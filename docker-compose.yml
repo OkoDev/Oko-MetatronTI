@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  crypto-bot:
+    build: .
+    container_name: crypto_volume_bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - ADMIN_ID=${ADMIN_ID}
+      - BINGX_API_KEY=${BINGX_API_KEY}
+      - BINGX_SECRET_KEY=${BINGX_SECRET_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./subscriptions.db:/app/subscriptions.db
+    networks:
+      - crypto-network
+
+networks:
+  crypto-network:
+    driver: bridge

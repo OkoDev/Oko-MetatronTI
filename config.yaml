@@ -1,0 +1,59 @@
+# Конфигурация Crypto Volume Bot
+
+# Telegram Bot
+telegram:
+  token: "${TELEGRAM_TOKEN}"
+  admin_id: "${ADMIN_ID}"
+
+# Биржи
+exchanges:
+  default: "bingx"
+  supported: ["binance", "bybit", "bingx", "okx"]
+  api_keys:
+    bingx:
+      api_key: "${BINGX_API_KEY}"
+      secret: "${BINGX_SECRET_KEY}"
+
+# Параметры анализа
+analysis:
+  volume_multiplier: 50.0
+  price_threshold: 40.0
+  history_size: 200
+  check_interval: 60
+
+# Подписки
+subscriptions:
+  free:
+    daily_limit: 5
+    signals: ["anomaly"]
+    price: 0
+  basic:
+    daily_limit: 10
+    signals: ["anomaly", "wt_signal", "mtf_signal"]
+    price: 9.99
+  premium:
+    daily_limit: 50
+    signals: ["anomaly", "wt_signal", "mtf_signal", "mtf_alert", "trend_signal", "divergence"]
+    price: 29.99
+  pro:
+    daily_limit: 999999
+    signals: ["all"]
+    price: 99.99
+
+# Логирование
+logging:
+  level: "INFO"
+  file: "crypto_bot.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# База данных
+database:
+  path: "subscriptions.db"
+  backup_interval: 24  # hours
+
+# Мониторинг
+monitoring:
+  health_check_interval: 300  # seconds
+  alert_on_errors: true
+  max_errors_per_hour: 10
