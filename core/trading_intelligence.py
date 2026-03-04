@@ -7,35 +7,36 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
-from enum import Enum
 import pandas as pd
 import numpy as np
 
-# Импорты индикаторов
+# Модели данных
+from core.signal_models import (
+    SignalType, SignalDirection, SignalStrength,
+    SignalData, MarketContext, TradingRecommendation,
+)
+
+# Проверки сигналов
+from core.signal_checkers import (
+    check_anomaly_signals, check_wt_signals, check_mtf_signals,
+    check_trend_signals, check_divergence_signals, check_pivot_signals,
+)
+
+# Форматтер рекомендаций
+from core.intelligence_formatter import format_intelligence_message  # noqa: F401 — re-export
+
 try:
     from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg
 except ImportError:
-    # Fallback импорты
     def calculate_trend(df, atr_period=43, factor=1.0):
-        df = df.copy()
-        df['trend'] = 1  # Простая заглушка
-        return df
-    
+        df = df.copy(); df["trend"] = 1; return df
+
     def calculate_wt(df, n1=10, n2=21):
-        df = df.copy()
-        df['wt1'] = 0
-        df['wt2'] = 0
-        return df
-    
+        df = df.copy(); df["wt1"] = 0; df["wt2"] = 0; return df
+
     def get_zone(wt_value):
-        if wt_value < -50:
-            return "OS"
-        elif wt_value > 50:
-            return "OB"
-        else:
-            return "N"
-    
+        return "OS" if wt_value < -50 else ("OB" if wt_value > 50 else "N")
+
     def detect_fvg(df):
         return "NONE", 0
 
@@ -74,86 +75,26 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-class SignalType(Enum):
-    """Типы сигналов"""
-    ANOMALY = "anomaly"
-    WT_SIGNAL = "wt_signal"
-    MTF_SIGNAL = "mtf_signal"
-    MTF_ALERT = "mtf_alert"
-    TREND_SIGNAL = "trend_signal"
-    DIVERGENCE = "divergence"
-    PIVOT_REVERSAL = "pivot_reversal"
-    PIVOT_ALERT = "pivot_alert"
-
-class SignalDirection(Enum):
-    """Направление сигнала"""
-    LONG = "LONG"
-    SHORT = "SHORT"
-    NEUTRAL = "NEUTRAL"
-
-class SignalStrength(Enum):
-    """Сила сигнала"""
-    VERY_HIGH = "VERY_HIGH"  # 80-100
-    HIGH = "HIGH"           # 60-79
-    MEDIUM = "MEDIUM"       # 40-59
-    LOW = "LOW"            # 20-39
-    VERY_LOW = "VERY_LOW"   # 0-19
-
-@dataclass
-class SignalData:
-    """Структура данных сигнала"""
-    symbol: str
-    signal_type: SignalType
-    direction: SignalDirection
-    strength: int  # 0-100
-    confidence: float  # 0.0-1.0
-    timestamp: datetime
-    data: Dict[str, Any]
-    timeframe: Optional[str] = None
-    entry_price: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
-
-@dataclass
-class MarketContext:
-    """Контекст рынка"""
-    symbol: str
-    current_price: float
-    volume_24h: float
-    volume_change_24h: float
-    price_change_24h: float
-    market_cap: Optional[float] = None
-    volatility: Optional[float] = None
-    trend_strength: Optional[float] = None
-
-@dataclass
-class TradingRecommendation:
-    """Комплексная торговая рекомендация"""
-    symbol: str
-    action: str  # "BUY", "SELL", "HOLD", "WATCH"
-    direction: SignalDirection
-    overall_strength: int  # 0-100
-    confidence: float  # 0.0-1.0
-    risk_level: str  # "LOW", "MEDIUM", "HIGH"
-    signals_count: int
-    supporting_signals: List[SignalData]
-    conflicting_signals: List[SignalData]
-    market_context: MarketContext
-    entry_price: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
-    reasoning: List[str] = None
-    timestamp: datetime = None
-
 class TradingIntelligence:
     """
     Основной класс для анализа и объединения торговых сигналов
     """
     
-    def __init__(self, data_collector, config: Dict = None):
+    # Маппинг строки из simulated_trades → SignalType enum для адаптивных весов
+    _SIGNAL_TYPE_MAP = {
+        "pivot_reversal": None,  # заполняется после объявления класса
+        "trend_signal":   None,
+        "wt_signal":      None,
+        "anomaly":        None,
+        "divergence":     None,
+        "mtf_signal":     None,
+    }
+
+    def __init__(self, data_collector, config: Dict = None, db_path: str = "subscriptions.db"):
         self.data_collector = data_collector
         self.config = config or {}
-        
+        self._db_path = db_path
+
         # Динамические веса для разных типов сигналов (адаптируются к эффективности)
         self.signal_weights = {
             SignalType.MTF_SIGNAL: 0.25,
@@ -165,6 +106,8 @@ class TradingIntelligence:
             SignalType.ANOMALY: 0.05,
             SignalType.PIVOT_ALERT: 0.15
         }
+        # Исходные веса сохраняем отдельно — чтобы не накапливать корректировки
+        self._base_signal_weights = dict(self.signal_weights)
         
         # Адаптивные пороги для принятия решений
         self.thresholds = {
@@ -223,7 +166,68 @@ class TradingIntelligence:
                 self.risk_manager = None
         else:
             logger.warning("Риск-менеджер недоступен")
-    
+
+        # OutcomePredictor — ML на реальных исходах симулированных сделок
+        self.outcome_predictor = None
+        try:
+            from core.outcome_predictor import OutcomePredictor
+            op = OutcomePredictor()
+            op.fit(db_path)
+            self.outcome_predictor = op
+            logger.info("OutcomePredictor: %s", op.info())
+        except Exception as e:
+            logger.warning("OutcomePredictor не инициализирован: %s", e)
+
+        # Адаптивные веса из реальной статистики (синхронно, sqlite3)
+        self.update_signal_weights()
+
+    def update_signal_weights(self, db_path: str = None) -> None:
+        """
+        Обновляет self.signal_weights на основе avg_R по типам сигналов из simulated_trades.
+        Вызывается при старте и после переобучения.
+        Минимум 20 закрытых сделок на тип — иначе вес не меняется.
+        """
+        _MIN_TRADES = 20
+        db = db_path or self._db_path
+        # Заполняем маппинг здесь, после объявления SignalType
+        _map = {
+            "pivot_reversal": SignalType.PIVOT_REVERSAL,
+            "trend_signal":   SignalType.TREND_SIGNAL,
+            "wt_signal":      SignalType.WT_SIGNAL,
+            "anomaly":        SignalType.ANOMALY,
+            "divergence":     SignalType.DIVERGENCE,
+            "mtf_signal":     SignalType.MTF_SIGNAL,
+        }
+        try:
+            from core.performance_engine import PerformanceEngine
+            rows = PerformanceEngine(db).by_signal_type()
+            changed = []
+            for row in rows:
+                st = _map.get(row["signal_type"])
+                if st is None:
+                    continue
+                closed = (row["wins"] or 0) + (row["losses"] or 0)
+                if closed < _MIN_TRADES:
+                    continue
+                avg_r = row["avg_r"] or 0.0
+                # factor: avg_r=0 → 1.0, +1R → 1.4, -1R → 0.6, clamped [0.5, 2.0]
+                factor = max(0.5, min(2.0, 1.0 + avg_r * 0.4))
+                base = self._base_signal_weights.get(st, 0.1)
+                new_w = round(base * factor, 4)
+                old_w = self.signal_weights.get(st, base)
+                self.signal_weights[st] = new_w
+                if abs(new_w - old_w) > 0.001:
+                    changed.append(
+                        f"{row['signal_type']}: {old_w:.3f}→{new_w:.3f} "
+                        f"(avg_R={avg_r:.2f}, n={closed})"
+                    )
+            if changed:
+                logger.info("Adaptive weights updated: %s", " | ".join(changed))
+            else:
+                logger.debug("Adaptive weights: нет изменений (мало данных или изменения незначительны)")
+        except Exception as e:
+            logger.warning("update_signal_weights: %s", e)
+
     def _initialize_performance_tracking(self):
         """Инициализирует отслеживание производительности сигналов"""
         for signal_type in SignalType:
@@ -379,27 +383,22 @@ class TradingIntelligence:
     async def _collect_all_signals(self, symbol: str) -> List[SignalData]:
         """Собирает все доступные сигналы для символа"""
         signals = []
-        
         try:
-            # Получаем данные для анализа
             df_1h = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
             df_15m = await self.data_collector.get_ohlcv(symbol, "15m", limit=100)
             df_3m = await self.data_collector.get_ohlcv(symbol, "3m", limit=100)
-            
+
             if df_1h is None or df_1h.empty:
                 return signals
-            
-            # Проверяем различные типы сигналов
-            signals.extend(await self._check_anomaly_signals(symbol, df_1h))
-            signals.extend(await self._check_wt_signals(symbol, df_15m))
-            signals.extend(await self._check_mtf_signals(symbol, df_1h, df_15m, df_3m))
-            signals.extend(await self._check_trend_signals(symbol, df_1h))
-            signals.extend(await self._check_divergence_signals(symbol, df_1h))
-            signals.extend(await self._check_pivot_signals(symbol, df_1h))
-            
+
+            signals.extend(await check_anomaly_signals(symbol, df_1h))
+            signals.extend(await check_wt_signals(symbol, df_15m))
+            signals.extend(await check_mtf_signals(symbol, df_1h, df_15m, df_3m))
+            signals.extend(await check_trend_signals(symbol, df_1h))
+            signals.extend(await check_divergence_signals(symbol, df_1h))
+            signals.extend(await check_pivot_signals(symbol, df_1h))
         except Exception as e:
             logger.exception(f"Ошибка сбора сигналов для {symbol}: {e}")
-        
         return signals
     
     def _filter_signals_by_quality(self, signals: List[SignalData]) -> List[SignalData]:
@@ -591,9 +590,38 @@ class TradingIntelligence:
             # Корректируем анализ на основе ML предсказаний
             if ml_predictions:
                 analysis = self._apply_ml_corrections(analysis, ml_predictions, market_context)
-            
+
+            # OutcomePredictor: блендинг P(win) в confidence
+            if self.outcome_predictor and analysis.get("direction") != SignalDirection.NEUTRAL:
+                try:
+                    supporting = analysis.get("supporting_signals", [])
+                    first_sig = supporting[0] if supporting else None
+                    sig_type = first_sig.signal_type.value if first_sig else "composite"
+                    direction_str = analysis["direction"].value if hasattr(analysis["direction"], "value") else str(analysis["direction"])
+                    features_dict = {
+                        "volatility": market_context.volatility or 0,
+                        "price_change_24h": market_context.price_change_24h or 0,
+                    }
+                    win_prob = self.outcome_predictor.predict_win_prob(
+                        signal_type=sig_type,
+                        direction=direction_str,
+                        strength=analysis.get("strength", 50),
+                        confidence=analysis.get("confidence", 0.5),
+                        features_dict=features_dict,
+                        regime=None,  # режим появится после регистрации сделки
+                    )
+                    if win_prob is not None:
+                        orig = analysis.get("confidence", 0.5)
+                        analysis["confidence"] = round(orig * 0.7 + win_prob * 0.3, 4)
+                        logger.debug(
+                            "OutcomePredictor: P(win)=%.2f conf %.3f→%.3f",
+                            win_prob, orig, analysis["confidence"],
+                        )
+                except Exception as op_err:
+                    logger.debug("OutcomePredictor blend: %s", op_err)
+
             return analysis
-            
+
         except Exception as e:
             logger.exception(f"Ошибка ML улучшения анализа для {symbol}: {e}")
             return analysis
@@ -665,346 +693,6 @@ class TradingIntelligence:
         for signal in signals:
             # Пока просто увеличиваем счетчик сигналов
             self.signal_performance[signal.signal_type]["total_signals"] += 1
-    
-    async def _check_anomaly_signals(self, symbol: str, df: pd.DataFrame) -> List[SignalData]:
-        """Проверка аномалий объема"""
-        signals = []
-        
-        try:
-            if len(df) < 20:
-                return signals
-                
-            # Простой анализ аномалий объема
-            volume_mean = df['volume'].rolling(20).mean().iloc[-1]
-            volume_current = df['volume'].iloc[-1]
-            volume_ratio = volume_current / volume_mean if volume_mean > 0 else 1
-            
-            if volume_ratio > 3.0:  # Объем в 3+ раза больше среднего
-                price_change = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
-                
-                direction = SignalDirection.LONG if price_change > 0 else SignalDirection.SHORT
-                strength = min(int(volume_ratio * 10), 100)
-                
-                signal = SignalData(
-                    symbol=symbol,
-                    signal_type=SignalType.ANOMALY,
-                    direction=direction,
-                    strength=strength,
-                    confidence=0.7,
-                    timestamp=datetime.now(),
-                    data={
-                        "volume_ratio": volume_ratio,
-                        "price_change": price_change,
-                        "volume_current": volume_current,
-                        "volume_mean": volume_mean
-                    },
-                    timeframe="1h"
-                )
-                signals.append(signal)
-                
-        except Exception as e:
-            logger.exception(f"Ошибка проверки аномалий для {symbol}: {e}")
-        
-        return signals
-    
-    async def _check_wt_signals(self, symbol: str, df: pd.DataFrame) -> List[SignalData]:
-        """Проверка Wavetrend сигналов"""
-        signals = []
-        
-        try:
-            if len(df) < 50:
-                return signals
-                
-            # Простой расчет WT (упрощенный)
-            df_wt = calculate_wt(df)
-            
-            if 'wt1' not in df_wt.columns or 'wt2' not in df_wt.columns:
-                return signals
-            
-            wt1_last = df_wt['wt1'].iloc[-1]
-            wt2_last = df_wt['wt2'].iloc[-1]
-            wt1_prev = df_wt['wt1'].iloc[-2]
-            wt2_prev = df_wt['wt2'].iloc[-2]
-            
-            # Проверяем пересечения
-            cross_up = wt1_prev < wt2_prev and wt1_last > wt2_last
-            cross_down = wt1_prev > wt2_prev and wt1_last < wt2_last
-            
-            if cross_up and wt1_last < -50:  # Пересечение в зоне перепроданности
-                signal = SignalData(
-                    symbol=symbol,
-                    signal_type=SignalType.WT_SIGNAL,
-                    direction=SignalDirection.LONG,
-                    strength=70,
-                    confidence=0.8,
-                    timestamp=datetime.now(),
-                    data={
-                        "wt1": wt1_last,
-                        "wt2": wt2_last,
-                        "zone": "OS"
-                    },
-                    timeframe="15m"
-                )
-                signals.append(signal)
-                
-            elif cross_down and wt1_last > 50:  # Пересечение в зоне перекупленности
-                signal = SignalData(
-                    symbol=symbol,
-                    signal_type=SignalType.WT_SIGNAL,
-                    direction=SignalDirection.SHORT,
-                    strength=70,
-                    confidence=0.8,
-                    timestamp=datetime.now(),
-                    data={
-                        "wt1": wt1_last,
-                        "wt2": wt2_last,
-                        "zone": "OB"
-                    },
-                    timeframe="15m"
-                )
-                signals.append(signal)
-                
-        except Exception as e:
-            logger.exception(f"Ошибка проверки WT для {symbol}: {e}")
-        
-        return signals
-    
-    async def _check_mtf_signals(self, symbol: str, df_1h: pd.DataFrame, 
-                               df_15m: pd.DataFrame, df_3m: pd.DataFrame) -> List[SignalData]:
-        """Проверка мультитаймфреймовых сигналов"""
-        signals = []
-        
-        try:
-            if df_1h is None or df_15m is None or df_3m is None:
-                return signals
-                
-            # Простой MTF анализ
-            
-            # Тренд на 1h
-            df_1h_trend = calculate_trend(df_1h)
-            trend_1h = df_1h_trend['trend'].iloc[-1] if 'trend' in df_1h_trend.columns else 0
-            
-            # WT на 15m
-            df_15m_wt = calculate_wt(df_15m)
-            if 'wt1' in df_15m_wt.columns and 'wt2' in df_15m_wt.columns:
-                wt1_15m = df_15m_wt['wt1'].iloc[-1]
-                wt2_15m = df_15m_wt['wt2'].iloc[-1]
-                
-                # WT на 3m
-                df_3m_wt = calculate_wt(df_3m)
-                if 'wt1' in df_3m_wt.columns:
-                    wt1_3m = df_3m_wt['wt1'].iloc[-1]
-                    
-                    # Комплексный MTF сигнал
-                    if trend_1h == 1 and wt1_15m > wt2_15m and wt1_3m < -50:
-                        signal = SignalData(
-                            symbol=symbol,
-                            signal_type=SignalType.MTF_SIGNAL,
-                            direction=SignalDirection.LONG,
-                            strength=85,
-                            confidence=0.9,
-                            timestamp=datetime.now(),
-                            data={
-                                "trend_1h": trend_1h,
-                                "wt1_15m": wt1_15m,
-                                "wt2_15m": wt2_15m,
-                                "wt1_3m": wt1_3m
-                            },
-                            timeframe="MTF"
-                        )
-                        signals.append(signal)
-                        
-                    elif trend_1h == -1 and wt1_15m < wt2_15m and wt1_3m > 50:
-                        signal = SignalData(
-                            symbol=symbol,
-                            signal_type=SignalType.MTF_SIGNAL,
-                            direction=SignalDirection.SHORT,
-                            strength=85,
-                            confidence=0.9,
-                            timestamp=datetime.now(),
-                            data={
-                                "trend_1h": trend_1h,
-                                "wt1_15m": wt1_15m,
-                                "wt2_15m": wt2_15m,
-                                "wt1_3m": wt1_3m
-                            },
-                            timeframe="MTF"
-                        )
-                        signals.append(signal)
-                        
-        except Exception as e:
-            logger.exception(f"Ошибка проверки MTF для {symbol}: {e}")
-        
-        return signals
-    
-    async def _check_trend_signals(self, symbol: str, df: pd.DataFrame) -> List[SignalData]:
-        """Проверка трендовых сигналов"""
-        signals = []
-        
-        try:
-            if len(df) < 50:
-                return signals
-                
-            df_trend = calculate_trend(df)
-            
-            if 'trend' not in df_trend.columns:
-                return signals
-                
-            trend_current = df_trend['trend'].iloc[-1]
-            trend_prev = df_trend['trend'].iloc[-2]
-            
-            # Изменение тренда
-            if trend_current != trend_prev:
-                direction = SignalDirection.LONG if trend_current == 1 else SignalDirection.SHORT
-                
-                signal = SignalData(
-                    symbol=symbol,
-                    signal_type=SignalType.TREND_SIGNAL,
-                    direction=direction,
-                    strength=60,
-                    confidence=0.7,
-                    timestamp=datetime.now(),
-                    data={
-                        "trend_current": trend_current,
-                        "trend_prev": trend_prev
-                    },
-                    timeframe="1h"
-                )
-                signals.append(signal)
-                
-        except Exception as e:
-            logger.exception(f"Ошибка проверки тренда для {symbol}: {e}")
-        
-        return signals
-    
-    async def _check_divergence_signals(self, symbol: str, df: pd.DataFrame) -> List[SignalData]:
-        """Проверка дивергенций"""
-        signals = []
-        
-        try:
-            if len(df) < 100:
-                return signals
-                
-            # Простой анализ дивергенций (упрощенный)
-            df_wt = calculate_wt(df)
-            
-            if 'wt1' not in df_wt.columns:
-                return signals
-                
-            # Ищем локальные максимумы и минимумы цены и WT
-            price_highs = df['high'].rolling(10, center=True).max()
-            price_lows = df['low'].rolling(10, center=True).min()
-            wt_highs = df_wt['wt1'].rolling(10, center=True).max()
-            wt_lows = df_wt['wt1'].rolling(10, center=True).min()
-            
-            # Простая проверка дивергенций
-            recent_price_high = price_highs.iloc[-20:].max()
-            recent_price_low = price_lows.iloc[-20:].min()
-            recent_wt_high = wt_highs.iloc[-20:].max()
-            recent_wt_low = wt_lows.iloc[-20:].min()
-            
-            # Бычья дивергенция: цена делает новый минимум, WT - нет
-            if recent_price_low < df['low'].iloc[-50:].min() and recent_wt_low > df_wt['wt1'].iloc[-50:].min():
-                signal = SignalData(
-                    symbol=symbol,
-                    signal_type=SignalType.DIVERGENCE,
-                    direction=SignalDirection.LONG,
-                    strength=75,
-                    confidence=0.8,
-                    timestamp=datetime.now(),
-                    data={
-                        "divergence_type": "bullish",
-                        "price_low": recent_price_low,
-                        "wt_low": recent_wt_low
-                    },
-                    timeframe="1h"
-                )
-                signals.append(signal)
-                
-            # Медвежья дивергенция: цена делает новый максимум, WT - нет
-            elif recent_price_high > df['high'].iloc[-50:].max() and recent_wt_high < df_wt['wt1'].iloc[-50:].max():
-                signal = SignalData(
-                    symbol=symbol,
-                    signal_type=SignalType.DIVERGENCE,
-                    direction=SignalDirection.SHORT,
-                    strength=75,
-                    confidence=0.8,
-                    timestamp=datetime.now(),
-                    data={
-                        "divergence_type": "bearish",
-                        "price_high": recent_price_high,
-                        "wt_high": recent_wt_high
-                    },
-                    timeframe="1h"
-                )
-                signals.append(signal)
-                
-        except Exception as e:
-            logger.exception(f"Ошибка проверки дивергенций для {symbol}: {e}")
-        
-        return signals
-    
-    async def _check_pivot_signals(self, symbol: str, df: pd.DataFrame) -> List[SignalData]:
-        """Проверка пивотных сигналов"""
-        signals = []
-        
-        try:
-            if len(df) < 50:
-                return signals
-                
-            # Простой анализ пивотов
-            current_price = df['close'].iloc[-1]
-            
-            # Ищем ближайшие уровни поддержки и сопротивления
-            highs = df['high'].rolling(20, center=True).max()
-            lows = df['low'].rolling(20, center=True).min()
-            
-            resistance_levels = highs[highs == df['high']].dropna()
-            support_levels = lows[lows == df['low']].dropna()
-            
-            # Проверяем приближение к уровням
-            for level in resistance_levels.iloc[-10:]:
-                distance = abs(current_price - level) / current_price * 100
-                if distance < 2.0:  # В пределах 2%
-                    signal = SignalData(
-                        symbol=symbol,
-                        signal_type=SignalType.PIVOT_REVERSAL,
-                        direction=SignalDirection.SHORT,
-                        strength=65,
-                        confidence=0.7,
-                        timestamp=datetime.now(),
-                        data={
-                            "pivot_type": "resistance",
-                            "level": level,
-                            "distance": distance
-                        },
-                        timeframe="1h"
-                    )
-                    signals.append(signal)
-                    
-            for level in support_levels.iloc[-10:]:
-                distance = abs(current_price - level) / current_price * 100
-                if distance < 2.0:  # В пределах 2%
-                    signal = SignalData(
-                        symbol=symbol,
-                        signal_type=SignalType.PIVOT_REVERSAL,
-                        direction=SignalDirection.LONG,
-                        strength=65,
-                        confidence=0.7,
-                        timestamp=datetime.now(),
-                        data={
-                            "pivot_type": "support",
-                            "level": level,
-                            "distance": distance
-                        },
-                        timeframe="1h"
-                    )
-                    signals.append(signal)
-                    
-        except Exception as e:
-            logger.exception(f"Ошибка проверки пивотов для {symbol}: {e}")
-        
-        return signals
     
     async def _get_market_context(self, symbol: str) -> MarketContext:
         """Получает контекст рынка для символа"""
@@ -1090,92 +778,6 @@ class TradingIntelligence:
             
         except Exception:
             return None
-    
-    def _analyze_signals(self, signals: List[SignalData], 
-                        market_context: MarketContext) -> Dict[str, Any]:
-        """Анализирует собранные сигналы"""
-        
-        if not signals:
-            return {"strength": 0, "confidence": 0, "direction": SignalDirection.NEUTRAL}
-        
-        # Группируем сигналы по направлению
-        long_signals = [s for s in signals if s.direction == SignalDirection.LONG]
-        short_signals = [s for s in signals if s.direction == SignalDirection.SHORT]
-        
-        # Рассчитываем взвешенную силу для каждого направления
-        long_strength = self._calculate_weighted_strength(long_signals)
-        short_strength = self._calculate_weighted_strength(short_signals)
-        
-        # Определяем доминирующее направление
-        if long_strength > short_strength:
-            direction = SignalDirection.LONG
-            strength = long_strength
-            supporting_signals = long_signals
-            conflicting_signals = short_signals
-        elif short_strength > long_strength:
-            direction = SignalDirection.SHORT
-            strength = short_strength
-            supporting_signals = short_signals
-            conflicting_signals = long_signals
-        else:
-            direction = SignalDirection.NEUTRAL
-            strength = max(long_strength, short_strength)
-            supporting_signals = []
-            conflicting_signals = signals
-        
-        # Рассчитываем уверенность
-        confidence = self._calculate_confidence(signals, market_context)
-        
-        return {
-            "strength": strength,
-            "confidence": confidence,
-            "direction": direction,
-            "supporting_signals": supporting_signals,
-            "conflicting_signals": conflicting_signals,
-            "total_signals": len(signals)
-        }
-    
-    def _calculate_weighted_strength(self, signals: List[SignalData]) -> int:
-        """Рассчитывает взвешенную силу сигналов"""
-        if not signals:
-            return 0
-        
-        total_weighted_strength = 0
-        total_weight = 0
-        
-        for signal in signals:
-            weight = self.signal_weights.get(signal.signal_type, 0.1)
-            weighted_strength = signal.strength * weight * signal.confidence
-            total_weighted_strength += weighted_strength
-            total_weight += weight
-        
-        if total_weight == 0:
-            return 0
-        
-        return min(int(total_weighted_strength / total_weight), 100)
-    
-    def _calculate_confidence(self, signals: List[SignalData], 
-                             market_context: MarketContext) -> float:
-        """Рассчитывает общую уверенность в сигналах"""
-        if not signals:
-            return 0.0
-        
-        # Базовая уверенность от качества сигналов
-        signal_confidence = np.mean([s.confidence for s in signals])
-        
-        # Корректировка на основе контекста рынка
-        context_factor = 1.0
-        
-        # Высокий объем увеличивает уверенность
-        if market_context.volume_24h > 0:
-            volume_factor = min(market_context.volume_24h / 1000000, 2.0)  # Нормализация
-            context_factor *= (0.8 + 0.2 * volume_factor)
-        
-        # Высокая волатильность снижает уверенность
-        if market_context.volatility and market_context.volatility > 10:
-            context_factor *= 0.9
-        
-        return min(signal_confidence * context_factor, 1.0)
     
     def _generate_recommendation(self, symbol: str, signals: List[SignalData],
                                analysis: Dict[str, Any], 
@@ -1460,10 +1062,22 @@ class TradingIntelligence:
             
             # Обучаем модели
             await self.ml_predictor.train_models(training_data)
-            
+
             logger.info(f"Обучение ML моделей завершено. Использовано {len(training_data)} примеров")
+
+            # Переобучаем OutcomePredictor на свежих данных из simulated_trades
+            if self.outcome_predictor is not None:
+                try:
+                    self.outcome_predictor.fit(self._db_path)
+                    logger.info("OutcomePredictor переобучён: %s", self.outcome_predictor.info())
+                except Exception as op_err:
+                    logger.warning("OutcomePredictor retrain: %s", op_err)
+
+            # Обновляем адаптивные веса после переобучения
+            self.update_signal_weights()
+
             return True
-            
+
         except Exception as e:
             logger.exception(f"Ошибка обучения ML моделей: {e}")
             return False
@@ -1719,133 +1333,3 @@ class TradingIntelligence:
         return self.risk_manager.get_risk_recommendations()
 
 
-def format_intelligence_message(recommendation: TradingRecommendation) -> str:
-    """
-    Форматирует сообщение с комплексной торговой рекомендацией
-    """
-    
-    # Эмодзи для действия
-    action_emoji = {
-        "BUY": "🟢",
-        "SELL": "🔴", 
-        "HOLD": "🟡",
-        "WATCH": "👀"
-    }
-    
-    # Эмодзи для силы сигнала
-    if recommendation.overall_strength >= 80:
-        strength_emoji = "🔥🔥🔥"
-        strength_text = "Очень высокая"
-    elif recommendation.overall_strength >= 60:
-        strength_emoji = "🔥🔥"
-        strength_text = "Высокая"
-    elif recommendation.overall_strength >= 40:
-        strength_emoji = "🔥"
-        strength_text = "Средняя"
-    else:
-        strength_emoji = "⚠️"
-        strength_text = "Низкая"
-    
-    # Эмодзи для уровня риска
-    risk_emoji = {
-        "LOW": "🟢",
-        "MEDIUM": "🟡", 
-        "HIGH": "🔴"
-    }
-    
-    emoji = action_emoji.get(recommendation.action, "❓")
-    
-    parts = [
-        f"{emoji} <b>КОМПЛЕКСНАЯ РЕКОМЕНДАЦИЯ</b> {emoji}",
-        f"Пара: {recommendation.symbol}",
-        f"Действие: <b>{recommendation.action}</b>",
-        f"Направление: {recommendation.direction.value}",
-        "",
-        f"{strength_emoji} <b>Сила сигнала: {recommendation.overall_strength}/100</b> ({strength_text})",
-        f"Уверенность: {recommendation.confidence:.2f}",
-        f"{risk_emoji.get(recommendation.risk_level, '❓')} <b>Риск:</b> {recommendation.risk_level}",
-        "",
-        f"📊 <b>Сигналов найдено:</b> {recommendation.signals_count}",
-        f"✅ Поддерживающих: {len(recommendation.supporting_signals)}",
-        f"⚠️ Конфликтующих: {len(recommendation.conflicting_signals)}"
-    ]
-    
-    # Уровни торговли
-    if recommendation.entry_price:
-        parts.append("")
-        parts.append("<b>🎯 Торговые уровни:</b>")
-        parts.append(f"Вход: {recommendation.entry_price:.6f}")
-        
-        if recommendation.stop_loss:
-            parts.append(f"Стоп-лосс: {recommendation.stop_loss:.6f}")
-        
-        if recommendation.take_profit:
-            parts.append(f"Тейк-профит: {recommendation.take_profit:.6f}")
-    
-    # Обоснование
-    if recommendation.reasoning:
-        parts.append("")
-        parts.append("<b>📋 Обоснование:</b>")
-        for reason in recommendation.reasoning[:5]:  # Показываем первые 5 пунктов
-            parts.append(f"• {reason}")
-    
-    # ML информация (если доступна)
-    if hasattr(recommendation, 'metadata') and recommendation.metadata:
-        ml_info = recommendation.metadata.get('ml_enhanced')
-        if ml_info:
-            parts.append("")
-            parts.append("<b>🤖 ML Анализ:</b>")
-            parts.append("• Анализ улучшен машинным обучением")
-            
-            ml_predictions = recommendation.metadata.get('ml_predictions_count', 0)
-            if ml_predictions > 0:
-                parts.append(f"• ML предсказаний: {ml_predictions}")
-            
-            strength_adj = recommendation.metadata.get('ml_strength_adjustment', 0)
-            if abs(strength_adj) > 0:
-                adj_emoji = "📈" if strength_adj > 0 else "📉"
-                parts.append(f"• {adj_emoji} Корректировка силы: {strength_adj:+.1f}")
-        
-        # Информация о риск-менеджменте
-        risk_managed = recommendation.metadata.get('risk_managed')
-        if risk_managed:
-            parts.append("")
-            parts.append("<b>🛡️ Управление рисками:</b>")
-            
-            risk_level = recommendation.metadata.get('risk_level', 'UNKNOWN')
-            parts.append(f"• Уровень риска: {risk_level}")
-            
-            position_size = recommendation.metadata.get('position_size', 0)
-            if position_size > 0:
-                parts.append(f"• Размер позиции: {position_size:.6f}")
-            
-            risk_percent = recommendation.metadata.get('risk_percent', 0)
-            if risk_percent > 0:
-                parts.append(f"• Риск позиции: {risk_percent:.2f}%")
-            
-            risk_reward = recommendation.metadata.get('risk_reward_ratio', 0)
-            if risk_reward > 0:
-                parts.append(f"• Соотношение риск/прибыль: {risk_reward:.2f}")
-            
-            risk_warnings = recommendation.metadata.get('risk_warnings', [])
-            if risk_warnings:
-                parts.append("• ⚠️ Предупреждения о рисках:")
-                for warning in risk_warnings[:3]:  # Показываем первые 3
-                    parts.append(f"  - {warning}")
-    
-    # Контекст рынка
-    parts.append("")
-    parts.append("<b>📈 Контекст рынка:</b>")
-    parts.append(f"Цена: {recommendation.market_context.current_price:.6f}")
-    
-    if recommendation.market_context.volume_24h > 0:
-        parts.append(f"Объем 24ч: {recommendation.market_context.volume_24h:,.0f}")
-    
-    if recommendation.market_context.price_change_24h:
-        change_emoji = "📈" if recommendation.market_context.price_change_24h > 0 else "📉"
-        parts.append(f"{change_emoji} Изменение 24ч: {recommendation.market_context.price_change_24h:+.2f}%")
-    
-    parts.append("")
-    parts.append(f"⏰ Время анализа: {recommendation.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    return "\n".join(parts)
