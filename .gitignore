@@ -25,6 +25,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.lock
+bot_instance.lock
 
 # ===============================
 # Virtual environments
