@@ -2,10 +2,20 @@ import ccxt.async_support as ccxt
 from collections import deque
 import asyncio
 import logging
+import time
 import pandas as pd
 import re
 
 logger = logging.getLogger(__name__)
+
+# TTL кеша зависит от таймфрейма: чем старше ТФ, тем дольше актуален
+_CACHE_TTL = {
+    "1m": 15, "3m": 30, "5m": 45,
+    "15m": 60, "45m": 120,
+    "1h": 180, "4h": 300, "1d": 600,
+}
+_DEFAULT_TTL = 60
+
 
 class RealTimeData:
     def __init__(self, exchange_id="bingx"):
@@ -20,6 +30,8 @@ class RealTimeData:
         self.history_size = 200
         self.usdt_pairs = []
         self.is_running = False
+        # Кеш OHLCV: {(symbol, timeframe): {"df": DataFrame, "ts": float, "limit": int}}
+        self._ohlcv_cache = {}
 
     async def load_markets(self):
         """Загрузить только USDT futures-пары (попытка универсальной фильтрации)"""
@@ -135,17 +147,27 @@ class RealTimeData:
         return await self.symbol_exists(normalized)
 
     async def get_ohlcv(self, symbol, timeframe="15m", limit=150):
-        """Возвращает pandas.DataFrame с колонками: time, open, high, low, close, volume"""
+        """Возвращает pandas.DataFrame с колонками: time, open, high, low, close, volume.
+        Результат кешируется с TTL, зависящим от таймфрейма."""
+        normalized_symbol = self.normalize_symbol(symbol)
+        cache_key = (normalized_symbol, timeframe)
+        now = time.monotonic()
+        ttl = _CACHE_TTL.get(timeframe, _DEFAULT_TTL)
+
+        # Проверяем кеш: совпадает ли ключ и достаточно ли свечей
+        cached = self._ohlcv_cache.get(cache_key)
+        if cached and (now - cached["ts"]) < ttl and cached["limit"] >= limit:
+            return cached["df"].copy()
+
         try:
-            # Нормализуем символ
-            normalized_symbol = self.normalize_symbol(symbol)
             candles = await self.exchange.fetch_ohlcv(normalized_symbol, timeframe=timeframe, limit=limit)
             if not candles:
                 return None
             df = pd.DataFrame(candles, columns=["time", "open", "high", "low", "close", "volume"])
             for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
-            return df
+            self._ohlcv_cache[cache_key] = {"df": df, "ts": now, "limit": limit}
+            return df.copy()
         except Exception:
             logger.debug(f"get_ohlcv error {symbol} {timeframe}", exc_info=True)
             return None

@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 
-from core.keyboards import main_menu
+from bot.keyboards import main_menu
 from bot.states import SubscriptionStates
 
 logger = logging.getLogger(__name__)

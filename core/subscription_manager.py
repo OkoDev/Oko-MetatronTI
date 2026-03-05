@@ -86,10 +86,38 @@ class SubscriptionManager:
                     R_multiple REAL,
                     closed_at TIMESTAMP,
                     duration_minutes REAL,
-                    features_json TEXT
+                    features_json TEXT,
+                    max_price REAL,
+                    min_price REAL,
+                    max_R_possible REAL,
+                    captured_R_pct REAL
                 )
             """)
-            
+
+            # Миграция: добавляем MFE колонки если их нет (для существующих БД)
+            for col, coltype in [
+                ("max_price", "REAL"), ("min_price", "REAL"),
+                ("max_R_possible", "REAL"), ("captured_R_pct", "REAL"),
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass  # колонка уже существует
+
+            # Персональные настройки капитала (Этап 5 ROADMAP)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    deposit_usdt REAL NOT NULL DEFAULT 1000.0,
+                    leverage INTEGER NOT NULL DEFAULT 10,
+                    risk_pct REAL NOT NULL DEFAULT 1.0,
+                    sl_pct REAL NOT NULL DEFAULT 2.0,
+                    tp_pct REAL NOT NULL DEFAULT 4.0,
+                    auto_sizing INTEGER NOT NULL DEFAULT 1,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, 

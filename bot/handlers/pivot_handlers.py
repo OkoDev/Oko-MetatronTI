@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 
-from core.keyboards import main_menu
+from bot.keyboards import main_menu
 from core.message_builder import tv_link
 from bot.states import PivotStates
 

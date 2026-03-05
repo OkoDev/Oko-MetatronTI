@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from core.keyboards import main_menu
+from bot.keyboards import main_menu
 from core.mtf_checker import collect_mtf_data
 from bot.monitoring import start_monitoring, stop_monitoring
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from core.keyboards import ai_analysis_inline_menu
+from bot.keyboards import ai_analysis_inline_menu
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,7 @@ from core.divergence_detector import DivergenceDetector
 from core.pivot_calculator_fixed import PivotCalculatorFixed
 from core.trading_intelligence import TradingIntelligence
 from core.trade_simulator import TradeSimulator
-from core.menu_handler import MenuHandler
+from bot.menus import MenuHandler
 
 # ==============================
 # Логирование

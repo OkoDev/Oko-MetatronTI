@@ -1,4 +1,4 @@
-# core/keyboards.py
+# bot/keyboards.py
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 
@@ -9,23 +9,23 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="🟢 Мониторинг"), 
+                KeyboardButton(text="🟢 Мониторинг"),
                 KeyboardButton(text="⏹ Остановить")
             ],
             [
-                KeyboardButton(text="🧠 AI Анализ"), 
+                KeyboardButton(text="🧠 AI Анализ"),
                 KeyboardButton(text="📊 Статистика")
             ],
             [
-                KeyboardButton(text="📈 Сигналы"), 
+                KeyboardButton(text="📈 Сигналы"),
                 KeyboardButton(text="🎯 Пивоты")
             ],
             [
-                KeyboardButton(text="🛡️ Риски"), 
+                KeyboardButton(text="🛡️ Риски"),
                 KeyboardButton(text="📚 История")
             ],
             [
-                KeyboardButton(text="💎 Подписки"), 
+                KeyboardButton(text="💎 Подписки"),
                 KeyboardButton(text="⚙️ Настройки")
             ],
             [
@@ -44,15 +44,15 @@ def monitoring_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="🟢 Запустить мониторинг"), 
+                KeyboardButton(text="🟢 Запустить мониторинг"),
                 KeyboardButton(text="⏹ Остановить мониторинг")
             ],
             [
-                KeyboardButton(text="📊 Статистика мониторинга"), 
+                KeyboardButton(text="📊 Статистика мониторинга"),
                 KeyboardButton(text="🏆 ТОП-10 по объему")
             ],
             [
-                KeyboardButton(text="🔍 Найти пару"), 
+                KeyboardButton(text="🔍 Найти пару"),
                 KeyboardButton(text="📈 Активные сигналы")
             ],
             [
@@ -71,19 +71,19 @@ def ai_analysis_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="🧠 Комплексный анализ"), 
+                KeyboardButton(text="🧠 Комплексный анализ"),
                 KeyboardButton(text="🤖 ML предсказания")
             ],
             [
-                KeyboardButton(text="📊 Анализ пары"), 
+                KeyboardButton(text="📊 Анализ пары"),
                 KeyboardButton(text="🎯 Торговые уровни")
             ],
             [
-                KeyboardButton(text="📈 Эффективность"), 
+                KeyboardButton(text="📈 Эффективность"),
                 KeyboardButton(text="🔄 Обновить модели")
             ],
             [
-                KeyboardButton(text="📚 ML статистика"), 
+                KeyboardButton(text="📚 ML статистика"),
                 KeyboardButton(text="⚙️ Настройки AI")
             ],
             [
@@ -102,19 +102,19 @@ def signals_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="🚨 Аномалии"), 
+                KeyboardButton(text="🚨 Аномалии"),
                 KeyboardButton(text="📊 WT сигналы")
             ],
             [
-                KeyboardButton(text="🔄 MTF анализ"), 
+                KeyboardButton(text="🔄 MTF анализ"),
                 KeyboardButton(text="📈 Тренд сигналы")
             ],
             [
-                KeyboardButton(text="💎 Дивергенции"), 
+                KeyboardButton(text="💎 Дивергенции"),
                 KeyboardButton(text="🎯 Пивот сигналы")
             ],
             [
-                KeyboardButton(text="📊 Все сигналы"), 
+                KeyboardButton(text="📊 Все сигналы"),
                 KeyboardButton(text="🔍 Поиск сигналов")
             ],
             [
@@ -133,15 +133,15 @@ def pivots_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📊 Недельные пивоты"), 
+                KeyboardButton(text="📊 Недельные пивоты"),
                 KeyboardButton(text="📅 Дневные пивоты")
             ],
             [
-                KeyboardButton(text="🔍 Проверить пивоты"), 
+                KeyboardButton(text="🔍 Проверить пивоты"),
                 KeyboardButton(text="📈 Развороты от пивотов")
             ],
             [
-                KeyboardButton(text="🎯 Ключевые уровни"), 
+                KeyboardButton(text="🎯 Ключевые уровни"),
                 KeyboardButton(text="📊 Анализ пивотов")
             ],
             [
@@ -160,19 +160,19 @@ def risk_management_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="🛡️ Профиль риска"), 
+                KeyboardButton(text="🛡️ Профиль риска"),
                 KeyboardButton(text="📊 Позиции")
             ],
             [
-                KeyboardButton(text="💰 Размер позиций"), 
+                KeyboardButton(text="💰 Размер позиций"),
                 KeyboardButton(text="🎯 Стоп-лоссы")
             ],
             [
-                KeyboardButton(text="📈 Соотношение риск/прибыль"), 
+                KeyboardButton(text="📈 Соотношение риск/прибыль"),
                 KeyboardButton(text="⚠️ Предупреждения")
             ],
             [
-                KeyboardButton(text="📊 Статистика рисков"), 
+                KeyboardButton(text="📊 Статистика рисков"),
                 KeyboardButton(text="⚙️ Настройки рисков")
             ],
             [
@@ -191,19 +191,19 @@ def history_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📊 Эффективность"), 
+                KeyboardButton(text="📊 Эффективность"),
                 KeyboardButton(text="📈 Тренд производительности")
             ],
             [
-                KeyboardButton(text="🎯 Анализ по типам"), 
+                KeyboardButton(text="🎯 Анализ по типам"),
                 KeyboardButton(text="📚 История сигналов")
             ],
             [
-                KeyboardButton(text="💡 Рекомендации"), 
+                KeyboardButton(text="💡 Рекомендации"),
                 KeyboardButton(text="📊 Детальная статистика")
             ],
             [
-                KeyboardButton(text="🔄 Обновить данные"), 
+                KeyboardButton(text="🔄 Обновить данные"),
                 KeyboardButton(text="📤 Экспорт данных")
             ],
             [
@@ -222,19 +222,19 @@ def subscriptions_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="💎 Моя подписка"), 
+                KeyboardButton(text="💎 Моя подписка"),
                 KeyboardButton(text="🛒 Купить подписку")
             ],
             [
-                KeyboardButton(text="✅ Подписаться"), 
+                KeyboardButton(text="✅ Подписаться"),
                 KeyboardButton(text="❌ Отписаться")
             ],
             [
-                KeyboardButton(text="📊 Лимиты"), 
+                KeyboardButton(text="📊 Лимиты"),
                 KeyboardButton(text="📈 Статистика использования")
             ],
             [
-                KeyboardButton(text="💳 История платежей"), 
+                KeyboardButton(text="💳 История платежей"),
                 KeyboardButton(text="⚙️ Настройки подписки")
             ],
             [
@@ -253,19 +253,19 @@ def settings_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="⚙️ Общие настройки"), 
+                KeyboardButton(text="⚙️ Общие настройки"),
                 KeyboardButton(text="🔔 Уведомления")
             ],
             [
-                KeyboardButton(text="📊 Параметры анализа"), 
+                KeyboardButton(text="📊 Параметры анализа"),
                 KeyboardButton(text="🎯 Настройки сигналов")
             ],
             [
-                KeyboardButton(text="🤖 AI настройки"), 
+                KeyboardButton(text="🤖 AI настройки"),
                 KeyboardButton(text="🛡️ Настройки рисков")
             ],
             [
-                KeyboardButton(text="📱 Интерфейс"), 
+                KeyboardButton(text="📱 Интерфейс"),
                 KeyboardButton(text="🔧 Дополнительно")
             ],
             [
@@ -423,14 +423,14 @@ def symbol_selection_menu(symbols: list, callback_prefix: str = "select_symbol")
             if i + j < len(symbols):
                 symbol = symbols[i + j]
                 row.append(InlineKeyboardButton(
-                    text=symbol, 
+                    text=symbol,
                     callback_data=f"{callback_prefix}_{symbol}"
                 ))
         buttons.append(row)
-    
+
     # Добавляем кнопку "Показать все"
     buttons.append([InlineKeyboardButton(text="📊 Показать все", callback_data=f"{callback_prefix}_all")])
-    
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -477,18 +477,18 @@ def pagination_menu(current_page: int, total_pages: int, callback_prefix: str) -
     Меню пагинации
     """
     buttons = []
-    
+
     # Кнопки навигации
     nav_buttons = []
     if current_page > 1:
         nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"{callback_prefix}_page_{current_page-1}"))
-    
+
     nav_buttons.append(InlineKeyboardButton(text=f"{current_page}/{total_pages}", callback_data="page_info"))
-    
+
     if current_page < total_pages:
         nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"{callback_prefix}_page_{current_page+1}"))
-    
+
     if nav_buttons:
         buttons.append(nav_buttons)
-    
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)

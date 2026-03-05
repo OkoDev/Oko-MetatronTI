@@ -7,42 +7,42 @@ import logging
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from core.keyboards import (
+from bot.keyboards import (
     main_menu, monitoring_menu, ai_analysis_menu, signals_menu,
     pivots_menu, risk_management_menu, history_menu,
     subscriptions_menu, settings_menu,
 )
-from core.menu_ai import (
+from bot.menus.ai import (
     handle_intelligence_analysis, handle_ml_predictions, show_statistics,
     show_help, handle_stop_monitoring, handle_find_pair, show_active_signals,
     handle_pair_analysis, handle_trading_levels, show_ai_performance,
     handle_retrain_models, show_ml_statistics, show_ai_settings,
 )
-from core.menu_signals import (
+from bot.menus.signals import (
     show_anomaly_signals, show_wt_signals, show_mtf_signals,
     show_trend_signals, show_divergence_signals, show_pivot_signals,
     show_all_signals, handle_signal_search,
 )
-from core.menu_pivots import (
+from bot.menus.pivots import (
     show_pivot_reversals, show_key_levels, show_pivot_analysis,
     show_pivots_request, show_check_pivot_request,
 )
-from core.menu_risk import (
+from bot.menus.risk import (
     show_risk_profile, show_active_positions, show_position_sizes,
     show_stop_losses, show_risk_reward_ratio, show_risk_warnings,
     show_risk_statistics, show_risk_settings,
 )
-from core.menu_history import (
+from bot.menus.history import (
     show_performance_analysis, show_performance_trend, show_analysis_by_type,
     show_signal_history, show_improvement_recommendations, show_detailed_statistics,
     refresh_history_data, export_history_data,
 )
-from core.menu_subscriptions import (
+from bot.menus.subscriptions import (
     show_subscription_limits, show_usage_statistics,
     show_payment_history, show_subscription_settings,
     cmd_my_subscription, cmd_buy_subscription, cmd_subscribe, cmd_unsubscribe,
 )
-from core.menu_settings import (
+from bot.menus.settings import (
     show_general_settings, show_notification_settings, show_analysis_settings,
     show_signal_settings, show_interface_settings, show_advanced_settings,
 )
@@ -307,7 +307,7 @@ class MenuHandler:
 
     async def _show_top_volume(self, message: Message):
         """Топ-10 пар по последнему объёму."""
-        from core.keyboards import main_menu as _main_menu
+        from bot.keyboards import main_menu as _main_menu
         if not self.bot.is_monitoring:
             await message.answer("⚠️ Мониторинг не запущен.", reply_markup=_main_menu())
             return

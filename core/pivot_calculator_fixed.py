@@ -1,553 +1,473 @@
 """
-ИСПРАВЛЕННЫЙ модуль расчета НЕДЕЛЬНЫХ и ДНЕВНЫХ пивотов
-Решает проблему получения данных с BingX для 1D и 1W таймфреймов
+Модуль расчета МЕСЯЧНЫХ, НЕДЕЛЬНЫХ и ДНЕВНЫХ пивотов.
+Уровни фиксируются на весь период (месяц/неделю/день) по UTC:
+  - Месячные: 1-е число 00:00 UTC (= 03:00 МСК)
+  - Недельные: Пн 00:00 UTC (= Пн 03:00 МСК)
+  - Дневные:   00:00 UTC каждый день (= 03:00 МСК)
 """
 import asyncio
 import logging
 import pandas as pd
-import numpy as np
 from typing import Optional, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
 
+# ──────────────────────────────────────────────────────────
+# Хелперы определения начала периодов (UTC)
+# ──────────────────────────────────────────────────────────
+
+def _current_month_start_utc() -> datetime:
+    """1-е число текущего месяца 00:00 UTC"""
+    now = datetime.now(timezone.utc)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _current_week_start_utc() -> datetime:
+    """Пн 00:00 UTC текущей недели"""
+    now = datetime.now(timezone.utc)
+    return (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _current_day_start_utc() -> datetime:
+    """00:00 UTC сегодня"""
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _df_with_datetime(df: pd.DataFrame) -> pd.DataFrame:
+    """Добавляет колонку datetime (UTC) из time (ms)"""
+    df = df.copy()
+    df["datetime"] = pd.to_datetime(df["time"], unit="ms", utc=True)
+    return df
+
+
+# ──────────────────────────────────────────────────────────
+# Основной класс
+# ──────────────────────────────────────────────────────────
+
 class PivotCalculatorFixed:
     """
-    Расчет Traditional Pivot Points для НЕДЕЛЬНЫХ и ДНЕВНЫХ таймфреймов
-    
-    ИСПРАВЛЕНИЕ: Использует альтернативные методы получения данных
+    Traditional Pivot Points для 1M / 1W / 1D.
+    Кеш period-based: уровни не меняются до смены периода.
     """
-    
-    def __init__(self):
-        self.pivot_cache = {}
-        self.cache_timeout = 3600  # 1 час для недельных, обновляется редко
-    
-    def calculate_traditional_pivots(self, high: float, low: float, close: float) -> Dict[str, float]:
-        """
-        Расчет Traditional Pivot Points по формулам из Pine Script
-        
-        Args:
-            high: максимум предыдущего периода
-            low: минимум предыдущего периода
-            close: закрытие предыдущего периода
-            
-        Returns:
-            Словарь с уровнями PP, S1-S5, R1-R5
-        """
-        # Pivot Point
-        pp = (high + low + close) / 3.0
-        
-        # Support levels (поддержки)
-        s1 = pp * 2.003 - high
-        s2 = pp - (high - low)
-        s3 = pp * 2 - (2 * high - low)
-        s4 = pp * 3 - (3 * high - low)
-        s5 = pp * 4 - (4 * high - low)
-        
-        # Resistance levels (сопротивления)
-        r1 = pp * 1.997 - low
-        r2 = pp + (high - low)
-        r3 = pp * 2 + (high - 2 * low)
-        r4 = pp * 3 + (high - 3 * low)
-        r5 = pp * 4 + (high - 4 * low)
-        
-        return {
-            'PP': pp,
-            'S1': s1, 'S2': s2, 'S3': s3, 'S4': s4, 'S5': s5,
-            'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5
-        }
-    
-    async def get_weekly_pivots_method1(self, symbol: str, data_collector) -> Optional[Dict]:
-        """
-        МЕТОД 1: Получение недельных пивотов через меньшие таймфреймы
-        Собираем данные за неделю из дневных свечей
-        """
-        try:
-            # Пробуем получить дневные данные
-            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=10)
-            
-            if df is None or len(df) < 7:
-                logger.debug(f"Недостаточно дневных данных для {symbol}")
-                return None
-            
-            # Берем последние 7 дней (неделя)
-            week_data = df.iloc[-7:].copy()
-            
-            # Вычисляем недельные H/L/C
-            high_week = week_data['high'].max()
-            low_week = week_data['low'].min()
-            close_week = week_data['close'].iloc[-1]  # Последнее закрытие
-            
-            # Рассчитываем пивоты
-            pivots = self.calculate_traditional_pivots(high_week, low_week, close_week)
-            pivots['timeframe'] = '1W'
-            pivots['method'] = 'aggregated_from_1d'
-            pivots['timestamp'] = datetime.now()
-            
-            logger.info(f"✅ Недельные пивоты для {symbol}: PP={pivots['PP']:.4f}")
-            return pivots
-            
-        except Exception as e:
-            logger.debug(f"Метод 1 failed для {symbol}: {e}")
-            return None
-    
-    async def get_weekly_pivots_method2(self, symbol: str, data_collector) -> Optional[Dict]:
-        """
-        МЕТОД 2: Получение недельных пивотов через 4-часовые свечи
-        Собираем 42 свечи по 4h = 7 дней
-        """
-        try:
-            # Получаем 4-часовые свечи за неделю (42 свечи = 7 дней)
-            df = await data_collector.get_ohlcv(symbol, timeframe="4h", limit=50)
-            
-            if df is None or len(df) < 42:
-                logger.debug(f"Недостаточно 4h данных для {symbol}")
-                return None
-            
-            # Берем последние 42 свечи (неделя)
-            week_data = df.iloc[-42:].copy()
-            
-            # Вычисляем недельные H/L/C
-            high_week = week_data['high'].max()
-            low_week = week_data['low'].min()
-            close_week = week_data['close'].iloc[-1]
-            
-            # Рассчитываем пивоты
-            pivots = self.calculate_traditional_pivots(high_week, low_week, close_week)
-            pivots['timeframe'] = '1W'
-            pivots['method'] = 'aggregated_from_4h'
-            pivots['timestamp'] = datetime.now()
-            
-            logger.info(f"✅ Недельные пивоты для {symbol} (метод 2): PP={pivots['PP']:.4f}")
-            return pivots
-            
-        except Exception as e:
-            logger.debug(f"Метод 2 failed для {symbol}: {e}")
-            return None
-    
-    async def get_daily_pivots(self, symbol: str, data_collector) -> Optional[Dict]:
-        """
-        Получение ДНЕВНЫХ пивотов
-        
-        Args:
-            symbol: торговая пара
-            data_collector: коллектор данных
-            
-        Returns:
-            Словарь с дневными пивотами или None
-        """
-        try:
-            # Проверяем кэш (для 1D данных это особенно эффективно)
-            cache_key = f"{symbol}_1D"
-            cached = self.pivot_cache.get(cache_key)
-            if cached:
-                age = (datetime.now() - cached["timestamp"]).total_seconds()
-                # Дневные пивоты можно кэшировать дольше, но оставим общий таймаут
-                if age < self.cache_timeout:
-                    logger.debug(f"Используем кэш для {symbol} 1D")
-                    return cached
 
-            # Пробуем напрямую получить дневные данные
-            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=5)
-            
-            if df is not None and len(df) >= 2:
-                # Используем предпоследний день
-                prev_day = df.iloc[-2]
-                
-                high_day = prev_day['high']
-                low_day = prev_day['low']
-                close_day = prev_day['close']
-                
-                pivots = self.calculate_traditional_pivots(high_day, low_day, close_day)
-                pivots['timeframe'] = '1D'
-                pivots['method'] = 'direct_1d'
-                pivots['timestamp'] = datetime.now()
-                
-                logger.info(f"✅ Дневные пивоты для {symbol}: PP={pivots['PP']:.4f}")
-                self.pivot_cache[cache_key] = pivots
-                return pivots
-            
-            # Если не получилось - агрегируем из часовых
-            df_1h = await data_collector.get_ohlcv(symbol, timeframe="1h", limit=30)
-            
-            if df_1h is None or len(df_1h) < 24:
-                logger.debug(f"Недостаточно данных для дневных пивотов {symbol}")
+    def __init__(self):
+        # {cache_key: {**pivots, "period_start": datetime, ...}}
+        self.pivot_cache: Dict[str, Dict] = {}
+
+    # ──────────────────────────────────────────────────────
+    # Формулы
+    # ──────────────────────────────────────────────────────
+
+    def calculate_traditional_pivots(self, high: float, low: float, close: float) -> Dict[str, float]:
+        """Traditional Pivot Points по формулам Pine Script"""
+        pp = (high + low + close) / 3.0
+        return {
+            "PP": pp,
+            "S1": pp * 2.003 - high,
+            "S2": pp - (high - low),
+            "S3": pp * 2 - (2 * high - low),
+            "S4": pp * 3 - (3 * high - low),
+            "S5": pp * 4 - (4 * high - low),
+            "R1": pp * 1.997 - low,
+            "R2": pp + (high - low),
+            "R3": pp * 2 + (high - 2 * low),
+            "R4": pp * 3 + (high - 3 * low),
+            "R5": pp * 4 + (high - 4 * low),
+        }
+
+    # ──────────────────────────────────────────────────────
+    # Месячные пивоты
+    # ──────────────────────────────────────────────────────
+
+    async def get_monthly_pivots(self, symbol: str, data_collector) -> Optional[Dict]:
+        """Месячные пивоты = H/L/C предыдущего полного календарного месяца"""
+        month_start = _current_month_start_utc()
+        cache_key = f"{symbol}_1M"
+        cached = self.pivot_cache.get(cache_key)
+        if cached and cached.get("period_start") == month_start:
+            logger.debug(f"Кеш 1M для {symbol}")
+            return cached
+
+        prev_month_end = month_start
+        prev_month_start = (month_start - timedelta(days=1)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=35)
+            if df is None or len(df) < 5:
                 return None
-            
-            # Берем последние 24 часа (день)
-            day_data = df_1h.iloc[-24:].copy()
-            
-            high_day = day_data['high'].max()
-            low_day = day_data['low'].min()
-            close_day = day_data['close'].iloc[-1]
-            
-            pivots = self.calculate_traditional_pivots(high_day, low_day, close_day)
-            pivots['timeframe'] = '1D'
-            pivots['method'] = 'aggregated_from_1h'
-            pivots['timestamp'] = datetime.now()
-            
-            logger.info(f"✅ Дневные пивоты для {symbol} (из 1h): PP={pivots['PP']:.4f}")
+
+            df = _df_with_datetime(df)
+            prev_month = df[
+                (df["datetime"] >= prev_month_start) & (df["datetime"] < prev_month_end)
+            ]
+
+            if prev_month.empty:
+                logger.debug(f"Нет данных прошлого месяца для {symbol}")
+                return None
+
+            pivots = self.calculate_traditional_pivots(
+                prev_month["high"].max(),
+                prev_month["low"].min(),
+                prev_month["close"].iloc[-1],
+            )
+            pivots.update({
+                "timeframe": "1M",
+                "method": "aggregated_from_1d",
+                "period_start": month_start,
+                "period_label": prev_month_start.strftime("%Y-%m"),
+                "timestamp": datetime.now(timezone.utc),
+            })
             self.pivot_cache[cache_key] = pivots
+            logger.info(f"✅ Месячные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots['period_label']})")
             return pivots
-            
-        except Exception as e:
-            logger.exception(f"Ошибка получения дневных пивотов для {symbol}")
+
+        except Exception:
+            logger.exception(f"Ошибка месячных пивотов для {symbol}")
             return None
-    
+
+    # ──────────────────────────────────────────────────────
+    # Недельные пивоты
+    # ──────────────────────────────────────────────────────
+
     async def get_weekly_pivots(self, symbol: str, data_collector) -> Optional[Dict]:
-        """
-        Получение НЕДЕЛЬНЫХ пивотов с использованием нескольких методов
-        
-        Пробует методы по очереди:
-        1. Агрегация из дневных свечей (1d)
-        2. Агрегация из 4-часовых свечей (4h)
-        
-        Returns:
-            Словарь с недельными пивотами или None
-        """
-        # Проверяем кэш
+        """Недельные пивоты = H/L/C прошлой полной недели (Пн–Вс UTC)"""
+        week_start = _current_week_start_utc()
         cache_key = f"{symbol}_1W"
-        if cache_key in self.pivot_cache:
-            cached = self.pivot_cache[cache_key]
-            age = (datetime.now() - cached['timestamp']).total_seconds()
-            if age < self.cache_timeout:
-                logger.debug(f"Используем кэш для {symbol} 1W")
-                return cached
-        
-        # Метод 1: Из дневных данных
-        pivots = await self.get_weekly_pivots_method1(symbol, data_collector)
+        cached = self.pivot_cache.get(cache_key)
+        if cached and cached.get("period_start") == week_start:
+            logger.debug(f"Кеш 1W для {symbol}")
+            return cached
+
+        prev_week_end = week_start
+        prev_week_start = week_start - timedelta(weeks=1)
+
+        # Метод 1: из дневных свечей
+        pivots = await self._weekly_from_1d(symbol, data_collector, prev_week_start, prev_week_end)
+        # Метод 2 (fallback): из 4h свечей
+        if not pivots:
+            pivots = await self._weekly_from_4h(symbol, data_collector, prev_week_start, prev_week_end)
+
         if pivots:
+            pivots["period_start"] = week_start
             self.pivot_cache[cache_key] = pivots
+            logger.info(f"✅ Недельные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots.get('period_label','')})")
             return pivots
-        
-        # Метод 2: Из 4-часовых данных
-        pivots = await self.get_weekly_pivots_method2(symbol, data_collector)
-        if pivots:
-            self.pivot_cache[cache_key] = pivots
-            return pivots
-        
+
         logger.warning(f"❌ Не удалось получить недельные пивоты для {symbol}")
         return None
-    
-    async def get_multi_timeframe_pivots(
-        self,
-        symbol: str,
-        data_collector
-    ) -> Dict[str, Dict]:
+
+    async def _weekly_from_1d(self, symbol, data_collector, week_start, week_end) -> Optional[Dict]:
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=14)
+            if df is None or len(df) < 5:
+                return None
+            df = _df_with_datetime(df)
+            week = df[(df["datetime"] >= week_start) & (df["datetime"] < week_end)]
+            if len(week) < 3:
+                return None
+            pivots = self.calculate_traditional_pivots(
+                week["high"].max(), week["low"].min(), week["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "1W",
+                "method": "aggregated_from_1d",
+                "period_label": week_start.strftime("%Y-W%V"),
+                "timestamp": datetime.now(timezone.utc),
+            })
+            return pivots
+        except Exception as e:
+            logger.debug(f"_weekly_from_1d failed {symbol}: {e}")
+            return None
+
+    async def _weekly_from_4h(self, symbol, data_collector, week_start, week_end) -> Optional[Dict]:
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="4h", limit=56)
+            if df is None or len(df) < 30:
+                return None
+            df = _df_with_datetime(df)
+            week = df[(df["datetime"] >= week_start) & (df["datetime"] < week_end)]
+            if len(week) < 10:
+                return None
+            pivots = self.calculate_traditional_pivots(
+                week["high"].max(), week["low"].min(), week["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "1W",
+                "method": "aggregated_from_4h",
+                "period_label": week_start.strftime("%Y-W%V"),
+                "timestamp": datetime.now(timezone.utc),
+            })
+            return pivots
+        except Exception as e:
+            logger.debug(f"_weekly_from_4h failed {symbol}: {e}")
+            return None
+
+    # ──────────────────────────────────────────────────────
+    # Дневные пивоты
+    # ──────────────────────────────────────────────────────
+
+    async def get_daily_pivots(self, symbol: str, data_collector) -> Optional[Dict]:
+        """Дневные пивоты = H/L/C предыдущего полного дня (00:00–00:00 UTC)"""
+        day_start = _current_day_start_utc()
+        cache_key = f"{symbol}_1D"
+        cached = self.pivot_cache.get(cache_key)
+        if cached and cached.get("period_start") == day_start:
+            logger.debug(f"Кеш 1D для {symbol}")
+            return cached
+
+        prev_day_end = day_start
+        prev_day_start = day_start - timedelta(days=1)
+
+        try:
+            # Метод 1: из дневных свечей
+            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=5)
+            if df is not None and len(df) >= 2:
+                df = _df_with_datetime(df)
+                prev = df[(df["datetime"] >= prev_day_start) & (df["datetime"] < prev_day_end)]
+                if not prev.empty:
+                    pivots = self.calculate_traditional_pivots(
+                        prev["high"].max(), prev["low"].min(), prev["close"].iloc[-1]
+                    )
+                    pivots.update({
+                        "timeframe": "1D",
+                        "method": "direct_1d",
+                        "period_start": day_start,
+                        "period_label": prev_day_start.strftime("%Y-%m-%d"),
+                        "timestamp": datetime.now(timezone.utc),
+                    })
+                    self.pivot_cache[cache_key] = pivots
+                    logger.info(f"✅ Дневные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots['period_label']})")
+                    return pivots
+
+            # Метод 2 (fallback): из 1h свечей
+            df_1h = await data_collector.get_ohlcv(symbol, timeframe="1h", limit=30)
+            if df_1h is None or len(df_1h) < 24:
+                return None
+            df_1h = _df_with_datetime(df_1h)
+            prev_1h = df_1h[(df_1h["datetime"] >= prev_day_start) & (df_1h["datetime"] < prev_day_end)]
+            if len(prev_1h) < 12:
+                return None
+            pivots = self.calculate_traditional_pivots(
+                prev_1h["high"].max(), prev_1h["low"].min(), prev_1h["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "1D",
+                "method": "aggregated_from_1h",
+                "period_start": day_start,
+                "period_label": prev_day_start.strftime("%Y-%m-%d"),
+                "timestamp": datetime.now(timezone.utc),
+            })
+            self.pivot_cache[cache_key] = pivots
+            logger.info(f"✅ Дневные пивоты {symbol} (из 1h): PP={pivots['PP']:.4f}")
+            return pivots
+
+        except Exception:
+            logger.exception(f"Ошибка дневных пивотов для {symbol}")
+            return None
+
+    # ──────────────────────────────────────────────────────
+    # Сводный метод
+    # ──────────────────────────────────────────────────────
+
+    async def get_multi_timeframe_pivots(self, symbol: str, data_collector) -> Dict[str, object]:
         """
-        Получает НЕДЕЛЬНЫЕ и ДНЕВНЫЕ пивоты
-        
-        Returns:
-            {'1W': {...}, '1D': {...}, 'confluence': [...]}
+        Возвращает {'1M': {...}, '1W': {...}, '1D': {...}, 'confluence': [...]}
         """
-        results: Dict[str, Dict] = {}
-        
-        # Параллельно получаем недельные и дневные пивоты,
-        # чтобы не ждать их последовательно (ускорение при работе с биржей).
-        weekly, daily = await asyncio.gather(
+        results: Dict = {}
+
+        monthly, weekly, daily = await asyncio.gather(
+            self.get_monthly_pivots(symbol, data_collector),
             self.get_weekly_pivots(symbol, data_collector),
             self.get_daily_pivots(symbol, data_collector),
         )
-        
+
+        if monthly:
+            results["1M"] = monthly
         if weekly:
-            results['1W'] = weekly
-            logger.info(f"✅ Недельные пивоты получены для {symbol}")
-        else:
-            logger.warning(f"⚠️ Не удалось получить недельные пивоты для {symbol}")
-        
+            results["1W"] = weekly
         if daily:
-            results['1D'] = daily
-            logger.info(f"✅ Дневные пивоты получены для {symbol}")
-        else:
-            logger.warning(f"⚠️ Не удалось получить дневные пивоты для {symbol}")
-        
-        # Ищем конфлюэнции (совпадения уровней)
-        if '1W' in results and '1D' in results:
-            confluence = self.find_confluences(results['1W'], results['1D'])
-            results['confluence'] = confluence
-            if confluence:
-                logger.info(f"🎯 Найдено {len(confluence)} конфлюэнций для {symbol}")
-        else:
-            results['confluence'] = []
-        
+            results["1D"] = daily
+
+        # Конфлюэнции между всеми доступными уровнями
+        results["confluence"] = self._find_all_confluences(results)
+        if results["confluence"]:
+            logger.info(f"🎯 {len(results['confluence'])} конфлюэнций для {symbol}")
+
         return results
-    
-    def find_confluences(
-        self,
-        weekly_pivots: Dict,
-        daily_pivots: Dict,
-        tolerance_percent: float = 0.3
-    ) -> List[Dict]:
-        """
-        Находит конфлюэнции между недельными и дневными пивотами
-        
-        Args:
-            weekly_pivots: недельные уровни
-            daily_pivots: дневные уровни
-            tolerance_percent: порог совпадения (0.3% = сильная конфлюэнция)
-            
-        Returns:
-            Список конфлюэнций с информацией
-        """
+
+    # ──────────────────────────────────────────────────────
+    # Конфлюэнции
+    # ──────────────────────────────────────────────────────
+
+    def _find_all_confluences(self, pivots_data: Dict, tolerance_percent: float = 0.3) -> List[Dict]:
+        """Конфлюэнции между всеми парами таймфреймов"""
+        all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
+        tf_pairs = [("1M", "1W"), ("1M", "1D"), ("1W", "1D")]
         confluences = []
-        
-        # Все уровни для проверки
-        all_levels = ['PP'] + [f'S{i}' for i in range(1, 6)] + [f'R{i}' for i in range(1, 6)]
-        
-        for w_level in all_levels:
-            if w_level not in weekly_pivots:
+
+        for tf_a, tf_b in tf_pairs:
+            piv_a = pivots_data.get(tf_a)
+            piv_b = pivots_data.get(tf_b)
+            if not piv_a or not piv_b:
                 continue
-            
-            w_price = weekly_pivots[w_level]
-            
-            # Проверяем совпадения с дневными
-            for d_level in all_levels:
-                if d_level not in daily_pivots:
+            for la in all_levels:
+                if la not in piv_a:
                     continue
-                
-                d_price = daily_pivots[d_level]
-                
-                # Рассчитываем расстояние
-                if w_price == 0:
-                    continue
-                
-                distance_percent = abs((w_price - d_price) / w_price * 100)
-                
-                if distance_percent <= tolerance_percent:
-                    confluences.append({
-                        'weekly_level': w_level,
-                        'weekly_price': w_price,
-                        'daily_level': d_level,
-                        'daily_price': d_price,
-                        'distance_percent': distance_percent,
-                        'strength': 'VERY_STRONG' if distance_percent < 0.1 else 'STRONG'
-                    })
-        
-        # Сортируем по силе
-        confluences.sort(key=lambda x: x['distance_percent'])
-        
+                pa = piv_a[la]
+                for lb in all_levels:
+                    if lb not in piv_b:
+                        continue
+                    pb = piv_b[lb]
+                    if pa == 0:
+                        continue
+                    dist = abs((pa - pb) / pa * 100)
+                    if dist <= tolerance_percent:
+                        confluences.append({
+                            "tf_a": tf_a, "level_a": la, "price_a": pa,
+                            "tf_b": tf_b, "level_b": lb, "price_b": pb,
+                            # Для обратной совместимости с кодом, ожидающим weekly_level/daily_level
+                            "weekly_level": la, "weekly_price": pa,
+                            "daily_level": lb, "daily_price": pb,
+                            "distance_percent": dist,
+                            "strength": "VERY_STRONG" if dist < 0.1 else "STRONG",
+                        })
+
+        confluences.sort(key=lambda x: x["distance_percent"])
         return confluences
-    
-    def is_near_level(
-        self,
-        current_price: float,
-        pivots: Dict[str, float],
-        threshold_percent: float = 0.5
-    ) -> Optional[Dict]:
-        """
-        Проверяет, находится ли цена близко к какому-либо уровню
-        
-        Args:
-            current_price: текущая цена
-            pivots: словарь с пивотами
-            threshold_percent: порог близости (0.5%)
-            
-        Returns:
-            Информация об уровне или None
-        """
+
+    def find_confluences(self, weekly_pivots: Dict, daily_pivots: Dict,
+                         tolerance_percent: float = 0.3) -> List[Dict]:
+        """Обратная совместимость: конфлюэнции 1W vs 1D"""
+        return self._find_all_confluences(
+            {"1W": weekly_pivots, "1D": daily_pivots}, tolerance_percent
+        )
+
+    # ──────────────────────────────────────────────────────
+    # Утилиты анализа уровней
+    # ──────────────────────────────────────────────────────
+
+    def is_near_level(self, current_price: float, pivots: Dict[str, float],
+                      threshold_percent: float = 0.5) -> Optional[Dict]:
+        """Проверяет близость цены к любому уровню"""
         if not pivots or current_price <= 0:
             return None
-        
-        # Проверяем все уровни
-        all_levels = ['PP'] + [f'S{i}' for i in range(1, 6)] + [f'R{i}' for i in range(1, 6)]
-        
-        for level_key in all_levels:
-            if level_key not in pivots:
+        all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
+        for key in all_levels:
+            if key not in pivots:
                 continue
-            
-            level_price = pivots[level_key]
-            if level_price <= 0:
+            price = pivots[key]
+            if price <= 0:
                 continue
-            
-            distance_percent = abs((current_price - level_price) / current_price * 100)
-            
-            if distance_percent <= threshold_percent:
-                # Определяем тип уровня
-                if level_key == 'PP':
-                    level_type = 'pivot'
-                elif 'S' in level_key:
-                    level_type = 'support'
-                else:
-                    level_type = 'resistance'
-                
+            dist = abs((current_price - price) / current_price * 100)
+            if dist <= threshold_percent:
+                level_type = "pivot" if key == "PP" else ("support" if "S" in key else "resistance")
                 return {
-                    'near_level': True,
-                    'level': level_key,
-                    'level_type': level_type,
-                    'price': level_price,
-                    'distance_percent': distance_percent,
-                    'timeframe': pivots.get('timeframe', 'N/A')
+                    "near_level": True,
+                    "level": key,
+                    "level_type": level_type,
+                    "price": price,
+                    "distance_percent": dist,
+                    "timeframe": pivots.get("timeframe", "N/A"),
                 }
-        
         return None
-    
-    def get_nearest_levels(
-        self,
-        current_price: float,
-        pivots: Dict[str, float],
-        count: int = 3
-    ) -> Dict[str, List]:
-        """
-        Находит ближайшие уровни поддержки и сопротивления
-        
-        Returns:
-            {'support': [(name, price, distance_pct)], 
-             'resistance': [(name, price, distance_pct)]}
-        """
+
+    def get_nearest_levels(self, current_price: float, pivots: Dict[str, float],
+                           count: int = 3) -> Dict[str, List]:
+        """Ближайшие уровни поддержки и сопротивления"""
         if not pivots or current_price <= 0:
-            return {'support': [], 'resistance': []}
-        
-        supports = []
-        resistances = []
-        
-        all_levels = ['PP'] + [f'S{i}' for i in range(1, 6)] + [f'R{i}' for i in range(1, 6)]
-        
-        for level_key in all_levels:
-            if level_key not in pivots:
+            return {"support": [], "resistance": []}
+        all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
+        supports, resistances = [], []
+        for key in all_levels:
+            price = pivots.get(key, 0)
+            if price <= 0:
                 continue
-            
-            level_price = pivots[level_key]
-            if level_price <= 0:
-                continue
-            
-            distance_pct = abs((current_price - level_price) / current_price * 100)
-            
-            if level_price < current_price:
-                supports.append((level_key, level_price, distance_pct))
-            elif level_price > current_price:
-                resistances.append((level_key, level_price, distance_pct))
-        
-        # Сортируем по близости
+            dist = abs((current_price - price) / current_price * 100)
+            if price < current_price:
+                supports.append((key, price, dist))
+            elif price > current_price:
+                resistances.append((key, price, dist))
         supports.sort(key=lambda x: x[2])
         resistances.sort(key=lambda x: x[2])
-        
-        return {
-            'support': supports[:count],
-            'resistance': resistances[:count]
-        }
-    
-    def format_pivot_message(
-        self,
-        symbol: str,
-        pivots_data: Dict,
-        current_price: float
-    ) -> str:
-        """
-        Форматирует сообщение с пивотными уровнями для Telegram
-        """
+        return {"support": supports[:count], "resistance": resistances[:count]}
+
+    # ──────────────────────────────────────────────────────
+    # Форматирование сообщения
+    # ──────────────────────────────────────────────────────
+
+    def format_pivot_message(self, symbol: str, pivots_data: Dict, current_price: float) -> str:
         from core.message_builder import tv_link
-        
+        from datetime import datetime as dt
+
         parts = [
             "📊 <b>ПИВОТНЫЕ УРОВНИ</b>",
-            f"Пара: {tv_link(symbol, interval=240)}",  # 4h график
+            f"Пара: {tv_link(symbol, interval=240)}",
             f"💰 Цена: {current_price:.6f}",
-            ""
+            "",
         ]
-        
-        # Недельные пивоты
-        if '1W' in pivots_data:
-            weekly = pivots_data['1W']
-            method = weekly.get('method', 'unknown')
-            
-            parts.append("<b>📅 НЕДЕЛЬНЫЕ ПИВОТЫ (1W)</b>")
-            parts.append(f"<i>Метод: {method}</i>")
+
+        def _render_tf(label: str, data: Dict):
+            method = data.get("method", "")
+            period = data.get("period_label", "")
+            parts.append(f"<b>📅 {label} ({period})</b>")
+            if method:
+                parts.append(f"<i>Метод: {method}</i>")
             parts.append("")
-            
-            # Сопротивления (показываем все, включая R3)
             parts.append("<b>🔴 Сопротивления:</b>")
             for i in range(5, 0, -1):
-                key = f'R{i}'
-                if key in weekly:
-                    if weekly[key] > current_price:
-                        dist = ((weekly[key] - current_price) / current_price) * 100
-                        parts.append(f"  {key}: {weekly[key]:.6f} (+{dist:.2f}%)")
-                    else:
-                        dist = ((current_price - weekly[key]) / current_price) * 100
-                        parts.append(f"  {key}: {weekly[key]:.6f} (-{dist:.2f}% ниже цены)")
-            
-            # PP
-            if 'PP' in weekly:
-                pp = weekly['PP']
-                dist = ((pp - current_price) / current_price) * 100
-                parts.append(f"\n<b>⚪ PP: {pp:.6f} ({dist:+.2f}%)</b>\n")
-            
-            # Поддержки (показываем все, включая S3)
+                k = f"R{i}"
+                if k not in data:
+                    continue
+                v = data[k]
+                diff = (v - current_price) / current_price * 100
+                sign = "+" if diff >= 0 else ""
+                parts.append(f"  {k}: {v:.6f} ({sign}{diff:.2f}%)")
+            if "PP" in data:
+                pp = data["PP"]
+                diff = (pp - current_price) / current_price * 100
+                parts.append(f"\n<b>⚪ PP: {pp:.6f} ({diff:+.2f}%)</b>\n")
             parts.append("<b>🟢 Поддержки:</b>")
             for i in range(1, 6):
-                key = f'S{i}'
-                if key in weekly:
-                    if weekly[key] < current_price:
-                        dist = ((current_price - weekly[key]) / current_price) * 100
-                        parts.append(f"  {key}: {weekly[key]:.6f} (-{dist:.2f}%)")
-                    else:
-                        dist = ((weekly[key] - current_price) / current_price) * 100
-                        parts.append(f"  {key}: {weekly[key]:.6f} (+{dist:.2f}% выше цены)")
-            
+                k = f"S{i}"
+                if k not in data:
+                    continue
+                v = data[k]
+                diff = (v - current_price) / current_price * 100
+                sign = "+" if diff >= 0 else ""
+                parts.append(f"  {k}: {v:.6f} ({sign}{diff:.2f}%)")
             parts.append("")
-        
-        # Дневные пивоты
-        if '1D' in pivots_data:
-            daily = pivots_data['1D']
-            method = daily.get('method', 'unknown')
-            
-            parts.append("<b>📅 ДНЕВНЫЕ ПИВОТЫ (1D)</b>")
-            parts.append(f"<i>Метод: {method}</i>")
-            parts.append("")
-            
-            # Сопротивления (показываем все, включая R3)
-            parts.append("<b>🔴 Сопротивления:</b>")
-            for i in range(5, 0, -1):
-                key = f'R{i}'
-                if key in daily:
-                    if daily[key] > current_price:
-                        dist = ((daily[key] - current_price) / current_price) * 100
-                        parts.append(f"  {key}: {daily[key]:.6f} (+{dist:.2f}%)")
-                    else:
-                        dist = ((current_price - daily[key]) / current_price) * 100
-                        parts.append(f"  {key}: {daily[key]:.6f} (-{dist:.2f}% ниже цены)")
-            
-            # PP
-            if 'PP' in daily:
-                pp = daily['PP']
-                dist = ((pp - current_price) / current_price) * 100
-                parts.append(f"\n<b>⚪ PP: {pp:.6f} ({dist:+.2f}%)</b>\n")
-            
-            # Поддержки (показываем все, включая S3)
-            parts.append("<b>🟢 Поддержки:</b>")
-            for i in range(1, 6):
-                key = f'S{i}'
-                if key in daily:
-                    if daily[key] < current_price:
-                        dist = ((current_price - daily[key]) / current_price) * 100
-                        parts.append(f"  {key}: {daily[key]:.6f} (-{dist:.2f}%)")
-                    else:
-                        dist = ((daily[key] - current_price) / current_price) * 100
-                        parts.append(f"  {key}: {daily[key]:.6f} (+{dist:.2f}% выше цены)")
-            
-            parts.append("")
-        
-        # Конфлюэнции
-        confluences = pivots_data.get('confluence', [])
+
+        for tf_key, tf_label in [("1M", "МЕСЯЧНЫЕ ПИВОТЫ"), ("1W", "НЕДЕЛЬНЫЕ ПИВОТЫ"), ("1D", "ДНЕВНЫЕ ПИВОТЫ")]:
+            if tf_key in pivots_data:
+                _render_tf(tf_label, pivots_data[tf_key])
+
+        confluences = pivots_data.get("confluence", [])
         if confluences:
             parts.append(f"<b>🎯 КОНФЛЮЭНЦИИ ({len(confluences)}):</b>")
-            for i, conf in enumerate(confluences[:3], 1):
+            for i, c in enumerate(confluences[:3], 1):
                 parts.append(
-                    f"{i}. {conf['weekly_level']} (1W) ≈ {conf['daily_level']} (1D)\n"
-                    f"   Цена: {conf['weekly_price']:.6f} ({conf['strength']})"
+                    f"{i}. {c['tf_a']} {c['level_a']} ≈ {c['tf_b']} {c['level_b']}\n"
+                    f"   Цена: {c['price_a']:.6f} ({c['strength']})"
                 )
             parts.append("")
-        
-        # Проверка близости к уровню
-        if '1W' in pivots_data:
-            near = self.is_near_level(current_price, pivots_data['1W'], 0.5)
-            if near:
-                parts.append(f"⚠️  <b>ЦЕНА У НЕДЕЛЬНОГО УРОВНЯ!</b>")
-                parts.append(f"Уровень: {near['level']} ({near['level_type']})")
-                parts.append(f"Расстояние: {near['distance_percent']:.3f}%")
-                parts.append("→ Жди подтверждения для входа!")
-        
+
+        # Предупреждение о близости к уровням (проверяем все ТФ)
+        for tf_key in ("1W", "1M", "1D"):
+            if tf_key in pivots_data:
+                near = self.is_near_level(current_price, pivots_data[tf_key], 0.5)
+                if near:
+                    parts.append(f"⚠️ <b>ЦЕНА У {tf_key} УРОВНЯ {near['level']}!</b>")
+                    parts.append(f"Расстояние: {near['distance_percent']:.3f}%")
+                    parts.append("→ Жди подтверждения для входа!")
+                    break
+
         parts.append("")
-        parts.append(f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
+        parts.append(f"🕐 {dt.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return "\n".join(parts)

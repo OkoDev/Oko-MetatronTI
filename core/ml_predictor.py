@@ -63,8 +63,6 @@ class PredictionType(Enum):
     """Типы предсказаний"""
     PRICE_DIRECTION = "price_direction"  # Направление движения цены
     SIGNAL_STRENGTH = "signal_strength"  # Сила сигнала
-    VOLATILITY = "volatility"  # Волатильность
-    VOLUME_ANOMALY = "volume_anomaly"  # Аномалии объема
 
 @dataclass
 class MLPrediction:
@@ -114,14 +112,6 @@ class MLPredictor:
                 'random_forest': RandomForestClassifier(n_estimators=100, random_state=42),
                 'gradient_boosting': GradientBoostingClassifier(n_estimators=100, random_state=42)
             },
-            PredictionType.VOLATILITY: {
-                'random_forest': RandomForestClassifier(n_estimators=100, random_state=42),
-                'gradient_boosting': GradientBoostingClassifier(n_estimators=100, random_state=42)
-            },
-            PredictionType.VOLUME_ANOMALY: {
-                'random_forest': RandomForestClassifier(n_estimators=100, random_state=42),
-                'logistic_regression': LogisticRegression(random_state=42, max_iter=1000)
-            }
         }
         
         # Скалеры для нормализации данных

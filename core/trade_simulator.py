@@ -54,7 +54,7 @@ class TradeSimulator:
         self.db_path = db_path
         self.max_duration_minutes = max_duration_minutes
 
-    def register_trade(self, recommendation: Any) -> Optional[int]:
+    def register_trade(self, recommendation: Any, regime: Optional[str] = None) -> Optional[int]:
         """
         Сохраняет сделку в БД при выдаче рекомендации.
         Возвращает id записи или None при ошибке / пропуске.
@@ -113,7 +113,7 @@ class TradeSimulator:
                         float(take_profit) if take_profit is not None else None,
                         int(strength) if strength is not None else None,
                         float(confidence) if confidence is not None else None,
-                        None,  # regime — позже
+                        regime,
                         STATUS_OPEN,
                         features_json,
                         ts.isoformat(),
@@ -126,6 +126,25 @@ class TradeSimulator:
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка регистрации сделки — {e}")
             return None
+
+    async def register_trade_async(self, recommendation: Any, data_collector: Any = None) -> Optional[int]:
+        """
+        Async-обёртка над register_trade: получает OHLCV, определяет режим рынка,
+        затем сохраняет сделку. Если data_collector недоступен — пишет regime=None.
+        """
+        regime: Optional[str] = None
+        if data_collector is not None:
+            symbol = _get_recommendation_value(recommendation, "symbol") or ""
+            if symbol:
+                try:
+                    from core.market_regime import MarketRegimeClassifier
+                    ohlcv = await data_collector.get_ohlcv(symbol, DEFAULT_TIMEFRAME, 50)
+                    if ohlcv:
+                        regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv)
+                        logger.debug("MarketRegime для %s: %s", symbol, regime)
+                except Exception as e:
+                    logger.debug("MarketRegime: не удалось определить для %s — %s", symbol, e)
+        return self.register_trade(recommendation, regime=regime)
 
     def get_open_trades(self) -> List[Dict[str, Any]]:
         """Возвращает список открытых сделок."""
@@ -157,16 +176,18 @@ class TradeSimulator:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT entry_price, stop_loss, take_profit, direction, created_at FROM simulated_trades WHERE id = ? AND status = ?",
+                    "SELECT entry_price, stop_loss, take_profit, direction, created_at, max_price, min_price FROM simulated_trades WHERE id = ? AND status = ?",
                     (trade_id, STATUS_OPEN),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return False
-                entry, sl, tp, direction, created_at = row
+                entry, sl, tp, direction, created_at, max_price_db, min_price_db = row
                 entry = float(entry)
                 sl = float(sl) if sl is not None else None
                 tp = float(tp) if tp is not None else None
+                max_price_db = float(max_price_db) if max_price_db is not None else None
+                min_price_db = float(min_price_db) if min_price_db is not None else None
 
                 # profit_pct
                 if str(direction).upper() == "LONG":
@@ -175,6 +196,7 @@ class TradeSimulator:
                     profit_pct = (entry - exit_price) / entry * 100.0
 
                 # R-multiple: 1R = |entry - stop_loss|
+                one_r = None
                 if sl is not None and sl != entry:
                     one_r = abs(entry - sl)
                     if str(direction).upper() == "LONG":
@@ -183,6 +205,17 @@ class TradeSimulator:
                         r_multiple = (entry - exit_price) / one_r
                 else:
                     r_multiple = None
+
+                # MFE: максимально достижимый R и % захваченного потенциала
+                max_R_possible = None
+                captured_R_pct = None
+                if one_r and one_r > 0:
+                    if str(direction).upper() == "LONG" and max_price_db:
+                        max_R_possible = round((max_price_db - entry) / one_r, 3)
+                    elif str(direction).upper() == "SHORT" and min_price_db:
+                        max_R_possible = round((entry - min_price_db) / one_r, 3)
+                    if max_R_possible and max_R_possible > 0 and r_multiple is not None:
+                        captured_R_pct = round((r_multiple / max_R_possible) * 100.0, 1)
 
                 # duration_minutes
                 try:
@@ -199,10 +232,13 @@ class TradeSimulator:
                 cursor.execute(
                     """
                     UPDATE simulated_trades
-                    SET status = ?, exit_price = ?, profit_pct = ?, R_multiple = ?, closed_at = ?, duration_minutes = ?
+                    SET status = ?, exit_price = ?, profit_pct = ?, R_multiple = ?,
+                        closed_at = ?, duration_minutes = ?, max_R_possible = ?, captured_R_pct = ?
                     WHERE id = ?
                     """,
-                    (status, exit_price, profit_pct, r_multiple, closed_at.isoformat(), duration_minutes, trade_id),
+                    (status, exit_price, profit_pct, r_multiple,
+                     closed_at.isoformat(), duration_minutes,
+                     max_R_possible, captured_R_pct, trade_id),
                 )
                 conn.commit()
             logger.info(f"TradeSimulator: закрыта сделка id={trade_id} {status} exit={exit_price:.4f} R={r_multiple}")
@@ -280,10 +316,16 @@ class TradeSimulator:
 
             exit_status = None
             exit_price_val = None
+            max_high = 0.0
+            min_low = float("inf")
             for _, row in df.iterrows():
                 high = float(row.get("high", 0) or 0)
                 low = float(row.get("low", 0) or 0)
                 open_ = float(row.get("open", 0) or 0)
+                if high > 0:
+                    max_high = max(max_high, high)
+                if low > 0:
+                    min_low = min(min_low, low)
                 if direction == "LONG":
                     hit_sl = sl is not None and low <= sl
                     hit_tp = tp is not None and high >= tp
@@ -311,6 +353,20 @@ class TradeSimulator:
                         exit_status, exit_price_val = STATUS_TP, tp
                 if exit_status:
                     break
+
+            # Обновляем MFE экстремумы для открытой сделки
+            new_max = max_high if max_high > 0 else None
+            new_min = min_low if min_low < float("inf") else None
+            if new_max is not None or new_min is not None:
+                try:
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute(
+                            "UPDATE simulated_trades SET max_price=?, min_price=? WHERE id=? AND status=?",
+                            (new_max, new_min, trade_id, STATUS_OPEN),
+                        )
+                        conn.commit()
+                except Exception as e:
+                    logger.debug(f"TradeSimulator: MFE update error {trade_id} — {e}")
 
             if exit_status and exit_price_val is not None:
                 if self.close_trade(trade_id, exit_status, exit_price_val):

@@ -7,7 +7,7 @@ import logging
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from core.keyboards import main_menu
+from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
 

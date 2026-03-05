@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l \"e:/MTF BOT/CURSOR/crypto_volume_bot/core/\"*.py)"
+    ]
+  }
+}

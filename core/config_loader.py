@@ -61,8 +61,8 @@ class ConfigLoader:
                 "supported": ["binance", "bybit", "bingx"]
             },
             "analysis": {
-                "volume_multiplier": 50.0,
-                "price_threshold": 40.0,
+                "volume_multiplier": 5.0,
+                "price_threshold": 7.0,
                 "history_size": 200,
                 "check_interval": 60
             },

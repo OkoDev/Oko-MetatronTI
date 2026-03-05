@@ -1,7 +1,7 @@
 from datetime import datetime
 import urllib.parse
 import re
-from core.config import CONFIG
+from core.config_loader import config
 
 def _normalize_to_tv(symbol: str) -> str:
     """
@@ -25,8 +25,8 @@ def _normalize_to_tv(symbol: str) -> str:
 def tv_link(symbol: str, interval: int = 15) -> str:
     """Создает ссылку на TradingView"""
     # Берем первую биржу из списка EXCHANGES
-    exchanges = CONFIG.get("EXCHANGES", ["bingx"])
-    exchange = exchanges[2].upper() if isinstance(exchanges, list) else "BINGX"
+    exchanges = config.get("exchanges.supported", ["binance", "bybit", "bingx"])
+    exchange = exchanges[2].upper() if isinstance(exchanges, list) and len(exchanges) > 2 else "BINGX"
     
     tv_sym = _normalize_to_tv(symbol)
     encoded = urllib.parse.quote(f"{exchange}:{tv_sym}", safe='')

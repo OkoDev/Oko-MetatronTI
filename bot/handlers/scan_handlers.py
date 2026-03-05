@@ -8,7 +8,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from core.keyboards import main_menu
+from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
 

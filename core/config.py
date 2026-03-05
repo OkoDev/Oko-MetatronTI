@@ -12,8 +12,8 @@ CONFIG = {
     'LIQUIDITY_LIMIT': 10000,
     'CHECK_INTERVAL': 200,
     'LOG_LEVEL': 'INFO',
-    'VOLUME_MULTIPLIER': 50.0,  # Более строгий порог для аномального объема 5
-    'PRICE_THRESHOLD': 40.0,    # Более высокий порог для изменения цены 7
+    'VOLUME_MULTIPLIER': 5.0,  # Более строгий порог для аномального объема 5
+    'PRICE_THRESHOLD': 7.0,    # Более высокий порог для изменения цены 7
     'BINGX': {
         'api_key': os.getenv('BINGX_API_KEY'),
         'secret': os.getenv('BINGX_SECRET_KEY')

@@ -12,7 +12,7 @@ from core.trend_signals import check_trend_following_signal, trend_signal_messag
 from core.divergence_detector import divergence_message
 from core.pivot_reversal import check_pivot_level_signal, pivot_level_signal_message
 from core.trading_intelligence import format_intelligence_message
-from core.keyboards import main_menu
+from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
 
