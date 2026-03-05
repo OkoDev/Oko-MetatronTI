@@ -23,7 +23,10 @@ from core.menu_signals import (
     show_trend_signals, show_divergence_signals, show_pivot_signals,
     show_all_signals, handle_signal_search,
 )
-from core.menu_pivots import show_pivot_reversals, show_key_levels, show_pivot_analysis
+from core.menu_pivots import (
+    show_pivot_reversals, show_key_levels, show_pivot_analysis,
+    show_pivots_request, show_check_pivot_request,
+)
 from core.menu_risk import (
     show_risk_profile, show_active_positions, show_position_sizes,
     show_stop_losses, show_risk_reward_ratio, show_risk_warnings,
@@ -37,6 +40,7 @@ from core.menu_history import (
 from core.menu_subscriptions import (
     show_subscription_limits, show_usage_statistics,
     show_payment_history, show_subscription_settings,
+    cmd_my_subscription, cmd_buy_subscription, cmd_subscribe, cmd_unsubscribe,
 )
 from core.menu_settings import (
     show_general_settings, show_notification_settings, show_analysis_settings,
@@ -107,18 +111,19 @@ class MenuHandler:
 
     async def handle_monitoring_menu_buttons(self, message: Message, state: FSMContext):
         """Обработка кнопок меню мониторинга."""
+        from bot.monitoring import start_monitoring, stop_monitoring
         text = message.text
         username = message.from_user.username or "Unknown"
         logger.info("🔍 [MENU] Мониторинг - %s нажал: '%s'", username, text)
         try:
             if text == "🟢 Запустить мониторинг":
-                await self.bot.cmd_monitor(message)
+                await start_monitoring(self.bot, message)
             elif text == "⏹ Остановить мониторинг":
-                await self.bot.cmd_monitor(message)
+                await stop_monitoring(self.bot, message)
             elif text == "📊 Статистика мониторинга":
-                await self.bot.cmd_stats(message)
+                await show_statistics(self.bot, message)
             elif text == "🏆 ТОП-10 по объему":
-                await self.bot.cmd_top(message)
+                await self._show_top_volume(message)
             elif text == "🔍 Найти пару":
                 await handle_find_pair(self.bot, message, state)
             elif text == "📈 Активные сигналы":
@@ -184,11 +189,11 @@ class MenuHandler:
         """Обработка кнопок меню пивотов."""
         text = message.text
         if text == "📊 Недельные пивоты":
-            await self.bot.cmd_request_pivots(message, state)
+            await show_pivots_request(self.bot, message, state)
         elif text == "📅 Дневные пивоты":
-            await self.bot.cmd_request_pivots(message, state)
+            await show_pivots_request(self.bot, message, state)
         elif text == "🔍 Проверить пивоты":
-            await self.bot.cmd_request_check(message, state)
+            await show_check_pivot_request(self.bot, message, state)
         elif text == "📈 Развороты от пивотов":
             await show_pivot_reversals(self.bot, message)
         elif text == "🎯 Ключевые уровни":
@@ -252,13 +257,13 @@ class MenuHandler:
         """Обработка кнопок меню подписок."""
         text = message.text
         if text == "💎 Моя подписка":
-            await self.bot.cmd_my_subscription(message)
+            await cmd_my_subscription(self.bot, message)
         elif text == "🛒 Купить подписку":
-            await self.bot.cmd_buy_subscription(message)
+            await cmd_buy_subscription(self.bot, message, state)
         elif text == "✅ Подписаться":
-            await self.bot.cmd_subscribe(message)
+            await cmd_subscribe(self.bot, message)
         elif text == "❌ Отписаться":
-            await self.bot.cmd_unsubscribe(message)
+            await cmd_unsubscribe(self.bot, message)
         elif text == "📊 Лимиты":
             await show_subscription_limits(self.bot, message)
         elif text == "📈 Статистика использования":
@@ -299,6 +304,23 @@ class MenuHandler:
     # ------------------------------------------------------------------
     # Переходы между меню
     # ------------------------------------------------------------------
+
+    async def _show_top_volume(self, message: Message):
+        """Топ-10 пар по последнему объёму."""
+        from core.keyboards import main_menu as _main_menu
+        if not self.bot.is_monitoring:
+            await message.answer("⚠️ Мониторинг не запущен.", reply_markup=_main_menu())
+            return
+        volumes = {}
+        for sym in self.bot.monitored_pairs:
+            vhist = self.bot.data_collector.volume_history.get(sym, [])
+            if vhist:
+                volumes[sym] = vhist[-1]
+        sorted_vols = sorted(volumes.items(), key=lambda x: x[1], reverse=True)
+        lines = ["📊 <b>ТОП-10 пар по объёму</b>"]
+        for i, (sym, vol) in enumerate(sorted_vols[:10], 1):
+            lines.append(f"{i}. {sym}: {vol:.2f}")
+        await message.answer("\n".join(lines), reply_markup=_main_menu())
 
     async def _show_main_menu(self, message: Message):
         await message.answer(

@@ -4,11 +4,44 @@
 import asyncio
 import logging
 
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
 
 from core.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
+
+
+async def show_pivots_request(bot, message: Message, state: FSMContext) -> None:
+    """Запрос тикера для показа пивотов — переводит в FSM-состояние."""
+    from bot.states import PivotStates
+    if not bot.monitored_pairs:
+        await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
+        return
+    examples = "\n".join([f"  • {p.split('/')[0]}" for p in bot.monitored_pairs[:10]])
+    await message.answer(
+        f"📊 <b>НЕДЕЛЬНЫЕ И ДНЕВНЫЕ ПИВОТЫ</b>\n\n"
+        f"💬 Введите тиккер монеты:\n\n<i>Примеры:</i>\n{examples}\n\n"
+        f"<code>Или просто: BTC, ETH, SOL...</code>",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await state.set_state(PivotStates.waiting_for_pivots)
+
+
+async def show_check_pivot_request(bot, message: Message, state: FSMContext) -> None:
+    """Запрос тикера для проверки близости к пивотам — переводит в FSM-состояние."""
+    from bot.states import PivotStates
+    if not bot.monitored_pairs:
+        await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
+        return
+    examples = "\n".join([f"  • {p.split('/')[0]}" for p in bot.monitored_pairs[:10]])
+    await message.answer(
+        f"🔍 <b>ПРОВЕРКА БЛИЗОСТИ К ПИВОТАМ</b>\n\n"
+        f"💬 Введите тиккер монеты:\n\n<i>Примеры:</i>\n{examples}\n\n"
+        f"<code>Или просто: BTC, ETH, SOL...</code>",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await state.set_state(PivotStates.waiting_for_check)
 
 
 async def show_pivot_reversals(bot, message: Message) -> None:

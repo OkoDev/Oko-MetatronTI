@@ -2,6 +2,7 @@
 Действия меню AI-анализа — standalone-функции вместо методов MenuHandler.
 """
 import logging
+from datetime import datetime
 
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
@@ -32,8 +33,39 @@ async def handle_ml_predictions(bot, message: Message, state: FSMContext) -> Non
 
 
 async def show_statistics(bot, message: Message) -> None:
-    """Делегирует показ статистики в cmd_stats."""
-    await bot.cmd_stats(message)
+    """Показ статистики бота."""
+    uptime = "N/A"
+    if hasattr(bot, "start_time") and bot.start_time:
+        delta = datetime.now() - bot.start_time
+        hours = delta.seconds // 3600
+        minutes = (delta.seconds % 3600) // 60
+        uptime = f"{delta.days}д {hours}ч {minutes}м"
+    user_id = message.from_user.id
+    sub_info = bot.subscription_manager.get_subscription_info(user_id)
+    lines = [
+        "📊 <b>СТАТИСТИКА БОТА</b>",
+        "",
+        f"{'✅ Активен' if bot.is_monitoring else '⏹ Остановлен'}",
+        f"⏱ Время работы: {uptime}",
+        "",
+        "<b>📈 Мониторинг:</b>",
+        f"• Отслеживаемых пар: {len(bot.monitored_pairs)}",
+        f"• Подписчиков: {len(bot.subscribers)}",
+        "",
+        "<b>💎 Ваша подписка:</b>",
+        f"• Уровень: {sub_info['tier']}",
+        f"• Сигналов сегодня: {sub_info['signals_today']}/{sub_info['signals_limit']}",
+        "",
+        "<b>🎯 Обнаружено сигналов:</b>",
+        f"• 🚨 Аномалий: {bot.signal_counters['anomaly']}",
+        f"• 📊 WT: {bot.signal_counters['wt_signal']}",
+        f"• 🔄 MTF: {bot.signal_counters['mtf_signal']}",
+        f"• 📈 Тренд: {bot.signal_counters['trend_signal']}",
+        f"• 💎 Дивергенций: {bot.signal_counters['divergence']}",
+        f"• 🔄 Разворотов: {bot.signal_counters['pivot_reversal']}",
+        f"• <b>📌 Всего: {bot.signal_counters['total']}</b>",
+    ]
+    await message.answer("\n".join(lines))
 
 
 async def show_help(bot, message: Message) -> None:
@@ -75,7 +107,8 @@ async def show_help(bot, message: Message) -> None:
 
 async def handle_stop_monitoring(bot, message: Message) -> None:
     """Остановка мониторинга."""
-    await bot.stop_monitoring(message)
+    from bot.monitoring import stop_monitoring
+    await stop_monitoring(bot, message)
 
 
 async def handle_find_pair(bot, message: Message, state: FSMContext) -> None:
