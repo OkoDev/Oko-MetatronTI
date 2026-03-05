@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from core.config_loader import config
 from core.subscription_manager import SubscriptionManager
+from core.watchlist_manager import WatchlistManager
 from core.data_collector import RealTimeData
 from core.anomaly_detector import AnomalyDetector
 from core.divergence_detector import DivergenceDetector
@@ -103,6 +104,9 @@ class TradingAlertBot:
         self.trade_simulator = TradeSimulator(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
+        self.watchlist_manager = WatchlistManager(
+            db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
+        )
 
         # Состояние бота
         self.is_monitoring = False
@@ -122,6 +126,7 @@ class TradingAlertBot:
         from bot.handlers.subscription_handlers import get_router as sub_router
         from bot.handlers.pivot_handlers import get_router as pivot_router
         from bot.handlers.analysis_handlers import get_router as analysis_router
+        from bot.handlers.scan_handlers import get_router as scan_router
         from bot.handlers.core_handlers import get_router as core_router
         from bot.handlers.callback_handlers import get_router as callback_router
 
@@ -129,6 +134,7 @@ class TradingAlertBot:
         self.dp.include_router(sub_router(self))
         self.dp.include_router(pivot_router(self))
         self.dp.include_router(analysis_router(self))
+        self.dp.include_router(scan_router(self))
         self.dp.include_router(core_router(self))     # содержит F.text catch-all
         self.dp.include_router(callback_router(self))
 

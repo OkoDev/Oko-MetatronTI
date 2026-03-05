@@ -63,6 +63,21 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
         except Exception:
             pass
 
+        # История сделок по паре
+        try:
+            from core.performance_engine import PerformanceEngine
+            pe = PerformanceEngine(bot.trade_simulator.db_path)
+            history = pe.pair_history(target_symbol, limit=5)
+            if history:
+                lines = [f"📚 <b>История по {display_symbol}</b>:"]
+                for h in history:
+                    icon = "✅" if h["status"] == "TP" else "❌" if h["status"] == "SL" else "⏰"
+                    r = h["R_multiple"] or 0
+                    lines.append(f"{icon} {h['signal_type']} {h['direction']} R={r:.2f}")
+                await message.answer("\n".join(lines))
+        except Exception:
+            pass
+
         bot.subscription_manager.increment_signal_count(user_id, "intelligence")
         bot.signal_counters["total"] += 1
 
