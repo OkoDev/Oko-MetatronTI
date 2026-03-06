@@ -82,7 +82,24 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
         bot.signal_counters["total"] += 1
 
         try:
-            await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector)
+            # Этап 6: применяем pivot TP перед регистрацией
+            distance_to_pivot_pct = 0.0
+            if hasattr(bot, "pivot_calculator"):
+                direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
+                entry_price = recommendation.entry_price or 0
+                if direction_val in ("LONG", "SHORT") and entry_price > 0:
+                    pivot_tp = bot.pivot_calculator.get_pivot_tp(
+                        direction=direction_val,
+                        entry_price=entry_price,
+                        symbol=target_symbol,
+                        stop_loss=recommendation.stop_loss,
+                        min_r=1.5,
+                    )
+                    if pivot_tp:
+                        recommendation.take_profit = pivot_tp
+                        distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
+            extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
+            await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
         except Exception as e:
             logger.debug("TradeSimulator register_trade: %s", e)
 
