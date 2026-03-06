@@ -352,14 +352,17 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
                 logger.debug("[%s] Pivot TP: %.6f (%.2f%%, %s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val)
 
-    min_strength = bot.config.get("signal_quality.min_strength", 40)
-    is_actionable = (
+    min_strength = bot.config.get("signal_quality.min_strength", 50)
+    min_strength_register = bot.config.get("signal_quality.min_strength_register", 40)
+
+    _dir_ok = (
         recommendation is not None
-        and recommendation.overall_strength >= min_strength
         and getattr(recommendation, "action", "WATCH") in ("BUY", "SELL")
         and getattr(recommendation, "direction", None) is not None
         and recommendation.direction.value != "NEUTRAL"
     )
+    is_actionable = _dir_ok and recommendation.overall_strength >= min_strength
+    should_register = _dir_ok and recommendation.overall_strength >= min_strength_register
 
     text = raw_text
     if recommendation:
@@ -373,7 +376,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 
     await broadcast_with_subscription_check(bot, text, signal_type)
 
-    if is_actionable:
+    if should_register:
         try:
             extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
             await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
@@ -381,8 +384,8 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             logger.debug("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e)
     elif recommendation:
         reason = []
-        if recommendation.overall_strength < min_strength:
-            reason.append(f"strength={recommendation.overall_strength:.1f}<{min_strength}")
+        if recommendation.overall_strength < min_strength_register:
+            reason.append(f"strength={recommendation.overall_strength:.1f}<{min_strength_register}")
         if getattr(recommendation, "action", "WATCH") not in ("BUY", "SELL"):
             reason.append(f"action={getattr(recommendation, 'action', '?')}")
         if getattr(recommendation, "direction", None) is None or recommendation.direction.value == "NEUTRAL":

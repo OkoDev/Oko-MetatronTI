@@ -74,4 +74,5 @@ signal_quality:
   sl_cooldown_hours: 4
   dedup_minutes: 30
   min_volume_usd: 1000000
-  min_strength: 50
+  min_strength: 50          # порог для TG-алерта
+  min_strength_register: 40 # порог для регистрации в симуляторе (ниже = больше обучающих данных)
