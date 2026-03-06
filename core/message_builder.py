@@ -31,7 +31,8 @@ def tv_link(symbol: str, interval: int = 15) -> str:
     tv_sym = _normalize_to_tv(symbol)
     encoded = urllib.parse.quote(f"{exchange}:{tv_sym}", safe='')
     url = f"https://ru.tradingview.com/chart/?symbol={encoded}&interval={interval}"
-    return f'<a href="{url}">{symbol}</a>'
+    label = symbol.replace(":USDT", "")
+    return f'<a href="{url}">{label}</a>'
 
 def anomaly_message(symbol: str, info: dict) -> str:
     """Форматирует сообщение об аномалии"""
@@ -44,18 +45,24 @@ def anomaly_message(symbol: str, info: dict) -> str:
         return "\n\n".join(parts)
     if "volume" in info:
         v = info["volume"]
-        parts.append(
-            f"📊 <b>Объем</b>\n"
-            f"Текущий: {v['current']:.2f}\n"
-            f"Средний: {v['average']:.2f}\n"
-            f"Превышение: {v['ratio']:.1f}x"
-        )
+        try:
+            parts.append(
+                f"📊 <b>Объем</b>\n"
+                f"Текущий: {float(v['current']):.2f}\n"
+                f"Средний: {float(v['average']):.2f}\n"
+                f"Превышение: {float(v['ratio']):.1f}x"
+            )
+        except (TypeError, KeyError, ValueError, IndexError):
+            pass
     if "price_change" in info:
         p = info["price_change"]
-        parts.append(
-            f"💹 <b>Цена</b> изменилась на {p['current']:.2f}% "
-            f"(порог {p['threshold']:.1f}%)"
-        )
+        try:
+            parts.append(
+                f"💹 <b>Цена</b> изменилась на {float(p['current']):.2f}% "
+                f"(порог {float(p['threshold']):.1f}%)"
+            )
+        except (TypeError, KeyError, ValueError, IndexError):
+            pass
     return "\n\n".join(parts)
 
 def wt_message(symbol: str, info: dict) -> str:

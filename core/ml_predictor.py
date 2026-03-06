@@ -10,11 +10,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
-import joblib
 import os
 
 # Попытка импорта ML библиотек
 try:
+    import joblib
     from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
@@ -23,6 +23,7 @@ try:
     from sklearn.neural_network import MLPClassifier
     ML_AVAILABLE = True
 except ImportError:
+    joblib = None
     ML_AVAILABLE = False
     # Заглушки для случаев, когда ML библиотеки недоступны
     class RandomForestClassifier:
@@ -52,6 +53,12 @@ except ImportError:
         split_idx = int(len(X) * (1 - test_size))
         return X[:split_idx], X[split_idx:], y[:split_idx], y[split_idx:]
     
+    class MLPClassifier:
+        def __init__(self, **kwargs): pass
+        def fit(self, X, y): return self
+        def predict(self, X): return np.zeros(len(X))
+        def predict_proba(self, X): return np.ones((len(X), 2)) * 0.5
+
     def accuracy_score(y_true, y_pred): return 0.5
     def precision_score(y_true, y_pred, average='weighted'): return 0.5
     def recall_score(y_true, y_pred, average='weighted'): return 0.5
@@ -130,7 +137,37 @@ class MLPredictor:
         # Путь для сохранения моделей
         self.models_dir = self.config.get('models_dir', 'models')
         os.makedirs(self.models_dir, exist_ok=True)
-    
+
+        # Загружаем ранее обученные модели и скейлеры с диска
+        self._load_models()
+
+    def _load_models(self):
+        """Загружает модели и скейлеры из диска, если они существуют."""
+        if not ML_AVAILABLE:
+            return
+        loaded = 0
+        for prediction_type in PredictionType:
+            # Загрузка скейлера
+            scaler_path = os.path.join(self.models_dir, f"scaler_{prediction_type.value}.joblib")
+            if os.path.exists(scaler_path):
+                try:
+                    self.scalers[prediction_type] = joblib.load(scaler_path)
+                except Exception as e:
+                    logger.warning(f"Не удалось загрузить скейлер {prediction_type.value}: {e}")
+
+            # Загрузка моделей
+            for model_name in list(self.models[prediction_type].keys()):
+                perf_key = f"{prediction_type.value}_{model_name}"
+                model_path = os.path.join(self.models_dir, f"{perf_key}.joblib")
+                if os.path.exists(model_path):
+                    try:
+                        self.models[prediction_type][model_name] = joblib.load(model_path)
+                        loaded += 1
+                    except Exception as e:
+                        logger.warning(f"Не удалось загрузить модель {perf_key}: {e}")
+        if loaded:
+            logger.info(f"MLPredictor: загружено {loaded} моделей из {self.models_dir}")
+
     async def predict_price_direction(self, symbol: str, timeframe: str = "1h") -> Optional[MLPrediction]:
         """Предсказывает направление движения цены"""
         try:
@@ -151,7 +188,7 @@ class MLPredictor:
                 return None
             
             # Нормализуем признаки
-            features_scaled = self.scalers[PredictionType.PRICE_DIRECTION].transform([features])
+            features_scaled = self.scalers[PredictionType.PRICE_DIRECTION].transform([list(features.values())])
             
             # Получаем предсказания от всех моделей
             predictions = []
@@ -216,7 +253,7 @@ class MLPredictor:
                 return None
             
             # Нормализуем признаки
-            features_scaled = self.scalers[PredictionType.SIGNAL_STRENGTH].transform([features])
+            features_scaled = self.scalers[PredictionType.SIGNAL_STRENGTH].transform([list(features.values())])
             
             # Получаем предсказания
             predictions = []
@@ -264,11 +301,11 @@ class MLPredictor:
     def _extract_price_features(self, df: pd.DataFrame) -> Dict[str, float]:
         """Извлекает признаки для предсказания направления цены"""
         try:
-            if len(df) < 20:
+            if len(df) < 30:
                 return {}
-            
+
             features = {}
-            
+
             # Технические индикаторы
             features['rsi'] = self._calculate_rsi(df['close'], 14)
             features['macd'] = self._calculate_macd(df['close'])
@@ -434,10 +471,22 @@ class MLPredictor:
                 # Нормализуем данные
                 X_train_scaled = self.scalers[prediction_type].fit_transform(X_train)
                 X_test_scaled = self.scalers[prediction_type].transform(X_test)
-                
+
+                # Сохраняем скейлер
+                scaler_path = os.path.join(self.models_dir, f"scaler_{prediction_type.value}.joblib")
+                joblib.dump(self.scalers[prediction_type], scaler_path)
+
                 # Обучаем каждую модель
+                import numpy as _np
+                n_classes = len(_np.unique(y_train))
                 for model_name, model in self.models[prediction_type].items():
                     try:
+                        if n_classes < 2:
+                            logger.warning(
+                                "Пропуск %s для %s: только 1 класс в y_train",
+                                model_name, prediction_type.value,
+                            )
+                            continue
                         # Обучаем модель
                         model.fit(X_train_scaled, y_train)
                         

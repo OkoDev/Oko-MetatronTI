@@ -2,6 +2,7 @@
 Форматирование торговой рекомендации в Telegram-сообщение.
 """
 from core.signal_models import TradingRecommendation
+from core.message_builder import tv_link
 
 
 def format_intelligence_message(recommendation: TradingRecommendation) -> str:
@@ -21,11 +22,11 @@ def format_intelligence_message(recommendation: TradingRecommendation) -> str:
 
     parts = [
         f"{emoji} <b>КОМПЛЕКСНАЯ РЕКОМЕНДАЦИЯ</b> {emoji}",
-        f"Пара: {recommendation.symbol}",
+        f"Пара: {tv_link(recommendation.symbol)}",
         f"Действие: <b>{recommendation.action}</b>",
         f"Направление: {recommendation.direction.value}",
         "",
-        f"{strength_emoji} <b>Сила сигнала: {recommendation.overall_strength}/100</b> ({strength_text})",
+        f"{strength_emoji} <b>Сила сигнала: {round(recommendation.overall_strength)}/100</b> ({strength_text})",
         f"Уверенность: {recommendation.confidence:.2f}",
         f"{risk_emoji.get(recommendation.risk_level, '❓')} <b>Риск:</b> {recommendation.risk_level}",
         "",

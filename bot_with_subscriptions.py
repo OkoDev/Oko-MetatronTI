@@ -14,7 +14,6 @@ from core.config_loader import config
 from core.subscription_manager import SubscriptionManager
 from core.watchlist_manager import WatchlistManager
 from core.data_collector import RealTimeData
-from core.anomaly_detector import AnomalyDetector
 from core.divergence_detector import DivergenceDetector
 from core.pivot_calculator_fixed import PivotCalculatorFixed
 from core.trading_intelligence import TradingIntelligence
@@ -88,13 +87,10 @@ class TradingAlertBot:
 
         self.subscription_manager = SubscriptionManager()
         self.data_collector = RealTimeData(exchange_id=config.get("exchanges.default", "bingx"))
-        self.detector = AnomalyDetector(
-            volume_multiplier=config.get("analysis.volume_multiplier", 50.0),
-            price_threshold=config.get("analysis.price_threshold", 40.0),
-        )
         self.divergence_detector = DivergenceDetector()
-        self.pivot_calculator = PivotCalculatorFixed()
-        self.pivot_calculator_fixed = PivotCalculatorFixed()
+        self.pivot_calculator = PivotCalculatorFixed(
+            db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
+        )
         self.trading_intelligence = TradingIntelligence(
             data_collector=self.data_collector,
             config=config.get_all(),
@@ -119,6 +115,8 @@ class TradingAlertBot:
             "trend_signal": 0, "divergence": 0, "pivot_reversal": 0,
             "pivot_alert": 0, "total": 0,
         }
+        # Фильтры качества сигналов (Этап 5.1)
+        self._last_signal = {}  # {(symbol, signal_type): datetime} — для дедупликации
 
         self._register_routers()
 
@@ -141,11 +139,24 @@ class TradingAlertBot:
     def run(self):
         logger.info("Запуск бота с поддержкой подписок...")
 
+        async def _ml_training_loop():
+            """Первичное обучение ML через 2 мин после старта, затем каждые 24ч."""
+            await asyncio.sleep(120)
+            while True:
+                try:
+                    ok = await self.trading_intelligence.train_ml_models(training_period_days=30)
+                    if ok:
+                        logger.info("ML-модели успешно обучены/переобучены")
+                except Exception as e:
+                    logger.warning(f"Ошибка обучения ML: {e}")
+                await asyncio.sleep(86400)  # 24 часа
+
         async def _run():
             from bot.monitoring import trade_tracker_loop
             from web.dashboard_server import start_dashboard
             asyncio.create_task(trade_tracker_loop(self))
-            asyncio.create_task(start_dashboard(db_path=self.trade_simulator.db_path))
+            asyncio.create_task(start_dashboard(db_path=self.trade_simulator.db_path, config=config))
+            asyncio.create_task(_ml_training_loop())
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())

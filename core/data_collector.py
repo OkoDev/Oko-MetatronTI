@@ -33,7 +33,7 @@ class RealTimeData:
         # Кеш OHLCV: {(symbol, timeframe): {"df": DataFrame, "ts": float, "limit": int}}
         self._ohlcv_cache = {}
 
-    async def load_markets(self):
+    async def load_markets(self, min_volume_usd: float = 0):
         """Загрузить только USDT futures-пары (попытка универсальной фильтрации)"""
         try:
             await self.exchange.load_markets()
@@ -62,8 +62,19 @@ class RealTimeData:
             self.usdt_pairs = sorted({p for p in candidates if "USDT" in p})
             # final filter: prefer explicit future suffix
             self.usdt_pairs = [p for p in self.usdt_pairs if (":USDT" in p or p.endswith("USDT-P") or p.endswith("/USDT:USDT"))]
+            # фильтр: базовый актив не длиннее 10 символов (отсекаем NCSISP5002USD и прочий мусор)
+            self.usdt_pairs = [
+                p for p in self.usdt_pairs
+                if len(p.split("/")[0]) <= 10
+            ]
 
             logger.info(f"Loaded {len(self.usdt_pairs)} USDT-futures pairs")
+
+            # Фильтр по объёму (Этап 5.1)
+            if min_volume_usd > 0:
+                self.usdt_pairs = await self._filter_by_volume(self.usdt_pairs, min_volume_usd)
+                logger.info(f"После фильтра объёма (>{min_volume_usd/1e6:.0f}M$): {len(self.usdt_pairs)} пар")
+
             for s in self.usdt_pairs:
                 self.price_history[s] = deque(maxlen=self.history_size)
                 self.volume_history[s] = deque(maxlen=self.history_size)
@@ -71,6 +82,21 @@ class RealTimeData:
         except Exception:
             logger.exception("load_markets error")
             return []
+
+    async def _filter_by_volume(self, pairs: list, min_volume_usd: float) -> list:
+        """Фильтрует пары по 24h quoteVolume через fetch_tickers (один batch-запрос)."""
+        try:
+            tickers = await self.exchange.fetch_tickers(pairs)
+            result = []
+            for sym in pairs:
+                t = tickers.get(sym, {})
+                vol = t.get("quoteVolume") or 0
+                if vol >= min_volume_usd:
+                    result.append(sym)
+            return result
+        except Exception as e:
+            logger.warning(f"Фильтр объёма не применён (ошибка fetch_tickers): {e}")
+            return pairs
 
     async def fetch_candles(self):
         """Background OHLCV fetcher (1m summary: price change % and volume)"""
@@ -146,7 +172,7 @@ class RealTimeData:
         normalized = self.normalize_symbol(symbol)
         return await self.symbol_exists(normalized)
 
-    async def get_ohlcv(self, symbol, timeframe="15m", limit=150):
+    async def get_ohlcv(self, symbol, timeframe="15m", limit=150, since=None):
         """Возвращает pandas.DataFrame с колонками: time, open, high, low, close, volume.
         Результат кешируется с TTL, зависящим от таймфрейма."""
         normalized_symbol = self.normalize_symbol(symbol)
@@ -160,7 +186,7 @@ class RealTimeData:
             return cached["df"].copy()
 
         try:
-            candles = await self.exchange.fetch_ohlcv(normalized_symbol, timeframe=timeframe, limit=limit)
+            candles = await self.exchange.fetch_ohlcv(normalized_symbol, timeframe=timeframe, limit=limit, since=since)
             if not candles:
                 return None
             df = pd.DataFrame(candles, columns=["time", "open", "high", "low", "close", "volume"])

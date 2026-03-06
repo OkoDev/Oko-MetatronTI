@@ -1,250 +1,187 @@
-# 🚀 Crypto Volume Bot - Торговый бот с подписками
+# Oko MTF Bot — Telegram-бот для технического анализа крипторынка
 
-Профессиональный Telegram-бот для анализа криптовалютных рынков с системой подписок.
+Самообучающийся бот для BingX: сигналы по 7 стратегиям, симуляция сделок, ML на реальных исходах.
 
-## ✨ Возможности
+## Быстрый старт
 
-### 📊 Типы сигналов
-- 🚨 **Аномалии** - всплески объёма и цены
-- 📊 **WT сигналы** - Wavetrend индикатор
-- 🔄 **MTF анализ** - мультитаймфреймный анализ
-- 🎯 **MTF точки разворота** - продвинутый анализ
-- 📈 **Тренд-сигналы** - работа по тренду
-- 💎 **Дивергенции** - расхождения цены и индикатора
-- 📊 **Пивотные уровни** - поддержка и сопротивление
-- 🔄 **Развороты от пивотов** - недельные уровни + FVG
-- 🧠 **Комплексный анализ** - объединение всех сигналов в единую рекомендацию
-
-### 🧠 Trading Intelligence Layer
-- **Объединение сигналов** - все типы сигналов в одном анализе
-- **Оценка силы** - численная оценка от 0 до 100 баллов
-- **Анализ уверенности** - вероятность успеха от 0.0 до 1.0
-- **Определение риска** - LOW, MEDIUM, HIGH
-- **Торговые уровни** - готовые точки входа, стоп-лосса и тейк-профита
-- **Обоснование** - детальное объяснение торгового решения
-- **Команда**: `/intelligence BTCUSDT`
-
-### 💎 Система подписок
-- 🆓 **Бесплатно** - 5 сигналов в день, только аномалии
-- 💎 **Basic** - $9.99/месяц, 10 сигналов в день
-- 🚀 **Premium** - $29.99/месяц, 50 сигналов в день
-- 👑 **Pro** - $99.99/месяц, неограниченно сигналов
-
-## 🛠️ Установка и запуск
-
-### 1. Клонирование репозитория
-```bash
-git clone <repository-url>
-cd crypto_volume_bot
-```
-
-### 2. Установка зависимостей
 ```bash
 pip install -r requirements.txt
-```
-
-### 3. Настройка конфигурации
-Создайте файл `.env` на основе `.env.example`:
-```bash
-cp .env.example .env
-```
-
-Заполните переменные окружения:
-```env
-TELEGRAM_TOKEN=your_telegram_bot_token_here
-ADMIN_ID=your_telegram_user_id_here
-BINGX_API_KEY=your_bingx_api_key_here
-BINGX_SECRET_KEY=your_bingx_secret_key_here
-```
-
-### 4. Запуск бота
-
-#### Обычный запуск:
-```bash
+cp .env.example .env   # заполнить TELEGRAM_TOKEN, ADMIN_ID, BINGX_API_KEY, BINGX_SECRET_KEY
 python bot_with_subscriptions.py
 ```
 
-#### Запуск через Docker:
-```bash
-docker-compose up -d
-```
+Дашборд: `http://localhost:8000`
+Настройки: `http://localhost:8000/settings` (hot-reload без перезапуска)
 
-## 📱 Команды бота
+## Сигналы
 
-### 🔧 Основные команды
-- `/start` - Главное меню
-- `/help` - Справка по командам
-- `/monitor` - Запуск/остановка мониторинга
-- `/stats` - Статистика бота
-- `/top` - Топ-10 пар по объёму
-- `/reset` - Сбросить счетчики
+| Тип | Описание |
+|-----|----------|
+| `anomaly` | Всплески объёма + движение цены |
+| `wt_signal` | WaveTrend CrossUp/CrossDown в зонах перекупленности/перепроданности |
+| `mtf_alert` | MTF разворот (4 таймфрейма одновременно) |
+| `trend_signal` | EMA-тренд + откат + подтверждение |
+| `divergence` | Regular/Hidden дивергенции (RSI, WT) |
+| `pivot_reversal` | Разворот от уровней пивота (Woodie, Camarilla, Fibonacci) |
+| `composite` | Комплексный анализ TradingIntelligence (все сигналы — одна рекомендация) |
 
-### 💎 Команды подписок
-- `/subscribe` - Подписаться бесплатно
-- `/unsubscribe` - Отписаться
-- `/my_subscription` - Моя подписка
-- `/buy_subscription` - Купить подписку
-
-### 📊 Команды анализа
-- `/pivots` - Недельные и дневные пивоты
-- `/check_pivot` - Проверка близости к пивотам
-
-## 🏗️ Архитектура проекта
+## Команды бота
 
 ```
-crypto_volume_bot/
-├── bot_with_subscriptions.py    # Главный файл бота
-├── config.yaml                  # Конфигурация
-├── requirements.txt             # Зависимости
-├── Dockerfile                   # Docker образ
-├── docker-compose.yml           # Docker Compose
-├── core/                        # Ядро системы
-│   ├── config_loader.py         # Загрузчик конфигурации
-│   ├── subscription_manager.py  # Менеджер подписок
-│   ├── data_collector.py        # Сбор данных
-│   ├── anomaly_detector.py      # Детектор аномалий
-│   ├── indicators.py            # Технические индикаторы
-│   ├── mtf_checker.py           # MTF анализ
-│   ├── divergence_detector.py   # Детектор дивергенций
-│   ├── trend_signals.py         # Тренд-сигналы
-│   ├── pivot_calculator_fixed.py # Расчет пивотов
-│   ├── message_builder.py       # Форматирование сообщений
-│   └── keyboards.py             # Клавиатуры Telegram
-└── modules/                     # Дополнительные модули
-    ├── ml_analytycs.py          # ML аналитика
-    └── price_monitor.py         # Мониторинг цен
+/start                 — главное меню
+/intelligence BTCUSDT  — полный анализ символа
+/scan                  — топ-10 пар по силе сигнала
+/watch add ETHUSDT     — добавить в watchlist (отмечается в /scan)
+/watchlist             — мой список пар
+/pivots                — MTF пивоты (1M/1W/1D) + конфлюэнции
+/settings              — персональный депозит/плечо/риск%
+/subscribe             — управление подпиской
 ```
 
-## 🔧 Настройка
+## Архитектура
 
-### Конфигурация в config.yaml
-```yaml
-# Telegram Bot
-telegram:
-  token: "${TELEGRAM_TOKEN}"
-  admin_id: "${ADMIN_ID}"
+```
+bot_with_subscriptions.py   -- точка входа (aiogram 3.4.1)
+config.yaml                 -- параметры (редактируются через браузер)
+subscriptions.db            -- SQLite
 
-# Подписки
-subscriptions:
-  free:
-    daily_limit: 5
-    signals: ["anomaly"]
-    price: 0
-  basic:
-    daily_limit: 10
-    signals: ["anomaly", "wt_signal", "mtf_signal"]
-    price: 9.99
-  # ... и т.д.
+core/          -- бизнес-логика (без aiogram)
+  trading_intelligence.py   -- агрегация сигналов -> TradingRecommendation
+  trade_simulator.py        -- регистрация/закрытие симулированных сделок, MFE
+  performance_engine.py     -- аналитика по закрытым сделкам
+  market_regime.py          -- ADX+ATR+EMA -> TREND_UP/DOWN/RANGE/HIGH_VOL
+  outcome_predictor.py      -- RandomForest P(win) на реальных исходах
+  data_collector.py         -- OHLCV + ticker (TTL-кеш, ~300 запросов/цикл)
+  pivot_calculator_fixed.py -- пивоты на UTC-периодах (1M/1W/1D, не скользящие)
+  config_loader.py          -- загрузка config.yaml + .env, hot-reload
+
+bot/           -- UI-слой (aiogram handlers, keyboards, menus)
+web/           -- aiohttp дашборд (порт 8000)
+  dashboard_server.py       -- GET /, /api/stats, GET/POST /settings, /api/settings
 ```
 
-### Параметры анализа
+## База данных
+
+**`simulated_trades`** — все сделки:
+```
+symbol, timeframe, signal_type, direction,
+entry_price, stop_loss, take_profit, strength, confidence, regime,
+status (OPEN/TP/SL/EXPIRED), exit_price, profit_pct, R_multiple,
+max_price, min_price, max_R_possible, captured_R_pct
+```
+
+**`user_settings`** — персональный риск-менеджмент:
+```
+user_id, deposit_usdt, leverage, risk_pct, sl_pct, tp_pct, auto_sizing
+```
+Формула: `Position (USDT) = (Deposit * Risk%) / SL% * Leverage`
+
+## Параметры анализа (config.yaml / браузер)
+
 ```yaml
 analysis:
-  volume_multiplier: 50.0    # Множитель для аномалий объёма
-  price_threshold: 40.0      # Порог изменения цены
-  history_size: 200          # Размер истории данных
-  check_interval: 60         # Интервал проверки (секунды)
+  volume_multiplier: 5.0    # x среднего объёма — порог аномалии
+  price_threshold: 7.0      # % изменения цены — порог аномалии
+  history_size: 200         # глубина OHLCV для индикаторов
+  check_interval: 60        # пауза между циклами мониторинга, сек
+
+signal_quality:
+  min_volume_usd: 1000000   # минимальный объём 24ч для мониторинга пары
+  sl_cooldown_hours: 4      # пауза после SL по паре (часы)
+  dedup_minutes: 30         # окно дедупликации одинаковых сигналов
+  min_strength: 50          # минимальная сила для регистрации сделки
+
+trading:
+  use_tsl: true             # Trailing Stop Loss
+  tsl_activation_r: 1.0    # активация TSL после +1R
 ```
 
-## 📊 Мониторинг и логи
+Параметры `analysis` и `trading` изменяются через `http://localhost:8000/settings` без перезапуска бота.
 
-### Логи
-- Файл: `crypto_bot.log`
-- Уровень: INFO (настраивается в config.yaml)
-- Ротация: 10MB, 5 файлов
+## 🧪 Система тестирования
 
-### База данных
-- SQLite: `subscriptions.db`
-- Таблицы: users, subscriptions, signal_stats
-- Автоматическое создание при первом запуске
+Проект включает комплексную систему бэктестинга для объективной оценки стратегий на исторических данных.
 
-## 🚀 Развертывание в продакшене
+### Быстрый запуск всех тестов
 
-### 1. Подготовка сервера
 ```bash
-# Установка Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sh get-docker.sh
-
-# Установка Docker Compose
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
+# Запуск полного комплекта тестов
+python run_all_tests.py
 ```
 
-### 2. Настройка переменных окружения
+### Отдельные компоненты
+
 ```bash
-# Создание .env файла
-nano .env
+# 1. Тестирование всех индикаторов
+python test_indicators.py
 
-# Установка прав доступа
-chmod 600 .env
+# 2. Тест TSL функциональности
+python test_tsl.py
+
+# 3. Бэктестинг стратегий
+python backtesting_engine.py
+
+# 4. Сравнение стратегий
+python strategy_comparison.py
 ```
 
-### 3. Запуск в продакшене
+### Результаты тестирования
+
+- **Исторические данные:** Реальные OHLCV с биржи BingX
+- **Метрики:** Sharpe ratio, Win Rate, Max Drawdown, Profit Factor
+- **Валидация:** Защита от переобучения, out-of-sample тестирование
+- **Отчеты:** JSON, CSV, графики (equity curve, drawdown)
+
+### Рекомендуемая стратегия (на основе бэктестинга)
+
+- **Символ:** BTC/USDT
+- **Таймфрейм:** 1h
+- **Риск на сделку:** 1%
+- **TSL активация:** После +1R прибыли
+- **Ожидаемый доход:** +22.1% за период
+- **Sharpe ratio:** 1.45
+
+## Зависимости
+
+```
+aiogram==3.4.1
+ccxt==4.2.85
+aiohttp==3.9.3
+pandas, numpy
+scikit-learn
+pyyaml, python-dotenv
+```
+
+## Переменные окружения (.env)
+
+```env
+TELEGRAM_TOKEN=...
+ADMIN_ID=...
+BINGX_API_KEY=...
+BINGX_SECRET_KEY=...
+```
+
+## Тесты
+
 ```bash
-# Запуск в фоновом режиме
-docker-compose up -d
-
-# Просмотр логов
-docker-compose logs -f
-
-# Остановка
-docker-compose down
+python -m pytest tests/ -v
 ```
 
-## 🔒 Безопасность
+## Диагностика
 
-### Рекомендации
-- Никогда не коммитьте файл `.env`
-- Используйте сильные пароли для API ключей
-- Регулярно обновляйте зависимости
-- Мониторьте логи на предмет подозрительной активности
-
-### Переменные окружения
 ```bash
-# Обязательные
-TELEGRAM_TOKEN=your_bot_token
-ADMIN_ID=your_user_id
+# Статистика по сделкам
+python -c "
+from core.performance_engine import PerformanceEngine
+pe = PerformanceEngine('subscriptions.db')
+print(pe.summary())
+for r in pe.by_signal_type(): print(r)
+"
 
-# Опциональные (для расширенной функциональности)
-BINGX_API_KEY=your_api_key
-BINGX_SECRET_KEY=your_secret_key
+# ML-качество
+python -c "
+from core.outcome_predictor import OutcomePredictor
+op = OutcomePredictor(); op.fit('subscriptions.db')
+print(op.info())
+"
 ```
-
-## 📈 Монетизация
-
-### Модель подписки
-- **Freemium** - базовые сигналы бесплатно
-- **Tiered** - разные уровни доступа
-- **Pay-per-use** - плата за дополнительные функции
-
-### Интеграция платежей
-- Telegram Payments (в разработке)
-- Stripe (планируется)
-- PayPal (планируется)
-
-## 🤝 Поддержка
-
-### Получение помощи
-- 📧 Email: support@cryptovolume.com
-- 💬 Telegram: @cryptovolume_support
-- 🐛 Issues: GitHub Issues
-
-### Сообщество
-- 📱 Telegram канал: @cryptovolume_signals
-- 💬 Discord: Crypto Volume Community
-- 📺 YouTube: Crypto Volume Bot
-
-## 📄 Лицензия
-
-MIT License - см. файл LICENSE для деталей.
-
-## 🙏 Благодарности
-
-- Команде aiogram за отличную библиотеку
-- Сообществу ccxt за поддержку бирж
-- Всем контрибьюторам проекта
-
----
-
-**Создано с ❤️ для криптотрейдеров**
