@@ -289,6 +289,24 @@ def _is_duplicate_signal(bot, symbol: str, signal_type: str) -> bool:
     return False
 
 
+async def _get_btc_regime(bot):
+    """Кешированный режим BTC/USDT (TTL 5 мин)."""
+    cache = getattr(bot, "_btc_regime_cache", None)
+    now = datetime.now().timestamp()
+    if cache and (now - cache["ts"]) < 300:
+        return cache["regime"]
+    try:
+        from core.market_regime import MarketRegimeClassifier
+        ohlcv = await bot.data_collector.get_ohlcv("BTC/USDT:USDT", "1h", limit=50)
+        if ohlcv is not None and not ohlcv.empty:
+            regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv.values.tolist())
+            bot._btc_regime_cache = {"regime": regime, "ts": now}
+            return regime
+    except Exception as e:
+        logger.debug("BTC режим не определён: %s", e)
+    return None
+
+
 async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_type: str, fallback_rec=None):
     # Фильтры качества сигналов (Этап 5.1)
     if hasattr(bot, "_last_signal") and _is_duplicate_signal(bot, symbol, signal_type):
@@ -301,6 +319,20 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         recommendation = await bot.trading_intelligence.analyze_symbol(symbol)
     except Exception:
         logger.exception("Ошибка AI-анализа для %s при сигнале %s", symbol, signal_type)
+
+    # Этап 5.2: BTC-корреляционный фильтр
+    btc_regime = await _get_btc_regime(bot)
+    if btc_regime == "HIGH_VOL":
+        logger.info("[%s] Фильтр BTC HIGH_VOL — сигнал пропущен", symbol)
+        return
+    if recommendation and btc_regime:
+        direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
+        if btc_regime == "TREND_UP" and direction_val == "SHORT":
+            logger.info("[%s] Фильтр BTC TREND_UP vs SHORT — пропущен", symbol)
+            return
+        if btc_regime == "TREND_DOWN" and direction_val == "LONG":
+            logger.info("[%s] Фильтр BTC TREND_DOWN vs LONG — пропущен", symbol)
+            return
 
     min_strength = bot.config.get("signal_quality.min_strength", 40)
     is_actionable = (
@@ -392,3 +424,38 @@ async def trade_tracker_loop(bot):
             break
         except Exception as e:
             logger.exception("TradeSimulator loop: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Этап 5.3 — Еженедельный отчёт
+# ---------------------------------------------------------------------------
+
+def format_weekly_report(stats: dict) -> str:
+    lines = [
+        "<b>ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ</b>",
+        f"Сделок закрыто: <b>{stats['total']}</b>",
+        f"Win rate: <b>{stats['win_rate']}%</b>  •  Avg R: <b>{stats['avg_r']}</b>  •  Best R: <b>{stats['best_r']}</b>",
+    ]
+    if stats.get("by_signal_type"):
+        lines += ["", "<b>По типу сигнала:</b>"]
+        for s in stats["by_signal_type"][:5]:
+            cnt = s["cnt"] or 0
+            wr = round((s["wins"] or 0) / cnt * 100) if cnt else 0
+            avg_r = round(s["avg_r"] or 0, 2)
+            lines.append(f"• {s['signal_type']}: {cnt} сд., WR {wr}%, Avg R {avg_r}")
+    return "\n".join(lines)
+
+
+async def send_weekly_report(bot) -> None:
+    from core.performance_engine import PerformanceEngine
+    try:
+        pe = PerformanceEngine(bot.trade_simulator.db_path)
+        stats = pe.weekly_summary(days_back=7)
+        if not stats["total"]:
+            logger.info("Еженедельный отчёт: нет закрытых сделок за неделю")
+            return
+        text = format_weekly_report(stats)
+        await broadcast_with_subscription_check(bot, text, "weekly_report")
+        logger.info("Еженедельный отчёт отправлен (%d сделок)", stats["total"])
+    except Exception:
+        logger.exception("Ошибка отправки еженедельного отчёта")

@@ -37,15 +37,16 @@ class PerformanceEngine:
                         SUM(CASE WHEN status='OPEN'    THEN 1 ELSE 0 END) AS open_count,
                         SUM(CASE WHEN status='TP'      THEN 1 ELSE 0 END) AS tp_count,
                         SUM(CASE WHEN status='SL'      THEN 1 ELSE 0 END) AS sl_count,
+                        SUM(CASE WHEN status='TSL'     THEN 1 ELSE 0 END) AS tsl_count,
                         SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired_count,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN R_multiple END) AS avg_r,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r,
                         AVG(CASE WHEN status='TP' THEN R_multiple END) AS avg_r_win,
-                        AVG(CASE WHEN status='SL' THEN R_multiple END) AS avg_r_loss
+                        AVG(CASE WHEN status IN ('SL','TSL') THEN R_multiple END) AS avg_r_loss
                     FROM simulated_trades
                 """)
                 row = dict(cur.fetchone())
-                closed = (row["tp_count"] or 0) + (row["sl_count"] or 0)
+                closed = (row["tp_count"] or 0) + (row["sl_count"] or 0) + (row["tsl_count"] or 0)
                 row["win_rate"] = round(row["tp_count"] / closed * 100, 1) if closed else None
                 row["closed_count"] = closed
                 for k in ("avg_profit_pct", "avg_r", "avg_r_win", "avg_r_loss"):
@@ -221,6 +222,50 @@ class PerformanceEngine:
         except Exception:
             logger.exception("pair_history %s", symbol)
             return []
+
+    # ------------------------------------------------------------------
+    # Статистика за период (для еженедельного отчёта)
+    # ------------------------------------------------------------------
+    def weekly_summary(self, days_back: int = 7) -> Dict[str, Any]:
+        """Статистика за последние N дней."""
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cutoff = f"datetime('now', '-{days_back} days')"
+                row = cur.execute(f"""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) as wins,
+                        SUM(CASE WHEN status='SL' THEN 1 ELSE 0 END) as losses,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as avg_r,
+                        MAX(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as best_r
+                    FROM simulated_trades WHERE closed_at >= {cutoff}
+                """).fetchone()
+                by_type = cur.execute(f"""
+                    SELECT signal_type,
+                           COUNT(*) as cnt,
+                           SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) as wins,
+                           AVG(R_multiple) as avg_r
+                    FROM simulated_trades WHERE closed_at >= {cutoff}
+                    GROUP BY signal_type ORDER BY avg_r DESC
+                """).fetchall()
+                total = row[0] or 0
+                wins = row[1] or 0
+                return {
+                    "total": total,
+                    "wins": wins,
+                    "losses": row[2] or 0,
+                    "win_rate": round(wins / total * 100, 1) if total else 0,
+                    "avg_r": round(row[3] or 0, 2),
+                    "best_r": round(row[4] or 0, 2),
+                    "by_signal_type": [
+                        {"signal_type": r[0], "cnt": r[1], "wins": r[2], "avg_r": round(r[3] or 0, 2)}
+                        for r in by_type
+                    ],
+                }
+        except Exception as e:
+            logger.exception("PerformanceEngine.weekly_summary: %s", e)
+            return {"total": 0, "wins": 0, "losses": 0, "win_rate": 0, "avg_r": 0, "best_r": 0, "by_signal_type": []}
 
     # ------------------------------------------------------------------
     # Всё одним вызовом (для /api/stats)

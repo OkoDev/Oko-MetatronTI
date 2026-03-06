@@ -74,19 +74,21 @@
 - `is_actionable`: регистрация только BUY/SELL + non-NEUTRAL direction
 - INFO-лог с причиной пропуска сделки (strength/action/direction)
 
-## 🔲 Этап 5.2 — BTC-корреляционный фильтр
+## ✅ Этап 5.2 — BTC-корреляционный фильтр (06.03.2026)
 **Цель:** учитывать рыночный контекст при выдаче сигналов
 
-- Получать режим BTC/USDT через MarketRegimeClassifier
-- При BTC HIGH_VOL → снижать confidence всех сигналов на 20–30%
-- Опционально: не выдавать SHORT при BTC TREND_UP и наоборот
+- `_get_btc_regime(bot)` — кешированный режим BTC/USDT (TTL 5 мин, таймфрейм 1h)
+- BTC HIGH_VOL → сигнал полностью пропускается
+- BTC TREND_UP + SHORT направление → пропускается
+- BTC TREND_DOWN + LONG направление → пропускается
+- Фильтр применяется после AI-анализа в `_broadcast_intelligence_alert()`
 
-## 🔲 Этап 5.3 — Еженедельный отчёт в Telegram
+## ✅ Этап 5.3 — Еженедельный отчёт в Telegram (06.03.2026)
 **Цель:** пользователь видит итоги недели без ручных запросов
 
-- Asyncio scheduler → каждое воскресенье в 20:00 UTC
-- Сообщение: кол-во сделок, win_rate, avg_R, топ-3 сигнала, худшие 3 пары за неделю
-- Использует `PerformanceEngine` с фильтром по дате
+- `PerformanceEngine.weekly_summary(days_back=7)` — статистика за N дней
+- `send_weekly_report(bot)` + `format_weekly_report(stats)` в `bot/monitoring.py`
+- `_weekly_report_loop()` — asyncio задача, отправляет каждое воскресенье в 20:00 UTC
 
 ## 🔲 Этап 6 — Динамический TP (pivot-based)
 **Цель:** заменить фиксированный TP% на ближайший уровень пивота
@@ -142,3 +144,5 @@
 | 2026-03-06 | Унификация сообщений: tv_link во всех типах, символ без :USDT, strength целым числом |
 | 2026-03-06 | Дашборд: tvUrl/symLink в таблицах, aiohttp.access → WARNING |
 | 2026-03-06 | Прогрев кеша пивотов при старте (asyncio.gather + Semaphore=20, 600+ пар) |
+| 2026-03-06 | Этап 5.2: BTC-корреляционный фильтр (HIGH_VOL + направление vs тренд) |
+| 2026-03-06 | Этап 5.3: Еженедельный отчёт (weekly_summary + _weekly_report_loop каждое вс. 20:00) |

@@ -117,6 +117,8 @@ class TradingAlertBot:
         }
         # Фильтры качества сигналов (Этап 5.1)
         self._last_signal = {}  # {(symbol, signal_type): datetime} — для дедупликации
+        # Этап 5.2: кеш режима BTC
+        self._btc_regime_cache = None
 
         self._register_routers()
 
@@ -151,12 +153,31 @@ class TradingAlertBot:
                     logger.warning(f"Ошибка обучения ML: {e}")
                 await asyncio.sleep(86400)  # 24 часа
 
+        async def _weekly_report_loop():
+            """Отправляет отчёт каждое воскресенье в 20:00 UTC."""
+            from datetime import datetime, timezone, timedelta
+            from bot.monitoring import send_weekly_report
+            while True:
+                try:
+                    now = datetime.now(timezone.utc)
+                    days_to_sunday = (6 - now.weekday()) % 7 or 7
+                    target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+                    target += timedelta(days=days_to_sunday)
+                    await asyncio.sleep((target - now).total_seconds())
+                    await send_weekly_report(self)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.exception("weekly_report_loop: %s", e)
+                    await asyncio.sleep(3600)
+
         async def _run():
             from bot.monitoring import trade_tracker_loop
             from web.dashboard_server import start_dashboard
             asyncio.create_task(trade_tracker_loop(self))
             asyncio.create_task(start_dashboard(db_path=self.trade_simulator.db_path, config=config))
             asyncio.create_task(_ml_training_loop())
+            asyncio.create_task(_weekly_report_loop())
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())
