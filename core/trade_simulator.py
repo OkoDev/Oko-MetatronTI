@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 STATUS_OPEN = "OPEN"
 STATUS_TP = "TP"
 STATUS_SL = "SL"
+STATUS_TSL = "TSL"
 STATUS_EXPIRED = "EXPIRED"
 
 # Дефолты
@@ -53,8 +54,42 @@ class TradeSimulator:
     def __init__(self, db_path: str = "subscriptions.db", max_duration_minutes: float = MAX_DURATION_MINUTES):
         self.db_path = db_path
         self.max_duration_minutes = max_duration_minutes
+        self.init_database()
 
-    def register_trade(self, recommendation: Any, regime: Optional[str] = None) -> Optional[int]:
+    def init_database(self):
+        """Создает таблицу simulated_trades в базе данных"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS simulated_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL DEFAULT '1h',
+                    signal_type TEXT,
+                    direction TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    strength INTEGER,
+                    confidence REAL,
+                    regime TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT NOT NULL DEFAULT 'OPEN',
+                    exit_price REAL,
+                    profit_pct REAL,
+                    R_multiple REAL,
+                    closed_at TIMESTAMP,
+                    duration_minutes REAL,
+                    features_json TEXT,
+                    max_price REAL,
+                    min_price REAL,
+                    max_R_possible REAL,
+                    captured_R_pct REAL
+                )
+            """)
+            conn.commit()
+
+    def register_trade(self, recommendation: Any, regime: Optional[str] = None, extra_features: Optional[dict] = None) -> Optional[int]:
         """
         Сохраняет сделку в БД при выдаче рекомендации.
         Возвращает id записи или None при ошибке / пропуске.
@@ -92,6 +127,8 @@ class TradeSimulator:
                 features["volume_24h"] = getattr(ctx, "volume_24h", None)
                 features["price_change_24h"] = getattr(ctx, "price_change_24h", None)
                 features["volatility"] = getattr(ctx, "volatility", None)
+            if extra_features:
+                features.update(extra_features)
             features_json = json.dumps(features) if features else None
 
             with sqlite3.connect(self.db_path) as conn:
@@ -127,10 +164,16 @@ class TradeSimulator:
             logger.exception(f"TradeSimulator: ошибка регистрации сделки — {e}")
             return None
 
-    async def register_trade_async(self, recommendation: Any, data_collector: Any = None) -> Optional[int]:
+    async def register_trade_async(
+        self,
+        recommendation: Any,
+        data_collector: Any = None,
+        extra_features: Optional[dict] = None,
+    ) -> Optional[int]:
         """
         Async-обёртка над register_trade: получает OHLCV, определяет режим рынка,
         затем сохраняет сделку. Если data_collector недоступен — пишет regime=None.
+        extra_features — доп. признаки (напр. distance_to_pivot_pct) для features_json.
         """
         regime: Optional[str] = None
         if data_collector is not None:
@@ -144,7 +187,7 @@ class TradeSimulator:
                         logger.debug("MarketRegime для %s: %s", symbol, regime)
                 except Exception as e:
                     logger.debug("MarketRegime: не удалось определить для %s — %s", symbol, e)
-        return self.register_trade(recommendation, regime=regime)
+        return self.register_trade(recommendation, regime=regime, extra_features=extra_features)
 
     def get_open_trades(self) -> List[Dict[str, Any]]:
         """Возвращает список открытых сделок."""
@@ -169,7 +212,7 @@ class TradeSimulator:
         closed_at: Optional[datetime] = None,
     ) -> bool:
         """Закрывает сделку, считает profit_pct и R_multiple."""
-        if status not in (STATUS_TP, STATUS_SL, STATUS_EXPIRED):
+        if status not in (STATUS_TP, STATUS_SL, STATUS_TSL, STATUS_EXPIRED):
             return False
         closed_at = closed_at or datetime.now(timezone.utc)
         try:
@@ -247,15 +290,23 @@ class TradeSimulator:
             logger.exception(f"TradeSimulator: ошибка close_trade {trade_id} — {e}")
             return False
 
-    async def check_open_trades(self, data_collector: Any) -> int:
+    async def check_open_trades_with_tsl(self, data_collector: Any, use_tsl: bool = True, tsl_activation_r: float = 1.0) -> int:
         """
-        Проверяет открытые сделки по OHLC: hit SL, hit TP или EXPIRED.
-        data_collector должен иметь метод get_ohlcv(symbol, timeframe, limit).
-        Возвращает количество закрытых сделок.
+        Проверяет открытые сделки с поддержкой TSL (Trailing Stop Loss).
+        TSL активируется после достижения tsl_activation_r прибыли.
+
+        Args:
+            data_collector: Источник OHLCV данных
+            use_tsl: Включить TSL логику
+            tsl_activation_r: После скольки R активировать TSL (1.0 = после +1R)
+
+        Returns:
+            Количество закрытых сделок
         """
         open_trades = self.get_open_trades()
         if not open_trades:
             return 0
+
         closed_count = 0
         for trade in open_trades:
             trade_id = trade["id"]
@@ -268,6 +319,7 @@ class TradeSimulator:
                 sl = float(sl)
             if tp is not None:
                 tp = float(tp)
+
             created_at = trade["created_at"]
             try:
                 if isinstance(created_at, str):
@@ -299,6 +351,7 @@ class TradeSimulator:
             except Exception as e:
                 logger.debug(f"TradeSimulator: get_ohlcv {symbol} — {e}")
                 continue
+
             if df is None or len(df) == 0:
                 continue
 
@@ -314,18 +367,62 @@ class TradeSimulator:
             if len(df) == 0:
                 continue
 
+            # Расчет текущего R-multiple для проверки активации TSL
+            current_price = df.iloc[-1]["close"]
+            current_r = None
+            if sl is not None and sl != entry:
+                one_r = abs(entry - sl)
+                if direction == "LONG":
+                    current_r = (current_price - entry) / one_r
+                else:
+                    current_r = (entry - current_price) / one_r
+
+            # TSL логика
+            tsl_triggered = False
+            tsl_price = None
+
+            if use_tsl and current_r is not None and current_r >= tsl_activation_r:
+                # Активируем TSL после достижения прибыли
+                try:
+                    from core.indicators import calculate_trend, get_trend_info
+                    df_with_trend = calculate_trend(df)
+                    trend_info = get_trend_info(df_with_trend)
+
+                    if trend_info and trend_info["tsl"] > 0:
+                        tsl_price = trend_info["tsl"]
+
+                        # Проверка срабатывания TSL
+                        if direction == "LONG" and current_price <= tsl_price:
+                            tsl_triggered = True
+                        elif direction == "SHORT" and current_price >= tsl_price:
+                            tsl_triggered = True
+
+                        if tsl_triggered:
+                            logger.info(f"TradeSimulator: TSL сработал для {symbol} {direction} "
+                                      f"entry={entry:.4f} current={current_price:.4f} tsl={tsl_price:.4f}")
+                            if self.close_trade(trade_id, STATUS_TSL, current_price):
+                                closed_count += 1
+                            continue
+
+                except Exception as e:
+                    logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
+
+            # Стандартная проверка SL/TP (если TSL не сработал)
             exit_status = None
             exit_price_val = None
             max_high = 0.0
             min_low = float("inf")
+
             for _, row in df.iterrows():
                 high = float(row.get("high", 0) or 0)
                 low = float(row.get("low", 0) or 0)
                 open_ = float(row.get("open", 0) or 0)
+
                 if high > 0:
                     max_high = max(max_high, high)
                 if low > 0:
                     min_low = min(min_low, low)
+
                 if direction == "LONG":
                     hit_sl = sl is not None and low <= sl
                     hit_tp = tp is not None and high >= tp
@@ -371,4 +468,5 @@ class TradeSimulator:
             if exit_status and exit_price_val is not None:
                 if self.close_trade(trade_id, exit_status, exit_price_val):
                     closed_count += 1
+
         return closed_count

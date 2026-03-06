@@ -7,6 +7,7 @@
 """
 import asyncio
 import logging
+import sqlite3
 import pandas as pd
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta, timezone
@@ -55,9 +56,85 @@ class PivotCalculatorFixed:
     Кеш period-based: уровни не меняются до смены периода.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: str = None):
         # {cache_key: {**pivots, "period_start": datetime, ...}}
         self.pivot_cache: Dict[str, Dict] = {}
+        self.db_path = db_path
+        if db_path:
+            self._init_db()
+            self._load_all_from_db()
+
+    def _init_db(self):
+        """Создаёт таблицу pivot_cache если не существует."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pivot_cache (
+                    symbol TEXT,
+                    timeframe TEXT,
+                    period_start TEXT,
+                    pp REAL, s1 REAL, s2 REAL, s3 REAL, s4 REAL, s5 REAL,
+                    r1 REAL, r2 REAL, r3 REAL, r4 REAL, r5 REAL,
+                    period_label TEXT,
+                    method TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (symbol, timeframe)
+                )
+            """)
+
+    def _load_all_from_db(self):
+        """Загружает все записи из БД в pivot_cache при старте."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute("SELECT * FROM pivot_cache").fetchall()
+            for row in rows:
+                key = f"{row['symbol']}_{row['timeframe']}"
+                d = dict(row)
+                # Восстанавливаем period_start как datetime для корректного сравнения с кэшем
+                try:
+                    period_start = datetime.fromisoformat(d["period_start"])
+                except Exception:
+                    period_start = d["period_start"]
+                self.pivot_cache[key] = {
+                    "PP": d["pp"], "S1": d["s1"], "S2": d["s2"], "S3": d["s3"],
+                    "S4": d["s4"], "S5": d["s5"],
+                    "R1": d["r1"], "R2": d["r2"], "R3": d["r3"],
+                    "R4": d["r4"], "R5": d["r5"],
+                    "timeframe": d["timeframe"],
+                    "period_start": period_start,
+                    "period_label": d.get("period_label", ""),
+                    "method": d.get("method", ""),
+                }
+            if rows:
+                logger.info("PivotCalculatorFixed: загружено %d записей из БД", len(rows))
+        except Exception as e:
+            logger.warning("PivotCalculatorFixed: ошибка загрузки из БД: %s", e)
+
+    def _save_to_db(self, symbol: str, timeframe: str, data: Dict):
+        """Сохраняет/обновляет пивоты в БД после вычисления."""
+        if not self.db_path:
+            return
+        try:
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO pivot_cache
+                    (symbol, timeframe, period_start, pp, s1, s2, s3, s4, s5,
+                     r1, r2, r3, r4, r5, period_label, method, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    symbol, timeframe,
+                    str(data.get("period_start", "")),
+                    data.get("PP"), data.get("S1"), data.get("S2"),
+                    data.get("S3"), data.get("S4"), data.get("S5"),
+                    data.get("R1"), data.get("R2"), data.get("R3"),
+                    data.get("R4"), data.get("R5"),
+                    data.get("period_label", ""),
+                    data.get("method", ""),
+                    now,
+                ))
+        except Exception as e:
+            logger.debug("PivotCalculatorFixed: ошибка сохранения в БД для %s %s: %s", symbol, timeframe, e)
 
     # ──────────────────────────────────────────────────────
     # Формулы
@@ -125,6 +202,7 @@ class PivotCalculatorFixed:
                 "timestamp": datetime.now(timezone.utc),
             })
             self.pivot_cache[cache_key] = pivots
+            self._save_to_db(symbol, "1M", pivots)
             logger.info(f"✅ Месячные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots['period_label']})")
             return pivots
 
@@ -156,7 +234,13 @@ class PivotCalculatorFixed:
 
         if pivots:
             pivots["period_start"] = week_start
+            # Сохраняем старый кэш как prev перед перезаписью
+            old = self.pivot_cache.get(cache_key)
+            if old and old.get("period_start") != week_start:
+                self.pivot_cache[f"{symbol}_1W_prev"] = old
+                self._save_to_db(symbol, "1W_prev", old)
             self.pivot_cache[cache_key] = pivots
+            self._save_to_db(symbol, "1W", pivots)
             logger.info(f"✅ Недельные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots.get('period_label','')})")
             return pivots
 
@@ -225,6 +309,12 @@ class PivotCalculatorFixed:
         prev_day_end = day_start
         prev_day_start = day_start - timedelta(days=1)
 
+        # Сохраняем старый кэш как prev перед пересчётом
+        old_daily = self.pivot_cache.get(cache_key)
+        if old_daily and old_daily.get("period_start") != day_start:
+            self.pivot_cache[f"{symbol}_1D_prev"] = old_daily
+            self._save_to_db(symbol, "1D_prev", old_daily)
+
         try:
             # Метод 1: из дневных свечей
             df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=5)
@@ -243,6 +333,7 @@ class PivotCalculatorFixed:
                         "timestamp": datetime.now(timezone.utc),
                     })
                     self.pivot_cache[cache_key] = pivots
+                    self._save_to_db(symbol, "1D", pivots)
                     logger.info(f"✅ Дневные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots['period_label']})")
                     return pivots
 
@@ -265,6 +356,7 @@ class PivotCalculatorFixed:
                 "timestamp": datetime.now(timezone.utc),
             })
             self.pivot_cache[cache_key] = pivots
+            self._save_to_db(symbol, "1D", pivots)
             logger.info(f"✅ Дневные пивоты {symbol} (из 1h): PP={pivots['PP']:.4f}")
             return pivots
 
@@ -295,6 +387,14 @@ class PivotCalculatorFixed:
         if daily:
             results["1D"] = daily
 
+        # Предыдущие периоды (для flip-levels и кросс-периодных конфлюэнций)
+        prev_weekly = self.pivot_cache.get(f"{symbol}_1W_prev")
+        if prev_weekly:
+            results["1W_prev"] = prev_weekly
+        prev_daily = self.pivot_cache.get(f"{symbol}_1D_prev")
+        if prev_daily:
+            results["1D_prev"] = prev_daily
+
         # Конфлюэнции между всеми доступными уровнями
         results["confluence"] = self._find_all_confluences(results)
         if results["confluence"]:
@@ -309,7 +409,10 @@ class PivotCalculatorFixed:
     def _find_all_confluences(self, pivots_data: Dict, tolerance_percent: float = 0.3) -> List[Dict]:
         """Конфлюэнции между всеми парами таймфреймов"""
         all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
-        tf_pairs = [("1M", "1W"), ("1M", "1D"), ("1W", "1D")]
+        tf_pairs = [
+            ("1M", "1W"), ("1M", "1D"), ("1W", "1D"),
+            ("1W", "1W_prev"), ("1D", "1D_prev"),  # кросс-периодные конфлюэнции
+        ]
         confluences = []
 
         for tf_a, tf_b in tf_pairs:
@@ -401,6 +504,67 @@ class PivotCalculatorFixed:
     # ──────────────────────────────────────────────────────
     # Форматирование сообщения
     # ──────────────────────────────────────────────────────
+
+    # ──────────────────────────────────────────────────────
+    # Этап 6 — Динамический TP
+    # ──────────────────────────────────────────────────────
+
+    def get_pivot_tp(
+        self,
+        direction: str,
+        entry_price: float,
+        symbol: str,
+        stop_loss: Optional[float] = None,
+        min_r: float = 1.5,
+    ) -> Optional[float]:
+        """
+        Возвращает TP как ближайший пивот в направлении сделки с R >= min_r.
+        Использует кешированные пивоты — не делает API-запросов.
+        direction: 'LONG' или 'SHORT'
+        """
+        if entry_price <= 0:
+            return None
+
+        # Собираем все ненулевые уровни из кеша 1M / 1W / 1D
+        all_prices: List[float] = []
+        for tf in ("1M", "1W", "1D"):
+            pivots = self.pivot_cache.get(f"{symbol}_{tf}")
+            if not pivots:
+                continue
+            for lk in ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]:
+                price = pivots.get(lk)
+                if price and price > 0:
+                    all_prices.append(price)
+
+        if not all_prices:
+            return None
+
+        if direction == "LONG":
+            candidates = sorted(p for p in all_prices if p > entry_price)
+            if not candidates:
+                return None
+            if stop_loss and stop_loss < entry_price:
+                sl_dist = entry_price - stop_loss
+                if sl_dist > 0:
+                    for tp in candidates:
+                        if (tp - entry_price) / sl_dist >= min_r:
+                            return tp
+            # Если SL неизвестен — ближайший уровень выше
+            return candidates[0]
+
+        if direction == "SHORT":
+            candidates = sorted((p for p in all_prices if p < entry_price), reverse=True)
+            if not candidates:
+                return None
+            if stop_loss and stop_loss > entry_price:
+                sl_dist = stop_loss - entry_price
+                if sl_dist > 0:
+                    for tp in candidates:
+                        if (entry_price - tp) / sl_dist >= min_r:
+                            return tp
+            return candidates[0]
+
+        return None
 
     def format_pivot_message(self, symbol: str, pivots_data: Dict, current_price: float) -> str:
         from core.message_builder import tv_link

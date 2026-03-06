@@ -90,21 +90,22 @@
 - `send_weekly_report(bot)` + `format_weekly_report(stats)` в `bot/monitoring.py`
 - `_weekly_report_loop()` — asyncio задача, отправляет каждое воскресенье в 20:00 UTC
 
-## 🔲 Этап 6 — Динамический TP (pivot-based)
+## ✅ Этап 6 — Динамический TP (pivot-based) (06.03.2026)
 **Цель:** заменить фиксированный TP% на ближайший уровень пивота
 
-- TP = ближайший уровень пивота выше/ниже цены входа
-- R варьируется от 1.5 до 10+ в зависимости от структуры рынка
-- Трейлинг SL: после достижения +1R подтягивать стоп в безубыток
-- MFE-данные (Этап 4.4) покажут сколько потенциала теряем при фиксированном TP
+- `PivotCalculatorFixed.get_pivot_tp(direction, entry, symbol, sl, min_r=1.5)` — без API-запросов, из кеша
+- Выбирает ближайший пивот (1M/1W/1D) в направлении сделки с R >= 1.5
+- Интеграция в `bot/monitoring.py` → `_broadcast_intelligence_alert()` перед регистрацией сделки
+- `distance_to_pivot_pct` сохраняется в `features_json` — используется RPredictor (Этап 7)
+- R теперь варьируется от 1.5 до 10+ в зависимости от структуры рынка
 
 ## 🔲 Этап 7 — R-регрессор (Kelly-sizing)
 **Цель:** ML-предсказание ожидаемого R → адаптивный размер позиции
 
-- `GradientBoostingRegressor`: предсказывает `max_R_possible` по признакам
-- Признаки: 12 из OutcomePredictor + расстояние до ближайшего пивота + ATR
-- Обучение после 300+ сделок с заполненным MFE
-- Kelly: `kelly_f = (win% × avg_R_win − loss% × 1) / avg_R_win`
+- `core/r_predictor.py` создан: `RPredictor` с `GradientBoostingRegressor`
+- 14 признаков: 12 базовых + `distance_to_pivot_pct` + режим рынка (4 one-hot)
+- `kelly_fraction(win_rate, avg_r_win)` и `kelly_position_size(deposit, ...)` реализованы
+- **Обучение:** после накопления 300+ сделок с `max_R_possible IS NOT NULL` (сейчас ~226+, нужно ~74)
 - Итог: `Position = Deposit × kelly_f × confidence`
 
 ## 🔲 Этап 8 — Масштабирование
@@ -146,3 +147,5 @@
 | 2026-03-06 | Прогрев кеша пивотов при старте (asyncio.gather + Semaphore=20, 600+ пар) |
 | 2026-03-06 | Этап 5.2: BTC-корреляционный фильтр (HIGH_VOL + направление vs тренд) |
 | 2026-03-06 | Этап 5.3: Еженедельный отчёт (weekly_summary + _weekly_report_loop каждое вс. 20:00) |
+| 2026-03-06 | Этап 6: динамический TP (get_pivot_tp из кеша 1M/1W/1D, min_r=1.5) |
+| 2026-03-06 | Этап 7 prep: core/r_predictor.py (GBR + Kelly), distance_to_pivot_pct в features_json |

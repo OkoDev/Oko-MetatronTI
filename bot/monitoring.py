@@ -334,6 +334,24 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             logger.info("[%s] Фильтр BTC TREND_DOWN vs LONG — пропущен", symbol)
             return
 
+    # Этап 6: заменяем fixed TP на ближайший пивот с R >= 1.5
+    distance_to_pivot_pct: float = 0.0
+    if recommendation is not None and hasattr(bot, "pivot_calculator"):
+        direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
+        entry_price = recommendation.entry_price or 0
+        if direction_val in ("LONG", "SHORT") and entry_price > 0:
+            pivot_tp = bot.pivot_calculator.get_pivot_tp(
+                direction=direction_val,
+                entry_price=entry_price,
+                symbol=symbol,
+                stop_loss=recommendation.stop_loss,
+                min_r=1.5,
+            )
+            if pivot_tp:
+                recommendation.take_profit = pivot_tp
+                distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
+                logger.debug("[%s] Pivot TP: %.6f (%.2f%%, %s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val)
+
     min_strength = bot.config.get("signal_quality.min_strength", 40)
     is_actionable = (
         recommendation is not None
@@ -357,7 +375,8 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 
     if is_actionable:
         try:
-            await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector)
+            extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
+            await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
         except Exception as e:
             logger.debug("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e)
     elif recommendation:
