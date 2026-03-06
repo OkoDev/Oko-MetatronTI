@@ -18,6 +18,7 @@ from core.divergence_detector import DivergenceDetector
 from core.pivot_calculator_fixed import PivotCalculatorFixed
 from core.trading_intelligence import TradingIntelligence
 from core.trade_simulator import TradeSimulator
+from core.r_predictor import RPredictor
 from bot.menus import MenuHandler
 
 # ==============================
@@ -119,6 +120,8 @@ class TradingAlertBot:
         self._last_signal = {}  # {(symbol, signal_type): datetime} — для дедупликации
         # Этап 5.2: кеш режима BTC
         self._btc_regime_cache = None
+        # Этап 7: R-регрессор (Kelly-sizing)
+        self.r_predictor = RPredictor()
 
         self._register_routers()
 
@@ -151,6 +154,20 @@ class TradingAlertBot:
                         logger.info("ML-модели успешно обучены/переобучены")
                 except Exception as e:
                     logger.warning(f"Ошибка обучения ML: {e}")
+                # Этап 7: обучение R-регрессора (требует 100+ закрытых сделок с max_R_possible)
+                try:
+                    db_path = self.trade_simulator.db_path
+                    r_ok = await asyncio.get_event_loop().run_in_executor(
+                        None, self.r_predictor.fit, db_path
+                    )
+                    if r_ok:
+                        logger.info(
+                            "RPredictor обучен: %d сделок, CV RMSE=%.3f",
+                            self.r_predictor._n_samples,
+                            self.r_predictor._cv_rmse or 0,
+                        )
+                except Exception as e:
+                    logger.warning("Ошибка обучения RPredictor: %s", e)
                 await asyncio.sleep(86400)  # 24 часа
 
         async def _weekly_report_loop():
