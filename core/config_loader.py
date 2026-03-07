@@ -64,7 +64,30 @@ class ConfigLoader:
                 "volume_multiplier": 5.0,
                 "price_threshold": 7.0,
                 "history_size": 200,
-                "check_interval": 60
+                "check_interval": 60,
+                "indicators": {
+                    "wavetrend": {
+                        "n1": 10,              # ESA period (9-12)
+                        "n2": 21,              # WT signal period (20-25)
+                        "ob_threshold": 60,    # Overbought zone (official standard)
+                        "os_threshold": -60    # Oversold zone (official standard)
+                    },
+                    "trend": {
+                        "atr_period": 43,      # ATR period for TSL-based trend (特殊パラメータ)
+                        "factor": 1.0          # ATR multiplier (0.8-1.2)
+                    },
+                    "market_regime": {
+                        "adx_period": 14,      # ADX period (standard TradingView)
+                        "atr_period": 14,      # ATR period (standard TradingView)
+                        "ema_period": 20       # EMA period for regime
+                    },
+                    "divergence": {
+                        "pivot_period": 5,
+                        "lookback": 50,
+                        "max_bars": 100,
+                        "min_bars_between": 5
+                    }
+                }
             },
             "subscriptions": {
                 "free": {"daily_limit": 5, "signals": ["anomaly"], "price": 0},
@@ -119,6 +142,137 @@ class ConfigLoader:
     def get_all(self) -> Dict[str, Any]:
         """Получает всю конфигурацию"""
         return self.config
+
+    def reload(self) -> None:
+        """Перечитывает config.yaml с диска без перезапуска бота."""
+        self.config = self.load_config()
+        logger.info("Конфигурация перезагружена с диска")
+
+    def save_indicators(
+        self,
+        wt_n1: int,
+        wt_n2: int,
+        wt_ob: float,
+        wt_os: float,
+        trend_atr_period: int,
+        trend_factor: float,
+    ) -> bool:
+        """
+        Обновляет секцию analysis.indicators в config.yaml и вызывает reload().
+        """
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("analysis", {}).setdefault("indicators", {})
+            raw["analysis"]["indicators"]["wavetrend"] = {
+                "n1": int(wt_n1),
+                "n2": int(wt_n2),
+                "ob_threshold": float(wt_ob),
+                "os_threshold": float(wt_os),
+            }
+            raw["analysis"]["indicators"]["trend"] = {
+                "atr_period": int(trend_atr_period),
+                "factor": round(float(trend_factor), 2),
+            }
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "Параметры индикаторов сохранены: wt=(%d,%d,%.0f,%.0f) trend=(%d,%.1f)",
+                wt_n1, wt_n2, wt_ob, wt_os, trend_atr_period, trend_factor,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения параметров индикаторов: %s", e)
+            return False
+
+    def save_analysis(
+        self,
+        volume_multiplier: float,
+        price_threshold: float,
+        check_interval: int,
+        history_size: int,
+    ) -> bool:
+        """
+        Обновляет секцию analysis в config.yaml и вызывает reload().
+        Читает сырой YAML (без подстановки env-vars) чтобы не затирать ${...} плейсхолдеры.
+        """
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("analysis", {})
+            raw["analysis"]["volume_multiplier"] = round(float(volume_multiplier), 2)
+            raw["analysis"]["price_threshold"] = round(float(price_threshold), 2)
+            raw["analysis"]["check_interval"] = int(check_interval)
+            raw["analysis"]["history_size"] = int(history_size)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "Параметры анализа сохранены: vol_mult=%.1f price_thr=%.1f interval=%d history=%d",
+                volume_multiplier, price_threshold, check_interval, history_size,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения конфигурации: %s", e)
+            return False
+
+    def save_trading(
+        self,
+        use_tsl: bool,
+        tsl_activation_r: float,
+        tsl_buffer_pct: float,
+    ) -> bool:
+        """Обновляет секцию trading в config.yaml и вызывает reload()."""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("trading", {})
+            raw["trading"]["use_tsl"] = bool(use_tsl)
+            raw["trading"]["tsl_activation_r"] = round(float(tsl_activation_r), 2)
+            raw["trading"]["tsl_buffer_pct"] = round(float(tsl_buffer_pct), 3)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "TSL настройки сохранены: use_tsl=%s activation_r=%.1f buffer=%.3f",
+                use_tsl, tsl_activation_r, tsl_buffer_pct,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения trading конфига: %s", e)
+            return False
+
+    def save_signal_quality(
+        self,
+        sl_cooldown_hours: int,
+        dedup_minutes: int,
+        min_volume_usd: int,
+        min_strength: int,
+        min_strength_register: int,
+    ) -> bool:
+        """Обновляет секцию signal_quality в config.yaml и вызывает reload()."""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("signal_quality", {})
+            raw["signal_quality"]["sl_cooldown_hours"] = int(sl_cooldown_hours)
+            raw["signal_quality"]["dedup_minutes"] = int(dedup_minutes)
+            raw["signal_quality"]["min_volume_usd"] = int(min_volume_usd)
+            raw["signal_quality"]["min_strength"] = int(min_strength)
+            raw["signal_quality"]["min_strength_register"] = int(min_strength_register)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "Качество сигналов сохранено: cooldown=%dh dedup=%dm vol=%d strength=%d/%d",
+                sl_cooldown_hours, dedup_minutes, min_volume_usd, min_strength, min_strength_register,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения signal_quality конфига: %s", e)
+            return False
+
 
 # Глобальный экземпляр конфигурации
 config = ConfigLoader()

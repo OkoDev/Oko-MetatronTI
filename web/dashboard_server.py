@@ -360,6 +360,62 @@ _SETTINGS_HTML = """<!DOCTYPE html>
   </section>
 
   <section>
+    <h2>&#x1F6E1;&#xFE0F; Качество сигналов</h2>
+    <form id="qualityForm">
+      <div class="field">
+        <label>Пауза после SL (часы)</label>
+        <input type="number" id="sl_cooldown_hours" min="1" max="48" step="1">
+        <span class="hint">не мониторить пару N часов после SL</span>
+      </div>
+      <div class="field">
+        <label>Дедупликация сигналов (мин)</label>
+        <input type="number" id="dedup_minutes" min="5" max="120" step="5">
+        <span class="hint">подавлять повторные одинаковые сигналы</span>
+      </div>
+      <div class="field">
+        <label>Мин. объём пары (USD)</label>
+        <input type="number" id="min_volume_usd" min="100000" max="100000000" step="100000">
+        <span class="hint">пары ниже порога не мониторируются</span>
+      </div>
+      <div class="field">
+        <label>Мин. сила для TG-алерта</label>
+        <input type="number" id="min_strength" min="20" max="100" step="1">
+        <span class="hint">слабее — не отправляется в Telegram</span>
+      </div>
+      <div class="field">
+        <label>Мин. сила для симулятора</label>
+        <input type="number" id="min_strength_register" min="10" max="100" step="1">
+        <span class="hint">слабее — не записывается в БД (меньше данных для ML)</span>
+      </div>
+      <button type="submit" class="btn" id="saveQualityBtn">&#x1F4BE; Сохранить качество</button>
+      <div id="msgQuality"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>&#x1F4C9; TSL — Trailing Stop Loss</h2>
+    <form id="tradingForm">
+      <div class="field">
+        <label>Использовать TSL</label>
+        <input type="checkbox" id="use_tsl" style="width:18px;height:18px;cursor:pointer;">
+        <span class="hint">следует за трендом, защищает прибыль</span>
+      </div>
+      <div class="field">
+        <label>Активировать TSL после (R)</label>
+        <input type="number" id="tsl_activation_r" min="0.1" max="5" step="0.1">
+        <span class="hint">включается когда сделка достигла +N×R</span>
+      </div>
+      <div class="field">
+        <label>Буфер TSL (%)</label>
+        <input type="number" id="tsl_buffer_pct" min="0" max="1" step="0.05">
+        <span class="hint">дополнительный зазор от линии TSL</span>
+      </div>
+      <button type="submit" class="btn" id="saveTradingBtn">&#x1F4BE; Сохранить TSL</button>
+      <div id="msgTrading"></div>
+    </form>
+  </section>
+
+  <section>
     <h2>&#x1F4B0; Управление капиталом (формула)</h2>
     <p style="font-size:.85rem;color:#8b949e;margin-bottom:10px;">
       Каждый Telegram-пользователь настраивает свои параметры командой <code>/settings</code> в боте.
@@ -396,6 +452,18 @@ async function loadSettings() {
     document.getElementById('wt_os').value       = wt.os_threshold ?? -60;
     document.getElementById('trend_atr').value   = tr.atr_period   ?? 43;
     document.getElementById('trend_factor').value= tr.factor       ?? 1.0;
+
+    const sq = d.signal_quality || {};
+    document.getElementById('sl_cooldown_hours').value      = sq.sl_cooldown_hours     ?? 4;
+    document.getElementById('dedup_minutes').value          = sq.dedup_minutes          ?? 30;
+    document.getElementById('min_volume_usd').value         = sq.min_volume_usd         ?? 1000000;
+    document.getElementById('min_strength').value           = sq.min_strength           ?? 50;
+    document.getElementById('min_strength_register').value  = sq.min_strength_register  ?? 40;
+
+    const trd = d.trading || {};
+    document.getElementById('use_tsl').checked         = trd.use_tsl !== false;
+    document.getElementById('tsl_activation_r').value  = trd.tsl_activation_r ?? 1.0;
+    document.getElementById('tsl_buffer_pct').value    = trd.tsl_buffer_pct   ?? 0.1;
 
     const w = d.signal_weights || {};
     const keys = Object.keys(w);
@@ -468,6 +536,26 @@ document.getElementById('indicatorsForm').addEventListener('submit', async (e) =
       },
     },
   }, 'saveIndBtn', 'msgInd', '&#x1F4BE; Сохранить индикаторы');
+});
+
+document.getElementById('qualityForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({signal_quality: {
+    sl_cooldown_hours:    parseInt(document.getElementById('sl_cooldown_hours').value),
+    dedup_minutes:        parseInt(document.getElementById('dedup_minutes').value),
+    min_volume_usd:       parseInt(document.getElementById('min_volume_usd').value),
+    min_strength:         parseInt(document.getElementById('min_strength').value),
+    min_strength_register:parseInt(document.getElementById('min_strength_register').value),
+  }}, 'saveQualityBtn', 'msgQuality', '&#x1F4BE; Сохранить качество');
+});
+
+document.getElementById('tradingForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({trading: {
+    use_tsl:          document.getElementById('use_tsl').checked,
+    tsl_activation_r: parseFloat(document.getElementById('tsl_activation_r').value),
+    tsl_buffer_pct:   parseFloat(document.getElementById('tsl_buffer_pct').value),
+  }}, 'saveTradingBtn', 'msgTrading', '&#x1F4BE; Сохранить TSL');
 });
 
 loadSettings();
@@ -927,7 +1015,26 @@ async def _handle_settings_get(request: web.Request) -> web.Response:
         },
     }
 
-    data = {"analysis": safe_analysis, "indicators": safe_indicators, "signal_weights": signal_weights}
+    safe_trading = {
+        "use_tsl":          cfg.get("trading.use_tsl", True),
+        "tsl_activation_r": cfg.get("trading.tsl_activation_r", 1.0),
+        "tsl_buffer_pct":   cfg.get("trading.tsl_buffer_pct", 0.1),
+    }
+    safe_signal_quality = {
+        "sl_cooldown_hours":    cfg.get("signal_quality.sl_cooldown_hours", 4),
+        "dedup_minutes":        cfg.get("signal_quality.dedup_minutes", 30),
+        "min_volume_usd":       cfg.get("signal_quality.min_volume_usd", 1_000_000),
+        "min_strength":         cfg.get("signal_quality.min_strength", 50),
+        "min_strength_register":cfg.get("signal_quality.min_strength_register", 40),
+    }
+
+    data = {
+        "analysis": safe_analysis,
+        "indicators": safe_indicators,
+        "signal_weights": signal_weights,
+        "trading": safe_trading,
+        "signal_quality": safe_signal_quality,
+    }
     return web.Response(
         text=json.dumps(data, ensure_ascii=False),
         content_type="application/json",
@@ -945,6 +1052,60 @@ async def _handle_settings_post(request: web.Request) -> web.Response:
             status=400,
             text=json.dumps({"ok": False, "error": "invalid JSON"}),
             content_type="application/json",
+        )
+
+    # --- Блок trading (TSL) ---
+    trading_body = body.get("trading")
+    if trading_body is not None:
+        try:
+            use_tsl   = bool(trading_body.get("use_tsl", True))
+            act_r     = float(trading_body.get("tsl_activation_r", 1.0))
+            buf       = float(trading_body.get("tsl_buffer_pct", 0.1))
+            errors: list = []
+            if not (0.1 <= act_r <= 5.0): errors.append("tsl_activation_r: 0.1–5.0")
+            if not (0.0 <= buf <= 1.0):   errors.append("tsl_buffer_pct: 0.0–1.0")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        ok = cfg.save_trading(use_tsl=use_tsl, tsl_activation_r=act_r, tsl_buffer_pct=buf)
+        return web.Response(
+            text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
+        )
+
+    # --- Блок signal_quality ---
+    sq_body = body.get("signal_quality")
+    if sq_body is not None:
+        try:
+            sl_h  = int(sq_body.get("sl_cooldown_hours", 4))
+            ded   = int(sq_body.get("dedup_minutes", 30))
+            vol   = int(sq_body.get("min_volume_usd", 1_000_000))
+            ms    = int(sq_body.get("min_strength", 50))
+            msr   = int(sq_body.get("min_strength_register", 40))
+            errors = []
+            if not (1 <= sl_h <= 48):         errors.append("sl_cooldown_hours: 1–48")
+            if not (5 <= ded <= 120):          errors.append("dedup_minutes: 5–120")
+            if not (100_000 <= vol <= 100_000_000): errors.append("min_volume_usd: 100К–100М")
+            if not (20 <= ms <= 100):          errors.append("min_strength: 20–100")
+            if not (10 <= msr <= ms):          errors.append(f"min_strength_register: 10–{ms}")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        ok = cfg.save_signal_quality(
+            sl_cooldown_hours=sl_h, dedup_minutes=ded, min_volume_usd=vol,
+            min_strength=ms, min_strength_register=msr,
+        )
+        return web.Response(
+            text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
         )
 
     # Если передан блок indicators — сохраняем только его
