@@ -264,10 +264,15 @@ _SETTINGS_HTML = """<!DOCTYPE html>
          padding: 9px 20px; font-size: .9rem; cursor: pointer; margin-top: 4px; }
   .btn:hover { background: #2ea043; }
   .btn:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+  .btn-reset { background: transparent; color: #8b949e; border: 1px solid #30363d;
+               border-radius: 6px; padding: 9px 16px; font-size: .9rem; cursor: pointer;
+               margin-top: 4px; margin-left: 8px; }
+  .btn-reset:hover { background: #21262d; color: #c9d1d9; border-color: #8b949e; }
   #msg { padding: 10px 14px; border-radius: 6px; font-size: .88rem; margin-top: 12px;
          display: none; }
-  .msg-ok  { background: #1a3a1f; color: #3fb950; border: 1px solid #2ea043; }
-  .msg-err { background: #3a1a1a; color: #f85149; border: 1px solid #f85149; }
+  .msg-ok   { background: #1a3a1f; color: #3fb950; border: 1px solid #2ea043; }
+  .msg-err  { background: #3a1a1a; color: #f85149; border: 1px solid #f85149; }
+  .msg-warn { background: #2d2200; color: #d29922; border: 1px solid #9e6a03; }
   .info-row { display: flex; justify-content: space-between; padding: 6px 0;
               border-bottom: 1px solid #21262d; font-size: .88rem; }
   .info-row:last-child { border-bottom: none; }
@@ -294,27 +299,28 @@ _SETTINGS_HTML = """<!DOCTYPE html>
         <label>Множитель аномалии объёма</label>
         <input type="number" id="volume_multiplier" name="volume_multiplier"
                min="1" max="100" step="0.5">
-        <span class="hint">× среднего объёма за 20 свечей</span>
+        <span class="hint">× среднего объёма за 20 свечей &nbsp;<b>default: 5.0</b></span>
       </div>
       <div class="field">
         <label>Порог изменения цены, %</label>
         <input type="number" id="price_threshold" name="price_threshold"
                min="0.5" max="50" step="0.5">
-        <span class="hint">минимальное движение цены для сигнала</span>
+        <span class="hint">минимальное движение цены для сигнала &nbsp;<b>default: 7.0</b></span>
       </div>
       <div class="field">
         <label>Интервал проверки, сек</label>
         <input type="number" id="check_interval" name="check_interval"
                min="10" max="3600" step="10">
-        <span class="hint">пауза между циклами мониторинга</span>
+        <span class="hint">пауза между циклами мониторинга &nbsp;<b>default: 60</b></span>
       </div>
       <div class="field">
         <label>Размер истории (свечей)</label>
         <input type="number" id="history_size" name="history_size"
                min="50" max="1000" step="50">
-        <span class="hint">глубина OHLCV для индикаторов</span>
+        <span class="hint">глубина OHLCV для индикаторов &nbsp;<b>default: 200</b></span>
       </div>
       <button type="submit" class="btn" id="saveBtn">&#x1F4BE; Сохранить и применить</button>
+      <button type="button" class="btn-reset" onclick="resetForm('analysis')">&#x21BA; Сбросить</button>
       <div id="msg"></div>
     </form>
   </section>
@@ -326,35 +332,36 @@ _SETTINGS_HTML = """<!DOCTYPE html>
       <div class="field">
         <label>ESA period (n1)</label>
         <input type="number" id="wt_n1" min="5" max="30" step="1">
-        <span class="hint">период EMA для HLC3 (обычно 9-12)</span>
+        <span class="hint">период EMA для HLC3 (9-12) &nbsp;<b>default: 10</b></span>
       </div>
       <div class="field">
         <label>Signal period (n2)</label>
         <input type="number" id="wt_n2" min="10" max="50" step="1">
-        <span class="hint">период EMA для сигнальной линии (обычно 20-25)</span>
+        <span class="hint">период сигнальной линии (20-25) &nbsp;<b>default: 21</b></span>
       </div>
       <div class="field">
         <label>Overbought (OB)</label>
         <input type="number" id="wt_ob" min="30" max="100" step="1">
-        <span class="hint">порог перекупленности (обычно 53-60)</span>
+        <span class="hint">перекупленность (53-60) &nbsp;<b>default: 58</b></span>
       </div>
       <div class="field">
         <label>Oversold (OS)</label>
         <input type="number" id="wt_os" min="-100" max="-30" step="1">
-        <span class="hint">порог перепроданности (обычно -53 до -60)</span>
+        <span class="hint">перепроданность (-53 до -60) &nbsp;<b>default: -58</b></span>
       </div>
       <p style="font-size:.8rem;color:#8b949e;margin:14px 0 10px;">Trend / TSL</p>
       <div class="field">
         <label>ATR period</label>
         <input type="number" id="trend_atr" min="5" max="200" step="1">
-        <span class="hint">период ATR для TSL-тренда (по умолчанию 43)</span>
+        <span class="hint">период ATR для TSL-тренда &nbsp;<b>default: 43</b></span>
       </div>
       <div class="field">
         <label>ATR factor</label>
         <input type="number" id="trend_factor" min="0.1" max="5" step="0.1">
-        <span class="hint">множитель ATR (0.8-1.2)</span>
+        <span class="hint">множитель ATR (0.8–1.2) &nbsp;<b>default: 1.0</b></span>
       </div>
       <button type="submit" class="btn" id="saveIndBtn">&#x1F4BE; Сохранить индикаторы</button>
+      <button type="button" class="btn-reset" onclick="resetForm('indicators')">&#x21BA; Сбросить</button>
       <div id="msgInd"></div>
     </form>
   </section>
@@ -365,29 +372,30 @@ _SETTINGS_HTML = """<!DOCTYPE html>
       <div class="field">
         <label>Пауза после SL (часы)</label>
         <input type="number" id="sl_cooldown_hours" min="1" max="48" step="1">
-        <span class="hint">не мониторить пару N часов после SL</span>
+        <span class="hint">не мониторить пару N часов после SL &nbsp;<b>default: 4</b></span>
       </div>
       <div class="field">
         <label>Дедупликация сигналов (мин)</label>
         <input type="number" id="dedup_minutes" min="5" max="120" step="5">
-        <span class="hint">подавлять повторные одинаковые сигналы</span>
+        <span class="hint">подавлять повторные одинаковые сигналы &nbsp;<b>default: 30</b></span>
       </div>
       <div class="field">
         <label>Мин. объём пары (USD)</label>
         <input type="number" id="min_volume_usd" min="100000" max="100000000" step="100000">
-        <span class="hint">пары ниже порога не мониторируются</span>
+        <span class="hint">пары ниже порога не мониторируются &nbsp;<b>default: 1 000 000</b></span>
       </div>
       <div class="field">
         <label>Мин. сила для TG-алерта</label>
         <input type="number" id="min_strength" min="20" max="100" step="1">
-        <span class="hint">слабее — не отправляется в Telegram</span>
+        <span class="hint">слабее — не отправляется в Telegram &nbsp;<b>default: 50</b></span>
       </div>
       <div class="field">
         <label>Мин. сила для симулятора</label>
         <input type="number" id="min_strength_register" min="10" max="100" step="1">
-        <span class="hint">слабее — не записывается в БД (меньше данных для ML)</span>
+        <span class="hint">слабее — не пишется в БД (↓ = больше обучающих данных) &nbsp;<b>default: 40</b></span>
       </div>
       <button type="submit" class="btn" id="saveQualityBtn">&#x1F4BE; Сохранить качество</button>
+      <button type="button" class="btn-reset" onclick="resetForm('quality')">&#x21BA; Сбросить</button>
       <div id="msgQuality"></div>
     </form>
   </section>
@@ -398,19 +406,20 @@ _SETTINGS_HTML = """<!DOCTYPE html>
       <div class="field">
         <label>Использовать TSL</label>
         <input type="checkbox" id="use_tsl" style="width:18px;height:18px;cursor:pointer;">
-        <span class="hint">следует за трендом, защищает прибыль</span>
+        <span class="hint">следует за трендом, защищает прибыль &nbsp;<b>default: ✓ вкл</b></span>
       </div>
       <div class="field">
         <label>Активировать TSL после (R)</label>
         <input type="number" id="tsl_activation_r" min="0.1" max="5" step="0.1">
-        <span class="hint">включается когда сделка достигла +N×R</span>
+        <span class="hint">включается когда сделка достигла +N×R &nbsp;<b>default: 1.0</b></span>
       </div>
       <div class="field">
         <label>Буфер TSL (%)</label>
         <input type="number" id="tsl_buffer_pct" min="0" max="1" step="0.05">
-        <span class="hint">дополнительный зазор от линии TSL</span>
+        <span class="hint">дополнительный зазор от линии TSL &nbsp;<b>default: 0.1</b></span>
       </div>
       <button type="submit" class="btn" id="saveTradingBtn">&#x1F4BE; Сохранить TSL</button>
+      <button type="button" class="btn-reset" onclick="resetForm('trading')">&#x21BA; Сбросить</button>
       <div id="msgTrading"></div>
     </form>
   </section>
@@ -433,6 +442,67 @@ _SETTINGS_HTML = """<!DOCTYPE html>
 
 </main>
 <script>
+// Значения по умолчанию — "защита от дурака"
+const DEFAULTS = {
+  analysis: {
+    volume_multiplier: 5.0,
+    price_threshold: 7.0,
+    check_interval: 60,
+    history_size: 200,
+  },
+  indicators: {
+    wt_n1: 10, wt_n2: 21, wt_ob: 58, wt_os: -58,
+    trend_atr: 43, trend_factor: 1.0,
+  },
+  quality: {
+    sl_cooldown_hours: 4,
+    dedup_minutes: 30,
+    min_volume_usd: 1000000,
+    min_strength: 50,
+    min_strength_register: 40,
+  },
+  trading: {
+    use_tsl: true,
+    tsl_activation_r: 1.0,
+    tsl_buffer_pct: 0.1,
+  },
+};
+
+function resetForm(section) {
+  const d = DEFAULTS[section];
+  if (!d) return;
+  const msgMap = {analysis:'msg', indicators:'msgInd', quality:'msgQuality', trading:'msgTrading'};
+  const msgEl = document.getElementById(msgMap[section]);
+
+  if (section === 'analysis') {
+    document.getElementById('volume_multiplier').value = d.volume_multiplier;
+    document.getElementById('price_threshold').value   = d.price_threshold;
+    document.getElementById('check_interval').value    = d.check_interval;
+    document.getElementById('history_size').value      = d.history_size;
+  } else if (section === 'indicators') {
+    document.getElementById('wt_n1').value        = d.wt_n1;
+    document.getElementById('wt_n2').value        = d.wt_n2;
+    document.getElementById('wt_ob').value        = d.wt_ob;
+    document.getElementById('wt_os').value        = d.wt_os;
+    document.getElementById('trend_atr').value    = d.trend_atr;
+    document.getElementById('trend_factor').value = d.trend_factor;
+  } else if (section === 'quality') {
+    document.getElementById('sl_cooldown_hours').value     = d.sl_cooldown_hours;
+    document.getElementById('dedup_minutes').value         = d.dedup_minutes;
+    document.getElementById('min_volume_usd').value        = d.min_volume_usd;
+    document.getElementById('min_strength').value          = d.min_strength;
+    document.getElementById('min_strength_register').value = d.min_strength_register;
+  } else if (section === 'trading') {
+    document.getElementById('use_tsl').checked        = d.use_tsl;
+    document.getElementById('tsl_activation_r').value = d.tsl_activation_r;
+    document.getElementById('tsl_buffer_pct').value   = d.tsl_buffer_pct;
+  }
+
+  msgEl.style.display = 'block';
+  msgEl.className = 'msg-warn';
+  msgEl.textContent = 'Значения сброшены на defaults. Нажмите «Сохранить» для применения.';
+}
+
 async function loadSettings() {
   try {
     const r = await fetch('/api/settings');
