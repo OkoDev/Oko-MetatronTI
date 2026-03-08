@@ -5,19 +5,83 @@
 import asyncio
 import logging
 import sqlite3
+import time as _time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from core.message_builder import anomaly_message, wt_message, mtf_message
 from core.mtf_checker import collect_mtf_data, check_mtf_alert, mtf_alert_message
 from core.trend_signals import check_trend_following_signal, trend_signal_message
-from core.divergence_detector import divergence_message
+from core.divergence_detector import divergence_message, mtf_divergence_message
 from core.pivot_reversal import check_pivot_level_signal, pivot_level_signal_message
 from core.trading_intelligence import format_intelligence_message
+from collections import deque
 from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals, check_mtf_signals as _check_mtf_signals
 from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
+
+# Ограничиваем параллельные вызовы analyze_symbol (тяжёлый: ML + 3 OHLCV-фетча)
+_analyze_sem = asyncio.Semaphore(3)
+
+
+def _div_passes_filters(div_info: dict, df_15m, pivot_calc, sym: str) -> tuple[bool, str]:
+    """
+    Фильтрация дивергенций: отсеивает шумы, оставляет только подтверждённые сигналы.
+
+    Правило 1 — WT zone:
+      Regular Bullish:  wt1_current < -40 (OS зона, уже встроено в детектор как < -60, дублируем)
+      Regular Bearish:  wt1_current > +40 (OB зона, уже встроено в детектор как > +60)
+      Hidden Bullish:   wt1_current < 0   (не в перекупленности, тренд вверх но откат)
+      Hidden Bearish:   wt1_current > 0   (не в перепроданности, тренд вниз но отскок)
+
+    Правило 2 — Pivot proximity:
+      цена должна быть в пределах 2% от ближайшего уровня поддержки (для LONG)
+      или сопротивления (для SHORT) из дневных пивотов.
+      Если пивоты не в кеше — правило пропускается (не блокируем).
+
+    Returns: (passed: bool, reason: str)
+    """
+    div_type = div_info.get("type", "")
+    is_bullish = "BULLISH" in div_type
+    is_bearish = "BEARISH" in div_type
+    is_hidden = "HIDDEN" in div_type
+
+    # ── Правило 1: WT zone ──────────────────────────────────────────────────
+    # wt1_current уже есть в details (вычислен детектором), не нужен df_15m
+    details = div_info.get("details") or {}
+    wt1_current = details.get("ind_current")
+
+    if wt1_current is not None:
+        if is_hidden:
+            # Скрытые дивергенции — продолжение тренда: WT не должен быть в противоположной зоне
+            if is_bullish and wt1_current > 0:
+                return False, f"Hidden Bull: wt1={wt1_current:.1f} выше 0 (OB территория)"
+            if is_bearish and wt1_current < 0:
+                return False, f"Hidden Bear: wt1={wt1_current:.1f} ниже 0 (OS территория)"
+        else:
+            # Регулярные дивергенции — разворот: нужна соответствующая зона
+            if is_bullish and wt1_current > -40:
+                return False, f"Regular Bull: wt1={wt1_current:.1f} не в OS зоне (<-40)"
+            if is_bearish and wt1_current < 40:
+                return False, f"Regular Bear: wt1={wt1_current:.1f} не в OB зоне (>+40)"
+
+    # ── Правило 2: Pivot proximity (из кеша, без API-запроса) ───────────────
+    if pivot_calc is not None:
+        daily_pivots = pivot_calc.pivot_cache.get(f"{sym}_1D")
+        if daily_pivots:
+            try:
+                current_price = float(df_15m["close"].iloc[-1]) if df_15m is not None else 0
+                if current_price > 0:
+                    nearest = pivot_calc.get_nearest_levels(current_price, daily_pivots, count=3)
+                    levels = nearest["support"] if is_bullish else nearest["resistance"]
+                    closest_dist = levels[0][2] if levels else 999.0  # dist в %
+                    if closest_dist > 2.0:
+                        return False, f"далеко от пивота: {closest_dist:.1f}% (порог 2%)"
+            except Exception:
+                pass  # ошибка — не блокируем
+
+    return True, ""
 
 
 def _make_pivot_recommendation(info: dict):
@@ -95,9 +159,10 @@ async def stop_monitoring(bot, message):
 
 
 async def _prefetch_pivots(bot):
-    """Прогревает кеш пивотов для всех пар параллельно (≤20 одновременно)."""
+    """Прогревает кеш пивотов для всех пар параллельно.
+    Semaphore(5) — намеренно медленно, чтобы не конкурировать со сканом за ApiEngine.Semaphore(20)."""
     pairs = bot.monitored_pairs
-    sem = asyncio.Semaphore(20)
+    sem = asyncio.Semaphore(5)
 
     async def _fetch_one(sym):
         async with sem:
@@ -111,17 +176,182 @@ async def _prefetch_pivots(bot):
     logger.info("Кеш пивотов прогрет.")
 
 
+async def scan_all_pairs(bot, check_divergences: bool = True):
+    """Один проход по всем парам: для каждой пары делаем все 7 проверок подряд,
+    затем broadcast СНАРУЖИ семафора — analyze_symbol не блокирует OHLCV-слоты."""
+    sem = asyncio.Semaphore(20)
+    cycle_start = _time.monotonic()
+
+    async def scan_one(sym):
+        signals_to_broadcast = []  # [(sig_type, raw_text, fallback_rec), ...]
+        all_scan_signals = []      # SignalData от детекторов — для pre_collected_signals
+
+        async with sem:
+            t_enter = _time.monotonic()
+            try:
+                # Параллельная загрузка всех TF (limit=160 для cache-hit в detect_divergence)
+                df_15m, df_1h, df_3m = await asyncio.gather(
+                    bot.data_collector.get_ohlcv(sym, "15m", limit=160),
+                    bot.data_collector.get_ohlcv(sym, "1h", limit=160),
+                    bot.data_collector.get_ohlcv(sym, "3m", limit=100),
+                )
+                t_ohlcv = _time.monotonic()
+                if (t_ohlcv - t_enter) > 5:
+                    logger.warning("[scan] OHLCV медленно %s: %.1fs", sym, t_ohlcv - t_enter)
+                if df_15m is None or df_15m.empty:
+                    return
+
+                # Обновляем price/volume history из уже загруженных данных
+                # (заменяет fetch_candles: нет лишних API-вызовов)
+                if len(df_15m) >= 2:
+                    dc = bot.data_collector
+                    prev_c = df_15m["close"].iloc[-2] or 0.0
+                    last_c = df_15m["close"].iloc[-1] or 0.0
+                    pct = ((last_c - prev_c) / prev_c * 100) if prev_c else 0.0
+                    dc.price_history.setdefault(sym, deque(maxlen=dc.history_size)).append(pct)
+                    dc.volume_history.setdefault(sym, deque(maxlen=dc.history_size)).append(
+                        float(df_15m["volume"].iloc[-1] or 0.0)
+                    )
+
+                # 1. Anomalies
+                for sig in await check_anomaly_signals(sym, df_15m):
+                    info = sig.data or {}
+                    bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
+                    bot.signal_counters["anomaly"] += 1
+                    bot.signal_counters["total"] += 1
+                    signals_to_broadcast.append(("anomaly", anomaly_message(sym, info), None))
+                    all_scan_signals.append(sig)
+
+                # 2. WT (15m и 1h из кеша для последующих вызовов)
+                for sig in await _check_wt_signals(sym, df_15m, df_1h):
+                    info = sig.data or {}
+                    logger.info("WT сигнал обнаружен для %s", sym)
+                    bot.signal_counters["wt_signal"] += 1
+                    bot.signal_counters["total"] += 1
+                    signals_to_broadcast.append(("wt_signal", wt_message(sym, info), None))
+                    all_scan_signals.append(sig)
+
+                # 3. MTF signals (15m, 1h из кеша)
+                for sig in await _check_mtf_signals(sym, df_1h, df_15m, df_3m):
+                    info = sig.data or {}
+                    bot.signal_counters["mtf_signal"] += 1
+                    bot.signal_counters["total"] += 1
+                    signals_to_broadcast.append(("mtf_signal", mtf_message(sym, info), None))
+                    all_scan_signals.append(sig)
+
+                # 4. MTF alerts — вынесены в check_mtf_alerts (каждые 5 мин),
+                # т.к. collect_mtf_data фетчит 7 TF (5m, 45m, 4h, 1d не в кеше)
+
+                # 5. Trend following — вынесен в check_trend_signals (каждые 5 мин),
+                # т.к. check_trend_following_signal фетчит 4h+5m (не в кеше)
+
+                # 6. Divergences: каждые 3 цикла (180 сек — медленный сигнал)
+                t_before_div = _time.monotonic()
+                div_found = False
+                if check_divergences:
+                    pivot_calc = getattr(bot, "pivot_calculator", None)
+                    try:
+                        has_mtf, mtf_info = await bot.divergence_detector.detect_mtf_divergence(
+                            sym, bot.data_collector
+                        )
+                        if has_mtf:
+                            passed, reason = _div_passes_filters(mtf_info, df_15m, pivot_calc, sym)
+                            if passed:
+                                div_found = True
+                                bot.signal_counters["divergence"] += 1
+                                bot.signal_counters["total"] += 1
+                                logger.info("[%s] MTF-дивергенция 1h+15m: %s", sym, mtf_info.get("type"))
+                                signals_to_broadcast.append(("mtf_divergence", mtf_divergence_message(sym, mtf_info), None))
+                            else:
+                                logger.debug("[%s] MTF-дивергенция отфильтрована: %s", sym, reason)
+                    except Exception:
+                        logger.exception("Ошибка check_mtf_divergence для %s", sym)
+
+                    if not div_found:
+                        for tf in ("15m", "1h"):
+                            try:
+                                has_div, div_info = await bot.divergence_detector.detect_divergence(
+                                    sym, bot.data_collector, timeframe=tf
+                                )
+                                if has_div:
+                                    passed, reason = _div_passes_filters(div_info, df_15m, pivot_calc, sym)
+                                    if passed:
+                                        bot.signal_counters["divergence"] += 1
+                                        bot.signal_counters["total"] += 1
+                                        logger.info("[%s] Дивергенция на %s: %s", sym, tf, div_info.get("type"))
+                                        signals_to_broadcast.append(("divergence", divergence_message(sym, div_info), None))
+                                        break
+                                    else:
+                                        logger.debug("[%s] Дивергенция %s отфильтрована: %s", sym, tf, reason)
+                            except Exception:
+                                logger.exception("Ошибка check_divergences для %s %s", sym, tf)
+
+                # 7. Pivot reversals — выполняем в отдельном цикле (check_pivot_reversals),
+                # т.к. check_pivot_level_signal фетчит 1m+5m данные (не в кеше) и замедляет скан
+
+                t_done = _time.monotonic()
+                if (t_done - t_before_div) > 3:
+                    logger.warning("[scan] Divergence медленно %s: %.1fs", sym, t_done - t_before_div)
+                if (t_done - t_enter) > 10:
+                    logger.warning("[scan] Пара медленно %s: total=%.1fs ohlcv=%.1fs div=%.1fs",
+                                   sym, t_done - t_enter, t_ohlcv - t_enter, t_done - t_before_div)
+            except Exception:
+                logger.exception("Ошибка scan_one для %s", sym)
+
+        # СНАРУЖИ семафора: broadcast как fire-and-forget задачи
+        # (analyze_symbol может занимать 30-60 сек — не блокируем asyncio.gather)
+        # pre_signals передаём только в первый broadcast — analyze_symbol закеширует результат
+        pre = all_scan_signals if all_scan_signals else None
+        for sig_type, raw_text, fallback_rec in signals_to_broadcast:
+            asyncio.create_task(
+                _broadcast_intelligence_alert(bot, sym, raw_text, sig_type,
+                                             fallback_rec=fallback_rec, pre_signals=pre)
+            )
+
+    pairs = list(bot.monitored_pairs)
+    stats = bot.data_collector._engine.cache_stats()
+    logger.info("Скан: %d пар | кеш=%d CB=%s", len(pairs), stats["cache_size"], stats["cb_state"])
+    await asyncio.gather(*[scan_one(sym) for sym in pairs])
+    elapsed = _time.monotonic() - cycle_start
+    logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
+    if elapsed > 55:
+        logger.warning("⚠️ Цикл превысил 55 сек — рассмотреть увеличение Semaphore или sleep")
+
+
 async def monitor_market(bot):
     try:
-        asyncio.create_task(bot.data_collector.fetch_candles())
+        # fetch_candles убран: price_history/volume_history обновляются в scan_one
+        # из уже загруженных df_15m — нет дополнительных 398 API-вызовов каждые 60 сек
+        _last_pivot_day = datetime.utcnow().date()  # уже прогрет в start_monitoring
+        _pivot_cycle = 0       # каждые 5 циклов (5 мин) — тяжёлые TF-проверки
+        _cascade_4h_cycle = 0  # каждые 60 циклов (60 мин) — MTF-дивергенция 4h→1h
+        _div_cycle = 0         # дивергенции каждые 3 цикла (180 сек — медленный сигнал)
         while bot.is_monitoring:
-            await check_anomalies(bot)
-            await check_wt_signals(bot)
-            await check_mtf_signals(bot)
-            await check_mtf_alerts(bot)
-            await check_trend_signals(bot)
-            await check_divergences(bot)
-            await check_pivot_reversals(bot)
+            # Фоновый пересчёт пивотов при смене дня/недели/месяца
+            today = datetime.utcnow().date()
+            if _last_pivot_day != today:
+                _last_pivot_day = today
+                asyncio.create_task(_prefetch_pivots(bot))
+                logger.info("Новый день (%s) — фоновый пересчёт пивотов запущен параллельно со сканером", today)
+
+            _div_cycle += 1
+            _check_div = (_div_cycle % 3 == 0)  # каждые 3 цикла = 180 сек
+            await scan_all_pairs(bot, check_divergences=_check_div)
+
+            # Тяжёлые проверки (некешируемые TF) — раз в 5 минут в фоне
+            _pivot_cycle += 1
+            if _pivot_cycle >= 5:
+                _pivot_cycle = 0
+                asyncio.create_task(check_mtf_alerts(bot))      # 7 TF включая 5m, 45m, 4h, 1d
+                asyncio.create_task(check_trend_signals(bot))   # 4h + 5m
+                asyncio.create_task(check_pivot_reversals(bot)) # 1m + 5m
+
+            # MTF-дивергенция 4h→1h — раз в час (4h свеча обновляется медленно)
+            _cascade_4h_cycle += 1
+            if _cascade_4h_cycle >= 60:
+                _cascade_4h_cycle = 0
+                asyncio.create_task(check_cascade_divergences(bot, "4h", "1h"))
+
             await asyncio.sleep(60)
     except asyncio.CancelledError:
         logger.info("Мониторинг остановлен")
@@ -131,126 +361,184 @@ async def monitor_market(bot):
 
 
 async def check_anomalies(bot):
-    for sym in bot.monitored_pairs:
-        try:
-            df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=30)
-            if df_15m is None or df_15m.empty:
-                continue
-            signals = await check_anomaly_signals(sym, df_15m)
-            for sig in signals:
-                info = sig.data or {}
-                bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
-                bot.signal_counters["anomaly"] += 1
-                bot.signal_counters["total"] += 1
-                raw_text = anomaly_message(sym, info)
-                await _broadcast_intelligence_alert(bot, sym, raw_text, "anomaly")
-        except Exception:
-            logger.exception("Ошибка check_anomalies для %s", sym)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            try:
+                df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=30)
+                if df_15m is None or df_15m.empty:
+                    return
+                signals = await check_anomaly_signals(sym, df_15m)
+                for sig in signals:
+                    info = sig.data or {}
+                    bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
+                    bot.signal_counters["anomaly"] += 1
+                    bot.signal_counters["total"] += 1
+                    raw_text = anomaly_message(sym, info)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "anomaly")
+            except Exception:
+                logger.exception("Ошибка check_anomalies для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 async def check_wt_signals(bot):
-    for sym in bot.monitored_pairs:
-        try:
-            df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=150)
-            if df_15m is None or df_15m.empty:
-                continue
-            df_1h = await bot.data_collector.get_ohlcv(sym, "1h", limit=60)
-            signals = await _check_wt_signals(sym, df_15m, df_1h)
-            for sig in signals:
-                info = sig.data or {}
-                logger.info("WT сигнал обнаружен для %s", sym)
-                raw_text = wt_message(sym, info)
-                await _broadcast_intelligence_alert(bot, sym, raw_text, "wt_signal")
-                bot.signal_counters["wt_signal"] += 1
-                bot.signal_counters["total"] += 1
-        except Exception:
-            logger.exception("Ошибка check_wt_signals для %s", sym)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            try:
+                df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=150)
+                if df_15m is None or df_15m.empty:
+                    return
+                df_1h = await bot.data_collector.get_ohlcv(sym, "1h", limit=60)
+                signals = await _check_wt_signals(sym, df_15m, df_1h)
+                for sig in signals:
+                    info = sig.data or {}
+                    logger.info("WT сигнал обнаружен для %s", sym)
+                    raw_text = wt_message(sym, info)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "wt_signal")
+                    bot.signal_counters["wt_signal"] += 1
+                    bot.signal_counters["total"] += 1
+            except Exception:
+                logger.exception("Ошибка check_wt_signals для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 async def check_mtf_signals(bot):
-    for sym in bot.monitored_pairs:
-        try:
-            df_1h  = await bot.data_collector.get_ohlcv(sym, "1h",  limit=100)
-            df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=100)
-            df_3m  = await bot.data_collector.get_ohlcv(sym, "3m",  limit=100)
-            if df_1h is None or df_1h.empty or df_15m is None or df_15m.empty:
-                continue
-            signals = await _check_mtf_signals(sym, df_1h, df_15m, df_3m)
-            for sig in signals:
-                info = sig.data or {}
-                raw_text = mtf_message(sym, info)
-                await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_signal")
-                bot.signal_counters["mtf_signal"] += 1
-                bot.signal_counters["total"] += 1
-        except Exception:
-            logger.exception("Ошибка check_mtf_signals для %s", sym)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            try:
+                df_1h  = await bot.data_collector.get_ohlcv(sym, "1h",  limit=100)
+                df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=100)
+                df_3m  = await bot.data_collector.get_ohlcv(sym, "3m",  limit=100)
+                if df_1h is None or df_1h.empty or df_15m is None or df_15m.empty:
+                    return
+                signals = await _check_mtf_signals(sym, df_1h, df_15m, df_3m)
+                for sig in signals:
+                    info = sig.data or {}
+                    raw_text = mtf_message(sym, info)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_signal")
+                    bot.signal_counters["mtf_signal"] += 1
+                    bot.signal_counters["total"] += 1
+            except Exception:
+                logger.exception("Ошибка check_mtf_signals для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 async def check_mtf_alerts(bot):
-    for sym in bot.monitored_pairs:
-        try:
-            snapshot = await collect_mtf_data(sym, bot.data_collector)
-            if not snapshot:
-                continue
-            is_alert, sig = check_mtf_alert(snapshot)
-            if is_alert:
-                raw_text = mtf_alert_message(sym, snapshot, sig)
-                await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_alert")
-                bot.signal_counters["mtf_alert"] += 1
-                bot.signal_counters["total"] += 1
-        except Exception:
-            logger.exception("Ошибка check_mtf_alerts для %s", sym)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            try:
+                snapshot = await collect_mtf_data(sym, bot.data_collector)
+                if not snapshot:
+                    return
+                is_alert, sig = check_mtf_alert(snapshot)
+                if is_alert:
+                    raw_text = mtf_alert_message(sym, snapshot, sig)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_alert")
+                    bot.signal_counters["mtf_alert"] += 1
+                    bot.signal_counters["total"] += 1
+            except Exception:
+                logger.exception("Ошибка check_mtf_alerts для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
+
+
+async def check_cascade_divergences(bot, senior_tf: str, junior_tf: str):
+    """Проверяет MTF-конфлюэнцию дивергенций (скрытая senior_tf + регулярная junior_tf) для всех пар."""
+    sem = asyncio.Semaphore(5)  # меньше параллелизм — каждая пара делает 2 OHLCV запроса
+
+    async def _one(sym):
+        async with sem:
+            try:
+                has_cascade, cascade_info = await bot.divergence_detector.detect_cascade_divergence(
+                    sym, bot.data_collector, senior_tf, junior_tf
+                )
+                if has_cascade:
+                    raw_text = mtf_divergence_message(sym, cascade_info)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_divergence")
+                    bot.signal_counters["divergence"] += 1
+                    bot.signal_counters["total"] += 1
+                    logger.info("[%s] Cascade-дивергенция %s→%s: %s (сила %d)",
+                                sym, senior_tf, junior_tf, cascade_info.get("type"), cascade_info.get("strength"))
+            except Exception:
+                logger.exception("Ошибка check_cascade_divergences %s→%s для %s", senior_tf, junior_tf, sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 async def check_trend_signals(bot):
-    for sym in bot.monitored_pairs:
-        try:
-            is_sig, info = await check_trend_following_signal(
-                sym, bot.data_collector, bot.divergence_detector, bot.pivot_calculator
-            )
-            if is_sig:
-                raw_text = trend_signal_message(sym, info)
-                await _broadcast_intelligence_alert(bot, sym, raw_text, "trend_signal")
-                bot.signal_counters["trend_signal"] += 1
-                bot.signal_counters["total"] += 1
-                logger.info("[%s] Тренд-сигнал: %s", sym, info.get("pattern"))
-        except Exception:
-            logger.exception("Ошибка check_trend_signals для %s", sym)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            try:
+                is_sig, info = await check_trend_following_signal(
+                    sym, bot.data_collector, bot.divergence_detector, bot.pivot_calculator
+                )
+                if is_sig:
+                    raw_text = trend_signal_message(sym, info)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "trend_signal")
+                    bot.signal_counters["trend_signal"] += 1
+                    bot.signal_counters["total"] += 1
+                    logger.info("[%s] Тренд-сигнал: %s", sym, info.get("pattern"))
+            except Exception:
+                logger.exception("Ошибка check_trend_signals для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 async def check_divergences(bot):
-    for sym in bot.monitored_pairs:
-        for tf in ("15m", "1h"):
-            try:
-                has_div, div_info = await bot.divergence_detector.detect_divergence(
-                    sym, bot.data_collector, timeframe=tf
-                )
-                if has_div:
-                    raw_text = divergence_message(sym, div_info)
-                    await _broadcast_intelligence_alert(bot, sym, raw_text, "divergence")
-                    bot.signal_counters["divergence"] += 1
-                    bot.signal_counters["total"] += 1
-                    logger.info("[%s] Дивергенция на %s: %s", sym, tf, div_info.get("type"))
-                    break
-            except Exception:
-                logger.exception("Ошибка check_divergences для %s %s", sym, tf)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            for tf in ("15m", "1h"):
+                try:
+                    has_div, div_info = await bot.divergence_detector.detect_divergence(
+                        sym, bot.data_collector, timeframe=tf
+                    )
+                    if has_div:
+                        raw_text = divergence_message(sym, div_info)
+                        await _broadcast_intelligence_alert(bot, sym, raw_text, "divergence")
+                        bot.signal_counters["divergence"] += 1
+                        bot.signal_counters["total"] += 1
+                        logger.info("[%s] Дивергенция на %s: %s", sym, tf, div_info.get("type"))
+                        break
+                except Exception:
+                    logger.exception("Ошибка check_divergences для %s %s", sym, tf)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 async def check_pivot_reversals(bot):
-    for sym in bot.monitored_pairs:
-        try:
-            has_signal, info = await check_pivot_level_signal(
-                sym, bot.data_collector, bot.pivot_calculator
-            )
-            if has_signal:
-                raw_text = pivot_level_signal_message(sym, info)
-                pivot_rec = _make_pivot_recommendation(info)
-                await _broadcast_intelligence_alert(bot, sym, raw_text, "pivot_reversal", fallback_rec=pivot_rec)
-                bot.signal_counters["pivot_reversal"] += 1
-                bot.signal_counters["total"] += 1
-                logger.info("[%s] Вход от уровня: %s R:R=%.1f", sym, info.get("level"), info.get("rr_ratio", 0))
-        except Exception:
-            logger.exception("Ошибка check_pivot_reversals для %s", sym)
+    sem = asyncio.Semaphore(10)
+
+    async def _one(sym):
+        async with sem:
+            try:
+                has_signal, info = await check_pivot_level_signal(
+                    sym, bot.data_collector, bot.pivot_calculator
+                )
+                if has_signal:
+                    raw_text = pivot_level_signal_message(sym, info)
+                    pivot_rec = _make_pivot_recommendation(info)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "pivot_reversal", fallback_rec=pivot_rec)
+                    bot.signal_counters["pivot_reversal"] += 1
+                    bot.signal_counters["total"] += 1
+                    logger.info("[%s] Вход от уровня: %s R:R=%.1f", sym, info.get("level"), info.get("rr_ratio", 0))
+            except Exception:
+                logger.exception("Ошибка check_pivot_reversals для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 def _is_in_sl_cooldown(bot, symbol: str) -> bool:
@@ -276,7 +564,8 @@ def _is_in_sl_cooldown(bot, symbol: str) -> bool:
 
 
 def _is_duplicate_signal(bot, symbol: str, signal_type: str) -> bool:
-    """Возвращает True если тот же signal_type по той же паре уже был < dedup_minutes назад."""
+    """Дедупликация по (паре, типу): каждый тип сигнала независим.
+    WT сигнал по паре не блокирует pivot_reversal по той же паре."""
     minutes = bot.config.get("signal_quality.dedup_minutes", 30)
     if minutes <= 0:
         return False
@@ -307,7 +596,49 @@ async def _get_btc_regime(bot):
     return None
 
 
-async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_type: str, fallback_rec=None):
+_kelly_stats_cache: dict = {}  # {"ts": float, "text": str}
+
+
+def _get_kelly_footer(bot) -> str:
+    """Kelly-sizing строка для TG-алерта. Кеш 30 мин. Пустая строка если не готов."""
+    import time, sqlite3
+    global _kelly_stats_cache
+    now = time.time()
+    if _kelly_stats_cache and (now - _kelly_stats_cache.get("ts", 0)) < 1800:
+        return _kelly_stats_cache["text"]
+    try:
+        r_pred = getattr(bot, "r_predictor", None)
+        if r_pred is None or not r_pred.is_trained:
+            _kelly_stats_cache = {"ts": now, "text": ""}
+            return ""
+        db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("""
+                SELECT COUNT(*),
+                       SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END),
+                       AVG(CASE WHEN status IN ('TP','TSL') THEN R_multiple ELSE NULL END)
+                FROM simulated_trades WHERE status != 'OPEN'
+            """).fetchone()
+        if not row or not row[0] or not row[2] or row[2] <= 0:
+            _kelly_stats_cache = {"ts": now, "text": ""}
+            return ""
+        total, wins, avg_r = int(row[0]), int(row[1] or 0), float(row[2])
+        win_rate = wins / total
+        from core.r_predictor import RPredictor
+        kelly_f = RPredictor.kelly_fraction(win_rate, avg_r)
+        if kelly_f <= 0:
+            _kelly_stats_cache = {"ts": now, "text": ""}
+            return ""
+        text = (f"\n📐 <i>Kelly: {kelly_f*100:.1f}% депозита"
+                f" (WR={win_rate*100:.0f}%, R̄={avg_r:.2f})</i>")
+        _kelly_stats_cache = {"ts": now, "text": text}
+        return text
+    except Exception:
+        return ""
+
+
+async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_type: str,
+                                        fallback_rec=None, pre_signals=None):
     # Фильтры качества сигналов (Этап 5.1)
     if hasattr(bot, "_last_signal") and _is_duplicate_signal(bot, symbol, signal_type):
         return
@@ -316,23 +647,38 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 
     recommendation = None
     try:
-        recommendation = await bot.trading_intelligence.analyze_symbol(symbol)
+        async with _analyze_sem:
+            recommendation = await bot.trading_intelligence.analyze_symbol(
+                symbol, pre_collected_signals=pre_signals
+            )
     except Exception:
         logger.exception("Ошибка AI-анализа для %s при сигнале %s", symbol, signal_type)
 
     # Этап 5.2: BTC-корреляционный фильтр
+    # Слабые контртрендовые сигналы (strength < 70) — блокируем
+    # Сильные (strength >= 70) — доставляем с предупреждением
     btc_regime = await _get_btc_regime(bot)
+    btc_warning = ""
     if btc_regime == "HIGH_VOL":
-        logger.info("[%s] Фильтр BTC HIGH_VOL — сигнал пропущен", symbol)
-        return
-    if recommendation and btc_regime:
+        btc_warning = "\n⚠️ <i>BTC (1h): высокая волатильность — повышенный риск для любых позиций</i>"
+    elif recommendation and btc_regime:
         direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
-        if btc_regime == "TREND_UP" and direction_val == "SHORT":
-            logger.info("[%s] Фильтр BTC TREND_UP vs SHORT — пропущен", symbol)
-            return
-        if btc_regime == "TREND_DOWN" and direction_val == "LONG":
-            logger.info("[%s] Фильтр BTC TREND_DOWN vs LONG — пропущен", symbol)
-            return
+        strength_val = getattr(recommendation, "overall_strength", 0)
+        is_counter_trend = (
+            (btc_regime == "TREND_UP" and direction_val == "SHORT") or
+            (btc_regime == "TREND_DOWN" and direction_val == "LONG")
+        )
+        if is_counter_trend:
+            if strength_val < 70:
+                logger.info("[%s] BTC %s vs %s, сила %d < 70 — пропущен",
+                            symbol, btc_regime, direction_val, strength_val)
+                return
+            # Сила >= 70 — доставляем с предупреждением
+            regime_ru = "восходящем" if btc_regime == "TREND_UP" else "нисходящем"
+            dir_ru = "шорт" if direction_val == "SHORT" else "лонг"
+            btc_warning = f"\n⚠️ <i>BTC (1h) в {regime_ru} тренде — {dir_ru} против рынка, сигнал сильный ({strength_val}/100)</i>"
+            logger.info("[%s] BTC %s vs %s, сила %d >= 70 — предупреждение",
+                        symbol, btc_regime, direction_val, strength_val)
 
     # Этап 6: заменяем fixed TP на ближайший пивот с R >= 1.5
     distance_to_pivot_pct: float = 0.0
@@ -340,17 +686,19 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
         entry_price = recommendation.entry_price or 0
         if direction_val in ("LONG", "SHORT") and entry_price > 0:
-            pivot_tp = bot.pivot_calculator.get_pivot_tp(
+            pivot_result = bot.pivot_calculator.get_pivot_tp_with_source(
                 direction=direction_val,
                 entry_price=entry_price,
                 symbol=symbol,
                 stop_loss=recommendation.stop_loss,
                 min_r=1.5,
             )
-            if pivot_tp:
+            if pivot_result:
+                pivot_tp, pivot_src = pivot_result
                 recommendation.take_profit = pivot_tp
+                recommendation.tp_source = pivot_src
                 distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
-                logger.debug("[%s] Pivot TP: %.6f (%.2f%%, %s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val)
+                logger.debug("[%s] Pivot TP: %.6f (%.2f%%, %s, src=%s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val, pivot_src)
 
     min_strength = bot.config.get("signal_quality.min_strength", 50)
     min_strength_register = bot.config.get("signal_quality.min_strength_register", 40)
@@ -364,15 +712,25 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     is_actionable = _dir_ok and recommendation.overall_strength >= min_strength
     should_register = _dir_ok and recommendation.overall_strength >= min_strength_register
 
+    # WATCH+NEUTRAL — нет торгового решения, не спамим
+    if (recommendation is not None
+            and getattr(recommendation, "action", "WATCH") in ("WATCH", "HOLD")
+            and getattr(recommendation.direction, "value", "NEUTRAL") == "NEUTRAL"):
+        logger.info("[%s] Пропущен WATCH+NEUTRAL — нет торгового решения", symbol)
+        return
+
     text = raw_text
     if recommendation:
         try:
-            text = format_intelligence_message(recommendation)
+            text = await format_intelligence_message(recommendation)
         except Exception:
             logger.exception("Ошибка форматирования AI-сообщения для %s", symbol)
             text = raw_text
+        if btc_warning:
+            text = text.rstrip() + btc_warning
         if is_actionable:
-            text = text.rstrip() + "\n─────────────\n💾 <i>Сделка зарегистрирована в симуляторе</i>"
+            kelly_line = _get_kelly_footer(bot)
+            text = text.rstrip() + "\n─────────────\n💾 <i>Сделка зарегистрирована в симуляторе</i>" + kelly_line
 
     await broadcast_with_subscription_check(bot, text, signal_type)
 

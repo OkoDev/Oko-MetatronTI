@@ -35,7 +35,8 @@ except ImportError:
         df = df.copy(); df["wt1"] = 0; df["wt2"] = 0; return df
 
     def get_zone(wt_value):
-        return "OS" if wt_value < -50 else ("OB" if wt_value > 50 else "N")
+        # Официальные стандартные зоны WaveTrend: ±60
+        return "OS" if wt_value < -60 else ("OB" if wt_value > 60 else "N")
 
     def detect_fvg(df):
         return "NONE", 0
@@ -50,28 +51,6 @@ except ImportError:
     MLPrediction = None
     PredictionType = None
 
-# Импорт исторического анализатора
-try:
-    from core.historical_analyzer import HistoricalAnalyzer, HistoricalSignal, SignalOutcome, PerformanceMetrics
-    HISTORICAL_AVAILABLE = True
-except ImportError:
-    HISTORICAL_AVAILABLE = False
-    HistoricalAnalyzer = None
-    HistoricalSignal = None
-    SignalOutcome = None
-    PerformanceMetrics = None
-
-# Импорт риск-менеджера
-try:
-    from core.risk_manager import RiskManager, RiskProfile, PositionRisk, RiskLevel, PositionSize
-    RISK_MANAGER_AVAILABLE = True
-except ImportError:
-    RISK_MANAGER_AVAILABLE = False
-    RiskManager = None
-    RiskProfile = None
-    PositionRisk = None
-    RiskLevel = None
-    PositionSize = None
 
 logger = logging.getLogger(__name__)
 
@@ -143,30 +122,6 @@ class TradingIntelligence:
         else:
             logger.warning("ML модуль недоступен")
         
-        # Исторический анализатор для отслеживания эффективности
-        self.historical_analyzer = None
-        if HISTORICAL_AVAILABLE:
-            try:
-                self.historical_analyzer = HistoricalAnalyzer()
-                logger.info("Исторический анализатор инициализирован")
-            except Exception as e:
-                logger.warning(f"Не удалось инициализировать исторический анализатор: {e}")
-                self.historical_analyzer = None
-        else:
-            logger.warning("Исторический анализатор недоступен")
-        
-        # Риск-менеджер для управления рисками
-        self.risk_manager = None
-        if RISK_MANAGER_AVAILABLE:
-            try:
-                self.risk_manager = RiskManager(config)
-                logger.info("Риск-менеджер инициализирован")
-            except Exception as e:
-                logger.warning(f"Не удалось инициализировать риск-менеджер: {e}")
-                self.risk_manager = None
-        else:
-            logger.warning("Риск-менеджер недоступен")
-
         # OutcomePredictor — ML на реальных исходах симулированных сделок
         self.outcome_predictor = None
         try:
@@ -269,30 +224,35 @@ class TradingIntelligence:
         """Кэширует результат анализа"""
         self.analysis_cache[symbol] = (datetime.now(), recommendation)
         
-    async def analyze_symbol(self, symbol: str) -> Optional[TradingRecommendation]:
+    async def analyze_symbol(self, symbol: str, pre_collected_signals=None) -> Optional[TradingRecommendation]:
         """
-        Комплексный анализ символа и генерация рекомендации
+        Комплексный анализ символа и генерация рекомендации.
+        pre_collected_signals — если переданы, пропускает _collect_all_signals (экономит API-вызовы).
         """
         import asyncio
         start_time = datetime.now()
-        
+
         try:
             # Проверяем кэш
             cached_result = self._get_cached_analysis(symbol)
             if cached_result:
                 logger.debug(f"Используем кэшированный анализ для {symbol}")
                 return cached_result
-            
-            # Добавляем таймаут для всего анализа (30 секунд)
-            try:
+
+            if pre_collected_signals:
+                signals = pre_collected_signals
+                logger.debug(f"[{symbol}] analyze_symbol: используем {len(signals)} pre_collected сигналов")
+            else:
                 # Собираем все доступные сигналы с таймаутом
-                signals = await asyncio.wait_for(
-                    self._collect_all_signals(symbol),
-                    timeout=20.0
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"Таймаут при сборе сигналов для {symbol}")
-                return None
+                try:
+                    signals = await asyncio.wait_for(
+                        self._collect_all_signals(symbol),
+                        timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    logger.error(f"Таймаут при сборе сигналов для {symbol} (прошло {elapsed:.1f}s)")
+                    return None
             
             if not signals:
                 logger.warning(f"Не найдено сигналов для {symbol}")
@@ -309,20 +269,26 @@ class TradingIntelligence:
                 min_signals = 1  # Для топ-пар достаточно 1 сигнала
             
             if len(filtered_signals) < min_signals:
-                logger.warning(f"Недостаточно качественных сигналов для {symbol}: {len(filtered_signals)} < {min_signals}")
-                # Для топ-пар все равно продолжаем анализ
-                if symbol_base not in top_pairs:
+                # Сильный одиночный сигнал (>=70) пропускаем даже для не-топ пар
+                max_strength = max((s.strength for s in filtered_signals), default=0)
+                if symbol_base not in top_pairs and max_strength < 70:
+                    logger.warning(f"Недостаточно сигналов для {symbol}: {len(filtered_signals)} < {min_signals}, max_str={max_strength}")
                     return None
                 
             # Получаем контекст рынка с таймаутом
             try:
                 market_context = await asyncio.wait_for(
                     self._get_market_context(symbol),
-                    timeout=5.0
+                    timeout=15.0
                 )
             except asyncio.TimeoutError:
-                logger.error(f"Таймаут при получении контекста для {symbol}")
-                return None
+                elapsed = (datetime.now() - start_time).total_seconds()
+                logger.warning(f"Таймаут контекста для {symbol} ({elapsed:.1f}s) — используем fallback")
+                # Fallback: цена из OHLCV (уже в кеше после _collect_all_signals)
+                market_context = MarketContext(
+                    symbol=symbol, current_price=0,
+                    volume_24h=0, volume_change_24h=0, price_change_24h=0,
+                )
             
             # Проверяем минимальные требования к рынку
             if not self._validate_market_context(market_context):
@@ -351,12 +317,6 @@ class TradingIntelligence:
                 symbol, filtered_signals, analysis, market_context
             )
             
-            # Улучшаем рекомендацию риск-менеджментом
-            try:
-                recommendation = self.enhance_with_risk_management(recommendation)
-            except Exception as e:
-                logger.warning(f"Ошибка риск-менеджмента для {symbol}: {e}, продолжаем без него")
-            
             # Кэшируем результат
             self._cache_analysis(symbol, recommendation)
             
@@ -384,19 +344,38 @@ class TradingIntelligence:
         """Собирает все доступные сигналы для символа"""
         signals = []
         try:
-            df_1h = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
-            df_15m = await self.data_collector.get_ohlcv(symbol, "15m", limit=100)
-            df_3m = await self.data_collector.get_ohlcv(symbol, "3m", limit=100)
+            t0 = asyncio.get_event_loop().time()
+
+            # Параллельная загрузка OHLCV для всех таймфреймов
+            df_1h, df_15m, df_3m = await asyncio.gather(
+                self.data_collector.get_ohlcv(symbol, "1h", limit=100),
+                self.data_collector.get_ohlcv(symbol, "15m", limit=100),
+                self.data_collector.get_ohlcv(symbol, "3m", limit=100),
+            )
+            t1 = asyncio.get_event_loop().time()
+            logger.debug(f"[{symbol}] OHLCV fetch: {t1-t0:.2f}s")
 
             if df_1h is None or df_1h.empty:
                 return signals
 
-            signals.extend(await check_anomaly_signals(symbol, df_1h))
-            signals.extend(await check_wt_signals(symbol, df_15m))
-            signals.extend(await check_mtf_signals(symbol, df_1h, df_15m, df_3m))
-            signals.extend(await check_trend_signals(symbol, df_1h))
-            signals.extend(await check_divergence_signals(symbol, df_1h))
-            signals.extend(await check_pivot_signals(symbol, df_1h))
+            # Параллельная проверка всех сигналов
+            results = await asyncio.gather(
+                check_anomaly_signals(symbol, df_15m),
+                check_wt_signals(symbol, df_15m),
+                check_mtf_signals(symbol, df_1h, df_15m, df_3m),
+                check_trend_signals(symbol, df_1h),
+                check_divergence_signals(symbol, df_1h),
+                check_pivot_signals(symbol, df_1h),
+                return_exceptions=True,
+            )
+            t2 = asyncio.get_event_loop().time()
+            logger.debug(f"[{symbol}] signal checks: {t2-t1:.2f}s | total: {t2-t0:.2f}s")
+
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.debug(f"[{symbol}] signal check error: {r}")
+                elif r:
+                    signals.extend(r)
         except Exception as e:
             logger.exception(f"Ошибка сбора сигналов для {symbol}: {e}")
         return signals
@@ -478,18 +457,28 @@ class TradingIntelligence:
             supporting_signals = []
             conflicting_signals = signals
 
-        # При конфликте (разница < порога) — NEUTRAL и снижаем уверенность
-        if dominant > 0 and conflict_ratio < conflict_threshold:
+        # Плавный конфликт: очень сильный → NEUTRAL, умеренный → штраф confidence
+        # conflict_ratio = abs(long-short)/max(long,short)
+        # 70 vs 68 → 0.029 → NEUTRAL (почти равны)
+        # 70 vs 60 → 0.143 → штраф confidence (LONG явно доминирует)
+        # 70 vs 40 → 0.429 → без штрафа
+        if dominant > 0 and conflict_ratio < 0.05:
+            # Очень сильный конфликт (почти равные стороны) → NEUTRAL
             direction = SignalDirection.NEUTRAL
             supporting_signals = []
             conflicting_signals = signals
+        elif dominant > 0 and conflict_ratio < conflict_threshold:
+            # Умеренный конфликт — direction остаётся, но confidence снижена
+            pass  # direction сохраняется по сильнейшей стороне
 
         # Уверенность: по поддерживающим сигналам + штраф за конфликт (не по всем подряд)
         confidence = self._calculate_advanced_confidence(
             supporting_signals, conflicting_signals, market_context
         )
-        if dominant > 0 and conflict_ratio < conflict_threshold:
-            confidence *= 0.6
+        if dominant > 0 and conflict_ratio < 0.05:
+            confidence *= 0.5
+        elif dominant > 0 and conflict_ratio < conflict_threshold:
+            confidence *= (0.6 + conflict_ratio)  # 0.6–0.9 плавно
         
         return {
             "strength": strength,
@@ -739,14 +728,23 @@ class TradingIntelligence:
                 quote_volume = base_volume * current_price if current_price > 0 else 0
             
             logger.debug(f"Контекст для {symbol}: цена={current_price}, объем={quote_volume}, изменение={price_change}%")
-            
+
+            # ATR из кешированного 15m датафрейма (обычно уже в кеше)
+            atr = None
+            try:
+                df_15m = await self.data_collector.get_ohlcv(normalized_symbol, "15m", limit=50)
+                atr = self._compute_atr(df_15m)
+            except Exception:
+                pass
+
             return MarketContext(
                 symbol=symbol,
                 current_price=current_price,
                 volume_24h=quote_volume,  # Используем quoteVolume как основной объем
                 volume_change_24h=0,  # Не всегда доступно
                 price_change_24h=price_change,
-                volatility=self._calculate_volatility(symbol)
+                volatility=self._calculate_volatility(symbol),
+                atr=atr,
             )
             
         except Exception as e:
@@ -759,6 +757,25 @@ class TradingIntelligence:
                 price_change_24h=0
             )
     
+    @staticmethod
+    def _compute_atr(df, period: int = 14) -> Optional[float]:
+        """Вычисляет ATR(14) из датафрейма OHLCV."""
+        try:
+            if df is None or len(df) < period + 1:
+                return None
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            tr = pd.concat([
+                high - low,
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs(),
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(window=period, min_periods=period).mean().iloc[-1]
+            return float(atr) if not np.isnan(atr) else None
+        except Exception:
+            return None
+
     def _calculate_volatility(self, symbol: str) -> Optional[float]:
         """Рассчитывает волатильность символа"""
         try:
@@ -810,10 +827,10 @@ class TradingIntelligence:
         reasoning = self._generate_reasoning(signals, analysis, market_context)
         
         # Рассчитываем уровни входа, стоп-лосса и тейк-профита
-        entry_price, stop_loss, take_profit = self._calculate_levels(
+        entry_price, stop_loss, take_profit, sl_source, tp_source = self._calculate_levels(
             symbol, direction, market_context, signals
         )
-        
+
         return TradingRecommendation(
             symbol=symbol,
             action=action,
@@ -828,6 +845,8 @@ class TradingIntelligence:
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            sl_source=sl_source,
+            tp_source=tp_source,
             reasoning=reasoning,
             timestamp=datetime.now()
         )
@@ -892,30 +911,45 @@ class TradingIntelligence:
         return reasoning
     
     def _calculate_levels(self, symbol: str, direction: SignalDirection,
-                         market_context: MarketContext, 
-                         signals: List[SignalData]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """Рассчитывает уровни входа, стоп-лосса и тейк-профита"""
-        
+                         market_context: MarketContext,
+                         signals: List[SignalData]) -> Tuple[Optional[float], Optional[float], Optional[float], str, str]:
+        """Рассчитывает уровни входа, SL и TP. Возвращает (entry, sl, tp, sl_source, tp_source)."""
+
         current_price = market_context.current_price
         if current_price == 0:
-            return None, None, None
-        
+            return None, None, None, "", ""
+
         entry_price = current_price
-        
-        # Рассчитываем стоп-лосс и тейк-профит на основе волатильности
-        volatility = market_context.volatility or 5.0  # По умолчанию 5%
-        
+
+        # --- SL: приоритет ATR(14) → волатильность → дефолт ---
+        if market_context.atr and entry_price > 0:
+            atr_pct = market_context.atr / entry_price * 100
+            sl_pct = max(1.0, min(1.5 * atr_pct, 4.0))  # 1.5×ATR, зажатый в [1%, 4%]
+            sl_source = f"atr_14:{atr_pct:.2f}%"
+        elif market_context.volatility:
+            sl_pct = max(1.0, min(market_context.volatility, 3.0))
+            sl_source = f"volatility:{market_context.volatility:.2f}%"
+        else:
+            sl_pct = 2.5
+            sl_source = "fallback:2.5%"
+
+        # --- TP: 1.5×SL (RR 1:1.5) — пивот-TP перезапишет в monitoring/analysis_handlers ---
+        tp_pct = sl_pct * 1.5
+        tp_source = f"atr_rr_1.5:{tp_pct:.2f}%"
+
         if direction == SignalDirection.LONG:
-            stop_loss = current_price * (1 - volatility / 100)
-            take_profit = current_price * (1 + volatility * 1.5 / 100)
+            stop_loss = current_price * (1 - sl_pct / 100)
+            take_profit = current_price * (1 + tp_pct / 100)
         elif direction == SignalDirection.SHORT:
-            stop_loss = current_price * (1 + volatility / 100)
-            take_profit = current_price * (1 - volatility * 1.5 / 100)
+            stop_loss = current_price * (1 + sl_pct / 100)
+            take_profit = current_price * (1 - tp_pct / 100)
         else:
             stop_loss = None
             take_profit = None
-        
-        return entry_price, stop_loss, take_profit
+            sl_source = ""
+            tp_source = ""
+
+        return entry_price, stop_loss, take_profit, sl_source, tp_source
     
     def get_performance_statistics(self) -> Dict[str, Any]:
         """Возвращает статистику производительности системы"""
@@ -1004,71 +1038,70 @@ class TradingIntelligence:
         self.analysis_cache.clear()
         logger.info("Статистика производительности сброшена")
     
+    @staticmethod
+    def _build_training_data(dfs: dict) -> list:
+        """Подготовка обучающих данных — CPU-bound, вызывается из thread pool."""
+        training_data = []
+        for symbol, df_1h in dfs.items():
+            if df_1h is None or len(df_1h) < 50:
+                continue
+            # Предварительный расчёт (O(n) вместо O(n²))
+            volatility_series = df_1h['close'].pct_change().rolling(20).std() * 100
+            vol_mean_series = df_1h['volume'].rolling(20).mean()
+            for i in range(20, len(df_1h) - 1):
+                training_data.append({
+                    'df': df_1h.iloc[:i+1],
+                    'price_direction': 1 if df_1h['close'].iloc[i + 1] > df_1h['close'].iloc[i] else 0,
+                    'volatility': volatility_series.iloc[i],
+                    'volume_anomaly': 1 if df_1h['volume'].iloc[i] > vol_mean_series.iloc[i] * 3 else 0,
+                })
+        return training_data
+
     async def train_ml_models(self, training_period_days: int = 30):
         """Обучает ML модели на исторических данных"""
         if not self.ml_predictor:
             logger.warning("ML модуль недоступен для обучения")
             return False
-        
+
         try:
             logger.info(f"Начинаем обучение ML моделей за {training_period_days} дней...")
-            
-            # Собираем исторические данные для обучения
-            training_data = []
-            
+
             # Получаем список символов для обучения
             symbols = list(self.recommendation_history.keys())
             if not symbols:
-                logger.warning("Нет исторических данных для обучения")
-                return False
-            
-            # Ограничиваем количество символов для обучения
-            symbols = symbols[:10]  # Максимум 10 символов
-            
-            for symbol in symbols:
-                try:
-                    # Получаем исторические данные
-                    df_1h = await self.data_collector.get_ohlcv(symbol, "1h", limit=training_period_days * 24)
-                    if df_1h is None or len(df_1h) < 50:
-                        continue
-                    
-                    # Создаем обучающие примеры
-                    for i in range(20, len(df_1h) - 1):  # Оставляем место для будущих данных
-                        # Определяем направление цены
-                        current_price = df_1h['close'].iloc[i]
-                        future_price = df_1h['close'].iloc[i + 1]
-                        price_direction = 1 if future_price > current_price else 0
-                        
-                        # Рассчитываем волатильность
-                        volatility = df_1h['close'].pct_change().rolling(20).std().iloc[i] * 100
-                        
-                        # Создаем точку данных
-                        data_point = {
-                            'df': df_1h.iloc[:i+1],
-                            'price_direction': price_direction,
-                            'volatility': volatility,
-                            'volume_anomaly': 1 if df_1h['volume'].iloc[i] > df_1h['volume'].rolling(20).mean().iloc[i] * 3 else 0
-                        }
-                        
-                        training_data.append(data_point)
-                        
-                except Exception as e:
-                    logger.warning(f"Ошибка сбора данных для обучения {symbol}: {e}")
-                    continue
-            
-            if len(training_data) < 100:
-                logger.warning(f"Недостаточно данных для обучения: {len(training_data)}")
-                return False
-            
-            # Обучаем модели
-            await self.ml_predictor.train_models(training_data)
+                symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+                logger.info("recommendation_history пуст — используем базовые символы для ML-обучения")
+            symbols = symbols[:10]
 
-            logger.info(f"Обучение ML моделей завершено. Использовано {len(training_data)} примеров")
+            # Параллельная загрузка OHLCV (async, event loop)
+            dfs_list = await asyncio.gather(*[
+                self.data_collector.get_ohlcv(s, "1h", limit=training_period_days * 24)
+                for s in symbols
+            ], return_exceptions=True)
+            dfs = {
+                s: df for s, df in zip(symbols, dfs_list)
+                if isinstance(df, __import__('pandas').DataFrame)
+            }
+
+            # Подготовка данных + обучение — всё в thread pool, не блокирует event loop
+            def _train_sync():
+                training_data = self._build_training_data(dfs)
+                if len(training_data) < 100:
+                    logger.warning(f"Недостаточно данных для обучения: {len(training_data)}")
+                    return 0
+                self.ml_predictor._train_models_sync(training_data)
+                return len(training_data)
+
+            training_count = await asyncio.to_thread(_train_sync)
+            if not training_count:
+                return False
+
+            logger.info(f"Обучение ML моделей завершено. Использовано {training_count} примеров")
 
             # Переобучаем OutcomePredictor на свежих данных из simulated_trades
             if self.outcome_predictor is not None:
                 try:
-                    self.outcome_predictor.fit(self._db_path)
+                    await asyncio.to_thread(self.outcome_predictor.fit, self._db_path)
                     logger.info("OutcomePredictor переобучён: %s", self.outcome_predictor.info())
                 except Exception as op_err:
                     logger.warning("OutcomePredictor retrain: %s", op_err)
@@ -1103,233 +1136,5 @@ class TradingIntelligence:
         
         return stats
     
-    def record_recommendation(self, recommendation: TradingRecommendation) -> bool:
-        """Записывает рекомендацию в историю для последующего анализа"""
-        if not self.historical_analyzer:
-            return False
-        
-        try:
-            # Создаем исторический сигнал
-            historical_signal = HistoricalSignal(
-                symbol=recommendation.symbol,
-                signal_type="intelligence",  # Тип комплексного анализа
-                direction=recommendation.direction.value,
-                strength=recommendation.overall_strength,
-                confidence=recommendation.confidence,
-                entry_price=recommendation.entry_price or 0.0,
-                stop_loss=recommendation.stop_loss,
-                take_profit=recommendation.take_profit,
-                timestamp=recommendation.timestamp,
-                outcome=SignalOutcome.PENDING,
-                metadata={
-                    "action": recommendation.action,
-                    "risk_level": recommendation.risk_level,
-                    "signals_count": recommendation.signals_count,
-                    "supporting_signals": [s.signal_type.value for s in recommendation.supporting_signals],
-                    "conflicting_signals": [s.signal_type.value for s in recommendation.conflicting_signals],
-                    "ml_enhanced": recommendation.metadata.get('ml_enhanced', False) if hasattr(recommendation, 'metadata') else False
-                }
-            )
-            
-            return self.historical_analyzer.record_signal(historical_signal)
-            
-        except Exception as e:
-            logger.exception(f"Ошибка записи рекомендации в историю: {e}")
-            return False
-    
-    def get_performance_analysis(self, symbol: str = None, days: int = 30) -> Dict[str, Any]:
-        """Получает анализ производительности"""
-        if not self.historical_analyzer:
-            return {"error": "Исторический анализатор недоступен"}
-        
-        try:
-            start_date = datetime.now() - timedelta(days=days)
-            
-            # Получаем метрики производительности
-            metrics = self.historical_analyzer.calculate_performance_metrics(
-                symbol, None, start_date
-            )
-            
-            # Получаем производительность по типам сигналов
-            performance_by_type = self.historical_analyzer.get_performance_by_signal_type(
-                symbol, start_date
-            )
-            
-            # Получаем тренд производительности
-            performance_trend = self.historical_analyzer.get_performance_trend(symbol, days)
-            
-            # Получаем рекомендации для улучшения
-            improvement_recommendations = self.historical_analyzer.get_recommendations_for_improvement(symbol)
-            
-            return {
-                "metrics": {
-                    "total_signals": metrics.total_signals,
-                    "success_rate": metrics.success_rate,
-                    "profit_factor": metrics.profit_factor,
-                    "win_rate": metrics.win_rate,
-                    "average_profit": metrics.average_profit,
-                    "average_loss": metrics.average_loss,
-                    "max_drawdown": metrics.max_drawdown,
-                    "sharpe_ratio": metrics.sharpe_ratio,
-                    "consecutive_wins": metrics.consecutive_wins,
-                    "consecutive_losses": metrics.consecutive_losses
-                },
-                "performance_by_type": {
-                    signal_type: {
-                        "success_rate": perf.success_rate,
-                        "profit_factor": perf.profit_factor,
-                        "total_signals": perf.total_signals
-                    } for signal_type, perf in performance_by_type.items()
-                },
-                "performance_trend": performance_trend,
-                "improvement_recommendations": improvement_recommendations,
-                "analysis_period_days": days
-            }
-            
-        except Exception as e:
-            logger.exception(f"Ошибка получения анализа производительности: {e}")
-            return {"error": f"Ошибка анализа: {e}"}
-    
-    def get_signal_effectiveness_report(self, symbol: str = None, days: int = 30) -> str:
-        """Генерирует отчет об эффективности сигналов"""
-        analysis = self.get_performance_analysis(symbol, days)
-        
-        if "error" in analysis:
-            return f"❌ Ошибка анализа: {analysis['error']}"
-        
-        metrics = analysis["metrics"]
-        recommendations = analysis["improvement_recommendations"]
-        
-        # Формируем отчет
-        report_parts = [
-            f"📊 <b>ОТЧЕТ О ПРОИЗВОДИТЕЛЬНОСТИ</b>",
-            f"Период: {days} дней",
-            f"Символ: {symbol or 'Все'}"
-        ]
-        
-        if metrics["total_signals"] > 0:
-            report_parts.extend([
-                "",
-                "<b>📈 Основные метрики:</b>",
-                f"• Всего сигналов: {metrics['total_signals']}",
-                f"• Успешность: {metrics['success_rate']:.1%}",
-                f"• Win Rate: {metrics['win_rate']:.1%}",
-                f"• Profit Factor: {metrics['profit_factor']:.2f}",
-                f"• Средняя прибыль: {metrics['average_profit']:.2f}",
-                f"• Средний убыток: {metrics['average_loss']:.2f}",
-                f"• Макс. просадка: {metrics['max_drawdown']:.1f}%",
-                f"• Sharpe Ratio: {metrics['sharpe_ratio']:.2f}",
-                f"• Послед. выигрыши: {metrics['consecutive_wins']}",
-                f"• Послед. проигрыши: {metrics['consecutive_losses']}"
-            ])
-        else:
-            report_parts.append("\n⚠️ Нет данных для анализа")
-        
-        if recommendations:
-            report_parts.extend([
-                "",
-                "<b>💡 Рекомендации для улучшения:</b>"
-            ])
-            for rec in recommendations:
-                report_parts.append(f"• {rec}")
-        
-        return "\n".join(report_parts)
-    
-    def enhance_with_risk_management(self, recommendation: TradingRecommendation) -> TradingRecommendation:
-        """Улучшает рекомендацию с помощью риск-менеджмента"""
-        if not self.risk_manager:
-            return recommendation
-        
-        try:
-            # Создаем профиль риска для символа
-            market_context = recommendation.market_context
-            volatility = market_context.volatility or 10.0
-            
-            risk_profile = self.risk_manager.create_risk_profile(
-                symbol=recommendation.symbol,
-                volatility=volatility,
-                volume=market_context.volume_24h,
-                price_change_24h=market_context.price_change_24h or 0.0
-            )
-            
-            # Рассчитываем размер позиции
-            if recommendation.entry_price:
-                position_size, size_category = self.risk_manager.calculate_position_size(
-                    symbol=recommendation.symbol,
-                    entry_price=recommendation.entry_price,
-                    stop_loss=recommendation.stop_loss or recommendation.entry_price * 0.98
-                )
-                
-                # Рассчитываем стоп-лосс и тейк-профит
-                stop_loss, take_profit = self.risk_manager.calculate_stop_loss_take_profit(
-                    symbol=recommendation.symbol,
-                    entry_price=recommendation.entry_price,
-                    direction=recommendation.direction.value
-                )
-                
-                # Оцениваем риск позиции
-                position_risk = self.risk_manager.assess_position_risk(
-                    symbol=recommendation.symbol,
-                    entry_price=recommendation.entry_price,
-                    position_size=position_size,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit
-                )
-                
-                # Проверяем лимиты риска
-                risk_ok, risk_warnings = self.risk_manager.check_risk_limits(
-                    symbol=recommendation.symbol,
-                    position_risk=position_risk
-                )
-                
-                # Обновляем рекомендацию
-                entry_price = recommendation.entry_price
-                recommendation.stop_loss = stop_loss
-                recommendation.take_profit = take_profit
-                
-                # Добавляем информацию о рисках
-                if not hasattr(recommendation, 'metadata'):
-                    recommendation.metadata = {}
-                
-                recommendation.metadata.update({
-                    'risk_managed': True,
-                    'risk_level': risk_profile.risk_level.value,
-                    'position_size': position_size,
-                    'size_category': size_category.value,
-                    'risk_percent': position_risk.risk_percent,
-                    'risk_reward_ratio': position_risk.risk_reward_ratio,
-                    'risk_warnings': risk_warnings,
-                    'risk_ok': risk_ok
-                })
-                
-                # Корректируем уровень риска в рекомендации
-                if risk_profile.risk_level == RiskLevel.VERY_HIGH:
-                    recommendation.risk_level = "HIGH"
-                elif risk_profile.risk_level == RiskLevel.HIGH:
-                    recommendation.risk_level = "HIGH"
-                elif risk_profile.risk_level == RiskLevel.MEDIUM:
-                    recommendation.risk_level = "MEDIUM"
-                else:
-                    recommendation.risk_level = "LOW"
-            
-            return recommendation
-            
-        except Exception as e:
-            logger.exception(f"Ошибка улучшения рекомендации риск-менеджментом: {e}")
-            return recommendation
-    
-    def get_risk_summary(self) -> Dict[str, Any]:
-        """Возвращает сводку по рискам"""
-        if not self.risk_manager:
-            return {"error": "Риск-менеджер недоступен"}
-        
-        return self.risk_manager.get_risk_summary()
-    
-    def get_risk_recommendations(self) -> List[str]:
-        """Возвращает рекомендации по управлению рисками"""
-        if not self.risk_manager:
-            return ["Риск-менеджер недоступен"]
-        
-        return self.risk_manager.get_risk_recommendations()
 
 

@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-MIN_SAMPLES = 100  # минимум сделок для обучения
+MIN_SAMPLES = 75  # минимум сделок для обучения (84 есть → активируем)
 
 try:
     from sklearn.ensemble import GradientBoostingRegressor
