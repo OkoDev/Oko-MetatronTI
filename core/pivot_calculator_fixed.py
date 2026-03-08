@@ -522,11 +522,27 @@ class PivotCalculatorFixed:
         Использует кешированные пивоты — не делает API-запросов.
         direction: 'LONG' или 'SHORT'
         """
+        result = self.get_pivot_tp_with_source(direction, entry_price, symbol, stop_loss, min_r)
+        return result[0] if result else None
+
+    def get_pivot_tp_with_source(
+        self,
+        direction: str,
+        entry_price: float,
+        symbol: str,
+        stop_loss: Optional[float] = None,
+        min_r: float = 1.5,
+    ) -> Optional[tuple]:
+        """
+        Возвращает (tp_price, source_str) — TP и источник уровня.
+        source_str формат: "pivot_1W:R1" / "pivot_1D:PP" и т.п.
+        Возвращает None если подходящий уровень не найден.
+        """
         if entry_price <= 0:
             return None
 
-        # Собираем все ненулевые уровни из кеша 1M / 1W / 1D
-        all_prices: List[float] = []
+        # Собираем (price, source) из кеша 1M / 1W / 1D
+        all_candidates: List[tuple] = []
         for tf in ("1M", "1W", "1D"):
             pivots = self.pivot_cache.get(f"{symbol}_{tf}")
             if not pivots:
@@ -534,35 +550,36 @@ class PivotCalculatorFixed:
             for lk in ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]:
                 price = pivots.get(lk)
                 if price and price > 0:
-                    all_prices.append(price)
+                    all_candidates.append((price, f"pivot_{tf}:{lk}"))
 
-        if not all_prices:
+        if not all_candidates:
             return None
 
+        sl_dist = None
+        if stop_loss and direction == "LONG" and stop_loss < entry_price:
+            sl_dist = entry_price - stop_loss
+        elif stop_loss and direction == "SHORT" and stop_loss > entry_price:
+            sl_dist = stop_loss - entry_price
+
         if direction == "LONG":
-            candidates = sorted(p for p in all_prices if p > entry_price)
-            if not candidates:
+            above = sorted((p, s) for p, s in all_candidates if p > entry_price)
+            if not above:
                 return None
-            if stop_loss and stop_loss < entry_price:
-                sl_dist = entry_price - stop_loss
-                if sl_dist > 0:
-                    for tp in candidates:
-                        if (tp - entry_price) / sl_dist >= min_r:
-                            return tp
-            # Если SL неизвестен — ближайший уровень выше
-            return candidates[0]
+            if sl_dist and sl_dist > 0:
+                for tp, src in above:
+                    if (tp - entry_price) / sl_dist >= min_r:
+                        return tp, src
+            return above[0]
 
         if direction == "SHORT":
-            candidates = sorted((p for p in all_prices if p < entry_price), reverse=True)
-            if not candidates:
+            below = sorted(((p, s) for p, s in all_candidates if p < entry_price), reverse=True)
+            if not below:
                 return None
-            if stop_loss and stop_loss > entry_price:
-                sl_dist = stop_loss - entry_price
-                if sl_dist > 0:
-                    for tp in candidates:
-                        if (entry_price - tp) / sl_dist >= min_r:
-                            return tp
-            return candidates[0]
+            if sl_dist and sl_dist > 0:
+                for tp, src in below:
+                    if (entry_price - tp) / sl_dist >= min_r:
+                        return tp, src
+            return below[0]
 
         return None
 

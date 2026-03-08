@@ -13,22 +13,27 @@ logger = logging.getLogger(__name__)
 
 
 async def show_anomaly_signals(bot, message: Message) -> None:
-    """Показ аномалий объема по первым 100 парам."""
+    """Показ аномалий объема по всем парам."""
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
-    found = []
-    for sym in bot.monitored_pairs[:100]:
+    symbols = bot.monitored_pairs
+    semaphore = asyncio.Semaphore(10)
+
+    async def process_symbol(sym: str):
         try:
-            is_anom, info = bot.detector.check_spike(sym, bot.data_collector)
-            if is_anom:
-                found.append((sym, info))
-                if len(found) >= 30:
-                    break
+            async with semaphore:
+                is_anom, info = bot.detector.check_spike(sym, bot.data_collector)
+                if is_anom:
+                    return sym, info
         except Exception:
-            continue
+            return None
+
+    raw_results = await asyncio.gather(*[process_symbol(sym) for sym in symbols])
+    found = [r for r in raw_results if r][:30]
+
     if not found:
-        await message.answer("🚨 Аномалий не найдено на первых 100 парах.")
+        await message.answer(f"🚨 Аномалий не найдено (скан {len(symbols)} пар).")
         return
     lines = ["🚨 <b>Последние аномалии</b>"]
     for sym, inf in found:
@@ -37,11 +42,11 @@ async def show_anomaly_signals(bot, message: Message) -> None:
 
 
 async def show_wt_signals(bot, message: Message) -> None:
-    """Показ Wavetrend-сигналов по первым 80 парам."""
+    """Показ Wavetrend-сигналов по всем парам."""
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
-    symbols = bot.monitored_pairs[:80]
+    symbols = bot.monitored_pairs
     semaphore = asyncio.Semaphore(10)
 
     async def process_symbol(sym: str):
@@ -57,7 +62,7 @@ async def show_wt_signals(bot, message: Message) -> None:
     found = [r for r in raw_results if r][:10]
 
     if not found:
-        await message.answer("📊 WT сигналов не найдено (скан 80 пар).")
+        await message.answer(f"📊 WT сигналов не найдено (скан {len(symbols)} пар).")
         return
     lines = ["📊 <b>WT сигналы</b>"]
     for sym, inf in found:
@@ -66,11 +71,11 @@ async def show_wt_signals(bot, message: Message) -> None:
 
 
 async def show_mtf_signals(bot, message: Message) -> None:
-    """Показ MTF-сигналов по первым 60 парам."""
+    """Показ MTF-сигналов по всем парам."""
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
-    symbols = bot.monitored_pairs[:60]
+    symbols = bot.monitored_pairs
     semaphore = asyncio.Semaphore(10)
 
     async def process_symbol(sym: str):
@@ -86,7 +91,7 @@ async def show_mtf_signals(bot, message: Message) -> None:
     found = [r for r in raw_results if r][:8]
 
     if not found:
-        await message.answer("🔄 MTF сигналов не найдено (скан 60 пар).")
+        await message.answer(f"🔄 MTF сигналов не найдено (скан {len(symbols)} пар).")
         return
     lines = ["🔄 <b>MTF сигналы</b>"]
     for sym, inf in found:
@@ -95,11 +100,11 @@ async def show_mtf_signals(bot, message: Message) -> None:
 
 
 async def show_trend_signals(bot, message: Message) -> None:
-    """Показ трендовых сигналов по первым 60 парам."""
+    """Показ трендовых сигналов по всем парам."""
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
-    symbols = bot.monitored_pairs[:60]
+    symbols = bot.monitored_pairs
     semaphore = asyncio.Semaphore(10)
 
     async def process_symbol(sym: str):
@@ -123,7 +128,7 @@ async def show_trend_signals(bot, message: Message) -> None:
     found = [r for r in raw_results if r][:8]
 
     if not found:
-        await message.answer("📈 Тренд-сигналов не найдено (скан 60 пар).")
+        await message.answer(f"📈 Тренд-сигналов не найдено (скан {len(symbols)} пар).")
         return
     lines = ["📈 <b>Трендовые сигналы</b>"]
     for sym, inf in found:
@@ -132,12 +137,12 @@ async def show_trend_signals(bot, message: Message) -> None:
 
 
 async def show_divergence_signals(bot, message: Message) -> None:
-    """Показ дивергенций по первым 60 парам."""
+    """Показ дивергенций по всем парам."""
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
     timeframes = ["15m", "1h"]
-    symbols = bot.monitored_pairs[:60]
+    symbols = bot.monitored_pairs
     semaphore = asyncio.Semaphore(10)
 
     async def process_symbol(sym: str):
@@ -159,7 +164,7 @@ async def show_divergence_signals(bot, message: Message) -> None:
     found = [r for r in raw_results if r][:8]
 
     if not found:
-        await message.answer("💎 Дивергенций не найдено (скан 60 пар).")
+        await message.answer(f"💎 Дивергенций не найдено (скан {len(symbols)} пар).")
         return
     lines = ["💎 <b>Дивергенции</b>"]
     for sym, tf, d in found:
@@ -168,12 +173,12 @@ async def show_divergence_signals(bot, message: Message) -> None:
 
 
 async def show_pivot_signals(bot, message: Message) -> None:
-    """Показ пар, цена которых рядом с недельными пивотами (скан 40 пар)."""
+    """Показ пар, цена которых рядом с недельными пивотами (все пары)."""
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
-    calc = bot.pivot_calculator_fixed
-    symbols = bot.monitored_pairs[:40]
+    calc = bot.pivot_calculator
+    symbols = bot.monitored_pairs
     semaphore = asyncio.Semaphore(10)
 
     async def process_symbol(sym: str):
@@ -196,7 +201,7 @@ async def show_pivot_signals(bot, message: Message) -> None:
     results = [r for r in raw_results if r][:8]
 
     if not results:
-        await message.answer("🎯 Пивот-сигналы: рядом с уровнями ничего не найдено (скан 40 пар).")
+        await message.answer(f"🎯 Пивот-сигналы: рядом с уровнями ничего не найдено (скан {len(symbols)} пар).")
         return
     lines = ["🎯 <b>Цена у недельных уровней</b>"]
     for sym, near in results:

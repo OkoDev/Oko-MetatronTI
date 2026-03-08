@@ -14,6 +14,7 @@ class SignalType(Enum):
     MTF_ALERT = "mtf_alert"
     TREND_SIGNAL = "trend_signal"
     DIVERGENCE = "divergence"
+    MTF_DIVERGENCE = "mtf_divergence"
     PIVOT_REVERSAL = "pivot_reversal"
     PIVOT_ALERT = "pivot_alert"
 
@@ -45,6 +46,8 @@ class SignalData:
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    description: str = ""        # что нашёл детектор: "Двойная бычья дивергенция (WT)"
+    interpretation: str = ""     # что это значит: "Цена LL→LL, индикатор HL→HL — продавцы выдохлись"
 
 
 @dataclass
@@ -57,6 +60,7 @@ class MarketContext:
     market_cap: Optional[float] = None
     volatility: Optional[float] = None
     trend_strength: Optional[float] = None
+    atr: Optional[float] = None
 
 
 @dataclass
@@ -74,6 +78,8 @@ class TradingRecommendation:
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    sl_source: str = ""   # "atr_14" | "volatility" | "fallback"
+    tp_source: str = ""   # "pivot_1M" | "pivot_1W" | "pivot_1D" | "atr_rr_1.5" | "fallback"
     reasoning: List[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Optional[Dict[str, Any]] = None

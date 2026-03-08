@@ -52,7 +52,7 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
                 await message.answer(error_text, reply_markup=main_menu())
             return
 
-        intelligence_message = format_intelligence_message(recommendation)
+        intelligence_message = await format_intelligence_message(recommendation)
         try:
             await analysis_msg.edit_text(intelligence_message)
         except Exception:
@@ -88,15 +88,17 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
                 direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
                 entry_price = recommendation.entry_price or 0
                 if direction_val in ("LONG", "SHORT") and entry_price > 0:
-                    pivot_tp = bot.pivot_calculator.get_pivot_tp(
+                    pivot_result = bot.pivot_calculator.get_pivot_tp_with_source(
                         direction=direction_val,
                         entry_price=entry_price,
                         symbol=target_symbol,
                         stop_loss=recommendation.stop_loss,
                         min_r=1.5,
                     )
-                    if pivot_tp:
+                    if pivot_result:
+                        pivot_tp, pivot_src = pivot_result
                         recommendation.take_profit = pivot_tp
+                        recommendation.tp_source = pivot_src
                         distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
             extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
             await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
