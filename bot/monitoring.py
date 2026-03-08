@@ -17,6 +17,7 @@ from core.pivot_reversal import check_pivot_level_signal, pivot_level_signal_mes
 from core.trading_intelligence import format_intelligence_message
 from collections import deque
 from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals, check_mtf_signals as _check_mtf_signals
+from core.signal_models import SignalData, SignalType, SignalDirection
 from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
                                 bot.signal_counters["total"] += 1
                                 logger.info("[%s] MTF-дивергенция 1h+15m: %s", sym, mtf_info.get("type"))
                                 signals_to_broadcast.append(("mtf_divergence", mtf_divergence_message(sym, mtf_info), None))
+                                _dir = SignalDirection.LONG if mtf_info.get("direction") == "LONG" else SignalDirection.SHORT
+                                all_scan_signals.append(SignalData(
+                                    symbol=sym, signal_type=SignalType.DIVERGENCE, direction=_dir,
+                                    strength=mtf_info.get("strength", 60), confidence=0.75,
+                                    timestamp=datetime.now(), data=mtf_info, timeframe="1h",
+                                ))
                             else:
                                 logger.debug("[%s] MTF-дивергенция отфильтрована: %s", sym, reason)
                     except Exception:
@@ -280,6 +287,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
                                         bot.signal_counters["total"] += 1
                                         logger.info("[%s] Дивергенция на %s: %s", sym, tf, div_info.get("type"))
                                         signals_to_broadcast.append(("divergence", divergence_message(sym, div_info), None))
+                                        _dir = SignalDirection.LONG if div_info.get("direction") == "LONG" else SignalDirection.SHORT
+                                        all_scan_signals.append(SignalData(
+                                            symbol=sym, signal_type=SignalType.DIVERGENCE, direction=_dir,
+                                            strength=div_info.get("strength", 50), confidence=0.7,
+                                            timestamp=datetime.now(), data=div_info, timeframe=tf,
+                                        ))
                                         break
                                     else:
                                         logger.debug("[%s] Дивергенция %s отфильтрована: %s", sym, tf, reason)
