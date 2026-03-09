@@ -242,6 +242,9 @@ class TradingIntelligence:
                 logger.debug(f"Используем кэшированный анализ для {symbol}")
                 return cached_result
 
+            # Этап 8.4.2: фиксируем единый snapshot_time для всех проверок
+            snapshot_time = datetime.now()
+
             if pre_collected_signals:
                 signals = pre_collected_signals
                 logger.debug(f"[{symbol}] analyze_symbol: используем {len(signals)} pre_collected сигналов")
@@ -256,7 +259,12 @@ class TradingIntelligence:
                     elapsed = (datetime.now() - start_time).total_seconds()
                     logger.error(f"Таймаут при сборе сигналов для {symbol} (прошло {elapsed:.1f}s)")
                     return None
-            
+
+            # Этап 8.4.2: None = data collection error (no silent fallback)
+            if signals is None:
+                logger.info("[intelligence] %s: данные недоступны — анализ пропущен", symbol)
+                return None
+
             if not signals:
                 logger.warning(f"Не найдено сигналов для {symbol} (pre_collected={bool(pre_collected_signals)})")
                 return None
@@ -323,6 +331,11 @@ class TradingIntelligence:
                 symbol, filtered_signals, analysis, market_context
             )
             
+            # Этап 8.4.2: фиксируем snapshot_time в метаданных рекомендации
+            if recommendation.metadata is None:
+                recommendation.metadata = {}
+            recommendation.metadata["snapshot_time"] = snapshot_time.isoformat()
+
             # Кэшируем результат
             self._cache_analysis(symbol, recommendation)
             
@@ -346,9 +359,14 @@ class TradingIntelligence:
             logger.exception(f"Ошибка анализа {symbol}: {e}")
             return None
     
-    async def _collect_all_signals(self, symbol: str) -> List[SignalData]:
-        """Собирает все доступные сигналы для символа"""
-        signals = []
+    async def _collect_all_signals(self, symbol: str) -> Optional[List[SignalData]]:
+        """
+        Собирает все доступные сигналы для символа.
+        Возвращает:
+          - List[SignalData] — сигналы (может быть пустым если нет сигналов)
+          - None — критичная ошибка загрузки данных (no silent fallback, Этап 8.4.2)
+        """
+        signals: List[SignalData] = []
         try:
             t0 = asyncio.get_event_loop().time()
 
@@ -361,8 +379,10 @@ class TradingIntelligence:
             t1 = asyncio.get_event_loop().time()
             logger.debug(f"[{symbol}] OHLCV fetch: {t1-t0:.2f}s")
 
+            # Этап 8.4.2: нет данных = ошибка, не тихий возврат
             if df_1h is None or df_1h.empty:
-                return signals
+                logger.info("[intelligence] %s: 1h OHLCV недоступен — пропуск (data error)", symbol)
+                return None
 
             # Проверка качества 15m-данных (свежесть + NaN)
             if df_15m is not None and not df_15m.empty:
@@ -373,7 +393,7 @@ class TradingIntelligence:
                 )
                 if not ok:
                     logger.info("[intelligence] %s: пропуск из-за качества данных: %s", symbol, reason)
-                    return signals
+                    return None
 
             # Параллельная проверка всех сигналов
             results = await asyncio.gather(
