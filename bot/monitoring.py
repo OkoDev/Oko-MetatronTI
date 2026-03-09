@@ -691,16 +691,17 @@ def _is_in_sl_cooldown(bot, symbol: str) -> bool:
     return False
 
 
-def _is_duplicate_signal(bot, symbol: str, signal_type: str) -> bool:
-    """Дедупликация по (паре, типу): каждый тип сигнала независим.
+def _is_duplicate_signal(bot, symbol: str, signal_type: str, direction: str = "") -> bool:
+    """Дедупликация по (пара, тип, направление).
+    LONG WT по паре не блокирует SHORT WT по той же паре.
     WT сигнал по паре не блокирует pivot_reversal по той же паре."""
     minutes = bot.config.get("signal_quality.dedup_minutes", 30)
     if minutes <= 0:
         return False
-    key = (symbol, signal_type)
+    key = (symbol, signal_type, direction)
     last_ts = bot._last_signal.get(key)
     if last_ts and (datetime.now() - last_ts).total_seconds() < minutes * 60:
-        logger.debug("[%s] Дубликат %s — пропущен (%d мин)", symbol, signal_type, minutes)
+        logger.debug("[%s] Дубликат %s/%s — пропущен (%d мин)", symbol, signal_type, direction, minutes)
         return True
     bot._last_signal[key] = datetime.now()
     return False
@@ -767,8 +768,17 @@ def _get_kelly_footer(bot) -> str:
 
 async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_type: str,
                                         fallback_rec=None, pre_signals=None):
-    # Фильтры качества сигналов (Этап 5.1)
-    if hasattr(bot, "_last_signal") and _is_duplicate_signal(bot, symbol, signal_type):
+    # Этап 8.4.4: извлекаем direction из первого pre_signal для точного dedup
+    direction = ""
+    if pre_signals:
+        for _sig in pre_signals:
+            _d = getattr(_sig, "direction", None)
+            if _d:
+                direction = getattr(_d, "value", str(_d))
+                break
+
+    # Фильтры качества сигналов (Этап 5.1 + 8.4.4)
+    if hasattr(bot, "_last_signal") and _is_duplicate_signal(bot, symbol, signal_type, direction):
         return
     if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol):
         return
