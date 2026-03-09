@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(python backtesting_engine.py)",
+      "Bash(python -u backtesting_engine.py)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:bingx-api.github.io)",
+      "WebFetch(domain:api.github.com)"
+    ]
+  }
+}

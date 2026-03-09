@@ -1,0 +1,147 @@
+# Конфигурации для тестирования стратегий
+
+# Базовые настройки тестирования
+testing:
+  default_symbol: "BTC/USDT"
+  default_timeframe: "1h"
+  default_period_days: 90
+  max_parallel_tests: 3
+
+# Сценарии бэктестинга
+backtest_scenarios:
+
+  # Быстрое тестирование (для разработки)
+  quick_test:
+    symbols: ["BTC/USDT", "GRT/USDT"]
+    timeframes: ["1h"]
+    start_date: "2024-10-01"
+    end_date: "2024-12-01"
+    risk_levels: [1.0]
+    tsl_configs:
+      - use_tsl: false
+      - use_tsl: true
+        tsl_activation_r: 1.0
+
+  # Полное тестирование (для финального анализа)
+  full_test:
+    symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "GRT/USDT"]
+    timeframes: ["15m", "1h", "4h"]
+    start_date: "2024-06-01"
+    end_date: "2024-12-31"
+    risk_levels: [0.5, 1.0, 1.5, 2.0]
+    tsl_configs:
+      - use_tsl: false
+      - use_tsl: true
+        tsl_activation_r: 0.5
+      - use_tsl: true
+        tsl_activation_r: 1.0
+      - use_tsl: true
+        tsl_activation_r: 1.5
+      - use_tsl: true
+        tsl_activation_r: 2.0
+
+  # Стресс-тестирование (экстремальные условия)
+  stress_test:
+    symbols: ["BTC/USDT"]
+    timeframes: ["1h"]
+    start_date: "2024-01-01"
+    end_date: "2024-12-31"
+    risk_levels: [2.0]
+    tsl_configs:
+      - use_tsl: true
+        tsl_activation_r: 1.0
+    market_conditions:
+      - high_volatility: true
+      - low_liquidity: true
+
+# Параметры оптимизации
+optimization:
+  population_size: 50
+  generations: 20
+  mutation_rate: 0.1
+  crossover_rate: 0.8
+
+  # Параметры для оптимизации
+  parameters:
+    tsl_activation_r:
+      min: 0.1
+      max: 3.0
+      step: 0.1
+    risk_per_trade_pct:
+      min: 0.5
+      max: 3.0
+      step: 0.25
+    max_duration_hours:
+      min: 24
+      max: 168  # 1 неделя
+      step: 12
+
+# Метрики для оценки
+evaluation_metrics:
+  primary:
+    - total_return_pct
+    - sharpe_ratio
+    - profit_factor
+    - win_rate
+
+  secondary:
+    - max_drawdown_pct
+    - avg_r_multiple
+    - recovery_factor
+    - calmar_ratio
+
+  risk_metrics:
+    - value_at_risk_95
+    - expected_shortfall
+    - ulcer_index
+    - downside_deviation
+
+# Настройки отчетов
+reporting:
+  output_dir: "backtest_reports"
+  formats: ["json", "csv", "html", "pdf"]
+  charts:
+    enabled: true
+    equity_curve: true
+    drawdown_chart: true
+    monthly_returns: true
+    signal_performance: true
+    risk_metrics: true
+
+# Валидационные тесты
+validation:
+  minimum_trades: 30
+  minimum_period_months: 3
+  out_of_sample_pct: 20
+  walk_forward_window_months: 1
+
+  # Тесты на переобучение
+  overfitting_tests:
+    - complexity_adjusted_sharpe
+    - probabilistic_sharpe_ratio
+    - deflated_sharpe_ratio
+
+# Настройки симуляции
+simulation:
+  commission_pct: 0.1
+  slippage_pct: 0.05
+  spread_pct: 0.02
+
+  # Моделирование задержек
+  latency:
+    order_placement_ms: 100
+    execution_ms: 50
+    data_feed_delay_ms: 25
+
+# Среда тестирования
+environment:
+  max_memory_gb: 8
+  timeout_minutes: 60
+  retry_attempts: 3
+  rate_limit_delay_ms: 100
+
+  # Параллелизация
+  parallel:
+    enabled: true
+    max_workers: 4
+    chunk_size: 1000

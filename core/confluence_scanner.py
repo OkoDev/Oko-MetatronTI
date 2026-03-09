@@ -1,26 +1,28 @@
 """
 Confluence Scanner — Lookback-детектор мульти-факторных сетапов.
 
-Ищет в окне lookback_bars баров совпадение условий:
-  1. WT был в OS зоне (wt1 < -53)          → +20 очков
-  2. TSL пересечение UP (тренд сменился 1)  → +20 очков
-  3. Цена была у ключевого пивота (S1/PP)   → +25 очков
-  4. Бычья дивергенция WT (price LL, wt HL)→ +20 очков
-  5. Текущая цена выше дневного PP          → +15 очков
+Ищет в окне lookback_bars баров совпадение условий (LONG и SHORT):
+
+  LONG (бычий сетап):
+    1. WT был в OS зоне (wt1 < -60)           → +20 очков
+    2. TSL пересечение UP (тренд сменился 1)   → +20 очков
+    3. Цена была у поддержки (S1/S2/PP)        → +25 очков
+    4. Бычья дивергенция WT (price LL, wt HL)  → +20 очков
+    5. Текущая цена выше дневного PP           → +15 очков
+
+  SHORT (медвежий сетап):
+    1. WT был в OB зоне (wt1 > +60)           → +20 очков
+    2. TSL пересечение DOWN (тренд сменился -1) → +20 очков
+    3. Цена была у сопротивления (R1/R2/PP)    → +25 очков
+    4. Медвежья дивергенция WT (price HH, wt LH) → +20 очков
+    5. Текущая цена ниже дневного PP           → +15 очков
 
 Порог сигнала: strength ≥ 60 (3+ факторов).
 Функция синхронная — не делает API-запросов, только считает по готовым df.
-
-Пример использования (в scan_one):
-    from core.confluence_scanner import scan_confluence
-    cfg = getattr(bot.config, '_data', bot.config) if hasattr(bot.config, '_data') else {}
-    for sig in scan_confluence(sym, df_15m, df_1h, bot.pivot_calculator.pivot_cache, cfg=bot.config):
-        all_scan_signals.append(sig)
-        signals_to_broadcast.append(("confluence", _confluence_message(sym, sig), None))
 """
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,19 +33,19 @@ from core.signal_models import SignalData, SignalType, SignalDirection
 logger = logging.getLogger(__name__)
 
 # ── Дефолты (перекрываются через config.yaml → analysis.confluence) ──────────
-_DEFAULT_WT_OS = -60
-_DEFAULT_WT_OB = 60   # WT в OB → OS сигнал уже устарел
+_DEFAULT_WT_OS = -60   # OS зона: wt1 < -60
+_DEFAULT_WT_OB = 60    # OB зона: wt1 > +60
 _DEFAULT_PIVOT_PCT = 1.0
 _DEFAULT_MIN_STRENGTH = 60
 _DEFAULT_DIV_MIN_BARS = 3
 _DEFAULT_LOOKBACK = 30
 
-# Очки за каждое условие (постоянные)
-_SCORE_WT_OS = 20
-_SCORE_TSL_CROSS = 20
-_SCORE_NEAR_PIVOT = 25
-_SCORE_DIVERGENCE = 20
-_SCORE_ABOVE_PP = 15
+# Очки за каждое условие
+_SCORE_WT_ZONE = 20     # WT в OS (LONG) или OB (SHORT)
+_SCORE_TSL_CROSS = 20   # TSL пересечение в нужном направлении
+_SCORE_NEAR_PIVOT = 25  # Цена у ключевого уровня
+_SCORE_DIVERGENCE = 20  # Дивергенция WT
+_SCORE_PP_CONFIRM = 15  # Цена по отношению к дневному PP
 
 
 def _get_cfg(cfg) -> dict:
@@ -51,11 +53,9 @@ def _get_cfg(cfg) -> dict:
     if cfg is None:
         return {}
     if hasattr(cfg, "get"):
-        # ConfigLoader с dot-нотацией
         block = cfg.get("analysis.confluence", None)
         if isinstance(block, dict):
             return block
-        # plain dict
         return (cfg.get("analysis") or {}).get("confluence", {})
     return {}
 
@@ -69,7 +69,7 @@ def scan_confluence(
     cfg=None,
 ) -> List[SignalData]:
     """
-    Lookback-сканер конфлюэнции. Возвращает список SignalData (обычно 0 или 1 сигнал).
+    Lookback-сканер конфлюэнции. Возвращает список SignalData (обычно 0-2 сигнала).
 
     Args:
         symbol:        торговая пара (напр. "BTC/USDT")
@@ -82,17 +82,16 @@ def scan_confluence(
     results: List[SignalData] = []
 
     try:
-        # ── Параметры из конфига (с дефолтами) ───────────────────────────
         conf_cfg = _get_cfg(cfg)
         if not conf_cfg.get("enabled", True):
             return results
 
         lookback_bars = int(conf_cfg.get("lookback_bars", lookback_bars))
-        wt_os_thr     = float(conf_cfg.get("wt_os_threshold", _DEFAULT_WT_OS))
-        wt_ob_thr     = float(conf_cfg.get("wt_ob_threshold", _DEFAULT_WT_OB))
-        pivot_pct     = float(conf_cfg.get("pivot_proximity_pct", _DEFAULT_PIVOT_PCT))
-        min_strength  = int(conf_cfg.get("min_strength", _DEFAULT_MIN_STRENGTH))
-        div_min_bars  = int(conf_cfg.get("div_min_bars", _DEFAULT_DIV_MIN_BARS))
+        wt_os_thr    = float(conf_cfg.get("wt_os_threshold", _DEFAULT_WT_OS))
+        wt_ob_thr    = float(conf_cfg.get("wt_ob_threshold", _DEFAULT_WT_OB))
+        pivot_pct    = float(conf_cfg.get("pivot_proximity_pct", _DEFAULT_PIVOT_PCT))
+        min_strength = int(conf_cfg.get("min_strength", _DEFAULT_MIN_STRENGTH))
+        div_min_bars = int(conf_cfg.get("div_min_bars", _DEFAULT_DIV_MIN_BARS))
 
         if df_15m is None or len(df_15m) < max(lookback_bars + 5, 50):
             return results
@@ -101,96 +100,126 @@ def scan_confluence(
         df = calculate_wt(df_15m, n1=10, n2=21)
         df = calculate_trend(df, atr_period=43, factor=1.0)
 
-        # Окно поиска: последние lookback_bars свечей
         window = df.iloc[-lookback_bars:].reset_index(drop=True)
         current_price = float(df["close"].iloc[-1])
         if current_price <= 0:
             return results
 
-        # ── Получаем дневные пивоты из кеша ──────────────────────────────
+        # ── Дневные пивоты из кеша ────────────────────────────────────────
         daily_pivots = pivot_cache.get(f"{symbol}_1D") or {}
 
-        # ── Проверка каждого условия ──────────────────────────────────────
-        score = 0
-        factors: List[str] = []
-        factor_data: Dict[str, Any] = {}
-
-        # 1. WT был в OS зоне в окне И сейчас не в OB (иначе сигнал устарел)
-        wt_min_in_window = float(window["wt1"].min())
+        wt_min = float(window["wt1"].min())
+        wt_max = float(window["wt1"].max())
         wt_current = float(window["wt1"].iloc[-1])
-        if wt_min_in_window < wt_os_thr and wt_current < wt_ob_thr:
-            score += _SCORE_WT_OS
-            factors.append("WT_OS")
-            factor_data["wt_min"] = round(wt_min_in_window, 1)
 
-        # 2. TSL пересечение — тренд сменился с -1 на 1 в окне
         trend_series = window["trend"].values
+
+        # ── LONG сетап ────────────────────────────────────────────────────
+        score_long = 0
+        factors_long: List[str] = []
+        data_long: Dict[str, Any] = {}
+
+        # 1L. WT в OS зоне (<-60) в окне, сейчас не в OB (сигнал не устарел)
+        if wt_min < wt_os_thr and wt_current < wt_ob_thr:
+            score_long += _SCORE_WT_ZONE
+            factors_long.append("WT_OS")
+            data_long["wt_min"] = round(wt_min, 1)
+
+        # 2L. TSL пересечение UP (-1 → 1)
         tsl_cross_up = any(
             trend_series[i] == -1 and trend_series[i + 1] == 1
             for i in range(len(trend_series) - 1)
         )
         if tsl_cross_up:
-            score += _SCORE_TSL_CROSS
-            factors.append("TSL_CROSS_UP")
+            score_long += _SCORE_TSL_CROSS
+            factors_long.append("TSL_CROSS_UP")
 
-        # 3. Цена была у ключевого пивота (S1 или PP дневной/недельный)
-        pivot_hit, pivot_desc = _check_near_pivot(window, daily_pivots,
-                                                  pivot_cache, symbol, pivot_pct)
-        if pivot_hit:
-            score += _SCORE_NEAR_PIVOT
-            factors.append("NEAR_PIVOT")
-            factor_data["pivot_hit"] = pivot_desc
+        # 3L. Цена у поддержки (S1/S2/PP дневной или недельный)
+        pivot_hit_l, pivot_desc_l = _check_near_support(
+            window, daily_pivots, pivot_cache, symbol, pivot_pct
+        )
+        if pivot_hit_l:
+            score_long += _SCORE_NEAR_PIVOT
+            factors_long.append("NEAR_SUPPORT")
+            data_long["pivot_hit"] = pivot_desc_l
 
-        # 4. Бычья дивергенция WT: price LL, wt1 HL
-        div_found, div_desc = _check_bullish_divergence_wt(window, div_min_bars)
-        if div_found:
-            score += _SCORE_DIVERGENCE
-            factors.append("WT_DIVERGENCE")
-            factor_data["div_desc"] = div_desc
+        # 4L. Бычья дивергенция WT (price LL, wt HL)
+        div_bull, div_bull_desc = _check_bullish_divergence_wt(window, div_min_bars)
+        if div_bull:
+            score_long += _SCORE_DIVERGENCE
+            factors_long.append("WT_DIVERGENCE")
+            data_long["div_desc"] = div_bull_desc
 
-        # 5. Текущая цена выше дневного PP (подтверждение пробоя)
+        # 5L. Текущая цена выше дневного PP
         daily_pp = daily_pivots.get("PP") or 0.0
         if daily_pp > 0 and current_price > daily_pp:
-            score += _SCORE_ABOVE_PP
-            factors.append("ABOVE_PP")
-            factor_data["daily_pp"] = round(daily_pp, 8)
+            score_long += _SCORE_PP_CONFIRM
+            factors_long.append("ABOVE_PP")
+            data_long["daily_pp"] = round(daily_pp, 8)
 
-        # ── Сигнал только если score >= порога ───────────────────────────
-        if score < min_strength:
-            logger.debug("[confluence] %s: score=%d < %d — пропуск %s",
-                         symbol, score, min_strength, factors)
-            return results
+        if score_long >= min_strength:
+            sig = _make_signal(
+                symbol, SignalDirection.LONG, score_long, factors_long, data_long,
+                lookback_bars, current_price
+            )
+            logger.info("[confluence] %s: LONG score=%d %s", symbol, score_long, factors_long)
+            results.append(sig)
 
-        # Конфлюэнция бычья (long): WT OS + TSL UP + поддержка
-        # Медвежья логика добавляется позже (Шаг 2)
-        direction = SignalDirection.LONG
+        # ── SHORT сетап ───────────────────────────────────────────────────
+        score_short = 0
+        factors_short: List[str] = []
+        data_short: Dict[str, Any] = {}
 
-        desc = f"Конфлюэнция ({'|'.join(factors)})"
-        interpretation = (
-            f"score={score}/100 — {len(factors)} из 5 условий: {', '.join(factors)}"
+        # 1S. WT в OB зоне (>+60) в окне, сейчас не в OS (сигнал не устарел)
+        if wt_max > wt_ob_thr and wt_current > wt_os_thr:
+            score_short += _SCORE_WT_ZONE
+            factors_short.append("WT_OB")
+            data_short["wt_max"] = round(wt_max, 1)
+
+        # 2S. TSL пересечение DOWN (1 → -1)
+        tsl_cross_down = any(
+            trend_series[i] == 1 and trend_series[i + 1] == -1
+            for i in range(len(trend_series) - 1)
         )
+        if tsl_cross_down:
+            score_short += _SCORE_TSL_CROSS
+            factors_short.append("TSL_CROSS_DOWN")
 
-        sig = SignalData(
-            symbol=symbol,
-            signal_type=SignalType.CONFLUENCE,
-            direction=direction,
-            strength=min(score, 100),
-            confidence=round(score / 100.0, 2),
-            timestamp=datetime.now(),
-            data={
-                "score": score,
-                "factors": factors,
-                **factor_data,
-                "lookback_bars": lookback_bars,
-                "current_price": current_price,
-            },
-            timeframe="15m",
-            description=desc,
-            interpretation=interpretation,
+        # 3S. Цена у сопротивления (R1/R2/PP дневной или недельный)
+        pivot_hit_s, pivot_desc_s = _check_near_resistance(
+            window, daily_pivots, pivot_cache, symbol, pivot_pct
         )
+        if pivot_hit_s:
+            score_short += _SCORE_NEAR_PIVOT
+            factors_short.append("NEAR_RESISTANCE")
+            data_short["pivot_hit"] = pivot_desc_s
 
-        logger.info("[confluence] %s: СИГНАЛ score=%d %s", symbol, score, factors)
-        results.append(sig)
+        # 4S. Медвежья дивергенция WT (price HH, wt LH)
+        div_bear, div_bear_desc = _check_bearish_divergence_wt(window, div_min_bars)
+        if div_bear:
+            score_short += _SCORE_DIVERGENCE
+            factors_short.append("WT_DIVERGENCE")
+            data_short["div_desc"] = div_bear_desc
+
+        # 5S. Текущая цена ниже дневного PP
+        if daily_pp > 0 and current_price < daily_pp:
+            score_short += _SCORE_PP_CONFIRM
+            factors_short.append("BELOW_PP")
+            data_short["daily_pp"] = round(daily_pp, 8)
+
+        if score_short >= min_strength:
+            sig = _make_signal(
+                symbol, SignalDirection.SHORT, score_short, factors_short, data_short,
+                lookback_bars, current_price
+            )
+            logger.info("[confluence] %s: SHORT score=%d %s", symbol, score_short, factors_short)
+            results.append(sig)
+
+        if not results:
+            logger.debug(
+                "[confluence] %s: нет сигнала (long=%d short=%d)",
+                symbol, score_long, score_short
+            )
 
     except Exception:
         logger.exception("[confluence] Ошибка scan_confluence для %s", symbol)
@@ -200,36 +229,89 @@ def scan_confluence(
 
 # ── Вспомогательные функции ───────────────────────────────────────────────────
 
-def _check_near_pivot(
+def _make_signal(
+    symbol: str,
+    direction: SignalDirection,
+    score: int,
+    factors: List[str],
+    factor_data: Dict[str, Any],
+    lookback_bars: int,
+    current_price: float,
+) -> SignalData:
+    dir_str = "LONG ↑" if direction == SignalDirection.LONG else "SHORT ↓"
+    desc = f"Конфлюэнция {dir_str} ({'|'.join(factors)})"
+    interpretation = f"score={score}/100 — {len(factors)} из 5 условий: {', '.join(factors)}"
+    return SignalData(
+        symbol=symbol,
+        signal_type=SignalType.CONFLUENCE,
+        direction=direction,
+        strength=min(score, 100),
+        confidence=round(score / 100.0, 2),
+        timestamp=datetime.now(),
+        data={
+            "score": score,
+            "factors": factors,
+            **factor_data,
+            "lookback_bars": lookback_bars,
+            "current_price": current_price,
+            "timeframe": "15m",
+        },
+        timeframe="15m",
+        description=desc,
+        interpretation=interpretation,
+    )
+
+
+def _check_near_support(
     window: pd.DataFrame,
     daily_pivots: Dict,
     pivot_cache: Dict,
     symbol: str,
     proximity_pct: float = _DEFAULT_PIVOT_PCT,
-) -> tuple[bool, str]:
+) -> Tuple[bool, str]:
     """
-    Проверяет: была ли цена (low) в окне в пределах _PIVOT_PROXIMITY_PCT%
-    от уровней S1, S2, PP дневных или недельных пивотов.
+    Цена (low) была у поддержки S1/S2/PP в окне.
+    Fallback: недельные пивоты.
     """
-    if not daily_pivots:
-        # Пробуем недельные как fallback
-        daily_pivots = pivot_cache.get(f"{symbol}_1W") or {}
-
-    if not daily_pivots:
+    pivots = daily_pivots or pivot_cache.get(f"{symbol}_1W") or {}
+    if not pivots:
         return False, ""
 
-    check_levels = ["S1", "S2", "PP"]
     lows = window["low"].values
-    closes = window["close"].values
-
-    for level in check_levels:
-        pv_price = daily_pivots.get(level) or 0.0
-        if pv_price <= 0:
+    for level in ("S1", "S2", "PP"):
+        pv = pivots.get(level) or 0.0
+        if pv <= 0:
             continue
         for price in lows:
-            dist_pct = abs(price - pv_price) / pv_price * 100
-            if dist_pct <= proximity_pct:
-                return True, f"1D_{level}={round(pv_price, 8)}"
+            if abs(price - pv) / pv * 100 <= proximity_pct:
+                return True, f"1D_{level}={round(pv, 8)}"
+
+    return False, ""
+
+
+def _check_near_resistance(
+    window: pd.DataFrame,
+    daily_pivots: Dict,
+    pivot_cache: Dict,
+    symbol: str,
+    proximity_pct: float = _DEFAULT_PIVOT_PCT,
+) -> Tuple[bool, str]:
+    """
+    Цена (high) была у сопротивления R1/R2/PP в окне.
+    Fallback: недельные пивоты.
+    """
+    pivots = daily_pivots or pivot_cache.get(f"{symbol}_1W") or {}
+    if not pivots:
+        return False, ""
+
+    highs = window["high"].values
+    for level in ("R1", "R2", "PP"):
+        pv = pivots.get(level) or 0.0
+        if pv <= 0:
+            continue
+        for price in highs:
+            if abs(price - pv) / pv * 100 <= proximity_pct:
+                return True, f"1D_{level}={round(pv, 8)}"
 
     return False, ""
 
@@ -237,13 +319,10 @@ def _check_near_pivot(
 def _check_bullish_divergence_wt(
     window: pd.DataFrame,
     div_min_bars: int = _DEFAULT_DIV_MIN_BARS,
-) -> tuple[bool, str]:
+) -> Tuple[bool, str]:
     """
-    Упрощённая проверка бычьей дивергенции WT в окне.
-
-    Условие: найти два трога WT (локальных минимума wt1) где:
-      - второй трог по цене НИЖЕ первого (price LL)
-      - второй трог по wt1  ВЫШЕ первого (wt  HL)
+    Бычья дивергенция WT в окне: price LL, wt1 HL.
+    Ищем два трога wt1 (локальных минимума) где wt1[i2] > wt1[i1] и low[i2] < low[i1].
     """
     wt1 = window["wt1"].values
     lows = window["low"].values
@@ -252,63 +331,107 @@ def _check_bullish_divergence_wt(
     if n < div_min_bars * 2 + 1:
         return False, ""
 
-    # Находим локальные минимумы wt1 (трогá)
-    troughs = []
-    for i in range(1, n - 1):
-        if wt1[i] < wt1[i - 1] and wt1[i] < wt1[i + 1] and wt1[i] < -30:
-            troughs.append(i)
+    troughs = [
+        i for i in range(1, n - 1)
+        if wt1[i] < wt1[i - 1] and wt1[i] < wt1[i + 1] and wt1[i] < -30
+    ]
 
     if len(troughs) < 2:
         return False, ""
 
-    # Проверяем пары трогов: price LL + wt HL
     for j in range(1, len(troughs)):
         i1, i2 = troughs[j - 1], troughs[j]
         if i2 - i1 < div_min_bars:
             continue
-        price_ll = lows[i2] < lows[i1]      # цена делает новый лоу
-        wt_hl = wt1[i2] > wt1[i1]           # WT при этом выше
-        if price_ll and wt_hl:
-            desc = (f"price_low: {round(lows[i1], 6)}→{round(lows[i2], 6)}, "
-                    f"wt: {round(wt1[i1], 1)}→{round(wt1[i2], 1)}")
+        if lows[i2] < lows[i1] and wt1[i2] > wt1[i1]:
+            desc = (
+                f"price_low: {round(lows[i1], 6)}→{round(lows[i2], 6)}, "
+                f"wt: {round(wt1[i1], 1)}→{round(wt1[i2], 1)}"
+            )
+            return True, desc
+
+    return False, ""
+
+
+def _check_bearish_divergence_wt(
+    window: pd.DataFrame,
+    div_min_bars: int = _DEFAULT_DIV_MIN_BARS,
+) -> Tuple[bool, str]:
+    """
+    Медвежья дивергенция WT в окне: price HH, wt1 LH.
+    Ищем два пика wt1 (локальных максимума) где wt1[i2] < wt1[i1] и high[i2] > high[i1].
+    """
+    wt1 = window["wt1"].values
+    highs = window["high"].values
+    n = len(wt1)
+
+    if n < div_min_bars * 2 + 1:
+        return False, ""
+
+    peaks = [
+        i for i in range(1, n - 1)
+        if wt1[i] > wt1[i - 1] and wt1[i] > wt1[i + 1] and wt1[i] > 30
+    ]
+
+    if len(peaks) < 2:
+        return False, ""
+
+    for j in range(1, len(peaks)):
+        i1, i2 = peaks[j - 1], peaks[j]
+        if i2 - i1 < div_min_bars:
+            continue
+        if highs[i2] > highs[i1] and wt1[i2] < wt1[i1]:
+            desc = (
+                f"price_high: {round(highs[i1], 6)}→{round(highs[i2], 6)}, "
+                f"wt: {round(wt1[i1], 1)}→{round(wt1[i2], 1)}"
+            )
             return True, desc
 
     return False, ""
 
 
 def confluence_message(symbol: str, sig: "SignalData") -> str:
-    """Форматирует TG-сообщение для confluence сигнала."""
+    """Форматирует TG-сообщение для confluence сигнала (LONG и SHORT)."""
     from core.message_builder import tv_link
     data = sig.data or {}
     factors = data.get("factors", [])
     score = data.get("score", 0)
     price = data.get("current_price", 0)
 
+    is_long = sig.direction == SignalDirection.LONG
+    dir_label = "LONG ↑" if is_long else "SHORT ↓"
+    dir_icon  = "🟢" if is_long else "🔴"
+
     emoji_map = {
-        "WT_OS":       "🌊 WT OS",
-        "TSL_CROSS_UP": "📈 TSL↑",
-        "NEAR_PIVOT":  "🎯 Пивот",
-        "WT_DIVERGENCE": "🔄 Дивер",
-        "ABOVE_PP":    "✅ >PP",
+        "WT_OS":            "🌊 WT OS",
+        "WT_OB":            "🌊 WT OB",
+        "TSL_CROSS_UP":     "📈 TSL↑",
+        "TSL_CROSS_DOWN":   "📉 TSL↓",
+        "NEAR_SUPPORT":     "🎯 Поддержка",
+        "NEAR_RESISTANCE":  "🎯 Сопротивление",
+        "WT_DIVERGENCE":    "🔄 Дивер",
+        "ABOVE_PP":         "✅ >PP",
+        "BELOW_PP":         "❌ <PP",
     }
     factor_str = "  ·  ".join(emoji_map.get(f, f) for f in factors)
-
     strength_emoji = "🔥🔥🔥" if score >= 80 else "🔥🔥" if score >= 60 else "🔥"
 
+    tf = data.get("timeframe", "15m")
     lines = [
         "\n",
-        f"🔗 <b>CONFLUENCE · {tv_link(symbol)} · LONG ↑</b>",
-        f"{strength_emoji} <b>{score}/100</b>  ({len(factors)}/5 факторов)",
+        f"🔗 <b>CONFLUENCE · {tv_link(symbol)} · {dir_icon} {dir_label}</b>",
+        f"⏱ <code>{tf}</code>  {strength_emoji} <b>{score}/100</b>  ({len(factors)}/5 факторов)",
         "",
         f"  {factor_str}",
     ]
 
     pivot_hit = data.get("pivot_hit", "")
-    div_desc = data.get("div_desc", "")
+    div_desc  = data.get("div_desc", "")
     if pivot_hit:
         lines.append(f"  📍 {pivot_hit}")
     if div_desc:
-        lines.append(f"  ↗️ {div_desc}")
+        arrow = "↗️" if is_long else "↘️"
+        lines.append(f"  {arrow} {div_desc}")
     if price:
         try:
             from core.intelligence_formatter import _fmt_price

@@ -1,0 +1,28 @@
+FROM node:20-bullseye
+
+# Системные пакеты
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    nano \
+    vim \
+    python3 \
+    python3-pip \
+    python3-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка Claude Code
+RUN npm install -g @anthropic-ai/claude-code
+
+# Установка зависимостей Python для проекта
+WORKDIR /workspace
+# Wildcard — не упадёт если requirements.txt отсутствует
+COPY requirements.txt* ./
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; else echo "requirements.txt не найден, установка позже"; fi
+
+# Для удобства работы
+RUN echo 'alias ll="ls -lah"' >> ~/.bashrc
+RUN echo 'export PYTHONUNBUFFERED=1' >> ~/.bashrc
+
+CMD ["bash"]

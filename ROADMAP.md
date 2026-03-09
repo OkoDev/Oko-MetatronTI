@@ -228,6 +228,71 @@
 - [ ] Доля degraded-решений контролируется SLA и не растёт без алерта
 - [ ] Качество входов стабильно улучшается по weekly review метрикам
 
+## 🔲 Этап 8.5 — Strategy Pattern Refactoring
+**Цель:** вынести торговые решения в модульную архитектуру для легкого добавления новых стратегий и A/B тестирования
+
+### 8.5.1 — Архитектура (Strategy Pattern + Registry)
+**Структура папок:**
+```
+strategies/
+├── __init__.py
+├── base.py                    ← BaseStrategy interface (analyze, calculate_sl_tp, backtest)
+├── built_in/
+│   ├── confluence.py          ← текущая логика (2+ сигнала, адаптивные веса, ML)
+│   ├── mtf_bias.py            ← новая быстрая стратегия (только MTF alerts)
+│   ├── conservative.py        ← консервативная (узкий SL atr*0.7, для минимизации DD)
+│   └── __init__.py
+├── rule_based.py              ← RuleEngine для config-driven стратегий (Phase 2.1)
+└── registry.py                ← фабрика get_strategy(name, config), list_strategies()
+```
+
+**BaseStrategy интерфейс:**
+```python
+class BaseStrategy(ABC):
+    def analyze(signals: List[SignalData], market_context: MarketContext) → TradingRecommendation
+    def calculate_sl_tp(entry, direction, atr, context) → (sl, tp, position_size)
+    def backtest(ohlcv_data, pairs) → {symbol: {signals, win_rate, avg_r}}
+```
+
+- [ ] Создать `strategies/base.py` с интерфейсом
+- [ ] Создать `strategies/registry.py` с фабрикой и STRATEGY_REGISTRY
+- [ ] Реализовать ConfluenceStrategy: перенос логики из `_analyze_signals_advanced()` + `_generate_recommendation()` (~200 строк)
+- [ ] Реализовать MTFBiasStrategy и ConservativeStrategy: примеры простых стратегий (~50-100 строк каждая)
+
+### 8.5.2 — Интеграция в TradingIntelligence
+- [ ] Инициализировать стратегию в `__init__`: `self.strategy = get_strategy(config["strategy.name"])`
+- [ ] Делегировать `_analyze_signals_advanced()` → `self.strategy.analyze()`
+- [ ] Делегировать `_generate_recommendation()` → логика внутри `strategy.analyze()`
+- [ ] Рефактор `trade_simulator.py`: параметризовать SL/TP, вынести в `calculate_sl_tp()` (опционально на Phase 2)
+- [ ] Тестирование: ConfluenceStrategy должна выдавать идентичные результаты текущей логике (regression test)
+
+### 8.5.3 — Config и переключение стратегий
+- [ ] Добавить в `config.yaml` секцию для выбора стратегии
+- [ ] Hot-reload: `ConfigLoader.save()` переуспешивает config → `bot.strategy = get_strategy()` без перезапуска
+- [ ] GET дашборда: `/api/strategies` → список всех + текущая + метрики win_rate по каждой
+- [ ] POST дашборда: `/api/strategies/switch/{name}` → переключить в DEMO-режиме, логировать смену
+
+### 8.5.4 — A/B тестирование и бэктестинг
+- [ ] Расширить `strategy_comparison.py`: сравнение всех стратегий из registry
+- [ ] Добавить unit-тесты в `tests/test_strategies.py` (параметризованные по registry)
+- [ ] Вывод таблицы: Strategy | Win Rate | Sharpe | Avg R | Max DD
+- [ ] Production: установить `strategy.name = "confluence"` + disable переключения
+
+### 8.5.5 — Phase 2.1 (future): Rule Engine для экспериментов
+- [ ] Реализовать `RuleEngine` в `strategies/rule_based.py` — интерпретирует YAML правила
+- [ ] Фабрика: `if config.type == "rule": strategy = RuleEngine(config)`
+
+### 8.5.6 — Phase 2.2 (future): Ensemble стратегий
+- [ ] EnsembleStrategy: запускает N стратегий, голосует (majority или weighted)
+- [ ] Use case: production-safety (2 из 3 согласны → BUY)
+
+**Definition of Done (Этап 8.5):**
+- [ ] ConfluenceStrategy дублирует текущее поведение: win_rate/sharpe совпадают (regression)
+- [ ] Можно добавить новую стратегию одним файлом (~50-200 строк) + одна строка в registry
+- [ ] Все стратегии могут сравниваться через strategy_comparison.py
+- [ ] Дашборд показывает список доступных и позволяет переключить (DEMO-only)
+- [ ] Тесты параметризованы по всем стратегиям в registry
+
 ---
 
 ## 🔲 Этап 9 — SMC (Smart Money Concepts)
@@ -280,3 +345,4 @@
 | 2026-03-08 | Этап 8.1: enableRateLimit=False (скан 30 мин → 30 сек), убран fetch_candles(), BTC фильтр → предупреждение, dedup по паре |
 | 2026-03-09 | Этап 8.4: добавлен подробный Quality Gate roadmap (9 подэтапов + DoD) |
 | 2026-03-09 | Фикс: pivot TP применяется ДО форматирования сообщения; добавлен блок "📍 Ближайшие пивоты" в комплексный анализ |
+| 2026-03-09 | Этап 8.4.1: core/data_quality.py — pre-check OHLCV (глубина/свежесть/NaN), интеграция в scan_one и _collect_all_signals |

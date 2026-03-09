@@ -26,6 +26,14 @@ from core.signal_checkers import (
 from core.intelligence_formatter import format_intelligence_message  # noqa: F401 — re-export
 from core.data_quality import check_ohlcv_quality
 
+# Strategy Pattern
+try:
+    from strategies import get_strategy, list_strategies
+    STRATEGIES_AVAILABLE = True
+except ImportError:
+    STRATEGIES_AVAILABLE = False
+    logger.warning("Strategies module not available, will use legacy logic")
+
 try:
     from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg
 except ImportError:
@@ -136,6 +144,20 @@ class TradingIntelligence:
         except Exception as e:
             logger.warning("OutcomePredictor не инициализирован: %s", e)
 
+        # Strategy Pattern: инициализируем стратегию
+        self.strategy = None
+        if STRATEGIES_AVAILABLE:
+            try:
+                strategy_name = config.get("strategy", {}).get("name", "confluence") if config else "confluence"
+                strategy_config = config.get("strategy", {}).get(strategy_name, {}) if config else {}
+                self.strategy = get_strategy(strategy_name, strategy_config)
+                logger.info(f"Strategy initialized: {strategy_name}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize strategy, falling back to legacy: {e}")
+                self.strategy = None
+        else:
+            logger.debug("Strategy Pattern not available, using legacy analysis")
+
         # Адаптивные веса из реальной статистики (синхронно, sqlite3)
         self.update_signal_weights()
 
@@ -212,6 +234,23 @@ class TradingIntelligence:
         perf["avg_strength"] = (perf["avg_strength"] * (perf["total_signals"] - 1) + signal.strength) / perf["total_signals"]
         perf["avg_confidence"] = (perf["avg_confidence"] * (perf["total_signals"] - 1) + signal.confidence) / perf["total_signals"]
         perf["last_updated"] = datetime.now()
+    
+    async def _run_strategy(self, symbol: str, signals: List[SignalData],
+                           market_context: MarketContext) -> Optional[TradingRecommendation]:
+        """
+        Запускает стратегию для анализа сигналов.
+        Эта функция async для совместимости с asyncio.wait_for().
+        """
+        if not self.strategy:
+            return None
+        
+        try:
+            # Стратегия может быть синхронной, оборачиваем в run_in_executor если нужно
+            recommendation = self.strategy.analyze(signals, market_context)
+            return recommendation
+        except Exception as e:
+            logger.exception(f"Strategy.analyze() error for {symbol}: {e}")
+            return None
     
     def _get_cached_analysis(self, symbol: str) -> Optional[TradingRecommendation]:
         """Получает кэшированный анализ если он еще актуален"""
@@ -311,25 +350,50 @@ class TradingIntelligence:
                 if symbol_base not in top_pairs:
                     return None
             
-            # Анализируем сигналы с учетом производительности
-            analysis = self._analyze_signals_advanced(filtered_signals, market_context)
+            # Анализируем сигналы через стратегию (или fallback на старую логику)
+            if self.strategy:
+                try:
+                    recommendation = await asyncio.wait_for(
+                        self._run_strategy(symbol, filtered_signals, market_context),
+                        timeout=20.0
+                    )
+                    if recommendation is None:
+                        logger.debug(f"Strategy returned None for {symbol} — fallback на legacy")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Strategy timeout for {symbol}, using legacy analysis")
+                    recommendation = None
+                except Exception as e:
+                    logger.warning(f"Strategy error for {symbol}: {e}, falling back to legacy")
+                    recommendation = None
+                
+                # Если стратегия не выдала результат, пробуем legacy
+                if recommendation is None:
+                    logger.debug(f"Falling back to legacy analysis for {symbol}")
+                    analysis = self._analyze_signals_advanced(filtered_signals, market_context)
+                    recommendation = self._generate_recommendation(
+                        symbol, filtered_signals, analysis, market_context
+                    )
+            else:
+                # Legacy fallback (если стратегии недоступны)
+                analysis = self._analyze_signals_advanced(filtered_signals, market_context)
+                recommendation = self._generate_recommendation(
+                    symbol, filtered_signals, analysis, market_context
+                )
+            
+            if recommendation is None:
+                return None
             
             # Улучшаем анализ с помощью ML (с таймаутом)
             if self.ml_predictor:
                 try:
-                    analysis = await asyncio.wait_for(
-                        self._enhance_analysis_with_ml(symbol, analysis, market_context),
+                    recommendation = await asyncio.wait_for(
+                        self._enhance_recommendation_with_ml(symbol, recommendation, market_context),
                         timeout=5.0
                     )
                 except asyncio.TimeoutError:
                     logger.warning(f"Таймаут ML анализа для {symbol}, продолжаем без ML")
                 except Exception as e:
                     logger.warning(f"Ошибка ML анализа для {symbol}: {e}, продолжаем без ML")
-            
-            # Генерируем рекомендацию
-            recommendation = self._generate_recommendation(
-                symbol, filtered_signals, analysis, market_context
-            )
             
             # Этап 8.4.2: фиксируем snapshot_time в метаданных рекомендации
             if recommendation.metadata is None:
@@ -589,9 +653,55 @@ class TradingIntelligence:
 
         return min(signal_confidence * context_factor, 1.0)
     
+    async def _enhance_recommendation_with_ml(self, symbol: str, recommendation: TradingRecommendation,
+                                             market_context: MarketContext) -> TradingRecommendation:
+        """
+        Улучшает рекомендацию с помощью ML (OutcomePredictor).
+        Модифицирует confidence на основе P(win).
+        """
+        if not recommendation or not self.outcome_predictor:
+            return recommendation
+        
+        try:
+            if recommendation.direction == SignalDirection.NEUTRAL:
+                return recommendation
+            
+            supporting = recommendation.supporting_signals or []
+            first_sig = supporting[0] if supporting else None
+            sig_type = first_sig.signal_type.value if first_sig else "composite"
+            direction_str = recommendation.direction.value if hasattr(recommendation.direction, "value") else str(recommendation.direction)
+            
+            features_dict = {
+                "volatility": market_context.volatility or 0,
+                "price_change_24h": market_context.price_change_24h or 0,
+            }
+            
+            win_prob = self.outcome_predictor.predict_win_prob(
+                signal_type=sig_type,
+                direction=direction_str,
+                strength=recommendation.overall_strength,
+                confidence=recommendation.confidence,
+                features_dict=features_dict,
+                regime=None,
+            )
+            
+            if win_prob is not None:
+                orig_conf = recommendation.confidence
+                # Блендируем: 70% оригинал, 30% предсказание ML
+                blended_conf = orig_conf * 0.7 + win_prob * 0.3
+                recommendation.confidence = round(blended_conf, 4)
+                logger.debug(
+                    f"[{symbol}] OutcomePredictor: P(win)={win_prob:.2f} "
+                    f"conf {orig_conf:.3f}→{recommendation.confidence:.3f}"
+                )
+        except Exception as e:
+            logger.debug(f"OutcomePredictor blend error: {e}")
+        
+        return recommendation
+    
     async def _enhance_analysis_with_ml(self, symbol: str, analysis: Dict[str, Any], 
                                        market_context: MarketContext) -> Dict[str, Any]:
-        """Улучшает анализ с помощью машинного обучения"""
+        """Улучшает анализ с помощью машинного обучения (legacy method)"""
         try:
             if not self.ml_predictor:
                 return analysis
