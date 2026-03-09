@@ -39,9 +39,14 @@ def _get_analyze_sem(bot) -> asyncio.Semaphore:
 
 
 def _div_passes_filters(div_info: dict, df_15m, pivot_calc, sym: str,
-                        proximity_pct: float = 4.0) -> tuple[bool, str]:
+                        proximity_pct: float = 4.0,
+                        market_regime: str = "") -> tuple[bool, str]:
     """
     Фильтрация дивергенций: отсеивает шумы, оставляет только подтверждённые сигналы.
+
+    Правило 0 — Режим рынка (Этап 8.4.5):
+      Hidden дивергенции в RANGE/HIGH_VOL режиме отклоняются:
+      в боковике нет тренда для продолжения, в HIGH_VOL тренды рвутся.
 
     Правило 1 — WT zone:
       Regular Bullish:  wt1_current < -40 (OS зона, уже встроено в детектор как < -60, дублируем)
@@ -60,6 +65,10 @@ def _div_passes_filters(div_info: dict, df_15m, pivot_calc, sym: str,
     is_bullish = "BULLISH" in div_type
     is_bearish = "BEARISH" in div_type
     is_hidden = "HIDDEN" in div_type
+
+    # ── Правило 0: Режим рынка — hidden div только в трендовом рынке ────────
+    if is_hidden and market_regime in ("RANGE", "HIGH_VOL"):
+        return False, f"Hidden div пропущена: режим {market_regime} (нет тренда для продолжения)"
 
     # ── Правило 1: WT zone ──────────────────────────────────────────────────
     # wt1_current уже есть в details (вычислен детектором), не нужен df_15m
@@ -301,12 +310,24 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
                 div_found = False
                 if check_divergences:
                     pivot_calc = getattr(bot, "pivot_calculator", None)
+                    # Этап 8.4.5: режим пары — скрытые дивергенции отклоняем в RANGE/HIGH_VOL
+                    _pair_regime = ""
+                    try:
+                        from core.market_regime import MarketRegimeClassifier
+                        _pair_regime = MarketRegimeClassifier().classify_from_ohlcv(
+                            df_15m.values.tolist()
+                        ) or ""
+                    except Exception:
+                        pass
                     try:
                         has_mtf, mtf_info = await bot.divergence_detector.detect_mtf_divergence(
                             sym, bot.data_collector
                         )
                         if has_mtf:
-                            passed, reason = _div_passes_filters(mtf_info, df_15m, pivot_calc, sym, _div_proximity_pct)
+                            passed, reason = _div_passes_filters(
+                                mtf_info, df_15m, pivot_calc, sym, _div_proximity_pct,
+                                market_regime=_pair_regime,
+                            )
                             if passed:
                                 div_found = True
                                 bot.signal_counters["divergence"] += 1
@@ -337,7 +358,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
                                     sym, bot.data_collector, timeframe=tf
                                 )
                                 if has_div:
-                                    passed, reason = _div_passes_filters(div_info, df_15m, pivot_calc, sym, _div_proximity_pct)
+                                    passed, reason = _div_passes_filters(
+                                        div_info, df_15m, pivot_calc, sym, _div_proximity_pct,
+                                        market_regime=_pair_regime,
+                                    )
                                     if passed:
                                         bot.signal_counters["divergence"] += 1
                                         bot.signal_counters["total"] += 1
