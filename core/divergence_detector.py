@@ -292,7 +292,7 @@ class DivergenceDetector:
                         'price_current': price_current,
                         'price_pivot': price_pivot,
                         'distance': distance,
-                        'ind_change': ind_pivot - ind_current,
+                        'ind_change': ind_current - ind_pivot,  # отрицательное: WT упал (LH)
                         'price_change_pct': ((price_current - price_pivot) / price_pivot) * 100
                     }
         
@@ -326,6 +326,9 @@ class DivergenceDetector:
             price_pivot = df['low'].iloc[pivot_idx]
             
             # Hidden Bullish: индикатор LL, цена HL
+            # Zone фильтр: hidden bull при wt > +20 — тренд уже развернулся, поздно
+            if ind_current > 20:
+                continue
             if ind_current < ind_pivot and price_current > price_pivot:
                 is_clean = self.check_virtual_line(
                     df[indicator_col], df['close'],
@@ -377,6 +380,9 @@ class DivergenceDetector:
             price_pivot = df['high'].iloc[pivot_idx]
             
             # Hidden Bearish: индикатор HH, цена LH
+            # Zone фильтр: hidden bear при wt < -20 — тренд уже развернулся, поздно
+            if ind_current < -20:
+                continue
             if ind_current > ind_pivot and price_current < price_pivot:
                 is_clean = self.check_virtual_line(
                     df[indicator_col], df['close'],
@@ -419,33 +425,49 @@ class DivergenceDetector:
             df = calculate_wt(df, n1=10, n2=21)
             
             # Проверяем дивергенции в порядке приоритета
-            
+            ind_pivots_low  = self.find_pivot_lows(df['wt1'], self.pivot_period)
+            ind_pivots_high = self.find_pivot_highs(df['wt1'], self.pivot_period)
+
+            _COUNT_LABELS = {1: "Обычная", 2: "Двойная", 3: "Тройная"}
+
             # 1. Regular Bullish (самая сильная для LONG)
             reg_bull = self.detect_regular_bullish(df, indicator_col='wt1')
             if reg_bull:
-                strength = self._calculate_strength(reg_bull, 'REGULAR_BULLISH')
+                div_count = self._count_div_chain_bullish(
+                    df, 'wt1', reg_bull['pivot_idx'], reg_bull['ind_pivot'],
+                    reg_bull['price_pivot'], ind_pivots_low
+                )
+                strength = self._calculate_strength(reg_bull, 'REGULAR_BULLISH', div_count)
+                label = _COUNT_LABELS.get(div_count, "Тройная+")
                 return True, {
                     "type": "REGULAR_BULLISH",
                     "direction": "LONG",
                     "strength": strength,
                     "timeframe": timeframe,
+                    "div_count": div_count,
                     "details": reg_bull,
-                    "description": "Обычная бычья дивергенция"
+                    "description": f"{label} бычья дивергенция"
                 }
-            
+
             # 2. Regular Bearish (самая сильная для SHORT)
             reg_bear = self.detect_regular_bearish(df, indicator_col='wt1')
             if reg_bear:
-                strength = self._calculate_strength(reg_bear, 'REGULAR_BEARISH')
+                div_count = self._count_div_chain_bearish(
+                    df, 'wt1', reg_bear['pivot_idx'], reg_bear['ind_pivot'],
+                    reg_bear['price_pivot'], ind_pivots_high
+                )
+                strength = self._calculate_strength(reg_bear, 'REGULAR_BEARISH', div_count)
+                label = _COUNT_LABELS.get(div_count, "Тройная+")
                 return True, {
                     "type": "REGULAR_BEARISH",
                     "direction": "SHORT",
                     "strength": strength,
                     "timeframe": timeframe,
+                    "div_count": div_count,
                     "details": reg_bear,
-                    "description": "Обычная медвежья дивергенция"
+                    "description": f"{label} медвежья дивергенция"
                 }
-            
+
             # 3. Hidden Bullish
             hid_bull = self.detect_hidden_bullish(df, indicator_col='wt1')
             if hid_bull:
@@ -455,10 +477,11 @@ class DivergenceDetector:
                     "direction": "LONG",
                     "strength": strength,
                     "timeframe": timeframe,
+                    "div_count": 1,
                     "details": hid_bull,
                     "description": "Скрытая бычья дивергенция (продолжение тренда)"
                 }
-            
+
             # 4. Hidden Bearish
             hid_bear = self.detect_hidden_bearish(df, indicator_col='wt1')
             if hid_bear:
@@ -468,25 +491,187 @@ class DivergenceDetector:
                     "direction": "SHORT",
                     "strength": strength,
                     "timeframe": timeframe,
+                    "div_count": 1,
                     "details": hid_bear,
                     "description": "Скрытая медвежья дивергенция (продолжение тренда)"
                 }
             
             return False, None
-            
+
         except Exception:
             logger.exception(f"Ошибка detect_divergence для {symbol}")
             return False, None
-    
-    def _calculate_strength(self, div_details, div_type):
+
+    # Бонус к силе сигнала за уровень иерархии TF (чем выше — тем ценнее)
+    _CASCADE_BONUS = {
+        ("1W", "1D"): 25,
+        ("1D", "4h"): 20,
+        ("4h", "1h"): 15,
+        ("1h", "15m"): 10,
+    }
+
+    async def detect_cascade_divergence(self, symbol, data_collector, senior_tf: str, junior_tf: str):
         """
-        ИСПРАВЛЕННЫЙ расчет силы дивергенции (0-100)
-        
+        Универсальная MTF-конфлюэнция дивергенций:
+          - Скрытая на senior_tf  → тренд продолжается, коррекция заканчивается
+          - Регулярная на junior_tf в том же направлении → точка входа
+
+        Args:
+            senior_tf: старший таймфрейм (напр. "4h", "1h")
+            junior_tf: младший таймфрейм (напр. "1h", "15m")
+
+        Returns:
+            (bool, dict) — найдена ли конфлюэнция и её детали
+        """
+        try:
+            limit = self.max_bars + self.pivot_period * 2 + 50
+
+            # Шаг 1: скрытая дивергенция на senior_tf
+            df_senior = await data_collector.get_ohlcv(symbol, timeframe=senior_tf, limit=limit)
+            if df_senior is None or len(df_senior) < limit:
+                return False, None
+
+            df_senior = calculate_wt(df_senior, n1=10, n2=21)
+
+            hidden_dir = None
+            hidden_strength = 0
+
+            hid_bull = self.detect_hidden_bullish(df_senior, indicator_col='wt1')
+            if hid_bull:
+                hidden_dir = "LONG"
+                hidden_strength = self._calculate_strength(hid_bull, 'HIDDEN_BULLISH')
+            else:
+                hid_bear = self.detect_hidden_bearish(df_senior, indicator_col='wt1')
+                if hid_bear:
+                    hidden_dir = "SHORT"
+                    hidden_strength = self._calculate_strength(hid_bear, 'HIDDEN_BEARISH')
+
+            if not hidden_dir:
+                return False, None
+
+            # Шаг 2: регулярная дивергенция на junior_tf в том же направлении
+            df_junior = await data_collector.get_ohlcv(symbol, timeframe=junior_tf, limit=limit)
+            if df_junior is None or len(df_junior) < limit:
+                return False, None
+
+            df_junior = calculate_wt(df_junior, n1=10, n2=21)
+
+            bull_str = "бычья" if hidden_dir == "LONG" else "медвежья"
+            if hidden_dir == "LONG":
+                regular_info = self.detect_regular_bullish(df_junior, indicator_col='wt1')
+                regular_type = 'REGULAR_BULLISH'
+            else:
+                regular_info = self.detect_regular_bearish(df_junior, indicator_col='wt1')
+                regular_type = 'REGULAR_BEARISH'
+
+            if not regular_info:
+                return False, None
+
+            regular_strength = self._calculate_strength(regular_info, regular_type)
+            bonus = self._CASCADE_BONUS.get((senior_tf, junior_tf), 10)
+            combined = min(100, int(hidden_strength * 0.4 + regular_strength * 0.6) + bonus)
+
+            tf_label = f"{senior_tf}+{junior_tf}"
+            return True, {
+                "type": f"MTF_{'BULLISH' if hidden_dir == 'LONG' else 'BEARISH'}",
+                "direction": hidden_dir,
+                "strength": combined,
+                "timeframe": tf_label,
+                "senior_tf": senior_tf,
+                "junior_tf": junior_tf,
+                "hidden_strength": hidden_strength,
+                "regular_strength": regular_strength,
+                "details": regular_info,
+                "description": f"MTF-дивергенция: скрытая {bull_str} ({senior_tf}) + регулярная {bull_str} ({junior_tf})",
+            }
+
+        except Exception:
+            logger.exception("Ошибка detect_cascade_divergence %s→%s для %s", senior_tf, junior_tf, symbol)
+            return False, None
+
+    async def detect_mtf_divergence(self, symbol, data_collector):
+        """Обёртка для уровня 1h→15m (обратная совместимость)."""
+        return await self.detect_cascade_divergence(symbol, data_collector, "1h", "15m")
+
+    def _count_div_chain_bullish(self, df, indicator_col, first_pivot_idx, first_pivot_wt, first_pivot_price, ind_pivots):
+        """
+        Считает глубину бычьей дивергентной цепочки, начиная с первого найденного пивота.
+
+        Для каждого следующего (более старого) пивота проверяет:
+          - WT пивота < WT текущего пивота (каждый минимум WT ниже = продолжение HL-цепочки)
+          - Цена пивота < цена текущего пивота (каждый минимум цены ниже = LL-цепочка)
+          - Пивот тоже в зоне OS (< -60)
+
+        Returns:
+            int: 1 = одиночная, 2 = двойная, 3 = тройная (максимум)
+        """
+        count = 1
+        cur_idx = first_pivot_idx
+        cur_wt = first_pivot_wt
+        cur_price = first_pivot_price
+
+        for pivot in reversed(ind_pivots):
+            if pivot['index'] >= cur_idx:
+                continue
+            if cur_idx - pivot['index'] > self.max_bars:
+                break
+            p_wt = pivot['value']
+            p_price = df['low'].iloc[pivot['index']]
+            # Следующий (старший) пивот должен быть ниже по WT и по цене, и в OS
+            if p_wt < cur_wt and p_price < cur_price and p_wt < -60:
+                count += 1
+                cur_idx = pivot['index']
+                cur_wt = p_wt
+                cur_price = p_price
+                if count >= 3:
+                    break
+
+        return count
+
+    def _count_div_chain_bearish(self, df, indicator_col, first_pivot_idx, first_pivot_wt, first_pivot_price, ind_pivots):
+        """
+        Считает глубину медвежьей дивергентной цепочки.
+
+        Для каждого более старого пивота:
+          - WT пивота > WT текущего пивота (HH-цепочка в WT — WT рос, LH к текущему)
+          - Цена пивота > цена текущего пивота (LH в цене ↔ HH-цепочка в прошлом)
+          - Пивот в зоне OB (> 60)
+
+        Returns:
+            int: 1 = одиночная, 2 = двойная, 3 = тройная
+        """
+        count = 1
+        cur_idx = first_pivot_idx
+        cur_wt = first_pivot_wt
+        cur_price = first_pivot_price
+
+        for pivot in reversed(ind_pivots):
+            if pivot['index'] >= cur_idx:
+                continue
+            if cur_idx - pivot['index'] > self.max_bars:
+                break
+            p_wt = pivot['value']
+            p_price = df['high'].iloc[pivot['index']]
+            if p_wt > cur_wt and p_price > cur_price and p_wt > 60:
+                count += 1
+                cur_idx = pivot['index']
+                cur_wt = p_wt
+                cur_price = p_price
+                if count >= 3:
+                    break
+
+        return count
+
+    def _calculate_strength(self, div_details, div_type, div_count: int = 1):
+        """
+        Расчет силы дивергенции (0-100).
+
         Учитывает:
-        1. Расстояние между точками (больше = лучше)
+        1. Расстояние между точками (макс 25 баллов)
         2. Величину расхождения индикатора
         3. Величину изменения цены
-        4. КРИТИЧНО: Нахождение в правильных зонах!
+        4. КРИТИЧНО: нахождение в правильных зонах
+        5. Бонус за двойную/тройную дивергенцию
         """
         if not div_details:
             return 0
@@ -563,7 +748,13 @@ class DivergenceDetector:
                 zone_score = 0   # Оба вне OB - СЛАБЫЙ сигнал!
         
         score += zone_score
-        
+
+        # Бонус за двойную/тройную дивергенцию
+        if div_count == 2:
+            score += 15
+        elif div_count >= 3:
+            score += 25
+
         return min(score, 100)
 
 
@@ -579,11 +770,16 @@ def divergence_message(symbol: str, div_info: dict) -> str:
     details = div_info.get("details", {})
     description = div_info.get("description", "")
     timeframe = div_info.get("timeframe", "15m")
-    
+    div_count = div_info.get("div_count", 1)
+
     # Определяем интервал для TradingView
     tf_to_interval = {"3m": 3, "5m": 5, "15m": 15, "1h": 60, "4h": 240}
     interval = tf_to_interval.get(timeframe, 15)
-    
+
+    # Заголовок с множественностью
+    _count_prefix = {1: "ДИВЕРГЕНЦИЯ", 2: "ДВОЙНАЯ ДИВЕРГЕНЦИЯ ⚡", 3: "ТРОЙНАЯ ДИВЕРГЕНЦИЯ 🔱"}
+    header = _count_prefix.get(div_count, "ТРОЙНАЯ+ ДИВЕРГЕНЦИЯ 🔱")
+
     # Эмодзи по направлению
     emoji = "🟢" if direction == "LONG" else "🔴"
     
@@ -610,7 +806,7 @@ def divergence_message(symbol: str, div_info: dict) -> str:
         type_text = "Скрытая (продолжение)"
     
     parts = [
-        f"{emoji} <b>ДИВЕРГЕНЦИЯ</b> {emoji}",
+        f"{emoji} <b>{header}</b> {emoji}",
         f"Пара: {tv_link(symbol, interval=interval)}",
         f"{type_emoji} Тип: <b>{description}</b>",
         f"Направление: <b>{direction}</b>",
@@ -639,6 +835,10 @@ def divergence_message(symbol: str, div_info: dict) -> str:
         parts.append("")
         parts.append(f"📏 Расстояние: {distance} баров")
         parts.append(f"📈 Изменение цены: {price_change:+.2f}%")
+        if div_count > 1:
+            _chain_labels = {2: "🔁 Двойная цепочка — продавцы/покупатели выдохлись дважды",
+                             3: "🔱 Тройная цепочка — экстремальное истощение, высокая вероятность разворота"}
+            parts.append(_chain_labels.get(div_count, ""))
         parts.append(f"📊 Изменение WT: {details.get('ind_change', 0):+.1f}")
     
     parts.append("")
@@ -727,5 +927,63 @@ def divergence_message(symbol: str, div_info: dict) -> str:
     
     parts.append("")
     parts.append(f"🕐 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
+
+    return "\n".join(parts)
+
+
+def mtf_divergence_message(symbol: str, div_info: dict) -> str:
+    """Форматирует сообщение о MTF-конфлюэнции дивергенций."""
+    from core.message_builder import tv_link
+    from datetime import datetime
+
+    direction = div_info.get("direction", "LONG")
+    strength = div_info.get("strength", 0)
+    description = div_info.get("description", "")
+    hidden_strength = div_info.get("hidden_strength", 0)
+    regular_strength = div_info.get("regular_strength", 0)
+    senior_tf = div_info.get("senior_tf", "1h")
+    junior_tf = div_info.get("junior_tf", "15m")
+
+    emoji = "🟢" if direction == "LONG" else "🔴"
+    action = "LONG — ожидается рост" if direction == "LONG" else "SHORT — ожидается падение"
+
+    if strength >= 75:
+        strength_emoji, strength_text = "🔥🔥🔥", "Очень сильная"
+    elif strength >= 60:
+        strength_emoji, strength_text = "🔥🔥", "Сильная"
+    elif strength >= 40:
+        strength_emoji, strength_text = "🔥", "Средняя"
+    else:
+        strength_emoji, strength_text = "⚡", "Слабая"
+
+    parts = [
+        f"{emoji} <b>MTF-ДИВЕРГЕНЦИЯ</b> {emoji}",
+        f"Пара: {tv_link(symbol)}",
+        f"Направление: <b>{action}</b>",
+        "",
+        f"{strength_emoji} Сила сигнала: <b>{strength}/100</b> — {strength_text}",
+        "",
+        "<b>💡 Что произошло:</b>",
+        f"  • Скрытая дивергенция ({senior_tf}): продолжение тренда, коррекция завершается (сила: {hidden_strength})",
+        f"  • Регулярная дивергенция ({junior_tf}): точка входа по тренду (сила: {regular_strength})",
+        f"  • {description}",
+        "",
+        "<b>⚠️ Рекомендации:</b>",
+    ]
+
+    if strength >= 75:
+        parts.append("  • Отличная точка входа по тренду — стандартный объём")
+        parts.append("  • Стоп ниже/выше уровня регулярной дивергенции на 15m")
+    elif strength >= 60:
+        parts.append("  • Хорошая точка входа — стандартный объём")
+        parts.append("  • Дождитесь закрытия 15m свечи для подтверждения")
+    else:
+        parts.append("  • Средний сигнал — уменьшите объём вдвое")
+        parts.append("  • Обязательно дождитесь подтверждения")
+
+    parts += [
+        "",
+        f"🕐 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+
     return "\n".join(parts)

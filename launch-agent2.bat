@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo  Agent 2: oko.webdev@gmail.com
+echo  Agent 2: yogoru@gmail.com
 echo  Oko MTF Bot - Developer Agent
 echo ============================================
 echo.
@@ -22,7 +22,7 @@ cd /d "e:\MTF BOT\CURSOR\crypto_volume_bot"
 if not exist "C:\ClaudeAgents\agent2\.claude.json" (
     echo.
     echo Первый запуск! Нужна авторизация:
-    echo Войди как: oko.webdev@gmail.com
+    echo Войди как: yogoru@gmail.com
     echo.
     claude login
 )

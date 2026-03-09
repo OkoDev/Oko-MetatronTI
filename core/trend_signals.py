@@ -87,6 +87,7 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
             # Вариант 1: Классический откат
             # 15m в зоне перепроданности + разворот вверх
             if zone_15m == "OS" and cross_up_15m and trend_5m == 1:
+                logger.debug("[%s] trend_following LONG: классический откат (15m OS + cross_up + 5m UP)", symbol)
                 signal_info = {
                     "symbol": symbol,
                     "type": "TREND_LONG",

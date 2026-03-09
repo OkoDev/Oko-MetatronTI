@@ -3,7 +3,7 @@
 ## 🏗️ Agent 1: Architect (claude_architect)
 
 **Роль:** Архитектор системы — планирование, анализ, code review
-**Аккаунт:** yogoru@gmail.com
+**Аккаунт:** oko.webdev@gmail.com
 **Контейнер:** `crypto_bot_architect`
 
 **Зоны ответственности:**
@@ -16,7 +16,7 @@
 **Запуск:**
 ```bash
 docker exec -it crypto_bot_architect bash
-# Первый раз: claude login → yogoru@gmail.com
+# Первый раз: claude login → oko.webdev@gmail.com
 claude --dangerously-skip-permissions
 ```
 
@@ -25,7 +25,7 @@ claude --dangerously-skip-permissions
 ## 💻 Agent 2: Developer (claude_developer)
 
 **Роль:** Разработчик-исполнитель — код, тесты, оптимизация
-**Аккаунт:** oko.webdev@gmail.com
+**Аккаунт:** yogoru@gmail.com
 **Контейнер:** `crypto_bot_developer`
 
 **Зоны ответственности:**
@@ -38,7 +38,7 @@ claude --dangerously-skip-permissions
 **Запуск:**
 ```bash
 docker exec -it crypto_bot_developer bash
-# Первый раз: claude login → oko.webdev@gmail.com
+# Первый раз: claude login → yogoru@gmail.com
 claude --dangerously-skip-permissions
 ```
 

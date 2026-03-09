@@ -85,7 +85,7 @@ def get_router(bot) -> Router:
         await message.answer(f"⏳ Расчет недельных и дневных пивотов для {target}...")
 
         try:
-            pivots_data = await bot.pivot_calculator_fixed.get_multi_timeframe_pivots(
+            pivots_data = await bot.pivot_calculator.get_multi_timeframe_pivots(
                 target, bot.data_collector
             )
             if not pivots_data:
@@ -95,10 +95,13 @@ def get_router(bot) -> Router:
                 await state.clear()
                 return
 
-            df = await bot.data_collector.get_ohlcv(target, "1m", limit=1)
-            current_price = float(df["close"].iloc[-1]) if df is not None and not df.empty else 0
+            ticker = await bot.data_collector.get_ticker(target)
+            current_price = float(ticker.get("last") or 0) if ticker else 0
+            if not current_price:
+                df = await bot.data_collector.get_ohlcv(target, "15m", limit=1)
+                current_price = float(df["close"].iloc[-1]) if df is not None and not df.empty else 0
 
-            msg = bot.pivot_calculator_fixed.format_pivot_message(target, pivots_data, current_price)
+            msg = bot.pivot_calculator.format_pivot_message(target, pivots_data, current_price)
             await message.answer(msg, disable_web_page_preview=True, reply_markup=main_menu())
             logger.info("Пивоты отправлены для %s", target)
 
@@ -127,7 +130,7 @@ def get_router(bot) -> Router:
         await message.answer(f"⏳ Проверка близости к пивотам для {target}...")
 
         try:
-            pivots_data = await bot.pivot_calculator_fixed.get_multi_timeframe_pivots(
+            pivots_data = await bot.pivot_calculator.get_multi_timeframe_pivots(
                 target, bot.data_collector
             )
             if not pivots_data or "1W" not in pivots_data:
@@ -140,16 +143,18 @@ def get_router(bot) -> Router:
             weekly_pivots = pivots_data["1W"]
             confluence = pivots_data.get("confluence", [])
 
-            df = await bot.data_collector.get_ohlcv(target, "1m", limit=1)
-            if df is None or df.empty:
+            ticker = await bot.data_collector.get_ticker(target)
+            current_price = float(ticker.get("last") or 0) if ticker else 0
+            if not current_price:
+                df = await bot.data_collector.get_ohlcv(target, "15m", limit=1)
+                current_price = float(df["close"].iloc[-1]) if df is not None and not df.empty else 0
+            if not current_price:
                 await message.answer(
                     f"❌ Не удалось получить цену для {target}", reply_markup=main_menu()
                 )
                 await state.clear()
                 return
-
-            current_price = float(df["close"].iloc[-1])
-            near_level = bot.pivot_calculator_fixed.is_near_level(
+            near_level = bot.pivot_calculator.is_near_level(
                 current_price, weekly_pivots, threshold_percent=1.0
             )
 

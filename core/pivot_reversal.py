@@ -47,19 +47,29 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
         weekly_pivots = pivots_data['1W']
         daily_pivots = pivots_data.get('1D')
         confluence = pivots_data.get('confluence', [])
-        
+
         # === 2. Получаем текущую цену ===
         df_1m = await data_collector.get_ohlcv(symbol, "1m", limit=2)
         if df_1m is None or len(df_1m) < 1:
             return False, None
-        
+
         current_price = df_1m['close'].iloc[-1]
-        
+
         # === 3. Проверяем близость к недельному уровню (0.5%) ===
         near_level = pivot_calculator.is_near_level(
             current_price, weekly_pivots, threshold_percent=0.5
         )
-        
+
+        # Fallback: проверяем предыдущую неделю (flip-levels)
+        if not near_level:
+            prev_weekly = pivots_data.get('1W_prev')
+            if prev_weekly:
+                near_level = pivot_calculator.is_near_level(
+                    current_price, prev_weekly, threshold_percent=0.5
+                )
+                if near_level:
+                    near_level["is_prev_period"] = True
+
         if not near_level:
             return False, None  # Цена не у уровня - выходим
         

@@ -226,11 +226,17 @@ class PivotCalculatorFixed:
         prev_week_end = week_start
         prev_week_start = week_start - timedelta(weeks=1)
 
-        # Метод 1: из дневных свечей
-        pivots = await self._weekly_from_1d(symbol, data_collector, prev_week_start, prev_week_end)
-        # Метод 2 (fallback): из 4h свечей
+        # Метод 1 (PRIMARY): прямой fetch 1w свечей — не зависит от UTC-границ суток биржи
+        pivots = await self._weekly_from_1w(symbol, data_collector)
+        # Метод 2: из дневных свечей с фильтром дат
+        if not pivots:
+            pivots = await self._weekly_from_1d(symbol, data_collector, prev_week_start, prev_week_end)
+        # Метод 3 (fallback): из 4h свечей
         if not pivots:
             pivots = await self._weekly_from_4h(symbol, data_collector, prev_week_start, prev_week_end)
+        # Метод 4 (последний резерв): из 1h свечей — работает даже если биржа не даёт 1d/4h/1w
+        if not pivots:
+            pivots = await self._weekly_from_1h(symbol, data_collector, prev_week_start, prev_week_end)
 
         if pivots:
             pivots["period_start"] = week_start
@@ -244,7 +250,7 @@ class PivotCalculatorFixed:
             logger.info(f"✅ Недельные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots.get('period_label','')})")
             return pivots
 
-        logger.warning(f"❌ Не удалось получить недельные пивоты для {symbol}")
+        logger.info("Недельные пивоты недоступны для %s (нет данных)", symbol)
         return None
 
     async def _weekly_from_1d(self, symbol, data_collector, week_start, week_end) -> Optional[Dict]:
@@ -255,7 +261,11 @@ class PivotCalculatorFixed:
             df = _df_with_datetime(df)
             week = df[(df["datetime"] >= week_start) & (df["datetime"] < week_end)]
             if len(week) < 3:
-                return None
+                # Fallback: если фильтр дат промахнулся (нестандартная UTC-граница биржи),
+                # берём последние 7 завершённых баров (исключая текущий незакрытый)
+                week = df.iloc[-8:-1] if len(df) >= 8 else df.iloc[:-1]
+                if len(week) < 3:
+                    return None
             pivots = self.calculate_traditional_pivots(
                 week["high"].max(), week["low"].min(), week["close"].iloc[-1]
             )
@@ -291,6 +301,55 @@ class PivotCalculatorFixed:
             return pivots
         except Exception as e:
             logger.debug(f"_weekly_from_4h failed {symbol}: {e}")
+            return None
+
+    async def _weekly_from_1w(self, symbol: str, data_collector) -> Optional[Dict]:
+        """Прямой fetch 1w свечей — самый надёжный метод, без привязки к UTC-границам суток."""
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="1w", limit=3)
+            if df is None or len(df) < 2:
+                return None
+            # iloc[-2] = предыдущая завершённая неделя (iloc[-1] = текущая открытая)
+            prev = df.iloc[-2]
+            pivots = self.calculate_traditional_pivots(
+                float(prev["high"]), float(prev["low"]), float(prev["close"])
+            )
+            pivots.update({
+                "timeframe": "1W",
+                "method": "direct_1w",
+                "timestamp": datetime.now(timezone.utc),
+            })
+            return pivots
+        except Exception as e:
+            logger.debug("_weekly_from_1w failed %s: %s", symbol, e)
+            return None
+
+    async def _weekly_from_1h(self, symbol: str, data_collector, week_start, week_end) -> Optional[Dict]:
+        """Последний резерв: агрегация из 1h свечей. 1h работает на любой бирже."""
+        try:
+            # limit=160 — максимум BingX на OHLCV-запрос; плюс уже в кеше от скана (cache HIT)
+            df = await data_collector.get_ohlcv(symbol, timeframe="1h", limit=160)
+            if df is None or len(df) < 24:
+                return None
+            df = _df_with_datetime(df)
+            week = df[(df["datetime"] >= week_start) & (df["datetime"] < week_end)]
+            if len(week) < 24:
+                # Фильтр дат не сработал — берём последние ~7 дней, исключая текущий бар
+                week = df.iloc[-161:-1] if len(df) >= 161 else df.iloc[:-1]
+                if len(week) < 24:
+                    return None
+            pivots = self.calculate_traditional_pivots(
+                week["high"].max(), week["low"].min(), week["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "1W",
+                "method": "aggregated_from_1h",
+                "period_label": week_start.strftime("%Y-W%V"),
+                "timestamp": datetime.now(timezone.utc),
+            })
+            return pivots
+        except Exception as e:
+            logger.debug("_weekly_from_1h failed %s: %s", symbol, e)
             return None
 
     # ──────────────────────────────────────────────────────
@@ -398,7 +457,7 @@ class PivotCalculatorFixed:
         # Конфлюэнции между всеми доступными уровнями
         results["confluence"] = self._find_all_confluences(results)
         if results["confluence"]:
-            logger.info(f"🎯 {len(results['confluence'])} конфлюэнций для {symbol}")
+            logger.debug(f"🎯 {len(results['confluence'])} конфлюэнций для {symbol}")
 
         return results
 
@@ -590,7 +649,7 @@ class PivotCalculatorFixed:
         parts = [
             "📊 <b>ПИВОТНЫЕ УРОВНИ</b>",
             f"Пара: {tv_link(symbol, interval=240)}",
-            f"💰 Цена: {current_price:.6f}",
+            f"💰 Цена: {current_price:.6f}" if current_price else "💰 Цена: н/д",
             "",
         ]
 
@@ -601,6 +660,8 @@ class PivotCalculatorFixed:
             if method:
                 parts.append(f"<i>Метод: {method}</i>")
             parts.append("")
+            if not current_price:
+                return
             parts.append("<b>🔴 Сопротивления:</b>")
             for i in range(5, 0, -1):
                 k = f"R{i}"

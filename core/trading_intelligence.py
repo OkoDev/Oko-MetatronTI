@@ -91,8 +91,8 @@ class TradingIntelligence:
         # Адаптивные пороги для принятия решений
         self.thresholds = {
             "min_signals": 2,  # Минимум сигналов для рекомендации
-            "min_strength": 40,  # Минимальная сила сигнала
-            "min_confidence": 0.6,  # Минимальная уверенность
+            "min_strength": 10,  # TI не фильтрует — фильтрация только в monitoring.py через config.yaml
+            "min_confidence": 0.55,  # Минимальная уверенность (снижено с 0.6 для устойчивости к штрафам)
             "conflict_threshold": 0.3,  # Порог конфликтующих сигналов
             "volume_threshold": 100000,  # Минимальный объем для анализа (снижен с 1M)
             "volatility_threshold": 50.0  # Максимальная волатильность (увеличен с 20)
@@ -247,7 +247,7 @@ class TradingIntelligence:
                 try:
                     signals = await asyncio.wait_for(
                         self._collect_all_signals(symbol),
-                        timeout=10.0
+                        timeout=20.0
                     )
                 except asyncio.TimeoutError:
                     elapsed = (datetime.now() - start_time).total_seconds()
@@ -255,23 +255,26 @@ class TradingIntelligence:
                     return None
             
             if not signals:
-                logger.warning(f"Не найдено сигналов для {symbol}")
+                logger.warning(f"Не найдено сигналов для {symbol} (pre_collected={bool(pre_collected_signals)})")
                 return None
             
             # Фильтруем сигналы по качеству
             filtered_signals = self._filter_signals_by_quality(signals)
             
             # Снижаем требования для популярных пар
-            min_signals = self.thresholds["min_signals"]
-            top_pairs = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 'MATIC', 'AVAX']
+            _sig_cfg = self.config.get("analysis", {}).get("signals", {})
+            min_signals = _sig_cfg.get("min_signals", self.thresholds["min_signals"])
+            top_pairs = _sig_cfg.get("premium_pairs",
+                ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 'MATIC', 'AVAX'])
+            single_min_strength = _sig_cfg.get("single_signal_min_strength", 50)
             symbol_base = symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', '').replace(':USDT', '')
             if symbol_base in top_pairs:
                 min_signals = 1  # Для топ-пар достаточно 1 сигнала
-            
+
             if len(filtered_signals) < min_signals:
-                # Сильный одиночный сигнал (>=70) пропускаем даже для не-топ пар
+                # Сильный одиночный сигнал пропускаем даже для не-топ пар
                 max_strength = max((s.strength for s in filtered_signals), default=0)
-                if symbol_base not in top_pairs and max_strength < 70:
+                if symbol_base not in top_pairs and max_strength < single_min_strength:
                     logger.warning(f"Недостаточно сигналов для {symbol}: {len(filtered_signals)} < {min_signals}, max_str={max_strength}")
                     return None
                 
@@ -815,7 +818,7 @@ class TradingIntelligence:
                 action = "SELL"
             else:
                 action = "HOLD"
-        elif strength >= 20:
+        elif strength >= 10:
             action = "WATCH"
         else:
             action = "HOLD"
@@ -1069,7 +1072,7 @@ class TradingIntelligence:
             # Получаем список символов для обучения
             symbols = list(self.recommendation_history.keys())
             if not symbols:
-                symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+                symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT"]
                 logger.info("recommendation_history пуст — используем базовые символы для ML-обучения")
             symbols = symbols[:10]
 

@@ -425,6 +425,93 @@ _SETTINGS_HTML = """<!DOCTYPE html>
   </section>
 
   <section>
+    <h2>&#x1F50D; Детектор аномалий объёма</h2>
+    <form id="detectorsForm">
+      <div class="field">
+        <label>Порог volume ratio</label>
+        <input type="number" id="volume_ratio_threshold" min="1.0" max="20.0" step="0.1">
+        <span class="hint">объём / среднее за MA-период (ниже = больше сигналов) &nbsp;<b>default: 3.0</b></span>
+      </div>
+      <div class="field">
+        <label>Период MA объёма (свечей)</label>
+        <input type="number" id="volume_ma_period" min="5" max="100" step="1">
+        <span class="hint">период скользящей средней объёма &nbsp;<b>default: 20</b></span>
+      </div>
+      <div class="field">
+        <label>Мин. баров для расчёта</label>
+        <input type="number" id="anom_min_bars" min="5" max="200" step="1">
+        <span class="hint">минимум исторических свечей &nbsp;<b>default: 20</b></span>
+      </div>
+      <div class="field">
+        <label>Множитель strength (по тренду)</label>
+        <input type="number" id="strength_trend_multiplier" min="1" max="30" step="1">
+        <span class="hint">ratio × N = сила сигнала по тренду &nbsp;<b>default: 12</b></span>
+      </div>
+      <div class="field">
+        <label>Множитель strength (против тренда)</label>
+        <input type="number" id="strength_counter_multiplier" min="1" max="30" step="1">
+        <span class="hint">ratio × N = сила контртрендового сигнала &nbsp;<b>default: 8</b></span>
+      </div>
+      <button type="submit" class="btn" id="saveDetectorsBtn">&#x1F4BE; Сохранить детекторы</button>
+      <button type="button" class="btn-reset" onclick="resetForm('detectors')">&#x21BA; Сбросить</button>
+      <div id="msgDetectors"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>&#x1F4CB; Фильтры сигналов</h2>
+    <form id="signalsConfigForm">
+      <div class="field">
+        <label>Мин. сигналов для рекомендации</label>
+        <input type="number" id="min_signals" min="1" max="10" step="1">
+        <span class="hint">не-топ пары: нужно минимум N сигналов &nbsp;<b>default: 2</b></span>
+      </div>
+      <div class="field">
+        <label>Порог bypass (1 сигнал), strength</label>
+        <input type="number" id="single_signal_min_strength" min="30" max="100" step="1">
+        <span class="hint">1 сигнал с силой ≥ N пропускает min_signals &nbsp;<b>default: 70</b></span>
+      </div>
+      <div class="field">
+        <label>Близость к пивоту, % (дивергенции)</label>
+        <input type="number" id="pivot_proximity_pct" min="0.5" max="20.0" step="0.5">
+        <span class="hint">допустимое расстояние до уровня (ниже = строже) &nbsp;<b>default: 4.0</b></span>
+      </div>
+      <div class="field">
+        <label>Контртренд порог (BTC фильтр)</label>
+        <input type="number" id="counter_trend_strength_threshold" min="30" max="100" step="1">
+        <span class="hint">сила < N при контртренде BTC → пропустить &nbsp;<b>default: 70</b></span>
+      </div>
+      <button type="submit" class="btn" id="saveSignalsConfigBtn">&#x1F4BE; Сохранить фильтры</button>
+      <button type="button" class="btn-reset" onclick="resetForm('signals_config')">&#x21BA; Сбросить</button>
+      <div id="msgSignalsConfig"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>&#x23F1;&#xFE0F; Интервалы мониторинга</h2>
+    <form id="monitoringForm">
+      <div class="field">
+        <label>Дивергенции (каждые N циклов)</label>
+        <input type="number" id="divergences_every_n_cycles" min="1" max="20" step="1">
+        <span class="hint">N × check_interval сек между проверками дивергенций &nbsp;<b>default: 3</b></span>
+      </div>
+      <div class="field">
+        <label>Фоновые проверки (каждые N циклов)</label>
+        <input type="number" id="background_every_n_cycles" min="1" max="30" step="1">
+        <span class="hint">MTF alerts, тренд, пивоты — каждые N×check_interval сек &nbsp;<b>default: 5</b></span>
+      </div>
+      <div class="field">
+        <label>Каскадные дивергенции 4h→1h (циклы)</label>
+        <input type="number" id="cascade_div_every_n_cycles" min="10" max="300" step="10">
+        <span class="hint">обновляется редко (4h свеча) &nbsp;<b>default: 60</b></span>
+      </div>
+      <button type="submit" class="btn" id="saveMonitoringBtn">&#x1F4BE; Сохранить интервалы</button>
+      <button type="button" class="btn-reset" onclick="resetForm('monitoring')">&#x21BA; Сбросить</button>
+      <div id="msgMonitoring"></div>
+    </form>
+  </section>
+
+  <section>
     <h2>&#x1F4B0; Управление капиталом (формула)</h2>
     <p style="font-size:.85rem;color:#8b949e;margin-bottom:10px;">
       Каждый Telegram-пользователь настраивает свои параметры командой <code>/settings</code> в боте.
@@ -459,19 +546,41 @@ const DEFAULTS = {
     dedup_minutes: 30,
     min_volume_usd: 1000000,
     min_strength: 50,
-    min_strength_register: 40,
+    min_strength_register: 20,
+    counter_trend_strength_threshold: 70,
   },
   trading: {
     use_tsl: true,
     tsl_activation_r: 1.0,
     tsl_buffer_pct: 0.1,
   },
+  detectors: {
+    volume_ratio_threshold: 3.0,
+    volume_ma_period: 20,
+    anom_min_bars: 20,
+    strength_trend_multiplier: 12,
+    strength_counter_multiplier: 8,
+  },
+  signals_config: {
+    min_signals: 2,
+    single_signal_min_strength: 70,
+    pivot_proximity_pct: 4.0,
+    counter_trend_strength_threshold: 70,
+  },
+  monitoring: {
+    divergences_every_n_cycles: 3,
+    background_every_n_cycles: 5,
+    cascade_div_every_n_cycles: 60,
+  },
 };
 
 function resetForm(section) {
   const d = DEFAULTS[section];
   if (!d) return;
-  const msgMap = {analysis:'msg', indicators:'msgInd', quality:'msgQuality', trading:'msgTrading'};
+  const msgMap = {
+    analysis:'msg', indicators:'msgInd', quality:'msgQuality', trading:'msgTrading',
+    detectors:'msgDetectors', signals_config:'msgSignalsConfig', monitoring:'msgMonitoring',
+  };
   const msgEl = document.getElementById(msgMap[section]);
 
   if (section === 'analysis') {
@@ -487,20 +596,38 @@ function resetForm(section) {
     document.getElementById('trend_atr').value    = d.trend_atr;
     document.getElementById('trend_factor').value = d.trend_factor;
   } else if (section === 'quality') {
-    document.getElementById('sl_cooldown_hours').value     = d.sl_cooldown_hours;
-    document.getElementById('dedup_minutes').value         = d.dedup_minutes;
-    document.getElementById('min_volume_usd').value        = d.min_volume_usd;
-    document.getElementById('min_strength').value          = d.min_strength;
-    document.getElementById('min_strength_register').value = d.min_strength_register;
+    document.getElementById('sl_cooldown_hours').value              = d.sl_cooldown_hours;
+    document.getElementById('dedup_minutes').value                  = d.dedup_minutes;
+    document.getElementById('min_volume_usd').value                 = d.min_volume_usd;
+    document.getElementById('min_strength').value                   = d.min_strength;
+    document.getElementById('min_strength_register').value          = d.min_strength_register;
+    document.getElementById('counter_trend_strength_threshold').value = d.counter_trend_strength_threshold;
   } else if (section === 'trading') {
     document.getElementById('use_tsl').checked        = d.use_tsl;
     document.getElementById('tsl_activation_r').value = d.tsl_activation_r;
     document.getElementById('tsl_buffer_pct').value   = d.tsl_buffer_pct;
+  } else if (section === 'detectors') {
+    document.getElementById('volume_ratio_threshold').value    = d.volume_ratio_threshold;
+    document.getElementById('volume_ma_period').value          = d.volume_ma_period;
+    document.getElementById('anom_min_bars').value             = d.anom_min_bars;
+    document.getElementById('strength_trend_multiplier').value = d.strength_trend_multiplier;
+    document.getElementById('strength_counter_multiplier').value = d.strength_counter_multiplier;
+  } else if (section === 'signals_config') {
+    document.getElementById('min_signals').value                      = d.min_signals;
+    document.getElementById('single_signal_min_strength').value       = d.single_signal_min_strength;
+    document.getElementById('pivot_proximity_pct').value              = d.pivot_proximity_pct;
+    document.getElementById('counter_trend_strength_threshold').value = d.counter_trend_strength_threshold;
+  } else if (section === 'monitoring') {
+    document.getElementById('divergences_every_n_cycles').value = d.divergences_every_n_cycles;
+    document.getElementById('background_every_n_cycles').value  = d.background_every_n_cycles;
+    document.getElementById('cascade_div_every_n_cycles').value = d.cascade_div_every_n_cycles;
   }
 
-  msgEl.style.display = 'block';
-  msgEl.className = 'msg-warn';
-  msgEl.textContent = 'Значения сброшены на defaults. Нажмите «Сохранить» для применения.';
+  if (msgEl) {
+    msgEl.style.display = 'block';
+    msgEl.className = 'msg-warn';
+    msgEl.textContent = 'Значения сброшены на defaults. Нажмите «Сохранить» для применения.';
+  }
 }
 
 async function loadSettings() {
@@ -528,7 +655,25 @@ async function loadSettings() {
     document.getElementById('dedup_minutes').value          = sq.dedup_minutes          ?? 30;
     document.getElementById('min_volume_usd').value         = sq.min_volume_usd         ?? 1000000;
     document.getElementById('min_strength').value           = sq.min_strength           ?? 50;
-    document.getElementById('min_strength_register').value  = sq.min_strength_register  ?? 40;
+    document.getElementById('min_strength_register').value  = sq.min_strength_register  ?? 20;
+    document.getElementById('counter_trend_strength_threshold').value = sq.counter_trend_strength_threshold ?? 70;
+
+    const det = (d.detectors || {}).anomaly || {};
+    document.getElementById('volume_ratio_threshold').value    = det.volume_ratio_threshold    ?? 3.0;
+    document.getElementById('volume_ma_period').value          = det.volume_ma_period          ?? 20;
+    document.getElementById('anom_min_bars').value             = det.min_bars                  ?? 20;
+    document.getElementById('strength_trend_multiplier').value = det.strength_trend_multiplier  ?? 12;
+    document.getElementById('strength_counter_multiplier').value = det.strength_counter_multiplier ?? 8;
+
+    const sc = d.signals_config || {};
+    document.getElementById('min_signals').value                      = sc.min_signals              ?? 2;
+    document.getElementById('single_signal_min_strength').value       = sc.single_signal_min_strength ?? 70;
+    document.getElementById('pivot_proximity_pct').value              = sc.pivot_proximity_pct      ?? 4.0;
+
+    const mon = d.monitoring_intervals || {};
+    document.getElementById('divergences_every_n_cycles').value = mon.divergences_every_n_cycles ?? 3;
+    document.getElementById('background_every_n_cycles').value  = mon.background_every_n_cycles  ?? 5;
+    document.getElementById('cascade_div_every_n_cycles').value = mon.cascade_div_every_n_cycles ?? 60;
 
     const trd = d.trading || {};
     document.getElementById('use_tsl').checked         = trd.use_tsl !== false;
@@ -626,6 +771,36 @@ document.getElementById('tradingForm').addEventListener('submit', async (e) => {
     tsl_activation_r: parseFloat(document.getElementById('tsl_activation_r').value),
     tsl_buffer_pct:   parseFloat(document.getElementById('tsl_buffer_pct').value),
   }}, 'saveTradingBtn', 'msgTrading', '&#x1F4BE; Сохранить TSL');
+});
+
+document.getElementById('detectorsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({detectors: {
+    volume_ratio_threshold:      parseFloat(document.getElementById('volume_ratio_threshold').value),
+    volume_ma_period:            parseInt(document.getElementById('volume_ma_period').value),
+    min_bars:                    parseInt(document.getElementById('anom_min_bars').value),
+    strength_trend_multiplier:   parseInt(document.getElementById('strength_trend_multiplier').value),
+    strength_counter_multiplier: parseInt(document.getElementById('strength_counter_multiplier').value),
+  }}, 'saveDetectorsBtn', 'msgDetectors', '&#x1F4BE; Сохранить детекторы');
+});
+
+document.getElementById('signalsConfigForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({signals_config: {
+    min_signals:                parseInt(document.getElementById('min_signals').value),
+    single_signal_min_strength: parseInt(document.getElementById('single_signal_min_strength').value),
+    pivot_proximity_pct:        parseFloat(document.getElementById('pivot_proximity_pct').value),
+    counter_trend_strength_threshold: parseInt(document.getElementById('counter_trend_strength_threshold').value),
+  }}, 'saveSignalsConfigBtn', 'msgSignalsConfig', '&#x1F4BE; Сохранить фильтры');
+});
+
+document.getElementById('monitoringForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({monitoring_intervals: {
+    divergences_every_n_cycles: parseInt(document.getElementById('divergences_every_n_cycles').value),
+    background_every_n_cycles:  parseInt(document.getElementById('background_every_n_cycles').value),
+    cascade_div_every_n_cycles: parseInt(document.getElementById('cascade_div_every_n_cycles').value),
+  }}, 'saveMonitoringBtn', 'msgMonitoring', '&#x1F4BE; Сохранить интервалы');
 });
 
 loadSettings();
@@ -1095,7 +1270,33 @@ async def _handle_settings_get(request: web.Request) -> web.Response:
         "dedup_minutes":        cfg.get("signal_quality.dedup_minutes", 30),
         "min_volume_usd":       cfg.get("signal_quality.min_volume_usd", 1_000_000),
         "min_strength":         cfg.get("signal_quality.min_strength", 50),
-        "min_strength_register":cfg.get("signal_quality.min_strength_register", 40),
+        "min_strength_register":cfg.get("signal_quality.min_strength_register", 20),
+        "counter_trend_strength_threshold": cfg.get("signal_quality.counter_trend_strength_threshold", 70),
+    }
+
+    det_cfg = cfg.get("detectors", {}).get("anomaly", {}) or {}
+    safe_detectors = {
+        "anomaly": {
+            "volume_ratio_threshold":      det_cfg.get("volume_ratio_threshold", 3.0),
+            "volume_ma_period":            det_cfg.get("volume_ma_period", 20),
+            "min_bars":                    det_cfg.get("min_bars", 20),
+            "strength_trend_multiplier":   det_cfg.get("strength_trend_multiplier", 12),
+            "strength_counter_multiplier": det_cfg.get("strength_counter_multiplier", 8),
+        }
+    }
+
+    mon_cfg = cfg.get("monitoring", {}).get("check_intervals", {}) or {}
+    safe_monitoring = {
+        "divergences_every_n_cycles": mon_cfg.get("divergences_every_n_cycles", 3),
+        "background_every_n_cycles":  mon_cfg.get("background_every_n_cycles", 5),
+        "cascade_div_every_n_cycles": mon_cfg.get("cascade_div_every_n_cycles", 60),
+    }
+
+    sig_cfg = analysis.get("signals", {}) or {}
+    safe_signals_config = {
+        "min_signals":              sig_cfg.get("min_signals", 2),
+        "single_signal_min_strength": sig_cfg.get("single_signal_min_strength", 70),
+        "pivot_proximity_pct":      cfg.get("analysis.divergence.pivot_proximity_pct", 4.0),
     }
 
     data = {
@@ -1104,6 +1305,9 @@ async def _handle_settings_get(request: web.Request) -> web.Response:
         "signal_weights": signal_weights,
         "trading": safe_trading,
         "signal_quality": safe_signal_quality,
+        "detectors": safe_detectors,
+        "monitoring_intervals": safe_monitoring,
+        "signals_config": safe_signals_config,
     }
     return web.Response(
         text=json.dumps(data, ensure_ascii=False),
@@ -1155,7 +1359,7 @@ async def _handle_settings_post(request: web.Request) -> web.Response:
             ded   = int(sq_body.get("dedup_minutes", 30))
             vol   = int(sq_body.get("min_volume_usd", 1_000_000))
             ms    = int(sq_body.get("min_strength", 50))
-            msr   = int(sq_body.get("min_strength_register", 40))
+            msr   = int(sq_body.get("min_strength_register", 20))
             errors = []
             if not (1 <= sl_h <= 48):         errors.append("sl_cooldown_hours: 1–48")
             if not (5 <= ded <= 120):          errors.append("dedup_minutes: 5–120")
@@ -1172,6 +1376,105 @@ async def _handle_settings_post(request: web.Request) -> web.Response:
         ok = cfg.save_signal_quality(
             sl_cooldown_hours=sl_h, dedup_minutes=ded, min_volume_usd=vol,
             min_strength=ms, min_strength_register=msr,
+        )
+        return web.Response(
+            text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
+        )
+
+    # --- Блок detectors ---
+    det_body = body.get("detectors")
+    if det_body is not None:
+        try:
+            ratio_thr  = float(det_body.get("volume_ratio_threshold", 3.0))
+            ma_period  = int(det_body.get("volume_ma_period", 20))
+            min_bars   = int(det_body.get("min_bars", 20))
+            str_trend  = int(det_body.get("strength_trend_multiplier", 12))
+            str_ctr    = int(det_body.get("strength_counter_multiplier", 8))
+            errors = []
+            if not (1.0 <= ratio_thr <= 20.0): errors.append("volume_ratio_threshold: 1.0–20.0")
+            if not (5 <= ma_period <= 100):     errors.append("volume_ma_period: 5–100")
+            if not (5 <= min_bars <= 200):      errors.append("min_bars: 5–200")
+            if not (1 <= str_trend <= 30):      errors.append("strength_trend_multiplier: 1–30")
+            if not (1 <= str_ctr <= 30):        errors.append("strength_counter_multiplier: 1–30")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        ok = cfg.save_detectors(
+            volume_ratio_threshold=ratio_thr, volume_ma_period=ma_period,
+            min_bars=min_bars, strength_trend_multiplier=str_trend,
+            strength_counter_multiplier=str_ctr,
+        )
+        return web.Response(
+            text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
+        )
+
+    # --- Блок signals_config ---
+    sc_body = body.get("signals_config")
+    if sc_body is not None:
+        try:
+            min_sig   = int(sc_body.get("min_signals", 2))
+            ss_min    = int(sc_body.get("single_signal_min_strength", 70))
+            prox_pct  = float(sc_body.get("pivot_proximity_pct", 4.0))
+            ct_thr    = int(sc_body.get("counter_trend_strength_threshold", 70))
+            errors = []
+            if not (1 <= min_sig <= 10):        errors.append("min_signals: 1–10")
+            if not (30 <= ss_min <= 100):        errors.append("single_signal_min_strength: 30–100")
+            if not (0.5 <= prox_pct <= 20.0):    errors.append("pivot_proximity_pct: 0.5–20.0")
+            if not (30 <= ct_thr <= 100):        errors.append("counter_trend_strength_threshold: 30–100")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        # Сохраняем в разные секции конфига
+        with open(cfg.config_path, "r", encoding="utf-8") as f:
+            import yaml as _yaml
+            raw = _yaml.safe_load(f)
+        raw.setdefault("analysis", {}).setdefault("signals", {})
+        raw["analysis"]["signals"]["min_signals"] = min_sig
+        raw["analysis"]["signals"]["single_signal_min_strength"] = ss_min
+        raw.setdefault("analysis", {}).setdefault("divergence", {})
+        raw["analysis"]["divergence"]["pivot_proximity_pct"] = round(prox_pct, 2)
+        raw.setdefault("signal_quality", {})
+        raw["signal_quality"]["counter_trend_strength_threshold"] = ct_thr
+        with open(cfg.config_path, "w", encoding="utf-8") as f:
+            _yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        cfg.reload()
+        return web.Response(
+            text=json.dumps({"ok": True, "error": None}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
+        )
+
+    # --- Блок monitoring_intervals ---
+    mon_body = body.get("monitoring_intervals")
+    if mon_body is not None:
+        try:
+            div_n = int(mon_body.get("divergences_every_n_cycles", 3))
+            bg_n  = int(mon_body.get("background_every_n_cycles", 5))
+            cas_n = int(mon_body.get("cascade_div_every_n_cycles", 60))
+            errors = []
+            if not (1 <= div_n <= 20):   errors.append("divergences_every_n_cycles: 1–20")
+            if not (1 <= bg_n <= 30):    errors.append("background_every_n_cycles: 1–30")
+            if not (10 <= cas_n <= 300): errors.append("cascade_div_every_n_cycles: 10–300")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        ok = cfg.save_monitoring(
+            divergences_every_n_cycles=div_n,
+            background_every_n_cycles=bg_n,
+            cascade_div_every_n_cycles=cas_n,
         )
         return web.Response(
             text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),

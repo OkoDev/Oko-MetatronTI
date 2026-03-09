@@ -1,4 +1,7 @@
 import os
+import time
+import hmac
+import hashlib
 import asyncio
 import aiohttp
 from dotenv import load_dotenv
@@ -35,7 +38,4 @@ async def test_bingx():
             print("Response data:", data)
 
 if __name__ == "__main__":
-    import time
-    import hmac
-    import hashlib
     asyncio.run(test_bingx())

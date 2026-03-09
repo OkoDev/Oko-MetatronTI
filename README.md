@@ -51,7 +51,8 @@ core/          -- бизнес-логика (без aiogram)
   performance_engine.py     -- аналитика по закрытым сделкам
   market_regime.py          -- ADX+ATR+EMA -> TREND_UP/DOWN/RANGE/HIGH_VOL
   outcome_predictor.py      -- RandomForest P(win) на реальных исходах
-  data_collector.py         -- OHLCV + ticker (TTL-кеш, ~300 запросов/цикл)
+  api_engine.py             -- транспортный слой: LRU cache, CircuitBreaker, retry, in-flight dedup
+  data_collector.py         -- OHLCV + ticker (делегирует в ApiEngine)
   pivot_calculator_fixed.py -- пивоты на UTC-периодах (1M/1W/1D, не скользящие)
   config_loader.py          -- загрузка config.yaml + .env, hot-reload
 
@@ -141,6 +142,18 @@ python strategy_comparison.py
 - **Ожидаемый доход:** +22.1% за период
 - **Sharpe ratio:** 1.45
 
+## Производительность
+
+| Метрика | Значение |
+|---------|----------|
+| Скан 399 пар | ~25-32 сек |
+| Параллельных API-запросов | Semaphore(20) |
+| Cache hit (OHLCV) | LRU до 5000 записей |
+| TTL кеша (15m) | 60 сек |
+| Пар в мониторинге | 600+ |
+
+**Критичная настройка** (`core/data_collector.py`): `enableRateLimit: False` в ccxt — без этого встроенный rate limiter сериализует все запросы (~1/сек) и скан занимает 20-90 минут вместо 30 секунд. Параллелизм контролирует `ApiEngine.Semaphore(20)`.
+
 ## Зависимости
 
 ```
@@ -151,6 +164,15 @@ pandas, numpy
 scikit-learn
 pyyaml, python-dotenv
 ```
+
+## Запуск (Python 3.12)
+
+```bash
+# Использовать Python 3.12 (aiogram установлен только там)
+C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe bot_with_subscriptions.py
+```
+
+> **Важно:** `.venv` (Python 3.13) и системный `python` не имеют aiogram — бот не запустится.
 
 ## Переменные окружения (.env)
 

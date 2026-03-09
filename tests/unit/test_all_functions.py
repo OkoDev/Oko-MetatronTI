@@ -39,7 +39,7 @@ class BotTester:
         logger.info("🧪 Тестирование определения типов меню...")
         
         try:
-            from core.menu_handler import MenuHandler
+            from bot.menus import MenuHandler
             
             # Создаем экземпляр MenuHandler
             menu_handler = MenuHandler(None)
@@ -91,7 +91,7 @@ class BotTester:
         logger.info("🧪 Тестирование генерации клавиатур...")
         
         try:
-            from core.keyboards import (
+            from bot.keyboards import (
                 main_menu, monitoring_menu, ai_analysis_menu, signals_menu,
                 pivots_menu, risk_management_menu, history_menu,
                 subscriptions_menu, settings_menu

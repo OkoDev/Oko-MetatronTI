@@ -1,8 +1,9 @@
 ## Язык
-Общайся и думать на русском языке. Документацию пиши на русском.
+Thinking (думать) на русском языке. Документацию пиши на русском.
 
 ## Общение
 После завершения задачи или подзадачи, кратко изложите, что вы сделали, что произошло и что дальше. Затем используйте команду `say` , чтобы прочитать это вслух.
+
 ---
 
 ## Проект: Oko MTF TG Bot
@@ -166,7 +167,8 @@ config.yaml                 ← конфигурация (API ключи, пар
 subscriptions.db            ← SQLite (пользователи, подписки, simulated_trades)
 
 core/                       ← ТОЛЬКО бизнес-логика, без aiogram
-  data_collector.py         ← получение данных с биржи (OHLCV + ticker, TTL-кеш)
+  api_engine.py             ← транспортный слой: LRU cache, CircuitBreaker, retry, in-flight dedup
+  data_collector.py         ← получение данных с биржи (OHLCV + ticker); делегирует в api_engine
   indicators.py             ← технические индикаторы (WT, RSI и др.)
   signal_models.py          ← dataclass модели: SignalData, TradingRecommendation и др.
   signal_checkers.py        ← чистые функции проверок по всем типам сигналов

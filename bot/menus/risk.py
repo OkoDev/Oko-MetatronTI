@@ -1,5 +1,6 @@
 """
-Действия меню управления рисками — standalone-функции вместо методов MenuHandler.
+Меню риск-менеджмента — реальные данные из simulated_trades через PerformanceEngine.
+Бот работает в режиме симуляции, реальных позиций нет.
 """
 import logging
 
@@ -8,124 +9,134 @@ from aiogram.types import Message
 logger = logging.getLogger(__name__)
 
 
+def _get_pe(bot):
+    from core.performance_engine import PerformanceEngine
+    db = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+    return PerformanceEngine(db)
+
+
 async def show_risk_profile(bot, message: Message) -> None:
-    """Показ профиля риска портфеля."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm:
-        await message.answer("🛡️ Менеджер рисков недоступен")
-        return
-    summary = rm.get_risk_summary()
-    recs = rm.get_risk_recommendations()
-    lines = [
-        "🛡️ <b>Профиль риска портфеля</b>",
-        f"Капитал: ${summary['base_capital']:.2f}",
-        f"Экспозиция: ${summary['total_exposure']:.2f} ({summary['exposure_percent']:.1f}%)",
-        f"Суммарный риск: ${summary['total_risk']:.2f} ({summary['risk_percent']:.2f}%)",
-        f"Активных позиций: {summary['active_positions']}",
-        f"Профилей риска: {summary['risk_profiles']}",
-        "",
-        "💡 <b>Рекомендации:</b>",
-    ]
-    for r in recs:
-        lines.append(f"• {r}")
+    """Профиль риска на основе статистики симулированных сделок."""
+    pe = _get_pe(bot)
+    s = pe.summary()
+    rows = pe.by_signal_type()
+    lines = ["<b>Профиль риска (симуляция)</b>"]
+    if s:
+        lines += [
+            f"Win rate: {s['win_rate']}%" if s.get("win_rate") is not None else "Win rate: —",
+            f"Avg R: {s.get('avg_r', '—')}",
+            f"Avg R (win): {s.get('avg_r_win', '—')} | Avg R (loss): {s.get('avg_r_loss', '—')}",
+            f"Закрытых сделок: {s.get('closed_count', 0)}",
+        ]
+    if rows:
+        lines.append("\n<b>По типам:</b>")
+        for r in rows:
+            wr = f"{r['win_rate']}%" if r.get("win_rate") is not None else "—"
+            lines.append(f"• {r['signal_type']}: WR={wr} avgR={r.get('avg_r','—')}")
     await message.answer("\n".join(lines))
 
 
 async def show_active_positions(bot, message: Message) -> None:
-    """Показ активных позиций."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm or not rm.active_positions:
-        await message.answer("📊 Активных позиций нет")
+    """Открытые симулированные сделки."""
+    pe = _get_pe(bot)
+    trades = pe.open_trades()
+    if not trades:
+        await message.answer("Нет открытых сделок")
         return
-    lines = ["📊 <b>Активные позиции</b>"]
-    for sym, pos in list(rm.active_positions.items())[:10]:
+    lines = [f"<b>Открытые сделки ({len(trades)})</b>"]
+    for t in trades[:10]:
         lines.append(
-            f"• {sym}: size={pos.position_size:.4f}, entry={pos.entry_price:.4f}, "
-            f"SL={pos.stop_loss:.4f}, TP={pos.take_profit:.4f}"
+            f"• {t['symbol']} {t['direction']} | entry={t['entry_price']:.4f} "
+            f"SL={t['stop_loss']:.4f} TP={t['take_profit']:.4f}"
         )
     await message.answer("\n".join(lines))
 
 
 async def show_position_sizes(bot, message: Message) -> None:
-    """Показ шкалы размеров позиций."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm:
-        await message.answer("💰 Менеджер рисков недоступен")
-        return
-    lines = ["💰 <b>Шкала размеров позиций</b>"]
-    for name, pct in rm.position_sizes.items():
-        lines.append(f"• {name.value}: {pct*100:.2f}% от капитала")
+    """Информация о размерах позиций из конфига."""
+    from core.config_loader import config
+    risk_pct = config.get("trading.risk_per_trade_pct", 1.0)
+    sl_pct = config.get("trading.sl_pct", 2.0)
+    tp_pct = config.get("trading.tp_pct", 4.0)
+    lines = [
+        "<b>Параметры позиций (конфиг)</b>",
+        f"Риск на сделку: {risk_pct}%",
+        f"Stop Loss: {sl_pct}%",
+        f"Take Profit: {tp_pct}%",
+        f"R/R ratio: {round(tp_pct / sl_pct, 2) if sl_pct else '—'}",
+    ]
     await message.answer("\n".join(lines))
 
 
 async def show_stop_losses(bot, message: Message) -> None:
     """Информация о стоп-лоссах."""
     await message.answer(
-        "🎯 Для расчета SL/TP используйте команду /intelligence SYMBOL — "
+        "Для расчёта SL/TP используйте команду /intelligence SYMBOL — "
         "уровни предлагаются в рекомендациях анализа."
     )
 
 
 async def show_risk_reward_ratio(bot, message: Message) -> None:
-    """Показ общей оценки риск/прибыль."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm:
-        await message.answer("📈 Менеджер рисков недоступен")
-        return
-    s = rm.get_risk_summary()
-    lines = [
-        "📈 <b>Общая оценка риск/прибыль</b>",
-        f"Дневных сделок: {s['daily_trades']}",
-        f"Дневной PnL: ${s['daily_pnl']:.2f}",
-        f"Макс. просадка: ${s['max_drawdown']:.2f}",
-    ]
+    """R/R статистика по закрытым сделкам."""
+    pe = _get_pe(bot)
+    rows = pe.by_direction()
+    s = pe.summary()
+    lines = ["<b>Соотношение риск/прибыль</b>"]
+    if s:
+        lines.append(f"Общий avg R: {s.get('avg_r', '—')}")
+        lines.append(f"Avg R win: {s.get('avg_r_win', '—')} | Avg R loss: {s.get('avg_r_loss', '—')}")
+    if rows:
+        for r in rows:
+            lines.append(f"• {r['direction']}: avgR={r.get('avg_r','—')} WR={r.get('win_rate','—')}%")
     await message.answer("\n".join(lines))
 
 
 async def show_risk_warnings(bot, message: Message) -> None:
-    """Показ предупреждений о нарушении риск-правил."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm:
-        await message.answer("⚠️ Менеджер рисков недоступен")
-        return
+    """Предупреждения на основе статистики."""
+    pe = _get_pe(bot)
+    s = pe.summary()
     warnings = []
-    for pos in rm.active_positions.values():
-        _, w = rm.check_risk_limits(pos.symbol, pos)
-        warnings.extend(w)
+    if s.get("win_rate") is not None and s["win_rate"] < 35:
+        warnings.append(f"Win rate {s['win_rate']}% — ниже 35%")
+    if s.get("avg_r") is not None and s["avg_r"] < -0.3:
+        warnings.append(f"Avg R = {s['avg_r']} — отрицательный")
     if not warnings:
-        await message.answer("✅ Нарушений риск-правил не обнаружено")
+        await message.answer("Нарушений риск-правил не обнаружено")
         return
-    lines = ["⚠️ <b>Предупреждения</b>"]
-    for w in warnings[:10]:
+    lines = ["<b>Предупреждения</b>"]
+    for w in warnings:
         lines.append(f"• {w}")
     await message.answer("\n".join(lines))
 
 
 async def show_risk_statistics(bot, message: Message) -> None:
-    """Показ статистики рисков."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm:
-        await message.answer("📊 Менеджер рисков недоступен")
-        return
-    s = rm.get_risk_summary()
-    lines = [
-        "📊 <b>Статистика рисков</b>",
-        f"Экспозиция: ${s['total_exposure']:.2f} ({s['exposure_percent']:.1f}%)",
-        f"Суммарный риск: ${s['total_risk']:.2f} ({s['risk_percent']:.2f}%)",
-        f"Дневной PnL: ${s['daily_pnl']:.2f}",
-        f"Серий убытков: {s['consecutive_losses']}",
-    ]
+    """Статистика рисков по режимам рынка."""
+    pe = _get_pe(bot)
+    by_regime = pe.by_regime()
+    s = pe.summary()
+    lines = ["<b>Статистика рисков</b>"]
+    if s:
+        lines += [
+            f"Закрытых: {s.get('closed_count', 0)} | Open: {s.get('open_count', 0)}",
+            f"Win rate: {s.get('win_rate', '—')}% | Avg R: {s.get('avg_r','—')}",
+        ]
+    if by_regime:
+        lines.append("\n<b>По режиму рынка:</b>")
+        for r in by_regime:
+            wr = f"{r['win_rate']}%" if r.get("win_rate") is not None else "—"
+            lines.append(f"• {r['regime']}: {r['total']} сд. WR={wr} avgR={r.get('avg_r','—')}")
     await message.answer("\n".join(lines))
 
 
 async def show_risk_settings(bot, message: Message) -> None:
-    """Показ настроек рисков."""
-    rm = getattr(bot.trading_intelligence, "risk_manager", None)
-    if not rm:
-        await message.answer("⚙️ Менеджер рисков недоступен")
-        return
-    settings = getattr(rm, "settings", {})
-    lines = ["⚙️ <b>Настройки рисков</b>"]
-    for key, val in settings.items():
-        lines.append(f"{key}: {val}")
-    await message.answer("\n".join(lines) if lines else "⚙️ Настройки по умолчанию")
+    """Настройки риска из конфига."""
+    from core.config_loader import config
+    lines = [
+        "<b>Настройки риска</b>",
+        f"Риск на сделку: {config.get('trading.risk_per_trade_pct', 1.0)}%",
+        f"Stop Loss: {config.get('trading.sl_pct', 2.0)}%",
+        f"Take Profit: {config.get('trading.tp_pct', 4.0)}%",
+        f"TSL: {'включён' if config.get('trading.use_tsl', True) else 'выключен'}",
+        f"TSL активация: +{config.get('trading.tsl_activation_r', 1.0)}R",
+    ]
+    await message.answer("\n".join(lines))

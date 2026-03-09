@@ -82,7 +82,7 @@ class TradingAlertBot:
     def __init__(self):
         self.token = config.get_telegram_token()
         self.config = config
-        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
         self.storage = MemoryStorage()
         self.dp = Dispatcher(storage=self.storage)
 
@@ -110,6 +110,7 @@ class TradingAlertBot:
         self.monitor_task = None
         self.monitored_pairs = []
         self.recent_anomalies = {}
+        self.recent_signals: dict = {}   # {symbol: [SignalData, ...]} — кеш сигналов из последнего скана
         self.subscribers = set()
         self.signal_counters = {
             "anomaly": 0, "wt_signal": 0, "mtf_signal": 0, "mtf_alert": 0,

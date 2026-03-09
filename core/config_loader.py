@@ -87,6 +87,14 @@ class ConfigLoader:
                         "max_bars": 100,
                         "min_bars_between": 5
                     }
+                },
+                "signals": {
+                    "min_signals": 2,
+                    "single_signal_min_strength": 70,
+                    "premium_pairs": ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "MATIC", "AVAX"]
+                },
+                "divergence": {
+                    "pivot_proximity_pct": 4.0  # допустимое расстояние до пивота для фильтра дивергенций
                 }
             },
             "subscriptions": {
@@ -100,7 +108,43 @@ class ConfigLoader:
                 "file": "crypto_bot.log",
                 "max_size": "10MB",
                 "backup_count": 5
-            }
+            },
+            "detectors": {
+                "anomaly": {
+                    "min_bars": 20,
+                    "volume_ma_period": 20,
+                    "volume_ratio_threshold": 3.0,
+                    "strength_trend_multiplier": 12,
+                    "strength_counter_multiplier": 8,
+                }
+            },
+            "monitoring": {
+                "check_intervals": {
+                    "divergences_every_n_cycles": 3,
+                    "background_every_n_cycles": 5,
+                    "cascade_div_every_n_cycles": 60,
+                }
+            },
+            "performance": {
+                "scan_semaphore_size": 20,
+                "analyze_semaphore_size": 3,
+                "prefetch_pivots_semaphore_size": 5,
+                "background_check_semaphore_size": 10,
+                "cascade_div_semaphore_size": 5,
+                "ohlcv_scan_limit": 160,
+                "ohlcv_slow_threshold_sec": 5.0,
+                "divergence_slow_threshold_sec": 3.0,
+                "pair_slow_threshold_sec": 10.0,
+                "scan_cycle_warning_threshold_sec": 55.0,
+            },
+            "signal_quality": {
+                "sl_cooldown_hours": 4,
+                "dedup_minutes": 30,
+                "min_volume_usd": 1000000,
+                "min_strength": 50,
+                "min_strength_register": 20,
+                "counter_trend_strength_threshold": 70,
+            },
         }
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -250,6 +294,7 @@ class ConfigLoader:
         min_volume_usd: int,
         min_strength: int,
         min_strength_register: int,
+        counter_trend_strength_threshold: int = 70,
     ) -> bool:
         """Обновляет секцию signal_quality в config.yaml и вызывает reload()."""
         try:
@@ -261,16 +306,75 @@ class ConfigLoader:
             raw["signal_quality"]["min_volume_usd"] = int(min_volume_usd)
             raw["signal_quality"]["min_strength"] = int(min_strength)
             raw["signal_quality"]["min_strength_register"] = int(min_strength_register)
+            raw["signal_quality"]["counter_trend_strength_threshold"] = int(counter_trend_strength_threshold)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
             self.reload()
             logger.info(
-                "Качество сигналов сохранено: cooldown=%dh dedup=%dm vol=%d strength=%d/%d",
-                sl_cooldown_hours, dedup_minutes, min_volume_usd, min_strength, min_strength_register,
+                "Качество сигналов сохранено: cooldown=%dh dedup=%dm vol=%d strength=%d/%d ct_thr=%d",
+                sl_cooldown_hours, dedup_minutes, min_volume_usd, min_strength,
+                min_strength_register, counter_trend_strength_threshold,
             )
             return True
         except Exception as e:
             logger.error("Ошибка сохранения signal_quality конфига: %s", e)
+            return False
+
+    def save_detectors(
+        self,
+        volume_ratio_threshold: float,
+        volume_ma_period: int,
+        min_bars: int,
+        strength_trend_multiplier: int,
+        strength_counter_multiplier: int,
+    ) -> bool:
+        """Обновляет секцию detectors.anomaly в config.yaml и вызывает reload()."""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("detectors", {}).setdefault("anomaly", {})
+            raw["detectors"]["anomaly"]["min_bars"] = int(min_bars)
+            raw["detectors"]["anomaly"]["volume_ma_period"] = int(volume_ma_period)
+            raw["detectors"]["anomaly"]["volume_ratio_threshold"] = round(float(volume_ratio_threshold), 2)
+            raw["detectors"]["anomaly"]["strength_trend_multiplier"] = int(strength_trend_multiplier)
+            raw["detectors"]["anomaly"]["strength_counter_multiplier"] = int(strength_counter_multiplier)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "Детекторы сохранены: ratio_thr=%.1f ma=%d min_bars=%d str=%d/%d",
+                volume_ratio_threshold, volume_ma_period, min_bars,
+                strength_trend_multiplier, strength_counter_multiplier,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения detectors конфига: %s", e)
+            return False
+
+    def save_monitoring(
+        self,
+        divergences_every_n_cycles: int,
+        background_every_n_cycles: int,
+        cascade_div_every_n_cycles: int,
+    ) -> bool:
+        """Обновляет секцию monitoring.check_intervals в config.yaml."""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("monitoring", {}).setdefault("check_intervals", {})
+            raw["monitoring"]["check_intervals"]["divergences_every_n_cycles"] = int(divergences_every_n_cycles)
+            raw["monitoring"]["check_intervals"]["background_every_n_cycles"] = int(background_every_n_cycles)
+            raw["monitoring"]["check_intervals"]["cascade_div_every_n_cycles"] = int(cascade_div_every_n_cycles)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "Мониторинг сохранён: div_every=%d bg_every=%d cascade_every=%d",
+                divergences_every_n_cycles, background_every_n_cycles, cascade_div_every_n_cycles,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения monitoring конфига: %s", e)
             return False
 
 

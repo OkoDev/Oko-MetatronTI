@@ -2,13 +2,13 @@ import ccxt.async_support as ccxt
 from collections import deque
 import asyncio
 import logging
-import time
-import pandas as pd
 import re
+
+from core.api_engine import ApiEngine
 
 logger = logging.getLogger(__name__)
 
-# TTL кеша зависит от таймфрейма: чем старше ТФ, тем дольше актуален
+# TTL кеша — оставляем для обратной совместимости (используется в api_engine)
 _CACHE_TTL = {
     "1m": 15, "3m": 30, "5m": 45,
     "15m": 60, "45m": 120,
@@ -21,7 +21,7 @@ class RealTimeData:
     def __init__(self, exchange_id="bingx"):
         self.exchange_id = exchange_id.lower()
         self.exchange = getattr(ccxt, exchange_id)({
-            "enableRateLimit": True,
+            "enableRateLimit": False,   # ApiEngine.Semaphore управляет параллелизмом сам
             "options": {"defaultType": "future"}
         })
         self.price_history = {}
@@ -30,8 +30,10 @@ class RealTimeData:
         self.history_size = 200
         self.usdt_pairs = []
         self.is_running = False
-        # Кеш OHLCV: {(symbol, timeframe): {"df": DataFrame, "ts": float, "limit": int}}
-        self._ohlcv_cache = {}
+        # ApiEngine: LRU cache + retry + circuit breaker + in-flight dedup
+        self._engine = ApiEngine(self.exchange, semaphore_size=20)
+        # Алиас для обратной совместимости (код, который напрямую обращается к _ohlcv_cache)
+        self._ohlcv_cache = self._engine._cache._data
 
     async def load_markets(self, min_volume_usd: float = 0):
         """Загрузить только USDT futures-пары (попытка универсальной фильтрации)"""
@@ -99,40 +101,46 @@ class RealTimeData:
             return pairs
 
     async def fetch_candles(self):
-        """Background OHLCV fetcher (1m summary: price change % and volume)"""
+        """Background OHLCV fetcher: параллельный fetch для всех пар (Semaphore через ApiEngine)."""
         self.is_running = True
         while self.is_running:
             try:
-                for s in list(self.usdt_pairs):
+                pairs = list(self.usdt_pairs)
+
+                async def _fetch_one(s: str) -> None:
                     try:
-                        candles = await self.exchange.fetch_ohlcv(s, timeframe=self.timeframe, limit=2)
-                        if candles and len(candles) >= 2:
-                            prev = candles[-2]
-                            last = candles[-1]
-                            prev_close = prev[4] or 0.0
-                            last_close = last[4] or 0.0
-                            if prev_close:
-                                price_change = ((last_close - prev_close) / prev_close) * 100.0
-                            else:
-                                price_change = 0.0
-                            current_vol = last[5] or 0.0
-                            self.price_history.setdefault(s, deque(maxlen=self.history_size)).append(price_change)
-                            self.volume_history.setdefault(s, deque(maxlen=self.history_size)).append(current_vol)
+                        df = await self._engine.fetch_ohlcv(s, self.timeframe, limit=2)
+                        if df is not None and len(df) >= 2:
+                            prev_close = df.iloc[-2]["close"] or 0.0
+                            last_close = df.iloc[-1]["close"] or 0.0
+                            price_change = (
+                                ((last_close - prev_close) / prev_close) * 100.0
+                                if prev_close else 0.0
+                            )
+                            current_vol = df.iloc[-1]["volume"] or 0.0
+                            self.price_history.setdefault(
+                                s, deque(maxlen=self.history_size)
+                            ).append(price_change)
+                            self.volume_history.setdefault(
+                                s, deque(maxlen=self.history_size)
+                            ).append(current_vol)
                     except Exception:
-                        logger.debug(f"fetch_candles error for {s}", exc_info=True)
-                        continue
+                        logger.debug("fetch_candles error for %s", s, exc_info=True)
+
+                await asyncio.gather(*[_fetch_one(s) for s in pairs])
+                logger.debug(
+                    "fetch_candles завершён: %d пар | %s",
+                    len(pairs), self._engine.cache_stats(),
+                )
                 await asyncio.sleep(60)
             except Exception:
                 logger.exception("fetch_candles loop error")
                 await asyncio.sleep(5)
 
     async def get_ticker(self, symbol):
-        """Получить тикер для символа"""
-        try:
-            return await self.exchange.fetch_ticker(symbol)
-        except Exception:
-            logger.debug(f"get_ticker error {symbol}", exc_info=True)
-            return None
+        """Получить тикер для символа (с circuit breaker и retry через ApiEngine)."""
+        normalized = self.normalize_symbol(symbol)
+        return await self._engine.fetch_ticker(normalized)
 
     async def symbol_exists(self, symbol):
         """Проверить существование символа"""
@@ -174,29 +182,9 @@ class RealTimeData:
 
     async def get_ohlcv(self, symbol, timeframe="15m", limit=150, since=None):
         """Возвращает pandas.DataFrame с колонками: time, open, high, low, close, volume.
-        Результат кешируется с TTL, зависящим от таймфрейма."""
+        Делегирует в ApiEngine: LRU cache → in-flight dedup → retry → circuit breaker."""
         normalized_symbol = self.normalize_symbol(symbol)
-        cache_key = (normalized_symbol, timeframe)
-        now = time.monotonic()
-        ttl = _CACHE_TTL.get(timeframe, _DEFAULT_TTL)
-
-        # Проверяем кеш: совпадает ли ключ и достаточно ли свечей
-        cached = self._ohlcv_cache.get(cache_key)
-        if cached and (now - cached["ts"]) < ttl and cached["limit"] >= limit:
-            return cached["df"].copy()
-
-        try:
-            candles = await self.exchange.fetch_ohlcv(normalized_symbol, timeframe=timeframe, limit=limit, since=since)
-            if not candles:
-                return None
-            df = pd.DataFrame(candles, columns=["time", "open", "high", "low", "close", "volume"])
-            for c in ["open", "high", "low", "close", "volume"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-            self._ohlcv_cache[cache_key] = {"df": df, "ts": now, "limit": limit}
-            return df.copy()
-        except Exception:
-            logger.debug(f"get_ohlcv error {symbol} {timeframe}", exc_info=True)
-            return None
+        return await self._engine.fetch_ohlcv(normalized_symbol, timeframe, limit, since)
 
     async def stop(self):
         self.is_running = False

@@ -1,6 +1,44 @@
-version: '3.8'
+version: "3.9"
 
 services:
+  # ========== CLAUDE AGENTS ==========
+  
+  claude_architect:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.claude
+    container_name: crypto_bot_architect
+    hostname: architect
+    volumes:
+      - .:/workspace
+      - claude_architect_home:/root
+    stdin_open: true
+    tty: true
+    environment:
+      - AGENT_ROLE=ARCHITECT
+      - AGENT_NAME=Architect Agent 1
+    networks:
+      - bot-network
+
+  claude_developer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.claude
+    container_name: crypto_bot_developer
+    hostname: developer
+    volumes:
+      - .:/workspace
+      - claude_developer_home:/root
+    stdin_open: true
+    tty: true
+    environment:
+      - AGENT_ROLE=DEVELOPER
+      - AGENT_NAME=Developer Agent 2
+    networks:
+      - bot-network
+
+  # ========== BOT SERVICE (для запуска) ==========
+  
   crypto-bot:
     build: .
     container_name: crypto_volume_bot
@@ -13,9 +51,19 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./subscriptions.db:/app/subscriptions.db
+      - .:/workspace
+    ports:
+      - "8000:8000"
     networks:
-      - crypto-network
+      - bot-network
+    depends_on:
+      - claude_architect
+      - claude_developer
 
 networks:
-  crypto-network:
+  bot-network:
     driver: bridge
+
+volumes:
+  claude_architect_home:
+  claude_developer_home:

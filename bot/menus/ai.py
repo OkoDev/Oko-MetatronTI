@@ -7,7 +7,6 @@ from datetime import datetime
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from bot.keyboards import ai_analysis_inline_menu
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +22,50 @@ async def handle_intelligence_analysis(bot, message: Message, state: FSMContext)
 
 
 async def handle_ml_predictions(bot, message: Message, state: FSMContext) -> None:
-    """Запуск ML предсказаний — показывает inline-меню."""
-    await message.answer(
-        "🤖 <b>ML Предсказания</b>\n\n"
-        "Машинное обучение для прогнозирования движения цен.\n"
-        "Выберите тип предсказания:",
-        reply_markup=ai_analysis_inline_menu()
-    )
+    """ML предсказания: статус моделей + P(win) из OutcomePredictor."""
+    ti = bot.trading_intelligence
+    lines = ["🤖 <b>ML Предсказания</b>\n"]
+
+    # MLPredictor — точность моделей
+    if hasattr(ti, "ml_predictor") and ti.ml_predictor:
+        perf = ti.ml_predictor.get_model_performance()
+        if perf:
+            lines.append("<b>📊 Модели направления цены:</b>")
+            for k, v in sorted(perf.items()):
+                lines.append(f"  {k}: acc={v.accuracy:.3f} f1={v.f1_score:.3f} (n={v.training_samples})")
+        else:
+            lines.append("⚠️ MLPredictor: модели не обучены")
+    else:
+        lines.append("⚠️ MLPredictor не инициализирован")
+
+    lines.append("")
+
+    # OutcomePredictor — P(win)
+    if hasattr(ti, "outcome_predictor") and ti.outcome_predictor:
+        info = ti.outcome_predictor.info() if hasattr(ti.outcome_predictor, "info") else {}
+        if info.get("trained"):
+            lines.append("<b>🎯 P(win) модель (OutcomePredictor):</b>")
+            lines.append(f"  CV AUC: {info.get('cv_auc', 'N/A'):.3f}")
+            lines.append(f"  Обучена на: {info.get('n_samples', '?')} сделках")
+            lines.append(f"  Классов: {info.get('n_classes', '?')}")
+        else:
+            lines.append("⚠️ OutcomePredictor: недостаточно данных (нужно 20+ закрытых сделок)")
+    else:
+        lines.append("⚠️ OutcomePredictor не инициализирован")
+
+    lines.append("")
+
+    # Адаптивные веса сигналов
+    if hasattr(ti, "signal_weights") and ti.signal_weights:
+        lines.append("<b>⚖️ Адаптивные веса сигналов:</b>")
+        base = getattr(ti, "_base_signal_weights", {})
+        for sig, w in sorted(ti.signal_weights.items(), key=lambda x: -x[1]):
+            base_w = base.get(sig, w)
+            delta = w - base_w
+            sign = f"+{delta:.3f}" if delta >= 0 else f"{delta:.3f}"
+            lines.append(f"  {sig}: {w:.3f} ({sign})")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 async def show_statistics(bot, message: Message) -> None:
@@ -162,15 +198,17 @@ async def handle_retrain_models(bot, message: Message) -> None:
     ti = bot.trading_intelligence
     if hasattr(ti, "ml_predictor") and ti.ml_predictor:
         try:
-            if hasattr(ti.ml_predictor, "retrain_models"):
-                await message.answer("🔄 Начинаю переобучение ML моделей...")
-                result = await ti.ml_predictor.retrain_models()
-                if result:
-                    await message.answer("✅ ML модели успешно переобучены!")
-                else:
-                    await message.answer("⚠️ Переобучение моделей завершилось с предупреждениями")
+            await message.answer("🔄 Запускаю переобучение ML моделей (30 дней истории)...")
+            result = await ti.train_ml_models(training_period_days=30)
+            if result:
+                perf = ti.ml_predictor.get_model_performance()
+                lines = ["✅ <b>ML модели переобучены</b>"]
+                for k, v in sorted(perf.items()):
+                    if "price_direction" in k:
+                        lines.append(f"  {k.split('_')[-1]}: acc={v.accuracy:.3f}")
+                await message.answer("\n".join(lines), parse_mode="HTML")
             else:
-                await message.answer("🔄 ML модуль не поддерживает переобучение. Модели обновляются автоматически при анализе.")
+                await message.answer("⚠️ Переобучение не выполнено (недостаточно данных)")
         except Exception:
             logger.exception("Ошибка переобучения ML моделей")
             await message.answer("❌ Ошибка переобучения")
@@ -181,12 +219,15 @@ async def handle_retrain_models(bot, message: Message) -> None:
 async def show_ml_statistics(bot, message: Message) -> None:
     """Показ ML-статистики."""
     ti = bot.trading_intelligence
-    if hasattr(ti, "ml_predictor"):
-        stats = getattr(ti.ml_predictor, "model_stats", {})
-        lines = ["📚 <b>ML статистика</b>"]
-        for key, val in stats.items():
-            lines.append(f"{key}: {val}")
-        await message.answer("\n".join(lines) if lines else "📚 ML статистика недоступна")
+    if hasattr(ti, "ml_predictor") and ti.ml_predictor:
+        perf = ti.ml_predictor.get_model_performance()
+        if perf:
+            lines = ["📚 <b>ML статистика</b>"]
+            for k, v in sorted(perf.items()):
+                lines.append(f"<b>{k}</b>: acc={v.accuracy:.3f} f1={v.f1_score:.3f} (n={v.training_samples})")
+            await message.answer("\n".join(lines), parse_mode="HTML")
+        else:
+            await message.answer("📚 ML модели ещё не обучены. Используйте '🔄 Обновить модели'.")
     else:
         await message.answer("📚 ML модуль не инициализирован")
 

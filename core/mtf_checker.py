@@ -53,12 +53,14 @@ def check_mtf_alert(snapshot: dict) -> tuple[bool, str]:
             snapshot.get("15m", {}).get("zone") == "OS" and
             snapshot.get("5m", {}).get("trend") == "UP"
         ):
+            logger.debug("MTF alert LONG: классический разворот (1h/45m/15m OS + 5m UP)")
             return True, "LONG"
 
         # Пример 2: Агрессивный LONG - достаточно 2 ТФ в OS + разворот на 3m
-        os_count = sum(1 for tf in ["1h", "45m", "15m", "5m"] 
+        os_count = sum(1 for tf in ["1h", "45m", "15m", "5m"]
                        if snapshot.get(tf, {}).get("zone") == "OS")
         if os_count >= 2 and snapshot.get("3m", {}).get("trend") == "UP":
+            logger.debug("MTF alert LONG: агрессивный (os_count=%d + 3m UP)", os_count)
             return True, "LONG"
 
         # === SHORT SETUP ===
@@ -69,12 +71,14 @@ def check_mtf_alert(snapshot: dict) -> tuple[bool, str]:
             snapshot.get("15m", {}).get("zone") == "OB" and
             snapshot.get("5m", {}).get("zone") == "OB"
         ):
+            logger.debug("MTF alert SHORT: 4h+1h DOWN + 15m/5m OB")
             return True, "SHORT"
 
         # Пример 2: Агрессивный SHORT
         ob_count = sum(1 for tf in ["1h", "45m", "15m", "5m"]
                        if snapshot.get(tf, {}).get("zone") == "OB")
         if ob_count >= 2 and snapshot.get("3m", {}).get("trend") == "DOWN":
+            logger.debug("MTF alert SHORT: агрессивный (ob_count=%d + 3m DOWN)", ob_count)
             return True, "SHORT"
 
         # === КОНСЕРВАТИВНЫЕ ВАРИАНТЫ ===
@@ -87,6 +91,7 @@ def check_mtf_alert(snapshot: dict) -> tuple[bool, str]:
             snapshot.get("5m", {}).get("trend") == "UP" and
             snapshot.get("3m", {}).get("trend") == "UP"
         ):
+            logger.debug("MTF alert LONG: консервативный (все ТФ OS + 5m/3m UP)")
             return True, "LONG"
 
         # SHORT: аналогично
@@ -98,6 +103,7 @@ def check_mtf_alert(snapshot: dict) -> tuple[bool, str]:
             snapshot.get("5m", {}).get("trend") == "DOWN" and
             snapshot.get("3m", {}).get("trend") == "DOWN"
         ):
+            logger.debug("MTF alert SHORT: консервативный (все ТФ OB + 5m/3m DOWN)")
             return True, "SHORT"
 
         return False, None

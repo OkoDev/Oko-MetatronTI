@@ -3,6 +3,7 @@
 Использует различные ML алгоритмы для анализа паттернов и предсказания движения цен
 """
 
+import asyncio
 import logging
 import numpy as np
 import pandas as pd
@@ -447,11 +448,14 @@ class MLPredictor:
         self.prediction_cache[cache_key] = (datetime.now(), prediction)
     
     async def train_models(self, training_data: List[Dict[str, Any]]):
-        """Обучает модели на исторических данных"""
+        """Обучает модели на исторических данных (CPU-heavy → thread pool)."""
         if not ML_AVAILABLE:
             logger.warning("ML библиотеки недоступны. Обучение пропущено.")
             return
-        
+        await asyncio.to_thread(self._train_models_sync, training_data)
+
+    def _train_models_sync(self, training_data: List[Dict[str, Any]]):
+        """Синхронная тренировка — вызывается из thread pool, не блокирует event loop."""
         try:
             logger.info("Начинаем обучение ML моделей...")
             

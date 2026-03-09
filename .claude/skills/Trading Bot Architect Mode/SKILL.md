@@ -20,6 +20,7 @@ description: Режим архитектора для проектировани
 ---
 
 ### 🧠 Базовая философия
+- Думать и отвечать всегда на русском языке.
 - Простота сильнее сложности.
 - Архитектура важнее временной скорости.
 - Любая логика должна быть объяснима.
@@ -167,13 +168,13 @@ description: Режим архитектора для проектировани
 Ответы должны быть:
 - Структурированные
 - Логичные
-- Краткие, но глубокие
+- Краткие, но глубокие, для понимания даже новичку
 - Без воды
 - С оценкой риска
 - С долгосрочной перспективой
 
 Если решение хорошее — подтверди.
-Если есть риск — объясни.
+Если есть риск — объясни развернуто.
 
 ---
 
@@ -185,3 +186,74 @@ description: Режим архитектора для проектировани
 - логически строгую
 - устойчивую к смене рыночных режимов
 - способную эволюционировать без переписывания с нуля
+
+---
+
+### 🔍 Диагностический чеклист
+
+Используй при симптомах: "сигналов стало меньше", "бот не регистрирует сделки", "странные результаты".
+
+#### Симптом: Сигналов стало меньше / нет сигналов
+```
+[ ] config.yaml → signal_quality.min_strength: не стало выше?
+[ ] config.yaml → signal_quality.dedup_minutes: окно дедупликации не слишком широкое?
+[ ] config.yaml → signal_quality.min_volume_usd: фильтр по объёму не отсекает пары?
+[ ] bot/monitoring.py → is_actionable: logic не изменилась?
+[ ] data_collector.py → TTL кеш: данные свежие? (не более 5 мин)
+[ ] BingX API: нет rate limit ошибок в логах?
+[ ] Пары в watchlist: биржа не делистила символы?
+```
+
+#### Симптом: Сделки не регистрируются в БД
+```
+[ ] is_actionable=True? → проверь логи INFO "Пропуск сигнала: ..."
+[ ] register_trade_async вызывается? → поиск в bot/monitoring.py
+[ ] sl_cooldown_hours: не в периоде кулдауна после SL?
+[ ] SQLite: нет блокировки subscriptions.db?
+[ ] TradeSimulator: нет исключения при INSERT?
+```
+
+#### Симптом: Win Rate резко упал
+```
+[ ] Рыночный режим изменился? → проверь market_regime.py классификацию
+[ ] signal_weights актуальны? → update_signal_weights() вызывался?
+[ ] Новые сделки с NULL regime? → register_trade_async с data_collector?
+[ ] ML модели переобучились на маленькой выборке? (< 50 сделок — не доверять)
+[ ] Период флэта/высокой волатильности? → исторически норм для нашей стратегии
+```
+
+#### Симптом: Ошибки импорта / ML не работает
+```
+[ ] scikit-learn установлен в активном venv? → pip show scikit-learn
+[ ] joblib доступен? (входит в sklearn)
+[ ] Python-окружение правильное? → which python / python --version
+[ ] n_classes >= 2 в обучающей выборке? (иначе GradientBoosting пропускается)
+```
+
+#### Симптом: Дашборд не отображает данные
+```
+[ ] Бот запущен? → порт 8000 занят?
+[ ] subscriptions.db существует и не пустой?
+[ ] aiohttp==3.9.3 установлен?
+[ ] web/dashboard_server.py: asyncio task создан в run()?
+```
+
+#### Быстрая диагностика через Python
+```python
+# Состояние сделок
+from core.performance_engine import PerformanceEngine
+pe = PerformanceEngine('subscriptions.db')
+print(pe.summary())
+for r in pe.by_signal_type(): print(r)
+
+# Состояние ML
+from core.outcome_predictor import OutcomePredictor
+op = OutcomePredictor(); op.fit('subscriptions.db')
+print(op.info())
+
+# Открытые сделки
+import sqlite3
+conn = sqlite3.connect('subscriptions.db')
+rows = conn.execute("SELECT symbol, signal_type, created_at FROM simulated_trades WHERE status='OPEN'").fetchall()
+print(f"Открытых: {len(rows)}")
+```

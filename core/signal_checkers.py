@@ -11,6 +11,11 @@ import pandas as pd
 from core.signal_models import SignalData, SignalDirection, SignalType
 
 try:
+    from core.config_loader import config as _cfg
+except ImportError:
+    _cfg = None
+
+try:
     from core.indicators import calculate_trend, calculate_wt
 except ImportError:
     def calculate_trend(df, atr_period=43, factor=1.0):
@@ -27,44 +32,94 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _wt_params() -> tuple:
+    """Возвращает (n1, n2, ob_threshold, os_threshold) из конфига или дефолты."""
+    if _cfg is None:
+        return 10, 21, 60, -60
+    n1  = _cfg.get("analysis.indicators.wavetrend.n1", 10)
+    n2  = _cfg.get("analysis.indicators.wavetrend.n2", 21)
+    ob  = _cfg.get("analysis.indicators.wavetrend.ob_threshold", 60)
+    os_ = _cfg.get("analysis.indicators.wavetrend.os_threshold", -60)
+    return int(n1), int(n2), float(ob), float(os_)
+
+
+def _trend_params() -> tuple:
+    """Возвращает (atr_period, factor) из конфига или дефолты."""
+    if _cfg is None:
+        return 43, 1.0
+    atr = _cfg.get("analysis.indicators.trend.atr_period", 43)
+    fac = _cfg.get("analysis.indicators.trend.factor", 1.0)
+    return int(atr), float(fac)
+
+
+def _anomaly_params() -> tuple:
+    """Возвращает (min_bars, ma_period, ratio_thr, str_trend, str_counter) из конфига."""
+    if _cfg is None:
+        return 20, 20, 3.0, 12, 8
+    min_bars  = _cfg.get("detectors.anomaly.min_bars", 20)
+    ma_period = _cfg.get("detectors.anomaly.volume_ma_period", 20)
+    ratio_thr = _cfg.get("detectors.anomaly.volume_ratio_threshold", 3.0)
+    str_trend = _cfg.get("detectors.anomaly.strength_trend_multiplier", 12)
+    str_ctr   = _cfg.get("detectors.anomaly.strength_counter_multiplier", 8)
+    return int(min_bars), int(ma_period), float(ratio_thr), int(str_trend), int(str_ctr)
+
+
 async def check_anomaly_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
     """Проверка аномалий объема."""
     signals = []
     try:
-        if df is None or len(df) < 20:
+        min_bars, ma_period, ratio_thr, str_trend, str_ctr = _anomaly_params()
+        if df is None or len(df) < min_bars:
             return signals
 
-        volume_mean = df["volume"].rolling(20).mean().iloc[-1]
+        volume_mean = df["volume"].rolling(ma_period).mean().iloc[-1]
         volume_current = df["volume"].iloc[-1]
         volume_ratio = volume_current / volume_mean if volume_mean > 0 else 1
 
-        if volume_ratio > 3.0:
+        if volume_ratio > ratio_thr:
             price_change = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100
             direction = SignalDirection.LONG if price_change > 0 else SignalDirection.SHORT
+            # Адаптивный strength: объём по тренду = сильнее, против тренда = слабее
+            try:
+                atr_p, fac = _trend_params()
+                df_t = calculate_trend(df, atr_period=atr_p, factor=fac)
+                trend_val = df_t["trend"].iloc[-1]  # 1=UP, -1=DOWN
+                trend_matches = (trend_val == 1 and direction == SignalDirection.LONG) or \
+                                (trend_val == -1 and direction == SignalDirection.SHORT)
+            except Exception:
+                trend_matches = False
+            if trend_matches:
+                anom_strength = min(int(volume_ratio * str_trend), 100)
+            else:
+                anom_strength = min(int(volume_ratio * str_ctr), 80)
+            logger.debug("[%s] ANOMALY %s vol_ratio=%.1f price_chg=%.2f%% str=%d trend_match=%s",
+                         symbol, direction.value, volume_ratio, price_change, anom_strength, trend_matches)
             signals.append(SignalData(
                 symbol=symbol,
                 signal_type=SignalType.ANOMALY,
                 direction=direction,
-                strength=min(int(volume_ratio * 10), 100),
+                strength=anom_strength,
                 confidence=0.7,
                 timestamp=datetime.now(),
                 data={"volume_ratio": volume_ratio, "price_change": price_change,
-                      "volume_current": volume_current, "volume_mean": volume_mean},
-                timeframe="1h",
+                      "volume_current": volume_current, "volume_mean": volume_mean,
+                      "trend_match": trend_matches},
+                timeframe="15m",
             ))
     except Exception:
         logger.exception("Ошибка проверки аномалий для %s", symbol)
     return signals
 
 
-async def check_wt_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
-    """Проверка Wavetrend сигналов."""
+async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = None) -> List[SignalData]:
+    """Проверка Wavetrend сигналов (15m) с опциональным фильтром по 1h."""
     signals = []
     try:
         if df is None or len(df) < 50:
             return signals
 
-        df_wt = calculate_wt(df)
+        n1, n2, ob, os_ = _wt_params()
+        df_wt = calculate_wt(df, n1=n1, n2=n2)
         if "wt1" not in df_wt.columns or "wt2" not in df_wt.columns:
             return signals
 
@@ -74,18 +129,47 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
         cross_up = wt1_prev < wt2_prev and wt1_last > wt2_last
         cross_down = wt1_prev > wt2_prev and wt1_last < wt2_last
 
-        if cross_up and wt1_last < -50:
-            signals.append(SignalData(
-                symbol=symbol, signal_type=SignalType.WT_SIGNAL, direction=SignalDirection.LONG,
-                strength=70, confidence=0.8, timestamp=datetime.now(),
-                data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OS"}, timeframe="15m",
-            ))
-        elif cross_down and wt1_last > 50:
-            signals.append(SignalData(
-                symbol=symbol, signal_type=SignalType.WT_SIGNAL, direction=SignalDirection.SHORT,
-                strength=70, confidence=0.8, timestamp=datetime.now(),
-                data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OB"}, timeframe="15m",
-            ))
+        # WT 1h для фильтра: отсекаем сигналы против старшего ТФ
+        wt1_1h = None
+        if df_1h is not None and len(df_1h) >= 50:
+            try:
+                df_1h_wt = calculate_wt(df_1h, n1=n1, n2=n2)
+                if "wt1" in df_1h_wt.columns:
+                    wt1_1h = float(df_1h_wt["wt1"].iloc[-1])
+            except Exception:
+                pass
+
+        # Адаптивный strength по глубине зоны WT
+        wt1_abs = abs(wt1_last)
+        if wt1_abs >= 80:
+            wt_strength = 85
+        elif wt1_abs >= 70:
+            wt_strength = 75
+        elif wt1_abs >= 60:
+            wt_strength = 65
+        else:
+            wt_strength = 55
+
+        if cross_up and wt1_last < os_:
+            if wt1_1h is not None and wt1_1h > ob:
+                logger.debug("[%s] WT CrossUp отклонён: 1h OB (wt1_1h=%.1f)", symbol, wt1_1h)
+            else:
+                logger.debug("[%s] WT CrossUp OS wt1=%.1f str=%d wt1_1h=%s", symbol, wt1_last, wt_strength, f"{wt1_1h:.1f}" if wt1_1h is not None else "N/A")
+                signals.append(SignalData(
+                    symbol=symbol, signal_type=SignalType.WT_SIGNAL, direction=SignalDirection.LONG,
+                    strength=wt_strength, confidence=0.8, timestamp=datetime.now(),
+                    data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OS", "wt1_1h": wt1_1h}, timeframe="15m",
+                ))
+        elif cross_down and wt1_last > ob:
+            if wt1_1h is not None and wt1_1h < os_:
+                logger.debug("[%s] WT CrossDown отклонён: 1h OS (wt1_1h=%.1f)", symbol, wt1_1h)
+            else:
+                logger.debug("[%s] WT CrossDown OB wt1=%.1f str=%d wt1_1h=%s", symbol, wt1_last, wt_strength, f"{wt1_1h:.1f}" if wt1_1h is not None else "N/A")
+                signals.append(SignalData(
+                    symbol=symbol, signal_type=SignalType.WT_SIGNAL, direction=SignalDirection.SHORT,
+                    strength=wt_strength, confidence=0.8, timestamp=datetime.now(),
+                    data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OB", "wt1_1h": wt1_1h}, timeframe="15m",
+                ))
     except Exception:
         logger.exception("Ошибка проверки WT для %s", symbol)
     return signals
@@ -100,15 +184,17 @@ async def check_mtf_signals(
         if any(x is None for x in (df_1h, df_15m, df_3m)):
             return signals
 
-        df_1h_trend = calculate_trend(df_1h)
+        n1, n2, ob, os_ = _wt_params()
+        atr_period, factor = _trend_params()
+        df_1h_trend = calculate_trend(df_1h, atr_period=atr_period, factor=factor)
         trend_1h = df_1h_trend["trend"].iloc[-1] if "trend" in df_1h_trend.columns else 0
 
-        df_15m_wt = calculate_wt(df_15m)
+        df_15m_wt = calculate_wt(df_15m, n1=n1, n2=n2)
         if "wt1" not in df_15m_wt.columns or "wt2" not in df_15m_wt.columns:
             return signals
 
         wt1_15m, wt2_15m = df_15m_wt["wt1"].iloc[-1], df_15m_wt["wt2"].iloc[-1]
-        df_3m_wt = calculate_wt(df_3m)
+        df_3m_wt = calculate_wt(df_3m, n1=n1, n2=n2)
         if "wt1" not in df_3m_wt.columns:
             return signals
 
@@ -117,9 +203,9 @@ async def check_mtf_signals(
                       timestamp=datetime.now(), timeframe="MTF",
                       data={"trend_1h": trend_1h, "wt1_15m": wt1_15m, "wt2_15m": wt2_15m, "wt1_3m": wt1_3m})
 
-        if trend_1h == 1 and wt1_15m > wt2_15m and wt1_3m < -50:
+        if trend_1h == 1 and wt1_15m > wt2_15m and wt1_3m < os_:
             signals.append(SignalData(direction=SignalDirection.LONG, **common))
-        elif trend_1h == -1 and wt1_15m < wt2_15m and wt1_3m > 50:
+        elif trend_1h == -1 and wt1_15m < wt2_15m and wt1_3m > ob:
             signals.append(SignalData(direction=SignalDirection.SHORT, **common))
     except Exception:
         logger.exception("Ошибка проверки MTF для %s", symbol)
@@ -133,7 +219,8 @@ async def check_trend_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]
         if df is None or len(df) < 50:
             return signals
 
-        df_trend = calculate_trend(df)
+        atr_period, factor = _trend_params()
+        df_trend = calculate_trend(df, atr_period=atr_period, factor=factor)
         if "trend" not in df_trend.columns:
             return signals
 
@@ -142,6 +229,7 @@ async def check_trend_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]
 
         if trend_current != trend_prev:
             direction = SignalDirection.LONG if trend_current == 1 else SignalDirection.SHORT
+            logger.debug("[%s] TREND flip %s→%s", symbol, trend_prev, trend_current)
             signals.append(SignalData(
                 symbol=symbol, signal_type=SignalType.TREND_SIGNAL, direction=direction,
                 strength=60, confidence=0.7, timestamp=datetime.now(),
@@ -159,7 +247,8 @@ async def check_divergence_signals(symbol: str, df: pd.DataFrame) -> List[Signal
         if df is None or len(df) < 100:
             return signals
 
-        df_wt = calculate_wt(df)
+        n1, n2, _, _ = _wt_params()
+        df_wt = calculate_wt(df, n1=n1, n2=n2)
         if "wt1" not in df_wt.columns:
             return signals
 

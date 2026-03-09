@@ -84,7 +84,7 @@ def print_divergence_details(div_info, symbol):
         print(f"  ❌ Не рекомендуется вход")
 
 
-async def test_single_pair(symbol, timeframe="1h"):
+async def _run_single_pair(symbol, timeframe="1h"):
     """Тестирует поиск дивергенций на одной паре"""
     print(f"\n{'='*70}")
     print(f"ТЕСТ: {symbol} на {timeframe}")

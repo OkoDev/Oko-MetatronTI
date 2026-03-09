@@ -108,13 +108,85 @@
 - **Обучение:** после накопления 300+ сделок с `max_R_possible IS NOT NULL` (сейчас ~226+, нужно ~74)
 - Итог: `Position = Deposit × kelly_f × confidence`
 
-## 🔲 Этап 8 — Масштабирование
+## ✅ Этап 8.0 — Стабильный API-движок (07.03.2026)
+**Цель:** устойчивость к сетевым сбоям и масштабируемость ×10-50
+
+- `core/api_engine.py` — транспортный слой под `data_collector.py`:
+  - `OhlcvCache` — LRU с ограниченным размером (maxsize=5000, evict oldest)
+  - `CircuitBreaker` — CLOSED → OPEN (10 ошибок) → HALF_OPEN (30 сек пауза) → CLOSED
+  - `ApiEngine` — retry × 3 + exponential backoff (NetworkError 1/2/4 сек, RateLimit 5/10/20 сек)
+  - In-flight deduplication: один API-вызов для N одновременных запросов одного ключа
+  - Централизованный `Semaphore(20)` — единственная точка ограничения параллелизма
+- `data_collector.py` — `get_ohlcv`/`get_ticker` делегируют в ApiEngine (публичный интерфейс не меняется)
+- `fetch_candles` — параллельный `asyncio.gather` вместо sequential for-loop (~10 мин → ~30 сек)
+- `bot/monitoring.py` — `_analyze_sem = Semaphore(3)` для ограничения параллельных `analyze_symbol`
+- `trading_intelligence.py` — `timeout=10.0` для `_collect_all_signals`
+
+## ✅ Этап 8.1 — Критический фикс производительности скана (08.03.2026)
+**Цель:** ускорить скан с 22-93 минут до приемлемых значений
+
+**Корневые причины медленного скана (диагностика):**
+1. `enableRateLimit: True` в ccxt — встроенный rate limiter сериализует ВСЕ запросы через один exchange-экземпляр (~1 запрос/сек), игнорируя asyncio-параллелизм. Эффект: 600 пар × 3 TF = 1800 запросов × 1 сек = **1800 сек = 30 мин**.
+2. `fetch_candles()` — фоновая задача запускала 398 API-запросов каждые 60 сек через тот же Semaphore, конкурируя со сканом. При скане 5177 сек = 86 запусков × 398 = ~34 000 паразитных запросов.
+3. Дивергенции: `scan_one` делал prefetch с `limit=150`, но `detect_divergence` запрашивал `limit=160` → cache miss на каждой паре.
+
+**Исправления:**
+- `core/data_collector.py`: `enableRateLimit: False` — ApiEngine.Semaphore(20) управляет параллелизмом сам (ускорение **44-186x**, скан 399 пар → **25-32 сек**)
+- `bot/monitoring.py`: убран `fetch_candles()` из `monitor_market()`. `price_history`/`volume_history` обновляются из `df_15m` прямо в `scan_one` — без дополнительных API-вызовов
+- `bot/monitoring.py`: prefetch в `scan_one` изменён на `limit=160` (совпадает с требованием divergence)
+- `bot/monitoring.py`: BTC-фильтр переделан из жёсткой блокировки в мягкое предупреждение ⚠️ — сигналы против тренда BTC доставляются с пометкой, не дропаются
+- `bot/monitoring.py`: ключ дедупликации изменён с `(symbol, signal_type)` на `symbol` — один алерт на пару за окно `dedup_minutes`
+- Добавлены timing-логи: `[scan] OHLCV медленно %s: %.1fs`, `[scan] Пара медленно %s: total=%.1fs`
+
+**Результат:**
+| Метрика | До | После |
+|---|---|---|
+| Скан 399 пар | 1337-5617 сек | 25-32 сек |
+| Скорость | ~1 пара/сек | ~15 пар/сек |
+| Паразитные запросы | ~34 000/цикл | 0 |
+| Пропущенные сигналы (BTC фильтр) | Все LONG при TREND_DOWN | Доставляются с предупреждением |
+| Дубли TG-сообщений | 47/мин после рестарта | 1/пару/dedup_window |
+
+## 🔲 Этап 8.2 — Масштабирование архитектуры
 **Цель:** готовность к >100 пользователям
 
 - Разбить `bot_with_subscriptions.py` (1540+ строк) на обработчики в `bot/handlers/`
 - Разбить `trading_intelligence.py` (1850+ строк) на `core/signals/` + `core/ml/`
 - SQLAlchemy ORM → переход на PostgreSQL займёт 1 день при наличии прослойки
-- Redis для кеша OHLCV (замена in-memory `_ohlcv_cache`)
+- WebSocket klines через `ccxt.pro` (Phase 2 ApiEngine) — REST только для исторических данных
+
+## 🔲 Этап 8.3 — Рефакторинг архитектуры меню TG
+**Цель:** устойчивая к изменениям система меню без text-based маршрутизации
+
+**Текущие проблемы (задокументированы 09.03.2026):**
+- Text-based роутинг через 9 frozenset'ов — хрупкий, уникальность держится только на эмодзи
+- При добавлении кнопки нужно менять 3 места: ReplyKeyboard + frozenset + if-elif (легко пропустить)
+- `current_menu` / `menu_stack` в MenuHandler — мёртвый код, не используется для маршрутизации
+- 4 пары дублированных ReplyKeyboard/InlineKeyboard (ai, signals, risk, history)
+- Inline-клавиатуры создаются но callback-обработчики могут быть не подключены
+
+**План рефакторинга:**
+- Перейти на FSM-состояния для текущего меню (MenuStates.main/signals/pivots/etc.)
+- `F.text & StateFilter(MenuStates.signals)` вместо frozenset-детектора
+- Удалить мёртвые `current_menu` / `menu_stack` из MenuHandler
+- Объединить дублированные ReplyKeyboard/InlineKeyboard или удалить Inline-версии
+- Проверить и подключить все callback_data обработчики
+
+**Условие старта:** нет срочности, запускать при добавлении нового раздела меню
+
+---
+
+## 🔲 Этап 9 — SMC (Smart Money Concepts)
+**Цель:** стратегия на основе структуры рынка — вход после слома структуры на откате 0.618
+
+- `core/structure_detector.py` — детектор Swing High/Low на ценовом графике
+- CHoCH (Change of Character) — первый слом структуры = сигнал разворота
+- BOS (Break of Structure) — пробой предыдущего swing = подтверждение направления
+- Order Block — последняя свеча импульса перед BOS (зона входа/SL)
+- Fibonacci 0.618 — зона входа на откате от импульса (BOS → коррекция → 0.618 → вход)
+- Confluence с FVG (уже есть в `core/indicators.py`) и пивот уровнями (Этап 6)
+- Новый `signal_type = "smc_signal"` с весом ~0.25 в TradingIntelligence
+- **Условие старта:** после Этапа 7 — ML валидирует реальную ценность SMC vs текущих стратегий
 
 ---
 
@@ -149,3 +221,6 @@
 | 2026-03-06 | Этап 5.3: Еженедельный отчёт (weekly_summary + _weekly_report_loop каждое вс. 20:00) |
 | 2026-03-06 | Этап 6: динамический TP (get_pivot_tp из кеша 1M/1W/1D, min_r=1.5) |
 | 2026-03-06 | Этап 7 prep: core/r_predictor.py (GBR + Kelly), distance_to_pivot_pct в features_json |
+| 2026-03-07 | Сканер: per-pair scan_all_pairs, prefetch limit=160, _analyze_sem=Semaphore(3) |
+| 2026-03-07 | Этап 8.0: core/api_engine.py (LRU cache, CircuitBreaker, retry, in-flight dedup) |
+| 2026-03-08 | Этап 8.1: enableRateLimit=False (скан 30 мин → 30 сек), убран fetch_candles(), BTC фильтр → предупреждение, dedup по паре |

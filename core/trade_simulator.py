@@ -122,7 +122,16 @@ class TradeSimulator:
                 ts = ts.replace(tzinfo=timezone.utc)
 
             signal_type = _signal_type_from_recommendation(recommendation)
+            # Сохраняем ВСЕ поддерживающие типы сигналов
+            supporting = _get_recommendation_value(recommendation, "supporting_signals") or []
+            all_signal_types = list(dict.fromkeys(
+                s.signal_type.value for s in supporting
+                if hasattr(s, "signal_type") and hasattr(s.signal_type, "value")
+            ))
             features = {}
+            if all_signal_types:
+                features["all_signal_types"] = all_signal_types
+                features["n_supporting"] = len(supporting)
             if ctx:
                 features["volume_24h"] = getattr(ctx, "volume_24h", None)
                 features["price_change_24h"] = getattr(ctx, "price_change_24h", None)

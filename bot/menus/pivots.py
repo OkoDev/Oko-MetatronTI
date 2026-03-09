@@ -58,7 +58,7 @@ async def show_pivot_reversals(bot, message: Message) -> None:
         try:
             async with semaphore:
                 has_signal, info = await check_pivot_level_signal(
-                    sym, bot.data_collector, bot.pivot_calculator_fixed
+                    sym, bot.data_collector, bot.pivot_calculator
                 )
                 if has_signal:
                     return sym, info
@@ -84,7 +84,7 @@ async def show_key_levels(bot, message: Message) -> None:
         return
     sym = bot.monitored_pairs[0]
     try:
-        piv = await bot.pivot_calculator_fixed.get_multi_timeframe_pivots(sym, bot.data_collector)
+        piv = await bot.pivot_calculator.get_multi_timeframe_pivots(sym, bot.data_collector)
         if not piv or "confluence" not in piv or not piv["confluence"]:
             await message.answer(f"🎯 Конфлюэнций не найдено для {sym}")
             return
@@ -106,7 +106,7 @@ async def show_pivot_analysis(bot, message: Message) -> None:
         return
     sym = bot.monitored_pairs[0]
     try:
-        piv = await bot.pivot_calculator_fixed.get_multi_timeframe_pivots(sym, bot.data_collector)
+        piv = await bot.pivot_calculator.get_multi_timeframe_pivots(sym, bot.data_collector)
         if not piv:
             await message.answer(f"❌ Не удалось получить пивоты для {sym}")
             return

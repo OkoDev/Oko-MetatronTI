@@ -1,5 +1,5 @@
 """
-Действия меню исторического анализа — standalone-функции вместо методов MenuHandler.
+Меню истории сигналов — данные из simulated_trades через PerformanceEngine.
 """
 import logging
 
@@ -8,119 +8,134 @@ from aiogram.types import Message
 logger = logging.getLogger(__name__)
 
 
+def _get_pe(bot):
+    from core.performance_engine import PerformanceEngine
+    db = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+    return PerformanceEngine(db)
+
+
 async def show_performance_analysis(bot, message: Message) -> None:
-    """Показ общей эффективности."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("📊 Исторический анализатор недоступен")
+    """Общая сводка по сделкам."""
+    pe = _get_pe(bot)
+    s = pe.summary()
+    if not s:
+        await message.answer("Нет данных")
         return
-    m = ha.calculate_performance_metrics()
     lines = [
-        "📊 <b>Эффективность за всё время</b>",
-        f"Сигналов: {m.total_signals}",
-        f"Win rate: {m.win_rate:.1%}",
-        f"Success rate: {m.success_rate:.1%}",
-        f"Profit Factor: {m.profit_factor:.2f}",
-        f"Max DD: {m.max_drawdown:.2f}%",
+        "<b>Сводка по сделкам</b>",
+        f"Всего: {s.get('total', 0)} | Открытых: {s.get('open_count', 0)}",
+        f"TP: {s.get('tp_count', 0)} | SL: {s.get('sl_count', 0)} | TSL: {s.get('tsl_count', 0)}",
+        f"Win rate: {s['win_rate']}%" if s.get('win_rate') is not None else "Win rate: —",
+        f"Avg R: {s.get('avg_r', '—')} | Avg R win: {s.get('avg_r_win', '—')} | Avg R loss: {s.get('avg_r_loss', '—')}",
     ]
     await message.answer("\n".join(lines))
 
 
 async def show_performance_trend(bot, message: Message) -> None:
-    """Показ тренда производительности за 7 дней."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("📈 Исторический анализатор недоступен")
+    """По направлению LONG/SHORT."""
+    pe = _get_pe(bot)
+    rows = pe.by_direction()
+    if not rows:
+        await message.answer("Нет данных по направлениям")
         return
-    trend = ha.get_performance_trend(days=7)
-    if not trend:
-        await message.answer("📈 Недостаточно данных для тренда (7д)")
-        return
-    lines = ["📈 <b>Тренд (7д)</b>"]
-    for d, v in list(trend.items())[-7:]:
-        lines.append(f"• {d}: SR={v['success_rate']:.1%} PF={v['profit_factor']:.2f} N={v['total_signals']}")
+    lines = ["<b>По направлению</b>"]
+    for r in rows:
+        wr = f"{r['win_rate']}%" if r.get('win_rate') is not None else "—"
+        lines.append(f"• {r['direction']}: {r['total']} сделок, WR={wr}, avgR={r.get('avg_r','—')}")
     await message.answer("\n".join(lines))
 
 
 async def show_analysis_by_type(bot, message: Message) -> None:
-    """Показ эффективности по типам сигналов."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("🎯 Исторический анализатор недоступен")
+    """По типам сигналов."""
+    pe = _get_pe(bot)
+    rows = pe.by_signal_type()
+    if not rows:
+        await message.answer("Нет данных по типам сигналов")
         return
-    by_type = ha.get_performance_by_signal_type()
-    if not by_type:
-        await message.answer("🎯 Нет данных по типам сигналов")
-        return
-    lines = ["🎯 <b>По типам сигналов</b>"]
-    for t, m in by_type.items():
-        lines.append(f"• {t}: SR={m.success_rate:.1%} PF={m.profit_factor:.2f} N={m.total_signals}")
+    lines = ["<b>По типам сигналов</b>"]
+    for r in rows:
+        wr = f"{r['win_rate']}%" if r.get('win_rate') is not None else "—"
+        lines.append(f"• {r['signal_type']}: {r['total']} сделок, WR={wr}, avgR={r.get('avg_r','—')}")
     await message.answer("\n".join(lines))
 
 
 async def show_signal_history(bot, message: Message) -> None:
-    """Показ последних 10 сигналов из истории."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("📚 Исторический анализатор недоступен")
+    """Последние 10 закрытых сделок."""
+    pe = _get_pe(bot)
+    trades = pe.recent_closed(limit=10)
+    if not trades:
+        await message.answer("История пуста")
         return
-    sigs = ha.get_signals(limit=10)
-    if not sigs:
-        await message.answer("📚 История пуста")
-        return
-    lines = ["📚 <b>Последние сигналы</b>"]
-    for s in sigs[:10]:
-        lines.append(f"• {s.timestamp:%Y-%m-%d %H:%M} {s.symbol} {s.signal_type} → {s.outcome.value}")
+    lines = ["<b>Последние 10 сделок</b>"]
+    for t in trades:
+        r_str = f"R={t['R_multiple']:.2f}" if t.get("R_multiple") is not None else ""
+        lines.append(
+            f"• {t['symbol']} {t['direction']} {t['status']} {r_str} "
+            f"({t.get('closed_at','')[:10]})"
+        )
     await message.answer("\n".join(lines))
 
 
 async def show_improvement_recommendations(bot, message: Message) -> None:
-    """Показ рекомендаций по улучшению."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("💡 Исторический анализатор недоступен")
+    """Рекомендации на основе реальной статистики."""
+    pe = _get_pe(bot)
+    s = pe.summary()
+    rows = pe.by_signal_type()
+    lines = ["<b>Рекомендации</b>"]
+    if not s or not s.get("closed_count"):
+        lines.append("• Недостаточно закрытых сделок для анализа")
+        await message.answer("\n".join(lines))
         return
-    recs = ha.get_recommendations_for_improvement()
-    lines = ["💡 <b>Рекомендации</b>"]
-    for r in recs:
-        lines.append(f"• {r}")
+    wr = s.get("win_rate", 0) or 0
+    if wr < 40:
+        lines.append(f"• Низкий win rate ({wr}%) — пересмотрите фильтры входа")
+    if s.get("avg_r") is not None and s["avg_r"] < 0:
+        lines.append("• Отрицательный avg R — проверьте SL/TP соотношение")
+    for r in rows:
+        if r.get("avg_r") is not None and r["avg_r"] < -0.5 and (r["wins"] or 0) + (r["losses"] or 0) >= 20:
+            lines.append(f"• {r['signal_type']}: слабая эффективность (avg R={r['avg_r']})")
+    if len(lines) == 1:
+        lines.append("• Показатели в норме, продолжайте стратегию")
     await message.answer("\n".join(lines))
 
 
 async def show_detailed_statistics(bot, message: Message) -> None:
-    """Показ детальной статистики."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("📊 Исторический анализатор недоступен")
-        return
-    m = ha.calculate_performance_metrics()
-    lines = [
-        "📊 <b>Детальная статистика</b>",
-        f"Всего сигналов: {m.total_signals}",
-        f"Успешные/Неуспешные/Частичные: {m.successful_signals}/{m.failed_signals}/{m.partial_signals}",
-        f"Win rate: {m.win_rate:.1%}",
-        f"Avg Profit: {m.average_profit:.2f} | Avg Loss: {m.average_loss:.2f}",
-        f"Profit Factor: {m.profit_factor:.2f} | Sharpe: {m.sharpe_ratio:.2f}",
-    ]
+    """Детальная статистика: все разрезы."""
+    pe = _get_pe(bot)
+    s = pe.summary()
+    by_regime = pe.by_regime()
+    lines = ["<b>Детальная статистика</b>"]
+    if s:
+        lines += [
+            f"Закрытых: {s.get('closed_count', 0)}",
+            f"TP/SL/TSL: {s.get('tp_count',0)}/{s.get('sl_count',0)}/{s.get('tsl_count',0)}",
+            f"Win rate: {s['win_rate']}%" if s.get("win_rate") is not None else "Win rate: —",
+            f"Avg R: {s.get('avg_r','—')} | Avg profit%: {s.get('avg_profit_pct','—')}",
+        ]
+    if by_regime:
+        lines.append("\n<b>По режиму рынка:</b>")
+        for r in by_regime:
+            wr = f"{r['win_rate']}%" if r.get('win_rate') is not None else "—"
+            lines.append(f"• {r['regime']}: {r['total']} сд., WR={wr}")
     await message.answer("\n".join(lines))
 
 
 async def refresh_history_data(bot, message: Message) -> None:
-    """Обновление / очистка устаревших данных истории."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("🔄 Исторический анализатор недоступен")
-        return
-    ok = ha.cleanup_old_data()
-    await message.answer("✅ Данные обновлены" if ok else "❌ Не удалось обновить данные")
+    """Данные обновляются в реальном времени из БД."""
+    await message.answer("Данные актуальны — история читается из БД напрямую")
 
 
 async def export_history_data(bot, message: Message) -> None:
-    """Экспорт метрик производительности в БД."""
-    ha = getattr(bot.trading_intelligence, "historical_analyzer", None)
-    if not ha:
-        await message.answer("📤 Исторический анализатор недоступен")
-        return
-    m = ha.calculate_performance_metrics()
-    ok = ha.save_performance_metrics(m)
-    await message.answer("📤 Метрики сохранены в базу" if ok else "❌ Ошибка сохранения метрик")
+    """Краткий экспорт статистики."""
+    pe = _get_pe(bot)
+    s = pe.summary()
+    rows = pe.by_signal_type()
+    lines = ["<b>Экспорт статистики</b>"]
+    if s:
+        lines.append(
+            f"Total={s.get('total',0)} TP={s.get('tp_count',0)} SL={s.get('sl_count',0)} "
+            f"WR={s.get('win_rate','—')}% avgR={s.get('avg_r','—')}"
+        )
+    for r in rows:
+        lines.append(f"{r['signal_type']}: total={r['total']} WR={r.get('win_rate','—')}% avgR={r.get('avg_r','—')}")
+    await message.answer("\n".join(lines))
