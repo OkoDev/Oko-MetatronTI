@@ -24,6 +24,7 @@ from core.signal_checkers import (
 
 # Форматтер рекомендаций
 from core.intelligence_formatter import format_intelligence_message  # noqa: F401 — re-export
+from core.data_quality import check_ohlcv_quality
 
 try:
     from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg
@@ -362,6 +363,17 @@ class TradingIntelligence:
 
             if df_1h is None or df_1h.empty:
                 return signals
+
+            # Проверка качества 15m-данных (свежесть + NaN)
+            if df_15m is not None and not df_15m.empty:
+                ok, reason = check_ohlcv_quality(
+                    df_15m, timeframe="15m",
+                    min_bars=50,   # limit=100, берём 50 как разумный минимум
+                    symbol=symbol,
+                )
+                if not ok:
+                    logger.info("[intelligence] %s: пропуск из-за качества данных: %s", symbol, reason)
+                    return signals
 
             # Параллельная проверка всех сигналов
             results = await asyncio.gather(

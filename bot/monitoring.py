@@ -19,6 +19,7 @@ from collections import deque
 from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals, check_mtf_signals as _check_mtf_signals
 from core.signal_models import SignalData, SignalType, SignalDirection
 from core.confluence_scanner import scan_confluence, confluence_message as _confluence_message
+from core.data_quality import check_ohlcv_quality, MIN_BARS
 from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,17 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
                 if (t_ohlcv - t_enter) > _slow_ohlcv:
                     logger.warning("[scan] OHLCV медленно %s: %.1fs", sym, t_ohlcv - t_enter)
                 if df_15m is None or df_15m.empty:
+                    return
+
+                # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
+                ok, reason = check_ohlcv_quality(
+                    df_15m,
+                    timeframe="15m",
+                    min_bars=MIN_BARS["divergence"],  # 160 — самый строгий детектор
+                    symbol=sym,
+                )
+                if not ok:
+                    logger.info("[scan] Пропускаем %s: %s", sym, reason)
                     return
 
                 # Обновляем price/volume history из уже загруженных данных
