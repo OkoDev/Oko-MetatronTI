@@ -37,83 +37,87 @@ def tv_link(symbol: str, interval: int = 15) -> str:
 def anomaly_message(symbol: str, info: dict) -> str:
     """Форматирует сообщение об аномалии"""
     parts = [
-        "🚨 <b>АНОМАЛИЯ</b> 🚨",
-        f"Пара: {tv_link(symbol, interval=1)}",
-        f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        "\n",
+        f"🚨 <b>АНОМАЛИЯ · {tv_link(symbol, interval=1)}</b>",
+        "",
     ]
     if not info:
-        return "\n\n".join(parts)
+        parts += [f"⏰ {datetime.now().strftime('%d.%m %H:%M')}", "\n"]
+        return "\n".join(parts)
     if "volume" in info:
         v = info["volume"]
         try:
-            parts.append(
-                f"📊 <b>Объем</b>\n"
-                f"Текущий: {float(v['current']):.2f}\n"
-                f"Средний: {float(v['average']):.2f}\n"
-                f"Превышение: {float(v['ratio']):.1f}x"
-            )
+            parts += [
+                "<b>📊 Объём</b>",
+                f"  Текущий:   {float(v['current']):.2f}",
+                f"  Средний:   {float(v['average']):.2f}",
+                f"  Превышение: <b>{float(v['ratio']):.1f}×</b>",
+                "",
+            ]
         except (TypeError, KeyError, ValueError, IndexError):
             pass
     if "price_change" in info:
         p = info["price_change"]
         try:
-            parts.append(
-                f"💹 <b>Цена</b> изменилась на {float(p['current']):.2f}% "
-                f"(порог {float(p['threshold']):.1f}%)"
-            )
+            ch = float(p['current'])
+            thr = float(p['threshold'])
+            ch_emoji = "📈" if ch > 0 else "📉"
+            parts += [f"{ch_emoji} Цена: <b>{ch:+.2f}%</b>  (порог {thr:.1f}%)", ""]
         except (TypeError, KeyError, ValueError, IndexError):
             pass
-    return "\n\n".join(parts)
+    parts += [f"⏰ {datetime.now().strftime('%d.%m %H:%M')}", "\n"]
+    return "\n".join(parts)
 
 def wt_message(symbol: str, info: dict) -> str:
     """Форматирует WT сигнал"""
-    emoji = "🟢" if "LONG" in info.get("type","") else "🔴"
-    tf = info.get("timeframe","15m")
-    
-    # Преобразуем таймфрейм в минуты для interval
+    is_long = "LONG" in info.get("type", "")
+    emoji = "🟢" if is_long else "🔴"
+    tf = info.get("timeframe", "15m")
+    dir_label = "LONG ↑" if is_long else "SHORT ↓"
+
     try:
-        if "h" in tf:
-            interval = int(tf.replace("h","")) * 60
-        else:
-            interval = int(tf.replace("m",""))
+        interval = int(tf.replace("h", "")) * 60 if "h" in tf else int(tf.replace("m", ""))
     except Exception:
         interval = 15
-    
+
+    wt1 = info.get('wt1', 0)
+    wt2 = info.get('wt2', 0)
+    try:
+        wt_str = f"WT1 <b>{float(wt1):.1f}</b>  WT2 {float(wt2):.1f}"
+    except (TypeError, ValueError):
+        wt_str = f"WT1 {wt1}  WT2 {wt2}"
+
     parts = [
-        f"{emoji} <b>WT СИГНАЛ {tf}</b> {emoji}",
-        f"Пара: {tv_link(symbol, interval=interval)}",
-        f"Тип: {info.get('type')}",
-        f"WT1={info.get('wt1'):.2f}, WT2={info.get('wt2'):.2f}",
-        f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        "\n",
+        f"{emoji} <b>WT · {tv_link(symbol, interval=interval)} · {dir_label} · {tf}</b>",
+        "",
+        f"  {wt_str}",
+        f"⏰ {datetime.now().strftime('%d.%m %H:%M')}",
+        "\n",
     ]
-    
-    if info.get("volume_details"):
-        vols = info['volume_details']
-        parts.append(f"📊 Объемы: {vols}")
-    
     return "\n".join(parts)
 
 def mtf_message(symbol: str, info: dict) -> str:
     """Форматирует MTF сигнал"""
-    emoji = "🟢" if info.get("type") in ("LONG","WT_LONG") else "🔴"
-    
+    is_long = info.get("type") in ("LONG", "WT_LONG")
+    emoji = "🟢" if is_long else "🔴"
+    dir_label = "LONG ↑" if is_long else "SHORT ↓"
+
     parts = [
-        f"{emoji} <b>MTF СИГНАЛ</b> {emoji}",
-        f"Пара: {tv_link(symbol, interval=3)}",
-        f"Тип: {info.get('type')}",
-        f"Тренд: {info.get('trend')} (1h)",
-        f"WT (15m): {info.get('wt')}",
-        f"Zone/FVG (3m): {info.get('zone')} + {info.get('fvg')}",
+        "\n",
+        f"{emoji} <b>MTF · {tv_link(symbol, interval=3)} · {dir_label}</b>",
+        "",
+        f"  Тренд 1h:   {info.get('trend', '—')}",
+        f"  WT 15m:     {info.get('wt', '—')}",
+        f"  Zone/FVG:   {info.get('zone', '—')} / {info.get('fvg', '—')}",
     ]
-    
+
     entry = info.get('entry_price')
     if entry and entry != 0:
-        parts.append(f"🎯 Вход: {entry:.4f}")
-    
-    parts.append(f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    if info.get("volume_details"):
-        vols = info['volume_details']
-        parts.append(f"📊 Объемы: {vols}")
-    
+        try:
+            parts.append(f"  🎯 Вход:    <code>{float(entry):.5f}</code>")
+        except (TypeError, ValueError):
+            pass
+
+    parts += [f"⏰ {datetime.now().strftime('%d.%m %H:%M')}", "\n"]
     return "\n".join(parts)

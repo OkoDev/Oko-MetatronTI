@@ -67,6 +67,7 @@ class TradingIntelligence:
         "anomaly":        None,
         "divergence":     None,
         "mtf_signal":     None,
+        "confluence":     None,
     }
 
     def __init__(self, data_collector, config: Dict = None, db_path: str = "subscriptions.db"):
@@ -83,7 +84,8 @@ class TradingIntelligence:
             SignalType.WT_SIGNAL: 0.10,
             SignalType.TREND_SIGNAL: 0.10,
             SignalType.ANOMALY: 0.05,
-            SignalType.PIVOT_ALERT: 0.15
+            SignalType.PIVOT_ALERT: 0.15,
+            SignalType.CONFLUENCE: 0.35,  # высокий вес — мультифакторный сигнал
         }
         # Исходные веса сохраняем отдельно — чтобы не накапливать корректировки
         self._base_signal_weights = dict(self.signal_weights)
@@ -543,7 +545,14 @@ class TradingIntelligence:
             context_factor *= 0.9
         if abs(market_context.price_change_24h) > 5:
             context_factor *= 1.1
-        signal_count_factor = min(total / 5.0, 1.5)
+        # CONFLUENCE сигналы содержат N факторов — считаем каждый как отдельный сигнал
+        effective_count = total
+        for sig in supporting_signals + conflicting_signals:
+            if getattr(sig, "signal_type", None) == SignalType.CONFLUENCE:
+                n_factors = len((sig.data or {}).get("factors", []))
+                if n_factors > 1:
+                    effective_count += n_factors - 1
+        signal_count_factor = min(effective_count / 5.0, 1.5)
         context_factor *= signal_count_factor
 
         return min(signal_confidence * context_factor, 1.0)
@@ -732,11 +741,26 @@ class TradingIntelligence:
             
             logger.debug(f"Контекст для {symbol}: цена={current_price}, объем={quote_volume}, изменение={price_change}%")
 
-            # ATR из кешированного 15m датафрейма (обычно уже в кеше)
+            # ATR(14), ATR(28), TSL-линии и свинг-уровни из 15m датафрейма
             atr = None
+            atr_slow = None
+            tsl_trendup = None
+            tsl_trenddown = None
+            swing_low = None
+            swing_high = None
             try:
-                df_15m = await self.data_collector.get_ohlcv(normalized_symbol, "15m", limit=50)
-                atr = self._compute_atr(df_15m)
+                df_15m = await self.data_collector.get_ohlcv(normalized_symbol, "15m", limit=60)
+                atr = self._compute_atr(df_15m, period=14)
+                atr_slow = self._compute_atr(df_15m, period=28)
+                if df_15m is not None and len(df_15m) >= 44:
+                    _trend_cfg = self.config.get("analysis", {}).get("indicators", {}).get("trend", {})
+                    _atr_pd  = _trend_cfg.get("atr_period", 43)
+                    _factor  = _trend_cfg.get("factor", 1.1)
+                    df_t = calculate_trend(df_15m, atr_period=_atr_pd, factor=_factor)
+                    tsl_trendup   = float(df_t["trendup"].iloc[-1])
+                    tsl_trenddown = float(df_t["trenddown"].iloc[-1])
+                    # Свинг-уровни: локальные минимумы/максимумы за последние 20 баров
+                    swing_low, swing_high = self._compute_swing_levels(df_15m, current_price)
             except Exception:
                 pass
 
@@ -748,6 +772,11 @@ class TradingIntelligence:
                 price_change_24h=price_change,
                 volatility=self._calculate_volatility(symbol),
                 atr=atr,
+                atr_slow=atr_slow,
+                tsl_trendup=tsl_trendup,
+                tsl_trenddown=tsl_trenddown,
+                swing_low=swing_low,
+                swing_high=swing_high,
             )
             
         except Exception as e:
@@ -760,6 +789,36 @@ class TradingIntelligence:
                 price_change_24h=0
             )
     
+    @staticmethod
+    def _compute_swing_levels(df, current_price: float, lookback: int = 20, wing: int = 2):
+        """Находит ближайший свинг-лоу ниже цены и свинг-хай выше цены за последние N баров.
+
+        wing=2 — локальный минимум/максимум определяется как ниже/выше 2 соседних баров с каждой стороны.
+        Возвращает (swing_low, swing_high) — оба могут быть None.
+        """
+        try:
+            if df is None or len(df) < lookback + wing * 2:
+                return None, None
+            recent = df.iloc[-(lookback + wing * 2):].reset_index(drop=True)
+            lows_below, highs_above = [], []
+            # не берём последние wing баров (нет "правых" соседей)
+            for i in range(wing, len(recent) - wing):
+                low_i  = recent["low"].iloc[i]
+                high_i = recent["high"].iloc[i]
+                left_l  = recent["low"].iloc[i - wing: i]
+                right_l = recent["low"].iloc[i + 1: i + wing + 1]
+                left_h  = recent["high"].iloc[i - wing: i]
+                right_h = recent["high"].iloc[i + 1: i + wing + 1]
+                if low_i < left_l.min() and low_i < right_l.min() and low_i < current_price:
+                    lows_below.append(low_i)
+                if high_i > left_h.max() and high_i > right_h.max() and high_i > current_price:
+                    highs_above.append(high_i)
+            swing_low  = float(max(lows_below))  if lows_below  else None  # ближайший = самый высокий
+            swing_high = float(min(highs_above)) if highs_above else None  # ближайший = самый низкий
+            return swing_low, swing_high
+        except Exception:
+            return None, None
+
     @staticmethod
     def _compute_atr(df, period: int = 14) -> Optional[float]:
         """Вычисляет ATR(14) из датафрейма OHLCV."""
@@ -830,7 +889,7 @@ class TradingIntelligence:
         reasoning = self._generate_reasoning(signals, analysis, market_context)
         
         # Рассчитываем уровни входа, стоп-лосса и тейк-профита
-        entry_price, stop_loss, take_profit, sl_source, tp_source = self._calculate_levels(
+        entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source = self._calculate_levels(
             symbol, direction, market_context, signals
         )
 
@@ -848,6 +907,7 @@ class TradingIntelligence:
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            tp1_price=tp1_price,
             sl_source=sl_source,
             tp_source=tp_source,
             reasoning=reasoning,
@@ -915,44 +975,137 @@ class TradingIntelligence:
     
     def _calculate_levels(self, symbol: str, direction: SignalDirection,
                          market_context: MarketContext,
-                         signals: List[SignalData]) -> Tuple[Optional[float], Optional[float], Optional[float], str, str]:
-        """Рассчитывает уровни входа, SL и TP. Возвращает (entry, sl, tp, sl_source, tp_source)."""
+                         signals: List[SignalData]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], str, str]:
+        """Рассчитывает уровни входа, SL и TP. Возвращает (entry, sl, tp, tp1, sl_source, tp_source).
 
+        tp1 — фиксированный уровень частичного выхода (50% позиции при 3R).
+        tp  — то же что tp1 (или пивот-уровень если он ≥ 3R).
+
+        SL (приоритет):
+          1. TSL-линия индикатора (trendup для LONG / trenddown для SHORT, ATR-43 factor-1.1)
+             — самый точный структурный стоп, тонкий при свежей смене тренда
+          2. Пивот-уровень из PIVOT_REVERSAL сигналов — если TSL слишком далеко
+          3. ATR(14) × динамический множитель (ratio ATR14/ATR28)
+          4. Волатильность fallback / фиксированный 2.0%
+        """
         current_price = market_context.current_price
         if current_price == 0:
-            return None, None, None, "", ""
+            return None, None, None, None, "", ""
 
         entry_price = current_price
 
-        # --- SL: приоритет ATR(14) → волатильность → дефолт ---
+        # --- Параметры из конфига ---
+        sl_cfg     = self.config.get("trading", {}).get("sl_tp", {})
+        atr_mult   = sl_cfg.get("atr_multiplier", 1.2)
+        sl_min     = sl_cfg.get("sl_min_pct", 0.8)
+        sl_max     = sl_cfg.get("sl_max_pct", 3.0)
+        tp_rr      = sl_cfg.get("tp_fallback_rr", 2.0)
+        atr_dyn    = sl_cfg.get("atr_dynamic", True)
+        atr_exp    = sl_cfg.get("atr_expand_threshold", 1.3)
+        atr_con    = sl_cfg.get("atr_contract_threshold", 0.8)
+        struct_buf = sl_cfg.get("struct_sl_buffer_pct", 0.3)  # % от цены
+        struct_max = sl_cfg.get("struct_sl_max_dist", 3.0)
+
+        is_long = direction == SignalDirection.LONG
+        is_short = direction == SignalDirection.SHORT
+
+        # --- ATR динамика: корректируем базовый множитель ---
+        if atr_dyn and market_context.atr and market_context.atr_slow:
+            ratio = market_context.atr / market_context.atr_slow
+            if ratio > atr_exp:
+                atr_mult = round(atr_mult * 0.85, 3)    # всплеск → SL уже
+            elif ratio < atr_con:
+                atr_mult = round(min(atr_mult * 1.1, 1.5), 3)  # затишье → чуть шире
+
+        # --- ATR/волатильность baseline ---
         if market_context.atr and entry_price > 0:
             atr_pct = market_context.atr / entry_price * 100
-            sl_pct = max(1.0, min(1.5 * atr_pct, 4.0))  # 1.5×ATR, зажатый в [1%, 4%]
+            sl_pct  = max(sl_min, min(atr_mult * atr_pct, sl_max))
             sl_source = f"atr_14:{atr_pct:.2f}%"
         elif market_context.volatility:
-            sl_pct = max(1.0, min(market_context.volatility, 3.0))
+            sl_pct  = max(sl_min, min(market_context.volatility, sl_max))
             sl_source = f"volatility:{market_context.volatility:.2f}%"
         else:
-            sl_pct = 2.5
-            sl_source = "fallback:2.5%"
+            sl_pct  = 2.0
+            sl_source = "fallback:2.0%"
 
-        # --- TP: 1.5×SL (RR 1:1.5) — пивот-TP перезапишет в monitoring/analysis_handlers ---
-        tp_pct = sl_pct * 1.5
-        tp_source = f"atr_rr_1.5:{tp_pct:.2f}%"
+        if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
+            return entry_price, None, None, None, "", ""
 
-        if direction == SignalDirection.LONG:
-            stop_loss = current_price * (1 - sl_pct / 100)
-            take_profit = current_price * (1 + tp_pct / 100)
-        elif direction == SignalDirection.SHORT:
-            stop_loss = current_price * (1 + sl_pct / 100)
-            take_profit = current_price * (1 - tp_pct / 100)
+        tsl_too_tight = sl_cfg.get("tsl_too_tight_pct", 0.6)
+
+        # ── 1. TSL-линия (trendup / trenddown ATR-43) ──────────────────────
+        tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
+        if tsl_line and tsl_line > 0:
+            if is_long and tsl_line < entry_price:
+                tsl_dist_pct = (entry_price - tsl_line) / entry_price * 100
+                tsl_sl_pct   = tsl_dist_pct + struct_buf
+                if sl_min <= tsl_sl_pct <= struct_max:
+                    # TSL слишком близко — ищем свинг-лоу как запасной уровень
+                    if tsl_sl_pct < tsl_too_tight and market_context.swing_low:
+                        sw = market_context.swing_low
+                        sw_pct = (entry_price - sw) / entry_price * 100 + struct_buf
+                        if sl_min <= sw_pct <= struct_max:
+                            sl_pct    = sw_pct
+                            sl_source = "swing_low"
+                        else:
+                            sl_pct    = tsl_sl_pct
+                            sl_source = "tsl_line:trendup"
+                    else:
+                        sl_pct    = tsl_sl_pct
+                        sl_source = "tsl_line:trendup"
+            elif is_short and tsl_line > entry_price:
+                tsl_dist_pct = (tsl_line - entry_price) / entry_price * 100
+                tsl_sl_pct   = tsl_dist_pct + struct_buf
+                if sl_min <= tsl_sl_pct <= struct_max:
+                    if tsl_sl_pct < tsl_too_tight and market_context.swing_high:
+                        sw = market_context.swing_high
+                        sw_pct = (sw - entry_price) / entry_price * 100 + struct_buf
+                        if sl_min <= sw_pct <= struct_max:
+                            sl_pct    = sw_pct
+                            sl_source = "swing_high"
+                        else:
+                            sl_pct    = tsl_sl_pct
+                            sl_source = "tsl_line:trenddown"
+                    else:
+                        sl_pct    = tsl_sl_pct
+                        sl_source = "tsl_line:trenddown"
+
+        # ── 2. Пивот-уровень как резервный структурный SL ──────────────────
+        # Используем только если TSL не дал результата (SL всё ещё ATR-based)
+        if "tsl_line" not in sl_source and "swing" not in sl_source:
+            pivot_type = "support" if is_long else "resistance"
+            struct_levels = [
+                s.data["level"]
+                for s in signals
+                if s.signal_type == SignalType.PIVOT_REVERSAL
+                and s.data.get("pivot_type") == pivot_type
+                and (s.data.get("level", 0) < entry_price if is_long
+                     else s.data.get("level", 0) > entry_price)
+            ]
+            if struct_levels:
+                nearest = max(struct_levels) if is_long else min(struct_levels)
+                pivot_sl_pct = abs(entry_price - nearest) / entry_price * 100 + struct_buf
+                if sl_min <= pivot_sl_pct <= struct_max and pivot_sl_pct < sl_pct:
+                    sl_pct    = pivot_sl_pct
+                    sl_source = f"structural:{pivot_type}:{nearest:.6g}"
+
+        # ── TP1: фиксированный 3R (частичный выход 50% позиции) ───────────
+        # Всегда 3R от SL независимо от пивотов
+        tp1_pct = sl_pct * 3.0
+        if is_long:
+            stop_loss  = entry_price * (1 - sl_pct / 100)
+            tp1_price  = entry_price * (1 + tp1_pct / 100)
         else:
-            stop_loss = None
-            take_profit = None
-            sl_source = ""
-            tp_source = ""
+            stop_loss  = entry_price * (1 + sl_pct / 100)
+            tp1_price  = entry_price * (1 - tp1_pct / 100)
 
-        return entry_price, stop_loss, take_profit, sl_source, tp_source
+        # ── TP fallback = TP1 (пивот-TP может перезаписать в monitoring,
+        #    но только если он ≥ 3R, иначе take_profit = tp1) ──────────────
+        take_profit = tp1_price
+        tp_source   = f"atr_rr_3.0:{tp1_pct:.2f}%"
+
+        return entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source
     
     def get_performance_statistics(self) -> Dict[str, Any]:
         """Возвращает статистику производительности системы"""

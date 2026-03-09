@@ -192,20 +192,43 @@ function symLink(sym) {
 function openTradesTable(rows) {
   if (!rows || !rows.length) return '<p class="note">Нет открытых позиций</p>';
   return `<table><thead><tr>
-    <th>#</th><th>Символ</th><th>Направление</th><th>Сигнал</th>
-    <th>Вход</th><th>SL</th><th>TP</th><th>Уверенность</th><th>Открыта</th>
+    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th>
+    <th>Вход</th><th>Сейчас</th><th>P&L%</th><th>R</th>
+    <th>SL</th><th>TP</th><th>Открыта</th><th>Закрыть</th>
   </tr></thead><tbody>` +
-  rows.map(r => `<tr>
-    <td>${r.id}</td>
-    <td>${symLink(r.symbol)}</td>
-    <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
-    <td>${r.signal_type||'—'}</td>
-    <td>${fmt(r.entry_price,4)}</td>
-    <td class="red">${fmt(r.stop_loss,4)}</td>
-    <td class="green">${fmt(r.take_profit,4)}</td>
-    <td>${r.confidence != null ? fmt(r.confidence*100,1)+'%' : '—'}</td>
-    <td>${r.created_at ? r.created_at.substring(0,16) : '—'}</td>
-  </tr>`).join('') + '</tbody></table>';
+  rows.map(r => {
+    const pnl = r.unrealized_pct;
+    const pnlClass = pnl == null ? '' : pnl >= 0 ? 'green' : 'red';
+    const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%' : '—';
+    const rStr = r.unrealized_r != null ? (r.unrealized_r >= 0 ? '+' : '') + r.unrealized_r.toFixed(2) + 'R' : '—';
+    const rClass = r.unrealized_r == null ? '' : r.unrealized_r >= 0 ? 'green' : 'red';
+    const curStr = r.current_price != null ? fmt(r.current_price, 4) : '<span style="color:#666">—</span>';
+    return `<tr>
+      <td>${r.id}</td>
+      <td>${symLink(r.symbol)}</td>
+      <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
+      <td>${r.signal_type||'—'}</td>
+      <td>${fmt(r.entry_price,4)}</td>
+      <td>${curStr}</td>
+      <td class="${pnlClass}">${pnlStr}</td>
+      <td class="${rClass}">${rStr}</td>
+      <td class="red">${fmt(r.stop_loss,4)}</td>
+      <td class="green">${fmt(r.take_profit,4)}</td>
+      <td>${r.created_at ? r.created_at.substring(0,16) : '—'}</td>
+      <td><button onclick="closeTrade(${r.id},this)" style="background:#b22222;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button></td>
+    </tr>`;
+  }).join('') + '</tbody></table>';
+}
+
+async function closeTrade(id, btn) {
+  if (!confirm(`Закрыть сделку #${id} по текущей цене?`)) return;
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await fetch(`/api/trades/${id}/close`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const d = await r.json();
+    if (d.ok) { btn.textContent = '✓'; btn.style.background='#2a6'; load(); }
+    else { btn.textContent = 'Err'; btn.disabled = false; }
+  } catch(e) { btn.textContent = 'Err'; btn.disabled = false; }
 }
 
 function recentTable(rows) {
@@ -477,6 +500,11 @@ _SETTINGS_HTML = """<!DOCTYPE html>
         <span class="hint">допустимое расстояние до уровня (ниже = строже) &nbsp;<b>default: 4.0</b></span>
       </div>
       <div class="field">
+        <label>BTC фильтр включён</label>
+        <input type="checkbox" id="btc_filter_enabled" style="width:18px;height:18px;cursor:pointer;">
+        <span class="hint">снять — отключить BTC-корреляционный фильтр (предупреждения и блокировки) &nbsp;<b>default: ✓</b></span>
+      </div>
+      <div class="field">
         <label>Контртренд порог (BTC фильтр)</label>
         <input type="number" id="counter_trend_strength_threshold" min="30" max="100" step="1">
         <span class="hint">сила < N при контртренде BTC → пропустить &nbsp;<b>default: 70</b></span>
@@ -527,6 +555,55 @@ _SETTINGS_HTML = """<!DOCTYPE html>
     <div id="weights"><span style="color:#8b949e">Загрузка...</span></div>
   </section>
 
+  <section>
+    <h2>&#x1F517; Confluence Scanner</h2>
+    <form id="confluenceForm">
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="confluence_enabled" style="accent-color:#58a6ff;width:16px;height:16px;">
+          Включён
+        </label>
+        <span class="hint">выключить без перезапуска бота &nbsp;<b>default: вкл</b></span>
+      </div>
+      <p style="font-size:.8rem;color:#8b949e;margin:14px 0 10px;">Окно поиска</p>
+      <div class="field">
+        <label>Lookback (баров 15m)</label>
+        <input type="number" id="confluence_lookback" min="5" max="200" step="1">
+        <span class="hint">глубина поиска (~7.5 ч при 30 барах) &nbsp;<b>default: 40</b></span>
+      </div>
+      <div class="field">
+        <label>Мин. score (порог сигнала)</label>
+        <input type="number" id="confluence_min_strength" min="40" max="100" step="5">
+        <span class="hint">60 = минимум 3 из 5 факторов должны совпасть &nbsp;<b>default: 60</b></span>
+      </div>
+      <p style="font-size:.8rem;color:#8b949e;margin:14px 0 10px;">WaveTrend зоны</p>
+      <div class="field">
+        <label>WT OS порог (Long)</label>
+        <input type="number" id="confluence_wt_os" min="-100" max="-20" step="1">
+        <span class="hint">WT ниже порога = перепроданность → фактор LONG &nbsp;<b>default: -58</b></span>
+      </div>
+      <div class="field">
+        <label>WT OB порог (Short)</label>
+        <input type="number" id="confluence_wt_ob" min="20" max="100" step="1">
+        <span class="hint">WT выше порога = перекупленность → фактор SHORT &nbsp;<b>default: 58</b></span>
+      </div>
+      <p style="font-size:.8rem;color:#8b949e;margin:14px 0 10px;">Пивоты и дивергенции</p>
+      <div class="field">
+        <label>Близость к пивоту (%)</label>
+        <input type="number" id="confluence_pivot_pct" min="0.1" max="5.0" step="0.1">
+        <span class="hint">цена считается "у пивота" если ближе чем N% &nbsp;<b>default: 0.5</b></span>
+      </div>
+      <div class="field">
+        <label>Мин. баров между трогами</label>
+        <input type="number" id="confluence_div_bars" min="1" max="20" step="1">
+        <span class="hint">минимальное расстояние для дивергенции WT &nbsp;<b>default: 3</b></span>
+      </div>
+      <button type="submit" class="btn" id="saveConfluenceBtn">&#x1F4BE; Сохранить Confluence</button>
+      <button type="button" class="btn-reset" onclick="resetForm('confluence')">&#x21BA; Сбросить</button>
+      <div id="msgConfluence"></div>
+    </form>
+  </section>
+
 </main>
 <script>
 // Значения по умолчанию — "защита от дурака"
@@ -536,6 +613,15 @@ const DEFAULTS = {
     price_threshold: 7.0,
     check_interval: 60,
     history_size: 200,
+  },
+  confluence: {
+    enabled: true,
+    lookback_bars: 40,
+    min_strength: 60,
+    wt_os_threshold: -58,
+    wt_ob_threshold: 58,
+    pivot_proximity_pct: 0.5,
+    div_min_bars: 3,
   },
   indicators: {
     wt_n1: 10, wt_n2: 21, wt_ob: 58, wt_os: -58,
@@ -565,6 +651,7 @@ const DEFAULTS = {
     min_signals: 2,
     single_signal_min_strength: 70,
     pivot_proximity_pct: 4.0,
+    btc_filter_enabled: true,
     counter_trend_strength_threshold: 70,
   },
   monitoring: {
@@ -601,7 +688,6 @@ function resetForm(section) {
     document.getElementById('min_volume_usd').value                 = d.min_volume_usd;
     document.getElementById('min_strength').value                   = d.min_strength;
     document.getElementById('min_strength_register').value          = d.min_strength_register;
-    document.getElementById('counter_trend_strength_threshold').value = d.counter_trend_strength_threshold;
   } else if (section === 'trading') {
     document.getElementById('use_tsl').checked        = d.use_tsl;
     document.getElementById('tsl_activation_r').value = d.tsl_activation_r;
@@ -616,11 +702,20 @@ function resetForm(section) {
     document.getElementById('min_signals').value                      = d.min_signals;
     document.getElementById('single_signal_min_strength').value       = d.single_signal_min_strength;
     document.getElementById('pivot_proximity_pct').value              = d.pivot_proximity_pct;
+    document.getElementById('btc_filter_enabled').checked             = d.btc_filter_enabled !== false;
     document.getElementById('counter_trend_strength_threshold').value = d.counter_trend_strength_threshold;
   } else if (section === 'monitoring') {
     document.getElementById('divergences_every_n_cycles').value = d.divergences_every_n_cycles;
     document.getElementById('background_every_n_cycles').value  = d.background_every_n_cycles;
     document.getElementById('cascade_div_every_n_cycles').value = d.cascade_div_every_n_cycles;
+  } else if (section === 'confluence') {
+    document.getElementById('confluence_enabled').checked        = d.enabled !== false;
+    document.getElementById('confluence_lookback').value         = d.lookback_bars;
+    document.getElementById('confluence_min_strength').value     = d.min_strength;
+    document.getElementById('confluence_wt_os').value            = d.wt_os_threshold;
+    document.getElementById('confluence_wt_ob').value            = d.wt_ob_threshold;
+    document.getElementById('confluence_pivot_pct').value        = d.pivot_proximity_pct;
+    document.getElementById('confluence_div_bars').value         = d.div_min_bars;
   }
 
   if (msgEl) {
@@ -656,7 +751,6 @@ async function loadSettings() {
     document.getElementById('min_volume_usd').value         = sq.min_volume_usd         ?? 1000000;
     document.getElementById('min_strength').value           = sq.min_strength           ?? 50;
     document.getElementById('min_strength_register').value  = sq.min_strength_register  ?? 20;
-    document.getElementById('counter_trend_strength_threshold').value = sq.counter_trend_strength_threshold ?? 70;
 
     const det = (d.detectors || {}).anomaly || {};
     document.getElementById('volume_ratio_threshold').value    = det.volume_ratio_threshold    ?? 3.0;
@@ -669,11 +763,22 @@ async function loadSettings() {
     document.getElementById('min_signals').value                      = sc.min_signals              ?? 2;
     document.getElementById('single_signal_min_strength').value       = sc.single_signal_min_strength ?? 70;
     document.getElementById('pivot_proximity_pct').value              = sc.pivot_proximity_pct      ?? 4.0;
+    document.getElementById('btc_filter_enabled').checked             = sc.btc_filter_enabled !== false;
+    document.getElementById('counter_trend_strength_threshold').value = sc.counter_trend_strength_threshold ?? 70;
 
     const mon = d.monitoring_intervals || {};
     document.getElementById('divergences_every_n_cycles').value = mon.divergences_every_n_cycles ?? 3;
     document.getElementById('background_every_n_cycles').value  = mon.background_every_n_cycles  ?? 5;
     document.getElementById('cascade_div_every_n_cycles').value = mon.cascade_div_every_n_cycles ?? 60;
+
+    const confl = d.confluence || {};
+    document.getElementById('confluence_enabled').checked        = confl.enabled !== false;
+    document.getElementById('confluence_lookback').value         = confl.lookback_bars        ?? 40;
+    document.getElementById('confluence_min_strength').value     = confl.min_strength         ?? 60;
+    document.getElementById('confluence_wt_os').value            = confl.wt_os_threshold      ?? -58;
+    document.getElementById('confluence_wt_ob').value            = confl.wt_ob_threshold      ?? 58;
+    document.getElementById('confluence_pivot_pct').value        = confl.pivot_proximity_pct  ?? 0.5;
+    document.getElementById('confluence_div_bars').value         = confl.div_min_bars         ?? 3;
 
     const trd = d.trading || {};
     document.getElementById('use_tsl').checked         = trd.use_tsl !== false;
@@ -790,6 +895,7 @@ document.getElementById('signalsConfigForm').addEventListener('submit', async (e
     min_signals:                parseInt(document.getElementById('min_signals').value),
     single_signal_min_strength: parseInt(document.getElementById('single_signal_min_strength').value),
     pivot_proximity_pct:        parseFloat(document.getElementById('pivot_proximity_pct').value),
+    btc_filter_enabled:         document.getElementById('btc_filter_enabled').checked,
     counter_trend_strength_threshold: parseInt(document.getElementById('counter_trend_strength_threshold').value),
   }}, 'saveSignalsConfigBtn', 'msgSignalsConfig', '&#x1F4BE; Сохранить фильтры');
 });
@@ -801,6 +907,19 @@ document.getElementById('monitoringForm').addEventListener('submit', async (e) =
     background_every_n_cycles:  parseInt(document.getElementById('background_every_n_cycles').value),
     cascade_div_every_n_cycles: parseInt(document.getElementById('cascade_div_every_n_cycles').value),
   }}, 'saveMonitoringBtn', 'msgMonitoring', '&#x1F4BE; Сохранить интервалы');
+});
+
+document.getElementById('confluenceForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({confluence: {
+    enabled:              document.getElementById('confluence_enabled').checked,
+    lookback_bars:        parseInt(document.getElementById('confluence_lookback').value),
+    min_strength:         parseInt(document.getElementById('confluence_min_strength').value),
+    wt_os_threshold:      parseFloat(document.getElementById('confluence_wt_os').value),
+    pivot_proximity_pct:  parseFloat(document.getElementById('confluence_pivot_pct').value),
+    div_min_bars:         parseInt(document.getElementById('confluence_div_bars').value),
+    wt_ob_threshold:      parseFloat(document.getElementById('confluence_wt_ob').value),
+  }}, 'saveConfluenceBtn', 'msgConfluence', '&#x1F4BE; Сохранить Confluence');
 });
 
 loadSettings();
@@ -1189,10 +1308,44 @@ async def _handle_index(request: web.Request) -> web.Response:
     return web.Response(text=_HTML, content_type="text/html", charset="utf-8")
 
 
+def _current_price_from_cache(dc, symbol: str) -> float | None:
+    """Берёт последнюю цену закрытия из кеша OHLCV (без API-запроса)."""
+    try:
+        cache = getattr(dc, "_ohlcv_cache", {})
+        for tf in ("15m", "1m", "5m", "1h"):
+            entry = cache.get((symbol, tf))
+            if entry and "df" in entry and not entry["df"].empty:
+                return float(entry["df"]["close"].iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
 async def _handle_stats(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
+    dc = request.app.get("data_collector")
     try:
         data = engine.full_stats()
+        # Обогащаем open_trades текущей ценой и нереализованным P&L
+        for t in data.get("open_trades", []):
+            cur = _current_price_from_cache(dc, t["symbol"]) if dc else None
+            t["current_price"] = cur
+            if cur is not None and t.get("entry_price") and t.get("stop_loss") and t.get("take_profit"):
+                ep = t["entry_price"]
+                sl = t["stop_loss"]
+                tp = t["take_profit"]
+                direction = t.get("direction", "LONG")
+                if direction == "LONG":
+                    pnl_pct = (cur - ep) / ep * 100
+                    sl_dist = ep - sl
+                else:
+                    pnl_pct = (ep - cur) / ep * 100
+                    sl_dist = sl - ep
+                t["unrealized_pct"] = round(pnl_pct, 2)
+                t["unrealized_r"] = round(pnl_pct / (abs(sl_dist) / ep * 100), 2) if sl_dist else None
+            else:
+                t["unrealized_pct"] = None
+                t["unrealized_r"] = None
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -1200,6 +1353,46 @@ async def _handle_stats(request: web.Request) -> web.Response:
         )
     except Exception as e:
         logger.exception("dashboard /api/stats error: %s", e)
+        return web.Response(status=500, text=str(e))
+
+
+async def _handle_close_trade(request: web.Request) -> web.Response:
+    """POST /api/trades/{trade_id}/close — ручное закрытие сделки."""
+    ts = request.app.get("trade_simulator")
+    dc = request.app.get("data_collector")
+    if ts is None:
+        return web.Response(status=503, text="TradeSimulator недоступен")
+    try:
+        trade_id = int(request.match_info["trade_id"])
+        # Получаем текущую цену из кеша или из тела запроса
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        # Читаем символ из БД
+        import sqlite3
+        with sqlite3.connect(ts.db_path) as conn:
+            row = conn.execute(
+                "SELECT symbol, entry_price FROM simulated_trades WHERE id=? AND status='OPEN'",
+                (trade_id,)
+            ).fetchone()
+        if not row:
+            return web.Response(status=404, text="Сделка не найдена или уже закрыта")
+        symbol, entry_price = row
+        # Текущая цена: из кеша → из тела запроса → entry_price (нейтрально)
+        cur_price = (_current_price_from_cache(dc, symbol) if dc else None) \
+                    or body.get("price") or entry_price
+        ok = ts.close_trade(trade_id, "EXPIRED", float(cur_price))
+        if ok:
+            logger.info("Dashboard: ручное закрытие сделки #%d %s @ %.5f", trade_id, symbol, cur_price)
+            return web.Response(
+                text=json.dumps({"ok": True, "trade_id": trade_id, "price": cur_price}, ensure_ascii=False),
+                content_type="application/json",
+            )
+        return web.Response(status=500, text="Не удалось закрыть сделку")
+    except Exception as e:
+        logger.exception("_handle_close_trade: %s", e)
         return web.Response(status=500, text=str(e))
 
 
@@ -1297,6 +1490,19 @@ async def _handle_settings_get(request: web.Request) -> web.Response:
         "min_signals":              sig_cfg.get("min_signals", 2),
         "single_signal_min_strength": sig_cfg.get("single_signal_min_strength", 70),
         "pivot_proximity_pct":      cfg.get("analysis.divergence.pivot_proximity_pct", 4.0),
+        "btc_filter_enabled":       cfg.get("signal_quality.btc_filter_enabled", True),
+        "counter_trend_strength_threshold": cfg.get("signal_quality.counter_trend_strength_threshold", 70),
+    }
+
+    confl_cfg = analysis.get("confluence", {}) or {}
+    safe_confluence = {
+        "enabled":              confl_cfg.get("enabled", True),
+        "lookback_bars":        confl_cfg.get("lookback_bars", 40),
+        "min_strength":         confl_cfg.get("min_strength", 60),
+        "wt_os_threshold":      confl_cfg.get("wt_os_threshold", -58),
+        "wt_ob_threshold":      confl_cfg.get("wt_ob_threshold", 58),
+        "pivot_proximity_pct":  confl_cfg.get("pivot_proximity_pct", 0.5),
+        "div_min_bars":         confl_cfg.get("div_min_bars", 3),
     }
 
     data = {
@@ -1308,6 +1514,7 @@ async def _handle_settings_get(request: web.Request) -> web.Response:
         "detectors": safe_detectors,
         "monitoring_intervals": safe_monitoring,
         "signals_config": safe_signals_config,
+        "confluence": safe_confluence,
     }
     return web.Response(
         text=json.dumps(data, ensure_ascii=False),
@@ -1418,10 +1625,11 @@ async def _handle_settings_post(request: web.Request) -> web.Response:
     sc_body = body.get("signals_config")
     if sc_body is not None:
         try:
-            min_sig   = int(sc_body.get("min_signals", 2))
-            ss_min    = int(sc_body.get("single_signal_min_strength", 70))
-            prox_pct  = float(sc_body.get("pivot_proximity_pct", 4.0))
-            ct_thr    = int(sc_body.get("counter_trend_strength_threshold", 70))
+            min_sig    = int(sc_body.get("min_signals", 2))
+            ss_min     = int(sc_body.get("single_signal_min_strength", 70))
+            prox_pct   = float(sc_body.get("pivot_proximity_pct", 4.0))
+            btc_en     = bool(sc_body.get("btc_filter_enabled", True))
+            ct_thr     = int(sc_body.get("counter_trend_strength_threshold", 70))
             errors = []
             if not (1 <= min_sig <= 10):        errors.append("min_signals: 1–10")
             if not (30 <= ss_min <= 100):        errors.append("single_signal_min_strength: 30–100")
@@ -1444,12 +1652,64 @@ async def _handle_settings_post(request: web.Request) -> web.Response:
         raw.setdefault("analysis", {}).setdefault("divergence", {})
         raw["analysis"]["divergence"]["pivot_proximity_pct"] = round(prox_pct, 2)
         raw.setdefault("signal_quality", {})
+        raw["signal_quality"]["btc_filter_enabled"] = btc_en
         raw["signal_quality"]["counter_trend_strength_threshold"] = ct_thr
         with open(cfg.config_path, "w", encoding="utf-8") as f:
             _yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         cfg.reload()
         return web.Response(
             text=json.dumps({"ok": True, "error": None}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
+        )
+
+    # --- Блок confluence ---
+    conf_body = body.get("confluence")
+    if conf_body is not None:
+        try:
+            enabled   = bool(conf_body.get("enabled", True))
+            lookback  = int(conf_body.get("lookback_bars", 40))
+            min_str   = int(conf_body.get("min_strength", 60))
+            wt_os     = float(conf_body.get("wt_os_threshold", -58))
+            wt_ob     = float(conf_body.get("wt_ob_threshold", 58))
+            piv_pct   = float(conf_body.get("pivot_proximity_pct", 0.5))
+            div_bars  = int(conf_body.get("div_min_bars", 3))
+            errors = []
+            if not (5 <= lookback <= 200):     errors.append("lookback_bars: 5–200")
+            if not (40 <= min_str <= 100):     errors.append("min_strength: 40–100")
+            if not (-100 <= wt_os <= -20):     errors.append("wt_os_threshold: -100 до -20")
+            if not (20 <= wt_ob <= 100):       errors.append("wt_ob_threshold: 20–100")
+            if not (0.1 <= piv_pct <= 5.0):   errors.append("pivot_proximity_pct: 0.1–5.0")
+            if not (1 <= div_bars <= 20):      errors.append("div_min_bars: 1–20")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        try:
+            import yaml as _yaml
+            with open(cfg.config_path, "r", encoding="utf-8") as f:
+                raw = _yaml.safe_load(f)
+            raw.setdefault("analysis", {}).setdefault("confluence", {})
+            raw["analysis"]["confluence"].update({
+                "enabled": enabled,
+                "lookback_bars": lookback,
+                "min_strength": min_str,
+                "wt_os_threshold": wt_os,
+                "wt_ob_threshold": wt_ob,
+                "pivot_proximity_pct": round(piv_pct, 2),
+                "div_min_bars": div_bars,
+            })
+            with open(cfg.config_path, "w", encoding="utf-8") as f:
+                _yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            cfg.reload()
+            ok = True
+        except Exception as e:
+            logger.exception("Ошибка сохранения confluence: %s", e)
+            ok = False
+        return web.Response(
+            text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),
             content_type="application/json", charset="utf-8",
         )
 
@@ -1684,7 +1944,8 @@ async def _handle_backtest_run(request: web.Request) -> web.Response:
     )
 
 
-async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000, config=None) -> None:
+async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000,
+                          config=None, data_collector=None, trade_simulator=None) -> None:
     """Запускает aiohttp-сервер. Вызывать через asyncio.create_task()."""
     import asyncio
     if config is None:
@@ -1696,9 +1957,12 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app = web.Application()
     app["engine"] = PerformanceEngine(db_path=db_path)
     app["config"] = config
+    app["data_collector"] = data_collector   # для получения текущей цены
+    app["trade_simulator"] = trade_simulator  # для ручного закрытия сделок
     app["backtest_state"] = {"running": False, "error": None, "log": [], "done": 0, "total": 0}
     app.router.add_get("/", _handle_index)
     app.router.add_get("/api/stats", _handle_stats)
+    app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/settings", _handle_settings_page)
     app.router.add_get("/api/settings", _handle_settings_get)
     app.router.add_post("/api/settings", _handle_settings_post)

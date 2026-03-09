@@ -193,7 +193,12 @@ class TradingAlertBot:
             from bot.monitoring import trade_tracker_loop
             from web.dashboard_server import start_dashboard
             asyncio.create_task(trade_tracker_loop(self))
-            asyncio.create_task(start_dashboard(db_path=self.trade_simulator.db_path, config=config))
+            asyncio.create_task(start_dashboard(
+                db_path=self.trade_simulator.db_path,
+                config=config,
+                data_collector=self.data_collector,
+                trade_simulator=self.trade_simulator,
+            ))
             asyncio.create_task(_ml_training_loop())
             asyncio.create_task(_weekly_report_loop())
             await self.dp.start_polling(self.bot)

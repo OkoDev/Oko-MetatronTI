@@ -70,6 +70,8 @@ class TradeSimulator:
                     entry_price REAL NOT NULL,
                     stop_loss REAL,
                     take_profit REAL,
+                    tp1_price REAL,
+                    tp1_hit_at TIMESTAMP,
                     strength INTEGER,
                     confidence REAL,
                     regime TEXT,
@@ -87,6 +89,12 @@ class TradeSimulator:
                     captured_R_pct REAL
                 )
             """)
+            # Миграция для существующих БД
+            for col, coldef in [("tp1_price", "REAL"), ("tp1_hit_at", "TIMESTAMP")]:
+                try:
+                    cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
+                except Exception:
+                    pass  # колонка уже существует
             conn.commit()
 
     def register_trade(self, recommendation: Any, regime: Optional[str] = None, extra_features: Optional[dict] = None) -> Optional[int]:
@@ -108,8 +116,9 @@ class TradeSimulator:
                 logger.debug("TradeSimulator: пропуск регистрации — направление NEUTRAL")
                 return None
 
-            stop_loss = _get_recommendation_value(recommendation, "stop_loss")
+            stop_loss  = _get_recommendation_value(recommendation, "stop_loss")
             take_profit = _get_recommendation_value(recommendation, "take_profit")
+            tp1_price  = _get_recommendation_value(recommendation, "tp1_price")
             if stop_loss is None and take_profit is None:
                 logger.debug("TradeSimulator: пропуск регистрации — нет SL и TP")
                 return None
@@ -146,8 +155,8 @@ class TradeSimulator:
                     """
                     INSERT INTO simulated_trades
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
-                     strength, confidence, regime, status, features_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tp1_price, strength, confidence, regime, status, features_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -157,6 +166,7 @@ class TradeSimulator:
                         float(entry),
                         float(stop_loss) if stop_loss is not None else None,
                         float(take_profit) if take_profit is not None else None,
+                        float(tp1_price) if tp1_price is not None else None,
                         int(strength) if strength is not None else None,
                         float(confidence) if confidence is not None else None,
                         regime,
@@ -228,35 +238,53 @@ class TradeSimulator:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT entry_price, stop_loss, take_profit, direction, created_at, max_price, min_price FROM simulated_trades WHERE id = ? AND status = ?",
+                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price FROM simulated_trades WHERE id = ? AND status = ?",
                     (trade_id, STATUS_OPEN),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return False
-                entry, sl, tp, direction, created_at, max_price_db, min_price_db = row
+                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db = row
                 entry = float(entry)
                 sl = float(sl) if sl is not None else None
                 tp = float(tp) if tp is not None else None
+                tp1_price_db = float(tp1_price_db) if tp1_price_db is not None else None
                 max_price_db = float(max_price_db) if max_price_db is not None else None
                 min_price_db = float(min_price_db) if min_price_db is not None else None
-
-                # profit_pct
-                if str(direction).upper() == "LONG":
-                    profit_pct = (exit_price - entry) / entry * 100.0
-                else:
-                    profit_pct = (entry - exit_price) / entry * 100.0
+                dir_up = str(direction).upper()
 
                 # R-multiple: 1R = |entry - stop_loss|
                 one_r = None
+                r_multiple = None
                 if sl is not None and sl != entry:
                     one_r = abs(entry - sl)
-                    if str(direction).upper() == "LONG":
-                        r_multiple = (exit_price - entry) / one_r
+
+                # profit_pct и R с учётом частичного TP1 (50% позиции)
+                if tp1_hit_at_db and tp1_price_db and one_r:
+                    # TP1 был взят (50% при ~3R), остаток закрывается сейчас
+                    if dir_up == "LONG":
+                        r_tp1  = (tp1_price_db - entry) / one_r
+                        r_exit = (exit_price - entry) / one_r
+                        pct_tp1  = (tp1_price_db - entry) / entry * 100.0
+                        pct_exit = (exit_price - entry) / entry * 100.0
                     else:
-                        r_multiple = (entry - exit_price) / one_r
+                        r_tp1  = (entry - tp1_price_db) / one_r
+                        r_exit = (entry - exit_price) / one_r
+                        pct_tp1  = (entry - tp1_price_db) / entry * 100.0
+                        pct_exit = (entry - exit_price) / entry * 100.0
+                    r_multiple  = round(0.5 * r_tp1  + 0.5 * r_exit, 3)
+                    profit_pct  = round(0.5 * pct_tp1 + 0.5 * pct_exit, 4)
                 else:
-                    r_multiple = None
+                    # Обычный выход без частичного TP
+                    if dir_up == "LONG":
+                        profit_pct = (exit_price - entry) / entry * 100.0
+                    else:
+                        profit_pct = (entry - exit_price) / entry * 100.0
+                    if one_r:
+                        if dir_up == "LONG":
+                            r_multiple = (exit_price - entry) / one_r
+                        else:
+                            r_multiple = (entry - exit_price) / one_r
 
                 # MFE: максимально достижимый R и % захваченного потенциала
                 max_R_possible = None
@@ -324,10 +352,14 @@ class TradeSimulator:
             entry = float(trade["entry_price"])
             sl = trade["stop_loss"]
             tp = trade["take_profit"]
+            tp1_price = trade.get("tp1_price")
+            tp1_hit_at = trade.get("tp1_hit_at")
             if sl is not None:
                 sl = float(sl)
             if tp is not None:
                 tp = float(tp)
+            if tp1_price is not None:
+                tp1_price = float(tp1_price)
 
             created_at = trade["created_at"]
             try:
@@ -416,7 +448,7 @@ class TradeSimulator:
                 except Exception as e:
                     logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
 
-            # Стандартная проверка SL/TP (если TSL не сработал)
+            # Стандартная проверка SL/TP1/TP (если TSL не сработал)
             exit_status = None
             exit_price_val = None
             max_high = 0.0
@@ -424,7 +456,7 @@ class TradeSimulator:
 
             for _, row in df.iterrows():
                 high = float(row.get("high", 0) or 0)
-                low = float(row.get("low", 0) or 0)
+                low  = float(row.get("low",  0) or 0)
                 open_ = float(row.get("open", 0) or 0)
 
                 if high > 0:
@@ -433,26 +465,45 @@ class TradeSimulator:
                     min_low = min(min_low, low)
 
                 if direction == "LONG":
-                    hit_sl = sl is not None and low <= sl
-                    hit_tp = tp is not None and high >= tp
+                    hit_sl  = sl  is not None and low  <= sl
+                    # TP1 фиксирует 50% — только если ещё не сработал
+                    if tp1_price and tp1_hit_at is None and high >= tp1_price:
+                        tp1_hit_at = datetime.now(timezone.utc).isoformat()
+                        try:
+                            with sqlite3.connect(self.db_path) as _c:
+                                _c.execute(
+                                    "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
+                                    (tp1_hit_at, trade_id, STATUS_OPEN),
+                                )
+                                _c.commit()
+                        except Exception:
+                            pass
+                        logger.info("TradeSimulator: TP1 hit (50%%) %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                    # После TP1: только SL (TSL уже обработан выше)
+                    hit_tp = (tp is not None and tp1_hit_at is None and high >= tp)
                     if hit_sl and hit_tp:
-                        # Оба в одной свече — какой ближе к open
-                        if open_ - sl <= tp - open_:
-                            exit_status, exit_price_val = STATUS_SL, sl
-                        else:
-                            exit_status, exit_price_val = STATUS_TP, tp
+                        exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
                     elif hit_sl:
                         exit_status, exit_price_val = STATUS_SL, sl
                     elif hit_tp:
                         exit_status, exit_price_val = STATUS_TP, tp
                 else:  # SHORT
-                    hit_sl = sl is not None and high >= sl
-                    hit_tp = tp is not None and low <= tp
+                    hit_sl  = sl is not None and high >= sl
+                    if tp1_price and tp1_hit_at is None and low <= tp1_price:
+                        tp1_hit_at = datetime.now(timezone.utc).isoformat()
+                        try:
+                            with sqlite3.connect(self.db_path) as _c:
+                                _c.execute(
+                                    "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
+                                    (tp1_hit_at, trade_id, STATUS_OPEN),
+                                )
+                                _c.commit()
+                        except Exception:
+                            pass
+                        logger.info("TradeSimulator: TP1 hit (50%%) %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                    hit_tp = (tp is not None and tp1_hit_at is None and low <= tp)
                     if hit_sl and hit_tp:
-                        if sl - open_ <= open_ - tp:
-                            exit_status, exit_price_val = STATUS_SL, sl
-                        else:
-                            exit_status, exit_price_val = STATUS_TP, tp
+                        exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
                     elif hit_sl:
                         exit_status, exit_price_val = STATUS_SL, sl
                     elif hit_tp:

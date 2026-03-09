@@ -13,55 +13,65 @@ from core.message_composer import get_composer
 
 _ACTION_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡", "WATCH": "👀"}
 _ACTION_LABEL = {
-    "BUY": "BUY — ожидается рост",
-    "SELL": "SELL — ожидается падение",
-    "HOLD": "HOLD — держать",
-    "WATCH": "WATCH — наблюдать",
+    "BUY":   "BUY",
+    "SELL":  "SELL",
+    "HOLD":  "HOLD",
+    "WATCH": "WATCH",
 }
 _DIRECTION_LABEL = {
-    "LONG": "LONG — рост цены",
-    "SHORT": "SHORT — падение цены",
+    "LONG":    "LONG ↑",
+    "SHORT":   "SHORT ↓",
     "NEUTRAL": "NEUTRAL",
 }
 _SIGNAL_TYPE_RU = {
-    "trend_signal": "Тренд EMA",
-    "wt_signal": "WaveTrend",
-    "anomaly": "Аномалия объёма",
-    "divergence": "Дивергенция",
-    "mtf_divergence": "MTF-дивергенция (каскад TF)",
-    "pivot_reversal": "Разворот от уровня пивота",
-    "mtf_alert": "MTF-разворот (4 TF)",
-    "composite": "Комплексный анализ",
+    "trend_signal":    "Тренд EMA",
+    "wt_signal":       "WaveTrend",
+    "anomaly":         "Аномалия объёма",
+    "divergence":      "Дивергенция",
+    "mtf_divergence":  "MTF-дивергенция",
+    "pivot_reversal":  "Разворот от пивота",
+    "mtf_alert":       "MTF-разворот",
+    "confluence":      "Confluence",
+    "composite":       "Комплексный",
 }
 _RISK_RU = {"LOW": "Низкий", "MEDIUM": "Средний", "HIGH": "Высокий"}
 
+# Источники SL/TP — короткие метки
+_SL_SHORT = {
+    "tsl_line":   "TSL",
+    "swing_low":  "Свинг",
+    "swing_high": "Свинг",
+    "structural": "Структура",
+    "atr_14":     "ATR(14)",
+    "volatility": "Волатильность",
+    "fallback":   "Фикс",
+}
+_TP_TF = {
+    "pivot_1M": "1M",
+    "pivot_1W": "1W",
+    "pivot_1D": "1D",
+    "atr_rr":   "ATR RR",
+}
 
-def _sl_hint(sl_source: str) -> str:
-    """Короткое пояснение источника стоп-лосса."""
+_SEP = "─" * 18
+
+
+def _sl_short(sl_source: str) -> str:
     if not sl_source:
         return ""
-    if sl_source.startswith("atr_14"):
-        return "ATR(14): адаптивный стоп за рыночный шум"
-    if sl_source.startswith("volatility"):
-        return "волатильность пары"
-    return "фиксированный"
+    for k, v in _SL_SHORT.items():
+        if sl_source.startswith(k):
+            return v
+    return ""
 
 
-def _tp_hint(tp_source: str) -> str:
-    """Короткое пояснение источника тейк-профита."""
+def _tp_short(tp_source: str) -> str:
     if not tp_source:
         return ""
-    if tp_source.startswith("pivot_1M"):
-        lv = tp_source.split(":")[-1]
-        return f"месячный пивот {lv}"
-    if tp_source.startswith("pivot_1W"):
-        lv = tp_source.split(":")[-1]
-        return f"недельный пивот {lv}"
-    if tp_source.startswith("pivot_1D"):
-        lv = tp_source.split(":")[-1]
-        return f"дневной пивот {lv}"
-    if tp_source.startswith("atr_rr"):
-        return "ATR RR 1:1.5 (нет пивота в кеше)"
+    for k, v in _TP_TF.items():
+        if tp_source.startswith(k):
+            lv = tp_source.split(":")[-1] if ":" in tp_source else ""
+            return f"{v} {lv}".strip()
     return ""
 
 
@@ -81,6 +91,26 @@ def _pct(entry: float, level: float) -> str:
     return f"{(level - entry) / entry * 100:+.2f}%"
 
 
+def _strength_label(strength: int) -> tuple[str, str]:
+    if strength >= 80:
+        return "🔥🔥🔥", "Очень высокая"
+    elif strength >= 60:
+        return "🔥🔥", "Высокая"
+    elif strength >= 40:
+        return "🔥", "Средняя"
+    return "⚡", "Низкая"
+
+
+def _entry_advice(strength: int) -> str:
+    if strength >= 75:
+        return "Стандартный объём · дождаться закрытия свечи"
+    elif strength >= 60:
+        return "Стандартный объём · желательно подтверждение 5m"
+    elif strength >= 40:
+        return "½ объёма · нужно подтверждение на младшем TF"
+    return "Пропустить — сила сигнала недостаточна"
+
+
 async def format_intelligence_message(recommendation: TradingRecommendation) -> str:
     """Async: может запрашивать Claude haiku для интерпретации новых типов сигналов."""
     action = recommendation.action
@@ -89,71 +119,68 @@ async def format_intelligence_message(recommendation: TradingRecommendation) -> 
     strength = round(recommendation.overall_strength)
     direction_val = getattr(recommendation.direction, "value", str(recommendation.direction))
     direction_label = _DIRECTION_LABEL.get(direction_val, direction_val)
+    strength_emoji, strength_text = _strength_label(strength)
 
-    if strength >= 80:
-        strength_emoji, strength_text = "🔥🔥🔥", "Очень высокая"
-    elif strength >= 60:
-        strength_emoji, strength_text = "🔥🔥", "Высокая"
-    elif strength >= 40:
-        strength_emoji, strength_text = "🔥", "Средняя"
-    else:
-        strength_emoji, strength_text = "⚡", "Низкая"
+    # Строка 1: действие · пара · направление
+    link = tv_link(recommendation.symbol)
+    header = f"{emoji} <b>{action_label} · {link} · {direction_label}</b>"
 
-    parts = [
-        f"{emoji} <b>{action_label}</b>",
-        f"Пара: {tv_link(recommendation.symbol)}",
-        f"Направление: <b>{direction_label}</b>",
-        "",
-        f"{strength_emoji} Сила сигнала: <b>{strength}/100</b> — {strength_text}",
-        f"Риск сделки: {_RISK_RU.get(recommendation.risk_level, recommendation.risk_level)}",
-    ]
+    # Строка 2: сила · риск
+    risk_ru = _RISK_RU.get(recommendation.risk_level, recommendation.risk_level)
+    sub = f"{strength_emoji} <b>{strength}/100</b> {strength_text}  ·  Риск: {risk_ru}"
 
-    # При WATCH/HOLD или NEUTRAL — нет торгового решения, показываем упрощённый вид
+    parts = ["\n", header, sub, ""]
+
+    # При WATCH/HOLD или NEUTRAL — упрощённый вид
     is_tradeable = action in ("BUY", "SELL") and direction_val != "NEUTRAL"
 
     if not is_tradeable:
-        parts += [
-            "",
-            "<b>💡 Ситуация:</b>",
-            "  • Сигналы присутствуют, но направление не определено",
-            "  • Конфликт между поддерживающими и противоречивыми сигналами",
-            "",
-            "<b>⚠️ Рекомендации:</b>",
-            "  • Ждите появления чёткого сигнала BUY или SELL",
-            "  • Не открывайте позицию при неопределённости",
-        ]
         ctx = recommendation.market_context
-        parts += ["", "<b>📊 Рынок:</b>",
-                  f"  Цена: <code>{_fmt_price(ctx.current_price)}</code>"]
+        parts += [
+            "<b>📊 Рынок</b>",
+            f"  Цена: <code>{_fmt_price(ctx.current_price)}</code>",
+        ]
         if ctx.price_change_24h:
             ch_emoji = "📈" if ctx.price_change_24h > 0 else "📉"
             parts.append(f"  {ch_emoji} За 24ч: {ctx.price_change_24h:+.2f}%")
-        parts.append(f"\n⏰ {recommendation.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+        parts += [
+            "",
+            "Направление не определено — нет позиции",
+            f"\n⏰ {recommendation.timestamp.strftime('%d.%m %H:%M')}",
+            "\n",
+        ]
         return "\n".join(parts)
 
-    # Торговые уровни (только для BUY/SELL)
+    # Торговые уровни
     entry = recommendation.entry_price
     sl = recommendation.stop_loss
     tp = recommendation.take_profit
 
     if entry:
-        parts += ["", "<b>🎯 Точки входа:</b>",
-                  f"  Вход:        <code>{_fmt_price(entry)}</code>"]
+        parts.append("<b>💰 Сделка</b>")
+        parts.append(f"  Вход:  <code>{_fmt_price(entry)}</code>")
         if sl:
-            sl_hint = _sl_hint(recommendation.sl_source)
-            parts.append(f"  Стоп-лосс:   <code>{_fmt_price(sl)}</code>  ({_pct(entry, sl)})  <i>{sl_hint}</i>")
+            sl_lbl = _sl_short(recommendation.sl_source)
+            parts.append(
+                f"  Стоп:  <code>{_fmt_price(sl)}</code>  <i>({_pct(entry, sl)}"
+                + (f"  {sl_lbl}" if sl_lbl else "") + "</i>)"
+            )
         if tp:
-            tp_hint = _tp_hint(recommendation.tp_source)
-            parts.append(f"  Тейк-профит: <code>{_fmt_price(tp)}</code>  ({_pct(entry, tp)})  <i>{tp_hint}</i>")
+            tp_lbl = _tp_short(recommendation.tp_source)
+            parts.append(
+                f"  Цель:  <code>{_fmt_price(tp)}</code>  <i>({_pct(entry, tp)}"
+                + (f"  {tp_lbl}" if tp_lbl else "") + "</i>)"
+            )
         if sl and tp:
             risk_pts = abs(entry - sl)
             rw_pts = abs(tp - entry)
             if risk_pts > 0:
                 rr = rw_pts / risk_pts
-                rr_quality = "🟢 отлично" if rr >= 2.0 else "🟡 приемлемо" if rr >= 1.5 else "🔴 слабо"
-                parts.append(f"  Риск/Прибыль: 1:{rr:.1f}  {rr_quality}")
+                rr_q = "🟢" if rr >= 2.0 else "🟡" if rr >= 1.5 else "🔴"
+                parts.append(f"  R:R    {rr_q} 1:{rr:.1f}")
+        parts.append("")
 
-    # Анализ сигналов — что за и против
+    # Сигналы-подтверждения
     support_types = list(dict.fromkeys(
         s.signal_type.value for s in recommendation.supporting_signals
     ))
@@ -164,16 +191,17 @@ async def format_intelligence_message(recommendation: TradingRecommendation) -> 
     conflict_ru = [_SIGNAL_TYPE_RU.get(t, t) for t in conflict_types]
 
     if support_ru or conflict_ru:
-        parts += ["", "<b>📋 Анализ сигналов:</b>"]
+        parts.append("<b>📋 Сигналы</b>")
         for t in support_ru[:5]:
             parts.append(f"  ✅ {t}")
         for t in conflict_ru[:3]:
-            parts.append(f"  ❌ {t} (против)")
+            parts.append(f"  ❌ {t}")
+        parts.append("")
 
     # Интерпретация — через MessageComposer (детектор / AI / fallback)
     composer = get_composer()
     interp_lines = []
-    for sig in recommendation.supporting_signals[:3]:
+    for sig in recommendation.supporting_signals[:2]:
         sig_type = sig.signal_type.value
         text = await composer.interpret(
             signal_type=sig_type,
@@ -182,47 +210,33 @@ async def format_intelligence_message(recommendation: TradingRecommendation) -> 
             signal_interpretation=sig.interpretation,
         )
         if text:
-            interp_lines.append(f"  • {text}")
+            interp_lines.append(f"  {text}")
 
     if interp_lines:
-        parts += ["", "<b>💡 Что произошло:</b>"]
+        parts.append("<b>💡 Что произошло</b>")
         parts.extend(interp_lines)
+        parts.append("")
 
-    # Рекомендации — конкретные действия на основе силы
-    parts += ["", "<b>⚠️ Рекомендации:</b>"]
-    if strength >= 75:
-        parts.append("  • Отличный сигнал — можно входить стандартным объёмом")
-        parts.append("  • Дождитесь закрытия свечи для подтверждения")
-    elif strength >= 60:
-        parts.append("  • Хороший сигнал — стандартный объём позиции")
-        parts.append("  • Желательно подтверждение на 5m/15m")
-    elif strength >= 40:
-        parts.append("  • Средний сигнал — уменьшите объём вдвое")
-        parts.append("  • Обязательно дождитесь подтверждения на младшем TF")
-    else:
-        parts.append("  • Слабый сигнал — высокий риск, вход не рекомендуется")
-        parts.append("  • Дождитесь более сильного сигнала")
+    # Совет по входу — одна строка
+    parts.append(f"<i>📌 {_entry_advice(strength)}</i>")
 
-    # Контекст рынка
+    # Рынок — компактно
     ctx = recommendation.market_context
-    price_str = _fmt_price(ctx.current_price)
-    parts += ["", "<b>📊 Рынок:</b>",
-              f"  Цена: <code>{price_str}</code>"]
-
+    mkt_parts = [f"<code>{_fmt_price(ctx.current_price)}</code>"]
     if ctx.price_change_24h:
         ch_emoji = "📈" if ctx.price_change_24h > 0 else "📉"
-        parts.append(f"  {ch_emoji} За 24ч: {ctx.price_change_24h:+.2f}%")
-
+        mkt_parts.append(f"{ch_emoji}{ctx.price_change_24h:+.1f}%")
     if ctx.volume_24h > 0:
         v = ctx.volume_24h
-        if v >= 1_000_000_000:
-            vol_str = f"${v / 1_000_000_000:.1f}B"
-        elif v >= 1_000_000:
-            vol_str = f"${v / 1_000_000:.1f}M"
-        else:
-            vol_str = f"${v:,.0f}"
-        parts.append(f"  Объём 24ч: {vol_str}")
+        vol_str = (f"${v/1e9:.1f}B" if v >= 1e9 else
+                   f"${v/1e6:.1f}M" if v >= 1e6 else f"${v:,.0f}")
+        mkt_parts.append(vol_str)
+    parts += ["", f"<b>📊</b> {' · '.join(mkt_parts)}"]
 
-    parts.append(f"\n⏰ {recommendation.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    # Время + разделитель
+    parts += [
+        f"⏰ {recommendation.timestamp.strftime('%d.%m %H:%M')}",
+        "\n",
+    ]
 
     return "\n".join(parts)

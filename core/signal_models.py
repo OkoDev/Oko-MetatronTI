@@ -17,6 +17,7 @@ class SignalType(Enum):
     MTF_DIVERGENCE = "mtf_divergence"
     PIVOT_REVERSAL = "pivot_reversal"
     PIVOT_ALERT = "pivot_alert"
+    CONFLUENCE = "confluence"
 
 
 class SignalDirection(Enum):
@@ -61,6 +62,11 @@ class MarketContext:
     volatility: Optional[float] = None
     trend_strength: Optional[float] = None
     atr: Optional[float] = None
+    atr_slow: Optional[float] = None     # ATR(28) для анализа динамики волатильности
+    tsl_trendup: Optional[float] = None    # TSL support-линия (SL для LONG)
+    tsl_trenddown: Optional[float] = None  # TSL resistance-линия (SL для SHORT)
+    swing_low: Optional[float] = None      # ближайший свинг-лоу ниже цены (20 баров)
+    swing_high: Optional[float] = None     # ближайший свинг-хай выше цены (20 баров)
 
 
 @dataclass
@@ -78,8 +84,9 @@ class TradingRecommendation:
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
-    sl_source: str = ""   # "atr_14" | "volatility" | "fallback"
-    tp_source: str = ""   # "pivot_1M" | "pivot_1W" | "pivot_1D" | "atr_rr_1.5" | "fallback"
+    tp1_price: Optional[float] = None   # уровень частичного TP (50% позиции при 3R)
+    sl_source: str = ""   # "tsl_line" | "swing_low" | "structural" | "atr_14" | "fallback"
+    tp_source: str = ""   # "pivot_1M" | "pivot_1W" | "pivot_1D" | "atr_rr_3.0" | "fallback"
     reasoning: List[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Optional[Dict[str, Any]] = None

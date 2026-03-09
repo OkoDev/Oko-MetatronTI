@@ -36,6 +36,42 @@ def _resolve_symbol(bot, symbol: str):
     return None, symbol
 
 
+def _fmt_p(price: float) -> str:
+    if price >= 1000:
+        return f"{price:,.2f}"
+    elif price >= 1:
+        return f"{price:.4f}"
+    elif price >= 0.01:
+        return f"{price:.5f}"
+    return f"{price:.8f}"
+
+
+def _build_pivot_summary(bot, symbol: str, current_price: float) -> str:
+    """Краткая сводка ближайших пивотных уровней из кеша (не делает API-запросов)."""
+    if not hasattr(bot, "pivot_calculator") or current_price <= 0:
+        return ""
+    lines = []
+    for tf, label in [("1D", "Дн"), ("1W", "Нед"), ("1M", "Мес")]:
+        pivots = bot.pivot_calculator.pivot_cache.get(f"{symbol}_{tf}")
+        if not pivots:
+            continue
+        nearest = bot.pivot_calculator.get_nearest_levels(current_price, pivots, count=1)
+        res = nearest.get("resistance", [])
+        sup = nearest.get("support", [])
+        parts = []
+        if res:
+            key, price, dist = res[0]
+            parts.append(f"⬆️ {key}={_fmt_p(price)} (+{dist:.1f}%)")
+        if sup:
+            key, price, dist = sup[0]
+            parts.append(f"⬇️ {key}={_fmt_p(price)} (-{dist:.1f}%)")
+        if parts:
+            lines.append(f"  [{label}] " + "  ".join(parts))
+    if not lines:
+        return ""
+    return "<b>📍 Ближайшие пивоты:</b>\n" + "\n".join(lines)
+
+
 async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, display_symbol: str, user_id: int):
     analysis_msg = await message.answer(
         f"🔍 <b>Анализирую {display_symbol}...</b>\n"
@@ -52,7 +88,33 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
                 await message.answer(error_text, reply_markup=main_menu())
             return
 
+        # Pivot TP — применяем ДО форматирования, чтобы пользователь видел реальный TP
+        distance_to_pivot_pct = 0.0
+        if hasattr(bot, "pivot_calculator"):
+            direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
+            entry_price = recommendation.entry_price or 0
+            if direction_val in ("LONG", "SHORT") and entry_price > 0:
+                pivot_result = bot.pivot_calculator.get_pivot_tp_with_source(
+                    direction=direction_val,
+                    entry_price=entry_price,
+                    symbol=target_symbol,
+                    stop_loss=recommendation.stop_loss,
+                    min_r=1.5,
+                )
+                if pivot_result:
+                    pivot_tp, pivot_src = pivot_result
+                    recommendation.take_profit = pivot_tp
+                    recommendation.tp_source = pivot_src
+                    distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
+
         intelligence_message = await format_intelligence_message(recommendation)
+
+        # Ближайшие пивотные уровни (из кеша, без API)
+        current_price = recommendation.market_context.current_price
+        pivot_summary = _build_pivot_summary(bot, target_symbol, current_price)
+        if pivot_summary:
+            intelligence_message += "\n\n" + pivot_summary
+
         try:
             await analysis_msg.edit_text(intelligence_message)
         except Exception:
@@ -82,24 +144,6 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
         bot.signal_counters["total"] += 1
 
         try:
-            # Этап 6: применяем pivot TP перед регистрацией
-            distance_to_pivot_pct = 0.0
-            if hasattr(bot, "pivot_calculator"):
-                direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
-                entry_price = recommendation.entry_price or 0
-                if direction_val in ("LONG", "SHORT") and entry_price > 0:
-                    pivot_result = bot.pivot_calculator.get_pivot_tp_with_source(
-                        direction=direction_val,
-                        entry_price=entry_price,
-                        symbol=target_symbol,
-                        stop_loss=recommendation.stop_loss,
-                        min_r=1.5,
-                    )
-                    if pivot_result:
-                        pivot_tp, pivot_src = pivot_result
-                        recommendation.take_profit = pivot_tp
-                        recommendation.tp_source = pivot_src
-                        distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
             extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
             await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
         except Exception as e:

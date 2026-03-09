@@ -18,6 +18,7 @@ from core.trading_intelligence import format_intelligence_message
 from collections import deque
 from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals, check_mtf_signals as _check_mtf_signals
 from core.signal_models import SignalData, SignalType, SignalDirection
+from core.confluence_scanner import scan_confluence, confluence_message as _confluence_message
 from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
     scan_sem_size = int(bot.config.get("performance.scan_semaphore_size", 20))
     sem = asyncio.Semaphore(scan_sem_size)
     cycle_start = _time.monotonic()
+    # Лимит confluence-сигналов за один цикл — защита от Telegram flood control
+    _confluence_max_per_cycle = int(bot.config.get("analysis.confluence.max_per_cycle", 3))
+    _confluence_sent = 0   # счётчик, разделяемый между scan_one через nonlocal
     _div_proximity_pct = bot.config.get("analysis.divergence.pivot_proximity_pct", 4.0)
     _ohlcv_limit = int(bot.config.get("performance.ohlcv_scan_limit", 160))
     _slow_ohlcv  = float(bot.config.get("performance.ohlcv_slow_threshold_sec", 5.0))
@@ -260,13 +264,27 @@ async def scan_all_pairs(bot, check_divergences: bool = True):
                     signals_to_broadcast.append(("mtf_signal", mtf_message(sym, info), None))
                     all_scan_signals.append(sig)
 
-                # 4. MTF alerts — вынесены в check_mtf_alerts (каждые 5 мин),
+                # 4. Confluence scanner (lookback по df_15m + df_1h + кеш пивотов)
+                nonlocal _confluence_sent
+                pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
+                for sig in scan_confluence(sym, df_15m, df_1h, pivot_cache, cfg=bot.config):
+                    bot.signal_counters["confluence"] = bot.signal_counters.get("confluence", 0) + 1
+                    bot.signal_counters["total"] += 1
+                    all_scan_signals.append(sig)
+                    if _confluence_sent < _confluence_max_per_cycle:
+                        signals_to_broadcast.append(("confluence", _confluence_message(sym, sig), None))
+                        _confluence_sent += 1
+                    else:
+                        logger.debug("[confluence] %s: лимит %d/цикл достигнут, пропуск TG",
+                                     sym, _confluence_max_per_cycle)
+
+                # 5. MTF alerts — вынесены в check_mtf_alerts (каждые 5 мин),
                 # т.к. collect_mtf_data фетчит 7 TF (5m, 45m, 4h, 1d не в кеше)
 
-                # 5. Trend following — вынесен в check_trend_signals (каждые 5 мин),
+                # 6. Trend following — вынесен в check_trend_signals (каждые 5 мин),
                 # т.к. check_trend_following_signal фетчит 4h+5m (не в кеше)
 
-                # 6. Divergences: каждые 3 цикла (180 сек — медленный сигнал)
+                # 7. Divergences: каждые 3 цикла (180 сек — медленный сигнал)
                 t_before_div = _time.monotonic()
                 div_found = False
                 if check_divergences:
@@ -755,7 +773,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     # Этап 5.2: BTC-корреляционный фильтр
     # Слабые контртрендовые сигналы (strength < 70) — блокируем
     # Сильные (strength >= 70) — доставляем с предупреждением
-    btc_regime = await _get_btc_regime(bot)
+    btc_regime = await _get_btc_regime(bot) if bot.config.get("signal_quality.btc_filter_enabled", True) else None
     btc_warning = ""
     if btc_regime == "HIGH_VOL":
         btc_warning = "\n⚠️ <i>BTC (1h): высокая волатильность — повышенный риск для любых позиций</i>"
@@ -779,18 +797,19 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             logger.info("[%s] BTC %s vs %s, сила %d >= %d — предупреждение",
                         symbol, btc_regime, direction_val, strength_val, ct_thr)
 
-    # Этап 6: заменяем fixed TP на ближайший пивот с R >= 1.5
+    # Этап 6: заменяем fixed TP на ближайший пивот с R >= tp_pivot_min_r (из конфига)
     distance_to_pivot_pct: float = 0.0
     if recommendation is not None and hasattr(bot, "pivot_calculator"):
         direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
         entry_price = recommendation.entry_price or 0
         if direction_val in ("LONG", "SHORT") and entry_price > 0:
+            pivot_min_r = bot.config.get("trading.sl_tp.tp_pivot_min_r", 2.0)
             pivot_result = bot.pivot_calculator.get_pivot_tp_with_source(
                 direction=direction_val,
                 entry_price=entry_price,
                 symbol=symbol,
                 stop_loss=recommendation.stop_loss,
-                min_r=1.5,
+                min_r=pivot_min_r,
             )
             if pivot_result:
                 pivot_tp, pivot_src = pivot_result
@@ -849,11 +868,15 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             reason.append("direction=NEUTRAL")
         logger.info("[%s] Сделка не зарегистрирована: %s", symbol, ", ".join(reason))
     elif fallback_rec is not None:
-        try:
-            await bot.trade_simulator.register_trade_async(fallback_rec, bot.data_collector)
-            logger.info("TradeSimulator fallback: зарегистрирован %s из pivot info", symbol)
-        except Exception as e:
-            logger.debug("TradeSimulator fallback для %s: %s", symbol, e)
+        fallback_strength = getattr(fallback_rec, "overall_strength", 0)
+        if fallback_strength >= min_strength_register:
+            try:
+                await bot.trade_simulator.register_trade_async(fallback_rec, bot.data_collector)
+                logger.info("TradeSimulator fallback: зарегистрирован %s str=%.0f", symbol, fallback_strength)
+            except Exception as e:
+                logger.debug("TradeSimulator fallback для %s: %s", symbol, e)
+        else:
+            logger.info("[%s] Fallback не зарегистрирован: strength=%.0f < %d", symbol, fallback_strength, min_strength_register)
 
 
 async def broadcast_with_subscription_check(bot, text: str, signal_type: str):
