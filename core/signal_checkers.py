@@ -18,16 +18,17 @@ except ImportError:
 try:
     from core.indicators import calculate_trend, calculate_wt
 except ImportError:
-    def calculate_trend(df, atr_period=43, factor=1.0):
-        df = df.copy()
-        df["trend"] = 1
-        return df
+    import logging as _log
+    _log.getLogger(__name__).error(
+        "КРИТИЧЕСКАЯ ОШИБКА: core.indicators недоступен — используются заглушки! "
+        "Тренд и TSL будут некорректны!"
+    )
 
-    def calculate_wt(df, n1=10, n2=21):
-        df = df.copy()
-        df["wt1"] = 0
-        df["wt2"] = 0
-        return df
+    def calculate_trend(df, atr_period=43, factor=1.0):  # noqa: stub
+        df = df.copy(); df["trend"] = 1; return df
+
+    def calculate_wt(df, n1=10, n2=21):  # noqa: stub
+        df = df.copy(); df["wt1"] = 0; df["wt2"] = 0; return df
 
 logger = logging.getLogger(__name__)
 

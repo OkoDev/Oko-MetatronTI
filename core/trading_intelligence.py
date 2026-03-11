@@ -37,18 +37,26 @@ except ImportError:
 try:
     from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr
 except ImportError:
-    def calculate_trend(df, atr_period=43, factor=1.0):
+    import logging as _log
+    _log.getLogger(__name__).error(
+        "КРИТИЧЕСКАЯ ОШИБКА: core.indicators недоступен — используются заглушки! "
+        "Тренд, TSL и ATR будут некорректны!"
+    )
+
+    def calculate_trend(df, atr_period=43, factor=1.0):  # noqa: stub
         df = df.copy(); df["trend"] = 1; return df
 
-    def calculate_wt(df, n1=10, n2=21):
+    def calculate_wt(df, n1=10, n2=21):  # noqa: stub
         df = df.copy(); df["wt1"] = 0; df["wt2"] = 0; return df
 
-    def get_zone(wt_value):
-        # Официальные стандартные зоны WaveTrend: ±60
+    def get_zone(wt_value):  # noqa: stub
         return "OS" if wt_value < -60 else ("OB" if wt_value > 60 else "N")
 
-    def detect_fvg(df):
+    def detect_fvg(df):  # noqa: stub
         return "NONE", 0
+
+    def compute_atr(df=None, period=14, **kw):  # noqa: stub
+        return None
 
 # Импорт ML модуля
 try:

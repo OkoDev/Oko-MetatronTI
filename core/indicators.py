@@ -93,30 +93,27 @@ def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
 
 def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame:
     """
-    Расчет тренда по алгоритму из Pine Script (точная реализация)
-    
-    Аналог:
-    float factor = 1.0
-    int pd = 43
-    float up = hl2 - (factor * ta.atr(pd))
-    dn = hl2 + (factor * ta.atr(pd))
-    
-    trendup := hl2[1] > trendup[1] ? math.max(up, trendup[1]) : up
-    trenddown := hl2[1] < trenddown[1] ? math.min(dn, trenddown[1]) : dn
-    trendX := hl2 > trenddown[1] ? 1 : hl2 < trendup[1] ? -1 : nz(trendX[1], 1)
+    ЕДИНЫЙ источник тренда и TSL-линий для всего проекта.
+
+    Расчет по алгоритму Pine Script (точная реализация):
+      up = hl2 - factor * ta.atr(atr_period)
+      dn = hl2 + factor * ta.atr(atr_period)
+      trendup  := prev_hl2 > prev_trendup  ? max(up, prev_trendup)  : up
+      trenddown:= prev_hl2 < prev_trenddown? min(dn, prev_trenddown): dn
+      trend    := hl2 > prev_trenddown ? 1 : hl2 < prev_trendup ? -1 : prev_trend
+
+    Добавляет колонки: trend (+1/-1), trendup, trenddown, tsl.
+    tsl = trendup  (для LONG, SL снизу)
+    tsl = trenddown(для SHORT, SL сверху)
+
+    Используется везде: check_trend_signals, TSL check_open_trades,
+    _calculate_levels в trading_intelligence, trade_simulator TSL-трекинг.
     """
     df = df.copy().reset_index(drop=True)
-    
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-    
-    # --- 1. Истинный диапазон (True Range) ---
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    
+
+    # --- 1. True Range — через единую функцию проекта ---
+    tr = true_range_series(df)
+
     # --- 2. ATR методом RMA (Wilder's smoothing), как в Pine Script ---
     atr = pd.Series(index=tr.index, dtype=float)
     if len(tr) >= atr_period:
@@ -128,6 +125,8 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     # Остальные значения остаются NaN (как в Pine до накопления period баров)
     
     # --- 3. hl2 и базовые уровни up/dn ---
+    high = df["high"]
+    low = df["low"]
     hl2 = (high + low) / 2.0
     up = hl2 - factor * atr
     dn = hl2 + factor * atr
@@ -269,6 +268,13 @@ def get_trend_info(df: pd.DataFrame) -> dict:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ЕДИНЫЕ БАЗОВЫЕ ВЫЧИСЛЕНИЯ — используйте только эти функции во всём проекте
+#
+# TREND / TSL  → calculate_trend(df, atr_period=43, factor=1.0)
+#                → колонки: trend (+1/-1), trendup, trenddown, tsl
+# ATR          → compute_atr(df, period) / compute_atr_values(h, l, c, period)
+# EMA          → compute_ema(values, period) / compute_ema_values(values, period)
+# SMA          → compute_sma(values, period)
+# True Range   → true_range_series(df)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def true_range_series(df: pd.DataFrame) -> pd.Series:
