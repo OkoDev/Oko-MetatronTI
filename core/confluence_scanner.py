@@ -174,13 +174,16 @@ def scan_confluence(
             factors_long.append("ABOVE_PP")
             data_long["daily_pp"] = round(daily_pp, 8)
 
-        if score_long >= min_strength:
+        # WT_CROSS_UP обязателен — без подтверждённого кросса сигнал не выдаём
+        if score_long >= min_strength and "WT_CROSS_UP" in factors_long:
             sig = _make_signal(
                 symbol, SignalDirection.LONG, score_long, factors_long, data_long,
                 lookback_bars, current_price
             )
             logger.info("[confluence] %s: LONG score=%d %s", symbol, score_long, factors_long)
             results.append(sig)
+        elif score_long >= min_strength:
+            logger.debug("[confluence] %s: LONG score=%d пропущен — нет WT_CROSS_UP", symbol, score_long)
 
         # ── SHORT сетап ───────────────────────────────────────────────────
         score_short = 0
@@ -236,13 +239,16 @@ def scan_confluence(
             factors_short.append("BELOW_PP")
             data_short["daily_pp"] = round(daily_pp, 8)
 
-        if score_short >= min_strength:
+        # WT_CROSS_DOWN обязателен — без подтверждённого кросса сигнал не выдаём
+        if score_short >= min_strength and "WT_CROSS_DOWN" in factors_short:
             sig = _make_signal(
                 symbol, SignalDirection.SHORT, score_short, factors_short, data_short,
                 lookback_bars, current_price
             )
             logger.info("[confluence] %s: SHORT score=%d %s", symbol, score_short, factors_short)
             results.append(sig)
+        elif score_short >= min_strength:
+            logger.debug("[confluence] %s: SHORT score=%d пропущен — нет WT_CROSS_DOWN", symbol, score_short)
 
         if not results:
             logger.debug(
