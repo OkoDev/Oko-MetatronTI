@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from typing import List, Optional, Union
 
 def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
     """Вычисляет wt1 и wt2, добавляет в df"""
@@ -16,9 +17,83 @@ def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
     return df
 
 
+# def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame:
+#     """
+#     Расчет тренда по алгоритму из Pine Script
+    
+#     Аналог:
+#     float factor = 1.0
+#     int pd = 43
+#     float up = hl2 - (factor * ta.atr(pd))
+#     dn = hl2 + (factor * ta.atr(pd))
+    
+#     trendup := hl2[1] > trendup[1] ? math.max(up, trendup[1]) : up
+#     trenddown := hl2[1] < trenddown[1] ? math.min(dn, trenddown[1]) : dn
+#     trendX := hl2 > trenddown[1] ? 1 : hl2 < trendup[1] ? -1 : nz(trendX[1], 1)
+#     """
+#     df = df.copy().reset_index(drop=True)
+    
+#     high = df["high"]
+#     low = df["low"]
+#     close = df["close"]
+    
+#     # Расчет ATR
+#     tr1 = high - low
+#     tr2 = (high - close.shift(1)).abs()
+#     tr3 = (low - close.shift(1)).abs()
+#     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+#     atr = tr.rolling(window=atr_period, min_periods=1).mean()
+    
+#     # hl2 (средняя цена high-low)
+#     hl2 = (high + low) / 2.0
+    
+#     # Базовые уровни up и dn
+#     up = hl2 - (factor * atr)
+#     dn = hl2 + (factor * atr)
+    
+#     # Инициализация массивов
+#     trendup = np.zeros(len(df))
+#     trenddown = np.zeros(len(df))
+#     trend = np.zeros(len(df))
+    
+#     # Первая строка
+#     trendup[0] = up.iloc[0]
+#     trenddown[0] = dn.iloc[0]
+#     trend[0] = 1  # По умолчанию восходящий тренд
+    
+#     # Итеративный расчет (как в Pine Script)
+#     for i in range(1, len(df)):
+#         # trendup := hl2[1] > trendup[1] ? math.max(up, trendup[1]) : up
+#         if hl2.iloc[i-1] > trendup[i-1]:
+#             trendup[i] = max(up.iloc[i], trendup[i-1])
+#         else:
+#             trendup[i] = up.iloc[i]
+        
+#         # trenddown := hl2[1] < trenddown[1] ? math.min(dn, trenddown[1]) : dn
+#         if hl2.iloc[i-1] < trenddown[i-1]:
+#             trenddown[i] = min(dn.iloc[i], trenddown[i-1])
+#         else:
+#             trenddown[i] = dn.iloc[i]
+        
+#         # trendX := hl2 > trenddown[1] ? 1 : hl2 < trendup[1] ? -1 : nz(trendX[1], 1)
+#         if hl2.iloc[i] > trenddown[i-1]:
+#             trend[i] = 1  # Восходящий тренд
+#         elif hl2.iloc[i] < trendup[i-1]:
+#             trend[i] = -1  # Нисходящий тренд
+#         else:
+#             trend[i] = trend[i-1]  # Сохраняем предыдущий тренд
+    
+#     # Добавляем в DataFrame
+#     df["trend"] = trend.astype(int)
+#     df["trendup"] = trendup
+#     df["trenddown"] = trenddown
+#     df["tsl"] = np.where(df["trend"] == 1, trendup, trenddown)
+    
+#     return df
+
 def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame:
     """
-    Расчет тренда по алгоритму из Pine Script
+    Расчет тренда по алгоритму из Pine Script (точная реализация)
     
     Аналог:
     float factor = 1.0
@@ -36,54 +111,72 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     low = df["low"]
     close = df["close"]
     
-    # Расчет ATR
+    # --- 1. Истинный диапазон (True Range) ---
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=atr_period, min_periods=1).mean()
     
-    # hl2 (средняя цена high-low)
+    # --- 2. ATR методом RMA (Wilder's smoothing), как в Pine Script ---
+    atr = pd.Series(index=tr.index, dtype=float)
+    if len(tr) >= atr_period:
+        # Первый период: простое среднее
+        atr.iloc[atr_period-1] = tr.iloc[:atr_period].mean()
+        # Рекуррентное сглаживание для остальных
+        for i in range(atr_period, len(tr)):
+            atr.iloc[i] = (atr.iloc[i-1] * (atr_period - 1) + tr.iloc[i]) / atr_period
+    # Остальные значения остаются NaN (как в Pine до накопления period баров)
+    
+    # --- 3. hl2 и базовые уровни up/dn ---
     hl2 = (high + low) / 2.0
+    up = hl2 - factor * atr
+    dn = hl2 + factor * atr
     
-    # Базовые уровни up и dn
-    up = hl2 - (factor * atr)
-    dn = hl2 + (factor * atr)
+    # --- 4. Инициализация выходных массивов (NaN для trendup/trenddown) ---
+    trendup = np.full(len(df), np.nan, dtype=float)
+    trenddown = np.full(len(df), np.nan, dtype=float)
+    trend = np.full(len(df), np.nan, dtype=float)
     
-    # Инициализация массивов
-    trendup = np.zeros(len(df))
-    trenddown = np.zeros(len(df))
-    trend = np.zeros(len(df))
-    
-    # Первая строка
+    # --- 5. Первый бар (i=0) ---
+    # trendup[0] = up[0] (скорее всего NaN), trenddown[0] = dn[0] (NaN), trend[0] = 1 (как nz(...,1))
     trendup[0] = up.iloc[0]
     trenddown[0] = dn.iloc[0]
-    trend[0] = 1  # По умолчанию восходящий тренд
+    trend[0] = 1.0
     
-    # Итеративный расчет (как в Pine Script)
+    # --- 6. Основной цикл (точная логика Pine Script) ---
     for i in range(1, len(df)):
-        # trendup := hl2[1] > trendup[1] ? math.max(up, trendup[1]) : up
-        if hl2.iloc[i-1] > trendup[i-1]:
-            trendup[i] = max(up.iloc[i], trendup[i-1])
-        else:
-            trendup[i] = up.iloc[i]
+        prev_hl2 = hl2.iloc[i-1]
+        prev_trendup = trendup[i-1]
+        prev_trenddown = trenddown[i-1]
+        prev_trend = trend[i-1]
         
-        # trenddown := hl2[1] < trenddown[1] ? math.min(dn, trenddown[1]) : dn
-        if hl2.iloc[i-1] < trenddown[i-1]:
-            trenddown[i] = min(dn.iloc[i], trenddown[i-1])
-        else:
-            trenddown[i] = dn.iloc[i]
+        up_i = up.iloc[i]
+        dn_i = dn.iloc[i]
         
-        # trendX := hl2 > trenddown[1] ? 1 : hl2 < trendup[1] ? -1 : nz(trendX[1], 1)
-        if hl2.iloc[i] > trenddown[i-1]:
-            trend[i] = 1  # Восходящий тренд
-        elif hl2.iloc[i] < trendup[i-1]:
-            trend[i] = -1  # Нисходящий тренд
+        # --- trendup ---
+        # Если предыдущий trendup существует и условие выполняется, берём максимум,
+        # иначе просто up_i (даже если up_i NaN – результат будет NaN)
+        if not np.isnan(prev_trendup) and prev_hl2 > prev_trendup:
+            trendup[i] = max(up_i, prev_trendup) if not np.isnan(up_i) else prev_trendup
         else:
-            trend[i] = trend[i-1]  # Сохраняем предыдущий тренд
+            trendup[i] = up_i
+        
+        # --- trenddown ---
+        if not np.isnan(prev_trenddown) and prev_hl2 < prev_trenddown:
+            trenddown[i] = min(dn_i, prev_trenddown) if not np.isnan(dn_i) else prev_trenddown
+        else:
+            trenddown[i] = dn_i
+        
+        # --- trendX ---
+        if not np.isnan(prev_trenddown) and hl2.iloc[i] > prev_trenddown:
+            trend[i] = 1.0
+        elif not np.isnan(prev_trendup) and hl2.iloc[i] < prev_trendup:
+            trend[i] = -1.0
+        else:
+            trend[i] = prev_trend if not np.isnan(prev_trend) else 1.0
     
-    # Добавляем в DataFrame
-    df["trend"] = trend.astype(int)
+    # --- 7. Добавление результатов в DataFrame ---
+    df["trend"] = trend.astype(int)   # trend теперь целые значения (1 или -1)
     df["trendup"] = trendup
     df["trenddown"] = trenddown
     df["tsl"] = np.where(df["trend"] == 1, trendup, trenddown)
@@ -172,3 +265,113 @@ def get_trend_info(df: pd.DataFrame) -> dict:
         "trenddown": last_row.get("trenddown", 0),
         "is_strong": trend_length >= 5  # Тренд считается сильным если 5+ баров
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ЕДИНЫЕ БАЗОВЫЕ ВЫЧИСЛЕНИЯ — используйте только эти функции во всём проекте
+# ═══════════════════════════════════════════════════════════════════════════
+
+def true_range_series(df: pd.DataFrame) -> pd.Series:
+    """True Range для pandas DataFrame с колонками high/low/close."""
+    tr1 = df["high"] - df["low"]
+    tr2 = (df["high"] - df["close"].shift(1)).abs()
+    tr3 = (df["low"] - df["close"].shift(1)).abs()
+    return pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+
+def compute_atr_values(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    period: int = 14,
+) -> List[float]:
+    """ATR серия (Wilder's RMA) из списков. Возвращает список всех значений.
+    Используется когда нужна медиана или история ATR (например market_regime).
+    """
+    n = len(closes)
+    if n < period + 1:
+        return []
+    tr = []
+    for i in range(1, n):
+        h, l, pc = highs[i], lows[i], closes[i - 1]
+        tr.append(max(h - l, abs(h - pc), abs(l - pc)))
+    if len(tr) < period:
+        return []
+    atr_val = sum(tr[:period]) / period
+    result = [atr_val]
+    for v in tr[period:]:
+        atr_val = (atr_val * (period - 1) + v) / period
+        result.append(atr_val)
+    return result
+
+
+def compute_atr(
+    df: Optional[pd.DataFrame] = None,
+    period: int = 14,
+    *,
+    highs: Optional[List[float]] = None,
+    lows: Optional[List[float]] = None,
+    closes: Optional[List[float]] = None,
+) -> Optional[float]:
+    """Единый ATR (Wilder's RMA) для всего проекта — как в Pine Script ta.atr().
+
+    Принимает либо pandas DataFrame (df=...), либо три списка (highs/lows/closes=...).
+    Возвращает последнее значение ATR или None если данных недостаточно.
+    """
+    if df is not None:
+        if len(df) < period + 1:
+            return None
+        h = df["high"].tolist()
+        l = df["low"].tolist()
+        c = df["close"].tolist()
+    elif highs is not None and lows is not None and closes is not None:
+        h, l, c = highs, lows, closes
+    else:
+        return None
+    vals = compute_atr_values(h, l, c, period)
+    return float(vals[-1]) if vals else None
+
+
+def compute_ema_values(
+    prices: Union[List[float], pd.Series],
+    period: int,
+) -> List[float]:
+    """EMA серия. k = 2/(period+1). Возвращает список всех значений.
+    Используется когда нужен slope или история EMA (например market_regime).
+    """
+    if isinstance(prices, pd.Series):
+        lst = prices.dropna().tolist()
+    else:
+        lst = [v for v in prices if v == v]
+    if len(lst) < period:
+        return []
+    k = 2.0 / (period + 1)
+    ema = sum(lst[:period]) / period
+    result = [ema]
+    for v in lst[period:]:
+        ema = v * k + ema * (1 - k)
+        result.append(ema)
+    return result
+
+
+def compute_ema(
+    values: Union[List[float], pd.Series],
+    period: int,
+) -> Optional[float]:
+    """Единая EMA для всего проекта. Возвращает последнее значение."""
+    vals = compute_ema_values(values, period)
+    return float(vals[-1]) if vals else None
+
+
+def compute_sma(
+    values: Union[List[float], pd.Series],
+    period: int,
+) -> Optional[float]:
+    """Единая SMA для всего проекта. Возвращает последнее значение."""
+    if isinstance(values, pd.Series):
+        lst = values.dropna().tolist()
+    else:
+        lst = [v for v in values if v == v]
+    if len(lst) < period:
+        return None
+    return float(sum(lst[-period:]) / period)

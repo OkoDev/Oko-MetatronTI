@@ -17,6 +17,7 @@ Market Regime Classifier — Этап 4.
 """
 import logging
 from typing import List, Optional
+from core.indicators import compute_atr_values, compute_ema_values
 
 logger = logging.getLogger(__name__)
 
@@ -27,32 +28,9 @@ _EMA_SLOPE_MIN = 0.0002         # минимальный наклон EMA (до�
 _MIN_CANDLES = 30               # минимум свечей для надёжного расчёта
 
 
-def _ema(prices: List[float], period: int) -> List[float]:
-    """Экспоненциальная скользящая средняя."""
-    if len(prices) < period:
-        return []
-    k = 2.0 / (period + 1)
-    result = [sum(prices[:period]) / period]
-    for p in prices[period:]:
-        result.append(p * k + result[-1] * (1 - k))
-    return result
-
-
-def _atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> List[float]:
-    """Average True Range."""
-    n = len(closes)
-    if n < 2:
-        return []
-    tr = []
-    for i in range(1, n):
-        h, l, pc = highs[i], lows[i], closes[i - 1]
-        tr.append(max(h - l, abs(h - pc), abs(l - pc)))
-    if len(tr) < period:
-        return tr
-    atr_vals = [sum(tr[:period]) / period]
-    for t in tr[period:]:
-        atr_vals.append((atr_vals[-1] * (period - 1) + t) / period)
-    return atr_vals
+# Используем единые функции из core/indicators.py
+_ema = compute_ema_values
+_atr = compute_atr_values
 
 
 def _adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Optional[float]:

@@ -35,7 +35,7 @@ except ImportError:
     logger.warning("Strategies module not available, will use legacy logic")
 
 try:
-    from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg
+    from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr
 except ImportError:
     def calculate_trend(df, atr_period=43, factor=1.0):
         df = df.copy(); df["trend"] = 1; return df
@@ -963,20 +963,9 @@ class TradingIntelligence:
 
     @staticmethod
     def _compute_atr(df, period: int = 14) -> Optional[float]:
-        """Вычисляет ATR(14) из датафрейма OHLCV."""
+        """ATR через единую функцию из core/indicators.py (Wilder's RMA)."""
         try:
-            if df is None or len(df) < period + 1:
-                return None
-            high = df['high']
-            low = df['low']
-            close = df['close']
-            tr = pd.concat([
-                high - low,
-                (high - close.shift(1)).abs(),
-                (low - close.shift(1)).abs(),
-            ], axis=1).max(axis=1)
-            atr = tr.rolling(window=period, min_periods=period).mean().iloc[-1]
-            return float(atr) if not np.isnan(atr) else None
+            return compute_atr(df=df, period=period)
         except Exception:
             return None
 
