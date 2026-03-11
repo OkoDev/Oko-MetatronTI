@@ -46,6 +46,7 @@ _SCORE_TSL_CROSS = 20   # TSL пересечение в нужном напра�
 _SCORE_NEAR_PIVOT = 25  # Цена у ключевого уровня
 _SCORE_DIVERGENCE = 20  # Дивергенция WT
 _SCORE_PP_CONFIRM = 15  # Цена по отношению к дневному PP
+_SCORE_WT_CROSS = 15    # WT cross (wt1/wt2 пересечение) в lookback-окне
 
 
 def _get_cfg(cfg) -> dict:
@@ -97,10 +98,14 @@ def scan_confluence(
             return results
 
         # ── Расчёт индикаторов ────────────────────────────────────────────
+        _factor = 1.0
+        if cfg is not None and hasattr(cfg, "get"):
+            _factor = float(cfg.get("analysis.indicators.trend.factor", 1.0))
         df = calculate_wt(df_15m, n1=10, n2=21)
-        df = calculate_trend(df, atr_period=43, factor=1.0)
+        df = calculate_trend(df, atr_period=43, factor=_factor)
 
-        window = df.iloc[-lookback_bars:].reset_index(drop=True)
+        # Исключаем открытую (незакрытую) свечу из lookback — lookahead bias
+        window = df.iloc[-lookback_bars - 1:-1].reset_index(drop=True)
         current_price = float(df["close"].iloc[-1])
         if current_price <= 0:
             return results
@@ -133,6 +138,18 @@ def scan_confluence(
         if tsl_cross_up:
             score_long += _SCORE_TSL_CROSS
             factors_long.append("TSL_CROSS_UP")
+
+        # 2bL. WT cross UP (wt1 пересёк wt2 снизу вверх) в закрытых барах
+        if "wt2" in window.columns:
+            wt1_arr = window["wt1"].values
+            wt2_arr = window["wt2"].values
+            wt_cross_up = any(
+                wt1_arr[i] <= wt2_arr[i] and wt1_arr[i + 1] > wt2_arr[i + 1]
+                for i in range(len(wt1_arr) - 1)
+            )
+            if wt_cross_up:
+                score_long += _SCORE_WT_CROSS
+                factors_long.append("WT_CROSS_UP")
 
         # 3L. Цена у поддержки (S1/S2/PP дневной или недельный)
         pivot_hit_l, pivot_desc_l = _check_near_support(
@@ -184,6 +201,18 @@ def scan_confluence(
         if tsl_cross_down:
             score_short += _SCORE_TSL_CROSS
             factors_short.append("TSL_CROSS_DOWN")
+
+        # 2bS. WT cross DOWN (wt1 пересёк wt2 сверху вниз) в закрытых барах
+        if "wt2" in window.columns:
+            wt1_arr = window["wt1"].values
+            wt2_arr = window["wt2"].values
+            wt_cross_down = any(
+                wt1_arr[i] >= wt2_arr[i] and wt1_arr[i + 1] < wt2_arr[i + 1]
+                for i in range(len(wt1_arr) - 1)
+            )
+            if wt_cross_down:
+                score_short += _SCORE_WT_CROSS
+                factors_short.append("WT_CROSS_DOWN")
 
         # 3S. Цена у сопротивления (R1/R2/PP дневной или недельный)
         pivot_hit_s, pivot_desc_s = _check_near_resistance(
@@ -407,6 +436,8 @@ def confluence_message(symbol: str, sig: "SignalData") -> str:
         "WT_OB":            "🌊 WT OB",
         "TSL_CROSS_UP":     "📈 TSL↑",
         "TSL_CROSS_DOWN":   "📉 TSL↓",
+        "WT_CROSS_UP":      "⚡ WT✕↑",
+        "WT_CROSS_DOWN":    "⚡ WT✕↓",
         "NEAR_SUPPORT":     "🎯 Поддержка",
         "NEAR_RESISTANCE":  "🎯 Сопротивление",
         "WT_DIVERGENCE":    "🔄 Дивер",
