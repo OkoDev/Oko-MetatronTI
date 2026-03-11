@@ -1,7 +1,7 @@
 import logging
 import pandas as pd
 import numpy as np
-from core.indicators import calculate_wt
+from core.indicators import calculate_wt, find_swing_highs, find_swing_lows
 
 logger = logging.getLogger(__name__)
 
@@ -40,73 +40,18 @@ class DivergenceDetector:
         self.min_bars_between = min_bars_between
     
     def find_pivot_highs(self, series, period):
-        """
-        Находит pivot highs (аналог ta.pivothigh в Pine Script)
-        
-        Pivot high = максимум, который выше всех значений 
-        на расстоянии 'period' слева и справа
-        """
-        pivots = []
-        
-        for i in range(period, len(series) - period):
-            current = series.iloc[i]
-            
-            # Проверяем что текущее значение выше всех в окне
-            is_pivot = True
-            
-            # Проверка слева
-            for j in range(i - period, i):
-                if series.iloc[j] >= current:
-                    is_pivot = False
-                    break
-            
-            # Проверка справа
-            if is_pivot:
-                for j in range(i + 1, i + period + 1):
-                    if series.iloc[j] >= current:
-                        is_pivot = False
-                        break
-            
-            if is_pivot:
-                pivots.append({
-                    'index': i,
-                    'value': current,
-                    'price': series.iloc[i]
-                })
-        
+        """Swing Highs — делегирует в find_swing_highs из core/indicators.py (единый источник)."""
+        pivots = find_swing_highs(series, period)
+        # Добавляем поле 'price' для обратной совместимости
+        for p in pivots:
+            p['price'] = p['value']
         return pivots
-    
+
     def find_pivot_lows(self, series, period):
-        """
-        Находит pivot lows (аналог ta.pivotlow в Pine Script)
-        """
-        pivots = []
-        
-        for i in range(period, len(series) - period):
-            current = series.iloc[i]
-            
-            is_pivot = True
-            
-            # Проверка слева
-            for j in range(i - period, i):
-                if series.iloc[j] <= current:
-                    is_pivot = False
-                    break
-            
-            # Проверка справа
-            if is_pivot:
-                for j in range(i + 1, i + period + 1):
-                    if series.iloc[j] <= current:
-                        is_pivot = False
-                        break
-            
-            if is_pivot:
-                pivots.append({
-                    'index': i,
-                    'value': current,
-                    'price': series.iloc[i]
-                })
-        
+        """Swing Lows — делегирует в find_swing_lows из core/indicators.py (единый источник)."""
+        pivots = find_swing_lows(series, period)
+        for p in pivots:
+            p['price'] = p['value']
         return pivots
     
     def check_virtual_line(self, indicator, price, start_idx, pivot_idx, 

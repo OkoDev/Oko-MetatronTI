@@ -17,7 +17,7 @@ Market Regime Classifier — Этап 4.
 """
 import logging
 from typing import List, Optional
-from core.indicators import compute_atr_values, compute_ema_values
+from core.indicators import compute_atr_values, compute_ema_values, compute_adx
 
 logger = logging.getLogger(__name__)
 
@@ -31,44 +31,7 @@ _MIN_CANDLES = 30               # минимум свечей для надёж�
 # Используем единые функции из core/indicators.py
 _ema = compute_ema_values
 _atr = compute_atr_values
-
-
-def _adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Optional[float]:
-    """ADX — последнее значение."""
-    n = len(closes)
-    if n < period * 2:
-        return None
-    dm_plus, dm_minus, tr = [], [], []
-    for i in range(1, n):
-        up = highs[i] - highs[i - 1]
-        down = lows[i - 1] - lows[i]
-        dm_plus.append(max(up, 0) if up > down else 0)
-        dm_minus.append(max(down, 0) if down > up else 0)
-        h, l, pc = highs[i], lows[i], closes[i - 1]
-        tr.append(max(h - l, abs(h - pc), abs(l - pc)))
-
-    def smooth(lst, p):
-        s = [sum(lst[:p])]
-        for v in lst[p:]:
-            s.append(s[-1] - s[-1] / p + v)
-        return s
-
-    str_ = smooth(tr, period)
-    sdm_plus = smooth(dm_plus, period)
-    sdm_minus = smooth(dm_minus, period)
-
-    di_plus = [100 * p / t if t else 0 for p, t in zip(sdm_plus, str_)]
-    di_minus = [100 * m / t if t else 0 for m, t in zip(sdm_minus, str_)]
-    dx = [
-        100 * abs(p - m) / (p + m) if (p + m) else 0
-        for p, m in zip(di_plus, di_minus)
-    ]
-    if len(dx) < period:
-        return None
-    adx_vals = [sum(dx[:period]) / period]
-    for v in dx[period:]:
-        adx_vals.append((adx_vals[-1] * (period - 1) + v) / period)
-    return adx_vals[-1] if adx_vals else None
+_adx = compute_adx  # ADX централизован в indicators.py
 
 
 class MarketRegimeClassifier:

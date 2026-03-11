@@ -276,6 +276,10 @@ def get_trend_info(df: pd.DataFrame) -> dict:
 # SMA          → compute_sma(values, period)
 # Volatility   → compute_volatility(closes, period=20) → ПРОЦЕНТЫ (1.5 = 1.5%)
 #                  Для ML нормализовать: / 100.0
+# ADX          → compute_adx(highs, lows, closes, period=14) → 0-100
+# RSI          → compute_rsi(closes, period=14) → 0-100
+# Volume Ratio → compute_volume_ratio(volumes, period=20) → current/SMA
+# Swing H/L    → find_swing_highs(series, period) / find_swing_lows(series, period)
 # True Range   → true_range_series(df)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -409,3 +413,152 @@ def compute_volatility(
     mean = sum(window) / len(window)
     variance = sum((x - mean) ** 2 for x in window) / len(window)
     return float(variance ** 0.5 * 100)  # в процентах
+
+
+def _wilder_smooth(values: List[float], period: int) -> List[float]:
+    """Wilder's smoothing (RMA) — вспомогательная функция для ADX."""
+    if len(values) < period:
+        return []
+    s = [sum(values[:period])]
+    for v in values[period:]:
+        s.append(s[-1] - s[-1] / period + v)
+    return s
+
+
+def compute_adx(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    period: int = 14,
+) -> Optional[float]:
+    """ADX (Average Directional Index) — Единый источник для всего проекта.
+
+    Алгоритм:
+      - Wilder's accumulated smoothing (sum→rma) для TR/DM+/DM-
+      - RMA (SMA init) для DX→ADX (как compute_atr_values)
+    Возвращает последнее значение ADX (0-100) или None если данных недостаточно.
+    Используется в: market_regime.py (TREND_UP/TREND_DOWN классификация).
+    """
+    n = len(closes)
+    if n < period * 2:
+        return None
+    dm_plus, dm_minus, tr = [], [], []
+    for i in range(1, n):
+        up   = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        dm_plus.append(max(up, 0) if up > down else 0)
+        dm_minus.append(max(down, 0) if down > up else 0)
+        h, l, pc = highs[i], lows[i], closes[i - 1]
+        tr.append(max(h - l, abs(h - pc), abs(l - pc)))
+
+    # Wilder's накопленное сглаживание (Σ → рекуррентно) для TR/DM
+    str_      = _wilder_smooth(tr, period)
+    sdm_plus  = _wilder_smooth(dm_plus, period)
+    sdm_minus = _wilder_smooth(dm_minus, period)
+
+    di_plus  = [100 * p / t if t else 0 for p, t in zip(sdm_plus, str_)]
+    di_minus = [100 * m / t if t else 0 for m, t in zip(sdm_minus, str_)]
+    dx = [100 * abs(p - m) / (p + m) if (p + m) else 0 for p, m in zip(di_plus, di_minus)]
+
+    # ADX = RMA(DX, period) — SMA-инициализация (как compute_atr_values)
+    if len(dx) < period:
+        return None
+    adx = sum(dx[:period]) / period
+    for v in dx[period:]:
+        adx = (adx * (period - 1) + v) / period
+    return float(adx)
+
+
+def compute_rsi(
+    closes: Union[List[float], pd.Series],
+    period: int = 14,
+) -> Optional[float]:
+    """RSI (Relative Strength Index) — Единый источник для всего проекта.
+
+    Алгоритм: SMA gain/loss за первые period баров, затем RMA (Wilder's).
+    Возвращает значение 0-100 или None если данных недостаточно.
+    Используется в: ml_predictor.py (feature extraction).
+    """
+    if isinstance(closes, pd.Series):
+        lst = closes.dropna().tolist()
+    else:
+        lst = [v for v in closes if v == v]
+    if len(lst) < period + 1:
+        return None
+    deltas = [lst[i] - lst[i - 1] for i in range(1, len(lst))]
+    gains = [max(d, 0.0) for d in deltas]
+    losses = [abs(min(d, 0.0)) for d in deltas]
+    # Первый период: SMA
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    # RMA (Wilder's)
+    for g, l in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain * (period - 1) + g) / period
+        avg_loss = (avg_loss * (period - 1) + l) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return float(100.0 - 100.0 / (1.0 + rs))
+
+
+def compute_volume_ratio(
+    volumes: Union[List[float], pd.Series],
+    period: int = 20,
+) -> Optional[float]:
+    """Относительный объём (volume ratio) — Единый источник для всего проекта.
+
+    Возвращает current_volume / SMA(volume, period).
+    Значение > 1.0 означает объём выше среднего (например 3.0 = тройной объём).
+    Используется в: signal_checkers.py, ml_predictor.py, trading_intelligence.py.
+    """
+    if isinstance(volumes, pd.Series):
+        lst = volumes.dropna().tolist()
+    else:
+        lst = [v for v in volumes if v == v]
+    if len(lst) < period + 1:
+        return None
+    ma = sum(lst[-period - 1:-1]) / period  # SMA за предыдущие period баров
+    current = lst[-1]
+    return float(current / ma) if ma > 0 else None
+
+
+def find_swing_highs(
+    series: pd.Series,
+    period: int = 5,
+) -> List[dict]:
+    """Swing Highs (pivot highs) — Единый источник для всего проекта.
+
+    Pivot high = значение выше ВСЕХ соседей на расстоянии period баров с каждой стороны.
+    Аналог ta.pivothigh() в Pine Script.
+
+    Возвращает список dict: {'index': int, 'value': float}
+    Используется в: divergence_detector.py, trading_intelligence.py (swing_high SL).
+    """
+    pivots = []
+    n = len(series)
+    for i in range(period, n - period):
+        val = series.iloc[i]
+        if all(val > series.iloc[j] for j in range(i - period, i + period + 1) if j != i):
+            pivots.append({"index": i, "value": float(val)})
+    return pivots
+
+
+def find_swing_lows(
+    series: pd.Series,
+    period: int = 5,
+) -> List[dict]:
+    """Swing Lows (pivot lows) — Единый источник для всего проекта.
+
+    Pivot low = значение ниже ВСЕХ соседей на расстоянии period баров с каждой стороны.
+    Аналог ta.pivotlow() в Pine Script.
+
+    Возвращает список dict: {'index': int, 'value': float}
+    Используется в: divergence_detector.py, trading_intelligence.py (swing_low SL).
+    """
+    pivots = []
+    n = len(series)
+    for i in range(period, n - period):
+        val = series.iloc[i]
+        if all(val < series.iloc[j] for j in range(i - period, i + period + 1) if j != i):
+            pivots.append({"index": i, "value": float(val)})
+    return pivots

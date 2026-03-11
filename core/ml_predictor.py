@@ -68,9 +68,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 try:
-    from core.indicators import compute_volatility as _compute_volatility
+    from core.indicators import (
+        compute_volatility as _compute_volatility,
+        compute_rsi as _compute_rsi,
+        compute_volume_ratio as _compute_volume_ratio,
+    )
 except ImportError:
     _compute_volatility = None
+    _compute_rsi = None
+    _compute_volume_ratio = None
 
 class PredictionType(Enum):
     """Типы предсказаний"""
@@ -312,11 +318,17 @@ class MLPredictor:
 
             features = {}
 
-            # Технические индикаторы
-            features['rsi'] = self._calculate_rsi(df['close'], 14)
+            # Технические индикаторы — единые функции из core/indicators.py
+            features['rsi'] = (
+                _compute_rsi(df['close'], period=14)
+                if _compute_rsi else self._calculate_rsi(df['close'], 14)
+            ) or 50.0
             features['macd'] = self._calculate_macd(df['close'])
             features['bb_position'] = self._calculate_bollinger_position(df['close'])
-            features['volume_ratio'] = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
+            _vr = _compute_volume_ratio(df['volume'], period=20) if _compute_volume_ratio else None
+            features['volume_ratio'] = _vr if _vr is not None else (
+                df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
+            )
             
             # Ценовые паттерны
             features['price_change_1h'] = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2]

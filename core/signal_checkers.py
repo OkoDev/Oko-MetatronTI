@@ -16,13 +16,17 @@ except ImportError:
     _cfg = None
 
 try:
-    from core.indicators import calculate_trend, calculate_wt
+    from core.indicators import (
+        calculate_trend, calculate_wt,
+        compute_volume_ratio as _compute_volume_ratio,
+    )
 except ImportError:
     import logging as _log
     _log.getLogger(__name__).error(
         "КРИТИЧЕСКАЯ ОШИБКА: core.indicators недоступен — используются заглушки! "
         "Тренд и TSL будут некорректны!"
     )
+    _compute_volume_ratio = None
 
     def calculate_trend(df, atr_period=43, factor=1.0):  # noqa: stub
         df = df.copy(); df["trend"] = 1; return df
@@ -73,9 +77,14 @@ async def check_anomaly_signals(symbol: str, df: pd.DataFrame) -> List[SignalDat
         if df is None or len(df) < min_bars:
             return signals
 
-        volume_mean = df["volume"].rolling(ma_period).mean().iloc[-1]
         volume_current = df["volume"].iloc[-1]
-        volume_ratio = volume_current / volume_mean if volume_mean > 0 else 1
+        # Volume ratio — единый источник из indicators.py
+        _vr = _compute_volume_ratio(df["volume"], period=ma_period) if _compute_volume_ratio else None
+        if _vr is None:
+            volume_mean = df["volume"].rolling(ma_period).mean().iloc[-1]
+            _vr = volume_current / volume_mean if volume_mean > 0 else 1.0
+        volume_mean = volume_current / _vr if _vr > 0 else 0
+        volume_ratio = _vr
 
         if volume_ratio > ratio_thr:
             price_change = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100
