@@ -90,14 +90,17 @@ class SubscriptionManager:
                     max_price REAL,
                     min_price REAL,
                     max_R_possible REAL,
-                    captured_R_pct REAL
+                    captured_R_pct REAL,
+                    sl_source TEXT,
+                    tp_source TEXT
                 )
             """)
 
-            # Миграция: добавляем MFE колонки если их нет (для существующих БД)
+            # Миграция: добавляем колонки если их нет (для существующих БД)
             for col, coltype in [
                 ("max_price", "REAL"), ("min_price", "REAL"),
                 ("max_R_possible", "REAL"), ("captured_R_pct", "REAL"),
+                ("sl_source", "TEXT"), ("tp_source", "TEXT"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")

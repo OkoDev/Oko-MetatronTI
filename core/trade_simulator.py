@@ -131,6 +131,8 @@ class TradeSimulator:
                 ts = ts.replace(tzinfo=timezone.utc)
 
             signal_type = _signal_type_from_recommendation(recommendation)
+            sl_source = _get_recommendation_value(recommendation, "sl_source") or None
+            tp_source = _get_recommendation_value(recommendation, "tp_source") or None
             # Сохраняем ВСЕ поддерживающие типы сигналов
             supporting = _get_recommendation_value(recommendation, "supporting_signals") or []
             all_signal_types = list(dict.fromkeys(
@@ -155,8 +157,9 @@ class TradeSimulator:
                     """
                     INSERT INTO simulated_trades
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
-                     tp1_price, strength, confidence, regime, status, features_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tp1_price, strength, confidence, regime, status, features_json, created_at,
+                     sl_source, tp_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -173,6 +176,8 @@ class TradeSimulator:
                         STATUS_OPEN,
                         features_json,
                         ts.isoformat(),
+                        sl_source,
+                        tp_source,
                     ),
                 )
                 trade_id = cursor.lastrowid

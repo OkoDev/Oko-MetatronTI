@@ -94,29 +94,29 @@ monitoring:
     cascade_div_every_n_cycles: 60
 trading:
   use_tsl: true
-  tsl_activation_r: 1.2
-  tsl_buffer_pct: 0.1
+  tsl_activation_r: 1.5
+  tsl_buffer_pct: 0.5
   sl_tp:
-    atr_multiplier: 1.2        # множитель ATR для SL (было 1.5)
-    sl_min_pct: 0.8            # мин. SL в % (было 1.0)
-    sl_max_pct: 3.0            # макс. SL в % (было 4.0)
-    tp_fallback_rr: 3.0        # базовый RR — TP1 (было 1.5→2.0→3.0)
-    tp_pivot_min_r: 3.0        # пивот принимается только если он ≥ 3R
-    tp_partial_pct: 0.50       # 50% позиции закрывается на TP1, остаток по TSL
-    atr_dynamic: true          # динамический ATR-множитель по динамике волатильности
-    atr_expand_threshold: 1.3  # ATR_14/ATR_28 > 1.3 → волатильность растёт → SL уже
-    atr_contract_threshold: 0.8 # ATR_14/ATR_28 < 0.8 → тихо → SL чуть шире
-    struct_sl_buffer_pct: 0.3  # отступ за структурным уровнем (% от цены)
-    struct_sl_max_dist: 3.0    # макс. расстояние до структурного SL от входа (%)
-    tsl_too_tight_pct: 0.6    # если TSL < этого % → искать свинг-вершину как резерв
+    atr_multiplier: 1.2
+    sl_min_pct: 1.0        # было 0.8 — tight <1% давали Win%=22%, поднято до 1.0%
+    sl_max_pct: 3.0
+    tp_fallback_rr: 3.0
+    tp_pivot_min_r: 3.0
+    tp_partial_pct: 0.5
+    atr_dynamic: true
+    atr_expand_threshold: 1.3
+    atr_contract_threshold: 0.8
+    struct_sl_buffer_pct: 0.3
+    struct_sl_max_dist: 3.0
+    tsl_too_tight_pct: 1.0  # было 0.6 — если TSL-линия <1% от цены → использовать swing_low
 signal_quality:
-  sl_cooldown_hours: 4
+  sl_cooldown_hours: 2
   dedup_minutes: 30
   min_volume_usd: 1000000
   min_strength: 50
   min_strength_register: 40
   counter_trend_strength_threshold: 30
-  btc_filter_enabled: true
+  btc_filter_enabled: false
 detectors:
   anomaly:
     min_bars: 20
@@ -135,36 +135,25 @@ performance:
   divergence_slow_threshold_sec: 3.0
   pair_slow_threshold_sec: 10.0
   scan_cycle_warning_threshold_sec: 55.0
-
-# ============================================================================
-# STRATEGY CONFIGURATION (Этап 8.5 onwards)
-# ============================================================================
 strategy:
-  name: "confluence"  # Available: "confluence", "mtf_bias", "conservative"
-  
-  # Confluence Strategy (по умолчанию)
+  name: confluence
   confluence:
     min_signals: 2
     conflict_threshold: 0.3
     signal_weights:
       mtf_signal: 0.25
-      mtf_alert: 0.30
-      pivot_reversal: 0.20
+      mtf_alert: 0.3
+      pivot_reversal: 0.2
       divergence: 0.15
-      wt_signal: 0.10
-      trend_signal: 0.10
+      wt_signal: 0.1
+      trend_signal: 0.1
       anomaly: 0.05
       pivot_alert: 0.15
       confluence: 0.35
-  
-  # MTF Bias Strategy (быстрая, только MTF alerts)
   mtf_bias:
     min_strength: 60
     require_confluence: false
-  
-  # Conservative Strategy (для минимизации просадок)
   conservative:
     min_signals: 3
     min_confidence: 0.65
     conflict_threshold: 0.2
-
