@@ -274,6 +274,8 @@ def get_trend_info(df: pd.DataFrame) -> dict:
 # ATR          → compute_atr(df, period) / compute_atr_values(h, l, c, period)
 # EMA          → compute_ema(values, period) / compute_ema_values(values, period)
 # SMA          → compute_sma(values, period)
+# Volatility   → compute_volatility(closes, period=20) → ПРОЦЕНТЫ (1.5 = 1.5%)
+#                  Для ML нормализовать: / 100.0
 # True Range   → true_range_series(df)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -381,3 +383,29 @@ def compute_sma(
     if len(lst) < period:
         return None
     return float(sum(lst[-period:]) / period)
+
+
+def compute_volatility(
+    closes: Union[List[float], pd.Series],
+    period: int = 20,
+) -> Optional[float]:
+    """Волатильность цены (Единый источник) — std процентных изменений за period баров.
+
+    Возвращает значение в ПРОЦЕНТАХ (например 1.5 означает 1.5%).
+    Используется в: market_context.volatility, SL-расчётах, ML-фичах.
+
+    При передаче в ML нормализовать: compute_volatility(...) / 100.0
+    """
+    if isinstance(closes, pd.Series):
+        lst = closes.dropna().tolist()
+    else:
+        lst = [v for v in closes if v == v]
+    if len(lst) < period + 1:
+        return None
+    pct = [(lst[i] - lst[i - 1]) / lst[i - 1] for i in range(1, len(lst)) if lst[i - 1] != 0]
+    if len(pct) < period:
+        return None
+    window = pct[-period:]
+    mean = sum(window) / len(window)
+    variance = sum((x - mean) ** 2 for x in window) / len(window)
+    return float(variance ** 0.5 * 100)  # в процентах

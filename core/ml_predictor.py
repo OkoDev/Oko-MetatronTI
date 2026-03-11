@@ -67,6 +67,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+try:
+    from core.indicators import compute_volatility as _compute_volatility
+except ImportError:
+    _compute_volatility = None
+
 class PredictionType(Enum):
     """Типы предсказаний"""
     PRICE_DIRECTION = "price_direction"  # Направление движения цены
@@ -318,8 +323,9 @@ class MLPredictor:
             features['price_change_4h'] = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5]
             features['price_change_24h'] = (df['close'].iloc[-1] - df['close'].iloc[-24]) / df['close'].iloc[-24]
             
-            # Волатильность
-            features['volatility'] = df['close'].pct_change().rolling(20).std().iloc[-1]
+            # Волатильность — compute_volatility возвращает проценты, делим на 100 для ML
+            _vol = _compute_volatility(df['close'], period=20) if _compute_volatility else None
+            features['volatility'] = (_vol / 100.0) if _vol is not None else df['close'].pct_change().rolling(20).std().iloc[-1]
             
             # Объемные индикаторы
             features['volume_trend'] = df['volume'].rolling(5).mean().iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]

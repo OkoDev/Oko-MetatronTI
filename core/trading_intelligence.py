@@ -35,7 +35,7 @@ except ImportError:
     logger.warning("Strategies module not available, will use legacy logic")
 
 try:
-    from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr
+    from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr, compute_volatility
 except ImportError:
     import logging as _log
     _log.getLogger(__name__).error(
@@ -56,6 +56,9 @@ except ImportError:
         return "NONE", 0
 
     def compute_atr(df=None, period=14, **kw):  # noqa: stub
+        return None
+
+    def compute_volatility(*_args, **_kw):  # noqa: stub
         return None
 
 # Импорт ML модуля
@@ -891,17 +894,21 @@ class TradingIntelligence:
             
             logger.debug(f"Контекст для {symbol}: цена={current_price}, объем={quote_volume}, изменение={price_change}%")
 
-            # ATR(14), ATR(28), TSL-линии и свинг-уровни из 15m датафрейма
+            # ATR(14), ATR(28), TSL-линии, свинг-уровни и волатильность из 15m датафрейма
             atr = None
             atr_slow = None
             tsl_trendup = None
             tsl_trenddown = None
             swing_low = None
             swing_high = None
+            volatility = None
             try:
                 df_15m = await self.data_collector.get_ohlcv(normalized_symbol, "15m", limit=60)
                 atr = self._compute_atr(df_15m, period=14)
                 atr_slow = self._compute_atr(df_15m, period=28)
+                if df_15m is not None and len(df_15m) >= 21:
+                    # Волатильность из OHLCV — единый источник (проценты)
+                    volatility = compute_volatility(df_15m['close'])
                 if df_15m is not None and len(df_15m) >= 44:
                     _trend_cfg = self.config.get("analysis", {}).get("indicators", {}).get("trend", {})
                     _atr_pd  = _trend_cfg.get("atr_period", 43)
@@ -920,7 +927,7 @@ class TradingIntelligence:
                 volume_24h=quote_volume,  # Используем quoteVolume как основной объем
                 volume_change_24h=0,  # Не всегда доступно
                 price_change_24h=price_change,
-                volatility=self._calculate_volatility(symbol),
+                volatility=volatility,
                 atr=atr,
                 atr_slow=atr_slow,
                 tsl_trendup=tsl_trendup,
@@ -1341,6 +1348,7 @@ class TradingIntelligence:
             if df_1h is None or len(df_1h) < 50:
                 continue
             # Предварительный расчёт (O(n) вместо O(n²))
+            # Волатильность в % — эквивалент compute_volatility(closes, period=20)
             volatility_series = df_1h['close'].pct_change().rolling(20).std() * 100
             vol_mean_series = df_1h['volume'].rolling(20).mean()
             for i in range(20, len(df_1h) - 1):
