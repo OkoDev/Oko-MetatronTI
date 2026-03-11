@@ -225,6 +225,12 @@ async function closeTrade(id, btn) {
   btn.disabled = true; btn.textContent = '...';
   try {
     const r = await fetch(`/api/trades/${id}/close`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (!r.ok) {
+      const msg = await r.text().catch(() => `HTTP ${r.status}`);
+      alert(msg || `Ошибка ${r.status}`);
+      btn.textContent = 'Err'; btn.disabled = false;
+      return;
+    }
     const d = await r.json();
     if (d.ok) { btn.textContent = '✓'; btn.style.background='#2a6'; load(); }
     else { btn.textContent = 'Err'; btn.disabled = false; }

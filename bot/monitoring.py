@@ -865,7 +865,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 logger.debug("[%s] Pivot TP: %.6f (%.2f%%, %s, src=%s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val, pivot_src)
 
     min_strength = bot.config.get("signal_quality.min_strength", 50)
-    min_strength_register = bot.config.get("signal_quality.min_strength_register", 40)
+    min_strength_register = bot.config.get("signal_quality.min_strength_register", 50)
 
     _dir_ok = (
         recommendation is not None
@@ -883,6 +883,18 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         logger.info("[%s] Пропущен WATCH+NEUTRAL — нет торгового решения", symbol)
         return
 
+    # Регистрируем сделку ДО отправки TG — чтобы footer "зарегистрирована" соответствовал реальности
+    trade_registered = False
+    if should_register:
+        try:
+            extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
+            trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
+            trade_registered = trade_id is not None
+            if not trade_registered:
+                logger.warning("[%s] register_trade вернул None (нет entry_price/SL/TP?) — сделка НЕ сохранена", symbol)
+        except Exception as e:
+            logger.debug("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e)
+
     text = raw_text
     if recommendation:
         try:
@@ -892,18 +904,14 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             text = raw_text
         if btc_warning:
             text = text.rstrip() + btc_warning
-        if is_actionable:
+        if is_actionable and trade_registered:
             kelly_line = _get_kelly_footer(bot)
             text = text.rstrip() + "\n─────────────\n💾 <i>Сделка зарегистрирована в симуляторе</i>" + kelly_line
 
     await broadcast_with_subscription_check(bot, text, signal_type)
 
     if should_register:
-        try:
-            extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
-            await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
-        except Exception as e:
-            logger.debug("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e)
+        pass  # уже зарегистрировано выше
     elif recommendation:
         reason = []
         if recommendation.overall_strength < min_strength_register:
@@ -960,7 +968,7 @@ async def trade_tracker_loop(bot):
 
     while True:
         try:
-            await asyncio.sleep(300)
+            await asyncio.sleep(60)
             closed = await bot.trade_simulator.check_open_trades_with_tsl(
                 bot.data_collector,
                 use_tsl=use_tsl,
