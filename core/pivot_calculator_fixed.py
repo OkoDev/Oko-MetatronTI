@@ -141,21 +141,9 @@ class PivotCalculatorFixed:
     # ──────────────────────────────────────────────────────
 
     def calculate_traditional_pivots(self, high: float, low: float, close: float) -> Dict[str, float]:
-        """Traditional Pivot Points по формулам Pine Script"""
-        pp = (high + low + close) / 3.0
-        return {
-            "PP": pp,
-            "S1": pp * 2.003 - high,
-            "S2": pp - (high - low),
-            "S3": pp * 2 - (2 * high - low),
-            "S4": pp * 3 - (3 * high - low),
-            "S5": pp * 4 - (4 * high - low),
-            "R1": pp * 1.997 - low,
-            "R2": pp + (high - low),
-            "R3": pp * 2 + (high - 2 * low),
-            "R4": pp * 3 + (high - 3 * low),
-            "R5": pp * 4 + (high - 4 * low),
-        }
+        """Traditional Pivot Points — делегирует в calculate_pivot_points из core/indicators.py."""
+        from core.indicators import calculate_pivot_points
+        return calculate_pivot_points(high, low, close)
 
     # ──────────────────────────────────────────────────────
     # Месячные пивоты

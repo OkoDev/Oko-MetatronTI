@@ -2,6 +2,7 @@ import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from core.indicators import calculate_pivot_points as _calculate_pivot_points
 
 logger = logging.getLogger(__name__)
 
@@ -18,46 +19,8 @@ class PivotLevels:
         self.max_levels = 5  # Максимум уровней поддержки/сопротивления
         
     def calculate_traditional_pivots(self, prev_high, prev_low, prev_close):
-        """
-        Расчет Traditional Pivot Points
-        
-        Формулы из Pine Script:
-        PP = (High + Low + Close) / 3
-        S1 = PP * 2.003 - High
-        S2 = PP - (High - Low)
-        S3 = PP * 2 - (2 * High - Low)
-        S4 = PP * 3 - (3 * High - Low)
-        S5 = PP * 4 - (4 * High - Low)
-        
-        R1 = PP * 1.997 - Low
-        R2 = PP + (High - Low)
-        R3 = PP * 2 + (High - 2 * Low)
-        R4 = PP * 3 + (High - 3 * Low)
-        R5 = PP * 4 + (High - 4 * Low)
-        """
-        
-        # Pivot Point
-        pp = (prev_high + prev_low + prev_close) / 3.0
-        
-        # Support levels
-        s1 = pp * 2.003 - prev_high
-        s2 = pp - (prev_high - prev_low)
-        s3 = pp * 2 - (2 * prev_high - prev_low)
-        s4 = pp * 3 - (3 * prev_high - prev_low)
-        s5 = pp * 4 - (4 * prev_high - prev_low)
-        
-        # Resistance levels
-        r1 = pp * 1.997 - prev_low
-        r2 = pp + (prev_high - prev_low)
-        r3 = pp * 2 + (prev_high - 2 * prev_low)
-        r4 = pp * 3 + (prev_high - 3 * prev_low)
-        r5 = pp * 4 + (prev_high - 4 * prev_low)
-        
-        return {
-            'PP': pp,
-            'S1': s1, 'S2': s2, 'S3': s3, 'S4': s4, 'S5': s5,
-            'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5
-        }
+        """Traditional Pivot Points — делегирует в calculate_pivot_points из core/indicators.py."""
+        return _calculate_pivot_points(prev_high, prev_low, prev_close)
     
     async def get_pivot_levels(self, data_collector, symbol, timeframe='1D'):
         """

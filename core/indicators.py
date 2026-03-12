@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
     """Вычисляет wt1 и wt2, добавляет в df"""
@@ -280,6 +280,7 @@ def get_trend_info(df: pd.DataFrame) -> dict:
 # RSI          → compute_rsi(closes, period=14) → 0-100
 # Volume Ratio → compute_volume_ratio(volumes, period=20) → current/SMA
 # Swing H/L    → find_swing_highs(series, period) / find_swing_lows(series, period)
+# Pivot Points → calculate_pivot_points(high, low, close) → {PP, S1-S5, R1-R5}
 # True Range   → true_range_series(df)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -562,3 +563,26 @@ def find_swing_lows(
         if all(val < series.iloc[j] for j in range(i - period, i + period + 1) if j != i):
             pivots.append({"index": i, "value": float(val)})
     return pivots
+
+
+def calculate_pivot_points(high: float, low: float, close: float) -> Dict[str, float]:
+    """Traditional Pivot Points — Единый источник формул для всего проекта.
+
+    Формулы Pine Script: PP = (H+L+C)/3, S1..S5, R1..R5.
+    Используется в: pivot_levels.PivotLevels и pivot_calculator_fixed.PivotCalculatorFixed.
+    """
+    pp = (high + low + close) / 3.0
+    hl = high - low
+    return {
+        "PP": pp,
+        "S1": pp * 2.003 - high,
+        "S2": pp - hl,
+        "S3": pp * 2 - (2 * high - low),
+        "S4": pp * 3 - (3 * high - low),
+        "S5": pp * 4 - (4 * high - low),
+        "R1": pp * 1.997 - low,
+        "R2": pp + hl,
+        "R3": pp * 2 + (high - 2 * low),
+        "R4": pp * 3 + (high - 3 * low),
+        "R5": pp * 4 + (high - 4 * low),
+    }
