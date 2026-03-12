@@ -18,6 +18,7 @@ class SignalType(Enum):
     PIVOT_REVERSAL = "pivot_reversal"
     PIVOT_ALERT = "pivot_alert"
     CONFLUENCE = "confluence"
+    MTF_BIAS = "mtf_bias"
 
 
 class SignalDirection(Enum):

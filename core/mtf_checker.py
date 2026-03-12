@@ -27,11 +27,21 @@ async def collect_mtf_data(symbol, data_collector, timeframes=None):
 
             zone = get_zone(wt1)
 
+            # WT cross на последних двух закрытых барах (-2 и -1)
+            wt_cross = 0
+            if len(wt_df) >= 2:
+                p_wt1, p_wt2 = wt_df["wt1"].iloc[-2], wt_df["wt2"].iloc[-2]
+                if p_wt1 <= p_wt2 and wt1 > wt2:
+                    wt_cross = 1   # кросс UP
+                elif p_wt1 >= p_wt2 and wt1 < wt2:
+                    wt_cross = -1  # кросс DOWN
+
             results[tf] = {
                 "trend": trend,
                 "wt1": round(wt1, 2),
                 "wt2": round(wt2, 2),
-                "zone": zone
+                "zone": zone,
+                "wt_cross": wt_cross,
             }
         except Exception:
             logger.exception(f"Ошибка MTF для {symbol} {tf}")

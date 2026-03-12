@@ -325,3 +325,40 @@ async def check_pivot_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]
     except Exception:
         logger.exception("Ошибка проверки пивотов для %s", symbol)
     return signals
+
+
+async def check_mtf_bias_signal(
+    symbol: str,
+    data_collector,
+    regime: str = None,
+    cfg=None,
+) -> List[SignalData]:
+    """
+    MTF Bias — автономный интерпретатор TF-alignment.
+    Собирает MTF-снапшот через collect_mtf_data и передаёт в MTFInterpreter.
+    """
+    signals = []
+    try:
+        from core.mtf_checker import collect_mtf_data
+        from core.mtf_interpreter import interpret
+
+        snapshot = await collect_mtf_data(symbol, data_collector)
+        if not snapshot:
+            return signals
+
+        sig = interpret(snapshot, regime=regime, cfg=cfg)
+        if sig is not None:
+            sig.symbol = symbol
+            logger.info(
+                "[mtf_bias] %s: %s score=%d bull=%d%% entry=%s senior=%d/3",
+                symbol,
+                sig.direction.value,
+                sig.strength,
+                sig.data.get("bull_pct", 0),
+                sig.data.get("entry_tf"),
+                sig.data.get("senior_matches", 0),
+            )
+            signals.append(sig)
+    except Exception:
+        logger.exception("[mtf_bias] Ошибка check_mtf_bias_signal для %s", symbol)
+    return signals

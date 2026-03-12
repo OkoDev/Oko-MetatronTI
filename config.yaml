@@ -45,6 +45,7 @@ analysis:
   confluence:
     enabled: true
     lookback_bars: 40
+    cross_fresh_bars: 10
     min_strength: 60
     wt_os_threshold: -60.0
     wt_ob_threshold: 60.0
@@ -93,6 +94,20 @@ monitoring:
     background_every_n_cycles: 3
     cascade_div_every_n_cycles: 60
 trading:
+  active_strategy: confluence_scanner  # "confluence" | "confluence_scanner" | "conservative"
+  strategies:
+    confluence_scanner:
+      min_strength: 60
+      tp_rr: 3.0
+      sl_buffer_pct: 0.3
+      tsl_max_dist: 3.0
+      tsl_min_dist: 0.6
+    confluence:
+      min_signals: 2
+      conflict_threshold: 0.3
+    conservative:
+      min_signals: 3
+      min_confidence: 0.65
   use_tsl: true
   tsl_activation_r: 1.5
   tsl_buffer_pct: 0.5
@@ -143,6 +158,7 @@ strategy:
     signal_weights:
       mtf_signal: 0.25
       mtf_alert: 0.3
+      mtf_bias: 0.30
       pivot_reversal: 0.2
       divergence: 0.15
       wt_signal: 0.1

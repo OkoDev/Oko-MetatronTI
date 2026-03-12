@@ -20,6 +20,7 @@ from core.signal_models import (
 from core.signal_checkers import (
     check_anomaly_signals, check_wt_signals, check_mtf_signals,
     check_trend_signals, check_divergence_signals, check_pivot_signals,
+    check_mtf_bias_signal,
 )
 
 # Форматтер рекомендаций
@@ -478,6 +479,7 @@ class TradingIntelligence:
                 check_trend_signals(symbol, df_1h),
                 check_divergence_signals(symbol, df_1h),
                 check_pivot_signals(symbol, df_1h),
+                check_mtf_bias_signal(symbol, self.data_collector, regime=None, cfg=self.config),
                 return_exceptions=True,
             )
             t2 = asyncio.get_event_loop().time()
