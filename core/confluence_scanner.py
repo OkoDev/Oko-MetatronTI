@@ -119,6 +119,30 @@ def scan_confluence(
 
         trend_series = window["trend"].values
 
+        # ── Определяем ПОСЛЕДНЕЕ пересечение TSL и WT (взаимоисключение LONG/SHORT)
+        # Ищем в последних cross_fresh_bars барах для фильтра "свежести"
+        cross_fresh_bars = int(conf_cfg.get("cross_fresh_bars", 10))
+        fresh_trend = trend_series[-cross_fresh_bars - 1:]
+
+        last_tsl_cross = None  # "UP" | "DOWN" | None
+        for i in range(len(fresh_trend) - 1):
+            if fresh_trend[i] == -1 and fresh_trend[i + 1] == 1:
+                last_tsl_cross = "UP"
+            elif fresh_trend[i] == 1 and fresh_trend[i + 1] == -1:
+                last_tsl_cross = "DOWN"
+
+        last_wt_cross = None  # "UP" | "DOWN" | None
+        if "wt2" in window.columns:
+            wt1_arr = window["wt1"].values
+            wt2_arr = window["wt2"].values
+            fresh_wt1 = wt1_arr[-cross_fresh_bars - 1:]
+            fresh_wt2 = wt2_arr[-cross_fresh_bars - 1:]
+            for i in range(len(fresh_wt1) - 1):
+                if fresh_wt1[i] <= fresh_wt2[i] and fresh_wt1[i + 1] > fresh_wt2[i + 1]:
+                    last_wt_cross = "UP"
+                elif fresh_wt1[i] >= fresh_wt2[i] and fresh_wt1[i + 1] < fresh_wt2[i + 1]:
+                    last_wt_cross = "DOWN"
+
         # ── LONG сетап ────────────────────────────────────────────────────
         score_long = 0
         factors_long: List[str] = []
@@ -130,26 +154,15 @@ def scan_confluence(
             factors_long.append("WT_OS")
             data_long["wt_min"] = round(wt_min, 1)
 
-        # 2L. TSL пересечение UP (-1 → 1)
-        tsl_cross_up = any(
-            trend_series[i] == -1 and trend_series[i + 1] == 1
-            for i in range(len(trend_series) - 1)
-        )
-        if tsl_cross_up:
+        # 2L. TSL последнее пересечение — UP
+        if last_tsl_cross == "UP":
             score_long += _SCORE_TSL_CROSS
             factors_long.append("TSL_CROSS_UP")
 
-        # 2bL. WT cross UP (wt1 пересёк wt2 снизу вверх) в закрытых барах
-        if "wt2" in window.columns:
-            wt1_arr = window["wt1"].values
-            wt2_arr = window["wt2"].values
-            wt_cross_up = any(
-                wt1_arr[i] <= wt2_arr[i] and wt1_arr[i + 1] > wt2_arr[i + 1]
-                for i in range(len(wt1_arr) - 1)
-            )
-            if wt_cross_up:
-                score_long += _SCORE_WT_CROSS
-                factors_long.append("WT_CROSS_UP")
+        # 2bL. WT последнее пересечение — UP
+        if last_wt_cross == "UP":
+            score_long += _SCORE_WT_CROSS
+            factors_long.append("WT_CROSS_UP")
 
         # 3L. Цена у поддержки (S1/S2/PP дневной или недельный)
         pivot_hit_l, pivot_desc_l = _check_near_support(
@@ -196,26 +209,15 @@ def scan_confluence(
             factors_short.append("WT_OB")
             data_short["wt_max"] = round(wt_max, 1)
 
-        # 2S. TSL пересечение DOWN (1 → -1)
-        tsl_cross_down = any(
-            trend_series[i] == 1 and trend_series[i + 1] == -1
-            for i in range(len(trend_series) - 1)
-        )
-        if tsl_cross_down:
+        # 2S. TSL последнее пересечение — DOWN
+        if last_tsl_cross == "DOWN":
             score_short += _SCORE_TSL_CROSS
             factors_short.append("TSL_CROSS_DOWN")
 
-        # 2bS. WT cross DOWN (wt1 пересёк wt2 сверху вниз) в закрытых барах
-        if "wt2" in window.columns:
-            wt1_arr = window["wt1"].values
-            wt2_arr = window["wt2"].values
-            wt_cross_down = any(
-                wt1_arr[i] >= wt2_arr[i] and wt1_arr[i + 1] < wt2_arr[i + 1]
-                for i in range(len(wt1_arr) - 1)
-            )
-            if wt_cross_down:
-                score_short += _SCORE_WT_CROSS
-                factors_short.append("WT_CROSS_DOWN")
+        # 2bS. WT последнее пересечение — DOWN
+        if last_wt_cross == "DOWN":
+            score_short += _SCORE_WT_CROSS
+            factors_short.append("WT_CROSS_DOWN")
 
         # 3S. Цена у сопротивления (R1/R2/PP дневной или недельный)
         pivot_hit_s, pivot_desc_s = _check_near_resistance(

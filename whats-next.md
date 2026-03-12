@@ -1,223 +1,266 @@
-<original_task>
-Продолжение разработки торгового бота Oko MTF (Telegram + BingX).
-Текущая сессия:
-1. Проверка открытых сделок в БД
-2. "Делай всё что нужно для совершенствования проекта" — свободный карт-бланш
-3. Настройка двух Claude-агентов для параллельной работы над проектом
-</original_task>
+# Whats-Next — Handoff Document
+> Создан: 13.03.2026 | Агент: Claude Sonnet 4.6 Developer
+> Сессия: Стратегии торговли STRAT-01 — STRAT-04
 
-<work_completed>
+---
 
-## Фиксы и улучшения (коммит `bddb51b`)
+## original_task
 
-### 1. conflict_ratio — баг-фикс (core/trading_intelligence.py, строки ~460-477)
-**Проблема:** Предыдущий порог 0.15 не исправлял проблему A3.
-70 LONG vs 60 SHORT → ratio = abs(70-60)/70 = 0.143 < 0.15 → по-прежнему NEUTRAL.
-Даже комментарий в коде описывал ПОЛОМАННОЕ поведение как норму.
+Реализация системы торговых стратегий в отдельном блоке (strategies/) чтобы:
+- Создавать новые стратегии как отдельные файлы
+- Удобно тестировать их на исторических данных через CLI
+- Легко переключаться между стратегиями через config.yaml
 
-**Исправление:** Порог снижен 0.15 → **0.05**:
-- ratio < 0.05 → NEUTRAL (почти равные стороны, например 70 vs 68)
-- 0.05 ≤ ratio < 0.30 → штраф confidence × (0.6 + ratio), direction сохраняется
-- ratio ≥ 0.30 → без штрафа
+Конкретные задачи из плана stateful-hatching-waterfall.md:
+- STRAT-01: ConfluenceScannerStrategy в strategies/built_in/
+- STRAT-02: Параметр strategy в BacktestConfig + подключение движка
+- STRAT-03: CLI runner run_backtest.py
+- STRAT-04: active_strategy в config.yaml + trading_intelligence
 
-Теперь: 70 vs 60 = ratio 0.143 → BUY с умеренным штрафом ✅
+---
 
-### 2. RPredictor MIN_SAMPLES (core/r_predictor.py, строка 19)
-**Изменение:** 100 → **75**
-**Причина:** В БД 84 закрытые сделки с max_R_possible > 0 (достаточно для обучения).
-При следующем запуске бота RPredictor автоматически обучится в `_ml_training_loop`.
+## work_completed — ВСЕ ЗАДАЧИ ВЫПОЛНЕНЫ
 
-### 3. Kelly sizing footer в TG-алертах (bot/monitoring.py)
-**Добавлено:**
-- Функция `_get_kelly_footer(bot)` — на уровне модуля перед `_broadcast_intelligence_alert`
-- Кеш 30 минут (`_kelly_stats_cache: dict = {}`) → один SQL-запрос на весь период
-- Читает из БД: total, wins (TP+TSL), avg_R
-- Вызывает `RPredictor.kelly_fraction(win_rate, avg_r)` → % депозита
-- Пустая строка если RPredictor не обучен или avg_r <= 0
+### STRAT-01: ConfluenceScannerStrategy
+**Файл:** [strategies/built_in/confluence_scanner_strategy.py](strategies/built_in/confluence_scanner_strategy.py) (новый, ~200 строк)
+- `@register_strategy("confluence_scanner")` декоратор
+- `analyze()` — ищет `SignalType.CONFLUENCE` с `strength >= min_strength`, выбирает лучший LONG/SHORT
+- `calculate_sl_tp()` — TSL-линия из `market_context.tsl_trendup/trenddown` + буфер `sl_buffer_pct%`, fallback `ATR×1.5`
+- Параметры: `min_strength=60, tp_rr=3.0, sl_buffer_pct=0.3, tsl_max_dist=3.0, tsl_min_dist=0.6`
 
-**Результат в TG-сообщении при is_actionable=True:**
+### STRAT-02: BacktestConfig + движок
+**Файл:** [backtesting_engine.py](backtesting_engine.py) строки 102-104:
+```python
+strategy: str = "default"
+strategy_config: dict = None
 ```
-─────────────
-💾 Сделка зарегистрирована в симуляторе
-📐 Kelly: 12.5% депозита (WR=42%, R̄=1.93)
-```
+- `_fetch_ohlcv_swap()` строки 147-153: retry на ошибку BingX 100410, max 3 retry, backoff 5/10/15 сек
+- `detect_signals()`: блок для `confluence_scanner` — подтягивает пивоты из `weekly_pivots`, создаёт `_conf_cache = {f"{symbol}_1D": flat_dict}`, вызывает `scan_confluence()`
 
-### 4. Настройка двух Claude-агентов
-
-#### Созданные/обновлённые файлы (НЕ закоммичены):
-- `.claude-config/agents.md` — обновлён: аккаунты (yogoru / oko.webdev), workflow, правила
-- `TASKS.md` — файл координации задач между агентами (Architect / Developer)
-- `launch-agent2.bat` — скрипт запуска второго агента без Docker
-
-#### `launch-agent2.bat` (корень проекта) — суть:
-```batch
-set USERPROFILE=C:\ClaudeAgents\agent2
-set HOME=C:\ClaudeAgents\agent2
-set APPDATA=C:\ClaudeAgents\agent2\AppData\Roaming
-cd /d "e:\MTF BOT\CURSOR\crypto_volume_bot"
-claude --dangerously-skip-permissions
-```
-При первом запуске нужно: `claude login` → oko.webdev@gmail.com
-
-## Ранее (предыдущие сессии)
-- `/settings` дашборд полный: `00b5ef1`, `80572c0`
-- Разделение порогов min_strength/min_strength_register: `ff407d4`
-- RPredictor в ML-петле: `7c7310e`
-- Pivot TP (Этап 6): `63209be`, `19d9814`
-- BTC-фильтр, еженедельный отчёт: `a69dfcd`
-
-</work_completed>
-
-<work_remaining>
-
-## Двойной агент — завершить настройку
-
-### Вариант A (если BIOS помог): Docker
-```cmd
-"C:\Program Files\Docker\Docker\resources\bin\docker.exe" compose build
-"C:\Program Files\Docker\Docker\resources\bin\docker.exe" compose up -d claude_architect claude_developer
-docker exec -it crypto_bot_architect bash → claude login (yogoru@gmail.com)
-docker exec -it crypto_bot_developer bash → claude login (oko.webdev@gmail.com)
-```
-
-### Вариант B (если Docker не заработал): launch-agent2.bat
-1. Запустить `launch-agent2.bat` в отдельном терминале
-2. При первом запуске: `claude login` → oko.webdev@gmail.com
-3. Проверить: `C:\ClaudeAgents\agent2\.claude.json` должен содержать oko.webdev email
-4. Обновить `.claude-config/agents.md` — указать выбранный вариант
-
-## Закоммитить новые файлы
-- `launch-agent2.bat` — новый файл
-- `TASKS.md` — новый файл
-- `.claude-config/agents.md` — обновлён
-
-## Этап 7 (Kelly) — ожидает запуска бота
-**Код уже готов.** Нужно запустить бот:
+### STRAT-03: CLI runner
+**Файл:** [run_backtest.py](run_backtest.py) (новый, ~215 строк)
 ```bash
-python bot_with_subscriptions.py
+python run_backtest.py --list-strategies
+python run_backtest.py --strategy confluence_scanner --symbol BTC/USDT --days 30
+python run_backtest.py --strategy default --symbol ETH/USDT --from 2026-01-01 --to 2026-03-01
 ```
-Через 5 мин после старта в логах должно появиться:
-`RPredictor обучен: 84 сделок, CV RMSE=X.XX`
-После этого в TG-алертах будет показываться 📐 Kelly: X.X% депозита
+- UTF-8 force на Windows (строки 3-7) — иначе emoji ломает cp1251
+- Нормализация символа: `args.symbol.upper().replace(" ", "")`
+- `finally: await engine._swap_exchange.close()` — закрытие всегда
+- Вывод: Win Rate, Avg R, Profit Factor, Sharpe, Max DD, Total Return + разбивка по типам сигналов
 
-Проверить готовность:
-```sql
-SELECT COUNT(*) FROM simulated_trades WHERE status != 'OPEN' AND max_R_possible > 0
--- Нужно ≥ 75. Сейчас = 84 ✅
+### STRAT-04: active_strategy в config + trading_intelligence
+**Файл:** [config.yaml](config.yaml) — добавлен блок:
+```yaml
+trading:
+  active_strategy: confluence_scanner
+  strategies:
+    confluence_scanner:
+      min_strength: 60
+      tp_rr: 3.0
+      sl_buffer_pct: 0.3
+      tsl_max_dist: 3.0
+      tsl_min_dist: 0.6
+    confluence:
+      min_signals: 2
+      conflict_threshold: 0.3
+    conservative:
+      min_signals: 3
+      min_confidence: 0.65
 ```
 
-## Этап 8 — Рефакторинг монолитов (задачи в TASKS.md)
+**Файл:** [core/trading_intelligence.py](core/trading_intelligence.py) — чтение стратегии из нового пути:
+```python
+strategy_name = (config.get("trading.active_strategy") or config.get("strategy.name") or "confluence")
+strategy_config = config.get(f"trading.strategies.{strategy_name}") or {}
+```
 
-### [ARCH-01] bot_with_subscriptions.py (1540+ строк)
-Разбить на:
-- `bot/core/bot.py` — класс OkoBot
-- `bot/loops/scan_loop.py` — scan_all_pairs, scan_one
-- `bot/loops/ml_loop.py` — _ml_training_loop
-- `bot/loops/trade_tracker.py` — check_open_trades loop
+### Сопутствующие изменения
 
-### [ARCH-02] trading_intelligence.py (1850+ строк)
-Разбить на:
-- `core/intelligence/signal_aggregator.py` — _analyze_signals_advanced
-- `core/intelligence/confidence_calculator.py` — _calculate_advanced_confidence
-- `core/intelligence/recommendation_generator.py` — _generate_recommendation
-- `core/intelligence/ml_enhancer.py` — _enhance_analysis_with_ml
+**[strategies/registry.py](strategies/registry.py)** — добавлен импорт ConfluenceScannerStrategy, MTFBiasStrategy в try/except
 
-## Этап 9 — SMC (задача [DEV-01] в TASKS.md)
-- `core/structure_detector.py` — Swing High/Low, CHoCH/BOS
-- Order Block finder + Fibonacci 0.618 entry
-- signal_type = "smc_signal", вес ~0.25
+**[core/confluence_scanner.py](core/confluence_scanner.py)** — крупное обновление:
+- Добавлен SHORT сетап (симметричный LONG)
+- `_SCORE_WT_CROSS = 15` — фактор WT crossover (wt1/wt2)
+- `last_tsl_cross` и `last_wt_cross` — поиск ПОСЛЕДНЕГО пересечения в `cross_fresh_bars=10` барах (не any() по всему lookback)
+- `WT_CROSS_UP` обязателен для LONG, `WT_CROSS_DOWN` — для SHORT (без него сигнал не выдаётся)
+- `window = df.iloc[-lookback_bars - 1:-1]` — исключает открытую свечу (lookahead bias fix)
+- `confluence_message()` — TF метка `⏱ {tf}`, иконка направления
+- `_check_near_resistance()` для SHORT (проверяет R1/R2/PP)
+- `_check_bearish_divergence_wt()` — price HH, wt1 LH
 
-## Оптимизация сигнальной цепочки (план serialized-floating-graham.md — пока НЕ реализован)
-- A1: Dedup ключ (symbol, signal_type) вместо symbol
-- B1: Дивергенции раз в 3 цикла вместо каждые 60 сек
-- B3: WT strength адаптивный по глубине зоны (сейчас всегда 70)
-- 3.1: pre_collected_signals в analyze_symbol (устранить дублирование API)
+**[core/signal_models.py](core/signal_models.py)** — добавлен `MTF_BIAS = "mtf_bias"` в `SignalType` enum
 
-</work_remaining>
+### Верификация
+- `python run_backtest.py --list-strategies` — 4 стратегии: confluence, confluence_scanner, conservative, mtf_bias
+- `python run_backtest.py --strategy confluence_scanner --symbol GRT/USDT --days 60` — успешно завершился
+- Rate limit retry 100410 работает
 
-<attempted_approaches>
+---
 
-## Docker Desktop — не запустился
-**Ошибка:** "Virtualization support not detected" + "Engine stopped"
-**Причина:** Виртуализация (Intel VT-x / AMD-V) отключена в BIOS.
-**Статус:** Пользователь пробует включить в BIOS.
-Если не получится → использовать `launch-agent2.bat`.
+## work_remaining
 
-## conflict_ratio — исходная реализация с порогом 0.15
-Предыдущая сессия снизила порог с 0.30 до 0.15 — казалось фиксом.
-Проблема: 70 vs 60 = ratio 0.143 < 0.15 → ВСЁ ЕЩЁ NEUTRAL.
-Комментарий в коде буквально описывал это как "70 vs 60 = 0.14 → NEUTRAL" — ПОЛОМАННОЕ поведение.
-Исправлено в текущей сессии: 0.15 → 0.05.
+### 1. Закоммитить изменения (ВЫСОКИЙ ПРИОРИТЕТ)
+Большой объём незакоммиченных изменений — риск потери.
 
-## plan mode "File has not been read yet"
-При Write в план-файл без предварительного Read → ошибка.
-Обход: Read(limit=5) перед Write.
+Файлы для коммита:
+```
+strategies/built_in/confluence_scanner_strategy.py  (НОВЫЙ)
+run_backtest.py                                      (НОВЫЙ)
+backtesting_engine.py                               (strategy поля + rate limit retry)
+strategies/registry.py                              (импорт ConfluenceScannerStrategy)
+core/confluence_scanner.py                          (SHORT + WT_CROSS + anti-lookahead)
+core/signal_models.py                               (MTF_BIAS enum)
+core/trading_intelligence.py                        (active_strategy config path)
+config.yaml                                         (active_strategy + strategies block)
+```
 
-</attempted_approaches>
+### 2. Мониторинг WR+EV через 1-2 недели
+После накопления данных проверить avg_R confluence сделок:
+```bash
+python -c "
+from core.performance_engine import PerformanceEngine
+pe = PerformanceEngine('subscriptions.db')
+for r in pe.by_signal_type(): print(r)
+"
+```
 
-<critical_context>
+### 3. Этап 8.4.3: hard/soft timeouts разделение
+Разделить `timeout=10.0` в `_collect_all_signals` на hard (API) и soft (вычисления).
 
-## База данных
-- `subscriptions.db` — SQLite, 303 сделки
-- Статусы: OPEN=20, SL=157, TP=96, TSL=22, EXPIRED=4
-- `max_R_possible` заполнен для **84** закрытых сделок (с 05.03.2026)
-- **RPredictor порог снижен до 75** → активируется при следующем запуске бота автоматически
+### 4. Этап 8.4.7: decision trace dashboard
+Показывать в дашборде "почему" для каждой сделки.
 
-## Аккаунты агентов
-- Agent 1 (Architect): **yogoru@gmail.com** — текущий, VSCode
-- Agent 2 (Developer): **oko.webdev@gmail.com** — второй аккаунт
+### 5. Каскадные дивергенции 1D+4h
+Добавить в `monitor_market()` цикл раз в 6 часов.
+Метод `detect_cascade_divergence()` уже готов в `divergence_detector.py`.
 
-## Claude Code конфиг на Windows (ключевое!)
-Хранится в ДВУХ местах (оба зависят от USERPROFILE):
-- `%USERPROFILE%\.claude\` — credentials.json, settings
-- `%USERPROFILE%\.claude.json` — oauthAccount, userID (ГЛАВНЫЙ)
-Переопределения только CLAUDE_CONFIG_DIR недостаточно — нужен полный USERPROFILE.
+### 6. Этап 9: core/structure_detector.py
+Swing H/L, CHoCH/BOS (Break of Structure) для Smart Money Concepts.
 
-## Docker PATH на Windows
-Не в системном PATH. Полный путь:
-`"C:\Program Files\Docker\Docker\resources\bin\docker.exe"`
+---
 
-## Python для бота
-Только Python 3.12 имеет aiogram:
-`C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe`
-В bash достаточно просто `python`.
+## attempted_approaches — Ошибки и решения
 
-## Координация агентов
-`TASKS.md` в корне проекта — задачи ARCH-* (Architect) и DEV-* (Developer).
-Правило: не редактировать один файл одновременно.
+### BingX rate limit 100410
+- Проблема: При загрузке >60 дней данных 1h — код 100410 "endpoint trigger frequency limit"
+- Решение: Retry loop в `_fetch_ohlcv_swap()` — max 3 попытки, backoff 5/10/15 сек
+- Ограничение: 60 дней на 1h норм, 80-120 дней иногда вызывает
 
-## Важные паттерны
-- Всегда `open(file, encoding='utf-8')` — Windows cp1251 ломает utf-8
-- TSL читает config каждый раз → hot-reload корректен
-- После save_* методов config_loader.reload() вызывается автоматически
+### Lowercase символ
+- Проблема: `btc/USDT` → "bingx does not have market symbol btc/USDT:USDT"
+- Решение: `symbol = args.symbol.upper().replace(" ", "")` в run_backtest.py
 
-</critical_context>
+### Unclosed client session
+- Проблема: После ошибки — asyncio WARNING об unclosed aiohttp session
+- Решение: `finally: await engine._swap_exchange.close()`
 
-<current_state>
+### Windows encoding UnicodeEncodeError
+- Проблема: "charmap codec can't encode emoji" при stdout cp1251
+- Решение: Force UTF-8 redirect строки 3-7 run_backtest.py
 
-## Статус этапов
-| Этап | Статус | Коммит |
-|------|--------|--------|
-| 1-4 | ✅ Готово | — |
-| 5.1-5.3 | ✅ Готово | `265289f`, `a69dfcd` |
-| 6 (pivot TP) | ✅ Готово | `63209be`, `19d9814` |
-| 7 (RPredictor обучение) | ✅ Код готов | `7c7310e` |
-| 7 (Kelly sizing footer) | ✅ Реализован | `bddb51b` |
-| conflict_ratio фикс | ✅ Исправлен (0.05) | `bddb51b` |
-| /settings полный | ✅ Готово | `00b5ef1`, `80572c0` |
-| Двойной агент Docker | ⏳ BIOS настройка | — |
-| Двойной агент bat | ✅ launch-agent2.bat готов | не закоммичен |
-| 8 (масштаб) | 🔜 Следующий этап | TASKS.md: ARCH-01, ARCH-02 |
-| 9 (SMC) | 🔜 После Этапа 8 | TASKS.md: DEV-01 |
+### Duplicate LONG+SHORT confluence сигналы
+- Проблема: `any()` по всему lookback → LONG и SHORT одновременно
+- Решение: Поиск ПОСЛЕДНЕГО кросса — `last_tsl_cross`, `last_wt_cross` — взаимоисключают
 
-## Git
-- Ветка: `main`, последний коммит: `bddb51b`
-- Незакоммиченные новые файлы: `launch-agent2.bat`, `TASKS.md`, `.claude-config/agents.md`
+### WT_OS слишком старый в lookback
+- Проблема: WT был в OS 7-9 часов назад, сейчас уже в OB — фактор засчитывался
+- Решение: Проверка `wt_current < wt_ob_thr` для LONG
 
-## Следующие действия по порядку
-1. Дождаться результата BIOS → запустить Docker (A) или использовать bat (B)
-2. Закоммитить новые файлы агентов
-3. Запустить бот → проверить Kelly footer в TG-алертах
-4. Начать Этап 8: рефакторинг bot_with_subscriptions.py
+### Confluence → action=WATCH вместо BUY/SELL
+- Проблема: `signal_count_factor = min(1/5.0, 1.5) = 0.2` → `confidence = 0.17 < 0.55`
+- Решение: В `_calculate_advanced_confidence` CONFLUENCE с N факторами считается как N сигналов:
+  `effective_count += n_factors - 1` для каждого CONFLUENCE сигнала
 
-</current_state>
+---
+
+## critical_context
+
+### Python
+- Python 3.12 строго: `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe`
+- `.venv` и Python 3.13 не имеют aiogram — не использовать
+
+### BingX API
+- `enableRateLimit: False` в ccxt живого бота — намеренно, управление через `Semaphore(20)` в ApiEngine
+- Backtesting engine: отдельный ccxt с `enableRateLimit: True` (нет Semaphore)
+- Rate limit 100410 — временный бан endpoint, не глобальный
+
+### Confluence OB/OS пороги
+- WT OS зона: `< -60` (параметр `wt_os_threshold`, дефолт -60)
+- WT OB зона: `_DEFAULT_WT_OB = 53` в confluence_scanner.py (НЕ 60!)
+- Смысл: "текущий WT не выше +53" для проверки свежести LONG сигнала OS
+
+### Обязательные условия для сигналов confluence_scanner
+- LONG: требует `WT_CROSS_UP` в последних `cross_fresh_bars=10` барах (2.5 часа на 15m)
+- SHORT: требует `WT_CROSS_DOWN` в последних `cross_fresh_bars=10` барах
+- Без свежего WT кросса сигнал НЕ выдаётся даже при score >= min_strength
+
+### Что НЕ переносить в strategies/
+- `core/` = чистые алгоритмы (индикаторы, детекторы) — не трогать
+- `strategies/` = только классы решений (входить/не входить, SL/TP)
+- `ConfluenceScannerStrategy` — обёртка над готовыми `SignalType.CONFLUENCE` от `scan_confluence()`
+
+### Дивергенции — ЗАПРЕТ
+- НЕ должны попадать в `all_scan_signals` / `pre_signals`
+- Создают `conflict_ratio` → `action=WATCH` → 0 сделок
+
+### Пивоты в backtesting движке
+- Хранятся как `{week_start_ms: {PP, R1, S1...}}`
+- Для confluence_scanner нужна flat-конвертация: `_conf_cache = {f"{symbol}_1D": flat_dict}`
+
+---
+
+## current_state
+
+### Статус deliverables
+
+| Deliverable | Статус | Файл |
+|---|---|---|
+| ConfluenceScannerStrategy | ГОТОВ | strategies/built_in/confluence_scanner_strategy.py |
+| BacktestConfig.strategy | ГОТОВ | backtesting_engine.py:102-104 |
+| Rate limit 100410 retry | ГОТОВ | backtesting_engine.py:147-153 |
+| CLI runner run_backtest.py | ГОТОВ | run_backtest.py |
+| active_strategy config.yaml | ГОТОВ | config.yaml |
+| trading_intelligence стратегия | ГОТОВ | core/trading_intelligence.py |
+| Confluence SHORT сетап | ГОТОВ | core/confluence_scanner.py |
+| WT_CROSS обязательный | ГОТОВ | core/confluence_scanner.py |
+| TF в TG-сообщениях | ГОТОВ | core/confluence_scanner.py |
+| Git commit | НЕ СДЕЛАН | — |
+
+### Что работает
+- `python run_backtest.py --list-strategies` — 4 стратегии
+- `python run_backtest.py --strategy confluence_scanner --symbol GRT/USDT --days 60` — успешно
+- Живой бот использует `active_strategy: confluence_scanner` из config.yaml
+- Confluence генерирует LONG и SHORT сигналы симметрично
+
+### Что под вопросом
+- Незакоммиченные изменения — риск потери при аварии
+- `trading_intelligence.py` с новым путём `trading.active_strategy` не верифицирован в живом боте
+- 6 открытых сделок в БД со strength 31-32 (ниже порога 40)
+
+### Команды для быстрой проверки
+```bash
+cd "e:/MTF BOT/CURSOR/crypto_volume_bot"
+
+# Стратегии
+python run_backtest.py --list-strategies
+
+# Бэктест 30 дней
+python run_backtest.py --strategy confluence_scanner --symbol BTC/USDT --days 30
+
+# Git статус
+git status && git log --oneline -5
+
+# Статистика из БД
+python -c "
+from core.performance_engine import PerformanceEngine
+pe = PerformanceEngine('subscriptions.db')
+print(pe.summary())
+for r in pe.by_signal_type(): print(r)
+"
+```
+
+### Где мы сейчас
+План **stateful-hatching-waterfall.md** полностью выполнен (STRAT-01 — STRAT-04).
+Следующий обязательный шаг: **git commit** всех незакоммиченных изменений.
+После: мониторинг результатов `confluence_scanner` в production через 1-2 недели.

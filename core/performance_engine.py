@@ -27,7 +27,11 @@ class PerformanceEngine:
     # Сводная статистика
     # ------------------------------------------------------------------
     def summary(self) -> Dict[str, Any]:
-        """Общая сводка: всего сделок, win-rate, avg R, avg profit_pct."""
+        """Общая сводка: всего сделок, win-rate, avg R, avg profit_pct.
+
+        Win Rate: TP + TSL считаются победами (TSL активируется после +1R, R всегда > 0).
+        avg_r_loss: только SL (TSL — не потеря).
+        """
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
@@ -41,17 +45,40 @@ class PerformanceEngine:
                         SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired_count,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r,
-                        AVG(CASE WHEN status='TP' THEN R_multiple END) AS avg_r_win,
-                        AVG(CASE WHEN status IN ('SL','TSL') THEN R_multiple END) AS avg_r_loss
+                        AVG(CASE WHEN status IN ('TP','TSL') THEN R_multiple END) AS avg_r_win,
+                        AVG(CASE WHEN status='SL' THEN R_multiple END) AS avg_r_loss,
+                        AVG(CASE WHEN status='TSL' THEN R_multiple END) AS avg_r_tsl,
+                        MIN(created_at) AS first_trade_at,
+                        MAX(created_at) AS last_trade_at
                     FROM simulated_trades
                 """)
                 row = dict(cur.fetchone())
-                closed = (row["tp_count"] or 0) + (row["sl_count"] or 0) + (row["tsl_count"] or 0)
-                row["win_rate"] = round(row["tp_count"] / closed * 100, 1) if closed else None
+                tp = row["tp_count"] or 0
+                sl = row["sl_count"] or 0
+                tsl = row["tsl_count"] or 0
+                closed = tp + sl + tsl
+                # TSL = Win (активируется только после +1R)
+                row["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
+                row["win_rate_tp_only"] = round(tp / closed * 100, 1) if closed else None
                 row["closed_count"] = closed
-                for k in ("avg_profit_pct", "avg_r", "avg_r_win", "avg_r_loss"):
+                for k in ("avg_profit_pct", "avg_r", "avg_r_win", "avg_r_loss", "avg_r_tsl"):
                     if row[k] is not None:
                         row[k] = round(row[k], 3)
+                # Активных дней и сделок в день (по закрытым)
+                try:
+                    from datetime import datetime as _dt
+                    if row.get("first_trade_at") and row.get("last_trade_at"):
+                        t0 = _dt.fromisoformat(row["first_trade_at"])
+                        t1 = _dt.fromisoformat(row["last_trade_at"])
+                        days = max((t1 - t0).days, 1)
+                        row["days_active"] = days
+                        row["closed_per_day"] = round(closed / days, 1) if closed else 0
+                    else:
+                        row["days_active"] = None
+                        row["closed_per_day"] = None
+                except Exception:
+                    row["days_active"] = None
+                    row["closed_per_day"] = None
                 return row
         except Exception as e:
             logger.exception("PerformanceEngine.summary: %s", e)
@@ -68,10 +95,11 @@ class PerformanceEngine:
                     SELECT
                         signal_type,
                         COUNT(*) AS total,
-                        SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) AS wins,
-                        SUM(CASE WHEN status='SL' THEN 1 ELSE 0 END) AS losses,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN R_multiple END) AS avg_r
+                        SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) AS tp_count,
+                        SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
+                        SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
                     FROM simulated_trades
                     GROUP BY signal_type
                     ORDER BY total DESC
@@ -80,8 +108,13 @@ class PerformanceEngine:
                 result = []
                 for r in rows:
                     d = dict(r)
-                    closed = (d["wins"] or 0) + (d["losses"] or 0)
-                    d["win_rate"] = round(d["wins"] / closed * 100, 1) if closed else None
+                    tp = d["tp_count"] or 0
+                    tsl = d["tsl_count"] or 0
+                    sl = d["sl_count"] or 0
+                    closed = tp + tsl + sl
+                    d["wins"] = tp + tsl
+                    d["losses"] = sl
+                    d["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
                     if d["avg_profit_pct"] is not None:
                         d["avg_profit_pct"] = round(d["avg_profit_pct"], 3)
                     if d["avg_r"] is not None:
@@ -103,10 +136,11 @@ class PerformanceEngine:
                     SELECT
                         direction,
                         COUNT(*) AS total,
-                        SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) AS wins,
-                        SUM(CASE WHEN status='SL' THEN 1 ELSE 0 END) AS losses,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN R_multiple END) AS avg_r
+                        SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) AS tp_count,
+                        SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
+                        SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
                     FROM simulated_trades
                     GROUP BY direction
                 """)
@@ -114,8 +148,13 @@ class PerformanceEngine:
                 result = []
                 for r in rows:
                     d = dict(r)
-                    closed = (d["wins"] or 0) + (d["losses"] or 0)
-                    d["win_rate"] = round(d["wins"] / closed * 100, 1) if closed else None
+                    tp = d["tp_count"] or 0
+                    tsl = d["tsl_count"] or 0
+                    sl = d["sl_count"] or 0
+                    closed = tp + tsl + sl
+                    d["wins"] = tp + tsl
+                    d["losses"] = sl
+                    d["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
                     if d["avg_profit_pct"] is not None:
                         d["avg_profit_pct"] = round(d["avg_profit_pct"], 3)
                     if d["avg_r"] is not None:
@@ -137,10 +176,11 @@ class PerformanceEngine:
                     SELECT
                         COALESCE(regime, 'unknown') AS regime,
                         COUNT(*) AS total,
-                        SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) AS wins,
-                        SUM(CASE WHEN status='SL' THEN 1 ELSE 0 END) AS losses,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
-                        AVG(CASE WHEN status IN ('TP','SL','EXPIRED') THEN R_multiple END) AS avg_r
+                        SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) AS tp_count,
+                        SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
+                        SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
                     FROM simulated_trades
                     GROUP BY regime
                     ORDER BY total DESC
@@ -149,8 +189,13 @@ class PerformanceEngine:
                 result = []
                 for r in rows:
                     d = dict(r)
-                    closed = (d["wins"] or 0) + (d["losses"] or 0)
-                    d["win_rate"] = round(d["wins"] / closed * 100, 1) if closed else None
+                    tp = d["tp_count"] or 0
+                    tsl = d["tsl_count"] or 0
+                    sl = d["sl_count"] or 0
+                    closed = tp + tsl + sl
+                    d["wins"] = tp + tsl
+                    d["losses"] = sl
+                    d["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
                     if d["avg_profit_pct"] is not None:
                         d["avg_profit_pct"] = round(d["avg_profit_pct"], 3)
                     if d["avg_r"] is not None:
@@ -171,7 +216,9 @@ class PerformanceEngine:
                 cur.execute("""
                     SELECT id, symbol, direction, signal_type, regime,
                            entry_price, exit_price, profit_pct, R_multiple,
-                           status, created_at, closed_at, duration_minutes
+                           status, created_at, closed_at, duration_minutes,
+                           max_R_possible, captured_R_pct,
+                           sl_source, tp_source
                     FROM simulated_trades
                     WHERE status != 'OPEN'
                     ORDER BY closed_at DESC
@@ -192,7 +239,11 @@ class PerformanceEngine:
                 cur.execute("""
                     SELECT id, symbol, direction, signal_type, regime,
                            entry_price, stop_loss, take_profit,
-                           strength, confidence, created_at
+                           strength, confidence, created_at,
+                           tsl_activated,
+                           tp1_price, tp1_hit_at,
+                           tp2_price, tp2_hit_at,
+                           tp3_price, tp3_hit_at
                     FROM simulated_trades
                     WHERE status = 'OPEN'
                     ORDER BY created_at DESC
@@ -227,7 +278,10 @@ class PerformanceEngine:
     # Статистика за период (для еженедельного отчёта)
     # ------------------------------------------------------------------
     def weekly_summary(self, days_back: int = 7) -> Dict[str, Any]:
-        """Статистика за последние N дней."""
+        """Статистика за последние N дней.
+        Фикс: win_rate делится на closed (TP+TSL+SL), не на total (включал OPEN).
+        TSL = Win.
+        """
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
@@ -235,8 +289,9 @@ class PerformanceEngine:
                 row = cur.execute(f"""
                     SELECT
                         COUNT(*) as total,
-                        SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) as wins,
-                        SUM(CASE WHEN status='SL' THEN 1 ELSE 0 END) as losses,
+                        SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) as tp_count,
+                        SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) as tsl_count,
+                        SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) as sl_count,
                         AVG(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as avg_r,
                         MAX(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as best_r
                     FROM simulated_trades WHERE closed_at >= {cutoff}
@@ -244,20 +299,24 @@ class PerformanceEngine:
                 by_type = cur.execute(f"""
                     SELECT signal_type,
                            COUNT(*) as cnt,
-                           SUM(CASE WHEN status='TP' THEN 1 ELSE 0 END) as wins,
-                           AVG(R_multiple) as avg_r
+                           SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END) as wins,
+                           AVG(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as avg_r
                     FROM simulated_trades WHERE closed_at >= {cutoff}
                     GROUP BY signal_type ORDER BY avg_r DESC
                 """).fetchall()
-                total = row[0] or 0
-                wins = row[1] or 0
+                tp = row[1] or 0
+                tsl = row[2] or 0
+                sl = row[3] or 0
+                closed = tp + tsl + sl
                 return {
-                    "total": total,
-                    "wins": wins,
-                    "losses": row[2] or 0,
-                    "win_rate": round(wins / total * 100, 1) if total else 0,
-                    "avg_r": round(row[3] or 0, 2),
-                    "best_r": round(row[4] or 0, 2),
+                    "total": row[0] or 0,
+                    "wins": tp + tsl,
+                    "losses": sl,
+                    "tsl_count": tsl,
+                    "closed": closed,
+                    "win_rate": round((tp + tsl) / closed * 100, 1) if closed else 0,
+                    "avg_r": round(row[4] or 0, 2),
+                    "best_r": round(row[5] or 0, 2),
                     "by_signal_type": [
                         {"signal_type": r[0], "cnt": r[1], "wins": r[2], "avg_r": round(r[3] or 0, 2)}
                         for r in by_type
@@ -265,7 +324,7 @@ class PerformanceEngine:
                 }
         except Exception as e:
             logger.exception("PerformanceEngine.weekly_summary: %s", e)
-            return {"total": 0, "wins": 0, "losses": 0, "win_rate": 0, "avg_r": 0, "best_r": 0, "by_signal_type": []}
+            return {"total": 0, "wins": 0, "losses": 0, "tsl_count": 0, "closed": 0, "win_rate": 0, "avg_r": 0, "best_r": 0, "by_signal_type": []}
 
     # ------------------------------------------------------------------
     # Всё одним вызовом (для /api/stats)

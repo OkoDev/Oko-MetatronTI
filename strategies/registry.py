@@ -80,8 +80,12 @@ def _load_built_in_strategies():
     
     try:
         from strategies.built_in.confluence import ConfluenceStrategy
-        from strategies.built_in.mtf_bias import MTFBiasStrategy
+        from strategies.built_in.confluence_scanner_strategy import ConfluenceScannerStrategy
         from strategies.built_in.conservative import ConservativeStrategy
+        try:
+            from strategies.built_in.mtf_bias import MTFBiasStrategy
+        except Exception:
+            pass
         _strategies_loaded = True
         logger.debug(f"Loaded built-in strategies: {list_strategies()}")
     except ImportError as e:

@@ -58,12 +58,21 @@ _HTML = """<!DOCTYPE html>
   tr:hover td { background: #1c2128; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 20px;
            font-size: .75rem; font-weight: 600; }
-  .badge-tp { background: #1a3a1f; color: #3fb950; }
-  .badge-sl { background: #3a1a1a; color: #f85149; }
+  .badge-tp  { background: #1a3a1f; color: #3fb950; }
+  .badge-sl  { background: #3a1a1a; color: #f85149; }
+  .badge-tsl { background: #2a1a3a; color: #b87eff; }
   .badge-exp { background: #2d2a1a; color: #d29922; }
-  .badge-open { background: #1a2a3a; color: #58a6ff; }
+  .badge-open{ background: #1a2a3a; color: #58a6ff; }
+  .purple { color: #b87eff; }
   #loader { text-align: center; padding: 60px; color: #8b949e; font-size: 1.1rem; }
   .note { color: #8b949e; font-size: .85rem; font-style: italic; padding: 12px 0; }
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
+  .filter-bar select, .filter-bar input { background: #161b22; border: 1px solid #30363d;
+    color: #c9d1d9; border-radius: 6px; padding: 4px 8px; font-size: .8rem; cursor: pointer; }
+  .filter-bar label { font-size: .8rem; color: #8b949e; }
+  .filter-bar button { background: #21262d; border: 1px solid #30363d; color: #8b949e;
+    border-radius: 6px; padding: 4px 10px; font-size: .8rem; cursor: pointer; }
+  .filter-bar button:hover { color: #c9d1d9; border-color: #8b949e; }
 </style>
 </head>
 <body>
@@ -81,7 +90,7 @@ _HTML = """<!DOCTYPE html>
 const fmt = (v, dec=2) => v == null ? '—' : (+v).toFixed(dec);
 const fmtPct = v => v == null ? '—' : (v > 0 ? '+' : '') + fmt(v, 2) + '%';
 const badge = s => {
-  const map = {TP:'badge-tp',SL:'badge-sl',EXPIRED:'badge-exp',OPEN:'badge-open'};
+  const map = {TP:'badge-tp', SL:'badge-sl', TSL:'badge-tsl', EXPIRED:'badge-exp', OPEN:'badge-open'};
   return `<span class="badge ${map[s]||''}">${s}</span>`;
 };
 const color = (v, inv=false) => {
@@ -104,28 +113,148 @@ async function load() {
 
 function render(d) {
   const s = d.summary || {};
+
+  // --- EV и Profit Factor ---
+  const wr = (s.win_rate ?? 0) / 100;
+  const rWin  = s.avg_r_win  ?? 0;
+  const rLoss = s.avg_r_loss ?? 0;   // отрицательное число (напр. -0.80)
+  const ev = wr * rWin + (1 - wr) * rLoss;
+  const evRound = Math.round(ev * 100) / 100;
+  const pfDenom = (1 - wr) * Math.abs(rLoss);
+  const pf = pfDenom > 0 ? Math.round(wr * rWin / pfDenom * 100) / 100 : null;
+
+  // --- Прогноз депозита (с реинвестированием) ---
+  const cpdAll = s.closed_per_day ?? 0; // все сигналы бота (79+)
+
+  // Макс. ожидаемая серия проигрышей: log(N) / log(1/lossRate)
+  function maxLoseStreak(n, wr) {
+    const lossRate = 1 - wr;
+    if (lossRate <= 0) return 0;
+    return Math.round(Math.log(n) / Math.log(1 / lossRate));
+  }
+  function maxDD(streak, riskPct) {
+    return Math.round((1 - Math.pow(1 - riskPct / 100, streak)) * 1000) / 10;
+  }
+
+  const projRow = ev > 0 ? `
+    <div class="card" style="min-width:380px;flex:2;border-color:#3fb95044" id="projCard">
+      <div class="label" style="font-size:.85rem;color:#c9d1d9;font-weight:600">
+        &#x1F4B0; Калькулятор роста депозита (compound)
+        <span style="color:#555;font-size:.7rem"> EV = ${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R/сделку</span>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:8px 0 10px;flex-wrap:wrap">
+        <div><div class="label">Депозит $</div>
+          <input id="projDeposit" type="number" value="100" min="10" max="1000000"
+            style="width:90px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-size:.9rem"
+            oninput="updateProj()"></div>
+        <div><div class="label">Риск %/сделку</div>
+          <input id="projRisk" type="number" value="1" min="0.05" max="10" step="0.05"
+            style="width:70px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-size:.9rem"
+            oninput="updateProj()"></div>
+        <div><div class="label">Режим</div>
+          <select id="projMode" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-size:.85rem" onchange="updateProj()">
+            <option value="manual3">Ручной · 3/день</option>
+            <option value="manual5">Ручной · 5/день</option>
+            <option value="manual10">Ручной · 10/день</option>
+            <option value="auto" ${cpdAll > 0 ? '' : 'disabled'}>Авторежим · все (${cpdAll}/день)</option>
+          </select></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:4px">
+        <div style="text-align:center">
+          <div class="label">Рост за 30 дней</div>
+          <div class="value green" style="font-size:1.6rem" id="projPct">...</div>
+          <div class="label" id="projFin">...</div>
+        </div>
+        <div style="text-align:center">
+          <div class="label">Макс. серия SL</div>
+          <div class="value yellow" style="font-size:1.6rem" id="projStreak">...</div>
+          <div class="label">подряд убыточных</div>
+        </div>
+        <div style="text-align:center">
+          <div class="label">Макс. просадка</div>
+          <div class="value red" style="font-size:1.6rem" id="projDD">...</div>
+          <div class="label">при серии SL</div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;font-size:.75rem;color:#555;border-top:1px solid #21262d;padding-top:6px">
+        ⚠️ Compound-прогноз на основе симуляции. WR 33% при 2370 сделок → до 19 SL подряд статистически.
+        Авторежим берёт <b>все</b> сигналы бота — нужен малый риск (0.1-0.3%) чтобы выдержать просадку.
+      </div>
+    </div>` : '';
+
+  window._ev = ev;
+  window._wr = wr;
+  window._cpdAll = cpdAll;
+  window.maxLoseStreak = maxLoseStreak;
+  window.maxDD = maxDD;
+  window.updateProj = function() {
+    const dep  = parseFloat(document.getElementById('projDeposit')?.value || 100);
+    const risk = parseFloat(document.getElementById('projRisk')?.value || 1);
+    const mode = document.getElementById('projMode')?.value || 'manual3';
+    const ev_  = window._ev;
+    const wr_  = window._wr;
+    const tpdMap = { manual3: 3, manual5: 5, manual10: 10, auto: window._cpdAll || 10 };
+    const tpd = tpdMap[mode] || 3;
+    const n = tpd * 30;
+
+    if (ev_ <= 0) {
+      document.getElementById('projPct').textContent = '—';
+      document.getElementById('projFin').textContent = '—';
+      return;
+    }
+
+    const finalDep = dep * Math.pow(1 + (risk / 100) * ev_, n);
+    const gain = finalDep - dep;
+    const pct = Math.round(gain / dep * 1000) / 10;
+    document.getElementById('projPct').textContent = (gain > 0 ? '+' : '') + pct + '%';
+    document.getElementById('projFin').textContent = '$' + Math.round(finalDep);
+
+    // Просадка
+    const streak = maxLoseStreak(n, wr_);
+    const dd = maxDD(streak, risk);
+    document.getElementById('projStreak').textContent = streak;
+    document.getElementById('projDD').textContent = '-' + dd + '%';
+
+    // Цвет просадки
+    const ddEl = document.getElementById('projDD');
+    if (ddEl) ddEl.className = 'value ' + (dd > 30 ? 'red' : dd > 15 ? 'yellow' : 'green') + ' ';
+    ddEl.style.fontSize = '1.6rem';
+    const pctEl = document.getElementById('projPct');
+    if (pctEl) { pctEl.className = 'value green'; pctEl.style.fontSize = '1.6rem'; }
+  };
+
   const html = `
     <section>
       <h2>Сводка</h2>
       <div class="cards">
-        <div class="card"><div class="label">Всего сделок</div>
-          <div class="value blue">${s.total ?? '—'}</div></div>
-        <div class="card"><div class="label">Открытых</div>
-          <div class="value blue">${s.open_count ?? '—'}</div></div>
+        <div class="card"><div class="label">Всего / Открыто</div>
+          <div class="value blue">${s.total ?? '—'} <span style="font-size:1rem;color:#58a6ff88">/ ${s.open_count ?? 0}</span></div>
+          ${s.days_active ? `<div class="label" style="margin-top:4px">${s.days_active} дней · ${cpdAll} сделок/день</div>` : ''}</div>
         <div class="card"><div class="label">Win Rate</div>
-          <div class="value ${s.win_rate >= 50 ? 'green' : 'red'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</div></div>
-        <div class="card"><div class="label">TP / SL</div>
-          <div class="value"><span class="green">${s.tp_count ?? 0}</span> / <span class="red">${s.sl_count ?? 0}</span></div></div>
-        <div class="card"><div class="label">Avg Profit %</div>
-          <div class="value ${color(s.avg_profit_pct)}">${fmtPct(s.avg_profit_pct)}</div></div>
-        <div class="card"><div class="label">Avg R</div>
-          <div class="value ${color(s.avg_r)}">${fmt(s.avg_r, 2)}</div></div>
-        <div class="card"><div class="label">Avg R (wins)</div>
-          <div class="value green">${fmt(s.avg_r_win, 2)}</div></div>
-        <div class="card"><div class="label">Avg R (losses)</div>
-          <div class="value red">${fmt(s.avg_r_loss, 2)}</div></div>
-        <div class="card"><div class="label">Истекло</div>
-          <div class="value yellow">${s.expired_count ?? 0}</div></div>
+          <div class="value ${wr >= 0.5 ? 'green' : 'red'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</div>
+          <div class="label" style="margin-top:4px">
+            <span class="green">TP ${s.tp_count ?? 0}</span> ·
+            <span class="purple">TSL ${s.tsl_count ?? 0}</span> ·
+            <span class="red">SL ${s.sl_count ?? 0}</span>
+          </div></div>
+        <div class="card" style="border-color:${evRound > 0 ? '#3fb950' : '#f85149'}44">
+          <div class="label">EV / сделку <span style="color:#444;font-size:.7rem" title="Expected Value = WR×R_win + (1-WR)×R_loss">ожидаемый R</span></div>
+          <div class="value ${evRound > 0 ? 'green' : 'red'}">${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R</div>
+          <div class="label" style="margin-top:4px">${evRound > 0 ? '✅ Система прибыльна' : '❌ Система убыточна'}</div></div>
+        <div class="card"><div class="label">Profit Factor</div>
+          <div class="value ${pf >= 1.5 ? 'green' : pf >= 1 ? 'yellow' : 'red'}">${pf != null ? pf.toFixed(2) : '—'}</div>
+          <div class="label" style="margin-top:4px">${pf >= 1.5 ? '🔥 Отличный' : pf >= 1.2 ? '👍 Хороший' : pf >= 1 ? '⚡ Слабый' : '❌ < 1'}</div></div>
+        <div class="card"><div class="label">Avg R (Win ↑ / Loss ↓)</div>
+          <div class="value" style="font-size:1.2rem">
+            <span class="green">+${fmt(rWin,2)}</span>
+            <span style="color:#444;font-weight:400"> / </span>
+            <span class="red">${fmt(rLoss,2)}</span>
+          </div>
+          <div class="label" style="margin-top:4px">Avg Profit: <span class="${color(s.avg_profit_pct)}">${fmtPct(s.avg_profit_pct)}</span></div></div>
+        ${projRow}
       </div>
     </section>
 
@@ -150,25 +279,29 @@ function render(d) {
     </section>
 
     <section>
-      <h2>Последние закрытые сделки</h2>
+      <h2>Последние закрытые сделки (${(d.recent_closed||[]).length})</h2>
       ${recentTable(d.recent_closed)}
     </section>
   `;
   document.getElementById('app').innerHTML = html;
+  // Инициализировать прогноз после рендера DOM
+  setTimeout(() => { if (window.updateProj) window.updateProj(); }, 0);
 }
 
 function tableByGroup(rows, labelKey) {
   if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
   return `<table><thead><tr>
-    <th>${labelKey}</th><th>Всего</th><th>Win Rate</th><th>TP</th><th>SL</th>
+    <th>${labelKey}</th><th>Всего</th><th>Win Rate</th>
+    <th class="green">TP</th><th class="purple">TSL</th><th class="red">SL</th>
     <th>Avg Profit%</th><th>Avg R</th>
   </tr></thead><tbody>` +
   rows.map(r => `<tr>
     <td>${r[labelKey] || '—'}</td>
     <td>${r.total}</td>
     <td class="${r.win_rate >= 50 ? 'green' : 'red'}">${r.win_rate != null ? r.win_rate + '%' : '—'}</td>
-    <td class="green">${r.wins}</td>
-    <td class="red">${r.losses}</td>
+    <td class="green">${r.tp_count ?? r.wins ?? 0}</td>
+    <td class="purple">${r.tsl_count ?? 0}</td>
+    <td class="red">${r.sl_count ?? r.losses ?? 0}</td>
     <td class="${color(r.avg_profit_pct)}">${fmtPct(r.avg_profit_pct)}</td>
     <td class="${color(r.avg_r)}">${fmt(r.avg_r,2)}</td>
   </tr>`).join('') + '</tbody></table>';
@@ -189,12 +322,29 @@ function symLink(sym) {
   return `<a href="${tvUrl(sym)}" target="_blank" style="color:#58a6ff;text-decoration:none">${label}</a>`;
 }
 
+function tslBadge(activated) {
+  if (activated) return '<span class="badge badge-tsl" title="TSL активен — следит за трендом">TSL ✓</span>';
+  return '<span style="color:#444;font-size:.75rem" title="TSL ещё не активирован">—</span>';
+}
+
+function tp1Cell(tp1_price, tp1_hit_at, entry) {
+  if (!tp1_price) return '<span style="color:#444">—</span>';
+  const pct = entry ? ((tp1_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
+  const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
+  if (tp1_hit_at) {
+    const t = tp1_hit_at.substring(11,16);
+    return `<span class="green" title="TP1 достигнут в ${t}">✓${fmt(tp1_price,4)}</span>${pctStr}`;
+  }
+  return `<span style="color:#8b949e">${fmt(tp1_price,4)}</span>${pctStr}`;
+}
+
 function openTradesTable(rows) {
   if (!rows || !rows.length) return '<p class="note">Нет открытых позиций</p>';
   return `<table><thead><tr>
     <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th>
     <th>Вход</th><th>Сейчас</th><th>P&L%</th><th>R</th>
-    <th>SL</th><th>TP</th><th>Открыта</th><th>Закрыть</th>
+    <th>SL</th><th>TP (финал)</th><th>TP1</th><th>TSL</th>
+    <th>Открыта</th><th>Закрыть</th>
   </tr></thead><tbody>` +
   rows.map(r => {
     const pnl = r.unrealized_pct;
@@ -203,7 +353,9 @@ function openTradesTable(rows) {
     const rStr = r.unrealized_r != null ? (r.unrealized_r >= 0 ? '+' : '') + r.unrealized_r.toFixed(2) + 'R' : '—';
     const rClass = r.unrealized_r == null ? '' : r.unrealized_r >= 0 ? 'green' : 'red';
     const curStr = r.current_price != null ? fmt(r.current_price, 4) : '<span style="color:#666">—</span>';
-    return `<tr>
+    // Подсветить строку если TSL активен
+    const rowStyle = r.tsl_activated ? ' style="background:rgba(184,126,255,0.05)"' : '';
+    return `<tr${rowStyle}>
       <td>${r.id}</td>
       <td>${symLink(r.symbol)}</td>
       <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
@@ -214,6 +366,8 @@ function openTradesTable(rows) {
       <td class="${rClass}">${rStr}</td>
       <td class="red">${fmt(r.stop_loss,4)}</td>
       <td class="green">${fmt(r.take_profit,4)}</td>
+      <td>${tp1Cell(r.tp1_price, r.tp1_hit_at, r.entry_price)}</td>
+      <td>${tslBadge(r.tsl_activated)}</td>
       <td>${r.created_at ? r.created_at.substring(0,16) : '—'}</td>
       <td><button onclick="closeTrade(${r.id},this)" style="background:#b22222;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button></td>
     </tr>`;
@@ -237,23 +391,107 @@ async function closeTrade(id, btn) {
   } catch(e) { btn.textContent = 'Err'; btn.disabled = false; }
 }
 
+let _recentRows = [];
+
 function recentTable(rows) {
-  if (!rows || !rows.length) return '<p class="note">Нет закрытых сделок</p>';
+  // Сохраняем текущие фильтры перед перезаписью данных
+  const savedFilters = {
+    st:  document.getElementById('fStatus')?.value  || '',
+    dir: document.getElementById('fDir')?.value     || '',
+    sig: document.getElementById('fSig')?.value     || '',
+    reg: document.getElementById('fRegime')?.value  || '',
+  };
+  _recentRows = rows || [];
+  if (!_recentRows.length) return '<p class="note">Нет закрытых сделок</p>';
+  // Фильтры восстанавливаются через setTimeout после рендера DOM
+  setTimeout(() => {
+    ['fStatus','fDir','fSig','fRegime'].forEach((id, i) => {
+      const v = Object.values(savedFilters)[i];
+      const el = document.getElementById(id);
+      if (el && v) el.value = v;
+    });
+    applyFilters();
+  }, 0);
+
+  // Уникальные значения для фильтров
+  const statuses  = [...new Set(_recentRows.map(r => r.status).filter(Boolean))].sort();
+  const dirs      = [...new Set(_recentRows.map(r => r.direction).filter(Boolean))].sort();
+  const sigTypes  = [...new Set(_recentRows.map(r => r.signal_type).filter(Boolean))].sort();
+
+  const mkOpts = (vals, all='Все') =>
+    `<option value="">${all}</option>` + vals.map(v => `<option value="${v}">${v}</option>`).join('');
+
+  return `
+  <div class="filter-bar">
+    <label>Статус:</label>
+    <select id="fStatus" onchange="applyFilters()">${mkOpts(statuses)}</select>
+    <label>Направление:</label>
+    <select id="fDir" onchange="applyFilters()">${mkOpts(dirs)}</select>
+    <label>Сигнал:</label>
+    <select id="fSig" onchange="applyFilters()">${mkOpts(sigTypes)}</select>
+    <label>Режим:</label>
+    <select id="fRegime" onchange="applyFilters()">
+      <option value="">Все</option>
+      <option value="TREND_UP">TREND_UP</option>
+      <option value="TREND_DOWN">TREND_DOWN</option>
+      <option value="RANGE">RANGE</option>
+      <option value="HIGH_VOL">HIGH_VOL</option>
+    </select>
+    <button onclick="resetFilters()">✕ Сброс</button>
+  </div>
+  <div id="recentTableWrap">${renderRecentRows(_recentRows)}</div>`;
+}
+
+function renderRecentRows(rows) {
+  if (!rows.length) return '<p class="note">Нет сделок по фильтру</p>';
   return `<table><thead><tr>
-    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th><th>Статус</th>
-    <th>Profit%</th><th>R</th><th>Длит (мин)</th><th>Закрыта</th>
+    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th><th>Режим</th><th>Статус</th>
+    <th>Profit%</th><th>R</th><th>Max R</th><th>Cap%</th>
+    <th>TP src</th><th>Длит(мин)</th><th>Закрыта</th>
   </tr></thead><tbody>` +
-  rows.map(r => `<tr>
-    <td>${r.id}</td>
-    <td>${symLink(r.symbol)}</td>
-    <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
-    <td>${r.signal_type||'—'}</td>
-    <td>${badge(r.status)}</td>
-    <td class="${color(r.profit_pct)}">${fmtPct(r.profit_pct)}</td>
-    <td class="${color(r.R_multiple)}">${fmt(r.R_multiple,2)}</td>
-    <td>${r.duration_minutes != null ? Math.round(r.duration_minutes) : '—'}</td>
-    <td>${r.closed_at ? r.closed_at.substring(0,16) : '—'}</td>
-  </tr>`).join('') + '</tbody></table>';
+  rows.map(r => {
+    const capPct = r.captured_R_pct != null ? fmt(r.captured_R_pct,0)+'%' : '—';
+    const capClass = r.captured_R_pct != null ? (r.captured_R_pct >= 60 ? 'green' : r.captured_R_pct >= 30 ? 'yellow' : 'red') : '';
+    const tpSrc = (r.tp_source||'').replace('pivot_','').split(':')[0] || '—';
+    return `<tr>
+      <td>${r.id}</td>
+      <td>${symLink(r.symbol)}</td>
+      <td class="${r.direction==='LONG'?'green':'red'}">${r.direction||'—'}</td>
+      <td>${r.signal_type||'—'}</td>
+      <td style="color:#8b949e;font-size:.8rem">${r.regime||'—'}</td>
+      <td>${badge(r.status)}</td>
+      <td class="${color(r.profit_pct)}">${fmtPct(r.profit_pct)}</td>
+      <td class="${color(r.R_multiple)}">${fmt(r.R_multiple,2)}</td>
+      <td class="yellow">${r.max_R_possible != null ? fmt(r.max_R_possible,2) : '—'}</td>
+      <td class="${capClass}">${capPct}</td>
+      <td style="color:#8b949e;font-size:.8rem">${tpSrc}</td>
+      <td>${r.duration_minutes != null ? Math.round(r.duration_minutes) : '—'}</td>
+      <td>${r.closed_at ? r.closed_at.substring(0,16) : '—'}</td>
+    </tr>`;
+  }).join('') + '</tbody></table>';
+}
+
+function applyFilters() {
+  const st  = document.getElementById('fStatus')?.value  || '';
+  const dir = document.getElementById('fDir')?.value     || '';
+  const sig = document.getElementById('fSig')?.value     || '';
+  const reg = document.getElementById('fRegime')?.value  || '';
+  const filtered = _recentRows.filter(r =>
+    (!st  || r.status     === st)  &&
+    (!dir || r.direction  === dir) &&
+    (!sig || r.signal_type=== sig) &&
+    (!reg || r.regime     === reg)
+  );
+  const wrap = document.getElementById('recentTableWrap');
+  if (wrap) wrap.innerHTML = renderRecentRows(filtered);
+}
+
+function resetFilters() {
+  ['fStatus','fDir','fSig','fRegime'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  applyFilters();
 }
 
 load();

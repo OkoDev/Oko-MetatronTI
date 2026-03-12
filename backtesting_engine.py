@@ -99,6 +99,9 @@ class BacktestConfig:
     use_pivot_boost: bool = False # касание pivot-уровня как усилитель силы сигнала
     use_reentry: bool = False     # перезаход после SL по дивергенции
     reentry_lookback: int = 10    # сколько баров после SL искать перезаход
+    # --- Стратегия ---
+    strategy: str = "default"     # "default" | "confluence_scanner" | любое имя из registry
+    strategy_config: dict = None  # параметры стратегии (min_strength и т.д.)
 
 
 class BacktestingEngine:
@@ -133,10 +136,21 @@ class BacktestingEngine:
         current_since = since
         end_ms = int(self.config.end_date.timestamp() * 1000)
 
+        _retries = 0
+        _max_retries = 3
         while True:
             try:
                 candles = await self._swap_exchange.fetch_ohlcv(swap_symbol, timeframe, since=current_since, limit=limit)
+                _retries = 0  # сброс счётчика при успехе
             except Exception as e:
+                err_str = str(e)
+                # BingX rate limit (100410) — ждём и повторяем
+                if "100410" in err_str and _retries < _max_retries:
+                    _retries += 1
+                    wait_sec = 5 * _retries
+                    logger.warning(f"Rate limit 100410 {swap_symbol}, retry {_retries}/{_max_retries} через {wait_sec}s")
+                    await asyncio.sleep(wait_sec)
+                    continue
                 logger.error(f"swap fetch_ohlcv error {swap_symbol} {timeframe}: {e}")
                 break
             if not candles:
@@ -502,6 +516,49 @@ class BacktestingEngine:
                         'price': signal_price,
                         'strength': signal_strength,
                     })
+
+            # Confluence Scanner детектор (только при strategy="confluence_scanner")
+            if self.config.strategy == "confluence_scanner":
+                try:
+                    from core.confluence_scanner import scan_confluence
+                    from core.signal_models import SignalDirection as _SD
+                    _pivots_flat = {}
+                    if full_pivots:
+                        week_key = _week_start_ms(bar_time)
+                        _pivots_flat = full_pivots.get(week_key, {})
+                    _conf_cache = {f"{symbol}_1D": _pivots_flat, f"{symbol}_1W": _pivots_flat}
+                    _cfg_obj = type("_C", (), {"get": lambda self, k, d=None: d})()
+                    for csig in scan_confluence(symbol, context, context, _conf_cache, cfg=_cfg_obj):
+                        key = f"confluence_{csig.direction.value}"
+                        if i - last_signal_bar.get(key, -COOLDOWN) < COOLDOWN:
+                            continue
+                        if i - last_any_signal_bar < GLOBAL_CD:
+                            continue
+                        # HTF / PP фильтры
+                        dir_str = csig.direction.value
+                        if htf_trend is not None:
+                            if dir_str == "LONG" and htf_trend < 0:
+                                continue
+                            if dir_str == "SHORT" and htf_trend > 0:
+                                continue
+                        if pp is not None:
+                            if dir_str == "LONG" and signal_price < pp:
+                                continue
+                            if dir_str == "SHORT" and signal_price > pp:
+                                continue
+                        last_signal_bar[key] = i
+                        last_any_signal_bar = i
+                        signals.append({
+                            'timestamp': bar_time,
+                            'bar_idx': i - 1,
+                            'type': 'confluence',
+                            'direction': dir_str,
+                            'price': signal_price,
+                            'strength': csig.strength,
+                            'confluence_data': csig.data,
+                        })
+                except Exception as _ce:
+                    logger.debug("confluence_scanner detect error: %s", _ce)
 
             # MTF WT+Pivot детектор (только при use_pivot_tp)
             if self.config.use_pivot_tp and full_pivots:

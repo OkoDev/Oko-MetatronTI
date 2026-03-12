@@ -160,8 +160,17 @@ class TradingIntelligence:
         self.strategy = None
         if STRATEGIES_AVAILABLE:
             try:
-                strategy_name = config.get("strategy", {}).get("name", "confluence") if config else "confluence"
-                strategy_config = config.get("strategy", {}).get(strategy_name, {}) if config else {}
+                # Приоритет: trading.active_strategy → strategy.name → "confluence"
+                strategy_name = (
+                    (config.get("trading.active_strategy") if config else None)
+                    or (config.get("strategy", {}).get("name") if config else None)
+                    or "confluence"
+                )
+                strategy_config = (
+                    (config.get(f"trading.strategies.{strategy_name}") if config else None)
+                    or (config.get("strategy", {}).get(strategy_name, {}) if config else {})
+                    or {}
+                )
                 self.strategy = get_strategy(strategy_name, strategy_config)
                 logger.info(f"Strategy initialized: {strategy_name}")
             except Exception as e:
