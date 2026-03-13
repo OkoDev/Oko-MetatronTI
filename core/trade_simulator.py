@@ -86,11 +86,15 @@ class TradeSimulator:
                     max_price REAL,
                     min_price REAL,
                     max_R_possible REAL,
-                    captured_R_pct REAL
+                    captured_R_pct REAL,
+                    tsl_activated INTEGER DEFAULT 0
                 )
             """)
             # Миграция для существующих БД
-            for col, coldef in [("tp1_price", "REAL"), ("tp1_hit_at", "TIMESTAMP")]:
+            for col, coldef in [
+                ("tp1_price", "REAL"), ("tp1_hit_at", "TIMESTAMP"),
+                ("tsl_activated", "INTEGER DEFAULT 0"),
+            ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
                 except Exception:
@@ -133,6 +137,8 @@ class TradeSimulator:
             signal_type = _signal_type_from_recommendation(recommendation)
             sl_source = _get_recommendation_value(recommendation, "sl_source") or None
             tp_source = _get_recommendation_value(recommendation, "tp_source") or None
+            metadata = _get_recommendation_value(recommendation, "metadata") or {}
+            strategy_name = metadata.get("strategy_name") or None
             # Сохраняем ВСЕ поддерживающие типы сигналов
             supporting = _get_recommendation_value(recommendation, "supporting_signals") or []
             all_signal_types = list(dict.fromkeys(
@@ -158,8 +164,8 @@ class TradeSimulator:
                     INSERT INTO simulated_trades
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
                      tp1_price, strength, confidence, regime, status, features_json, created_at,
-                     sl_source, tp_source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sl_source, tp_source, strategy_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -178,6 +184,7 @@ class TradeSimulator:
                         ts.isoformat(),
                         sl_source,
                         tp_source,
+                        strategy_name,
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -428,7 +435,17 @@ class TradeSimulator:
             tsl_price = None
 
             if use_tsl and current_r is not None and current_r >= tsl_activation_r:
-                # Активируем TSL после достижения прибыли
+                # Активируем TSL после достижения прибыли — помечаем в БД
+                try:
+                    with sqlite3.connect(self.db_path) as _c:
+                        _c.execute(
+                            "UPDATE simulated_trades SET tsl_activated=1 WHERE id=? AND tsl_activated=0",
+                            (trade_id,),
+                        )
+                        _c.commit()
+                except Exception:
+                    pass
+
                 try:
                     from core.indicators import calculate_trend, get_trend_info
                     df_with_trend = calculate_trend(df)

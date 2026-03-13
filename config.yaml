@@ -94,7 +94,12 @@ monitoring:
     background_every_n_cycles: 3
     cascade_div_every_n_cycles: 60
 trading:
-  active_strategy: confluence_scanner  # "confluence" | "confluence_scanner" | "conservative"
+  active_strategy: confluence_scanner  # главная: отправляет TG-сигналы
+  active_strategies:                   # все симулируются в БД для сравнения WR
+    - confluence_scanner
+    - pivot_reversal
+    - confluence
+    - mtf_bias
   strategies:
     confluence_scanner:
       min_strength: 60
@@ -108,13 +113,17 @@ trading:
     conservative:
       min_signals: 3
       min_confidence: 0.65
+    pivot_reversal:
+      min_strength: 60
+      tp_rr: 2.5
+      sl_buffer_pct: 0.1
   use_tsl: true
   tsl_activation_r: 1.5
   tsl_buffer_pct: 0.5
   sl_tp:
     atr_multiplier: 1.2
     sl_min_pct: 1.0        # было 0.8 — tight <1% давали Win%=22%, поднято до 1.0%
-    sl_max_pct: 3.0
+    sl_max_pct: 2.0
     tp_fallback_rr: 3.0
     tp_pivot_min_r: 3.0
     tp_partial_pct: 0.5
@@ -125,7 +134,7 @@ trading:
     struct_sl_max_dist: 3.0
     tsl_too_tight_pct: 1.0  # было 0.6 — если TSL-линия <1% от цены → использовать swing_low
 signal_quality:
-  sl_cooldown_hours: 2
+  sl_cooldown_hours: 1
   dedup_minutes: 30
   min_volume_usd: 1000000
   min_strength: 50

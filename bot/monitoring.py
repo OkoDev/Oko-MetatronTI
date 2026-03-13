@@ -911,6 +911,24 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         except Exception as e:
             logger.debug("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e)
 
+    # Регистрируем сделки остальных стратегий (только в БД, без TG)
+    other_recs = (getattr(recommendation, "metadata", None) or {}).get("all_strategy_recs", {})
+    if other_recs:
+        for strat_name, other_rec in other_recs.items():
+            try:
+                _dir_ok_other = (
+                    getattr(other_rec, "action", "WATCH") in ("BUY", "SELL")
+                    and getattr(other_rec, "direction", None) is not None
+                    and other_rec.direction.value != "NEUTRAL"
+                )
+                if _dir_ok_other and other_rec.overall_strength >= min_strength_register:
+                    other_rec.metadata = other_rec.metadata or {}
+                    other_rec.metadata["strategy_name"] = strat_name
+                    await bot.trade_simulator.register_trade_async(other_rec, bot.data_collector)
+                    logger.debug("[%s] Стратегия '%s' зарегистрирована в БД", symbol, strat_name)
+            except Exception as e:
+                logger.debug("register_trade стратегии '%s' для %s: %s", strat_name, symbol, e)
+
     text = raw_text
     if recommendation:
         try:

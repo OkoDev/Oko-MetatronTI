@@ -156,25 +156,42 @@ class TradingIntelligence:
         except Exception as e:
             logger.warning("OutcomePredictor не инициализирован: %s", e)
 
-        # Strategy Pattern: инициализируем стратегию
-        self.strategy = None
+        # Strategy Pattern: инициализируем все активные стратегии
+        self.strategy = None           # основная (для TG-сигналов)
+        self.strategies: Dict[str, Any] = {}  # все активные стратегии
+        self.active_strategy_name: str = "confluence"
         if STRATEGIES_AVAILABLE:
             try:
-                # Приоритет: trading.active_strategy → strategy.name → "confluence"
-                strategy_name = (
+                # Основная стратегия (для TG-сигналов)
+                self.active_strategy_name = (
                     (config.get("trading.active_strategy") if config else None)
                     or (config.get("strategy", {}).get("name") if config else None)
                     or "confluence"
                 )
-                strategy_config = (
-                    (config.get(f"trading.strategies.{strategy_name}") if config else None)
-                    or (config.get("strategy", {}).get(strategy_name, {}) if config else {})
-                    or {}
+                # Список всех стратегий для параллельной симуляции
+                active_list = (
+                    (config.get("trading.active_strategies") if config else None)
+                    or [self.active_strategy_name]
                 )
-                self.strategy = get_strategy(strategy_name, strategy_config)
-                logger.info(f"Strategy initialized: {strategy_name}")
+                for sname in active_list:
+                    try:
+                        scfg = (
+                            (config.get(f"trading.strategies.{sname}") if config else None)
+                            or (config.get("strategy", {}).get(sname, {}) if config else {})
+                            or {}
+                        )
+                        self.strategies[sname] = get_strategy(sname, scfg)
+                        logger.info(f"Strategy loaded: {sname}")
+                    except Exception as e:
+                        logger.warning(f"Strategy '{sname}' не загружена: {e}")
+                # Обратная совместимость: self.strategy = основная
+                self.strategy = self.strategies.get(self.active_strategy_name)
+                if self.strategy is None and self.strategies:
+                    # fallback на первую доступную
+                    self.active_strategy_name, self.strategy = next(iter(self.strategies.items()))
+                logger.info(f"Active strategy: {self.active_strategy_name}, total: {list(self.strategies.keys())}")
             except Exception as e:
-                logger.warning(f"Failed to initialize strategy, falling back to legacy: {e}")
+                logger.warning(f"Failed to initialize strategies, falling back to legacy: {e}")
                 self.strategy = None
         else:
             logger.debug("Strategy Pattern not available, using legacy analysis")
@@ -258,20 +275,42 @@ class TradingIntelligence:
     
     async def _run_strategy(self, symbol: str, signals: List[SignalData],
                            market_context: MarketContext) -> Optional[TradingRecommendation]:
-        """
-        Запускает стратегию для анализа сигналов.
-        Эта функция async для совместимости с asyncio.wait_for().
-        """
+        """Запускает основную стратегию. Async для совместимости с asyncio.wait_for()."""
         if not self.strategy:
             return None
-        
         try:
-            # Стратегия может быть синхронной, оборачиваем в run_in_executor если нужно
             recommendation = self.strategy.analyze(signals, market_context)
             return recommendation
         except Exception as e:
             logger.exception(f"Strategy.analyze() error for {symbol}: {e}")
             return None
+
+    async def _run_all_strategies(self, symbol: str, signals: List[SignalData],
+                                  market_context: MarketContext) -> Dict[str, TradingRecommendation]:
+        """
+        Запускает все активные стратегии параллельно.
+        Возвращает Dict[strategy_name, recommendation] — только успешные результаты.
+        Основная стратегия тоже включена в словарь.
+        """
+        if not self.strategies:
+            return {}
+
+        async def _run_one(name: str, strat) -> tuple:
+            try:
+                rec = strat.analyze(signals, market_context)
+                return name, rec
+            except Exception as e:
+                logger.debug(f"Strategy '{name}' ошибка для {symbol}: {e}")
+                return name, None
+
+        results = await asyncio.gather(
+            *[_run_one(name, strat) for name, strat in self.strategies.items()],
+            return_exceptions=False
+        )
+        return {
+            name: rec for name, rec in results
+            if rec is not None
+        }
     
     def _get_cached_analysis(self, symbol: str) -> Optional[TradingRecommendation]:
         """Получает кэшированный анализ если он еще актуален"""
@@ -371,35 +410,38 @@ class TradingIntelligence:
                 if symbol_base not in top_pairs:
                     return None
             
-            # Анализируем сигналы через стратегию (или fallback на старую логику)
-            if self.strategy:
+            # Запускаем все стратегии параллельно
+            all_recs: Dict[str, TradingRecommendation] = {}
+            if self.strategies:
                 try:
-                    recommendation = await asyncio.wait_for(
-                        self._run_strategy(symbol, filtered_signals, market_context),
+                    all_recs = await asyncio.wait_for(
+                        self._run_all_strategies(symbol, filtered_signals, market_context),
                         timeout=20.0
                     )
-                    if recommendation is None:
-                        logger.debug(f"Strategy returned None for {symbol} — fallback на legacy")
                 except asyncio.TimeoutError:
-                    logger.warning(f"Strategy timeout for {symbol}, using legacy analysis")
-                    recommendation = None
+                    logger.warning(f"Strategies timeout for {symbol}, using legacy analysis")
                 except Exception as e:
-                    logger.warning(f"Strategy error for {symbol}: {e}, falling back to legacy")
-                    recommendation = None
-                
-                # Если стратегия не выдала результат, пробуем legacy
-                if recommendation is None:
-                    logger.debug(f"Falling back to legacy analysis for {symbol}")
-                    analysis = self._analyze_signals_advanced(filtered_signals, market_context)
-                    recommendation = self._generate_recommendation(
-                        symbol, filtered_signals, analysis, market_context
-                    )
-            else:
-                # Legacy fallback (если стратегии недоступны)
+                    logger.warning(f"Strategies error for {symbol}: {e}, falling back to legacy")
+
+            # Основная рекомендация — от active стратегии
+            recommendation = all_recs.get(self.active_strategy_name)
+
+            # Если основная стратегия не выдала результат — legacy fallback
+            if recommendation is None:
+                logger.debug(f"Active strategy '{self.active_strategy_name}' вернула None для {symbol} — legacy")
                 analysis = self._analyze_signals_advanced(filtered_signals, market_context)
                 recommendation = self._generate_recommendation(
                     symbol, filtered_signals, analysis, market_context
                 )
+
+            # Тегируем основную рекомендацию именем стратегии
+            if recommendation is not None:
+                recommendation.metadata = recommendation.metadata or {}
+                recommendation.metadata["strategy_name"] = self.active_strategy_name
+                # Остальные стратегии передаём в monitoring для раздельной регистрации
+                other_recs = {k: v for k, v in all_recs.items() if k != self.active_strategy_name}
+                if other_recs:
+                    recommendation.metadata["all_strategy_recs"] = other_recs
             
             if recommendation is None:
                 return None

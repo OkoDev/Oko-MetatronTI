@@ -92,7 +92,9 @@ class SubscriptionManager:
                     max_R_possible REAL,
                     captured_R_pct REAL,
                     sl_source TEXT,
-                    tp_source TEXT
+                    tp_source TEXT,
+                    tsl_activated INTEGER DEFAULT 0,
+                    strategy_name TEXT
                 )
             """)
 
@@ -101,6 +103,8 @@ class SubscriptionManager:
                 ("max_price", "REAL"), ("min_price", "REAL"),
                 ("max_R_possible", "REAL"), ("captured_R_pct", "REAL"),
                 ("sl_source", "TEXT"), ("tp_source", "TEXT"),
+                ("tsl_activated", "INTEGER DEFAULT 0"),
+                ("strategy_name", "TEXT"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")

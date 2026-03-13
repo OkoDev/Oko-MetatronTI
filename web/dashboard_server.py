@@ -301,6 +301,11 @@ function render(d, cf) {
     </section>
 
     <section>
+      <h2>По стратегии</h2>
+      ${tableByGroup(d.by_strategy, 'strategy_name')}
+    </section>
+
+    <section>
       <h2>По типу сигнала</h2>
       ${tableByGroup(d.by_signal_type, 'signal_type')}
     </section>

@@ -126,6 +126,48 @@ class PerformanceEngine:
             return []
 
     # ------------------------------------------------------------------
+    # По стратегии (strategy_name)
+    # ------------------------------------------------------------------
+    def by_strategy(self) -> List[Dict[str, Any]]:
+        """WR / avg_R / total по strategy_name — для сравнения стратегий."""
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT
+                        COALESCE(strategy_name, '—') AS strategy_name,
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) AS tp_count,
+                        SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
+                        SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
+                    FROM simulated_trades
+                    GROUP BY strategy_name
+                    ORDER BY total DESC
+                """)
+                rows = cur.fetchall()
+                result = []
+                for r in rows:
+                    d = dict(r)
+                    tp = d["tp_count"] or 0
+                    tsl = d["tsl_count"] or 0
+                    sl = d["sl_count"] or 0
+                    closed = tp + tsl + sl
+                    d["wins"] = tp + tsl
+                    d["losses"] = sl
+                    d["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
+                    if d["avg_profit_pct"] is not None:
+                        d["avg_profit_pct"] = round(d["avg_profit_pct"], 3)
+                    if d["avg_r"] is not None:
+                        d["avg_r"] = round(d["avg_r"], 3)
+                    result.append(d)
+                return result
+        except Exception as e:
+            logger.exception("PerformanceEngine.by_strategy: %s", e)
+            return []
+
+    # ------------------------------------------------------------------
     # По направлению (LONG / SHORT)
     # ------------------------------------------------------------------
     def by_direction(self) -> List[Dict[str, Any]]:
@@ -441,6 +483,7 @@ class PerformanceEngine:
         return {
             "summary": self.summary(),
             "by_signal_type": self.by_signal_type(),
+            "by_strategy": self.by_strategy(),
             "by_direction": self.by_direction(),
             "by_regime": self.by_regime(),
             "recent_closed": self.recent_closed(20),
