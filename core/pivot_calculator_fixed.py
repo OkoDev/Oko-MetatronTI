@@ -594,7 +594,7 @@ class PivotCalculatorFixed:
             pivots = self.pivot_cache.get(f"{symbol}_{tf}")
             if not pivots:
                 continue
-            for lk in ["PP", "S1", "R1"]:
+            for lk in ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]:
                 price = pivots.get(lk)
                 if price and price > 0:
                     all_candidates.append((price, f"pivot_{tf}:{lk}"))
