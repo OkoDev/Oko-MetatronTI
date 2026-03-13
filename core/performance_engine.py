@@ -275,6 +275,114 @@ class PerformanceEngine:
             return []
 
     # ------------------------------------------------------------------
+    # Разбивка confluence по факторам, direction, strength
+    # ------------------------------------------------------------------
+    def confluence_breakdown(self) -> Dict[str, Any]:
+        """Аналитика WR по confluence-факторам, direction и strength."""
+        import json
+        try:
+            with self._conn() as conn:
+                conn.row_factory = None
+                cur = conn.cursor()
+
+                # По direction
+                cur.execute("""
+                    SELECT direction,
+                        COUNT(*) total,
+                        SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END) wins,
+                        ROUND(100.0*SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END)/COUNT(*),1) wr,
+                        ROUND(AVG(R_multiple),2) avg_r
+                    FROM simulated_trades
+                    WHERE signal_type='confluence' AND status IN ('TP','SL','TSL')
+                    GROUP BY direction ORDER BY wr DESC
+                """)
+                by_direction = [
+                    {"direction": r[0], "total": r[1], "wins": r[2], "wr": r[3], "avg_r": r[4]}
+                    for r in cur.fetchall()
+                ]
+
+                # По диапазонам strength
+                cur.execute("""
+                    SELECT
+                        CASE
+                            WHEN strength < 50 THEN '<50'
+                            WHEN strength < 60 THEN '50-60'
+                            WHEN strength < 70 THEN '60-70'
+                            WHEN strength < 80 THEN '70-80'
+                            ELSE '80+'
+                        END rng,
+                        COUNT(*) total,
+                        SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END) wins,
+                        ROUND(100.0*SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END)/COUNT(*),1) wr,
+                        ROUND(AVG(R_multiple),2) avg_r
+                    FROM simulated_trades
+                    WHERE signal_type='confluence' AND status IN ('TP','SL','TSL')
+                    GROUP BY rng ORDER BY rng
+                """)
+                by_strength = [
+                    {"range": r[0], "total": r[1], "wins": r[2], "wr": r[3], "avg_r": r[4]}
+                    for r in cur.fetchall()
+                ]
+
+                # По tp_source
+                cur.execute("""
+                    SELECT tp_source,
+                        COUNT(*) total,
+                        ROUND(100.0*SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END)/COUNT(*),1) wr,
+                        ROUND(AVG(R_multiple),2) avg_r
+                    FROM simulated_trades
+                    WHERE signal_type='confluence' AND status IN ('TP','SL','TSL')
+                    GROUP BY tp_source ORDER BY total DESC LIMIT 10
+                """)
+                by_tp_source = [
+                    {"source": r[0] or "—", "total": r[1], "wr": r[2], "avg_r": r[3]}
+                    for r in cur.fetchall()
+                ]
+
+                # По факторам (из features_json → confluence_factors)
+                cur.execute("""
+                    SELECT features_json, status, R_multiple
+                    FROM simulated_trades
+                    WHERE signal_type='confluence'
+                        AND status IN ('TP','SL','TSL')
+                        AND features_json IS NOT NULL
+                        AND features_json LIKE '%confluence_factors%'
+                """)
+                factor_stats: Dict[str, Dict] = {}
+                for fj, status, rmult in cur.fetchall():
+                    try:
+                        factors = json.loads(fj).get("confluence_factors", [])
+                    except Exception:
+                        factors = []
+                    win = 1 if status in ("TP", "TSL") else 0
+                    for f in factors:
+                        if f not in factor_stats:
+                            factor_stats[f] = {"total": 0, "wins": 0, "r_sum": 0.0}
+                        factor_stats[f]["total"] += 1
+                        factor_stats[f]["wins"] += win
+                        factor_stats[f]["r_sum"] += (rmult or 0.0)
+
+                by_factor = sorted([
+                    {
+                        "factor": k,
+                        "total": v["total"],
+                        "wr": round(100.0 * v["wins"] / v["total"], 1) if v["total"] else 0,
+                        "avg_r": round(v["r_sum"] / v["total"], 2) if v["total"] else 0,
+                    }
+                    for k, v in factor_stats.items()
+                ], key=lambda x: -x["total"])
+
+                return {
+                    "by_direction": by_direction,
+                    "by_strength": by_strength,
+                    "by_tp_source": by_tp_source,
+                    "by_factor": by_factor,
+                }
+        except Exception:
+            logger.exception("confluence_breakdown")
+            return {"by_direction": [], "by_strength": [], "by_tp_source": [], "by_factor": []}
+
+    # ------------------------------------------------------------------
     # Статистика за период (для еженедельного отчёта)
     # ------------------------------------------------------------------
     def weekly_summary(self, days_back: int = 7) -> Dict[str, Any]:

@@ -101,9 +101,10 @@ const color = (v, inv=false) => {
 
 async function load() {
   try {
-    const r = await fetch('/api/stats');
-    const d = await r.json();
-    render(d);
+    const [r1, r2] = await Promise.all([fetch('/api/stats'), fetch('/api/stats/confluence')]);
+    const d = await r1.json();
+    const cf = await r2.json();
+    render(d, cf);
     document.getElementById('updated').textContent =
       'Обновлено: ' + new Date().toLocaleTimeString('ru');
   } catch(e) {
@@ -111,7 +112,48 @@ async function load() {
   }
 }
 
-function render(d) {
+function confluenceBreakdown(cf) {
+  if (!cf) return '';
+  const tbl = (rows, cols, headers) => {
+    if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+    const head = headers.map(h => `<th>${h}</th>`).join('');
+    const body = rows.map(r => `<tr>${cols.map(c => {
+      const v = r[c];
+      if (c === 'wr') return `<td class="${v >= 45 ? 'green' : v >= 30 ? '' : 'red'}">${v ?? '—'}%</td>`;
+      if (c === 'avg_r') return `<td class="${color(v)}">${v ?? '—'}</td>`;
+      return `<td>${v ?? '—'}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  };
+  return `
+  <section>
+    <h2>Confluence — разбивка WR</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По направлению</h3>
+        ${tbl(cf.by_direction, ['direction','total','wr','avg_r'], ['Направление','Сделок','WR%','avg R'])}
+      </div>
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По strength</h3>
+        ${tbl(cf.by_strength, ['range','total','wr','avg_r'], ['Strength','Сделок','WR%','avg R'])}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По факторам (новые сделки)</h3>
+        ${cf.by_factor && cf.by_factor.length
+          ? tbl(cf.by_factor, ['factor','total','wr','avg_r'], ['Фактор','Сделок','WR%','avg R'])
+          : '<p class="note">Факторы будут накапливаться в новых сделках</p>'}
+      </div>
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По TP источнику</h3>
+        ${tbl(cf.by_tp_source, ['source','total','wr','avg_r'], ['TP source','Сделок','WR%','avg R'])}
+      </div>
+    </div>
+  </section>`;
+}
+
+function render(d, cf) {
   const s = d.summary || {};
 
   // --- EV и Profit Factor ---
@@ -267,6 +309,8 @@ function render(d) {
       <h2>По направлению</h2>
       ${tableByGroup(d.by_direction, 'direction')}
     </section>
+
+    ${confluenceBreakdown(cf)}
 
     <section>
       <h2>По режиму рынка</h2>
@@ -1552,6 +1596,19 @@ async def _handle_index(request: web.Request) -> web.Response:
     return web.Response(text=_HTML, content_type="text/html", charset="utf-8")
 
 
+async def _handle_confluence_breakdown(request: web.Request) -> web.Response:
+    engine: PerformanceEngine = request.app["engine"]
+    try:
+        data = engine.confluence_breakdown()
+        return web.Response(
+            text=json.dumps(data, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+        )
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 def _current_price_from_cache(dc, symbol: str) -> float | None:
     """Берёт последнюю цену закрытия из кеша OHLCV (без API-запроса)."""
     try:
@@ -2206,6 +2263,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app["backtest_state"] = {"running": False, "error": None, "log": [], "done": 0, "total": 0}
     app.router.add_get("/", _handle_index)
     app.router.add_get("/api/stats", _handle_stats)
+    app.router.add_get("/api/stats/confluence", _handle_confluence_breakdown)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/settings", _handle_settings_page)
     app.router.add_get("/api/settings", _handle_settings_get)

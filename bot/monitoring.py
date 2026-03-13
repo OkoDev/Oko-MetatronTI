@@ -112,22 +112,28 @@ def _make_pivot_recommendation(info: dict):
     is_long = "LONG" in info.get("type", "")
     confidence_str = info.get("confidence", "HIGH")
     conf_float = 0.85 if confidence_str == "VERY_HIGH" else 0.70
-    strength = 80 if confidence_str == "VERY_HIGH" else 65
+    # Динамический strength из детектора (60-100), иначе fallback
+    strength = info.get("strength", 80 if confidence_str == "VERY_HIGH" else 65)
     tp_levels = info.get("take_profits", [])
     tp1 = tp_levels[0]["price"] if tp_levels else None
+    tp_main = tp_levels[1]["price"] if len(tp_levels) > 1 else tp1  # TP2 как основная цель
+    level = info.get("level", "")
     _sig = SimpleNamespace(signal_type=SimpleNamespace(value="pivot_reversal"))
     return SimpleNamespace(
         symbol=info.get("symbol", ""),
         entry_price=info.get("entry_price"),
         direction=SimpleNamespace(value="LONG" if is_long else "SHORT"),
         stop_loss=info.get("stop_loss"),
-        take_profit=tp1,
+        take_profit=tp_main,
+        tp1_price=tp1,
         overall_strength=strength,
         confidence=conf_float,
         timestamp=datetime.now(),
         market_context=None,
         supporting_signals=[_sig],
         conflicting_signals=[],
+        sl_source=info.get("sl_source", "atr_14"),
+        tp_source=f"pivot_1W_{level}" if level else "pivot_1W",
         metadata={},
     )
 
@@ -887,8 +893,18 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     trade_registered = False
     if should_register:
         try:
-            extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
-            trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
+            extra: dict = {}
+            if distance_to_pivot_pct:
+                extra["distance_to_pivot_pct"] = distance_to_pivot_pct
+            # Извлекаем факторы confluence для аналитики WR по каждому фактору
+            conf_factors = []
+            for sig in (recommendation.supporting_signals or []):
+                if getattr(sig, "signal_type", None) and sig.signal_type.value == "confluence":
+                    conf_factors = (sig.data or {}).get("factors", [])
+                    break
+            if conf_factors:
+                extra["confluence_factors"] = conf_factors
+            trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:
                 logger.warning("[%s] register_trade вернул None (нет entry_price/SL/TP?) — сделка НЕ сохранена", symbol)
