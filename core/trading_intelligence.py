@@ -19,8 +19,7 @@ from core.signal_models import (
 # Проверки сигналов
 from core.signal_checkers import (
     check_anomaly_signals, check_wt_signals, check_mtf_signals,
-    check_trend_signals, check_divergence_signals, check_pivot_signals,
-    check_mtf_bias_signal,
+    check_trend_signals, check_mtf_bias_signal,
 )
 
 # Форматтер рекомендаций
@@ -96,17 +95,19 @@ class TradingIntelligence:
         self.config = config or {}
         self._db_path = db_path
 
-        # Динамические веса для разных типов сигналов (адаптируются к эффективности)
+        # Веса сигналов: MTF_BIAS = главное WaveTrend-ядро (7 TF, alignment, senior gate)
+        # Пивоты = второе ядро (подтверждение + цели).
+        # MTF_SIGNAL / MTF_ALERT — временно сохранены, будут упразднены после тестирования MTF_BIAS.
         self.signal_weights = {
-            SignalType.MTF_SIGNAL: 0.25,
-            SignalType.MTF_ALERT: 0.30,
-            SignalType.PIVOT_REVERSAL: 0.20,
-            SignalType.DIVERGENCE: 0.15,
-            SignalType.WT_SIGNAL: 0.10,
-            SignalType.TREND_SIGNAL: 0.10,
-            SignalType.ANOMALY: 0.05,
-            SignalType.PIVOT_ALERT: 0.15,
-            SignalType.CONFLUENCE: 0.35,  # высокий вес — мультифакторный сигнал
+            SignalType.MTF_BIAS:       0.50,  # ГЛАВНОЕ ядро — WaveTrend 7 TF
+            SignalType.PIVOT_REVERSAL: 0.20,  # второе ядро — пивоты (подтверждение + цели)
+            SignalType.CONFLUENCE:     0.15,  # производный от WT
+            SignalType.DIVERGENCE:     0.10,
+            SignalType.MTF_ALERT:      0.10,  # → будет упразднён в Шаге 3
+            SignalType.WT_SIGNAL:      0.08,
+            SignalType.MTF_SIGNAL:     0.05,  # → будет упразднён в Шаге 3
+            SignalType.TREND_SIGNAL:   0.05,
+            SignalType.ANOMALY:        0.03,
         }
         # Исходные веса сохраняем отдельно — чтобы не накапливать корректировки
         self._base_signal_weights = dict(self.signal_weights)
@@ -215,6 +216,7 @@ class TradingIntelligence:
             "anomaly":        SignalType.ANOMALY,
             "divergence":     SignalType.DIVERGENCE,
             "mtf_signal":     SignalType.MTF_SIGNAL,
+            "mtf_bias":       SignalType.MTF_BIAS,
         }
         try:
             from core.performance_engine import PerformanceEngine
@@ -398,8 +400,15 @@ class TradingIntelligence:
                 elapsed = (datetime.now() - start_time).total_seconds()
                 logger.warning(f"Таймаут контекста для {symbol} ({elapsed:.1f}s) — используем fallback")
                 # Fallback: цена из OHLCV (уже в кеше после _collect_all_signals)
+                fallback_price = 0.0
+                try:
+                    _df = await self.data_collector.get_ohlcv(symbol, "15m", limit=5)
+                    if _df is not None and len(_df) > 0:
+                        fallback_price = float(_df["close"].iloc[-1])
+                except Exception:
+                    pass
                 market_context = MarketContext(
-                    symbol=symbol, current_price=0,
+                    symbol=symbol, current_price=fallback_price,
                     volume_24h=0, volume_change_24h=0, price_change_24h=0,
                 )
             
@@ -523,13 +532,14 @@ class TradingIntelligence:
                     return None
 
             # Параллельная проверка всех сигналов
+            # Примитивные check_divergence_signals / check_pivot_signals удалены:
+            # их роль выполняют полные divergence_detector + pivot_reversal (фоновые задачи).
+            # MTF_BIAS — главное WT-ядро (7 TF, alignment score, senior gate).
             results = await asyncio.gather(
                 check_anomaly_signals(symbol, df_15m),
                 check_wt_signals(symbol, df_15m),
                 check_mtf_signals(symbol, df_1h, df_15m, df_3m),
                 check_trend_signals(symbol, df_1h),
-                check_divergence_signals(symbol, df_1h),
-                check_pivot_signals(symbol, df_1h),
                 check_mtf_bias_signal(symbol, self.data_collector, regime=None, cfg=self.config),
                 return_exceptions=True,
             )
@@ -621,6 +631,29 @@ class TradingIntelligence:
             strength = max(long_strength, short_strength)
             supporting_signals = []
             conflicting_signals = signals
+
+        # ── MTF_BIAS tie-breaker (главное WT-ядро) ────────────────────────────────────────────
+        # При умеренном конфликте или NEUTRAL — если есть сильный MTF_BIAS (score ≥ 70),
+        # он фиксирует направление. Это реализует архитектуру "WaveTrend как ядро".
+        _bias_sigs = [
+            s for s in signals
+            if s.signal_type == SignalType.MTF_BIAS
+            and s.direction != SignalDirection.NEUTRAL
+            and s.strength >= 70
+        ]
+        if _bias_sigs and (direction == SignalDirection.NEUTRAL or (dominant > 0 and conflict_ratio < conflict_threshold)):
+            _bias_dir = _bias_sigs[0].direction
+            direction = _bias_dir
+            supporting_signals = [s for s in signals if s.direction == _bias_dir]
+            conflicting_signals = [s for s in signals if s.direction not in (_bias_dir, SignalDirection.NEUTRAL)]
+            logger.debug("[%s] MTF_BIAS override → %s str=%d (conflict_ratio=%.2f)",
+                         signals[0].symbol if signals else "?",
+                         _bias_dir.value, _bias_sigs[0].strength, conflict_ratio)
+            # Пересчитываем dominant и conflict_ratio после override
+            long_str = sum(s.strength for s in signals if s.direction == SignalDirection.LONG)
+            short_str = sum(s.strength for s in signals if s.direction == SignalDirection.SHORT)
+            dominant = max(long_str, short_str)
+            conflict_ratio = (abs(long_str - short_str) / dominant) if dominant > 0 else 1.0
 
         # Плавный конфликт: очень сильный → NEUTRAL, умеренный → штраф confidence
         # conflict_ratio = abs(long-short)/max(long,short)

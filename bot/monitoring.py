@@ -909,7 +909,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             if not trade_registered:
                 logger.warning("[%s] register_trade вернул None (нет entry_price/SL/TP?) — сделка НЕ сохранена", symbol)
         except Exception as e:
-            logger.debug("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e)
+            logger.warning("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e, exc_info=True)
 
     # Регистрируем сделки остальных стратегий (только в БД, без TG)
     other_recs = (getattr(recommendation, "metadata", None) or {}).get("all_strategy_recs", {})
@@ -932,7 +932,17 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     text = raw_text
     if recommendation:
         try:
-            text = await format_intelligence_message(recommendation)
+            # Если активная стратегия — MTF_BIAS, используем специальный форматтер
+            _mtf_bias_sig = next(
+                (s for s in (recommendation.supporting_signals or [])
+                 if getattr(s, "signal_type", None) and s.signal_type.value == "mtf_bias"),
+                None
+            )
+            if _mtf_bias_sig is not None:
+                from core.mtf_interpreter import mtf_bias_message
+                text = mtf_bias_message(symbol, _mtf_bias_sig)
+            else:
+                text = await format_intelligence_message(recommendation)
         except Exception:
             logger.exception("Ошибка форматирования AI-сообщения для %s", symbol)
             text = raw_text

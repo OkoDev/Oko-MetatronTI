@@ -145,6 +145,14 @@ class TradeSimulator:
                 s.signal_type.value for s in supporting
                 if hasattr(s, "signal_type") and hasattr(s.signal_type, "value")
             ))
+            # tsl_tf: для MTF_BIAS сигналов берём старший TF для trailing
+            _ENTRY_TO_TSL_TF = {"3m": "1h", "5m": "1h", "15m": "1h", "45m": "4h", "1h": "4h"}
+            tsl_tf = "15m"
+            for _sig in supporting:
+                if getattr(getattr(_sig, "signal_type", None), "value", "") == "mtf_bias":
+                    _entry_tf = (_sig.data or {}).get("entry_tf", "15m")
+                    tsl_tf = _ENTRY_TO_TSL_TF.get(_entry_tf, "1h")
+                    break
             features = {}
             if all_signal_types:
                 features["all_signal_types"] = all_signal_types
@@ -164,8 +172,8 @@ class TradeSimulator:
                     INSERT INTO simulated_trades
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
                      tp1_price, strength, confidence, regime, status, features_json, created_at,
-                     sl_source, tp_source, strategy_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sl_source, tp_source, strategy_name, tsl_tf)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -185,6 +193,7 @@ class TradeSimulator:
                         sl_source,
                         tp_source,
                         strategy_name,
+                        tsl_tf,
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -448,8 +457,33 @@ class TradeSimulator:
 
                 try:
                     from core.indicators import calculate_trend, get_trend_info
-                    df_with_trend = calculate_trend(df)
-                    trend_info = get_trend_info(df_with_trend)
+
+                    # Выбираем TF для TSL:
+                    # 1. Если у сделки есть tsl_tf (MTF_BIAS) — пробуем его
+                    # 2. Иначе пробуем 1h (широкий, меньше шума)
+                    # 3. Fallback — TF сделки
+                    df_tsl = None
+                    tsl_tf_used = tf
+                    preferred_tsl_tf = trade.get("tsl_tf") or "15m"
+
+                    for _tsl_try in ([preferred_tsl_tf] if preferred_tsl_tf != tf else ["1h"]):
+                        try:
+                            df_senior = await data_collector.get_ohlcv(symbol, timeframe=_tsl_try, limit=100)
+                            if df_senior is not None and len(df_senior) >= 50:
+                                df_senior_trend = calculate_trend(df_senior)
+                                trend_val = int(df_senior_trend["trend"].iloc[-1])
+                                if (direction == "LONG" and trend_val == 1) or (direction == "SHORT" and trend_val == -1):
+                                    df_tsl = df_senior_trend
+                                    tsl_tf_used = _tsl_try
+                        except Exception:
+                            pass
+                        if df_tsl is not None:
+                            break
+
+                    if df_tsl is None:
+                        df_tsl = calculate_trend(df)
+
+                    trend_info = get_trend_info(df_tsl)
 
                     if trend_info and trend_info["tsl"] > 0:
                         tsl_price = trend_info["tsl"]
@@ -461,8 +495,11 @@ class TradeSimulator:
                             tsl_triggered = True
 
                         if tsl_triggered:
-                            logger.info(f"TradeSimulator: TSL сработал для {symbol} {direction} "
-                                      f"entry={entry:.4f} current={current_price:.4f} tsl={tsl_price:.4f}")
+                            logger.info(
+                                f"TradeSimulator: TSL сработал для {symbol} {direction} "
+                                f"entry={entry:.4f} current={current_price:.4f} "
+                                f"tsl={tsl_price:.4f} [tf={tsl_tf_used}]"
+                            )
                             if self.close_trade(trade_id, STATUS_TSL, current_price):
                                 closed_count += 1
                             continue

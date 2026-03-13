@@ -2,13 +2,39 @@
 
 ## 📋 Обзор системы индикаторов
 
-Бот Oko MTF использует **7 типов сигналов** и **6 технических индикаторов** для комплексного анализа крипторынка. Система построена на принципах **Trading Bot Architect Mode** с адаптивными весами и ML-улучшениями.
+Бот Oko MTF использует **8 типов сигналов** и **11 технических индикаторов** для комплексного анализа крипторынка. Система построена на принципах **Trading Bot Architect Mode** с адаптивными весами, ML-улучшениями и Strategy Pattern.
+
+> **Принцип единого источника (с 12.03.2026):** все индикаторы реализованы в `core/indicators.py`. Другие модули только импортируют оттуда — дублирования нет.
 
 ---
 
 ## 🧮 Технические индикаторы (core/indicators.py)
 
-### 1. **WaveTrend (WT)** - основной осциллятор
+### Полный реестр функций
+
+| Функция | Назначение | Возвращает |
+|---------|-----------|-----------|
+| `calculate_wt(df, n1=10, n2=21)` | WaveTrend осциллятор | df с колонками wt1, wt2 |
+| `calculate_trend(df, atr_period=43, factor=1.0)` | TREND + TSL линии | df с trend, trendup, trenddown, tsl |
+| `true_range_series(df)` | True Range | pd.Series |
+| `compute_atr(df, period)` | ATR из df | pd.Series |
+| `compute_atr_values(h, l, c, period)` | ATR из numpy-массивов | List[float] |
+| `compute_ema(df, period)` | EMA (добавляет в df) | df |
+| `compute_ema_values(values, period)` | EMA из массива | np.ndarray |
+| `compute_sma(values, period)` | SMA из массива | np.ndarray |
+| `compute_volatility(closes, period=20)` | Волатильность | float, **в процентах** |
+| `compute_adx(h, l, c, period=14)` | ADX | float (0–100) |
+| `compute_rsi(closes, period=14)` | RSI (Wilder's RMA) | float (0–100) |
+| `compute_volume_ratio(volumes, period=20)` | Отношение объема к SMA | float |
+| `find_swing_highs(series, period)` | Локальные максимумы | List[int] (индексы) |
+| `find_swing_lows(series, period)` | Локальные минимумы | List[int] (индексы) |
+| `calculate_pivot_points(h, l, c)` | Пивот-уровни | Dict: PP, S1–S5, R1–R5 |
+| `detect_fvg(df)` | Fair Value Gap | (bool, dict) |
+| `get_zone(wt_value)` | Зона WT | "OB" / "OS" / "N" |
+
+---
+
+### 1. **WaveTrend (WT)** — основной осциллятор
 
 ```python
 def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
@@ -16,752 +42,513 @@ def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
 
 **Алгоритм:**
 - **HLC3** = (High + Low + Close) / 3
-- **ESA** = EMA(HLC3, n1=10) - экспоненциальная средняя
-- **D** = EMA(|HLC3 - ESA|, n1=10) - среднее отклонение
-- **CI** = (HLC3 - ESA) / (0.015 × D) - нормализованный индекс
-- **WT1** = EMA(CI, n2=21) - основная линия
-- **WT2** = SMA(WT1, 4) - сигнальная линия
+- **ESA** = EMA(HLC3, n1=10)
+- **D** = EMA(|HLC3 − ESA|, n1=10)
+- **CI** = (HLC3 − ESA) / (0.015 × D)
+- **WT1** = EMA(CI, n2=21) — основная линия
+- **WT2** = SMA(WT1, 4) — сигнальная линия
 
-**Зоны перекупленности/перепроданности:**
-- **OB (Overbought)**: WT1 > +60 (официальная зона)
-- **OS (Oversold)**: WT1 < -60 (официальная зона)
-- **N (Neutral)**: -60 < WT1 < +60
-- **⚠️ Примечание:** Для сигналов используется более мягкий порог ±50 (входим чуть раньше в официальную зону)
+**Зоны:**
+- **OB (Overbought)**: WT1 > +60
+- **OS (Oversold)**: WT1 < −60
+- **N (Neutral)**: −60 < WT1 < +60
 
 **Настройка в config.yaml:**
 ```yaml
 analysis:
   wt_periods:
-    n1: 10  # Период ESA (рекомендуется 10-12)
-    n2: 21  # Период WT (рекомендуется 21-25)
+    n1: 10
+    n2: 21
 ```
-
-**Применение:**
-- Определение перекупленности/перепроданности
-- Поиск разворотов по кроссам WT1/WT2
-- Подтверждение тренда на младших таймфреймах
-- **Минимум 50 баров** для расчета
 
 ---
 
-### 2. **Trend Indicator** - определение тренда
+### 2. **Trend Indicator + TSL** — единый источник тренда
 
 ```python
 def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame:
 ```
 
-**Алгоритм (Pine Script аналог):**
-- **HL2** = (High + Low) / 2 - средняя цена
-- **ATR** = EMA(TR, period=43) - средний истинный диапазон
-- **Up** = HL2 - (factor × ATR) - верхняя граница
-- **Down** = HL2 + (factor × ATR) - нижняя граница
-- **TrendUp[i]** = max(Up[i], TrendUp[i-1]) if HL2[i-1] > TrendUp[i-1]
-- **TrendDown[i]** = min(Down[i], TrendDown[i-1]) if HL2[i-1] < TrendDown[i-1]
-- **Trend** = +1 если HL2 > TrendDown[prev], -1 если HL2 < TrendUp[prev]
+**Алгоритм (точная реализация Pine Script):**
+- ATR рассчитывается методом **Wilder's RMA** (не SMA)
+- `up = hl2 − factor × ATR`
+- `dn = hl2 + factor × ATR`
+- `trendup[i]` = max(up, prev_trendup) если prev_hl2 > prev_trendup
+- `trenddown[i]` = min(dn, prev_trenddown) если prev_hl2 < prev_trenddown
+- `trend = +1` если hl2 > prev_trenddown, `-1` если hl2 < prev_trendup
 
-**Выходные данные:**
-- `trend`: текущее направление (+1 UP, -1 DOWN)
-- `trendup`: уровень для восходящего тренда
-- `trenddown`: уровень для нисходящего тренда
-- `tsl`: Trailing Stop Loss (выбирает trendup или trenddown)
+**Выходные колонки df:**
+| Колонка | Значение |
+|---------|---------|
+| `trend` | +1 (UP) / -1 (DOWN) |
+| `trendup` | TSL-линия снизу (для LONG) |
+| `trenddown` | TSL-линия сверху (для SHORT) |
+| `tsl` | = trendup если LONG, = trenddown если SHORT |
 
-**Настройка:**
-```yaml
-analysis:
-  trend:
-    atr_period: 43  # Период ATR (рекомендуется 40-50)
-    factor: 1.0     # Множитель ATR (0.8-1.2)
-```
-
-**Особенности:**
-- Более гладкий, чем простые скользящие средние
-- Учитывает волатильность через ATR
-- Отлично работает на силовых движениях
-- На флэте генерирует много ложных сигналов
+**Используется в:** `signal_checkers.py`, `trade_simulator.py` (TSL-трекинг), `trading_intelligence._calculate_levels()`
 
 ---
 
-### 3. **Fair Value Gap (FVG)** - детектор пробелов
+### 3. **RSI** — Wilder's RMA
 
 ```python
-def detect_fvg(df: pd.DataFrame):
+def compute_rsi(closes, period=14) -> float:
 ```
 
-**Алгоритм:**
+⚠️ Использует **Wilder's RMA** (экспоненциальное сглаживание с alpha=1/period), как в Pine Script. Старая реализация через `rolling().mean()` давала расхождение с TradingView — исправлено 12.03.2026.
+
+---
+
+### 4. **ADX** — сила тренда
+
+```python
+def compute_adx(h, l, c, period=14) -> float:
+```
+
+Возвращает значение 0–100. Инициализация через SMA (не SUM) — исправлено 12.03.2026.
+
+- ADX < 20: слабый тренд / флэт
+- ADX 20–40: умеренный тренд
+- ADX > 40: сильный тренд
+
+Используется в `market_regime.py` для классификации рыночного режима.
+
+---
+
+### 5. **Volatility** — в процентах
+
+```python
+def compute_volatility(closes, period=20) -> float:
+```
+
+⚠️ Возвращает **проценты** (например, 2.5 = 2.5%). До 12.03.2026 возвращала доли → `sl_pct` всегда зажимался в `sl_min=1%`. Исправлено.
+
+---
+
+### 6. **Pivot Points**
+
+```python
+def calculate_pivot_points(high, low, close) -> Dict[str, float]:
+```
+
+Возвращает: `{PP, S1, S2, S3, S4, S5, R1, R2, R3, R4, R5}`
+
+Делегируют оба класса: `pivot_levels.py` и `pivot_calculator_fixed.py`.
+
+---
+
+### 7. **Fair Value Gap (FVG)**
+
+```python
+def detect_fvg(df: pd.DataFrame) -> (bool, dict):
+```
+
+- **Bull FVG**: Low[2] > High[0] — бычий гэп
+- **Bear FVG**: High[2] < Low[0] — медвежий гэп
 - Проверяет последние 3 свечи
-- **Bull FVG**: Low[2] > High[0] (бычий гэп вверх)
-- **Bear FVG**: High[2] < Low[0] (медвежий гэп вниз)
-- **Entry** = средняя точка гэпа
-
-**Применение:**
-- Входы по пробеганию пробелов (FVG mitigation)
-- Идентификация сильных движений
-- **Потенциал:** 3-5% на одном движении
 
 ---
 
-### 4. **RSI (Relative Strength Index)** - дополнительный
+## 📊 8 типов торговых сигналов
 
-Используется в `divergence_detector.py` наряду с WT для выявления дивергенций.
+### 1. **ANOMALY** — аномалии объема
+**Файл:** `core/signal_checkers.py` (был `anomaly_detector.py`, удалён)
+**Сила:** 70 | **Уверенность:** 0.7
 
-**Формула:**
-```
-RS = Avg(Up moves) / Avg(Down moves)
-RSI = 100 - (100 / (1 + RS))
-```
-
-**Зоны:**
-- Overbought: RSI > 70
-- Oversold: RSI < 30
-- Divergence: цена выше, RSI ниже (или наоборот)
-
----
-
-## 📊 7 типов торговых сигналов
-
-### 1. **ANOMALY** - аномалии объема
-**Файл:** `core/anomaly_detector.py`  
-**Сила:** 70 | **Уверенность:** 0.7  
-**Таймфрейм:** 1H
-
-**Логика:** Всплески объема + движение цены в одном направлении
 ```python
 volume_ratio = current_volume / mean_volume_20
-if volume_ratio > 3.0:
+if volume_ratio > volume_multiplier:  # config: 5.0
     price_change = (close - prev_close) / prev_close * 100
     direction = LONG if price_change > 0 else SHORT
 ```
 
-**Сигнал означает:** Начало сильного движения, скорее всего вслед за информацией
-
 **Настройка:**
 ```yaml
 analysis:
-  volume_multiplier: 5.0  # Коэффициент аномалии объема (3.0-8.0)
-  price_threshold: 7.0    # Минимальное движение цены % (5.0-15.0)
+  volume_multiplier: 5.0   # 3.0–8.0
+  price_threshold: 7.0     # 5.0–15.0
 ```
-
-**Оптимизация:**
-- Понизить `volume_multiplier` для более чутких сигналов (риск шума)
-- Увеличить `price_threshold` для фильтрации ложные пики объема
-- **Лучше на**: Листингах монет, экономических новостях
 
 ---
 
-### 2. **WT_SIGNAL** - WaveTrend кроссы
-**Файл:** `core/signal_checkers.py`  
-**Сила:** 70 | **Уверенность:** 0.8  
-**Таймфрейм:** 15m
+### 2. **WT_SIGNAL** — WaveTrend кроссы
+**Файл:** `core/signal_checkers.py`
+**Сила:** 70 | **Уверенность:** 0.8
 
-**Логика:** Кроссы WT1/WT2 в официальных зонах перекупленности/перепроданности
 ```python
 cross_up = wt1_prev < wt2_prev and wt1_last > wt2_last
-cross_down = wt1_prev > wt2_prev and wt1_last < wt2_last
-
-# Используем официальные пороги ±60 (не ±50!)
-if cross_up and wt1_last < -60:      # LONG в OS (перепроданность)
-if cross_down and wt1_last > 60:     # SHORT в OB (перекупленность)
+if cross_up and wt1_last < -60:   # LONG в зоне OS
+if cross_down and wt1_last > 60:  # SHORT в зоне OB
 ```
 
-⚠️ **Важно:** Использование ±50 вместо ±60 генерирует много ложных сигналов на колебаниях. Это нарушает архитектуру и снижает win rate на 5-10%.
-
-**Сигнал означает:** Разворот от экстремума, часто в начало коррекции
-
-**Особенности:**
-- Очень быстрый сигнал (реагирует на 1-2 свечи)
-- Хорошо на волатильных парах
-- **Требует подтверждения** от других сигналов
-- **Минимум 50 баров** для надежности
-
-**Оптимизация:**
-- Использовать вместе с MTF сигналом
-- Требовать, чтобы trend на 1H совпадал с направлением
-- Филтровать очень экстремальные значения (wt1 < -80 или > 80)
+⚠️ Порог **±60** (не ±50) — официальный стандарт. Использование ±50 генерирует ложные сигналы и снижает win rate на 5–10%.
 
 ---
 
-### 3. **MTF_SIGNAL** - мульти-таймфрейм синхронизация
-**Файл:** `core/mtf_checker.py`  
-**Сила:** 85 | **Уверенность:** 0.9  
-**Таймфрейм:** MTF (1H + 15m + 3m)
+### 3. **MTF_SIGNAL** — мульти-таймфрейм синхронизация
+**Файл:** `core/mtf_checker.py`
+**Сила:** 85 | **Уверенность:** 0.9
 
-**Логика:** Синхронизация трендов нескольких таймфреймов
 ```python
-# Основное направление - тренд на 1H
-trend_1h = calculate_trend(df_1h)["trend"].iloc[-1]
-
-# Подтверждение - WaveTrend на 15m и 3m
-wt1_15m, wt2_15m = calculate_wt(df_15m)[["wt1", "wt2"]].iloc[-1]
-wt1_3m = calculate_wt(df_3m)["wt1"].iloc[-1]
-
-# LONG условие (официальный стандарт ±60, не ±50!)
-if trend_1h == 1 and wt1_15m > wt2_15m and wt1_3m < -60:
-    return LONG
-
-# SHORT условие (официальный стандарт ±60, не ±50!)
-elif trend_1h == -1 and wt1_15m < wt2_15m and wt1_3m > 60:
-    return SHORT
-```
-
-**Сигнал означает:** Высокая вероятность разворота или продолжения тренда, подтвержденная на 3+ таймфреймах
-
-**Преимущества:**
-- **Самый сильный сигнал** (avg_R = +0.50)
-- Минимум ложных сигналов
-- Высокая точность на трендовых рынках
-
-**Недостатки:**
-- Отстает в начале движения (ждет подтверждения)
-- Плохо на флэте
-
----
-
-### 4. **TREND_SIGNAL** - развороты тренда
-**Файл:** `core/trend_signals.py`  
-**Сила:** 60 | **Уверенность:** 0.7  
-**Таймфрейм:** 1H
-
-**Логика:** Отслеживание изменения направления тренда через TSL
-```python
-trend_current = calculate_trend(df)["trend"].iloc[-1]
-trend_prev = calculate_trend(df)["trend"].iloc[-2]
-
-if trend_current != trend_prev:
-    # Средняя цена пересекла один из TSL уровней
-    direction = LONG if trend_current == 1 else SHORT
-```
-
-**Сигнал означает:** Точка развора тренда, переход из UP в DOWN или наоборот
-
-**Особенности:**
-- Хорошо для позиционирования
-- **Текущая эффективность:** avg_R = -0.50 (требует оптимизации)
-- Может быть использован как стоп-сигнал для противоположных позиций
-
-**Проблема:** Часто дает разворот, который продолжается в старом направлении (ложный сигнал)
-
----
-
-### 5. **DIVERGENCE** - дивергенции цена/индикатор
-**Файл:** `core/divergence_detector.py`  
-**Сила:** 75 | **Уверенность:** 0.8  
-**Таймфрейм:** 1H
-
-**Логика:** Расхождения между движением цены и осциллятором (WT + RSI)
-```python
-# Bearish Divergence
-recent_price_high > df["high"].iloc[-50:].max() and \
-recent_wt_high < df_wt["wt1"].iloc[-50:].max()
-# Цена выше, но осциллятор ниже → давление ослабевает → SHORT
-
-# Bullish Divergence  
-recent_price_low < df["low"].iloc[-50:].min() and \
-recent_wt_low > df_wt["wt1"].iloc[-50:].min()
-# Цена ниже, но осциллятор выше → дно не подтверждается → LONG
-```
-
-**Типы:**
-- **Regular Divergence**: классическая дивергенция (разворот вероятен на 50-60%)
-- **Hidden Divergence**: скрытая дивергенция (продолжение тренда на 60-70%)
-
-**Применение:**
-- Лучше всего работает на вершинах/дне
-- Требует ** 2-3 локальных экстремума** для надежности
-- На трендовом рынке работает лучше
-
----
-
-### 6. **PIVOT_REVERSAL** - развороты от пивот-уровней
-**Файл:** `core/pivot_reversal.py`  
-**Сила:** 65 | **Уверенность:** 0.7  
-**Таймфрейм:** 1H
-
-**Логика:** Цена касается уровней поддержки/сопротивления из пивотов
-```python
-resistance_levels = calculate_traditional_pivots(prev_high, prev_low, prev_close)
-for level in [R1, R2, R3, ...]:
-    distance = abs(current_price - level) / current_price * 100
-    if distance < 2.0:  # В пределах 2% от уровня
-        return SHORT  # Разворот от сопротивления
-
-# Аналогично для поддержки (S1-S5)
-```
-
-**Сигнал означает:** Цена касается технического уровня, вероятен разворот или откат
-
-**Текущая эффективность:** avg_R = +0.50 (хорошо после улучшений)
-
-**Уровни пивотов:**
-```
-PP (Pivot Point) = (H + L + C) / 3
-S1 = PP × 2.003 - H
-S2 = PP - (H - L)
-S3 = PP × 2 - (2H - L)
-R1 = PP × 1.997 - L
-R2 = PP + (H - L)
-R3 = PP × 2 + (H - 2L)
+# Тренд 1H + WT 15m/3m
+if trend_1h == 1 and wt1_15m > wt2_15m and wt1_3m < -60:   # LONG
+elif trend_1h == -1 and wt1_15m < wt2_15m and wt1_3m > 60:  # SHORT
 ```
 
 ---
 
-### 7. **MTF_PIVOT_INTEGRATION** - комбинированные сигналы
-**Файл:** `core/mtf_pivot_integration.py`  
-**Сила:** 90 | **Уверенность:** 0.95  
+### 4. **TREND_SIGNAL** — развороты тренда
+**Файл:** `core/trend_signals.py`
+**Сила:** 60 | **Уверенность:** 0.7
 
-**Логика:** Пересечение MTF сигнала + пивот-конфлюэнции
-```python
-# Условия одновременно:
-# 1. MTF сигнал (trend 1H + WT 15m/3m)
-# 2. Цена в пределах 2% от пивот-уровня
-# 3. Конфлюэнция недельных и дневных пивотов
-return COMPOSITE_SIGNAL
-```
-
-**Это самый сильный сигнал** - применяется редко но с высокой вероятностью успеха.
+Фиксирует смену `trend: +1 → -1` или `-1 → +1`. Текущая эффективность: avg_R = −0.50. Вес адаптивно снижен до 0.08.
 
 ---
 
-## 🎯 Система пивотов (core/pivot_levels.py & core/pivot_calculator_fixed.py)
+### 5. **DIVERGENCE** — дивергенции
+**Файл:** `core/divergence_detector.py`
+**Сила:** 75 | **Уверенность:** 0.8
 
-### **Типы пивотов:**
+- **Regular Divergence**: разворот (цена ↑, осциллятор ↓ или наоборот)
+- **Hidden Divergence**: продолжение тренда
 
-#### 1. **Traditional Pivot Points** (основной)
-Формулы выше. Используется по умолчанию.
+⚠️ Дивергенции **не попадают** в `all_scan_signals` / `pre_signals` — только в отдельный список, чтобы не создавать `conflict_ratio`.
 
-#### 2. **Woodie Pivot Points**
-```
-PP = (H + L) / 2 + Close
-S1 = 2 × PP - H
-R1 = 2 × PP - L
-```
-Смещение на закрытие предыдущего периода.
-
-#### 3. **Camarilla Pivot Points**
-```
-A = (H - L) × 1.1 / 2
-PP = (H + L) / 2
-S1 = PP - A
-R1 = PP + A
-S2 = PP - A × 2
-R2 = PP + A × 2
-```
-Более узкие уровни, хороши для скальпинга.
-
-#### 4. **Fibonacci Pivot Points**
-Использует коэффициенты Фибоначчи (0.236, 0.382, 0.618, 1.0).
-
-### **Мульти-таймфрейм пивоты (Period-based):**
-**Файл:** `core/pivot_calculator_fixed.py`
-
-Вместо скользящего окна используются **UTC-периоды**:
-- **1W** (недельные): пневдельница 00:00 UTC до следующего понедельника
-- **1D** (дневные): 00:00 UTC до 23:59 UTC
-- **1M** (месячные): начало месяца до конца
-
-**Преимущества:**
-- Одни и те же уровни на всех выкладкам за период
-- Соответствуют финслужбам и аналитикам
-- Более стабильные
-
-### **Конфлюэнция (совпадение уровней):**
-```python
-# Порог совпадения
-distance_percent = abs((weekly_price - daily_price) / weekly_price × 100)
-
-if distance_percent <= 0.3%:  # Очень близко
-    strength = "VERY_STRONG"
-elif distance_percent <= 1.0%:
-    strength = "STRONG"
-```
-
-**Обоснование:** Когда недельный и дневной пивоты совпадают, это сильный уровень за счет согласованности разных временных горизонтов.
+Требует limit=160 баров (max_bars=100 + pivot_period×2 + 50).
 
 ---
 
-## 🧠 Trading Intelligence - агрегация всех сигналов
+### 6. **PIVOT_REVERSAL** — развороты от пивот-уровней
+**Файл:** `core/pivot_reversal.py`
+**Сила:** 65 | **Уверенность:** 0.7 | avg_R = +0.50
 
-### **Архитектура анализа:**
-```
-DataCollector (OHLCV с TTL-кешем)
-  ↓
-6 детекторов сигналов (anomaly, WT, MTF, trend, divergence, pivot) 
-  ↓
-TradingIntelligence.analyze_symbol()
-  ├─ _collect_all_signals()     # Собирает 6 сигналов
-  ├─ _filter_signals_by_quality()  # Удаляет шум
-  ├─ _analyze_signals_advanced()   # Взвешивает и объединяет
-  ├─ _enhance_analysis_with_ml()  # ML улучшения P(win)
-  └─ _generate_recommendation()   # Финальная рекомендация
-  ↓
-TradeSimulator.register_trade_async()  # Логирование в БД
+Цена касается уровня из `pivot_calculator_fixed` (1M/1W/1D пивоты по UTC-периодам). TP пересчитывается через `get_pivot_tp_with_source()` с R ≥ 1.5.
+
+---
+
+### 7. **MTF_PIVOT_INTEGRATION** — MTF + пивот-конфлюэнция
+**Файл:** `core/mtf_pivot_integration.py`
+**Сила:** 90 | **Уверенность:** 0.95
+
+Пересечение MTF сигнала + цена у пивот-уровня. Самый сильный одиночный сигнал, редкий.
+
+---
+
+### 8. **CONFLUENCE** — мультифакторный скан ⭐ новый
+**Файл:** `core/confluence_scanner.py`
+
+Проверяет 5+ факторов одновременно:
+
+| Фактор | Условие LONG | Условие SHORT |
+|--------|-------------|--------------|
+| WT_OS | WT1 < −53 (threshold) | WT1 > +53 |
+| WT_OB | WT1 < +53 (не в зоне OB) | — |
+| WT_CROSS | Последний кросс вверх (в fresh_bars=10) | Последний кросс вниз |
+| TSL_CROSS | Последний кросс trendline вверх | Последний кросс вниз |
+| NEAR_SUPPORT/RESISTANCE | Цена близко к S1–S5 | Цена близко к R1–R5 |
+| BELOW/ABOVE_PP | Цена ниже PP | Цена выше PP |
+| WT_DIVERGENCE | Бычья дивергенция | Медвежья дивергенция |
+
+**Фиксы (12.03.2026):**
+- `last_tsl_cross` / `last_wt_cross` = `"UP" | "DOWN" | None` — взаимоисключающие (баг двойных LONG+SHORT устранён)
+- Поиск только в последних `cross_fresh_bars=10` барах (2.5 часа)
+
+```yaml
+analysis:
+  confluence:
+    cross_fresh_bars: 10   # баров для поиска кросса
+    wt_os_threshold: -53
+    wt_ob_threshold: 53
 ```
 
-### **Веса сигналов (адаптивные):**
+---
+
+## 🎯 Пивот-система
+
+### Period-based пивоты (pivot_calculator_fixed.py)
+
+Пивоты рассчитываются по **UTC-периодам** (не скользящее окно):
+- **1M**: начало месяца 00:00 UTC
+- **1W**: понедельник 00:00 UTC
+- **1D**: 00:00 UTC
+
+**SL/TP логика (реализована с 08.03.2026):**
+
+| Приоритет | SL | TP |
+|-----------|----|----|
+| 1 (основной) | `1.5 × ATR(14)`, зажат в [1%, 4%] | Ближайший пивот с R ≥ 1.5 |
+| 2 (fallback) | `volatility` → clamp(vol, 1%, 3%) | `1.5 × SL_dist` |
+| 3 (крайний) | 2.5% | — |
+
+Поля в TradingRecommendation: `sl_source`, `tp_source` — логируются для диагностики.
+
+---
+
+## 🏃 TSL (Trailing Stop Loss)
+
+**Активен по умолчанию.** Включается после достижения +1R прибыли.
+
+```yaml
+trading:
+  use_tsl: true
+  tsl_activation_r: 1.0
+  tsl_buffer_pct: 0.1
+```
+
+**Логика:**
+- LONG: SL следует за `trendup` (снизу вверх)
+- SHORT: SL следует за `trenddown` (сверху вниз)
+- Рассчитывается через `calculate_trend()` из `core/indicators.py`
+
+---
+
+## 🌐 Рыночные режимы (core/market_regime.py)
+
+**MarketRegimeClassifier** (ADX + ATR + EMA) классифицирует рынок при регистрации сделки:
+
+| Режим | Условие |
+|-------|---------|
+| `TREND_UP` | ADX > порога, EMA50 < цены |
+| `TREND_DOWN` | ADX > порога, EMA50 > цены |
+| `RANGE` | ADX < порога, низкая волатильность |
+| `HIGH_VOL` | высокая волатильность (ATR%) |
+
+Записывается в поле `regime` таблицы `simulated_trades`. Используется OutcomePredictor (4 one-hot признака).
+
+---
+
+## 📦 Проверка качества данных (core/data_quality.py)
+
+Три проверки OHLCV перед анализом:
+
+| Проверка | Условие пропуска |
+|---------|-----------------|
+| **Глубина** | `len(df) < min_bars` (160 для scan_one, 50 для /intelligence) |
+| **Свежесть** | Последняя свеча старше `freshness_mult × TF` |
+| **NaN-пробелы** | >5% NaN в close |
+
+---
+
+## 🔧 API-движок (core/api_engine.py)
+
+Транспортный слой под `data_collector.py`:
+
+| Компонент | Функция |
+|-----------|---------|
+| `OhlcvCache` | LRU (OrderedDict), maxsize=5000, TTL по TF |
+| `CircuitBreaker` | 10 ошибок → OPEN 30 сек → HALF_OPEN → проверка |
+| In-flight dedup | `dict[(symbol, tf, limit), Future]` — один запрос на ключ |
+| Retry | NetworkError: 1/2/4 сек; RateLimitExceeded: 5/10/20 сек |
+| Semaphore | `Semaphore(20)` — единая точка контроля параллелизма |
+
+`enableRateLimit: False` в ccxt — намеренно, управление через Semaphore.
+
+---
+
+## 🧠 Trading Intelligence — агрегация сигналов
+
+### Сигнальный поток:
+
+```
+scan_one (monitoring.py)
+  → analyze_symbol (trading_intelligence.py)
+      → _collect_all_signals()       # таймаут 10 сек
+      → _analyze_signals_advanced()  # взвешивание + conflict_ratio
+      → _enhance_analysis_with_ml()  # MLPredictor + OutcomePredictor
+      → _generate_recommendation()
+  → _broadcast_intelligence_alert()
+      → is_actionable (str ≥ 50, BUY/SELL, dir ≠ NEUTRAL) → TG-алерт
+      → should_register (str ≥ 40, dir ≠ NEUTRAL)         → register_trade_async → DB
+```
+
+### Веса сигналов (адаптивные, 242+ сделок):
+
 ```python
 signal_weights = {
-    SignalType.MTF_ALERT: 0.30,         # 30% - самый сильный
-    SignalType.MTF_SIGNAL: 0.25,        # 25%
-    SignalType.PIVOT_REVERSAL: 0.20,    # 20%
-    SignalType.DIVERGENCE: 0.15,        # 15%
-    SignalType.WT_SIGNAL: 0.10,         # 10%
-    SignalType.TREND_SIGNAL: 0.10,      # 10%
-    SignalType.ANOMALY: 0.05,           # 5%
+    MTF_ALERT:          0.30,   # самый сильный
+    MTF_SIGNAL:         0.25,
+    PIVOT_REVERSAL:     0.24,   # адаптировано ↑ (avg_R = +0.50)
+    DIVERGENCE:         0.15,
+    WT_SIGNAL:          0.133,  # адаптировано ↑ (avg_R = +0.83)
+    TREND_SIGNAL:       0.08,   # адаптировано ↓ (avg_R = −0.50)
+    ANOMALY:            0.05,
 }
 ```
 
-**Total: 115% (нормализуется при расчете)**
+**Формула адаптации:** `factor = clamp(1.0 + avg_R × 0.4, 0.5, 2.0)`, минимум 20 закрытых сделок.
 
-### **Адаптация весов (Этап 4):**
+### Пороги регистрации:
 
-Веса автоматически адаптируются на основе **реальных результатов** из taблицы `simulated_trades`:
-
-```python
-def update_signal_weights(self):
-    for signal_type:
-        closed_trades = count_trades(signal_type, status IN [TP, SL])
-        if closed_trades < 20:  # Минимум данных
-            continue
-        avg_R = avg(profit_R) for signal_type
-        factor = clamp(1.0 + avg_R × 0.4, 0.5, 2.0)
-        new_weight = base_weight × factor
-```
-
-**Формула:**
-- avg_R = +1.0 → factor = 1.4 → вес ×1.4 (улучшилось)
-- avg_R = 0.0 → factor = 1.0 → вес не меняется
-- avg_R = -1.0 → factor = 0.6 → вес ×0.6 (ухудшилось)
-
-**Текущие реальные веса (163 сделки):**
-- `pivot_reversal`: 0.20 → **0.24** (avg_R = +0.50) ↑
-- `trend_signal`: 0.10 → **0.08** (avg_R = -0.50) ↓
-- `wt_signal`: 0.10 → **0.133** (avg_R = +0.83) ↑↑
-
-### **Пороги принятия решений:**
-```python
-thresholds = {
-    "min_signals": 2,              # Минимум сигналов для рекомендации
-    "min_strength": 40,            # Минимальная сила сигнала (0-100)
-    "min_confidence": 0.6,         # Минимальная уверенность (0-1.0)
-    "conflict_threshold": 0.3,     # Доля противоречивых сигналов
-    "volume_threshold": 100000,    # Min объем 24h USD
-    "volatility_threshold": 50.0,  # Max волатильность %
-}
-```
-
-**Переопределение для топ-пар:**
-- BTC, ETH, BNB, SOL, XRP, ADA, DOGE, DOT, MATIC, AVAX
-- Требуют минимум 1 сигнал (вместо 2)
-- Проходят даже при неидеальном контексте
-
-### **Фильтры качества сигналов:**
-
-1. **По объему**: 24h volume > 100k USDT
-2. **По волатильности**: < 50% (слишком высокая = шум)
-3. **По листингу**: возраст > 30 дней (новые = риск)
-4. **Cooldown после SL**: пауза перед новым сигналом (конфиг)
-5. **Дедупликация**: одна пара не дает >1 алерта подряд
-
----
-
-## 🤖 ML-улучшения (Этап 4.2)
-
-### **OutcomePredictor - RandomForest на реальных исходах**
-
-Обучается на закрытых сделках из `simulated_trades`:
-
-**12 признаков:**
-1. `strength` - сила сигнала (0-100)
-2. `confidence` - уверенность (0-1)
-3. `direction` - направление (LONG/SHORT, one-hot 2 признака)
-4. `signal_type` - тип сигнала (3 one-hot для PIVOT/TREND/WT)
-5. `volatility` - волатильность (ATR %)
-6. `price_change` - движение цены за период
-7. `regime` - рыночный режим (4 one-hot для TREND_UP/TREND_DOWN/RANGE/HIGH_VOL)
-
-**Таргет:**
-- TP = 1 (успешная сделка)
-- SL = 0 (неудачная сделка)
-
-**Метрики:**
-- **CV AUC**: ~0.56 (базовая линия)
-- **Улучшение**: после накопления 300+ сделок с заполненным полем `regime`
-
-**Применение:**
-```python
-p_win = outcome_predictor.predict_proba(features)
-confidence = 0.7 × original_confidence + 0.3 × p_win
-```
-
-### **MLPredictor - OHLCV-based (ещё в разработке)**
-
-Предсказывает:
-- **PRICE_DIRECTION**: вверх/вниз на следующей свече
-- **SIGNAL_STRENGTH**: усиление силы текущего сигнала
-
----
-
-## ⚙️ Настройка параметров (config.yaml)
-
-### **Файл конфигурации:**
 ```yaml
-# BingX API
-bingx_api_key: "YOUR_KEY"
-bingx_secret_key: "YOUR_SECRET"
+signal_quality:
+  min_strength: 50          # TG-алерт
+  min_strength_register: 40 # запись в БД
+```
 
-# Telegram
-telegram_token: "YOUR_TOKEN"
-admin_id: 123456789
+### Таймаут и fallback цены:
 
-# Анализ дефолт  
+При таймауте `_get_market_context` (15 сек) цена берётся из кеша OHLCV:
+```python
+_df = await data_collector.get_ohlcv(symbol, "15m", limit=5)
+fallback_price = float(_df["close"].iloc[-1])
+```
+(Без этого `current_price=0` → `entry_price=None` → сделка не регистрируется)
+
+---
+
+## 🤖 ML-улучшения
+
+### OutcomePredictor (core/outcome_predictor.py)
+
+RandomForest(200 деревьев) на реальных исходах:
+- **12 признаков**: strength, confidence, direction, signal_type(3), volatility, price_change, regime(4)
+- **Таргет**: TP=1, SL=0
+- **CV AUC**: ~0.486 (240+ сделок; вырастет при заполнении regime)
+- **Блендинг**: `confidence = 0.7 × original + 0.3 × P(win)`
+
+### MLPredictor (core/ml_predictor.py)
+
+OHLCV-based предсказание направления и силы сигнала. RSI использует Wilder's RMA (исправлено 12.03.2026, было SMA-rolling).
+
+---
+
+## ⚙️ Ключевые параметры config.yaml
+
+```yaml
 analysis:
-  volume_multiplier: 5.0        # Коэффициент объема (3.0-8.0)
-  price_threshold: 7.0          # Минимум цены движения % (5.0-15.0)
-  history_size: 200             # OHLCV глубина (150-300)
-  check_interval: 60            # Интервал проверки сек (30-180)
-  
-  # WaveTrend параметры
+  volume_multiplier: 5.0
+  price_threshold: 7.0
   wt_periods:
-    n1: 10                       # Главный период (9-12)
-    n2: 21                       # Сигнальный период (20-25)
-    
-  # Trend параметры
+    n1: 10
+    n2: 21
   trend:
-    atr_period: 43              # ATR период (35-50)
-    factor: 1.0                 # ATR множитель (0.8-1.2)
-    
-  # Пивоты параметры
-  pivot:
-    confluence_threshold: 0.3   # Порог конфлюэнции % (0.1-0.5)
-    max_levels: 5               # Макс уровней S/R (3-7)
-    types: ["traditional", "woodie", "camarilla", "fibonacci"]
-```
+    atr_period: 43
+    factor: 1.0
+  confluence:
+    cross_fresh_bars: 10
+    wt_os_threshold: -53
+    wt_ob_threshold: 53
 
-### **Адаптивные пороги (редактируются через браузер):**
-```yaml
-thresholds:
-  min_signals: 2
-  min_strength: 40
-  min_confidence: 0.6
-  conflict_threshold: 0.3
-  volume_threshold: 100000
-  volatility_threshold: 50.0
-```
+trading:
+  use_tsl: true
+  tsl_activation_r: 1.0
+  tsl_buffer_pct: 0.1
 
-### **Hot-reload настроек:**
-Все параметры можно менять через веб-интерфейс:
+signal_quality:
+  min_volume_usd: 1000000
+  sl_cooldown_hours: 4
+  dedup_minutes: 30
+  min_strength: 50
+  min_strength_register: 40
 ```
-http://localhost:8000/settings
-```
-
-Изменения применяются мгновенно через `ConfigLoader.save_analysis()` без перезапуска бота.
 
 ---
 
 ## 📈 Мониторинг и оптимизация
 
-### **Проверка эффективности сигналов:**
+### Текущие метрики (242+ сделок):
+
+| Метрика | Значение | Цель |
+|---------|----------|------|
+| Win Rate | 39.7% | > 50% |
+| CV AUC (ML) | 0.486 | > 0.65 |
+| pivot_reversal avg_R | +0.50 | > 1.0 |
+| wt_signal avg_R | +0.83 | > 1.0 |
+| trend_signal avg_R | −0.50 | > 0 |
+
+### Полезные команды:
+
 ```bash
+# Статистика по типам сигналов
 python -c "
 from core.performance_engine import PerformanceEngine
 pe = PerformanceEngine('subscriptions.db')
 print(pe.summary())
-for r in pe.by_signal_type(): 
-    print(f'{r[\"signal_type\"]}: win_rate={r[\"win_rate\"]:.1%}, avg_R={r[\"avg_r\"]:.2f}')
+for r in pe.by_signal_type():
+    print(r)
 "
-```
 
-### **Текущие метрики (на 163 сделках):**
-| Метрика | Значение | Цель |
-|---------|----------|------|
-| Всего сделок | 163 | 500+ |
-| Win Rate | 43.3% | > 50% |
-| Avg R (win) | 2.0 | > 3.0 |
-| CV AUC (ML) | 0.56 | > 0.65 |
-| Avg captured_R% | — | > 60% |
-
-### **Проверка OutcomePredictor:**
-```bash
+# OutcomePredictor
 python -c "
 from core.outcome_predictor import OutcomePredictor
 op = OutcomePredictor(); op.fit('subscriptions.db')
 print(op.info())
 "
+
+# Диагностика API-движка
+# (когда бот запущен, из REPL)
+# bot.data_collector._engine.cache_stats()
 ```
 
-### **Дашборд в реальном времени:**
+### Дашборд:
 ```
-http://localhost:8000       # Статистика по сигналам
-http://localhost:8000/api/stats   # JSON API
+http://localhost:8000           # статистика + EV + прогноз депозита
+http://localhost:8000/settings  # редактирование параметров (hot-reload)
+http://localhost:8000/api/stats # JSON
 ```
 
 ---
 
-## 🚀 Рекомендации по оптимизации
+## 🔍 Частые проблемы
 
-### **Для повышения Win Rate (текущий 43.3% → цель 50%+):**
-
-1. **Увеличить пороги качества**
-   ```yaml
-   min_strength: 50  # было 40
-   min_confidence: 0.7  # было 0.6
-   ```
-
-2. **Улучшить фильтры**
-   - Увеличить `volume_multiplier` для более редких, но точных аномалий
-   - Добавить cooldown после SL (Этап 5.1)
-   - Добавить BTC-корреляцию (Этап 5.2)
-
-3. **Переоптимизировать веса**
-   - На основе backtesting за разные рыночные условия
-   - Снизить вес `trend_signal` (avg_R = -0.50)
-   - Повысить вес `pivot_reversal` + MTF комбинации
-
-4. **Дедупликация сигналов** (Этап 5.1)
-   - Одна монета не дает >1 сигнала подряд
-   - Требует нового данных между сигналами
-
-### **Для повышения Avg R (2.0 → 3.0+):**
-
-1. **Динамический TP по пивотам** (Этап 6)
-   ```python
-   tp = nearest_pivot_level (выше/ниже entry)
-   R = (tp - entry) / (entry - sl)  # Теперь 3-10 вместо фиксированного
-   ```
-
-2. **R-регрессор для предсказания потенциала** (Этап 7)
-   - GradientBoostingRegressor предсказывает `max_R_possible`
-   - MFE-трекинг показывает, сколько потенциала теряем
-
-3. **Trailing Stop Loss**
-   - После достижения +1R подтянуть SL в безубыток
-   - Защита от разворота при достигнутой прибыли
-
-4. **Анализ MFE (Max Favorable Excursion)**
-   - Смотреть, какой максимальный R был доступен
-   - `captured_R_pct = R_multiple / max_R_possible × 100%`
-
----
-
-## 🏗️ Архитектурные улучшения (ROADMAP)
-
-### **Этап 8 - Масштабирование:**
-
-1. **Разбить монолиты**
-   - `bot_with_subscriptions.py` (1540 строк) → обработчики в `bot/handlers/`
-   - `trading_intelligence.py` (1850 строк) → `core/signals/` + `core/ml/`
-
-2. **Redis кэш для OHLCV**
-   - Текущий: in-memory dict (теряются при рестарте)
-   - Новый: Redis → сохраняется между перезапусками
-
-3. **PostgreSQL вместо SQLite**
-   - Для >100 пользователей
-   - Миграция займет 1 день с текущей прослойкой
-
-4. **Async обработка сигналов**
-   - Текущий: последовательная (60 сек цикл)
-   - Желаемый: параллельная (30 сек цикл)
-
----
-
-## 🔍 Частые проблемы и решения
-
-### **Проблема: Много ложных сигналов (low win rate)**
-**Решение:**
+### Много ложных сигналов
 ```yaml
-# Увеличить пороги
-min_confidence: 0.8  # было 0.6
-min_strength: 60     # было 40
-volume_threshold: 500000  # было 100k
-conflect_threshold: 0.1  # было 0.3 (не допускать противоречия)
+min_confidence: 0.8
+min_strength: 60
+volume_threshold: 500000
 ```
 
-### **⚠️ КРИТИЧНО: WT пороги должны быть ±60, не ±50!**
-**Проблема:** Ошибка в архитектуре - использование ±50 вместо официального стандарта ±60
-- Генерирует ложные сигналы на случайных колебаниях
-- Снижает win rate на 5-10%
-- Может привести к потерям денег
-
-**Файлы с ошибкой (уже исправлены):**
-- `core/signal_checkers.py`: проверяйте `wt1_last < -60`, `wt1_last > 60` (не ±50)
-- `core/mtf_checker.py`: проверяйте `wt1_3m < -60`, `wt1_3m > 60` (не ±50)
-
-**Проверка:**
+### WT пороги — ±60, не ±50!
+Проверка:
 ```bash
-grep -n "< -50\|> 50" core/signal_checkers.py  # Должно быть пусто!
-grep -n "< -60\|> 60" core/signal_checkers.py  # Должно быть найдено
+grep -n "< -50\|> 50" core/signal_checkers.py   # должно быть пусто
+grep -n "< -60\|> 60" core/signal_checkers.py   # должно быть
 ```
 
-### **Проблема: Нет сигналов на интересующей паре**
-**Решение:**
-1. Проверить объем 24h > 100k USD
-2. Проверить таймфреймы (нужны данные 1H, 15m, 3m)
-3. Добавить в top_pairs для ослабления требований
-4. Проверить волатильность (если > 50% - пауза)
-
-### **Проблема: Дашборд не обновляется**
-**Решение:**
-1. Проверить что бот работает (есть код в консоли)
-2. Очистить кэш браузера (Ctrl+Shift+Delete)
-3. Перезайти на `http://localhost:8000`
-
-### **Проблема: OutcomePredictor показывает 0.56 AUC**
-**Решение:**
-- Это базовая линия (чуть лучше случайного)
-- Нужно 300+ сделок с заполненным полем `regime`
-- После этого AUC вырастет до 0.60-0.65
-
----
-
-## 📚 Дополнительные материалы
-
-### **Структура папок:**
-- **`core/`** - бизнес-логика (технические индикаторы, сигналы, ML)
-- **`bot/`** - UI-слой Telegram (keyboards, handlers, menus)
-- **`web/`** - дашборд aiohttp
-- **`tests/`** - юнит-тесты и интеграционные тесты
-
-### **Файлы для изучения:**
-1. `core/indicators.py` - реализация всех индикаторов
-2. `core/trading_intelligence.py` - главный анализ
-3. `core/signal_checkers.py` - каждый тип сигнала
-4. `core/performance_engine.py` - статистика по сделкам
-5. `config.yaml` - все параметры
-
-### **Полезные команды:**
+### Сделка не зарегистрирована
+Смотреть лог:
 ```bash
-# Запуск бота
-python bot_with_subscriptions.py
-
-# Тесты
-python -m pytest tests/ -v
-
-# Отладка конкретного символа
-python -c "
-from core.data_collector import RealTimeData
-from core.trading_intelligence import TradingIntelligence
-import asyncio
-async def test():
-    dc = RealTimeData()
-    ti = TradingIntelligence(dc)
-    r = await ti.analyze_symbol('BTCUSDT')
-    print(r)
-asyncio.run(test())
-"
+grep "зарегистрир\|Сделка не\|action=WATCH" crypto_bot.log | tail -20
 ```
 
----
+Причины:
+1. `action=WATCH` — strength < 40 или direction=NEUTRAL
+2. `entry_price=None` — таймаут market_context (исправлено 13.03.2026)
+3. `conflict_ratio` высокий — противоречивые сигналы
 
-## ✅ Контрольный список для новичка
-
-- [ ] Понимаю, что такое WaveTrend и его зоны
-- [ ] Знаю разницу между 7 типами сигналов
-- [ ] Могу отредактировать параметры в config.yaml
-- [ ] Умею читать статистику из PerformanceEngine
-- [ ] Проверил свежие сделки в БД (subscriptions.db)
-- [ ] Посетил дашборд и увидел графики
-- [ ] Готов к оптимизации весов на реальных данных
+### Ошибка `_build_result() missing argument`
+Исправлено 13.03.2026 в `core/pivot_reversal.py` — добавлен `trend_label` в оба call site.
 
 ---
 
-*Документ актуален на 5 марта 2026. Обновляется с каждым этапом ROADMAP.*
+## 🏗️ Архитектурные ограничения (не менять без понимания)
+
+- Дивергенции **не** в `all_scan_signals` — создают `conflict_ratio`
+- `bot.pivot_calculator` — правильное имя (не `pivot_calculator_fixed`)
+- `enableRateLimit: False` — намеренно (Semaphore(20))
+- Python 3.12 строго — `.venv` и 3.13 не имеют aiogram
+- `_ohlcv_cache` = алиас `self._engine._cache._data`
+- `anomaly_detector.py`, `config.py`, `risk_manager.py` — **удалены**
+
+---
+
+## 📁 Ключевые файлы
+
+| Файл | Назначение |
+|------|-----------|
+| `core/indicators.py` | Все технические индикаторы (единый источник) |
+| `core/signal_checkers.py` | Все детекторы сигналов (inc. anomaly) |
+| `core/confluence_scanner.py` | Мультифакторный confluence-скан |
+| `core/trading_intelligence.py` | Агрегация сигналов → рекомендация |
+| `core/market_regime.py` | Классификатор рыночного режима |
+| `core/data_quality.py` | Проверки OHLCV перед анализом |
+| `core/api_engine.py` | LRU-кеш, CircuitBreaker, in-flight dedup |
+| `core/trade_simulator.py` | Регистрация сделок, TSL-трекинг, MFE |
+| `core/performance_engine.py` | Аналитика по simulated_trades |
+| `core/outcome_predictor.py` | ML на реальных исходах (P(win)) |
+| `core/pivot_calculator_fixed.py` | Period-based пивоты (1M/1W/1D UTC) |
+| `config.yaml` | Все параметры |
+
+---
+
+*Обновлено: 13.03.2026. Все индикаторы централизованы в `core/indicators.py` (Этап 8.3, 12.03.2026).*

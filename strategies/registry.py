@@ -82,6 +82,7 @@ def _load_built_in_strategies():
         from strategies.built_in.confluence import ConfluenceStrategy
         from strategies.built_in.confluence_scanner_strategy import ConfluenceScannerStrategy
         from strategies.built_in.conservative import ConservativeStrategy
+        from strategies.built_in.pivot_reversal_strategy import PivotReversalStrategy
         try:
             from strategies.built_in.mtf_bias import MTFBiasStrategy
         except Exception:

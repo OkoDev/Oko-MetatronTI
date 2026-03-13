@@ -189,6 +189,7 @@ def interpret(
                 "cross_found": entry_tf if cross_bonus > 0 else None,
                 "regime": regime,
                 "tf_table": tf_table,
+                "senior_reversal": detect_senior_reversal(snapshot),
             },
             description=description,
             interpretation=interpretation,
@@ -197,6 +198,53 @@ def interpret(
     except Exception:
         logger.exception("[mtf_bias] Ошибка interpret()")
         return None
+
+
+def detect_senior_reversal(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Обнаруживает потенциальный разворот на старших TF (1d, 4h, 1h).
+
+    Признак разворота DOWN: тренд UP + WT в зоне OB.
+    Признак разворота UP:   тренд DOWN + WT в зоне OS.
+
+    Возвращает словарь с полями:
+        direction: "UP" | "DOWN"   — куда разворачивается цена
+        tf:        "1d" | "4h" | "1h"
+        wt1:       float            — текущий WT
+        zone:      "OB" | "OS"
+        strength:  int              — 1d=85, 4h=80, 1h=75
+    Или None если признаков разворота нет.
+    """
+    senior_tfs = [("1d", 1.0), ("4h", 0.8), ("1h", 0.6)]
+    reversals = []
+
+    for tf, weight in senior_tfs:
+        d = snapshot.get(tf)
+        if not d:
+            continue
+        trend = d.get("trend", "")
+        zone = d.get("zone", "N")
+        wt1 = d.get("wt1", 0)
+
+        if trend == "UP" and zone == "OB":
+            reversals.append({"direction": "DOWN", "tf": tf, "wt1": wt1,
+                               "zone": zone, "weight": weight})
+        elif trend == "DOWN" and zone == "OS":
+            reversals.append({"direction": "UP", "tf": tf, "wt1": wt1,
+                               "zone": zone, "weight": weight})
+
+    if not reversals:
+        return None
+
+    best = reversals[0]  # самый старший TF первый в списке
+    strength = int(60 + best["weight"] * 25)  # 1d=85, 4h=80, 1h=75
+    return {
+        "direction": best["direction"],
+        "tf": best["tf"],
+        "wt1": best["wt1"],
+        "zone": best["zone"],
+        "strength": strength,
+    }
 
 
 def mtf_bias_message(symbol: str, sig: "SignalData") -> str:

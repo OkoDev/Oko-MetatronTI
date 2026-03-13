@@ -5,6 +5,16 @@
 
 ## work_completed — ЧТО СДЕЛАНО В ЭТОЙ СЕССИИ
 
+### 4. MTF WT Интерпретатор — починка и интеграция (текущая сессия)
+- `core/trading_intelligence.py`: добавлен `SignalType.MTF_BIAS: 0.30` в `signal_weights` и `_base_signal_weights`; добавлен маппинг `"mtf_bias"` в `update_signal_weights()`
+- `strategies/built_in/mtf_bias.py`: исправлен фильтр — теперь фильтрует `MTF_BIAS` (не `MTF_SIGNAL/MTF_ALERT`); исправлен `require_confluence` блок
+- `bot/monitoring.py`: в блоке форматирования TG-текста добавлена ветка — если `supporting_signals` содержит `MTF_BIAS` сигнал → используется `mtf_bias_message(symbol, sig)` вместо общего форматтера
+- `core/mtf_interpreter.py`: добавлена функция `detect_senior_reversal(snapshot)` — обнаруживает потенциальные развороты на 1d/4h/1h по принципу (тренд UP + WT в OB) или (тренд DOWN + WT в OS); результат добавляется в `sig.data["senior_reversal"]` внутри `interpret()`
+- `core/subscription_manager.py`: добавлена колонка `tsl_tf TEXT DEFAULT '15m'` в `simulated_trades` + миграция
+- `core/trade_simulator.py`: при регистрации сделки — если `supporting_signals` содержат `MTF_BIAS` сигнал, извлекается `entry_tf` и маппируется на старший TSL TF (5m/15m → 1h, 45m/1h → 4h); `tsl_tf` сохраняется в БД; в `check_open_trades_with_tsl()` — `preferred_tsl_tf` из сделки используется для TSL вместо жёсткого 1h
+
+
+
 ### 1. Confluence аналитика WR + фикс TP пивоты (коммит e1106c6)
 - `bot/monitoring.py`: сохраняем `confluence_factors` в `features_json` при регистрации
 - `core/performance_engine.py`: новый метод `confluence_breakdown()` — WR по direction/strength/tp_source/факторам
@@ -64,7 +74,7 @@ for r in pe.by_strategy(): print(r)
 Данные показали: strength 50-70 = WR 50-57%, strength 70-80 = WR 4.3% (аномалия 12.03).
 Нужно разобраться почему 12.03 было 198 сигналов с плохим качеством.
 
-### 4. MTF WT — ведение сделок по TSL старшего TF (обсуждено, не реализовано)
+### 4. MTF WT — ✅ РЕАЛИЗОВАНО (текущая сессия)
 - После входа на 15m → trailing по TSL 1h вместо 15m TSL
 - Pivot confluence как цель (кластеры уровней с разных TF)
 

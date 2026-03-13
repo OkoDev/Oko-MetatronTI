@@ -47,18 +47,18 @@ class MTFBiasStrategy(BaseStrategy):
         if not signals:
             return None
         
-        # Фильтруем только MTF сигналы
-        mtf_signals = [s for s in signals 
-                       if s.signal_type in (SignalType.MTF_SIGNAL, SignalType.MTF_ALERT)]
-        
-        # Если нет MTF сигналов, нет торговли
+        # Фильтруем только MTF_BIAS сигналы (от автономного интерпретатора 7 TF)
+        mtf_signals = [s for s in signals
+                       if s.signal_type == SignalType.MTF_BIAS]
+
+        # Если нет MTF_BIAS сигналов, нет торговли
         if not mtf_signals:
             return None
         
         # Если требуем конфлюэнцию, ищем дополнительный сигнал
         if self.require_confluence:
-            supporting_signals = [s for s in signals 
-                                 if s.signal_type not in (SignalType.MTF_SIGNAL, SignalType.MTF_ALERT)]
+            supporting_signals = [s for s in signals
+                                 if s.signal_type != SignalType.MTF_BIAS]
             if not supporting_signals:
                 self.logger.debug("No confluence signal found, skipping MTF signal")
                 return None

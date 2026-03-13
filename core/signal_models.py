@@ -14,9 +14,8 @@ class SignalType(Enum):
     MTF_ALERT = "mtf_alert"
     TREND_SIGNAL = "trend_signal"
     DIVERGENCE = "divergence"
-    MTF_DIVERGENCE = "mtf_divergence"
+    MTF_DIVERGENCE = "mtf_divergence"   # каскадные дивергенции 1D+4h+1h (Этап 9)
     PIVOT_REVERSAL = "pivot_reversal"
-    PIVOT_ALERT = "pivot_alert"
     CONFLUENCE = "confluence"
     MTF_BIAS = "mtf_bias"
 
