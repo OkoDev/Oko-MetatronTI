@@ -80,15 +80,13 @@ HIGH_VOL → меньше размер позиции, TP1 обязателен 
 - `bot_with_subscriptions.py` — только точка входа (75 строк)
 - `bot/monitoring.py` — фильтры + фоновые проверки + broadcast (765 строк)
 
-### [ARCH-02] Этап 8: Рефакторинг trading_intelligence.py
-**Агент:** Architect
-**Приоритет:** Высокий
-**Описание:**
-Разбить 1850+ строк:
-- `core/intelligence/signal_aggregator.py` — _analyze_signals_advanced
-- `core/intelligence/confidence_calculator.py` — _calculate_advanced_confidence
-- `core/intelligence/recommendation_generator.py` — _generate_recommendation
-- `core/intelligence/ml_enhancer.py` — _enhance_analysis_with_ml
+### [ARCH-02] ✅ Этап 8: Рефакторинг trading_intelligence.py — ГОТОВО
+Реализовано 14.03.2026 (коммит b82214a):
+- `core/intelligence/signal_aggregator.py` — analyze_signals_advanced, calculate_adaptive_weighted_strength
+- `core/intelligence/confidence_calculator.py` — calculate_advanced_confidence
+- `core/intelligence/recommendation_generator.py` — generate_recommendation, determine_risk_level, generate_reasoning, calculate_levels
+- `core/intelligence/ml_enhancer.py` — enhance_analysis_with_ml, apply_ml_corrections
+- trading_intelligence.py: 1536 → 1061 строк, методы стали тонкими делегатами
 
 ### [DEV-01] Этап 9: core/structure_detector.py
 **Агент:** Developer
