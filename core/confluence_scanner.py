@@ -125,19 +125,37 @@ def scan_confluence(
         wt_max = float(window["wt1"].max())
         wt_current = float(window["wt1"].iloc[-1])
 
-        trend_series = window["trend"].values
+        trend_series    = window["trend"].values
+        trendup_arr     = window["trendup"].values
+        trenddown_arr   = window["trenddown"].values
+        close_arr       = window["close"].values
 
         # ── Определяем ПОСЛЕДНЕЕ пересечение TSL и WT (взаимоисключение LONG/SHORT)
         # Ищем в последних cross_fresh_bars барах для фильтра "свежести"
-        cross_fresh_bars = int(conf_cfg.get("cross_fresh_bars", 10))
-        fresh_trend = trend_series[-cross_fresh_bars - 1:]
+        cross_fresh_bars  = int(conf_cfg.get("cross_fresh_bars", 10))
+        offset            = len(window) - cross_fresh_bars - 1
+        fresh_trend       = trend_series[offset:]
+        fresh_trenddown   = trenddown_arr[offset:]
+        fresh_trendup     = trendup_arr[offset:]
+        fresh_close       = close_arr[offset:]
 
+        # TSL_CROSS подтверждён по ЗАКРЫТИЮ свечи (close confirmation):
+        #   UP:   trend[i-1]==-1 → trend[i]==1  И close[i] > trenddown[i-1]
+        #   DOWN: trend[i-1]==1  → trend[i]==-1 И close[i] < trendup[i-1]
+        # Исключает ложные флипы когда hl2 тыкнулся в TSL-линию, но close вернулся.
         last_tsl_cross = None  # "UP" | "DOWN" | None
-        for i in range(len(fresh_trend) - 1):
-            if fresh_trend[i] == -1 and fresh_trend[i + 1] == 1:
-                last_tsl_cross = "UP"
-            elif fresh_trend[i] == 1 and fresh_trend[i + 1] == -1:
-                last_tsl_cross = "DOWN"
+        for i in range(1, len(fresh_trend)):
+            prev_trend = fresh_trend[i - 1]
+            curr_trend = fresh_trend[i]
+            curr_close = fresh_close[i]
+            prev_trenddown = fresh_trenddown[i - 1]
+            prev_trendup   = fresh_trendup[i - 1]
+            if prev_trend == -1 and curr_trend == 1 and not np.isnan(prev_trenddown):
+                if curr_close > prev_trenddown:   # свеча закрылась выше TSL DOWN → подтверждено
+                    last_tsl_cross = "UP"
+            elif prev_trend == 1 and curr_trend == -1 and not np.isnan(prev_trendup):
+                if curr_close < prev_trendup:     # свеча закрылась ниже TSL UP → подтверждено
+                    last_tsl_cross = "DOWN"
 
         # Проблема 3: кросс засчитывается ТОЛЬКО в зоне OS (UP) / OB (DOWN)
         last_wt_cross = None  # "UP" | "DOWN" | None
