@@ -40,15 +40,11 @@
 - Приоритет: под S1 → под FVG → под TSL линией → ATR fallback
 - Зажим [0.5%, 3%]. Добавить `sl_source` описание в TradingRecommendation (уже есть)
 
-### [DEV-06] RR-фильтр перед регистрацией сделки
-**Агент:** Developer
-**Приоритет:** Высокий
-**Зависимость:** После DEV-05
-**Описание:**
-В `core/trade_simulator.py` перед INSERT:
-- Вычислить RR до R2 (из pivot_levels)
-- Если RR_to_R2 < 2.0 → не регистрировать, лог INFO
-- Математическое обоснование: при WR=40%, нужен RR≥1:2 для положительного EV
+### [DEV-06] ✅ RR-фильтр перед регистрацией сделки — ГОТОВО
+Реализовано 15.03.2026 (коммит 1e48630):
+- RR = abs(tp-entry)/abs(entry-sl), если < 2.0 → skip + log INFO
+- Также зафиксированы sl_source/tp_source/strategy_name/tsl_tf в CREATE TABLE (были только в INSERT)
+- 7 новых тестов TestRRFilter, 25/25 passed
 
 ### [DEV-07] Частичные TP в trade_simulator
 **Агент:** Developer
@@ -120,13 +116,11 @@ HIGH_VOL → меньше размер позиции, TP1 обязателен 
 - check_anomaly_signals при volume spike
 - check_divergence_signals (bullish/bearish)
 
-### [DEV-03] Тесты для divergence_detector.py
-**Агент:** Developer
-**Приоритет:** Низкий
-**Описание:**
-`tests/unit/test_divergence.py` уже есть — расширить:
-- hidden bullish/bearish с zone фильтром
-- cascade divergence bonus расчёт
+### [DEV-03] ✅ Тесты для divergence_detector.py — ГОТОВО
+Реализовано 15.03.2026 (коммит 14e6626):
+- tests/unit/test_divergence_detector.py (новый файл, 306 строк)
+- Hidden bull/bear zone фильтры, ind_change знаки, cascade bonus все уровни
+- 16 passed, 6 skipped
 
 ---
 
