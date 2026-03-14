@@ -425,6 +425,77 @@ class PerformanceEngine:
             return {"by_direction": [], "by_strength": [], "by_tp_source": [], "by_factor": []}
 
     # ------------------------------------------------------------------
+    # Статистика безубытка
+    # ------------------------------------------------------------------
+    def breakeven_stats(self) -> Dict[str, Any]:
+        """
+        Статистика срабатывания безубытка (be_activated=1):
+          - total_be: сколько раз сработал
+          - be_exit: сколько закрылись по BE (SL у entry)
+          - survived: сколько выжили и закрылись TP/TSL
+          - avg_r_be_exit: средний R при BE-выходе (должен быть ~0)
+          - avg_r_survived: средний R выживших (TP/TSL после BE)
+          - be_exit_pct: % сделок закрытых на BE из всех с be_activated
+          - without_be: средний R сделок без BE (база сравнения)
+          BE-выход определяется как: status=SL + |exit - entry| / entry < 0.5%
+        """
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+
+                # Сделки с BE
+                cur.execute("""
+                    SELECT status, exit_price, entry_price, R_multiple
+                    FROM simulated_trades
+                    WHERE be_activated=1
+                      AND status IN ('TP','SL','TSL')
+                      AND exit_price IS NOT NULL AND entry_price > 0
+                """)
+                rows_be = cur.fetchall()
+
+                # Сделки без BE
+                cur.execute("""
+                    SELECT AVG(R_multiple), COUNT(*)
+                    FROM simulated_trades
+                    WHERE be_activated=0
+                      AND status IN ('TP','SL','TSL')
+                      AND R_multiple IS NOT NULL
+                """)
+                row_no_be = cur.fetchone()
+
+            be_exit_rows, survived_rows = [], []
+            for status, exit_p, entry_p, rmult in rows_be:
+                is_be_exit = (
+                    status == "SL"
+                    and exit_p is not None
+                    and abs(exit_p - entry_p) / entry_p < 0.005
+                )
+                if is_be_exit:
+                    be_exit_rows.append(rmult or 0.0)
+                else:
+                    survived_rows.append(rmult or 0.0)
+
+            total_be   = len(rows_be)
+            be_exit_n  = len(be_exit_rows)
+            survived_n = len(survived_rows)
+
+            def avg(lst): return round(sum(lst) / len(lst), 3) if lst else None
+
+            return {
+                "total_be":      total_be,
+                "be_exit":       be_exit_n,
+                "survived":      survived_n,
+                "be_exit_pct":   round(be_exit_n / total_be * 100) if total_be else 0,
+                "avg_r_be_exit": avg(be_exit_rows),
+                "avg_r_survived": avg(survived_rows),
+                "without_be_avg_r": round(row_no_be[0], 3) if row_no_be and row_no_be[0] else None,
+                "without_be_total": row_no_be[1] if row_no_be else 0,
+            }
+        except Exception:
+            logger.exception("breakeven_stats")
+            return {}
+
+    # ------------------------------------------------------------------
     # Статистика за период (для еженедельного отчёта)
     # ------------------------------------------------------------------
     def weekly_summary(self, days_back: int = 7) -> Dict[str, Any]:

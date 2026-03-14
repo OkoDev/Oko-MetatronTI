@@ -88,6 +88,7 @@ class TradeSimulator:
                     max_R_possible REAL,
                     captured_R_pct REAL,
                     tsl_activated INTEGER DEFAULT 0,
+                    be_activated INTEGER DEFAULT 0,
                     sl_source TEXT,
                     tp_source TEXT,
                     strategy_name TEXT,
@@ -103,6 +104,7 @@ class TradeSimulator:
             for col, coldef in [
                 ("tp1_price", "REAL"), ("tp1_hit_at", "TIMESTAMP"),
                 ("tsl_activated", "INTEGER DEFAULT 0"),
+                ("be_activated", "INTEGER DEFAULT 0"),
                 ("sl_source", "TEXT"), ("tp_source", "TEXT"),
                 ("strategy_name", "TEXT"), ("tsl_tf", "TEXT DEFAULT '15m'"),
                 ("tp2_price", "REAL"), ("tp2_hit_at", "TIMESTAMP"),
@@ -525,7 +527,7 @@ class TradeSimulator:
                     try:
                         with sqlite3.connect(self.db_path) as _c:
                             _c.execute(
-                                "UPDATE simulated_trades SET stop_loss=? WHERE id=?",
+                                "UPDATE simulated_trades SET stop_loss=?, be_activated=1 WHERE id=?",
                                 (new_sl, trade_id),
                             )
                             _c.commit()

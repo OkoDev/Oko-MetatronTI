@@ -101,15 +101,68 @@ const color = (v, inv=false) => {
 
 async function load() {
   try {
-    const [r1, r2] = await Promise.all([fetch('/api/stats'), fetch('/api/stats/confluence')]);
+    const [r1, r2, r3] = await Promise.all([fetch('/api/stats'), fetch('/api/stats/confluence'), fetch('/api/stats/breakeven')]);
     const d = await r1.json();
     const cf = await r2.json();
-    render(d, cf);
+    const be = await r3.json();
+    render(d, cf, be);
     document.getElementById('updated').textContent =
       'Обновлено: ' + new Date().toLocaleTimeString('ru');
   } catch(e) {
     document.getElementById('updated').textContent = 'Ошибка загрузки: ' + e.message;
   }
+}
+
+function breakevenSection(be) {
+  if (!be || be.total_be === undefined) return '';
+  if (be.total_be === 0) return `
+  <section>
+    <h2>Безубыток (BE) — статистика</h2>
+    <p class="note">Данные накапливаются — BE ещё не срабатывал ни разу.</p>
+  </section>`;
+
+  const beExitPct = be.be_exit_pct ?? 0;
+  const survived  = be.survived ?? 0;
+  const beExit    = be.be_exit ?? 0;
+  const totalBe   = be.total_be ?? 0;
+
+  const rBeExit    = be.avg_r_be_exit  != null ? be.avg_r_be_exit.toFixed(2)   : '—';
+  const rSurvived  = be.avg_r_survived != null ? be.avg_r_survived.toFixed(2)  : '—';
+  const rNoBe      = be.without_be_avg_r != null ? be.without_be_avg_r.toFixed(2) : '—';
+
+  const exitColor = beExitPct > 60 ? 'red' : beExitPct > 35 ? 'yellow' : 'green';
+
+  return `
+  <section>
+    <h2>Безубыток (BE +0.5R) — статистика</h2>
+    <div class="cards" style="grid-template-columns:repeat(4,1fr)">
+      <div class="card">
+        <div class="label">BE сработал</div>
+        <div class="value">${totalBe}</div>
+        <div class="label">сделок</div>
+      </div>
+      <div class="card">
+        <div class="label">Закрылись на BE</div>
+        <div class="value ${exitColor}">${beExit} <span style="font-size:.9rem">(${beExitPct}%)</span></div>
+        <div class="label">avg R: ${rBeExit}</div>
+      </div>
+      <div class="card">
+        <div class="label">Выжили после BE</div>
+        <div class="value green">${survived}</div>
+        <div class="label">avg R: <span class="${color(be.avg_r_survived)}">${rSurvived}</span></div>
+      </div>
+      <div class="card">
+        <div class="label">Без BE (база)</div>
+        <div class="value">${be.without_be_total ?? '—'}</div>
+        <div class="label">avg R: <span class="${color(be.without_be_avg_r)}">${rNoBe}</span></div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:8px">
+      BE-выход = статус SL, выход в пределах ±0.5% от входа.
+      ${beExitPct > 50 ? '⚠️ BE часто срабатывает преждевременно — возможно стоит поднять порог активации.' : ''}
+      ${beExitPct <= 30 && survived > 0 ? '✅ BE эффективен: большинство сделок выживают и закрываются в прибыль.' : ''}
+    </p>
+  </section>`;
 }
 
 function confluenceBreakdown(cf) {
@@ -175,7 +228,7 @@ function confluenceBreakdown(cf) {
   </section>`;
 }
 
-function render(d, cf) {
+function render(d, cf, be) {
   const s = d.summary || {};
 
   // --- EV и Profit Factor ---
@@ -338,6 +391,8 @@ function render(d, cf) {
     </section>
 
     ${confluenceBreakdown(cf)}
+
+    ${breakevenSection(be)}
 
     <section>
       <h2>По режиму рынка</h2>
@@ -1636,6 +1691,19 @@ async def _handle_confluence_breakdown(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_breakeven_stats(request: web.Request) -> web.Response:
+    engine: PerformanceEngine = request.app["engine"]
+    try:
+        data = engine.breakeven_stats()
+        return web.Response(
+            text=json.dumps(data, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+        )
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 def _current_price_from_cache(dc, symbol: str) -> float | None:
     """Берёт последнюю цену закрытия из кеша OHLCV (без API-запроса)."""
     try:
@@ -2291,6 +2359,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/", _handle_index)
     app.router.add_get("/api/stats", _handle_stats)
     app.router.add_get("/api/stats/confluence", _handle_confluence_breakdown)
+    app.router.add_get("/api/stats/breakeven", _handle_breakeven_stats)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/settings", _handle_settings_page)
     app.router.add_get("/api/settings", _handle_settings_get)
