@@ -114,15 +114,37 @@ async function load() {
 
 function confluenceBreakdown(cf) {
   if (!cf) return '';
+  const FACTOR_LABELS = {
+    'WT_OS':           '🌊 WT OS (перепроданность)',
+    'WT_OB':           '🌊 WT OB (перекупленность)',
+    'TSL_CROSS_UP':    '📈 TSL↑ (тренд сменился вверх)',
+    'TSL_CROSS_DOWN':  '📉 TSL↓ (тренд сменился вниз)',
+    'WT_CROSS_UP':     '⚡ WT✕↑ (кросс из OS — обязателен)',
+    'WT_CROSS_DOWN':   '⚡ WT✕↓ (кросс из OB — обязателен)',
+    'NEAR_SUPPORT':    '🎯 У поддержки (S1/S2/PP)',
+    'NEAR_RESISTANCE': '🎯 У сопротивления (R1/R2/PP)',
+    'WT_DIVERGENCE':   '🔄 Дивергенция WT',
+    'ABOVE_PP':        '✅ Выше дневного PP',
+    'BELOW_PP':        '❌ Ниже дневного PP',
+    'TREND_1H_UP':     '🕐 1h тренд UP (+бонус)',
+    'TREND_1H_DOWN':   '🕐 1h тренд DOWN (+бонус)',
+    'DUAL_CROSS':      '💥 Двойной кросс TSL+WT (+бонус)',
+  };
+  const BONUS_FACTORS = new Set(['TREND_1H_UP','TREND_1H_DOWN','DUAL_CROSS']);
   const tbl = (rows, cols, headers) => {
     if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
     const head = headers.map(h => `<th>${h}</th>`).join('');
-    const body = rows.map(r => `<tr>${cols.map(c => {
-      const v = r[c];
-      if (c === 'wr') return `<td class="${v >= 45 ? 'green' : v >= 30 ? '' : 'red'}">${v ?? '—'}%</td>`;
-      if (c === 'avg_r') return `<td class="${color(v)}">${v ?? '—'}</td>`;
-      return `<td>${v ?? '—'}</td>`;
-    }).join('')}</tr>`).join('');
+    const body = rows.map(r => {
+      const isBonus = BONUS_FACTORS.has(r.factor);
+      const rowStyle = isBonus ? ' style="background:rgba(255,215,0,0.07);font-weight:600"' : '';
+      return `<tr${rowStyle}>${cols.map(c => {
+        const v = r[c];
+        if (c === 'factor') return `<td>${FACTOR_LABELS[v] || v}${isBonus ? ' <span style="color:#f0a500;font-size:.75rem">★</span>' : ''}</td>`;
+        if (c === 'wr') return `<td class="${v >= 45 ? 'green' : v >= 30 ? '' : 'red'}">${v ?? '—'}%</td>`;
+        if (c === 'avg_r') return `<td class="${color(v)}">${v ?? '—'}</td>`;
+        return `<td>${v ?? '—'}</td>`;
+      }).join('')}</tr>`;
+    }).join('');
     return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   };
   return `
@@ -140,7 +162,7 @@ function confluenceBreakdown(cf) {
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div>
-        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По факторам (новые сделки)</h3>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По факторам (новые сделки) <span style="color:#f0a500;font-size:.75rem">★ = бонусный фактор</span></h3>
         ${cf.by_factor && cf.by_factor.length
           ? tbl(cf.by_factor, ['factor','total','wr','avg_r'], ['Фактор','Сделок','WR%','avg R'])
           : '<p class="note">Факторы будут накапливаться в новых сделках</p>'}
