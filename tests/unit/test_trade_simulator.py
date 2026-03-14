@@ -26,11 +26,15 @@ def make_recommendation(
     rec.entry_price = entry_price
     rec.stop_loss = stop_loss
     rec.take_profit = take_profit
+    rec.tp1_price = None
     rec.overall_strength = strength
     rec.confidence = confidence
     rec.timestamp = datetime.now(timezone.utc)
     rec.market_context = None
     rec.supporting_signals = []
+    rec.sl_source = None
+    rec.tp_source = None
+    rec.metadata = {}
     return rec
 
 
@@ -213,3 +217,67 @@ class TestExpired:
         with sqlite3.connect(tmp_db) as conn:
             row = conn.execute("SELECT status FROM simulated_trades WHERE id=?", (trade_id,)).fetchone()
         assert row[0] == STATUS_EXPIRED
+
+
+# ─── RR-фильтр ────────────────────────────────────────────────────────────────
+
+class TestRRFilter:
+    """DEV-06: при WR=40% нужен RR≥2.0 для положительного EV."""
+
+    def test_rr_exactly_2_accepted(self, tmp_db):
+        """RR=2.0 ровно на границе — пропускается (>=2.0)."""
+        sim = TradeSimulator(tmp_db)
+        # entry=100, sl=95, tp=110 → RR=(110-100)/(100-95)=2.0
+        rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=110.0)
+        trade_id = sim.register_trade(rec)
+        assert trade_id is not None
+
+    def test_rr_above_2_accepted(self, tmp_db):
+        """RR=3.0 → регистрируется."""
+        sim = TradeSimulator(tmp_db)
+        # entry=100, sl=95, tp=115 → RR=15/5=3.0
+        rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=115.0)
+        trade_id = sim.register_trade(rec)
+        assert trade_id is not None
+
+    def test_rr_below_2_rejected(self, tmp_db):
+        """RR=1.5 → сделка не регистрируется."""
+        sim = TradeSimulator(tmp_db)
+        # entry=100, sl=95, tp=107.5 → RR=7.5/5=1.5
+        rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=107.5)
+        trade_id = sim.register_trade(rec)
+        assert trade_id is None
+
+    def test_rr_1_rejected(self, tmp_db):
+        """RR=1.0 → убыточное матожидание, отклоняется."""
+        sim = TradeSimulator(tmp_db)
+        # entry=100, sl=95, tp=105 → RR=5/5=1.0
+        rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=105.0)
+        trade_id = sim.register_trade(rec)
+        assert trade_id is None
+
+    def test_rr_short_below_2_rejected(self, tmp_db):
+        """SHORT: entry=100, sl=105, tp=90 → RR=(100-90)/(105-100)=10/5=2.0 → граница."""
+        sim = TradeSimulator(tmp_db)
+        rec = make_recommendation(direction="SHORT", entry_price=100.0, stop_loss=105.0, take_profit=90.0)
+        trade_id = sim.register_trade(rec)
+        assert trade_id is not None  # ровно 2.0 — принимается
+
+    def test_rr_short_below_2_rejected_low(self, tmp_db):
+        """SHORT RR=1.2 → отклоняется."""
+        sim = TradeSimulator(tmp_db)
+        # entry=100, sl=105, tp=94 → RR=(100-94)/(105-100)=6/5=1.2
+        rec = make_recommendation(direction="SHORT", entry_price=100.0, stop_loss=105.0, take_profit=94.0)
+        trade_id = sim.register_trade(rec)
+        assert trade_id is None
+
+    def test_no_sl_skips_rr_check(self, tmp_db):
+        """Если нет SL — RR-фильтр не применяется, сделка регистрируется."""
+        sim = TradeSimulator(tmp_db)
+        rec = make_recommendation(entry_price=100.0, stop_loss=None, take_profit=102.0)
+        # Без SL сделка пропускается другим фильтром (нет SL и TP)
+        # но если бы был только TP — RR не считается
+        trade_id = sim.register_trade(rec)
+        # stop_loss=None → пропуск по "нет SL и TP" только если оба None
+        # здесь TP есть, SL нет → проходит регистрацию (RR не проверяется)
+        assert trade_id is not None

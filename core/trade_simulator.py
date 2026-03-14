@@ -87,13 +87,19 @@ class TradeSimulator:
                     min_price REAL,
                     max_R_possible REAL,
                     captured_R_pct REAL,
-                    tsl_activated INTEGER DEFAULT 0
+                    tsl_activated INTEGER DEFAULT 0,
+                    sl_source TEXT,
+                    tp_source TEXT,
+                    strategy_name TEXT,
+                    tsl_tf TEXT DEFAULT '15m'
                 )
             """)
             # Миграция для существующих БД
             for col, coldef in [
                 ("tp1_price", "REAL"), ("tp1_hit_at", "TIMESTAMP"),
                 ("tsl_activated", "INTEGER DEFAULT 0"),
+                ("sl_source", "TEXT"), ("tp_source", "TEXT"),
+                ("strategy_name", "TEXT"), ("tsl_tf", "TEXT DEFAULT '15m'"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -133,6 +139,20 @@ class TradeSimulator:
             ts = _get_recommendation_value(recommendation, "timestamp") or datetime.now(timezone.utc)
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
+
+            # RR-фильтр: при WR=40% нужен RR≥2.0 для положительного EV
+            MIN_RR = 2.0
+            if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:
+                sl_dist = abs(float(entry) - float(stop_loss))
+                tp_dist = abs(float(take_profit) - float(entry))
+                if sl_dist > 0:
+                    actual_rr = tp_dist / sl_dist
+                    if actual_rr < MIN_RR:
+                        logger.info(
+                            f"TradeSimulator: пропуск {_direction_str(direction)} {_get_recommendation_value(recommendation,'symbol')} "
+                            f"— RR={actual_rr:.2f} < {MIN_RR} (SL={stop_loss:.4f}, TP={take_profit:.4f}, entry={entry:.4f})"
+                        )
+                        return None
 
             signal_type = _signal_type_from_recommendation(recommendation)
             sl_source = _get_recommendation_value(recommendation, "sl_source") or None
