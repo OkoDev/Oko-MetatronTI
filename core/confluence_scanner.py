@@ -4,20 +4,26 @@ Confluence Scanner — Lookback-детектор мульти-факторных
 Ищет в окне lookback_bars баров совпадение условий (LONG и SHORT):
 
   LONG (бычий сетап):
-    1. WT был в OS зоне (wt1 < -60)           → +20 очков
-    2. TSL пересечение UP (тренд сменился 1)   → +20 очков
-    3. Цена была у поддержки (S1/S2/PP)        → +25 очков
-    4. Бычья дивергенция WT (price LL, wt HL)  → +20 очков
-    5. Текущая цена выше дневного PP           → +15 очков
+    1. WT был в OS зоне (wt1 < -60)                   → +20 очков
+    2. TSL пересечение UP (тренд сменился 1)           → +20 очков
+    2b. WT кросс UP в OS зоне (обязателен для сигнала) → +15 очков
+    3. Цена была у поддержки (S1/S2/PP)                → +25 очков
+    4. Бычья дивергенция WT (price LL, wt HL)          → +20 очков
+    5. Текущая цена выше дневного PP                   → +15 очков
+    6. Тренд 1h = UP (старший ТФ подтверждает)         → +10 очков (бонус)
+    7. TSL_CROSS_UP + WT_CROSS_UP совпали              → +10 очков (бонус)
 
   SHORT (медвежий сетап):
-    1. WT был в OB зоне (wt1 > +60)           → +20 очков
-    2. TSL пересечение DOWN (тренд сменился -1) → +20 очков
-    3. Цена была у сопротивления (R1/R2/PP)    → +25 очков
-    4. Медвежья дивергенция WT (price HH, wt LH) → +20 очков
-    5. Текущая цена ниже дневного PP           → +15 очков
+    1. WT был в OB зоне (wt1 > +60)                    → +20 очков
+    2. TSL пересечение DOWN (тренд сменился -1)         → +20 очков
+    2b. WT кросс DOWN в OB зоне (обязателен для сигнала)→ +15 очков
+    3. Цена была у сопротивления (R1/R2/PP)             → +25 очков
+    4. Медвежья дивергенция WT (price HH, wt LH)        → +20 очков
+    5. Текущая цена ниже дневного PP                    → +15 очков
+    6. Тренд 1h = DOWN (старший ТФ подтверждает)        → +10 очков (бонус)
+    7. TSL_CROSS_DOWN + WT_CROSS_DOWN совпали           → +10 очков (бонус)
 
-Порог сигнала: strength ≥ 60 (3+ факторов).
+Порог сигнала: strength ≥ 60. WT_CROSS в зоне OS/OB — обязателен.
 Функция синхронная — не делает API-запросов, только считает по готовым df.
 """
 import logging
@@ -35,10 +41,10 @@ logger = logging.getLogger(__name__)
 # ── Дефолты (перекрываются через config.yaml → analysis.confluence) ──────────
 _DEFAULT_WT_OS = -60   # OS зона: wt1 < -60
 _DEFAULT_WT_OB = 60    # OB зона: wt1 > +60
-_DEFAULT_PIVOT_PCT = 1.0
+_DEFAULT_PIVOT_PCT = 0.5
 _DEFAULT_MIN_STRENGTH = 60
-_DEFAULT_DIV_MIN_BARS = 3
-_DEFAULT_LOOKBACK = 5
+_DEFAULT_DIV_MIN_BARS = 5
+_DEFAULT_LOOKBACK = 20  # 20 баров × 15м = 5 часов контекста
 
 # Очки за каждое условие
 _SCORE_WT_ZONE = 20     # WT в OS (LONG) или OB (SHORT)
@@ -46,7 +52,9 @@ _SCORE_TSL_CROSS = 20   # TSL пересечение в нужном напра�
 _SCORE_NEAR_PIVOT = 25  # Цена у ключевого уровня
 _SCORE_DIVERGENCE = 20  # Дивергенция WT
 _SCORE_PP_CONFIRM = 15  # Цена по отношению к дневному PP
-_SCORE_WT_CROSS = 15    # WT cross (wt1/wt2 пересечение) в lookback-окне
+_SCORE_WT_CROSS = 15    # WT cross в зоне OS/OB (кросс + зона одновременно)
+_SCORE_DUAL_CROSS = 10  # Бонус: TSL_CROSS + WT_CROSS совпали (оба подтверждают)
+_SCORE_TREND_1H = 10    # Бонус: тренд 1h совпадает с направлением
 
 
 def _get_cfg(cfg) -> dict:
@@ -131,6 +139,7 @@ def scan_confluence(
             elif fresh_trend[i] == 1 and fresh_trend[i + 1] == -1:
                 last_tsl_cross = "DOWN"
 
+        # Проблема 3: кросс засчитывается ТОЛЬКО в зоне OS (UP) / OB (DOWN)
         last_wt_cross = None  # "UP" | "DOWN" | None
         if "wt2" in window.columns:
             wt1_arr = window["wt1"].values
@@ -138,10 +147,24 @@ def scan_confluence(
             fresh_wt1 = wt1_arr[-cross_fresh_bars - 1:]
             fresh_wt2 = wt2_arr[-cross_fresh_bars - 1:]
             for i in range(len(fresh_wt1) - 1):
-                if fresh_wt1[i] <= fresh_wt2[i] and fresh_wt1[i + 1] > fresh_wt2[i + 1]:
-                    last_wt_cross = "UP"
-                elif fresh_wt1[i] >= fresh_wt2[i] and fresh_wt1[i + 1] < fresh_wt2[i + 1]:
-                    last_wt_cross = "DOWN"
+                in_os = fresh_wt1[i] < wt_os_thr   # был в OS при кроссе
+                in_ob = fresh_wt1[i] > wt_ob_thr   # был в OB при кроссе
+                if fresh_wt1[i] <= fresh_wt2[i] and fresh_wt1[i + 1] > fresh_wt2[i + 1] and in_os:
+                    last_wt_cross = "UP"   # кросс вверх из OS
+                elif fresh_wt1[i] >= fresh_wt2[i] and fresh_wt1[i + 1] < fresh_wt2[i + 1] and in_ob:
+                    last_wt_cross = "DOWN"  # кросс вниз из OB
+
+        # Проблема 2: тренд на 1h — фильтр старшего ТФ
+        trend_1h = 0  # 0 = неизвестен, 1 = UP, -1 = DOWN
+        if df_1h is not None and len(df_1h) >= 50:
+            try:
+                _atr_p = 43
+                if cfg is not None and hasattr(cfg, "get"):
+                    _atr_p = int(cfg.get("analysis.indicators.trend.atr_period", 43))
+                df_1h_t = calculate_trend(df_1h, atr_period=_atr_p, factor=_factor)
+                trend_1h = int(df_1h_t["trend"].iloc[-1])
+            except Exception:
+                pass
 
         # ── LONG сетап ────────────────────────────────────────────────────
         score_long = 0
@@ -186,6 +209,16 @@ def scan_confluence(
             score_long += _SCORE_PP_CONFIRM
             factors_long.append("ABOVE_PP")
             data_long["daily_pp"] = round(daily_pp, 8)
+
+        # 6L. Бонус: тренд 1h совпадает с LONG (старший ТФ подтверждает)
+        if trend_1h == 1:
+            score_long += _SCORE_TREND_1H
+            factors_long.append("TREND_1H_UP")
+
+        # 7L. Бонус: двойной кросс (TSL_CROSS_UP + WT_CROSS_UP — оба подтверждают)
+        if "TSL_CROSS_UP" in factors_long and "WT_CROSS_UP" in factors_long:
+            score_long += _SCORE_DUAL_CROSS
+            factors_long.append("DUAL_CROSS")
 
         # WT_CROSS_UP обязателен — без подтверждённого кросса сигнал не выдаём
         if score_long >= min_strength and "WT_CROSS_UP" in factors_long:
@@ -240,6 +273,16 @@ def scan_confluence(
             score_short += _SCORE_PP_CONFIRM
             factors_short.append("BELOW_PP")
             data_short["daily_pp"] = round(daily_pp, 8)
+
+        # 6S. Бонус: тренд 1h совпадает с SHORT (старший ТФ подтверждает)
+        if trend_1h == -1:
+            score_short += _SCORE_TREND_1H
+            factors_short.append("TREND_1H_DOWN")
+
+        # 7S. Бонус: двойной кросс (TSL_CROSS_DOWN + WT_CROSS_DOWN — оба подтверждают)
+        if "TSL_CROSS_DOWN" in factors_short and "WT_CROSS_DOWN" in factors_short:
+            score_short += _SCORE_DUAL_CROSS
+            factors_short.append("DUAL_CROSS")
 
         # WT_CROSS_DOWN обязателен — без подтверждённого кросса сигнал не выдаём
         if score_short >= min_strength and "WT_CROSS_DOWN" in factors_short:
@@ -451,6 +494,9 @@ def confluence_message(symbol: str, sig: "SignalData") -> str:
         "WT_DIVERGENCE":    "🔄 Дивер",
         "ABOVE_PP":         "✅ >PP",
         "BELOW_PP":         "❌ <PP",
+        "TREND_1H_UP":      "🕐 1h↑",
+        "TREND_1H_DOWN":    "🕐 1h↓",
+        "DUAL_CROSS":       "💥 2×CROSS",
     }
     factor_str = "  ·  ".join(emoji_map.get(f, f) for f in factors)
     strength_emoji = "🔥🔥🔥" if score >= 80 else "🔥🔥" if score >= 60 else "🔥"
