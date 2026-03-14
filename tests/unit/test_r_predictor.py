@@ -134,7 +134,7 @@ class TestUntrainedPredictor:
         info = rp.info()
         assert info["is_trained"] is False
         assert info["n_samples"] == 0
-        assert info["min_samples_needed"] == 100
+        assert info["min_samples_needed"] == 75  # снижено с 100 (коммит bddb51b)
 
     def test_fit_insufficient_data_returns_false(self, tmp_path):
         """Обучение на пустой БД должно вернуть False (недостаточно данных)."""
