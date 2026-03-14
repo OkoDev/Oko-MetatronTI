@@ -348,10 +348,18 @@ class TradeSimulator:
             logger.exception(f"TradeSimulator: ошибка close_trade {trade_id} — {e}")
             return False
 
-    async def check_open_trades_with_tsl(self, data_collector: Any, use_tsl: bool = True, tsl_activation_r: float = 1.0) -> int:
+    async def check_open_trades_with_tsl(
+        self,
+        data_collector: Any,
+        use_tsl: bool = True,
+        tsl_activation_r: float = 1.0,
+        use_breakeven: bool = True,
+        breakeven_activation_r: float = 0.5,
+    ) -> int:
         """
         Проверяет открытые сделки с поддержкой TSL (Trailing Stop Loss).
         TSL активируется после достижения tsl_activation_r прибыли.
+        Безубыток активируется после достижения breakeven_activation_r (до TSL).
 
         Args:
             data_collector: Источник OHLCV данных
@@ -438,6 +446,31 @@ class TradeSimulator:
                     current_r = (current_price - entry) / one_r
                 else:
                     current_r = (entry - current_price) / one_r
+
+            # ── Безубыток: переносим SL в entry после +breakeven_activation_r ─
+            tsl_activated_db = trade.get("tsl_activated", 0) if isinstance(trade, dict) else 0
+            if (use_breakeven and current_r is not None
+                    and current_r >= breakeven_activation_r
+                    and not tsl_activated_db and sl is not None):
+                be_buf = entry * 0.001  # 0.1% буфер
+                new_sl = entry + be_buf if direction == "LONG" else entry - be_buf
+                # Переносим только если текущий SL хуже безубытка
+                if (direction == "LONG" and sl < new_sl) or \
+                   (direction == "SHORT" and sl > new_sl):
+                    try:
+                        with sqlite3.connect(self.db_path) as _c:
+                            _c.execute(
+                                "UPDATE simulated_trades SET stop_loss=? WHERE id=?",
+                                (new_sl, trade_id),
+                            )
+                            _c.commit()
+                        sl = new_sl
+                        logger.info(
+                            "[breakeven] %s: SL → %.6g (entry+buf) при R=%.2f",
+                            symbol, new_sl, current_r,
+                        )
+                    except Exception:
+                        pass
 
             # TSL логика
             tsl_triggered = False

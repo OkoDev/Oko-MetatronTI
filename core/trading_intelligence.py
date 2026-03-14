@@ -1264,48 +1264,41 @@ class TradingIntelligence:
         if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
             return entry_price, None, None, None, "", ""
 
-        tsl_too_tight = sl_cfg.get("tsl_too_tight_pct", 0.6)
+        # ── 1. SWING — стоп за ближайший структурный экстремум ─────────────
+        # Принцип: "торгуем то что рынок показывает" — swing = реальный уровень
+        # где рынок развернулся. Если пробит — сетап сломан.
+        swing = market_context.swing_low if is_long else market_context.swing_high
+        if swing and swing > 0:
+            if is_long and swing < entry_price:
+                swing_pct = (entry_price - swing) / entry_price * 100 + struct_buf
+                if swing_pct <= struct_max:
+                    sl_pct    = swing_pct
+                    sl_source = "swing_low"
+            elif is_short and swing > entry_price:
+                swing_pct = (swing - entry_price) / entry_price * 100 + struct_buf
+                if swing_pct <= struct_max:
+                    sl_pct    = swing_pct
+                    sl_source = "swing_high"
 
-        # ── 1. TSL-линия (trendup / trenddown ATR-43) ──────────────────────
-        tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
-        if tsl_line and tsl_line > 0:
-            if is_long and tsl_line < entry_price:
-                tsl_dist_pct = (entry_price - tsl_line) / entry_price * 100
-                tsl_sl_pct   = tsl_dist_pct + struct_buf
-                if sl_min <= tsl_sl_pct <= struct_max:
-                    # TSL слишком близко — ищем свинг-лоу как запасной уровень
-                    if tsl_sl_pct < tsl_too_tight and market_context.swing_low:
-                        sw = market_context.swing_low
-                        sw_pct = (entry_price - sw) / entry_price * 100 + struct_buf
-                        if sl_min <= sw_pct <= struct_max:
-                            sl_pct    = sw_pct
-                            sl_source = "swing_low"
-                        else:
-                            sl_pct    = tsl_sl_pct
-                            sl_source = "tsl_line:trendup"
-                    else:
+        # ── 2. TSL-линия — если swing недоступен ─────────────────────────
+        if "swing" not in sl_source:
+            tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
+            if tsl_line and tsl_line > 0:
+                if is_long and tsl_line < entry_price:
+                    tsl_dist_pct = (entry_price - tsl_line) / entry_price * 100
+                    tsl_sl_pct   = tsl_dist_pct + struct_buf
+                    if tsl_sl_pct <= struct_max:
                         sl_pct    = tsl_sl_pct
                         sl_source = "tsl_line:trendup"
-            elif is_short and tsl_line > entry_price:
-                tsl_dist_pct = (tsl_line - entry_price) / entry_price * 100
-                tsl_sl_pct   = tsl_dist_pct + struct_buf
-                if sl_min <= tsl_sl_pct <= struct_max:
-                    if tsl_sl_pct < tsl_too_tight and market_context.swing_high:
-                        sw = market_context.swing_high
-                        sw_pct = (sw - entry_price) / entry_price * 100 + struct_buf
-                        if sl_min <= sw_pct <= struct_max:
-                            sl_pct    = sw_pct
-                            sl_source = "swing_high"
-                        else:
-                            sl_pct    = tsl_sl_pct
-                            sl_source = "tsl_line:trenddown"
-                    else:
+                elif is_short and tsl_line > entry_price:
+                    tsl_dist_pct = (tsl_line - entry_price) / entry_price * 100
+                    tsl_sl_pct   = tsl_dist_pct + struct_buf
+                    if tsl_sl_pct <= struct_max:
                         sl_pct    = tsl_sl_pct
                         sl_source = "tsl_line:trenddown"
 
-        # ── 2. Пивот-уровень как резервный структурный SL ──────────────────
-        # Используем только если TSL не дал результата (SL всё ещё ATR-based)
-        if "tsl_line" not in sl_source and "swing" not in sl_source:
+        # ── 3. Пивот-уровень как резервный структурный SL ──────────────────
+        if "swing" not in sl_source and "tsl_line" not in sl_source:
             pivot_type = "support" if is_long else "resistance"
             struct_levels = [
                 s.data["level"]

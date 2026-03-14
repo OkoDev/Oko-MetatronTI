@@ -120,6 +120,8 @@ trading:
   use_tsl: true
   tsl_activation_r: 1.0
   tsl_buffer_pct: 0.5
+  use_breakeven: true           # Безубыток: SL → entry после достижения прибыли
+  breakeven_activation_r: 0.5  # Переносить SL в безубыток после +0.5R
   sl_tp:
     atr_multiplier: 1.2
     sl_min_pct: 1.0        # было 0.8 — tight <1% давали Win%=22%, поднято до 1.0%

@@ -126,7 +126,13 @@ def interpret(
                 entry_tf = tf
                 break
         if entry_tf is None:
-            entry_tf = "15m"  # fallback — entry без свежего кросса
+            # Без кросса на entry TF — не торгуем.
+            # Принцип: "торгуем то что рынок показывает", а не угадываем.
+            logger.debug(
+                "[mtf_bias] пропущен: нет WT кросса на entry TF (%s)",
+                "UP" if direction == SignalDirection.LONG else "DOWN",
+            )
+            return None
 
         # ── Шаг 4: Zone filter ───────────────────────────────────────────────
         entry_zone = snapshot.get(entry_tf, {}).get("zone", "N")
@@ -140,7 +146,7 @@ def interpret(
         # ── Шаг 5: Strength ──────────────────────────────────────────────────
         base = aligned_pct
         senior_bonus = _SENIOR_FULL_BONUS if senior_matches == 3 else 0
-        cross_bonus = _CROSS_BONUS if entry_tf and snapshot.get(entry_tf, {}).get("wt_cross") == cross_target else 0
+        cross_bonus = _CROSS_BONUS  # кросс всегда есть (обязательное условие выше)
         regime_penalty = _RANGE_PENALTY if regime == "RANGE" else 0
 
         strength = max(0, min(100, base + senior_bonus + cross_bonus - regime_penalty))

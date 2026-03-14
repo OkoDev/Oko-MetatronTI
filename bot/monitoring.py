@@ -1009,6 +1009,8 @@ async def trade_tracker_loop(bot):
     # Параметры TSL из конфига
     use_tsl = bot.config.get("trading.use_tsl", True)
     tsl_activation_r = bot.config.get("trading.tsl_activation_r", 1.0)
+    use_breakeven = bot.config.get("trading.use_breakeven", True)
+    breakeven_activation_r = bot.config.get("trading.breakeven_activation_r", 0.5)
 
     while True:
         try:
@@ -1016,7 +1018,9 @@ async def trade_tracker_loop(bot):
             closed = await bot.trade_simulator.check_open_trades_with_tsl(
                 bot.data_collector,
                 use_tsl=use_tsl,
-                tsl_activation_r=tsl_activation_r
+                tsl_activation_r=tsl_activation_r,
+                use_breakeven=use_breakeven,
+                breakeven_activation_r=breakeven_activation_r,
             )
             if closed > 0:
                 logger.info("TradeSimulator: закрыто сделок за цикл: %s", closed)
