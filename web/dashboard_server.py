@@ -376,12 +376,12 @@ function render(d, cf, be) {
     </section>
 
     <section>
-      <h2>По стратегии</h2>
+      <h2>По конфигурации <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Strategy Pattern — confluence / conservative / mtf_bias)</span></h2>
       ${tableByGroup(d.by_strategy, 'strategy_name')}
     </section>
 
     <section>
-      <h2>По типу сигнала</h2>
+      <h2>По типу сигнала <span style="font-size:.75rem;color:#8b949e;font-weight:400">(детектор — confluence / wt_signal / pivot_reversal / …)</span></h2>
       ${tableByGroup(d.by_signal_type, 'signal_type')}
     </section>
 
