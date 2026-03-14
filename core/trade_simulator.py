@@ -91,7 +91,12 @@ class TradeSimulator:
                     sl_source TEXT,
                     tp_source TEXT,
                     strategy_name TEXT,
-                    tsl_tf TEXT DEFAULT '15m'
+                    tsl_tf TEXT DEFAULT '15m',
+                    tp2_price REAL,
+                    tp2_hit_at TIMESTAMP,
+                    tp3_price REAL,
+                    tp3_hit_at TIMESTAMP,
+                    strategy_type TEXT DEFAULT 'SINGLE'
                 )
             """)
             # Миграция для существующих БД
@@ -100,6 +105,9 @@ class TradeSimulator:
                 ("tsl_activated", "INTEGER DEFAULT 0"),
                 ("sl_source", "TEXT"), ("tp_source", "TEXT"),
                 ("strategy_name", "TEXT"), ("tsl_tf", "TEXT DEFAULT '15m'"),
+                ("tp2_price", "REAL"), ("tp2_hit_at", "TIMESTAMP"),
+                ("tp3_price", "REAL"), ("tp3_hit_at", "TIMESTAMP"),
+                ("strategy_type", "TEXT DEFAULT 'SINGLE'"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -185,34 +193,63 @@ class TradeSimulator:
                 features.update(extra_features)
             features_json = json.dumps(features) if features else None
 
+            # Определяем strategy_type и рассчитываем TP-уровни
+            dir_str = _direction_str(direction)
+            tp2_price = None
+            tp3_price = None
+            strategy_type = "SINGLE"
+            if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:
+                sl_dist = abs(float(entry) - float(stop_loss))
+                tp_dist = abs(float(take_profit) - float(entry))
+                if sl_dist > 0:
+                    rr = tp_dist / sl_dist
+                    sign = 1.0 if dir_str == "LONG" else -1.0
+                    if rr >= 3.0:
+                        strategy_type = "TRIPLE_TP_TSL"
+                        # tp1 = 1/3, tp2 = 2/3, tp3 = полный TP
+                        if tp1_price is None:
+                            tp1_price = float(entry) + sign * tp_dist * (1.0 / 3.0)
+                        tp2_price = float(entry) + sign * tp_dist * (2.0 / 3.0)
+                        tp3_price = float(take_profit)
+                    elif rr >= 2.0:
+                        strategy_type = "DUAL_TP"
+                        # tp1 = 1/2, tp2 = полный TP
+                        if tp1_price is None:
+                            tp1_price = float(entry) + sign * tp_dist * 0.5
+                        tp2_price = float(take_profit)
+
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
                     INSERT INTO simulated_trades
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
-                     tp1_price, strength, confidence, regime, status, features_json, created_at,
+                     tp1_price, tp2_price, tp3_price, strategy_type,
+                     strength, confidence, regime, status, features_json, created_at,
                      sl_source, tp_source, strategy_name, tsl_tf)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
                         DEFAULT_TIMEFRAME,
                         signal_type,
-                        _direction_str(direction),
+                        dir_str,
                         float(entry),
                         float(stop_loss) if stop_loss is not None else None,
                         float(take_profit) if take_profit is not None else None,
                         float(tp1_price) if tp1_price is not None else None,
+                        float(tp2_price) if tp2_price is not None else None,
+                        float(tp3_price) if tp3_price is not None else None,
+                        strategy_type,
                         int(strength) if strength is not None else None,
                         float(confidence) if confidence is not None else None,
                         regime,
                         STATUS_OPEN,
                         features_json,
                         ts.isoformat(),
-                        sl_source,
-                        tp_source,
-                        strategy_name,
+                        sl_source if isinstance(sl_source, str) else None,
+                        tp_source if isinstance(tp_source, str) else None,
+                        strategy_name if isinstance(strategy_name, str) else None,
                         tsl_tf,
                     ),
                 )
@@ -401,14 +438,22 @@ class TradeSimulator:
             entry = float(trade["entry_price"])
             sl = trade["stop_loss"]
             tp = trade["take_profit"]
-            tp1_price = trade.get("tp1_price")
+            tp1_price  = trade.get("tp1_price")
             tp1_hit_at = trade.get("tp1_hit_at")
+            tp2_price  = trade.get("tp2_price")
+            tp2_hit_at = trade.get("tp2_hit_at")
+            tp3_price  = trade.get("tp3_price")
+            tp3_hit_at = trade.get("tp3_hit_at")
             if sl is not None:
                 sl = float(sl)
             if tp is not None:
                 tp = float(tp)
             if tp1_price is not None:
                 tp1_price = float(tp1_price)
+            if tp2_price is not None:
+                tp2_price = float(tp2_price)
+            if tp3_price is not None:
+                tp3_price = float(tp3_price)
 
             created_at = trade["created_at"]
             try:
@@ -578,7 +623,7 @@ class TradeSimulator:
 
                 if direction == "LONG":
                     hit_sl  = sl  is not None and low  <= sl
-                    # TP1 фиксирует 50% — только если ещё не сработал
+                    # TP1 фиксирует часть — только если ещё не сработал
                     if tp1_price and tp1_hit_at is None and high >= tp1_price:
                         tp1_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
@@ -590,15 +635,33 @@ class TradeSimulator:
                                 _c.commit()
                         except Exception:
                             pass
-                        logger.info("TradeSimulator: TP1 hit (50%%) %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                    # После TP1: только SL (TSL уже обработан выше)
-                    hit_tp = (tp is not None and tp1_hit_at is None and high >= tp)
-                    if hit_sl and hit_tp:
-                        exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
-                    elif hit_sl:
-                        exit_status, exit_price_val = STATUS_SL, sl
-                    elif hit_tp:
-                        exit_status, exit_price_val = STATUS_TP, tp
+                        logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                    # TP2
+                    if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
+                        tp2_hit_at = datetime.now(timezone.utc).isoformat()
+                        try:
+                            with sqlite3.connect(self.db_path) as _c:
+                                _c.execute(
+                                    "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
+                                    (tp2_hit_at, trade_id, STATUS_OPEN),
+                                )
+                                _c.commit()
+                        except Exception:
+                            pass
+                        logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
+                    # TP3 (финальный выход для TRIPLE)
+                    if tp3_price and tp3_hit_at is None and tp2_hit_at and high >= tp3_price:
+                        tp3_hit_at = datetime.now(timezone.utc).isoformat()
+                        exit_status, exit_price_val = STATUS_TP, tp3_price
+                    # Обычный TP (SINGLE/DUAL — tp == take_profit)
+                    hit_tp = (tp is not None and tp2_hit_at is None and tp1_hit_at is None and high >= tp)
+                    if not exit_status:
+                        if hit_sl and hit_tp:
+                            exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
+                        elif hit_sl:
+                            exit_status, exit_price_val = STATUS_SL, sl
+                        elif hit_tp:
+                            exit_status, exit_price_val = STATUS_TP, tp
                 else:  # SHORT
                     hit_sl  = sl is not None and high >= sl
                     if tp1_price and tp1_hit_at is None and low <= tp1_price:
@@ -612,14 +675,32 @@ class TradeSimulator:
                                 _c.commit()
                         except Exception:
                             pass
-                        logger.info("TradeSimulator: TP1 hit (50%%) %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                    hit_tp = (tp is not None and tp1_hit_at is None and low <= tp)
-                    if hit_sl and hit_tp:
-                        exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
-                    elif hit_sl:
-                        exit_status, exit_price_val = STATUS_SL, sl
-                    elif hit_tp:
-                        exit_status, exit_price_val = STATUS_TP, tp
+                        logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                    # TP2
+                    if tp2_price and tp2_hit_at is None and tp1_hit_at and low <= tp2_price:
+                        tp2_hit_at = datetime.now(timezone.utc).isoformat()
+                        try:
+                            with sqlite3.connect(self.db_path) as _c:
+                                _c.execute(
+                                    "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
+                                    (tp2_hit_at, trade_id, STATUS_OPEN),
+                                )
+                                _c.commit()
+                        except Exception:
+                            pass
+                        logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
+                    # TP3 (финальный для TRIPLE)
+                    if tp3_price and tp3_hit_at is None and tp2_hit_at and low <= tp3_price:
+                        tp3_hit_at = datetime.now(timezone.utc).isoformat()
+                        exit_status, exit_price_val = STATUS_TP, tp3_price
+                    hit_tp = (tp is not None and tp2_hit_at is None and tp1_hit_at is None and low <= tp)
+                    if not exit_status:
+                        if hit_sl and hit_tp:
+                            exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
+                        elif hit_sl:
+                            exit_status, exit_price_val = STATUS_SL, sl
+                        elif hit_tp:
+                            exit_status, exit_price_val = STATUS_TP, tp
                 if exit_status:
                     break
 
