@@ -18,6 +18,7 @@ class SignalType(Enum):
     PIVOT_REVERSAL = "pivot_reversal"
     CONFLUENCE = "confluence"
     MTF_BIAS = "mtf_bias"
+    SMC_STRUCTURE = "smc_structure"   # CHoCH / BOS — Smart Money Concepts (Этап 9)
 
 
 class SignalDirection(Enum):

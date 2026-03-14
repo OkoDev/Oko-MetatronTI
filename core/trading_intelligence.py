@@ -88,6 +88,7 @@ class TradingIntelligence:
         "divergence":     None,
         "mtf_signal":     None,
         "confluence":     None,
+        "smc_structure":  None,
     }
 
     def __init__(self, data_collector, config: Dict = None, db_path: str = "subscriptions.db"):
@@ -108,6 +109,7 @@ class TradingIntelligence:
             SignalType.MTF_SIGNAL:     0.05,  # → будет упразднён в Шаге 3
             SignalType.TREND_SIGNAL:   0.05,
             SignalType.ANOMALY:        0.03,
+            SignalType.SMC_STRUCTURE:  0.12,  # BOS/CHoCH — Этап 9 SMC
         }
         # Исходные веса сохраняем отдельно — чтобы не накапливать корректировки
         self._base_signal_weights = dict(self.signal_weights)

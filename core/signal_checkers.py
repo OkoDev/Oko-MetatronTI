@@ -250,6 +250,55 @@ async def check_trend_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]
     return signals
 
 
+async def check_smc_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
+    """
+    Проверка SMC-структуры (BOS / CHoCH) на 15m.
+
+    BOS (Break of Structure) — подтверждение продолжения тренда, strength=65.
+    CHoCH (Change of Character) — первый сигнал разворота, strength=55.
+    BOS приоритетнее CHoCH (detect_structure возвращает BOS если оба найдены).
+    """
+    signals = []
+    try:
+        if df is None or len(df) < 30:
+            return signals
+
+        from core.structure_detector import detect_structure
+        result = detect_structure(df)
+
+        if result["signal"] is None:
+            return signals
+
+        direction = SignalDirection.LONG if result["signal"] == "LONG" else SignalDirection.SHORT
+        stype = result["signal_type"]  # "BOS" or "CHOCH"
+        struct_info = result["bos"] if stype == "BOS" else result["choch"]
+        confidence = 0.75 if stype == "BOS" else 0.65
+
+        logger.debug(
+            "[%s] SMC %s %s level=%.6g str=%d",
+            symbol, stype, direction.value,
+            struct_info.get("level", 0), result["strength"],
+        )
+        signals.append(SignalData(
+            symbol=symbol,
+            signal_type=SignalType.SMC_STRUCTURE,
+            direction=direction,
+            strength=result["strength"],
+            confidence=confidence,
+            timestamp=datetime.now(),
+            data={
+                "smc_type": stype,                          # "BOS" | "CHOCH"
+                "struct_type": struct_info.get("type", ""), # "BULLISH_BOS" etc.
+                "level": struct_info.get("level", 0),       # пробитый уровень
+                "current_price": struct_info.get("current_price", 0),
+            },
+            timeframe="15m",
+        ))
+    except Exception:
+        logger.exception("Ошибка проверки SMC для %s", symbol)
+    return signals
+
+
 async def check_mtf_bias_signal(
     symbol: str,
     data_collector,
