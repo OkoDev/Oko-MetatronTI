@@ -46,16 +46,12 @@
 - Также зафиксированы sl_source/tp_source/strategy_name/tsl_tf в CREATE TABLE (были только в INSERT)
 - 7 новых тестов TestRRFilter, 25/25 passed
 
-### [DEV-07] Частичные TP в trade_simulator
-**Агент:** Developer
-**Приоритет:** Средний
-**Зависимость:** После DEV-06 + анализа данных от DEV-04
-**Описание:**
-- Новые поля в `simulated_trades`: tp1_price, tp1_pct(0.30), tp2_price, tp2_pct(0.40), tp3_price, tp3_pct(0.20), strategy_type
-- Миграция в `subscription_manager.py`
-- Логика: RR≥3 AND TREND → TRIPLE_TP_TSL; RR≥2 → DUAL_TP; иначе → SINGLE
-- `check_open_trades()` трекает каждый TP уровень отдельно
-- Дашборд: колонки TP1/TP2/TP3 в таблице открытых сделок
+### [DEV-07] ✅ Частичные TP в trade_simulator — ГОТОВО
+Реализовано 15.03.2026 (коммит 5e1be9d):
+- tp2_price/tp2_hit_at/tp3_price/tp3_hit_at/strategy_type в схеме + миграция
+- RR≥3→TRIPLE_TP_TSL, RR∈[2,3)→DUAL_TP, уровни рассчитываются при регистрации
+- Трекинг tp2/tp3 в check_open_trades_with_tsl() для LONG и SHORT
+- 31/31 тестов passed
 
 ### [ARCH-03] State Machine для confluence (Шаг 2)
 **Агент:** Architect
@@ -75,16 +71,14 @@ TREND → TRIPLE_TP_TSL, агрессивный SL
 RANGE → DUAL_TP, консервативный SL
 HIGH_VOL → меньше размер позиции, TP1 обязателен сразу
 
-### [ARCH-01] Этап 8: Рефакторинг bot_with_subscriptions.py
-**Агент:** Architect
-**Приоритет:** Высокий
-**Описание:**
-Разбить монолит 1540+ строк на модули:
-- `bot/core/bot.py` — класс OkoBot (__init__, свойства)
-- `bot/loops/scan_loop.py` — scan_all_pairs, scan_one
-- `bot/loops/ml_loop.py` — _ml_training_loop
-- `bot/loops/trade_tracker.py` — check_open_trades loop
-Точка входа остаётся в `bot_with_subscriptions.py` (только запуск).
+### [ARCH-01] ✅ Этап 8: Рефакторинг bot_with_subscriptions.py — ГОТОВО
+Реализовано 14.03.2026 (коммит b4768ca):
+- `bot/core/bot.py` — TradingAlertBot класс
+- `bot/loops/scan_loop.py` — scan_all_pairs + monitor_market + _prefetch_pivots
+- `bot/loops/ml_loop.py` — ml_training_loop + weekly_report_loop
+- `bot/loops/trade_tracker.py` — trade_tracker_loop
+- `bot_with_subscriptions.py` — только точка входа (75 строк)
+- `bot/monitoring.py` — фильтры + фоновые проверки + broadcast (765 строк)
 
 ### [ARCH-02] Этап 8: Рефакторинг trading_intelligence.py
 **Агент:** Architect
