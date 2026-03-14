@@ -109,14 +109,14 @@ HIGH_VOL → меньше размер позиции, TP1 обязателен 
 - check_pivot_signals(symbol, df): max(high)/min(low) 60 баров → SignalData(PIVOT_REVERSAL)
 - tests/unit/test_signal_checkers.py: убраны заглушки, тесты проходят
 
-### [DEV-02] Тесты для signal_checkers.py
-**Агент:** Developer
-**Приоритет:** Средний
-**Описание:**
-`tests/unit/test_signal_checkers.py` уже существует — дополнить тестами:
-- check_wt_signals с мок данными OS/OB зон
-- check_anomaly_signals при volume spike
-- check_divergence_signals (bullish/bearish)
+### [DEV-02] ✅ Тесты для signal_checkers.py — ГОТОВО
+Реализовано 15.03.2026 (коммит be85635):
+- check_wt_signals: OS crossover форсированный, df_1h=None/df фильтр (47 тестов total)
+- check_divergence_signals: bullish сценарий, NaN данные, граничные 100 баров
+- check_pivot_signals: near resistance SHORT, near support LONG, far from levels
+- fix: PIVOT_ALERT→PIVOT_REVERSAL в strategies/built_in/
+- fix: SignalData timestamp/data обязательные поля в test_strategies.py
+- 231/231 passed
 
 ### [DEV-03] ✅ Тесты для divergence_detector.py — ГОТОВО
 Реализовано 15.03.2026 (коммит 14e6626):

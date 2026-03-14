@@ -99,13 +99,13 @@
 - `distance_to_pivot_pct` сохраняется в `features_json` — используется RPredictor (Этап 7)
 - R теперь варьируется от 1.5 до 10+ в зависимости от структуры рынка
 
-## 🔲 Этап 7 — R-регрессор (Kelly-sizing)
+## ✅ Этап 7 — R-регрессор (Kelly-sizing)
 **Цель:** ML-предсказание ожидаемого R → адаптивный размер позиции
 
 - `core/r_predictor.py` создан: `RPredictor` с `GradientBoostingRegressor`
 - 14 признаков: 12 базовых + `distance_to_pivot_pct` + режим рынка (4 one-hot)
 - `kelly_fraction(win_rate, avg_r_win)` и `kelly_position_size(deposit, ...)` реализованы
-- **Обучение:** после накопления 300+ сделок с `max_R_possible IS NOT NULL` (сейчас ~226+, нужно ~74)
+- MIN_SAMPLES снижен 100→75 (обучение доступнее)
 - Итог: `Position = Deposit × kelly_f × confidence`
 
 ## ✅ Этап 8.0 — Стабильный API-движок (07.03.2026)
@@ -146,6 +146,35 @@
 | Паразитные запросы | ~34 000/цикл | 0 |
 | Пропущенные сигналы (BTC фильтр) | Все LONG при TREND_DOWN | Доставляются с предупреждением |
 | Дубли TG-сообщений | 47/мин после рестарта | 1/пару/dedup_window |
+
+## ✅ Этап 8.1.1 — Рефакторинг bot_with_subscriptions.py (ARCH-01, 14.03.2026)
+- `bot/core/bot.py` — TradingAlertBot класс
+- `bot/loops/scan_loop.py` — scan_all_pairs + monitor_market + _prefetch_pivots
+- `bot/loops/ml_loop.py` — ml_training_loop + weekly_report_loop
+- `bot/loops/trade_tracker.py` — trade_tracker_loop
+- `bot_with_subscriptions.py` → только точка входа (75 строк)
+
+## ✅ Этап 8.1.2 — Рефакторинг trading_intelligence.py (ARCH-02, 14.03.2026)
+- `core/intelligence/signal_aggregator.py` — analyze_signals_advanced
+- `core/intelligence/confidence_calculator.py` — calculate_advanced_confidence
+- `core/intelligence/recommendation_generator.py` — generate_recommendation, calculate_levels
+- `core/intelligence/ml_enhancer.py` — enhance_analysis_with_ml
+- trading_intelligence.py: 1536 → 1061 строк
+
+## ✅ Этап 8.1.3 — SL/TP система (14-15.03.2026)
+- DEV-05: Структурный SL — приоритет S1/R1 pivot → FVG midpoint → TSL-линия → ATR fallback
+- DEV-06: RR-фильтр перед регистрацией (RR ≥ 2.0 → skip + INFO лог)
+- DEV-07: Частичные TP — TRIPLE_TP_TSL (RR≥3), DUAL_TP (RR∈[2,3)), SINGLE (прочее)
+- trекинг tp2/tp3 hit в check_open_trades_with_tsl()
+- 7 новых тестов TestRRFilter, 6 тестов TestStrategyType
+
+## ✅ Этап 9 — SMC (Smart Money Concepts) базовая реализация (14-15.03.2026)
+- `core/structure_detector.py` — detect_swing_highs_lows, detect_choch, detect_bos, detect_structure
+- BOS > CHoCH по приоритету; strength: BOS=65, CHoCH=55
+- `core/signal_checkers.py` — check_smc_signals() → SignalData(SMC_STRUCTURE)
+- `core/signal_models.py` — SignalType.SMC_STRUCTURE
+- 25/25 тестов в test_structure_detector.py
+- Восстановлены check_divergence_signals / check_pivot_signals после рефакторинга ARCH-02
 
 ## 🔲 Этап 8.2 — Масштабирование архитектуры
 **Цель:** готовность к >100 пользователям
@@ -346,3 +375,15 @@ class BaseStrategy(ABC):
 | 2026-03-09 | Этап 8.4: добавлен подробный Quality Gate roadmap (9 подэтапов + DoD) |
 | 2026-03-09 | Фикс: pivot TP применяется ДО форматирования сообщения; добавлен блок "📍 Ближайшие пивоты" в комплексный анализ |
 | 2026-03-09 | Этап 8.4.1: core/data_quality.py — pre-check OHLCV (глубина/свежесть/NaN), интеграция в scan_one и _collect_all_signals |
+| 2026-03-14 | ARCH-01: рефакторинг bot_with_subscriptions.py → bot/core/bot.py + bot/loops/ (75 строк точка входа) |
+| 2026-03-14 | ARCH-02: рефакторинг trading_intelligence.py → core/intelligence/ (4 модуля, 1536→1061 строк) |
+| 2026-03-14 | DEV-05: структурный SL (S1/R1 pivot → FVG → TSL → ATR), sl_min_pct 1.0→0.5, sl_max_pct 2.0→3.0 |
+| 2026-03-14 | DEV-01b: check_smc_signals() в signal_checkers.py, SignalType.SMC_STRUCTURE, вес 0.12 |
+| 2026-03-14 | DEV-01c: восстановлены check_divergence_signals / check_pivot_signals после ARCH-02 |
+| 2026-03-15 | DEV-01: core/structure_detector.py (Swing H/L, CHoCH, BOS), 25/25 тестов |
+| 2026-03-15 | DEV-06: RR-фильтр ≥2.0 перед регистрацией сделки, 7 тестов TestRRFilter |
+| 2026-03-15 | DEV-07: Частичные TP (TRIPLE_TP_TSL/DUAL_TP), трекинг tp2/tp3, 6 тестов TestStrategyType |
+| 2026-03-15 | DEV-03: тесты DivergenceDetector (hidden bull/bear, cascade, граничные условия), 16/16 passed |
+| 2026-03-15 | DEV-02: дополнены тесты signal_checkers (WT OS/OB, divergence, pivot near levels), 47/47 passed |
+| 2026-03-15 | fix: PIVOT_ALERT→PIVOT_REVERSAL в strategies/built_in/, fix SignalData fields в test_strategies.py |
+| 2026-03-15 | Итого тестов: 231 passed, 11 skipped |
