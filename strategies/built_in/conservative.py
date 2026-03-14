@@ -46,7 +46,7 @@ class ConservativeStrategy(BaseStrategy):
             SignalType.WT_SIGNAL: 0.10,
             SignalType.TREND_SIGNAL: 0.08,  # -0.02
             SignalType.ANOMALY: 0.03,  # -0.02 (менее надежно)
-            SignalType.PIVOT_ALERT: 0.10,  # -0.05
+            SignalType.PIVOT_REVERSAL: 0.10,  # -0.05
             SignalType.CONFLUENCE: 0.25,  # -0.10 (может быть шумным)
         }
         

@@ -53,7 +53,7 @@ class ConfluenceStrategy(BaseStrategy):
             SignalType.WT_SIGNAL: 0.10,
             SignalType.TREND_SIGNAL: 0.10,
             SignalType.ANOMALY: 0.05,
-            SignalType.PIVOT_ALERT: 0.15,
+            SignalType.PIVOT_REVERSAL: 0.15,
             SignalType.CONFLUENCE: 0.35,
         }
         
