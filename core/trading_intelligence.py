@@ -595,160 +595,27 @@ class TradingIntelligence:
         
         return True
     
-    def _analyze_signals_advanced(self, signals: List[SignalData], 
+    def _analyze_signals_advanced(self, signals: List[SignalData],
                                  market_context: MarketContext) -> Dict[str, Any]:
-        """Продвинутый анализ сигналов с учетом исторической производительности"""
-        
-        if not signals:
-            return {"strength": 0, "confidence": 0, "direction": SignalDirection.NEUTRAL}
-        
-        # Группируем сигналы по направлению
-        long_signals = [s for s in signals if s.direction == SignalDirection.LONG]
-        short_signals = [s for s in signals if s.direction == SignalDirection.SHORT]
-        
-        # Рассчитываем взвешенную силу с учетом исторической производительности
-        long_strength = self._calculate_adaptive_weighted_strength(long_signals)
-        short_strength = self._calculate_adaptive_weighted_strength(short_signals)
-        
-        # Модель конфликта: если разница между long и short мала — считаем рынок конфликтным
-        total_strength = long_strength + short_strength
-        conflict_threshold = self.thresholds.get("conflict_threshold", 0.3)
-        dominant = max(long_strength, short_strength)
-        conflict_ratio = (abs(long_strength - short_strength) / dominant) if dominant > 0 else 1.0
-
-        if long_strength > short_strength:
-            direction = SignalDirection.LONG
-            strength = long_strength
-            supporting_signals = long_signals
-            conflicting_signals = short_signals
-        elif short_strength > long_strength:
-            direction = SignalDirection.SHORT
-            strength = short_strength
-            supporting_signals = short_signals
-            conflicting_signals = long_signals
-        else:
-            direction = SignalDirection.NEUTRAL
-            strength = max(long_strength, short_strength)
-            supporting_signals = []
-            conflicting_signals = signals
-
-        # ── MTF_BIAS tie-breaker (главное WT-ядро) ────────────────────────────────────────────
-        # При умеренном конфликте или NEUTRAL — если есть сильный MTF_BIAS (score ≥ 70),
-        # он фиксирует направление. Это реализует архитектуру "WaveTrend как ядро".
-        _bias_sigs = [
-            s for s in signals
-            if s.signal_type == SignalType.MTF_BIAS
-            and s.direction != SignalDirection.NEUTRAL
-            and s.strength >= 70
-        ]
-        if _bias_sigs and (direction == SignalDirection.NEUTRAL or (dominant > 0 and conflict_ratio < conflict_threshold)):
-            _bias_dir = _bias_sigs[0].direction
-            direction = _bias_dir
-            supporting_signals = [s for s in signals if s.direction == _bias_dir]
-            conflicting_signals = [s for s in signals if s.direction not in (_bias_dir, SignalDirection.NEUTRAL)]
-            logger.debug("[%s] MTF_BIAS override → %s str=%d (conflict_ratio=%.2f)",
-                         signals[0].symbol if signals else "?",
-                         _bias_dir.value, _bias_sigs[0].strength, conflict_ratio)
-            # Пересчитываем dominant и conflict_ratio после override
-            long_str = sum(s.strength for s in signals if s.direction == SignalDirection.LONG)
-            short_str = sum(s.strength for s in signals if s.direction == SignalDirection.SHORT)
-            dominant = max(long_str, short_str)
-            conflict_ratio = (abs(long_str - short_str) / dominant) if dominant > 0 else 1.0
-
-        # Плавный конфликт: очень сильный → NEUTRAL, умеренный → штраф confidence
-        # conflict_ratio = abs(long-short)/max(long,short)
-        # 70 vs 68 → 0.029 → NEUTRAL (почти равны)
-        # 70 vs 60 → 0.143 → штраф confidence (LONG явно доминирует)
-        # 70 vs 40 → 0.429 → без штрафа
-        if dominant > 0 and conflict_ratio < 0.05:
-            # Очень сильный конфликт (почти равные стороны) → NEUTRAL
-            direction = SignalDirection.NEUTRAL
-            supporting_signals = []
-            conflicting_signals = signals
-        elif dominant > 0 and conflict_ratio < conflict_threshold:
-            # Умеренный конфликт — direction остаётся, но confidence снижена
-            pass  # direction сохраняется по сильнейшей стороне
-
-        # Уверенность: по поддерживающим сигналам + штраф за конфликт (не по всем подряд)
-        confidence = self._calculate_advanced_confidence(
-            supporting_signals, conflicting_signals, market_context
+        """Делегирует в core.intelligence.signal_aggregator."""
+        from core.intelligence.signal_aggregator import analyze_signals_advanced
+        return analyze_signals_advanced(
+            signals, market_context,
+            self.signal_weights, self.thresholds,
+            self._calculate_advanced_confidence,
         )
-        if dominant > 0 and conflict_ratio < 0.05:
-            confidence *= 0.5
-        elif dominant > 0 and conflict_ratio < conflict_threshold:
-            confidence *= (0.6 + conflict_ratio)  # 0.6–0.9 плавно
-        
-        return {
-            "strength": strength,
-            "confidence": confidence,
-            "direction": direction,
-            "supporting_signals": supporting_signals,
-            "conflicting_signals": conflicting_signals,
-            "total_signals": len(signals)
-        }
     
     def _calculate_adaptive_weighted_strength(self, signals: List[SignalData]) -> int:
-        """
-        Взвешенная сила: вклад сигнала = weight по quality_score (strength * confidence).
-        Слабые сигналы учитываются, но с меньшим весом. Адаптивность по accuracy отключена,
-        пока нет реального outcome tracking (successful_signals).
-        """
-        if not signals:
-            return 0
-
-        total_weighted_strength = 0.0
-        total_weight = 0.0
-
-        for signal in signals:
-            base_weight = self.signal_weights.get(signal.signal_type, 0.1)
-            # Вес по качеству: слабые/низкоуверенные вносят меньший вклад, но не нулевой
-            quality = (signal.strength / 100.0) * signal.confidence
-            effective_weight = base_weight * max(quality, 0.05)
-            total_weighted_strength += signal.strength * effective_weight
-            total_weight += effective_weight
-
-        if total_weight <= 0:
-            return 0
-        return min(int(round(total_weighted_strength / total_weight)), 100)
+        """Делегирует в core.intelligence.signal_aggregator."""
+        from core.intelligence.signal_aggregator import calculate_adaptive_weighted_strength
+        return calculate_adaptive_weighted_strength(signals, self.signal_weights)
     
     def _calculate_advanced_confidence(self, supporting_signals: List[SignalData],
                                      conflicting_signals: List[SignalData],
                                      market_context: MarketContext) -> float:
-        """
-        Уверенность по поддерживающим сигналам и штраф за конфликт.
-        Не усредняем по всем (long+short) — иначе при 2 LONG 0.9 и 2 SHORT 0.9 получали бы 0.9.
-        """
-        total = len(supporting_signals) + len(conflicting_signals)
-        if total == 0:
-            return 0.5
-        # База только по поддерживающему направлению
-        if supporting_signals:
-            signal_confidence = float(np.mean([s.confidence for s in supporting_signals]))
-        else:
-            signal_confidence = 0.5
-        # Штраф за долю конфликтующих
-        conflict_penalty = len(conflicting_signals) / total
-        signal_confidence *= (1.0 - 0.5 * conflict_penalty)
-
-        context_factor = 1.0
-        if market_context.volume_24h > 0:
-            volume_factor = min(market_context.volume_24h / 1000000, 2.0)
-            context_factor *= (0.8 + 0.2 * volume_factor)
-        if market_context.volatility and market_context.volatility > 10:
-            context_factor *= 0.9
-        if abs(market_context.price_change_24h) > 5:
-            context_factor *= 1.1
-        # CONFLUENCE сигналы содержат N факторов — считаем каждый как отдельный сигнал
-        effective_count = total
-        for sig in supporting_signals + conflicting_signals:
-            if getattr(sig, "signal_type", None) == SignalType.CONFLUENCE:
-                n_factors = len((sig.data or {}).get("factors", []))
-                if n_factors > 1:
-                    effective_count += n_factors - 1
-        signal_count_factor = min(effective_count / 5.0, 1.5)
-        context_factor *= signal_count_factor
-
-        return min(signal_confidence * context_factor, 1.0)
+        """Делегирует в core.intelligence.confidence_calculator."""
+        from core.intelligence.confidence_calculator import calculate_advanced_confidence
+        return calculate_advanced_confidence(supporting_signals, conflicting_signals, market_context)
     
     async def _enhance_recommendation_with_ml(self, symbol: str, recommendation: TradingRecommendation,
                                              market_context: MarketContext) -> TradingRecommendation:
@@ -796,134 +663,27 @@ class TradingIntelligence:
         
         return recommendation
     
-    async def _enhance_analysis_with_ml(self, symbol: str, analysis: Dict[str, Any], 
+    async def _enhance_analysis_with_ml(self, symbol: str, analysis: Dict[str, Any],
                                        market_context: MarketContext) -> Dict[str, Any]:
-        """Улучшает анализ с помощью машинного обучения (legacy method)"""
-        try:
-            if not self.ml_predictor:
-                return analysis
-            
-            # Получаем ML предсказания
-            ml_predictions = []
-            
-            # Предсказание направления цены
-            price_prediction = await self.ml_predictor.predict_price_direction(symbol)
-            if price_prediction:
-                ml_predictions.append(price_prediction)
-            
-            # Предсказание силы сигналов
-            for signal in analysis.get("supporting_signals", []):
-                signal_data = {
-                    "strength": signal.strength,
-                    "confidence": signal.confidence,
-                    "signal_type": signal.signal_type.value,
-                    "age": (datetime.now() - signal.timestamp).total_seconds(),
-                    "volume_24h": market_context.volume_24h,
-                    "price_change_24h": market_context.price_change_24h,
-                    "volatility": market_context.volatility or 0
-                }
-                
-                strength_prediction = await self.ml_predictor.predict_signal_strength(symbol, signal_data)
-                if strength_prediction:
-                    ml_predictions.append(strength_prediction)
-            
-            # Корректируем анализ на основе ML предсказаний
-            if ml_predictions:
-                analysis = self._apply_ml_corrections(analysis, ml_predictions, market_context)
+        """Делегирует в core.intelligence.ml_enhancer."""
+        from core.intelligence.ml_enhancer import enhance_analysis_with_ml
+        return await enhance_analysis_with_ml(
+            symbol, analysis, market_context,
+            self.ml_predictor, self.outcome_predictor,
+        )
 
-            # OutcomePredictor: блендинг P(win) в confidence
-            if self.outcome_predictor and analysis.get("direction") != SignalDirection.NEUTRAL:
-                try:
-                    supporting = analysis.get("supporting_signals", [])
-                    first_sig = supporting[0] if supporting else None
-                    sig_type = first_sig.signal_type.value if first_sig else "composite"
-                    direction_str = analysis["direction"].value if hasattr(analysis["direction"], "value") else str(analysis["direction"])
-                    features_dict = {
-                        "volatility": market_context.volatility or 0,
-                        "price_change_24h": market_context.price_change_24h or 0,
-                    }
-                    win_prob = self.outcome_predictor.predict_win_prob(
-                        signal_type=sig_type,
-                        direction=direction_str,
-                        strength=analysis.get("strength", 50),
-                        confidence=analysis.get("confidence", 0.5),
-                        features_dict=features_dict,
-                        regime=None,  # режим появится после регистрации сделки
-                    )
-                    if win_prob is not None:
-                        orig = analysis.get("confidence", 0.5)
-                        analysis["confidence"] = round(orig * 0.7 + win_prob * 0.3, 4)
-                        logger.debug(
-                            "OutcomePredictor: P(win)=%.2f conf %.3f→%.3f",
-                            win_prob, orig, analysis["confidence"],
-                        )
-                except Exception as op_err:
-                    logger.debug("OutcomePredictor blend: %s", op_err)
-
-            return analysis
-
-        except Exception as e:
-            logger.exception(f"Ошибка ML улучшения анализа для {symbol}: {e}")
-            return analysis
-    
-    def _apply_ml_corrections(self, analysis: Dict[str, Any], 
-                             ml_predictions: List[MLPrediction], 
+    def _apply_ml_corrections(self, analysis: Dict[str, Any],
+                             ml_predictions,
                              market_context: MarketContext) -> Dict[str, Any]:
-        """Применяет ML корректировки к анализу"""
-        try:
-            # Корректируем силу на основе ML предсказаний
-            ml_strength_adjustment = 0
-            ml_confidence_adjustment = 0
-            
-            for prediction in ml_predictions:
-                if prediction.prediction_type == PredictionType.PRICE_DIRECTION:
-                    # Корректируем силу на основе предсказания направления
-                    direction_match = self._check_direction_match(analysis["direction"], prediction.predicted_value)
-                    if direction_match:
-                        ml_strength_adjustment += prediction.confidence * 10  # До 10 баллов
-                    else:
-                        ml_strength_adjustment -= prediction.confidence * 5  # До -5 баллов
-                
-                elif prediction.prediction_type == PredictionType.SIGNAL_STRENGTH:
-                    # Корректируем силу на основе предсказания силы сигнала
-                    predicted_strength = prediction.predicted_value * 100  # Конвертируем в 0-100
-                    current_strength = analysis["strength"]
-                    
-                    # Если ML предсказывает более высокую силу, увеличиваем
-                    if predicted_strength > current_strength:
-                        ml_strength_adjustment += (predicted_strength - current_strength) * prediction.confidence * 0.3
-                    else:
-                        ml_strength_adjustment -= (current_strength - predicted_strength) * prediction.confidence * 0.2
-                
-                # Корректируем уверенность
-                ml_confidence_adjustment += prediction.confidence * 0.1  # До 0.1
-            
-            # Применяем корректировки
-            analysis["strength"] = max(0, min(100, analysis["strength"] + ml_strength_adjustment))
-            analysis["confidence"] = max(0.0, min(1.0, analysis["confidence"] + ml_confidence_adjustment))
-            
-            # Добавляем ML метаданные
-            analysis["ml_enhanced"] = True
-            analysis["ml_predictions_count"] = len(ml_predictions)
-            analysis["ml_strength_adjustment"] = ml_strength_adjustment
-            analysis["ml_confidence_adjustment"] = ml_confidence_adjustment
-            
-            return analysis
-            
-        except Exception as e:
-            logger.exception(f"Ошибка применения ML корректировок: {e}")
-            return analysis
-    
-    def _check_direction_match(self, analysis_direction: SignalDirection, 
+        """Делегирует в core.intelligence.ml_enhancer."""
+        from core.intelligence.ml_enhancer import apply_ml_corrections
+        return apply_ml_corrections(analysis, ml_predictions, market_context)
+
+    def _check_direction_match(self, analysis_direction: SignalDirection,
                               ml_prediction: float) -> bool:
-        """Проверяет соответствие направления анализа и ML предсказания"""
-        if analysis_direction == SignalDirection.LONG and ml_prediction > 0.5:
-            return True
-        elif analysis_direction == SignalDirection.SHORT and ml_prediction < 0.5:
-            return True
-        elif analysis_direction == SignalDirection.NEUTRAL:
-            return 0.4 <= ml_prediction <= 0.6
-        return False
+        """Делегирует в core.intelligence.ml_enhancer."""
+        from core.intelligence.ml_enhancer import _check_direction_match
+        return _check_direction_match(analysis_direction, ml_prediction)
     
     def _update_signal_statistics(self, signals: List[SignalData], 
                                  recommendation: TradingRecommendation):
@@ -1033,18 +793,22 @@ class TradingIntelligence:
             )
     
     @staticmethod
-    def _compute_swing_levels(df, current_price: float, lookback: int = 20, wing: int = 2):
-        """Находит ближайший свинг-лоу ниже цены и свинг-хай выше цены за последние N баров.
+    def _compute_swing_levels(df, current_price: float, lookback: int = 20, wing: int = 4):
+        """Находит структурный свинг-лоу и свинг-хай за последние lookback баров.
 
-        wing=2 — локальный минимум/максимум определяется как ниже/выше 2 соседних баров с каждой стороны.
+        Принцип "за вершину": берём МИНИМАЛЬНЫЙ low (самый низкий экстремум в окне) —
+        это реальная структурная вершина, видимая на графике.
+        wing=4 используется только для отбора значимых локальных экстремумов
+        (не берём случайные шумовые свечи без подтверждения соседями).
+
         Возвращает (swing_low, swing_high) — оба могут быть None.
         """
         try:
             if df is None or len(df) < lookback + wing * 2:
                 return None, None
             recent = df.iloc[-(lookback + wing * 2):].reset_index(drop=True)
-            lows_below, highs_above = [], []
-            # не берём последние wing баров (нет "правых" соседей)
+            lows_candidates, highs_candidates = [], []
+            # Ищем значимые экстремумы (не шум): low/high ниже/выше всех wing соседей
             for i in range(wing, len(recent) - wing):
                 low_i  = recent["low"].iloc[i]
                 high_i = recent["high"].iloc[i]
@@ -1053,11 +817,12 @@ class TradingIntelligence:
                 left_h  = recent["high"].iloc[i - wing: i]
                 right_h = recent["high"].iloc[i + 1: i + wing + 1]
                 if low_i < left_l.min() and low_i < right_l.min() and low_i < current_price:
-                    lows_below.append(low_i)
+                    lows_candidates.append(low_i)
                 if high_i > left_h.max() and high_i > right_h.max() and high_i > current_price:
-                    highs_above.append(high_i)
-            swing_low  = float(max(lows_below))  if lows_below  else None  # ближайший = самый высокий
-            swing_high = float(min(highs_above)) if highs_above else None  # ближайший = самый низкий
+                    highs_candidates.append(high_i)
+            # "За вершину" = самый ДАЛЬНИЙ экстремум (min low / max high)
+            swing_low  = float(min(lows_candidates))  if lows_candidates  else None
+            swing_high = float(max(highs_candidates)) if highs_candidates else None
             return swing_low, swing_high
         except Exception:
             return None, None
@@ -1090,247 +855,21 @@ class TradingIntelligence:
         except Exception:
             return None
     
-    def _generate_recommendation(self, symbol: str, signals: List[SignalData],
-                               analysis: Dict[str, Any], 
-                               market_context: MarketContext) -> TradingRecommendation:
-        """Генерирует финальную торговую рекомендацию"""
-        
-        strength = analysis["strength"]
-        confidence = analysis["confidence"]
-        direction = analysis["direction"]
-        supporting_signals = analysis["supporting_signals"]
-        conflicting_signals = analysis["conflicting_signals"]
-        
-        # Определяем действие
-        if strength >= self.thresholds["min_strength"] and confidence >= self.thresholds["min_confidence"]:
-            if direction == SignalDirection.LONG:
-                action = "BUY"
-            elif direction == SignalDirection.SHORT:
-                action = "SELL"
-            else:
-                action = "HOLD"
-        elif strength >= 10:
-            action = "WATCH"
-        else:
-            action = "HOLD"
-        
-        # Определяем уровень риска
-        risk_level = self._determine_risk_level(strength, confidence, market_context)
-        
-        # Генерируем обоснование
-        reasoning = self._generate_reasoning(signals, analysis, market_context)
-        
-        # Рассчитываем уровни входа, стоп-лосса и тейк-профита
-        entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source = self._calculate_levels(
-            symbol, direction, market_context, signals
-        )
+    def _generate_recommendation(self, symbol, signals, analysis, market_context):
+        from core.intelligence.recommendation_generator import generate_recommendation
+        return generate_recommendation(symbol, signals, analysis, market_context, self.thresholds, self.config)
 
-        return TradingRecommendation(
-            symbol=symbol,
-            action=action,
-            direction=direction,
-            overall_strength=strength,
-            confidence=confidence,
-            risk_level=risk_level,
-            signals_count=len(signals),
-            supporting_signals=supporting_signals,
-            conflicting_signals=conflicting_signals,
-            market_context=market_context,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            tp1_price=tp1_price,
-            sl_source=sl_source,
-            tp_source=tp_source,
-            reasoning=reasoning,
-            timestamp=datetime.now()
-        )
-    
-    def _determine_risk_level(self, strength: int, confidence: float, 
-                             market_context: MarketContext) -> str:
-        """Определяет уровень риска"""
-        
-        risk_score = 0
-        
-        # Базовая оценка риска
-        if strength < 40:
-            risk_score += 2
-        elif strength < 60:
-            risk_score += 1
-        
-        if confidence < 0.6:
-            risk_score += 2
-        elif confidence < 0.8:
-            risk_score += 1
-        
-        # Корректировка на основе контекста
-        if market_context.volatility and market_context.volatility > 15:
-            risk_score += 1
-        
-        if market_context.price_change_24h and abs(market_context.price_change_24h) > 10:
-            risk_score += 1
-        
-        if risk_score >= 4:
-            return "HIGH"
-        elif risk_score >= 2:
-            return "MEDIUM"
-        else:
-            return "LOW"
-    
-    def _generate_reasoning(self, signals: List[SignalData], analysis: Dict[str, Any],
-                          market_context: MarketContext) -> List[str]:
-        """Генерирует обоснование рекомендации"""
-        reasoning = []
-        
-        # Основные сигналы
-        if analysis["supporting_signals"]:
-            signal_types = [s.signal_type.value for s in analysis["supporting_signals"]]
-            reasoning.append(f"Поддерживающие сигналы: {', '.join(set(signal_types))}")
-        
-        # Конфликтующие сигналы
-        if analysis["conflicting_signals"]:
-            signal_types = [s.signal_type.value for s in analysis["conflicting_signals"]]
-            reasoning.append(f"Конфликтующие сигналы: {', '.join(set(signal_types))}")
-        
-        # Контекст рынка
-        if market_context.volume_24h > 0:
-            reasoning.append(f"Объем 24ч: {market_context.volume_24h:,.0f}")
-        
-        if market_context.price_change_24h:
-            reasoning.append(f"Изменение цены 24ч: {market_context.price_change_24h:+.2f}%")
-        
-        # Общая оценка
-        reasoning.append(f"Общая сила: {analysis['strength']}/100")
-        reasoning.append(f"Уверенность: {analysis['confidence']:.2f}")
-        
-        return reasoning
-    
-    def _calculate_levels(self, symbol: str, direction: SignalDirection,
-                         market_context: MarketContext,
-                         signals: List[SignalData]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], str, str]:
-        """Рассчитывает уровни входа, SL и TP. Возвращает (entry, sl, tp, tp1, sl_source, tp_source).
+    def _determine_risk_level(self, strength, confidence, market_context):
+        from core.intelligence.recommendation_generator import determine_risk_level
+        return determine_risk_level(strength, confidence, market_context)
 
-        tp1 — фиксированный уровень частичного выхода (50% позиции при 3R).
-        tp  — то же что tp1 (или пивот-уровень если он ≥ 3R).
+    def _generate_reasoning(self, signals, analysis, market_context):
+        from core.intelligence.recommendation_generator import generate_reasoning
+        return generate_reasoning(signals, analysis, market_context)
 
-        SL (приоритет):
-          1. TSL-линия индикатора (trendup для LONG / trenddown для SHORT, ATR-43 factor-1.1)
-             — самый точный структурный стоп, тонкий при свежей смене тренда
-          2. Пивот-уровень из PIVOT_REVERSAL сигналов — если TSL слишком далеко
-          3. ATR(14) × динамический множитель (ratio ATR14/ATR28)
-          4. Волатильность fallback / фиксированный 2.0%
-        """
-        current_price = market_context.current_price
-        if current_price == 0:
-            return None, None, None, None, "", ""
-
-        entry_price = current_price
-
-        # --- Параметры из конфига ---
-        sl_cfg     = self.config.get("trading", {}).get("sl_tp", {})
-        atr_mult   = sl_cfg.get("atr_multiplier", 1.2)
-        sl_min     = sl_cfg.get("sl_min_pct", 0.8)
-        sl_max     = sl_cfg.get("sl_max_pct", 3.0)
-        tp_rr      = sl_cfg.get("tp_fallback_rr", 2.0)
-        atr_dyn    = sl_cfg.get("atr_dynamic", True)
-        atr_exp    = sl_cfg.get("atr_expand_threshold", 1.3)
-        atr_con    = sl_cfg.get("atr_contract_threshold", 0.8)
-        struct_buf = sl_cfg.get("struct_sl_buffer_pct", 0.3)  # % от цены
-        struct_max = sl_cfg.get("struct_sl_max_dist", 3.0)
-
-        is_long = direction == SignalDirection.LONG
-        is_short = direction == SignalDirection.SHORT
-
-        # --- ATR динамика: корректируем базовый множитель ---
-        if atr_dyn and market_context.atr and market_context.atr_slow:
-            ratio = market_context.atr / market_context.atr_slow
-            if ratio > atr_exp:
-                atr_mult = round(atr_mult * 0.85, 3)    # всплеск → SL уже
-            elif ratio < atr_con:
-                atr_mult = round(min(atr_mult * 1.1, 1.5), 3)  # затишье → чуть шире
-
-        # --- ATR/волатильность baseline ---
-        if market_context.atr and entry_price > 0:
-            atr_pct = market_context.atr / entry_price * 100
-            sl_pct  = max(sl_min, min(atr_mult * atr_pct, sl_max))
-            sl_source = f"atr_14:{atr_pct:.2f}%"
-        elif market_context.volatility:
-            sl_pct  = max(sl_min, min(market_context.volatility, sl_max))
-            sl_source = f"volatility:{market_context.volatility:.2f}%"
-        else:
-            sl_pct  = 2.0
-            sl_source = "fallback:2.0%"
-
-        if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
-            return entry_price, None, None, None, "", ""
-
-        # ── 1. SWING — стоп за ближайший структурный экстремум ─────────────
-        # Принцип: "торгуем то что рынок показывает" — swing = реальный уровень
-        # где рынок развернулся. Если пробит — сетап сломан.
-        swing = market_context.swing_low if is_long else market_context.swing_high
-        if swing and swing > 0:
-            if is_long and swing < entry_price:
-                swing_pct = (entry_price - swing) / entry_price * 100 + struct_buf
-                if swing_pct <= struct_max:
-                    sl_pct    = swing_pct
-                    sl_source = "swing_low"
-            elif is_short and swing > entry_price:
-                swing_pct = (swing - entry_price) / entry_price * 100 + struct_buf
-                if swing_pct <= struct_max:
-                    sl_pct    = swing_pct
-                    sl_source = "swing_high"
-
-        # ── 2. TSL-линия — если swing недоступен ─────────────────────────
-        if "swing" not in sl_source:
-            tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
-            if tsl_line and tsl_line > 0:
-                if is_long and tsl_line < entry_price:
-                    tsl_dist_pct = (entry_price - tsl_line) / entry_price * 100
-                    tsl_sl_pct   = tsl_dist_pct + struct_buf
-                    if tsl_sl_pct <= struct_max:
-                        sl_pct    = tsl_sl_pct
-                        sl_source = "tsl_line:trendup"
-                elif is_short and tsl_line > entry_price:
-                    tsl_dist_pct = (tsl_line - entry_price) / entry_price * 100
-                    tsl_sl_pct   = tsl_dist_pct + struct_buf
-                    if tsl_sl_pct <= struct_max:
-                        sl_pct    = tsl_sl_pct
-                        sl_source = "tsl_line:trenddown"
-
-        # ── 3. Пивот-уровень как резервный структурный SL ──────────────────
-        if "swing" not in sl_source and "tsl_line" not in sl_source:
-            pivot_type = "support" if is_long else "resistance"
-            struct_levels = [
-                s.data["level"]
-                for s in signals
-                if s.signal_type == SignalType.PIVOT_REVERSAL
-                and s.data.get("pivot_type") == pivot_type
-                and (s.data.get("level", 0) < entry_price if is_long
-                     else s.data.get("level", 0) > entry_price)
-            ]
-            if struct_levels:
-                nearest = max(struct_levels) if is_long else min(struct_levels)
-                pivot_sl_pct = abs(entry_price - nearest) / entry_price * 100 + struct_buf
-                if sl_min <= pivot_sl_pct <= struct_max and pivot_sl_pct < sl_pct:
-                    sl_pct    = pivot_sl_pct
-                    sl_source = f"structural:{pivot_type}:{nearest:.6g}"
-
-        # ── TP1: фиксированный 3R (частичный выход 50% позиции) ───────────
-        # Всегда 3R от SL независимо от пивотов
-        tp1_pct = sl_pct * 3.0
-        if is_long:
-            stop_loss  = entry_price * (1 - sl_pct / 100)
-            tp1_price  = entry_price * (1 + tp1_pct / 100)
-        else:
-            stop_loss  = entry_price * (1 + sl_pct / 100)
-            tp1_price  = entry_price * (1 - tp1_pct / 100)
-
-        # ── TP fallback = TP1 (пивот-TP может перезаписать в monitoring,
-        #    но только если он ≥ 3R, иначе take_profit = tp1) ──────────────
-        take_profit = tp1_price
-        tp_source   = f"atr_rr_3.0:{tp1_pct:.2f}%"
-
-        return entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source
+    def _calculate_levels(self, symbol, direction, market_context, signals):
+        from core.intelligence.recommendation_generator import calculate_levels
+        return calculate_levels(symbol, direction, market_context, signals, self.config)
     
     def get_performance_statistics(self) -> Dict[str, Any]:
         """Возвращает статистику производительности системы"""
