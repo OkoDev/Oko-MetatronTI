@@ -334,3 +334,115 @@ async def check_mtf_bias_signal(
     except Exception:
         logger.exception("[mtf_bias] Ошибка check_mtf_bias_signal для %s", symbol)
     return signals
+
+
+async def check_divergence_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
+    """
+    Обёртка DivergenceDetector → List[SignalData] (принимает готовый df).
+    Используется в тестах и backtesting_engine (без внешнего data_collector).
+
+    Порядок проверки: Regular Bullish → Regular Bearish → Hidden Bullish → Hidden Bearish.
+    """
+    signals = []
+    try:
+        if df is None or len(df) < 100:
+            return signals
+
+        from core.divergence_detector import DivergenceDetector
+        from core.indicators import calculate_wt as _calc_wt
+
+        det = DivergenceDetector()
+        df_wt = _calc_wt(df.copy(), n1=10, n2=21)
+        if "wt1" not in df_wt.columns:
+            return signals
+
+        checks = [
+            (det.detect_regular_bullish(df_wt, "wt1"), "REGULAR_BULLISH", "LONG"),
+            (det.detect_regular_bearish(df_wt, "wt1"), "REGULAR_BEARISH", "SHORT"),
+            (det.detect_hidden_bullish(df_wt, "wt1"),  "HIDDEN_BULLISH",  "LONG"),
+            (det.detect_hidden_bearish(df_wt, "wt1"),  "HIDDEN_BEARISH",  "SHORT"),
+        ]
+        for result, div_type, dir_str in checks:
+            if not result:
+                continue
+            strength = int(det._calculate_strength(result, div_type))
+            direction = SignalDirection.LONG if dir_str == "LONG" else SignalDirection.SHORT
+            logger.debug("[%s] DIV %s str=%d", symbol, div_type, strength)
+            signals.append(SignalData(
+                symbol=symbol,
+                signal_type=SignalType.DIVERGENCE,
+                direction=direction,
+                strength=strength,
+                confidence=0.75,
+                timestamp=datetime.now(),
+                data={"type": div_type, "direction": dir_str, "details": result},
+                timeframe="15m",
+            ))
+            break  # один сигнал (наивысший приоритет)
+    except Exception:
+        logger.exception("Ошибка check_divergence_signals для %s", symbol)
+    return signals
+
+
+async def check_pivot_signals(
+    symbol: str,
+    df: pd.DataFrame,
+    proximity_pct: float = 2.0,
+) -> List[SignalData]:
+    """
+    Находит сигналы разворота у локальных max-High / min-Low (S/R из OHLCV).
+    Простая обёртка для тестов и backtesting_engine (не требует pivot_calculator).
+
+    Алгоритм: берёт max(high) и min(low) за последние 60 баров (без последних 5),
+    проверяет что текущая цена в пределах proximity_pct% от уровня.
+    """
+    signals = []
+    try:
+        if df is None or len(df) < 30:
+            return signals
+
+        current_price = float(df["close"].iloc[-1])
+        if current_price <= 0:
+            return signals
+
+        # Исторические бары — исключаем последние 5 (они ещё формируются)
+        tail = min(len(df) - 5, 60)
+        hist = df.iloc[-(tail + 5):-5]
+
+        resistance = float(hist["high"].max())
+        support    = float(hist["low"].min())
+
+        # Цена у сопротивления → SHORT
+        dist_res = abs(current_price - resistance) / resistance * 100
+        if current_price < resistance and dist_res <= proximity_pct:
+            strength = max(40, min(80, int((1 - dist_res / proximity_pct) * 40 + 40)))
+            logger.debug("[%s] PIVOT SHORT near resistance=%.6g dist=%.2f%%", symbol, resistance, dist_res)
+            signals.append(SignalData(
+                symbol=symbol,
+                signal_type=SignalType.PIVOT_REVERSAL,
+                direction=SignalDirection.SHORT,
+                strength=strength,
+                confidence=0.65,
+                timestamp=datetime.now(),
+                data={"level": resistance, "pivot_type": "resistance", "distance_pct": dist_res},
+                timeframe="15m",
+            ))
+
+        # Цена у поддержки → LONG
+        dist_sup = abs(current_price - support) / support * 100
+        if current_price > support and dist_sup <= proximity_pct:
+            strength = max(40, min(80, int((1 - dist_sup / proximity_pct) * 40 + 40)))
+            logger.debug("[%s] PIVOT LONG near support=%.6g dist=%.2f%%", symbol, support, dist_sup)
+            signals.append(SignalData(
+                symbol=symbol,
+                signal_type=SignalType.PIVOT_REVERSAL,
+                direction=SignalDirection.LONG,
+                strength=strength,
+                confidence=0.65,
+                timestamp=datetime.now(),
+                data={"level": support, "pivot_type": "support", "distance_pct": dist_sup},
+                timeframe="15m",
+            ))
+    except Exception:
+        logger.exception("Ошибка check_pivot_signals для %s", symbol)
+    return signals

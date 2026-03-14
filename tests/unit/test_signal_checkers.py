@@ -14,20 +14,9 @@ from core.signal_checkers import (
     check_wt_signals,
     check_mtf_signals,
     check_trend_signals,
+    check_divergence_signals,
+    check_pivot_signals,
 )
-
-# check_divergence_signals и check_pivot_signals удалены при рефакторинге ARCH-02.
-# Architect должен восстановить обёртки в signal_checkers.py (задача DEV-01c).
-# Тесты для этих функций временно пропускаются.
-_MISSING = "функция удалена при рефакторинге ARCH-02 — ожидаем восстановления"
-
-async def check_divergence_signals(*a, **kw):
-    pytest.skip(_MISSING)
-    return []
-
-async def check_pivot_signals(*a, **kw):
-    pytest.skip(_MISSING)
-    return []
 from core.signal_models import SignalDirection, SignalType
 
 
