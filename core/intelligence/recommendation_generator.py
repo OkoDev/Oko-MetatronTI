@@ -73,11 +73,13 @@ def calculate_levels(
     """
     Рассчитывает уровни входа, SL и TP.
 
-    SL (приоритет):
-      1. Swing SL (структурный экстремум)
-      2. TSL-линия индикатора
-      3. Пивот-уровень из PIVOT_REVERSAL сигналов
+    SL (приоритет, DEV-05):
+      1. Под S1/R1 — ближайший пивот поддержки/сопротивления из PIVOT_REVERSAL сигналов
+      2. Под FVG — Fair Value Gap midpoint из данных сигналов (если есть)
+      3. Под TSL-линией индикатора (trendup/trenddown)
       4. ATR(14) × динамический множитель / волатильность / фиксированный 2%
+
+    Зажим: [sl_min_pct=0.5%, sl_max_pct=3.0%] (config: sl_tp.sl_min_pct / sl_max_pct)
 
     Returns:
         (entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source)
@@ -89,13 +91,12 @@ def calculate_levels(
     entry_price = current_price
     sl_cfg     = config.get("trading", {}).get("sl_tp", {})
     atr_mult   = sl_cfg.get("atr_multiplier", 1.2)
-    sl_min     = sl_cfg.get("sl_min_pct", 0.8)
+    sl_min     = sl_cfg.get("sl_min_pct", 0.5)   # DEV-05: зажим [0.5%, 3%]
     sl_max     = sl_cfg.get("sl_max_pct", 3.0)
     atr_dyn    = sl_cfg.get("atr_dynamic", True)
     atr_exp    = sl_cfg.get("atr_expand_threshold", 1.3)
     atr_con    = sl_cfg.get("atr_contract_threshold", 0.8)
     struct_buf = sl_cfg.get("struct_sl_buffer_pct", 0.3)
-    struct_max = sl_cfg.get("struct_sl_max_dist", 3.0)
 
     is_long  = direction == SignalDirection.LONG
     is_short = direction == SignalDirection.SHORT
@@ -108,7 +109,7 @@ def calculate_levels(
         elif ratio < atr_con:
             atr_mult = round(min(atr_mult * 1.1, 1.5), 3)
 
-    # ATR / волатильность baseline
+    # ATR / волатильность baseline (используется как fallback шаг 4)
     if market_context.atr and entry_price > 0:
         atr_pct   = market_context.atr / entry_price * 100
         sl_pct    = max(sl_min, min(atr_mult * atr_pct, sl_max))
@@ -123,61 +124,63 @@ def calculate_levels(
     if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
         return entry_price, None, None, None, "", ""
 
-    # ── 1. SWING — структурный экстремум ──────────────────────────────────
-    swing    = market_context.swing_low if is_long else market_context.swing_high
-    _tsl_ref = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
-    _tsl_dist_ref = (
-        abs(entry_price - _tsl_ref) / entry_price * 100
-        if _tsl_ref and _tsl_ref > 0 and entry_price > 0 else 0.0
-    )
-    _swing_min = max(sl_min, _tsl_dist_ref)
+    # ── 1. S1/R1 — ближайший пивот поддержки/сопротивления ───────────────
+    # Источник: PIVOT_REVERSAL сигналы (data["level"] + data["pivot_type"])
+    pivot_type    = "support" if is_long else "resistance"
+    struct_levels = [
+        s.data["level"]
+        for s in signals
+        if s.signal_type == SignalType.PIVOT_REVERSAL
+        and s.data.get("pivot_type") == pivot_type
+        and (s.data.get("level", 0) < entry_price if is_long
+             else s.data.get("level", 0) > entry_price)
+    ]
+    if struct_levels:
+        nearest      = max(struct_levels) if is_long else min(struct_levels)
+        s1_sl_pct    = abs(entry_price - nearest) / entry_price * 100 + struct_buf
+        if sl_min <= s1_sl_pct <= sl_max:
+            sl_pct    = s1_sl_pct
+            sl_source = f"s1:{pivot_type}:{nearest:.6g}"
 
-    if swing and swing > 0:
-        if is_long and swing < entry_price:
-            swing_pct = (entry_price - swing) / entry_price * 100 + struct_buf
-            if _swing_min <= swing_pct <= struct_max:
-                sl_pct    = swing_pct
-                sl_source = "swing_low"
-        elif is_short and swing > entry_price:
-            swing_pct = (swing - entry_price) / entry_price * 100 + struct_buf
-            if _swing_min <= swing_pct <= struct_max:
-                sl_pct    = swing_pct
-                sl_source = "swing_high"
+    # ── 2. FVG — Fair Value Gap midpoint из данных сигналов ───────────────
+    # Источник: сигналы с data["has_fvg"]=True и data["fvg_entry"] (PIVOT_REVERSAL)
+    if "s1:" not in sl_source:
+        for sig in signals:
+            if not sig.data.get("has_fvg"):
+                continue
+            fvg_price = sig.data.get("fvg_entry")
+            fvg_type  = sig.data.get("fvg_type", "")
+            if not fvg_price:
+                continue
+            if is_long and fvg_type == "BULL" and fvg_price < entry_price:
+                fvg_sl_pct = (entry_price - fvg_price) / entry_price * 100 + struct_buf
+                if sl_min <= fvg_sl_pct <= sl_max:
+                    sl_pct    = fvg_sl_pct
+                    sl_source = f"fvg_bull:{fvg_price:.6g}"
+                    break
+            elif is_short and fvg_type == "BEAR" and fvg_price > entry_price:
+                fvg_sl_pct = (fvg_price - entry_price) / entry_price * 100 + struct_buf
+                if sl_min <= fvg_sl_pct <= sl_max:
+                    sl_pct    = fvg_sl_pct
+                    sl_source = f"fvg_bear:{fvg_price:.6g}"
+                    break
 
-    # ── 2. TSL-линия — если swing недоступен ──────────────────────────────
-    if "swing" not in sl_source:
+    # ── 3. TSL-линия — если S1 и FVG недоступны ───────────────────────────
+    if "s1:" not in sl_source and "fvg_" not in sl_source:
         tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
         if tsl_line and tsl_line > 0:
             if is_long and tsl_line < entry_price:
                 tsl_dist_pct = (entry_price - tsl_line) / entry_price * 100
                 tsl_sl_pct   = tsl_dist_pct + struct_buf
-                if tsl_sl_pct <= struct_max:
+                if sl_min <= tsl_sl_pct <= sl_max:
                     sl_pct    = tsl_sl_pct
                     sl_source = "tsl_line:trendup"
             elif is_short and tsl_line > entry_price:
                 tsl_dist_pct = (tsl_line - entry_price) / entry_price * 100
                 tsl_sl_pct   = tsl_dist_pct + struct_buf
-                if tsl_sl_pct <= struct_max:
+                if sl_min <= tsl_sl_pct <= sl_max:
                     sl_pct    = tsl_sl_pct
                     sl_source = "tsl_line:trenddown"
-
-    # ── 3. Пивот-уровень как резервный структурный SL ─────────────────────
-    if "swing" not in sl_source and "tsl_line" not in sl_source:
-        pivot_type    = "support" if is_long else "resistance"
-        struct_levels = [
-            s.data["level"]
-            for s in signals
-            if s.signal_type == SignalType.PIVOT_REVERSAL
-            and s.data.get("pivot_type") == pivot_type
-            and (s.data.get("level", 0) < entry_price if is_long
-                 else s.data.get("level", 0) > entry_price)
-        ]
-        if struct_levels:
-            nearest      = max(struct_levels) if is_long else min(struct_levels)
-            pivot_sl_pct = abs(entry_price - nearest) / entry_price * 100 + struct_buf
-            if sl_min <= pivot_sl_pct <= struct_max and pivot_sl_pct < sl_pct:
-                sl_pct    = pivot_sl_pct
-                sl_source = f"structural:{pivot_type}:{nearest:.6g}"
 
     # ── TP1: фиксированный 3R ─────────────────────────────────────────────
     tp1_pct = sl_pct * 3.0

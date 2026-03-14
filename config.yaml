@@ -124,8 +124,8 @@ trading:
   breakeven_activation_r: 0.5  # Переносить SL в безубыток после +0.5R
   sl_tp:
     atr_multiplier: 1.2
-    sl_min_pct: 1.0        # было 0.8 — tight <1% давали Win%=22%, поднято до 1.0%
-    sl_max_pct: 2.0
+    sl_min_pct: 0.5        # DEV-05: зажим [0.5%, 3%] — S1/FVG/TSL приоритет
+    sl_max_pct: 3.0
     tp_fallback_rr: 3.0
     tp_pivot_min_r: 3.0
     tp_partial_pct: 0.5
