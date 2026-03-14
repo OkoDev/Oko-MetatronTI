@@ -1,107 +1,152 @@
 # Whats-Next — Handoff Document
-> Обновлено: 13.03.2026 | Агент: Claude Sonnet 4.6
+> Обновлено: 14.03.2026 | Агент: Claude Sonnet 4.6 (Architect)
 
 ---
 
-## work_completed — ЧТО СДЕЛАНО В ЭТОЙ СЕССИИ
+<work_completed>
 
-### 4. MTF WT Интерпретатор — починка и интеграция (текущая сессия)
-- `core/trading_intelligence.py`: добавлен `SignalType.MTF_BIAS: 0.30` в `signal_weights` и `_base_signal_weights`; добавлен маппинг `"mtf_bias"` в `update_signal_weights()`
-- `strategies/built_in/mtf_bias.py`: исправлен фильтр — теперь фильтрует `MTF_BIAS` (не `MTF_SIGNAL/MTF_ALERT`); исправлен `require_confluence` блок
-- `bot/monitoring.py`: в блоке форматирования TG-текста добавлена ветка — если `supporting_signals` содержит `MTF_BIAS` сигнал → используется `mtf_bias_message(symbol, sig)` вместо общего форматтера
-- `core/mtf_interpreter.py`: добавлена функция `detect_senior_reversal(snapshot)` — обнаруживает потенциальные развороты на 1d/4h/1h по принципу (тренд UP + WT в OB) или (тренд DOWN + WT в OS); результат добавляется в `sig.data["senior_reversal"]` внутри `interpret()`
-- `core/subscription_manager.py`: добавлена колонка `tsl_tf TEXT DEFAULT '15m'` в `simulated_trades` + миграция
-- `core/trade_simulator.py`: при регистрации сделки — если `supporting_signals` содержат `MTF_BIAS` сигнал, извлекается `entry_tf` и маппируется на старший TSL TF (5m/15m → 1h, 45m/1h → 4h); `tsl_tf` сохраняется в БД; в `check_open_trades_with_tsl()` — `preferred_tsl_tf` из сделки используется для TSL вместо жёсткого 1h
+## Что было сделано (14.03.2026 — обе сессии)
 
+### ARCH-01 (коммит b4768ca)
+- `bot/core/bot.py` — TradingAlertBot класс
+- `bot/loops/scan_loop.py` — scan_all_pairs + monitor_market + _prefetch_pivots
+- `bot/loops/ml_loop.py` — ml_training_loop + weekly_report_loop
+- `bot/loops/trade_tracker.py` — trade_tracker_loop
+- `bot_with_subscriptions.py` — только точка входа (75 строк)
+- `bot/monitoring.py` — фильтры + фоновые проверки + broadcast (765 строк)
 
+### ARCH-02 (коммит b82214a)
+- `core/intelligence/signal_aggregator.py` — analyze_signals_advanced, calculate_adaptive_weighted_strength
+- `core/intelligence/confidence_calculator.py` — calculate_advanced_confidence
+- `core/intelligence/recommendation_generator.py` — generate_recommendation, determine_risk_level, generate_reasoning, calculate_levels
+- `core/intelligence/ml_enhancer.py` — enhance_analysis_with_ml, apply_ml_corrections
+- `core/trading_intelligence.py`: 1536 → 1061 строк, методы стали тонкими делегатами
 
-### 1. Confluence аналитика WR + фикс TP пивоты (коммит e1106c6)
-- `bot/monitoring.py`: сохраняем `confluence_factors` в `features_json` при регистрации
-- `core/performance_engine.py`: новый метод `confluence_breakdown()` — WR по direction/strength/tp_source/факторам
-- `web/dashboard_server.py`: секция "Confluence — разбивка WR", endpoint `GET /api/stats/confluence`
+### DEV-01 (коммит 02c8e4b, Developer, 15.03.2026)
+- `core/structure_detector.py`: detect_swing_highs_lows(), detect_choch(), detect_bos(), detect_structure()
+- BOS > CHoCH по приоритету, strength 55/65
+- 25/25 тестов passed
 
-### 2. Параллельный запуск всех стратегий (коммит 5716911)
-- `config.yaml`: `active_strategies: [confluence_scanner, pivot_reversal, confluence, mtf_bias]`
-- `core/subscription_manager.py` + `trade_simulator.py`: колонка `strategy_name` в `simulated_trades`
-- `core/trading_intelligence.py`: `self.strategies dict`, `_run_all_strategies()` — параллельный запуск
-- `bot/monitoring.py`: регистрирует сделки всех стратегий в БД (без TG-спама для не-основных)
-- `core/performance_engine.py`: `by_strategy()` + `full_stats` включает `by_strategy`
-- `web/dashboard_server.py`: секция "По стратегии" на главной странице
-
-### 3. CLAUDE.md обновлён (правило обязательного чтения MD)
-- Добавлен блок "🔴 СТАРТ КАЖДОЙ СЕССИИ" — список файлов для обязательного чтения
+</work_completed>
 
 ---
 
-## current_state — ТЕКУЩЕЕ СОСТОЯНИЕ
+<work_remaining>
 
-### Активная стратегия (TG-сигналы)
-`confluence_scanner` — основная, отправляет TG-сигналы
+## Высокий приоритет
 
-### Параллельные стратегии (только БД)
-`pivot_reversal`, `confluence`, `mtf_bias` — накапливают сделки с `strategy_name` тегом
+### 1. DEV-01b — Интеграция structure_detector → signal_checkers.py
+Developer должен добавить новый тип сигнала `smc_signal` в пайплайн:
+- Вызвать `detect_structure()` в `check_structure_signals()` в `signal_checkers.py`
+- Добавить `SignalType.SMC_SIGNAL` в `signal_models.py`
+- Добавить вес ~0.25 в `trading_intelligence.py`
+- Вызвать в `analyze_symbol()` (scan_one)
 
-### Что работает
-- `python run_backtest.py --list-strategies` → 5 стратегий
-- `/api/stats` → включает `by_strategy` таблицу
-- `/api/stats/confluence` → разбивка WR по факторам
+### 2. DEV-02 — Тесты для signal_checkers.py
+Дополнить `tests/unit/test_signal_checkers.py`:
+- check_wt_signals с мок данными OS/OB зон
+- check_anomaly_signals при volume spike
+- check_divergence_signals (bullish/bearish)
 
-### Данные по стратегиям
-Старые сделки в БД имеют `strategy_name = NULL` (до этой сессии).
-Новые сделки с `strategy_name` начнут накапливаться после перезапуска бота.
+## Низкий приоритет (Architect)
+
+### 3. ARCH-03 — State Machine для confluence
+Зависимость: нужно 2+ недели данных от confluence_scanner.
+Заменить Lookback Scanner на State Machine per symbol.
+
+### 4. ARCH-04 — Адаптивный выбор стратегии по режиму рынка
+Зависимость: после DEV-07 + ARCH-03.
+TREND → TRIPLE_TP_TSL, RANGE → DUAL_TP.
+
+</work_remaining>
 
 ---
 
-## work_remaining — ЧТО ОСТАЛОСЬ
+<critical_context>
 
-### 1. 🔥 ВЫСОКИЙ ПРИОРИТЕТ: Перезапустить бота
-Все изменения вступят в силу только после перезапуска:
+## Инфраструктура
+
+### Python
+- **Python 3.12 строго:** `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe`
+- `.venv` и Python 3.13 не имеют aiogram — не использовать
+
+### Запуск бота
 ```bash
 C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe bot_with_subscriptions.py
 ```
 
-### 2. Мониторинг через 1-2 недели
-После накопления данных проверить WR по стратегиям:
-```bash
-python -c "
-from core.performance_engine import PerformanceEngine
-pe = PerformanceEngine('subscriptions.db')
-for r in pe.by_strategy(): print(r)
-"
+### Дашборд
+- `http://localhost:8000` — статистика
+- `http://localhost:8000/settings` — настройки
+- `GET /api/stats/confluence` — разбивка WR по факторам
+
+### Архитектура после ARCH-01/02
+```
+bot_with_subscriptions.py  ← точка входа (75 строк)
+bot/core/bot.py            ← TradingAlertBot
+bot/loops/
+  scan_loop.py             ← scan_all_pairs, monitor_market, _prefetch_pivots
+  ml_loop.py               ← ml_training_loop, weekly_report_loop
+  trade_tracker.py         ← trade_tracker_loop
+bot/monitoring.py          ← фильтры, broadcast, фоновые проверки (765 строк)
+
+core/trading_intelligence.py       ← 1061 строк (делегаты)
+core/intelligence/
+  signal_aggregator.py             ← агрегация сигналов
+  confidence_calculator.py         ← расчёт уверенности
+  recommendation_generator.py      ← SL/TP, рекомендация
+  ml_enhancer.py                   ← ML улучшение
 ```
 
-### 3. Confluence — улучшение сигналов (из анализа данных)
-Данные показали: strength 50-70 = WR 50-57%, strength 70-80 = WR 4.3% (аномалия 12.03).
-Нужно разобраться почему 12.03 было 198 сигналов с плохим качеством.
+### БД: subscriptions.db
+```
+id, symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
+strength, confidence, regime, created_at,
+status (OPEN/TP/SL/TSL/EXPIRED), exit_price, profit_pct, R_multiple, closed_at,
+duration_minutes, features_json,
+max_price, min_price, max_R_possible, captured_R_pct,
+strategy_name TEXT,
+tsl_tf TEXT DEFAULT '15m',
+tsl_activated INTEGER DEFAULT 0,
+sl_source TEXT, tp_source TEXT,
+tp2_price, tp2_hit_at, tp3_price, tp3_hit_at, strategy_type
+```
 
-### 4. MTF WT — ✅ РЕАЛИЗОВАНО (текущая сессия)
-- После входа на 15m → trailing по TSL 1h вместо 15m TSL
-- Pivot confluence как цель (кластеры уровней с разных TF)
+## Архитектурные запреты
 
-### 5. Из TASKS.md (в очереди)
-- [DEV-05] Умный выбор SL (структурный): под S1 → под FVG → под TSL → ATR fallback
-- [DEV-06] RR-фильтр перед регистрацией (RR < 2.0 → не регистрировать)
-- [ARCH-01] Рефакторинг bot_with_subscriptions.py (1540+ строк)
+- **Дивергенции НЕ в pre_signals** — создают `conflict_ratio` → `action=WATCH`, сделки не регистрируются
+- **`enableRateLimit: False`** в ccxt — намеренно (контроль через `Semaphore(20)`)
+- **Логику TP (pivot уровни)** — менять только с согласования пользователя
+- **Любые изменения торговой логики** — сначала обсудить с пользователем
+
+## Стратегии
+
+- `active_strategy` в config.yaml = кто отправляет TG-сигналы (основная стратегия)
+- `active_strategies` = все симулируются в БД для сравнения WR
+- Зарегистрированные стратегии: `confluence`, `confluence_scanner`, `conservative`, `mtf_bias`, `pivot_reversal`
+
+## Ключевые данные по стратегиям (на 13.03.2026)
+- `pivot_reversal`: WR 47.9%, avg_R +0.46 — **лучшая по данным**
+- `confluence`: WR 19.1%, avg_R -0.13 — требует улучшения
+- `wt_signal`: WR 33.6%, avg_R +0.36 — средний
+
+</critical_context>
 
 ---
 
-## critical_context
+<current_state>
 
-### Python
-- Python 3.12 строго: `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe`
-- `.venv` и Python 3.13 не имеют aiogram — не использовать
+## Состояние на 14.03.2026
 
-### Стратегии
-- `active_strategy` = кто отправляет TG-сигналы
-- `active_strategies` = все симулируются в БД для сравнения WR
-- Все 5 стратегий зарегистрированы: `confluence, confluence_scanner, conservative, mtf_bias, pivot_reversal`
+### Что работает
+- Сканер: 600+ пар, enableRateLimit=False, Semaphore(20), 25-32 сек на полный прогон
+- TSL: активируется при current_r ≥ 1.0, переключается на 1h если тренд совпадает
+- PIVOT_REVERSAL: без лишних API-вызовов, динамический strength 60-100
+- Стратегии: все 5 симулируются параллельно, `strategy_name` пишется в БД
+- Дашборд: `/api/stats/confluence`, секция "По стратегии"
+- structure_detector.py: готов, 25/25 тестов, ожидает интеграции в signal_checkers
 
-### Ключевые находки из данных (13.03.2026)
-- pivot_reversal: WR 47.9%, avg_R +0.46 — лучшая стратегия по данным
-- confluence: WR 19.1%, avg_R -0.13 — требует улучшения условий входа
-- wt_signal: WR 33.6%, avg_R +0.36 — средний результат
-- TP источник: pivot_1D:S2/S3 даёт WR 0-7% (цена не доходит до дальних уровней)
+### Незакоммиченные изменения
+Нет — все изменения закоммичены.
 
-### Архитектурное решение: НЕ трогать без обсуждения
-- Логику выставления TP (pivot уровни) — только с согласования пользователя
-- Любые изменения торговой логики (SL/TP/условия входа) — сначала обсудить
+</current_state>
