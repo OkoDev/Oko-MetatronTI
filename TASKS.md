@@ -88,16 +88,13 @@ HIGH_VOL → меньше размер позиции, TP1 обязателен 
 - `core/intelligence/ml_enhancer.py` — enhance_analysis_with_ml, apply_ml_corrections
 - trading_intelligence.py: 1536 → 1061 строк, методы стали тонкими делегатами
 
-### [DEV-01] Этап 9: core/structure_detector.py
-**Агент:** Developer
-**Приоритет:** Средний
-**Зависимость:** После ARCH-01 завершён
-**Описание:**
-Создать детектор SMC структуры:
-- `detect_swing_highs_lows(df)` → список пиков/впадин
-- `detect_choch(highs, lows)` → Change of Character
-- `detect_bos(highs, lows)` → Break of Structure
-- Интеграция в signal_checkers.py как новый тип сигнала
+### [DEV-01] ✅ Этап 9: core/structure_detector.py — ГОТОВО
+Реализовано 15.03.2026 (коммит 02c8e4b):
+- detect_swing_highs_lows(), detect_choch(), detect_bos(), detect_structure()
+- Делегирует в indicators.find_swing_highs/lows (единый источник)
+- BOS > CHoCH по приоритету, strength 55/65
+- 25/25 тестов passed
+- Следующий шаг: интеграция в signal_checkers.py (DEV-01b)
 
 ### [DEV-02] Тесты для signal_checkers.py
 **Агент:** Developer
