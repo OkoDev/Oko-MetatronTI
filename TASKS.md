@@ -31,14 +31,15 @@
 
 **Цель:** находить сетапы как на графике BASUSDT 09.03.2026 (1H+15M)
 
-### [DEV-05] Умный выбор SL (структурный)
-**Агент:** Developer
-**Приоритет:** Высокий
-**Зависимость:** После DEV-04
-**Описание:**
-Изменить `_calculate_levels()` в `core/trading_intelligence.py`:
-- Приоритет: под S1 → под FVG → под TSL линией → ATR fallback
-- Зажим [0.5%, 3%]. Добавить `sl_source` описание в TradingRecommendation (уже есть)
+### [DEV-05] ✅ Умный выбор SL (структурный) — ГОТОВО
+Реализовано 14.03.2026 (коммит 8e5ff4a):
+- core/intelligence/recommendation_generator.py: новый приоритет SL:
+  1) S1/R1 pivot из PIVOT_REVERSAL сигналов (data["level"] + data["pivot_type"])
+  2) FVG midpoint из data["fvg_entry"] (PIVOT_REVERSAL bonus data)
+  3) TSL-линия (trendup/trenddown)
+  4) ATR/volatility fallback
+- Убран SWING шаг (заменён S1 структурным пивотом)
+- config.yaml: sl_min_pct 1.0 → 0.5, sl_max_pct 2.0 → 3.0
 
 ### [DEV-06] ✅ RR-фильтр перед регистрацией сделки — ГОТОВО
 Реализовано 15.03.2026 (коммит 1e48630):
@@ -94,7 +95,19 @@ HIGH_VOL → меньше размер позиции, TP1 обязателен 
 - Делегирует в indicators.find_swing_highs/lows (единый источник)
 - BOS > CHoCH по приоритету, strength 55/65
 - 25/25 тестов passed
-- Следующий шаг: интеграция в signal_checkers.py (DEV-01b)
+
+### [DEV-01b] ✅ Интеграция SMC → signal_checkers.py — ГОТОВО
+Реализовано 14.03.2026 (коммит 17cb938):
+- core/signal_models.py: SignalType.SMC_STRUCTURE = "smc_structure"
+- core/signal_checkers.py: check_smc_signals(symbol, df) — вызывает detect_structure()
+  BOS → strength=65, confidence=0.75; CHoCH → strength=55, confidence=0.65
+- core/trading_intelligence.py: SMC_STRUCTURE вес 0.12 + _SIGNAL_TYPE_MAP
+
+### [DEV-01c] ✅ Восстановление check_divergence_signals / check_pivot_signals — ГОТОВО
+Реализовано 14.03.2026 (коммит 1d078f2):
+- check_divergence_signals(symbol, df): DivergenceDetector sync → SignalData(DIVERGENCE)
+- check_pivot_signals(symbol, df): max(high)/min(low) 60 баров → SignalData(PIVOT_REVERSAL)
+- tests/unit/test_signal_checkers.py: убраны заглушки, тесты проходят
 
 ### [DEV-02] Тесты для signal_checkers.py
 **Агент:** Developer
