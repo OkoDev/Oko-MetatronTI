@@ -19,6 +19,7 @@ from core.pivot_calculator_fixed import PivotCalculatorFixed
 from core.trading_intelligence import TradingIntelligence
 from core.trade_simulator import TradeSimulator
 from core.r_predictor import RPredictor
+from core.confluence_state_machine import ConfluenceStateMachine
 from bot.menus import MenuHandler
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ class TradingAlertBot:
         self.watchlist_manager = WatchlistManager(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
+        # State Machine для confluence (ARCH-03)
+        _sm_db = getattr(self.subscription_manager, "db_path", "subscriptions.db")
+        self.confluence_sm = ConfluenceStateMachine(db_path=_sm_db)
+        self.confluence_sm.load_from_db()
 
         # Состояние бота
         self.is_monitoring = False

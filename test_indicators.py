@@ -14,11 +14,7 @@ from core.indicators import (
     calculate_trend, calculate_wt, get_trend_info,
     calculate_trend_strength, detect_fvg
 )
-from core.divergence_detector import DivergenceDetector
-from core.anomaly_detector import AnomalyDetector
-from core.mtf_checker import collect_mtf_data, check_mtf_alert
-from core.trend_signals import check_trend_following_signal
-from core.pivot_reversal import check_pivot_level_signal
+from core.signal_checkers import check_anomaly_signals, check_divergence_signals
 from core.market_regime import MarketRegimeClassifier
 
 logger = logging.getLogger(__name__)
@@ -210,33 +206,31 @@ class IndicatorTester:
 
     def test_divergence_detector(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Тестирование детектора дивергенций
+        Тестирование детектора дивергенций через check_divergence_signals
         """
         print("🔄 Тестирование детектора дивергенций...")
 
-        detector = DivergenceDetector()
         divergences = []
+        WINDOW = 50
 
-        # Проверяем на разных окнах
-        window_sizes = [20, 30, 50]
+        for i in range(WINDOW, len(df), 10):  # Каждые 10 свечей для скорости
+            context_df = df.iloc[i-WINDOW:i+1].reset_index(drop=True)
+            try:
+                import asyncio
+                sigs = asyncio.get_event_loop().run_until_complete(
+                    check_divergence_signals(self.symbol, context_df)
+                )
+                for sig in sigs:
+                    divergences.append({
+                        'datetime': df.iloc[i].get('datetime', i),
+                        'type': sig.signal_type.value,
+                        'direction': sig.direction.value,
+                        'strength': sig.strength
+                    })
+            except Exception as e:
+                logger.debug(f"Ошибка анализа дивергенций: {e}")
 
-        for window in window_sizes:
-            for i in range(window, len(df), 10):  # Каждые 10 свечей для скорости
-                context_df = df.iloc[i-window:i+1]
-                try:
-                    divs = detector.detect_divergences(context_df)
-                    for div in divs:
-                        divergences.append({
-                            'datetime': df.iloc[i]['datetime'],
-                            'type': div['type'],
-                            'window': window,
-                            'strength': div.get('strength', 'unknown')
-                        })
-                except Exception as e:
-                    logger.debug(f"Ошибка анализа дивергенций: {e}")
-
-        # Статистика
-        div_types = {}
+        div_types: Dict[str, int] = {}
         for div in divergences:
             div_type = div['type']
             div_types[div_type] = div_types.get(div_type, 0) + 1
@@ -245,41 +239,31 @@ class IndicatorTester:
             'total_divergences': len(divergences),
             'divergence_types': div_types,
             'recent_divergences': divergences[-5:],
-            'avg_per_window': round(len(divergences) / len(window_sizes), 1)
+            'avg_per_100bars': round(len(divergences) / max(1, len(df) // 100), 1)
         }
 
     def test_anomaly_detector(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Тестирование детектора аномалий
+        Тестирование детектора аномалий через check_anomaly_signals
         """
         print("🚨 Тестирование детектора аномалий...")
 
-        detector = AnomalyDetector(volume_multiplier=3.0, price_threshold=5.0)
+        import asyncio
         anomalies = []
+        WINDOW = 50
 
-        # Mock data collector для тестирования
-        class MockCollector:
-            def __init__(self, data):
-                self.data = data
-
-            async def get_ohlcv(self, symbol, timeframe, limit=None, since=None):
-                if since:
-                    filtered = self.data[self.data['time'] >= since]
-                else:
-                    filtered = self.data
-                return filtered.tail(limit) if limit else filtered
-
-        mock_collector = MockCollector(df)
-
-        # Проверяем каждую свечу
-        for i in range(20, len(df)):  # Начинаем с 20 для достаточного контекста
+        for i in range(WINDOW, len(df), 5):
+            context_df = df.iloc[i-WINDOW:i+1].reset_index(drop=True)
             try:
-                is_anomaly, info = detector.check_spike(self.symbol, mock_collector)
-                if is_anomaly:
+                sigs = asyncio.get_event_loop().run_until_complete(
+                    check_anomaly_signals(self.symbol, context_df)
+                )
+                for sig in sigs:
                     anomalies.append({
-                        'datetime': df.iloc[i]['datetime'],
-                        'type': 'volume_spike' if 'volume' in str(info).lower() else 'price_spike',
-                        'info': str(info)[:100] + '...' if len(str(info)) > 100 else str(info)
+                        'datetime': df.iloc[i].get('datetime', i),
+                        'type': sig.signal_type.value,
+                        'direction': sig.direction.value,
+                        'strength': sig.strength
                     })
             except Exception as e:
                 logger.debug(f"Ошибка анализа аномалий: {e}")
@@ -287,7 +271,7 @@ class IndicatorTester:
         return {
             'total_anomalies': len(anomalies),
             'recent_anomalies': anomalies[-5:],
-            'anomaly_rate': round(len(anomalies) / len(df) * 100, 2)
+            'anomaly_rate': round(len(anomalies) / max(1, len(df)) * 100, 2)
         }
 
     def test_fvg_detector(self, df: pd.DataFrame) -> Dict[str, Any]:

@@ -45,7 +45,9 @@ def calculate_advanced_confidence(
             n_factors = len((sig.data or {}).get("factors", []))
             if n_factors > 1:
                 effective_count += n_factors - 1
-    signal_count_factor = min(effective_count / 5.0, 1.5)
+    # Минимум 0.5 при 1 сигнале — не убиваем confidence одиночных качественных сигналов (WT_B, CONFLUENCE)
+    # При 5 сигналах = 1.0, при 7+ = 1.5 (бонус за сильную конфлюэнцию)
+    signal_count_factor = min(0.5 + effective_count / 10.0, 1.5)
     context_factor *= signal_count_factor
 
     return min(signal_confidence * context_factor, 1.0)

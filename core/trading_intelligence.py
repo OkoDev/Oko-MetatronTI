@@ -19,7 +19,7 @@ from core.signal_models import (
 # Проверки сигналов
 from core.signal_checkers import (
     check_anomaly_signals, check_wt_signals, check_mtf_signals,
-    check_trend_signals, check_mtf_bias_signal,
+    check_trend_signals, check_mtf_bias_signal, check_wt_b_signals,
 )
 
 # Форматтер рекомендаций
@@ -32,7 +32,6 @@ try:
     STRATEGIES_AVAILABLE = True
 except ImportError:
     STRATEGIES_AVAILABLE = False
-    logger.warning("Strategies module not available, will use legacy logic")
 
 try:
     from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr, compute_volatility
@@ -106,6 +105,7 @@ class TradingIntelligence:
             SignalType.DIVERGENCE:     0.10,
             SignalType.MTF_ALERT:      0.10,  # → будет упразднён в Шаге 3
             SignalType.WT_SIGNAL:      0.08,
+            SignalType.WT_B_SIGNAL:    0.15,  # тип B: WR=85% на бэктесте
             SignalType.MTF_SIGNAL:     0.05,  # → будет упразднён в Шаге 3
             SignalType.TREND_SIGNAL:   0.05,
             SignalType.ANOMALY:        0.03,
@@ -215,6 +215,7 @@ class TradingIntelligence:
             "pivot_reversal": SignalType.PIVOT_REVERSAL,
             "trend_signal":   SignalType.TREND_SIGNAL,
             "wt_signal":      SignalType.WT_SIGNAL,
+            "wt_b_signal":    SignalType.WT_B_SIGNAL,
             "anomaly":        SignalType.ANOMALY,
             "divergence":     SignalType.DIVERGENCE,
             "mtf_signal":     SignalType.MTF_SIGNAL,
@@ -348,19 +349,25 @@ class TradingIntelligence:
             # Этап 8.4.2: фиксируем единый snapshot_time для всех проверок
             snapshot_time = datetime.now()
 
+            # Этап 8.4.3: маркер качества анализа (full|degraded|timeout)
+            collect_quality = "full"
+
             if pre_collected_signals:
                 signals = pre_collected_signals
-                logger.debug(f"[{symbol}] analyze_symbol: используем {len(signals)} pre_collected сигналов")
+                logger.debug("[%s] analyze_symbol: используем %d pre_collected сигналов", symbol, len(signals))
             else:
-                # Собираем все доступные сигналы с таймаутом
+                # ── HARD timeout: сбор сигналов (Этап 8.4.3) ─────────────────
                 try:
-                    signals = await asyncio.wait_for(
+                    signals, collect_quality = await asyncio.wait_for(
                         self._collect_all_signals(symbol),
                         timeout=20.0
                     )
                 except asyncio.TimeoutError:
                     elapsed = (datetime.now() - start_time).total_seconds()
-                    logger.error(f"Таймаут при сборе сигналов для {symbol} (прошло {elapsed:.1f}s)")
+                    logger.error(
+                        "[intelligence] %s: HARD timeout при сборе сигналов (%.1fs) — analysis_quality=timeout",
+                        symbol, elapsed,
+                    )
                     return None
 
             # Этап 8.4.2: None = data collection error (no silent fallback)
@@ -392,7 +399,7 @@ class TradingIntelligence:
                     logger.warning(f"Недостаточно сигналов для {symbol}: {len(filtered_signals)} < {min_signals}, max_str={max_strength}")
                     return None
                 
-            # Получаем контекст рынка с таймаутом
+            # ── SOFT timeout: контекст рынка (Этап 8.4.3) ────────────────────
             try:
                 market_context = await asyncio.wait_for(
                     self._get_market_context(symbol),
@@ -400,8 +407,12 @@ class TradingIntelligence:
                 )
             except asyncio.TimeoutError:
                 elapsed = (datetime.now() - start_time).total_seconds()
-                logger.warning(f"Таймаут контекста для {symbol} ({elapsed:.1f}s) — используем fallback")
-                # Fallback: цена из OHLCV (уже в кеше после _collect_all_signals)
+                # Soft timeout: деградируем, но продолжаем с fallback-контекстом
+                collect_quality = "degraded"
+                logger.warning(
+                    "[intelligence] %s: SOFT timeout контекста (%.1fs) — analysis_quality=degraded, fallback",
+                    symbol, elapsed,
+                )
                 fallback_price = 0.0
                 try:
                     _df = await self.data_collector.get_ohlcv(symbol, "15m", limit=5)
@@ -469,10 +480,16 @@ class TradingIntelligence:
                 except Exception as e:
                     logger.warning(f"Ошибка ML анализа для {symbol}: {e}, продолжаем без ML")
             
-            # Этап 8.4.2: фиксируем snapshot_time в метаданных рекомендации
+            # Этап 8.4.2/8.4.3: snapshot_time + analysis_quality в метаданных
             if recommendation.metadata is None:
                 recommendation.metadata = {}
             recommendation.metadata["snapshot_time"] = snapshot_time.isoformat()
+            recommendation.metadata["analysis_quality"] = collect_quality
+            if collect_quality != "full":
+                logger.info(
+                    "[intelligence] %s: рекомендация с analysis_quality=%s",
+                    symbol, collect_quality,
+                )
 
             # Кэшируем результат
             self._cache_analysis(symbol, recommendation)
@@ -497,65 +514,88 @@ class TradingIntelligence:
             logger.exception(f"Ошибка анализа {symbol}: {e}")
             return None
     
-    async def _collect_all_signals(self, symbol: str) -> Optional[List[SignalData]]:
+    async def _collect_all_signals(
+        self, symbol: str
+    ) -> tuple[Optional[List[SignalData]], str]:
         """
         Собирает все доступные сигналы для символа.
-        Возвращает:
-          - List[SignalData] — сигналы (может быть пустым если нет сигналов)
-          - None — критичная ошибка загрузки данных (no silent fallback, Этап 8.4.2)
+
+        Returns
+        -------
+        (signals_or_none, analysis_quality)
+
+        signals_or_none:
+          - List[SignalData] — сигналы (может быть пустым)
+          - None — критичная ошибка загрузки данных (hard block, Этап 8.4.2)
+
+        analysis_quality: "full" | "degraded"
+          - "full"     — все 6 детекторов завершились без ошибок
+          - "degraded" — один или несколько детекторов бросили исключение,
+                         но хотя бы часть сигналов собрана (soft fallback, Этап 8.4.3)
         """
+        _TOTAL_CHECKERS = 6
         signals: List[SignalData] = []
+        quality = "full"
         try:
             t0 = asyncio.get_event_loop().time()
 
-            # Параллельная загрузка OHLCV для всех таймфреймов
+            # ── HARD: параллельная загрузка OHLCV (критичный шаг) ─────────────
             df_1h, df_15m, df_3m = await asyncio.gather(
                 self.data_collector.get_ohlcv(symbol, "1h", limit=100),
                 self.data_collector.get_ohlcv(symbol, "15m", limit=100),
                 self.data_collector.get_ohlcv(symbol, "3m", limit=100),
             )
             t1 = asyncio.get_event_loop().time()
-            logger.debug(f"[{symbol}] OHLCV fetch: {t1-t0:.2f}s")
+            logger.debug("[%s] OHLCV fetch: %.2fs", symbol, t1 - t0)
 
-            # Этап 8.4.2: нет данных = ошибка, не тихий возврат
+            # Этап 8.4.2: нет данных = hard block (no silent fallback)
             if df_1h is None or df_1h.empty:
                 logger.info("[intelligence] %s: 1h OHLCV недоступен — пропуск (data error)", symbol)
-                return None
+                return None, "full"  # quality неважен — None остановит анализ
 
             # Проверка качества 15m-данных (свежесть + NaN)
             if df_15m is not None and not df_15m.empty:
                 ok, reason = check_ohlcv_quality(
                     df_15m, timeframe="15m",
-                    min_bars=50,   # limit=100, берём 50 как разумный минимум
+                    min_bars=50,
                     symbol=symbol,
                 )
                 if not ok:
                     logger.info("[intelligence] %s: пропуск из-за качества данных: %s", symbol, reason)
-                    return None
+                    return None, "full"
 
-            # Параллельная проверка всех сигналов
-            # Примитивные check_divergence_signals / check_pivot_signals удалены:
-            # их роль выполняют полные divergence_detector + pivot_reversal (фоновые задачи).
-            # MTF_BIAS — главное WT-ядро (7 TF, alignment score, senior gate).
+            # ── SOFT: параллельный запуск детекторов (Этап 8.4.3) ─────────────
+            # return_exceptions=True: отдельный детектор не ломает остальных
+            # MTF_BIAS — главное WT-ядро (7 TF, alignment score, senior gate)
             results = await asyncio.gather(
                 check_anomaly_signals(symbol, df_15m),
                 check_wt_signals(symbol, df_15m),
                 check_mtf_signals(symbol, df_1h, df_15m, df_3m),
                 check_trend_signals(symbol, df_1h),
                 check_mtf_bias_signal(symbol, self.data_collector, regime=None, cfg=self.config),
+                check_wt_b_signals(symbol, df_1h),
                 return_exceptions=True,
             )
             t2 = asyncio.get_event_loop().time()
-            logger.debug(f"[{symbol}] signal checks: {t2-t1:.2f}s | total: {t2-t0:.2f}s")
+            logger.debug("[%s] signal checks: %.2fs | total: %.2fs", symbol, t2 - t1, t2 - t0)
 
+            failed = 0
             for r in results:
                 if isinstance(r, Exception):
-                    logger.debug(f"[{symbol}] signal check error: {r}")
+                    failed += 1
+                    logger.debug("[%s] signal check error: %s", symbol, r)
                 elif r:
                     signals.extend(r)
+
+            if failed > 0:
+                quality = "degraded"
+                logger.info(
+                    "[intelligence] %s: analysis_quality=degraded (%d/%d детекторов упали)",
+                    symbol, failed, _TOTAL_CHECKERS,
+                )
         except Exception as e:
-            logger.exception(f"Ошибка сбора сигналов для {symbol}: {e}")
-        return signals
+            logger.exception("Ошибка сбора сигналов для %s: %s", symbol, e)
+        return signals, quality
     
     def _filter_signals_by_quality(self, signals: List[SignalData]) -> List[SignalData]:
         """

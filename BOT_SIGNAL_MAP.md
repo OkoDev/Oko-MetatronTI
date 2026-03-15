@@ -1,6 +1,6 @@
 # Карта сигнальных цепочек — Oko MTF Bot
 
-> Сгенерировано: 2026-03-08
+> Обновлено: 2026-03-14
 
 ## ОБЩАЯ БЛОК-СХЕМА
 
@@ -110,11 +110,50 @@ START monitoring
 
 ### 8. PIVOT_REVERSAL (Разворот от пивота)
 - **Детектор:** `core/pivot_reversal.py` → `check_pivot_level_signal`
-- **Таймфреймы:** 1m (цена) + 5m (тренд) + 3m (FVG) + 15m (WT)
-- **Условие LONG:** цена в 0.5% от S1/S2/PP + WT CrossUP (OS/нейтраль) + тренд 5m UP
-- **Условие SHORT:** цена в 0.5% от R1/R2/PP + WT CrossDOWN (OB/нейтраль) + тренд 5m DOWN
-- **Бонус:** FVG BULL/BEAR на 3m
+- **Таймфреймы:** 15m (цена + тренд + WT из кеша scan_one, без лишних API-запросов) + 3m (FVG бонус)
+- **Условие LONG:** цена в 0.5% от S1/S2/PP + WT CrossUP (OS/нейтраль) + тренд 15m UP
+- **Условие SHORT:** цена в 0.5% от R1/R2/PP + WT CrossDOWN (OB/нейтраль) + тренд 15m DOWN
+- **SL:** ATR(14) × 1.5, зажат в [1%, 4%]
+- **TP:** следующий недельный уровень (R1→R2→R3 для LONG, S1→S2→S3 для SHORT)
+- **Бонус:** FVG BULL/BEAR на 3m → confidence=VERY_HIGH, strength +10
+- **Бонус:** Конфлюэнция 1W+1D → strength +10
+- **Сила:** 60 базово + до 40 очков за WT кросс / смена тренда / FVG / конфлюэнцию
+- **Стратегия:** `PivotReversalStrategy` (`strategies/built_in/pivot_reversal_strategy.py`)
 - **Цикл:** фоновая задача, каждые 5 мин
+
+### 9. CONFLUENCE (Конфлюэнция факторов)
+- **Детектор:** `core/confluence_scanner.py` → `scan_confluence()`
+- **Стратегия:** `ConfluenceScannerStrategy` (`strategies/built_in/confluence_scanner_strategy.py`)
+- **Таймфреймы:** 15m (WT, TSL, тренд) + 1h (MTF-тренд) + 1W (пивоты)
+- **Обязательные условия:**
+  - LONG: `WT_CROSS_UP` в последних `cross_fresh_bars=10` барах (2.5 часа)
+  - SHORT: `WT_CROSS_DOWN` в последних `cross_fresh_bars=10` барах
+  - Без свежего кросса — сигнал не выдаётся даже при score ≥ min_strength
+- **Факторы силы:** WT_OS/OB зона, WT кросс, TSL кросс, MTF-тренд, дивергенция, близость пивота
+- **SL:** TSL-линия из market_context.tsl_trendup/trenddown + буфер 0.3%, fallback ATR×1.5
+- **WT OB порог:** `_DEFAULT_WT_OB = 53` (не 60! — проверяет что текущий WT не ушёл в OB для LONG)
+- **Цикл:** scan_one (каждые 60 сек)
+
+### 10. WT_B_SIGNAL (WaveTrend Type B — дивергенция в OS/OB)
+- **Детектор:** `core/signal_checkers.py` → `check_wt_b_signals`
+- **Таймфрейм:** 1h (явно)
+- **Условие LONG:** CrossUP ВО время OS (wt1 < adaptive p10) + дивергенция (min2_wt > min1_wt, разрыв 3-20)
+- **Условие SHORT:** CrossDOWN ВО время OB (wt1 > adaptive p90) + дивергенция (max2_wt < max1_wt, разрыв 3-20)
+- **Adaptive OS/OB:** p10/p90 из серии wt1 (vs фиксированных ±60 у WT_SIGNAL)
+- **Фильтры:**
+  - `div_strength < 3` → пропуск (слишком слабый сигнал)
+  - `div_strength > 20` → пропуск (АНТИСИГНАЛ, WR=33% — продолжение тренда)
+  - `lookback: 35 баров`
+- **Сила:**
+  - div_strength 10-20 → base=90 (WR=100% n=15 в бэктесте)
+  - div_strength 6-10 → base=80 (WR=82%)
+  - div_strength 3-6 → base=70 (WR=73%)
+  - LONG + depth < -70 → +5
+- **Confidence:** 0.88
+- **Вес в TradingIntelligence:** 0.15
+- **Цикл:** через analyze_symbol (fire-and-forget из scan_one)
+- **Бэктест:** 103 пары, 180 дней: WR=84.9%, avgRet=+4.82% (div_strength 3-20)
+- **config.yaml:** `analysis.wt_b: enabled/div_min/div_max/lookback`
 
 ---
 
@@ -151,20 +190,31 @@ START monitoring
 
 ---
 
-## АДАПТИВНЫЕ ВЕСА СИГНАЛОВ
+## АДАПТИВНЫЕ ВЕСА СИГНАЛОВ (актуально на 15.03.2026)
 
-| Тип | Базовый вес | Пример после адаптации |
-|-----|------------|------------------------|
-| MTF_ALERT | 0.30 | 0.30 (нет данных) |
-| MTF_SIGNAL | 0.25 | 0.25 |
-| PIVOT_REVERSAL | 0.20 | 0.24 (avg_R=+0.50) |
-| DIVERGENCE | 0.15 | 0.15 |
-| WT_SIGNAL | 0.10 | 0.133 (avg_R=+0.83) |
-| TREND_SIGNAL | 0.10 | 0.08 (avg_R=-0.50) |
-| ANOMALY | 0.05 | 0.05 |
+| Тип | Базовый вес | После адаптации | Статус |
+|-----|------------|-----------------|--------|
+| **MTF_BIAS** | **0.50** | 0.50 | ★ ГЛАВНОЕ ЯДРО (tie-breaker) |
+| **PIVOT_REVERSAL** | **0.20** | 0.24 (avg_R=+0.50) | ★ второе ядро |
+| WT_B_SIGNAL | 0.15 | 0.15 | ★ новый (бэктест WR=85%, нужно 20+ сделок) |
+| CONFLUENCE | 0.15 | 0.15 | через ConfluenceScannerStrategy |
+| SMC_STRUCTURE | 0.12 | 0.12 | BOS/CHoCH, только в pipeline |
+| DIVERGENCE | 0.10 | 0.10 | только фоновые задачи |
+| WT_SIGNAL | 0.08 | 0.133 (avg_R=+0.83) | — |
+| TREND_SIGNAL | 0.05 | 0.04 (avg_R=-0.50) | — |
+| ANOMALY | 0.03 | 0.03 | — |
+| MTF_SIGNAL | — | — | ⚠️ LEGACY → заменён MTF_BIAS |
+| MTF_ALERT | — | — | ⚠️ LEGACY → заменён MTF_BIAS |
+
+**signal_type приоритет в БД (trade_simulator.py):**
+`wt_b_signal > mtf_bias > confluence > pivot_reversal > smc_structure > wt_signal > divergence > trend_signal > anomaly > mtf_signal`
 
 Формула: `new_weight = base × clamp(1 + avg_R × 0.4, 0.5, 2.0)`
 Минимум 20 закрытых сделок по типу сигнала для адаптации.
+
+> ⚠️ **Архитектурная особенность:** Дивергенции и пивоты НЕ собираются в `_collect_all_signals()` — только из фоновых задач. Это гарантирует отсутствие `conflict_ratio` в основном потоке.
+
+> ⚠️ **MTF_BIAS** при `strength ≥ 70` и конфликте направлений — фиксирует итоговое направление рекомендации (tie-breaker).
 
 ---
 
@@ -209,15 +259,43 @@ register_trade_async(recommendation, data_collector)
 ```
 Каждые 5 минут:
   check_open_trades_with_tsl
-    ├─ Получить текущие OHLCV
+    ├─ Получить текущие OHLCV (TF сделки, limit=200)
+    ├─ EXPIRED: если сделка старше max_duration_minutes
     ├─ Обновить max_price / min_price (MFE трекинг)
-    ├─ LONG: если цена < trenddown → TSL (если активирован после +1R)
-    ├─ SHORT: если цена > trendup → TSL
+    ├─ TSL активация при current_r >= tsl_activation_r=1.0:
+    │   ├─ UPDATE tsl_activated=1 в БД
+    │   ├─ Загрузить 1h OHLCV
+    │   ├─ Если тренд 1h == направление сделки → TSL по 1h (широкий, меньше шума)
+    │   └─ Иначе → TSL по TF сделки (15m, тесный)
+    ├─ LONG: если цена <= tsl → close TSL
+    ├─ SHORT: если цена >= tsl → close TSL
     ├─ SL: пробой stop_loss
-    └─ TP: достижение take_profit
+    ├─ TP1: первая цель (50% фиксация, обновляет tp1_hit_at)
+    └─ TP: достижение take_profit (если TP1 ещё не было)
 ```
 
-**Параметры TSL:** `tsl_activation_r=1.0`, `tsl_buffer_pct=0.1`
+**Параметры TSL:** `tsl_activation_r=1.0` (снижено с 1.5), `tsl_buffer_pct=0.5`
+**Поле `tsl_activated`:** 0 = не достигал порога активации, 1 = хотя бы раз пересёк +1R
+
+---
+
+## СТРАТЕГИИ (strategies/)
+
+```
+strategies/
+  base.py          ← BaseStrategy(ABC): analyze(), calculate_sl_tp()
+  registry.py      ← @register_strategy("name"), get_strategy(name, config)
+  built_in/
+    confluence.py              ← ConfluenceStrategy
+    confluence_scanner_strategy.py ← ConfluenceScannerStrategy ★ АКТИВНАЯ
+    conservative.py            ← ConservativeStrategy
+    pivot_reversal_strategy.py ← PivotReversalStrategy
+    mtf_bias.py               ← MTFBiasStrategy (в разработке)
+```
+
+**Активная стратегия:** задаётся в `config.yaml` → `trading.active_strategy: confluence_scanner`
+**Переключение:** изменить значение и перезапустить бота
+**CLI бэктест:** `python run_backtest.py --strategy confluence_scanner --symbol BTC/USDT --days 30`
 
 ---
 

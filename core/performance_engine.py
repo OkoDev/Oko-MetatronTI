@@ -251,7 +251,7 @@ class PerformanceEngine:
     # ------------------------------------------------------------------
     # Последние N закрытых сделок
     # ------------------------------------------------------------------
-    def recent_closed(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def recent_closed(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
@@ -264,12 +264,21 @@ class PerformanceEngine:
                     FROM simulated_trades
                     WHERE status != 'OPEN'
                     ORDER BY closed_at DESC
-                    LIMIT ?
-                """, (limit,))
+                    LIMIT ? OFFSET ?
+                """, (limit, offset))
                 return [dict(r) for r in cur.fetchall()]
         except Exception as e:
             logger.exception("PerformanceEngine.recent_closed: %s", e)
             return []
+
+    def closed_trades_count(self) -> int:
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM simulated_trades WHERE status != 'OPEN'")
+                return cur.fetchone()[0]
+        except Exception:
+            return 0
 
     # ------------------------------------------------------------------
     # Открытые сделки

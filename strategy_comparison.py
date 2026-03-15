@@ -142,29 +142,46 @@ class StrategyComparator:
         """
         Выводит таблицу сравнения результатов
         """
+        if not results:
+            print(f"\n{title}: нет данных")
+            return
+
         print(f"\n🏆 {title}")
-        print("-" * 80)
-        print("<15")
-        print("-" * 80)
+        print("-" * 95)
+        header = f"{'Стратегия':<20} {'Сделок':>7} {'WR%':>6} {'Avg R':>7} {'MaxDD%':>7} {'PF':>6} {'Sharpe':>7} {'Доход%':>8} {'Серия SL':>9}"
+        print(header)
+        print("-" * 95)
 
         for result in results:
             config = result['config']
             metrics = result['metrics']
-            label = get_label_func(config)
+            label = get_label_func(config)[:20]
+            print(
+                f"{label:<20} "
+                f"{metrics.get('total_trades', 0):>7} "
+                f"{metrics.get('win_rate', 0):>6.1f} "
+                f"{metrics.get('avg_r_multiple', 0):>7.2f} "
+                f"{metrics.get('max_drawdown_pct', 0):>7.1f} "
+                f"{metrics.get('profit_factor', 0):>6.2f} "
+                f"{metrics.get('sharpe_ratio', 0):>7.2f} "
+                f"{metrics.get('total_return_pct', 0):>8.1f} "
+                f"{metrics.get('max_consecutive_sl', 0):>9}"
+            )
 
-            print("<15")
+        print("-" * 95)
 
         # Лучший результат
-        best_result = max(results, key=lambda x: x['metrics']['total_return_pct'])
+        best_result = max(results, key=lambda x: x['metrics'].get('total_return_pct', 0))
         best_config = best_result['config']
         best_metrics = best_result['metrics']
         best_label = get_label_func(best_config)
 
         print(f"\n🎯 Лучший результат: {best_label}")
-        print(f"   Доход: {best_metrics['total_return_pct']}%")
-        print(f"   Профит фактор: {best_metrics['profit_factor']}")
-        print(f"   Sharpe: {best_metrics['sharpe_ratio']}")
-        print(f"   Max DD: {best_metrics['max_drawdown_pct']}%")
+        print(f"   Доход: {best_metrics.get('total_return_pct', 0)}%")
+        print(f"   Профит фактор: {best_metrics.get('profit_factor', 0)}")
+        print(f"   Sharpe: {best_metrics.get('sharpe_ratio', 0)}")
+        print(f"   Max DD: {best_metrics.get('max_drawdown_pct', 0)}%")
+        print(f"   Серия SL: {best_metrics.get('max_consecutive_sl', 0)}")
 
     async def run_full_comparison(self):
         """

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 class SignalType(Enum):
     ANOMALY = "anomaly"
     WT_SIGNAL = "wt_signal"
+    WT_B_SIGNAL = "wt_b_signal"   # тип B: crossover В OS/OB + дивергенция WT (WR=85%)
     MTF_SIGNAL = "mtf_signal"
     MTF_ALERT = "mtf_alert"
     TREND_SIGNAL = "trend_signal"

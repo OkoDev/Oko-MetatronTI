@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import random
 import time as _time
 from collections import deque
 from datetime import datetime
@@ -66,6 +67,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         all_scan_signals = []      # SignalData от детекторов — для pre_collected_signals
 
         async with sem:
+            # Этап 8.4.2: единый snapshot_time для всей пары — все данные привязаны к нему
+            snapshot_time = datetime.now()
             t_enter = _time.monotonic()
             try:
                 # Параллельная загрузка всех TF (limit из конфига для cache-hit в detect_divergence)
@@ -74,6 +77,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     bot.data_collector.get_ohlcv(sym, "1h", limit=_ohlcv_limit),
                     bot.data_collector.get_ohlcv(sym, "3m", limit=100),
                 )
+                logger.debug("[scan] %s snapshot=%s", sym, snapshot_time.strftime("%H:%M:%S"))
                 t_ohlcv = _time.monotonic()
                 if (t_ohlcv - t_enter) > _slow_ohlcv:
                     logger.warning("[scan] OHLCV медленно %s: %.1fs", sym, t_ohlcv - t_enter)
@@ -129,10 +133,23 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     signals_to_broadcast.append(("mtf_signal", mtf_message(sym, info), None))
                     all_scan_signals.append(sig)
 
-                # 4. Confluence scanner (lookback по df_15m + df_1h + кеш пивотов)
+                # 4. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
                 nonlocal _confluence_sent
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
-                for sig in scan_confluence(sym, df_15m, df_1h, pivot_cache, cfg=bot.config):
+                _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
+                _confluence_sigs = []
+                if _use_sm and hasattr(bot, "confluence_sm"):
+                    try:
+                        _confluence_sigs = bot.confluence_sm.update(
+                            sym, df_15m, df_1h, pivot_cache, cfg=bot.config
+                        )
+                    except Exception as _sm_e:
+                        logger.debug("[confluence_sm] %s error: %s", sym, _sm_e)
+                        _confluence_sigs = scan_confluence(sym, df_15m, df_1h, pivot_cache, cfg=bot.config)
+                else:
+                    _confluence_sigs = scan_confluence(sym, df_15m, df_1h, pivot_cache, cfg=bot.config)
+
+                for sig in _confluence_sigs:
                     bot.signal_counters["confluence"] = bot.signal_counters.get("confluence", 0) + 1
                     bot.signal_counters["total"] += 1
                     all_scan_signals.append(sig)
@@ -256,6 +273,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             )
 
     pairs = list(bot.monitored_pairs)
+    random.shuffle(pairs)  # равный шанс для всех пар, убирает алфавитный bias у confluence лимита
     stats = bot.data_collector._engine.cache_stats()
     logger.info("Скан: %d пар | кеш=%d CB=%s", len(pairs), stats["cache_size"], stats["cb_state"])
     await asyncio.gather(*[scan_one(sym) for sym in pairs])

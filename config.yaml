@@ -25,7 +25,7 @@ analysis:
       os_threshold: -60.0
     trend:
       atr_period: 43
-      factor: 1.25  # было 1.1; +6x avg_exit_R по бэктесту + ручное наблюдение
+      factor: 1.25
   signals:
     min_signals: 2
     single_signal_min_strength: 54
@@ -40,10 +40,16 @@ analysis:
     - DOT
     - MATIC
     - AVAX
+  wt_b:
+    enabled: true
+    div_min: 3.0    # min разрыв лоу/хай (div_strength) — слабее не берём
+    div_max: 20.0   # max разрыв — выше = продолжение тренда, не разворот
+    lookback: 35    # баров назад для поиска дивергенции
   divergence:
     pivot_proximity_pct: 0.5
   confluence:
     enabled: true
+    use_state_machine: false  # false = lookback scanner (быстрее, больше сделок); true = State Machine (ARCH-03, строже)
     lookback_bars: 5
     cross_fresh_bars: 5
     min_strength: 60
@@ -93,6 +99,8 @@ monitoring:
     divergences_every_n_cycles: 5
     background_every_n_cycles: 3
     cascade_div_every_n_cycles: 60
+strategy_name: confluence  # Strategy Pattern: дефолтная стратегия (ARCH-05)
+
 trading:
   active_strategy: confluence_scanner  # главная: отправляет TG-сигналы
   active_strategies:                   # все симулируются в БД для сравнения WR

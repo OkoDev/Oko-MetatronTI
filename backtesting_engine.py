@@ -102,6 +102,8 @@ class BacktestConfig:
     # --- Стратегия ---
     strategy: str = "default"     # "default" | "confluence_scanner" | любое имя из registry
     strategy_config: dict = None  # параметры стратегии (min_strength и т.д.)
+    use_confluence: bool = True   # включить confluence_scanner во все стратегии
+    train_pct: float = 0.7        # доля данных для in-sample (0.7 = 70%)
 
 
 class BacktestingEngine:
@@ -411,6 +413,7 @@ class BacktestingEngine:
                 checkers.append(check_trend_signals(symbol, context))
             if self.config.use_divergence:
                 checkers.append(check_divergence_signals(symbol, context))
+            checkers.append(check_pivot_signals(symbol, context))
 
             for coro in checkers:
                 try:
@@ -517,8 +520,8 @@ class BacktestingEngine:
                         'strength': signal_strength,
                     })
 
-            # Confluence Scanner детектор (только при strategy="confluence_scanner")
-            if self.config.strategy == "confluence_scanner":
+            # Confluence Scanner детектор (всегда, если use_confluence=True)
+            if self.config.use_confluence:
                 try:
                     from core.confluence_scanner import scan_confluence
                     from core.signal_models import SignalDirection as _SD
@@ -838,6 +841,37 @@ class BacktestingEngine:
         # 5. Рассчитываем метрики
         metrics = self.calculate_metrics()
 
+        # 6. In-sample / Out-of-sample разбивка
+        split_idx = int(len(df) * self.config.train_pct)
+        split_bar_time = int(df.iloc[split_idx]['time']) if split_idx < len(df) else 0
+
+        in_sample_trades = [t for t in self.trades if int(t.entry_time.timestamp() * 1000) < split_bar_time]
+        oos_trades = [t for t in self.trades if int(t.entry_time.timestamp() * 1000) >= split_bar_time]
+
+        def _calc_simple_metrics(trades: list) -> dict:
+            if not trades:
+                return {'trades': 0, 'win_rate': 0.0, 'avg_r': 0.0}
+            wins = [t for t in trades if t.result == BacktestResult.WIN]
+            return {
+                'trades': len(trades),
+                'win_rate': round(len(wins) / len(trades) * 100, 1),
+                'avg_r': round(float(np.mean([t.r_multiple for t in trades])), 2),
+            }
+
+        in_sample_metrics = _calc_simple_metrics(in_sample_trades)
+        oos_metrics = _calc_simple_metrics(oos_trades)
+
+        # Метрики по типам сигналов с IS/OOS разбивкой
+        signal_types = set(t.signal_type for t in self.trades)
+        signal_split = {}
+        for st in signal_types:
+            is_t = [t for t in in_sample_trades if t.signal_type == st]
+            oos_t = [t for t in oos_trades if t.signal_type == st]
+            signal_split[st] = {
+                'in_sample': _calc_simple_metrics(is_t),
+                'out_of_sample': _calc_simple_metrics(oos_t),
+            }
+
         if self._owned_exchange:
             await self._swap_exchange.close()
         logger.info("Бэктест завершен")
@@ -846,7 +880,10 @@ class BacktestingEngine:
             'trades': self.trades,
             'metrics': metrics,
             'data_points': len(df),
-            'signals_found': len(signals)
+            'signals_found': len(signals),
+            'in_sample_metrics': in_sample_metrics,
+            'out_of_sample_metrics': oos_metrics,
+            'signal_split': signal_split,
         }
 
     def calculate_metrics(self) -> Dict[str, Any]:
@@ -887,15 +924,35 @@ class BacktestingEngine:
         gross_loss = abs(sum([t.profit_pct for t in losing_trades]))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
 
+        # Максимальная серия SL подряд
+        max_consecutive_sl = 0
+        current_sl_streak = 0
+        for t in self.trades:
+            if t.result == BacktestResult.LOSS:
+                current_sl_streak += 1
+                max_consecutive_sl = max(max_consecutive_sl, current_sl_streak)
+            else:
+                current_sl_streak = 0
+
         # По типам сигналов
         signal_performance = {}
         for signal_type in set([t.signal_type for t in self.trades]):
             type_trades = [t for t in self.trades if t.signal_type == signal_type]
             type_wins = [t for t in type_trades if t.result == BacktestResult.WIN]
+            # Серия SL для типа
+            max_sl_streak = 0
+            streak = 0
+            for t in type_trades:
+                if t.result == BacktestResult.LOSS:
+                    streak += 1
+                    max_sl_streak = max(max_sl_streak, streak)
+                else:
+                    streak = 0
             signal_performance[signal_type] = {
                 'total': len(type_trades),
-                'win_rate': len(type_wins) / len(type_trades) * 100 if type_trades else 0,
-                'avg_r': np.mean([t.r_multiple for t in type_trades]) if type_trades else 0
+                'win_rate': round(len(type_wins) / len(type_trades) * 100, 1) if type_trades else 0,
+                'avg_r': round(np.mean([t.r_multiple for t in type_trades]), 2) if type_trades else 0,
+                'max_sl_streak': max_sl_streak,
             }
 
         return {
@@ -912,7 +969,8 @@ class BacktestingEngine:
             'wins': len(winning_trades),
             'losses': len(losing_trades),
             'expired': len(expired_trades),
-            'signal_performance': signal_performance
+            'max_consecutive_sl': max_consecutive_sl,
+            'signal_performance': signal_performance,
         }
 
 
@@ -1499,7 +1557,86 @@ async def _run_bot_backtest_multi():
         print(f"  Max DD: медиана={mc['dd_p50']}%  worst-5%={mc['dd_p5']}%")
 
 
+def _print_signal_table(result: dict) -> None:
+    """Выводит таблицу результатов по типам сигналов с IS/OOS разбивкой."""
+    signal_split = result.get('signal_split', {})
+    perf = result.get('metrics', {}).get('signal_performance', {})
+    if not perf:
+        return
+    print("\nТип сигнала     | Сделок | WR%  | Avg R | Серия SL | In-sample        | Out-of-sample")
+    print("-" * 90)
+    for stype, sp in sorted(perf.items()):
+        is_m = signal_split.get(stype, {}).get('in_sample', {})
+        oos_m = signal_split.get(stype, {}).get('out_of_sample', {})
+        is_str = f"WR={is_m.get('win_rate', 0):.0f}% R={is_m.get('avg_r', 0):.2f}" if is_m.get('trades') else "—"
+        oos_str = f"WR={oos_m.get('win_rate', 0):.0f}% R={oos_m.get('avg_r', 0):.2f}" if oos_m.get('trades') else "—"
+        print(f"{stype:<16}| {sp['total']:>6} | {sp['win_rate']:>4.0f} | {sp['avg_r']:>5.2f} | {sp['max_sl_streak']:>8} | {is_str:<16} | {oos_str}")
+    print("-" * 90)
+
+
+async def _run_scenario(scenario_name: str) -> None:
+    """Запускает сценарий из backtest_config.yaml."""
+    import yaml
+    config_path = "backtest_config.yaml"
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            cfg_yaml = yaml.safe_load(f)
+    except FileNotFoundError:
+        print(f"Файл {config_path} не найден.")
+        return
+    except Exception as e:
+        print(f"Ошибка чтения {config_path}: {e}")
+        return
+
+    scenarios = cfg_yaml.get('backtest_scenarios', {})
+    if scenario_name not in scenarios:
+        available = list(scenarios.keys())
+        print(f"Сценарий '{scenario_name}' не найден. Доступные: {available}")
+        return
+
+    sc = scenarios[scenario_name]
+    symbols = sc.get('symbols', ['BTC/USDT'])
+    start_date = datetime.fromisoformat(sc['start_date']).replace(tzinfo=timezone.utc)
+    end_date = datetime.fromisoformat(sc['end_date']).replace(tzinfo=timezone.utc)
+
+    print(f"\n🚀 Сценарий: {scenario_name}")
+    print(f"   Пары: {symbols}")
+    print(f"   Период: {start_date.date()} → {end_date.date()}\n")
+
+    periods = [(scenario_name, start_date, end_date)]
+    results = await run_comprehensive_backtest(symbols=symbols, periods=periods)
+
+    # Вывод по типам сигналов
+    for r in results:
+        sym = r.get('symbol', '')
+        m = r.get('metrics', {})
+        print(f"\n📊 {sym} — сделок: {m.get('total_trades', 0)}  WR: {m.get('win_rate', 0)}%  "
+              f"AvgR: {m.get('avg_r_multiple', 0)}  MaxSL-серия: {m.get('max_consecutive_sl', 0)}")
+        is_m = r.get('in_sample_metrics', {})
+        oos_m = r.get('out_of_sample_metrics', {})
+        print(f"   In-sample (70%):  {is_m.get('trades', 0)} сд  WR={is_m.get('win_rate', 0)}%  AvgR={is_m.get('avg_r', 0)}")
+        print(f"   Out-of-sample:    {oos_m.get('trades', 0)} сд  WR={oos_m.get('win_rate', 0)}%  AvgR={oos_m.get('avg_r', 0)}")
+        _print_signal_table(r)
+
+
 if __name__ == "__main__":
-    # Бэктест стандартного поведения бота (TradingIntelligence.analyze_symbol)
-    # Тестирует именно тот анализ, который бот делает в реальном времени
-    asyncio.run(_run_bot_backtest_multi())
+    import argparse
+    parser = argparse.ArgumentParser(description="Backtesting Engine")
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Сценарий из backtest_config.yaml: quick_test | full_test | stress_test",
+    )
+    parser.add_argument(
+        "--bot",
+        action="store_true",
+        help="Запустить bot backtest (TradingIntelligence.analyze_symbol)",
+    )
+    args = parser.parse_args()
+
+    if args.scenario:
+        asyncio.run(_run_scenario(args.scenario))
+    else:
+        # Бэктест стандартного поведения бота
+        asyncio.run(_run_bot_backtest_multi())

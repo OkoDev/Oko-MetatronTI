@@ -168,6 +168,35 @@
 - trекинг tp2/tp3 hit в check_open_trades_with_tsl()
 - 7 новых тестов TestRRFilter, 6 тестов TestStrategyType
 
+## ✅ Этап 9.1 — WT Type B Research + wt_b_signal (15.03.2026)
+**Цель:** найти и внедрить класс сигналов с высоким WR через систематический бэктест
+
+### Исследование (scripts/analyze_wt_typeB.py)
+- 103 пары, 180 дней, 1h таймфрейм — полный цикл: данные → гипотезы → тесты → реализация
+- **Тип B:** CrossUP/DOWN ВО время нахождения WT в OS/OB + дивергенция (второй лоу > первого)
+- **div_strength > 20 = антисигнал** — WR=33% (слишком большой разрыв = продолжение тренда)
+- **div_strength 3-20 = оптимальный диапазон** — WR=84.9%, avgRet=+4.82% (n=59)
+- **4h soft check** (WT 4h в OS/OB) → WR=87.2% (39/59 сигналов подтверждены)
+- Adaptive OS/OB thresholds: p10/p90 из серии wt1 (vs fixed ±60)
+
+| Стратегия | n | WR | avgRet |
+|---|---|---|---|
+| Тип A (текущий wt_signal) | ~500+ | ~49% | ~+0.5% |
+| Тип B без фильтров | 158 | 57% | +1.6% |
+| Тип B, div_strength 3-20 | 59 | **84.9%** | **+4.82%** |
+| Тип B, div_strength 3-20 + 4h OS | 39 | **87.2%** | **+4.78%** |
+
+### Реализация
+- `core/signal_models.py` — `WT_B_SIGNAL = "wt_b_signal"`
+- `core/signal_checkers.py` — `check_wt_b_signals()` с adaptive thresholds + div_strength фильтром
+- `core/trading_intelligence.py` — вес 0.15
+- `config.yaml` — секция `analysis.wt_b`
+- `core/trade_simulator.py` — bug-fix: приоритетный список signal_type в _signal_type_from_recommendation
+
+### Bug-fix: signal_type priority
+asyncio.gather возвращает результаты в порядке аргументов → anomaly всегда первый в supporting_signals.
+Исправлено приоритетным списком: `wt_b_signal > mtf_bias > confluence > pivot_reversal > ...`
+
 ## ✅ Этап 9 — SMC (Smart Money Concepts) базовая реализация (14-15.03.2026)
 - `core/structure_detector.py` — detect_swing_highs_lows, detect_choch, detect_bos, detect_structure
 - BOS > CHoCH по приоритету; strength: BOS=65, CHoCH=55

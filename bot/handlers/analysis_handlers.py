@@ -85,7 +85,22 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
     try:
         recommendation = await bot.trading_intelligence.analyze_symbol(target_symbol)
         if not recommendation:
-            error_text = f"❌ Не удалось выполнить анализ для {display_symbol}.\nВозможно, недостаточно данных."
+            # Диагностика: пробуем понять причину
+            reason = "нет торгового сигнала"
+            try:
+                df = await bot.data_collector.get_ohlcv(target_symbol, "15m", limit=10)
+                if df is None or df.empty:
+                    reason = "пара не торгуется на бирже или нет данных"
+                elif len(df) < 50:
+                    reason = f"мало исторических данных ({len(df)} свечей, нужно 50+)"
+                else:
+                    ticker = await bot.data_collector.get_ticker(target_symbol)
+                    vol = (ticker or {}).get("quoteVolume") or 0
+                    if vol < 500_000:
+                        reason = f"низкий объём торгов (${vol/1e6:.2f}M за 24ч, нужно >$0.5M)"
+            except Exception:
+                pass
+            error_text = f"❌ Нет анализа для {display_symbol}.\n<i>Причина: {reason}</i>"
             try:
                 await analysis_msg.edit_text(error_text)
             except Exception:

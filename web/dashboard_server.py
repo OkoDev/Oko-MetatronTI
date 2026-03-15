@@ -443,7 +443,7 @@ function render(d, cf, be) {
     </section>
 
     <section>
-      <h2>Последние закрытые сделки (${(d.recent_closed||[]).length})</h2>
+      <h2>Закрытые сделки <span id="closedTotalHeader" style="color:#8b949e;font-size:.85em"></span></h2>
       ${recentTable(d.recent_closed)}
     </section>
   `;
@@ -556,43 +556,89 @@ async function closeTrade(id, btn) {
 }
 
 let _recentRows = [];
+let _closedPage = 1;
+let _closedPerPage = 50;
+let _closedTotal = 0;
+let _closedTotalPages = 1;
+
+async function loadClosedPage(page) {
+  _closedPage = page;
+  try {
+    const r = await fetch(`/api/closed_trades?page=${page}&per_page=${_closedPerPage}`);
+    const d = await r.json();
+    _closedTotal = d.total;
+    _closedTotalPages = d.total_pages;
+    _recentRows = d.rows || [];
+    const wrap = document.getElementById('recentTableWrap');
+    if (wrap) wrap.innerHTML = renderRecentRows(_recentRows);
+    updatePaginationControls();
+    updateFilterOptions();
+    applyFilters();
+  } catch(e) { console.error('loadClosedPage:', e); }
+}
+
+function updatePaginationControls() {
+  const hdr = document.getElementById('closedTotalHeader');
+  if (hdr) hdr.textContent = `(всего ${_closedTotal})`;
+  const el = document.getElementById('closedPagination');
+  if (!el) return;
+  const from = (_closedPage - 1) * _closedPerPage + 1;
+  const to = Math.min(_closedPage * _closedPerPage, _closedTotal);
+  const isFirst = _closedPage <= 1, isLast = _closedPage >= _closedTotalPages;
+  const btn = (label, page, disabled) =>
+    `<button onclick="loadClosedPage(${page})" ${disabled?'disabled':''}
+      style="background:${disabled?'#161b22':'#21262d'};border:1px solid ${disabled?'#21262d':'#30363d'};
+             color:${disabled?'#484f58':'#c9d1d9'};border-radius:6px;padding:4px 10px;
+             font-size:.8rem;cursor:${disabled?'default':'pointer'}">${label}</button>`;
+  el.innerHTML =
+    btn('⟪', 1, isFirst) +
+    btn('‹ Пред', _closedPage - 1, isFirst) +
+    `<span style="padding:4px 14px;background:#161b22;border:1px solid #30363d;border-radius:6px;
+                  font-size:.8rem;color:#8b949e;white-space:nowrap">
+       стр.&nbsp;<strong style="color:#c9d1d9">${_closedPage}</strong>&nbsp;/&nbsp;${_closedTotalPages}
+       <span style="color:#484f58;margin:0 6px">·</span>
+       <strong style="color:#c9d1d9">${from}–${to}</strong>&nbsp;из&nbsp;${_closedTotal}
+     </span>` +
+    btn('След ›', _closedPage + 1, isLast) +
+    btn('⟫', _closedTotalPages, isLast) +
+    `<select onchange="changePerPage(this.value)"
+       style="margin-left:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;
+              border-radius:6px;padding:4px 8px;font-size:.8rem;cursor:pointer">
+       ${[20,50,100,200].map(n=>`<option value="${n}"${n===_closedPerPage?' selected':''}>${n}&nbsp;/&nbsp;стр.</option>`).join('')}
+     </select>`;
+}
+
+function changePerPage(val) {
+  _closedPerPage = parseInt(val);
+  loadClosedPage(1);
+}
+
+function updateFilterOptions() {
+  const statuses = [...new Set(_recentRows.map(r=>r.status).filter(Boolean))].sort();
+  const dirs     = [...new Set(_recentRows.map(r=>r.direction).filter(Boolean))].sort();
+  const sigs     = [...new Set(_recentRows.map(r=>r.signal_type).filter(Boolean))].sort();
+  const mkOpts = (id, vals) => {
+    const el = document.getElementById(id); if (!el) return;
+    const cur = el.value;
+    el.innerHTML = `<option value="">Все</option>` + vals.map(v=>`<option value="${v}"${v===cur?' selected':''}>${v}</option>`).join('');
+  };
+  mkOpts('fStatus', statuses);
+  mkOpts('fDir', dirs);
+  mkOpts('fSig', sigs);
+}
 
 function recentTable(rows) {
-  // Сохраняем текущие фильтры перед перезаписью данных
-  const savedFilters = {
-    st:  document.getElementById('fStatus')?.value  || '',
-    dir: document.getElementById('fDir')?.value     || '',
-    sig: document.getElementById('fSig')?.value     || '',
-    reg: document.getElementById('fRegime')?.value  || '',
-  };
   _recentRows = rows || [];
-  if (!_recentRows.length) return '<p class="note">Нет закрытых сделок</p>';
-  // Фильтры восстанавливаются через setTimeout после рендера DOM
-  setTimeout(() => {
-    ['fStatus','fDir','fSig','fRegime'].forEach((id, i) => {
-      const v = Object.values(savedFilters)[i];
-      const el = document.getElementById(id);
-      if (el && v) el.value = v;
-    });
-    applyFilters();
-  }, 0);
-
-  // Уникальные значения для фильтров
-  const statuses  = [...new Set(_recentRows.map(r => r.status).filter(Boolean))].sort();
-  const dirs      = [...new Set(_recentRows.map(r => r.direction).filter(Boolean))].sort();
-  const sigTypes  = [...new Set(_recentRows.map(r => r.signal_type).filter(Boolean))].sort();
-
-  const mkOpts = (vals, all='Все') =>
-    `<option value="">${all}</option>` + vals.map(v => `<option value="${v}">${v}</option>`).join('');
-
+  // После первого рендера подгружаем страницу 1 через пагинацию
+  setTimeout(() => loadClosedPage(1), 0);
   return `
   <div class="filter-bar">
     <label>Статус:</label>
-    <select id="fStatus" onchange="applyFilters()">${mkOpts(statuses)}</select>
+    <select id="fStatus" onchange="applyFilters()"><option value="">Все</option></select>
     <label>Направление:</label>
-    <select id="fDir" onchange="applyFilters()">${mkOpts(dirs)}</select>
+    <select id="fDir" onchange="applyFilters()"><option value="">Все</option></select>
     <label>Сигнал:</label>
-    <select id="fSig" onchange="applyFilters()">${mkOpts(sigTypes)}</select>
+    <select id="fSig" onchange="applyFilters()"><option value="">Все</option></select>
     <label>Режим:</label>
     <select id="fRegime" onchange="applyFilters()">
       <option value="">Все</option>
@@ -603,6 +649,7 @@ function recentTable(rows) {
     </select>
     <button onclick="resetFilters()">✕ Сброс</button>
   </div>
+  <div id="closedPagination" style="margin:10px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
   <div id="recentTableWrap">${renderRecentRows(_recentRows)}</div>`;
 }
 
@@ -1790,6 +1837,32 @@ async def _handle_stats(request: web.Request) -> web.Response:
         return web.Response(status=500, text=str(e))
 
 
+async def _handle_closed_trades(request: web.Request) -> web.Response:
+    """GET /api/closed_trades?page=1&per_page=50 — пагинированный список закрытых сделок."""
+    engine: PerformanceEngine = request.app["engine"]
+    try:
+        page = max(1, int(request.rel_url.query.get("page", 1)))
+        per_page = min(200, max(10, int(request.rel_url.query.get("per_page", 50))))
+        offset = (page - 1) * per_page
+        total = engine.closed_trades_count()
+        rows = engine.recent_closed(limit=per_page, offset=offset)
+        data = {
+            "rows": rows,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+        }
+        return web.Response(
+            text=json.dumps(data, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("dashboard /api/closed_trades error: %s", e)
+        return web.Response(status=500, text=str(e))
+
+
 async def _handle_close_trade(request: web.Request) -> web.Response:
     """POST /api/trades/{trade_id}/close — ручное закрытие сделки."""
     ts = request.app.get("trade_simulator")
@@ -2398,6 +2471,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/stats", _handle_stats)
     app.router.add_get("/api/stats/confluence", _handle_confluence_breakdown)
     app.router.add_get("/api/stats/breakeven", _handle_breakeven_stats)
+    app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/settings", _handle_settings_page)
     app.router.add_get("/api/settings", _handle_settings_get)

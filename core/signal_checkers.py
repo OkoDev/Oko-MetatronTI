@@ -136,8 +136,8 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
         wt1_last, wt2_last = df_wt["wt1"].iloc[-1], df_wt["wt2"].iloc[-1]
         wt1_prev, wt2_prev = df_wt["wt1"].iloc[-2], df_wt["wt2"].iloc[-2]
 
-        cross_up = wt1_prev < wt2_prev and wt1_last > wt2_last
-        cross_down = wt1_prev > wt2_prev and wt1_last < wt2_last
+        cross_up = wt1_prev < wt2_prev and wt1_last > wt2_last and (wt1_last - wt2_last) >= 3
+        cross_down = wt1_prev > wt2_prev and wt1_last < wt2_last and (wt2_last - wt1_last) >= 3
 
         # WT 1h для фильтра: отсекаем сигналы против старшего ТФ
         wt1_1h = None
@@ -159,6 +159,11 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
             wt_strength = 65
         else:
             wt_strength = 55
+
+        # Бонус за импульс: большой разрыв WT1-WT2 = сильный разворот (данные: WR 60% vs 37% при gap>=10)
+        gap = abs(wt1_last - wt2_last)
+        if gap >= 10:
+            wt_strength = min(90, wt_strength + 5)
 
         if cross_up and wt1_last < os_:
             if wt1_1h is not None and wt1_1h > ob:
@@ -182,6 +187,134 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
                 ))
     except Exception:
         logger.exception("Ошибка проверки WT для %s", symbol)
+    return signals
+
+
+# ── WT тип B: вспомогательные функции ────────────────────────────────────────
+
+def _wt_b_bullish_div(wt1_vals: list, os_: float) -> dict:
+    """Bullish дивергенция для типа B: min второй половины > min первой (оба в OS)."""
+    half = len(wt1_vals) // 2
+    if half < 5:
+        return {"found": False}
+    os1 = [v for v in wt1_vals[:half] if v < os_]
+    os2 = [v for v in wt1_vals[half:] if v < os_]
+    if not os1 or not os2:
+        return {"found": False}
+    min1, min2 = min(os1), min(os2)
+    if min2 <= min1:
+        return {"found": False}
+    return {"found": True, "div_strength": round(min2 - min1, 2), "depth": round(min1, 2)}
+
+
+def _wt_b_bearish_div(wt1_vals: list, ob: float) -> dict:
+    """Bearish дивергенция для типа B: max второй половины < max первой (оба в OB)."""
+    half = len(wt1_vals) // 2
+    if half < 5:
+        return {"found": False}
+    ob1 = [v for v in wt1_vals[:half] if v > ob]
+    ob2 = [v for v in wt1_vals[half:] if v > ob]
+    if not ob1 or not ob2:
+        return {"found": False}
+    max1, max2 = max(ob1), max(ob2)
+    if max2 >= max1:
+        return {"found": False}
+    return {"found": True, "div_strength": round(max1 - max2, 2), "depth": round(max1, 2)}
+
+
+def _wt_b_strength(div_strength: float, depth: float, direction: str) -> int:
+    """Strength для типа B по данным бэктеста (103 пары, WR=85%)."""
+    if div_strength >= 10:
+        base = 90   # WR=100% в бэктесте
+    elif div_strength >= 6:
+        base = 80   # WR=82%
+    else:
+        base = 70   # WR=73%
+    # Бонус за глубину лоу (только LONG)
+    if direction == "LONG" and depth < -70:
+        base = min(95, base + 5)
+    return base
+
+
+async def check_wt_b_signals(symbol: str, df_1h: pd.DataFrame) -> list:
+    """
+    WT тип B (1h): crossover В OS/OB зоне + дивергенция WT1.
+
+    Фильтры из бэктеста (103 пары, 180 дней):
+      - Adaptive OS/OB: p10/p90 от серии wt1
+      - div_strength: 3-20 (разрыв лоу/хай в OS/OB зоне)
+      - LOOKBACK: 35 баров
+    Результат: n=59, WR=84.9%, avgRet=+4.82%.
+    """
+    import numpy as np
+    signals = []
+    try:
+        if df_1h is None or len(df_1h) < 80:
+            return signals
+
+        n1, n2   = 10, 21
+        LOOKBACK = 35
+        DIV_MIN  = 3.0
+        DIV_MAX  = 20.0
+
+        df_wt = calculate_wt(df_1h, n1=n1, n2=n2)
+        if "wt1" not in df_wt.columns:
+            return signals
+
+        wt1_arr = df_wt["wt1"].values
+        wt2_arr = df_wt["wt2"].values
+
+        # Адаптивные пороги p10/p90
+        os_ = float(np.percentile(wt1_arr, 10))
+        ob  = float(np.percentile(wt1_arr, 90))
+
+        wt1_last, wt2_last = wt1_arr[-1], wt2_arr[-1]
+        wt1_prev, wt2_prev = wt1_arr[-2], wt2_arr[-2]
+
+        cross_up   = wt1_prev < wt2_prev and wt1_last > wt2_last
+        cross_down = wt1_prev > wt2_prev and wt1_last < wt2_last
+        if not cross_up and not cross_down:
+            return signals
+
+        window = list(wt1_arr[-(LOOKBACK + 1):-1])
+
+        if cross_up and wt1_last < os_:
+            d = _wt_b_bullish_div(window, os_)
+            if d["found"] and DIV_MIN <= d["div_strength"] <= DIV_MAX:
+                strength = _wt_b_strength(d["div_strength"], d["depth"], "LONG")
+                logger.info("[%s] WT-B LONG wt1=%.1f os=%.1f div_str=%.1f str=%d",
+                            symbol, wt1_last, os_, d["div_strength"], strength)
+                signals.append(SignalData(
+                    symbol=symbol, signal_type=SignalType.WT_B_SIGNAL,
+                    direction=SignalDirection.LONG,
+                    strength=strength, confidence=0.88,
+                    timestamp=datetime.now(), timeframe="1h",
+                    data={
+                        "wt1": round(wt1_last, 2), "zone": "OS",
+                        "div_strength": d["div_strength"], "depth": d["depth"],
+                        "os_adaptive": round(os_, 1),
+                    },
+                ))
+
+        if cross_down and wt1_last > ob:
+            d = _wt_b_bearish_div(window, ob)
+            if d["found"] and DIV_MIN <= d["div_strength"] <= DIV_MAX:
+                strength = _wt_b_strength(d["div_strength"], d["depth"], "SHORT")
+                logger.info("[%s] WT-B SHORT wt1=%.1f ob=%.1f div_str=%.1f str=%d",
+                            symbol, wt1_last, ob, d["div_strength"], strength)
+                signals.append(SignalData(
+                    symbol=symbol, signal_type=SignalType.WT_B_SIGNAL,
+                    direction=SignalDirection.SHORT,
+                    strength=strength, confidence=0.88,
+                    timestamp=datetime.now(), timeframe="1h",
+                    data={
+                        "wt1": round(wt1_last, 2), "zone": "OB",
+                        "div_strength": d["div_strength"], "depth": d["depth"],
+                        "ob_adaptive": round(ob, 1),
+                    },
+                ))
+    except Exception:
+        logger.exception("Ошибка check_wt_b_signals для %s", symbol)
     return signals
 
 

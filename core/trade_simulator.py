@@ -37,10 +37,44 @@ def _direction_str(direction) -> str:
 
 
 def _signal_type_from_recommendation(rec: Any) -> str:
-    """Доминирующий тип сигнала из supporting_signals или 'composite'."""
+    """Доминирующий тип сигнала из supporting_signals или 'composite'.
+
+    Приоритет от высшего к низшему — отражает качество/редкость сигнала:
+      wt_b_signal      WR=85% на бэктесте — самый редкий и качественный
+      mtf_bias         главное WT-ядро (7 TF, вес 0.50)
+      confluence       производный сложный паттерн (state machine)
+      pivot_reversal   разворот у ключевого уровня
+      smc_structure    BOS/CHoCH — структура рынка
+      wt_signal        базовый WT crossover в OS/OB
+      divergence       дивергенция
+      trend_signal     смена тренда
+      anomaly          всплеск объёма (частый, низкий вес)
+      mtf_signal       устаревший MTF (будет упразднён)
+    """
+    _PRIORITY = [
+        "wt_b_signal",
+        "mtf_bias",
+        "confluence",
+        "pivot_reversal",
+        "smc_structure",
+        "wt_signal",
+        "divergence",
+        "trend_signal",
+        "anomaly",
+        "mtf_signal",
+    ]
     supporting = _get_recommendation_value(rec, "supporting_signals") or []
     if not supporting:
         return "composite"
+    present = {
+        getattr(s.signal_type, "value", None)
+        for s in supporting
+        if hasattr(s, "signal_type")
+    }
+    for stype in _PRIORITY:
+        if stype in present:
+            return stype
+    # Fallback: первый сигнал
     first = supporting[0]
     if hasattr(first, "signal_type") and hasattr(first.signal_type, "value"):
         return first.signal_type.value
@@ -541,7 +575,11 @@ class TradeSimulator:
                 df["time"] = pd.to_numeric(df["time"], errors="coerce")
                 try:
                     ts_sec = created_dt.timestamp()
-                    df = df[df["time"] >= ts_sec * 1000].copy()
+                    df_filtered = df[df["time"] >= ts_sec * 1000].copy()
+                    # Если фильтр выбросил все свечи (например, часы сервера были смещены
+                    # при создании сделки) — берём последние 5 свечей как минимум,
+                    # чтобы SL/TP всегда проверялся по актуальным данным.
+                    df = df_filtered if len(df_filtered) > 0 else df.iloc[-5:].copy()
                 except Exception:
                     pass
             if len(df) == 0:

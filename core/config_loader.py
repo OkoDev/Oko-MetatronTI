@@ -69,8 +69,8 @@ class ConfigLoader:
                     "wavetrend": {
                         "n1": 10,              # ESA period (9-12)
                         "n2": 21,              # WT signal period (20-25)
-                        "ob_threshold": 60,    # Overbought zone (official standard)
-                        "os_threshold": -60    # Oversold zone (official standard)
+                        "ob_threshold": 60,    # Overbought zone
+                        "os_threshold": -60    # Oversold zone
                     },
                     "trend": {
                         "atr_period": 43,      # ATR period for TSL-based trend (特殊パラメータ)
