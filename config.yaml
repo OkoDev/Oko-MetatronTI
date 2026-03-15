@@ -121,7 +121,9 @@ trading:
   tsl_activation_r: 1.0
   tsl_buffer_pct: 0.5
   use_breakeven: true           # Безубыток: SL → entry после достижения прибыли
-  breakeven_activation_r: 0.5  # Переносить SL в безубыток после +0.5R
+  breakeven_activation_r: 0.8  # 0.5→0.8R: данные показали что 0.5R — зона волатильности,
+                                # риск срезания хороших сделок. 0.8R = уверенное движение,
+                                # буфер 0.2R до TSL-активации (1.0R) минимизирует преждевременные выходы
   sl_tp:
     atr_multiplier: 1.2
     sl_min_pct: 0.5        # DEV-05: зажим [0.5%, 3%] — S1/FVG/TSL приоритет
@@ -184,3 +186,20 @@ strategy:
     min_signals: 3
     min_confidence: 0.65
     conflict_threshold: 0.2
+
+risk_management:
+  regime_strategy:
+    enabled: true
+    # TREND_UP / TREND_DOWN: агрессивный трейлинг
+    trend_sl_factor: 0.85
+    trend_strategy_type: TRIPLE_TP_TSL
+    trend_position_multiplier: 1.0
+    # RANGE: консервативная фиксация прибыли
+    range_sl_factor: 1.15
+    range_strategy_type: DUAL_TP
+    range_position_multiplier: 1.0
+    # HIGH_VOL: уменьшаем риск, берём TP1 сразу
+    high_vol_sl_factor: 1.0
+    high_vol_strategy_type: DUAL_TP
+    high_vol_position_multiplier: 0.5
+    high_vol_tp1_r: 0.5
