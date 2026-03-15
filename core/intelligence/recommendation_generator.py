@@ -73,7 +73,8 @@ def calculate_levels(
     """
     Рассчитывает уровни входа, SL и TP.
 
-    SL (приоритет, DEV-05):
+    SL (приоритет):
+      0. Swing LOW/HIGH — реальная рыночная структура (20 баров) + буфер 0.3%
       1. Под S1/R1 — ближайший пивот поддержки/сопротивления из PIVOT_REVERSAL сигналов
       2. Под FVG — Fair Value Gap midpoint из данных сигналов (если есть)
       3. Под TSL-линией индикатора (trendup/trenddown)
@@ -124,27 +125,42 @@ def calculate_levels(
     if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
         return entry_price, None, None, None, "", ""
 
+    # ── 0. Swing LOW/HIGH — реальная рыночная структура (первый приоритет) ─
+    swing_level = market_context.swing_low if is_long else market_context.swing_high
+    if swing_level and swing_level > 0:
+        if is_long and swing_level < entry_price:
+            swing_sl_pct = (entry_price - swing_level) / entry_price * 100 + struct_buf
+            if sl_min <= swing_sl_pct <= sl_max:
+                sl_pct    = swing_sl_pct
+                sl_source = f"swing_low:{swing_level:.6g}"
+        elif is_short and swing_level > entry_price:
+            swing_sl_pct = (swing_level - entry_price) / entry_price * 100 + struct_buf
+            if sl_min <= swing_sl_pct <= sl_max:
+                sl_pct    = swing_sl_pct
+                sl_source = f"swing_high:{swing_level:.6g}"
+
     # ── 1. S1/R1 — ближайший пивот поддержки/сопротивления ───────────────
     # Источник: PIVOT_REVERSAL сигналы (data["level"] + data["pivot_type"])
-    pivot_type    = "support" if is_long else "resistance"
-    struct_levels = [
-        s.data["level"]
-        for s in signals
-        if s.signal_type == SignalType.PIVOT_REVERSAL
-        and s.data.get("pivot_type") == pivot_type
-        and (s.data.get("level", 0) < entry_price if is_long
-             else s.data.get("level", 0) > entry_price)
-    ]
-    if struct_levels:
-        nearest      = max(struct_levels) if is_long else min(struct_levels)
-        s1_sl_pct    = abs(entry_price - nearest) / entry_price * 100 + struct_buf
-        if sl_min <= s1_sl_pct <= sl_max:
-            sl_pct    = s1_sl_pct
-            sl_source = f"s1:{pivot_type}:{nearest:.6g}"
+    if "swing_" not in sl_source:
+        pivot_type    = "support" if is_long else "resistance"
+        struct_levels = [
+            s.data["level"]
+            for s in signals
+            if s.signal_type == SignalType.PIVOT_REVERSAL
+            and s.data.get("pivot_type") == pivot_type
+            and (s.data.get("level", 0) < entry_price if is_long
+                 else s.data.get("level", 0) > entry_price)
+        ]
+        if struct_levels:
+            nearest      = max(struct_levels) if is_long else min(struct_levels)
+            s1_sl_pct    = abs(entry_price - nearest) / entry_price * 100 + struct_buf
+            if sl_min <= s1_sl_pct <= sl_max:
+                sl_pct    = s1_sl_pct
+                sl_source = f"s1:{pivot_type}:{nearest:.6g}"
 
     # ── 2. FVG — Fair Value Gap midpoint из данных сигналов ───────────────
     # Источник: сигналы с data["has_fvg"]=True и data["fvg_entry"] (PIVOT_REVERSAL)
-    if "s1:" not in sl_source:
+    if "swing_" not in sl_source and "s1:" not in sl_source:
         for sig in signals:
             if not sig.data.get("has_fvg"):
                 continue
@@ -165,8 +181,8 @@ def calculate_levels(
                     sl_source = f"fvg_bear:{fvg_price:.6g}"
                     break
 
-    # ── 3. TSL-линия — если S1 и FVG недоступны ───────────────────────────
-    if "s1:" not in sl_source and "fvg_" not in sl_source:
+    # ── 3. TSL-линия — если swing, S1 и FVG недоступны ────────────────────
+    if "swing_" not in sl_source and "s1:" not in sl_source and "fvg_" not in sl_source:
         tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
         if tsl_line and tsl_line > 0:
             if is_long and tsl_line < entry_price:
