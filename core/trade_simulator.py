@@ -9,6 +9,8 @@ import json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
+from core.regime_strategy import apply_regime_to_strategy, get_regime_params
+
 logger = logging.getLogger(__name__)
 
 # Статусы сделки
@@ -110,6 +112,8 @@ class TradeSimulator:
                 ("tp2_price", "REAL"), ("tp2_hit_at", "TIMESTAMP"),
                 ("tp3_price", "REAL"), ("tp3_hit_at", "TIMESTAMP"),
                 ("strategy_type", "TEXT DEFAULT 'SINGLE'"),
+                ("first_profit_r", "REAL"),    # первое наблюдение R > 0 (цена впервые пошла в прибыль)
+                ("first_drawdown_r", "REAL"),  # первое наблюдение R < 0 (первый откат ниже entry)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -219,6 +223,45 @@ class TradeSimulator:
                         if tp1_price is None:
                             tp1_price = float(entry) + sign * tp_dist * 0.5
                         tp2_price = float(take_profit)
+
+            # Адаптируем strategy_type и TP1 на основе режима рынка (ARCH-04)
+            if regime and stop_loss is not None and take_profit is not None and entry is not None:
+                try:
+                    regime_params = get_regime_params(regime)
+                    strategy_type, tp1_price = apply_regime_to_strategy(
+                        strategy_type=strategy_type,
+                        entry=float(entry),
+                        stop_loss=float(stop_loss),
+                        take_profit=float(take_profit),
+                        tp1_price=tp1_price,
+                        direction=dir_str,
+                        regime=regime,
+                    )
+                    # Пересчитываем TP2/TP3 если strategy_type изменился
+                    sl_dist_f = abs(float(entry) - float(stop_loss))
+                    tp_dist_f = abs(float(take_profit) - float(entry))
+                    sign_f = 1.0 if dir_str == "LONG" else -1.0
+                    if strategy_type == "TRIPLE_TP_TSL":
+                        tp2_price = float(entry) + sign_f * tp_dist_f * (2.0 / 3.0)
+                        tp3_price = float(take_profit)
+                    elif strategy_type == "DUAL_TP":
+                        tp2_price = float(take_profit)
+                        tp3_price = None
+                    else:
+                        tp2_price = None
+                        tp3_price = None
+                    # Записываем position_size_multiplier в features_json для аналитики
+                    if regime_params.position_size_multiplier != 1.0:
+                        if features is None:
+                            features = {}
+                        features["position_size_multiplier"] = regime_params.position_size_multiplier
+                        features_json = json.dumps(features)
+                        logger.info(
+                            "[regime_strategy] %s %s: position_size×%.2f",
+                            symbol, regime, regime_params.position_size_multiplier,
+                        )
+                except Exception as _re:
+                    logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -706,15 +749,33 @@ class TradeSimulator:
                 if exit_status:
                     break
 
-            # Обновляем MFE экстремумы для открытой сделки
+            # Обновляем MFE экстремумы + first_profit_r / first_drawdown_r
             new_max = max_high if max_high > 0 else None
             new_min = min_low if min_low < float("inf") else None
-            if new_max is not None or new_min is not None:
+
+            # first_profit_r / first_drawdown_r — заполняем один раз (первое наблюдение)
+            fp_r = trade.get("first_profit_r")   # None = ещё не фиксировали
+            fd_r = trade.get("first_drawdown_r")
+            new_fp_r = new_fd_r = None
+            if current_r is not None:  # значит one_r вычислен и sl != entry
+                if fp_r is None and current_r > 0.1:
+                    new_fp_r = round(current_r, 3)
+                if fd_r is None and current_r < -0.1:
+                    new_fd_r = round(current_r, 3)
+
+            if new_max is not None or new_min is not None or new_fp_r is not None or new_fd_r is not None:
                 try:
                     with sqlite3.connect(self.db_path) as conn:
                         conn.execute(
-                            "UPDATE simulated_trades SET max_price=?, min_price=? WHERE id=? AND status=?",
-                            (new_max, new_min, trade_id, STATUS_OPEN),
+                            """UPDATE simulated_trades
+                               SET max_price=?, min_price=?,
+                                   first_profit_r  = CASE WHEN first_profit_r  IS NULL AND ? IS NOT NULL THEN ? ELSE first_profit_r  END,
+                                   first_drawdown_r= CASE WHEN first_drawdown_r IS NULL AND ? IS NOT NULL THEN ? ELSE first_drawdown_r END
+                               WHERE id=? AND status=?""",
+                            (new_max, new_min,
+                             new_fp_r, new_fp_r,
+                             new_fd_r, new_fd_r,
+                             trade_id, STATUS_OPEN),
                         )
                         conn.commit()
                 except Exception as e:
