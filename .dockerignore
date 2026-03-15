@@ -1,0 +1,11 @@
+.tmp
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.git
+*.db
+logs/
+backtest_reports/
+.env
+node_modules/

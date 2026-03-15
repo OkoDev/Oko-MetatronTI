@@ -89,6 +89,44 @@ _HTML = """<!DOCTYPE html>
 <script>
 const fmt = (v, dec=2) => v == null ? '—' : (+v).toFixed(dec);
 const fmtPct = v => v == null ? '—' : (v > 0 ? '+' : '') + fmt(v, 2) + '%';
+
+// ── Всплывающие подсказки ──────────────────────────────────────────────────
+const TOOLTIPS = {
+  // signal_type (ТФ входа)
+  'confluence':     '[ТФ: 15m] Confluence Scanner — lookback 20 баров: WT в OS/OB + TSL кросс (close) + пивоты + дивергенция. WT_CROSS в зоне OS/OB обязателен.',
+  'wt_signal':      '[ТФ: 15m] WaveTrend Signal — кросс wt1/wt2 в зонах OS (<−60) или OB (>+60). Классический разворотный сигнал.',
+  'pivot_reversal': '[ТФ: 15m] Pivot Reversal — разворот у уровней пивота (Woodie/Camarilla: S1/S2/R1/R2/PP). Цена отбилась от структурного уровня.',
+  'trend_signal':   '[ТФ: 15m] Trend Signal — смена тренда по EMA + ADX. Работает на трендовых рынках, слаб в боковике.',
+  'anomaly':        '[ТФ: 15m] Volume Anomaly — аномальный всплеск объёма (>3σ от среднего). Может быть началом движения или ложным выбросом.',
+  'mtf_bias':       '[ТФ: 3m→1d] MTF Bias — выравнивание 7 таймфреймов. Нужно: alignment ≥65%, senior gate 2/3, WT кросс на entry TF.',
+  'composite':      '[ТФ: 15m] Composite — несколько детекторов одновременно. Высокое confidence, но редкий сигнал.',
+  'divergence':     '[ТФ: 15m] Divergence — дивергенция WT: Regular (разворот) или Hidden (продолжение тренда). Price LL + wt HL (бычья).',
+  // strategy_name
+  'conservative':   'Strategy Pattern: Conservative — повышенный min_strength, меньше сделок, выше качество входа.',
+  // confluence factors
+  'WT_OS':           '[ТФ: 15m] WT1 < −60 в окне lookback → зона перепроданности. Рынок перепродан, ищем разворот вверх. +20 очков.',
+  'WT_OB':           '[ТФ: 15m] WT1 > +60 в окне lookback → зона перекупленности. Рынок перекуплен, ищем разворот вниз. +20 очков.',
+  'TSL_CROSS_UP':    '[ТФ: 15m] TSL-линия пробита вверх: close[i] > trenddown[i-1]. Подтверждённая смена тренда DOWN→UP по закрытию свечи. +20 очков.',
+  'TSL_CROSS_DOWN':  '[ТФ: 15m] TSL-линия пробита вниз: close[i] < trendup[i-1]. Подтверждённая смена тренда UP→DOWN по закрытию свечи. +20 очков.',
+  'WT_CROSS_UP':     '[ТФ: 15m] ⚡ ОБЯЗАТЕЛЕН: wt1 пересёк wt2 снизу вверх в OS зоне (<−60). Без этого сигнал не выдаётся. +15 очков.',
+  'WT_CROSS_DOWN':   '[ТФ: 15m] ⚡ ОБЯЗАТЕЛЕН: wt1 пересёк wt2 сверху вниз в OB зоне (>+60). Без этого сигнал не выдаётся. +15 очков.',
+  'NEAR_SUPPORT':    '[ТФ: 1D/1W пивоты] Цена (low) в ±0.5% от S1/S2/PP. Структурная поддержка подтверждает вход. +25 очков.',
+  'NEAR_RESISTANCE': '[ТФ: 1D/1W пивоты] Цена (high) в ±0.5% от R1/R2/PP. Структурное сопротивление подтверждает SHORT. +25 очков.',
+  'WT_DIVERGENCE':   '[ТФ: 15m] Дивергенция WT в окне: price LL + wt1 HL (бычья) или price HH + wt1 LH (медвежья). +20 очков.',
+  'ABOVE_PP':        '[ТФ: 1D PP] Текущая цена выше дневного PP → бычий контекст. +15 очков.',
+  'BELOW_PP':        '[ТФ: 1D PP] Текущая цена ниже дневного PP → медвежий контекст. +15 очков.',
+  'TREND_1H_UP':     '[ТФ: 1h] ★ Бонус +10: тренд на 1h = UP совпадает с LONG. Старший ТФ подтверждает направление.',
+  'TREND_1H_DOWN':   '[ТФ: 1h] ★ Бонус +10: тренд на 1h = DOWN совпадает с SHORT. Старший ТФ подтверждает направление.',
+  'DUAL_CROSS':      '[ТФ: 15m] ★ Бонус +10: оба кросса (TSL_CROSS + WT_CROSS) на 15m присутствуют одновременно. Двойное подтверждение.',
+  // regime
+  'TREND_UP':   'Режим рынка [15m]: восходящий тренд — ADX высокий + EMA растут. Лонги предпочтительнее.',
+  'TREND_DOWN': 'Режим рынка [15m]: нисходящий тренд — ADX высокий + EMA падают. Шорты предпочтительнее.',
+  'RANGE':      'Режим рынка [15m]: боковик — ADX низкий, цена в диапазоне. Confluence получает штраф -15 к score.',
+  'HIGH_VOL':   'Режим рынка [15m]: высокая волатильность — ATR аномально широкий. Стопы шире, риск выше.',
+  'unknown':    'Режим не определён (старые сделки до добавления market_regime).',
+  '—':          'Нет данных / поле не заполнено.',
+};
+const tip = key => TOOLTIPS[key] ? ` title="${TOOLTIPS[key]}"` : '';
 const badge = s => {
   const map = {TP:'badge-tp', SL:'badge-sl', TSL:'badge-tsl', EXPIRED:'badge-exp', OPEN:'badge-open'};
   return `<span class="badge ${map[s]||''}">${s}</span>`;
@@ -192,7 +230,7 @@ function confluenceBreakdown(cf) {
       const rowStyle = isBonus ? ' style="background:rgba(255,215,0,0.07);font-weight:600"' : '';
       return `<tr${rowStyle}>${cols.map(c => {
         const v = r[c];
-        if (c === 'factor') return `<td>${FACTOR_LABELS[v] || v}${isBonus ? ' <span style="color:#f0a500;font-size:.75rem">★</span>' : ''}</td>`;
+        if (c === 'factor') return `<td><span${tip(v)}${TOOLTIPS[v] ? ' style="cursor:help;border-bottom:1px dotted #8b949e"' : ''}>${FACTOR_LABELS[v] || v}${isBonus ? ' <span style="color:#f0a500;font-size:.75rem">★</span>' : ''}</span></td>`;
         if (c === 'wr') return `<td class="${v >= 45 ? 'green' : v >= 30 ? '' : 'red'}">${v ?? '—'}%</td>`;
         if (c === 'avg_r') return `<td class="${color(v)}">${v ?? '—'}</td>`;
         return `<td>${v ?? '—'}</td>`;
@@ -422,7 +460,7 @@ function tableByGroup(rows, labelKey) {
     <th>Avg Profit%</th><th>Avg R</th>
   </tr></thead><tbody>` +
   rows.map(r => `<tr>
-    <td>${r[labelKey] || '—'}</td>
+    <td><span${tip(r[labelKey])}${TOOLTIPS[r[labelKey]] ? ' style="cursor:help;border-bottom:1px dotted #8b949e"' : ''}>${r[labelKey] || '—'}</span></td>
     <td>${r.total}</td>
     <td class="${r.win_rate >= 50 ? 'green' : 'red'}">${r.win_rate != null ? r.win_rate + '%' : '—'}</td>
     <td class="green">${r.tp_count ?? r.wins ?? 0}</td>
