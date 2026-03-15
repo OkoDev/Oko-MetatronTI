@@ -1,8 +1,48 @@
 # 🔬 Отчет аудита индикаторов — Oko MTF Bot
 
-**Дата:** 5 марта 2026  
-**Режим:** Trading Bot Architect Mode  
-**Статус:** 5 багов найдено, 2 исправлено, 3 требуют доработки
+**Первичный аудит:** 5 марта 2026 (Trading Bot Architect Mode)
+**Обновлён:** 14 марта 2026
+**Статус:** 5 багов найдено — все исправлены. Добавлены новые данные.
+
+---
+
+## 📊 Актуальная картина — 14.03.2026
+
+### Новые стратегии (добавлены 12-14.03.2026)
+| Стратегия | Файл | Статус | Вес в TradingIntelligence |
+|-----------|------|--------|--------------------------|
+| ConfluenceScannerStrategy | `strategies/built_in/confluence_scanner_strategy.py` | АКТИВНАЯ | — (отдельная логика) |
+| PivotReversalStrategy | `strategies/built_in/pivot_reversal_strategy.py` | готова | — |
+| MTFBiasStrategy | `strategies/built_in/mtf_bias.py` | **ЯДРО, вес 0.50** | 0.50 |
+
+### Изменения в TSL системе (14.03.2026)
+- `tsl_activation_r: 1.5 → 1.0` — снижен порог активации
+- `tsl_activated` поле добавлено в БД (было: всегда 0)
+- 1h TSL переключение: если 1h тренд совпадает → широкий TSL по 1h
+
+### Изменения в swing SL (14.03.2026, незакоммичено)
+`core/trading_intelligence.py` → `_compute_swing_levels()`:
+- `wing: 2 → 4` — более строгий отбор экстремумов
+- Логика: было "ближайший swing" (max low) → стало "за вершину" (min low)
+- Добавлена граница: `_swing_min = max(sl_min, tsl_dist)` — swing SL не уже TSL
+
+### Актуальные веса сигналов (14.03.2026)
+| Тип | Вес | Статус |
+|-----|-----|--------|
+| MTF_BIAS | **0.50** | ★ главное ядро, tie-breaker при конфликте |
+| PIVOT_REVERSAL | 0.20 | ★ второе ядро |
+| CONFLUENCE | 0.15 | через ConfluenceScannerStrategy |
+| DIVERGENCE | 0.10 | только фоновые задачи |
+| WT_SIGNAL | 0.08 | адаптивный strength 55-85 |
+| TREND_SIGNAL | 0.05 | подтверждающий |
+| ANOMALY | 0.03 | слабейший |
+| MTF_SIGNAL | — | ⚠️ LEGACY (→ MTF_BIAS) |
+| MTF_ALERT | — | ⚠️ LEGACY (→ MTF_BIAS) |
+
+### Архитектурные особенности (важно!)
+- **Дивергенции и PIVOT_REVERSAL НЕ в `_collect_all_signals()`** — только фоновые задачи мониторинга. Это намеренно: исключает `conflict_ratio → action=WATCH`
+- **MTF_BIAS** при `strength ≥ 70` + конфликт направлений → фиксирует финальное направление (tie-breaker)
+- **Legacy**: `calculate_trend_strength()` в indicators.py объявлена но нигде не вызывается
 
 ---
 

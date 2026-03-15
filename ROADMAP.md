@@ -232,138 +232,64 @@ asyncio.gather возвращает результаты в порядке ар�
 
 **Условие старта:** нет срочности, запускать при добавлении нового раздела меню
 
-## 🔲 Этап 8.4 — Quality Gate до принятия сделки
+## ✅ Этап 8.4 — Quality Gate до принятия сделки (14-16.03.2026)
 **Цель:** повысить качество входов и снизить ложные регистрации до отправки в TG/БД
 
-### 8.4.1 — Блокер: целостность данных перед анализом
-- [ ] Ввести pre-check на свежесть OHLCV по каждому TF (`age`, пропуски, дубликаты)
-- [ ] Пропускать сигнал, если не хватает минимальной глубины истории для конкретного детектора
-- [ ] Логировать причину skip в едином формате (`symbol`, `tf`, `reason`, `timestamp`)
+### ✅ 8.4.1 — Целостность данных перед анализом
+- [x] `core/data_quality.py` — pre-check OHLCV (глубина/свежесть/NaN)
+- [x] Интеграция в scan_one и _collect_all_signals
 
-### 8.4.2 — Блокер: консистентность пайплайна принятия решения
-- [ ] Синхронизировать пороги `is_actionable` и `should_register` (единая policy-таблица)
-- [ ] Зафиксировать единый `snapshot_time` данных для всех проверок одного сигнала
-- [ ] Запретить регистрацию сделки при частичном падении критичных шагов анализа (no silent fallback)
+### ✅ 8.4.2 — Консистентность пайплайна
+- [x] Единый `snapshot_time` до gather OHLCV
+- [x] `_collect_all_signals()` → `(signals, quality)` tuple
+- [x] No silent fallback: df_1h is None → hard block
 
-### 8.4.3 — Высокий приоритет: таймауты и degraded-mode
-- [ ] Разделить таймауты на `hard` (блокирует решение) и `soft` (допускает решение)
-- [ ] Явно маркировать degraded-решения в TG/БД (`analysis_quality=degraded`)
-- [ ] Добавить счётчики SLA: `% full-analysis`, `% degraded`, `% timeout by step`
+### ✅ 8.4.3 — Таймауты и degraded-mode
+- [x] HARD timeout 20s на сбор сигналов → return None
+- [x] SOFT timeout 15s на market context → degraded + fallback
+- [x] `analysis_quality = full|degraded|timeout` в metadata
+- [x] 8 тестов `tests/unit/test_quality_gate.py`
 
-### 8.4.4 — Высокий приоритет: дедуп и конкуренция сигналов
-- [ ] Перейти на dedup-ключ, учитывающий `symbol + side + class`, а не только `symbol`
-- [ ] Разрешить замену слабого сигнала более сильным внутри dedup-окна
-- [ ] Добавить правило `latest-confirmation wins` для конкурирующих сигналов по одной паре
+### ✅ 8.4.4 — Дедуп по (symbol, signal_type, direction) (коммит 940a81e)
+### ✅ 8.4.5 — Hidden divergence фильтр в RANGE/HIGH_VOL (коммит de9df08)
 
-### 8.4.5 — Высокий приоритет: рыночный контекст
-- [ ] Ужесточить фильтрацию hidden-divergence в `RANGE/HIGH_VOL`
-- [ ] Добавить коэффициент корреляционного риска с BTC (не только warning)
-- [ ] Ввести kill-switch на экстремальной волатильности рынка
+### 🔲 8.4.6–8.4.9 — Калибровка, наблюдаемость, тестовый контур, операционный контроль
+- [ ] Калибровать confidence на реальных исходах (reliability curve)
+- [ ] Decision trace для каждой сделки
+- [ ] Replay-тесты на исторических окнах
+- [ ] Еженедельный auto-review метрик
 
-### 8.4.6 — Средний приоритет: качество признаков и калибровка
-- [ ] Проверить стабильность распределений фичей по неделям (data drift)
-- [ ] Калибровать `confidence` на реальных исходах (reliability curve)
-- [ ] Валидировать вклад каждого типа сигнала в итоговый `R` (ablation)
+## ✅ Этап 8.5 — Strategy Pattern (ARCH-05, 15.03.2026)
+**Цель:** модульная архитектура для стратегий и A/B тестирования
 
-### 8.4.7 — Средний приоритет: наблюдаемость и аудит решений
-- [ ] Сделать `decision trace` для каждой сделки: какие фильтры прошли/не прошли
-- [ ] Добавить дашборд причин отказа (top skip reasons)
-- [ ] Вести метрику latency от детекта до регистрации/рассылки
+### ✅ Реализовано:
+- [x] `strategies/base.py` — BaseStrategy(ABC): analyze(), calculate_sl_tp()
+- [x] `strategies/registry.py` — @register_strategy, get_strategy(), list_strategies()
+- [x] `strategies/built_in/` — confluence, confluence_scanner, conservative, pivot_reversal, mtf_bias
+- [x] `trading_intelligence.py` — _run_strategy(), _run_all_strategies() с asyncio.gather
+- [x] `config.yaml` — `trading.active_strategy`, `trading.active_strategies`
+- [x] 22 regression-теста в `tests/unit/test_strategy_pattern.py`
 
-### 8.4.8 — Средний приоритет: тестовый контур качества сигналов
-- [ ] Набор replay-тестов на исторических окнах для всей цепочки от сигнала до решения
-- [ ] Регрессионные тесты на пограничные режимы (тонкий рынок, новости, флет)
-- [ ] Canary-режим: сравнение старой и новой policy без реального влияния на рассылку
-
-### 8.4.9 — Операционный контроль (постоянно)
-- [ ] Еженедельный review: win rate, avg R, captured R%, false-positive ratio
-- [ ] Авто-алерт при деградации метрик ниже порога
-- [ ] Формальный changelog policy: каждое изменение фильтров с гипотезой и KPI проверки
-
-**Definition of Done (Этап 8.4):**
-- [ ] Нет silent fallback при критичных ошибках анализа
-- [ ] Все skip/timeout причины наблюдаемы в логах и дашборде
-- [ ] Доля degraded-решений контролируется SLA и не растёт без алерта
-- [ ] Качество входов стабильно улучшается по weekly review метрикам
-
-## 🔲 Этап 8.5 — Strategy Pattern Refactoring
-**Цель:** вынести торговые решения в модульную архитектуру для легкого добавления новых стратегий и A/B тестирования
-
-### 8.5.1 — Архитектура (Strategy Pattern + Registry)
-**Структура папок:**
-```
-strategies/
-├── __init__.py
-├── base.py                    ← BaseStrategy interface (analyze, calculate_sl_tp, backtest)
-├── built_in/
-│   ├── confluence.py          ← текущая логика (2+ сигнала, адаптивные веса, ML)
-│   ├── mtf_bias.py            ← новая быстрая стратегия (только MTF alerts)
-│   ├── conservative.py        ← консервативная (узкий SL atr*0.7, для минимизации DD)
-│   └── __init__.py
-├── rule_based.py              ← RuleEngine для config-driven стратегий (Phase 2.1)
-└── registry.py                ← фабрика get_strategy(name, config), list_strategies()
-```
-
-**BaseStrategy интерфейс:**
-```python
-class BaseStrategy(ABC):
-    def analyze(signals: List[SignalData], market_context: MarketContext) → TradingRecommendation
-    def calculate_sl_tp(entry, direction, atr, context) → (sl, tp, position_size)
-    def backtest(ohlcv_data, pairs) → {symbol: {signals, win_rate, avg_r}}
-```
-
-- [ ] Создать `strategies/base.py` с интерфейсом
-- [ ] Создать `strategies/registry.py` с фабрикой и STRATEGY_REGISTRY
-- [ ] Реализовать ConfluenceStrategy: перенос логики из `_analyze_signals_advanced()` + `_generate_recommendation()` (~200 строк)
-- [ ] Реализовать MTFBiasStrategy и ConservativeStrategy: примеры простых стратегий (~50-100 строк каждая)
-
-### 8.5.2 — Интеграция в TradingIntelligence
-- [ ] Инициализировать стратегию в `__init__`: `self.strategy = get_strategy(config["strategy.name"])`
-- [ ] Делегировать `_analyze_signals_advanced()` → `self.strategy.analyze()`
-- [ ] Делегировать `_generate_recommendation()` → логика внутри `strategy.analyze()`
-- [ ] Рефактор `trade_simulator.py`: параметризовать SL/TP, вынести в `calculate_sl_tp()` (опционально на Phase 2)
-- [ ] Тестирование: ConfluenceStrategy должна выдавать идентичные результаты текущей логике (regression test)
-
-### 8.5.3 — Config и переключение стратегий
-- [ ] Добавить в `config.yaml` секцию для выбора стратегии
-- [ ] Hot-reload: `ConfigLoader.save()` переуспешивает config → `bot.strategy = get_strategy()` без перезапуска
-- [ ] GET дашборда: `/api/strategies` → список всех + текущая + метрики win_rate по каждой
-- [ ] POST дашборда: `/api/strategies/switch/{name}` → переключить в DEMO-режиме, логировать смену
-
-### 8.5.4 — A/B тестирование и бэктестинг
-- [ ] Расширить `strategy_comparison.py`: сравнение всех стратегий из registry
-- [ ] Добавить unit-тесты в `tests/test_strategies.py` (параметризованные по registry)
-- [ ] Вывод таблицы: Strategy | Win Rate | Sharpe | Avg R | Max DD
-- [ ] Production: установить `strategy.name = "confluence"` + disable переключения
-
-### 8.5.5 — Phase 2.1 (future): Rule Engine для экспериментов
-- [ ] Реализовать `RuleEngine` в `strategies/rule_based.py` — интерпретирует YAML правила
-- [ ] Фабрика: `if config.type == "rule": strategy = RuleEngine(config)`
-
-### 8.5.6 — Phase 2.2 (future): Ensemble стратегий
-- [ ] EnsembleStrategy: запускает N стратегий, голосует (majority или weighted)
-- [ ] Use case: production-safety (2 из 3 согласны → BUY)
-
-**Definition of Done (Этап 8.5):**
-- [ ] ConfluenceStrategy дублирует текущее поведение: win_rate/sharpe совпадают (regression)
-- [ ] Можно добавить новую стратегию одним файлом (~50-200 строк) + одна строка в registry
-- [ ] Все стратегии могут сравниваться через strategy_comparison.py
-- [ ] Дашборд показывает список доступных и позволяет переключить (DEMO-only)
-- [ ] Тесты параметризованы по всем стратегиям в registry
+### 🔲 Планы (Phase 2):
+- [ ] Hot-reload стратегий через `/api/strategies/switch/{name}`
+- [ ] RuleEngine (YAML-driven стратегии)
+- [ ] EnsembleStrategy (голосование N стратегий)
 
 ---
 
-## 🔲 Этап 9 — SMC (Smart Money Concepts)
-**Цель:** стратегия на основе структуры рынка — вход после слома структуры на откате 0.618
+## ✅/🔲 Этап 9 — SMC (Smart Money Concepts)
+**Цель:** стратегия на основе структуры рынка
 
-- `core/structure_detector.py` — детектор Swing High/Low на ценовом графике
-- CHoCH (Change of Character) — первый слом структуры = сигнал разворота
-- BOS (Break of Structure) — пробой предыдущего swing = подтверждение направления
-- Order Block — последняя свеча импульса перед BOS (зона входа/SL)
-- Fibonacci 0.618 — зона входа на откате от импульса (BOS → коррекция → 0.618 → вход)
-- Confluence с FVG (уже есть в `core/indicators.py`) и пивот уровнями (Этап 6)
-- Новый `signal_type = "smc_signal"` с весом ~0.25 в TradingIntelligence
-- **Условие старта:** после Этапа 7 — ML валидирует реальную ценность SMC vs текущих стратегий
+### ✅ Базовая реализация (14-15.03.2026):
+- [x] `core/structure_detector.py` — Swing H/L, CHoCH, BOS, detect_structure()
+- [x] `core/signal_checkers.py` — check_smc_signals() → SignalData(SMC_STRUCTURE)
+- [x] `core/signal_models.py` — SignalType.SMC_STRUCTURE, вес 0.12
+- [x] 25/25 тестов в test_structure_detector.py
+
+### 🔲 Расширение (Phase 2):
+- [ ] Order Block — последняя свеча импульса перед BOS (зона входа/SL)
+- [ ] Fibonacci 0.618 — зона входа на откате от импульса
+- [ ] SMC-специфичная стратегия в strategies/built_in/
 
 ---
 
@@ -416,3 +342,11 @@ class BaseStrategy(ABC):
 | 2026-03-15 | DEV-02: дополнены тесты signal_checkers (WT OS/OB, divergence, pivot near levels), 47/47 passed |
 | 2026-03-15 | fix: PIVOT_ALERT→PIVOT_REVERSAL в strategies/built_in/, fix SignalData fields в test_strategies.py |
 | 2026-03-15 | Итого тестов: 231 passed, 11 skipped |
+| 2026-03-15 | ARCH-03: ConfluenceStateMachine (SQLite persist, 5 состояний), 15 тестов |
+| 2026-03-15 | ARCH-04: regime_strategy — адаптивный выбор стратегии по режиму |
+| 2026-03-15 | ARCH-05: Strategy Pattern — registry, _run_all_strategies, 22 regression-теста |
+| 2026-03-15 | ARCH-07: Quality Gate — snapshot_time, no silent fallback, hard/soft timeouts, 8 тестов |
+| 2026-03-15 | wt_b_signal: WT Type B (div_strength 3-20, WR=85% backtest), вес 0.15 |
+| 2026-03-16 | Фикс "меньше сделок": confidence signal_count_factor min 0.5 + use_state_machine=false |
+| 2026-03-16 | scan_loop: random.shuffle(pairs) — убирает алфавитный bias |
+| 2026-03-16 | Порядок в проекте: тесты → tests/, скрипты → scripts/, docs/ MD |

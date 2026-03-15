@@ -10,19 +10,30 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-dev \
     build-essential \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Claude Code
+# Создаём non-root пользователя (UID 1000 стандартный для dev containers)
+RUN useradd -m -s /bin/bash -u 1000 developer && \
+    echo "developer ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Установка Claude Code глобально
 RUN npm install -g @anthropic-ai/claude-code
 
 # Установка зависимостей Python для проекта
 WORKDIR /workspace
-# Wildcard — не упадёт если requirements.txt отсутствует
 COPY requirements.txt* ./
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; else echo "requirements.txt не найден, установка позже"; fi
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; else echo "requirements.txt не найден"; fi
 
-# Для удобства работы
-RUN echo 'alias ll="ls -lah"' >> ~/.bashrc
-RUN echo 'export PYTHONUNBUFFERED=1' >> ~/.bashrc
+# Права на workspace
+RUN chown -R developer:developer /workspace
+
+# Переключаемся на non-root пользователя
+USER developer
+
+# Удобства в ~/.bashrc пользователя
+RUN echo 'alias ll="ls -lah"' >> ~/.bashrc && \
+    echo 'export PYTHONUNBUFFERED=1' >> ~/.bashrc && \
+    echo 'export PATH="/workspace/.venv/bin:$PATH"' >> ~/.bashrc
 
 CMD ["bash"]

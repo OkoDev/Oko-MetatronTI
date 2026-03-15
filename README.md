@@ -17,13 +17,15 @@ python bot_with_subscriptions.py
 
 | Тип | Описание |
 |-----|----------|
-| `anomaly` | Всплески объёма + движение цены |
-| `wt_signal` | WaveTrend CrossUp/CrossDown в зонах перекупленности/перепроданности |
-| `mtf_alert` | MTF разворот (4 таймфрейма одновременно) |
+| `wt_b_signal` | WT Type B — крест в OS/OB + дивергенция (WR=85% backtest) |
+| `confluence` | Мульти-факторный сетап: WT zone + TSL cross + pivot + divergence |
+| `mtf_bias` | MTF Bias — 7 TF alignment + senior gate + entry TF selection |
+| `pivot_reversal` | Разворот от уровней пивота (1W/1D/1M) |
+| `smc_structure` | BOS/CHoCH — структурные сигналы Smart Money |
+| `wt_signal` | WaveTrend CrossUp/CrossDown в зонах OS/OB |
+| `divergence` | Regular/Hidden дивергенции WT |
 | `trend_signal` | EMA-тренд + откат + подтверждение |
-| `divergence` | Regular/Hidden дивергенции (RSI, WT) |
-| `pivot_reversal` | Разворот от уровней пивота (Woodie, Camarilla, Fibonacci) |
-| `composite` | Комплексный анализ TradingIntelligence (все сигналы — одна рекомендация) |
+| `anomaly` | Всплески объёма + движение цены |
 
 ## Команды бота
 
@@ -41,24 +43,37 @@ python bot_with_subscriptions.py
 ## Архитектура
 
 ```
-bot_with_subscriptions.py   -- точка входа (aiogram 3.4.1)
+bot_with_subscriptions.py   -- точка входа (75 строк, aiogram 3.4.1)
 config.yaml                 -- параметры (редактируются через браузер)
 subscriptions.db            -- SQLite
 
-core/          -- бизнес-логика (без aiogram)
-  trading_intelligence.py   -- агрегация сигналов -> TradingRecommendation
-  trade_simulator.py        -- регистрация/закрытие симулированных сделок, MFE
-  performance_engine.py     -- аналитика по закрытым сделкам
-  market_regime.py          -- ADX+ATR+EMA -> TREND_UP/DOWN/RANGE/HIGH_VOL
-  outcome_predictor.py      -- RandomForest P(win) на реальных исходах
-  api_engine.py             -- транспортный слой: LRU cache, CircuitBreaker, retry, in-flight dedup
+core/                       -- бизнес-логика (без aiogram)
+  trading_intelligence.py   -- агрегация сигналов → TradingRecommendation
+  intelligence/             -- вынесенные модули (signal_aggregator, confidence, ML, recommendation)
+  signal_checkers.py        -- детекторы: WT, WT_B, anomaly, MTF, divergence, pivot, SMC
+  trade_simulator.py        -- регистрация/закрытие сделок, MFE, TSL, частичные TP
+  api_engine.py             -- LRU cache, CircuitBreaker, retry, in-flight dedup
   data_collector.py         -- OHLCV + ticker (делегирует в ApiEngine)
-  pivot_calculator_fixed.py -- пивоты на UTC-периодах (1M/1W/1D, не скользящие)
-  config_loader.py          -- загрузка config.yaml + .env, hot-reload
+  confluence_scanner.py     -- мульти-факторный детектор (lookback + state machine)
+  mtf_interpreter.py        -- MTF Bias: 7 TF alignment + senior gate
+  structure_detector.py     -- SMC: BOS/CHoCH/Swing
+  market_regime.py          -- ADX+ATR+EMA → TREND_UP/DOWN/RANGE/HIGH_VOL
+  pivot_calculator_fixed.py -- пивоты UTC (1M/1W/1D)
 
-bot/           -- UI-слой (aiogram handlers, keyboards, menus)
-web/           -- aiohttp дашборд (порт 8000)
-  dashboard_server.py       -- GET /, /api/stats, GET/POST /settings, /api/settings
+bot/                        -- UI-слой (aiogram)
+  core/bot.py               -- TradingAlertBot класс
+  loops/                    -- scan_loop, trade_tracker, ml_loop
+  handlers/                 -- /start, /intelligence, /scan, /pivots, /settings
+  menus/                    -- диспетчер меню
+
+strategies/                 -- Strategy Pattern (ARCH-05)
+  base.py                   -- BaseStrategy(ABC)
+  registry.py               -- @register_strategy, get_strategy()
+  built_in/                 -- confluence, confluence_scanner, conservative, pivot_reversal, mtf_bias
+
+scripts/                    -- бэктестинг, анализ, утилиты
+tests/                      -- unit + integration тесты
+web/                        -- aiohttp дашборд (порт 8000)
 ```
 
 ## База данных
@@ -103,27 +118,23 @@ trading:
 
 Проект включает комплексную систему бэктестинга для объективной оценки стратегий на исторических данных.
 
-### Быстрый запуск всех тестов
+### Unit-тесты
 
 ```bash
-# Запуск полного комплекта тестов
-python run_all_tests.py
+python -m pytest tests/ -v
 ```
 
-### Отдельные компоненты
+### Бэктестинг и сравнение стратегий
 
 ```bash
-# 1. Тестирование всех индикаторов
-python test_indicators.py
+# Бэктестинг стратегий
+python scripts/backtesting_engine.py --scenario quick_test
 
-# 2. Тест TSL функциональности
-python test_tsl.py
+# Сравнение стратегий
+python scripts/strategy_comparison.py
 
-# 3. Бэктестинг стратегий
-python backtesting_engine.py
-
-# 4. Сравнение стратегий
-python strategy_comparison.py
+# CLI бэктест конкретной стратегии
+python scripts/run_backtest.py --strategy confluence_scanner --symbol BTC/USDT --days 30
 ```
 
 ### Результаты тестирования

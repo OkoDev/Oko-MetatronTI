@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Backtesting Framework — тестирование стратегий на исторических данных
+Backtesting Framework — тестирование стратегий на исторических данных.
+Запуск: python scripts/backtesting_engine.py [--scenario quick_test]
 """
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
 import pandas as pd
 import numpy as np

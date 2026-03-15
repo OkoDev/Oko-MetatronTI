@@ -6,7 +6,23 @@
       "Bash(python -u backtesting_engine.py)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:bingx-api.github.io)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "Bash(python -m pytest tests/unit/ -q --tb=short -x --ignore=tests/unit/test_confluence_state_machine.py)",
+      "Bash(python scripts/analyze_tsl_params.py --symbols BTCUSDT ETHUSDT SOLUSDT --days 30)",
+      "Bash(python scripts/analyze_wt_thresholds.py --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT --days 45)",
+      "Bash(python scripts/analyze_wt_signals.py --days 15)",
+      "Bash(python scripts/analyze_wt_divergence.py --days 45)",
+      "Bash(python scripts/analyze_wt_divergence.py)",
+      "Bash(python scripts/analyze_wt_divergence.py --days 90)",
+      "Bash(python scripts/analyze_wt_typeB.py --days 180 --symbols BERAUSDT COTIUSDT CFXUSDT XRPUSDT AVAXUSDT API3USDT BTCUSDT ETHUSDT SOLUSDT BNBUSDT ADAUSDT DOGEUSDT LINKUSDT ETCUSDT NOTUSDT 1INCHUSDT ALGOUSDT SUIUSDT MOVEUSDT XLMUSDT)",
+      "Bash(python scripts/analyze_wt_typeB.py --tf 1h --days 180)",
+      "Bash(C:UsersyogoruAppDataLocalProgramsPythonPython312python.exe scripts/analyze_wt_typeB.py --tf 1h --days 180)",
+      "Bash(python scripts/analyze_wt_typeB.py --tf 1h --days 180 --div-max 20)",
+      "Bash(python scripts/analyze_wt_typeB.py --tf 1h --days 180 --div-max 20 --div-min 3)",
+      "Bash(ls -1 *.py *.md)",
+      "Bash(ls -1 *.md)",
+      "Bash(ls -d */)",
+      "Bash(ls -1 scripts/*.py)"
     ]
   }
 }

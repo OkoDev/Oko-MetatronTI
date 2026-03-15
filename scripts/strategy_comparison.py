@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Сравнение стратегий с разными параметрами
+Сравнение стратегий с разными параметрами.
+Запуск: python scripts/strategy_comparison.py
 """
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
 import pandas as pd
 import numpy as np

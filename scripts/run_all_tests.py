@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """
-Быстрый запуск всех тестов системы
+Быстрый запуск всех тестов системы.
+Запуск: python scripts/run_all_tests.py (из корня проекта)
 """
 import asyncio
+import os
 import sys
 import time
 from datetime import datetime
+
+# Добавляем корень проекта и scripts/ в sys.path
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "scripts"))
+sys.path.insert(0, os.path.join(_ROOT, "tests"))
 
 async def run_indicator_tests():
     """Запуск тестирования индикаторов"""

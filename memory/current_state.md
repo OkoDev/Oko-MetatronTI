@@ -1,5 +1,32 @@
 # Current State
 
+## [15.03.2026 09:59 UTC] Агент: Developer — Баги APR/USDT флэш-краш
+
+### ✅ Сделано
+- **Расследован инцидент**: сделка #1910 APR/USDT LONG застряла OPEN при цене -21% ниже SL
+- **Причина #1 (критическая)**: системные часы Windows были сдвинуты на +3 часа — бот хранил UTC+3 как UTC в `created_at`. После NTP-коррекции все реальные свечи стали "старше" чем `created_at` → фильтр `df[time >= created_at]` возвращал пустой df → `continue` → SL никогда не проверялся
+- **Причина #2**: WT_CROSS_UP сгенерировал LONG-сигнал во время флэш-краша (-25%) — gap WT1-WT2 был слишком мал (разовый тик, сразу развернулся вниз)
+- **Фикс #1** (`core/trade_simulator.py`): если фильтр по created_at даёт пустой df — берём последние 5 свечей как фолбэк (защита от смещения часов)
+- **Фикс #2** (`core/signal_checkers.py`): требуем `wt1-wt2 >= 3` при cross_up и `wt2-wt1 >= 3` при cross_down — однократные мелкие пересечения игнорируются
+- **Часы синхронизированы**: `w32tm /resync /force` + `w32tm /config /syncfromflags:DOMHIER /update`
+- **Сделка #1910 закрыта вручную** по SL-цене (0.15999, -1R, -2.18%) вместо -9.74R
+
+### ⚠️ Незакоммиченные изменения
+- `core/trade_simulator.py` — фолбэк при пустом df
+- `core/signal_checkers.py` — gap-фильтр для WT кросса
+
+---
+
+## [15.03.2026 ~UTC] Агент: Developer
+- ✅ Сделано: Swing SL как первый приоритет в calculate_levels (коммит be82031)
+  - Иерархия: swing_low/high → S1 pivot → FVG → TSL-линия → ATR
+  - sl_source: "swing_low:PRICE" | "swing_high:PRICE"
+  - 247/253 тестов прошли (6 failing — confluence_state_machine, не связаны)
+- ✅ Безубыток (breakeven при +0.5R) уже был реализован ранее
+- ⚠️ 6 тестов в test_confluence_state_machine.py сломаны — нужна работа архитектора
+
+---
+
 ## [14.03.2026] Агент: Architect
 
 ### ✅ Сделано в этой сессии
