@@ -33,6 +33,10 @@ def _resolve_symbol(bot, symbol: str):
     for p in bot.monitored_pairs:
         if p.startswith(base + "/USDT"):
             return p, symbol
+    # Символ не мониторируется (отфильтрован по объёму), но может существовать на бирже.
+    # Возвращаем нормализованный символ — analyze_symbol сам вернёт None если данных нет.
+    if normalized and "/" in normalized:
+        return normalized, symbol
     return None, symbol
 
 
