@@ -138,39 +138,24 @@ TRADER 22.03 — разбор 5 пар live → memory/trader_analyses/2026-03-2
 ---
 
 ### TR-004 — Pivot Proximity Filter: пороги для крипты
-**Статус:** 🟢 в плане (Фаза 1, после ARCH-33)
+**Статус:** ✅ выполнено 24.03.2026 — ответы в DISCUSSION.md
 
-**Предложенный псевдокод:**
-```python
-distance = min_dist(current_price, all_pivot_levels) / price * 100
-if distance < 1.5%:  signal_multiplier = 1.0  # пивот рядом
-elif distance < 3.0%: signal_multiplier = 0.9  # умеренно
-else:                 min_score += 10           # нужен сильный сигнал
-```
+**Ответы TRADER (24.03):**
+- [x] Статические 1.5%/3.0% — неправильные для крипты. ATR-adaptive (`tier1 = max(1.0%, ATR*1.5)`) — правильный подход, DEV-37 уже реализовал. Добавить cap сверху: `min(ATR*1.5, 5.0%)`
+- [x] ATR-адаптация нужна и уже есть. Floor 1.0% защищает стейблы/медленные пары.
+- [x] Пивоты: только классические 1D/1W/1M. Future PP — нет (он уже в DEV-36 score modifier, дублировать не нужно).
 
-**Что нужно от TRADER:**
-- [ ] Пороги 1.5% / 3.0% — правильные для крипты? Или для BTC нужно 0.8%/2.0%, для альтов 2.5%/5.0%?
-- [ ] Нужна ли адаптация порогов под ATR пары (высоковолатильные vs стейблы)?
-- [ ] Какие пивоты включать: только классические (1D/1W/1M) или добавить Future PP тоже?
+**→ DEV:** в DEV-37, в формуле tier1 изменить `max(1.0%, ATR*1.5)` → `max(1.0%, min(ATR*1.5, 5.0%))`. Статические пороги из pseudocode выше не использовать.
 
 ---
 
 ### TR-005 — Future PP как Direction Gate: спецификация
-**Статус:** 🟢 в плане (Фаза 1, ARCH-33)
+**Статус:** ✅ выполнено 24.03.2026 — спек ARCH-33 подтверждён полностью, DEV-36 реализован корректно
 
-**Принятый подход (из Discussion):** score modifier, не hard gate.
-
-```python
-if direction == "LONG" and price > future_daily_pp:
-    score -= 10  # PREMIUM
-elif direction == "LONG" and price < future_daily_pp * 0.985:
-    score += 5   # DISCOUNT > 1.5%
-```
-
-**Что нужно от TRADER:**
-- [ ] Порог 0.985 (1.5%) — правильный? Или 0.99 (1.0%)?
-- [ ] Как комбинировать Future Daily PP и Future Weekly PP? Если они противоречат — какой приоритет?
-- [ ] Для SHORT: инвертированная логика (выше future PP = SHORT разрешён)? Или симметрично?
+**Ответы TRADER (24.03):**
+- [x] Порог 0.985 (1.5%) правильный для 15m. Пороги по ТФ: 15m=0.985, 1h=0.990, 4h=0.993 — подтверждены.
+- [x] Weekly vs Daily конфликт: Weekly приоритет, доп. -5 при конфликте — правильно, уже в DEV-36.
+- [x] SHORT — зеркально симметрично: price > future_pp × 1.015 → +5 (PREMIUM хорошо), price < future_pp → -10 (DISCOUNT плохо). Уже в спеке ARCH-33.
 
 ---
 
@@ -237,19 +222,55 @@ PP: 3.180 (-1.9%) | R1: 3.350 (+3.4%) | S1: 3.060 (-5.6%)
 ---
 
 ### TR-008 — Разбор закрытых сделок: паттерны SL
-**Статус:** 🟢 в плане
+**Статус:** 🟡 важно (24.03.2026) — данных достаточно, запускать
 
 **Цель:** найти систематические паттерны в SL-сделках. Не "почему конкретная пара", а "какой тип входа всегда заканчивается SL?"
 
 **Формат:** DEV предоставляет выборку 30-50 SL-сделок с данными. TRADER анализирует: что общего? Вход в PREMIUM? Слабый MTF? HIGH_VOL режим? Конфлюэнций не было?
 
-**Когда:** запустить после стабилизации #1 (через 3-5 дней).
+**→ DEV:** выгрузить последние 50 SL-сделок (не считая WL breach):
+```sql
+SELECT symbol, signal_type, direction, regime, strength, confidence,
+       entry_price, stop_loss, take_profit, created_at, features_json
+FROM simulated_trades
+WHERE status = 'SL' AND signal_type != 'watch_list_breach'
+ORDER BY closed_at DESC LIMIT 50;
+```
+Вставить результат в DISCUSSION.md → TRADER разберёт.
 
 ---
 
 ## 🏛️ Задачи ARCH
 
 > Архитектурные решения — дизайн, приоритеты, спецификации. Выполняются до передачи DEV.
+
+---
+
+### ARCH-37 — Guards в register_trade_async(): архитектурное решение 🔴
+**Статус:** 🟡 важно (24.03.2026) — нужно решение ARCH
+**Источник:** TRADER 24.03 — WL breach bypass DEV-32 (DISCUSSION.md 24.03)
+
+**Проблема:** `regime_direction_block` (DEV-32), `blocked_regimes` (DEV-33), `max_rr` (DEV-35) реализованы в `trading_intelligence.analyze_symbol()`. WL breach обходит этот path → 17 LONG/TREND_DOWN попало в БД.
+
+**Вариант A (статус кво):** guards в `analyze_symbol()`. Каждый новый code-path (WL breach, Level 3 авто-вход и т.д.) патчится отдельно.
+
+**Вариант B (рекомендован TRADER):** guards в `register_trade_async()` — единственная точка регистрации. Любой source защищён автоматически.
+
+**→ ARCH:** принять решение. Если B — дать спек DEV: какие guards переезжают и в каком порядке. DEV-42 ждёт этого решения.
+
+---
+
+### ARCH-38 — Singleton PivotCalculatorFixed для DEV-36 🟡
+**Статус:** 🟡 важно (24.03.2026)
+**Источник:** whats-next.md 23.03
+
+**Проблема:** DEV-36 создаёт `PivotCalculatorFixed()` с пустым кешем при каждом `analyze_symbol()`. При 600 парах = 600 отдельных fetch/час.
+
+**Вариант A (предпочтительный):** `self._pivot_calc = PivotCalculatorFixed()` в `TradingIntelligence.__init__`. Кеш живёт весь цикл сканирования.
+
+**Вариант B:** Class-level кеш с TTL через class variable — сложнее, не нужно.
+
+**→ ARCH:** подтвердить Вариант A, дать спек DEV.
 
 ---
 
@@ -398,32 +419,95 @@ trading:
 
 ---
 
-### DEV-42 — DEV-37 shadow review → включить 🟡
-**Статус:** 🟡 важно — дедлайн 26.03.2026
+### DEV-42 — DEV-37 shadow review → включить ✅
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH (DISCUSSION 23.03) + DEV наблюдение
 
-**Что сделать:**
-1. Посмотреть логи `[DEV-37 PivotProximity]` за 23-26.03:
-   - Считать сколько раз тег `hard_block` срабатывал на сигналах str≥80
-   - Если `hard_block` > 20% от всех срабатываний → `hard_block_mult: 3→4`
-   - Если нет аномалий → `pivot_proximity_filter.enabled: false → true`
-2. Обновить `config.yaml` и закоммитить с результатами наблюдения
+**Результат анализа логов (crypto_bot.log, 23.03):**
+- Всего событий DEV-37: 48 (near=26, penalty=22, hard_block=0)
+- hard_block rate = 0% (порог: <20% → включаем)
+- Дистанции penalty: 3.09%–7.03% — разумные
+- **Решение:** `pivot_proximity_filter.enabled: true` (было false)
 
-**Файлы:** `config.yaml` → `trading.pivot_proximity_filter.enabled`
+**Файлы:** `config.yaml` → `trading.pivot_proximity_filter.enabled: true`
 
 ---
 
-### DEV-43 — Закрыть "плохие" WL breach позиции 🟡
-**Статус:** 🟡 важно — ждёт решения ARCH/TRADER
+### DEV-43 — Закрыть "плохие" WL breach позиции
+**Статус:** ✅ Решение ARCH 24.03 — **Вариант B: ждём SL/TSL/EXPIRED**
 **Источник:** DEV DISCUSSION 23.03 — 17/18 breach позиций LONG/TREND_DOWN
 
-**Контекст:** DEV-41 теперь блокирует контр-тренд WL breach входы, но 17 существующих LONG/TREND_DOWN позиций остаются открытыми.
+**Решение ARCH:** Не закрывать вручную. Симуляция — не реальные деньги. Позиции закроются сами по SL/TSL/EXPIRED. Статистика этих сделок полезна: будет видно как ведут себя контр-трендовые входы. Ручное закрытие = манипуляция данными.
 
-**Варианты (→ ARCH/TRADER: выберите):**
-- **Вариант A**: закрыть вручную через dashboard (✕ Close) — чистим портфель
-- **Вариант B**: ждём SL/TSL/EXPIRED — не вмешиваемся в открытые позиции
+**Мониторинг:** при следующем TR-001 (25.03) TRADER смотрит на эти позиции — сколько выжило, SL или EXPIRED.
 
-**Если Вариант A:** DEV делает batch-close скрипт или закрывает руками через UI.
+---
+
+### DEV-44 — Guards в register_trade_async(): Вариант B 🟡
+**Статус:** 🟡 важно
+**Источник:** ARCH решение 24.03 (DISCUSSION.md), проблема обнаружена в DEV-41 WL breach
+
+**Зачем:** `analyze_symbol()` — не единственный путь. WL breach, Level 3 (Фаза 3) обходят его. Guards только в `analyze_symbol` = дыры. Guards в `register_trade_async()` = защита любого code-path.
+
+**Что добавить** в начало `register_trade_async()` **после Correlation Guard (DEV-38)**:
+
+```python
+# Safety gate: режим vs направление (дублирует DEV-32, защищает все code-paths)
+_regime = getattr(recommendation, 'regime', None) or (
+    recommendation.metadata.get("mtf_context", {}).get("regime") if recommendation.metadata else None
+)
+_direction = getattr(recommendation, 'direction', None)
+if _regime and _direction:
+    _rdb = cfg.get("trading.regime_direction_block", {})
+    if _rdb.get("enabled"):
+        _blocked_dir = _rdb.get(_regime)
+        if _blocked_dir and str(_direction).upper() == _blocked_dir:
+            logger.info("[register_trade] %s БЛОК regime_direction: %s/%s", symbol, _regime, _direction)
+            return None
+    _blocked_regimes = cfg.get("trading.blocked_regimes", [])
+    if _regime in _blocked_regimes:
+        logger.info("[register_trade] %s БЛОК blocked_regime: %s", symbol, _regime)
+        return None
+```
+
+**Файлы:** `core/trade_simulator.py` — `register_trade_async()` (~строка 480)
+
+**Важно:** guards в `analyze_symbol()` (DEV-32/33) **остаются** — они снижают action до WATCH (пользователь видит причину). Guards в `register_trade_async()` — второй рубеж (return None тихо).
+
+---
+
+### DEV-42 — Rate-limit WL breach входов 🟡
+**Статус:** 🟡 важно (24.03.2026) — ждёт решения ARCH-37
+**Источник:** TRADER TR-001 24.03 — 17 входов за 33 минуты в одном направлении
+
+**Проблема:** нет ограничения на количество одновременных WL breach входов. Волновой памп → все пары из WL пробивают уровни одновременно → 17 позиций за 33 минуты.
+
+**Решение:** счётчик WL breach входов с скользящим окном (аналогично Market Event Marker DEV-39):
+```python
+# В trade_simulator или scan_loop (зависит от решения ARCH-37):
+self._wl_breach_timestamps: List[datetime] = []
+
+# В _handle_wl_breach_entry() или register_trade_async():
+now = datetime.now(timezone.utc)
+window = now - timedelta(minutes=cfg.get("trading.wl_breach_rate_limit.window_minutes", 30))
+self._wl_breach_timestamps = [t for t in self._wl_breach_timestamps if t >= window]
+max_entries = cfg.get("trading.wl_breach_rate_limit.max_entries", 3)
+if len(self._wl_breach_timestamps) >= max_entries:
+    logger.info("[WL-BREACH] Rate-limit: %d входов за %d мин", len(...), window_minutes)
+    return None
+self._wl_breach_timestamps.append(now)
+```
+
+**Config:**
+```yaml
+trading:
+  wl_breach_rate_limit:
+    enabled: true
+    max_entries: 3     # макс WL breach за окно
+    window_minutes: 30
+```
+
+**Зависимость:** ARCH-37 — место вставки зависит от решения Вариант A/B.
 
 ---
 
@@ -437,7 +521,7 @@ trading:
 
 **Фикс 3 — R:R cap:** применить `sl_cfg.get("max_rr", 6.0)` к tp_price в WL breach code-path.
 
-**Архитектурный вопрос → ARCH:** решить Вариант A или B (guards в analyze_symbol vs register_trade_async). Детали в DISCUSSION.md 24.03.
+**Архитектурный вопрос → ARCH:** ✅ Решено 24.03 — **Вариант B принят**. Реализация в DEV-44.
 
 **Дополнительно:** rate-limit на WL breach — не более 3 входов за 30 минут.
 
@@ -547,8 +631,8 @@ pe = PerformanceEngine('subscriptions.db')
 
 ---
 
-### DEV-41 — wt_signal + NEAR_PIVOT → силовой апгрейд 🟡
-**Статус:** ✅ выполнено 23.03.2026
+### DEV-41b — wt_signal + NEAR_PIVOT → силовой апгрейд
+**Статус:** ✅ выполнено 24.03.2026 (git: 7af842a, именовался DEV-41 — конфликт имён с WL breach)
 **Источник:** ARCH-23 спек (21.03.2026). Данные: wt_signal avg_R=+0.32 без пивота, avg_R=+1.27 с пивотом.
 
 #### Суть
