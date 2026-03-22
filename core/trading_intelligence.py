@@ -94,6 +94,9 @@ class TradingIntelligence:
         self.data_collector = data_collector
         self.config = config or {}
         self._db_path = db_path
+        # ARCH-38 / DEV-45: Singleton — один инстанс на весь цикл, кеш живёт с db_path
+        from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_cls
+        self._pivot_calc_shared: _PCF_cls = _PCF_cls(db_path=db_path)
 
         # Веса сигналов: MTF_BIAS = главное WaveTrend-ядро (7 TF, alignment, senior gate)
         # Пивоты = второе ядро (подтверждение + цели).
@@ -612,8 +615,7 @@ class TradingIntelligence:
                 # Ленивый fetch (PivotCalculatorFixed кеширует — нет лишних API-запросов)
                 if _daily_pivots_41 is None:
                     try:
-                        from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF41
-                        _pcf41 = _PCF41()
+                        _pcf41 = self._pivot_calc_shared
                         _daily_pivots_41 = await _pcf41.get_daily_pivots(symbol, self.data_collector) or {}
                         _weekly_pivots_41 = await _pcf41.get_weekly_pivots(symbol, self.data_collector) or {}
                     except Exception:
@@ -814,8 +816,7 @@ class TradingIntelligence:
                     and recommendation.direction is not None
                     and recommendation.direction.value in ("LONG", "SHORT")):
                 try:
-                    from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF
-                    _pc = _PCF()
+                    _pc = self._pivot_calc_shared
                     _fdp = await _pc.get_future_daily_pivots(symbol, self.data_collector)
                     if _fdp and "PP" in _fdp:
                         _fpp = float(_fdp["PP"])
@@ -896,8 +897,7 @@ class TradingIntelligence:
                         # PP уровни: Daily + Weekly + Monthly из кеша
                         _pp_levels37 = []
                         try:
-                            from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF37
-                            _pc37 = _PCF37()
+                            _pc37 = self._pivot_calc_shared
                             _dp37 = await _pc37.get_daily_pivots(symbol, self.data_collector)
                             if _dp37 and "PP" in _dp37:
                                 _pp_levels37.append(float(_dp37["PP"]))
@@ -1146,8 +1146,7 @@ class TradingIntelligence:
             # Weekly pivots из кеша
             weekly_pivots = None
             try:
-                from core.pivot_calculator_fixed import PivotCalculatorFixed
-                pc = PivotCalculatorFixed()
+                pc = self._pivot_calc_shared
                 weekly_pivots = await pc.get_weekly_pivots(symbol, self.data_collector)
             except Exception:
                 logger.debug("[%s] weekly pivots для MTFContext недоступны", symbol)

@@ -542,8 +542,8 @@ if _regime and _direction:
 
 ---
 
-### DEV-45 — Singleton PivotCalculatorFixed в TradingIntelligence 🟡
-**Статус:** 🟡 важно (24.03.2026)
+### DEV-45 — Singleton PivotCalculatorFixed в TradingIntelligence ✅
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH-38 спек (24.03.2026)
 
 **Проблема:** 4 места в `trading_intelligence.py` создают `PivotCalculatorFixed()` без db_path → пустой кеш каждый раз → 600 инстансов/час.
