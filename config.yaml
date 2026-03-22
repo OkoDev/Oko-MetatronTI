@@ -118,6 +118,15 @@ outcome_predictor:
 
 strategy_name: confluence
 trading:
+  # DEV-32: блокировка контр-тренд входов (TRADER 23.03: CAKE/SAHARA — системная ошибка)
+  # TREND_DOWN → только SHORT, TREND_UP → только LONG, RANGE/HIGH_VOL — оба направления
+  regime_direction_block:
+    enabled: true
+    TREND_DOWN: LONG   # блокировать LONG при нисходящем тренде
+    TREND_UP: SHORT    # блокировать SHORT при восходящем тренде
+  # DEV-33: блокировка входов в HIGH_VOL режиме (WR=0%, avg_R=-0.25 по DB-анализу)
+  blocked_regimes:
+  - HIGH_VOL
   entry_timeframe: 15m
   bounce_mode:
     enabled: false

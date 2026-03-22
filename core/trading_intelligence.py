@@ -718,6 +718,44 @@ class TradingIntelligence:
                 trace.add_filter("confidence_gate", True,
                                  f"confidence={recommendation.confidence:.3f} >= {_min_conf:.2f}")
 
+            # DEV-32: блокировка контр-тренд входов (TRADER 23.03)
+            # TREND_DOWN → блокировать LONG, TREND_UP → блокировать SHORT
+            if (recommendation.action in ("BUY", "SELL")
+                    and mtf_context is not None and mtf_context.regime):
+                _rdb = (self.config.get("trading", {}).get("regime_direction_block", {})
+                        if self.config else {})
+                if _rdb.get("enabled", False):
+                    _blocked = _rdb.get(mtf_context.regime)  # "LONG" или "SHORT"
+                    _rec_dir = (recommendation.direction.value
+                                if hasattr(recommendation.direction, "value")
+                                else str(recommendation.direction))
+                    if _blocked and _rec_dir == _blocked:
+                        logger.info(
+                            "[%s] DEV-32 regime_block: %s→WATCH (regime=%s блокирует %s)",
+                            symbol, recommendation.action, mtf_context.regime, _blocked,
+                        )
+                        trace.add_filter(
+                            "regime_direction_block", False,
+                            f"regime={mtf_context.regime} блокирует {_blocked}",
+                        )
+                        recommendation.action = "WATCH"
+
+            # DEV-33: блокировка HIGH_VOL режима (WR=0%, avg_R=-0.25)
+            if (recommendation.action in ("BUY", "SELL")
+                    and mtf_context is not None and mtf_context.regime):
+                _blocked_regimes = (self.config.get("trading", {}).get("blocked_regimes", [])
+                                    if self.config else [])
+                if mtf_context.regime in _blocked_regimes:
+                    logger.info(
+                        "[%s] DEV-33 blocked_regime: %s→WATCH (regime=%s заблокирован)",
+                        symbol, recommendation.action, mtf_context.regime,
+                    )
+                    trace.add_filter(
+                        "blocked_regime", False,
+                        f"regime={mtf_context.regime} в blocked_regimes",
+                    )
+                    recommendation.action = "WATCH"
+
             # Этап 8.4.2/8.4.3: snapshot_time + analysis_quality в метаданных
             if recommendation.metadata is None:
                 recommendation.metadata = {}
