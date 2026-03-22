@@ -602,6 +602,54 @@ class TradingIntelligence:
                 if symbol_base not in top_pairs and not manual_request:
                     return None
 
+            # DEV-41: wt_signal + NEAR_PIVOT → strength +20
+            # wt_signal у пивота статистически avg_R=+1.27 vs +0.32 без пивота (ARCH-23)
+            _daily_pivots_41: Optional[Dict] = None
+            _weekly_pivots_41: Dict = {}
+            for _sig41 in filtered_signals:
+                if getattr(_sig41.signal_type, "value", str(_sig41.signal_type)) != "wt_signal":
+                    continue
+                # Ленивый fetch (PivotCalculatorFixed кеширует — нет лишних API-запросов)
+                if _daily_pivots_41 is None:
+                    try:
+                        from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF41
+                        _pcf41 = _PCF41()
+                        _daily_pivots_41 = await _pcf41.get_daily_pivots(symbol, self.data_collector) or {}
+                        _weekly_pivots_41 = await _pcf41.get_weekly_pivots(symbol, self.data_collector) or {}
+                    except Exception:
+                        _daily_pivots_41 = {}
+                # Объединяем 1D + 1W уровни
+                _all_levels_41 = dict(_daily_pivots_41)
+                _all_levels_41.update({f"1W_{k}": v for k, v in _weekly_pivots_41.items()})
+                if not _all_levels_41:
+                    continue
+                # Ищем ближайший уровень в ±1%
+                _price41 = (market_context.current_price if market_context else 0) or _sig41.data.get("price", 0)
+                _nearest_name, _nearest_dist = None, float("inf")
+                for _lvl_name, _lvl_price in _all_levels_41.items():
+                    try:
+                        if _lvl_price and float(_lvl_price) > 0:
+                            _d = abs(_price41 - float(_lvl_price)) / float(_lvl_price) * 100
+                            if _d < _nearest_dist:
+                                _nearest_dist, _nearest_name = _d, _lvl_name
+                    except Exception:
+                        pass
+                if _nearest_dist > 1.0:
+                    continue  # не у пивота — не буcтим
+                # Защита от дублирования с confluence / wt_b_signal
+                _st_vals_41 = {getattr(s.signal_type, "value", str(s.signal_type)) for s in filtered_signals}
+                if _st_vals_41 & {"confluence", "wt_b_signal"}:
+                    continue
+                # Буст +20
+                _old_str41 = _sig41.strength
+                _sig41.strength = min(100, _sig41.strength + 20)
+                if _sig41.data is None:
+                    _sig41.data = {}
+                _sig41.data["near_pivot"] = _nearest_name
+                _sig41.data["near_pivot_dist_pct"] = round(_nearest_dist, 3)
+                logger.info("[DEV-41] %s wt_signal NEAR_PIVOT=%s (%.2f%%), str %d→%d",
+                            symbol, _nearest_name, _nearest_dist, _old_str41, _sig41.strength)
+
             # Запускаем все стратегии параллельно
             all_recs: Dict[str, TradingRecommendation] = {}
             if self.strategies:
