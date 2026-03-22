@@ -149,16 +149,20 @@ class TradingIntelligence:
         
         # OutcomePredictor — ML на реальных исходах симулированных сделок
         self.outcome_predictor = None
-        try:
-            from core.outcome_predictor import OutcomePredictor
-            op = OutcomePredictor()
-            # ARCH-21: скользящее окно из конфига (None = вся история)
-            _tw = (config.get("outcome_predictor.training_window") if config else None)
-            op.fit(db_path, training_window=_tw)
-            self.outcome_predictor = op
-            logger.info("OutcomePredictor: %s", op.info())
-        except Exception as e:
-            logger.warning("OutcomePredictor не инициализирован: %s", e)
+        _use_op = (config.get("ml.use_outcome_predictor", True) if config else True)
+        if not _use_op:
+            logger.info("OutcomePredictor отключён: ml.use_outcome_predictor=false (AUC<0.5)")
+        else:
+            try:
+                from core.outcome_predictor import OutcomePredictor
+                op = OutcomePredictor()
+                # ARCH-21: скользящее окно из конфига (None = вся история)
+                _tw = (config.get("outcome_predictor.training_window") if config else None)
+                op.fit(db_path, training_window=_tw)
+                self.outcome_predictor = op
+                logger.info("OutcomePredictor: %s", op.info())
+            except Exception as e:
+                logger.warning("OutcomePredictor не инициализирован: %s", e)
 
         # ARCH-12.5: AutoCalibrator — rule-based калибровка MTF multipliers
         self._auto_calibrator = None

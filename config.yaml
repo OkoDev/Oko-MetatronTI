@@ -189,7 +189,7 @@ signal_quality:
   dedup_minutes: 30
   min_volume_usd: 700000
   min_strength: 50
-  min_strength_register: 65  # было 40 — убрать мусорные сделки
+  min_strength_register: 75  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
@@ -238,6 +238,9 @@ strategy:
     min_signals: 3
     min_confidence: 0.65
     conflict_threshold: 0.2
+ml:
+  use_outcome_predictor: false  # AUC=0.329 → антиML: инвертирует confidence. Отключён до AUC>0.55
+
 future_pivots:
   enabled: false
   broadcast_tg: false
@@ -250,6 +253,7 @@ signals:
   mtf_alert_register: false      # DEV-31: резервный флаг (не используется если enabled=false)
   cascade_div_enabled: true
   send_chart: true               # отправлять PNG-график вместе с сигналом
+  show_fvg_confluences: true     # ARCH-28: показывать FVG+Pivot зоны в TG-сообщении
   chart_tf: "1h"                 # таймфрейм графика
   chart_bars: 300                # количество баров на графике
 risk_management:
