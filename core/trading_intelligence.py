@@ -896,6 +896,19 @@ class TradingIntelligence:
             except Exception as _e37:
                 logger.debug("[%s] DEV-37 Pivot Proximity Filter: %s", symbol, _e37)
 
+            # DEV-40: ATR entry TF → используется в register_trade для ATR-based TP1
+            try:
+                from core.entry_config import ENTRY_TO_TP1_TF as _TP1_TF_MAP
+                _entry_tf_40 = get_primary_entry_tf(self.config)
+                _atr_tf_40 = _TP1_TF_MAP.get(_entry_tf_40, "15m")
+                _df_atr40 = await self.data_collector.get_ohlcv(symbol, _atr_tf_40, limit=20)
+                if _df_atr40 is not None and len(_df_atr40) >= 14:
+                    _atr40 = compute_atr(_df_atr40, period=14)
+                    if _atr40 and _atr40 > 0:
+                        recommendation.atr_entry_tf = float(_atr40)
+            except Exception as _e40:
+                logger.debug("[%s] DEV-40 atr_entry_tf: %s", symbol, _e40)
+
             # Этап 8.4.2/8.4.3: snapshot_time + analysis_quality в метаданных
             if recommendation.metadata is None:
                 recommendation.metadata = {}

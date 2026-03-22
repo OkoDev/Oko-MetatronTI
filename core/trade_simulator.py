@@ -350,6 +350,10 @@ class TradeSimulator:
             tp2_price = None
             tp3_price = None
             strategy_type = "SINGLE"
+            # DEV-40: ATR-based TP1 (из TradingRecommendation.atr_entry_tf)
+            atr_entry = _get_recommendation_value(recommendation, "atr_entry_tf")
+            _TP1_REGIME_MULT = {"TREND_UP": 2.0, "TREND_DOWN": 2.0, "RANGE": 1.0}
+            _tp1_regime_mult = _TP1_REGIME_MULT.get(regime, 1.5)
             if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:
                 sl_dist = abs(float(entry) - float(stop_loss))
                 tp_dist = abs(float(take_profit) - float(entry))
@@ -358,16 +362,22 @@ class TradeSimulator:
                     sign = 1.0 if dir_str == "LONG" else -1.0
                     if rr >= 3.0:
                         strategy_type = "TRIPLE_TP_TSL"
-                        # tp1 = 1/3, tp2 = 2/3, tp3 = полный TP
+                        # tp1: ATR-based если доступен, иначе 1/3 tp_dist
                         if tp1_price is None:
-                            tp1_price = float(entry) + sign * tp_dist * (1.0 / 3.0)
+                            if atr_entry and atr_entry > 0:
+                                tp1_price = float(entry) + sign * atr_entry * _tp1_regime_mult
+                            else:
+                                tp1_price = float(entry) + sign * tp_dist * (1.0 / 3.0)
                         tp2_price = float(entry) + sign * tp_dist * (2.0 / 3.0)
                         tp3_price = float(take_profit)
                     elif rr >= 2.0:
                         strategy_type = "DUAL_TP"
-                        # tp1 = 1/2, tp2 = полный TP
+                        # tp1: ATR-based если доступен, иначе 1/2 tp_dist
                         if tp1_price is None:
-                            tp1_price = float(entry) + sign * tp_dist * 0.5
+                            if atr_entry and atr_entry > 0:
+                                tp1_price = float(entry) + sign * atr_entry * _tp1_regime_mult
+                            else:
+                                tp1_price = float(entry) + sign * tp_dist * 0.5
                         tp2_price = float(take_profit)
 
             # Адаптируем strategy_type и TP1 на основе режима рынка (ARCH-04)
@@ -797,11 +807,37 @@ class TradeSimulator:
                 else:
                     current_r = (entry - current_price) / one_r
 
+            # DEV-40: Безубыток — перенести SL в entry ± 0.1% после достижения breakeven_activation_r
+            be_activated = bool(trade.get("be_activated"))
+            if use_breakeven and not be_activated and current_r is not None and current_r >= breakeven_activation_r and sl is not None:
+                be_sl = entry * (1.001 if direction == "LONG" else 0.999)
+                should_move = (
+                    (direction == "LONG" and sl < be_sl) or
+                    (direction == "SHORT" and sl > be_sl)
+                )
+                if should_move:
+                    try:
+                        with sqlite3.connect(self.db_path) as _c:
+                            _c.execute(
+                                "UPDATE simulated_trades SET stop_loss=?, be_activated=1 WHERE id=? AND status=?",
+                                (be_sl, trade_id, STATUS_OPEN),
+                            )
+                            _c.commit()
+                        sl = be_sl
+                        be_activated = True
+                        logger.info("[DEV-40] Breakeven %s id=%d sl→%.6f (R=%.2f)", symbol, trade_id, be_sl, current_r)
+                    except Exception as _be_e:
+                        logger.debug("[DEV-40] breakeven update error: %s", _be_e)
+
             # TSL логика
             tsl_triggered = False
             tsl_price = None
 
-            if use_tsl and current_r is not None and current_r >= tsl_activation_r:
+            # DEV-40: TSL gate по tp1_hit_at для DUAL_TP / TRIPLE_TP_TSL
+            _strategy_type = trade.get("strategy_type", "SINGLE")
+            _is_multi_tp = _strategy_type in ("DUAL_TP", "TRIPLE_TP_TSL")
+            _tsl_gate = (tp1_hit_at is not None) if _is_multi_tp else (current_r is not None and current_r >= tsl_activation_r)
+            if use_tsl and _tsl_gate:
                 # Активируем TSL после достижения прибыли — помечаем в БД
                 try:
                     with sqlite3.connect(self.db_path) as _c:

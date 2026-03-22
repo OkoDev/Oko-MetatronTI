@@ -45,8 +45,8 @@
 
 ### TR-001 — Ежедневный разбор Watch List с живыми свечами
 **Статус:** 🔄 периодическая
-**Последний разбор:** 23.03.2026 | BTC/PAXG/XAUT/CAKE🚨/SAHARA🚨/TUT | CAKE+SAHARA — контр-тренд с высоким score
-**Следующий:** 24.03.2026 (утро)
+**Последний разбор:** 24.03.2026 | 33 открытых сделок | найдено 3 критических бага WL breach → DEV-41
+**Следующий:** 25.03.2026 (утро)
 
 **Что делать:** взять 4-6 пар из Watch List или свежих сигналов, посмотреть живые свечи (WT, тренд, wick structure), дать оценку: подтверждает рынок сигнал или нет?
 
@@ -380,6 +380,126 @@ trading:
 ## 🛠️ Задачи DEV
 
 > **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | ✅ выполнено | 🔄 в работе
+
+---
+
+### DEV-41 — WL breach: 3 критических фикса 🔴
+**Статус:** 🟡 важно (24.03.2026)
+**Источник:** TRADER TR-001 разбор 24.03 → DISCUSSION.md
+
+**Фикс 1 — DEV-32 bypass:** добавить `regime_direction_block` guard в `_handle_wl_breach_entry()` в `bot/loops/scan_loop.py`. 17/18 WL breach сделок прошли как LONG/TREND_DOWN.
+
+**Фикс 2 — TP=None:** fallback в `_handle_wl_breach_entry()` когда `get_tp_by_hierarchy` возвращает None → ATR-based TP (2.5×ATR) + проверка min R:R 1.5. 16/18 сделок без TP.
+
+**Фикс 3 — R:R cap:** применить `sl_cfg.get("max_rr", 6.0)` к tp_price в WL breach code-path.
+
+**Архитектурный вопрос → ARCH:** решить Вариант A или B (guards в analyze_symbol vs register_trade_async). Детали в DISCUSSION.md 24.03.
+
+**Дополнительно:** rate-limit на WL breach — не более 3 входов за 30 минут.
+
+---
+
+### DEV-40 — Двухступенчатый TP1+TP2: реализация 🟡
+**Статус:** ✅ выполнено 23.03.2026
+**Источник:** TR-003 спек (TRADER 22.03.2026), анализ кода ARCH 22.03.2026
+
+#### Что не так сейчас
+- `tp1_price` = доля от RR (50% tp_dist для DUAL_TP, 33% для TRIPLE) — достигается нескоро, часто = 3-6R
+- `be_activated` и `breakeven_activation_r` — **поля есть в БД/сигнатуре, но логика не реализована** (заглушки)
+- TSL активируется по `current_r >= tsl_activation_r` без учёта `tp1_hit_at`
+
+#### Что изменить
+
+**1. ATR-based TP1 в `trade_simulator.py` → `register_trade_async()`**
+
+Сейчас `tp1_price` считается как фракция от `take_profit`. Заменить на ATR × мультипликатор:
+
+```python
+# ENTRY_TO_TP1_TF маппинг (как ENTRY_TO_TSL_TF в entry_config.py):
+ENTRY_TO_TP1_TF = {"15m": "15m", "1h": "1h", "4h": "4h", "1D": "1h"}  # cap 1h
+
+# Мультипликатор по режиму:
+TP1_REGIME_MULT = {
+    "TREND_UP": 2.0, "TREND_DOWN": 2.0,   # тренд — даём больше места
+    "RANGE": 1.0,                           # диапазон — быстро берём
+}
+regime_mult = TP1_REGIME_MULT.get(regime, 1.5)  # дефолт 1.5
+
+# ATR берём из rec.atr_entry_tf (см. пункт 3)
+if rec.atr_entry_tf and rec.atr_entry_tf > 0:
+    atr_dist = rec.atr_entry_tf * regime_mult
+    tp1_price = entry + sign * atr_dist      # LONG: +, SHORT: -
+else:
+    tp1_price = entry + sign * tp_dist * 0.5  # fallback: текущая логика
+```
+
+**2. Реализовать breakeven в `check_open_trades_with_tsl()`**
+
+Сейчас `be_activated` не используется. Добавить в цикл по открытым сделкам:
+
+```python
+# После расчёта current_r, до TSL-блока:
+if use_breakeven and breakeven_activation_r > 0:
+    if not be_activated and current_r is not None and current_r >= breakeven_activation_r:
+        # Перенести SL в entry ± 0.1%
+        be_sl = entry_price * (1.001 if direction == "LONG" else 0.999)
+        if direction == "LONG" and stop_loss < be_sl:
+            # UPDATE stop_loss = be_sl, be_activated = 1
+        elif direction == "SHORT" and stop_loss > be_sl:
+            # UPDATE stop_loss = be_sl, be_activated = 1
+```
+
+**3. Добавить `atr_entry_tf` в `TradingRecommendation` (signal_models.py)**
+
+```python
+@dataclass
+class TradingRecommendation:
+    ...
+    atr_entry_tf: Optional[float] = None  # ATR(entry_tf) для расчёта TP1
+```
+
+В `trading_intelligence.py` → `analyze_symbol()` после сбора snapshot:
+```python
+entry_tf = rec.timeframe  # "15m", "1h", etc.
+atr_tf = ENTRY_TO_TP1_TF.get(entry_tf, entry_tf)
+atr_data = snapshot.get(atr_tf, {})
+rec.atr_entry_tf = atr_data.get("atr")  # уже есть в snapshot
+```
+
+**4. TSL gate по tp1_hit_at для DUAL_TP / TRIPLE_TP_TSL**
+
+В `check_open_trades_with_tsl()` (~строка 804):
+```python
+# Было:
+if use_tsl and current_r is not None and current_r >= tsl_activation_r:
+
+# Стало (добавить условие для multi-TP стратегий):
+is_multi_tp = strategy_type in ("DUAL_TP", "TRIPLE_TP_TSL")
+tsl_gate = (tp1_hit_at is not None) if is_multi_tp else (current_r >= tsl_activation_r)
+if use_tsl and tsl_gate:
+```
+
+#### Файлы
+| Файл | Изменение |
+|------|-----------|
+| `core/signal_models.py` | Добавить `atr_entry_tf: Optional[float] = None` в TradingRecommendation |
+| `core/intelligence/entry_config.py` | Добавить `ENTRY_TO_TP1_TF` маппинг |
+| `core/trade_simulator.py` | ATR-based tp1_price + breakeven логика + TSL gate |
+| `core/intelligence/trading_intelligence.py` | Заполнять `rec.atr_entry_tf` из snapshot |
+
+#### Что НЕ менять (Фаза 1)
+- Доля закрытия при TP1 (остаётся 50% — в симуляторе это логически так, фактический размер не меняется)
+- Схема БД — все поля уже есть
+- `strategy_type` выбор (DUAL_TP / TRIPLE_TP_TSL) по RR — остаётся
+
+#### Проверка после реализации
+```bash
+python -c "
+from core.performance_engine import PerformanceEngine
+pe = PerformanceEngine('subscriptions.db')
+# Смотреть: be_activated (% сделок), tp1_hit_at (% сделок), сравнить avg_R DUAL_TP до/после
+"
+```
 
 ---
 

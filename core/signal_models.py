@@ -160,6 +160,7 @@ class TradingRecommendation:
     tp1_price: Optional[float] = None   # уровень частичного TP (50% позиции при 3R)
     sl_source: str = ""   # "tsl_line" | "swing_low" | "structural" | "atr_14" | "fallback"
     tp_source: str = ""   # "pivot_1M" | "pivot_1W" | "pivot_1D" | "atr_rr_3.0" | "fallback"
+    atr_entry_tf: Optional[float] = None  # ATR(entry_tf) для ATR-based TP1 (DEV-40)
     reasoning: List[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Optional[Dict[str, Any]] = None

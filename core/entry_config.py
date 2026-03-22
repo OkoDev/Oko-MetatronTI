@@ -18,6 +18,20 @@ from typing import List, Optional
 # Дефолт если в конфиге не указано
 _DEFAULT_ENTRY_TF = "15m"
 
+# Маппинг entry TF → TF для ATR-based TP1 (DEV-40), cap 1h
+ENTRY_TO_TP1_TF = {
+    "1m":  "15m",
+    "3m":  "15m",
+    "5m":  "15m",
+    "15m": "15m",
+    "30m": "1h",
+    "45m": "1h",
+    "1h":  "1h",
+    "4h":  "1h",
+    "1D":  "1h",
+    "1d":  "1h",
+}
+
 # Маппинг entry TF → TSL TF (каскадный TSL начинается с этого ТФ)
 ENTRY_TO_TSL_TF = {
     "1m":  "15m",
