@@ -247,30 +247,94 @@ ORDER BY closed_at DESC LIMIT 50;
 ---
 
 ### ARCH-37 — Guards в register_trade_async(): архитектурное решение 🔴
-**Статус:** 🟡 важно (24.03.2026) — нужно решение ARCH
+**Статус:** ✅ выполнено 24.03.2026 — решение принято, спек передан DEV-43
 **Источник:** TRADER 24.03 — WL breach bypass DEV-32 (DISCUSSION.md 24.03)
 
-**Проблема:** `regime_direction_block` (DEV-32), `blocked_regimes` (DEV-33), `max_rr` (DEV-35) реализованы в `trading_intelligence.analyze_symbol()`. WL breach обходит этот path → 17 LONG/TREND_DOWN попало в БД.
+**Контекст после ревью кода:**
+- DEV-41 уже реализовал все три фикса в `_handle_wl_breach_entry()` (DEV-32 gate, ATR fallback TP, R:R cap, rate-limit)
+- WL breach trades от 23.03T01:xx — легаси до перезапуска бота, не баги текущего кода
+- `register_trade_async()` уже имеет DEV-38 Correlation Guard — паттерн established
 
-**Вариант A (статус кво):** guards в `analyze_symbol()`. Каждый новый code-path (WL breach, Level 3 авто-вход и т.д.) патчится отдельно.
+**Решение ARCH: Вариант B (partial) — второй рубеж в register_trade_async()**
 
-**Вариант B (рекомендован TRADER):** guards в `register_trade_async()` — единственная точка регистрации. Любой source защищён автоматически.
+Логика двух уровней защиты:
+```
+Уровень 1 (analyze_symbol / _handle_wl_breach_entry):
+  → видимый пользователю — action=WATCH с причиной, логирование
 
-**→ ARCH:** принять решение. Если B — дать спек DEV: какие guards переезжают и в каком порядке. DEV-42 ждёт этого решения.
+Уровень 2 (register_trade_async):
+  → тихий аварийный — return None, INFO лог
+  → срабатывает только если Уровень 1 пропустил (будущие code-path, баги)
+```
+
+**Что переходит в `register_trade_async()` (второй рубеж):**
+1. `regime_direction_block` (DEV-32) — silent fallback
+2. `blocked_regimes` / HIGH_VOL (DEV-33) — silent fallback
+
+**Что НЕ переходит:**
+- `max_rr` — это параметр уровней SL/TP, а не guard регистрации. Если TP уже посчитан правильно — cap не нужен как guard.
+- Rate-limit WL breach — специфична для WL breach, не для всех регистраций.
+
+**Спек для DEV-43 (новая задача):**
+```python
+# В register_trade_async(), после DEV-38 Correlation Guard блока:
+
+# ARCH-37: Второй рубеж — regime/direction guard
+try:
+    from core.config_loader import config as _cfg_a37
+    _rdb = (_cfg_a37.get("trading", {}).get("regime_direction_block", {})
+            if _cfg_a37 else {})
+    _br  = (_cfg_a37.get("trading", {}).get("blocked_regimes", [])
+            if _cfg_a37 else [])
+    if regime and (_rdb.get("enabled", False) or _br):
+        _sym_a37 = _get_recommendation_value(recommendation, "symbol") or ""
+        _dir_a37 = _direction_str(_get_recommendation_value(recommendation, "direction"))
+        # DEV-32 fallback
+        if _rdb.get("enabled", False):
+            _blocked = _rdb.get(regime)
+            if _blocked and _dir_a37 == _blocked:
+                logger.info("[ARCH-37] %s: второй рубеж — %s блокирует %s при %s",
+                            _sym_a37, "regime_direction_block", _dir_a37, regime)
+                return None
+        # DEV-33 fallback
+        if regime in _br:
+            logger.info("[ARCH-37] %s: второй рубеж — %s в blocked_regimes",
+                        _sym_a37, regime)
+            return None
+except Exception as _e37:
+    logger.debug("[ARCH-37] guard error: %s", _e37)
+```
+
+**Важно:** `regime` уже вычислен выше в `register_trade_async()` (строка 506). Блок вставить ПОСЛЕ блока определения `regime`, ПОСЛЕ DEV-38 guard.
 
 ---
 
 ### ARCH-38 — Singleton PivotCalculatorFixed для DEV-36 🟡
-**Статус:** 🟡 важно (24.03.2026)
-**Источник:** whats-next.md 23.03
+**Статус:** ✅ выполнено 24.03.2026 — решение принято, спек передан DEV-45
 
-**Проблема:** DEV-36 создаёт `PivotCalculatorFixed()` с пустым кешем при каждом `analyze_symbol()`. При 600 парах = 600 отдельных fetch/час.
+**Анализ после ревью кода:**
+- `PivotCalculatorFixed()` вызывается БЕЗ `db_path` в DEV-36/DEV-37/DEV-41 блоках → кеш из БД не загружается (строки 59-65 pivot_calculator_fixed.py)
+- `PivotCalculatorFixed(db_path=...)` загружает всё из БД при `__init__` → кеш горячий с первого вызова
+- `TradingIntelligence.__init__` не имеет `self._pivot_calc` (подтверждено чтением кода)
 
-**Вариант A (предпочтительный):** `self._pivot_calc = PivotCalculatorFixed()` в `TradingIntelligence.__init__`. Кеш живёт весь цикл сканирования.
+**Решение ARCH: Вариант A — singleton с db_path**
 
-**Вариант B:** Class-level кеш с TTL через class variable — сложнее, не нужно.
+**Спек для DEV-45:**
 
-**→ ARCH:** подтвердить Вариант A, дать спек DEV.
+1. В `TradingIntelligence.__init__()` (~строка 96, после `self._db_path = db_path`):
+```python
+# ARCH-38: Singleton PivotCalculatorFixed — кеш живёт весь цикл
+from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF
+self._pivot_calc_shared: _PCF = _PCF(db_path=db_path)
+```
+
+2. Заменить все `PivotCalculatorFixed()` / `PivotCalculatorFixed(...)` в `trading_intelligence.py` на `self._pivot_calc_shared`:
+   - строка 615: `_PCF41()` → `self._pivot_calc_shared`
+   - строка 817: `_PCF()` → `self._pivot_calc_shared`
+   - строка 899: `_PCF37()` → `self._pivot_calc_shared`
+   - строка 1150: `PivotCalculatorFixed()` → `self._pivot_calc_shared`
+
+**Ожидаемый эффект:** ~600 инстансов/час → 1 инстанс. DB загрузка при старте once.
 
 ---
 
@@ -443,8 +507,8 @@ trading:
 
 ---
 
-### DEV-44 — Guards в register_trade_async(): Вариант B 🟡
-**Статус:** 🟡 важно
+### DEV-44 — Guards в register_trade_async(): Вариант B ✅
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH решение 24.03 (DISCUSSION.md), проблема обнаружена в DEV-41 WL breach
 
 **Зачем:** `analyze_symbol()` — не единственный путь. WL breach, Level 3 (Фаза 3) обходят его. Guards только в `analyze_symbol` = дыры. Guards в `register_trade_async()` = защита любого code-path.
@@ -474,40 +538,41 @@ if _regime and _direction:
 
 **Важно:** guards в `analyze_symbol()` (DEV-32/33) **остаются** — они снижают action до WATCH (пользователь видит причину). Guards в `register_trade_async()` — второй рубеж (return None тихо).
 
+**Уточнение ARCH-37 (24.03):** вставлять ПОСЛЕ блока определения `regime` (~строка 510 в trade_simulator.py), не в начало. Использовать уже вычисленный `regime`, не `recommendation.regime`.
+
 ---
 
-### DEV-42 — Rate-limit WL breach входов 🟡
-**Статус:** 🟡 важно (24.03.2026) — ждёт решения ARCH-37
-**Источник:** TRADER TR-001 24.03 — 17 входов за 33 минуты в одном направлении
+### DEV-45 — Singleton PivotCalculatorFixed в TradingIntelligence 🟡
+**Статус:** 🟡 важно (24.03.2026)
+**Источник:** ARCH-38 спек (24.03.2026)
 
-**Проблема:** нет ограничения на количество одновременных WL breach входов. Волновой памп → все пары из WL пробивают уровни одновременно → 17 позиций за 33 минуты.
+**Проблема:** 4 места в `trading_intelligence.py` создают `PivotCalculatorFixed()` без db_path → пустой кеш каждый раз → 600 инстансов/час.
 
-**Решение:** счётчик WL breach входов с скользящим окном (аналогично Market Event Marker DEV-39):
+**Что сделать:**
+
+1. В `TradingIntelligence.__init__()` (~строка 96):
 ```python
-# В trade_simulator или scan_loop (зависит от решения ARCH-37):
-self._wl_breach_timestamps: List[datetime] = []
-
-# В _handle_wl_breach_entry() или register_trade_async():
-now = datetime.now(timezone.utc)
-window = now - timedelta(minutes=cfg.get("trading.wl_breach_rate_limit.window_minutes", 30))
-self._wl_breach_timestamps = [t for t in self._wl_breach_timestamps if t >= window]
-max_entries = cfg.get("trading.wl_breach_rate_limit.max_entries", 3)
-if len(self._wl_breach_timestamps) >= max_entries:
-    logger.info("[WL-BREACH] Rate-limit: %d входов за %d мин", len(...), window_minutes)
-    return None
-self._wl_breach_timestamps.append(now)
+from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_cls
+self._pivot_calc_shared = _PCF_cls(db_path=db_path)
 ```
 
-**Config:**
-```yaml
-trading:
-  wl_breach_rate_limit:
-    enabled: true
-    max_entries: 3     # макс WL breach за окно
-    window_minutes: 30
-```
+2. Заменить в `trading_intelligence.py`:
+   - строка ~615: `PivotCalculatorFixed as _PCF41` + `_PCF41()` → `self._pivot_calc_shared`
+   - строка ~817: `PivotCalculatorFixed as _PCF` + `_PCF()` → `self._pivot_calc_shared`
+   - строка ~899: `PivotCalculatorFixed as _PCF37` + `_PCF37()` → `self._pivot_calc_shared`
+   - строка ~1150: `PivotCalculatorFixed()` → `self._pivot_calc_shared`
 
-**Зависимость:** ARCH-37 — место вставки зависит от решения Вариант A/B.
+**Проверка после:** `grep -c "PivotCalculatorFixed()" core/trading_intelligence.py` → должно быть 0.
+
+**Файлы:** `core/trading_intelligence.py`
+
+---
+
+### DEV-42b — Rate-limit WL breach входов
+**Статус:** ✅ выполнено 23.03.2026 — уже в DEV-41, строки 53–61 scan_loop.py
+**Источник:** TRADER TR-001 24.03 (добавлено как задача, но уже было реализовано)
+
+Rate-limit hardcoded: max 3 входа за 30 минут через `_wl_breach_timestamps` deque. Работает.
 
 ---
 

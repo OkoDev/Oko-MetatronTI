@@ -495,6 +495,39 @@ class TradeSimulator:
         except Exception as _e:
             logger.debug("[DEV-38] Correlation Guard error: %s", _e)
 
+        # DEV-44: Safety gate — второй рубеж (защищает WL breach и любые будущие code-paths)
+        # Guards в analyze_symbol() остаются (DEV-32/33): они снижают action→WATCH с причиной.
+        # Здесь — тихий return None для не-analyze_symbol путей.
+        try:
+            from core.config_loader import config as _cfg_44
+            if _cfg_44:
+                _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
+                _regime_44 = (
+                    _get_recommendation_value(recommendation, "regime") or
+                    (recommendation.metadata.get("mtf_context", {}).get("regime")
+                     if getattr(recommendation, "metadata", None) else None)
+                )
+                _direction_44 = _get_recommendation_value(recommendation, "direction") or None
+
+                # Guard 1: blocked_regimes (DEV-33)
+                _blocked_regimes_44 = _cfg_44.get("trading.blocked_regimes", [])
+                if _regime_44 and _blocked_regimes_44 and _regime_44 in _blocked_regimes_44:
+                    logger.info("[DEV-44] %s БЛОК blocked_regime: %s", _sym_44, _regime_44)
+                    return None
+
+                # Guard 2: regime_direction_block (DEV-32)
+                _rdb_44 = _cfg_44.get("trading.regime_direction_block", {})
+                if _regime_44 and _direction_44 and _rdb_44.get("enabled"):
+                    _blocked_dir_44 = _rdb_44.get(_regime_44)
+                    if _blocked_dir_44 and str(_direction_44).upper() == _blocked_dir_44:
+                        logger.info(
+                            "[DEV-44] %s БЛОК regime_direction: %s/%s",
+                            _sym_44, _regime_44, _direction_44,
+                        )
+                        return None
+        except Exception as _e:
+            logger.debug("[DEV-44] Safety gate error: %s", _e)
+
         regime: Optional[str] = None
         if data_collector is not None:
             symbol = _get_recommendation_value(recommendation, "symbol") or ""
