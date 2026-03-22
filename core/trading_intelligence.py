@@ -90,13 +90,15 @@ class TradingIntelligence:
         "smc_structure":  None,
     }
 
-    def __init__(self, data_collector, config: Dict = None, db_path: str = "subscriptions.db"):
+    def __init__(self, data_collector, config: Dict = None, db_path: str = "subscriptions.db",
+                 pivot_calculator=None):
         self.data_collector = data_collector
         self.config = config or {}
         self._db_path = db_path
         # ARCH-38 / DEV-45: Singleton — один инстанс на весь цикл, кеш живёт с db_path
+        # Если передан внешний инстанс (bot.pivot_calculator) — используем его кеш (DEV-45 fix)
         from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_cls
-        self._pivot_calc_shared: _PCF_cls = _PCF_cls(db_path=db_path)
+        self._pivot_calc_shared: _PCF_cls = pivot_calculator or _PCF_cls(db_path=db_path)
 
         # Веса сигналов: MTF_BIAS = главное WaveTrend-ядро (7 TF, alignment, senior gate)
         # Пивоты = второе ядро (подтверждение + цели).

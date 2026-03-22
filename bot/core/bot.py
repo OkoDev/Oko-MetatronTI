@@ -53,6 +53,7 @@ class TradingAlertBot:
             data_collector=self.data_collector,
             config=config,
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db"),
+            pivot_calculator=self.pivot_calculator,  # DEV-45 fix: общий кеш с _prefetch_pivots
         )
         self.menu_handler = MenuHandler(self)
         self.trade_simulator = TradeSimulator(
@@ -99,6 +100,7 @@ class TradingAlertBot:
         from bot.handlers.pivot_handlers import get_router as pivot_router
         from bot.handlers.analysis_handlers import get_router as analysis_router
         from bot.handlers.scan_handlers import get_router as scan_router
+        from bot.handlers.deep_analysis_handler import get_router as deep_router
         from bot.handlers.core_handlers import get_router as core_router
         from bot.handlers.callback_handlers import get_router as callback_router
 
@@ -107,6 +109,7 @@ class TradingAlertBot:
         self.dp.include_router(pivot_router(self))
         self.dp.include_router(analysis_router(self))
         self.dp.include_router(scan_router(self))
+        self.dp.include_router(deep_router(self))     # ARCH-29: /deep SYMBOL [TF]
         self.dp.include_router(core_router(self))     # содержит F.text catch-all
         self.dp.include_router(callback_router(self))
 
