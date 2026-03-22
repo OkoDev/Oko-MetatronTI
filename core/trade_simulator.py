@@ -464,6 +464,27 @@ class TradeSimulator:
         затем сохраняет сделку. Если data_collector недоступен — пишет regime=None.
         extra_features — доп. признаки (напр. distance_to_pivot_pct) для features_json.
         """
+        # DEV-38: Correlation Guard — блок если по коррелированному активу уже открыта сделка
+        try:
+            from core.config_loader import config as _cfg_cg38
+            _corr_groups = (_cfg_cg38.get("trading", {}).get("correlation_groups", [])
+                            if _cfg_cg38 else [])
+            if _corr_groups:
+                _new_sym = _get_recommendation_value(recommendation, "symbol") or ""
+                _new_base = _new_sym.split("/")[0]
+                _open_bases = {t["symbol"].split("/")[0] for t in self.get_open_trades()}
+                for _group in _corr_groups:
+                    if _new_base in _group:
+                        _conflict = _open_bases & set(_group) - {_new_base}
+                        if _conflict:
+                            logger.info(
+                                "[DEV-38] Correlation Guard: блок %s — уже открыта %s из той же группы",
+                                _new_sym, _conflict,
+                            )
+                            return None
+        except Exception as _e:
+            logger.debug("[DEV-38] Correlation Guard error: %s", _e)
+
         regime: Optional[str] = None
         if data_collector is not None:
             symbol = _get_recommendation_value(recommendation, "symbol") or ""

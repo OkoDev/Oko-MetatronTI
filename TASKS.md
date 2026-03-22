@@ -397,13 +397,11 @@ trading:
 ---
 
 ### DEV-38 — Correlation Guard: реализация 🟡
-**Статус:** 🟢 в плане (Фаза 1, после DEV-36+37)
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH-35 спек (23.03.2026)
 
-**Что:** блокировка второй сделки по коррелированному активу. Спек полностью в ARCH-35 (TASKS.md).
-**Где:** `trade_simulator.py` → `register_trade_async()` — в самом начале метода
-**Данные:** `self.get_open_trades()` (уже есть) + `cfg.get("trading.correlation_groups", [])`
-**Конфиг:** добавить `trading.correlation_groups` в `config.yaml`
+**Что сделано:** в начале `register_trade_async()` — если новый символ принадлежит группе и уже есть открытая сделка по другому активу той же группы → `return None` + INFO лог.
+- `config.yaml`: `trading.correlation_groups: [[PAXG, XAUT], [BTC, WBTC], [ETH, STETH, WETH]]`
 
 ---
 

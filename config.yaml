@@ -133,6 +133,10 @@ trading:
     enabled: true   # DEV-39: маркировать SL-сделки при массовых стопах
     sl_count: 5     # сколько SL за окно = market event
     window_minutes: 30
+  correlation_groups:          # DEV-38: блокировка коррелированных активов
+    - [PAXG, XAUT]             # gold tokens
+    - [BTC, WBTC]              # wrapped bitcoin
+    - [ETH, STETH, WETH]       # wrapped ether
   entry_timeframe: 15m
   bounce_mode:
     enabled: false
