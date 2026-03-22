@@ -172,12 +172,15 @@ elif direction == "LONG" and price < future_daily_pp * 0.985:
 □ Портфельный лимит позволяет (< 3 открытых / нет перекоса)
 ```
 
-**Что нужно уточнить:**
-- [ ] "4h FVG активна" — как долго FVG считается "активным"? Пока не заполнен? Или TTL есть?
-- [ ] "1h структура не противоположна" — конкретный критерий: CHoCH против = запрет? Или только BOS против?
-- [ ] При 5/6 условиях — это Watch List или уведомление с кнопкой подтверждения?
-- [ ] При 4/6 — пропускаем или логируем?
-- [ ] Портфельный лимит: "< 3 открытых" — это вообще все OPEN или только в том же направлении?
+**Спек уточнён TRADER 23.03 — все вопросы закрыты:**
+```
+FVG активна: fill_pct < 80% AND bars_since_creation <= 10 (4h баров = 40 часов)
+BOS против направления    → hard block (условие НЕ выполнено)
+CHoCH против направления  → soft block (условие выполнено, но score -= 8)
+5/6 условий → Watch List + уведомление "Сетап 5/6, ждём условие N"
+4/6 условий → тихое логирование без уведомления
+Лимиты: max 2 LONG одновременно + max 2 SHORT + max 4 OPEN всего
+```
 
 ---
 
@@ -237,18 +240,52 @@ PP: 3.180 (-1.9%) | R1: 3.350 (+3.4%) | S1: 3.060 (-5.6%)
 
 ### ARCH-33 — Future PP score modifier 🟡
 **Статус:** 🟢 в плане
-**Что:** Future PP уже вычисляется (`pivot_calculator_fixed.get_future_daily_pivots`). Нужна интеграция в скоринг:
-- LONG выше future_pp → `-10` к score
-- LONG в 1.5% ниже future_pp → `+5` к score (цена идёт к поддержке)
+**Что:** Future PP уже вычисляется (`pivot_calculator_fixed.get_future_daily_pivots`). Нужна интеграция в скоринг.
 **Где:** `trading_intelligence.py` → `_calculate_adaptive_weighted_strength()`
+
+**Спек (TRADER 23.03, принят ARCH):**
+```python
+# Пороги по ТФ входа:
+# 15m: discount_threshold = 0.985 (1.5% ниже future_pp)
+# 1h:  discount_threshold = 0.990 (1.0%)
+# 4h:  discount_threshold = 0.993 (0.7%)
+
+# LONG:
+if price > future_daily_pp:         score -= 10  # PREMIUM → против
+if price < future_daily_pp * threshold: score += 5  # DISCOUNT → в пользу
+
+# SHORT (зеркально):
+if price > future_daily_pp * 1.015: score += 5   # PREMIUM → в пользу
+if price < future_daily_pp:         score -= 10  # DISCOUNT → против
+
+# При конфликте Weekly PP vs Daily PP:
+# Weekly приоритет → score -= 5 дополнительно (не блок)
+# Weekly нейтральный (±0.5% от Weekly PP) → смотреть только Daily
+```
 
 ---
 
 ### ARCH-34 — Pivot Proximity Filter 🟡
 **Статус:** 🟢 в плане
 **Что:** Вместо блокировки по времени сессии — торгуем только когда цена близко к пивоту.
-Правило: `distance_to_nearest_pivot < 1.5%` → торгуем; иначе → `min_score + 10` (требовать сильнее).
-**Где:** `monitoring.py` или `trading_intelligence.py` → после `analyze_symbol()`
+**Где:** `trading_intelligence.py` → после `analyze_symbol()`
+
+**Спек (TRADER 23.03, принят ARCH):**
+```python
+# Адаптивные пороги на базе ATR (не хардкод):
+atr_pct = ATR_14(4h) / price * 100
+tier1 = max(1.0, atr_pct * 1.5)   # "рядом" — торгуем
+tier2 = tier1 * 2                   # "умеренно" — требуем score+10
+
+# Приоритет пивотов (ближайший):
+# 1D PP > 1W PP > 1M PP > Future Daily PP
+
+# Логика:
+distance = min(distance_to_1d_pp, distance_to_1w_pp, ...)
+if distance < tier1:   # рядом → торгуем нормально
+elif distance < tier2: # умеренно → min_score + 10
+else:                  # далеко → пропускаем
+```
 
 ---
 
@@ -314,11 +351,10 @@ trading:
 ---
 
 ### DEV-35 — R:R cap max 6.0 🟡
-**Статус:** 🟢 в плане (после DEV-32+33)
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** TRADER 23.03 — PAXG R:R=24.6x, CRCLX R:R=32.1x — TP на monthly pivot недостижим.
 
-**Что:** `config.yaml` → `trading.sl_tp.max_rr: 6.0` + guard в `trade_simulator.py` при расчёте TP.
-**Эффект:** реалистичный TP → выше WR, меньше EXPIRED.
+**Что сделано:** `config.yaml` → `trading.sl_tp.max_rr: 6.0` + guard в `recommendation_generator.py:calculate_levels()` (перед return). Использует `sl_cfg.get("max_rr")` — согласован с существующим стилем. Синхронизирует `tp1_price` с обрезанным `take_profit`. Добавляет `|capped_rr_6.0` в `tp_source` для диагностики.
 
 ---
 
@@ -329,3 +365,8 @@ trading:
 3. Каждая задача = отдельный git commit с внятным сообщением
 4. После реализации — Architect делает `git diff HEAD~1` и пишет review здесь
 5. **Любая роль задаёт вопросы** другим ролям при необходимости — не блокируется и не молчит. Вопрос без ответа лучше чем неверное решение молча.
+6. **Алгоритм подключения для каждой роли:**
+   1. [DISCUSSION.md](DISCUSSION.md) — **первым**. Найти `→ своя роль:` — ответить до любой другой работы.
+   2. [TASKS.md](TASKS.md) — статусы задач, что в работе, что ждёт.
+   3. `whats-next.md` — handoff от предыдущей сессии.
+   4. `memory/MEMORY.md` — архитектурные решения и паттерны.

@@ -229,6 +229,16 @@ def calculate_levels(
     take_profit = tp1_price
     tp_source   = f"atr_fallback_rr_{fallback_rr:.1f}:{tp1_pct:.2f}%"
 
+    # DEV-35: R:R cap — ограничить нереалистичный R:R (PAXG 24x → 6x, CRCLX 32x → 6x)
+    max_rr = sl_cfg.get("max_rr", 0)
+    if max_rr > 0 and stop_loss and take_profit:
+        sl_dist    = max(abs(stop_loss - entry_price), 1e-8)
+        actual_rr  = abs(take_profit - entry_price) / sl_dist
+        if actual_rr > max_rr:
+            take_profit = (entry_price + sl_dist * max_rr) if is_long else (entry_price - sl_dist * max_rr)
+            tp1_price   = take_profit  # синхронизируем
+            tp_source   = f"{tp_source}|capped_rr_{max_rr:.1f}"
+
     return entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source
 
 

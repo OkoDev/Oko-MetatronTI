@@ -182,6 +182,7 @@ trading:
     sl_min_pct: 0.5
     sl_max_pct: 3.0
     tp_fallback_rr: 3.0
+    max_rr: 6.0          # DEV-35: cap R:R (PAXG 24x, CRCLX 32x → max 6x)
     require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
     tp_pivot_min_r: 2.0
     tp_reversal_min_r: 2.0
