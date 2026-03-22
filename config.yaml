@@ -127,6 +127,8 @@ trading:
   # DEV-33: блокировка входов в HIGH_VOL режиме (WR=0%, avg_R=-0.25 по DB-анализу)
   blocked_regimes:
   - HIGH_VOL
+  future_pp_score_modifier:
+    enabled: true   # DEV-36: ±score на основе позиции цены vs Future Daily PP
   entry_timeframe: 15m
   bounce_mode:
     enabled: false

@@ -239,7 +239,7 @@ PP: 3.180 (-1.9%) | R1: 3.350 (+3.4%) | S1: 3.060 (-5.6%)
 ---
 
 ### ARCH-33 — Future PP score modifier 🟡
-**Статус:** 🟢 в плане
+**Статус:** ✅ выполнено 23.03.2026 — спек готов, передан в DEV-36
 **Что:** Future PP уже вычисляется (`pivot_calculator_fixed.get_future_daily_pivots`). Нужна интеграция в скоринг.
 **Где:** `trading_intelligence.py` → `_calculate_adaptive_weighted_strength()`
 
@@ -266,55 +266,167 @@ if price < future_daily_pp:         score -= 10  # DISCOUNT → против
 ---
 
 ### ARCH-34 — Pivot Proximity Filter 🟡
-**Статус:** 🟢 в плане
-**Что:** Вместо блокировки по времени сессии — торгуем только когда цена близко к пивоту.
-**Где:** `trading_intelligence.py` → после `analyze_symbol()`
+**Статус:** ✅ выполнено 23.03.2026 — спек готов, передан в DEV-37
 
-**Спек (TRADER 23.03, принят ARCH):**
+**Архитектурные решения (ARCH):**
+
+**1. Точка вставки:** `analyze_symbol()` — после блока DEV-32/33 (~строка 741), до `return recommendation`. Там уже есть `current_price` и `mtf_context`.
+
+**2. Источники данных** (без новых API-запросов):
+- `ATR(4h)` → из `snapshot["4h"]` (уже в `collect_mtf_data`), поле `atr`. Если нет — фильтр пропускается (не блокирует).
+- `Daily PP` → `PivotCalculatorFixed.get_daily_pivots(symbol, data_collector)` — лёгкий вызов, кешируется.
+- `Weekly PP` → уже есть в `mtf_context.weekly_pivots` (загружается в `_build_mtf_context`).
+
+**3. Поведение:**
 ```python
-# Адаптивные пороги на базе ATR (не хардкод):
-atr_pct = ATR_14(4h) / price * 100
-tier1 = max(1.0, atr_pct * 1.5)   # "рядом" — торгуем
-tier2 = tier1 * 2                   # "умеренно" — требуем score+10
+# distance > tier2 → WATCH (не блокируем жёстко — score penalty)
+# distance ∈ [tier1, tier2] → score_modifier = -10 (требуем сильнее)
+# distance < tier1 → без изменений
+```
+Не хардкодим `action = "WATCH"` — только score modifier. Жёсткий блок только если distance > 3×tier1.
 
-# Приоритет пивотов (ближайший):
-# 1D PP > 1W PP > 1M PP > Future Daily PP
+**4. Режим запуска:** `enabled: false` по умолчанию (shadow mode). Логировать срабатывания 3-5 дней, потом включать.
 
-# Логика:
-distance = min(distance_to_1d_pp, distance_to_1w_pp, ...)
-if distance < tier1:   # рядом → торгуем нормально
-elif distance < tier2: # умеренно → min_score + 10
-else:                  # далеко → пропускаем
+**5. Конфиг:**
+```yaml
+trading:
+  pivot_proximity_filter:
+    enabled: false      # shadow mode → true после наблюдения
+    hard_block_mult: 3  # distance > tier1*3 → WATCH
 ```
 
 ---
 
 ### ARCH-35 — Correlation Guard (связанные активы) 🟡
-**Статус:** 🟢 в плане
-**Источник:** TRADER 23.03 — PAXG + XAUT = два золотых токена одновременно, не диверсификация.
-**Что:** Список коррелированных групп в config. Если уже есть OPEN сделка по активу из группы → не открывать вторую.
+**Статус:** ✅ выполнено 23.03.2026 — спек готов, передан в DEV-38
+
+**Архитектурные решения (ARCH):**
+
+**1. Точка вставки:** `trade_simulator.py` → `register_trade_async()` — в начале, до любых расчётов SL/TP. `get_open_trades()` уже существует (строка 479), дополнительных запросов не нужно.
+
+**2. Логика:**
+```python
+# В начале register_trade_async():
+corr_groups = cfg.get("trading.correlation_groups", [])
+if corr_groups:
+    open_symbols = {t["symbol"].split("/")[0] for t in self.get_open_trades()}
+    new_base = symbol.split("/")[0]  # "PAXG" из "PAXG/USDT"
+    for group in corr_groups:
+        if new_base in group:
+            conflict = open_symbols & set(group) - {new_base}
+            if conflict:
+                logger.info("[%s] Correlation Guard: блок — уже открыта %s из той же группы", symbol, conflict)
+                return None
+```
+
+**3. Конфиг:**
 ```yaml
 trading:
   correlation_groups:
-    - [PAXG, XAUT]      # gold tokens
-    - [BTC, WBTC]
-    - [ETH, STETH, WETH]
+    - [PAXG, XAUT]        # gold tokens
+    - [BTC, WBTC]         # wrapped bitcoin
+    - [ETH, STETH, WETH]  # wrapped ether
 ```
-**Где:** `trade_simulator.py` → `register_trade_async()` — проверить open trades перед регистрацией.
+
+**4. Поведение:** тихий блок (return None) + INFO лог. Не WATCH — просто не регистрируем, сигнал уже ушёл в TG без сделки.
 
 ---
 
 ### ARCH-36 — Market Event Marker 🟢
-**Статус:** 🟢 в плане
-**Источник:** TRADER 23.03 — 8 SL за 25 минут (18:01–18:37 UTC) = системный дамп BTC.
-**Что:** Когда `>5 SL за 30 минут` → записать в `features_json` маркер `"market_event": true` для всех сделок в этом окне. Использовать в ML-анализе для фильтрации аномальных сессий.
-**Где:** `trade_simulator.py` → `check_open_trades()` — считать SL в скользящем окне.
+**Статус:** ✅ выполнено 23.03.2026 — спек готов, передан в DEV-39
+
+**Архитектурные решения (ARCH):**
+
+**1. In-memory счётчик** в `TradeSimulator.__init__`:
+```python
+self._sl_timestamps: List[datetime] = []  # скользящее окно SL
+```
+
+**2. Точка вставки:** `close_trade()` после успешного закрытия с `STATUS_SL`:
+```python
+if status == STATUS_SL:
+    now = datetime.now(timezone.utc)
+    self._sl_timestamps.append(now)
+    # Прунинг окна 30 минут
+    window_start = now - timedelta(minutes=30)
+    self._sl_timestamps = [t for t in self._sl_timestamps if t >= window_start]
+    # Порог: 5+ SL за 30 минут = market event
+    if len(self._sl_timestamps) >= cfg.get("trading.market_event_marker.sl_count", 5):
+        self._mark_market_event_in_window(window_start)
+```
+
+**3. Метод `_mark_market_event_in_window()`:**
+```python
+# UPDATE features_json для всех SL-сделок внутри окна:
+UPDATE simulated_trades
+SET features_json = json_patch(features_json, '{"market_event": true}')
+WHERE status = 'SL' AND closed_at >= window_start
+```
+SQLite не имеет json_patch — использовать Python: читать features_json, merge dict, записать обратно.
+
+**4. Конфиг:**
+```yaml
+trading:
+  market_event_marker:
+    enabled: true
+    sl_count: 5      # сколько SL за окно = событие
+    window_minutes: 30
+```
+
+**5. Использование:** поле `market_event: true` в `features_json` → ML фильтрует аномальные сессии при обучении. Не влияет на live-торговлю.
 
 ---
 
 ## 🛠️ Задачи DEV
 
 > **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | ✅ выполнено | 🔄 в работе
+
+---
+
+### DEV-39 — Market Event Marker: реализация 🟢
+**Статус:** 🟢 в плане (Фаза 1, низкий приоритет)
+**Источник:** ARCH-36 спек (23.03.2026)
+
+**Что:** in-memory счётчик SL в скользящем окне → маркер `market_event: true` в `features_json`. Спек в ARCH-36.
+**Где:** `trade_simulator.py` → `close_trade()` + новый метод `_mark_market_event_in_window()`
+**Конфиг:** `trading.market_event_marker.enabled/sl_count/window_minutes`
+**Влияние на live:** нулевое — только ретроактивный UPDATE в БД для ML
+
+---
+
+### DEV-38 — Correlation Guard: реализация 🟡
+**Статус:** 🟢 в плане (Фаза 1, после DEV-36+37)
+**Источник:** ARCH-35 спек (23.03.2026)
+
+**Что:** блокировка второй сделки по коррелированному активу. Спек полностью в ARCH-35 (TASKS.md).
+**Где:** `trade_simulator.py` → `register_trade_async()` — в самом начале метода
+**Данные:** `self.get_open_trades()` (уже есть) + `cfg.get("trading.correlation_groups", [])`
+**Конфиг:** добавить `trading.correlation_groups` в `config.yaml`
+
+---
+
+### DEV-37 — Pivot Proximity Filter: реализация 🟡
+**Статус:** 🟢 в плане (Фаза 1, после DEV-36)
+**Источник:** ARCH-34 спек (23.03.2026)
+
+**Что:** score modifier на базе расстояния до ближайшего пивота. Спек полностью в ARCH-34 (TASKS.md).
+**Где:** `trading_intelligence.py` → `analyze_symbol()` после блока DEV-32/33
+**Данные:** `snapshot["4h"]["atr"]` + `PivotCalculatorFixed.get_daily_pivots()` + `mtf_context.weekly_pivots`
+**Конфиг:** `trading.pivot_proximity_filter.enabled: false` (shadow mode по умолчанию)
+**Зависимость:** после DEV-36
+
+---
+
+### DEV-36 — Future PP score modifier: реализация 🟡
+**Статус:** ✅ выполнено 23.03.2026
+**Источник:** ARCH-33 спек (23.03.2026)
+
+**Что сделано:** блок в `trading_intelligence.py` после DEV-33 (перед metadata).
+- LONG: price > future_pp → -10 (PREMIUM плохо), price < future_pp * threshold → +5 (DISCOUNT хорошо)
+- SHORT: зеркально
+- Порог DISCOUNT по ТФ: 15m=0.985, 1h=0.990, 4h=0.993
+- Weekly PP конфликт → дополнительный -5
+- `config.yaml`: `trading.future_pp_score_modifier.enabled: true`
 
 ---
 

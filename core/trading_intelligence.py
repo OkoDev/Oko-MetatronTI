@@ -756,6 +756,68 @@ class TradingIntelligence:
                     )
                     recommendation.action = "WATCH"
 
+            # DEV-36: Future PP score modifier (ARCH-33 спек, TRADER 23.03)
+            # Модифицирует overall_strength на основе позиции цены относительно Future Daily PP.
+            # LONG в PREMIUM (выше future_pp) → -10. LONG в DISCOUNT → +5.
+            # SHORT — зеркально.
+            _fpp_enabled = (self.config.get("trading", {}).get("future_pp_score_modifier", {}).get("enabled", False)
+                            if self.config else False)
+            if (_fpp_enabled
+                    and recommendation.direction is not None
+                    and recommendation.direction.value in ("LONG", "SHORT")):
+                try:
+                    from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF
+                    _pc = _PCF()
+                    _fdp = await _pc.get_future_daily_pivots(symbol, self.data_collector)
+                    if _fdp and "PP" in _fdp:
+                        _fpp = float(_fdp["PP"])
+                        _price = (recommendation.entry_price
+                                  or (market_context.current_price if market_context else 0))
+                        _dir = recommendation.direction.value
+                        _etf = get_primary_entry_tf(self.config)
+
+                        # Порог DISCOUNT зависит от ТФ входа
+                        _discount_thr = {"15m": 0.985, "1h": 0.990, "4h": 0.993}.get(_etf, 0.985)
+                        _premium_thr_short = 1.015  # для SHORT premium
+
+                        _fpp_delta = 0
+                        if _dir == "LONG":
+                            if _price > _fpp:
+                                _fpp_delta = -10  # PREMIUM для LONG = плохо
+                            elif _price < _fpp * _discount_thr:
+                                _fpp_delta = +5   # DISCOUNT для LONG = хорошо
+                        else:  # SHORT
+                            if _price > _fpp * _premium_thr_short:
+                                _fpp_delta = +5   # PREMIUM для SHORT = хорошо
+                            elif _price < _fpp:
+                                _fpp_delta = -10  # DISCOUNT для SHORT = плохо
+
+                        # Weekly PP конфликт: если Weekly и Daily говорят разное → -5
+                        if _fpp_delta != 0:
+                            try:
+                                _fwp = await _pc.get_future_weekly_pivots(symbol, self.data_collector)
+                                if _fwp and "PP" in _fwp:
+                                    _wpp = float(_fwp["PP"])
+                                    _w_neutral = abs(_price - _wpp) / _wpp <= 0.005  # ±0.5%
+                                    if not _w_neutral:
+                                        # Weekly говорит LONG если price < weekly_pp, SHORT если > weekly_pp
+                                        _w_dir = "LONG" if _price < _wpp else "SHORT"
+                                        if _w_dir != _dir:
+                                            _fpp_delta -= 5  # Weekly против → дополнительный штраф
+                            except Exception:
+                                pass
+
+                        if _fpp_delta != 0:
+                            _old_str = recommendation.overall_strength
+                            recommendation.overall_strength = max(0, min(100, _old_str + _fpp_delta))
+                            logger.info(
+                                "[%s] DEV-36 FuturePP: dir=%s price=%.6f fpp=%.6f delta=%+d str %d→%d",
+                                symbol, _dir, _price, _fpp, _fpp_delta,
+                                _old_str, recommendation.overall_strength,
+                            )
+                except Exception as _e:
+                    logger.debug("[%s] DEV-36 Future PP modifier: %s", symbol, _e)
+
             # Этап 8.4.2/8.4.3: snapshot_time + analysis_quality в метаданных
             if recommendation.metadata is None:
                 recommendation.metadata = {}
