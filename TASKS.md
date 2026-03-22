@@ -318,6 +318,20 @@ trading:
 
 ---
 
+### DEV-WL-BREACH — Watch List breach → автовход 🔴
+**Статус:** ✅ выполнено 23.03.2026
+**Источник:** TR-002 спек (TRADER 22.03.2026)
+
+**Что сделано:**
+- `core/signal_watch_list.py`: добавлен метод `check_breach_entry_direction()` — проверяет пробой В направлении (противоположен `check_breach`)
+- `bot/loops/scan_loop.py`: в DEV-22 блок добавлен `elif` — при breach entry → `_handle_wl_breach_entry()`
+- `_handle_wl_breach_entry()` — async функция: gates (HIGH_VOL, cooldown), SL=pivot±0.5%, TP через `get_tp_by_hierarchy` ≤5%, min R:R=1.5, `signal_type="watch_list_breach"`, TG-алерт
+- `config.yaml`: добавлен `wl_sl_buffer_pct: 0.5`
+
+**Спек:** orig_score (не re-analyze), SL=пробитый_пивот±0.5%, TP=ближайший пивот ≤5%, min R:R=1.5, TTL=4h
+
+---
+
 ### DEV-32 — Блокировка контр-тренд входов 🔴
 **Статус:** ✅ выполнено 23.03.2026
 **Источник:** TRADER-анализ 23.03 — CAKE LONG/TREND_DOWN str=98, SAHARA SHORT/TREND_UP str=94

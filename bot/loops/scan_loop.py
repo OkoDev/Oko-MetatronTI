@@ -34,6 +34,125 @@ async def _send_wl_alert(bot, symbol: str, text: str) -> None:
         logger.debug("[WL] Ошибка отправки алерта %s: %s", symbol, e)
 
 
+async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: float, df_entry) -> None:
+    """
+    DEV-WL-BREACH: обработка пробоя пивота В НАПРАВЛЕНИИ — открыть сделку.
+
+    Проверяет gates (regime, cooldown), строит рекомендацию и регистрирует в БД.
+    """
+    from types import SimpleNamespace
+    from bot.monitoring import _is_in_sl_cooldown
+
+    direction = wl_entry.direction  # "LONG" | "SHORT"
+    pivot_level = wl_entry.pivot_level
+    score = wl_entry.score
+
+    # Gate 1: режим HIGH_VOL — не входим
+    try:
+        from core.market_regime import MarketRegimeClassifier
+        regime = MarketRegimeClassifier().classify_from_ohlcv(df_entry)
+        if regime == "HIGH_VOL":
+            logger.info("[WL-BREACH] %s: пропуск — режим HIGH_VOL", symbol)
+            return
+    except Exception as e:
+        logger.debug("[WL-BREACH] %s: ошибка определения режима — %s", symbol, e)
+        regime = None
+
+    # Gate 2: cooldown после SL
+    if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol):
+        logger.info("[WL-BREACH] %s: пропуск — SL cooldown", symbol)
+        return
+
+    # SL = пробитый пивот ± 0.5% буфер (уровень стал support/resistance)
+    sl_buffer_pct = float(bot.config.get("signal_quality.wl_sl_buffer_pct", 0.5)) / 100
+    if direction == "LONG":
+        sl = pivot_level * (1.0 - sl_buffer_pct)
+    else:
+        sl = pivot_level * (1.0 + sl_buffer_pct)
+
+    # TP = следующий пивот в направлении ≤5% от entry, через иерархию
+    tp = None
+    tp_source = "tsl_only"
+    pivot_calc = getattr(bot, "pivot_calculator", None)
+    if pivot_calc is not None:
+        try:
+            result = pivot_calc.get_tp_by_hierarchy(
+                direction=direction,
+                entry_price=current_price,
+                symbol=symbol,
+                stop_loss=sl,
+                min_r=1.5,
+            )
+            if result:
+                tp_candidate, tp_src = result
+                max_tp_dist = current_price * 0.05  # 5% от entry
+                if abs(tp_candidate - current_price) <= max_tp_dist:
+                    tp = tp_candidate
+                    tp_source = tp_src
+                else:
+                    logger.info("[WL-BREACH] %s: TP=%.6f далеко (>5%%) — TSL-only", symbol, tp_candidate)
+        except Exception as e:
+            logger.debug("[WL-BREACH] %s: ошибка get_tp_by_hierarchy — %s", symbol, e)
+
+    # Проверка min R:R = 1.5
+    if tp is not None and sl and pivot_level > 0:
+        risk = abs(current_price - sl)
+        reward = abs(tp - current_price)
+        if risk > 0 and reward / risk < 1.5:
+            logger.info("[WL-BREACH] %s: пропуск — R:R=%.2f < 1.5", symbol, reward / risk)
+            return
+
+    # Строим рекомендацию
+    _sig = SimpleNamespace(signal_type=SimpleNamespace(value="watch_list_breach"))
+    rec = SimpleNamespace(
+        symbol=symbol,
+        action="BUY" if direction == "LONG" else "SELL",
+        entry_price=current_price,
+        direction=SimpleNamespace(value=direction),
+        stop_loss=sl,
+        take_profit=tp,
+        tp1_price=None,
+        overall_strength=int(score),
+        confidence=0.65,
+        timestamp=datetime.now(),
+        market_context=None,
+        supporting_signals=[_sig],
+        conflicting_signals=[],
+        sl_source=f"wl_pivot_{wl_entry.pivot_key or 'level'}",
+        tp_source=tp_source,
+        metadata={"signal_type": "watch_list_breach", "wl_reason": wl_entry.reason},
+    )
+
+    # Регистрируем сделку (dedup по открытым сделкам — внутри register_trade)
+    trade_id = None
+    if hasattr(bot, "trade_simulator"):
+        try:
+            trade_id = await bot.trade_simulator.register_trade_async(
+                rec, bot.data_collector,
+                extra_features={"wl_pivot_key": wl_entry.pivot_key, "wl_score": score},
+            )
+        except Exception as e:
+            logger.warning("[WL-BREACH] %s: ошибка register_trade — %s", symbol, e)
+
+    if trade_id is None:
+        logger.info("[WL-BREACH] %s: сделка не зарегистрирована (дубль или нет SL/TP)", symbol)
+        return
+
+    # TG-алерт
+    dir_emoji = "🟢" if direction == "LONG" else "🔴"
+    tp_str = f"{tp:.6f}" if tp else "TSL"
+    text = (
+        f"{dir_emoji} <b>WL BREACH:</b> {symbol.split('/')[0]}\n"
+        f"Вход: {current_price:.6f} | SL: {sl:.6f} | TP: {tp_str}\n"
+        f"Score: {int(score)} | Pivot: {wl_entry.pivot_key or 'level'} | "
+        f"Режим: {regime or '?'}\n"
+        f"<i>Сделка #{trade_id} зарегистрирована</i>"
+    )
+    await _send_wl_alert(bot, symbol, text)
+    logger.info("[WL-BREACH] %s %s: сделка #%d entry=%.6f SL=%.6f TP=%s",
+                symbol, direction, trade_id, current_price, sl, tp_str)
+
+
 async def _prefetch_pivots(bot) -> None:
     """Прогревает кеш пивотов для всех пар параллельно.
     Semaphore намеренно маленький — не конкурируем со сканом за ApiEngine.Semaphore(20).
@@ -217,9 +336,17 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _cur_price = float(df_entry["close"].iloc[-1])
                     _breach_pct = float(bot.config.get("signal_quality.watch_list_breach_pct", 1.0))
                     if _wl.check_breach(sym, _cur_price, breach_pct=_breach_pct):
+                        # Пробой ПРОТИВ направления → идея провалилась, удаляем
                         _wl.remove(sym, f"пробой pivot price={_cur_price:.4f}")
                         asyncio.create_task(
                             _send_wl_alert(bot, sym, f"🔴 <b>WL:</b> пробой уровня для {sym.split('/')[0]} — идея отменена")
+                        )
+                    elif _wl.check_breach_entry_direction(sym, _cur_price, breach_pct=_breach_pct):
+                        # DEV-WL-BREACH: пробой В направлении → открываем сделку
+                        _wl_entry = _wl.get(sym)  # сохраняем до удаления
+                        _wl.remove(sym, f"breach_entry price={_cur_price:.6f}")
+                        asyncio.create_task(
+                            _handle_wl_breach_entry(bot, sym, _wl_entry, _cur_price, df_entry)
                         )
 
                 # Обновляем price/volume history из уже загруженных данных

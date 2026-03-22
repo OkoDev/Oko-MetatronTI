@@ -206,6 +206,7 @@ signal_quality:
   # DEV-22: WATCH LIST
   watch_list_ttl_hours: 4        # TTL записи в WL (часов)
   watch_list_breach_pct: 1.0     # % ниже/выше pivot_level для подтверждения пробоя
+  wl_sl_buffer_pct: 0.5          # DEV-WL-BREACH: буфер SL от пробитого пивота (%)
 detectors:
   anomaly:
     min_bars: 20

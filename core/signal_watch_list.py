@@ -142,6 +142,41 @@ class SignalWatchList:
 
         return False
 
+    def check_breach_entry_direction(
+        self,
+        symbol: str,
+        current_price: float,
+        breach_pct: float = 1.0,
+    ) -> bool:
+        """
+        Проверяет пробой пивот-уровня В НАПРАВЛЕНИИ сигнала (= вход).
+
+        Противоположен check_breach() — тот проверяет пробой ПРОТИВ (аннулирование).
+        LONG: цена пробила resistance вверх = вход
+        SHORT: цена пробила support вниз = вход
+
+        DEV-WL-BREACH.
+        Returns True если уровень пробит в направлении → открыть сделку.
+        """
+        entry = self.get(symbol)
+        if entry is None or entry.pivot_level <= 0:
+            return False
+
+        threshold = entry.pivot_level * breach_pct / 100
+        if entry.direction == "LONG" and current_price > entry.pivot_level + threshold:
+            logger.info(
+                "[WL] 🟢 %s breach LONG: price=%.6f > %.6f (+%.1f%%)",
+                symbol, current_price, entry.pivot_level, breach_pct,
+            )
+            return True
+        if entry.direction == "SHORT" and current_price < entry.pivot_level - threshold:
+            logger.info(
+                "[WL] 🟢 %s breach SHORT: price=%.6f < %.6f (-%.1f%%)",
+                symbol, current_price, entry.pivot_level, breach_pct,
+            )
+            return True
+        return False
+
     def check_breach(
         self,
         symbol: str,
@@ -149,7 +184,7 @@ class SignalWatchList:
         breach_pct: float = 1.0,
     ) -> bool:
         """
-        Проверяет пробой пивот-уровня.
+        Проверяет пробой пивот-уровня ПРОТИВ направления (= аннулирование идеи).
 
         breach_pct: процент отступа от уровня для подтверждения пробоя (default 1.0%).
         Returns True если уровень пробит → нужно удалить из WL.
