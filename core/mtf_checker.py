@@ -1,5 +1,5 @@
 import logging
-from core.indicators import calculate_trend, calculate_wt, get_zone
+from core.indicators import calculate_wt, get_zone
 from core.message_builder import tv_link  # Добавили импорт
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ async def collect_mtf_data(symbol, data_collector, timeframes=None):
     Возвращает dict вида {tf: {trend, wt1, wt2, zone}}
     """
     if timeframes is None:
-        timeframes = ["3m", "5m", "15m", "45m", "1h", "4h", "1d"]
+        timeframes = ["3m", "5m", "15m", "1h", "4h", "1d"]  # ARCH-18: убран нестандартный 45m
 
     results = {}
     for tf in timeframes:
@@ -19,11 +19,12 @@ async def collect_mtf_data(symbol, data_collector, timeframes=None):
             if df is None or df.empty:
                 continue
 
-            trend_df = calculate_trend(df.copy())
-            trend = "UP" if trend_df["trend"].iloc[-1] == 1 else "DOWN"
-
             wt_df = calculate_wt(df.copy())
             wt1, wt2 = wt_df["wt1"].iloc[-1], wt_df["wt2"].iloc[-1]
+
+            # WT momentum: wt1 > wt2 = бычий импульс, иначе медвежий.
+            # Заменяет ATR trailing stop — для MTF alignment нужен моментум, не TSL.
+            trend = "UP" if wt1 > wt2 else "DOWN"
 
             zone = get_zone(wt1)
 

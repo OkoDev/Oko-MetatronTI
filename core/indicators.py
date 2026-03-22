@@ -3,7 +3,11 @@ import numpy as np
 from typing import Dict, List, Optional, Union
 
 def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
-    """Вычисляет wt1 и wt2, добавляет в df"""
+    """Вычисляет wt1 и wt2, добавляет в df.
+    ARCH-18: если колонки уже есть и параметры дефолтные — пропускаем пересчёт.
+    """
+    if n1 == 10 and n2 == 21 and "wt1" in df.columns and "wt2" in df.columns:
+        return df
     df = df.copy().reset_index(drop=True)
     hlc3 = (df["high"] + df["low"] + df["close"]) / 3.0
     esa = hlc3.ewm(span=n1, adjust=False).mean()
@@ -94,6 +98,7 @@ def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
 def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame:
     """
     ЕДИНЫЙ источник тренда и TSL-линий для всего проекта.
+    ARCH-18: если колонки уже есть и параметры дефолтные — пропускаем пересчёт.
 
     Расчет по алгоритму Pine Script (точная реализация):
       up = hl2 - factor * ta.atr(atr_period)
@@ -109,6 +114,9 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     Используется везде: check_trend_signals, TSL check_open_trades,
     _calculate_levels в trading_intelligence, trade_simulator TSL-трекинг.
     """
+    _trend_cols = ("trend", "trendup", "trenddown", "tsl")
+    if atr_period == 43 and factor == 1.0 and all(c in df.columns for c in _trend_cols):
+        return df
     df = df.copy().reset_index(drop=True)
 
     # --- 1. True Range — через единую функцию проекта ---

@@ -6,25 +6,26 @@ Trading Intelligence Layer - система объединения и анали
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, NamedTuple, Optional, Tuple, Any
 import pandas as pd
 import numpy as np
 
 # Модели данных
 from core.signal_models import (
     SignalType, SignalDirection, SignalStrength,
-    SignalData, MarketContext, TradingRecommendation,
+    SignalData, MarketContext, TradingRecommendation, MTFContext,
 )
 
 # Проверки сигналов
 from core.signal_checkers import (
-    check_anomaly_signals, check_wt_signals, check_mtf_signals,
+    check_anomaly_signals, check_wt_signals,
     check_trend_signals, check_mtf_bias_signal, check_wt_b_signals,
 )
 
 # Форматтер рекомендаций
 from core.intelligence_formatter import format_intelligence_message  # noqa: F401 — re-export
 from core.data_quality import check_ohlcv_quality
+from core.entry_config import get_primary_entry_tf
 
 # Strategy Pattern
 try:
@@ -85,7 +86,6 @@ class TradingIntelligence:
         "wt_signal":      None,
         "anomaly":        None,
         "divergence":     None,
-        "mtf_signal":     None,
         "confluence":     None,
         "smc_structure":  None,
     }
@@ -97,7 +97,7 @@ class TradingIntelligence:
 
         # Веса сигналов: MTF_BIAS = главное WaveTrend-ядро (7 TF, alignment, senior gate)
         # Пивоты = второе ядро (подтверждение + цели).
-        # MTF_SIGNAL / MTF_ALERT — временно сохранены, будут упразднены после тестирования MTF_BIAS.
+        # DEV-31: MTF_SIGNAL удалён (legacy, 0 сделок, заменён MTF_BIAS).
         self.signal_weights = {
             SignalType.MTF_BIAS:       0.50,  # ГЛАВНОЕ ядро — WaveTrend 7 TF
             SignalType.PIVOT_REVERSAL: 0.20,  # второе ядро — пивоты (подтверждение + цели)
@@ -105,8 +105,7 @@ class TradingIntelligence:
             SignalType.DIVERGENCE:     0.10,
             SignalType.MTF_ALERT:      0.10,  # → будет упразднён в Шаге 3
             SignalType.WT_SIGNAL:      0.08,
-            SignalType.WT_B_SIGNAL:    0.15,  # тип B: WR=85% на бэктесте
-            SignalType.MTF_SIGNAL:     0.05,  # → будет упразднён в Шаге 3
+            SignalType.WT_B_SIGNAL:    0.35,  # тип B: WR=85% на бэктесте (DEV-24: реанимация)
             SignalType.TREND_SIGNAL:   0.05,
             SignalType.ANOMALY:        0.03,
             SignalType.SMC_STRUCTURE:  0.12,  # BOS/CHoCH — Этап 9 SMC
@@ -118,7 +117,7 @@ class TradingIntelligence:
         self.thresholds = {
             "min_signals": 2,  # Минимум сигналов для рекомендации
             "min_strength": 10,  # TI не фильтрует — фильтрация только в monitoring.py через config.yaml
-            "min_confidence": 0.55,  # Минимальная уверенность (снижено с 0.6 для устойчивости к штрафам)
+            "min_confidence": 0.55,  # Минимальная уверенность
             "conflict_threshold": 0.3,  # Порог конфликтующих сигналов
             "volume_threshold": 100000,  # Минимальный объем для анализа (снижен с 1M)
             "volatility_threshold": 50.0  # Максимальная волатильность (увеличен с 20)
@@ -153,11 +152,22 @@ class TradingIntelligence:
         try:
             from core.outcome_predictor import OutcomePredictor
             op = OutcomePredictor()
-            op.fit(db_path)
+            # ARCH-21: скользящее окно из конфига (None = вся история)
+            _tw = (config.get("outcome_predictor.training_window") if config else None)
+            op.fit(db_path, training_window=_tw)
             self.outcome_predictor = op
             logger.info("OutcomePredictor: %s", op.info())
         except Exception as e:
             logger.warning("OutcomePredictor не инициализирован: %s", e)
+
+        # ARCH-12.5: AutoCalibrator — rule-based калибровка MTF multipliers
+        self._auto_calibrator = None
+        try:
+            from core.auto_calibrator import AutoCalibrator
+            self._auto_calibrator = AutoCalibrator(db_path=db_path)
+            logger.info("AutoCalibrator: загружен (%s)", self._auto_calibrator.calibration_path)
+        except Exception as e:
+            logger.warning("AutoCalibrator не инициализирован: %s", e)
 
         # Strategy Pattern: инициализируем все активные стратегии
         self.strategy = None           # основная (для TG-сигналов)
@@ -218,7 +228,6 @@ class TradingIntelligence:
             "wt_b_signal":    SignalType.WT_B_SIGNAL,
             "anomaly":        SignalType.ANOMALY,
             "divergence":     SignalType.DIVERGENCE,
-            "mtf_signal":     SignalType.MTF_SIGNAL,
             "mtf_bias":       SignalType.MTF_BIAS,
         }
         try:
@@ -317,6 +326,106 @@ class TradingIntelligence:
             if rec is not None
         }
     
+    # Приоритет стратегий для оркестровки (ARCH-09)
+    _STRATEGY_PRIORITY = [
+        "reversal_scanner",     # WT 15m разворот — CONFLUENCE + TSL + пивот + дивер
+        "reversal",             # качественный разворот (1 сигнал без count-penalty)
+        "trend_following",      # несколько трендовых подтверждений
+    ]
+
+    def _pick_best_recommendation(
+        self,
+        all_recs: Dict[str, "TradingRecommendation"],
+    ) -> tuple[Optional["TradingRecommendation"], str]:
+        """
+        Оркестровый выбор лучшей рекомендации (ARCH-09):
+          1. reversal_scanner (разворотный сетап) — если есть, берём сразу
+          2. reversal / trend_following — из обоих берём с бо́льшим strength
+          3. Любая другая загруженная стратегия (fallback)
+
+        Returns (recommendation, strategy_name).
+        """
+        if not all_recs:
+            return None, "legacy"
+
+        # Priority-1: reversal_scanner
+        if rec := all_recs.get("reversal_scanner"):
+            return rec, "reversal_scanner"
+
+        # Priority-2: reversal / trend_following — max by overall_strength
+        candidates = {
+            k: v for k, v in all_recs.items()
+            if k in ("reversal", "trend_following")
+        }
+        if candidates:
+            best_name = max(
+                candidates,
+                key=lambda n: candidates[n].overall_strength or 0,
+            )
+            return candidates[best_name], best_name
+
+        # Priority-3: любая другая стратегия
+        name, rec = next(iter(all_recs.items()))
+        return rec, name
+
+    # ── ARCH-20: явный арбитр стратегий ──────────────────────────────────────
+
+    class _StrategyDecision(NamedTuple):
+        direction: "SignalDirection"
+        confidence_mult: float
+        reason: str
+
+    def _select_strategy(
+        self,
+        signals: List[SignalData],
+        mtf_ctx: Optional[MTFContext],
+    ) -> "_StrategyDecision":
+        """
+        ARCH-20: Явный арбитр направлений (interim fix без ScanContext).
+
+        Считает силу LONG vs SHORT по взвешенной сумме strength сигналов,
+        сверяет с MTF bias → возвращает итоговое direction, confidence_mult и reason.
+        confidence_mult применяется к recommendation.confidence после выбора стратегии.
+        """
+        if not signals:
+            return self._StrategyDecision(SignalDirection.NEUTRAL, 1.0, "no_signals")
+
+        long_str = sum(s.strength for s in signals if s.direction == SignalDirection.LONG)
+        short_str = sum(s.strength for s in signals if s.direction == SignalDirection.SHORT)
+        total = long_str + short_str or 1
+
+        long_pct = long_str / total
+        short_pct = short_str / total
+
+        # Доминирующее направление из сигналов (порог 65%)
+        if long_pct >= 0.65:
+            sig_dir = SignalDirection.LONG
+        elif short_pct >= 0.65:
+            sig_dir = SignalDirection.SHORT
+        else:
+            sig_dir = SignalDirection.NEUTRAL  # конфликт
+
+        bias = mtf_ctx.direction_bias if mtf_ctx else SignalDirection.NEUTRAL
+        bs = mtf_ctx.bias_strength if mtf_ctx else 0.0
+
+        if bias == SignalDirection.NEUTRAL:
+            if sig_dir == SignalDirection.NEUTRAL:
+                return self._StrategyDecision(SignalDirection.NEUTRAL, 0.85, "direction_conflict_no_bias")
+            return self._StrategyDecision(sig_dir, 1.0, "no_mtf_bias")
+
+        if sig_dir == SignalDirection.NEUTRAL:
+            # Конфликт сигналов → доверяем MTF bias, снижаем уверенность
+            return self._StrategyDecision(bias, 0.80, f"direction_conflict|bias={bias.value}")
+
+        if sig_dir == bias:
+            # Сигналы согласованы с bias → лёгкое усиление
+            mult = round(min(1.15, 1.0 + 0.1 * bs), 2)
+            return self._StrategyDecision(sig_dir, mult, f"aligned|bias={bias.value}")
+
+        # Сигналы против bias → снижаем уверенность пропорционально bias_strength
+        mult = round(max(0.70, 1.0 - 0.30 * bs), 2)
+        return self._StrategyDecision(sig_dir, mult, f"counter_bias={bias.value}")
+
     def _get_cached_analysis(self, symbol: str) -> Optional[TradingRecommendation]:
         """Получает кэшированный анализ если он еще актуален"""
         if symbol in self.analysis_cache:
@@ -331,12 +440,14 @@ class TradingIntelligence:
         """Кэширует результат анализа"""
         self.analysis_cache[symbol] = (datetime.now(), recommendation)
         
-    async def analyze_symbol(self, symbol: str, pre_collected_signals=None) -> Optional[TradingRecommendation]:
+    async def analyze_symbol(self, symbol: str, pre_collected_signals=None, manual_request: bool = False) -> Optional[TradingRecommendation]:
         """
         Комплексный анализ символа и генерация рекомендации.
         pre_collected_signals — если переданы, пропускает _collect_all_signals (экономит API-вызовы).
+        manual_request — ручной запрос пользователя: смягчаем фильтры, чтобы показать хоть что-то.
         """
         import asyncio
+        from core.intelligence.decision_trace import create_trace
         start_time = datetime.now()
 
         try:
@@ -345,6 +456,9 @@ class TradingIntelligence:
             if cached_result:
                 logger.debug(f"Используем кэшированный анализ для {symbol}")
                 return cached_result
+
+            # DEV-12: Decision Trace — аудит решения
+            trace = create_trace(symbol)
 
             # Этап 8.4.2: фиксируем единый snapshot_time для всех проверок
             snapshot_time = datetime.now()
@@ -378,10 +492,16 @@ class TradingIntelligence:
             if not signals:
                 logger.warning(f"Не найдено сигналов для {symbol} (pre_collected={bool(pre_collected_signals)})")
                 return None
-            
+
             # Фильтруем сигналы по качеству
             filtered_signals = self._filter_signals_by_quality(signals)
-            
+
+            # DEV-12: записываем сырые сигналы в trace
+            for sig in filtered_signals:
+                trace.add_signal(sig)
+            trace.signal_count = len(filtered_signals)
+            trace.signal_quality = collect_quality
+
             # Снижаем требования для популярных пар
             _sig_cfg = self.config.get("analysis", {}).get("signals", {})
             min_signals = _sig_cfg.get("min_signals", self.thresholds["min_signals"])
@@ -389,16 +509,45 @@ class TradingIntelligence:
                 ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 'MATIC', 'AVAX'])
             single_min_strength = _sig_cfg.get("single_signal_min_strength", 50)
             symbol_base = symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', '').replace(':USDT', '')
-            if symbol_base in top_pairs:
-                min_signals = 1  # Для топ-пар достаточно 1 сигнала
+            if symbol_base in top_pairs or manual_request:
+                min_signals = 1  # Для топ-пар и ручного запроса достаточно 1 сигнала
 
             if len(filtered_signals) < min_signals:
                 # Сильный одиночный сигнал пропускаем даже для не-топ пар
                 max_strength = max((s.strength for s in filtered_signals), default=0)
-                if symbol_base not in top_pairs and max_strength < single_min_strength:
+                if not manual_request and symbol_base not in top_pairs and max_strength < single_min_strength:
+                    trace.add_filter("min_signals", False,
+                                     f"{len(filtered_signals)} < {min_signals}, max_str={max_strength}")
                     logger.warning(f"Недостаточно сигналов для {symbol}: {len(filtered_signals)} < {min_signals}, max_str={max_strength}")
                     return None
+                trace.add_filter("min_signals", True, f"bypassed: top_pair={symbol_base in top_pairs} or strong={max_strength}")
+            else:
+                trace.add_filter("min_signals", True, f"{len(filtered_signals)} >= {min_signals}")
                 
+            # ── ARCH-12: MTF Context (аналитический центр) ────────────────────
+            mtf_context = await self._build_mtf_context(symbol)
+            if mtf_context is not None:
+                # DEV-12: сохраняем pre-MTF strength для trace
+                _pre_mtf = {id(s): s.strength for s in filtered_signals}
+                filtered_signals = self._apply_mtf_context(filtered_signals, mtf_context)
+                # DEV-12: записываем multipliers в trace
+                trace.mtf_context = {
+                    "direction_bias": mtf_context.direction_bias.value,
+                    "bias_strength": mtf_context.bias_strength,
+                    "price_zone": mtf_context.price_zone,
+                    "aligned_pct": mtf_context.aligned_pct,
+                    "regime": mtf_context.regime,
+                }
+                for sig in filtered_signals:
+                    orig = _pre_mtf.get(id(sig), sig.strength)
+                    if orig != sig.strength:
+                        sig_type = getattr(sig.signal_type, "value", str(sig.signal_type))
+                        sig_dir = getattr(sig.direction, "value", str(sig.direction))
+                        dir_m = mtf_context.direction_multiplier(sig.direction)
+                        zone_m = mtf_context.zone_multiplier(sig.direction)
+                        comb = dir_m * 0.7 + zone_m * 0.3
+                        trace.add_mtf_multiplier(sig_type, sig_dir, orig, dir_m, zone_m, comb, sig.strength)
+
             # ── SOFT timeout: контекст рынка (Этап 8.4.3) ────────────────────
             try:
                 market_context = await asyncio.wait_for(
@@ -415,7 +564,7 @@ class TradingIntelligence:
                 )
                 fallback_price = 0.0
                 try:
-                    _df = await self.data_collector.get_ohlcv(symbol, "15m", limit=5)
+                    _df = await self.data_collector.get_ohlcv(symbol, get_primary_entry_tf(self.config), limit=5)
                     if _df is not None and len(_df) > 0:
                         fallback_price = float(_df["close"].iloc[-1])
                 except Exception:
@@ -425,13 +574,30 @@ class TradingIntelligence:
                     volume_24h=0, volume_change_24h=0, price_change_24h=0,
                 )
             
+            # ARCH-12: обогащаем MarketContext полем mtf_context
+            if mtf_context is not None:
+                market_context.mtf_context = mtf_context
+
+            # ARCH-17: SMC Context (структура + зоны интереса)
+            smc_context = None
+            try:
+                from core.smc import analyze_smc
+                df_entry = await self.data_collector.get_ohlcv(
+                    symbol, get_primary_entry_tf(self.config), limit=100,
+                )
+                if df_entry is not None and len(df_entry) >= 30:
+                    smc_context = analyze_smc(df_entry)
+                    market_context.smc_context = smc_context
+            except Exception:
+                logger.debug("[%s] analyze_smc failed", symbol, exc_info=True)
+
             # Проверяем минимальные требования к рынку
             if not self._validate_market_context(market_context):
                 logger.warning(f"Рыночный контекст не подходит для анализа {symbol} (объем: {market_context.volume_24h}, цена: {market_context.current_price})")
                 # Для топ-пар все равно продолжаем, даже если контекст не идеален
-                if symbol_base not in top_pairs:
+                if symbol_base not in top_pairs and not manual_request:
                     return None
-            
+
             # Запускаем все стратегии параллельно
             all_recs: Dict[str, TradingRecommendation] = {}
             if self.strategies:
@@ -445,51 +611,147 @@ class TradingIntelligence:
                 except Exception as e:
                     logger.warning(f"Strategies error for {symbol}: {e}, falling back to legacy")
 
-            # Основная рекомендация — от active стратегии
-            recommendation = all_recs.get(self.active_strategy_name)
+            # ── ARCH-09: оркестровый выбор лучшей стратегии ─────────────────
+            # Priority: reversal_scanner > reversal > trend_following > legacy
+            recommendation, chosen_strategy = self._pick_best_recommendation(all_recs)
 
-            # Если основная стратегия не выдала результат — legacy fallback
+            # DEV-12: записываем strategy candidates
+            trace.set_strategy_candidates(all_recs)
+            trace.strategy_name = chosen_strategy or ""
+
             if recommendation is None:
-                logger.debug(f"Active strategy '{self.active_strategy_name}' вернула None для {symbol} — legacy")
-                analysis = self._analyze_signals_advanced(filtered_signals, market_context)
-                recommendation = self._generate_recommendation(
-                    symbol, filtered_signals, analysis, market_context
-                )
+                # Legacy fallback: ни одна стратегия не дала результат
+                # Проверяем min_signals (как стратегии) — не пропускаем одиночные сигналы
+                if len(filtered_signals) < min_signals:
+                    logger.debug("[%s] legacy fallback пропущен: %d сигналов < min_signals=%d",
+                                 symbol, len(filtered_signals), min_signals)
+                else:
+                    logger.debug("[%s] все стратегии вернули None — legacy fallback", symbol)
+                    analysis = self._analyze_signals_advanced(filtered_signals, market_context)
+                    recommendation = self._generate_recommendation(
+                        symbol, filtered_signals, analysis, market_context
+                    )
+                chosen_strategy = "legacy"
 
-            # Тегируем основную рекомендацию именем стратегии
+            # Тегируем рекомендацию выбранной стратегией
             if recommendation is not None:
                 recommendation.metadata = recommendation.metadata or {}
-                recommendation.metadata["strategy_name"] = self.active_strategy_name
-                # Остальные стратегии передаём в monitoring для раздельной регистрации
-                other_recs = {k: v for k, v in all_recs.items() if k != self.active_strategy_name}
+                recommendation.metadata["strategy_name"] = chosen_strategy
+                # Все остальные рекомендации — для раздельной регистрации в monitoring
+                other_recs = {k: v for k, v in all_recs.items() if k != chosen_strategy}
                 if other_recs:
                     recommendation.metadata["all_strategy_recs"] = other_recs
+                if chosen_strategy != self.active_strategy_name:
+                    logger.info(
+                        "[%s] ARCH-09 выбрана стратегия '%s' (active='%s')",
+                        symbol, chosen_strategy, self.active_strategy_name,
+                    )
             
             if recommendation is None:
                 return None
-            
+
+            # ── ARCH-20: явный арбитр направлений ────────────────────────────
+            arbiter = self._select_strategy(filtered_signals, mtf_context)
+            if arbiter.confidence_mult != 1.0:
+                new_conf = round(recommendation.confidence * arbiter.confidence_mult, 3)
+                logger.debug(
+                    "[%s] ARCH-20 arbiter: dir=%s conf %.3f→%.3f mult=%.2f (%s)",
+                    symbol, arbiter.direction.value,
+                    recommendation.confidence, new_conf,
+                    arbiter.confidence_mult, arbiter.reason,
+                )
+                recommendation.confidence = new_conf
+            recommendation.metadata = recommendation.metadata or {}
+            recommendation.metadata["strategy_arbiter"] = {
+                "direction": arbiter.direction.value,
+                "confidence_mult": arbiter.confidence_mult,
+                "reason": arbiter.reason,
+            }
+
             # Улучшаем анализ с помощью ML (с таймаутом)
+            _pre_ml_conf = recommendation.confidence
             if self.ml_predictor:
                 try:
                     recommendation = await asyncio.wait_for(
                         self._enhance_recommendation_with_ml(symbol, recommendation, market_context),
                         timeout=5.0
                     )
+                    # DEV-12: записываем ML adjustment
+                    if recommendation.confidence != _pre_ml_conf:
+                        trace.set_ml_adjustment(
+                            _pre_ml_conf,
+                            recommendation.metadata.get("ml_win_prob", recommendation.confidence) if recommendation.metadata else recommendation.confidence,
+                            recommendation.confidence,
+                        )
                 except asyncio.TimeoutError:
                     logger.warning(f"Таймаут ML анализа для {symbol}, продолжаем без ML")
+                    trace.add_filter("ml_enhance", False, "timeout")
                 except Exception as e:
                     logger.warning(f"Ошибка ML анализа для {symbol}: {e}, продолжаем без ML")
-            
+                    trace.add_filter("ml_enhance", False, str(e))
+
+            # Пересчёт action после ML blend: confidence могла упасть ниже порога
+            _signals_cfg = self.config.get("analysis", {}).get("signals", {}) if self.config else {}
+            _global_min_conf = _signals_cfg.get("min_confidence", self.thresholds["min_confidence"])
+            # DEV-26: per-signal-type порог — берём тип доминирующего сигнала (max strength)
+            _by_type = _signals_cfg.get("min_confidence_by_type", {})
+            _primary_type = ""
+            if recommendation.supporting_signals:
+                _dom = max(recommendation.supporting_signals, key=lambda s: s.strength or 0)
+                _primary_type = _dom.signal_type.value if hasattr(_dom.signal_type, "value") else str(_dom.signal_type)
+            _min_conf = _by_type.get(_primary_type, _global_min_conf)
+            if recommendation.confidence < _min_conf:
+                if recommendation.action in ("BUY", "SELL"):
+                    trace.add_filter("confidence_gate", False,
+                                     f"confidence={recommendation.confidence:.3f} < {_min_conf:.2f} ({_primary_type or 'global'}) → WATCH")
+                    logger.info(
+                        "[%s] action %s→WATCH: confidence=%.3f < %.2f (type=%s) после ML",
+                        symbol, recommendation.action,
+                        recommendation.confidence, _min_conf, _primary_type or "global",
+                    )
+                    recommendation.action = "WATCH"
+            else:
+                trace.add_filter("confidence_gate", True,
+                                 f"confidence={recommendation.confidence:.3f} >= {_min_conf:.2f}")
+
             # Этап 8.4.2/8.4.3: snapshot_time + analysis_quality в метаданных
             if recommendation.metadata is None:
                 recommendation.metadata = {}
             recommendation.metadata["snapshot_time"] = snapshot_time.isoformat()
             recommendation.metadata["analysis_quality"] = collect_quality
+            # ARCH-12: сохраняем MTFContext для features_json
+            if mtf_context is not None:
+                recommendation.metadata["mtf_context"] = {
+                    "direction_bias": mtf_context.direction_bias.value,
+                    "bias_strength": mtf_context.bias_strength,
+                    "price_zone": mtf_context.price_zone,
+                    "aligned_pct": mtf_context.aligned_pct,
+                    "senior_matches": mtf_context.senior_matches,
+                    "wt_spreads": mtf_context.wt_spreads,
+                    "regime": mtf_context.regime,
+                    "bull_pct": mtf_context.bull_pct,
+                    "bear_pct": mtf_context.bear_pct,
+                    "senior_reversal": mtf_context.senior_reversal,
+                }
+            # ARCH-17: сохраняем SMCContext для features_json
+            if smc_context is not None:
+                recommendation.metadata["smc_context"] = smc_context.to_features()
             if collect_quality != "full":
                 logger.info(
                     "[intelligence] %s: рекомендация с analysis_quality=%s",
                     symbol, collect_quality,
                 )
+
+            # DEV-12: финализируем trace и записываем в metadata
+            trace.set_final(
+                action=recommendation.action,
+                confidence=recommendation.confidence,
+                strength=recommendation.overall_strength,
+                direction=getattr(recommendation.direction, "value", str(recommendation.direction)),
+            )
+            trace.regime = getattr(mtf_context, "regime", "") or "" if mtf_context else ""
+            recommendation.metadata["decision_trace"] = trace.to_dict()
+            logger.debug("[decision_trace] %s", trace.summary())
 
             # Кэшируем результат
             self._cache_analysis(symbol, recommendation)
@@ -533,7 +795,7 @@ class TradingIntelligence:
           - "degraded" — один или несколько детекторов бросили исключение,
                          но хотя бы часть сигналов собрана (soft fallback, Этап 8.4.3)
         """
-        _TOTAL_CHECKERS = 6
+        _TOTAL_CHECKERS = 5  # DEV-31: было 6, убран check_mtf_signals
         signals: List[SignalData] = []
         quality = "full"
         try:
@@ -542,7 +804,7 @@ class TradingIntelligence:
             # ── HARD: параллельная загрузка OHLCV (критичный шаг) ─────────────
             df_1h, df_15m, df_3m = await asyncio.gather(
                 self.data_collector.get_ohlcv(symbol, "1h", limit=100),
-                self.data_collector.get_ohlcv(symbol, "15m", limit=100),
+                self.data_collector.get_ohlcv(symbol, get_primary_entry_tf(self.config), limit=100),
                 self.data_collector.get_ohlcv(symbol, "3m", limit=100),
             )
             t1 = asyncio.get_event_loop().time()
@@ -556,7 +818,7 @@ class TradingIntelligence:
             # Проверка качества 15m-данных (свежесть + NaN)
             if df_15m is not None and not df_15m.empty:
                 ok, reason = check_ohlcv_quality(
-                    df_15m, timeframe="15m",
+                    df_15m, timeframe=get_primary_entry_tf(self.config),
                     min_bars=50,
                     symbol=symbol,
                 )
@@ -564,15 +826,22 @@ class TradingIntelligence:
                     logger.info("[intelligence] %s: пропуск из-за качества данных: %s", symbol, reason)
                     return None, "full"
 
+            # ── Regime: определяем режим рынка для mtf_bias ──────────────────
+            _regime: Optional[str] = None
+            try:
+                from core.market_regime import MarketRegimeClassifier
+                _regime = MarketRegimeClassifier().classify_from_dataframes(df_15m, df_1h)
+            except Exception:
+                logger.debug("[%s] MarketRegime: не удалось определить", symbol)
+
             # ── SOFT: параллельный запуск детекторов (Этап 8.4.3) ─────────────
             # return_exceptions=True: отдельный детектор не ломает остальных
             # MTF_BIAS — главное WT-ядро (7 TF, alignment score, senior gate)
             results = await asyncio.gather(
                 check_anomaly_signals(symbol, df_15m),
                 check_wt_signals(symbol, df_15m),
-                check_mtf_signals(symbol, df_1h, df_15m, df_3m),
                 check_trend_signals(symbol, df_1h),
-                check_mtf_bias_signal(symbol, self.data_collector, regime=None, cfg=self.config),
+                check_mtf_bias_signal(symbol, self.data_collector, regime=_regime, cfg=self.config),
                 check_wt_b_signals(symbol, df_1h),
                 return_exceptions=True,
             )
@@ -609,6 +878,125 @@ class TradingIntelligence:
                 filtered.append(signal)
         return filtered
     
+    async def _build_mtf_context(self, symbol: str) -> Optional[MTFContext]:
+        """
+        ARCH-12: Строит MTFContext для символа.
+        Данные из кешированного collect_mtf_data + weekly_pivots + regime.
+        """
+        try:
+            from core.mtf_checker import collect_mtf_data
+            from core.mtf_interpreter import analyze_context
+
+            snapshot = await collect_mtf_data(symbol, self.data_collector)
+            if not snapshot:
+                return None
+
+            # Текущая цена из snapshot (15m или 1h)
+            current_price = 0.0
+            try:
+                _df = await self.data_collector.get_ohlcv(symbol, get_primary_entry_tf(self.config), limit=5)
+                if _df is not None and len(_df) > 0:
+                    current_price = float(_df["close"].iloc[-1])
+            except Exception:
+                pass
+
+            # Weekly pivots из кеша
+            weekly_pivots = None
+            try:
+                from core.pivot_calculator_fixed import PivotCalculatorFixed
+                pc = PivotCalculatorFixed()
+                weekly_pivots = await pc.get_weekly_pivots(symbol, self.data_collector)
+            except Exception:
+                logger.debug("[%s] weekly pivots для MTFContext недоступны", symbol)
+
+            # Regime
+            _regime: Optional[str] = None
+            try:
+                from core.market_regime import MarketRegimeClassifier
+                df_15m = await self.data_collector.get_ohlcv(symbol, get_primary_entry_tf(self.config), limit=100)
+                df_1h = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
+                _regime = MarketRegimeClassifier().classify_from_dataframes(df_15m, df_1h)
+            except Exception:
+                pass
+
+            ctx = analyze_context(
+                snapshot=snapshot,
+                current_price=current_price,
+                weekly_pivots=weekly_pivots,
+                regime=_regime,
+            )
+
+            # ARCH-12.5: подгружаем калиброванные параметры
+            if hasattr(self, '_auto_calibrator') and self._auto_calibrator is not None:
+                ctx.calibration_params = self._auto_calibrator.get_params()
+
+            return ctx
+
+        except Exception:
+            logger.debug("[%s] _build_mtf_context failed", symbol, exc_info=True)
+            return None
+
+    @staticmethod
+    def _apply_mtf_context(
+        signals: List[SignalData], ctx: MTFContext
+    ) -> List[SignalData]:
+        """
+        ARCH-12: Применяет MTFContext к сигналам — адаптивные множители strength.
+
+        Принцип: адаптивные веса, НЕ жёсткие блоки.
+        Сигнал ПРОТИВ bias ослабляется, но не запрещается.
+        Разворот от R5 (zone=1.0) при SHORT должен пройти.
+        """
+        for signal in signals:
+            original = signal.strength
+
+            # Множитель по направлению bias
+            dir_mult = ctx.direction_multiplier(signal.direction)
+
+            # ARCH-19: дифференцированный penalty для контр-трендовых сигналов.
+            # Вместо единого floor (≈0.3-0.4) — три уровня в зависимости от качества сигнала.
+            if dir_mult < 1.0:
+                score = signal.data.get("score", 0) if signal.data else 0
+                has_div = any(
+                    f in (signal.data.get("factors") or [])
+                    for f in ("WT_DIVERGENCE", "WT_HIDDEN_DIV")
+                )
+                if signal.signal_type == SignalType.PIVOT_REVERSAL and score >= 65:
+                    dir_mult = 1.0   # senior_reversal — без penalty
+                elif has_div and score >= 65:
+                    dir_mult = 0.75  # div + качество — умеренное снижение
+                else:
+                    dir_mult = 0.40  # шум — текущее поведение
+
+            # Множитель по ценовой зоне (пивоты)
+            zone_mult = ctx.zone_multiplier(signal.direction)
+
+            # Комбинированный множитель (веса из калибровки или defaults)
+            cp = ctx.calibration_params or {}
+            dw = cp.get("dir_weight", 0.7)
+            zw = cp.get("zone_weight", 0.3)
+            combined = dir_mult * dw + zone_mult * zw
+
+            # CONFLUENCE — агрегированный сигнал, MTF bias уже частично учтён внутри score.
+            # Мягкий penalty: максимум -25%, чтобы сильные (80+) проходили, слабые (60) отсеивались.
+            if signal.signal_type == SignalType.CONFLUENCE:
+                combined = max(0.75, combined)
+
+            new_strength = max(0, min(100, int(round(signal.strength * combined))))
+            signal.strength = new_strength
+
+            # Пересчёт confidence
+            signal.confidence = round(new_strength / 100.0, 2)
+
+            if abs(new_strength - original) >= 5:
+                logger.debug(
+                    "[mtf_context] %s %s %s: strength %d→%d (dir=%.2f zone=%.2f comb=%.2f)",
+                    signal.symbol, signal.signal_type.value, signal.direction.value,
+                    original, new_strength, dir_mult, zone_mult, combined,
+                )
+
+        return signals
+
     def _validate_market_context(self, market_context: MarketContext) -> bool:
         """Проверяет, подходит ли рыночный контекст для анализа"""
         # Проверяем, что цена не равна нулю (критично)
@@ -791,7 +1179,7 @@ class TradingIntelligence:
             swing_high = None
             volatility = None
             try:
-                df_15m = await self.data_collector.get_ohlcv(normalized_symbol, "15m", limit=60)
+                df_15m = await self.data_collector.get_ohlcv(normalized_symbol, get_primary_entry_tf(self.config), limit=60)
                 atr = self._compute_atr(df_15m, period=14)
                 atr_slow = self._compute_atr(df_15m, period=28)
                 if df_15m is not None and len(df_15m) >= 21:

@@ -21,8 +21,14 @@ logger = logging.getLogger(__name__)
 # Минимум закрытых сделок для обучения
 MIN_TRADES = 30
 
-# Маппинг signal_type → one-hot позиция
-_SIG_ORDER = ["pivot_reversal", "trend_signal", "wt_signal"]
+# ARCH-21: скользящее окно — по умолчанию None (вся история)
+DEFAULT_TRAINING_WINDOW = None
+
+# Маппинг signal_type → one-hot позиция (DEV-13: реальные типы из БД)
+# anomaly=34, confluence=1301, mtf_alert=137, mtf_bias=5,
+# pivot_reversal=445, trend_signal=45, wt_signal=476
+_SIG_ORDER = ["pivot_reversal", "trend_signal", "wt_signal",
+              "confluence", "anomaly", "mtf_alert", "mtf_bias"]
 
 # Маппинг режима → one-hot позиция
 _REGIME_ORDER = ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL"]
@@ -47,7 +53,7 @@ def _build_feature_vector(
     features_dict: Dict[str, Any],
     regime: Optional[str],
 ) -> List[float]:
-    """Строит вектор из 12 признаков."""
+    """Строит вектор из 16 признаков."""
     # 1-2: strength, confidence
     v = [
         min(max((strength or 50.0) / 100.0, 0.0), 1.0),
@@ -77,14 +83,24 @@ class OutcomePredictor:
     def __init__(self):
         self._model = None
         self._trained = False
-        self._n_features = 12
+        self._n_features = 16
         self._n_samples = 0
         self._cv_score: Optional[float] = None
+        # DEV-12 (8.4.7): Confidence Calibrator
+        try:
+            from core.intelligence.confidence_calibrator import ConfidenceCalibrator
+            self._calibrator: Optional[object] = ConfidenceCalibrator()
+        except Exception:
+            self._calibrator = None
 
     # ------------------------------------------------------------------
-    def fit(self, db_path: str = "subscriptions.db") -> bool:
+    def fit(self, db_path: str = "subscriptions.db", training_window: Optional[int] = None) -> bool:
         """
         Обучает модель на закрытых сделках (status IN ('TP','SL')).
+
+        training_window — ARCH-21: если задан, берём только последние N записей
+        (скользящее окно). Позволяет адаптироваться к смене рынка без накопления
+        старого bias. Рекомендуется N=500-1000 при наличии 1000+ чистых записей.
 
         Returns True если обучение прошло успешно, False иначе.
         """
@@ -92,6 +108,15 @@ class OutcomePredictor:
             return False
         try:
             rows = self._load_closed_trades(db_path)
+
+            # ARCH-21: скользящее окно — берём только последние N записей
+            if training_window and len(rows) > training_window:
+                logger.info(
+                    "OutcomePredictor: sliding window %d → %d (из %d)",
+                    len(rows), training_window, len(rows),
+                )
+                rows = rows[-training_window:]
+
             if len(rows) < MIN_TRADES:
                 logger.info(
                     "OutcomePredictor: недостаточно данных (%d/%d) — пропуск обучения",
@@ -112,7 +137,7 @@ class OutcomePredictor:
                         r["regime"],
                     )
                     X.append(fv)
-                    y.append(1 if r["status"] == "TP" else 0)
+                    y.append(1 if r["status"] in ("TP", "TSL") else 0)
                 except Exception as row_err:
                     logger.debug("OutcomePredictor: пропуск строки — %s", row_err)
                     continue
@@ -155,6 +180,14 @@ class OutcomePredictor:
                 win_rate,
                 f"{self._cv_score:.3f}" if self._cv_score else "n/a",
             )
+
+            # DEV-12 (8.4.7): обучаем калибратор вместе с основной моделью
+            if self._calibrator is not None:
+                try:
+                    self._calibrator.fit(db_path)
+                except Exception as cal_err:
+                    logger.debug("ConfidenceCalibrator.fit: %s", cal_err)
+
             return True
 
         except Exception as e:
@@ -198,11 +231,24 @@ class OutcomePredictor:
                 SELECT signal_type, direction, strength, confidence,
                        regime, status, features_json
                 FROM simulated_trades
-                WHERE status IN ('TP', 'SL')
+                WHERE status IN ('TP', 'SL', 'TSL')
                   AND signal_type IS NOT NULL
                   AND direction IS NOT NULL
             """)
             return [dict(r) for r in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    def calibrate_confidence(self, raw_confidence: float) -> float:
+        """DEV-12 (8.4.7): Возвращает откалиброванный confidence.
+
+        Если калибратор не обучен — возвращает raw_confidence без изменений.
+        """
+        if self._calibrator is None or not getattr(self._calibrator, "is_fitted", False):
+            return raw_confidence
+        try:
+            return self._calibrator.calibrate(raw_confidence)
+        except Exception:
+            return raw_confidence
 
     # ------------------------------------------------------------------
     @property
@@ -210,8 +256,15 @@ class OutcomePredictor:
         return self._trained
 
     def info(self) -> Dict:
+        cal_info = {}
+        if self._calibrator is not None:
+            try:
+                cal_info = self._calibrator.info()
+            except Exception:
+                pass
         return {
             "trained": self._trained,
             "n_samples": self._n_samples,
             "cv_auc": self._cv_score,
+            "calibrator": cal_info,
         }

@@ -41,9 +41,9 @@ class FakeCfg:
     _data = {
         "strategy_name": "confluence",
         "trading": {
-            "active_strategy": "confluence_scanner",
-            "active_strategies": ["confluence_scanner"],
-            "strategies": {"confluence_scanner": {"min_strength": 60}},
+            "active_strategy": "reversal_scanner",
+            "active_strategies": ["reversal_scanner"],
+            "strategies": {"reversal_scanner": {"min_strength": 60}},
         },
     }
     def get(self, key, default=None):
@@ -176,7 +176,6 @@ class TestCollectAllSignalsQuality:
         originals = {
             "check_anomaly_signals": ti_mod.check_anomaly_signals,
             "check_wt_signals": ti_mod.check_wt_signals,
-            "check_mtf_signals": ti_mod.check_mtf_signals,
             "check_trend_signals": ti_mod.check_trend_signals,
             "check_mtf_bias_signal": ti_mod.check_mtf_bias_signal,
             "check_wt_b_signals": ti_mod.check_wt_b_signals,

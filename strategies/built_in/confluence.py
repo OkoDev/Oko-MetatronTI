@@ -46,7 +46,6 @@ class ConfluenceStrategy(BaseStrategy):
     def _init_signal_weights(self, config: Dict) -> Dict[SignalType, float]:
         """Инициализирует веса сигналов из конфига или использует дефолты."""
         default_weights = {
-            SignalType.MTF_SIGNAL: 0.25,
             SignalType.MTF_ALERT: 0.30,
             SignalType.PIVOT_REVERSAL: 0.20,
             SignalType.DIVERGENCE: 0.15,

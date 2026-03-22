@@ -197,13 +197,208 @@
 asyncio.gather возвращает результаты в порядке аргументов → anomaly всегда первый в supporting_signals.
 Исправлено приоритетным списком: `wt_b_signal > mtf_bias > confluence > pivot_reversal > ...`
 
-## ✅ Этап 9 — SMC (Smart Money Concepts) базовая реализация (14-15.03.2026)
+## ✅ Этап 9.0 — SMC (Smart Money Concepts) базовая реализация (14-15.03.2026)
 - `core/structure_detector.py` — detect_swing_highs_lows, detect_choch, detect_bos, detect_structure
 - BOS > CHoCH по приоритету; strength: BOS=65, CHoCH=55
 - `core/signal_checkers.py` — check_smc_signals() → SignalData(SMC_STRUCTURE)
 - `core/signal_models.py` — SignalType.SMC_STRUCTURE
 - 25/25 тестов в test_structure_detector.py
 - Восстановлены check_divergence_signals / check_pivot_signals после рефакторинга ARCH-02
+
+## ✅/🔲 Этап 10 — MTF Interpreter как аналитический центр (ARCH-12, 16.03.2026)
+**Статус:** Шаги 1-4 ГОТОВЫ | Шаг 5 (ML на MTF фичах) ждёт накопления данных
+**Приоритет:** КРИТИЧЕСКИЙ — архитектурный переход, меняет принцип работы бота
+
+### Предпосылки (16.03.2026, анализ 210 сделок за 15-16.03)
+- **82% сделок — SHORT**, WR SHORT = 33.5% (убыточно)
+- **WR LONG = 67.6%** — в 2 раза лучше, но бот почти не лонгует
+- **29 SHORT** выбиты одним пампом за 35 минут (коррелированный риск)
+- **74% SL-сделок** были в плюсе (avg max_R=5.3) перед разворотом в убыток
+- Бот ловит медвежьи сигналы на 15m внутри бычьего тренда на старших ТФ
+- **Корень:** сигнал на 15m принимает решение, а старшие ТФ — только подтверждают
+
+### Суть изменения
+Инверсия порядка принятия решений: **анализ → решение → вход** вместо **сигнал → анализ → решение**.
+
+`mtf_interpreter.py` из генератора сигнала (один из 6 чекеров) превращается в **аналитический центр** — единый фундамент для всех остальных компонентов.
+
+### Архитектура ДО (плоская модель)
+```
+6 чекеров параллельно (anomaly, wt, mtf, trend, mtf_bias, wt_b)
+  │
+  ▼ плоский список сигналов (все равны)
+  │
+  стратегия (confluence/reversal/trend) — голосование
+  │
+  ▼ recommendation
+  │
+  monitoring — постфактум фильтры (BTC, dedup)
+```
+
+Проблема: 15m-сигнал **решает** направление. Старшие ТФ и пивоты — декорация.
+
+### Архитектура ПОСЛЕ (иерархическая модель)
+```
+┌──────────────────────────────────────────────────┐
+│  CORE ANALYTICS — mtf_interpreter (центр)        │
+│                                                  │
+│  Вход: snapshot 7 ТФ + пивоты 1M/1W/1D + regime │
+│                                                  │
+│  Выход: MTFContext {                             │
+│    direction_bias: LONG/SHORT/NEUTRAL            │
+│    bias_strength: 0.0-1.0                        │
+│    price_zone: 0.0-1.0 (S5→R5 weekly)           │
+│    wt_spreads: {tf: |wt1-wt2|}                   │
+│    senior_reversal: dict|None                    │
+│    regime: TREND_UP/DOWN/RANGE/HIGH_VOL          │
+│  }                                               │
+│                                                  │
+│  Это КОНТЕКСТ, не сигнал.                        │
+│  Говорит "куда смотреть", не "входи".            │
+└────────────────────┬─────────────────────────────┘
+                     │
+                     ▼
+┌──────────────────────────────────────────────────┐
+│  SIGNAL LAYER — поиск точки входа                │
+│                                                  │
+│  Получает: MTFContext + OHLCV                    │
+│  Ищет ТОЛЬКО в разрешённом направлении           │
+│                                                  │
+│  WT cross, confluence, pivot reversal,           │
+│  divergence — как тайминг, не как решение        │
+│                                                  │
+│  strength *= context.direction_multiplier(dir)   │
+│  SHORT у S2_weekly + bias=LONG → strength × 0.4  │
+│  LONG у S2_weekly + bias=LONG → strength × 1.5   │
+└────────────────────┬─────────────────────────────┘
+                     │
+                     ▼
+┌──────────────────────────────────────────────────┐
+│  EXECUTION LAYER — SL/TP/размер                  │
+│                                                  │
+│  SL: swing_low/high (из структуры)               │
+│  TP: пивот иерархия (1M>1W>1D)                   │
+│  Размер: Kelly × regime_multiplier               │
+│  Тип: reversal (быстрый TP) / trend (широкий TSL)│
+└────────────────────┬─────────────────────────────┘
+                     │
+                     ▼
+┌──────────────────────────────────────────────────┐
+│  RISK LAYER — последний фильтр                   │
+│                                                  │
+│  Dedup, position limit, correlation guard,       │
+│  BTC filter                                      │
+└──────────────────────────────────────────────────┘
+```
+
+### Что меняется принципиально
+| | До | После |
+|---|---|---|
+| Кто решает направление | 6 чекеров голосуют | mtf_interpreter (старшие ТФ + пивоты) |
+| Роль 15m сигналов | Решение | Тайминг входа |
+| Пивоты | Только для TP (постфактум) | Фундамент анализа (зоны покупок/продаж) |
+| Regime | Не используется (regime=None) | Определяет тип торговли |
+| Strategies layer | 7 стратегий голосуют | Профили execution (reversal/trend) |
+
+### Данные в MTFContext (уже доступны, но теряются)
+| Данные | Источник | Текущий статус |
+|--------|----------|---------------|
+| wt2 по каждому ТФ | collect_mtf_data | Собирается, выбрасывается из tf_table |
+| tf_table (28 фичей) | interpret() | В SignalData.data, не пишется в features_json |
+| bull_pct / bear_pct | interpret() | Только в SignalData.data |
+| senior_reversal | detect_senior_reversal() | Вычисляется, никем не читается |
+| price_zone (пивоты) | pivot_calculator | Не связан с MTF пайплайном |
+| wt_spread по ТФ | wt1-wt2 | Не вычисляется (wt2 выброшен) |
+
+### План реализации (инкрементальный)
+| Шаг | Что | Эффект |
+|-----|-----|--------|
+| 1 | `analyze_context()` → MTFContext (вернуть wt2, считать spreads, senior_reversal) | Данные доступны |
+| 2 | `_apply_mtf_context()` — адаптивные множители strength по направлению и зоне | Мягкий фильтр (без блоков) |
+| 3 | Обогатить MarketContext полями из MTFContext | Стратегии видят контекст |
+| 4 | Писать полный снапшот в features_json (40 фичей) | Данные для ML |
+| 5 | ML модель P(win) на MTF фичах (через 1-2 недели накопления) | Learned bias вместо rule-based |
+
+### Принципы
+- **Адаптивные веса, не жёсткие блоки** — SHORT на бычьем рынке ослабляется, но не запрещается (разворот от R5 должен пройти)
+- **Инкрементальный переход** — каждый шаг можно откатить, данные собираются параллельно
+- **ML обучение на пивотах** — после накопления 200-300 сделок с MTF фичами
+
+---
+
+## ✅ Этап 11.1 — SMC пакет core/smc/ (ARCH-17, 18.03.2026)
+**Цель:** полная SMC-библиотека для фильтрации сигналов и бэктеста
+
+- `core/smc/swing_points.py` — HH/HL/LH/LL классификация (≥2 бара каждая сторона)
+- `core/smc/structure.py` — BOS/CHoCH детектор, серия swing points → структура
+- `core/smc/fvg.py` — Fair Value Gap (3-свечной дисбаланс), mitigation tracking
+- `core/smc/order_blocks.py` — OB = последняя свеча перед BOS/CHoCH, mitigation_pct
+- `core/smc/liquidity.py` — sweeps (пробой swing high/low на 1 бар с возвратом)
+- `core/smc/ote.py` — OTE зона (0.618-0.786 Fibonacci от импульса)
+- `core/smc/context.py` — SMCContext: агрегат всех SMC-данных для символа/ТФ
+- Принцип: **одно вычисление → многократное переиспользование** (SMCContext кэшируется)
+
+## ✅ Этап 11.2 — Backtesting блок (DEV-32–35, 21-22.03.2026)
+**Цель:** валидация стратегий на исторических данных с корректной экономикой
+
+- **DEV-33 (commission):** `commission_pct` теперь применяется в `backtesting_engine.py` (был определён, но никогда не вычитался)
+- **DEV-34 (SMC-эксперимент):** cfg1 (только флаги) / cfg2 (require OB) / cfg3 (OB+FVG) — 3 конфига для валидации гипотезы
+- **DEV-35 (MultiSource):** `data_source="binance"` + `data_source="cryptocom"` в `BacktestConfig` — история с 2018 вместо даты листинга на BingX
+- `scripts/universe_builder.py` — CoinGecko top-250, стратификация 3 тира (top-10 / 11-50 / 51-200), seed=42, воспроизводимо
+- `scripts/multi_source_ohlcv.py` — автовыбор лучшего источника: Binance → Crypto.com → BingX (по глубине истории)
+- `scripts/run_universe_backtest.py` — оркестратор: 30 альтов, Binance, 2022-2026, Monte Carlo, JSON-отчёт
+
+**Ключевой результат DEV-30:** SL=0.3% (pivot × 0.997), EV=+0.256 vs baseline EV=+0.115 (2.2×). WR=23.1% при avg_R=+1.108 — автоматизация убирает эмоцию.
+
+## ✅ Этап 11.3 — ARCH-23: WT + NEAR_PIVOT → confluence (22.03.2026)
+**Цель:** апгрейд wt_signal → confluence при детекции WT-кросса у пивотного уровня
+
+- `PivotCalculatorFixed.find_near_pivot(price, symbol, threshold_pct=1.0)` — новый метод (core слой, переиспользует прогретый pivot_cache)
+- `scan_loop.py::scan_one()` — апгрейд в реальном пути выполнения:
+  - WT cross в OS/OB + цена в ±1% от пивота (1M > 1W > 1D) → `signal_type = CONFLUENCE`, `strength += 20` (cap 95)
+  - Данные пивота пишутся в `sig.data` для трассировки
+- **Принцип:** одно вычисление пивота (при прогреве) → переиспользование при каждом WT-сигнале без дополнительных API-вызовов
+- **Данные:** avg_R без пивота = +0.32 (n=472), с пивотом = +1.27 (n=~56) — разрыв 4×
+
+## ✅ Этап 11 — Operations Dashboard (ARCH-13, 16.03.2026)
+**Приоритет:** СРЕДНИЙ — операционный контроль бота без правки кода
+
+### Предпосылки
+- Future pivot alerts спамят ~30 сообщений за цикл в TG
+- Настройки размазаны: web `/settings` (часть), config.yaml, хардкод
+- Нет лайв-статуса (BTC режим, ML модели, скан-цикл) в одном месте
+- Нет быстрых тогглов для вкл/выкл функций без перезапуска
+
+### Архитектура
+```
+┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
+│  Telegram    │────▶│  /api/dashboard  │◀────│  Web UI      │
+│  InlineKB    │     │  /api/toggles    │     │  /dashboard  │
+│  (быстрый)   │     │  /api/actions    │     │  (полный)    │
+└─────────────┘     └──────────────────┘     └──────────────┘
+                           │
+                    ┌──────┴──────┐
+                    │ config.yaml │
+                    │ + hot reload│
+                    └─────────────┘
+```
+
+### Блоки
+| Блок | Описание |
+|------|----------|
+| Live Status | Цикл скана, пары, BTC режим, ML, сигналы/час, WR |
+| Тогглы | future_pivot→TG, mtf_register, cascade_div, confluence, TSL, BE, BTC mode |
+| Quick Params | min_strength, dedup, cooldown, max_confluence, counter_trend_thr |
+| Actions | Rescan, retrain ML, export CSV, reset counters |
+
+### Новые конфиг-флаги
+| Ключ | Default | Описание |
+|------|---------|----------|
+| `future_pivots.broadcast_tg` | false | Future pivot alerts в Telegram |
+| `signals.mtf_alert_register` | true | Регистрация MTF reversal в симулятор |
+| `signals.cascade_div_enabled` | true | Каскадные дивергенции |
+
+---
 
 ## 🔲 Этап 8.2 — Масштабирование архитектуры
 **Цель:** готовность к >100 пользователям
@@ -265,7 +460,7 @@ asyncio.gather возвращает результаты в порядке ар�
 ### ✅ Реализовано:
 - [x] `strategies/base.py` — BaseStrategy(ABC): analyze(), calculate_sl_tp()
 - [x] `strategies/registry.py` — @register_strategy, get_strategy(), list_strategies()
-- [x] `strategies/built_in/` — confluence, confluence_scanner, conservative, pivot_reversal, mtf_bias
+- [x] `strategies/built_in/` — confluence, reversal_scanner (ex-confluence_scanner), conservative, pivot_reversal, mtf_bias
 - [x] `trading_intelligence.py` — _run_strategy(), _run_all_strategies() с asyncio.gather
 - [x] `config.yaml` — `trading.active_strategy`, `trading.active_strategies`
 - [x] 22 regression-теста в `tests/unit/test_strategy_pattern.py`
@@ -350,3 +545,19 @@ asyncio.gather возвращает результаты в порядке ар�
 | 2026-03-16 | Фикс "меньше сделок": confidence signal_count_factor min 0.5 + use_state_machine=false |
 | 2026-03-16 | scan_loop: random.shuffle(pairs) — убирает алфавитный bias |
 | 2026-03-16 | Порядок в проекте: тесты → tests/, скрипты → scripts/, docs/ MD |
+| 2026-03-16 | ARCH-11: MTF Bias фиксы (5 багов), 313/313 тестов |
+| 2026-03-16 | Фикс: pivot_rec fallback не регистрировался (elif→if), MTF alert fallback_rec добавлен |
+| 2026-03-16 | Future pivot alerts убраны из TG (спам ~30/цикл), только лог |
+| 2026-03-16 | ARCH-13: Operations Dashboard (Web + TG) — старт реализации |
+| 2026-03-16 | ARCH-12 шаги 1-4: MTFContext, analyze_context, _apply_mtf_context, 14 MTF-фичей в features_json (371 тестов) |
+| 2026-03-18 | Bugfix: trade_simulator.py — shadowing `import json` блокировал 100% регистраций; market_regime.py — DataFrame truthiness |
+| 2026-03-18 | SELFTEST L12: Trade Lifecycle test (register → verify OPEN → close TP → verify closed → cleanup) |
+| 2026-03-18 | Performance: api_semaphore_size 5→20, api_rps 8→15 (OHLCV тормозили 7+ сек) |
+| 2026-03-18 | Cleanup: risk_manager.py pyc удалены |
+| 2026-03-18 | Rename: confluence_scanner → wt_15m_reversal_scanner, ConfluenceScannerStrategy → ReversalScannerStrategy ("reversal_scanner"), 8 баров, обязат. TSL+WT гейты, pivot touch 0.15%, MTF soft penalty floor=0.75 |
+| 2026-03-19 | DEV-23: shadow mode динамических порогов OB/OS — core/dynamic_thresholds.py, os_method в signal data |
+| 2026-03-19 | DEV-26: per-signal-type confidence пороги (wt_b_signal=0.50, confluence=0.55, anomaly=0.60) |
+| 2026-03-19 | DEV-27: rolling WR degradation detector (RollingWRMonitor, порог 0.3 WR, cooldown 6h) |
+| 2026-03-19 | DEV-24: wt_b_signal реанимация + state machine фикс (WR=85% сигнал, confidence min 0.5) |
+| 2026-03-20 | DEV-28: двунаправленный каскадный TSL — де-эскалация при R≥5.0 + WT exhaustion + TSL tightness |
+| 2026-03-20 | DEV-21: Unified Message Generator — format_signal_message() в intelligence_formatter.py |

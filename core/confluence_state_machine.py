@@ -27,11 +27,14 @@ from core.confluence_scanner import (
     _check_near_support, _check_near_resistance,
     _check_bullish_divergence_wt, _check_bearish_divergence_wt,
     _make_signal, _get_cfg,
-    _DEFAULT_WT_OS, _DEFAULT_WT_OB, _DEFAULT_PIVOT_PCT,
+    _DEFAULT_WT_OS, _DEFAULT_WT_OB,
     _DEFAULT_MIN_STRENGTH, _DEFAULT_DIV_MIN_BARS,
-    _SCORE_WT_ZONE, _SCORE_TSL_CROSS, _SCORE_WT_CROSS,
-    _SCORE_NEAR_PIVOT, _SCORE_DIVERGENCE, _SCORE_PP_CONFIRM,
-    _SCORE_TREND_1H, _SCORE_DUAL_CROSS,
+    _SCORE_WT_ZONE,
+)
+from core.wt_15m_reversal_scanner import (
+    _SCORE_WT_CROSS_IN_ZONE, _SCORE_WT_CROSS_OUT_ZONE,
+    _SCORE_TSL_CROSS, _SCORE_PIVOT_TOUCH, _SCORE_DIVERGENCE,
+    _DEFAULT_PIVOT_TOUCH_PCT,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,10 +157,10 @@ class ConfluenceStateMachine:
         # Параметры из конфига
         wt_os_thr    = float(conf_cfg.get("wt_os_threshold", _DEFAULT_WT_OS))
         wt_ob_thr    = float(conf_cfg.get("wt_ob_threshold", _DEFAULT_WT_OB))
-        pivot_pct    = float(conf_cfg.get("pivot_proximity_pct", _DEFAULT_PIVOT_PCT))
+        pivot_pct    = float(conf_cfg.get("pivot_touch_pct", _DEFAULT_PIVOT_TOUCH_PCT))
         min_strength = int(conf_cfg.get("min_strength", _DEFAULT_MIN_STRENGTH))
         div_min_bars = int(conf_cfg.get("div_min_bars", _DEFAULT_DIV_MIN_BARS))
-        cross_fresh  = int(conf_cfg.get("cross_fresh_bars", 10))
+        cross_fresh  = int(conf_cfg.get("cross_fresh_bars", 8))
 
         daily_pivots = pivot_cache.get(f"{symbol}_1D") or {}
         current_price = float(df["close"].iloc[-1])
@@ -211,16 +214,27 @@ class ConfluenceStateMachine:
         daily_pivots: Dict, pivot_cache: Dict,
         current_price: float, trend_1h: int, cfg,
     ) -> Optional[SignalData]:
-        """Один шаг автомата для direction. Возвращает SignalData или None."""
-        is_long = direction == "LONG"
-        window = df.iloc[-min(len(df), 50):].reset_index(drop=True)
+        """
+        Один шаг автомата для direction. Возвращает SignalData или None.
 
-        wt1_arr = window["wt1"].values if "wt1" in window.columns else np.array([])
-        wt2_arr = window["wt2"].values if "wt2" in window.columns else np.array([])
-        trend_arr = window["trend"].values if "trend" in window.columns else np.array([])
-        trendup_arr = window["trendup"].values if "trendup" in window.columns else np.array([])
-        trenddown_arr = window["trenddown"].values if "trenddown" in window.columns else np.array([])
-        close_arr = window["close"].values if "close" in window.columns else np.array([])
+        Новая логика (DEV-19): 4 фактора, 8 баров, gate WT+TSL обязательны.
+          Gate 1 (WT_ZONE): wt1 < wt_os_thr (LONG) или > wt_ob_thr (SHORT)
+          Gate 2 (TSL_CROSS): TSL пересекает в нужном направлении
+          Опционально: PIVOT_TOUCH (+25) и DIVERGENCE (+20) накапливаются
+          Триггер: WT_CROSS — вычисляем итоговый score, если >= min → SIGNAL
+        """
+        is_long = direction == "LONG"
+        # Большое окно для divergence/pivot detection
+        window = df.iloc[-min(len(df), 50):].reset_index(drop=True)
+        # Малое окно для TSL/WT кроссов (cross_fresh баров)
+        cross_window = df.iloc[-min(len(df), cross_fresh + 1):].reset_index(drop=True)
+
+        wt1_arr = cross_window["wt1"].values if "wt1" in cross_window.columns else np.array([])
+        wt2_arr = cross_window["wt2"].values if "wt2" in cross_window.columns else np.array([])
+        trend_arr = cross_window["trend"].values if "trend" in cross_window.columns else np.array([])
+        trendup_arr = cross_window["trendup"].values if "trendup" in cross_window.columns else np.array([])
+        trenddown_arr = cross_window["trenddown"].values if "trenddown" in cross_window.columns else np.array([])
+        close_arr = cross_window["close"].values if "close" in cross_window.columns else np.array([])
 
         wt1_last = float(wt1_arr[-1]) if len(wt1_arr) else 0.0
 
@@ -241,9 +255,9 @@ class ConfluenceStateMachine:
                 logger.debug("[csm] %s %s: IDLE→WT_ZONE wt1=%.1f", symbol, direction, wt1_last)
             return None
 
-        # ── WT_ZONE: ждём TSL_CROSS ────────────────────────────────────────────
+        # ── WT_ZONE: ждём TSL_CROSS (gate 2) ──────────────────────────────────
         if st.state == ConfluenceState.WT_ZONE:
-            # Проверяем: не вышли ли из зоны на противоположную сторону?
+            # Вышли в противоположную зону → сброс
             if is_long and wt1_last > wt_ob_thr:
                 st.reset()
                 return None
@@ -261,73 +275,60 @@ class ConfluenceStateMachine:
                 logger.debug("[csm] %s %s: WT_ZONE→TSL_CROSS", symbol, direction)
             return None
 
-        # ── TSL_CROSS: ждём касания pivot ────────────────────────────────────
-        if st.state == ConfluenceState.TSL_CROSS:
-            if is_long:
-                hit, desc = _check_near_support(window, daily_pivots, pivot_cache, symbol, pivot_pct)
-            else:
-                hit, desc = _check_near_resistance(window, daily_pivots, pivot_cache, symbol, pivot_pct)
+        # ── TSL_CROSS / NEAR_PIVOT / DIVERGENCE: накапливаем, ждём WT_CROSS ───
+        if st.state in (
+            ConfluenceState.TSL_CROSS,
+            ConfluenceState.NEAR_PIVOT,
+            ConfluenceState.DIVERGENCE,
+        ):
+            # Опциональный фактор: PIVOT_TOUCH (0.15%, однократно)
+            piv_factor = "NEAR_SUPPORT" if is_long else "NEAR_RESISTANCE"
+            if piv_factor not in st.factors:
+                if is_long:
+                    hit, desc = _check_near_support(window, daily_pivots, pivot_cache, symbol, pivot_pct)
+                else:
+                    hit, desc = _check_near_resistance(window, daily_pivots, pivot_cache, symbol, pivot_pct)
+                if hit:
+                    st.add_factor(piv_factor, _SCORE_PIVOT_TOUCH, {"pivot_hit": desc})
+                    if st.state == ConfluenceState.TSL_CROSS:
+                        st.state = ConfluenceState.NEAR_PIVOT
+                        logger.debug("[csm] %s %s: TSL_CROSS→NEAR_PIVOT %s", symbol, direction, desc)
 
-            if hit:
-                st.state = ConfluenceState.NEAR_PIVOT
-                factor = "NEAR_SUPPORT" if is_long else "NEAR_RESISTANCE"
-                st.add_factor(factor, _SCORE_NEAR_PIVOT, {"pivot_hit": desc})
-                logger.debug("[csm] %s %s: TSL_CROSS→NEAR_PIVOT %s", symbol, direction, desc)
-            return None
+            # Опциональный фактор: DIVERGENCE (однократно)
+            if "WT_DIVERGENCE" not in st.factors:
+                if is_long:
+                    div_ok, div_desc = _check_bullish_divergence_wt(window, div_min_bars)
+                else:
+                    div_ok, div_desc = _check_bearish_divergence_wt(window, div_min_bars)
+                if div_ok:
+                    st.add_factor("WT_DIVERGENCE", _SCORE_DIVERGENCE, {"div_desc": div_desc})
+                    if st.state in (ConfluenceState.TSL_CROSS, ConfluenceState.NEAR_PIVOT):
+                        st.state = ConfluenceState.DIVERGENCE
+                        logger.debug("[csm] %s %s: →DIVERGENCE", symbol, direction)
 
-        # ── NEAR_PIVOT: ждём дивергенции ──────────────────────────────────────
-        if st.state == ConfluenceState.NEAR_PIVOT:
-            if is_long:
-                div_ok, div_desc = _check_bullish_divergence_wt(window, div_min_bars)
-            else:
-                div_ok, div_desc = _check_bearish_divergence_wt(window, div_min_bars)
-
-            if div_ok:
-                st.state = ConfluenceState.DIVERGENCE
-                st.add_factor("WT_DIVERGENCE", _SCORE_DIVERGENCE, {"div_desc": div_desc})
-                logger.debug("[csm] %s %s: NEAR_PIVOT→DIVERGENCE", symbol, direction)
-            return None
-
-        # ── DIVERGENCE: ждём WT_CROSS (финальный триггер) ─────────────────────
-        if st.state == ConfluenceState.DIVERGENCE:
+            # Финальный триггер: WT_CROSS
             wt_cross = self._detect_wt_cross(wt1_arr, wt2_arr, wt_os_thr, wt_ob_thr, cross_fresh)
             cross_ok = (is_long and wt_cross == "UP") or (not is_long and wt_cross == "DOWN")
 
             if not cross_ok:
                 return None
 
-            # Добавляем WT_CROSS фактор
+            # WT_CROSS в зоне OS/OB → более высокий балл
+            # _detect_wt_cross возвращает UP/DOWN только при in_os/in_ob → всегда IN_ZONE
             factor = "WT_CROSS_UP" if is_long else "WT_CROSS_DOWN"
-            st.add_factor(factor, _SCORE_WT_CROSS)
-
-            # Проверяем PP подтверждение
-            daily_pp = (daily_pivots or {}).get("PP") or 0.0
-            if daily_pp > 0:
-                if is_long and current_price > daily_pp:
-                    st.add_factor("ABOVE_PP", _SCORE_PP_CONFIRM, {"daily_pp": round(daily_pp, 8)})
-                elif not is_long and current_price < daily_pp:
-                    st.add_factor("BELOW_PP", _SCORE_PP_CONFIRM, {"daily_pp": round(daily_pp, 8)})
-
-            # Бонус: тренд 1h
-            if is_long and trend_1h == 1:
-                st.add_factor("TREND_1H_UP", _SCORE_TREND_1H)
-            elif not is_long and trend_1h == -1:
-                st.add_factor("TREND_1H_DOWN", _SCORE_TREND_1H)
-
-            # Бонус: двойной кросс
-            tsl_f = "TSL_CROSS_UP" if is_long else "TSL_CROSS_DOWN"
-            wt_f  = "WT_CROSS_UP"  if is_long else "WT_CROSS_DOWN"
-            if tsl_f in st.factors and wt_f in st.factors:
-                st.add_factor("DUAL_CROSS", _SCORE_DUAL_CROSS)
+            st.add_factor(factor, _SCORE_WT_CROSS_IN_ZONE)
 
             total_score = st.score
             logger.info(
-                "[csm] %s %s: DIVERGENCE→SIGNAL score=%d factors=%s",
-                symbol, direction, total_score, st.factors
+                "[csm] %s %s: →SIGNAL score=%d factors=%s",
+                symbol, direction, total_score, st.factors,
             )
 
             if total_score < min_strength:
-                logger.debug("[csm] %s %s: score %d < min %d, reset", symbol, direction, total_score, min_strength)
+                logger.debug(
+                    "[csm] %s %s: score %d < min %d, reset",
+                    symbol, direction, total_score, min_strength,
+                )
                 st.reset()
                 return None
 
@@ -337,10 +338,9 @@ class ConfluenceStateMachine:
                 total_score,
                 list(st.factors),
                 dict(st.data),
-                lookback_bars=50,
+                lookback_bars=cross_fresh,
                 current_price=current_price,
             )
-            # Добавляем метку источника
             if sig.data:
                 sig.data["source"] = "state_machine"
 

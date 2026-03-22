@@ -33,6 +33,7 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import pandas as pd
 
+from core.entry_config import get_primary_entry_tf
 from core.indicators import calculate_trend, calculate_wt
 from core.signal_models import SignalData, SignalType, SignalDirection
 
@@ -352,9 +353,9 @@ def _make_signal(
             **factor_data,
             "lookback_bars": lookback_bars,
             "current_price": current_price,
-            "timeframe": "15m",
+            "timeframe": get_primary_entry_tf(),
         },
-        timeframe="15m",
+        timeframe=get_primary_entry_tf(),
         description=desc,
         interpretation=interpretation,
     )
@@ -488,6 +489,56 @@ def _check_bearish_divergence_wt(
     return False, ""
 
 
+def check_future_classic_confluence(
+    future_pivots: Dict[str, Any],
+    classic_pivots: Dict[str, Any],
+    threshold_pct: float = 0.5,
+) -> List[Dict[str, Any]]:
+    """
+    DEV-11: конфлюэнция Future × Classic пивотов.
+
+    Сравнивает все уровни (PP, S1-S5, R1-R5) между future и classic пивотами.
+    Если расстояние ≤ threshold_pct% → супер-сильный уровень (+15 strength bonus).
+
+    Args:
+        future_pivots:  результат get_future_daily/weekly/monthly_pivots()
+        classic_pivots: из pivot_cache ("{sym}_1D", "_1W", "_1M")
+        threshold_pct:  % близости (дефолт 0.5%)
+
+    Returns:
+        Список dict: {future_level, classic_level, price, distance_pct, strength_bonus}
+    """
+    if not future_pivots or not classic_pivots:
+        return []
+
+    all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
+    results = []
+
+    for fl in all_levels:
+        fp = future_pivots.get(fl)
+        if not fp or fp <= 0:
+            continue
+        for cl in all_levels:
+            cp = classic_pivots.get(cl)
+            if not cp or cp <= 0:
+                continue
+            dist_pct = abs((fp - cp) / cp * 100)
+            if dist_pct <= threshold_pct:
+                results.append({
+                    "future_level": fl,
+                    "classic_level": cl,
+                    "future_price": fp,
+                    "classic_price": cp,
+                    "price": (fp + cp) / 2,  # средняя
+                    "distance_pct": round(dist_pct, 4),
+                    "strength_bonus": 15,
+                    "label": f"FUTURE_{fl}≈CLASSIC_{cl}",
+                })
+
+    results.sort(key=lambda x: x["distance_pct"])
+    return results
+
+
 def confluence_message(symbol: str, sig: "SignalData") -> str:
     """Форматирует TG-сообщение для confluence сигнала (LONG и SHORT)."""
     from core.message_builder import tv_link
@@ -519,7 +570,7 @@ def confluence_message(symbol: str, sig: "SignalData") -> str:
     factor_str = "  ·  ".join(emoji_map.get(f, f) for f in factors)
     strength_emoji = "🔥🔥🔥" if score >= 80 else "🔥🔥" if score >= 60 else "🔥"
 
-    tf = data.get("timeframe", "15m")
+    tf = data.get("timeframe", get_primary_entry_tf())
     lines = [
         "\n",
         f"🔗 <b>CONFLUENCE · {tv_link(symbol)} · {dir_icon} {dir_label}</b>",

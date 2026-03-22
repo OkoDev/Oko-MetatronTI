@@ -4,7 +4,7 @@
 import logging
 
 from aiogram import Router
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,9 @@ def get_router(bot) -> Router:
                 user_id, username, data, callback_query.message.message_id,
             )
 
-            if data.startswith("ai_"):
+            if data.startswith("dash:"):
+                await _handle_dashboard_callback(callback_query, bot)
+            elif data.startswith("ai_"):
                 await _handle_ai_callback(callback_query)
             elif data.startswith("signal_"):
                 await _handle_signal_callback(callback_query)
@@ -51,6 +53,121 @@ def get_router(bot) -> Router:
             await callback_query.answer("❌ Произошла ошибка при обработке команды")
 
     return router
+
+
+async def _handle_dashboard_callback(callback_query: CallbackQuery, bot):
+    """Обработчик всех dash:* callback-ов."""
+    from bot.menus.dashboard import (
+        dashboard_status_text, dashboard_main_kb,
+        dashboard_toggles_text, dashboard_toggles_kb,
+        dashboard_params_text, dashboard_params_kb,
+        _TOGGLES,
+    )
+    data = callback_query.data
+    msg = callback_query.message
+
+    if data == "dash:main" or data == "dash:refresh":
+        text = dashboard_status_text(bot)
+        kb = dashboard_main_kb()
+        try:
+            await msg.edit_text(text, reply_markup=kb)
+        except Exception:
+            await msg.answer(text, reply_markup=kb)
+        await callback_query.answer("Обновлено" if data == "dash:refresh" else "")
+
+    elif data == "dash:toggles":
+        text = dashboard_toggles_text(bot)
+        kb = dashboard_toggles_kb(bot)
+        await msg.edit_text(text, reply_markup=kb)
+        await callback_query.answer()
+
+    elif data == "dash:params":
+        text = dashboard_params_text(bot)
+        kb = dashboard_params_kb(bot)
+        await msg.edit_text(text, reply_markup=kb)
+        await callback_query.answer()
+
+    elif data.startswith("dash:t:"):
+        # Toggle boolean config key
+        key = data[7:]  # after "dash:t:"
+        from bot.menus.dashboard import _TOGGLE_DEFAULTS
+        current = bot.config.get(key, _TOGGLE_DEFAULTS.get(key, False))
+        new_val = not current
+        bot.config.set(key, new_val)
+        try:
+            bot.config.save()
+        except Exception:
+            pass
+        text = dashboard_toggles_text(bot)
+        kb = dashboard_toggles_kb(bot)
+        await msg.edit_text(text, reply_markup=kb)
+        label = key.split(".")[-1]
+        await callback_query.answer(f"{label} = {'ON' if new_val else 'OFF'}")
+
+    elif data.startswith("dash:btc:"):
+        mode = data[9:]  # after "dash:btc:"
+        if mode in ("shadow", "block", "off"):
+            bot.config.set("signal_quality.btc_filter_mode", mode)
+            try:
+                bot.config.save()
+            except Exception:
+                pass
+        text = dashboard_toggles_text(bot)
+        kb = dashboard_toggles_kb(bot)
+        await msg.edit_text(text, reply_markup=kb)
+        await callback_query.answer(f"BTC filter = {mode}")
+
+    elif data.startswith("dash:p:"):
+        # Param adjust: dash:p:key:+step or dash:p:key:-step
+        parts = data[7:].rsplit(":", 1)  # key, delta
+        if len(parts) == 2:
+            key, delta_str = parts
+            try:
+                delta = int(delta_str)
+            except ValueError:
+                delta = float(delta_str)
+            current = bot.config.get(key, 0)
+            new_val = current + delta
+            # Clamp
+            from bot.menus.dashboard import _PARAMS
+            for pk, pl, pd, pmn, pmx, ps in _PARAMS:
+                if pk == key:
+                    new_val = max(pmn, min(pmx, new_val))
+                    break
+            bot.config.set(key, type(current)(new_val) if isinstance(current, int) else new_val)
+            try:
+                bot.config.save()
+            except Exception:
+                pass
+        text = dashboard_params_text(bot)
+        kb = dashboard_params_kb(bot)
+        await msg.edit_text(text, reply_markup=kb)
+        await callback_query.answer(f"{key.split('.')[-1]} = {new_val}")
+
+    elif data == "dash:diag":
+        await callback_query.answer("Запуск диагностики...")
+        try:
+            from core.selftest import run_selftest
+            report = await run_selftest(config=bot.config, bot=bot)
+            text = report.summary_text()
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="dash:diag")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="dash:main")],
+            ])
+            try:
+                await msg.edit_text(text, reply_markup=kb)
+            except Exception:
+                await msg.answer(text, reply_markup=kb)
+        except Exception as e:
+            await msg.edit_text(
+                f"❌ Ошибка диагностики: {e}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="dash:main")],
+                ]),
+            )
+
+    elif data == "dash:noop":
+        await callback_query.answer()
 
 
 async def _handle_ai_callback(callback_query: CallbackQuery):

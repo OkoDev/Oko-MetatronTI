@@ -83,7 +83,7 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
         reply_markup=main_menu(),
     )
     try:
-        recommendation = await bot.trading_intelligence.analyze_symbol(target_symbol)
+        recommendation = await bot.trading_intelligence.analyze_symbol(target_symbol, manual_request=True)
         if not recommendation:
             # Диагностика: пробуем понять причину
             reason = "нет торгового сигнала"

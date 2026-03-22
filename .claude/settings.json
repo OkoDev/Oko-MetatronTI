@@ -22,7 +22,19 @@
       "Bash(ls -1 *.py *.md)",
       "Bash(ls -1 *.md)",
       "Bash(ls -d */)",
-      "Bash(ls -1 scripts/*.py)"
+      "Bash(ls -1 scripts/*.py)",
+      "Bash(C:UsersyogoruAppDataLocalProgramsPythonPython312python.exe -c \":*)",
+      "Bash(\"/c/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe\" -c \":*)",
+      "Bash(grep -a [wt_15m_rev] 'e:/MTF BOT/CURSOR/crypto_volume_bot/crypto_bot.log')",
+      "Read(//c/Users/yogoru/.claude/**)",
+      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -c \"import json; json.load\\(open\\(''C:/Users/yogoru/.claude/settings.json'', encoding=''utf-8''\\)\\); print\\(''JSON валидный''\\)\")",
+      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/integration/test_reversal_scanner_e2e.py -v --tb=short)",
+      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pip install pytest pytest-asyncio --quiet)",
+      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/integration/test_reversal_scanner_e2e.py::TestConfigParams -v --tb=short)",
+      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -c \":*)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\yogoru\\.claude"
     ]
   }
 }

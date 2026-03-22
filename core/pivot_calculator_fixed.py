@@ -61,32 +61,55 @@ class PivotCalculatorFixed:
         self.pivot_cache: Dict[str, Dict] = {}
         self.db_path = db_path
         if db_path:
-            self._init_db()
+            self._ensure_table()
             self._load_all_from_db()
 
+    _CREATE_TABLE_SQL = """
+        CREATE TABLE IF NOT EXISTS pivot_cache (
+            symbol TEXT,
+            timeframe TEXT,
+            period_start TEXT,
+            pp REAL, s1 REAL, s2 REAL, s3 REAL, s4 REAL, s5 REAL,
+            r1 REAL, r2 REAL, r3 REAL, r4 REAL, r5 REAL,
+            period_label TEXT,
+            method TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (symbol, timeframe)
+        )
+    """
+
+    def _ensure_table(self):
+        """Создаёт таблицу pivot_cache если не существует. Безопасно при любых условиях."""
+        try:
+            import os
+            db_abs = os.path.abspath(self.db_path)
+            logger.debug("PivotCalculatorFixed: db_path=%s (abs=%s)", self.db_path, db_abs)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(self._CREATE_TABLE_SQL)
+                conn.commit()
+        except Exception as e:
+            logger.warning("PivotCalculatorFixed: не удалось создать таблицу: %s", e)
+
     def _init_db(self):
-        """Создаёт таблицу pivot_cache если не существует."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS pivot_cache (
-                    symbol TEXT,
-                    timeframe TEXT,
-                    period_start TEXT,
-                    pp REAL, s1 REAL, s2 REAL, s3 REAL, s4 REAL, s5 REAL,
-                    r1 REAL, r2 REAL, r3 REAL, r4 REAL, r5 REAL,
-                    period_label TEXT,
-                    method TEXT,
-                    updated_at TEXT,
-                    PRIMARY KEY (symbol, timeframe)
-                )
-            """)
+        """Алиас для обратной совместимости."""
+        self._ensure_table()
 
     def _load_all_from_db(self):
-        """Загружает все записи из БД в pivot_cache при старте."""
+        """Загружает все записи из БД в pivot_cache при старте.
+        Пропускает записи с устаревшим period_start (для 1W — не текущая неделя)."""
         try:
+            current_week = _current_week_start_utc()
+            current_month = _current_month_start_utc()
+            current_day = _current_day_start_utc()
+
             with sqlite3.connect(self.db_path) as conn:
+                # Гарантируем наличие таблицы
+                conn.execute(self._CREATE_TABLE_SQL)
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute("SELECT * FROM pivot_cache").fetchall()
+
+            loaded = 0
+            skipped = 0
             for row in rows:
                 key = f"{row['symbol']}_{row['timeframe']}"
                 d = dict(row)
@@ -95,6 +118,44 @@ class PivotCalculatorFixed:
                     period_start = datetime.fromisoformat(d["period_start"])
                 except Exception:
                     period_start = d["period_start"]
+
+                # Валидация: пропускаем устаревшие записи
+                tf = d.get("timeframe", "")
+                if isinstance(period_start, datetime):
+                    # Убираем tzinfo для сравнения если нужно
+                    ps_naive = period_start.replace(tzinfo=None) if period_start.tzinfo else period_start
+                    cw_naive = current_week.replace(tzinfo=None) if current_week.tzinfo else current_week
+                    cm_naive = current_month.replace(tzinfo=None) if current_month.tzinfo else current_month
+                    cd_naive = current_day.replace(tzinfo=None) if current_day.tzinfo else current_day
+
+                    if tf in ("1W", "1W_prev") and ps_naive != cw_naive:
+                        skipped += 1
+                        continue
+                    if tf == "1M" and ps_naive != cm_naive:
+                        skipped += 1
+                        continue
+                    if tf == "1D" and ps_naive != cd_naive:
+                        skipped += 1
+                        continue
+
+                # В понедельник: скипаем 1W записи, обновлённые ДО сегодня
+                # (они рассчитаны до смены недели и могут содержать стейл данные).
+                # Записи, обновлённые сегодня — доверяем (рассчитаны с валидацией свечей).
+                now_utc = datetime.now(timezone.utc)
+                if tf in ("1W", "1W_prev") and now_utc.weekday() == 0:  # 0 = Monday
+                    updated_at_str = d.get("updated_at", "")
+                    try:
+                        updated_at = datetime.fromisoformat(updated_at_str)
+                        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+                        today_naive = today_start.replace(tzinfo=None)
+                        upd_naive = updated_at.replace(tzinfo=None) if updated_at.tzinfo else updated_at
+                        if upd_naive < today_naive:
+                            skipped += 1
+                            continue
+                    except (ValueError, TypeError):
+                        skipped += 1
+                        continue
+
                 self.pivot_cache[key] = {
                     "PP": d["pp"], "S1": d["s1"], "S2": d["s2"], "S3": d["s3"],
                     "S4": d["s4"], "S5": d["s5"],
@@ -105,8 +166,12 @@ class PivotCalculatorFixed:
                     "period_label": d.get("period_label", ""),
                     "method": d.get("method", ""),
                 }
+                loaded += 1
             if rows:
-                logger.info("PivotCalculatorFixed: загружено %d записей из БД", len(rows))
+                logger.info(
+                    "PivotCalculatorFixed: загружено %d записей из БД (пропущено %d устаревших)",
+                    loaded, skipped,
+                )
         except Exception as e:
             logger.warning("PivotCalculatorFixed: ошибка загрузки из БД: %s", e)
 
@@ -117,6 +182,7 @@ class PivotCalculatorFixed:
         try:
             now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute(self._CREATE_TABLE_SQL)
                 conn.execute("""
                     INSERT OR REPLACE INTO pivot_cache
                     (symbol, timeframe, period_start, pp, s1, s2, s3, s4, s5,
@@ -254,13 +320,21 @@ class PivotCalculatorFixed:
                 week = df.iloc[-8:-1] if len(df) >= 8 else df.iloc[:-1]
                 if len(week) < 3:
                     return None
-            pivots = self.calculate_traditional_pivots(
-                week["high"].max(), week["low"].min(), week["close"].iloc[-1]
+            h_val = float(week["high"].max())
+            l_val = float(week["low"].min())
+            c_val = float(week["close"].iloc[-1])
+            pivots = self.calculate_traditional_pivots(h_val, l_val, c_val)
+            logger.info(
+                "[weekly_1d] %s: %d bars, %s H=%.6f L=%.6f C=%.6f → PP=%.6f",
+                symbol, len(week), week_start.strftime("%Y-W%V"), h_val, l_val, c_val, pivots.get("PP", 0),
             )
             pivots.update({
                 "timeframe": "1W",
                 "method": "aggregated_from_1d",
                 "period_label": week_start.strftime("%Y-W%V"),
+                "source_high": h_val,
+                "source_low": l_val,
+                "source_close": c_val,
                 "timestamp": datetime.now(timezone.utc),
             })
             return pivots
@@ -299,12 +373,47 @@ class PivotCalculatorFixed:
                 return None
             # iloc[-2] = предыдущая завершённая неделя (iloc[-1] = текущая открытая)
             prev = df.iloc[-2]
-            pivots = self.calculate_traditional_pivots(
-                float(prev["high"]), float(prev["low"]), float(prev["close"])
+            h, l, c = float(prev["high"]), float(prev["low"]), float(prev["close"])
+
+            # Валидация: свеча должна быть за прошлую неделю (Пн-1нед .. Пн текущей)
+            candle_ts = None
+            if "time" in df.columns:
+                candle_ts = int(prev["time"])
+            elif "timestamp" in df.columns:
+                candle_ts = int(prev["timestamp"])
+
+            period_label = ""
+            if candle_ts:
+                from datetime import datetime as _dt
+                candle_dt = _dt.utcfromtimestamp(candle_ts / 1000) if candle_ts > 1e12 else _dt.utcfromtimestamp(candle_ts)
+                period_label = candle_dt.strftime("%Y-%m-%d")
+
+                # Проверяем: дата свечи должна быть в пределах prev_week_start ± 2 дня
+                # (разные биржи начинают неделю в разные дни: Пн, Вс, Сб)
+                expected_start = _current_week_start_utc() - timedelta(weeks=1)
+                candle_dt_aware = candle_dt.replace(tzinfo=timezone.utc)
+                delta_days = abs((candle_dt_aware - expected_start).days)
+                if delta_days > 2:
+                    logger.warning(
+                        "[weekly_1w] %s: ОТКЛОНЕНА — свеча=%s, ожидалась неделя от %s (delta=%d дней). "
+                        "BingX week boundary не совпадает. Fallback на 1d.",
+                        symbol, period_label, expected_start.strftime("%Y-%m-%d"), delta_days,
+                    )
+                    return None  # fallback на _weekly_from_1d
+
+            pivots = self.calculate_traditional_pivots(h, l, c)
+            logger.info(
+                "[weekly_1w] %s: prev candle=%s H=%.6f L=%.6f C=%.6f → PP=%.6f R1=%.6f S1=%.6f",
+                symbol, period_label, h, l, c,
+                pivots.get("PP", 0), pivots.get("R1", 0), pivots.get("S1", 0),
             )
             pivots.update({
                 "timeframe": "1W",
                 "method": "direct_1w",
+                "period_label": period_label,
+                "source_high": h,
+                "source_low": l,
+                "source_close": c,
                 "timestamp": datetime.now(timezone.utc),
             })
             return pivots
@@ -362,16 +471,32 @@ class PivotCalculatorFixed:
             self.pivot_cache[f"{symbol}_1D_prev"] = old_daily
             self._save_to_db(symbol, "1D_prev", old_daily)
 
+        # Сравниваем по ms-timestamp (int) — избегаем TZ-сравнение pandas Timestamp vs Python datetime
+        prev_start_ms = int(prev_day_start.timestamp() * 1000)
+        today_ms = int(day_start.timestamp() * 1000)
+
         try:
             # Метод 1: из дневных свечей
             df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=5)
             if df is not None and len(df) >= 2:
-                df = _df_with_datetime(df)
-                prev = df[(df["datetime"] >= prev_day_start) & (df["datetime"] < prev_day_end)]
+                df = df.sort_values("time")
+                # Фильтр по ms-timestamp: yesterday start ≤ time < today start
+                prev = df[(df["time"] >= prev_start_ms) & (df["time"] < today_ms)]
+                if prev.empty:
+                    # Fallback: если свеча отдаётся с close-timestamp (= today_ms), включаем её
+                    prev = df[(df["time"] >= prev_start_ms) & (df["time"] <= today_ms)]
+                    prev = prev.iloc[:-1] if len(prev) > 1 else prev
                 if not prev.empty:
-                    pivots = self.calculate_traditional_pivots(
-                        prev["high"].max(), prev["low"].min(), prev["close"].iloc[-1]
+                    H = float(prev["high"].max())
+                    L = float(prev["low"].min())
+                    C = float(prev["close"].iloc[-1])
+                    candle_ts = int(prev["time"].iloc[-1])
+                    candle_dt = datetime.fromtimestamp(candle_ts / 1000, tz=timezone.utc)
+                    logger.debug(
+                        "[daily_pivot] %s: prev_candle dt=%s H=%.6f L=%.6f C=%.6f",
+                        symbol, candle_dt.strftime("%Y-%m-%d %H:%M"), H, L, C,
                     )
+                    pivots = self.calculate_traditional_pivots(H, L, C)
                     pivots.update({
                         "timeframe": "1D",
                         "method": "direct_1d",
@@ -381,20 +506,25 @@ class PivotCalculatorFixed:
                     })
                     self.pivot_cache[cache_key] = pivots
                     self._save_to_db(symbol, "1D", pivots)
-                    logger.info(f"✅ Дневные пивоты {symbol}: PP={pivots['PP']:.4f} ({pivots['period_label']})")
+                    logger.info(
+                        "✅ Дневные пивоты %s: PP=%.4f R1=%.4f S1=%.4f (%s) [candle=%s]",
+                        symbol, pivots["PP"], pivots.get("R1", 0), pivots.get("S1", 0),
+                        pivots["period_label"], candle_dt.strftime("%Y-%m-%d %H:%M UTC"),
+                    )
                     return pivots
 
             # Метод 2 (fallback): из 1h свечей
             df_1h = await data_collector.get_ohlcv(symbol, timeframe="1h", limit=30)
             if df_1h is None or len(df_1h) < 24:
                 return None
-            df_1h = _df_with_datetime(df_1h)
-            prev_1h = df_1h[(df_1h["datetime"] >= prev_day_start) & (df_1h["datetime"] < prev_day_end)]
+            prev_1h = df_1h[(df_1h["time"] >= prev_start_ms) & (df_1h["time"] < today_ms)]
             if len(prev_1h) < 12:
                 return None
-            pivots = self.calculate_traditional_pivots(
-                prev_1h["high"].max(), prev_1h["low"].min(), prev_1h["close"].iloc[-1]
-            )
+            H = float(prev_1h["high"].max())
+            L = float(prev_1h["low"].min())
+            C = float(prev_1h["close"].iloc[-1])
+            logger.debug("[daily_pivot] %s (1h): H=%.6f L=%.6f C=%.6f", symbol, H, L, C)
+            pivots = self.calculate_traditional_pivots(H, L, C)
             pivots.update({
                 "timeframe": "1D",
                 "method": "aggregated_from_1h",
@@ -409,6 +539,127 @@ class PivotCalculatorFixed:
 
         except Exception:
             logger.exception(f"Ошибка дневных пивотов для {symbol}")
+            return None
+
+    # ──────────────────────────────────────────────────────
+    # Future Pivots (DEV-11) — текущий период H/L/C
+    # ──────────────────────────────────────────────────────
+    # Кеш с TTL=60 сек: уровни меняются с каждой свечой,
+    # поэтому используем time-based cache, а не period-based.
+
+    def _future_cache_valid(self, cache_key: str, ttl_sec: int = 60) -> bool:
+        """Проверяет свежесть future-кеша по TTL."""
+        cached = self.pivot_cache.get(cache_key)
+        if not cached or "expires_at" not in cached:
+            return False
+        return datetime.now(timezone.utc) < cached["expires_at"]
+
+    async def get_future_daily_pivots(
+        self, symbol: str, data_collector, ttl_sec: int = 60
+    ) -> Optional[Dict]:
+        """Future Daily Pivots = PP/S/R из текущего дня (00:00 UTC → сейчас)."""
+        cache_key = f"{symbol}_future_1D"
+        if self._future_cache_valid(cache_key, ttl_sec):
+            return self.pivot_cache[cache_key]
+
+        day_start = _current_day_start_utc()
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="1h", limit=30)
+            if df is None or len(df) < 1:
+                return None
+            df = _df_with_datetime(df)
+            today = df[df["datetime"] >= day_start]
+            if today.empty:
+                return None
+            pivots = self.calculate_traditional_pivots(
+                today["high"].max(), today["low"].min(), today["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "future_1D",
+                "method": "future_from_1h",
+                "period_label": day_start.strftime("%Y-%m-%d") + " (live)",
+                "expires_at": datetime.now(timezone.utc).replace(
+                    second=0, microsecond=0
+                ) + timedelta(seconds=ttl_sec),
+            })
+            self.pivot_cache[cache_key] = pivots
+            logger.debug("Future 1D пивоты %s: PP=%.6f", symbol, pivots["PP"])
+            return pivots
+        except Exception:
+            logger.exception("Ошибка future_daily_pivots для %s", symbol)
+            return None
+
+    async def get_future_weekly_pivots(
+        self, symbol: str, data_collector, ttl_sec: int = 60
+    ) -> Optional[Dict]:
+        """Future Weekly Pivots = PP/S/R из текущей недели (Пн UTC → сейчас)."""
+        cache_key = f"{symbol}_future_1W"
+        if self._future_cache_valid(cache_key, ttl_sec):
+            return self.pivot_cache[cache_key]
+
+        week_start = _current_week_start_utc()
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="4h", limit=56)
+            if df is None or len(df) < 1:
+                # fallback к 1h
+                df = await data_collector.get_ohlcv(symbol, timeframe="1h", limit=160)
+            if df is None or len(df) < 1:
+                return None
+            df = _df_with_datetime(df)
+            this_week = df[df["datetime"] >= week_start]
+            if this_week.empty:
+                return None
+            pivots = self.calculate_traditional_pivots(
+                this_week["high"].max(), this_week["low"].min(), this_week["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "future_1W",
+                "method": "future_from_4h",
+                "period_label": week_start.strftime("%Y-W%V") + " (live)",
+                "expires_at": datetime.now(timezone.utc).replace(
+                    second=0, microsecond=0
+                ) + timedelta(seconds=ttl_sec),
+            })
+            self.pivot_cache[cache_key] = pivots
+            logger.debug("Future 1W пивоты %s: PP=%.6f", symbol, pivots["PP"])
+            return pivots
+        except Exception:
+            logger.exception("Ошибка future_weekly_pivots для %s", symbol)
+            return None
+
+    async def get_future_monthly_pivots(
+        self, symbol: str, data_collector, ttl_sec: int = 60
+    ) -> Optional[Dict]:
+        """Future Monthly Pivots = PP/S/R из текущего месяца (1-е UTC → сейчас)."""
+        cache_key = f"{symbol}_future_1M"
+        if self._future_cache_valid(cache_key, ttl_sec):
+            return self.pivot_cache[cache_key]
+
+        month_start = _current_month_start_utc()
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=35)
+            if df is None or len(df) < 1:
+                return None
+            df = _df_with_datetime(df)
+            this_month = df[df["datetime"] >= month_start]
+            if this_month.empty:
+                return None
+            pivots = self.calculate_traditional_pivots(
+                this_month["high"].max(), this_month["low"].min(), this_month["close"].iloc[-1]
+            )
+            pivots.update({
+                "timeframe": "future_1M",
+                "method": "future_from_1d",
+                "period_label": month_start.strftime("%Y-%m") + " (live)",
+                "expires_at": datetime.now(timezone.utc).replace(
+                    second=0, microsecond=0
+                ) + timedelta(seconds=ttl_sec),
+            })
+            self.pivot_cache[cache_key] = pivots
+            logger.debug("Future 1M пивоты %s: PP=%.6f", symbol, pivots["PP"])
+            return pivots
+        except Exception:
+            logger.exception("Ошибка future_monthly_pivots для %s", symbol)
             return None
 
     # ──────────────────────────────────────────────────────
@@ -453,8 +704,33 @@ class PivotCalculatorFixed:
     # Конфлюэнции
     # ──────────────────────────────────────────────────────
 
-    def _find_all_confluences(self, pivots_data: Dict, tolerance_percent: float = 0.3) -> List[Dict]:
-        """Конфлюэнции между всеми парами таймфреймов"""
+    # Допуски по парам TF: разные таймфреймы имеют разный масштаб уровней
+    _TF_TOLERANCE = {
+        ("1D", "1D_prev"): 0.3,   # тот же TF разных периодов → строго
+        ("1W", "1W_prev"): 0.5,
+        ("1W", "1D"):      1.0,   # недельный + дневной → мягче
+        ("1M", "1W"):      1.5,   # месячный + недельный → ещё мягче
+        ("1M", "1D"):      1.5,
+    }
+
+    @staticmethod
+    def _confluence_strength(dist: float, tf_a: str, tf_b: str) -> str:
+        """Сила конфлюэнции с учётом масштаба TF-пары."""
+        # Кросс-TF конфлюэнции сами по себе сильнее — разные периоды сошлись
+        cross_tf = {tf_a, tf_b} not in ({"1D", "1D_prev"}, {"1W", "1W_prev"})
+        if dist < 0.1:
+            return "VERY_STRONG"
+        if dist < 0.5:
+            return "STRONG" if not cross_tf else "VERY_STRONG"
+        if dist < 1.0:
+            return "MODERATE" if not cross_tf else "STRONG"
+        return "WEAK"
+
+    def _find_all_confluences(self, pivots_data: Dict, tolerance_percent: float = None) -> List[Dict]:
+        """Конфлюэнции между всеми парами таймфреймов.
+        Использует разные допуски для разных пар TF (см. _TF_TOLERANCE).
+        tolerance_percent — глобальный override (для обратной совместимости вызовов с явным аргументом).
+        """
         all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
         tf_pairs = [
             ("1M", "1W"), ("1M", "1D"), ("1W", "1D"),
@@ -467,6 +743,12 @@ class PivotCalculatorFixed:
             piv_b = pivots_data.get(tf_b)
             if not piv_a or not piv_b:
                 continue
+            # Допуск: явный аргумент > per-pair > дефолт 0.5
+            tol = (
+                tolerance_percent
+                if tolerance_percent is not None
+                else self._TF_TOLERANCE.get((tf_a, tf_b), self._TF_TOLERANCE.get((tf_b, tf_a), 0.5))
+            )
             for la in all_levels:
                 if la not in piv_a:
                     continue
@@ -478,7 +760,7 @@ class PivotCalculatorFixed:
                     if pa == 0:
                         continue
                     dist = abs((pa - pb) / pa * 100)
-                    if dist <= tolerance_percent:
+                    if dist <= tol:
                         confluences.append({
                             "tf_a": tf_a, "level_a": la, "price_a": pa,
                             "tf_b": tf_b, "level_b": lb, "price_b": pb,
@@ -486,7 +768,7 @@ class PivotCalculatorFixed:
                             "weekly_level": la, "weekly_price": pa,
                             "daily_level": lb, "daily_price": pb,
                             "distance_percent": dist,
-                            "strength": "VERY_STRONG" if dist < 0.1 else "STRONG",
+                            "strength": self._confluence_strength(dist, tf_a, tf_b),
                         })
 
         confluences.sort(key=lambda x: x["distance_percent"])
@@ -630,6 +912,118 @@ class PivotCalculatorFixed:
 
         return None
 
+    def get_tp_by_hierarchy(
+        self,
+        direction: str,
+        entry_price: float,
+        symbol: str,
+        stop_loss: Optional[float] = None,
+        min_r: float = 2.0,
+        tolerance_pct: float = 0.3,
+    ) -> Optional[tuple]:
+        """
+        TP по иерархии уровней (ARCH-09п5): сильный → слабый.
+
+        Порядок:
+          1. Конфлюэнция 1M+1W (±tolerance_pct%) — самый сильный
+          2. Конфлюэнция 1W+1D
+          3. 1M уровень (R1-R5 / S1-S5 / PP) — ближайший >= min_r
+          4. 1W уровень
+          5. 1D уровень
+          6. Любой пивот (get_pivot_tp_with_source)
+
+        Returns: (tp_price, source_str) или None
+        """
+        if entry_price <= 0:
+            return None
+
+        sl_dist: Optional[float] = None
+        if stop_loss and stop_loss > 0:
+            if direction == "LONG" and stop_loss < entry_price:
+                sl_dist = entry_price - stop_loss
+            elif direction == "SHORT" and stop_loss > entry_price:
+                sl_dist = stop_loss - entry_price
+
+        def _qualifies(price: float) -> bool:
+            if direction == "LONG" and price <= entry_price:
+                return False
+            if direction == "SHORT" and price >= entry_price:
+                return False
+            if sl_dist and sl_dist > 0:
+                return abs(price - entry_price) / sl_dist >= min_r
+            return True
+
+        # Строим pivots_data из кеша
+        pivots_data: Dict = {}
+        for tf in ("1M", "1W", "1D"):
+            cached = self.pivot_cache.get(f"{symbol}_{tf}")
+            if cached:
+                pivots_data[tf] = cached
+
+        # 1-2. Конфлюэнции (1M+1W, затем 1W+1D) — min_r смягчён до 1.0 для конфлюэнций,
+        # т.к. конфлюэнтный уровень сам по себе сильнее одиночного.
+        if len(pivots_data) >= 2:
+            confluences = self._find_all_confluences(pivots_data, tolerance_pct)
+            for ta, tb in (("1M", "1W"), ("1W", "1D")):
+                for c in confluences:
+                    if {c["tf_a"], c["tf_b"]} == {ta, tb}:
+                        avg_price = (c["price_a"] + c["price_b"]) / 2.0
+                        # Для конфлюэнций достаточно R ≥ 1.0 (сильный уровень перевешивает R:R)
+                        if direction == "LONG" and avg_price <= entry_price:
+                            continue
+                        if direction == "SHORT" and avg_price >= entry_price:
+                            continue
+                        if sl_dist and sl_dist > 0:
+                            r_to_confluence = abs(avg_price - entry_price) / sl_dist
+                            if r_to_confluence < 1.0:
+                                continue  # совсем близко — нет смысла
+                        src = f"confluence_{ta}+{tb}:{c['level_a']}≈{c['level_b']}"
+                        return avg_price, src
+
+        # 3-5. Уровни по TF (1M → 1W → 1D) — берём ближайший подходящий
+        all_lvls = ["PP"] + [f"R{i}" for i in range(1, 6)] + [f"S{i}" for i in range(1, 6)]
+        for tf in ("1M", "1W", "1D"):
+            piv = self.pivot_cache.get(f"{symbol}_{tf}")
+            if not piv:
+                continue
+            candidates = [
+                (price, f"pivot_{tf}:{lk}")
+                for lk in all_lvls
+                if (price := piv.get(lk)) and price > 0 and _qualifies(price)
+            ]
+            if candidates:
+                reverse = direction == "SHORT"
+                candidates.sort(key=lambda x: x[0], reverse=reverse)
+                return candidates[0]
+
+        return None
+
+    def find_near_pivot(
+        self,
+        price: float,
+        symbol: str,
+        threshold_pct: float = 1.0,
+    ) -> Optional[tuple]:
+        """
+        ARCH-23: возвращает (pivot_price, source_str) если цена в пределах threshold_pct%
+        от любого пивотного уровня. Приоритет: 1M > 1W > 1D (старший ТФ важнее).
+        Проверяет PP и S1-S3 / R1-R3.
+        Один вызов на сигнал — переиспользует уже прогретый pivot_cache.
+        """
+        if not price or price <= 0:
+            return None
+        for tf in ("1M", "1W", "1D"):
+            cached = self.pivot_cache.get(f"{symbol}_{tf}")
+            if not cached:
+                continue
+            for lk in ["PP"] + [f"S{i}" for i in range(1, 4)] + [f"R{i}" for i in range(1, 4)]:
+                lvl = cached.get(lk)
+                if not lvl or lvl <= 0:
+                    continue
+                if abs(price - lvl) / price * 100 <= threshold_pct:
+                    return lvl, f"{tf}:{lk}"
+        return None
+
     def format_pivot_message(self, symbol: str, pivots_data: Dict, current_price: float) -> str:
         from core.message_builder import tv_link
         from datetime import datetime as dt
@@ -680,8 +1074,12 @@ class PivotCalculatorFixed:
 
         confluences = pivots_data.get("confluence", [])
         if confluences:
+            # Приоритет: кросс-TF конфлюэнции (1M/1W/1D) выше чем same-TF (1D/1D_prev)
+            _cross_tf = [c for c in confluences if {c["tf_a"], c["tf_b"]} not in ({"1D", "1D_prev"}, {"1W", "1W_prev"})]
+            _same_tf  = [c for c in confluences if {c["tf_a"], c["tf_b"]} in ({"1D", "1D_prev"}, {"1W", "1W_prev"})]
+            ordered = _cross_tf + _same_tf
             parts.append(f"<b>🎯 КОНФЛЮЭНЦИИ ({len(confluences)}):</b>")
-            for i, c in enumerate(confluences[:3], 1):
+            for i, c in enumerate(ordered[:5], 1):
                 parts.append(
                     f"{i}. {c['tf_a']} {c['level_a']} ≈ {c['tf_b']} {c['level_b']}\n"
                     f"   Цена: {c['price_a']:.6f} ({c['strength']})"

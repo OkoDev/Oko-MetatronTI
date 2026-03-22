@@ -280,6 +280,21 @@ class PerformanceEngine:
         except Exception:
             return 0
 
+    def mfe_ready_count(self) -> int:
+        """DEV-16: Количество закрытых сделок с MFE-данными (max_R_possible IS NOT NULL).
+        Нужно >= 3000 для обучения RLExitAgent.
+        """
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT COUNT(*) FROM simulated_trades "
+                    "WHERE status IN ('TP','SL','TSL') AND max_R_possible IS NOT NULL"
+                )
+                return cur.fetchone()[0]
+        except Exception:
+            return 0
+
     # ------------------------------------------------------------------
     # Открытые сделки
     # ------------------------------------------------------------------
@@ -291,7 +306,7 @@ class PerformanceEngine:
                     SELECT id, symbol, direction, signal_type, regime,
                            entry_price, stop_loss, take_profit,
                            strength, confidence, created_at,
-                           tsl_activated,
+                           tsl_activated, tsl_tf,
                            tp1_price, tp1_hit_at,
                            tp2_price, tp2_hit_at,
                            tp3_price, tp3_hit_at
@@ -555,6 +570,68 @@ class PerformanceEngine:
         except Exception as e:
             logger.exception("PerformanceEngine.weekly_summary: %s", e)
             return {"total": 0, "wins": 0, "losses": 0, "tsl_count": 0, "closed": 0, "win_rate": 0, "avg_r": 0, "best_r": 0, "by_signal_type": []}
+
+    # ------------------------------------------------------------------
+    # DEV-27: Rolling WR degradation detector
+    # ------------------------------------------------------------------
+    def rolling_win_rate(self, window: int = 50) -> Optional[Dict[str, Any]]:
+        """WR по последним N закрытым сделкам (rolling window).
+
+        Returns dict с ключами: win_rate, wins, losses, n, status
+        status: "ok" | "warn" | "critical" | "insufficient_data"
+        """
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT status
+                    FROM simulated_trades
+                    WHERE status IN ('TP', 'SL', 'TSL')
+                    ORDER BY closed_at DESC
+                    LIMIT ?
+                """, (window,))
+                rows = [r[0] for r in cur.fetchall()]
+            n = len(rows)
+            if n < max(10, window // 5):
+                return {"win_rate": None, "wins": 0, "losses": 0, "n": n, "status": "insufficient_data"}
+            wins = sum(1 for s in rows if s in ("TP", "TSL"))
+            losses = n - wins
+            wr = round(wins / n * 100, 1)
+            if wr < 30.0:
+                status = "critical"
+            elif wr < 40.0:
+                status = "warn"
+            else:
+                status = "ok"
+            return {"win_rate": wr, "wins": wins, "losses": losses, "n": n, "status": status}
+        except Exception as e:
+            logger.exception("PerformanceEngine.rolling_win_rate: %s", e)
+            return None
+
+    def check_wr_degradation(self, window: int = 50, warn_threshold: float = 40.0,
+                             critical_threshold: float = 30.0) -> Optional[Dict[str, Any]]:
+        """Проверяет деградацию WR по скользящему окну.
+
+        Returns None если данных недостаточно, иначе dict:
+          - win_rate, n, status ("ok"|"warn"|"critical"), message
+        """
+        result = self.rolling_win_rate(window=window)
+        if result is None or result.get("status") == "insufficient_data":
+            return None
+        wr = result["win_rate"]
+        if wr < critical_threshold:
+            result["message"] = (
+                f"🚨 КРИТИЧНО: Rolling WR={wr:.1f}% за {result['n']} сделок "
+                f"(порог {critical_threshold:.0f}%). Проверь сигналы немедленно!"
+            )
+        elif wr < warn_threshold:
+            result["message"] = (
+                f"⚠️ ПРЕДУПРЕЖДЕНИЕ: Rolling WR={wr:.1f}% за {result['n']} сделок "
+                f"(порог {warn_threshold:.0f}%). Возможная деградация."
+            )
+        else:
+            result["message"] = f"✅ Rolling WR={wr:.1f}% за {result['n']} сделок — норма."
+        return result
 
     # ------------------------------------------------------------------
     # Всё одним вызовом (для /api/stats)

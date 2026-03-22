@@ -211,6 +211,22 @@ class TestStaticDetectors:
 class TestConfluenceStateMachine:
     def setup_method(self):
         self.sm = ConfluenceStateMachine(db_path=None)
+        # update() пересчитывает индикаторы через calculate_wt/calculate_trend,
+        # что перезаписывает тестовые значения. Мокируем — возвращаем df как есть.
+        self._patch_wt = patch(
+            "core.confluence_state_machine.calculate_wt",
+            side_effect=lambda df, **kw: df,
+        )
+        self._patch_trend = patch(
+            "core.confluence_state_machine.calculate_trend",
+            side_effect=lambda df, **kw: df,
+        )
+        self._patch_wt.start()
+        self._patch_trend.start()
+
+    def teardown_method(self):
+        self._patch_wt.stop()
+        self._patch_trend.stop()
 
     def test_initial_state_idle(self):
         assert self.sm.get_state("BTC/USDT", "LONG") == ConfluenceState.IDLE

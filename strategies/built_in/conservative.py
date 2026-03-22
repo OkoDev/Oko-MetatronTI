@@ -39,8 +39,7 @@ class ConservativeStrategy(BaseStrategy):
         
         # Консервативные веса: больше вес на надежные сигналы
         self.signal_weights = {
-            SignalType.MTF_SIGNAL: 0.30,  # +0.05
-            SignalType.MTF_ALERT: 0.25,   # -0.05
+            SignalType.MTF_ALERT: 0.25,
             SignalType.PIVOT_REVERSAL: 0.25,  # +0.05
             SignalType.DIVERGENCE: 0.20,  # +0.05
             SignalType.WT_SIGNAL: 0.10,

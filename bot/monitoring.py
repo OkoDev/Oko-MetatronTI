@@ -8,14 +8,16 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Optional
 
-from core.message_builder import anomaly_message, wt_message, mtf_message
+from core.message_builder import anomaly_message, wt_message
 from core.mtf_checker import collect_mtf_data, check_mtf_alert, mtf_alert_message
 from core.trend_signals import check_trend_following_signal, trend_signal_message
 from core.divergence_detector import divergence_message, mtf_divergence_message
 from core.pivot_reversal import check_pivot_level_signal, pivot_level_signal_message
 from core.trading_intelligence import format_intelligence_message
-from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals, check_mtf_signals as _check_mtf_signals
+from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals
+from core.entry_config import get_primary_entry_tf
 from core.signal_models import SignalData, SignalType, SignalDirection
 from bot.keyboards import main_menu
 
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Ограничиваем параллельные вызовы analyze_symbol (тяжёлый: ML + 3 OHLCV-фетча)
 # Размер задаётся через config: performance.analyze_semaphore_size (default 3)
-_analyze_sem: asyncio.Semaphore | None = None
+_analyze_sem: Optional[asyncio.Semaphore] = None
 
 
 def _get_analyze_sem(bot) -> asyncio.Semaphore:
@@ -102,6 +104,35 @@ def _div_passes_filters(div_info: dict, df_15m, pivot_calc, sym: str,
                 pass  # ошибка — не блокируем
 
     return True, ""
+
+
+def _make_mtf_alert_recommendation(sym: str, signal_type: str, strength: int,
+                                    current_price: float, atr: float):
+    """Адаптер MTF alert → объект для register_trade (fallback_rec)."""
+    is_long = signal_type == "LONG"
+    sl_mult = 2.0
+    tp_rr = 2.5
+    sl = current_price - atr * sl_mult if is_long else current_price + atr * sl_mult
+    risk = abs(current_price - sl)
+    tp = current_price + risk * tp_rr if is_long else current_price - risk * tp_rr
+    _sig = SimpleNamespace(signal_type=SimpleNamespace(value="mtf_alert"))
+    return SimpleNamespace(
+        symbol=sym,
+        entry_price=current_price,
+        direction=SimpleNamespace(value="LONG" if is_long else "SHORT"),
+        stop_loss=sl,
+        take_profit=tp,
+        tp1_price=None,
+        overall_strength=strength,
+        confidence=0.70,
+        timestamp=datetime.now(),
+        market_context=None,
+        supporting_signals=[_sig],
+        conflicting_signals=[],
+        sl_source="atr_15m",
+        tp_source="rr_2.5",
+        metadata={},
+    )
 
 
 def _make_pivot_recommendation(info: dict):
@@ -199,10 +230,11 @@ async def check_anomalies(bot):
     async def _one(sym):
         async with sem:
             try:
-                df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=30)
-                if df_15m is None or df_15m.empty:
+                _etf = get_primary_entry_tf()
+                df_entry = await bot.data_collector.get_ohlcv(sym, _etf, limit=30)
+                if df_entry is None or df_entry.empty:
                     return
-                signals = await check_anomaly_signals(sym, df_15m)
+                signals = await check_anomaly_signals(sym, df_entry)
                 for sig in signals:
                     info = sig.data or {}
                     bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
@@ -222,11 +254,12 @@ async def check_wt_signals(bot):
     async def _one(sym):
         async with sem:
             try:
-                df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=150)
-                if df_15m is None or df_15m.empty:
+                _etf = get_primary_entry_tf()
+                df_entry = await bot.data_collector.get_ohlcv(sym, _etf, limit=150)
+                if df_entry is None or df_entry.empty:
                     return
                 df_1h = await bot.data_collector.get_ohlcv(sym, "1h", limit=60)
-                signals = await _check_wt_signals(sym, df_15m, df_1h)
+                signals = await _check_wt_signals(sym, df_entry, df_1h)
                 for sig in signals:
                     info = sig.data or {}
                     logger.info("WT сигнал обнаружен для %s", sym)
@@ -239,29 +272,6 @@ async def check_wt_signals(bot):
 
     await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
-
-async def check_mtf_signals(bot):
-    sem = asyncio.Semaphore(int(bot.config.get("performance.background_check_semaphore_size", 10)))
-
-    async def _one(sym):
-        async with sem:
-            try:
-                df_1h  = await bot.data_collector.get_ohlcv(sym, "1h",  limit=100)
-                df_15m = await bot.data_collector.get_ohlcv(sym, "15m", limit=100)
-                df_3m  = await bot.data_collector.get_ohlcv(sym, "3m",  limit=100)
-                if df_1h is None or df_1h.empty or df_15m is None or df_15m.empty:
-                    return
-                signals = await _check_mtf_signals(sym, df_1h, df_15m, df_3m)
-                for sig in signals:
-                    info = sig.data or {}
-                    raw_text = mtf_message(sym, info)
-                    await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_signal")
-                    bot.signal_counters["mtf_signal"] += 1
-                    bot.signal_counters["total"] += 1
-            except Exception:
-                logger.exception("Ошибка check_mtf_signals для %s", sym)
-
-    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
 def _make_signal_stub(sym: str, signal_type: SignalType, direction_str: str,
@@ -285,6 +295,9 @@ def _make_signal_stub(sym: str, signal_type: SignalType, direction_str: str,
 
 
 async def check_mtf_alerts(bot):
+    # DEV-31: mtf_alert убран — 137 сделок WR=4.4%. Отключается через signals.mtf_alert_enabled=false
+    if not bot.config.get("signals.mtf_alert_enabled", True):
+        return
     sem = asyncio.Semaphore(int(bot.config.get("performance.background_check_semaphore_size", 10)))
 
     async def _one(sym):
@@ -295,9 +308,27 @@ async def check_mtf_alerts(bot):
                     return
                 is_alert, sig = check_mtf_alert(snapshot)
                 if is_alert:
+                    from core.mtf_checker import analyze_mtf_strength
+                    strength = analyze_mtf_strength(snapshot, sig)
                     raw_text = mtf_alert_message(sym, snapshot, sig)
-                    pre = [_make_signal_stub(sym, SignalType.MTF_ALERT, sig)]
-                    await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_alert", pre_signals=pre)
+                    pre = [_make_signal_stub(sym, SignalType.MTF_ALERT, sig, strength=strength)]
+                    # Создаём fallback_rec для регистрации сделки (если включено)
+                    mtf_fallback = None
+                    if bot.config.get("signals.mtf_alert_register", True):
+                        try:
+                            _etf = get_primary_entry_tf()
+                            df_entry = await bot.data_collector.get_ohlcv(sym, _etf, limit=30)
+                            if df_entry is not None and len(df_entry) >= 14:
+                                cur_price = float(df_entry["close"].iloc[-1])
+                                atr = float(df_entry["high"].rolling(14).max().iloc[-1]
+                                            - df_entry["low"].rolling(14).min().iloc[-1]) / 14
+                                if cur_price > 0 and atr > 0:
+                                    mtf_fallback = _make_mtf_alert_recommendation(
+                                        sym, sig, strength, cur_price, atr)
+                        except Exception:
+                            logger.debug("[%s] MTF alert fallback_rec: не удалось вычислить", sym)
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_alert",
+                                                        fallback_rec=mtf_fallback, pre_signals=pre)
                     bot.signal_counters["mtf_alert"] += 1
                     bot.signal_counters["total"] += 1
             except Exception:
@@ -308,6 +339,8 @@ async def check_mtf_alerts(bot):
 
 async def check_cascade_divergences(bot, senior_tf: str, junior_tf: str):
     """Проверяет MTF-конфлюэнцию дивергенций (скрытая senior_tf + регулярная junior_tf) для всех пар."""
+    if not bot.config.get("signals.cascade_div_enabled", True):
+        return
     sem = asyncio.Semaphore(int(bot.config.get("performance.cascade_div_semaphore_size", 5)))
 
     async def _one(sym):
@@ -363,7 +396,7 @@ async def check_divergences(bot):
 
     async def _one(sym):
         async with sem:
-            for tf in ("15m", "1h"):
+            for tf in (get_primary_entry_tf(), "1h"):
                 try:
                     has_div, div_info = await bot.divergence_detector.detect_divergence(
                         sym, bot.data_collector, timeframe=tf
@@ -414,6 +447,117 @@ async def check_pivot_reversals(bot):
                     logger.info("[%s] Вход от уровня: %s R:R=%.1f", sym, info.get("level"), info.get("rr_ratio", 0))
             except Exception:
                 logger.exception("Ошибка check_pivot_reversals для %s", sym)
+
+    await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
+
+
+async def check_future_pivot_alerts(bot):
+    """
+    DEV-11: Pre-alert при приближении цены к future pivot уровням.
+    Вызывается каждые _bg_n циклов из monitor_market.
+    """
+    if not bot.config.get("future_pivots.enabled", True):
+        return
+
+    pre_alert_pct = float(bot.config.get("future_pivots.pre_alert_pct", 1.0))
+    ttl_sec = int(bot.config.get("future_pivots.ttl_sec", 60))
+    threshold_pct = float(bot.config.get("future_pivots.confluence_threshold_pct", 0.5))
+    sem = asyncio.Semaphore(int(bot.config.get("performance.background_check_semaphore_size", 10)))
+    pivot_calc = getattr(bot, "pivot_calculator", None)
+
+    if pivot_calc is None:
+        return
+
+    from core.confluence_scanner import check_future_classic_confluence
+
+    async def _one(sym):
+        async with sem:
+            try:
+                # Загружаем future пивоты (с TTL-кешем)
+                future_daily, future_weekly, future_monthly = await asyncio.gather(
+                    pivot_calc.get_future_daily_pivots(sym, bot.data_collector, ttl_sec=ttl_sec),
+                    pivot_calc.get_future_weekly_pivots(sym, bot.data_collector, ttl_sec=ttl_sec),
+                    pivot_calc.get_future_monthly_pivots(sym, bot.data_collector, ttl_sec=ttl_sec),
+                )
+
+                future_map = {
+                    "future_1D": future_daily,
+                    "future_1W": future_weekly,
+                    "future_1M": future_monthly,
+                }
+
+                # Текущая цена из кеша entry TF
+                _etf = get_primary_entry_tf()
+                df_entry = await bot.data_collector.get_ohlcv(sym, _etf, limit=5)
+                if df_entry is None or df_entry.empty:
+                    return
+                current_price = float(df_entry["close"].iloc[-1])
+                if current_price <= 0:
+                    return
+
+                all_levels = ["PP"] + [f"S{i}" for i in range(1, 6)] + [f"R{i}" for i in range(1, 6)]
+                alerts = []
+
+                # Проверяем близость цены к каждому future-уровню
+                for tf_key, f_pivots in future_map.items():
+                    if not f_pivots:
+                        continue
+                    for lvl in all_levels:
+                        price = f_pivots.get(lvl)
+                        if not price or price <= 0:
+                            continue
+                        dist_pct = abs((current_price - price) / price * 100)
+                        if dist_pct <= pre_alert_pct:
+                            alerts.append({
+                                "tf": tf_key,
+                                "level": lvl,
+                                "price": price,
+                                "dist_pct": dist_pct,
+                                "current_price": current_price,
+                            })
+
+                # Конфлюэнция Future × Classic
+                confluence_hits = []
+                for tf_key, f_pivots in future_map.items():
+                    if not f_pivots:
+                        continue
+                    # Берём classic кеш (1D, 1W, 1M)
+                    classic_tf = tf_key.replace("future_", "")
+                    classic_pivots = pivot_calc.pivot_cache.get(f"{sym}_{classic_tf}")
+                    if classic_pivots:
+                        hits = check_future_classic_confluence(f_pivots, classic_pivots, threshold_pct)
+                        confluence_hits.extend(hits)
+
+                if not alerts and not confluence_hits:
+                    return
+
+                # Формируем сообщение pre-alert
+                lines = [f"⚠️ <b>FUTURE PIVOT ALERT · {sym}</b>"]
+                if alerts:
+                    lines.append(f"💰 Цена: <code>{current_price:.6f}</code>")
+                    for a in sorted(alerts, key=lambda x: x["dist_pct"])[:3]:
+                        lines.append(
+                            f"  📍 {a['tf'].replace('future_','')} {a['level']}: "
+                            f"<code>{a['price']:.6f}</code> "
+                            f"({a['dist_pct']:.2f}% от цены)"
+                        )
+                if confluence_hits:
+                    lines.append("🎯 <b>Future × Classic конфлюэнции:</b>")
+                    for c in confluence_hits[:2]:
+                        lines.append(
+                            f"  {c['label']}: <code>{c['price']:.6f}</code> "
+                            f"(+{c['strength_bonus']} strength)"
+                        )
+                lines.append(f"⏰ {datetime.now().strftime('%d.%m %H:%M')}")
+                raw_text = "\n".join(lines)
+
+                logger.info("[future_pivots] %s: %d уровней, %d конфлюэнций",
+                            sym, len(alerts), len(confluence_hits))
+                if bot.config.get("future_pivots.broadcast_tg", False):
+                    await _broadcast_intelligence_alert(bot, sym, raw_text, "future_pivot_alert")
+
+            except Exception:
+                logger.exception("Ошибка check_future_pivot_alerts для %s", sym)
 
     await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
@@ -541,11 +685,52 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     except Exception:
         logger.exception("Ошибка AI-анализа для %s при сигнале %s", symbol, signal_type)
 
-    # Этап 5.2: BTC-корреляционный фильтр
-    # Слабые контртрендовые сигналы (strength < 70) — блокируем
-    # Сильные (strength >= 70) — доставляем с предупреждением
+    # ARCH-28: FVG + Pivot Confluence — бонус к strength если цена в зоне конфлюэнции
+    if recommendation is not None and hasattr(bot, "pivot_calculator"):
+        try:
+            from core.smc import find_fvg_pivot_confluences
+            smc_ctx = getattr(getattr(recommendation, "market_context", None), "smc_context", None)
+            if smc_ctx is not None and smc_ctx.fvg is not None:
+                # Строим плоский dict пивотов из кеша: {"1W_S2": 0.004406, ...}
+                flat_pivots: dict = {}
+                sym_pivots = getattr(bot.pivot_calculator, "pivot_cache", {}).get(symbol, {})
+                for tf_key, levels in sym_pivots.items():
+                    if isinstance(levels, dict):
+                        for lk, lv in levels.items():
+                            if isinstance(lv, (int, float)) and lv > 0:
+                                flat_pivots[f"{tf_key}_{lk}"] = lv
+
+                if flat_pivots:
+                    cur_price = recommendation.market_context.current_price or 0
+                    zones = find_fvg_pivot_confluences(smc_ctx.fvg, flat_pivots, cur_price)
+                    if zones:
+                        # Сохраняем все зоны в metadata для features_json
+                        if recommendation.metadata is None:
+                            recommendation.metadata = {}
+                        recommendation.metadata["fvg_confluences"] = [z.to_dict() for z in zones]
+
+                        # Бонус strength: только если цена ВНУТРИ FVG зоны
+                        for z in zones:
+                            fvg = z.fvg
+                            if fvg.bottom <= cur_price <= fvg.top:
+                                bonus = z.score
+                                old_str = recommendation.overall_strength
+                                recommendation.overall_strength = min(100, old_str + bonus)
+                                logger.info(
+                                    "[ARCH-28] %s: цена в зоне %s (score=%d) → strength %d→%d",
+                                    symbol, z.label, bonus, old_str, recommendation.overall_strength,
+                                )
+                                break  # применяем только за первую (ближайшую) зону
+        except Exception:
+            logger.debug("[ARCH-28] %s: ошибка FVG confluence", symbol, exc_info=True)
+
+    # Этап 5.2: BTC-корреляционный фильтр (ARCH-09п8)
+    # shadow (default): только логирует + btc_counter_trend в features_json, НЕ блокирует
+    # block: блокирует слабые контртрендовые сигналы (классическое поведение)
+    btc_filter_mode = bot.config.get("signal_quality.btc_filter_mode", "shadow")
     btc_regime = await _get_btc_regime(bot) if bot.config.get("signal_quality.btc_filter_enabled", True) else None
     btc_warning = ""
+    btc_counter_trend = False   # флаг для features_json (аналитика WR)
     if btc_regime == "HIGH_VOL":
         btc_warning = "\n⚠️ <i>BTC (1h): высокая волатильность — повышенный риск для любых позиций</i>"
     elif recommendation and btc_regime:
@@ -557,25 +742,32 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         )
         ct_thr = int(bot.config.get("signal_quality.counter_trend_strength_threshold", 70))
         if is_counter_trend:
-            if strength_val < ct_thr:
-                logger.info("[%s] BTC %s vs %s, сила %d < %d — пропущен",
+            btc_counter_trend = True
+            if btc_filter_mode == "block" and strength_val < ct_thr:
+                logger.info("[%s] BTC %s vs %s, сила %d < %d — пропущен (block mode)",
                             symbol, btc_regime, direction_val, strength_val, ct_thr)
                 return
-            # Сила >= ct_thr — доставляем с предупреждением
             regime_ru = "восходящем" if btc_regime == "TREND_UP" else "нисходящем"
             dir_ru = "шорт" if direction_val == "SHORT" else "лонг"
-            btc_warning = f"\n⚠️ <i>BTC (1h) в {regime_ru} тренде — {dir_ru} против рынка, сигнал сильный ({strength_val}/100)</i>"
-            logger.info("[%s] BTC %s vs %s, сила %d >= %d — предупреждение",
-                        symbol, btc_regime, direction_val, strength_val, ct_thr)
+            btc_warning = f"\n⚠️ <i>BTC (1h) в {regime_ru} тренде — {dir_ru} против рынка ({strength_val}/100)</i>"
+            logger.info("[%s] BTC %s vs %s, сила %d, режим=%s — btc_counter_trend=True",
+                        symbol, btc_regime, direction_val, strength_val, btc_filter_mode)
 
-    # Этап 6: заменяем fixed TP на ближайший пивот с R >= tp_pivot_min_r (из конфига)
+    # Этап 6: TP по иерархии пивотов (ARCH-09п5)
+    # Порядок: конфлюэнция 1M+1W → 1W+1D → 1M → 1W → 1D → fallback ATR
     distance_to_pivot_pct: float = 0.0
     if recommendation is not None and hasattr(bot, "pivot_calculator"):
         direction_val = getattr(recommendation.direction, "value", "NEUTRAL")
         entry_price = recommendation.entry_price or 0
         if direction_val in ("LONG", "SHORT") and entry_price > 0:
-            pivot_min_r = bot.config.get("trading.sl_tp.tp_pivot_min_r", 2.0)
-            pivot_result = bot.pivot_calculator.get_pivot_tp_with_source(
+            strategy_type = (recommendation.metadata or {}).get("strategy_type", "")
+            if strategy_type == "reversal":
+                pivot_min_r = bot.config.get("trading.sl_tp.tp_reversal_min_r", 2.0)
+            elif strategy_type == "trend_following":
+                pivot_min_r = bot.config.get("trading.sl_tp.tp_trend_min_r", 1.5)
+            else:
+                pivot_min_r = bot.config.get("trading.sl_tp.tp_pivot_min_r", 2.0)
+            pivot_result = bot.pivot_calculator.get_tp_by_hierarchy(
                 direction=direction_val,
                 entry_price=entry_price,
                 symbol=symbol,
@@ -587,7 +779,12 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 recommendation.take_profit = pivot_tp
                 recommendation.tp_source = pivot_src
                 distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
-                logger.debug("[%s] Pivot TP: %.6f (%.2f%%, %s, src=%s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val, pivot_src)
+                logger.debug("[%s] Pivot TP (hierarchy): %.6f (%.2f%%, %s, src=%s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val, pivot_src)
+            elif bot.config.get("trading.sl_tp.require_pivot_tp", False):
+                # Вариант C (п.6): если pivot TP не найден и require_pivot_tp=true → пропуск регистрации
+                logger.info("[%s] Пропуск регистрации: require_pivot_tp=true, pivot не найден в 2-20R", symbol)
+                if recommendation is not None:
+                    recommendation = None  # блокирует is_actionable и should_register
 
     min_strength = bot.config.get("signal_quality.min_strength", 50)
     min_strength_register = bot.config.get("signal_quality.min_strength_register", 50)
@@ -608,6 +805,51 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         logger.info("[%s] Пропущен WATCH+NEUTRAL — нет торгового решения", symbol)
         return
 
+    # ── DEV-22: WATCH LIST ─────────────────────────────────────────────────────
+    # Если action=WATCH и есть чёткое направление — добавить в WL или эскалировать.
+    _wl = getattr(bot, "signal_watch_list", None)
+    if _wl is not None and recommendation is not None:
+        _rec_action = getattr(recommendation, "action", "WATCH")
+        _rec_dir = (getattr(recommendation.direction, "value", "NEUTRAL")
+                    if recommendation.direction else "NEUTRAL")
+        _rec_str = recommendation.overall_strength
+
+        # MTF direction из metadata
+        _mtf_ctx = (recommendation.metadata or {}).get("mtf_context", {})
+        _mtf_dir = _mtf_ctx.get("direction_bias", "") if isinstance(_mtf_ctx, dict) else ""
+        _mtf_aligned = _mtf_ctx.get("aligned_pct", 0) if isinstance(_mtf_ctx, dict) else 0
+
+        # Кол-во дивергенций в supporting_signals
+        _div_count = sum(
+            1 for s in (recommendation.supporting_signals or [])
+            if "divergence" in str(getattr(s, "signal_type", "")).lower()
+        )
+
+        if _rec_action == "WATCH" and _rec_dir in ("LONG", "SHORT"):
+            # Pivot level для отслеживания пробоя: используем stop_loss (уровень под/над которым идея ломается)
+            _pivot_key = getattr(recommendation, "sl_source", "") or ""
+            _pivot_level = recommendation.stop_loss or 0.0
+            _wl_reason = f"MTF {_mtf_dir} {_mtf_aligned}%" if _mtf_dir else "WATCH"
+
+            if _wl.has(symbol):
+                # Уже в WL → проверяем эскалацию
+                if _wl.check_escalation(symbol, _rec_str, _rec_action, _mtf_dir, _div_count):
+                    # Эскалируем: форсируем BUY/SELL, пересчитываем флаги
+                    recommendation.action = "BUY" if _rec_dir == "LONG" else "SELL"
+                    _dir_ok = True
+                    is_actionable = _rec_str >= min_strength
+                    should_register = _rec_str >= min_strength_register
+                    raw_text = raw_text.rstrip() + "\n🔔 <i>Эскалация из WATCH — условия улучшились</i>"
+                    _wl.add(symbol, _rec_dir, _rec_str, "escalated", _pivot_key, _pivot_level, _div_count)
+                    logger.info("[%s] WL: WATCH → %s (score=%.0f)", symbol, recommendation.action, _rec_str)
+                # иначе WATCH остаётся WATCH — обновляем div_count если вырос
+                elif _div_count > (_wl.get(symbol).div_count if _wl.get(symbol) else 0):
+                    _wl.add(symbol, _rec_dir, _rec_str, _wl_reason, _pivot_key, _pivot_level, _div_count)
+            else:
+                # Добавляем новую запись в WL
+                _wl.add(symbol, _rec_dir, _rec_str, _wl_reason, _pivot_key, _pivot_level, _div_count)
+    # ── /DEV-22 ────────────────────────────────────────────────────────────────
+
     # Регистрируем сделку ДО отправки TG — чтобы footer "зарегистрирована" соответствовал реальности
     trade_registered = False
     if should_register:
@@ -615,6 +857,8 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             extra: dict = {}
             if distance_to_pivot_pct:
                 extra["distance_to_pivot_pct"] = distance_to_pivot_pct
+            if btc_counter_trend:
+                extra["btc_counter_trend"] = True   # shadow: для аналитики WR с/без BTC-фильтра
             # Извлекаем факторы confluence для аналитики WR по каждому фактору
             conf_factors = []
             for sig in (recommendation.supporting_signals or []):
@@ -623,6 +867,10 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                     break
             if conf_factors:
                 extra["confluence_factors"] = conf_factors
+            # ARCH-28: FVG+Pivot confluence зоны в features_json
+            _fvg_zones = (recommendation.metadata or {}).get("fvg_confluences")
+            if _fvg_zones:
+                extra["fvg_confluences"] = _fvg_zones
             trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:
@@ -667,41 +915,53 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             text = raw_text
         if btc_warning:
             text = text.rstrip() + btc_warning
+        # Стандартный footer статуса регистрации — в каждом сообщении
         if is_actionable and trade_registered:
             kelly_line = _get_kelly_footer(bot)
             text = text.rstrip() + "\n─────────────\n💾 <i>Сделка зарегистрирована в симуляторе</i>" + kelly_line
+        elif recommendation:
+            _reason_parts = []
+            if getattr(recommendation, "action", "WATCH") not in ("BUY", "SELL"):
+                _reason_parts.append(f"action={getattr(recommendation, 'action', '?')}")
+            if recommendation.overall_strength < min_strength_register:
+                _reason_parts.append(f"сила={recommendation.overall_strength:.0f}&lt;{min_strength_register}")
+            _mtf = (recommendation.metadata or {}).get("mtf_context", {})
+            _bias = _mtf.get("direction_bias", "") if isinstance(_mtf, dict) else ""
+            _aligned = _mtf.get("aligned_pct") if isinstance(_mtf, dict) else None
+            _mtf_str = f" · MTF {_bias} {_aligned}%" if _bias and _aligned else ""
+            _reason_str = ", ".join(_reason_parts) if _reason_parts else "WATCH"
+            text = text.rstrip() + f"\n─────────────\n❌ <i>Не зарегистрирован: {_reason_str}{_mtf_str}</i>"
+            logger.info("[%s] Сделка не зарегистрирована: %s%s", symbol, _reason_str, _mtf_str)
 
-    await broadcast_with_subscription_check(bot, text, signal_type)
+    # ── PNG-график (если send_chart: true в config) ───────────────────────────
+    png_bytes = None
+    if bot.config.get("signals.send_chart", False):
+        try:
+            from core.chart_builder import build_signal_chart
+            chart_tf   = bot.config.get("signals.chart_tf", "1h")
+            chart_bars = int(bot.config.get("signals.chart_bars", 300))
+            png_bytes = await build_signal_chart(symbol, tf=chart_tf, bars=chart_bars)
+        except Exception:
+            logger.exception("Ошибка генерации графика для %s", symbol)
 
-    if should_register:
-        pass  # уже зарегистрировано выше
-    elif recommendation:
-        reason = []
-        if recommendation.overall_strength < min_strength_register:
-            reason.append(f"strength={recommendation.overall_strength:.1f}<{min_strength_register}")
-        if getattr(recommendation, "action", "WATCH") not in ("BUY", "SELL"):
-            reason.append(f"action={getattr(recommendation, 'action', '?')}")
-        if getattr(recommendation, "direction", None) is None or recommendation.direction.value == "NEUTRAL":
-            reason.append("direction=NEUTRAL")
-        logger.info("[%s] Сделка не зарегистрирована: %s", symbol, ", ".join(reason))
-    elif fallback_rec is not None:
+    await broadcast_with_subscription_check(bot, text, signal_type, chart_png=png_bytes)
+
+    # fallback_rec отключён: analyze_symbol с MTF multiplier — единственный путь регистрации.
+    # Старый fallback обходил MTF context → strength 70-100 при bias AGAINST → WR=8.7%.
+    if not should_register and not trade_registered and fallback_rec is not None:
         fallback_strength = getattr(fallback_rec, "overall_strength", 0)
-        if fallback_strength >= min_strength_register:
-            try:
-                await bot.trade_simulator.register_trade_async(fallback_rec, bot.data_collector)
-                logger.info("TradeSimulator fallback: зарегистрирован %s str=%.0f", symbol, fallback_strength)
-            except Exception as e:
-                logger.debug("TradeSimulator fallback для %s: %s", symbol, e)
-        else:
-            logger.info("[%s] Fallback не зарегистрирован: strength=%.0f < %d", symbol, fallback_strength, min_strength_register)
+        logger.info("[%s] Fallback НЕ регистрируем (MTF bypass fix): str=%.0f, signal=%s",
+                    symbol, fallback_strength, signal_type)
 
 
-async def broadcast_with_subscription_check(bot, text: str, signal_type: str):
+async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
+                                             chart_png: bytes | None = None):
     if not bot.subscribers:
         logger.warning("Нет подписчиков для отправки сигнала %s", signal_type)
         return
 
-    logger.info("Отправка сигнала %s для %d подписчиков", signal_type, len(bot.subscribers))
+    logger.info("Отправка сигнала %s для %d подписчиков (chart=%s)",
+                signal_type, len(bot.subscribers), chart_png is not None)
     sent_count = 0
     for uid in list(bot.subscribers):
         try:
@@ -711,7 +971,22 @@ async def broadcast_with_subscription_check(bot, text: str, signal_type: str):
             if not bot.subscription_manager.can_send_signal_today(uid):
                 logger.debug("Пользователь %s достиг дневного лимита", uid)
                 continue
-            await bot.bot.send_message(chat_id=uid, text=text, disable_web_page_preview=True)
+
+            if chart_png:
+                # Telegram caption ограничен 1024 символами
+                caption = text[:1020] + "…" if len(text) > 1024 else text
+                from aiogram.types import BufferedInputFile
+                await bot.bot.send_photo(
+                    chat_id=uid,
+                    photo=BufferedInputFile(chart_png, filename="chart.png"),
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            else:
+                await bot.bot.send_message(
+                    chat_id=uid, text=text, disable_web_page_preview=True, parse_mode="HTML"
+                )
+
             sent_count += 1
             logger.info("Сигнал %s отправлен пользователю %s", signal_type, uid)
             bot.subscription_manager.record_signal_sent(uid, signal_type)

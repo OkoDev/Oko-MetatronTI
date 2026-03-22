@@ -20,8 +20,9 @@ STATUS_SL = "SL"
 STATUS_TSL = "TSL"
 STATUS_EXPIRED = "EXPIRED"
 
-# Дефолты
-DEFAULT_TIMEFRAME = "15m"
+# Дефолты — entry TF из core.entry_config
+from core.entry_config import get_primary_entry_tf, get_cascade_tfs, get_tsl_tf
+DEFAULT_TIMEFRAME = get_primary_entry_tf()  # из config.yaml → trading.entry_timeframe
 MAX_DURATION_MINUTES = 48 * 60  # 48 часов — затем EXPIRED
 
 
@@ -49,7 +50,6 @@ def _signal_type_from_recommendation(rec: Any) -> str:
       divergence       дивергенция
       trend_signal     смена тренда
       anomaly          всплеск объёма (частый, низкий вес)
-      mtf_signal       устаревший MTF (будет упразднён)
     """
     _PRIORITY = [
         "wt_b_signal",
@@ -61,7 +61,6 @@ def _signal_type_from_recommendation(rec: Any) -> str:
         "divergence",
         "trend_signal",
         "anomaly",
-        "mtf_signal",
     ]
     supporting = _get_recommendation_value(rec, "supporting_signals") or []
     if not supporting:
@@ -91,6 +90,9 @@ class TradeSimulator:
         self.db_path = db_path
         self.max_duration_minutes = max_duration_minutes
         self.init_database()
+        # DEV-15: LLM-анализатор SL-сделок (инициализируется лениво при первом SL)
+        self._trade_analyzer = None
+        self._trade_analyzer_init = False
 
     def init_database(self):
         """Создает таблицу simulated_trades в базе данных"""
@@ -148,6 +150,7 @@ class TradeSimulator:
                 ("strategy_type", "TEXT DEFAULT 'SINGLE'"),
                 ("first_profit_r", "REAL"),    # первое наблюдение R > 0 (цена впервые пошла в прибыль)
                 ("first_drawdown_r", "REAL"),  # первое наблюдение R < 0 (первый откат ниже entry)
+                ("decision_trace_json", "TEXT"),  # DEV-12: полный аудит решения
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -182,6 +185,72 @@ class TradeSimulator:
                 return None
 
             symbol = _get_recommendation_value(recommendation, "symbol") or ""
+
+            # Dedup открытых позиций: блокируем если по символу уже есть открытая сделка
+            # ARCH-15: при bounce_mode допускаем 2 сделки с разным trade_mode (SWING + SCALP)
+            trade_mode = ""
+            if extra_features:
+                trade_mode = extra_features.get("trade_mode", "")
+            if symbol:
+                try:
+                    with sqlite3.connect(self.db_path) as _c:
+                        existing_rows = _c.execute(
+                            "SELECT id, direction, features_json FROM simulated_trades "
+                            "WHERE symbol=? AND status=? LIMIT 5",
+                            (symbol, STATUS_OPEN),
+                        ).fetchall()
+                    if existing_rows:
+                        # Если есть trade_mode — проверяем совместимость
+                        if trade_mode:
+                            for row in existing_rows:
+                                ex_features = {}
+                                try:
+                                    ex_features = json.loads(row[2]) if row[2] else {}
+                                except Exception:
+                                    pass
+                                ex_mode = ex_features.get("trade_mode", "swing")
+                                if ex_mode == trade_mode:
+                                    # Тот же trade_mode → дубль
+                                    logger.info(
+                                        "TradeSimulator: [dedup] пропуск %s %s — уже открыта #%d (%s, mode=%s)",
+                                        _direction_str(direction), symbol, row[0], row[1], ex_mode,
+                                    )
+                                    return None
+                            # Разные trade_mode → допускаем (SWING + SCALP)
+                            logger.info(
+                                "TradeSimulator: [bounce] допускаем %s %s mode=%s — есть открытая с другим mode",
+                                _direction_str(direction), symbol, trade_mode,
+                            )
+                        else:
+                            # Без trade_mode → старая логика: блокируем
+                            logger.info(
+                                "TradeSimulator: [dedup] пропуск %s %s — уже открыта #%d (%s)",
+                                _direction_str(direction), symbol, existing_rows[0][0], existing_rows[0][1],
+                            )
+                            return None
+                except Exception as _e:
+                    logger.debug("TradeSimulator: [dedup] ошибка проверки — %s", _e)
+
+            # DEV-14: Correlation Guard — лимит открытых позиций по направлению
+            try:
+                from core.config_loader import config as _cfg_cg
+                _max_per_dir = int(_cfg_cg.get("trading.max_positions_per_direction", 5))
+                _dir_str = _direction_str(direction)
+                if _max_per_dir > 0 and _dir_str in ("LONG", "SHORT") and "__SELFTEST__" not in str(symbol):
+                    with sqlite3.connect(self.db_path) as _c:
+                        _open_count = _c.execute(
+                            "SELECT COUNT(*) FROM simulated_trades WHERE status=? AND direction=?",
+                            (STATUS_OPEN, _dir_str),
+                        ).fetchone()[0]
+                    if _open_count >= _max_per_dir:
+                        logger.info(
+                            "TradeSimulator: [corr_guard] пропуск %s %s — открыто %d/%d %s позиций",
+                            _dir_str, symbol, _open_count, _max_per_dir, _dir_str,
+                        )
+                        return None
+            except Exception as _cg_e:
+                logger.debug("TradeSimulator: [corr_guard] ошибка — %s", _cg_e)
+
             strength = _get_recommendation_value(recommendation, "overall_strength")
             confidence = _get_recommendation_value(recommendation, "confidence")
             ts = _get_recommendation_value(recommendation, "timestamp") or datetime.now(timezone.utc)
@@ -189,7 +258,11 @@ class TradeSimulator:
                 ts = ts.replace(tzinfo=timezone.utc)
 
             # RR-фильтр: при WR=40% нужен RR≥2.0 для положительного EV
-            MIN_RR = 2.0
+            try:
+                from core.config_loader import config as _cfg
+                MIN_RR = float(_cfg.get("trading.min_rr_ratio", 2.0))
+            except Exception:
+                MIN_RR = 2.0
             if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:
                 sl_dist = abs(float(entry) - float(stop_loss))
                 tp_dist = abs(float(take_profit) - float(entry))
@@ -214,12 +287,12 @@ class TradeSimulator:
                 if hasattr(s, "signal_type") and hasattr(s.signal_type, "value")
             ))
             # tsl_tf: для MTF_BIAS сигналов берём старший TF для trailing
-            _ENTRY_TO_TSL_TF = {"3m": "1h", "5m": "1h", "15m": "1h", "45m": "4h", "1h": "4h"}
-            tsl_tf = "15m"
+            from core.entry_config import ENTRY_TO_TSL_TF
+            tsl_tf = DEFAULT_TIMEFRAME
             for _sig in supporting:
                 if getattr(getattr(_sig, "signal_type", None), "value", "") == "mtf_bias":
-                    _entry_tf = (_sig.data or {}).get("entry_tf", "15m")
-                    tsl_tf = _ENTRY_TO_TSL_TF.get(_entry_tf, "1h")
+                    _entry_tf = (_sig.data or {}).get("entry_tf", DEFAULT_TIMEFRAME)
+                    tsl_tf = ENTRY_TO_TSL_TF.get(_entry_tf, "1h")
                     break
             features = {}
             if all_signal_types:
@@ -231,7 +304,44 @@ class TradeSimulator:
                 features["volatility"] = getattr(ctx, "volatility", None)
             if extra_features:
                 features.update(extra_features)
+            # ARCH-12: MTF Context фичи для ML
+            mtf_ctx = metadata.get("mtf_context") if metadata else None
+            if mtf_ctx and isinstance(mtf_ctx, dict):
+                features["mtf_direction_bias"] = mtf_ctx.get("direction_bias")
+                features["mtf_bias_strength"] = mtf_ctx.get("bias_strength")
+                features["mtf_price_zone"] = mtf_ctx.get("price_zone")
+                features["mtf_aligned_pct"] = mtf_ctx.get("aligned_pct")
+                features["mtf_senior_matches"] = mtf_ctx.get("senior_matches")
+                features["mtf_regime"] = mtf_ctx.get("regime")
+                # DEV-13: использовать regime из MTFContext если не передан явно
+                if regime is None:
+                    regime = mtf_ctx.get("regime")
+                features["mtf_bull_pct"] = mtf_ctx.get("bull_pct")
+                features["mtf_bear_pct"] = mtf_ctx.get("bear_pct")
+                # WT spreads по старшим ТФ
+                wt_sp = mtf_ctx.get("wt_spreads", {})
+                for tf in ("1h", "4h", "1d"):
+                    features[f"mtf_wt_spread_{tf}"] = wt_sp.get(tf)
+                # Senior reversal
+                sr = mtf_ctx.get("senior_reversal")
+                if sr:
+                    features["mtf_sr_direction"] = sr.get("direction")
+                    features["mtf_sr_tf"] = sr.get("tf")
+                    features["mtf_sr_strength"] = sr.get("strength")
+            # ARCH-17: SMC Context фичи для ML
+            smc_ctx = metadata.get("smc_context") if metadata else None
+            if smc_ctx and isinstance(smc_ctx, dict):
+                features.update(smc_ctx)
             features_json = json.dumps(features) if features else None
+
+            # DEV-12: Decision Trace
+            decision_trace_json = None
+            dt_data = metadata.get("decision_trace") if metadata else None
+            if dt_data:
+                try:
+                    decision_trace_json = json.dumps(dt_data, ensure_ascii=False, default=str)
+                except Exception:
+                    pass
 
             # Определяем strategy_type и рассчитываем TP-уровни
             dir_str = _direction_str(direction)
@@ -305,8 +415,8 @@ class TradeSimulator:
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
                      tp1_price, tp2_price, tp3_price, strategy_type,
                      strength, confidence, regime, status, features_json, created_at,
-                     sl_source, tp_source, strategy_name, tsl_tf)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -330,6 +440,7 @@ class TradeSimulator:
                         tp_source if isinstance(tp_source, str) else None,
                         strategy_name if isinstance(strategy_name, str) else None,
                         tsl_tf,
+                        decision_trace_json,
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -358,7 +469,7 @@ class TradeSimulator:
                 try:
                     from core.market_regime import MarketRegimeClassifier
                     ohlcv = await data_collector.get_ohlcv(symbol, DEFAULT_TIMEFRAME, 50)
-                    if ohlcv:
+                    if ohlcv is not None and not ohlcv.empty:
                         regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv)
                         logger.debug("MarketRegime для %s: %s", symbol, regime)
                 except Exception as e:
@@ -379,6 +490,21 @@ class TradeSimulator:
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка get_open_trades — {e}")
             return []
+
+    def _get_trade_analyzer(self):
+        """DEV-15: Ленивая инициализация TradeAnalyzer (только если API ключ доступен)."""
+        if not self._trade_analyzer_init:
+            self._trade_analyzer_init = True
+            try:
+                from core.config_loader import config as _cfg
+                if _cfg.get("anthropic.enabled", True):
+                    from core.trade_analyzer import TradeAnalyzer
+                    self._trade_analyzer = TradeAnalyzer(self.db_path)
+                    if not self._trade_analyzer._enabled:
+                        self._trade_analyzer = None
+            except Exception as e:
+                logger.debug("TradeSimulator: TradeAnalyzer не инициализирован — %s", e)
+        return self._trade_analyzer
 
     def close_trade(
         self,
@@ -454,7 +580,7 @@ class TradeSimulator:
                     if max_R_possible and max_R_possible > 0 and r_multiple is not None:
                         captured_R_pct = round((r_multiple / max_R_possible) * 100.0, 1)
 
-                # duration_minutes
+                # duration_minutes (оба timestamp должны быть aware UTC)
                 try:
                     if isinstance(created_at, str):
                         created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
@@ -462,7 +588,12 @@ class TradeSimulator:
                         created_dt = created_at
                     if created_dt.tzinfo is None:
                         created_dt = created_dt.replace(tzinfo=timezone.utc)
-                    duration_minutes = (closed_at - created_dt).total_seconds() / 60.0
+                    _closed_utc = closed_at if closed_at.tzinfo else closed_at.replace(tzinfo=timezone.utc)
+                    duration_minutes = (_closed_utc - created_dt).total_seconds() / 60.0
+                    if duration_minutes < 0:
+                        duration_minutes = abs(duration_minutes)
+                        logger.warning("[trade %d] negative duration corrected: created=%s closed=%s",
+                                       trade_id, created_at, closed_at)
                 except Exception:
                     duration_minutes = None
 
@@ -491,6 +622,7 @@ class TradeSimulator:
         tsl_activation_r: float = 1.0,
         use_breakeven: bool = True,
         breakeven_activation_r: float = 0.5,
+        cascade_tsl: bool = True,
     ) -> int:
         """
         Проверяет открытые сделки с поддержкой TSL (Trailing Stop Loss).
@@ -547,17 +679,12 @@ class TradeSimulator:
 
             now = datetime.now(timezone.utc)
             age_minutes = (now - created_dt).total_seconds() / 60.0
-            if age_minutes >= self.max_duration_minutes:
-                # EXPIRED — закрываем по текущей цене
-                try:
-                    ticker = await data_collector.get_ticker(symbol)
-                    if ticker:
-                        last = float(ticker.get("last") or ticker.get("close") or entry)
-                        if self.close_trade(trade_id, STATUS_EXPIRED, last):
-                            closed_count += 1
-                except Exception as e:
-                    logger.debug(f"TradeSimulator: EXPIRED get_ticker {symbol} — {e}")
-                continue
+            try:
+                from core.config_loader import config as _cfg
+                _max_dur = float(_cfg.get("trading.max_trade_duration_hours", 48)) * 60
+            except Exception:
+                _max_dur = self.max_duration_minutes
+            _is_expired = age_minutes >= _max_dur
 
             tf = trade.get("timeframe") or DEFAULT_TIMEFRAME
             try:
@@ -595,31 +722,6 @@ class TradeSimulator:
                 else:
                     current_r = (entry - current_price) / one_r
 
-            # ── Безубыток: переносим SL в entry после +breakeven_activation_r ─
-            tsl_activated_db = trade.get("tsl_activated", 0) if isinstance(trade, dict) else 0
-            if (use_breakeven and current_r is not None
-                    and current_r >= breakeven_activation_r
-                    and not tsl_activated_db and sl is not None):
-                be_buf = entry * 0.001  # 0.1% буфер
-                new_sl = entry + be_buf if direction == "LONG" else entry - be_buf
-                # Переносим только если текущий SL хуже безубытка
-                if (direction == "LONG" and sl < new_sl) or \
-                   (direction == "SHORT" and sl > new_sl):
-                    try:
-                        with sqlite3.connect(self.db_path) as _c:
-                            _c.execute(
-                                "UPDATE simulated_trades SET stop_loss=?, be_activated=1 WHERE id=?",
-                                (new_sl, trade_id),
-                            )
-                            _c.commit()
-                        sl = new_sl
-                        logger.info(
-                            "[breakeven] %s: SL → %.6g (entry+buf) при R=%.2f",
-                            symbol, new_sl, current_r,
-                        )
-                    except Exception:
-                        pass
-
             # TSL логика
             tsl_triggered = False
             tsl_price = None
@@ -639,27 +741,155 @@ class TradeSimulator:
                 try:
                     from core.indicators import calculate_trend, get_trend_info
 
-                    # Выбираем TF для TSL:
-                    # 1. Если у сделки есть tsl_tf (MTF_BIAS) — пробуем его
-                    # 2. Иначе пробуем 1h (широкий, меньше шума)
-                    # 3. Fallback — TF сделки
                     df_tsl = None
                     tsl_tf_used = tf
-                    preferred_tsl_tf = trade.get("tsl_tf") or "15m"
 
-                    for _tsl_try in ([preferred_tsl_tf] if preferred_tsl_tf != tf else ["1h"]):
+                    if cascade_tsl:
+                        # Каскадный TSL (ARCH-10 + DEV-28): двунаправленный каскад.
+                        # Эскалация: 15m → 1h → 4h при подтверждении тренда.
+                        # Де-эскалация: 4h → 1h при R>=N и истощении WT (DEV-28).
+                        _CASCADE_TFS = get_cascade_tfs(DEFAULT_TIMEFRAME)
+                        prev_tsl_tf = trade.get("tsl_tf") or DEFAULT_TIMEFRAME
+                        best_tsl_tf = None
+
+                        # Читаем флаг де-эскалации из features_json
+                        _feat_js: dict = {}
                         try:
-                            df_senior = await data_collector.get_ohlcv(symbol, timeframe=_tsl_try, limit=100)
-                            if df_senior is not None and len(df_senior) >= 50:
-                                df_senior_trend = calculate_trend(df_senior)
-                                trend_val = int(df_senior_trend["trend"].iloc[-1])
-                                if (direction == "LONG" and trend_val == 1) or (direction == "SHORT" and trend_val == -1):
-                                    df_tsl = df_senior_trend
-                                    tsl_tf_used = _tsl_try
+                            _feat_js = json.loads(trade.get("features_json") or "{}")
                         except Exception:
                             pass
-                        if df_tsl is not None:
-                            break
+                        _tsl_degraded = bool(_feat_js.get("tsl_degraded", False))
+
+                        if _tsl_degraded:
+                            # После де-эскалации — используем сохранённый ТФ, не повышаем.
+                            _ctf = prev_tsl_tf
+                            try:
+                                df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
+                                if df_c is not None and len(df_c) >= 50:
+                                    df_c_trend = calculate_trend(df_c)
+                                    trend_val = int(df_c_trend["trend"].iloc[-1])
+                                    if (direction == "LONG" and trend_val == 1) or \
+                                       (direction == "SHORT" and trend_val == -1):
+                                        best_tsl_tf = _ctf
+                                        df_tsl = df_c_trend
+                            except Exception:
+                                pass
+                        else:
+                            # Нормальная эскалация: самый старший ТФ где тренд совпадает.
+                            for _ctf in _CASCADE_TFS:
+                                try:
+                                    df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
+                                    if df_c is not None and len(df_c) >= 50:
+                                        df_c_trend = calculate_trend(df_c)
+                                        trend_val = int(df_c_trend["trend"].iloc[-1])
+                                        if (direction == "LONG" and trend_val == 1) or \
+                                           (direction == "SHORT" and trend_val == -1):
+                                            best_tsl_tf = _ctf
+                                            df_tsl = df_c_trend
+                                except Exception:
+                                    pass
+
+                            # ── DEV-28: Де-эскалация при истощении импульса ──────────
+                            # Условия: R >= порога AND WT на текущем ТФ исчерпан
+                            # AND младший ТФ даёт более тесный TSL.
+                            try:
+                                from core.config_loader import config as _cfg_ts
+                                _de_esc_r = float(_cfg_ts.get("trading.cascade_tsl_deescalation_r", 5.0))
+                                _wt_ob = float(_cfg_ts.get("analysis.indicators.wavetrend.ob_threshold", 60.0))
+                                _wt_os = float(_cfg_ts.get("analysis.indicators.wavetrend.os_threshold", -60.0))
+                            except Exception:
+                                _de_esc_r, _wt_ob, _wt_os = 5.0, 60.0, -60.0
+
+                            if (best_tsl_tf is not None and current_r is not None and
+                                    current_r >= _de_esc_r and best_tsl_tf in _CASCADE_TFS):
+                                _cas_idx = _CASCADE_TFS.index(best_tsl_tf)
+                                if _cas_idx > 0:
+                                    _wt_exhausted = False
+                                    _wt1_last = None
+                                    try:
+                                        from core.indicators import calculate_wt
+                                        _df_wt_chk = calculate_wt(df_tsl)
+                                        _wt1_last = float(_df_wt_chk["wt1"].iloc[-1])
+                                        if direction == "SHORT" and _wt1_last < _wt_os:
+                                            _wt_exhausted = True
+                                        elif direction == "LONG" and _wt1_last > _wt_ob:
+                                            _wt_exhausted = True
+                                    except Exception:
+                                        pass
+
+                                    if _wt_exhausted:
+                                        lower_tf = _CASCADE_TFS[_cas_idx - 1]
+                                        try:
+                                            df_lower = await data_collector.get_ohlcv(
+                                                symbol, timeframe=lower_tf, limit=100
+                                            )
+                                            if df_lower is not None and len(df_lower) >= 50:
+                                                df_lower_trend = calculate_trend(df_lower)
+                                                _lower_info = get_trend_info(df_lower_trend)
+                                                _curr_info = get_trend_info(df_tsl)
+                                                if (_lower_info and _curr_info and
+                                                        _lower_info["tsl"] > 0 and _curr_info["tsl"] > 0):
+                                                    _lower_tsl = _lower_info["tsl"]
+                                                    _curr_tsl = _curr_info["tsl"]
+                                                    # SHORT: тесней = trendup ниже (ближе к цене сверху)
+                                                    # LONG:  тесней = trenddown выше (ближе к цене снизу)
+                                                    _is_tighter = (
+                                                        (direction == "SHORT" and _lower_tsl < _curr_tsl) or
+                                                        (direction == "LONG" and _lower_tsl > _curr_tsl)
+                                                    )
+                                                    if _is_tighter:
+                                                        logger.info(
+                                                            "[cascade_tsl] %s: de-escalate %s → %s "
+                                                            "(R=%.1fR, WT=%.1f, TSL %.4f → %.4f тесней)",
+                                                            symbol, best_tsl_tf, lower_tf,
+                                                            current_r, _wt1_last, _curr_tsl, _lower_tsl,
+                                                        )
+                                                        best_tsl_tf = lower_tf
+                                                        df_tsl = df_lower_trend
+                                                        _feat_js["tsl_degraded"] = True
+                                        except Exception:
+                                            pass
+
+                        if not best_tsl_tf and _tsl_degraded:
+                            logger.info(
+                                "[cascade_tsl] %s: degraded TF %s потерял тренд → fallback entry TF",
+                                symbol, prev_tsl_tf,
+                            )
+
+                        if best_tsl_tf:
+                            tsl_tf_used = best_tsl_tf
+                            if best_tsl_tf != prev_tsl_tf:
+                                action_label = "de-escalate" if _feat_js.get("tsl_degraded") and not _tsl_degraded else "trend confirmed"
+                                logger.info(
+                                    "[cascade_tsl] %s: TSL %s → %s (%s)",
+                                    symbol, prev_tsl_tf, best_tsl_tf, action_label,
+                                )
+                                try:
+                                    with sqlite3.connect(self.db_path) as _c:
+                                        _c.execute(
+                                            "UPDATE simulated_trades SET tsl_tf=?, features_json=? WHERE id=?",
+                                            (best_tsl_tf, json.dumps(_feat_js), trade_id),
+                                        )
+                                        _c.commit()
+                                except Exception:
+                                    pass
+                    else:
+                        # Классический TSL: один предпочтительный TF
+                        preferred_tsl_tf = trade.get("tsl_tf") or DEFAULT_TIMEFRAME
+                        for _tsl_try in ([preferred_tsl_tf] if preferred_tsl_tf != tf else ["1h"]):
+                            try:
+                                df_senior = await data_collector.get_ohlcv(symbol, timeframe=_tsl_try, limit=100)
+                                if df_senior is not None and len(df_senior) >= 50:
+                                    df_senior_trend = calculate_trend(df_senior)
+                                    trend_val = int(df_senior_trend["trend"].iloc[-1])
+                                    if (direction == "LONG" and trend_val == 1) or \
+                                       (direction == "SHORT" and trend_val == -1):
+                                        df_tsl = df_senior_trend
+                                        tsl_tf_used = _tsl_try
+                            except Exception:
+                                pass
+                            if df_tsl is not None:
+                                break
 
                     if df_tsl is None:
                         df_tsl = calculate_trend(df)
@@ -819,8 +1049,30 @@ class TradeSimulator:
                 except Exception as e:
                     logger.debug(f"TradeSimulator: MFE update error {trade_id} — {e}")
 
+            # EXPIRED: проверяем только если TP/SL/TSL не сработал за время жизни сделки
+            if not exit_status and _is_expired:
+                try:
+                    ticker = await data_collector.get_ticker(symbol)
+                    if ticker:
+                        last = float(ticker.get("last") or ticker.get("close") or entry)
+                        if self.close_trade(trade_id, STATUS_EXPIRED, last):
+                            closed_count += 1
+                            logger.info(
+                                "TradeSimulator: EXPIRED %s %s age=%.0fh price=%.6f",
+                                symbol, direction, age_minutes / 60, last,
+                            )
+                except Exception as e:
+                    logger.debug(f"TradeSimulator: EXPIRED get_ticker {symbol} — {e}")
+                continue
+
             if exit_status and exit_price_val is not None:
                 if self.close_trade(trade_id, exit_status, exit_price_val):
                     closed_count += 1
+                    # DEV-15: LLM-разбор для SL-сделок
+                    if exit_status == STATUS_SL:
+                        analyzer = self._get_trade_analyzer()
+                        if analyzer is not None:
+                            import asyncio
+                            asyncio.create_task(analyzer.analyze_sl_trade(trade_id))
 
         return closed_count

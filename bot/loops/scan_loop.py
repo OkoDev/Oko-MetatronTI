@@ -10,37 +10,115 @@ import time as _time
 from collections import deque
 from datetime import datetime
 
-from core.message_builder import anomaly_message, wt_message, mtf_message
+from core.entry_config import get_primary_entry_tf, get_entry_timeframes
+from core.message_builder import anomaly_message, wt_message, wt_b_message as _wt_b_message
 from core.divergence_detector import divergence_message, mtf_divergence_message
 from core.signal_checkers import (
     check_anomaly_signals,
     check_wt_signals as _check_wt_signals,
-    check_mtf_signals as _check_mtf_signals,
+    check_wt_b_signals as _check_wt_b_signals,
 )
 from core.signal_models import SignalData, SignalType, SignalDirection
-from core.confluence_scanner import scan_confluence, confluence_message as _confluence_message
+from core.wt_15m_reversal_scanner import scan_wt_15m_reversal, reversal_message as _confluence_message
 from core.data_quality import check_ohlcv_quality, MIN_BARS
 
 logger = logging.getLogger(__name__)
 
 
+async def _send_wl_alert(bot, symbol: str, text: str) -> None:
+    """Отправляет короткое WL-уведомление всем подписчикам."""
+    try:
+        from bot.monitoring import broadcast_with_subscription_check
+        await broadcast_with_subscription_check(bot, text, "wl_alert")
+    except Exception as e:
+        logger.debug("[WL] Ошибка отправки алерта %s: %s", symbol, e)
+
+
 async def _prefetch_pivots(bot) -> None:
     """Прогревает кеш пивотов для всех пар параллельно.
-    Semaphore намеренно маленький — не конкурируем со сканом за ApiEngine.Semaphore(20)."""
+    Semaphore намеренно маленький — не конкурируем со сканом за ApiEngine.Semaphore(20).
+    После прогрева — самодиагностика: отчёт в лог + Telegram."""
     pairs = bot.monitored_pairs
     pfx_sem_size = int(bot.config.get("performance.prefetch_pivots_semaphore_size", 2))
     sem = asyncio.Semaphore(pfx_sem_size)
 
+    # Результаты диагностики
+    ok_weekly = []
+    fail_weekly = []
+    ok_daily = []
+    fail_daily = []
+    ok_monthly = []
+    fail_monthly = []
+
     async def _fetch_one(sym):
         async with sem:
             try:
-                await bot.pivot_calculator.get_multi_timeframe_pivots(sym, bot.data_collector)
-            except Exception:
-                pass
+                result = await bot.pivot_calculator.get_multi_timeframe_pivots(sym, bot.data_collector)
+                if result.get("1W"):
+                    ok_weekly.append(sym)
+                else:
+                    fail_weekly.append(sym)
+                if result.get("1D"):
+                    ok_daily.append(sym)
+                else:
+                    fail_daily.append(sym)
+                if result.get("1M"):
+                    ok_monthly.append(sym)
+                else:
+                    fail_monthly.append(sym)
+            except Exception as e:
+                fail_weekly.append(sym)
+                fail_daily.append(sym)
+                fail_monthly.append(sym)
+                logger.debug("Prefetch pivots error %s: %s", sym, e)
+            # Микропауза между парами — защита от rate-limit при массовом прогреве
+            await asyncio.sleep(0.15)
 
     logger.info("Прогрев кеша пивотов для %d пар...", len(pairs))
     await asyncio.gather(*[_fetch_one(sym) for sym in pairs])
-    logger.info("Кеш пивотов прогрет.")
+
+    # ── Самодиагностика ──
+    total = len(pairs)
+    w_ok, w_fail = len(ok_weekly), len(fail_weekly)
+    d_ok, d_fail = len(ok_daily), len(fail_daily)
+    m_ok, m_fail = len(ok_monthly), len(fail_monthly)
+
+    logger.info(
+        "Кеш пивотов прогрет: Monthly %d/%d OK, Weekly %d/%d OK, Daily %d/%d OK",
+        m_ok, total, w_ok, total, d_ok, total,
+    )
+
+    # Отчёт в Telegram админу
+    diag_lines = [f"📊 <b>Pivot Diagnostics</b>"]
+    diag_lines.append(f"Monthly: {m_ok}/{total} ✅  {m_fail} ❌")
+    diag_lines.append(f"Weekly:  {w_ok}/{total} ✅  {w_fail} ❌")
+    diag_lines.append(f"Daily:   {d_ok}/{total} ✅  {d_fail} ❌")
+
+    if fail_monthly:
+        short = [s.split("/")[0] for s in fail_monthly[:15]]
+        diag_lines.append(f"\n⚠️ Без Monthly ({m_fail}):")
+        diag_lines.append(", ".join(short))
+        if len(fail_monthly) > 15:
+            diag_lines.append(f"... и ещё {len(fail_monthly) - 15}")
+
+    if fail_weekly:
+        short = [s.split("/")[0] for s in fail_weekly[:15]]
+        diag_lines.append(f"\n⚠️ Без Weekly ({w_fail}):")
+        diag_lines.append(", ".join(short))
+        if len(fail_weekly) > 15:
+            diag_lines.append(f"... и ещё {len(fail_weekly) - 15}")
+
+    if not fail_monthly and not fail_weekly and not fail_daily:
+        diag_lines.append("\n✅ Все пивоты рассчитаны успешно!")
+
+    diag_text = "\n".join(diag_lines)
+
+    try:
+        admin_id = bot.config.get("telegram.admin_id")
+        if admin_id:
+            await bot.bot.send_message(int(admin_id), diag_text, parse_mode="HTML")
+    except Exception as e:
+        logger.debug("Pivot diagnostics TG send error: %s", e)
 
 
 async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
@@ -52,10 +130,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     sem = asyncio.Semaphore(scan_sem_size)
     cycle_start = _time.monotonic()
 
-    # Лимит confluence-сигналов за один цикл — защита от Telegram flood control
+    # Лимиты сигналов за один цикл — защита от Telegram flood control
     _confluence_max_per_cycle = int(bot.config.get("analysis.confluence.max_per_cycle", 3))
     _confluence_sent = 0
+    _anomaly_max_per_cycle = int(bot.config.get("analysis.anomaly.max_per_cycle", 5))
+    _anomaly_sent = 0
     _div_proximity_pct = bot.config.get("analysis.divergence.pivot_proximity_pct", 4.0)
+    _etf = get_primary_entry_tf(bot.config)  # Primary entry TF (default "15m")
+    _entry_tfs = get_entry_timeframes(bot.config)  # Все entry TF (может быть ["5m", "15m", "1h"])
+    _multi_tf = len(_entry_tfs) > 1
+    _resolver = getattr(bot, "multi_tf_resolver", None)
     _ohlcv_limit = int(bot.config.get("performance.ohlcv_scan_limit", 160))
     _slow_ohlcv  = float(bot.config.get("performance.ohlcv_slow_threshold_sec", 5.0))
     _slow_div    = float(bot.config.get("performance.divergence_slow_threshold_sec", 3.0))
@@ -63,6 +147,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     _slow_cycle  = float(bot.config.get("performance.scan_cycle_warning_threshold_sec", 55.0))
 
     async def scan_one(sym):
+        nonlocal _confluence_sent, _anomaly_sent
         signals_to_broadcast = []  # [(sig_type, raw_text, fallback_rec), ...]
         all_scan_signals = []      # SignalData от детекторов — для pre_collected_signals
 
@@ -72,22 +157,53 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             t_enter = _time.monotonic()
             try:
                 # Параллельная загрузка всех TF (limit из конфига для cache-hit в detect_divergence)
-                df_15m, df_1h, df_3m = await asyncio.gather(
-                    bot.data_collector.get_ohlcv(sym, "15m", limit=_ohlcv_limit),
-                    bot.data_collector.get_ohlcv(sym, "1h", limit=_ohlcv_limit),
-                    bot.data_collector.get_ohlcv(sym, "3m", limit=100),
-                )
-                logger.debug("[scan] %s snapshot=%s", sym, snapshot_time.strftime("%H:%M:%S"))
+                # Multi-TF: загружаем все entry TF + вспомогательные (1h, 3m)
+                _fetch_tasks = [bot.data_collector.get_ohlcv(sym, tf, limit=_ohlcv_limit) for tf in _entry_tfs]
+                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "1h", limit=_ohlcv_limit))
+                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "3m", limit=100))
+                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "4h", limit=60))
+                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "1d", limit=60))
+                _fetched = await asyncio.gather(*_fetch_tasks)
+                # Распаковка: entry TF dataframes + 1h + 3m + 4h + 1d
+                _entry_dfs = {tf: _fetched[i] for i, tf in enumerate(_entry_tfs)}
+                df_1h = _fetched[-4]
+                df_3m = _fetched[-3]
+                df_4h = _fetched[-2]
+                df_1d = _fetched[-1]
+                # Primary entry для совместимости (используется в divergence, confluence, etc.)
+                _primary = _entry_dfs.get(_etf)
+                df_entry = _primary if _primary is not None else next((v for v in _entry_dfs.values() if v is not None), None)
+
+                logger.debug("[scan] %s snapshot=%s tfs=%s", sym, snapshot_time.strftime("%H:%M:%S"),
+                             ",".join(_entry_tfs))
                 t_ohlcv = _time.monotonic()
                 if (t_ohlcv - t_enter) > _slow_ohlcv:
                     logger.warning("[scan] OHLCV медленно %s: %.1fs", sym, t_ohlcv - t_enter)
-                if df_15m is None or df_15m.empty:
+                if df_entry is None or df_entry.empty:
                     return
+
+                # ARCH-18: pre-compute индикаторы один раз на все основные TF.
+                # Детекторы проверяют наличие колонок и пропускают пересчёт.
+                from core.indicators import calculate_wt as _calc_wt, calculate_trend as _calc_trend
+                df_entry = _calc_wt(df_entry)
+                df_entry = _calc_trend(df_entry)
+                if df_1h is not None and not df_1h.empty:
+                    df_1h = _calc_wt(df_1h)
+                    df_1h = _calc_trend(df_1h)
+                if df_3m is not None and not df_3m.empty:
+                    df_3m = _calc_wt(df_3m)
+                    df_3m = _calc_trend(df_3m)
+                if df_4h is not None and not df_4h.empty:
+                    df_4h = _calc_wt(df_4h)
+                    df_4h = _calc_trend(df_4h)
+                if df_1d is not None and not df_1d.empty:
+                    df_1d = _calc_wt(df_1d)
+                    df_1d = _calc_trend(df_1d)
 
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(
-                    df_15m,
-                    timeframe="15m",
+                    df_entry,
+                    timeframe=_etf,
                     min_bars=MIN_BARS["divergence"],  # 160 — самый строгий детектор
                     symbol=sym,
                 )
@@ -95,59 +211,98 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     logger.info("[scan] Пропускаем %s: %s", sym, reason)
                     return
 
+                # DEV-22: проверяем пробой/разворот для пар в WATCH LIST
+                _wl = getattr(bot, "signal_watch_list", None)
+                if _wl is not None and _wl.has(sym) and len(df_entry) > 0:
+                    _cur_price = float(df_entry["close"].iloc[-1])
+                    _breach_pct = float(bot.config.get("signal_quality.watch_list_breach_pct", 1.0))
+                    if _wl.check_breach(sym, _cur_price, breach_pct=_breach_pct):
+                        _wl.remove(sym, f"пробой pivot price={_cur_price:.4f}")
+                        asyncio.create_task(
+                            _send_wl_alert(bot, sym, f"🔴 <b>WL:</b> пробой уровня для {sym.split('/')[0]} — идея отменена")
+                        )
+
                 # Обновляем price/volume history из уже загруженных данных
                 # (заменяет fetch_candles: нет лишних API-вызовов)
-                if len(df_15m) >= 2:
+                if len(df_entry) >= 2:
                     dc = bot.data_collector
-                    prev_c = df_15m["close"].iloc[-2] or 0.0
-                    last_c = df_15m["close"].iloc[-1] or 0.0
+                    prev_c = df_entry["close"].iloc[-2] or 0.0
+                    last_c = df_entry["close"].iloc[-1] or 0.0
                     pct = ((last_c - prev_c) / prev_c * 100) if prev_c else 0.0
                     dc.price_history.setdefault(sym, deque(maxlen=dc.history_size)).append(pct)
                     dc.volume_history.setdefault(sym, deque(maxlen=dc.history_size)).append(
-                        float(df_15m["volume"].iloc[-1] or 0.0)
+                        float(df_entry["volume"].iloc[-1] or 0.0)
                     )
 
-                # 1. Anomalies
-                for sig in await check_anomaly_signals(sym, df_15m):
-                    info = sig.data or {}
-                    bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
-                    bot.signal_counters["anomaly"] += 1
-                    bot.signal_counters["total"] += 1
-                    signals_to_broadcast.append(("anomaly", anomaly_message(sym, info), None))
-                    all_scan_signals.append(sig)
+                # === Multi-TF signal collection ===
+                # Для каждого entry TF собираем сигналы (anomaly, WT, MTF)
+                _scan_tfs = _entry_tfs if _multi_tf else [_etf]
+                for _scan_tf in _scan_tfs:
+                    _df_tf = _entry_dfs.get(_scan_tf, df_entry)
+                    if _df_tf is None or _df_tf.empty:
+                        continue
 
-                # 2. WT (15m и 1h из кеша для последующих вызовов)
-                for sig in await _check_wt_signals(sym, df_15m, df_1h):
-                    info = sig.data or {}
-                    logger.info("WT сигнал обнаружен для %s", sym)
-                    bot.signal_counters["wt_signal"] += 1
-                    bot.signal_counters["total"] += 1
-                    signals_to_broadcast.append(("wt_signal", wt_message(sym, info), None))
-                    all_scan_signals.append(sig)
+                    # 1. Anomalies (только primary TF — аномалии не зависят от entry)
+                    if _scan_tf == _etf:
+                        for sig in await check_anomaly_signals(sym, _df_tf):
+                            info = sig.data or {}
+                            bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
+                            bot.signal_counters["anomaly"] += 1
+                            bot.signal_counters["total"] += 1
+                            all_scan_signals.append(sig)
+                            if _anomaly_sent < _anomaly_max_per_cycle:
+                                signals_to_broadcast.append(("anomaly", anomaly_message(sym, info), None))
+                                _anomaly_sent += 1
+                            else:
+                                logger.debug("[anomaly] %s: лимит %d/цикл достигнут, пропуск TG",
+                                             sym, _anomaly_max_per_cycle)
 
-                # 3. MTF signals (15m, 1h из кеша)
-                for sig in await _check_mtf_signals(sym, df_1h, df_15m, df_3m):
-                    info = sig.data or {}
-                    bot.signal_counters["mtf_signal"] += 1
-                    bot.signal_counters["total"] += 1
-                    signals_to_broadcast.append(("mtf_signal", mtf_message(sym, info), None))
-                    all_scan_signals.append(sig)
+                    # 2. WT
+                    _pivot_calc = getattr(bot, "pivot_calculator", None)
+                    for sig in await _check_wt_signals(sym, _df_tf, df_1h):
+                        info = sig.data or {}
+                        if _multi_tf:
+                            sig.timeframe = _scan_tf  # тегируем ТФ
+                        # ARCH-23: апгрейд wt_signal → confluence если цена у пивота (±1%)
+                        if _pivot_calc is not None and not _df_tf.empty:
+                            _price = float(_df_tf["close"].iloc[-1])
+                            _near = _pivot_calc.find_near_pivot(_price, sym)
+                            if _near:
+                                _lvl, _src = _near
+                                sig.signal_type = SignalType.CONFLUENCE
+                                sig.strength = min(95, sig.strength + 20)
+                                sig.data["near_pivot"] = True
+                                sig.data["pivot_level"] = _lvl
+                                sig.data["pivot_source"] = _src
+                                info = sig.data  # обновляем info после апгрейда
+                                logger.info(
+                                    "ARCH-23 [%s]: WT → CONFLUENCE (пивот %s=%.6f, dist=%.2f%%)",
+                                    sym, _src, _lvl, abs(_price - _lvl) / _price * 100,
+                                )
+                        logger.info("WT сигнал обнаружен для %s [%s]", sym, _scan_tf)
+                        bot.signal_counters["wt_signal"] += 1
+                        bot.signal_counters["total"] += 1
+                        signals_to_broadcast.append(("wt_signal", wt_message(sym, info), None))
+                        all_scan_signals.append(sig)
 
-                # 4. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
-                nonlocal _confluence_sent
+                # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
                 _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
                 _confluence_sigs = []
                 if _use_sm and hasattr(bot, "confluence_sm"):
                     try:
                         _confluence_sigs = bot.confluence_sm.update(
-                            sym, df_15m, df_1h, pivot_cache, cfg=bot.config
+                            sym, df_entry, df_1h, pivot_cache, cfg=bot.config
                         )
                     except Exception as _sm_e:
                         logger.debug("[confluence_sm] %s error: %s", sym, _sm_e)
-                        _confluence_sigs = scan_confluence(sym, df_15m, df_1h, pivot_cache, cfg=bot.config)
+                        _confluence_sigs = scan_wt_15m_reversal(
+                            sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h
+                        )
                 else:
-                    _confluence_sigs = scan_confluence(sym, df_15m, df_1h, pivot_cache, cfg=bot.config)
+                    _confluence_sigs = scan_wt_15m_reversal(
+                        sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h
+                    )
 
                 for sig in _confluence_sigs:
                     bot.signal_counters["confluence"] = bot.signal_counters.get("confluence", 0) + 1
@@ -160,13 +315,24 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         logger.debug("[confluence] %s: лимит %d/цикл достигнут, пропуск TG",
                                      sym, _confluence_max_per_cycle)
 
-                # 5. MTF alerts — вынесены в check_mtf_alerts (каждые 5 мин),
+                # 5. WT-B Signal (1h): адаптивный OS/OB + дивергенция, WR=85%
+                # df_1h уже в кеше — не фетчим повторно
+                if df_1h is not None and not df_1h.empty:
+                    _wt_b_sigs = await _check_wt_b_signals(sym, df_1h)
+                    for sig in _wt_b_sigs:
+                        bot.signal_counters["wt_b"] = bot.signal_counters.get("wt_b", 0) + 1
+                        bot.signal_counters["total"] += 1
+                        all_scan_signals.append(sig)
+                        signals_to_broadcast.append(("wt_b", _wt_b_message(sym, sig), None))
+                        logger.info("[wt_b] %s: %s str=%d", sym, sig.direction.value, sig.strength)
+
+                # 6. MTF alerts — вынесены в check_mtf_alerts (каждые 5 мин),
                 # т.к. collect_mtf_data фетчит 7 TF (5m, 45m, 4h, 1d не в кеше)
 
-                # 6. Trend following — вынесен в check_trend_signals (каждые 5 мин),
+                # 7. Trend following — вынесен в check_trend_signals (каждые 5 мин),
                 # т.к. check_trend_following_signal фетчит 4h+5m (не в кеше)
 
-                # 7. Divergences: каждые 3 цикла (180 сек — медленный сигнал)
+                # 8. Divergences: каждые 3 цикла (180 сек — медленный сигнал)
                 t_before_div = _time.monotonic()
                 div_found = False
                 if check_divergences:
@@ -175,8 +341,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _pair_regime = ""
                     try:
                         from core.market_regime import MarketRegimeClassifier
-                        _pair_regime = MarketRegimeClassifier().classify_from_ohlcv(
-                            df_15m.values.tolist()
+                        from core.indicators import calculate_trend, calculate_wt
+                        _df15_t = calculate_trend(df_entry)
+                        _df15_t = calculate_wt(_df15_t)
+                        _df1h_t = calculate_trend(df_1h) if df_1h is not None and not df_1h.empty else None
+                        _pair_regime = MarketRegimeClassifier().classify_from_dataframes(
+                            _df15_t, _df1h_t
                         ) or ""
                     except Exception:
                         pass
@@ -186,7 +356,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         )
                         if has_mtf:
                             passed, reason = _div_passes_filters(
-                                mtf_info, df_15m, pivot_calc, sym, _div_proximity_pct,
+                                mtf_info, df_entry, pivot_calc, sym, _div_proximity_pct,
                                 market_regime=_pair_regime,
                             )
                             if passed:
@@ -213,14 +383,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         logger.exception("Ошибка check_mtf_divergence для %s", sym)
 
                     if not div_found:
-                        for tf in ("15m", "1h"):
+                        for tf in (_etf, "1h"):
                             try:
                                 has_div, div_info = await bot.divergence_detector.detect_divergence(
                                     sym, bot.data_collector, timeframe=tf
                                 )
                                 if has_div:
                                     passed, reason = _div_passes_filters(
-                                        div_info, df_15m, pivot_calc, sym, _div_proximity_pct,
+                                        div_info, df_entry, pivot_calc, sym, _div_proximity_pct,
                                         market_regime=_pair_regime,
                                     )
                                     if passed:
@@ -262,6 +432,52 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         if all_scan_signals:
             bot.recent_signals[sym] = all_scan_signals
 
+        # === Multi-TF Resolver (ARCH-13) ===
+        # В multi-TF режиме фильтруем конфликтные/дублирующие сигналы через Resolver.
+        # Передаём MTF Bias для разрешения неопределённостей при равном TF приоритете.
+        if _multi_tf and _resolver and all_scan_signals:
+            # Получаем MTF Bias из уже имеющихся сигналов (MTF_BIAS генерируется в analyze_symbol,
+            # но мы можем быстро получить direction из старших TF snapshot)
+            try:
+                from core.mtf_interpreter import analyze_context
+                from core.mtf_checker import collect_mtf_data
+                _snapshot = await collect_mtf_data(sym, bot.data_collector)
+                if _snapshot:
+                    _cur_price = float(df_entry['close'].iloc[-1]) if df_entry is not None and len(df_entry) > 0 else 0
+                    _wp = getattr(bot.pivot_calculator, "pivot_cache", {}).get(sym, {}).get("1W", {})
+                    _ctx = analyze_context(_snapshot, _cur_price, _wp, regime=None)
+                    if _ctx and _ctx.direction_bias:
+                        _bias_dir = getattr(_ctx.direction_bias, "value", str(_ctx.direction_bias))
+                        _resolver.set_mtf_bias(sym, _bias_dir, _ctx.aligned_pct)
+            except Exception:
+                pass  # MTF Bias — бонус, не блокирует работу
+
+            from core.multi_tf_resolver import TFSignal
+            for sig in all_scan_signals:
+                _dir = getattr(sig.direction, "value", str(sig.direction)) if sig.direction else ""
+                if _dir in ("LONG", "SHORT"):
+                    _resolver.add_signal(TFSignal(
+                        symbol=sym,
+                        timeframe=getattr(sig, "timeframe", _etf) or _etf,
+                        direction=_dir,
+                        signal_type=sig.signal_type.value if hasattr(sig.signal_type, "value") else str(sig.signal_type),
+                        strength=getattr(sig, "strength", 50),
+                    ))
+            decision = _resolver.resolve_and_clear(sym)
+            if decision.action == "REJECT":
+                logger.info("[%s] MultiTF Resolver: REJECT — %s", sym, decision.reason)
+                signals_to_broadcast = []  # Блокируем все broadcast
+                all_scan_signals = []
+            elif decision.action == "UPGRADE":
+                logger.info("[%s] MultiTF Resolver: UPGRADE — %s", sym, decision.reason)
+            elif decision.action == "SPLIT":
+                # ARCH-15: SPLIT → broadcast ОБА: тренд (SWING) + отскок (SCALP)
+                logger.info("[%s] MultiTF Resolver: SPLIT — %s", sym, decision.reason)
+                # Помечаем bounce_signal для регистрации с trade_mode=scalp
+                if decision.bounce_signal:
+                    decision.bounce_signal._trade_mode = "scalp"
+            # ACCEPT — проходит как есть
+
         # СНАРУЖИ семафора: broadcast как fire-and-forget задачи
         # (analyze_symbol может занимать 30-60 сек — не блокируем asyncio.gather)
         # pre_signals передаём только в первый broadcast — analyze_symbol закеширует результат
@@ -290,6 +506,7 @@ async def monitor_market(bot) -> None:
         check_trend_signals,
         check_pivot_reversals,
         check_cascade_divergences,
+        check_future_pivot_alerts,
     )
     try:
         _last_pivot_day = datetime.utcnow().date()  # уже прогрет в start_monitoring
@@ -317,15 +534,21 @@ async def monitor_market(bot) -> None:
             _pivot_cycle += 1
             if _pivot_cycle >= _bg_n:
                 _pivot_cycle = 0
-                asyncio.create_task(check_mtf_alerts(bot))      # 7 TF включая 5m, 45m, 4h, 1d
-                asyncio.create_task(check_trend_signals(bot))   # 4h + 5m
-                asyncio.create_task(check_pivot_reversals(bot)) # 1m + 5m
+                asyncio.create_task(check_mtf_alerts(bot))         # 7 TF включая 5m, 45m, 4h, 1d
+                asyncio.create_task(check_trend_signals(bot))      # 4h + 5m
+                asyncio.create_task(check_pivot_reversals(bot))    # 1m + 5m
+                asyncio.create_task(check_future_pivot_alerts(bot))  # DEV-11: future pivots pre-alert
 
             # MTF-дивергенция 4h→1h — раз в N циклов (4h свеча обновляется медленно)
             _cascade_4h_cycle += 1
             if _cascade_4h_cycle >= _cascade_n:
                 _cascade_4h_cycle = 0
                 asyncio.create_task(check_cascade_divergences(bot, "4h", "1h"))
+
+            # DEV-22: очищаем истёкшие WL-записи каждый цикл
+            _wl = getattr(bot, "signal_watch_list", None)
+            if _wl is not None:
+                _wl.cleanup_expired()
 
             await asyncio.sleep(bot.config.get("analysis.check_interval", 60))
     except asyncio.CancelledError:

@@ -1,22 +1,32 @@
 """
-Market Regime Classifier — Этап 4.
-Классифицирует рыночный режим на основе ADX, ATR-percentile и наклона EMA.
+Market Regime Classifier — Этап 4 / ARCH-09п6.
 
-Режимы:
-  TREND_UP   — восходящий тренд (ADX высокий, EMA растёт)
-  TREND_DOWN — нисходящий тренд (ADX высокий, EMA падает)
-  RANGE      — боковик (ADX низкий, ATR в норме)
-  HIGH_VOL   — высокая волатильность (ATR резко выше медианы)
+Два режима работы:
+  classify_from_ohlcv()       — старый метод (ADX + EMA slope), обратная совместимость
+  classify_from_dataframes()  — новый MTF метод (trend + WT + ATR, ARCH-09п6)
+
+Новый метод (ARCH-09п6):
+  ATR > 1.8×median → HIGH_VOL (перекрывает всё)
+  MTF alignment (trend 15m == 1h [== 4h]) + |WT1-WT2| > 10 → TREND_UP/DOWN
+  MTF alignment + |WT1-WT2| ≤ 10 → RANGE (тренд затухает)
+  MTF конфликт → RANGE
+
+Старый метод (обратная совместимость):
+  ADX > 25 + EMA slope → TREND_UP/TREND_DOWN
+  ADX ≤ 25 → RANGE
+  ATR > 1.8×median → HIGH_VOL
 
 Использование:
     from core.market_regime import MarketRegimeClassifier
 
     clf = MarketRegimeClassifier()
-    regime = clf.classify_from_ohlcv(ohlcv)   # ohlcv: list of [ts, o, h, l, c, v]
+    regime = clf.classify_from_ohlcv(ohlcv)          # ohlcv: list of [ts, o, h, l, c, v]
+    regime = clf.classify_from_dataframes(df_15m, df_1h)  # DataFrame с trend/wt1/wt2
     # → "TREND_UP" | "TREND_DOWN" | "RANGE" | "HIGH_VOL" | None
 """
 import logging
 from typing import List, Optional
+import pandas as pd
 from core.indicators import compute_atr_values, compute_ema_values, compute_adx
 
 logger = logging.getLogger(__name__)
@@ -67,8 +77,14 @@ class MarketRegimeClassifier:
         str | None — "TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL", или None при ошибке
         """
         try:
-            if not ohlcv or len(ohlcv) < _MIN_CANDLES:
-                logger.debug("MarketRegimeClassifier: недостаточно свечей (%d)", len(ohlcv) if ohlcv else 0)
+            if ohlcv is None:
+                logger.debug("MarketRegimeClassifier: ohlcv is None")
+                return None
+            # DataFrame → list
+            if hasattr(ohlcv, "values"):
+                ohlcv = ohlcv.values.tolist()
+            if len(ohlcv) < _MIN_CANDLES:
+                logger.debug("MarketRegimeClassifier: недостаточно свечей (%d)", len(ohlcv))
                 return None
 
             highs = [float(c[2]) for c in ohlcv]
@@ -108,4 +124,83 @@ class MarketRegimeClassifier:
 
         except Exception as e:
             logger.exception("MarketRegimeClassifier: ошибка — %s", e)
+            return None
+
+    def classify_from_dataframes(
+        self,
+        df_15m: "pd.DataFrame",
+        df_1h: "Optional[pd.DataFrame]" = None,
+        df_4h: "Optional[pd.DataFrame]" = None,
+    ) -> Optional[str]:
+        """
+        MTF-режим (ARCH-09п6): trend + WT + ATR.
+
+        Требует DataFrame с колонками после calculate_trend() и calculate_wt():
+          trend  — 1 (UP) / -1 (DOWN)
+          wt1, wt2  — WaveTrend осцилляторы (опционально)
+          high, low, close  — для ATR
+
+        Parameters
+        ----------
+        df_15m : основной TF (обязательный)
+        df_1h  : старший TF (опциональный, улучшает точность)
+        df_4h  : ещё старший TF (опциональный)
+        """
+        try:
+            if df_15m is None or len(df_15m) < _MIN_CANDLES:
+                return None
+
+            # HIGH_VOL — ATR по 15m (перекрывает всё)
+            if "high" in df_15m.columns and "low" in df_15m.columns and "close" in df_15m.columns:
+                highs  = df_15m["high"].tolist()
+                lows   = df_15m["low"].tolist()
+                closes = df_15m["close"].tolist()
+                atr_vals = _atr(highs, lows, closes, self.atr_period)
+                if atr_vals:
+                    last_atr   = atr_vals[-1]
+                    median_atr = sorted(atr_vals)[len(atr_vals) // 2]
+                    if median_atr > 0 and last_atr > _ATR_HIGH_VOL_MULT * median_atr:
+                        return "HIGH_VOL"
+
+            # MTF trend alignment
+            def _trend_val(df: "pd.DataFrame") -> Optional[int]:
+                if df is not None and "trend" in df.columns and len(df) > 0:
+                    try:
+                        return int(df["trend"].iloc[-1])
+                    except Exception:
+                        pass
+                return None
+
+            t_15 = _trend_val(df_15m)
+            t_1h = _trend_val(df_1h)
+            t_4h = _trend_val(df_4h)
+
+            # Собираем только доступные TF
+            available = [t for t in (t_15, t_1h, t_4h) if t is not None]
+            if not available:
+                return "RANGE"
+
+            # MTF aligned: все совпадают
+            mtf_aligned = len(set(available)) == 1
+            trend_dir   = available[0]  # направление при выравнивании
+
+            # WT divergence |WT1 - WT2| из df_15m
+            wt_diff = 0.0
+            if "wt1" in df_15m.columns and "wt2" in df_15m.columns:
+                try:
+                    wt_diff = abs(float(df_15m["wt1"].iloc[-1]) - float(df_15m["wt2"].iloc[-1]))
+                except Exception:
+                    pass
+
+            if mtf_aligned:
+                # Тренд подтверждён на всех доступных TF
+                if wt_diff > 10:
+                    return "TREND_UP" if trend_dir == 1 else "TREND_DOWN"
+                # wt_diff ≤ 10 — тренд затухает или флэт
+                return "RANGE"
+
+            return "RANGE"
+
+        except Exception as e:
+            logger.exception("MarketRegimeClassifier.classify_from_dataframes: %s", e)
             return None

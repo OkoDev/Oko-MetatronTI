@@ -8,12 +8,29 @@ from typing import List
 
 import pandas as pd
 
+from core.entry_config import get_primary_entry_tf
 from core.signal_models import SignalData, SignalDirection, SignalType
 
 try:
     from core.config_loader import config as _cfg
 except ImportError:
     _cfg = None
+
+try:
+    from core.dynamic_thresholds import compute_dynamic_thresholds, os_method_label as _os_method_label
+    _DYN_THRESH_AVAILABLE = True
+except ImportError:
+    _DYN_THRESH_AVAILABLE = False
+
+# DEV-17: per-symbol Isolation Forest кеш (обучается лениво при первом вызове)
+_anomaly_models: dict = {}
+
+try:
+    from core.anomaly_model import AnomalyModel as _AnomalyModel
+    _IF_AVAILABLE = True
+except ImportError:
+    _IF_AVAILABLE = False
+    _AnomalyModel = None
 
 try:
     from core.indicators import (
@@ -86,6 +103,16 @@ async def check_anomaly_signals(symbol: str, df: pd.DataFrame) -> List[SignalDat
         volume_mean = volume_current / _vr if _vr > 0 else 0
         volume_ratio = _vr
 
+        # DEV-17: Isolation Forest — дополнительная проверка перед rule-based порогом
+        # Если IF обучена и говорит "норма" → пропускаем даже если ratio_thr превышен
+        _use_if = _IF_AVAILABLE and _cfg and _cfg.get("detectors.anomaly.use_isolation_forest", True)
+        if _use_if:
+            if symbol not in _anomaly_models:
+                _anomaly_models[symbol] = _AnomalyModel()
+            _am = _anomaly_models[symbol]
+            if not _am.is_trained:
+                _am.fit(df)  # ленивое обучение на первом вызове
+
         if volume_ratio > ratio_thr:
             price_change = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100
             direction = SignalDirection.LONG if price_change > 0 else SignalDirection.SHORT
@@ -102,6 +129,18 @@ async def check_anomaly_signals(symbol: str, df: pd.DataFrame) -> List[SignalDat
                 anom_strength = min(int(volume_ratio * str_trend), 100)
             else:
                 anom_strength = min(int(volume_ratio * str_ctr), 80)
+
+            # DEV-17: IF score → корректировка strength
+            if _use_if and _am.is_trained:
+                if_score = _am.score(df)
+                if if_score is not None:
+                    if_strength = _am.anomaly_strength(if_score)
+                    # Блендинг: 60% rule-based + 40% IF
+                    anom_strength = int(0.6 * anom_strength + 0.4 * if_strength)
+                    anom_strength = max(0, min(100, anom_strength))
+                    logger.debug("[%s] ANOMALY IF score=%.3f if_str=%d blended_str=%d",
+                                 symbol, if_score, if_strength, anom_strength)
+
             logger.debug("[%s] ANOMALY %s vol_ratio=%.1f price_chg=%.2f%% str=%d trend_match=%s",
                          symbol, direction.value, volume_ratio, price_change, anom_strength, trend_matches)
             signals.append(SignalData(
@@ -114,7 +153,7 @@ async def check_anomaly_signals(symbol: str, df: pd.DataFrame) -> List[SignalDat
                 data={"volume_ratio": volume_ratio, "price_change": price_change,
                       "volume_current": volume_current, "volume_mean": volume_mean,
                       "trend_match": trend_matches},
-                timeframe="15m",
+                timeframe=get_primary_entry_tf(_cfg),
             ))
     except Exception:
         logger.exception("Ошибка проверки аномалий для %s", symbol)
@@ -165,25 +204,50 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
         if gap >= 10:
             wt_strength = min(90, wt_strength + 5)
 
+        # ── DEV-23: Shadow-mode динамических порогов (не меняет gate) ─────────
+        _dyn_os = os_
+        _dyn_ob = ob
+        _dyn_computed = False
+        if _DYN_THRESH_AVAILABLE and _cfg is not None:
+            _dyn_enabled = _cfg.get("analysis.confluence.dynamic_os_enabled", False)
+            if _dyn_enabled and "wt1" in df_wt.columns:
+                _dyn_k  = float(_cfg.get("analysis.confluence.dyn_os_k", 0.8))
+                _dyn_win = int(_cfg.get("analysis.confluence.dyn_os_window", 50))
+                _wt1_hist = df_wt["wt1"].dropna().values
+                _dyn_os, _dyn_ob, _dyn_computed = compute_dynamic_thresholds(
+                    _wt1_hist, k=_dyn_k, window=_dyn_win, fixed_os=os_, fixed_ob=ob,
+                )
+                if _dyn_computed:
+                    logger.debug(
+                        "[wt_signal] %s: shadow dyn_os=%.1f dyn_ob=%.1f vs fixed %.1f/%.1f",
+                        symbol, _dyn_os, _dyn_ob, os_, ob,
+                    )
+
         if cross_up and wt1_last < os_:
             if wt1_1h is not None and wt1_1h > ob:
                 logger.debug("[%s] WT CrossUp отклонён: 1h OB (wt1_1h=%.1f)", symbol, wt1_1h)
             else:
-                logger.debug("[%s] WT CrossUp OS wt1=%.1f str=%d wt1_1h=%s", symbol, wt1_last, wt_strength, f"{wt1_1h:.1f}" if wt1_1h is not None else "N/A")
+                _fixed_trig = wt1_last < os_
+                _dyn_trig = _dyn_computed and wt1_last < _dyn_os
+                _os_m = _os_method_label(_fixed_trig, _dyn_trig, _dyn_computed) if _DYN_THRESH_AVAILABLE else "fixed"
+                logger.debug("[%s] WT CrossUp OS wt1=%.1f str=%d wt1_1h=%s os_method=%s", symbol, wt1_last, wt_strength, f"{wt1_1h:.1f}" if wt1_1h is not None else "N/A", _os_m)
                 signals.append(SignalData(
                     symbol=symbol, signal_type=SignalType.WT_SIGNAL, direction=SignalDirection.LONG,
                     strength=wt_strength, confidence=0.8, timestamp=datetime.now(),
-                    data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OS", "wt1_1h": wt1_1h}, timeframe="15m",
+                    data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OS", "wt1_1h": wt1_1h, "os_method": _os_m}, timeframe=get_primary_entry_tf(_cfg),
                 ))
         elif cross_down and wt1_last > ob:
             if wt1_1h is not None and wt1_1h < os_:
                 logger.debug("[%s] WT CrossDown отклонён: 1h OS (wt1_1h=%.1f)", symbol, wt1_1h)
             else:
-                logger.debug("[%s] WT CrossDown OB wt1=%.1f str=%d wt1_1h=%s", symbol, wt1_last, wt_strength, f"{wt1_1h:.1f}" if wt1_1h is not None else "N/A")
+                _fixed_trig = wt1_last > ob
+                _dyn_trig = _dyn_computed and wt1_last > _dyn_ob
+                _ob_m = _os_method_label(_fixed_trig, _dyn_trig, _dyn_computed) if _DYN_THRESH_AVAILABLE else "fixed"
+                logger.debug("[%s] WT CrossDown OB wt1=%.1f str=%d wt1_1h=%s ob_method=%s", symbol, wt1_last, wt_strength, f"{wt1_1h:.1f}" if wt1_1h is not None else "N/A", _ob_m)
                 signals.append(SignalData(
                     symbol=symbol, signal_type=SignalType.WT_SIGNAL, direction=SignalDirection.SHORT,
                     strength=wt_strength, confidence=0.8, timestamp=datetime.now(),
-                    data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OB", "wt1_1h": wt1_1h}, timeframe="15m",
+                    data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OB", "wt1_1h": wt1_1h, "os_method": _ob_m}, timeframe=get_primary_entry_tf(_cfg),
                 ))
     except Exception:
         logger.exception("Ошибка проверки WT для %s", symbol)
@@ -318,42 +382,6 @@ async def check_wt_b_signals(symbol: str, df_1h: pd.DataFrame) -> list:
     return signals
 
 
-async def check_mtf_signals(
-    symbol: str, df_1h: pd.DataFrame, df_15m: pd.DataFrame, df_3m: pd.DataFrame
-) -> List[SignalData]:
-    """Проверка мультитаймфреймовых сигналов."""
-    signals = []
-    try:
-        if any(x is None for x in (df_1h, df_15m, df_3m)):
-            return signals
-
-        n1, n2, ob, os_ = _wt_params()
-        atr_period, factor = _trend_params()
-        df_1h_trend = calculate_trend(df_1h, atr_period=atr_period, factor=factor)
-        trend_1h = df_1h_trend["trend"].iloc[-1] if "trend" in df_1h_trend.columns else 0
-
-        df_15m_wt = calculate_wt(df_15m, n1=n1, n2=n2)
-        if "wt1" not in df_15m_wt.columns or "wt2" not in df_15m_wt.columns:
-            return signals
-
-        wt1_15m, wt2_15m = df_15m_wt["wt1"].iloc[-1], df_15m_wt["wt2"].iloc[-1]
-        df_3m_wt = calculate_wt(df_3m, n1=n1, n2=n2)
-        if "wt1" not in df_3m_wt.columns:
-            return signals
-
-        wt1_3m = df_3m_wt["wt1"].iloc[-1]
-        common = dict(symbol=symbol, signal_type=SignalType.MTF_SIGNAL, strength=85, confidence=0.9,
-                      timestamp=datetime.now(), timeframe="MTF",
-                      data={"trend_1h": trend_1h, "wt1_15m": wt1_15m, "wt2_15m": wt2_15m, "wt1_3m": wt1_3m})
-
-        if trend_1h == 1 and wt1_15m > wt2_15m and wt1_3m < os_:
-            signals.append(SignalData(direction=SignalDirection.LONG, **common))
-        elif trend_1h == -1 and wt1_15m < wt2_15m and wt1_3m > ob:
-            signals.append(SignalData(direction=SignalDirection.SHORT, **common))
-    except Exception:
-        logger.exception("Ошибка проверки MTF для %s", symbol)
-    return signals
-
 
 async def check_trend_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
     """Проверка трендовых сигналов."""
@@ -425,7 +453,7 @@ async def check_smc_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
                 "level": struct_info.get("level", 0),       # пробитый уровень
                 "current_price": struct_info.get("current_price", 0),
             },
-            timeframe="15m",
+            timeframe=get_primary_entry_tf(_cfg),
         ))
     except Exception:
         logger.exception("Ошибка проверки SMC для %s", symbol)
@@ -509,7 +537,7 @@ async def check_divergence_signals(symbol: str, df: pd.DataFrame) -> List[Signal
                 confidence=0.75,
                 timestamp=datetime.now(),
                 data={"type": div_type, "direction": dir_str, "details": result},
-                timeframe="15m",
+                timeframe=get_primary_entry_tf(_cfg),
             ))
             break  # один сигнал (наивысший приоритет)
     except Exception:
@@ -558,7 +586,7 @@ async def check_pivot_signals(
                 confidence=0.65,
                 timestamp=datetime.now(),
                 data={"level": resistance, "pivot_type": "resistance", "distance_pct": dist_res},
-                timeframe="15m",
+                timeframe=get_primary_entry_tf(_cfg),
             ))
 
         # Цена у поддержки → LONG
@@ -574,7 +602,7 @@ async def check_pivot_signals(
                 confidence=0.65,
                 timestamp=datetime.now(),
                 data={"level": support, "pivot_type": "support", "distance_pct": dist_sup},
-                timeframe="15m",
+                timeframe=get_primary_entry_tf(_cfg),
             ))
     except Exception:
         logger.exception("Ошибка check_pivot_signals для %s", symbol)

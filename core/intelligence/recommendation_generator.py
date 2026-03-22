@@ -181,8 +181,26 @@ def calculate_levels(
                     sl_source = f"fvg_bear:{fvg_price:.6g}"
                     break
 
-    # ── 3. TSL-линия — если swing, S1 и FVG недоступны ────────────────────
+    # ── 2.5. SMC Order Block — зона институциональных ордеров (ARCH-17) ──
     if "swing_" not in sl_source and "s1:" not in sl_source and "fvg_" not in sl_source:
+        smc = getattr(market_context, "smc_context", None)
+        if smc is not None:
+            ob = smc.nearest_bull_ob if is_long else smc.nearest_bear_ob
+            if ob is not None:
+                ob_level = ob.bottom if is_long else ob.top
+                if is_long and 0 < ob_level < entry_price:
+                    ob_sl_pct = (entry_price - ob_level) / entry_price * 100 + struct_buf
+                    if sl_min <= ob_sl_pct <= sl_max:
+                        sl_pct    = ob_sl_pct
+                        sl_source = f"smc_ob:{ob_level:.6g}"
+                elif is_short and ob_level > entry_price:
+                    ob_sl_pct = (ob_level - entry_price) / entry_price * 100 + struct_buf
+                    if sl_min <= ob_sl_pct <= sl_max:
+                        sl_pct    = ob_sl_pct
+                        sl_source = f"smc_ob:{ob_level:.6g}"
+
+    # ── 3. TSL-линия — если swing, S1 и FVG недоступны ────────────────────
+    if "swing_" not in sl_source and "s1:" not in sl_source and "fvg_" not in sl_source and "smc_ob" not in sl_source:
         tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
         if tsl_line and tsl_line > 0:
             if is_long and tsl_line < entry_price:
@@ -198,8 +216,9 @@ def calculate_levels(
                     sl_pct    = tsl_sl_pct
                     sl_source = "tsl_line:trenddown"
 
-    # ── TP1: фиксированный 3R ─────────────────────────────────────────────
-    tp1_pct = sl_pct * 3.0
+    # ── TP: ATR × fallback_rr (реальный уровень устанавливается постобработкой в monitoring.py)
+    fallback_rr = sl_cfg.get("tp_fallback_rr", 3.0)
+    tp1_pct = sl_pct * fallback_rr
     if is_long:
         stop_loss  = entry_price * (1 - sl_pct / 100)
         tp1_price  = entry_price * (1 + tp1_pct / 100)
@@ -208,7 +227,7 @@ def calculate_levels(
         tp1_price  = entry_price * (1 - tp1_pct / 100)
 
     take_profit = tp1_price
-    tp_source   = f"atr_rr_3.0:{tp1_pct:.2f}%"
+    tp_source   = f"atr_fallback_rr_{fallback_rr:.1f}:{tp1_pct:.2f}%"
 
     return entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source
 

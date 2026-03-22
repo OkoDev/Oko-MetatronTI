@@ -85,63 +85,15 @@ class PivotLevels:
                 logger.error(f"Не удалось получить недельные пивоты для {symbol}")
                 return {}
             
-            # НОВОЕ: Проверяем совпадения (конфлюэнция)
-            if '1W' in results and '1D' in results:
-                confluence = self._find_confluence(results['1W'], results['1D'])
-                results['confluence'] = confluence
-            else:
-                results['confluence'] = []
+            # Конфлюэнции: рассчитываются через PivotCalculatorFixed._find_all_confluences()
+            # PivotLevels не используется в production — see bot.pivot_calculator (ARCH-25)
+            results['confluence'] = []
             
             return results
             
         except Exception as e:
             logger.exception(f"Ошибка get_multi_timeframe_pivots для {symbol}: {e}")
             return {}
-    
-    def _find_confluence(self, weekly_pivots, daily_pivots, threshold_percent=0.3):
-        """
-        Находит совпадения между недельными и дневными пивотами
-        
-        Args:
-            weekly_pivots: недельные уровни
-            daily_pivots: дневные уровни
-            threshold_percent: порог совпадения (0.3% = сильная конфлюэнция)
-        
-        Returns:
-            list с совпадающими уровнями
-        """
-        confluence_levels = []
-        
-        # Все уровни для проверки
-        all_levels = ['PP'] + [f'S{i}' for i in range(1, 6)] + [f'R{i}' for i in range(1, 6)]
-        
-        for w_level in all_levels:
-            if w_level not in weekly_pivots:
-                continue
-            
-            w_price = weekly_pivots[w_level]
-            
-            # Проверяем совпадение с дневными уровнями
-            for d_level in all_levels:
-                if d_level not in daily_pivots:
-                    continue
-                
-                d_price = daily_pivots[d_level]
-                
-                # Рассчитываем расстояние
-                distance_percent = abs((w_price - d_price) / w_price * 100)
-                
-                if distance_percent <= threshold_percent:
-                    confluence_levels.append({
-                        'weekly_level': w_level,
-                        'weekly_price': w_price,
-                        'daily_level': d_level,
-                        'daily_price': d_price,
-                        'distance_percent': distance_percent,
-                        'strength': 'VERY_STRONG' if distance_percent < 0.1 else 'STRONG'
-                    })
-        
-        return confluence_levels
     
     def get_nearest_level(self, current_price, pivots, direction='both'):
         """

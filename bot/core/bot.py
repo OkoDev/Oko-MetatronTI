@@ -20,6 +20,9 @@ from core.trading_intelligence import TradingIntelligence
 from core.trade_simulator import TradeSimulator
 from core.r_predictor import RPredictor
 from core.confluence_state_machine import ConfluenceStateMachine
+from core.multi_tf_resolver import MultiTFResolver
+from core.bounce_detector import BounceDetector
+from core.signal_watch_list import SignalWatchList
 from bot.menus import MenuHandler
 
 logger = logging.getLogger(__name__)
@@ -37,14 +40,18 @@ class TradingAlertBot:
         self.dp = Dispatcher(storage=self.storage)
 
         self.subscription_manager = SubscriptionManager()
-        self.data_collector = RealTimeData(exchange_id=config.get("exchanges.default", "bingx"))
+        self.data_collector = RealTimeData(
+            exchange_id=config.get("exchanges.default", "bingx"),
+            api_semaphore_size=int(config.get("performance.api_semaphore_size", 5)),
+            api_rps=float(config.get("performance.api_rps", 8.0)),
+        )
         self.divergence_detector = DivergenceDetector()
         self.pivot_calculator = PivotCalculatorFixed(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
         self.trading_intelligence = TradingIntelligence(
             data_collector=self.data_collector,
-            config=config.get_all(),
+            config=config,
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db"),
         )
         self.menu_handler = MenuHandler(self)
@@ -67,7 +74,7 @@ class TradingAlertBot:
         self.recent_signals: dict = {}   # {symbol: [SignalData, ...]} — кеш сигналов из последнего скана
         self.subscribers = set()
         self.signal_counters = {
-            "anomaly": 0, "wt_signal": 0, "mtf_signal": 0, "mtf_alert": 0,
+            "anomaly": 0, "wt_signal": 0, "mtf_alert": 0,
             "trend_signal": 0, "divergence": 0, "pivot_reversal": 0,
             "pivot_alert": 0, "total": 0,
         }
@@ -77,6 +84,13 @@ class TradingAlertBot:
         self._btc_regime_cache = None
         # Этап 7: R-регрессор (Kelly-sizing)
         self.r_predictor = RPredictor()
+        # ARCH-15: Bounce Detector (контртренд-отскоки)
+        self.bounce_detector = BounceDetector(config=config)
+        # ARCH-13: Multi-TF Conflict Resolver (с bounce support)
+        self.multi_tf_resolver = MultiTFResolver(config=config, bounce_detector=self.bounce_detector)
+        # DEV-22: WATCH LIST — автоматическое наблюдение и эскалация сигналов
+        _wl_ttl = int(config.get("signal_quality.watch_list_ttl_hours", 4))
+        self.signal_watch_list = SignalWatchList(ttl_hours=_wl_ttl)
 
         self._register_routers()
 
@@ -100,8 +114,26 @@ class TradingAlertBot:
         logger.info("Запуск бота с поддержкой подписок...")
 
         async def _run():
+            # === SELFTEST при старте (ARCH-14) ===
+            from core.selftest import run_selftest
+            selftest_report = await run_selftest(config=self.config, bot=self)
+            logger.info("SelfTest завершён: %d/%d пройдено за %.0fms",
+                        sum(1 for r in selftest_report.results if r.passed),
+                        len(selftest_report.results),
+                        selftest_report.total_duration_ms)
+            if not selftest_report.critical_passed:
+                for r in selftest_report.critical_failed:
+                    logger.error("CRITICAL SELFTEST FAIL [%s] %s: %s", r.layer, r.name, r.error)
+                logger.error("Бот не может стартовать — критические тесты провалены!")
+                return
+            if selftest_report.failed:
+                for r in selftest_report.failed:
+                    logger.warning("SELFTEST WARN [%s] %s: %s", r.layer, r.name, r.error)
+            # Сохраняем отчёт для /status команды
+            self._selftest_report = selftest_report
+
             from bot.monitoring import trade_tracker_loop
-            from bot.loops.ml_loop import ml_training_loop, weekly_report_loop
+            from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop
             from web.dashboard_server import start_dashboard
 
             asyncio.create_task(trade_tracker_loop(self))
@@ -110,9 +142,12 @@ class TradingAlertBot:
                 config=config,
                 data_collector=self.data_collector,
                 trade_simulator=self.trade_simulator,
+                bot=self,
             ))
             asyncio.create_task(ml_training_loop(self))
             asyncio.create_task(weekly_report_loop(self))
+            asyncio.create_task(wr_health_check_loop(self))  # DEV-27: rolling WR monitor
+            asyncio.create_task(auto_review_loop(self))      # DEV-12/8.4.9: weekly auto-review
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())

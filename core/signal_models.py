@@ -54,6 +54,73 @@ class SignalData:
 
 
 @dataclass
+class MTFContext:
+    """
+    ARCH-12: Аналитический контекст от MTF Interpreter.
+    Говорит "куда смотреть", не "входи". Это КОНТЕКСТ, не сигнал.
+
+    ARCH-12.5: Коэффициенты multipliers автокалибруются из реальных исходов.
+    Калиброванные значения передаются через calibration_params.
+    """
+    direction_bias: SignalDirection       # куда смотрит рынок (от старших ТФ)
+    bias_strength: float                  # 0.0-1.0
+    price_zone: float                     # 0.0=S5, 0.5=PP, 1.0=R5 (weekly пивоты)
+    aligned_pct: int                      # % ТФ в одном направлении
+    senior_matches: int                   # 2 или 3
+    senior_reversal: Optional[Dict[str, Any]]  # разворот старшего ТФ
+    wt_spreads: Dict[str, float]          # {tf: |wt1-wt2|} — сила тренда по ТФ
+    regime: Optional[str] = None          # TREND_UP/DOWN/RANGE/HIGH_VOL
+    bull_pct: int = 0
+    bear_pct: int = 0
+    # ARCH-12.5: калиброванные параметры (None = defaults)
+    calibration_params: Optional[Dict[str, float]] = None
+
+    def direction_multiplier(self, signal_direction: SignalDirection) -> float:
+        """
+        Множитель для strength сигнала на основе контекста.
+        Сигнал ПО направлению bias → усиление, ПРОТИВ → ослабление.
+        Коэффициенты берутся из calibration_params (если есть) или defaults.
+        """
+        if self.direction_bias == SignalDirection.NEUTRAL:
+            return 1.0
+
+        cp = self.calibration_params or {}
+        aligned_boost = cp.get("aligned_boost", 0.5)
+        counter_penalty = cp.get("counter_penalty", 0.7)
+        counter_floor = cp.get("counter_floor", 0.3)
+
+        aligned = (signal_direction == self.direction_bias)
+        bs = self.bias_strength  # 0.0-1.0
+
+        if aligned:
+            return 1.0 + bs * aligned_boost
+        else:
+            return max(counter_floor, 1.0 - bs * counter_penalty)
+
+    def zone_multiplier(self, signal_direction: SignalDirection) -> float:
+        """
+        Множитель на основе ценовой зоны (пивоты).
+        LONG у S5 (zone=0.0) → усиление, LONG у R5 (zone=1.0) → ослабление.
+        Коэффициенты берутся из calibration_params (если есть) или defaults.
+        """
+        if self.price_zone < 0 or self.price_zone > 1:
+            return 1.0
+
+        cp = self.calibration_params or {}
+        zone_base_high = cp.get("zone_base_high", 1.4)
+        zone_range = cp.get("zone_range", 0.8)
+        zone_base_low = cp.get("zone_base_low", 0.6)
+
+        if signal_direction == SignalDirection.LONG:
+            # LONG: zone=0.0 (S5) → zone_base_high, zone=1.0 (R5) → zone_base_low
+            return zone_base_high - zone_range * self.price_zone
+        elif signal_direction == SignalDirection.SHORT:
+            # SHORT: zone=1.0 (R5) → zone_base_high, zone=0.0 (S5) → zone_base_low
+            return zone_base_low + zone_range * self.price_zone
+        return 1.0
+
+
+@dataclass
 class MarketContext:
     symbol: str
     current_price: float
@@ -69,6 +136,10 @@ class MarketContext:
     tsl_trenddown: Optional[float] = None  # TSL resistance-линия (SL для SHORT)
     swing_low: Optional[float] = None      # ближайший свинг-лоу ниже цены (20 баров)
     swing_high: Optional[float] = None     # ближайший свинг-хай выше цены (20 баров)
+    # ARCH-12: MTF Context fields
+    mtf_context: Optional['MTFContext'] = None
+    # ARCH-17: SMC Context fields
+    smc_context: Optional['SMCContext'] = None  # полный MTFContext объект
 
 
 @dataclass

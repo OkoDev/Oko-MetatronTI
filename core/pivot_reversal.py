@@ -80,20 +80,24 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
         trend_15m_prev = int(df_15m['trend'].iloc[-2])
         trend_changed  = (trend_15m != trend_15m_prev)
 
-        # === 5. ATR из 15m → SL (вместо локального min/max 3m) ===
+        # === 5. ATR — только для fallback, не основной SL ===
         try:
             atr_series = compute_atr(df_15m, period=14)
             atr_val = float(atr_series.iloc[-1]) if atr_series is not None and len(atr_series) > 0 else None
         except Exception:
             atr_val = None
 
+        # DEV-30 (Вариант A): SL = 0.3% под/над уровнем пивота (бэктест EV=0.256 vs ATR 0.115)
+        # Если level_price недоступен — fallback на ATR
+        _pivot_buf = 0.003  # 0.3% буфер под/над уровнем
+        _sl_long_pivot  = level_price * (1 - _pivot_buf)   # LONG: ниже уровня поддержки
+        _sl_short_pivot = level_price * (1 + _pivot_buf)   # SHORT: выше уровня сопротивления
+
+        # fallback sl_dist для rr_ratio вычислений (всё ещё нужен в _build_result)
         if atr_val and atr_val > 0:
-            sl_dist = max(
-                min(atr_val * 1.5, current_price * 0.04),  # max 4%
-                current_price * 0.01,                       # min 1%
-            )
+            sl_dist = max(min(atr_val * 1.5, current_price * 0.04), current_price * 0.01)
         else:
-            sl_dist = current_price * 0.02  # 2% fallback
+            sl_dist = current_price * 0.02
 
         # === 6. FVG на 3m — только бонус, не блокирует ===
         df_3m = await data_collector.get_ohlcv(symbol, "3m", limit=20)
@@ -117,11 +121,12 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
             return min(s, 100)
 
         def _build_result(type_str, direction_label, wt_label, trend_label,
-                          stop_loss, tp_levels, has_confluence):
+                          stop_loss, tp_levels, has_confluence, sl_source_str='atr_14'):
             fvg_ok = (fvg_type == ("BULL" if "LONG" in type_str else "BEAR")) if has_fvg else True
             wt_ok = cross_up if "LONG" in type_str else cross_down
+            actual_sl_dist = abs(current_price - stop_loss)
             tp_distance = abs(tp_levels[0]['price'] - current_price) if tp_levels else 0
-            rr_ratio = tp_distance / sl_dist if sl_dist > 0 else 0
+            rr_ratio = tp_distance / actual_sl_dist if actual_sl_dist > 0 else 0
             strength = _strength(wt_ok, trend_changed, has_fvg, fvg_ok, has_confluence)
             return {
                 'symbol': symbol,
@@ -143,9 +148,9 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 'confluence_info': [c for c in confluence if c['weekly_level'] == level_name],
                 'entry_price': current_price,
                 'stop_loss': stop_loss,
-                'stop_distance_pct': sl_dist / current_price * 100,
+                'stop_distance_pct': actual_sl_dist / current_price * 100,
                 'atr': atr_val,
-                'sl_source': 'atr_14',
+                'sl_source': sl_source_str,
                 'take_profits': tp_levels,
                 'rr_ratio': rr_ratio,
                 'strength': strength,
@@ -170,7 +175,8 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 has_confluence = any(c['weekly_level'] == level_name for c in confluence)
                 return True, _build_result(
                     'PIVOT_LEVEL_LONG', 'вверх', 'UP', 'вверх',
-                    current_price - sl_dist, tp_levels, has_confluence
+                    _sl_long_pivot, tp_levels, has_confluence,
+                    sl_source_str=f'pivot_{level_name}:0.3%'
                 )
 
         # === SHORT: у сопротивления ===
@@ -190,7 +196,8 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 has_confluence = any(c['weekly_level'] == level_name for c in confluence)
                 return True, _build_result(
                     'PIVOT_LEVEL_SHORT', 'вниз', 'DOWN', 'вниз',
-                    current_price + sl_dist, tp_levels, has_confluence
+                    _sl_short_pivot, tp_levels, has_confluence,
+                    sl_source_str=f'pivot_{level_name}:0.3%'
                 )
 
         return False, None

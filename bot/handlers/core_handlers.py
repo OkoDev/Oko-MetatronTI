@@ -116,7 +116,6 @@ def get_router(bot) -> Router:
             "<b>🎯 Обнаружено сигналов:</b>",
             f"• 🚨 Аномалий: {bot.signal_counters['anomaly']}",
             f"• 📊 WT сигналов: {bot.signal_counters['wt_signal']}",
-            f"• 🔄 MTF базовых: {bot.signal_counters['mtf_signal']}",
             f"• 🎯 MTF точек разворота: {bot.signal_counters['mtf_alert']}",
             f"• 📈 Тренд-сигналов: {bot.signal_counters['trend_signal']}",
             f"• 💎 Дивергенций: {bot.signal_counters['divergence']}",
@@ -150,7 +149,7 @@ def get_router(bot) -> Router:
     @router.message(Command("reset"))
     async def cmd_reset_stats(message: Message):
         bot.signal_counters = {
-            "anomaly": 0, "wt_signal": 0, "mtf_signal": 0, "mtf_alert": 0,
+            "anomaly": 0, "wt_signal": 0, "mtf_alert": 0,
             "trend_signal": 0, "divergence": 0, "pivot_reversal": 0,
             "pivot_alert": 0, "total": 0,
         }
@@ -177,6 +176,31 @@ def get_router(bot) -> Router:
         for tf in available:
             d = snapshot[tf]
             lines.append(f"{tf:>3}  {d['trend']:^5}  {d['wt1']:.1f}/{d['wt2']:.1f}    {d['zone']}")
+
+        await message.answer("\n".join(lines), reply_markup=main_menu())
+
+    # DEV-22: /wl — текущий WATCH LIST (пары ожидающие эскалации)
+    @router.message(Command("wl"))
+    async def cmd_wl(message: Message):
+        wl = getattr(bot, "signal_watch_list", None)
+        if wl is None or len(wl) == 0:
+            await message.answer("📋 <b>Watch List пуст</b> — нет активных WATCH-наблюдений.")
+            return
+
+        entries = wl.get_all()
+        dir_emoji = {"LONG": "🟢", "SHORT": "🔴"}
+        lines = [f"📋 <b>Watch List</b> ({len(entries)} пар)\n"]
+        for e in entries:
+            sym_short = e["symbol"].split("/")[0]
+            ttl_h = e["ttl_minutes"] // 60
+            ttl_m = e["ttl_minutes"] % 60
+            pivot_str = f" | {e['pivot_key']}={e['pivot_level']:.4f}" if e["pivot_level"] > 0 else ""
+            div_str = f" | div×{e['div_count']}" if e["div_count"] > 0 else ""
+            lines.append(
+                f"{dir_emoji.get(e['direction'], '⚪')} <b>{sym_short}</b> "
+                f"score={e['score']:.0f} · {e['reason']}{pivot_str}{div_str}\n"
+                f"   ⏱ TTL: {ttl_h}h {ttl_m}m"
+            )
 
         await message.answer("\n".join(lines), reply_markup=main_menu())
 

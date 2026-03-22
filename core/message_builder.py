@@ -121,3 +121,31 @@ def mtf_message(symbol: str, info: dict) -> str:
 
     parts += [f"⏰ {datetime.now().strftime('%d.%m %H:%M')}", "\n"]
     return "\n".join(parts)
+
+
+def wt_b_message(symbol: str, sig: "SignalData") -> str:
+    """Форматирует WT-B (1h) сигнал — адаптивный OS/OB + дивергенция."""
+    from core.signal_models import SignalDirection
+    is_long = sig.direction == SignalDirection.LONG
+    emoji   = "🔵"   # WT-B синий — отличается от стандартного WT
+    dir_label = "LONG ↑" if is_long else "SHORT ↓"
+    d = sig.data or {}
+
+    strength = int(sig.strength or 0)
+    div_str  = d.get("div_strength", 0)
+    wt1_val  = d.get("wt1", 0)
+    depth    = d.get("depth", 0)
+    zone_thr = d.get("os_adaptive") or d.get("ob_adaptive") or 0
+    fire     = "🔥🔥🔥" if strength >= 90 else "🔥🔥" if strength >= 80 else "🔥"
+
+    parts = [
+        "\n",
+        f"{emoji} <b>WT-B · {tv_link(symbol, interval=60)} · {dir_label}</b>",
+        f"  ⏱ 1h  {fire} <b>{strength}/100</b>",
+        f"  📊 WT1={wt1_val:.1f}  адапт.={'OS' if is_long else 'OB'}={zone_thr:.1f}",
+        f"  🔄 Дивер: div_str={div_str:.1f}  depth={depth:.1f}",
+        f"  ✅ confidence={sig.confidence:.2f}",
+        f"⏰ {datetime.now().strftime('%d.%m %H:%M')}",
+        "\n",
+    ]
+    return "\n".join(parts)

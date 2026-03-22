@@ -1,6 +1,6 @@
 telegram:
-  token: ${TELEGRAM_TOKEN}
-  admin_id: ${ADMIN_ID}
+  token: 7674649932:AAG3QDXkwaCbuoxCOT9BQy17XB5jkyc270U
+  admin_id: '428163099'
 exchanges:
   default: bingx
   supported:
@@ -10,8 +10,8 @@ exchanges:
   - okx
   api_keys:
     bingx:
-      api_key: ${BINGX_API_KEY}
-      secret: ${BINGX_SECRET_KEY}
+      api_key: 2zDHkpQwgHe54YWlvnKg5B18OOrstPP9ddYJrPBZyiz9KUrEM89tk5qCEvaLrmZ0gpRdYotahOrH9QRElQ
+      secret: rgDbCOJCjfi9ok5k2idnfSeLz0JDdzJebTz5MoKa61fZykl9XhKrrEMZajDfXhkXDpfvfZPGGWeUYeh4CNUhg
 analysis:
   volume_multiplier: 4.0
   price_threshold: 5.0
@@ -29,6 +29,16 @@ analysis:
   signals:
     min_signals: 2
     single_signal_min_strength: 54
+    min_confidence: 0.55
+    # DEV-26: per-signal-type пороги (override глобального min_confidence)
+    min_confidence_by_type:
+      wt_b_signal: 0.50    # WR=85% на бэктесте, менее строгий порог
+      wt_signal: 0.52
+      pivot_reversal: 0.52
+      confluence: 0.68
+      mtf_bias: 0.55
+      trend_signal: 0.55
+      anomaly: 0.60        # аномалии — шумные, строже
     premium_pairs:
     - BTC
     - ETH
@@ -42,22 +52,26 @@ analysis:
     - AVAX
   wt_b:
     enabled: true
-    div_min: 3.0    # min разрыв лоу/хай (div_strength) — слабее не берём
-    div_max: 20.0   # max разрыв — выше = продолжение тренда, не разворот
-    lookback: 35    # баров назад для поиска дивергенции
+    div_min: 3.0
+    div_max: 20.0
+    lookback: 35
   divergence:
     pivot_proximity_pct: 0.5
+  anomaly:
+    max_per_cycle: 5
   confluence:
     enabled: true
-    use_state_machine: false  # false = lookback scanner (быстрее, больше сделок); true = State Machine (ARCH-03, строже)
-    lookback_bars: 5
+    use_state_machine: false
+    lookback_bars: 8
     cross_fresh_bars: 5
     min_strength: 60
     wt_os_threshold: -60.0
     wt_ob_threshold: 60.0
-    pivot_proximity_pct: 0.5
+    pivot_touch_pct: 0.15
     div_min_bars: 9
-    max_per_cycle: 3
+    max_per_cycle: 10
+    dynamic_os_enabled: false
+    4h_gate_enabled: false   # ARCH-26: временно отключён (22.03) — WT momentum неверно определял тренд, шорты блокировались в нисходящем рынке. Вернуться к Варианту A (ATR Trend) после наблюдения.
 subscriptions:
   free:
     daily_limit: 5
@@ -69,14 +83,12 @@ subscriptions:
     signals:
     - anomaly
     - wt_signal
-    - mtf_signal
     price: 9.99
   premium:
     daily_limit: 50
     signals:
     - anomaly
     - wt_signal
-    - mtf_signal
     - mtf_alert
     - trend_signal
     - divergence
@@ -99,22 +111,46 @@ monitoring:
     divergences_every_n_cycles: 5
     background_every_n_cycles: 3
     cascade_div_every_n_cycles: 60
-strategy_name: confluence  # Strategy Pattern: дефолтная стратегия (ARCH-05)
+outcome_predictor:
+  # ARCH-21: скользящее окно обучения. null = вся история (текущее поведение).
+  # Активировать при 1000+ чистых записей в БД (после DEV-13).
+  training_window: null  # например: 500
 
+strategy_name: confluence
 trading:
-  active_strategy: confluence_scanner  # главная: отправляет TG-сигналы
-  active_strategies:                   # все симулируются в БД для сравнения WR
-    - confluence_scanner
-    - pivot_reversal
-    - confluence
-    - mtf_bias
+  entry_timeframe: 15m
+  bounce_mode:
+    enabled: false
+    max_bounces: 2
+    min_trend_strength: 50
+    cooldown_sec: 300
+    scalp_atr_multiplier: 1.0
+  active_strategy: reversal_scanner
+  active_strategies:
+  - reversal_scanner
+  - reversal
+  - trend_following
+  - pivot_reversal
+  - confluence
+  - mtf_bias
   strategies:
-    confluence_scanner:
+    reversal_scanner:
       min_strength: 60
       tp_rr: 3.0
       sl_buffer_pct: 0.3
       tsl_max_dist: 3.0
       tsl_min_dist: 0.6
+    reversal:
+      min_strength: 70
+      min_confidence: 0.6
+      conflict_margin: 0.15
+      tp_rr: 2.0
+    trend_following:
+      min_signals: 2
+      min_strength: 55
+      min_confidence: 0.55
+      conflict_threshold: 0.25
+      tp_rr: 3.0
     confluence:
       min_signals: 2
       conflict_threshold: 0.3
@@ -126,33 +162,40 @@ trading:
       tp_rr: 2.5
       sl_buffer_pct: 0.1
   use_tsl: true
-  tsl_activation_r: 1.0
+  tsl_activation_r: 1
   tsl_buffer_pct: 0.5
-  use_breakeven: true           # Безубыток: SL → entry после достижения прибыли
-  breakeven_activation_r: 0.8  # 0.5→0.8R: данные показали что 0.5R — зона волатильности,
-                                # риск срезания хороших сделок. 0.8R = уверенное движение,
-                                # буфер 0.2R до TSL-активации (1.0R) минимизирует преждевременные выходы
+  cascade_tsl: true
+  cascade_tsl_deescalation_r: 2.5  # DEV-29: снижено с 5.0 (бэктест: 0 активаций при 5.0R, 83% TSL-закрытий до 4R)
+  use_breakeven: false
+  max_positions_per_direction: 0   # DEV-14: Correlation Guard (0 = отключён)
   sl_tp:
     atr_multiplier: 1.2
-    sl_min_pct: 0.5        # DEV-05: зажим [0.5%, 3%] — S1/FVG/TSL приоритет
+    sl_min_pct: 0.5
     sl_max_pct: 3.0
     tp_fallback_rr: 3.0
-    tp_pivot_min_r: 3.0
+    require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
+    tp_pivot_min_r: 2.0
+    tp_reversal_min_r: 2.0
+    tp_trend_min_r: 1.5
     tp_partial_pct: 0.5
     atr_dynamic: true
     atr_expand_threshold: 1.3
     atr_contract_threshold: 0.8
     struct_sl_buffer_pct: 0.3
     struct_sl_max_dist: 3.0
-    tsl_too_tight_pct: 1.0  # было 0.6 — если TSL-линия <1% от цены → использовать swing_low
+    tsl_too_tight_pct: 1.0
 signal_quality:
-  sl_cooldown_hours: 1
+  sl_cooldown_hours: 4.0   # 4 часа после SL (было 0.75 — защита от повторных SL)
   dedup_minutes: 30
-  min_volume_usd: 1000000
+  min_volume_usd: 700000
   min_strength: 50
-  min_strength_register: 40
+  min_strength_register: 65  # было 40 — убрать мусорные сделки
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
+  btc_filter_mode: shadow
+  # DEV-22: WATCH LIST
+  watch_list_ttl_hours: 4        # TTL записи в WL (часов)
+  watch_list_breach_pct: 1.0     # % ниже/выше pivot_level для подтверждения пробоя
 detectors:
   anomaly:
     min_bars: 20
@@ -161,11 +204,13 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
-  scan_semaphore_size: 20
-  analyze_semaphore_size: 3
-  prefetch_pivots_semaphore_size: 5
-  background_check_semaphore_size: 10
-  cascade_div_semaphore_size: 5
+  scan_semaphore_size: 5
+  analyze_semaphore_size: 2
+  prefetch_pivots_semaphore_size: 2
+  background_check_semaphore_size: 5
+  cascade_div_semaphore_size: 3
+  api_rps: 15
+  api_semaphore_size: 8
   ohlcv_scan_limit: 160
   ohlcv_slow_threshold_sec: 5.0
   divergence_slow_threshold_sec: 3.0
@@ -177,9 +222,8 @@ strategy:
     min_signals: 2
     conflict_threshold: 0.3
     signal_weights:
-      mtf_signal: 0.25
       mtf_alert: 0.3
-      mtf_bias: 0.30
+      mtf_bias: 0.3
       pivot_reversal: 0.2
       divergence: 0.15
       wt_signal: 0.1
@@ -194,19 +238,29 @@ strategy:
     min_signals: 3
     min_confidence: 0.65
     conflict_threshold: 0.2
-
+future_pivots:
+  enabled: false
+  broadcast_tg: false
+  ttl_sec: 1800
+  confluence_threshold_pct: 0.5
+  pre_alert_pct: 1.0
+  strength_bonus: 15
+signals:
+  mtf_alert_enabled: false       # DEV-31: 137 сделок WR=4.4% — убран полностью (TG + регистрация)
+  mtf_alert_register: false      # DEV-31: резервный флаг (не используется если enabled=false)
+  cascade_div_enabled: true
+  send_chart: true               # отправлять PNG-график вместе с сигналом
+  chart_tf: "1h"                 # таймфрейм графика
+  chart_bars: 300                # количество баров на графике
 risk_management:
   regime_strategy:
     enabled: true
-    # TREND_UP / TREND_DOWN: агрессивный трейлинг
     trend_sl_factor: 0.85
     trend_strategy_type: TRIPLE_TP_TSL
     trend_position_multiplier: 1.0
-    # RANGE: консервативная фиксация прибыли
     range_sl_factor: 1.15
     range_strategy_type: DUAL_TP
     range_position_multiplier: 1.0
-    # HIGH_VOL: уменьшаем риск, берём TP1 сразу
     high_vol_sl_factor: 1.0
     high_vol_strategy_type: DUAL_TP
     high_vol_position_multiplier: 0.5

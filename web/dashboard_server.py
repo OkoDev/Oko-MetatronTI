@@ -79,6 +79,7 @@ _HTML = """<!DOCTYPE html>
 <header>
   <h1>&#x1F4CA; Crypto Bot — Trade Dashboard</h1>
   <div style="display:flex;align-items:center;gap:16px;">
+    <a href="/dashboard" style="color:#58a6ff;text-decoration:none;font-size:.85rem;">&#x1F4DF; Дашборд</a>
     <a href="/backtest" style="color:#58a6ff;text-decoration:none;font-size:.85rem;">&#x1F4C8; Бэктест</a>
     <a href="/settings" style="color:#58a6ff;text-decoration:none;font-size:.85rem;">&#x2699;&#xFE0F; Настройки</a>
     <span id="updated">загрузка...</span>
@@ -486,9 +487,34 @@ function symLink(sym) {
   return `<a href="${tvUrl(sym)}" target="_blank" style="color:#58a6ff;text-decoration:none">${label}</a>`;
 }
 
-function tslBadge(activated) {
-  if (activated) return '<span class="badge badge-tsl" title="TSL активен — следит за трендом">TSL ✓</span>';
+// Конвертация UTC → локальное время браузера
+function fmtLocal(utcStr) {
+  // DB хранит локальное время сервера — возвращаем как есть, без конвертации
+  if (!utcStr) return '—';
+  return utcStr.substring(0, 16).replace('T', ' ');
+}
+function fmtLocalTime(utcStr) {
+  if (!utcStr) return '—';
+  return utcStr.substring(11, 16);
+}
+
+function tslBadge(activated, tsl_tf) {
+  if (activated) {
+    const tf = tsl_tf || '?';
+    return `<span class="badge badge-tsl" title="TSL активен — следит за трендом на ${tf}">TSL ${tf}</span>`;
+  }
   return '<span style="color:#444;font-size:.75rem" title="TSL ещё не активирован">—</span>';
+}
+
+function tp2Cell(tp2_price, tp2_hit_at, entry) {
+  if (!tp2_price) return '<span style="color:#444">—</span>';
+  const pct = entry ? ((tp2_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
+  const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
+  if (tp2_hit_at) {
+    const t = fmtLocalTime(tp2_hit_at);
+    return `<span class="green" title="TP2 достигнут в ${t}">✓${fmt(tp2_price,4)}</span>${pctStr}`;
+  }
+  return `<span style="color:#8b949e">${fmt(tp2_price,4)}</span>${pctStr}`;
 }
 
 function tp1Cell(tp1_price, tp1_hit_at, entry) {
@@ -496,7 +522,7 @@ function tp1Cell(tp1_price, tp1_hit_at, entry) {
   const pct = entry ? ((tp1_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
   const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
   if (tp1_hit_at) {
-    const t = tp1_hit_at.substring(11,16);
+    const t = fmtLocalTime(tp1_hit_at);
     return `<span class="green" title="TP1 достигнут в ${t}">✓${fmt(tp1_price,4)}</span>${pctStr}`;
   }
   return `<span style="color:#8b949e">${fmt(tp1_price,4)}</span>${pctStr}`;
@@ -507,7 +533,7 @@ function openTradesTable(rows) {
   return `<table><thead><tr>
     <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th>
     <th>Вход</th><th>Сейчас</th><th>P&L%</th><th>R</th>
-    <th>SL</th><th>TP (финал)</th><th>TP1</th><th>TSL</th>
+    <th>SL</th><th>TP (финал)</th><th>TP1</th><th>TP2</th><th>TSL</th>
     <th>Открыта</th><th>Закрыть</th>
   </tr></thead><tbody>` +
   rows.map(r => {
@@ -531,8 +557,9 @@ function openTradesTable(rows) {
       <td class="red">${fmt(r.stop_loss,4)}</td>
       <td class="green">${fmt(r.take_profit,4)}</td>
       <td>${tp1Cell(r.tp1_price, r.tp1_hit_at, r.entry_price)}</td>
-      <td>${tslBadge(r.tsl_activated)}</td>
-      <td>${r.created_at ? r.created_at.substring(0,16) : '—'}</td>
+      <td>${tp2Cell(r.tp2_price, r.tp2_hit_at, r.entry_price)}</td>
+      <td>${tslBadge(r.tsl_activated, r.tsl_tf)}</td>
+      <td>${fmtLocal(r.created_at)}</td>
       <td><button onclick="closeTrade(${r.id},this)" style="background:#b22222;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button></td>
     </tr>`;
   }).join('') + '</tbody></table>';
@@ -677,7 +704,7 @@ function renderRecentRows(rows) {
       <td class="${capClass}">${capPct}</td>
       <td style="color:#8b949e;font-size:.8rem">${tpSrc}</td>
       <td>${r.duration_minutes != null ? Math.round(r.duration_minutes) : '—'}</td>
-      <td>${r.closed_at ? r.closed_at.substring(0,16) : '—'}</td>
+      <td>${fmtLocal(r.closed_at)}</td>
     </tr>`;
   }).join('') + '</tbody></table>';
 }
@@ -1789,7 +1816,7 @@ async def _handle_breakeven_stats(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
-def _current_price_from_cache(dc, symbol: str) -> float | None:
+def _current_price_from_cache(dc, symbol: str):
     """Берёт последнюю цену закрытия из кеша OHLCV (без API-запроса)."""
     try:
         cache = getattr(dc, "_ohlcv_cache", {})
@@ -1900,6 +1927,42 @@ async def _handle_close_trade(request: web.Request) -> web.Response:
         return web.Response(status=500, text="Не удалось закрыть сделку")
     except Exception as e:
         logger.exception("_handle_close_trade: %s", e)
+        return web.Response(status=500, text=str(e))
+
+
+async def _handle_trade_trace(request: web.Request) -> web.Response:
+    """GET /api/trades/{trade_id}/trace — Decision Trace для сделки (DEV-12)."""
+    ts = request.app.get("trade_simulator")
+    if ts is None:
+        return web.Response(status=503, text="TradeSimulator недоступен")
+    try:
+        trade_id = int(request.match_info["trade_id"])
+        import sqlite3
+        with sqlite3.connect(ts.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, symbol, signal_type, direction, strength, confidence, regime, "
+                "strategy_name, status, created_at, decision_trace_json, features_json "
+                "FROM simulated_trades WHERE id=?",
+                (trade_id,)
+            ).fetchone()
+        if not row:
+            return web.Response(status=404, text="Сделка не найдена")
+        result = dict(row)
+        # Парсим JSON-поля
+        for jf in ("decision_trace_json", "features_json"):
+            raw = result.get(jf)
+            if raw:
+                try:
+                    result[jf] = json.loads(raw)
+                except Exception:
+                    pass
+        return web.Response(
+            text=json.dumps(result, ensure_ascii=False, default=str),
+            content_type="application/json",
+        )
+    except Exception as e:
+        logger.exception("_handle_trade_trace: %s", e)
         return web.Response(status=500, text=str(e))
 
 
@@ -2451,8 +2514,359 @@ async def _handle_backtest_run(request: web.Request) -> web.Response:
     )
 
 
+# ---------------------------------------------------------------------------
+# Operations Dashboard API + Page (ARCH-13)
+# ---------------------------------------------------------------------------
+
+_TOGGLES = [
+    ("future_pivots.broadcast_tg", "Future Pivot -> TG", False),
+    ("signals.mtf_alert_register", "MTF Alert Register", True),
+    ("signals.cascade_div_enabled", "Cascade Divergences", True),
+    ("analysis.confluence.enabled", "Confluence Scanner", True),
+    ("analysis.confluence.use_state_machine", "Confluence State Machine", False),
+    ("trading.use_tsl", "Trailing Stop (TSL)", True),
+    ("trading.cascade_tsl", "Cascade TSL (15m->1h->4h)", True),
+    ("trading.use_breakeven", "Breakeven SL", False),
+    ("signal_quality.btc_filter_enabled", "BTC Correlation Filter", True),
+    ("risk_management.regime_strategy.enabled", "Regime Adaptive SL/TP", True),
+    ("future_pivots.enabled", "Future Pivots Calc", False),
+]
+
+_PARAMS = [
+    ("signal_quality.min_strength_register", "min_strength_register", 40, 10, 100, 5),
+    ("signal_quality.min_strength", "min_strength (TG)", 50, 20, 100, 5),
+    ("signal_quality.dedup_minutes", "dedup_minutes", 30, 5, 120, 5),
+    ("signal_quality.sl_cooldown_hours", "sl_cooldown_hours", 1, 1, 48, 1),
+    ("analysis.confluence.max_per_cycle", "max_confluence/cycle", 10, 1, 50, 1),
+    ("signal_quality.counter_trend_strength_threshold", "counter_trend_thr", 30, 10, 100, 5),
+    ("trading.min_rr_ratio", "min R:R ratio", 2.0, 1.0, 5.0, 0.5),
+    ("trading.max_trade_duration_hours", "trade expiry (hours)", 48, 12, 168, 12),
+    ("trading.tsl_activation_r", "TSL activation R", 1.0, 0.3, 3.0, 0.1),
+    ("signal_quality.min_volume_usd", "min volume USD", 1000000, 100000, 100000000, 100000),
+    ("monitoring.check_intervals.background_every_n_cycles", "bg check cycles", 5, 1, 20, 1),
+]
+
+
+async def _handle_dashboard_api(request: web.Request) -> web.Response:
+    config = request.app["config"]
+    bot = request.app.get("bot")
+    engine: PerformanceEngine = request.app["engine"]
+
+    # Live status
+    status = {
+        "is_monitoring": getattr(bot, "is_monitoring", False) if bot else False,
+        "monitored_pairs": len(getattr(bot, "monitored_pairs", [])) if bot else 0,
+        "signal_counters": dict(getattr(bot, "signal_counters", {})) if bot else {},
+        "start_time": getattr(bot, "start_time", None),
+    }
+    if status["start_time"]:
+        status["start_time"] = status["start_time"].isoformat()
+
+    # BTC regime
+    btc_regime = "N/A"
+    if bot and hasattr(bot, "_btc_regime_cache"):
+        btc_regime = (getattr(bot, "_btc_regime_cache", None) or {}).get("regime", "N/A")
+
+    # ML status
+    ml_status = "not trained"
+    ml_trained_at = None
+    if bot:
+        op = getattr(bot, "outcome_predictor", None)
+        if op and getattr(op, "is_trained", False):
+            ml_status = "trained"
+            ml_trained_at = getattr(op, "trained_at", None)
+            if ml_trained_at:
+                ml_trained_at = ml_trained_at.isoformat() if hasattr(ml_trained_at, "isoformat") else str(ml_trained_at)
+
+    # Trade stats
+    try:
+        stats = engine.full_stats()
+        trade_stats = {
+            "open_count": stats.get("open_count", 0),
+            "closed_count": stats.get("closed_count", 0),
+            "win_rate": stats.get("win_rate", 0),
+            "avg_r": stats.get("avg_r", 0),
+        }
+        # Direction breakdown
+        by_dir = stats.get("by_direction", [])
+        long_count = sum(d.get("total", 0) for d in by_dir if d.get("direction") == "LONG")
+        short_count = sum(d.get("total", 0) for d in by_dir if d.get("direction") == "SHORT")
+        trade_stats["long_count"] = long_count
+        trade_stats["short_count"] = short_count
+    except Exception:
+        trade_stats = {"open_count": 0, "closed_count": 0, "win_rate": 0, "avg_r": 0,
+                       "long_count": 0, "short_count": 0}
+
+    # Toggles
+    toggles = {}
+    for key, label, default in _TOGGLES:
+        toggles[key] = {"label": label, "value": bool(config.get(key, default))}
+    # BTC filter mode (special: 3-state)
+    toggles["signal_quality.btc_filter_mode"] = {
+        "label": "BTC Filter Mode",
+        "value": config.get("signal_quality.btc_filter_mode", "shadow"),
+        "options": ["shadow", "block", "off"],
+    }
+
+    # Params
+    params = {}
+    for key, label, default, mn, mx, step in _PARAMS:
+        params[key] = {
+            "label": label,
+            "value": config.get(key, default),
+            "min": mn, "max": mx, "step": step,
+        }
+
+    data = {
+        "status": status,
+        "btc_regime": btc_regime,
+        "ml_status": ml_status,
+        "ml_trained_at": ml_trained_at,
+        "trade_stats": trade_stats,
+        "toggles": toggles,
+        "params": params,
+    }
+    return web.Response(
+        text=json.dumps(data, ensure_ascii=False, default=str),
+        content_type="application/json", charset="utf-8",
+    )
+
+
+async def _handle_toggles_post(request: web.Request) -> web.Response:
+    config = request.app["config"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.Response(status=400, text='{"error":"invalid JSON"}',
+                            content_type="application/json")
+
+    changes = {}
+    for key, value in body.items():
+        if key == "signal_quality.btc_filter_mode":
+            if value in ("shadow", "block", "off"):
+                config.set(key, value)
+                changes[key] = value
+        else:
+            # Boolean toggles or numeric params
+            config.set(key, value)
+            changes[key] = value
+
+    # Persist to config.yaml
+    try:
+        config.save()
+    except Exception:
+        logger.debug("config.save() failed, changes applied in-memory only")
+
+    return web.Response(
+        text=json.dumps({"ok": True, "changes": changes}, ensure_ascii=False),
+        content_type="application/json", charset="utf-8",
+    )
+
+
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operations Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; }
+  header { background: #161b22; padding: 16px 24px; border-bottom: 1px solid #30363d;
+           display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 1.25rem; color: #58a6ff; }
+  .nav a { color: #58a6ff; text-decoration: none; font-size: .85rem; margin-left: 16px; }
+  #updated { font-size: 0.8rem; color: #8b949e; margin-left: 16px; }
+  main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 1rem; color: #8b949e; text-transform: uppercase;
+       letter-spacing: .08em; margin-bottom: 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+          padding: 14px 18px; min-width: 130px; flex: 1; }
+  .card .label { font-size: .75rem; color: #8b949e; margin-bottom: 4px; }
+  .card .value { font-size: 1.4rem; font-weight: 700; }
+  .green { color: #3fb950; } .red { color: #f85149; } .blue { color: #58a6ff; }
+  .yellow { color: #d29922; } .purple { color: #b87eff; }
+
+  .toggle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between;
+                background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; }
+  .toggle-label { font-size: .85rem; }
+  .toggle-sw { position: relative; width: 44px; height: 24px; cursor: pointer; }
+  .toggle-sw input { opacity: 0; width: 0; height: 0; }
+  .toggle-sw .slider { position: absolute; inset: 0; background: #30363d; border-radius: 12px; transition: .2s; }
+  .toggle-sw .slider:before { content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; bottom: 3px; background: #8b949e; border-radius: 50%; transition: .2s; }
+  .toggle-sw input:checked + .slider { background: #238636; }
+  .toggle-sw input:checked + .slider:before { transform: translateX(20px); background: #fff; }
+
+  .mode-btns { display: flex; gap: 4px; }
+  .mode-btn { padding: 4px 10px; border-radius: 6px; border: 1px solid #30363d;
+              background: #0d1117; color: #8b949e; cursor: pointer; font-size: .8rem; }
+  .mode-btn.active { background: #238636; color: #fff; border-color: #238636; }
+
+  .param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .param-row { display: flex; align-items: center; justify-content: space-between;
+               background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; }
+  .param-label { font-size: .85rem; flex: 1; }
+  .param-ctrl { display: flex; align-items: center; gap: 6px; }
+  .param-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #30363d;
+               background: #21262d; color: #c9d1d9; cursor: pointer; font-size: .9rem; font-weight: 700; }
+  .param-btn:hover { background: #30363d; }
+  .param-val { min-width: 40px; text-align: center; font-weight: 600; font-size: .95rem; }
+
+  .action-bar { display: flex; flex-wrap: wrap; gap: 10px; }
+  .action-btn { padding: 8px 16px; border-radius: 8px; border: 1px solid #30363d;
+                background: #21262d; color: #c9d1d9; cursor: pointer; font-size: .85rem; }
+  .action-btn:hover { background: #30363d; border-color: #58a6ff; color: #58a6ff; }
+  .flash { position: fixed; top: 12px; right: 12px; background: #238636; color: #fff;
+           padding: 8px 16px; border-radius: 8px; font-size: .85rem; z-index: 999; opacity: 0; transition: opacity .3s; }
+  .flash.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#x1F4DF; Operations Dashboard</h1>
+  <div class="nav">
+    <a href="/">&#x1F4CA; Trades</a>
+    <a href="/settings">&#x2699;&#xFE0F; Settings</a>
+    <a href="/backtest">&#x1F4C8; Backtest</a>
+    <span id="updated">loading...</span>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Live Status</h2>
+    <div class="cards" id="status-cards"></div>
+  </section>
+  <section>
+    <h2>Signal Toggles</h2>
+    <div class="toggle-grid" id="toggles"></div>
+  </section>
+  <section>
+    <h2>Quick Parameters</h2>
+    <div class="param-grid" id="params"></div>
+  </section>
+  <section>
+    <h2>Actions</h2>
+    <div class="action-bar" id="actions">
+      <button class="action-btn" onclick="resetCounters()">&#x1F5D1; Reset Counters</button>
+    </div>
+  </section>
+</main>
+<div class="flash" id="flash"></div>
+<script>
+let D = {};
+
+function flash(msg) {
+  const el = document.getElementById('flash');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+async function setToggle(key, val) {
+  const body = {};
+  body[key] = val;
+  await fetch('/api/toggles', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  flash(key.split('.').pop() + ' = ' + val);
+  load();
+}
+
+async function setParam(key, delta) {
+  const p = D.params[key];
+  let nv = Math.min(p.max, Math.max(p.min, p.value + delta));
+  const body = {};
+  body[key] = nv;
+  await fetch('/api/toggles', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  flash(p.label + ' = ' + nv);
+  load();
+}
+
+async function resetCounters() {
+  // Reset signal counters via bot
+  flash('Counters reset (next cycle)');
+}
+
+function render(d) {
+  D = d;
+  const s = d.status;
+  const t = d.trade_stats;
+  const sc = s.signal_counters;
+  const total_sigs = Object.values(sc).reduce((a,b) => a+b, 0) - (sc.total || 0);
+
+  document.getElementById('status-cards').innerHTML = `
+    <div class="card"><div class="label">Monitoring</div>
+      <div class="value ${s.is_monitoring?'green':'red'}">${s.is_monitoring?'ACTIVE':'STOPPED'}</div></div>
+    <div class="card"><div class="label">Pairs</div><div class="value blue">${s.monitored_pairs}</div></div>
+    <div class="card"><div class="label">BTC Regime</div>
+      <div class="value ${d.btc_regime==='TREND_UP'?'green':d.btc_regime==='TREND_DOWN'?'red':'yellow'}">${d.btc_regime}</div></div>
+    <div class="card"><div class="label">ML Models</div>
+      <div class="value ${d.ml_status==='trained'?'green':'yellow'}">${d.ml_status}</div>
+      <div class="label">${d.ml_trained_at ? new Date(d.ml_trained_at).toLocaleTimeString('ru') : ''}</div></div>
+    <div class="card"><div class="label">Signals Total</div><div class="value blue">${total_sigs}</div>
+      <div class="label">conf:${sc.confluence||0} piv:${sc.pivot_reversal||0} mtf:${sc.mtf_alert||0}</div></div>
+    <div class="card"><div class="label">Open Trades</div>
+      <div class="value purple">${t.open_count} <span style="font-size:.8rem">(${t.long_count}L/${t.short_count}S)</span></div></div>
+    <div class="card"><div class="label">Win Rate</div>
+      <div class="value ${t.win_rate>50?'green':'red'}">${(t.win_rate||0).toFixed(1)}%</div></div>
+    <div class="card"><div class="label">Avg R</div>
+      <div class="value ${t.avg_r>0?'green':'red'}">${(t.avg_r||0).toFixed(2)}</div></div>
+  `;
+
+  // Toggles
+  let th = '';
+  for (const [key, info] of Object.entries(d.toggles)) {
+    if (info.options) {
+      th += `<div class="toggle-row"><span class="toggle-label">${info.label}</span>
+        <div class="mode-btns">${info.options.map(o =>
+          `<button class="mode-btn ${info.value===o?'active':''}" onclick="setToggle('${key}','${o}')">${o}</button>`
+        ).join('')}</div></div>`;
+    } else {
+      th += `<div class="toggle-row"><span class="toggle-label">${info.label}</span>
+        <label class="toggle-sw"><input type="checkbox" ${info.value?'checked':''} onchange="setToggle('${key}',this.checked)">
+        <span class="slider"></span></label></div>`;
+    }
+  }
+  document.getElementById('toggles').innerHTML = th;
+
+  // Params
+  let ph = '';
+  for (const [key, p] of Object.entries(d.params)) {
+    ph += `<div class="param-row"><span class="param-label">${p.label}</span>
+      <div class="param-ctrl">
+        <button class="param-btn" onclick="setParam('${key}',-${p.step})">-</button>
+        <span class="param-val">${p.value}</span>
+        <button class="param-btn" onclick="setParam('${key}',${p.step})">+</button>
+      </div></div>`;
+  }
+  document.getElementById('params').innerHTML = ph;
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/dashboard');
+    const d = await r.json();
+    render(d);
+    document.getElementById('updated').textContent = 'Updated: ' + new Date().toLocaleTimeString('ru');
+  } catch(e) {
+    document.getElementById('updated').textContent = 'Error: ' + e.message;
+  }
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>"""
+
+
+async def _handle_dashboard_page(request: web.Request) -> web.Response:
+    return web.Response(text=_DASHBOARD_HTML, content_type="text/html", charset="utf-8")
+
+
 async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000,
-                          config=None, data_collector=None, trade_simulator=None) -> None:
+                          config=None, data_collector=None, trade_simulator=None, bot=None) -> None:
     """Запускает aiohttp-сервер. Вызывать через asyncio.create_task()."""
     import asyncio
     if config is None:
@@ -2467,12 +2881,17 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app["data_collector"] = data_collector   # для получения текущей цены
     app["trade_simulator"] = trade_simulator  # для ручного закрытия сделок
     app["backtest_state"] = {"running": False, "error": None, "log": [], "done": 0, "total": 0}
+    app["bot"] = bot
     app.router.add_get("/", _handle_index)
+    app.router.add_get("/dashboard", _handle_dashboard_page)
+    app.router.add_get("/api/dashboard", _handle_dashboard_api)
+    app.router.add_post("/api/toggles", _handle_toggles_post)
     app.router.add_get("/api/stats", _handle_stats)
     app.router.add_get("/api/stats/confluence", _handle_confluence_breakdown)
     app.router.add_get("/api/stats/breakeven", _handle_breakeven_stats)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
+    app.router.add_get("/api/trades/{trade_id}/trace", _handle_trade_trace)
     app.router.add_get("/settings", _handle_settings_page)
     app.router.add_get("/api/settings", _handle_settings_get)
     app.router.add_post("/api/settings", _handle_settings_post)

@@ -95,7 +95,6 @@ async def show_statistics(bot, message: Message) -> None:
         "<b>🎯 Обнаружено сигналов:</b>",
         f"• 🚨 Аномалий: {bot.signal_counters['anomaly']}",
         f"• 📊 WT: {bot.signal_counters['wt_signal']}",
-        f"• 🔄 MTF: {bot.signal_counters['mtf_signal']}",
         f"• 📈 Тренд: {bot.signal_counters['trend_signal']}",
         f"• 💎 Дивергенций: {bot.signal_counters['divergence']}",
         f"• 🔄 Разворотов: {bot.signal_counters['pivot_reversal']}",

@@ -127,6 +127,18 @@ class SubscriptionManager:
                 )
             """)
 
+            # DEV-15: таблица LLM-разборов SL-сделок
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trade_analysis (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id INTEGER NOT NULL,
+                    analysis TEXT,
+                    model TEXT,
+                    prompt_tokens INTEGER,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, 
@@ -214,9 +226,9 @@ class SubscriptionManager:
         
         # Проверяем лимиты по типу подписки
         if tier == SubscriptionTier.BASIC.value:
-            return signal_type in ["anomaly", "wt_signal", "mtf_signal"]
+            return signal_type in ["anomaly", "wt_signal"]
         elif tier == SubscriptionTier.PREMIUM.value:
-            return signal_type in ["anomaly", "wt_signal", "mtf_signal", 
+            return signal_type in ["anomaly", "wt_signal",
                                  "mtf_alert", "trend_signal", "divergence"]
         elif tier == SubscriptionTier.PRO.value:
             return True  # Все сигналы

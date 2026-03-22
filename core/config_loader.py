@@ -100,7 +100,7 @@ class ConfigLoader:
             "subscriptions": {
                 "free": {"daily_limit": 5, "signals": ["anomaly"], "price": 0},
                 "basic": {"daily_limit": 10, "signals": ["anomaly", "wt_signal"], "price": 9.99},
-                "premium": {"daily_limit": 50, "signals": ["anomaly", "wt_signal", "mtf_signal"], "price": 29.99},
+                "premium": {"daily_limit": 50, "signals": ["anomaly", "wt_signal", "trend_signal"], "price": 29.99},
                 "pro": {"daily_limit": 999999, "signals": ["all"], "price": 99.99}
             },
             "logging": {
@@ -126,11 +126,13 @@ class ConfigLoader:
                 }
             },
             "performance": {
-                "scan_semaphore_size": 20,
-                "analyze_semaphore_size": 3,
-                "prefetch_pivots_semaphore_size": 5,
-                "background_check_semaphore_size": 10,
-                "cascade_div_semaphore_size": 5,
+                "scan_semaphore_size": 5,
+                "analyze_semaphore_size": 2,
+                "prefetch_pivots_semaphore_size": 2,
+                "background_check_semaphore_size": 5,
+                "cascade_div_semaphore_size": 3,
+                "api_semaphore_size": 20,
+                "api_rps": 15.0,
                 "ohlcv_scan_limit": 160,
                 "ohlcv_slow_threshold_sec": 5.0,
                 "divergence_slow_threshold_sec": 3.0,
@@ -186,6 +188,39 @@ class ConfigLoader:
     def get_all(self) -> Dict[str, Any]:
         """Получает всю конфигурацию"""
         return self.config
+
+    def set(self, key: str, value: Any) -> None:
+        """Устанавливает значение по dot-separated ключу (in-memory)."""
+        keys = key.split(".")
+        d = self.config
+        for k in keys[:-1]:
+            d = d.setdefault(k, {})
+        d[keys[-1]] = value
+
+    def save(self) -> bool:
+        """Сохраняет текущий in-memory конфиг в config.yaml и reload."""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            # Merge in-memory changes into raw YAML
+            self._deep_merge(raw, self.config)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            return True
+        except Exception:
+            logger.exception("config.save() failed")
+            return False
+
+    @staticmethod
+    def _deep_merge(base: dict, override: dict) -> dict:
+        """Рекурсивный merge override в base."""
+        for k, v in override.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                ConfigLoader._deep_merge(base[k], v)
+            else:
+                base[k] = v
+        return base
 
     def reload(self) -> None:
         """Перечитывает config.yaml с диска без перезапуска бота."""

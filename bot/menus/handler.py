@@ -19,7 +19,7 @@ from bot.menus.ai import (
     handle_retrain_models, show_ml_statistics, show_ai_settings,
 )
 from bot.menus.signals import (
-    show_anomaly_signals, show_wt_signals, show_mtf_signals,
+    show_anomaly_signals, show_wt_signals,
     show_trend_signals, show_divergence_signals, show_pivot_signals,
     show_all_signals, handle_signal_search,
 )
@@ -100,6 +100,8 @@ class MenuHandler:
                 await self._show_subscriptions_menu(message)
             elif text == "⚙️ Настройки":
                 await self._show_settings_menu(message)
+            elif text == "📟 Дашборд":
+                await self._show_dashboard(message)
             elif text == "ℹ️ Помощь":
                 await show_help(self.bot, message)
             else:
@@ -168,8 +170,6 @@ class MenuHandler:
             await show_anomaly_signals(self.bot, message)
         elif text == "📊 WT сигналы":
             await show_wt_signals(self.bot, message)
-        elif text == "🔄 MTF анализ":
-            await show_mtf_signals(self.bot, message)
         elif text == "📈 Тренд сигналы":
             await show_trend_signals(self.bot, message)
         elif text == "💎 Дивергенции":
@@ -385,6 +385,11 @@ class MenuHandler:
         )
         self.current_menu = "settings"
 
+    async def _show_dashboard(self, message: Message):
+        from bot.menus.dashboard import dashboard_status_text, dashboard_main_kb
+        text = dashboard_status_text(self.bot)
+        await message.answer(text, reply_markup=dashboard_main_kb())
+
     # ------------------------------------------------------------------
     # Универсальный обработчик
     # ------------------------------------------------------------------
@@ -425,9 +430,9 @@ class MenuHandler:
         if text in {
             "🟢 Мониторинг", "⏹ Остановить", "🧠 AI Анализ", "📊 Статистика",
             "📈 Сигналы", "🎯 Пивоты", "🛡️ Риски", "📚 История",
-            "💎 Подписки", "⚙️ Настройки", "ℹ️ Помощь",
+            "💎 Подписки", "⚙️ Настройки", "📟 Дашборд", "ℹ️ Помощь",
             "Мониторинг", "Остановить", "AI Анализ", "Статистика",
-            "Сигналы", "Пивоты", "Риски", "История", "Подписки", "Настройки", "Помощь",
+            "Сигналы", "Пивоты", "Риски", "История", "Подписки", "Настройки", "Дашборд", "Помощь",
         }:
             return "main"
 
@@ -450,9 +455,9 @@ class MenuHandler:
             return "ai_analysis"
 
         if text in {
-            "🚨 Аномалии", "📊 WT сигналы", "🔄 MTF анализ", "📈 Тренд сигналы",
+            "🚨 Аномалии", "📊 WT сигналы", "📈 Тренд сигналы",
             "💎 Дивергенции", "🎯 Пивот сигналы", "📊 Все сигналы", "🔍 Поиск сигналов",
-            "⬅️ Назад в главное меню", "Аномалии", "WT сигналы", "MTF анализ", "Тренд сигналы",
+            "⬅️ Назад в главное меню", "Аномалии", "WT сигналы", "Тренд сигналы",
             "Дивергенции", "Пивот сигналы", "Все сигналы", "Поиск сигналов", "Назад в главное меню",
         }:
             return "signals"

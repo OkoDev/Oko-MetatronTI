@@ -103,3 +103,129 @@ class TestGetPivotTP:
         # entry=100, sl=95 → sl_dist=5, min_r=1.5 → нужен >=107.5
         tp = calc.get_pivot_tp("LONG", 100.0, "SYM", stop_loss=95.0, min_r=1.5)
         assert tp == 108.0  # ближайший уровень с R >= 1.5 из объединённого списка
+
+
+class TestGetTpByHierarchy:
+    """Тесты для ARCH-09п5: TP по иерархии пивотов."""
+
+    def _calc(self, caches: dict) -> PivotCalculatorFixed:
+        """Создаёт экземпляр с предзаполненным pivot_cache."""
+        calc = PivotCalculatorFixed.__new__(PivotCalculatorFixed)
+        calc.pivot_cache = caches
+        calc.logger = __import__("logging").getLogger("test")
+        return calc
+
+    # ── Конфлюэнции ──────────────────────────────────────────────────────────
+
+    def test_confluence_1m_1w_wins_over_plain_1d(self):
+        """[01] Конфлюэнция 1M+1W выбирается раньше 1D-уровня."""
+        # entry=100, sl=95 (sl_dist=5), min_r=2.0 → нужен TP >= 110
+        # 1M R1=112, 1W R1=112.2 (конфлюэнция ≈112.1, R=(12.1/5)=2.42 ✓)
+        # 1D R1=115 (R=3.0, тоже подходит но конфлюэнция сильнее)
+        calc = self._calc({
+            "SYM_1M": {"PP": 100.0, "R1": 112.0},
+            "SYM_1W": {"PP": 99.5, "R1": 112.2},
+            "SYM_1D": {"PP": 98.0, "R1": 115.0},
+        })
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "confluence_1M+1W" in src
+        assert abs(tp - 112.1) < 0.5
+
+    def test_confluence_1w_1d_when_no_1m(self):
+        """[02] При отсутствии 1M: конфлюэнция 1W+1D."""
+        calc = self._calc({
+            "SYM_1W": {"PP": 99.0, "R1": 110.0},
+            "SYM_1D": {"PP": 98.5, "R1": 110.2},
+        })
+        # entry=100, sl=95 → sl_dist=5, min_r=2.0 → TP >= 110
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "confluence_1W+1D" in src
+
+    # ── TF-уровни ─────────────────────────────────────────────────────────────
+
+    def test_1m_level_used_when_no_confluence(self):
+        """[03] Нет конфлюэнции → берём 1M-уровень."""
+        calc = self._calc({
+            "SYM_1M": {"PP": 95.0, "R1": 115.0},
+            "SYM_1W": {"PP": 99.0, "R1": 130.0},   # далеко — не конфлюэнция
+        })
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "pivot_1M" in src
+        assert tp == 115.0
+
+    def test_1w_fallback_when_no_1m(self):
+        """[04] Нет 1M → берём 1W-уровень."""
+        calc = self._calc({
+            "SYM_1W": {"PP": 99.0, "R1": 114.0},
+        })
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "pivot_1W" in src
+        assert tp == 114.0
+
+    def test_1d_fallback_when_no_1m_1w(self):
+        """[05] Только 1D → берём 1D-уровень."""
+        calc = self._calc({
+            "SYM_1D": {"PP": 99.0, "R1": 112.0},
+        })
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "pivot_1D" in src
+
+    # ── SHORT ─────────────────────────────────────────────────────────────────
+
+    def test_short_confluence_1m_1w(self):
+        """[06] SHORT: конфлюэнция 1M+1W ниже entry."""
+        calc = self._calc({
+            "SYM_1M": {"PP": 100.0, "S1": 88.0},
+            "SYM_1W": {"PP": 100.5, "S1": 87.9},
+        })
+        # entry=100, sl=105 → sl_dist=5, min_r=2.0 → TP <= 90
+        result = calc.get_tp_by_hierarchy("SHORT", 100.0, "SYM", stop_loss=105.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "confluence_1M+1W" in src
+        assert tp < 100.0
+
+    def test_short_1w_fallback(self):
+        """[07] SHORT без конфлюэнции → 1W-уровень ниже entry."""
+        calc = self._calc({
+            "SYM_1W": {"PP": 101.0, "S1": 87.0},
+        })
+        result = calc.get_tp_by_hierarchy("SHORT", 100.0, "SYM", stop_loss=105.0, min_r=2.0)
+        assert result is not None
+        tp, src = result
+        assert "pivot_1W" in src
+        assert tp == 87.0
+
+    # ── Граничные случаи ──────────────────────────────────────────────────────
+
+    def test_empty_cache_returns_none(self):
+        """[08] Пустой кеш → None."""
+        calc = self._calc({})
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0)
+        assert result is None
+
+    def test_zero_entry_returns_none(self):
+        """[09] entry_price=0 → None."""
+        calc = self._calc({"SYM_1D": {"R1": 110.0}})
+        result = calc.get_tp_by_hierarchy("LONG", 0.0, "SYM")
+        assert result is None
+
+    def test_no_level_qualifies_min_r_returns_none(self):
+        """[10] Все уровни не проходят min_r → None."""
+        # entry=100, sl=90 (sl_dist=10), min_r=3.0 → TP >= 130
+        # Единственный уровень: 110 (R=1.0, не проходит)
+        calc = self._calc({
+            "SYM_1D": {"R1": 110.0},
+        })
+        result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=90.0, min_r=3.0)
+        assert result is None

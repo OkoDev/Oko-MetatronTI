@@ -18,10 +18,10 @@ _DEFAULT_TTL = 60
 
 
 class RealTimeData:
-    def __init__(self, exchange_id="bingx"):
+    def __init__(self, exchange_id="bingx", api_semaphore_size: int = 5, api_rps: float = 8.0):
         self.exchange_id = exchange_id.lower()
         self.exchange = getattr(ccxt, exchange_id)({
-            "enableRateLimit": False,   # ApiEngine.Semaphore управляет параллелизмом сам
+            "enableRateLimit": False,   # ApiEngine управляет rate limiting сам
             "options": {"defaultType": "future"}
         })
         self.price_history = {}
@@ -30,8 +30,8 @@ class RealTimeData:
         self.history_size = 200
         self.usdt_pairs = []
         self.is_running = False
-        # ApiEngine: LRU cache + retry + circuit breaker + in-flight dedup
-        self._engine = ApiEngine(self.exchange, semaphore_size=20)
+        # ApiEngine: LRU cache + retry + circuit breaker + rate limiter + in-flight dedup
+        self._engine = ApiEngine(self.exchange, semaphore_size=api_semaphore_size, rps=api_rps)
         # Алиас для обратной совместимости (код, который напрямую обращается к _ohlcv_cache)
         self._ohlcv_cache = self._engine._cache._data
 

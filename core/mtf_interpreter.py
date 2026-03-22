@@ -19,7 +19,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from core.signal_models import SignalData, SignalType, SignalDirection
+from core.signal_models import SignalData, SignalType, SignalDirection, MTFContext
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,9 @@ def interpret(
             return None
 
         # ── Шаг 5: Strength ──────────────────────────────────────────────────
-        base = aligned_pct
+        # Нормализуем base из диапазона [_ALIGNMENT_THRESHOLD..100] → [0..70]
+        # aligned_pct=65 → 0, aligned_pct=100 → 70
+        base = round((aligned_pct - _ALIGNMENT_THRESHOLD) / (100 - _ALIGNMENT_THRESHOLD) * 70)
         senior_bonus = _SENIOR_FULL_BONUS if senior_matches == 3 else 0
         cross_bonus = _CROSS_BONUS  # кросс всегда есть (обязательное условие выше)
         regime_penalty = _RANGE_PENALTY if regime == "RANGE" else 0
@@ -253,45 +255,118 @@ def detect_senior_reversal(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]
     }
 
 
-def mtf_bias_message(symbol: str, sig: "SignalData") -> str:
-    """Форматирует TG-сообщение для MTF_BIAS сигнала."""
-    from core.message_builder import tv_link
-    data = sig.data or {}
-    score = sig.strength
-    direction = sig.direction
-    is_long = direction == SignalDirection.LONG
-    dir_label = "LONG ↑" if is_long else "SHORT ↓"
-    dir_icon = "🟢" if is_long else "🔴"
+def analyze_context(
+    snapshot: Dict[str, Dict[str, Any]],
+    current_price: float = 0.0,
+    weekly_pivots: Optional[Dict[str, float]] = None,
+    regime: Optional[str] = None,
+) -> MTFContext:
+    """
+    ARCH-12: Строит MTFContext — аналитический фундамент для всех сигналов.
 
-    entry_tf = data.get("entry_tf", "15m")
-    aligned_pct = data.get("aligned_pct", 0)
-    senior_matches = data.get("senior_matches", 0)
-    regime = data.get("regime") or "?"
-    tf_table = data.get("tf_table", {})
+    Это НЕ сигнал, а контекст: "куда смотрит рынок", "в какой зоне цена",
+    "насколько сильный тренд по ТФ". Используется для модификации strength
+    сигналов через direction_multiplier() и zone_multiplier().
 
-    strength_emoji = "🔥🔥🔥" if score >= 80 else "🔥🔥" if score >= 60 else "🔥"
+    Args:
+        snapshot: dict из collect_mtf_data() → {tf: {trend, wt1, wt2, zone, wt_cross}}
+        current_price: текущая цена (для price_zone)
+        weekly_pivots: dict с ключами PP, S1-S5, R1-R5 (для price_zone)
+        regime: режим рынка (TREND_UP/DOWN/RANGE/HIGH_VOL)
 
-    # Строка ТФ-таблицы (3m→1d)
-    tf_order = ["3m", "5m", "15m", "45m", "1h", "4h", "1d"]
-    tf_cells = []
-    for tf in tf_order:
-        d = tf_table.get(tf)
-        if not d:
-            tf_cells.append(f"{tf}:?")
+    Returns:
+        MTFContext (всегда, даже при слабых данных — direction_bias=NEUTRAL)
+    """
+    # ── 1. TF Alignment ─────────────────────────────────────────────
+    bull_weight = 0
+    bear_weight = 0
+    available_weight = 0
+
+    for tf, weight in _TF_WEIGHTS.items():
+        tf_data = snapshot.get(tf)
+        if not tf_data:
             continue
-        arr = "↑" if d["trend"] == "UP" else "↓"
-        zone_mark = "⚡" if d.get("wt_cross") else ("🔴" if d["zone"] == "OB" else ("🟢" if d["zone"] == "OS" else ""))
-        tf_cells.append(f"{tf}{arr}{zone_mark}")
+        available_weight += weight
+        trend = tf_data.get("trend", "")
+        if trend == "UP":
+            bull_weight += weight
+        elif trend == "DOWN":
+            bear_weight += weight
 
-    lines = [
-        "\n",
-        f"📊 <b>MTF BIAS · {tv_link(symbol)} · {dir_icon} {dir_label}</b>",
-        f"⏱ entry: <code>{entry_tf}</code>   {strength_emoji} <b>{score}/100</b>   senior: {senior_matches}/3",
-        "",
-        f"  {'  '.join(tf_cells)}",
-        f"  alignment: <b>{aligned_pct}%</b> {dir_label[:4]}   режим: {regime}",
-        "",
-        f"⏰ {datetime.now().strftime('%d.%m %H:%M')}",
-        "\n",
-    ]
-    return "\n".join(lines)
+    if available_weight > 0:
+        bull_pct = round(bull_weight / available_weight * 100)
+        bear_pct = round(bear_weight / available_weight * 100)
+    else:
+        bull_pct = bear_pct = 0
+
+    # Направление bias
+    if bull_pct >= _ALIGNMENT_THRESHOLD:
+        direction_bias = SignalDirection.LONG
+        aligned_pct = bull_pct
+    elif bear_pct >= _ALIGNMENT_THRESHOLD:
+        direction_bias = SignalDirection.SHORT
+        aligned_pct = bear_pct
+    else:
+        direction_bias = SignalDirection.NEUTRAL
+        aligned_pct = max(bull_pct, bear_pct)
+
+    # bias_strength: 0.0 при aligned=50% (нет bias), 1.0 при aligned=100%
+    bias_strength = round(max(0.0, (aligned_pct - 50) / 50.0), 2)
+
+    # ── 2. Senior TF gate ────────────────────────────────────────────
+    if direction_bias != SignalDirection.NEUTRAL:
+        expected = "UP" if direction_bias == SignalDirection.LONG else "DOWN"
+        senior_matches = sum(
+            1 for tf in _SENIOR_TFS
+            if snapshot.get(tf, {}).get("trend") == expected
+        )
+    else:
+        senior_matches = 0
+
+    # ── 3. Senior reversal ───────────────────────────────────────────
+    senior_reversal = detect_senior_reversal(snapshot) if snapshot else None
+
+    # ── 4. WT spreads (|wt1-wt2| по каждому ТФ) ─────────────────────
+    wt_spreads: Dict[str, float] = {}
+    for tf in ("3m", "5m", "15m", "45m", "1h", "4h", "1d"):
+        d = snapshot.get(tf)
+        if d and "wt1" in d and "wt2" in d:
+            wt_spreads[tf] = round(abs(d["wt1"] - d["wt2"]), 2)
+
+    # ── 5. Price zone (0.0=S5 .. 0.5=PP .. 1.0=R5) ──────────────────
+    price_zone = 0.5  # default = PP (нейтраль)
+    if current_price > 0 and weekly_pivots:
+        s5 = weekly_pivots.get("S5") or weekly_pivots.get("S3", 0)
+        r5 = weekly_pivots.get("R5") or weekly_pivots.get("R3", 0)
+        pp = weekly_pivots.get("PP", 0)
+        if s5 > 0 and r5 > s5:
+            # Линейная интерполяция: S5=0.0, PP=0.5, R5=1.0
+            price_zone = round(max(0.0, min(1.0, (current_price - s5) / (r5 - s5))), 3)
+
+    ctx = MTFContext(
+        direction_bias=direction_bias,
+        bias_strength=bias_strength,
+        price_zone=price_zone,
+        aligned_pct=aligned_pct,
+        senior_matches=senior_matches,
+        senior_reversal=senior_reversal,
+        wt_spreads=wt_spreads,
+        regime=regime,
+        bull_pct=bull_pct,
+        bear_pct=bear_pct,
+    )
+
+    logger.info(
+        "[mtf_context] bias=%s str=%.2f zone=%.2f aligned=%d%% senior=%d/3 regime=%s spreads=%s",
+        direction_bias.value, bias_strength, price_zone,
+        aligned_pct, senior_matches, regime,
+        {tf: s for tf, s in wt_spreads.items() if tf in ("1h", "4h", "1d")},
+    )
+
+    return ctx
+
+
+def mtf_bias_message(symbol: str, sig: "SignalData") -> str:
+    """Форматирует TG-сообщение для MTF_BIAS сигнала. Thin wrapper над format_signal_message."""
+    from core.intelligence_formatter import format_signal_message
+    return format_signal_message(symbol, sig, signal_type="mtf_bias")

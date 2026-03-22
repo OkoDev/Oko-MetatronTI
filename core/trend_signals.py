@@ -54,7 +54,8 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
             return False, None
         
         # === 3. Ищем откат на 15m ===
-        df_15m = await data_collector.get_ohlcv(symbol, "15m", limit=150)
+        from core.entry_config import get_primary_entry_tf
+        df_15m = await data_collector.get_ohlcv(symbol, get_primary_entry_tf(), limit=150)
         if df_15m is None or df_15m.empty:
             return False, None
         

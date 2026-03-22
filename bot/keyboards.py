@@ -29,6 +29,7 @@ def main_menu() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="⚙️ Настройки")
             ],
             [
+                KeyboardButton(text="📟 Дашборд"),
                 KeyboardButton(text="ℹ️ Помощь")
             ]
         ],
@@ -106,16 +107,15 @@ def signals_menu() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📊 WT сигналы")
             ],
             [
-                KeyboardButton(text="🔄 MTF анализ"),
-                KeyboardButton(text="📈 Тренд сигналы")
+                KeyboardButton(text="📈 Тренд сигналы"),
+                KeyboardButton(text="💎 Дивергенции")
             ],
             [
-                KeyboardButton(text="💎 Дивергенции"),
-                KeyboardButton(text="🎯 Пивот сигналы")
+                KeyboardButton(text="🎯 Пивот сигналы"),
+                KeyboardButton(text="📊 Все сигналы")
             ],
             [
-                KeyboardButton(text="📊 Все сигналы"),
-                KeyboardButton(text="🔍 Поиск сигналов")
+                KeyboardButton(text="🔍 Поиск сигналов"),
             ],
             [
                 KeyboardButton(text="⬅️ Назад в главное меню")
@@ -345,7 +345,6 @@ def signal_types_inline_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📊 WT сигналы", callback_data="signal_wt")
             ],
             [
-                InlineKeyboardButton(text="🔄 MTF анализ", callback_data="signal_mtf"),
                 InlineKeyboardButton(text="📈 Тренд", callback_data="signal_trend")
             ],
             [

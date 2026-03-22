@@ -13,6 +13,7 @@ async def trade_tracker_loop(bot) -> None:
     tsl_activation_r = bot.config.get("trading.tsl_activation_r", 1.0)
     use_breakeven = bot.config.get("trading.use_breakeven", True)
     breakeven_activation_r = bot.config.get("trading.breakeven_activation_r", 0.5)
+    cascade_tsl = bot.config.get("trading.cascade_tsl", True)
 
     while True:
         try:
@@ -23,6 +24,7 @@ async def trade_tracker_loop(bot) -> None:
                 tsl_activation_r=tsl_activation_r,
                 use_breakeven=use_breakeven,
                 breakeven_activation_r=breakeven_activation_r,
+                cascade_tsl=cascade_tsl,
             )
             if closed > 0:
                 logger.info("TradeSimulator: закрыто сделок за цикл: %s", closed)

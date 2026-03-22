@@ -60,10 +60,10 @@ class _FakeCfg:
     _data = {
         "strategy_name": "confluence",
         "trading": {
-            "active_strategy": "confluence_scanner",
-            "active_strategies": ["confluence_scanner", "confluence"],
+            "active_strategy": "reversal_scanner",
+            "active_strategies": ["reversal_scanner", "confluence"],
             "strategies": {
-                "confluence_scanner": {"min_strength": 60},
+                "reversal_scanner": {"min_strength": 60},
                 "confluence": {"min_signals": 2},
             },
         },
@@ -94,7 +94,7 @@ class _MockCollector:
 class TestStrategyRegistry:
     def test_all_built_in_strategies_registered(self):
         strats = list_strategies()
-        for expected in ("confluence", "confluence_scanner", "conservative", "mtf_bias", "pivot_reversal"):
+        for expected in ("confluence", "reversal_scanner", "conservative", "mtf_bias", "pivot_reversal"):
             assert expected in strats, f"{expected!r} отсутствует в реестре"
 
     def test_get_strategy_returns_base_strategy(self):
@@ -119,13 +119,13 @@ class TestConfluenceStrategy:
 
     def test_single_signal_returns_none(self):
         s = get_strategy("confluence")
-        sigs = [_sig(SignalType.MTF_SIGNAL, SignalDirection.LONG)]
+        sigs = [_sig(SignalType.MTF_ALERT, SignalDirection.LONG)]
         assert s.analyze(sigs, self.ctx) is None
 
     def test_two_long_signals_returns_buy(self):
         s = get_strategy("confluence")
         sigs = [
-            _sig(SignalType.MTF_SIGNAL, SignalDirection.LONG, 70, 0.8),
+            _sig(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8),
             _sig(SignalType.WT_SIGNAL,  SignalDirection.LONG, 60, 0.75),
         ]
         rec = s.analyze(sigs, self.ctx)
@@ -136,7 +136,7 @@ class TestConfluenceStrategy:
     def test_two_short_signals_returns_sell(self):
         s = get_strategy("confluence")
         sigs = [
-            _sig(SignalType.MTF_SIGNAL, SignalDirection.SHORT, 72, 0.8),
+            _sig(SignalType.MTF_ALERT, SignalDirection.SHORT, 72, 0.8),
             _sig(SignalType.WT_SIGNAL,  SignalDirection.SHORT, 65, 0.75),
         ]
         rec = s.analyze(sigs, self.ctx)
@@ -146,7 +146,7 @@ class TestConfluenceStrategy:
     def test_conflicting_signals_returns_none(self):
         s = get_strategy("confluence")
         sigs = [
-            _sig(SignalType.MTF_SIGNAL, SignalDirection.LONG,  50, 0.8),
+            _sig(SignalType.MTF_ALERT, SignalDirection.LONG,  50, 0.8),
             _sig(SignalType.WT_SIGNAL,  SignalDirection.SHORT, 48, 0.8),
         ]
         assert s.analyze(sigs, self.ctx) is None
@@ -175,7 +175,7 @@ class TestConservativeStrategy:
     def test_two_signals_insufficient(self):
         s = get_strategy("conservative")
         sigs = [
-            _sig(SignalType.MTF_SIGNAL, SignalDirection.LONG, 75, 0.9),
+            _sig(SignalType.MTF_ALERT, SignalDirection.LONG, 75, 0.9),
             _sig(SignalType.WT_SIGNAL,  SignalDirection.LONG, 70, 0.85),
         ]
         assert s.analyze(sigs, self.ctx_low_vol) is None
@@ -183,7 +183,7 @@ class TestConservativeStrategy:
     def test_three_strong_signals_returns_buy(self):
         s = get_strategy("conservative")
         sigs = [
-            _sig(SignalType.MTF_SIGNAL, SignalDirection.LONG, 75, 0.9),
+            _sig(SignalType.MTF_ALERT, SignalDirection.LONG, 75, 0.9),
             _sig(SignalType.WT_SIGNAL,  SignalDirection.LONG, 70, 0.85),
             _sig(SignalType.DIVERGENCE, SignalDirection.LONG, 75, 0.88),
         ]
@@ -214,16 +214,16 @@ class TestMTFBiasStrategy:
 # ── ConfluenceScannerStrategy ─────────────────────────────────────────────────
 
 
-class TestConfluenceScannerStrategy:
+class TestReversalScannerStrategy:
     ctx = _ctx()
 
     def test_no_confluence_signal_returns_none(self):
-        s = get_strategy("confluence_scanner")
-        sigs = [_sig(SignalType.MTF_SIGNAL, SignalDirection.LONG, 70, 0.8)]
+        s = get_strategy("reversal_scanner")
+        sigs = [_sig(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8)]
         assert s.analyze(sigs, self.ctx) is None
 
     def test_confluence_long_signal_returns_buy(self):
-        s = get_strategy("confluence_scanner")
+        s = get_strategy("reversal_scanner")
         sigs = [_sig(SignalType.CONFLUENCE, SignalDirection.LONG, 75, 0.85)]
         rec = s.analyze(sigs, self.ctx)
         assert rec is not None
@@ -232,7 +232,7 @@ class TestConfluenceScannerStrategy:
         assert rec.take_profit > 45_000.0
 
     def test_confluence_below_min_strength_returns_none(self):
-        s = get_strategy("confluence_scanner", {"min_strength": 80})
+        s = get_strategy("reversal_scanner", {"min_strength": 80})
         sigs = [_sig(SignalType.CONFLUENCE, SignalDirection.LONG, 70, 0.85)]
         assert s.analyze(sigs, self.ctx) is None
 
@@ -255,11 +255,11 @@ class TestTradingIntelligenceStrategyPattern:
 
     def test_active_strategy_name(self):
         ti = self._make_ti()
-        assert ti.active_strategy_name == "confluence_scanner"
+        assert ti.active_strategy_name == "reversal_scanner"
 
     def test_strategies_dict_contains_active_strategies(self):
         ti = self._make_ti()
-        assert "confluence_scanner" in ti.strategies
+        assert "reversal_scanner" in ti.strategies
         assert "confluence" in ti.strategies
 
     def test_run_strategy_returns_recommendation(self):
@@ -279,15 +279,15 @@ class TestTradingIntelligenceStrategyPattern:
         all_recs = asyncio.get_event_loop().run_until_complete(
             ti._run_all_strategies("BTC/USDT", conf_sig, ctx)
         )
-        # confluence_scanner должна выдать результат (есть CONFLUENCE-сигнал)
-        assert "confluence_scanner" in all_recs
-        assert all_recs["confluence_scanner"].action == "BUY"
+        # reversal_scanner должна выдать результат (есть CONFLUENCE-сигнал)
+        assert "reversal_scanner" in all_recs
+        assert all_recs["reversal_scanner"].action == "BUY"
 
     def test_run_strategy_returns_none_on_no_signal(self):
         ti = self._make_ti()
         ctx = _ctx()
-        # MTF_SIGNAL — не CONFLUENCE, confluence_scanner вернёт None
-        non_conf_sigs = [_sig(SignalType.MTF_SIGNAL, SignalDirection.LONG, 70, 0.8)]
+        # MTF_SIGNAL — не CONFLUENCE, reversal_scanner вернёт None
+        non_conf_sigs = [_sig(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8)]
         rec = asyncio.get_event_loop().run_until_complete(
             ti._run_strategy("BTC/USDT", non_conf_sigs, ctx)
         )

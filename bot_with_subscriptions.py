@@ -67,6 +67,10 @@ if platform.system() == "Windows":
 
 
 if __name__ == "__main__":
+    # Гарантируем запуск из директории проекта (чтобы subscriptions.db был единым)
+    _project_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(_project_dir)
+
     if not _acquire_single_instance_lock():
         print("⚠️ Бот уже запущен (обнаружен lock-файл). Закрываю второй экземпляр.")
         sys.exit(1)

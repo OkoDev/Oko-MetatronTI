@@ -12,7 +12,6 @@ import numpy as np
 from core.signal_checkers import (
     check_anomaly_signals,
     check_wt_signals,
-    check_mtf_signals,
     check_trend_signals,
     check_divergence_signals,
     check_pivot_signals,
@@ -162,57 +161,6 @@ class TestWTSignals:
         df_1h = make_df(n=100, seed=2)
         signals = await check_wt_signals("BTC/USDT", df, df_1h=df_1h)
         assert isinstance(signals, list)
-
-
-# ─── MTF сигналы ──────────────────────────────────────────────────────────────
-
-class TestMTFSignals:
-    @pytest.mark.asyncio
-    async def test_returns_list_on_good_data(self):
-        df_1h  = make_df(n=150, seed=1)
-        df_15m = make_df(n=150, seed=2)
-        df_3m  = make_df(n=150, seed=3)
-        signals = await check_mtf_signals("BTC/USDT", df_1h, df_15m, df_3m)
-        assert isinstance(signals, list)
-
-    @pytest.mark.asyncio
-    async def test_none_df_3m_returns_empty(self):
-        df_1h  = make_df(n=150, seed=1)
-        df_15m = make_df(n=150, seed=2)
-        signals = await check_mtf_signals("BTC/USDT", df_1h, df_15m, None)
-        assert isinstance(signals, list)
-
-    @pytest.mark.asyncio
-    async def test_none_df_1h_returns_empty(self):
-        df_15m = make_df(n=150, seed=2)
-        df_3m  = make_df(n=150, seed=3)
-        signals = await check_mtf_signals("BTC/USDT", None, df_15m, df_3m)
-        assert signals == []
-
-    @pytest.mark.asyncio
-    async def test_all_none_returns_empty(self):
-        signals = await check_mtf_signals("BTC/USDT", None, None, None)
-        assert signals == []
-
-    @pytest.mark.asyncio
-    async def test_short_data_no_crash(self):
-        df_1h  = make_df(n=20, seed=1)
-        df_15m = make_df(n=20, seed=2)
-        df_3m  = make_df(n=20, seed=3)
-        signals = await check_mtf_signals("BTC/USDT", df_1h, df_15m, df_3m)
-        assert isinstance(signals, list)
-
-    @pytest.mark.asyncio
-    async def test_signal_fields_valid_if_any(self):
-        df_1h  = make_df(n=150, seed=10)
-        df_15m = make_df(n=150, seed=11)
-        df_3m  = make_df(n=150, seed=12)
-        signals = await check_mtf_signals("SOL/USDT", df_1h, df_15m, df_3m)
-        for s in signals:
-            assert s.symbol == "SOL/USDT"
-            assert s.signal_type == SignalType.MTF_SIGNAL
-            assert s.direction in (SignalDirection.LONG, SignalDirection.SHORT, SignalDirection.NEUTRAL)
-            assert 0 <= s.strength <= 100
 
 
 # ─── Тренд сигналы ────────────────────────────────────────────────────────────
@@ -429,7 +377,6 @@ class TestSignalProperties:
         checkers = [
             (check_anomaly_signals,    (df,)),
             (check_wt_signals,         (df, df_1h)),
-            (check_mtf_signals,        (df_1h, df, df_3m)),
             (check_trend_signals,      (df,)),
             (check_divergence_signals, (df,)),
             (check_pivot_signals,      (df,)),
@@ -448,7 +395,6 @@ class TestSignalProperties:
         checkers = [
             (check_anomaly_signals,    (bad_df,)),
             (check_wt_signals,         (bad_df,)),
-            (check_mtf_signals,        (bad_df, bad_df, bad_df)),
             (check_trend_signals,      (bad_df,)),
             (check_divergence_signals, (bad_df,)),
             (check_pivot_signals,      (bad_df,)),
@@ -474,7 +420,6 @@ class TestSignalProperties:
         checkers = [
             (check_anomaly_signals,    (empty,)),
             (check_wt_signals,         (empty,)),
-            (check_mtf_signals,        (empty, empty, empty)),
             (check_trend_signals,      (empty,)),
             (check_divergence_signals, (empty,)),
             (check_pivot_signals,      (empty,)),

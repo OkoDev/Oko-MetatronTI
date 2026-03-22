@@ -6,12 +6,15 @@
 2. Если пусто — делаем live "state scan" с мягкими условиями (текущее состояние рынка).
    State scan использует OHLCV кеш (данные уже в памяти после скана бота).
 """
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import datetime, timedelta
 
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
+from core.entry_config import get_primary_entry_tf
 
 from bot.keyboards import main_menu
 from core.signal_models import SignalType
@@ -82,7 +85,7 @@ async def _wt_state(sym: str, dc) -> dict | None:
     """WT: пара сейчас в зоне OB (>50) или OS (<-50)."""
     try:
         from core.indicators import calculate_wt
-        df = await dc.get_ohlcv(sym, "15m", limit=100)
+        df = await dc.get_ohlcv(sym, get_primary_entry_tf(), limit=100)
         if df is None or len(df) < 50:
             return None
         df_wt = calculate_wt(df, n1=10, n2=21)
@@ -102,7 +105,7 @@ async def _wt_state(sym: str, dc) -> dict | None:
 async def _anomaly_state(sym: str, dc) -> dict | None:
     """Аномалия: объём текущего бара > 1.5× MA20."""
     try:
-        df = await dc.get_ohlcv(sym, "15m", limit=50)
+        df = await dc.get_ohlcv(sym, get_primary_entry_tf(), limit=50)
         if df is None or len(df) < 25:
             return None
         vol_ma = df["volume"].rolling(20).mean().iloc[-1]
@@ -235,21 +238,6 @@ async def show_wt_signals(bot, message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-async def show_mtf_signals(bot, message: Message) -> None:
-    if not bot.monitored_pairs:
-        await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
-        return
-
-    found = _get_cached(bot, SignalType.MTF_SIGNAL, 8)
-    if not found:
-        await message.answer(f"🔄 MTF сигналов не найдено (скан {len(bot.monitored_pairs)} пар).")
-        return
-    lines = ["🔄 <b>MTF сигналы</b>"]
-    for sym, sig in found:
-        d = sig.data or {}
-        lines.append(f"• {sym} — {sig.direction.value} {d.get('pattern', sig.signal_type.value)}")
-    await message.answer("\n".join(lines))
-
 
 async def show_trend_signals(bot, message: Message) -> None:
     if not bot.monitored_pairs:
@@ -336,7 +324,6 @@ async def show_all_signals(bot, message: Message) -> None:
     """Показ всех типов сигналов последовательно."""
     await show_anomaly_signals(bot, message)
     await show_wt_signals(bot, message)
-    await show_mtf_signals(bot, message)
     await show_trend_signals(bot, message)
     await show_divergence_signals(bot, message)
     await show_pivot_signals(bot, message)

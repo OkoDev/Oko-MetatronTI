@@ -27,7 +27,7 @@ async def cmd_my_subscription(bot, message: Message) -> None:
 
     signal_names = {
         "anomaly": "🚨 Аномалии", "wt_signal": "📊 WT сигналы",
-        "mtf_signal": "🔄 MTF сигналы", "trend_signal": "📈 Тренд-сигналы",
+        "trend_signal": "📈 Тренд-сигналы",
         "divergence": "💎 Дивергенции", "all": "🌟 Все сигналы",
     }
     signal_list = ["🌟 Все доступные сигналы"] if "all" in signals \

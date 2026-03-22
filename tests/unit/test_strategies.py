@@ -112,13 +112,13 @@ def test_confluence_strategy_requires_min_signals(market_context):
     strategy = get_strategy("confluence")
     
     # Один сигнал
-    single_signal = [create_signal(SignalType.MTF_SIGNAL, SignalDirection.LONG, 70, 0.8)]
+    single_signal = [create_signal(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8)]
     rec = strategy.analyze(single_signal, market_context)
     assert rec is None
     
     # Два сигнала
     two_signals = [
-        create_signal(SignalType.MTF_SIGNAL, SignalDirection.LONG, 70, 0.8),
+        create_signal(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8),
         create_signal(SignalType.WT_SIGNAL, SignalDirection.LONG, 60, 0.7),
     ]
     rec = strategy.analyze(two_signals, market_context)
@@ -134,7 +134,7 @@ def test_confluence_strategy_detects_conflicts(market_context):
     
     # Примерно равные сигналы LONG и SHORT
     conflicting_signals = [
-        create_signal(SignalType.MTF_SIGNAL, SignalDirection.LONG, 50, 0.8),
+        create_signal(SignalType.MTF_ALERT, SignalDirection.LONG, 50, 0.8),
         create_signal(SignalType.WT_SIGNAL, SignalDirection.SHORT, 48, 0.8),
     ]
     rec = strategy.analyze(conflicting_signals, market_context)
@@ -170,7 +170,7 @@ def test_conservative_strategy_requires_high_confidence(market_context):
 
     # Два сигнала — не достаточно
     weak_signals = [
-        create_signal(SignalType.MTF_SIGNAL, SignalDirection.LONG, 50, 0.6),
+        create_signal(SignalType.MTF_ALERT, SignalDirection.LONG, 50, 0.6),
         create_signal(SignalType.WT_SIGNAL, SignalDirection.LONG, 50, 0.6),
     ]
     rec = strategy.analyze(weak_signals, market_context)
@@ -187,7 +187,7 @@ def test_conservative_strategy_requires_high_confidence(market_context):
         atr=450.0,
     )
     strong_signals = [
-        create_signal(SignalType.MTF_SIGNAL, SignalDirection.LONG, 75, 0.9),
+        create_signal(SignalType.MTF_ALERT, SignalDirection.LONG, 75, 0.9),
         create_signal(SignalType.WT_SIGNAL, SignalDirection.LONG, 70, 0.85),
         create_signal(SignalType.DIVERGENCE, SignalDirection.LONG, 75, 0.88),
     ]

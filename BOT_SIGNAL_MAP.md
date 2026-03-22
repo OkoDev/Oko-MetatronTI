@@ -1,6 +1,6 @@
 # Карта сигнальных цепочек — Oko MTF Bot
 
-> Обновлено: 2026-03-16
+> Обновлено: 2026-03-22
 
 ## ОБЩАЯ БЛОК-СХЕМА
 
@@ -15,8 +15,9 @@ START monitoring
   │   │   └─ scan_one per pair
   │   │       ├─ OHLCV prefetch (15m+1h+3m, limit=160)
   │   │       ├─ check_anomaly_signals
-  │   │       ├─ check_wt_signals
-  │   │       ├─ check_mtf_signals
+  │   │       ├─ check_wt_signals → [ARCH-23] find_near_pivot() → если ±1% → CONFLUENCE +20str
+  │   │       ├─ confluence_sm.update() / scan_wt_15m_reversal() [pivot_cache передаётся]
+  │   │       ├─ check_wt_b_signals (1h)
   │   │       └─ detect_mtf_divergence | detect_divergence → _div_passes_filters
   │   │
   │   │   СНАРУЖИ семафора (fire-and-forget):
@@ -49,12 +50,17 @@ START monitoring
 - **Внутренние фильтры:** только порог 3.0×
 - **Цикл:** scan_one (каждые 60 сек)
 
-### 2. WT_SIGNAL (WaveTrend)
+### 2. WT_SIGNAL (WaveTrend) / CONFLUENCE (апгрейд, ARCH-23)
 - **Детектор:** `core/signal_checkers.py` → `check_wt_signals`
-- **Условие LONG:** CrossUP (wt1 пересекает wt2 снизу вверх) + wt1 < -60
-- **Условие SHORT:** CrossDOWN + wt1 > 60
+- **Условие LONG:** CrossUP (wt1 пересекает wt2 снизу вверх) + wt1 < -60, gap ≥ 3
+- **Условие SHORT:** CrossDOWN + wt1 > 60, gap ≥ 3
 - **Фильтр 1h:** если 1h-wt1 в противоположной зоне → отклонение
-- **Сила:** 70, confidence: 0.8
+- **Сила:** 70 базово, confidence: 0.8
+- **ARCH-23 апгрейд** (в `scan_loop.py::scan_one`, после детекции):
+  - `pivot_calculator.find_near_pivot(last_close, sym, threshold_pct=1.0)`
+  - Если цена в ±1% от пивота (1M > 1W > 1D): `signal_type = CONFLUENCE`, `strength += 20` (cap 95)
+  - Данные: `sig.data["near_pivot/pivot_level/pivot_source"]`
+- **Данные:** avg_R без пивота +0.32, с пивотом +1.27 (4× разница)
 - **Цикл:** scan_one (каждые 60 сек)
 
 ### 3. MTF_SIGNAL (Мульти-таймфрейм)
@@ -122,17 +128,19 @@ START monitoring
 - **Цикл:** фоновая задача, каждые 5 мин
 
 ### 9. CONFLUENCE (Конфлюэнция факторов)
-- **Детектор:** `core/confluence_scanner.py` → `scan_confluence()`
-- **Стратегия:** `ConfluenceScannerStrategy` (`strategies/built_in/confluence_scanner_strategy.py`)
-- **Таймфреймы:** 15m (WT, TSL, тренд) + 1h (MTF-тренд) + 1W (пивоты)
-- **Обязательные условия:**
-  - LONG: `WT_CROSS_UP` в последних `cross_fresh_bars=10` барах (2.5 часа)
-  - SHORT: `WT_CROSS_DOWN` в последних `cross_fresh_bars=10` барах
-  - Без свежего кросса — сигнал не выдаётся даже при score ≥ min_strength
-- **Факторы силы:** WT_OS/OB зона, WT кросс, TSL кросс, MTF-тренд, дивергенция, близость пивота
+- **Детектор:** `core/wt_15m_reversal_scanner.py` → `scan_wt_15m_reversal()`
+- **Стратегия:** `ReversalScannerStrategy` (`strategies/built_in/reversal_scanner_strategy.py`), зарегистрирована как `"reversal_scanner"`
+- **Таймфреймы:** 15m (WT, TSL) + 1W (пивоты)
+- **Обязательные гейты (mandatory):**
+  - TSL cross (тренд меняется)
+  - WT cross (подтверждение)
+- **Факторы силы:** WT zone, pivot touch (0.15%), дивергенция
+- **Lookback:** 8 баров (было 20)
+- **Убрано:** trend_1h, PP bias, dual_cross — обрабатывается через MTF контекст
+- **MTF контекст:** применяет soft penalty к CONFLUENCE сигналам: floor=0.75 (макс. −25%)
 - **SL:** TSL-линия из market_context.tsl_trendup/trenddown + буфер 0.3%, fallback ATR×1.5
-- **WT OB порог:** `_DEFAULT_WT_OB = 53` (не 60! — проверяет что текущий WT не ушёл в OB для LONG)
 - **Цикл:** scan_one (каждые 60 сек)
+- **Legacy:** старый `core/confluence_scanner.py` (`scan_confluence()`) сохранён для обратной совместимости (state machine, бэктестинг)
 
 ### 10. WT_B_SIGNAL (WaveTrend Type B — дивергенция в OS/OB)
 - **Детектор:** `core/signal_checkers.py` → `check_wt_b_signals`
@@ -197,7 +205,7 @@ START monitoring
 | **MTF_BIAS** | **0.50** | 0.50 | ★ ГЛАВНОЕ ЯДРО (tie-breaker) |
 | **PIVOT_REVERSAL** | **0.20** | 0.24 (avg_R=+0.50) | ★ второе ядро |
 | WT_B_SIGNAL | 0.15 | 0.15 | ★ новый (бэктест WR=85%, нужно 20+ сделок) |
-| CONFLUENCE | 0.15 | 0.15 | через ConfluenceScannerStrategy |
+| CONFLUENCE | 0.15 | 0.15 | через ReversalScannerStrategy (reversal_scanner) |
 | SMC_STRUCTURE | 0.12 | 0.12 | BOS/CHoCH, только в pipeline |
 | DIVERGENCE | 0.10 | 0.10 | только фоновые задачи |
 | WT_SIGNAL | 0.08 | 0.133 (avg_R=+0.83) | — |
@@ -223,6 +231,7 @@ START monitoring
 | Семафор | Лимит | Назначение |
 |---------|-------|-----------|
 | `_analyze_sem` | 3 | analyze_symbol (тяжёлый: ML + 3 OHLCV) |
+| API Semaphore | 20 | api_engine (все API-вызовы к бирже), api_rps=15 |
 | scan_all_pairs | 20 | параллельный скан пар |
 | check_mtf_alerts | 10 | фоновые MTF-алерты |
 | check_trend_signals | 10 | фоновые тренд-сигналы |
@@ -287,21 +296,22 @@ strategies/
   registry.py      ← @register_strategy("name"), get_strategy(name, config)
   built_in/
     confluence.py              ← ConfluenceStrategy
-    confluence_scanner_strategy.py ← ConfluenceScannerStrategy ★ АКТИВНАЯ
+    reversal_scanner_strategy.py   ← ReversalScannerStrategy ★ АКТИВНАЯ (зарег. как "reversal_scanner")
+    confluence_scanner_strategy.py ← ConfluenceScannerStrategy (legacy)
     conservative.py            ← ConservativeStrategy
     pivot_reversal_strategy.py ← PivotReversalStrategy
     mtf_bias.py               ← MTFBiasStrategy (в разработке)
 ```
 
-**Активная стратегия:** задаётся в `config.yaml` → `trading.active_strategy: confluence_scanner`
+**Активная стратегия:** задаётся в `config.yaml` → `trading.active_strategy: reversal_scanner`
 **Переключение:** изменить значение и перезапустить бота
-**CLI бэктест:** `python run_backtest.py --strategy confluence_scanner --symbol BTC/USDT --days 30`
+**CLI бэктест:** `python run_backtest.py --strategy reversal_scanner --symbol BTC/USDT --days 30`
 
 ---
 
 ## ИЗВЕСТНЫЕ ПРОБЛЕМЫ И ТЕХНИЧЕСКИЙ ДОЛГ
 
-1. ~~risk_manager.py~~ — удалён (active_positions был пустой, мёртвый код)
+1. ~~risk_manager.py~~ — удалён (active_positions был пустой, мёртвый код), pyc очищены 18.03
 2. **Fallback pivot**: если `analyze_symbol` упал по таймауту — pivot_reversal регистрируется без AI
 3. **Скрытые дивергенции**: фильтр `wt1 < 0` может быть мягким в боковом рынке
 4. **Прогрев пивотов**: `_prefetch_pivots` запускается как `create_task` — первый цикл стартует до завершения прогрева

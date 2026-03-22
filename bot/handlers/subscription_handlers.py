@@ -63,7 +63,6 @@ def get_router(bot) -> Router:
         signal_names = {
             "anomaly": "🚨 Аномалии",
             "wt_signal": "📊 WT сигналы",
-            "mtf_signal": "🔄 MTF сигналы",
             "mtf_alert": "🎯 MTF точки разворота",
             "trend_signal": "📈 Тренд-сигналы",
             "divergence": "💎 Дивергенции",
