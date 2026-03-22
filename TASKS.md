@@ -384,13 +384,15 @@ trading:
 ---
 
 ### DEV-39 — Market Event Marker: реализация 🟢
-**Статус:** 🟢 в плане (Фаза 1, низкий приоритет)
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH-36 спек (23.03.2026)
 
-**Что:** in-memory счётчик SL в скользящем окне → маркер `market_event: true` в `features_json`. Спек в ARCH-36.
-**Где:** `trade_simulator.py` → `close_trade()` + новый метод `_mark_market_event_in_window()`
-**Конфиг:** `trading.market_event_marker.enabled/sl_count/window_minutes`
-**Влияние на live:** нулевое — только ретроактивный UPDATE в БД для ML
+**Что сделано:**
+- `trade_simulator.__init__`: `self._sl_timestamps: List[datetime] = []`
+- `close_trade()`: после STATUS_SL → append + prune окна + если ≥5 → `_mark_market_event_in_window()`
+- `_mark_market_event_in_window()`: UPDATE features_json всех SL-сделок в окне → `{"market_event": true}`
+- `config.yaml`: `trading.market_event_marker.enabled/sl_count/window_minutes`
+- Влияние на live: нулевое — только ретроактивный UPDATE в БД для ML-фильтрации
 
 ---
 

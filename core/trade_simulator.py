@@ -6,7 +6,7 @@ import sqlite3
 import pandas as pd
 import logging
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 from core.regime_strategy import apply_regime_to_strategy, get_regime_params
@@ -93,6 +93,8 @@ class TradeSimulator:
         # DEV-15: LLM-анализатор SL-сделок (инициализируется лениво при первом SL)
         self._trade_analyzer = None
         self._trade_analyzer_init = False
+        # DEV-39: скользящее окно SL для Market Event Marker
+        self._sl_timestamps: List[datetime] = []
 
     def init_database(self):
         """Создает таблицу simulated_trades в базе данных"""
@@ -610,10 +612,62 @@ class TradeSimulator:
                 )
                 conn.commit()
             logger.info(f"TradeSimulator: закрыта сделка id={trade_id} {status} exit={exit_price:.4f} R={r_multiple}")
+
+            # DEV-39: Market Event Marker — скользящее окно SL
+            if status == STATUS_SL:
+                try:
+                    from core.config_loader import config as _cfg
+                    _me = _cfg.get("trading", {}).get("market_event_marker", {}) if _cfg else {}
+                    if _me.get("enabled", True):
+                        _sl_count_thr = int(_me.get("sl_count", 5))
+                        _window_min   = int(_me.get("window_minutes", 30))
+                        _now = datetime.now(timezone.utc)
+                        self._sl_timestamps.append(_now)
+                        _window_start = _now - timedelta(minutes=_window_min)
+                        self._sl_timestamps = [t for t in self._sl_timestamps if t >= _window_start]
+                        if len(self._sl_timestamps) >= _sl_count_thr:
+                            logger.warning(
+                                "[DEV-39] Market Event: %d SL за %d мин → маркируем сделки в окне",
+                                len(self._sl_timestamps), _window_min,
+                            )
+                            self._mark_market_event_in_window(_window_start)
+                except Exception as _e:
+                    logger.debug("[DEV-39] Market Event Marker error: %s", _e)
+
             return True
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка close_trade {trade_id} — {e}")
             return False
+
+    def _mark_market_event_in_window(self, window_start: datetime) -> None:
+        """DEV-39: ретроактивно помечает SL-сделки в окне как market_event=true."""
+        try:
+            ws_str = window_start.isoformat()
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT id, features_json FROM simulated_trades "
+                    "WHERE status = ? AND closed_at >= ?",
+                    (STATUS_SL, ws_str),
+                ).fetchall()
+                updated = 0
+                for row_id, feat_js in rows:
+                    try:
+                        feat = json.loads(feat_js) if feat_js else {}
+                    except Exception:
+                        feat = {}
+                    if feat.get("market_event"):
+                        continue  # уже помечена
+                    feat["market_event"] = True
+                    conn.execute(
+                        "UPDATE simulated_trades SET features_json = ? WHERE id = ?",
+                        (json.dumps(feat, ensure_ascii=False), row_id),
+                    )
+                    updated += 1
+                conn.commit()
+            if updated:
+                logger.info("[DEV-39] _mark_market_event_in_window: помечено %d сделок", updated)
+        except Exception as e:
+            logger.debug("[DEV-39] _mark_market_event_in_window error: %s", e)
 
     async def check_open_trades_with_tsl(
         self,

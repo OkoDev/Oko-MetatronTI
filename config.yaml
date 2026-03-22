@@ -129,6 +129,10 @@ trading:
   - HIGH_VOL
   future_pp_score_modifier:
     enabled: true   # DEV-36: ±score на основе позиции цены vs Future Daily PP
+  market_event_marker:
+    enabled: true   # DEV-39: маркировать SL-сделки при массовых стопах
+    sl_count: 5     # сколько SL за окно = market event
+    window_minutes: 30
   entry_timeframe: 15m
   bounce_mode:
     enabled: false
