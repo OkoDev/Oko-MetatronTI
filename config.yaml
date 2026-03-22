@@ -127,6 +127,9 @@ trading:
   # DEV-33: блокировка входов в HIGH_VOL режиме (WR=0%, avg_R=-0.25 по DB-анализу)
   blocked_regimes:
   - HIGH_VOL
+  pivot_proximity_filter:
+    enabled: false      # DEV-37: shadow mode → true после 3-5 дней наблюдения
+    hard_block_mult: 3  # distance > tier1*3 → WATCH
   future_pp_score_modifier:
     enabled: true   # DEV-36: ±score на основе позиции цены vs Future Daily PP
   market_event_marker:

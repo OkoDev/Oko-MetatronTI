@@ -406,14 +406,15 @@ trading:
 ---
 
 ### DEV-37 — Pivot Proximity Filter: реализация 🟡
-**Статус:** 🟢 в плане (Фаза 1, после DEV-36)
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH-34 спек (23.03.2026)
 
-**Что:** score modifier на базе расстояния до ближайшего пивота. Спек полностью в ARCH-34 (TASKS.md).
-**Где:** `trading_intelligence.py` → `analyze_symbol()` после блока DEV-32/33
-**Данные:** `snapshot["4h"]["atr"]` + `PivotCalculatorFixed.get_daily_pivots()` + `mtf_context.weekly_pivots`
-**Конфиг:** `trading.pivot_proximity_filter.enabled: false` (shadow mode по умолчанию)
-**Зависимость:** после DEV-36
+**Что сделано:** блок в `trading_intelligence.analyze_symbol()` после DEV-36.
+- 4h ATR → `tier1 = max(1.0%, ATR*1.5)`, `tier2 = tier1*2`
+- PP уровни: Daily PP + Weekly PP (через PivotCalculatorFixed, кешировано)
+- `dist < tier1` → ok | `dist < hard_mult*tier1` → -10 str | `dist > hard_mult*tier1` → WATCH
+- `enabled: false` (shadow mode) — логирует без изменений; `enabled: true` → применяет
+- `config.yaml`: `trading.pivot_proximity_filter.enabled: false / hard_block_mult: 3`
 
 ---
 

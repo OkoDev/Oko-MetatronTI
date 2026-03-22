@@ -818,6 +818,84 @@ class TradingIntelligence:
                 except Exception as _e:
                     logger.debug("[%s] DEV-36 Future PP modifier: %s", symbol, _e)
 
+            # DEV-37: Pivot Proximity Filter (ARCH-34 спек, TRADER 23.03)
+            # Штраф к score если цена далеко от ближайшего пивота (1D/1W/1M PP).
+            # shadow mode (enabled: false) — только логирование без изменений.
+            _ppf_cfg = (self.config.get("trading", {}).get("pivot_proximity_filter", {})
+                        if self.config else {})
+            _ppf_enabled = _ppf_cfg.get("enabled", False)
+            _ppf_shadow  = not _ppf_enabled  # shadow = логируем, но не меняем
+            try:
+                _price37 = (recommendation.entry_price
+                            or (market_context.current_price if market_context else 0))
+                if _price37 > 0:
+                    # 4h ATR для адаптивных порогов (кешировано scan_loop-ом)
+                    _atr_pct37 = None
+                    try:
+                        _df_4h37 = await self.data_collector.get_ohlcv(symbol, "4h", limit=20)
+                        if _df_4h37 is not None and len(_df_4h37) >= 14:
+                            _atr_val37 = compute_atr(_df_4h37, period=14)
+                            if _atr_val37 and _atr_val37 > 0:
+                                _atr_pct37 = _atr_val37 / _price37 * 100
+                    except Exception:
+                        pass
+
+                    if _atr_pct37:
+                        _tier1_37 = max(1.0, _atr_pct37 * 1.5)
+                        _tier2_37 = _tier1_37 * 2
+                        _hard_m37 = float(_ppf_cfg.get("hard_block_mult", 3))
+
+                        # PP уровни: Daily + Weekly + Monthly из кеша
+                        _pp_levels37 = []
+                        try:
+                            from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF37
+                            _pc37 = _PCF37()
+                            _dp37 = await _pc37.get_daily_pivots(symbol, self.data_collector)
+                            if _dp37 and "PP" in _dp37:
+                                _pp_levels37.append(float(_dp37["PP"]))
+                            _wp37 = await _pc37.get_weekly_pivots(symbol, self.data_collector)
+                            if _wp37 and "PP" in _wp37:
+                                _pp_levels37.append(float(_wp37["PP"]))
+                        except Exception:
+                            pass
+
+                        if _pp_levels37:
+                            _min_dist37 = min(
+                                abs(p - _price37) / _price37 * 100 for p in _pp_levels37
+                            )
+                            _hard_thr37 = _tier1_37 * _hard_m37
+
+                            if _min_dist37 < _tier1_37:
+                                _ppf_tag = "near"       # рядом — торгуем нормально
+                            elif _min_dist37 < _hard_thr37:
+                                _ppf_tag = "penalty"    # умеренно/далеко — штраф -10
+                            else:
+                                _ppf_tag = "hard_block" # очень далеко → WATCH
+
+                            logger.info(
+                                "[%s] DEV-37 PivotProximity: dist=%.2f%% tier1=%.2f%% "
+                                "tier2=%.2f%% hard=%.2f%% tag=%s shadow=%s",
+                                symbol, _min_dist37, _tier1_37, _tier2_37,
+                                _hard_thr37, _ppf_tag, _ppf_shadow,
+                            )
+
+                            if not _ppf_shadow:
+                                if _ppf_tag == "hard_block" and recommendation.action in ("BUY", "SELL"):
+                                    recommendation.action = "WATCH"
+                                    trace.add_filter(
+                                        "pivot_proximity_hard", False,
+                                        f"dist={_min_dist37:.1f}% > {_hard_m37}×tier1",
+                                    )
+                                elif _ppf_tag == "penalty":
+                                    _old37 = recommendation.overall_strength
+                                    recommendation.overall_strength = max(0, min(100, _old37 - 10))
+                                    logger.info(
+                                        "[%s] DEV-37: str %d→%d",
+                                        symbol, _old37, recommendation.overall_strength,
+                                    )
+            except Exception as _e37:
+                logger.debug("[%s] DEV-37 Pivot Proximity Filter: %s", symbol, _e37)
+
             # Этап 8.4.2/8.4.3: snapshot_time + analysis_quality в метаданных
             if recommendation.metadata is None:
                 recommendation.metadata = {}
