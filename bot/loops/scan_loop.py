@@ -24,6 +24,9 @@ from core.data_quality import check_ohlcv_quality, MIN_BARS
 
 logger = logging.getLogger(__name__)
 
+# DEV-41: rate-limit для WL breach — не более 3 входов за 30 минут
+_wl_breach_timestamps: deque = deque()
+
 
 async def _send_wl_alert(bot, symbol: str, text: str) -> None:
     """Отправляет короткое WL-уведомление всем подписчикам."""
@@ -47,6 +50,16 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     pivot_level = wl_entry.pivot_level
     score = wl_entry.score
 
+    # DEV-41: Rate-limit — не более 3 WL breach входов за 30 минут
+    _now = datetime.now()
+    _rate_window = 30 * 60  # секунд
+    _rate_limit = 3
+    while _wl_breach_timestamps and (_now - _wl_breach_timestamps[0]).total_seconds() > _rate_window:
+        _wl_breach_timestamps.popleft()
+    if len(_wl_breach_timestamps) >= _rate_limit:
+        logger.info("[WL-BREACH] %s: пропуск — rate limit (%d входов за 30 мин)", symbol, _rate_limit)
+        return
+
     # Gate 1: режим HIGH_VOL — не входим
     try:
         from core.market_regime import MarketRegimeClassifier
@@ -62,6 +75,18 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol):
         logger.info("[WL-BREACH] %s: пропуск — SL cooldown", symbol)
         return
+
+    # DEV-41 Фикс 1: Gate 3 — DEV-32 regime_direction_block bypass fix
+    # WL breach обходил этот guard, теперь применяем явно
+    try:
+        _rdb = bot.config.get("trading", {}).get("regime_direction_block", {})
+        if _rdb.get("enabled", False) and regime:
+            _blocked_dir = _rdb.get(regime)  # e.g. TREND_DOWN → "LONG"
+            if _blocked_dir and direction == _blocked_dir:
+                logger.info("[WL-BREACH] %s: пропуск — DEV-41/DEV-32 %s блокирует %s", symbol, regime, direction)
+                return
+    except Exception as _e32:
+        logger.debug("[WL-BREACH] %s: ошибка DEV-32 gate — %s", symbol, _e32)
 
     # SL = пробитый пивот ± 0.5% буфер (уровень стал support/resistance)
     sl_buffer_pct = float(bot.config.get("signal_quality.wl_sl_buffer_pct", 0.5)) / 100
@@ -93,6 +118,43 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                     logger.info("[WL-BREACH] %s: TP=%.6f далеко (>5%%) — TSL-only", symbol, tp_candidate)
         except Exception as e:
             logger.debug("[WL-BREACH] %s: ошибка get_tp_by_hierarchy — %s", symbol, e)
+
+    # DEV-41 Фикс 2: fallback ATR-based TP если get_tp_by_hierarchy вернул None
+    if tp is None and sl is not None and current_price > 0:
+        try:
+            from core.indicators import compute_atr as _compute_atr
+            _atr = _compute_atr(df_entry, period=14)
+            if _atr and _atr > 0:
+                _sign = 1.0 if direction == "LONG" else -1.0
+                _tp_atr = current_price + _sign * _atr * 2.5
+                _risk = abs(current_price - sl)
+                _reward = abs(_tp_atr - current_price)
+                if _risk > 0 and _reward / _risk >= 1.5:
+                    tp = _tp_atr
+                    tp_source = "atr_2.5x_fallback"
+                    logger.info("[WL-BREACH] %s: ATR fallback TP=%.6f (ATR=%.6f, R:R=%.2f)",
+                                symbol, tp, _atr, _reward / _risk)
+                else:
+                    logger.info("[WL-BREACH] %s: ATR fallback R:R=%.2f < 1.5 — TSL-only", symbol,
+                                _reward / _risk if _risk > 0 else 0)
+        except Exception as _e_atr:
+            logger.debug("[WL-BREACH] %s: ошибка ATR fallback — %s", symbol, _e_atr)
+
+    # DEV-41 Фикс 3: R:R cap (max_rr из конфига, default 6.0)
+    if tp is not None and sl is not None and current_price > 0:
+        _risk = abs(current_price - sl)
+        _reward = abs(tp - current_price)
+        if _risk > 0:
+            _rr = _reward / _risk
+            try:
+                _max_rr = float(bot.config.get("trading", {}).get("sl_tp", {}).get("max_rr", 6.0))
+            except Exception:
+                _max_rr = 6.0
+            if _rr > _max_rr:
+                _sign = 1.0 if direction == "LONG" else -1.0
+                tp = current_price + _sign * _risk * _max_rr
+                tp_source = f"{tp_source}|capped_rr_{_max_rr}"
+                logger.info("[WL-BREACH] %s: R:R=%.2f → cap %.1fx → TP=%.6f", symbol, _rr, _max_rr, tp)
 
     # Проверка min R:R = 1.5
     if tp is not None and sl and pivot_level > 0:
@@ -137,6 +199,9 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     if trade_id is None:
         logger.info("[WL-BREACH] %s: сделка не зарегистрирована (дубль или нет SL/TP)", symbol)
         return
+
+    # DEV-41: фиксируем время успешного входа для rate-limit
+    _wl_breach_timestamps.append(datetime.now())
 
     # TG-алерт
     dir_emoji = "🟢" if direction == "LONG" else "🔴"

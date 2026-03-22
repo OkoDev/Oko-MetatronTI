@@ -384,7 +384,7 @@ trading:
 ---
 
 ### DEV-41 — WL breach: 3 критических фикса 🔴
-**Статус:** 🟡 важно (24.03.2026)
+**Статус:** ✅ выполнено 23.03.2026
 **Источник:** TRADER TR-001 разбор 24.03 → DISCUSSION.md
 
 **Фикс 1 — DEV-32 bypass:** добавить `regime_direction_block` guard в `_handle_wl_breach_entry()` в `bot/loops/scan_loop.py`. 17/18 WL breach сделок прошли как LONG/TREND_DOWN.
@@ -500,6 +500,74 @@ pe = PerformanceEngine('subscriptions.db')
 # Смотреть: be_activated (% сделок), tp1_hit_at (% сделок), сравнить avg_R DUAL_TP до/после
 "
 ```
+
+---
+
+### DEV-41 — wt_signal + NEAR_PIVOT → силовой апгрейд 🟡
+**Статус:** 🟡 важно — после DEV-40
+**Источник:** ARCH-23 спек (21.03.2026). Данные: wt_signal avg_R=+0.32 без пивота, avg_R=+1.27 с пивотом.
+
+#### Суть
+`wt_signal` у пивотного уровня статистически идентичен `confluence`, но регистрируется с низкими весами и без пивотного TP. Задача: детектировать `wt_signal` вблизи пивота (±1%) и бустить strength +20.
+
+#### Точка вставки
+`core/trading_intelligence.py` → `analyze_symbol()` — **после `_apply_mtf_context()` (~строка 536)**, до `_analyze_signals_advanced()` (~строка 634).
+
+#### Алгоритм
+
+```python
+# DEV-41: wt_signal + NEAR_PIVOT boost
+_daily_pivots_41 = None
+for sig in filtered_signals:
+    if sig.signal_type != "wt_signal":
+        continue
+    # Ленивый fetch daily pivots (PivotCalculatorFixed кеширует)
+    if _daily_pivots_41 is None:
+        try:
+            from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF41
+            _daily_pivots_41 = await _PCF41().get_daily_pivots(symbol, self.data_collector) or {}
+        except Exception:
+            _daily_pivots_41 = {}
+
+    # Собрать уровни: 1D + 1W
+    _all_levels = dict(_daily_pivots_41)
+    if mtf_context and mtf_context.weekly_pivots:
+        _all_levels.update({f"1W_{k}": v for k, v in mtf_context.weekly_pivots.items()})
+
+    # Найти ближайший в ±1%
+    price = (market_context.current_price if market_context else 0) or sig.data.get("price", 0)
+    nearest_name, nearest_dist = None, float("inf")
+    for lvl_name, lvl_price in _all_levels.items():
+        if lvl_price and lvl_price > 0:
+            dist = abs(price - lvl_price) / lvl_price * 100
+            if dist < nearest_dist:
+                nearest_dist, nearest_name = dist, lvl_name
+
+    if nearest_dist > 1.0:
+        continue  # не у пивота
+
+    # Защита от дублирования с confluence
+    has_confluence = any(s.signal_type in ("confluence", "wt_b_signal") for s in filtered_signals)
+    if has_confluence:
+        continue
+
+    # Буст
+    old_str = sig.strength
+    sig.strength = min(100, sig.strength + 20)
+    sig.data["near_pivot"] = nearest_name
+    sig.data["near_pivot_dist_pct"] = round(nearest_dist, 3)
+    logger.info("[DEV-41] %s wt_signal NEAR_PIVOT=%s (%.2f%%), str %d->%d",
+                symbol, nearest_name, nearest_dist, old_str, sig.strength)
+```
+
+#### Файлы
+| Файл | Изменение |
+|------|-----------|
+| `core/trading_intelligence.py` | Вставить блок DEV-41 после `_apply_mtf_context()` |
+
+#### Что не трогать
+- `signal_type` остаётся `wt_signal` (не менять на confluence — разная статистика)
+- TP расчёт — оставить текущую логику (пивотный TP подтянется через recommend_generator)
 
 ---
 
