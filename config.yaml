@@ -25,7 +25,7 @@ analysis:
       os_threshold: -60.0
     trend:
       atr_period: 43
-      factor: 1.25
+      factor: 1.1        # DEV-34: было 1.25 → меньше ложных TSL-выходов
   signals:
     min_signals: 2
     single_signal_min_strength: 54
