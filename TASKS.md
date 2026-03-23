@@ -162,7 +162,7 @@ TRADER 22.03 — разбор 5 пар live → memory/trader_analyses/2026-03-2
 ---
 
 ### TR-006 — 6-условный чеклист Level 3 авто-входа: детальная спецификация
-**Статус:** 🟢 в плане (Фаза 3)
+**Статус:** ✅ спек готов 23.03.2026 — DISCUSSION.md + memory/trader_analyses/TR-006-spec.md
 
 **Из Discussion (22.03) — базовый чеклист:**
 ```
@@ -255,32 +255,44 @@ ORDER BY closed_at DESC LIMIT 50;
 
 **Цель:** оценить качество ML и adaptive_weights после 2 недель чистых данных (post DEV-32/33/49).
 
-**Чеклист (≈06.04.2026):**
+#### 📊 BASELINE (23.03.2026)
 
-1. **OutcomePredictor AUC**
-   ```python
-   from core.outcome_predictor import OutcomePredictor
-   op = OutcomePredictor(); op.fit('subscriptions.db')
-   print(op.info())  # смотреть CV AUC
-   ```
+**OutcomePredictor:** ❌ не обучен — `sklearn не установлен` в текущем окружении. → DEV-51
+
+**WR baseline (2066 чистых сделок):** 29.4% (TP+TSL)
+
+**Adaptive weights (чистые):**
+| Signal Type | n | avg_R |
+|---|---|---|
+| confluence | 1188 | +1.52 |
+| wt_signal | 423 | +0.39 |
+| pivot_reversal | 353 | **+0.29** ← (было +0.50) |
+| trend_signal | 43 | -0.25 |
+| watch_list_breach | 11 | -0.31 |
+
+**Guards эффект (id>3100, сделки после guards):**
+- TREND_DOWN/LONG пробросов после рестарта: **0** ✅ (3 сделки 02:28 UTC = до рестарта)
+- HIGH_VOL пробросов: **0** ✅ DEV-33 работает
+- WR последних 49 сделок: 13-25% — медвежий рынок, ожидаемо
+
+**⚠️ Критическая находка:** `sklearn` не установлен → OutcomePredictor, R-predictor, ML pipeline полностью отключены. → Создана DEV-51.
+
+#### Чеклист для финального ревью (≈06.04.2026):
+
+1. **OutcomePredictor AUC** (после установки sklearn + DEV-51):
    - AUC > 0.55 → активировать ARCH-21 (sliding window training_window=500)
    - AUC < 0.50 → ищем новые признаки (MTF bias, price_zone?)
 
-2. **Adaptive weights pivot_reversal**
-   ```python
-   from core.performance_engine import PerformanceEngine
-   pe = PerformanceEngine('subscriptions.db'); pe.by_signal_type()
-   ```
-   - Смотреть avg_R для pivot_reversal (сейчас ~+0.50 → должно снизиться при медвежьем рынке)
-   - Если вес >0.15 несмотря на серию SL → создать ARCH-46 (обновление весов раз в 2ч)
+2. **Adaptive weights pivot_reversal trend**:
+   - Если avg_R pivot_reversal > 0 после 2 недель → wt_signal лучший кандидат на повышение веса
+   - Если avg_R trend_signal стабильно < 0 → рассмотреть отключение или ограничение до 1 типа
 
-3. **WR на чистых данных (post DEV-32/33)**
-   - Взять сделки после 25.03.2026 (post timezone fix)
-   - Ожидаем WR ↑ с ~31% к 45%+ (убрали 52% контр-тренд LONG/TREND_DOWN)
+3. **WR post-fix** (сделки после 25.03.2026):
+   - Ожидаем ↑ с 29% к 40%+ (убрали 52% контр-тренд LONG/TREND_DOWN)
 
 4. **TR-008 повторный** — 50 SL-сделок из новых данных → передать TRADER
 
-**Если триггер не наступил к 06.04 (мало сделок):** перенести на 13.04, не форсировать.
+**Если к 06.04 < 200 новых сделок:** перенести на 13.04, не форсировать.
 
 ---
 
@@ -651,6 +663,38 @@ trading:
 ## 🛠️ Задачи DEV
 
 > **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | ✅ выполнено | 🔄 в работе
+
+---
+
+### DEV-51 — Установить sklearn: ML pipeline полностью отключён 🟡
+**Статус:** ✅ выполнено 23.03.2026 — `scikit-learn>=1.3.0` добавлен в requirements.txt
+**Источник:** ARCH-45 baseline 23.03.2026 — обнаружено при запуске OutcomePredictor
+
+**Проблема:** `sklearn` не установлен в окружении → весь ML pipeline (OutcomePredictor, RPredictor, MLPredictor) работает в dummy-режиме:
+```
+OutcomePredictor: sklearn не установлен — predict_win_prob вернёт None
+```
+
+**Что проверить:**
+```bash
+# Какое окружение использует бот?
+which python3
+python3 -c "import sklearn; print(sklearn.__version__)"
+# Если не найден:
+pip install scikit-learn
+# или
+pip3 install scikit-learn
+```
+
+**Файл:** `requirements.txt` → убедиться что `scikit-learn` есть (уже должен быть по CLAUDE.md).
+**Примечание:** CLAUDE.md говорит `pip install scikit-learn` — значит в продакшн окружении должен быть. Проверить что бот запускается из правильного venv.
+
+**Ожидаемый эффект после установки:**
+- OutcomePredictor обучится и начнёт давать P(win)
+- Adaptive confidence blending 0.7×orig + 0.3×P(win) заработает
+- ARCH-45 финальный ревью станет возможным
+
+**Приоритет:** 🟡 важно — без этого AUC-триггер для ARCH-21 никогда не сработает.
 
 ---
 
