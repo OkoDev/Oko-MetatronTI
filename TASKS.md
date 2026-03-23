@@ -194,8 +194,10 @@ CHoCH против направления  → soft block (условие вып
 **Формат:** TRADER смотрит на 5-10 живых примеров сигнала детектора и даёт вердикт: "Вижу смысл", "Вижу ложный сигнал потому что...", "Нужна доработка условия N".
 
 **Текущая очередь:**
-- [ ] После включения `use_outcome_predictor: false` — подтвердить что TAKE/BEAT-подобные сигналы появляются в регистрации
-- [ ] Pivot Proximity Filter (после реализации) — живой тест на 10 парах
+- [x] ✅ 23.03 — `use_outcome_predictor: false` подтверждён: p_win нет в features_json, сигналы регистрируются без фильтра
+- [x] ✅ 23.03 — Pivot Proximity Filter (DEV-37): WR near=9% → very_far=5%. Важное: pivot_reversal без PPF WR=53%. Проблема: PPF не нужно применять к pivot_reversal. → DEV: проверить
+- [x] ✅ 23.03 — Q-ARCH-TRADER-1/3 закрыты: DASH/FIL по тренду, SKYAI контр-тренд в RANGE; одно изменение = блок LONG при TREND_DOWN
+- [ ] 06.04 — SMC-структура как фильтр: повторный анализ вместе с TR-008 (нужно 200+ чистых сделок)
 
 ---
 
@@ -663,6 +665,81 @@ trading:
 ## 🛠️ Задачи DEV
 
 > **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | ✅ выполнено | 🔄 в работе
+
+---
+
+### DEV-52 — Level 3 Фаза A: L3-lite shadow mode (условия 3+5+6) 🟢
+**Статус:** ✅ выполнено 23.03.2026
+**Источник:** TR-006 спек (TRADER 23.03.2026) + ARCH решение 23.03.2026
+
+**Цель:** реализовать L3-checker Фаза A в shadow mode — логировать кандидатов без реального входа.
+
+**Условия Фазы A:**
+- **Условие 3** — 1h структура не противоположна направлению (BOS/CHoCH check)
+- **Условие 5** — effective_score ≥ 85
+- **Условие 6** — Портфельный лимит (< 2 LONG, < 2 SHORT, < 4 OPEN)
+
+**Архитектура:**
+
+1. **Портфельный gate** в `register_trade_async()` (~строка до return):
+```python
+# DEV-52: Портфельный лимит L3
+open_trades = self.get_open_trades()
+open_longs  = sum(1 for t in open_trades if t['direction'] == 'LONG')
+open_shorts = sum(1 for t in open_trades if t['direction'] == 'SHORT')
+direction_str = _direction_str(_get_recommendation_value(recommendation, 'direction'))
+if direction_str == 'LONG' and open_longs >= 2:
+    logger.info("[DEV-52] %s: портфельный лимит LONG (%d/2)", symbol, open_longs)
+    return None
+if direction_str == 'SHORT' and open_shorts >= 2:
+    logger.info("[DEV-52] %s: портфельный лимит SHORT (%d/2)", symbol, open_shorts)
+    return None
+if len(open_trades) >= 4:
+    logger.info("[DEV-52] %s: портфельный лимит TOTAL (%d/4)", symbol, len(open_trades))
+    return None
+```
+
+2. **Условие 3 (структура 1h)** в `analyze_symbol()` — после DEV-36/37 блоков:
+```python
+# DEV-52: L3-условие 3 — 1h структура
+from core.structure_detector import detect_structure
+if data and data.get('1h'):
+    df_1h = data['1h']
+    struct_1h = detect_structure(df_1h)
+    last_break = struct_1h.get('last_break')
+    if last_break:
+        bars_ago = len(df_1h) - 1 - last_break['break_index']
+        is_stale = bars_ago > 48
+        is_bearish_bos = last_break.get('type') == 'BOS' and last_break.get('direction') == 'BEARISH'
+        is_bullish_bos = last_break.get('type') == 'BOS' and last_break.get('direction') == 'BULLISH'
+        if not is_stale:
+            if direction == 'LONG' and is_bearish_bos:
+                # HARD BLOCK: BEARISH_BOS против LONG
+                logger.info("[DEV-52-L3] %s БЛОК: BEARISH_BOS против LONG на 1h", symbol)
+                # shadow: пока не блокируем, только логируем
+            elif direction == 'SHORT' and is_bullish_bos:
+                logger.info("[DEV-52-L3] %s БЛОК: BULLISH_BOS против SHORT на 1h", symbol)
+```
+
+3. **Условие 5 (effective_score ≥ 85)** — уже есть как `overall_strength`. Пока shadow mode → просто логируем кандидатов.
+
+**Shadow mode:** `enabled: false` по умолчанию. При `enabled: false` — только INFO лог `[DEV-52-L3] candidate 5/6 conds`.
+
+**Config:**
+```yaml
+trading:
+  l3_checker:
+    enabled: false   # shadow mode → true после накопления статистики
+    min_score: 85
+    max_open_long: 2
+    max_open_short: 2
+    max_open_total: 4
+```
+
+**Файлы:** `core/trade_simulator.py`, `core/trading_intelligence.py`, `config.yaml`
+
+**Фаза B (DEV-53):** +условие 4 (WT кросс freshness + near_pivot) — после DEV-52
+**Фаза C (DEV-54):** +условия 1+2 (FVG/OB 4h + Fibonacci OTE) — заблокировано (нет multi-TF SMC)
 
 ---
 

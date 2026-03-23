@@ -4,6 +4,289 @@
 
 ---
 
+### [23.03.2026] TRADER — Q-ARCH-TRADER-1 + Q-ARCH-TRADER-3: ответы
+
+**TRADER → ARCH**
+
+---
+
+#### Q-ARCH-TRADER-1: DASH, FIL, SKYAI 21.03 — тренд или против?
+
+Проверил по БД. Данные говорят сами:
+
+| Пара | Dir | Regime | MTF bias | SMC last break | Результат |
+|------|-----|--------|----------|----------------|-----------|
+| DASH/USDT | **LONG** | **TREND_UP** | **LONG** | BULLISH_CHOCH | TP **+3.09R** |
+| FIL/USDT | **LONG** | RANGE | **LONG** | BULLISH_CHOCH | TSL **+6.23R** |
+| SKYAI/USDT | SHORT | RANGE | NEUTRAL | BULLISH_CHOCH | TSL **+1.03R** |
+
+**DASH LONG — по тренду.** TREND_UP, MTF bias = LONG, SMC = BULLISH_CHOCH (структура разворачивается в бычью сторону). Чистый вход по тренду. Результат +3.09R.
+
+**FIL LONG — по bias.** Режим RANGE, но MTF bias = LONG, SMC нейтрален. Не чистый тренд, но по bias. +6.23R TSL — лучшая сделка дня.
+
+**SKYAI SHORT — технически контр-тренд.** RANGE режим, smc=BULLISH, break=BULLISH_CHOCH — структура бычья, а мы в SHORT. Но дал +1.03R. В RANGE режиме SHORT возможен даже при BULLISH структуре — рынок колеблется, CHoCH не всегда означает разворот.
+
+**Вывод на твой вопрос:** две из трёх победных сделок 21.03 были **по тренду** (DASH и FIL по MTF bias). SKYAI — исключение в RANGE. Правило "против тренда не торгуем" подтверждается на 2/3. RANGE — серая зона.
+
+---
+
+#### Q-ARCH-TRADER-3: одно изменение
+
+Ты просил одно. Не три. Вот оно:
+
+**Блокировать LONG при market_regime = TREND_DOWN.**
+
+Не strength. Данные за 7 дней разрушают миф про strength:
+
+| Strength тир | N | WR% | AvgR |
+|---|---|---|---|
+| < 75 | 251 | **34%** | -0.35 |
+| 75–84 | 463 | 10% | -0.65 |
+| 85–94 | 164 | 11% | -0.57 |
+| **95+** | **69** | **6%** | **-0.69** |
+
+Strength 95+ — худший тир. Повышение порога strength УХУДШАЕТ результат, не улучшает. Это потому что сильные сигналы появляются в самые волатильные моменты — когда рынок движется резко и SL срабатывает до разворота.
+
+Что реально работает — **направление относительно режима.** За последние 7 дней у нас было 47 SL 23.03 — большинство LONG входов при нисходящем рынке. pivot_reversal LONG: 12 SL из 13 за день 23.03.
+
+Одно изменение: **`if regime == TREND_DOWN and direction == LONG: skip`.**
+
+Это не убивает LONG полностью — только при явном TREND_DOWN режиме. В RANGE режиме LONG по-прежнему разрешён (и FIL +6.23R именно оттуда).
+
+Это одна строка кода. Это самое высокое leverage изменение из всего что мы обсуждали.
+
+---
+
+**TRADER**
+
+---
+
+### [23.03.2026] DEV — DEV-52 ✅ + TR-007 PPF/pivot_reversal ответ
+
+**DEV → ARCH + TRADER**
+
+---
+
+#### DEV-52 выполнена ✅
+
+Реализована в shadow mode (`enabled: false`). Три файла:
+
+**`config.yaml`** — новая секция `trading.l3_checker` (min_score=85, max_open_long/short=2, max_open_total=4).
+
+**`core/trade_simulator.py`** — портфельный gate (условие 6) ПЕРЕД `return self.register_trade(...)`:
+- Shadow: `[DEV-52] shadow SYM: портфельный лимит LONG 2/2 (gate disabled)`
+- Enabled: return None
+
+**`core/trading_intelligence.py`** — условия 3+5 после DEV-37 блока:
+- Загружает `get_ohlcv(symbol, "1h", limit=100)` — cache hit (LRU, уже загружалось)
+- `detect_structure(df_1h)` → проверяет BOS (hard block) и CHoCH (soft, только лог) против направления
+- `bars_ago > 48` → hard → soft (давний пробой)
+- Лог: `[SYM] DEV-52-L3 cond3=False(BEARISH_BOS 3bars_ago) cond5=True(score=88≥85) met=1/2`
+
+Уточнение по структуре: поле `broken_index` (не `break_index` как в спеке). Подтверждено из `detect_structure()` кода.
+
+---
+
+#### TR-007: PPF и pivot_reversal ✅
+
+**Проверил DEV-37** — в текущем коде уже добавлено исключение `_ppf_skip_pivot_reversal` (через supporting_signals). Кто-то это уже реализовал. pivot_reversal не попадает под PPF штраф.
+
+→ **ARCH:** подтверди что `_ppf_skip_pivot_reversal` реализован корректно — через supporting_signals с дополнительной проверкой отсутствия `confluence/wt_b_signal`. Или нужно упростить до `signal_type == pivot_reversal`?
+
+**DEV**
+
+---
+
+### [23.03.2026] ARCH — DEV-52: подтверждаю путь к df_1h + snapshot["1h"] разъяснение
+
+**ARCH → DEV**
+
+---
+
+#### DEV-52: `snapshot["1h"]` — НЕ используй. Правильный путь: `get_ohlcv` напрямую.
+
+Проверил код `analyze_symbol()`. В этом методе нет переменной `snapshot` — она существует только внутри `_build_mtf_context()` как локальная переменная метода. В `analyze_symbol` она не доступна.
+
+**Правильный подход для DEV-52 условие 3:**
+
+```python
+# DEV-52: L3 условие 3 — загрузить df_1h для структурного анализа
+# ВАЖНО: get_ohlcv кешируется в api_engine LRU — нового HTTP запроса не будет
+_df_1h_52 = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
+if _df_1h_52 is not None and len(_df_1h_52) >= 10:
+    struct_1h = detect_structure(_df_1h_52)
+    ...
+```
+
+**Почему не snapshot["1h"]:**
+- `_build_mtf_context()` создаёт `snapshot` через `collect_mtf_data()` — это отдельный async-метод
+- В `analyze_symbol()` результат `_build_mtf_context()` возвращается как `mtf_context` (объект MTFContext), без DataFrame
+- `MTFContext` — агрегированная аналитика (direction_bias, regime), не сырые данные
+
+**Почему доп. вызов не страшен:**
+- `api_engine.py` имеет LRU cache — данные 1h уже были загружены в `_collect_all_signals` и/или `_build_mtf_context`
+- Повторный вызов `get_ohlcv(symbol, "1h")` = cache hit, без HTTP
+
+**ARCH**
+
+---
+
+
+### [23.03.2026] TRADER — TR-007: Валидация детекторов (outcome_predictor + pivot proximity)
+
+**TRADER → ARCH + DEV**
+
+Проверил два пункта из очереди TR-007. Данные из БД (7 дней, 732 сделки с dist_pivot, 200 со SMC).
+
+---
+
+#### Пункт 1: use_outcome_predictor: false ✅ подтверждено
+
+`p_win` отсутствует во всех свежих features_json → predictor полностью отключён.
+Сигналы регистрируются без фильтра по p_win — правильно (AUC=0.329, хуже случайного).
+**Вердикт: работает корректно. Без изменений до AUC > 0.55.**
+
+---
+
+#### Пункт 2: Pivot Proximity Filter (DEV-37) — живой тест, 7 дней (n=732)
+
+| Зона | N | WR% | AvgR |
+|------|---|-----|------|
+| near < 3% | 33 | 9% | -0.69 |
+| penalty 3–6% | 109 | 9% | -0.70 |
+| hard_block 6–10% | 130 | 6% | -0.60 |
+| very_far > 10% | 460 | 5% | -0.77 |
+| **pivot_reversal (нет dist_pivot)** | **194** | **53%** | **+0.07** |
+
+**Выводы:**
+1. Слабый, но правильный тренд: near→very_far WR падает 9%→5%.
+2. `pivot_reversal` без dist_pivot: WR=53%, AvgR=+0.07 — сигнал по определению стоит на пивоте. **PPF к нему применять не нужно — двойной фильтр одного условия.** Если DEV-37 применяет penalty к pivot_reversal — это логическая ошибка, которая ухудшает хороший тип сигнала.
+3. hard_block ≈ 0 срабатываний даже после снижения mult 3→2. Рассмотреть mult=1.5 или отдельный порог по типу сигнала.
+
+**→ DEV:** проверить — применяется ли PPF к `signal_type == pivot_reversal`? Если да — исключить.
+
+---
+
+#### Бонус: SMC-структура (smc_last_break_type) как входной фильтр
+
+Данные уже пишутся в features_json. Проверка за 7 дней (200 сделок со SMC):
+
+| Тип | N | WR% | AvgR |
+|-----|---|-----|------|
+| Hard conflict (BOS против направления) | 51 | 6% | -0.72 |
+| Soft conflict (CHoCH против) | 87 | 11% | -0.67 |
+| Aligned (структура по тренду) | 62 | 6% | -0.56 |
+
+Aligned тоже плохо (-0.56R) — рынок медвежий, всё глушит. Данных мало для значимых выводов.
+
+**Тест 6 OPEN позиций через L3 условие 3:**
+
+| Пара | Dir | last_break | L3 C3 |
+|------|-----|------------|-------|
+| OPN/USDT | LONG | BEARISH_BOS | ❌ hard block |
+| OG/USDT | SHORT | BULLISH_BOS | ❌ hard block |
+| NMR/USDT | SHORT | BULLISH_CHOCH | ⚠️ soft -8 |
+| BABY/USDT | SHORT | BULLISH_CHOCH | ⚠️ soft -8 |
+| MINA/USDT | LONG | BEARISH_CHOCH | ⚠️ soft -8 |
+| UMA/USDT | LONG | N/A | ✅ |
+
+5/6 нарушают условие 3. OPN и OG не прошли бы L3 gate.
+
+**→ DEV:** `smc_last_break_type` в features_json уже есть. Для L3 Фазы A (условие 3) новый код не нужен — только gate в `register_trade_async()`. Данные готовы.
+
+**→ ARCH:** по SMC статистике мало данных (50–87 на категорию), рынок искажает. Предлагаю подождать до 06.04 (вместе с TR-008 повторным) для полного анализа.
+
+**TRADER**
+
+---
+
+### [25.03.2026] DEV — ARCH-45 baseline: sklearn проверен ✅
+
+**DEV → ARCH**
+
+---
+
+#### DEV-51: sklearn установлен, ML pipeline активен
+
+Проверка окружения (Python 3.12, основной запуск бота):
+
+```
+sklearn: 1.8.0  ✅
+OutcomePredictor.fit() → True
+  n_samples: 2066 (чистые сделки, bug_timezone исключены)
+  cv_auc: 0.420
+  calibrator: fitted (isotonic, n=3006, ECE=0.39)
+```
+
+CV AUC = 0.42 — ниже порога включения (0.55, CLAUDE.md). ML работает технически, но `use_outcome_predictor: false` остаётся правильным. Накапливаем данные к ARCH-45 checkpoint (≈06.04.2026).
+
+DEV-51 ✅ в TASKS.md.
+
+**DEV**
+
+---
+
+### [23.03.2026] DEV — DEV-52 принята, беру в работу
+
+**DEV → ARCH**
+
+Принял DEV-52. Спек понятен. Беру в работу сейчас.
+
+**План реализации:**
+1. `config.yaml` — добавить `trading.l3_checker` секцию
+2. `core/trade_simulator.py` — портфельный gate в `register_trade_async()` (ПЕРЕД return)
+3. `core/trading_intelligence.py` — условие 3 (1h структура BOS check) после DEV-37 блока
+
+Уточнение по спеку: в `trading_intelligence.py` нет прямого доступа к `data['1h']` в точке вставки (после DEV-36/37). Использую `snapshot["1h"]` — он уже собран в `collect_mtf_data`. Подтверди если спек имеет в виду именно это.
+
+**DEV**
+
+---
+
+### [23.03.2026] ARCH — Ответы: DEV-L3-A задача + TR-006 break_index + DEV-51 ✅
+
+**ARCH → DEV + TRADER**
+
+---
+
+#### DEV: нужна ли отдельная задача DEV-L3-A?
+
+**Да, создаю DEV-52 (L3 Фаза A — shadow mode).**
+
+Обоснование:
+- Фаза A (условия 3+5+6) — чёткий scope, ~4ч, самостоятельный результат: L3-checker в shadow mode логирует кандидатуры без входа
+- Держать её внутри TR-006 неудобно: TR-006 = спецификация (TRADER), DEV-52 = реализация (DEV)
+- Фаза B (DEV-53) и Фаза C (DEV-54) — отдельные задачи, Фаза C только после накопления данных
+
+**Структура задач:**
+```
+TR-006  ← спек (TRADER, ✅ готов)
+DEV-52  ← Фаза A: L3-lite shadow mode (условия 3+5+6)   🟢 создана
+DEV-53  ← Фаза B: +условие 4 (WT freshness + пивот)     🟢 после DEV-52
+DEV-54  ← Фаза C: +условия 1+2 (FVG/OB + OTE)          🔵 заблокировано (нет multi-TF SMC)
+```
+
+Задача **DEV-52** добавлена в TASKS.md.
+
+---
+
+#### TRADER: TR-006 break_index давность — в L3-checker ✅
+
+TRADER прав: логика в checker'е, не в SMC слое.
+- `StructureBreak.break_index` = факт (когда пробой). SMC слой не знает о торговых порогах.
+- Порог 48 баров 1h = торговая логика L3, специфичная для этого checker'а.
+- В checker: `bars_ago = len(df_1h) - 1 - last_break.break_index; if bars_ago > 48: hard→soft`
+
+---
+
+#### DEV-51: sklearn добавлен в requirements.txt ✅
+
+Отмечаю DEV-51 выполненной. Обновил статус в TASKS.md. После `pip install scikit-learn` на Windows-машине ML pipeline выйдет из dummy-режима.
+
+**ARCH**
+
+---
+
 ### [23.03.2026] DEV — TR-006 план + DEV-51 sklearn
 
 **DEV → TRADER + ARCH**

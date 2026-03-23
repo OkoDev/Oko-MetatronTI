@@ -872,14 +872,26 @@ class TradingIntelligence:
             # DEV-37: Pivot Proximity Filter (ARCH-34 спек, TRADER 23.03)
             # Штраф к score если цена далеко от ближайшего пивота (1D/1W/1M PP).
             # shadow mode (enabled: false) — только логирование без изменений.
+            # TRADER 25.03: pivot_reversal исключён — сигнал по определению стоит на пивоте,
+            #               PPF создаёт двойной фильтр одного условия и штрафует хороший тип.
             _ppf_cfg = (self.config.get("trading", {}).get("pivot_proximity_filter", {})
                         if self.config else {})
             _ppf_enabled = _ppf_cfg.get("enabled", False)
             _ppf_shadow  = not _ppf_enabled  # shadow = логируем, но не меняем
+            _ppf_skip_pivot_reversal = any(
+                getattr(getattr(s, "signal_type", None), "value", None) == "pivot_reversal"
+                for s in (recommendation.supporting_signals or [])
+            ) and not any(
+                getattr(getattr(s, "signal_type", None), "value", None) in ("wt_b_signal", "mtf_bias", "confluence")
+                for s in (recommendation.supporting_signals or [])
+            )
             try:
-                _price37 = (recommendation.entry_price
-                            or (market_context.current_price if market_context else 0))
-                if _price37 > 0:
+                if _ppf_skip_pivot_reversal:
+                    logger.debug("[%s] DEV-37 PPF: пропуск для pivot_reversal", symbol)
+                else:
+                  _price37 = (recommendation.entry_price
+                              or (market_context.current_price if market_context else 0))
+                  if _price37 > 0:
                     # 4h ATR для адаптивных порогов (кешировано scan_loop-ом)
                     _atr_pct37 = None
                     try:
@@ -892,7 +904,7 @@ class TradingIntelligence:
                         pass
 
                     if _atr_pct37:
-                        _tier1_37 = max(1.0, _atr_pct37 * 1.5)
+                        _tier1_37 = max(1.0, min(_atr_pct37 * 1.5, 5.0))  # TRADER TR-004: cap 5%
                         _tier2_37 = _tier1_37 * 2
                         _hard_m37 = float(_ppf_cfg.get("hard_block_mult", 3))
 
@@ -945,6 +957,59 @@ class TradingIntelligence:
                                     )
             except Exception as _e37:
                 logger.debug("[%s] DEV-37 Pivot Proximity Filter: %s", symbol, _e37)
+
+            # DEV-52: L3 условия 3+5 — shadow mode (только лог, не блокирует)
+            try:
+                from core.config_loader import config as _cfg_52ti
+                _l3_52 = (_cfg_52ti.get("trading", {}) or {}).get("l3_checker", {}) if _cfg_52ti else {}
+                if _l3_52:
+                    _min_score_52 = _l3_52.get("min_score", 85)
+                    _dir_52ti = str(getattr(recommendation, "direction", "") or "").upper()
+                    _score_52 = getattr(recommendation, "overall_strength", 0) or 0
+                    _cond5 = _score_52 >= _min_score_52
+
+                    # Условие 3: 1h структура не противоположна направлению
+                    _cond3 = True
+                    _cond3_note = "no_data"
+                    try:
+                        from core.structure_detector import detect_structure as _det_struct_52
+                        _df_1h_52 = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
+                        if _df_1h_52 is not None and len(_df_1h_52) >= 20:
+                            _struct_52 = _det_struct_52(_df_1h_52)
+                            _last_bos  = _struct_52.get("bos")
+                            _last_choch = _struct_52.get("choch")
+                            _last_brk = _last_bos or _last_choch
+                            if _last_brk:
+                                _bars_ago_52 = len(_df_1h_52) - 1 - _last_brk.get("broken_index", 0)
+                                _is_stale_52 = _bars_ago_52 > 48  # >48 баров 1h = >48ч
+                                _brk_dir_52  = (_last_brk.get("direction") or "").upper()
+                                _brk_type_52 = "BOS" if _last_bos else "CHOCH"
+                                if not _is_stale_52:
+                                    if _dir_52ti == "LONG" and _brk_dir_52 == "BEARISH" and _brk_type_52 == "BOS":
+                                        _cond3 = False
+                                        _cond3_note = f"BEARISH_BOS {_bars_ago_52}bars_ago"
+                                    elif _dir_52ti == "SHORT" and _brk_dir_52 == "BULLISH" and _brk_type_52 == "BOS":
+                                        _cond3 = False
+                                        _cond3_note = f"BULLISH_BOS {_bars_ago_52}bars_ago"
+                                    elif _dir_52ti == "LONG" and _brk_dir_52 == "BEARISH" and _brk_type_52 == "CHOCH":
+                                        _cond3_note = f"BEARISH_CHOCH soft {_bars_ago_52}bars"
+                                    elif _dir_52ti == "SHORT" and _brk_dir_52 == "BULLISH" and _brk_type_52 == "CHOCH":
+                                        _cond3_note = f"BULLISH_CHOCH soft {_bars_ago_52}bars"
+                                    else:
+                                        _cond3_note = f"{_brk_dir_52}_{_brk_type_52} ok"
+                                else:
+                                    _cond3_note = f"stale({_bars_ago_52}bars)"
+                    except Exception as _e52_struct:
+                        logger.debug("[%s] DEV-52 struct: %s", symbol, _e52_struct)
+
+                    # Сводный лог
+                    _conds_met = sum([_cond3, _cond5])  # условия 3+5 (6 в portfolio gate)
+                    logger.info(
+                        "[%s] DEV-52-L3 cond3=%s(%s) cond5=%s(score=%d≥%d) met=%d/2",
+                        symbol, _cond3, _cond3_note, _cond5, _score_52, _min_score_52, _conds_met,
+                    )
+            except Exception as _e52ti:
+                logger.debug("[%s] DEV-52 L3 checker: %s", symbol, _e52ti)
 
             # DEV-40: ATR entry TF → используется в register_trade для ATR-based TP1
             try:

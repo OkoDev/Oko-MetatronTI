@@ -257,7 +257,8 @@ class TradeSimulator:
             confidence = _get_recommendation_value(recommendation, "confidence")
             ts = _get_recommendation_value(recommendation, "timestamp") or datetime.now(timezone.utc)
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                # DEV-49: astimezone конвертирует из локального в UTC (replace только клеит метку)
+                ts = ts.astimezone(timezone.utc)
 
             # RR-фильтр: при WR=40% нужен RR≥2.0 для положительного EV
             try:
@@ -474,6 +475,28 @@ class TradeSimulator:
         затем сохраняет сделку. Если data_collector недоступен — пишет regime=None.
         extra_features — доп. признаки (напр. distance_to_pivot_pct) для features_json.
         """
+        # ARCH-42: Market Stress Gate — блок входов при массовых SL (shadow mode)
+        try:
+            from core.config_loader import config as _cfg_msg
+            _msg = (_cfg_msg.get("trading", {}) or {}).get("market_stress_gate", {}) if _cfg_msg else {}
+            if _msg:
+                _threshold = int(_msg.get("sl_threshold", 5))
+                _window_min = int(_msg.get("window_minutes", 30))
+                _now_msg = datetime.now(timezone.utc)
+                _window_start_msg = _now_msg - timedelta(minutes=_window_min)
+                _recent_sl = [t for t in self._sl_timestamps if t >= _window_start_msg]
+                if len(_recent_sl) >= _threshold:
+                    _sym_msg = _get_recommendation_value(recommendation, "symbol") or ""
+                    if _msg.get("enabled"):
+                        logger.info("[ARCH-42] %s БЛОК market_stress: %d SL за %d мин",
+                                    _sym_msg, len(_recent_sl), _window_min)
+                        return None
+                    else:
+                        logger.info("[ARCH-42] shadow %s: %d SL за %d мин (gate disabled)",
+                                    _sym_msg, len(_recent_sl), _window_min)
+        except Exception as _e_msg:
+            logger.debug("[ARCH-42] stress gate error: %s", _e_msg)
+
         # DEV-38: Correlation Guard — блок если по коррелированному активу уже открыта сделка
         try:
             from core.config_loader import config as _cfg_cg38
@@ -495,39 +518,6 @@ class TradeSimulator:
         except Exception as _e:
             logger.debug("[DEV-38] Correlation Guard error: %s", _e)
 
-        # DEV-44: Safety gate — второй рубеж (защищает WL breach и любые будущие code-paths)
-        # Guards в analyze_symbol() остаются (DEV-32/33): они снижают action→WATCH с причиной.
-        # Здесь — тихий return None для не-analyze_symbol путей.
-        try:
-            from core.config_loader import config as _cfg_44
-            if _cfg_44:
-                _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
-                _regime_44 = (
-                    _get_recommendation_value(recommendation, "regime") or
-                    (recommendation.metadata.get("mtf_context", {}).get("regime")
-                     if getattr(recommendation, "metadata", None) else None)
-                )
-                _direction_44 = _get_recommendation_value(recommendation, "direction") or None
-
-                # Guard 1: blocked_regimes (DEV-33)
-                _blocked_regimes_44 = _cfg_44.get("trading.blocked_regimes", [])
-                if _regime_44 and _blocked_regimes_44 and _regime_44 in _blocked_regimes_44:
-                    logger.info("[DEV-44] %s БЛОК blocked_regime: %s", _sym_44, _regime_44)
-                    return None
-
-                # Guard 2: regime_direction_block (DEV-32)
-                _rdb_44 = _cfg_44.get("trading.regime_direction_block", {})
-                if _regime_44 and _direction_44 and _rdb_44.get("enabled"):
-                    _blocked_dir_44 = _rdb_44.get(_regime_44)
-                    if _blocked_dir_44 and str(_direction_44).upper() == _blocked_dir_44:
-                        logger.info(
-                            "[DEV-44] %s БЛОК regime_direction: %s/%s",
-                            _sym_44, _regime_44, _direction_44,
-                        )
-                        return None
-        except Exception as _e:
-            logger.debug("[DEV-44] Safety gate error: %s", _e)
-
         regime: Optional[str] = None
         if data_collector is not None:
             symbol = _get_recommendation_value(recommendation, "symbol") or ""
@@ -540,6 +530,58 @@ class TradeSimulator:
                         logger.debug("MarketRegime для %s: %s", symbol, regime)
                 except Exception as e:
                     logger.debug("MarketRegime: не удалось определить для %s — %s", symbol, e)
+
+        # DEV-44 (ARCH-39 fix): Safety gate — второй рубеж, использует свежевычисленный regime
+        # Теперь работает для ВСЕХ code-paths (analyze_symbol + WL breach + будущие)
+        if regime:
+            try:
+                from core.config_loader import config as _cfg_44
+                if _cfg_44:
+                    _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
+                    _dir_44 = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                    # Guard 1: blocked_regimes (DEV-33 fallback)
+                    if regime in (_cfg_44.get("trading.blocked_regimes") or []):
+                        logger.info("[DEV-44] %s БЛОК blocked_regime: %s", _sym_44, regime)
+                        return None
+                    # Guard 2: regime_direction_block (DEV-32 fallback)
+                    _rdb = _cfg_44.get("trading.regime_direction_block") or {}
+                    if _rdb.get("enabled") and _rdb.get(regime) == _dir_44:
+                        logger.info("[DEV-44] %s БЛОК regime_direction: %s/%s", _sym_44, regime, _dir_44)
+                        return None
+            except Exception as _e44:
+                logger.debug("[DEV-44] Safety gate error: %s", _e44)
+
+        # DEV-52: L3 Портфельный лимит (условие 6) — shadow mode
+        try:
+            from core.config_loader import config as _cfg_52
+            _l3 = (_cfg_52.get("trading", {}) or {}).get("l3_checker", {}) if _cfg_52 else {}
+            if _l3:
+                _max_long  = _l3.get("max_open_long", 2)
+                _max_short = _l3.get("max_open_short", 2)
+                _max_total = _l3.get("max_open_total", 4)
+                _dir_52    = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                _sym_52    = _get_recommendation_value(recommendation, "symbol") or symbol
+                _open_52   = self.get_open_trades()
+                _n_long    = sum(1 for t in _open_52 if t.get("direction") == "LONG")
+                _n_short   = sum(1 for t in _open_52 if t.get("direction") == "SHORT")
+                _n_total   = len(_open_52)
+                _blocked_52 = None
+                if _dir_52 == "LONG" and _n_long >= _max_long:
+                    _blocked_52 = f"LONG {_n_long}/{_max_long}"
+                elif _dir_52 == "SHORT" and _n_short >= _max_short:
+                    _blocked_52 = f"SHORT {_n_short}/{_max_short}"
+                elif _n_total >= _max_total:
+                    _blocked_52 = f"TOTAL {_n_total}/{_max_total}"
+                if _blocked_52:
+                    if _l3.get("enabled"):
+                        logger.info("[DEV-52] %s: портфельный лимит %s", _sym_52, _blocked_52)
+                        return None
+                    else:
+                        logger.info("[DEV-52] shadow %s: портфельный лимит %s (gate disabled)",
+                                    _sym_52, _blocked_52)
+        except Exception as _e52:
+            logger.debug("[DEV-52] portfolio gate error: %s", _e52)
+
         return self.register_trade(recommendation, regime=regime, extra_features=extra_features)
 
     def get_open_trades(self) -> List[Dict[str, Any]]:
@@ -821,10 +863,14 @@ class TradeSimulator:
                 try:
                     ts_sec = created_dt.timestamp()
                     df_filtered = df[df["time"] >= ts_sec * 1000].copy()
-                    # Если фильтр выбросил все свечи (например, часы сервера были смещены
-                    # при создании сделки) — берём последние 5 свечей как минимум,
-                    # чтобы SL/TP всегда проверялся по актуальным данным.
-                    df = df_filtered if len(df_filtered) > 0 else df.iloc[-5:].copy()
+                    # DEV-49: при пустом фильтре — пропускаем чек (не используем pre-entry бары)
+                    if len(df_filtered) == 0:
+                        logger.warning(
+                            "[trade %d] нет баров после created_at (%s) — пропуск чека SL/TP",
+                            trade_id, created_at,
+                        )
+                        continue
+                    df = df_filtered
                 except Exception:
                     pass
             if len(df) == 0:
