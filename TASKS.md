@@ -62,8 +62,8 @@
 
 ### TR-001 — Ежедневный разбор Watch List с живыми свечами
 **Статус:** 🔄 периодическая
-**Последний разбор:** 23.03.2026 (вечер) | 39 OPEN | бот не работает с 04:00 | → memory/trader_analyses/2026-03-23-evening.md
-**Следующий:** после перезапуска бота (DEV)
+**Последний разбор:** 23.03.2026 (ночь ~18:30 UTC) | 28 OPEN | 47 SL за день | → memory/trader_analyses/2026-03-23-night.md
+**Следующий:** 25.03.2026
 
 **Что делать:** взять 4-6 пар из Watch List или свежих сигналов, посмотреть живые свечи (WT, тренд, wick structure), дать оценку: подтверждает рынок сигнал или нет?
 
@@ -246,6 +246,41 @@ ORDER BY closed_at DESC LIMIT 50;
 ## 🏛️ Задачи ARCH
 
 > Архитектурные решения — дизайн, приоритеты, спецификации. Выполняются до передачи DEV.
+
+---
+
+### ARCH-45 — Плановый ревью: OutcomePredictor AUC + adaptive weights после чистых данных 🔄
+**Статус:** 🔄 в работе — baseline снят 23.03.2026, финальный ревью ≈ 06.04.2026
+**Источник:** Сессия 23.03.2026 — система стабилизирована после DEV-49/50
+
+**Цель:** оценить качество ML и adaptive_weights после 2 недель чистых данных (post DEV-32/33/49).
+
+**Чеклист (≈06.04.2026):**
+
+1. **OutcomePredictor AUC**
+   ```python
+   from core.outcome_predictor import OutcomePredictor
+   op = OutcomePredictor(); op.fit('subscriptions.db')
+   print(op.info())  # смотреть CV AUC
+   ```
+   - AUC > 0.55 → активировать ARCH-21 (sliding window training_window=500)
+   - AUC < 0.50 → ищем новые признаки (MTF bias, price_zone?)
+
+2. **Adaptive weights pivot_reversal**
+   ```python
+   from core.performance_engine import PerformanceEngine
+   pe = PerformanceEngine('subscriptions.db'); pe.by_signal_type()
+   ```
+   - Смотреть avg_R для pivot_reversal (сейчас ~+0.50 → должно снизиться при медвежьем рынке)
+   - Если вес >0.15 несмотря на серию SL → создать ARCH-46 (обновление весов раз в 2ч)
+
+3. **WR на чистых данных (post DEV-32/33)**
+   - Взять сделки после 25.03.2026 (post timezone fix)
+   - Ожидаем WR ↑ с ~31% к 45%+ (убрали 52% контр-тренд LONG/TREND_DOWN)
+
+4. **TR-008 повторный** — 50 SL-сделок из новых данных → передать TRADER
+
+**Если триггер не наступил к 06.04 (мало сделок):** перенести на 13.04, не форсировать.
 
 ---
 
@@ -722,6 +757,26 @@ trading:
 За всё время наблюдения hard_block=0. При tier1≈3.3% медиана — текущий порог 9.9% нереалистичен. Снизить до 6.6%.
 
 **Файл:** `config.yaml` → 1 строка.
+
+---
+
+### DEV-50 — OutcomePredictor: фильтрация data_quality=bug_timezone ✅
+**Статус:** ✅ выполнено (25.03.2026)
+**Источник:** ARCH ответ DEV-49 (25.03.2026)
+
+**Зачем:** 948 сделок помечены `features_json["data_quality"]="bug_timezone"` (DEV-49). Признаки в OutcomePredictor не временные → текущего влияния нет. **Риск:** при активации ARCH-21 sliding window (training_window=500) эти 948 баг-сделок могут доминировать в обучающей выборке.
+
+**Что сделать:** в `OutcomePredictor.fit()` в цикле (~строка 128), сразу после парсинга `fj`:
+
+```python
+# DEV-50: исключаем баг-данные timezone из обучения (948 сделок до 25.03)
+if fj.get("data_quality") == "bug_timezone":
+    continue
+```
+
+**Файл:** `core/outcome_predictor.py` строка ~130.
+
+**Приоритет:** 🟢 низкий — реализовать до активации ARCH-21 sliding window (не блокер сейчас).
 
 ---
 

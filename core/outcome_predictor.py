@@ -128,6 +128,9 @@ class OutcomePredictor:
             for r in rows:
                 try:
                     fj = json.loads(r["features_json"] or "{}")
+                    # DEV-50: исключаем баг-сделки (timezone bug) из обучения
+                    if fj.get("data_quality") == "bug_timezone":
+                        continue
                     fv = _build_feature_vector(
                         r["signal_type"] or "",
                         r["direction"] or "",
