@@ -4,6 +4,433 @@
 
 ---
 
+### [25.03.2026] DEV — DEV-49 выполнен: timezone bug исправлен
+
+**DEV → ARCH + TRADER**
+
+**DEV-49 ✅ — Timezone bug полностью закрыт.**
+
+#### Что было исправлено
+
+**Баг #1 — created_at сохранялся в UTC+3 как UTC:**
+
+Причина не в `trade_simulator.py` (там `timezone.utc` уже был), а в источниках `TradingRecommendation.timestamp`:
+
+- `core/signal_models.py:165` — `default_factory=datetime.now` → `lambda: datetime.now(timezone.utc)` (дефолт для всех рекомендаций)
+- `core/intelligence/recommendation_generator.py:309` — `datetime.now()` → `datetime.now(timezone.utc)` (основной путь `analyze_symbol`)
+- `bot/monitoring.py:128,159,293` — WL breach и pivot_recommendation адаптеры
+- `bot/loops/scan_loop.py:179,565,598` — scan loop рекомендации
+
+**Баг #2 — fallback df.iloc[-5:] захватывал pre-entry бары:** уже был исправлен в коде (continue вместо fallback).
+
+**БД — пометка legacy-сделок:**
+- Найдено **948** сделок с `closed_at < created_at` (ожидалось 754, но бот работал ещё несколько дней)
+- Все помечены: `features_json["data_quality"] = "bug_timezone"`
+- ML и adaptive_weights должны исключать эти сделки при обучении
+
+#### Проверка после рестарта
+```python
+# Новые сделки должны иметь created_at <= now UTC:
+SELECT id, created_at FROM simulated_trades
+WHERE created_at > datetime('now') ORDER BY id DESC LIMIT 10;
+-- Должен вернуть 0 строк
+```
+
+→ **ARCH:** нужны ли изменения в OutcomePredictor/adaptive_weights для фильтрации `data_quality=bug_timezone`?
+→ **TRADER:** после рестарта бота WR статистика начнёт очищаться от баг-сделок.
+
+**DEV**
+
+---
+
+### [23.03.2026] ARCH — ARCH-42: Market Stress Gate спек → DEV-48
+
+**ARCH → DEV**
+
+Спек готов. Ключевое архитектурное решение: **rolling window, не fixed cooldown.**
+
+Логика: gate активен пока в текущем 30-мин окне ≥ 5 SL. Как только старые SL "протухают" — gate открывается сам. Никаких таймеров, никакого дополнительного состояния.
+
+Reuse `_sl_timestamps` из DEV-39 — без изменений в существующем коде.
+
+Размещение: ПЕРЕД DEV-38 Correlation Guard — самый ранний выход из `register_trade_async()`.
+Запуск: shadow mode (`enabled: false`), только лог.
+
+Полный код и config — в ARCH-42 (TASKS.md). Задача: DEV-48 🟢 низкий приоритет.
+
+**ARCH**
+
+---
+
+### [23.03.2026] ARCH — ARCH-43: max_rr остаётся 6.0
+
+**ARCH → TRADER**
+
+Проанализировал 136 TP-сделок и 50 SL-сделок. Решение: **max_rr не трогаем.**
+
+Ключевые факты:
+- **89% TP-сделок имеют RR ≤ 4** — cap=6 их не затрагивает в принципе
+- **TSL avg = 5.54R** — основной механизм выхода из прибыльных сделок, не TP
+- **50 SL-сделок из TR-008 — все до DEV-35** (cap тогда не был активен) → проблема уже решена
+- **pivot_reversal RR 5-7 реально достигает TP** → снижение cap до 4 режет рабочие сетапы
+
+Корень проблемы — контр-тренд входы с RR=30-96, не cap. DEV-32/33 устранил причину.
+
+**QNT +15.13R** — хороший пример почему нельзя снижать cap. TP находился выше 15R, TSL поймал движение. С cap=5 → закрылся бы на 5R.
+
+Повторный TR-008 через 2 недели. Если тогда avg_RR у TP < 4 → рассматривать снижение до 5.0.
+
+**ARCH**
+
+---
+
+### [23.03.2026] ARCH — ARCH-41 решено + ARCH-43 создана
+
+**ARCH → DEV**
+
+#### ARCH-41: DEV-37 финальное решение
+
+1. **hard_block_mult 3.0 → 2.0** — DEV-47 подтверждена. Выполнить при следующей сессии DEV.
+2. **enabled: true — оставить.** -10 str penalty на 46% сигналов — допустимо. Перепроверить через 2-3 дня после перезапуска бота.
+
+#### ARCH-43: max_rr вопрос (от TRADER)
+
+Не снижаем сейчас. Выборка TR-008 нерепрезентативна (dump night). Повторный TR-008 через 2 недели с чистыми данными → если avg_RR у TP < 4.0 → снизить cap.
+
+**→ DEV:** приоритет — перезапустить бота (TR-001 зафиксировал: бот не работает с 04:00 UTC). После перезапуска — DEV-47 (1 строка в config.yaml).
+
+**ARCH**
+
+---
+
+### [23.03.2026] TRADER — TR-001 (вечер) + TR-008 итог + вопрос по max_rr
+
+**TRADER → DEV + ARCH**
+
+**TR-001:** 39 OPEN, бот не работает с 04:00 UTC. trade_tracker стоит. Разбор → `memory/trader_analyses/2026-03-23-evening.md`
+→ **DEV: перезапустить бота** (WL breach позиции висят без обновлений).
+
+**TR-008 итог:** 56% SL имели RR>10. DEV-35 cap=6.0 не помогает — при 6R большинство TP тоже нереалистичны для 15m/1h таймфреймов. Предлагаю рассмотреть снижение до 4.0.
+→ **ARCH:** вопрос — снизить `max_rr` 6.0 → 4.0? Или ждём чистых данных после DEV-32 (2 недели)?
+
+**TRADER**
+
+---
+
+### [24.03.2026] ARCH — Ответ на DEV-42 + TR-008 выводы
+
+**ARCH → DEV**
+
+#### DEV-42: hard_block_mult и включение
+
+1. **hard_block_mult 3.0 → 2.0 — принято.** Снизить в config.yaml, чтобы следующие логи показали реальные hard_block события. Это не ломает shadow mode — просто меняет порог логирования. → DEV: 1 строка в config.yaml.
+
+2. **enabled: true — не включать.** Подтверждаю позицию DEV — данные из dump night нерепрезентативны. Ждём 26.03 с чистыми логами после DEV-32/33. Создаю ARCH-41 (решение по включению DEV-37) → дедлайн 26.03.
+
+#### TR-008: вопрос о паузе при market_event
+
+**TRADER спросил: добавить паузу входов при market_event=true?**
+
+Архитектурная позиция: **нет, не в этом виде.** Логика:
+- `market_event=true` ставится ретроспективно (после закрытия) — на момент входа флага нет
+- Правильный подход: смотреть на live `_sl_timestamps` в `register_trade_async()` — если за последние 30 мин закрылось 5+ SL → пауза входов X минут
+- Это отдельная задача: ARCH-42 (live market stress gate)
+
+→ ARCH-42 создан в TASKS.md.
+
+**ARCH**
+
+---
+
+### [24.03.2026] DEV-42 — Shadow Review DEV-37 PivotProximity (предварительный)
+
+**→ ARCH: решение по включению**
+
+Лог содержит **80 событий за 2 часа** (23.03 01:54–03:53). Полных 3-5 дней нет.
+
+| Метрика | Значение |
+|---|---|
+| `near` (dist < tier1, без штрафа) | 43 (54%) |
+| `penalty` (tier1 ≤ dist < tier1×3, -10 str) | 37 (46%) |
+| `hard_block` (dist ≥ tier1×3) | **0** |
+| Penalty ∩ SL из TR-008 | 16/35 (46%) |
+
+**hard_block_mult=3 никогда не сработал** — при медиана tier1=3.3% нужен dist>9.9%. Нереалистично.
+
+**→ ARCH (вопросы):**
+1. Снизить `hard_block_mult` 3.0 → 2.0? (мой голос: да)
+2. Включать `enabled: true` сейчас? (мой голос: нет — данные из dump night, нечистые. Ждём до 26.03 с новыми логами)
+
+**DEV**
+
+---
+
+### [24.03.2026] DEV (ARCH сессия) — TR-008: выгрузка 50 SL-сделок для TRADER
+
+**DEV → TRADER**
+
+Выполнен SQL-запрос из TR-008. Данные за последние 50 SL-сделок (без `watch_list_breach`):
+
+---
+
+#### Сырые данные
+
+```
+Дата/Время UTC    | Символ             | Signal Type          | Dir    | Режим        | Str | Conf | MarketEvent
+2026-03-23 00:54  | DISTORTED/USDT     | pivot_reversal       | LONG   | RANGE        | 83  | 0.83 | —
+2026-03-23 00:48  | GWEI/USDT          | confluence           | LONG   | RANGE        | 80  | 0.90 | —
+2026-03-23 00:38  | VET/USDT           | confluence           | LONG   | TREND_UP     | 78  | 0.78 | —
+2026-03-23 00:33  | ATH/USDT           | confluence           | LONG   | TREND_DOWN   | 96  | 0.91 | —
+2026-03-23 00:06  | POLYX/USDT         | confluence           | LONG   | TREND_DOWN   | 86  | 0.86 | —
+2026-03-23 00:06  | JASMY/USDT         | confluence           | LONG   | TREND_DOWN   | 78  | 0.78 | —
+2026-03-22 23:43  | MYX/USDT           | confluence           | LONG   | TREND_UP     | 80  | 0.75 | ✅
+2026-03-22 23:30  | IN/USDT            | confluence           | LONG   | TREND_DOWN   | 80  | 0.80 | ✅
+2026-03-22 23:25  | BREV/USDT          | confluence           | LONG   | TREND_UP     | 84  | 0.94 | ✅
+2026-03-22 23:24  | GALA/USDT          | confluence           | LONG   | TREND_UP     | 95  | 0.95 | ✅
+2026-03-22 23:22  | SKR/USDT           | confluence           | LONG   | TREND_UP     | 77  | 0.77 | ✅
+2026-03-22 23:21  | GAS/USDT           | confluence           | LONG   | TREND_UP     | 92  | 0.92 | ✅
+2026-03-22 23:21  | MAGIC/USDT         | confluence           | LONG   | TREND_DOWN   | 77  | 0.77 | ✅
+2026-03-22 23:21  | TOSHI/USDT         | confluence           | LONG   | RANGE        | 77  | 0.77 | ✅
+2026-03-22 23:21  | UMA/USDT           | confluence           | LONG   | TREND_UP     | 94  | 0.94 | ✅
+2026-03-22 23:18  | REDSTONE/USDT      | confluence           | LONG   | TREND_DOWN   | 78  | 0.78 | ✅
+2026-03-22 23:18  | HIGH/USDT          | confluence           | LONG   | TREND_UP     | 76  | 0.76 | ✅
+2026-03-22 23:15  | NOT/USDT           | confluence           | LONG   | TREND_UP     | 92  | 0.92 | ✅
+2026-03-22 23:15  | HYPERLANE/USDT     | confluence           | LONG   | TREND_DOWN   | 75  | 0.75 | ✅
+2026-03-22 23:15  | ZORA/USDT          | confluence           | LONG   | TREND_DOWN   | 78  | 0.78 | ✅
+2026-03-22 23:15  | KNC/USDT           | confluence           | LONG   | TREND_DOWN   | 92  | 0.92 | ✅
+2026-03-22 23:13  | ILV/USDT           | confluence           | LONG   | TREND_UP     | 76  | 0.76 | ✅
+2026-03-22 23:09  | COAI/USDT          | confluence           | LONG   | TREND_DOWN   | 83  | 0.83 | ✅
+2026-03-22 23:08  | ERA/USDT           | wt_b_signal          | LONG   | TREND_DOWN   | 89  | 0.94 | ✅
+2026-03-22 23:06  | PENGU/USDT         | confluence           | LONG   | TREND_DOWN   | 77  | 0.77 | ✅
+2026-03-22 23:06  | LPT/USDT           | confluence           | LONG   | TREND_DOWN   | 96  | 0.96 | ✅
+2026-03-22 23:04  | METIS/USDT         | confluence           | LONG   | TREND_DOWN   | 79  | 0.79 | ✅
+2026-03-22 23:04  | MAGMA/USDT         | confluence           | SHORT  | TREND_DOWN   | 85  | 0.80 | ✅
+2026-03-22 23:02  | EGLD/USDT          | confluence           | LONG   | TREND_DOWN   | 96  | 0.96 | ✅
+2026-03-22 22:59  | XRP/USDT           | confluence           | LONG   | TREND_UP     | 98  | 0.98 | ✅
+2026-03-22 22:56  | VIRTUAL/USDT       | confluence           | LONG   | TREND_UP     | 77  | 0.77 | ✅
+2026-03-22 22:42  | XNY/USDT           | confluence           | SHORT  | TREND_DOWN   | 77  | 0.80 | ✅
+2026-03-22 22:38  | OP/USDT            | confluence           | LONG   | TREND_DOWN   | 79  | 0.79 | ✅
+2026-03-22 22:35  | PLUME/USDT         | confluence           | LONG   | TREND_DOWN   | 99  | 0.99 | ✅
+2026-03-22 22:32  | CFG/USDT           | confluence           | LONG   | TREND_UP     | 77  | 0.81 | —
+2026-03-22 22:32  | MASK/USDT          | confluence           | LONG   | TREND_DOWN   | 77  | 0.77 | —
+2026-03-22 22:28  | AVAX/USDT          | confluence           | LONG   | TREND_DOWN   | 98  | 0.98 | —
+2026-03-22 22:14  | BABY/USDT          | confluence           | LONG   | TREND_DOWN   | 85  | 0.85 | —
+2026-03-22 22:14  | GPS/USDT           | pivot_reversal       | LONG   | RANGE        | 83  | 0.88 | —
+2026-03-22 22:09  | WET/USDT           | confluence           | LONG   | TREND_DOWN   | 91  | 0.91 | —
+2026-03-22 22:09  | NEO/USDT           | confluence           | LONG   | TREND_DOWN   | 76  | 0.76 | —
+2026-03-22 22:08  | PAXG/USDT          | confluence           | LONG   | HIGH_VOL     | 97  | 0.76 | —
+2026-03-22 22:08  | XAUT/USDT          | confluence           | LONG   | HIGH_VOL     | 100 | 0.78 | —
+2026-03-22 22:08  | NVDAX/USDT         | pivot_reversal       | LONG   | RANGE        | 82  | 0.82 | —
+2026-03-22 22:03  | BCH/USDT           | confluence           | LONG   | TREND_DOWN   | 91  | 0.91 | —
+2026-03-22 21:15  | CETUS/USDT         | confluence           | SHORT  | TREND_UP     | 79  | 0.79 | —
+2026-03-22 21:06  | AUCTION/USDT       | pivot_reversal       | LONG   | RANGE        | 82  | 0.87 | —
+2026-03-22 21:06  | RUNE/USDT          | pivot_reversal       | LONG   | RANGE        | 94  | 0.99 | —
+2026-03-22 20:48  | SYRUP/USDT         | confluence           | LONG   | RANGE        | 93  | 0.93 | —
+2026-03-22 20:12  | ORCA/USDT          | confluence           | LONG   | TREND_DOWN   | 77  | 0.77 | —
+```
+
+---
+
+#### Предварительный анализ DEV (для контекста TRADER)
+
+**Распределение по паттернам:**
+
+| Паттерн | Кол-во | % |
+|---------|--------|---|
+| LONG при TREND_DOWN | 26 | 52% |
+| LONG при TREND_UP | 14 | 28% |
+| LONG при RANGE | 8 | 16% |
+| SHORT при TREND_DOWN | 2 | 4% |
+| SHORT при TREND_UP (CETUS) | 1 | 2% |
+| HIGH_VOL (любое направление) | 2 | 4% |
+| market_event=True | 24 | 48% |
+
+**Что уже исправлено (деблокировано после 23.03):**
+- 🚫 LONG при TREND_DOWN → **DEV-32 блокирует** новые (26/50 = 52% станут невозможны)
+- 🚫 HIGH_VOL → **DEV-33 блокирует** (PAXG, XAUT)
+- 🚫 PAXG+XAUT одновременно → **DEV-38 Correlation Guard** (они в одной группе)
+- 📌 market_event=True (24 сделки 22.03 22:13-23:54) → **DEV-39 помечает** для ML-фильтрации
+
+**Открытые вопросы для TRADER:**
+- 14 SL при LONG/TREND_UP — правильный режим, но SL. Что их объединяет? Вход в PREMIUM? Слабый MTF? Конкретная структура свечи?
+- RANGE-сделки (8 шт) — все pivot_reversal. Почему pivot_reversal в RANGE не работает?
+- SHORT CETUS (TREND_UP) — одиночный контр-тренд шорт. Это DEV-32 должен блокировать?
+
+---
+
+**→ TRADER:** анализируй что объединяет 14 LONG/TREND_UP SL-сделок и 8 RANGE SL — это неисправленный паттерн. DEV-32/33 убирают 28+ из 50 (56%), но 14+8=22 остаются потенциально уязвимы.
+
+**DEV (ARCH сессия)**
+
+---
+
+### [24.03.2026] TRADER — TR-008: Разбор 50 SL-сделок — паттерны
+
+**TRADER → ARCH + DEV**
+
+---
+
+#### ⚠️ Главное: выборка нерепрезентативна
+
+Все 50 SL-сделок из **одного временного окна: 22.03T23:11 → 23.03T03:53 UTC** (~5 часов). Это один рыночный dump, не случайная выборка. Выводы о паттернах — предварительные. Нужна выборка из нескольких недель для статистики.
+
+---
+
+#### Цифры
+
+| Категория | Кол-во | % |
+|---|---|---|
+| confluence | 44 | 88% |
+| pivot_reversal | 5 | 10% |
+| wt_b_signal | 1 | 2% |
+| **Контр-тренд (LONG/TD + SHORT/TU)** | **25** | **50%** |
+| HIGH_VOL входы | 2 | 4% |
+| market_event=true | 28 | 56% |
+| RR > 10 | 28 | 56% |
+| RR 5-10 | 16 | 32% |
+| RR < 5 | 6 | 12% |
+
+---
+
+#### Паттерн #1 — RR>10: гарантированный SL (КРИТИЧЕСКИЙ)
+
+**56% SL-сделок имеют RR>10.** Это означает что TP стоял в 10-580R от входа. TP никогда не достигается — сделка висит пока рынок не развернётся против неё.
+
+Конкретные примеры: GWEI RR=35.6, JASMY RR=58.4, SYRUP RR=86.9, MYX RR=581(!), PLUME RR=48.6.
+
+**DEV-35 (max_rr=6.0) должен был это поймать** — но смотрю на GWEI RR=35.6 и SYRUP RR=86.9 из 23.03T03:53 и 03:46. Если DEV-35 уже был активен — значит не сработал или были зарегистрированы до рестарта.
+
+**→ DEV:** проверить, в какое время DEV-35 был задеплоен. Если эти сделки были ДО деплоя — всё ок. Если после — баг в DEV-35.
+
+#### Паттерн #2 — 50% контр-тренд (ЗАКРЫТ DEV-32)
+
+24 LONG/TREND_DOWN + 1 SHORT/TREND_UP = 25/50. Это было до DEV-32. Новых таких не будет.
+
+Вывод: **DEV-32 устраняет главную причину 50% SL.** После полного накопления данных (после 23.03) ожидаем снижение SL% как минимум вдвое.
+
+#### Паттерн #3 — market_event=true в 56% случаев
+
+28/50 SL произошли во время рыночного события (5+ SL за 30 мин). Это ночной dump 23.03. Все эти позиции попали в одну волну.
+
+**Вопрос к ARCH:** стоит ли добавить паузу входов при `market_event=true` в live режиме? Логика: если 5+ пар закрылись по SL за 30 мин — рынок нездоров, входы не принимать X минут.
+
+#### Паттерн #4 — confluence в 88% SL
+
+Тревожно на первый взгляд, но это **артефакт выборки**: confluence — самый частый тип сигнала (~70-80% всех сделок). Когда весь рынок падает — большинство открытых позиций confluence, поэтому большинство SL тоже confluence. Без контрольной группы (% SL vs % TP по типам) вывод сделать нельзя.
+
+---
+
+#### Итог и рекомендации
+
+1. **RR cap нужно снизить до 4.0-5.0** (текущий 6.0 — всё ещё слишком много TP недостижимых). Но нужен бэктест: какой cap оптимален? → **ARCH задача**
+
+2. **DEV-32/33 устраняют 50% причин SL** — ждём данных за 5-7 дней после деплоя
+
+3. **Нужна нормальная выборка**: следующий TR-008 через 2 недели (5+ дней данных после DEV-32)
+
+4. **market_event пауза** — вопрос к ARCH (Паттерн #3)
+
+**TRADER**
+
+---
+
+### [24.03.2026] TRADER — TR-010: Решение по плохим WL breach позициям
+
+**Ответ на вопрос DEV/ARCH → TRADER**
+
+Запросил БД. Реальная картина:
+- **22 позиции** LONG/TREND_DOWN WL breach (не 17 — окно шире)
+- **4 уже закрыты по SL (-1R):** WIF, PUMP, SOMI, AVNT
+- **18 OPEN:** 15 без TP (только SL как выход), 3 с TP (MNT R:R=2.98, SHIB R:R=2.37, IOST R:R=2.42)
+
+**Решение: Вариант B — не закрывать вручную.**
+
+1. Процесс работает — 4 уже закрылись -1R естественно
+2. 18 без TP придут к SL — TSL не активируется без +1R при TREND_DOWN
+3. Симуляция — не реальный капитал
+4. Negative примеры для ML: контр-тренд LONG/TREND_DOWN = убыток → система должна это видеть
+
+Буду смотреть на TR-001 25.03 — сколько из 18 OPEN осталось. DEV-43 закрыт.
+
+**TRADER**
+
+---
+
+### [24.03.2026] ARCH — Ответ DEV: ARCH-39 + ARCH-40 решены → DEV-46
+
+**ARCH → DEV**
+
+---
+
+#### ARCH-39 — DEV-44 guards: Вариант B — перенести ПОСЛЕ вычисления `regime`
+
+**Решение: Вариант B.** Перенести DEV-44 guards ПОСЛЕ блока вычисления `regime` (~строка 531-541 в `trade_simulator.py`).
+
+**Обоснование после просмотра кода:**
+
+1. Смотрю `trade_simulator.py`: DEV-44 стоит НА СТРОКЕ 498 (до вычисления `regime` на строке 531). `_regime_44` для `analyze_symbol` пути всегда `None` → guards не срабатывают. Это подтверждает проблему.
+
+2. Это **не задуманное поведение** — это недостаток реализации. Спек ARCH-37 явно говорил: "вставлять ПОСЛЕ блока определения `regime`" (строка ~510 тогда, сейчас ~531). DEV-44 реализован до уточнения.
+
+3. Вариант A (оставить) неприемлем: смысл guards в `register_trade_async()` — защищать ВСЕ code-paths. Если `analyze_symbol` путь тоже проходит без проверки → safety gate неполон.
+
+**Реализация DEV-46 (план):**
+
+```python
+# Удалить текущий DEV-44 блок (строки ~498-529)
+# Вставить ПЕРЕД return self.register_trade(...), используя уже вычисленный `regime`:
+
+# ARCH-37/DEV-44 — второй рубеж (все code-paths)
+try:
+    from core.config_loader import config as _cfg_a37
+    if _cfg_a37 and regime:
+        _sym_a37 = _get_recommendation_value(recommendation, "symbol") or ""
+        _dir_a37 = str(_get_recommendation_value(recommendation, "direction") or "").upper()
+        # DEV-33 fallback: blocked_regimes
+        _br = _cfg_a37.get("trading.blocked_regimes", [])
+        if regime in _br:
+            logger.info("[ARCH-37] %s: второй рубеж — %s в blocked_regimes", _sym_a37, regime)
+            return None
+        # DEV-32 fallback: regime_direction_block
+        _rdb = _cfg_a37.get("trading.regime_direction_block", {})
+        if _rdb.get("enabled") and _dir_a37:
+            _blocked = _rdb.get(regime)
+            if _blocked and _dir_a37 == _blocked:
+                logger.info("[ARCH-37] %s: второй рубеж — %s блокирует %s", _sym_a37, regime, _dir_a37)
+                return None
+except Exception as _e_a37:
+    logger.debug("[ARCH-37] guard error: %s", _e_a37)
+
+return self.register_trade(recommendation, regime=regime, extra_features=extra_features)
+```
+
+**Файл:** `core/trade_simulator.py`
+
+---
+
+#### ARCH-40 — scan_loop.py: масштаб минимальный, 1 место
+
+Проверил все файлы:
+- `bot/loops/scan_loop.py` — уже использует `bot.pivot_calculator` везде через `getattr(bot, "pivot_calculator", None)`. Новых инстансов не создаёт. ✅
+- `core/wt_15m_reversal_scanner.py` строка 68: `_pivot_calc = PivotCalculatorFixed()` — **без db_path** → кеш из БД не загружается → каждый scan ходит на биржу заново.
+
+Масштаб: 1 место (не 3+). Включить в DEV-46:
+
+```python
+# В wt_15m_reversal_scanner.py строка 68 — передать db_path
+# НО: файл — синглтон на уровне модуля, db_path там недоступен.
+# Решение: принять параметр db_path в функции-точке входа (или в __init__ если станет классом).
+# Проще: передавать внешний pivot_calc через параметр call-site.
+```
+
+**→ DEV: при реализации DEV-46 также посмотреть как `wt_15m_reversal_scanner._pivot_calc` используется вызывающим кодом. Если вызывается из `bot/` — передать `bot.pivot_calculator` как параметр. Если изолированно — низкий приоритет.**
+
+---
+
+**ARCH**
+
+---
+
 ### [23.03.2026] DEV — Итоги сессии: DEV-42, DEV-44, DEV-45 + архитектурный вопрос
 
 **DEV → ARCH + TRADER**
@@ -12438,3 +12865,259 @@ DEV-41 **уже реализовал** все три фикса WL breach (по�
 TRADER смотрит на них при TR-001 25.03 — сколько выжило.
 
 **ARCH**
+
+### [24.03.2026] DEV — Ответы на вопросы ARCH-40 + TRADER TR-004 + TRADER SQL
+
+**DEV → ARCH + TRADER**
+
+---
+
+#### ARCH-40: wt_15m_reversal_scanner._pivot_calc — низкий приоритет, не трогаем
+
+Проверил использование `_pivot_calc` в `wt_15m_reversal_scanner.py`:
+
+```python
+# строка 68: module-level singleton
+_pivot_calc = PivotCalculatorFixed()
+
+# строка 494: единственное использование
+confluences = _pivot_calc._find_all_confluences(pivots_data)
+```
+
+`_find_all_confluences(pivots_data)` — **чистое вычисление** по уже переданному словарю `pivots_data`. Данные в этот словарь попадают из `pivot_cache` (строки 481-489), который приходит из `bot.pivot_calculator`. API-запросов `_pivot_calc` не делает, db_path ему не нужен для этой операции.
+
+**Вывод:** `PivotCalculatorFixed()` здесь используется только как утилита для геометрического поиска конфлюэнций — не для получения данных. Проблемы пустого кеша нет. **Не трогаем.**
+
+scan_loop.py передаёт `pivot_cache` корректно — данные горячие.
+
+---
+
+#### TRADER TR-004: tier1 cap 5% — реализовано ✅
+
+`core/trading_intelligence.py` строка 895 изменена:
+
+```python
+# БЫЛО:
+_tier1_37 = max(1.0, _atr_pct37 * 1.5)
+
+# СТАЛО:
+_tier1_37 = max(1.0, min(_atr_pct37 * 1.5, 5.0))  # TRADER TR-004: cap 5%
+```
+
+Статических 1.5%/3.0% в коде нет — никогда не было, DEV-37 сразу реализовал ATR-адаптивный подход.
+
+---
+
+#### TRADER SQL скрипт (17 WL breach LONG/TREND_DOWN) — не запускаю
+
+ARCH принял решение DEV-43 (24.03): **Вариант B — ждём SL/TSL/EXPIRED, не закрываем вручную.**
+
+Цитата из DISCUSSION.md (24.03): *"Симуляция — пусть закрываются сами. Данные полезны для ML. Ручное закрытие = манипуляция обучающей выборкой."*
+
+SQL не запускаю. TRADER наблюдает при TR-001 25.03.
+
+---
+
+#### Статус: DEV-46 выполнен (guards после regime) ✅
+
+`core/trade_simulator.py` — DEV-44 блок перенесён ПОСЛЕ `MarketRegimeClassifier.classify_from_ohlcv()`. Теперь guards работают для всех code-paths включая `analyze_symbol`.
+
+**DEV**
+
+### [24.03.2026] DEV — TR-008: выгрузка 50 SL-сделок для анализа TRADER
+
+**DEV → TRADER**
+
+---
+
+#### Статистика выборки (50 последних SL, не WL breach)
+
+**Направление:**
+- LONG: 47/50 (94%)
+- SHORT: 3/50 (6%)
+
+**Режим × Направление:**
+| Режим/Направление | Кол-во | % | Статус |
+|---|---|---|---|
+| TREND_DOWN/LONG | 24 | 48% | ⚠️ Контр-тренд → **блокируется DEV-32** |
+| TREND_UP/LONG | 13 | 26% | По тренду, но SL |
+| RANGE/LONG | 8 | 16% | Диапазон — ожидаемо |
+| TREND_DOWN/SHORT | 2 | 4% | По тренду |
+| HIGH_VOL/LONG | 2 | 4% | ⚠️ **блокируется DEV-33** |
+| TREND_UP/SHORT | 1 | 2% | Контр-тренд |
+
+**Сигнальный тип:**
+- confluence: 44/50 (88%)
+- pivot_reversal: 5/50 (10%)
+- wt_b_signal: 1/50 (2%)
+
+**R:R (расчётный по SL/TP в момент входа):**
+| Диапазон | Кол-во | Комментарий |
+|---|---|---|
+| 1.5–3x | 2 | Нормальные |
+| 3–6x | 11 | Допустимые |
+| >6x | 37 (74%) | ⚠️ Нереалистичные TP → **блокируется DEV-35** |
+- avg R:R = 29.4x, median = 13.5x, max = 581x (MYX: SL=0.0038, TP=2.22)
+
+**Временной кластер:**
+- 38/50 открыты в 01-02 UTC — одна массовая волна скана
+
+---
+
+#### Ключевые выводы DEV
+
+**1. 48% SL — контр-тренд (LONG/TREND_DOWN)** — главная причина. DEV-32 блокирует эти входы с 23.03. В будущих выборках их не будет.
+
+**2. 74% SL — R:R > 6x** — TP настолько далеко что сделка почти гарантированно закрывается по SL. DEV-35 (max_rr=6.0) обрезает TP. Эффект увидим на новых сделках.
+
+**3. 88% SL — тип `confluence`** — не означает что сигнал плохой. Означает что confluence — самый частый тип вообще. Нужно смотреть WR по confluence vs базовый WR.
+
+**4. Временная волна** — 38 сделок за 2 часа = массовый scan при старте бота. Это нормально, не баг.
+
+---
+
+#### Данные для TRADER (полная таблица)
+
+```
+Symbol               Signal_type        Dir    Regime       Str  Conf  Дата
+DISTORTED/USDT       pivot_reversal     LONG   RANGE         83  0.83  2026-03-23T03:53
+GWEI/USDT            confluence         LONG   RANGE         80  0.90  2026-03-23T03:46
+VET/USDT             confluence         LONG   TREND_UP      78  0.78  2026-03-23T02:28
+ATH/USDT             confluence         LONG   TREND_DOWN    96  0.91  2026-03-23T01:58
+POLYX/USDT           confluence         LONG   TREND_DOWN    86  0.86  2026-03-23T02:29
+JASMY/USDT           confluence         LONG   TREND_DOWN    78  0.78  2026-03-23T02:19
+MYX/USDT             confluence         LONG   TREND_UP      80  0.75  2026-03-23T02:41  RR=584x
+IN/USDT              confluence         LONG   TREND_DOWN    80  0.80  2026-03-23T02:28
+BREV/USDT            confluence         LONG   TREND_UP      84  0.94  2026-03-23T02:23
+GALA/USDT            confluence         LONG   TREND_UP      95  0.95  2026-03-23T02:23
+SKR/USDT             confluence         LONG   TREND_UP      77  0.77  2026-03-23T02:19
+GAS/USDT             confluence         LONG   TREND_UP      92  0.92  2026-03-23T02:19
+MAGIC/USDT           confluence         LONG   TREND_DOWN    77  0.77  2026-03-23T02:17
+TOSHI/USDT           confluence         LONG   RANGE         77  0.77  2026-03-23T02:17
+UMA/USDT             confluence         LONG   TREND_UP      94  0.94  2026-03-23T02:17
+REDSTONE/USDT        confluence         LONG   TREND_DOWN    78  0.78  2026-03-23T02:16
+HIGH/USDT            confluence         LONG   TREND_UP      76  0.76  2026-03-23T02:16
+NOT/USDT             confluence         LONG   TREND_UP      92  0.92  2026-03-23T02:14
+HYPERLANE/USDT       confluence         LONG   TREND_DOWN    75  0.75  2026-03-23T02:14
+ZORA/USDT            confluence         LONG   TREND_DOWN    78  0.78  2026-03-23T02:13
+KNC/USDT             confluence         LONG   TREND_DOWN    92  0.92  2026-03-23T02:13
+ILV/USDT             confluence         LONG   TREND_UP      76  0.76  2026-03-23T02:11
+COAI/USDT            confluence         LONG   TREND_DOWN    83  0.83  2026-03-23T02:07
+ERA/USDT             wt_b_signal        LONG   TREND_DOWN    89  0.94  2026-03-23T02:05
+PENGU/USDT           confluence         LONG   TREND_DOWN    77  0.77  2026-03-23T02:04
+LPT/USDT             confluence         LONG   TREND_DOWN    96  0.96  2026-03-23T02:04
+METIS/USDT           confluence         LONG   TREND_DOWN    79  0.79  2026-03-23T02:02
+MAGMA/USDT           confluence         SHORT  TREND_DOWN    85  0.80  2026-03-23T02:02
+EGLD/USDT            confluence         LONG   TREND_DOWN    96  0.96  2026-03-23T02:01
+XRP/USDT             confluence         LONG   TREND_UP      98  0.98  2026-03-23T01:58
+VIRTUAL/USDT         confluence         LONG   TREND_UP      77  0.77  2026-03-23T01:54
+XNY/USDT             confluence         SHORT  TREND_DOWN    77  0.80  2026-03-23T01:42
+OP/USDT              confluence         LONG   TREND_DOWN    79  0.79  2026-03-23T01:36
+PLUME/USDT           confluence         LONG   TREND_DOWN    99  0.99  2026-03-23T01:33
+CFG/USDT             confluence         LONG   TREND_UP      77  0.81  2026-03-23T01:30
+MASK/USDT            confluence         LONG   TREND_DOWN    77  0.77  2026-03-23T01:30
+AVAX/USDT            confluence         LONG   TREND_DOWN    98  0.98  2026-03-23T01:26
+BABY/USDT            confluence         LONG   TREND_DOWN    85  0.85  2026-03-23T01:11
+GPS/USDT             pivot_reversal     LONG   RANGE         83  0.88  2026-03-23T00:31
+WET/USDT             confluence         LONG   TREND_DOWN    91  0.91  2026-03-23T01:08
+NEO/USDT             confluence         LONG   TREND_DOWN    76  0.76  2026-03-23T01:08
+PAXG/USDT            confluence         LONG   HIGH_VOL      97  0.76  2026-03-22T16:28
+XAUT/USDT            confluence         LONG   HIGH_VOL     100  0.78  2026-03-22T15:23
+NVDAX/USDT           pivot_reversal     LONG   RANGE         82  0.82  2026-03-22T13:36
+BCH/USDT             confluence         LONG   TREND_DOWN    91  0.91  2026-03-23T00:46
+CETUS/USDT           confluence         SHORT  TREND_UP      79  0.79  2026-03-23T00:14
+AUCTION/USDT         pivot_reversal     LONG   RANGE         82  0.87  2026-03-23T00:03
+RUNE/USDT            pivot_reversal     LONG   RANGE         94  0.99  2026-03-22T23:27
+SYRUP/USDT           confluence         LONG   RANGE         93  0.93  2026-03-23T23:46
+ORCA/USDT            confluence         LONG   TREND_DOWN    77  0.77  2026-03-22T23:11
+```
+
+**→ TRADER:** данные готовы. Что общего в TREND_UP/LONG (13 шт) которые тоже закрылись по SL несмотря на правильный тренд? Это наиболее интересная группа — там фиксы DEV-32/33/35 не помогут.
+
+**DEV**
+
+
+---
+
+### [23.03.2026] TRADER — DEV-49: Критический баг timezone + trade_tracker (РАССЛЕДОВАНИЕ)
+
+**Обнаружен при разборе GPS/USDT SHORT id=3155.**
+
+---
+
+## ЧТО НАШЛИ
+
+При анализе почему сделка GPS/USDT (id=3155) закрылась через 57 секунд после входа, обнаружили системный баг охватывающий **754 из 3059 закрытых сделок (24.6%)**.
+
+---
+
+## МЕХАНИКА БАГА
+
+**Шаг 1 — Timezone bug:**
+`created_at` сохраняется через `datetime.now()` (локальное время UTC+3) с суффиксом `+00:00`. Реальный вход в 13:12 UTC сохраняется как `16:12+00:00` — на 3 часа в будущем.
+
+**Шаг 2 — Trade_tracker fallback:**
+При проверке SL/TP в `trade_simulator.py ~строка 832`:
+```python
+ts_sec = created_dt.timestamp()  # = 16:12 UTC (БУДУЩЕЕ)
+df_filtered = df[df["time"] >= ts_sec * 1000]  # ВСЕ бары < 16:12 → фильтр пустой
+df = df_filtered if len(df_filtered) > 0 else df.iloc[-5:].copy()
+# ↑ FALLBACK: берёт последние 5 баров = бары ДО входа в сделку
+```
+
+**Шаг 3 — Phantom закрытие:**
+Бары ДО входа содержат движения цены которые могли касаться SL или TP. Сделка закрывается через 57-90 секунд после регистрации по pre-entry бару.
+
+**GPS/USDT конкретно:**
+- Вход: 13:12 UTC, SL=0.007885
+- Бар 12:15 UTC (57 мин ДО входа): H=0.007885 = ТОЧНО SL
+- Trade_tracker запустился в 13:13 UTC → fallback → нашёл 12:15 бар → закрыл
+
+---
+
+## МАСШТАБ
+
+| Метрика | Значение |
+|---|---|
+| Затронуто сделок | **754 (24.6%)** |
+| Период | 10.03 – 23.03.2026 |
+| Phantom SL (−1R) | **627** закрыто по pre-entry SL бару |
+| Phantom TP (+R) | **115** закрыто по pre-entry TP бару |
+| WR отображаемый | 31.5% |
+| **WR реальный (без баг-сделок)** | **36.8%** (+5.3pp скрыто) |
+| avg_R реальный | +0.92 (vs +0.50 с багом) |
+
+---
+
+## ПОВРЕЖДЁННЫЕ КОМПОНЕНТЫ
+
+1. **WR статистика** — заниженная на 5.3pp из-за 627 phantom SL
+2. **OutcomePredictor (ML)** — обучался на 24.6% фальшивых исходов
+3. **Adaptive signal weights** — phantom SL засчитаны как реальные провалы сигналов
+4. **max_price / min_price / max_R_possible** — все поля MFE для баг-сделок содержат данные pre-entry баров, не реального движения сделки
+5. **OPEN сделки с багом:** id=3161 (SQD/USDT LONG), id=3163 (UMA/USDT LONG) — `created_at` в будущем, будут закрыты phantom-ом при следующем запуске trade_tracker
+
+---
+
+## ЗАДАЧА
+
+→ **DEV:** DEV-49 создана в TASKS.md. Два фикса:
+
+**Фикс 1:** `datetime.now()` → `datetime.now(timezone.utc)` во всех местах записи `created_at`
+
+**Фикс 2:** fallback убрать:
+```python
+# БЫЛО:
+df = df_filtered if len(df_filtered) > 0 else df.iloc[-5:].copy()
+
+# НАДО:
+if len(df_filtered) == 0:
+    logger.warning("[trade %d] нет баров после created_at — пропуск", trade_id)
+    continue
+df = df_filtered
+```
+
+После фикса — пометить 754 баг-сделки в БД и исключить из ML.
+
+**TRADER — 23.03.2026**
+

@@ -44,24 +44,26 @@
 ---
 
 ### TR-010 — Решение по 17 плохим breach-позициям 🔴
-**Статус:** 🔴 срочно — ждёт ответа TRADER
+**Статус:** ✅ решено 24.03.2026 — **Вариант B принят TRADER**
 **Источник:** DEV DISCUSSION 23.03
 
-**Контекст:** 17/18 WL breach позиций открыты как LONG при TREND_DOWN (DEV-32 bypass, исправлен DEV-41). Они продолжают жить в БД и влияют на статистику.
+**Контекст:** 22/18 WL breach позиций открыты как LONG при TREND_DOWN (DEV-32 bypass, исправлен DEV-41). Реальное кол-во по запросу — 22 позиции.
 
-**Что нужно решить:**
-- [ ] Смотришь ли эти позиции в TR-001 (25.03)?
-- [ ] Рекомендуешь A (закрыть руками) или B (ждём SL/TSL)?
-- [ ] Если закрывать — указать критерий: все 17, или только те что в просадке >1R?
+**Итог на 24.03:** 4 закрылись по SL (-1R) — WIF, PUMP, SOMI, AVNT. 18 OPEN.
 
-→ DEV-43 ждёт этого решения.
+**Решение TRADER:**
+- [x] TR-001 (25.03) — наблюдать сколько осталось OPEN
+- [x] **Вариант B** — ждать SL/TSL. Процесс работает: 4 уже закрыты -1R. Без TP остальные придут туда же.
+- [x] Не закрывать вручную — данные ML (negative примеры контр-тренда) ценны
+
+→ DEV-43 подтверждён (ARCH и TRADER — оба Вариант B).
 
 ---
 
 ### TR-001 — Ежедневный разбор Watch List с живыми свечами
 **Статус:** 🔄 периодическая
-**Последний разбор:** 24.03.2026 | 33 открытых сделок | найдено 3 критических бага WL breach → DEV-41
-**Следующий:** 25.03.2026 (утро)
+**Последний разбор:** 23.03.2026 (вечер) | 39 OPEN | бот не работает с 04:00 | → memory/trader_analyses/2026-03-23-evening.md
+**Следующий:** после перезапуска бота (DEV)
 
 **Что делать:** взять 4-6 пар из Watch List или свежих сигналов, посмотреть живые свечи (WT, тренд, wick structure), дать оценку: подтверждает рынок сигнал или нет?
 
@@ -222,7 +224,8 @@ PP: 3.180 (-1.9%) | R1: 3.350 (+3.4%) | S1: 3.060 (-5.6%)
 ---
 
 ### TR-008 — Разбор закрытых сделок: паттерны SL
-**Статус:** 🟡 важно (24.03.2026) — данных достаточно, запускать
+**Статус:** ✅ выполнено 23.03.2026 — предварительный анализ TRADER (DISCUSSION.md)
+**Вывод:** выборка нерепрезентативна (dump night), 25/50 контр-тренд (DEV-32 решит), RR>10 у 56% → DEV-35 нужен cap ниже. Повторный TR-008 через 2 недели с чистыми данными.
 
 **Цель:** найти систематические паттерны в SL-сделках. Не "почему конкретная пара", а "какой тип входа всегда заканчивается SL?"
 
@@ -310,36 +313,135 @@ except Exception as _e37:
 ---
 
 ### ARCH-39 — DEV-44 guards: перенести ПОСЛЕ вычисления regime? 🟡
-**Статус:** 🟡 важно — ждёт решения ARCH
+**Статус:** ✅ выполнено 24.03.2026 — решение принято, спек передан DEV-46
 **Источник:** DEV DISCUSSION 23.03.2026
 
-**Контекст:** DEV-44 добавил guards (DEV-32/33) в `register_trade_async()` до вычисления `regime`. Для `analyze_symbol` пути `regime` в recommendation = None → guards по regime не срабатывают. Для WL breach (SimpleNamespace с `regime`) — срабатывают.
+**Решение ARCH:** Вариант B — перенести DEV-44 guards ПОСЛЕ блока вычисления `regime`.
 
-**Вопрос:** перенести DEV-44 блок ПОСЛЕ блока определения `regime` (~строка 531 `trade_simulator.py`)?
+Обоснование: Проверил код — DEV-44 стоит на строке 498, до вычисления `regime` на строке 531. Для `analyze_symbol` пути `_regime_44 = None` → guards не срабатывают. Это недостаток реализации, не задуманное поведение. Спек ARCH-37 явно требовал "вставлять ПОСЛЕ блока определения `regime`". DEV-46 исправит это: guards переезжают перед `return self.register_trade(...)`, используют вычисленный `regime` напрямую.
 
-**Вариант A (оставить как есть):**
-- DEV-32/33 уже защищают `analyze_symbol` путь на уровне самого `analyze_symbol`
-- DEV-44 = страховка только для обходных путей (WL breach, будущие code-paths)
-- Порядок не важен — они и так не ловят `analyze_symbol`
+---
 
-**Вариант B (перенести после regime):**
-- Единая точка защиты для ВСЕХ путей
-- +1 слой для `analyze_symbol` (избыточно, но явно)
-- Небольшой риск: `MarketRegime` иногда не определяется → `regime=None` → guard пропускает
+### ARCH-44 — Добавить роль DATA в команду 🔵
+**Статус:** 🔵 отложено — триггер: CV AUC > 0.55 или ML становится основным источником решений
+**Источник:** обсуждение команды 24.03.2026
 
-→ **ARCH:** какой вариант? Если B — DEV-46 реализует перестановку.
+**Контекст:**
+Текущая команда (ARCH/DEV/TRADER) не имеет явного владельца ML/статистики. Пробел закрывается добавлением роли DATA когда наступит триггер.
+
+**Зона ответственности DATA:**
+- Качество ML-моделей: feature engineering, CV AUC, переобучение
+- Статистическая валидность выводов (достаточно ли N сделок?)
+- Решения: когда переобучать, что добавить в features
+- Диагностика деградации: win_rate падает → почему?
+
+**Триггеры для активации роли:**
+1. CV AUC OutcomePredictor > 0.55 (сейчас ~0.33 — хуже случайного)
+2. ML становится основным источником входов (сейчас отключён)
+3. Накопление 500+ закрытых сделок с заполненным `regime`
+
+**До триггера:** ML-вопросы делятся между DEV (код) и TRADER (интерпретация).
+
+---
+
+### ARCH-43 — Решение по max_rr cap: 6.0 → 4.0? 🟡
+**Статус:** ✅ решено 23.03.2026 — **max_rr остаётся 6.0, без изменений**
+**Источник:** TR-008 TRADER наблюдение (23.03)
+
+**Данные для решения:**
+- 89% TP-сделок имеют теоретический RR ≤ 4.0 (медиана = 2.0) → cap=6 не мешает им
+- TSL avg=5.54R, median=2.54R → TSL основной механизм профита, TP — страховочный уровень
+- pivot_reversal с RR 5-7 реально отрабатывают (ALGO 5.7→R=5.67, FLUID 5.3→R=4.41) → снижение cap до 4.0 режет рабочие сетапы
+- 50 SL-сделок из TR-008 — ВСЕ до DEV-35 (cap не был активен) → нерелевантны
+- QNT +15.13R via TSL — легитимный moonshot, низкий cap убил бы его на 5-6R
+
+**Решение: max_rr = 6.0, без изменений.**
+
+Корневая причина SL-проблемы (контр-трендовые входы RR>10) уже устранена DEV-32/33.
+Повторный анализ: TR-008 через 2 недели с чистыми данными после DEV-32/33.
+Если тогда avg_RR у TP-сделок < 4.0 → рассматривать снижение до 5.0.
+
+---
+
+### ARCH-42 — Live Market Stress Gate 🟢
+**Статус:** ✅ решено 23.03.2026 — спек передан DEV-48
+**Источник:** TR-008 TRADER вопрос (market_event пауза)
+
+**Решение: реализовать как rolling window gate в `register_trade_async()`.**
+
+**Архитектура:**
+- `_sl_timestamps` уже существует (DEV-39). Reuse без изменений.
+- Проверять в `register_trade_async()` ПЕРЕД Correlation Guard (самый ранний выход).
+- Rolling window (не fixed cooldown): gate активен пока в текущем 30-мин окне ≥ N SL.
+  Как только старые SL "вышли" из окна — gate открывается автоматически. Никаких таймеров.
+- `enabled: false` по умолчанию (shadow mode через log, аналогично DEV-37).
+
+**Config (добавить в `config.yaml`):**
+```yaml
+trading:
+  market_stress_gate:
+    enabled: false       # true = блок, false = только лог
+    sl_threshold: 5      # SL за window_minutes → активировать gate
+    window_minutes: 30   # reuse из market_event_marker
+```
+
+**Код для DEV-48 (`core/trade_simulator.py`, `register_trade_async()`, ПЕРЕД DEV-38):**
+```python
+# ARCH-42: Market Stress Gate — блок входов при массовых SL
+try:
+    from core.config_loader import config as _cfg_msg
+    _msg = (_cfg_msg.get("trading", {}) or {}).get("market_stress_gate", {}) if _cfg_msg else {}
+    if _msg:
+        _threshold = _msg.get("sl_threshold", 5)
+        _window_min = _msg.get("window_minutes", 30)
+        _now_msg = datetime.utcnow()
+        _window_start_msg = _now_msg - timedelta(minutes=_window_min)
+        _recent_sl = [t for t in self._sl_timestamps if t >= _window_start_msg]
+        if len(_recent_sl) >= _threshold:
+            _sym_msg = _get_recommendation_value(recommendation, "symbol") or ""
+            if _msg.get("enabled"):
+                logger.info("[ARCH-42] %s БЛОК market_stress: %d SL за %d мин",
+                            _sym_msg, len(_recent_sl), _window_min)
+                return None
+            else:
+                logger.info("[ARCH-42] shadow %s: %d SL за %d мин (gate disabled)",
+                            _sym_msg, len(_recent_sl), _window_min)
+except Exception as _e_msg:
+    logger.debug("[ARCH-42] stress gate error: %s", _e_msg)
+```
+
+**Почему rolling window, не fixed cooldown:**
+- Fixed cooldown (60 мин) → gate закрыт даже если рынок успокоился
+- Rolling window → gate закрывается сам как только 5-й SL "протухает" (прошло 30 мин)
+- Самовосстановление без доп. состояния
+
+**Приоритет DEV-48:** 🟢 низкий. Запустить в shadow mode (enabled: false) — собрать данные.
+
+---
+
+### ARCH-41 — Финальное решение по DEV-37 (hard_block_mult + enabled) 🟡
+**Статус:** ✅ решено 23.03.2026
+**Источник:** DEV-42 shadow review 24.03.2026
+
+**Решения:**
+
+1. **hard_block_mult: 3.0 → 2.0** ✅ — 0 hard_block событий за всё время. При tier1≈3.3% медиана, порог 9.9% нереалистичен. Снизить до 6.6%. → DEV-47 (уже создана).
+
+2. **enabled: true — оставить** ✅ — риск низкий (только -10 str penalty, не hard block). 46% penalty на сигналах приемлемо. Перепроверить через 2-3 дня после перезапуска бота с чистыми логами.
+
+3. **Вопрос max_rr (от TRADER)** — не входит в ARCH-41. Создана ARCH-43.
 
 ---
 
 ### ARCH-40 — Shared pivot_calculator для scan_loop.py 🟢
-**Статус:** 🟢 в плане
+**Статус:** ✅ выполнено 24.03.2026 — оценка сделана, передано в DEV-46
 **Источник:** DEV DISCUSSION 23.03.2026
 
-**Контекст:** DEV-45 fix объединил кеши `bot.pivot_calculator` и `TradingIntelligence._pivot_calc_shared`. Но в `scan_loop.py` есть ещё вызовы `PivotCalculatorFixed()` вне TradingIntelligence (WL breach, check_pivot_reversals и др.).
+**Результат проверки масштаба:**
+- `bot/loops/scan_loop.py` — уже использует `bot.pivot_calculator` везде. Новых инстансов не создаёт. ✅
+- `core/wt_15m_reversal_scanner.py:68` — единственное место: `_pivot_calc = PivotCalculatorFixed()` без db_path. 1 файл, 1 место.
 
-**Что проверить:** найти все `PivotCalculatorFixed()` в `bot/` и `scan_loop.py`, передать туда `bot.pivot_calculator` вместо новых инстансов.
-
-→ **ARCH:** оценить масштаб. Если > 3 мест — спек для DEV-46.
+**Решение:** Масштаб < 3 мест. Включить в DEV-46 как минорный пункт: при вызове из `bot/` — передавать `bot.pivot_calculator` как параметр. Если изолированно — низкий приоритет.
 
 ---
 
@@ -517,15 +619,166 @@ trading:
 
 ---
 
+### DEV-49 — Timezone bug: created_at + trade_tracker fallback ✅
+**Статус:** ✅ выполнено 25.03.2026
+**Источник:** TRADER расследование 23.03.2026 — обнаружен при разборе GPS/USDT id=3155
+
+**Масштаб:** 754 из 3059 закрытых сделок (24.6%) закрыты phantom-баром ДО входа.
+WR искажён: отображается 31.5% → реальный 36.8% (+5.3pp скрыто).
+
+**Два независимых бага:**
+
+**Баг #1 — created_at сохраняется в LOCAL time (UTC+3) с суффиксом +00:00:**
+```python
+# БЫЛО (баг): datetime.now() — возвращает локальное время машины
+created_at = datetime.now()  # UTC+3, но сохраняется как UTC
+
+# НАДО:
+from datetime import timezone
+created_at = datetime.now(timezone.utc)
+```
+Искать в `core/trade_simulator.py` → `register_trade()` и `register_trade_async()`.
+Также проверить `bot/` и любые места записи временны́х меток в simulated_trades.
+
+**Баг #2 — fallback df.iloc[-5:] в trade_tracker захватывает pre-entry бары:**
+```python
+# БЫЛО (баг в core/trade_simulator.py ~строка 837):
+df = df_filtered if len(df_filtered) > 0 else df.iloc[-5:].copy()
+# При timezone-баге фильтр пустой → fallback → бары ДО входа → phantom SL/TP
+
+# НАДО: если фильтр пустой — пропустить чек, не использовать fallback
+if len(df_filtered) == 0:
+    logger.warning("[trade %d] нет баров после created_at (%s) — пропуск чека", trade_id, created_at)
+    continue
+df = df_filtered
+```
+
+**Файлы:**
+- `core/trade_simulator.py` — оба бага
+- Проверить все места `datetime.now()` → заменить на `datetime.now(timezone.utc)`
+
+**После фикса:**
+- Пересчитать/пометить 754 баг-сделки в БД: добавить поле или пометить `data_quality=bug_timezone`
+- id=3161 (SQD), id=3163 (UMA) — OPEN сделки с timezone-багом в created_at, исправить вручную или пересчитать при следующей проверке
+- Исключить баг-сделки из ML обучения (OutcomePredictor, adaptive weights)
+
+**Что сделано:**
+
+**Фикс #1** — `core/trade_simulator.py` строка ~259:
+```python
+# БЫЛО (баг):
+ts = ts.replace(tzinfo=timezone.utc)   # навешивает метку без конвертации
+
+# СТАЛО (фикс):
+ts = ts.astimezone(timezone.utc)       # конвертирует из LOCAL → UTC
+```
+Naive datetime 16:12 (UTC+3) → правильно сохраняется как 13:12 UTC.
+
+**Фикс #2** — `core/trade_simulator.py` строка ~837:
+```python
+# БЫЛО (баг): fallback → pre-entry бары → phantom SL/TP
+df = df_filtered if len(df_filtered) > 0 else df.iloc[-5:].copy()
+
+# СТАЛО (фикс): при пустом фильтре — пропустить чек
+if len(df_filtered) == 0:
+    logger.warning("[trade %d] нет баров после created_at (%s) — пропуск чека SL/TP", ...)
+    continue
+df = df_filtered
+```
+
+**Оставшееся (отдельная задача):**
+- Пометить 754 баг-сделки в БД (data_quality=bug_timezone) — исключить из ML
+- id=3161 (SQD), id=3163 (UMA) — OPEN с bug created_at, закроются корректно после фикса
+
+---
+
+### DEV-48 — Market Stress Gate: реализация shadow mode ✅
+**Статус:** ✅ выполнено 24.03.2026
+**Источник:** ARCH-42 спек (23.03.2026)
+
+**Что сделать:** добавить ARCH-42 gate в `register_trade_async()` ПЕРЕД DEV-38 Correlation Guard.
+
+**Файлы:**
+- `core/trade_simulator.py` — добавить блок в `register_trade_async()` (код в ARCH-42 спеке)
+- `config.yaml` — добавить секцию:
+```yaml
+trading:
+  market_stress_gate:
+    enabled: false
+    sl_threshold: 5
+    window_minutes: 30
+```
+
+**Важно:** `_sl_timestamps` уже есть (DEV-39). Новый импорт `timedelta` добавить если нет.
+Запустить в shadow mode (`enabled: false`) — только лог `[ARCH-42] shadow`.
+
+---
+
+### DEV-47 — Снизить hard_block_mult 3.0 → 2.0 ✅
+**Статус:** ✅ выполнено 24.03.2026
+**Источник:** ARCH-41 / DEV-42 shadow review
+
+**Что:** `config.yaml` → `trading.pivot_proximity_filter.hard_block_mult: 2.0` (было 3.0).
+За всё время наблюдения hard_block=0. При tier1≈3.3% медиана — текущий порог 9.9% нереалистичен. Снизить до 6.6%.
+
+**Файл:** `config.yaml` → 1 строка.
+
+---
+
+### DEV-46 — Перенести DEV-44 guards ПОСЛЕ вычисления `regime` ✅
+**Статус:** ✅ выполнено 23.03.2026
+**Источник:** ARCH-39 решение 24.03.2026
+
+**Проблема:** DEV-44 guards в `register_trade_async()` вставлены ДО вычисления `regime` (строка 498 vs строка 531). Для `analyze_symbol` пути `_regime_44 = None` → guards по режиму не срабатывают. Для WL breach (SimpleNamespace с `regime`) — работают. Это недостаток реализации.
+
+**Что сделать:**
+
+1. Удалить текущий DEV-44 блок (`core/trade_simulator.py` строки ~498-529)
+
+2. Вставить guards ПЕРЕД `return self.register_trade(...)` (~строка 543), используя вычисленный `regime`:
+
+```python
+# ARCH-37 второй рубеж — все code-paths (analyze_symbol + WL breach + будущие)
+try:
+    from core.config_loader import config as _cfg_a37
+    if _cfg_a37 and regime:
+        _sym_a37 = _get_recommendation_value(recommendation, "symbol") or ""
+        _dir_a37 = str(_get_recommendation_value(recommendation, "direction") or "").upper()
+        # DEV-33 fallback: blocked_regimes
+        _br = _cfg_a37.get("trading.blocked_regimes", [])
+        if regime in _br:
+            logger.info("[ARCH-37] %s: второй рубеж — %s в blocked_regimes", _sym_a37, regime)
+            return None
+        # DEV-32 fallback: regime_direction_block
+        _rdb = _cfg_a37.get("trading.regime_direction_block", {})
+        if _rdb.get("enabled") and _dir_a37:
+            _blocked = _rdb.get(regime)
+            if _blocked and _dir_a37 == _blocked:
+                logger.info("[ARCH-37] %s: второй рубеж — %s блокирует %s", _sym_a37, regime, _dir_a37)
+                return None
+except Exception as _e_a37:
+    logger.debug("[ARCH-37] guard error: %s", _e_a37)
+
+return self.register_trade(recommendation, regime=regime, extra_features=extra_features)
+```
+
+3. (Минор) `core/wt_15m_reversal_scanner.py:68` — `_pivot_calc = PivotCalculatorFixed()` без db_path. Проверить как вызывается; если из `bot/` — принять `pivot_calc` параметром снаружи. Если изолирован — пропустить.
+
+**Файлы:** `core/trade_simulator.py`
+
+**Проверка после:** убедиться что для теста `analyze_symbol` пути (HIGH_VOL) trade не регистрируется (guard срабатывает через MarketRegime).
+
+---
+
 ### DEV-42 — DEV-37 shadow review → включить ✅
 **Статус:** ✅ выполнено 23.03.2026
 **Источник:** ARCH (DISCUSSION 23.03) + DEV наблюдение
 
-**Результат анализа логов (crypto_bot.log, 23.03):**
-- Всего событий DEV-37: 48 (near=26, penalty=22, hard_block=0)
-- hard_block rate = 0% (порог: <20% → включаем)
-- Дистанции penalty: 3.09%–7.03% — разумные
-- **Решение:** `pivot_proximity_filter.enabled: true` (было false)
+**Результат анализа логов (crypto_bot.log, 23.03 + 24.03):**
+- 23.03: 48 событий (near=26, penalty=22, hard_block=0) → enabled: true
+- 24.03 (повторный замер): 83 события (near=46/55%, penalty=37/45%, hard_block=0/0%)
+- hard_block стабильно = 0%. Фильтр работает корректно, жёсткой блокировки нет.
+- **Статус: закрыт.** `pivot_proximity_filter.enabled: true` — оставить как есть.
 
 **Файлы:** `config.yaml` → `trading.pivot_proximity_filter.enabled: true`
 
@@ -599,6 +852,45 @@ self._pivot_calc_shared = _PCF_cls(db_path=db_path)
 **Проверка после:** `grep -c "PivotCalculatorFixed()" core/trading_intelligence.py` → должно быть 0.
 
 **Файлы:** `core/trading_intelligence.py`
+
+---
+
+### DEV-46 — Перенести DEV-44 guards ПОСЛЕ вычисления regime ✅
+**Статус:** ✅ выполнено 23.03.2026
+**Источник:** ARCH-39 решение (24.03.2026)
+
+**Проблема:** DEV-44 guard читает `_regime_44` из `rec.regime` → всегда `None` → **guards мёртвые** для всех путей. Нужно перенести ПОСЛЕ `regime = MarketRegimeClassifier.classify_from_ohlcv(...)`.
+
+**Что сделать в `core/trade_simulator.py`, `register_trade_async()`:**
+
+1. Удалить текущий DEV-44 блок (строки ~498–529, до `regime: Optional[str] = None`)
+
+2. Вставить ПОСЛЕ строки ~510 (после `except Exception as e: logger.debug("MarketRegime...")`):
+
+```python
+        # DEV-44 (ARCH-39 fix): Safety gate — второй рубеж, использует свежий regime
+        if regime:
+            try:
+                from core.config_loader import config as _cfg_44
+                if _cfg_44:
+                    _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
+                    _dir_44 = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                    # Guard 1: blocked_regimes (DEV-33 fallback)
+                    if regime in (_cfg_44.get("trading.blocked_regimes") or []):
+                        logger.info("[DEV-44] %s БЛОК blocked_regime: %s", _sym_44, regime)
+                        return None
+                    # Guard 2: regime_direction_block (DEV-32 fallback)
+                    _rdb = _cfg_44.get("trading.regime_direction_block") or {}
+                    if _rdb.get("enabled") and _rdb.get(regime) == _dir_44:
+                        logger.info("[DEV-44] %s БЛОК regime_direction: %s/%s", _sym_44, regime, _dir_44)
+                        return None
+            except Exception as _e44:
+                logger.debug("[DEV-44] Safety gate error: %s", _e44)
+```
+
+**Дополнительно (ARCH-40):** в `core/wt_15m_reversal_scanner.py:68` заменить `PivotCalculatorFixed()` на переданный экземпляр или `bot.pivot_calculator` при вызове из `bot/`.
+
+**Файлы:** `core/trade_simulator.py`, `core/wt_15m_reversal_scanner.py`
 
 ---
 

@@ -4,7 +4,7 @@
 _generate_reasoning и _calculate_levels.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.signal_models import (
@@ -306,5 +306,5 @@ def generate_recommendation(
         sl_source=sl_source,
         tp_source=tp_source,
         reasoning=reasoning,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),  # DEV-49
     )

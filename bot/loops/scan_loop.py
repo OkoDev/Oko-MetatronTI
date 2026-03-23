@@ -8,7 +8,7 @@ import logging
 import random
 import time as _time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.entry_config import get_primary_entry_tf, get_entry_timeframes
 from core.message_builder import anomaly_message, wt_message, wt_b_message as _wt_b_message
@@ -176,7 +176,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         tp1_price=None,
         overall_strength=int(score),
         confidence=0.65,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),  # DEV-49
         market_context=None,
         supporting_signals=[_sig],
         conflicting_signals=[],
@@ -562,7 +562,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 _div_stub = SignalData(
                                     symbol=sym, signal_type=SignalType.DIVERGENCE, direction=_dir,
                                     strength=mtf_info.get("strength", 60), confidence=0.75,
-                                    timestamp=datetime.now(), data=dict(mtf_info, timeframe="1h"), timeframe="1h",
+                                    timestamp=datetime.now(timezone.utc), data=dict(mtf_info, timeframe="1h"), timeframe="1h",  # DEV-49
                                 )
                                 bot.recent_signals.setdefault(sym, [])
                                 bot.recent_signals[sym] = [
@@ -595,7 +595,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         _div_stub = SignalData(
                                             symbol=sym, signal_type=SignalType.DIVERGENCE, direction=_dir,
                                             strength=div_info.get("strength", 50), confidence=0.7,
-                                            timestamp=datetime.now(), data=div_info, timeframe=tf,
+                                            timestamp=datetime.now(timezone.utc), data=div_info, timeframe=tf,  # DEV-49
                                         )
                                         bot.recent_signals.setdefault(sym, [])
                                         bot.recent_signals[sym] = [

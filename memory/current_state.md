@@ -1,5 +1,139 @@
 # Current State
 
+## [25.03.2026] Агент: Developer
+- ✅ DEV-49 — timezone bug исправлен в источниках (не в trade_simulator, а в TradingRecommendation)
+  - `core/signal_models.py` — default_factory → `lambda: datetime.now(timezone.utc)`
+  - `core/intelligence/recommendation_generator.py` — `datetime.now()` → UTC
+  - `bot/monitoring.py` — 3 места → UTC
+  - `bot/loops/scan_loop.py` — 3 места → UTC
+  - fallback df.iloc[-5:] уже был исправлен ранее (continue при пустом фильтре)
+- ✅ БД — 948 сделок помечены `data_quality=bug_timezone` в features_json
+
+**Ожидает:**
+- Рестарт бота (пользователь, Windows)
+- Ответ ARCH: фильтровать ли bug_timezone в OutcomePredictor/adaptive_weights?
+
+---
+
+## [23.03.2026 ~15:00 UTC] Агент: TRADER
+- ✅ DEV-49 — timezone bug + trade_tracker fallback ИСПРАВЛЕНЫ
+  - Фикс #1: `ts.replace(tzinfo=utc)` → `ts.astimezone(timezone.utc)` в trade_simulator.py ~259
+  - Фикс #2: fallback `df.iloc[-5:]` убран → теперь `continue` при пустом фильтре ~837
+- ✅ GPS/USDT id=3155 разобран полностью:
+  - PIVOT_TOUCH = Daily R1 = 0.007998 (от бара 11:30, 1.5ч ДО входа)
+  - Сделка закрыта через 57 сек phantom-баром (12:15 UTC, до входа)
+  - Реальный WR без баг-сделок = 36.8% vs отображаемый 31.5%
+- ✅ Macro GPS разбор: Fib 0.705 = 0.008026, Weekly PP сопротивление, шорт до Weekly S1 = 0.79 Fib
+- ✅ DEV-49 добавлена в TASKS.md (✅), DISCUSSION.md, whats-next.md
+
+**Остаток работы по баг-сделкам:**
+- 754 сделок нужно пометить в БД (data_quality=bug_timezone) → исключить из ML
+- id=3161 (SQD), id=3163 (UMA) — OPEN с bug created_at, закроются корректно после рестарта бота
+
+**Бот требует перезапуска** для активации DEV-49!
+
+## [24.03.2026 сессия 3] Агент: ARCH
+- ✅ ARCH-39 ✅ — Вариант B принят, DEV-46 создан и реализован
+- ✅ ARCH-40 ✅ — scan_loop.py чист; wt_15m_reversal_scanner._pivot_calc только для confluences (не API) → no action
+- ✅ DEV-46 ✅ — guards перенесены ПОСЛЕ MarketRegimeClassifier в trade_simulator.py (ARCH-39 fix)
+- ✅ TR-008 данные — 50 SL-сделок выгружены в DISCUSSION.md (48% market_event, 52% TREND_DOWN LONG)
+- ✅ DISCUSSION.md обновлён: ARCH-39/40 решения + TR-008 данные
+
+**Текущая очередь DEV:**
+- Нет новых задач (DEV-46 ✅). Смотреть логи DEV-37 (дедлайн 26.03 уже истёк → нужно проверить).
+
+**Текущая очередь TRADER:**
+- TR-001 🔄 — разбор 25.03 (наблюдать WL breach позиции, осталось ~18 OPEN)
+- TR-008 🔄 — данные в DISCUSSION.md, анализировать паттерны LONG/TREND_UP SL (14 шт) + RANGE pivot_reversal SL (8 шт)
+
+## [24.03.2026 сессия 2] Агент: ARCH + TRADER
+- ✅ TR-001 — разбор 33 открытых сделок: 3 критических бага WL breach, файл memory/trader_analyses/2026-03-24.md
+- ✅ TR-004 ✅ — ответ TRADER по pivot proximity (ATR-адаптивный cap 5%)
+- ✅ TR-005 ✅ — подтверждение ARCH-33 порогов
+- ✅ ARCH-37 ✅ — Вариант B принят (guards в register_trade_async ПОСЛЕ режима)
+- ✅ ARCH-38 ✅ — Вариант A принят (singleton PivotCalculatorFixed в TradingIntelligence.__init__)
+- ✅ ARCH-39 ✅ — DEV-44 guard мёртвый (читает rec.regime=None), решение: перенос ПОСЛЕ MarketRegimeClassifier → DEV-46
+- ✅ ARCH-40 ✅ — оценка scan_loop.py (1 место в wt_15m_reversal_scanner.py), включено в DEV-46
+- ✅ DEV-46 создан с полным спеком (TASKS.md)
+- ✅ DISCUSSION.md обновлён: 3 новых поста (TRADER TR-001, TRADER TR-004/005, ARCH 37-40)
+
+## [24.03.2026] Агент: Architect
+- ✅ Ответ на DEV-41 WL breach: **Вариант B принят** — guards переносим в register_trade_async()
+- ✅ Ответ на DEV-43 (17 плохих позиций): **Вариант B** — не закрывать вручную, ждём SL/TSL/EXPIRED
+- ✅ DEV-44 создан — guards в register_trade_async() (Safety gate: режим+направление для всех code-paths)
+- ✅ DEV-41b — переименован (конфликт с WL breach DEV-41)
+- ✅ DEV-43 закрыт решением ARCH
+- ✅ DISCUSSION.md обновлён — пост с Вариант B, DEV-44 спек
+
+## [22.03.2026] Агент: Architect
+- ✅ DEV-40 добавлен в TASKS.md
+- ✅ DEV-41b (wt_signal NEAR_PIVOT) добавлен в TASKS.md
+- ✅ DISCUSSION.md обновлён
+
+## [23.03.2026 сессия DEV] Агент: Developer
+- ✅ DEV-WL-BREACH — автовход по пробою уровня из WL
+  - `core/signal_watch_list.py`: добавлен `check_breach_entry_direction()` (пробой В сторону позиции → вход)
+  - `bot/loops/scan_loop.py`: `_handle_wl_breach_entry()`, `elif` в scan_one после пробоя против — сначала проверяем breach_against, потом breach_entry
+  - `config.yaml`: `signal_quality.wl_sl_buffer_pct: 0.5`
+- ✅ fix: `check_tasks.py` parser — переписан `parse_backlog_tasks()` под формат `### DEV-XX — Title 🟡`
+- ✅ DEV-36 — Future PP score modifier
+  - `core/trading_intelligence.py`: LONG выше future_pp → -10 str; LONG ниже pp×0.985 → +5; SHORT зеркально; Weekly конфликт → -5
+  - `config.yaml`: `trading.future_pp_score_modifier.enabled: true`
+- ✅ DEV-39 — Market Event Marker
+  - `core/trade_simulator.py`: `_sl_timestamps` скользящее окно, `_mark_market_event_in_window()` → `features_json["market_event"]=true`
+  - `config.yaml`: `trading.market_event_marker.enabled: true, sl_count: 5, window_minutes: 30`
+- ✅ DEV-38 — Correlation Guard
+  - `core/trade_simulator.py`: в `register_trade_async()` проверяем correlation_groups; если открыта коррелированная — return None
+  - `config.yaml`: `trading.correlation_groups: [[PAXG,XAUT],[BTC,WBTC],[ETH,STETH,WETH]]`
+- ✅ DEV-37 — Pivot Proximity Filter (shadow mode)
+  - `core/trading_intelligence.py`: fetches 4h OHLCV → ATR-14, tier1/tier2, checks 1D+1W PP proximity → strength penalty / WATCH
+  - **Shadow mode** (`enabled: false`): логирует, не применяет. Включить через 3-5 дней наблюдения логов `[DEV-37 PivotProximity]`
+  - `config.yaml`: `trading.pivot_proximity_filter.enabled: false, hard_block_mult: 3`
+- ✅ DEV-34 — ATR factor 1.25→1.1
+  - `config.yaml`: `analysis.indicators.trend.factor: 1.1`
+- ✅ DISCUSSION.md обновлён — пост с итогами 7 задач сессии
+
+**Git коммиты этой сессии:**
+```
+a8a141e feat: DEV-WL-BREACH
+d825241 fix: check_tasks.py parser
+0e0cc49 feat: DEV-36 Future PP score modifier
+40dfe95 feat: DEV-39 Market Event Marker
+5236fc9 feat: DEV-38 Correlation Guard
+5d45e55 feat: DEV-37 Pivot Proximity Filter (shadow mode)
+00be161 feat: DEV-34 ATR factor 1.25→1.1
+```
+
+**Не запушено:** 9 коммитов впереди origin/main (включая предыдущие сессии)
+
+**Для ARCH — вопросы (см. DISCUSSION.md):**
+1. DEV-37 shadow mode: проверить логи `[DEV-37 PivotProximity]` через 3-5 дней → решить включать ли `enabled: true`
+2. DEV-36 производительность: каждый `analyze_symbol` создаёт новый `PivotCalculatorFixed()` с пустым кешем для future_pp — нужен singleton или TTL-кеш
+
+---
+
+## [22.03.2026 сессия 11] Агент: Developer
+- ✅ РЕАЛИЗОВАН #1 — два параметра, один коммит (2468246):
+  - `config.yaml`: `ml.use_outcome_predictor: false` — AUC=0.329 антиML отключён
+  - `config.yaml`: `signal_quality.min_strength_register: 65→75` — компенсатор шума
+  - `trading_intelligence.py`: guard `if not _use_op: skip OutcomePredictor init`
+- ✅ Discussion в TASKS.md — полный день диалога DEV+ARCH+TRADER:
+  - Разбор WR коллапса: 3 причины (ATR 1.25, HIGH_VOL, OutcomePredictor)
+  - Живой анализ TAKE/BEAT/GRASS/BANK/TWT с графиками
+  - Future Pivots уже реализованы (pivot_calculator_fixed.py + monitoring.py)
+  - TRADER задачи TR-001..TR-008 формализованы в разделе ## 🎯 Задачи TRADER
+- ✅ Roadmap зафиксирован (Фаза 0→3)
+
+**Следующие задачи (Фаза 0 — через 3 дня наблюдения #1):**
+- #2: ATR factor 1.25→1.1 в config.yaml
+- #3: blocked_regimes: ["HIGH_VOL"] в config.yaml
+- Параллельно: TRADER выполняет TR-001 (ежедневный разбор) + TR-002/TR-003 (спецификации)
+
+**Что наблюдать после деплоя #1:**
+- Количество BUY/SELL в день (должно вырасти — разблокирован OutcomePredictor)
+- WR (должен вырасти — убран мусор strength<75)
+- Появляются ли TAKE/BEAT-подобные регистрации вместо WATCH
+
 ## [22.03.2026 сессия 10] Агент: Developer
 - ✅ ARCH-28 интегрирован: FVG + Pivot Confluence в `bot/monitoring.py`
   - После `analyze_symbol()`: берём `smc_context.fvg` + `pivot_cache[symbol]` → `find_fvg_pivot_confluences()`

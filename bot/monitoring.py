@@ -125,7 +125,7 @@ def _make_mtf_alert_recommendation(sym: str, signal_type: str, strength: int,
         tp1_price=None,
         overall_strength=strength,
         confidence=0.70,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),  # DEV-49
         market_context=None,
         supporting_signals=[_sig],
         conflicting_signals=[],
@@ -156,7 +156,7 @@ def _make_pivot_recommendation(info: dict):
         tp1_price=tp1,
         overall_strength=strength,
         confidence=conf_float,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),  # DEV-49
         market_context=None,
         supporting_signals=[_sig],
         conflicting_signals=[],
@@ -290,7 +290,7 @@ def _make_signal_stub(sym: str, signal_type: SignalType, direction_str: str,
         direction = SignalDirection.NEUTRAL
     return SignalData(
         symbol=sym, signal_type=signal_type, direction=direction,
-        strength=strength, confidence=0.7, timestamp=datetime.now(), data=data or {},
+        strength=strength, confidence=0.7, timestamp=datetime.now(timezone.utc), data=data or {},  # DEV-49
     )
 
 
@@ -909,7 +909,8 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 from core.mtf_interpreter import mtf_bias_message
                 text = mtf_bias_message(symbol, _mtf_bias_sig)
             else:
-                text = await format_intelligence_message(recommendation)
+                _show_fvg = bot.config.get("signals.show_fvg_confluences", True)
+                text = await format_intelligence_message(recommendation, show_fvg_confluences=_show_fvg)
         except Exception:
             logger.exception("Ошибка форматирования AI-сообщения для %s", symbol)
             text = raw_text
@@ -940,7 +941,14 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             from core.chart_builder import build_signal_chart
             chart_tf   = bot.config.get("signals.chart_tf", "1h")
             chart_bars = int(bot.config.get("signals.chart_bars", 300))
-            png_bytes = await build_signal_chart(symbol, tf=chart_tf, bars=chart_bars)
+            _chart_fvg_all = (getattr(recommendation, "metadata", None) or {}).get("fvg_confluences") or []
+            # Только зоны в ±8% от текущей цены — не перегружать чарт дальними уровнями
+            _chart_fvg = [z for z in _chart_fvg_all
+                          if abs(z.get("distance_pct", 999)) <= 8.0] or None
+            png_bytes = await build_signal_chart(
+                symbol, tf=chart_tf, bars=chart_bars,
+                bot=bot, fvg_zones=_chart_fvg,
+            )
         except Exception:
             logger.exception("Ошибка генерации графика для %s", symbol)
 

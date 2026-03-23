@@ -2,7 +2,7 @@
 Модели данных для торговых сигналов и рекомендаций.
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -162,5 +162,5 @@ class TradingRecommendation:
     tp_source: str = ""   # "pivot_1M" | "pivot_1W" | "pivot_1D" | "atr_rr_3.0" | "fallback"
     atr_entry_tf: Optional[float] = None  # ATR(entry_tf) для ATR-based TP1 (DEV-40)
     reasoning: List[str] = field(default_factory=list)
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))  # DEV-49
     metadata: Optional[Dict[str, Any]] = None
