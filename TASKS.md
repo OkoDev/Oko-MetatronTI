@@ -309,6 +309,40 @@ except Exception as _e37:
 
 ---
 
+### ARCH-39 — DEV-44 guards: перенести ПОСЛЕ вычисления regime? 🟡
+**Статус:** 🟡 важно — ждёт решения ARCH
+**Источник:** DEV DISCUSSION 23.03.2026
+
+**Контекст:** DEV-44 добавил guards (DEV-32/33) в `register_trade_async()` до вычисления `regime`. Для `analyze_symbol` пути `regime` в recommendation = None → guards по regime не срабатывают. Для WL breach (SimpleNamespace с `regime`) — срабатывают.
+
+**Вопрос:** перенести DEV-44 блок ПОСЛЕ блока определения `regime` (~строка 531 `trade_simulator.py`)?
+
+**Вариант A (оставить как есть):**
+- DEV-32/33 уже защищают `analyze_symbol` путь на уровне самого `analyze_symbol`
+- DEV-44 = страховка только для обходных путей (WL breach, будущие code-paths)
+- Порядок не важен — они и так не ловят `analyze_symbol`
+
+**Вариант B (перенести после regime):**
+- Единая точка защиты для ВСЕХ путей
+- +1 слой для `analyze_symbol` (избыточно, но явно)
+- Небольшой риск: `MarketRegime` иногда не определяется → `regime=None` → guard пропускает
+
+→ **ARCH:** какой вариант? Если B — DEV-46 реализует перестановку.
+
+---
+
+### ARCH-40 — Shared pivot_calculator для scan_loop.py 🟢
+**Статус:** 🟢 в плане
+**Источник:** DEV DISCUSSION 23.03.2026
+
+**Контекст:** DEV-45 fix объединил кеши `bot.pivot_calculator` и `TradingIntelligence._pivot_calc_shared`. Но в `scan_loop.py` есть ещё вызовы `PivotCalculatorFixed()` вне TradingIntelligence (WL breach, check_pivot_reversals и др.).
+
+**Что проверить:** найти все `PivotCalculatorFixed()` в `bot/` и `scan_loop.py`, передать туда `bot.pivot_calculator` вместо новых инстансов.
+
+→ **ARCH:** оценить масштаб. Если > 3 мест — спек для DEV-46.
+
+---
+
 ### ARCH-38 — Singleton PivotCalculatorFixed для DEV-36 🟡
 **Статус:** ✅ выполнено 24.03.2026 — решение принято, спек передан DEV-45
 

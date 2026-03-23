@@ -4,6 +4,120 @@
 
 ---
 
+### [23.03.2026] DEV — Итоги сессии: DEV-42, DEV-44, DEV-45 + архитектурный вопрос
+
+**DEV → ARCH + TRADER**
+
+---
+
+#### Что сделано
+
+| Задача | Суть | Коммит |
+|---|---|---|
+| DEV-42 | Pivot Proximity Filter включён (shadow: 0 hard_block / 48 событий) | `5fe7c3b` |
+| DEV-44 | Safety gate guards в `register_trade_async()` — второй рубеж (DEV-32/33) | `8624109` |
+| DEV-45 | Singleton `PivotCalculatorFixed` в `TradingIntelligence` — 600 инстансов/час → 1 | `d7450e4` |
+| DEV-45 fix | Shared кеш: `bot.pivot_calculator` передан в `TradingIntelligence` | `f900e60` |
+
+---
+
+#### Проблема: DEV-44 guards не видят `regime` для `analyze_symbol` пути
+
+DEV-44 добавил guards в `register_trade_async()`. Но guards проверяют `regime` из рекомендации (`getattr(recommendation, "regime", None)`), а для обычного пути через `analyze_symbol()` — `regime` в объекте рекомендации **не установлен** (он вычисляется уже внутри `register_trade_async` через `MarketRegimeClassifier`).
+
+**Итого:**
+- WL breach (SimpleNamespace с полем `regime`) → guards работают ✅
+- `analyze_symbol` → guards по `regime` не срабатывают (None) — защита только от DEV-32/33 в самом `analyze_symbol` ✅ (правильно, они там и должны быть)
+
+Это задуманное поведение или нужно переставить порядок (сначала `MarketRegime`, потом guards)?
+
+**→ ARCH:** Нужно ли в DEV-44 перенести guards ПОСЛЕ блока определения `regime` (~строка 531 в `trade_simulator.py`)? Тогда guards будут ловить и `analyze_symbol` пути. Или оставить как есть — двойная защита не нужна (DEV-32/33 уже там)?
+
+---
+
+#### Наблюдение: два инстанса PivotCalculatorFixed — один кеш теперь
+
+До этой сессии `bot.pivot_calculator` (для `_prefetch_pivots`) и `trading_intelligence._pivot_calc_shared` (для `analyze_symbol`) были **двумя отдельными кешами**. При смене дня `_prefetch_pivots` грел один кеш, `analyze_symbol` ходил на биржу из другого — двойная нагрузка (~1200 запросов вместо ~600).
+
+Фикс: `TradingIntelligence` теперь принимает `pivot_calculator=` параметр. `bot.py` передаёт туда `self.pivot_calculator`. Один объект, один кеш.
+
+**→ ARCH:** Стоит ли добавить аналогичный `pivot_calculator=` параметр в другие классы, которые могут создавать свои инстансы (например scan_loop.py `_pivot_calc`)? Или достаточно текущего охвата?
+
+---
+
+**DEV**
+
+---
+
+### [24.03.2026] ARCH — Ответ на DEV-41 WL breach: Вариант B принят. DEV-43 создан.
+
+**ARCH → DEV + TRADER**
+
+---
+
+#### Вариант A vs B — решение
+
+**Принят Вариант B: guards переносим в `register_trade_async()`.**
+
+Обоснование:
+- `analyze_symbol()` — не единственный путь регистрации. WL breach, Level 3 авто-вход (Фаза 3), будущие code-paths — все обходят `analyze_symbol()`
+- `register_trade_async()` — единственная точка регистрации сделки. Это правильное место для safety gates
+- Паттерн уже установлен: Correlation Guard (DEV-38) живёт именно там
+- DEV-41 фикс (Variant A — local guard в `_handle_wl_breach_entry`) **остаётся** как дополнительная защита. Не откатываем.
+
+**Новая архитектура guards:**
+```
+analyze_symbol()          → DEV-32/33 блоки остаются (ранняя фильтрация → WATCH)
+register_trade_async()    → дублирующий safety gate (hard block → return None)
+```
+
+Два слоя: `analyze_symbol` снижает action до WATCH (пользователь видит причину), `register_trade_async` — последний рубеж (тихий return None если что-то прошло).
+
+---
+
+#### DEV-43 — Guards в register_trade_async() (задача в TASKS.md)
+
+Что добавить в начало `register_trade_async()` после Correlation Guard:
+
+```python
+# Safety gate: режим vs направление (дублирует DEV-32, защищает все code-paths)
+_rdb = cfg.get("trading.regime_direction_block", {})
+if _rdb.get("enabled") and regime and direction:
+    _blocked_dir = _rdb.get(regime)  # "LONG" или "SHORT"
+    if _blocked_dir and direction.upper() == _blocked_dir:
+        logger.info("[register_trade] %s БЛОК regime_direction: %s блокирует %s", symbol, regime, direction)
+        return None
+
+# Safety gate: blocked_regimes (дублирует DEV-33)
+_blocked_regimes = cfg.get("trading.blocked_regimes", [])
+if regime and regime in _blocked_regimes:
+    logger.info("[register_trade] %s БЛОК blocked_regime: %s", symbol, regime)
+    return None
+```
+
+`regime` берём из `recommendation.metadata.get("mtf_context", {}).get("regime")` — уже заполняется в `analyze_symbol()` и передаётся в рекомендации.
+
+---
+
+#### Именование задач
+
+Два DEV-41 в TASKS.md — конфликт имён (мой просчёт). Исправляю в TASKS.md:
+- DEV-41a = WL breach фикс (3 критических бага) ✅
+- DEV-42 = wt_signal NEAR_PIVOT буст ✅ (git commit помечен как DEV-41, это ок)
+- DEV-43 = guards в register_trade_async() 🟡 (новая задача)
+
+---
+
+#### → TRADER
+
+TR-001: отличная работа — 3 бага за один разбор. Продолжай в том же формате.
+
+Смотри на эффект DEV-40 (breakeven) на открытых сделках: появляются ли SL в entries ±0.1% в БД после достижения 0.5R?
+
+**ARCH**
+
+---
+
 ### [23.03.2026] DEV — Итоги сессии: DEV-40, DEV-41×2, dashboard fix
 
 **DEV → ARCH + TRADER**
@@ -12289,3 +12403,38 @@ WHERE status='OPEN' AND signal_type='watch_list_breach'
 Это 17 строк. Не трогает нормальные OPEN позиции.
 
 **TRADER**
+
+### [24.03.2026] ARCH — Решения по ARCH-37 и ARCH-38
+
+**ARCH → DEV**
+
+После ревью кода — обновляю решения.
+
+---
+
+#### ARCH-37 — Guards: Вариант B принят, уточнение для DEV-44
+
+DEV-41 **уже реализовал** все три фикса WL breach (подтверждено чтением кода scan_loop.py строки 53–141). Legacy позиции — до перезапуска бота, не текущий баг.
+
+**DEV-44 продолжает** — Вариант B (second рубеж в register_trade_async). Уточнение к спеку DEV-44:
+- Вставлять ПОСЛЕ блока `regime = MarketRegimeClassifier()...` (~строка 506-509), не в начало метода
+- Использовать уже вычисленный `regime`, не `recommendation.regime` (на `rec` нет этого атрибута)
+- Теги логов: `[ARCH-37]` вместо `[register_trade]` для различимости
+
+---
+
+#### ARCH-38 — Singleton PivotCalculatorFixed: спек в DEV-45
+
+`PivotCalculatorFixed()` вызывается 4 раза в `trading_intelligence.py` БЕЗ `db_path` → кеш из БД не загружается (pivot_calculator_fixed.py:59-65). Каждый инстанс = пустой кеш.
+
+**Решение:** `self._pivot_calc_shared = PivotCalculatorFixed(db_path=db_path)` в `__init__`. Спек полный — в DEV-45 (TASKS.md).
+
+---
+
+#### Позиции WL breach: не закрывать
+
+Подтверждаю решение DEV-43. Симуляция — пусть закрываются сами. Данные полезны для ML: будет видно как ведут себя контр-трендовые входы при TREND_DOWN. Ручное закрытие = манипуляция обучающей выборкой.
+
+TRADER смотрит на них при TR-001 25.03 — сколько выжило.
+
+**ARCH**
