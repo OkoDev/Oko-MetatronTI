@@ -5,7 +5,7 @@ Trading Intelligence Layer - система объединения и анали
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, NamedTuple, Optional, Tuple, Any
 import pandas as pd
 import numpy as np
@@ -504,6 +504,24 @@ class TradingIntelligence:
 
             # Фильтруем сигналы по качеству
             filtered_signals = self._filter_signals_by_quality(signals)
+
+            # DEV-55 / ARCH-46: PIVOT_TOUCH staleness penalty
+            # Если касание пивота было давно (> staleness_bars баров) — снижаем strength сигнала.
+            _pts_cfg = (self.config.get("trading", {}) or {}).get("pivot_touch_staleness", {})
+            if _pts_cfg.get("enabled"):
+                _pts_bars = int(_pts_cfg.get("staleness_bars", 5))
+                _pts_penalty = int(_pts_cfg.get("score_penalty", -10))
+                for _sig55 in filtered_signals:
+                    _factors = (_sig55.data.get("factors") or []) if _sig55.data else []
+                    if "PIVOT_TOUCH" in _factors:
+                        _bars_ago = _sig55.data.get("pivot_bars_ago", 0) if _sig55.data else 0
+                        if _bars_ago > _pts_bars:
+                            _old_str = _sig55.strength
+                            _sig55.strength = max(0, _sig55.strength + _pts_penalty)
+                            logger.info(
+                                "[%s] DEV-55 PIVOT_TOUCH stale: %d баров (penalty %d) str %d→%d",
+                                symbol, _bars_ago, _pts_penalty, _old_str, _sig55.strength,
+                            )
 
             # DEV-12: записываем сырые сигналы в trace
             for sig in filtered_signals:
@@ -1011,6 +1029,83 @@ class TradingIntelligence:
             except Exception as _e52ti:
                 logger.debug("[%s] DEV-52 L3 checker: %s", symbol, _e52ti)
 
+            # ARCH-48: Weekly Bias Filter — Фаза A shadow (DEV-56) + Фаза B production gate (DEV-58)
+            # Фаза A: записывает weekly_bias в metadata (shadow, всегда)
+            # Фаза B: production gate (enabled: false → включить вручную через config.yaml)
+            try:
+                _wcfg_48 = (self.config.get("trading") or {}).get("weekly_bias_filter") or {}
+                _pc_48 = self._pivot_calc_shared
+                _wp48  = await _pc_48.get_weekly_pivots(symbol, self.data_collector)
+                _weekly_pp_48 = float((_wp48 or {}).get("PP") or 0) or None
+                _price_48 = float(recommendation.entry_price or
+                                  (market_context.current_price if market_context else 0) or 0)
+                if _weekly_pp_48 and _price_48:
+                    _weekly_bias_48 = "BULLISH" if _price_48 > _weekly_pp_48 else "BEARISH"
+                    _mp48  = await _pc_48.get_monthly_pivots(symbol, self.data_collector)
+                    _dp48  = await _pc_48.get_daily_pivots(symbol, self.data_collector)
+                    _monthly_pp_48 = float((_mp48 or {}).get("PP") or 0) or None
+                    _daily_pp_48   = float((_dp48 or {}).get("PP") or 0) or None
+                    _ctx_score_48  = sum([
+                        bool(_monthly_pp_48 and _price_48 < _monthly_pp_48),
+                        bool(_weekly_pp_48  and _price_48 < _weekly_pp_48),
+                        bool(_daily_pp_48   and _price_48 < _daily_pp_48),
+                    ])
+                    _dir_48 = str(getattr(recommendation.direction, "value", recommendation.direction) or "").upper()
+                    _gate_block_48 = (
+                        (_dir_48 == "LONG"  and _weekly_bias_48 == "BEARISH") or
+                        (_dir_48 == "SHORT" and _weekly_bias_48 == "BULLISH")
+                    )
+                    if _gate_block_48:
+                        logger.info(
+                            "[ARCH-48 shadow] %s: direction=%s would_block=True weekly_bias=%s ctx_score=%d",
+                            symbol, _dir_48, _weekly_bias_48, _ctx_score_48,
+                        )
+                    recommendation.metadata = recommendation.metadata or {}
+                    recommendation.metadata.update({
+                        "weekly_bias": _weekly_bias_48,
+                        "weekly_context_score": _ctx_score_48,
+                        "weekly_gate_would_block": _gate_block_48,
+                    })
+
+                    # DEV-58: Фаза B — production gate (включить: weekly_bias_filter.enabled: true)
+                    if _gate_block_48 and _wcfg_48.get("enabled"):
+                        _penalty_48 = int(_wcfg_48.get("soft_penalty", 25))
+                        _near_pct_48 = float(_wcfg_48.get("near_level_pct", 1.5)) / 100
+                        _hard_ctx_48 = int(_wcfg_48.get("hard_block_ctx_score", 3))
+                        _wr1 = float((_wp48 or {}).get("R1") or 0) or None
+                        _ws1 = float((_wp48 or {}).get("S1") or 0) or None
+                        _near_r = bool(_wr1 and abs(_price_48 - _wr1) / _price_48 < _near_pct_48)
+                        _near_s = bool(_ws1 and abs(_price_48 - _ws1) / _price_48 < _near_pct_48)
+
+                        if _dir_48 == "LONG" and _weekly_bias_48 == "BEARISH" and not _near_s:
+                            if _ctx_score_48 >= _hard_ctx_48:
+                                recommendation.action = "WATCH"
+                                logger.info(
+                                    "[DEV-58] %s hard_block LONG/BEARISH ctx=%d (≥%d)",
+                                    symbol, _ctx_score_48, _hard_ctx_48,
+                                )
+                            else:
+                                overall_strength = max(0, overall_strength - _penalty_48)
+                                logger.info(
+                                    "[DEV-58] %s soft_penalty LONG/BEARISH ctx=%d strength=%d→%d",
+                                    symbol, _ctx_score_48, overall_strength + _penalty_48, overall_strength,
+                                )
+                        elif _dir_48 == "SHORT" and _weekly_bias_48 == "BULLISH" and not _near_r:
+                            if _ctx_score_48 >= _hard_ctx_48:
+                                recommendation.action = "WATCH"
+                                logger.info(
+                                    "[DEV-58] %s hard_block SHORT/BULLISH ctx=%d (≥%d)",
+                                    symbol, _ctx_score_48, _hard_ctx_48,
+                                )
+                            else:
+                                overall_strength = max(0, overall_strength - _penalty_48)
+                                logger.info(
+                                    "[DEV-58] %s soft_penalty SHORT/BULLISH ctx=%d strength=%d→%d",
+                                    symbol, _ctx_score_48, overall_strength + _penalty_48, overall_strength,
+                                )
+            except Exception as _e48:
+                logger.debug("[ARCH-48] weekly bias error: %s", _e48)
+
             # DEV-40: ATR entry TF → используется в register_trade для ATR-based TP1
             try:
                 from core.entry_config import ENTRY_TO_TP1_TF as _TP1_TF_MAP
@@ -1184,7 +1279,7 @@ class TradingIntelligence:
         filtered = []
         max_age_seconds = 3600  # 1 час
         for signal in signals:
-            if (datetime.now() - signal.timestamp).total_seconds() < max_age_seconds:
+            if (datetime.now(timezone.utc) - signal.timestamp).total_seconds() < max_age_seconds:
                 filtered.append(signal)
         return filtered
     
