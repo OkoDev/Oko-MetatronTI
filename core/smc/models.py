@@ -265,3 +265,64 @@ def _mark_fvg_overlap(ob_analysis: OBAnalysis, fvg_analysis: FVGAnalysis) -> Non
             if ob.bottom <= fvg.top and ob.top >= fvg.bottom:
                 ob.has_fvg_overlap = True
                 break
+
+
+def build_mtf_smc_snapshot(
+    smc_ctx: SMCContext,
+    current_price: float,
+    proximity_pct: float = 1.5,
+) -> "MTFSMCSnapshot":
+    """
+    ARCH-51: Строит лёгкий торговый срез SMC для одного старшего TF.
+
+    Args:
+        smc_ctx: полный SMCContext старшего TF (4h или 1d).
+        current_price: текущая цена (из младшего TF или тикера).
+        proximity_pct: % расстояния до OB для признания «рядом» (default 1.5%).
+
+    Returns:
+        MTFSMCSnapshot — только торгово-значимые факты.
+    """
+    from core.signals.signal_models import MTFSMCSnapshot
+
+    snap = MTFSMCSnapshot()
+    if current_price <= 0:
+        return snap
+
+    prox = proximity_pct / 100.0
+
+    # Bull OB рядом → поддержка для LONG
+    for ob in smc_ctx.order_blocks.active_bull:
+        if abs(ob.midpoint - current_price) / current_price <= prox:
+            snap.bull_ob_nearby = True
+            snap.ob_proximity_pct = abs(ob.midpoint - current_price) / current_price * 100
+            break
+
+    # Bear OB рядом → сопротивление для LONG
+    for ob in smc_ctx.order_blocks.active_bear:
+        if abs(ob.midpoint - current_price) / current_price <= prox:
+            snap.bear_ob_nearby = True
+            break
+
+    # Bull FVG ПОД ценой → магнит/поддержка
+    for fvg in smc_ctx.fvg.active_bull:
+        if fvg.top < current_price:
+            snap.fvg_support = True
+            break
+
+    # Bear FVG НАД ценой → магнит/сопротивление
+    for fvg in smc_ctx.fvg.active_bear:
+        if fvg.bottom > current_price:
+            snap.fvg_resistance = True
+            break
+
+    # Последний структурный слом (CHoCH / BOS)
+    if smc_ctx.structure and smc_ctx.structure.breaks:
+        last_brk = smc_ctx.structure.breaks[-1]
+        direction = "bullish" if last_brk.direction == "LONG" else "bearish"
+        if last_brk.is_choch:
+            snap.choch_direction = direction
+        elif last_brk.is_bos:
+            snap.bos_direction = direction
+
+    return snap

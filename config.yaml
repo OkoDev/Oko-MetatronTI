@@ -25,7 +25,7 @@ analysis:
       os_threshold: -60.0
     trend:
       atr_period: 43
-      factor: 1.1        # DEV-34: было 1.25 → меньше ложных TSL-выходов
+      factor: 1.25       # DEV-66: бэктест +0.041R vs 1.1 (DEV-34 был ошибочным — 1.1 слишком тесный)
   signals:
     min_signals: 2
     single_signal_min_strength: 54
@@ -70,7 +70,9 @@ analysis:
     pivot_touch_pct: 0.15
     div_min_bars: 9
     max_per_cycle: 10
-    dynamic_os_enabled: false
+    dynamic_os_enabled: true   # ARCH-49: shadow comparison — вычисляем dyn_os, логируем [DYN-OS], gate по-прежнему FIXED
+    dyn_os_k: 1.2              # ARCH-49: k=1.2 (TRADER бэктест: Avg R +0.51 на 15m vs fixed -0.18)
+    dyn_os_window: 50          # ARCH-49: окно для mean/std WT1
     4h_gate_enabled: false   # ARCH-26: временно отключён (22.03) — WT momentum неверно определял тренд, шорты блокировались в нисходящем рынке. Вернуться к Варианту A (ATR Trend) после наблюдения.
 subscriptions:
   free:
@@ -130,6 +132,10 @@ trading:
   pivot_proximity_filter:
     enabled: true       # DEV-42: включено 23.03 — shadow 48 событий: near=26, penalty=22, hard_block=0 (0% < 20%)
     hard_block_mult: 2  # DEV-47: снижено 3→2 (tier1≈3.3% median → порог 6.6% вместо 9.9%)
+  pivot_touch_staleness:            # DEV-55 / ARCH-46: penalty за устаревшее касание пивота
+    enabled: true
+    staleness_bars: 5               # касание > 5 баров назад = устаревшее
+    score_penalty: -10              # штраф к strength сигнала
   future_pp_score_modifier:
     enabled: true   # DEV-36: ±score на основе позиции цены vs Future Daily PP
   market_event_marker:
@@ -140,6 +146,11 @@ trading:
     enabled: false                # shadow mode — только лог [ARCH-42]
     sl_threshold: 5               # SL за window_minutes → активировать gate
     window_minutes: 30            # rolling window (reuse _sl_timestamps из DEV-39)
+  weekly_bias_filter:            # ARCH-48 / DEV-56: top-down weekly PP bias
+    enabled: false               # Фаза A: false (shadow). Фаза B: true (production gate)
+    soft_penalty: 25             # score penalty при направлении против bias
+    hard_block_ctx_score: 3      # hard block при тройном контрастном контексте
+    near_level_pct: 1.5          # % от уровня = "рядом с Weekly R/S" (исключение)
   l3_checker:                    # DEV-52 / TR-006: L3 Фаза A — shadow mode
     enabled: false               # shadow: только лог [DEV-52-L3], не блокирует
     min_score: 85                # условие 5: effective_score ≥ 85
@@ -199,13 +210,20 @@ trading:
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5  # DEV-29: снижено с 5.0 (бэктест: 0 активаций при 5.0R, 83% TSL-закрытий до 4R)
   use_breakeven: false
+  use_be_after_tp1: false   # DEV-60: BE для остатка после TP1 hit (DUAL_TP/TRIPLE_TP_TSL), независимо от use_breakeven
+  expired_management:       # DEV-62: Tiered EXPIRED — конвертация прибыльных TREND позиций в TSL
+    tsl_convert_min_r: 1.5  # минимальный R для конвертации (при R=1.0 легко разворачивается)
+    tsl_convert_regimes:    # только тренд (в RANGE — высокая вероятность возврата в диапазон)
+      - TREND_UP
+      - TREND_DOWN
   max_positions_per_direction: 0   # DEV-14: Correlation Guard (0 = отключён)
   sl_tp:
     atr_multiplier: 1.2
     sl_min_pct: 0.5
     sl_max_pct: 3.0
-    tp_fallback_rr: 3.0
-    max_rr: 6.0          # DEV-35: cap R:R (PAXG 24x, CRCLX 32x → max 6x)
+    tp_fallback_rr: 2.5
+    max_rr: 3.0          # DEV-35: cap R:R (PAXG 24x, CRCLX 32x → max 6x)
+    max_rr_range: 2.5    # DEV-61: RANGE-специфичный cap (среднее RANGE движение = 2.0–2.5x)
     require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
     tp_pivot_min_r: 2.0
     tp_reversal_min_r: 2.0
@@ -223,6 +241,17 @@ signal_quality:
   min_volume_usd: 700000
   min_strength: 50
   min_strength_register: 75  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
+  min_strength_wl_breach: 45  # DEV-69: WL breach — ниже, т.к. касание уровня само по себе = контекст
+  ote_shadow_mode: true         # ARCH-53: OTE детектор shadow mode (только логирование, ≥2 недели)
+  ote_zone_tfs: ["1h", "4h", "1d"]       # ARCH-53 swing: zone TF (trigger = entry TF 15m)
+  ote_scalp_zone_tfs: ["15m"]            # ARCH-53 scalp: zone TF (ICT: 15m zone)
+  ote_scalp_trigger_tf: "3m"             # ARCH-53 scalp: trigger TF (ICT: 3m WT cross)
+  min_strength_by_regime:    # DEV-61: override per regime (выше базового min_strength_register)
+    RANGE: 70                # RANGE = SL-фабрика при слабых сигналах (str=18, str=49 в БД)
+    HIGH_VOL: 80             # HIGH_VOL уже заблокирован, но на случай снятия блока
+  signal_regime_block:       # DEV-64B: hard block мёртвых комбинаций (0% WR на 33+ сделках)
+    pivot_reversal:
+      blocked_regimes: [RANGE, TREND_DOWN]  # 33 сд WR=0%, 8 сд WR=0% — достаточно для блока
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
@@ -238,13 +267,13 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
-  scan_semaphore_size: 5
-  analyze_semaphore_size: 2
+  scan_semaphore_size: 10
+  analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
   cascade_div_semaphore_size: 3
   api_rps: 15
-  api_semaphore_size: 8
+  api_semaphore_size: 12
   ohlcv_scan_limit: 161  # +1 буфер: BingX возвращает limit-1 баров (159 вместо 160)
   ohlcv_slow_threshold_sec: 5.0
   divergence_slow_threshold_sec: 3.0

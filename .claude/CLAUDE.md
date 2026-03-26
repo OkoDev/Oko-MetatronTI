@@ -99,33 +99,79 @@ config.yaml                 ← конфигурация (API ключи, пар
 subscriptions.db            ← SQLite (пользователи, подписки, simulated_trades)
 
 core/                       ← ТОЛЬКО бизнес-логика, без aiogram
-  api_engine.py             ← транспортный слой: LRU cache, CircuitBreaker, retry, in-flight dedup
-  data_collector.py         ← получение данных с биржи (OHLCV + ticker); делегирует в api_engine
-  indicators.py             ← технические индикаторы (WT, RSI и др.)
-  signal_models.py          ← dataclass модели: SignalData, TradingRecommendation и др.
-  signal_checkers.py        ← чистые функции проверок по всем типам сигналов
-  anomaly_detector.py       ← всплески объёма
-  divergence_detector.py    ← дивергенции (Regular, Hidden)
-  trend_signals.py          ← сигналы тренда (EMA, ADX, slope)
-  mtf_checker.py            ← multi-timeframe анализ
-  mtf_pivot_integration.py  ← MTF + пивоты (комбинированные сигналы)
-  pivot_levels.py           ← уровни пивотов (Woodie, Camarilla, Fibonacci)
-  pivot_reversal.py         ← разворотные сигналы по пивотам
-  pivot_calculator_fixed.py ← period-based пивоты (1M/1W/1D, UTC)
-  trading_intelligence.py   ← 1850 строк: агрегация сигналов → рекомендация
-  intelligence_formatter.py ← форматирование TradingRecommendation → HTML (re-export)
-  trade_simulator.py        ← регистрация сделок, SL/TP трекинг, MFE
-  performance_engine.py     ← аналитика по simulated_trades (read-only)
-  outcome_predictor.py      ← RandomForest на исходах сделок, P(win)
-  market_regime.py          ← ADX+ATR+EMA классификатор (TREND_UP/DOWN/RANGE/HIGH_VOL)
-  ml_predictor.py           ← OHLCV-based ML (PRICE_DIRECTION, SIGNAL_STRENGTH)
-  message_builder.py        ← форматирование символов, TV-ссылки
-  config.py                 ← legacy-константы (заменён config_loader)
-  config_loader.py          ← загрузка config.yaml и .env
-  subscription_manager.py   ← SQLite: users, subscriptions, simulated_trades, user_settings
-  watchlist_manager.py      ← watchlist пользователя
-  # risk_manager.py        ← УДАЛЁН 18.03.2026 (active_positions был пуст, мёртвый код)
-  historical_analyzer.py    ← дублирует часть функций trade_simulator, не основной
+  # ARCH-54 (29.03.2026): файлы разбиты по подпапкам.
+  # Старые импорты (from core.X import Y) работают через stub-файлы в корне core/.
+  # Новый импорт: from core.<папка>.<модуль> import Y
+
+  infra/                    ← транспорт и конфигурация
+    api_engine.py           ← LRU cache, CircuitBreaker, retry, in-flight dedup
+    data_collector.py       ← получение данных с биржи (OHLCV + ticker)
+    config_loader.py        ← загрузка config.yaml и .env
+    data_quality.py         ← валидация качества OHLCV
+    entry_config.py         ← конфигурация entry TF
+
+  indicators/               ← технические индикаторы
+    indicators.py           ← WT, RSI, ATR, EMA, ADX, trend, swing H/L
+    divergence_detector.py  ← дивергенции (Regular, Hidden) + MTF cascade
+    trend_signals.py        ← сигналы тренда (EMA cross, ADX, slope)
+    market_regime.py        ← ADX+ATR+EMA → TREND_UP/DOWN/RANGE/HIGH_VOL
+    anomaly_model.py        ← модель аномалий объёма
+    bounce_detector.py      ← детектор bounce от уровней
+    dynamic_thresholds.py   ← адаптивные пороги по волатильности
+
+  signals/                  ← модели и чекеры сигналов
+    signal_models.py        ← dataclass: SignalData, TradingRecommendation и др.
+    signal_checkers.py      ← чистые функции проверок по всем типам сигналов
+    signal_watch_list.py    ← логика WL breach сигналов
+    wt_15m_reversal_scanner.py ← сканер WT разворотов на 15m
+    structure_detector.py   ← детектор CHoCH/BOS на барах
+
+  pivots/                   ← уровни пивотов
+    pivot_levels.py         ← Woodie, Camarilla, Standard
+    pivot_reversal.py       ← разворотные сигналы по пивотам
+    pivot_calculator_fixed.py ← period-based пивоты (1M/1W/1D, UTC)
+    mtf_pivot_integration.py  ← MTF + пивоты (комбинированные сигналы)
+
+  mtf/                      ← multi-timeframe анализ
+    mtf_checker.py          ← MTF проверки согласованности
+    mtf_interpreter.py      ← интерпретация MTF контекста
+    multi_tf_resolver.py    ← резолвер конфликтов между TF
+
+  trading/                  ← торговый движок
+    trade_simulator.py      ← регистрация сделок, SL/TP/TSL трекинг, MFE
+    trade_analyzer.py       ← анализ закрытых сделок
+    performance_engine.py   ← аналитика по simulated_trades (read-only)
+    regime_strategy.py      ← адаптация параметров под рыночный режим (ARCH-04)
+
+  ml/                       ← ML-модели
+    ml_predictor.py         ← OHLCV-based ML (PRICE_DIRECTION, SIGNAL_STRENGTH)
+    outcome_predictor.py    ← RandomForest на исходах сделок, P(win)
+    r_predictor.py          ← предсказание max R-multiple
+    rl_exit_agent.py        ← RL-агент управления выходом (stub)
+    auto_calibrator.py      ← автокалибровка MTF multipliers
+
+  ui/                       ← форматирование и вывод
+    message_builder.py      ← TV-ссылки, форматирование символов
+    message_composer.py     ← composer паттерн для сборки сообщений
+    intelligence_formatter.py ← TradingRecommendation → HTML
+    chart_builder.py        ← генерация candlestick PNG
+
+  db/                       ← работа с БД
+    subscription_manager.py ← SQLite: users, subscriptions, simulated_trades, user_settings
+    watchlist_manager.py    ← watchlist пользователя (max 20/user)
+
+  confluence/               ← confluence детекторы
+    confluence_scanner.py
+    confluence_state_machine.py
+
+  smc/                      ← Smart Money Concepts (уже был)
+  intelligence/             ← агрегация сигналов → рекомендация (уже был)
+  agents/                   ← агент-архитектура (уже был)
+
+  trading_intelligence.py   ← монолит 1850 строк (остаётся в корне, ROADMAP Этап 8)
+  selftest.py
+  # Stub-файлы в корне (backward compat): api_engine.py, config_loader.py и др.
+  #   → каждый делает: from core.<папка>.<модуль> import *
 
 bot/                        ← UI-слой (aiogram)
   keyboards.py              ← клавиатуры Telegram (494 строки)

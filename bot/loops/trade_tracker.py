@@ -11,8 +11,9 @@ async def trade_tracker_loop(bot) -> None:
     """Каждые 60 сек проверяет открытые сделки и закрывает их по SL/TP/TSL."""
     use_tsl = bot.config.get("trading.use_tsl", True)
     tsl_activation_r = bot.config.get("trading.tsl_activation_r", 1.0)
-    use_breakeven = bot.config.get("trading.use_breakeven", True)
+    use_breakeven = bot.config.get("trading.use_breakeven", False)
     breakeven_activation_r = bot.config.get("trading.breakeven_activation_r", 0.5)
+    use_be_after_tp1 = bot.config.get("trading.use_be_after_tp1", False)
     cascade_tsl = bot.config.get("trading.cascade_tsl", True)
 
     while True:
@@ -24,6 +25,7 @@ async def trade_tracker_loop(bot) -> None:
                 tsl_activation_r=tsl_activation_r,
                 use_breakeven=use_breakeven,
                 breakeven_activation_r=breakeven_activation_r,
+                use_be_after_tp1=use_be_after_tp1,
                 cascade_tsl=cascade_tsl,
             )
             if closed > 0:

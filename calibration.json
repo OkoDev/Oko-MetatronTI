@@ -1,0 +1,231 @@
+{
+  "updated_at": "2026-03-18T12:41:01.861083+00:00",
+  "params": {
+    "aligned_boost": 0.1,
+    "counter_penalty": 0.7,
+    "counter_floor": 0.3,
+    "zone_range": 0.8,
+    "zone_base_high": 1.4,
+    "zone_base_low": 0.6,
+    "dir_weight": 0.7,
+    "zone_weight": 0.3
+  },
+  "last_calibration": {
+    "timestamp": "2026-03-18T12:41:01.854574+00:00",
+    "segments_analyzed": 18,
+    "total_trades": 194,
+    "adjustments": [
+      {
+        "param": "aligned_boost",
+        "old": 0.3,
+        "new": 0.1,
+        "delta_pct": -66.7,
+        "reason": "dir=SHORT_bias=SHORT: aligned убыточен",
+        "segment": "dir=SHORT_bias=SHORT",
+        "expectancy": -1.0,
+        "n_trades": 16
+      }
+    ],
+    "params_before": {
+      "aligned_boost": 0.3,
+      "counter_penalty": 0.7,
+      "counter_floor": 0.3,
+      "zone_range": 0.8,
+      "zone_base_high": 1.4,
+      "zone_base_low": 0.6,
+      "dir_weight": 0.7,
+      "zone_weight": 0.3
+    },
+    "params_after": {
+      "aligned_boost": 0.1,
+      "counter_penalty": 0.7,
+      "counter_floor": 0.3,
+      "zone_range": 0.8,
+      "zone_base_high": 1.4,
+      "zone_base_low": 0.6,
+      "dir_weight": 0.7,
+      "zone_weight": 0.3
+    },
+    "segments": [
+      {
+        "name": "dir=SHORT_bias=SHORT",
+        "total": 16,
+        "wins": 0,
+        "losses": 16,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "dir=SHORT_zone=MIDDLE",
+        "total": 37,
+        "wins": 0,
+        "losses": 37,
+        "win_rate": 0.0,
+        "avg_r": -0.98,
+        "expectancy": -0.98
+      },
+      {
+        "name": "dir=SHORT_regime=RANGE",
+        "total": 33,
+        "wins": 0,
+        "losses": 33,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "align=aligned_zone=MIDDLE",
+        "total": 23,
+        "wins": 0,
+        "losses": 23,
+        "win_rate": 0.0,
+        "avg_r": -0.967,
+        "expectancy": -0.967
+      },
+      {
+        "name": "dir=SHORT_bias=NEUTRAL",
+        "total": 123,
+        "wins": 5,
+        "losses": 118,
+        "win_rate": 4.1,
+        "avg_r": -0.146,
+        "expectancy": -0.146
+      },
+      {
+        "name": "align=neutral_zone=MIDDLE",
+        "total": 28,
+        "wins": 0,
+        "losses": 28,
+        "win_rate": 0.0,
+        "avg_r": -0.973,
+        "expectancy": -0.973
+      },
+      {
+        "name": "dir=LONG_bias=NEUTRAL",
+        "total": 45,
+        "wins": 2,
+        "losses": 43,
+        "win_rate": 4.4,
+        "avg_r": -0.034,
+        "expectancy": -0.034
+      },
+      {
+        "name": "dir=LONG_zone=MIDDLE",
+        "total": 15,
+        "wins": 0,
+        "losses": 15,
+        "win_rate": 0.0,
+        "avg_r": -0.95,
+        "expectancy": -0.95
+      },
+      {
+        "name": "dir=LONG_regime=RANGE",
+        "total": 14,
+        "wins": 0,
+        "losses": 14,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "dir=SHORT_regime=HIGH_VOL",
+        "total": 4,
+        "wins": 0,
+        "losses": 4,
+        "win_rate": 0.0,
+        "avg_r": -0.812,
+        "expectancy": -0.812
+      },
+      {
+        "name": "dir=LONG_bias=LONG",
+        "total": 9,
+        "wins": 0,
+        "losses": 9,
+        "win_rate": 0.0,
+        "avg_r": -0.917,
+        "expectancy": -0.917
+      },
+      {
+        "name": "dir=LONG_regime=HIGH_VOL",
+        "total": 3,
+        "wins": 0,
+        "losses": 3,
+        "win_rate": 0.0,
+        "avg_r": -0.75,
+        "expectancy": -0.75
+      },
+      {
+        "name": "dir=LONG_zone=RESISTANCE",
+        "total": 2,
+        "wins": 0,
+        "losses": 2,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "align=aligned_zone=RESISTANCE",
+        "total": 2,
+        "wins": 0,
+        "losses": 2,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "dir=SHORT_bias=LONG",
+        "total": 1,
+        "wins": 0,
+        "losses": 1,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "align=counter_zone=MIDDLE",
+        "total": 1,
+        "wins": 0,
+        "losses": 1,
+        "win_rate": 0.0,
+        "avg_r": -1.0,
+        "expectancy": -1.0
+      },
+      {
+        "name": "dir=SHORT_regime=UNKNOWN",
+        "total": 103,
+        "wins": 5,
+        "losses": 98,
+        "win_rate": 4.9,
+        "avg_r": 0.013,
+        "expectancy": 0.013
+      },
+      {
+        "name": "dir=LONG_regime=UNKNOWN",
+        "total": 37,
+        "wins": 2,
+        "losses": 35,
+        "win_rate": 5.4,
+        "avg_r": 0.175,
+        "expectancy": 0.175
+      }
+    ]
+  },
+  "history": [
+    {
+      "timestamp": "2026-03-18T12:41:01.854574+00:00",
+      "adjustments": 1,
+      "total_trades": 194,
+      "params": {
+        "aligned_boost": 0.1,
+        "counter_penalty": 0.7,
+        "counter_floor": 0.3,
+        "zone_range": 0.8,
+        "zone_base_high": 1.4,
+        "zone_base_low": 0.6,
+        "dir_weight": 0.7,
+        "zone_weight": 0.3
+      }
+    }
+  ]
+}

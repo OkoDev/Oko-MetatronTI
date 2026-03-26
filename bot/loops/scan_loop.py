@@ -11,7 +11,11 @@ from collections import deque
 from datetime import datetime, timezone
 
 from core.entry_config import get_primary_entry_tf, get_entry_timeframes
-from core.message_builder import anomaly_message, wt_message, wt_b_message as _wt_b_message
+from core.message_builder import (
+    anomaly_message, wt_message, wt_b_message as _wt_b_message,
+    funding_extreme_message as _funding_message,
+    liquidity_sweep_message as _sweep_message,
+)
 from core.divergence_detector import divergence_message, mtf_divergence_message
 from core.signal_checkers import (
     check_anomaly_signals,
@@ -50,6 +54,14 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     pivot_level = wl_entry.pivot_level
     score = wl_entry.score
 
+    # Gate 0: min_strength guard — WL breach не проверял strength (DOGE str=18 баг 25.03)
+    # DEV-69: отдельный порог для WL breach (45) — ниже мониторинга (75), т.к. касание уровня = контекст
+    _min_str_wl = int(bot.config.get("signal_quality.min_strength_wl_breach",
+                      bot.config.get("signal_quality.min_strength_register", 75)))
+    if score < _min_str_wl:
+        logger.info("[WL-BREACH] %s: пропуск — strength=%d < min_strength_wl_breach=%d", symbol, score, _min_str_wl)
+        return
+
     # DEV-41: Rate-limit — не более 3 WL breach входов за 30 минут
     _now = datetime.now()
     _rate_window = 30 * 60  # секунд
@@ -87,6 +99,39 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                 return
     except Exception as _e32:
         logger.debug("[WL-BREACH] %s: ошибка DEV-32 gate — %s", symbol, _e32)
+
+    # Gate 4: DEV-58 Weekly Bias Filter (production gate, enabled: false по умолчанию)
+    try:
+        _wbcfg_58 = (bot.config.get("trading") or {}).get("weekly_bias_filter") or {}
+        if _wbcfg_58.get("enabled"):
+            _pc_58 = getattr(bot, "pivot_calculator", None)
+            if _pc_58 is not None:
+                _wp58 = await _pc_58.get_weekly_pivots(symbol, bot.data_collector)
+                _wpp58 = float((_wp58 or {}).get("PP") or 0) or None
+                if _wpp58 and current_price:
+                    _bias58 = "BULLISH" if current_price > _wpp58 else "BEARISH"
+                    _dp58 = await _pc_58.get_daily_pivots(symbol, bot.data_collector)
+                    _mp58 = await _pc_58.get_monthly_pivots(symbol, bot.data_collector)
+                    _dpp58 = float((_dp58 or {}).get("PP") or 0) or None
+                    _mpp58 = float((_mp58 or {}).get("PP") or 0) or None
+                    _ctx58 = sum([
+                        bool(_mpp58 and current_price < _mpp58),
+                        bool(_wpp58 and current_price < _wpp58),
+                        bool(_dpp58 and current_price < _dpp58),
+                    ])
+                    _conflict58 = (
+                        (direction == "LONG" and _bias58 == "BEARISH") or
+                        (direction == "SHORT" and _bias58 == "BULLISH")
+                    )
+                    _hard_ctx58 = int(_wbcfg_58.get("hard_block_ctx_score", 3))
+                    if _conflict58 and _ctx58 >= _hard_ctx58:
+                        logger.info(
+                            "[WL-BREACH DEV-58] %s: hard_block %s/%s ctx=%d",
+                            symbol, direction, _bias58, _ctx58,
+                        )
+                        return
+    except Exception as _e58:
+        logger.debug("[WL-BREACH] %s: ошибка DEV-58 gate — %s", symbol, _e58)
 
     # SL = пробитый пивот ± 0.5% буфер (уровень стал support/resistance)
     sl_buffer_pct = float(bot.config.get("signal_quality.wl_sl_buffer_pct", 0.5)) / 100
@@ -140,21 +185,26 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         except Exception as _e_atr:
             logger.debug("[WL-BREACH] %s: ошибка ATR fallback — %s", symbol, _e_atr)
 
-    # DEV-41 Фикс 3: R:R cap (max_rr из конфига, default 6.0)
+    # DEV-64A: global + regime R:R cap (max_rr из sl_tp, enforce для всех режимов)
     if tp is not None and sl is not None and current_price > 0:
         _risk = abs(current_price - sl)
         _reward = abs(tp - current_price)
         if _risk > 0:
             _rr = _reward / _risk
+            _sl_tp_cfg = bot.config.get("trading", {}).get("sl_tp", {})
             try:
-                _max_rr = float(bot.config.get("trading", {}).get("sl_tp", {}).get("max_rr", 6.0))
+                if regime == "RANGE":
+                    _max_rr = float(_sl_tp_cfg.get("max_rr_range", 2.5))
+                else:
+                    _max_rr = float(_sl_tp_cfg.get("max_rr", 3.0))
             except Exception:
-                _max_rr = 6.0
+                _max_rr = 3.0
             if _rr > _max_rr:
                 _sign = 1.0 if direction == "LONG" else -1.0
                 tp = current_price + _sign * _risk * _max_rr
                 tp_source = f"{tp_source}|capped_rr_{_max_rr}"
-                logger.info("[WL-BREACH] %s: R:R=%.2f → cap %.1fx → TP=%.6f", symbol, _rr, _max_rr, tp)
+                logger.info("[WL-BREACH DEV-64A] %s: R:R=%.2f → cap %.1fx TP=%.6f (regime=%s)",
+                            symbol, _rr, _max_rr, tp, regime or "?")
 
     # Проверка min R:R = 1.5
     if tp is not None and sl and pivot_level > 0:
@@ -449,6 +499,45 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 logger.debug("[anomaly] %s: лимит %d/цикл достигнут, пропуск TG",
                                              sym, _anomaly_max_per_cycle)
 
+                    # 1a. DEV-81: FUNDING_EXTREME (shadow mode — только лог, не в TG)
+                    if _scan_tf == _etf:
+                        try:
+                            from core.signals.funding_detector import detect_funding_extreme
+                            _fr = await bot.data_collector.get_funding_rate(sym)
+                            if _fr is not None:
+                                _funding_sig = detect_funding_extreme(sym, _df_tf, _fr, bot.config)
+                                if _funding_sig is not None:
+                                    all_scan_signals.append(_funding_sig)
+                                    bot.signal_counters["funding_extreme"] = (
+                                        bot.signal_counters.get("funding_extreme", 0) + 1
+                                    )
+                                    bot.signal_counters["total"] += 1
+                                    # shadow mode: не отправляем в TG, только лог
+                                    logger.info(
+                                        "[DEV-81 shadow] %s funding=%.6f dir=%s str=%d",
+                                        sym, _fr, _funding_sig.direction.value, _funding_sig.strength,
+                                    )
+                        except Exception as _fe:
+                            logger.debug("[FUNDING] %s error: %s", sym, _fe)
+
+                    # 1b. DEV-82: LIQUIDITY_SWEEP
+                    if _scan_tf == _etf:
+                        try:
+                            from core.signals.liquidity_sweep_detector import detect_liquidity_sweep
+                            _pc = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
+                            _sweep_sig = detect_liquidity_sweep(sym, _df_tf, _pc, bot.config)
+                            if _sweep_sig is not None:
+                                all_scan_signals.append(_sweep_sig)
+                                bot.signal_counters["liquidity_sweep"] = (
+                                    bot.signal_counters.get("liquidity_sweep", 0) + 1
+                                )
+                                bot.signal_counters["total"] += 1
+                                signals_to_broadcast.append(
+                                    ("liquidity_sweep", _sweep_message(sym, _sweep_sig), None)
+                                )
+                        except Exception as _se:
+                            logger.debug("[LIQSWEEP] %s error: %s", sym, _se)
+
                     # 2. WT
                     _pivot_calc = getattr(bot, "pivot_calculator", None)
                     for sig in await _check_wt_signals(sym, _df_tf, df_1h):
@@ -674,10 +763,19 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         # (analyze_symbol может занимать 30-60 сек — не блокируем asyncio.gather)
         # pre_signals передаём только в первый broadcast — analyze_symbol закеширует результат
         pre = all_scan_signals if all_scan_signals else None
+        # Передаём все уже загруженные df — analyze_symbol использует их напрямую (нет повторных fetch)
+        _pre_dfs = {
+            _etf:  df_entry,
+            "1h":  df_1h,
+            "3m":  df_3m,
+            "4h":  df_4h,
+            "1d":  df_1d,
+        }
         for sig_type, raw_text, fallback_rec in signals_to_broadcast:
             asyncio.create_task(
                 _broadcast_intelligence_alert(bot, sym, raw_text, sig_type,
-                                             fallback_rec=fallback_rec, pre_signals=pre)
+                                             fallback_rec=fallback_rec, pre_signals=pre,
+                                             pre_fetched_dfs=_pre_dfs)
             )
 
     pairs = list(bot.monitored_pairs)

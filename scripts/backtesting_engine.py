@@ -29,6 +29,66 @@ from core.trade_simulator import STATUS_TP, STATUS_SL, STATUS_TSL, STATUS_EXPIRE
 logger = logging.getLogger(__name__)
 
 
+def _ms_to_date_str(ts_ms: int) -> str:
+    """Конвертирует Unix ms timestamp в строку YYYY-MM-DD (UTC)."""
+    return datetime.utcfromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d")
+
+
+def _trade_pnl(trade: "BacktestTrade", balance: float, config: "BacktestConfig") -> float:
+    """DEV-33: P&L сделки с учётом leverage и комиссии (round-trip).
+
+    Математика:
+      margin        = balance × risk_per_trade_pct / 100
+      position_size = margin × leverage
+      gross_pnl     = position_size × profit_pct / 100
+      commission    = position_size × commission_pct / 100 × 2  (entry + exit)
+      net_pnl       = gross_pnl - commission
+
+    Liquidation guard: потеря не может превысить margin (capital committed).
+    """
+    leverage = max(1, int(config.leverage))
+    margin = balance * (config.risk_per_trade_pct / 100)
+    position_size = margin * leverage
+    gross_pnl = position_size * (trade.profit_pct / 100)
+    commission = position_size * (config.commission_pct / 100) * 2  # round-trip
+    net_pnl = gross_pnl - commission
+    # Liquidation guard: убыток не может превысить вложенный margin
+    if net_pnl < -margin:
+        net_pnl = -margin
+    return net_pnl
+
+
+def _calc_smc_stats(trades: "List[BacktestTrade]") -> dict:
+    """DEV-34: статистика SMC флагов по сделкам."""
+    if not trades:
+        return {}
+    ob_trades  = [t for t in trades if t.smc_ob is True]
+    fvg_trades = [t for t in trades if t.smc_fvg is True]
+    ob_wins    = [t for t in ob_trades  if t.result == BacktestResult.WIN]
+    fvg_wins   = [t for t in fvg_trades if t.result == BacktestResult.WIN]
+    ob_fvg     = [t for t in trades if t.smc_ob is True and t.smc_fvg is True]
+    ob_fvg_wins= [t for t in ob_fvg if t.result == BacktestResult.WIN]
+
+    def _wr(wins, total):
+        return round(len(wins) / len(total) * 100, 1) if total else 0.0
+
+    def _avg_r(lst):
+        import numpy as np
+        return round(float(np.mean([t.r_multiple for t in lst])), 2) if lst else 0.0
+
+    return {
+        'ob_count':      len(ob_trades),
+        'ob_wr':         _wr(ob_wins, ob_trades),
+        'ob_avg_r':      _avg_r(ob_trades),
+        'fvg_count':     len(fvg_trades),
+        'fvg_wr':        _wr(fvg_wins, fvg_trades),
+        'fvg_avg_r':     _avg_r(fvg_trades),
+        'ob_fvg_count':  len(ob_fvg),
+        'ob_fvg_wr':     _wr(ob_fvg_wins, ob_fvg),
+        'ob_fvg_avg_r':  _avg_r(ob_fvg),
+    }
+
+
 def _week_start_ms(ts_ms: int) -> int:
     """Возвращает timestamp начала недели (Пн 00:00 UTC) для ts_ms."""
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -62,6 +122,8 @@ class BacktestTrade:
     min_price: Optional[float] = None
     max_r_possible: Optional[float] = None
     captured_r_pct: Optional[float] = None
+    smc_ob: Optional[bool] = None   # DEV-34: Bull/Bear OB был у цены входа
+    smc_fvg: Optional[bool] = None  # DEV-34: незаполненный FVG был у цены входа
 
 
 @dataclass
@@ -77,6 +139,7 @@ class BacktestConfig:
     use_tsl: bool = True
     tsl_activation_r: float = 1.0
     commission_pct: float = 0.1
+    leverage: int = 1             # DEV-33: плечо (1=спот, 2/3/5=фьючерс). Риск остаётся risk_per_trade_pct; leverage увеличивает позицию и комиссию
     use_htf_filter: bool = True   # фильтр по HTF тренду
     use_pivot_filter: bool = True  # фильтр по weekly pivot PP
     htf_timeframe: str = "4h"    # ТФ для HTF фильтра
@@ -103,6 +166,15 @@ class BacktestConfig:
     use_pivot_boost: bool = False # касание pivot-уровня как усилитель силы сигнала
     use_reentry: bool = False     # перезаход после SL по дивергенции
     reentry_lookback: int = 10    # сколько баров после SL искать перезаход
+    # --- DEV-34: SMC фильтр ---
+    use_smc: bool = False         # вычислять SMC контекст (требуется для smc_require_*)
+    smc_require_ob: bool = False  # LONG требует Bull OB у цены, SHORT — Bear OB
+    smc_require_fvg: bool = False # LONG требует незаполненный Bull FVG, SHORT — Bear FVG
+    smc_ob_tf: str = "15m"        # ТФ для OB (будущее: 1h, 4h; сейчас = основной TF)
+    smc_ob_pairs: list = None     # per-asset OB-фильтр: список символов где smc_require_ob активен.
+                                  # None = применять ко всем. ["ETH/USDT","BTC/USDT"] = только топ-5.
+    # --- DEV-35: источник данных ---
+    data_source: str = "bingx"    # "bingx" | "cryptocom" | "binance". Binance: с 2017, максимальная история
     # --- Стратегия ---
     strategy: str = "default"     # "default" | "confluence_scanner" | любое имя из registry
     strategy_config: dict = None  # параметры стратегии (min_strength и т.д.)
@@ -118,12 +190,22 @@ class BacktestingEngine:
     def __init__(self, config: BacktestConfig, shared_exchange=None):
         self.config = config
         self.data_collector = RealTimeData()
-        # Используем shared exchange если передан (экономия rate limit), иначе создаём свой
-        self._owned_exchange = shared_exchange is None
-        self._swap_exchange = shared_exchange or ccxt_async.bingx({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'swap'},
-        })
+        # DEV-35: выбираем биржу по data_source
+        if config.data_source == "cryptocom":
+            # Crypto.com: спот, история с 2018
+            self._swap_exchange = ccxt_async.cryptocom({'enableRateLimit': True})
+            self._owned_exchange = True
+        elif config.data_source == "binance":
+            # Binance: спот, максимальная история (BTC с 2017, большинство альтов с 2019-2021)
+            self._swap_exchange = ccxt_async.binance({'enableRateLimit': True})
+            self._owned_exchange = True
+        else:
+            # BingX: фьючерс-swap (текущее поведение)
+            self._owned_exchange = shared_exchange is None
+            self._swap_exchange = shared_exchange or ccxt_async.bingx({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'swap'},
+            })
         self.trades: List[BacktestTrade] = []
         self.balance = config.initial_balance
         self.current_balance = config.initial_balance
@@ -135,29 +217,80 @@ class BacktestingEngine:
             return f"{symbol}:{base}"
         return symbol
 
+    def _to_source_symbol(self, symbol: str) -> str:
+        """DEV-35: возвращает символ в формате нужной биржи.
+        BingX   → 'BTC/USDT:USDT' (swap/perpetual)
+        Binance → 'BTC/USDT'      (spot)
+        Crypto.com → 'BTC/USDT'  (spot)
+        """
+        if self.config.data_source in ("cryptocom", "binance"):
+            return symbol.split(':')[0]  # убираем ':USDT' суффикс если есть
+        return self._to_swap_symbol(symbol)
+
+    def _cache_symbol_key(self, symbol: str) -> str:
+        """DEV-35: ключ символа для кэша — с префиксом источника во избежание коллизий.
+        Пример: 'bingx:BTC/USDT:USDT', 'cryptocom:BTC/USDT'
+        """
+        return f"{self.config.data_source}:{self._to_source_symbol(symbol)}"
+
     async def _fetch_ohlcv_swap(self, symbol: str, timeframe: str, since: int, limit: int = 1000) -> Optional[pd.DataFrame]:
-        """Загружает OHLCV пачками через BingX swap, начиная с since."""
-        swap_symbol = self._to_swap_symbol(symbol)
-        all_data = []
-        current_since = since
+        """Загружает OHLCV пачками через configured exchange, начиная с since.
+        DEV-32: сначала проверяет SQLite кэш, докачивает только недостающее.
+        DEV-35: использует _to_source_symbol() + _cache_symbol_key() для поддержки Crypto.com.
+        """
+        source_symbol = self._to_source_symbol(symbol)   # DEV-35: BingX swap или Crypto.com spot
+        cache_key = self._cache_symbol_key(symbol)        # DEV-35: с префиксом источника
         end_ms = int(self.config.end_date.timestamp() * 1000)
+
+        # ── DEV-32: SQLite кэш ──────────────────────────────────────────────
+        try:
+            from scripts.ohlcv_cache import get_cache
+            cache = get_cache()
+            c_min, c_max = cache.get_coverage(cache_key, timeframe)
+
+            if c_min is not None and c_min <= since and c_max is not None and c_max >= end_ms:
+                # Полное покрытие — API не нужен
+                cached_df = cache.read(cache_key, timeframe, since, end_ms)
+                if cached_df is not None:
+                    logger.info("[cache] HIT %s %s (%d bars)", cache_key, timeframe, len(cached_df))
+                    return cached_df
+
+            # Инкрементальное обновление: есть данные, но хвост устарел
+            fetch_since = since
+            if c_min is not None and c_min <= since and c_max is not None and c_max < end_ms:
+                fetch_since = c_max + 1  # докачиваем только пропущенный хвост
+                logger.info(
+                    "[cache] PARTIAL %s %s: cached to %s, fetching tail",
+                    cache_key, timeframe,
+                    _ms_to_date_str(c_max),
+                )
+        except Exception as _e:
+            logger.debug("[cache] unavailable: %s", _e)
+            cache = None
+            fetch_since = since
+        else:
+            pass  # fetch_since уже выставлен выше
+        # ── /DEV-32 ─────────────────────────────────────────────────────────
+
+        all_data = []
+        current_since = fetch_since
 
         _retries = 0
         _max_retries = 3
         while True:
             try:
-                candles = await self._swap_exchange.fetch_ohlcv(swap_symbol, timeframe, since=current_since, limit=limit)
+                candles = await self._swap_exchange.fetch_ohlcv(source_symbol, timeframe, since=current_since, limit=limit)
                 _retries = 0  # сброс счётчика при успехе
             except Exception as e:
                 err_str = str(e)
-                # BingX rate limit (100410) — ждём и повторяем
-                if "100410" in err_str and _retries < _max_retries:
+                # BingX rate limit (100410) — ждём и повторяем (только для BingX)
+                if self.config.data_source == "bingx" and "100410" in err_str and _retries < _max_retries:
                     _retries += 1
                     wait_sec = 5 * _retries
-                    logger.warning(f"Rate limit 100410 {swap_symbol}, retry {_retries}/{_max_retries} через {wait_sec}s")
+                    logger.warning(f"Rate limit 100410 {source_symbol}, retry {_retries}/{_max_retries} через {wait_sec}s")
                     await asyncio.sleep(wait_sec)
                     continue
-                logger.error(f"swap fetch_ohlcv error {swap_symbol} {timeframe}: {e}")
+                logger.error(f"fetch_ohlcv error {source_symbol} {timeframe}: {e}")
                 break
             if not candles:
                 break
@@ -176,8 +309,25 @@ class BacktestingEngine:
 
         if not all_data:
             return None
-        df = pd.concat(all_data, ignore_index=True).drop_duplicates(subset=['time']).sort_values('time')
-        return df.reset_index(drop=True)
+        df_new = pd.concat(all_data, ignore_index=True).drop_duplicates(subset=['time']).sort_values('time')
+        df_new = df_new.reset_index(drop=True)
+
+        # ── DEV-32: сохраняем в кэш + мержим с ранее закэшированным хвостом ─
+        try:
+            if cache is not None:
+                cache.save(cache_key, timeframe, df_new)
+                # Если была частичная загрузка (fetch_since > since) — дочитать голову из кэша
+                if fetch_since > since:
+                    head = cache.read(cache_key, timeframe, since, fetch_since - 1)
+                    if head is not None and not head.empty:
+                        df_new = pd.concat([head, df_new], ignore_index=True) \
+                                   .drop_duplicates(subset=["time"]).sort_values("time") \
+                                   .reset_index(drop=True)
+        except Exception as _e:
+            logger.debug("[cache] save failed: %s", _e)
+        # ── /DEV-32 ──────────────────────────────────────────────────────────
+
+        return df_new
 
     async def _load_htf_df(self, htf: Optional[str] = None) -> pd.DataFrame:
         """Загружает HTF OHLCV через swap и вычисляет SuperTrend для фильтрации направления."""
@@ -390,11 +540,27 @@ class BacktestingEngine:
         last_signal_bar: Dict[str, int] = {}
         last_any_signal_bar: int = -GLOBAL_CD
 
+        # DEV-34: импорт analyze_smc один раз
+        _analyze_smc = None
+        if self.config.use_smc:
+            try:
+                from core.smc import analyze_smc as _analyze_smc
+            except Exception as _e:
+                logger.warning("[DEV-34] SMC недоступен: %s — use_smc игнорируется", _e)
+
         for i in range(WINDOW, len(df), STEP):
             context = df.iloc[i - WINDOW:i].copy().reset_index(drop=True)
             current_bar = df.iloc[i - 1]
             bar_time = int(current_bar['time'])
             signal_price = float(current_bar['close'])
+
+            # DEV-34: SMC анализ текущего окна (один раз за бар, переиспользуется всеми сигналами)
+            smc_ctx = None
+            if _analyze_smc is not None:
+                try:
+                    smc_ctx = _analyze_smc(context)
+                except Exception:
+                    pass
 
             # HTF trend: последний 4h-бар ≤ bar_time
             htf_trend = None
@@ -485,6 +651,23 @@ class BacktestingEngine:
                         else:
                             continue  # недостаточно LTF данных
 
+                    # Фильтр 6: SMC — Order Block + FVG (DEV-34)
+                    _smc_ob_active = False
+                    _smc_fvg_active = False
+                    if self.config.use_smc and smc_ctx is not None:
+                        is_long_sig = direction_str == 'LONG'
+                        ob = smc_ctx.nearest_bull_ob if is_long_sig else smc_ctx.nearest_bear_ob
+                        fvg = smc_ctx.nearest_bull_fvg if is_long_sig else smc_ctx.nearest_bear_fvg
+                        _smc_ob_active = ob is not None and (ob.bottom * 0.995 <= signal_price <= ob.top * 1.005)
+                        _smc_fvg_active = fvg is not None
+                        # per-asset OB: фильтр применяется только если символ в smc_ob_pairs (или список пустой)
+                        _ob_pairs = self.config.smc_ob_pairs
+                        _ob_pair_match = (_ob_pairs is None) or (self.config.symbol in _ob_pairs)
+                        if self.config.smc_require_ob and _ob_pair_match and not _smc_ob_active:
+                            continue
+                        if self.config.smc_require_fvg and not _smc_fvg_active:
+                            continue
+
                     key = f"{sig_type_str}_{direction_str}"
                     if i - last_signal_bar.get(key, -COOLDOWN) < COOLDOWN:
                         continue
@@ -522,6 +705,8 @@ class BacktestingEngine:
                         'direction': direction_str,
                         'price': signal_price,
                         'strength': signal_strength,
+                        'smc_ob': _smc_ob_active,
+                        'smc_fvg': _smc_fvg_active,
                     })
 
             # Confluence Scanner детектор (всегда, если use_confluence=True)
@@ -746,7 +931,9 @@ class BacktestingEngine:
                     max_price=max_price,
                     min_price=min_price,
                     max_r_possible=round(max_r_possible, 2) if max_r_possible else None,
-                    captured_r_pct=round(captured_r_pct, 1) if captured_r_pct else None
+                    captured_r_pct=round(captured_r_pct, 1) if captured_r_pct else None,
+                    smc_ob=signal.get('smc_ob'),
+                    smc_fvg=signal.get('smc_fvg'),
                 )
 
         # Если сделка не закрылась за max_duration
@@ -769,7 +956,9 @@ class BacktestingEngine:
             duration_hours=round(duration_hours, 1),
             signal_type=signal['type'],
             max_price=max_price,
-            min_price=min_price
+            min_price=min_price,
+            smc_ob=signal.get('smc_ob'),
+            smc_fvg=signal.get('smc_fvg'),
         )
 
     async def run_backtest(self) -> Dict[str, Any]:
@@ -817,8 +1006,7 @@ class BacktestingEngine:
             trade = _process_signal(signal, processed_bars)
             if trade:
                 self.trades.append(trade)
-                trade_value = self.current_balance * (self.config.risk_per_trade_pct / 100)
-                self.current_balance += trade_value * (trade.profit_pct / 100)
+                self.current_balance += _trade_pnl(trade, self.current_balance, self.config)
 
                 # Перезаход после SL: ищем дивергенцию в том же направлении
                 if self.config.use_reentry and trade.result == BacktestResult.LOSS:
@@ -835,8 +1023,7 @@ class BacktestingEngine:
                                 re_trade = _process_signal(rsig, processed_bars)
                                 if re_trade:
                                     self.trades.append(re_trade)
-                                    trade_value = self.current_balance * (self.config.risk_per_trade_pct / 100)
-                                    self.current_balance += trade_value * (re_trade.profit_pct / 100)
+                                    self.current_balance += _trade_pnl(re_trade, self.current_balance, self.config)
                                 break
                         else:
                             continue
@@ -913,19 +1100,23 @@ class BacktestingEngine:
         avg_loss = np.mean([t.profit_pct for t in losing_trades]) if losing_trades else 0
         avg_r = np.mean([t.r_multiple for t in self.trades])
 
-        # Risk metrics
-        returns = [t.profit_pct for t in self.trades]
-        sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(365) if returns else 0
+        # DEV-33: account-level returns = price_move × leverage − commission_round_trip
+        lev = max(1, int(self.config.leverage))
+        comm_rt = self.config.commission_pct * 2  # round-trip commission (entry + exit)
+        acct_returns = [t.profit_pct * lev - comm_rt for t in self.trades]
 
-        # Drawdown
-        cumulative_returns = np.cumprod([1 + r/100 for r in returns])
+        # Risk metrics (на account-level доходности)
+        sharpe_ratio = np.mean(acct_returns) / np.std(acct_returns) * np.sqrt(365) if acct_returns else 0
+
+        # Drawdown (на account-level доходности)
+        cumulative_returns = np.cumprod([1 + r/100 for r in acct_returns])
         running_max = np.maximum.accumulate(cumulative_returns)
         drawdowns = (cumulative_returns - running_max) / running_max
         max_drawdown = np.min(drawdowns) * 100 if len(drawdowns) > 0 else 0
 
-        # Profit factor
-        gross_profit = sum([t.profit_pct for t in winning_trades])
-        gross_loss = abs(sum([t.profit_pct for t in losing_trades]))
+        # Profit factor (на account-level)
+        gross_profit = sum([r for r in acct_returns if r > 0])
+        gross_loss = abs(sum([r for r in acct_returns if r < 0]))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
 
         # Максимальная серия SL подряд
@@ -975,6 +1166,11 @@ class BacktestingEngine:
             'expired': len(expired_trades),
             'max_consecutive_sl': max_consecutive_sl,
             'signal_performance': signal_performance,
+            # DEV-33
+            'leverage': lev,
+            'commission_pct': self.config.commission_pct,
+            # DEV-34: SMC статистика
+            'smc_stats': _calc_smc_stats(self.trades) if self.config.use_smc else None,
         }
 
 
@@ -1202,7 +1398,13 @@ async def run_bot_backtest(
     tp_r: float = 2.0,
     tsl_activation_r: float = 1.0,
     max_duration_bars: int = 96,   # баров 15m (96 = 24h)
+    data_source: str = "bingx",    # "bingx" | "binance" | "cryptocom"
     on_progress=None,
+    # DEV-34: SMC фильтры (эксперимент cfg1/cfg2/cfg3)
+    use_smc: bool = False,
+    smc_require_ob: bool = False,
+    smc_require_fvg: bool = False,
+    smc_ob_pairs: list = None,    # per-asset: None=все, ["ETH/USDT",...]=только эти
 ) -> Dict[str, Any]:
     """
     Бэктест стандартного поведения бота через TradingIntelligence.analyze_symbol().
@@ -1222,11 +1424,13 @@ async def run_bot_backtest(
     since_ms = int(start_date.timestamp() * 1000)
     end_ms = int(end_date.timestamp() * 1000)
 
-    # Создаём shared exchange для загрузки данных
-    shared_ex = ccxt_async.bingx({
-        'enableRateLimit': True,
-        'options': {'defaultType': 'swap'},
-    })
+    # Создаём exchange: BingX шарится как shared_exchange, остальные создаёт engine сам
+    shared_ex = None
+    if data_source == "bingx":
+        shared_ex = ccxt_async.bingx({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'},
+        })
 
     engine_cfg = BacktestConfig(
         symbol=symbol, timeframe="15m",
@@ -1235,6 +1439,9 @@ async def run_bot_backtest(
         tp_r=tp_r, tsl_activation_r=tsl_activation_r,
         max_duration_hours=max_duration_bars,
         use_tsl=True, risk_per_trade_pct=1.0,
+        data_source=data_source,
+        use_smc=use_smc, smc_require_ob=smc_require_ob, smc_require_fvg=smc_require_fvg,
+        smc_ob_pairs=smc_ob_pairs,
     )
     engine = BacktestingEngine(engine_cfg, shared_exchange=shared_ex)
 
@@ -1246,7 +1453,10 @@ async def run_bot_backtest(
         _log("  Загрузка данных 3m...")
         df_3m = await engine._fetch_ohlcv_swap(symbol, "3m", since_ms)
     finally:
-        await shared_ex.close()
+        if shared_ex:
+            await shared_ex.close()
+        elif engine._owned_exchange and hasattr(engine._swap_exchange, 'close'):
+            await engine._swap_exchange.close()
 
     if df_15m is None or df_15m.empty:
         _log("  ПРОПУСК: нет данных 15m")
@@ -1318,6 +1528,26 @@ async def run_bot_backtest(
             'price': float(bar['close']),
             'strength': rec.overall_strength,
         }
+
+        # DEV-34: SMC фильтр (cfg2/cfg3 — фильтруем сигналы по OB/FVG)
+        if use_smc and (smc_require_ob or smc_require_fvg):
+            context_window = df_15m.iloc[max(0, i - 200):i].copy().reset_index(drop=True)
+            try:
+                from core.smc import analyze_smc as _analyze_smc
+                smc_ctx = _analyze_smc(context_window)
+                is_long_sig = direction == 'LONG'
+                ob  = smc_ctx.nearest_bull_ob  if is_long_sig else smc_ctx.nearest_bear_ob
+                fvg = smc_ctx.nearest_bull_fvg if is_long_sig else smc_ctx.nearest_bear_fvg
+                _ob_ok  = ob  is not None and (ob.bottom * 0.995 <= signal['price'] <= ob.top * 1.005)
+                _fvg_ok = fvg is not None
+                _ob_pairs = engine_cfg.smc_ob_pairs
+                _ob_pair_match = (_ob_pairs is None) or (symbol in _ob_pairs)
+                if smc_require_ob and _ob_pair_match and not _ob_ok:
+                    continue
+                if smc_require_fvg and not _fvg_ok:
+                    continue
+            except Exception:
+                pass  # нет SMC → пропускаем фильтр
 
         trade = engine.simulate_trade_with_tsl(signal, df_15m, i)
         if trade:

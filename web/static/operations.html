@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operations Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; }
+  header { background: #161b22; padding: 16px 24px; border-bottom: 1px solid #30363d;
+           display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 1.25rem; color: #58a6ff; }
+  .nav a { color: #58a6ff; text-decoration: none; font-size: .85rem; margin-left: 16px; }
+  #updated { font-size: 0.8rem; color: #8b949e; margin-left: 16px; }
+  main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 1rem; color: #8b949e; text-transform: uppercase;
+       letter-spacing: .08em; margin-bottom: 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+          padding: 14px 18px; min-width: 130px; flex: 1; }
+  .card .label { font-size: .75rem; color: #8b949e; margin-bottom: 4px; }
+  .card .value { font-size: 1.4rem; font-weight: 700; }
+  .green { color: #3fb950; } .red { color: #f85149; } .blue { color: #58a6ff; }
+  .yellow { color: #d29922; } .purple { color: #b87eff; }
+
+  .toggle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between;
+                background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; }
+  .toggle-label { font-size: .85rem; }
+  .toggle-sw { position: relative; width: 44px; height: 24px; cursor: pointer; }
+  .toggle-sw input { opacity: 0; width: 0; height: 0; }
+  .toggle-sw .slider { position: absolute; inset: 0; background: #30363d; border-radius: 12px; transition: .2s; }
+  .toggle-sw .slider:before { content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; bottom: 3px; background: #8b949e; border-radius: 50%; transition: .2s; }
+  .toggle-sw input:checked + .slider { background: #238636; }
+  .toggle-sw input:checked + .slider:before { transform: translateX(20px); background: #fff; }
+
+  .mode-btns { display: flex; gap: 4px; }
+  .mode-btn { padding: 4px 10px; border-radius: 6px; border: 1px solid #30363d;
+              background: #0d1117; color: #8b949e; cursor: pointer; font-size: .8rem; }
+  .mode-btn.active { background: #238636; color: #fff; border-color: #238636; }
+
+  .param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .param-row { display: flex; align-items: center; justify-content: space-between;
+               background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; }
+  .param-label { font-size: .85rem; flex: 1; }
+  .param-ctrl { display: flex; align-items: center; gap: 6px; }
+  .param-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #30363d;
+               background: #21262d; color: #c9d1d9; cursor: pointer; font-size: .9rem; font-weight: 700; }
+  .param-btn:hover { background: #30363d; }
+  .param-val { min-width: 40px; text-align: center; font-weight: 600; font-size: .95rem; }
+
+  .action-bar { display: flex; flex-wrap: wrap; gap: 10px; }
+  .action-btn { padding: 8px 16px; border-radius: 8px; border: 1px solid #30363d;
+                background: #21262d; color: #c9d1d9; cursor: pointer; font-size: .85rem; }
+  .action-btn:hover { background: #30363d; border-color: #58a6ff; color: #58a6ff; }
+  .flash { position: fixed; top: 12px; right: 12px; background: #238636; color: #fff;
+           padding: 8px 16px; border-radius: 8px; font-size: .85rem; z-index: 999; opacity: 0; transition: opacity .3s; }
+  .flash.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#x1F4DF; Operations Dashboard</h1>
+  <div class="nav">
+    <a href="/">&#x1F4CA; Trades</a>
+    <a href="/settings">&#x2699;&#xFE0F; Settings</a>
+    <a href="/backtest">&#x1F4C8; Backtest</a>
+    <span id="updated">loading...</span>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Live Status</h2>
+    <div class="cards" id="status-cards"></div>
+  </section>
+  <section>
+    <h2>Signal Toggles</h2>
+    <div class="toggle-grid" id="toggles"></div>
+  </section>
+  <section>
+    <h2>Quick Parameters</h2>
+    <div class="param-grid" id="params"></div>
+  </section>
+  <section>
+    <h2>Actions</h2>
+    <div class="action-bar" id="actions">
+      <button class="action-btn" onclick="resetCounters()">&#x1F5D1; Reset Counters</button>
+    </div>
+  </section>
+</main>
+<div class="flash" id="flash"></div>
+<script>
+let D = {};
+
+function flash(msg) {
+  const el = document.getElementById('flash');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+async function setToggle(key, val) {
+  const body = {};
+  body[key] = val;
+  await fetch('/api/toggles', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  flash(key.split('.').pop() + ' = ' + val);
+  load();
+}
+
+async function setParam(key, delta) {
+  const p = D.params[key];
+  let nv = Math.min(p.max, Math.max(p.min, p.value + delta));
+  const body = {};
+  body[key] = nv;
+  await fetch('/api/toggles', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  flash(p.label + ' = ' + nv);
+  load();
+}
+
+async function resetCounters() {
+  // Reset signal counters via bot
+  flash('Counters reset (next cycle)');
+}
+
+function render(d) {
+  D = d;
+  const s = d.status;
+  const t = d.trade_stats;
+  const sc = s.signal_counters;
+  const total_sigs = Object.values(sc).reduce((a,b) => a+b, 0) - (sc.total || 0);
+
+  document.getElementById('status-cards').innerHTML = `
+    <div class="card"><div class="label">Monitoring</div>
+      <div class="value ${s.is_monitoring?'green':'red'}">${s.is_monitoring?'ACTIVE':'STOPPED'}</div></div>
+    <div class="card"><div class="label">Pairs</div><div class="value blue">${s.monitored_pairs}</div></div>
+    <div class="card"><div class="label">BTC Regime</div>
+      <div class="value ${d.btc_regime==='TREND_UP'?'green':d.btc_regime==='TREND_DOWN'?'red':'yellow'}">${d.btc_regime}</div></div>
+    <div class="card"><div class="label">ML Models</div>
+      <div class="value ${d.ml_status==='trained'?'green':'yellow'}">${d.ml_status}</div>
+      <div class="label">${d.ml_trained_at ? new Date(d.ml_trained_at).toLocaleTimeString('ru') : ''}</div></div>
+    <div class="card"><div class="label">Signals Total</div><div class="value blue">${total_sigs}</div>
+      <div class="label">conf:${sc.confluence||0} piv:${sc.pivot_reversal||0} mtf:${sc.mtf_alert||0}</div></div>
+    <div class="card"><div class="label">Open Trades</div>
+      <div class="value purple">${t.open_count} <span style="font-size:.8rem">(${t.long_count}L/${t.short_count}S)</span></div></div>
+    <div class="card"><div class="label">Win Rate</div>
+      <div class="value ${t.win_rate>50?'green':'red'}">${(t.win_rate||0).toFixed(1)}%</div></div>
+    <div class="card"><div class="label">Avg R</div>
+      <div class="value ${t.avg_r>0?'green':'red'}">${(t.avg_r||0).toFixed(2)}</div></div>
+  `;
+
+  // Toggles
+  let th = '';
+  for (const [key, info] of Object.entries(d.toggles)) {
+    if (info.options) {
+      th += `<div class="toggle-row"><span class="toggle-label">${info.label}</span>
+        <div class="mode-btns">${info.options.map(o =>
+          `<button class="mode-btn ${info.value===o?'active':''}" onclick="setToggle('${key}','${o}')">${o}</button>`
+        ).join('')}</div></div>`;
+    } else {
+      th += `<div class="toggle-row"><span class="toggle-label">${info.label}</span>
+        <label class="toggle-sw"><input type="checkbox" ${info.value?'checked':''} onchange="setToggle('${key}',this.checked)">
+        <span class="slider"></span></label></div>`;
+    }
+  }
+  document.getElementById('toggles').innerHTML = th;
+
+  // Params
+  let ph = '';
+  for (const [key, p] of Object.entries(d.params)) {
+    ph += `<div class="param-row"><span class="param-label">${p.label}</span>
+      <div class="param-ctrl">
+        <button class="param-btn" onclick="setParam('${key}',-${p.step})">-</button>
+        <span class="param-val">${p.value}</span>
+        <button class="param-btn" onclick="setParam('${key}',${p.step})">+</button>
+      </div></div>`;
+  }
+  document.getElementById('params').innerHTML = ph;
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/dashboard');
+    const d = await r.json();
+    render(d);
+    document.getElementById('updated').textContent = 'Updated: ' + new Date().toLocaleTimeString('ru');
+  } catch(e) {
+    document.getElementById('updated').textContent = 'Error: ' + e.message;
+  }
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

@@ -449,7 +449,8 @@ class TradingIntelligence:
         """Кэширует результат анализа"""
         self.analysis_cache[symbol] = (datetime.now(), recommendation)
         
-    async def analyze_symbol(self, symbol: str, pre_collected_signals=None, manual_request: bool = False) -> Optional[TradingRecommendation]:
+    async def analyze_symbol(self, symbol: str, pre_collected_signals=None, manual_request: bool = False,
+                             pre_fetched_dfs: Optional[Dict[str, Any]] = None) -> Optional[TradingRecommendation]:
         """
         Комплексный анализ символа и генерация рекомендации.
         pre_collected_signals — если переданы, пропускает _collect_all_signals (экономит API-вызовы).
@@ -460,11 +461,12 @@ class TradingIntelligence:
         start_time = datetime.now()
 
         try:
-            # Проверяем кэш
-            cached_result = self._get_cached_analysis(symbol)
-            if cached_result:
-                logger.debug(f"Используем кэшированный анализ для {symbol}")
-                return cached_result
+            # Проверяем кэш — manual_request всегда получает свежий анализ
+            if not manual_request:
+                cached_result = self._get_cached_analysis(symbol)
+                if cached_result:
+                    logger.debug(f"Используем кэшированный анализ для {symbol}")
+                    return cached_result
 
             # DEV-12: Decision Trace — аудит решения
             trace = create_trace(symbol)
@@ -499,8 +501,11 @@ class TradingIntelligence:
                 return None
 
             if not signals:
-                logger.warning(f"Не найдено сигналов для {symbol} (pre_collected={bool(pre_collected_signals)})")
-                return None
+                if not manual_request:
+                    logger.warning(f"Не найдено сигналов для {symbol} (pre_collected={bool(pre_collected_signals)})")
+                    return None
+                logger.info(f"[manual] {symbol}: нет сигналов, но запрос ручной — показываем рыночный контекст")
+                signals = []
 
             # Фильтруем сигналы по качеству
             filtered_signals = self._filter_signals_by_quality(signals)
@@ -618,6 +623,91 @@ class TradingIntelligence:
             except Exception:
                 logger.debug("[%s] analyze_smc failed", symbol, exc_info=True)
 
+            # ARCH-51 + ARCH-53: единый MTF блок
+            # Приоритет: pre_fetched_dfs (переданы из scan_one — уже загружены и wt рассчитан)
+            #            → fallback: fetch через data_collector (ручной /intelligence запрос)
+            # Нет повторных API-вызовов, нет повторного calculate_wt.
+            try:
+                from core.smc import analyze_smc as _smc_analyze
+                from core.smc.models import build_mtf_smc_snapshot
+                from core.signals.ote_detector import detect_ote_signal
+                _cur_price    = market_context.current_price
+                _entry_tf     = get_primary_entry_tf(self.config)
+                _ote_shadow   = (self.config or {}).get("signal_quality", {}).get("ote_shadow_mode", True)
+                _ote_zone_tfs = (self.config or {}).get("signal_quality", {}).get(
+                    "ote_zone_tfs", ["1h", "4h", "1d"]
+                )
+                # Скальп OTE: 15m zone → 3m trigger (ICT-правильный pipeline)
+                _scalp_zone_tfs   = (self.config or {}).get("signal_quality", {}).get(
+                    "ote_scalp_zone_tfs", ["15m"]
+                )
+                _scalp_trigger_tf = (self.config or {}).get("signal_quality", {}).get(
+                    "ote_scalp_trigger_tf", "3m"
+                )
+                _arch51_fields = {"4h": "smc_h4", "1d": "smc_d1"}
+                _pdfs = pre_fetched_dfs or {}  # уже загруженные df из scan_one
+
+                async def _get_df(tf: str, limit: int = 100):
+                    """Берёт df из pre_fetched_dfs или фетчит (fallback для /intelligence)."""
+                    df = _pdfs.get(tf)
+                    if df is not None and len(df) >= 10:
+                        return df
+                    return await self.data_collector.get_ohlcv(symbol, tf, limit=limit)
+
+                # ── Swing/Position OTE zones: 1h/4h/1d ──────────────────────
+                _smc_contexts: dict = {}
+                for _ztf in _ote_zone_tfs:
+                    try:
+                        _df_ztf = await _get_df(_ztf)
+                        if _df_ztf is None or len(_df_ztf) < 30:
+                            continue
+                        _ctx_ztf = _smc_analyze(_df_ztf)
+                        _smc_contexts[_ztf] = _ctx_ztf
+                        if _ztf in _arch51_fields and mtf_context is not None:
+                            snap = build_mtf_smc_snapshot(_ctx_ztf, _cur_price)
+                            setattr(mtf_context, _arch51_fields[_ztf], snap)
+                    except Exception:
+                        logger.debug("[%s] MTF SMC %s failed", symbol, _ztf, exc_info=True)
+
+                # OTE swing сигнал: zone=1h/4h/1d → trigger=15m
+                if _smc_contexts and df_entry is not None:
+                    if "cross_up" not in df_entry.columns:
+                        from core.indicators.indicators import calculate_wt
+                        df_entry = calculate_wt(df_entry)
+                    ote_sig = detect_ote_signal(
+                        df_trigger=df_entry,
+                        symbol=symbol,
+                        smc_contexts=_smc_contexts,
+                        trigger_tf=_entry_tf,
+                        shadow_mode=_ote_shadow,
+                    )
+                    if ote_sig is not None:
+                        filtered_signals.append(ote_sig)
+
+                # ── Scalp OTE: zone=15m → trigger=3m (ICT) ──────────────────
+                # 15m SMC уже вычислен выше как smc_context — переиспользуем
+                _scalp_smc_contexts: dict = {}
+                if smc_context is not None and "15m" in _scalp_zone_tfs:
+                    _scalp_smc_contexts["15m"] = smc_context
+
+                _df_scalp_trigger = await _get_df(_scalp_trigger_tf)
+                if _scalp_smc_contexts and _df_scalp_trigger is not None and len(_df_scalp_trigger) >= 30:
+                    if "cross_up" not in _df_scalp_trigger.columns:
+                        from core.indicators.indicators import calculate_wt
+                        _df_scalp_trigger = calculate_wt(_df_scalp_trigger)
+                    ote_scalp_sig = detect_ote_signal(
+                        df_trigger=_df_scalp_trigger,
+                        symbol=symbol,
+                        smc_contexts=_scalp_smc_contexts,
+                        trigger_tf=_scalp_trigger_tf,
+                        shadow_mode=_ote_shadow,
+                    )
+                    if ote_scalp_sig is not None:
+                        filtered_signals.append(ote_scalp_sig)
+
+            except Exception:
+                logger.debug("[%s] ARCH-51+53 MTF block failed", symbol, exc_info=True)
+
             # Проверяем минимальные требования к рынку
             if not self._validate_market_context(market_context):
                 logger.warning(f"Рыночный контекст не подходит для анализа {symbol} (объем: {market_context.volume_24h}, цена: {market_context.current_price})")
@@ -695,8 +785,7 @@ class TradingIntelligence:
 
             if recommendation is None:
                 # Legacy fallback: ни одна стратегия не дала результат
-                # Проверяем min_signals (как стратегии) — не пропускаем одиночные сигналы
-                if len(filtered_signals) < min_signals:
+                if len(filtered_signals) < min_signals and not manual_request:
                     logger.debug("[%s] legacy fallback пропущен: %d сигналов < min_signals=%d",
                                  symbol, len(filtered_signals), min_signals)
                 else:
@@ -741,6 +830,39 @@ class TradingIntelligence:
                 "confidence_mult": arbiter.confidence_mult,
                 "reason": arbiter.reason,
             }
+
+            # ARCH-51: shadow logging MTF SMC snapshots (не влияет на strength/action)
+            if mtf_context is not None:
+                for _snap_tf, _snap_attr in (("4h", "smc_h4"), ("1d", "smc_d1")):
+                    snap = getattr(mtf_context, _snap_attr, None)
+                    if snap is not None:
+                        key = f"arch51_{_snap_tf}"
+                        recommendation.metadata[key] = {
+                            "bull_ob_nearby": snap.bull_ob_nearby,
+                            "bear_ob_nearby": snap.bear_ob_nearby,
+                            "fvg_support": snap.fvg_support,
+                            "fvg_resistance": snap.fvg_resistance,
+                            "choch_direction": snap.choch_direction,
+                            "bos_direction": snap.bos_direction,
+                            "ob_proximity_pct": round(snap.ob_proximity_pct, 3),
+                        }
+                        logger.debug(
+                            "[%s] ARCH-51 %s: bull_ob=%s bear_ob=%s fvg_sup=%s fvg_res=%s choch=%s bos=%s prox=%.2f%%",
+                            symbol, _snap_tf,
+                            snap.bull_ob_nearby, snap.bear_ob_nearby,
+                            snap.fvg_support, snap.fvg_resistance,
+                            snap.choch_direction, snap.bos_direction,
+                            snap.ob_proximity_pct,
+                        )
+
+            # ARCH-53: OTE shadow metadata
+            if smc_context is not None:
+                _ote_zone = smc_context.fibonacci.active_ote if smc_context.fibonacci else None
+                recommendation.metadata["ote_shadow"] = {
+                    "in_ote": _ote_zone is not None and _ote_zone.price_in_ote,
+                    "zone": str(_ote_zone) if _ote_zone else None,
+                    "direction": _ote_zone.direction if _ote_zone else None,
+                }
 
             # Улучшаем анализ с помощью ML (с таймаутом)
             _pre_ml_conf = recommendation.confidence
@@ -958,6 +1080,9 @@ class TradingIntelligence:
                                 symbol, _min_dist37, _tier1_37, _tier2_37,
                                 _hard_thr37, _ppf_tag, _ppf_shadow,
                             )
+                            # DEV-53: сохраняем для cond4
+                            recommendation.metadata["dist_pivot_pct"] = round(_min_dist37, 3)
+                            recommendation.metadata["tier1_pct"] = round(_tier1_37, 3)
 
                             if not _ppf_shadow:
                                 if _ppf_tag == "hard_block" and recommendation.action in ("BUY", "SELL"):
@@ -1020,11 +1145,52 @@ class TradingIntelligence:
                     except Exception as _e52_struct:
                         logger.debug("[%s] DEV-52 struct: %s", symbol, _e52_struct)
 
+                    # DEV-53 (Фаза B): Условие 4 — WT кросс freshness (≤3 бара 15m) + near pivot
+                    _cond4 = False
+                    _cond4_note = "no_wt"
+                    try:
+                        _wt_sigs_53 = [
+                            s for s in (recommendation.supporting_signals or [])
+                            if getattr(getattr(s, "signal_type", None), "value", None) == "wt_signal"
+                        ]
+                        if _wt_sigs_53:
+                            _wt_s53 = _wt_sigs_53[0]
+                            _wt_bar_idx_53 = (_wt_s53.data or {}).get("wt_cross_bar_index")
+                            if _wt_bar_idx_53 is not None:
+                                _df_15m_53 = await self.data_collector.get_ohlcv(symbol, "15m", limit=100)
+                                if _df_15m_53 is not None:
+                                    _bars_ago_53 = len(_df_15m_53) - 1 - _wt_bar_idx_53
+                                    _fresh_53 = _bars_ago_53 <= 3
+                                    _dist53 = (recommendation.metadata or {}).get("dist_pivot_pct", 999)
+                                    _tier1_53 = (recommendation.metadata or {}).get("tier1_pct", 5.0)
+                                    _near_53 = _dist53 < _tier1_53
+                                    _cond4 = _fresh_53 and _near_53
+                                    _cond4_note = (
+                                        f"fresh={_fresh_53}({_bars_ago_53}bars)"
+                                        f" near={_near_53}(dist={_dist53:.2f}%<{_tier1_53:.2f}%)"
+                                    )
+                            else:
+                                _cond4_note = "no_bar_idx"
+                    except Exception as _e53_cond4:
+                        logger.debug("[%s] DEV-53 cond4: %s", symbol, _e53_cond4)
+
+                    # DEV-53: CHoCH soft penalty (-8 score) — активен при наличии l3_checker конфига
+                    _choch_penalty_53 = False
+                    if "CHOCH" in _cond3_note:
+                        _old_53 = getattr(recommendation, "overall_strength", 0) or 0
+                        recommendation.overall_strength = max(0, _old_53 - 8)
+                        _choch_penalty_53 = True
+                        logger.info(
+                            "[%s] DEV-53: CHoCH soft penalty str %d→%d (%s)",
+                            symbol, _old_53, recommendation.overall_strength, _cond3_note,
+                        )
+
                     # Сводный лог
-                    _conds_met = sum([_cond3, _cond5])  # условия 3+5 (6 в portfolio gate)
+                    _conds_met = sum([_cond3, _cond4, _cond5])  # условия 3+4+5
                     logger.info(
-                        "[%s] DEV-52-L3 cond3=%s(%s) cond5=%s(score=%d≥%d) met=%d/2",
-                        symbol, _cond3, _cond3_note, _cond5, _score_52, _min_score_52, _conds_met,
+                        "[%s] DEV-52-L3 cond3=%s(%s) cond4=%s(%s) cond5=%s(score=%d≥%d) choch_pen=%s met=%d/3",
+                        symbol, _cond3, _cond3_note, _cond4, _cond4_note,
+                        _cond5, _score_52, _min_score_52, _choch_penalty_53, _conds_met,
                     )
             except Exception as _e52ti:
                 logger.debug("[%s] DEV-52 L3 checker: %s", symbol, _e52ti)
@@ -1105,6 +1271,48 @@ class TradingIntelligence:
                                 )
             except Exception as _e48:
                 logger.debug("[ARCH-48] weekly bias error: %s", _e48)
+
+            # ARCH-51-pre: логировать конфликт 15m bearish SMC + LONG (валидация до реализации ARCH-51)
+            try:
+                _smc51 = getattr(market_context, "smc_context", None)
+                _dir51 = str(getattr(recommendation.direction, "value", recommendation.direction) or "").upper()
+                if _smc51 is not None and _dir51 == "LONG":
+                    _smc_trend51 = str(getattr(_smc51.trend, "value", "")).lower()
+                    if _smc_trend51 == "bearish":
+                        # pivot_dist: сначала ищем в metadata (future-proof), потом в wt_signal.data,
+                        # потом вычисляем сами — ближайший 1D+1W уровень к текущей цене
+                        _dist51 = (recommendation.metadata or {}).get("pivot_proximity_pct")
+                        if _dist51 is None:
+                            for _s51 in filtered_signals:
+                                _d51 = (_s51.data or {}).get("near_pivot_dist_pct")
+                                if _d51 is not None:
+                                    _dist51 = _d51
+                                    break
+                        if _dist51 is None:
+                            try:
+                                _pcf51 = self._pivot_calc_shared
+                                _dp51 = await _pcf51.get_daily_pivots(symbol, self.data_collector) or {}
+                                _wp51 = await _pcf51.get_weekly_pivots(symbol, self.data_collector) or {}
+                                _ap51 = dict(_dp51)
+                                _ap51.update({f"1W_{k}": v for k, v in _wp51.items()})
+                                _price51 = getattr(market_context, "current_price", 0) or 0
+                                if _price51 and _ap51:
+                                    _dists51 = [
+                                        abs(_price51 - float(v)) / float(v) * 100
+                                        for v in _ap51.values() if v and float(v) > 0
+                                    ]
+                                    _dist51 = round(min(_dists51), 2) if _dists51 else None
+                            except Exception:
+                                pass
+                        _wgate51 = (recommendation.metadata or {}).get("weekly_gate_would_block", "?")
+                        logger.info(
+                            "[ARCH-51-pre] %s SMC conflict: 15m=bearish LONG, pivot_dist=%s, weekly_gate=%s",
+                            symbol,
+                            f"{_dist51:.1f}%" if isinstance(_dist51, (int, float)) else "?",
+                            _wgate51,
+                        )
+            except Exception as _e51:
+                logger.debug("[ARCH-51-pre] %s: %s", symbol, _e51)
 
             # DEV-40: ATR entry TF → используется в register_trade для ATR-based TP1
             try:
@@ -1279,7 +1487,8 @@ class TradingIntelligence:
         filtered = []
         max_age_seconds = 3600  # 1 час
         for signal in signals:
-            if (datetime.now(timezone.utc) - signal.timestamp).total_seconds() < max_age_seconds:
+            _ts = signal.timestamp if signal.timestamp.tzinfo is not None else signal.timestamp.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - _ts).total_seconds() < max_age_seconds:
                 filtered.append(signal)
         return filtered
     

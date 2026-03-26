@@ -146,6 +146,23 @@ def _make_pivot_recommendation(info: dict):
     tp1 = tp_levels[0]["price"] if tp_levels else None
     tp_main = tp_levels[1]["price"] if len(tp_levels) > 1 else tp1  # TP2 как основная цель
     level = info.get("level", "")
+
+    # DEV-59: R:R cap — pivot_reversal обходит calculate_levels(), применяем cap вручную
+    _entry = info.get("entry_price")
+    _sl    = info.get("stop_loss")
+    if _entry and _sl and tp_main:
+        try:
+            from core.config_loader import config as _cfg59
+            _max_rr = float(_cfg59.get("trading.sl_management.max_rr", 6.0))
+        except Exception:
+            _max_rr = 6.0
+        _sl_dist = abs(float(_entry) - float(_sl))
+        if _sl_dist > 0:
+            _actual_rr = abs(float(tp_main) - float(_entry)) / _sl_dist
+            if _actual_rr > _max_rr:
+                tp_main = (float(_entry) + _sl_dist * _max_rr) if is_long else (float(_entry) - _sl_dist * _max_rr)
+                if tp1 and abs(float(tp1) - float(_entry)) / _sl_dist > _max_rr:
+                    tp1 = tp_main
     _sig = SimpleNamespace(signal_type=SimpleNamespace(value="pivot_reversal"))
     return SimpleNamespace(
         symbol=info.get("symbol", ""),
@@ -660,7 +677,8 @@ def _get_kelly_footer(bot) -> str:
 
 
 async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_type: str,
-                                        fallback_rec=None, pre_signals=None):
+                                        fallback_rec=None, pre_signals=None,
+                                        pre_fetched_dfs=None):
     # Этап 8.4.4: извлекаем direction из первого pre_signal для точного dedup
     direction = ""
     if pre_signals:
@@ -680,7 +698,8 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     try:
         async with _get_analyze_sem(bot):
             recommendation = await bot.trading_intelligence.analyze_symbol(
-                symbol, pre_collected_signals=pre_signals
+                symbol, pre_collected_signals=pre_signals,
+                pre_fetched_dfs=pre_fetched_dfs,
             )
     except Exception:
         logger.exception("Ошибка AI-анализа для %s при сигнале %s", symbol, signal_type)
@@ -871,6 +890,12 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             _fvg_zones = (recommendation.metadata or {}).get("fvg_confluences")
             if _fvg_zones:
                 extra["fvg_confluences"] = _fvg_zones
+            # DEV-56/58: Weekly Bias shadow data → features_json (для анализа WR до включения gate)
+            _meta = recommendation.metadata or {}
+            if "weekly_bias" in _meta:
+                extra["weekly_bias"] = _meta["weekly_bias"]
+                extra["weekly_context_score"] = _meta.get("weekly_context_score", 0)
+                extra["weekly_gate_would_block"] = _meta.get("weekly_gate_would_block", False)
             trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:

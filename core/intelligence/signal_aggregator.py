@@ -56,7 +56,10 @@ def analyze_signals_advanced(
         dict: strength, confidence, direction, supporting_signals, conflicting_signals, total_signals
     """
     if not signals:
-        return {"strength": 0, "confidence": 0, "direction": SignalDirection.NEUTRAL}
+        return {
+            "strength": 0, "confidence": 0, "direction": SignalDirection.NEUTRAL,
+            "supporting_signals": [], "conflicting_signals": [], "total_signals": 0,
+        }
 
     long_signals = [s for s in signals if s.direction == SignalDirection.LONG]
     short_signals = [s for s in signals if s.direction == SignalDirection.SHORT]

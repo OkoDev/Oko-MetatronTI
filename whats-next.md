@@ -1,371 +1,246 @@
-# What's Next — Handoff 22.03.2026 (сессия 9)
-
 <original_task>
-## Продолжение спринта DEV (сессия 9)
-
-Сессия 8 завершила:
-- п.4: run_universe_backtest.py — инфраструктура бэктеста на 30 случайных альтах
-- п.5: SMC эксперимент cfg1/cfg2/cfg3 (ETH/SOL/BNB): ETH OB-фильтр +5.4% WR, SOL/BNB не улучшает
-- п.6: Вариант C — require_pivot_tp: без пивотного TP в 2-20R → не регистрировать сделку
-- п.7: FVG immediate mitigation fix (start_bar fvg.index+2 → +1)
-
-ARCH ответил на Q1/Q2/Q3 и поставил три задачи для сессии 9:
-1. Q1 (OB per-asset) → реализовать `smc_ob_pairs` в BacktestConfig — применять OB-фильтр только на топ-5 ликвидных пар
-2. Q2 → 30-символьный бэктест (данные закэшированы) — запустить и дать отчёт
-3. Q3 → chart_builder fallback (уже подтверждён в прошлой сессии)
-
-Сессия 9 выполнила:
-- ✅ `smc_ob_pairs` реализован полностью в 4 местах
-- ✅ 30-символьный бэктест (task btzlnl2xq) запущен в фоне — всё ещё работает
-- ✅ TASKS.md обновлён — DEV→ARCH отчёт написан
+Продолжение предыдущей сессии. Пять задач:
+1. Добавить Stop hook с AGENT_ROLE=DEVELOPER в ~/.claude/settings.json (рядом с существующим TRADER)
+2. DEV-79: web/static/ рефакторинг — вынести 4 HTML-константы из dashboard_server.py в статические файлы
+3. DEV-80: Trading Panel — новая страница /trading с Position Sizer UI
+4. DEV-81: FUNDING_EXTREME detector (shadow mode, только лог, не в TG)
+5. DEV-82: LIQUIDITY_SWEEP detector (broadcast в TG)
 </original_task>
 
 <work_completed>
-## Сессия 9 — завершено
 
-### 1. `smc_ob_pairs` — per-asset OB-фильтр (✅ полностью реализован)
+## 1. Stop hooks в ~/.claude/settings.json ✅
+Файл: `C:/Users/yogoru/.claude/settings.json`
+- Добавлен второй Stop hook с AGENT_ROLE=DEVELOPER рядом с существующим TRADER
+- Итоговая структура hooks.Stop: два entry — DEVELOPER + TRADER, оба вызывают
+  `scripts/check_tasks.py` с разным env var AGENT_ROLE
 
-**Файл:** `scripts/backtesting_engine.py`
+## 2. DEV-79: web/static/ рефакторинг ✅
+- `web/dashboard_server.py`: 3266 → 985 строк (потом 1038 после DEV-80)
+  - Удалены 4 HTML-константы: `_HTML`, `_SETTINGS_HTML`, `_BACKTEST_HTML`, `_DASHBOARD_HTML`
+  - Handlers переключены на `web.FileResponse(Path(__file__).parent / "static/X.html")`
+  - Добавлен `app.router.add_static("/static", Path(__file__).parent / "static")`
+- Созданы статические файлы:
+  - `web/static/index.html` (56734 байт)
+  - `web/static/settings.html` (36461 байт)
+  - `web/static/backtest.html` (18801 байт)
+  - `web/static/operations.html` (9180 байт)
+- В `web/static/index.html` добавлена ссылка "Trading Panel" в sidebar footer
+- В `web/static/index.html` добавлен SIM mode badge в topbar (подгружает /api/trading/status)
 
-**BacktestConfig (строка 174-175):**
+## 3. DEV-80: Trading Panel ✅
+`web/static/trading.html` (18119 байт) — новый файл:
+- Position Sizer форма: Symbol, Deposit, Risk%, Leverage, Entry, SL
+- Автозаполнение из `/api/settings`
+- Таблица TP: 1R / 2R / 3R / 5R с ценами и прибылью в USDT
+- `GET /api/trading/instrument_info?symbol=...` для min_notional (lazy, при blur)
+- Предупреждение при марже > 50%
+
+Новые маршруты в `web/dashboard_server.py`:
+```
+GET  /trading                        → _handle_trading_page
+GET  /api/trading/status             → _handle_trading_status
+GET  /api/trading/instrument_info    → _handle_trading_instrument_info
+```
+
+## 4. DEV-81: FUNDING_EXTREME detector ✅
+
+### Детектор (создан в прошлой сессии)
+`core/signals/funding_detector.py`:
+- `detect_funding_extreme(symbol, df, funding_rate, cfg) → Optional[SignalData]`
+- Порог: `|funding_rate| > 0.0005` (0.05% / 8h)
+- Условие: WT cross в OS (<-40) / OB (>+40) зоне
+- Shadow mode: `data["shadow"] = True`
+- Strength: `min(100, int(50 + ratio * 15))`
+
+### get_funding_rate() добавлен в data_collector
+`core/infra/data_collector.py`:
+- Строка 8: `import time as _time`
+- Строки 9-10: `_FUNDING_CACHE_TTL = 1800`
+- Строка ~38: `self._funding_cache: dict = {}` в `__init__`
+- Строки ~190-213: `async def get_funding_rate(symbol) -> float | None`
+  - TTL-кеш 30 мин: `{normalized: (rate, fetched_at)}`
+  - `exchange.fetch_funding_rate(normalized)["fundingRate"]`
+
+### Интеграция в scan_loop.py
+`bot/loops/scan_loop.py`, блок `1a` (вставлен перед `# 2. WT`, ~строки 502-519):
+- Только на `_scan_tf == _etf`
+- **Shadow mode**: добавляется в `all_scan_signals` + счётчик `funding_extreme`, НО НЕ в `signals_to_broadcast`
+
+### Форматтер
+`core/ui/message_builder.py`: функция `funding_extreme_message(symbol, sig)`
+
+## 5. DEV-82: LIQUIDITY_SWEEP detector ✅
+
+### Детектор (создан в прошлой сессии)
+`core/signals/liquidity_sweep_detector.py`:
+- `detect_liquidity_sweep(symbol, df, pivot_cache, cfg) → Optional[SignalData]`
+- LONG: `bar.low < swing_low AND bar.close > swing_low AND wt1 < -40`
+- SHORT: `bar.high > swing_high AND bar.close < swing_high AND wt1 > +40`
+- `detect_swing_points(df.iloc[:-1], period=5)` — без последнего бара
+- Pivot bonus +15 при совпадении с W:S1/R1 (±0.5%)
+- Base strength: `55 + min(20, sweep_depth*5) + wt_bonus`
+
+### Интеграция в scan_loop.py
+`bot/loops/scan_loop.py`, блок `1b` (~строки 520-535):
+- `pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})`
+- **Broadcast в TG**: `signals_to_broadcast.append(("liquidity_sweep", _sweep_message(...), None))`
+
+### Форматтер
+`core/ui/message_builder.py`: функция `liquidity_sweep_message(symbol, sig)`
+
+## 6. signal_models.py обновлён ✅
+`core/signals/signal_models.py`:
 ```python
-smc_ob_pairs: list = None     # per-asset OB-фильтр: список символов где smc_require_ob активен.
-                              # None = применять ко всем. ["ETH/USDT","BTC/USDT"] = только топ-5.
+FUNDING_EXTREME = "funding_extreme"   # DEV-81
+LIQUIDITY_SWEEP = "liquidity_sweep"   # DEV-82
 ```
 
-**run_backtest() — Фильтр 6 (строки 663-665):**
-```python
-_ob_pairs = self.config.smc_ob_pairs
-_ob_pair_match = (_ob_pairs is None) or (self.config.symbol in _ob_pairs)
-if self.config.smc_require_ob and _ob_pair_match and not _smc_ob_active:
-    continue
+## 7. Синтаксис проверен ✅
+```
+OK: core/infra/data_collector.py
+OK: core/ui/message_builder.py
+OK: bot/loops/scan_loop.py
 ```
 
-**run_bot_backtest() — параметр (строка 1407):**
-```python
-smc_ob_pairs: list = None,    # per-asset: None=все, ["ETH/USDT",...]=только эти
-```
-
-**run_bot_backtest() — BacktestConfig инициализация (строки 1435-1445):**
-```python
-engine_cfg = BacktestConfig(
-    ...
-    use_smc=use_smc, smc_require_ob=smc_require_ob, smc_require_fvg=smc_require_fvg,
-    smc_ob_pairs=smc_ob_pairs,  # ← добавлено в сессии 9
-)
-```
-
-**run_bot_backtest() — inline SMC-фильтр (строки ~1540-1548):**
-```python
-_ob_pairs = engine_cfg.smc_ob_pairs
-_ob_pair_match = (_ob_pairs is None) or (symbol in _ob_pairs)
-if smc_require_ob and _ob_pair_match and not _ob_ok:
-    continue
-```
-
-### 2. `run_smc_experiment.py` — CLI аргумент `--ob-pairs` (✅)
-
-**Файл:** `scripts/run_smc_experiment.py`
-
-Добавлен параметр `smc_ob_pairs: Optional[List[str]] = None` в `run_smc_configs()`.
-Добавлен CLI: `--ob-pairs ETH/USDT BTC/USDT SOL/USDT BNB/USDT XRP/USDT`
-Передаётся в каждый `run_bot_backtest()` вызов.
-
-Пример запуска с per-asset OB:
-```bash
-python scripts/run_smc_experiment.py \
-  --symbols ETH/USDT BTC/USDT SOL/USDT BNB/USDT XRP/USDT \
-  --ob-pairs ETH/USDT BTC/USDT SOL/USDT BNB/USDT XRP/USDT \
-  --source binance --start 2023 --end 2024
-```
-
-### 3. TASKS.md — DEV→ARCH отчёт (✅)
-
-Добавлен блок `### [22.03.2026] DEV — smc_ob_pairs реализован + 30-symbol бэктест запущен` в начало Discussion (строки 15-53). Все три задачи ARCH закрыты.
-
-### 4. memory/current_state.md — обновлён (✅)
-
-Добавлена запись сессии 9 с полным списком изменений.
-
----
-
-## Сессия 8 — было завершено ранее (для справки)
-
-### п.5: SMC эксперимент
-
-**Новый файл:** `scripts/run_smc_experiment.py`
-Запускает 3 конфигурации: cfg1 (baseline без OB), cfg2 (OB-фильтр), cfg3 (OB+FVG)
-
-**Результаты (ETH/SOL/BNB, Binance 2023-2024):**
-- ETH: cfg1→432 tr WR=47.7%, cfg2→49 tr WR=53.1% (+5.4%), AvgR 0.130→0.330
-- SOL: cfg1→417 tr WR=50.1%, cfg2→7 tr (n слишком мало, нестатистично)
-- BNB: cfg1→425 tr WR=39.2%, cfg2→15 tr WR=33.3% (хуже!)
-- Вывод: OB-фильтр полезен только на ликвидных зрелых парах (ETH/BTC)
-
-**Отчёт:** `data/smc_experiment_20260322_012439.json`
-
-### п.6: Вариант C — require_pivot_tp
-
-**Файл:** `bot/monitoring.py` (~строка 380)
-```python
-elif bot.config.get("trading.sl_tp.require_pivot_tp", False):
-    logger.info("[%s] Пропуск регистрации: require_pivot_tp=true, pivot не найден", symbol)
-    if recommendation is not None:
-        recommendation = None  # блокирует is_actionable и should_register
-```
-
-**Файл:** `config.yaml` — `require_pivot_tp: false` (выключен по умолчанию)
-
-### п.7: FVG immediate mitigation fix
-
-**Файл:** `core/smc/fvg.py`
-`start_bar = fvg.index + 1` (было: `+ 2`)
-
-### Инфраструктура бэктеста (сессии 7-8)
-
-| Файл | Описание |
-|------|----------|
-| `scripts/universe_builder.py` | CoinGecko топ-250, стратификация 10+10+10, seed=42 |
-| `scripts/multi_source_ohlcv.py` | Автовыбор источника: binance→cryptocom→bingx |
-| `scripts/run_universe_backtest.py` | Universe бэктест на 30 случайных альтах |
-| `scripts/backtesting_engine.py` | +Binance source, +smc params, +smc_ob_pairs |
-
-**Данные закэшированы** (SQLite кэш в проекте):
-- XRP/USDT 15m: 147932 баров (HIT)
-- XRP/USDT 3m: 739655 баров (HIT)
-- ETH/USDT 15m: 147932 баров (HIT)
-- ETH/USDT 3m: PARTIAL (данные до 2026-01-31, хвост докачивается)
+## 8. TASKS.md + current_state.md обновлены ✅
+DEV-81, DEV-82: `🟢/🟡` → `✅ ВЫПОЛНЕНО 26.03.2026`
 </work_completed>
 
 <work_remaining>
-## Немедленно (при следующем старте сессии)
 
-### 1. Проверить результаты 30-символьного бэктеста (ПРИОРИТЕТ 1)
-
-**Task ID:** `btzlnl2xq`
-
-```python
-# В начале следующей сессии:
-TaskOutput(task_id="btzlnl2xq", block=False, timeout=5000)
-```
-
-Если `status=completed`:
-- Найти новый JSON: `ls data/universe_backtest_*.json` (самый свежий)
-- Прочитать отчёт, составить таблицу
-- Добавить в TASKS.md Discussion (DEV→ARCH)
-
-Если `status=running`:
-- Продолжить другие задачи, вернуться позже
-- ИЛИ `TaskOutput(..., block=True, timeout=600000)` чтобы подождать
-
-**Что анализировать в результатах:**
-- Медианный WR по 30 символам (цель > 45%)
-- Сколько символов показывают WR > 50% (baseline без SMC)
-- Распределение AvgR: есть ли аутлайеры тянущие среднее вниз
-- FIGR_HELOC/USDT — скорее всего 0 сделок или ошибка, исключить из медианы
-
-### 2. Коммит всех изменений спринта (ПРИОРИТЕТ 2)
-
-60 файлов, 11088 вставок накоплено с коммита `8268f0c`:
-
+## 🔴 Приоритет 1 — DEV-75 (КРИТИЧЕСКИЙ БАГ)
+**Задача:** Инвертировать иерархию TP в `get_tp_by_hierarchy()`
+**Проблема:** Текущий порядок 1D→1W→confluence→1M неверный, должен быть 1M→1W→1D
+**Как найти:**
 ```bash
-# Рекомендованные файлы для стейджинга (основные изменения спринта):
-git add scripts/backtesting_engine.py \
-        scripts/run_smc_experiment.py \
-        scripts/run_universe_backtest.py \
-        scripts/universe_builder.py \
-        scripts/multi_source_ohlcv.py \
-        core/smc/fvg.py \
-        bot/monitoring.py \
-        config.yaml \
-        TASKS.md \
-        memory/current_state.md \
-        whats-next.md
-
-git commit -m "feat: SMC бэктест (smc_ob_pairs per-asset, universe backtest, FVG fix, require_pivot_tp)"
+grep -rn "get_tp_by_hierarchy\|tp_hierarchy" core/
 ```
+**Влияние:** Все новые сделки получают неправильный TP уровень
 
-### 3. Каскадный SL — Этап A (следующий функциональный приоритет)
+## 🟡 Приоритет 2 — DEV-81 вывод из shadow mode (~09.04.2026)
+Через 2 недели после 26.03.2026:
+1. В `bot/loops/scan_loop.py` блок `1a` добавить строку:
+   ```python
+   signals_to_broadcast.append(("funding_extreme", _funding_message(sym, _funding_sig), None))
+   ```
+2. Убрать комментарий `# shadow mode` при желании
 
-**План:** `C:\Users\yogoru\.claude\plans\squishy-brewing-church.md`
+## 🟡 Приоритет 3 — TR-008 (валидация после рестарта)
+Проверить /scan + /intelligence после рестарта бота (ARCH-54 фаза 3).
+Убедиться что stub-файлы правильно реэкспортируют новые модули.
 
-**Три изменения Этапа A:**
+## 🟢 Приоритет 4 — DEV-83 (ARCH-56 implementation)
+MTF Interpreter v2 Phase B. Зависит от ARCH-56 спека (ARCH агент).
 
-#### 3a. Swing SL в `core/trading_intelligence.py`
-Метод: `_calculate_levels()` строки 1269-1305
-```python
-# Новый приоритет SL:
-# 1. SWING_LOW (для LONG): market_context.swing_low + буфер 0.3%
-#    → sl_source = "swing_low"
-# 2. TSL-линия (trendup/trenddown ATR-43) если swing недоступен
-#    → sl_source = "tsl_line:trendup"
-# 3. ATR fallback
-#    → sl_source = "atr_14:X.XX%"
-# market_context.swing_low/high уже вычисляются в _compute_swing_levels() (строки 1035-1063)
-```
+## 🟢 Приоритет 5 — DEV-84 (L3 Фаза C)
+Ждёт накопления OTE shadow данных (~2 недели от 29.03.2026 = ~12.04.2026).
 
-#### 3b. Безубыток в `core/trade_simulator.py`
-Метод: `check_open_trades_with_tsl()`
-```python
-# Добавить перед TSL-проверкой:
-breakeven_r = config.get("trading.breakeven_activation_r", 0.5)
-if current_r >= breakeven_r and not tsl_activated:
-    new_sl = entry * (1.001) if is_long else entry * (0.999)
-    # UPDATE stop_loss в БД
-```
+## 🟢 Приоритет 6 — DEV-77/78 (VST/LIVE trading)
+DEV-77: OrderExecutor VST/SIM layer
+DEV-78: PositionManager + PositionSizer + live_orders
+UI для Trading Panel (DEV-80) уже готов.
 
-#### 3c. Конфиг `config.yaml`
-```yaml
-trading:
-  use_breakeven: true           # (уже есть: use_breakeven: false → изменить на true)
-  breakeven_activation_r: 0.5  # новый параметр
-```
+## Проверить после рестарта бота
+- Логи `[DEV-81 shadow]` при экстремальном funding
+- Логи `[DEV-82-LIQSWEEP]` + TG сообщения при sweep паттернах
+- `bot.signal_counters["funding_extreme"]` и `["liquidity_sweep"]` инкрементируются
+- `/trading` страница открывается в браузере
+- SIM mode badge в топбаре index.html работает
 
-**Верификация после реализации:**
-```bash
-grep "sl_source.*swing" crypto_bot.log | head -10
-grep "breakeven" crypto_bot.log | head -10
-```
-
-### 4. SMC эксперимент с per-asset конфигом (после 30-symbol результатов)
-
-```bash
-python scripts/run_smc_experiment.py \
-  --symbols ETH/USDT BTC/USDT SOL/USDT BNB/USDT XRP/USDT \
-  --ob-pairs ETH/USDT BTC/USDT \
-  --source binance --start 2022 --end 2026 --conc 2
-```
-Цель: проверить что OB только на ETH+BTC даёт лучший aggregated WR чем cfg2 (все символы).
 </work_remaining>
 
 <attempted_approaches>
-## Что не работало / тупики
 
-### 30-символьный бэктест — первая попытка (сессия 8)
+## Регулярное выражение для извлечения HTML констант
+**Проблема:** `_HTML` — подстрока `_SETTINGS_HTML`. Паттерн `_HTML = """.*?"""` матчил внутри `_SETTINGS_HTML = """` на суффиксе `_HTML`.
+**Результат:** Артефакты в dashboard_server.py: `# _SETTINGS# _HTML moved to web/static/`
+**Фикс:** Ручная правка через Edit tool.
 
-Первый запуск `run_universe_backtest.py` завершился с exit code 0 но **без JSON-файла** в `data/`. Причина: задача была запущена как background bash в предыдущей сессии, произошёл компакт контекста, задача завершилась без сохранения (или упала на FIGR_HELOC/USDT). Решение: запустить повторно (task btzlnl2xq).
+## Python скрипт для add_static route
+**Проблема:** `src.replace()` с одиночными кавычками не совпал с оригинальным кодом (двойные кавычки).
+**Фикс:** Добавлен route напрямую через Edit tool.
 
-### Hard timeout на XRP 3m данных
+## Синтаксическая ошибка в funding_detector.py
+**Проблема:** `from datetime import datetime, timezone` попала внутрь сигнатуры функции.
+**Фикс:** Перенесён import на уровень модуля.
 
-При бэктесте последних ~10 баров (конец 2026-03) запрос 3m данных для будущих временных меток зависал на ~25 сек. Не блокер — только последние бары.
-
-### Negative Sharpe во всех baseline прогонах
-
-WR=46-47%, AvgR=0.10-0.13 → Sharpe < 0. Это особенность формулы: при leverage=1 и маленьком AvgR каждый -1R убыток перевешивает +0.13R выигрыш в equity волатильности. ARCH подтвердил: **формула, не стратегия**. Не переделывать.
-
-### OB-фильтр на SOL и BNB не работает
-
-cfg2 (smc_require_ob=True) на SOL: только 7 сделок из 417 — OB редко совпадает с сигналами. На BNB: WR снижается (39.2%→33.3%). Поэтому реализован per-asset `smc_ob_pairs`.
-
-### BacktestConfig: smc_ob_pairs не передавался в engine_cfg
-
-`run_bot_backtest()` создавал `BacktestConfig(...)` без `smc_ob_pairs=smc_ob_pairs`. Обнаружено в начале сессии 9, исправлено.
-
-### OutcomePredictor — AUC < 0.5
-
-Из лога task btzlnl2xq: `CV AUC=0.323` — хуже случайного. 2837 сделок, WR=21.0%. Модель не помогает. Это контекст продакшн-данных, не бэктест.
 </attempted_approaches>
 
 <critical_context>
-## Критический контекст
 
-### Роли агентов
-- **DEV = yogoru@gmail.com** (этот инстанс, VSCode/Claude Code) — реализует
-- **ARCH = oko.webdev@gmail.com** (Docker) — проектирует, пишет Discussion в TASKS.md
-- Рабочий процесс: ARCH пишет → DEV реализует → DEV пишет отчёт в Discussion
+## Python версия
+`C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe` — Python 3.12.
+Единственная версия с aiogram. `.venv` / Python 3.13 — без aiogram.
 
-### Python версии
-- **Python 3.12**: `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe`
-  - Единственная с aiogram. Использовать для запуска бота и бэктестов.
-- **.venv и Python 3.13**: без aiogram — не использовать для бота
+## ARCH-54: stub-файлы в core/
+Старые импорты `from core.X import Y` работают через stubs в корне `core/`.
+`core/message_builder.py` — stub с `from core.ui.message_builder import *` → новые функции подхватятся автоматически.
 
-### Кэш данных Binance
-SQLite кэш: HIT для XRP/ETH/BNB/SOL 15m и 1h (~147K баров на пару).
-Повторные прогоны намного быстрее первого.
-
-### BacktestConfig → run_bot_backtest разрыв
-
-Два независимых SMC-фильтра:
-1. `BacktestingEngine.run_backtest()` — Фильтр 6 (строки ~660-670)
-2. `run_bot_backtest()` inline filter (строки ~1535-1550)
-
-Оба теперь используют `smc_ob_pairs`. Новые параметры SMC нужно добавлять в **оба** места.
-
-### COOLDOWN = 8 в бэктесте
-
-`run_bot_backtest()` анализирует каждый 8-й бар. 147932 баров / 8 = ~18491 анализов.
-Время: ~15-30 мин на символ при cache hit.
-30 символов параллельно (concurrency=2) = ~4-8 часов.
-
-### FIGR_HELOC/USDT
-
-Нестандартный тикер в universe (seed=42, стратификация). Не существует на Binance.
-Вероятно даст 0 сделок — исключить из медианы при анализе результатов.
-
-### OutcomePredictor в продакшн
-
-CV AUC=0.323 — хуже случайного. 2837 сделок, WR=21.0%. Модель деградировала.
-Это не блокер для бэктеста но означает что `confidence` в реальном боте искажён.
-
-### Незакоммиченные изменения — масштаб
-
-60 файлов, 11088 вставок с последнего коммита `8268f0c`.
-Нужен коммит перед следующим крупным изменением.
-
-### План Каскадного SL
-
-`C:\Users\yogoru\.claude\plans\squishy-brewing-church.md` — 4 этапа.
-Этап A (Swing SL + безубыток) — следующий функциональный приоритет бота.
-Swing уже вычисляется в `market_context.swing_low/high` но не используется как SL.
-
-### Адаптивные веса (текущие из лога)
-
+## scan_loop.py: структура блоков scan_one
 ```
-pivot_reversal: 0.200 → 0.185 (avg_R=-0.19, n=611)
-wt_signal:      0.080 → 0.090 (avg_R=+0.32, n=473)
-trend_signal:   0.050 → 0.045 (avg_R=-0.26, n=44)
-anomaly:        0.030 → 0.035 (avg_R=+0.37, n=36)
+1a  DEV-81 FUNDING (shadow)     ← новый, только_if _scan_tf == _etf
+1b  DEV-82 LIQUIDITY_SWEEP      ← новый, только если _scan_tf == _etf
+1   Anomalies                    ← только _scan_tf == _etf
+2   WT signals
+3   Confluence (SM / fallback)
+5   WT-B (1h)
+8   Divergences (каждые 3 цикла)
 ```
+
+## DEV-81 shadow mode intent
+Детектор намеренно не отправляет в TG — нужно накопить 2 недели логов для анализа качества.
+Флаг: `data["shadow"] = True`. В scan_loop.py блок 1a — нет строки broadcast.
+
+## pivot_cache формат
+```python
+pivot_cache[symbol] = {"W:S1": 1.234, "W:R1": 1.456, ...}
+```
+Ключи Weekly: `"W:S1"`, `"W:S2"`, `"W:R1"`, `"W:R2"`.
+
+## detect_swing_points зависимость
+`core/smc/swing_points.py` — файл существует. Возвращает объект с `.lows` и `.highs`
+(списки SwingPoint с `.index` и `.value`).
+ВАЖНО: детектор вызывает `detect_swing_points(df.iloc[:-1], period=5)` — **без последнего бара**.
+
+## get_funding_rate: не все пары поддерживают funding
+BingX может не возвращать funding для некоторых пар. Метод возвращает `None` при ошибке — детектор пропускается.
+
+## web/static/ файлы не в git (вероятно)
+Проверить что `web/static/` не в `.gitignore`. Файлы скорее всего `??` (untracked).
+
 </critical_context>
 
 <current_state>
-## Статус на момент завершения сессии 9
 
-### Deliverables
+## Статус всех deliverables
 
-| Артефакт | Статус | Файл/Строки |
-|----------|--------|-------------|
-| smc_ob_pairs в BacktestConfig | ✅ Готов | `backtesting_engine.py:174` |
-| smc_ob_pairs в run_bot_backtest() | ✅ Готов | `backtesting_engine.py:1407,1444` |
-| smc_ob_pairs в inline filter | ✅ Готов | `backtesting_engine.py:~1542` |
-| --ob-pairs CLI в run_smc_experiment | ✅ Готов | `run_smc_experiment.py` |
-| 30-symbol бэктест | 🔄 Работает | task `btzlnl2xq` |
-| TASKS.md DEV→ARCH отчёт | ✅ Написан | `TASKS.md:15-53` |
-| memory/current_state.md | ✅ Обновлён | актуален |
-| require_pivot_tp (п.6) | ✅ Готов | `bot/monitoring.py`, `config.yaml` |
-| FVG immediate mitigation (п.7) | ✅ Готов | `core/smc/fvg.py` |
-| Коммит спринта | ❌ Не сделан | — |
-| Каскадный SL Этап A | ❌ Не начат | plan: `squishy-brewing-church.md` |
+| Задача | Статус | Ключевые файлы |
+|--------|--------|----------------|
+| Stop hooks DEVELOPER+TRADER | ✅ | `~/.claude/settings.json` |
+| DEV-79: web/static/ | ✅ | `web/dashboard_server.py`, `web/static/*.html` |
+| DEV-80: Trading Panel | ✅ | `web/static/trading.html` + 3 новых route |
+| DEV-81: FUNDING_EXTREME | ✅ (shadow) | `core/signals/funding_detector.py`, `core/infra/data_collector.py`, `bot/loops/scan_loop.py:502-519` |
+| DEV-82: LIQUIDITY_SWEEP | ✅ (broadcast) | `core/signals/liquidity_sweep_detector.py`, `bot/loops/scan_loop.py:520-535` |
 
-### Порядок следующих действий
+## Что работает
+- Синтаксис всех файлов проверен через `ast.parse` ✅
+- Stub в `core/message_builder.py` автоматически реэкспортирует новые форматтеры ✅
+- TASKS.md: DEV-79/80/81/82 = `✅ ВЫПОЛНЕНО` ✅
 
-```
-1. TaskOutput(btzlnl2xq) → если completed → прочитать JSON → TASKS.md отчёт
-2. git commit (60 файлов спринта)
-3. Каскадный SL Этап A:
-   a. core/trading_intelligence.py — swing SL
-   b. core/trade_simulator.py — breakeven +0.5R
-   c. config.yaml — use_breakeven: true, breakeven_activation_r: 0.5
-```
+## Что НЕ проверено (требует рестарта бота)
+- Реальный `get_funding_rate()` на BingX
+- `[DEV-81 shadow]` логи
+- `[DEV-82-LIQSWEEP]` логи + TG broadcast
+- Trading Panel `/trading` в браузере
+- SIM badge в index.html topbar
 
-### Что работает
+## Незакоммиченные изменения
+Новые файлы: `web/static/*.html` (5 шт), `core/signals/funding_detector.py`, `core/signals/liquidity_sweep_detector.py`
+Изменённые: `web/dashboard_server.py`, `core/infra/data_collector.py`, `core/ui/message_builder.py`, `core/signals/signal_models.py`, `bot/loops/scan_loop.py`, `TASKS.md`, `memory/current_state.md`
 
-- Бэктест инфраструктура: `run_universe_backtest.py`, `run_smc_experiment.py`
-- per-asset OB фильтр: `smc_ob_pairs` реализован и передаётся правильно
-- Кэш данных: SQLite с ~150K баров на пару — быстрые повторные прогоны
-
-### Что не работает / требует внимания
-
-- 30-symbol бэктест — ещё работает, нет финального JSON
-- OutcomePredictor: AUC=0.323 (деградация) — не блокер, но требует внимания позже
+## Следующий шаг
+1. Рестарт бота → проверка логов DEV-81/82
+2. Git commit
+3. DEV-75 🔴 (критический баг иерархии TP)
 </current_state>

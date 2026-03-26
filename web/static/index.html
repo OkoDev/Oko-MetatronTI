@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crypto Bot Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  /* ── SPA Layout ── */
+  .app-layout { display: flex; flex: 1; overflow: hidden; }
+  /* ── Sidebar ── */
+  .sidebar { width: 210px; min-width: 210px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; overflow-y: auto; }
+  .sidebar-logo { padding: 16px 16px 12px; border-bottom: 1px solid #21262d; }
+  .sidebar-logo h1 { font-size: .95rem; color: #58a6ff; font-weight: 700; }
+  .sidebar-logo .sub { font-size: .68rem; color: #484f58; margin-top: 3px; }
+  .nav-group { padding: 10px 0 4px; }
+  .nav-label { font-size: .62rem; text-transform: uppercase; letter-spacing: .1em; color: #484f58; padding: 0 14px 5px; }
+  .nav-item { display: flex; align-items: center; gap: 9px; padding: 9px 14px; cursor: pointer; color: #8b949e; font-size: .85rem; border-left: 3px solid transparent; text-decoration: none; transition: background .15s, color .15s; }
+  .nav-item:hover { background: #1c2128; color: #c9d1d9; }
+  .nav-item.active { background: #1c2128; color: #58a6ff; border-left-color: #58a6ff; }
+  .nav-item .icon { font-size: .95rem; width: 18px; text-align: center; flex-shrink: 0; }
+  .nav-badge { margin-left: auto; background: #1a2a3a; color: #58a6ff; border-radius: 10px; padding: 1px 7px; font-size: .68rem; font-weight: 700; }
+  .sidebar-footer { margin-top: auto; border-top: 1px solid #21262d; padding: 6px 0; }
+  /* ── Main area ── */
+  .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .topbar { background: #161b22; border-bottom: 1px solid #30363d; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+  .topbar-title { font-size: .9rem; color: #c9d1d9; font-weight: 600; }
+  #updated { font-size: .75rem; color: #8b949e; }
+  .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  /* ── Pages ── */
+  .page { display: none; }
+  .page.active { display: block; }
+  /* ── Sections ── */
+  section { margin-bottom: 28px; }
+  h2 { font-size: .85rem; color: #8b949e; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  /* ── Cards ── */
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px 20px; min-width: 140px; flex: 1; }
+  .card .label { font-size: .75rem; color: #8b949e; margin-bottom: 6px; }
+  .card .value { font-size: 1.5rem; font-weight: 700; }
+  /* ── Colors ── */
+  .green { color: #3fb950; } .red { color: #f85149; } .blue { color: #58a6ff; } .yellow { color: #d29922; } .purple { color: #b87eff; }
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; padding: 8px 10px; background: #161b22; color: #8b949e; border-bottom: 1px solid #30363d; }
+  td { padding: 7px 10px; border-bottom: 1px solid #21262d; }
+  tr:hover td { background: #1c2128; }
+  /* ── Badges ── */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: .75rem; font-weight: 600; }
+  .badge-tp  { background: #1a3a1f; color: #3fb950; }
+  .badge-sl  { background: #3a1a1a; color: #f85149; }
+  .badge-tsl { background: #2a1a3a; color: #b87eff; }
+  .badge-exp { background: #2d2a1a; color: #d29922; }
+  .badge-open{ background: #1a2a3a; color: #58a6ff; }
+  /* ── Misc ── */
+  #loader { text-align: center; padding: 60px; color: #8b949e; font-size: 1.1rem; }
+  .note { color: #8b949e; font-size: .85rem; font-style: italic; padding: 12px 0; }
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
+  .filter-bar select, .filter-bar input { background: #161b22; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; padding: 4px 8px; font-size: .8rem; cursor: pointer; }
+  .filter-bar label { font-size: .8rem; color: #8b949e; }
+  .filter-bar button { background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px; padding: 4px 10px; font-size: .8rem; cursor: pointer; }
+  .filter-bar button:hover { color: #c9d1d9; border-color: #8b949e; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <h1>&#x1F4CA; Oko MTF</h1>
+      <div class="sub">Trade Dashboard</div>
+    </div>
+    <nav class="nav-group">
+      <div class="nav-label">Обзор</div>
+      <div class="nav-item active" data-page="summary" onclick="showPage('summary')">
+        <span class="icon">&#x1F4CA;</span> Сводка
+      </div>
+      <div class="nav-item" data-page="open" onclick="showPage('open')">
+        <span class="icon">&#x1F4C2;</span> Открытые
+        <span class="nav-badge" id="navOpenCount">0</span>
+      </div>
+      <div class="nav-item" data-page="history" onclick="showPage('history')">
+        <span class="icon">&#x1F4CB;</span> История
+      </div>
+      <div class="nav-item" data-page="analytics" onclick="showPage('analytics')">
+        <span class="icon">&#x1F4C8;</span> Аналитика
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="nav-label" style="padding:10px 14px 5px">Инструменты</div>
+      <a class="nav-item" href="/trading">
+        <span class="icon">&#x1F3AF;</span> Trading Panel
+      </a>
+      <a class="nav-item" href="/settings">
+        <span class="icon">&#x2699;&#xFE0F;</span> Настройки
+      </a>
+      <a class="nav-item" href="/backtest">
+        <span class="icon">&#x1F4C9;</span> Бэктест
+      </a>
+    </div>
+  </aside>
+  <div class="main-area">
+    <div class="topbar">
+      <span class="topbar-title" id="pageTitle">Сводка</span>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="updated">загрузка...</span>
+        <a id="modeBadge" href="/trading" style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:10px;font-size:.72rem;font-weight:700;background:#21262d;color:#8b949e;border:1px solid #30363d;text-decoration:none;cursor:pointer">
+          <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block"></span>
+          <span id="modeLabel">SIM</span>
+        </a>
+      </div>
+    </div>
+    <div class="content" id="app">
+      <div id="loader">&#x23F3; Загрузка данных...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmt = (v, dec=2) => v == null ? '—' : (+v).toFixed(dec);
+const fmtPct = v => v == null ? '—' : (v > 0 ? '+' : '') + fmt(v, 2) + '%';
+
+// ── Всплывающие подсказки ──────────────────────────────────────────────────
+const TOOLTIPS = {
+  // signal_type (ТФ входа)
+  'confluence':     '[ТФ: 15m] Confluence Scanner — lookback 20 баров: WT в OS/OB + TSL кросс (close) + пивоты + дивергенция. WT_CROSS в зоне OS/OB обязателен.',
+  'wt_signal':      '[ТФ: 15m] WaveTrend Signal — кросс wt1/wt2 в зонах OS (<−60) или OB (>+60). Классический разворотный сигнал.',
+  'pivot_reversal': '[ТФ: 15m] Pivot Reversal — разворот у уровней пивота (Woodie/Camarilla: S1/S2/R1/R2/PP). Цена отбилась от структурного уровня.',
+  'trend_signal':   '[ТФ: 15m] Trend Signal — смена тренда по EMA + ADX. Работает на трендовых рынках, слаб в боковике.',
+  'anomaly':        '[ТФ: 15m] Volume Anomaly — аномальный всплеск объёма (>3σ от среднего). Может быть началом движения или ложным выбросом.',
+  'mtf_bias':       '[ТФ: 3m→1d] MTF Bias — выравнивание 7 таймфреймов. Нужно: alignment ≥65%, senior gate 2/3, WT кросс на entry TF.',
+  'composite':      '[ТФ: 15m] Composite — несколько детекторов одновременно. Высокое confidence, но редкий сигнал.',
+  'divergence':     '[ТФ: 15m] Divergence — дивергенция WT: Regular (разворот) или Hidden (продолжение тренда). Price LL + wt HL (бычья).',
+  // strategy_name
+  'conservative':   'Strategy Pattern: Conservative — повышенный min_strength, меньше сделок, выше качество входа.',
+  // confluence factors
+  'WT_OS':           '[ТФ: 15m] WT1 < −60 в окне lookback → зона перепроданности. Рынок перепродан, ищем разворот вверх. +20 очков.',
+  'WT_OB':           '[ТФ: 15m] WT1 > +60 в окне lookback → зона перекупленности. Рынок перекуплен, ищем разворот вниз. +20 очков.',
+  'TSL_CROSS_UP':    '[ТФ: 15m] TSL-линия пробита вверх: close[i] > trenddown[i-1]. Подтверждённая смена тренда DOWN→UP по закрытию свечи. +20 очков.',
+  'TSL_CROSS_DOWN':  '[ТФ: 15m] TSL-линия пробита вниз: close[i] < trendup[i-1]. Подтверждённая смена тренда UP→DOWN по закрытию свечи. +20 очков.',
+  'WT_CROSS_UP':     '[ТФ: 15m] ⚡ ОБЯЗАТЕЛЕН: wt1 пересёк wt2 снизу вверх в OS зоне (<−60). Без этого сигнал не выдаётся. +15 очков.',
+  'WT_CROSS_DOWN':   '[ТФ: 15m] ⚡ ОБЯЗАТЕЛЕН: wt1 пересёк wt2 сверху вниз в OB зоне (>+60). Без этого сигнал не выдаётся. +15 очков.',
+  'NEAR_SUPPORT':    '[ТФ: 1D/1W пивоты] Цена (low) в ±0.5% от S1/S2/PP. Структурная поддержка подтверждает вход. +25 очков.',
+  'NEAR_RESISTANCE': '[ТФ: 1D/1W пивоты] Цена (high) в ±0.5% от R1/R2/PP. Структурное сопротивление подтверждает SHORT. +25 очков.',
+  'WT_DIVERGENCE':   '[ТФ: 15m] Дивергенция WT в окне: price LL + wt1 HL (бычья) или price HH + wt1 LH (медвежья). +20 очков.',
+  'ABOVE_PP':        '[ТФ: 1D PP] Текущая цена выше дневного PP → бычий контекст. +15 очков.',
+  'BELOW_PP':        '[ТФ: 1D PP] Текущая цена ниже дневного PP → медвежий контекст. +15 очков.',
+  'TREND_1H_UP':     '[ТФ: 1h] ★ Бонус +10: тренд на 1h = UP совпадает с LONG. Старший ТФ подтверждает направление.',
+  'TREND_1H_DOWN':   '[ТФ: 1h] ★ Бонус +10: тренд на 1h = DOWN совпадает с SHORT. Старший ТФ подтверждает направление.',
+  'DUAL_CROSS':      '[ТФ: 15m] ★ Бонус +10: оба кросса (TSL_CROSS + WT_CROSS) на 15m присутствуют одновременно. Двойное подтверждение.',
+  // regime
+  'TREND_UP':   'Режим рынка [15m]: восходящий тренд — ADX высокий + EMA растут. Лонги предпочтительнее.',
+  'TREND_DOWN': 'Режим рынка [15m]: нисходящий тренд — ADX высокий + EMA падают. Шорты предпочтительнее.',
+  'RANGE':      'Режим рынка [15m]: боковик — ADX низкий, цена в диапазоне. Confluence получает штраф -15 к score.',
+  'HIGH_VOL':   'Режим рынка [15m]: высокая волатильность — ATR аномально широкий. Стопы шире, риск выше.',
+  'unknown':    'Режим не определён (старые сделки до добавления market_regime).',
+  '—':          'Нет данных / поле не заполнено.',
+};
+const tip = key => TOOLTIPS[key] ? ` title="${TOOLTIPS[key]}"` : '';
+const badge = s => {
+  const map = {TP:'badge-tp', SL:'badge-sl', TSL:'badge-tsl', EXPIRED:'badge-exp', OPEN:'badge-open'};
+  return `<span class="badge ${map[s]||''}">${s}</span>`;
+};
+const color = (v, inv=false) => {
+  if (v == null) return '';
+  const pos = inv ? v < 0 : v > 0;
+  return pos ? 'green' : (v === 0 ? '' : 'red');
+};
+
+async function load() {
+  try {
+    const [r1, r2, r3, r4] = await Promise.all([
+      fetch('/api/stats'), fetch('/api/stats/confluence'),
+      fetch('/api/stats/breakeven'), fetch('/api/equity')
+    ]);
+    const d = await r1.json();
+    const cf = await r2.json();
+    const be = await r3.json();
+    const eq = await r4.json();
+    render(d, cf, be, eq);
+    document.getElementById('updated').textContent =
+      'Обновлено: ' + new Date().toLocaleTimeString('ru');
+  } catch(e) {
+    document.getElementById('updated').textContent = 'Ошибка загрузки: ' + e.message;
+  }
+}
+
+function breakevenSection(be) {
+  if (!be || be.total_be === undefined) return '';
+  if (be.total_be === 0) return `
+  <section>
+    <h2>Безубыток (BE) — статистика</h2>
+    <p class="note">Данные накапливаются — BE ещё не срабатывал ни разу.</p>
+  </section>`;
+
+  const beExitPct = be.be_exit_pct ?? 0;
+  const survived  = be.survived ?? 0;
+  const beExit    = be.be_exit ?? 0;
+  const totalBe   = be.total_be ?? 0;
+
+  const rBeExit    = be.avg_r_be_exit  != null ? be.avg_r_be_exit.toFixed(2)   : '—';
+  const rSurvived  = be.avg_r_survived != null ? be.avg_r_survived.toFixed(2)  : '—';
+  const rNoBe      = be.without_be_avg_r != null ? be.without_be_avg_r.toFixed(2) : '—';
+
+  const exitColor = beExitPct > 60 ? 'red' : beExitPct > 35 ? 'yellow' : 'green';
+
+  return `
+  <section>
+    <h2>Безубыток (BE +0.5R) — статистика</h2>
+    <div class="cards" style="grid-template-columns:repeat(4,1fr)">
+      <div class="card">
+        <div class="label">BE сработал</div>
+        <div class="value">${totalBe}</div>
+        <div class="label">сделок</div>
+      </div>
+      <div class="card">
+        <div class="label">Закрылись на BE</div>
+        <div class="value ${exitColor}">${beExit} <span style="font-size:.9rem">(${beExitPct}%)</span></div>
+        <div class="label">avg R: ${rBeExit}</div>
+      </div>
+      <div class="card">
+        <div class="label">Выжили после BE</div>
+        <div class="value green">${survived}</div>
+        <div class="label">avg R: <span class="${color(be.avg_r_survived)}">${rSurvived}</span></div>
+      </div>
+      <div class="card">
+        <div class="label">Без BE (база)</div>
+        <div class="value">${be.without_be_total ?? '—'}</div>
+        <div class="label">avg R: <span class="${color(be.without_be_avg_r)}">${rNoBe}</span></div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:8px">
+      BE-выход = статус SL, выход в пределах ±0.5% от входа.
+      ${beExitPct > 50 ? '⚠️ BE часто срабатывает преждевременно — возможно стоит поднять порог активации.' : ''}
+      ${beExitPct <= 30 && survived > 0 ? '✅ BE эффективен: большинство сделок выживают и закрываются в прибыль.' : ''}
+    </p>
+  </section>`;
+}
+
+function confluenceBreakdown(cf) {
+  if (!cf) return '';
+  const FACTOR_LABELS = {
+    'WT_OS':           '🌊 WT OS (перепроданность)',
+    'WT_OB':           '🌊 WT OB (перекупленность)',
+    'TSL_CROSS_UP':    '📈 TSL↑ (тренд сменился вверх)',
+    'TSL_CROSS_DOWN':  '📉 TSL↓ (тренд сменился вниз)',
+    'WT_CROSS_UP':     '⚡ WT✕↑ (кросс из OS — обязателен)',
+    'WT_CROSS_DOWN':   '⚡ WT✕↓ (кросс из OB — обязателен)',
+    'NEAR_SUPPORT':    '🎯 У поддержки (S1/S2/PP)',
+    'NEAR_RESISTANCE': '🎯 У сопротивления (R1/R2/PP)',
+    'WT_DIVERGENCE':   '🔄 Дивергенция WT',
+    'ABOVE_PP':        '✅ Выше дневного PP',
+    'BELOW_PP':        '❌ Ниже дневного PP',
+    'TREND_1H_UP':     '🕐 1h тренд UP (+бонус)',
+    'TREND_1H_DOWN':   '🕐 1h тренд DOWN (+бонус)',
+    'DUAL_CROSS':      '💥 Двойной кросс TSL+WT (+бонус)',
+  };
+  const BONUS_FACTORS = new Set(['TREND_1H_UP','TREND_1H_DOWN','DUAL_CROSS']);
+  const tbl = (rows, cols, headers) => {
+    if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+    const head = headers.map(h => `<th>${h}</th>`).join('');
+    const body = rows.map(r => {
+      const isBonus = BONUS_FACTORS.has(r.factor);
+      const rowStyle = isBonus ? ' style="background:rgba(255,215,0,0.07);font-weight:600"' : '';
+      return `<tr${rowStyle}>${cols.map(c => {
+        const v = r[c];
+        if (c === 'factor') return `<td><span${tip(v)}${TOOLTIPS[v] ? ' style="cursor:help;border-bottom:1px dotted #8b949e"' : ''}>${FACTOR_LABELS[v] || v}${isBonus ? ' <span style="color:#f0a500;font-size:.75rem">★</span>' : ''}</span></td>`;
+        if (c === 'wr') return `<td class="${v >= 45 ? 'green' : v >= 30 ? '' : 'red'}">${v ?? '—'}%</td>`;
+        if (c === 'avg_r') return `<td class="${color(v)}">${v ?? '—'}</td>`;
+        return `<td>${v ?? '—'}</td>`;
+      }).join('')}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  };
+  return `
+  <section>
+    <h2>Confluence — разбивка WR</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По направлению</h3>
+        ${tbl(cf.by_direction, ['direction','total','wr','avg_r'], ['Направление','Сделок','WR%','avg R'])}
+      </div>
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По strength</h3>
+        ${tbl(cf.by_strength, ['range','total','wr','avg_r'], ['Strength','Сделок','WR%','avg R'])}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По факторам (новые сделки) <span style="color:#f0a500;font-size:.75rem">★ = бонусный фактор</span></h3>
+        ${cf.by_factor && cf.by_factor.length
+          ? tbl(cf.by_factor, ['factor','total','wr','avg_r'], ['Фактор','Сделок','WR%','avg R'])
+          : '<p class="note">Факторы будут накапливаться в новых сделках</p>'}
+      </div>
+      <div>
+        <h3 style="font-size:.9rem;color:#8b949e;margin:0 0 6px">По TP источнику</h3>
+        ${tbl(cf.by_tp_source, ['source','total','wr','avg_r'], ['TP source','Сделок','WR%','avg R'])}
+      </div>
+    </div>
+  </section>`;
+}
+
+// ── Equity Curve ─────────────────────────────────────────────────────────────
+let _eqTrades = [];
+
+function calcEquity(trades, openTrades, deposit, riskPct) {
+  let balance = deposit;
+  const points = [{ t: null, b: deposit, r: 0 }];
+  let peak = deposit;
+  let maxDD = 0, bestPnl = 0, worstPnl = 0;
+
+  for (const t of trades) {
+    const r = t.R_multiple || 0;
+    const pnl = balance * (riskPct / 100) * r;
+    balance += pnl;
+    if (balance > peak) peak = balance;
+    const dd = peak > 0 ? (peak - balance) / peak * 100 : 0;
+    if (dd > maxDD) maxDD = dd;
+    if (pnl > bestPnl) bestPnl = pnl;
+    if (pnl < worstPnl) worstPnl = pnl;
+    points.push({ t: t.closed_at, b: balance, r, status: t.status, sym: t.symbol });
+  }
+
+  // Добавить открытые сделки (unrealized)
+  for (const t of (openTrades || [])) {
+    if (t.unrealized_r == null) continue;
+    const pnl = balance * (riskPct / 100) * t.unrealized_r;
+    balance += pnl;
+    points.push({ t: t.created_at, b: balance, r: t.unrealized_r, status: 'OPEN', sym: t.symbol, open: true });
+  }
+
+  return { points, balance, maxDD: Math.round(maxDD * 10) / 10, bestPnl, worstPnl };
+}
+
+function drawEquitySVG(points, startDeposit) {
+  if (points.length < 2) return '<p class="note">Недостаточно данных для графика</p>';
+  const W = 900, H = 230, PAD = { t: 16, r: 16, b: 48, l: 64 };
+  const cW = W - PAD.l - PAD.r, cH = H - PAD.t - PAD.b;
+
+  const vals = points.map(p => p.b);
+  const minV = Math.min(...vals) * 0.998;
+  const maxV = Math.max(...vals) * 1.002;
+  const range = maxV - minV || 1;
+
+  const px = (i) => PAD.l + (i / (points.length - 1)) * cW;
+  const py = (v) => PAD.t + cH - ((v - minV) / range) * cH;
+
+  const pts = points.map((p, i) => `${px(i)},${py(p.b)}`).join(' ');
+  const depClamped = Math.max(minV, Math.min(maxV, startDeposit));
+  const depY = py(depClamped);
+  const areaPath = `M ${px(0)},${depY} ` +
+    points.map((p, i) => `L ${px(i)},${py(p.b)}`).join(' ') +
+    ` L ${px(points.length - 1)},${depY} Z`;
+
+  // Y axis labels
+  const yLabels = [minV, minV + range*0.25, minV + range*0.5, minV + range*0.75, maxV].map(v => {
+    const label = v >= 1000 ? '$' + Math.round(v/10)/100 + 'k' : '$' + Math.round(v);
+    return `<text x="${PAD.l-6}" y="${py(v)+4}" text-anchor="end" font-size="10" fill="#484f58">${label}</text>`;
+  }).join('');
+
+  // X axis date labels — ~6 равномерных меток
+  const datedPts = points.map((p, i) => ({...p, i})).filter(p => p.t);
+  const xLabels = [];
+  if (datedPts.length >= 2) {
+    const step = Math.max(1, Math.floor(datedPts.length / 6));
+    const picks = [];
+    for (let k = 0; k < datedPts.length; k += step) picks.push(datedPts[k]);
+    const last = datedPts[datedPts.length - 1];
+    if (picks[picks.length-1] !== last) picks.push(last);
+    for (const p of picks) {
+      const d = new Date(p.t);
+      const mo = (d.getMonth()+1).toString().padStart(2,'0');
+      const dy = d.getDate().toString().padStart(2,'0');
+      const hr = d.getHours().toString().padStart(2,'0');
+      const label = mo + '/' + dy;
+      const x = px(p.i);
+      xLabels.push(`<line x1="${x}" y1="${PAD.t+cH}" x2="${x}" y2="${PAD.t+cH+5}" stroke="#30363d" stroke-width="1"/>`);
+      xLabels.push(`<text x="${x}" y="${PAD.t+cH+16}" text-anchor="middle" font-size="10" fill="#484f58">${label}</text>`);
+    }
+  }
+
+  const baseLine = `<line x1="${PAD.l}" y1="${depY}" x2="${PAD.l+cW}" y2="${depY}" stroke="#30363d" stroke-dasharray="4,3" stroke-width="1"/>`;
+  const xAxisLine = `<line x1="${PAD.l}" y1="${PAD.t+cH}" x2="${PAD.l+cW}" y2="${PAD.t+cH}" stroke="#21262d" stroke-width="1"/>`;
+
+  const openDots = points.filter(p => p.open).map(p => {
+    const idx = points.indexOf(p);
+    return `<circle cx="${px(idx)}" cy="${py(p.b)}" r="3" fill="#58a6ff" opacity="0.7"/>`;
+  }).join('');
+
+  const lastBalance = points[points.length-1].b;
+  const isUp = lastBalance >= startDeposit;
+
+  return `
+  <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block">
+    <defs>
+      <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${isUp ? '#3fb950' : '#f85149'}" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="${isUp ? '#3fb950' : '#f85149'}" stop-opacity="0.02"/>
+      </linearGradient>
+    </defs>
+    ${xAxisLine}${baseLine}${yLabels}${xLabels.join('')}
+    <path d="${areaPath}" fill="url(#eqGrad)"/>
+    <polyline points="${pts}" fill="none" stroke="${isUp ? '#3fb950' : '#f85149'}" stroke-width="1.5"/>
+    ${openDots}
+    <circle cx="${px(points.length-1)}" cy="${py(lastBalance)}" r="4" fill="${isUp ? '#3fb950' : '#f85149'}"/>
+  </svg>`;
+}
+
+window._eqZoom = localStorage.getItem('eqZoom') || 'ALL';
+
+function _eqCutoff(zoom) {
+  const ms = { '1D': 1, '3D': 3, '1W': 7, '1M': 30, '3M': 90 };
+  const days = ms[zoom];
+  return days ? new Date(Date.now() - days * 86400000) : null;
+}
+
+window.setEqZoom = function(z) {
+  window._eqZoom = z;
+  localStorage.setItem('eqZoom', z);
+  updateEquity();
+};
+
+function renderEquitySection(eq, openTrades) {
+  window._eqTrades = eq || [];
+  window._eqOpenTrades = openTrades || [];
+
+  const deposit = parseFloat(localStorage.getItem('eqDeposit') || '1000');
+  const riskPct = parseFloat(localStorage.getItem('eqRisk') || '1');
+
+  const ZOOMS = [['1D','1Д'],['3D','3Д'],['1W','1Н'],['1M','1М'],['3M','3М'],['ALL','Всё']];
+  const zBtns = ZOOMS.map(([z, lbl]) =>
+    `<button id="eqZ${z}" onclick="setEqZoom('${z}')"
+      style="padding:4px 10px;border-radius:5px;border:1px solid #30363d;background:#0d1117;color:#8b949e;cursor:pointer;font-size:.8rem;transition:all .15s"
+    >${lbl}</button>`
+  ).join('');
+
+  return `
+  <section style="margin-top:20px">
+    <h2>Симуляция депозита <span style="font-size:.75rem;color:#8b949e;font-weight:400">(compound — реинвестирование прибыли)</span></h2>
+    <div style="display:flex;gap:16px;align-items:flex-end;margin-bottom:12px;flex-wrap:wrap">
+      <div>
+        <div class="label" style="margin-bottom:4px">Стартовый депозит $</div>
+        <input id="eqDeposit" type="number" value="${deposit}" min="10" step="10"
+          style="width:110px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem"
+          oninput="updateEquity()">
+      </div>
+      <div>
+        <div class="label" style="margin-bottom:4px">Риск % / сделку</div>
+        <input id="eqRisk" type="number" value="${riskPct}" min="0.1" max="10" step="0.1"
+          style="width:90px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem"
+          oninput="updateEquity()">
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="label" style="margin-right:2px">Период:</span>
+        ${zBtns}
+      </div>
+      <div id="eqMetrics" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px"></div>
+    </div>
+    <div id="eqChart" style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 8px"></div>
+  </section>`;
+}
+
+window.updateEquity = function() {
+  const depEl  = document.getElementById('eqDeposit');
+  const riskEl = document.getElementById('eqRisk');
+  if (!depEl || !riskEl) return;
+  const deposit = parseFloat(depEl.value) || 1000;
+  const riskPct = parseFloat(riskEl.value) || 1;
+  localStorage.setItem('eqDeposit', deposit);
+  localStorage.setItem('eqRisk', riskPct);
+
+  // Полная кривая от начала
+  const { points: allPts } = calcEquity(window._eqTrades, window._eqOpenTrades, deposit, riskPct);
+
+  // Срезаем по зуму
+  const cutoff = _eqCutoff(window._eqZoom || 'ALL');
+  let visPts = allPts;
+  let startDep = deposit;
+  if (cutoff && allPts.length > 1) {
+    let startIdx = 0;
+    for (let i = 0; i < allPts.length - 1; i++) {
+      if (!allPts[i].t || new Date(allPts[i].t) < cutoff) startIdx = i;
+      else break;
+    }
+    startDep = allPts[startIdx].b;
+    visPts = allPts.slice(startIdx);
+  }
+
+  // Метрики по видимому диапазону
+  const balance = visPts.length ? visPts[visPts.length-1].b : startDep;
+  let peak = startDep, maxDD = 0, bestPnl = 0, worstPnl = 0;
+  for (let i = 0; i < visPts.length; i++) {
+    if (visPts[i].b > peak) peak = visPts[i].b;
+    const dd = peak > 0 ? (peak - visPts[i].b) / peak * 100 : 0;
+    if (dd > maxDD) maxDD = dd;
+    if (i > 0) {
+      const pnl = visPts[i].b - visPts[i-1].b;
+      if (pnl > bestPnl) bestPnl = pnl;
+      if (pnl < worstPnl) worstPnl = pnl;
+    }
+  }
+  maxDD = Math.round(maxDD * 10) / 10;
+
+  const pnlTotal = balance - startDep;
+  const pnlPct   = startDep > 0 ? pnlTotal / startDep * 100 : 0;
+  const isUp     = pnlTotal >= 0;
+
+  const metrics = [
+    { label: 'Текущий баланс',  val: '$' + Math.round(balance * 100) / 100, cls: isUp ? 'green' : 'red' },
+    { label: 'P&L',             val: (isUp ? '+' : '') + '$' + Math.round(pnlTotal*100)/100 + ' (' + (isUp?'+':'') + Math.round(pnlPct*10)/10 + '%)', cls: isUp ? 'green' : 'red' },
+    { label: 'Макс. просадка',  val: '-' + maxDD + '%', cls: maxDD > 20 ? 'red' : maxDD > 10 ? 'yellow' : 'green' },
+    { label: 'Лучшая сделка',   val: '+$' + Math.round(bestPnl*100)/100, cls: 'green' },
+    { label: 'Худшая сделка',   val: '-$' + Math.round(Math.abs(worstPnl)*100)/100, cls: 'red' },
+  ].map(m => `
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 16px;min-width:120px">
+      <div class="label">${m.label}</div>
+      <div style="font-size:1.1rem;font-weight:700;margin-top:4px" class="${m.cls}">${m.val}</div>
+    </div>`).join('');
+
+  const metricsEl = document.getElementById('eqMetrics');
+  if (metricsEl) metricsEl.innerHTML = metrics;
+  const chartEl = document.getElementById('eqChart');
+  if (chartEl) chartEl.innerHTML = drawEquitySVG(visPts, startDep);
+
+  // Подсветка активной кнопки зума
+  ['1D','3D','1W','1M','3M','ALL'].forEach(z => {
+    const btn = document.getElementById('eqZ' + z);
+    if (!btn) return;
+    const active = z === (window._eqZoom || 'ALL');
+    btn.style.background  = active ? '#21262d' : '#0d1117';
+    btn.style.color       = active ? '#c9d1d9' : '#8b949e';
+    btn.style.borderColor = active ? '#58a6ff' : '#30363d';
+  });
+};
+
+const PAGE_TITLES = {
+  summary:   'Сводка',
+  open:      'Открытые позиции',
+  history:   'История сделок',
+  analytics: 'Аналитика'
+};
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const el = document.getElementById('page-' + name);
+  if (el) el.classList.add('active');
+  document.querySelectorAll('.nav-item[data-page]').forEach(n => n.classList.remove('active'));
+  const nav = document.querySelector('.nav-item[data-page="' + name + '"]');
+  if (nav) nav.classList.add('active');
+  const title = document.getElementById('pageTitle');
+  if (title) title.textContent = PAGE_TITLES[name] || name;
+  localStorage.setItem('activePage', name);
+  if (name === 'history' && _closedTotal === 0) loadClosedPage(1);
+}
+
+function render(d, cf, be, eq) {
+  const s = d.summary || {};
+
+  // --- EV и Profit Factor ---
+  const wr = (s.win_rate ?? 0) / 100;
+  const rWin  = s.avg_r_win  ?? 0;
+  const rLoss = s.avg_r_loss ?? 0;   // отрицательное число (напр. -0.80)
+  const ev = wr * rWin + (1 - wr) * rLoss;
+  const evRound = Math.round(ev * 100) / 100;
+  const pfDenom = (1 - wr) * Math.abs(rLoss);
+  const pf = pfDenom > 0 ? Math.round(wr * rWin / pfDenom * 100) / 100 : null;
+
+  // --- Прогноз депозита (с реинвестированием) ---
+  const cpdAll = s.closed_per_day ?? 0; // все сигналы бота (79+)
+
+  // Макс. ожидаемая серия проигрышей: log(N) / log(1/lossRate)
+  function maxLoseStreak(n, wr) {
+    const lossRate = 1 - wr;
+    if (lossRate <= 0) return 0;
+    return Math.round(Math.log(n) / Math.log(1 / lossRate));
+  }
+  function maxDD(streak, riskPct) {
+    return Math.round((1 - Math.pow(1 - riskPct / 100, streak)) * 1000) / 10;
+  }
+
+  const projRow = ev > 0 ? `
+    <div class="card" style="min-width:380px;flex:2;border-color:#3fb95044" id="projCard">
+      <div class="label" style="font-size:.85rem;color:#c9d1d9;font-weight:600">
+        &#x1F4B0; Калькулятор роста депозита (compound)
+        <span style="color:#555;font-size:.7rem"> EV = ${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R/сделку</span>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:8px 0 10px;flex-wrap:wrap">
+        <div><div class="label">Депозит $</div>
+          <input id="projDeposit" type="number" value="100" min="10" max="1000000"
+            style="width:90px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-size:.9rem"
+            oninput="updateProj()"></div>
+        <div><div class="label">Риск %/сделку</div>
+          <input id="projRisk" type="number" value="1" min="0.05" max="10" step="0.05"
+            style="width:70px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-size:.9rem"
+            oninput="updateProj()"></div>
+        <div><div class="label">Режим</div>
+          <select id="projMode" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-size:.85rem" onchange="updateProj()">
+            <option value="manual3">Ручной · 3/день</option>
+            <option value="manual5">Ручной · 5/день</option>
+            <option value="manual10">Ручной · 10/день</option>
+            <option value="auto" ${cpdAll > 0 ? '' : 'disabled'}>Авторежим · все (${cpdAll}/день)</option>
+          </select></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:4px">
+        <div style="text-align:center">
+          <div class="label">Рост за 30 дней</div>
+          <div class="value green" style="font-size:1.6rem" id="projPct">...</div>
+          <div class="label" id="projFin">...</div>
+        </div>
+        <div style="text-align:center">
+          <div class="label">Макс. серия SL</div>
+          <div class="value yellow" style="font-size:1.6rem" id="projStreak">...</div>
+          <div class="label">подряд убыточных</div>
+        </div>
+        <div style="text-align:center">
+          <div class="label">Макс. просадка</div>
+          <div class="value red" style="font-size:1.6rem" id="projDD">...</div>
+          <div class="label">при серии SL</div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;font-size:.75rem;color:#555;border-top:1px solid #21262d;padding-top:6px">
+        ⚠️ Compound-прогноз на основе симуляции. WR 33% при 2370 сделок → до 19 SL подряд статистически.
+        Авторежим берёт <b>все</b> сигналы бота — нужен малый риск (0.1-0.3%) чтобы выдержать просадку.
+      </div>
+    </div>` : '';
+
+  window._ev = ev;
+  window._wr = wr;
+  window._cpdAll = cpdAll;
+  window.maxLoseStreak = maxLoseStreak;
+  window.maxDD = maxDD;
+  window.updateProj = function() {
+    const dep  = parseFloat(document.getElementById('projDeposit')?.value || 100);
+    const risk = parseFloat(document.getElementById('projRisk')?.value || 1);
+    const mode = document.getElementById('projMode')?.value || 'manual3';
+    const ev_  = window._ev;
+    const wr_  = window._wr;
+    const tpdMap = { manual3: 3, manual5: 5, manual10: 10, auto: window._cpdAll || 10 };
+    const tpd = tpdMap[mode] || 3;
+    const n = tpd * 30;
+
+    if (ev_ <= 0) {
+      document.getElementById('projPct').textContent = '—';
+      document.getElementById('projFin').textContent = '—';
+      return;
+    }
+
+    const finalDep = dep * Math.pow(1 + (risk / 100) * ev_, n);
+    const gain = finalDep - dep;
+    const pct = Math.round(gain / dep * 1000) / 10;
+    document.getElementById('projPct').textContent = (gain > 0 ? '+' : '') + pct + '%';
+    document.getElementById('projFin').textContent = '$' + Math.round(finalDep);
+
+    // Просадка
+    const streak = maxLoseStreak(n, wr_);
+    const dd = maxDD(streak, risk);
+    document.getElementById('projStreak').textContent = streak;
+    document.getElementById('projDD').textContent = '-' + dd + '%';
+
+    // Цвет просадки
+    const ddEl = document.getElementById('projDD');
+    if (ddEl) ddEl.className = 'value ' + (dd > 30 ? 'red' : dd > 15 ? 'yellow' : 'green') + ' ';
+    ddEl.style.fontSize = '1.6rem';
+    const pctEl = document.getElementById('projPct');
+    if (pctEl) { pctEl.className = 'value green'; pctEl.style.fontSize = '1.6rem'; }
+  };
+
+  const html = `
+    <!-- ═══ PAGE: СВОДКА ═══ -->
+    <div class="page" id="page-summary">
+      ${renderEquitySection(eq, d.open_trades)}
+      <section>
+        <h2>Сводка</h2>
+        <div class="cards">
+          <div class="card"><div class="label">Всего / Открыто</div>
+            <div class="value blue">${s.total ?? '—'} <span style="font-size:1rem;color:#58a6ff88">/ ${s.open_count ?? 0}</span></div>
+            ${s.days_active ? `<div class="label" style="margin-top:4px">${s.days_active} дней · ${cpdAll} сделок/день</div>` : ''}</div>
+          <div class="card"><div class="label">Win Rate</div>
+            <div class="value ${wr >= 0.5 ? 'green' : 'red'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</div>
+            <div class="label" style="margin-top:4px">
+              <span class="green">TP ${s.tp_count ?? 0}</span> ·
+              <span class="purple">TSL ${s.tsl_count ?? 0}</span> ·
+              <span class="red">SL ${s.sl_count ?? 0}</span>
+            </div></div>
+          <div class="card" style="border-color:${evRound > 0 ? '#3fb950' : '#f85149'}44">
+            <div class="label">EV / сделку <span style="color:#444;font-size:.7rem" title="Expected Value = WR×R_win + (1-WR)×R_loss">ожидаемый R</span></div>
+            <div class="value ${evRound > 0 ? 'green' : 'red'}">${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R</div>
+            <div class="label" style="margin-top:4px">${evRound > 0 ? '✅ Система прибыльна' : '❌ Система убыточна'}</div></div>
+          <div class="card"><div class="label">Profit Factor</div>
+            <div class="value ${pf >= 1.5 ? 'green' : pf >= 1 ? 'yellow' : 'red'}">${pf != null ? pf.toFixed(2) : '—'}</div>
+            <div class="label" style="margin-top:4px">${pf >= 1.5 ? '🔥 Отличный' : pf >= 1.2 ? '👍 Хороший' : pf >= 1 ? '⚡ Слабый' : '❌ < 1'}</div></div>
+          <div class="card"><div class="label">Avg R (Win ↑ / Loss ↓)</div>
+            <div class="value" style="font-size:1.2rem">
+              <span class="green">+${fmt(rWin,2)}</span>
+              <span style="color:#444;font-weight:400"> / </span>
+              <span class="red">${fmt(rLoss,2)}</span>
+            </div>
+            <div class="label" style="margin-top:4px">Avg Profit: <span class="${color(s.avg_profit_pct)}">${fmtPct(s.avg_profit_pct)}</span></div></div>
+          ${projRow}
+        </div>
+      </section>
+    </div>
+
+    <!-- ═══ PAGE: ОТКРЫТЫЕ ═══ -->
+    <div class="page" id="page-open">
+      <section>
+        <h2>Открытые позиции <span style="color:#8b949e;font-size:.9em;font-weight:400">(${(d.open_trades||[]).length})</span></h2>
+        ${openTradesTable(d.open_trades)}
+      </section>
+    </div>
+
+    <!-- ═══ PAGE: ИСТОРИЯ ═══ -->
+    <div class="page" id="page-history">
+      <section>
+        <h2>Закрытые сделки <span id="closedTotalHeader" style="color:#8b949e;font-size:.85em"></span></h2>
+        ${recentTable(d.recent_closed)}
+      </section>
+    </div>
+
+    <!-- ═══ PAGE: АНАЛИТИКА ═══ -->
+    <div class="page" id="page-analytics">
+      <section>
+        <h2>По конфигурации <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Strategy Pattern — confluence / conservative / mtf_bias)</span></h2>
+        ${tableByGroup(d.by_strategy, 'strategy_name')}
+      </section>
+      <section>
+        <h2>По типу сигнала <span style="font-size:.75rem;color:#8b949e;font-weight:400">(детектор — confluence / wt_signal / pivot_reversal / …)</span></h2>
+        ${tableByGroup(d.by_signal_type, 'signal_type')}
+      </section>
+      <section>
+        <h2>По направлению</h2>
+        ${tableByGroup(d.by_direction, 'direction')}
+      </section>
+      ${confluenceBreakdown(cf)}
+      ${breakevenSection(be)}
+      <section>
+        <h2>По режиму рынка</h2>
+        ${regimeSection(d.by_regime)}
+      </section>
+    </div>
+  `;
+  document.getElementById('app').innerHTML = html;
+  // Обновить счётчик открытых в sidebar
+  const oc = document.getElementById('navOpenCount');
+  if (oc) oc.textContent = (d.open_trades||[]).length;
+  // Восстановить активную страницу
+  showPage(localStorage.getItem('activePage') || 'summary');
+  setTimeout(() => {
+    if (window.updateProj) window.updateProj();
+    if (window.updateEquity) window.updateEquity();
+  }, 0);
+}
+
+function tableByGroup(rows, labelKey) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+  return `<table><thead><tr>
+    <th>${labelKey}</th><th>Всего</th><th>Win Rate</th>
+    <th class="green">TP</th><th class="purple">TSL</th><th class="red">SL</th>
+    <th>Avg Profit%</th><th>Avg R</th>
+  </tr></thead><tbody>` +
+  rows.map(r => `<tr>
+    <td><span${tip(r[labelKey])}${TOOLTIPS[r[labelKey]] ? ' style="cursor:help;border-bottom:1px dotted #8b949e"' : ''}>${r[labelKey] || '—'}</span></td>
+    <td>${r.total}</td>
+    <td class="${r.win_rate >= 50 ? 'green' : 'red'}">${r.win_rate != null ? r.win_rate + '%' : '—'}</td>
+    <td class="green">${r.tp_count ?? r.wins ?? 0}</td>
+    <td class="purple">${r.tsl_count ?? 0}</td>
+    <td class="red">${r.sl_count ?? r.losses ?? 0}</td>
+    <td class="${color(r.avg_profit_pct)}">${fmtPct(r.avg_profit_pct)}</td>
+    <td class="${color(r.avg_r)}">${fmt(r.avg_r,2)}</td>
+  </tr>`).join('') + '</tbody></table>';
+}
+
+function regimeSection(rows) {
+  const allUnknown = !rows || rows.every(r => r.regime === 'unknown');
+  if (allUnknown) return '<p class="note">Режим рынка пока не заполняется. Подключите MarketRegimeClassifier в trade_simulator.py — и данные появятся здесь автоматически.</p>';
+  return tableByGroup(rows, 'regime');
+}
+
+function tvUrl(sym) {
+  const base = (sym||'').replace('/USDT:USDT','').replace('/USDT','').replace('/','');
+  return `https://ru.tradingview.com/chart/?symbol=BINGX%3A${base}USDT.P&interval=15`;
+}
+function symLink(sym) {
+  const label = (sym||'').replace(':USDT','');
+  return `<a href="${tvUrl(sym)}" target="_blank" style="color:#58a6ff;text-decoration:none">${label}</a>`;
+}
+
+// Конвертация UTC → локальное время браузера (ручной парсинг, надёжно для всех браузеров)
+const _p = n => String(n).padStart(2, '0');
+function _utcDate(utcStr) {
+  if (!utcStr) return null;
+  // Поддержка форматов: "2026-03-23 13:13:54", "2026-03-23T13:13:54", "2026-03-23 13:13"
+  const m = String(utcStr).match(/^(\d{4})-(\d{2})-(\d{2})[\sT](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, se] = m;
+  return new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +(se || 0)));
+}
+function fmtLocal(utcStr) {
+  const d = _utcDate(utcStr);
+  if (!d) return '—';
+  return `${_p(d.getDate())}.${_p(d.getMonth()+1)}.${d.getFullYear()} ${_p(d.getHours())}:${_p(d.getMinutes())}`;
+}
+function fmtLocalTime(utcStr) {
+  const d = _utcDate(utcStr);
+  if (!d) return '—';
+  return `${_p(d.getHours())}:${_p(d.getMinutes())}`;
+}
+function fmtLocalShort(utcStr) {
+  const d = _utcDate(utcStr);
+  if (!d) return '—';
+  return `${_p(d.getDate())}.${_p(d.getMonth()+1)} ${_p(d.getHours())}:${_p(d.getMinutes())}`;
+}
+
+function tslBadge(activated, tsl_tf) {
+  if (activated) {
+    const tf = tsl_tf || '?';
+    return `<span class="badge badge-tsl" title="TSL активен — следит за трендом на ${tf}">TSL ${tf}</span>`;
+  }
+  return '<span style="color:#444;font-size:.75rem" title="TSL ещё не активирован">—</span>';
+}
+
+function tp2Cell(tp2_price, tp2_hit_at, entry) {
+  if (!tp2_price) return '<span style="color:#444">—</span>';
+  const pct = entry ? ((tp2_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
+  const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
+  if (tp2_hit_at) {
+    const t = fmtLocalTime(tp2_hit_at);
+    return `<span class="green" title="TP2 достигнут в ${t}">✓${fmt(tp2_price,4)}</span>${pctStr}`;
+  }
+  return `<span style="color:#8b949e">${fmt(tp2_price,4)}</span>${pctStr}`;
+}
+
+function tp1Cell(tp1_price, tp1_hit_at, entry) {
+  if (!tp1_price) return '<span style="color:#444">—</span>';
+  const pct = entry ? ((tp1_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
+  const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
+  if (tp1_hit_at) {
+    const t = fmtLocalTime(tp1_hit_at);
+    return `<span class="green" title="TP1 достигнут в ${t}">✓${fmt(tp1_price,4)}</span>${pctStr}`;
+  }
+  return `<span style="color:#8b949e">${fmt(tp1_price,4)}</span>${pctStr}`;
+}
+
+function openTradesTable(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет открытых позиций</p>';
+  return `<table><thead><tr>
+    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th>
+    <th>Вход</th><th>Сейчас</th><th>P&L%</th><th>R</th>
+    <th>SL</th><th>TP (финал)</th><th>TP1</th><th>TP2</th><th>TSL</th>
+    <th>Открыта</th><th>Закрыть</th>
+  </tr></thead><tbody>` +
+  rows.map(r => {
+    const pnl = r.unrealized_pct;
+    const pnlClass = pnl == null ? '' : pnl >= 0 ? 'green' : 'red';
+    const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%' : '—';
+    const rStr = r.unrealized_r != null ? (r.unrealized_r >= 0 ? '+' : '') + r.unrealized_r.toFixed(2) + 'R' : '—';
+    const rClass = r.unrealized_r == null ? '' : r.unrealized_r >= 0 ? 'green' : 'red';
+    const curStr = r.current_price != null ? fmt(r.current_price, 4) : '<span style="color:#666">—</span>';
+    // Подсветить строку если TSL активен
+    const rowStyle = r.tsl_activated ? ' style="background:rgba(184,126,255,0.05)"' : '';
+    return `<tr${rowStyle}>
+      <td>${r.id}</td>
+      <td>${symLink(r.symbol)}</td>
+      <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
+      <td>${r.signal_type||'—'}</td>
+      <td>${fmt(r.entry_price,4)}</td>
+      <td>${curStr}</td>
+      <td class="${pnlClass}">${pnlStr}</td>
+      <td class="${rClass}">${rStr}</td>
+      <td class="red">${fmt(r.stop_loss,4)}</td>
+      <td class="green">${fmt(r.take_profit,4)}</td>
+      <td>${tp1Cell(r.tp1_price, r.tp1_hit_at, r.entry_price)}</td>
+      <td>${tp2Cell(r.tp2_price, r.tp2_hit_at, r.entry_price)}</td>
+      <td>${tslBadge(r.tsl_activated, r.tsl_tf)}</td>
+      <td style="color:#8b949e;font-size:.8rem">${fmtLocalShort(r.created_at)}</td>
+      <td><button onclick="closeTrade(${r.id},this)" style="background:#b22222;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button></td>
+    </tr>`;
+  }).join('') + '</tbody></table>';
+}
+
+async function closeTrade(id, btn) {
+  if (!confirm(`Закрыть сделку #${id} по текущей цене?`)) return;
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await fetch(`/api/trades/${id}/close`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (!r.ok) {
+      const msg = await r.text().catch(() => `HTTP ${r.status}`);
+      alert(msg || `Ошибка ${r.status}`);
+      btn.textContent = 'Err'; btn.disabled = false;
+      return;
+    }
+    const d = await r.json();
+    if (d.ok) { btn.textContent = '✓'; btn.style.background='#2a6'; load(); }
+    else { btn.textContent = 'Err'; btn.disabled = false; }
+  } catch(e) { btn.textContent = 'Err'; btn.disabled = false; }
+}
+
+let _recentRows = [];
+let _closedPage = 1;
+let _closedPerPage = 50;
+let _closedTotal = 0;
+let _closedTotalPages = 1;
+
+async function loadClosedPage(page) {
+  _closedPage = page;
+  try {
+    const r = await fetch(`/api/closed_trades?page=${page}&per_page=${_closedPerPage}`);
+    const d = await r.json();
+    _closedTotal = d.total;
+    _closedTotalPages = d.total_pages;
+    _recentRows = d.rows || [];
+    const wrap = document.getElementById('recentTableWrap');
+    if (wrap) wrap.innerHTML = renderRecentRows(_recentRows);
+    updatePaginationControls();
+    updateFilterOptions();
+    applyFilters();
+  } catch(e) { console.error('loadClosedPage:', e); }
+}
+
+function updatePaginationControls() {
+  const hdr = document.getElementById('closedTotalHeader');
+  if (hdr) hdr.textContent = `(всего ${_closedTotal})`;
+  const el = document.getElementById('closedPagination');
+  if (!el) return;
+  const from = (_closedPage - 1) * _closedPerPage + 1;
+  const to = Math.min(_closedPage * _closedPerPage, _closedTotal);
+  const isFirst = _closedPage <= 1, isLast = _closedPage >= _closedTotalPages;
+  const btn = (label, page, disabled) =>
+    `<button onclick="loadClosedPage(${page})" ${disabled?'disabled':''}
+      style="background:${disabled?'#161b22':'#21262d'};border:1px solid ${disabled?'#21262d':'#30363d'};
+             color:${disabled?'#484f58':'#c9d1d9'};border-radius:6px;padding:4px 10px;
+             font-size:.8rem;cursor:${disabled?'default':'pointer'}">${label}</button>`;
+  el.innerHTML =
+    btn('⟪', 1, isFirst) +
+    btn('‹ Пред', _closedPage - 1, isFirst) +
+    `<span style="padding:4px 14px;background:#161b22;border:1px solid #30363d;border-radius:6px;
+                  font-size:.8rem;color:#8b949e;white-space:nowrap">
+       стр.&nbsp;<strong style="color:#c9d1d9">${_closedPage}</strong>&nbsp;/&nbsp;${_closedTotalPages}
+       <span style="color:#484f58;margin:0 6px">·</span>
+       <strong style="color:#c9d1d9">${from}–${to}</strong>&nbsp;из&nbsp;${_closedTotal}
+     </span>` +
+    btn('След ›', _closedPage + 1, isLast) +
+    btn('⟫', _closedTotalPages, isLast) +
+    `<select onchange="changePerPage(this.value)"
+       style="margin-left:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;
+              border-radius:6px;padding:4px 8px;font-size:.8rem;cursor:pointer">
+       ${[20,50,100,200].map(n=>`<option value="${n}"${n===_closedPerPage?' selected':''}>${n}&nbsp;/&nbsp;стр.</option>`).join('')}
+     </select>`;
+}
+
+function changePerPage(val) {
+  _closedPerPage = parseInt(val);
+  loadClosedPage(1);
+}
+
+function updateFilterOptions() {
+  const statuses = [...new Set(_recentRows.map(r=>r.status).filter(Boolean))].sort();
+  const dirs     = [...new Set(_recentRows.map(r=>r.direction).filter(Boolean))].sort();
+  const sigs     = [...new Set(_recentRows.map(r=>r.signal_type).filter(Boolean))].sort();
+  const mkOpts = (id, vals) => {
+    const el = document.getElementById(id); if (!el) return;
+    const cur = el.value;
+    el.innerHTML = `<option value="">Все</option>` + vals.map(v=>`<option value="${v}"${v===cur?' selected':''}>${v}</option>`).join('');
+  };
+  mkOpts('fStatus', statuses);
+  mkOpts('fDir', dirs);
+  mkOpts('fSig', sigs);
+}
+
+function recentTable(rows) {
+  _recentRows = rows || [];
+  // После первого рендера подгружаем страницу 1 через пагинацию
+  setTimeout(() => loadClosedPage(1), 0);
+  return `
+  <div class="filter-bar">
+    <label>Статус:</label>
+    <select id="fStatus" onchange="applyFilters()"><option value="">Все</option></select>
+    <label>Направление:</label>
+    <select id="fDir" onchange="applyFilters()"><option value="">Все</option></select>
+    <label>Сигнал:</label>
+    <select id="fSig" onchange="applyFilters()"><option value="">Все</option></select>
+    <label>Режим:</label>
+    <select id="fRegime" onchange="applyFilters()">
+      <option value="">Все</option>
+      <option value="TREND_UP">TREND_UP</option>
+      <option value="TREND_DOWN">TREND_DOWN</option>
+      <option value="RANGE">RANGE</option>
+      <option value="HIGH_VOL">HIGH_VOL</option>
+    </select>
+    <button onclick="resetFilters()">✕ Сброс</button>
+  </div>
+  <div id="closedPagination" style="margin:10px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
+  <div id="recentTableWrap">${renderRecentRows(_recentRows)}</div>`;
+}
+
+function renderRecentRows(rows) {
+  if (!rows.length) return '<p class="note">Нет сделок по фильтру</p>';
+  return `<table><thead><tr>
+    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th><th>Режим</th><th>Статус</th>
+    <th>Profit%</th><th>R</th><th>Max R</th><th>Cap%</th>
+    <th>TP src</th><th>Длит(мин)</th><th>Открыта</th><th>Закрыта</th>
+  </tr></thead><tbody>` +
+  rows.map(r => {
+    const capPct = r.captured_R_pct != null ? fmt(r.captured_R_pct,0)+'%' : '—';
+    const capClass = r.captured_R_pct != null ? (r.captured_R_pct >= 60 ? 'green' : r.captured_R_pct >= 30 ? 'yellow' : 'red') : '';
+    const tpSrc = (r.tp_source||'').replace('pivot_','').split(':')[0] || '—';
+    return `<tr>
+      <td>${r.id}</td>
+      <td>${symLink(r.symbol)}</td>
+      <td class="${r.direction==='LONG'?'green':'red'}">${r.direction||'—'}</td>
+      <td>${r.signal_type||'—'}</td>
+      <td style="color:#8b949e;font-size:.8rem">${r.regime||'—'}</td>
+      <td>${badge(r.status)}</td>
+      <td class="${color(r.profit_pct)}">${fmtPct(r.profit_pct)}</td>
+      <td class="${color(r.R_multiple)}">${fmt(r.R_multiple,2)}</td>
+      <td class="yellow">${r.max_R_possible != null ? fmt(r.max_R_possible,2) : '—'}</td>
+      <td class="${capClass}">${capPct}</td>
+      <td style="color:#8b949e;font-size:.8rem">${tpSrc}</td>
+      <td>${r.duration_minutes != null ? Math.round(r.duration_minutes) : '—'}</td>
+      <td style="color:#8b949e;font-size:.8rem">${fmtLocalShort(r.created_at)}</td>
+      <td style="font-size:.85rem">${fmtLocalShort(r.closed_at)}</td>
+    </tr>`;
+  }).join('') + '</tbody></table>';
+}
+
+function applyFilters() {
+  const st  = document.getElementById('fStatus')?.value  || '';
+  const dir = document.getElementById('fDir')?.value     || '';
+  const sig = document.getElementById('fSig')?.value     || '';
+  const reg = document.getElementById('fRegime')?.value  || '';
+  const filtered = _recentRows.filter(r =>
+    (!st  || r.status     === st)  &&
+    (!dir || r.direction  === dir) &&
+    (!sig || r.signal_type=== sig) &&
+    (!reg || r.regime     === reg)
+  );
+  const wrap = document.getElementById('recentTableWrap');
+  if (wrap) wrap.innerHTML = renderRecentRows(filtered);
+}
+
+function resetFilters() {
+  ['fStatus','fDir','fSig','fRegime'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  applyFilters();
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

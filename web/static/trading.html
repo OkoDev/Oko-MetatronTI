@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Panel — Oko MTF</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  .app-layout { display: flex; flex: 1; overflow: hidden; }
+  /* Sidebar */
+  .sidebar { width: 210px; min-width: 210px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; overflow-y: auto; }
+  .sidebar-logo { padding: 16px 16px 12px; border-bottom: 1px solid #21262d; }
+  .sidebar-logo h1 { font-size: .95rem; color: #58a6ff; font-weight: 700; }
+  .sidebar-logo .sub { font-size: .68rem; color: #484f58; margin-top: 3px; }
+  .nav-group { padding: 10px 0 4px; }
+  .nav-label { font-size: .62rem; text-transform: uppercase; letter-spacing: .1em; color: #484f58; padding: 0 14px 5px; }
+  .nav-item { display: flex; align-items: center; gap: 9px; padding: 9px 14px; cursor: pointer; color: #8b949e; font-size: .85rem; border-left: 3px solid transparent; text-decoration: none; transition: background .15s, color .15s; }
+  .nav-item:hover { background: #1c2128; color: #c9d1d9; }
+  .nav-item.active { background: #1c2128; color: #58a6ff; border-left-color: #58a6ff; }
+  .nav-item .icon { font-size: .95rem; width: 18px; text-align: center; flex-shrink: 0; }
+  .sidebar-footer { margin-top: auto; border-top: 1px solid #21262d; padding: 6px 0; }
+  /* Main */
+  .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .topbar { background: #161b22; border-bottom: 1px solid #30363d; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+  .topbar-title { font-size: .9rem; color: #c9d1d9; font-weight: 600; }
+  .topbar-right { display: flex; align-items: center; gap: 12px; }
+  .mode-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 12px; font-size: .75rem; font-weight: 700; letter-spacing: .05em; cursor: pointer; text-decoration: none; }
+  .mode-sim  { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+  .mode-vst  { background: #1a2a3a; color: #58a6ff; border: 1px solid #1f6feb; }
+  .mode-live { background: #1a3a1f; color: #3fb950; border: 1px solid #238636; }
+  .mode-dot  { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  /* Cards */
+  h2 { font-size: .85rem; color: #8b949e; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+  .panel-title { font-size: .9rem; font-weight: 600; color: #c9d1d9; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  /* Form grid */
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-group label { font-size: .75rem; color: #8b949e; }
+  .form-group input, .form-group select {
+    background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+    border-radius: 6px; padding: 7px 10px; font-size: .85rem; outline: none;
+    transition: border-color .15s;
+  }
+  .form-group input:focus, .form-group select:focus { border-color: #58a6ff; }
+  .form-group .hint { font-size: .7rem; color: #484f58; }
+  /* Result cards */
+  .result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 16px; }
+  .result-card { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 14px 16px; }
+  .result-card .label { font-size: .72rem; color: #8b949e; margin-bottom: 5px; }
+  .result-card .value { font-size: 1.25rem; font-weight: 700; }
+  .result-card .sub-value { font-size: .75rem; color: #8b949e; margin-top: 2px; }
+  .green { color: #3fb950; } .red { color: #f85149; } .blue { color: #58a6ff; } .yellow { color: #d29922; }
+  /* Warning */
+  .warn-box { background: #2d2a1a; border: 1px solid #d29922; border-radius: 6px; padding: 8px 12px; font-size: .8rem; color: #d29922; margin-top: 12px; display: none; }
+  .warn-box.show { display: block; }
+  /* Btn */
+  .btn { padding: 8px 18px; border-radius: 6px; font-size: .85rem; font-weight: 600; cursor: pointer; border: none; transition: opacity .15s; }
+  .btn-primary { background: #238636; color: #fff; }
+  .btn-primary:hover { opacity: .85; }
+  .btn-secondary { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+  .btn-secondary:hover { color: #c9d1d9; }
+  /* TP rows */
+  .tp-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262d; font-size: .85rem; }
+  .tp-row:last-child { border-bottom: none; }
+  .tp-row .lbl { color: #8b949e; }
+  /* settings load status */
+  #settingsStatus { font-size: .75rem; color: #484f58; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <h1>&#x1F4CA; Oko MTF</h1>
+      <div class="sub">Trade Dashboard</div>
+    </div>
+    <nav class="nav-group">
+      <div class="nav-label">Обзор</div>
+      <a class="nav-item" href="/">
+        <span class="icon">&#x1F4CA;</span> Сводка
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="nav-label" style="padding:10px 14px 5px">Инструменты</div>
+      <a class="nav-item active" href="/trading">
+        <span class="icon">&#x1F3AF;</span> Trading Panel
+      </a>
+      <a class="nav-item" href="/settings">
+        <span class="icon">&#x2699;&#xFE0F;</span> Настройки
+      </a>
+      <a class="nav-item" href="/backtest">
+        <span class="icon">&#x1F4C9;</span> Бэктест
+      </a>
+    </div>
+  </aside>
+
+  <div class="main-area">
+    <div class="topbar">
+      <span class="topbar-title">&#x1F3AF; Trading Panel</span>
+      <div class="topbar-right">
+        <span id="settingsStatus"></span>
+        <a id="modeBadge" class="mode-badge mode-sim" href="/trading">
+          <span class="mode-dot"></span>
+          <span id="modeLabel">SIM</span>
+        </a>
+      </div>
+    </div>
+    <div class="content">
+
+      <!-- ── Position Sizer ───────────────────────────────────── -->
+      <div class="panel">
+        <div class="panel-title">&#x1F4CF; Position Sizer</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Символ</label>
+            <input id="inSymbol" type="text" placeholder="BTC/USDT:USDT" value="">
+            <span class="hint" id="minNotionalHint"></span>
+          </div>
+          <div class="form-group">
+            <label>Депозит (USDT)</label>
+            <input id="inDeposit" type="number" min="1" step="1" placeholder="1000">
+          </div>
+          <div class="form-group">
+            <label>Риск на сделку (%)</label>
+            <input id="inRisk" type="number" min="0.1" max="10" step="0.1" placeholder="1.0">
+          </div>
+          <div class="form-group">
+            <label>Плечо</label>
+            <input id="inLev" type="number" min="1" max="100" step="1" placeholder="5">
+          </div>
+          <div class="form-group">
+            <label>Цена входа (USDT)</label>
+            <input id="inEntry" type="number" min="0" step="any" placeholder="50000">
+          </div>
+          <div class="form-group">
+            <label>Стоп-лосс (USDT)</label>
+            <input id="inSl" type="number" min="0" step="any" placeholder="49000">
+          </div>
+        </div>
+
+        <div id="warnBox" class="warn-box"></div>
+
+        <div class="result-grid" id="results" style="display:none">
+          <div class="result-card">
+            <div class="label">Размер позиции</div>
+            <div class="value blue" id="rPosSize">—</div>
+            <div class="sub-value" id="rPosSizeSub">—</div>
+          </div>
+          <div class="result-card">
+            <div class="label">Риск (USDT)</div>
+            <div class="value red" id="rRiskUsd">—</div>
+            <div class="sub-value" id="rRiskPct">—</div>
+          </div>
+          <div class="result-card">
+            <div class="label">SL дистанция</div>
+            <div class="value yellow" id="rSlDist">—</div>
+            <div class="sub-value" id="rSlPrice">—</div>
+          </div>
+          <div class="result-card">
+            <div class="label">Маржа (USDT)</div>
+            <div class="value" id="rMargin">—</div>
+            <div class="sub-value" id="rMarginPct">—</div>
+          </div>
+        </div>
+
+        <!-- TP targets -->
+        <div id="tpBlock" style="display:none; margin-top:18px;">
+          <h2>Take Profit цели</h2>
+          <div id="tpRows"></div>
+        </div>
+
+        <div style="margin-top:16px; display:flex; gap:10px;">
+          <button class="btn btn-primary" onclick="calc()">Рассчитать</button>
+          <button class="btn btn-secondary" onclick="loadSettings()">&#x21BA; Из настроек</button>
+        </div>
+      </div>
+
+      <!-- ── Режим торговли ──────────────────────────────────── -->
+      <div class="panel">
+        <div class="panel-title">&#x1F6E1; Режим торговли</div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+          <a class="mode-badge mode-sim" style="font-size:.85rem; padding:6px 16px; pointer-events:none">
+            <span class="mode-dot"></span> SIM — Симуляция
+          </a>
+          <span style="font-size:.8rem; color:#8b949e">Бот работает в режиме симуляции сделок. VST и LIVE будут доступны после интеграции OrderExecutor (DEV-77).</span>
+        </div>
+      </div>
+
+      <!-- ── Текущие настройки риска ──────────────────────────── -->
+      <div class="panel">
+        <div class="panel-title">&#x2699; Параметры риска (из настроек)</div>
+        <div id="riskParams" class="form-grid" style="margin-top:0">
+          <div class="form-group">
+            <label>Депозит</label>
+            <div id="rpDeposit" style="font-size:.95rem; color:#c9d1d9; padding:7px 0">загрузка...</div>
+          </div>
+          <div class="form-group">
+            <label>Риск %</label>
+            <div id="rpRisk" style="font-size:.95rem; color:#c9d1d9; padding:7px 0">—</div>
+          </div>
+          <div class="form-group">
+            <label>Плечо</label>
+            <div id="rpLev" style="font-size:.95rem; color:#c9d1d9; padding:7px 0">—</div>
+          </div>
+          <div class="form-group">
+            <label>Auto-sizing</label>
+            <div id="rpAuto" style="font-size:.95rem; color:#c9d1d9; padding:7px 0">—</div>
+          </div>
+        </div>
+        <a href="/settings" style="font-size:.78rem; color:#58a6ff; text-decoration:none; margin-top:12px; display:inline-block;">&#x270F; Изменить настройки</a>
+      </div>
+
+    </div><!-- .content -->
+  </div><!-- .main-area -->
+</div><!-- .app-layout -->
+
+<script>
+// ── Константы R:R для TP ─────────────────────────────────────────────────
+const TP_LEVELS = [
+  { label: 'TP1 (1R)',   r: 1 },
+  { label: 'TP2 (2R)',   r: 2 },
+  { label: 'TP3 (3R)',   r: 3 },
+  { label: 'TP★ (5R)',   r: 5 },
+];
+
+const fmt = (v, d=2) => v == null ? '—' : (+v).toFixed(d);
+const fmtK = v => v >= 1000 ? (v/1000).toFixed(2)+'K' : v.toFixed(2);
+
+// ── Загрузка настроек ────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    const s = d.user_settings || {};
+    if (s.deposit_usdt)  document.getElementById('inDeposit').value = s.deposit_usdt;
+    if (s.risk_pct)      document.getElementById('inRisk').value    = s.risk_pct;
+    if (s.leverage)      document.getElementById('inLev').value     = s.leverage;
+
+    document.getElementById('rpDeposit').textContent = s.deposit_usdt ? s.deposit_usdt + ' USDT' : '—';
+    document.getElementById('rpRisk').textContent    = s.risk_pct ? s.risk_pct + '%' : '—';
+    document.getElementById('rpLev').textContent     = s.leverage ? s.leverage + 'x' : '—';
+    document.getElementById('rpAuto').textContent    = s.auto_sizing ? 'Вкл' : 'Выкл';
+
+    document.getElementById('settingsStatus').textContent = 'настройки загружены';
+  } catch (e) {
+    document.getElementById('settingsStatus').textContent = 'ошибка загрузки';
+  }
+}
+
+// ── Min notional ─────────────────────────────────────────────────────────
+let _minNotional = null;
+async function fetchMinNotional(symbol) {
+  if (!symbol) return;
+  try {
+    const r = await fetch('/api/trading/instrument_info?symbol=' + encodeURIComponent(symbol));
+    if (!r.ok) return;
+    const d = await r.json();
+    _minNotional = d.min_notional || null;
+    const hint = document.getElementById('minNotionalHint');
+    if (_minNotional) hint.textContent = 'Min notional: ' + _minNotional + ' USDT';
+  } catch (_) {}
+}
+
+document.getElementById('inSymbol').addEventListener('blur', function() {
+  fetchMinNotional(this.value.trim());
+});
+
+// ── Расчёт ──────────────────────────────────────────────────────────────
+function calc() {
+  const symbol  = document.getElementById('inSymbol').value.trim();
+  const deposit = parseFloat(document.getElementById('inDeposit').value);
+  const riskPct = parseFloat(document.getElementById('inRisk').value);
+  const lev     = parseFloat(document.getElementById('inLev').value) || 1;
+  const entry   = parseFloat(document.getElementById('inEntry').value);
+  const sl      = parseFloat(document.getElementById('inSl').value);
+
+  const warn = document.getElementById('warnBox');
+  warn.textContent = '';
+  warn.classList.remove('show');
+
+  if (!deposit || !riskPct || !entry || !sl) {
+    warn.textContent = 'Заполните: Депозит, Риск%, Цена входа, Стоп-лосс';
+    warn.classList.add('show');
+    return;
+  }
+  if (sl === entry) {
+    warn.textContent = 'SL не может равняться Entry';
+    warn.classList.add('show');
+    return;
+  }
+
+  const direction = sl < entry ? 'LONG' : 'SHORT';
+  const slDistAbs = Math.abs(entry - sl);
+  const slDistPct = slDistAbs / entry * 100;
+
+  const riskUsd   = deposit * riskPct / 100;
+  // Размер позиции в базовой валюте
+  const posUsd    = riskUsd / (slDistPct / 100);      // USDT размер без плеча
+  const posContracts = posUsd / entry;                 // контракты (напр. BTC)
+  const margin    = posUsd / lev;                      // требуемая маржа
+
+  // Валидация min notional
+  if (_minNotional && posUsd < _minNotional) {
+    warn.textContent = `⚠ Размер позиции ${posUsd.toFixed(2)} USDT < min_notional ${_minNotional} USDT. Увеличьте депозит или риск%.`;
+    warn.classList.add('show');
+  }
+  if (margin > deposit * 0.5) {
+    const existing = warn.textContent;
+    warn.textContent = (existing ? existing + '  |  ' : '') + `⚠ Маржа ${margin.toFixed(2)} USDT = ${(margin/deposit*100).toFixed(0)}% депозита — высокий риск!`;
+    warn.classList.add('show');
+  }
+
+  // Fill results
+  document.getElementById('rPosSize').textContent   = fmtK(posUsd) + ' USDT';
+  document.getElementById('rPosSizeSub').textContent= fmt(posContracts, 4) + (symbol ? ' ' + symbol.split('/')[0] : '');
+  document.getElementById('rRiskUsd').textContent   = fmt(riskUsd) + ' USDT';
+  document.getElementById('rRiskPct').textContent   = riskPct + '% депозита';
+  document.getElementById('rSlDist').textContent    = fmt(slDistPct) + '%';
+  document.getElementById('rSlPrice').textContent   = direction + ' SL @ ' + fmt(sl, entry < 1 ? 6 : 2);
+  document.getElementById('rMargin').textContent    = fmt(margin) + ' USDT';
+  document.getElementById('rMarginPct').textContent = fmt(margin / deposit * 100) + '% депозита';
+
+  document.getElementById('results').style.display = 'grid';
+
+  // TP rows
+  const tpContainer = document.getElementById('tpRows');
+  tpContainer.innerHTML = '';
+  TP_LEVELS.forEach(tp => {
+    const tpPrice = direction === 'LONG'
+      ? entry + slDistAbs * tp.r
+      : entry - slDistAbs * tp.r;
+    const tpPct   = slDistPct * tp.r;
+    const profit  = riskUsd * tp.r;
+    const row = document.createElement('div');
+    row.className = 'tp-row';
+    row.innerHTML = `
+      <span class="lbl">${tp.label}</span>
+      <span>${fmt(tpPrice, entry < 1 ? 6 : 2)}</span>
+      <span class="green">+${fmt(tpPct)}%</span>
+      <span class="green">+${fmt(profit)} USDT</span>`;
+    tpContainer.appendChild(row);
+  });
+  document.getElementById('tpBlock').style.display = 'block';
+}
+
+// ── Инициализация ────────────────────────────────────────────────────────
+loadSettings();
+</script>
+</body>
+</html>

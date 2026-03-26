@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Stop hook для Архитектора — мониторинг TASKS.md.
-Когда Claude собирается остановиться, этот скрипт проверяет
-есть ли новые задачи в очереди. Если есть — блокирует остановку
-и сообщает Архитектору какую задачу взять.
+Stop hook для агентов — мониторинг DISCUSSION.md и TASKS.md.
+Когда Claude собирается остановиться, этот скрипт:
+1. Проверяет DISCUSSION.md — есть ли неотвеченные вопросы к текущей роли
+2. Проверяет TASKS.md — есть ли задачи в очереди
+Если есть — блокирует остановку и сообщает что взять.
 
-Используется как Stop hook в ~/.claude/settings.json Архитектора.
+Используется как Stop hook в ~/.claude/settings.json
 """
 import json
 import os
@@ -14,6 +15,7 @@ import sys
 from datetime import datetime, timedelta
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), '..', 'TASKS.md')
+DISCUSSION_FILE = os.path.join(os.path.dirname(__file__), '..', 'DISCUSSION.md')
 SCHEDULE_FILE = os.path.join(os.path.dirname(__file__), 'trader_schedule.json')
 AGENT_ROLE = os.environ.get('AGENT_ROLE', 'ARCHITECT').upper()
 PERIODIC_INTERVAL_HOURS = 24
@@ -23,6 +25,13 @@ AGENT_TASK_PREFIX = {
     'ARCHITECT': 'ARCH-',
     'DEVELOPER': 'DEV-',
     'TRADER': 'TR-',
+}
+
+# Как роль называется в заголовках Discussion
+AGENT_DISCUSSION_NAME = {
+    'ARCHITECT': 'ARCH',
+    'DEVELOPER': 'DEV',
+    'TRADER': 'TRADER',
 }
 
 
@@ -166,13 +175,107 @@ def parse_trader_tasks(content: str) -> list[dict]:
     return tasks
 
 
+def date_to_int(d: str) -> int:
+    """DD.MM.YYYY → YYYYMMDD для сравнения дат."""
+    try:
+        parts = d.split('.')
+        return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+    except Exception:
+        return 0
+
+
+def parse_discussion_questions(content: str, role: str) -> list[dict]:
+    """Ищет вопросы к роли role в DISCUSSION.md, на которые ещё нет ответа.
+
+    Форматы вопросов:
+      **→ DEV:**       (стандартный)
+      **ARCH → DEV**   (reply-формат)
+
+    Файл — newest-first: секция с меньшим индексом = новее.
+    Считается отвеченным если наша секция стоит ВЫШЕ (новее) секции с вопросом.
+    """
+    role_name = AGENT_DISCUSSION_NAME.get(role, role)
+
+    # Разбить на секции по заголовкам ### [дата]
+    sections = re.split(r'(?=### \[\d{2}\.\d{2}\.\d{4}\])', content)
+
+    # Паттерн вопроса к нашей роли.
+    # Ловит: **→ ARCH:** и **→ ARCH** (вопрос начинается с →)
+    # НЕ ловит: **DEV → ARCH** (заголовок секции — роль перед →)
+    question_re = re.compile(
+        r'\*\*→\s*' + re.escape(role_name) + r'[:\s\*]',
+        re.IGNORECASE
+    )
+
+    # Индексы секций ОТ нашей роли (меньший = новее)
+    our_indices: list[int] = []
+    for idx, sec in enumerate(sections):
+        hdr = re.match(r'### \[(\d{2}\.\d{2}\.\d{4})\]\s+' + re.escape(role_name) + r'\b', sec)
+        if hdr:
+            our_indices.append(idx)
+
+    questions: list[dict] = []
+    for idx, sec in enumerate(sections):
+        hdr = re.match(r'### \[(\d{2}\.\d{2}\.\d{4})\]\s+(\S+)', sec)
+        if not hdr:
+            continue
+
+        sec_author = hdr.group(2).upper()
+
+        # Не смотрим свои собственные секции
+        if sec_author == role_name.upper():
+            continue
+
+        # Есть ли вопрос к нам в этой секции?
+        # Пропускаем строки помеченные ✅ (уже отвечено)
+        q_lines = [
+            line.strip() for line in sec.split('\n')
+            if question_re.search(line) and '✅' not in line
+        ]
+        if not q_lines:
+            continue
+
+        # Считается отвеченным если есть наша секция с меньшим индексом (= новее)
+        already_answered = any(our_idx < idx for our_idx in our_indices)
+        if already_answered:
+            continue
+
+        questions.append({
+            'date': hdr.group(1),
+            'from': sec_author,
+            'questions': q_lines,
+        })
+
+    return questions
+
+
 def priority_order(p: str) -> int:
     return {'Высокий': 0, 'Средний': 1, 'Низкий': 2}.get(p, 99)
 
 
 def main():
+    # ── 1. DISCUSSION.md — проверяем первым (по приоритету из CLAUDE.md) ──────
+    if os.path.exists(DISCUSSION_FILE):
+        with open(DISCUSSION_FILE, encoding='utf-8') as f:
+            disc_content = f.read()
+        unanswered = parse_discussion_questions(disc_content, AGENT_ROLE)
+        if unanswered:
+            role_name = AGENT_DISCUSSION_NAME.get(AGENT_ROLE, AGENT_ROLE)
+            lines = []
+            for q in unanswered:
+                lines.append(f"  [{q['date']}] от {q['from']}:")
+                for qline in q['questions']:
+                    lines.append(f"    {qline}")
+            reason = (
+                f"💬 В DISCUSSION.md есть неотвеченные вопросы к {role_name}:\n"
+                + "\n".join(lines)
+                + f"\n\nПрочитай /workspace/DISCUSSION.md и ответь на вопросы своей роли."
+            )
+            print(json.dumps({"decision": "block", "reason": reason}))
+            return
+
+    # ── 2. TASKS.md — проверяем задачи в очереди ─────────────────────────────
     if not os.path.exists(TASKS_FILE):
-        # Файл не найден — позволяем остановиться
         print(json.dumps({"decision": "approve"}))
         return
 

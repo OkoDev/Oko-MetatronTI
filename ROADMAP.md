@@ -360,6 +360,43 @@ asyncio.gather возвращает результаты в порядке ар�
 - **Принцип:** одно вычисление пивота (при прогреве) → переиспользование при каждом WT-сигнале без дополнительных API-вызовов
 - **Данные:** avg_R без пивота = +0.32 (n=472), с пивотом = +1.27 (n=~56) — разрыв 4×
 
+## ✅ Этап 12 — Фильтры качества сделок (22–25.03.2026)
+**Цель:** устранить систематические потери: контр-тренд входы, нереальные R:R, дублирование активов
+
+- **DEV-32/41**: `regime_direction_block` — запрет LONG при TREND_DOWN и SHORT при TREND_UP
+- **DEV-33**: `blocked_regimes: [HIGH_VOL]` — WR=0% в HIGH_VOL, входы отключены
+- **DEV-35/64A**: `max_rr` cap — 6.0 → 3.0, устранены R:R=17–23x у pivot_reversal
+- **DEV-37/ARCH-34**: Pivot Proximity Filter — входы только у пивотных уровней (ATR-adaptive)
+- **DEV-38/ARCH-35**: Correlation Guard — не дублировать коррелированные активы (PAXG/XAUT и т.д.)
+- **DEV-44/46**: второй рубеж защиты в `register_trade_async()` — все code-paths защищены
+- **DEV-45**: Singleton PivotCalculatorFixed — 600 лишних инстансов/час устранены
+- **DEV-49**: timezone-баг в created_at (UTC+3 → UTC), 948 старых сделок помечены
+- **DEV-55/ARCH-46**: PIVOT_TOUCH staleness — штраф за устаревшие (>5 баров) касания
+
+---
+
+## ✅ Этап 13 — Top-Down контекст и L3 shadow mode (24–27.03.2026)
+**Цель:** добавить макро-контекст и подготовить 6-условный чеклист входа
+
+- **DEV-40**: DUAL_TP стратегия — TP1=ATR от входа, BE после TP1, TSL на остаток
+- **DEV-56/58/ARCH-48**: Weekly Bias Filter — `price vs weekly PP` как top-down фильтр (shadow → production)
+- **ARCH-50**: MTF Phase Detector — IMPULSE/CORRECTION/CASCADE_OS паттерны в MTFContext
+- **DEV-52/53**: L3 shadow mode — 6-условный чеклист (структура 1h + score≥85 + портфельный лимит + WT freshness + CHoCH penalty)
+- **ARCH-49**: Dynamic OS shadow — live-сравнение dynamic vs fixed порогов (30 дней)
+- **DEV-67**: Cascade TSL fallback — при развороте тренда не "падает" на entry TF
+
+---
+
+## 🔲 Этап 14 — Multi-TF SMC и L3 production (план ≈06–15.04.2026)
+**Цель:** система "видит" 4h/1D структуру, L3 чеклист включается в production
+
+- **DEV-63/ARCH-51**: MTFSMCSnapshot в MTFContext — 4h и 1D OB/FVG/BOS видимы в pipeline
+- **L3 production gate**: включить после накопления статистики shadow mode
+- **Weekly Bias production (DEV-58)**: включить ≈27–29.03 после 3–5 дней данных
+- **ARCH-45**: ревью OutcomePredictor — переобучение, AUC, решение о включении
+
+---
+
 ## ✅ Этап 11 — Operations Dashboard (ARCH-13, 16.03.2026)
 **Приоритет:** СРЕДНИЙ — операционный контроль бота без правки кода
 
@@ -490,14 +527,22 @@ asyncio.gather возвращает результаты в порядке ар�
 
 ## Метрики прогресса
 
-| Метрика | Сейчас | Цель (Этап 7) |
-|---------|--------|----------------|
-| Сделок в БД | 226+ | 500+ |
-| Win rate | 43.3% | > 50% |
-| avg_R (win) | 2.0 | > 3.0 (dynamic TP) |
-| CV AUC (OutcomePredictor) | 0.56 | > 0.65 |
-| avg captured_R_pct | — | > 60% |
-| Пар в мониторинге | 600+ | — |
+> Обновлено: 27.03.2026
+
+| Метрика | Сейчас | Цель |
+|---------|--------|------|
+| Сделок в БД (всего) | 3 218 | — |
+| Закрытых сделок | 3 100 | — |
+| Win rate (TP+TSL) | 20.3% | > 35% |
+| Win rate (TP only) | 4.5% | > 25% |
+| avg_R (TP-сделки) | +4.99 | > 3.0 |
+| avg_R (TSL-сделки) | +5.34 | > 3.0 |
+| avg_R (SL-сделки) | −0.71 | > −1.0 |
+| CV AUC (OutcomePredictor) | отключён (AUC=0.33) | > 0.65 |
+| Пар в мониторинге | 427 | — |
+
+> **Примечание:** WR=20.3% включает ~948 сделок с timezone-багом (закрывались по phantom SL).
+> После фильтрации по data_quality реальный WR ожидается ~35–38%.
 
 ---
 
@@ -561,3 +606,26 @@ asyncio.gather возвращает результаты в порядке ар�
 | 2026-03-19 | DEV-24: wt_b_signal реанимация + state machine фикс (WR=85% сигнал, confidence min 0.5) |
 | 2026-03-20 | DEV-28: двунаправленный каскадный TSL — де-эскалация при R≥5.0 + WT exhaustion + TSL tightness |
 | 2026-03-20 | DEV-21: Unified Message Generator — format_signal_message() в intelligence_formatter.py |
+| 2026-03-21 | ARCH-51 спек: Cascade TSL 15m→1h→4h — де/эскалация по тренду старшего TF |
+| 2026-03-22 | DEV-32: regime_direction_block — запрет LONG/TREND_DOWN и SHORT/TREND_UP |
+| 2026-03-22 | DEV-35: max_rr cap 6.0 — устранены R:R=24–32x у PAXG/CRCLX |
+| 2026-03-22 | DEV-WL-BREACH: автовход при пробое WL пивота (SL=пивот±0.5%, TTL=4h, rate-limit 3/30мин) |
+| 2026-03-22 | DEV-40: DUAL_TP — ATR-based TP1 + breakeven + TSL gate по tp1_hit_at |
+| 2026-03-23 | DEV-33: HIGH_VOL в blocked_regimes (WR=0% → входы отключены) |
+| 2026-03-23 | DEV-37: Pivot Proximity Filter (tier1=max(1%,ATR*1.5)) — shadow → включён |
+| 2026-03-23 | DEV-38: Correlation Guard — блок дубликатов PAXG/XAUT, BTC/WBTC, ETH/STETH |
+| 2026-03-23 | DEV-45: Singleton PivotCalculatorFixed — −600 инстансов/час |
+| 2026-03-23 | DEV-49: timezone-баг created_at (UTC+3→UTC), fallback df без phantom-баров |
+| 2026-03-23 | DEV-51: scikit-learn установлен, OutcomePredictor запущен (AUC≈0.56) |
+| 2026-03-24 | DEV-44/46: второй рубеж в register_trade_async() — все code-paths защищены |
+| 2026-03-24 | DEV-52: L3 Фаза A — портфельный лимит 2+2+4, структура 1h, score≥85 (shadow) |
+| 2026-03-24 | DEV-56: Weekly Bias Filter Фаза A shadow — weekly_bias в features_json |
+| 2026-03-24 | DEV-57: BE activation по tp1_hit_at — безусловный триггер для MULTI_TP |
+| 2026-03-24 | ARCH-50: MTF Phase Detector (IMPULSE/CORRECTION/CASCADE_OS) в mtf_interpreter.py |
+| 2026-03-25 | DEV-53: L3 Фаза B — cond4 (WT freshness ≤3 баров + near_pivot) + CHoCH -8 penalty |
+| 2026-03-25 | DEV-55: PIVOT_TOUCH staleness — penalty -10 если касание >5 баров назад |
+| 2026-03-25 | DEV-67: Cascade TSL fallback — при развороте не падает на entry TF (prev_tsl_tf) |
+| 2026-03-26 | DEV-64A: global max_rr=3.0 enforce в trade_simulator + scan_loop |
+| 2026-03-26 | DEV-64B: signal_regime_block — явный список запрещённых (режим+направление) пар |
+| 2026-03-26 | DEV-66: TSL factor 1.1→1.25 (бэктест +0.041R), бот перезапущен |
+| 2026-03-27 | OutcomePredictor отключён (AUC=0.329 < 0.5), min_strength_register 65→75 |

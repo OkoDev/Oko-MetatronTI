@@ -1,6 +1,6 @@
 # Карта сигнальных цепочек — Oko MTF Bot
 
-> Обновлено: 2026-03-22
+> Обновлено: 2026-03-27
 
 ## ОБЩАЯ БЛОК-СХЕМА
 
@@ -26,8 +26,14 @@ START monitoring
   │   │       ├─ analyze_symbol (timeout 30s)
   │   │       ├─ Фильтры: dedup / sl_cooldown / BTC-режим
   │   │       ├─ is_actionable (strength>=50, BUY/SELL, not NEUTRAL)
-  │   │       ├─ should_register (strength>=40) → register_trade_async
+  │   │       ├─ should_register (strength>=75) → register_trade_async (DEV-68)
   │   │       └─ broadcast_with_subscription_check → TG
+  │   │
+  │   ├─ watch_list_breach_check (каждые 60 сек, параллельно)
+  │   │   └─ SignalWatchList: пары в режиме ожидания пробоя
+  │   │       ├─ WL breach: пробой pivot уровня → AUTO-ENTRY (без analyze_symbol)
+  │   │       ├─ min_strength_guard (DEV-68): strength >= min_strength_register (75)
+  │   │       └─ register_trade_async → INSERT simulated_trades
   │   │
   │   ├─ Каждые 5 мин: check_mtf_alerts, check_trend_signals, check_pivot_reversals
   │   └─ Каждый час: check_cascade_divergences (4h→1h)
@@ -142,7 +148,16 @@ START monitoring
 - **Цикл:** scan_one (каждые 60 сек)
 - **Legacy:** старый `core/confluence_scanner.py` (`scan_confluence()`) сохранён для обратной совместимости (state machine, бэктестинг)
 
-### 10. WT_B_SIGNAL (WaveTrend Type B — дивергенция в OS/OB)
+### 10. WATCH_LIST_BREACH (пробой пивотного уровня)
+- **Детектор:** `core/signal_watch_list.py` → `SignalWatchList`
+- **Логика:** пара добавляется в WL вручную (`/watch add SYMBOL`) или автоматически. Ждёт пробоя пивота
+- **Условие:** цена пересекает pivot уровень (1M/1W/1D) в ожидаемом направлении
+- **Auto-entry:** без вызова analyze_symbol → прямой вызов register_trade_async
+- **min_strength guard (DEV-68):** strength < min_strength_register (75) → пропуск (исправлено: DOGE str=18 раньше проходил)
+- **SL/TP:** ATR-based
+- **Цикл:** scan_loop, каждые 60 сек (параллельно со scan_all_pairs)
+
+### 11. WT_B_SIGNAL (WaveTrend Type B — дивергенция в OS/OB)
 - **Детектор:** `core/signal_checkers.py` → `check_wt_b_signals`
 - **Таймфрейм:** 1h (явно)
 - **Условие LONG:** CrossUP ВО время OS (wt1 < adaptive p10) + дивергенция (min2_wt > min1_wt, разрыв 3-20)
@@ -190,8 +205,15 @@ START monitoring
      → footer "Сделка зарегистрирована" в TG
        ↓
 6. should_register:
-     strength >= 40
-     → register_trade_async → INSERT simulated_trades
+     strength >= 75 (min_strength_register, DEV-68)
+     → register_trade_async — Quality Gates:
+         ① Market Stress Gate (DEV-48, shadow): high stress → block (в shadow — только лог)
+         ② Correlation Guard (DEV-38): коррелированные пары (BTC+WBTC, PAXG+XAUT) → skip дубли
+         ③ Regime Direction Block (DEV-64B): LONG в TREND_DOWN / SHORT в TREND_UP → block
+         ④ blocked_regimes (DEV-33): HIGH_VOL → block (WR=0%)
+         ⑤ signal_regime_block: явные запреты из config.yaml
+         ⑥ max_rr cap (DEV-64A): R:R > 3.0 → обрезать TP до max_rr=3.0
+         → INSERT simulated_trades
        ↓
 7. broadcast_with_subscription_check → TG пользователям
 ```
@@ -251,6 +273,8 @@ START monitoring
 
 ```
 register_trade_async(recommendation, data_collector)
+  ├─ Quality Gates (см. раздел выше):
+  │   Market Stress → Correlation → Regime Block → blocked_regimes → signal_regime_block → max_rr cap
   ├─ MarketRegimeClassifier.classify_from_ohlcv
   │   └─ ADX + ATR + EMA → TREND_UP / TREND_DOWN / RANGE / HIGH_VOL
   ├─ get_pivot_tp_with_source → TP привязан к ближайшему пивоту (min R=1.5)
@@ -258,6 +282,7 @@ register_trade_async(recommendation, data_collector)
        symbol, timeframe (15m), signal_type, direction,
        entry_price, stop_loss, take_profit, sl_source, tp_source,
        strength, confidence, regime, created_at, status=OPEN,
+       tsl_activated=0, be_activated=0, tsl_tf=None,
        features_json: {volume_24h, price_change_24h, volatility, ...}
 ```
 
@@ -273,13 +298,19 @@ register_trade_async(recommendation, data_collector)
     ├─ Обновить max_price / min_price (MFE трекинг)
     ├─ TSL активация при current_r >= tsl_activation_r=1.0:
     │   ├─ UPDATE tsl_activated=1 в БД
-    │   ├─ Загрузить 1h OHLCV
-    │   ├─ Если тренд 1h == направление сделки → TSL по 1h (широкий, меньше шума)
-    │   └─ Иначе → TSL по TF сделки (15m, тесный)
+    │   ├─ Cascade TSL (DEV-67): 15m → 1h → 4h
+    │   │   ├─ Если тренд 4h == направление → TSL по 4h (самый широкий)
+    │   │   ├─ Иначе если тренд 1h == направление → TSL по 1h
+    │   │   ├─ Иначе если тренд 15m == направление → TSL по 15m
+    │   │   └─ Fallback (DEV-67): разворот на всех TF → использовать prev_tsl_tf без trend gate
+    │   │       (защита от ошибки "no valid TF" при развороте тренда)
+    │   └─ factor=1.25 (DEV-66): TSL-линия немного шире → позиции держатся дольше
+    ├─ BE активация при current_r >= breakeven_activation_r=0.8:
+    │   └─ SL → entry_price ± 0.1% (безубыток)
     ├─ LONG: если цена <= tsl → close TSL
     ├─ SHORT: если цена >= tsl → close TSL
     ├─ SL: пробой stop_loss
-    ├─ TP1: первая цель (50% фиксация, обновляет tp1_hit_at)
+    ├─ TP1: первая цель (50% фиксация, обновляет tp1_hit_at → триггер безубытка)
     └─ TP: достижение take_profit (если TP1 ещё не было)
 ```
 
@@ -316,6 +347,8 @@ strategies/
 3. **Скрытые дивергенции**: фильтр `wt1 < 0` может быть мягким в боковом рынке
 4. **Прогрев пивотов**: `_prefetch_pivots` запускается как `create_task` — первый цикл стартует до завершения прогрева
 5. **analyze_symbol кеш**: TTL=5 мин, один и тот же символ может быть проанализирован повторно через разные сигнальные пути
+6. **DEV-59 (⚠️ не закрыт)**: `pivot_reversal` может обходить `max_rr=3.0` cap в своём code path — WR=9.1% из-за RR=17-23x, требует проверки
+7. **Weekly Bias данные** (DEV-56 bugfix 27.03): данные не накапливались — `weekly_bias` из metadata не передавался в `features_json`. Исправлено в monitoring.py. Production gate DEV-58 — после ≈30.03–06.04
 
 ---
 
@@ -328,6 +361,10 @@ strategies/
 4. BTC контр-тренд + strength < 70?
 5. `analyze_symbol` вернул None (таймаут 30 сек)?
 6. Для дивергенций: `_div_passes_filters`?
+7. **should_register**: strength < 75 (`min_strength_register`, DEV-68)?
+8. **Regime block** (DEV-64B): LONG при TREND_DOWN или SHORT при TREND_UP?
+9. **blocked_regimes**: HIGH_VOL (DEV-33)?
+10. **signal_regime_block**: явный запрет в config.yaml?
 
 ### Сигнал не отправляется в TG:
 1. Нет подписчиков?

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
@@ -30,11 +30,14 @@ _SIGNAL_TTL_MINUTES = 60   # события из скана живут 1 час
 
 def _get_cached(bot, signal_type: SignalType, limit: int) -> list:
     """Возвращает сигналы из кеша recent_signals не старше TTL."""
-    cutoff = datetime.now() - timedelta(minutes=_SIGNAL_TTL_MINUTES)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=_SIGNAL_TTL_MINUTES)
     found = []
     for sym, signals in getattr(bot, "recent_signals", {}).items():
         for sig in signals:
-            if sig.signal_type == signal_type and sig.timestamp >= cutoff:
+            ts = sig.timestamp
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if sig.signal_type == signal_type and ts >= cutoff:
                 found.append((sym, sig))
     found.sort(key=lambda x: x[1].strength, reverse=True)
     return found[:limit]

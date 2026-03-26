@@ -1,6 +1,6 @@
 # Oko MTF Bot — Архитектурная карта
 
-> Актуально на: 2026-03-22 | 250+ тестов | 600+ пар в мониторинге
+> Актуально на: 2026-03-27 | 250+ тестов | 427 пар в мониторинге | 3 200+ сделок в БД
 
 ---
 
@@ -227,7 +227,7 @@ BingX Exchange
 │        │        + register_trade    │
 │        │                            │
 │  should_register:                   │
-│   strength ≥ 40                     │
+│   strength ≥ 75 (min_strength_reg)  │
 │        │                            │
 │        ├─ YES → register only       │
 │        └─ NO  → log INFO skip      │
@@ -302,11 +302,15 @@ BingX Exchange
         │        │
         ├── MFE: max_price / min_price
         │        │
-        ├── current_R ≥ 0.8 → безубыток (SL → entry)
+        ├── current_R ≥ 0.8 → безубыток (SL → entry ± 0.1%)
         │        │
-        ├── current_R ≥ 1.0 → TSL активирован
-        │   │  1h тренд совпадает → TSL по 1h (широкий)
+        ├── tp1_hit_at → безусловный BE для MULTI_TP (DEV-57)
+        │        │
+        ├── current_R ≥ 1.0 → Cascade TSL активирован
+        │   │  4h тренд совпадает → TSL по 4h (самый широкий)
+        │   │  1h тренд совпадает → TSL по 1h
         │   │  иначе → TSL по 15m (тесный)
+        │   │  fallback: если ни один TF не подошёл → prev_tsl_tf (DEV-67)
         │        │
         ├── TP1 hit → tp1_hit_at записан
         ├── TP2 hit → tp2_hit_at записан
@@ -384,7 +388,37 @@ BingX Exchange
 
 ---
 
-## 5. Веса сигналов и адаптация
+## 5. Quality Gates в register_trade_async()
+
+Каждая сделка проходит через цепочку guards перед записью в БД:
+
+```
+register_trade_async(recommendation)
+    │
+    ├── Market Stress Gate (DEV-48) — 5+ SL за 30 мин → block (shadow)
+    │
+    ├── Correlation Guard (DEV-38) — уже открыта из той же группы → block
+    │    PAXG/XAUT, BTC/WBTC, ETH/STETH/WETH
+    │
+    ├── MarketRegimeClassifier.classify_from_ohlcv()  ← вычисляем режим здесь
+    │
+    ├── Regime Safety Gate (DEV-44/46)
+    │    ├── regime in blocked_regimes [HIGH_VOL] → block
+    │    └── regime_direction_block: TREND_DOWN+LONG → block, TREND_UP+SHORT → block
+    │
+    ├── Signal Regime Block (DEV-64B)
+    │    └── явный список запрещённых пар (сигнал_тип + режим + направление)
+    │
+    ├── Portfolio Limit (DEV-52) — 2 LONG + 2 SHORT + 4 OPEN total → block
+    │
+    ├── max_rr cap (DEV-64A) — R:R > 3.0 → TP пересчитывается
+    │
+    └── register_trade(recommendation, regime=regime)
+```
+
+---
+
+## 6. Веса сигналов и адаптация
 
 ```
 Сигнал             Базовый вес    После адаптации    Роль
@@ -405,7 +439,7 @@ ANOMALY               0.03           0.03             только объём
 
 ---
 
-## 6. Семафоры и таймауты
+## 7. Семафоры и таймауты
 
 ```
 Ресурс                  Лимит    Назначение
