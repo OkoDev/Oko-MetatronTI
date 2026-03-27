@@ -63,6 +63,7 @@ log/
 instance/
 backups/
 calibration.json
+config_snapshots/
 
 # ===============================
 # Cache

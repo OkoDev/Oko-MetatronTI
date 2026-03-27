@@ -622,12 +622,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _pair_regime = ""
                     try:
                         from core.market_regime import MarketRegimeClassifier
-                        from core.indicators import calculate_trend, calculate_wt
-                        _df15_t = calculate_trend(df_entry)
-                        _df15_t = calculate_wt(_df15_t)
-                        _df1h_t = calculate_trend(df_1h) if df_1h is not None and not df_1h.empty else None
+                        # ARCH-18: df_entry и df_1h уже содержат pre-computed trendup/trenddown/wt1
                         _pair_regime = MarketRegimeClassifier().classify_from_dataframes(
-                            _df15_t, _df1h_t
+                            df_entry, df_1h
                         ) or ""
                     except Exception:
                         pass

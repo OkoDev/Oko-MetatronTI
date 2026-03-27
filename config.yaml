@@ -1,3 +1,36 @@
+# ================================================================
+# Oko MTF Bot — конфигурация
+# Версия: 0.9-stable (27.03.2026)
+#
+# SHADOW / DISABLED ПАРАМЕТРЫ (не трогать до указанной даты):
+# ─────────────────────────────────────────────────────────────
+# signal_quality.ote_shadow_mode: true
+#   → OTE детектор (ARCH-53). Shadow до ~09.04.2026 (2 недели данных)
+#   → Активировать: ote_shadow_mode: false
+#
+# trading.market_stress_gate.enabled: false
+#   → Массовый SL-gate (DEV-48/ARCH-42). Shadow — только лог [ARCH-42]
+#   → Активировать когда накопится статистика событий
+#
+# trading.weekly_bias_filter.enabled: false
+#   → Weekly PP bias filter (ARCH-48/DEV-56). Фаза A=shadow, Фаза B=true
+#
+# trading.l3_checker.enabled: false
+#   → L3 Фаза A (DEV-52/TR-006). Shadow — только лог [DEV-52-L3]
+#   → Активировать после подтверждения условий ARCH-54
+#
+# ml.use_outcome_predictor: false
+#   → RandomForest на исходах. AUC=0.329 — хуже случайного
+#   → Активировать при AUC > 0.55 (нужно 500+ сделок с заполненным regime)
+#
+# signals.mtf_alert_enabled: false
+#   → MTF Alert убран насовсем (DEV-31: WR=4.4% на 137 сделках)
+#
+# analysis.confluence.4h_gate_enabled: false
+#   → ARCH-26: временно отключён 22.03 (WT momentum неверно определял тренд)
+#   → Вернуться к Варианту A (ATR Trend) после наблюдения
+# ================================================================
+
 telegram:
   token: 7674649932:AAG3QDXkwaCbuoxCOT9BQy17XB5jkyc270U
   admin_id: '428163099'
