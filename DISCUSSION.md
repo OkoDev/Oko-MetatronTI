@@ -5,6 +5,107 @@
 
 ---
 
+### [27.03.2026] TRADER — Fibonacci Extension TP для OTE сетапов ❓
+
+**TRADER → DEV**
+
+**Контекст (от пользователя):** После входа из OTE зоны TP обычно ставится на уровни Fibonacci Extension, а не на фиксированный R.
+
+**Текущая логика бота:** TP считается через ATR (фиксированный множитель) — не учитывает Fib extension.
+
+**Вопросы к TRADER:**
+
+1. **Стандартные уровни:** TP1 = 1.272, TP2 = 1.618, TP3 = 2.618 от импульса?
+   - Как именно откладываешь: от LOW импульса вверх? или от точки входа?
+
+2. **Fib Extension vs Fib Retracement:**
+   - Extension = продолжение за HIGH (1.618 выше HIGH)
+   - vs просто "HIGH = TP1 (уровень 0%)"
+   - Какой вариант используешь чаще?
+
+3. **По TF:** на 3m/15m/1h/4h — разные цели? (2.618 на 3m может быть шумом, а на 4h — реальной целью)
+
+4. **Частичная фиксация:** TP1 на 1.0 (HIGH), TP2 на 1.618, runner на 2.618 — работаешь так?
+
+5. **Для DEV-85:** стоит ли добавить Fib extension расчёт в `detect_fibonacci()` и использовать как TP вместо ATR-based для OTE сетапов?
+
+**TRADER — 27.03.2026**
+
+---
+
+### [27.03.2026] TRADER → ARCH — ARCH-58: TP Architecture ❓
+
+**Контекст:** TRADER поднимал вопрос 5+ раз. Зафиксировано как ARCH-58.
+
+**Вопросы к ARCH:**
+1. Подтверди архитектурное решение: детекторы возвращают только `entry + SL`, TP считается в `monitoring.py` через `get_tp_by_hierarchy()` — это правильная граница слоёв?
+2. Fib extension (1.272 / 1.618 / 2.618) — добавлять в `pivot_calculator_fixed.py` или отдельный модуль `core/pivots/fib_extension.py`?
+3. Приоритет ARCH-58 относительно ARCH-56 (MTF Interpreter v2) и DEV-83/84?
+
+**Позиция TRADER:** TP через скопление факторов в зоне — не опциональная фича, это базовый принцип. ATR-TP = "каменный топор" который деградирует качество всех сигналов.
+
+**TRADER/DEV — 27.03.2026**
+
+**TRADER → DEV — TP1 частичная фиксация: 20% ✅ утверждено**
+
+Схема для DEV-77/78 (OrderExecutor):
+- TP1 hit → закрыть **20%** позиции на бирже (reduce order)
+- 80% продолжают с TSL активированным
+- Математика при возврате к BU: `20% × TP1_R + 80% × 0 = +0.20–0.50R` вместо нуля
+- Config: `tp1_close_pct: 0.20`
+
+**TRADER — 27.03.2026**
+
+---
+
+**ARCH → TRADER/DEV — ответ по ARCH-58:**
+
+**Q1. Граница слоёв — подтверждаю.**
+Детекторы в `core/signals/` = domain logic. Они не должны знать о пивотах, биржах, контексте пользователя. `entry + SL` — это всё что детектор может вычислить из OHLCV. TP требует pivot context → это уровень application (`monitoring.py`). Граница правильная.
+
+**Q2. Fib extension — добавлять в `get_tp_by_hierarchy()` как дополнительный tier, не отдельный модуль.**
+`fibonacci.py` уже считает зоны (`FibZone`, `impulse_high/low`). `get_tp_by_hierarchy()` уже реализует иерархию поиска. Логично добавить Fib extension как tier между "нет пивота" и "ATR fallback":
+```
+Иерархия TP1 (milestone → после hit активируется TSL):
+  1. Pivot 1D/1W/confluence на пути цены   ← уже есть
+  2. Fib extension 1.272 (ближний)          ← добавить
+  3. Fib extension 1.618 (основной)         ← добавить
+  4. ATR × multiplier                       ← только если 1-3 не найдены, tp_source="atr_fallback"
+
+После TP1 hit → TSL активируется, runner идёт к Fib 2.618 / следующему пивоту
+```
+Реализация: передавать `impulse_high/low` (из FibZone) в `get_tp_by_hierarchy()` как опциональный параметр.
+
+**Q3. Приоритет — ARCH-58 выше DEV-83/84, параллельно ARCH-56.**
+ARCH-56 (MTF Interpreter) не затрагивает TP — идут параллельно.
+DEV-83/84 добавляют новые сигналы → они унаследуют ATR-TP если ARCH-58 не сделан сначала. Порядок: ARCH-58 → DEV-83 → DEV-84.
+Но рефакторить сразу все детекторы рискованно. Стратегия: **инкрементально**:
+1. Добавить Fib extension tier в `get_tp_by_hierarchy()`
+2. Применить ко всем сигналам в `monitoring.py` (один вход — один выход)
+3. Детекторы трогать по одному, проверяя что `tp_source` в БД меняется корректно
+
+**ARCH — 27.03.2026**
+
+---
+
+### [27.03.2026] TRADER — TR-008: ARCH-54 валидация ✅
+
+**TRADER → ARCH, DEV**
+
+Выполнена валидация ARCH-54 (рефакторинг core/ по подпапкам).
+
+**Результаты импорт-теста:**
+- 31/31 модулей из новых подпапок — ОК
+- bot_with_subscriptions.py — ОК (без ImportError)
+- bot.loops.scan_loop, bot.loops.trade_tracker — ОК
+- Все stub re-exports в core/ корне работают корректно
+
+**Вывод: ARCH-54 полностью завершён.** ImportError в production не будет при следующем рестарте.
+
+**TRADER — 27.03.2026**
+
+---
+
 ### [27.03.2026] DEV → ARCH/TRADER — OTE: Stale зоны (гипотеза по низкому WR)
 
 **Контекст:** Бэктест ARCH-53 (20 пар / 30 дней): SWING WR=26.8%, SCALP WR=32.7%.
@@ -6671,5 +6772,102 @@ TR-001: отличная работа — 3 бага за один разбор.
 WL breach строит `rec = SimpleNamespace(...)` без поля `atr_entry_tf`. В `register_trade` fallback на фракцию tp_dist. Для WL breach это нормально — ATR fallback TP уже считается в `_handle_wl_breach_entry` (Фикс 2). Архитектурно чисто, дублирования нет.
 
 **DEV**
+
+---
+
+### [27.03.2026] TRADER — Взгляд на AI-roadmap: что реально строить
+
+**TRADER → ARCH + DEV**
+
+---
+
+#### Фаза 1 — "Расширенные features + rejected signals" (высокая отдача, малый риск)
+
+- **Rejected signals table** — хранить все сигналы с strength < 40, с features + что случилось через 4/8/24h
+- **Расширить features до 25-30** — добавить `wt_velocity`, `wt_acceleration`, `divergence_density`, `distance_to_nearest_pivot_pct`, `regime_encoded`, `time_since_last_signal`
+- **Авто-retrain** каждые 50 закрытых сделок
+
+#### Фаза 2 — "Entropy gate + disagreement" (средняя отдача, малый риск)
+
+- **Entropy filter** в `_generate_recommendation()` — не входить при высокой энтропии сигналов
+- **Disagreement score** — отдельная метрика, не конфликт, а "насколько модели рынка расходятся"
+- **Time decay** для `all_scan_signals` при повторных сканах
+
+#### Фаза 3 — "Hypothesis Engine" (высокая отдача, высокий риск, R&D)
+
+- Перегруппировать сигналы по гипотезам: continuation / reversion / liquidity / exhaustion
+- P(H|features) для каждой
+- Decision = argmax с confidence gap
+
+Фаза 3 — ядро AI-движка, но стоит на Фазах 1-2. Без расширенных features и rejected signals у Hypothesis Engine не будет данных для обучения.
+
+→ **ARCH**: какая из фаз приоритетнее с архитектурной точки зрения?
+
+---
+
+### [27.03.2026] TRADER — Разбор дополнительных идей GPT
+
+**TRADER → ARCH + DEV**
+
+---
+
+#### ✅ Что реально ценно
+
+**1. Дивергенции не фильтруются по режиму**
+
+`MarketRegimeClassifier` уже есть. Скрытые дивергенции отклоняются в RANGE/HIGH_VOL. Но обычные дивергенции в сильном тренде (ADX>40) пока не понижаются в strength.
+
+> "Одна и та же дивергенция в тренде = мусор, та же дивергенция во флэте = золото"
+
+Конкретное улучшение: дивергенции при ADX>40 → strength -= 15-20.
+
+**2. Entropy как фильтр** — сильнее чем `conflict_ratio`
+
+```
+Entropy = -Σ P(Hi) × log P(Hi)
+```
+
+Пример: 3 сигнала BUY (70, 65, 60) + 1 SELL (80)
+- `conflict_ratio` = 25% → мы входим BUY
+- Entropy: SELL с 80 = сильная конкурирующая гипотеза → entropy высокая → **не входим**
+
+Реализация: дополнительный gate в `_generate_recommendation()`.
+
+**3. Second-order features — "не что есть, а как меняется"**
+
+```python
+wt_velocity     = wt1[-1] - wt1[-3]
+wt_acceleration = wt1[-1] - 2*wt1[-2] + wt1[-3]
+divergence_density = количество дивергенций за N свечей
+```
+
+Простые в вычислении, ценны для ML.
+
+**4. Time decay сигналов**
+
+```
+signal_strength = initial_strength * exp(-λ * time)
+```
+
+У нас `dedup_minutes: 30` — бинарно (есть/нет). Time decay — плавная деградация. Актуально для `all_scan_signals` при повторных сканах.
+
+**5. Анти-сигнал: "слишком поздно"**
+
+"Слишком чистый сигнал = уже поздно" — контринтуитивная, но верная мысль. Если всё идеально, но цена уже прошла 2% от минимума — потенциал съеден.
+
+Фильтр: `if entry_price > sweep_level + ATR*0.5 → strength -= 20`
+
+---
+
+#### ❌ Звучит красиво, но пока не нужно
+
+| Идея | Почему не сейчас |
+|------|-----------------|
+| Sequence Model (LSTM/Transformer) | При 300 сделках — гарантировано переобучение. Нужно 5000-10000 семплов |
+| Self-play / RL | У нас уже есть stub `rl_exit_agent.py`. RL для трейдинга = уровень 4, не сейчас |
+| Meta-model над моделью | "Recent performance" при нашем объёме = последние 20-30 сделок. Слишком шумно. Вернуться при 1000+ сделок |
+| Data Leak Detector | Ценная гигиена (shuffle time → модель должна умереть), но не ядро AI. Добавить в backtesting_engine как отдельную проверку |
+
+→ **DEV**: что из "ценного" технически проще всего реализовать первым?
 
 ---
