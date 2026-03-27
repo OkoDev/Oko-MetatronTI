@@ -786,12 +786,18 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 pivot_min_r = bot.config.get("trading.sl_tp.tp_trend_min_r", 1.5)
             else:
                 pivot_min_r = bot.config.get("trading.sl_tp.tp_pivot_min_r", 2.0)
+            # ARCH-58: извлекаем impulse_high/low из metadata (OTE detector их пишет)
+            _meta = recommendation.metadata or {}
+            _imp_high = _meta.get("impulse_high")
+            _imp_low  = _meta.get("impulse_low")
             pivot_result = bot.pivot_calculator.get_tp_by_hierarchy(
                 direction=direction_val,
                 entry_price=entry_price,
                 symbol=symbol,
                 stop_loss=recommendation.stop_loss,
                 min_r=pivot_min_r,
+                impulse_high=_imp_high,
+                impulse_low=_imp_low,
             )
             if pivot_result:
                 pivot_tp, pivot_src = pivot_result

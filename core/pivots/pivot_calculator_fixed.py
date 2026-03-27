@@ -920,6 +920,8 @@ class PivotCalculatorFixed:
         stop_loss: Optional[float] = None,
         min_r: float = 2.0,
         tolerance_pct: float = 0.3,
+        impulse_high: Optional[float] = None,
+        impulse_low: Optional[float] = None,
     ) -> Optional[tuple]:
         """
         TP по иерархии уровней (DEV-75): высокоэффективный → низкоэффективный.
@@ -962,7 +964,8 @@ class PivotCalculatorFixed:
 
         # DEV-75: порядок по убыванию avg_R из реальных данных БД
         # 1. 1D (avg_R=+1.536) → 2. 1W → 3. confluence 1W+1D → 4. confluence 1M+1W → 5. 1M
-        all_lvls = ["PP"] + [f"R{i}" for i in range(1, 6)] + [f"S{i}" for i in range(1, 6)]
+        # DEV-86: только R1-R3/S1-S3 — R4/R5/S4/S5 расширенные уровни редко достигаются
+        all_lvls = ["PP"] + [f"R{i}" for i in range(1, 4)] + [f"S{i}" for i in range(1, 4)]
 
         # 1-2. Сначала 1D и 1W — самые эффективные одиночные уровни
         for tf in ("1D", "1W"):
@@ -1009,6 +1012,19 @@ class PivotCalculatorFixed:
                 reverse = direction == "SHORT"
                 candidates.sort(key=lambda x: x[0], reverse=reverse)
                 return candidates[0]
+
+        # 6. Fib extension (ARCH-58): если есть данные импульса — 1.272 → 1.618
+        # Откладывается от impulse_high/low за пределы импульса.
+        # Используется как TP1 когда пивот не найден в диапазоне.
+        if impulse_high and impulse_low and impulse_high > impulse_low:
+            diff = impulse_high - impulse_low
+            for ratio, label in ((1.272, "fib_1.272"), (1.618, "fib_1.618")):
+                if direction == "LONG":
+                    fib_tp = impulse_high + diff * (ratio - 1.0)
+                else:
+                    fib_tp = impulse_low - diff * (ratio - 1.0)
+                if _qualifies(fib_tp):
+                    return fib_tp, label
 
         return None
 

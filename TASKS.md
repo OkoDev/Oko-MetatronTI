@@ -50,7 +50,7 @@
 | [DEV-64A](#dev-64a) | ✅ | Global max_rr=3.0 enforce в register_trade() + WL breach (исправлено 29.03) | DEV |
 | [DEV-64B](#dev-64b) | ✅ | signal_regime_block: pivot_reversal block в RANGE/TREND_DOWN | DEV |
 | [DEV-74](#dev-74) | ✅ | DUAL_TP в RANGE деактивировать → SINGLE (TRADER 29.03, avg_R=-0.942) | DEV |
-| [DEV-75](#dev-75) | 🔴 | Перевернуть иерархию TP: 1D→1W→confluence→1M в get_tp_by_hierarchy() | DEV |
+| [DEV-75](#dev-75) | ✅ | Перевернуть иерархию TP: 1D→1W→confluence→1M в get_tp_by_hierarchy() | DEV |
 | [ARCH-55](#arch-55) | 🟢 | sl_tp_calculator.py — единая точка SL/TP (TRADER 29.03, бэклог апрель) | ARCH |
 | [DEV-66](#dev-66) | ✅ | factor 1.1 → 1.25 в config.yaml (бэктест подтвердил) | DEV |
 | [DEV-65](#dev-65) | ✅ | Бэктест: tsl_line vs ATR×1.5 — проблема в RR=18x, не в SL | DEV |
@@ -69,10 +69,10 @@
 | [DEV-69](#dev-69) | ✅ | WL breach min_strength_wl_breach: 45 — реализовано 29.03 | DEV |
 | [DEV-70](#dev-70) | ✅ | ARCH-04 gap: cfg передать в get_regime_params() + комментарий sl_factor | DEV |
 | [DEV-73](#dev-73) | ✅ | TSL gate fix: активировать при +1R для DUAL/TRIPLE (не ждать TP1 hit) | DEV |
-| [ARCH-54](#arch-54) | 🔄 | Рефакторинг core/ — разбивка 47 файлов по подпапкам (ждёт TR-008) | ARCH+DEV+TRADER |
+| [ARCH-54](#arch-54) | ✅ | Рефакторинг core/ — разбивка по подпапкам, валидация TR-008 ✅ 27.03.2026 | ARCH+DEV+TRADER |
 | [DEV-71](#dev-71) | ✅ | ARCH-54 Фаза 1: создать папки + переместить файлы + stub re-exports | DEV |
 | [DEV-72](#dev-72) | ✅ | ARCH-54 Фаза 2: обновить CLAUDE.md структуру проекта | DEV |
-| [TR-008](#tr-008) | 🟡 | ARCH-54 Фаза 3: валидация — проверить /scan, /intelligence после рестарта | TRADER |
+| [TR-008](#tr-008) | ✅ | ARCH-54 Фаза 3: валидация — 31/31 модулей ОК, ImportError нет (27.03.2026) | TRADER |
 | [ARCH-51](#arch-51) | ✅ | MTFSMCSnapshot: smc_h4/smc_d1 в MTFContext — shadow mode активен | ARCH→DEV |
 | [DEV-63](#dev-63) | ✅ | ARCH-51 Фаза 1: реализация MTFSMCSnapshot + shadow logging | DEV |
 | [ARCH-53](#arch-53) | ✅ | OTE детектор: спек готов → DEV-76 | ARCH |
@@ -81,6 +81,7 @@
 | [ARCH-47](#arch-47) | 🔵 | SMC contradiction filter: SHORT при нулевых медвежьих S… | ARCH |
 | [ARCH-56](#arch-56) | 🟡 | MTF Interpreter v2 Phase B: phase/cascade/avoid_reason/named_pattern спек | ARCH |
 | [ARCH-57](#arch-57) | 🔵 | Confluence TRADER/RANGE tier parameter (April backlog) | ARCH |
+| [ARCH-58](#arch-58) | 🔴 | TP Architecture: все детекторы → только entry+SL, TP через get_tp_by_hierarchy() централизованно | ARCH |
 | [DEV-77](#dev-77) | 🟢 | OrderExecutor: core/trading/order_executor.py (VST/SIM execution) | DEV |
 | [DEV-78](#dev-78) | 🟢 | PositionManager + PositionSizer + live_orders table + order_reconciler | DEV |
 | [DEV-79](#dev-79) | ✅ | Trading Panel: web/static/ рефакторинг (HTML/CSS/JS из dashboard_server.py) | DEV |
@@ -90,11 +91,12 @@
 | [DEV-83](#dev-83) | 🟢 | ARCH-56 реализация: phase_detector + zone_cascade + avoid_reason + named_pattern | DEV |
 | [DEV-84](#dev-84) | 🟢 | L3 Фаза C: FVG/OB + OTE условия (разблокировано DEV-63) | DEV |
 | [DEV-85](#dev-85) | 🟢 | OTE v2: Wide only + ATR-trend filter (бэктест WR≥40%) | DEV |
+| [DEV-86](#dev-86) | 🟡 | `get_tp_by_hierarchy()`: убрать R4–R5/S4–S5 расширенные уровни | DEV |
 
 ---
 
-### ARCH-54 — Рефакторинг core/ — разбивка по папкам 🔄
-**Статус:** 🔄 в работе — DEV-71/72 ✅, TR-008 ожидает рестарта
+### ARCH-54 — Рефакторинг core/ — разбивка по папкам ✅
+**Статус:** ✅ Завершён — DEV-71/72 ✅, TR-008 ✅ 27.03.2026
 **Агент:** ARCH+DEV+TRADER
 **Источник:** ARCH 29.03.2026
 
@@ -152,11 +154,17 @@ _tsl_gate = (current_r is not None and current_r >= tsl_activation_r)
 
 ---
 
-### TR-008 — ARCH-54 Валидация: сигналы работают после рестарта 🟡
-**Статус:** 🟡 ожидает DEV-71
+### TR-008 — ARCH-54 Валидация: сигналы работают после рестарта ✅
+**Статус:** ✅ Завершён — TRADER 27.03.2026
 **Агент:** TRADER
 
-После рестарта бота: /scan + /intelligence BTC/USDT — нет ImportError в логах, сигналы приходят.
+**Результаты импорт-теста (27.03.2026):**
+- 31/31 модулей из новых подпапок core/ — OK
+- bot_with_subscriptions.py — OK (без ошибок)
+- bot.loops.scan_loop, bot.loops.trade_tracker — OK
+- Все stub re-exports работают корректно
+
+**Итог: ARCH-54 полностью завершён.**
 
 ---
 
@@ -865,6 +873,13 @@ await exchange.create_order(symbol, type="MARKET", side="buy", amount=qty,
             "takeProfit": {"type": "MARKET", "triggerPrice": tp}})
 ```
 
+**Схема частичной фиксации (утверждено TRADER 27.03.2026):**
+- **TP1 hit → закрыть 20% позиции** (reduce order на бирже)
+- Оставшиеся 80% продолжают с TSL
+- Математика: при возврате к BU итог = +0.20–0.50R вместо 0R → страховка от нулевых сделок
+- При полном runner (3R): итог = +2.70R vs +3.0R → стоимость страховки 0.30R
+- `tp1_close_pct: 0.20` в config.yaml
+
 **Требования:** min_notional=5 USDT check, не менять TradeSimulator, параллельный слой.
 
 ---
@@ -976,5 +991,80 @@ Shadow mode: первые 2 недели только INFO лог.
 3. `scripts/backtest_ote_mtf.py` — добавить `--mode wide_only` флаг для проверки Wide без Tight
 
 **Критерий готовности:** бэктест Wide + trend_filter ≥ WR=40% AND Sharpe≥1.0 на 10+ парах
+
+**Идея для DEV-85 v2 (после основного бэктеста):** Двунаправленный OTE
+- **SHORT в OTE:** цена выше 0.5 + перекупленность на trigger TF → шорт с TP в OTE (0.62–0.705)
+- **LONG из OTE:** цена в зоне + WT кросс вверх → лонг (текущая логика)
+- Живой пример: TUT/USDT 15m 27.03.2026 — шорт от 0.00863 со стопом за HIGH (0.00868), TP в OTE (0.00846)
+- ⚠️ WR таких сетапов на истории неизвестен — **обязательный бэктест перед реализацией**
+- Частота сетапов зависит от TF — нужна раздельная статистика по 3m/15m/1h/4h
+
+---
+
+### ARCH-58 — TP Architecture: централизованный расчёт через скопление факторов 🔴
+**Статус:** 🔴 критический архитектурный долг
+**Агент:** ARCH → DEV
+**Источник:** TRADER (повторно поднималось 5+ раз в дискуссиях с 03.2026)
+**Приоритет:** высокий — блокирует качество всех новых детекторов
+
+**Проблема:**
+Каждый детектор сигналов (`ote_detector.py`, `wt_15m_reversal_scanner.py` и др.) считает TP самостоятельно через `ATR × multiplier` — "каменный топор". Инфраструктура для правильного TP существует (`get_tp_by_hierarchy()` в `pivot_calculator_fixed.py`), но детекторы к ней не имеют доступа — они в `core/signals/`, без пивотов.
+
+**Принцип (позиция TRADER):**
+TP должен определяться из скопления факторов в одной зоне:
+1. Ближайший пивот (1D/1W/confluence) на пути цены
+2. FVG / OB / зона ликвидности
+3. Fib extension (1.272 / 1.618 / 2.618 от импульса)
+Не фиксированный R, не ATR × N — это всегда "в пустоте".
+
+**Текущее состояние:**
+- `get_tp_by_hierarchy()` ✅ существует, уже вызывается в `bot/monitoring.py:789` и `scan_loop.py:149`
+- НО: только для части сигналов, остальные получают ATR-TP из детектора
+- Fib extension (1.618/2.618) пока нигде не реализован
+
+**Архитектурное решение (спек для DEV):**
+```
+ДО (сейчас):
+  detector.py → entry + SL + TP(ATR) → monitoring.py → register
+
+ПОСЛЕ:
+  detector.py → entry + SL only (TP=None)
+  monitoring.py → get_tp_by_hierarchy(entry, SL, symbol, direction)
+               → если нет пивота → Fib extension (1.272 как min, 1.618 как default)
+               → если нет ничего → ATR как последний fallback (с меткой tp_source="atr_fallback")
+```
+
+**Задачи DEV:**
+1. `core/pivots/pivot_calculator_fixed.py` — добавить Fib extension в `get_tp_by_hierarchy()`: если пивот не найден → считать 1.272/1.618 от impulse_high (для LONG)
+2. `bot/monitoring.py` — применять `get_tp_by_hierarchy()` ДЛЯ ВСЕХ сигналов, не только части
+3. Все детекторы в `core/signals/` — убрать расчёт TP, оставить только entry + SL
+4. `tp_source` в БД должен чётко показывать откуда TP: `"pivot_1D_R1"`, `"fib_1.618"`, `"atr_fallback"`
+
+**Критерий готовности:** 0 сигналов с `tp_source = "atr_*"` кроме явного fallback-случая (нет пивота И нет Fib зоны)
+
+---
+
+### DEV-86 — `get_tp_by_hierarchy()`: убрать расширенные уровни R4–R5/S4–S5 🟡
+**Статус:** 🟡 требует реализации
+**Агент:** DEV
+**Источник:** TRADER 29.03.2026 — баг ONT/USDT SHORT #3523, `tp_source: pivot_1W_R4`
+**Зависит от:** —
+**Файл:** `core/pivots/pivot_calculator_fixed.py:967`
+
+**Проблема:**
+`all_lvls` включает R1–R5/S1–S5. Уровни R4/R5/S4/S5 — расширенные (Woodie R4 = PP + 3×(H-C), очень далеко). В RANGE/HIGH_VOL режиме они нереальны. `_qualifies()` проверяет только `min_r`, не ограничивает по типу уровня.
+
+**Фикс (1 строка):**
+```python
+# Было:
+all_lvls = ["PP"] + [f"R{i}" for i in range(1, 6)] + [f"S{i}" for i in range(1, 6)]
+
+# Стало (R4-R5 / S4-S5 убраны):
+all_lvls = ["PP"] + [f"R{i}" for i in range(1, 4)] + [f"S{i}" for i in range(1, 4)]
+```
+
+Применить в tier 1 (1D), tier 2 (1W), tier 5 (1M) — везде где используется `all_lvls`.
+
+**Критерий готовности:** `tp_source` в новых сделках не содержит R4/S4/R5/S5 уровней.
 
 ---

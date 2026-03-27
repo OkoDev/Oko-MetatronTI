@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 _CACHE_TTL = {
     "1m": 15, "3m": 30, "5m": 45,
     "15m": 60, "45m": 120,
-    "1h": 180, "4h": 300, "1d": 600,
+    "1h": 180, "4h": 900, "1d": 1800,  # ARCH-51: 4h/1d грузятся в каждом scan_one → увеличен TTL (900s/1800s)
 }
 _DEFAULT_TTL = 60
 

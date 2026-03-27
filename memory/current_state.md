@@ -4,6 +4,30 @@
 
 ---
 
+## [27.03.2026] Агент: ARCH+DEV — ARCH-58 шаг 1 + решения по TP
+
+- ✅ `config.yaml`: `scan_cycle_warning_threshold_sec` 55→70, `ohlcv_slow_threshold_sec` 5→8
+- ✅ `core/infra/api_engine.py` + `data_collector.py`: TTL 4h 300→900s, 1d 600→1800s (фикс бурста кеша)
+- ✅ **ARCH-58 шаг 1**: Fib extension tier добавлен в `get_tp_by_hierarchy()` (`pivot_calculator_fixed.py`)
+  - Новые параметры: `impulse_high`, `impulse_low`
+  - Tier 6: Fib 1.272 → Fib 1.618 (когда пивот не найден)
+  - `monitoring.py`: извлекает `impulse_high/low` из `recommendation.metadata` и передаёт
+  - OTE detector уже пишет эти поля в metadata → автоматически работает
+- ✅ 21/21 unit тестов pivot TP прошли
+- ✅ **Симуляция 20% на TP1** (683 сделки с TP1 hit):
+  - SL после TP1: +0.876R → +1.243R (+0.367R страховка) ✅
+  - TSL: +5.998R → +5.878R (-0.12R, цена страховки)
+  - Итого: +3.889R → +3.951R (+0.062R, нейтрально)
+
+**Решения зафиксированы в TASKS.md + DISCUSSION.md:**
+- TP1 = 20% фиксация (утверждено TRADER)
+- Двунаправленный OTE (SHORT→OTE + LONG из OTE) → DEV-85 v2, нужен бэктест
+- Иерархия TP1: Пивот 1D/1W → Fib 1.272 → Fib 1.618 → ATR fallback
+
+⚠️ **Нужен рестарт бота** для применения: TTL фикс, config.yaml пороги
+
+---
+
 ## [26.03.2026] Агент: DEV — ARCH-53 Backtest завершён (scripts/backtest_ote_mtf.py)
 
 - ✅ `scripts/backtest_ote_mtf.py` создан и отлажен: 5 TF × 20 пар × N дней

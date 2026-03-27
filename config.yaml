@@ -220,7 +220,7 @@ trading:
       min_strength: 70
       min_confidence: 0.6
       conflict_margin: 0.15
-      tp_rr: 2.0
+      tp_rr: 3.0 #было 2.0 → 3.0 (изменил руками 17:52 27.03) 
     trend_following:
       min_signals: 2
       min_strength: 55
@@ -235,11 +235,11 @@ trading:
       min_confidence: 0.65
     pivot_reversal:
       min_strength: 60
-      tp_rr: 2.5
+      tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03) 
       sl_buffer_pct: 0.1
   use_tsl: true
   tsl_activation_r: 1
-  tsl_buffer_pct: 0.5
+  tsl_buffer_pct: 0.3 # было 0,5 → 0,3 (изменил руками 17:52 27.03)
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5  # DEV-29: снижено с 5.0 (бэктест: 0 активаций при 5.0R, 83% TSL-закрытий до 4R)
   use_breakeven: false
@@ -251,22 +251,21 @@ trading:
       - TREND_DOWN
   max_positions_per_direction: 0   # DEV-14: Correlation Guard (0 = отключён)
   sl_tp:
-    atr_multiplier: 1.2
+    atr_multiplier: 1.0 # было 1.2 → 1 (изменил руками 17:52 27.03)
     sl_min_pct: 0.5
     sl_max_pct: 3.0
     tp_fallback_rr: 2.5
     max_rr: 3.0          # DEV-35: cap R:R (PAXG 24x, CRCLX 32x → max 6x)
     max_rr_range: 2.5    # DEV-61: RANGE-специфичный cap (среднее RANGE движение = 2.0–2.5x)
     require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
-    tp_pivot_min_r: 2.0
-    tp_reversal_min_r: 2.0
-    tp_trend_min_r: 1.5
-    tp_partial_pct: 0.5
+    tp_pivot_min_r: 3.0  # было 2.0 → 3.0 (изменил руками 17:52 27.03) — минимальный R для pivot TP 
+    tp_reversal_min_r: 3.0 # было 2.0 → 3.0 (изменил руками 17:52 27.03) — минимальный R для reversal TP 
+    tp_partial_pct: 0.2 # было 0.5 → 0.2 (изменил руками 17:52 27.03)
     atr_dynamic: true
     atr_expand_threshold: 1.3
     atr_contract_threshold: 0.8
     struct_sl_buffer_pct: 0.3
-    struct_sl_max_dist: 3.0
+    struct_sl_max_dist: 2.0 # было 3.0 → 2.0 (изменил руками 17:52 27.03) — максимальное расстояние до SL для структурных уровней (S/R, FVG)
     tsl_too_tight_pct: 1.0
 signal_quality:
   sl_cooldown_hours: 4.0   # 4 часа после SL (было 0.75 — защита от повторных SL)
@@ -282,15 +281,19 @@ signal_quality:
   min_strength_by_regime:    # DEV-61: override per regime (выше базового min_strength_register)
     RANGE: 70                # RANGE = SL-фабрика при слабых сигналах (str=18, str=49 в БД)
     HIGH_VOL: 80             # HIGH_VOL уже заблокирован, но на случай снятия блока
-  signal_regime_block:       # DEV-64B: hard block мёртвых комбинаций (0% WR на 33+ сделках)
+  signal_regime_block:       # DEV-64B: hard block мёртвых комбинаций (расширено 27.03.2026)
     pivot_reversal:
-      blocked_regimes: [RANGE, TREND_DOWN]  # 33 сд WR=0%, 8 сд WR=0% — достаточно для блока
+      blocked_regimes: [RANGE, TREND_DOWN, HIGH_VOL]  # WR=5.7%/1.8%/10% avg_R=-0.61/-0.78/-0.54
+    confluence:
+      blocked_regimes: [RANGE, TREND_DOWN, TREND_UP, HIGH_VOL]  # WR=19%/12%/7%/0% — только None: +1.42R
+    wt_signal:
+      blocked_regimes: [RANGE, TREND_DOWN, TREND_UP, HIGH_VOL]  # WR=0% везде кроме None avg_R=-1.0
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
   # DEV-22: WATCH LIST
   watch_list_ttl_hours: 4        # TTL записи в WL (часов)
-  watch_list_breach_pct: 1.0     # % ниже/выше pivot_level для подтверждения пробоя
+  watch_list_breach_pct: 0.8     # % ниже/выше pivot_level для подтверждения пробоя #было 1.0 → 0.8 (изменил руками 17:52 27.03) — снижение для увеличения количества пробоев (WR=25% при 0.8 vs WR=15% при 1.0)
   wl_sl_buffer_pct: 0.5          # DEV-WL-BREACH: буфер SL от пробитого пивота (%)
 detectors:
   anomaly:
@@ -308,10 +311,10 @@ performance:
   api_rps: 15
   api_semaphore_size: 12
   ohlcv_scan_limit: 161  # +1 буфер: BingX возвращает limit-1 баров (159 вместо 160)
-  ohlcv_slow_threshold_sec: 5.0
+  ohlcv_slow_threshold_sec: 8.0
   divergence_slow_threshold_sec: 3.0
   pair_slow_threshold_sec: 10.0
-  scan_cycle_warning_threshold_sec: 55.0
+  scan_cycle_warning_threshold_sec: 70.0
 strategy:
   name: confluence
   confluence:
@@ -342,7 +345,7 @@ future_pivots:
   broadcast_tg: false
   ttl_sec: 1800
   confluence_threshold_pct: 0.5
-  pre_alert_pct: 1.0
+  pre_alert_pct: 1.0 # 
   strength_bonus: 15
 signals:
   mtf_alert_enabled: false       # DEV-31: 137 сделок WR=4.4% — убран полностью (TG + регистрация)

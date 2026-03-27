@@ -1,115 +1,98 @@
 <original_task>
-Продолжение предыдущей сессии. Пять задач:
-1. Добавить Stop hook с AGENT_ROLE=DEVELOPER в ~/.claude/settings.json (рядом с существующим TRADER)
-2. DEV-79: web/static/ рефакторинг — вынести 4 HTML-константы из dashboard_server.py в статические файлы
-3. DEV-80: Trading Panel — новая страница /trading с Position Sizer UI
-4. DEV-81: FUNDING_EXTREME detector (shadow mode, только лог, не в TG)
-5. DEV-82: LIQUIDITY_SWEEP detector (broadcast в TG)
+Стабилизационный спринт проекта Oko MTF Bot.
+Цель: заморозить фичи, привести кодовую базу в порядок, создать защитные механизмы, задокументировать.
+Принцип: ни одна строка логики не меняется. Только чистка, документация, защита.
+
+План: Фазы 0-5 из файла `C:\Users\yogoru\.claude\plans\glowing-painting-koala.md`
 </original_task>
 
 <work_completed>
 
-## 1. Stop hooks в ~/.claude/settings.json ✅
-Файл: `C:/Users/yogoru/.claude/settings.json`
-- Добавлен второй Stop hook с AGENT_ROLE=DEVELOPER рядом с существующим TRADER
-- Итоговая структура hooks.Stop: два entry — DEVELOPER + TRADER, оба вызывают
-  `scripts/check_tasks.py` с разным env var AGENT_ROLE
+## Фаза 0 — Защита ✅ (предыдущая сессия)
+- Git commit 161 файл: `52c4348` — "checkpoint: stabilization start"
+- Бэкап БД: `backups/subscriptions_2026-03-27_XXXX.db` (7.3 MB)
+- Авто-бэкап функция `_backup_database()` в `bot_with_subscriptions.py` — хранит 7 копий
+- Git tag `v0.9-stable`
 
-## 2. DEV-79: web/static/ рефакторинг ✅
-- `web/dashboard_server.py`: 3266 → 985 строк (потом 1038 после DEV-80)
-  - Удалены 4 HTML-константы: `_HTML`, `_SETTINGS_HTML`, `_BACKTEST_HTML`, `_DASHBOARD_HTML`
-  - Handlers переключены на `web.FileResponse(Path(__file__).parent / "static/X.html")`
-  - Добавлен `app.router.add_static("/static", Path(__file__).parent / "static")`
-- Созданы статические файлы:
-  - `web/static/index.html` (56734 байт)
-  - `web/static/settings.html` (36461 байт)
-  - `web/static/backtest.html` (18801 байт)
-  - `web/static/operations.html` (9180 байт)
-- В `web/static/index.html` добавлена ссылка "Trading Panel" в sidebar footer
-- В `web/static/index.html` добавлен SIM mode badge в topbar (подгружает /api/trading/status)
+## Фаза 1 — Чистка мёртвого кода ✅ (предыдущая сессия)
+- Commit `bc64698` — "stabilization: phase 1 — dead code archived"
+- `domain/`, `infrastructure/`, `presentation/` → `_archive/skeleton/`
+- 7 устаревших скриптов → `scripts/_archive/`
+- Пустые папки docs/api/, docs/architecture/, docs/guides/ — удалены
 
-## 3. DEV-80: Trading Panel ✅
-`web/static/trading.html` (18119 байт) — новый файл:
-- Position Sizer форма: Symbol, Deposit, Risk%, Leverage, Entry, SL
-- Автозаполнение из `/api/settings`
-- Таблица TP: 1R / 2R / 3R / 5R с ценами и прибылью в USDT
-- `GET /api/trading/instrument_info?symbol=...` для min_notional (lazy, при blur)
-- Предупреждение при марже > 50%
+## Фаза 2 — Дедупликация вычислений ✅ (текущая сессия)
+**Файл:** `bot/loops/scan_loop.py`, строки 623-633
 
-Новые маршруты в `web/dashboard_server.py`:
-```
-GET  /trading                        → _handle_trading_page
-GET  /api/trading/status             → _handle_trading_status
-GET  /api/trading/instrument_info    → _handle_trading_instrument_info
-```
-
-## 4. DEV-81: FUNDING_EXTREME detector ✅
-
-### Детектор (создан в прошлой сессии)
-`core/signals/funding_detector.py`:
-- `detect_funding_extreme(symbol, df, funding_rate, cfg) → Optional[SignalData]`
-- Порог: `|funding_rate| > 0.0005` (0.05% / 8h)
-- Условие: WT cross в OS (<-40) / OB (>+40) зоне
-- Shadow mode: `data["shadow"] = True`
-- Strength: `min(100, int(50 + ratio * 15))`
-
-### get_funding_rate() добавлен в data_collector
-`core/infra/data_collector.py`:
-- Строка 8: `import time as _time`
-- Строки 9-10: `_FUNDING_CACHE_TTL = 1800`
-- Строка ~38: `self._funding_cache: dict = {}` в `__init__`
-- Строки ~190-213: `async def get_funding_rate(symbol) -> float | None`
-  - TTL-кеш 30 мин: `{normalized: (rate, fetched_at)}`
-  - `exchange.fetch_funding_rate(normalized)["fundingRate"]`
-
-### Интеграция в scan_loop.py
-`bot/loops/scan_loop.py`, блок `1a` (вставлен перед `# 2. WT`, ~строки 502-519):
-- Только на `_scan_tf == _etf`
-- **Shadow mode**: добавляется в `all_scan_signals` + счётчик `funding_extreme`, НО НЕ в `signals_to_broadcast`
-
-### Форматтер
-`core/ui/message_builder.py`: функция `funding_extreme_message(symbol, sig)`
-
-## 5. DEV-82: LIQUIDITY_SWEEP detector ✅
-
-### Детектор (создан в прошлой сессии)
-`core/signals/liquidity_sweep_detector.py`:
-- `detect_liquidity_sweep(symbol, df, pivot_cache, cfg) → Optional[SignalData]`
-- LONG: `bar.low < swing_low AND bar.close > swing_low AND wt1 < -40`
-- SHORT: `bar.high > swing_high AND bar.close < swing_high AND wt1 > +40`
-- `detect_swing_points(df.iloc[:-1], period=5)` — без последнего бара
-- Pivot bonus +15 при совпадении с W:S1/R1 (±0.5%)
-- Base strength: `55 + min(20, sweep_depth*5) + wt_bonus`
-
-### Интеграция в scan_loop.py
-`bot/loops/scan_loop.py`, блок `1b` (~строки 520-535):
-- `pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})`
-- **Broadcast в TG**: `signals_to_broadcast.append(("liquidity_sweep", _sweep_message(...), None))`
-
-### Форматтер
-`core/ui/message_builder.py`: функция `liquidity_sweep_message(symbol, sig)`
-
-## 6. signal_models.py обновлён ✅
-`core/signals/signal_models.py`:
+**Проблема:** В блоке divergences (строки 625-628) выполнялись повторные вызовы:
 ```python
-FUNDING_EXTREME = "funding_extreme"   # DEV-81
-LIQUIDITY_SWEEP = "liquidity_sweep"   # DEV-82
+_df15_t = calculate_trend(df_entry)
+_df15_t = calculate_wt(_df15_t)
+_df1h_t = calculate_trend(df_1h) if df_1h is not None and not df_1h.empty else None
 ```
+Хотя ARCH-18 pre-compute (строки 421-435) уже вычислил эти колонки.
 
-## 7. Синтаксис проверен ✅
-```
-OK: core/infra/data_collector.py
-OK: core/ui/message_builder.py
-OK: bot/loops/scan_loop.py
-```
+**Фикс:** Удалены повторные вызовы, MarketRegimeClassifier.classify_from_dataframes() теперь получает df_entry и df_1h напрямую.
 
-## 8. TASKS.md + current_state.md обновлены ✅
-DEV-81, DEV-82: `🟢/🟡` → `✅ ВЫПОЛНЕНО 26.03.2026`
+**Остальное уже было правильно:**
+- `trading_intelligence.py` строки 674-676: guard `if "cross_up" not in df_entry.columns` — не дублирует
+- `trading_intelligence.py` строки 695-697: аналогичный guard — не дублирует
+- `trading_intelligence.py` строка 1874: `_compute_atr` делегирует в `compute_atr` из indicators.py
+- `trading_intelligence.py` строка 1795: отдельный `get_ohlcv` — ручной /intelligence запрос, норма
+
+## Фаза 3 — Документация ✅ (текущая сессия)
+**Файл:** `config.yaml` — добавлен header с реестром shadow/disabled параметров (строки 1-22):
+- `ote_shadow_mode: true` → активировать ~09.04.2026
+- `market_stress_gate.enabled: false` → shadow
+- `weekly_bias_filter.enabled: false` → Фаза A
+- `l3_checker.enabled: false` → shadow DEV-52
+- `ml.use_outcome_predictor: false` → AUC<0.55
+- `signals.mtf_alert_enabled: false` → убран насовсем DEV-31
+- `confluence.4h_gate_enabled: false` → временно ARCH-26
+
+**Обнаружено:** Все приоритетные модули уже имеют docstrings:
+- `core/intelligence/ml_enhancer.py` ✅
+- `core/intelligence/confidence_calculator.py` ✅
+- `core/intelligence/decision_trace.py` ✅
+- `core/intelligence/recommendation_generator.py` ✅
+- `core/smc/deep_analysis.py` ✅
+- `core/trading_intelligence.py` — section-комментарии `# ──` уже есть ✅
+
+## Фаза 4 — Тесты ✅ (текущая сессия)
+**Новые файлы:**
+
+`tests/unit/test_funding_detector.py` — 9 тестов:
+- TestFundingDetectorFilters: 4 теста (порог, None, мало баров, нет кросса)
+- TestFundingDetectorSignal: 5 тестов (LONG, SHORT, shadow flag, strength scale, symbol/tf)
+
+`tests/unit/test_liquidity_sweep_detector.py` — 8 тестов:
+- TestLiquiditySweepFilters: 3 теста (мало баров, нет sweep, WT не в зоне)
+- TestLiquiditySweepSignal: 5 тестов (LONG, SHORT, pivot bonus, data fields, symbol/tf)
+
+Результат: **17/17 ✅**
+
+**Ключевое открытие при разработке тестов:**
+`detect_swing_points(period=5)` требует настоящий параболический паттерн (5+ баров выше/ниже с обеих сторон). Плоский df с одним "провалом" не работает. Решение: синусоидальный df через `np.linspace(0, 4*pi, n)`.
+
+## Фаза 5 — Config freeze ✅ (текущая сессия)
+- `config_snapshots/config_v0.9_2026-03-27.yaml` — снапшот текущей конфигурации
+- `.gitignore`: добавлен `config_snapshots/`
+- Финальный commit: `65676fb` — "stabilization: Фазы 2-5"
+- Git tag `v1.0-stable` → `65676fb`
+
+## Итоговые коммиты стабилизации
+```
+52c4348  checkpoint: stabilization start — all current work
+bc64698  stabilization: phase 1 — dead code archived
+b53cf05  feat: auto-backup DB at start, keep 7 copies
+65676fb  stabilization: Фазы 2-5 — дедупликация, документация, тесты, config snapshot
+```
+Tags: `v0.9-stable` (52c4348), `v1.0-stable` (65676fb)
+
 </work_completed>
 
 <work_remaining>
 
-## 🔴 Приоритет 1 — DEV-75 (КРИТИЧЕСКИЙ БАГ)
+## 🔴 Приоритет 1 — DEV-75 (КРИТИЧЕСКИЙ БАГ, не решён)
 **Задача:** Инвертировать иерархию TP в `get_tp_by_hierarchy()`
 **Проблема:** Текущий порядок 1D→1W→confluence→1M неверный, должен быть 1M→1W→1D
 **Как найти:**
@@ -124,7 +107,7 @@ grep -rn "get_tp_by_hierarchy\|tp_hierarchy" core/
    ```python
    signals_to_broadcast.append(("funding_extreme", _funding_message(sym, _funding_sig), None))
    ```
-2. Убрать комментарий `# shadow mode` при желании
+2. В `config.yaml`: `ote_shadow_mode: false` (если OTE накопил достаточно данных)
 
 ## 🟡 Приоритет 3 — TR-008 (валидация после рестарта)
 Проверить /scan + /intelligence после рестарта бота (ARCH-54 фаза 3).
@@ -141,6 +124,11 @@ DEV-77: OrderExecutor VST/SIM layer
 DEV-78: PositionManager + PositionSizer + live_orders
 UI для Trading Panel (DEV-80) уже готов.
 
+## Технический долг (низкий приоритет, из плана стабилизации)
+- Фаза 2 (неполная): `_compute_atr()` в `trading_intelligence.py` строка 1874 уже правильно делегирует в compute_atr из indicators.py — фактически закрыта
+- test_market_regime.py и test_regime_strategy.py имеют ошибки коллекции (ещё до нашей работы)
+- test_trade_simulator.py: 21+ тестов падали до нашей работы (не деградация от стабилизации)
+
 ## Проверить после рестарта бота
 - Логи `[DEV-81 shadow]` при экстремальном funding
 - Логи `[DEV-82-LIQSWEEP]` + TG сообщения при sweep паттернах
@@ -152,18 +140,22 @@ UI для Trading Panel (DEV-80) уже готов.
 
 <attempted_approaches>
 
-## Регулярное выражение для извлечения HTML констант
-**Проблема:** `_HTML` — подстрока `_SETTINGS_HTML`. Паттерн `_HTML = """.*?"""` матчил внутри `_SETTINGS_HTML = """` на суффиксе `_HTML`.
-**Результат:** Артефакты в dashboard_server.py: `# _SETTINGS# _HTML moved to web/static/`
-**Фикс:** Ручная правка через Edit tool.
+## Первая попытка fixtures для test_liquidity_sweep_detector.py
+**Подход:** Создать df с явным "провалом" в lows:
+```python
+lows[swing_idx] = 0.950  # swing_low
+lows[-1] = 0.940         # sweep
+prices[-1] = 0.960       # recovery
+```
+**Результат:** `detect_swing_points(period=5)` вернул `lows: []` — не нашёл swing_low
 
-## Python скрипт для add_static route
-**Проблема:** `src.replace()` с одиночными кавычками не совпал с оригинальным кодом (двойные кавычки).
-**Фикс:** Добавлен route напрямую через Edit tool.
+**Причина:** period=5 требует 5 баров выше с обеих сторон. Плоский df (lows=0.999 везде кроме одного бара) не создаёт настоящий локальный минимум — соседние бары тоже 0.999 ≈ swing_low, нет явного доминирования.
 
-## Синтаксическая ошибка в funding_detector.py
-**Проблема:** `from datetime import datetime, timezone` попала внутрь сигнатуры функции.
-**Фикс:** Перенесён import на уровень модуля.
+**Фикс:** Синусоидальный паттерн через `np.sin(x)` при x∈[0, 4π] создаёт 2 реальных swing_low на баре 18 и 43 — оба находятся detect_swing_points.
+
+## Попытка найти дублирования в trading_intelligence.py
+**Ожидание:** Найдём многократные вызовы calculate_wt/trend без guard.
+**Реальность:** Строки 674-676 и 695-697 уже имеют guard `if "cross_up" not in df_entry.columns` — правильный паттерн. Строка 1795 — это отдельный `get_ohlcv` с limit=60 для ручного /intelligence запроса (не дублирование scan_one).
 
 </attempted_approaches>
 
@@ -173,24 +165,39 @@ UI для Trading Panel (DEV-80) уже готов.
 `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe` — Python 3.12.
 Единственная версия с aiogram. `.venv` / Python 3.13 — без aiogram.
 
+## Git теги стабилизации
+- `v0.9-stable` = `52c4348` — точка входа в стабилизацию (до чистки)
+- `v1.0-stable` = `65676fb` — финал стабилизации
+
+## ARCH-18 pre-compute в scan_loop.py
+Строки 421-435: calculate_wt + calculate_trend вычисляются ОДИН РАЗ для df_entry, df_1h, df_3m, df_4h, df_1d. Все детекторы должны использовать guard `if "wt1" in df.columns` или `if "cross_up" not in df.columns` перед вычислением.
+
 ## ARCH-54: stub-файлы в core/
 Старые импорты `from core.X import Y` работают через stubs в корне `core/`.
-`core/message_builder.py` — stub с `from core.ui.message_builder import *` → новые функции подхватятся автоматически.
+`core/message_builder.py` → `from core.ui.message_builder import *`
+`core/indicators.py` → `from core.indicators.indicators import *`
 
-## scan_loop.py: структура блоков scan_one
+## scan_loop.py структура блоков scan_one
 ```
-1a  DEV-81 FUNDING (shadow)     ← новый, только_if _scan_tf == _etf
-1b  DEV-82 LIQUIDITY_SWEEP      ← новый, только если _scan_tf == _etf
-1   Anomalies                    ← только _scan_tf == _etf
+1a  DEV-81 FUNDING (shadow)   — только _scan_tf == _etf
+1b  DEV-82 LIQUIDITY_SWEEP    — только _scan_tf == _etf, broadcast в TG
+1   Anomalies                  — только _scan_tf == _etf
 2   WT signals
 3   Confluence (SM / fallback)
 5   WT-B (1h)
 8   Divergences (каждые 3 цикла)
 ```
 
-## DEV-81 shadow mode intent
-Детектор намеренно не отправляет в TG — нужно накопить 2 недели логов для анализа качества.
-Флаг: `data["shadow"] = True`. В scan_loop.py блок 1a — нет строки broadcast.
+## Падающие тесты (до нашей работы)
+- `tests/unit/test_market_regime.py` — ошибка коллекции (import error)
+- `tests/unit/test_regime_strategy.py` — ошибка коллекции
+- `tests/unit/test_trade_simulator.py` — 21+ упавших теста (не деградация)
+Все эти тесты падали ДО стабилизации — подтверждено через `git stash`.
+
+## DEV-81 shadow mode
+Детектор намеренно не отправляет в TG 2 недели (с 26.03.2026).
+Флаг: `data["shadow"] = True`. В scan_loop блок 1a нет строки broadcast.
+Активировать: добавить `signals_to_broadcast.append(...)` ~09.04.2026.
 
 ## pivot_cache формат
 ```python
@@ -198,49 +205,39 @@ pivot_cache[symbol] = {"W:S1": 1.234, "W:R1": 1.456, ...}
 ```
 Ключи Weekly: `"W:S1"`, `"W:S2"`, `"W:R1"`, `"W:R2"`.
 
-## detect_swing_points зависимость
-`core/smc/swing_points.py` — файл существует. Возвращает объект с `.lows` и `.highs`
-(списки SwingPoint с `.index` и `.value`).
-ВАЖНО: детектор вызывает `detect_swing_points(df.iloc[:-1], period=5)` — **без последнего бара**.
-
-## get_funding_rate: не все пары поддерживают funding
-BingX может не возвращать funding для некоторых пар. Метод возвращает `None` при ошибке — детектор пропускается.
-
-## web/static/ файлы не в git (вероятно)
-Проверить что `web/static/` не в `.gitignore`. Файлы скорее всего `??` (untracked).
+## detect_swing_points требования
+`detect_swing_points(df, period=5)` — ищет локальные min/max с period=5 барами с каждой стороны.
+ВАЖНО: для теста нужен синусоидальный df, не плоский.
 
 </critical_context>
 
 <current_state>
 
-## Статус всех deliverables
+## Статус стабилизационного плана
 
-| Задача | Статус | Ключевые файлы |
-|--------|--------|----------------|
-| Stop hooks DEVELOPER+TRADER | ✅ | `~/.claude/settings.json` |
-| DEV-79: web/static/ | ✅ | `web/dashboard_server.py`, `web/static/*.html` |
-| DEV-80: Trading Panel | ✅ | `web/static/trading.html` + 3 новых route |
-| DEV-81: FUNDING_EXTREME | ✅ (shadow) | `core/signals/funding_detector.py`, `core/infra/data_collector.py`, `bot/loops/scan_loop.py:502-519` |
-| DEV-82: LIQUIDITY_SWEEP | ✅ (broadcast) | `core/signals/liquidity_sweep_detector.py`, `bot/loops/scan_loop.py:520-535` |
+| Фаза | Статус | Коммит | Ключевые файлы |
+|------|--------|--------|----------------|
+| 0 — Защита | ✅ | 52c4348, b53cf05 | .gitignore, bot_with_subscriptions.py |
+| 1 — Чистка | ✅ | bc64698 | _archive/skeleton/, scripts/_archive/ |
+| 2 — Дедупликация | ✅ | 65676fb | bot/loops/scan_loop.py:623-633 |
+| 3 — Документация | ✅ | 65676fb | config.yaml header |
+| 4 — Тесты | ✅ | 65676fb | tests/unit/test_funding_detector.py, test_liquidity_sweep_detector.py |
+| 5 — Config freeze | ✅ | 65676fb | config_snapshots/, .gitignore |
 
-## Что работает
-- Синтаксис всех файлов проверен через `ast.parse` ✅
-- Stub в `core/message_builder.py` автоматически реэкспортирует новые форматтеры ✅
-- TASKS.md: DEV-79/80/81/82 = `✅ ВЫПОЛНЕНО` ✅
+## Тест-результаты
+- Наши новые тесты: **17/17 ✅** (funding + liquidity_sweep)
+- Весь unit suite: 524 passed, 37 failed, 9 skipped
+- Падения существовали ДО стабилизации (не регрессия)
 
-## Что НЕ проверено (требует рестарта бота)
-- Реальный `get_funding_rate()` на BingX
-- `[DEV-81 shadow]` логи
-- `[DEV-82-LIQSWEEP]` логи + TG broadcast
-- Trading Panel `/trading` в браузере
-- SIM badge в index.html topbar
-
-## Незакоммиченные изменения
-Новые файлы: `web/static/*.html` (5 шт), `core/signals/funding_detector.py`, `core/signals/liquidity_sweep_detector.py`
-Изменённые: `web/dashboard_server.py`, `core/infra/data_collector.py`, `core/ui/message_builder.py`, `core/signals/signal_models.py`, `bot/loops/scan_loop.py`, `TASKS.md`, `memory/current_state.md`
+## Git состояние
+```
+Branch: main (ahead of origin/main by 31 commits)
+Tags: v0.9-stable (52c4348), v1.0-stable (65676fb)
+Незакоммичены: DISCUSSION.md, TASKS.md, core/infra/api_engine.py, core/infra/data_collector.py
+```
 
 ## Следующий шаг
-1. Рестарт бота → проверка логов DEV-81/82
-2. Git commit
-3. DEV-75 🔴 (критический баг иерархии TP)
+**DEV-75** — критический баг иерархии TP в `get_tp_by_hierarchy()`.
+Найти через: `grep -rn "get_tp_by_hierarchy\|tp_hierarchy" core/`
+
 </current_state>
