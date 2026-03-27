@@ -35,6 +35,7 @@ def make_recommendation(
     rec.sl_source = None
     rec.tp_source = None
     rec.metadata = {}
+    rec.atr_entry_tf = None   # DEV-40: без этого MagicMock возвращает MagicMock вместо None
     return rec
 
 
