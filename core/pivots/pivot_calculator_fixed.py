@@ -922,14 +922,14 @@ class PivotCalculatorFixed:
         tolerance_pct: float = 0.3,
     ) -> Optional[tuple]:
         """
-        TP по иерархии уровней (ARCH-09п5): сильный → слабый.
+        TP по иерархии уровней (DEV-75): высокоэффективный → низкоэффективный.
 
-        Порядок:
-          1. Конфлюэнция 1M+1W (±tolerance_pct%) — самый сильный
-          2. Конфлюэнция 1W+1D
-          3. 1M уровень (R1-R5 / S1-S5 / PP) — ближайший >= min_r
-          4. 1W уровень
-          5. 1D уровень
+        Порядок (по убыванию avg_R из реальной БД):
+          1. 1D уровень (avg_R +1.536) — ближайший >= min_r
+          2. 1W уровень
+          3. Конфлюэнция 1W+1D (±tolerance_pct%)
+          4. Конфлюэнция 1M+1W (avg_R -0.603) — только как дальний TP
+          5. 1M уровень
           6. Любой пивот (get_pivot_tp_with_source)
 
         Returns: (tp_price, source_str) или None
@@ -960,29 +960,12 @@ class PivotCalculatorFixed:
             if cached:
                 pivots_data[tf] = cached
 
-        # 1-2. Конфлюэнции (1M+1W, затем 1W+1D) — min_r смягчён до 1.0 для конфлюэнций,
-        # т.к. конфлюэнтный уровень сам по себе сильнее одиночного.
-        if len(pivots_data) >= 2:
-            confluences = self._find_all_confluences(pivots_data, tolerance_pct)
-            for ta, tb in (("1M", "1W"), ("1W", "1D")):
-                for c in confluences:
-                    if {c["tf_a"], c["tf_b"]} == {ta, tb}:
-                        avg_price = (c["price_a"] + c["price_b"]) / 2.0
-                        # Для конфлюэнций достаточно R ≥ 1.0 (сильный уровень перевешивает R:R)
-                        if direction == "LONG" and avg_price <= entry_price:
-                            continue
-                        if direction == "SHORT" and avg_price >= entry_price:
-                            continue
-                        if sl_dist and sl_dist > 0:
-                            r_to_confluence = abs(avg_price - entry_price) / sl_dist
-                            if r_to_confluence < 1.0:
-                                continue  # совсем близко — нет смысла
-                        src = f"confluence_{ta}+{tb}:{c['level_a']}≈{c['level_b']}"
-                        return avg_price, src
-
-        # 3-5. Уровни по TF (1M → 1W → 1D) — берём ближайший подходящий
+        # DEV-75: порядок по убыванию avg_R из реальных данных БД
+        # 1. 1D (avg_R=+1.536) → 2. 1W → 3. confluence 1W+1D → 4. confluence 1M+1W → 5. 1M
         all_lvls = ["PP"] + [f"R{i}" for i in range(1, 6)] + [f"S{i}" for i in range(1, 6)]
-        for tf in ("1M", "1W", "1D"):
+
+        # 1-2. Сначала 1D и 1W — самые эффективные одиночные уровни
+        for tf in ("1D", "1W"):
             piv = self.pivot_cache.get(f"{symbol}_{tf}")
             if not piv:
                 continue
@@ -990,6 +973,37 @@ class PivotCalculatorFixed:
                 (price, f"pivot_{tf}:{lk}")
                 for lk in all_lvls
                 if (price := piv.get(lk)) and price > 0 and _qualifies(price)
+            ]
+            if candidates:
+                reverse = direction == "SHORT"
+                candidates.sort(key=lambda x: x[0], reverse=reverse)
+                return candidates[0]
+
+        # 3-4. Конфлюэнции (1W+1D первой, затем 1M+1W) — используют стандартный min_r
+        if len(pivots_data) >= 2:
+            confluences = self._find_all_confluences(pivots_data, tolerance_pct)
+            for ta, tb in (("1W", "1D"), ("1M", "1W")):
+                for c in confluences:
+                    if {c["tf_a"], c["tf_b"]} == {ta, tb}:
+                        avg_price = (c["price_a"] + c["price_b"]) / 2.0
+                        if direction == "LONG" and avg_price <= entry_price:
+                            continue
+                        if direction == "SHORT" and avg_price >= entry_price:
+                            continue
+                        if sl_dist and sl_dist > 0:
+                            r_to_confluence = abs(avg_price - entry_price) / sl_dist
+                            if r_to_confluence < min_r:
+                                continue
+                        src = f"confluence_{ta}+{tb}:{c['level_a']}≈{c['level_b']}"
+                        return avg_price, src
+
+        # 5. 1M — последний (avg_R слабый, редко достигается)
+        piv_1m = self.pivot_cache.get(f"{symbol}_1M")
+        if piv_1m:
+            candidates = [
+                (price, f"pivot_1M:{lk}")
+                for lk in all_lvls
+                if (price := piv_1m.get(lk)) and price > 0 and _qualifies(price)
             ]
             if candidates:
                 reverse = direction == "SHORT"

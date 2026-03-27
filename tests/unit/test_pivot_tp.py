@@ -117,11 +117,11 @@ class TestGetTpByHierarchy:
 
     # ── Конфлюэнции ──────────────────────────────────────────────────────────
 
-    def test_confluence_1m_1w_wins_over_plain_1d(self):
-        """[01] Конфлюэнция 1M+1W выбирается раньше 1D-уровня."""
+    def test_1d_wins_over_confluence_1m_1w(self):
+        """[01] DEV-75: 1D-уровень приоритетнее конфлюэнции 1M+1W (avg_R: 1D=+1.536 vs 1M+1W=-0.603)."""
         # entry=100, sl=95 (sl_dist=5), min_r=2.0 → нужен TP >= 110
-        # 1M R1=112, 1W R1=112.2 (конфлюэнция ≈112.1, R=(12.1/5)=2.42 ✓)
-        # 1D R1=115 (R=3.0, тоже подходит но конфлюэнция сильнее)
+        # 1M R1=112, 1W R1=112.2 (конфлюэнция ≈112.1)
+        # 1D R1=115 (R=3.0 ✓) — должна победить 1D, не конфлюэнция
         calc = self._calc({
             "SYM_1M": {"PP": 100.0, "R1": 112.0},
             "SYM_1W": {"PP": 99.5, "R1": 112.2},
@@ -130,28 +130,27 @@ class TestGetTpByHierarchy:
         result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
         assert result is not None
         tp, src = result
-        assert "confluence_1M+1W" in src
-        assert abs(tp - 112.1) < 0.5
+        assert "pivot_1D" in src
+        assert tp == 115.0
 
-    def test_confluence_1w_1d_when_no_1m(self):
-        """[02] При отсутствии 1M: конфлюэнция 1W+1D."""
+    def test_1d_wins_when_only_1w_and_1d(self):
+        """[02] DEV-75: при наличии 1W и 1D (без 1M), победит 1D (приоритет выше 1W)."""
         calc = self._calc({
             "SYM_1W": {"PP": 99.0, "R1": 110.0},
             "SYM_1D": {"PP": 98.5, "R1": 110.2},
         })
-        # entry=100, sl=95 → sl_dist=5, min_r=2.0 → TP >= 110
+        # entry=100, sl=95 → sl_dist=5, min_r=2.0 → TP >= 110; 1D R1=110.2, R=2.04 ✓
         result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
         assert result is not None
         tp, src = result
-        assert "confluence_1W+1D" in src
+        assert "pivot_1D" in src
 
     # ── TF-уровни ─────────────────────────────────────────────────────────────
 
-    def test_1m_level_used_when_no_confluence(self):
-        """[03] Нет конфлюэнции → берём 1M-уровень."""
+    def test_1m_level_used_when_no_1w_1d(self):
+        """[03] DEV-75: только 1M в кеше (нет 1W и 1D) → берём 1M-уровень."""
         calc = self._calc({
             "SYM_1M": {"PP": 95.0, "R1": 115.0},
-            "SYM_1W": {"PP": 99.0, "R1": 130.0},   # далеко — не конфлюэнция
         })
         result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
         assert result is not None
@@ -182,18 +181,18 @@ class TestGetTpByHierarchy:
 
     # ── SHORT ─────────────────────────────────────────────────────────────────
 
-    def test_short_confluence_1m_1w(self):
-        """[06] SHORT: конфлюэнция 1M+1W ниже entry."""
+    def test_short_1w_wins_over_confluence_1m_1w(self):
+        """[06] DEV-75 SHORT: 1W-уровень приоритетнее конфлюэнции 1M+1W."""
         calc = self._calc({
             "SYM_1M": {"PP": 100.0, "S1": 88.0},
             "SYM_1W": {"PP": 100.5, "S1": 87.9},
         })
-        # entry=100, sl=105 → sl_dist=5, min_r=2.0 → TP <= 90
+        # entry=100, sl=105 → sl_dist=5, min_r=2.0 → TP <= 90; 1W S1=87.9, R=2.42 ✓
         result = calc.get_tp_by_hierarchy("SHORT", 100.0, "SYM", stop_loss=105.0, min_r=2.0)
         assert result is not None
         tp, src = result
-        assert "confluence_1M+1W" in src
-        assert tp < 100.0
+        assert "pivot_1W" in src
+        assert tp == 87.9
 
     def test_short_1w_fallback(self):
         """[07] SHORT без конфлюэнции → 1W-уровень ниже entry."""
