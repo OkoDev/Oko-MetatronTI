@@ -49,9 +49,9 @@ _ZONE_TF_PRIORITY: List[Tuple[str, int]] = [
     ("1h",  0),   # минимальный TF для OTE сигнала
 ]
 
-# Tight OTE "sweet spot" — бонус к strength
-_TIGHT_OTE_LOW  = 0.618
-_TIGHT_OTE_HIGH = 0.705
+# DEV-85: Wide OTE only [0.705–0.786] — tight [0.618–0.705] исключён (бэктест WR=18.2%)
+_OTE_FULL_LOW  = 0.618   # граница полной OTE зоны (для fib_ratio логирования)
+_WIDE_OTE_MIN  = 0.705   # минимальный retrace для wide зоны (только этот диапазон торгуется)
 
 
 def detect_ote_signal(
@@ -62,6 +62,7 @@ def detect_ote_signal(
     max_bars_lookback: int = 5,
     shadow_mode: bool = True,
     zone_tf_priority: Optional[List[Tuple[str, int]]] = None,
+    df_trend_ref: Optional[pd.DataFrame] = None,
 ) -> Optional[SignalData]:
     """
     Детектирует MTF OTE сигнал.
@@ -71,6 +72,8 @@ def detect_ote_signal(
         symbol:       торговая пара.
         smc_contexts: dict {tf: SMCContext} — min {"1h": ...}, опц. "4h", "1d".
                       Вычисляются один раз в ARCH-51+OTE блоке trading_intelligence.
+        df_trend_ref: (DEV-85) DataFrame с "trend" колонкой (1h df, calculate_trend применён).
+                      Используется для ATR-trend direction gate. Если None — gate пропускается.
         trigger_tf:   имя trigger TF (для логирования).
         max_bars_lookback: окно поиска WT cross в зоне (trigger TF барах).
         shadow_mode:  True → только logging, SignalData не возвращается.
@@ -106,7 +109,21 @@ def detect_ote_signal(
     primary_tf, primary_zone, _ = confirmed[0]
     direction = SignalDirection.LONG if primary_zone.direction == "LONG" else SignalDirection.SHORT
 
-    # ── WT cross на trigger TF (15m) в зоне СТАРШЕГО подтверждающего TF ──
+    # ── DEV-85: вычислить impulse ПЕРЕД проверкой зоны (нужен для wide gate) ──
+    impulse = primary_zone.impulse_high - primary_zone.impulse_low
+    if impulse <= 0:
+        return None
+
+    # DEV-85: wide OTE boundary — верхняя граница wide zone для WT cross проверки
+    # Wide zone: retrace >= WIDE_OTE_MIN (0.705)
+    # LONG: цена <= impulse_high - impulse * 0.705 (глубже в откат)
+    # SHORT: цена >= impulse_low + impulse * 0.705 (глубже в откат)
+    if direction == SignalDirection.LONG:
+        _wide_boundary = primary_zone.impulse_high - impulse * _WIDE_OTE_MIN
+    else:
+        _wide_boundary = primary_zone.impulse_low + impulse * _WIDE_OTE_MIN
+
+    # ── WT cross на trigger TF (15m) в WIDE зоне СТАРШЕГО подтверждающего TF ──
     cross_col = "cross_up" if direction == SignalDirection.LONG else "cross_down"
     if cross_col not in df_trigger.columns:
         return None
@@ -115,13 +132,33 @@ def detect_ote_signal(
     cross_vals  = tail[cross_col].values
     close_vals  = tail["close"].values
 
-    has_cross_in_zone = any(
-        not np.isnan(v)
-        and primary_zone.ote_bottom <= close_vals[i] <= primary_zone.ote_top
-        for i, v in enumerate(cross_vals)
-    )
+    # DEV-85: только wide зона [0.705–0.786] — tight [0.618–0.705] отсеивается здесь
+    if direction == SignalDirection.LONG:
+        has_cross_in_zone = any(
+            not np.isnan(v)
+            and primary_zone.ote_bottom <= close_vals[i] <= _wide_boundary
+            for i, v in enumerate(cross_vals)
+        )
+    else:
+        has_cross_in_zone = any(
+            not np.isnan(v)
+            and _wide_boundary <= close_vals[i] <= primary_zone.ote_top
+            for i, v in enumerate(cross_vals)
+        )
     if not has_cross_in_zone:
         return None
+
+    # ── DEV-85: ATR-trend direction gate (1h df) ──────────────────────────
+    # Требуем совпадение тренда на старшем TF. Если 1h тренд против — зона stale или
+    # импульс не валиден. Пропускаем если trend колонки нет (graceful degradation).
+    if df_trend_ref is not None and "trend" in df_trend_ref.columns and len(df_trend_ref) > 0:
+        ref_trend = df_trend_ref["trend"].iloc[-1]
+        expected  = 1 if direction == SignalDirection.LONG else -1
+        if ref_trend == -expected:   # тренд ПРОТИВ сигнала → отклонить
+            logger.debug(
+                "[%s] OTE %s отклонён: 1h trend=%s против направления", symbol, direction.value, ref_trend
+            )
+            return None
 
     # ── Strength ──────────────────────────────────────────────────────────
     strength = 65  # base (1h или любой один TF)
@@ -137,19 +174,13 @@ def detect_ote_signal(
     if is_bos:
         strength += 10
 
-    # Tight OTE
-    cur     = float(df_trigger["close"].iloc[-1])
-    impulse = primary_zone.impulse_high - primary_zone.impulse_low
-    tight_ote  = False
+    # fib_ratio для логирования (tight бонус убран — DEV-85)
+    cur       = float(df_trigger["close"].iloc[-1])
     fib_ratio: Optional[float] = None
-    if impulse > 0:
-        if direction == SignalDirection.LONG:
-            fib_ratio = (primary_zone.impulse_high - cur) / impulse
-        else:
-            fib_ratio = (cur - primary_zone.impulse_low) / impulse
-        tight_ote = _TIGHT_OTE_LOW <= fib_ratio <= _TIGHT_OTE_HIGH
-        if tight_ote:
-            strength += 10
+    if direction == SignalDirection.LONG:
+        fib_ratio = (primary_zone.impulse_high - cur) / impulse
+    else:
+        fib_ratio = (cur - primary_zone.impulse_low) / impulse
 
     strength   = min(strength, 100)
     confidence = round(strength / 100.0, 2)
@@ -157,10 +188,10 @@ def detect_ote_signal(
     # ── Logging ───────────────────────────────────────────────────────────
     tfs_str = "+".join(confirmed_tfs)
     logger.info(
-        "[%s] OTE %s [%s→%s]: zone=%.5g–%.5g str=%d bos=%s tight=%s ratio=%s shadow=%s",
+        "[%s] OTE %s [%s→%s]: wide_zone=%.5g–%.5g str=%d bos=%s ratio=%s shadow=%s",
         symbol, direction.value, tfs_str, trigger_tf,
-        primary_zone.ote_bottom, primary_zone.ote_top,
-        strength, is_bos, tight_ote,
+        primary_zone.ote_bottom, _wide_boundary,
+        strength, is_bos,
         f"{fib_ratio:.3f}" if fib_ratio is not None else "?",
         shadow_mode,
     )
@@ -183,7 +214,7 @@ def detect_ote_signal(
             "impulse_high":  primary_zone.impulse_high,
             "impulse_low":   primary_zone.impulse_low,
             "fib_ratio":     round(fib_ratio, 4) if fib_ratio is not None else None,
-            "tight_ote":     tight_ote,
+            "wide_ote":      True,   # DEV-85: всегда wide [0.705-0.786]
             "origin_break":  ob.break_type.value if ob is not None else "unknown",
             "is_bos":        is_bos,
             "confirmed_tfs": confirmed_tfs,   # ["1d", "4h", "1h"] — какие TF подтвердили
@@ -192,12 +223,12 @@ def detect_ote_signal(
         },
         description=(
             f"OTE {'LONG' if direction == SignalDirection.LONG else 'SHORT'} "
-            f"[{tfs_str}→{trigger_tf}]: зона {primary_zone.ote_bottom:.5g}–{primary_zone.ote_top:.5g}"
-            + (" [tight]" if tight_ote else "")
+            f"[{tfs_str}→{trigger_tf}]: wide зона {primary_zone.ote_bottom:.5g}–{_wide_boundary:.5g}"
+            f" [ratio={fib_ratio:.3f}]" if fib_ratio else ""
         ),
         interpretation=(
             f"MTF конфлюенция OTE: {tfs_str}. "
-            f"Зона отката 61.8–78.6% от {primary_tf} импульса после "
+            f"Wide зона отката 70.5–78.6% от {primary_tf} импульса после "
             f"{'BOS' if is_bos else 'CHoCH'}. "
             f"WT cross на {trigger_tf} подтверждает оптимальный вход."
         ),

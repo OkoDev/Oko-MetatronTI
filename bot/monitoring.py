@@ -772,8 +772,8 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             logger.info("[%s] BTC %s vs %s, сила %d, режим=%s — btc_counter_trend=True",
                         symbol, btc_regime, direction_val, strength_val, btc_filter_mode)
 
-    # Этап 6: TP по иерархии пивотов (ARCH-09п5)
-    # Порядок: конфлюэнция 1M+1W → 1W+1D → 1M → 1W → 1D → fallback ATR
+    # Этап 6: TP по иерархии пивотов (ARCH-09п5, DEV-75)
+    # Порядок: 1D → 1W → confluence(1W+1D) → confluence(1M+1W) → 1M → ATR fallback
     distance_to_pivot_pct: float = 0.0
     if recommendation is not None and hasattr(bot, "pivot_calculator"):
         direction_val = getattr(recommendation.direction, "value", "NEUTRAL")

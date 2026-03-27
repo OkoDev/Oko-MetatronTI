@@ -4,6 +4,67 @@
 
 ---
 
+## [28.03.2026 #3] Агент: DEV — DEV-85 реализован
+
+- ✅ **DEV-85**: `core/signals/ote_detector.py` — wide only gate [0.705-0.786] + ATR-trend gate (1h df)
+  - Tight zone [0.618-0.705] — антипаттерн (WR=18.2%) — отсеян через `_wide_boundary`
+  - `df_trend_ref` параметр: передаётся 1h df с `trend` колонкой из pre_fetched_dfs
+  - Если 1h trend против сигнала → отклонить (stale zone filter)
+  - Tight бонус (+10) убран. `wide_ote: True` в data. Обновлён logging
+- ✅ `core/trading_intelligence.py`: `df_trend_ref=_pdfs.get("1h")` в detect_ote_signal()
+- ✅ Тесты: 4/4 ручных ✅, full suite 545 passed / 16 failed (все pre-existing)
+- ⚠️ Нужен рестарт бота для активации изменений
+
+**Следующий шаг:** DEV-83 (ARCH-56 реализация) или ответить TRADER по unswept liquidity в DISCUSSION.md
+
+---
+
+## [28.03.2026 #2] Агент: TRADER — TR-001 daily analysis + DEV-75/DEV-86 already done + Fib TP verdict
+
+- ✅ **TR-001 анализ 28.03.2026** → `memory/trader_analyses/2026-03-28.md`
+  - 20 открытых сделок, рынок медвежий, vol 0.2-0.3x avg
+  - STG SHORT +0.97R (лучший), LTC SHORT +0.78R, TRX LONG +0.52R
+  - WL: ENA RSI=12, JUP RSI=18 — экстремальный oversold, ждать WT crossup
+  - Win Rate 7д: 15.0%, avgR=-0.27 ⚠️ (медвежий рынок + OTE stale zones)
+- ✅ **Fib Extension TP — ЗАКРЫТ** (бэктест 27-28.03.2026):
+  - Hit rate 5-15% на 15m, 3-6% на 1h — слишком далеко от входа
+  - TSL = единственный надёжный выход. Вопросы в DISCUSSION закрыты.
+  - `get_tp_by_hierarchy()` — Fib step 6 УДАЛЁН из кода
+- ✅ **DEV-75** (pivot hierarchy) и **DEV-86** (убрать R4-S4) — оба уже были в коде ДО этой сессии
+  - DEV-75: порядок 1D→1W→confluence(1W+1D)→confluence(1M+1W)→1M ✓
+  - DEV-86: `range(1,4)` = R1,R2,R3 / S1,S2,S3 ✓
+  - TASKS.md обновлён → оба ✅
+
+**Следующие задачи (по приоритету):**
+1. **DEV-85** 🟡 — OTE stale zones фикс (TTL + price-invalidation) — ГЛАВНЫЙ приоритет для WR
+2. **DEV-83** 🟢 — MTF Interpreter Phase B (ARCH-56 спек готов)
+3. **DEV-84** 🟢 — L3 Phase C FVG/OB + OTE conditions
+
+---
+
+## [28.03.2026] Агент: ARCH — ARCH-56 спек + ответы в DISCUSSION + DEV-86/DEV-75
+
+- ✅ **ARCH-56 Phase B спек** написан в TASKS.md (разблокирует DEV-83):
+  - 4 новые функции в `mtf_interpreter.py`: `_detect_phase`, `_detect_zone_cascade`, `_detect_avoid_reason`, `_detect_pattern`
+  - 7 новых полей в `MTFContext`: phase, zone_state, avoid_reason, pattern_name, pattern_confidence, unswept_highs, unswept_lows
+  - Фазы: impulse_up/down, correction_*_in_*, reversal_*, range
+  - Pattern names: IMPULSE_UP/DOWN, WAVE_3_RELOAD, BEARISH_CORRECTION_FADE, CASCADE_*_REVERSAL, REVERSAL_*, RANGE_PLAY
+  - shadow mode (avoid_reason только лог, phase_guard_enabled: false)
+- ✅ **ARCH-56** → статус ✅ в TASKS.md
+- ✅ **DEV-75** → статус ✅ в TASKS.md (был 🔴, но уже сделан: commit adaa77c)
+- ✅ **DEV-86** создана в TASKS.md: убрать R4-R5/S4-S5 из get_tp_by_hierarchy() — 1 строка
+- ✅ **DISCUSSION.md** — ответы ARCH на 3 открытых блока:
+  - OTE stale zones: TTL=30 баров, price-invalidation, stale = баг-фикс до DEV-85
+  - TP через SMC: последовательность подтверждена, unswept_liquidity добавить в ARCH-56
+  - Критический баг TP: DEV-75 исправил порядок, DEV-86 уберёт R4/S4 — два шага фикса
+
+**Следующие задачи DEV:**
+1. **DEV-86** 🟡 — 1 строка в pivot_calculator_fixed.py (быстро, фиксит real bug)
+2. **DEV-83** 🟢 — реализация ARCH-56 Phase B (5 файлов, spec готов)
+3. **DEV-77** 🟢 — OrderExecutor (после DEV-83 или параллельно)
+
+---
+
 ## [27.03.2026] Агент: ARCH+DEV — ARCH-58 шаг 1 + решения по TP
 
 - ✅ `config.yaml`: `scan_cycle_warning_threshold_sec` 55→70, `ohlcv_slow_threshold_sec` 5→8

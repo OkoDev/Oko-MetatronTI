@@ -680,6 +680,7 @@ class TradingIntelligence:
                         smc_contexts=_smc_contexts,
                         trigger_tf=_entry_tf,
                         shadow_mode=_ote_shadow,
+                        df_trend_ref=_pdfs.get("1h"),  # DEV-85: ATR-trend gate на 1h
                     )
                     if ote_sig is not None:
                         filtered_signals.append(ote_sig)

@@ -61,7 +61,7 @@
 | [DEV-53](#dev-53) | ✅ | L3 Фаза B: cond4 WT freshness + CHoCH penalty (-8) | DEV |
 | [ARCH-52](#arch-52) | ✅ | Ретроспектива PROJECT-LOG.md по архивным задачам (55 шт) | ARCH |
 | [ARCH-45](#arch-45) | 🔄 | Плановый ревью: OutcomePredictor AUC + adaptive weights… | ARCH |
-| [ARCH-48](#arch-48) | 🔄 | Weekly Pivot Bias Filter: top-down контекст для направл… | ARCH |
+| [ARCH-48](#arch-48) | ✅ | Weekly Pivot Bias Filter: Phase B включена 28.03 (WR blocked=17% vs allowed=22%) | ARCH |
 | [TR-001](#tr-001) | 🔄 | Ежедневный разбор Watch List с живыми свечами | TRADER |
 | [TR-007](#tr-007) | 🔄 | Валидация новых детекторов перед внедрением | TRADER |
 | [DEV-61](#dev-61) | ✅ | RANGE-специфичный RR cap + min_strength_by_regime | DEV |
@@ -79,7 +79,7 @@
 | [DEV-76](#dev-76) | ✅ | ARCH-53: `core/signals/ote_detector.py` + shadow mode | DEV |
 | [ARCH-44](#arch-44) | 🔵 | Добавить роль DATA в команду | ARCH |
 | [ARCH-47](#arch-47) | 🔵 | SMC contradiction filter: SHORT при нулевых медвежьих S… | ARCH |
-| [ARCH-56](#arch-56) | 🟡 | MTF Interpreter v2 Phase B: phase/cascade/avoid_reason/named_pattern спек | ARCH |
+| [ARCH-56](#arch-56) | ✅ | MTF Interpreter v2 Phase B: phase/cascade/avoid_reason/named_pattern спек | ARCH |
 | [ARCH-57](#arch-57) | 🔵 | Confluence TRADER/RANGE tier parameter (April backlog) | ARCH |
 | [ARCH-58](#arch-58) | 🔴 | TP Architecture: все детекторы → только entry+SL, TP через get_tp_by_hierarchy() централизованно | ARCH |
 | [DEV-77](#dev-77) | 🟢 | OrderExecutor: core/trading/order_executor.py (VST/SIM execution) | DEV |
@@ -90,8 +90,8 @@
 | [DEV-82](#dev-82) | ✅ | LIQUIDITY_SWEEP detector: core/signals/liquidity_sweep_detector.py | DEV |
 | [DEV-83](#dev-83) | 🟢 | ARCH-56 реализация: phase_detector + zone_cascade + avoid_reason + named_pattern | DEV |
 | [DEV-84](#dev-84) | 🟢 | L3 Фаза C: FVG/OB + OTE условия (разблокировано DEV-63) | DEV |
-| [DEV-85](#dev-85) | 🟢 | OTE v2: Wide only + ATR-trend filter (бэктест WR≥40%) | DEV |
-| [DEV-86](#dev-86) | 🟡 | `get_tp_by_hierarchy()`: убрать R4–R5/S4–S5 расширенные уровни | DEV |
+| [DEV-85](#dev-85) | ✅ | OTE v2: Wide only [0.705-0.786] + ATR-trend gate (1h df) — 28.03.2026 | DEV |
+| [DEV-86](#dev-86) | ✅ | `get_tp_by_hierarchy()`: убрать R4–R5/S4–S5 расширенные уровни | DEV |
 
 ---
 
@@ -333,8 +333,8 @@ if df_tsl is None and prev_tsl_tf != DEFAULT_TIMEFRAME:
 
 ### TR-001 — Ежедневный разбор Watch List с живыми свечами
 **Статус:** 🔄 периодическая
-**Последний разбор:** 26.03.2026 | 6 пар live | NOT+ETC ✅ TP близко | KAITO ❌ rejection wick | → memory/trader_analyses/2026-03-26.md
-**Следующий:** 28.03.2026
+**Последний разбор:** 28.03.2026 | 20 открытых сделок | STG SHORT +0.97R, LTC SHORT +0.78R | WL: ENA RSI=12, JUP RSI=18 — extreme oversold, ждём bounce сигнал | → memory/trader_analyses/2026-03-28.md
+**Следующий:** 29.03.2026
 
 **Что делать:** взять 4-6 пар из Watch List или свежих сигналов, посмотреть живые свечи (WT, тренд, wick structure), дать оценку: подтверждает рынок сигнал или нет?
 
@@ -404,8 +404,8 @@ TRADER 22.03 — разбор 5 пар live → memory/trader_analyses/2026-03-2
 
 ---
 
-### ARCH-48 — Weekly Pivot Bias Filter: top-down контекст для направления входа 🔴
-**Статус:** 🔄 в работе — спек готов, Фаза A передана DEV-56
+### ARCH-48 — Weekly Pivot Bias Filter: top-down контекст для направления входа ✅
+**Статус:** ✅ Phase B активирована 28.03.2026 — n=67 blocked WR=17% vs n=79 allowed WR=22% → фильтр работает
 **Источник:** TRADER 24.03.2026 — анализ 23 SHORT в день памп, DOT #3043 LONG в тройном медвежьем контексте
 
 **Проблема:** Бот принимает решение о направлении (LONG/SHORT) без учёта macro-контекста пары. 23.03: 23 SHORT открыты при цене выше Weekly PP → все по SL (-1R). Одновременно трейдер вручную взял +300-560% на GRT (LONG, выше weekly PP) и SHIB (SHORT, ниже weekly PP). Каждая пара в своём контексте.
@@ -821,22 +821,304 @@ factor: 1.25   # DEV-66: было 1.1 (DEV-34), бэктест показал +0
 
 
 
-### ARCH-56 — MTF Interpreter v2 Phase B: спек phase/cascade/avoid_reason 🟡
-**Статус:** 🟡 в плане
+### ARCH-56 — MTF Interpreter v2 Phase B: спек phase/cascade/avoid_reason ✅
+**Статус:** ✅ Спек написан — 28.03.2026
 **Агент:** ARCH
 **Источник:** ARCH-50 Phase A ✅ (24.03.2026) + TRADER верификация + аудит 26.03.2026
 **Блокирует:** DEV-83
 
-**Задача ARCH:** написать финальный DEV-спек для Phase B с учётом DEV-63 (MTFSMCSnapshot готов).
+---
 
-**Компоненты спека:**
-1. `phase_detector` — impulse_up/down, correction_up_in_bear, correction_down_in_bull
-2. `zone_cascade` — cascade_os/ob (2+ старших TF в OS/OB), partial_os/ob
-3. `avoid_reason: Optional[str]` — "correction_active", "cascade_ob_short_only" и др.
-4. `pattern_name: str` — IMPULSE_UP, CASCADE_OS_REVERSAL, WAVE_3_RELOAD и др.
-5. Интеграция smc_h4/smc_d1 из MTFSMCSnapshot в phase logic
+#### Шаг 1 — Новые поля в MTFContext (`core/signals/signal_models.py`)
 
-**Полный контекст:** TASKS-ARCHIVE.md ARCH-50 + DISCUSSION.md [24.03.2026] ARCH — ARCH-50 Phase A
+```python
+@dataclass
+class MTFContext:
+    # ... существующие поля без изменений ...
+
+    # ARCH-56 Phase B: новые поля
+    phase: Optional[str] = None
+    # Значения: "impulse_up" | "impulse_down" |
+    #           "correction_down_in_bull" | "correction_up_in_bear" |
+    #           "reversal_up" | "reversal_down" | "range"
+
+    zone_state: Optional[str] = None
+    # Значения: "cascade_os" | "cascade_ob" |
+    #           "partial_os" | "partial_ob" | "neutral"
+
+    avoid_reason: Optional[str] = None
+    # Значения: "correction_active" | "cascade_ob_short_only" | "cascade_os_long_only" |
+    #           "high_vol_no_trade" | None (= торговать можно)
+
+    pattern_name: Optional[str] = None
+    # Значения: "IMPULSE_UP" | "IMPULSE_DOWN" | "WAVE_3_RELOAD" |
+    #           "BEARISH_CORRECTION_FADE" | "CASCADE_OS_REVERSAL" |
+    #           "CASCADE_OB_REVERSAL" | "REVERSAL_UP" | "REVERSAL_DOWN" | "RANGE_PLAY"
+
+    pattern_confidence: float = 0.0   # 0.0–1.0
+
+    unswept_highs: List[float] = field(default_factory=list)
+    # sell-side liquidity: нетронутые swing highs с 1h/4h за последние 20 баров
+    unswept_lows: List[float] = field(default_factory=list)
+    # buy-side liquidity: нетронутые swing lows с 1h/4h за последние 20 баров
+```
+
+---
+
+#### Шаг 2 — Новые функции в `core/mtf/mtf_interpreter.py`
+
+```python
+def _detect_phase(
+    snapshot: Dict[str, Any],
+    smc_h4: Optional["MTFSMCSnapshot"],
+    smc_d1: Optional["MTFSMCSnapshot"],
+) -> tuple[str, float]:
+    """
+    Определяет фазу рынка по иерархии TF + SMC контексту.
+    Returns: (phase_str, confidence: 0.0-1.0)
+    """
+    d1_trend = snapshot.get("1d", {}).get("trend")
+    h4_trend = snapshot.get("4h", {}).get("trend")
+    h1_trend = snapshot.get("1h", {}).get("trend")
+
+    d1_bos  = smc_d1.bos_direction  if smc_d1 else "none"
+    h4_bos  = smc_h4.bos_direction  if smc_h4 else "none"
+    h4_choch = smc_h4.choch_direction if smc_h4 else "none"
+
+    # IMPULSE: все старшие TF в одном направлении
+    if d1_trend == "UP" and h4_trend == "UP" and h1_trend == "UP":
+        conf = 0.9 if (d1_bos == "bullish" or h4_bos == "bullish") else 0.7
+        return "impulse_up", conf
+    if d1_trend == "DOWN" and h4_trend == "DOWN" and h1_trend == "DOWN":
+        conf = 0.9 if (d1_bos == "bearish" or h4_bos == "bearish") else 0.7
+        return "impulse_down", conf
+
+    # CORRECTION: 1D/4H одно направление, 1H — противоположное
+    if d1_trend == "UP" and h4_trend == "UP" and h1_trend == "DOWN":
+        return "correction_down_in_bull", 0.8
+    if d1_trend == "DOWN" and h4_trend == "DOWN" and h1_trend == "UP":
+        return "correction_up_in_bear", 0.8
+
+    # REVERSAL: CHoCH на 4H противоречит тренду 1D
+    if d1_trend == "DOWN" and h4_choch == "bullish" and h1_trend == "UP":
+        return "reversal_up", 0.6
+    if d1_trend == "UP" and h4_choch == "bearish" and h1_trend == "DOWN":
+        return "reversal_down", 0.6
+
+    return "range", 0.4
+
+
+def _detect_zone_cascade(snapshot: Dict[str, Any]) -> str:
+    """
+    Определяет состояние WT-зон на старших TF.
+    cascade_os/ob = 2 senior TF (1d+4h) в OS/OB одновременно.
+    """
+    d1_zone = snapshot.get("1d", {}).get("zone", "N")
+    h4_zone = snapshot.get("4h", {}).get("zone", "N")
+
+    if d1_zone == "OS" and h4_zone == "OS":
+        return "cascade_os"   # сильная зона покупки
+    if d1_zone == "OB" and h4_zone == "OB":
+        return "cascade_ob"   # сильная зона продажи
+    if d1_zone == "OS" or h4_zone == "OS":
+        return "partial_os"
+    if d1_zone == "OB" or h4_zone == "OB":
+        return "partial_ob"
+    return "neutral"
+
+
+def _detect_avoid_reason(
+    phase: str,
+    zone_state: str,
+    direction_bias: "SignalDirection",
+    regime: Optional[str],
+) -> Optional[str]:
+    """
+    Soft-block: причина НЕ торговать сейчас.
+    Возвращает строку или None (= торговать можно).
+    Использование: только логирование, НЕ hard-block.
+    """
+    LONG  = SignalDirection.LONG
+    SHORT = SignalDirection.SHORT
+
+    # Коррекции: не входим по направлению коррекции (против тренда)
+    if phase == "correction_up_in_bear" and direction_bias == LONG:
+        return "correction_active"   # подскок вверх в медвежьем — не LONG
+    if phase == "correction_down_in_bull" and direction_bias == SHORT:
+        return "correction_active"   # откат вниз в бычьем — не SHORT
+
+    # Cascade zone против направления
+    if zone_state == "cascade_ob" and direction_bias == LONG:
+        return "cascade_ob_short_only"  # 1D+4H в OB — только SHORT здесь
+    if zone_state == "cascade_os" and direction_bias == SHORT:
+        return "cascade_os_long_only"   # 1D+4H в OS — только LONG здесь
+
+    if regime == "HIGH_VOL":
+        return "high_vol_no_trade"
+
+    return None
+
+
+def _detect_pattern(
+    phase: str,
+    zone_state: str,
+    senior_matches: int,
+) -> tuple[str, float]:
+    """
+    Определяет named pattern для сигнала.
+    Returns: (pattern_name, confidence)
+    """
+    if phase == "impulse_up" and senior_matches == 3:
+        return "IMPULSE_UP", 0.85
+    if phase == "impulse_down" and senior_matches == 3:
+        return "IMPULSE_DOWN", 0.85
+    if phase == "correction_down_in_bull" and zone_state in ("cascade_os", "partial_os"):
+        return "WAVE_3_RELOAD", 0.75    # откат в бычьем + OS = откуп импульса
+    if phase == "correction_up_in_bear" and zone_state in ("cascade_ob", "partial_ob"):
+        return "BEARISH_CORRECTION_FADE", 0.70  # подскок в медвежьем + OB = шорт
+    if zone_state == "cascade_os" and phase != "impulse_up":
+        return "CASCADE_OS_REVERSAL", 0.65
+    if zone_state == "cascade_ob" and phase != "impulse_down":
+        return "CASCADE_OB_REVERSAL", 0.65
+    if phase == "reversal_up":
+        return "REVERSAL_UP", 0.60
+    if phase == "reversal_down":
+        return "REVERSAL_DOWN", 0.60
+    return "RANGE_PLAY", 0.40
+```
+
+---
+
+#### Шаг 3 — Обновить `analyze_context()` в `mtf_interpreter.py`
+
+Добавить параметры и вызовы новых функций:
+
+```python
+def analyze_context(
+    snapshot,
+    current_price=0.0,
+    weekly_pivots=None,
+    regime=None,
+    smc_h4=None,         # ← новый параметр (Optional[MTFSMCSnapshot])
+    smc_d1=None,         # ← новый параметр (Optional[MTFSMCSnapshot])
+    df_1h=None,          # ← новый параметр (для unswept liquidity)
+    df_4h=None,          # ← новый параметр (для unswept liquidity)
+) -> MTFContext:
+    ...
+    # после вычисления existing полей:
+    phase, phase_conf = _detect_phase(snapshot, smc_h4, smc_d1)
+    zone_state = _detect_zone_cascade(snapshot)
+    avoid_reason = _detect_avoid_reason(phase, zone_state, direction_bias, regime)
+    pattern_name, pattern_conf = _detect_pattern(phase, zone_state, senior_matches)
+    unswept_highs, unswept_lows = _extract_unswept_liquidity(df_1h, df_4h)
+
+    ctx = MTFContext(
+        # ... existing fields ...
+        smc_h4=smc_h4,
+        smc_d1=smc_d1,
+        phase=phase,
+        zone_state=zone_state,
+        avoid_reason=avoid_reason,
+        pattern_name=pattern_name,
+        pattern_confidence=phase_conf,
+        unswept_highs=unswept_highs,
+        unswept_lows=unswept_lows,
+    )
+```
+
+```python
+def _extract_unswept_liquidity(
+    df_1h: Optional[pd.DataFrame],
+    df_4h: Optional[pd.DataFrame],
+    lookback: int = 20,
+) -> tuple[list[float], list[float]]:
+    """
+    Из swing H/L 1h и 4h извлекает нетронутые уровни ликвидности.
+    Swing High "unswept" = за последние lookback баров никто не торговал выше него.
+    Sources: calculate_trend() → df["trend"] содержит swing points через SMA/crossover.
+
+    NOTE: Простая версия — берём max rolling high / min rolling low за lookback баров
+    как приближение к реальным swing H/L. Полноценные swing points = DEV-83 улучшение.
+    """
+    highs, lows = [], []
+    for df in (df_1h, df_4h):
+        if df is None or len(df) < lookback:
+            continue
+        tail = df.tail(lookback * 2)  # последние 40 баров для контекста
+        recent = tail.tail(lookback)   # последние 20 баров = "текущая зона"
+        recent_high = recent["high"].max() if "high" in recent.columns else 0
+        overall_max = tail["high"].max() if "high" in tail.columns else 0
+        overall_min = tail["low"].min() if "low" in tail.columns else 0
+        recent_low = recent["low"].min() if "low" in recent.columns else 0
+
+        # Unswept high: выше текущего диапазона (никто не брал стопы там)
+        if overall_max > recent_high > 0:
+            highs.append(round(overall_max, 8))
+        # Unswept low: ниже текущего диапазона
+        if overall_min < recent_low and overall_min > 0:
+            lows.append(round(overall_min, 8))
+
+    return sorted(set(highs), reverse=True), sorted(set(lows))
+```
+
+---
+
+#### Шаг 4 — Обновить caller в `trading_intelligence.py`
+
+Найти вызов `analyze_context(snapshot, ...)` и передать новые аргументы:
+```python
+mtf_ctx = mtf_interpreter.analyze_context(
+    snapshot=mtf_snapshot,
+    current_price=current_price,
+    weekly_pivots=weekly_pivots,
+    regime=regime,
+    smc_h4=smc_h4_snapshot,   # из ARCH-51 shadow mode
+    smc_d1=smc_d1_snapshot,   # из ARCH-51 shadow mode
+    df_1h=df_1h,
+    df_4h=df_4h,
+)
+```
+
+---
+
+#### Шаг 5 — Soft-block логика в `trading_intelligence.py`
+
+**Phase B = shadow mode по умолчанию** (`phase_guard_enabled: false` в config.yaml).
+
+```python
+if mtf_ctx.avoid_reason:
+    logger.info(
+        "[phase_guard] %s: avoid_reason=%s pattern=%s phase=%s",
+        symbol, mtf_ctx.avoid_reason, mtf_ctx.pattern_name, mtf_ctx.phase
+    )
+    # SHADOW MODE: только лог, не блокирует сигнал
+    # После накопления данных (2 недели) → включить hard block через config
+```
+
+---
+
+#### Шаг 6 — Форматтер (`core/ui/intelligence_formatter.py`)
+
+Добавить в Telegram-вывод:
+```
+📊 MTF Phase: WAVE_3_RELOAD (conf=75%)
+⚠️ Avoid: correction_active
+```
+Только если `pattern_name` и `avoid_reason` не None.
+
+---
+
+#### Файлы для изменения (DEV-83):
+1. `core/signals/signal_models.py` — новые поля в MTFContext (backward-compat: всё Optional/default)
+2. `core/mtf/mtf_interpreter.py` — 4 новые функции + обновить `analyze_context()`
+3. `core/trading_intelligence.py` — обновить вызов `analyze_context()` + soft-block лог
+4. `core/ui/intelligence_formatter.py` — показывать phase/pattern/avoid_reason
+5. `config.yaml` — `mtf.phase_guard_enabled: false`
+
+**Критерий готовности:**
+- В логах появляется `[phase_guard]` при coorrection/cascade противоречиях
+- `avoid_reason` виден в Telegram для MTF_BIAS сигналов
+- 0 регрессий в существующих тестах
 
 ---
 
@@ -1044,8 +1326,8 @@ TP должен определяться из скопления факторо�
 
 ---
 
-### DEV-86 — `get_tp_by_hierarchy()`: убрать расширенные уровни R4–R5/S4–S5 🟡
-**Статус:** 🟡 требует реализации
+### DEV-86 — `get_tp_by_hierarchy()`: убрать расширенные уровни R4–R5/S4–S5 ✅
+**Статус:** ✅ реализовано — строка 968 pivot_calculator_fixed.py уже содержит range(1,4)
 **Агент:** DEV
 **Источник:** TRADER 29.03.2026 — баг ONT/USDT SHORT #3523, `tp_source: pivot_1W_R4`
 **Зависит от:** —
