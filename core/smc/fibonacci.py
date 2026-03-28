@@ -217,8 +217,20 @@ def detect_fibonacci(
             ote_top, ote_bottom = _calc_ote(impulse_high, impulse_low, direction)
             ote_mid = (ote_top + ote_bottom) / 2.0
 
-            # Цена в OTE?
-            price_in_ote = ote_bottom <= current_price <= ote_top if ote_top > ote_bottom else False
+            # DEV-85 Step 0: price-invalidation (ARCH spec) — структурный BOS провалился?
+            # LONG: если цена упала ниже impulse_low → BOS вверх недействителен → зона stale
+            # SHORT: если цена выросла выше impulse_high → BOS вниз недействителен → зона stale
+            structure_valid = True
+            if direction == "LONG" and current_price < impulse_low:
+                structure_valid = False
+            elif direction == "SHORT" and current_price > impulse_high:
+                structure_valid = False
+
+            # Цена в OTE? (только если структура валидна)
+            price_in_ote = (
+                (ote_bottom <= current_price <= ote_top if ote_top > ote_bottom else False)
+                if structure_valid else False
+            )
 
             zones.append(FibZone(
                 direction=direction,
