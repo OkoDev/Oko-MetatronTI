@@ -45,7 +45,6 @@ class PivotReversalStrategy(BaseStrategy):
         cfg = config or {}
         self.min_strength  = int(cfg.get("min_strength", 60))
         self.tp_rr         = float(cfg.get("tp_rr", 2.5))
-        self.sl_buffer_pct = float(cfg.get("sl_buffer_pct", 0.1))
         self.logger.info(
             "PivotReversalStrategy: min_strength=%d tp_rr=%.1f",
             self.min_strength, self.tp_rr
@@ -134,7 +133,6 @@ class PivotReversalStrategy(BaseStrategy):
         TP: entry ± sl_dist × tp_rr.
         """
         is_long = direction.upper() == "LONG"
-        buf = self.sl_buffer_pct / 100.0
 
         if atr and atr > 0 and entry_price > 0:
             sl_dist = max(
@@ -143,9 +141,6 @@ class PivotReversalStrategy(BaseStrategy):
             )
         else:
             sl_dist = entry_price * 0.02  # 2% hard fallback
-
-        # Дополнительный буфер
-        sl_dist *= (1 + buf)
 
         sl = (entry_price - sl_dist) if is_long else (entry_price + sl_dist)
         tp = (entry_price + sl_dist * self.tp_rr) if is_long else (entry_price - sl_dist * self.tp_rr)

@@ -83,7 +83,7 @@ async def _build_wlr_message(bot, symbol: str) -> str:
                 df_1h  = await bot.data_collector.get_ohlcv(symbol, "1h", limit=60)
                 if df_1h is not None and len(df_1h) >= 20:
                     df_1h = calculate_wt(df_1h)
-                    df_1h = calculate_trend(df_1h)
+                    df_1h = calculate_trend(df_1h, atr_period=tr_cfg.get("atr_period", 43), factor=tr_cfg.get("factor", 1.0))
                     regime = clf.classify_from_dataframes(df, df_1h) or "?"
                 else:
                     regime = clf.classify_from_dataframes(df, df) or "?"

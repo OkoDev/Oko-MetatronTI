@@ -328,7 +328,7 @@ class TestReversalScannerStrategy:
     """Тесты стратегии выбора лучшего CONFLUENCE сигнала и расчёта SL/TP."""
 
     def setup_method(self):
-        self.strategy = get_strategy("reversal_scanner")
+        self.strategy = get_strategy("wt_entry")
         self.ctx = _ctx()
 
     # ── analyze: выбор сигнала ────────────────────────────────────────────────

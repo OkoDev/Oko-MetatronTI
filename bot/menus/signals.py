@@ -134,7 +134,8 @@ async def _trend_state(sym: str, dc) -> dict | None:
         df = await dc.get_ohlcv(sym, "1h", limit=100)
         if df is None or len(df) < 60:
             return None
-        df_t = calculate_trend(df, atr_period=43, factor=1.0)
+        _tr_cfg_sig = (bot.config.get("analysis.indicators.trend", {}) if hasattr(bot, "config") and bot.config else {})
+        df_t = calculate_trend(df, atr_period=int(_tr_cfg_sig.get("atr_period", 43)), factor=float(_tr_cfg_sig.get("factor", 1.0)))
         if "trend" not in df_t.columns:
             return None
         last5 = df_t["trend"].iloc[-5:]

@@ -255,11 +255,136 @@ def detect_senior_reversal(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]
     }
 
 
+# ── ARCH-56 Phase B: вспомогательные функции ──────────────────────────────────
+
+def _detect_phase(snapshot: Dict[str, Any]) -> tuple:
+    """
+    Определяет фазу рынка по иерархии TF.
+    Returns: (phase_str, confidence: 0.0-1.0)
+    """
+    d1 = snapshot.get("1d", {}).get("trend")
+    h4 = snapshot.get("4h", {}).get("trend")
+    h1 = snapshot.get("1h", {}).get("trend")
+
+    if d1 == "UP" and h4 == "UP" and h1 == "UP":
+        return "impulse_up", 0.9
+    if d1 == "DOWN" and h4 == "DOWN" and h1 == "DOWN":
+        return "impulse_down", 0.9
+    if d1 == "UP" and h4 == "UP" and h1 == "DOWN":
+        return "correction_down_in_bull", 0.8
+    if d1 == "DOWN" and h4 == "DOWN" and h1 == "UP":
+        return "correction_up_in_bear", 0.8
+    if d1 == "DOWN" and h4 == "UP" and h1 == "UP":
+        return "reversal_up", 0.6
+    if d1 == "UP" and h4 == "DOWN" and h1 == "DOWN":
+        return "reversal_down", 0.6
+    return "range", 0.4
+
+
+def _detect_zone_cascade(snapshot: Dict[str, Any]) -> str:
+    """
+    Состояние WT-зон на старших TF.
+    cascade_os/ob = 1D+4H оба в OS/OB.
+    """
+    d1z = snapshot.get("1d", {}).get("zone", "N")
+    h4z = snapshot.get("4h", {}).get("zone", "N")
+    if d1z == "OS" and h4z == "OS":
+        return "cascade_os"
+    if d1z == "OB" and h4z == "OB":
+        return "cascade_ob"
+    if d1z == "OS" or h4z == "OS":
+        return "partial_os"
+    if d1z == "OB" or h4z == "OB":
+        return "partial_ob"
+    return "neutral"
+
+
+def _detect_avoid_reason(
+    phase: str,
+    zone_state: str,
+    direction_bias: "SignalDirection",
+    regime: Optional[str],
+) -> Optional[str]:
+    """
+    Soft-block: причина НЕ торговать сейчас (только лог, не hard-block).
+    Вернуть None = торговать можно.
+    """
+    LONG = SignalDirection.LONG
+    SHORT = SignalDirection.SHORT
+    if phase == "correction_up_in_bear" and direction_bias == LONG:
+        return "correction_active"
+    if phase == "correction_down_in_bull" and direction_bias == SHORT:
+        return "correction_active"
+    if zone_state == "cascade_ob" and direction_bias == LONG:
+        return "cascade_ob_short_only"
+    if zone_state == "cascade_os" and direction_bias == SHORT:
+        return "cascade_os_long_only"
+    if regime == "HIGH_VOL":
+        return "high_vol_no_trade"
+    return None
+
+
+def _detect_pattern(phase: str, zone_state: str, senior_matches: int) -> tuple:
+    """
+    Named pattern для сигнала.
+    Returns: (pattern_name, confidence)
+    """
+    if phase == "impulse_up" and senior_matches == 3:
+        return "IMPULSE_UP", 0.85
+    if phase == "impulse_down" and senior_matches == 3:
+        return "IMPULSE_DOWN", 0.85
+    if phase == "correction_down_in_bull" and zone_state in ("cascade_os", "partial_os"):
+        return "WAVE_3_RELOAD", 0.75
+    if phase == "correction_up_in_bear" and zone_state in ("cascade_ob", "partial_ob"):
+        return "BEARISH_CORRECTION_FADE", 0.70
+    if zone_state == "cascade_os" and phase != "impulse_up":
+        return "CASCADE_OS_REVERSAL", 0.65
+    if zone_state == "cascade_ob" and phase != "impulse_down":
+        return "CASCADE_OB_REVERSAL", 0.65
+    if phase == "reversal_up":
+        return "REVERSAL_UP", 0.60
+    if phase == "reversal_down":
+        return "REVERSAL_DOWN", 0.60
+    return "RANGE_PLAY", 0.40
+
+
+def _extract_unswept_liquidity(
+    df_1h=None, df_4h=None, lookback: int = 20
+) -> tuple:
+    """
+    Нетронутые уровни ликвидности с 1h/4h.
+    Unswept high = max за предыдущие lookback баров, которого нет в последних 10 барах.
+    Unswept low  = min за предыдущие lookback баров, которого нет в последних 10 барах.
+    """
+    highs: list = []
+    lows: list = []
+    for df in (df_1h, df_4h):
+        if df is None or len(df) < lookback + 10:
+            continue
+        try:
+            window = df.tail(lookback + 10)
+            prior  = window.iloc[:-10]
+            recent = window.iloc[-10:]
+            h_max = float(prior["high"].max()) if "high" in prior.columns else 0.0
+            l_min = float(prior["low"].min())  if "low"  in prior.columns else 0.0
+            r_max = float(recent["high"].max()) if "high" in recent.columns else 0.0
+            r_min = float(recent["low"].min())  if "low"  in recent.columns else 0.0
+            if h_max > r_max > 0:
+                highs.append(round(h_max, 8))
+            if 0 < l_min < r_min:
+                lows.append(round(l_min, 8))
+        except Exception:
+            pass
+    return sorted(set(highs), reverse=True), sorted(set(lows))
+
+
 def analyze_context(
     snapshot: Dict[str, Dict[str, Any]],
     current_price: float = 0.0,
     weekly_pivots: Optional[Dict[str, float]] = None,
     regime: Optional[str] = None,
+    df_1h=None,   # ARCH-56: для unswept liquidity
+    df_4h=None,   # ARCH-56: для unswept liquidity
 ) -> MTFContext:
     """
     ARCH-12: Строит MTFContext — аналитический фундамент для всех сигналов.
@@ -268,11 +393,16 @@ def analyze_context(
     "насколько сильный тренд по ТФ". Используется для модификации strength
     сигналов через direction_multiplier() и zone_multiplier().
 
+    ARCH-56 Phase B (новые поля): phase, zone_state, avoid_reason, pattern_name,
+    pattern_confidence, unswept_highs, unswept_lows.
+
     Args:
         snapshot: dict из collect_mtf_data() → {tf: {trend, wt1, wt2, zone, wt_cross}}
         current_price: текущая цена (для price_zone)
         weekly_pivots: dict с ключами PP, S1-S5, R1-R5 (для price_zone)
         regime: режим рынка (TREND_UP/DOWN/RANGE/HIGH_VOL)
+        df_1h: OHLCV 1h DataFrame (для unswept liquidity, опционально)
+        df_4h: OHLCV 4h DataFrame (для unswept liquidity, опционально)
 
     Returns:
         MTFContext (всегда, даже при слабых данных — direction_bias=NEUTRAL)
@@ -343,6 +473,13 @@ def analyze_context(
             # Линейная интерполяция: S5=0.0, PP=0.5, R5=1.0
             price_zone = round(max(0.0, min(1.0, (current_price - s5) / (r5 - s5))), 3)
 
+    # ── 6. ARCH-56 Phase B: фаза, зона, avoid_reason, паттерн ────────
+    _phase, _phase_conf = _detect_phase(snapshot)
+    _zone_state = _detect_zone_cascade(snapshot)
+    _avoid_reason = _detect_avoid_reason(_phase, _zone_state, direction_bias, regime)
+    _pattern_name, _pattern_conf = _detect_pattern(_phase, _zone_state, senior_matches)
+    _unswept_h, _unswept_l = _extract_unswept_liquidity(df_1h, df_4h)
+
     ctx = MTFContext(
         direction_bias=direction_bias,
         bias_strength=bias_strength,
@@ -354,13 +491,21 @@ def analyze_context(
         regime=regime,
         bull_pct=bull_pct,
         bear_pct=bear_pct,
+        phase=_phase,
+        zone_state=_zone_state,
+        avoid_reason=_avoid_reason,
+        pattern_name=_pattern_name,
+        pattern_confidence=round(_pattern_conf, 2),
+        unswept_highs=_unswept_h,
+        unswept_lows=_unswept_l,
     )
 
     logger.info(
-        "[mtf_context] bias=%s str=%.2f zone=%.2f aligned=%d%% senior=%d/3 regime=%s spreads=%s",
+        "[mtf_context] bias=%s str=%.2f zone=%.2f aligned=%d%% senior=%d/3 regime=%s "
+        "phase=%s zone_state=%s pattern=%s avoid=%s",
         direction_bias.value, bias_strength, price_zone,
         aligned_pct, senior_matches, regime,
-        {tf: s for tf, s in wt_spreads.items() if tf in ("1h", "4h", "1d")},
+        _phase, _zone_state, _pattern_name, _avoid_reason,
     )
 
     return ctx

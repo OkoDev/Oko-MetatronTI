@@ -21,12 +21,12 @@ from strategies.registry import register_strategy
 logger = logging.getLogger(__name__)
 
 
-@register_strategy("reversal_scanner")
-class ReversalScannerStrategy(BaseStrategy):
+@register_strategy("wt_entry")
+class WtEntryStrategy(BaseStrategy):
     """
-    Reversal Scanner Strategy — мульти-факторный разворотный сетап.
+    WT Entry Strategy — вход по SignalType.CONFLUENCE (WT-based reversal сканер).
 
-    Параметры конфига (под ключом strategies.reversal_scanner в config.yaml):
+    Параметры конфига (под ключом strategies.wt_entry в config.yaml):
       min_strength:   int  = 60   — минимальный score для генерации сигнала
       tp_rr:          float = 3.0 — RR цели (TP = entry ± sl_dist × tp_rr)
       sl_buffer_pct:  float = 0.3 — буфер за TSL-линией, %

@@ -970,6 +970,9 @@ class TradeSimulator:
 
                 try:
                     from core.indicators import calculate_trend, get_trend_info
+                    from core.config_loader import config as _cfg_trend
+                    _tsl_atr_p = int(_cfg_trend.get("analysis.indicators.trend.atr_period", 43))
+                    _tsl_factor = float(_cfg_trend.get("analysis.indicators.trend.factor", 1.0))
 
                     df_tsl = None
                     tsl_tf_used = tf
@@ -996,7 +999,7 @@ class TradeSimulator:
                             try:
                                 df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
                                 if df_c is not None and len(df_c) >= 50:
-                                    df_c_trend = calculate_trend(df_c)
+                                    df_c_trend = calculate_trend(df_c, atr_period=_tsl_atr_p, factor=_tsl_factor)
                                     trend_val = int(df_c_trend["trend"].iloc[-1])
                                     if (direction == "LONG" and trend_val == 1) or \
                                        (direction == "SHORT" and trend_val == -1):
@@ -1010,7 +1013,7 @@ class TradeSimulator:
                                 try:
                                     df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
                                     if df_c is not None and len(df_c) >= 50:
-                                        df_c_trend = calculate_trend(df_c)
+                                        df_c_trend = calculate_trend(df_c, atr_period=_tsl_atr_p, factor=_tsl_factor)
                                         trend_val = int(df_c_trend["trend"].iloc[-1])
                                         if (direction == "LONG" and trend_val == 1) or \
                                            (direction == "SHORT" and trend_val == -1):
@@ -1054,7 +1057,7 @@ class TradeSimulator:
                                                 symbol, timeframe=lower_tf, limit=100
                                             )
                                             if df_lower is not None and len(df_lower) >= 50:
-                                                df_lower_trend = calculate_trend(df_lower)
+                                                df_lower_trend = calculate_trend(df_lower, atr_period=_tsl_atr_p, factor=_tsl_factor)
                                                 _lower_info = get_trend_info(df_lower_trend)
                                                 _curr_info = get_trend_info(df_tsl)
                                                 if (_lower_info and _curr_info and
@@ -1092,7 +1095,7 @@ class TradeSimulator:
                                         symbol, timeframe=prev_tsl_tf, limit=100
                                     )
                                     if df_fallback is not None and len(df_fallback) >= 50:
-                                        df_tsl = calculate_trend(df_fallback)
+                                        df_tsl = calculate_trend(df_fallback, atr_period=_tsl_atr_p, factor=_tsl_factor)
                                         tsl_tf_used = prev_tsl_tf
                                         logger.info(
                                             "[cascade_tsl] %s: trend reversed, fallback to prev_tsl_tf=%s",
@@ -1125,7 +1128,7 @@ class TradeSimulator:
                             try:
                                 df_senior = await data_collector.get_ohlcv(symbol, timeframe=_tsl_try, limit=100)
                                 if df_senior is not None and len(df_senior) >= 50:
-                                    df_senior_trend = calculate_trend(df_senior)
+                                    df_senior_trend = calculate_trend(df_senior, atr_period=_tsl_atr_p, factor=_tsl_factor)
                                     trend_val = int(df_senior_trend["trend"].iloc[-1])
                                     if (direction == "LONG" and trend_val == 1) or \
                                        (direction == "SHORT" and trend_val == -1):
@@ -1137,7 +1140,7 @@ class TradeSimulator:
                                 break
 
                     if df_tsl is None:
-                        df_tsl = calculate_trend(df)
+                        df_tsl = calculate_trend(df, atr_period=_tsl_atr_p, factor=_tsl_factor)
 
                     trend_info = get_trend_info(df_tsl)
 
@@ -1169,10 +1172,17 @@ class TradeSimulator:
             max_high = 0.0
             min_low = float("inf")
 
+            # DEV-88: SL по CLOSE (не LOW) для источников на основе TSL-линии.
+            # TSL линия — индикаторный уровень, свечной фитиль через неё не = выход.
+            # Реальный выход подтверждается закрытием ниже (LONG) / выше (SHORT).
+            _sl_src = (trade.get("sl_source") or "").lower()
+            _sl_check_close = _sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl")
+
             for _, row in df.iterrows():
-                high = float(row.get("high", 0) or 0)
-                low  = float(row.get("low",  0) or 0)
-                open_ = float(row.get("open", 0) or 0)
+                high  = float(row.get("high",  0) or 0)
+                low   = float(row.get("low",   0) or 0)
+                close = float(row.get("close", 0) or 0)
+                open_ = float(row.get("open",  0) or 0)
 
                 if high > 0:
                     max_high = max(max_high, high)
@@ -1180,7 +1190,7 @@ class TradeSimulator:
                     min_low = min(min_low, low)
 
                 if direction == "LONG":
-                    hit_sl  = sl  is not None and low  <= sl
+                    hit_sl = sl is not None and (close <= sl if _sl_check_close else low <= sl)
                     # TP1 фиксирует часть — только если ещё не сработал
                     if tp1_price and tp1_hit_at is None and high >= tp1_price:
                         tp1_hit_at = datetime.now(timezone.utc).isoformat()
@@ -1221,7 +1231,7 @@ class TradeSimulator:
                         elif hit_tp:
                             exit_status, exit_price_val = STATUS_TP, tp
                 else:  # SHORT
-                    hit_sl  = sl is not None and high >= sl
+                    hit_sl = sl is not None and (close >= sl if _sl_check_close else high >= sl)
                     if tp1_price and tp1_hit_at is None and low <= tp1_price:
                         tp1_hit_at = datetime.now(timezone.utc).isoformat()
                         try:

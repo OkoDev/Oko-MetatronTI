@@ -1,243 +1,235 @@
 <original_task>
-Стабилизационный спринт проекта Oko MTF Bot.
-Цель: заморозить фичи, привести кодовую базу в порядок, создать защитные механизмы, задокументировать.
-Принцип: ни одна строка логики не меняется. Только чистка, документация, защита.
-
-План: Фазы 0-5 из файла `C:\Users\yogoru\.claude\plans\glowing-painting-koala.md`
+Сессия DEV от 28.03.2026. Цель: взять задачи по приоритету из бэклога DEV.
+Выполнено за сессию: DEV-84 (L3 Фаза C shadow logging).
+DEV-83 и DEV-88 были выполнены другими сессиями в этот же день.
 </original_task>
 
 <work_completed>
 
-## Фаза 0 — Защита ✅ (предыдущая сессия)
-- Git commit 161 файл: `52c4348` — "checkpoint: stabilization start"
-- Бэкап БД: `backups/subscriptions_2026-03-27_XXXX.db` (7.3 MB)
-- Авто-бэкап функция `_backup_database()` в `bot_with_subscriptions.py` — хранит 7 копий
-- Git tag `v0.9-stable`
+## DEV-88 — SL improvements (выполнено другой сессией, незакоммичено)
 
-## Фаза 1 — Чистка мёртвого кода ✅ (предыдущая сессия)
-- Commit `bc64698` — "stabilization: phase 1 — dead code archived"
-- `domain/`, `infrastructure/`, `presentation/` → `_archive/skeleton/`
-- 7 устаревших скриптов → `scripts/_archive/`
-- Пустые папки docs/api/, docs/architecture/, docs/guides/ — удалены
+**1. Убран sl_buffer_pct:**
+- `strategies/built_in/pivot_reversal_strategy.py`: удалён `self.sl_buffer_pct`, `buf`, `sl_dist *= (1 + buf)`
+- `config.yaml`: удалена строка `sl_buffer_pct: 0.1`
 
-## Фаза 2 — Дедупликация вычислений ✅ (текущая сессия)
-**Файл:** `bot/loops/scan_loop.py`, строки 623-633
+**2. SL по CLOSE для tsl_line источников:**
+- `core/trading/trade_simulator.py` строки ~1172-1180:
+  ```python
+  _sl_src = (trade.get("sl_source") or "").lower()
+  _sl_check_close = _sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl")
+  ```
+  Рационал: TSL-линия — индикаторный уровень, фитиль через неё не = выход. Нужно закрытие.
 
-**Проблема:** В блоке divergences (строки 625-628) выполнялись повторные вызовы:
+**3. calculate_trend читает atr_period/factor из config везде:**
+- `core/trading/trade_simulator.py` — 6 мест
+- `bot/loops/scan_loop.py`, `bot/handlers/scan_handlers.py`, `bot/menus/signals.py`
+- `core/pivots/pivot_reversal.py`, `core/indicators/trend_signals.py`
+
+---
+
+## DEV-83 — ARCH-56 Phase B: MTF Interpreter v2 (незакоммичено)
+
+**`core/signals/signal_models.py`** — 7 новых полей в MTFContext:
 ```python
-_df15_t = calculate_trend(df_entry)
-_df15_t = calculate_wt(_df15_t)
-_df1h_t = calculate_trend(df_1h) if df_1h is not None and not df_1h.empty else None
+phase: Optional[str] = None        # impulse_up|impulse_down|correction_*|reversal_*|range
+zone_state: Optional[str] = None   # cascade_os|cascade_ob|partial_os|partial_ob|neutral
+avoid_reason: Optional[str] = None # correction_active|cascade_ob_short_only|...
+pattern_name: Optional[str] = None # IMPULSE_UP|WAVE_3_RELOAD|BEARISH_CORRECTION_FADE|...
+pattern_confidence: float = 0.0
+unswept_highs: List[float] = field(default_factory=list)
+unswept_lows: List[float] = field(default_factory=list)
 ```
-Хотя ARCH-18 pre-compute (строки 421-435) уже вычислил эти колонки.
 
-**Фикс:** Удалены повторные вызовы, MarketRegimeClassifier.classify_from_dataframes() теперь получает df_entry и df_1h напрямую.
+**`core/mtf/mtf_interpreter.py`** — 5 новых функций:
+- `_detect_phase(snapshot)` — тренд 1d/4h/1h → phase_str
+- `_detect_zone_cascade(snapshot)` — WT-зоны 1d+4h → zone_state
+- `_detect_avoid_reason(...)` → Optional[str]
+- `_detect_pattern(...)` → (pattern_name, confidence)
+- `_extract_unswept_liquidity(df_1h, df_4h)` → (highs, lows)
+- `analyze_context(snapshot, df_entry, df_1h=None, df_4h=None)` — обновлена сигнатура
 
-**Остальное уже было правильно:**
-- `trading_intelligence.py` строки 674-676: guard `if "cross_up" not in df_entry.columns` — не дублирует
-- `trading_intelligence.py` строки 695-697: аналогичный guard — не дублирует
-- `trading_intelligence.py` строка 1874: `_compute_atr` делегирует в `compute_atr` из indicators.py
-- `trading_intelligence.py` строка 1795: отдельный `get_ohlcv` — ручной /intelligence запрос, норма
-
-## Фаза 3 — Документация ✅ (текущая сессия)
-**Файл:** `config.yaml` — добавлен header с реестром shadow/disabled параметров (строки 1-22):
-- `ote_shadow_mode: true` → активировать ~09.04.2026
-- `market_stress_gate.enabled: false` → shadow
-- `weekly_bias_filter.enabled: false` → Фаза A
-- `l3_checker.enabled: false` → shadow DEV-52
-- `ml.use_outcome_predictor: false` → AUC<0.55
-- `signals.mtf_alert_enabled: false` → убран насовсем DEV-31
-- `confluence.4h_gate_enabled: false` → временно ARCH-26
-
-**Обнаружено:** Все приоритетные модули уже имеют docstrings:
-- `core/intelligence/ml_enhancer.py` ✅
-- `core/intelligence/confidence_calculator.py` ✅
-- `core/intelligence/decision_trace.py` ✅
-- `core/intelligence/recommendation_generator.py` ✅
-- `core/smc/deep_analysis.py` ✅
-- `core/trading_intelligence.py` — section-комментарии `# ──` уже есть ✅
-
-## Фаза 4 — Тесты ✅ (текущая сессия)
-**Новые файлы:**
-
-`tests/unit/test_funding_detector.py` — 9 тестов:
-- TestFundingDetectorFilters: 4 теста (порог, None, мало баров, нет кросса)
-- TestFundingDetectorSignal: 5 тестов (LONG, SHORT, shadow flag, strength scale, symbol/tf)
-
-`tests/unit/test_liquidity_sweep_detector.py` — 8 тестов:
-- TestLiquiditySweepFilters: 3 теста (мало баров, нет sweep, WT не в зоне)
-- TestLiquiditySweepSignal: 5 тестов (LONG, SHORT, pivot bonus, data fields, symbol/tf)
-
-Результат: **17/17 ✅**
-
-**Ключевое открытие при разработке тестов:**
-`detect_swing_points(period=5)` требует настоящий параболический паттерн (5+ баров выше/ниже с обеих сторон). Плоский df с одним "провалом" не работает. Решение: синусоидальный df через `np.linspace(0, 4*pi, n)`.
-
-## Фаза 5 — Config freeze ✅ (текущая сессия)
-- `config_snapshots/config_v0.9_2026-03-27.yaml` — снапшот текущей конфигурации
-- `.gitignore`: добавлен `config_snapshots/`
-- Финальный commit: `65676fb` — "stabilization: Фазы 2-5"
-- Git tag `v1.0-stable` → `65676fb`
-
-## Итоговые коммиты стабилизации
+**`core/trading_intelligence.py`** — _build_mtf_context() фетчит df_4h, передаёт df_1h+df_4h в analyze_context(); shadow лог:
+```python
+logger.info("[phase56] %s phase=%s zone=%s pattern=%s(%.2f) avoid=%s", ...)
 ```
-52c4348  checkpoint: stabilization start — all current work
-bc64698  stabilization: phase 1 — dead code archived
-b53cf05  feat: auto-backup DB at start, keep 7 copies
-65676fb  stabilization: Фазы 2-5 — дедупликация, документация, тесты, config snapshot
+
+**`core/ui/intelligence_formatter.py`** — строка в TG-сообщении:
 ```
-Tags: `v0.9-stable` (52c4348), `v1.0-stable` (65676fb)
+🧭 Фаза: 🚀 impulse_up · IMPULSE_UP ⚠️ correction_active
+```
+
+**`config.yaml`**: добавлена строка `phase_guard_enabled: false`
+
+---
+
+## DEV-84 — L3 Фаза C shadow logging (выполнено в этой сессии, незакоммичено)
+
+**`core/trading_intelligence.py`** строки 1197–1223.
+Вставлено ВНУТРИ `if _l3_52:`, ПОСЛЕ DEV-52-L3 сводного лога, ПЕРЕД `except Exception as _e52ti:`.
+
+Логирует: `[SYM] DEV-84-L3C cond_c1=True(4h_fvg_sup=Y) cond_c2=False(ote=N)`
+
+- **cond_c1**: FVG support/resistance из `mtf_context.smc_h4` (4h snapshot, DEV-63)
+- **cond_c2**: active OTE из `smc_context.fibonacci.active_ote` (DEV-85)
+- Всё в try/except — shadow, production flow не затронут
+
+---
+
+## DEV-85 — OTE v2 (закоммичено: cb4248e, 8731937)
+
+- `core/smc/fibonacci.py`: price-invalidation stale fix
+- `core/signals/ote_detector.py`: wide zone [0.705-0.786] + ATR-trend gate
+
+---
+
+## config.yaml изменения (незакоммичены)
+
+- `weekly_bias_filter.enabled: true` (Phase B, 28.03)
+- `sl_cooldown_hours: 4.0 → 2.0`
+- `min_volume_usd: 700000 → 0`
+- `tsl_buffer_pct` — закомментирован (мёртвый параметр)
 
 </work_completed>
 
 <work_remaining>
 
-## 🔴 Приоритет 1 — DEV-75 (КРИТИЧЕСКИЙ БАГ, не решён)
-**Задача:** Инвертировать иерархию TP в `get_tp_by_hierarchy()`
-**Проблема:** Текущий порядок 1D→1W→confluence→1M неверный, должен быть 1M→1W→1D
-**Как найти:**
-```bash
-grep -rn "get_tp_by_hierarchy\|tp_hierarchy" core/
+## НЕМЕДЛЕННО: Коммит + рестарт
+
+**Коммит 1 — DEV-83:**
+Файлы: `core/signals/signal_models.py`, `core/mtf/mtf_interpreter.py`,
+`core/trading_intelligence.py` (только DEV-83 части), `core/ui/intelligence_formatter.py`, `config.yaml`
+
+**Коммит 2 — DEV-84 + DEV-88:**
+Файлы: `core/trading_intelligence.py` (DEV-84 часть), `core/trading/trade_simulator.py`,
+`strategies/built_in/pivot_reversal_strategy.py`,
+`bot/loops/scan_loop.py`, `bot/handlers/scan_handlers.py`, `bot/menus/signals.py`,
+`core/indicators/trend_signals.py`, `core/pivots/pivot_reversal.py`
+
+**Коммит 3 — docs:**
+Файлы: `DISCUSSION.md`, `TASKS.md`, `memory/current_state.md`,
+`memory/trader_analyses/2026-03-27.md`, `memory/trader_analyses/2026-03-28.md`,
+`scripts/backtest_fib_extension_tp.py`
+
+**Рестарт бота:**
 ```
-**Влияние:** Все новые сделки получают неправильный TP уровень
+C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe bot_with_subscriptions.py
+```
 
-## 🟡 Приоритет 2 — DEV-81 вывод из shadow mode (~09.04.2026)
-Через 2 недели после 26.03.2026:
-1. В `bot/loops/scan_loop.py` блок `1a` добавить строку:
-   ```python
-   signals_to_broadcast.append(("funding_extreme", _funding_message(sym, _funding_sig), None))
-   ```
-2. В `config.yaml`: `ote_shadow_mode: false` (если OTE накопил достаточно данных)
+## Проверить после рестарта (5-10 мин)
 
-## 🟡 Приоритет 3 — TR-008 (валидация после рестарта)
-Проверить /scan + /intelligence после рестарта бота (ARCH-54 фаза 3).
-Убедиться что stub-файлы правильно реэкспортируют новые модули.
+- `[phase56] SYM phase=impulse_up zone=...` — DEV-83
+- `[SYM] DEV-84-L3C cond_c1=...` — DEV-84 (только L3 сигналы)
+- `[DEV-58] SYM LONG/BEARISH BLOCKED` — weekly_bias_filter Phase B
+- `[OTE]` с `wide_zone=` — DEV-85
 
-## 🟢 Приоритет 4 — DEV-83 (ARCH-56 implementation)
-MTF Interpreter v2 Phase B. Зависит от ARCH-56 спека (ARCH агент).
+## DEV-87 — OTE backtest v2 (~11.04.2026)
 
-## 🟢 Приоритет 5 — DEV-84 (L3 Фаза C)
-Ждёт накопления OTE shadow данных (~2 недели от 29.03.2026 = ~12.04.2026).
+Baseline: WR=26.8%, Sharpe=-2.35. Ждёт 2 недели shadow данных от 28.03.2026.
 
-## 🟢 Приоритет 6 — DEV-77/78 (VST/LIVE trading)
-DEV-77: OrderExecutor VST/SIM layer
-DEV-78: PositionManager + PositionSizer + live_orders
-UI для Trading Panel (DEV-80) уже готов.
+## DEV-81 shadow exit (~09.04.2026)
 
-## Технический долг (низкий приоритет, из плана стабилизации)
-- Фаза 2 (неполная): `_compute_atr()` в `trading_intelligence.py` строка 1874 уже правильно делегирует в compute_atr из indicators.py — фактически закрыта
-- test_market_regime.py и test_regime_strategy.py имеют ошибки коллекции (ещё до нашей работы)
-- test_trade_simulator.py: 21+ тестов падали до нашей работы (не деградация от стабилизации)
+В `bot/loops/scan_loop.py` блок 1a добавить broadcast FUNDING_EXTREME.
 
-## Проверить после рестарта бота
-- Логи `[DEV-81 shadow]` при экстремальном funding
-- Логи `[DEV-82-LIQSWEEP]` + TG сообщения при sweep паттернах
-- `bot.signal_counters["funding_extreme"]` и `["liquidity_sweep"]` инкрементируются
-- `/trading` страница открывается в браузере
-- SIM mode badge в топбаре index.html работает
+## DEV-77/78 — OrderExecutor + PositionManager (апрель)
+
+## ARCH-45 — OutcomePredictor AUC review (~06.04.2026)
 
 </work_remaining>
 
 <attempted_approaches>
 
-## Первая попытка fixtures для test_liquidity_sweep_detector.py
-**Подход:** Создать df с явным "провалом" в lows:
-```python
-lows[swing_idx] = 0.950  # swing_low
-lows[-1] = 0.940         # sweep
-prices[-1] = 0.960       # recovery
-```
-**Результат:** `detect_swing_points(period=5)` вернул `lows: []` — не нашёл swing_low
+## DEV-84: Edit "File has been modified since read"
 
-**Причина:** period=5 требует 5 баров выше с обеих сторон. Плоский df (lows=0.999 везде кроме одного бара) не создаёт настоящий локальный минимум — соседние бары тоже 0.999 ≈ swing_low, нет явного доминирования.
+Проблема: trading_intelligence.py был изменён DEV-83 сессией между Read и Edit.
+Решение: перечитать с offset=1185, взять актуальный контекст.
 
-**Фикс:** Синусоидальный паттерн через `np.sin(x)` при x∈[0, 4π] создаёт 2 реальных swing_low на баре 18 и 43 — оба находятся detect_swing_points.
+## DEV-85 тест n=20
 
-## Попытка найти дублирования в trading_intelligence.py
-**Ожидание:** Найдём многократные вызовы calculate_wt/trend без guard.
-**Реальность:** Строки 674-676 и 695-697 уже имеют guard `if "cross_up" not in df_entry.columns` — правильный паттерн. Строка 1795 — это отдельный `get_ohlcv` с limit=60 для ручного /intelligence запроса (не дублирование scan_one).
+Проблема: guard `if len(df_trigger) < 30` → None при n=20.
+Решение: n = 35.
+
+## git stash CRLF corruption
+
+Stash перезаписал pivot_calculator_fixed.py. Фикс: `git checkout HEAD -- file`.
+Урок: не использовать git stash на Windows CRLF файлах.
 
 </attempted_approaches>
 
 <critical_context>
 
-## Python версия
-`C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe` — Python 3.12.
-Единственная версия с aiogram. `.venv` / Python 3.13 — без aiogram.
-
-## Git теги стабилизации
-- `v0.9-stable` = `52c4348` — точка входа в стабилизацию (до чистки)
-- `v1.0-stable` = `65676fb` — финал стабилизации
-
-## ARCH-18 pre-compute в scan_loop.py
-Строки 421-435: calculate_wt + calculate_trend вычисляются ОДИН РАЗ для df_entry, df_1h, df_3m, df_4h, df_1d. Все детекторы должны использовать guard `if "wt1" in df.columns` или `if "cross_up" not in df.columns` перед вычислением.
-
-## ARCH-54: stub-файлы в core/
-Старые импорты `from core.X import Y` работают через stubs в корне `core/`.
-`core/message_builder.py` → `from core.ui.message_builder import *`
-`core/indicators.py` → `from core.indicators.indicators import *`
-
-## scan_loop.py структура блоков scan_one
+## Python: только 3.12 для запуска бота
 ```
-1a  DEV-81 FUNDING (shadow)   — только _scan_tf == _etf
-1b  DEV-82 LIQUIDITY_SWEEP    — только _scan_tf == _etf, broadcast в TG
-1   Anomalies                  — только _scan_tf == _etf
-2   WT signals
-3   Confluence (SM / fallback)
-5   WT-B (1h)
-8   Divergences (каждые 3 цикла)
+C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe
 ```
 
-## Падающие тесты (до нашей работы)
-- `tests/unit/test_market_regime.py` — ошибка коллекции (import error)
-- `tests/unit/test_regime_strategy.py` — ошибка коллекции
-- `tests/unit/test_trade_simulator.py` — 21+ упавших теста (не деградация)
-Все эти тесты падали ДО стабилизации — подтверждено через `git stash`.
+## DEV-84: точная позиция
+`core/trading_intelligence.py`:
+- 1189-1195: DEV-52-L3 сводный лог
+- 1197-1223: DEV-84 Фаза C (вставлено)
+- 1224: `except Exception as _e52ti:`
+Отступ 20 пробелов (внутри `if _l3_52:`)
 
-## DEV-81 shadow mode
-Детектор намеренно не отправляет в TG 2 недели (с 26.03.2026).
-Флаг: `data["shadow"] = True`. В scan_loop блок 1a нет строки broadcast.
-Активировать: добавить `signals_to_broadcast.append(...)` ~09.04.2026.
+## DEV-84: интерпретация логов
 
-## pivot_cache формат
-```python
-pivot_cache[symbol] = {"W:S1": 1.234, "W:R1": 1.456, ...}
-```
-Ключи Weekly: `"W:S1"`, `"W:S2"`, `"W:R1"`, `"W:R2"`.
+- `cond_c1=False(no_smc_h4)` — smc_h4 snapshot пустой (норма пока нет 4h данных)
+- `cond_c1=True(4h_fvg_sup=Y)` — 4h FVG support подтверждает LONG
+- `cond_c2=False(no_smc)` — smc_context=None (норма если SMC не вычислялся)
+- `cond_c2=True(ote=Y)` — активная OTE зона подтверждает вход
 
-## detect_swing_points требования
-`detect_swing_points(df, period=5)` — ищет локальные min/max с period=5 барами с каждой стороны.
-ВАЖНО: для теста нужен синусоидальный df, не плоский.
+## OTE backtest baseline (для DEV-87)
+
+Без DEV-85 фильтров: WR=26.8%, AvgR=-0.197, Sharpe=-2.35, MaxDD=-139R.
+Wide OTE [0.705-0.786] already WR=33.5%, AvgR=+0.006 — потенциал с DEV-85 фильтрами.
+
+## Мёртвые параметры config.yaml
+
+- `tsl_buffer_pct` — закомментирован, не читается в коде
+- `signals.mtf_alert_enabled` — убран насовсем (DEV-31)
 
 </critical_context>
 
 <current_state>
 
-## Статус стабилизационного плана
-
-| Фаза | Статус | Коммит | Ключевые файлы |
-|------|--------|--------|----------------|
-| 0 — Защита | ✅ | 52c4348, b53cf05 | .gitignore, bot_with_subscriptions.py |
-| 1 — Чистка | ✅ | bc64698 | _archive/skeleton/, scripts/_archive/ |
-| 2 — Дедупликация | ✅ | 65676fb | bot/loops/scan_loop.py:623-633 |
-| 3 — Документация | ✅ | 65676fb | config.yaml header |
-| 4 — Тесты | ✅ | 65676fb | tests/unit/test_funding_detector.py, test_liquidity_sweep_detector.py |
-| 5 — Config freeze | ✅ | 65676fb | config_snapshots/, .gitignore |
-
-## Тест-результаты
-- Наши новые тесты: **17/17 ✅** (funding + liquidity_sweep)
-- Весь unit suite: 524 passed, 37 failed, 9 skipped
-- Падения существовали ДО стабилизации (не регрессия)
-
-## Git состояние
+## Git статус
 ```
-Branch: main (ahead of origin/main by 31 commits)
-Tags: v0.9-stable (52c4348), v1.0-stable (65676fb)
-Незакоммичены: DISCUSSION.md, TASKS.md, core/infra/api_engine.py, core/infra/data_collector.py
+Last commit: 7916912
+
+Незакоммичено:
+M  DISCUSSION.md, TASKS.md
+M  bot/handlers/scan_handlers.py, bot/loops/scan_loop.py, bot/menus/signals.py
+M  config.yaml
+M  core/indicators/trend_signals.py, core/mtf/mtf_interpreter.py
+M  core/pivots/pivot_reversal.py, core/signals/signal_models.py
+M  core/trading/trade_simulator.py, core/trading_intelligence.py
+M  core/ui/intelligence_formatter.py
+M  strategies/built_in/pivot_reversal_strategy.py
+M  memory/current_state.md, say_tmp.ps1
+?? memory/trader_analyses/2026-03-27.md
+?? memory/trader_analyses/2026-03-28.md
+?? scripts/backtest_fib_extension_tp.py
 ```
+
+## Задачи
+
+| Задача | Статус | Коммит |
+|--------|--------|--------|
+| DEV-85 Step 0 | ✅ | cb4248e |
+| DEV-85 Step 1 | ✅ | 8731937 |
+| DEV-83 | ✅ | незакоммичен |
+| DEV-84 | ✅ | незакоммичен |
+| DEV-88 | ✅ | незакоммичен |
+| DEV-86 | ✅ | 0bc784d |
+| DEV-87 | 🟢 | ~11.04 |
+| DEV-77/78 | 🟢 | апрель |
+
+## Бот
+
+НЕ перезапущен. Нужен рестарт для DEV-83/84/85/88 + weekly_bias_filter Phase B.
 
 ## Следующий шаг
-**DEV-75** — критический баг иерархии TP в `get_tp_by_hierarchy()`.
-Найти через: `grep -rn "get_tp_by_hierarchy\|tp_hierarchy" core/`
+
+1. Закоммитить (3 коммита)
+2. Перезапустить бот
+3. Проверить логи через 5-10 минут
 
 </current_state>

@@ -96,6 +96,21 @@ class MTFContext:
     # ARCH-51: SMC снэпшоты старших TF (shadow mode — только логирование)
     smc_h4: Optional["MTFSMCSnapshot"] = None
     smc_d1: Optional["MTFSMCSnapshot"] = None
+    # ARCH-56 Phase B: фаза рынка, зональное состояние, мягкий блок, паттерн
+    phase: Optional[str] = None
+    # impulse_up | impulse_down | correction_down_in_bull | correction_up_in_bear |
+    # reversal_up | reversal_down | range
+    zone_state: Optional[str] = None
+    # cascade_os | cascade_ob | partial_os | partial_ob | neutral
+    avoid_reason: Optional[str] = None
+    # correction_active | cascade_ob_short_only | cascade_os_long_only |
+    # high_vol_no_trade | None (торговать можно)
+    pattern_name: Optional[str] = None
+    # IMPULSE_UP | IMPULSE_DOWN | WAVE_3_RELOAD | BEARISH_CORRECTION_FADE |
+    # CASCADE_OS_REVERSAL | CASCADE_OB_REVERSAL | REVERSAL_UP | REVERSAL_DOWN | RANGE_PLAY
+    pattern_confidence: float = 0.0
+    unswept_highs: List[float] = field(default_factory=list)  # sell-side liquidity 1h/4h
+    unswept_lows: List[float] = field(default_factory=list)   # buy-side liquidity 1h/4h
 
     def direction_multiplier(self, signal_direction: SignalDirection) -> float:
         """

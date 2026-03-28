@@ -151,7 +151,7 @@ outcome_predictor:
   # Активировать при 1000+ чистых записей в БД (после DEV-13).
   training_window: null  # например: 500
 
-strategy_name: confluence
+strategy_name: multi_signal
 trading:
   # DEV-32: блокировка контр-тренд входов (TRADER 23.03: CAKE/SAHARA — системная ошибка)
   # TREND_DOWN → только SHORT, TREND_UP → только LONG, RANGE/HIGH_VOL — оба направления
@@ -179,8 +179,9 @@ trading:
     enabled: false                # shadow mode — только лог [ARCH-42]
     sl_threshold: 5               # SL за window_minutes → активировать gate
     window_minutes: 30            # rolling window (reuse _sl_timestamps из DEV-39)
+  phase_guard_enabled: false       # ARCH-56 Phase B: shadow mode (только лог, не блокирует) — включить когда накопим 2 недели данных
   weekly_bias_filter:            # ARCH-48 / DEV-56: top-down weekly PP bias
-    enabled: false               # Фаза A: false (shadow). Фаза B: true (production gate)
+    enabled: true                # Phase B активирована 28.03.2026 (n=67 blocked WR=17% vs allowed WR=22%)
     soft_penalty: 25             # score penalty при направлении против bias
     hard_block_ctx_score: 3      # hard block при тройном контрастном контексте
     near_level_pct: 1.5          # % от уровня = "рядом с Weekly R/S" (исключение)
@@ -201,16 +202,16 @@ trading:
     min_trend_strength: 50
     cooldown_sec: 300
     scalp_atr_multiplier: 1.0
-  active_strategy: reversal_scanner
+  active_strategy: wt_entry
   active_strategies:
-  - reversal_scanner
+  - wt_entry
   - reversal
   - trend_following
   - pivot_reversal
-  - confluence
+  - multi_signal
   - mtf_bias
   strategies:
-    reversal_scanner:
+    wt_entry:
       min_strength: 60
       tp_rr: 3.0
       sl_buffer_pct: 0.3
@@ -220,14 +221,14 @@ trading:
       min_strength: 70
       min_confidence: 0.6
       conflict_margin: 0.15
-      tp_rr: 3.0 #было 2.0 → 3.0 (изменил руками 17:52 27.03) 
+      tp_rr: 3.0 #было 2.0 → 3.0 (изменил руками 17:52 27.03)
     trend_following:
       min_signals: 2
       min_strength: 55
       min_confidence: 0.55
       conflict_threshold: 0.25
       tp_rr: 3.0
-    confluence:
+    multi_signal:
       min_signals: 2
       conflict_threshold: 0.3
     conservative:
@@ -235,11 +236,10 @@ trading:
       min_confidence: 0.65
     pivot_reversal:
       min_strength: 60
-      tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03) 
-      sl_buffer_pct: 0.1
+      tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03)
   use_tsl: true
   tsl_activation_r: 1
-  tsl_buffer_pct: 0.3 # было 0,5 → 0,3 (изменил руками 17:52 27.03)
+  # tsl_buffer_pct: 0.3  # МЁРТВЫЙ — в коде не читается (DEV-87, 28.03.2026). Подключить или удалить.
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5  # DEV-29: снижено с 5.0 (бэктест: 0 активаций при 5.0R, 83% TSL-закрытий до 4R)
   use_breakeven: false
@@ -268,9 +268,9 @@ trading:
     struct_sl_max_dist: 2.0 # было 3.0 → 2.0 (изменил руками 17:52 27.03) — максимальное расстояние до SL для структурных уровней (S/R, FVG)
     tsl_too_tight_pct: 1.0
 signal_quality:
-  sl_cooldown_hours: 4.0   # 4 часа после SL (было 0.75 — защита от повторных SL)
+  sl_cooldown_hours: 2.0   # 2 часа после SL (было 4.0 → 2.0, изменил руками 17:52 27.03) — снижено для увеличения количества сигналов (WR=20% при 2ч vs WR=15% при 4ч)
   dedup_minutes: 30
-  min_volume_usd: 700000
+  min_volume_usd: 0 #700000
   min_strength: 50
   min_strength_register: 75  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
   min_strength_wl_breach: 45  # DEV-69: WL breach — ниже, т.к. касание уровня само по себе = контекст
@@ -316,8 +316,8 @@ performance:
   pair_slow_threshold_sec: 10.0
   scan_cycle_warning_threshold_sec: 70.0
 strategy:
-  name: confluence
-  confluence:
+  name: multi_signal
+  multi_signal:
     min_signals: 2
     conflict_threshold: 0.3
     signal_weights:

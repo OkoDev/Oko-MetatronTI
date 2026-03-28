@@ -39,7 +39,7 @@
 ## 🎯 Задачи TRADER
 
 > Торговые задачи — исследования, спецификации, валидации. Выполняются в [DISCUSSION.md](DISCUSSION.md) или отдельными постами.
-> **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | ✅ выполнено
+> **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | 🔵 backlog | ✅ выполнено
 
 ---
 
@@ -88,8 +88,8 @@
 | [DEV-80](#dev-80) | ✅ | Trading Panel: /trading page + Position Sizer UI + badge SIM/VST/LIVE | DEV |
 | [DEV-81](#dev-81) | ✅ | FUNDING_EXTREME detector: core/signals/funding_detector.py | DEV |
 | [DEV-82](#dev-82) | ✅ | LIQUIDITY_SWEEP detector: core/signals/liquidity_sweep_detector.py | DEV |
-| [DEV-83](#dev-83) | 🟢 | ARCH-56 реализация: phase_detector + zone_cascade + avoid_reason + named_pattern | DEV |
-| [DEV-84](#dev-84) | 🟢 | L3 Фаза C: FVG/OB + OTE условия (разблокировано DEV-63) | DEV |
+| [DEV-83](#dev-83) | ✅ | ARCH-56 реализация: phase_detector + zone_cascade + avoid_reason + named_pattern | DEV |
+| [DEV-84](#dev-84) | ✅ | L3 Фаза C: FVG/OB + OTE shadow logging — реализовано 28.03 | DEV |
 | [DEV-85](#dev-85) | ✅ | OTE v2: Step0 stale-invalidation + Step1 wide [0.705-0.786] + ATR-trend gate | DEV |
 | [DEV-86](#dev-86) | ✅ | `get_tp_by_hierarchy()`: убрать R4–R5/S4–S5 расширенные уровни | DEV |
 | [DEV-87](#dev-87) | 🟢 | OTE backtest v2: проверить WR после Step0+Step1 фильтров (ждёт shadow данных ~11.04) | DEV |
@@ -485,7 +485,11 @@ trading:
 
 **→ DEV-56:** Фаза A shadow. ✅ выполнено 24.03.2026
 ⚠️ **Баг исправлен 27.03:** `weekly_bias` вычислялся в trading_intelligence.py и сохранялся только в `recommendation.metadata`, но НЕ передавался в `features_json`. В `bot/monitoring.py` добавлена передача трёх полей (`weekly_bias`, `weekly_context_score`, `weekly_gate_would_block`) в `extra_features`. До рестарта бота данные не накапливались.
-**→ DEV-58:** Фаза B production. Стартует после анализа данных Фазы A (≈ 30.03–06.04 после рестарта бота с фиксом).
+**→ DEV-58:** ✅ Фаза B production активирована 28.03.2026 (config `enabled: true`).
+- soft_penalty=25 (LONG/BEARISH без уровня → strength-25)
+- hard_block ctx≥3 → action=WATCH
+- Исключение расширено 28.03: S1+**S2+PP** для LONG, R1+**R2+PP** для SHORT (было только S1/R1)
+- near_level_pct=1.5% подтверждён данными (реальные расстояния 3-9%, порог не слишком широк)
 
 ---
 
@@ -1123,8 +1127,8 @@ if mtf_ctx.avoid_reason:
 
 ---
 
-### DEV-83 — ARCH-56: MTF Interpreter Phase B реализация 🟢
-**Статус:** 🟢 в плане
+### DEV-83 — ARCH-56: MTF Interpreter Phase B реализация ✅
+**Статус:** ✅ реализован 28.03.2026
 **Агент:** DEV
 **Источник:** аудит 26.03.2026
 **Зависит от:** ARCH-56 (спек)

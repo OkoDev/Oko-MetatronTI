@@ -65,7 +65,10 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
 
         # === 4. WT + Trend из одного df_15m (не нужен 5m) ===
         df_15m = calculate_wt(df_15m)
-        df_15m = calculate_trend(df_15m, atr_period=43, factor=1.0)
+        from core.config_loader import config as _cfg_pr
+        df_15m = calculate_trend(df_15m,
+                                 atr_period=int(_cfg_pr.get("analysis.indicators.trend.atr_period", 43)),
+                                 factor=float(_cfg_pr.get("analysis.indicators.trend.factor", 1.0)))
 
         wt1_curr = float(df_15m['wt1'].iloc[-1])
         wt2_curr = float(df_15m['wt2'].iloc[-1])

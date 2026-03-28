@@ -246,6 +246,22 @@ async def format_intelligence_message(recommendation: TradingRecommendation,
         _counter = (_bias_val == "LONG" and _dir_val == "SHORT") or (_bias_val == "SHORT" and _dir_val == "LONG")
         _warn = "  ⚠️ против тренда" if _counter else ""
         parts.append(f"<i>📡 MTF: {' · '.join(_mtf_parts)}{_warn}</i>")
+
+        # ARCH-56 Phase B: фаза + паттерн + soft-block (shadow mode)
+        _phase = getattr(ctx_mtf, "phase", None)
+        _pat = getattr(ctx_mtf, "pattern_name", None)
+        _avr = getattr(ctx_mtf, "avoid_reason", None)
+        if _phase or _pat:
+            _phase_emoji = {
+                "impulse_up": "🚀", "impulse_down": "💣",
+                "correction_down_in_bull": "🔄⬆", "correction_up_in_bear": "🔄⬇",
+                "reversal_up": "↩️", "reversal_down": "↩️",
+                "range": "↔️",
+            }.get(_phase or "", "")
+            _phase_str = f"{_phase_emoji} {_phase}" if _phase else ""
+            _pat_str = f" · {_pat}" if _pat else ""
+            _avr_str = f" ⚠️ {_avr}" if _avr else ""
+            parts.append(f"<i>🧭 Фаза: {_phase_str}{_pat_str}{_avr_str}</i>")
         parts.append("")
 
     # DEV-21: SMC контекст — OB+FVG / OTE / CHoCH (только если есть значимые факторы)

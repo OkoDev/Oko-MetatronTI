@@ -419,20 +419,23 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # ARCH-18: pre-compute индикаторы один раз на все основные TF.
                 # Детекторы проверяют наличие колонок и пропускают пересчёт.
                 from core.indicators import calculate_wt as _calc_wt, calculate_trend as _calc_trend
+                from core.config_loader import config as _cfg_scan
+                _scan_atr_p = int(_cfg_scan.get("analysis.indicators.trend.atr_period", 43))
+                _scan_factor = float(_cfg_scan.get("analysis.indicators.trend.factor", 1.0))
                 df_entry = _calc_wt(df_entry)
-                df_entry = _calc_trend(df_entry)
+                df_entry = _calc_trend(df_entry, atr_period=_scan_atr_p, factor=_scan_factor)
                 if df_1h is not None and not df_1h.empty:
                     df_1h = _calc_wt(df_1h)
-                    df_1h = _calc_trend(df_1h)
+                    df_1h = _calc_trend(df_1h, atr_period=_scan_atr_p, factor=_scan_factor)
                 if df_3m is not None and not df_3m.empty:
                     df_3m = _calc_wt(df_3m)
-                    df_3m = _calc_trend(df_3m)
+                    df_3m = _calc_trend(df_3m, atr_period=_scan_atr_p, factor=_scan_factor)
                 if df_4h is not None and not df_4h.empty:
                     df_4h = _calc_wt(df_4h)
-                    df_4h = _calc_trend(df_4h)
+                    df_4h = _calc_trend(df_4h, atr_period=_scan_atr_p, factor=_scan_factor)
                 if df_1d is not None and not df_1d.empty:
                     df_1d = _calc_wt(df_1d)
-                    df_1d = _calc_trend(df_1d)
+                    df_1d = _calc_trend(df_1d, atr_period=_scan_atr_p, factor=_scan_factor)
 
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(

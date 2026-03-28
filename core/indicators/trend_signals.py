@@ -1,5 +1,8 @@
 import logging
 from core.indicators import calculate_trend, calculate_wt, get_zone
+from core.config_loader import config as _cfg_ts
+_TS_ATR_P = int(_cfg_ts.get("analysis.indicators.trend.atr_period", 43))
+_TS_FACTOR = float(_cfg_ts.get("analysis.indicators.trend.factor", 1.0))
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
         if df_4h is None or df_4h.empty:
             return False, None
         
-        df_4h = calculate_trend(df_4h)
+        df_4h = calculate_trend(df_4h, atr_period=_TS_ATR_P, factor=_TS_FACTOR)
         df_4h = calculate_wt(df_4h)
         trend_4h = df_4h["trend"].iloc[-1]
         
@@ -43,7 +46,7 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
         if df_1h is None or df_1h.empty:
             return False, None
         
-        df_1h = calculate_trend(df_1h)
+        df_1h = calculate_trend(df_1h, atr_period=_TS_ATR_P, factor=_TS_FACTOR)
         df_1h = calculate_wt(df_1h)
         trend_1h = df_1h["trend"].iloc[-1]
         wt1_1h = df_1h["wt1"].iloc[-1]
@@ -59,7 +62,7 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
         if df_15m is None or df_15m.empty:
             return False, None
         
-        df_15m = calculate_trend(df_15m)
+        df_15m = calculate_trend(df_15m, atr_period=_TS_ATR_P, factor=_TS_FACTOR)
         df_15m = calculate_wt(df_15m)
         trend_15m = df_15m["trend"].iloc[-1]
         wt1_15m = df_15m["wt1"].iloc[-1]
@@ -77,7 +80,7 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
         if df_5m is None or df_5m.empty:
             return False, None
         
-        df_5m = calculate_trend(df_5m)
+        df_5m = calculate_trend(df_5m, atr_period=_TS_ATR_P, factor=_TS_FACTOR)
         df_5m = calculate_wt(df_5m)
         trend_5m = df_5m["trend"].iloc[-1]
         wt1_5m = df_5m["wt1"].iloc[-1]

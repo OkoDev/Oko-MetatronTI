@@ -181,7 +181,7 @@ class TradingIntelligence:
         # Strategy Pattern: инициализируем все активные стратегии
         self.strategy = None           # основная (для TG-сигналов)
         self.strategies: Dict[str, Any] = {}  # все активные стратегии
-        self.active_strategy_name: str = "confluence"
+        self.active_strategy_name: str = "multi_signal"
         if STRATEGIES_AVAILABLE:
             try:
                 # Основная стратегия (для TG-сигналов)
@@ -337,9 +337,9 @@ class TradingIntelligence:
     
     # Приоритет стратегий для оркестровки (ARCH-09)
     _STRATEGY_PRIORITY = [
-        "reversal_scanner",     # WT 15m разворот — CONFLUENCE + TSL + пивот + дивер
-        "reversal",             # качественный разворот (1 сигнал без count-penalty)
-        "trend_following",      # несколько трендовых подтверждений
+        "wt_entry",        # WT-based reversal вход (SignalType.CONFLUENCE + TSL + пивот + дивер)
+        "reversal",        # качественный разворот (1 сигнал без count-penalty)
+        "trend_following", # несколько трендовых подтверждений
     ]
 
     def _pick_best_recommendation(
@@ -357,9 +357,9 @@ class TradingIntelligence:
         if not all_recs:
             return None, "legacy"
 
-        # Priority-1: reversal_scanner
-        if rec := all_recs.get("reversal_scanner"):
-            return rec, "reversal_scanner"
+        # Priority-1: wt_entry
+        if rec := all_recs.get("wt_entry"):
+            return rec, "wt_entry"
 
         # Priority-2: reversal / trend_following — max by overall_strength
         candidates = {
@@ -579,6 +579,18 @@ class TradingIntelligence:
                         zone_m = mtf_context.zone_multiplier(sig.direction)
                         comb = dir_m * 0.7 + zone_m * 0.3
                         trace.add_mtf_multiplier(sig_type, sig_dir, orig, dir_m, zone_m, comb, sig.strength)
+
+                # ARCH-56 Phase B: shadow-mode лог фазы/паттерна/avoid_reason
+                _ar = mtf_context.avoid_reason
+                logger.info(
+                    "[phase56] %s phase=%s zone=%s pattern=%s(%.2f) avoid=%s",
+                    symbol,
+                    mtf_context.phase,
+                    mtf_context.zone_state,
+                    mtf_context.pattern_name,
+                    mtf_context.pattern_confidence,
+                    _ar or "—",
+                )
 
             # ── SOFT timeout: контекст рынка (Этап 8.4.3) ────────────────────
             try:
@@ -1193,6 +1205,34 @@ class TradingIntelligence:
                         symbol, _cond3, _cond3_note, _cond4, _cond4_note,
                         _cond5, _score_52, _min_score_52, _choch_penalty_53, _conds_met,
                     )
+
+                    # DEV-84 (Фаза C) — shadow logging: FVG support + OTE zone
+                    _cond_c1, _cond_c1_note = False, "no_smc_h4"
+                    try:
+                        _snap_h4_84 = getattr(mtf_context, "smc_h4", None) if mtf_context else None
+                        if _snap_h4_84 is not None:
+                            if _dir_52ti == "LONG":
+                                _cond_c1 = bool(_snap_h4_84.fvg_support)
+                                _cond_c1_note = f"4h_fvg_sup={'Y' if _cond_c1 else 'N'}"
+                            else:
+                                _cond_c1 = bool(_snap_h4_84.fvg_resistance)
+                                _cond_c1_note = f"4h_fvg_res={'Y' if _cond_c1 else 'N'}"
+                    except Exception as _e84c1:
+                        logger.debug("[%s] DEV-84 cond_c1: %s", symbol, _e84c1)
+
+                    _cond_c2, _cond_c2_note = False, "no_smc"
+                    try:
+                        _fib_84 = getattr(smc_context, "fibonacci", None) if smc_context else None
+                        if _fib_84 is not None:
+                            _cond_c2 = _fib_84.active_ote is not None
+                            _cond_c2_note = f"ote={'Y' if _cond_c2 else 'N'}"
+                    except Exception as _e84c2:
+                        logger.debug("[%s] DEV-84 cond_c2: %s", symbol, _e84c2)
+
+                    logger.info(
+                        "[%s] DEV-84-L3C cond_c1=%s(%s) cond_c2=%s(%s)",
+                        symbol, _cond_c1, _cond_c1_note, _cond_c2, _cond_c2_note,
+                    )
             except Exception as _e52ti:
                 logger.debug("[%s] DEV-52 L3 checker: %s", symbol, _e52ti)
 
@@ -1232,6 +1272,7 @@ class TradingIntelligence:
                         "weekly_bias": _weekly_bias_48,
                         "weekly_context_score": _ctx_score_48,
                         "weekly_gate_would_block": _gate_block_48,
+                        "weekly_pp": _weekly_pp_48,
                     })
 
                     # DEV-58: Фаза B — production gate (включить: weekly_bias_filter.enabled: true)
@@ -1239,13 +1280,41 @@ class TradingIntelligence:
                         _penalty_48 = int(_wcfg_48.get("soft_penalty", 25))
                         _near_pct_48 = float(_wcfg_48.get("near_level_pct", 1.5)) / 100
                         _hard_ctx_48 = int(_wcfg_48.get("hard_block_ctx_score", 3))
+                        # near_s: LONG исключение — рядом с weekly поддержкой (S1/S2/PP)
+                        # near_r: SHORT исключение — рядом с weekly сопротивлением (R1/R2/PP)
+                        _wp48_pp = float((_wp48 or {}).get("PP") or 0) or None
                         _wr1 = float((_wp48 or {}).get("R1") or 0) or None
+                        _wr2 = float((_wp48 or {}).get("R2") or 0) or None
                         _ws1 = float((_wp48 or {}).get("S1") or 0) or None
-                        _near_r = bool(_wr1 and abs(_price_48 - _wr1) / _price_48 < _near_pct_48)
-                        _near_s = bool(_ws1 and abs(_price_48 - _ws1) / _price_48 < _near_pct_48)
+                        _ws2 = float((_wp48 or {}).get("S2") or 0) or None
+                        def _within(_lvl, _p, _pct):
+                            return bool(_lvl and abs(_p - _lvl) / _p < _pct)
+                        def _near_label(_lvl, _name, _p, _pct):
+                            if _within(_lvl, _p, _pct):
+                                return _name
+                            return None
+                        _near_s_label = (
+                            _near_label(_ws1, "W_S1", _price_48, _near_pct_48) or
+                            _near_label(_ws2, "W_S2", _price_48, _near_pct_48) or
+                            (_near_label(_wp48_pp, "W_PP", _price_48, _near_pct_48)
+                             if _weekly_bias_48 == "BEARISH" else None)
+                        )
+                        _near_r_label = (
+                            _near_label(_wr1, "W_R1", _price_48, _near_pct_48) or
+                            _near_label(_wr2, "W_R2", _price_48, _near_pct_48) or
+                            (_near_label(_wp48_pp, "W_PP", _price_48, _near_pct_48)
+                             if _weekly_bias_48 == "BULLISH" else None)
+                        )
+                        _near_s = bool(_near_s_label)
+                        _near_r = bool(_near_r_label)
 
-                        if _dir_48 == "LONG" and _weekly_bias_48 == "BEARISH" and not _near_s:
-                            if _ctx_score_48 >= _hard_ctx_48:
+                        if _dir_48 == "LONG" and _weekly_bias_48 == "BEARISH":
+                            if _near_s:
+                                logger.info(
+                                    "[DEV-58] %s LONG/BEARISH ALLOWED — near %s (within %.1f%%)",
+                                    symbol, _near_s_label, _near_pct_48 * 100,
+                                )
+                            elif _ctx_score_48 >= _hard_ctx_48:
                                 recommendation.action = "WATCH"
                                 logger.info(
                                     "[DEV-58] %s hard_block LONG/BEARISH ctx=%d (≥%d)",
@@ -1257,8 +1326,13 @@ class TradingIntelligence:
                                     "[DEV-58] %s soft_penalty LONG/BEARISH ctx=%d strength=%d→%d",
                                     symbol, _ctx_score_48, overall_strength + _penalty_48, overall_strength,
                                 )
-                        elif _dir_48 == "SHORT" and _weekly_bias_48 == "BULLISH" and not _near_r:
-                            if _ctx_score_48 >= _hard_ctx_48:
+                        elif _dir_48 == "SHORT" and _weekly_bias_48 == "BULLISH":
+                            if _near_r:
+                                logger.info(
+                                    "[DEV-58] %s SHORT/BULLISH ALLOWED — near %s (within %.1f%%)",
+                                    symbol, _near_r_label, _near_pct_48 * 100,
+                                )
+                            elif _ctx_score_48 >= _hard_ctx_48:
                                 recommendation.action = "WATCH"
                                 logger.info(
                                     "[DEV-58] %s hard_block SHORT/BULLISH ctx=%d (≥%d)",
@@ -1523,12 +1597,15 @@ class TradingIntelligence:
             except Exception:
                 logger.debug("[%s] weekly pivots для MTFContext недоступны", symbol)
 
-            # Regime
+            # Regime + ARCH-56: df_1h/df_4h для unswept liquidity
             _regime: Optional[str] = None
+            df_1h = None
+            df_4h = None
             try:
                 from core.market_regime import MarketRegimeClassifier
                 df_15m = await self.data_collector.get_ohlcv(symbol, get_primary_entry_tf(self.config), limit=100)
                 df_1h = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
+                df_4h = await self.data_collector.get_ohlcv(symbol, "4h", limit=60)
                 _regime = MarketRegimeClassifier().classify_from_dataframes(df_15m, df_1h)
             except Exception:
                 pass
@@ -1538,6 +1615,8 @@ class TradingIntelligence:
                 current_price=current_price,
                 weekly_pivots=weekly_pivots,
                 regime=_regime,
+                df_1h=df_1h,   # ARCH-56: unswept liquidity
+                df_4h=df_4h,   # ARCH-56: unswept liquidity
             )
 
             # ARCH-12.5: подгружаем калиброванные параметры

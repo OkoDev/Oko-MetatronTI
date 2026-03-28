@@ -4,6 +4,59 @@
 
 ---
 
+## [28.03.2026 #6] Агент: DEV — DEV-87/88 + переименования + энциклопедия
+
+- ✅ **DEV-88**: SL по CLOSE (не LOW) для `sl_source` начинающихся с `tsl_line`/`wl_pivot_tsl` — `core/trading/trade_simulator.py`
+- ✅ **Переименования стратегий**: `reversal_scanner`→`wt_entry` (WtEntryStrategy), `confluence`→`multi_signal` (MultiSignalStrategy)
+  - `strategies/built_in/reversal_scanner_strategy.py`, `strategies/built_in/confluence.py`
+  - `core/trading_intelligence.py`: `_STRATEGY_PRIORITY`, `active_strategy_name`, `_pick_best_recommendation()`
+  - `config.yaml`: `active_strategy`, `active_strategies`, `strategies.*`
+  - `tests/unit/`: sed-замена строковых имён
+  - **БД мигрирована**: 511 `confluence`→`multi_signal`, 729 `reversal_scanner`→`wt_entry` в `simulated_trades.strategy_name`
+- ✅ **pivot_reversal.sl_buffer_pct убран**: из `config.yaml` и `strategies/built_in/pivot_reversal_strategy.py`
+- ✅ **DISCUSSION.md**: ответ TRADER по unswept_liquidity (DEV вопрос)
+- ✅ **docs/ENCYCLOPEDIA.md** создана: SignalType.CONFLUENCE, WtEntryStrategy, MultiSignalStrategy, TSL, WL Breach, SL CLOSE vs LOW
+- ✅ **memory/arch_signal_types.md** создан: типы сигналов, стратегии, веса, DEV-88
+- ✅ **memory/MEMORY.md**: добавлена секция "Типы сигналов и стратегии"
+
+⚠️ **Незакоммиченные изменения**: DEV-87 (factor=1.25 везде в calculate_trend), DEV-88 (CLOSE check), переименования, конфиг, миграция БД, ENCYCLOPEDIA.md
+⚠️ **Нужен рестарт бота** для применения изменений
+
+---
+
+## [28.03.2026 #5] Агент: DEV — DEV-83 завершён (ARCH-56 Phase B)
+
+- ✅ **DEV-83 Step 1** (`core/signals/signal_models.py`): 7 новых полей в MTFContext (phase, zone_state, avoid_reason, pattern_name, pattern_confidence, unswept_highs, unswept_lows)
+- ✅ **DEV-83 Step 2-3** (`core/mtf/mtf_interpreter.py`): 5 функций (_detect_phase, _detect_zone_cascade, _detect_avoid_reason, _detect_pattern, _extract_unswept_liquidity) + обновлён analyze_context(df_1h, df_4h)
+- ✅ **DEV-83 Step 4** (`core/trading_intelligence.py`): _build_mtf_context() теперь фетчит df_4h и передаёт df_1h+df_4h в analyze_context()
+- ✅ **DEV-83 Step 5** (trading_intelligence.py): shadow-mode лог [phase56] symbol phase=X zone=Y pattern=Z avoid=W
+- ✅ **DEV-83 Step 6** (`core/ui/intelligence_formatter.py`): строка "🧭 Фаза: <phase> · <pattern> ⚠️ <avoid>" в TG-сообщении
+- ✅ **DEV-83 Step 7** (`config.yaml`): `mtf.phase_guard_enabled: false` добавлен
+- ✅ TASKS.md: DEV-83 → ✅
+
+⚠️ Нужен рестарт бота (DEV-83 + DEV-84 + DEV-85 + weekly_bias_filter=true)
+
+**Следующий шаг:** DEV-87 (backtest OTE v2 ~11.04), или другие DEV-задачи
+
+---
+
+## [28.03.2026 #4] Агент: DEV — DEV-84 завершён
+
+- ✅ **DEV-84** (Фаза C shadow logging): `core/trading_intelligence.py` строки 1197-1223
+  - Внутри блока `if _l3_52:`, после DEV-52-L3 сводного лога
+  - cond_c1: FVG support/resistance из `mtf_context.smc_h4` (4h snapshot)
+  - cond_c2: active OTE из `smc_context.fibonacci.active_ote`
+  - Лог: `[SYM] DEV-84-L3C cond_c1=T/F(4h_fvg_sup=Y/N) cond_c2=T/F(ote=Y/N)`
+  - Всё в try/except — shadow mode, production flow не затронут
+- ✅ TASKS.md: DEV-84 → ✅
+
+⚠️ Нужен рестарт бота (активировать DEV-84 + DEV-85)
+
+**Следующий шаг:** DEV-83 (ARCH-56 реализация) — ждёт спека или другие задачи
+**Доступно:** DEV-87 (backtest OTE v2 ~11.04)
+
+---
+
 ## [28.03.2026 #3] Агент: DEV — DEV-85 полностью завершён
 
 - ✅ **DEV-85 Step 0** (`cb4248e`): `core/smc/fibonacci.py` — price-invalidation stale fix
@@ -14,9 +67,6 @@
 - ✅ DISCUSSION.md: ответ TRADER по unswept_liquidity (~50-70 строк, ждёт ARCH-56 спек)
 - ✅ Тесты: 545/570 unit (16 pre-existing, no regression)
 - ⚠️ Нужен рестарт бота
-
-**Следующий шаг:** DEV-83 (ARCH-56 реализация) — заблокирован (ждёт ARCH-56 спек от ARCH)
-**Доступно сейчас:** DEV-87 (backtest OTE v2 ~11.04), DEV-84 (L3 Фаза C)
 
 ---
 

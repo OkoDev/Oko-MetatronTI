@@ -39,11 +39,11 @@ def _sig(st, dr, strength=70, conf=0.8) -> SignalData:
 
 class FakeCfg:
     _data = {
-        "strategy_name": "confluence",
+        "strategy_name": "multi_signal",
         "trading": {
-            "active_strategy": "reversal_scanner",
-            "active_strategies": ["reversal_scanner"],
-            "strategies": {"reversal_scanner": {"min_strength": 60}},
+            "active_strategy": "wt_entry",
+            "active_strategies": ["wt_entry"],
+            "strategies": {"wt_entry": {"min_strength": 60}},
         },
     }
     def get(self, key, default=None):

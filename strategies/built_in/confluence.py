@@ -17,10 +17,10 @@ from strategies.registry import register_strategy
 logger = logging.getLogger(__name__)
 
 
-@register_strategy("confluence")
-class ConfluenceStrategy(BaseStrategy):
+@register_strategy("multi_signal")
+class MultiSignalStrategy(BaseStrategy):
     """
-    Confluence Strategy: требует конфлюэнции 2+ сигналов от разных источников.
+    Multi-Signal Strategy: требует 2+ сигналов от разных источников (типов).
     
     Логика:
     1. Фильтрует сигналы с низкой уверенностью
