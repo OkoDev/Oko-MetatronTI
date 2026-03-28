@@ -902,6 +902,43 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 extra["weekly_bias"] = _meta["weekly_bias"]
                 extra["weekly_context_score"] = _meta.get("weekly_context_score", 0)
                 extra["weekly_gate_would_block"] = _meta.get("weekly_gate_would_block", False)
+            # ML-CONTEXT: WT-фичи из supporting signals (CONFLUENCE signal.data)
+            for _sig in (recommendation.supporting_signals or []):
+                if getattr(_sig, "signal_type", None) and _sig.signal_type.value == "confluence":
+                    _sd = _sig.data or {}
+                    if "wt_cross_quality" in _sd:
+                        extra["wt_cross_quality"] = _sd["wt_cross_quality"]  # "in_zone"/"out_zone"
+                    if "div_type" in _sd:
+                        extra["wt_div_type"] = _sd["div_type"]  # "regular_bull"/"hidden_bull"/etc.
+                    for _k in ("mtf_4h_trend", "mtf_4h_wt", "mtf_4h_zone"):
+                        if _k in _sd:
+                            extra[_k] = _sd[_k]
+                    break
+            # ML-CONTEXT: дивергенции из supporting signals
+            extra["div_count"] = _div_count  # уже посчитан выше (DIVERGENCE сигналы)
+            extra["hidden_div"] = int(any(
+                "hidden" in str((_s.data or {}).get("div_type", "")).lower()
+                for _s in (recommendation.supporting_signals or [])
+            ))
+            # ML-CONTEXT: WT значения на entry TF и HTF из pre_fetched_dfs
+            if pre_fetched_dfs:
+                _entry_tf_key = getattr(recommendation, "timeframe", None) or "15m"
+                for _tf_key, _feat_key_wt1, _feat_key_wt2 in [
+                    (_entry_tf_key, "wt1_value",   "wt2_value"),
+                    ("1h",          "htf_wt1_1h",  "htf_wt2_1h"),
+                    ("4h",          "htf_wt1_4h",  "htf_wt2_4h"),
+                ]:
+                    _df_tf = pre_fetched_dfs.get(_tf_key)
+                    if _df_tf is not None and "wt1" in _df_tf.columns and len(_df_tf) > 0:
+                        try:
+                            _w1 = round(float(_df_tf["wt1"].iloc[-1]), 1)
+                            _w2 = round(float(_df_tf["wt2"].iloc[-1]), 1)
+                            extra[_feat_key_wt1] = _w1
+                            extra[_feat_key_wt2] = _w2
+                            if _feat_key_wt1 == "wt1_value":  # только для entry TF
+                                extra["wt_zone"] = "OS" if _w1 <= -60 else "OB" if _w1 >= 60 else "N"
+                        except Exception:
+                            pass
             trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:

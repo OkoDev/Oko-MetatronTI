@@ -307,6 +307,26 @@ class TradeSimulator:
                 features["volatility"] = getattr(ctx, "volatility", None)
             if extra_features:
                 features.update(extra_features)
+            # ML-CONTEXT: entry quality metrics (TF-agnostic)
+            _entry_tf_val = _get_recommendation_value(recommendation, "timeframe")
+            features["entry_tf"] = str(_entry_tf_val) if isinstance(_entry_tf_val, str) else DEFAULT_TIMEFRAME
+            # RR при входе (actual_rr вычислен выше в RR-фильтре)
+            try:
+                features["rr_at_entry"] = round(actual_rr, 2)
+            except NameError:
+                pass
+            # SL в единицах ATR (TF-agnostic качество стопа)
+            _atr_ctx = getattr(ctx, "atr", None) if ctx else None
+            if isinstance(_atr_ctx, (int, float)) and _atr_ctx > 0 and entry and stop_loss:
+                _sl_abs = abs(float(entry) - float(stop_loss))
+                features["sl_atr_ratio"] = round(_sl_abs / _atr_ctx, 2)
+            # Торговая сессия по UTC (контекст времени входа)
+            _h = datetime.now(timezone.utc).hour
+            features["session"] = (
+                "ASIA"   if  0 <= _h <  8 else
+                "LONDON" if  8 <= _h < 13 else
+                "NY"     if 13 <= _h < 22 else "OFF"
+            )
             # ARCH-12: MTF Context фичи для ML
             mtf_ctx = metadata.get("mtf_context") if metadata else None
             if mtf_ctx and isinstance(mtf_ctx, dict):
@@ -352,7 +372,8 @@ class TradeSimulator:
             tp3_price = None
             strategy_type = "SINGLE"
             # DEV-40: ATR-based TP1 (из TradingRecommendation.atr_entry_tf)
-            atr_entry = _get_recommendation_value(recommendation, "atr_entry_tf")
+            _atr_entry_raw = _get_recommendation_value(recommendation, "atr_entry_tf")
+            atr_entry = _atr_entry_raw if isinstance(_atr_entry_raw, (int, float)) else None
             _TP1_REGIME_MULT = {"TREND_UP": 2.0, "TREND_DOWN": 2.0, "RANGE": 1.0}
             _tp1_regime_mult = _TP1_REGIME_MULT.get(regime, 1.5)
             if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:

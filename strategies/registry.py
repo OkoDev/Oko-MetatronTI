@@ -79,8 +79,8 @@ def _load_built_in_strategies():
         return
     
     try:
-        from strategies.built_in.confluence import ConfluenceStrategy
-        from strategies.built_in.reversal_scanner_strategy import ReversalScannerStrategy
+        from strategies.built_in.confluence import MultiSignalStrategy
+        from strategies.built_in.reversal_scanner_strategy import WtEntryStrategy
         from strategies.built_in.conservative import ConservativeStrategy
         from strategies.built_in.pivot_reversal_strategy import PivotReversalStrategy
         try:

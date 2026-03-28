@@ -109,7 +109,7 @@ def test_strategy_calculate_sl_tp_short(strategy_name, market_context):
 
 def test_confluence_strategy_requires_min_signals(market_context):
     """Confluence требует минимум 2 сигнала."""
-    strategy = get_strategy("confluence")
+    strategy = get_strategy("multi_signal")
     
     # Один сигнал
     single_signal = [create_signal(SignalType.MTF_ALERT, SignalDirection.LONG, 70, 0.8)]
@@ -130,7 +130,7 @@ def test_confluence_strategy_requires_min_signals(market_context):
 
 def test_confluence_strategy_detects_conflicts(market_context):
     """Confluence отвергает конфликтующие сигналы."""
-    strategy = get_strategy("confluence")
+    strategy = get_strategy("multi_signal")
     
     # Примерно равные сигналы LONG и SHORT
     conflicting_signals = [
