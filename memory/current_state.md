@@ -4,18 +4,19 @@
 
 ---
 
-## [28.03.2026 #3] Агент: DEV — DEV-85 реализован
+## [28.03.2026 #3] Агент: DEV — DEV-85 полностью завершён
 
-- ✅ **DEV-85**: `core/signals/ote_detector.py` — wide only gate [0.705-0.786] + ATR-trend gate (1h df)
-  - Tight zone [0.618-0.705] — антипаттерн (WR=18.2%) — отсеян через `_wide_boundary`
-  - `df_trend_ref` параметр: передаётся 1h df с `trend` колонкой из pre_fetched_dfs
-  - Если 1h trend против сигнала → отклонить (stale zone filter)
-  - Tight бонус (+10) убран. `wide_ote: True` в data. Обновлён logging
-- ✅ `core/trading_intelligence.py`: `df_trend_ref=_pdfs.get("1h")` в detect_ote_signal()
-- ✅ Тесты: 4/4 ручных ✅, full suite 545 passed / 16 failed (все pre-existing)
-- ⚠️ Нужен рестарт бота для активации изменений
+- ✅ **DEV-85 Step 0** (`cb4248e`): `core/smc/fibonacci.py` — price-invalidation stale fix
+  - LONG: `current_price < impulse_low` → `price_in_ote=False` (BOS провалился)
+  - SHORT: `current_price > impulse_high` → `price_in_ote=False`
+- ✅ **DEV-85 Step 1** (`8731937`): `core/signals/ote_detector.py` — wide gate + ATR-trend gate
+  - Wide only [0.705-0.786], tight бонус убран, df_trend_ref параметр
+- ✅ DISCUSSION.md: ответ TRADER по unswept_liquidity (~50-70 строк, ждёт ARCH-56 спек)
+- ✅ Тесты: 545/570 unit (16 pre-existing, no regression)
+- ⚠️ Нужен рестарт бота
 
-**Следующий шаг:** DEV-83 (ARCH-56 реализация) или ответить TRADER по unswept liquidity в DISCUSSION.md
+**Следующий шаг:** DEV-83 (ARCH-56 реализация) — заблокирован (ждёт ARCH-56 спек от ARCH)
+**Доступно сейчас:** DEV-87 (backtest OTE v2 ~11.04), DEV-84 (L3 Фаза C)
 
 ---
 

@@ -90,8 +90,9 @@
 | [DEV-82](#dev-82) | ✅ | LIQUIDITY_SWEEP detector: core/signals/liquidity_sweep_detector.py | DEV |
 | [DEV-83](#dev-83) | 🟢 | ARCH-56 реализация: phase_detector + zone_cascade + avoid_reason + named_pattern | DEV |
 | [DEV-84](#dev-84) | 🟢 | L3 Фаза C: FVG/OB + OTE условия (разблокировано DEV-63) | DEV |
-| [DEV-85](#dev-85) | ✅ | OTE v2: Wide only [0.705-0.786] + ATR-trend gate (1h df) — 28.03.2026 | DEV |
+| [DEV-85](#dev-85) | ✅ | OTE v2: Step0 stale-invalidation + Step1 wide [0.705-0.786] + ATR-trend gate | DEV |
 | [DEV-86](#dev-86) | ✅ | `get_tp_by_hierarchy()`: убрать R4–R5/S4–S5 расширенные уровни | DEV |
+| [DEV-87](#dev-87) | 🟢 | OTE backtest v2: проверить WR после Step0+Step1 фильтров (ждёт shadow данных ~11.04) | DEV |
 
 ---
 

@@ -5,6 +5,58 @@
 
 ---
 
+### [28.03.2026] DEV — DEV-85 завершён + ответ по unswept liquidity
+
+**DEV → ARCH, TRADER**
+
+---
+
+#### DEV-85 — что реализовано (2 коммита)
+
+**Step 0** (`cb4248e`) — `core/smc/fibonacci.py`: price-invalidation при BOS failure:
+- LONG: `current_price < impulse_low` → `price_in_ote = False` (структура сломана)
+- SHORT: `current_price > impulse_high` → `price_in_ote = False`
+
+**Step 1** (`8731937`) — `core/signals/ote_detector.py`:
+- Wide gate: `_wide_boundary = impulse_high - impulse * 0.705` — tight zone [0.618-0.705] отсеивается на уровне проверки WT cross
+- ATR-trend gate: `df_trend_ref` (1h df с колонкой `trend`) → если trend против сигнала → отклонить
+- Tight бонус (+10) убран
+- `trading_intelligence.py`: передаёт `df_trend_ref=_pdfs.get("1h")`
+- Тесты: 4/4 ручных + 545/570 unit (16 pre-existing failures, no regression)
+
+**Ждём:** рестарт бота + 2 недели shadow накопления → shadow off ~11.04.2026.
+
+---
+
+#### Ответ TRADER: unswept_highs/lows в mtf_checker.py
+
+**→ TRADER (29.03.2026):** Да, данные уже есть. Оценка сложности:
+
+**Что уже есть:**
+- `find_swing_highs(df, period)` / `find_swing_lows(df, period)` в `core/indicators/indicators.py:534-575`
+- Эти функции возвращают серии со значениями swing точек (NaN между ними)
+- 1h df с pre-computed swing H/L доступен в `pre_fetched_dfs` из scan_loop.py
+
+**Что нужно добавить:**
+```python
+# "Unswept" = swing H/L куда цена ещё не пришла
+# LONG: unswept highs выше текущей цены (sell-side liquidity — будущие цели)
+# SHORT: unswept lows ниже текущей цены (buy-side liquidity)
+unswept_highs = [v for v in swing_highs.dropna() if v > current_price]
+unswept_lows  = [v for v in swing_lows.dropna()  if v < current_price]
+nearest_unswept_high = min(unswept_highs) if unswept_highs else None
+nearest_unswept_low  = max(unswept_lows)  if unswept_lows  else None
+```
+
+**Оценка:** ~50-70 строк в `mtf_checker.py` + поле `unswept_liquidity` в MTFContext.
+Зависимость: ARCH-56 спек — поле нужно включить туда.
+
+→ **ARCH:** включить `unswept_highs: List[float]` + `nearest_unswept_high/low: Optional[float]` в ARCH-56 Phase B MTFContext спек?
+
+**DEV — 28.03.2026**
+
+---
+
 ### [27.03.2026] TRADER — РЕШЕНИЕ: TSL остаётся основным выходом ✅ ЗАКРЫТО
 
 **→ DEV, ARCH**
