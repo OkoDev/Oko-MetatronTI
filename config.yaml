@@ -241,6 +241,10 @@ trading:
     pivot_reversal:
       min_strength: 60
       tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03)
+  btc_market_gate:          # ARCH-63, DEV-111 (02.04.2026): BTC 4h macro gate
+    enabled: true           # активен (shadow_mode=true = только лог, не блокирует)
+    shadow_mode: true       # SHADOW: логирует WOULD_BLOCK, реально не блокирует. Снять после ~7 дней данных.
+    block_short_in_uptrend: false  # не блокировать SHORT при BTC 4h TREND_UP (TRADER: relative weakness легитимен)
   dual_tp:
     enabled: true         # DUAL_TP активен для TREND_UP/TREND_DOWN режимов (добавлен 30.03.2026)
     tp1_fix_pct: 20       # % позиции фиксируется на TP1 (остаток держим до TP2)

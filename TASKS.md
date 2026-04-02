@@ -83,7 +83,7 @@
 | [DEV-103](#dev-103) | 🔥 | Exchange Health Loop + TG алерт (Слои 1+2 ARCH-65) — перед VST | DEV |
 | [DEV-104](#dev-104) | 🔵 | Dead-Man Timer: emergency close all (Слой 3 ARCH-65) — только перед LIVE | DEV |
 | [ARCH-63](#arch-63) | ✅ | Bear market filter: BTC 4h gate спек готов 30.03 → DEV-111 реализует | ARCH |
-| [DEV-111](#dev-111) | 🔥 | BTC 4h market gate shadow: `_get_btc_4h_regime()` + параметр в analyze_symbol() — повышен 02.04 | DEV |
+| [DEV-111](#dev-111) | ✅ | BTC 4h market gate shadow: `_get_btc_4h_regime()` + gate в monitoring.py — 02.04 | DEV |
 | [DEV-101](#dev-101) | ✅ | WS Фаза 1: _log_ws_stats_after_warmup + pre-filter в trade_tracker — 29.03 | DEV |
 | [DEV-102](#dev-102) | 🟡 | chart_builder: blacklist малоликвидных пар + try/except без ERROR спама | DEV |
 | [ARCH-64](#arch-64) | 🔵 | pivot_reversal daily bias: штраф -20 / near W_S1/S2 → -10 — спек готов 29.03 | ARCH |
@@ -2670,5 +2670,69 @@ python scripts/run_diagnostics.py --quick  # только SL/TP + Regime (30 с�
 - Бейдж "Система OK / ⚠️ N проблем" в шапке дашборда
 
 **Зависит от:** ARCH-62 (exit_manager) — после рефакторинга unit-тесты станут чище; но диагностику можно начать уже сейчас на текущем коде.
+
+---
+
+
+### DEV-122 — cascade_tsl.py: вынести + cap_tf при tp1_hit 🟡
+
+**Статус:** 🟡 важно — после DEV-111
+**Агент:** DEV
+**Источник:** TRADER+DEV DISCUSSION 01.04.2026, подтверждён ARCH 02.04.2026
+
+**Проблема:** Два бага в каскадном TSL:
+1. `tsl_tf TEXT DEFAULT '15m'` в БД → TSL стартует с тесного 15m если сигнал не несёт `entry_tf`
+2. После tp1_hit каскад может эскалировать до 4h → слишком широкий → cap%=33% вместо ~55%
+
+**Решение:** новый модуль `core/trading/cascade_tsl.py` с интерфейсом:
+```python
+def resolve_tsl_tf(
+    symbol, direction, current_r, prev_tsl_tf,
+    df_map: dict,   # {"15m": df, "1h": df, "4h": df}
+    tp1_hit: bool,  # True → cap_tf = "1h"
+    cfg,
+) -> tuple[str, DataFrame]:   # (new_tsl_tf, df_tsl)
+```
+
+Логика:
+- `tp1_hit=False` → обычный каскад: 15m → 1h → 4h
+- `tp1_hit=True` → `cap_tf="1h"`: максимум 1h, не поднимаемся до 4h
+
+**Что перенести из trade_simulator.py:**
+- ВСЯ логика TSL: эскалация / деэскалация / R-gradient drop (DEV-91) / pivot_touch fast exit (DEV-106) / WT exhaustion / cascade degraded
+
+**Файлы:**
+| Файл | Что делать |
+|---|---|
+| `core/trading/cascade_tsl.py` | Новый модуль — вся каскадная логика |
+| `core/trading/trade_simulator.py` | Заменить ~300 строк на вызов `cascade_tsl.resolve_tsl_tf()` |
+
+**Ожидаемый эффект:** cap% DUAL_TP tp1_hit: 33% → ~55-60%
+
+---
+
+### DEV-123 — TP reliability query 🟡
+
+**Статус:** 🟡 быстрая задача (~15 мин)
+**Агент:** DEV
+**Источник:** TRADER DISCUSSION 01.04.2026
+
+**SQL:**
+```sql
+SELECT strategy_type,
+       tp1_hit_at IS NULL as tp1_missing,
+       status,
+       COUNT(*) as n,
+       ROUND(AVG(R_multiple), 3) as avg_R
+FROM simulated_trades
+WHERE strategy_type IN ('DUAL_TP','DUAL_TSL')
+  AND status != 'OPEN'
+GROUP BY strategy_type, tp1_missing, status
+ORDER BY strategy_type, status
+```
+
+**Ожидаемый результат:** понять — бывают ли `status=TP` при `tp1_hit_at IS NULL`? Если да — TP2 закрывает напрямую (нормально), если нет — нужен дополнительный анализ.
+
+→ **DEV:** результат вставить в DISCUSSION.
 
 ---

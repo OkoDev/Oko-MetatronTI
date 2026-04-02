@@ -635,6 +635,24 @@ async def _get_btc_regime(bot):
     return None
 
 
+async def _get_btc_4h_regime(bot) -> str | None:
+    """Кешированный BTC/USDT 4h режим для ARCH-63 market gate (TTL 5 мин)."""
+    cache = getattr(bot, "_btc_4h_regime_cache", None)
+    now = datetime.now().timestamp()
+    if cache and (now - cache["ts"]) < 300:
+        return cache["regime"]
+    try:
+        from core.market_regime import MarketRegimeClassifier
+        ohlcv = await bot.data_collector.get_ohlcv("BTC/USDT:USDT", "4h", limit=50)
+        if ohlcv is not None and not ohlcv.empty:
+            regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv.values.tolist())
+            bot._btc_4h_regime_cache = {"regime": regime, "ts": now}
+            return regime
+    except Exception as e:
+        logger.debug("[BTC4h] режим не определён: %s", e)
+    return None
+
+
 _kelly_stats_cache: dict = {}  # {"ts": float, "text": str}
 
 
@@ -771,6 +789,42 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             btc_warning = f"\n⚠️ <i>BTC (1h) в {regime_ru} тренде — {dir_ru} против рынка ({strength_val}/100)</i>"
             logger.info("[%s] BTC %s vs %s, сила %d, режим=%s — btc_counter_trend=True",
                         symbol, btc_regime, direction_val, strength_val, btc_filter_mode)
+
+    # Этап 5.3: BTC 4h Market Gate (ARCH-63, DEV-111) — shadow mode
+    if recommendation is not None:
+        _btc_gate_cfg = (bot.config.get("trading", {}) or {}).get("btc_market_gate", {})
+        if _btc_gate_cfg.get("enabled", False):
+            _btc_4h = await _get_btc_4h_regime(bot)
+            if _btc_4h is not None:
+                _dir4h = getattr(recommendation.direction, "value",
+                                 str(recommendation.direction))
+                _shadow4h = _btc_gate_cfg.get("shadow_mode", True)
+                _should_block4h = False
+                _reason4h = None
+
+                # Правило 1: BTC 4h TREND_DOWN → блок LONG
+                if _btc_4h == "TREND_DOWN" and _dir4h == "LONG":
+                    _sig_type = getattr(recommendation, "signal_type", "") or ""
+                    _wb = (recommendation.features or {}).get("weekly_bias", "UNKNOWN")
+                    # Исключение: pivot_reversal с BULLISH weekly bias
+                    if not (_sig_type == "pivot_reversal" and _wb == "BULLISH"):
+                        _should_block4h = True
+                        _reason4h = f"BTC 4h TREND_DOWN блокирует LONG"
+
+                # Правило 2: BTC 4h TREND_UP → блок SHORT (выключено по умолчанию)
+                elif (_btc_4h == "TREND_UP" and _dir4h == "SHORT"
+                      and _btc_gate_cfg.get("block_short_in_uptrend", False)):
+                    _should_block4h = True
+                    _reason4h = "BTC 4h TREND_UP блокирует SHORT"
+
+                if _should_block4h:
+                    if _shadow4h:
+                        logger.info("[%s] ARCH-63 SHADOW WOULD_BLOCK %s btc_4h=%s reason=%s",
+                                    symbol, _dir4h, _btc_4h, _reason4h)
+                    else:
+                        logger.info("[%s] ARCH-63 btc_market_gate: %s→WATCH (%s)",
+                                    symbol, recommendation.action, _reason4h)
+                        recommendation.action = "WATCH"
 
     # Этап 6: TP по иерархии пивотов (ARCH-09п5, DEV-75)
     # Порядок: 1D → 1W → confluence(1W+1D) → confluence(1M+1W) → 1M → ATR fallback
