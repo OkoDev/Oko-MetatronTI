@@ -80,7 +80,7 @@
 | [DEV-99](#dev-99) | ✅ | Скан 534 пар >70 сек: scan_semaphore 10→20, min_volume_usd 0→1M — 29.03 | DEV |
 | [DEV-100](#dev-100) | 🟡 | chart_builder: try/except + blacklist для малоликвидных пар (GAIB, BANANA) | DEV |
 | [ARCH-65](#arch-65) | ✅ | Exchange Health Guard спек: health check + TG alert + dead-man timer для LIVE — 30.03 | ARCH |
-| [DEV-103](#dev-103) | 🔥 | Exchange Health Loop + TG алерт (Слои 1+2 ARCH-65) — перед VST | DEV |
+| [DEV-103](#dev-103) | ✅ | Exchange Health Loop + TG алерт (Слои 1+2 ARCH-65) — реализован 02.04 | DEV |
 | [DEV-104](#dev-104) | 🔵 | Dead-Man Timer: emergency close all (Слой 3 ARCH-65) — только перед LIVE | DEV |
 | [ARCH-63](#arch-63) | ✅ | Bear market filter: BTC 4h gate спек готов 30.03 → DEV-111 реализует | ARCH |
 | [DEV-111](#dev-111) | ✅ | BTC 4h market gate shadow: `_get_btc_4h_regime()` + gate в monitoring.py — 02.04 | DEV |
@@ -127,7 +127,7 @@
 | [DEV-109](#dev-109) | ✅ | RANGE: confluence разблокирован (WR=63.6% SHORT, avg_R=+2.67R) — pivot_reversal в RANGE уже был заблокирован в DEV-64B | DEV |
 | [ARCH-66](#arch-66) | ✅ | RANGE BOUNCE спек готов 30.03: SL/TP от пивотов, entry ≤2% от края, TP_R≥3.5 | ARCH |
 | [DEV-110](#dev-110) | 🟡 | RANGE BOUNCE реализация: `calc_range_bounce_sl_tp()` в sl_tp_calculator.py | DEV |
-| [DEV-111](#dev-111) | 🔥 | BTC 4h market gate shadow mode (спек ARCH-63 30.03) — повышен 02.04: блокирует LONG при BTC TREND_DOWN | DEV |
+| [DEV-111](#dev-111) | ✅ | BTC 4h market gate shadow mode — реализован 02.04, commit caa3311 | DEV |
 | [DEV-113](#dev-113) | ✅ | Dashboard VST P1: auto-refresh 30s + BTC 4h badge + cascade badge в open trades | DEV |
 | [DEV-114](#dev-114) | ✅ | Dashboard VST P1: Risk Exposure карточка + Open P&L сегодня (R и USDT) | DEV |
 | [DEV-115](#dev-115) | ✅ | Dashboard VST P1: текущий R live в open trades + cap%/MFE в closed trades | DEV |
@@ -140,8 +140,11 @@
 | [ARCH-62](#arch-62-detail) | 🔥 | Trade Simulator рефакторинг: exit_manager + cascade_tsl + levels_calculator + strategy_resolver | ARCH |
 | [DEV-121](#dev-121) | 🟢 | Self-diagnostics suite: скрипты глубокой проверки всех ключевых узлов системы | DEV |
 | [ARCH-67](#arch-67) | 🔵 | USDT.D macro gate: CoinGecko API + shadow mode — бэклог май (после накопления данных BTC gate) | ARCH |
-| [DEV-122](#dev-122) | 🟡 | cascade_tsl.py: вынести каскадную логику + cap_tf="1h" при tp1_hit (фикс 33%→~55% cap) | DEV |
-| [DEV-123](#dev-123) | 🟡 | TP reliability query: проверить DUAL_TP/DUAL_TSL сделки — tp1_hit_at vs status | DEV |
+| [ARCH-68](#arch-68) | 🟢 | Куб Метатрона Фаза 2: MTF WT Specialist + MTF SMC Specialist + Reversal Mode + Narrative Builder | ARCH |
+| [DEV-122](#dev-122) | ✅ | tsl_activation_r_range=0.7 (RANGE) + tp_pivot_min_r_range=1.2 — 02.04.2026 | DEV |
+| [DEV-123](#dev-123) | ✅ | anti-degradation gate: R >= 5R → skip degradation в cascade_tsl.py — 02.04.2026 | DEV |
+| [DEV-124](#dev-124) | ✅ | EXPIRED extension: max_R_possible >= 5R → 120h вместо 48h — 02.04.2026 | DEV |
+| [DEV-91-v2](#dev-91-v2) | ✅ | R-gradient drop: убран shadow, теперь реальный gate де-эскалации — 02.04.2026 | DEV |
 
 ---
 
@@ -2734,5 +2737,115 @@ ORDER BY strategy_type, status
 **Ожидаемый результат:** понять — бывают ли `status=TP` при `tp1_hit_at IS NULL`? Если да — TP2 закрывает напрямую (нормально), если нет — нужен дополнительный анализ.
 
 → **DEV:** результат вставить в DISCUSSION.
+
+---
+
+### ARCH-68 — Куб Метатрона Фаза 2: ML Специалисты + Narrative Builder 🟢
+
+**Статус:** 🟢 в плане (после Фазы 1 — ARCH-62 + DEV-121)
+**Агент:** ARCH → DEV
+**Источник:** TRADER 02.04.2026 — концепция Куба Метатрона
+**Документация:** `docs/ENCYCLOPEDIA.md` → раздел "Архитектурная концепция: Куб Метатрона"
+
+---
+
+#### Состав Фазы 2
+
+**Сфера 3 — MTF WT Specialist (`core/ml/mtf_wt_specialist.py`)**
+
+ML модель обученная исключительно на MTF WT + ATR-trend данных.
+
+Входные признаки (35): 7 TF × 5 признаков
+```
+TF: 1d, 4h, 1h, 45m, 15m, 5m, 3m
+Признаки per TF:
+  wt1 (float)         — значение WaveTrend 1
+  wt2 (float)         — значение WaveTrend 2
+  zone (-1/0/1)       — OS / Normal / OB
+  wt_cross (-1/0/1)   — медвежий / нет / бычий кросс
+  atr_trend (1/-1)    — направление ATR-тренда (calculate_trend()) ← НЕ ЗАБЫТЬ
+```
+Выход: `TREND_CONTINUATION / REVERSAL_SETUP / EXHAUSTION / UNCLEAR`
++ confidence 0.0-1.0
+
+Обучение:
+- X = wt_snap из features_json (per trade)
+- y = TP=1 / SL=0
+- Переобучается в ml_loop как OutcomePredictor
+
+**Сфера 4 — MTF SMC Specialist (`core/ml/mtf_smc_specialist.py`)**
+
+Признаки (36): 4 TF × 9 признаков
+```
+TF: 1d, 4h, 1h, 15m
+  ob_bull (bool)          — бычий Order Block активен
+  ob_distance_pct (float) — расстояние до OB в %
+  fvg_open (bool)         — незакрытый Fair Value Gap
+  choch (bool)            — CHoCH (последние N баров)
+  bos (bool)              — BOS
+  ote_zone (bool)         — цена в OTE [0.705-0.786]
+  eqh_near (bool)         — Equal Highs в радиусе 1% (ликвидность сверху)
+  eql_near (bool)         — Equal Lows в радиусе 1% (ликвидность снизу)
+  liquidity_above (bool)  — пул ликвидности выше цены
+```
+Выход: `STRONG_BULL_ZONE / WEAK_ZONE / STRONG_BEAR_ZONE / NEUTRAL`
+
+EQH/EQL важность:
+- Equal Highs = уровни ликвидности которые маркетмейкер sweep
+- EQH на 1h + OTE 15m = stop hunt setup → SHORT
+- EQL на 1h + OTE 15m = liquidity grab → LONG
+- Детектор EQH/EQL: добавить в `core/smc/liquidity.py`
+
+**Сфера 6 расширение — Reversal Mode Detector**
+
+В `core/indicators/market_regime.py` добавить поле `mode`:
+```
+mode = TREND    когда: ADX растёт + WT не в OS/OB + нет CHoCH
+mode = REVERSAL когда: WT 4h в OS/OB (< -60 или > 60)
+                    AND ADX 1h снижается 3+ бара
+                    AND CHoCH на 1h или 15m
+```
+Влияние на Decision Core:
+- mode=TREND    → confluence +0, pivot_reversal -20 strength
+- mode=REVERSAL → pivot_reversal +0, confluence -20 strength
+
+Данные подтверждают: 27-29.03 (TREND) confluence avg+0.49R / 01.04 (REVERSAL) pivot_reversal +0.81R WR=41.7%
+
+**Сфера 9 — Narrative Builder (`core/intelligence/narrative_builder.py`)**
+
+Читает из SharedContextBus:
+- mtf_wt_verdict + mtf_smc_verdict
+- режим (TREND/REVERSAL) + макро (BTC/USDT.D)
+- все активные сигналы
+- cascade_count + post_tsl_data
+
+Строит TradingNarrative:
+```python
+@dataclass
+class TradingNarrative:
+    text: str            # человекочитаемый нарратив для TG
+    action: str          # BUY/SELL/HOLD/WATCH
+    strategy: str        # SINGLE/DUAL_TP/DUAL_TSL
+    confidence: float    # итоговая уверенность
+    p_win: float         # P(win) взвешенно от всех ML
+    key_factors: list    # топ-3 фактора решения
+    mode: str            # TREND/REVERSAL
+```
+
+**Shared Context Bus расширение**
+
+`core/context/pair_context.py` → добавить pub/sub:
+```python
+def publish(symbol, event_type, data)  # публикация события
+def subscribe(event_type, handler)      # подписка модуля
+def get_state(symbol) → PairFullState  # полное состояние пары
+```
+
+---
+
+#### Зависимости
+- Фаза 1 (ARCH-62 Exit Manager) — до начала Фазы 2
+- DEV-121 Self-Diagnostics — параллельно
+- Накопление данных с wt_snap в features_json — для обучения специалистов
 
 ---

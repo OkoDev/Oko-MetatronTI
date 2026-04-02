@@ -249,12 +249,20 @@ trading:
     enabled: true         # DUAL_TP активен для TREND_UP/TREND_DOWN режимов (добавлен 30.03.2026)
     tp1_fix_pct: 20       # % позиции фиксируется на TP1 (остаток держим до TP2)
   use_tsl: true
-  tsl_activation_r: 1
+  tsl_activation_r: 1.0            # глобальный порог активации TSL (TREND)
+  tsl_activation_r_range: 0.7      # DEV-122 (02.04.2026): RANGE — активировать TSL раньше (+93 доп активации)
   # tsl_buffer_pct: 0.3  # МЁРТВЫЙ — в коде не читается (DEV-87, 28.03.2026). Подключить или удалить.
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5  # DEV-29: снижено с 5.0 (бэктест: 0 активаций при 5.0R, 83% TSL-закрытий до 4R)
+  cascade_tsl_opts:                 # ARCH-62 Шаг 1 + DEV-91/123 (02.04.2026) — доп. параметры cascade TSL
+    cap_tf_after_tp1: "1h"          # ARCH-62: после tp1_hit — не эскалировать выше 1h (DUAL_TP cap 32%→55%)
+    no_degrade_above_r: 5.0         # DEV-123: ракеты R >= 5R — запрет деградации TSL от WT касания
+    r_gradient_peak_min_r: 3.0      # DEV-91: минимальный пик для R-gradient gate
+    r_gradient_rollback_pct: 0.85   # DEV-91: откат до <85% пика = триггер де-эскалации
   use_breakeven: false
   use_be_after_tp1: false   # DEV-60: BE для остатка после TP1 hit (DUAL_TP/TRIPLE_TP_TSL), независимо от use_breakeven
+  expired_extend_min_r: 5.0   # DEV-124 (02.04.2026): ракеты R>=5 → продлить до expired_extend_hours
+  expired_extend_hours: 120   # DEV-124: 120h вместо 48h для сильных сделок (29 EXPIRED с 5R+: упущено 172R)
   expired_management:       # DEV-62: Tiered EXPIRED — конвертация прибыльных TREND позиций в TSL
     tsl_convert_min_r: 1.5  # минимальный R для конвертации (при R=1.0 легко разворачивается)
     tsl_convert_regimes:    # только тренд (в RANGE — высокая вероятность возврата в диапазон)
@@ -270,6 +278,7 @@ trading:
     max_rr_range: 2.5    # DEV-61: RANGE-специфичный cap (среднее RANGE движение = 2.0–2.5x)
     require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
     tp_pivot_min_r: 3.0  # было 2.0 → 3.0 (27.03) — минимальный R для pivot TP; менять вместе с tp_fallback_rr
+    tp_pivot_min_r_range: 1.2    # DEV-122 (02.04.2026): RANGE — ближайший пивот как цель (avg_TP RANGE=5-8R → hit rate 28-41%)
     tp_reversal_min_r: 3.0 # было 2.0 → 3.0 (27.03) — минимальный R для reversal TP; менять вместе с tp_fallback_rr
     tp_partial_pct: 0.2 # было 0.5 → 0.2 (изменил руками 17:52 27.03)
     atr_dynamic: true

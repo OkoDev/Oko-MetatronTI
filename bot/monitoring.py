@@ -834,7 +834,11 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         entry_price = recommendation.entry_price or 0
         if direction_val in ("LONG", "SHORT") and entry_price > 0:
             strategy_type = (recommendation.metadata or {}).get("strategy_type", "")
-            if strategy_type == "reversal":
+            _rec_regime = getattr(recommendation, "regime", None) or ""
+            if _rec_regime == "RANGE":
+                # DEV-122: для RANGE берём ближайший пивот (avg TP 5-8R → hit rate 28-41%)
+                pivot_min_r = bot.config.get("trading.sl_tp.tp_pivot_min_r_range", 1.2)
+            elif strategy_type == "reversal":
                 pivot_min_r = bot.config.get("trading.sl_tp.tp_reversal_min_r", 2.0)
             elif strategy_type == "trend_following":
                 pivot_min_r = bot.config.get("trading.sl_tp.tp_trend_min_r", 1.5)

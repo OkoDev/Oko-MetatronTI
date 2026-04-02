@@ -1050,6 +1050,15 @@ class TradeSimulator:
             try:
                 from core.config_loader import config as _cfg
                 _max_dur = float(_cfg.get("trading.max_trade_duration_hours", 48)) * 60
+                # DEV-124: ракеты (текущий R >= expired_extend_min_r) получают удлинённый лимит
+                _ext_min_r = float(_cfg.get("trading.expired_extend_min_r", 5.0))
+                _ext_hours = float(_cfg.get("trading.expired_extend_hours", 120))
+                # Быстрый подсчёт R из БД: max_R_possible как прокси для текущего потенциала
+                _max_r_db = trade.get("max_R_possible")
+                if _max_r_db is not None and float(_max_r_db) >= _ext_min_r:
+                    _max_dur = max(_max_dur, _ext_hours * 60)
+                    logger.debug("[DEV-124] %s: max_R_possible=%.1f >= %.1f → продлеваем до %.0fh",
+                                 symbol, float(_max_r_db), _ext_min_r, _ext_hours)
             except Exception:
                 _max_dur = self.max_duration_minutes
             _is_expired = age_minutes >= _max_dur
@@ -1171,7 +1180,16 @@ class TradeSimulator:
             # DEV-73: TSL активируется по current_r для ВСЕХ стратегий (был баг: DUAL/TRIPLE ждали tp1_hit_at)
             _strategy_type = trade.get("strategy_type", "SINGLE")
             _is_multi_tp = _strategy_type in ("DUAL_TP", "TRIPLE_TP_TSL")
-            _tsl_gate = (current_r is not None and current_r >= tsl_activation_r)
+            # DEV-122: RANGE — активируем TSL раньше (tsl_activation_r_range=0.7)
+            _trade_regime = trade.get("regime", "")
+            _tsl_act_r = tsl_activation_r
+            try:
+                from core.config_loader import config as _cfg_tsl
+                if _trade_regime == "RANGE":
+                    _tsl_act_r = float(_cfg_tsl.get("trading.tsl_activation_r_range", tsl_activation_r))
+            except Exception:
+                pass
+            _tsl_gate = (current_r is not None and current_r >= _tsl_act_r)
             if use_tsl and _tsl_gate:
                 # Активируем TSL после достижения прибыли — помечаем в БД
                 try:
@@ -1224,8 +1242,17 @@ class TradeSimulator:
                             except Exception:
                                 pass
                         else:
+                            # ARCH-62 Шаг 1: cap_tf после tp1_hit — не эскалировать выше "1h"
+                            from core.trading.cascade_tsl import get_cascade_cap_tf
+                            _tp1_hit_now = bool(trade.get("tp1_hit_at"))
+                            _cap_tf = get_cascade_cap_tf(_tp1_hit_now, _cfg_trend)
+                            _cascade_tfs_capped = (
+                                [t for t in _CASCADE_TFS if _CASCADE_TFS.index(t) <= _CASCADE_TFS.index(_cap_tf)]
+                                if _cap_tf and _cap_tf in _CASCADE_TFS else _CASCADE_TFS
+                            )
+
                             # Нормальная эскалация: самый старший ТФ где тренд совпадает.
-                            for _ctf in _CASCADE_TFS:
+                            for _ctf in _cascade_tfs_capped:
                                 try:
                                     df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
                                     if df_c is not None and len(df_c) >= 50:
@@ -1357,34 +1384,39 @@ class TradeSimulator:
                                     except Exception as _e89w:
                                         logger.debug("[DEV-89] weekly pivot: %s", _e89w)
 
-                                    # DEV-91 (TR-009): R-gradient drop — shadow mode
-                                    # Консервативный триггер: пик ≥ 3R и откат >45% от пика
+                                    # DEV-91: R-gradient drop — реальный триггер де-эскалации (убран shadow mode)
                                     _r_gradient_drop = False
+                                    _max_r_achieved = 0.0
                                     try:
+                                        from core.trading.cascade_tsl import check_r_gradient_drop
                                         _mp_grad = trade.get("max_price")
                                         _lp_grad = trade.get("min_price")
                                         _sl_dist_grad = abs(entry - sl) if sl and sl > 0 else 0.0
-                                        _max_r_achieved = 0.0
                                         if _sl_dist_grad > 0:
                                             if direction == "LONG" and _mp_grad:
                                                 _max_r_achieved = (float(_mp_grad) - entry) / _sl_dist_grad
                                             elif direction == "SHORT" and _lp_grad:
                                                 _max_r_achieved = (entry - float(_lp_grad)) / _sl_dist_grad
-                                        _r_gradient_drop = (
-                                            _max_r_achieved >= 3.0
-                                            and current_r is not None and current_r >= 2.0
-                                            and current_r < _max_r_achieved * 0.85
-                                        )
-                                        if _r_gradient_drop:
-                                            logger.info(
-                                                "[TSL_GRAD][SHADOW] %s: peak=%.1fR cur=%.1fR ratio=%.0f%% → would_deescalate",
-                                                symbol, _max_r_achieved, current_r,
-                                                (current_r / _max_r_achieved * 100) if _max_r_achieved > 0 else 0,
+                                        if current_r is not None:
+                                            _r_gradient_drop = check_r_gradient_drop(
+                                                current_r, _max_r_achieved, _cfg_ts
                                             )
                                     except Exception as _e91:
                                         logger.debug("[DEV-91] r_gradient: %s", _e91)
 
-                                    if _wt_exhausted or _near_weekly:
+                                    # DEV-123: anti-degradation gate для ракет
+                                    _skip_degrade = False
+                                    try:
+                                        from core.trading.cascade_tsl import should_skip_degradation
+                                        if current_r is not None:
+                                            _skip_degrade = should_skip_degradation(
+                                                current_r, _max_r_achieved, direction,
+                                                _wt1_1h, _wt1_4h, _cfg_ts
+                                            )
+                                    except Exception as _e123:
+                                        logger.debug("[DEV-123] skip_degrade: %s", _e123)
+
+                                    if not _skip_degrade and (_wt_exhausted or _near_weekly or _r_gradient_drop):
                                         lower_tf = _CASCADE_TFS[_cas_idx - 1]
                                         try:
                                             df_lower = await data_collector.get_ohlcv(
