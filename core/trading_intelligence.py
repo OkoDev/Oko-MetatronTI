@@ -1246,7 +1246,12 @@ class TradingIntelligence:
                 _weekly_pp_48 = float((_wp48 or {}).get("PP") or 0) or None
                 _price_48 = float(recommendation.entry_price or
                                   (market_context.current_price if market_context else 0) or 0)
-                if _weekly_pp_48 and _price_48:
+                if not (_weekly_pp_48 and _price_48):
+                    # Находка 4 (ARCH 29.03): явно записываем UNKNOWN чтобы видеть в features_json
+                    recommendation.metadata = recommendation.metadata or {}
+                    recommendation.metadata["weekly_bias"] = "UNKNOWN"
+                    recommendation.metadata["weekly_gate_would_block"] = False
+                elif _weekly_pp_48 and _price_48:
                     _weekly_bias_48 = "BULLISH" if _price_48 > _weekly_pp_48 else "BEARISH"
                     _mp48  = await _pc_48.get_monthly_pivots(symbol, self.data_collector)
                     _dp48  = await _pc_48.get_daily_pivots(symbol, self.data_collector)
@@ -1307,6 +1312,18 @@ class TradingIntelligence:
                         )
                         _near_s = bool(_near_s_label)
                         _near_r = bool(_near_r_label)
+
+                        # DEV-89 sub-task: tp_source содержит Weekly уровень → разрешить
+                        # Если get_tp_by_hierarchy() вернул Weekly S/R как TP — сигнал уже
+                        # находится в контексте Weekly зоны (дневных уровней между ценой и TP нет)
+                        _tp_src_89 = str(getattr(recommendation, "tp_source", None) or "")
+                        if "1W" in _tp_src_89 or "1w" in _tp_src_89.lower():
+                            if _dir_48 == "LONG" and any(x in _tp_src_89 for x in ("S1","S2","S3","PP")):
+                                _near_s = True
+                                _near_s_label = _near_s_label or f"tp_src:{_tp_src_89}"
+                            elif _dir_48 == "SHORT" and any(x in _tp_src_89 for x in ("R1","R2","R3","PP")):
+                                _near_r = True
+                                _near_r_label = _near_r_label or f"tp_src:{_tp_src_89}"
 
                         if _dir_48 == "LONG" and _weekly_bias_48 == "BEARISH":
                             if _near_s:

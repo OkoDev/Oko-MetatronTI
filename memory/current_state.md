@@ -4,6 +4,165 @@
 
 ---
 
+## [01.04.2026] Агент: DEV — Аудит SL конвейера + полный map TP/SL/TSL
+
+- ✅ **Диагноз SL конвейера**: DEV-108 (dynamic_os в RANGE) = root cause. Фикс: `dynamic_os_enabled: false` в config.yaml
+- ✅ **4 dead trades** (NULL take_profit от bounce_mode): закрыты как EXPIRED (id 4479, 4485, 4625, 4760)
+- ✅ **trigger_bus**: вернут в `shadow: true` (только 1 сделка за 3 дня — недостаточно данных)
+- ✅ **bounce_mode**: `enabled: false` — создавал take_profit=NULL сделки без механизма выхода
+- ✅ **Полный аудит check_open_trades** (строки 1050-1665): задокументирована карта всех решений
+- ✅ **TASKS.md**: добавлена DEV-121 (Self-Diagnostics Suite) + ARCH-62 в сводной таблице
+- ✅ **DISCUSSION.md**: полный map TP/SL аудита + список 6 критических проблем
+
+**Критические проблемы (из аудита):**
+1. `tsl_tf DEFAULT '15m'` — TSL стартует слишком рано для 15m сделок → ARCH-62 fix
+2. После tp1_hit нет `cap_tf` — 4h TSL слишком широкий → ARCH-62 cap_tf="1h"
+3. `tp1_fix_pct=20` (config) — только 20% фиксируется на TP1, 80% идёт на TSL
+4. bounce trades (NULL TP) — виснут до EXPIRED — ARCH-62 exit_manager bounce mode
+5. DEV-91 R-gradient shadow — не де-эскалирует, только логирует
+
+**Незакоммиченные изменения:** config.yaml (dynamic_os, bounce_mode, trigger_bus), DISCUSSION.md, TASKS.md
+**⚠️ НЕ КОММИТИТЬ** — система не полностью стабильна (RANGE WR=19%, все режимы убыточны)
+
+**Следующие приоритеты:**
+1. 🔥 ARCH-62: разделить trade_simulator.py → exit_manager + cascade_tsl + levels_calculator
+2. 🟢 DEV-121: написать скрипты self-diagnostics (эталонные кейсы TP/SL/TSL)
+3. 🔥 DEV-111: BTC 4h gate shadow mode
+
+---
+
+## [30.03.2026] Агент: ARCH — DEV-118/119/120: TP стратегия, DUAL_TSL, фикс open-trades
+
+- ✅ **DEV-118**: Фикс дублирования `analyze_symbol` — выбор лучшего signal_type по приоритету (`max()`)
+  - `scan_loop.py`: `_SIGNAL_PRIORITY = {confluence:100, wt_b:90, wt_signal:80, ...}`
+  - Один `analyze_symbol` на пару за цикл вместо N дублей
+- ✅ **DEV-119**: TRIPLE_TP_TSL убран, DUAL_TP на пивотах
+  - `pivot_calculator_fixed.py`: добавлен `get_next_tp_by_hierarchy(tp1_price, ...)` — второй пивот по иерархии
+  - `trade_simulator.py`: TP1 = первый пивот (`take_profit`), TP2 рассчитывается async через новую функцию
+  - Баг TP2 exit исправлен: после TP2 hit устанавливается `exit_status = STATUS_TP`
+  - `regime_strategy.py`: RANGE `max_strategy_type = "SINGLE"` (было DUAL_TP)
+  - `config.yaml`: добавлен блок `trading.dual_tp: {enabled: true, tp1_fix_pct: 70}`
+  - `dashboard_server.py`: toggle «DUAL TP» + слайдер «TP1 fix %»
+- ✅ **DEV-120**: DUAL_TSL для обоих TREND режимов (данные из БД 119 сделок)
+  - `TREND_UP` TSL avg=**4.6R** vs TP avg=2.1R → DUAL_TSL выгоднее на +0.6R/сделку
+  - `regime_strategy.py`: `_STRATEGY_ORDER = ["SINGLE","DUAL_TP","DUAL_TSL"]`; TREND min=`DUAL_TSL`
+  - `close_trade()`: взвешенный R = `tp1_fix_pct × R_tp1 + (1-tp1_fix_pct) × R_exit` (было хардкод 0.5)
+  - `config.yaml`: `trend_strategy_type: DUAL_TSL`
+- ⚠️ **Нужен рестарт бота** для применения изменений
+- 🔄 **Следующий приоритет**: DEV-103 (Exchange Health Loop) — блокирует VST
+
+---
+
+## [30.03.2026] Агент: ARCH — Спеки ARCH-63 + ARCH-66 + приоритеты DEV
+
+- ✅ **ARCH-63 спек** готов: BTC 4h market gate в DISCUSSION.md
+  - Место: `trading_intelligence.analyze_symbol()` новый параметр `btc_market_regime`
+  - Shadow mode сначала, блокирует LONG при BTC 4h TREND_DOWN
+  - Исключение: pivot_reversal + weekly_bias=BULLISH
+  - Config: `trading.btc_market_gate.enabled: true, shadow_mode: true`
+- ✅ **ARCH-66 спек** готов: RANGE BOUNCE SL/TP calculator в DISCUSSION.md
+  - `calc_range_bounce_sl_tp()` в `core/smc/sl_tp_calculator.py`
+  - Фильтры: regime=RANGE, 15m, confluence/wl_breach, entry≤2% от пивота, TP_R≥3.5
+  - Config: `trading.range_bounce.enabled: false` (включить после теста)
+- ✅ **TASKS.md** обновлён: ARCH-63→✅, ARCH-66→✅, DEV-111 добавлен 🟡
+- ✅ **PROJECT-LOG.md** обновлён
+- 🔄 **Ждём DEV**: DEV-103 (Health Loop) → DEV-111 (BTC 4h gate) → DEV-110 (RANGE BOUNCE)
+- ❓ **Ждём TRADER**: валидация — SHORT в RANGE структурно лучше LONG или артефакт медвежьего рынка?
+
+---
+
+## [29.03.2026 ~00:30 UTC] Агент: ARCH (сессия 35) — Trade Dashboard аудит
+
+- ✅ **DISCUSSION.md**: Полный аудит Trade Dashboard — 6 разделов:
+  - Текущее состояние (страницы, виджеты, технологии)
+  - 20+ пробелов по открытым позициям, закрытым сделкам, аналитике, real-time
+  - Приоритеты редизайна (Quick wins / Аналитика / VST readiness)
+  - Референсы: Grafana, Bybit Pro, 3Commas, TradingView
+  - VST checklist (9 пунктов)
+  - Технический долг + вопросы к DEV и TRADER
+- ✅ **PROJECT-LOG.md**: добавлена запись аудита
+- 🔄 **Ждём**: TRADER → приоритет метрик для VST; DEV → выбор приоритета редизайна
+
+---
+
+## [29.03.2026] Агент: DEV (сессия 34) — DEV-95/77/78 завершены
+
+- ✅ **DEV-95**: TriggerBus — `core/context/trigger_bus.py` + `bot/loops/trigger_loop.py`
+  - OteReentryTrigger, CascadeTrigger; интеграция в `bot/core/bot.py` (pair_context + post_analyser + trigger_loop task)
+  - `config.yaml`: `trigger_bus: {shadow: true, cascade_min: 3, interval_sec: 120}`
+- ✅ **DEV-77**: OrderExecutor — `core/trading/order_executor.py`
+  - Режимы: SIM_ONLY / VST / LIVE; bracket-ордер + partial_close (20%); min_notional check
+  - `config.yaml`: `trading.execution_mode: sim_only`, `trading.tp1_close_pct: 0.20`
+- ✅ **DEV-78**: PositionManager + PositionSizer + OrderReconciler
+  - `core/trading/position_sizer.py`: qty = deposit×risk% / (sl_dist × entry_price)
+  - `core/trading/position_manager.py`: live_orders таблица, has_open_position(), sync_with_exchange()
+  - `core/trading/order_reconciler.py`: reconcile() при старте бота — детектирует ORPHAN позиции
+
+⚠️ **Нужен рестарт бота** — все изменения незакоммичены
+
+---
+
+## [29.03.2026] Агент: DEV (сессия 33) — Куб Метатрона Фаза 1 + ARCH-58 + DEV-96
+
+- ✅ **ARCH-58**: TP Architecture — все пути регистрации теперь используют `get_tp_by_hierarchy()`
+  - `recommendation_generator.py`: переименован ATR fallback tp_source → `"atr_fallback"`
+  - `bot/loops/scan_loop.py`: то же переименование
+  - `bot/monitoring.py:962`: добавлен `get_tp_by_hierarchy()` для пути `other_recs`
+  - `core/ui/intelligence_formatter.py`: добавлен `"atr_fallback": "ATR"` в `_TP_TF` dict
+- ✅ **DEV-90 (ARCH-59)**: `classify_v2()` shadow mode
+  - `core/signals/structure_detector.py`: добавлен `detect_structural_regime(df, period=5)` — HH/HL паттерн
+  - `core/indicators/market_regime.py`: добавлен `classify_v2(df_15m, df_1h)` — 3 слоя (spike guard → structural → MTF)
+  - `config.yaml`: добавлен `market_regime: use_v2: false` (shadow only)
+- ✅ **DEV-92**: `_post_tsl_queue` в TradeSimulator — TTL=8h + impulse breach invalidation
+- ✅ **DEV-93**: `PairContextBus` — `core/context/pair_context.py` + `core/context/__init__.py`
+- ✅ **DEV-94**: `PostTradeAnalyser` — `core/trading/post_trade_analyser.py` (shadow mode)
+  - Реагирует на SL/TSL/TP через callback; вычисляет OTE зону [0.705, 0.786] для re-entry
+- ✅ **DEV-96**: SMC флаги — 4 направленных флага в `SMCContext.to_features()`
+  - `has_bullish_bos`, `has_bearish_bos`, `has_bullish_choch`, `has_bearish_choch`
+- ⚠️ **DEV-95** 🔵: TriggerBus — ARCH-61 спек готов (✅), задача в бэклоге
+- ⚠️ **DEV-97** 🔵: weekly_bias gate штраф — ЗАБЛОКИРОВАНО, нужны данные n≥30
+
+⚠️ **Нужен рестарт бота** — все изменения незакоммичены
+
+---
+
+## [28.03.2026 ~23:45] Агент: TRADER — Стратегическое видение записано
+
+- ✅ **DISCUSSION.md** — добавлена запись «Куб Метатрона»: полная архитектура полносвязной системы
+  - Текущая архитектура vs. Cuб Метатрона (диаграмма узлов)
+  - Каскадные данные: A2Z(+86R), PIPPIN(0% SL), SUN(82% WR)
+  - Cap% проблема: 4-7R bucket = 48% захват, дают обратно 7.79R avg
+  - Shared Context Bus, Trigger System, Post-Trade Analyser — концепции
+  - Фазы реализации 1/2/3
+  - Открытые вопросы → ARCH (Shared Context архитектура) + DEV (TR-010 совместимость)
+- ✅ **DISCUSSION.md** — TR-010 Post-TSL OTE Re-entry (из пред. записи сессии)
+- ✅ **DISCUSSION.md** — TR-009 R-gradient де-эскалация + бэктест (из пред. записи сессии)
+- ✅ **TASKS.md** — TR-009, TR-010 добавлены
+
+**Следующий шаг:** ответ ARCH на вопросы в Кубе Метатрона → реализация TR-009/TR-010
+
+---
+
+## [28.03.2026 #7] Агент: DEV — DEV-89 завершён
+
+- ✅ **DEV-89** — Cascade TSL: OR-логика 4h+1h WT + weekly pivot touch
+  - `core/trading/trade_simulator.py` строки ~1061-1120:
+    - Фетч 1h WT (`df_1h_wt89`), OR логика: `_wt_exhausted = _wt_4h_exh or _wt_1h_exh`
+    - Weekly pivot touch через `PivotCalculatorFixed().get_weekly_pivots()` при `current_r >= _de_esc_r`
+    - SHORT: S1/S2/S3/PP; LONG: R1/R2/R3/PP; порог 1.5%
+    - `if _wt_exhausted or _near_weekly:` → de-escalate
+    - Лог: `(R=%.1fR, WT4h=X.X 1h=X.X near_w=True/False, TSL тесней)`
+  - **DEV-89 sub-task**: `core/trading_intelligence.py` строки ~1308-1319:
+    - tp_source weekly exception в DEV-58 блоке
+    - `if "1W" in tp_source` → `_near_s=True` (LONG) / `_near_r=True` (SHORT)
+- ✅ TASKS.md: DEV-89 → ✅
+
+⚠️ Нужен рестарт бота
+
+**Следующий шаг:** DEV-90 (ARCH-59: detect_structural_regime + classify_v2 shadow mode) или другие задачи
+
+---
+
 ## [28.03.2026 #6] Агент: DEV — DEV-87/88 + переименования + энциклопедия
 
 - ✅ **DEV-88**: SL по CLOSE (не LOW) для `sl_source` начинающихся с `tsl_line`/`wl_pivot_tsl` — `core/trading/trade_simulator.py`

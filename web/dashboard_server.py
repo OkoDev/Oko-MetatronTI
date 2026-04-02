@@ -96,25 +96,80 @@ async def _handle_stats(request: web.Request) -> web.Response:
     dc = request.app.get("data_collector")
     try:
         data = engine.full_stats()
-        # Обогащаем open_trades текущей ценой и нереализованным P&L
+        # Обогащаем open_trades текущей ценой, нереализованным P&L и MFE
         for t in data.get("open_trades", []):
             cur = _current_price_from_cache(dc, t["symbol"]) if dc else None
             t["current_price"] = cur
-            if cur is not None and t.get("entry_price") and t.get("stop_loss"):
-                ep = t["entry_price"]
-                sl = t["stop_loss"]
-                direction = t.get("direction", "LONG")
+            ep = t.get("entry_price") or 0
+            sl = t.get("stop_loss") or 0
+            direction = t.get("direction", "LONG")
+            sl_dist = abs(ep - sl) if ep and sl else 0
+            if cur is not None and ep and sl_dist:
                 if direction == "LONG":
                     pnl_pct = (cur - ep) / ep * 100
-                    sl_dist = ep - sl
                 else:
                     pnl_pct = (ep - cur) / ep * 100
-                    sl_dist = sl - ep
                 t["unrealized_pct"] = round(pnl_pct, 2)
-                t["unrealized_r"] = round(pnl_pct / (abs(sl_dist) / ep * 100), 2) if sl_dist else None
+                t["unrealized_r"] = round(pnl_pct / (sl_dist / ep * 100), 2) if sl_dist else None
             else:
                 t["unrealized_pct"] = None
                 t["unrealized_r"] = None
+            # MFE: max R достигнутый за время жизни сделки
+            max_r = t.get("max_R_possible")
+            if max_r is None and ep and sl_dist:
+                max_p = t.get("max_price")
+                min_p = t.get("min_price")
+                if direction == "LONG" and max_p:
+                    max_r = round((float(max_p) - ep) / sl_dist, 2)
+                elif direction == "SHORT" and min_p:
+                    max_r = round((ep - float(min_p)) / sl_dist, 2)
+            t["mfe_r"] = round(max_r, 2) if max_r is not None else None
+            # Cascade level из features_json
+            try:
+                fj = t.get("features_json")
+                if fj:
+                    import json as _json
+                    _fj = _json.loads(fj) if isinstance(fj, str) else fj
+                    t["cascade_level"] = _fj.get("cascade_level") or _fj.get("tsl_tf")
+                else:
+                    t["cascade_level"] = t.get("tsl_tf")
+            except Exception:
+                t["cascade_level"] = t.get("tsl_tf")
+
+        # BTC 4h regime
+        bot = request.app.get("bot")
+        btc_4h_regime = None
+        if bot:
+            _cache = getattr(bot, "_btc_4h_regime_cache", None)
+            if _cache:
+                btc_4h_regime = _cache.get("regime")
+
+        # Risk Exposure + Open P&L R
+        open_trades = data.get("open_trades", [])
+        deposit_usdt = 1000.0
+        risk_pct = 1.0
+        try:
+            import sqlite3 as _sqlite3
+            db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+            with _sqlite3.connect(db_path) as _conn:
+                _row = _conn.execute(
+                    "SELECT deposit_usdt, risk_pct FROM user_settings ORDER BY user_id LIMIT 1"
+                ).fetchone()
+                if _row:
+                    deposit_usdt = float(_row[0]) or deposit_usdt
+                    risk_pct = float(_row[1]) or risk_pct
+        except Exception:
+            pass
+        n_open = len(open_trades)
+        total_risk_usdt = n_open * deposit_usdt * risk_pct / 100.0
+        total_risk_pct  = total_risk_usdt / deposit_usdt * 100.0 if deposit_usdt else 0.0
+        open_pnl_r = sum(t["unrealized_r"] for t in open_trades if t.get("unrealized_r") is not None)
+        data["btc_4h_regime"]      = btc_4h_regime
+        data["risk_exposure_pct"]  = round(total_risk_pct, 2)
+        data["risk_exposure_usdt"] = round(total_risk_usdt, 2)
+        data["deposit_usdt"]       = deposit_usdt
+        data["open_pnl_r"]         = round(open_pnl_r, 2)
+
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -839,6 +894,7 @@ _TOGGLES = [
     ("trading.cascade_tsl", "Cascade TSL (15m->1h->4h)", True),
     ("trading.use_breakeven", "Breakeven SL", False),
     ("signal_quality.btc_filter_enabled", "BTC Correlation Filter", True),
+    ("trading.dual_tp.enabled", "DUAL TP (TREND only)", True),
     ("risk_management.regime_strategy.enabled", "Regime Adaptive SL/TP", True),
     ("future_pivots.enabled", "Future Pivots Calc", False),
 ]
@@ -853,6 +909,7 @@ _PARAMS = [
     ("trading.min_rr_ratio", "min R:R ratio", 2.0, 1.0, 5.0, 0.5),
     ("trading.max_trade_duration_hours", "trade expiry (hours)", 48, 12, 168, 12),
     ("trading.tsl_activation_r", "TSL activation R", 1.0, 0.3, 3.0, 0.1),
+    ("trading.dual_tp.tp1_fix_pct", "TP1 fix % (DUAL)", 70, 10, 100, 5),
     ("signal_quality.min_volume_usd", "min volume USD", 1000000, 100000, 100000000, 100000),
     ("monitoring.check_intervals.background_every_n_cycles", "bg check cycles", 5, 1, 20, 1),
 ]

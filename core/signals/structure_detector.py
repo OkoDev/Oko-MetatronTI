@@ -245,3 +245,45 @@ def detect_structure(
         result["strength"]    = 55  # CHoCH первый сигнал — осторожно
 
     return result
+
+
+def detect_structural_regime(
+    df: pd.DataFrame,
+    period: int = 5,
+) -> str:
+    """
+    DEV-90 / ARCH-59: Определяет текущий структурный режим по паттерну HH/HL или LH/LL.
+
+    В отличие от detect_bos()/detect_choch() (event-based — только последний бар),
+    эта функция смотрит на последовательность swing-points → persistent режим.
+
+    Args:
+        df:     OHLCV DataFrame (мин. _MIN_BARS баров)
+        period: период для detect_swing_highs_lows()
+
+    Returns:
+        "TREND_UP"   — HH + HL (последние 2 пика и 2 впадины растут)
+        "TREND_DOWN" — LH + LL (последние 2 пика и 2 впадины падают)
+        "RANGE"      — смешанная структура или недостаточно данных
+    """
+    if df is None or len(df) < _MIN_BARS:
+        return "RANGE"
+
+    try:
+        swings = detect_swing_highs_lows(df, period=period)
+        highs = swings["highs"]
+        lows  = swings["lows"]
+
+        hh = len(highs) >= 2 and highs[-1]["value"] > highs[-2]["value"]
+        hl = len(lows)  >= 2 and lows[-1]["value"]  > lows[-2]["value"]
+        ll = len(lows)  >= 2 and lows[-1]["value"]  < lows[-2]["value"]
+        lh = len(highs) >= 2 and highs[-1]["value"] < highs[-2]["value"]
+
+        if hh and hl:
+            return "TREND_UP"
+        if ll and lh:
+            return "TREND_DOWN"
+        return "RANGE"
+    except Exception as e:
+        logger.warning("[detect_structural_regime] error: %s", e)
+        return "RANGE"

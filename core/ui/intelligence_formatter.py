@@ -48,10 +48,11 @@ _SL_SHORT = {
     "fallback":   "Фикс",
 }
 _TP_TF = {
-    "pivot_1M": "1M",
-    "pivot_1W": "1W",
-    "pivot_1D": "1D",
-    "atr_rr":   "ATR RR",
+    "pivot_1M":    "1M",
+    "pivot_1W":    "1W",
+    "pivot_1D":    "1D",
+    "atr_rr":      "ATR RR",
+    "atr_fallback": "ATR",  # ARCH-58
 }
 
 _SEP = "─" * 18

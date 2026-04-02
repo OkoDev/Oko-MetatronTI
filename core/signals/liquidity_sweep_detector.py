@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 _WT_OS = -40.0
 _WT_OB = 40.0
-_MIN_BARS = 30           # минимум баров для swing analysis
+_MIN_BARS = 50           # DEV-82 v2: минимум баров (было 30 → 50 для 1h свингов)
 _LOOKBACK_SWING = 2      # сколько последних свингов проверять
 _PIVOT_BONUS = 15        # бонус если sweep совпал с pivot уровнем
 
@@ -69,7 +69,7 @@ def _find_sweep_level_and_direction(
     # 1. Swing points analysis
     try:
         from core.smc.swing_points import detect_swing_points
-        sa = detect_swing_points(df.iloc[:-1], period=5)  # без последнего бара (он сам sweep)
+        sa = detect_swing_points(df.iloc[:-1], period=10)  # DEV-82 v2: 5→10 для 1h значимых свингов
     except Exception as e:
         logger.debug("[LIQSWEEP] %s swing_points error: %s", symbol, e)
         return None, None, False
@@ -191,7 +191,7 @@ def detect_liquidity_sweep(
         strength=strength,
         confidence=0.58 + (0.07 if pivot_bonus else 0),
         timestamp=datetime.now(timezone.utc),
-        timeframe="15m",
+        timeframe="1h",   # DEV-82 v2: детектор работает на 1h данных
         entry_price=bar_close,
         data={
             "sweep_level": sweep_level,

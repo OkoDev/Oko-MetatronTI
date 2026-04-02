@@ -227,7 +227,7 @@ def calculate_levels(
         tp1_price  = entry_price * (1 - tp1_pct / 100)
 
     take_profit = tp1_price
-    tp_source   = f"atr_fallback_rr_{fallback_rr:.1f}:{tp1_pct:.2f}%"
+    tp_source   = "atr_fallback"  # ARCH-58: явная метка, monitoring.py перезапишет на pivot_*
 
     # DEV-35: R:R cap — ограничить нереалистичный R:R (PAXG 24x → 6x, CRCLX 32x → 6x)
     max_rr = sl_cfg.get("max_rr", 0)

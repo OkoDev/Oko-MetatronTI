@@ -103,7 +103,7 @@ analysis:
     pivot_touch_pct: 0.15
     div_min_bars: 9
     max_per_cycle: 10
-    dynamic_os_enabled: true   # ARCH-49: shadow comparison — вычисляем dyn_os, логируем [DYN-OS], gate по-прежнему FIXED
+    dynamic_os_enabled: false  # ARCH-49 ОТКАТ 01.04: DEV-108 сделал dyn_os production в RANGE → confluence/RANGE SL конвейер 440 SL/5дней. Вернуть true только после валидации shadow mode отдельно.
     dyn_os_k: 1.2              # ARCH-49: k=1.2 (TRADER бэктест: Avg R +0.51 на 15m vs fixed -0.18)
     dyn_os_window: 50          # ARCH-49: окно для mean/std WT1
     4h_gate_enabled: false   # ARCH-26: временно отключён (22.03) — WT momentum неверно определял тренд, шорты блокировались в нисходящем рынке. Вернуться к Варианту A (ATR Trend) после наблюдения.
@@ -153,6 +153,10 @@ outcome_predictor:
 
 strategy_name: multi_signal
 trading:
+  # DEV-77: OrderExecutor — режим исполнения ордеров
+  execution_mode: sim_only   # sim_only | vst (sandbox) | live
+  tp1_close_pct: 0.20        # 20% позиции закрыть при TP1 hit
+
   # DEV-32: блокировка контр-тренд входов (TRADER 23.03: CAKE/SAHARA — системная ошибка)
   # TREND_DOWN → только SHORT, TREND_UP → только LONG, RANGE/HIGH_VOL — оба направления
   regime_direction_block:
@@ -197,7 +201,7 @@ trading:
     - [ETH, STETH, WETH]       # wrapped ether
   entry_timeframe: 15m
   bounce_mode:
-    enabled: false
+    enabled: false # руками 01.04.2026 02:15 → ОТКАТ 01.04 (не валидирован, SL конвейер)
     max_bounces: 2
     min_trend_strength: 50
     cooldown_sec: 300
@@ -237,6 +241,9 @@ trading:
     pivot_reversal:
       min_strength: 60
       tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03)
+  dual_tp:
+    enabled: true         # DUAL_TP активен для TREND_UP/TREND_DOWN режимов (добавлен 30.03.2026)
+    tp1_fix_pct: 20       # % позиции фиксируется на TP1 (остаток держим до TP2)
   use_tsl: true
   tsl_activation_r: 1
   # tsl_buffer_pct: 0.3  # МЁРТВЫЙ — в коде не читается (DEV-87, 28.03.2026). Подключить или удалить.
@@ -254,12 +261,12 @@ trading:
     atr_multiplier: 1.0 # было 1.2 → 1 (изменил руками 17:52 27.03)
     sl_min_pct: 0.5
     sl_max_pct: 3.0
-    tp_fallback_rr: 2.5
+    tp_fallback_rr: 3.0  # было 2.5 → 3.0 (28.03) — ATR fallback TP; должен быть >= tp_pivot_min_r, иначе отклонённый пивот лучше fallback
     max_rr: 3.0          # DEV-35: cap R:R (PAXG 24x, CRCLX 32x → max 6x)
     max_rr_range: 2.5    # DEV-61: RANGE-специфичный cap (среднее RANGE движение = 2.0–2.5x)
     require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
-    tp_pivot_min_r: 3.0  # было 2.0 → 3.0 (изменил руками 17:52 27.03) — минимальный R для pivot TP 
-    tp_reversal_min_r: 3.0 # было 2.0 → 3.0 (изменил руками 17:52 27.03) — минимальный R для reversal TP 
+    tp_pivot_min_r: 3.0  # было 2.0 → 3.0 (27.03) — минимальный R для pivot TP; менять вместе с tp_fallback_rr
+    tp_reversal_min_r: 3.0 # было 2.0 → 3.0 (27.03) — минимальный R для reversal TP; менять вместе с tp_fallback_rr
     tp_partial_pct: 0.2 # было 0.5 → 0.2 (изменил руками 17:52 27.03)
     atr_dynamic: true
     atr_expand_threshold: 1.3
@@ -267,13 +274,22 @@ trading:
     struct_sl_buffer_pct: 0.3
     struct_sl_max_dist: 2.0 # было 3.0 → 2.0 (изменил руками 17:52 27.03) — максимальное расстояние до SL для структурных уровней (S/R, FVG)
     tsl_too_tight_pct: 1.0
+market_regime:
+  use_v2: false  # DEV-90/ARCH-59: гибридный classify_v2() — false=shadow, true=production
+
+trigger_bus:
+  shadow: true          # ОТКАТ 01.04: только 1 trade за 3 дня, данных мало. Вернуть false после 30+ trades.
+  cascade_min: 3        # мин. cascade_count для CascadeTrigger
+  interval_sec: 120     # интервал цикла в секундах
+
 signal_quality:
   sl_cooldown_hours: 2.0   # 2 часа после SL (было 4.0 → 2.0, изменил руками 17:52 27.03) — снижено для увеличения количества сигналов (WR=20% при 2ч vs WR=15% при 4ч)
   dedup_minutes: 30
-  min_volume_usd: 0 #700000
+  min_volume_usd: 0  # фильтр по BingX-объёму некорректен (глобальный объём монеты м.б. намного выше)
   min_strength: 50
   min_strength_register: 75  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
   min_strength_wl_breach: 45  # DEV-69: WL breach — ниже, т.к. касание уровня само по себе = контекст
+  pivot_reversal_max_strength: 79  # DEV-98 (ARCH Находка 2): strength≥80 = WR=4.5% avgR=−0.735R → блок
   ote_shadow_mode: true         # ARCH-53: OTE детектор shadow mode (только логирование, ≥2 недели)
   ote_zone_tfs: ["1h", "4h", "1d"]       # ARCH-53 swing: zone TF (trigger = entry TF 15m)
   ote_scalp_zone_tfs: ["15m"]            # ARCH-53 scalp: zone TF (ICT: 15m zone)
@@ -303,13 +319,13 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
-  scan_semaphore_size: 10
-  analyze_semaphore_size: 3
+  scan_semaphore_size: 10   # откат 20→10 (30.03: 20 давало throttle BingX → 10-35 сек latency)
+  analyze_semaphore_size: 3  # откат 5→3 (30.03: вместе с scan=20 перегружали API)
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
   cascade_div_semaphore_size: 3
   api_rps: 15
-  api_semaphore_size: 12
+  api_semaphore_size: 10 # 12 поменял руками 30.03 16:30
   ohlcv_scan_limit: 161  # +1 буфер: BingX возвращает limit-1 баров (159 вместо 160)
   ohlcv_slow_threshold_sec: 8.0
   divergence_slow_threshold_sec: 3.0
@@ -359,10 +375,10 @@ risk_management:
   regime_strategy:
     enabled: true
     trend_sl_factor: 0.85
-    trend_strategy_type: TRIPLE_TP_TSL
+    trend_strategy_type: DUAL_TSL  # 70% на TP1 (пивот), 30% под TSL (решение 30.03.2026)
     trend_position_multiplier: 1.0
     range_sl_factor: 1.15
-    range_strategy_type: DUAL_TP
+    range_strategy_type: SINGLE    # было DUAL_TP — RANGE всегда на первом пивоте (30.03.2026)
     range_position_multiplier: 1.0
     high_vol_sl_factor: 1.0
     high_vol_strategy_type: DUAL_TP

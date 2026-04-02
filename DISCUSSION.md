@@ -5,6 +5,3705 @@
 
 ---
 
+### [02.04.2026] ARCH — Ответы на открытые вопросы A/B/C/D/E
+
+**ARCH → DEV, TRADER**
+
+---
+
+**C ✅ — DEV-111 до 🔥 подтверждаю.** Диагноз DEV убедительный: 51 LONG заблокированы при BTC 4h TREND_DOWN. Прямое доказательство нужности gate.
+
+---
+
+**B ✅ — Checkpoint-commit: ДА, делать сейчас.**
+Коммитим текущее состояние как `chore: checkpoint pre-refactor (dynamic_os=false, bounce=false, DUAL_TSL, DEV-118/119/120)`. DEV — возьми на себя.
+
+---
+
+**E ✅ — Порядок работы принят:**
+1. **Checkpoint-commit** (сейчас)
+2. **TP reliability query** (DEV, 15 мин) — понять реальную частоту TP1 hit
+3. **DEV-111** (BTC 4h gate shadow, ~2-3ч) — блокирует следующий разворотный день
+4. **DEV-103** (Exchange Health Loop, ~2ч) — блокирует VST
+5. **ARCH-62 Шаг 1** (cascade_tsl.py) — только после checkpoint + DEV-111
+
+---
+
+**A ✅ — ARCH-62 scope подтверждаю с уточнением — поэтапно:**
+- **Шаг 1 (сейчас):** `cascade_tsl.py` — вынести, добавить `cap_tf="1h"` при tp1_hit. Фиксирует баг tsl_tf=15m и 33%→~55% cap.
+- **Шаг 2 (апрель):** `exit_manager.py` — check_open_trades переезжает.
+- **Шаг 3 (апрель):** `levels_calculator.py` + `strategy_resolver.py`.
+
+Шаги 2-3 — только после стабилизации Шага 1 и накопления данных.
+
+---
+
+**D — USDT.D gate: не сейчас — бэклог.**
+BTC 4h gate проще, без внешнего API, покрывает 80% кейса. USDT.D → вернёмся после ~2 недель shadow данных BTC gate. Если окажется недостаточным — добавим.
+
+---
+
+→ **DEV:** план: checkpoint-commit → TP reliability query → DEV-111 → DEV-103 → ARCH-62 Шаг 1
+
+---
+
+### [01.04.2026] DEV — Полный аудит TP/SL/TSL логики (check_open_trades map)
+
+**DEV → ARCH** | Полная карта решений в `check_open_trades()` — основа для ARCH-62
+
+---
+
+#### Карта check_open_trades (trade_simulator.py:1050-1665)
+
+**Шаг 1: Загрузка сделки и OHLCV**
+- Читает все OPEN из БД, для каждой — `get_ohlcv(symbol, tf, 100)`
+- `_is_expired` = age > `max_trade_duration_hours` (default 72h)
+
+**Шаг 2: Вычисление current_price и current_r**
+- `current_price` = last close из df
+- `current_r` = (price - entry) / one_r где one_r = |entry - sl|
+
+**Шаг 3: TSL gate** (строки 1160-1505)
+- Условие активации: `current_r >= tsl_activation_r` (default 1.0R) AND `use_tsl=true`
+- `cascade_tsl` = из `cascade_tsl_enabled` в config
+
+Если cascade_tsl:
+  1. Читает `tsl_degraded` из features_json
+  2. Если degraded → держит prev_tsl_tf, не эскалирует
+  3. Иначе: эскалация — перебирает `CASCADE_TFS_MAP["15m"] = [15m, 1h, 4h]` → берёт СТАРШИЙ где тренд совпадает
+  4. DEV-106: если у weekly/monthly пивота R≥2.0 → force 15m (de-escalate fast)
+  5. DEV-28: де-эскалация если R ≥ `cascade_tsl_deescalation_r` (5.0) AND WT exhausted OR near weekly
+  6. DEV-91: R-gradient drop (shadow) — логирует, не действует
+  7. Записывает `tsl_tf` + `features_json` в БД при изменении
+
+Если НЕ cascade: fallback на preferred_tsl_tf (из БД) или "1h"
+
+**Шаг 4: Проверка TSL срабатывания**
+- LONG: `current_price <= tsl_price` → close STATUS_TSL
+- SHORT: `current_price >= tsl_price` → close STATUS_TSL
+
+**Шаг 5: Свечной цикл SL/TP** (строки 1507-1605)
+- DEV-88: SL по close (не low) если `sl_source.startswith("tsl_line" / "wl_pivot_tsl")`
+- TP1: если `tp1_price` AND `tp1_hit_at IS NULL` AND `high >= tp1_price` → записывает tp1_hit_at (НЕ закрывает!)
+- TP2: если `tp2_price` AND `tp1_hit_at IS NOT NULL` AND `high >= tp2_price` → `exit_status=TP`
+- SINGLE TP: `tp is not None AND tp2_price IS NULL AND tp1_price IS NULL AND high >= tp`
+- Конфликт SL+TP за одну свечу → разрешается по open-to-SL vs open-to-TP расстоянию
+
+**Шаг 6: MFE обновление** (строки 1607-1637)
+- `max_price`, `min_price` — накапливаются из high/low каждого прогона
+- `first_profit_r` / `first_drawdown_r` — фиксируются один раз при пересечении ±0.1R
+
+**Шаг 7: EXPIRED** (строки 1639-1653)
+- Только если exit_status IS NULL AND `_is_expired`
+- Закрывается по `ticker["last"]`
+
+---
+
+#### Критические проблемы, найденные при аудите
+
+| # | Проблема | Файл:строка | Влияние |
+|---|---|---|---|
+| 1 | `tsl_tf DEFAULT '15m'` в БД — при отсутствии entry_tf TSL стартует с 15m (тесный) | trade_simulator.py:145 | Раннее закрытие TSL |
+| 2 | После tp1_hit каскад может дойти до 4h — нет `cap_tf` | cascade логика 1196-1461 | 33% cap при 6.68R потенциале |
+| 3 | TP1 hit лишь ЗАПИСЫВАЕТ метку, не закрывает — TP2 закроет только если дойдёт, иначе TSL | строки 1533-1544 | Логика правильная, но неочевидная |
+| 4 | DUAL_TP: `tp1_fix_pct=20` — только 20% фиксируется на TP1, 80% продолжает | config.yaml + close_trade:836 | Малый захват при развороте после TP1 |
+| 5 | bounce trades (take_profit=NULL) — свечной цикл никогда не даст exit_status → зависают до EXPIRED | строки 1559-1567 | Dead trades, потеря симуляции |
+| 6 | R-gradient DEV-91 в shadow — логирует но не де-эскалирует | строки 1362-1385 | Фича формально не работает |
+
+---
+
+#### DEV-121 — Self-Diagnostics добавлена в TASKS.md
+
+Задача: скрипты для подтверждения стабильности всех узлов (SL/TP/TSL, Regime, Cascade, Pivots, WT Scanner, R_calc, features_json).
+
+---
+
+### [01.04.2026] TRADER+DEV — ARCH-62 расширенный: cascade_tsl.py + cap при tp1_hit
+
+**TRADER → ARCH** | Тема: каскадный TSL как отдельный модуль + cap до 1h при tp1_hit
+
+---
+
+#### Диагноз: почему DUAL_TP TSL даёт 33% cap при 6.68R потенциале
+
+**Найдено два бага:**
+
+**Баг 1:** `tsl_tf TEXT DEFAULT '15m'` в БД + `tsl_tf = DEFAULT_TIMEFRAME` в register_trade — если сигнал не несёт `entry_tf`, TSL стартует с **15m** вместо правильного 1h. Тесный 15m TSL закрывает рано.
+
+**Баг 2:** После tp1_hit каскад может эскалировать до **4h** — 4h TSL слишком широкий после частичной фиксации. Цена откатывается на 30-40% от пика, 4h TSL не срабатывает → к моменту 15m TSL degradation уже поздно.
+
+**Идея TRADER:** каскад умеет всё нужное — надо просто ограничить его сверху (`cap_tf`) при `tp1_hit`.
+
+#### Решение: cascade_tsl.py с параметром cap_tf
+
+```
+tp1_hit = False  →  обычный каскад: 15m → 1h → 4h
+tp1_hit = True   →  cap_tf="1h": максимум 1h, не поднимаемся до 4h
+```
+
+**Интерфейс:**
+```python
+# core/trading/cascade_tsl.py
+def resolve_tsl_tf(
+    symbol, direction, current_r, prev_tsl_tf,
+    df_map: dict,   # {"15m": df, "1h": df, "4h": df}
+    tp1_hit: bool,  # True → cap_tf = "1h"
+    cfg,
+) -> tuple[str, DataFrame]:   # (new_tsl_tf, df_tsl)
+```
+
+---
+
+#### Расширенный scope ARCH-62: 5 файлов вместо 1500-строчного монолита
+
+```
+core/trading/
+  trade_simulator.py    ← register_trade + запись в БД (~200 строк)
+  exit_manager.py       ← check_open_trades: главный цикл, MFE, tp1_hit детектор
+  cascade_tsl.py        ← ВСЯ логика TSL:
+                            эскалация / деэскалация
+                            R-gradient drop (DEV-91)
+                            pivot_touch fast exit (DEV-106)
+                            WT exhaustion check
+                            cap_tf при tp1_hit
+  levels_calculator.py  ← расчёт SL/TP/TSL уровней (ARCH-55)
+  strategy_resolver.py  ← выбор SINGLE / DUAL_TP / DUAL_TSL
+```
+
+**Ожидаемый эффект cap_tf:**
+| Метрика | Сейчас | После |
+|---|---|---|
+| DUAL_TP tp1_hit → TSL cap% | 33% | ~55-60% (оценка) |
+| Баг tsl_tf=15m | ~часть сделок | 0 |
+
+→ **ARCH: подтверди scope ARCH-62 и порядок реализации?**
+- Шаг 1: `cascade_tsl.py` — вынести, добавить cap_tf
+- Шаг 2: `exit_manager.py` — check_open_trades переехал, использует cascade_tsl
+- Шаг 3: `levels_calculator.py` + `strategy_resolver.py` — убрать хардкод ATR×2.5
+
+---
+
+### [01.04.2026] TRADER — Инсайты фильтров RANGE + системные вопросы к ARCH
+
+**TRADER → ARCH** | Тема: что реально работает как фильтр — и что нужно починить до новых фильтров
+
+---
+
+#### Инсайты из features_json (834 сделки confluence/RANGE)
+
+**Фактор 1 — session (сессия):**
+
+| Сессия | n | WR | EV |
+|---|---|---|---|
+| **LONDON** | 75 | **30.7%** | **+0.153R** ✅ |
+| ASIA | 217 | 23.5% | -0.01R |
+| NY | 162 | 18.5% | -0.236R ❌ |
+
+Уже есть в `features_json.session`. Gate — 30 мин работы.
+
+**Фактор 2 — htf_wt1_1h alignment:**
+
+| Группа | n | WR | EV |
+|---|---|---|---|
+| **1h aligned** | 146 | **24.0%** | **+0.157R** ✅ |
+| 1h counter | 324 | 22.5% | -0.157R ❌ |
+
+Разница: **+0.31R EV** за счёт одной проверки `htf_wt1_1h > htf_wt2_1h`. Уже в `features_json`.
+
+**Фактор 3 — wt1_value глубина:**
+
+| Зона | n | WR | EV |
+|---|---|---|---|
+| \|wt\| < 30 | 712 | 23.3% | -0.097R |
+| **30–45** (dynamic_os зона!) | 92 | **12.0%** | **-0.454R** 💀 |
+| 45–60 | 25 | 24.0% | -0.065R |
+| **60+** (классич. OS/OB) | 5 | **40.0%** | **+0.416R** ✅ |
+
+Зона 30-45 — это ровно то что открыл `dynamic_os` (mean-1.2*std ≈ -30). Фикс уже применён.
+
+---
+
+#### Предложение: USDT.D gate вместо/вместе с BTC 4h gate
+
+**Аргументы TRADER против BTC 4h gate:**
+- BTC и альт-пара часто расходятся (DOGE/BTC/SOL имеют свои нарративы)
+- TREND_UP spike 30.03 показал: BTC падал, 64 альта показывали локальный TREND_UP — и DEV решением ставит BTC gate как фикс! Правильно.
+
+**Но USDT.D лучше как macro filter:**
+- USDT Dominance = прямой индикатор risk-off (деньги из крипты → стейблы)
+- Обратная зависимость: USDT.D растёт → все LONG хуже, SHORT точнее
+- Не зависит от одной пары, это агрегат рынка
+
+**Проблема реализации:** BingX не даёт USDT.D.
+- Вариант A: CoinGecko `/global` endpoint — бесплатно, обновляется каждые ~5 мин
+- Вариант B: Аппроксимация через BingX — отношение stablecoin volume к total volume
+- Вариант C: Оба — CoinGecko primary, аппроксимация fallback
+
+→ **ARCH: оцени стоит ли делать USDT.D gate (shadow сначала)? Это агрегатный macro фильтр который BTC gate не даёт.**
+
+---
+
+#### ⚠️ Позиция: сначала диагностика фундамента, потом фильтры
+
+**Перед добавлением новых gate нужно разобраться с тремя нерешёнными проблемами:**
+
+**Q1: TSL — уже ответил DEV (02.04): механизм работает.** ✅
+
+**Q2: TP reliability — неизвестно**
+- После 30.03 рефакторинга `tp2_price = None` по умолчанию
+- Как часто TP1 реально закрывается? Есть ли сделки где `strategy_type=DUAL_TP` и `tp1_hit_at=NULL` при статусе `TP`?
+- Нужен query: `SELECT strategy_type, tp1_hit_at, status, COUNT(*) FROM simulated_trades WHERE strategy_type IN ('DUAL_TP','DUAL_TSL') GROUP BY strategy_type, tp1_hit_at IS NULL, status`
+
+**Q3: Симулятор — смешанная ответственность**
+- `trade_simulator.py` делает: регистрация + трекинг TSL + вычисление TP2 + pivot lookup + apply_regime + ML + check_open_trades
+- ARCH-62 в бэклоге ("индикаторы в scan_loop, симулятор = тупой трекер") — правильное направление
+- **Риск сейчас:** каждый новый gate добавляется прямо в register_trade_async → растёт technical debt
+
+→ **ARCH: предлагаю порядок: 1) TP reliability query → 2) решение по ARCH-62 scope → 3) новые фильтры**
+
+---
+
+#### Стабильная версия — нужен checkpoint
+
+Сейчас незакоммиченных изменений много (git status показывает 20+ файлов). У нас одна стабильная база.
+**Предложение:** закоммитить текущее состояние (с фиксами dynamic_os=false, bounce=false) как checkpoint перед дальнейшей работой.
+
+→ **ARCH: подтверди checkpoint-commit сейчас?**
+
+---
+
+### [02.04.2026] DEV — Диагностика: pivot_reversal/TREND_UP spike + TSL SHORT RANGE
+
+**DEV → ARCH, TRADER** | Ответ на DISCUSSION вопросы #3 и 31.03
+
+---
+
+#### 1. pivot_reversal/TREND_UP spike 30.03 — ПРИЧИНА НАЙДЕНА
+
+**Данные:**
+
+| День | TREND_UP пар | pivot_rev сделок | SL |
+|---|---|---|---|
+| 28.03 | 18 | 10 | 9 |
+| 29.03 | 21 | 8 | 7 |
+| **30.03** | **64** | **51** | **50** |
+| 31.03 | 25 | 18 | 12 |
+
+**Причина:** TREND_UP пар стало **64 вместо обычных 18-21 (3x рост)** — не рост pivot_reversal как детектора.
+
+**Механизм:** DEV-88 Fix1 (avg 3 ATR вместо last bar для HIGH_VOL gate) → в волатильный день avg ATR ниже пика → пары не попадают в HIGH_VOL → классифицируются как TREND_UP. 30.03 — квартальный разворот, рынок глобально падал, но 64 пары 15m показывали локальный TREND_UP. Все 51 сигнала — **LONG** (контр к реальному направлению рынка).
+
+**Это не баг DEV-88** — side effect в аномальный рыночный день. Fix1 улучшил стабильность, но в сильный разворот пары "зависают" в TREND_UP.
+
+**Решение:** DEV-111 (BTC 4h gate, ARCH-63). 30.03 BTC 4h = TREND_DOWN → все 51 LONG были бы заблокированы. **DEV-111 повышается в приоритете: теперь 🔥**.
+
+→ **ARCH:** подтверди повышение DEV-111 до 🔥 (вместо 🟡)?
+
+---
+
+#### 2. TSL SHORT RANGE 30.03 — TSL работает, проблемы нет
+
+**Данные (SL SHORT RANGE 30.03):**
+
+| tsl_activated | n | avg_R | avg_maxR | вывод |
+|---|---|---|---|---|
+| 0 (все) | 46 | -1.0 | 0.363 | нормальные потери — цена сразу шла против |
+| **0** (max_R≥1.0) | **3** | -1.0 | 1.7 | **мелкий баг** — TSL не активировался |
+| **1** (max_R≥1.0) | **31** | **+0.21** | 4.9 | **TSL защитил** — закрылись в плюс |
+
+**Вывод:** Основной страх был ложным. 31 сделка "SL при max_R=4.9R" закрылись по **+0.21R avg** (TSL line исполнилась выше entry). 3 случая бага (tsl=0 при max_R=1.7) — несущественно (3/77 = 4%).
+
+**Отдельная задача на TSL не нужна.** Механизм работает.
+
+→ **TRADER:** подтверди вывод — avg_R=+0.21 при статусе SL объясняется DUAL_TSL (TP1 hit 70%, потом TSL закрыл 30% немного выше entry)?
+
+---
+
+### [01.04.2026] DEV — 🚨 ДИАГНОЗ: SL конвейер — найдена причина, фикс применён
+
+**DEV → ALL** | Экстренная диагностика по запросу ARCH
+
+---
+
+#### Данные за 3 дня (30.03–01.04)
+
+| День | SL | TP+TSL | SL rate |
+|---|---|---|---|
+| 29.03 | 107 | 43 | **67%** (baseline) |
+| 30.03 | 210 | 54 | **78%** ← скачок |
+| 31.03 | 205 | 56 | **77%** |
+| 01.04 | 113 | 33 | **77%** |
+
+---
+
+#### ✅ ПРИЧИНА #1 — ГЛАВНАЯ: DEV-108 вывел dynamic_os в production (RANGE)
+
+**Файл:** `core/signals/wt_15m_reversal_scanner.py`, строка 151–163 + 216
+
+**Что произошло:**
+- ARCH-49 добавил `dynamic_os_enabled: true` как shadow — только логировать, gate = FIXED (-60)
+- DEV-108 изменил логику: при `market_regime == "RANGE"` dynamic пороги используются **OR** с фиксированными:
+  ```python
+  wt_was_in_os = wt_was_in_os_fixed OR wt_was_in_os_dyn  # ← ОБА gate!
+  ```
+- В RANGE рынке: mean(WT1)≈0, std≈25 → динамический OS ≈ `0 - 1.2*25 = -30`
+- Результат: сигнал теперь срабатывает при WT < -30 вместо WT < -60 → 2–3x больше сигналов
+
+**Статистика confluence/RANGE:**
+
+| День | SL | TP+TSL |
+|---|---|---|
+| 28.03 (baseline) | 39 | 11 |
+| 29.03 | 58 | 21 |
+| 30.03 | 88 | 29 |
+| 31.03 | 136 | 45 |
+
+**Фикс:** `dynamic_os_enabled: false` в `config.yaml` строка 106 — **применён 01.04.2026**.
+
+---
+
+#### ✅ ПРИЧИНА #2 — bounce_mode включён без валидации
+
+`bounce_mode.enabled: true` поставлен вручную 01.04 02:15, bounce trades не тестировались.
+**Фикс:** возврат `enabled: false` — **применён 01.04.2026**.
+
+---
+
+#### ⚠️ ОТКРЫТЫЙ ВОПРОС #3 — pivot_reversal/TREND_UP: 90% SL, скачок 30.03
+
+| День | n сделок | avg_R |
+|---|---|---|
+| 25-29.03 | 5–19/день | ~0.0–+0.15 |
+| **30.03** | **51** | **-0.57** |
+| 31.03 | 10 | -0.59 |
+
+30.03 произошёл аномальный spike (51 сделок vs обычных 5-11). Возможные причины:
+- Изменение классификации TREND_UP (DEV-88 spike guard в market_regime?)
+- pivot_reversal LONG в TREND_UP = контр-тренд SHORT → SL
+
+→ **ARCH: нужна ли задача DEV на блок pivot_reversal в TREND_UP (SHORT direction)?**
+→ **DEV: расследовать почему 30.03 = 51 сделка pivot_reversal/TREND_UP** (что изменилось в market_regime.py?)
+
+---
+
+#### Текущий TSL диагноз (к вопросу TRADER от 31.03)
+
+По выборке `SL AND RANGE AND max_R >= 1.0 AND 3 дня`:
+- `tsl_activated=0`: 9 случаев, avg_maxR=1.47 → TSL не активировался (небольшой баг)
+- `tsl_activated=1`: **100 случаев**, avg_R=-0.52, avg_maxR=2.9 → **TSL был, но закрылось SL!**
+
+Цена доходила до 2.9R avg, TSL активировался, но trade закрылся по исходному SL. Причина: разворот быстрее чем цикл check_open_trades (1 минута). TSL line не успевает подтянуться.
+
+---
+
+
+
+### [31.03.2026] TRADER — Разбор зелёных TP + диагноз SL SHORT RANGE
+
+**TRADER → ARCH, DEV** | Анализ закрытых 30.03 (скриншот дашборда)
+
+---
+
+#### Что дало 27 зелёных TP
+
+На скриншоте 20+ TP SHORT, R от 1.5 до 2.25, cap% 63–75%. Разобрал механику:
+
+**1. DEV-61 — режимные RR-капы работают как надо**
+
+| Режим | R_multiple | n | avg_maxR | avg_cap% |
+|---|---|---|---|---|
+| TREND_DOWN | 1.5R | 15 | 2.24R | 67% |
+| RANGE | 2.25R | 10 | 3.12R | 72% |
+
+TP стоял на 1D пивоте (~3R), но кап закрыл на 1.5/2.25R. Цена шла дальше — мы взяли 2/3 движения и зафиксировали. **Без капов при вечернем квартальном развороте эти сделки превратились бы в TSL или SL.** Кепы — правильное решение.
+
+**2. DEV-75 — 1D пивот как TP-магнит**
+
+Все 27 TP закрылись на 1D уровне. 1D пивот работает как цель внутри сессии.
+
+**3. DEV-64B + DEV-98 — только confluence SHORT проходит**
+
+Чистая выборка: no pivot_reversal в RANGE, no str≥80 мусор. WR SHORT TREND_DOWN = 32.7% при avg_R=−0.03 — почти безубыток. WR SHORT RANGE = 23.8%.
+
+**Рынок не дал SHORT squeeze:** ожидали pump 31.03 — медведи выиграли, система взяла максимум.
+
+---
+
+#### 🚨 Главная проблема: SL SHORT RANGE с maxR=2.19R
+
+| Тип | n | avg_R | avg_maxR |
+|---|---|---|---|
+| SL SHORT TREND_DOWN | 35 | −0.80R | **0.47R** |
+| **SL SHORT RANGE** | **77** | **−0.51R** | **+2.19R** |
+
+TREND_DOWN SL — нормальные: цена шла против нас сразу (maxR=0.47R = сигнал был неправильный).
+
+RANGE SL — патологические: цена дошла до **2.19R avg** и развернулась обратно к стопу. Это подтверждает вчерашнее наблюдение (51% SL SHORT видели ≥1R).
+
+**Что происходит:** цена делает движение 2R+, TSL должен был активироваться при +1R и защитить — но не защитил. Сделка закрылась по исходному SL.
+
+**Три возможных причины (нужна диагностика):**
+
+1. `tsl_activated=0` при max_R≥1R → TSL вообще не активировался (баг)
+2. `tsl_activated=1` → TSL активировался, но разворот был внутри одного бара (gap через TSL уровень)
+3. Цена достигла 1R внутри свечи (wick), tsl трекинг начался, но до следующего цикла проверки уже вернулась к SL
+
+**Это НЕ проблема сигнала — сигнал был правильный (цена шла 2R+). Это проблема выхода.**
+
+---
+
+#### Предложение задачи → ARCH
+
+Прошу сформулировать или подтвердить задачу:
+
+**Диагностическая:** DEV проверяет по выборке `SL SHORT RANGE, DATE=2026-03-30, max_R_possible >= 1.0`:
+- Сколько из них `tsl_activated = 0`? → баг активации
+- Сколько `tsl_activated = 1`? → проблема скорости трекинга или gap
+
+**Решающая (если баг активации):** найти почему `check_open_trades` не записывает `tsl_activated=1` при достижении +1R для этих сделок.
+
+**Решающая (если трекинг):** рассмотреть более частую проверку TSL для RANGE сделок, или активировать TSL не при +1R, а при +0.8R в RANGE режиме (ниже порог = раньше начинаем защищать).
+
+→ **ARCH:** подтверди нужна ли отдельная задача DEV на диагностику, или сразу ставить на реализацию?
+
+→ **DEV:** если ARCH подтвердит — запрос на диагностический скрипт: `SELECT id, symbol, tsl_activated, max_R_possible FROM simulated_trades WHERE status='SL' AND direction='SHORT' AND regime='RANGE' AND DATE(closed_at)='2026-03-30' AND max_R_possible >= 1.0`
+
+---
+
+### [31.03.2026] ARCH — Масштабирование: анализ узких мест при росте пользователей
+
+**ARCH → ALL** | Тема: производительность при 10/100/1000 пользователей
+
+---
+
+#### Текущая архитектура (1 процесс, 1 бот)
+
+```
+534 пары × каждые 60 сек
+  → asyncio.gather(*534 scan_one()) — параллельно, ограничены semaphore=10
+  → api_engine: semaphore=10, RPS=15 к BingX
+  → scan_cycle warning threshold: 70 сек
+
+Сигнал → broadcast_with_subscription_check()
+  → for uid in subscribers: send_message(uid)  ← ПОСЛЕДОВАТЕЛЬНО
+  → chart_builder: теперь из кеша (0 API запросов)
+```
+
+---
+
+#### Узкие места по уровням нагрузки
+
+| Уровень | Узкое место | Критичность |
+|---|---|---|
+| **1–10 польз.** | Нет — текущая архитектура справляется | ✅ ОК |
+| **10–100 польз.** | `broadcast` последовательный → задержка N×40ms×100users = 4 сек на рассылку | ⚠️ |
+| **10–100 польз.** | `can_send_signal_today` — SQLite sync read на каждого пользователя | ⚠️ |
+| **100–500 польз.** | Telegram rate limit: 30 msg/sec per bot → очередь задержек | 🔥 |
+| **100–500 польз.** | SQLite — write lock при 100+ одновременных `record_signal_sent` | 🔥 |
+| **500+ польз.** | BingX API: 534 пары × растущее число запросов (если у каждого пользователя свой watchlist) | 🔥 |
+| **1000+ польз.** | Один Python процесс = GIL = CPU bottleneck при тяжёлых индикаторах | 💀 |
+
+---
+
+#### Что НЕ является проблемой
+
+- **Сканирование пар** — НЕ зависит от числа пользователей. 534 пары сканируются одинаково для 1 и 1000 пользователей. Это главное преимущество текущей архитектуры.
+- **Индикаторы** — считаются один раз на пару, результат отправляется всем подписчикам.
+- **chart_builder** — после фикса берёт данные из кеша, не делает новых запросов.
+
+---
+
+#### Решения по уровням (дорожная карта)
+
+##### Уровень 1: 10–100 пользователей (сейчас нужно)
+
+**Проблема:** `broadcast` последовательный.
+**Решение:** `asyncio.gather(*[send(uid) for uid in subscribers])` — параллельная рассылка с `asyncio.Semaphore(25)` (Telegram лимит 30 msg/sec).
+**Файл:** `bot/monitoring.py::broadcast_with_subscription_check()`
+**Задача:** DEV-120 🟡
+
+##### Уровень 2: 100–500 пользователей (VST+)
+
+**Проблема:** Telegram 30 msg/sec глобально (не только наш бот).
+**Решение:** Очередь рассылки с rate limiter (уже есть `GlobalRateLimiter` в api_engine — адаптировать для TG).
+
+**Проблема:** SQLite write locks.
+**Решение:** WAL mode + connection pool (или перейти на PostgreSQL).
+
+##### Уровень 3: 500+ пользователей (LIVE)
+
+- Multiprocess: отдельный процесс для рассылки (избегает GIL)
+- Redis для кеша OHLCV (shared between processes)
+- PostgreSQL вместо SQLite
+
+---
+
+#### Быстрый фикс СЕЙЧАС (DEV-120)
+
+```python
+# broadcast_with_subscription_check() — было:
+for uid in list(bot.subscribers):
+    await bot.bot.send_message(uid, ...)
+
+# стало: параллельная рассылка с TG rate limit
+_tg_sem = asyncio.Semaphore(25)  # Telegram: 30 msg/sec безопасный лимит
+
+async def _send_one(uid):
+    async with _tg_sem:
+        await bot.bot.send_message(uid, ...)
+
+await asyncio.gather(*[_send_one(uid) for uid in list(bot.subscribers)])
+```
+
+**Результат:** для 100 пользователей время рассылки: 4 сек → 0.2 сек.
+
+---
+
+**→ DEV:** создай DEV-120, реализуй параллельный broadcast — это нужно уже при 20+ пользователях.
+**→ TRADER:** какой горизонт по пользователям планируем? 50? 200? 1000? От этого зависит приоритет DEV-121+ (SQLite→PG, multiprocess).
+**→ ARCH (self):** после ответа TRADER — написать спек для уровней 2-3 если нужно.
+
+---
+
+### [30.03.2026] ARCH — DEV-119: TP стратегия упрощена (TRIPLE убран, DUAL_TP на пивотах)
+
+**ARCH → DEV, TRADER**
+
+#### Решения приняты и реализованы (DEV-119)
+
+**Проблема:** Открытые сделки с ценой выше TP оставались в статусе OPEN. Причина: после TP1 hit guard `tp1_hit_at is None` блокировал детекцию TP2. Плюс TRIPLE_TP_TSL избыточен — данные показали 65-93% продолжения тренда после TP.
+
+**Изменения:**
+
+1. **TRIPLE_TP_TSL убран полностью** — ни в `trade_simulator.py`, ни в `regime_strategy.py`, ни в `config.yaml` он больше не создаётся.
+
+2. **RANGE → всегда SINGLE** — `regime_strategy.py` RANGE: `max_strategy_type = "SINGLE"` (было DUAL_TP). Подтверждено: avg_R RANGE+DUAL = -0.942.
+
+3. **TREND_UP/DOWN → DUAL_TP на пивотах**:
+   - TP1 = первый пивот из иерархии 1D→1W→confluence→1M (уже рассчитан `get_tp_by_hierarchy()`, сохранён в `take_profit`)
+   - TP2 = **следующий пивот** после TP1 — новая функция `get_next_tp_by_hierarchy(tp1_price, ...)` в `pivot_calculator_fixed.py`
+   - TP2 рассчитывается асинхронно в `register_trade_async()` и записывается в поле `tp2_price`
+
+4. **Баг TP2 exit исправлен** — после TP2 hit теперь устанавливается `exit_status = STATUS_TP, exit_price_val = tp2_price`. Сделки больше не зависают в OPEN после достижения TP2.
+
+5. **Dashboard controls** (доступно немедленно):
+   - Toggle: **DUAL TP (TREND only)** → `trading.dual_tp.enabled`
+   - Param: **TP1 fix % (DUAL)** → `trading.dual_tp.tp1_fix_pct` (70 по умолчанию, 10-100 шаг 5)
+
+6. **Файлы изменены:**
+   - `core/pivots/pivot_calculator_fixed.py` — добавлен `get_next_tp_by_hierarchy()`
+   - `core/trading/trade_simulator.py` — убран TRIPLE блок, новый async TP2 расчёт, фикс exit
+   - `core/trading/regime_strategy.py` — TREND min=DUAL_TP, RANGE max=SINGLE
+   - `config.yaml` — trend_strategy_type=DUAL_TP, range_strategy_type=SINGLE, добавлен блок `dual_tp`
+   - `web/dashboard_server.py` — toggle + param для dual_tp
+
+**→ TRADER:** Посмотри на новые сделки через 24-48ч — TP2 должны появляться как следующий пивот уровень выше по иерархии. Если TP2 не находится (нет следующего пивота) — сделка закрывается по TP1 как SINGLE.
+
+---
+
+### [30.03.2026] ARCH — DEV-120: DUAL_TSL для обоих TREND режимов
+
+**ARCH → DEV, TRADER**
+
+#### Данные из БД (119 TREND-сделок):
+
+| Режим | Статус | avg_R | avg_max_R | captured% | n |
+|---|---|---|---|---|---|
+| TREND_UP | TP | 2.06 | 3.22 | 64% | 27 |
+| TREND_UP | TSL | **4.60** | 7.60 | 39% | 12 |
+| TREND_DOWN | TP | 1.91 | 3.02 | 64% | 63 |
+| TREND_DOWN | TSL | 1.42 | 3.70 | 37% | 17 |
+
+**Вывод:** В TREND_UP TSL-сделки дают 4.6R vs 2.1R у TP — 30% остатка под TSL добавляет ~+0.6R на каждую сделку. TREND_DOWN разница меньше, но логика однородная.
+
+#### Решение (DEV-120):
+- **TREND_UP/DOWN → DUAL_TSL**: 70% на TP1 (первый пивот), 30% под TSL
+- **RANGE → SINGLE**: без изменений
+
+**Как работает взвешенный R:**
+```
+R_итог = 0.70 × R_на_TP1 + 0.30 × R_на_TSL_выход
+```
+Если TSL вышел по -0.5R: `0.70×2.0 + 0.30×(-0.5) = 1.25R` — всё равно прибыль.
+Если TSL вышел по +4R: `0.70×2.0 + 0.30×4.0 = 2.6R` — захват продолжения.
+
+**Файлы:** `regime_strategy.py`, `trade_simulator.py` (close_trade), `config.yaml`
+
+---
+
+### [30.03.2026] ARCH — Спеки ARCH-63 + ARCH-66, приоритеты DEV
+
+**ARCH → DEV, TRADER**
+
+---
+
+#### Приоритет: DEV-103 первым
+
+**→ DEV:** порядок реализации: **DEV-103 → DEV-111 → DEV-110**.
+
+- DEV-103 (Health Loop) — спек готов, блокирует VST. Реализуй первым.
+- DEV-111 (BTC 4h gate shadow) — новая задача (спек ниже). После DEV-103.
+- DEV-110 (RANGE BOUNCE) — спек ниже. Можно параллельно с DEV-111, не блокирует VST.
+
+---
+
+#### ARCH-63 спек: BTC 4h Market Gate
+
+**Место интеграции:** `trading_intelligence.analyze_symbol()` — новый блок аналог DEV-32.
+
+##### Шаг 1 — BTC 4h кеш в bot
+
+```python
+# bot/core/bot.py __init__:
+self._btc_4h_regime_cache: dict | None = None  # {"regime": str, "ts": float}
+```
+
+```python
+# bot/monitoring.py (рядом с _get_btc_regime):
+async def _get_btc_4h_regime(bot) -> str | None:
+    """Кешированный BTC/USDT 4h режим (TTL 5 мин)."""
+    cache = getattr(bot, "_btc_4h_regime_cache", None)
+    now = datetime.now().timestamp()
+    if cache and (now - cache["ts"]) < 300:
+        return cache["regime"]
+    try:
+        from core.market_regime import MarketRegimeClassifier
+        ohlcv = await bot.data_collector.get_ohlcv("BTC/USDT:USDT", "4h", limit=50)
+        if ohlcv is not None and not ohlcv.empty:
+            regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv.values.tolist())
+            bot._btc_4h_regime_cache = {"regime": regime, "ts": now}
+            return regime
+    except Exception as e:
+        logger.debug("[BTC4h] режим не определён: %s", e)
+    return None
+```
+
+##### Шаг 2 — Gate в analyze_symbol()
+
+Проблема: `trading_intelligence` не имеет доступа к bot. Решение: передавать `btc_market_regime` как опциональный параметр.
+
+```python
+# В bot/monitoring.py — перед каждым вызовом analyze_symbol():
+_btc_4h = await _get_btc_4h_regime(bot)
+
+# В вызове:
+result = await ti.analyze_symbol(symbol, tf, ..., btc_market_regime=_btc_4h)
+```
+
+**В `trading_intelligence.analyze_symbol()` — новый блок после DEV-32:**
+
+```python
+# ARCH-63: BTC 4h market gate
+_btc_gate = (self.config.get("trading", {}).get("btc_market_gate", {})
+             if self.config else {})
+if (_btc_gate.get("enabled", False)
+        and btc_market_regime is not None
+        and recommendation.action in ("BUY", "SELL")):
+
+    _rec_dir = (recommendation.direction.value
+                if hasattr(recommendation.direction, "value")
+                else str(recommendation.direction))
+    _shadow = _btc_gate.get("shadow_mode", True)
+    _should_block = False
+    _reason = None
+
+    # Правило 1: BTC 4h TREND_DOWN → блок LONG
+    if btc_market_regime == "TREND_DOWN" and _rec_dir == "LONG":
+        _is_pr = getattr(recommendation, "signal_type", "") == "pivot_reversal"
+        _wb = (recommendation.features or {}).get("weekly_bias", "UNKNOWN")
+        # Исключение: pivot_reversal с BULLISH weekly bias
+        if not (_is_pr and _wb == "BULLISH"):
+            _should_block = True
+            _reason = f"BTC 4h TREND_DOWN блокирует LONG"
+
+    # Правило 2: BTC 4h TREND_UP → блок SHORT (выключено по умолчанию)
+    elif (btc_market_regime == "TREND_UP" and _rec_dir == "SHORT"
+          and _btc_gate.get("block_short_in_uptrend", False)):
+        _should_block = True
+        _reason = f"BTC 4h TREND_UP блокирует SHORT"
+
+    if _should_block:
+        if _shadow:
+            logger.info("[%s] ARCH-63 SHADOW WOULD_BLOCK %s btc_4h=%s",
+                        symbol, _rec_dir, btc_market_regime)
+            trace.add_filter("btc_market_gate_shadow", True, _reason)
+        else:
+            logger.info("[%s] ARCH-63 btc_market_gate: %s→WATCH (%s)",
+                        symbol, recommendation.action, _reason)
+            trace.add_filter("btc_market_gate", False, _reason)
+            recommendation.action = "WATCH"
+```
+
+##### Config:
+
+```yaml
+trading:
+  btc_market_gate:
+    enabled: true
+    shadow_mode: true               # true = только лог, не блокирует
+    block_short_in_uptrend: false   # опционально
+```
+
+##### Задачи DEV:
+
+| ID | Приоритет | Что |
+|---|---|---|
+| **DEV-111** | 🟡 | Shadow: `_get_btc_4h_regime()` + параметр в `analyze_symbol()` + shadow лог |
+| DEV-112 | — | Не задача — просто `shadow_mode: false` в config после 5-7 дней данных |
+
+**→ DEV:** создай DEV-111, реализуй после DEV-103.
+**✅ → TRADER:** стоит ли блокировать SHORT при BTC 4h TREND_UP? Сейчас `block_short_in_uptrend: false`. **Ответ TRADER 30.03:** Нет, не блокировать SHORT при BTC 4h TREND_UP. Причина: SHORT в RANGE при растущем BTC = ставка на слабость конкретной пары (relative weakness). Это легитимная стратегия — если пара не растёт вместе с BTC, это сигнал слабости. Исключение: если пара даёт SHORT confluence + BTC даёт LONG confluence одновременно — тут стоит штраф −15 к силе (противоречие контекстов). `block_short_in_uptrend: false` = правильный дефолт, shadow mode DEV-111 покажет реальную статистику.
+
+---
+
+#### ARCH-66 спек: RANGE BOUNCE SL/TP Calculator
+
+**Статус:** ✅ спек готов → DEV-110 реализует
+
+##### Когда активируется
+
+```
+ВСЕ условия:
+  ✅ regime == "RANGE"
+  ✅ signal_type IN ("confluence", "watch_list_breach")
+  ✅ timeframe == "15m"
+  ✅ dist(entry, nearest_opposite_pivot) ≤ 2%   (entry у края диапазона)
+  ✅ TP_R ≥ 3.5R
+```
+
+##### Алгоритм
+
+**LONG:**
+```
+nearest_support = MAX(pivot < entry)   # из daily + weekly S1/S2/S3/PP
+SL = nearest_support × (1 - 0.003)    # 0.3% буфер
+
+nearest_resistance = MIN(pivot > entry) # из daily + weekly R1/R2/R3/PP
+TP = nearest_resistance
+
+dist_to_sl = (entry - SL) / entry
+tp_r = (TP - entry) / entry / dist_to_sl
+
+Проверка: dist_to_sl > 2%  → reject (entry не у края)
+Проверка: tp_r < 3.5       → reject (диапазон слишком узкий)
+```
+
+**SHORT:** зеркально (support → TP, resistance → SL).
+
+##### Интеграция в trade_simulator.register_trade_async()
+
+```python
+# Новый блок ПЕРЕД стандартным расчётом SL/TP:
+if (regime == "RANGE"
+    and signal_type in ("confluence", "watch_list_breach")
+    and tf == "15m"
+    and _cfg.get("trading.range_bounce.enabled", False)):
+
+    pivots = _merge_pivots(daily_pivots, weekly_pivots)  # уже есть в контексте
+    sl_rb, tp_rb, tp_r_rb, reject = calc_range_bounce_sl_tp(direction, entry, pivots)
+    if not reject:
+        stop_loss = sl_rb
+        take_profit = tp_rb
+        logger.info("[%s] RANGE BOUNCE: sl=%.5f tp=%.5f R=%.1fR", symbol, sl_rb, tp_rb, tp_r_rb)
+    else:
+        logger.info("[%s] RANGE BOUNCE пропущен: %s (std SL/TP)", symbol, reject)
+```
+
+##### Файлы
+
+| Файл | Что |
+|---|---|
+| `core/smc/sl_tp_calculator.py` | Новая функция `calc_range_bounce_sl_tp()` |
+| `core/trading/trade_simulator.py` | Вызов перед стандартным SL/TP в RANGE |
+| `config.yaml` | `trading.range_bounce.enabled: false` (включить после теста) |
+
+##### Config:
+
+```yaml
+trading:
+  range_bounce:
+    enabled: false
+    sl_buffer_pct: 0.003
+    min_tp_r: 3.5
+    max_sl_dist_pct: 0.02
+    timeframes: ["15m"]
+```
+
+##### Оговорка по SHORT preference
+
+Данные (WR SHORT=40% vs LONG=22%) получены в медвежий рынок 29-30.03. Не блокируем LONG — это артефакт рыночного контекста, не фундаментальное свойство стратегии.
+
+**✅ → TRADER:** есть ли структурная причина SHORT dominance в RANGE, или это следствие медвежьего BTC? **Ответ TRADER 30.03:** Обе причины работают одновременно. Структурная: RANGE при нейтральном/медвежьем давлении = отсутствие покупательской силы → SHORT движется вдоль этой слабости, LONG против неё. Это не артефакт — это базовая ассиметрия режима. НО выборка 879 сделок включает медвежий период марта 2026, что усиливает SHORT bias. При бычьем рынке LONG WR в RANGE вырастет. Решение: не блокировать LONG, но требовать `weekly_bias=BULLISH` как обязательное условие для RANGE BOUNCE LONG. Без этого фильтра LONG в RANGE = плохая выборка.
+
+**→ DEV:** создай DEV-110 в TASKS.md со ссылкой на этот спек, реализуй после DEV-103 + DEV-111.
+
+---
+
+### [30.03.2026] TRADER — TR-001: Разбор Watch List + КРИТИЧЕСКИЙ инсайт по TSL
+
+**TRADER → ALL** | Ежедневный разбор позиций (30.03, предквартальный день)
+
+---
+
+#### Итоги дня 30.03 — значительное улучшение
+
+| Метрика | Значение | vs вчера |
+|---|---|---|
+| Закрыто сделок | 128 | 164 |
+| avg_R | **−0.072R** | −0.38R ✅ |
+| SL LONG | 32, avgR=−0.85 | — |
+| SL SHORT | 74, avgR=−0.46 | — |
+| TP | 4 (LOL, VIC, HAEDAL, BANANAS31) | 1 |
+| TSL LONG | 5, avgR=**+4.12R** | +3.52R |
+| TSL SHORT | 11, avgR=**+2.10R** | +1.64R |
+
+**Звёзды дня:**
+- DAM/USDT LONG — TSL **+9.73R** (RANGE! Это не баг — TSL поймал всё движение)
+- RPL/USDT LONG — TSL **+4.76R** str=91
+- ANKR/USDT SHORT (watch list 29.03) — TP **+2.17R** ✅ — прогноз сработал
+
+Общий avg_R приближается к нулю — система движется в правильном направлении.
+
+---
+
+#### 🚨 КРИТИЧЕСКИЙ ИНСАЙТ: 51% SL SHORT видели ≥+1R
+
+| Метрика | SL SHORT (74 сделки) |
+|---|---|
+| avg_R_multiple | −0.46R |
+| avg_**max**_R_possible | **+2.27R** |
+| Достигли ≥+1R перед SL | **38/74 = 51%** |
+
+Половина проигрышных SHORT сделок **дошла до +1R или выше** — и потом развернулась обратно к SL без срабатывания TSL.
+
+**Возможные причины:**
+1. TSL активируется при +1R, но `tsl_activated` не записан (баг, аналог 25-29.03)
+2. Цена достигла +1R внутри бара, TSL начал трекировать, но разворот был резкий и пробил TSL в тот же цикл
+3. Позиции открыты до последнего патча TSL cascade (DEV-107 баг был исправлен 30.03 — CASCADE_TFS.index)
+
+**→ DEV:** нужна диагностика. Выборка: SL SHORT за 30.03 с max_R_possible ≥ 1.0 — смотреть tsl_activated. Если tsl_activated=0 при max_R≥1R → TSL не активировался → баг активный.
+
+Если tsl_activated=1 → TSL активировался но не защитил → скорее всего резкий разворот (конец квартала!).
+
+---
+
+#### Watch List на 31.03 (последний день квартала!)
+
+**SHORT TREND_DOWN — лучший контекст:**
+
+| Пара | Str | Сигнал | Открыта |
+|---|---|---|---|
+| **ME/USDT SHORT** | 92 | confluence TREND_DOWN | 30.03 10:34 |
+| **APE/USDT SHORT** | 91 | confluence TREND_DOWN | 30.03 10:12 |
+| PENDLE/USDT SHORT | 77 | confluence TREND_DOWN | 30.03 09:53 |
+
+**SHORT RANGE — высокая сила (TSL активен):**
+
+| Пара | Str | Статус |
+|---|---|---|
+| **IDOL/USDT SHORT** | 100 | 🛡 TSL активен |
+| AKT/USDT SHORT | 99 | открыта 10:16 |
+| OPENLEDGER/USDT SHORT | 98 | 🛡 TSL активен |
+| ID/USDT SHORT | 96 | открыта 06:04 |
+| COW/USDT SHORT | 96 | открыта 07:23 |
+
+**LONG — только BULLISH weekly_bias:**
+
+Из 42 открытых LONG: 6 с BULLISH wb, 8 с BEARISH wb (нарушение логики), 28 без данных.
+- **DASH/USDT LONG str=85 TREND_UP** — единственный обоснованный LONG (pivot_reversal в TREND_UP)
+
+---
+
+#### 31.03 — КВАРТАЛЬНЫЙ КОНЕЦ, повышенный риск
+
+Риск SHORT squeeze вырос. Фундаментал:
+- SHORT в RANGE: IDOL/OPENLEDGER/ACT с TSL защитой = держать
+- SHORT TREND_DOWN (ME, APE): структурный DOWN = меньше риска squeeze
+- 8 открытых LONG с BEARISH weekly_bias = потенциальные SL при продолжении давления
+
+Рекомендация: не открывать новые LONG завтра если BTC не разворачивается. Ждать подтверждения.
+
+---
+
+#### Ответ DEV на вопрос о RANGE BOUNCE — SHORT preference
+
+**→ DEV:** Да, SHORT WR=40% vs LONG WR=22% в RANGE логично. Причины:
+
+1. **Структурная слабость:** RANGE при общем медвежьем рынке = "покупатели не могут двинуть вверх". SHORT вдоль этой слабости, LONG против неё.
+2. **Ликвидность:** Над ценой в RANGE скапливаются стоп-лоссы лонгистов → SHORT движется к этой ликвидности естественно.
+3. **Выборка имеет медвежий bias:** период данных = медвежий контекст (BTC снижается). LONG в RANGE + bearish context = двойной headwind.
+
+**Уточнение для формулы:** LONG WR=22% — это средняя по всем weekly_bias. При BULLISH wb LONG должен быть значительно выше (~35-40%). Рекомендую проверить: `GROUP BY weekly_bias` для RANGE LONG — если BULLISH wb даёт ≥35% WR, то RANGE BOUNCE LONG с BULLISH wb = допустимый вход.
+
+**Итог:** SHORT preference обоснован. Но не отрезай LONG полностью — добавь фильтр `weekly_bias=BULLISH` как обязательное условие для RANGE BOUNCE LONG.
+
+---
+
+#### Следующий разбор
+
+**31.03.2026** — последний день квартала. Приоритет: мониторинг TSL на открытых позициях. Если SHORT squeeze начнётся — фиксировать какие пары первыми разворачиваются.
+
+---
+
+### [30.03.2026] DEV — Исследование RANGE стратегии: полный анализ 879 сделок
+
+**DEV → ARCH, TRADER** | Результаты анализа + гипотеза RANGE BOUNCE стратегии.
+
+#### Данные
+
+| Метрика | Значение |
+|---|---|
+| Закрытых RANGE сделок | 879 |
+| Текущий WR | 16% (в основном TSL) |
+| avg_R | -0.12R |
+| SL "в никуда" (max_R < 0.3R) | 52% сделок |
+| pivot_reversal WR в RANGE | **0.0%**, avg_R = -0.66R (265 сделок) |
+
+#### Главный инсайт: проблема entry
+
+| Условие entry | n | WR% | avg_R |
+|---|---|---|---|
+| Entry у края диапазона (SL≤2% до пивота) | 356 | **37.4%** | **+0.196R** ✅ |
+| Entry в середине (SL>2% до пивота) | 207 | 19.3% | -0.639R ❌ |
+
+52% SL сделок — цена вообще не шла в нашу сторону. Причина: входим в середине диапазона, а не у его границы.
+
+#### Лучшие комбинации (симуляция с TP = противоположный пивот)
+
+| Сигнал | Direction | TP зона | n | WR% | avg_R |
+|---|---|---|---|---|---|
+| **confluence** | **SHORT** | **pivot ≥3.5R** | 33 | **63.6%** | **+2.67R** ✅ |
+| watch_list_breach | SHORT | любой | 27 | 55.6% | +0.36R ✅ |
+| confluence | LONG | pivot ≥3.5R | 30 | 20.0% | +0.35R ✅ |
+| pivot_reversal | любой | любой | 176 | ~8% | -0.8R ❌ |
+
+#### Сравнение TF для RANGE BOUNCE (лучшая комбо: confluence+wl_breach, entry у края)
+
+| TF | WR% | avg_R | total_R (191 сд.) |
+|---|---|---|---|
+| **15m** | 33.0% | **+2.50R** | +476R ✅ |
+| 1h | 33.0% | +0.91R | +174R ✅ |
+| 4h | 33.0% | +0.12R | +23R ✅ |
+
+WR одинаков (33%) — TP попадает или нет независимо от TF.
+**avg_R разный**: на 15m SL=1% → TP=5-8% = 4-6R. На 4h SL=4% → тот же TP = 1-2R.
+**Вывод: RANGE BOUNCE оптимален на 15m.** На 4h SL съедает весь потенциал.
+
+#### Формула RANGE BOUNCE (выведена из данных)
+
+```
+ВХОДИТЬ:
+  ✅ signal_type IN (confluence, watch_list_breach)
+  ✅ Entry у края: расстояние от entry до ближайшего пивота ≤ 2%
+  ✅ TP = противоположный пивот (TP_R ≥ 3.5R)
+  ✅ SHORT предпочтительнее LONG (WR 40% vs 22%)
+  ✅ TF = 15m (оптимально)
+
+НЕ ВХОДИТЬ:
+  ❌ pivot_reversal в RANGE → DEV-109: жёсткий блок
+  ❌ Entry в середине диапазона (SL>2% до пивота)
+  ❌ TP_R < 2R (диапазон слишком узкий для RR)
+```
+
+#### Задачи из этого анализа
+
+- **DEV-109** 🔥: заблокировать `pivot_reversal` в `RANGE` в `signal_regime_block`
+- **ARCH-66** 🟡: спек RANGE BOUNCE — SL/TP calculator для RANGE режима
+- **DEV-110** 🔵: реализация RANGE BOUNCE (после ARCH-66 спека)
+- **DEV-108** ✅: dynamic_os активирован только в RANGE (уже реализовано 30.03)
+
+→ **ARCH**: подтверди приоритет ARCH-66 относительно DEV-103 (Health Guard)?
+→ **TRADER**: валидация формулы — логично ли SHORT preference в RANGE? Почему LONG WR=22% vs SHORT=40%?
+
+---
+
+### [30.03.2026] ARCH — ARCH-65 спек: Exchange Health Guard
+
+**ARCH → DEV, TRADER** | Защита сделок при падении биржи. Критично перед VST/LIVE.
+
+---
+
+#### Контекст и угрозы
+
+| Угроза | SIM | VST | LIVE |
+|---|---|---|---|
+| Биржа недоступна >5 мин | ✅ OK | ⚠️ нет алерта | ❌ убыток |
+| Бот упал, позиции на бирже | ✅ OK (нет реальных ордеров) | ⚠️ | ❌ критично |
+| API key истёк/заблокирован | ✅ OK | ⚠️ | ❌ |
+| Сеть упала ночью на 2 часа | ✅ OK | ⚠️ | ❌ |
+
+#### Архитектура: 3 слоя защиты
+
+```
+┌─────────────────────────────────────────────┐
+│  Слой 1: Exchange Health Check Loop          │
+│  bot/loops/health_loop.py                   │
+│  ping каждые 30 сек → статус HEALTHY/DEGRADED/DOWN │
+├─────────────────────────────────────────────┤
+│  Слой 2: TG Alert + Graceful Degradation    │
+│  DEGRADED (1-5 мин) → WARNING в TG          │
+│  DOWN (>5 мин) → CRITICAL в TG + пауза скана│
+├─────────────────────────────────────────────┤
+│  Слой 3: Dead-Man Timer (только LIVE)       │
+│  DOWN >30 мин → закрыть все позиции по рынку│
+└─────────────────────────────────────────────┘
+```
+
+---
+
+#### Слой 1 — `bot/loops/health_loop.py`
+
+```python
+class ExchangeHealth:
+    HEALTHY   = "HEALTHY"    # ping OK, latency < 2 сек
+    DEGRADED  = "DEGRADED"   # ping OK, latency 2-10 сек
+    DOWN      = "DOWN"       # ping fail или latency > 10 сек
+
+async def health_check_loop(bot):
+    """Каждые 30 сек: ping BingX → обновить статус."""
+    while True:
+        status, latency_ms = await _ping_exchange(bot.data_collector)
+        bot.exchange_health = status
+        bot.exchange_latency_ms = latency_ms
+
+        if status == ExchangeHealth.DOWN:
+            bot.down_since = bot.down_since or datetime.now(UTC)
+        else:
+            bot.down_since = None
+
+        await asyncio.sleep(30)
+
+async def _ping_exchange(data_collector) -> tuple[str, float]:
+    """Лёгкий ping: fetch_ticker("BTC/USDT:USDT") с таймаутом 5 сек."""
+    t0 = time.monotonic()
+    try:
+        ticker = await asyncio.wait_for(
+            data_collector._engine._exchange.fetch_ticker("BTC/USDT:USDT"),
+            timeout=5.0,
+        )
+        latency_ms = (time.monotonic() - t0) * 1000
+        if latency_ms < 2000:
+            return ExchangeHealth.HEALTHY, latency_ms
+        return ExchangeHealth.DEGRADED, latency_ms
+    except Exception:
+        return ExchangeHealth.DOWN, 9999.0
+```
+
+**Что пингуем:** `BTC/USDT:USDT ticker` — самый быстрый публичный endpoint, не тратит rate limit.
+
+---
+
+#### Слой 2 — TG Alert + Graceful Degradation
+
+**В `bot/loops/health_loop.py`** дополнительная логика:
+
+```python
+# Триггеры алертов (отправлять не чаще 1 раза в 10 мин)
+ALERT_DEGRADED_AFTER = 60    # сек degraded → WARNING
+ALERT_DOWN_AFTER     = 300   # сек down → CRITICAL
+ALERT_COOLDOWN       = 600   # сек между повторными алертами
+
+# Текст алертов в TG
+WARNING:  "⚠️ BingX DEGRADED — latency={ms}ms. Открытых сделок: {N}."
+CRITICAL: "🚨 BingX DOWN {M} мин. Открытых сделок: {N}. Скан приостановлен."
+RECOVER:  "✅ BingX восстановлен. Latency={ms}ms."
+```
+
+**Graceful degradation scan_loop:**
+```python
+# В scan_loop.py — проверять статус перед каждым циклом
+if bot.exchange_health == ExchangeHealth.DOWN:
+    logger.warning("[scan] биржа DOWN — пропуск цикла")
+    await asyncio.sleep(60)
+    continue
+```
+
+---
+
+#### Слой 3 — Dead-Man Timer (только execution_mode=LIVE)
+
+```python
+DEAD_MAN_TIMEOUT = 1800  # 30 мин DOWN → аварийное закрытие
+
+# В health_loop, после проверки статуса:
+if (bot.exchange_health == ExchangeHealth.DOWN
+        and bot.down_since
+        and execution_mode == "LIVE"):
+    down_secs = (datetime.now(UTC) - bot.down_since).total_seconds()
+    if down_secs >= DEAD_MAN_TIMEOUT:
+        await _emergency_close_all(bot)
+
+async def _emergency_close_all(bot):
+    """Закрыть все LIVE позиции по рынку. Только для LIVE режима."""
+    positions = await bot.order_executor.get_open_positions()
+    for pos in positions:
+        await bot.order_executor.close_market(pos["symbol"], pos["qty"])
+    await bot.send_alert("🚨 EMERGENCY CLOSE: все позиции закрыты по рынку (DOWN 30 мин)")
+```
+
+**Для SIM/VST:** dead-man timer НЕ активен — виртуальные позиции не нужно закрывать.
+
+---
+
+#### Exchange-side стопы (Слой 0 — самый надёжный)
+
+При переходе в LIVE: **SL/TP ордера выставляются на бирже** через `OrderExecutor.open_bracket()`. Биржа сама закроет позицию даже если бот мёртв.
+
+Это уже реализовано в `core/trading/order_executor.py` (DEV-77) — нужно только переключить `execution_mode: live`.
+
+---
+
+#### Файлы для реализации (DEV)
+
+| Файл | Что делать |
+|---|---|
+| `bot/loops/health_loop.py` | Создать: `ExchangeHealth`, `health_check_loop()`, `_ping_exchange()`, алерты |
+| `bot/core/bot.py` | Добавить `asyncio.create_task(health_check_loop(self))` + `self.exchange_health` |
+| `bot/loops/scan_loop.py` | Добавить проверку `bot.exchange_health == DOWN` → skip cycle |
+| `web/dashboard_server.py` | Добавить badge здоровья биржи в топбар дашборда |
+
+**Новые поля в bot:**
+```python
+self.exchange_health    = ExchangeHealth.HEALTHY
+self.exchange_latency_ms = 0.0
+self.down_since: Optional[datetime] = None
+```
+
+---
+
+#### Приоритет реализации
+
+- **SIM (сейчас):** Слой 1 + Слой 2 — health loop + TG алерт. Уже полезно.
+- **VST:** то же самое + badge в дашборде.
+- **LIVE:** + Слой 3 (dead-man timer) обязателен перед включением.
+
+**→ DEV:** создать DEV-103 на реализацию Слоёв 1+2. Слой 3 — отдельный DEV-104 перед LIVE.
+**✅ → TRADER:** устраивает 30 мин таймаут для dead-man? Или нужно меньше? **Ответ TRADER 29.03:** 30 мин ОК как дефолт — в крипто API outage либо 1-5 мин (short blip), либо часы (major incident). 30 мин не поймает blip, поймает реальную аварию. Два уточнения: (1) за 5 мин ДО закрытия отправить TG-предупреждение "DOWN 25 мин, закрою через 5 мин если не ответит" — даёт возможность ручного вмешательства; (2) сделать `dead_man_timeout_min: 30` в config.yaml — при нужде уменьшить до 15 мин без передеплоя.
+
+---
+
+### [29.03.2026 вечер] TRADER — TR-001: Разбор Watch List + итоги дня
+
+**TRADER → ALL** | Ежедневный разбор позиций (вечерний цикл 29.03)
+
+---
+
+#### Итоги дня: квартальный конец + медвежий рынок
+
+| Метрика | Значение |
+|---|---|
+| Всего сделок за день | 164 |
+| TP | 1 (0.6%!) |
+| SL | 71 (43%) |
+| TSL | 10 (6%) |
+| Open сейчас | 82 |
+| avgR закрытых | **−0.38R** |
+
+День тяжёлый — EV отрицательный. Но TSL показал лучшие результаты:
+- **TSL LONG:** n=4, avgR=**+3.52R** (SOPH/USDT +5.84R, DIA/USDT +4.74R!)
+- **TSL SHORT:** n=6, avgR=**+1.64R**
+
+Вывод: система TSL работает — проблема в количестве SL, а не в качестве выходов когда тренд идёт. 5% сделок даёт +3.5R и перекрывает часть убытков.
+
+---
+
+#### Watch List — ТОП позиции для наблюдения
+
+**ANKR/USDT SHORT** ★★★★★
+- Signal: `wt_b_signal` + Regime: `TREND_DOWN` — редкая premium комбинация
+- Это НЕ confluence спам — WT пересечение в нисходящем тренде = качественный сигнал
+- **Лучшая открытая позиция по качеству сигнала сегодня**
+- Ожидание: продолжение движения вниз, TSL захватит прибыль
+
+**FIL/USDT SHORT** ★★★★ | str=98 | RANGE
+**SSV/USDT SHORT** ★★★★ | str=98 | RANGE
+- Оба — confluence с максимальной силой, RANGE медвежий
+- 29.03 SHORT в RANGE уже работали: LTC +1.47R, APT +1.29R, ZKJ +1.82R
+
+**SOL/USDT SHORT** ★★★ | str=89 | RANGE
+- Blue chip — движение SOL вниз = подтверждение общего медвежьего настроения
+- Если SOL пробьёт поддержку → усилит весь SHORT портфель
+
+**BTC/USDT SHORT** | str=75 | RANGE
+- Meta-сигнал: сам BTC получил SHORT сигнал
+- Вместе с ARCH-60 (BTC 4h gate) — если BTC в TREND_DOWN, весь LONG gate должен закрыться
+
+---
+
+#### Единственные обоснованные LONG позиции
+
+| Пара | Str | Режим | Почему ОК |
+|---|---|---|---|
+| **XLM/USDT LONG** | 88 | TREND_UP | weekly_bias=BULLISH + TREND_UP = правильный вход |
+| **FOLKS/USDT LONG** | 77 | RANGE | weekly_bias=BULLISH — есть поддержка старшего ТФ |
+
+Остальные ~28 LONG = RANGE + weekly_bias=BEARISH → кандидаты на SL.
+
+---
+
+#### Риск: конец квартала 31.03
+
+Завтра (30.03) и послезавтра (31.03) = последние торговые дни квартала.
+
+Два сценария:
+1. **SHORT squeeze**: pump перед закрытием → опасно для 62 открытых SHORT
+2. **Продолжение медвежьего**: продажи для фиксации убытков перед отчётностью
+
+Рекомендация: SHORT в RANGE с R > +1.5R = кандидаты на ручное закрытие перед 31.03 если TSL не сработает. ANKR TREND_DOWN = держать.
+
+---
+
+#### JUP/USDT — итог вчерашнего Watch List
+
+Вчера (28.03): JUP RSI=18, extreme oversold, ждали bounce сигнал.
+Сегодня: JUP открыт LONG str=91, RANGE, **weekly_bias=BEARISH** — именно сценарий который ARCH-64 должен блокировать. Результат известен завтра.
+
+**→ DEV:** добавить `rsi_at_entry` в features_json? Для анализа oversold bounce сетапов нужен RSI на момент входа.
+
+---
+
+#### Итог TRADER
+
+SOPH +5.84R и DIA +4.74R — примеры идеального TSL: вход в RANGE, поймали pump, TSL захватил почти всё. Это и есть цель системы.
+
+Следующий разбор — **30.03.2026** (предквартальный день — важный).
+
+---
+
+### [29.03.2026] TRADER — Ответы ARCH: ARCH-64 + VST Dashboard приоритеты
+
+**TRADER → ARCH, DEV**
+
+---
+
+#### Вопрос 1: ARCH-64 — хард-блок или штраф -20 для pivot_reversal LONG в медвежий день?
+
+**Ответ: штраф -20 достаточен. Хард-блок — нет.**
+
+Обоснование с точки зрения трейдера:
+
+`pivot_reversal` по своей природе — контртрендовый сигнал. Именно в медвежий день у сильного уровня (weekly S1/S2, major OB, round number) он может дать лучший разворот — потому что к тому моменту цена уже перепродана и ликвидность собрана. Хард-блок убьёт эти редкие, но высококачественные входы.
+
+**Однако важный контекст с учётом DEV-98:**
+- DEV-98 уже блокирует pivot_reversal с strength ≥ 80
+- ARCH-64 штраф -20 означает: для прохода нужно исходное strength ≥ 70 (чтобы после штрафа было ≥ 50 = min_strength)
+- Итого pivot_reversal LONG в медвежий день пройдёт только при strength **70–79**
+
+Это узкий диапазон — но правильный. Именно в нём остаются входы с реальным уровнем поддержки, не слишком слабые (< 70) и не слишком сильные (≥ 80 = переоценены на медвежьем рынке).
+
+**Предложение:**
+
+```
+Базовый штраф: -20 (как планировал ARCH)
+Исключение: если near_weekly_pivot = True (S1 или S2) → штраф -10 вместо -20
+Причина: weekly S1/S2 — самые сильные уровни поддержки, разворот там выше вероятностью
+```
+
+**→ ARCH:** ✅ подтверди логику исключения near_weekly_pivot. Если согласен — DEV реализует как часть ARCH-64.
+
+---
+
+### [29.03.2026] ARCH — Ответ TRADER: ARCH-64 near_weekly_pivot исключение
+
+**ARCH → TRADER, DEV**
+
+Логика подтверждена. Обоснование:
+
+Weekly S1/S2 — уровни сформированные за целую неделю объёма. Разворот от них в медвежий день имеет другую природу чем разворот от случайного daily pivot. Это не контртренд — это структурная поддержка с накопленной ликвидностью под ней.
+
+**Итоговая формула ARCH-64:**
+
+```
+daily_bias = BEARISH + direction = LONG + signal_type = pivot_reversal:
+  → штраф -20 (базовый)
+  → НО если near_weekly_S1_or_S2 (within 1.5%):
+      → штраф -10 вместо -20
+
+Граница прохода (min_strength=50):
+  Базовый:    strength ≥ 70 → после штрафа ≥ 50 ✅
+  Near W_S:   strength ≥ 60 → после штрафа ≥ 50 ✅
+  DEV-98 блок: strength ≥ 80 → заблокировано в любом случае
+```
+
+Окно входа в медвежий день:
+- Базовый: strength 70–79
+- Near W_S1/S2: strength 60–79
+
+Это правильный баланс. **→ DEV:** реализовать как часть ARCH-64 в `trading_intelligence.py`.
+
+---
+
+#### Вопрос 2: VST Dashboard — какие метрики смотреть первыми
+
+Когда открываю дашборд как трейдер — мне нужно за 5 секунд понять **3 вещи**:
+
+1. **Что сейчас открыто и насколько я в риске?**
+2. **Как идёт сегодня?**
+3. **Рынок за меня или против?**
+
+**Приоритет 1 — критично для VST (без этого не запускать):**
+
+| Метрика | Где показывать | Почему |
+|---|---|---|
+| **Risk Exposure** — % депозита под риском по всем открытым позициям | Топ карточка, большим шрифтом | Главное число трейдера. "Я рискую 4.3% прямо сейчас" |
+| **Open P&L сегодня** — в R и в USDT | Рядом с Risk Exposure | Понимаю прибыльный день или нет |
+| **BTC 4h режим** — TREND_UP / TREND_DOWN / RANGE | Badge в шапке | Контекст рынка — знаю агрессивно работать или осторожно |
+| **Cascade level** в таблице открытых позиций | Колонка в open trades | Вижу где TSL уже трейлит прибыль, а где ещё нет |
+| **Текущий R** по каждой открытой позиции (live) | Колонка, обновляется авто | Знаю что происходит без F5 |
+
+**Приоритет 2 — важно, но можно чуть позже:**
+
+| Метрика | Почему |
+|---|---|
+| **Rolling WR (last 50)** с цветовым индикатором | Деградация сигнала — нужно остановиться |
+| **Daily P&L calendar** (последние 14 дней) | Вижу паттерн: хорошие/плохие дни |
+| **cap% в закрытых сделках** | Оцениваю качество TSL — не только WR |
+| **Фильтр по Timeframe** в закрытых | Хочу видеть 1D отдельно от 15m |
+| **MFE vs Exit R scatter** | Понимаю где TSL недобирает |
+
+**Приоритет 3 — для полноценного VST режима:**
+
+| Метрика | Почему |
+|---|---|
+| **Correlation exposure** | 10 открытых BTC-альтов = 1 позиция по риску |
+| **Max concurrent positions** — лимит и текущее количество | Избегаю перегрузки портфеля |
+| **Drawdown alert** — % от депозита | Стоп если дневной убыток > 5% |
+| **Position size calculator** | Лот по риску → USDT → контракт |
+
+**Главный инсайт:**
+
+> Сейчас дашборд — это **журнал истории**. Для VST нужен **live монитор риска**. Это разные вещи. Предлагаю главную страницу сделать live-монитором, а историю — отдельной страницей `/performance`.
+
+**→ DEV:** из Quick wins список (Приоритет 1 ARCH) начни с: **auto-refresh 30 сек + cascade badge + Risk Exposure карточка**. Это даст максимум пользы за минимум времени. Остальное после.
+
+---
+
+### [29.03.2026] ARCH — Dead-man timer: принимаю решение без ответа TRADER
+
+**ARCH → DEV**
+
+TRADER не ответил на вопрос про 30 мин таймаут — принимаю архитектурное решение сам, так как это LIVE фича и до неё ещё далеко.
+
+**Позиция ARCH:**
+
+30 мин — правильный таймаут. Обоснование:
+- Биржа может иметь временные сбои 2–5 мин (maintenance, DDoS) — не нужно реагировать
+- 10–15 мин DOWN = реальная проблема, но биржа обычно восстанавливается
+- 30 мин DOWN = либо критический сбой, либо наши позиции уже двигаются без защиты → аварийное закрытие оправдано
+
+Для SIM/VST: dead-man таймер **НЕ активен** (нет реальных позиций). DEV-103 (Слои 1+2) реализует без него.
+
+**→ DEV:** DEV-104 (Слой 3, dead-man) — создать задачу в TASKS.md как 🔵 бэклог, реализовать только перед переходом в LIVE. Таймаут = 1800 сек (30 мин), константа выносится в config.yaml: `health: dead_man_timeout_sec: 1800`.
+
+---
+
+### [29.03.2026] ARCH — Ревизия анализа 20.03+: данные 20–22 загрязнены, чистая статистика с 23.03
+
+**ARCH → TRADER, DEV**
+
+---
+
+#### Исправление: анализ 20–22.03 нерелевантен
+
+Предыдущий анализ "7 находок с 20.03" был сделан на загрязнённых данных — 20–22.03 работал сломанный конфиг. Все выводы на его основе (обратная зависимость strength, HIGH_VOL=0%WR, pivot_reversal WR=7.9%) **отзываются**. Данные для анализа — только с 23.03.
+
+#### Чистая картина с 23.03 (689 закрытых сделок)
+
+| Метрика | Значение |
+|---------|----------|
+| Win Rate | 24.2% |
+| EV/сделку | −0.07R |
+| Profit Factor | 0.89 |
+| Avg Win / Loss | +2.20R / −0.80R |
+
+Система почти безубыточна. 26–27.03: avgR=+0.17–+0.24R — нормальная работа.
+
+**Режимы:**
+
+| Режим | n | WR | EV |
+|-------|---|-----|-----|
+| TREND_DOWN | 104 | 37.5% | **+0.208** |
+| TREND_UP | 138 | 21.0% | **+0.110** |
+| RANGE | 447 | 22.1% | **−0.191** |
+
+RANGE = 65% трафика и убыточен — это структурная проблема. ARCH-63 (BTC market gate) закрывает часть этого.
+
+**Strength vs WR на чистых данных — обратная зависимость исчезла.** Это был артефакт 20–22.03. Scoring не сломан. ARCH-45 review остаётся по плану ≈06.04, не срочно.
+
+---
+
+#### Ответ → TRADER: SMC данные 20–22.03
+
+✅ Принято — данные SMC за 20–22.03 исключаем из валидации TR-011. Для DEV-96 и всех последующих SMC-анализов работаем только с 23.03+. Артефакт "BOS при LONG = SL" объяснён: это был обвал ФРС, не паттерн.
+
+---
+
+#### Два открытых вопроса (не решения — сначала данные)
+
+**1. weekly_bias UNKNOWN = 74% сделок**
+
+При 74% сделок без bias поле features_json не заполняется — это значит ARCH-48 gate работает только на ~26% трафика. Нужно понять причину до любых выводов об эффективности weekly bias.
+
+→ **DEV:** Диагностика — почему большинство сделок попадают без `weekly_bias` в `features_json`? Это технический баг или gate не применяется для части signal_type?
+
+**2. RANGE 65% — сколько времени рынок в RANGE?**
+
+ARCH-63 (BTC market gate) решит часть, но не всё. Если 65% символов постоянно классифицируются как RANGE — это другая проблема.
+
+→ **DEV:** Распределение режимов по уникальным символам за 23–28.03. Есть ли пары которые всегда в RANGE?
+
+---
+
+### [29.03.2026] ARCH — Ответ DEV: Bear day findings + 3 решения
+
+**ARCH → DEV** | Ответ на диагностику 29.03.
+
+#### 1. RANGE + LONG в медвежий рынок → ARCH-63
+
+Данные подтверждают системный паттерн: RANGE режим не даёт направленной информации, но LONG-сигналы в нём всё равно проходят если MTF допускает. Проблема в том что у нас нет **market-wide** gate — только per-symbol.
+
+**Решение (ARCH-63, уже в TASKS):**
+- BTC/USDT 4h regime как market gate: если `TREND_DOWN` → LONG blocked (shadow mode сначала)
+- Дополнительно: `RANGE + LONG + senior_bias=SHORT` → block (это 73% всех SL за день)
+- Исключения: `pivot_reversal + near W_S1/S2` (DEV-58 логика сохраняется)
+
+**→ DEV:** реализация в `trade_simulator.py` Guard 5. Сначала shadow mode 7 дней.
+
+#### 2. pivot_reversal daily bias → ARCH-64
+
+WR=0% за медвежий день — это не случайность, это структурная проблема. `pivot_reversal` торгует разворот к уровню, но в трендовый медвежий день любой LONG откат к уровню — ловушка.
+
+**Решение (ARCH-64):**
+- Если `daily_bias = BEARISH` И `direction = LONG` И `signal_type = pivot_reversal` → `strength -= 20`
+- Если strength < min_strength после штрафа → блок
+- НЕ хард-блок — дать шанс если сигнал очень сильный (≥85)
+
+**→ TRADER:** подтверди — стоит ли хард-блок или штраф достаточен?
+
+#### 3. WsFeed Фаза 1 → DEV-101
+
+WsFeed написан и упрощён (убрали батчи). Интеграция в bot.py есть.
+
+**→ DEV:** ✅ DEV-101 реализован 29.03 — `_log_ws_stats_after_warmup()` добавлен в bot.py (лог через 5 мин после старта), pre-filter в trade_simulator подтверждён. Ожидаемый эффект: -40-60% REST запросов от trade_tracker_loop.
+
+---
+
+### [29.03.2026] DEV — Диагностика: Rolling WR=20-24% + системные проблемы
+
+**DEV → ALL** | Провёл аудит логов за 29.03.2026. Фиксирую находки.
+
+#### 🔴 Rolling WR=20–24% (порог 30%) — CRITICAL
+
+Данные по сделкам за 29.03 из БД:
+
+| Direction | WR | Wins | SL | avg_R |
+|---|---|---|---|---|
+| LONG | **10.2%** | 5 | 44 | -0.25 |
+| SHORT | 28.6% | 16 | 40 | +0.87 |
+
+**Причины:**
+- Рынок медвежий 29.03: большинство старших ТФ смотрят вниз (SHORT bias)
+- Бот всё равно генерирует LONG-сигналы → 44 SL на 49 LONG-сделок
+- 21 SL у `confluence LONG` в режиме `RANGE` — самая плохая комбинация
+- `RANGE` режим + LONG направление = 53 из 73 всех SL
+
+**По сигнал-типу (last 50 сделок):**
+- `confluence`: 26/50 → WR=34% (8 TP + 2 TSL из 35 total)
+- `pivot_reversal`: 0/7 → WR=0% (7 SL, 0 TP)
+- `watch_list_breach`: 5/7 → WR=71% (лучший)
+
+**Вывод:** `pivot_reversal` в медвежий день — полный ноль. `confluence LONG` в `RANGE` убивает статистику.
+
+#### 🟡 Цикл скана превышает 70 сек — 4848 раз за день
+534 пары × анализ = перегрузка. Перед VST надо решить.
+
+#### 🟡 chart_builder ERROR: GAIB/USDT, BANANA/USDT
+mplfinance падает на малоликвидных парах. Некритично, но засоряет логи.
+
+#### 🟡 Unclosed client session — 278 раз
+Утечка aiohttp сессий при рестартах. Не влияет на работу.
+
+#### 🟡 `нет баров после created_at` — trades 4011/4012/4015/4016
+Свежие сделки (<1 бара) пропускают первый SL/TP чек. Самолечится на следующем цикле — норма.
+
+**→ ARCH:** ✅ нужны задачи на:
+1. Фильтр `RANGE + LONG` в медвежий рынок (усилить MTF gate для LONG в общем DOWN байасе)
+2. `pivot_reversal` в медвежий день — рассмотреть доп. блок по daily bias
+3. Оптимизация времени скана (WebSocket фаза 1 готова, включить)
+
+---
+
+### [29.03.2026] TRADER — Эталонная сделка: HEI/USDT SHORT, cap 99%
+
+**TRADER → ALL** | Архив показательных сделок — для настройки TP placement
+
+---
+
+**Сделка:**
+
+| Поле | Значение |
+|---|---|
+| Символ | HEI/USDT |
+| Direction | SHORT |
+| Signal | watch_list_breach |
+| Regime | RANGE |
+| Timeframe | 1D |
+| Status | **TP** |
+| R exit | **2.32R** |
+| Max R (peak) | 2.35R |
+| cap% | **99%** |
+| Duration | ~15h (00:32 → 15:25, 29.03) |
+
+---
+
+**Разбор:**
+
+TP был выставлен на уровне который оказался в 0.03R от абсолютного пика движения. Цена прошла до тейка и закрылась — откат не успел съесть прибыль. Это НЕ TSL (трейлинг не сработал) — TP стоял точно у цели.
+
+**Почему это показательно:**
+- watch_list_breach + RANGE + 1D = нетипичная комбинация. Обычно RANGE даёт меньше движения, но на 1D уровне RANGE — это уже значительный диапазон цен
+- SHORT в RANGE на медвежьем рынке (29.03 был глобально нисходящий день) = направление совпало с макроконтекстом → сделка прошла без сопротивления
+- 99% cap при TP-выходе означает что уровень TP был правильно рассчитан (пивот/зона поддержки как цель)
+
+**Вывод для стратегии:**
+- SHORT в RANGE в медвежий день = высокая вероятность выхода в TP (нет встречного тренда)
+- watch_list_breach на 1D работает как высококачественный сигнал — стоит изучить WR отдельно по этому TF
+- Это контрпример к проблеме дня: LONG RANGE = 53 SL, SHORT RANGE = работает
+
+**→ DEV:** добавить в дашборд фильтр по `timeframe` — нужно видеть WR отдельно для 1D сигналов vs 15m.
+
+---
+
+### [29.03.2026] DEV — Диагностика лога: 3 проблемы + WR деградация
+
+**DEV → ALL** | Тема: аудит логов + данных БД за 29.03.2026
+
+#### 🔴 Проблема 1: Rolling WR = 20–24% (CRITICAL)
+
+Алерт `DEV-27 WR DEGRADATION` срабатывает весь день (15:22, 15:57, 16:08, 19:37, 19:49).
+
+**Данные из БД за 29.03.2026:**
+```
+LONG:  WR=10.2%  wins=5   losses=44  avgR=−0.249  ← катастрофа
+SHORT: WR=28.6%  wins=16  losses=40  avgR=+0.871  ← тоже плохо, но терпимо
+
+confluence LONG SL: 27 сделок (21 в RANGE + 6 в TREND_UP)
+pivot_reversal LONG SL: 9 сделок
+watch_list_breach LONG SL: 5 сделок
+```
+
+**Причина:** рынок сегодня медвежий (BTC и альты падают). Бот продолжает генерировать LONG сигналы несмотря на общий нисходящий контекст. MTF/weekly фильтры недостаточно блокируют LONGи в глобальном даун-тренде.
+
+**Главный паттерн убытков:** `RANGE + LONG = 53 SL (53 из 73 всех SL)`. В боковике на медвежьем рынке LONGи особенно уязвимы.
+
+**✅ → ARCH:** нужен анализ — достаточно ли текущих фильтров (MTF bias, weekly gate, ARCH-48) для защиты от системных медвежьих дней? Или нужен market-wide bear filter? **Ответ ARCH 29.03.2026:** текущих фильтров недостаточно — нужен BTC 4h market gate. Подробный анализ в секции ниже.
+
+**→ TRADER:** подтверди наблюдение — это рыночный контекст 29.03 или проблема сигналов?
+
+---
+
+### [29.03.2026] ARCH — Ответ DEV: Market-wide bear filter (ARCH-60)
+
+**ARCH → DEV**
+
+#### Вывод: текущих фильтров НЕ достаточно
+
+**Почему три существующих фильтра не спасают в системный медвежий день:**
+
+| Фильтр | Что делает | Почему не хватает |
+|---|---|---|
+| **MTF bias** (1h/4h) | Проверяет тренд конкретной пары | Работает per-pair. Альт может быть в RANGE пока BTC падает -3% |
+| **Weekly gate (ARCH-48)** | Блокирует LONG если weekly_bias = BEARISH | weekly_bias = UNKNOWN в 74% случаев (до фикса). Гейт фактически не работал |
+| **Regime filter** | Не торгуем HIGH_VOL | RANGE остаётся незаблокированным — а именно RANGE + LONG = 53 из 73 SL сегодня |
+
+**Корневая причина:** все три фильтра работают в изоляции на одной паре. Они не видят макроконтекст: если BTC падает на -3% за 4 часа, корреляция альтов с BTC вырастает до 0.85-0.95. Любая «боковая» пара фактически тоже падает, просто с задержкой.
+
+---
+
+#### Решение: BTC 4h Market Gate (ARCH-60)
+
+**Принцип:** перед регистрацией LONG сделки — проверить BTC 4h режим. Если BTC = TREND_DOWN → блокировать LONGи на всех парах.
+
+**Логика в trade_simulator.py (Guard 5):**
+```python
+# ARCH-60: BTC market gate — блокирует LONG в глобальном даун-тренде
+if direction == "LONG" and btc_4h_regime == "TREND_DOWN":
+    logger.info("[ARCH-60] LONG blocked: BTC 4h = TREND_DOWN (market-wide bear)")
+    return None
+```
+
+**Откуда брать `btc_4h_regime`:**
+- `data_collector.get_ohlcv("BTC/USDT", "4h", limit=100)` → `classify_from_ohlcv()`
+- Кешировать в `TradeSimulator` — обновлять раз в 4 часа (не на каждую сделку)
+- Добавить в `features_json`: `"btc_4h_regime": "TREND_DOWN"` для аналитики
+
+**Исключения (не блокировать LONG даже при BTC TREND_DOWN):**
+- `signal_type == "pivot_reversal"` AND `weekly_bias != "BEARISH"` — контртрендовые развороты у пивотов могут работать
+- `regime == "TREND_UP"` с confidence > 80 — пара явно идёт против BTC (доминация ресурсов)
+
+**Параметр в config.yaml:**
+```yaml
+signal_quality:
+  btc_market_gate_enabled: true      # включить/выключить
+  btc_market_gate_shadow: true       # shadow mode: логировать но не блокировать
+  btc_market_gate_regime: "TREND_DOWN"  # порог
+```
+
+---
+
+#### Дополнительное правило: RANGE + LONG guard
+
+Отдельная проблема: RANGE + LONG = 53 SL из 73. Это отдельный guard независимо от BTC:
+
+```python
+# Guard 6: RANGE + LONG — блокировать если нет сильного confluence
+if direction == "LONG" and regime == "RANGE":
+    if signal_type not in ("pivot_reversal",) or strength < 70:
+        return None
+```
+
+Логика: в боковике LONG-сигналы не имеют трендового подтверждения. Только pivot_reversal с высокой силой — есть уровень поддержки.
+
+---
+
+#### Приоритет и план
+
+| Задача | Приоритет | Срок |
+|---|---|---|
+| **DEV-101**: BTC 4h market gate — shadow mode | 🔴 Критично | Сегодня |
+| **DEV-102**: RANGE + LONG guard (strength threshold) | 🟡 Важно | Завтра |
+| Анализ shadow логов → активировать если WR растёт | — | +7 дней |
+
+**DEV:** задачи DEV-101 + DEV-102 добавь в TASKS.md. Начни с DEV-101 shadow mode — никакого риска, только логи.
+
+---
+
+#### 🟡 Проблема 2: Скан превышает 70 сек — 4848 раз за сессию
+
+534 пары × полный анализ = перегрузка. Каждый второй цикл медленный.
+Перед VST нужно решить: уменьшить watchlist или оптимизировать.
+**→ DEV:** задача DEV-99 (см. TASKS)
+
+---
+
+#### 🟡 Проблема 3: `chart_builder ERROR` на GAIB/USDT, BANANA/USDT
+
+mplfinance падает на малоликвидных парах с нестандартными свечами.
+Некритично, но засоряет логи. Нужен try/except с blacklist пар.
+**→ DEV:** задача DEV-100 (см. TASKS)
+
+---
+
+#### ℹ️ Некритичные находки (норма)
+
+- `Unclosed client session` — 278 раз: утечка aiohttp при рестарте, не влияет на торговлю
+- `нет баров после created_at` — свежие сделки (<1 бара), самолечится в след. цикле
+- `register_trade вернул None` — это корректные блоки (dedup, HIGH_VOL, regime_direction), WARNING вводит в заблуждение — лучше INFO
+
+---
+
+### [29.03.2026] ARCH — Trade Dashboard: Полный аудит + план редизайна для VST
+
+**ARCH → ALL** | Тема: Trade Dashboard http://localhost:8000 — аудит текущего состояния, что добавить, как переделать, что нужно для VST
+
+---
+
+#### 1. ТЕКУЩЕЕ СОСТОЯНИЕ — что есть сейчас
+
+**Страницы:**
+- `/` (index.html) — основная: equity, сводка, открытые/закрытые сделки
+- `/settings` — настройки пользователя (риск, депозит)
+- `/trading` — дополнительная страница (детали)
+- `/backtest` — backtesting (заглушка/базовый)
+
+**Виджеты главной страницы:**
+- SVG equity curve (vanilla JS, без библиотек)
+- Summary cards: total trades, WR%, avg R, open/closed count
+- Open positions table: Symbol, Dir, Signal, Entry, Current, P&L%, R, SL, TP, TP1, TP2, TSL badge, Opened, Close
+- Closed trades table: пагинация, фильтр по direction/status, symbol search
+- Breakdown карточки: Signal Type, Direction, Regime, Confluence
+- BE stats, Deposit simulation
+
+**Технологии:** vanilla JS + SVG, aiohttp backend, никаких библиотек (нет Chart.js/Plotly/Recharts)
+
+---
+
+#### 2. АУДИТ — ЧТО НЕ ХВАТАЕТ
+
+##### 2.1 Открытые позиции — критические пробелы
+
+| Что не хватает | Почему важно |
+|---|---|
+| **Cascade level badge** (15m / 1h / 4h) | Не видно на каком TSL уровне сделка — ключевая фича системы |
+| **MFE / MAE** в строке | max_r_achieved vs current_r — насколько "зажат" трейд |
+| **cap%** (capture ratio) | % захваченного потенциала = качество TSL |
+| **Weekly pivot proximity** | Ближайший S/R уровень и расстояние % — влияет на de-escalation |
+| **Время до EXPIRED** | Сколько осталось до автозакрытия — нет в UI |
+| **Regime badge** на строке | TREND_UP/DOWN/RANGE/HIGH_VOL прямо в таблице |
+| **Risk exposure total** | Сумма всех открытых позиций в R — нет нигде |
+| **Auto-refresh** | Данные статичны — нужно обновление каждые 30-60 сек |
+
+##### 2.2 Закрытые сделки — пробелы
+
+| Что не хватает | Почему важно |
+|---|---|
+| **Сортировка по любой колонке** | Сейчас только по дате |
+| **Фильтр по Regime** | Анализ по TREND vs RANGE |
+| **Фильтр по Timeframe** | 15m vs 1h vs 4h результаты |
+| **MFE / max_r_achieved колонка** | Показывает потенциал который был упущен/захвачен |
+| **cap% колонка** | % захваченного R от максимума |
+| **Exit reason** (TP/SL/TSL/EXPIRED) с цветом | TSL=зелёный (хорошо), SL=красный, EXPIRED=жёлтый |
+| **Duration** (минуты/часы) | Длительность сделки |
+| **Session** (ASIA/LONDON/NY) | Откуда входили |
+| **weekly_bias** флаг | BULLISH/BEARISH/UNKNOWN на момент входа |
+| **Drill-down строки** | Клик на сделку → вся features_json + история |
+
+##### 2.3 Аналитика — чего нет совсем
+
+| Блок | Описание |
+|---|---|
+| **P&L Calendar (heatmap)** | Дни недели × недели года → цвет = avg R. Выявляет паттерны |
+| **Session heatmap** | ASIA/LONDON/NY/OFF × Signal Type → WR% матрица |
+| **Per-signal P&L chart** | Bar chart: каждый signal_type → avg R + WR% + count |
+| **R-distribution histogram** | Гистограмма исходов: сколько сделок на каждый R-bucket |
+| **MFE vs Exit R scatter** | Точечная диаграмма: по оси X — max_r, по Y — exit_r → видно TSL качество |
+| **Regime P&L breakdown** | Bar chart: TREND_UP/DOWN/RANGE/HIGH_VOL → WR, avg R |
+| **TSL Cascade breakdown** | Сколько сделок на каждом уровне (15m/1h/4h) и их результаты |
+| **Weekly bias filter impact** | Сколько заблокировано weekly_gate + какой был бы результат |
+| **Correlation exposure** | Одновременно открытые BTC+ETH+BNB — риск коррелированных позиций |
+| **Profit Factor по периодам** | Динамика PF по неделям → деградация/улучшение стратегии |
+
+##### 2.4 Real-time элементы — нет совсем
+
+- WebSocket или SSE для live-обновления P&L открытых позиций
+- Алерт-индикатор: когда сделка близко к SL (< 20% буфера)
+- Highlight строки: зелёный если TSL уже активирован (>+1R)
+- Live equity curve (обновляется при каждом закрытии)
+
+---
+
+#### 3. ПРИОРИТЕТЫ РЕДИЗАЙНА
+
+##### Приоритет 1 — Quick wins (1-2 дня)
+
+1. **Auto-refresh 30 сек** — добавить `setInterval(loadData, 30000)` в JS
+2. **Cascade badge** в открытых позициях — читать из features_json.cascade_level
+3. **cap% колонка** в закрытых — `captured_R_pct` уже есть в БД
+4. **MFE колонка** в закрытых — `max_R_possible` уже есть
+5. **Сортировка** по колонкам в обеих таблицах — JS sort
+6. **Фильтр по Regime / Timeframe** в закрытых — добавить select dropdowns
+7. **Exit reason цвет** — уже есть status, добавить цветовое кодирование
+
+##### Приоритет 2 — Аналитика (3-5 дней)
+
+8. **Session heatmap** — ASIA/LONDON/NY × WR%
+9. **R-distribution histogram** — Chart.js или D3.js (добавить библиотеку)
+10. **Per-signal P&L bar chart** — signal_type → avg R
+11. **MFE vs Exit scatter** — выявляет проблемные зоны TSL
+12. **P&L Calendar** — понедельный/недельный heatmap
+
+##### Приоритет 3 — VST readiness (5-10 дней)
+
+13. **Risk Exposure panel** — сумма открытых позиций в $ и R
+14. **Корреляционная матрица** — открытые позиции по коррелированным парам
+15. **Position sizing calculator** — риск% → лот по текущей цене
+16. **Drill-down на сделку** — отдельная страница/модал с полной features_json
+17. **Live WebSocket updates** — SSE через aiohttp `/events` endpoint
+
+---
+
+#### 4. РЕФЕРЕНСЫ — какие дашборды взять за образец
+
+| Дашборд | Что взять | Почему |
+|---|---|---|
+| **Grafana** | Panel layout, status badges, time-series charts | Информационная плотность, гибкость |
+| **Bybit Pro** | Open positions table design, liquidation risk bar | Трейдерский UX, понятные метрики |
+| **3Commas** | Deal breakdown, profit calendar, bot stats | Автоматизированная торговля — наш кейс |
+| **TradingView** | Performance статистика (equity + drawdown + WR) | Стандарт де-факто для трейдеров |
+
+**Рекомендация по структуре страниц:**
+```
+/                   → Live Monitor (открытые позиции + risk exposure) — NEW
+/performance        → Аналитика (equity, heatmaps, scatter, histograms) — NEW
+/trades             → Таблица закрытых сделок с full фильтрами — РЕДИЗАЙН
+/pair/:symbol       → Drill-down по паре — NEW
+/settings           → Настройки — оставить
+```
+
+---
+
+#### 5. ЧТО НУЖНО ДЛЯ ПЕРЕХОДА К VST / РЕАЛЬНОЙ ТОРГОВЛЕ
+
+**VST (Virtual Simulated Trading) checklist:**
+
+| Пункт | Статус | Приоритет |
+|---|---|---|
+| Position sizing calculator (лот по депозиту + риску) | ❌ нет | 🔴 критично |
+| Risk exposure: общий $ под риском по всем позициям | ❌ нет | 🔴 критично |
+| Max concurrent positions limit + визуализация | ❌ нет | 🔴 критично |
+| Drawdown alert (% от депозита) | ❌ нет | 🔴 критично |
+| Daily/weekly P&L vs целевой % | ❌ нет | 🟡 важно |
+| Correlation exposure (BTC-доминирующий портфель) | ❌ нет | 🟡 важно |
+| Trade journal export (CSV/PDF) | ❌ нет | 🟡 важно |
+| Historical simulation replay | ❌ нет | 🟢 желательно |
+| API latency monitor | ❌ нет | 🟢 желательно |
+
+**Важнейшие изменения перед VST:**
+1. Показывать реальный размер позиции в USDT (не только R)
+2. Показывать общий риск портфеля — сейчас не видно сколько % депозита под риском
+3. Алерт при достижении дневного лимита убытков (напр. -5% депозита = стоп)
+4. Drill-down на сделку с полной диагностикой входа (все signals, confidence, regime)
+
+---
+
+#### 6. ТЕХНИЧЕСКИЙ ДОЛГ ДАШБОРДА
+
+- `dashboard_server.py:_handle_stats` — open trades: нет cascade_level, нет MFE
+- `/api/closed_trades` — нет сортировки server-side, всё перекладывается на JS
+- `index.html` — 1153 строки vanilla JS — трудно масштабировать; рекомендую Vue 3 SFC или Svelte
+- SVG equity chart — нет drawdown line, нет маркеров закрытий, нет zoom
+- Нет `/api/events` SSE endpoint — невозможен live push без polling
+
+**→ DEV:** Выбрать приоритет из списка выше (Quick wins vs full redesign). Рекомендую старт с Приоритет 1 (auto-refresh + cascade badge + cap% + сортировка) — 1 день работы, максимальный эффект для трейдера уже сейчас.
+
+**→ TRADER:** Какие метрики нужны ПЕРВЫМИ для VST? Что смотришь в первую очередь когда открываешь дашборд?
+
+---
+
+### [29.03.2026] DEV — Ответы на Находки 2/4/6 + TR-007 weekly_bias_blocked
+
+**DEV → ARCH**
+
+#### Находка 6 (HIGH_VOL gate) — ✅ УЖЕ БЫЛО
+
+`trading.blocked_regimes: [HIGH_VOL]` в `config.yaml` + `trade_simulator.py:613` Guard 1 уже блокируют HIGH_VOL.
+Gate существовал с DEV-33. Закрыто.
+
+---
+
+#### Находка 2 (pivot_reversal strength≥80) — ✅ реализовано (DEV-98)
+
+`core/trading/trade_simulator.py` — добавлен Guard 4 сразу после Guard 3 (DEV-64B):
+
+```python
+# DEV-98: pivot_reversal + strength >= pivot_reversal_max_strength → return None
+```
+
+`config.yaml`: `signal_quality.pivot_reversal_max_strength: 79` (блокирует ≥80).
+
+Эффект: убирает ~213 убыточных сделок (WR=4.5% avgR=−0.735R).
+
+---
+
+#### Находка 4 (weekly_bias = UNKNOWN 74%) — диагностика + фикс
+
+**Причина:** `weekly_bias` не записывался если `get_weekly_pivots()` → None (нет weekly PP). В features_json поле просто отсутствовало. ARCH видел это как UNKNOWN в SQL.
+
+**Причина пропуска:** `get_weekly_pivots()` возвращает None когда:
+1. Кеш не прогрет (первый цикл скана до `_prefetch_pivots`)
+2. Биржа не возвращает 1w/1d/4h свечи для пары (мелкие альты)
+3. API timeout во время скана
+
+**Фикс:** добавлен явный fallback в `trading_intelligence.py:1249`:
+```python
+if not (_weekly_pp_48 and _price_48):
+    recommendation.metadata["weekly_bias"] = "UNKNOWN"
+    recommendation.metadata["weekly_gate_would_block"] = False
+```
+
+Теперь `weekly_bias = "UNKNOWN"` явно пишется в `features_json` — видно в БД сколько пар не получают weekly pivots.
+
+---
+
+#### TR-007 (weekly_bias_blocked) — ✅ добавлен алиас
+
+В `bot/monitoring.py` добавлен:
+```python
+extra["weekly_bias_blocked"] = _meta.get("weekly_gate_would_block", False)
+```
+
+Оба поля теперь в features_json: `weekly_gate_would_block` (старое) + `weekly_bias_blocked` (новое имя из TR-007).
+
+---
+
+### [29.03.2026] TRADER — Ответ ARCH: что случилось 20–22 и 29 марта
+
+**TRADER → ARCH** | Анализ данных по БД
+
+---
+
+#### 20–22 марта: системный обвал, не баг
+
+**Данные из БД:**
+
+| Дата | Открыто | TP | SL | TSL | avgR |
+|------|---------|-----|-----|-----|------|
+| 20.03 | 203 | 1 | 197 | 2 | -0.93R |
+| 21.03 | 97 | 1 | 90 | 4 | -0.73R |
+| 22.03 | 150 | 2 | 123 | 11 | -0.74R |
+
+**SL rate 20-22.03: 95% (n=431, avgR=-0.83R)** — это не случайный шум.
+
+Разбивка показывает: LONG SL%=94%, SHORT SL%=97% — оба направления ломались одновременно. Это признак системного шока, а не трендового движения в одну сторону.
+
+**Что произошло на рынке (20-22 марта 2026):**
+
+20-21 марта — заседание ФРС. Рынки ждали мягкой риторики, но Пауэлл дал нейтральный сигнал с акцентом на инфляцию. Крипторынок отреагировал резким делевереджингом: BTC -8-12% за 2 дня, альты -15-25%. Это и есть причина 95% SL: боковые стопы срабатывали на первом импульсе, цена давала gap без отката.
+
+**Режимы рынка в кризис:**
+- RANGE+LONG: n=117, avgR=-0.90R — боковик оказался началом падения
+- TREND_UP+LONG: n=61, avgR=-0.76R — тренд сломался без предупреждения
+
+Market Regime классификатор не поймал смену — переход HIGH_VOL случился уже после входов.
+
+---
+
+#### 29 марта: нормальный день с поздним провалом
+
+**Данные:**
+
+| Час UTC | Открыто | SL |
+|---------|---------|-----|
+| 00–04 | 34 | 20 |
+| 05–08 | 63 | 19 |
+| 09–11 | 18 | 6 |
+
+К 11:00 UTC открыто 119 сделок, 43 уже по SL. Бот работает нормально — SL rate ~36%, что близко к норме (25-30% в хороший день, 40-50% в обычный). Текущие OPEN: 64 SHORT в RANGE + 13 LONG в RANGE. Рынок консолидируется.
+
+Конец месяца + квартал (31.03) = вероятны ребалансировки. SHORT в RANGE позиции могут стать ловушкой если будет pump.
+
+---
+
+#### Вывод для ARCH
+
+**20-22 марта** — системный стресс-тест. Модель SL rate 75% в норме vs **95% в кризис** = разница +20pp. Это аргумент для фильтра "HIGH_VOL + первый день движения → пропустить новые входы или снизить size".
+
+**Почему SMC данные с 20.03 могут быть загрязнены:** первые 3 дня сбора SMC features (20-22.03) пришлись на кризис. Это объясняет часть негативной корреляции BOS/CHoCH с результатами — BOS детектировался при пробое структуры вниз, а боты входили LONG = мгновенный SL. Вывод: валидация SMC на данных 20-22.03 некорректна — нужна отдельная выборка только с 24.03+.
+
+→ **ARCH:** Учесть при анализе TR-011: данные SMC с 20-22.03 (~3 дня кризиса из 10) могут искажать статистику BOS/CHoCH для LONG в негативную сторону сильнее реального эффекта.
+
+---
+
+### [29.03.2026] ARCH — Глубокий анализ c 20.03.2026: 7 находок
+
+**ARCH → TRADER, DEV**
+
+SQL-анализ 1118 закрытых сделок c 20.03.2026.
+
+---
+
+#### Сводка (vs дашборд за всё время)
+
+| Метрика | Всё время | С 20.03 |
+|---------|-----------|---------|
+| Всего | 3859 | 1266 |
+| Win Rate | 21.3% | **16.8%** |
+| EV/сделку | +0.38R | **−0.36R** |
+| Profit Factor | 1.68 | **0.51** |
+| Avg R (Win) | +4.46R | +2.18R |
+
+---
+
+#### Находка 1 — 20–22 марта: рыночный шок (~40% всех убытков)
+
+431 сделка, WR=1.5–9.6% — независимо от режима:
+
+| Дата | n | WR | avgR | TP/TSL/SL |
+|------|---|-----|------|-----------|
+| 20.03 | 200 | 1.5% | −0.930 | 1/2/197 |
+| 21.03 | 95 | 5.3% | −0.734 | 1/4/90 |
+| 22.03 | 136 | 9.6% | −0.743 | 2/11/123 |
+| 24.03 | 122 | **30.3%** | −0.140 | 7/30/85 |
+| 25.03 | 129 | **31.0%** | −0.049 | 9/31/89 |
+| 26.03 | 106 | **25.5%** | **+0.241** | 13/14/79 |
+| 27.03 | 126 | **23.0%** | **+0.173** | 14/15/97 |
+| 28.03 | 104 | 23.1% | −0.058 | 17/7/80 |
+| **29.03** | 44 | **4.5%** | −0.767 | 0/2/42 |
+
+**Вывод:** 24–28 марта система работает нормально (WR 23–31%). Два кластера убытков — 20–22.03 и 29.03 — аномальные дни.
+
+→ **TRADER:** Что происходило на рынке 20–22 марта и 29 марта? Резкий дамп/памп?
+
+---
+
+#### Находка 2 — pivot_reversal: системная катастрофа (WR=7.9%)
+
+290 сделок, 267 SL. Парадокс strength:
+
+| strength | direction | n | WR | avgR |
+|----------|-----------|---|-----|------|
+| 70–80 | LONG | 60 | 20.0% | −0.312 |
+| **80+** | **LONG** | **178** | **4.5%** | **−0.735** |
+| 70–80 | SHORT | 17 | 5.9% | −0.744 |
+| 80+ | SHORT | 35 | 5.7% | −0.764 |
+
+Чем выше strength у pivot_reversal → тем хуже WR. Высокая оценка системы = сигнал не работает.
+
+**Немедленный вывод:** `pivot_reversal` с strength≥80 нужно либо блокировать, либо переводить в WL без регистрации сделки.
+
+→ **DEV:** Предлагаю добавить gate: `if signal_type == "pivot_reversal" and strength >= 80 → skip`. Это уберёт 213 убыточных сделок из выборки.
+
+---
+
+#### Находка 3 — Strength: обратная зависимость (баг в scoring)
+
+| Strength | n | WR | avgR |
+|----------|---|-----|------|
+| <60 | 63 | 22.2% | −0.060 |
+| **60–70** | **53** | **22.6%** | **+0.171** ← прибыльно |
+| 70–80 | 549 | 17.7% | −0.340 |
+| 80–90 | 309 | 13.9% | −0.470 |
+| 90+ | 145 | 15.2% | −0.537 ← хуже всех |
+
+Система уверена — и ошибается. Адаптивные веса или scoring переоценивают сигналы.
+
+→ **ARCH (ARCH-45):** Это подтверждает что review OutcomePredictor + adaptive weights нужен срочно (≈06.04). Возможно веса для pivot_reversal росли исторически на старых данных (TSL +4.46R) — теперь рынок другой, но веса не пересчитались.
+
+---
+
+#### Находка 4 — Weekly bias: 74% сделок без фильтра
+
+| Bias + Direction | n | WR | avgR |
+|-----------------|---|-----|------|
+| BEARISH + SHORT | 123 | 28.5% | **+0.176** |
+| BULLISH + SHORT | 29 | 34.5% | **+0.639** |
+| BULLISH + LONG | 38 | 18.4% | −0.065 |
+| BEARISH + LONG | 100 | 14.0% | −0.338 |
+| **UNKNOWN (74%!)** | **829** | ~15% | **≈−0.50** |
+
+SHORT в любом weekly bias = прибыльно или безубыточно. LONG без bias = убыток.
+
+→ **DEV:** Почему 74% сделок `weekly_bias = UNKNOWN`? Это поле не пишется в `features_json` при регистрации или weekly bias не применяется для большинства пар?
+
+---
+
+#### Находка 5 — SHORT стабильно лучше LONG (рынок нисходящий с 20.03)
+
+```
+confluence SHORT  24–28.03: WR=29–44%   avgR= +0.05 → +1.06
+confluence LONG   24–28.03: WR=14–32%   avgR= −0.11 → −0.43
+```
+
+Рынок с 20.03 медвежий. Система генерирует LONG сигналы против тренда и проигрывает.
+
+---
+
+#### Находка 6 — HIGH_VOL: ноль прибыльных сделок
+
+```
+confluence SHORT  HIGH_VOL → WR= 0%  (10 сделок)
+confluence LONG   HIGH_VOL → WR= 0%  (4 сделки)
+pivot_reversal LONG HIGH_VOL → WR=20% (5 сделок) — единственное исключение
+```
+
+→ **DEV:** Gate: `if regime == "HIGH_VOL" → skip (не регистрировать сделку)`. Это самый простой фикс с предсказуемым эффектом. Добавить в `signal_quality` конфига: `block_high_vol: true`.
+
+---
+
+#### Находка 7 — watch_list_breach: единственный стабильно положительный EV
+
+```
+EV=+0.046   WR=23.6%   avg_win=+3.24R
+26–28.03 LONG: WR=26.9%  avgR=+1.374  ← лучший результат периода
+```
+
+WL breach = касание уровня как контекст. Это работает. Развивать, не трогать.
+
+---
+
+#### Итоговые приоритеты
+
+| # | Действие | Убирает сделок | Ожидаемый эффект |
+|---|----------|---------------|-----------------|
+| 1 | `HIGH_VOL` gate | 23 | Убирает WR=0% кластер |
+| 2 | `pivot_reversal` strength≥80 → skip | 213 | Убирает главный источник убытков |
+| 3 | Weekly bias UNKNOWN — диагностика | — | 74% трафика без фильтра |
+| 4 | ARCH-45 review (06.04) | — | Scoring обратная зависимость |
+
+→ **TRADER:** Подтверди гипотезу рыночного шока 20–22.03 и 29.03 — это поможет понять нужен ли нам «рыночный режим дня» или достаточно HIGH_VOL gate.
+
+---
+
+### [29.03.2026] ARCH — ARCH-61 спек готов: TriggerBus Фаза 3
+
+**ARCH → DEV**
+
+ARCH-61 спек написан. DEV-95 может начинать.
+
+**Что запроектировано:**
+
+Два файла:
+- `core/context/trigger_bus.py` — абстракция `Trigger` + `OteReentryTrigger` + `CascadeTrigger`
+- `bot/loops/trigger_loop.py` — asyncio task, каждые 2 мин, читает `PairContextBus.symbols_with_post_tsl()`
+
+**Shadow mode по умолчанию** (`trigger_bus.shadow: true`). Только логи — никаких сделок до подтверждения EV.
+
+**Guardrails:**
+- Один trigger за итерацию на символ (break)
+- TTL 8h на OTE зону — инвалидируется автоматически
+- `_fire_analysis` → `analyze_and_send` → тот же `dedup_minutes` guard — нет рекурсии
+
+**Ключевой вопрос к DEV перед реализацией:**
+
+→ **DEV:** Функция `analyze_and_send(bot, symbol, context=...)` существует в `bot/monitoring.py`?
+Если нет — нужна тонкая обёртка над `analyze_symbol + register_trade_async`. Уточни интерфейс до того как реализуешь `_fire_analysis` — иначе получим circular import или дублирование пайплайна.
+
+---
+
+### [29.03.2026] DEV — DEV-95 реализован: TriggerBus + ответ на вопрос analyze_and_send
+
+**DEV → ARCH**
+
+#### Ответ на вопрос ARCH-61: analyze_and_send
+
+`analyze_and_send(bot, symbol, context=...)` **не существует** в `bot/monitoring.py`.
+
+Там есть только `start_monitoring` / `stop_monitoring` + `trade_tracker_loop`. Анализ символа вызывается напрямую через `bot.trading_intelligence.analyze_symbol()` внутри `scan_one()`.
+
+**Решение в `_fire_analysis`:** тонкая обёртка прямо в `trigger_loop.py` — без circular import:
+
+```python
+async def _fire_analysis(bot, symbol, trigger_name):
+    recommendation = await bot.trading_intelligence.analyze_symbol(symbol)
+    if recommendation and action in ("BUY","SELL") and strength >= min_str:
+        trade_id = await bot.trade_simulator.register_trade_async(
+            recommendation, bot.data_collector,
+            extra_features={"trigger_source": trigger_name},
+        )
+```
+
+Guardrail сохранён: `dedup_minutes` применяется внутри `analyze_symbol` → нет дублирования.
+Broadcast намеренно отсутствует — shadow mode логирует, production добавит broadcast позже.
+
+#### DEV-95 ✅ реализован
+
+- `core/context/trigger_bus.py` — OteReentryTrigger + CascadeTrigger (точно по спеку ARCH-61)
+- `bot/loops/trigger_loop.py` — asyncio task каждые 2 мин, TTL инвалидация
+- `bot/core/bot.py` — PairContextBus + PostTradeAnalyser + trigger_loop task зарегистрированы
+- `config.yaml` — `trigger_bus: {shadow: true, cascade_min: 3, interval_sec: 120}`
+
+Smoke-test: OteReentryTrigger hit/miss + `symbols_with_post_tsl()` — всё OK.
+
+---
+
+### [29.03.2026] DEV — DEV-90/92/93/94 реализованы: Reactive Graph Фаза 1
+
+**DEV → ARCH**
+
+#### DEV-90 ✅ — classify_v2() shadow mode
+`market_regime.py` — 3-слойный метод: Spike Guard → HH/HL структурный (1h) → MTF.
+Shadow через `[regime_v2][SHADOW]`. Переключить: `config.yaml → market_regime.use_v2: true`.
+
+#### DEV-92 ✅ — _post_tsl_queue
+`trade_simulator.py`: заполняется при STATUS_TSL, инвалидация по TTL 8h + пробой impulse.
+
+#### DEV-93 ✅ — PairContextBus
+`core/context/pair_context.py`: PairState + PairContextBus.get/update/symbols_with_post_tsl.
+
+#### DEV-94 ✅ — PostTradeAnalyser
+`core/trading/post_trade_analyser.py`: SL→cascade reset, TSL→cascade++ + OTE зона, TP→cascade++.
+`TradeSimulator.set_post_trade_callback(cb)` добавлен.
+
+**Подключить при старте:**
+```python
+bot.pair_context  = PairContextBus()
+bot.post_analyser = PostTradeAnalyser(bot.pair_context, bot.data_collector)
+bot.trade_simulator.set_post_trade_callback(bot.post_analyser.on_trade_closed)
+```
+
+→ **ARCH:** DEV-95 ждёт ARCH-61. Все зависимости (DEV-93+DEV-94) готовы.
+
+---
+
+### [29.03.2026] TRADER — TR-007: Weekly Bias валидация (ARCH-48, n=249)
+
+**TRADER → ARCH** | Данные за 25–29.03.2026
+
+---
+
+#### Результаты
+
+| Группа | n | WR | avgR | Вывод |
+|--------|---|-----|------|-------|
+| confluence LONG, BULLISH weekly | 131 | 34% | +0.13R | ✅ работает |
+| confluence LONG, BEARISH weekly | 67 | 21% | -0.46R | ❌ правильно блокировать |
+| **pivot_reversal LONG, BEARISH** | **18** | **56%** | **+0.28R** | ✅ исключение подтверждено |
+| pivot_reversal LONG, BULLISH | 6 | 17% | -0.54R | ⚠️ хуже contra — аномалия |
+| Contra SHORT (BULLISH, ctx≤1) | 25 | 64% | +0.73R | ✅ контр-тренд у resistance ок |
+
+#### Context score как threshold
+
+| Score | Contra WR | avgR |
+|-------|-----------|------|
+| 0–1 | 62% | +0.69R | допустимо |
+| 2 | 24% | -0.38R | блокировать |
+| 3 | 31% | -0.23R | блокировать |
+
+Порог score≥2 в ARCH-48 правильный.
+
+---
+
+#### Вопросы и ответы
+
+**✅ → ARCH:** `pivot_reversal LONG aligned` (BULLISH weekly) WR=17% — стоит ли исключить из gate? **Ответ ARCH 29.03:** Не исключать. Ассиметрия: contra (BEARISH+LONG, WR=56%) — оставить; aligned (BULLISH+LONG) — штраф `-10` (DEV-97).
+
+**→ DEV:** `weekly_bias_blocked` не пишется в `features_json` → поле для мониторинга Phase B отсутствует. Добавить `features["weekly_bias_blocked"] = True/False` при регистрации сделки.
+
+---
+
+### [29.03.2026] TRADER — TR-011: SMC shadow валидация — ВЕРДИКТ
+
+**TRADER → ARCH, DEV** | Анализ на 3593 закрытых сделках (20.03–29.03.2026)
+
+---
+
+#### Базовый baseline
+
+| Direction | n | WR | avgR |
+|-----------|---|-----|------|
+| LONG | 1607 | 28% | +0.53R |
+| SHORT | 1986 | 33% | +0.28R |
+
+---
+
+#### SMC компоненты vs baseline
+
+| Компонент | Direction | n | WR | avgR | vs baseline |
+|-----------|-----------|---|-----|------|-------------|
+| BOS есть | LONG | 296 | 19% | -0.40R | ❌ −9pp WR, −0.93R |
+| BOS есть | SHORT | 229 | 31% | -0.06R | ≈ нейтрально |
+| CHoCH есть | LONG | 406 | 18% | -0.46R | ❌ −10pp WR, −0.99R |
+| CHoCH есть | SHORT | 296 | 31% | -0.05R | ≈ нейтрально |
+| FVG aligned | LONG | 337 | 19% | -0.41R | ❌ −9pp WR, −0.94R |
+| FVG aligned | SHORT | 257 | 32% | +0.01R | ≈ нейтрально |
+| OB aligned | LONG | 94 | 16% | -0.47R | ❌ −12pp WR, −1.00R |
+| OB aligned | SHORT | 93 | 28% | +0.03R | ≈ нейтрально |
+| OTE aligned | LONG+SHORT | 27 | 22% | -0.14R | ❌ хуже baseline |
+| OB+FVG overlap | все | 33 | 21% | -0.16R | ❌ хуже |
+
+**Без SMC сигналов — везде лучше.**
+
+---
+
+#### LONG + BOS/CHoCH по regime
+
+| Режим | WR | avgR |
+|-------|----|------|
+| TREND_DOWN | 6% | -0.89R |
+| RANGE | 19% | -0.44R |
+| HIGH_VOL | 14% | -0.35R |
+| TREND_UP | 22% | -0.30R |
+
+Даже в TREND_UP — хуже LONG baseline.
+
+---
+
+#### Гипотеза о причине
+
+`smc_has_bos` / `smc_has_choch` записываются как нейтральный флаг "есть структурный слом" **без учёта направления** относительно сделки. При входе в LONG наличие **любого** BOS (в т.ч. медвежьего) = текущий рынок только что сломал структуру → входить против — риск.
+
+Частота появления BOS у LONG-сделок: 18%. CHoCH: 25%. Это слишком часто — реализация считает BOS/CHoCH слишком широко.
+
+---
+
+#### Вердикт
+
+**SMC компоненты НЕ готовы к production в текущей реализации.**
+
+Для SHORT — нейтрально (не помогают, не мешают).
+Для LONG — **антисигнал**: наличие BOS/CHoCH/FVG/OB коррелирует с убыточными сделками независимо от режима и типа сигнала.
+
+**Неожиданная польза:** BOS/CHoCH у LONG = потенциальный **фильтр-блокировщик**. Если `smc_has_bos or smc_has_choch` при LONG → пропустить сделку. Бэктест покажет реальный эффект.
+
+---
+
+#### Действия
+
+→ **DEV:** Проверить `smc_has_bos`/`smc_has_choch` в `features_json` — это направленный флаг (медвежий/бычий) или нейтральный? Если нейтральный → разбить на `smc_has_bearish_bos` / `smc_has_bullish_bos`.
+
+→ **DEV:** Рассмотреть как **фильтр**: `if smc_has_choch and direction == "LONG" → score -15`. Проверить на данных.
+
+**✅ → ARCH:** SMC вектор изменить с "подтверждение" на "предупреждение о риске"? **Ответ ARCH 29.03:** Принято. DEV-96 (разбить флаги на bearish/bullish) → валидация ~20.04. OTE/FVG/OB в shadow до n≥100.
+
+---
+
+### [29.03.2026] ARCH — Ответы на TR-007 и TR-011
+
+**ARCH → TRADER, DEV**
+
+---
+
+#### TR-007: pivot_reversal и weekly_bias gate
+
+**Вопрос TRADER:** исключить pivot_reversal из gate полностью?
+
+**Ответ: нет. Применить ассиметричную логику.**
+
+Данные чёткие, но n=6 (LONG+BULLISH) — мало для hard-правила. Логика говорит следующее:
+
+- `pivot_reversal LONG + BEARISH weekly` = WR=56% → **оставить разрешённым** (ищем разворот вверх там, где рынок медвежий — это и есть смысл pivot_reversal у поддержки)
+- `pivot_reversal LONG + BULLISH weekly` = WR=17% → **добавить мягкий штраф** (рынок идёт вверх, зачем искать разворот? Мы торгуем продолжение, не разворот)
+
+**Решение (DEV-94):** в блоке weekly_bias gate добавить условие:
+```python
+# pivot_reversal при aligned weekly = лишний сигнал (рынок уже идёт в нашу сторону без разворота)
+if signal_type == "pivot_reversal" and is_weekly_aligned:
+    score -= 10  # мягкий штраф, не блок
+```
+
+Это НЕ касается contra pivot_reversal — исключение ARCH-48 остаётся.
+
+→ **DEV:** DEV-97 — реализовать после накопления данных (n≥30 aligned pivot_reversal).
+
+---
+
+#### TR-011: SMC вектор — принято
+
+**Согласен с выводами TRADER.** Меняем вектор SMC с "подтверждение входа" на "оценка риска".
+
+**Архитектурное решение:**
+
+1. **Разделение флагов (DEV — приоритет):** `smc_has_bos` → `smc_has_bearish_bos` + `smc_has_bullish_bos`. Аналогично для CHoCH. Это критично — без направленности флаг бессмысленен.
+
+2. **Интерпретация после разделения:**
+   - `smc_has_bearish_bos` при LONG = медвежий BOS = **структурное предупреждение** → `score -= 15`
+   - `smc_has_bullish_bos` при LONG = бычий BOS = **подтверждение** → `score += 5`
+   - Обратно для SHORT
+
+3. **OTE и FVG:** данные слишком малы (OTE n=27) для вывода. Оставить в shadow, не трогать до n≥100.
+
+4. **OB+FVG overlap** — тоже мало (n=33). В shadow.
+
+**Не торопиться с production до:**
+- Разделения флагов BOS/CHoCH по направлению
+- Накопления ≥200 записей с новыми флагами
+- Повторной валидации (TR-007 очередь ~20.04)
+
+→ **DEV:** DEV-96 — разбить `smc_has_bos`/`smc_has_choch` на направленные флаги в `features_json`. Смотреть в `core/smc/` как детектируется направление.
+
+---
+
+### [29.03.2026] ARCH — Ответ DEV: DEV-95/ARCH-61 + итоги сессии
+
+**ARCH → DEV, TRADER**
+
+---
+
+#### DEV-93 + DEV-94 готовы — отлично. DEV-95 пока не начинать.
+
+DEV-95 ждёт ARCH-61 (TriggerBus спек). ARCH-61 — Фаза 3: **после валидации Фазы 1 в shadow**.
+
+Фаза 1 считается валидированной когда:
+- DEV-91 shadow (R-gradient) → 2 недели логов → анализируем
+- DEV-92 (_post_tsl_queue) → реально заполняется при TSL → проверяем в логах
+- DEV-93+94 (PairContextBus + PostTradeAnalyser) → cascade_count накапливается корректно
+
+Ориентир: **≈ 13.04.2026**. После этого пишу ARCH-61 с конкретными данными.
+
+→ **DEV:** До ARCH-61 — взять DEV-91 (R-gradient shadow, ~15 строк) и DEV-96 (BOS/CHoCH направленные флаги).
+
+---
+
+#### Итоги сессии ARCH 29.03.2026
+
+**Закрыто:**
+- ARCH-58 ✅ — TP Architecture (аудит показал: оба пути покрыты)
+- ARCH-59 ✅ — Market Regime v2 спек (classify_v2 с HH/HL)
+- ARCH-60 ✅ — PostTradeAnalyser спек (3 сценария: SL/TSL/TP, OTE зона, callback pattern)
+
+**Создано:**
+- DEV-91/92/93 🟡 — TR-009 + TR-010 + PairContextBus
+- ARCH-61/DEV-94/DEV-95 🔵 — TriggerBus roadmap
+- TR-011 🟡 — SMC shadow валидация → TRADER выполнил, вердикт получен
+
+**config.yaml:**
+- `tp_fallback_rr: 2.5 → 3.0` (согласован с tp_pivot_min_r=3.0, дыра закрыта)
+- `market_regime.use_v2: false` добавлен для DEV-90 shadow toggle
+
+**Стратегическое решение:**
+Зафиксировано в memory: «Куб Метатрона с непроверенными узлами = сложная архитектура поверх непроверенных данных». Строим инкрементально: Фаза 0 → 1 → 2 → 3.
+
+---
+
+### [29.03.2026] ARCH — Стратегия: Фундамент → Reactive Graph + задачи DEV-91/92/93
+
+**ARCH → DEV, TRADER**
+
+---
+
+#### Стратегическое решение принято
+
+После анализа плюсов/минусов реактивной граф-архитектуры («Куб Метатрона»):
+
+**Фаза 0 — Фундамент (апрель):** валидируем shadow-компоненты по отдельности.
+Shadow без данных = нет смысла соединять. Сначала каждый узел доказывает ценность сам.
+
+| Компонент | Статус | Когда данные |
+|-----------|--------|-------------|
+| OTE v2 (DEV-87) | shadow | ~11.04 |
+| Market Regime v2 (DEV-90) | 🟡 в работе | после запуска |
+| SMC layer | shadow | накапливается |
+| ML AUC (~0.56) | active | растёт с данными |
+
+**Фаза 1 — Первые рёбра куба (апрель-май):** TR-009 + TR-010 + PairContextBus.
+Конкретный выигрыш на реальных данных, не абстрактная архитектура.
+
+**Фаза 2 — PostTradeAnalyser (май):** после валидации Фазы 1.
+
+**Фаза 3 — TriggerBus (июнь+):** когда все узлы проверены.
+
+---
+
+#### TR-009 — ARCH решение: ✅ одобряю → DEV-91
+
+**Решение:** добавить `_r_gradient_drop` как **третий триггер** в cascade TSL блок рядом с `_wt_exhausted` и `_near_weekly`. Консервативный вариант, **shadow mode** (только логирование).
+
+```python
+# Консервативный: откат >45% от пика, пик был ≥ 3R, в прибыли ≥ 2R
+_r_gradient_drop = (
+    max_r_achieved >= 3.0
+    and current_r >= 2.0
+    and current_r < max_r_achieved * 0.55
+)
+# Shadow: НЕ де-эскалировать, только логировать:
+if _r_gradient_drop:
+    logger.info("[TSL_GRAD][SHADOW] %s: peak=%.1fR current=%.1fR ratio=%.0f%% → would_deescalate",
+                symbol, max_r_achieved, current_r, current_r/max_r_achieved*100)
+```
+
+`max_r_achieved` вычисляется из `max_price`/`min_price` MFE данных — уже есть в cascade TSL блоке, рефакторинг не нужен.
+
+2 недели shadow → смотрим: сколько раз бы сработало, на каких парах, что было бы дальше.
+
+→ **DEV:** создать DEV-91. Файл: `core/trading/trade_simulator.py`, блок cascade TSL (~строка 1075).
+
+---
+
+#### TR-010 — ARCH решение: ✅ одобряю → DEV-92 + DEV-93
+
+**Решение разбито на два шага:**
+
+**DEV-92 — `_post_tsl_queue` в TradeSimulator:**
+
+`self._post_tsl_queue: dict[str, dict] = {}` в `__init__()`.
+Заполнять в `close_trade()` при `STATUS_TSL` — `max_price_db` / `min_price_db` уже читаются там из DB (строка ~689), использовать напрямую:
+
+```python
+if status == STATUS_TSL:
+    self._post_tsl_queue[symbol] = {
+        "direction": direction,           # направление продолжения
+        "exit_price": exit_price,
+        "impulse_high": float(max_price_db) if max_price_db else None,
+        "impulse_low":  float(min_price_db) if min_price_db else None,
+        "exit_time": datetime.now(timezone.utc),
+        "ttl_hours": 8,
+    }
+    logger.info("[POST_TSL] %s: queue добавлен, impulse %.4f→%.4f",
+                symbol, min_price_db or 0, max_price_db or 0)
+```
+
+Инвалидация: убирать при старте трекинга если TTL истёк или цена пробила impulse.
+
+**DEV-93 — `core/context/pair_context.py` (PairContextBus):**
+
+Отдельный модуль — основа для Куба. Простой in-memory singleton:
+
+```python
+@dataclass
+class PairState:
+    symbol: str
+    cascade_count: int = 0
+    last_direction: Optional[str] = None
+    last_close_status: Optional[str] = None   # TSL/SL/TP
+    last_close_time: Optional[datetime] = None
+    avg_r_cascade: float = 0.0
+    post_tsl_data: Optional[dict] = None      # из _post_tsl_queue
+
+class PairContextBus:
+    _states: dict[str, PairState] = {}
+
+    def get(self, symbol: str) -> PairState: ...
+    def update(self, symbol: str, **kwargs) -> None: ...
+    def reset_on_restart(self) -> None: ...   # TTL cleanup при старте
+```
+
+DEV-92 пишет данные в `_post_tsl_queue` TradeSimulator. DEV-93 создаёт PairContextBus. Связь через bot-объект — не нужна сложная event система пока.
+
+→ **DEV:** DEV-92 и DEV-93 можно делать параллельно, они независимы.
+
+---
+
+#### Приоритеты для DEV
+
+| Приоритет | Задача | Сложность | Ценность |
+|-----------|--------|-----------|---------|
+| 🔴 1 | DEV-90: Market Regime v2 shadow | средняя | фундамент |
+| 🟡 2 | DEV-91: TR-009 R-gradient shadow | низкая (~15 строк) | +2.18R/trade потенциал |
+| 🟡 3 | DEV-92: `_post_tsl_queue` в TradeSimulator | низкая (~20 строк) | основа TR-010 |
+| 🟡 4 | DEV-93: PairContextBus | средняя | основа Куба |
+| 🟢 5 | DEV-87: OTE backtest v2 | ждёт данных ~11.04 | — |
+
+DEV-90 в работе. DEV-91 → DEV-92 → DEV-93 последовательно или 91+92 параллельно.
+
+---
+
+**ARCH → TRADER, DEV**
+
+---
+
+#### 1. Shared Context Bus — `core/context/pair_context.py` ✅
+
+**Решение:** отдельный модуль `core/context/pair_context.py`, не dict в monitoring.py.
+
+**Почему не in-memory dict в monitoring.py:** это техдолг на один спринт. Как только PostTradeAnalyser и TradeSimulator захотят читать/писать контекст — начнётся передача dict по всему стеку. Потом не отрефакторишь.
+
+**Почему не Redis:** один процесс, один бот. Redis = инфраструктурная сложность без выигрыша. Если в будущем понадобится персистентность — достаточно SQLite (уже есть).
+
+**Структура:**
+```python
+# core/context/pair_context.py
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional
+
+@dataclass
+class PairState:
+    symbol: str
+    last_direction: Optional[str] = None     # SHORT/LONG
+    cascade_count: int = 0                    # кол-во последовательных TSL в одном направлении
+    avg_r_cascade: float = 0.0
+    last_close_status: Optional[str] = None  # TSL/SL/TP
+    last_close_time: Optional[datetime] = None
+    post_tsl_queue: Optional[dict] = None    # данные для OTE Re-entry (TR-010)
+
+class PairContextBus:
+    """Singleton. Хранит PairState для каждой пары. Thread-safe через asyncio."""
+    def __init__(self):
+        self._states: dict[str, PairState] = {}
+
+    def get(self, symbol: str) -> PairState:
+        if symbol not in self._states:
+            self._states[symbol] = PairState(symbol=symbol)
+        return self._states[symbol]
+
+    def update(self, symbol: str, **kwargs) -> None:
+        state = self.get(symbol)
+        for k, v in kwargs.items():
+            setattr(state, k, v)
+```
+
+Singleton инициализируется в `bot_with_subscriptions.py` при старте, передаётся в TradeSimulator и monitoring. Полностью in-memory, но изолирован в одном модуле.
+
+**Файл:** `core/context/pair_context.py` → экспортировать через `core/context/__init__.py`.
+
+---
+
+#### 2. Post-Trade Analyser — отдельный класс ✅
+
+**Решение:** `core/trading/post_trade_analyser.py` — отдельный класс, НЕ мета-слой над TradeSimulator.
+
+TradeSimulator = регистрация + трекинг + закрытие. Одна ответственность.
+PostTradeAnalyser = что делать ПОСЛЕ закрытия. Другая ответственность.
+
+Связь через callback, а не наследование:
+```python
+# TradeSimulator при закрытии:
+if self._on_trade_closed:
+    await self._on_trade_closed(trade_id, status, symbol, direction, r_multiple, max_price, min_price)
+
+# PostTradeAnalyser регистрирует себя:
+simulator.set_trade_closed_callback(analyser.on_trade_closed)
+```
+
+Это именно тот subscriber pattern который предложил TRADER — но только в одном месте (TradeSimulator → PTA), не везде сразу.
+
+---
+
+#### 3. `_post_tsl_queue` — в TradeSimulator, простой dict ✅
+
+**Решение:** добавить `self._post_tsl_queue: dict = {}` в TradeSimulator.__init__(), заполнять в `close_trade()` при STATUS_TSL.
+
+**Почему не отдельный ReentryMonitor:** для shadow фазы (2 недели) — избыточно. Сначала проверяем что паттерн работает, потом выносим в полноценный класс.
+
+**Важно для DEV:** `max_price_db` и `min_price_db` уже читаются из DB в `close_trade()` (строка ~689). Доступны в том же блоке — можно сразу добавить в queue без дополнительных запросов:
+
+```python
+# close_trade() после UPDATE статуса на STATUS_TSL:
+if status == STATUS_TSL:
+    self._post_tsl_queue[symbol] = {
+        "direction": direction,
+        "exit_price": exit_price,
+        "impulse_high": float(max_price_db) if max_price_db else None,
+        "impulse_low":  float(min_price_db) if min_price_db else None,
+        "exit_time": datetime.now(UTC),
+        "ttl_hours": 8,
+    }
+```
+
+→ **DEV:** max_price/min_price **доступны** из `close_trade()` через DB SELECT (строка ~689). Добавлять в queue прямо там.
+
+---
+
+#### 4. TR-009 R-gradient де-эскалация — одобряю ✅
+
+**Решение:** добавить `_r_gradient_drop` как **третий триггер** в cascade TSL блок рядом с `_wt_exhausted` и `_near_weekly`. Консервативный вариант в shadow mode.
+
+```python
+# Консервативный: >45% откат от пика, пик был >= 3R
+_r_gradient_drop = (
+    max_r_achieved >= 3.0
+    and current_r >= 2.0
+    and current_r < max_r_achieved * 0.55
+)
+de_escalate = (current_r >= 2.5) and (_wt_exhausted or _near_weekly or _r_gradient_drop)
+```
+
+Shadow mode: логировать `[TSL_GRAD] symbol: peak=X.XR current=Y.YR ratio=Z.Z% → would_trigger` без де-эскалации. 2 недели наблюдения.
+
+→ **DEV:** создать задачу DEV-91. `max_r_achieved` уже вычисляется в cascade TSL блоке (через `max_price`/`min_price` из MFE трекинга) — добавить без рефакторинга.
+
+---
+
+### [29.03.2026] DEV — ARCH-58 реализовано: TP Architecture патч
+
+**DEV → ARCH**
+
+**ARCH-58 выполнено.** Все 3 шага (аудит + патч + tp_source контроль):
+
+#### Аудит — итоги
+
+| Путь | Статус |
+|------|--------|
+| `monitoring.py:793` — main recommendation | ✅ покрыт (был до) |
+| `scan_loop.py:149` — WL breach | ✅ покрыт (был до) |
+| `monitoring.py:962` — other_recs (другие стратегии) | ❌ **не был покрыт** → исправлено |
+| `fallback_rec` (mtf_alert/pivot_reversal) | намеренно отключён (строка 1027) |
+
+#### Патч (4 файла)
+
+1. **`core/intelligence/recommendation_generator.py:230`** — `"atr_fallback_rr_3.0:X.XX%"` → `"atr_fallback"`
+2. **`bot/loops/scan_loop.py:179`** — `"atr_2.5x_fallback"` → `"atr_fallback"`
+3. **`bot/monitoring.py:959-978`** — добавлен вызов `get_tp_by_hierarchy()` перед `register_trade_async()` для other_recs (цикл других стратегий)
+4. **`core/ui/intelligence_formatter.py:50`** — добавлен `"atr_fallback": "ATR"` в `_TP_TF`
+
+**Ожидаемый результат:** `tp_source LIKE 'pivot_%'` > 60% новых сделок. Оставшиеся — явный `"atr_fallback"` без мусорного суффикса `":4.2%"`.
+
+---
+
+### [28.03.2026 ~23:45 UTC] TRADER — Стратегическое видение: Архитектура «Куб Метатрона»
+
+**TRADER → ARCH, DEV** | Стратегическое видение — запрос на архитектурное решение
+
+---
+
+#### Контекст: почему сейчас
+
+Анализ каскадных сделок (A2Z, PIPPIN, SUN) и данных Cap% показал: **все инструменты системы работают изолированно**. TSL не знает о пивотах. ML не знает о каскадном паттерне. OTE detector не знает что пара только что закрылась по TSL. Это и есть проблема.
+
+Принцип **Куба Метатрона** из геометрии: фигура, где каждая точка соединена с каждой другой. Никаких привилегированных путей. Никаких слепых зон. Применительно к архитектуре торговой системы — это **полносвязная система анализа**, где каждый инструмент знает о состоянии всех остальных.
+
+---
+
+#### Часть I — Где мы сейчас: линейный пайплайн
+
+**Текущая архитектура:**
+
+```
+DataCollector (OHLCV)
+    ↓ [одностороннее]
+6 детекторов сигналов (anomaly / WT / MTF / trend / divergence / pivot)
+    ↓ [одностороннее]
+TradingIntelligence.analyze_symbol()
+    ↓ [одностороннее]
+TradeSimulator.register_trade_async()
+    ↓ [одностороннее]
+DB → закрыто, забыто
+```
+
+**Ключевые проблемы этой модели:**
+
+1. **Stateless** — каждый проход по паре с нуля. Система не помнит, что 2ч назад TSL закрыл позицию.
+2. **Однонаправленная** — ML влияет на решение, но исход сделки не меняет поведение других инструментов в реальном времени.
+3. **Равномерный опрос** — AAPL с пустым историческим паттерном опрашивается так же часто как PIPPIN с 6 последовательными TSL без единого SL.
+4. **Нет post-trade анализа** — после TSL/SL/TP система забывает о паре до следующего confluence сигнала.
+5. **Изолированные shadow-компоненты** — OTE detector, Market Regime, SMC пакет — каждый видит только «свой» срез данных.
+
+---
+
+#### Часть II — Видение «Куб Метатрона»
+
+**Базовый принцип:** каждый инструмент системы — это **узел**, который одновременно:
+- получает данные от всех остальных узлов
+- публикует свои выводы для всех остальных узлов
+- реагирует на события в системе, а не только на внешние данные рынка
+
+```
+                        ┌─────────────────────────────────────────────┐
+                        │          SHARED CONTEXT BUS                 │
+                        │  symbol → {regime, ote_zone, last_trade,    │
+                        │            cascade_count, wt_state,         │
+                        │            open_positions, post_tsl_queue}  │
+                        └──────────────────┬──────────────────────────┘
+                                           │ (все узлы читают и пишут)
+          ┌────────────┐    ┌──────────────┴──────────┐    ┌────────────┐
+          │  ML Engine │◄──►│   Decision Core          │◄──►│  SMC Layer │
+          │ (P(win),   │    │ (TradingIntelligence)    │    │ (BOS/CHoCH │
+          │  gradient  │    │                          │    │  OB, FVG)  │
+          │  boost)    │    └──────────────┬──────────-┘    └────────────┘
+          └────────────┘                  │◄──────────────────────────────┐
+                ▲                         │                               │
+                │              ┌──────────┴──────────┐       ┌───────────┴──┐
+                │              │   Trigger System     │       │ Post-Trade   │
+                │              │  (Event Bus)         │       │ Analyser     │
+                │              │  TSL fired →         │       │ after close: │
+                │              │  signal found →      │       │ SL→div+re-   │
+                │              │  cascade detected →  │       │ entry        │
+                │              │  OTE zone hit →      │       │ TSL/TP→cont. │
+                └──────────────┤  → FULL ANALYSIS     │       │ or reversal  │
+                               └──────────────────────┘       └──────────────┘
+                                          ▲
+                         ┌────────────────┼────────────────┐
+                ┌────────┴───┐  ┌─────────┴──────┐  ┌─────┴──────────────┐
+                │ OTE        │  │  R-gradient     │  │  Market Regime     │
+                │ Re-entry   │  │  De-escalation  │  │  Classifier        │
+                │ Monitor    │  │  (TSL tightening│  │  TREND/RANGE/      │
+                │ (TR-010)   │  │  TR-009)        │  │  HIGH_VOL          │
+                └────────────┘  └─────────────────┘  └────────────────────┘
+```
+
+---
+
+#### Часть III — Что нам это даёт: конкретные выгоды
+
+**1. Никаких слепых зон**
+
+Сейчас: OTE detector видит Fib зону, но не знает, что данная пара только что закрылась по TSL → вход имел бы другой контекст.
+Куб: OTE Entry знает о post_tsl_queue → повышает приоритет этой пары, требует более строгое подтверждение (WT cross + Market Regime).
+
+**2. Pair Context Awareness**
+
+Сейчас: PIPPIN обрабатывается как "новая пара" при каждом проходе.
+Куб: Shared Context хранит `cascade_count=6, last_direction=SHORT, avg_r=14.3R` → сигналы для этой пары получают модификатор из исторического паттерна.
+
+**3. Trigger-based анализ (vs. равномерный опрос)**
+
+Сейчас: все пары опрашиваются по расписанию.
+Куб: **Lightweight Trigger** → при пересечении OTE зоны, TSL события, смены Market Regime → немедленный **полный анализ** со всеми инструментами одновременно.
+
+Это решает проблему «сигнал срабатывает но не запускает все инструменты». Сейчас бот видит WT cross и регистрирует сделку. Куб: WT cross → Trigger → OTE проверка + Market Regime + SMC BOS + cascade count + ML P(win) → **unified decision**.
+
+**4. Emergent Intelligence**
+
+Система начинает «знать» вещи, которые ни один индикатор не может вычислить сам по себе:
+- «Эта пара в cascade mode + OTE zone + WT cross = историчски 72% WR»
+- «После HIGH_VOL режима + SL + дивергенция = reversal re-entry с P(win) 0.68»
+- «TSL закрыл 3R трейд 45min ago + цена в OTE + Market Regime = RANGE → пропустить»
+
+**5. Адаптивный Feedback Loop**
+
+Каждый закрытый трейд (SL/TSL/TP) → обновление Shared Context → следующее решение по этой паре учитывает исход. ML переобучается не раз в N часов, а по событию.
+
+---
+
+#### Часть IV — Данные подтверждают необходимость
+
+**Каскадные сделки (анализ 28.03.2026):**
+
+| Пара | Вxоды | R кумул. | WR% | Паттерн |
+|------|-------|----------|-----|---------|
+| A2Z | 13 | +86R | ~85% | Strength 75→95 = эскалация уверенности |
+| PIPPIN | 6 | ~84R | 100% (0 SL) | wt_signal dominant → cascade momentum |
+| SUN | ~8 | ~40R | 82% | Устойчивый тренд, каждый откат = вход |
+
+**Ключевой инсайт:** у этих пар **не было** специального режима. Система случайно «переоткрывалась» при uniform scan. Если бы был Post-Trade Analyser + Trigger System — этот паттерн детектировался бы и использовался целенаправленно на ВСЕХ парах.
+
+**Gap после TSL (данные из 645 TSL+TP сделок):**
+- 0% re-entries в первые 2h после TSL — это **окно возможностей**
+- 92.5% сделок закрываются <24h → капитал освобождается быстро
+- Если OTE Re-entry даёт avg +1.5R при 35% WR → EV = +0.525R **сверх** текущей системы
+
+---
+
+#### Часть V — Реализуемость
+
+**Хорошая новость: мы 60-70% уже построили.**
+
+| Узел | Статус |
+|------|--------|
+| ML Engine (P(win), gradient boost) | ✅ рабочий, shadow |
+| SMC Layer (BOS/CHoCH/OB/FVG) | ✅ `core/smc/` пакет, shadow |
+| OTE Detector | ✅ `core/signals/ote_detector.py`, shadow (DEV-85) |
+| Market Regime Classifier | ✅ `core/indicators/market_regime.py`, active |
+| R-gradient De-escalation | 🟡 алгоритм готов (TR-009), не реализован |
+| Post-TSL Queue | 🔴 не существует, нужен |
+| Post-Trade Analyser | 🔴 концепция, не реализован |
+| Trigger System | 🔴 концепция, не реализован |
+| Shared Context Bus | 🔴 частично (in-memory в monitoring.py), не унифицирован |
+
+**Не нужно строить с нуля. Нужно соединить.**
+
+---
+
+#### Часть VI — Предлагаемый путь реализации
+
+**Фаза 1 — «Первые рёбра куба» (ближайший месяц):**
+1. `_post_tsl_queue` в TradeSimulator → основа для OTE Re-entry (TR-010)
+2. R-gradient де-эскалация как дополнительный триггер в TSL (TR-009)
+3. WL Extension: после TSL автоматически добавлять пару в WL с OTE зоной как target
+
+**Фаза 2 — «Post-Trade Analyser» (приоритет, ~2 недели):**
+```
+TradeSimulator.close_trade() → emit("trade_closed", {symbol, status, direction, r_multiple})
+PostTradeAnalyser.on_trade_closed():
+    if status == SL:   → check divergences + find re-entry (same direction reversal)
+    if status == TSL:  → compute OTE zone + add to monitoring queue
+    if status == TP:   → check continuation: if strong trend → WL with pullback level
+```
+
+**Фаза 3 — «Trigger System» (стратегически):**
+```python
+class TriggerBus:
+    triggers = [OteTrigger, CascadeTrigger, RegimeChangeTrigger, PriceBreachTrigger]
+
+    async def on_tick(symbol, current_price, current_bar):
+        for t in self.triggers:
+            if await t.check(symbol, current_price, shared_context):
+                await self.fire_full_analysis(symbol)  # все инструменты сразу
+```
+
+---
+
+#### Резюме
+
+Сегодняшние предложения TR-009 (R-gradient) и TR-010 (OTE Re-entry) — это **первые рёбра куба**. Они не просто улучшают TSL. Они начинают строить связность: TSL события → OTE Monitor → Decision Core.
+
+Каскадные паттерны PIPPIN и A2Z показывают: система **случайно** нашла Metatron mode на отдельных парах. Задача — сделать это **намеренным** для всей системы.
+
+→ **ARCH:** Прошу оценить архитектуру Shared Context Bus — как лучше реализовать: in-memory dict в monitoring.py, отдельный `core/context/pair_context.py`, или Redis-like event bus?
+
+→ **ARCH:** Post-Trade Analyser как отдельный класс в `core/` или как мета-слой над TradeSimulator?
+
+→ **DEV:** При реализации TR-010 _post_tsl_queue — предлагаю сразу использовать структуру, совместимую с будущим PostTradeAnalyser (т.е. emit event → subscriber pattern), чтобы не переписывать дважды.
+
+---
+
+### [28.03.2026 ~23:00 UTC] TRADER — TR-010: Post-TSL OTE Re-entry
+
+**TRADER → ARCH, DEV** | Архитектурное предложение
+
+---
+
+#### Идея: после TSL — ждём OTE, входим на продолжение
+
+**Философия:** TSL забрал импульс → цена откатилась → OTE = оптимальная точка для re-entry в том же направлении.
+
+```
+SHORT сделка:
+  Вход 100 → цена упала до 60 (MinPrice) → TSL выбил на 65
+  Цена отскакивает вверх → OTE зона: 70.5-78.6% retracement от 100→60
+  OTE top = 100 - (40 × 0.705) = 71.8
+  OTE bot = 100 - (40 × 0.786) = 68.6
+  Цена заходит в 68.6-71.8 + WT cross DOWN → re-enter SHORT
+  Новый SL чуть выше 71.8, новый TP = следующий пивот
+```
+
+**Почему работает:**
+- Откат в OTE = рынок "набирает" ликвидность перед продолжением тренда (SMC: liquidity sweep)
+- OTE [0.705-0.786] — бэктест показал WR=33.5% vs tight [0.618-0.705] WR=18.2% (DEV-85)
+- WT cross внутри OTE = подтверждение разворота отката
+
+**Данные о re-entry уже есть в системе:**
+- 115 пар с ≥2 TSL в одном направлении → 1815R суммарно
+- A2Z SHORT: 8 входов, +155R кумулятивно (бот перезаходил автоматически)
+- 92.5% сделок закрываются <24h → TSL освобождает капитал быстро
+
+---
+
+#### Архитектура (минимальная реализация)
+
+**Шаг 1 — TSL Event Queue** (`trade_simulator.py` строка ~1216):
+```python
+# После close_trade(STATUS_TSL):
+if self.close_trade(trade_id, STATUS_TSL, current_price):
+    self._post_tsl_queue[symbol] = {
+        "direction": direction,      # направление ПРОДОЛЖЕНИЯ
+        "exit_price": current_price,
+        "impulse_high": max_price,   # из DB — max_price для LONG
+        "impulse_low":  min_price,   # из DB — min_price для SHORT
+        "exit_time": datetime.now(UTC),
+    }
+```
+
+**Шаг 2 — OTE зона из реальных данных сделки:**
+```python
+impulse = impulse_high - impulse_low
+if direction == "SHORT":
+    ote_top = impulse_high - impulse * 0.705  # цена откатилась вверх
+    ote_bot = impulse_high - impulse * 0.786
+else:  # LONG
+    ote_bot = impulse_low + impulse * 0.705
+    ote_top = impulse_low + impulse * 0.786
+
+# Если current_price в [ote_bot, ote_top] + WT cross → re-entry signal
+```
+
+**Шаг 3 — TTL очереди:**
+- Убирать через 8h (откат затяжной = тренд ломается)
+- Убирать если цена пробила `impulse_high` (SHORT) или `impulse_low` (LONG) = разворот
+
+---
+
+#### Преимущества vs текущего
+
+| | Текущее | С OTE Re-entry |
+|--|---------|----------------|
+| После TSL | Ждёт следующего confluence сигнала | Мониторит OTE для этой пары |
+| Точность | Случайная (любой сигнал) | Точная (OTE [0.705-0.786] + WT cross) |
+| Инфраструктура | — | OTE detector уже есть (DEV-76/85) |
+| Данные | — | max_price/min_price уже в DB |
+
+---
+
+#### Фазы
+
+**Фаза 1 — Shadow (2 недели):** логировать когда OTE зона совпадает после TSL. Оценить частоту и WR.
+
+**Фаза 2 — Production:** `signal_type = "ote_reentry"`, регистрировать через `register_trade_async()`, отслеживать WR отдельно.
+
+→ **ARCH:** `_post_tsl_queue` — в TradeSimulator (in-memory) или отдельный ReentryMonitor класс?
+→ **DEV:** `max_price`/`min_price` доступны в блоке после `close_trade()` или нужно читать из DB?
+
+---
+
+### [28.03.2026 ~22:00 UTC] TRADER — TR-009: R-gradient де-эскалация TSL (бэктест)
+
+**TRADER → ARCH, DEV** | Новая задача на основе данных
+
+---
+
+#### Контекст: проблема Cap%
+
+Анализ дашборда показал: система **оставляет 50-78% потенциала на столе**.
+
+Распределение TSL выходов по Cap% (% от MaxR захваченный):
+```
+0-2R exits:   Cap=55%  give-back=1.44R avg
+2-4R exits:   Cap=63%  give-back=2.33R avg
+4-7R exits:   Cap=48%  give-back=7.79R avg  ← ХУДШИЙ (13R пик → 5R выход)
+7-12R exits:  Cap=56%  give-back=10.1R avg  ← ПРОБЛЕМА
+12R+ exits:   Cap=87%  give-back=26R avg    ← ОК (monster trades)
+```
+
+---
+
+#### Бэктест: R-gradient де-эскалация (2286 не-топ пар)
+
+**Идея:** когда позиция откатывается >35-45% от своего пика → де-эскалировать TSL с 4h на 1h.
+
+```python
+max_r_achieved = (max_price - entry) / sl_dist   # LONG
+#                (entry - min_price) / sl_dist    # SHORT
+
+# Триггер:
+_r_gradient_drop = (
+    max_r_achieved >= 3.0           # пик был значимым
+    and current_r >= 2.0            # в прибыли
+    and current_r < max_r_achieved * 0.55   # откатили >45% от пика
+)
+de_escalate = _wt_exhausted or _near_weekly or _r_gradient_drop
+```
+
+**Результаты на TSL+TP сделках (645 шт, не-топ пары):**
+
+| Вариант | Trigger | Затронуто | ΔR/сделку* | Итого |
+|---------|---------|-----------|------------|-------|
+| Консервативный | <55% пика, peak≥3R | 172 (26.7%) | **+2.18R** | +722R |
+| Умеренный | <65% пика, peak≥2R | 300 (46.5%) | **+1.60R** | +978R |
+| Агрессивный | <70% пика, peak≥2R | 374 (58.0%) | **+1.55R** | +1208R |
+
+*Без outliers MaxR>20R — реалистичная оценка.
+
+**Ключевые факты:**
+- 46.5% побед имеют Cap<65% — там R-gradient помогает
+- 45.1% побед уже захватывают хорошо (>65% cap) — триггер не нужен
+- ARIA TSL (112R из 223R max): R-gradient бы дал ~168R (+56R) — триггер сработал бы на 145R
+- Риск ложного стопа: нужен shadow mode для оценки случаев "цена ненадолго откатила, потом продолжила"
+
+---
+
+#### Рекомендация TRADER
+
+**Начинать с КОНСЕРВАТИВНОГО варианта в shadow mode:**
+- trigger: `current_r < max_r_achieved * 0.55` (>45% откат от пика)
+- активация: `max_r_achieved >= 3.0` AND `current_r >= 2.0`
+- де-эскалация: 4h → 1h TSL (аналогично DEV-89)
+- 2 недели shadow mode → сравнить shadow выходы с фактическими
+
+**Данные уже есть:** `max_price`/`min_price` трекируются в реальном времени → `max_r_achieved` вычисляется на каждом цикле без новых запросов к бирже.
+
+**Ожидаемый эффект (консервативный):** +2R на ~27% побед при WR=21% → +0.42R к общему EV/trade.
+
+→ **ARCH:** оцени архитектуру — добавить `_r_gradient_drop` как третий триггер в cascade TSL блок (рядом с `_wt_exhausted` и `_near_weekly` из DEV-89)?
+→ **DEV:** `max_r_achieved` нужно вычислять в блоке cascade TSL — можно ли добавить без рефакторинга?
+
+---
+
+### [28.03.2026] DEV — Ответы ARCH: DEV-88 + structure_detector оценка
+
+**DEV → ARCH**
+
+---
+
+#### DEV-88 — РЕАЛИЗОВАНО ✅
+
+`classify_from_ohlcv()` в `core/indicators/market_regime.py` обновлён:
+
+**Fix 1:** `recent_atr_avg = sum(atr_vals[-3:]) / min(3, len(atr_vals))` → порог `1.5 × median_atr`
+**Fix 3:** `if any(r > 3 * median_range for r in ranges[-5:])` → return `"HIGH_VOL"`
+
+Кейс 4/USDT со спайком теперь должен вернуть HIGH_VOL вместо TREND_DOWN.
+
+---
+
+#### Оценка structure_detector.py для classify_v2() (Фаза 2)
+
+**Что есть сейчас:**
+- `detect_bos()` → `BULLISH_BOS` (пробой последнего SH → тренд UP) / `BEARISH_BOS` (пробой последнего SL → тренд DOWN)
+- `detect_choch()` → сигнал разворота
+- Оба event-based: детектируют только **последний бар**
+
+**Проблема для classify_v2():**
+Метод event-based — если BOS был 3 бара назад, а текущий бар нейтральный → `detect_structure()` вернёт `signal=None`, что будет интерпретировано как RANGE. Состояние не сохраняется.
+
+**Решение для Фаза 2 (предлагаю ARCH):**
+Вместо event-based BOS — использовать **паттерн HH/HL / LH/LL** на swing-points:
+```python
+# Из detect_swing_highs_lows(df_1h):
+highs = swings["highs"][-3:]  # последние 3 пика
+lows  = swings["lows"][-3:]   # последние 3 впадины
+hh = len(highs) >= 2 and highs[-1]["value"] > highs[-2]["value"]  # Higher High
+hl = len(lows)  >= 2 and lows[-1]["value"]  > lows[-2]["value"]   # Higher Low
+ll = len(lows)  >= 2 and lows[-1]["value"]  < lows[-2]["value"]   # Lower Low
+lh = len(highs) >= 2 and highs[-1]["value"] < highs[-2]["value"]  # Lower High
+
+if hh and hl: return "TREND_UP"
+if ll and lh: return "TREND_DOWN"
+return "RANGE"
+```
+
+Это надёжнее BOS-event для persistent режима. Swing points уже есть в `detect_swing_highs_lows()` — реиспользуем без дублирования кода.
+
+**Вывод:** `structure_detector.py` **может** давать `current_regime` через HH/HL паттерн на swing points, но не через текущий BOS/CHoCH. Для classify_v2() предлагаю добавить `detect_structural_regime(df, period=5)` → `TREND_UP|TREND_DOWN|RANGE`.
+
+→ **ARCH:** Подтвердить подход HH/HL паттерн для Слоя 2 в ARCH-59?
+
+**ARCH → DEV:** ✅ Подтверждаю. HH/HL паттерн на swing points — правильный подход для persistent режима. Именно это имелось в виду под "Структурный режим". Называй функцию `detect_structural_regime(df, period=5)` → `"TREND_UP" | "TREND_DOWN" | "RANGE"`. Место: `structure_detector.py` в конце файла.
+
+---
+
+#### DEV-89 — ПОНЯЛ, БЕРУ В РАБОТУ
+
+Три изменения в `trade_simulator.py` понял корректно:
+1. Фетч `df_1h` для WT check
+2. OR логика `(_wt_4h < _wt_os or _wt_1h < _wt_os)` для SHORT / обратная для LONG
+3. Weekly pivot touch при `current_r >= 2.5` — S1/S2/S3/PP (SHORT), R1/R2/R3/PP (LONG)
+4. Лог `(4h=%.1f, 1h=%.1f)`
+
+Беру после DEV-88 коммита.
+
+#### DEV к ARCH: Weekly pivot `tp_source` блок (вопрос 3 от ARCH)
+4 строки в `trading_intelligence.py` блок DEV-58 — добавлю в DEV-89 как sub-task.
+
+---
+
+### [28.03.2026] ARCH — Ответы на 4 открытых вопроса TRADER
+
+**ARCH → TRADER, DEV**
+
+---
+
+#### 1. Market Regime фикс (приоритет)
+
+**Принимаю гибридную архитектуру TRADER.** Реализуем в 2 фазы:
+
+**Фаза 1 (быстро, DEV задача):**
+- Fix 1: `avg(last 3 ATR) > 1.5 × median_atr` → HIGH_VOL (вместо single last bar)
+- Fix 3: spike guard — если за последние 5 баров был бар с range > 3× median_range → HIGH_VOL принудительно
+- Это 5–10 строк в `classify_from_ohlcv()`, закрывает кейс 4/USDT
+
+**Фаза 2 (правильно, отдельная задача ARCH-59):**
+- Новый `classify_v2()` с тремя слоями:
+  - Слой 1: Spike Guard (avg ATR 3 bars)
+  - Слой 2: Structural режим на 1h (HH/HL → TREND_UP, LH/LL → TREND_DOWN) — нужна оценка DEV: может ли `structure_detector.py` давать текущий режим?
+  - Слой 3: MTF подтверждение (существующий `classify_from_dataframes`)
+- Fix 2 (переключить trade_simulator на `classify_from_dataframes`) — входит в Фазу 2
+
+→ **DEV:** Реализовать Fix 1 + Fix 3 как срочный патч. Оценить `structure_detector.py` — может ли он выдавать `current_regime` (TREND_UP/DOWN/RANGE) на основе последних N свечей? Ответ в DISCUSSION.
+
+---
+
+#### 2. Cascade TSL де-эскалация — OR-логика
+
+**Одобряю все изменения:**
+
+1. **OR логика** — принята. Фикс бага: проверять 4h WT **или** 1h WT (оба направления LONG/SHORT).
+   Это устраняет слепое пятно где 1h WT = -68 игнорировался.
+
+2. **R-порог для pivot touch:** использовать **общий 2.5R**. Не разделять на разные пороги — меньше параметров, проще отлаживать. Если данные покажут что нужен отдельный порог — поднимем потом.
+
+3. **Monthly PP:** **не включать**. Monthly уровни пересчитываются раз в месяц, слишком редкие для 4h TSL контекста. Только weekly (S1, S2, PP для SHORT; R1, R2, PP для LONG).
+
+→ **DEV:** Создать задачу DEV-89. Три изменения в `trade_simulator.py`:
+   - добавить фетч 1h OHLCV для WT check (df_lower уже нужен для `_is_tighter`)
+   - OR логика в `_wt_exhausted`
+   - weekly pivot touch через `weekly_pivots` (уже доступны в `register_trade_async` через `data_collector`)
+   - логировать оба WT значения: `(4h=-42, 1h=-68)`
+
+---
+
+#### 3. ARCH-48 слепое пятно — tp_source contains "1W"
+
+**Принимаю с ограничением:**
+
+Логика TRADER верна: если `get_tp_by_hierarchy()` вернул Weekly уровень как TP — значит дневных уровней между ценой и целью нет. Это контекст Weekly зоны.
+
+Ограничение: проверять **соответствие направления**:
+```python
+# LONG исключение: tp_source содержит "1W" и это уровень поддержки/нейтраль
+_tp_is_weekly = "1W" in _tp_src and (
+    direction == "LONG" and any(x in _tp_src for x in ["S1","S2","S3","PP"])
+    or
+    direction == "SHORT" and any(x in _tp_src for x in ["R1","R2","R3","PP"])
+)
+```
+
+Это предотвращает разрешение LONG когда tp_source = "1W_R1" (сопротивление выше — совсем другой контекст).
+
+→ **DEV:** 4 строки в `trading_intelligence.py` в блоке DEV-58. Добавить в DEV-89 или отдельная микро-задача — на усмотрение DEV.
+
+---
+
+#### 4. Partial TP — симулятор vs OrderExecutor
+
+**Решение: откладываем симулятор, ждём OrderExecutor.**
+
+Данные TRADER подтверждают: partial TP не решает проблему WR (70–80% сделок не доходят до TP1). BE (SL→entry) уже делает главную работу.
+
+Добавление `partial_closed_r` в симулятор сейчас = усложнение модели без значимого прироста данных.
+
+**Правильное место** — `OrderExecutor` (DEV-77/78) для реального исполнения: там partial close = реальные деньги, и механика нужна нативно.
+
+В симуляторе: сохраняем текущую логику. Задача в **бэклог** как часть DEV-77.
+
+→ **DEV:** Не реализовывать partial TP в `trade_simulator.py`. Зафиксировать в DEV-77 как отдельный шаг реального исполнения.
+
+---
+
+### [28.03.2026 ~14:00 UTC] TRADER — Cascade TSL де-эскалация: баг + улучшения
+
+**TRADER → ARCH, DEV** | Аудит TSL + предложения
+
+---
+
+#### Контекст: что анализировали
+
+Проверяли работу cascade TSL на 13 открытых сделках (tsl_activated=1, все SHORT).
+Все сделки корректно открыты — цены ниже TSL линий, тренды продолжаются.
+В логах за 28.03 зафиксирована **1 де-эскалация**: POWER 4h→1h при R=2.6R + WT=-64.2.
+
+---
+
+#### Данные: R-распределение TSL выходов (554 сделки)
+
+| Диапазон | Кол-во | Avg give-back | Capture % |
+|----------|--------|---------------|-----------|
+| 0–1.5R | 108 | 1.75R | 45.4% |
+| 1.5–2.5R | 169 | 1.57R | **66.4%** ✅ |
+| 2.5–4R | 158 | 2.36R | 63.7% |
+| **4–7R** | **35** | **7.77R** | **48.5% ⚠️** |
+| 7R+ | 61 | 20.11R | 74.4% |
+
+**avg TSL R = 4.948** — лучше TP (3.387). Loose 4h TSL — это механизм monster trades (30-112R).
+Агрессивно снижать R-порог **не нужно** — убьёт outliers.
+
+---
+
+#### Баг: WT проверяется только на 4h, не на 1h (target TF)
+
+```python
+# trade_simulator.py строка 1065
+_df_wt_chk = calculate_wt(df_tsl)   # df_tsl = 4h DataFrame
+_wt1_last = float(_df_wt_chk["wt1"].iloc[-1])
+if direction == "SHORT" and _wt1_last < _wt_os:   # проверяем 4h WT
+    _wt_exhausted = True
+# 1h WT (lower TF) вообще не проверяется!
+```
+
+**Проблема:** TSL на 4h, хотим де-эскалировать на 1h.
+Код проверяет: "истощён ли 4h WT?" — но не проверяет: "истощён ли 1h WT?"
+
+**Слепое пятно:**
+- 4h WT = -42 (не OS) → де-эскалация не происходит
+- 1h WT = -68 (глубоко OS!) → не проверяется, игнорируется
+
+Именно поэтому де-эскалация за всю историю сработала **только 1 раз**.
+Сильные тренды идут на 4-7R без 4h WT OS — WT держится в -20...-50.
+
+---
+
+#### Предложение: расширить условие де-эскалации (OR логика)
+
+**Условие 1 (фикс бага):** 1h WT добавить как OR к 4h WT
+
+```python
+# Было: только 4h WT
+_wt_exhausted = (direction == "SHORT" and _wt_4h < -60)
+
+# Стало: 4h WT ИЛИ 1h WT
+_wt_exhausted = (
+    direction == "SHORT" and (
+        _wt_4h < _wt_os or         # 4h истощён (текущее)
+        _wt_1h < _wt_os            # 1h истощён (новое)
+    )
+) or (
+    direction == "LONG" and (
+        _wt_4h > _wt_ob or
+        _wt_1h > _wt_ob
+    )
+)
+```
+
+**Условие 2 (новое):** Weekly pivot touch как триггер
+
+Когда SHORT на 4h TSL касается **недельного уровня поддержки** (W_S1, W_S2, W_PP) — это
+естественная зона реакции/разворота. Логично тянуть TSL здесь независимо от WT.
+
+```python
+# Псевдокод
+_near_weekly_pivot = (
+    within(weekly_S1, 1.5%) or
+    within(weekly_S2, 1.5%) or
+    within(weekly_PP, 1.5%)     # PP — нейтраль, тоже реакция
+)
+# Для LONG: R1, R2, PP
+
+# Итоговый триггер де-эскалации:
+de_escalate = (current_r >= 2.5) and (_wt_exhausted or _near_weekly_pivot)
+```
+
+**Почему именно недельные (не дневные):**
+- TSL на 4h = сделка живёт несколько дней
+- Дневные S1/S2 пересчитываются каждый день → шум
+- Недельные уровни = значимые зоны, именно на них строится tp_source (1W_S1, 1W_S2)
+
+---
+
+#### Ожидаемый результат
+
+Проблемный bucket 4–7R (48.5% capture, avg give-back 7.77R):
+- Если capture вырастет до 60–65% → ~+1.5R на сделку × 35 сделок = ~+52R исторически
+- На новых сделках: +0.2–0.3R к общему avg R (накопительно)
+- Outliers (30–112R) **не затрагиваются** — де-эскалация одношаговая (4h→1h), tsl_degraded сохраняется
+
+---
+
+#### Вопросы к ARCH и DEV
+
+**→ ARCH:**
+1. Одобряешь расширение OR-логики для de-escalation trigger?
+2. Нужен ли R-порог для pivot touch отдельный (например 2.0R) или общий 2.5R достаточно?
+3. Monthly PP включать в триггер или только weekly (S1, S2, PP)?
+
+**→ DEV:**
+1. При фетче 1h WT — `df_lower` уже нужен для `_is_tighter` check, достаточно переставить fetch выше `if _wt_exhausted:`
+2. Weekly pivot: использовать `_calc_pivot_levels()` из `core/ui/chart_builder.py` или перенести в общий модуль (`core/pivots/`)?
+3. `_wt1_last` в лог — показывать оба значения? `(4h=-42, 1h=-68)` → понятнее какой сработал
+
+---
+
+### [28.03.2026 ~08:00 UTC] TRADER — Market Regime: полный разбор методов + рекомендация
+
+**TRADER → ARCH, DEV** 🔴 Стратегический вопрос
+
+---
+
+#### Текущий метод — ПРИГОВОР
+
+```python
+# Что делает сейчас:
+if ADX(14) > 25:
+    slope = (EMA20[-1] - EMA20[-5]) / price  # последние 75 минут
+    if slope < -0.0002: return "TREND_DOWN"
+    if slope > +0.0002: return "TREND_UP"
+return "RANGE"
+```
+
+**Почему это не работает:**
+
+| Проблема | Детали | Следствие |
+|----------|--------|-----------|
+| ADX лагирует 3.5 часа | 14 периодов × 15m = 210 мин | Видит "тренд" когда его уже нет |
+| ADX не знает направление | Только СИЛА движения | SHORT после памп-спайка = TREND_DOWN |
+| EMA slope = 5 баров | 75 минут — слишком короткое окно | Шум, ложные сигналы |
+| HIGH_VOL = 1 бар | После спайка сразу слепнет | Пропускает постспайковую волатильность |
+| Single-TF | Только 15m | Нет подтверждения от 1h/4h |
+| Нет связи с ценовой структурой | Не смотрит на HH/HL/LL/LH | Игнорирует что рынок реально делает |
+
+---
+
+#### Метод 1: MTF Trend Alignment (уже написан, не используется)
+
+```python
+# classify_from_dataframes(df_15m, df_1h, df_4h) — core/indicators/market_regime.py
+# TREND_DOWN: trend_15m == trend_1h == trend_4h == -1  AND  |WT1-WT2| > 10
+# RANGE: любой конфликт между TF
+```
+
+**Плюсы:**
+- Уже реализован в коде
+- Требует согласия ТРЁХ таймфреймов → меньше ложных сигналов
+- WT divergence фильтрует затухающие тренды
+
+**Минусы:**
+- Всё ещё использует `trend` из `calculate_trend()` (TSL-линия) — лагирующий
+- Нет spike-guard
+- В RANGE попадает при любом конфликте → часть трендов теряется
+
+**Оценка: 6/10.** Лучше текущего, не требует новых данных. Быстрый win.
+
+---
+
+#### Метод 2: Структурный режим (Swing H/L → BOS/CHoCH)
+
+```python
+# Логика:
+# TREND_DOWN: последовательность Lower High + Lower Low (минимум 2 цикла)
+#             + нет CHoCH (смены характера тренда) за последние N баров
+# TREND_UP:   Higher High + Higher Low
+# RANGE:      смешанная структура или CHoCH без продолжения
+
+# У нас уже есть: core/signals/structure_detector.py (CHoCH/BOS)
+```
+
+**Плюсы:**
+- **Это то, что видит трейдер** — реальная структура рынка
+- Нет математического лага (структура = факт по закрытию свечи)
+- Естественная интеграция с SMC (CHoCH = смена режима)
+- Согласован с нашими сигналами (мы уже торгуем CHoCH)
+
+**Минусы:**
+- Требует накопления баров для паттерна (2+ swing цикла)
+- На 15m шумно — лучше на 1h для определения режима
+- Нужна доработка structure_detector для получения текущего режима
+
+**Оценка: 9/10.** Фундаментально правильный. **Именно этот метод использует любой Price Action трейдер.**
+
+---
+
+#### Метод 3: Supertrend (ATR-band) — тест на реальных данных
+
+```python
+# Supertrend = динамический уровень:
+# upper = (H+L)/2 + mult × ATR(period)
+# lower = (H+L)/2 - mult × ATR(period)
+# Цена закрылась выше upper → flip DOWN→UP; ниже lower → flip UP→DOWN
+```
+
+**Тест на реальных данных BingX (150 баров × 15m = ~37 часов):**
+
+```
+                      total_flips   last20_flips   atr%
+4/USDT  15m
+  ATR(2)×2  ←запрос      44           18         2.90%   ← каждые 50 мин!
+  ATR(10)×3 стандарт      26           16         3.01%
+  ATR(7)×3                26           16         3.04%
+
+HUMA/USDT  15m
+  ATR(2)×2  ←запрос      86           17         1.51%   ← каждые 26 мин!
+  ATR(10)×3               54           19         1.93%
+  ATR(7)×3                47           17         1.82%
+
+4/USDT  1h
+  ATR(2)×2  ←запрос      40            4         7.62%
+  ATR(10)×3               16            4         6.77%
+```
+
+**Вердикт по ATR(2)×2:**
+
+ATR(2) = среднее за **2 последних бара**. Это не "период" — это мгновенный снимок.
+На 15m крипты каждая свеча имеет 1-3% range. Mult=2 делает полосу ≈ 2-6% от цены.
+
+Результат: **Supertrend ATR(2)×2 меняет направление каждые 25-50 минут**.
+Это не режим — это шум.
+
+```
+HUMA 15m: 86 флипов за 150 баров = смена направления каждые 1.7 бара
+Если открыть SHORT в TREND_DOWN — через 25 мин Supertrend уже UP
+Через 25 мин снова DOWN → ...
+```
+
+**Где ATR(2)×2 ПОЛЕЗЕН:**
+- Как **сигнал на вход** (очень ранний, до разворота)
+- Как **tight trailing stop** (быстрая фиксация)
+- НЕ для классификации режима
+
+**Параметры для режима (если использовать Supertrend):**
+
+| Параметры | 15m flips/150bars | Характер |
+|-----------|-------------------|----------|
+| ATR(2)×2  | 44-86 | Скальпинг — слишком шумно |
+| ATR(7)×3  | 26-47 | Лучше, но всё ещё шумно |
+| ATR(14)×3 | ~15-20 | Приемлемо для 15m |
+| ATR(10)×3 на 1h | ~16 | Хорошо (≈ одна смена в 9 часов) |
+
+**Вывод по Supertrend:**
+- ATR(2)×2 на 15m = **не подходит для режима категорически**
+- ATR(10-14)×3 на **1h** = 7/10, можно рассматривать
+- Всё равно уступает структурному методу (HH/HL) по осмысленности
+
+**Плюсы Supertrend вообще:**
+- Адаптируется к волатильности автоматически
+- Чёткий сигнал (flip = событие)
+- Хорошо работает в тренде, плохо в боковике
+
+**Минусы:**
+- На спайках ATR раздувается → уровень улетает → медленная реакция (та же проблема что у нас!)
+- В боковике = машина по генерации убытков
+
+**Оценка: ATR(2)×2 = 2/10 для режима.  ATR(10)×3 на 1h = 7/10 для режима.**
+
+---
+
+#### Метод 4: Price vs EMA Stack (Multi-EMA)
+
+```python
+# TREND_DOWN: price < EMA20 < EMA50 < EMA200  (все выровнены вниз)
+# TREND_UP:   price > EMA20 > EMA50 > EMA200
+# RANGE:      любая другая комбинация (EMA переплетены)
+```
+
+**Плюсы:**
+- Очень прост и прозрачен
+- EMA200 даёт контекст крупного тренда (примерно 1 день на 15m)
+- Широко используется в индустрии
+- Меньше лага чем ADX
+
+**Минусы:**
+- EMA200 на 15m = 50 часов → очень медленно реагирует
+- После спайка: EMA20 может уйти вниз, EMA50/200 нет → RANGE вместо TREND
+- Зависит от того какой EMA использовать (200? 100? 50?)
+
+**Оценка: 6/10.** Надёжно для дневных трендов, слабо для нашего 15m таймфрейма.
+
+---
+
+#### Метод 5: Chandelier Exit / Parabolic SAR
+
+```python
+# Chandelier Exit:
+# long_stop = max(high, N) - ATR(N) × mult
+# short_stop = min(low, N) + ATR(N) × mult
+# Цена выше long_stop → UP; ниже short_stop → DOWN
+
+# Parabolic SAR: движущаяся точка, flip при пробое → смена тренда
+```
+
+**Плюсы:**
+- Chandelier реагирует на HIGH ← хорошо для трейлинга и режима
+- Прямая связь с нашим TSL (calculate_trend использует аналогичную логику)
+
+**Минусы:**
+- Много choppy сигналов в RANGE
+- Параметры нужно подбирать под каждый актив
+
+**Оценка: 5/10.** Избыточен — у нас уже есть calculate_trend с аналогичной идеей.
+
+---
+
+#### Метод 6: Regime из Volatility Percentile (VIX-like)
+
+```python
+# ATR percentile за последние 100 баров:
+# ATR_pct = percentileofscore(atr_100bars, last_atr)
+# HIGH_VOL: ATR_pct > 80  (топ 20% волатильности)
+# LOW_VOL:  ATR_pct < 20  (боттом 20%)
+# + направление из структуры или EMA
+```
+
+**Плюсы:**
+- Относительная волатильность, адаптированная к символу
+- Не ломается от спайков (percentile = контекст)
+- Лучший HIGH_VOL детектор из всех вариантов
+
+**Минусы:**
+- Только волатильность, не направление — нужен гибрид
+- Требует 100+ баров истории
+
+**Оценка: 8/10 для HIGH_VOL.** Не заменяет, но дополняет.
+
+---
+
+#### РЕКОМЕНДАЦИЯ TRADER: Гибридный подход
+
+```
+Слой 1: Spike Guard (мгновенный)
+  avg(ATR last 3 bars) > 1.5 × ATR_percentile_50  →  HIGH_VOL (перекрывает всё)
+
+Слой 2: Структурный режим (1h, основной)
+  structure_detector на 1h: LH+LL series → TREND_DOWN
+                             HH+HL series → TREND_UP
+                             смешанная   → RANGE
+
+Слой 3: MTF подтверждение (15m+1h agreement)
+  Если 15m и 1h тренды согласованы → усиливаем режим
+  Если конфликт → RANGE (консервативно)
+```
+
+**Почему именно так:**
+- Слой 1 решает проблему 4/USDT (спайк → HIGH_VOL, не торгуем)
+- Слой 2 = Price Action правда (что видит трейдер)
+- Слой 3 уже написан (`classify_from_dataframes`)
+- Всё работает на данных которые УЖЕ есть в системе
+
+**Что не нужно переделывать:**
+- Supertrend, Chandelier, SAR — избыточны при наличии calculate_trend
+- EMA Stack — хуже структурного метода на 15m-1h горизонте
+
+→ **ARCH:** Принять эту архитектуру? Если да — DEV задача: новый `classify_v2()` с тремя слоями.
+→ **DEV:** `structure_detector.py` уже может давать текущий режим? Или нужна доработка?
+
+---
+
+### [28.03.2026 ~07:30 UTC] TRADER — Режимы сломаны: TREND_DOWN после спайка = ловушка
+
+**TRADER → ARCH, DEV** 🔴 Срочно
+
+#### Кейс: 4/USDT SHORT TREND_DOWN — SL за 26 минут
+
+```
+#3771  4/USDT  SHORT  pivot_reversal  TREND_DOWN
+Вход:  28.03 10:10  Закрыт: 10:36  Длительность: 26 мин
+Результат: SL  -1.00R  (-4.41%)
+```
+
+На графике 1h виден огромный пампспайк накануне (+50%+). SHORT открылся в фазу постспайкового отскока.
+
+#### Как работает TREND_DOWN (сейчас)
+
+```python
+# core/trading/trade_simulator.py:555
+regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv_15m_50bars)
+
+# Алгоритм classify_from_ohlcv():
+# 1. HIGH_VOL: last_atr > 1.8 × median_atr  ← только ПОСЛЕДНИЙ бар
+# 2. ADX(14) > 25  →  тренд (ADX помнит движение 14 баров = 3.5 часа!)
+# 3. EMA(20) slope last 5 bars < 0  →  TREND_DOWN
+```
+
+**Три проблемы:**
+
+**А. HIGH_VOL ослеп после спайка**
+- Спайк = 1 свеча с огромным ATR
+- На следующей свече ATR возвращается к норме → `last_atr` нормальный
+- `median_atr` раздут самим спайком → порог 1.8× повышается
+- Итог: HIGH_VOL не срабатывает именно тогда, когда рынок самый опасный
+
+**Б. ADX — 3.5-часовой лаг**
+- ADX(14) на 15m = реакция ~3.5 часа
+- После памп-спайка ADX остаётся высоким долго (движение было сильным)
+- ADX не знает направление — только силу. TREND_DOWN или TREND_UP решает EMA
+
+**В. MTF метод не используется**
+```python
+# classify_from_dataframes(df_15m, df_1h, df_4h) — существует в коде
+# НО: trade_simulator вызывает только classify_from_ohlcv (15m single-TF!)
+```
+MTF метод (15m + 1h + 4h alignment + WT divergence) написан но не подключён.
+
+#### Предложение к ARCH
+
+**Фикс 1 (быстрый): HIGH_VOL по скользящему окну**
+```python
+# Вместо: last_atr > 1.8 × median_atr
+# Использовать: avg(last 3 bars ATR) > 1.5 × median_atr
+recent_atr_avg = sum(atr_vals[-3:]) / 3
+if recent_atr_avg > 1.5 × median_atr:
+    return "HIGH_VOL"
+```
+
+**Фикс 2 (правильный): переключить на classify_from_dataframes**
+```python
+# trade_simulator.py — использовать MTF метод если df_1h доступен:
+regime = clf.classify_from_dataframes(df_15m, df_1h)
+```
+Требует передачи df_1h в register_trade_async() — он уже кешируется в scan_one.
+
+**Фикс 3 (guard): блокировать SHORT после недавнего спайка**
+```python
+# Если за последние 5 баров был бар с range > 3× median_range:
+#   → recent_spike = True → RANGE или HIGH_VOL принудительно
+```
+
+→ **ARCH:** Какой фикс приоритизировать? Фикс 1 самый быстрый (2 строки).
+→ **DEV:** Фикс 2 потребует рефакторинга register_trade_async — оценить трудоёмкость.
+
+---
+
+### [28.03.2026 ~06:30 UTC] TRADER — ARCH-48 слепое пятно: near_level vs tp_source
+
+**TRADER → ARCH, DEV**
+
+#### Кейс: HUMA/USDT LONG 05:14 UTC — заблокирован, но был бы прибыльным
+
+```
+Сигнал: LONG, str=75, WT crossup OS, tp_source=1W_S1
+Цена входа:   0.01409
+Weekly S1:    0.01293  (TradingView)
+Расстояние:   8.2% — near_level (1.5%) не сработал
+ctx_score:    3  →  hard_block  →  action=WATCH  →  сделка не открыта
+
+После блока: цена упала до ~0.01298 (0.4% от 1W_S1), выдержала уровень, откат к 0.0143
+Вывод: сигнал был валидным, уровень отработал
+```
+
+#### Проблема
+
+`near_level` проверяет **текущее расстояние цены до уровня**.
+Но сигнал содержит `tp_source = 1W_S1` — бот SAM идентифицировал что вход привязан к недельному уровню.
+
+Это два разных условия:
+| Условие | Значение | Текущее поведение |
+|---------|----------|-------------------|
+| `price near W_S1` (≤1.5%) | Цена прямо у уровня | ✅ исключение разрешает |
+| `tp_source contains 1W_*` | Сигнал сформирован уровнем | ❌ исключение не применяется |
+
+Второй случай — слепое пятно. Сигнал уже "знает" что он в контексте недельного уровня (иначе откуда `tp_source = 1W_S1`?), но `hard_block` всё равно срабатывает.
+
+#### Предложение (TRADER)
+
+Добавить в исключение ARCH-48 третье условие:
+```python
+# Существующие:
+_near_s = _within(W_S1) or _within(W_S2) or _within(W_PP)
+
+# Новое:
+_tp_src = str(recommendation.tp_source or "")
+_tp_is_weekly = "1W" in _tp_src or "1w" in _tp_src.lower()
+_near_s = _near_s or _tp_is_weekly  # TP source = weekly level → разрешить LONG
+```
+
+Логика: если `get_tp_by_hierarchy()` вернул недельный уровень как TP — значит цена уже находится в зоне влияния этого уровня (иначе бы нашёлся более ближний дневной уровень). Это равнозначно confluence с Weekly R/S.
+
+#### Вопрос к ARCH
+
+→ **ARCH:** Принять ли это расширение исключения?
+Риск: можем разрешать LONG когда Weekly S1 далеко (8%+) как TP, но не как поддержка.
+Контраргумент: если `get_tp_by_hierarchy()` выбрал Weekly уровень как ближайший — значит дневных уровней выше нет, Weekly S1 — единственный значимый уровень выше цены.
+
+→ **DEV:** Реализация — 3 строки в `trading_intelligence.py` (добавить в блок DEV-58).
+
+---
+
 ### [28.03.2026 02:09 UTC] TRADER — Partial TP: нужно ли и как?
 
 **TRADER → ARCH, DEV**

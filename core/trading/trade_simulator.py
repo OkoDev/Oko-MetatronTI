@@ -95,6 +95,16 @@ class TradeSimulator:
         self._trade_analyzer_init = False
         # DEV-39: скользящее окно SL для Market Event Marker
         self._sl_timestamps: List[datetime] = []
+        # DEV-92 / TR-010: Post-TSL очередь для OTE Re-entry мониторинга
+        self._post_tsl_queue: dict = {}
+        # DEV-94: callback от PostTradeAnalyser (устанавливается при старте бота)
+        self._post_trade_callback = None
+        # DEV-89: общий PivotCalculatorFixed — создаётся один раз, не на каждую сделку
+        self._pivot_calc: object = None
+
+    def set_post_trade_callback(self, cb) -> None:
+        """DEV-94: регистрирует PostTradeAnalyser.on_trade_closed как callback."""
+        self._post_trade_callback = cb
 
     def init_database(self):
         """Создает таблицу simulated_trades в базе данных"""
@@ -398,25 +408,23 @@ class TradeSimulator:
                         logger.info(
                             "[DEV-64A] %s R:R cap → %.1fx (regime=%s)", symbol, _max_rr_64a, regime or "?"
                         )
-                    if rr >= 3.0:
-                        strategy_type = "TRIPLE_TP_TSL"
-                        # tp1: ATR-based если доступен, иначе 1/3 tp_dist
-                        if tp1_price is None:
-                            if atr_entry and atr_entry > 0:
-                                tp1_price = float(entry) + sign * atr_entry * _tp1_regime_mult
-                            else:
-                                tp1_price = float(entry) + sign * tp_dist * (1.0 / 3.0)
-                        tp2_price = float(entry) + sign * tp_dist * (2.0 / 3.0)
-                        tp3_price = float(take_profit)
-                    elif rr >= 2.0:
-                        strategy_type = "DUAL_TP"
-                        # tp1: ATR-based если доступен, иначе 1/2 tp_dist
-                        if tp1_price is None:
-                            if atr_entry and atr_entry > 0:
-                                tp1_price = float(entry) + sign * atr_entry * _tp1_regime_mult
-                            else:
-                                tp1_price = float(entry) + sign * tp_dist * 0.5
-                        tp2_price = float(take_profit)
+                    # TRIPLE_TP_TSL убран 30.03.2026 — только SINGLE / DUAL_TP / DUAL_TSL
+                    if rr >= 2.0:
+                        # Проверяем dual_tp.enabled из конфига
+                        _dual_tp_enabled = True
+                        try:
+                            from core.config_loader import config as _cfg_dtp
+                            _dual_tp_enabled = bool(
+                                (_cfg_dtp.get("trading.dual_tp") or {}).get("enabled", True)
+                            )
+                        except Exception:
+                            pass
+                        if _dual_tp_enabled:
+                            # Базовый тип DUAL_TP; apply_regime_to_strategy() поднимет до DUAL_TSL для TREND
+                            strategy_type = "DUAL_TP"
+                            # TP1 = первый пивот = take_profit
+                            tp1_price = float(take_profit)
+                            tp2_price = None
 
                     # TRADER: DUAL_TP в RANGE убыточен (avg_R=-0.942) → деактивируем
                     if strategy_type == "DUAL_TP" and regime == "RANGE":
@@ -439,15 +447,13 @@ class TradeSimulator:
                         regime=regime,
                         cfg=_cfg_rs,
                     )
-                    # Пересчитываем TP2/TP3 если strategy_type изменился
-                    sl_dist_f = abs(float(entry) - float(stop_loss))
-                    tp_dist_f = abs(float(take_profit) - float(entry))
-                    sign_f = 1.0 if dir_str == "LONG" else -1.0
-                    if strategy_type == "TRIPLE_TP_TSL":
-                        tp2_price = float(entry) + sign_f * tp_dist_f * (2.0 / 3.0)
-                        tp3_price = float(take_profit)
-                    elif strategy_type == "DUAL_TP":
-                        tp2_price = float(take_profit)
+                    # Пересчитываем уровни после apply_regime
+                    if strategy_type in ("DUAL_TP", "DUAL_TSL"):
+                        # TP1 = первый пивот (take_profit)
+                        tp1_price = float(take_profit)
+                        # TP2: для DUAL_TP = следующий пивот (заполняется в async)
+                        #      для DUAL_TSL = None (закрывается по TSL)
+                        tp2_price = None
                         tp3_price = None
                     else:
                         tp2_price = None
@@ -575,6 +581,21 @@ class TradeSimulator:
                     if ohlcv is not None and not ohlcv.empty:
                         regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv)
                         logger.debug("MarketRegime для %s: %s", symbol, regime)
+                        # DEV-90 / ARCH-59: shadow logging classify_v2 (сравниваем с текущим)
+                        try:
+                            from core.config_loader import config as _cfg90
+                            _use_v2 = _cfg90.get("market_regime.use_v2", False) if _cfg90 else False
+                            _clf90 = MarketRegimeClassifier()
+                            _df_1h90 = await data_collector.get_ohlcv(symbol, "1h", 50)
+                            _v2 = _clf90.classify_v2(ohlcv, _df_1h90)
+                            if _use_v2:
+                                regime = _v2
+                                logger.debug("[regime_v2] %s: v2=%s (production)", symbol, _v2)
+                            else:
+                                logger.debug("[regime_v2][SHADOW] %s: old=%s new=%s",
+                                             symbol, regime, _v2)
+                        except Exception as _e90:
+                            logger.debug("[regime_v2] %s: shadow error — %s", symbol, _e90)
                 except Exception as e:
                     logger.debug("MarketRegime: не удалось определить для %s — %s", symbol, e)
 
@@ -608,6 +629,23 @@ class TradeSimulator:
             except Exception as _e44:
                 logger.debug("[DEV-44] Safety gate error: %s", _e44)
 
+        # DEV-98: Guard 4 — pivot_reversal strength≥80 → skip
+        # Находка 2 (ARCH 29.03.2026): WR=4.5% avgR=−0.735R при strength≥80; чем выше strength → хуже
+        # Порог: signal_quality.pivot_reversal_max_strength (default 79 = блок ≥80)
+        try:
+            from core.config_loader import config as _cfg_98
+            if _cfg_98:
+                _pms = int(_cfg_98.get("signal_quality.pivot_reversal_max_strength", 100))
+                _sig98 = str(_get_recommendation_value(recommendation, "signal_type") or "")
+                _str98 = int(_get_recommendation_value(recommendation, "overall_strength") or
+                             getattr(recommendation, "overall_strength", 0) or 0)
+                if _sig98 == "pivot_reversal" and _pms < 100 and _str98 >= _pms:
+                    _sym98 = _get_recommendation_value(recommendation, "symbol") or symbol
+                    logger.info("[DEV-98] %s БЛОК pivot_reversal strength=%d >= %d", _sym98, _str98, _pms)
+                    return None
+        except Exception as _e98:
+            logger.debug("[DEV-98] gate error: %s", _e98)
+
         # DEV-52: L3 Портфельный лимит (условие 6) — shadow mode
         try:
             from core.config_loader import config as _cfg_52
@@ -639,7 +677,60 @@ class TradeSimulator:
         except Exception as _e52:
             logger.debug("[DEV-52] portfolio gate error: %s", _e52)
 
-        return self.register_trade(recommendation, regime=regime, extra_features=extra_features)
+        trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features)
+
+        # DUAL_TP: рассчитываем TP2 = следующий пивот после TP1 (30.03.2026)
+        if trade_id and data_collector is not None:
+            try:
+                from core.config_loader import config as _cfg_dtp2
+                _dual_enabled = bool(
+                    (_cfg_dtp2.get("trading.dual_tp") or {}).get("enabled", True)
+                )
+                if _dual_enabled:
+                    with __import__("sqlite3").connect(self.db_path) as _conn:
+                        _conn.row_factory = __import__("sqlite3").Row
+                        _row = _conn.execute(
+                            "SELECT strategy_type, tp1_price, tp2_price, entry_price, stop_loss, direction, symbol FROM simulated_trades WHERE id=?",
+                            (trade_id,)
+                        ).fetchone()
+                    if _row and _row["strategy_type"] == "DUAL_TP" and _row["tp2_price"] is None and _row["tp1_price"]:
+                        _sym_dtp = _row["symbol"]
+                        _dir_dtp = str(_row["direction"] or "").upper()
+                        _entry_dtp = float(_row["entry_price"])
+                        _sl_dtp = float(_row["stop_loss"]) if _row["stop_loss"] else None
+                        _tp1_dtp = float(_row["tp1_price"])
+                        # Прогреваем кеш пивотов
+                        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_dtp
+                        if self._pivot_calc is None:
+                            self._pivot_calc = _PCF_dtp(db_path=self.db_path)
+                        await self._pivot_calc.get_weekly_pivots(_sym_dtp, data_collector)
+                        await self._pivot_calc.get_monthly_pivots(_sym_dtp, data_collector)
+                        await self._pivot_calc.get_daily_pivots(_sym_dtp, data_collector)
+                        _tp2_result = self._pivot_calc.get_next_tp_by_hierarchy(
+                            tp1_price=_tp1_dtp,
+                            direction=_dir_dtp,
+                            entry_price=_entry_dtp,
+                            symbol=_sym_dtp,
+                            stop_loss=_sl_dtp,
+                            min_r=1.0,
+                        )
+                        if _tp2_result:
+                            _tp2_price, _tp2_src = _tp2_result
+                            with __import__("sqlite3").connect(self.db_path) as _conn:
+                                _conn.execute(
+                                    "UPDATE simulated_trades SET tp2_price=? WHERE id=?",
+                                    (float(_tp2_price), trade_id)
+                                )
+                                _conn.commit()
+                            logger.info(
+                                "[DUAL_TP] %s id=%d TP2=%.6f (%s)", _sym_dtp, trade_id, _tp2_price, _tp2_src
+                            )
+                        else:
+                            logger.info("[DUAL_TP] %s id=%d TP2 пивот не найден → остаётся None", _sym_dtp, trade_id)
+            except Exception as _e_dtp:
+                logger.debug("[DUAL_TP] async tp2 calc error: %s", _e_dtp)
+
+        return trade_id
 
     def get_open_trades(self) -> List[Dict[str, Any]]:
         """Возвращает список открытых сделок."""
@@ -686,13 +777,14 @@ class TradeSimulator:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price FROM simulated_trades WHERE id = ? AND status = ?",
+                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type FROM simulated_trades WHERE id = ? AND status = ?",
                     (trade_id, STATUS_OPEN),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return False
-                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db = row
+                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db = row
+                strategy_type_db = str(strategy_type_db or "SINGLE")
                 entry = float(entry)
                 sl = float(sl) if sl is not None else None
                 tp = float(tp) if tp is not None else None
@@ -707,9 +799,18 @@ class TradeSimulator:
                 if sl is not None and sl != entry:
                     one_r = abs(entry - sl)
 
-                # profit_pct и R с учётом частичного TP1 (50% позиции)
+                # profit_pct и R с учётом частичного TP1 (tp1_fix_pct% позиции)
                 if tp1_hit_at_db and tp1_price_db and one_r:
-                    # TP1 был взят (50% при ~3R), остаток закрывается сейчас
+                    # Читаем tp1_fix_pct из конфига (default 70%)
+                    _tp1_fix = 0.7
+                    try:
+                        from core.config_loader import config as _cfg_fix
+                        _tp1_fix = float(
+                            (_cfg_fix.get("trading.dual_tp") or {}).get("tp1_fix_pct", 70)
+                        ) / 100.0
+                    except Exception:
+                        pass
+                    _tp2_fix = 1.0 - _tp1_fix
                     if dir_up == "LONG":
                         r_tp1  = (tp1_price_db - entry) / one_r
                         r_exit = (exit_price - entry) / one_r
@@ -720,8 +821,8 @@ class TradeSimulator:
                         r_exit = (entry - exit_price) / one_r
                         pct_tp1  = (entry - tp1_price_db) / entry * 100.0
                         pct_exit = (entry - exit_price) / entry * 100.0
-                    r_multiple  = round(0.5 * r_tp1  + 0.5 * r_exit, 3)
-                    profit_pct  = round(0.5 * pct_tp1 + 0.5 * pct_exit, 4)
+                    r_multiple = round(_tp1_fix * r_tp1 + _tp2_fix * r_exit, 3)
+                    profit_pct = round(_tp1_fix * pct_tp1 + _tp2_fix * pct_exit, 4)
                 else:
                     # Обычный выход без частичного TP
                     if dir_up == "LONG":
@@ -797,6 +898,44 @@ class TradeSimulator:
                 except Exception as _e:
                     logger.debug("[DEV-39] Market Event Marker error: %s", _e)
 
+            # DEV-92 / TR-010: Post-TSL очередь для OTE Re-entry мониторинга
+            if status == STATUS_TSL and symbol:
+                _dir92 = str(direction).upper() if direction else None
+                self._post_tsl_queue[symbol] = {
+                    "direction":    _dir92,
+                    "exit_price":   exit_price,
+                    "impulse_high": max_price_db,
+                    "impulse_low":  min_price_db,
+                    "exit_time":    datetime.now(timezone.utc),
+                    "ttl_hours":    8,
+                }
+                logger.info(
+                    "[POST_TSL_QUEUE] %s: добавлен direction=%s impulse=[%.4f, %.4f]",
+                    symbol, _dir92,
+                    min_price_db or 0, max_price_db or 0,
+                )
+
+            # DEV-94: callback для PostTradeAnalyser (async, не блокируем)
+            if self._post_trade_callback and symbol:
+                try:
+                    import asyncio as _asyncio
+                    _r = r_multiple if r_multiple is not None else 0.0
+                    _sl_dist = abs(entry - (sl or entry))
+                    _asyncio.create_task(self._post_trade_callback(
+                        trade_id=trade_id,
+                        status=status,
+                        symbol=symbol,
+                        direction=str(direction).upper() if direction else "LONG",
+                        r_multiple=_r,
+                        entry_price=entry,
+                        sl_dist=_sl_dist,
+                        max_price=max_price_db,
+                        min_price=min_price_db,
+                        entry_tf=entry_tf_db or "15m",
+                    ))
+                except Exception as _ecb:
+                    logger.debug("[DEV-94] post_trade_callback error: %s", _ecb)
+
             return True
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка close_trade {trade_id} — {e}")
@@ -859,6 +998,17 @@ class TradeSimulator:
         if not open_trades:
             return 0
 
+        # DEV-92: инвалидация _post_tsl_queue по TTL и пробою impulse
+        _now92 = datetime.now(timezone.utc)
+        _to_del92 = []
+        for _sym92, _q92 in self._post_tsl_queue.items():
+            _age_h = (_now92 - _q92["exit_time"]).total_seconds() / 3600
+            if _age_h > _q92.get("ttl_hours", 8):
+                _to_del92.append(_sym92)
+        for _sym92 in _to_del92:
+            logger.debug("[POST_TSL_QUEUE] %s: удалён по TTL", _sym92)
+            del self._post_tsl_queue[_sym92]
+
         closed_count = 0
         for trade in open_trades:
             trade_id = trade["id"]
@@ -905,6 +1055,37 @@ class TradeSimulator:
             _is_expired = age_minutes >= _max_dur
 
             tf = trade.get("timeframe") or DEFAULT_TIMEFRAME
+
+            # WS pre-filter: если WsFeed даёт цену — проверим, нужен ли вообще REST
+            # Пропускаем OHLCV-fetch если цена далеко от всех уровней (экономим REST)
+            _sl_level  = trade.get("stop_loss")
+            _tp_level  = trade.get("take_profit")
+            _tsl_level = trade.get("tsl_price")
+            _dir       = trade.get("direction", "LONG")
+            _ws_price  = None
+            if hasattr(data_collector, "get_current_price"):
+                try:
+                    _ws_price = await data_collector.get_current_price(symbol)
+                except Exception:
+                    pass
+            if _ws_price and _sl_level and _tp_level and not _is_expired:
+                _sl_f, _tp_f = float(_sl_level), float(_tp_level)
+                _tsl_f = float(_tsl_level) if _tsl_level else None
+                # Буфер 0.5% — если цена далеко от всех уровней, пропускаем тяжёлый REST
+                _buf = _ws_price * 0.005
+                _near_sl  = abs(_ws_price - _sl_f) <= _buf
+                _near_tp  = abs(_ws_price - _tp_f) <= _buf
+                _near_tsl = _tsl_f is not None and abs(_ws_price - _tsl_f) <= _buf
+                # Для LONG: SL пробит если цена НИЖЕ SL
+                _sl_hit_ws = (_dir == "LONG" and _ws_price <= _sl_f + _buf) or \
+                             (_dir == "SHORT" and _ws_price >= _sl_f - _buf)
+                _tp_hit_ws = (_dir == "LONG" and _ws_price >= _tp_f - _buf) or \
+                             (_dir == "SHORT" and _ws_price <= _tp_f + _buf)
+                if not (_near_sl or _near_tp or _near_tsl or _sl_hit_ws or _tp_hit_ws):
+                    logger.debug("[WS-skip] %s price=%.4f далеко от SL/TP/TSL — пропуск REST",
+                                 symbol, _ws_price)
+                    continue  # цена далеко — этот цикл пропускаем, следующий догонит
+
             try:
                 df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200)
             except Exception as e:
@@ -936,6 +1117,20 @@ class TradeSimulator:
 
             # Расчет текущего R-multiple для проверки активации TSL
             current_price = df.iloc[-1]["close"]
+
+            # DEV-92: инвалидация _post_tsl_queue по пробою impulse
+            _q92 = self._post_tsl_queue.get(symbol)
+            if _q92:
+                _imp_h92 = _q92.get("impulse_high")
+                _imp_l92 = _q92.get("impulse_low")
+                if _q92["direction"] == "SHORT" and _imp_h92 and current_price > _imp_h92:
+                    logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_high %.4f",
+                                 symbol, _imp_h92)
+                    del self._post_tsl_queue[symbol]
+                elif _q92["direction"] == "LONG" and _imp_l92 and current_price < _imp_l92:
+                    logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_low %.4f",
+                                 symbol, _imp_l92)
+                    del self._post_tsl_queue[symbol]
             current_r = None
             if sl is not None and sl != entry:
                 one_r = abs(entry - sl)
@@ -1054,24 +1249,142 @@ class TradeSimulator:
                             except Exception:
                                 _de_esc_r, _wt_ob, _wt_os = 5.0, 60.0, -60.0
 
+                            # ── DEV-106: Pivot Touch Fast Exit → force 15m TSL ──────
+                            # Weekly OR Monthly pivot touch + R >= 2.0 → прыжок на 15m напрямую.
+                            # Анализ 512 TSL сделок: pivot touch захватывал 58% пика (avg 4.1R из 7.8R max).
+                            # При force 15m: +2.44R avg на 181 сделке (лучше 165, хуже только 16).
+                            # 1M R1/R2/R3 исключены — они пробойные, не разворотные (данные).
+                            _pivot_tsl_already = _feat_js.get("pivot_tsl_15m", False)
+                            if (best_tsl_tf is not None and current_r is not None and
+                                    current_r >= 2.0 and not _pivot_tsl_already and
+                                    best_tsl_tf != "15m"):
+                                _near_w106 = False
+                                _near_m106 = False
+                                try:
+                                    from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF106
+                                    if self._pivot_calc is None:
+                                        self._pivot_calc = _PCF106(db_path=self.db_path)
+                                    def _pw106(lvl, price=current_price, pct=0.02):
+                                        return bool(lvl and price and abs(price - float(lvl)) / price <= pct)
+                                    # Weekly touch
+                                    _wp106 = await self._pivot_calc.get_weekly_pivots(symbol, data_collector)
+                                    if _wp106:
+                                        if direction == "SHORT":
+                                            _near_w106 = any(_pw106(_wp106.get(k)) for k in ("S1","S2","S3","PP"))
+                                        else:
+                                            _near_w106 = any(_pw106(_wp106.get(k)) for k in ("R1","R2","R3","PP"))
+                                    # Monthly touch (1M R1/R2/R3 для LONG исключены — пробойные)
+                                    _mp106 = await self._pivot_calc.get_monthly_pivots(symbol, data_collector)
+                                    if _mp106:
+                                        if direction == "SHORT":
+                                            _near_m106 = any(_pw106(_mp106.get(k)) for k in ("S1","S2","S3","PP"))
+                                        else:
+                                            _near_m106 = _pw106(_mp106.get("PP"))
+                                except Exception as _e106:
+                                    logger.debug("[DEV-106] pivot check: %s", _e106)
+
+                                if _near_w106 or _near_m106:
+                                    _touch_lbl = ("1W+1M" if (_near_w106 and _near_m106)
+                                                  else ("1W" if _near_w106 else "1M"))
+                                    try:
+                                        _df_15m_106 = await data_collector.get_ohlcv(
+                                            symbol, timeframe="15m", limit=100
+                                        )
+                                        if _df_15m_106 is not None and len(_df_15m_106) >= 50:
+                                            _df_15m_tr = calculate_trend(_df_15m_106, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                                            _inf_15m = get_trend_info(_df_15m_tr)
+                                            _inf_cur = get_trend_info(df_tsl)
+                                            if (_inf_15m and _inf_cur and
+                                                    _inf_15m["tsl"] > 0 and _inf_cur["tsl"] > 0):
+                                                logger.info(
+                                                    "[DEV-106] %s: %s touch R=%.1fR → force 15m TSL "
+                                                    "(%.4f → %.4f)",
+                                                    symbol, _touch_lbl, current_r,
+                                                    _inf_cur["tsl"], _inf_15m["tsl"],
+                                                )
+                                                best_tsl_tf = "15m"
+                                                df_tsl = _df_15m_tr
+                                                _feat_js["pivot_tsl_15m"] = True
+                                                _feat_js["tsl_degraded"] = True
+                                    except Exception as _e106b:
+                                        logger.debug("[DEV-106] 15m apply: %s", _e106b)
+
                             if (best_tsl_tf is not None and current_r is not None and
                                     current_r >= _de_esc_r and best_tsl_tf in _CASCADE_TFS):
-                                _cas_idx = _CASCADE_TFS.index(best_tsl_tf)
+                                _cas_idx = _CASCADE_TFS.index(best_tsl_tf)  # DEV-107 fix: was df_tsl (DataFrame)
                                 if _cas_idx > 0:
+                                    # DEV-89: OR логика — 4h WT ИЛИ 1h WT (фикс бага: 1h WT игнорировался)
                                     _wt_exhausted = False
-                                    _wt1_last = None
+                                    _wt1_4h = None
+                                    _wt1_1h = None
                                     try:
                                         from core.indicators import calculate_wt
+                                        # 4h WT (текущий df_tsl)
                                         _df_wt_chk = calculate_wt(df_tsl)
-                                        _wt1_last = float(_df_wt_chk["wt1"].iloc[-1])
-                                        if direction == "SHORT" and _wt1_last < _wt_os:
-                                            _wt_exhausted = True
-                                        elif direction == "LONG" and _wt1_last > _wt_ob:
-                                            _wt_exhausted = True
+                                        _wt1_4h = float(_df_wt_chk["wt1"].iloc[-1])
+                                        # 1h WT (фетч)
+                                        _df_1h_wt89 = await data_collector.get_ohlcv(symbol, "1h", limit=50)
+                                        if _df_1h_wt89 is not None and len(_df_1h_wt89) >= 20:
+                                            _df_1h_wt89 = calculate_wt(_df_1h_wt89)
+                                            _wt1_1h = float(_df_1h_wt89["wt1"].iloc[-1])
+                                        # OR: истощён если 4h ИЛИ 1h
+                                        _wt_4h_exh = (
+                                            (direction == "SHORT" and _wt1_4h is not None and _wt1_4h < _wt_os) or
+                                            (direction == "LONG"  and _wt1_4h is not None and _wt1_4h > _wt_ob)
+                                        )
+                                        _wt_1h_exh = (
+                                            (direction == "SHORT" and _wt1_1h is not None and _wt1_1h < _wt_os) or
+                                            (direction == "LONG"  and _wt1_1h is not None and _wt1_1h > _wt_ob)
+                                        )
+                                        _wt_exhausted = _wt_4h_exh or _wt_1h_exh
                                     except Exception:
                                         pass
 
-                                    if _wt_exhausted:
+                                    # DEV-89: weekly pivot touch — де-эскалировать у W_S/R уровней
+                                    _near_weekly = False
+                                    try:
+                                        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF89
+                                        if self._pivot_calc is None:
+                                            self._pivot_calc = _PCF89(db_path=self.db_path)
+                                        _wp89 = await self._pivot_calc.get_weekly_pivots(symbol, data_collector)
+                                        if _wp89 and current_price:
+                                            def _w89(lvl, pct=0.015):
+                                                return lvl and abs(current_price - float(lvl)) / current_price <= pct
+                                            if direction == "SHORT":
+                                                _near_weekly = any(_w89(_wp89.get(k)) for k in ("S1","S2","S3","PP"))
+                                            else:
+                                                _near_weekly = any(_w89(_wp89.get(k)) for k in ("R1","R2","R3","PP"))
+                                    except Exception as _e89w:
+                                        logger.debug("[DEV-89] weekly pivot: %s", _e89w)
+
+                                    # DEV-91 (TR-009): R-gradient drop — shadow mode
+                                    # Консервативный триггер: пик ≥ 3R и откат >45% от пика
+                                    _r_gradient_drop = False
+                                    try:
+                                        _mp_grad = trade.get("max_price")
+                                        _lp_grad = trade.get("min_price")
+                                        _sl_dist_grad = abs(entry - sl) if sl and sl > 0 else 0.0
+                                        _max_r_achieved = 0.0
+                                        if _sl_dist_grad > 0:
+                                            if direction == "LONG" and _mp_grad:
+                                                _max_r_achieved = (float(_mp_grad) - entry) / _sl_dist_grad
+                                            elif direction == "SHORT" and _lp_grad:
+                                                _max_r_achieved = (entry - float(_lp_grad)) / _sl_dist_grad
+                                        _r_gradient_drop = (
+                                            _max_r_achieved >= 3.0
+                                            and current_r is not None and current_r >= 2.0
+                                            and current_r < _max_r_achieved * 0.85
+                                        )
+                                        if _r_gradient_drop:
+                                            logger.info(
+                                                "[TSL_GRAD][SHADOW] %s: peak=%.1fR cur=%.1fR ratio=%.0f%% → would_deescalate",
+                                                symbol, _max_r_achieved, current_r,
+                                                (current_r / _max_r_achieved * 100) if _max_r_achieved > 0 else 0,
+                                            )
+                                    except Exception as _e91:
+                                        logger.debug("[DEV-91] r_gradient: %s", _e91)
+
+                                    if _wt_exhausted or _near_weekly:
                                         lower_tf = _CASCADE_TFS[_cas_idx - 1]
                                         try:
                                             df_lower = await data_collector.get_ohlcv(
@@ -1094,9 +1407,13 @@ class TradeSimulator:
                                                     if _is_tighter:
                                                         logger.info(
                                                             "[cascade_tsl] %s: de-escalate %s → %s "
-                                                            "(R=%.1fR, WT=%.1f, TSL %.4f → %.4f тесней)",
+                                                            "(R=%.1fR, WT4h=%s 1h=%s near_w=%s, TSL %.4f → %.4f тесней)",
                                                             symbol, best_tsl_tf, lower_tf,
-                                                            current_r, _wt1_last, _curr_tsl, _lower_tsl,
+                                                            current_r,
+                                                            f"{_wt1_4h:.1f}" if _wt1_4h is not None else "?",
+                                                            f"{_wt1_1h:.1f}" if _wt1_1h is not None else "?",
+                                                            
+                                                            _near_weekly, _curr_tsl, _lower_tsl,
                                                         )
                                                         best_tsl_tf = lower_tf
                                                         df_tsl = df_lower_trend
@@ -1225,7 +1542,7 @@ class TradeSimulator:
                         except Exception:
                             pass
                         logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                    # TP2
+                    # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
                     if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
                         tp2_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
@@ -1238,12 +1555,9 @@ class TradeSimulator:
                         except Exception:
                             pass
                         logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
-                    # TP3 (финальный выход для TRIPLE)
-                    if tp3_price and tp3_hit_at is None and tp2_hit_at and high >= tp3_price:
-                        tp3_hit_at = datetime.now(timezone.utc).isoformat()
-                        exit_status, exit_price_val = STATUS_TP, tp3_price
-                    # Обычный TP (SINGLE/DUAL — tp == take_profit)
-                    hit_tp = (tp is not None and tp2_hit_at is None and tp1_hit_at is None and high >= tp)
+                        exit_status, exit_price_val = STATUS_TP, tp2_price
+                    # Обычный TP (SINGLE — tp1/tp2 не используются)
+                    hit_tp = (tp is not None and tp2_price is None and tp1_price is None and high >= tp)
                     if not exit_status:
                         if hit_sl and hit_tp:
                             exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
@@ -1265,7 +1579,7 @@ class TradeSimulator:
                         except Exception:
                             pass
                         logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                    # TP2
+                    # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
                     if tp2_price and tp2_hit_at is None and tp1_hit_at and low <= tp2_price:
                         tp2_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
@@ -1278,11 +1592,8 @@ class TradeSimulator:
                         except Exception:
                             pass
                         logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
-                    # TP3 (финальный для TRIPLE)
-                    if tp3_price and tp3_hit_at is None and tp2_hit_at and low <= tp3_price:
-                        tp3_hit_at = datetime.now(timezone.utc).isoformat()
-                        exit_status, exit_price_val = STATUS_TP, tp3_price
-                    hit_tp = (tp is not None and tp2_hit_at is None and tp1_hit_at is None and low <= tp)
+                        exit_status, exit_price_val = STATUS_TP, tp2_price
+                    hit_tp = (tp is not None and tp2_price is None and tp1_price is None and low <= tp)
                     if not exit_status:
                         if hit_sl and hit_tp:
                             exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)

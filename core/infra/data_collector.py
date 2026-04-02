@@ -1,5 +1,6 @@
 import ccxt.async_support as ccxt
 from collections import deque
+from typing import Optional
 import asyncio
 import logging
 import re
@@ -40,6 +41,26 @@ class RealTimeData:
         self._ohlcv_cache = self._engine._cache._data
         # DEV-81: кеш funding rates {symbol: (rate, fetched_at)}
         self._funding_cache: dict = {}
+        # WsFeed: real-time тикеры (устанавливается из bot.py после создания WsFeed)
+        self._ws_feed = None
+
+    def set_ws_feed(self, ws_feed) -> None:
+        """Привязывает WsFeed для real-time цен. Вызывается из bot/core/bot.py."""
+        self._ws_feed = ws_feed
+
+    async def get_current_price(self, symbol: str) -> Optional[float]:
+        """Real-time цена: WsFeed первым (0 latency), fallback → OHLCV последний close.
+        Используется в trade_tracker для TSL/SL/TP проверки без REST-запроса.
+        """
+        if self._ws_feed is not None:
+            price = self._ws_feed.get_price(symbol)
+            if price:
+                return price
+        # Fallback: последний close из кеша OHLCV (без нового REST запроса)
+        cached = self._engine._cache.get((symbol, "1m"), limit=2, ttl=120)
+        if cached is not None and len(cached) > 0:
+            return float(cached.iloc[-1]["close"])
+        return None
 
     async def load_markets(self, min_volume_usd: float = 0):
         """Загрузить только USDT futures-пары (попытка универсальной фильтрации)"""
@@ -192,7 +213,7 @@ class RealTimeData:
         normalized_symbol = self.normalize_symbol(symbol)
         return await self._engine.fetch_ohlcv(normalized_symbol, timeframe, limit, since)
 
-    async def get_funding_rate(self, symbol: str) -> float | None:
+    async def get_funding_rate(self, symbol: str) -> Optional[float]:
         """
         DEV-81: Получить текущий funding rate для фьючерса.
         Кешируется на 30 минут (_FUNDING_CACHE_TTL).

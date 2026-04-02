@@ -160,7 +160,7 @@ async def check_anomaly_signals(symbol: str, df: pd.DataFrame) -> List[SignalDat
     return signals
 
 
-async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = None) -> List[SignalData]:
+async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = None, market_regime: str = "") -> List[SignalData]:
     """Проверка Wavetrend сигналов (15m) с опциональным фильтром по 1h."""
     signals = []
     try:
@@ -204,11 +204,15 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
         if gap >= 10:
             wt_strength = min(90, wt_strength + 5)
 
-        # ── DEV-23: Shadow-mode динамических порогов (не меняет gate) ─────────
+        # ── DEV-108: dynamic_os только в RANGE режиме ────────────────────────
+        # Анализ: в RANGE WT ходит [-30,+30], фиксированный -60 не достигается → 52% SL сразу.
+        # mean±0.8std даёт реальную нижнюю границу диапазона (~-13) → ловим bounce у края.
+        # В TREND/HIGH_VOL — фиксированный (-60) правильнее (dynamic даёт мусор в трендовом контексте).
         _dyn_os = os_
         _dyn_ob = ob
         _dyn_computed = False
-        if _DYN_THRESH_AVAILABLE and _cfg is not None:
+        _is_range = (market_regime == "RANGE")
+        if _DYN_THRESH_AVAILABLE and _cfg is not None and _is_range:
             _dyn_enabled = _cfg.get("analysis.confluence.dynamic_os_enabled", False)
             if _dyn_enabled and "wt1" in df_wt.columns:
                 _dyn_k  = float(_cfg.get("analysis.confluence.dyn_os_k", 0.8))
@@ -219,11 +223,15 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
                 )
                 if _dyn_computed:
                     logger.debug(
-                        "[wt_signal] %s: shadow dyn_os=%.1f dyn_ob=%.1f vs fixed %.1f/%.1f",
+                        "[DEV-108] %s RANGE: dyn_os=%.1f dyn_ob=%.1f vs fixed %.1f/%.1f → ACTIVE",
                         symbol, _dyn_os, _dyn_ob, os_, ob,
                     )
 
-        if cross_up and wt1_last < os_:
+        # В RANGE используем dynamic порог как основной gate (не shadow)
+        _os_gate = _dyn_os if (_dyn_computed and _is_range) else os_
+        _ob_gate = _dyn_ob if (_dyn_computed and _is_range) else ob
+
+        if cross_up and wt1_last < _os_gate:
             if wt1_1h is not None and wt1_1h > ob:
                 logger.debug("[%s] WT CrossUp отклонён: 1h OB (wt1_1h=%.1f)", symbol, wt1_1h)
             else:
@@ -236,7 +244,7 @@ async def check_wt_signals(symbol: str, df: pd.DataFrame, df_1h: pd.DataFrame = 
                     strength=wt_strength, confidence=0.8, timestamp=datetime.now(),
                     data={"wt1": wt1_last, "wt2": wt2_last, "zone": "OS", "wt1_1h": wt1_1h, "os_method": _os_m}, timeframe=get_primary_entry_tf(_cfg),
                 ))
-        elif cross_down and wt1_last > ob:
+        elif cross_down and wt1_last > _ob_gate:
             if wt1_1h is not None and wt1_1h < os_:
                 logger.debug("[%s] WT CrossDown отклонён: 1h OS (wt1_1h=%.1f)", symbol, wt1_1h)
             else:

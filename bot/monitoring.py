@@ -902,6 +902,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 extra["weekly_bias"] = _meta["weekly_bias"]
                 extra["weekly_context_score"] = _meta.get("weekly_context_score", 0)
                 extra["weekly_gate_would_block"] = _meta.get("weekly_gate_would_block", False)
+                extra["weekly_bias_blocked"] = _meta.get("weekly_gate_would_block", False)  # TR-007 алиас
             # ML-CONTEXT: WT-фичи из supporting signals (CONFLUENCE signal.data)
             for _sig in (recommendation.supporting_signals or []):
                 if getattr(_sig, "signal_type", None) and _sig.signal_type.value == "confluence":
@@ -943,6 +944,9 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             trade_registered = trade_id is not None
             if not trade_registered:
                 logger.warning("[%s] register_trade вернул None (нет entry_price/SL/TP?) — сделка НЕ сохранена", symbol)
+            elif hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
+                # Фаза 2: добавляем OHLCV-подписку для новой сделки
+                bot.ws_feed.update_priority_pairs([symbol])
         except Exception as e:
             logger.warning("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e, exc_info=True)
 
@@ -959,6 +963,24 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 if _dir_ok_other and other_rec.overall_strength >= min_strength_register:
                     other_rec.metadata = other_rec.metadata or {}
                     other_rec.metadata["strategy_name"] = strat_name
+                    # ARCH-58: применяем иерархию пивотов для побочных стратегий
+                    if hasattr(bot, "pivot_calculator"):
+                        try:
+                            _odir = getattr(other_rec.direction, "value", "")
+                            _oentry = getattr(other_rec, "entry_price", None) or 0
+                            _osl = getattr(other_rec, "stop_loss", None)
+                            if _odir in ("LONG", "SHORT") and _oentry > 0 and _osl is not None:
+                                _ores = bot.pivot_calculator.get_tp_by_hierarchy(
+                                    direction=_odir,
+                                    entry_price=_oentry,
+                                    symbol=symbol,
+                                    stop_loss=_osl,
+                                    min_r=bot.config.get("trading.sl_tp.tp_pivot_min_r", 2.0),
+                                )
+                                if _ores:
+                                    other_rec.take_profit, other_rec.tp_source = _ores
+                        except Exception as _e58:
+                            logger.debug("[ARCH-58/other_recs] %s '%s': %s", symbol, strat_name, _e58)
                     await bot.trade_simulator.register_trade_async(other_rec, bot.data_collector)
                     logger.debug("[%s] Стратегия '%s' зарегистрирована в БД", symbol, strat_name)
             except Exception as e:
@@ -1030,49 +1052,60 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                     symbol, fallback_strength, signal_type)
 
 
+_TG_BROADCAST_SEM = asyncio.Semaphore(25)  # DEV-120: Telegram safe rate ~25 msg/sec
+
+
 async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
                                              chart_png: bytes | None = None):
     if not bot.subscribers:
         logger.warning("Нет подписчиков для отправки сигнала %s", signal_type)
         return
 
+    uids = list(bot.subscribers)
     logger.info("Отправка сигнала %s для %d подписчиков (chart=%s)",
-                signal_type, len(bot.subscribers), chart_png is not None)
-    sent_count = 0
-    for uid in list(bot.subscribers):
+                signal_type, len(uids), chart_png is not None)
+
+    sent_results = []
+
+    async def _send_one(uid: int) -> bool:
         try:
             if not bot.subscription_manager.can_receive_signal(uid, signal_type):
                 logger.debug("Пользователь %s не может получить сигнал %s", uid, signal_type)
-                continue
+                return False
             if not bot.subscription_manager.can_send_signal_today(uid):
                 logger.debug("Пользователь %s достиг дневного лимита", uid)
-                continue
+                return False
 
-            if chart_png:
-                # Telegram caption ограничен 1024 символами
-                caption = text[:1020] + "…" if len(text) > 1024 else text
-                from aiogram.types import BufferedInputFile
-                await bot.bot.send_photo(
-                    chat_id=uid,
-                    photo=BufferedInputFile(chart_png, filename="chart.png"),
-                    caption=caption,
-                    parse_mode="HTML",
-                )
-            else:
-                await bot.bot.send_message(
-                    chat_id=uid, text=text, disable_web_page_preview=True, parse_mode="HTML"
-                )
+            async with _TG_BROADCAST_SEM:
+                if chart_png:
+                    caption = text[:1020] + "…" if len(text) > 1024 else text
+                    from aiogram.types import BufferedInputFile
+                    await bot.bot.send_photo(
+                        chat_id=uid,
+                        photo=BufferedInputFile(chart_png, filename="chart.png"),
+                        caption=caption,
+                        parse_mode="HTML",
+                    )
+                else:
+                    await bot.bot.send_message(
+                        chat_id=uid, text=text, disable_web_page_preview=True, parse_mode="HTML"
+                    )
 
-            sent_count += 1
-            logger.info("Сигнал %s отправлен пользователю %s", signal_type, uid)
             bot.subscription_manager.record_signal_sent(uid, signal_type)
+            logger.debug("Сигнал %s отправлен пользователю %s", signal_type, uid)
+            return True
         except Exception:
             logger.exception("Ошибка отправки сообщения %s", uid)
+            return False
+
+    # DEV-120: параллельная рассылка всем подписчикам
+    sent_results = await asyncio.gather(*[_send_one(uid) for uid in uids])
+    sent_count = sum(sent_results)
 
     if sent_count == 0:
         logger.warning("Сигнал %s не отправлен ни одному подписчику", signal_type)
     else:
-        logger.info("Сигнал %s отправлен %d подписчикам", signal_type, sent_count)
+        logger.info("Сигнал %s отправлен %d/%d подписчикам", signal_type, sent_count, len(uids))
 
 
 def trade_tracker_loop(bot):

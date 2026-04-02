@@ -4,7 +4,7 @@ Regime Strategy Adapter — ARCH-04.
 Адаптирует параметры торговой стратегии в зависимости от рыночного режима:
 
   TREND_UP / TREND_DOWN:
-    - strategy_type → TRIPLE_TP_TSL (агрессивное удержание прибыли)
+    - strategy_type → DUAL_TSL (70% на TP1=пивот, 30% под TSL до конца тренда)
     - sl_factor → 0.85 (более тёсный SL, выше RR)
 
   RANGE:
@@ -23,7 +23,7 @@ Regime Strategy Adapter — ARCH-04.
   risk_management:
     regime_strategy:
       trend_sl_factor: 0.85
-      trend_strategy_type: TRIPLE_TP_TSL
+      trend_strategy_type: DUAL_TSL
       range_sl_factor: 1.15
       range_strategy_type: DUAL_TP
       high_vol_position_multiplier: 0.5
@@ -40,7 +40,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Порядок стратегий от «слабейшей» к «сильнейшей»
-_STRATEGY_ORDER = ["SINGLE", "DUAL_TP", "TRIPLE_TP_TSL"]
+_STRATEGY_ORDER = ["SINGLE", "DUAL_TP", "DUAL_TSL"]
 
 
 @dataclass
@@ -70,19 +70,19 @@ class RegimeParams:
 _DEFAULT_PARAMS: dict[str, RegimeParams] = {
     "TREND_UP": RegimeParams(
         sl_factor=0.85,
-        min_strategy_type="TRIPLE_TP_TSL",
+        min_strategy_type="DUAL_TSL",  # 70% на TP1, 30% под TSL (данные: TSL avg=4.6R vs TP avg=2.1R)
         position_size_multiplier=1.0,
         label="TREND_UP",
     ),
     "TREND_DOWN": RegimeParams(
         sl_factor=0.85,
-        min_strategy_type="TRIPLE_TP_TSL",
+        min_strategy_type="DUAL_TSL",  # 70% на TP1, 30% под TSL (решение 30.03.2026)
         position_size_multiplier=1.0,
         label="TREND_DOWN",
     ),
     "RANGE": RegimeParams(
         sl_factor=1.15,
-        max_strategy_type="DUAL_TP",
+        max_strategy_type="SINGLE",    # было DUAL_TP — RANGE всегда фиксирует на первом пивоте
         position_size_multiplier=1.0,
         label="RANGE",
     ),
@@ -221,11 +221,9 @@ def apply_regime_to_strategy(
     # Если strategy_type изменился → пересчитываем TP1
     adjusted_tp1 = tp1_price
     if adjusted_strategy != strategy_type and sl_dist > 0 and entry > 0:
-        tp_dist = abs(take_profit - entry)
-        if adjusted_strategy == "TRIPLE_TP_TSL":
-            adjusted_tp1 = entry + sign * tp_dist * (1.0 / 3.0)
-        elif adjusted_strategy == "DUAL_TP":
-            adjusted_tp1 = entry + sign * tp_dist * 0.5
+        if adjusted_strategy in ("DUAL_TP", "DUAL_TSL"):
+            # TP1 = take_profit (первый пивот по иерархии)
+            adjusted_tp1 = take_profit
 
     # Форсированный TP1 при HIGH_VOL (перекрывает выше)
     if params.tp1_r is not None and sl_dist > 0:

@@ -1028,6 +1028,117 @@ class PivotCalculatorFixed:
 
         return None
 
+    def get_next_tp_by_hierarchy(
+        self,
+        tp1_price: float,
+        direction: str,
+        entry_price: float,
+        symbol: str,
+        stop_loss: Optional[float] = None,
+        min_r: float = 2.0,
+        tolerance_pct: float = 0.3,
+        impulse_high: Optional[float] = None,
+        impulse_low: Optional[float] = None,
+    ) -> Optional[tuple]:
+        """
+        TP2 по иерархии — следующий пивот после TP1 (skip_price=tp1_price).
+        Та же иерархия что у get_tp_by_hierarchy(), но пропускает уровни
+        совпадающие с tp1_price (±tolerance_pct%) или ближе к точке входа.
+
+        Returns: (tp_price, source_str) или None
+        """
+        if entry_price <= 0 or tp1_price <= 0:
+            return None
+
+        sl_dist: Optional[float] = None
+        if stop_loss and stop_loss > 0:
+            if direction == "LONG" and stop_loss < entry_price:
+                sl_dist = entry_price - stop_loss
+            elif direction == "SHORT" and stop_loss > entry_price:
+                sl_dist = stop_loss - entry_price
+
+        tol = tolerance_pct / 100.0
+
+        def _qualifies(price: float) -> bool:
+            # Должен быть в правильном направлении от точки входа
+            if direction == "LONG" and price <= entry_price:
+                return False
+            if direction == "SHORT" and price >= entry_price:
+                return False
+            # Должен быть за пределами TP1 (не ближе к входу чем TP1)
+            if direction == "LONG" and price <= tp1_price:
+                return False
+            if direction == "SHORT" and price >= tp1_price:
+                return False
+            # Не должен совпадать с TP1 по tolerance
+            if abs(price - tp1_price) / max(tp1_price, 1e-9) < tol:
+                return False
+            # Должен удовлетворять min_r относительно SL
+            if sl_dist and sl_dist > 0:
+                return abs(price - entry_price) / sl_dist >= min_r
+            return True
+
+        pivots_data: Dict = {}
+        for tf in ("1M", "1W", "1D"):
+            cached = self.pivot_cache.get(f"{symbol}_{tf}")
+            if cached:
+                pivots_data[tf] = cached
+
+        all_lvls = ["PP"] + [f"R{i}" for i in range(1, 4)] + [f"S{i}" for i in range(1, 4)]
+
+        # 1-2. 1D затем 1W — собираем ВСЕ кандидаты и берём ближайший за TP1
+        for tf in ("1D", "1W"):
+            piv = self.pivot_cache.get(f"{symbol}_{tf}")
+            if not piv:
+                continue
+            candidates = [
+                (price, f"pivot_{tf}:{lk}")
+                for lk in all_lvls
+                if (price := piv.get(lk)) and price > 0 and _qualifies(price)
+            ]
+            if candidates:
+                reverse = direction == "SHORT"
+                candidates.sort(key=lambda x: x[0], reverse=reverse)
+                return candidates[0]
+
+        # 3-4. Конфлюэнции
+        if len(pivots_data) >= 2:
+            confluences = self._find_all_confluences(pivots_data, tolerance_pct)
+            for ta, tb in (("1W", "1D"), ("1M", "1W")):
+                for c in confluences:
+                    if {c["tf_a"], c["tf_b"]} == {ta, tb}:
+                        avg_price = (c["price_a"] + c["price_b"]) / 2.0
+                        if not _qualifies(avg_price):
+                            continue
+                        src = f"confluence_{ta}+{tb}:{c['level_a']}≈{c['level_b']}"
+                        return avg_price, src
+
+        # 5. 1M
+        piv_1m = self.pivot_cache.get(f"{symbol}_1M")
+        if piv_1m:
+            candidates = [
+                (price, f"pivot_1M:{lk}")
+                for lk in all_lvls
+                if (price := piv_1m.get(lk)) and price > 0 and _qualifies(price)
+            ]
+            if candidates:
+                reverse = direction == "SHORT"
+                candidates.sort(key=lambda x: x[0], reverse=reverse)
+                return candidates[0]
+
+        # 6. Fib extension за пределами TP1
+        if impulse_high and impulse_low and impulse_high > impulse_low:
+            diff = impulse_high - impulse_low
+            for ratio, label in ((1.618, "fib_1.618"), (2.0, "fib_2.0"), (2.618, "fib_2.618")):
+                if direction == "LONG":
+                    fib_tp = impulse_high + diff * (ratio - 1.0)
+                else:
+                    fib_tp = impulse_low - diff * (ratio - 1.0)
+                if _qualifies(fib_tp):
+                    return fib_tp, label
+
+        return None
+
     def find_near_pivot(
         self,
         price: float,

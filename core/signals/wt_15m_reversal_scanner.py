@@ -88,6 +88,7 @@ def scan_wt_15m_reversal(
     lookback_bars: int = _DEFAULT_LOOKBACK,
     cfg=None,
     df_4h: pd.DataFrame = None,
+    market_regime: str = "",
 ) -> List[SignalData]:
     """
     Детектор разворотного сетапа на 15m. Возвращает список SignalData (обычно 0-2).
@@ -140,12 +141,14 @@ def scan_wt_15m_reversal(
         wt_min = float(window["wt1"].min())
         wt_max = float(window["wt1"].max())
 
-        # ── Динамические пороги OS/OB (эксперимент) ───────────────────────
-        # mean ± k*std по последним dyn_os_window барам (без открытой свечи)
+        # ── DEV-108: dynamic_os только в RANGE (не shadow, production gate) ──
+        # В RANGE WT ходит в узком диапазоне: mean±0.8std = реальная граница.
+        # В TREND/HIGH_VOL dynamic даёт мусор → используем фиксированный.
         dyn_os_thr = wt_os_thr  # fallback к фиксированному
         dyn_ob_thr = wt_ob_thr
         _dyn_computed = False
-        if dyn_os_enabled and "wt1" in df.columns:
+        _is_range_scanner = (market_regime == "RANGE")
+        if dyn_os_enabled and _is_range_scanner and "wt1" in df.columns:
             wt1_hist = df["wt1"].dropna().values
             dyn_os_thr, dyn_ob_thr, _dyn_computed = compute_dynamic_thresholds(
                 wt1_hist, k=dyn_os_k, window=dyn_os_window,
@@ -153,7 +156,7 @@ def scan_wt_15m_reversal(
             )
             if _dyn_computed:
                 logger.debug(
-                    "[wt_15m_rev] %s: dyn_os=%.1f dyn_ob=%.1f vs fixed=%.1f/%.1f",
+                    "[DEV-108] %s RANGE: dyn_os=%.1f dyn_ob=%.1f vs fixed=%.1f/%.1f → ACTIVE",
                     symbol, dyn_os_thr, dyn_ob_thr, wt_os_thr, wt_ob_thr,
                 )
             else:

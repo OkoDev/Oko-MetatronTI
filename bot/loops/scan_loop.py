@@ -176,7 +176,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                 _reward = abs(_tp_atr - current_price)
                 if _risk > 0 and _reward / _risk >= 1.5:
                     tp = _tp_atr
-                    tp_source = "atr_2.5x_fallback"
+                    tp_source = "atr_fallback"  # ARCH-58
                     logger.info("[WL-BREACH] %s: ATR fallback TP=%.6f (ATR=%.6f, R:R=%.2f)",
                                 symbol, tp, _atr, _reward / _risk)
                 else:
@@ -437,6 +437,17 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     df_1d = _calc_wt(df_1d)
                     df_1d = _calc_trend(df_1d, atr_period=_scan_atr_p, factor=_scan_factor)
 
+                # DEV-108: вычисляем market_regime один раз для всего скана пары
+                # Используется в WT/confluence детекторах для dynamic_os в RANGE
+                _pair_regime = ""
+                try:
+                    from core.market_regime import MarketRegimeClassifier
+                    _pair_regime = MarketRegimeClassifier().classify_from_dataframes(
+                        df_entry, df_1h
+                    ) or ""
+                except Exception:
+                    pass
+
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(
                     df_entry,
@@ -523,12 +534,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         except Exception as _fe:
                             logger.debug("[FUNDING] %s error: %s", sym, _fe)
 
-                    # 1b. DEV-82: LIQUIDITY_SWEEP
+                    # 1b. DEV-82 v2: LIQUIDITY_SWEEP — 1h TF (значимые флипы, period=10 свинги)
+                    # Изменено: 15m→1h, period=5→10, min_bars=30→50. Запускаем один раз (не в loop по TF).
                     if _scan_tf == _etf:
                         try:
                             from core.signals.liquidity_sweep_detector import detect_liquidity_sweep
                             _pc = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
-                            _sweep_sig = detect_liquidity_sweep(sym, _df_tf, _pc, bot.config)
+                            _sweep_sig = detect_liquidity_sweep(sym, df_1h, _pc, bot.config)
                             if _sweep_sig is not None:
                                 all_scan_signals.append(_sweep_sig)
                                 bot.signal_counters["liquidity_sweep"] = (
@@ -543,7 +555,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                     # 2. WT
                     _pivot_calc = getattr(bot, "pivot_calculator", None)
-                    for sig in await _check_wt_signals(sym, _df_tf, df_1h):
+                    for sig in await _check_wt_signals(sym, _df_tf, df_1h, market_regime=_pair_regime):
                         info = sig.data or {}
                         if _multi_tf:
                             sig.timeframe = _scan_tf  # тегируем ТФ
@@ -581,11 +593,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     except Exception as _sm_e:
                         logger.debug("[confluence_sm] %s error: %s", sym, _sm_e)
                         _confluence_sigs = scan_wt_15m_reversal(
-                            sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h
+                            sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h,
+                            market_regime=_pair_regime,
                         )
                 else:
                     _confluence_sigs = scan_wt_15m_reversal(
-                        sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h
+                        sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h,
+                        market_regime=_pair_regime,
                     )
 
                 for sig in _confluence_sigs:
@@ -622,15 +636,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 if check_divergences:
                     pivot_calc = getattr(bot, "pivot_calculator", None)
                     # Этап 8.4.5: режим пары — скрытые дивергенции отклоняем в RANGE/HIGH_VOL
-                    _pair_regime = ""
-                    try:
-                        from core.market_regime import MarketRegimeClassifier
-                        # ARCH-18: df_entry и df_1h уже содержат pre-computed trendup/trenddown/wt1
-                        _pair_regime = MarketRegimeClassifier().classify_from_dataframes(
-                            df_entry, df_1h
-                        ) or ""
-                    except Exception:
-                        pass
+                    # _pair_regime уже вычислен выше (DEV-108, один раз на пару)
                     try:
                         has_mtf, mtf_info = await bot.divergence_detector.detect_mtf_divergence(
                             sym, bot.data_collector
@@ -771,7 +777,22 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             "4h":  df_4h,
             "1d":  df_1d,
         }
-        for sig_type, raw_text, fallback_rec in signals_to_broadcast:
+        # DEV-118: выбираем ОДИН лучший сигнал на пару за цикл.
+        # Все сигналы остаются в pre_signals как контекст для analyze_symbol.
+        # Это устраняет дублирование analyze_symbol (~27+19 сек CPU зря на DYDX).
+        _SIGNAL_PRIORITY = {
+            "confluence":      100,
+            "wt_b":             90,
+            "wt_signal":        80,
+            "liquidity_sweep":  70,
+            "anomaly":          50,
+        }
+        if signals_to_broadcast:
+            best = max(signals_to_broadcast, key=lambda x: _SIGNAL_PRIORITY.get(x[0], 0))
+            if len(signals_to_broadcast) > 1:
+                skipped = [s[0] for s in signals_to_broadcast if s is not best]
+                logger.info("[%s] DEV-118: best=%s пропущены=%s (один analyze_symbol)", sym, best[0], skipped)
+            sig_type, raw_text, fallback_rec = best
             asyncio.create_task(
                 _broadcast_intelligence_alert(bot, sym, raw_text, sig_type,
                                              fallback_rec=fallback_rec, pre_signals=pre,

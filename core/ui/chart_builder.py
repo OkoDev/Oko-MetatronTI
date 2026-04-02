@@ -49,18 +49,19 @@ async def _fetch_ohlcv_from(exch, sym: str, tf: str, limit: int) -> list:
 
 
 async def _fetch_ohlcv(symbol: str, tf: str, limit: int) -> pd.DataFrame:
+    # BingX — основная биржа бота; Binance как fallback для spot-символов
     try:
-        raw = await _fetch_ohlcv_from(
-            ccxt_async.binance({"enableRateLimit": True}),
-            _to_binance_symbol(symbol), tf, limit,
-        )
-    except ccxt_async.BadSymbol:
         raw = await _fetch_ohlcv_from(
             ccxt_async.bingx({"enableRateLimit": True}),
             symbol, tf, limit,
         )
+    except Exception:
+        raw = await _fetch_ohlcv_from(
+            ccxt_async.binance({"enableRateLimit": True}),
+            _to_binance_symbol(symbol), tf, limit,
+        )
     df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    df["time"] = pd.to_datetime(df["time"], unit="ms", utc=True)
     df = df.set_index("time").astype(float)
     return df
 
@@ -95,13 +96,13 @@ async def _fetch_pivot_1h(symbol: str, limit: int = 530) -> pd.DataFrame:
     """Загружает 1h данные для расчёта пивотов (≥3 полных недели)."""
     try:
         raw = await _fetch_ohlcv_from(
-            ccxt_async.binance({"enableRateLimit": True}),
-            _to_binance_symbol(symbol), "1h", limit,
-        )
-    except ccxt_async.BadSymbol:
-        raw = await _fetch_ohlcv_from(
             ccxt_async.bingx({"enableRateLimit": True}),
             symbol, "1h", limit,
+        )
+    except Exception:
+        raw = await _fetch_ohlcv_from(
+            ccxt_async.binance({"enableRateLimit": True}),
+            _to_binance_symbol(symbol), "1h", limit,
         )
     df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
     df["time"] = pd.to_datetime(df["time"], unit="ms", utc=True)
@@ -210,7 +211,15 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
     price_min, price_max = df["low"].min(), df["high"].max()
 
     last_t = df.index[-1]
-    bar_sec = int((df.index[1] - df.index[0]).total_seconds()) if len(df) > 1 else 3600
+    # Защита от дубликатов/нулевой разницы: берём медиану первых 10 интервалов
+    _tf_fallback = {"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}
+    if len(df) > 1:
+        _diffs = [abs((df.index[i+1] - df.index[i]).total_seconds()) for i in range(min(10, len(df)-1)) if (df.index[i+1] - df.index[i]).total_seconds() > 0]
+        bar_sec = int(sorted(_diffs)[len(_diffs)//2]) if _diffs else 900
+    else:
+        bar_sec = 900
+    if bar_sec == 0:
+        bar_sec = 900
     next_midnight = last_t.normalize() + pd.Timedelta(days=1)
     bars_to_eod = max(1, int((next_midnight - last_t).total_seconds() / bar_sec))
     days_to_mon = (7 - last_t.weekday()) % 7 or 7
@@ -267,20 +276,85 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
                               bars: int = 300, warmup: int = 80,
                               bot=None, fvg_zones=None) -> bytes | None:
     """Генерирует PNG-график для сигнала. Возвращает bytes или None при ошибке."""
-    if not _MPF_OK or not _CCXT_OK:
-        logger.warning("chart_builder: mplfinance или ccxt недоступны")
+    if not _MPF_OK:
+        logger.warning("chart_builder: mplfinance не установлен")
         return None
     try:
-        df_full, df_pivot1h = await asyncio.gather(
-            _fetch_ohlcv(symbol, tf, bars + warmup),
-            _fetch_pivot_1h(symbol),
-        )
+        dc = getattr(bot, "data_collector", None) if bot else None
+
+        # Основные данные: из кеша data_collector (уже загружены при сканировании)
+        # Fallback: прямой запрос BingX → Binance
+        if dc is not None:
+            limit = bars + warmup
+            df_full = await dc.get_ohlcv(symbol, tf, limit=limit)
+            df_pivot1h = await dc.get_ohlcv(symbol, "1h", limit=530)
+        else:
+            if not _CCXT_OK:
+                logger.warning("chart_builder: ccxt недоступен")
+                return None
+            df_full, df_pivot1h = await asyncio.gather(
+                _fetch_ohlcv(symbol, tf, bars + warmup),
+                _fetch_pivot_1h(symbol),
+            )
+
+        if df_full is None or df_full.empty:
+            logger.warning("chart_builder: нет данных для %s %s", symbol, tf)
+            return None
+
+        # Нормализуем индекс: data_collector возвращает RangeIndex + колонка "time" (ms int)
+        # _calc_pivot_levels требует DatetimeIndex с tz; pd.to_datetime без unit="ms"
+        # интерпретирует int как наносекунды → неверные даты → пустые пивоты
+        def _ensure_dt_index(df: pd.DataFrame) -> pd.DataFrame:
+            if isinstance(df.index, pd.DatetimeIndex):
+                return df
+            df = df.copy()
+            if "time" in df.columns:
+                col = df["time"]
+                if pd.api.types.is_numeric_dtype(col):
+                    # ms timestamps от data_collector/ccxt
+                    df["time"] = pd.to_datetime(col, unit="ms", utc=True)
+                else:
+                    df["time"] = pd.to_datetime(col, utc=True)
+                df = df.set_index("time")
+            else:
+                df.index = pd.to_datetime(df.index, utc=True)
+            return df
+
+        df_full     = _ensure_dt_index(df_full)
+        df_pivot1h  = _ensure_dt_index(df_pivot1h) if df_pivot1h is not None else None
+
         df_full = _calculate_wt(df_full)
         df = df_full.iloc[-bars:].copy()
-        daily_pivots, weekly_pivots = _calc_pivot_levels(df_pivot1h, tz_offset_hours=3)
+        daily_pivots, weekly_pivots = _calc_pivot_levels(df_pivot1h, tz_offset_hours=3) if df_pivot1h is not None and not df_pivot1h.empty else ({}, {})
         return _render(df, symbol, tf,
                        daily_pivots=daily_pivots,
                        weekly_pivots=weekly_pivots)
     except Exception:
         logger.exception("chart_builder: ошибка генерации графика для %s", symbol)
+        return None
+
+
+def build_deep_chart(
+    df,
+    symbol: str,
+    tf: str,
+    daily_pivots=None,
+    weekly_pivots=None,
+    fvg_zones=None,
+    cross_pivots=None,
+    all_fvgs=None,
+) -> bytes | None:
+    """Синхронная обёртка для deep_analysis_handler (вызывается через run_in_executor).
+    fvg_zones / cross_pivots / all_fvgs зарезервированы для будущего рендеринга FVG-зон.
+    """
+    if not _MPF_OK:
+        return None
+    try:
+        if "wt1" not in df.columns:
+            df = _calculate_wt(df)
+        return _render(df, symbol, tf,
+                       daily_pivots=daily_pivots,
+                       weekly_pivots=weekly_pivots)
+    except Exception:
+        logger.exception("build_deep_chart: ошибка для %s", symbol)
         return None

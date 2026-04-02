@@ -95,11 +95,18 @@ class MarketRegimeClassifier:
             atr_vals = _atr(highs, lows, closes, self.atr_period)
             if not atr_vals:
                 return None
-            last_atr = atr_vals[-1]
             median_atr = sorted(atr_vals)[len(atr_vals) // 2]
 
             # HIGH_VOL — проверяем первой (перекрывает всё)
-            if median_atr > 0 and last_atr > _ATR_HIGH_VOL_MULT * median_atr:
+            # Fix 1 (DEV-88): avg последних 3 ATR вместо single bar, порог 1.5× вместо 1.8×
+            recent_atr_avg = sum(atr_vals[-3:]) / min(3, len(atr_vals))
+            if median_atr > 0 and recent_atr_avg > 1.5 * median_atr:
+                return "HIGH_VOL"
+
+            # Fix 3 (DEV-88): spike guard — бар с range > 3× median за последние 5 баров
+            ranges = [h - l for h, l in zip(highs, lows)]
+            median_range = sorted(ranges)[len(ranges) // 2]
+            if median_range > 0 and any(r > 3 * median_range for r in ranges[-5:]):
                 return "HIGH_VOL"
 
             # ADX
@@ -204,3 +211,65 @@ class MarketRegimeClassifier:
         except Exception as e:
             logger.exception("MarketRegimeClassifier.classify_from_dataframes: %s", e)
             return None
+
+    def classify_v2(
+        self,
+        df_15m: "pd.DataFrame",
+        df_1h:  "Optional[pd.DataFrame]" = None,
+    ) -> str:
+        """
+        DEV-90 / ARCH-59: Гибридный классификатор v2 (3 слоя).
+
+        Слой 1 — Spike Guard: spike за последние 5 баров → HIGH_VOL (быстрый override).
+        Слой 2 — Структурный режим на 1h: HH/HL паттерн через detect_structural_regime().
+        Слой 3 — MTF подтверждение: classify_from_dataframes(df_15m, df_1h).
+                  Если Слой 2 и Слой 3 согласованы → возвращаем результат.
+                  Конфликт → RANGE (консервативно).
+
+        Shadow mode: не заменяет текущий classify_from_ohlcv/classify_from_dataframes.
+        Управляется через config: market_regime.use_v2 (default: false).
+        """
+        try:
+            from core.signals.structure_detector import detect_structural_regime
+
+            # Слой 1: Spike Guard по df_15m
+            if df_15m is not None and len(df_15m) >= _MIN_CANDLES:
+                if "high" in df_15m.columns and "low" in df_15m.columns:
+                    ranges = (df_15m["high"] - df_15m["low"]).tolist()
+                    if ranges:
+                        med_range = sorted(ranges)[len(ranges) // 2]
+                        if med_range > 0 and any(r > 3 * med_range for r in ranges[-5:]):
+                            return "HIGH_VOL"
+
+            # Слой 2: Структурный режим по 1h DF
+            struct_regime = None
+            if df_1h is not None and len(df_1h) >= _MIN_CANDLES:
+                struct_regime = detect_structural_regime(df_1h, period=5)
+
+            # Слой 3: MTF подтверждение
+            mtf_regime = self.classify_from_dataframes(df_15m, df_1h)
+
+            # Решение
+            if struct_regime is None:
+                # Недостаточно swing points — доверяем MTF
+                return mtf_regime or "RANGE"
+
+            if mtf_regime in ("TREND_UP", "TREND_DOWN", "RANGE"):
+                # Согласованность: оба указывают на тренд или оба — RANGE
+                if struct_regime == mtf_regime:
+                    return struct_regime
+                # Один тренд, другой RANGE → RANGE (консервативно)
+                if "TREND" in struct_regime and "TREND" in (mtf_regime or ""):
+                    # Оба тренд, но разные направления (редко) → RANGE
+                    if struct_regime != mtf_regime:
+                        return "RANGE"
+                return "RANGE"
+
+            # mtf_regime is None или HIGH_VOL
+            if mtf_regime == "HIGH_VOL":
+                return "HIGH_VOL"
+            return struct_regime or "RANGE"
+
+        except Exception as e:
+            logger.warning("[classify_v2] error: %s", e)
+            return "RANGE"

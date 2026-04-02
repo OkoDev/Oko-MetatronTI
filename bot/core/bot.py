@@ -23,6 +23,9 @@ from core.confluence_state_machine import ConfluenceStateMachine
 from core.multi_tf_resolver import MultiTFResolver
 from core.bounce_detector import BounceDetector
 from core.signal_watch_list import SignalWatchList
+from core.context.pair_context import PairContextBus
+from core.trading.post_trade_analyser import PostTradeAnalyser
+from core.infra.ws_feed import WsFeed
 from bot.menus import MenuHandler
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,11 @@ class TradingAlertBot:
         self.trade_simulator = TradeSimulator(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
+        # DEV-93/DEV-94/DEV-95: Куб Метатрона Фаза 1 — Shared Context Bus + PostTradeAnalyser
+        self.pair_context = PairContextBus()
+        self.post_analyser = PostTradeAnalyser(self.pair_context, self.data_collector)
+        self.trade_simulator.set_post_trade_callback(self.post_analyser.on_trade_closed)
+
         self.watchlist_manager = WatchlistManager(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
@@ -93,6 +101,12 @@ class TradingAlertBot:
         _wl_ttl = int(config.get("signal_quality.watch_list_ttl_hours", 4))
         self.signal_watch_list = SignalWatchList(ttl_hours=_wl_ttl)
 
+        # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
+        self.ws_feed = WsFeed(
+            ohlcv_cache=self.data_collector._engine._cache,
+        )
+        self.data_collector.set_ws_feed(self.ws_feed)  # data_collector.get_current_price() → WS first
+
         self._register_routers()
 
     def _register_routers(self):
@@ -112,6 +126,41 @@ class TradingAlertBot:
         self.dp.include_router(deep_router(self))     # ARCH-29: /deep SYMBOL [TF]
         self.dp.include_router(core_router(self))     # содержит F.text catch-all
         self.dp.include_router(callback_router(self))
+
+    async def _start_ws_feed(self) -> None:
+        """Запускает WsFeed после прогрева пар (ждёт до 30 сек пока monitored_pairs заполнится)."""
+        for _ in range(30):
+            if self.monitored_pairs:
+                break
+            await asyncio.sleep(1)
+        if not self.monitored_pairs:
+            logger.warning("[WsFeed] monitored_pairs пусты — WsFeed не запущен")
+            return
+        pairs = list(self.monitored_pairs)
+        # Фаза 2: OHLCV для пар с открытыми сделками (get_open_trades — sync)
+        priority_pairs = []
+        try:
+            open_trades = self.trade_simulator.get_open_trades()
+            priority_pairs = list({t.get("symbol") for t in open_trades if t.get("symbol")})
+        except Exception as e:
+            logger.debug("[WsFeed] priority_pairs error: %s", e)
+        logger.info("[WsFeed] Старт: %d пар, %d priority OHLCV", len(pairs), len(priority_pairs))
+        # DEV-101: логируем stats через 5 мин после старта для верификации
+        asyncio.create_task(self._log_ws_stats_after_warmup())
+        await self.ws_feed.start(pairs, priority_pairs=priority_pairs)
+
+    async def _log_ws_stats_after_warmup(self) -> None:
+        """DEV-101: через 5 мин после старта WS — логируем статус для верификации."""
+        await asyncio.sleep(300)
+        stats = self.ws_feed.stats()
+        if stats["active_tickers"] > 0:
+            logger.info(
+                "[WsFeed] ✅ LIVE | tickers=%d updates=%d errors=%d uptime=%ds",
+                stats["active_tickers"], stats["ticker_updates"],
+                stats["errors"], stats["uptime_sec"],
+            )
+        else:
+            logger.warning("[WsFeed] ⚠️ НЕТ активных тикеров через 5 мин — проверь ccxt.pro")
 
     def run(self):
         logger.info("Запуск бота с поддержкой подписок...")
@@ -137,9 +186,12 @@ class TradingAlertBot:
 
             from bot.monitoring import trade_tracker_loop
             from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop
+            from bot.loops.trigger_loop import run_trigger_loop
             from web.dashboard_server import start_dashboard
 
             asyncio.create_task(trade_tracker_loop(self))
+            asyncio.create_task(run_trigger_loop(self))     # DEV-95: Куб Метатрона — OTE/Cascade триггеры
+            asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket
             asyncio.create_task(start_dashboard(
                 db_path=self.trade_simulator.db_path,
                 config=config,

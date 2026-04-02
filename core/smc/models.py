@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from core.smc.swing_points import SwingAnalysis, StructureTrend, detect_swing_points
-from core.smc.structure import StructureAnalysis, StructureBreak, detect_structure
+from core.smc.structure import StructureAnalysis, StructureBreak, BreakType, detect_structure
 from core.smc.fvg import FVGAnalysis, FVG, detect_fvg
 from core.smc.order_blocks import OBAnalysis, OrderBlock, detect_order_blocks
 from core.smc.liquidity import LiquidityAnalysis, LiquidityZone, detect_liquidity
@@ -79,6 +79,23 @@ class SMCContext:
     @property
     def has_bos(self) -> bool:
         return any(b.is_bos for b in self.structure.breaks)
+
+    # DEV-96: направленные флаги (bullish = LONG, bearish = SHORT)
+    @property
+    def has_bullish_bos(self) -> bool:
+        return any(b.break_type == BreakType.BULLISH_BOS for b in self.structure.breaks)
+
+    @property
+    def has_bearish_bos(self) -> bool:
+        return any(b.break_type == BreakType.BEARISH_BOS for b in self.structure.breaks)
+
+    @property
+    def has_bullish_choch(self) -> bool:
+        return any(b.break_type == BreakType.BULLISH_CHOCH for b in self.structure.breaks)
+
+    @property
+    def has_bearish_choch(self) -> bool:
+        return any(b.break_type == BreakType.BEARISH_CHOCH for b in self.structure.breaks)
 
     @property
     def active_resistance(self) -> Optional[float]:
@@ -146,6 +163,11 @@ class SMCContext:
             "smc_trend": self.trend.value,
             "smc_has_choch": self.has_choch,
             "smc_has_bos": self.has_bos,
+            # DEV-96: направленные флаги (backward-compat: старые остаются)
+            "smc_has_bullish_bos":   self.has_bullish_bos,
+            "smc_has_bearish_bos":   self.has_bearish_bos,
+            "smc_has_bullish_choch": self.has_bullish_choch,
+            "smc_has_bearish_choch": self.has_bearish_choch,
             "smc_last_break_type": lb.break_type.value if lb else None,
             "smc_last_break_strength": lb.strength if lb else 0,
             "smc_active_resistance": self.active_resistance,

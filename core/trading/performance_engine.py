@@ -256,11 +256,11 @@ class PerformanceEngine:
             with self._conn() as conn:
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT id, symbol, direction, signal_type, regime,
+                    SELECT id, symbol, timeframe, direction, signal_type, regime,
                            entry_price, exit_price, profit_pct, R_multiple,
                            status, created_at, closed_at, duration_minutes,
                            max_R_possible, captured_R_pct,
-                           sl_source, tp_source
+                           sl_source, tp_source, tsl_tf
                     FROM simulated_trades
                     WHERE status != 'OPEN'
                     ORDER BY closed_at DESC
@@ -303,13 +303,12 @@ class PerformanceEngine:
             with self._conn() as conn:
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT id, symbol, direction, signal_type, regime,
+                    SELECT id, symbol, timeframe, direction, signal_type, regime,
                            entry_price, stop_loss, take_profit,
                            strength, confidence, created_at,
                            tsl_activated, tsl_tf,
-                           tp1_price, tp1_hit_at,
-                           tp2_price, tp2_hit_at,
-                           tp3_price, tp3_hit_at
+                           tp_source, sl_source,
+                           max_price, min_price, max_R_possible
                     FROM simulated_trades
                     WHERE status = 'OPEN'
                     ORDER BY created_at DESC
@@ -637,12 +636,13 @@ class PerformanceEngine:
     # Всё одним вызовом (для /api/stats)
     # ------------------------------------------------------------------
     def equity_data(self) -> List[Dict[str, Any]]:
-        """Возвращает закрытые сделки для equity curve в дашборде (R_multiple, closed_at, status, symbol)."""
+        """Возвращает закрытые сделки для equity curve в дашборде."""
         with self._conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT symbol, status, R_multiple, closed_at
+                SELECT symbol, status, R_multiple, closed_at,
+                       entry_price, stop_loss, created_at, direction
                 FROM simulated_trades
                 WHERE status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL
                 ORDER BY closed_at ASC
@@ -650,7 +650,11 @@ class PerformanceEngine:
             )
             rows = cursor.fetchall()
         return [
-            {"symbol": r[0], "status": r[1], "R_multiple": r[2], "closed_at": r[3]}
+            {
+                "symbol": r[0], "status": r[1], "R_multiple": r[2], "closed_at": r[3],
+                "entry_price": r[4], "stop_loss": r[5],
+                "created_at": r[6], "direction": r[7],
+            }
             for r in rows
         ]
 

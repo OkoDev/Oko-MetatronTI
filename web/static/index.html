@@ -61,6 +61,16 @@
   .filter-bar label { font-size: .8rem; color: #8b949e; }
   .filter-bar button { background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px; padding: 4px 10px; font-size: .8rem; cursor: pointer; }
   .filter-bar button:hover { color: #c9d1d9; border-color: #8b949e; }
+  /* ── Sortable table headers ── */
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: #c9d1d9; }
+  th.sort-asc::after  { content: ' ▲'; font-size: .65rem; color: #58a6ff; }
+  th.sort-desc::after { content: ' ▼'; font-size: .65rem; color: #58a6ff; }
+  /* ── Risk Exposure panel ── */
+  .risk-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+  .risk-panel .rp-item { display: flex; flex-direction: column; gap: 2px; }
+  .risk-panel .rp-label { font-size: .7rem; color: #8b949e; text-transform: uppercase; letter-spacing: .06em; }
+  .risk-panel .rp-val { font-size: 1.1rem; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -102,7 +112,8 @@
   <div class="main-area">
     <div class="topbar">
       <span class="topbar-title" id="pageTitle">Сводка</span>
-      <div style="display:flex;align-items:center;gap:12px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="btc4hBadge" style="display:none;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;border:1px solid #30363d"></span>
         <span id="updated">загрузка...</span>
         <a id="modeBadge" href="/trading" style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:10px;font-size:.72rem;font-weight:700;background:#21262d;color:#8b949e;border:1px solid #30363d;text-decoration:none;cursor:pointer">
           <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block"></span>
@@ -303,21 +314,68 @@ function confluenceBreakdown(cf) {
 // ── Equity Curve ─────────────────────────────────────────────────────────────
 let _eqTrades = [];
 
-function calcEquity(trades, openTrades, deposit, riskPct) {
+function calcEquity(trades, openTrades, deposit, riskPct, leverage, takerFeePct, maxPositions) {
+  leverage    = leverage    || 1;
+  takerFeePct = takerFeePct != null ? takerFeePct : 0.05; // BingX taker fee per side, %
+  maxPositions = maxPositions || 0; // 0 = unlimited
+
+  // --- Фильтр по макс. позициям (симуляция реального кол-ва открытых сделок) ---
+  let activeTrades = trades;
+  if (maxPositions > 0) {
+    activeTrades = [];
+    const open = []; // {created_at, closed_at}
+    // Сортируем по времени открытия
+    const sorted = [...trades].sort((a, b) =>
+      (a.created_at || a.closed_at || '').localeCompare(b.created_at || b.closed_at || ''));
+    for (const t of sorted) {
+      const now = t.created_at || t.closed_at;
+      // Убираем уже закрытые
+      const filtered = open.filter(o => o.closed_at && now && o.closed_at > now);
+      open.length = 0; open.push(...filtered);
+      if (open.length < maxPositions) {
+        open.push({ created_at: t.created_at, closed_at: t.closed_at });
+        activeTrades.push(t);
+      }
+    }
+    // Возвращаем порядок по closed_at (как исходный)
+    activeTrades.sort((a, b) =>
+      (a.closed_at || '').localeCompare(b.closed_at || ''));
+  }
+
   let balance = deposit;
   const points = [{ t: null, b: deposit, r: 0 }];
   let peak = deposit;
   let maxDD = 0, bestPnl = 0, worstPnl = 0;
+  const feeRate = takerFeePct / 100; // per side
 
-  for (const t of trades) {
+  for (const t of activeTrades) {
     const r = t.R_multiple || 0;
-    const pnl = balance * (riskPct / 100) * r;
-    balance += pnl;
+
+    // Комиссия: taker fee × 2 (вход + выход) × нотионал
+    // Нотионал = balance × riskPct% × leverage / sl_dist_pct
+    // sl_dist_pct из реальных данных сделки, fallback 2%
+    let sl_dist_pct = 0.02;
+    if (t.entry_price && t.stop_loss && t.entry_price > 0) {
+      const d = Math.abs(t.entry_price - t.stop_loss) / t.entry_price;
+      if (d > 0.0001) sl_dist_pct = d;
+    }
+    const notional  = balance * (riskPct / 100) * leverage / sl_dist_pct;
+    const commission = notional * feeRate * 2;
+
+    // Потери: SL = riskPct% от баланса (плечо не влияет)
+    // Прибыль: gain = riskPct% × leverage × R
+    const pnl = r >= 0
+      ? balance * (riskPct / 100) * leverage * r
+      : balance * (riskPct / 100) * r;
+    balance += pnl - commission;
+    if (balance < 0) balance = 0;
+
     if (balance > peak) peak = balance;
     const dd = peak > 0 ? (peak - balance) / peak * 100 : 0;
     if (dd > maxDD) maxDD = dd;
-    if (pnl > bestPnl) bestPnl = pnl;
-    if (pnl < worstPnl) worstPnl = pnl;
+    const netPnl = pnl - commission;
+    if (netPnl > bestPnl)  bestPnl  = netPnl;
+    if (netPnl < worstPnl) worstPnl = netPnl;
     points.push({ t: t.closed_at, b: balance, r, status: t.status, sym: t.symbol });
   }
 
@@ -424,8 +482,12 @@ function renderEquitySection(eq, openTrades) {
   window._eqTrades = eq || [];
   window._eqOpenTrades = openTrades || [];
 
-  const deposit = parseFloat(localStorage.getItem('eqDeposit') || '1000');
-  const riskPct = parseFloat(localStorage.getItem('eqRisk') || '1');
+  const deposit    = parseFloat(localStorage.getItem('eqDeposit')  || '1000');
+  const riskPct    = parseFloat(localStorage.getItem('eqRisk')     || '1');
+  const leverage   = parseFloat(localStorage.getItem('eqLeverage') || '1');
+  const takerFee   = parseFloat(localStorage.getItem('eqFee')      || '0.05');
+  const maxPos     = parseInt(localStorage.getItem('eqMaxPos')     || '0', 10);
+  const startDate  = localStorage.getItem('eqStartDate') || '';
 
   const ZOOMS = [['1D','1Д'],['3D','3Д'],['1W','1Н'],['1M','1М'],['3M','3М'],['ALL','Всё']];
   const zBtns = ZOOMS.map(([z, lbl]) =>
@@ -450,6 +512,34 @@ function renderEquitySection(eq, openTrades) {
           style="width:90px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem"
           oninput="updateEquity()">
       </div>
+      <div>
+        <div class="label" style="margin-bottom:4px">Плечо ×</div>
+        <input id="eqLeverage" type="number" value="${leverage}" min="1" max="100" step="1"
+          style="width:75px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem"
+          title="Убытки всегда = Риск% от баланса. Прибыль = Риск% × Плечо × R"
+          oninput="updateEquity()">
+      </div>
+      <div>
+        <div class="label" style="margin-bottom:4px">Комиссия % (taker)</div>
+        <input id="eqFee" type="number" value="${takerFee}" min="0" max="1" step="0.01"
+          style="width:80px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem"
+          title="BingX taker fee: 0.05% за сторону (0.1% round-trip). Вычитается с каждой сделки."
+          oninput="updateEquity()">
+      </div>
+      <div>
+        <div class="label" style="margin-bottom:4px">Макс. позиций</div>
+        <input id="eqMaxPos" type="number" value="${maxPos}" min="0" max="20" step="1"
+          style="width:75px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem"
+          title="Макс. одновременных позиций (0 = без ограничений). Реалистично: 3-5."
+          oninput="updateEquity()">
+      </div>
+      <div>
+        <div class="label" style="margin-bottom:4px">Дата начала депозита</div>
+        <input id="eqStartDate" type="date" value="${startDate}"
+          style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 10px;font-size:.95rem;cursor:pointer"
+          title="Считать только сделки с этой даты. Оставьте пустым — от начала истории."
+          onchange="updateEquity()">
+      </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <span class="label" style="margin-right:2px">Период:</span>
         ${zBtns}
@@ -461,16 +551,35 @@ function renderEquitySection(eq, openTrades) {
 }
 
 window.updateEquity = function() {
-  const depEl  = document.getElementById('eqDeposit');
-  const riskEl = document.getElementById('eqRisk');
+  const depEl    = document.getElementById('eqDeposit');
+  const riskEl   = document.getElementById('eqRisk');
+  const levEl    = document.getElementById('eqLeverage');
+  const feeEl    = document.getElementById('eqFee');
+  const maxPosEl = document.getElementById('eqMaxPos');
+  const startEl  = document.getElementById('eqStartDate');
   if (!depEl || !riskEl) return;
-  const deposit = parseFloat(depEl.value) || 1000;
-  const riskPct = parseFloat(riskEl.value) || 1;
-  localStorage.setItem('eqDeposit', deposit);
-  localStorage.setItem('eqRisk', riskPct);
+  const deposit    = parseFloat(depEl.value)    || 1000;
+  const riskPct    = parseFloat(riskEl.value)   || 1;
+  const leverage   = parseFloat(levEl?.value    || '1')    || 1;
+  const takerFee   = parseFloat(feeEl?.value    != null ? feeEl.value : '0.05');
+  const maxPos     = parseInt(maxPosEl?.value   || '0', 10) || 0;
+  const startDate  = startEl?.value || '';
+  localStorage.setItem('eqDeposit',  deposit);
+  localStorage.setItem('eqRisk',     riskPct);
+  localStorage.setItem('eqLeverage', leverage);
+  localStorage.setItem('eqFee',      takerFee);
+  localStorage.setItem('eqMaxPos',   maxPos);
+  localStorage.setItem('eqStartDate', startDate);
 
-  // Полная кривая от начала
-  const { points: allPts } = calcEquity(window._eqTrades, window._eqOpenTrades, deposit, riskPct);
+  // Фильтр по дате начала депозита
+  let baseTrades = window._eqTrades || [];
+  if (startDate) {
+    const cutoffMs = new Date(startDate).getTime();
+    baseTrades = baseTrades.filter(t => t.closed_at && new Date(t.closed_at).getTime() >= cutoffMs);
+  }
+
+  // Полная кривая с комиссией и лимитом позиций
+  const { points: allPts } = calcEquity(baseTrades, window._eqOpenTrades, deposit, riskPct, leverage, takerFee, maxPos);
 
   // Срезаем по зуму
   const cutoff = _eqCutoff(window._eqZoom || 'ALL');
@@ -553,6 +662,13 @@ function showPage(name) {
 }
 
 function render(d, cf, be, eq) {
+  // Обновляем Risk Exposure метаданные из API
+  _riskMeta = {
+    risk_exposure_pct:  d.risk_exposure_pct  ?? null,
+    risk_exposure_usdt: d.risk_exposure_usdt ?? null,
+    deposit_usdt:       d.deposit_usdt       ?? null,
+    open_pnl_r:         d.open_pnl_r         ?? null,
+  };
   const s = d.summary || {};
 
   // --- EV и Profit Factor ---
@@ -745,6 +861,22 @@ function render(d, cf, be, eq) {
   // Обновить счётчик открытых в sidebar
   const oc = document.getElementById('navOpenCount');
   if (oc) oc.textContent = (d.open_trades||[]).length;
+  // BTC 4h badge
+  const b4h = document.getElementById('btc4hBadge');
+  if (b4h) {
+    const r4h = d.btc_4h_regime;
+    if (r4h) {
+      const c4h = {TREND_UP:'#2ea043',TREND_DOWN:'#f85149',RANGE:'#d29922',HIGH_VOL:'#a371f7'}[r4h]||'#8b949e';
+      const lbl = {TREND_UP:'BTC 4h ↑',TREND_DOWN:'BTC 4h ↓',RANGE:'BTC 4h ⇄',HIGH_VOL:'BTC 4h ⚡'}[r4h]||('BTC 4h '+r4h);
+      b4h.textContent = lbl;
+      b4h.style.color = c4h;
+      b4h.style.borderColor = c4h+'44';
+      b4h.style.background = c4h+'18';
+      b4h.style.display = '';
+    } else {
+      b4h.style.display = 'none';
+    }
+  }
   // Восстановить активную страницу
   showPage(localStorage.getItem('activePage') || 'summary');
   setTimeout(() => {
@@ -821,63 +953,206 @@ function tslBadge(activated, tsl_tf) {
   return '<span style="color:#444;font-size:.75rem" title="TSL ещё не активирован">—</span>';
 }
 
-function tp2Cell(tp2_price, tp2_hit_at, entry) {
-  if (!tp2_price) return '<span style="color:#444">—</span>';
-  const pct = entry ? ((tp2_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
-  const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
-  if (tp2_hit_at) {
-    const t = fmtLocalTime(tp2_hit_at);
-    return `<span class="green" title="TP2 достигнут в ${t}">✓${fmt(tp2_price,4)}</span>${pctStr}`;
-  }
-  return `<span style="color:#8b949e">${fmt(tp2_price,4)}</span>${pctStr}`;
+function regimeBadge(regime) {
+  if (!regime) return '<span style="color:#444">—</span>';
+  const colors = {
+    TREND_UP:   '#2ea043',
+    TREND_DOWN: '#f85149',
+    RANGE:      '#d29922',
+    HIGH_VOL:   '#a371f7',
+  };
+  const c = colors[regime] || '#8b949e';
+  const short = { TREND_UP:'↑TRD', TREND_DOWN:'↓TRD', RANGE:'RNG', HIGH_VOL:'VOL' }[regime] || regime;
+  return `<span style="color:${c};font-size:.72rem;font-weight:600" title="${regime}">${short}</span>`;
 }
 
-function tp1Cell(tp1_price, tp1_hit_at, entry) {
-  if (!tp1_price) return '<span style="color:#444">—</span>';
-  const pct = entry ? ((tp1_price - entry) / Math.abs(entry) * 100).toFixed(1) : '';
-  const pctStr = pct ? ` <span style="color:#8b949e;font-size:.73rem">(+${pct}%)</span>` : '';
-  if (tp1_hit_at) {
-    const t = fmtLocalTime(tp1_hit_at);
-    return `<span class="green" title="TP1 достигнут в ${t}">✓${fmt(tp1_price,4)}</span>${pctStr}`;
-  }
-  return `<span style="color:#8b949e">${fmt(tp1_price,4)}</span>${pctStr}`;
+function mfeCell(mfe_r) {
+  if (mfe_r == null) return '<span style="color:#444">—</span>';
+  const cls = mfe_r >= 2 ? 'green' : mfe_r >= 1 ? '' : 'red';
+  const color = mfe_r >= 2 ? '#2ea043' : mfe_r >= 1 ? '#e3b341' : '#8b949e';
+  return `<span style="color:${color};font-weight:600" title="Max R достигнутый за жизнь сделки">${mfe_r >= 0 ? '+' : ''}${mfe_r.toFixed(2)}R</span>`;
 }
 
-function openTradesTable(rows) {
-  if (!rows || !rows.length) return '<p class="note">Нет открытых позиций</p>';
-  return `<table><thead><tr>
-    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th>
-    <th>Вход</th><th>Сейчас</th><th>P&L%</th><th>R</th>
-    <th>SL</th><th>TP (финал)</th><th>TP1</th><th>TP2</th><th>TSL</th>
-    <th>Открыта</th><th>Закрыть</th>
-  </tr></thead><tbody>` +
-  rows.map(r => {
+function tpCell(tp_price, tp_source, entry, direction) {
+  if (!tp_price) return '<span style="color:#444">—</span>';
+  let dist_pct = '';
+  if (entry) {
+    const d = direction === 'LONG'
+      ? (tp_price - entry) / entry * 100
+      : (entry - tp_price) / entry * 100;
+    dist_pct = ` <span style="color:#8b949e;font-size:.73rem">(${d >= 0 ? '+' : ''}${d.toFixed(1)}%)</span>`;
+  }
+  const src = tp_source ? ` title="Источник: ${tp_source}"` : '';
+  const srcLabel = tp_source ? ` <span style="color:#555;font-size:.68rem">${tp_source}</span>` : '';
+  return `<span class="green"${src}>${fmt(tp_price,4)}</span>${dist_pct}${srcLabel}`;
+}
+
+// ── Сортировка ────────────────────────────────────────────────────────────
+let _openSort = { key: null, dir: 1 };
+let _openRows = [];
+
+function sortOpenBy(key, thEl) {
+  if (_openSort.key === key) _openSort.dir *= -1;
+  else { _openSort.key = key; _openSort.dir = 1; }
+  document.querySelectorAll('#openTradesTbl th.sortable').forEach(t => {
+    t.classList.remove('sort-asc','sort-desc');
+  });
+  thEl.classList.add(_openSort.dir === 1 ? 'sort-asc' : 'sort-desc');
+  const sorted = [..._openRows].sort((a,b) => {
+    const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; if (bv == null) return -1;
+    return (av < bv ? -1 : av > bv ? 1 : 0) * _openSort.dir;
+  });
+  const wrap = document.getElementById('openTblBody');
+  if (wrap) wrap.innerHTML = renderOpenRows(sorted);
+}
+
+let _closedSort = { key: null, dir: 1 };
+
+function sortClosedBy(key, thEl) {
+  if (_closedSort.key === key) _closedSort.dir *= -1;
+  else { _closedSort.key = key; _closedSort.dir = 1; }
+  document.querySelectorAll('#closedTradesTbl th.sortable').forEach(t => {
+    t.classList.remove('sort-asc','sort-desc');
+  });
+  thEl.classList.add(_closedSort.dir === 1 ? 'sort-asc' : 'sort-desc');
+  const sorted = [..._recentRows].sort((a,b) => {
+    const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; if (bv == null) return -1;
+    return (av < bv ? -1 : av > bv ? 1 : 0) * _closedSort.dir;
+  });
+  const wrap = document.getElementById('recentTableWrap');
+  if (wrap) wrap.innerHTML = renderRecentRows(sorted);
+}
+
+// ── Risk Exposure ──────────────────────────────────────────────────────────
+let _riskMeta = { risk_exposure_pct: null, risk_exposure_usdt: null, deposit_usdt: null, open_pnl_r: null };
+
+function riskExposurePanel(rows) {
+  if (!rows || !rows.length) return '';
+  let tslActive = 0, longN = 0, shortN = 0, deepLoss = 0;
+  rows.forEach(r => {
+    if (r.tsl_activated) tslActive++;
+    if (r.direction === 'LONG') longN++; else shortN++;
+    if (r.unrealized_r != null && r.unrealized_r < -0.5) deepLoss++;
+  });
+  const tslPct  = rows.length ? Math.round(tslActive / rows.length * 100) : 0;
+  const tslColor = tslPct >= 30 ? '#2ea043' : tslPct >= 10 ? '#d29922' : '#f85149';
+  const dpColor  = deepLoss > 5 ? '#f85149' : deepLoss > 0 ? '#d29922' : '#2ea043';
+
+  // Risk Exposure из API (с депозитом)
+  const rePct  = _riskMeta.risk_exposure_pct;
+  const reUsdt = _riskMeta.risk_exposure_usdt;
+  const dep    = _riskMeta.deposit_usdt;
+  const pnlR   = _riskMeta.open_pnl_r;
+  const reColor = rePct == null ? '#8b949e' : rePct > 10 ? '#f85149' : rePct > 5 ? '#d29922' : '#2ea043';
+  const pnlColor = pnlR == null ? '#8b949e' : pnlR > 0 ? '#2ea043' : pnlR < 0 ? '#f85149' : '#8b949e';
+  const reStr  = rePct != null ? `${rePct.toFixed(1)}%` : '—';
+  const reUsdtStr = (reUsdt != null && dep != null) ? `$${reUsdt.toFixed(0)} / $${dep.toFixed(0)}` : '';
+  const pnlStr = pnlR != null ? (pnlR >= 0 ? '+' : '') + pnlR.toFixed(2) + 'R' : '—';
+
+  return `<div class="risk-panel">
+    <div class="rp-item"><div class="rp-label">Открыто позиций</div>
+      <div class="rp-val blue">${rows.length}
+        <span style="font-size:.75rem;color:#8b949e;font-weight:400"> L:${longN} S:${shortN}</span>
+      </div></div>
+    <div class="rp-item" title="Суммарный риск: N позиций × risk_pct%">
+      <div class="rp-label">Под риском (депозит)</div>
+      <div class="rp-val" style="color:${reColor}">${reStr}</div>
+      <div style="font-size:.7rem;color:#555">${reUsdtStr}</div></div>
+    <div class="rp-item" title="Сумма нереализованного R по всем открытым сделкам">
+      <div class="rp-label">Open P&L</div>
+      <div class="rp-val" style="color:${pnlColor}">${pnlStr}</div></div>
+    <div class="rp-item"><div class="rp-label">TSL защита</div>
+      <div class="rp-val" style="color:${tslColor}">${tslActive}
+        <span style="font-size:.75rem;font-weight:400">(${tslPct}%)</span></div></div>
+    <div class="rp-item"><div class="rp-label">Глубокий минус (&lt;−0.5R)</div>
+      <div class="rp-val" style="color:${dpColor}">${deepLoss}</div></div>
+  </div>`;
+}
+
+// ── Возраст позиции и EXPIRED countdown ───────────────────────────────────
+const MAX_TRADE_H = 48;
+function ageCell(created_at) {
+  const d = _utcDate(created_at);
+  if (!d) return '—';
+  const now = Date.now();
+  const ageMs = now - d.getTime();
+  const ageH = ageMs / 3600000;
+  const remH = MAX_TRADE_H - ageH;
+  const ageStr = ageH < 1
+    ? Math.round(ageMs/60000) + 'м'
+    : ageH < 24
+      ? ageH.toFixed(1) + 'ч'
+      : (ageH/24).toFixed(1) + 'д';
+  if (remH <= 0) return `<span class="red" title="Сделка истекает">⏰ EXPIRED</span>`;
+  const expColor = remH < 4 ? '#f85149' : remH < 12 ? '#d29922' : '#8b949e';
+  const expStr   = remH < 24 ? remH.toFixed(0)+'ч' : (remH/24).toFixed(1)+'д';
+  return `<span style="color:#8b949e">${ageStr}</span>`
+    + `<span style="color:${expColor};font-size:.68rem" title="До EXPIRED: ${expStr}"> /${expStr}</span>`;
+}
+
+function cascadeBadge(level) {
+  if (!level) return '<span style="color:#333">—</span>';
+  const cfg = { '4h': ['#2ea043','↑4h'], '1h': ['#d29922','→1h'], '15m': ['#58a6ff','↓15m'] };
+  const [c, lbl] = cfg[level] || ['#8b949e', level];
+  return `<span style="color:${c};font-size:.72rem;font-weight:700" title="TSL cascade level: ${level}">${lbl}</span>`;
+}
+
+function renderOpenRows(rows) {
+  return rows.map(r => {
     const pnl = r.unrealized_pct;
     const pnlClass = pnl == null ? '' : pnl >= 0 ? 'green' : 'red';
     const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%' : '—';
-    const rStr = r.unrealized_r != null ? (r.unrealized_r >= 0 ? '+' : '') + r.unrealized_r.toFixed(2) + 'R' : '—';
-    const rClass = r.unrealized_r == null ? '' : r.unrealized_r >= 0 ? 'green' : 'red';
+    const rVal = r.unrealized_r;
+    const rStr = rVal != null ? (rVal >= 0 ? '+' : '') + rVal.toFixed(2) + 'R' : '—';
+    const rClass = rVal == null ? '' : rVal >= 0 ? 'green' : 'red';
     const curStr = r.current_price != null ? fmt(r.current_price, 4) : '<span style="color:#666">—</span>';
-    // Подсветить строку если TSL активен
-    const rowStyle = r.tsl_activated ? ' style="background:rgba(184,126,255,0.05)"' : '';
+    let rowBg = '';
+    if (r.tsl_activated) rowBg = 'background:rgba(184,126,255,0.07)';
+    else if (rVal != null && rVal < -0.5) rowBg = 'background:rgba(248,81,73,0.05)';
+    const rowStyle = rowBg ? ` style="${rowBg}"` : '';
+    const tfLabel = r.timeframe ? `<span style="color:#555;font-size:.68rem"> ${r.timeframe}</span>` : '';
     return `<tr${rowStyle}>
       <td>${r.id}</td>
-      <td>${symLink(r.symbol)}</td>
+      <td>${symLink(r.symbol)}${tfLabel}</td>
       <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
       <td>${r.signal_type||'—'}</td>
+      <td>${regimeBadge(r.regime)}</td>
       <td>${fmt(r.entry_price,4)}</td>
       <td>${curStr}</td>
       <td class="${pnlClass}">${pnlStr}</td>
       <td class="${rClass}">${rStr}</td>
-      <td class="red">${fmt(r.stop_loss,4)}</td>
-      <td class="green">${fmt(r.take_profit,4)}</td>
-      <td>${tp1Cell(r.tp1_price, r.tp1_hit_at, r.entry_price)}</td>
-      <td>${tp2Cell(r.tp2_price, r.tp2_hit_at, r.entry_price)}</td>
+      <td>${mfeCell(r.mfe_r)}</td>
+      <td class="red" title="${r.sl_source||''}">${fmt(r.stop_loss,4)}</td>
+      <td>${tpCell(r.take_profit, r.tp_source, r.entry_price, r.direction)}</td>
       <td>${tslBadge(r.tsl_activated, r.tsl_tf)}</td>
-      <td style="color:#8b949e;font-size:.8rem">${fmtLocalShort(r.created_at)}</td>
-      <td><button onclick="closeTrade(${r.id},this)" style="background:#b22222;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button></td>
+      <td>${cascadeBadge(r.cascade_level)}</td>
+      <td>${ageCell(r.created_at)}</td>
+      <td><button onclick="closeTrade(${r.id},this)" style="background:#b22222;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">✕</button></td>
     </tr>`;
-  }).join('') + '</tbody></table>';
+  }).join('');
+}
+
+function openTradesTable(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет открытых позиций</p>';
+  _openRows = rows;
+  return riskExposurePanel(rows) + `<table id="openTradesTbl"><thead><tr>
+    <th class="sortable" onclick="sortOpenBy('id',this)">#</th>
+    <th>Символ</th>
+    <th class="sortable" onclick="sortOpenBy('direction',this)">Dir</th>
+    <th class="sortable" onclick="sortOpenBy('signal_type',this)">Сигнал</th>
+    <th class="sortable" onclick="sortOpenBy('regime',this)">Режим</th>
+    <th>Вход</th><th>Сейчас</th>
+    <th class="sortable" onclick="sortOpenBy('unrealized_pct',this)">P&L%</th>
+    <th class="sortable" onclick="sortOpenBy('unrealized_r',this)">R сейчас</th>
+    <th class="sortable" onclick="sortOpenBy('mfe_r',this)">Max R↑</th>
+    <th>SL</th><th>TP</th><th>TSL</th><th title="TSL Cascade уровень: 4h→1h→15m">Casc</th>
+    <th class="sortable" onclick="sortOpenBy('created_at',this)">Возраст/Exp</th>
+    <th>✕</th>
+  </tr></thead><tbody id="openTblBody">${renderOpenRows(rows)}</tbody></table>`;
 }
 
 async function closeTrade(id, btn) {
@@ -971,13 +1246,12 @@ function updateFilterOptions() {
 
 function recentTable(rows) {
   _recentRows = rows || [];
-  // После первого рендера подгружаем страницу 1 через пагинацию
   setTimeout(() => loadClosedPage(1), 0);
   return `
   <div class="filter-bar">
     <label>Статус:</label>
     <select id="fStatus" onchange="applyFilters()"><option value="">Все</option></select>
-    <label>Направление:</label>
+    <label>Dir:</label>
     <select id="fDir" onchange="applyFilters()"><option value="">Все</option></select>
     <label>Сигнал:</label>
     <select id="fSig" onchange="applyFilters()"><option value="">Все</option></select>
@@ -989,6 +1263,14 @@ function recentTable(rows) {
       <option value="RANGE">RANGE</option>
       <option value="HIGH_VOL">HIGH_VOL</option>
     </select>
+    <label>TF:</label>
+    <select id="fTf" onchange="applyFilters()">
+      <option value="">Все</option>
+      <option value="15m">15m</option>
+      <option value="1h">1h</option>
+      <option value="4h">4h</option>
+      <option value="1d">1d</option>
+    </select>
     <button onclick="resetFilters()">✕ Сброс</button>
   </div>
   <div id="closedPagination" style="margin:10px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
@@ -997,28 +1279,37 @@ function recentTable(rows) {
 
 function renderRecentRows(rows) {
   if (!rows.length) return '<p class="note">Нет сделок по фильтру</p>';
-  return `<table><thead><tr>
-    <th>#</th><th>Символ</th><th>Dir</th><th>Сигнал</th><th>Режим</th><th>Статус</th>
-    <th>Profit%</th><th>R</th><th>Max R</th><th>Cap%</th>
-    <th>TP src</th><th>Длит(мин)</th><th>Открыта</th><th>Закрыта</th>
+  const s = (key, label) =>
+    `<th class="sortable" onclick="sortClosedBy('${key}',this)">${label}</th>`;
+  return `<table id="closedTradesTbl"><thead><tr>
+    ${s('id','#')}<th>Символ</th>${s('direction','Dir')}
+    ${s('signal_type','Сигнал')}${s('regime','Режим')}<th>TF</th>${s('status','Статус')}
+    ${s('profit_pct','Profit%')}${s('R_multiple','R')}${s('max_R_possible','Max R')}${s('captured_R_pct','Cap%')}
+    <th>TP src</th>${s('duration_minutes','Длит')}${s('created_at','Открыта')}${s('closed_at','Закрыта')}
   </tr></thead><tbody>` +
   rows.map(r => {
     const capPct = r.captured_R_pct != null ? fmt(r.captured_R_pct,0)+'%' : '—';
     const capClass = r.captured_R_pct != null ? (r.captured_R_pct >= 60 ? 'green' : r.captured_R_pct >= 30 ? 'yellow' : 'red') : '';
     const tpSrc = (r.tp_source||'').replace('pivot_','').split(':')[0] || '—';
+    const durStr = r.duration_minutes != null
+      ? (r.duration_minutes < 60 ? Math.round(r.duration_minutes)+'м'
+        : r.duration_minutes < 1440 ? (r.duration_minutes/60).toFixed(1)+'ч'
+        : (r.duration_minutes/1440).toFixed(1)+'д')
+      : '—';
     return `<tr>
       <td>${r.id}</td>
       <td>${symLink(r.symbol)}</td>
       <td class="${r.direction==='LONG'?'green':'red'}">${r.direction||'—'}</td>
       <td>${r.signal_type||'—'}</td>
-      <td style="color:#8b949e;font-size:.8rem">${r.regime||'—'}</td>
-      <td>${badge(r.status)}</td>
+      <td>${regimeBadge(r.regime)}</td>
+      <td style="color:#8b949e;font-size:.75rem">${r.timeframe||'—'}</td>
+      <td>${r.status === 'TSL' ? `<span class="badge badge-tsl" title="TF: ${r.tsl_tf||'?'}">TSL ${r.tsl_tf||'?'}</span>` : badge(r.status)}</td>
       <td class="${color(r.profit_pct)}">${fmtPct(r.profit_pct)}</td>
       <td class="${color(r.R_multiple)}">${fmt(r.R_multiple,2)}</td>
       <td class="yellow">${r.max_R_possible != null ? fmt(r.max_R_possible,2) : '—'}</td>
       <td class="${capClass}">${capPct}</td>
-      <td style="color:#8b949e;font-size:.8rem">${tpSrc}</td>
-      <td>${r.duration_minutes != null ? Math.round(r.duration_minutes) : '—'}</td>
+      <td style="color:#8b949e;font-size:.75rem">${tpSrc}</td>
+      <td style="color:#8b949e">${durStr}</td>
       <td style="color:#8b949e;font-size:.8rem">${fmtLocalShort(r.created_at)}</td>
       <td style="font-size:.85rem">${fmtLocalShort(r.closed_at)}</td>
     </tr>`;
@@ -1030,18 +1321,20 @@ function applyFilters() {
   const dir = document.getElementById('fDir')?.value     || '';
   const sig = document.getElementById('fSig')?.value     || '';
   const reg = document.getElementById('fRegime')?.value  || '';
+  const tf  = document.getElementById('fTf')?.value      || '';
   const filtered = _recentRows.filter(r =>
     (!st  || r.status     === st)  &&
     (!dir || r.direction  === dir) &&
     (!sig || r.signal_type=== sig) &&
-    (!reg || r.regime     === reg)
+    (!reg || r.regime     === reg) &&
+    (!tf  || r.timeframe  === tf)
   );
   const wrap = document.getElementById('recentTableWrap');
   if (wrap) wrap.innerHTML = renderRecentRows(filtered);
 }
 
 function resetFilters() {
-  ['fStatus','fDir','fSig','fRegime'].forEach(id => {
+  ['fStatus','fDir','fSig','fRegime','fTf'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
