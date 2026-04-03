@@ -114,6 +114,7 @@
       <span class="topbar-title" id="pageTitle">Сводка</span>
       <div style="display:flex;align-items:center;gap:10px">
         <span id="btc4hBadge" style="display:none;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;border:1px solid #30363d"></span>
+        <span id="exchangeHealthBadge" title="Статус соединения с BingX" style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;border:1px solid #30363d;background:#1a2a1a;color:#3fb950">● BingX</span>
         <span id="updated">загрузка...</span>
         <a id="modeBadge" href="/trading" style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:10px;font-size:.72rem;font-weight:700;background:#21262d;color:#8b949e;border:1px solid #30363d;text-decoration:none;cursor:pointer">
           <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block"></span>
@@ -178,19 +179,43 @@ const color = (v, inv=false) => {
   return pos ? 'green' : (v === 0 ? '' : 'red');
 };
 
+async function updateModeBadge() {
+  try {
+    const r = await fetch('/api/trading/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    const mode = d.mode || 'SIM';
+    const modeColors = { SIM: '#8b949e', VST: '#58a6ff', LIVE: '#3fb950' };
+    const modeBg     = { SIM: '#21262d', VST: '#1a2a3a', LIVE: '#1a3a1f' };
+    const modeBorder = { SIM: '#30363d', VST: '#1f6feb', LIVE: '#238636' };
+    const badge = document.getElementById('modeBadge');
+    const label = document.getElementById('modeLabel');
+    label.textContent = mode;
+    badge.style.color       = modeColors[mode] || '#8b949e';
+    badge.style.background  = modeBg[mode]     || '#21262d';
+    badge.style.borderColor = modeBorder[mode] || '#30363d';
+    if (d.vst_balance != null) {
+      badge.title = `Баланс: ${d.vst_balance.toLocaleString('ru')} VST`;
+    }
+  } catch(_) {}
+}
+
 async function load() {
   try {
-    const [r1, r2, r3, r4] = await Promise.all([
+    const [r1, r2, r3, r4, r5] = await Promise.all([
       fetch('/api/stats'), fetch('/api/stats/confluence'),
-      fetch('/api/stats/breakeven'), fetch('/api/equity')
+      fetch('/api/stats/breakeven'), fetch('/api/equity'),
+      fetch('/api/stats/analytics')
     ]);
-    const d = await r1.json();
+    const d  = await r1.json();
     const cf = await r2.json();
     const be = await r3.json();
     const eq = await r4.json();
-    render(d, cf, be, eq);
+    const an = await r5.json();
+    render(d, cf, be, eq, an);
     document.getElementById('updated').textContent =
       'Обновлено: ' + new Date().toLocaleTimeString('ru');
+    updateModeBadge();
   } catch(e) {
     document.getElementById('updated').textContent = 'Ошибка загрузки: ' + e.message;
   }
@@ -661,7 +686,153 @@ function showPage(name) {
   if (name === 'history' && _closedTotal === 0) loadClosedPage(1);
 }
 
-function render(d, cf, be, eq) {
+// ── DEV-116: Session Heatmap ─────────────────────────────────────────────────
+function sessionHeatmap(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных по сессиям</p>';
+  const SESSION_LABELS = { LONDON: '🇬🇧 London', ASIA: '🌏 Asia', NY: '🗽 NY', '?': '❓ Неизвестно' };
+  const order = ['LONDON', 'NY', 'ASIA', '?'];
+  const sorted = order.map(s => rows.find(r => r.session === s)).filter(Boolean);
+  const remaining = rows.filter(r => !order.includes(r.session));
+  const all = [...sorted, ...remaining];
+  const maxN = Math.max(...all.map(r => r.n));
+  return `
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+    ${all.map(r => {
+      const wr = r.wr ?? 0;
+      const avr = r.avg_r ?? 0;
+      const barW = maxN > 0 ? Math.round(r.n / maxN * 100) : 0;
+      const clr = avr > 0.1 ? '#3fb950' : avr < -0.1 ? '#f85149' : '#d29922';
+      return `<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px">
+        <div style="font-size:.85rem;font-weight:700;color:#c9d1d9;margin-bottom:6px">${SESSION_LABELS[r.session] || r.session}</div>
+        <div style="background:#21262d;border-radius:4px;height:6px;margin-bottom:8px">
+          <div style="background:${clr};width:${barW}%;height:100%;border-radius:4px"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:.78rem;text-align:center">
+          <div><div class="label">Сделок</div><div style="font-weight:700">${r.n}</div></div>
+          <div><div class="label">WR%</div><div class="${wr>=30?'green':wr>=20?'':'red'}" style="font-weight:700">${wr}%</div></div>
+          <div><div class="label">avg R</div><div class="${color(avr)}" style="font-weight:700">${avr>0?'+':''}${avr}</div></div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// ── DEV-116: R-Distribution Histogram ────────────────────────────────────────
+function rDistributionChart(data) {
+  if (!data || !data.buckets || !data.buckets.length) return '<p class="note">Нет данных</p>';
+  const { buckets, counts, total } = data;
+  const maxC = Math.max(...counts, 1);
+  const W = 860, H = 160, PAD = {l:40, r:10, t:10, b:40};
+  const cW = W - PAD.l - PAD.r;
+  const cH = H - PAD.t - PAD.b;
+  const bW = Math.floor(cW / buckets.length) - 1;
+
+  const bars = buckets.map((lbl, i) => {
+    const c = counts[i];
+    const bH = maxC > 0 ? Math.round(c / maxC * cH) : 0;
+    const x = PAD.l + i * (cW / buckets.length);
+    const y = PAD.t + cH - bH;
+    // зелёный для положительных бакетов, красный для отрицательных
+    const isPos = lbl.startsWith('0') || lbl.startsWith('>') || /^[1-9]/.test(lbl);
+    const fill = isPos ? '#2ea04388' : '#f8514988';
+    const pct = total > 0 ? (c/total*100).toFixed(0) : 0;
+    return `<rect x="${x}" y="${y}" width="${bW}" height="${bH}" fill="${fill}" rx="2">
+      <title>${lbl}: ${c} сделок (${pct}%)</title></rect>
+    ${c > 0 ? `<text x="${x+bW/2}" y="${y-3}" text-anchor="middle" font-size="9" fill="#8b949e">${c}</text>` : ''}`;
+  }).join('');
+
+  const xLabels = buckets.map((lbl, i) => {
+    if (i % 2 !== 0) return '';
+    const x = PAD.l + i * (cW / buckets.length) + bW/2;
+    return `<text x="${x}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#484f58">${lbl}</text>`;
+  }).join('');
+
+  const zero_x = PAD.l + 5 * (cW / buckets.length); // бакет "0..0.5" — граница 0
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px">
+    <line x1="${zero_x}" y1="${PAD.t}" x2="${zero_x}" y2="${PAD.t+cH}" stroke="#30363d" stroke-dasharray="4"/>
+    ${bars}${xLabels}
+    <text x="${PAD.l-4}" y="${PAD.t+cH/2}" text-anchor="middle" font-size="10" fill="#484f58" transform="rotate(-90,${PAD.l-12},${PAD.t+cH/2})">Кол-во</text>
+  </svg>`;
+}
+
+// ── DEV-116: P&L Calendar ─────────────────────────────────────────────────────
+function pnlCalendar(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+  // Показываем последние 35 дней
+  const recent = rows.slice(0, 35).reverse();
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px">
+    ${recent.map(r => {
+      const avr = r.avg_r ?? 0;
+      const intensity = Math.min(Math.abs(avr) / 2, 1);
+      const bg = avr > 0.05
+        ? `rgba(63,185,80,${0.15 + intensity*0.65})`
+        : avr < -0.05
+          ? `rgba(248,81,73,${0.15 + intensity*0.65})`
+          : '#21262d';
+      const day = r.day ? r.day.slice(5) : '?'; // MM-DD
+      return `<div title="${r.day}: ${r.n} сделок, avg_R=${avr>0?'+':''}${avr}, WR=${r.wr}%"
+        style="width:44px;height:44px;background:${bg};border:1px solid #30363d;border-radius:4px;
+               display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:default">
+        <div style="font-size:.65rem;color:#8b949e">${day}</div>
+        <div style="font-size:.72rem;font-weight:700;color:${avr>0?'#3fb950':avr<0?'#f85149':'#8b949e'}">${avr>0?'+':''}${avr}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// ── DEV-116: MFE vs Exit R Scatter ───────────────────────────────────────────
+function mfeScatter(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных MFE</p>';
+  const W = 500, H = 300, PAD = {l:48, r:16, t:16, b:40};
+  const cW = W - PAD.l - PAD.r, cH = H - PAD.t - PAD.b;
+
+  const mfeVals = rows.map(r => r.mfe_r);
+  const exitVals = rows.map(r => r.exit_r);
+  const maxX = Math.min(Math.max(...mfeVals, 4), 12);
+  const minY = Math.max(Math.min(...exitVals, -1), -2);
+  const maxY = Math.min(Math.max(...exitVals, 2), 8);
+
+  const px = v => PAD.l + Math.min(v / maxX, 1) * cW;
+  const py = v => PAD.t + cH - ((v - minY) / (maxY - minY)) * cH;
+
+  const COLORS = {TP:'#3fb950', TSL:'#b87eff', SL:'#f85149', EXPIRED:'#d29922'};
+
+  const dots = rows.map(r => {
+    const x = px(r.mfe_r), y = py(r.exit_r);
+    if (x < PAD.l || x > W-PAD.r || y < PAD.t || y > H-PAD.b) return '';
+    const fill = COLORS[r.status] || '#8b949e';
+    return `<circle cx="${x}" cy="${y}" r="3" fill="${fill}" opacity="0.6">
+      <title>${r.signal_type} ${r.status} | exit=${r.exit_r}R | MFE=${r.mfe_r}R</title></circle>`;
+  }).join('');
+
+  // Диагональ capture=100%
+  const diagPts = [PAD.l, py(0), px(maxX), py(maxX)].join(',');
+
+  // Оси
+  const yLabels = [minY, 0, Math.round(maxY/2), maxY].map(v =>
+    `<text x="${PAD.l-4}" y="${py(v)+4}" text-anchor="end" font-size="10" fill="#484f58">${v>0?'+':''}${v}R</text>`
+  ).join('');
+  const xLabels = [0,2,4,6,8,10,12].filter(v=>v<=maxX).map(v =>
+    `<text x="${px(v)}" y="${H-4}" text-anchor="middle" font-size="10" fill="#484f58">${v}R</text>`
+  ).join('');
+
+  const legend = Object.entries(COLORS).map(([s,c]) =>
+    `<span style="margin-right:10px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c};margin-right:3px"></span>${s}</span>`
+  ).join('');
+
+  return `
+  <div style="font-size:.72rem;color:#8b949e;margin-bottom:6px">${legend}</div>
+  <svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px">
+    <line x1="${px(0)}" y1="${PAD.t}" x2="${px(0)}" y2="${PAD.t+cH}" stroke="#30363d"/>
+    <line x1="${PAD.l}" y1="${py(0)}" x2="${PAD.l+cW}" y2="${py(0)}" stroke="#30363d"/>
+    <line x1="${PAD.l}" y1="${py(0)}" x2="${px(maxX)}" y2="${py(maxX)}" stroke="#58a6ff22" stroke-dasharray="5"/>
+    ${dots}${yLabels}${xLabels}
+    <text x="${PAD.l+cW/2}" y="${H-1}" text-anchor="middle" font-size="10" fill="#484f58">MFE (max достигнутый R)</text>
+    <text x="12" y="${PAD.t+cH/2}" text-anchor="middle" font-size="10" fill="#484f58" transform="rotate(-90,12,${PAD.t+cH/2})">Exit R</text>
+  </svg>`;
+}
+
+function render(d, cf, be, eq, an) {
   // Обновляем Risk Exposure метаданные из API
   _riskMeta = {
     risk_exposure_pct:  d.risk_exposure_pct  ?? null,
@@ -855,6 +1026,24 @@ function render(d, cf, be, eq) {
         <h2>По режиму рынка</h2>
         ${regimeSection(d.by_regime)}
       </section>
+
+      <!-- ── DEV-116: аналитические графики ─────────────────────────── -->
+      <section>
+        <h2>По торговым сессиям <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Asia / London / NY)</span></h2>
+        ${sessionHeatmap(an && an.by_session)}
+      </section>
+      <section>
+        <h2>Распределение R-multiple <span style="font-size:.75rem;color:#8b949e;font-weight:400">(гистограмма закрытых сделок)</span></h2>
+        ${rDistributionChart(an && an.r_distribution)}
+      </section>
+      <section>
+        <h2>P&amp;L календарь <span style="font-size:.75rem;color:#8b949e;font-weight:400">(последние 35 дней)</span></h2>
+        ${pnlCalendar(an && an.pnl_calendar)}
+      </section>
+      <section>
+        <h2>MFE vs Exit R <span style="font-size:.75rem;color:#8b949e;font-weight:400">(потенциал vs фактический выход)</span></h2>
+        ${mfeScatter(an && an.mfe_scatter)}
+      </section>
     </div>
   `;
   document.getElementById('app').innerHTML = html;
@@ -876,6 +1065,22 @@ function render(d, cf, be, eq) {
     } else {
       b4h.style.display = 'none';
     }
+  }
+  // Exchange Health badge (DEV-103)
+  const ehBadge = document.getElementById('exchangeHealthBadge');
+  if (ehBadge) {
+    const eh = d.exchange_health || 'HEALTHY';
+    const lat = d.exchange_latency_ms != null ? d.exchange_latency_ms : null;
+    const latStr = lat != null ? ` ${lat}ms` : '';
+    const ehCfg = {
+      HEALTHY:  { bg: '#1a3a1f', color: '#3fb950', label: '● BingX' + latStr },
+      DEGRADED: { bg: '#3a2a1a', color: '#d29922', label: '⚠ BingX' + latStr },
+      DOWN:     { bg: '#3a1a1a', color: '#f85149', label: '✕ BingX DOWN' },
+    }[eh] || { bg: '#1a2a3a', color: '#8b949e', label: '? BingX' };
+    ehBadge.textContent  = ehCfg.label;
+    ehBadge.style.background   = ehCfg.bg;
+    ehBadge.style.color        = ehCfg.color;
+    ehBadge.style.borderColor  = ehCfg.color + '44';
   }
   // Восстановить активную страницу
   showPage(localStorage.getItem('activePage') || 'summary');

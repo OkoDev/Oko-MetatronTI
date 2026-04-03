@@ -181,11 +181,8 @@
       <!-- ── Режим торговли ──────────────────────────────────── -->
       <div class="panel">
         <div class="panel-title">&#x1F6E1; Режим торговли</div>
-        <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-          <a class="mode-badge mode-sim" style="font-size:.85rem; padding:6px 16px; pointer-events:none">
-            <span class="mode-dot"></span> SIM — Симуляция
-          </a>
-          <span style="font-size:.8rem; color:#8b949e">Бот работает в режиме симуляции сделок. VST и LIVE будут доступны после интеграции OrderExecutor (DEV-77).</span>
+        <div id="tradingModePanel" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+          <span style="font-size:.8rem; color:#8b949e">загрузка...</span>
         </div>
       </div>
 
@@ -346,8 +343,57 @@ function calc() {
   document.getElementById('tpBlock').style.display = 'block';
 }
 
+// ── Режим торговли ──────────────────────────────────────────────────────
+async function loadTradingStatus() {
+  try {
+    const r = await fetch('/api/trading/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    const mode = d.mode || 'SIM';  // SIM | VST | LIVE
+    const modeClass = { SIM: 'mode-sim', VST: 'mode-vst', LIVE: 'mode-live' }[mode] || 'mode-sim';
+    const modeDesc = {
+      SIM:  'Симуляция — ордера НЕ отправляются на биржу',
+      VST:  'Virtual Simulation Trading — реальный API BingX (sandbox)',
+      LIVE: 'Реальная торговля — ордера исполняются на бирже',
+    }[mode] || mode;
+    const modeColor = { SIM: '#8b949e', VST: '#58a6ff', LIVE: '#3fb950' }[mode] || '#8b949e';
+
+    // Обновить topbar badge
+    const badge = document.getElementById('modeBadge');
+    badge.className = 'mode-badge ' + modeClass;
+    document.getElementById('modeLabel').textContent = mode;
+
+    // Обновить панель режима
+    let balanceHtml = '';
+    if (d.vst_balance != null) {
+      balanceHtml = `<span style="font-size:.85rem;color:#c9d1d9">Баланс: <strong>${d.vst_balance.toLocaleString('ru')} VST</strong></span>`;
+    }
+    let paramsHtml = '';
+    if (d.deposit_usdt) paramsHtml += `<span style="font-size:.8rem;color:#8b949e">Депозит: ${d.deposit_usdt} USDT</span>`;
+    if (d.risk_pct)     paramsHtml += `<span style="font-size:.8rem;color:#8b949e">Риск: ${d.risk_pct}%</span>`;
+    if (d.leverage)     paramsHtml += `<span style="font-size:.8rem;color:#8b949e">Плечо: ${d.leverage}x</span>`;
+    const tslHtml = d.use_tsl
+      ? `<span style="font-size:.8rem;color:#3fb950">TSL ✓ (активация +${d.tsl_activation_r}R)</span>`
+      : `<span style="font-size:.8rem;color:#8b949e">TSL выкл</span>`;
+
+    document.getElementById('tradingModePanel').innerHTML = `
+      <a class="mode-badge ${modeClass}" style="font-size:.85rem;padding:6px 16px;pointer-events:none">
+        <span class="mode-dot"></span> ${mode} — ${modeDesc}
+      </a>
+      ${balanceHtml}
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px">
+        ${paramsHtml}
+        ${tslHtml}
+      </div>`;
+  } catch (e) {
+    document.getElementById('tradingModePanel').innerHTML =
+      '<span style="font-size:.8rem;color:#f85149">Ошибка загрузки статуса: ' + e.message + '</span>';
+  }
+}
+
 // ── Инициализация ────────────────────────────────────────────────────────
 loadSettings();
+loadTradingStatus();
 </script>
 </body>
 </html>
