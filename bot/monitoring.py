@@ -1045,42 +1045,44 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 if hasattr(bot, "order_executor") and is_actionable:
                     try:
                         _oe = bot.order_executor
-                        if _oe.is_live() or True:  # SIM тоже логируем для валидации
-                            _oe_dir = getattr(recommendation.direction, "value", "LONG")
-                            _oe_entry = float(recommendation.entry_price or 0)
-                            _oe_sl = float(recommendation.stop_loss or 0)
-                            _oe_tp1 = float(recommendation.take_profit or 0)
-                            _oe_tp2 = float(recommendation.tp1_price or 0) or None
-                            if _oe_entry > 0 and _oe_sl > 0 and _oe_tp1 > 0:
-                                # Рассчитываем qty через PositionSizer
-                                _deposit = float(bot.config.get("trading.deposit_usdt", 1000.0))
-                                _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
-                                _leverage = int(bot.config.get("trading.leverage", 1))
-                                _qty = bot.position_sizer.calc_qty(
+                        _oe_dir = getattr(recommendation.direction, "value", "LONG")
+                        _oe_entry = float(recommendation.entry_price or 0)
+                        _oe_sl = float(recommendation.stop_loss or 0)
+                        _oe_tp1 = float(recommendation.take_profit or 0)
+                        _oe_tp2 = float(recommendation.tp1_price or 0) or None
+                        if _oe_entry > 0 and _oe_sl > 0 and _oe_tp1 > 0:
+                            # Реальный баланс с биржи (VST) или config (SIM)
+                            _deposit = await _oe.get_available_balance()
+                            _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+                            _leverage = int(bot.config.get("trading.leverage", 5))
+                            _qty = bot.position_sizer.calc_qty(
+                                entry_price=_oe_entry,
+                                sl_price=_oe_sl,
+                                deposit=_deposit,
+                                risk_pct=_risk_pct,
+                                leverage=_leverage,
+                            )
+                            if _qty > 0:
+                                _br = await _oe.open_bracket(
+                                    symbol=symbol,
+                                    direction=_oe_dir,
                                     entry_price=_oe_entry,
-                                    sl_price=_oe_sl,
-                                    deposit=_deposit,
-                                    risk_pct=_risk_pct,
-                                    leverage=_leverage,
+                                    sl=_oe_sl,
+                                    tp1=_oe_tp1,
+                                    tp2=_oe_tp2,
+                                    qty=_qty,
                                 )
-                                if _qty > 0:
-                                    _br = await _oe.open_bracket(
-                                        symbol=symbol,
-                                        direction=_oe_dir,
-                                        entry_price=_oe_entry,
-                                        sl=_oe_sl,
-                                        tp1=_oe_tp1,
-                                        tp2=_oe_tp2,
-                                        qty=_qty,
+                                if not _br.success:
+                                    logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
+                                else:
+                                    logger.info(
+                                        "[%s] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
+                                        symbol, _br.mode.upper(), _oe_dir, _qty,
+                                        _oe_entry, _oe_sl, _oe_tp1, _br.order_id, _br.notional_usdt,
                                     )
-                                    if not _br.success:
-                                        logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
-                                    else:
-                                        logger.info(
-                                            "[%s] [%s] bracket_open: %s qty=%.6f entry=%.4f SL=%.4f TP=%.4f order_id=%s",
-                                            symbol, _br.mode.upper(), _oe_dir, _qty,
-                                            _oe_entry, _oe_sl, _oe_tp1, _br.order_id,
-                                        )
+                            else:
+                                logger.warning("[%s] OrderExecutor: qty=0 (deposit=%.2f risk=%.1f%% sl_dist=?)",
+                                               symbol, _deposit, _risk_pct)
                     except Exception as _oe_e:
                         logger.warning("[%s] OrderExecutor: %s", symbol, _oe_e)
         except Exception as e:
