@@ -65,6 +65,26 @@ async def _handle_breakeven_stats(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_analytics(request: web.Request) -> web.Response:
+    """GET /api/stats/analytics — данные для DEV-116 графиков."""
+    engine: PerformanceEngine = request.app["engine"]
+    try:
+        data = {
+            "by_session":    engine.by_session(),
+            "r_distribution": engine.r_distribution(),
+            "pnl_calendar":  engine.pnl_calendar(),
+            "mfe_scatter":   engine.mfe_scatter(),
+        }
+        return web.Response(
+            text=json.dumps(data, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("analytics error: %s", e)
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 async def _handle_equity(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
     try:
@@ -169,6 +189,9 @@ async def _handle_stats(request: web.Request) -> web.Response:
         data["risk_exposure_usdt"] = round(total_risk_usdt, 2)
         data["deposit_usdt"]       = deposit_usdt
         data["open_pnl_r"]         = round(open_pnl_r, 2)
+        # DEV-103: Exchange Health badge
+        data["exchange_health"]      = getattr(bot, "exchange_health", "HEALTHY") if bot else "HEALTHY"
+        data["exchange_latency_ms"]  = round(getattr(bot, "exchange_latency_ms", 0.0), 0) if bot else 0
 
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
@@ -287,15 +310,33 @@ async def _handle_trading_page(request: web.Request) -> web.Response:
 
 
 async def _handle_trading_status(request: web.Request) -> web.Response:
-    """Возвращает текущий режим торговли и параметры риска."""
+    """Возвращает текущий режим торговли, параметры риска и баланс VST."""
     cfg = request.app["config"]
     trading_cfg = cfg.get("trading", {}) if hasattr(cfg, "get") else {}
+    raw_mode = (trading_cfg.get("execution_mode") or "sim_only").upper()
+    mode_label = {"SIM_ONLY": "SIM", "VST": "VST", "LIVE": "LIVE"}.get(raw_mode, raw_mode)
+
+    result = {
+        "mode": mode_label,
+        "use_tsl": trading_cfg.get("use_tsl", True),
+        "tsl_activation_r": trading_cfg.get("tsl_activation_r", 1.0),
+        "deposit_usdt": trading_cfg.get("deposit_usdt", 1000.0),
+        "risk_pct": trading_cfg.get("risk_pct", 1.0),
+        "leverage": trading_cfg.get("leverage", 5),
+        "vst_balance": None,
+    }
+
+    # Для VST/LIVE — получаем реальный баланс
+    if mode_label in ("VST", "LIVE"):
+        try:
+            bot = request.app.get("bot")
+            if bot and hasattr(bot, "order_executor"):
+                result["vst_balance"] = round(await bot.order_executor.get_available_balance(), 2)
+        except Exception:
+            pass
+
     return web.Response(
-        text=json.dumps({
-            "mode": "SIM",
-            "use_tsl": trading_cfg.get("use_tsl", True),
-            "tsl_activation_r": trading_cfg.get("tsl_activation_r", 1.0),
-        }, ensure_ascii=False),
+        text=json.dumps(result, ensure_ascii=False),
         content_type="application/json", charset="utf-8",
     )
 
@@ -1063,6 +1104,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/stats", _handle_stats)
     app.router.add_get("/api/stats/confluence", _handle_confluence_breakdown)
     app.router.add_get("/api/stats/breakeven", _handle_breakeven_stats)
+    app.router.add_get("/api/stats/analytics", _handle_analytics)
     app.router.add_get("/api/equity", _handle_equity)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)

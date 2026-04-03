@@ -285,6 +285,30 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     # DEV-41: фиксируем время успешного входа для rate-limit
     _wl_breach_timestamps.append(datetime.now())
 
+    # VST/LIVE: открываем реальный ордер на бирже
+    if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer") and tp is not None:
+        try:
+            _oe = bot.order_executor
+            _deposit = await _oe.get_available_balance()
+            _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+            _leverage = int(bot.config.get("trading.leverage", 5))
+            _qty = bot.position_sizer.calc_qty(
+                entry_price=current_price, sl_price=sl,
+                deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
+            )
+            if _qty > 0:
+                _br = await _oe.open_bracket(
+                    symbol=symbol, direction=direction,
+                    entry_price=current_price, sl=sl, tp1=tp, qty=_qty,
+                )
+                if _br.success:
+                    logger.info("[WL-BREACH][%s] ✅ %s %s qty=%.6f order_id=%s",
+                                _br.mode.upper(), symbol, direction, _qty, _br.order_id)
+                else:
+                    logger.warning("[WL-BREACH] OrderExecutor error: %s", _br.error)
+        except Exception as _oe_e:
+            logger.warning("[WL-BREACH] OrderExecutor exception: %s", _oe_e)
+
     # TG-алерт
     dir_emoji = "🟢" if direction == "LONG" else "🔴"
     tp_str = f"{tp:.6f}" if tp else "TSL"
