@@ -78,6 +78,35 @@ class OrderExecutor:
         self._cfg    = config
         self._mode   = ExecutionMode(config.get("trading.execution_mode", "sim_only"))
         self._tp1_close_pct = float(config.get("trading.tp1_close_pct", 0.20))
+        self._vst_exchange = None  # инициализируется лениво при первом VST вызове
+
+    def _get_exchange(self):
+        """Возвращает exchange объект: VST sandbox или production."""
+        if self._mode == ExecutionMode.VST:
+            if self._vst_exchange is None:
+                try:
+                    import ccxt
+                    _vk = self._cfg.get("exchanges.api_keys.bingx_vst.api_key", "")
+                    _vs = self._cfg.get("exchanges.api_keys.bingx_vst.secret", "")
+                    if not _vk or _vk.startswith("REPLACE"):
+                        raise ValueError("VST API key не настроен в config.yaml")
+                    self._vst_exchange = ccxt.bingx({
+                        "apiKey": _vk,
+                        "secret": _vs,
+                        "enableRateLimit": True,
+                        "options": {
+                            "defaultType": "future",
+                            "broker": "VST",
+                        },
+                        "urls": {"api": {"public": "https://open-api-vst.bingx.com", "private": "https://open-api-vst.bingx.com"}},
+                    })
+                    logger.info("[OrderExecutor] VST exchange инициализирован (sandbox BingX)")
+                except Exception as e:
+                    logger.error("[OrderExecutor] Ошибка инициализации VST exchange: %s", e)
+                    raise
+            return self._vst_exchange
+        # LIVE — используем production exchange из data_collector
+        return self._dc.exchange
 
     @property
     def mode(self) -> ExecutionMode:
@@ -148,9 +177,9 @@ class OrderExecutor:
     async def _exchange_bracket(
         self, symbol, direction, entry_price, sl, tp1, tp2, qty, notional
     ) -> BracketResult:
-        """BingX bracket-ордер через ccxt."""
+        """BingX bracket-ордер через ccxt (VST sandbox или LIVE)."""
         try:
-            exchange = self._dc.exchange
+            exchange = self._get_exchange()
             side = "buy" if direction == "LONG" else "sell"
             params: dict = {
                 "stopLoss":   {"type": "MARKET", "triggerPrice": sl},

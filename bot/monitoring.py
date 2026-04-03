@@ -826,6 +826,42 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     symbol, recommendation.action, _reason4h)
                         recommendation.action = "WATCH"
 
+    # Этап 5.4: DEV-128 — weekly_bias gate для pivot_reversal RANGE
+    # Данные: 62% pivot_reversal RANGE = weekly_bias=NONE, EV=-0.5—0.76R → блок
+    # Исключение: BULLISH/BEARISH (aligned с направлением) — пропускаем
+    if recommendation is not None:
+        try:
+            _wb128_cfg = (bot.config.get("signal_quality", {}) or {}).get("weekly_bias_gate", {})
+            _wb128_enabled = _wb128_cfg.get("enabled", True)
+            _wb128_shadow  = _wb128_cfg.get("shadow_mode", False)
+            _wb128_sig = getattr(recommendation, "signal_type", "") or ""
+            _wb128_reg = getattr(recommendation, "regime", "") or ""
+            if _wb128_sig == "pivot_reversal" and _wb128_reg == "RANGE":
+                _wb128_meta = recommendation.metadata or {}
+                _wb128_bias = _wb128_meta.get("weekly_bias", "UNKNOWN")
+                _wb128_dir  = getattr(recommendation.direction, "value", "NEUTRAL")
+                # Блокируем NONE/UNKNOWN — нет контекста, EV отрицательный
+                # Исключение: BULLISH+LONG или BEARISH+SHORT — aligned
+                _wb128_aligned = (
+                    (_wb128_bias == "BULLISH" and _wb128_dir == "LONG") or
+                    (_wb128_bias == "BEARISH" and _wb128_dir == "SHORT")
+                )
+                _wb128_block = not _wb128_aligned  # блок если не aligned
+                if _wb128_block:
+                    if _wb128_shadow or not _wb128_enabled:
+                        logger.info(
+                            "[%s] DEV-128 SHADOW pivot_reversal RANGE weekly_bias=%s dir=%s → WOULD_BLOCK",
+                            symbol, _wb128_bias, _wb128_dir,
+                        )
+                    else:
+                        logger.info(
+                            "[%s] DEV-128 pivot_reversal RANGE weekly_bias=%s dir=%s → WATCH",
+                            symbol, _wb128_bias, _wb128_dir,
+                        )
+                        recommendation.action = "WATCH"
+        except Exception as _e128:
+            logger.debug("[DEV-128] %s: gate error — %s", symbol, _e128)
+
     # Этап 6: TP по иерархии пивотов (ARCH-09п5, DEV-75)
     # Порядок: 1D → 1W → confluence(1W+1D) → confluence(1M+1W) → 1M → ATR fallback
     distance_to_pivot_pct: float = 0.0
@@ -1002,9 +1038,51 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             trade_registered = trade_id is not None
             if not trade_registered:
                 logger.warning("[%s] register_trade вернул None (нет entry_price/SL/TP?) — сделка НЕ сохранена", symbol)
-            elif hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
-                # Фаза 2: добавляем OHLCV-подписку для новой сделки
-                bot.ws_feed.update_priority_pairs([symbol])
+            else:
+                if hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
+                    bot.ws_feed.update_priority_pairs([symbol])
+                # DEV-77: OrderExecutor — VST/LIVE исполнение (SIM_ONLY = только лог)
+                if hasattr(bot, "order_executor") and is_actionable:
+                    try:
+                        _oe = bot.order_executor
+                        if _oe.is_live() or True:  # SIM тоже логируем для валидации
+                            _oe_dir = getattr(recommendation.direction, "value", "LONG")
+                            _oe_entry = float(recommendation.entry_price or 0)
+                            _oe_sl = float(recommendation.stop_loss or 0)
+                            _oe_tp1 = float(recommendation.take_profit or 0)
+                            _oe_tp2 = float(recommendation.tp1_price or 0) or None
+                            if _oe_entry > 0 and _oe_sl > 0 and _oe_tp1 > 0:
+                                # Рассчитываем qty через PositionSizer
+                                _deposit = float(bot.config.get("trading.deposit_usdt", 1000.0))
+                                _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+                                _leverage = int(bot.config.get("trading.leverage", 1))
+                                _qty = bot.position_sizer.calc_qty(
+                                    entry_price=_oe_entry,
+                                    sl_price=_oe_sl,
+                                    deposit=_deposit,
+                                    risk_pct=_risk_pct,
+                                    leverage=_leverage,
+                                )
+                                if _qty > 0:
+                                    _br = await _oe.open_bracket(
+                                        symbol=symbol,
+                                        direction=_oe_dir,
+                                        entry_price=_oe_entry,
+                                        sl=_oe_sl,
+                                        tp1=_oe_tp1,
+                                        tp2=_oe_tp2,
+                                        qty=_qty,
+                                    )
+                                    if not _br.success:
+                                        logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
+                                    else:
+                                        logger.info(
+                                            "[%s] [%s] bracket_open: %s qty=%.6f entry=%.4f SL=%.4f TP=%.4f order_id=%s",
+                                            symbol, _br.mode.upper(), _oe_dir, _qty,
+                                            _oe_entry, _oe_sl, _oe_tp1, _br.order_id,
+                                        )
+                    except Exception as _oe_e:
+                        logger.warning("[%s] OrderExecutor: %s", symbol, _oe_e)
         except Exception as e:
             logger.warning("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e, exc_info=True)
 

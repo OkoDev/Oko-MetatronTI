@@ -132,7 +132,7 @@
 | [DEV-114](#dev-114) | ✅ | Dashboard VST P1: Risk Exposure карточка + Open P&L сегодня (R и USDT) | DEV |
 | [DEV-115](#dev-115) | ✅ | Dashboard VST P1: текущий R live в open trades + cap%/MFE в closed trades | DEV |
 | [DEV-120](#dev-120) | ✅ | Параллельный broadcast: asyncio.gather + TG semaphore 25 msg/sec (DEV-120, масштабирование) | DEV |
-| [DEV-116](#dev-116) | 🔵 | Dashboard P2: Session heatmap + R-distribution + per-signal P&L bar chart | DEV |
+| [DEV-116](#dev-116) | ✅ | Dashboard P2: Session heatmap + R-distribution + per-signal P&L bar chart | DEV |
 | [DEV-117](#dev-117) | 🔵 | Dashboard P3: страница `/performance` + drill-down `/pair/:symbol` + SSE endpoint | DEV |
 | [DEV-118](#dev-118) | ✅ | Фикс двойного analyze_symbol: best signal_type выбирается по приоритету, один analyze_symbol — 30.03 | DEV |
 | [DEV-119](#dev-119) | ✅ | TRIPLE_TP_TSL убран, DUAL_TP переработан: TP1=пивот, TP2=следующий пивот, RANGE→SINGLE — 30.03 | DEV |
@@ -2543,9 +2543,9 @@ trading:
 
 ---
 
-### DEV-116 — Dashboard P2: Аналитические графики 🔵
+### DEV-116 — Dashboard P2: Аналитические графики ✅
 
-**Статус:** 🔵 бэклог
+**Статус:** ✅ выполнено (03.04.2026)
 **Агент:** DEV
 **Источник:** ARCH аудит 29.03
 

@@ -25,6 +25,8 @@ from core.bounce_detector import BounceDetector
 from core.signal_watch_list import SignalWatchList
 from core.context.pair_context import PairContextBus
 from core.trading.post_trade_analyser import PostTradeAnalyser
+from core.trading.order_executor import OrderExecutor
+from core.trading.position_sizer import PositionSizer
 from core.infra.ws_feed import WsFeed
 from bot.menus import MenuHandler
 
@@ -67,6 +69,11 @@ class TradingAlertBot:
         self.post_analyser = PostTradeAnalyser(self.pair_context, self.data_collector)
         self.trade_simulator.set_post_trade_callback(self.post_analyser.on_trade_closed)
 
+        # DEV-77/78: OrderExecutor + PositionSizer (SIM → VST → LIVE)
+        self.order_executor = OrderExecutor(self.data_collector, config)
+        self.position_sizer = PositionSizer(config)
+        logger.info("[Bot] execution_mode=%s", self.order_executor.mode.value)
+
         self.watchlist_manager = WatchlistManager(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
@@ -100,6 +107,11 @@ class TradingAlertBot:
         # DEV-22: WATCH LIST — автоматическое наблюдение и эскалация сигналов
         _wl_ttl = int(config.get("signal_quality.watch_list_ttl_hours", 4))
         self.signal_watch_list = SignalWatchList(ttl_hours=_wl_ttl)
+
+        # DEV-103 / ARCH-65: Exchange Health Guard
+        self.exchange_health     = "HEALTHY"   # ExchangeHealth.HEALTHY
+        self.exchange_latency_ms = 0.0
+        self.down_since          = None        # datetime | None
 
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
         self.ws_feed = WsFeed(
@@ -187,8 +199,10 @@ class TradingAlertBot:
             from bot.monitoring import trade_tracker_loop
             from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop
             from bot.loops.trigger_loop import run_trigger_loop
+            from bot.loops.health_loop import health_check_loop
             from web.dashboard_server import start_dashboard
 
+            asyncio.create_task(health_check_loop(self))        # DEV-103: Exchange Health Guard
             asyncio.create_task(trade_tracker_loop(self))
             asyncio.create_task(run_trigger_loop(self))     # DEV-95: Куб Метатрона — OTE/Cascade триггеры
             asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket

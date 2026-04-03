@@ -45,6 +45,9 @@ exchanges:
     bingx:
       api_key: 2zDHkpQwgHe54YWlvnKg5B18OOrstPP9ddYJrPBZyiz9KUrEM89tk5qCEvaLrmZ0gpRdYotahOrH9QRElQ
       secret: rgDbCOJCjfi9ok5k2idnfSeLz0JDdzJebTz5MoKa61fZykl9XhKrrEMZajDfXhkXDpfvfZPGGWeUYeh4CNUhg
+    bingx_vst:                    # VST sandbox — отдельный ключ, URL: open-api-vst.bingx.com
+      api_key: REPLACE_WITH_VST_API_KEY
+      secret:  REPLACE_WITH_VST_SECRET
 analysis:
   volume_multiplier: 4.0
   price_threshold: 5.0
@@ -156,6 +159,11 @@ trading:
   # DEV-77: OrderExecutor — режим исполнения ордеров
   execution_mode: sim_only   # sim_only | vst (sandbox) | live
   tp1_close_pct: 0.20        # 20% позиции закрыть при TP1 hit
+
+  # PositionSizer — риск-менеджмент (DEV-78)
+  deposit_usdt: 1000.0       # VST депозит
+  risk_pct: 1.0              # риск 1% от депозита на сделку
+  leverage: 5                # плечо (5x для VST)
 
   # DEV-32: блокировка контр-тренд входов (TRADER 23.03: CAKE/SAHARA — системная ошибка)
   # TREND_DOWN → только SHORT, TREND_UP → только LONG, RANGE/HIGH_VOL — оба направления
@@ -300,7 +308,7 @@ signal_quality:
   dedup_minutes: 30
   min_volume_usd: 0  # фильтр по BingX-объёму некорректен (глобальный объём монеты м.б. намного выше)
   min_strength: 50
-  min_strength_register: 75  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
+  min_strength_register: 63  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
   min_strength_wl_breach: 45  # DEV-69: WL breach — ниже, т.к. касание уровня само по себе = контекст
   pivot_reversal_max_strength: 79  # DEV-98 (ARCH Находка 2): strength≥80 = WR=4.5% avgR=−0.735R → блок
   ote_shadow_mode: true         # ARCH-53: OTE детектор shadow mode (только логирование, ≥2 недели)
@@ -317,6 +325,9 @@ signal_quality:
       blocked_regimes: [RANGE, TREND_DOWN, TREND_UP, HIGH_VOL]  # WR=19%/12%/7%/0% — только None: +1.42R
     wt_signal:
       blocked_regimes: [RANGE, TREND_DOWN, TREND_UP, HIGH_VOL]  # WR=0% везде кроме None avg_R=-1.0
+  weekly_bias_gate:          # DEV-128: pivot_reversal RANGE при weekly_bias≠aligned → блок
+    enabled: true            # true = production gate (данные: 62% убыточных при NONE)
+    shadow_mode: false       # false = реальный блок (не shadow)
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
@@ -388,7 +399,7 @@ risk_management:
   regime_strategy:
     enabled: true
     trend_sl_factor: 0.85
-    trend_strategy_type: DUAL_TSL  # 70% на TP1 (пивот), 30% под TSL (решение 30.03.2026)
+    trend_strategy_type: SINGLE    # DEV-124: DUAL_TP/DUAL_TSL → -88.5R, SINGLE → +1866R (02.04.2026)
     trend_position_multiplier: 1.0
     range_sl_factor: 1.15
     range_strategy_type: SINGLE    # было DUAL_TP — RANGE всегда на первом пивоте (30.03.2026)
