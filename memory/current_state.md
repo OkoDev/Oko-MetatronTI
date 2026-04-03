@@ -4,6 +4,64 @@
 
 ---
 
+## [04.04.2026] Агент: DEV — DEV-126 выполнен
+
+- ✅ **DEV-126**: features_json fix — WL breach + other_recs теперь пишут weekly_bias, htf_wt
+  - `scan_loop.py`: `_handle_wl_breach_entry` → полный extra_features (weekly_bias через pivot_calculator, htf_wt1_1h через async fetch 1h, wt1_value из df_entry)
+  - `monitoring.py`: `other_recs` block → передаёт weekly_bias/htf_wt из recommendation.metadata + pre_fetched_dfs
+- 🔄 **Следующие**: DEV-127 (SMC None gate shadow), DEV-128 (weekly_bias gate pivot_reversal)
+
+---
+
+## [02.04.2026] Агент: TRADER — TR-007 + TR-001 выполнены
+
+- ✅ **SMC gate**: `smc_has_bos OR smc_has_choch` — 254 сделки без SMC = WR=2% EV=−0.818R → shadow gate предложен DEV
+- ✅ **session="?" баг**: 745/1401 (53%) сделок = неполный features_json (session+htf_wt+RR = одно множество)
+- ✅ **HTF alignment**: +0.468R EV разница, но данные только у 47% — нужен fix заполнения
+- ✅ **Мёртвые детекторы**: wt_signal (0% WR), anomaly (0% WR) → предложено убрать
+- ✅ **pivot_reversal LONG TREND_DOWN**: −0.929R → предложено заблокировать
+- ✅ **TR-001**: WR=37.5% сегодня, EV≈+0.54R, 25 открытых позиций. OKB/KAITO >45ч.
+- ✅ **PairFullState валидация**: концепция верна, но fix заполнения данных = prerequisite для ML специалистов
+- ✅ **trader_analyses/2026-04-02.md** создан
+
+**Критический вывод**: fix session+htf_wt в register_trade_async — необходимо перед ARCH-68 (ML специалисты).
+
+---
+
+## [02.04.2026] Агент: ARCH — Куб Метатрона зафиксирован в ENCYCLOPEDIA
+
+- ✅ **docs/ENCYCLOPEDIA.md**: добавлен раздел "Архитектурная концепция: Куб Метатрона"
+  - 13 сфер с детальным описанием каждой (статус, файл, признаки, зависимости)
+  - 5 Платоновых тел — уровни абстракции системы
+  - PairFullState dataclass с полным набором полей шины
+  - MTF WT Specialist: **35 признаков** (7TF × wt1/wt2/zone/cross/**atr_trend**)
+  - MTF SMC Specialist: 36 признаков (4TF × 9 включая EQH/EQL)
+  - Дорожная карта Фаза 0→4
+  - Правило: любая задача должна соответствовать Кубу
+- ✅ **CLAUDE.md**: добавлено обязательное чтение ENCYCLOPEDIA + архитектурное правило Куба
+- ✅ **TASKS.md**: добавлена ARCH-68 (Куб Фаза 2: ML специалисты + Narrative Builder)
+- ✅ **DISCUSSION.md**: зафиксирована концепция + уточнение ATR-trend в MTF WT Specialist
+
+**Следующие приоритеты:**
+1. 🔥 ARCH-62: Exit Manager (разделить монолит trade_simulator.py) — блокирует Фазу 2
+2. 🟢 DEV-121: Self-Diagnostics Suite
+3. 🔥 DEV-111: BTC 4h gate shadow
+
+---
+
+## [02.04.2026] Агент: TRADER — TR-001 + ответы DEV/ARCH
+
+- ✅ **Ответ DEV**: avg_R=+0.21 при SL-статусе = DUAL_TP tp1_hit механизм (30/31 хитнули TP1, 0.70×R_tp1 + 0.30×(-1R) ≈ +0.21R). TSL gap риск, не баг.
+- ✅ **48ч ревью DUAL_TSL/TP2**: TSL exits = avg_R +3.0-3.2R, TP2 = 14 сделок +2.288R. Механизм корректен.
+- ✅ **WR нормализована**: сегодня (02.04) WR=37.5%, EV≈+0.54R. Фиксы dynamic_os+bounce работают.
+- ✅ **Ответ ARCH**: горизонт пользователей = 50-200, SQLite достаточно, WAL при ~50 usr.
+- ✅ **TR-001**: 25 открытых, ⚠️ OKB/KAITO >45ч (EXPIRED скоро), MMT tsl=0 за 29ч.
+- ✅ **Trader analysis**: memory/trader_analyses/2026-04-02.md создан.
+
+**Текущее состояние системы:** стабильна. WR нормализована.
+
+---
+
 ## [01.04.2026] Агент: DEV — Аудит SL конвейера + полный map TP/SL/TSL
 
 - ✅ **Диагноз SL конвейера**: DEV-108 (dynamic_os в RANGE) = root cause. Фикс: `dynamic_os_enabled: false` в config.yaml

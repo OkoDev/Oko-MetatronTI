@@ -235,13 +235,45 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         metadata={"signal_type": "watch_list_breach", "wl_reason": wl_entry.reason},
     )
 
+    # DEV-126: собираем полный extra_features для WL breach — weekly_bias + htf_wt
+    _extra_wl: dict = {"wl_pivot_key": wl_entry.pivot_key, "wl_score": score}
+    try:
+        _pc_wl = getattr(bot, "pivot_calculator", None)
+        if _pc_wl is not None:
+            _wp_wl = await _pc_wl.get_weekly_pivots(symbol, bot.data_collector)
+            _wpp_wl = float((_wp_wl or {}).get("PP") or 0) or None
+            if _wpp_wl and current_price:
+                _extra_wl["weekly_bias"] = "BULLISH" if current_price > _wpp_wl else "BEARISH"
+            else:
+                _extra_wl["weekly_bias"] = "UNKNOWN"
+        else:
+            _extra_wl["weekly_bias"] = "UNKNOWN"
+    except Exception:
+        _extra_wl["weekly_bias"] = "UNKNOWN"
+    try:
+        _df_1h_wl = await bot.data_collector.get_ohlcv(symbol, "1h", limit=30)
+        if _df_1h_wl is not None and "wt1" in _df_1h_wl.columns and len(_df_1h_wl) > 0:
+            _extra_wl["htf_wt1_1h"] = round(float(_df_1h_wl["wt1"].iloc[-1]), 1)
+            _extra_wl["htf_wt2_1h"] = round(float(_df_1h_wl["wt2"].iloc[-1]), 1)
+    except Exception:
+        pass
+    # entry-TF WT (df_entry уже прошёл _calc_wt в scan_one)
+    try:
+        if df_entry is not None and "wt1" in df_entry.columns and len(df_entry) > 0:
+            _extra_wl["wt1_value"] = round(float(df_entry["wt1"].iloc[-1]), 1)
+            _extra_wl["wt2_value"] = round(float(df_entry["wt2"].iloc[-1]), 1)
+            _w1e = _extra_wl["wt1_value"]
+            _extra_wl["wt_zone"] = "OS" if _w1e <= -60 else "OB" if _w1e >= 60 else "N"
+    except Exception:
+        pass
+
     # Регистрируем сделку (dedup по открытым сделкам — внутри register_trade)
     trade_id = None
     if hasattr(bot, "trade_simulator"):
         try:
             trade_id = await bot.trade_simulator.register_trade_async(
                 rec, bot.data_collector,
-                extra_features={"wl_pivot_key": wl_entry.pivot_key, "wl_score": score},
+                extra_features=_extra_wl,
             )
         except Exception as e:
             logger.warning("[WL-BREACH] %s: ошибка register_trade — %s", symbol, e)
@@ -826,6 +858,12 @@ async def monitor_market(bot) -> None:
         _div_cycle = 0
         while bot.is_monitoring:
             # Читаем цикловые интервалы из конфига (hot-reload)
+            # DEV-103: пропустить цикл если биржа DOWN
+            if getattr(bot, "exchange_health", "HEALTHY") == "DOWN":
+                logger.warning("[scan] биржа DOWN — пропуск цикла скана")
+                await asyncio.sleep(60)
+                continue
+
             _div_n      = int(bot.config.get("monitoring.check_intervals.divergences_every_n_cycles", 3))
             _bg_n       = int(bot.config.get("monitoring.check_intervals.background_every_n_cycles", 5))
             _cascade_n  = int(bot.config.get("monitoring.check_intervals.cascade_div_every_n_cycles", 60))

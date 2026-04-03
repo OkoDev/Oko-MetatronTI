@@ -1039,7 +1039,28 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     other_rec.take_profit, other_rec.tp_source = _ores
                         except Exception as _e58:
                             logger.debug("[ARCH-58/other_recs] %s '%s': %s", symbol, strat_name, _e58)
-                    await bot.trade_simulator.register_trade_async(other_rec, bot.data_collector)
+                    # DEV-126: передаём weekly_bias + htf_wt из контекста основной рекомендации
+                    _or_extra: dict = {}
+                    _main_meta = (recommendation.metadata or {}) if recommendation else {}
+                    if "weekly_bias" in _main_meta:
+                        _or_extra["weekly_bias"] = _main_meta["weekly_bias"]
+                        _or_extra["weekly_context_score"] = _main_meta.get("weekly_context_score", 0)
+                    if pre_fetched_dfs:
+                        for _or_tf, _or_k1, _or_k2 in [
+                            ("1h", "htf_wt1_1h", "htf_wt2_1h"),
+                            ("4h", "htf_wt1_4h", "htf_wt2_4h"),
+                        ]:
+                            _or_df = pre_fetched_dfs.get(_or_tf)
+                            if _or_df is not None and "wt1" in _or_df.columns and len(_or_df) > 0:
+                                try:
+                                    _or_extra[_or_k1] = round(float(_or_df["wt1"].iloc[-1]), 1)
+                                    _or_extra[_or_k2] = round(float(_or_df["wt2"].iloc[-1]), 1)
+                                except Exception:
+                                    pass
+                    await bot.trade_simulator.register_trade_async(
+                        other_rec, bot.data_collector,
+                        extra_features=_or_extra or None,
+                    )
                     logger.debug("[%s] Стратегия '%s' зарегистрирована в БД", symbol, strat_name)
             except Exception as e:
                 logger.debug("register_trade стратегии '%s' для %s: %s", strat_name, symbol, e)

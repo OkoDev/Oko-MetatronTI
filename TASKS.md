@@ -145,6 +145,11 @@
 | [DEV-123](#dev-123) | ✅ | anti-degradation gate: R >= 5R → skip degradation в cascade_tsl.py — 02.04.2026 | DEV |
 | [DEV-124](#dev-124) | ✅ | EXPIRED extension: max_R_possible >= 5R → 120h вместо 48h — 02.04.2026 | DEV |
 | [DEV-91-v2](#dev-91-v2) | ✅ | R-gradient drop: убран shadow, теперь реальный gate де-эскалации — 02.04.2026 | DEV |
+| [DEV-125](#dev-125) | ✅ | TREND → SINGLE: DUAL_TP/DUAL_TSL убраны из TREND (SINGLE +1866R vs DUAL -88.5R) — 02.04 | DEV |
+| [DEV-126](#dev-126) | ✅ | features_json баг: session="?" + htf_wt1_1h=None у 53% сделок — найти и починить | DEV |
+| [DEV-127](#dev-127) | 🟡 | SMC None gate: smc_has_bos OR smc_has_choch в wt_15m_reversal_scanner.py (shadow) | DEV |
+| [DEV-128](#dev-128) | 🟡 | weekly_bias gate: pivot_reversal блокировать при weekly_bias=NONE (62% убыточных) | DEV |
+| [DEV-129](#dev-129) | 🟡 | PivotTouchTrigger: pivot R1/R2/S1/S2 1D/1W касание → немедленный analyze_symbol (shadow) | DEV |
 
 ---
 

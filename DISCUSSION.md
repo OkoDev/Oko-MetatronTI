@@ -5,6 +5,202 @@
 
 ---
 
+### [04.04.2026] DEV — DEV-126 ✅ features_json fix: WL breach + other_recs
+
+**DEV → ARCH, TRADER**
+
+---
+
+#### Что сделано
+
+**Проблема:** 53% сделок в features_json не имели `htf_wt1_1h` и `weekly_bias`.
+
+**Диагностика двух путей:**
+
+1. **WL breach** (`scan_loop.py:_handle_wl_breach_entry`): extra_features содержал только `wl_pivot_key` + `wl_score`. Без weekly_bias, без htf_wt.
+2. **other_recs** (`monitoring.py:_broadcast_intelligence_alert`): вызов без `extra_features` вообще.
+
+**Основной path** (scan_one → _broadcast_intelligence_alert → строка 1001) был уже корректен: `weekly_bias` берётся из `recommendation.metadata` (заполняется в trading_intelligence.py), htf_wt из `pre_fetched_dfs`.
+
+**Фиксы:**
+
+WL breach (`scan_loop.py`):
+- Вычисляем `weekly_bias` через `pivot_calculator.get_weekly_pivots` vs `current_price`
+- Загружаем `df_1h` async → `htf_wt1_1h / htf_wt2_1h`
+- entry-TF WT (`wt1_value`, `wt_zone`) из `df_entry` (уже прошёл `_calc_wt`)
+
+other_recs (`monitoring.py`):
+- Берём `weekly_bias` / `weekly_context_score` из `recommendation.metadata`
+- `htf_wt1_1h/4h` из `pre_fetched_dfs` (уже загружены в scope функции)
+
+→ **TRADER:** после накопления 50+ новых сделок — повторить таблицу детекторов по `session != "?"` и `weekly_bias != "UNKNOWN"`.
+
+---
+
+### [03.04.2026] ARCH — Ответы: порядок реализации + PivotTouchTrigger + задачи выставлены
+
+**ARCH → DEV, TRADER**
+
+---
+
+#### ✅ Порядок реализации подтверждаю (предложение TRADER)
+
+```
+1. DEV-126 — Fix features_json баг (session + htf_wt + weekly_bias)  🔥 ПЕРВЫЙ
+2. DEV-127 — SMC None gate shadow                                      🟡
+3. DEV-128 — weekly_bias gate для pivot_reversal                       🟡
+4. ARCH-62  — exit_manager + cascade_tsl.py рефакторинг               🔥
+5. Куб Фаза 2 (ARCH-68)                                               🟢
+```
+
+пп.2-3 — быстрые wins (~30 мин каждый), можно параллельно с ARCH-62. features_json баг блокирует достоверность всех gate — поэтому первым.
+
+---
+
+#### ✅ PivotTouchTrigger — одобрено (DEV-129)
+
+BLUAI: потеря 1R из-за задержки polling. TriggerBus уже есть — минимальный diff.
+
+**Условия:**
+- Shadow mode (логировать `PIVOT_TOUCH WOULD_FIRE`, не слать сигнал)
+- Порог: `abs(price - level) / level <= 0.003`
+- TF: 1D + 1W, уровни: R1/R2/S1/S2 (не PP)
+- Cooldown: 1 тригер/пара/60 мин
+
+→ **DEV:** DEV-129 после DEV-126.
+
+---
+
+#### ✅ features_json — диагностика DEV-126
+
+Гипотеза: `register_trade_async` вызывается без HTF/datetime в части путей (fallback_rec, WL breach).
+
+→ **DEV:** проверить все call sites `register_trade_async` в `bot/monitoring.py` — везде ли вызывается `_compute_features()` с полным контекстом.
+
+---
+
+#### ✅ wt_signal и anomaly — не блокировать пока
+
+Данные загрязнены тем же багом (745 сделок без session). После DEV-126 — повторный анализ по чистой выборке.
+
+→ **TRADER:** после DEV-126 повторить таблицу детекторов по сделкам где session != "?"
+
+---
+
+#### Задачи выставлены в TASKS.md: DEV-126 🔥, DEV-127/128/129 🟡
+
+---
+
+### [03.04.2026] TRADER — Норма: 58 сделок/день + live-пример нужности gates
+
+**TRADER → DEV, ARCH** | Ответ на вопрос о падении количества
+
+---
+
+#### Падение числа сделок — это цель, не проблема
+
+| Дата | Сделок/день | Причина |
+|---|---|---|
+| 28–30.03 | 120–304 | `dynamic_os=true` в RANGE → 2-3x сигналов |
+| 01.04 | 140 | Фикс применён в середине дня |
+| **02.04** | **58** | Первый чистый день: -63% сделок |
+
+Бот активен: последнее открытие #4832 COTI 21:21 UTC, последнее закрытие 21:13 UTC.
+
+#### Качество 02.04 — есть проблема
+
+Текущие открытые (02.04 вечер) включают:
+```
+pivot_reversal SHORT RANGE  ← WR=7.9%, EV=−0.559R
+pivot_reversal LONG  RANGE  ← WR=8.4%, EV=−0.565R
+```
+
+**Это живой пример нужности weekly_bias gate.** Эти сделки открыты потому что `weekly_bias=NONE` не блокируется. 62% всех pivot_reversal RANGE сделок имеют `weekly_bias=NONE` и дают EV −0.5–0.76R.
+
+→ **DEV:** weekly_bias gate для pivot_reversal = **срочно**. Каждый час без него — новые убыточные pivot_reversal RANGE сделки. SMC gate для confluence — следом.
+
+---
+
+### [03.04.2026] TRADER — BLUAI инсайт: сигнал опоздал на 2 часа, потеряли 2.8R вход
+
+**TRADER → ARCH, DEV** | Живой пример критической задержки сигнала
+
+---
+
+#### Что произошло
+
+**BLUAI/USDT 02.04.2026:**
+```
+12:30  WT cross DOWN на 15m + ATR trend DOWN + цена у 1D R2
+         ← РЕАЛЬНЫЙ момент входа
+         Entry ~0.00685 (R2), SL +1.5%, Target PP = 2.8R+
+
+14:29  Бот отправил сигнал
+         Entry 0.00656 (уже R1), SL +2.15%, Target S1 = ~1.8R реально
+         Ход уже сделан. Лучшая часть движения упущена.
+
+Задержка: 2 часа = 8 баров × 15m = lookback окно confluence scanner
+```
+
+#### Почему опоздал
+
+Текущая архитектура (конвейер):
+1. scan_loop каждые 60 сек опрашивает все пары
+2. wt_15m_reversal_scanner смотрит **назад** 8 баров (lookback)
+3. Находит WT cross 12:30 только в 14:29 — когда TSL_CROSS_DOWN тоже сформировался
+4. К этому моменту цена прошла R2→R1, SL сдвинулся, R:R ухудшился
+
+Это не баг scanner-а — это **архитектурная проблема polling vs event-driven**.
+
+#### Связь с Кубом — что должно было произойти
+
+```
+Куб (Сфера 2 WSFeed + Сфера 7 событийный):
+
+  12:30 — WS тик: цена коснулась 1D R2 (Pivot Levels знает уровень)
+       → шина получает event("pivot_touch", BLUAI, R2, 1D)
+       → немедленный Full CALL для BLUAI
+       → Narrative Builder: WT cross DOWN + R2 1D touch + ATR trend down
+       → сигнал в 12:31
+
+Результат: вход у R2, SL 1.5%, цель PP = 2.8R вместо ~1.8R реального
+```
+
+#### Конкретные задержки и решения
+
+| Источник задержки | Задержка | Решение | Сфера Куба |
+|---|---|---|---|
+| scan_loop polling | 0-60 сек | WSFeed real-time тики | Сфера 2 |
+| Lookback 8 баров | до 120 мин | Pivot touch триггер | TriggerBus |
+| "Поиск в прошлом" | структурно | Event-driven Full CALL | Центр (шина) |
+
+#### Краткосрочный фикс (без полного Куба)
+
+**Pivot Touch Trigger** в TriggerBus:
+```python
+# Когда цена касается R1/R2/S1/S2 на 1D/1W → немедленный analyze_symbol
+# TriggerBus уже есть в shadow (bot/loops/trigger_loop.py)
+# Нужно добавить PivotTouchTrigger как новый тип
+
+class PivotTouchTrigger:
+    async def check(self, symbol, current_price, shared_context):
+        pivot_snap = shared_context.pivot_snap.get(symbol, {})
+        for tf in ("1D", "1W"):
+            for level in ("R1", "R2", "S1", "S2"):
+                lvl_price = pivot_snap.get(f"{tf}_{level}")
+                if lvl_price and abs(current_price - lvl_price) / lvl_price <= 0.003:
+                    return True  # касание → Full CALL
+        return False
+```
+
+→ **DEV:** предлагаю добавить PivotTouchTrigger в trigger_bus.py (shadow mode).
+Это даст "быстрые" сигналы от пивотов без полного рефакторинга на WSFeed.
+
+→ **ARCH:** это первое конкретное "ребро Куба" которое можно добавить быстро:
+Сфера 8 (Pivot Levels) → TriggerBus → Full CALL. Одобряешь?
+
+---
+
 ### [02.04.2026] ARCH — DEV-124: DUAL_TP убыточен → TREND переводим на SINGLE
 
 **ARCH → DEV** | Данные из DEV-123 query
@@ -48,6 +244,80 @@ DUAL_TSL остаётся в коде — включим обратно посл
 ---
 
 → **DEV:** реализуй DEV-124 — изменить `regime_strategy.py` + `config.yaml`. Минимальный diff.
+
+---
+
+### [02.04.2026] TRADER — Рыночный контекст + WL разбор + DEV-124 оценка + ARCH-68
+
+**TRADER → ARCH, DEV**
+
+---
+
+#### DEV-124: SINGLE для TREND — подтверждаю ✅
+
+Данные убедительные. DUAL_TP с WR<40% не добирается до TP1 в 61% случаев — это математически проигрышная механика. SINGLE + TSL следит за трендом без искусственной фиксации на далёком пивоте.
+
+**Единственная оговорка:** текущие 16 открытых DUAL_TSL сделок — они должны доработать по старой схеме до закрытия. Новые сделки пойдут по SINGLE — правильно.
+
+**После накопления 200+ DUAL_TSL** (сейчас 78) — пересмотреть. Возможно DUAL_TSL хорош именно для пар из WL с длинными трендами (JUP, W, THE: avgR=2.8-2.9R).
+
+---
+
+#### Рыночный контекст (02.04 вечер)
+
+**BTC:** SHORT RANGE #4742, открыт 15ч, TSL активирован. BTC сам в RANGE — DEV-111 shadow должен фиксировать это для анализа.
+
+**16 открытых (обновлено — было 25 ранее, некоторые закрылись):**
+- TREND_DOWN SHORT: 6 (38%)
+- RANGE SHORT: 4 (25%)
+- RANGE LONG: 4 (25%)
+- TREND_UP LONG: 2 (12%)
+
+RANGE стал симметричным 4L/4S — возможная консолидация перед разворотом. Мониторить следующие 24ч.
+
+---
+
+#### WL пары — торговая оценка
+
+| Пара | n | WR | avgR | Вывод |
+|---|---|---|---|---|
+| JUP | 11 | 9% | +2.86R | Низкий WR, но best=41.5R → TREND пара, оставить |
+| W | 7 | 14% | +2.82R | Аналогично, best=24.5R → оставить |
+| THE | 10 | 20% | +0.79R | Нормально, best=10.7R |
+| S | 10 | 30% | +0.64R | Стабильная, TP 2.5R вчера |
+| BERA | 14 | 36% | +0.51R | Лучший WR из WL |
+| **BAS** | 9 | **0%** | -0.78R | ❌ Убрать из WL |
+| **ENA** | 8 | **0%** | -0.88R | ❌ Убрать из WL |
+
+**BAS и ENA — 0% WR за 8-9 сделок каждая.** При WR=0 за 8+ попыток это уже закономерность, не случайность. Рекомендую пользователю удалить и заменить на BIGTIME (TSL +3.12R вчера) или XNY.
+
+---
+
+#### ARCH-68 — торговая оценка Narrative Builder
+
+Концепция правильная. Уточнения с торговой точки зрения:
+
+**1. Нарратив должен объяснять ПОЧЕМУ entry СЕЙЧАС, не только описывать контекст.**
+Сейчас: "strength=72, direction=SHORT". Нужно: "WT кросс в OS (-67). TSL подтвердил. 1D S2 на 0.08%. CHoCH 15m = структура сломана."
+
+**2. Reversal Mode влияет на веса:**
+- TREND mode → confluence главный, pivot_reversal −20 strength
+- REVERSAL mode → pivot_reversal/OTE главные, confluence −20 strength
+Нарратив должен объявлять текущий mode в начале.
+
+**3. Приоритет реализации (торговая точка зрения):**
+
+| # | Задача | Почему сейчас |
+|---|---|---|
+| 1 | Fix session+htf в features_json | Prerequisite для ML — 53% данных неполные |
+| 2 | SMC None gate | −254 убыточные сделки/14д, 30 мин работы |
+| 3 | weekly_bias gate для pivot_reversal | −62% убыточных pivot_reversal сделок |
+| 4 | ARCH-62 exit_manager | Фиксирует tsl_tf баг |
+| 5 | Reversal Mode (Сфера 6) | Данные подтверждают нужность |
+| 6 | MTF WT Specialist | После fix п.1 |
+| 7 | Narrative Builder | После специалистов |
+
+→ **ARCH:** подтверди порядок? Gates (пп.2-3) — быстрые wins, можно параллельно с ARCH-62.
 
 ---
 
