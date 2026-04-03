@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, TYPE_CHECKING
@@ -95,7 +97,18 @@ class _BingXClient:
         sig = self._sign(qs)
         url = f"{self._base}{path}?{qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers={"X-BX-APIKEY": self._api_key}, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with s.get(url, headers={"X-BX-APIKEY": self._api_key},
+                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+                return await r.json()
+
+    async def _post_raw(self, path: str, raw_qs: str, url_qs: str) -> dict:
+        """POST с разделением: raw_qs для подписи, url_qs для URL (JSON значения URL-encoded)."""
+        import aiohttp
+        sig = self._sign(raw_qs)
+        url = f"{self._base}{path}?{url_qs}&signature={sig}"
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
+                              timeout=aiohttp.ClientTimeout(total=10)) as r:
                 return await r.json()
 
     async def _post(self, path: str, params: dict | None = None) -> dict:
@@ -106,7 +119,8 @@ class _BingXClient:
         sig = self._sign(qs)
         url = f"{self._base}{path}?{qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers={"X-BX-APIKEY": self._api_key}, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
+                              timeout=aiohttp.ClientTimeout(total=10)) as r:
                 return await r.json()
 
     async def get_balance(self) -> float:
@@ -129,35 +143,39 @@ class _BingXClient:
     ) -> dict:
         """
         Открывает MARKET позицию с SL и TP через BingX Perpetual API.
-        Сначала устанавливает плечо, потом открывает позицию.
+        SL/TP передаются как JSON объекты (тип STOP_MARKET/TAKE_PROFIT_MARKET).
         """
-        # BingX symbol format для perpetual: "BTC-USDT" (дефис, не слэш)
         bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        pos_side = "LONG" if side == "BUY" else "SHORT"
 
         # 1. Установить плечо
         try:
             lev_resp = await self._post("/openApi/swap/v2/trade/leverage", {
-                "symbol": bx_symbol,
-                "side": side,
-                "leverage": str(leverage),
+                "symbol": bx_symbol, "side": pos_side, "leverage": str(leverage),
             })
-            logger.debug("[BingXClient] leverage %s %s x%d: %s", bx_symbol, side, leverage, lev_resp)
+            logger.debug("[BingXClient] leverage %s x%d: %s", bx_symbol, leverage, lev_resp)
         except Exception as e:
             logger.warning("[BingXClient] leverage error (продолжаем): %s", e)
 
         # 2. Открыть позицию
-        pos_side = "LONG" if side == "BUY" else "SHORT"
-        order_params = {
-            "symbol":       bx_symbol,
-            "side":         side,
-            "positionSide": pos_side,
-            "type":         "MARKET",
-            "quantity":     str(qty),
-            "stopLoss":     str(sl),
-            "takeProfit":   str(tp),
-        }
-        resp = await self._post("/openApi/swap/v2/trade/order", order_params)
-        return resp
+        # SL/TP: JSON объект с числовыми значениями (не строки)
+        sl_obj = json.dumps({"type": "STOP_MARKET",        "stopPrice": sl, "price": 0, "workingType": "MARK_PRICE"}, separators=(",", ":"))
+        tp_obj = json.dumps({"type": "TAKE_PROFIT_MARKET", "stopPrice": tp, "price": 0, "workingType": "MARK_PRICE"}, separators=(",", ":"))
+
+        ts = self._ts()
+        # Для подписи — RAW строка (JSON не URL-encoded)
+        raw_qs = (
+            f"positionSide={pos_side}&quantity={qty}&side={side}"
+            f"&stopLoss={sl_obj}&symbol={bx_symbol}"
+            f"&takeProfit={tp_obj}&timestamp={ts}&type=MARKET"
+        )
+        # Для URL — JSON URL-encoded
+        url_qs = (
+            f"positionSide={pos_side}&quantity={qty}&side={side}"
+            f"&stopLoss={urllib.parse.quote(sl_obj)}&symbol={bx_symbol}"
+            f"&takeProfit={urllib.parse.quote(tp_obj)}&timestamp={ts}&type=MARKET"
+        )
+        return await self._post_raw("/openApi/swap/v2/trade/order", raw_qs, url_qs)
 
     async def close_position(self, symbol: str, side: str, qty: float) -> dict:
         """Закрывает часть позиции (reduce-only MARKET)."""
