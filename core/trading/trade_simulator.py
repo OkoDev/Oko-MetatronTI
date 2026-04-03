@@ -747,6 +747,18 @@ class TradeSimulator:
             logger.exception(f"TradeSimulator: ошибка get_open_trades — {e}")
             return []
 
+    def set_exchange_sl_order_id(self, trade_id: int, sl_order_id: str) -> None:
+        """Сохраняет orderId SL-ордера на бирже для последующего cancel+replace при TSL."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE simulated_trades SET exchange_sl_order_id = ? WHERE id = ?",
+                    (str(sl_order_id), trade_id),
+                )
+            logger.debug("TradeSimulator: trade #%d → exchange_sl_order_id=%s", trade_id, sl_order_id)
+        except Exception as e:
+            logger.warning("TradeSimulator: set_exchange_sl_order_id #%d: %s", trade_id, e)
+
     def set_exchange_order_id(self, trade_id: int, order_id: str) -> None:
         """Привязывает реальный exchange_order_id к симуляторной сделке.
         Только такие сделки будут синхронизироваться с биржей в VST/LIVE режиме."""
@@ -993,7 +1005,7 @@ class TradeSimulator:
         breakeven_activation_r: float = 0.5,
         use_be_after_tp1: bool = False,
         cascade_tsl: bool = True,
-    ) -> int:
+    ) -> tuple:
         """
         Проверяет открытые сделки с поддержкой TSL (Trailing Stop Loss).
         TSL активируется после достижения tsl_activation_r прибыли.
@@ -1005,11 +1017,14 @@ class TradeSimulator:
             tsl_activation_r: После скольки R активировать TSL (1.0 = после +1R)
 
         Returns:
-            Количество закрытых сделок
+            tuple(closed_count: int, tsl_moved: list[dict])
+            tsl_moved — список сделок где TSL активен и цена TSL изменилась:
+              {trade_id, symbol, direction, qty, new_sl_price, old_sl_price,
+               exchange_sl_order_id, exchange_order_id}
         """
         open_trades = self.get_open_trades()
         if not open_trades:
-            return 0
+            return 0, []
 
         # DEV-92: инвалидация _post_tsl_queue по TTL и пробою impulse
         _now92 = datetime.now(timezone.utc)
@@ -1023,6 +1038,7 @@ class TradeSimulator:
             del self._post_tsl_queue[_sym92]
 
         closed_count = 0
+        tsl_moved: list = []   # сделки где TSL активен и SL-цена изменилась
         for trade in open_trades:
             trade_id = trade["id"]
             symbol = trade["symbol"]
@@ -1545,6 +1561,24 @@ class TradeSimulator:
                             if self.close_trade(trade_id, STATUS_TSL, current_price):
                                 closed_count += 1
                             continue
+                        else:
+                            # TSL активен, не сработал — фиксируем движение SL для обновления на бирже
+                            _exch_sl_id = trade.get("exchange_sl_order_id")
+                            _old_sl = float(trade.get("stop_loss") or 0)
+                            _exch_order_id = trade.get("exchange_order_id")
+                            if _exch_order_id and tsl_price and tsl_price != _old_sl:
+                                # qty — из оригинального ордера (посчитаем из notional или берём из БД)
+                                _qty = float(trade.get("qty") or 0)
+                                tsl_moved.append({
+                                    "trade_id":            trade_id,
+                                    "symbol":              symbol,
+                                    "direction":           direction,
+                                    "qty":                 _qty,
+                                    "new_sl_price":        tsl_price,
+                                    "old_sl_price":        _old_sl,
+                                    "exchange_sl_order_id": _exch_sl_id,
+                                    "exchange_order_id":   _exch_order_id,
+                                })
 
                 except Exception as e:
                     logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
@@ -1707,4 +1741,4 @@ class TradeSimulator:
                             import asyncio
                             asyncio.create_task(analyzer.analyze_sl_trade(trade_id))
 
-        return closed_count
+        return closed_count, tsl_moved

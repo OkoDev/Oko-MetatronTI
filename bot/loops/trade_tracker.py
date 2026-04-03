@@ -8,6 +8,98 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+async def fetch_and_save_sl_order_id(bot, trade_id: int, symbol: str, pos_side: str) -> None:
+    """После открытия bracket-ордера — получаем SL orderId и сохраняем в БД.
+    Вызывается async через create_task, ждём 2 сек чтобы биржа успела создать ордер.
+    """
+    await asyncio.sleep(2)
+    try:
+        sl_order_id = await bot.order_executor.get_sl_order_id(symbol, pos_side)
+        if sl_order_id:
+            bot.trade_simulator.set_exchange_sl_order_id(trade_id, sl_order_id)
+            logger.info("[VST-TSL] trade #%d %s %s → exchange_sl_order_id=%s",
+                        trade_id, symbol, pos_side, sl_order_id)
+        else:
+            logger.warning("[VST-TSL] trade #%d %s: SL orderId не найден на бирже", trade_id, symbol)
+    except Exception as e:
+        logger.warning("[VST-TSL] fetch_and_save_sl_order_id #%d: %s", trade_id, e)
+
+
+async def _update_tsl_on_exchange(bot, tsl_moved: list) -> None:
+    """Обновляет SL-ордера на бирже при движении TSL (cancel + replace)."""
+    oe = bot.order_executor
+    ts = bot.trade_simulator
+    tsl_min_move_pct = float(bot.config.get("trading.tsl_min_move_pct", 0.1))
+
+    for item in tsl_moved:
+        trade_id   = item["trade_id"]
+        symbol     = item["symbol"]
+        direction  = item["direction"]
+        new_sl     = item["new_sl_price"]
+        old_sl     = item["old_sl_price"]
+        sl_oid     = item.get("exchange_sl_order_id")
+        pos_side   = "LONG" if direction == "LONG" else "SHORT"
+
+        try:
+            if not sl_oid:
+                # exchange_sl_order_id ещё не получен — попробуем получить сейчас
+                sl_oid = await oe.get_sl_order_id(symbol, pos_side)
+                if sl_oid:
+                    ts.set_exchange_sl_order_id(trade_id, sl_oid)
+                else:
+                    logger.warning("[VST-TSL] #%d %s: нет SL orderId — пропуск", trade_id, symbol)
+                    continue
+
+            # qty нужен для нового ордера — берём из позиции на бирже
+            qty = item.get("qty") or 0.0
+            if not qty:
+                # Запросим qty из open positions
+                try:
+                    from core.trading.order_executor import VST_BASE_URL, LIVE_BASE_URL
+                    import os
+                    mode = bot.config.get("trading.execution_mode", "sim_only")
+                    if mode == "vst":
+                        from core.trading.order_executor import _BingXClient
+                        api_key = os.environ.get("BINGX_VST_API_KEY", "")
+                        secret  = os.environ.get("BINGX_VST_SECRET_KEY", "")
+                        base    = VST_BASE_URL
+                    else:
+                        from core.trading.order_executor import _BingXClient
+                        api_key = os.environ.get("BINGX_API_KEY", "")
+                        secret  = os.environ.get("BINGX_SECRET_KEY", "")
+                        base    = LIVE_BASE_URL
+                    client = _BingXClient(api_key, secret, base)
+                    bx_sym = symbol.replace("/", "-").replace(":USDT", "")
+                    pos_resp = await client._get("/openApi/swap/v2/user/positions")
+                    for p in (pos_resp.get("data") or []):
+                        if p.get("symbol") == bx_sym and p.get("positionSide", "").upper() == pos_side:
+                            qty = float(p.get("positionAmt") or p.get("availableAmt") or 0)
+                            break
+                except Exception as _e:
+                    logger.warning("[VST-TSL] #%d get qty error: %s", trade_id, _e)
+
+            if not qty:
+                logger.warning("[VST-TSL] #%d %s: qty=0, пропуск", trade_id, symbol)
+                continue
+
+            new_id = await oe.update_sl(
+                symbol=symbol,
+                pos_side=pos_side,
+                old_sl_order_id=sl_oid,
+                new_sl_price=new_sl,
+                qty=qty,
+                min_move_pct=tsl_min_move_pct,
+                old_sl_price=old_sl,
+            )
+            if new_id:
+                ts.set_exchange_sl_order_id(trade_id, new_id)
+                logger.info("[VST-TSL] ✅ #%d %s: SL %.6f → %.6f (order_id=%s)",
+                            trade_id, symbol, old_sl, new_sl, new_id)
+
+        except Exception as e:
+            logger.warning("[VST-TSL] _update_tsl_on_exchange #%d %s: %s", trade_id, symbol, e)
+
+
 async def _sync_vst_positions(bot) -> None:
     """
     VST/LIVE sync: получаем открытые позиции с биржи и закрываем
@@ -107,7 +199,7 @@ async def trade_tracker_loop(bot) -> None:
             if _is_live:
                 await _sync_vst_positions(bot)
 
-            closed = await bot.trade_simulator.check_open_trades_with_tsl(
+            closed, tsl_moved = await bot.trade_simulator.check_open_trades_with_tsl(
                 bot.data_collector,
                 use_tsl=use_tsl,
                 tsl_activation_r=tsl_activation_r,
@@ -118,6 +210,10 @@ async def trade_tracker_loop(bot) -> None:
             )
             if closed > 0:
                 logger.info("TradeSimulator: закрыто сделок за цикл: %s", closed)
+
+            # VST/LIVE: обновляем SL на бирже при движении TSL (Вариант A)
+            if _is_live and tsl_moved and hasattr(bot, "order_executor"):
+                await _update_tsl_on_exchange(bot, tsl_moved)
         except asyncio.CancelledError:
             break
         except Exception as e:

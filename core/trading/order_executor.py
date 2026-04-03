@@ -123,6 +123,18 @@ class _BingXClient:
                               timeout=aiohttp.ClientTimeout(total=10)) as r:
                 return await r.json()
 
+    async def _delete(self, path: str, params: dict | None = None) -> dict:
+        import aiohttp
+        p = dict(params or {})
+        p["timestamp"] = self._ts()
+        qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
+        sig = self._sign(qs)
+        url = f"{self._base}{path}?{qs}&signature={sig}"
+        async with aiohttp.ClientSession() as s:
+            async with s.delete(url, headers={"X-BX-APIKEY": self._api_key},
+                                timeout=aiohttp.ClientTimeout(total=10)) as r:
+                return await r.json()
+
     async def get_balance(self) -> float:
         """Возвращает availableMargin (VST или USDT)."""
         resp = await self._get("/openApi/swap/v2/user/balance")
@@ -349,6 +361,117 @@ class OrderExecutor:
                 entry_price=entry_price, sl=sl, tp1=tp1, tp2=tp2,
                 error=str(e), notional_usdt=notional,
             )
+
+    # ─────────────────────── TSL: обновление SL на бирже ─────────────────────
+
+    async def get_sl_order_id(self, symbol: str, pos_side: str) -> Optional[str]:
+        """Возвращает orderId STOP_MARKET ордера для позиции (для последующего cancel+replace).
+        pos_side: "LONG" | "SHORT"
+        """
+        if self._mode == ExecutionMode.SIM_ONLY:
+            return None
+        try:
+            bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+            client = self._get_client()
+            resp = await client._get("/openApi/swap/v2/trade/openOrders", {"symbol": bx_symbol})
+            orders = resp.get("data", {}).get("orders", []) or []
+            for o in orders:
+                if (o.get("type") == "STOP_MARKET"
+                        and o.get("positionSide", "").upper() == pos_side.upper()):
+                    return str(o["orderId"])
+            return None
+        except Exception as e:
+            logger.warning("[OrderExecutor] get_sl_order_id %s %s: %s", symbol, pos_side, e)
+            return None
+
+    async def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """Отменяет ордер по orderId. Возвращает True если успешно или уже отсутствует."""
+        if self._mode == ExecutionMode.SIM_ONLY:
+            return True
+        try:
+            bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+            client = self._get_client()
+            resp = await client._delete("/openApi/swap/v2/trade/order", {
+                "symbol": bx_symbol, "orderId": order_id,
+            })
+            code = resp.get("code", -1)
+            if code == 0:
+                return True
+            msg = resp.get("msg", "")
+            # Ордер уже исполнен/не существует — не ошибка
+            if "not exist" in msg.lower() or "already" in msg.lower() or code in (80012, 80014):
+                logger.info("[OrderExecutor] cancel_order %s #%s — уже закрыт: %s", symbol, order_id, msg)
+                return False  # False = ордер не найден (позиция может быть закрыта биржей)
+            logger.warning("[OrderExecutor] cancel_order %s #%s error: %s", symbol, order_id, resp)
+            return True  # Попробуем поставить новый всё равно
+        except Exception as e:
+            logger.warning("[OrderExecutor] cancel_order %s #%s: %s", symbol, order_id, e)
+            return True
+
+    async def place_sl_order(
+        self, symbol: str, pos_side: str, sl_price: float, qty: float
+    ) -> Optional[str]:
+        """Ставит новый STOP_MARKET ордер (SL) для существующей позиции.
+        Возвращает orderId нового ордера или None при ошибке.
+        """
+        if self._mode == ExecutionMode.SIM_ONLY:
+            return "SIM"
+        try:
+            bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+            # reduceOnly SL: side противоположный positionSide
+            side = "SELL" if pos_side.upper() == "LONG" else "BUY"
+            client = self._get_client()
+            resp = await client._post("/openApi/swap/v2/trade/order", {
+                "symbol":       bx_symbol,
+                "side":         side,
+                "positionSide": pos_side.upper(),
+                "type":         "STOP_MARKET",
+                "quantity":     str(qty),
+                "stopPrice":    str(sl_price),
+                "workingType":  "MARK_PRICE",
+                "reduceOnly":   "true",
+            })
+            code = resp.get("code", -1)
+            if code != 0:
+                logger.warning("[OrderExecutor] place_sl_order %s %s sl=%.6f: %s",
+                               symbol, pos_side, sl_price, resp.get("msg", resp))
+                return None
+            order_id = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+            logger.info("[OrderExecutor] ✅ новый SL %s %s sl=%.6f order_id=%s",
+                        symbol, pos_side, sl_price, order_id)
+            return order_id or None
+        except Exception as e:
+            logger.warning("[OrderExecutor] place_sl_order %s: %s", symbol, e)
+            return None
+
+    async def update_sl(
+        self, symbol: str, pos_side: str, old_sl_order_id: str,
+        new_sl_price: float, qty: float, min_move_pct: float = 0.1,
+        old_sl_price: float = 0.0,
+    ) -> Optional[str]:
+        """Cancel + replace SL ордер при движении TSL.
+        Обновляет только если движение > min_move_pct%.
+        Возвращает новый orderId или None (ошибка / не обновлялся).
+        """
+        if self._mode == ExecutionMode.SIM_ONLY:
+            return None
+        # Фильтр мелких движений
+        if old_sl_price > 0:
+            move_pct = abs(new_sl_price - old_sl_price) / old_sl_price * 100
+            if move_pct < min_move_pct:
+                logger.debug("[OrderExecutor] update_sl %s: движение %.3f%% < %.1f%% — пропуск",
+                             symbol, move_pct, min_move_pct)
+                return None
+
+        exists = await self.cancel_order(symbol, old_sl_order_id)
+        if not exists:
+            # Ордер не найден — позиция закрыта биржей, sync подхватит
+            return None
+
+        new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty)
+        logger.info("[OrderExecutor] TSL update %s %s: SL %.6f → %.6f order_id=%s",
+                    symbol, pos_side, old_sl_price, new_sl_price, new_id)
+        return new_id
 
     # ─────────────────────── Частичная фиксация ───────────────────────────
 

@@ -1083,6 +1083,12 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
                                     if _br.order_id and trade_id:
                                         bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id)
+                                        # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
+                                        _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
+                                        import asyncio as _asyncio
+                                        from bot.loops.trade_tracker import fetch_and_save_sl_order_id
+                                        _asyncio.create_task(fetch_and_save_sl_order_id(
+                                            bot, trade_id, symbol, _pos_side))
                             else:
                                 logger.warning("[%s] OrderExecutor: qty=0 (deposit=%.2f risk=%.1f%% sl_dist=?)",
                                                symbol, _deposit, _risk_pct)

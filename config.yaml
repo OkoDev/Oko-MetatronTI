@@ -258,6 +258,7 @@ trading:
     tp1_fix_pct: 20       # % позиции фиксируется на TP1 (остаток держим до TP2)
   use_tsl: true
   tsl_activation_r: 1.0            # глобальный порог активации TSL (TREND)
+  tsl_min_move_pct: 0.15           # VST/LIVE: мин. движение TSL (%) для обновления SL на бирже
   tsl_activation_r_range: 0.7      # DEV-122 (02.04.2026): RANGE — активировать TSL раньше (+93 доп активации)
   # tsl_buffer_pct: 0.3  # МЁРТВЫЙ — в коде не читается (DEV-87, 28.03.2026). Подключить или удалить.
   cascade_tsl: true
