@@ -85,22 +85,28 @@ class OrderExecutor:
         if self._mode == ExecutionMode.VST:
             if self._vst_exchange is None:
                 try:
+                    import os
                     import ccxt
-                    _vk = self._cfg.get("exchanges.api_keys.bingx_vst.api_key", "")
-                    _vs = self._cfg.get("exchanges.api_keys.bingx_vst.secret", "")
-                    if not _vk or _vk.startswith("REPLACE"):
-                        raise ValueError("VST API key не настроен в config.yaml")
+                    # Ключи из .env (приоритет) или config.yaml (fallback)
+                    _vk = (os.environ.get("BINGX_VST_API_KEY")
+                           or self._cfg.get("exchanges.api_keys.bingx_vst.api_key", ""))
+                    _vs = (os.environ.get("BINGX_VST_SECRET_KEY")
+                           or self._cfg.get("exchanges.api_keys.bingx_vst.secret", ""))
+                    if not _vk:
+                        raise ValueError("VST API key не найден (BINGX_VST_API_KEY в .env)")
                     self._vst_exchange = ccxt.bingx({
                         "apiKey": _vk,
                         "secret": _vs,
                         "enableRateLimit": True,
-                        "options": {
-                            "defaultType": "future",
-                            "broker": "VST",
+                        "options": {"defaultType": "future"},
+                        "urls": {
+                            "api": {
+                                "public":  "https://open-api-vst.bingx.com",
+                                "private": "https://open-api-vst.bingx.com",
+                            }
                         },
-                        "urls": {"api": {"public": "https://open-api-vst.bingx.com", "private": "https://open-api-vst.bingx.com"}},
                     })
-                    logger.info("[OrderExecutor] VST exchange инициализирован (sandbox BingX)")
+                    logger.info("[OrderExecutor] VST exchange инициализирован (BingX sandbox)")
                 except Exception as e:
                     logger.error("[OrderExecutor] Ошибка инициализации VST exchange: %s", e)
                     raise
