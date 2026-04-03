@@ -310,7 +310,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                         # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
                         _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
                         import asyncio as _asyncio_wl
-                        from bot.loops.trade_tracker import fetch_and_save_sl_order_id
+                        from core.exchange.tsl_updater import fetch_and_save_sl_order_id
                         _asyncio_wl.create_task(fetch_and_save_sl_order_id(
                             bot, trade_id, symbol, _pos_side_wl))
                 else:

@@ -25,7 +25,7 @@ from core.bounce_detector import BounceDetector
 from core.signal_watch_list import SignalWatchList
 from core.context.pair_context import PairContextBus
 from core.trading.post_trade_analyser import PostTradeAnalyser
-from core.trading.order_executor import OrderExecutor
+from core.exchange import OrderManager as OrderExecutor
 from core.trading.position_sizer import PositionSizer
 from core.infra.ws_feed import WsFeed
 from bot.menus import MenuHandler
@@ -70,7 +70,7 @@ class TradingAlertBot:
         self.trade_simulator.set_post_trade_callback(self.post_analyser.on_trade_closed)
 
         # DEV-77/78: OrderExecutor + PositionSizer (SIM → VST → LIVE)
-        self.order_executor = OrderExecutor(self.data_collector, config)
+        self.order_executor = OrderExecutor(config)
         self.position_sizer = PositionSizer(config)
         logger.info("[Bot] execution_mode=%s", self.order_executor.mode.value)
 
