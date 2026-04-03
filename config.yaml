@@ -46,8 +46,8 @@ exchanges:
       api_key: 2zDHkpQwgHe54YWlvnKg5B18OOrstPP9ddYJrPBZyiz9KUrEM89tk5qCEvaLrmZ0gpRdYotahOrH9QRElQ
       secret: rgDbCOJCjfi9ok5k2idnfSeLz0JDdzJebTz5MoKa61fZykl9XhKrrEMZajDfXhkXDpfvfZPGGWeUYeh4CNUhg
     bingx_vst:                    # VST sandbox — отдельный ключ, URL: open-api-vst.bingx.com
-      api_key: REPLACE_WITH_VST_API_KEY
-      secret:  REPLACE_WITH_VST_SECRET
+      api_key: 5G6nUxnTehaKbA4HFCT38ay6EpGS40Uu5rx4iO3jsfeiqRhARhIHBHwPI1yTNDBMowVFWLDzgq73idWQ
+      secret:  9QGi9fg5XShU91Ev3yMR9SOeWoWmqX2DFqSIgrcbhutl64OtM3xu3Mh3KJNfCFItIm5lKHKCjgyaUiHpvuJw
 analysis:
   volume_multiplier: 4.0
   price_threshold: 5.0
@@ -157,7 +157,7 @@ outcome_predictor:
 strategy_name: multi_signal
 trading:
   # DEV-77: OrderExecutor — режим исполнения ордеров
-  execution_mode: sim_only   # sim_only | vst (sandbox) | live
+  execution_mode: vst        # sim_only | vst (sandbox) | live
   tp1_close_pct: 0.20        # 20% позиции закрыть при TP1 hit
 
   # PositionSizer — риск-менеджмент (DEV-78)
