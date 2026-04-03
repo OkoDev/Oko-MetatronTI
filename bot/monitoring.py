@@ -805,7 +805,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 # Правило 1: BTC 4h TREND_DOWN → блок LONG
                 if _btc_4h == "TREND_DOWN" and _dir4h == "LONG":
                     _sig_type = getattr(recommendation, "signal_type", "") or ""
-                    _wb = (recommendation.features or {}).get("weekly_bias", "UNKNOWN")
+                    _wb = (recommendation.metadata or {}).get("weekly_bias", "UNKNOWN")
                     # Исключение: pivot_reversal с BULLISH weekly bias
                     if not (_sig_type == "pivot_reversal" and _wb == "BULLISH"):
                         _should_block4h = True
@@ -1080,6 +1080,9 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                         symbol, _br.mode.upper(), _oe_dir, _qty,
                                         _oe_entry, _oe_sl, _oe_tp1, _br.order_id, _br.notional_usdt,
                                     )
+                                    # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
+                                    if _br.order_id and trade_id:
+                                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id)
                             else:
                                 logger.warning("[%s] OrderExecutor: qty=0 (deposit=%.2f risk=%.1f%% sl_dist=?)",
                                                symbol, _deposit, _risk_pct)

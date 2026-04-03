@@ -747,6 +747,19 @@ class TradeSimulator:
             logger.exception(f"TradeSimulator: ошибка get_open_trades — {e}")
             return []
 
+    def set_exchange_order_id(self, trade_id: int, order_id: str) -> None:
+        """Привязывает реальный exchange_order_id к симуляторной сделке.
+        Только такие сделки будут синхронизироваться с биржей в VST/LIVE режиме."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE simulated_trades SET exchange_order_id = ? WHERE id = ?",
+                    (str(order_id), trade_id),
+                )
+            logger.debug("TradeSimulator: trade #%d → exchange_order_id=%s", trade_id, order_id)
+        except Exception as e:
+            logger.warning("TradeSimulator: set_exchange_order_id #%d: %s", trade_id, e)
+
     def _get_trade_analyzer(self):
         """DEV-15: Ленивая инициализация TradeAnalyzer (только если API ключ доступен)."""
         if not self._trade_analyzer_init:

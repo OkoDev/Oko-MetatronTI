@@ -304,6 +304,9 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                 if _br.success:
                     logger.info("[WL-BREACH][%s] ✅ %s %s qty=%.6f order_id=%s",
                                 _br.mode.upper(), symbol, direction, _qty, _br.order_id)
+                    # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
+                    if _br.order_id and trade_id:
+                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id)
                 else:
                     logger.warning("[WL-BREACH] OrderExecutor error: %s", _br.error)
         except Exception as _oe_e:

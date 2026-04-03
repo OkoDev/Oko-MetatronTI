@@ -95,7 +95,8 @@ class SubscriptionManager:
                     tp_source TEXT,
                     tsl_activated INTEGER DEFAULT 0,
                     strategy_name TEXT,
-                    tsl_tf TEXT DEFAULT '15m'
+                    tsl_tf TEXT DEFAULT '15m',
+                    exchange_order_id TEXT
                 )
             """)
 
@@ -107,6 +108,7 @@ class SubscriptionManager:
                 ("tsl_activated", "INTEGER DEFAULT 0"),
                 ("strategy_name", "TEXT"),
                 ("tsl_tf", "TEXT DEFAULT '15m'"),
+                ("exchange_order_id", "TEXT"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")

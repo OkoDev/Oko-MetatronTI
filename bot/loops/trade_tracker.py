@@ -47,10 +47,14 @@ async def _sync_vst_positions(bot) -> None:
                 sym_our = sym_raw.replace("-", "/") + ":USDT"
                 open_on_exchange[sym_our] = p
 
-        # Проверяем открытые сделки в симуляторе
+        # Проверяем ТОЛЬКО сделки с реальным exchange_order_id (VST/LIVE ордера)
+        # SIM-сделки (exchange_order_id IS NULL) синхронизировать не нужно
         open_sim = bot.trade_simulator.get_open_trades()
         synced = 0
         for trade in open_sim:
+            # Пропускаем чистые SIM-сделки без реального ордера на бирже
+            if not trade.get("exchange_order_id"):
+                continue
             sym = trade.get("symbol", "")
             trade_id = trade.get("id")
             if sym not in open_on_exchange:
