@@ -146,3 +146,27 @@ yarn.lock
 *.drawio
 *.pdf
 *.svg
+# ===============================
+# Сгенерированные файлы проекта
+# ===============================
+
+# Графики chart_builder (PNG в корне)
+chart_*.png
+
+# Результаты бэктестов
+backtest_results*.json
+backtest_reports/
+data/universe_backtest_*.json
+data/universe_cache.json
+data/smc_experiment_*.json
+
+# Кэш данных (генерируется при запуске)
+data/*.json
+
+# Расписание трейдера (runtime)
+scripts/trader_schedule.json
+
+# ===============================
+# Claude Code
+# ===============================
+.claude/settings.local.json

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(wc -l \"e:/MTF BOT/CURSOR/crypto_volume_bot/core/\"*.py)",
-      "Bash(python -m pytest tests/ -v --tb=short)",
-      "Bash(python -c \":*)"
-    ]
-  }
-}
