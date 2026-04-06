@@ -169,6 +169,28 @@ class TradingIntelligence:
             except Exception as e:
                 logger.warning("OutcomePredictor не инициализирован: %s", e)
 
+        # DEV-138: MTF WT Specialist (shadow mode)
+        self._wt_specialist = None
+        # DEV-139: MTF SMC Specialist (shadow mode)
+        self._smc_specialist = None
+        try:
+            from core.ml.mtf_wt_specialist import MTFWTSpecialist
+            spec = MTFWTSpecialist()
+            spec.fit(db_path)
+            self._wt_specialist = spec
+            logger.info("MTFWTSpecialist: %s", spec.info())
+        except Exception as _e:
+            logger.warning("MTFWTSpecialist не инициализирован: %s", _e)
+
+        try:
+            from core.ml.mtf_smc_specialist import MTFSMCSpecialist
+            smc_spec = MTFSMCSpecialist()
+            smc_spec.fit(db_path)
+            self._smc_specialist = smc_spec
+            logger.info("MTFSMCSpecialist: %s", smc_spec.info())
+        except Exception as _e:
+            logger.warning("MTFSMCSpecialist не инициализирован: %s", _e)
+
         # ARCH-12.5: AutoCalibrator — rule-based калибровка MTF multipliers
         self._auto_calibrator = None
         try:
@@ -844,6 +866,67 @@ class TradingIntelligence:
                 "reason": arbiter.reason,
             }
 
+            # DEV-137: Reversal Mode shadow — записываем в metadata, не влияем на strength
+            if mtf_context is not None and mtf_context.reversal_mode is not None:
+                recommendation.metadata["reversal_mode"] = mtf_context.reversal_mode
+                logger.info(
+                    "[%s][DEV-137] reversal_mode=%s",
+                    symbol, mtf_context.reversal_mode,
+                )
+
+            # DEV-139: MTF SMC Specialist shadow — predict + запись в metadata
+            if mtf_context is not None and getattr(mtf_context, "smc_snap", None):
+                recommendation.metadata["smc_snap"] = mtf_context.smc_snap
+                try:
+                    _smc_verdict = self._smc_specialist.predict(mtf_context.smc_snap) if self._smc_specialist else None
+                    if _smc_verdict is not None:
+                        recommendation.metadata["smc_verdict"] = {
+                            "label": _smc_verdict.label,
+                            "confidence": round(_smc_verdict.confidence, 3),
+                        }
+                        logger.debug(
+                            "[%s][DEV-139] smc_verdict=%s conf=%.3f",
+                            symbol, _smc_verdict.label, _smc_verdict.confidence,
+                        )
+                except Exception as _e:
+                    logger.debug("[DEV-139] smc_specialist.predict error: %s", _e)
+
+            # DEV-138: MTF WT Specialist shadow — predict + запись в metadata
+            if mtf_context is not None and mtf_context.wt_snap:
+                recommendation.metadata["wt_snap"] = mtf_context.wt_snap
+                try:
+                    _wt_verdict = self._wt_specialist.predict(mtf_context.wt_snap)
+                    if _wt_verdict is not None:
+                        recommendation.metadata["wt_verdict"] = {
+                            "label": _wt_verdict.label,
+                            "confidence": round(_wt_verdict.confidence, 3),
+                        }
+                        logger.debug(
+                            "[%s][DEV-138] wt_verdict=%s conf=%.3f",
+                            symbol, _wt_verdict.label, _wt_verdict.confidence,
+                        )
+                except Exception as _e:
+                    logger.debug("[DEV-138] wt_specialist.predict error: %s", _e)
+
+            # ARCH-70: wt_verdict_strong → EventBus Full CALL (publish если REVERSAL_SETUP conf≥0.7)
+            try:
+                _wt_v_meta = recommendation.metadata.get("wt_verdict")
+                if _wt_v_meta and _wt_v_meta.get("label") == "REVERSAL_SETUP":
+                    if _wt_v_meta.get("confidence", 0) >= 0.70:
+                        _eb_ti = getattr(self, "_event_bus", None)
+                        if _eb_ti is not None:
+                            import asyncio as _asyncio
+                            _asyncio.create_task(_eb_ti.publish(
+                                symbol, "wt_verdict_strong", priority=2,
+                                data={"label": _wt_v_meta["label"], "conf": _wt_v_meta["confidence"]},
+                            ))
+                            logger.debug(
+                                "[ARCH-70] %s wt_verdict_strong conf=%.2f → EventBus",
+                                symbol, _wt_v_meta["confidence"],
+                            )
+            except Exception as _e_eb:
+                logger.debug("[ARCH-70] wt_verdict_strong publish error: %s", _e_eb)
+
             # ARCH-51: shadow logging MTF SMC snapshots (не влияет на strength/action)
             if mtf_context is not None:
                 for _snap_tf, _snap_attr in (("4h", "smc_h4"), ("1d", "smc_d1")):
@@ -867,6 +950,87 @@ class TradingIntelligence:
                             snap.choch_direction, snap.bos_direction,
                             snap.ob_proximity_pct,
                         )
+
+            # DEV-146: VerdictAggregator — gate из WTVerdict + SMCVerdict
+            try:
+                from core.intelligence.verdict_aggregator import aggregate_verdicts
+                _vg_wt_v = recommendation.metadata.get("wt_verdict")
+                _vg_sc_v = recommendation.metadata.get("smc_verdict")
+                if _vg_wt_v or _vg_sc_v:
+                    class _VGVrd:
+                        def __init__(self, d): self.label = d.get("label"); self.confidence = d.get("confidence", 0.5)
+                    _vgate_enabled = bool(
+                        (self.config or {}).get("trading", {}).get("verdict_gate", {}).get("enabled", False)
+                    )
+                    _vgate = aggregate_verdicts(
+                        direction=str(getattr(recommendation, "direction", "") or ""),
+                        wt_verdict=_VGVrd(_vg_wt_v) if _vg_wt_v else None,
+                        smc_verdict=_VGVrd(_vg_sc_v) if _vg_sc_v else None,
+                        config=(self.config or {}).get("trading"),
+                        enabled=_vgate_enabled,
+                    )
+                    recommendation.metadata["verdict_gate"] = {
+                        "should_block": _vgate.should_block,
+                        "would_block":  _vgate.would_block,
+                        "strength_delta": _vgate.strength_delta,
+                        "reason": _vgate.reason,
+                    }
+                    if _vgate.should_block:
+                        # Реальный gate: обнуляем strength → сигнал не пройдёт is_actionable
+                        recommendation.overall_strength = 0
+                        recommendation.action = "WATCH"
+                        logger.info(
+                            "[%s][DEV-146] VERDICT_GATE BLOCK: %s",
+                            symbol, _vgate.reason,
+                        )
+                    elif _vgate.strength_delta != 0.0 and not _vgate.would_block:
+                        # Только буст (не штраф): корректируем strength
+                        _new_str = round(
+                            min(100.0, max(0.0, float(recommendation.overall_strength or 0) + _vgate.strength_delta)),
+                            1,
+                        )
+                        recommendation.overall_strength = _new_str
+            except Exception as _e_vg:
+                logger.debug("[DEV-146] VerdictAggregator error: %s", _e_vg)
+
+            # DEV-141: Narrative Builder (shadow — config toggle trading.narrative.enabled)
+            _narrative_enabled = (self.config or {}).get("trading", {}).get("narrative", {}).get("enabled", False)
+            try:
+                from core.intelligence.narrative_builder import NarrativeBuilder
+                _rm  = recommendation.metadata.get("reversal_mode", "UNCLEAR")
+                _wt_v = recommendation.metadata.get("wt_verdict")
+                _sc_v = recommendation.metadata.get("smc_verdict")
+                # WTVerdict/SMCVerdict как простые namespace-ы (dataclass-совместимо)
+                class _Vrd:
+                    def __init__(self, d): self.label = d.get("label"); self.confidence = d.get("confidence", 0.5)
+                _wt_vrd  = _Vrd(_wt_v)  if _wt_v  else None
+                _smc_vrd = _Vrd(_sc_v)  if _sc_v  else None
+                _p_out   = recommendation.metadata.get("p_win")
+                _btc_reg = recommendation.metadata.get("btc_4h_regime")
+                _pair_bus = getattr(self, '_pair_context_bus', None)
+                _nb = NarrativeBuilder(_pair_bus)
+                _narrative = _nb.build(
+                    symbol=symbol,
+                    recommendation=recommendation,
+                    wt_verdict=_wt_vrd,
+                    smc_verdict=_smc_vrd,
+                    reversal_mode=_rm,
+                    btc_regime=_btc_reg,
+                    p_outcome=_p_out,
+                )
+                recommendation.metadata["narrative"] = {
+                    "text": _narrative.text,
+                    "p_win": _narrative.p_win,
+                    "mode": _narrative.mode,
+                    "key_factors": _narrative.key_factors,
+                    "confidence": _narrative.confidence,
+                }
+                if _narrative_enabled:
+                    logger.info("[%s][DEV-141] narrative: %s", symbol, _narrative.text)
+                else:
+                    logger.debug("[%s][DEV-141] narrative (shadow): %s", symbol, _narrative.text)
+            except Exception as _e_narr:
+                logger.debug("[DEV-141] narrative error: %s", _e_narr)
 
             # ARCH-53: OTE shadow metadata
             if smc_context is not None:
@@ -1627,6 +1791,14 @@ class TradingIntelligence:
             except Exception:
                 pass
 
+            # DEV-137: Reversal Mode (shadow — только в metadata, не влияет на strength)
+            _reversal_mode: Optional[str] = None
+            try:
+                _reversal_mode = MarketRegimeClassifier().classify_mode(df_4h, df_1h, df_15m)
+                logger.debug("[%s][DEV-137] reversal_mode=%s", symbol, _reversal_mode)
+            except Exception:
+                pass
+
             ctx = analyze_context(
                 snapshot=snapshot,
                 current_price=current_price,
@@ -1639,6 +1811,45 @@ class TradingIntelligence:
             # ARCH-12.5: подгружаем калиброванные параметры
             if hasattr(self, '_auto_calibrator') and self._auto_calibrator is not None:
                 ctx.calibration_params = self._auto_calibrator.get_params()
+
+            # DEV-137: сохраняем reversal_mode в контексте
+            ctx.reversal_mode = _reversal_mode
+
+            # DEV-138: сохраняем wt_snap из snapshot в контексте (для features_json + WTSpecialist)
+            if snapshot:
+                ctx.wt_snap = {
+                    tf: {
+                        "wt1": v.get("wt1", 0.0),
+                        "wt2": v.get("wt2", 0.0),
+                        "zone": v.get("zone", "Normal"),
+                        "wt_cross": v.get("wt_cross", 0),
+                        "trend": v.get("trend", 0),
+                    }
+                    for tf, v in snapshot.items()
+                    if isinstance(v, dict)
+                }
+
+            # DEV-139: smc_snap — вычисляем для 4 TF (использует уже загруженные df)
+            try:
+                from core.ml.mtf_smc_specialist import _build_smc_snap_from_df
+                _cur_price_smc = current_price or 0.0
+                _smc_snap: dict = {}
+                for _tf_name, _df_smc in (
+                    ("15m", df_15m), ("1h", df_1h), ("4h", df_4h)
+                ):
+                    if _df_smc is not None and len(_df_smc) >= 30:
+                        _smc_snap[_tf_name] = _build_smc_snap_from_df(_df_smc, _cur_price_smc)
+                # 1d — загружаем отдельно (не было в _build_mtf_context)
+                try:
+                    _df_1d = await self.data_collector.get_ohlcv(symbol, "1d", limit=60)
+                    if _df_1d is not None and len(_df_1d) >= 30:
+                        _smc_snap["1d"] = _build_smc_snap_from_df(_df_1d, _cur_price_smc)
+                except Exception:
+                    pass
+                if _smc_snap:
+                    ctx.smc_snap = _smc_snap
+            except Exception as _e_smc:
+                logger.debug("[DEV-139] smc_snap error: %s", _e_smc)
 
             return ctx
 

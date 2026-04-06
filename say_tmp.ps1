@@ -1,1 +1,0 @@
-Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SelectVoice('Microsoft Irina Desktop'); $s.Speak('Otvety ARCH zapisany. Pyat resheniy prinyaty. Sleduyushchiy shag dlya DEV: checkpoint commit, zatem DEV sto odinnadtsat.')

@@ -305,6 +305,168 @@ async def _handle_trade_trace(request: web.Request) -> web.Response:
         return web.Response(status=500, text=str(e))
 
 
+async def _handle_live_orders(request: web.Request) -> web.Response:
+    """GET /api/live_orders — открытые позиции на бирже (VST/LIVE режим).
+    DEV-144b: JOIN с simulated_trades для получения реальных SL/TP цен.
+    """
+    bot = request.app.get("bot")
+    try:
+        orders = []
+        pm = getattr(bot, "position_manager", None) if bot else None
+        if pm is not None:
+            open_pos = pm.get_open_positions()
+
+            # Подтягиваем SL/TP цены из simulated_trades по sim_trade_id
+            sim_trade_ids = [p.sim_trade_id for p in open_pos if p.sim_trade_id]
+            sl_tp_map: dict = {}
+            if sim_trade_ids:
+                import sqlite3 as _sq
+                engine = request.app.get("engine")
+                db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
+                try:
+                    with _sq.connect(db_path) as _conn:
+                        _conn.row_factory = _sq.Row
+                        placeholders = ",".join("?" * len(sim_trade_ids))
+                        rows = _conn.execute(
+                            f"SELECT id, stop_loss, take_profit, entry_price, strength, signal_type "
+                            f"FROM simulated_trades WHERE id IN ({placeholders})",
+                            sim_trade_ids,
+                        ).fetchall()
+                        for row in rows:
+                            sl_tp_map[row["id"]] = {
+                                "stop_loss":   row["stop_loss"],
+                                "take_profit": row["take_profit"],
+                                "entry_price": row["entry_price"],
+                                "strength":    row["strength"],
+                                "signal_type": row["signal_type"],
+                            }
+                except Exception as db_e:
+                    logger.warning("_handle_live_orders JOIN failed: %s", db_e)
+
+            for pos in open_pos:
+                sim = sl_tp_map.get(pos.sim_trade_id) or {}
+                orders.append({
+                    "id":                 pos.id,
+                    "sim_trade_id":       pos.sim_trade_id,
+                    "exchange_order_id":  pos.exchange_order_id,
+                    "symbol":             pos.symbol,
+                    "side":               pos.side,
+                    "qty":                pos.qty,
+                    "sl_order_id":        pos.sl_order_id,
+                    "tp_order_id":        pos.tp_order_id,
+                    "status":             pos.status,
+                    "slip_pct":           pos.slip_pct,
+                    "created_at":         pos.created_at,
+                    # DEV-144b: реальные цены из simulated_trades
+                    "stop_loss":          sim.get("stop_loss"),
+                    "take_profit":        sim.get("take_profit"),
+                    "entry_price":        sim.get("entry_price"),
+                    "strength":           sim.get("strength"),
+                    "signal_type":        sim.get("signal_type"),
+                })
+
+        # Режим торговли из конфига
+        cfg = request.app.get("config", {})
+        trading_cfg = cfg.get("trading", {}) if hasattr(cfg, "get") else {}
+        raw_mode = (trading_cfg.get("execution_mode") or "sim_only").upper()
+        mode = {"SIM_ONLY": "SIM", "VST": "VST", "LIVE": "LIVE"}.get(raw_mode, raw_mode)
+
+        return web.Response(
+            text=json.dumps({"mode": mode, "orders": orders, "count": len(orders)},
+                            ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("_handle_live_orders: %s", e)
+        return web.Response(status=500, text=json.dumps({"error": str(e)}),
+                            content_type="application/json")
+
+
+async def _handle_live(request: web.Request) -> web.Response:
+    """GET /api/live — реальный баланс BingX + позиции (DEV-144c).
+    В SIM_ONLY режиме возвращает mode=SIM и пустые данные.
+    """
+    bot = request.app.get("bot")
+    cfg = request.app.get("config", {})
+
+    trading_cfg = cfg.get("trading", {}) if hasattr(cfg, "get") else {}
+    raw_mode = (trading_cfg.get("execution_mode") or "sim_only").upper()
+    mode = {"SIM_ONLY": "SIM", "VST": "VST", "LIVE": "LIVE"}.get(raw_mode, raw_mode)
+
+    result: dict = {
+        "mode": mode,
+        "balance": None,
+        "positions": [],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "error": None,
+    }
+
+    if bot and hasattr(bot, "order_executor") and mode in ("VST", "LIVE"):
+        try:
+            snapshot = await bot.order_executor.get_exchange_snapshot()
+            result["balance"] = snapshot.get("balance")
+            # Нормализуем поля позиций BingX → удобный формат
+            raw_positions = snapshot.get("positions", [])
+            for p in raw_positions:
+                amt = float(p.get("positionAmt") or p.get("availableAmt") or 0)
+                if amt == 0:
+                    continue
+                # BingX Hedge Mode: positionSide = "LONG"/"SHORT" (positionAmt всегда ≥ 0)
+                pos_side = p.get("positionSide") or ("LONG" if amt > 0 else "SHORT")
+                result["positions"].append({
+                    "symbol":            p.get("symbol", ""),
+                    "side":              pos_side,
+                    "size":              abs(amt),
+                    "entry_price":       float(p.get("avgPrice") or p.get("entryPrice") or 0),
+                    "mark_price":        float(p.get("markPrice") or 0),
+                    "unrealized_pnl":    float(p.get("unrealizedProfit") or 0),
+                    "leverage":          int(p.get("leverage") or 1),
+                    "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
+                    "liquidation_price": float(p.get("liquidationPrice") or 0),
+                })
+            # JOIN с simulated_trades по символу → получаем SL/TP для отображения
+            if result["positions"]:
+                syms = list({p["symbol"].replace("-", "/").replace(":USDT", "/USDT")
+                             for p in result["positions"]})
+                # symbol в БД: "BTC/USDT", на бирже: "BTC-USDT"
+                engine = request.app.get("engine")
+                db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
+                sl_tp_map: dict = {}
+                try:
+                    import sqlite3 as _sq
+                    with _sq.connect(db_path) as _conn:
+                        _conn.row_factory = _sq.Row
+                        ph = ",".join("?" * len(syms))
+                        rows = _conn.execute(
+                            f"SELECT symbol, stop_loss, take_profit FROM simulated_trades "
+                            f"WHERE status='OPEN' AND symbol IN ({ph})",
+                            syms,
+                        ).fetchall()
+                        for row in rows:
+                            sl_tp_map[row["symbol"]] = {
+                                "stop_loss":  row["stop_loss"],
+                                "take_profit": row["take_profit"],
+                            }
+                except Exception as db_e:
+                    logger.debug("_handle_live JOIN failed: %s", db_e)
+                for pos in result["positions"]:
+                    # symbol в live = "BTC-USDT", в БД = "BTC/USDT"
+                    db_sym = pos["symbol"].replace("-", "/").replace(":USDT", "/USDT")
+                    st = sl_tp_map.get(db_sym) or {}
+                    pos["stop_loss"]  = st.get("stop_loss")
+                    pos["take_profit"] = st.get("take_profit")
+
+            result["error"] = snapshot.get("error")
+        except Exception as e:
+            logger.warning("_handle_live error: %s", e)
+            result["error"] = str(e)
+
+    return web.Response(
+        text=json.dumps(result, ensure_ascii=False, default=str),
+        content_type="application/json", charset="utf-8",
+    )
+
+
 async def _handle_trading_page(request: web.Request) -> web.Response:
     return web.FileResponse(Path(__file__).parent / "static/trading.html")
 
@@ -510,6 +672,30 @@ async def _handle_settings_post(request: web.Request) -> web.Response:
             status=400,
             text=json.dumps({"ok": False, "error": "invalid JSON"}),
             content_type="application/json",
+        )
+
+    # --- Блок risk (deposit / risk_pct / leverage) ---
+    risk_body = body.get("risk")
+    if risk_body is not None:
+        try:
+            deposit  = float(risk_body.get("deposit_usdt", 1000.0))
+            risk_pct = float(risk_body.get("risk_pct", 1.0))
+            leverage = int(risk_body.get("leverage", 5))
+            errors: list = []
+            if not (10 <= deposit <= 10_000_000): errors.append("deposit_usdt: 10–10 000 000")
+            if not (0.1 <= risk_pct <= 10.0):     errors.append("risk_pct: 0.1–10.0")
+            if not (1 <= leverage <= 100):         errors.append("leverage: 1–100")
+        except (TypeError, ValueError) as e:
+            errors = [f"Некорректный тип данных: {e}"]
+        if errors:
+            return web.Response(
+                text=json.dumps({"ok": False, "error": "; ".join(errors)}, ensure_ascii=False),
+                content_type="application/json", charset="utf-8",
+            )
+        ok = cfg.save_risk(deposit_usdt=deposit, risk_pct=risk_pct, leverage=leverage)
+        return web.Response(
+            text=json.dumps({"ok": ok, "error": None if ok else "ошибка записи файла"}, ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
         )
 
     # --- Блок trading (TSL) ---
@@ -1109,6 +1295,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/api/trades/{trade_id}/trace", _handle_trade_trace)
+    app.router.add_get("/api/live_orders", _handle_live_orders)
+    app.router.add_get("/api/live", _handle_live)
     app.router.add_get("/trading", _handle_trading_page)
     app.router.add_get("/api/trading/status", _handle_trading_status)
     app.router.add_get("/api/trading/instrument_info", _handle_trading_instrument_info)

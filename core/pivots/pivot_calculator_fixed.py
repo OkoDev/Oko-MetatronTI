@@ -1000,18 +1000,8 @@ class PivotCalculatorFixed:
                         src = f"confluence_{ta}+{tb}:{c['level_a']}≈{c['level_b']}"
                         return avg_price, src
 
-        # 5. 1M — последний (avg_R слабый, редко достигается)
-        piv_1m = self.pivot_cache.get(f"{symbol}_1M")
-        if piv_1m:
-            candidates = [
-                (price, f"pivot_1M:{lk}")
-                for lk in all_lvls
-                if (price := piv_1m.get(lk)) and price > 0 and _qualifies(price)
-            ]
-            if candidates:
-                reverse = direction == "SHORT"
-                candidates.sort(key=lambda x: x[0], reverse=reverse)
-                return candidates[0]
+        # 5. 1M — ЗАБЛОКИРОВАН (DEV-130: WR=4%, avg_R=-0.779, n=91 — слишком далёкий уровень)
+        # pivot_1M как TP почти никогда не достигается → дренаж -0.779R на сделку
 
         # 6. Fib extension (ARCH-58): если есть данные импульса — 1.272 → 1.618
         # Откладывается от impulse_high/low за пределы импульса.
@@ -1113,18 +1103,7 @@ class PivotCalculatorFixed:
                         src = f"confluence_{ta}+{tb}:{c['level_a']}≈{c['level_b']}"
                         return avg_price, src
 
-        # 5. 1M
-        piv_1m = self.pivot_cache.get(f"{symbol}_1M")
-        if piv_1m:
-            candidates = [
-                (price, f"pivot_1M:{lk}")
-                for lk in all_lvls
-                if (price := piv_1m.get(lk)) and price > 0 and _qualifies(price)
-            ]
-            if candidates:
-                reverse = direction == "SHORT"
-                candidates.sort(key=lambda x: x[0], reverse=reverse)
-                return candidates[0]
+        # 5. 1M — ЗАБЛОКИРОВАН (DEV-130: WR=4%, avg_R=-0.779 — слишком далёкий для TP2)
 
         # 6. Fib extension за пределами TP1
         if impulse_high and impulse_low and impulse_high > impulse_low:

@@ -106,9 +106,16 @@ class TradeSimulator:
         """DEV-94: регистрирует PostTradeAnalyser.on_trade_closed как callback."""
         self._post_trade_callback = cb
 
+    def _db_connect(self, timeout: int = 30):
+        """DEV-148: единое место для настройки соединения — WAL + busy_timeout на каждом connect."""
+        conn = sqlite3.connect(self.db_path, timeout=timeout)
+        conn.execute("PRAGMA busy_timeout=10000")
+        return conn
+
     def init_database(self):
         """Создает таблицу simulated_trades в базе данных"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")   # параллельные читатели не блокируют запись
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS simulated_trades (
@@ -147,7 +154,10 @@ class TradeSimulator:
                     tp2_hit_at TIMESTAMP,
                     tp3_price REAL,
                     tp3_hit_at TIMESTAMP,
-                    strategy_type TEXT DEFAULT 'SINGLE'
+                    strategy_type TEXT DEFAULT 'SINGLE',
+                    exchange_order_id TEXT,
+                    exchange_sl_order_id TEXT,
+                    qty REAL
                 )
             """)
             # Миграция для существующих БД
@@ -163,6 +173,9 @@ class TradeSimulator:
                 ("first_profit_r", "REAL"),    # первое наблюдение R > 0 (цена впервые пошла в прибыль)
                 ("first_drawdown_r", "REAL"),  # первое наблюдение R < 0 (первый откат ниже entry)
                 ("decision_trace_json", "TEXT"),  # DEV-12: полный аудит решения
+                ("exchange_order_id", "TEXT"),    # DEV-136: ID ордера на бирже (VST/LIVE)
+                ("exchange_sl_order_id", "TEXT"), # DEV-136: ID SL-ордера на бирже (для cancel+replace TSL)
+                ("qty", "REAL"),                  # DEV-136: qty позиции (для TSL updater)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -205,7 +218,7 @@ class TradeSimulator:
                 trade_mode = extra_features.get("trade_mode", "")
             if symbol:
                 try:
-                    with sqlite3.connect(self.db_path) as _c:
+                    with self._db_connect() as _c:
                         existing_rows = _c.execute(
                             "SELECT id, direction, features_json FROM simulated_trades "
                             "WHERE symbol=? AND status=? LIMIT 5",
@@ -249,7 +262,7 @@ class TradeSimulator:
                 _max_per_dir = int(_cfg_cg.get("trading.max_positions_per_direction", 5))
                 _dir_str = _direction_str(direction)
                 if _max_per_dir > 0 and _dir_str in ("LONG", "SHORT") and "__SELFTEST__" not in str(symbol):
-                    with sqlite3.connect(self.db_path) as _c:
+                    with self._db_connect() as _c:
                         _open_count = _c.execute(
                             "SELECT COUNT(*) FROM simulated_trades WHERE status=? AND direction=?",
                             (STATUS_OPEN, _dir_str),
@@ -365,6 +378,18 @@ class TradeSimulator:
             smc_ctx = metadata.get("smc_context") if metadata else None
             if smc_ctx and isinstance(smc_ctx, dict):
                 features.update(smc_ctx)
+            # DEV-138: wt_snap для MTFWTSpecialist (7 TF × {wt1,wt2,zone,wt_cross,trend})
+            wt_snap = metadata.get("wt_snap") if metadata else None
+            if wt_snap and isinstance(wt_snap, dict):
+                features["wt_snap"] = wt_snap
+            # DEV-139: smc_snap для MTFSMCSpecialist (4 TF × 9 признаков)
+            smc_snap = metadata.get("smc_snap") if metadata else None
+            if smc_snap and isinstance(smc_snap, dict):
+                features["smc_snap"] = smc_snap
+            # DEV-137: reversal_mode shadow
+            rev_mode = metadata.get("reversal_mode") if metadata else None
+            if rev_mode:
+                features["reversal_mode"] = rev_mode
             features_json = json.dumps(features) if features else None
 
             # DEV-12: Decision Trace
@@ -473,7 +498,7 @@ class TradeSimulator:
                 except Exception as _re:
                     logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
@@ -621,11 +646,19 @@ class TradeSimulator:
                     if _srb:
                         _sig_type_44 = str(_get_recommendation_value(recommendation, "signal_type") or "")
                         _srb_sig = _srb.get(_sig_type_44) or {}
+                        # Guard 3A: blocked_regimes (legacy — без направления)
                         if regime in (_srb_sig.get("blocked_regimes") or []):
                             logger.info(
                                 "[DEV-64B] %s БЛОК signal_regime_block: %s/%s", _sym_44, _sig_type_44, regime
                             )
                             return None
+                        # Guard 3B: blocked_combos (DEV-133) — direction × regime, хирургические блоки
+                        for _combo in (_srb_sig.get("blocked_combos") or []):
+                            if regime == _combo.get("regime") and _dir_44 == _combo.get("direction"):
+                                logger.info(
+                                    "[DEV-133] %s БЛОК combo: %s/%s/%s", _sym_44, _sig_type_44, _dir_44, regime
+                                )
+                                return None
             except Exception as _e44:
                 logger.debug("[DEV-44] Safety gate error: %s", _e44)
 
@@ -676,6 +709,47 @@ class TradeSimulator:
                                     _sym_52, _blocked_52)
         except Exception as _e52:
             logger.debug("[DEV-52] portfolio gate error: %s", _e52)
+
+        # DEV-110 / ARCH-66: RANGE BOUNCE — переопределяем SL/TP от пивотов
+        # Активируется только: RANGE + confluence/watch_list_breach + 15m + entry у края (≤2%)
+        try:
+            from core.config_loader import config as _cfg_rb
+            _rb_cfg = (_cfg_rb.get("trading", {}) or {}).get("range_bounce", {})
+            if _rb_cfg.get("enabled", False) and regime == "RANGE":
+                _rb_sig = str(_get_recommendation_value(recommendation, "signal_type") or "")
+                _rb_tf  = str(_get_recommendation_value(recommendation, "timeframe") or "")
+                if _rb_sig in ("confluence", "watch_list_breach") and _rb_tf == "15m":
+                    _rb_sym = str(_get_recommendation_value(recommendation, "symbol") or "")
+                    _rb_dir = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                    _rb_entry = float(_get_recommendation_value(recommendation, "entry_price") or 0)
+                    if _rb_entry > 0 and self._pivot_calc is not None:
+                        from core.smc.sl_tp_calculator import calc_range_bounce_sl_tp
+                        _rb_sl, _rb_tp, _rb_r, _rb_reject = calc_range_bounce_sl_tp(
+                            direction=_rb_dir,
+                            entry=_rb_entry,
+                            pivot_cache=self._pivot_calc.pivot_cache,
+                            symbol=_rb_sym,
+                            sl_buffer_pct=float(_rb_cfg.get("sl_buffer_pct", 0.003)),
+                            min_tp_r=float(_rb_cfg.get("min_tp_r", 3.5)),
+                            max_sl_dist_pct=float(_rb_cfg.get("max_sl_dist_pct", 0.02)),
+                        )
+                        if not _rb_reject:
+                            # Применяем RANGE BOUNCE SL/TP
+                            try:
+                                recommendation.stop_loss   = _rb_sl
+                                recommendation.take_profit = _rb_tp
+                                recommendation.sl_source   = "range_bounce_pivot"
+                                recommendation.tp_source   = "range_bounce_pivot"
+                            except AttributeError:
+                                pass
+                            logger.info(
+                                "[DEV-110] %s RANGE BOUNCE %s: sl=%.5f tp=%.5f R=%.1f",
+                                _rb_sym, _rb_dir, _rb_sl, _rb_tp, _rb_r,
+                            )
+                        else:
+                            logger.debug("[DEV-110] %s пропущен: %s", _rb_sym, _rb_reject)
+        except Exception as _e_rb:
+            logger.debug("[DEV-110] RANGE BOUNCE error: %s", _e_rb)
 
         trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features)
 
@@ -735,7 +809,7 @@ class TradeSimulator:
     def get_open_trades(self) -> List[Dict[str, Any]]:
         """Возвращает список открытых сделок."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(
@@ -750,7 +824,7 @@ class TradeSimulator:
     def set_exchange_sl_order_id(self, trade_id: int, sl_order_id: str) -> None:
         """Сохраняет orderId SL-ордера на бирже для последующего cancel+replace при TSL."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 conn.execute(
                     "UPDATE simulated_trades SET exchange_sl_order_id = ? WHERE id = ?",
                     (str(sl_order_id), trade_id),
@@ -759,16 +833,23 @@ class TradeSimulator:
         except Exception as e:
             logger.warning("TradeSimulator: set_exchange_sl_order_id #%d: %s", trade_id, e)
 
-    def set_exchange_order_id(self, trade_id: int, order_id: str) -> None:
+    def set_exchange_order_id(self, trade_id: int, order_id: str, qty: float = 0.0) -> None:
         """Привязывает реальный exchange_order_id к симуляторной сделке.
-        Только такие сделки будут синхронизироваться с биржей в VST/LIVE режиме."""
+        Только такие сделки будут синхронизироваться с биржей в VST/LIVE режиме.
+        qty — размер позиции, нужен для TSL cancel+replace."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "UPDATE simulated_trades SET exchange_order_id = ? WHERE id = ?",
-                    (str(order_id), trade_id),
-                )
-            logger.debug("TradeSimulator: trade #%d → exchange_order_id=%s", trade_id, order_id)
+            with self._db_connect() as conn:
+                if qty > 0:
+                    conn.execute(
+                        "UPDATE simulated_trades SET exchange_order_id = ?, qty = ? WHERE id = ?",
+                        (str(order_id), qty, trade_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE simulated_trades SET exchange_order_id = ? WHERE id = ?",
+                        (str(order_id), trade_id),
+                    )
+            logger.debug("TradeSimulator: trade #%d → exchange_order_id=%s qty=%.6f", trade_id, order_id, qty)
         except Exception as e:
             logger.warning("TradeSimulator: set_exchange_order_id #%d: %s", trade_id, e)
 
@@ -799,7 +880,7 @@ class TradeSimulator:
             return False
         closed_at = closed_at or datetime.now(timezone.utc)
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type FROM simulated_trades WHERE id = ? AND status = ?",
@@ -970,7 +1051,7 @@ class TradeSimulator:
         """DEV-39: ретроактивно помечает SL-сделки в окне как market_event=true."""
         try:
             ws_str = window_start.isoformat()
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 rows = conn.execute(
                     "SELECT id, features_json FROM simulated_trades "
                     "WHERE status = ? AND closed_at >= ?",
@@ -1190,7 +1271,7 @@ class TradeSimulator:
                 )
                 if should_move:
                     try:
-                        with sqlite3.connect(self.db_path) as _c:
+                        with self._db_connect() as _c:
                             _c.execute(
                                 "UPDATE simulated_trades SET stop_loss=?, be_activated=1 WHERE id=? AND status=?",
                                 (be_sl, trade_id, STATUS_OPEN),
@@ -1222,7 +1303,7 @@ class TradeSimulator:
             if use_tsl and _tsl_gate:
                 # Активируем TSL после достижения прибыли — помечаем в БД
                 try:
-                    with sqlite3.connect(self.db_path) as _c:
+                    with self._db_connect() as _c:
                         _c.execute(
                             "UPDATE simulated_trades SET tsl_activated=1 WHERE id=? AND tsl_activated=0",
                             (trade_id,),
@@ -1512,7 +1593,7 @@ class TradeSimulator:
                                     symbol, prev_tsl_tf, best_tsl_tf, action_label,
                                 )
                                 try:
-                                    with sqlite3.connect(self.db_path) as _c:
+                                    with self._db_connect() as _c:
                                         _c.execute(
                                             "UPDATE simulated_trades SET tsl_tf=?, features_json=? WHERE id=?",
                                             (best_tsl_tf, json.dumps(_feat_js), trade_id),
@@ -1545,6 +1626,14 @@ class TradeSimulator:
 
                     if trend_info and trend_info["tsl"] > 0:
                         tsl_price = trend_info["tsl"]
+
+                        # DEV-132: TSL floor — не закрывать хуже entry.
+                        # После активации TSL (tsl_activation_r=1R) trenddown может оказаться
+                        # ниже entry (LONG) при малом ATR или откате. Минимальный exit = entry.
+                        if direction == "LONG":
+                            tsl_price = max(tsl_price, entry)
+                        elif direction == "SHORT":
+                            tsl_price = min(tsl_price, entry)
 
                         # Проверка срабатывания TSL
                         if direction == "LONG" and current_price <= tsl_price:
@@ -1579,6 +1668,14 @@ class TradeSimulator:
                                     "exchange_sl_order_id": _exch_sl_id,
                                     "exchange_order_id":   _exch_order_id,
                                 })
+                                # Обновляем stop_loss в БД → текущий TSL уровень виден в дашборде
+                                try:
+                                    conn.execute(
+                                        "UPDATE simulated_trades SET stop_loss=? WHERE id=? AND status='OPEN'",
+                                        (tsl_price, trade_id),
+                                    )
+                                except Exception as _ue:
+                                    logger.debug("TSL: stop_loss update #%d: %s", trade_id, _ue)
 
                 except Exception as e:
                     logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
@@ -1612,7 +1709,7 @@ class TradeSimulator:
                     if tp1_price and tp1_hit_at is None and high >= tp1_price:
                         tp1_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
-                            with sqlite3.connect(self.db_path) as _c:
+                            with self._db_connect() as _c:
                                 _c.execute(
                                     "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
                                     (tp1_hit_at, trade_id, STATUS_OPEN),
@@ -1625,7 +1722,7 @@ class TradeSimulator:
                     if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
                         tp2_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
-                            with sqlite3.connect(self.db_path) as _c:
+                            with self._db_connect() as _c:
                                 _c.execute(
                                     "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
                                     (tp2_hit_at, trade_id, STATUS_OPEN),
@@ -1649,7 +1746,7 @@ class TradeSimulator:
                     if tp1_price and tp1_hit_at is None and low <= tp1_price:
                         tp1_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
-                            with sqlite3.connect(self.db_path) as _c:
+                            with self._db_connect() as _c:
                                 _c.execute(
                                     "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
                                     (tp1_hit_at, trade_id, STATUS_OPEN),
@@ -1662,7 +1759,7 @@ class TradeSimulator:
                     if tp2_price and tp2_hit_at is None and tp1_hit_at and low <= tp2_price:
                         tp2_hit_at = datetime.now(timezone.utc).isoformat()
                         try:
-                            with sqlite3.connect(self.db_path) as _c:
+                            with self._db_connect() as _c:
                                 _c.execute(
                                     "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
                                     (tp2_hit_at, trade_id, STATUS_OPEN),
@@ -1699,7 +1796,7 @@ class TradeSimulator:
 
             if new_max is not None or new_min is not None or new_fp_r is not None or new_fd_r is not None:
                 try:
-                    with sqlite3.connect(self.db_path) as conn:
+                    with self._db_connect() as conn:
                         conn.execute(
                             """UPDATE simulated_trades
                                SET max_price=?, min_price=?,

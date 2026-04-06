@@ -111,6 +111,12 @@ class MTFContext:
     pattern_confidence: float = 0.0
     unswept_highs: List[float] = field(default_factory=list)  # sell-side liquidity 1h/4h
     unswept_lows: List[float] = field(default_factory=list)   # buy-side liquidity 1h/4h
+    # DEV-137: Reversal Mode Detector (shadow — только логирование)
+    reversal_mode: Optional[str] = None  # "REVERSAL" | "TREND" | "UNCLEAR"
+    # DEV-138: MTF WT Specialist snapshot (для predict и features_json)
+    wt_snap: Optional[Dict[str, Any]] = None  # {tf: {wt1, wt2, zone, wt_cross, trend}}
+    # DEV-139: MTF SMC Specialist snapshot
+    smc_snap: Optional[Dict[str, Any]] = None  # {tf: {ob_bull, fvg_open, choch, bos, ...}}
 
     def direction_multiplier(self, signal_direction: SignalDirection) -> float:
         """

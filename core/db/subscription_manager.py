@@ -26,6 +26,10 @@ class SubscriptionManager:
     def init_database(self):
         """Создает таблицы в базе данных"""
         with sqlite3.connect(self.db_path) as conn:
+            # DEV-148: WAL mode — параллельные читатели не блокируют писателей;
+            # busy_timeout — ждать до 10 сек вместо немедленного OperationalError
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=10000")
             cursor = conn.cursor()
             
             # Таблица пользователей

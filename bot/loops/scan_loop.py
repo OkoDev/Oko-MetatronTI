@@ -251,10 +251,13 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     except Exception:
         _extra_wl["weekly_bias"] = "UNKNOWN"
     try:
+        from core.indicators import calculate_wt as _calc_wt_wl
         _df_1h_wl = await bot.data_collector.get_ohlcv(symbol, "1h", limit=30)
-        if _df_1h_wl is not None and "wt1" in _df_1h_wl.columns and len(_df_1h_wl) > 0:
-            _extra_wl["htf_wt1_1h"] = round(float(_df_1h_wl["wt1"].iloc[-1]), 1)
-            _extra_wl["htf_wt2_1h"] = round(float(_df_1h_wl["wt2"].iloc[-1]), 1)
+        if _df_1h_wl is not None and len(_df_1h_wl) >= 10:
+            _df_1h_wl = _calc_wt_wl(_df_1h_wl)  # DEV-126: raw OHLCV не имеет wt1
+            if "wt1" in _df_1h_wl.columns:
+                _extra_wl["htf_wt1_1h"] = round(float(_df_1h_wl["wt1"].iloc[-1]), 1)
+                _extra_wl["htf_wt2_1h"] = round(float(_df_1h_wl["wt2"].iloc[-1]), 1)
     except Exception:
         pass
     # entry-TF WT (df_entry уже прошёл _calc_wt в scan_one)
@@ -304,16 +307,24 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                 if _br.success:
                     logger.info("[WL-BREACH][%s] ✅ %s %s qty=%.6f order_id=%s",
                                 _br.mode.upper(), symbol, direction, _qty, _br.order_id)
+                    # Записываем в live_orders для трекинга
+                    if hasattr(bot, "position_manager"):
+                        _pos_dir_wl = "LONG" if direction == "LONG" else "SHORT"
+                        bot.position_manager.register(
+                            symbol=symbol, side=_pos_dir_wl, qty=_qty,
+                            sim_trade_id=trade_id,
+                            exchange_order_id=_br.order_id,
+                        )
                     # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
                     if _br.order_id and trade_id:
-                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id)
+                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
                         # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
                         _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
                         import asyncio as _asyncio_wl
                         from core.exchange.tsl_updater import fetch_and_save_sl_order_id
                         _asyncio_wl.create_task(fetch_and_save_sl_order_id(
                             bot, trade_id, symbol, _pos_side_wl))
-                else:
+                elif _br.error != "position_already_open":
                     logger.warning("[WL-BREACH] OrderExecutor error: %s", _br.error)
         except Exception as _oe_e:
             logger.warning("[WL-BREACH] OrderExecutor exception: %s", _oe_e)
@@ -577,6 +588,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             else:
                                 logger.debug("[anomaly] %s: лимит %d/цикл достигнут, пропуск TG",
                                              sym, _anomaly_max_per_cycle)
+                            # ARCH-70: EventBus — anomaly запускает Full CALL
+                            _eb = getattr(bot, "event_bus", None)
+                            if _eb is not None:
+                                asyncio.create_task(_eb.publish(sym, "anomaly_volume", priority=4))
 
                     # 1a. DEV-81: FUNDING_EXTREME (shadow mode — только лог, не в TG)
                     if _scan_tf == _etf:
@@ -596,6 +611,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         "[DEV-81 shadow] %s funding=%.6f dir=%s str=%d",
                                         sym, _fr, _funding_sig.direction.value, _funding_sig.strength,
                                     )
+                                    # ARCH-70: EventBus — funding_extreme запускает Full CALL
+                                    _eb = getattr(bot, "event_bus", None)
+                                    if _eb is not None:
+                                        asyncio.create_task(_eb.publish(sym, "funding_extreme", priority=2))
                         except Exception as _fe:
                             logger.debug("[FUNDING] %s error: %s", sym, _fe)
 
@@ -615,6 +634,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 signals_to_broadcast.append(
                                     ("liquidity_sweep", _sweep_message(sym, _sweep_sig), None)
                                 )
+                                # ARCH-70: EventBus — liquidity_sweep запускает Full CALL (prio=1)
+                                _eb = getattr(bot, "event_bus", None)
+                                if _eb is not None:
+                                    asyncio.create_task(_eb.publish(sym, "liquidity_sweep", priority=1))
                         except Exception as _se:
                             logger.debug("[LIQSWEEP] %s error: %s", sym, _se)
 
@@ -650,6 +673,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
                 _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
                 _confluence_sigs = []
+
+                # DEV-127: SMC контекст для SMC None gate (shadow) в wt_15m_reversal_scanner
+                _smc_ctx_scan = None
+                try:
+                    from core.smc import analyze_smc as _analyze_smc
+                    if df_entry is not None and len(df_entry) >= 30:
+                        _smc_ctx_scan = _analyze_smc(df_entry)
+                except Exception:
+                    pass
+
                 if _use_sm and hasattr(bot, "confluence_sm"):
                     try:
                         _confluence_sigs = bot.confluence_sm.update(
@@ -659,12 +692,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         logger.debug("[confluence_sm] %s error: %s", sym, _sm_e)
                         _confluence_sigs = scan_wt_15m_reversal(
                             sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h,
-                            market_regime=_pair_regime,
+                            market_regime=_pair_regime, smc_context=_smc_ctx_scan,
                         )
                 else:
                     _confluence_sigs = scan_wt_15m_reversal(
                         sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h,
-                        market_regime=_pair_regime,
+                        market_regime=_pair_regime, smc_context=_smc_ctx_scan,
                     )
 
                 for sig in _confluence_sigs:
@@ -677,6 +710,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     else:
                         logger.debug("[confluence] %s: лимит %d/цикл достигнут, пропуск TG",
                                      sym, _confluence_max_per_cycle)
+                    # ARCH-70: EventBus — wt_confluence запускает Full CALL
+                    _eb = getattr(bot, "event_bus", None)
+                    if _eb is not None:
+                        asyncio.create_task(_eb.publish(sym, "wt_confluence", priority=3))
+                    break  # Один confluence Full CALL на пару за цикл достаточно
 
                 # 5. WT-B Signal (1h): адаптивный OS/OB + дивергенция, WR=85%
                 # df_1h уже в кеше — не фетчим повторно
@@ -875,6 +913,58 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         logger.warning("⚠️ Цикл превысил %.0f сек — рассмотреть увеличение Semaphore или sleep", _slow_cycle)
 
 
+_btc_macro_prev_close: float | None = None  # последняя известная close BTC/15m
+
+
+async def _check_btc_macro_shock(bot) -> None:
+    """
+    ARCH-70: btc_macro_shock — публикует в EventBus если BTC/USDT 15m свеча >2.5%.
+    Вызывается в начале каждого цикла monitor_market.
+    Публикует для ВСЕХ мониторируемых пар (BTC shock = рыночный стресс).
+    """
+    global _btc_macro_prev_close
+    _eb = getattr(bot, "event_bus", None)
+    if _eb is None:
+        return
+    threshold_pct = float(bot.config.get("event_bus.btc_macro_shock_pct", 2.5))
+    try:
+        ohlcv = await bot.data_collector.get_ohlcv("BTC/USDT:USDT", "15m", limit=3)
+        if ohlcv is None or ohlcv.empty or len(ohlcv) < 2:
+            return
+        last_row  = ohlcv.iloc[-1]
+        prev_row  = ohlcv.iloc[-2]
+        last_open  = float(prev_row["close"])    # открытие последней свечи ≈ закрытие предыдущей
+        last_close = float(last_row["close"])
+        if last_open <= 0:
+            return
+        move_pct = abs(last_close - last_open) / last_open * 100
+
+        # Дедупликация: публикуем только если это новая свеча (close изменился)
+        if _btc_macro_prev_close is not None and abs(last_close - _btc_macro_prev_close) < 0.00001:
+            return  # та же свеча — пропускаем
+        _btc_macro_prev_close = last_close
+
+        if move_pct >= threshold_pct:
+            direction = "up" if last_close > last_open else "down"
+            logger.info(
+                "[ARCH-70] BTC macro shock: %.2f%% %s → publish btc_macro для всех пар",
+                move_pct, direction,
+            )
+            # Публикуем для всех мониторируемых пар (они реагируют на BTC)
+            watchlist = list(getattr(bot, "monitored_pairs", None) or [])
+            published = 0
+            for sym in watchlist[:30]:  # лимит: не бомбардировать очередь
+                ok = await _eb.publish(
+                    sym, "btc_macro", priority=4,
+                    data={"btc_move_pct": round(move_pct, 2), "direction": direction},
+                )
+                if ok:
+                    published += 1
+            logger.info("[ARCH-70] btc_macro_shock опубликован для %d пар", published)
+    except Exception as e:
+        logger.debug("[ARCH-70] _check_btc_macro_shock error: %s", e)
+
+
 async def monitor_market(bot) -> None:
     """Главный цикл мониторинга: запускает скан каждые N сек + фоновые задачи."""
     from bot.monitoring import (
@@ -907,6 +997,9 @@ async def monitor_market(bot) -> None:
                 _last_pivot_day = today
                 asyncio.create_task(_prefetch_pivots(bot))
                 logger.info("Новый день (%s) — фоновый пересчёт пивотов запущен параллельно со сканером", today)
+
+            # ARCH-70: btc_macro_shock — проверяем BTC 15m каждый цикл
+            asyncio.create_task(_check_btc_macro_shock(bot))
 
             _div_cycle += 1
             _check_div = (_div_cycle % _div_n == 0)

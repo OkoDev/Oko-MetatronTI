@@ -231,3 +231,115 @@ def detect_liquidity(
     except Exception as e:
         logger.debug("detect_liquidity error: %s", e, exc_info=True)
         return empty
+
+
+# ---------------------------------------------------------------------------
+# DEV-140 / ARCH-68: Equal Highs / Equal Lows
+# ---------------------------------------------------------------------------
+
+def detect_equal_highs_lows(
+    df: pd.DataFrame,
+    threshold_pct: float = 0.01,  # 1% = "equal"
+    lookback: int = 50,
+) -> dict:
+    """
+    DEV-140: Детектор Equal Highs (EQH) и Equal Lows (EQL).
+
+    EQH — два или более Swing High на одном уровне (±threshold_pct).
+    EQL — два или более Swing Low на одном уровне.
+
+    EQH/EQL — зоны скопления ликвидности (стоп-ордера трейдеров).
+    Цена часто выходит за них (liquidity sweep), после чего разворачивается.
+
+    Args:
+        df: OHLCV DataFrame (минимум 10 баров).
+        threshold_pct: допуск в долях (0.01 = 1%).
+        lookback: количество последних баров для поиска.
+
+    Returns:
+        dict с ключами:
+          eqh_near  (bool)         — EQH в радиусе threshold_pct от текущей цены
+          eql_near  (bool)         — EQL в радиусе threshold_pct от текущей цены
+          eqh_level (float | None) — уровень EQH (среднее двух high)
+          eql_level (float | None) — уровень EQL (среднее двух low)
+          eqh_count (int)          — сколько high совпало
+          eql_count (int)          — сколько low совпало
+    """
+    result = {
+        "eqh_near": False, "eql_near": False,
+        "eqh_level": None, "eql_level": None,
+        "eqh_count": 0,    "eql_count": 0,
+    }
+
+    if df is None or len(df) < 10:
+        return result
+
+    try:
+        n = len(df)
+        start = max(0, n - lookback)
+        window = df.iloc[start:]
+        current_price = float(df["close"].iloc[-1])
+
+        highs = window["high"].tolist()
+        lows  = window["low"].tolist()
+
+        # ── Equal Highs ───────────────────────────────────────────────────────
+        eqh_clusters: list = []
+        for i in range(len(highs)):
+            for j in range(i + 1, len(highs)):
+                h_i, h_j = highs[i], highs[j]
+                if h_i > 0 and abs(h_i - h_j) / h_i <= threshold_pct:
+                    # Нашли пару равных high
+                    level = (h_i + h_j) / 2
+                    # Добавляем в кластер или создаём новый
+                    merged = False
+                    for cluster in eqh_clusters:
+                        if abs(cluster["level"] - level) / cluster["level"] <= threshold_pct:
+                            cluster["count"] += 1
+                            cluster["level"] = (cluster["level"] + level) / 2
+                            merged = True
+                            break
+                    if not merged:
+                        eqh_clusters.append({"level": level, "count": 2})
+
+        if eqh_clusters:
+            # Берём самый "плотный" кластер
+            best_eqh = max(eqh_clusters, key=lambda c: c["count"])
+            result["eqh_level"] = round(best_eqh["level"], 8)
+            result["eqh_count"] = best_eqh["count"]
+            # near = уровень в радиусе threshold_pct от текущей цены
+            if current_price > 0:
+                result["eqh_near"] = (
+                    abs(best_eqh["level"] - current_price) / current_price <= threshold_pct
+                )
+
+        # ── Equal Lows ────────────────────────────────────────────────────────
+        eql_clusters: list = []
+        for i in range(len(lows)):
+            for j in range(i + 1, len(lows)):
+                l_i, l_j = lows[i], lows[j]
+                if l_i > 0 and abs(l_i - l_j) / l_i <= threshold_pct:
+                    level = (l_i + l_j) / 2
+                    merged = False
+                    for cluster in eql_clusters:
+                        if abs(cluster["level"] - level) / cluster["level"] <= threshold_pct:
+                            cluster["count"] += 1
+                            cluster["level"] = (cluster["level"] + level) / 2
+                            merged = True
+                            break
+                    if not merged:
+                        eql_clusters.append({"level": level, "count": 2})
+
+        if eql_clusters:
+            best_eql = max(eql_clusters, key=lambda c: c["count"])
+            result["eql_level"] = round(best_eql["level"], 8)
+            result["eql_count"] = best_eql["count"]
+            if current_price > 0:
+                result["eql_near"] = (
+                    abs(best_eql["level"] - current_price) / current_price <= threshold_pct
+                )
+
+    except Exception as e:
+        logger.debug("detect_equal_highs_lows error: %s", e)
+
+    return result

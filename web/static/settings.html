@@ -55,6 +55,31 @@
 </header>
 <main>
 
+  <section style="border-color: #f85149;">
+    <h2 style="color: #f85149;">&#x1F4B0; Риск-менеджмент</h2>
+    <div class="formula">qty = (deposit × risk_pct%) / (sl_dist% × entry) × leverage</div>
+    <form id="riskForm">
+      <div class="field">
+        <label>Депозит ($)</label>
+        <input type="number" id="deposit_usdt" min="10" max="10000000" step="100">
+        <span class="hint">размер торгового счёта &nbsp;<b>default: 1000</b></span>
+      </div>
+      <div class="field">
+        <label>Риск на сделку (%)</label>
+        <input type="number" id="risk_pct" min="0.1" max="10" step="0.1">
+        <span class="hint">% от депозита на одну сделку &nbsp;<b>default: 1.0</b></span>
+      </div>
+      <div class="field">
+        <label>Плечо (×)</label>
+        <input type="number" id="leverage" min="1" max="100" step="1">
+        <span class="hint">кредитное плечо для расчёта позиции &nbsp;<b>default: 5</b></span>
+      </div>
+      <div id="riskPreview" style="background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:.85rem;color:#8b949e;"></div>
+      <button type="submit" class="btn" id="saveRiskBtn">&#x1F4BE; Сохранить риск-менеджмент</button>
+      <div id="msgRisk"></div>
+    </form>
+  </section>
+
   <section>
     <h2>&#x1F50D; Параметры анализа</h2>
     <form id="analysisForm">
@@ -348,6 +373,11 @@
 <script>
 // Значения по умолчанию — "защита от дурака"
 const DEFAULTS = {
+  risk: {
+    deposit_usdt: 1000,
+    risk_pct: 1.0,
+    leverage: 5,
+  },
   analysis: {
     volume_multiplier: 5.0,
     price_threshold: 7.0,
@@ -520,6 +550,12 @@ async function loadSettings() {
     document.getElementById('confluence_pivot_pct').value        = confl.pivot_proximity_pct  ?? 0.5;
     document.getElementById('confluence_div_bars').value         = confl.div_min_bars         ?? 3;
 
+    const risk = d.trading || {};
+    document.getElementById('deposit_usdt').value = risk.deposit_usdt ?? 1000;
+    document.getElementById('risk_pct').value     = risk.risk_pct     ?? 1.0;
+    document.getElementById('leverage').value     = risk.leverage     ?? 5;
+    updateRiskPreview();
+
     const trd = d.trading || {};
     document.getElementById('use_tsl').checked         = trd.use_tsl !== false;
     document.getElementById('tsl_activation_r').value  = trd.tsl_activation_r ?? 1.0;
@@ -569,6 +605,30 @@ async function postSettings(body, btnId, msgId, btnLabel) {
     btn.textContent = btnLabel;
   }
 }
+
+function updateRiskPreview() {
+  const deposit  = parseFloat(document.getElementById('deposit_usdt').value) || 1000;
+  const risk_pct = parseFloat(document.getElementById('risk_pct').value) || 1.0;
+  const leverage = parseInt(document.getElementById('leverage').value) || 5;
+  const riskUsd  = deposit * risk_pct / 100;
+  const notional = riskUsd / 0.02 * leverage; // пример SL=2%
+  document.getElementById('riskPreview').innerHTML =
+    `Риск на сделку: <b style="color:#f85149">$${riskUsd.toFixed(2)}</b> &nbsp;|&nbsp; ` +
+    `Пример позиции (SL 2%): <b style="color:#58a6ff">$${notional.toFixed(0)}</b> notional &nbsp;|&nbsp; ` +
+    `Маржа: <b style="color:#3fb950">$${(notional/leverage).toFixed(0)}</b>`;
+}
+['deposit_usdt','risk_pct','leverage'].forEach(id =>
+  document.getElementById(id).addEventListener('input', updateRiskPreview)
+);
+
+document.getElementById('riskForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await postSettings({risk: {
+    deposit_usdt: parseFloat(document.getElementById('deposit_usdt').value),
+    risk_pct:     parseFloat(document.getElementById('risk_pct').value),
+    leverage:     parseInt(document.getElementById('leverage').value),
+  }}, 'saveRiskBtn', 'msgRisk', '&#x1F4BE; Сохранить риск-менеджмент');
+});
 
 document.getElementById('analysisForm').addEventListener('submit', async (e) => {
   e.preventDefault();

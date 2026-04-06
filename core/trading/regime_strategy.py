@@ -70,13 +70,13 @@ class RegimeParams:
 _DEFAULT_PARAMS: dict[str, RegimeParams] = {
     "TREND_UP": RegimeParams(
         sl_factor=0.85,
-        min_strategy_type="DUAL_TSL",  # 70% на TP1, 30% под TSL (данные: TSL avg=4.6R vs TP avg=2.1R)
+        min_strategy_type=None,  # DEV-124: SINGLE (данные: DUAL_TP/DUAL_TSL → -88.5R, SINGLE → +1866R)
         position_size_multiplier=1.0,
         label="TREND_UP",
     ),
     "TREND_DOWN": RegimeParams(
         sl_factor=0.85,
-        min_strategy_type="DUAL_TSL",  # 70% на TP1, 30% под TSL (решение 30.03.2026)
+        min_strategy_type=None,  # DEV-124: SINGLE
         position_size_multiplier=1.0,
         label="TREND_DOWN",
     ),

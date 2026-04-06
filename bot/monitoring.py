@@ -452,13 +452,28 @@ async def check_pivot_reversals(bot):
                                             strength=info.get("strength", 70),
                                             data=info)
                     pre = [stub]
+                    # DEV-126: загружаем entry/HTF df для htf_wt1_1h/4h в features_json
+                    # get_ohlcv возвращает raw OHLCV → нужен calculate_wt перед использованием
+                    _pre_dfs: dict = {}
+                    try:
+                        from core.indicators import calculate_wt as _calc_wt_pivot
+                        for _tf, _lim in [("15m", 50), ("1h", 30), ("4h", 30)]:
+                            try:
+                                _df = await bot.data_collector.get_ohlcv(sym, _tf, limit=_lim)
+                                if _df is not None and len(_df) >= 10:
+                                    _pre_dfs[_tf] = _calc_wt_pivot(_df)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     # Кешируем для меню "Все сигналы"
                     bot.recent_signals.setdefault(sym, [])
                     bot.recent_signals[sym] = [
                         s for s in bot.recent_signals[sym] if s.signal_type != SignalType.PIVOT_REVERSAL
                     ] + [stub]
                     await _broadcast_intelligence_alert(bot, sym, raw_text, "pivot_reversal",
-                                                        fallback_rec=pivot_rec, pre_signals=pre)
+                                                        fallback_rec=pivot_rec, pre_signals=pre,
+                                                        pre_fetched_dfs=_pre_dfs or None)
                     bot.signal_counters["pivot_reversal"] += 1
                     bot.signal_counters["total"] += 1
                     logger.info("[%s] Вход от уровня: %s R:R=%.1f", sym, info.get("level"), info.get("rr_ratio", 0))
@@ -862,6 +877,40 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         except Exception as _e128:
             logger.debug("[DEV-128] %s: gate error — %s", symbol, _e128)
 
+    # DEV-128ext / DEV-133: блок токсичных direction×regime комбо (мониторинг-уровень)
+    # Соответствует config.yaml signal_regime_block.*.blocked_combos (DEV-133)
+    # pivot_reversal: LONG TREND_DOWN (WR=0%), SHORT TREND_UP (WR=19%)
+    # confluence:     LONG TREND_DOWN (WR=3%), SHORT TREND_UP (WR=0%), SHORT HIGH_VOL (WR=0%)
+    #                 LONG HIGH_VOL (WR=0%), LONG TREND_UP (WR=18%)
+    if recommendation is not None:
+        try:
+            _ct_sig  = getattr(recommendation, "signal_type", "") or ""
+            _ct_reg  = getattr(recommendation, "regime", "") or ""
+            _ct_dir  = getattr(recommendation.direction, "value", "NEUTRAL")
+            _ct_block = False
+            _ct_reason = ""
+            if _ct_sig in ("pivot_reversal", "confluence"):
+                if _ct_dir == "LONG" and _ct_reg == "TREND_DOWN":
+                    _ct_block = True
+                    _ct_reason = f"{_ct_sig} LONG TREND_DOWN (WR≈0-3%)"
+                elif _ct_dir == "SHORT" and _ct_reg == "TREND_UP":
+                    _ct_block = True
+                    _ct_reason = f"{_ct_sig} SHORT TREND_UP (WR≈0-19%)"
+                elif _ct_sig == "confluence" and _ct_dir == "SHORT" and _ct_reg == "HIGH_VOL":
+                    _ct_block = True
+                    _ct_reason = "confluence SHORT HIGH_VOL (WR=0%)"
+                elif _ct_sig == "confluence" and _ct_dir == "LONG" and _ct_reg == "HIGH_VOL":
+                    _ct_block = True
+                    _ct_reason = "confluence LONG HIGH_VOL (WR=0%)"
+                elif _ct_sig == "confluence" and _ct_dir == "LONG" and _ct_reg == "TREND_UP":
+                    _ct_block = True
+                    _ct_reason = "confluence LONG TREND_UP (WR=18%, avg=-0.362R)"
+            if _ct_block:
+                logger.info("[%s] DEV-128ext %s → WATCH", symbol, _ct_reason)
+                recommendation.action = "WATCH"
+        except Exception as _ect:
+            logger.debug("[DEV-128ext] %s: %s", symbol, _ect)
+
     # Этап 6: TP по иерархии пивотов (ARCH-09п5, DEV-75)
     # Порядок: 1D → 1W → confluence(1W+1D) → confluence(1M+1W) → 1M → ATR fallback
     distance_to_pivot_pct: float = 0.0
@@ -1073,16 +1122,25 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     qty=_qty,
                                 )
                                 if not _br.success:
-                                    logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
+                                    if _br.error != "position_already_open":
+                                        logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
                                 else:
                                     logger.info(
                                         "[%s] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
                                         symbol, _br.mode.upper(), _oe_dir, _qty,
                                         _oe_entry, _oe_sl, _oe_tp1, _br.order_id, _br.notional_usdt,
                                     )
+                                    # Записываем в live_orders для трекинга
+                                    if hasattr(bot, "position_manager"):
+                                        _pos_dir = "LONG" if _oe_dir == "LONG" else "SHORT"
+                                        bot.position_manager.register(
+                                            symbol=symbol, side=_pos_dir, qty=_qty,
+                                            sim_trade_id=trade_id,
+                                            exchange_order_id=_br.order_id,
+                                        )
                                     # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
                                     if _br.order_id and trade_id:
-                                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id)
+                                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
                                         # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
                                         _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
                                         import asyncio as _asyncio

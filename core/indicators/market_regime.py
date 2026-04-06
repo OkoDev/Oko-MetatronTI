@@ -212,6 +212,75 @@ class MarketRegimeClassifier:
             logger.exception("MarketRegimeClassifier.classify_from_dataframes: %s", e)
             return None
 
+    def classify_mode(
+        self,
+        df_4h: "pd.DataFrame",
+        df_1h: "pd.DataFrame",
+        df_15m: "Optional[pd.DataFrame]" = None,
+    ) -> str:
+        """
+        DEV-137 (ARCH-68 Фаза 2): Reversal Mode Detector — shadow only.
+
+        Returns
+        -------
+        "REVERSAL" — WT 4h в OB/OS + ADX 1h падает 3 бара + CHoCH на 1h или 15m
+        "TREND"    — ADX 1h растёт + WT 4h вне OB/OS + нет CHoCH
+        "UNCLEAR"  — всё остальное
+        """
+        try:
+            # ── 1. WT 4h: зона OB/OS ──────────────────────────────────────────
+            wt_extreme = False
+            if (df_4h is not None
+                    and "wt1" in df_4h.columns
+                    and len(df_4h) > 0):
+                wt1_4h = float(df_4h["wt1"].iloc[-1])
+                wt_extreme = wt1_4h > 60 or wt1_4h < -60
+            else:
+                wt1_4h = 0.0
+
+            # ── 2. ADX 1h: slope за последние 3 бара ─────────────────────────
+            adx_declining = False
+            adx_rising    = False
+            if (df_1h is not None
+                    and len(df_1h) >= self.adx_period * 2 + 2
+                    and "high" in df_1h.columns):
+                h1 = df_1h["high"].tolist()
+                l1 = df_1h["low"].tolist()
+                c1 = df_1h["close"].tolist()
+                adx_vals = []
+                for cut in [2, 1, 0]:
+                    sl_h = h1[:-cut] if cut else h1
+                    sl_l = l1[:-cut] if cut else l1
+                    sl_c = c1[:-cut] if cut else c1
+                    adx_vals.append(_adx(sl_h, sl_l, sl_c, self.adx_period))
+                if all(v is not None for v in adx_vals):
+                    adx_declining = adx_vals[0] > adx_vals[1] > adx_vals[2]
+                    adx_rising    = adx_vals[0] < adx_vals[1] < adx_vals[2]
+
+            # ── 3. CHoCH на 1h и/или 15m ─────────────────────────────────────
+            choch_present = False
+            try:
+                from core.smc.structure import detect_structure
+                for _df in (df_1h, df_15m):
+                    if _df is not None and len(_df) >= 30:
+                        sa = detect_structure(_df)
+                        if sa.last_break is not None and sa.last_break.is_choch:
+                            choch_present = True
+                            break
+            except Exception as _e:
+                logger.debug("[classify_mode] CHoCH error: %s", _e)
+
+            # ── Решение ──────────────────────────────────────────────────────
+            if wt_extreme and adx_declining and choch_present:
+                return "REVERSAL"
+            if adx_rising and not wt_extreme and not choch_present:
+                return "TREND"
+            return "UNCLEAR"
+
+        except Exception as e:
+            logger.warning("[classify_mode] error: %s", e)
+            return "UNCLEAR"
+
     def classify_v2(
         self,
         df_15m: "pd.DataFrame",

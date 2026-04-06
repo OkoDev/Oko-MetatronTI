@@ -34,6 +34,28 @@ except ImportError:
     _CCXT_OK = False
 
 
+# DEV-100: blacklist малоликвидных пар — mplfinance падает на OHLCV с нулями/выбросами
+# Читается из config.yaml: signals.chart_blacklist (список строк).
+# Хардкодный базовый список; дополняется из конфига при вызове.
+_CHART_BLACKLIST_BASE: set[str] = {
+    "GAIB/USDT:USDT",
+    "GAIB/USDT",
+    "BANANA/USDT:USDT",
+    "BANANA/USDT",
+}
+
+
+def _is_chart_blacklisted(symbol: str, bot=None) -> bool:
+    """True если пара в blacklist (хардкод + config)."""
+    if symbol in _CHART_BLACKLIST_BASE:
+        return True
+    if bot is not None:
+        cfg_list = bot.config.get("signals.chart_blacklist", []) if hasattr(bot, "config") else []
+        if isinstance(cfg_list, list) and symbol in cfg_list:
+            return True
+    return False
+
+
 # ─── Fetch ────────────────────────────────────────────────────────────────────
 
 def _to_binance_symbol(symbol: str) -> str:
@@ -279,6 +301,10 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
     if not _MPF_OK:
         logger.warning("chart_builder: mplfinance не установлен")
         return None
+    # DEV-100: blacklist малоликвидных пар
+    if _is_chart_blacklisted(symbol, bot):
+        logger.info("chart_builder: %s в blacklist — пропускаем генерацию графика", symbol)
+        return None
     try:
         dc = getattr(bot, "data_collector", None) if bot else None
 
@@ -299,6 +325,12 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
 
         if df_full is None or df_full.empty:
             logger.warning("chart_builder: нет данных для %s %s", symbol, tf)
+            return None
+
+        # DEV-100: защита от нестандартных OHLCV (нули, NaN, выбросы → mplfinance краш)
+        _close = df_full["close"] if "close" in df_full.columns else None
+        if _close is None or (_close <= 0).any() or _close.isna().any():
+            logger.warning("chart_builder: %s — невалидные close (нули/NaN), пропускаем", symbol)
             return None
 
         # Нормализуем индекс: data_collector возвращает RangeIndex + колонка "time" (ms int)

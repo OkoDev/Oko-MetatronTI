@@ -89,6 +89,7 @@ def scan_wt_15m_reversal(
     cfg=None,
     df_4h: pd.DataFrame = None,
     market_regime: str = "",
+    smc_context=None,
 ) -> List[SignalData]:
     """
     Детектор разворотного сетапа на 15m. Возвращает список SignalData (обычно 0-2).
@@ -101,6 +102,7 @@ def scan_wt_15m_reversal(
         lookback_bars: глубина поиска в барах 15m (8 баров = 2 часа)
         cfg:           объект конфига (ConfigLoader или dict) — читает analysis.confluence
         df_4h:         OHLCV DataFrame 4h — для 4h контекста (WT, тренд)
+        smc_context:   SMCContext из core.smc.analyze_smc — для DEV-127 SMC None gate
     """
     results: List[SignalData] = []
 
@@ -121,6 +123,28 @@ def scan_wt_15m_reversal(
 
         if df_15m is None or len(df_15m) < max(lookback_bars + 5, 30):
             return results
+
+        # ── DEV-127: SMC None gate (shadow) ───────────────────────────────
+        # Если SMC не подтверждает структуру (нет BOS и нет CHoCH) — сигнал ненадёжен.
+        # shadow=True: только логируем WOULD_BLOCK, не блокируем.
+        # Активировать: analysis.smc_none_gate.enabled: true в config.yaml
+        _smc_gate_cfg: dict = {}
+        if cfg is not None and hasattr(cfg, "get"):
+            _smc_gate_cfg = cfg.get("analysis.smc_none_gate", {}) or {}
+        _smc_gate_enabled = bool(_smc_gate_cfg.get("enabled", False))
+        _smc_no_structure = False
+        if smc_context is not None:
+            _has_bos   = bool(getattr(smc_context, "has_bos", False))
+            _has_choch = bool(getattr(smc_context, "has_choch", False))
+            if not _has_bos and not _has_choch:
+                _smc_no_structure = True
+                logger.info(
+                    "[DEV-127][SHADOW] %s: SMC нет BOS/CHoCH — %s",
+                    symbol,
+                    "WOULD_BLOCK" if not _smc_gate_enabled else "BLOCK",
+                )
+                if _smc_gate_enabled:
+                    return results
 
         # ── Расчёт индикаторов ────────────────────────────────────────────
         _factor = 1.0
@@ -308,6 +332,9 @@ def scan_wt_15m_reversal(
                 data_long["mtf_4h_trend"] = _4h_dir
                 data_long["mtf_4h_wt"]    = _4h_wt1
                 data_long["mtf_4h_zone"]  = _4h_zone
+            # DEV-127: SMC статус в данных сигнала (для аналитики shadow)
+            if _smc_no_structure:
+                data_long["smc_no_structure"] = True
 
             if score_long >= min_strength:
                 sig = _make_signal(
@@ -391,6 +418,9 @@ def scan_wt_15m_reversal(
                 data_short["mtf_4h_trend"] = _4h_dir
                 data_short["mtf_4h_wt"]    = _4h_wt1
                 data_short["mtf_4h_zone"]  = _4h_zone
+            # DEV-127: SMC статус в данных сигнала (для аналитики shadow)
+            if _smc_no_structure:
+                data_short["smc_no_structure"] = True
 
             if score_short >= min_strength:
                 sig = _make_signal(

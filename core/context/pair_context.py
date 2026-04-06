@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,11 @@ class PairState:
     # Post-TSL данные для OTE Re-entry (TR-010)
     post_tsl_data: Optional[dict] = None      # {direction, ote_top, ote_bot, impulse_high, impulse_low, exit_time, ttl_hours}
 
+    # DEV-142: DEV-138/DEV-137/DEV-139 специалисты (pub/sub расширение)
+    wt_verdict: Optional[str] = None          # "TREND_CONTINUATION" / "REVERSAL_SETUP" / ...
+    smc_verdict: Optional[str] = None         # "STRONG_BULL_ZONE" / ...
+    reversal_mode: Optional[str] = None       # "TREND" / "REVERSAL" / "UNCLEAR"
+
 
 class PairContextBus:
     """
@@ -47,6 +52,8 @@ class PairContextBus:
 
     def __init__(self) -> None:
         self._states: dict[str, PairState] = {}
+        # DEV-142: pub/sub подписчики {event_type: [handler, ...]}
+        self._subscribers: Dict[str, List[Callable]] = {}
 
     def get(self, symbol: str) -> PairState:
         """Возвращает PairState для символа, создаёт если нет."""
@@ -75,3 +82,30 @@ class PairContextBus:
         """Сбросить состояние по символу (например после длительного простоя)."""
         if symbol in self._states:
             del self._states[symbol]
+
+    # ── DEV-142: pub/sub расширение ──────────────────────────────────────────
+
+    def subscribe(self, event_type: str, handler: Callable) -> None:
+        """Регистрирует обработчик события. handler(symbol, data) → None."""
+        self._subscribers.setdefault(event_type, []).append(handler)
+
+    def publish(self, symbol: str, event_type: str, data: dict) -> None:
+        """Публикует событие. Синхронно вызывает подписчиков."""
+        for handler in self._subscribers.get(event_type, []):
+            try:
+                handler(symbol, data)
+            except Exception as e:
+                logger.warning("[PairContextBus] subscriber error (%s): %s", event_type, e)
+
+    def get_full_state(self, symbol: str) -> dict:
+        """Полный снимок состояния пары — для Narrative Builder и отладки."""
+        state = self.get(symbol)
+        return {
+            "cascade_count":    state.cascade_count,
+            "last_direction":   state.last_direction,
+            "last_close_status": state.last_close_status,
+            "post_tsl_data":    state.post_tsl_data,
+            "wt_verdict":       state.wt_verdict,
+            "smc_verdict":      state.smc_verdict,
+            "reversal_mode":    state.reversal_mode,
+        }

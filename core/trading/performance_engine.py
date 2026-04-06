@@ -19,7 +19,8 @@ class PerformanceEngine:
         self.db_path = db_path
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA busy_timeout=10000")  # DEV-148
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -657,6 +658,89 @@ class PerformanceEngine:
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # DEV-116: аналитические данные для графиков
+    # ------------------------------------------------------------------
+
+    def by_session(self) -> List[Dict[str, Any]]:
+        """WR и avg_R по торговым сессиям из features_json."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT
+                    COALESCE(json_extract(features_json, '$.session'), '?') as session,
+                    COUNT(*) as n,
+                    ROUND(SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as wr,
+                    ROUND(AVG(R_multiple), 3) as avg_r,
+                    ROUND(SUM(R_multiple), 1) as total_r
+                FROM simulated_trades
+                WHERE status NOT IN ('OPEN') AND features_json IS NOT NULL
+                GROUP BY session
+                ORDER BY avg_r DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+
+    def r_distribution(self) -> Dict[str, Any]:
+        """Распределение R_multiple по бакетам для гистограммы."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT R_multiple FROM simulated_trades
+                WHERE status NOT IN ('OPEN') AND R_multiple IS NOT NULL
+            """).fetchall()
+        vals = [r[0] for r in rows]
+        if not vals:
+            return {"buckets": [], "counts": []}
+        # Бакеты: от -2 до +8R с шагом 0.5
+        import math
+        edges = [-3, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 999]
+        labels = ["<-2", "-2..-1.5", "-1.5..-1", "-1..-0.5", "-0.5..0",
+                  "0..0.5", "0.5..1", "1..1.5", "1.5..2", "2..3", "3..4",
+                  "4..5", "5..6", "6..8", ">8"]
+        counts = [0] * len(labels)
+        for v in vals:
+            for i in range(len(edges) - 1):
+                if edges[i] <= v < edges[i + 1]:
+                    counts[i] += 1
+                    break
+        return {"buckets": labels, "counts": counts, "total": len(vals)}
+
+    def pnl_calendar(self) -> List[Dict[str, Any]]:
+        """P&L по дням: дата, n сделок, avg_R, total_R для heatmap."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT
+                    DATE(closed_at) as day,
+                    COUNT(*) as n,
+                    ROUND(AVG(R_multiple), 3) as avg_r,
+                    ROUND(SUM(R_multiple), 2) as total_r,
+                    ROUND(SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) as wr
+                FROM simulated_trades
+                WHERE status NOT IN ('OPEN') AND closed_at IS NOT NULL AND R_multiple IS NOT NULL
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT 90
+            """).fetchall()
+            return [dict(r) for r in rows]
+
+    def mfe_scatter(self) -> List[Dict[str, Any]]:
+        """MFE vs Exit R scatter: max_R_possible vs R_multiple (последние 500)."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT
+                    R_multiple as exit_r,
+                    max_R_possible as mfe_r,
+                    status,
+                    signal_type,
+                    regime
+                FROM simulated_trades
+                WHERE status NOT IN ('OPEN')
+                  AND R_multiple IS NOT NULL
+                  AND max_R_possible IS NOT NULL
+                  AND max_R_possible > 0
+                ORDER BY closed_at DESC
+                LIMIT 500
+            """).fetchall()
+            return [dict(r) for r in rows]
 
     def full_stats(self) -> Dict[str, Any]:
         return {

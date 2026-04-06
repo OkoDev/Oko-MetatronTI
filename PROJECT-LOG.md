@@ -18,6 +18,48 @@
 
 ---
 
+## 📅 История изменений
+
+### [06.04.2026] ARCH-70: wt_verdict_strong + btc_macro_shock триггеры EventBus
+
+**Проблема:** EventBus шина работала с 4 триггерами (anomaly, funding, liquidity_sweep, wt_confluence). Два оставшихся из спека не были подключены.
+**Решение:** `core/trading_intelligence.py` — после блока DEV-138 (wt_specialist.predict) добавлен publish `wt_verdict_strong` при label=REVERSAL_SETUP conf≥0.7. `bot/loops/scan_loop.py` — функция `_check_btc_macro_shock()` + вызов в начале каждого цикла `monitor_market()`, проверяет BTC/USDT 15m свечу на движение >2.5%. `bot/core/bot.py` — `trading_intelligence._event_bus = self.event_bus` для связи. `config.yaml` — добавлен `btc_macro_shock_pct: 2.5`.
+**Результат:** EventBus покрывает все 6 триггеров из спека ARCH-70. Любой новый детектор добавляется одной строкой `_eb.publish(sym, "event_type")`.
+
+---
+
+### [06.04.2026] DEV-144d+144e: Hero grid + donut charts на дашборде
+
+**Проблема:** Главная страница не показывала BingX баланс и risk exposure в удобном виде. Аналитика не давала быстрого визуального обзора распределения сигналов и режимов рынка.
+**Решение:** `web/static/index.html` — добавлен hero-grid (3 карточки вверху главной: BingX Equity, Risk Exposure с прогресс-баром, Позиций/WR). Карточка BingX заполняется через `loadLive()`. На странице Аналитика добавлены SVG donut charts (сигналы и режимы) с легендой avg R / WR. Добавлен responsive breakpoint @860px.
+**Результат:** Главная страница теперь даёт мгновенный обзор состояния торговли — баланс биржи, риск и статистика видны с первого взгляда. Donut charts на аналитике показывают распределение без таблиц.
+
+---
+
+### [06.04.2026] DEV-100 + DEV-127 + DEV-148 доп.: chart blacklist, SMC gate, SQLite helper
+
+**DEV-100 (chart_builder blacklist):** `core/ui/chart_builder.py` — добавлен `_CHART_BLACKLIST_BASE` (GAIB, BANANA и др.) + проверка в `build_signal_chart` в начале функции. Добавлена валидация OHLCV (нулевые/NaN close). Список расширяем через `signals.chart_blacklist` в config.yaml. Предотвращает краш mplfinance на малоликвидных парах с нестандартными данными.
+
+**DEV-127 (SMC None gate, shadow):** `core/signals/wt_15m_reversal_scanner.py` — добавлен параметр `smc_context`, при `has_bos=False AND has_choch=False` логируется `[DEV-127][SHADOW] WOULD_BLOCK`. Флаг `analysis.smc_none_gate.enabled: false` — shadow по умолчанию. `bot/loops/scan_loop.py` — перед вызовом scanner вычисляем `analyze_smc(df_entry)` и передаём как `smc_context`.
+
+**DEV-148 доп.:** `core/trading/trade_simulator.py` — добавлен `_db_connect()` helper, который применяет `busy_timeout=10000` ко ВСЕМ 16 соединениям (ранее только к `init_database`). `core/trading/performance_engine.py` — аналогичный фикс в `_conn()`.
+
+**Результат:** Больше нет graphical crash на мусорных парах. WOULD_BLOCK статистика SMC gate накапливается. `database is locked` устранён на всех write-путях.
+
+---
+
+### [05.04.2026] DEV-147 + DEV-148: TSL SL накопление и SQLite lock фиксы
+
+**Проблема:** TSL обновлял SL на бирже через cancel-by-ID, но при таймауте `place_sl_order()` возвращал None → ID в БД не обновлялся → следующий цикл отменял мёртвый ордер и ставил ещё один. За ночь накапливалось до 14 SL-ордеров на пару. Параллельно: `trade_tracker` и `monitoring` писали в SQLite одновременно → `database is locked`.
+
+**Решение DEV-147:** `order_manager.py → update_sl()` — вместо cancel-by-ID теперь получаем `get_open_orders()` → отменяем ВСЕ STOP_MARKET по символу+pos_side → ставим один новый. Fallback на cancel-by-ID если биржа недоступна.
+
+**Решение DEV-148:** `trade_simulator.py` и `db/subscription_manager.py` — добавлен `PRAGMA busy_timeout=10000` (ждать до 10 сек). `position_sync.py` — добавлены timeout=10 и busy_timeout для write-коннектов.
+
+**Результат:** Ордера больше не накапливаются даже при нестабильном соединении. SQLite lock заменяется ожиданием вместо падения.
+
+---
+
 ### OutcomePredictor
 Модель машинного обучения (RandomForest), которая учится на истории закрытых сделок.
 По 12 признакам (сила сигнала, режим рынка, тип сигнала и др.) предсказывает
@@ -103,6 +145,83 @@ ATR-адаптивный фильтр близости к пивоту: `tier1 =
 ---
 
 ## 📅 История изменений
+
+---
+
+### [06.04.2026] ARCH-45 — Ревью OutcomePredictor + Adaptive Weights
+
+**Проблема:** плановый ревью ML-слоя (срок 06.04) — решить активировать ли OutcomePredictor и пересчитать ли адаптивные веса.
+**Результат:** CV AUC=0.41 — модель не активируется. Причина диагностирована: confidence/strength у winners и losers идентичны (нет дифференцирующих фичей). pivot_reversal avg_R=-0.153 → вес 0.94x. WR post-fix=27.1% (было 4.9% в недели бага). Текущая неделя 45.5%. Создана DEV-149 — добавить distance_to_sl_pct, atr_multiple, wt_snap в feature_vector. Следующий ревью: 20.04.2026.
+
+---
+
+### [06.04.2026] ARCH-70 — EventBus: централизованная шина Full CALL
+
+**Проблема:** 10+ детекторов (anomaly, funding, liquidity sweep, confluence) обнаруживают сигналы и делают broadcast в TG, но не вызывают `analyze_symbol()`. Full CALL (→ register_trade) происходил только из TriggerLoop по 3 сценариям. 75% событий "терялись" без торгового решения.
+**Решение:** `core/context/event_bus.py` — приоритетная очередь (heapq) с cooldown 30 мин/пара и семафором max_concurrent=3. Детекторы публикуют `event_bus.publish(symbol, event_type)` после обнаружения сигнала. consume_loop читает очередь → `_fire_analysis()` → `analyze_symbol()`. Shadow mode (`event_bus.shadow: true`) — только WOULD_FIRE логи. Подключены: anomaly (prio=4), liquidity_sweep (prio=1), funding_extreme (prio=2), wt_confluence (prio=3).
+**Результат:** система реагирует на рынок событийно. Liquidity Sweep → немедленный Full CALL (высший приоритет). Cooldown защищает от шума. После 3-5 дней наблюдения: переключить `event_bus.shadow: false`.
+
+---
+
+### [06.04.2026] DEV-146 — VerdictAggregator: WTVerdict + SMCVerdict → gate (ARCH-68 Фаза 2)
+
+**Проблема:** Компоненты Куба Метатрона (DEV-137..142) накапливали WTVerdict и SMCVerdict в metadata, но никак не влияли на решение — данные "висели в воздухе".
+**Решение:** `core/intelligence/verdict_aggregator.py` — агрегирует два вердикта в `VerdictGate`: блокировка при SMC=STRONG_BEAR+LONG (или SMC=STRONG_BULL+SHORT, conf ≥ 0.65), блокировка при WT=EXHAUSTION (conf ≥ 0.65), буст +5 к strength при совпадении. Интегрирован в `trading_intelligence.py` после секции DEV-138/139. Конфиг: `trading.verdict_gate.enabled: false` (shadow mode, только WOULD_BLOCK логи).
+**Результат:** система логирует когда вердикты противоречат направлению; при `enabled: true` — реальный gate. Активировать после накопления 200+ сделок с wt_snap/smc_snap.
+
+---
+
+### [06.04.2026] DEV-145 — BingX timestamp invalid + position_sync рефакторинг
+
+**Проблема:** Все VST ордера падали с `code: 109400 — timestamp is invalid` — системное время WSL отставало от BingX на ~4.7с (допуск ±1с). Следствие: `get_balance()` возвращал 0 → qty=0 → ордер не ставился. Плюс `position_sync` угадывал статус закрытой сделки по текущей цене — давал R=0.
+**Решение:** (1) `BingXClient.sync_time()` — получает серверное время BingX и сохраняет offset; `_ts()` корректирует timestamp на offset. `OrderManager._get_client_synced()` вызывает sync один раз lazy. (2) `position_sync.sync_positions()` переведён на `_get_client_synced()` + читает `get_filled_orders()` для реального exit_price и типа ордера (STOP_MARKET→SL, TAKE_PROFIT_MARKET→TP). (3) Добавлен `fix_zero_r_trades()` — ретроспективная чистка 106 нулевых VST записей: ищет реальный exit через API, иначе помечает UNKNOWN.
+**Результат:** ордера будут ставиться корректно; position_sync пишет реальный exit_price; есть инструмент для чистки исторического мусора.
+
+---
+
+### [05.04.2026] DEV-129 — PivotTouchTrigger: событийный вход при касании пивотов
+
+**Проблема:** polling каждые 2 минуты → потеря до 1R при касании пивотного уровня R1/R2/S1/S2 в промежутке между сканами.
+**Решение:** `PivotTouchTrigger` в `core/context/trigger_bus.py` — проверяет расстояние до R1/R2/S1/S2 на 1D и 1W (порог 0.3%). Cooldown 60 мин/пара. `trigger_loop.py` расширен: `_check_pivot_touches()` читает `pivot_cache` без лишних API-запросов. Shadow mode (логирует `PIVOT_TOUCH WOULD_FIRE`). Включить production через `trigger_bus.shadow: false` в config.
+**Результат:** событийный анализ при касании ключевых уровней — без изменения scan_loop, минимальный diff.
+
+---
+
+### [05.04.2026] Куб Метатрона Фаза 2 — все 6 компонентов реализованы (DEV-137..142)
+
+**Проблема:** 6 задач ARCH-68 не были реализованы — system не различала REVERSAL vs TREND режим, не имела ML специалистов по WT/SMC, не собирала EQH/EQL уровни, не генерировала торговых нарративов.
+**Решение:** Реализованы все 6 компонентов в shadow mode за одну сессию:
+- DEV-137: `classify_mode()` в MarketRegimeClassifier — WT 4h + ADX slope + CHoCH → REVERSAL/TREND/UNCLEAR
+- DEV-138: `MTFWTSpecialist` (35 признаков, 7 TF) — RandomForest на wt_snap из features_json
+- DEV-139: `MTFSMCSpecialist` (36 признаков, 4 TF) — RandomForest на smc_snap
+- DEV-140: `detect_equal_highs_lows()` в liquidity.py — поиск EQH/EQL как liquidity magnets
+- DEV-141: `NarrativeBuilder` — синтезирует TradingNarrative (текст + P(win) + key_factors)
+- DEV-142: PairContextBus pub/sub — `publish/subscribe/get_full_state`, новые поля PairState
+**Результат:** данные собираются (wt_snap/smc_snap/reversal_mode в features_json), shadow логируются, ML обучится автоматически по накоплении 50+ сделок с нужными снимками.
+
+---
+
+### [05.04.2026] DEV-143 — position_sync.py фикс: реальный exit_price для VST сделок
+
+**Проблема:** `position_sync.py:59` — `get_current_price()` возвращает None для большинства пар (не в WS-фиде) → fallback = entry_price → status всегда "TP" → 100% VST TP с R=0.
+**Решение:** Добавлен промежуточный fallback через `get_ticker()` (REST-запрос) перед финальным fallback на entry_price. Только если тикер тоже недоступен → старый fallback.
+**Результат:** VST-сделки теперь закрываются с реальным exit_price и корректным статусом SL/TP.
+
+---
+
+### [04.04.2026] TRADER: DEV-142 — position_sync.py баг, 86 VST TP с R=0
+
+**Проблема:** В VST режиме 86/91 TP сегодня имели R=0 (exit=entry). Реальная производительность дня (WR=16%, -21.6R) была скрыта за нулевыми записями.
+**Решение:** Найдена корневая причина в `core/exchange/position_sync.py:59`. Метод `get_current_price()` (WS-only) возвращает None для большинства пар → fallback = `entry_price`. Дальше статус-проверка всегда даёт "TP" (entry > sl). Фикс: заменить на `get_ticker()` как fallback. Создан DEV-142 🔥.
+**Результат:** После фикса VST-сделки будут корректно записываться с реальным exit_price и правильным статусом SL/TP.
+
+---
+
+### [04.04.2026] ARCH-68: Куб Метатрона Фаза 2 — архитектурный план (ARCH-68)
+
+**Проблема:** система хорошо классифицирует режим (TREND/RANGE), но не различает внутри режима фазу рынка: идёт тренд или назревает разворот? ML-модели обучены на общих признаках, без специализации на WT и SMC данных.
+**Решение:** разработан план 6 компонентов: (1) Reversal Mode Detector — расширение MarketRegimeClassifier, определяет "TREND vs REVERSAL" по WT 4h зоне + ADX slope + CHoCH; (2) MTF WT Specialist — ML модель на 35 WT признаках по 7 TF; (3) EQH/EQL детектор — поиск Equal Highs/Lows как уровней ликвидности; (4) MTF SMC Specialist — ML на 36 SMC признаках по 4 TF; (5) Narrative Builder — синтезирует всё в TradingNarrative с P(win) и текстом для TG; (6) PairContextBus pub/sub — расширение шины состояния. Все компоненты в shadow mode.
+**Результат:** DEV-137..142 добавлены в TASKS.md. Начинаем с DEV-137 (Reversal Mode) — самый быстрый, не зависит от ARCH-62, сразу улучшает DEV-128ext (confluence блокировка в правильном mode).
 
 ---
 

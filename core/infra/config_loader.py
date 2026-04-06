@@ -413,5 +413,32 @@ class ConfigLoader:
             return False
 
 
+    def save_risk(
+        self,
+        deposit_usdt: float,
+        risk_pct: float,
+        leverage: int,
+    ) -> bool:
+        """Обновляет параметры риск-менеджмента в секции trading config.yaml."""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("trading", {})
+            raw["trading"]["deposit_usdt"] = round(float(deposit_usdt), 2)
+            raw["trading"]["risk_pct"]     = round(float(risk_pct), 2)
+            raw["trading"]["leverage"]     = int(leverage)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self.reload()
+            logger.info(
+                "Риск-менеджмент сохранён: deposit=%.2f risk_pct=%.2f leverage=%d",
+                deposit_usdt, risk_pct, leverage,
+            )
+            return True
+        except Exception as e:
+            logger.error("Ошибка сохранения риск конфига: %s", e)
+            return False
+
+
 # Глобальный экземпляр конфигурации
 config = ConfigLoader()

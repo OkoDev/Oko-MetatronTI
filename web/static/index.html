@@ -71,6 +71,25 @@
   .risk-panel .rp-item { display: flex; flex-direction: column; gap: 2px; }
   .risk-panel .rp-label { font-size: .7rem; color: #8b949e; text-transform: uppercase; letter-spacing: .06em; }
   .risk-panel .rp-val { font-size: 1.1rem; font-weight: 700; }
+  /* ── Hero grid (144d) ── */
+  .hero-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+  .hero-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 18px 22px; display: flex; flex-direction: column; gap: 3px; }
+  .hero-card .hc-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .09em; color: #8b949e; }
+  .hero-card .hc-val { font-size: 2rem; font-weight: 700; line-height: 1.15; }
+  .hero-card .hc-sub { font-size: .78rem; color: #8b949e; margin-top: 3px; }
+  .hero-card .hc-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+  .hero-card .hc-mini { font-size: .82rem; }
+  .hc-bar { height: 5px; background: #21262d; border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  .hc-bar-fill { height: 100%; border-radius: 3px; transition: width .5s ease; }
+  @media (max-width: 860px) { .hero-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 540px) { .hero-grid { grid-template-columns: 1fr; } }
+  /* ── Donut (144e) ── */
+  .donut-wrap { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .donut-legend { flex: 1; min-width: 130px; display: flex; flex-direction: column; gap: 5px; }
+  .donut-legend-row { display: flex; align-items: center; gap: 6px; font-size: .79rem; }
+  .donut-legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .donut-legend-lbl { color: #8b949e; flex: 1; }
+  .donut-legend-val { color: #c9d1d9; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -200,6 +219,147 @@ async function updateModeBadge() {
   } catch(_) {}
 }
 
+async function loadLiveOrders() {
+  try {
+    const r = await fetch('/api/live_orders');
+    if (!r.ok) return;
+    const d = await r.json();
+    const section = document.getElementById('liveOrdersSection');
+    if (!section) return;
+    // Показываем только для VST/LIVE
+    if (d.mode === 'SIM' || d.mode === 'SIM_ONLY') {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    const countEl = document.getElementById('liveOrdersCount');
+    if (countEl) countEl.textContent = `(${d.count})`;
+    const body = document.getElementById('liveOrdersBody');
+    if (!body) return;
+    if (!d.orders || d.orders.length === 0) {
+      body.innerHTML = '<p class="note">Открытых позиций на бирже нет.</p>';
+      return;
+    }
+    const rows = d.orders.map(o => {
+      const sideColor = o.side === 'LONG' ? '#26a69a' : '#ef5350';
+      // DEV-144b: показываем реальные цены SL/TP из simulated_trades
+      const fmtPrice = (v) => v != null ? parseFloat(v).toPrecision(5) : null;
+      const slPrice = fmtPrice(o.stop_loss);
+      const tpPrice = fmtPrice(o.take_profit);
+      const slLabel = slPrice
+        ? `<span style="color:#ef5350">SL ${slPrice}</span>`
+        : (o.sl_order_id ? `<span style="color:#ef5350">SL✓</span>` : '<span style="color:#555">SL—</span>');
+      const tpLabel = tpPrice
+        ? `<span style="color:#26a69a">TP ${tpPrice}</span>`
+        : (o.tp_order_id ? `<span style="color:#26a69a">TP✓</span>` : '<span style="color:#555">TP—</span>');
+      const slipLabel = o.slip_pct != null && o.slip_pct !== 0
+        ? `<span style="color:#ffeb3b">${o.slip_pct > 0 ? '+' : ''}${o.slip_pct.toFixed(2)}%</span>` : '—';
+      const created = o.created_at ? o.created_at.substring(0, 16).replace('T', ' ') : '—';
+      return `<tr>
+        <td>${o.symbol}</td>
+        <td style="color:${sideColor};font-weight:600">${o.side}</td>
+        <td>${o.qty != null ? o.qty : '—'}</td>
+        <td style="font-size:.8em;color:#8b949e">${o.exchange_order_id || '—'}</td>
+        <td>${slLabel}&nbsp;${tpLabel}</td>
+        <td>${slipLabel}</td>
+        <td style="font-size:.8em;color:#8b949e">${created}</td>
+      </tr>`;
+    }).join('');
+    body.innerHTML = `<table><thead><tr>
+      <th>Пара</th><th>Сторона</th><th>Объём</th>
+      <th>Order ID</th><th>SL / TP</th><th>Проскальз.</th><th>Время</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  } catch(_) {}
+}
+
+async function loadLive() {
+  try {
+    const r = await fetch('/api/live');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    // ── DEV-144d: Hero balance карточка ───────────────────────────────────
+    const heroBalVal = document.getElementById('heroBalVal');
+    const heroBalSub = document.getElementById('heroBalSub');
+    const heroCard   = document.getElementById('heroBalance');
+    if (heroBalVal) {
+      const fmtUsd = v => '$' + (v || 0).toLocaleString('ru', {minimumFractionDigits:2, maximumFractionDigits:2});
+      if (d.mode === 'SIM' || !d.balance) {
+        heroBalVal.textContent = 'SIM';
+        heroBalVal.style.color = '#8b949e';
+        if (heroBalSub) heroBalSub.textContent = 'режим симуляции — биржа не подключена';
+        if (heroCard) heroCard.style.borderColor = '#30363d';
+      } else {
+        const bal = d.balance;
+        const pnl = bal.unrealized_pnl || 0;
+        const pnlColor = pnl >= 0 ? '#3fb950' : '#f85149';
+        heroBalVal.textContent = fmtUsd(bal.equity);
+        heroBalVal.style.color = '#58a6ff';
+        if (heroCard) heroCard.style.borderColor = '#58a6ff44';
+        if (heroBalSub) {
+          heroBalSub.innerHTML =
+            'Свободно: <b style="color:#c9d1d9">' + fmtUsd(bal.available) + '</b>' +
+            '&nbsp;&nbsp;P&L: <span style="color:' + pnlColor + '">' + (pnl >= 0 ? '+' : '') + fmtUsd(pnl) + '</span>' +
+            (bal.used_margin > 0 ? '&nbsp;&nbsp;Маржа: <span style="color:#8b949e">' + fmtUsd(bal.used_margin) + '</span>' : '') +
+            '<br><span style="color:#484f58;font-size:.68rem">' + d.mode + ' · ' + new Date(d.timestamp).toLocaleTimeString('ru') + '</span>';
+        }
+      }
+    }
+    // (exchangeBalanceWidget оставляем для обратной совместимости — скрыт)
+    const balWidget = document.getElementById('exchangeBalanceWidget');
+    if (balWidget) balWidget.style.display = 'none';
+
+    // ── Реальные позиции BingX на странице Открытые ────────────────────────
+    const posSection = document.getElementById('exchangePosSection');
+    if (!posSection) return;
+    if (d.mode === 'SIM') { posSection.style.display = 'none'; return; }
+    posSection.style.display = '';
+    const posBody = document.getElementById('exchangePosBody');
+    const posCount = document.getElementById('exchangePosCount');
+    if (!posBody) return;
+    if (!d.positions || d.positions.length === 0) {
+      if (posCount) posCount.textContent = '(0)';
+      posBody.innerHTML = '<p class="note">Позиций на бирже нет.</p>';
+      return;
+    }
+    if (posCount) posCount.textContent = `(${d.positions.length})`;
+    const fmtP = v => v != null ? parseFloat(v).toPrecision(5) : null;
+    const rows = d.positions.map(p => {
+      const sideColor = p.side === 'LONG' ? '#3fb950' : '#f85149';
+      const pnl = p.unrealized_pnl || 0;
+      const pnlColor = pnl >= 0 ? '#3fb950' : '#f85149';
+      const pnlStr = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+      const ep = p.entry_price > 0 ? p.entry_price.toPrecision(5) : '—';
+      const mp = p.mark_price > 0 ? p.mark_price.toPrecision(5) : '—';
+      const movePct = (p.entry_price > 0 && p.mark_price > 0)
+        ? ((p.mark_price - p.entry_price) / p.entry_price * 100 * (p.side === 'SHORT' ? -1 : 1)).toFixed(2)
+        : null;
+      const moveStr = movePct != null
+        ? `<span style="color:${+movePct >= 0 ? '#3fb950' : '#f85149'}">${+movePct >= 0 ? '+' : ''}${movePct}%</span>`
+        : '—';
+      const sym = (p.symbol || '').replace('-USDT', '/USDT');
+      // SL/TP из simulated_trades (если найдены)
+      const slStr = fmtP(p.stop_loss)
+        ? `<span style="color:#f85149">SL ${fmtP(p.stop_loss)}</span>` : '<span style="color:#555">—</span>';
+      const tpStr = fmtP(p.take_profit)
+        ? `<span style="color:#3fb950">TP ${fmtP(p.take_profit)}</span>` : '<span style="color:#555">—</span>';
+      return `<tr>
+        <td>${sym}</td>
+        <td style="color:${sideColor};font-weight:600">${p.side}</td>
+        <td style="font-size:.85em;color:#8b949e">${ep}</td>
+        <td style="font-size:.85em">${mp}&nbsp;${moveStr}</td>
+        <td style="color:${pnlColor};font-weight:600">${pnlStr}</td>
+        <td style="font-size:.82em">${slStr}&nbsp;${tpStr}</td>
+        <td>${p.leverage}×</td>
+      </tr>`;
+    }).join('');
+    posBody.innerHTML = `<table><thead><tr>
+      <th>Пара</th><th>Сторона</th><th>Вход</th><th>Текущая</th>
+      <th>Unrealized P&amp;L</th><th>SL / TP</th><th>Плечо</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  } catch(_) {}
+}
+
 async function load() {
   try {
     const [r1, r2, r3, r4, r5] = await Promise.all([
@@ -216,6 +376,7 @@ async function load() {
     document.getElementById('updated').textContent =
       'Обновлено: ' + new Date().toLocaleTimeString('ru');
     updateModeBadge();
+    loadLive();
   } catch(e) {
     document.getElementById('updated').textContent = 'Ошибка загрузки: ' + e.message;
   }
@@ -957,20 +1118,42 @@ function render(d, cf, be, eq, an) {
   const html = `
     <!-- ═══ PAGE: СВОДКА ═══ -->
     <div class="page" id="page-summary">
+      <!-- DEV-144d: Hero grid — 3 карточки вверху -->
+      <div class="hero-grid">
+        <!-- Карточка 1: BingX Equity (заполняется loadLive) -->
+        <div class="hero-card" id="heroBalance" style="border-color:#58a6ff33">
+          <div class="hc-label">BingX Equity</div>
+          <div class="hc-val blue" id="heroBalVal">—</div>
+          <div class="hc-sub" id="heroBalSub">загрузка…</div>
+        </div>
+        <!-- Карточка 2: Risk Exposure -->
+        <div class="hero-card" id="heroRisk">
+          <div class="hc-label">Risk Exposure</div>
+          <div class="hc-val" id="heroRiskVal" style="color:${(_riskMeta.risk_exposure_pct||0) > 10 ? '#f85149' : (_riskMeta.risk_exposure_pct||0) > 5 ? '#d29922' : '#3fb950'}">${_riskMeta.risk_exposure_pct != null ? _riskMeta.risk_exposure_pct.toFixed(1) + '%' : '—'}</div>
+          <div class="hc-sub">${_riskMeta.risk_exposure_usdt != null && _riskMeta.deposit_usdt != null ? '$' + _riskMeta.risk_exposure_usdt.toFixed(0) + ' из $' + _riskMeta.deposit_usdt.toFixed(0) : 'нет данных о депозите'}</div>
+          <div class="hc-bar"><div class="hc-bar-fill" id="heroRiskBar" style="width:${Math.min(_riskMeta.risk_exposure_pct||0, 100)}%;background:${(_riskMeta.risk_exposure_pct||0) > 10 ? '#f85149' : (_riskMeta.risk_exposure_pct||0) > 5 ? '#d29922' : '#3fb950'}"></div></div>
+        </div>
+        <!-- Карточка 3: Позиций / WR -->
+        <div class="hero-card">
+          <div class="hc-label">Позиций открыто / WR</div>
+          <div class="hc-val">${s.open_count ?? 0} <span style="font-size:1.1rem;color:#8b949e;font-weight:400">/ ${s.total ?? 0}</span></div>
+          <div class="hc-row">
+            <div class="hc-mini green">TP ${s.tp_count ?? 0}</div>
+            <div class="hc-mini purple">TSL ${s.tsl_count ?? 0}</div>
+            <div class="hc-mini red">SL ${s.sl_count ?? 0}</div>
+            <div class="hc-mini" style="margin-left:auto;font-size:.95rem;font-weight:700" class="${wr >= 0.5 ? 'green' : 'red'}">
+              <span style="color:${wr >= 0.5 ? '#3fb950' : '#f85149'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</span>
+              <span style="color:#8b949e;font-size:.7rem;font-weight:400"> WR</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Equity curve -->
       ${renderEquitySection(eq, d.open_trades)}
+      <!-- KPI карточки -->
       <section>
-        <h2>Сводка</h2>
+        <h2>Метрики стратегии</h2>
         <div class="cards">
-          <div class="card"><div class="label">Всего / Открыто</div>
-            <div class="value blue">${s.total ?? '—'} <span style="font-size:1rem;color:#58a6ff88">/ ${s.open_count ?? 0}</span></div>
-            ${s.days_active ? `<div class="label" style="margin-top:4px">${s.days_active} дней · ${cpdAll} сделок/день</div>` : ''}</div>
-          <div class="card"><div class="label">Win Rate</div>
-            <div class="value ${wr >= 0.5 ? 'green' : 'red'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</div>
-            <div class="label" style="margin-top:4px">
-              <span class="green">TP ${s.tp_count ?? 0}</span> ·
-              <span class="purple">TSL ${s.tsl_count ?? 0}</span> ·
-              <span class="red">SL ${s.sl_count ?? 0}</span>
-            </div></div>
           <div class="card" style="border-color:${evRound > 0 ? '#3fb950' : '#f85149'}44">
             <div class="label">EV / сделку <span style="color:#444;font-size:.7rem" title="Expected Value = WR×R_win + (1-WR)×R_loss">ожидаемый R</span></div>
             <div class="value ${evRound > 0 ? 'green' : 'red'}">${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R</div>
@@ -978,13 +1161,16 @@ function render(d, cf, be, eq, an) {
           <div class="card"><div class="label">Profit Factor</div>
             <div class="value ${pf >= 1.5 ? 'green' : pf >= 1 ? 'yellow' : 'red'}">${pf != null ? pf.toFixed(2) : '—'}</div>
             <div class="label" style="margin-top:4px">${pf >= 1.5 ? '🔥 Отличный' : pf >= 1.2 ? '👍 Хороший' : pf >= 1 ? '⚡ Слабый' : '❌ < 1'}</div></div>
-          <div class="card"><div class="label">Avg R (Win ↑ / Loss ↓)</div>
+          <div class="card"><div class="label">Avg R (Win / Loss)</div>
             <div class="value" style="font-size:1.2rem">
               <span class="green">+${fmt(rWin,2)}</span>
               <span style="color:#444;font-weight:400"> / </span>
               <span class="red">${fmt(rLoss,2)}</span>
             </div>
-            <div class="label" style="margin-top:4px">Avg Profit: <span class="${color(s.avg_profit_pct)}">${fmtPct(s.avg_profit_pct)}</span></div></div>
+            <div class="label" style="margin-top:4px">Сделок/день: <span style="color:#c9d1d9">${cpdAll}</span> · ${s.days_active || 0} дней</div></div>
+          <div class="card"><div class="label">Open P&L</div>
+            <div class="value" style="color:${(_riskMeta.open_pnl_r||0) >= 0 ? '#3fb950' : '#f85149'}">${_riskMeta.open_pnl_r != null ? ((_riskMeta.open_pnl_r >= 0 ? '+' : '') + _riskMeta.open_pnl_r.toFixed(2) + 'R') : '—'}</div>
+            <div class="label" style="margin-top:4px">нереализованный R</div></div>
           ${projRow}
         </div>
       </section>
@@ -995,6 +1181,10 @@ function render(d, cf, be, eq, an) {
       <section>
         <h2>Открытые позиции <span style="color:#8b949e;font-size:.9em;font-weight:400">(${(d.open_trades||[]).length})</span></h2>
         ${openTradesTable(d.open_trades)}
+      </section>
+      <section id="exchangePosSection" style="display:none">
+        <h2>Позиции BingX <span id="exchangePosCount" style="color:#8b949e;font-size:.9em;font-weight:400"></span> <span style="color:#58a6ff;font-size:.75em;font-weight:400">(прямой запрос к бирже)</span></h2>
+        <div id="exchangePosBody"></div>
       </section>
     </div>
 
@@ -1008,6 +1198,17 @@ function render(d, cf, be, eq, an) {
 
     <!-- ═══ PAGE: АНАЛИТИКА ═══ -->
     <div class="page" id="page-analytics">
+      <!-- DEV-144e: Donut charts — распределение сигналов и режимов -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:4px">
+        <section style="margin-bottom:0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px">
+          <h2 style="border-bottom:none;padding-bottom:0;margin-bottom:10px">Распределение сигналов</h2>
+          ${signalDonut(d.by_signal_type)}
+        </section>
+        <section style="margin-bottom:0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px">
+          <h2 style="border-bottom:none;padding-bottom:0;margin-bottom:10px">Режимы рынка</h2>
+          ${regimeDonut(d.by_regime)}
+        </section>
+      </div>
       <section>
         <h2>По конфигурации <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Strategy Pattern — confluence / conservative / mtf_bias)</span></h2>
         ${tableByGroup(d.by_strategy, 'strategy_name')}
@@ -1544,6 +1745,68 @@ function resetFilters() {
     if (el) el.value = '';
   });
   applyFilters();
+}
+
+// ── DEV-144e: SVG Donut chart ─────────────────────────────────────────────
+function drawDonut(data, colors, size) {
+  size = size || 130;
+  if (!data || !data.length) return '<p class="note">Нет данных</p>';
+  const total = data.reduce(function(s, d) { return s + (d.value || 0); }, 0);
+  if (!total) return '<p class="note">Нет данных</p>';
+  const cx = size/2, cy = size/2, r = size * 0.38, ri = size * 0.24;
+  let angle = -Math.PI / 2;
+  const slices = data.map(function(d, i) {
+    const frac = d.value / total;
+    const a1 = angle, a2 = angle + frac * Math.PI * 2;
+    angle = a2;
+    const x1 = cx + r*Math.cos(a1), y1 = cy + r*Math.sin(a1);
+    const x2 = cx + r*Math.cos(a2), y2 = cy + r*Math.sin(a2);
+    const xi1 = cx + ri*Math.cos(a1), yi1 = cy + ri*Math.sin(a1);
+    const xi2 = cx + ri*Math.cos(a2), yi2 = cy + ri*Math.sin(a2);
+    const large = frac > 0.5 ? 1 : 0;
+    const path = 'M ' + x1 + ' ' + y1 + ' A ' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x2 + ' ' + y2 +
+                 ' L ' + xi2 + ' ' + yi2 + ' A ' + ri + ' ' + ri + ' 0 ' + large + ' 0 ' + xi1 + ' ' + yi1 + ' Z';
+    const clr = colors[i % colors.length];
+    const pct = Math.round(frac * 100);
+    return '<path d="' + path + '" fill="' + clr + '" opacity="0.85"><title>' + d.label + ': ' + d.value + ' (' + pct + '%)</title></path>';
+  }).join('');
+  return '<svg viewBox="0 0 ' + size + ' ' + size + '" style="width:' + size + 'px;height:' + size + 'px;flex-shrink:0">' + slices + '</svg>';
+}
+
+function signalDonut(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+  const COLORS = ['#58a6ff','#3fb950','#d29922','#b87eff','#f85149','#79c0ff','#e3b341'];
+  const data = rows.map(function(r) { return { label: r.signal_type||'?', value: r.total||0 }; });
+  const legend = rows.map(function(r, i) {
+    const rColor = r.avg_r > 0 ? '#3fb950' : r.avg_r < 0 ? '#f85149' : '#8b949e';
+    return '<div class="donut-legend-row">' +
+      '<span class="donut-legend-dot" style="background:' + COLORS[i%COLORS.length] + '"></span>' +
+      '<span class="donut-legend-lbl">' + (r.signal_type||'?') + '</span>' +
+      '<span class="donut-legend-val">' + (r.total||0) + '</span>' +
+      '<span style="color:' + rColor + ';font-size:.72rem;min-width:40px;text-align:right">' + (r.avg_r > 0 ? '+' : '') + fmt(r.avg_r, 2) + 'R</span>' +
+    '</div>';
+  }).join('');
+  return '<div class="donut-wrap">' + drawDonut(data, COLORS) + '<div class="donut-legend">' + legend + '</div></div>';
+}
+
+function regimeDonut(rows) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+  const REGIME_COLORS = { TREND_UP:'#3fb950', TREND_DOWN:'#f85149', RANGE:'#d29922', HIGH_VOL:'#b87eff' };
+  const REGIME_LABELS = { TREND_UP:'Тренд ↑', TREND_DOWN:'Тренд ↓', RANGE:'Боковик', HIGH_VOL:'Высокая vol' };
+  const valid = rows.filter(function(r) { return r.regime && r.regime !== 'unknown'; });
+  if (!valid.length) return '<p class="note">Режимы накапливаются (старые сделки до 04.03 имеют NULL)</p>';
+  const data   = valid.map(function(r) { return { label: REGIME_LABELS[r.regime]||r.regime, value: r.total||0 }; });
+  const colors = valid.map(function(r) { return REGIME_COLORS[r.regime]||'#8b949e'; });
+  const legend = valid.map(function(r, i) {
+    const wrColor = (r.win_rate||0) >= 50 ? '#3fb950' : '#f85149';
+    return '<div class="donut-legend-row">' +
+      '<span class="donut-legend-dot" style="background:' + colors[i] + '"></span>' +
+      '<span class="donut-legend-lbl">' + (REGIME_LABELS[r.regime]||r.regime) + '</span>' +
+      '<span class="donut-legend-val">' + (r.total||0) + '</span>' +
+      '<span style="color:' + wrColor + ';font-size:.72rem;min-width:42px;text-align:right">WR ' + (r.win_rate||0) + '%</span>' +
+    '</div>';
+  }).join('');
+  return '<div class="donut-wrap">' + drawDonut(data, colors) + '<div class="donut-legend">' + legend + '</div></div>';
 }
 
 load();

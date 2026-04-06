@@ -4,6 +4,148 @@
 
 ---
 
+## [05.04.2026 вечер] Агент: Developer — Куб Метатрона Фаза 2 (DEV-137..142) ✅
+
+- ✅ **DEV-137**: `classify_mode()` в `core/indicators/market_regime.py` — WT 4h OB/OS + ADX 1h slope + CHoCH → REVERSAL/TREND/UNCLEAR. Запись в `recommendation.metadata["reversal_mode"]`.
+- ✅ **DEV-138**: `core/ml/mtf_wt_specialist.py` — MTFWTSpecialist, 35 признаков (7 TF × 5), WTVerdict. wt_snap пишется в features_json через trade_simulator. Shadow → metadata["wt_verdict"].
+- ✅ **DEV-139**: `core/ml/mtf_smc_specialist.py` — MTFSMCSpecialist, 36 признаков (4 TF × 9), SMCVerdict. smc_snap вычисляется в `_build_mtf_context`. Shadow → metadata["smc_verdict"].
+- ✅ **DEV-140**: `detect_equal_highs_lows()` в `core/smc/liquidity.py` — EQH/EQL детектор. Используется в smc_snap.
+- ✅ **DEV-141**: `core/intelligence/narrative_builder.py` — NarrativeBuilder + TradingNarrative. Config toggle `trading.narrative.enabled: false`. Shadow → metadata["narrative"].
+- ✅ **DEV-142**: `core/context/pair_context.py` — `publish/subscribe/get_full_state` + `wt_verdict/smc_verdict/reversal_mode` в PairState.
+- ⚠️ **Нужен рестарт бота** для применения всех изменений.
+- ⚠️ ML обучится автоматически по накоплении 50+ сделок с wt_snap/smc_snap (shadow, не влияет на trading).
+- ⚠️ **DEV-144** (редизайн дашборда) — в планах, статус 🟡.
+
+---
+
+## [05.04.2026] Агент: Developer — DEV-143 position_sync фикс
+
+- ✅ **DEV-143**: `core/exchange/position_sync.py:59` — добавлен `get_ticker()` fallback
+  - Было: `get_current_price() or entry_price` → всегда TP@entry при WS-miss
+  - Стало: WS → REST ticker → entry_price (только как крайний fallback)
+  - Нужен рестарт бота — изменения вступят в силу для новых sync-циклов
+
+---
+
+## [04.04.2026 вечер] Агент: Developer — DEV-126 финальный фикс
+
+- ✅ **DEV-126 / DEV-133 финал**: корень бага найден — `get_ohlcv()` возвращает raw OHLCV без `wt1`
+  - `monitoring.py` `check_pivot_reversals`: добавлен `calculate_wt()` для 15m/1h/4h df перед передачей в `_pre_dfs`
+  - `scan_loop.py` `_handle_wl_breach_entry`: добавлен `calculate_wt()` для df_1h перед чтением wt1
+  - Ранний код проверял `"wt1" in _df.columns` до вычисления — условие всегда False → htf_wt всегда None
+- 🔄 **Нужен рестарт** — изменения вступят в силу при следующем старте бота
+
+---
+
+## [04.04.2026] Агент: ARCH — ARCH-68 план
+
+- ✅ **ARCH-68** взята в работу (🟢 → 🔄)
+- ✅ Архитектурный план написан в DISCUSSION.md: 5 компонентов, 6 задач DEV-137..142
+- ✅ TASKS.md обновлён: DEV-137..142 добавлены в сводную таблицу
+- 🔄 **DEV-137** ожидает разработчика (Reversal Mode Detector — первый приоритет)
+- 📌 Все задачи ARCH-68 запускаются в shadow mode без ARCH-62
+
+---
+
+## [04.04.2026] Агент: Developer — DEV-136 TSL fix
+
+- ✅ **DEV-136** (TSL на бирже — критический баг): `exchange_order_id`, `exchange_sl_order_id`, `qty` отсутствовали в `simulated_trades`
+  - TSL cancel+replace НИКОГДА не работал — `set_exchange_order_id()` молча падал (колонки нет)
+  - Фикс: добавлены 3 колонки в CREATE TABLE + ALTER TABLE миграции в `trade_simulator.py`
+  - `set_exchange_order_id(trade_id, order_id, qty=0.0)` — теперь сохраняет qty тоже
+  - Call sites обновлены: `monitoring.py` + `scan_loop.py` передают `qty=_qty`
+  - После рестарта новые VST сделки будут иметь `exchange_order_id` → TSL начнёт работать
+
+---
+
+## [04.04.2026 ночь] Агент: Developer — DEV-133 + DEV-134
+
+- ✅ **DEV-133**: дедупликация VST позиций — `OrderManager.has_open_position()` + проверка в `open_bracket()` перед размещением
+  - `core/exchange/order_manager.py`: новый метод `has_open_position(symbol)` запрашивает биржу
+  - `open_bracket()`: если позиция уже есть → `BracketResult(success=False, error="position_already_open")` без ордера
+- ✅ **DEV-134**: `PositionManager` инстанцирован в `bot.py` как `bot.position_manager`
+  - `bot/core/bot.py`: `from core.trading.position_manager import PositionManager` + `self.position_manager = PositionManager(...)`
+  - `bot/monitoring.py`: после `open_bracket()` → `bot.position_manager.register()`
+  - `bot/loops/scan_loop.py`: то же самое в WL breach пути
+- ⚠️ **Корневая причина 35 vs 15**: VST режим работал без трекинга — `live_orders` была пустой, позиции накапливались без дедупликации
+- ⚠️ **Позиции без TP/SL**: старые позиции (10000SATS, TNSR, ONE, REZ, VVV, AERGO, XAN) — нужно закрыть вручную на бирже
+- 🔄 **Нужен рестарт бота** — после рестарта новые дубли не появятся
+
+**→ TRADER**: текущие 35 позиций на бирже без TP/SL — закрыть вручную, затем рестарт
+
+---
+
+## [03.04.2026] Агент: TRADER — SL диагноз + DEV-126 неполный + рынок
+
+- ✅ **SL конвейер диагноз**: 2 причины — хронический (pivot_reversal LONG RANGE, нет gate) + рыночный (SHORT при BTC отскоке)
+- ✅ **DEV-126 неполный**: confluence htf_wt 100% ✅, но pivot_reversal 0% ❌, WL breach 0% ❌
+- ✅ **Рынок 03.04**: разворот вверх. LONG=SHORT=19. TREND_UP=13 vs TREND_DOWN=8
+- ✅ **weekly_bias gate уточнение**: применять только к pivot_reversal, НЕ к confluence
+- ✅ **BTC 1h gate**: не нужен — reversal confluence работает лучше при 1h+4h DOWN (OS)
+- ✅ **Все записаны в DISCUSSION.md**
+
+**→ DEV:** pivot_reversal + WL breach всё ещё без htf_wt — нужен доп. фикс DEV-126.
+
+---
+
+## [04.04.2026] Агент: TRADER — TR-001 + TR-007
+
+- ✅ **TR-001**: WL 7д WR=12% (3/25), totalR=−12.1R. Лидер: S (+1.25R). Аутсайдер: API3 (4 SL)
+- ✅ **ENA аномалия**: TP с R=0.0, exit=entry. TSL activated. Баг захвата прибыли → сообщено DEV
+- ✅ **TR-007 детекторы**: pivot_reversal = -204R total, главный дренаж. wt_signal пересмотрен: 31% WR, +0.308R (НЕ убирать)
+- ✅ **confluence контртренд**: LONG TREND_DOWN (-0.794R) + SHORT TREND_UP (-0.841R) → блокировать
+- ✅ **WLB SHORT RANGE**: -0.188R (n=76) → добавить фильтр после clean data
+- ✅ **Бот сегодня**: 0 сделок 04.04 — похоже не запущен
+- ✅ **trader_analyses/2026-04-04.md** создан
+
+**→ ARCH/DEV:** DEV-128 + блокировка pivot_reversal LONG TREND_DOWN / SHORT TREND_UP — СРОЧНО
+
+---
+
+## [04.04.2026] Агент: Developer — DEV ответ + DEV-132 фикс
+
+- ✅ **DISCUSSION ответ**: написан DEV ответ на вопросы ARCH/TRADER (check_pivot_signals подтвердил, задачи приняты)
+- ✅ **DEV-132 реализован**: floor TSL = entry price в `trade_simulator.py` строка ~1546
+  - LONG: `tsl_price = max(tsl_price, entry)` — TSL не закроет хуже entry
+  - SHORT: `tsl_price = min(tsl_price, entry)` — симметрично
+  - Файл: `core/trading/trade_simulator.py`
+- 🟡 **DEV-126**: pivot_reversal + WL breach без htf_wt — fix не сделан (очередь)
+- 🟡 **DEV-127**: confluence контртренд gate — в очереди
+- 🟡 **DEV-128**: pivot_reversal режим-гейты — в очереди
+- 🟡 **DEV-130**: блок pivot_1M как TP — в очереди
+- 🟡 **DEV-131**: PositionManager VST Phase 2 — в очереди
+
+---
+
+## [04.04.2026] Агент: TRADER — position_sync баг + аналитика
+
+- ✅ **DEV [02.04] вопрос закрыт**: avg_R=+0.21 при SL+tsl=1 = DUAL_TP механизм (tp1_hit 70% locked → остаток SL выше entry → weighted R>0)
+- 🔥 **DEV-142 найден**: `position_sync.py:59` — `get_current_price` возвращает None для большинства пар → fallback=entry_price → все VST сделки записываются как TP@entry, R=0
+  - Сегодня: 86/91 TP = нулевые, ВСЕ VST (exchange_order_id). SIM = 0 нулевых TP.
+  - Реальная производительность: WR=16%, -21.6R (46 SL, 7 TP по +3R, 2 TSL)
+  - Фикс: заменить get_current_price() → get_ticker() в position_sync.py
+- ✅ **Аналитика 04.04**: лучшие сделки = SOMI/PIEVERSE/LAB/ONE/OXT по +3.0R TP (SINGLE cap)
+- ✅ **Записано в DISCUSSION.md**
+
+**→ DEV: DEV-142 🔥 — position_sync.py:59 fix (2 строки). Блокирует корректность VST статистики.**
+**→ Напоминание: 35 VST позиций без TP/SL — закрыть вручную, затем рестарт**
+
+---
+
+## [04.04.2026] Агент: TRADER — VST аудит
+
+- ✅ **VST аудит завершён**
+  - API ключи в .env: BINGX_VST_API_KEY + BINGX_VST_SECRET_KEY ✅
+  - OrderExecutor + PositionSizer инстанцируются в bot.py ✅
+  - monitoring.py вызывает open_bracket() для VST ✅ (строки 1044-1087)
+  - **live_orders таблица**: НЕ существует (PositionManager нигде не инстанцируется)
+  - **order_id**: теряется — BracketResult.order_id не записывается в БД
+  - Текущий режим: "fire and forget" — ордера открываются, не отслеживаются
+- ✅ **Анализ записан в DISCUSSION.md**
+- ✅ **Рекомендация DEV**: инстанцировать PositionManager в bot.py + вызвать register() после open_bracket()
+
+---
+
 ## [04.04.2026] Агент: DEV — DEV-126 выполнен
 
 - ✅ **DEV-126**: features_json fix — WL breach + other_recs теперь пишут weekly_bias, htf_wt

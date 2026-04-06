@@ -12,6 +12,7 @@ OrderManager — биржевой слой исполнения ордеров.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional, TYPE_CHECKING
 
 from core.exchange.bingx_client import (
@@ -45,6 +46,13 @@ class OrderManager:
                 raise ValueError(f"[OrderManager] API ключ не найден для mode={self._mode.value}")
         return self._client
 
+    async def _get_client_synced(self) -> BingXClient:
+        """DEV-145: Возвращает клиент с синхронизированным временем (один раз)."""
+        client = self._get_client()
+        if not client._time_synced:
+            await client.sync_time()
+        return client
+
     @property
     def mode(self) -> ExecutionMode:
         return self._mode
@@ -58,12 +66,53 @@ class OrderManager:
         if not self.is_live():
             return float(self._cfg.get("trading.deposit_usdt", 1000.0))
         try:
-            return await self._get_client().get_balance()
+            return await (await self._get_client_synced()).get_balance()
         except Exception as e:
             logger.warning("[OrderManager] get_balance error: %s", e)
             return float(self._cfg.get("trading.deposit_usdt", 1000.0))
 
+    async def get_exchange_snapshot(self) -> dict:
+        """Возвращает баланс + позиции с биржи (для /api/live дашборда).
+        В SIM_ONLY режиме возвращает заглушку без API-запроса.
+        """
+        if not self.is_live():
+            return {"balance": None, "positions": [], "error": "SIM_ONLY mode"}
+        try:
+            client = await self._get_client_synced()
+            balance_resp = await client.get("/openApi/swap/v2/user/balance")
+            positions = await client.get_positions()
+            bd = balance_resp.get("data", {}).get("balance", {})
+            return {
+                "balance": {
+                    "available":      float(bd.get("availableMargin", 0) or 0),
+                    "equity":         float(bd.get("equity", 0) or 0),
+                    "unrealized_pnl": float(bd.get("unrealizedProfit", 0) or 0),
+                    "used_margin":    float(bd.get("usedMargin", 0) or 0),
+                },
+                "positions": positions,
+                "error": None,
+            }
+        except Exception as e:
+            logger.warning("[OrderManager] get_exchange_snapshot: %s", e)
+            return {"balance": None, "positions": [], "error": str(e)}
+
     # ── Открытие позиции ────────────────────────────────────────────────────
+
+    async def has_open_position(self, symbol: str) -> bool:
+        """True если на бирже уже есть открытая позиция по символу (VST/LIVE)."""
+        if not self.is_live():
+            return False
+        try:
+            bx_sym = symbol.replace("/", "-").replace(":USDT", "")
+            positions = await (await self._get_client_synced()).get_positions()
+            for p in positions:
+                if (p.get("symbol") == bx_sym
+                        and abs(float(p.get("positionAmt") or p.get("availableAmt") or 0)) > 0):
+                    return True
+            return False
+        except Exception as e:
+            logger.warning("[OrderManager] has_open_position %s: %s", symbol, e)
+            return False  # при ошибке не блокируем
 
     async def open_bracket(
         self,
@@ -91,6 +140,16 @@ class OrderManager:
                 error=f"notional={notional:.2f} < {MIN_NOTIONAL} min", notional_usdt=notional,
             )
 
+        # Дедупликация: не открывать если позиция уже есть на бирже
+        if self.is_live() and await self.has_open_position(symbol):
+            logger.info("[OrderManager] %s — позиция уже открыта, пропуск", symbol)
+            return BracketResult(
+                success=False, mode=self._mode.value, symbol=symbol,
+                direction=direction, qty=qty, entry_price=entry_price,
+                sl=sl, tp1=tp1, tp2=tp2,
+                error="position_already_open", notional_usdt=notional,
+            )
+
         if not self.is_live():
             logger.info("[OrderManager][SIM] %s %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f notional=%.2f",
                         symbol, direction, qty, entry_price, sl, tp1, notional)
@@ -102,7 +161,7 @@ class OrderManager:
             )
 
         try:
-            client   = self._get_client()
+            client   = await self._get_client_synced()
             side     = "BUY" if direction == "LONG" else "SELL"
             leverage = int(self._cfg.get("trading.leverage", 5))
             resp     = await client.place_bracket_order(symbol=symbol, side=side, qty=qty,
@@ -149,7 +208,7 @@ class OrderManager:
                                       close_qty=close_qty, close_price=current_price, order_id="SIM")
         try:
             side = "BUY" if direction == "LONG" else "SELL"
-            resp = await self._get_client().close_position_market(symbol, side, close_qty)
+            resp = await (await self._get_client_synced()).close_position_market(symbol, side, close_qty)
             if resp.get("code", -1) != 0:
                 return PartialCloseResult(success=False, symbol=symbol,
                                           close_qty=close_qty, close_price=current_price,
@@ -169,7 +228,7 @@ class OrderManager:
         if not self.is_live():
             return None
         try:
-            orders = await self._get_client().get_open_orders(symbol)
+            orders = await (await self._get_client_synced()).get_open_orders(symbol)
             for o in orders:
                 if (o.get("type") == "STOP_MARKET"
                         and o.get("positionSide", "").upper() == pos_side.upper()):
@@ -185,7 +244,7 @@ class OrderManager:
             return 0.0
         try:
             bx_sym = symbol.replace("/", "-").replace(":USDT", "")
-            positions = await self._get_client().get_positions()
+            positions = await (await self._get_client_synced()).get_positions()
             for p in positions:
                 if (p.get("symbol") == bx_sym
                         and p.get("positionSide", "").upper() == pos_side.upper()):
@@ -199,7 +258,7 @@ class OrderManager:
         if not self.is_live():
             return True
         try:
-            resp = await self._get_client().cancel_order(symbol, order_id)
+            resp = await (await self._get_client_synced()).cancel_order(symbol, order_id)
             code = resp.get("code", -1)
             if code == 0:
                 return True
@@ -221,9 +280,10 @@ class OrderManager:
             return "SIM"
         try:
             side = "SELL" if pos_side.upper() == "LONG" else "BUY"
-            resp = await self._get_client().place_stop_order(
+            qty_floor = math.floor(qty * 100) / 100  # floor до 2 знаков — иначе биржа отклоняет
+            resp = await (await self._get_client_synced()).place_stop_order(
                 symbol=symbol, side=side, pos_side=pos_side.upper(),
-                stop_price=sl_price, qty=qty,
+                stop_price=sl_price, qty=qty_floor,
             )
             if resp.get("code", -1) != 0:
                 logger.warning("[OrderManager] place_sl_order %s %s sl=%.6f: %s",
@@ -242,7 +302,10 @@ class OrderManager:
         new_sl_price: float, qty: float,
         old_sl_price: float = 0.0, min_move_pct: float = 0.1,
     ) -> Optional[str]:
-        """Cancel + replace SL при движении TSL. Фильтр мелких движений."""
+        """Cancel ALL open STOP_MARKET по символу + place one new SL при движении TSL.
+        DEV-147: вместо cancel-by-ID — отменяем все STOP_MARKET по pos_side,
+        чтобы не накапливать ордера при таймаутах place_sl_order.
+        """
         if not self.is_live():
             return None
         if old_sl_price > 0:
@@ -251,9 +314,27 @@ class OrderManager:
                 logger.debug("[OrderManager] update_sl %s: движение %.3f%% < %.1f%% — пропуск",
                              symbol, move_pct, min_move_pct)
                 return None
-        exists = await self.cancel_order(symbol, old_sl_order_id)
-        if not exists:
-            return None   # позиция закрыта биржей — sync подхватит
+
+        # Отменяем ВСЕ STOP_MARKET по символу+pos_side (атомарная очистка накопленных ордеров)
+        try:
+            orders = await (await self._get_client_synced()).get_open_orders(symbol)
+            sl_orders = [
+                o for o in orders
+                if o.get("type") == "STOP_MARKET"
+                and o.get("positionSide", "").upper() == pos_side.upper()
+            ]
+            if sl_orders:
+                logger.info("[OrderManager] update_sl %s %s: отменяем %d STOP_MARKET ордеров",
+                            symbol, pos_side, len(sl_orders))
+                for o in sl_orders:
+                    await self.cancel_order(symbol, str(o["orderId"]))
+            else:
+                logger.info("[OrderManager] update_sl %s %s: открытых SL нет — ставим напрямую",
+                            symbol, pos_side)
+        except Exception as e:
+            logger.warning("[OrderManager] update_sl %s: ошибка get_open_orders: %s — fallback cancel by ID", symbol, e)
+            await self.cancel_order(symbol, old_sl_order_id)
+
         new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty)
         logger.info("[OrderManager] TSL update %s %s: SL %.6f → %.6f order_id=%s",
                     symbol, pos_side, old_sl_price, new_sl_price, new_id)

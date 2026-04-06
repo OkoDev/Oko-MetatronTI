@@ -32,7 +32,7 @@
 # ================================================================
 
 telegram:
-  token: 7674649932:AAG3QDXkwaCbuoxCOT9BQy17XB5jkyc270U
+  token: "${TELEGRAM_TOKEN}"
   admin_id: '428163099'
 exchanges:
   default: bingx
@@ -43,11 +43,11 @@ exchanges:
   - okx
   api_keys:
     bingx:
-      api_key: 2zDHkpQwgHe54YWlvnKg5B18OOrstPP9ddYJrPBZyiz9KUrEM89tk5qCEvaLrmZ0gpRdYotahOrH9QRElQ
-      secret: rgDbCOJCjfi9ok5k2idnfSeLz0JDdzJebTz5MoKa61fZykl9XhKrrEMZajDfXhkXDpfvfZPGGWeUYeh4CNUhg
-    bingx_vst:                    # VST sandbox — ключи в .env: BINGX_VST_API_KEY / BINGX_VST_SECRET_KEY
-      api_key: ""
-      secret:  ""
+      api_key: "${BINGX_API_KEY}"
+      secret: "${BINGX_SECRET_KEY}"
+    bingx_vst:                    # VST sandbox
+      api_key: "${BINGX_VST_API_KEY}"
+      secret:  "${BINGX_VST_SECRET_KEY}"
 analysis:
   volume_multiplier: 4.0
   price_threshold: 5.0
@@ -250,9 +250,21 @@ trading:
       min_strength: 60
       tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03)
   btc_market_gate:          # ARCH-63, DEV-111 (02.04.2026): BTC 4h macro gate
-    enabled: true           # активен (shadow_mode=true = только лог, не блокирует)
-    shadow_mode: true       # SHADOW: логирует WOULD_BLOCK, реально не блокирует. Снять после ~7 дней данных.
+    enabled: true           # активен
+    shadow_mode: true       # SHADOW: ждём ~7 дней данных (старт 02.04, активировать ~09.04)
     block_short_in_uptrend: false  # не блокировать SHORT при BTC 4h TREND_UP (TRADER: relative weakness легитимен)
+  # DEV-146 / ARCH-68 Фаза 2: VerdictAggregator — gate из WTVerdict + SMCVerdict
+  verdict_gate:
+    enabled: false                 # false = shadow (WOULD_BLOCK только лог), включить после накопления 200+ сделок с snap
+    smc_block_confidence: 0.65    # мин. conf SMCVerdict для блокировки (STRONG_BULL/BEAR против направления)
+    wt_exhaustion_confidence: 0.65 # мин. conf WTVerdict=EXHAUSTION для блокировки
+    strength_boost: 5.0           # бонус к strength при совпадении вердиктов
+    strength_penalty: -10.0       # штраф к strength при противоречии (не блок в shadow mode)
+  range_bounce:            # DEV-110 / ARCH-66: RANGE режим — SL/TP от пивотов (04.04.2026)
+    enabled: false         # false = shadow (только лог), включить после первичного теста
+    sl_buffer_pct: 0.003   # 0.3% буфер за пивотом для SL
+    min_tp_r: 3.5          # минимальный RR (диапазон шире → выше RR)
+    max_sl_dist_pct: 0.02  # 2% макс. расстояние SL→entry (entry должен быть у края)
   dual_tp:
     enabled: true         # DUAL_TP активен для TREND_UP/TREND_DOWN режимов (добавлен 30.03.2026)
     tp1_fix_pct: 20       # % позиции фиксируется на TP1 (остаток держим до TP2)
@@ -304,6 +316,14 @@ trigger_bus:
   cascade_min: 3        # мин. cascade_count для CascadeTrigger
   interval_sec: 120     # интервал цикла в секундах
 
+# ARCH-70: EventBus — централизованная шина Full CALL (06.04.2026)
+event_bus:
+  enabled: true          # true = EventBus активен (shadow режим контролируется ниже)
+  shadow: true           # true = только WOULD_FIRE лог (не вызывает analyze_symbol)
+  cooldown_minutes: 30   # мин. интервал Full CALL / пара (защита от шума)
+  max_concurrent: 3      # макс. параллельных analyze_symbol через EventBus
+  btc_macro_shock_pct: 2.5  # ARCH-70: порог движения BTC/15m для btc_macro триггера (%)
+
 signal_quality:
   sl_cooldown_hours: 2.0   # 2 часа после SL (было 4.0 → 2.0, изменил руками 17:52 27.03) — снижено для увеличения количества сигналов (WR=20% при 2ч vs WR=15% при 4ч)
   dedup_minutes: 30
@@ -319,13 +339,26 @@ signal_quality:
   min_strength_by_regime:    # DEV-61: override per regime (выше базового min_strength_register)
     RANGE: 70                # RANGE = SL-фабрика при слабых сигналах (str=18, str=49 в БД)
     HIGH_VOL: 80             # HIGH_VOL уже заблокирован, но на случай снятия блока
-  signal_regime_block:       # DEV-64B: hard block мёртвых комбинаций (расширено 27.03.2026)
+  signal_regime_block:       # DEV-133 (04.04.2026): хирургические direction×regime блоки
     pivot_reversal:
-      blocked_regimes: [RANGE, TREND_DOWN, HIGH_VOL]  # WR=5.7%/1.8%/10% avg_R=-0.61/-0.78/-0.54
+      blocked_regimes: []    # снят грубый блок (weekly_bias_gate + DEV-128ext покрывают)
+      blocked_combos:        # точечные блоки с данными (n≥16, avgR<-0.4)
+        - {direction: LONG,  regime: TREND_DOWN}   # n=40, WR=0%,  avg=-0.936R
+        - {direction: SHORT, regime: TREND_UP}     # n=16, WR=19%, avg=-0.442R
+        - {direction: LONG,  regime: HIGH_VOL}     # WR<10%
     confluence:
-      blocked_regimes: [RANGE, TREND_DOWN, TREND_UP, HIGH_VOL]  # WR=19%/12%/7%/0% — только None: +1.42R
+      blocked_regimes: []    # снят грубый блок — открываем +141R (SHORT RANGE/TREND_DOWN)
+      blocked_combos:        # токсичные комбо с достаточными данными
+        - {direction: LONG,  regime: TREND_DOWN}   # n=95,  WR=3%,  avg=-0.794R
+        - {direction: SHORT, regime: TREND_UP}     # n=68,  WR=0%,  avg=-0.841R
+        - {direction: SHORT, regime: HIGH_VOL}     # n=25,  WR=0%,  avg=-0.880R
+        - {direction: LONG,  regime: HIGH_VOL}     # WR=0%,  avg=-0.625R
+        - {direction: LONG,  regime: TREND_UP}     # n=144, WR=18%, avg=-0.362R
     wt_signal:
-      blocked_regimes: [RANGE, TREND_DOWN, TREND_UP, HIGH_VOL]  # WR=0% везде кроме None avg_R=-1.0
+      blocked_regimes: []    # снят грубый блок — wt_signal=WR31%+0.308R не мёртвый (TRADER 04.04)
+      blocked_combos:        # осторожно: мало чистых данных (ждём DEV-126 полного фикса)
+        - {direction: LONG,  regime: TREND_DOWN}
+        - {direction: SHORT, regime: TREND_UP}
   weekly_bias_gate:          # DEV-128: pivot_reversal RANGE при weekly_bias≠aligned → блок
     enabled: true            # true = production gate (данные: 62% убыточных при NONE)
     shadow_mode: false       # false = реальный блок (не shadow)
@@ -409,3 +442,14 @@ risk_management:
     high_vol_strategy_type: DUAL_TP
     high_vol_position_multiplier: 0.5
     high_vol_tp1_r: 0.5
+
+
+# ── LLM-разбор SL-сделок (TradeAnalyzer / DEV-15) ───────────────────────────
+# Провайдеры: groq | openai | openrouter | ollama | anthropic | disabled
+# Groq — бесплатно, ключ: console.groq.com → API Keys
+# OpenRouter — бесплатные модели, ключ: openrouter.ai
+trade_analyzer:
+  provider: groq
+  api_key: "${GROQ_API_KEY}"
+  model: "llama-3.1-8b-instant"   # быстрый, бесплатный
+  # base_url: ""        # переопределить URL (опционально)

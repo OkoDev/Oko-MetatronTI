@@ -27,6 +27,7 @@ from core.context.pair_context import PairContextBus
 from core.trading.post_trade_analyser import PostTradeAnalyser
 from core.exchange import OrderManager as OrderExecutor
 from core.trading.position_sizer import PositionSizer
+from core.trading.position_manager import PositionManager
 from core.infra.ws_feed import WsFeed
 from bot.menus import MenuHandler
 
@@ -72,6 +73,8 @@ class TradingAlertBot:
         # DEV-77/78: OrderExecutor + PositionSizer (SIM → VST → LIVE)
         self.order_executor = OrderExecutor(config)
         self.position_sizer = PositionSizer(config)
+        _pm_db = getattr(self.subscription_manager, "db_path", "subscriptions.db")
+        self.position_manager = PositionManager(db_path=_pm_db)
         logger.info("[Bot] execution_mode=%s", self.order_executor.mode.value)
 
         self.watchlist_manager = WatchlistManager(
@@ -112,6 +115,12 @@ class TradingAlertBot:
         self.exchange_health     = "HEALTHY"   # ExchangeHealth.HEALTHY
         self.exchange_latency_ms = 0.0
         self.down_since          = None        # datetime | None
+
+        # ARCH-70: EventBus — централизованная шина Full CALL
+        from core.context.event_bus import EventBus
+        self.event_bus = EventBus(config=config)
+        # Подключаем EventBus к TradingIntelligence (для wt_verdict_strong триггера)
+        self.trading_intelligence._event_bus = self.event_bus
 
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
         self.ws_feed = WsFeed(
@@ -196,6 +205,22 @@ class TradingAlertBot:
             # Сохраняем отчёт для /status команды
             self._selftest_report = selftest_report
 
+            # DEV-145: синхронизация live_orders с реальными позициями при старте
+            _exec_mode = self.config.get("trading.execution_mode", "sim_only")
+            if _exec_mode in ("vst", "live"):
+                try:
+                    from core.trading.order_reconciler import OrderReconciler
+                    _reconciler = OrderReconciler(
+                        position_manager=self.position_manager,
+                        order_manager=self.order_executor,
+                        execution_mode=_exec_mode,
+                    )
+                    _rec_stats = await _reconciler.reconcile()
+                    logger.info("[Bot] live_orders reconcile: ok=%d closed=%d",
+                                _rec_stats.get("ok", 0), _rec_stats.get("closed", 0))
+                except Exception as _re:
+                    logger.warning("[Bot] reconcile error (не критично): %s", _re)
+
             from bot.monitoring import trade_tracker_loop
             from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop
             from bot.loops.trigger_loop import run_trigger_loop
@@ -205,6 +230,7 @@ class TradingAlertBot:
             asyncio.create_task(health_check_loop(self))        # DEV-103: Exchange Health Guard
             asyncio.create_task(trade_tracker_loop(self))
             asyncio.create_task(run_trigger_loop(self))     # DEV-95: Куб Метатрона — OTE/Cascade триггеры
+            asyncio.create_task(self.event_bus.consume_loop(self))  # ARCH-70: EventBus Full CALL шина
             asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket
             asyncio.create_task(start_dashboard(
                 db_path=self.trade_simulator.db_path,

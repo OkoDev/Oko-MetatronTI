@@ -75,12 +75,46 @@ class BingXClient:
         self._api_key = api_key
         self._secret  = secret
         self._base    = base_url.rstrip("/")
+        # DEV-145: time_offset корректирует расхождение local clock с BingX (ms)
+        # Синхронизируется один раз при первом запросе через sync_time()
+        self._time_offset_ms: int = 0
+        self._time_synced: bool = False
+
+    async def sync_time(self) -> int:
+        """
+        DEV-145: Получает время BingX-сервера и вычисляет offset.
+        Вызывать один раз при старте клиента (make_client).
+        Возвращает offset в миллисекундах (local - server).
+        """
+        import aiohttp
+        try:
+            url = f"{self._base}/openApi/swap/v2/server/time"
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    data = await r.json()
+            server_ts = (
+                data.get("data", {}).get("serverTime")
+                or data.get("serverTime")
+            )
+            if server_ts:
+                local_ts = int(time.time() * 1000)
+                self._time_offset_ms = local_ts - int(server_ts)
+                self._time_synced = True
+                logger.info(
+                    "[BingXClient] time sync: local=%d server=%d offset=%+dms",
+                    local_ts, int(server_ts), self._time_offset_ms,
+                )
+        except Exception as e:
+            logger.warning("[BingXClient] sync_time failed: %s — offset=0", e)
+        return self._time_offset_ms
 
     def _sign(self, params_str: str) -> str:
         return hmac.new(self._secret.encode(), params_str.encode(), hashlib.sha256).hexdigest()
 
     def _ts(self) -> str:
-        return str(int(time.time() * 1000))
+        # DEV-145: корректируем local time на offset чтобы совпало с BingX
+        corrected = int(time.time() * 1000) - self._time_offset_ms
+        return str(corrected)
 
     async def get(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
@@ -155,6 +189,23 @@ class BingXClient:
         resp = await self.get("/openApi/swap/v2/trade/openOrders", params or None)
         return resp.get("data", {}).get("orders", []) or []
 
+    async def get_filled_orders(self, symbol: str, limit: int = 50) -> list:
+        """Возвращает последние исполненные ордера по символу.
+        Используется в position_sync для определения реального exit price и статуса (SL/TP).
+        BingX endpoint: GET /openApi/swap/v2/trade/allOrders
+        """
+        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        resp = await self.get("/openApi/swap/v2/trade/allOrders", {
+            "symbol": bx_symbol,
+            "limit":  str(limit),
+        })
+        if resp.get("code") != 0:
+            logger.warning("[BingXClient] get_filled_orders %s error: %s", symbol, resp)
+            return []
+        orders = resp.get("data", {}).get("orders", []) or []
+        # Фильтруем только FILLED ордера
+        return [o for o in orders if o.get("status") == "FILLED"]
+
     async def place_bracket_order(
         self, symbol: str, side: str, qty: float,
         sl: float, tp: float, leverage: int = 5,
@@ -197,7 +248,6 @@ class BingXClient:
             "quantity":     str(qty),
             "stopPrice":    str(stop_price),
             "workingType":  "MARK_PRICE",
-            "reduceOnly":   "true",
         })
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:

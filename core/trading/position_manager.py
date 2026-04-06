@@ -174,38 +174,52 @@ class PositionManager:
 
     # ─────────────────────── Sync ──────────────────────────────────────────
 
-    async def sync_with_exchange(self, data_collector: "RealTimeData") -> dict:
+    async def sync_with_exchange(self, order_manager) -> dict:
         """
-        Сверяет live_orders с позициями на бирже при рестарте.
+        Сверяет live_orders с реальными позициями на бирже при старте бота.
 
-        Для каждой OPEN позиции в БД:
-          - Если есть на бирже → OK
-          - Если нет → помечаем ORPHAN (закрыта пока бот был offline)
+        DEV-145: использует BingXClient через OrderManager (не ccxt).
+        Для каждой OPEN записи в live_orders:
+          - Если позиция есть на бирже → OK, статус актуален
+          - Если позиции нет на бирже → CLOSED (закрылась пока бот был offline)
+
+        Не угадываем статус — помечаем CLOSED (live_orders не хранит SL/TP цен,
+        реальный статус SL/TP обновляется через position_sync в симуляторе).
 
         Returns:
-            {"ok": N, "orphan": M}
+            {"ok": N, "closed": M}
         """
         open_positions = self.get_open_positions()
         if not open_positions:
-            return {"ok": 0, "orphan": 0}
+            return {"ok": 0, "closed": 0}
 
-        stats = {"ok": 0, "orphan": 0}
+        stats = {"ok": 0, "closed": 0}
         try:
-            exchange_positions = await data_collector.exchange.fetch_positions()
-            exchange_symbols = {p["symbol"] for p in exchange_positions if p.get("contracts", 0) > 0}
+            # Используем BingXClient напрямую через OrderManager
+            client = order_manager._get_client()
+            exchange_positions = await client.get_positions()
+            # BingX символ: "BTC-USDT", наш: "BTC/USDT:USDT"
+            open_syms: set = set()
+            for p in exchange_positions:
+                qty = float(p.get("positionAmt") or p.get("availableAmt") or 0)
+                if qty != 0:
+                    bx_sym = p.get("symbol", "")
+                    our_sym = bx_sym.replace("-", "/") + ":USDT"
+                    open_syms.add(our_sym)
         except Exception as e:
             logger.warning("[PositionManager] sync: не удалось получить позиции с биржи: %s", e)
             return stats
 
         for pos in open_positions:
-            if pos.symbol in exchange_symbols:
+            if pos.symbol in open_syms:
                 stats["ok"] += 1
                 logger.debug("[PositionManager] sync OK %s", pos.symbol)
             else:
-                self.mark_orphan(pos.id)
-                stats["orphan"] += 1
-                logger.warning("[PositionManager] sync ORPHAN %s id=%d — закрыта пока бот был offline",
-                               pos.symbol, pos.id)
+                # Позиция закрылась пока бот не работал — закрываем запись
+                self.close(pos.id)
+                stats["closed"] += 1
+                logger.info("[PositionManager] sync CLOSED %s id=%d — нет на бирже",
+                            pos.symbol, pos.id)
 
-        logger.info("[PositionManager] sync завершён: ok=%d orphan=%d", stats["ok"], stats["orphan"])
+        logger.info("[PositionManager] sync завершён: ok=%d closed=%d", stats["ok"], stats["closed"])
         return stats
