@@ -4,7 +4,9 @@
 Все функции принимают bot (TradingAlertBot) первым аргументом.
 """
 import asyncio
+import html
 import logging
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -889,22 +891,25 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             _ct_dir  = getattr(recommendation.direction, "value", "NEUTRAL")
             _ct_block = False
             _ct_reason = ""
-            if _ct_sig in ("pivot_reversal", "confluence"):
+            # DEV-149: pivot_reversal LONG TREND_DOWN разблокирован — это классический
+            # reversal setup на OS, даёт +0.33R в общем по pivot_reversal.
+            # confluence HIGH_VOL разблокирован — теперь HIGH_VOL не в blocked_regimes.
+            # REVERSAL-BOOST (DEV-149) обходит эти фильтры для реверс-сетапов.
+            _has_rev_boost = bool((recommendation.metadata or {}).get("reversal_boost"))
+            if not _has_rev_boost and _ct_sig == "confluence":
                 if _ct_dir == "LONG" and _ct_reg == "TREND_DOWN":
                     _ct_block = True
-                    _ct_reason = f"{_ct_sig} LONG TREND_DOWN (WR≈0-3%)"
+                    _ct_reason = "confluence LONG TREND_DOWN (WR=3%, avg=-0.17R)"
                 elif _ct_dir == "SHORT" and _ct_reg == "TREND_UP":
                     _ct_block = True
-                    _ct_reason = f"{_ct_sig} SHORT TREND_UP (WR≈0-19%)"
-                elif _ct_sig == "confluence" and _ct_dir == "SHORT" and _ct_reg == "HIGH_VOL":
-                    _ct_block = True
-                    _ct_reason = "confluence SHORT HIGH_VOL (WR=0%)"
-                elif _ct_sig == "confluence" and _ct_dir == "LONG" and _ct_reg == "HIGH_VOL":
-                    _ct_block = True
-                    _ct_reason = "confluence LONG HIGH_VOL (WR=0%)"
-                elif _ct_sig == "confluence" and _ct_dir == "LONG" and _ct_reg == "TREND_UP":
+                    _ct_reason = "confluence SHORT TREND_UP (WR≈0%)"
+                elif _ct_dir == "LONG" and _ct_reg == "TREND_UP":
                     _ct_block = True
                     _ct_reason = "confluence LONG TREND_UP (WR=18%, avg=-0.362R)"
+            if not _has_rev_boost and _ct_sig == "pivot_reversal":
+                if _ct_dir == "SHORT" and _ct_reg == "TREND_UP":
+                    _ct_block = True
+                    _ct_reason = "pivot_reversal SHORT TREND_UP (WR=19%)"
             if _ct_block:
                 logger.info("[%s] DEV-128ext %s → WATCH", symbol, _ct_reason)
                 recommendation.action = "WATCH"
@@ -1086,7 +1091,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:
-                logger.warning("[%s] register_trade вернул None (нет entry_price/SL/TP?) — сделка НЕ сохранена", symbol)
+                logger.info("[%s] register_trade → None (заблокировано: regime/SL/TP/gate) — сделка НЕ сохранена", symbol)
             else:
                 if hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
                     bot.ws_feed.update_priority_pairs([symbol])
@@ -1250,6 +1255,18 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             text = text.rstrip() + f"\n─────────────\n❌ <i>Не зарегистрирован: {_reason_str}{_mtf_str}</i>"
             logger.info("[%s] Сделка не зарегистрирована: %s%s", symbol, _reason_str, _mtf_str)
 
+    # ── DEV-151: Groq AI-комментарий к сигналу ───────────────────────────────
+    if recommendation is not None and bot.config.get("trade_analyzer.signal_comment", True):
+        try:
+            from core.trading.trade_analyzer import TradeAnalyzer
+            _ta = TradeAnalyzer(db_path=getattr(bot.trade_simulator, "db_path", "subscriptions.db"))
+            if _ta._enabled:
+                _ai_comment = await _ta.analyze_signal(recommendation)
+                if _ai_comment:
+                    text = text.rstrip() + f"\n─────────────\n🤖 <i>{_ai_comment}</i>"
+        except Exception as _e_ta:
+            logger.debug("[DEV-151] Groq signal comment error: %s", _e_ta)
+
     # ── PNG-график (если send_chart: true в config) ───────────────────────────
     png_bytes = None
     if bot.config.get("signals.send_chart", False):
@@ -1281,6 +1298,18 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 _TG_BROADCAST_SEM = asyncio.Semaphore(25)  # DEV-120: Telegram safe rate ~25 msg/sec
 
 
+def _prepare_photo_caption(text: str, limit: int = 1024) -> str:
+    """
+    Фото-caption короче обычного сообщения. Если резать HTML-строку как есть,
+    Telegram может получить незакрытый тег и отклонить отправку.
+    """
+    plain = re.sub(r"<[^>]+>", "", text or "")
+    plain = html.unescape(plain).strip()
+    if len(plain) <= limit:
+        return plain
+    return plain[: limit - 1].rstrip() + "…"
+
+
 async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
                                              chart_png: bytes | None = None):
     if not bot.subscribers:
@@ -1304,13 +1333,13 @@ async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
 
             async with _TG_BROADCAST_SEM:
                 if chart_png:
-                    caption = text[:1020] + "…" if len(text) > 1024 else text
+                    caption = _prepare_photo_caption(text)
                     from aiogram.types import BufferedInputFile
                     await bot.bot.send_photo(
                         chat_id=uid,
                         photo=BufferedInputFile(chart_png, filename="chart.png"),
                         caption=caption,
-                        parse_mode="HTML",
+                        parse_mode=None,
                     )
                 else:
                     await bot.bot.send_message(

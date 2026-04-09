@@ -1,38 +1,5 @@
-# ================================================================
-# Oko MTF Bot — конфигурация
-# Версия: 0.9-stable (27.03.2026)
-#
-# SHADOW / DISABLED ПАРАМЕТРЫ (не трогать до указанной даты):
-# ─────────────────────────────────────────────────────────────
-# signal_quality.ote_shadow_mode: true
-#   → OTE детектор (ARCH-53). Shadow до ~09.04.2026 (2 недели данных)
-#   → Активировать: ote_shadow_mode: false
-#
-# trading.market_stress_gate.enabled: false
-#   → Массовый SL-gate (DEV-48/ARCH-42). Shadow — только лог [ARCH-42]
-#   → Активировать когда накопится статистика событий
-#
-# trading.weekly_bias_filter.enabled: false
-#   → Weekly PP bias filter (ARCH-48/DEV-56). Фаза A=shadow, Фаза B=true
-#
-# trading.l3_checker.enabled: false
-#   → L3 Фаза A (DEV-52/TR-006). Shadow — только лог [DEV-52-L3]
-#   → Активировать после подтверждения условий ARCH-54
-#
-# ml.use_outcome_predictor: false
-#   → RandomForest на исходах. AUC=0.329 — хуже случайного
-#   → Активировать при AUC > 0.55 (нужно 500+ сделок с заполненным regime)
-#
-# signals.mtf_alert_enabled: false
-#   → MTF Alert убран насовсем (DEV-31: WR=4.4% на 137 сделках)
-#
-# analysis.confluence.4h_gate_enabled: false
-#   → ARCH-26: временно отключён 22.03 (WT momentum неверно определял тренд)
-#   → Вернуться к Варианту A (ATR Trend) после наблюдения
-# ================================================================
-
 telegram:
-  token: "${TELEGRAM_TOKEN}"
+  token: ${TELEGRAM_TOKEN}
   admin_id: '428163099'
 exchanges:
   default: bingx
@@ -43,14 +10,14 @@ exchanges:
   - okx
   api_keys:
     bingx:
-      api_key: "${BINGX_API_KEY}"
-      secret: "${BINGX_SECRET_KEY}"
-    bingx_vst:                    # VST sandbox
-      api_key: "${BINGX_VST_API_KEY}"
-      secret:  "${BINGX_VST_SECRET_KEY}"
+      api_key: ${BINGX_API_KEY}
+      secret: ${BINGX_SECRET_KEY}
+    bingx_vst:
+      api_key: ${BINGX_VST_API_KEY}
+      secret: ${BINGX_VST_SECRET_KEY}
 analysis:
   volume_multiplier: 4.0
-  price_threshold: 5.0
+  price_threshold: 3.0
   history_size: 200
   check_interval: 60
   indicators:
@@ -61,20 +28,19 @@ analysis:
       os_threshold: -60.0
     trend:
       atr_period: 43
-      factor: 1.25       # DEV-66: бэктест +0.041R vs 1.1 (DEV-34 был ошибочным — 1.1 слишком тесный)
+      factor: 1.25
   signals:
     min_signals: 2
     single_signal_min_strength: 54
     min_confidence: 0.55
-    # DEV-26: per-signal-type пороги (override глобального min_confidence)
     min_confidence_by_type:
-      wt_b_signal: 0.50    # WR=85% на бэктесте, менее строгий порог
+      wt_b_signal: 0.5
       wt_signal: 0.52
       pivot_reversal: 0.52
-      confluence: 0.68
+      confluence: 0.58  # DEV-149: 0.68→0.58, ML блендинг срезал до 0.53-0.60
       mtf_bias: 0.55
       trend_signal: 0.55
-      anomaly: 0.60        # аномалии — шумные, строже
+      anomaly: 0.6
     premium_pairs:
     - BTC
     - ETH
@@ -106,10 +72,11 @@ analysis:
     pivot_touch_pct: 0.15
     div_min_bars: 9
     max_per_cycle: 10
-    dynamic_os_enabled: false  # ARCH-49 ОТКАТ 01.04: DEV-108 сделал dyn_os production в RANGE → confluence/RANGE SL конвейер 440 SL/5дней. Вернуть true только после валидации shadow mode отдельно.
-    dyn_os_k: 1.2              # ARCH-49: k=1.2 (TRADER бэктест: Avg R +0.51 на 15m vs fixed -0.18)
-    dyn_os_window: 50          # ARCH-49: окно для mean/std WT1
-    4h_gate_enabled: false   # ARCH-26: временно отключён (22.03) — WT momentum неверно определял тренд, шорты блокировались в нисходящем рынке. Вернуться к Варианту A (ATR Trend) после наблюдения.
+    dynamic_os_enabled: false
+    dyn_os_k: 1.2
+    dyn_os_window: 50
+    4h_gate_enabled: false
+    pivot_proximity_pct: 0.2
 subscriptions:
   free:
     daily_limit: 5
@@ -150,66 +117,63 @@ monitoring:
     background_every_n_cycles: 3
     cascade_div_every_n_cycles: 60
 outcome_predictor:
-  # ARCH-21: скользящее окно обучения. null = вся история (текущее поведение).
-  # Активировать при 1000+ чистых записей в БД (после DEV-13).
-  training_window: null  # например: 500
-
+  training_window: null
 strategy_name: multi_signal
 trading:
-  # DEV-77: OrderExecutor — режим исполнения ордеров
-  execution_mode: vst        # sim_only | vst (sandbox) | live
-  tp1_close_pct: 0.20        # 20% позиции закрыть при TP1 hit
-
-  # PositionSizer — риск-менеджмент (DEV-78)
-  deposit_usdt: 1000.0       # VST депозит
-  risk_pct: 1.0              # риск 1% от депозита на сделку
-  leverage: 5                # плечо (5x для VST)
-
-  # DEV-32: блокировка контр-тренд входов (TRADER 23.03: CAKE/SAHARA — системная ошибка)
-  # TREND_DOWN → только SHORT, TREND_UP → только LONG, RANGE/HIGH_VOL — оба направления
+  execution_mode: vst
+  tp1_close_pct: 0.2
+  deposit_usdt: 110.0
+  risk_pct: 0.5
+  leverage: 5
   regime_direction_block:
     enabled: true
-    TREND_DOWN: LONG   # блокировать LONG при нисходящем тренде
-    TREND_UP: SHORT    # блокировать SHORT при восходящем тренде
-  # DEV-33: блокировка входов в HIGH_VOL режиме (WR=0%, avg_R=-0.25 по DB-анализу)
-  blocked_regimes:
-  - HIGH_VOL
+    TREND_DOWN: LONG
+    TREND_UP: SHORT
+  blocked_regimes: []  # DEV-149: HIGH_VOL → фильтр по min_strength_by_regime вместо глобального блока
   pivot_proximity_filter:
-    enabled: true       # DEV-42: включено 23.03 — shadow 48 событий: near=26, penalty=22, hard_block=0 (0% < 20%)
-    hard_block_mult: 2  # DEV-47: снижено 3→2 (tier1≈3.3% median → порог 6.6% вместо 9.9%)
-  pivot_touch_staleness:            # DEV-55 / ARCH-46: penalty за устаревшее касание пивота
     enabled: true
-    staleness_bars: 5               # касание > 5 баров назад = устаревшее
-    score_penalty: -10              # штраф к strength сигнала
+    hard_block_mult: 2
+  pivot_touch_staleness:
+    enabled: true
+    staleness_bars: 5
+    score_penalty: -10
   future_pp_score_modifier:
-    enabled: true   # DEV-36: ±score на основе позиции цены vs Future Daily PP
+    enabled: true
   market_event_marker:
-    enabled: true   # DEV-39: маркировать SL-сделки при массовых стопах
-    sl_count: 5     # сколько SL за окно = market event
+    enabled: true
+    sl_count: 5
     window_minutes: 30
-  market_stress_gate:             # DEV-48 / ARCH-42: блок входов при массовых SL
-    enabled: false                # shadow mode — только лог [ARCH-42]
-    sl_threshold: 5               # SL за window_minutes → активировать gate
-    window_minutes: 30            # rolling window (reuse _sl_timestamps из DEV-39)
-  phase_guard_enabled: false       # ARCH-56 Phase B: shadow mode (только лог, не блокирует) — включить когда накопим 2 недели данных
-  weekly_bias_filter:            # ARCH-48 / DEV-56: top-down weekly PP bias
-    enabled: true                # Phase B активирована 28.03.2026 (n=67 blocked WR=17% vs allowed WR=22%)
-    soft_penalty: 25             # score penalty при направлении против bias
-    hard_block_ctx_score: 3      # hard block при тройном контрастном контексте
-    near_level_pct: 1.5          # % от уровня = "рядом с Weekly R/S" (исключение)
-  l3_checker:                    # DEV-52 / TR-006: L3 Фаза A — shadow mode
-    enabled: false               # shadow: только лог [DEV-52-L3], не блокирует
-    min_score: 85                # условие 5: effective_score ≥ 85
-    max_open_long: 2             # условие 6: не более 2 LONG одновременно
-    max_open_short: 2            # условие 6: не более 2 SHORT одновременно
-    max_open_total: 4            # условие 6: не более 4 OPEN всего
-  correlation_groups:          # DEV-38: блокировка коррелированных активов
-    - [PAXG, XAUT]             # gold tokens
-    - [BTC, WBTC]              # wrapped bitcoin
-    - [ETH, STETH, WETH]       # wrapped ether
+  market_stress_gate:
+    enabled: false
+    sl_threshold: 5
+    window_minutes: 30
+  phase_guard_enabled: false
+  weekly_bias_filter:
+    enabled: true
+    soft_penalty: 25
+    hard_block_ctx_score: 3
+    near_level_pct: 1.5
+  pivot_reversal_bias:
+    enabled: false
+    against_bias_penalty: 20
+    near_level_pct: 1.5
+  l3_checker:
+    enabled: false
+    min_score: 85
+    max_open_long: 2
+    max_open_short: 2
+    max_open_total: 4
+  correlation_groups:
+  - - PAXG
+    - XAUT
+  - - BTC
+    - WBTC
+  - - ETH
+    - STETH
+    - WETH
   entry_timeframe: 15m
   bounce_mode:
-    enabled: false # руками 01.04.2026 02:15 → ОТКАТ 01.04 (не валидирован, SL конвейер)
+    enabled: false
     max_bounces: 2
     min_trend_strength: 50
     cooldown_sec: 300
@@ -233,7 +197,7 @@ trading:
       min_strength: 70
       min_confidence: 0.6
       conflict_margin: 0.15
-      tp_rr: 3.0 #было 2.0 → 3.0 (изменил руками 17:52 27.03)
+      tp_rr: 3.0
     trend_following:
       min_signals: 2
       min_strength: 55
@@ -248,127 +212,134 @@ trading:
       min_confidence: 0.65
     pivot_reversal:
       min_strength: 60
-      tp_rr: 3.0 #было 2.5 → 3.0 (изменил руками 17:52 27.03)
-  btc_market_gate:          # ARCH-63, DEV-111 (02.04.2026): BTC 4h macro gate
-    enabled: true           # активен
-    shadow_mode: true       # SHADOW: ждём ~7 дней данных (старт 02.04, активировать ~09.04)
-    block_short_in_uptrend: false  # не блокировать SHORT при BTC 4h TREND_UP (TRADER: relative weakness легитимен)
-  # DEV-146 / ARCH-68 Фаза 2: VerdictAggregator — gate из WTVerdict + SMCVerdict
+      tp_rr: 3.0
+  btc_market_gate:
+    enabled: true
+    shadow_mode: true
+    block_short_in_uptrend: false
   verdict_gate:
-    enabled: false                 # false = shadow (WOULD_BLOCK только лог), включить после накопления 200+ сделок с snap
-    smc_block_confidence: 0.65    # мин. conf SMCVerdict для блокировки (STRONG_BULL/BEAR против направления)
-    wt_exhaustion_confidence: 0.65 # мин. conf WTVerdict=EXHAUSTION для блокировки
-    strength_boost: 5.0           # бонус к strength при совпадении вердиктов
-    strength_penalty: -10.0       # штраф к strength при противоречии (не блок в shadow mode)
-  range_bounce:            # DEV-110 / ARCH-66: RANGE режим — SL/TP от пивотов (04.04.2026)
-    enabled: false         # false = shadow (только лог), включить после первичного теста
-    sl_buffer_pct: 0.003   # 0.3% буфер за пивотом для SL
-    min_tp_r: 3.5          # минимальный RR (диапазон шире → выше RR)
-    max_sl_dist_pct: 0.02  # 2% макс. расстояние SL→entry (entry должен быть у края)
+    enabled: false
+    smc_block_confidence: 0.65
+    wt_exhaustion_confidence: 0.65
+    strength_boost: 5.0
+    strength_penalty: -10.0
+  range_bounce:
+    enabled: false
+    sl_buffer_pct: 0.003
+    min_tp_r: 3.5
+    max_sl_dist_pct: 0.02
   dual_tp:
-    enabled: true         # DUAL_TP активен для TREND_UP/TREND_DOWN режимов (добавлен 30.03.2026)
-    tp1_fix_pct: 20       # % позиции фиксируется на TP1 (остаток держим до TP2)
+    enabled: true
+    tp1_fix_pct: 20
   use_tsl: true
-  tsl_activation_r: 1.0            # глобальный порог активации TSL (TREND)
-  tsl_min_move_pct: 0.15           # VST/LIVE: мин. движение TSL (%) для обновления SL на бирже
-  tsl_activation_r_range: 0.7      # DEV-122 (02.04.2026): RANGE — активировать TSL раньше (+93 доп активации)
-  # tsl_buffer_pct: 0.3  # МЁРТВЫЙ — в коде не читается (DEV-87, 28.03.2026). Подключить или удалить.
+  tsl_activation_r: 1.0
+  tsl_min_move_pct: 0.15
+  tsl_activation_r_range: 0.7
   cascade_tsl: true
-  cascade_tsl_deescalation_r: 2.5  # DEV-29: снижено с 5.0 (бэктест: 0 активаций при 5.0R, 83% TSL-закрытий до 4R)
-  cascade_tsl_opts:                 # ARCH-62 Шаг 1 + DEV-91/123 (02.04.2026) — доп. параметры cascade TSL
-    cap_tf_after_tp1: "1h"          # ARCH-62: после tp1_hit — не эскалировать выше 1h (DUAL_TP cap 32%→55%)
-    no_degrade_above_r: 5.0         # DEV-123: ракеты R >= 5R — запрет деградации TSL от WT касания
-    r_gradient_peak_min_r: 3.0      # DEV-91: минимальный пик для R-gradient gate
-    r_gradient_rollback_pct: 0.85   # DEV-91: откат до <85% пика = триггер де-эскалации
+  cascade_tsl_deescalation_r: 2.5
+  cascade_tsl_opts:
+    cap_tf_after_tp1: 1h
+    no_degrade_above_r: 3.0
+    r_gradient_peak_min_r: 2.0
+    r_gradient_rollback_pct: 0.75
   use_breakeven: false
-  use_be_after_tp1: false   # DEV-60: BE для остатка после TP1 hit (DUAL_TP/TRIPLE_TP_TSL), независимо от use_breakeven
-  expired_extend_min_r: 5.0   # DEV-124 (02.04.2026): ракеты R>=5 → продлить до expired_extend_hours
-  expired_extend_hours: 120   # DEV-124: 120h вместо 48h для сильных сделок (29 EXPIRED с 5R+: упущено 172R)
-  expired_management:       # DEV-62: Tiered EXPIRED — конвертация прибыльных TREND позиций в TSL
-    tsl_convert_min_r: 1.5  # минимальный R для конвертации (при R=1.0 легко разворачивается)
-    tsl_convert_regimes:    # только тренд (в RANGE — высокая вероятность возврата в диапазон)
-      - TREND_UP
-      - TREND_DOWN
-  max_positions_per_direction: 0   # DEV-14: Correlation Guard (0 = отключён)
+  use_be_after_tp1: false
+  expired_extend_min_r: 5.0
+  expired_extend_hours: 120
+  expired_management:
+    tsl_convert_min_r: 1.5
+    tsl_convert_regimes:
+    - TREND_UP
+    - TREND_DOWN
+  max_positions_per_direction: 0
   sl_tp:
-    atr_multiplier: 1.0 # было 1.2 → 1 (изменил руками 17:52 27.03)
+    atr_multiplier: 1.0
     sl_min_pct: 0.5
     sl_max_pct: 3.0
-    tp_fallback_rr: 3.0  # было 2.5 → 3.0 (28.03) — ATR fallback TP; должен быть >= tp_pivot_min_r, иначе отклонённый пивот лучше fallback
-    max_rr: 3.0          # DEV-35: cap R:R (PAXG 24x, CRCLX 32x → max 6x)
-    max_rr_range: 2.5    # DEV-61: RANGE-специфичный cap (среднее RANGE движение = 2.0–2.5x)
-    require_pivot_tp: false  # Вариант C (п.6): true → не регистрировать сделку если нет pivot TP (2-20R)
-    tp_pivot_min_r: 3.0  # было 2.0 → 3.0 (27.03) — минимальный R для pivot TP; менять вместе с tp_fallback_rr
-    tp_pivot_min_r_range: 1.2    # DEV-122 (02.04.2026): RANGE — ближайший пивот как цель (avg_TP RANGE=5-8R → hit rate 28-41%)
-    tp_reversal_min_r: 3.0 # было 2.0 → 3.0 (27.03) — минимальный R для reversal TP; менять вместе с tp_fallback_rr
-    tp_partial_pct: 0.2 # было 0.5 → 0.2 (изменил руками 17:52 27.03)
+    tp_fallback_rr: 3.0
+    max_rr: 3.0
+    max_rr_range: 2.5
+    require_pivot_tp: false
+    tp_pivot_min_r: 3.0
+    tp_pivot_min_r_range: 1.2
+    tp_reversal_min_r: 3.0
+    tp_partial_pct: 0.2
     atr_dynamic: true
     atr_expand_threshold: 1.3
     atr_contract_threshold: 0.8
     struct_sl_buffer_pct: 0.3
-    struct_sl_max_dist: 2.0 # было 3.0 → 2.0 (изменил руками 17:52 27.03) — максимальное расстояние до SL для структурных уровней (S/R, FVG)
+    struct_sl_max_dist: 2.0
     tsl_too_tight_pct: 1.0
 market_regime:
-  use_v2: false  # DEV-90/ARCH-59: гибридный classify_v2() — false=shadow, true=production
-
+  use_v2: false
 trigger_bus:
-  shadow: true          # ОТКАТ 01.04: только 1 trade за 3 дня, данных мало. Вернуть false после 30+ trades.
-  cascade_min: 3        # мин. cascade_count для CascadeTrigger
-  interval_sec: 120     # интервал цикла в секундах
-
-# ARCH-70: EventBus — централизованная шина Full CALL (06.04.2026)
+  shadow: false
+  cascade_min: 3
+  interval_sec: 120
 event_bus:
-  enabled: true          # true = EventBus активен (shadow режим контролируется ниже)
-  shadow: true           # true = только WOULD_FIRE лог (не вызывает analyze_symbol)
-  cooldown_minutes: 30   # мин. интервал Full CALL / пара (защита от шума)
-  max_concurrent: 3      # макс. параллельных analyze_symbol через EventBus
-  btc_macro_shock_pct: 2.5  # ARCH-70: порог движения BTC/15m для btc_macro триггера (%)
-
+  enabled: true
+  shadow: false
+  cooldown_minutes: 30
+  max_concurrent: 3
+  btc_macro_shock_pct: 2.5
 signal_quality:
-  sl_cooldown_hours: 2.0   # 2 часа после SL (было 4.0 → 2.0, изменил руками 17:52 27.03) — снижено для увеличения количества сигналов (WR=20% при 2ч vs WR=15% при 4ч)
+  sl_cooldown_hours: 2.0
   dedup_minutes: 30
-  min_volume_usd: 0  # фильтр по BingX-объёму некорректен (глобальный объём монеты м.б. намного выше)
+  min_volume_usd: 0
   min_strength: 50
-  min_strength_register: 63  # было 65 → 75: убрать мусор strength<75, TAKE/BEAT/GRASS проходят
-  min_strength_wl_breach: 45  # DEV-69: WL breach — ниже, т.к. касание уровня само по себе = контекст
-  pivot_reversal_max_strength: 79  # DEV-98 (ARCH Находка 2): strength≥80 = WR=4.5% avgR=−0.735R → блок
-  ote_shadow_mode: true         # ARCH-53: OTE детектор shadow mode (только логирование, ≥2 недели)
-  ote_zone_tfs: ["1h", "4h", "1d"]       # ARCH-53 swing: zone TF (trigger = entry TF 15m)
-  ote_scalp_zone_tfs: ["15m"]            # ARCH-53 scalp: zone TF (ICT: 15m zone)
-  ote_scalp_trigger_tf: "3m"             # ARCH-53 scalp: trigger TF (ICT: 3m WT cross)
-  min_strength_by_regime:    # DEV-61: override per regime (выше базового min_strength_register)
-    RANGE: 70                # RANGE = SL-фабрика при слабых сигналах (str=18, str=49 в БД)
-    HIGH_VOL: 80             # HIGH_VOL уже заблокирован, но на случай снятия блока
-  signal_regime_block:       # DEV-133 (04.04.2026): хирургические direction×regime блоки
+  min_strength_register: 50  # DEV-149: было 63 — съедал ~40% валидных, возврат к прежнему уровню
+  min_strength_wl_breach: 45
+  pivot_reversal_max_strength: 79
+  ote_shadow_mode: true
+  ote_zone_tfs:
+  - 1h
+  - 4h
+  - 1d
+  ote_scalp_zone_tfs:
+  - 15m
+  ote_scalp_trigger_tf: 3m
+  min_strength_by_regime:
+    RANGE: 60       # DEV-149: 70→60, слишком агрессивный фильтр в RANGE
+    HIGH_VOL: 75    # DEV-149: 80→75, HIGH_VOL больше не в blocked_regimes
+  signal_regime_block:
     pivot_reversal:
-      blocked_regimes: []    # снят грубый блок (weekly_bias_gate + DEV-128ext покрывают)
-      blocked_combos:        # точечные блоки с данными (n≥16, avgR<-0.4)
-        - {direction: LONG,  regime: TREND_DOWN}   # n=40, WR=0%,  avg=-0.936R
-        - {direction: SHORT, regime: TREND_UP}     # n=16, WR=19%, avg=-0.442R
-        - {direction: LONG,  regime: HIGH_VOL}     # WR<10%
+      blocked_regimes: []
+      blocked_combos:
+      - direction: LONG
+        regime: TREND_DOWN
+      - direction: SHORT
+        regime: TREND_UP
+      - direction: LONG
+        regime: HIGH_VOL
     confluence:
-      blocked_regimes: []    # снят грубый блок — открываем +141R (SHORT RANGE/TREND_DOWN)
-      blocked_combos:        # токсичные комбо с достаточными данными
-        - {direction: LONG,  regime: TREND_DOWN}   # n=95,  WR=3%,  avg=-0.794R
-        - {direction: SHORT, regime: TREND_UP}     # n=68,  WR=0%,  avg=-0.841R
-        - {direction: SHORT, regime: HIGH_VOL}     # n=25,  WR=0%,  avg=-0.880R
-        - {direction: LONG,  regime: HIGH_VOL}     # WR=0%,  avg=-0.625R
-        - {direction: LONG,  regime: TREND_UP}     # n=144, WR=18%, avg=-0.362R
+      blocked_regimes: []
+      blocked_combos:
+      - direction: LONG
+        regime: TREND_DOWN
+      - direction: SHORT
+        regime: TREND_UP
+      - direction: SHORT
+        regime: HIGH_VOL
+      - direction: LONG
+        regime: HIGH_VOL
+      - direction: LONG
+        regime: TREND_UP
     wt_signal:
-      blocked_regimes: []    # снят грубый блок — wt_signal=WR31%+0.308R не мёртвый (TRADER 04.04)
-      blocked_combos:        # осторожно: мало чистых данных (ждём DEV-126 полного фикса)
-        - {direction: LONG,  regime: TREND_DOWN}
-        - {direction: SHORT, regime: TREND_UP}
-  weekly_bias_gate:          # DEV-128: pivot_reversal RANGE при weekly_bias≠aligned → блок
-    enabled: true            # true = production gate (данные: 62% убыточных при NONE)
-    shadow_mode: false       # false = реальный блок (не shadow)
+      blocked_regimes: []
+      blocked_combos:
+      - direction: LONG
+        regime: TREND_DOWN
+      - direction: SHORT
+        regime: TREND_UP
+  weekly_bias_gate:
+    enabled: true
+    shadow_mode: false
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
-  # DEV-22: WATCH LIST
-  watch_list_ttl_hours: 4        # TTL записи в WL (часов)
-  watch_list_breach_pct: 0.8     # % ниже/выше pivot_level для подтверждения пробоя #было 1.0 → 0.8 (изменил руками 17:52 27.03) — снижение для увеличения количества пробоев (WR=25% при 0.8 vs WR=15% при 1.0)
-  wl_sl_buffer_pct: 0.5          # DEV-WL-BREACH: буфер SL от пробитого пивота (%)
+  watch_list_ttl_hours: 4
+  watch_list_breach_pct: 0.8
+  wl_sl_buffer_pct: 0.5
 detectors:
   anomaly:
     min_bars: 20
@@ -377,14 +348,14 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
-  scan_semaphore_size: 10   # откат 20→10 (30.03: 20 давало throttle BingX → 10-35 сек latency)
-  analyze_semaphore_size: 3  # откат 5→3 (30.03: вместе с scan=20 перегружали API)
+  scan_semaphore_size: 10
+  analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
   cascade_div_semaphore_size: 3
   api_rps: 15
-  api_semaphore_size: 10 # 12 поменял руками 30.03 16:30
-  ohlcv_scan_limit: 161  # +1 буфер: BingX возвращает limit-1 баров (159 вместо 160)
+  api_semaphore_size: 10
+  ohlcv_scan_limit: 161
   ohlcv_slow_threshold_sec: 8.0
   divergence_slow_threshold_sec: 3.0
   pair_slow_threshold_sec: 10.0
@@ -412,44 +383,36 @@ strategy:
     min_confidence: 0.65
     conflict_threshold: 0.2
 ml:
-  use_outcome_predictor: false  # AUC=0.329 → антиML: инвертирует confidence. Отключён до AUC>0.55
-
+  use_outcome_predictor: false
 future_pivots:
   enabled: false
   broadcast_tg: false
   ttl_sec: 1800
   confluence_threshold_pct: 0.5
-  pre_alert_pct: 1.0 # 
+  pre_alert_pct: 1.0
   strength_bonus: 15
 signals:
-  mtf_alert_enabled: false       # DEV-31: 137 сделок WR=4.4% — убран полностью (TG + регистрация)
-  mtf_alert_register: false      # DEV-31: резервный флаг (не используется если enabled=false)
+  mtf_alert_enabled: false
+  mtf_alert_register: false
   cascade_div_enabled: true
-  send_chart: true               # отправлять PNG-график вместе с сигналом
-  show_fvg_confluences: true     # ARCH-28: показывать FVG+Pivot зоны в TG-сообщении
-  chart_tf: "1h"                 # таймфрейм графика
-  chart_bars: 300                # количество баров на графике
+  send_chart: true
+  show_fvg_confluences: true
+  chart_tf: 1h
+  chart_bars: 300
 risk_management:
   regime_strategy:
     enabled: true
     trend_sl_factor: 0.85
-    trend_strategy_type: SINGLE    # DEV-124: DUAL_TP/DUAL_TSL → -88.5R, SINGLE → +1866R (02.04.2026)
+    trend_strategy_type: SINGLE
     trend_position_multiplier: 1.0
     range_sl_factor: 1.15
-    range_strategy_type: SINGLE    # было DUAL_TP — RANGE всегда на первом пивоте (30.03.2026)
+    range_strategy_type: SINGLE
     range_position_multiplier: 1.0
     high_vol_sl_factor: 1.0
     high_vol_strategy_type: DUAL_TP
     high_vol_position_multiplier: 0.5
     high_vol_tp1_r: 0.5
-
-
-# ── LLM-разбор SL-сделок (TradeAnalyzer / DEV-15) ───────────────────────────
-# Провайдеры: groq | openai | openrouter | ollama | anthropic | disabled
-# Groq — бесплатно, ключ: console.groq.com → API Keys
-# OpenRouter — бесплатные модели, ключ: openrouter.ai
 trade_analyzer:
   provider: groq
-  api_key: "${GROQ_API_KEY}"
-  model: "llama-3.1-8b-instant"   # быстрый, бесплатный
-  # base_url: ""        # переопределить URL (опционально)
+  api_key: ${GROQ_API_KEY}
+  model: llama-3.1-8b-instant
