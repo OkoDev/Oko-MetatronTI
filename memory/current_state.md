@@ -4,6 +4,78 @@
 
 ---
 
+## [09.04.2026 ночь] Агент: Developer — DEV-149 разблокировка + TSL фиксы + Reversal Boost ✅
+
+**Контекст:** коллапс потока сделок (304/день → 3/день к 09.04), TSL на бирже зациклился, orphan-и не закрывались, развороты не ловились. План: `C:\Users\yogoru\.claude\plans\modular-imagining-tulip.md`.
+
+### Сделано (НЕ закоммичено, бот НЕ перезапущен):
+
+1. ✅ **TSL TUT float-equality** — `core/trading/trade_simulator.py:~1680` — замена `tsl_price != _old_sl` на `abs(delta)/old * 100 >= 0.15` (устраняет зацикленный cancel+replace каждые 2 мин).
+2. ✅ **TSL KMNO retry** — `core/exchange/tsl_updater.py:15-32` — `fetch_and_save_sl_order_id` теперь 3 попытки × 2 сек (BingX иногда создаёт trigger за 3-5 сек).
+3. ✅ **TSL CAKE orphan auto-close** — `core/exchange/tsl_updater.py:67-86` — если `get_position_qty()=0` → `close_trade(EXPIRED)` вместо бесконечных `place_sl_order` ошибок.
+4. ✅ **Reversal Boost подключён** — `core/trading_intelligence.py:~886` — если `metadata.reversal_mode=="REVERSAL"` + сигнал в `(pivot_reversal, confluence, wl_breach)` + WT 4h в OB/OS по направлению → `strength += 8` + обход `regime_direction_block` (там же `:~1112`).
+5. ✅ **config.yaml — пороги снижены**:
+   - `min_strength_register: 63 → 50`
+   - `analysis.signals.min_confidence_by_type.confluence: 0.68 → 0.58`
+   - `signal_quality.min_strength_by_regime.RANGE: 70 → 60`, `HIGH_VOL: 80 → 75`
+   - `trading.blocked_regimes: [HIGH_VOL] → []` (HIGH_VOL теперь фильтруется только по `min_strength_by_regime.HIGH_VOL=75`)
+6. ✅ **DEV-128ext сужен** — `bot/monitoring.py:882-914` — оставлены только подтверждённые вредные комбо (`confluence LONG TREND_DOWN/UP`, `confluence SHORT TREND_UP`, `pivot_reversal SHORT TREND_UP`). Разблокированы: `pivot_reversal LONG TREND_DOWN` (классический reversal на OS), `confluence HIGH_VOL` обе стороны. Все блоки имеют bypass на `reversal_boost`.
+7. ✅ **position_sync guard ослаблен** — `core/exchange/position_sync.py:97-112` — теперь пропуск только если snapshot пустой **два цикла подряд** (было `open_sim_count > 3`).
+8. ✅ **ML блендинг проверен** — `core/trading_intelligence.py:156-167, 2090-2133` — при `ml.use_outcome_predictor: false` `self.outcome_predictor = None`, `blend_confidence_with_ml` возвращает сразу. Confluence confidence drops (0.65→0.53) — НЕ от ML.
+
+### Ревизия весов сигналов (запрошено пользователем) — ДАННЫЕ ЕСТЬ, конфиг НЕ менял
+
+Статистика по закрытым сделкам за **14 дней** (`simulated_trades`):
+
+| signal_type         | n    | WR%  | avgR    | вердикт |
+|---------------------|------|------|---------|---------|
+| confluence          | 1189 | 27.1 | **+0.148** | ✅ работает (SHORT) |
+| pivot_reversal      | 499  | 22.0 | -0.094  | ⚠️ слабо отрицательный |
+| watch_list_breach   | 206  | 27.2 | **+0.219** | ✅ лучший |
+| wt_b_signal         | 40   | 17.5 | -0.392  | 🔴 вреден |
+| wt_signal           | 3    | 0    | -1.0    | мёртв |
+| mtf_bias            | 1    | 0    | -1.0    | мёртв |
+
+Остальные из `signal_weights` (`mtf_alert, divergence, trend_signal, anomaly, pivot_alert`) — **0 сделок за 14 дней** → конфигурация весов для них не влияет, можно чистить.
+
+**Разрез по direction × regime (важно!):**
+- `confluence SHORT RANGE` +0.288 (n=522), `SHORT TREND_DOWN` +0.307 (n=227) — сильно в плюс
+- `confluence LONG` везде минус: RANGE -0.071 (n=318), TREND_UP -0.176 (n=122) — 440 сделок, все отрицательные
+- `pivot_reversal LONG TREND_UP` **-0.319** (n=160) — подтверждено, блок в DEV-128ext оставлен
+- `pivot_reversal SHORT TREND_DOWN` +0.162 (n=43) — разблокировано правильно
+- `watch_list_breach LONG TREND_UP` **+0.897** (n=26) — отличный trend-following паттерн
+- `wt_b_signal LONG RANGE` -0.873 (n=8) — худший разрез
+
+**Предлагаемые изменения весов** (формула `factor = clamp(1.0 + avgR*0.4, 0.5, 2.0)`, базовые — текущие из `config.yaml:368-376`):
+
+| signal          | current | предл. | причина |
+|-----------------|---------|--------|---------|
+| confluence      | 0.35    | 0.37   | +0.148R, лёгкий буст |
+| pivot_reversal  | 0.20    | 0.19   | -0.094R, минус-корректировка |
+| wt_signal       | 0.10    | 0.05   | мёртв (3 сделки), заглушить |
+| mtf_bias        | 0.30    | 0.15   | мёртв (1 сделка) |
+| mtf_alert       | 0.30    | 0.15   | 0 сделок, мёртвый канал |
+| trend_signal    | 0.10    | 0.05   | 0 сделок |
+| anomaly         | 0.05    | 0.05   | без изменений |
+| divergence      | 0.15    | 0.10   | 0 сделок |
+| pivot_alert     | 0.15    | 0.10   | 0 сделок |
+
+Корректировки **мягкие** — если канал оживёт после разблокировки порогов, он легко вернётся. wt_b_signal НЕ в этой таблице (отдельный детектор, `analysis.wt_b.enabled` — пользователь просил оставить наблюдать).
+
+**Не предлагаю** жёстко резать `confluence LONG` на уровне регулярных правил: reversal_boost должен ловить реальные развороты, а когда рынок развернётся — LONG оживёт. Это временный перекос, не структурный.
+
+### 🔄 Остаётся к утру
+- Решение: применить ли предложенные веса (или скорректировать пропорции)
+- Рестарт бота для применения DEV-149 (8 изменений в файлах)
+- Верификация по плану Этап 6 (30 мин — 2 часа логи + дашборд)
+- Коммит посекционно (5 коммитов по группам изменений)
+
+### ⚠️ Важно
+- `scripts/repair_missing_stops.py` содержит `APPROVED_TRADE_IDS = {5306,5329,5337,5346,5368}` — **старые ID из инцидента 04.04**. Перед запуском сейчас нужно обновить под актуальные orphan-ы (или использовать `audit_missing_stops.py` только для аудита).
+- Все изменения локальные, откат — `git checkout` по файлам.
+
+---
+
 ## [05.04.2026 вечер] Агент: Developer — Куб Метатрона Фаза 2 (DEV-137..142) ✅
 
 - ✅ **DEV-137**: `classify_mode()` в `core/indicators/market_regime.py` — WT 4h OB/OS + ADX 1h slope + CHoCH → REVERSAL/TREND/UNCLEAR. Запись в `recommendation.metadata["reversal_mode"]`.
