@@ -579,7 +579,18 @@ class TradingIntelligence:
                 trace.add_filter("min_signals", True, f"{len(filtered_signals)} >= {min_signals}")
                 
             # ── ARCH-12: MTF Context (аналитический центр) ────────────────────
-            mtf_context = await self._build_mtf_context(symbol)
+            try:
+                mtf_context = await asyncio.wait_for(
+                    self._build_mtf_context(symbol),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                _mtf_elapsed = (datetime.now() - start_time).total_seconds()
+                logger.warning(
+                    "[intelligence] %s: timeout _build_mtf_context (%.1fs) — mtf_context=None",
+                    symbol, _mtf_elapsed,
+                )
+                mtf_context = None
             if mtf_context is not None:
                 # DEV-12: сохраняем pre-MTF strength для trace
                 _pre_mtf = {id(s): s.strength for s in filtered_signals}
@@ -820,7 +831,10 @@ class TradingIntelligence:
 
             if recommendation is None:
                 # Legacy fallback: ни одна стратегия не дала результат
-                if len(filtered_signals) < min_signals and not manual_request:
+                # DEV-149: bypass для сильных одиночных сигналов (аналогично строке 569)
+                _max_str_legacy = max((s.strength for s in filtered_signals), default=0)
+                _bypass_legacy = _max_str_legacy >= single_min_strength or symbol_base in top_pairs
+                if len(filtered_signals) < min_signals and not manual_request and not _bypass_legacy:
                     logger.debug("[%s] legacy fallback пропущен: %d сигналов < min_signals=%d",
                                  symbol, len(filtered_signals), min_signals)
                 else:
@@ -866,13 +880,46 @@ class TradingIntelligence:
                 "reason": arbiter.reason,
             }
 
-            # DEV-137: Reversal Mode shadow — записываем в metadata, не влияем на strength
+            # DEV-137: Reversal Mode — записываем в metadata
             if mtf_context is not None and mtf_context.reversal_mode is not None:
                 recommendation.metadata["reversal_mode"] = mtf_context.reversal_mode
                 logger.info(
                     "[%s][DEV-137] reversal_mode=%s",
                     symbol, mtf_context.reversal_mode,
                 )
+
+            # DEV-149: Reversal Boost — если mode=REVERSAL + WT 4h в OB/OS + реверсивный сигнал
+            # → strength +8 и флаг для обхода regime_direction_block (чтобы не проспать разворот рынка).
+            try:
+                _rm_val = (recommendation.metadata or {}).get("reversal_mode")
+                _sig_t  = (getattr(recommendation, "signal_type", "") or "").lower()
+                _dir_v  = (recommendation.direction.value
+                           if hasattr(recommendation.direction, "value")
+                           else str(recommendation.direction))
+                _rev_types = ("pivot_reversal", "confluence", "watch_list_breach", "wl_breach")
+                if (_rm_val == "REVERSAL"
+                        and _sig_t in _rev_types
+                        and mtf_context is not None
+                        and getattr(mtf_context, "wt_snap", None)):
+                    _wt4h = float((mtf_context.wt_snap.get("4h") or {}).get("wt1", 0.0))
+                    _zone_ok = (
+                        (_dir_v == "LONG"  and _wt4h < -60) or
+                        (_dir_v == "SHORT" and _wt4h >  60)
+                    )
+                    if _zone_ok:
+                        _old_s = float(getattr(recommendation, "overall_strength", 0) or 0)
+                        recommendation.overall_strength = round(min(100.0, _old_s + 8.0), 1)
+                        recommendation.metadata["reversal_boost"] = {
+                            "wt_4h": round(_wt4h, 1),
+                            "strength_delta": 8.0,
+                            "old_strength": _old_s,
+                        }
+                        logger.info(
+                            "[%s][DEV-149] REVERSAL-BOOST %s sig=%s wt_4h=%.1f strength %.0f→%.0f",
+                            symbol, _dir_v, _sig_t, _wt4h, _old_s, recommendation.overall_strength,
+                        )
+            except Exception as _e_rb:
+                logger.debug("[DEV-149] reversal_boost error: %s", _e_rb)
 
             # DEV-139: MTF SMC Specialist shadow — predict + запись в metadata
             if mtf_context is not None and getattr(mtf_context, "smc_snap", None):
@@ -1098,6 +1145,15 @@ class TradingIntelligence:
                     _rec_dir = (recommendation.direction.value
                                 if hasattr(recommendation.direction, "value")
                                 else str(recommendation.direction))
+                    # DEV-149: REVERSAL-BOOST обходит regime_direction_block —
+                    # это классический reversal setup (WT 4h OB/OS + reversal mode).
+                    _has_rev_boost = bool((recommendation.metadata or {}).get("reversal_boost"))
+                    if _has_rev_boost and _blocked and _rec_dir == _blocked:
+                        logger.info(
+                            "[%s][DEV-149] regime_direction_block SKIPPED — reversal_boost active",
+                            symbol,
+                        )
+                        _blocked = None
                     if _blocked and _rec_dir == _blocked:
                         logger.info(
                             "[%s] DEV-32 regime_block: %s→WATCH (regime=%s блокирует %s)",
@@ -1442,6 +1498,11 @@ class TradingIntelligence:
                         "weekly_context_score": _ctx_score_48,
                         "weekly_gate_would_block": _gate_block_48,
                         "weekly_pp": _weekly_pp_48,
+                        # ARCH-64: уровни для near_level check (без повторного API вызова)
+                        "weekly_s1": float((_wp48 or {}).get("S1") or 0) or None,
+                        "weekly_s2": float((_wp48 or {}).get("S2") or 0) or None,
+                        "weekly_r1": float((_wp48 or {}).get("R1") or 0) or None,
+                        "weekly_r2": float((_wp48 or {}).get("R2") or 0) or None,
                     })
 
                     # DEV-58: Фаза B — production gate (включить: weekly_bias_filter.enabled: true)
@@ -1527,6 +1588,66 @@ class TradingIntelligence:
                                 )
             except Exception as _e48:
                 logger.debug("[ARCH-48] weekly bias error: %s", _e48)
+
+            # ARCH-64: pivot_reversal weekly_bias gate (shadow по умолчанию)
+            # Данные TRADER [02.04.2026]: weekly_bias=UNKNOWN → 62% сделок, EV -0.4..−0.76R
+            # Логика: UNKNOWN → WOULD_BLOCK; против bias → WOULD_PENALIZE -20; рядом с W_S/R → исключение
+            try:
+                _a64_strat = (recommendation.metadata or {}).get("strategy_name", "")
+                if _a64_strat == "pivot_reversal":
+                    _a64_bias   = (recommendation.metadata or {}).get("weekly_bias", "UNKNOWN")
+                    _a64_cfg    = (self.config.get("trading") or {}).get("pivot_reversal_bias", {})
+                    _a64_shadow = not bool(_a64_cfg.get("enabled", False))
+                    _dir_64     = str(getattr(recommendation.direction, "value", "") or "").upper()
+                    _pfx64      = "[ARCH-64 SHADOW]" if _a64_shadow else "[ARCH-64]"
+
+                    # Кейс 1: weekly_bias=UNKNOWN → самые убыточные (EV -0.76R, 62% pivot_reversal)
+                    if _a64_bias == "UNKNOWN":
+                        logger.info("%s %s pivot_reversal weekly_bias=UNKNOWN → WOULD_BLOCK", _pfx64, symbol)
+                        if not _a64_shadow:
+                            recommendation.action = "WATCH"
+                            recommendation.metadata["arch64"] = "blocked:bias_unknown"
+
+                    # Кейс 2: направление против weekly bias → штраф (LONG+BEARISH или SHORT+BULLISH)
+                    elif ((_dir_64 == "LONG"  and _a64_bias == "BEARISH") or
+                          (_dir_64 == "SHORT" and _a64_bias == "BULLISH")):
+                        _a64_penalty  = int(_a64_cfg.get("against_bias_penalty", 20))
+                        _a64_near_pct = float(_a64_cfg.get("near_level_pct", 1.5)) / 100
+                        _a64_price    = float(
+                            recommendation.entry_price or
+                            (market_context.current_price if market_context else 0) or 0
+                        )
+                        # near_level: используем значения из metadata ARCH-48 (W_S1/S2 или W_R1/R2)
+                        _a64_meta = recommendation.metadata or {}
+                        _ws1_64 = _a64_meta.get("weekly_s1")
+                        _ws2_64 = _a64_meta.get("weekly_s2")
+                        _wr1_64 = _a64_meta.get("weekly_r1")
+                        _wr2_64 = _a64_meta.get("weekly_r2")
+
+                        def _near64(lvl):
+                            return bool(lvl and _a64_price
+                                        and abs(_a64_price - float(lvl)) / float(_a64_price) < _a64_near_pct)
+
+                        _a64_near = (
+                            (_near64(_ws1_64) or _near64(_ws2_64)) if _dir_64 == "LONG"
+                            else (_near64(_wr1_64) or _near64(_wr2_64))
+                        )
+
+                        if _a64_near:
+                            logger.info(
+                                "%s %s pivot_reversal %s/%s ALLOWED (near W_S/R ≤%.1f%%)",
+                                _pfx64, symbol, _dir_64, _a64_bias, _a64_near_pct * 100,
+                            )
+                        else:
+                            logger.info(
+                                "%s %s pivot_reversal %s/%s WOULD_PENALIZE -%d",
+                                _pfx64, symbol, _dir_64, _a64_bias, _a64_penalty,
+                            )
+                            if not _a64_shadow:
+                                overall_strength = max(0, overall_strength - _a64_penalty)
+                                recommendation.metadata["arch64"] = f"penalty:-{_a64_penalty}"
+            except Exception as _e64:
+                logger.debug("[ARCH-64] error: %s", _e64)
 
             # ARCH-51-pre: логировать конфликт 15m bearish SMC + LONG (валидация до реализации ARCH-51)
             try:

@@ -271,7 +271,13 @@ class MarketRegimeClassifier:
                 logger.debug("[classify_mode] CHoCH error: %s", _e)
 
             # ── Решение ──────────────────────────────────────────────────────
-            if wt_extreme and adx_declining and choch_present:
+            logger.debug(
+                "[classify_mode] wt_extreme=%s(wt1_4h=%.1f) adx_declining=%s choch=%s",
+                wt_extreme, wt1_4h, adx_declining, choch_present,
+            )
+            # DEV-149: ослабляем до 2 из 3 — WT extreme + любой из (adx_declining, choch)
+            _rev_score = int(wt_extreme) + int(adx_declining) + int(choch_present)
+            if wt_extreme and _rev_score >= 2:
                 return "REVERSAL"
             if adx_rising and not wt_extreme and not choch_present:
                 return "TREND"
