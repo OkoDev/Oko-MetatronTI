@@ -75,7 +75,17 @@ async def sync_positions(bot) -> None:
         client = await order_mgr._get_client_synced()
 
         # Получаем открытые позиции на бирже
-        positions = await client.get_positions()
+        # FAIL-CLOSED: если get_positions() бросает — пропускаем весь цикл.
+        # Пустой список из-за ошибки API нельзя считать "нет позиций" —
+        # это приводит к массовому ложному закрытию tracked сделок.
+        try:
+            positions = await client.get_positions()
+        except Exception as _pos_err:
+            logger.warning(
+                "[POSITION-SYNC] get_positions failed → пропуск синхронизации: %s", _pos_err
+            )
+            return
+
         open_on_exchange: dict = {}   # sym_our → position_data
         for p in positions:
             sym_raw = p.get("symbol", "")   # "BTC-USDT"
@@ -83,6 +93,23 @@ async def sync_positions(bot) -> None:
             if qty != 0:
                 sym_our = sym_raw.replace("-", "/") + ":USDT"
                 open_on_exchange[sym_our] = p
+
+        # DEV-149: защита от API-сбоя — пропускаем синхронизацию только если
+        # snapshot был пустой ДВА цикла подряд. Одиночное пустое значение может
+        # быть реальным (все закрылись). Две подряд — почти наверняка API-сбой.
+        open_sim_count = sum(
+            1 for t in bot.trade_simulator.get_open_trades()
+            if t.get("exchange_order_id")
+        )
+        _prev_empty = getattr(bot, "_position_sync_prev_empty", False)
+        _now_empty  = len(open_on_exchange) == 0 and open_sim_count > 0
+        bot._position_sync_prev_empty = _now_empty
+        if _now_empty and _prev_empty:
+            logger.warning(
+                "[POSITION-SYNC] snapshot пустой 2-й цикл подряд (tracked=%d) — пропуск",
+                open_sim_count,
+            )
+            return
 
         open_sim = bot.trade_simulator.get_open_trades()
         synced = 0

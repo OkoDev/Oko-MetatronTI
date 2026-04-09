@@ -101,6 +101,8 @@ class TradeSimulator:
         self._post_trade_callback = None
         # DEV-89: общий PivotCalculatorFixed — создаётся один раз, не на каждую сделку
         self._pivot_calc: object = None
+        # DEV-148: защита от concurrent close одной сделки (database is locked cascade)
+        self._close_in_progress: set = set()
 
     def set_post_trade_callback(self, cb) -> None:
         """DEV-94: регистрирует PostTradeAnalyser.on_trade_closed как callback."""
@@ -343,6 +345,11 @@ class TradeSimulator:
             if isinstance(_atr_ctx, (int, float)) and _atr_ctx > 0 and entry and stop_loss:
                 _sl_abs = abs(float(entry) - float(stop_loss))
                 features["sl_atr_ratio"] = round(_sl_abs / _atr_ctx, 2)
+            # DEV-149: distance_to_sl_pct — запас до SL в % при открытии
+            if entry and stop_loss and float(entry) > 0:
+                features["distance_to_sl_pct"] = round(
+                    abs(float(entry) - float(stop_loss)) / float(entry) * 100, 4
+                )
             # Торговая сессия по UTC (контекст времени входа)
             _h = datetime.now(timezone.utc).hour
             features["session"] = (
@@ -878,6 +885,11 @@ class TradeSimulator:
         """Закрывает сделку, считает profit_pct и R_multiple."""
         if status not in (STATUS_TP, STATUS_SL, STATUS_TSL, STATUS_EXPIRED):
             return False
+        # DEV-148: защита от concurrent close одной сделки → database is locked cascade
+        if trade_id in self._close_in_progress:
+            logger.debug("[TradeSimulator] close_trade %d уже в процессе — пропуск", trade_id)
+            return False
+        self._close_in_progress.add(trade_id)
         closed_at = closed_at or datetime.now(timezone.utc)
         try:
             with self._db_connect() as conn:
@@ -1046,6 +1058,8 @@ class TradeSimulator:
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка close_trade {trade_id} — {e}")
             return False
+        finally:
+            self._close_in_progress.discard(trade_id)
 
     def _mark_market_event_in_window(self, window_start: datetime) -> None:
         """DEV-39: ретроактивно помечает SL-сделки в окне как market_event=true."""
@@ -1124,6 +1138,7 @@ class TradeSimulator:
             trade_id = trade["id"]
             symbol = trade["symbol"]
             direction = (trade["direction"] or "").upper()
+            _exchange_managed_trade = bool(trade.get("exchange_order_id"))
             entry = float(trade["entry_price"])
             sl = trade["stop_loss"]
             tp = trade["take_profit"]
@@ -1647,6 +1662,13 @@ class TradeSimulator:
                                 f"entry={entry:.4f} current={current_price:.4f} "
                                 f"tsl={tsl_price:.4f} [tf={tsl_tf_used}]"
                             )
+                            if _exchange_managed_trade:
+                                logger.warning(
+                                    "[TradeSimulator][LIVE-GUARD] %s #%d: TSL hit detected by simulator, "
+                                    "but trade is exchange-managed — waiting for exchange confirmation",
+                                    symbol, trade_id,
+                                )
+                                continue
                             if self.close_trade(trade_id, STATUS_TSL, current_price):
                                 closed_count += 1
                             continue
@@ -1655,7 +1677,13 @@ class TradeSimulator:
                             _exch_sl_id = trade.get("exchange_sl_order_id")
                             _old_sl = float(trade.get("stop_loss") or 0)
                             _exch_order_id = trade.get("exchange_order_id")
-                            if _exch_order_id and tsl_price and tsl_price != _old_sl:
+                            # Фильтр ≥0.15% — устраняет float-equality "движения" и повторный cancel+replace
+                            _min_move = 0.15  # % — tsl_updater применит тот же порог при реальном move
+                            _is_real_move = (
+                                _exch_order_id and tsl_price and _old_sl > 0
+                                and abs(tsl_price - _old_sl) / _old_sl * 100 >= _min_move
+                            )
+                            if _is_real_move:
                                 # qty — из оригинального ордера (посчитаем из notional или берём из БД)
                                 _qty = float(trade.get("qty") or 0)
                                 tsl_moved.append({
@@ -1670,10 +1698,12 @@ class TradeSimulator:
                                 })
                                 # Обновляем stop_loss в БД → текущий TSL уровень виден в дашборде
                                 try:
-                                    conn.execute(
-                                        "UPDATE simulated_trades SET stop_loss=? WHERE id=? AND status='OPEN'",
-                                        (tsl_price, trade_id),
-                                    )
+                                    with self._db_connect() as _tsl_conn:
+                                        _tsl_conn.execute(
+                                            "UPDATE simulated_trades SET stop_loss=? WHERE id=? AND status='OPEN'",
+                                            (tsl_price, trade_id),
+                                        )
+                                        _tsl_conn.commit()
                                 except Exception as _ue:
                                     logger.debug("TSL: stop_loss update #%d: %s", trade_id, _ue)
 
@@ -1691,6 +1721,7 @@ class TradeSimulator:
             # Реальный выход подтверждается закрытием ниже (LONG) / выше (SHORT).
             _sl_src = (trade.get("sl_source") or "").lower()
             _sl_check_close = _sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl")
+            _tsl_is_active = bool(trade.get("tsl_activated"))
 
             for _, row in df.iterrows():
                 high  = float(row.get("high",  0) or 0)
@@ -1733,7 +1764,9 @@ class TradeSimulator:
                         logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
                         exit_status, exit_price_val = STATUS_TP, tp2_price
                     # Обычный TP (SINGLE — tp1/tp2 не используются)
-                    hit_tp = (tp is not None and tp2_price is None and tp1_price is None and high >= tp)
+                    # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
+                    # TSL сам закроет сделку при развороте тренда.
+                    hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and high >= tp)
                     if not exit_status:
                         if hit_sl and hit_tp:
                             exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
@@ -1769,7 +1802,8 @@ class TradeSimulator:
                             pass
                         logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
                         exit_status, exit_price_val = STATUS_TP, tp2_price
-                    hit_tp = (tp is not None and tp2_price is None and tp1_price is None and low <= tp)
+                    # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
+                    hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and low <= tp)
                     if not exit_status:
                         if hit_sl and hit_tp:
                             exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
@@ -1814,6 +1848,13 @@ class TradeSimulator:
 
             # EXPIRED: проверяем только если TP/SL/TSL не сработал за время жизни сделки
             if not exit_status and _is_expired:
+                if _exchange_managed_trade:
+                    logger.warning(
+                        "[TradeSimulator][LIVE-GUARD] %s #%d: EXPIRED detected by simulator, "
+                        "but trade is exchange-managed — waiting for exchange confirmation",
+                        symbol, trade_id,
+                    )
+                    continue
                 try:
                     ticker = await data_collector.get_ticker(symbol)
                     if ticker:
@@ -1829,6 +1870,13 @@ class TradeSimulator:
                 continue
 
             if exit_status and exit_price_val is not None:
+                if _exchange_managed_trade:
+                    logger.warning(
+                        "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected by simulator @ %.6f, "
+                        "but trade is exchange-managed — waiting for exchange confirmation",
+                        symbol, trade_id, exit_status, exit_price_val,
+                    )
+                    continue
                 if self.close_trade(trade_id, exit_status, exit_price_val):
                     closed_count += 1
                     # DEV-15: LLM-разбор для SL-сделок
