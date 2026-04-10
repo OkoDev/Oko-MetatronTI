@@ -217,15 +217,21 @@ async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
             if ti is not None:
                 ti.update_signal_weights()
                 logger.info("[EventBus][ARCH-72] trade_closed %s → update_signal_weights OK", symbol)
-                # Раз в 10 закрытых сделок — переобучаем OutcomePredictor
-                _op = getattr(ti, "outcome_predictor", None)
-                if _op is not None:
-                    _closed_count = getattr(bot, "_eb_closed_count", 0) + 1
-                    bot._eb_closed_count = _closed_count
-                    if _closed_count % 10 == 0:
-                        import asyncio as _aio
+                # Раз в 10 закрытых сделок — переобучаем OutcomePredictor + WTSpecialist + SMCSpecialist
+                _closed_count = getattr(bot, "_eb_closed_count", 0) + 1
+                bot._eb_closed_count = _closed_count
+                if _closed_count % 10 == 0:
+                    import asyncio as _aio
+                    _op = getattr(ti, "outcome_predictor", None)
+                    if _op is not None:
                         _aio.create_task(_aio.to_thread(_op.fit, ti._db_path))
-                        logger.info("[EventBus][ARCH-72] trade_closed → OutcomePredictor retrain (%d closed)", _closed_count)
+                    _wts = getattr(ti, "_wt_specialist", None)
+                    if _wts is not None:
+                        _aio.create_task(_aio.to_thread(_wts.fit, ti._db_path))
+                    _smcs = getattr(ti, "_smc_specialist", None)
+                    if _smcs is not None:
+                        _aio.create_task(_aio.to_thread(_smcs.fit, ti._db_path))
+                    logger.info("[EventBus][ARCH-72] trade_closed → retrain OP+WT+SMC (%d closed)", _closed_count)
         except Exception as _e72:
             logger.debug("[EventBus][ARCH-72] trade_closed feedback error: %s", _e72)
         return

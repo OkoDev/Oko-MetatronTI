@@ -121,6 +121,11 @@ class TradingAlertBot:
         self.event_bus = EventBus(config=config)
         # Подключаем EventBus к TradingIntelligence (для wt_verdict_strong триггера)
         self.trading_intelligence._event_bus = self.event_bus
+        # Куб: PairContextBus → TradingIntelligence (NarrativeBuilder + wt_verdict persist)
+        self.trading_intelligence._pair_context_bus = self.pair_context
+        # ARCH-72: Feedback Loop — PostTradeAnalyser получает доступ к intelligence + event_bus
+        self.post_analyser._intelligence = self.trading_intelligence
+        self.post_analyser._event_bus = self.event_bus
 
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
         self.ws_feed = WsFeed(

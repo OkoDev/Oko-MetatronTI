@@ -1756,6 +1756,19 @@ class TradingIntelligence:
             recommendation.metadata["decision_trace"] = trace.to_dict()
             logger.debug("[decision_trace] %s", trace.summary())
 
+            # Куб: персистируем wt_verdict + reversal_mode в PairContextBus
+            _pcb = getattr(self, '_pair_context_bus', None)
+            if _pcb is not None:
+                _pcb_updates = {}
+                _wt_v_pcb = (recommendation.metadata or {}).get("wt_verdict")
+                if _wt_v_pcb:
+                    _pcb_updates["wt_verdict"] = _wt_v_pcb.get("label")
+                _rm_pcb = (recommendation.metadata or {}).get("reversal_mode")
+                if _rm_pcb:
+                    _pcb_updates["reversal_mode"] = _rm_pcb
+                if _pcb_updates:
+                    _pcb.update(symbol, **_pcb_updates)
+
             # Кэшируем результат
             self._cache_analysis(symbol, recommendation)
             
