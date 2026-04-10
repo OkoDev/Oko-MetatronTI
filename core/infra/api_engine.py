@@ -256,6 +256,8 @@ class ApiEngine:
             self._cb.record_failure()
             if not fut.done():
                 fut.set_exception(exc)
+                # Подавляем "Future exception was never retrieved" если нет waiters
+                fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
             return None
         finally:
             self._in_flight.pop(dedup_key, None)

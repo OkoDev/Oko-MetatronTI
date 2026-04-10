@@ -1,25 +1,17 @@
 """
 LIQUIDITY_SWEEP detector (DEV-82).
 
-Паттерн "sweep and reverse":
-  LONG:  Последний бар пробил swing_low (low < sweep_level),
-         но закрылся обратно выше (close > sweep_level),
-         + WT1 в OS зоне (<-40).
-         → Стопы лонгистов собраны, разворот вверх.
+Логика сигнала:
+  LONG  -> последний 1h-бар снимает значимую sell-side ликвидность
+           и закрывается обратно выше уровня.
+  SHORT -> последний 1h-бар снимает значимую buy-side ликвидность
+           и закрывается обратно ниже уровня.
 
-  SHORT: Последний бар пробил swing_high (high > sweep_level),
-         но закрылся ниже (close < sweep_level),
-         + WT1 в OB зоне (>+40).
-         → Стопы шортистов собраны, разворот вниз.
-
-Уровни sweep:
-  1. Последний swing_low/high из detect_swing_points (period=5)
-  2. Weekly pivot S1/R1 из pivot_cache (если доступен)
-  Если совпадают (оба пробиты одним баром) → strength бонус +15
-
-Зависимости:
-  core/smc/swing_points.py  — detect_swing_points()
-  core/signals/signal_models — SignalData, SignalType
+Антишум-фильтры:
+  - не используем любой локальный swing сам по себе
+  - уровень должен быть либо кластером ликвидности с >= 2 swing'ами,
+    либо weekly pivot (W:S1/W:S2/W:R1/W:R2)
+  - sweep обязан иметь минимальную глубину прокола и возврата
 """
 from __future__ import annotations
 
@@ -33,15 +25,24 @@ from core.signals.signal_models import SignalData, SignalDirection, SignalType
 
 logger = logging.getLogger(__name__)
 
-_WT_OS = -40.0
-_WT_OB = 40.0
-_MIN_BARS = 50           # DEV-82 v2: минимум баров (было 30 → 50 для 1h свингов)
-_LOOKBACK_SWING = 2      # сколько последних свингов проверять
-_PIVOT_BONUS = 15        # бонус если sweep совпал с pivot уровнем
+_WT_OS = -50.0
+_WT_OB = 50.0
+_MIN_BARS = 120
+_PIVOT_BONUS = 15
+_MIN_CLUSTER_SWINGS = 2
+_LIQ_CLUSTER_TOLERANCE_PCT = 0.3
+_MIN_SWEEP_DEPTH_PCT = 0.12
+_MIN_RECLAIM_PCT = 0.05
 
 
 def _has_wt(df: pd.DataFrame) -> bool:
     return "wt1" in df.columns and "wt2" in df.columns
+
+
+def _pct_distance(a: float, b: float) -> float:
+    if not a:
+        return 0.0
+    return abs(a - b) / a * 100.0
 
 
 def _find_sweep_level_and_direction(
@@ -50,68 +51,90 @@ def _find_sweep_level_and_direction(
     symbol: str,
 ) -> tuple[Optional[float], Optional[str], bool]:
     """
-    Ищет уровень sweep на последнем баре.
+    Ищет значимый уровень sweep на последнем баре.
 
     Returns:
         (sweep_level, direction, pivot_bonus)
-        direction: "LONG" (swept sell-side) или "SHORT" (swept buy-side)
-        pivot_bonus: True если уровень совпадает с Weekly S1/R1
     """
     last = df.iloc[-1]
-    bar_low  = float(last["low"])
+    bar_low = float(last["low"])
     bar_high = float(last["high"])
     bar_close = float(last["close"])
 
-    sweep_level = None
-    direction = None
-    pivot_bonus = False
-
-    # 1. Swing points analysis
     try:
+        from core.smc.liquidity import detect_liquidity
         from core.smc.swing_points import detect_swing_points
-        sa = detect_swing_points(df.iloc[:-1], period=10)  # DEV-82 v2: 5→10 для 1h значимых свингов
-    except Exception as e:
-        logger.debug("[LIQSWEEP] %s swing_points error: %s", symbol, e)
+
+        history_df = df.iloc[:-1]
+        swings = detect_swing_points(history_df, period=10)
+        liquidity = detect_liquidity(
+            history_df,
+            swings,
+            cluster_tolerance_pct=_LIQ_CLUSTER_TOLERANCE_PCT,
+            track_sweeps=True,
+        )
+    except Exception as exc:
+        logger.debug("[LIQSWEEP] %s ошибка анализа ликвидности: %s", symbol, exc)
         return None, None, False
 
-    # LONG: last bar swept a recent swing_low
-    if sa.lows:
-        recent_lows = sorted(sa.lows, key=lambda x: x.index, reverse=True)[:_LOOKBACK_SWING]
-        for sp in recent_lows:
-            lvl = sp.value
-            if bar_low < lvl and bar_close > lvl:
-                # Sweep confirmed: проткнули ниже, закрылись выше
-                sweep_level = lvl
-                direction = "LONG"
-                break
+    candidate_long: Optional[float] = None
+    for zone in reversed(liquidity.sell_side):
+        if zone.swept or zone.swing_count < _MIN_CLUSTER_SWINGS:
+            continue
+        if bar_low >= zone.zone_bottom or bar_close <= zone.level:
+            continue
 
-    # SHORT: last bar swept a recent swing_high
-    if direction is None and sa.highs:
-        recent_highs = sorted(sa.highs, key=lambda x: x.index, reverse=True)[:_LOOKBACK_SWING]
-        for sp in recent_highs:
-            lvl = sp.value
-            if bar_high > lvl and bar_close < lvl:
-                sweep_level = lvl
-                direction = "SHORT"
-                break
+        depth_pct = (zone.level - bar_low) / zone.level * 100
+        reclaim_pct = (bar_close - zone.level) / zone.level * 100
+        if depth_pct >= _MIN_SWEEP_DEPTH_PCT and reclaim_pct >= _MIN_RECLAIM_PCT:
+            candidate_long = zone.level
+            break
 
-    if sweep_level is None:
-        return None, None, False
+    candidate_short: Optional[float] = None
+    for zone in reversed(liquidity.buy_side):
+        if zone.swept or zone.swing_count < _MIN_CLUSTER_SWINGS:
+            continue
+        if bar_high <= zone.zone_top or bar_close >= zone.level:
+            continue
 
-    # 2. Проверка совпадения с pivot (бонус)
+        depth_pct = (bar_high - zone.level) / zone.level * 100
+        reclaim_pct = (zone.level - bar_close) / zone.level * 100
+        if depth_pct >= _MIN_SWEEP_DEPTH_PCT and reclaim_pct >= _MIN_RECLAIM_PCT:
+            candidate_short = zone.level
+            break
+
     try:
-        _piv = pivot_cache.get(symbol, {})
-        # Weekly pivots: W:S1, W:S2 для LONG; W:R1, W:R2 для SHORT
-        _piv_keys = ["W:S1", "W:S2"] if direction == "LONG" else ["W:R1", "W:R2"]
-        for _pk in _piv_keys:
-            _pv = _piv.get(_pk)
-            if _pv and abs(sweep_level - _pv) / _pv < 0.005:  # ±0.5%
-                pivot_bonus = True
-                break
+        pivots = pivot_cache.get(symbol, {})
+        long_pivot = next(
+            (
+                float(pv) for key in ("W:S1", "W:S2")
+                if (pv := pivots.get(key)) and bar_low < float(pv) < bar_close
+            ),
+            None,
+        )
+        short_pivot = next(
+            (
+                float(pv) for key in ("W:R1", "W:R2")
+                if (pv := pivots.get(key)) and bar_high > float(pv) > bar_close
+            ),
+            None,
+        )
     except Exception:
-        pass
+        long_pivot = None
+        short_pivot = None
 
-    return sweep_level, direction, pivot_bonus
+    if candidate_long is not None:
+        pivot_bonus = long_pivot is not None and _pct_distance(candidate_long, long_pivot) <= 0.5
+        return candidate_long, "LONG", pivot_bonus
+    if candidate_short is not None:
+        pivot_bonus = short_pivot is not None and _pct_distance(candidate_short, short_pivot) <= 0.5
+        return candidate_short, "SHORT", pivot_bonus
+    if long_pivot is not None:
+        return long_pivot, "LONG", True
+    if short_pivot is not None:
+        return short_pivot, "SHORT", True
+
+    return None, None, False
 
 
 def detect_liquidity_sweep(
@@ -120,54 +143,38 @@ def detect_liquidity_sweep(
     pivot_cache: Optional[dict] = None,
     cfg=None,
 ) -> Optional[SignalData]:
-    """
-    Детектор паттерна Liquidity Sweep (DEV-82).
-
-    Args:
-        symbol:       тикер пары
-        df:           OHLCV DataFrame с pre-computed wt1/wt2 (если нет — вычисляются внутри)
-        pivot_cache:  словарь pivot уровней {symbol: {"W:S1": ..., ...}}
-        cfg:          config объект (опционально)
-
-    Returns:
-        SignalData или None.
-    """
     if df is None or len(df) < _MIN_BARS:
         return None
 
     if pivot_cache is None:
         pivot_cache = {}
 
-    # Проверка WT
     if not _has_wt(df):
         try:
             from core.indicators import calculate_wt
+
             df = calculate_wt(df)
         except Exception:
             logger.debug("[LIQSWEEP] %s: не удалось вычислить WT", symbol)
             return None
 
     wt1_last = float(df["wt1"].iloc[-1])
-
-    # Найти sweep уровень
     sweep_level, direction, pivot_bonus = _find_sweep_level_and_direction(df, pivot_cache, symbol)
     if sweep_level is None or direction is None:
         return None
 
-    # Фильтр WT зоны
     if direction == "LONG" and wt1_last >= _WT_OS:
         return None
     if direction == "SHORT" and wt1_last <= _WT_OB:
         return None
 
-    # Strength: чем глубже вынос + чем ниже WT → тем сильнее
-    bar_low   = float(df["low"].iloc[-1])
-    bar_high  = float(df["high"].iloc[-1])
+    bar_low = float(df["low"].iloc[-1])
+    bar_high = float(df["high"].iloc[-1])
     bar_close = float(df["close"].iloc[-1])
 
     if direction == "LONG":
         sweep_depth_pct = (sweep_level - bar_low) / sweep_level * 100
-        wt_bonus = max(0, int((-wt1_last - 40) / 2))   # WT ниже -40 → бонус
+        wt_bonus = max(0, int((-wt1_last - 40) / 2))
     else:
         sweep_depth_pct = (bar_high - sweep_level) / sweep_level * 100
         wt_bonus = max(0, int((wt1_last - 40) / 2))
@@ -181,7 +188,13 @@ def detect_liquidity_sweep(
 
     logger.info(
         "[DEV-82-LIQSWEEP] %s dir=%s sweep_lvl=%.6f close=%.6f wt1=%.1f pivot_bonus=%s str=%d",
-        symbol, direction, sweep_level, bar_close, wt1_last, pivot_bonus, strength,
+        symbol,
+        direction,
+        sweep_level,
+        bar_close,
+        wt1_last,
+        pivot_bonus,
+        strength,
     )
 
     return SignalData(
@@ -189,9 +202,9 @@ def detect_liquidity_sweep(
         signal_type=SignalType.LIQUIDITY_SWEEP,
         direction=sig_dir,
         strength=strength,
-        confidence=0.58 + (0.07 if pivot_bonus else 0),
+        confidence=0.58 + (0.07 if pivot_bonus else 0.0),
         timestamp=datetime.now(timezone.utc),
-        timeframe="1h",   # DEV-82 v2: детектор работает на 1h данных
+        timeframe="1h",
         entry_price=bar_close,
         data={
             "sweep_level": sweep_level,
@@ -201,7 +214,7 @@ def detect_liquidity_sweep(
         },
         description=f"Sweep {'sell-side' if direction == 'LONG' else 'buy-side'} @ {sweep_level:.6g}",
         interpretation=(
-            f"Вынос стопов {'лонгистов' if direction == 'LONG' else 'шортистов'} "
-            f"за уровень {sweep_level:.6g} — разворот {'вверх' if direction == 'LONG' else 'вниз'}"
+            f"Снятие {'sell-side' if direction == 'LONG' else 'buy-side'} ликвидности "
+            f"в районе {sweep_level:.6g} с разворотом {'вверх' if direction == 'LONG' else 'вниз'}"
         ),
     )

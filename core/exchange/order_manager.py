@@ -65,11 +65,22 @@ class OrderManager:
     async def get_available_balance(self) -> float:
         if not self.is_live():
             return float(self._cfg.get("trading.deposit_usdt", 1000.0))
+        fallback = float(self._cfg.get("trading.deposit_usdt", 1000.0))
         try:
-            return await (await self._get_client_synced()).get_balance()
+            raw_balance = await (await self._get_client_synced()).get_balance()
+            if raw_balance is None:
+                logger.warning("[OrderManager] get_balance unavailable, fallback to config deposit %.2f",
+                               fallback)
+                return fallback
+            balance = float(raw_balance)
+            if math.isfinite(balance) and balance >= 0:
+                return balance
+            logger.warning("[OrderManager] get_balance returned non-finite %.8f, fallback to config deposit %.2f",
+                           balance, fallback)
+            return fallback
         except Exception as e:
             logger.warning("[OrderManager] get_balance error: %s", e)
-            return float(self._cfg.get("trading.deposit_usdt", 1000.0))
+            return fallback
 
     async def get_exchange_snapshot(self) -> dict:
         """Возвращает баланс + позиции с биржи (для /api/live дашборда).
@@ -286,8 +297,28 @@ class OrderManager:
                 stop_price=sl_price, qty=qty_floor,
             )
             if resp.get("code", -1) != 0:
+                msg = resp.get("msg", "")
+                # "order size must be less than available amount X TOKEN"
+                # → реальный qty с биржи отличается от сохранённого (частичное закрытие / округление)
+                if "must be less than the available amount" in msg:
+                    real_qty = await self.get_position_qty(symbol, pos_side)
+                    if real_qty and real_qty > 0:
+                        qty_retry = math.floor(real_qty * 100) / 100
+                        logger.info(
+                            "[OrderManager] place_sl_order %s: qty mismatch (%.4f→%.4f), retry",
+                            symbol, qty_floor, qty_retry,
+                        )
+                        resp = await (await self._get_client_synced()).place_stop_order(
+                            symbol=symbol, side=side, pos_side=pos_side.upper(),
+                            stop_price=sl_price, qty=qty_retry,
+                        )
+                        if resp.get("code", -1) == 0:
+                            oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+                            logger.info("[OrderManager] ✅ новый SL %s %s sl=%.6f order_id=%s (retry qty)",
+                                        symbol, pos_side, sl_price, oid)
+                            return oid or None
                 logger.warning("[OrderManager] place_sl_order %s %s sl=%.6f: %s",
-                               symbol, pos_side, sl_price, resp.get("msg", resp))
+                               symbol, pos_side, sl_price, msg or resp)
                 return None
             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
             logger.info("[OrderManager] ✅ новый SL %s %s sl=%.6f order_id=%s",

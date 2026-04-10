@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -126,7 +127,20 @@ class BingXClient:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers={"X-BX-APIKEY": self._api_key},
                              timeout=aiohttp.ClientTimeout(total=10)) as r:
-                return await r.json()
+                resp = await r.json()
+        # DEV-145 авто-ресинхронизация: при timestamp drift ресинхронизируем и ретраим
+        if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
+            logger.warning("[BingXClient] timestamp is invalid — ресинхронизация и retry")
+            await self.sync_time()
+            p["timestamp"] = self._ts()
+            qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
+            sig2 = self._sign(qs2)
+            url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url2, headers={"X-BX-APIKEY": self._api_key},
+                                 timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    resp = await r.json()
+        return resp
 
     async def post(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
@@ -164,21 +178,45 @@ class BingXClient:
 
     # ── Высокоуровневые методы ──────────────────────────────────────────────
 
-    async def get_balance(self) -> float:
+    async def get_balance(self) -> Optional[float]:
         """Возвращает availableMargin (VST или USDT)."""
         resp = await self.get("/openApi/swap/v2/user/balance")
-        try:
-            return float(resp["data"]["balance"]["availableMargin"])
-        except Exception:
-            logger.warning("[BingXClient] get_balance parse error: %s", resp)
-            return 0.0
+        if resp.get("code") != 0:
+            if "timestamp is invalid" in str(resp.get("msg", "")).lower():
+                logger.warning("[BingXClient] get_balance timestamp invalid, resync and retry")
+                await self.sync_time()
+                resp = await self.get("/openApi/swap/v2/user/balance")
+            if resp.get("code") != 0:
+                logger.warning("[BingXClient] get_balance error: %s", resp)
+                return None
+
+        balance = resp.get("data", {}).get("balance", {}) or {}
+        for key in ("availableMargin", "availableBalance", "available", "balance"):
+            raw = balance.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
+
+        logger.warning("[BingXClient] get_balance parse error: %s", resp)
+        return None
 
     async def get_positions(self) -> list:
-        """Возвращает список открытых позиций."""
+        """Возвращает список открытых позиций.
+        ВАЖНО: при ошибке API бросает RuntimeError — вызывающий код обязан её поймать.
+        Возврат [] при ошибке недопустим: position_sync трактует это как "позиций нет"
+        и ложно закрывает все tracked сделки (инцидент 2026-04-07 21:47 UTC).
+        """
         resp = await self.get("/openApi/swap/v2/user/positions")
-        if resp.get("code") != 0:
+        code = resp.get("code")
+        if code != 0:
+            msg = resp.get("msg", "unknown")
             logger.warning("[BingXClient] get_positions error: %s", resp)
-            return []
+            raise RuntimeError(f"get_positions API error code={code} msg={msg}")
         return resp.get("data", []) or []
 
     async def get_open_orders(self, symbol: str | None = None) -> list:
@@ -262,14 +300,20 @@ class BingXClient:
         bx_symbol  = symbol.replace("/", "-").replace(":USDT", "")
         close_side = "SELL" if side == "BUY" else "BUY"
         pos_side   = "LONG" if side == "BUY" else "SHORT"
-        return await self.post("/openApi/swap/v2/trade/order", {
+        payload = {
             "symbol":       bx_symbol,
             "side":         close_side,
             "positionSide": pos_side,
             "type":         "MARKET",
             "quantity":     str(qty),
             "reduceOnly":   "true",
-        })
+        }
+        resp = await self.post("/openApi/swap/v2/trade/order", payload)
+        msg = str(resp.get("msg", ""))
+        if resp.get("code") == 109400 and "ReduceOnly" in msg and "Hedge mode" in msg:
+            payload.pop("reduceOnly", None)
+            return await self.post("/openApi/swap/v2/trade/order", payload)
+        return resp
 
 
 # ── Фабрика клиента ─────────────────────────────────────────────────────────

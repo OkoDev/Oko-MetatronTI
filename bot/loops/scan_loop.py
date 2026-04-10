@@ -466,20 +466,37 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             snapshot_time = datetime.now()
             t_enter = _time.monotonic()
             try:
-                # Параллельная загрузка всех TF (limit из конфига для cache-hit в detect_divergence)
-                # Multi-TF: загружаем все entry TF + вспомогательные (1h, 3m)
-                _fetch_tasks = [bot.data_collector.get_ohlcv(sym, tf, limit=_ohlcv_limit) for tf in _entry_tfs]
-                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "1h", limit=_ohlcv_limit))
-                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "3m", limit=100))
-                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "4h", limit=60))
-                _fetch_tasks.append(bot.data_collector.get_ohlcv(sym, "1d", limit=60))
-                _fetched = await asyncio.gather(*_fetch_tasks)
-                # Распаковка: entry TF dataframes + 1h + 3m + 4h + 1d
-                _entry_dfs = {tf: _fetched[i] for i, tf in enumerate(_entry_tfs)}
-                df_1h = _fetched[-4]
-                df_3m = _fetched[-3]
-                df_4h = _fetched[-2]
-                df_1d = _fetched[-1]
+                # Горячий путь: грузим только TF, которые реально нужны самому scan_loop.
+                # 3m/1d оставляем ленивыми — они нужны в analyze_symbol только для пар с сигналом.
+                _fetch_plan: list[tuple[str, int]] = []
+                _seen_fetches: set[tuple[str, int]] = set()
+
+                def _add_fetch(tf: str, limit: int) -> None:
+                    key = (tf, limit)
+                    if key not in _seen_fetches:
+                        _seen_fetches.add(key)
+                        _fetch_plan.append(key)
+
+                for tf in _entry_tfs:
+                    _add_fetch(tf, _ohlcv_limit)
+                _add_fetch("1h", _ohlcv_limit)
+                _add_fetch("4h", 60)
+
+                _fetched = await asyncio.gather(*[
+                    bot.data_collector.get_ohlcv(sym, tf, limit=limit)
+                    for tf, limit in _fetch_plan
+                ])
+                _fetched_map = {
+                    (tf, limit): df for (tf, limit), df in zip(_fetch_plan, _fetched)
+                }
+                _entry_dfs = {
+                    tf: _fetched_map.get((tf, _ohlcv_limit))
+                    for tf in _entry_tfs
+                }
+                df_1h = _fetched_map.get(("1h", _ohlcv_limit))
+                df_4h = _fetched_map.get(("4h", 60))
+                df_3m = None
+                df_1d = None
                 # Primary entry для совместимости (используется в divergence, confluence, etc.)
                 _primary = _entry_dfs.get(_etf)
                 df_entry = _primary if _primary is not None else next((v for v in _entry_dfs.values() if v is not None), None)
@@ -873,12 +890,19 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         # pre_signals передаём только в первый broadcast — analyze_symbol закеширует результат
         pre = all_scan_signals if all_scan_signals else None
         # Передаём все уже загруженные df — analyze_symbol использует их напрямую (нет повторных fetch)
+        if signals_to_broadcast:
+            # Ленивая догрузка: дорогие 3m/1d нужны только для дальнейшего intelligence-анализа.
+            if df_3m is None:
+                df_3m = await bot.data_collector.get_ohlcv(sym, "3m", limit=100)
+            if df_1d is None:
+                df_1d = await bot.data_collector.get_ohlcv(sym, "1d", limit=60)
+
         _pre_dfs = {
-            _etf:  df_entry,
-            "1h":  df_1h,
-            "3m":  df_3m,
-            "4h":  df_4h,
-            "1d":  df_1d,
+            _etf: df_entry,
+            "1h": df_1h,
+            "3m": df_3m,
+            "4h": df_4h,
+            "1d": df_1d,
         }
         # DEV-118: выбираем ОДИН лучший сигнал на пару за цикл.
         # Все сигналы остаются в pre_signals как контекст для analyze_symbol.

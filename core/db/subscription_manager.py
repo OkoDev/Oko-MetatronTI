@@ -3,6 +3,7 @@
 """
 import sqlite3
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from enum import Enum
@@ -23,13 +24,17 @@ class SubscriptionManager:
         self.db_path = db_path
         self.init_database()
     
+    def _db_connect(self, timeout: int = 30):
+        """DEV-148: единое место для настройки соединения — busy_timeout на каждом connect."""
+        conn = sqlite3.connect(self.db_path, timeout=timeout)
+        conn.execute("PRAGMA busy_timeout=10000")
+        return conn
+
     def init_database(self):
         """Создает таблицы в базе данных"""
-        with sqlite3.connect(self.db_path) as conn:
-            # DEV-148: WAL mode — параллельные читатели не блокируют писателей;
-            # busy_timeout — ждать до 10 сек вместо немедленного OperationalError
+        with self._db_connect() as conn:
+            # WAL mode — параллельные читатели не блокируют писателей
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=10000")
             cursor = conn.cursor()
             
             # Таблица пользователей
@@ -153,10 +158,10 @@ class SubscriptionManager:
                  first_name: str = None, last_name: str = None):
         """Добавляет пользователя в базу"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO users 
+                    INSERT OR REPLACE INTO users
                     (user_id, username, first_name, last_name)
                     VALUES (?, ?, ?, ?)
                 """, (user_id, username, first_name, last_name))
@@ -168,7 +173,7 @@ class SubscriptionManager:
     def get_user_subscription(self, user_id: int) -> Optional[Dict]:
         """Получает активную подписку пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT tier, start_date, end_date, is_active
@@ -198,9 +203,9 @@ class SubscriptionManager:
             start_date = datetime.now()
             end_date = start_date + timedelta(days=duration_days)
             
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 cursor = conn.cursor()
-                
+
                 # Деактивируем старые подписки
                 cursor.execute("""
                     UPDATE subscriptions 
@@ -247,7 +252,7 @@ class SubscriptionManager:
         """Получает количество сигналов за сегодня"""
         try:
             today = datetime.now().date()
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT COUNT(*) FROM signal_stats
@@ -287,16 +292,27 @@ class SubscriptionManager:
 
     def record_signal_sent(self, user_id: int, signal_type: str):
         """Записывает отправленный сигнал"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO signal_stats (user_id, signal_type)
-                    VALUES (?, ?)
-                """, (user_id, signal_type))
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Ошибка записи сигнала {user_id}: {e}")
+        retries = 4
+        delay_sec = 0.15
+        for attempt in range(retries):
+            try:
+                with self._db_connect() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO signal_stats (user_id, signal_type)
+                        VALUES (?, ?)
+                    """, (user_id, signal_type))
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e).lower() and attempt < retries - 1:
+                    time.sleep(delay_sec * (attempt + 1))
+                    continue
+                logger.error(f"Ошибка записи сигнала {user_id}: {e}")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка записи сигнала {user_id}: {e}")
+                return
     
     def get_subscription_info(self, user_id: int) -> Dict:
         """Получает информацию о подписке для отображения"""

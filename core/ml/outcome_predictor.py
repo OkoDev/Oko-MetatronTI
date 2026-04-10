@@ -45,6 +45,9 @@ except ImportError:
     logger.warning("OutcomePredictor: sklearn не установлен — predict_win_prob вернёт None")
 
 
+_REVERSAL_MODE_ORDER = ["TREND", "REVERSAL", "UNCLEAR"]
+
+
 def _build_feature_vector(
     signal_type: str,
     direction: str,
@@ -53,7 +56,21 @@ def _build_feature_vector(
     features_dict: Dict[str, Any],
     regime: Optional[str],
 ) -> List[float]:
-    """Строит вектор из 16 признаков."""
+    """Строит вектор из 23 признаков (DEV-149: +7 новых).
+
+    1-2:   strength, confidence
+    3:     direction (LONG=1)
+    4-10:  signal_type one-hot (7 типов)
+    11:    volatility
+    12:    price_change_24h
+    13-16: regime one-hot (4 типа)
+    — новые (DEV-149) —
+    17:    distance_to_sl_pct (запас до SL, %)
+    18:    sl_atr_ratio (SL в единицах ATR)
+    19:    wt1_15m (WT1 на 15m из wt_snap)
+    20:    wt2_15m (WT2 на 15m из wt_snap)
+    21-23: reversal_mode one-hot (TREND/REVERSAL/UNCLEAR)
+    """
     # 1-2: strength, confidence
     v = [
         min(max((strength or 50.0) / 100.0, 0.0), 1.0),
@@ -61,16 +78,35 @@ def _build_feature_vector(
     ]
     # 3: direction one-hot (LONG=1, SHORT=0)
     v.append(1.0 if str(direction).upper() == "LONG" else 0.0)
-    # 4-6: signal_type one-hot
+    # 4-10: signal_type one-hot
     v += [1.0 if signal_type == s else 0.0 for s in _SIG_ORDER]
-    # 7: volatility (normalized)
+    # 11: volatility (normalized)
     vol = features_dict.get("volatility") or 0.0
     v.append(min(float(vol) / 100.0, 3.0))
-    # 8: price_change_24h (normalized)
+    # 12: price_change_24h (normalized)
     pc = features_dict.get("price_change_24h") or 0.0
     v.append(min(max(float(pc) / 10.0, -3.0), 3.0))
-    # 9-12: regime one-hot
+    # 13-16: regime one-hot
     v += [1.0 if (regime or "") == r else 0.0 for r in _REGIME_ORDER]
+
+    # DEV-149: новые фичи — дифференцирование winners/losers
+    # 17: distance_to_sl_pct (маленький → хуже, > 5% нормируем)
+    dist_sl = features_dict.get("distance_to_sl_pct") or 0.0
+    v.append(min(float(dist_sl) / 5.0, 3.0))
+    # 18: sl_atr_ratio (широкий SL → нестабильно; > 3 ATR нормируем)
+    sl_atr = features_dict.get("sl_atr_ratio") or 0.0
+    v.append(min(float(sl_atr) / 3.0, 3.0))
+    # 19-20: wt1_15m, wt2_15m из wt_snap["15m"]
+    wt_snap = features_dict.get("wt_snap") or {}
+    wt_15m = wt_snap.get("15m") or {} if isinstance(wt_snap, dict) else {}
+    wt1 = wt_15m.get("wt1") if isinstance(wt_15m, dict) else None
+    wt2 = wt_15m.get("wt2") if isinstance(wt_15m, dict) else None
+    v.append(min(max(float(wt1) / 100.0, -2.0), 2.0) if wt1 is not None else 0.0)
+    v.append(min(max(float(wt2) / 100.0, -2.0), 2.0) if wt2 is not None else 0.0)
+    # 21-23: reversal_mode one-hot
+    rev_mode = (features_dict.get("reversal_mode") or "").upper()
+    v += [1.0 if rev_mode == m else 0.0 for m in _REVERSAL_MODE_ORDER]
+
     return v
 
 
@@ -83,7 +119,7 @@ class OutcomePredictor:
     def __init__(self):
         self._model = None
         self._trained = False
-        self._n_features = 16
+        self._n_features = 23  # DEV-149: +7 новых фич
         self._n_samples = 0
         self._cv_score: Optional[float] = None
         # DEV-12 (8.4.7): Confidence Calibrator

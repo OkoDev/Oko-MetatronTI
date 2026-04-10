@@ -48,7 +48,7 @@ _PROMPT_TEMPLATE = """\
 КОНТЕКСТ РЕШЕНИЯ:
 {context_block}
 
-Ответь 2–4 предложениями на русском языке. Только факты из контекста, без домыслов.\
+Ответь кратко как трейдер 2–3 предложениями на русском языке. Только факты из контекста, без домыслов.\
 """
 
 
@@ -244,6 +244,92 @@ class TradeAnalyzer:
 
         except Exception as e:
             logger.warning("TradeAnalyzer.analyze_sl_trade(%d): %s", trade_id, e)
+            return None
+
+    # ------------------------------------------------------------------
+    async def analyze_signal(self, recommendation: object) -> Optional[str]:
+        """DEV-151: Groq-комментарий к новому сигналу перед отправкой в TG.
+
+        Возвращает 1-3 предложения анализа или None если LLM недоступен.
+        """
+        if not self._enabled or self._client is None:
+            return None
+        try:
+            from core.signal_models import TradingRecommendation
+            symbol    = getattr(recommendation, "symbol", "?")
+            direction = str(getattr(recommendation, "direction", "?"))
+            if hasattr(recommendation.direction, "value"):
+                direction = recommendation.direction.value
+            signal_type = getattr(recommendation, "signal_type", "?")
+            if hasattr(signal_type, "value"):
+                signal_type = signal_type.value
+            strength   = getattr(recommendation, "overall_strength", 0)
+            confidence = float(getattr(recommendation, "confidence", 0) or 0)
+            action     = getattr(recommendation, "action", "?")
+            meta       = getattr(recommendation, "metadata", {}) or {}
+
+            # Контекст из metadata
+            ctx_lines = []
+            regime = meta.get("regime") or meta.get("market_regime")
+            if regime:
+                ctx_lines.append(f"Режим рынка: {regime}")
+            rev_mode = meta.get("reversal_mode")
+            if rev_mode:
+                ctx_lines.append(f"Сценарий: {rev_mode}")
+            mtf = meta.get("mtf_context") or {}
+            if isinstance(mtf, dict) and mtf.get("direction_bias"):
+                ctx_lines.append(
+                    f"MTF bias: {mtf.get('direction_bias')} ({mtf.get('aligned_pct', '?')}% TF согласовано)"
+                )
+            smc = meta.get("smc_context") or {}
+            if isinstance(smc, dict):
+                if smc.get("smc_has_bos"):
+                    ctx_lines.append("SMC: BOS подтверждён")
+                if smc.get("smc_ob_active"):
+                    ctx_lines.append("SMC: Order Block активен")
+                if smc.get("smc_fvg_active"):
+                    ctx_lines.append("SMC: FVG активна")
+            wt_verdict = meta.get("wt_verdict") or {}
+            if isinstance(wt_verdict, dict) and wt_verdict.get("label"):
+                ctx_lines.append(
+                    f"WT Verdict: {wt_verdict.get('label')} (conf={wt_verdict.get('confidence', 0):.2f})"
+                )
+            sl  = getattr(recommendation, "stop_loss", None)
+            tp  = getattr(recommendation, "take_profit", None)
+            ep  = getattr(recommendation, "entry_price", None)
+            if ep and sl and tp and float(ep) > 0:
+                rr = abs(float(tp) - float(ep)) / max(abs(float(ep) - float(sl)), 1e-9)
+                ctx_lines.append(f"RR при входе: {rr:.2f}")
+
+            ctx_block = "\n".join(ctx_lines) if ctx_lines else "Нет дополнительного контекста"
+
+            prompt = (
+                f"Ты — аналитик торгового бота по крипторынку. Оцени новый торговый сигнал.\n\n"
+                f"СИГНАЛ:\n"
+                f"  Символ:      {symbol}\n"
+                f"  Действие:    {action} ({direction})\n"
+                f"  Тип:         {signal_type}\n"
+                f"  Сила:        {strength:.0f}%  confidence={confidence:.2f}\n\n"
+                f"КОНТЕКСТ:\n{ctx_block}\n\n"
+                f"Ответь 1–2 предложениями на русском: стоит ли доверять этому сигналу "
+                f"и на что обратить внимание. Без воды, только факты."
+            )
+
+            if self._provider == "anthropic":
+                response = await self._client.messages.create(
+                    model=self._model, max_tokens=150,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.content[0].text.strip()
+            else:
+                response = await self._client.chat.completions.create(
+                    model=self._model, max_tokens=150,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            logger.warning("TradeAnalyzer.analyze_signal: %s", e)
             return None
 
     def _save_analysis(self, trade_id: int, analysis: str, prompt_tokens: Optional[int]) -> None:
