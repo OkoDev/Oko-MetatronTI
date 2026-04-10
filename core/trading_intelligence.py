@@ -472,10 +472,13 @@ class TradingIntelligence:
         self.analysis_cache[symbol] = (datetime.now(), recommendation)
         
     async def analyze_symbol(self, symbol: str, pre_collected_signals=None, manual_request: bool = False,
-                             pre_fetched_dfs: Optional[Dict[str, Any]] = None) -> Optional[TradingRecommendation]:
+                             pre_fetched_dfs: Optional[Dict[str, Any]] = None,
+                             extra_pre_signals=None) -> Optional[TradingRecommendation]:
         """
         Комплексный анализ символа и генерация рекомендации.
         pre_collected_signals — если переданы, пропускает _collect_all_signals (экономит API-вызовы).
+        extra_pre_signals     — дополнительные сигналы (напр. дивергенции из Full CALL),
+                                добавляются ПОСЛЕ _collect_all_signals (не заменяют его).
         manual_request — ручной запрос пользователя: смягчаем фильтры, чтобы показать хоть что-то.
         """
         import asyncio
@@ -528,6 +531,12 @@ class TradingIntelligence:
                     return None
                 logger.info(f"[manual] {symbol}: нет сигналов, но запрос ручной — показываем рыночный контекст")
                 signals = []
+
+            # ARCH-71: Inject дополнительных сигналов от Full CALL (дивергенции и др.)
+            if extra_pre_signals:
+                signals = list(signals) + list(extra_pre_signals)
+                logger.info("[%s] analyze_symbol: +%d extra_pre_signals (итого %d)",
+                            symbol, len(extra_pre_signals), len(signals))
 
             # Фильтруем сигналы по качеству
             filtered_signals = self._filter_signals_by_quality(signals)
@@ -948,7 +957,7 @@ class TradingIntelligence:
                             "label": _wt_verdict.label,
                             "confidence": round(_wt_verdict.confidence, 3),
                         }
-                        logger.debug(
+                        logger.info(
                             "[%s][DEV-138] wt_verdict=%s conf=%.3f",
                             symbol, _wt_verdict.label, _wt_verdict.confidence,
                         )

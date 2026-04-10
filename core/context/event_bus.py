@@ -25,7 +25,7 @@ import heapq
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger("event_bus")
 
@@ -40,6 +40,7 @@ EVENT_PRIORITY = {
     "ml_verdict":        3,
     "anomaly_volume":    4,
     "btc_macro":         4,
+    "trade_closed":      5,  # ARCH-72: Feedback Loop
 }
 
 
@@ -206,15 +207,109 @@ class EventBus:
 
 async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
     """
-    Full CALL: analyze_symbol → register_trade_async если actionable.
-    Копия логики из trigger_loop._fire_analysis() — единая точка.
+    ARCH-71: Real Full CALL — расширенный анализ на всех 6 TF.
+    trade_closed — feedback-событие, не запускает Full CALL (только NarrativeBuilder).
     """
+    # trade_closed: ARCH-72 Feedback Loop — обновляем веса и ML, не запускаем Full CALL
+    if event_type == "trade_closed":
+        try:
+            ti = getattr(bot, "trading_intelligence", None)
+            if ti is not None:
+                ti.update_signal_weights()
+                logger.info("[EventBus][ARCH-72] trade_closed %s → update_signal_weights OK", symbol)
+                # Раз в 10 закрытых сделок — переобучаем OutcomePredictor
+                _op = getattr(ti, "outcome_predictor", None)
+                if _op is not None:
+                    _closed_count = getattr(bot, "_eb_closed_count", 0) + 1
+                    bot._eb_closed_count = _closed_count
+                    if _closed_count % 10 == 0:
+                        import asyncio as _aio
+                        _aio.create_task(_aio.to_thread(_op.fit, ti._db_path))
+                        logger.info("[EventBus][ARCH-72] trade_closed → OutcomePredictor retrain (%d closed)", _closed_count)
+        except Exception as _e72:
+            logger.debug("[EventBus][ARCH-72] trade_closed feedback error: %s", _e72)
+        return
+
+    # ARCH-71: загружаем все 6 TF + дивергенции → analyze_symbol(pre_fetched_dfs)
+    # OTE swing/scalp и SMC на 4h/1d автоматически используют pre_fetched_dfs
     try:
+        t0 = asyncio.get_event_loop().time()
         logger.info("[EventBus] FIRE %s event=%s", symbol, event_type)
-        recommendation = await bot.trading_intelligence.analyze_symbol(symbol)
+
+        # ── 1. Загрузить все 6 TF параллельно ──────────────────────────────
+        _ALL_TFS = ["3m", "5m", "15m", "1h", "4h", "1d"]
+        _limits  = {"3m": 100, "5m": 100, "15m": 160, "1h": 160, "4h": 100, "1d": 100}
+        raw_dfs = await asyncio.gather(
+            *[bot.data_collector.get_ohlcv(symbol, tf, limit=_limits[tf]) for tf in _ALL_TFS],
+            return_exceptions=True,
+        )
+        pre_fetched_dfs: dict = {}
+        for tf, df in zip(_ALL_TFS, raw_dfs):
+            if not isinstance(df, Exception) and df is not None and not df.empty:
+                pre_fetched_dfs[tf] = df
+
+        tf_loaded = list(pre_fetched_dfs.keys())
+        logger.info(
+            "[EventBus] FIRE %s: TF загружены %s (%.2fs)",
+            symbol, tf_loaded, asyncio.get_event_loop().time() - t0,
+        )
+
+        # ── 2. Дивергенции на 15m / 1h / 4h → собираем как SignalData ──────
+        div_signals: List[Any] = []
+        div_detector = getattr(bot, "divergence_detector", None)
+        if div_detector is not None:
+            try:
+                from core.signals.signal_models import SignalData, SignalType, SignalDirection
+                _div_signal_type = SignalType.DIVERGENCE
+                _dir_map = {"LONG": SignalDirection.LONG, "SHORT": SignalDirection.SHORT}
+            except ImportError:
+                _div_signal_type = None
+
+            for _div_tf in ("15m", "1h", "4h"):
+                if _div_tf not in pre_fetched_dfs:
+                    continue
+                try:
+                    has_div, _div_info = await div_detector.detect_divergence(
+                        symbol, bot.data_collector, timeframe=_div_tf
+                    )
+                    if has_div and _div_info:
+                        logger.info(
+                            "[EventBus] FIRE %s: дивергенция на %s — %s",
+                            symbol, _div_tf, _div_info,
+                        )
+                        if _div_signal_type is not None:
+                            _str = min(int(_div_info.get("strength", 30)), 100)
+                            _dir_str = _div_info.get("direction", "LONG")
+                            _div_sig = SignalData(
+                                symbol=symbol,
+                                signal_type=_div_signal_type,
+                                direction=_dir_map.get(_dir_str, SignalDirection.NEUTRAL),
+                                strength=_str,
+                                confidence=round(0.55 + _str / 300, 3),  # 0.55..0.88
+                                timestamp=datetime.now(timezone.utc),
+                                data=_div_info,
+                                timeframe=_div_tf,
+                                description=_div_info.get("description", "Дивергенция"),
+                            )
+                            div_signals.append(_div_sig)
+                except Exception as _de:
+                    logger.debug("[EventBus] %s div %s: %s", symbol, _div_tf, _de)
+
+        # ── 3. analyze_symbol с pre_fetched_dfs + extra div сигналами ─────────
+        recommendation = await bot.trading_intelligence.analyze_symbol(
+            symbol,
+            pre_fetched_dfs=pre_fetched_dfs if pre_fetched_dfs else None,
+            extra_pre_signals=div_signals if div_signals else None,
+        )
+
+        elapsed = asyncio.get_event_loop().time() - t0
         if recommendation is None:
-            logger.info("[EventBus] %s event=%s -> analyze_symbol returned None", symbol, event_type)
+            logger.info(
+                "[EventBus] %s event=%s -> analyze_symbol returned None (%.2fs)",
+                symbol, event_type, elapsed,
+            )
             return
+
         action    = getattr(recommendation, "action", "WATCH")
         strength  = getattr(recommendation, "overall_strength", 0)
         direction = (
@@ -230,13 +325,13 @@ async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
             )
             if trade_id:
                 logger.info(
-                    "[EventBus] %s event=%s → trade_id=%d strength=%.0f",
-                    symbol, event_type, trade_id, strength,
+                    "[EventBus] %s event=%s → trade_id=%d strength=%.0f (%.2fs)",
+                    symbol, event_type, trade_id, strength, elapsed,
                 )
         else:
             logger.info(
-                "[EventBus] %s event=%s -> not actionable (action=%s dir=%s str=%.0f)",
-                symbol, event_type, action, direction, strength,
+                "[EventBus] %s event=%s -> not actionable (action=%s dir=%s str=%.0f %.2fs)",
+                symbol, event_type, action, direction, strength, elapsed,
             )
     except Exception as e:
         logger.warning("[EventBus] _fire_analysis %s event=%s: %s", symbol, event_type, e)

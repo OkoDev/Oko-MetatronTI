@@ -218,7 +218,7 @@ trading:
     shadow_mode: true
     block_short_in_uptrend: false
   verdict_gate:
-    enabled: false
+    enabled: true
     smc_block_confidence: 0.65
     wt_exhaustion_confidence: 0.65
     strength_boost: 5.0
