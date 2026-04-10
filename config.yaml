@@ -53,7 +53,7 @@ analysis:
     - MATIC
     - AVAX
   wt_b:
-    enabled: true
+    enabled: false  # DATA-10.04: WR<10%, avgR -0.7..-1.1R, все комбо убыточны
     div_min: 3.0
     div_max: 20.0
     lookback: 35
@@ -309,8 +309,11 @@ signal_quality:
         regime: TREND_DOWN
       - direction: SHORT
         regime: TREND_UP
+      # HIGH_VOL разблокирован: LONG +0.069R, ранее заблокирован ошибочно
       - direction: LONG
-        regime: HIGH_VOL
+        regime: TREND_UP    # DATA-10.04: -0.642R (58 сделок)
+      - direction: SHORT
+        regime: HIGH_VOL    # DATA-10.04: -0.955R (7 сделок)
     confluence:
       blocked_regimes: []
       blocked_combos:
@@ -319,11 +322,14 @@ signal_quality:
       - direction: SHORT
         regime: TREND_UP
       - direction: SHORT
-        regime: HIGH_VOL
+        regime: HIGH_VOL    # -1.237R (31 сделок) — оставляем
+      # LONG HIGH_VOL разблокирован: +0.482R (12 сделок)
       - direction: LONG
-        regime: HIGH_VOL
+        regime: TREND_UP    # -0.313R (62 сделки) — оставляем
       - direction: LONG
-        regime: TREND_UP
+        regime: RANGE       # DATA-10.04: -0.289R (97 сделок!)
+      - direction: SHORT
+        regime: RANGE       # DATA-10.04: -0.297R (64 сделки)
     wt_signal:
       blocked_regimes: []
       blocked_combos:
