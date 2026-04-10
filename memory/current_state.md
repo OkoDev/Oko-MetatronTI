@@ -4,6 +4,30 @@
 
 ---
 
+## [10.04.2026] Агент: TRADER — SQL-разбор + рекомендации (TR-001, DEV-153)
+- ✅ Ответил на DEV-153: 426 сделок с wt_snap (389 закрытых) — порог 200+ пройден, но рекомендую НЕ включать VerdictGate сейчас (рынок whipsaw)
+- ✅ Собрал WR benchmark: нейтральный период 01-03.04 = **38.7%** (vs 8.4% за 07-10.04)
+- ✅ Выявил критически убыточные комбо: `confluence SHORT HIGH_VOL` (-1.699 avgR), `confluence LONG RANGE` (-0.648)
+- ✅ 4 рекомендации в DISCUSSION.md: HIGH_VOL ограничить, LONG RANGE фильтр, circuit breaker, пороги DEV-149 не снижать
+- ✅ TR-007 отложен до 14.04 (рынок непоказательный)
+- ⚠️ WR=8.4% (07-10.04) — рыночный контекст (post-crash whipsaw), не баг кода
+- ⚠️ DEV-149 изменения (снижение порогов) — РЕКОМЕНДУЮ НЕ применять до WR>25% за 3 дня
+- ⚠️ HIGH_VOL: рассмотреть обратно `min_strength.HIGH_VOL: 85+` или `blocked_regimes`
+
+→ Ждём решения ARCH по рекомендациям B/C/D (DISCUSSION.md [10.04] TRADER)
+
+---
+
+## [10.04.2026] Агент: Architect — Ответ на аудит Куба + Position Sync решение
+- ✅ Ответил на DEV [10.04.2026] аудит Куба Метатрона — подтвердил выводы, расставил приоритеты
+- ✅ Принял решение по Position Sync: Вариант 1 (fail-closed) — создана DEV-154 🔴
+- ✅ Написал спек ARCH-71 (Real Full CALL) — deep_analyze_symbol() на всех 6 TF
+- ✅ Написал спек ARCH-72 (Feedback Loop) — close_trade → PairContextBus + weights + EventBus
+- ✅ Порядок: P0 (DEV-154) → P1 (DEV-152 рестарт) → P2 (ARCH-71) → P3 (ARCH-72) → P4 (DEV-153)
+- Записано в DISCUSSION.md и TASKS.md
+
+---
+
 ## [09.04.2026 ночь] Агент: Developer — DEV-149 разблокировка + TSL фиксы + Reversal Boost ✅
 
 **Контекст:** коллапс потока сделок (304/день → 3/день к 09.04), TSL на бирже зациклился, orphan-и не закрывались, развороты не ловились. План: `C:\Users\yogoru\.claude\plans\modular-imagining-tulip.md`.

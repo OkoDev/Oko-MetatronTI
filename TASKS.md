@@ -29,11 +29,14 @@
 | [DEV-144f](#dev-144f) | 🟢 | P6: Единый CSS — тёмная тема, виджет-карточки, responsive grid | DEV |
 | [DEV-117](#dev-117) | 🔵 | Dashboard P3: /performance + /pair/:symbol + SSE endpoint | DEV |
 | **VST / БИРЖА** | | | |
+| [DEV-154](#dev-154) | 🔴 | Position Sync fail-safe: get_positions error → skip cycle, не закрывать сделки | DEV |
 | [DEV-147](#dev-147) | ✅ | TSL SL накопление: update_sl() → cancel ALL open STOP_MARKET → place one | DEV |
-| [DEV-148](#dev-148) | ✅ | SQLite WAL mode + busy_timeout=10000 (database is locked фикс) | DEV |
-| [DEV-111act](#dev-111act) | 🟡 | BTC 4h gate shadow→production: активировать ~09.04 (7 дней WOULD_BLOCK с 02.04) | DEV |
+| [DEV-148](#dev-148) | 🔄 | SQLite WAL mode + busy_timeout=10000 — db locked на set_exchange_sl_order_id всё ещё есть | DEV |
+| [DEV-111b](#dev-111b) | 🟡 | BTC 4h gate: HIGH_VOL в условие блока LONG + лог режима при каждом вызове | DEV |
+| [DEV-111act](#dev-111act) | ⏸ | BTC 4h gate production: отложен до 14.04 (gate молчал при обвале — HIGH_VOL не блокировал) | DEV |
 | [DEV-104](#dev-104) | 🔵 | Dead-Man Timer: emergency close all (Слой 3 ARCH-65) — только перед LIVE | DEV |
 | **СТРАТЕГИЯ / СИГНАЛЫ** | | | |
+| [DEV-151](#dev-151) | ✅ | Groq AI-комментарий к сигналам в TG (monitoring.py + TradeAnalyzer.analyze_signal) | DEV |
 | [DEV-110](#dev-110) | 🟡 | RANGE BOUNCE: calc_range_bounce_sl_tp() в sl_tp_calculator.py | DEV |
 | [DEV-127](#dev-127) | ✅ | SMC None gate: smc_has_bos OR smc_has_choch (shadow) в wt_15m_reversal_scanner | DEV |
 | [DEV-100](#dev-100) | ✅ | chart_builder: try/except + blacklist малоликвидных пар (GAIB, BANANA) | DEV |
@@ -41,15 +44,20 @@
 | [DEV-121](#dev-121) | 🟢 | Self-diagnostics suite: глубокая проверка всех узлов системы | DEV |
 | **ML / АНАЛИТИКА** | | | |
 | [ARCH-45](#arch-45) | ✅ | Плановый ревью: AUC=0.41 (не активировать), WR=27.1%, следующий ревью 20.04 | ARCH |
-| [DEV-149](#dev-149) | 🟡 | OutcomePredictor: добавить фичи distance_to_sl_pct + atr_multiple + wt_snap + reversal_mode | DEV |
-| [ARCH-68](#arch-68) | 🔄 | Куб Метатрона Фаза 2: MTF WT/SMC Specialists → production integration | ARCH |
+| [DEV-149](#dev-149) | ✅ | OutcomePredictor: вектор 16→23 фич (distance_to_sl + sl_atr + wt1/2_15m + reversal_mode) | DEV |
+| [ARCH-68](#arch-68) | ✅ | Куб Метатрона Фаза 2+3: все компоненты shadow + EventBus 6 триггеров | ARCH |
 | [DEV-146](#dev-146) | ✅ | VerdictAggregator: WTVerdict+SMCVerdict → gate/strength (shadow, активировать при 200+ сделках) | DEV |
+| **КУБ МЕТАТРОНА** | | | |
+| [ARCH-71](#arch-71) | 🔴 | Real Full CALL: EventBus запускает расширенный анализ (все TF + все детекторы) | ARCH/DEV |
+| [ARCH-72](#arch-72) | 🟡 | Feedback Loop: PostTradeAnalyser → update_weights + PairContextBus + EventBus | ARCH/DEV |
+| [DEV-152](#dev-152) | 🔴 | EventBus диагностика: логи FIRE/CONSUMED/None (уже сделано, ждёт рестарта) | DEV |
+| [DEV-153](#dev-153) | 🟡 | VerdictGate активация: verdict_gate.enabled: true (после проверки snap данных) | DEV |
 | **АРХИТЕКТУРА** | | | |
 | [ARCH-70](#arch-70) | ✅ | EventBus Фаза 1+2+3: шина Full CALL — 6 триггеров включая wt_verdict_strong + btc_macro_shock | ARCH |
 | [ARCH-62](#arch-62) | 🔵 | Trade Simulator рефакторинг: exit_manager + cascade_tsl + levels_calculator | ARCH |
-| [ARCH-55](#arch-55) | 🟢 | sl_tp_calculator.py — единая точка SL/TP (бэклог апрель) | ARCH |
+| [ARCH-55](#arch-55) | 🟡 | DEV-110 интеграция: MarketContext.pivot_cache_1d_1w + RANGE BOUNCE в calculate_levels() | ARCH |
 | [ARCH-57](#arch-57) | 🔵 | Confluence TRADER/RANGE tier parameter | ARCH |
-| [ARCH-64](#arch-64) | 🔵 | pivot_reversal daily bias: штраф -20 / near W_S1/S2 → -10 | ARCH |
+| [ARCH-64](#arch-64) | ✅ | pivot_reversal weekly_bias gate: UNKNOWN→WATCH + против bias→-20 (shadow) | ARCH |
 | [ARCH-67](#arch-67) | 🔵 | USDT.D macro gate: CoinGecko API + shadow (бэклог май) | ARCH |
 | [ARCH-69](#arch-69) | 🔵 | Перенести verbose-секции CLAUDE.md → ENCYCLOPEDIA.md | ARCH |
 | [ARCH-44](#arch-44) | 🔵 | Добавить роль DATA (триггер: AUC > 0.55) | ARCH |
@@ -77,6 +85,17 @@
 
 ---
 
+### DEV-154 — Position Sync fail-safe 🔴
+**Файлы:** `core/exchange/bingx_client.py`, `core/exchange/position_sync.py`, `core/trading/position_manager.py`
+**Инцидент:** 07.04.2026 — BingX `timestamp is invalid` → `get_positions()` вернул `[]` → position_sync ложно закрыл 18 позиций как EXPIRED.
+**Фикс (Вариант 1 — fail-closed):**
+1. `bingx_client.py` → `get_positions()`: при ошибке API — бросать исключение, НЕ возвращать `[]`. При `109400` → сбросить `_time_synced = False`
+2. `position_sync.py`: try/except → при ошибке skip цикла + счётчик `_consecutive_failures` (3+ → CRITICAL)
+3. `position_manager.py`: использовать `_get_client_synced()`, при ошибке — skip
+**Спек:** DISCUSSION.md [10.04.2026] ARCH
+
+---
+
 ### DEV-147 — TSL SL накопление на бирже 🔴
 **Файл:** `core/exchange/order_manager.py`, метод `update_sl()`
 **Симптом:** SPACE/USDT накопил 14 открытых SL-ордеров. `place_sl_order()` возвращает None при ошибке → ID в БД не обновляется → следующий цикл отменяет мёртвый ID, ставит ещё один SL.
@@ -94,10 +113,28 @@
 
 ---
 
-### DEV-111act — BTC 4h gate production 🟡
-**Срок:** ~09.04.2026 (7 дней shadow с 02.04)
-**Действие:** в monitoring.py изменить `btc_filter_mode: "shadow"` → `"block"` в config.yaml
-**Условие:** просмотреть WOULD_BLOCK логи — если блокирует > 30% пар в боковике → отложить
+### DEV-111b — BTC 4h gate HIGH_VOL фикс 🟡
+**Файл:** `bot/monitoring.py` (~строка 821) + `bot/monitoring.py` (~строка 663 `_get_btc_4h_regime`)
+**Проблема:** gate блокирует только `TREND_DOWN`, но при обвале BTC классификатор возвращает `HIGH_VOL` (spike guard срабатывает на крупных свечах) — gate молчит.
+**Фикс 1** — расширить условие блока LONG:
+```python
+# было:
+if _btc_4h == "TREND_DOWN" and _dir4h == "LONG":
+# стало:
+if _btc_4h in ("TREND_DOWN", "HIGH_VOL") and _dir4h == "LONG":
+```
+**Фикс 2** — добавить лог режима в `_get_btc_4h_regime()` после расчёта:
+```python
+logger.info("[BTC4h] режим=%s close=%.0f", regime, ohlcv['close'].iloc[-1])
+```
+**Shadow остаётся:** `shadow_mode: true` — только логи, не блокировать. Наблюдать 5 дней после правки.
+**Спек:** DISCUSSION.md [07.04.2026] ARCH
+
+---
+
+### DEV-111act — BTC 4h gate production ⏸
+**Отложен до ~14.04.2026** (gate молчал всю неделю shadow — HIGH_VOL не блокировал LONG при тарифном обвале 04-06.04)
+**Условие активации:** после DEV-111b + 5 дней WOULD_BLOCK данных, убедиться что gate блокирует >15% LONG в медвежьих условиях.
 
 ---
 
@@ -145,21 +182,23 @@
 - WR post-fix=**27.1%** (511/1883 TP+TSL), avgR=+0.061. Неделя 06.04 показывает 45.5% — тенденция положительная
 - Следующий ревью: **20.04.2026**
 
-### DEV-149 — OutcomePredictor новые фичи 🟡
-**Файлы:** `core/ml/outcome_predictor.py` (функция `_build_feature_vector`) + `core/trading/trade_simulator.py` (`register_trade_async` — запись в features_json)
-**Суть:** текущие 12 фич не дифференцируют winners/losers (conf и strength почти одинаковые). Добавить:
-- `distance_to_sl_pct` — расстояние entry→SL в % при открытии
-- `atr_multiple` — SL в единицах ATR (широкий SL = хуже)
-- `wt1_15m`, `wt2_15m` из `wt_snap` (DEV-138, уже пишется в metadata)
-- `reversal_mode` (TREND/REVERSAL/UNCLEAR из DEV-137, уже в metadata)
-**После:** переобучить модель, проверить AUC → цель > 0.55
+### DEV-149 — OutcomePredictor новые фичи ✅
+**Файлы:** `core/ml/outcome_predictor.py` + `core/trading/trade_simulator.py`
+**Выполнено 06.04.2026:**
+- Вектор расширен 16 → **23 признака** (+7 DEV-149)
+- `distance_to_sl_pct` — добавлен в `register_trade()` (trade_simulator.py)
+- `sl_atr_ratio` — уже был, теперь извлекается в `_build_feature_vector`
+- `wt1_15m`, `wt2_15m` — из `wt_snap["15m"]` в features_dict
+- `reversal_mode` one-hot (TREND/REVERSAL/UNCLEAR) — из features_dict
+- Модель переобучится автоматически в следующем `ml_training_loop`
+**Цель:** AUC > 0.55 (сейчас 0.41)
 
 ---
 
-### ARCH-68 — Куб Метатрона Фаза 2 🔄
-**Выполнено:** DEV-137..142 — все компоненты реализованы в shadow mode
-**DEV-146 выполнен:** VerdictAggregator создан (`core/intelligence/verdict_aggregator.py`), интегрирован в trading_intelligence.py, config добавлен (verdict_gate.enabled: false)
-**Следующий шаг:** накопить 200+ сделок с wt_snap/smc_snap → обучить модели → включить `verdict_gate.enabled: true`
+### ARCH-68 — Куб Метатрона Фаза 2+3 ✅
+**Завершена 06.04.2026.** Все 7 компонентов в shadow mode, EventBus покрывает 6 триггеров.
+**Milestone активации:** 200+ сделок с wt_snap/smc_snap → обучить MTFWTSpecialist/MTFSMCSpecialist → включить `verdict_gate.enabled: true`
+**TR-007:** с 13.04 проверить WOULD_BLOCK логи VerdictAggregator (DISCUSSION.md [06.04.2026])
 
 ---
 
@@ -235,6 +274,50 @@
 
 ---
 
+### ARCH-71 — Real Full CALL 🔴
+**Контекст:** EventBus Full CALL сейчас = повторный `analyze_symbol()` = тот же конвейер. За 2 дня работы: 3 сделки из тысяч событий.
+**Суть:** Full CALL должен запускать **расширенный анализ** для пары:
+1. Фетч ВСЕХ TF (3m, 5m, 15m, 1h, 4h, 1d)
+2. Дивергенции на всех TF (сейчас только entry + 1h, и только каждый 3-й цикл)
+3. OTE check (сейчас не вызывается в scan_one вообще)
+4. SMC полный анализ на 1h + 4h (сейчас только entry TF для smc_context)
+5. CHoCH/BOS актуальный check
+6. Результаты → PairContextBus (для других модулей и NarrativeBuilder)
+**Файлы:** `core/context/event_bus.py` (_fire_analysis), `bot/loops/scan_loop.py`
+**Спек:** DISCUSSION.md [10.04.2026] DEV
+
+---
+
+### ARCH-72 — Feedback Loop 🟡
+**Контекст:** PostTradeAnalyser существует но ничего не возвращает в систему. Цикл обратной связи разорван.
+**Суть:** при закрытии сделки:
+1. PostTradeAnalyser обновляет PairContextBus (avg_R, WR, последний статус для пары)
+2. Вызывает update_signal_weights() (адаптивные веса)
+3. Публикует "trade_closed" в EventBus → NarrativeBuilder создаёт нарратив
+**Файлы:** `core/trading/post_trade_analyser.py`, `core/context/pair_context.py`, `core/context/event_bus.py`
+
+---
+
+### DEV-152 — EventBus диагностика 🔴
+**Статус:** ✅ логи добавлены, ждёт рестарта
+**Суть:** добавлены INFO-уровень логи в event_bus.py:
+- `[EventBus] CONSUMED` — событие взято из очереди
+- `[EventBus] FIRE` — начало _fire_analysis
+- `[EventBus] -> analyze_symbol returned None` — сигнал не найден
+- `[EventBus] -> not actionable` — повышен с DEBUG до INFO
+**После рестарта:** наблюдать 1 час, собрать статистику FIRE vs None vs actionable.
+
+---
+
+### DEV-153 — VerdictGate активация 🟡
+**Суть:** включить `verdict_gate.enabled: true` в config.yaml
+**Условие:** 200+ сделок с wt_snap в features_json (проверить SQL)
+**Эффект:** MTF WT Specialist и SMC Specialist начнут влиять на strength (бонус/штраф)
+**Риск:** может заблокировать часть сигналов. Сначала проверить WOULD_BLOCK статистику.
+**Config:** `trading.verdict_gate.enabled: false → true`
+
+---
+
 ### ARCH-62 — Trade Simulator рефакторинг 🔵
 **Суть:** монолит trade_simulator.py (1850 строк) → разбить:
 - `exit_manager.py` — логика закрытия SL/TP/TSL/EXPIRED
@@ -265,9 +348,31 @@
 
 ---
 
-### ARCH-55 — sl_tp_calculator.py единая точка 🟢
-**Суть:** сейчас SL/TP рассчитывается в 3 местах (trading_intelligence, trade_simulator, sl_tp_calculator). Нужна одна точка.
-**Статус:** бэклог апрель — после рефакторинга ARCH-62
+### ARCH-55 — DEV-110 интеграция: RANGE BOUNCE в calculate_levels() 🟡
+**Спек (06.04.2026):** детальный алгоритм → DISCUSSION.md [06.04.2026] ARCH → ARCH-55
+
+**Что делать DEV (5 шагов):**
+
+1. **`core/signal_models.py`** — добавить в `MarketContext`:
+   ```python
+   pivot_cache_1d_1w: dict = field(default_factory=dict)
+   regime: str = ""
+   ```
+
+2. **`core/intelligence/recommendation_generator.py`** — добавить шаг -1 в `calculate_levels()` (перед swing_low): RANGE BOUNCE ветка, вызывает `calc_range_bounce_sl_tp()`, при успехе возвращает сразу с `sl_source="range_bounce:pivot"`.
+
+3. **`core/trading_intelligence.py`** — заполнить `market_context.regime = _regime or ""` перед вызовом `_generate_recommendation()`.
+
+4. **`core/trading_intelligence.py`** — если `_regime == "RANGE"` и `range_bounce.enabled`, загрузить пивоты 1D/1W через `PivotCalculatorFixed` → записать в `market_context.pivot_cache_1d_1w`.
+
+5. **`config.yaml`** — убедиться что есть:
+   ```yaml
+   trading:
+     range_bounce:
+       enabled: false
+   ```
+
+**После реализации:** `enabled: false` → смотреть что не падает → включить → накопить 20 сделок с `sl_source=range_bounce:pivot` → сравнить WR
 
 ---
 
@@ -279,7 +384,7 @@
 | ARCH-44 | Роль DATA в команде | CV AUC > 0.55 |
 | ARCH-47 | SMC contradiction filter | После накопления SMC данных в shadow |
 | ARCH-57 | Confluence TRADER/RANGE tier | После анализа confluence WR по режимам |
-| ARCH-64 | pivot_reversal daily bias штраф | Спек готов, нужен DEV |
+| ARCH-64 | pivot_reversal weekly_bias gate ✅ | — |
 | ARCH-67 | USDT.D macro gate | Бэклог май — после BTC gate production |
 | ARCH-69 | ENCYCLOPEDIA.md (verbose-секции из CLAUDE.md) | Когда CLAUDE.md > 500 строк |
 | DEV-104 | Dead-Man Timer emergency close | Только перед переходом в LIVE |

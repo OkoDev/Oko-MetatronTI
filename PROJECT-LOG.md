@@ -20,6 +20,46 @@
 
 ## 📅 История изменений
 
+### [06.04.2026] ARCH-64: pivot_reversal weekly_bias gate (shadow)
+
+**Проблема:** 62% сделок pivot_reversal имеют `weekly_bias=UNKNOWN` — самые убыточные (EV -0.76R). LONG+BEARISH / SHORT+BULLISH без поддержки W_S/R тоже убыточны.
+**Решение:** В `trading_intelligence.py` добавлен блок ARCH-64 после ARCH-48. Кейс 1: `weekly_bias=UNKNOWN` → WOULD_BLOCK (shadow). Кейс 2: против bias → WOULD_PENALIZE -20, исключение если near W_S1/S2 (≤1.5%). W_S1/S2/R1/R2 теперь сохраняются в metadata ARCH-48 — без лишних API запросов. Config: `trading.pivot_reversal_bias.enabled: false`.
+**Результат:** Shadow gate активен. Включить через 3-5 дней после WOULD_BLOCK логов.
+
+---
+
+### [07.04.2026] TSL Supremacy: TP больше не режет ракеты при активном TSL
+
+**Проблема:** Критический архитектурный баг — фиксированный TP=3R срабатывал даже когда TSL уже вёл сделку. 275 сделок с активным TSL закрыты по TP; 106 упустили >1R. Примеры: HANA/USDT упустил 46.5R, RIVER/USDT — 22.7R. Данные: TSL avg R=4.45 vs TP avg R=2.73 (+62%).
+**Решение:** `core/trading/trade_simulator.py` — добавлена проверка `_tsl_is_active = bool(trade.get("tsl_activated"))` в оба блока (LONG/SHORT). `hit_tp` вычисляется как `False` если TSL активен. TP остаётся только как страховка до активации TSL. `config.yaml` — де-эскалация cascade TSL агрессивнее: `no_degrade_above_r 5.0→3.0`, `r_gradient_peak_min_r 3.0→2.0`, `r_gradient_rollback_pct 0.85→0.75`.
+**Результат:** Ракеты больше не режутся на 3R. Ожидаем рост avg captured_R_pct с 57.5% до 65%+, avg R TSL-сделок вырастет. Проверить через 3-5 дней.
+
+---
+
+### [07.04.2026] DEV-148 финальный фикс: busy_timeout в subscription_manager.py
+
+**Проблема:** `database is locked` продолжал появляться в логах (`close_trade`). Предыдущий фикс добавил `_db_connect()` только в `trade_simulator.py`, но `subscription_manager.py` (6 методов) всё ещё использовал прямой `sqlite3.connect()` без timeout.
+**Решение:** В `core/db/subscription_manager.py` добавлен `_db_connect()` helper с `PRAGMA busy_timeout=10000`. Все 6 методов (`init_database`, `add_user`, `get_user_subscription`, `create_subscription`, `get_daily_signal_count`, `record_signal_sent`) переведены на helper.
+**Результат:** Теперь каждое соединение с БД во всём проекте ждёт до 10 секунд перед ошибкой. Ошибок `database is locked` быть не должно.
+
+---
+
+### [06.04.2026] DEV-149: OutcomePredictor — вектор признаков 16→23
+
+**Проблема:** AUC=0.41 (хуже случайного). Confidence и strength у winners и losers почти идентичны — текущие 16 фич не дифференцируют исходы.
+**Решение:** `core/ml/outcome_predictor.py` — вектор расширен до 23 признаков. Добавлено 7 новых: `distance_to_sl_pct` (нормирован / 5%), `sl_atr_ratio` (извлечение из features_dict), `wt1_15m`/`wt2_15m` из `wt_snap["15m"]`, `reversal_mode` one-hot (TREND/REVERSAL/UNCLEAR). `core/trading/trade_simulator.py` — добавлен расчёт `distance_to_sl_pct = |entry-SL|/entry×100` при регистрации сделки.
+**Результат:** При следующем `ml_training_loop` модель переобучится с новыми признаками. Ожидаем рост AUC с 0.41 → цель >0.55. Новые фичи уже пишутся в features_json для всех новых сделок.
+
+---
+
+### [06.04.2026] ARCH-68 закрыта + ARCH-55 спек (DEV-110 интеграция)
+
+**Проблема:** ARCH-68 технически завершена (все 6 триггеров EventBus подключены), но не была официально закрыта. DEV-110 (`calc_range_bounce_sl_tp`) реализован, но не интегрирован — непонятно куда подключить (pivot_cache недоступен в calculate_levels).
+**Решение:** ARCH-68 → ✅. Для DEV-110: архитектурный выбор Вариант C — добавить `pivot_cache_1d_1w: dict` и `regime: str` в `MarketContext`, тогда `calculate_levels()` сможет вызывать RANGE BOUNCE без изменения API. Полный спек из 5 шагов записан в DISCUSSION.md и TASKS.md (ARCH-55 🟡).
+**Результат:** DEV получил готовый спек. ARCH-55 переведена из бэклога в активные задачи — это ключ к корректному SL/TP в RANGE режиме.
+
+---
+
 ### [06.04.2026] ARCH-70: wt_verdict_strong + btc_macro_shock триггеры EventBus
 
 **Проблема:** EventBus шина работала с 4 триггерами (anomaly, funding, liquidity_sweep, wt_confluence). Два оставшихся из спека не были подключены.
