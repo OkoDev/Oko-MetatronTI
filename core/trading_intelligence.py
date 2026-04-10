@@ -522,8 +522,18 @@ class TradingIntelligence:
 
             # Этап 8.4.2: None = data collection error (no silent fallback)
             if signals is None:
-                logger.info("[intelligence] %s: данные недоступны — анализ пропущен", symbol)
-                return None
+                # ARCH-71: даже при None — если есть extra_pre_signals (div от Full CALL), продолжаем
+                if extra_pre_signals:
+                    signals = []
+                else:
+                    logger.info("[intelligence] %s: данные недоступны — анализ пропущен", symbol)
+                    return None
+
+            # ARCH-71: Inject дополнительных сигналов от Full CALL ДО проверки min_signals
+            if extra_pre_signals:
+                signals = list(signals or []) + list(extra_pre_signals)
+                logger.info("[%s] analyze_symbol: +%d extra_pre_signals (итого %d)",
+                            symbol, len(extra_pre_signals), len(signals))
 
             if not signals:
                 if not manual_request:
@@ -531,12 +541,6 @@ class TradingIntelligence:
                     return None
                 logger.info(f"[manual] {symbol}: нет сигналов, но запрос ручной — показываем рыночный контекст")
                 signals = []
-
-            # ARCH-71: Inject дополнительных сигналов от Full CALL (дивергенции и др.)
-            if extra_pre_signals:
-                signals = list(signals) + list(extra_pre_signals)
-                logger.info("[%s] analyze_symbol: +%d extra_pre_signals (итого %d)",
-                            symbol, len(extra_pre_signals), len(signals))
 
             # Фильтруем сигналы по качеству
             filtered_signals = self._filter_signals_by_quality(signals)
