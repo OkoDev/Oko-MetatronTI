@@ -1642,13 +1642,17 @@ class TradeSimulator:
                     if trend_info and trend_info["tsl"] > 0:
                         tsl_price = trend_info["tsl"]
 
-                        # DEV-132: TSL floor — не закрывать хуже entry.
-                        # После активации TSL (tsl_activation_r=1R) trenddown может оказаться
-                        # ниже entry (LONG) при малом ATR или откате. Минимальный exit = entry.
+                        # DEV-132 / DEV-149: TSL floor с буфером.
+                        # Биржевой STOP_MARKET срабатывает на wick (не на close),
+                        # поэтому TSL на entry → мгновенное закрытие R=0 при любом фитиле.
+                        # Буфер 0.3% — минимальный зазор чтобы wick не выбил позицию.
+                        _tsl_floor_pct = 0.003  # 0.3%
                         if direction == "LONG":
-                            tsl_price = max(tsl_price, entry)
+                            _floor = entry * (1 - _tsl_floor_pct)
+                            tsl_price = max(tsl_price, _floor)
                         elif direction == "SHORT":
-                            tsl_price = min(tsl_price, entry)
+                            _ceil = entry * (1 + _tsl_floor_pct)
+                            tsl_price = min(tsl_price, _ceil)
 
                         # Проверка срабатывания TSL
                         if direction == "LONG" and current_price <= tsl_price:
@@ -1719,8 +1723,13 @@ class TradeSimulator:
             # DEV-88: SL по CLOSE (не LOW) для источников на основе TSL-линии.
             # TSL линия — индикаторный уровень, свечной фитиль через неё не = выход.
             # Реальный выход подтверждается закрытием ниже (LONG) / выше (SHORT).
+            # DEV-149: Для exchange-managed (VST) сделок всегда по wick (low/high),
+            # т.к. биржевой STOP_MARKET срабатывает на wick, не на close.
             _sl_src = (trade.get("sl_source") or "").lower()
-            _sl_check_close = _sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl")
+            _sl_check_close = (
+                (_sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl"))
+                and not _exchange_managed_trade  # VST → wick, SIM → close
+            )
             _tsl_is_active = bool(trade.get("tsl_activated"))
 
             for _, row in df.iterrows():
