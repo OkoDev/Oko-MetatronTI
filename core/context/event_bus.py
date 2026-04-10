@@ -171,6 +171,10 @@ class EventBus:
                 else:
                     # Обновляем cooldown ДО fire (чтобы параллельные publish блокировались)
                     self._cooldowns[item.symbol] = datetime.now(timezone.utc)
+                    logger.info(
+                        "[EventBus] CONSUMED %s event=%s prio=%d -> launching Full CALL",
+                        item.symbol, item.event_type, item.priority,
+                    )
                     asyncio.create_task(
                         self._fire_with_semaphore(bot, item)
                     )
@@ -206,8 +210,10 @@ async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
     Копия логики из trigger_loop._fire_analysis() — единая точка.
     """
     try:
+        logger.info("[EventBus] FIRE %s event=%s", symbol, event_type)
         recommendation = await bot.trading_intelligence.analyze_symbol(symbol)
         if recommendation is None:
+            logger.info("[EventBus] %s event=%s -> analyze_symbol returned None", symbol, event_type)
             return
         action    = getattr(recommendation, "action", "WATCH")
         strength  = getattr(recommendation, "overall_strength", 0)
@@ -228,8 +234,8 @@ async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
                     symbol, event_type, trade_id, strength,
                 )
         else:
-            logger.debug(
-                "[EventBus] %s event=%s → not actionable (action=%s dir=%s str=%.0f)",
+            logger.info(
+                "[EventBus] %s event=%s -> not actionable (action=%s dir=%s str=%.0f)",
                 symbol, event_type, action, direction, strength,
             )
     except Exception as e:
