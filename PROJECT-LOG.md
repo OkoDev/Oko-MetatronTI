@@ -20,6 +20,43 @@
 
 ## 📅 История изменений
 
+### [12.04.2026] DEV-155 + DEV-156 + DEV-157 — три защитных фильтра сигналов
+
+**Проблема:** три независимых класса аномалий снижали качество торговли: (1) HIGH_VOL режим давал avgR=-1.55 и WR=5%, (2) whipsaw рынок при общем WR<15% не сигнализировал о плохих условиях, (3) бага расчёта SL давала дистанцию 0.002% — получали R=-450.
+
+**Решение:**
+- **DEV-157:** guard в `register_trade()` — пропускать если `sl_dist_pct < 0.1%` (config: `trading.min_sl_dist_pct: 0.1`). Лог WARNING с деталями.
+- **DEV-155:** дифференцированный порог в `is_actionable()` (monitoring.py) и `register_trade_async()` — `HIGH_VOL: 85`, `LONG_RANGE: 75` (было 50-60). Читает `bot.pair_context.regime` и config `min_strength_by_regime` / `min_strength_by_direction_regime`.
+- **DEV-156:** `core/trading/circuit_breaker.py` (Singleton) — каждые 15 мин проверяет WR за 50 сделок. WR<15% → `strength_floor_bonus = +10` на 30 мин. Применяется в `is_actionable()`. Loop: `circuit_breaker_loop()` в `bot/loops/ml_loop.py`.
+
+**Результат:** три уровня защиты работают последовательно — DEV-157 (SL guard) → DEV-155 (режим/направление) → DEV-156 (market condition). Аномальные R больше не пройдут в БД.
+
+### [12.04.2026] DEV-87 — OTE backtest v2: результаты Step0+Step1 фильтров
+
+**Проблема:** OTE детектор работал в shadow mode без статистики — нужно было проверить WR после добавленных фильтров (Step0: stale-invalidation, Step1: wide zone [0.705-0.786] + ATR trend gate).
+
+**Решение:** Запущен `scripts/backtest_ote_mtf.py` — 5 пар (BTC/ETH/SOL/BNB/XRP), 60 дней, 180 SWING + 124 SCALP сделок.
+
+**Результат:** SWING WR=35.1% (нужно ≥45%) — не готов к production. SCALP WR=29.2% — хуже случайного. Исключение: ETH WR=45.5%, 4h zone WR=37.7%, CHoCH WR=37.8%. Тройная конфлюенция не встречается. Нужен Step2 с дополнительными фильтрами.
+
+---
+
+### [12.04.2026] Стандарт DUAL_TSL 10%/90% — переход с SINGLE на данных
+
+**Проблема:** DEV-124 объявил SINGLE лучшим (+1866R vs DUAL_TSL -88.5R), но сравнение было нечестным — разные рыночные периоды. Одна неделя (W10) создала +1828R для SINGLE, маскируя реальную картину. Без выбросов SINGLE = -184R. Последняя неделя (W14): WR=11.6%, avg_R=-1.762.
+
+**Решение:** Честный бэктест на 5564 сделках (один набор, все стратегии пересчитаны):
+- SINGLE: Total R = -1073R, WR=28.6%, Max DD=1323R ❌
+- PURE TSL (0%): Total R = +670R ✅
+- DUAL_TSL 30/70: Total R = +723R ✅
+- DUAL_TSL 10/90: Total R = +847R, WR=39.6%, Max DD=421R ✅✅ ← оптимум
+
+Grid search по соотношениям (шаг 5%) показал монотонное убывание с ростом TP1%. Исключение: 0% хуже 10% — минимальная страховка защищает случаи где TSL не захватывает прибыль до первого пивота. Изменено в `config.yaml`: `trend_strategy_type: DUAL_TSL`, `tp1_fix_pct: 10`.
+
+**Результат:** 10%/90% — зафиксированный стандарт DUAL_TSL. RANGE=SINGLE, HIGH_VOL=DUAL_TP (0.5R). DEV-124 закрыт как ошибочный (нечестное сравнение периодов).
+
+---
+
 ### [06.04.2026] ARCH-64: pivot_reversal weekly_bias gate (shadow)
 
 **Проблема:** 62% сделок pivot_reversal имеют `weekly_bias=UNKNOWN` — самые убыточные (EV -0.76R). LONG+BEARISH / SHORT+BULLISH без поддержки W_S/R тоже убыточны.

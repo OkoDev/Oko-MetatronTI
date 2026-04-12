@@ -294,6 +294,22 @@ class TradeSimulator:
             if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:
                 sl_dist = abs(float(entry) - float(stop_loss))
                 tp_dist = abs(float(take_profit) - float(entry))
+
+                # DEV-157: guard аномально малого SL (ASR R=-450 при sl_dist=0.002%)
+                try:
+                    from core.config_loader import config as _cfg_sl
+                    MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
+                except Exception:
+                    MIN_SL_DIST_PCT = 0.1
+                if sl_dist > 0:
+                    sl_dist_pct = sl_dist / float(entry) * 100
+                    if sl_dist_pct < MIN_SL_DIST_PCT:
+                        logger.warning(
+                            "TradeSimulator: [DEV-157] пропуск %s %s — SL слишком близко: %.4f%% < %.2f%% (entry=%.6f SL=%.6f)",
+                            _direction_str(direction), symbol, sl_dist_pct, MIN_SL_DIST_PCT, float(entry), float(stop_loss),
+                        )
+                        return None
+
                 if sl_dist > 0:
                     actual_rr = tp_dist / sl_dist
                     if actual_rr < MIN_RR:
@@ -669,6 +685,31 @@ class TradeSimulator:
             except Exception as _e44:
                 logger.debug("[DEV-44] Safety gate error: %s", _e44)
 
+        # DEV-155: Guard — min_strength по режиму/направлению (HIGH_VOL=85, LONG_RANGE=75)
+        if regime:
+            try:
+                from core.config_loader import config as _cfg_155
+                if _cfg_155:
+                    _str155 = int(_get_recommendation_value(recommendation, "overall_strength") or
+                                  getattr(recommendation, "overall_strength", 0) or 0)
+                    _sym155 = _get_recommendation_value(recommendation, "symbol") or symbol
+                    _dir155 = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                    # direction+regime ключ: "LONG_HIGH_VOL" / "LONG_RANGE" / "SHORT_HIGH_VOL" / etc.
+                    _dir_regime_key = f"{_dir155}_{regime}"
+                    _by_dir_regime = (_cfg_155.get("signal_quality.min_strength_by_direction_regime") or {})
+                    _by_regime = (_cfg_155.get("signal_quality.min_strength_by_regime") or {})
+                    _base_min = int(_cfg_155.get("signal_quality.min_strength_register", 50))
+                    _eff_min = _by_dir_regime.get(_dir_regime_key,
+                               _by_regime.get(regime, _base_min))
+                    if _str155 < _eff_min:
+                        logger.info(
+                            "[DEV-155] %s БЛОК %s/%s strength=%d < %d",
+                            _sym155, _dir155, regime, _str155, _eff_min,
+                        )
+                        return None
+            except Exception as _e155:
+                logger.debug("[DEV-155] gate error: %s", _e155)
+
         # DEV-98: Guard 4 — pivot_reversal strength≥80 → skip
         # Находка 2 (ARCH 29.03.2026): WR=4.5% avgR=−0.735R при strength≥80; чем выше strength → хуже
         # Порог: signal_quality.pivot_reversal_max_strength (default 79 = блок ≥80)
@@ -1032,6 +1073,21 @@ class TradeSimulator:
                     symbol, _dir92,
                     min_price_db or 0, max_price_db or 0,
                 )
+
+            # Куб: Сфера 10 (Exit Manager) → bus: POSITION_CLOSED
+            _pcb = getattr(self, "_pair_context_bus", None)
+            if _pcb is not None and symbol:
+                try:
+                    from core.context.pair_context import SphereEvent
+                    _pcb.publish(symbol, SphereEvent.POSITION_CLOSED, {
+                        "trade_id": trade_id,
+                        "status": status,
+                        "r_multiple": round(r_multiple, 3) if r_multiple is not None else 0.0,
+                        "direction": str(direction).upper() if direction else "LONG",
+                        "exit_price": exit_price,
+                    })
+                except Exception as _epc:
+                    logger.debug("[Cube] POSITION_CLOSED publish error: %s", _epc)
 
             # DEV-94: callback для PostTradeAnalyser (async, не блокируем)
             if self._post_trade_callback and symbol:
@@ -1710,6 +1766,19 @@ class TradeSimulator:
                                         _tsl_conn.commit()
                                 except Exception as _ue:
                                     logger.debug("TSL: stop_loss update #%d: %s", trade_id, _ue)
+                                # Куб: Сфера 10 → bus: TSL_MOVED
+                                _pcb = getattr(self, "_pair_context_bus", None)
+                                if _pcb is not None:
+                                    try:
+                                        from core.context.pair_context import SphereEvent
+                                        _pcb.publish(symbol, SphereEvent.TSL_MOVED, {
+                                            "trade_id": trade_id,
+                                            "old_sl": _old_sl,
+                                            "new_sl": tsl_price,
+                                            "tf": tsl_tf or "15m",
+                                        })
+                                    except Exception:
+                                        pass
 
                 except Exception as e:
                     logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
@@ -1758,6 +1827,17 @@ class TradeSimulator:
                         except Exception:
                             pass
                         logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                        # Куб: Сфера 10 → bus: TP1_HIT
+                        _pcb = getattr(self, "_pair_context_bus", None)
+                        if _pcb is not None:
+                            try:
+                                from core.context.pair_context import SphereEvent
+                                _r_at_tp1 = (tp1_price - entry) / abs(entry - sl) if sl and entry != sl else 0
+                                _pcb.publish(symbol, SphereEvent.TP1_HIT, {
+                                    "trade_id": trade_id, "r_at_tp1": round(abs(_r_at_tp1), 2),
+                                })
+                            except Exception:
+                                pass
                     # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
                     if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
                         tp2_hit_at = datetime.now(timezone.utc).isoformat()

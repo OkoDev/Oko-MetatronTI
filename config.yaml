@@ -147,6 +147,13 @@ trading:
     enabled: false
     sl_threshold: 5
     window_minutes: 30
+  circuit_breaker:            # DEV-156: поднимает min_strength при низком WR
+    enabled: true
+    lookback_trades: 50       # последние N закрытых сделок
+    wr_trigger_pct: 15.0      # WR < 15% → активация
+    wr_reset_pct: 20.0        # WR > 20% → деактивация (после cooldown)
+    cooldown_minutes: 30      # держать активным минимум 30 мин
+    strength_bonus: 10        # +10 к min_strength при активации
   phase_guard_enabled: false
   weekly_bias_filter:
     enabled: true
@@ -252,6 +259,7 @@ trading:
     - TREND_UP
     - TREND_DOWN
   max_positions_per_direction: 0
+  min_sl_dist_pct: 0.1    # DEV-157: пропуск если SL < 0.1% от entry (защита от R=-450)
   sl_tp:
     atr_multiplier: 1.0
     sl_min_pct: 0.5
@@ -300,7 +308,9 @@ signal_quality:
   ote_scalp_trigger_tf: 3m
   min_strength_by_regime:
     RANGE: 60       # DEV-149: 70→60, слишком агрессивный фильтр в RANGE
-    HIGH_VOL: 75    # DEV-149: 80→75, HIGH_VOL больше не в blocked_regimes
+    HIGH_VOL: 85    # DEV-155: 75→85 (avgR=-1.55 в HIGH_VOL за 07-10.04)
+  min_strength_by_direction_regime:
+    LONG_RANGE: 75  # DEV-155: WR=25.4% даже в нейтральный рынок
   signal_regime_block:
     pivot_reversal:
       blocked_regimes: []

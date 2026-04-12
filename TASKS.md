@@ -29,7 +29,9 @@
 | [DEV-144f](#dev-144f) | 🟢 | P6: Единый CSS — тёмная тема, виджет-карточки, responsive grid | DEV |
 | [DEV-117](#dev-117) | 🔵 | Dashboard P3: /performance + /pair/:symbol + SSE endpoint | DEV |
 | **VST / БИРЖА** | | | |
-| [DEV-154](#dev-154) | 🔴 | Position Sync fail-safe: get_positions error → skip cycle, не закрывать сделки | DEV |
+| [DEV-155](#dev-155) | ✅ | min_strength_by_regime/direction: HIGH_VOL=85, LONG_RANGE=75 в config + is_actionable() | DEV |
+| [DEV-156](#dev-156) | ✅ | Circuit Breaker: rolling WR<15% за 50 сделок → +10 к min_strength на 30 мин | DEV |
+| [DEV-154](#dev-154) | ✅ | Position Sync fail-safe: get_positions error → skip cycle, не закрывать сделки | DEV |
 | [DEV-147](#dev-147) | ✅ | TSL SL накопление: update_sl() → cancel ALL open STOP_MARKET → place one | DEV |
 | [DEV-148](#dev-148) | 🔄 | SQLite WAL mode + busy_timeout=10000 — db locked на set_exchange_sl_order_id всё ещё есть | DEV |
 | [DEV-111b](#dev-111b) | 🟡 | BTC 4h gate: HIGH_VOL в условие блока LONG + лог режима при каждом вызове | DEV |
@@ -40,17 +42,17 @@
 | [DEV-110](#dev-110) | 🟡 | RANGE BOUNCE: calc_range_bounce_sl_tp() в sl_tp_calculator.py | DEV |
 | [DEV-127](#dev-127) | ✅ | SMC None gate: smc_has_bos OR smc_has_choch (shadow) в wt_15m_reversal_scanner | DEV |
 | [DEV-100](#dev-100) | ✅ | chart_builder: try/except + blacklist малоликвидных пар (GAIB, BANANA) | DEV |
-| [DEV-87](#dev-87) | 🟢 | OTE backtest v2: WR после Step0+Step1 фильтров (ждёт данных ~11.04) | DEV |
+| [DEV-87](#dev-87) | ✅ | OTE backtest v2: WR=35.1% SWING, 29.2% SCALP — 🔴 не готов к prod (нужны доп. фильтры) | DEV |
 | [DEV-121](#dev-121) | 🟢 | Self-diagnostics suite: глубокая проверка всех узлов системы | DEV |
 | **ML / АНАЛИТИКА** | | | |
-| [ARCH-45](#arch-45) | ✅ | Плановый ревью: AUC=0.41 (не активировать), WR=27.1%, следующий ревью 20.04 | ARCH |
+| [ARCH-45](#arch-45) | 🟢 | OutcomePredictor ревью: следующий 20.04 (AUC=0.41, цель >0.55) | ARCH |
 | [DEV-149](#dev-149) | ✅ | OutcomePredictor: вектор 16→23 фич (distance_to_sl + sl_atr + wt1/2_15m + reversal_mode) | DEV |
 | [ARCH-68](#arch-68) | ✅ | Куб Метатрона Фаза 2+3: все компоненты shadow + EventBus 6 триггеров | ARCH |
 | [DEV-146](#dev-146) | ✅ | VerdictAggregator: WTVerdict+SMCVerdict → gate/strength (shadow, активировать при 200+ сделках) | DEV |
 | **КУБ МЕТАТРОНА** | | | |
-| [ARCH-71](#arch-71) | 🔴 | Real Full CALL: EventBus запускает расширенный анализ (все TF + все детекторы) | ARCH/DEV |
-| [ARCH-72](#arch-72) | 🟡 | Feedback Loop: PostTradeAnalyser → update_weights + PairContextBus + EventBus | ARCH/DEV |
-| [DEV-152](#dev-152) | 🔴 | EventBus диагностика: логи FIRE/CONSUMED/None (уже сделано, ждёт рестарта) | DEV |
+| [ARCH-71](#arch-71) | ✅ | Real Full CALL: _fire_analysis() загружает все 6 TF + дивергенции + pre_fetched_dfs | ARCH/DEV |
+| [ARCH-72](#arch-72) | ✅ | Feedback Loop: PostTradeAnalyser → update_weights каждые 50 + EventBus trade_closed | ARCH/DEV |
+| [DEV-152](#dev-152) | ✅ | EventBus диагностика: логи FIRE/CONSUMED/None — добавлены, работают | DEV |
 | [DEV-153](#dev-153) | 🟡 | VerdictGate активация: verdict_gate.enabled: true (после проверки snap данных) | DEV |
 | **АРХИТЕКТУРА** | | | |
 | [ARCH-70](#arch-70) | ✅ | EventBus Фаза 1+2+3: шина Full CALL — 6 триггеров включая wt_verdict_strong + btc_macro_shock | ARCH |
@@ -64,7 +66,9 @@
 | [ARCH-47](#arch-47) | 🔵 | SMC contradiction filter: SHORT при нулевых медвежьих S… | ARCH |
 | **TRADER** | | | |
 | [TR-001](#tr-001) | 🔄 | Ежедневный разбор Watch List с живыми свечами | TRADER |
-| [TR-007](#tr-007) | 🔄 | Валидация новых детекторов перед внедрением | TRADER |
+| [TR-007](#tr-007) | 🔴 | Валидация MTF WT Specialist vs реальные входы (срок наступил 12.04) | TRADER |
+| [TRADER-AUDIT-002](#trader-audit-002) | 🟢 | Аудит DUAL_TSL split 10%/90%: grid search после 500+ новых DUAL_TSL сделок (~30.04) | TRADER |
+| [DEV-157](#dev-157) | ✅ | Фикс аномального SL: min_sl_dist_pct guard (ASR: -450R, XPIN: -81R — SL < 0.1% от цены) | DEV |
 
 ---
 
@@ -82,6 +86,38 @@
 - 🟢 **144f** — Единый CSS: тёмная тема #0d1117, карточки #161b22, green/red/blue (responsive — добавлен)
 
 **Ссылка на спек:** DISCUSSION.md [05.04.2026] ARCH — DEV-144
+
+---
+
+### DEV-155 — min_strength по режиму/направлению 🔴
+**Файлы:** `config.yaml`, `bot/monitoring.py` (`is_actionable()`), `core/trading/trade_simulator.py` (`register_trade_async()`)
+**Суть:** добавить дифференцированные пороги силы сигнала по режиму и направлению:
+- `HIGH_VOL: 85` — после 07-10.04 avgR=-1.553 в этом режиме
+- `LONG_RANGE: 75` — хронически слабо (25.4% WR даже в нейтральный рынок)
+**Config:**
+```yaml
+signal_quality:
+  min_strength_by_regime:
+    HIGH_VOL: 85
+  min_strength_by_direction_regime:
+    LONG_RANGE: 75
+```
+**Логика в `is_actionable()`:** сначала `min_strength_by_direction_regime`, потом `min_strength_by_regime`, потом дефолт.
+**Спек:** DISCUSSION.md [12.04.2026] ARCH
+
+---
+
+### DEV-156 — Circuit Breaker 🔴
+**Файл:** `core/trading/circuit_breaker.py` (новый) + `bot/monitoring.py`
+**Суть:** если rolling WR за последние 50 закрытых сделок < 15% → поднять min_strength на +10 на 30 минут
+**Алгоритм:**
+1. Singleton `CircuitBreaker`, метод `check(db_path)` — SQL `SELECT COUNT(*) WHERE status IN ('TP','TSL') ORDER BY closed_at DESC LIMIT 50`
+2. `strength_floor_bonus: int` — 0 в норме, +10 при активации
+3. Сброс через 30 мин (или если WR вернулся > 20%)
+4. Вызов каждые 15 мин в отдельной async задаче
+5. `bot/monitoring.py` → `is_actionable()`: `effective_min = min_strength + cb.strength_floor_bonus`
+**Лог:** `[CircuitBreaker] WR=8.4% < 15%, порог +10 на 30 мин` / `[CircuitBreaker] OFF — WR=32%`
+**Спек:** DISCUSSION.md [12.04.2026] ARCH
 
 ---
 
@@ -162,10 +198,18 @@ logger.info("[BTC4h] режим=%s close=%.0f", regime, ohlcv['close'].iloc[-1])
 
 ---
 
-### DEV-87 — OTE backtest v2 🟢
-**Срок:** ~11.04.2026 (ждёт shadow данных)
-**Суть:** проверить WR после Step0 (stale-invalidation) + Step1 (wide [0.705-0.786] + ATR gate)
-**Метрика:** нужно ≥ 30 OTE сделок для статистической значимости
+### DEV-87 — OTE backtest v2 ✅
+**Выполнено 12.04.2026.** Запущен `scripts/backtest_ote_mtf.py` — 5 пар (BTC/ETH/SOL/BNB/XRP), 60 дней, 180 SWING + 124 SCALP сделок.
+
+**Результаты:**
+- SWING WR=35.1%, AvgR=0.054, Sharpe=0.59, MaxDD=-14R → 🔴 ниже порога 45%
+- SCALP WR=29.2%, AvgR=-0.125, Sharpe=-1.46 → 🔴 провал
+- Лучший subgroup: 4h primary zone WR=37.7%, CHoCH WR=37.8%, ETH WR=45.5%
+- BTC катастрофа: WR=20%, AvgR=-0.400
+- Конфлюенция 3TF = 0 сигналов (слишком редко)
+
+**Вывод:** Step0+Step1 недостаточно. Нужен Step2 — дополнительные фильтры для выхода на WR≥45%.
+**Следующий шаг:** ARCH решает Step2 фильтры (4h-only? CHoCH-only? exclude BTC?)
 
 ---
 
@@ -342,9 +386,41 @@ logger.info("[BTC4h] режим=%s close=%.0f", regime, ohlcv['close'].iloc[-1])
 
 ---
 
-### TR-007 — Валидация новых детекторов 🔄
-**Текущий фокус:** MTF WT Specialist + MTF SMC Specialist (DEV-138/139) — shadow данные накапливаются
-**Задача TRADER:** через 1 неделю (после ~12.04) — оценить WTVerdict vs реальные входы
+### TR-007 — Валидация MTF WT Specialist 🔴
+**Срок наступил: 12.04.2026**
+**Задача TRADER:** оценить WTVerdict vs реальные входы из логов и БД:
+- Выгрузить WOULD_BLOCK записи VerdictAggregator (grep логов)
+- Проверить: сколько заблокированных сигналов были бы прибыльными?
+- Вывод: активировать `verdict_gate.enabled: true` или ждать ещё
+
+---
+
+### TRADER-AUDIT-002 — Аудит DUAL_TSL split 🟢
+**Триггер:** 500+ закрытых сделок с `strategy_type=DUAL_TSL` в БД (~30.04.2026)
+**Задача:**
+1. Запустить grid search соотношений 5..95% (шаг 5%) на новых DUAL_TSL сделках
+2. Пересчитать TSL_CAPTURE_RATE (сейчас 57.9% из 680 TSL-сделок)
+3. Сравнить с текущим стандартом 10%/90%
+4. Обновить `tp1_fix_pct` в config.yaml если оптимум сдвинулся
+
+**SQL для мониторинга:** `SELECT COUNT(*) FROM simulated_trades WHERE strategy_type='DUAL_TSL' AND status != 'OPEN'`
+**Зафиксировано:** PROJECT-LOG.md [12.04.2026], memory/project_dual_tsl_strategy.md
+
+---
+
+### DEV-157 — Фикс аномального SL 🔴
+**Файлы:** `core/trading/trade_simulator.py` (`register_trade()`), `core/trading/sl_tp_calculator.py`
+**Симптом:** ASR/USDT: -450R, XPIN/USDT: -81R — SL рассчитан в 0.002% от цены входа (вместо нормальных 1-3%).
+**Причина:** при некоторых парах ATR или пивот-расчёт даёт SL практически равный entry → единица риска минимальна → любое движение = огромный R.
+**Фикс:** добавить guard в `register_trade()`:
+```python
+sl_dist_pct = abs(entry - stop_loss) / entry * 100
+if sl_dist_pct < 0.1:  # SL ближе 0.1% — явный баг расчёта
+    logger.warning("[SL-GUARD] %s: sl_dist=%.4f%% < 0.1%% → пропуск регистрации", symbol, sl_dist_pct)
+    return None
+```
+**Конфиг:** добавить `trading.min_sl_dist_pct: 0.1` (настраиваемый порог)
+**Данные:** 15 сделок с |R|>10 в БД, из них 5 с |R|>20 — все баг SL
 
 ---
 

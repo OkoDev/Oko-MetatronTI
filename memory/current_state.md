@@ -4,793 +4,140 @@
 
 ---
 
+## [~17:30 UTC 12.04.2026] Агент: Developer — DEV-155 + DEV-156 + DEV-157
+
+- ✅ **DEV-157:** guard в `register_trade()` — sl_dist_pct < 0.1% → skip + WARNING. config: `trading.min_sl_dist_pct: 0.1`
+- ✅ **DEV-155:** `min_strength_by_regime` HIGH_VOL: 85 (было 75), + новый `min_strength_by_direction_regime` LONG_RANGE: 75. Применяется в `is_actionable()` и `register_trade_async()`.
+- ✅ **DEV-156:** `core/trading/circuit_breaker.py` (Singleton) — WR<15% → +10 к min_strength на 30 мин. Loop `circuit_breaker_loop()` запускается в bot.py.
+- ✅ TASKS.md (DEV-155/156/157 → ✅), PROJECT-LOG.md обновлены
+- 🔄 Следующий шаг: рестарт бота → логи `[DEV-155]`, `[DEV-156]`, `[CircuitBreaker]`
+- ⚠️ VerdictAggregator WT threshold 0.65→0.50 ещё не реализовано
+
+## [~14:30 UTC 12.04.2026] Агент: Developer — DEV-87 OTE backtest v2
+
+- ✅ Запущен `scripts/backtest_ote_mtf.py` — 5 пар, 60 дней, 304 сделки total
+- ✅ SWING WR=35.1%, SCALP WR=29.2% — оба ниже порога 45%
+- ✅ TASKS.md, PROJECT-LOG.md, DISCUSSION.md обновлены
+- ⚠️ OTE остаётся в shadow_mode=true — производственный деплой нецелесообразен
+- 🔄 Ожидаем: ARCH решает Step2 фильтры (4h-only? CHoCH-only? exclude BTC?)
+- Лучший subgroup: 4h primary WR=37.7%, CHoCH WR=37.8%, ETH WR=45.5%
+
+---
+
+## [~10:00 UTC 12.04.2026] Агент: Architect — Фильтры WR + Circuit Breaker
+
+- ✅ Прочитал аудит TRADER (WR=8.4% за 07-10.04, диагноз: whipsaw рынок)
+- ✅ Принял решения по B/C/D: HIGH_VOL→85, LONG_RANGE→75, Circuit Breaker
+- ✅ Создал DEV-155 + DEV-156 в TASKS.md с полными спеками
+- ✅ Ответил в DISCUSSION.md с приоритетами на 12.04
+- 🔄 Ожидаем: DEV реализует DEV-155→DEV-156→рестарт
+- ⚠️ DEV-153 (VerdictGate): держать выключенным по рекомендации TRADER до WR > 30% за 3 дня подряд
+
+---
+
+## [12:00 UTC 12.04.2026] Агент: Architect — DUAL_TSL стандарт
+
+- ✅ Сделано: Бэктест 5564 сделок → DUAL_TSL 10%/90% = лучший вариант (+847R)
+- ✅ DEV-124 закрыт как ошибочный (нечестное сравнение периодов)
+- ✅ config.yaml: `trend_strategy_type: DUAL_TSL`, `tp1_fix_pct: 10`
+- ✅ Задокументировано: PROJECT-LOG.md, memory/project_dual_tsl_strategy.md
+- ⚠️ Апрель 2026: все стратегии в минусе — плохой рынок, не баг стратегии
+- 🔄 Следить: первые DUAL_TSL сделки в БД (`strategy_type=DUAL_TSL`), логи `[regime_strategy] TREND_UP: DUAL_TP → DUAL_TSL`
+
+---
+
+## [11.04.2026 02:30 UTC] Агент: Developer — Куб Метатрона ПОЛНАЯ РЕАЛИЗАЦИЯ
+
+### Что сделано:
+
+**Куб Метатрона — все 13 сфер подключены к шине:**
+
+1. **PairContextBus расширен** (`core/context/pair_context.py`):
+   - PairState: 38 полей (все 13 сфер)
+   - SphereEvent: 22 типа событий
+   - Auto-update PairState при publish()
+   - Event log для диагностики (последние 200 событий)
+
+2. **Новые детекторы** (`core/signals/htf_detectors.py`):
+   - TrendChangeDetector — смена тренда на 1h → EventBus
+   - WTCrossHTFDetector — кросс WT в OB/OS на 4h/1d → EventBus
+   - EVENT_PRIORITY: +3 новых триггера (trend_change_1h, wt_cross_4h, wt_cross_1d)
+
+3. **scan_loop.py wiring** — каждый детектор публикует в bus:
+   - Anomaly → ANOMALY_DETECTED
+   - WT signal → SIGNAL_DETECTED
+   - Confluence → SIGNAL_DETECTED
+   - Divergence → DIVERGENCE_FOUND
+   - Regime → REGIME_UPDATED (+ reversal_mode)
+   - WT snap → WT_SNAP_UPDATED (все TF)
+   - Pivot snap → PIVOT_SNAP_UPDATED
+   - BTC macro shock → CROSS_MARKET
+
+4. **WsFeed → bus** — TICK_PRICE (throttled 1/10 tick)
+
+5. **Exit Manager → bus** (`trade_simulator.py`):
+   - POSITION_CLOSED при close_trade()
+   - TSL_MOVED при движении TSL
+   - TP1_HIT при частичном TP
+
+6. **PostTradeAnalyser → bus** — CASCADE_UPDATED, OTE_ZONE_SET
+
+7. **NarrativeBuilder** (`core/intelligence/narrative_builder.py`) — читает ПОЛНЫЙ PairState:
+   - Факторы из всех сфер: WT snap, cascade, divergence, pivot, anomaly, BTC
+   - spheres_used: считает сколько сфер дали данные
+   - Публикует NARRATIVE_BUILT в bus
+
+8. **SphereRegistry** (`core/context/sphere_registry.py`) — Сфера 12:
+   - Подписан на все 22 типа событий
+   - health_check() → статус каждой сферы (OK/STALE/DEAD)
+   - summary_text() для /status
+
+9. **Mesh-связность** (`bot/core/bot.py → _wire_cube_subscriptions()`):
+   - 8 подписок между сферами
+   - Сфера 3 ← regime_updated, Сфера 6 ← wt_snap_updated
+   - Сфера 9 ← signal_detected, Сфера 10 ← divergence + pivot
+   - Сфера 12 ← все
+
+10. **position_sync.py** — фикс бага ложных exit_price:
+    - Sanity check: SL с R>3 → заменяем на SL цену
+    - TP с R<-1 → заменяем на TP цену
+    - EXPIRED с R>10 → заменяем на SL цену
+
+### Известные проблемы:
+- ⚠️ 90 OPEN: 42 VST + 48 SIM-only (SIM-only by design)
+- ⚠️ NEAR #5795 и ещё ~10 сделок: position_sync использовал текущую цену вместо реального exit → фикс выше
+- ⚠️ DUSK/USDT R:R=26.8 — нет записи о сделке в логе (возможно min_strength фильтр)
+
+### Файлы изменены (НЕ закоммичены):
+- `core/context/pair_context.py` — полный Shared Context Bus
+- `core/context/event_bus.py` — +3 EVENT_PRIORITY
+- `core/context/sphere_registry.py` — НОВЫЙ
+- `core/signals/htf_detectors.py` — НОВЫЙ
+- `core/intelligence/narrative_builder.py` — полный нарратив из всех сфер
+- `core/trading/post_trade_analyser.py` — CASCADE/OTE publish
+- `core/trading/trade_simulator.py` — POSITION_CLOSED/TSL_MOVED/TP1_HIT publish
+- `core/infra/ws_feed.py` — TICK_PRICE publish
+- `core/exchange/position_sync.py` — sanity check fix
+- `bot/core/bot.py` — HTF detectors, SphereRegistry, _wire_cube_subscriptions
+- `bot/loops/scan_loop.py` — все детекторы → bus publish
+- `docs/ENCYCLOPEDIA.md` — статус Куба 12/12 сфер
+
+### Следующий шаг:
+- Рестарт бота → проверить логи [Cube] и [SphereRegistry]
+- Через 30 мин: `bot.sphere_registry.summary_text()` — все 12 сфер OK?
+
+---
+
+## [12.04.2026 ~16:30 UTC] Агент: TRADER — TR-001 + TR-007
+- ✅ TR-001: разбор БД 12.04, WR тренд 8%→17% (улучшение, но <30%)
+- ✅ TR-007: VerdictAggregator — verdict_would_block не пишется в features_json (0 записей). Нужна задача DEV.
+- ✅ Баг-репорт: ASR R=-450, AKT TP с R=-6.56 — аномальные R_multiple, нужен sanity clamp [-15,+15]
+- ✅ EventBus: все Full CALL → None (ожидаемо), BTC 4h gate работает в shadow TREND_DOWN
+- ✅ Согласен с решениями ARCH по DEV-155 + DEV-156
+- ⚠️ SHORT HIGH_VOL: 3 дня подряд avgR<-0.7, WR=5% — DEV-155 критически нужен
+- ⚠️ PIXEL SHORT HIGH_VOL открыт (str=71) — не пройдёт DEV-155 порог 85
+
 ## [10.04.2026] Агент: TRADER — SQL-разбор + рекомендации (TR-001, DEV-153)
-- ✅ Ответил на DEV-153: 426 сделок с wt_snap (389 закрытых) — порог 200+ пройден, но рекомендую НЕ включать VerdictGate сейчас (рынок whipsaw)
-- ✅ Собрал WR benchmark: нейтральный период 01-03.04 = **38.7%** (vs 8.4% за 07-10.04)
-- ✅ Выявил критически убыточные комбо: `confluence SHORT HIGH_VOL` (-1.699 avgR), `confluence LONG RANGE` (-0.648)
-- ✅ 4 рекомендации в DISCUSSION.md: HIGH_VOL ограничить, LONG RANGE фильтр, circuit breaker, пороги DEV-149 не снижать
-- ✅ TR-007 отложен до 14.04 (рынок непоказательный)
-- ⚠️ WR=8.4% (07-10.04) — рыночный контекст (post-crash whipsaw), не баг кода
-- ⚠️ DEV-149 изменения (снижение порогов) — РЕКОМЕНДУЮ НЕ применять до WR>25% за 3 дня
-- ⚠️ HIGH_VOL: рассмотреть обратно `min_strength.HIGH_VOL: 85+` или `blocked_regimes`
-
-→ Ждём решения ARCH по рекомендациям B/C/D (DISCUSSION.md [10.04] TRADER)
-
----
-
-## [10.04.2026] Агент: Architect — Ответ на аудит Куба + Position Sync решение
-- ✅ Ответил на DEV [10.04.2026] аудит Куба Метатрона — подтвердил выводы, расставил приоритеты
-- ✅ Принял решение по Position Sync: Вариант 1 (fail-closed) — создана DEV-154 🔴
-- ✅ Написал спек ARCH-71 (Real Full CALL) — deep_analyze_symbol() на всех 6 TF
-- ✅ Написал спек ARCH-72 (Feedback Loop) — close_trade → PairContextBus + weights + EventBus
-- ✅ Порядок: P0 (DEV-154) → P1 (DEV-152 рестарт) → P2 (ARCH-71) → P3 (ARCH-72) → P4 (DEV-153)
-- Записано в DISCUSSION.md и TASKS.md
-
----
-
-## [09.04.2026 ночь] Агент: Developer — DEV-149 разблокировка + TSL фиксы + Reversal Boost ✅
-
-**Контекст:** коллапс потока сделок (304/день → 3/день к 09.04), TSL на бирже зациклился, orphan-и не закрывались, развороты не ловились. План: `C:\Users\yogoru\.claude\plans\modular-imagining-tulip.md`.
-
-### Сделано (НЕ закоммичено, бот НЕ перезапущен):
-
-1. ✅ **TSL TUT float-equality** — `core/trading/trade_simulator.py:~1680` — замена `tsl_price != _old_sl` на `abs(delta)/old * 100 >= 0.15` (устраняет зацикленный cancel+replace каждые 2 мин).
-2. ✅ **TSL KMNO retry** — `core/exchange/tsl_updater.py:15-32` — `fetch_and_save_sl_order_id` теперь 3 попытки × 2 сек (BingX иногда создаёт trigger за 3-5 сек).
-3. ✅ **TSL CAKE orphan auto-close** — `core/exchange/tsl_updater.py:67-86` — если `get_position_qty()=0` → `close_trade(EXPIRED)` вместо бесконечных `place_sl_order` ошибок.
-4. ✅ **Reversal Boost подключён** — `core/trading_intelligence.py:~886` — если `metadata.reversal_mode=="REVERSAL"` + сигнал в `(pivot_reversal, confluence, wl_breach)` + WT 4h в OB/OS по направлению → `strength += 8` + обход `regime_direction_block` (там же `:~1112`).
-5. ✅ **config.yaml — пороги снижены**:
-   - `min_strength_register: 63 → 50`
-   - `analysis.signals.min_confidence_by_type.confluence: 0.68 → 0.58`
-   - `signal_quality.min_strength_by_regime.RANGE: 70 → 60`, `HIGH_VOL: 80 → 75`
-   - `trading.blocked_regimes: [HIGH_VOL] → []` (HIGH_VOL теперь фильтруется только по `min_strength_by_regime.HIGH_VOL=75`)
-6. ✅ **DEV-128ext сужен** — `bot/monitoring.py:882-914` — оставлены только подтверждённые вредные комбо (`confluence LONG TREND_DOWN/UP`, `confluence SHORT TREND_UP`, `pivot_reversal SHORT TREND_UP`). Разблокированы: `pivot_reversal LONG TREND_DOWN` (классический reversal на OS), `confluence HIGH_VOL` обе стороны. Все блоки имеют bypass на `reversal_boost`.
-7. ✅ **position_sync guard ослаблен** — `core/exchange/position_sync.py:97-112` — теперь пропуск только если snapshot пустой **два цикла подряд** (было `open_sim_count > 3`).
-8. ✅ **ML блендинг проверен** — `core/trading_intelligence.py:156-167, 2090-2133` — при `ml.use_outcome_predictor: false` `self.outcome_predictor = None`, `blend_confidence_with_ml` возвращает сразу. Confluence confidence drops (0.65→0.53) — НЕ от ML.
-
-### Ревизия весов сигналов (запрошено пользователем) — ДАННЫЕ ЕСТЬ, конфиг НЕ менял
-
-Статистика по закрытым сделкам за **14 дней** (`simulated_trades`):
-
-| signal_type         | n    | WR%  | avgR    | вердикт |
-|---------------------|------|------|---------|---------|
-| confluence          | 1189 | 27.1 | **+0.148** | ✅ работает (SHORT) |
-| pivot_reversal      | 499  | 22.0 | -0.094  | ⚠️ слабо отрицательный |
-| watch_list_breach   | 206  | 27.2 | **+0.219** | ✅ лучший |
-| wt_b_signal         | 40   | 17.5 | -0.392  | 🔴 вреден |
-| wt_signal           | 3    | 0    | -1.0    | мёртв |
-| mtf_bias            | 1    | 0    | -1.0    | мёртв |
-
-Остальные из `signal_weights` (`mtf_alert, divergence, trend_signal, anomaly, pivot_alert`) — **0 сделок за 14 дней** → конфигурация весов для них не влияет, можно чистить.
-
-**Разрез по direction × regime (важно!):**
-- `confluence SHORT RANGE` +0.288 (n=522), `SHORT TREND_DOWN` +0.307 (n=227) — сильно в плюс
-- `confluence LONG` везде минус: RANGE -0.071 (n=318), TREND_UP -0.176 (n=122) — 440 сделок, все отрицательные
-- `pivot_reversal LONG TREND_UP` **-0.319** (n=160) — подтверждено, блок в DEV-128ext оставлен
-- `pivot_reversal SHORT TREND_DOWN` +0.162 (n=43) — разблокировано правильно
-- `watch_list_breach LONG TREND_UP` **+0.897** (n=26) — отличный trend-following паттерн
-- `wt_b_signal LONG RANGE` -0.873 (n=8) — худший разрез
-
-**Предлагаемые изменения весов** (формула `factor = clamp(1.0 + avgR*0.4, 0.5, 2.0)`, базовые — текущие из `config.yaml:368-376`):
-
-| signal          | current | предл. | причина |
-|-----------------|---------|--------|---------|
-| confluence      | 0.35    | 0.37   | +0.148R, лёгкий буст |
-| pivot_reversal  | 0.20    | 0.19   | -0.094R, минус-корректировка |
-| wt_signal       | 0.10    | 0.05   | мёртв (3 сделки), заглушить |
-| mtf_bias        | 0.30    | 0.15   | мёртв (1 сделка) |
-| mtf_alert       | 0.30    | 0.15   | 0 сделок, мёртвый канал |
-| trend_signal    | 0.10    | 0.05   | 0 сделок |
-| anomaly         | 0.05    | 0.05   | без изменений |
-| divergence      | 0.15    | 0.10   | 0 сделок |
-| pivot_alert     | 0.15    | 0.10   | 0 сделок |
-
-Корректировки **мягкие** — если канал оживёт после разблокировки порогов, он легко вернётся. wt_b_signal НЕ в этой таблице (отдельный детектор, `analysis.wt_b.enabled` — пользователь просил оставить наблюдать).
-
-**Не предлагаю** жёстко резать `confluence LONG` на уровне регулярных правил: reversal_boost должен ловить реальные развороты, а когда рынок развернётся — LONG оживёт. Это временный перекос, не структурный.
-
-### 🔄 Остаётся к утру
-- Решение: применить ли предложенные веса (или скорректировать пропорции)
-- Рестарт бота для применения DEV-149 (8 изменений в файлах)
-- Верификация по плану Этап 6 (30 мин — 2 часа логи + дашборд)
-- Коммит посекционно (5 коммитов по группам изменений)
-
-### ⚠️ Важно
-- `scripts/repair_missing_stops.py` содержит `APPROVED_TRADE_IDS = {5306,5329,5337,5346,5368}` — **старые ID из инцидента 04.04**. Перед запуском сейчас нужно обновить под актуальные orphan-ы (или использовать `audit_missing_stops.py` только для аудита).
-- Все изменения локальные, откат — `git checkout` по файлам.
-
----
-
-## [05.04.2026 вечер] Агент: Developer — Куб Метатрона Фаза 2 (DEV-137..142) ✅
-
-- ✅ **DEV-137**: `classify_mode()` в `core/indicators/market_regime.py` — WT 4h OB/OS + ADX 1h slope + CHoCH → REVERSAL/TREND/UNCLEAR. Запись в `recommendation.metadata["reversal_mode"]`.
-- ✅ **DEV-138**: `core/ml/mtf_wt_specialist.py` — MTFWTSpecialist, 35 признаков (7 TF × 5), WTVerdict. wt_snap пишется в features_json через trade_simulator. Shadow → metadata["wt_verdict"].
-- ✅ **DEV-139**: `core/ml/mtf_smc_specialist.py` — MTFSMCSpecialist, 36 признаков (4 TF × 9), SMCVerdict. smc_snap вычисляется в `_build_mtf_context`. Shadow → metadata["smc_verdict"].
-- ✅ **DEV-140**: `detect_equal_highs_lows()` в `core/smc/liquidity.py` — EQH/EQL детектор. Используется в smc_snap.
-- ✅ **DEV-141**: `core/intelligence/narrative_builder.py` — NarrativeBuilder + TradingNarrative. Config toggle `trading.narrative.enabled: false`. Shadow → metadata["narrative"].
-- ✅ **DEV-142**: `core/context/pair_context.py` — `publish/subscribe/get_full_state` + `wt_verdict/smc_verdict/reversal_mode` в PairState.
-- ⚠️ **Нужен рестарт бота** для применения всех изменений.
-- ⚠️ ML обучится автоматически по накоплении 50+ сделок с wt_snap/smc_snap (shadow, не влияет на trading).
-- ⚠️ **DEV-144** (редизайн дашборда) — в планах, статус 🟡.
-
----
-
-## [05.04.2026] Агент: Developer — DEV-143 position_sync фикс
-
-- ✅ **DEV-143**: `core/exchange/position_sync.py:59` — добавлен `get_ticker()` fallback
-  - Было: `get_current_price() or entry_price` → всегда TP@entry при WS-miss
-  - Стало: WS → REST ticker → entry_price (только как крайний fallback)
-  - Нужен рестарт бота — изменения вступят в силу для новых sync-циклов
-
----
-
-## [04.04.2026 вечер] Агент: Developer — DEV-126 финальный фикс
-
-- ✅ **DEV-126 / DEV-133 финал**: корень бага найден — `get_ohlcv()` возвращает raw OHLCV без `wt1`
-  - `monitoring.py` `check_pivot_reversals`: добавлен `calculate_wt()` для 15m/1h/4h df перед передачей в `_pre_dfs`
-  - `scan_loop.py` `_handle_wl_breach_entry`: добавлен `calculate_wt()` для df_1h перед чтением wt1
-  - Ранний код проверял `"wt1" in _df.columns` до вычисления — условие всегда False → htf_wt всегда None
-- 🔄 **Нужен рестарт** — изменения вступят в силу при следующем старте бота
-
----
-
-## [04.04.2026] Агент: ARCH — ARCH-68 план
-
-- ✅ **ARCH-68** взята в работу (🟢 → 🔄)
-- ✅ Архитектурный план написан в DISCUSSION.md: 5 компонентов, 6 задач DEV-137..142
-- ✅ TASKS.md обновлён: DEV-137..142 добавлены в сводную таблицу
-- 🔄 **DEV-137** ожидает разработчика (Reversal Mode Detector — первый приоритет)
-- 📌 Все задачи ARCH-68 запускаются в shadow mode без ARCH-62
-
----
-
-## [04.04.2026] Агент: Developer — DEV-136 TSL fix
-
-- ✅ **DEV-136** (TSL на бирже — критический баг): `exchange_order_id`, `exchange_sl_order_id`, `qty` отсутствовали в `simulated_trades`
-  - TSL cancel+replace НИКОГДА не работал — `set_exchange_order_id()` молча падал (колонки нет)
-  - Фикс: добавлены 3 колонки в CREATE TABLE + ALTER TABLE миграции в `trade_simulator.py`
-  - `set_exchange_order_id(trade_id, order_id, qty=0.0)` — теперь сохраняет qty тоже
-  - Call sites обновлены: `monitoring.py` + `scan_loop.py` передают `qty=_qty`
-  - После рестарта новые VST сделки будут иметь `exchange_order_id` → TSL начнёт работать
-
----
-
-## [04.04.2026 ночь] Агент: Developer — DEV-133 + DEV-134
-
-- ✅ **DEV-133**: дедупликация VST позиций — `OrderManager.has_open_position()` + проверка в `open_bracket()` перед размещением
-  - `core/exchange/order_manager.py`: новый метод `has_open_position(symbol)` запрашивает биржу
-  - `open_bracket()`: если позиция уже есть → `BracketResult(success=False, error="position_already_open")` без ордера
-- ✅ **DEV-134**: `PositionManager` инстанцирован в `bot.py` как `bot.position_manager`
-  - `bot/core/bot.py`: `from core.trading.position_manager import PositionManager` + `self.position_manager = PositionManager(...)`
-  - `bot/monitoring.py`: после `open_bracket()` → `bot.position_manager.register()`
-  - `bot/loops/scan_loop.py`: то же самое в WL breach пути
-- ⚠️ **Корневая причина 35 vs 15**: VST режим работал без трекинга — `live_orders` была пустой, позиции накапливались без дедупликации
-- ⚠️ **Позиции без TP/SL**: старые позиции (10000SATS, TNSR, ONE, REZ, VVV, AERGO, XAN) — нужно закрыть вручную на бирже
-- 🔄 **Нужен рестарт бота** — после рестарта новые дубли не появятся
-
-**→ TRADER**: текущие 35 позиций на бирже без TP/SL — закрыть вручную, затем рестарт
-
----
-
-## [03.04.2026] Агент: TRADER — SL диагноз + DEV-126 неполный + рынок
-
-- ✅ **SL конвейер диагноз**: 2 причины — хронический (pivot_reversal LONG RANGE, нет gate) + рыночный (SHORT при BTC отскоке)
-- ✅ **DEV-126 неполный**: confluence htf_wt 100% ✅, но pivot_reversal 0% ❌, WL breach 0% ❌
-- ✅ **Рынок 03.04**: разворот вверх. LONG=SHORT=19. TREND_UP=13 vs TREND_DOWN=8
-- ✅ **weekly_bias gate уточнение**: применять только к pivot_reversal, НЕ к confluence
-- ✅ **BTC 1h gate**: не нужен — reversal confluence работает лучше при 1h+4h DOWN (OS)
-- ✅ **Все записаны в DISCUSSION.md**
-
-**→ DEV:** pivot_reversal + WL breach всё ещё без htf_wt — нужен доп. фикс DEV-126.
-
----
-
-## [04.04.2026] Агент: TRADER — TR-001 + TR-007
-
-- ✅ **TR-001**: WL 7д WR=12% (3/25), totalR=−12.1R. Лидер: S (+1.25R). Аутсайдер: API3 (4 SL)
-- ✅ **ENA аномалия**: TP с R=0.0, exit=entry. TSL activated. Баг захвата прибыли → сообщено DEV
-- ✅ **TR-007 детекторы**: pivot_reversal = -204R total, главный дренаж. wt_signal пересмотрен: 31% WR, +0.308R (НЕ убирать)
-- ✅ **confluence контртренд**: LONG TREND_DOWN (-0.794R) + SHORT TREND_UP (-0.841R) → блокировать
-- ✅ **WLB SHORT RANGE**: -0.188R (n=76) → добавить фильтр после clean data
-- ✅ **Бот сегодня**: 0 сделок 04.04 — похоже не запущен
-- ✅ **trader_analyses/2026-04-04.md** создан
-
-**→ ARCH/DEV:** DEV-128 + блокировка pivot_reversal LONG TREND_DOWN / SHORT TREND_UP — СРОЧНО
-
----
-
-## [04.04.2026] Агент: Developer — DEV ответ + DEV-132 фикс
-
-- ✅ **DISCUSSION ответ**: написан DEV ответ на вопросы ARCH/TRADER (check_pivot_signals подтвердил, задачи приняты)
-- ✅ **DEV-132 реализован**: floor TSL = entry price в `trade_simulator.py` строка ~1546
-  - LONG: `tsl_price = max(tsl_price, entry)` — TSL не закроет хуже entry
-  - SHORT: `tsl_price = min(tsl_price, entry)` — симметрично
-  - Файл: `core/trading/trade_simulator.py`
-- 🟡 **DEV-126**: pivot_reversal + WL breach без htf_wt — fix не сделан (очередь)
-- 🟡 **DEV-127**: confluence контртренд gate — в очереди
-- 🟡 **DEV-128**: pivot_reversal режим-гейты — в очереди
-- 🟡 **DEV-130**: блок pivot_1M как TP — в очереди
-- 🟡 **DEV-131**: PositionManager VST Phase 2 — в очереди
-
----
-
-## [04.04.2026] Агент: TRADER — position_sync баг + аналитика
-
-- ✅ **DEV [02.04] вопрос закрыт**: avg_R=+0.21 при SL+tsl=1 = DUAL_TP механизм (tp1_hit 70% locked → остаток SL выше entry → weighted R>0)
-- 🔥 **DEV-142 найден**: `position_sync.py:59` — `get_current_price` возвращает None для большинства пар → fallback=entry_price → все VST сделки записываются как TP@entry, R=0
-  - Сегодня: 86/91 TP = нулевые, ВСЕ VST (exchange_order_id). SIM = 0 нулевых TP.
-  - Реальная производительность: WR=16%, -21.6R (46 SL, 7 TP по +3R, 2 TSL)
-  - Фикс: заменить get_current_price() → get_ticker() в position_sync.py
-- ✅ **Аналитика 04.04**: лучшие сделки = SOMI/PIEVERSE/LAB/ONE/OXT по +3.0R TP (SINGLE cap)
-- ✅ **Записано в DISCUSSION.md**
-
-**→ DEV: DEV-142 🔥 — position_sync.py:59 fix (2 строки). Блокирует корректность VST статистики.**
-**→ Напоминание: 35 VST позиций без TP/SL — закрыть вручную, затем рестарт**
-
----
-
-## [04.04.2026] Агент: TRADER — VST аудит
-
-- ✅ **VST аудит завершён**
-  - API ключи в .env: BINGX_VST_API_KEY + BINGX_VST_SECRET_KEY ✅
-  - OrderExecutor + PositionSizer инстанцируются в bot.py ✅
-  - monitoring.py вызывает open_bracket() для VST ✅ (строки 1044-1087)
-  - **live_orders таблица**: НЕ существует (PositionManager нигде не инстанцируется)
-  - **order_id**: теряется — BracketResult.order_id не записывается в БД
-  - Текущий режим: "fire and forget" — ордера открываются, не отслеживаются
-- ✅ **Анализ записан в DISCUSSION.md**
-- ✅ **Рекомендация DEV**: инстанцировать PositionManager в bot.py + вызвать register() после open_bracket()
-
----
-
-## [04.04.2026] Агент: DEV — DEV-126 выполнен
-
-- ✅ **DEV-126**: features_json fix — WL breach + other_recs теперь пишут weekly_bias, htf_wt
-  - `scan_loop.py`: `_handle_wl_breach_entry` → полный extra_features (weekly_bias через pivot_calculator, htf_wt1_1h через async fetch 1h, wt1_value из df_entry)
-  - `monitoring.py`: `other_recs` block → передаёт weekly_bias/htf_wt из recommendation.metadata + pre_fetched_dfs
-- 🔄 **Следующие**: DEV-127 (SMC None gate shadow), DEV-128 (weekly_bias gate pivot_reversal)
-
----
-
-## [02.04.2026] Агент: TRADER — TR-007 + TR-001 выполнены
-
-- ✅ **SMC gate**: `smc_has_bos OR smc_has_choch` — 254 сделки без SMC = WR=2% EV=−0.818R → shadow gate предложен DEV
-- ✅ **session="?" баг**: 745/1401 (53%) сделок = неполный features_json (session+htf_wt+RR = одно множество)
-- ✅ **HTF alignment**: +0.468R EV разница, но данные только у 47% — нужен fix заполнения
-- ✅ **Мёртвые детекторы**: wt_signal (0% WR), anomaly (0% WR) → предложено убрать
-- ✅ **pivot_reversal LONG TREND_DOWN**: −0.929R → предложено заблокировать
-- ✅ **TR-001**: WR=37.5% сегодня, EV≈+0.54R, 25 открытых позиций. OKB/KAITO >45ч.
-- ✅ **PairFullState валидация**: концепция верна, но fix заполнения данных = prerequisite для ML специалистов
-- ✅ **trader_analyses/2026-04-02.md** создан
-
-**Критический вывод**: fix session+htf_wt в register_trade_async — необходимо перед ARCH-68 (ML специалисты).
-
----
-
-## [02.04.2026] Агент: ARCH — Куб Метатрона зафиксирован в ENCYCLOPEDIA
-
-- ✅ **docs/ENCYCLOPEDIA.md**: добавлен раздел "Архитектурная концепция: Куб Метатрона"
-  - 13 сфер с детальным описанием каждой (статус, файл, признаки, зависимости)
-  - 5 Платоновых тел — уровни абстракции системы
-  - PairFullState dataclass с полным набором полей шины
-  - MTF WT Specialist: **35 признаков** (7TF × wt1/wt2/zone/cross/**atr_trend**)
-  - MTF SMC Specialist: 36 признаков (4TF × 9 включая EQH/EQL)
-  - Дорожная карта Фаза 0→4
-  - Правило: любая задача должна соответствовать Кубу
-- ✅ **CLAUDE.md**: добавлено обязательное чтение ENCYCLOPEDIA + архитектурное правило Куба
-- ✅ **TASKS.md**: добавлена ARCH-68 (Куб Фаза 2: ML специалисты + Narrative Builder)
-- ✅ **DISCUSSION.md**: зафиксирована концепция + уточнение ATR-trend в MTF WT Specialist
-
-**Следующие приоритеты:**
-1. 🔥 ARCH-62: Exit Manager (разделить монолит trade_simulator.py) — блокирует Фазу 2
-2. 🟢 DEV-121: Self-Diagnostics Suite
-3. 🔥 DEV-111: BTC 4h gate shadow
-
----
-
-## [02.04.2026] Агент: TRADER — TR-001 + ответы DEV/ARCH
-
-- ✅ **Ответ DEV**: avg_R=+0.21 при SL-статусе = DUAL_TP tp1_hit механизм (30/31 хитнули TP1, 0.70×R_tp1 + 0.30×(-1R) ≈ +0.21R). TSL gap риск, не баг.
-- ✅ **48ч ревью DUAL_TSL/TP2**: TSL exits = avg_R +3.0-3.2R, TP2 = 14 сделок +2.288R. Механизм корректен.
-- ✅ **WR нормализована**: сегодня (02.04) WR=37.5%, EV≈+0.54R. Фиксы dynamic_os+bounce работают.
-- ✅ **Ответ ARCH**: горизонт пользователей = 50-200, SQLite достаточно, WAL при ~50 usr.
-- ✅ **TR-001**: 25 открытых, ⚠️ OKB/KAITO >45ч (EXPIRED скоро), MMT tsl=0 за 29ч.
-- ✅ **Trader analysis**: memory/trader_analyses/2026-04-02.md создан.
-
-**Текущее состояние системы:** стабильна. WR нормализована.
-
----
-
-## [01.04.2026] Агент: DEV — Аудит SL конвейера + полный map TP/SL/TSL
-
-- ✅ **Диагноз SL конвейера**: DEV-108 (dynamic_os в RANGE) = root cause. Фикс: `dynamic_os_enabled: false` в config.yaml
-- ✅ **4 dead trades** (NULL take_profit от bounce_mode): закрыты как EXPIRED (id 4479, 4485, 4625, 4760)
-- ✅ **trigger_bus**: вернут в `shadow: true` (только 1 сделка за 3 дня — недостаточно данных)
-- ✅ **bounce_mode**: `enabled: false` — создавал take_profit=NULL сделки без механизма выхода
-- ✅ **Полный аудит check_open_trades** (строки 1050-1665): задокументирована карта всех решений
-- ✅ **TASKS.md**: добавлена DEV-121 (Self-Diagnostics Suite) + ARCH-62 в сводной таблице
-- ✅ **DISCUSSION.md**: полный map TP/SL аудита + список 6 критических проблем
-
-**Критические проблемы (из аудита):**
-1. `tsl_tf DEFAULT '15m'` — TSL стартует слишком рано для 15m сделок → ARCH-62 fix
-2. После tp1_hit нет `cap_tf` — 4h TSL слишком широкий → ARCH-62 cap_tf="1h"
-3. `tp1_fix_pct=20` (config) — только 20% фиксируется на TP1, 80% идёт на TSL
-4. bounce trades (NULL TP) — виснут до EXPIRED — ARCH-62 exit_manager bounce mode
-5. DEV-91 R-gradient shadow — не де-эскалирует, только логирует
-
-**Незакоммиченные изменения:** config.yaml (dynamic_os, bounce_mode, trigger_bus), DISCUSSION.md, TASKS.md
-**⚠️ НЕ КОММИТИТЬ** — система не полностью стабильна (RANGE WR=19%, все режимы убыточны)
-
-**Следующие приоритеты:**
-1. 🔥 ARCH-62: разделить trade_simulator.py → exit_manager + cascade_tsl + levels_calculator
-2. 🟢 DEV-121: написать скрипты self-diagnostics (эталонные кейсы TP/SL/TSL)
-3. 🔥 DEV-111: BTC 4h gate shadow mode
-
----
-
-## [30.03.2026] Агент: ARCH — DEV-118/119/120: TP стратегия, DUAL_TSL, фикс open-trades
-
-- ✅ **DEV-118**: Фикс дублирования `analyze_symbol` — выбор лучшего signal_type по приоритету (`max()`)
-  - `scan_loop.py`: `_SIGNAL_PRIORITY = {confluence:100, wt_b:90, wt_signal:80, ...}`
-  - Один `analyze_symbol` на пару за цикл вместо N дублей
-- ✅ **DEV-119**: TRIPLE_TP_TSL убран, DUAL_TP на пивотах
-  - `pivot_calculator_fixed.py`: добавлен `get_next_tp_by_hierarchy(tp1_price, ...)` — второй пивот по иерархии
-  - `trade_simulator.py`: TP1 = первый пивот (`take_profit`), TP2 рассчитывается async через новую функцию
-  - Баг TP2 exit исправлен: после TP2 hit устанавливается `exit_status = STATUS_TP`
-  - `regime_strategy.py`: RANGE `max_strategy_type = "SINGLE"` (было DUAL_TP)
-  - `config.yaml`: добавлен блок `trading.dual_tp: {enabled: true, tp1_fix_pct: 70}`
-  - `dashboard_server.py`: toggle «DUAL TP» + слайдер «TP1 fix %»
-- ✅ **DEV-120**: DUAL_TSL для обоих TREND режимов (данные из БД 119 сделок)
-  - `TREND_UP` TSL avg=**4.6R** vs TP avg=2.1R → DUAL_TSL выгоднее на +0.6R/сделку
-  - `regime_strategy.py`: `_STRATEGY_ORDER = ["SINGLE","DUAL_TP","DUAL_TSL"]`; TREND min=`DUAL_TSL`
-  - `close_trade()`: взвешенный R = `tp1_fix_pct × R_tp1 + (1-tp1_fix_pct) × R_exit` (было хардкод 0.5)
-  - `config.yaml`: `trend_strategy_type: DUAL_TSL`
-- ⚠️ **Нужен рестарт бота** для применения изменений
-- 🔄 **Следующий приоритет**: DEV-103 (Exchange Health Loop) — блокирует VST
-
----
-
-## [30.03.2026] Агент: ARCH — Спеки ARCH-63 + ARCH-66 + приоритеты DEV
-
-- ✅ **ARCH-63 спек** готов: BTC 4h market gate в DISCUSSION.md
-  - Место: `trading_intelligence.analyze_symbol()` новый параметр `btc_market_regime`
-  - Shadow mode сначала, блокирует LONG при BTC 4h TREND_DOWN
-  - Исключение: pivot_reversal + weekly_bias=BULLISH
-  - Config: `trading.btc_market_gate.enabled: true, shadow_mode: true`
-- ✅ **ARCH-66 спек** готов: RANGE BOUNCE SL/TP calculator в DISCUSSION.md
-  - `calc_range_bounce_sl_tp()` в `core/smc/sl_tp_calculator.py`
-  - Фильтры: regime=RANGE, 15m, confluence/wl_breach, entry≤2% от пивота, TP_R≥3.5
-  - Config: `trading.range_bounce.enabled: false` (включить после теста)
-- ✅ **TASKS.md** обновлён: ARCH-63→✅, ARCH-66→✅, DEV-111 добавлен 🟡
-- ✅ **PROJECT-LOG.md** обновлён
-- 🔄 **Ждём DEV**: DEV-103 (Health Loop) → DEV-111 (BTC 4h gate) → DEV-110 (RANGE BOUNCE)
-- ❓ **Ждём TRADER**: валидация — SHORT в RANGE структурно лучше LONG или артефакт медвежьего рынка?
-
----
-
-## [29.03.2026 ~00:30 UTC] Агент: ARCH (сессия 35) — Trade Dashboard аудит
-
-- ✅ **DISCUSSION.md**: Полный аудит Trade Dashboard — 6 разделов:
-  - Текущее состояние (страницы, виджеты, технологии)
-  - 20+ пробелов по открытым позициям, закрытым сделкам, аналитике, real-time
-  - Приоритеты редизайна (Quick wins / Аналитика / VST readiness)
-  - Референсы: Grafana, Bybit Pro, 3Commas, TradingView
-  - VST checklist (9 пунктов)
-  - Технический долг + вопросы к DEV и TRADER
-- ✅ **PROJECT-LOG.md**: добавлена запись аудита
-- 🔄 **Ждём**: TRADER → приоритет метрик для VST; DEV → выбор приоритета редизайна
-
----
-
-## [29.03.2026] Агент: DEV (сессия 34) — DEV-95/77/78 завершены
-
-- ✅ **DEV-95**: TriggerBus — `core/context/trigger_bus.py` + `bot/loops/trigger_loop.py`
-  - OteReentryTrigger, CascadeTrigger; интеграция в `bot/core/bot.py` (pair_context + post_analyser + trigger_loop task)
-  - `config.yaml`: `trigger_bus: {shadow: true, cascade_min: 3, interval_sec: 120}`
-- ✅ **DEV-77**: OrderExecutor — `core/trading/order_executor.py`
-  - Режимы: SIM_ONLY / VST / LIVE; bracket-ордер + partial_close (20%); min_notional check
-  - `config.yaml`: `trading.execution_mode: sim_only`, `trading.tp1_close_pct: 0.20`
-- ✅ **DEV-78**: PositionManager + PositionSizer + OrderReconciler
-  - `core/trading/position_sizer.py`: qty = deposit×risk% / (sl_dist × entry_price)
-  - `core/trading/position_manager.py`: live_orders таблица, has_open_position(), sync_with_exchange()
-  - `core/trading/order_reconciler.py`: reconcile() при старте бота — детектирует ORPHAN позиции
-
-⚠️ **Нужен рестарт бота** — все изменения незакоммичены
-
----
-
-## [29.03.2026] Агент: DEV (сессия 33) — Куб Метатрона Фаза 1 + ARCH-58 + DEV-96
-
-- ✅ **ARCH-58**: TP Architecture — все пути регистрации теперь используют `get_tp_by_hierarchy()`
-  - `recommendation_generator.py`: переименован ATR fallback tp_source → `"atr_fallback"`
-  - `bot/loops/scan_loop.py`: то же переименование
-  - `bot/monitoring.py:962`: добавлен `get_tp_by_hierarchy()` для пути `other_recs`
-  - `core/ui/intelligence_formatter.py`: добавлен `"atr_fallback": "ATR"` в `_TP_TF` dict
-- ✅ **DEV-90 (ARCH-59)**: `classify_v2()` shadow mode
-  - `core/signals/structure_detector.py`: добавлен `detect_structural_regime(df, period=5)` — HH/HL паттерн
-  - `core/indicators/market_regime.py`: добавлен `classify_v2(df_15m, df_1h)` — 3 слоя (spike guard → structural → MTF)
-  - `config.yaml`: добавлен `market_regime: use_v2: false` (shadow only)
-- ✅ **DEV-92**: `_post_tsl_queue` в TradeSimulator — TTL=8h + impulse breach invalidation
-- ✅ **DEV-93**: `PairContextBus` — `core/context/pair_context.py` + `core/context/__init__.py`
-- ✅ **DEV-94**: `PostTradeAnalyser` — `core/trading/post_trade_analyser.py` (shadow mode)
-  - Реагирует на SL/TSL/TP через callback; вычисляет OTE зону [0.705, 0.786] для re-entry
-- ✅ **DEV-96**: SMC флаги — 4 направленных флага в `SMCContext.to_features()`
-  - `has_bullish_bos`, `has_bearish_bos`, `has_bullish_choch`, `has_bearish_choch`
-- ⚠️ **DEV-95** 🔵: TriggerBus — ARCH-61 спек готов (✅), задача в бэклоге
-- ⚠️ **DEV-97** 🔵: weekly_bias gate штраф — ЗАБЛОКИРОВАНО, нужны данные n≥30
-
-⚠️ **Нужен рестарт бота** — все изменения незакоммичены
-
----
-
-## [28.03.2026 ~23:45] Агент: TRADER — Стратегическое видение записано
-
-- ✅ **DISCUSSION.md** — добавлена запись «Куб Метатрона»: полная архитектура полносвязной системы
-  - Текущая архитектура vs. Cuб Метатрона (диаграмма узлов)
-  - Каскадные данные: A2Z(+86R), PIPPIN(0% SL), SUN(82% WR)
-  - Cap% проблема: 4-7R bucket = 48% захват, дают обратно 7.79R avg
-  - Shared Context Bus, Trigger System, Post-Trade Analyser — концепции
-  - Фазы реализации 1/2/3
-  - Открытые вопросы → ARCH (Shared Context архитектура) + DEV (TR-010 совместимость)
-- ✅ **DISCUSSION.md** — TR-010 Post-TSL OTE Re-entry (из пред. записи сессии)
-- ✅ **DISCUSSION.md** — TR-009 R-gradient де-эскалация + бэктест (из пред. записи сессии)
-- ✅ **TASKS.md** — TR-009, TR-010 добавлены
-
-**Следующий шаг:** ответ ARCH на вопросы в Кубе Метатрона → реализация TR-009/TR-010
-
----
-
-## [28.03.2026 #7] Агент: DEV — DEV-89 завершён
-
-- ✅ **DEV-89** — Cascade TSL: OR-логика 4h+1h WT + weekly pivot touch
-  - `core/trading/trade_simulator.py` строки ~1061-1120:
-    - Фетч 1h WT (`df_1h_wt89`), OR логика: `_wt_exhausted = _wt_4h_exh or _wt_1h_exh`
-    - Weekly pivot touch через `PivotCalculatorFixed().get_weekly_pivots()` при `current_r >= _de_esc_r`
-    - SHORT: S1/S2/S3/PP; LONG: R1/R2/R3/PP; порог 1.5%
-    - `if _wt_exhausted or _near_weekly:` → de-escalate
-    - Лог: `(R=%.1fR, WT4h=X.X 1h=X.X near_w=True/False, TSL тесней)`
-  - **DEV-89 sub-task**: `core/trading_intelligence.py` строки ~1308-1319:
-    - tp_source weekly exception в DEV-58 блоке
-    - `if "1W" in tp_source` → `_near_s=True` (LONG) / `_near_r=True` (SHORT)
-- ✅ TASKS.md: DEV-89 → ✅
-
-⚠️ Нужен рестарт бота
-
-**Следующий шаг:** DEV-90 (ARCH-59: detect_structural_regime + classify_v2 shadow mode) или другие задачи
-
----
-
-## [28.03.2026 #6] Агент: DEV — DEV-87/88 + переименования + энциклопедия
-
-- ✅ **DEV-88**: SL по CLOSE (не LOW) для `sl_source` начинающихся с `tsl_line`/`wl_pivot_tsl` — `core/trading/trade_simulator.py`
-- ✅ **Переименования стратегий**: `reversal_scanner`→`wt_entry` (WtEntryStrategy), `confluence`→`multi_signal` (MultiSignalStrategy)
-  - `strategies/built_in/reversal_scanner_strategy.py`, `strategies/built_in/confluence.py`
-  - `core/trading_intelligence.py`: `_STRATEGY_PRIORITY`, `active_strategy_name`, `_pick_best_recommendation()`
-  - `config.yaml`: `active_strategy`, `active_strategies`, `strategies.*`
-  - `tests/unit/`: sed-замена строковых имён
-  - **БД мигрирована**: 511 `confluence`→`multi_signal`, 729 `reversal_scanner`→`wt_entry` в `simulated_trades.strategy_name`
-- ✅ **pivot_reversal.sl_buffer_pct убран**: из `config.yaml` и `strategies/built_in/pivot_reversal_strategy.py`
-- ✅ **DISCUSSION.md**: ответ TRADER по unswept_liquidity (DEV вопрос)
-- ✅ **docs/ENCYCLOPEDIA.md** создана: SignalType.CONFLUENCE, WtEntryStrategy, MultiSignalStrategy, TSL, WL Breach, SL CLOSE vs LOW
-- ✅ **memory/arch_signal_types.md** создан: типы сигналов, стратегии, веса, DEV-88
-- ✅ **memory/MEMORY.md**: добавлена секция "Типы сигналов и стратегии"
-
-⚠️ **Незакоммиченные изменения**: DEV-87 (factor=1.25 везде в calculate_trend), DEV-88 (CLOSE check), переименования, конфиг, миграция БД, ENCYCLOPEDIA.md
-⚠️ **Нужен рестарт бота** для применения изменений
-
----
-
-## [28.03.2026 #5] Агент: DEV — DEV-83 завершён (ARCH-56 Phase B)
-
-- ✅ **DEV-83 Step 1** (`core/signals/signal_models.py`): 7 новых полей в MTFContext (phase, zone_state, avoid_reason, pattern_name, pattern_confidence, unswept_highs, unswept_lows)
-- ✅ **DEV-83 Step 2-3** (`core/mtf/mtf_interpreter.py`): 5 функций (_detect_phase, _detect_zone_cascade, _detect_avoid_reason, _detect_pattern, _extract_unswept_liquidity) + обновлён analyze_context(df_1h, df_4h)
-- ✅ **DEV-83 Step 4** (`core/trading_intelligence.py`): _build_mtf_context() теперь фетчит df_4h и передаёт df_1h+df_4h в analyze_context()
-- ✅ **DEV-83 Step 5** (trading_intelligence.py): shadow-mode лог [phase56] symbol phase=X zone=Y pattern=Z avoid=W
-- ✅ **DEV-83 Step 6** (`core/ui/intelligence_formatter.py`): строка "🧭 Фаза: <phase> · <pattern> ⚠️ <avoid>" в TG-сообщении
-- ✅ **DEV-83 Step 7** (`config.yaml`): `mtf.phase_guard_enabled: false` добавлен
-- ✅ TASKS.md: DEV-83 → ✅
-
-⚠️ Нужен рестарт бота (DEV-83 + DEV-84 + DEV-85 + weekly_bias_filter=true)
-
-**Следующий шаг:** DEV-87 (backtest OTE v2 ~11.04), или другие DEV-задачи
-
----
-
-## [28.03.2026 #4] Агент: DEV — DEV-84 завершён
-
-- ✅ **DEV-84** (Фаза C shadow logging): `core/trading_intelligence.py` строки 1197-1223
-  - Внутри блока `if _l3_52:`, после DEV-52-L3 сводного лога
-  - cond_c1: FVG support/resistance из `mtf_context.smc_h4` (4h snapshot)
-  - cond_c2: active OTE из `smc_context.fibonacci.active_ote`
-  - Лог: `[SYM] DEV-84-L3C cond_c1=T/F(4h_fvg_sup=Y/N) cond_c2=T/F(ote=Y/N)`
-  - Всё в try/except — shadow mode, production flow не затронут
-- ✅ TASKS.md: DEV-84 → ✅
-
-⚠️ Нужен рестарт бота (активировать DEV-84 + DEV-85)
-
-**Следующий шаг:** DEV-83 (ARCH-56 реализация) — ждёт спека или другие задачи
-**Доступно:** DEV-87 (backtest OTE v2 ~11.04)
-
----
-
-## [28.03.2026 #3] Агент: DEV — DEV-85 полностью завершён
-
-- ✅ **DEV-85 Step 0** (`cb4248e`): `core/smc/fibonacci.py` — price-invalidation stale fix
-  - LONG: `current_price < impulse_low` → `price_in_ote=False` (BOS провалился)
-  - SHORT: `current_price > impulse_high` → `price_in_ote=False`
-- ✅ **DEV-85 Step 1** (`8731937`): `core/signals/ote_detector.py` — wide gate + ATR-trend gate
-  - Wide only [0.705-0.786], tight бонус убран, df_trend_ref параметр
-- ✅ DISCUSSION.md: ответ TRADER по unswept_liquidity (~50-70 строк, ждёт ARCH-56 спек)
-- ✅ Тесты: 545/570 unit (16 pre-existing, no regression)
-- ⚠️ Нужен рестарт бота
-
----
-
-## [28.03.2026 #2] Агент: TRADER — TR-001 daily analysis + DEV-75/DEV-86 already done + Fib TP verdict
-
-- ✅ **TR-001 анализ 28.03.2026** → `memory/trader_analyses/2026-03-28.md`
-  - 20 открытых сделок, рынок медвежий, vol 0.2-0.3x avg
-  - STG SHORT +0.97R (лучший), LTC SHORT +0.78R, TRX LONG +0.52R
-  - WL: ENA RSI=12, JUP RSI=18 — экстремальный oversold, ждать WT crossup
-  - Win Rate 7д: 15.0%, avgR=-0.27 ⚠️ (медвежий рынок + OTE stale zones)
-- ✅ **Fib Extension TP — ЗАКРЫТ** (бэктест 27-28.03.2026):
-  - Hit rate 5-15% на 15m, 3-6% на 1h — слишком далеко от входа
-  - TSL = единственный надёжный выход. Вопросы в DISCUSSION закрыты.
-  - `get_tp_by_hierarchy()` — Fib step 6 УДАЛЁН из кода
-- ✅ **DEV-75** (pivot hierarchy) и **DEV-86** (убрать R4-S4) — оба уже были в коде ДО этой сессии
-  - DEV-75: порядок 1D→1W→confluence(1W+1D)→confluence(1M+1W)→1M ✓
-  - DEV-86: `range(1,4)` = R1,R2,R3 / S1,S2,S3 ✓
-  - TASKS.md обновлён → оба ✅
-
-**Следующие задачи (по приоритету):**
-1. **DEV-85** 🟡 — OTE stale zones фикс (TTL + price-invalidation) — ГЛАВНЫЙ приоритет для WR
-2. **DEV-83** 🟢 — MTF Interpreter Phase B (ARCH-56 спек готов)
-3. **DEV-84** 🟢 — L3 Phase C FVG/OB + OTE conditions
-
----
-
-## [28.03.2026] Агент: ARCH — ARCH-56 спек + ответы в DISCUSSION + DEV-86/DEV-75
-
-- ✅ **ARCH-56 Phase B спек** написан в TASKS.md (разблокирует DEV-83):
-  - 4 новые функции в `mtf_interpreter.py`: `_detect_phase`, `_detect_zone_cascade`, `_detect_avoid_reason`, `_detect_pattern`
-  - 7 новых полей в `MTFContext`: phase, zone_state, avoid_reason, pattern_name, pattern_confidence, unswept_highs, unswept_lows
-  - Фазы: impulse_up/down, correction_*_in_*, reversal_*, range
-  - Pattern names: IMPULSE_UP/DOWN, WAVE_3_RELOAD, BEARISH_CORRECTION_FADE, CASCADE_*_REVERSAL, REVERSAL_*, RANGE_PLAY
-  - shadow mode (avoid_reason только лог, phase_guard_enabled: false)
-- ✅ **ARCH-56** → статус ✅ в TASKS.md
-- ✅ **DEV-75** → статус ✅ в TASKS.md (был 🔴, но уже сделан: commit adaa77c)
-- ✅ **DEV-86** создана в TASKS.md: убрать R4-R5/S4-S5 из get_tp_by_hierarchy() — 1 строка
-- ✅ **DISCUSSION.md** — ответы ARCH на 3 открытых блока:
-  - OTE stale zones: TTL=30 баров, price-invalidation, stale = баг-фикс до DEV-85
-  - TP через SMC: последовательность подтверждена, unswept_liquidity добавить в ARCH-56
-  - Критический баг TP: DEV-75 исправил порядок, DEV-86 уберёт R4/S4 — два шага фикса
-
-**Следующие задачи DEV:**
-1. **DEV-86** 🟡 — 1 строка в pivot_calculator_fixed.py (быстро, фиксит real bug)
-2. **DEV-83** 🟢 — реализация ARCH-56 Phase B (5 файлов, spec готов)
-3. **DEV-77** 🟢 — OrderExecutor (после DEV-83 или параллельно)
-
----
-
-## [27.03.2026] Агент: ARCH+DEV — ARCH-58 шаг 1 + решения по TP
-
-- ✅ `config.yaml`: `scan_cycle_warning_threshold_sec` 55→70, `ohlcv_slow_threshold_sec` 5→8
-- ✅ `core/infra/api_engine.py` + `data_collector.py`: TTL 4h 300→900s, 1d 600→1800s (фикс бурста кеша)
-- ✅ **ARCH-58 шаг 1**: Fib extension tier добавлен в `get_tp_by_hierarchy()` (`pivot_calculator_fixed.py`)
-  - Новые параметры: `impulse_high`, `impulse_low`
-  - Tier 6: Fib 1.272 → Fib 1.618 (когда пивот не найден)
-  - `monitoring.py`: извлекает `impulse_high/low` из `recommendation.metadata` и передаёт
-  - OTE detector уже пишет эти поля в metadata → автоматически работает
-- ✅ 21/21 unit тестов pivot TP прошли
-- ✅ **Симуляция 20% на TP1** (683 сделки с TP1 hit):
-  - SL после TP1: +0.876R → +1.243R (+0.367R страховка) ✅
-  - TSL: +5.998R → +5.878R (-0.12R, цена страховки)
-  - Итого: +3.889R → +3.951R (+0.062R, нейтрально)
-
-**Решения зафиксированы в TASKS.md + DISCUSSION.md:**
-- TP1 = 20% фиксация (утверждено TRADER)
-- Двунаправленный OTE (SHORT→OTE + LONG из OTE) → DEV-85 v2, нужен бэктест
-- Иерархия TP1: Пивот 1D/1W → Fib 1.272 → Fib 1.618 → ATR fallback
-
-⚠️ **Нужен рестарт бота** для применения: TTL фикс, config.yaml пороги
-
----
-
-## [26.03.2026] Агент: DEV — ARCH-53 Backtest завершён (scripts/backtest_ote_mtf.py)
-
-- ✅ `scripts/backtest_ote_mtf.py` создан и отлажен: 5 TF × 20 пар × N дней
-- ✅ Фиксы в процессе: OHLCVCache интеграция, `enableRateLimit=False`, precompute zone SMC (`_fast_zone_ctx`), DatetimeIndex восстановление после `calculate_wt`, `cross_up/cross_down` добавление, `zone_tf_priority` параметр в `detect_ote_signal()`
-- ✅ Изменены файлы: `core/signals/ote_detector.py` (добавлен параметр `zone_tf_priority`)
-- ✅ Результаты бэктеста (10 пар / 30 дней / 416 swing + 248 scalp сделок):
-
-**SWING [1h/4h/1d→15m]: 🔴 ОТКАЗ**
-  - WR=28.8%, AvgR=-0.136, Sharpe=-1.59, MaxDD=-66R
-  - 4h зона: 69% сделок, WR=27.8% — ГЛАВНАЯ ПРОБЛЕМА
-  - 1h зона: WR=32.9%, AvgR=-0.01 — нейтральная (почти безубыточна)
-  - Tight OTE [0.618–0.705]: WR=18.2% — ХУЖЕ! Wide [0.705–0.786]: WR=39.5%, AvgR=+0.184 — лучше
-  - Конфлюенция 2TF не помогает (WR=24.2% < 1TF 29.2%)
-
-**SCALP [15m→3m]: 🔴 ОТКАЗ**
-  - WR=33.9%, AvgR=+0.017, Sharpe=0.19, MaxDD=-15R
-
-**Финальные результаты (20 пар):**
-  - SWING: WR=26.8%, AvgR=-0.197, Sharpe=-2.35, MaxDD=-139R → ОТКАЗ
-  - SCALP: WR=32.7%, AvgR=-0.02, Sharpe=-0.23, MaxDD=-30R → ОТКАЗ
-  - Wide OTE [0.705-0.786]: WR=33.5%, AvgR=+0.006 → почти безубыточна (потенциал!)
-  - Tight OTE [0.618-0.705]: WR=20.5% → антипаттерн, убрать
-  - MATIC делистирован на Binance (пропущена)
-  - INJ: WR=47.1%, AvgR=+0.412 (17 сд) — единственная зелёная пара
-
-**Следующие шаги (DEV-77):**
-  - DEV-77: OTE v2 — убрать tight зону + добавить ATR-trend direction gate
-  - Цель: WR≥40%, Sharpe≥1.0
-  - Shadow mode продолжить ≥2 недели
-
----
-
-## [26.03.2026] Агент: DEV — DEV-79/80/81/82 завершены
-
-- ✅ DEV-79: web/static/ рефакторинг — 4 HTML-константы вынесены в файлы (index/settings/backtest/operations.html). dashboard_server.py 3266→985 строк
-- ✅ DEV-80: Trading Panel `/trading` — Position Sizer (deposit/risk/leverage/entry/sl), TP таблица 1R-5R, min_notional check. Файл `web/static/trading.html`
-- ✅ DEV-81: FUNDING_EXTREME detector — `core/signals/funding_detector.py`, shadow mode (лог only, не в TG). Интеграция: `data_collector.get_funding_rate()` (TTL 30мин) + scan_loop.py 1a блок
-- ✅ DEV-82: LIQUIDITY_SWEEP detector — `core/signals/liquidity_sweep_detector.py`. Интеграция: scan_loop.py 1b блок, broadcast в TG. Форматтеры добавлены в `core/ui/message_builder.py`
-- ✅ Stop hooks: settings.json — оба хука DEVELOPER + TRADER
-- ⚠️ Нужен рестарт бота для активации новых детекторов
-
----
-
-## [29.03.2026] Агент: ARCH — ARCH-51 спек + DEV-63 создана
-
-- ✅ ARCH-51 добавлена в TASKS.md (была только в DISCUSSION.md — задача «потерялась»)
-- ✅ Аудит SMC-кода: 4 бага в старом спеке (поля `bullish_obs`/`bullish_fvgs` → `active_bull`/`active_bear`, `fvg.high`→`fvg.top`, строковый матч→`is_choch`/`is_bos`)
-- ✅ Исправленный спек записан в DISCUSSION.md [29.03.2026 ARCH — ARCH-51 DEV-спек]
-- ✅ DEV-63 создана в TASKS.md (🟡, 3 файла, 4 шага, shadow only)
-- Вставочные точки: trading_intelligence.py:623 (snapshots) и ~715 (shadow logging)
-
----
-
-## [29.03.2026] Агент: DEV (сессия 32) — DEV-76 завершён
-
-- ✅ `core/signals/signal_models.py` — `SignalType.OTE_SIGNAL = "ote_signal"`
-- ✅ `core/signals/ote_detector.py` создан (~120 строк): `detect_ote_signal()` читает `smc_ctx.fibonacci.active_ote`, WT cross trigger, tight OTE бонус
-- ✅ `core/trading_intelligence.py` — OTE вызов после ARCH-51 (строка ~645), shadow metadata (строка ~808)
-- ✅ `config.yaml` — `ote_shadow_mode: true`
-- ✅ Import-тест: ALL OK
-- ⚠️ Нужен рестарт бота для активации OTE shadow logging
-- ⏳ ARCH ревьюирует логи через 2 недели, переключает `ote_shadow_mode: false`
-
----
-
-## [29.03.2026] Агент: ARCH (сессия 31) — ARCH-53 спек + DEV-76 создана
-
-- ✅ Аудит SMC инфраструктуры: `fibonacci.py` уже содержит `FibZone.price_in_ote` + `FibAnalysis.active_ote`
-- ✅ ARCH-53 спек записан в DISCUSSION.md: `detect_ote_signal()` читает `smc_ctx.fibonacci.active_ote`, триггер WT cross в зоне
-- ✅ DEV-76 создана в TASKS.md (🟡, 3 файла, 5 шагов, shadow only)
-- ✅ ARCH-53 закрыт (спек готов), DEV-76 в очереди
-- Вставочные точки: trading_intelligence.py ~280-320 (сбор сигналов) + ~780 (shadow metadata)
-
----
-
-## [29.03.2026] Агент: DEV (сессия 31) — DEV-63 завершён
-
-- ✅ DEV-63 Шаг 1: `core/signals/signal_models.py` — `MTFSMCSnapshot` dataclass + `smc_h4`/`smc_d1` в `MTFContext`
-- ✅ DEV-63 Шаг 2: `core/smc/models.py` — `build_mtf_smc_snapshot()` после `_mark_fvg_overlap`
-- ✅ DEV-63 Шаг 3: `core/trading_intelligence.py:623` — вызов snapshots для 4h + 1d
-- ✅ DEV-63 Шаг 4: `core/trading_intelligence.py:~780` — shadow logging в `metadata["arch51_4h"]` / `metadata["arch51_1d"]`
-- ✅ Import-тест: ALL OK
-- ⚠️ Нужен рестарт бота для активации shadow logging
-- ⏳ Следующее: TR-008 (TRADER валидирует /scan), ARCH-53 разблокирован (OTE детектор)
-
----
-
-## [29.03.2026] Агент: DEV (сессия 30) — 4 критических фикса trade_simulator.py
-
-- ✅ DEV-73: `_tsl_gate` = `current_r >= tsl_activation_r` для ВСЕХ стратегий (был: DUAL/TRIPLE ждали tp1_hit_at)
-- ✅ DEV-67: cascade TSL fallback к `prev_tsl_tf` при развороте тренда (вставлено после строки 1052)
-- ✅ DEV-64B: Guard 3 `signal_regime_block` — читает `signal_quality.signal_regime_block` из config, pivot_reversal+RANGE/TREND_DOWN блокируется
-- ✅ ARCH-04: `_grp_412 = get_regime_params(regime, cfg=_cfg_rs)` — `regime_params` NameError устранён
-- ✅ import-тест: ALL OK
-- ✅ Верификация: ALL FIXES OK
-- ✅ Бот перезапущен ARCH (PID 494440 → 21440), дашборд 200 OK
-- ⏳ TR-008 — TRADER валидирует /scan + /intelligence
-
----
-
-## [29.03.2026] Агент: DEV (сессия 29) — post-ARCH-54 runtime фиксы
-- ✅ `core/ui/intelligence_formatter.py`: добавлен параметр `show_fvg_confluences: bool = False` в `format_intelligence_message()`
-- ✅ `core/ui/chart_builder.py`: добавлены параметры `bot=None`, `fvg_zones=None` в `build_signal_chart()`
-- Причина: git restore вернул старые версии файлов (до uncommitted changes), недостающие kwargs вызывали TypeError в bot/monitoring.py:936,971
-- 🔴 Нужен рестарт бота для проверки всех фиксов
-
----
-
-## [26.03.2026] Агент: ARCH (сессия 27) — DEV-71 ревью __init__.py
-- ✅ Ревью __init__.py: db/ ✅, ui/ ✅ (опц: message_composer), ml/ ✅ (опц: r/rl/auto), indicators/ 🔴 fix
-- ✅ Исправлен indicators/__init__.py: убран `from core.indicators.indicators import *` (дублирование)
-- ✅ DISCUSSION.md: добавлен ревью-пост ARCH с конкретными действиями для DEV
-- ✅ Зафиксировано разделение зон: DEV = signals/pivots/mtf/infra/trading/confluence, ARCH = ревью db/ui/ml/indicators
-- ⚠️ Хук AGENT_ROLE=DEVELOPER срабатывает в ARCH-сессии — DEV-71 статус 🔄 должен его блокировать, если нет — проверить TASKS.md
-
-## [26.03.2026] Агент: ARCH (сессия 26) — ревью ARCH-04 + ответы TRADER
-- ✅ Ответил на все открытые вопросы TRADER (A: LIQUIDITY_SWEEP, B: OTE, C: Confluence split, H: WL breach+CHoCH) в DISCUSSION.md
-- ✅ Архитектурный ревью `core/regime_strategy.py` (ARCH-04): два gap
-  - Gap 1: `sl_factor` не применяется → комментарий (намеренно)
-  - Gap 2: `cfg` не передаётся в `get_regime_params()` → config-секция мёртвая
-- ✅ DEV-70 создана (TASKS.md + DISCUSSION.md)
-- ✅ ARCH-53 добавлена в бэклог (OTE детектор, апрель)
-- ✅ DEV-69 ✅ (уже реализована DEV в сессии 25) — исправил статус в TASKS.md
-
-## [29.03.2026] Агент: DEV (сессия 28) — DEV-71/72 завершены
-- ✅ DEV-71: ARCH-54 Фаза 1 — 10 папок созданы, 40 файлов перемещены, stubs работают (18/18)
-- ✅ DEV-72: CLAUDE.md обновлён — новая структура core/ с подпапками
-- ✅ DEV-70 re-applied к core/trading/trade_simulator.py + core/trading/regime_strategy.py
-- ✅ Circular import ui/__init__.py пофикшен (убраны eager imports)
-- 🔴 Нужен рестарт бота
-- ⏳ TR-008 — TRADER валидирует /scan после рестарта
-
-## [29.03.2026] Агент: DEV (сессия 25)
-- ✅ DEV-69: `min_strength_wl_breach: 45` в config.yaml + fallback логика в scan_loop.py:54
-- ✅ DEV-70: cfg передан в apply_regime_to_strategy() + комментарий sl_factor в regime_strategy.py
-
-## [28.03.2026] Агент: DEV (сессия 24)
-- ✅ Ответы на открытые вопросы TRADER/ARCH 24-25.03 — добавлено в DISCUSSION.md
-- ✅ fetch_funding_rate() → поддерживается ccxt/BingX (fetch_funding_rate + fetch_funding_rates)
-- ✅ MTF divergence complexity → низкая, инфраструктура есть (detect_cascade_divergence), нужен dual_tf (regular+regular)
-- ✅ Fib для OTE → НЕ из pivot_levels.py (там нет Fib), нужен отдельный ote_detector.py
-- ✅ WL breach min_strength → сейчас 75 (CHECK str=56 не пройдёт), предложен DEV-69: отдельный `min_strength_wl_breach=45`
-- ⏳ DEV-69 ждёт одобрения ARCH
-
-## [27.03.2026] Агент: ARCH (сессия 23) — документация + DEV-56 bugfix
-- ✅ ARCH-52 завершён: BOT_SIGNAL_MAP.md обновлён (дата, порог 75, WL breach, quality gates, Cascade TSL, диагностика)
-- ✅ DEV-59 закрыт через DEV-64A: код подтверждён — pivot_reversal идёт через register_trade_async, DEV-64A cap применяется
-- ✅ DEV-56 bugfix: weekly_bias не сохранялся в features_json (был только в metadata) — исправлено в monitoring.py (3 поля в extra_features)
-- ⚠️ DEV-58 сдвинут на ≈30.03–06.04 — нужны новые данные после рестарта бота с фиксом
-
-## [27.03.2026] Агент: TRADER (сессия 21)
-- ✅ DEV-65 вердикт TRADER: tsl_line остаётся, DEV-64C закрыт (wl_pivot_tsl_line WR=21.2%)
-- ✅ Бот перезапущен — DEV-64A (max_rr=3.0) + DEV-64B (signal_regime_block) + DEV-66 (factor=1.25) активны
-- **DEV-59 🔴 следующий приоритет** — pivot_reversal R:R cap (WR=9.1% из-за RR=17-23x)
-
----
-
-## [26.03.2026] Агент: Developer (сессия 20)
-- ✅ DEV-66: factor 1.25 в config.yaml (было 1.1, бэктест +0.041R)
-- ✅ DEV-64A реализован: global max_rr=3.0 enforce в trade_simulator.py + scan_loop.py
-- ✅ DEV-64B реализован: signal_regime_block в config.yaml + trade_simulator.py
-- ✅ DEV-65 выполнен: tsl_line WR=4.4% avg_rr=18.2x = atr WR=3.8% avg_rr=18.4x → проблема в RR, не SL
-- ✅ DEV-64C закрыт: не нужен, DEV-64A устраняет первопричину
-- **DEV-59 всё ещё не реализован** — следующий после 64C
-
----
-
-## [25.03.2026] Агент: Developer (сессия 22)
-- ✅ DEV-67: Cascade TSL fallback при развороте тренда — trade_simulator.py:1055-1072
-- ✅ DEV-68: WL breach min_strength guard (DOGE str=18 баг)
-- ✅ DEV-53: L3 Фаза B — cond4 (WT freshness + near_pivot) + CHoCH soft penalty (-8)
-- ✅ TASKS.md обновлён: DEV-67/68/53 помечены ✅
-- ⏳ Следующее: рестарт бота → DEV-58 Фаза B (≈27-29.03)
-
----
-
-## 📊 Текущее состояние системы (27.03.2026)
-
-**Бот:** запущен, 427 пар в мониторинге
-
-**Активные фильтры:**
-- max_rr = 3.0 (DEV-64A) — глобальный cap R:R
-- signal_regime_block (DEV-64B) — блок контр-тренд входов
-- factor = 1.25 (DEV-66) — TSL немного шире
-- Cascade TSL fallback (DEV-67) — не "падает" при развороте тренда
-- L3 shadow mode (DEV-52/53) — 6-условный чеклист, только логирование
-
-**В shadow mode (данные копятся, не блокируют):**
-- Weekly Bias Filter (DEV-56) — ⚠️ баг исправлен 27.03: данные теперь пишутся в features_json → DEV-58 production ≈30.03–06.04
-- Market Stress Gate (DEV-48)
-- Dynamic OS (ARCH-49) — 30 дней наблюдения
-- ARCH-51-pre logging — конфликты 15m SMC vs 4h OB
-
-**Следующие задачи по приоритету:**
-1. ~~DEV-59~~ ✅ закрыт через DEV-64A (cap применяется в register_trade_async)
-2. **Рестарт бота** 🔴 — применить DEV-56 bugfix (weekly_bias в features_json)
-3. DEV-58 🔄 — Weekly Bias production gate (≈30.03–06.04 после накопления данных)
-4. ARCH-45 🔄 — плановый ревью OutcomePredictor AUC ≈06.04
-5. DEV-63 🟡 — Multi-TF SMC snapshot (≈06-08.04)
+- ✅ Ответил на DEV-153: 426 сделок с wt_snap (389 закрытых)
+- ✅ WR benchmark: нейтральный период 01-03.04 = 38.7% (vs 8.4% за 07-10.04)
+- ⚠️ WR=8.4% (07-10.04) — рыночный контекст (post-crash whipsaw)

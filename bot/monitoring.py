@@ -962,6 +962,38 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     min_strength = bot.config.get("signal_quality.min_strength", 50)
     min_strength_register = bot.config.get("signal_quality.min_strength_register", 50)
 
+    # DEV-155: дифференцированный порог по режиму/направлению
+    # HIGH_VOL=85, LONG_RANGE=75 (avgR по этим комбинациям хронически <0)
+    _sym_regime: Optional[str] = None
+    try:
+        _pair_ctx = getattr(bot, "pair_context", None)
+        if _pair_ctx is not None and recommendation is not None:
+            _sym_regime = _pair_ctx.get(symbol).regime
+    except Exception:
+        pass
+    if _sym_regime and recommendation is not None:
+        _rec_dir155 = getattr(getattr(recommendation, "direction", None), "value", "NEUTRAL")
+        _dir_regime_key = f"{_rec_dir155}_{_sym_regime}"
+        _by_dir_regime = bot.config.get("signal_quality.min_strength_by_direction_regime") or {}
+        _by_regime = bot.config.get("signal_quality.min_strength_by_regime") or {}
+        _eff_min_str = int(_by_dir_regime.get(_dir_regime_key,
+                            _by_regime.get(_sym_regime, min_strength)))
+        if _eff_min_str != min_strength:
+            logger.debug("[DEV-155] %s %s/%s eff_min_strength=%d (was %d)",
+                         symbol, _rec_dir155, _sym_regime, _eff_min_str, min_strength)
+        min_strength = _eff_min_str
+
+    # DEV-156: Circuit Breaker — поднимаем min_strength если WR < 15% за 50 сделок
+    try:
+        from core.trading.circuit_breaker import CircuitBreaker
+        _cb = CircuitBreaker()
+        if _cb.strength_floor_bonus:
+            min_strength += _cb.strength_floor_bonus
+            logger.debug("[DEV-156] CircuitBreaker активен: +%d → min_strength=%d (%s)",
+                         _cb.strength_floor_bonus, min_strength, symbol)
+    except Exception as _cb_e:
+        logger.debug("[DEV-156] CircuitBreaker error: %s", _cb_e)
+
     _dir_ok = (
         recommendation is not None
         and getattr(recommendation, "action", "WATCH") in ("BUY", "SELL")

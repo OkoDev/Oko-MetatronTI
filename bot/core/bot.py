@@ -65,10 +65,12 @@ class TradingAlertBot:
         self.trade_simulator = TradeSimulator(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
-        # DEV-93/DEV-94/DEV-95: Куб Метатрона Фаза 1 — Shared Context Bus + PostTradeAnalyser
+        # DEV-93/DEV-94/DEV-95: Куб Метатрона — Shared Context Bus + PostTradeAnalyser
         self.pair_context = PairContextBus()
         self.post_analyser = PostTradeAnalyser(self.pair_context, self.data_collector)
         self.trade_simulator.set_post_trade_callback(self.post_analyser.on_trade_closed)
+        # Куб: Сфера 10 (Exit Manager) → PairContextBus
+        self.trade_simulator._pair_context_bus = self.pair_context
 
         # DEV-77/78: OrderExecutor + PositionSizer (SIM → VST → LIVE)
         self.order_executor = OrderExecutor(config)
@@ -127,13 +129,105 @@ class TradingAlertBot:
         self.post_analyser._intelligence = self.trading_intelligence
         self.post_analyser._event_bus = self.event_bus
 
+        # ═══ КУБ МЕТАТРОНА: HTF детекторы (Сфера 7) ═══
+        from core.signals.htf_detectors import TrendChangeDetector, WTCrossHTFDetector
+        self._htf_detectors = (TrendChangeDetector(), WTCrossHTFDetector())
+
+        # ═══ КУБ: Sphere Registry (Сфера 12 — Self-Diagnostics) ═══
+        from core.context.sphere_registry import SphereRegistry
+        self.sphere_registry = SphereRegistry(self.pair_context)
+
+        # ═══ КУБ: Подписки между сферами (mesh-связность) ═══
+        self._wire_cube_subscriptions()
+
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
         self.ws_feed = WsFeed(
             ohlcv_cache=self.data_collector._engine._cache,
         )
         self.data_collector.set_ws_feed(self.ws_feed)  # data_collector.get_current_price() → WS first
+        # Куб: WsFeed → PairContextBus (Сфера 2 → Central Hub)
+        self.ws_feed._pair_context_bus = self.pair_context
 
         self._register_routers()
+
+    def _wire_cube_subscriptions(self):
+        """
+        Куб Метатрона: подписки между сферами.
+        Каждая сфера подписывается на события других через PairContextBus.
+        Это создаёт mesh-связность — любое событие достигает всех заинтересованных узлов.
+        """
+        from core.context.pair_context import SphereEvent
+        bus = self.pair_context
+
+        # ── Сфера 3 (WT Specialist) подписана на: regime_updated ──────────────
+        # При смене режима → verdict может измениться (EXHAUSTION в TREND vs RANGE разное)
+        def _on_regime_for_wt(symbol, data):
+            state = bus.get(symbol)
+            # Если режим сменился на REVERSAL mode — WT specialist должен знать
+            if data.get("mode") == "REVERSAL" and state.wt_verdict == "TREND_CONTINUATION":
+                logger.debug("[Cube] %s: regime→REVERSAL, WT verdict stale", symbol)
+        bus.subscribe(SphereEvent.REGIME_UPDATED, _on_regime_for_wt)
+
+        # ── Сфера 6 (Regime) подписана на: wt_snap_updated ───────────────────
+        # WT snap на 4h даёт сигнал о reversal mode
+        def _on_wt_for_regime(symbol, data):
+            wt_4h = data.get("4h")
+            if wt_4h:
+                wt1 = wt_4h.get("wt1", 0)
+                state = bus.get(symbol)
+                if abs(wt1) > 60 and state.reversal_mode != "REVERSAL":
+                    logger.debug("[Cube] %s: WT 4h=%+.0f → potential REVERSAL", symbol, wt1)
+        bus.subscribe(SphereEvent.WT_SNAP_UPDATED, _on_wt_for_regime)
+
+        # ── Сфера 9 (Narrative Builder) подписана на: все ключевые события ────
+        # Narrative Builder реагирует на каждый новый сигнал
+        def _on_signal_for_narrative(symbol, data):
+            state = bus.get(symbol)
+            # Обновляем narrative-relevant fields
+            sig_type = data.get("signal_type", "")
+            if sig_type and state.last_signal_type != sig_type:
+                logger.debug("[Cube] %s: signal %s → narrative update pending", symbol, sig_type)
+        bus.subscribe(SphereEvent.SIGNAL_DETECTED, _on_signal_for_narrative)
+
+        # ── Сфера 10 (Exit Manager) подписана на: wt_snap, regime, divergence ─
+        # При дивергенции — Exit Manager может подтянуть TSL
+        def _on_div_for_exit(symbol, data):
+            state = bus.get(symbol)
+            if state.open_trade_id and state.tsl_active:
+                logger.debug("[Cube] %s: divergence → Exit Manager aware (trade #%d)",
+                             symbol, state.open_trade_id)
+        bus.subscribe(SphereEvent.DIVERGENCE_FOUND, _on_div_for_exit)
+
+        # ── Сфера 11 (Post-Trade) подписана на: position_closed ──────────────
+        # Когда позиция закрывается — cascade обновляется
+        def _on_close_for_cascade(symbol, data):
+            state = bus.get(symbol)
+            logger.debug("[Cube] %s: position closed → cascade_count=%d", symbol, state.cascade_count)
+        bus.subscribe(SphereEvent.POSITION_CLOSED, _on_close_for_cascade)
+
+        # ── Сфера 12 (Diagnostics) подписана на: все события ─────────────────
+        # SphereRegistry отслеживает здоровье всех сфер
+        if hasattr(self, 'sphere_registry'):
+            self.sphere_registry.wire_subscriptions(bus)
+
+        # ── Cross-subscriptions для mesh: Сфера 5 ↔ Сфера 7 ─────────────────
+        # Cross-Market (BTC regime) влияет на все сигналы
+        def _on_btc_for_signals(symbol, data):
+            state = bus.get(symbol)
+            state.btc_regime = data.get("btc_regime")
+        bus.subscribe(SphereEvent.CROSS_MARKET, _on_btc_for_signals)
+
+        # ── Pivot touch → Exit Manager (TP targets near pivot) ───────────────
+        def _on_pivot_for_exit(symbol, data):
+            state = bus.get(symbol)
+            if state.open_trade_id:
+                logger.debug("[Cube] %s: pivot touch → TP check (trade #%d)",
+                             symbol, state.open_trade_id)
+        bus.subscribe(SphereEvent.PIVOT_TOUCH, _on_pivot_for_exit)
+
+        _n_subs = sum(len(v) for v in bus._subscribers.values())
+        logger.info("[Cube] mesh-связность: %d подписок на %d типов событий",
+                    _n_subs, len(bus._subscribers))
 
     def _register_routers(self):
         from bot.handlers.subscription_handlers import get_router as sub_router
@@ -227,7 +321,7 @@ class TradingAlertBot:
                     logger.warning("[Bot] reconcile error (не критично): %s", _re)
 
             from bot.monitoring import trade_tracker_loop
-            from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop
+            from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop, circuit_breaker_loop
             from bot.loops.trigger_loop import run_trigger_loop
             from bot.loops.health_loop import health_check_loop
             from web.dashboard_server import start_dashboard
@@ -246,8 +340,9 @@ class TradingAlertBot:
             ))
             asyncio.create_task(ml_training_loop(self))
             asyncio.create_task(weekly_report_loop(self))
-            asyncio.create_task(wr_health_check_loop(self))  # DEV-27: rolling WR monitor
-            asyncio.create_task(auto_review_loop(self))      # DEV-12/8.4.9: weekly auto-review
+            asyncio.create_task(wr_health_check_loop(self))    # DEV-27: rolling WR monitor
+            asyncio.create_task(auto_review_loop(self))        # DEV-12/8.4.9: weekly auto-review
+            asyncio.create_task(circuit_breaker_loop(self))   # DEV-156: Circuit Breaker
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())

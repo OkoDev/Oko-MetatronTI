@@ -113,6 +113,25 @@ async def wr_health_check_loop(bot) -> None:
         await asyncio.sleep(6 * 3600)  # каждые 6 часов
 
 
+async def circuit_breaker_loop(bot) -> None:
+    """DEV-156: Circuit Breaker — проверяет WR каждые 15 мин.
+
+    Если rolling WR (window=50) < 15% → поднять min_strength +10 на 30 мин.
+    Проверяется в bot/monitoring.py через CircuitBreaker().strength_floor_bonus.
+    """
+    from core.trading.circuit_breaker import CircuitBreaker
+    cb = CircuitBreaker()
+    await asyncio.sleep(60)  # дать боту прогреться
+    while True:
+        try:
+            db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+            cb.check(db_path)
+            logger.debug("[CircuitBreaker] status: %s", cb.status_text())
+        except Exception as e:
+            logger.exception("circuit_breaker_loop: %s", e)
+        await asyncio.sleep(15 * 60)  # каждые 15 мин
+
+
 async def auto_review_loop(bot) -> None:
     """DEV-12 (8.4.9): Еженедельный авто-анализ метрик системы.
 
