@@ -230,7 +230,7 @@ trading:
     max_sl_dist_pct: 0.02
   dual_tp:
     enabled: true
-    tp1_fix_pct: 20
+    tp1_fix_pct: 30
   use_tsl: true
   tsl_activation_r: 1.0
   tsl_min_move_pct: 0.15
@@ -409,7 +409,7 @@ risk_management:
   regime_strategy:
     enabled: true
     trend_sl_factor: 0.85
-    trend_strategy_type: SINGLE
+    trend_strategy_type: DUAL_TSL
     trend_position_multiplier: 1.0
     range_sl_factor: 1.15
     range_strategy_type: SINGLE
