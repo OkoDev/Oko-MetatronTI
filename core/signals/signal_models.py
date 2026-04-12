@@ -183,6 +183,9 @@ class MarketContext:
     mtf_context: Optional['MTFContext'] = None
     # ARCH-17: SMC Context fields
     smc_context: Optional['SMCContext'] = None  # полный MTFContext объект
+    # ARCH-55: RANGE BOUNCE — режим рынка + пивотный кеш для calculate_levels()
+    regime: str = ""                           # TREND_UP / TREND_DOWN / RANGE / HIGH_VOL
+    pivot_cache_1d_1w: Dict[str, Any] = field(default_factory=dict)  # {symbol_1D: {PP,R1,...}, symbol_1W: {}}
 
 
 @dataclass

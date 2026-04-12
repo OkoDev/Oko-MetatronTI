@@ -667,6 +667,25 @@ class TradingIntelligence:
             # ARCH-12: обогащаем MarketContext полем mtf_context
             if mtf_context is not None:
                 market_context.mtf_context = mtf_context
+                # ARCH-55: сохраняем режим чтобы calculate_levels() мог выбрать RANGE BOUNCE
+                market_context.regime = getattr(mtf_context, "regime", "") or ""
+
+            # ARCH-55: RANGE BOUNCE — загружаем пивоты если режим RANGE и фича включена
+            try:
+                _rb_cfg = (self.config or {}).get("trading", {}).get("range_bounce", {})
+                if (_rb_cfg.get("enabled", False) and market_context.regime == "RANGE"
+                        and self.data_collector is not None):
+                    _pcf = self._pivot_calc_shared
+                    _1d = await _pcf.get_daily_pivots(symbol, self.data_collector) or {}
+                    _1w = await _pcf.get_weekly_pivots(symbol, self.data_collector) or {}
+                    market_context.pivot_cache_1d_1w = {
+                        f"{symbol}_1D": _1d,
+                        f"{symbol}_1W": _1w,
+                    }
+                    logger.debug("[ARCH-55] %s RANGE — pivot_cache загружен: 1D=%d 1W=%d уровней",
+                                 symbol, len(_1d), len(_1w))
+            except Exception as _e55:
+                logger.debug("[ARCH-55] pivot_cache load failed: %s", _e55)
 
             # ARCH-17: SMC Context (структура + зоны интереса)
             smc_context = None

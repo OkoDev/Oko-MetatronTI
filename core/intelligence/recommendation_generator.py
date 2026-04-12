@@ -125,6 +125,30 @@ def calculate_levels(
     if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
         return entry_price, None, None, None, "", ""
 
+    # ── -1. RANGE BOUNCE — pivot-based SL/TP для RANGE режима (ARCH-55/DEV-110) ─
+    # Имеет наивысший приоритет: если pivot подходит — возвращаем сразу
+    _rb_cfg = config.get("trading", {}).get("range_bounce", {})
+    if (_rb_cfg.get("enabled", False)
+            and getattr(market_context, "regime", "") == "RANGE"
+            and getattr(market_context, "pivot_cache_1d_1w", None)):
+        try:
+            from core.smc.sl_tp_calculator import calc_range_bounce_sl_tp
+            rb_sl, rb_tp, rb_r, rb_reject = calc_range_bounce_sl_tp(
+                direction="LONG" if is_long else "SHORT",
+                entry=entry_price,
+                pivot_cache=market_context.pivot_cache_1d_1w,
+                symbol=symbol,
+                sl_buffer_pct=_rb_cfg.get("sl_buffer_pct", 0.003),
+                min_tp_r=_rb_cfg.get("min_tp_r", 3.5),
+                max_sl_dist_pct=_rb_cfg.get("max_sl_dist_pct", 0.02),
+            )
+            if rb_reject is None and rb_sl and rb_tp:
+                logger.info("[ARCH-55] %s RANGE BOUNCE SL=%.6g TP=%.6g R=%.1f", symbol, rb_sl, rb_tp, rb_r)
+                return entry_price, rb_sl, rb_tp, rb_tp, "range_bounce:pivot", "range_bounce:pivot"
+            logger.debug("[ARCH-55] %s RANGE BOUNCE rejected: %s → fallback standard", symbol, rb_reject)
+        except Exception as _e55:
+            logger.debug("[ARCH-55] range_bounce error: %s", _e55)
+
     # ── 0. Swing LOW/HIGH — реальная рыночная структура (первый приоритет) ─
     swing_level = market_context.swing_low if is_long else market_context.swing_high
     if swing_level and swing_level > 0:

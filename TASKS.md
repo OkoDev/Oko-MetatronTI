@@ -39,10 +39,11 @@
 | [DEV-104](#dev-104) | 🔵 | Dead-Man Timer: emergency close all (Слой 3 ARCH-65) — только перед LIVE | DEV |
 | **СТРАТЕГИЯ / СИГНАЛЫ** | | | |
 | [DEV-151](#dev-151) | ✅ | Groq AI-комментарий к сигналам в TG (monitoring.py + TradeAnalyzer.analyze_signal) | DEV |
-| [DEV-110](#dev-110) | 🟡 | RANGE BOUNCE: calc_range_bounce_sl_tp() в sl_tp_calculator.py | DEV |
+| [DEV-110](#dev-110) | ✅ | RANGE BOUNCE: calc_range_bounce_sl_tp() в sl_tp_calculator.py | DEV |
 | [DEV-127](#dev-127) | ✅ | SMC None gate: smc_has_bos OR smc_has_choch (shadow) в wt_15m_reversal_scanner | DEV |
 | [DEV-100](#dev-100) | ✅ | chart_builder: try/except + blacklist малоликвидных пар (GAIB, BANANA) | DEV |
 | [DEV-87](#dev-87) | ✅ | OTE backtest v2: WR=35.1% SWING, 29.2% SCALP — 🔴 не готов к prod (нужны доп. фильтры) | DEV |
+| [DEV-88](#dev-88) | 🔴 | OTE Step2 фильтры: min_zone_tf=4h + require_choch=true → пересчёт бэктеста | DEV |
 | [DEV-121](#dev-121) | 🟢 | Self-diagnostics suite: глубокая проверка всех узлов системы | DEV |
 | **ML / АНАЛИТИКА** | | | |
 | [ARCH-45](#arch-45) | 🟢 | OutcomePredictor ревью: следующий 20.04 (AUC=0.41, цель >0.55) | ARCH |
@@ -57,7 +58,7 @@
 | **АРХИТЕКТУРА** | | | |
 | [ARCH-70](#arch-70) | ✅ | EventBus Фаза 1+2+3: шина Full CALL — 6 триггеров включая wt_verdict_strong + btc_macro_shock | ARCH |
 | [ARCH-62](#arch-62) | 🔵 | Trade Simulator рефакторинг: exit_manager + cascade_tsl + levels_calculator | ARCH |
-| [ARCH-55](#arch-55) | 🟡 | DEV-110 интеграция: MarketContext.pivot_cache_1d_1w + RANGE BOUNCE в calculate_levels() | ARCH |
+| [ARCH-55](#arch-55) | ✅ | DEV-110 интеграция: MarketContext.pivot_cache_1d_1w + RANGE BOUNCE в calculate_levels() | ARCH |
 | [ARCH-57](#arch-57) | 🔵 | Confluence TRADER/RANGE tier parameter | ARCH |
 | [ARCH-64](#arch-64) | ✅ | pivot_reversal weekly_bias gate: UNKNOWN→WATCH + против bias→-20 (shadow) | ARCH |
 | [ARCH-67](#arch-67) | 🔵 | USDT.D macro gate: CoinGecko API + shadow (бэклог май) | ARCH |
@@ -209,7 +210,33 @@ logger.info("[BTC4h] режим=%s close=%.0f", regime, ohlcv['close'].iloc[-1])
 - Конфлюенция 3TF = 0 сигналов (слишком редко)
 
 **Вывод:** Step0+Step1 недостаточно. Нужен Step2 — дополнительные фильтры для выхода на WR≥45%.
-**Следующий шаг:** ARCH решает Step2 фильтры (4h-only? CHoCH-only? exclude BTC?)
+**Решение ARCH (12.04.2026):** A+B принято, C отложено, D отклонено. → DEV-88.
+
+---
+
+### DEV-88 — OTE Step2 фильтры (решение ARCH 12.04.2026) 🔴
+**Файл:** `core/signals/ote_detector.py`, `config.yaml`
+
+**Суть:** Добавить два фильтра в `detect_ote_signal()`:
+1. `min_zone_tf: str = "4h"` — если primary TF меньше (1h) → `return None`
+2. `require_choch: bool = False` — если `True` и `is_bos=True` → `return None`
+
+**Конфиг** (`config.yaml`):
+```yaml
+signals:
+  ote_min_zone_tf: "4h"
+  ote_require_choch: true
+```
+
+**После реализации** — запустить бэктест:
+```bash
+python scripts/backtest_ote_mtf.py --pairs BTC ETH SOL BNB XRP --days 60
+```
+
+**Критерий успеха:** SWING WR ≥ 42% → создать DEV-89 "OTE shadow extended: 20 пар, 90 дней".
+Если WR < 42% — отчитаться в DISCUSSION.md, ARCH пересматривает.
+
+**Логика решения:** 1h zone слишком мелкая (OTE в ней = шум). BOS после 70%+ отката = структурная слабость, не вход. CHoCH + глубокий откат = ICT логика (первое движение нового тренда). Детали в DISCUSSION.md [12.04.2026 ARCH].
 
 ---
 
