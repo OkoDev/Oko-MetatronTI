@@ -230,7 +230,7 @@ trading:
     max_sl_dist_pct: 0.02
   dual_tp:
     enabled: true
-    tp1_fix_pct: 30
+    tp1_fix_pct: 10
   use_tsl: true
   tsl_activation_r: 1.0
   tsl_min_move_pct: 0.15
