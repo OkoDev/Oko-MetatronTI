@@ -20,6 +20,367 @@
 
 ## 📅 История изменений
 
+### [19.04.2026] ARCH: ARCH-91 — Narrative в TG + lost_reason + feedback loop (спринт 5/5, финал)
+
+**Проблема:** нарратив строился и писался в features_json, но трейдер его не видел. После закрытия сделки система не знала «почему вход провалился» и не сообщала это следующему сигналу по той же паре.
+
+**Решение:** три связанные под-задачи в одном PR. В [monitoring.py](bot/monitoring.py) добавлен блок `📖 Нарратив` (SMC-факторы + ключевые факторы, до 4 строк) и `📜 Прошлый вход` (если закрытие < 4ч назад). В [post_trade_analyser.py](core/trading/post_trade_analyser.py) — `classify_lost_reason(status, R, max_R, tp1_hit)` с 5 категориями: TIMEOUT / SL_GAPPED / TSL_LATE / BAD_ENTRY / SL_STANDARD — обновляет `features_json["lost_reason"]` и `PairState.last_narrative_outcome`. В [narrative_builder.py](core/intelligence/narrative_builder.py) — `_extract_past_outcome_line` читает outcome и генерирует строку если age < 4ч. Config: `trading.narrative.include_in_tg: true`.
+
+**Результат:** спринт «Замыкание разрывов» закрыт 5/5. Куб теперь: видит структуру (ARCH-89) → думает ею (ARCH-90) → показывает трейдеру (ARCH-91) → запоминает исходы (ARCH-88 + ARCH-91). Тесты 10/10 PASS. После рестарта бота нарратив появится в TG-сигналах.
+
+---
+
+### [19.04.2026] ARCH+DEV: ARCH-90 — NarrativeBuilder читает SMC, OutcomePredictor получает 4 новых фичи (спринт, задача 3/5)
+
+**Проблема:** SMC snapshot теперь заполняется (ARCH-89), но дальше данные никуда не идут. NarrativeBuilder строит нарратив без структурного контекста — трейдер не видит почему сигнал; ML OutcomePredictor работает на 23 фичах без SMC-предикторов (ближайший OB, OTE, BOS alignment).
+
+**Решение:** В NarrativeBuilder добавлена функция `_extract_smc_narrative(snap, direction)` — формирует 0-4 строки по приоритету: цена в OTE → ближайший bull/bear OB → последний BOS (с маркером `✓`/`⚠` по alignment) → CHoCH против направления → FVG mitigation >60%. Отдельно кладёт 4 плоских поля (`nearest_ob_strength`, `price_in_ote`, `current_retracement`, `last_bos_direction`) — они идут в features_json и далее в OutcomePredictor как позиции 24-27 вектора. Unit-тест [tests/unit/test_narrative_smc.py](tests/unit/test_narrative_smc.py) — 9/9 PASS, включая graceful-сценарий при `smc_snap=None` и проверку длины вектора 27.
+
+**Результат:** Куб теперь не только «видит» структуру (ARCH-89), но и **думает** ей: нарратив строится со структурным контекстом, ML получает предиктивные фичи для обучения на накопленных исходах. Все 5 файлов в одном PR, существующие тесты не ломаются. Следующий шаг — ARCH-91 (TG-видимость + lost_reason + feedback-loop), после чего спринт «Замыкание разрывов» закрывается 5/5.
+
+---
+
+### [19.04.2026] ARCH+DEV: ARCH-89 — SMC snapshot publisher merged (спринт «Замыкание разрывов», задача 2/5)
+
+**Проблема:** FVG, Order Blocks, BOS, CHoCH и Fibonacci живут только внутри OTE-пайплайна. NarrativeBuilder строит контекст без структурных данных — «слепой нарратив». Событие `SMC_SNAP_UPDATED` объявлено, обработчик готов, но никто не публикует.
+
+**Решение:** Создан `core/smc/smc_snapshot.py` — функция `build_smc_snapshot(symbol, ohlcv_by_tf)` агрегирует все SMC-детекторы (FVG/OB/BOS/CHoCH/Swings) по TF в единый snap из 13 полей: nearest OB, активные FVG, последний BOS/CHoCH, swing high/low, Fibonacci-уровни (включая OTE 0.705/0.79), `price_in_ote` и `current_retracement`. В `bot/loops/scan_loop.py` добавлена публикация события после `SMC_VERDICT`. `detect_structure` кешируется per-TF, один расчёт переиспользуется для swing и Fibonacci.
+
+**Результат:** PairState.smc_snap теперь заполняется. Готова основа для ARCH-90 (NarrativeBuilder читает smc_snap) и ARCH-87 (Fibonacci в features_json для ML). Benchmark 56.9мс avg на synthetic — на проде ожидается <50мс (меньше свингов). Лог `[SMC_SNAP]` с ключевыми полями для отладки.
+
+---
+
+### [19.04.2026] ARCH: DEV-172-FIX закрыт как not-a-bug, открыта ARCH-92
+
+**Проблема:** В плане спринта значилось, что Entry Priority Matrix 4+ дня пишет `priority=None` у всех сделок — якобы критический баг, shadow-гипотеза не проверяется.
+
+**Решение:** Сначала проверили факты. SQL по 703 сделкам за 14–18.04 показал распределение P1/P2/P3/None = **49 / 280 / 176 / 198** (72% имеют priority). Матрица работает — вероятно DEV-169 (`atr_trend_1h_bias` fallback) закрыл баг раньше постановки задачи. DEV-172-FIX отмечен ✅ CLOSED: NOT-A-BUG. Вместо фикса поставили [ARCH-92](TASKS.md#arch-92) — через 2-3 дня (~22.04) на 200+ закрытых сделках замерить WR/avgR по P1/P2/P3 и решить, активировать ли правило «P3 → WATCH».
+
+**Результат:** Не изменили ни строки кода (правило «одно изменение с измеримым результатом»). Слот спринта освобождён — DEV (yogoru) продолжает ARCH-89. Два косметических наблюдения зафиксированы в TASKS.md: 19% сделок без `wt_snap` (timeout MTF) и мёртвая ветка `bias_from_atr` в `entry_matrix.py:53` (ищет ключ `atr_trend`, которого нет в snapshot). Оба — в бэклог.
+
+**Урок:** План может устареть быстрее, чем его исполняют. Проверять гипотезу на свежих данных **до** писания кода. Диагностика стоит минут — «фикс работающего» стоит регрессий.
+
+---
+
+### [19.04.2026] ARCH+DEV: ARCH-88 — Per-pair Loss Memory merged (спринт «Замыкание разрывов», задача 1/5)
+
+**Проблема:** API3 получил 8 стоп-лоссов подряд — ни одного автоматического защитного действия. Одна деградирующая пара может сливать депозит, пока глобальные веса показывают «среднюю температуру по больнице».
+
+**Решение:** PairState расширен полями `sl_streak_count`, `last_n_outcomes` (deque на 10), `pair_avg_r_last_20`, `last_sl_at`, `pair_cooldown_until`. `PostTradeAnalyser` обновляет их после каждого закрытия сделки (SL → ++, TP/TSL с прибылью → 0). В `bot/monitoring.py` новый PAIR-COOLDOWN gate: при серии SL ≥ 5 блокирует регистрацию сигнала (сейчас shadow — только лог `[PAIR-COOLDOWN SHADOW WOULD_BLOCK]`).
+
+**Результат:** Защитный контур готов. Через 48ч shadow-наблюдения активируем prod если блокирует <10% сигналов. Следующая задача спринта — ARCH-89 (SMC-снимок в PairState).
+
+---
+
+### [19.04.2026] ARCH: Спринт «Замыкание разрывов» — 5 задач, ARCH-88..91 + DEV-172-FIX
+
+**Проблема:** Куб Метатрона собирает данные из 12 сфер, но они не доходят до точки решения. SMC-детекторы считают FVG/OB/BOS, но ничего не публикуют в PairState. Одна пара (API3) получила 8 стоп-лоссов подряд — система не заметила паттерна. Entry Priority Matrix живёт shadow-режимом 4+ дня с багом `priority=None`. Нарратив строится, но невидим трейдеру и не обновляется после закрытия сделки.
+
+**Решение:** В [TASKS.md](TASKS.md) добавлен блок «🚀 СПРИНТ» с пятью задачами 🔴 приоритета — все про замыкание разрывов, не новые фичи. DEV (второй аккаунт yogoru в agent-loop) берёт ARCH-88 → 89 → 90 → 91 последовательно с пинами в DISCUSSION.md. DEV-172-FIX (диагностика priority=None) берёт ARCH параллельно. Принцип «одно изменение за раз + shadow 48ч» сохранён.
+
+**Результат:** Сформулирован план на 5-7 дней с чёткими acceptance criteria для каждой задачи. После спринта: per-pair защита от серии SL, SMC-данные в нарративе и в features_json (рост фич OutcomePredictor 23 → 30), нарратив видимый в TG, lost_reason классификатор для самодиагностики.
+
+---
+
+### [18.04.2026] ARCH: ARCH-84 — MTF gate shadow для SHORT при LONG bias пары
+
+**Проблема:** WR SHORT=33.5% vs LONG=67.6% — шортим против бычьего рынка пары. Мягкие множители (Этап 10) не помогли: WR SHORT не изменился.
+
+**Решение:** `bot/monitoring.py` — Этап 5.3b после ARCH-78. Если `MTFContext.bias_strength > 0.70` и направление SHORT → `WOULD_BLOCK` лог (shadow) или `action = WATCH` (production). Исключение: `pivot_reversal` (разворот у уровня — допустим против bias). `config.yaml`: `mtf_gate_enabled: true`, `mtf_gate_shadow: true`. В `features_json` пишутся `mtf_bias`, `mtf_bias_strength`, `arch84_would_block`.
+
+**Результат:** shadow активен. Через 2 дня смотрим `[ARCH-84 SHADOW WOULD_BLOCK]` в логах — если ≥15% SHORT блокируется → переключаем `mtf_gate_shadow: false`.
+
+### [18.04.2026] ARCH: DEV-178 — Data integrity audit + data_era разметка
+
+**Проблема:** 6832 сделок содержат данные трёх "загрязнённых" эр. pre_157 (avgR=+1.009) и post_157 (avgR=-0.291) содержали micro-SL артефакты (140 сделок с WR=75%, avgR=+1.868 — полная иллюзия). ML обучался на всей выборке → искажал оценки сигналов.
+
+**Решение:**
+- `scripts/data_integrity_audit.py`: скрипт аудита метрик (WR, avgR, Sharpe) по трём эрам + backfill `data_era` в `features_json` всех существующих сделок (`--tag` режим). Эры: `pre_157` / `post_157` / `post_fix` / `micro_sl_artifact`.
+- `core/trading/trade_simulator.py`: каждая новая сделка автоматически получает `data_era` в `features_json` на основе текущей даты и sl_dist.
+- `core/ml/outcome_predictor.py`: `_load_closed_trades` теперь фильтрует `created_at >= 2026-03-15`; в `fit()` дополнительно пропускаются `micro_sl_artifact`.
+
+**Результат:** ML обучается только на чистых данных. post_fix без micro-SL: 483 сделки. Backfill встроен в `TradeSimulator.__init__` — запустится автоматически при следующем старте, обходя WAL/9p проблему.
+
+### [18.04.2026] ARCH: DEV-164 + DEV-163 + actual_entry_price — биржевой путь приближен к симулятору
+
+**Проблема:** VST/LIVE путь открытия ордеров имел 3 gap'а относительно SIM-симулятора: 1) min_sl_dist guard не применялся к биржевым ордерам, 2) CircuitBreaker не срабатывал при WR=0% из-за порога в 10 закрытых сделок, 3) реальная цена исполнения с биржи нигде не сохранялась.
+
+**Решение:**
+- `core/exchange/order_manager.py`: добавлен DEV-164 guard в `open_bracket()` — та же проверка `min_sl_dist_pct` что и в trade_simulator.py. Оба пути теперь защищены.
+- `core/trading/circuit_breaker.py`: порог снижен с 10 до 5 сделок + fast-trigger при WR=0% с 3+ сделок (срабатывает немедленно, не ждёт 10).
+- `core/trading/trade_simulator.py`: добавлена колонка `actual_entry_price` + параметр в `set_exchange_order_id()`.
+- `bot/monitoring.py`: после успешного `open_bracket` биржевая цена исполнения (`_br.entry_price`) сохраняется в `actual_entry_price`.
+
+**Результат:** Разница `actual_entry_price vs entry_price` теперь видна в БД — можно измерить реальный slippage по парам.
+
+### [14.04.2026] TRADER: TR-001 Анализ данных — Time Gate подтверждён, DEV-172 не пишет данные
+
+**Проблема:** После активации DEV-170 (time gate 09-18 UTC) и DEV-171 (confluence заморозка) нужно проверить по фактическим данным — gate работает как ожидалось? Entry Priority Matrix (DEV-172) накапливает shadow данные?
+
+**Решение:** SQL-анализ 163 сделок за 24 часа. Результат: `pivot_reversal` в gate = avgR +1.233R vs -1.374R вне gate — gate подтверждён. `confluence` убыточен во все часы одинаково (в gate -1.294, вне -1.269) — полный стоп правильный. DEV-172: все 335 сделок за 2 дня получили `entry_priority=None` — матрица не пишет данные, нужна диагностика.
+
+**Результат:** Time Gate эффективен. Ответ DEV на вопрос "смотри тайминги" — blackout для 15:00 UTC не нужен (для pivot_reversal там avgR позитивный). Приоритет — починить DEV-172 entry_priority запись иначе shadow не накапливается.
+
+---
+
+### [14.04.2026] TRADER: Диагноз WT как триггер vs сигнал — ответы на вопросы ARCH
+
+**Проблема:** ARCH обнаружил корневую причину убытков: система использует WT momentum (`wt1 > wt2`) для определения тренда, хотя это инструмент триггера. Из-за этого 56% сигналов блокируются как "MTF NEUTRAL" — в том числе при реально хорошем тренде на 1H/4H.
+
+**Решение:** TRADER подтвердил диагноз и дал конкретные ответы. "Хороший" WT cross требует: 4H глубоко OS (wt1 ≤ −53), структурный тренд на 4H/1H по EMA (не WT momentum), зону для стопа рядом. Без depth — это шум. Рекомендовано: добавить `ema_slope_4h` для диагностики, WT оставить только как entry trigger (последнее звено в цепи: структура → зона → WT cross).
+
+**Результат:** Архитектурное решение согласовано — Entry Priority Matrix (ARCH-78) идёт в правильном направлении. DEV может продолжать диагностику через backtesting с EMA slope 1D как pre-filter.
+
+---
+
+### [14.04.2026] ARCH-55-VAL: Промежуточная валидация pivot-based TP (TRADER)
+
+**Проблема:** ARCH-55 добавил пивот-based (уровни дневных пивотов) SL/TP для сигналов RANGE BOUNCE. Shadow запущен 12.04, нужно накопить 20+ сделок к 19.04 и сравнить с обычным SL/TP.
+
+**Решение:** SQL-анализ 335 сделок за 12-14.04. Сигнал `range_bounce` почти не генерируется (0 сделок), но ARCH-55 уже применяется к `pivot_reversal`. Обнаружено: широкий ATR-стоп (atr_14) + пивот TP на уровне R2/PP = avgR +1.897 (35 сделок, ~80% winners через TSL). Узкий стоп (atr_1.5) + пивот TP = убыточен (-0.536) из-за преждевременных выбиваний. S-уровни (S1/S2/S3) как TP для LONG позиций — катастрофа (avgR до -3.692).
+
+**Результат:** Пивот-based TP подтверждён при правильном стопе. Рекомендация ARCH: проверить почему `range_bounce` не генерируется + рассмотреть отдельный tier для `pivot_reversal LONG + atr_14 SL + R2/PP TP`.
+
+### [14.04.2026] DEV-172: Entry Priority Matrix — shadow сбор данных о качестве входов
+
+**Проблема:** Непонятно почему одни входы работают, а другие нет. Нужна метрика качества входа, которую можно накопить и затем использовать как фильтр.
+
+**Решение:** Создан модуль `core/intelligence/entry_matrix.py`. Функция `evaluate_entry_priority()` оценивает вход по трём критериям из `wt_snap`: bias 1h (ATR Trend согласован), zone (OS/OB на 1h или 4h), trigger (WT кросс на 15m). Результат P1/P2/P3/None пишется в `features_json` каждой сделки. Никакого влияния на логику входа — только сбор данных.
+
+**Результат:** Через 200+ новых сделок сможем сравнить WR по приоритетам. Если P1 даёт WR≥35% — переключаем матрицу как фильтр входов. Это шаг 2 Варианта A из DISCUSSION (после выключения confluence).
+
+### [14.04.2026] DEV-171: Confluence полный стоп (дополнение)
+
+**Проблема:** Предыдущая версия DEV-171 оставила открытым SHORT×TREND_DOWN. Но TRADER рекомендовал полный стоп, и данные по confluence однозначны: -348R за 3362 сделки во всех комбинациях.
+
+**Решение:** `analysis.confluence.enabled: false` в config.yaml — перекрывает все blocked_combos, полностью останавливает регистрацию сделок типа `confluence`.
+
+**Результат:** Самый крупный источник убытков (55% сделок) заблокирован. Эксперимент до 28.04.2026 — смотрим P&L без confluence.
+
+### [14.04.2026] DEV-170/171: Time gate + Confluence блок + L3 лимит позиций
+
+**Проблема:** Система теряла -501R за 6064 сделки. Главные источники: `confluence` сигнал (-348R, 55% всех сделок), ночные входы 23:00–06:00 UTC (avgR=-0.3), слишком много одновременных позиций.
+
+**Решение:** Три изменения в конфиге + code в trade_simulator.py:
+1. Time-of-day gate (09:00–18:00 UTC по умолчанию, wt_signal расширен до 04:00 — азиатская ночь прибыльна для него)
+2. Confluence заблокирован во всех убыточных режимах, открыт только SHORT×TREND_DOWN
+3. L3 Checker включён: max 3 открытых позиции одновременно
+
+**Результат:** Отфильтровывается большинство убыточных входов без изменения архитектуры. Обратимо через конфиг. Ожидаем rост avgR новых сделок через 2 недели (эксперимент до 28.04).
+
+### [14.04.2026] TRADER — Анализ wt_signal по режиму и направлению (TR-001)
+
+**Проблема:** Было известно что `wt_signal` = прибыльный (+149R), но непонятно в каких условиях он работает, а где теряет. Нужен разбор по режимам рынка и времени входа.
+
+**Решение:** SQL-запросы по 498 закрытым wt_signal сделкам. Выявлено: весь профит пришёл из NULL-режима (сделки до 04.03.2026). После введения режимного классификатора — wt_signal убыточен во всех режимах, но выборка мала (<25 сделок). Также найден "мёртвый час": 15:00 UTC даёт avgR=-0.550 для wt_signal.
+
+**Результат:** Конкретные рекомендации DEV: (1) расширить time gate для wt_signal до 04:00–18:00 UTC (ночные часы 04-08 прибыльны для этого типа), (2) ослабить режимный фильтр на wt_signal пока не накопится 100+ сделок с каждым режимом, (3) добавить blackout 15:00–15:30 UTC. Записи добавлены в DISCUSSION.md.
+
+### [14.04.2026] DEV-169: atr_trend_1h_bias добавлен в features_json
+
+**Проблема:** Система использует 15m regime как основной фильтр, но по данным 6064 сделок торговля без режимных фильтров (старые сделки) давала лучший результат (+0.247R avg). Анализ показал: главный bias должен быть 1h ATR Trend, а не 15m режим.
+**Решение:** В `register_trade_async` добавлен расчёт ATR Trend (43-период) на 1h OHLCV. Результат (UP/DOWN) записывается в `features_json` как `atr_trend_1h_bias`. DataCollector кеширует запрос — дополнительного сетевого вызова нет.
+**Результат:** Каждая новая сделка теперь содержит 1h ATR bias. После накопления 200+ сделок можно провести анализ: "сделки по тренду vs против" → данные для ARCH-77 карты комбинаций.
+
+### [14.04.2026] DEV-168: LIVE-GUARD лог спам исправлен
+
+**Проблема:** 4 биржевые позиции с неправильным SL (direction guard не сработал) висели 1-2 дня. LIVE-GUARD логировал WARNING каждую минуту → 34967 строк спама, скрывавших реальные проблемы.
+**Решение:** добавлен `_live_guard_logged: dict` в TradeSimulator. Каждый из 3 типов LIVE-GUARD (TSL/EXPIRED/exit) логирует WARNING не чаще раза в час на позицию.
+**Результат:** лог чистый, предупреждения видны но не спамят. Позиции закрыты вручную пользователем.
+
+### [14.04.2026] Оптимизация контекста сессии — сокращение затрат на токены
+
+**Проблема:** TASKS.md занимал ~23,000 токенов за счёт описаний уже выполненных задач. Каждая сессия тратила ~150 токенов на неактуальный раздел бэктестинга в CLAUDE.md.
+**Решение:** Создан `TASKS-ARCHIVE.md` (все ✅ задачи), `TASKS.md` сокращён до активных задач (770→188 строк), создан `START.md` — 49-строчный файл быстрого контекста. В CLAUDE.md убран раздел бэктестинга (~130 строк).
+**Результат:** Старт сессии теперь читает 1 файл (START.md, 49 строк) вместо 4 файлов. TASKS.md в 4 раза меньше.
+
+### [13.04.2026] DEV-117: /performance + /pair/:symbol + SSE endpoint
+
+**Задача:** Dashboard P3 — аналитические страницы и SSE.
+
+**Реализовано:** `PerformanceEngine.pair_stats()` + `top_pairs()`. API: `GET /api/performance` (сводка всех breakdowns), `GET /api/pair/{symbol}` (stats+history+open), `GET /api/events` (SSE stream, 30s). Страницы: `performance.html` (KPI карты, таблицы по сигналам/режимам, топ пар, weekly, SSE-индикатор), `pair.html` (aggregate stats + история + открытые сделки). Ссылка в sidebar index.html.
+
+**Результат:** `/performance` и `/pair/BTC_USDT:USDT` доступны. SSE обновляет KPI без polling.
+
+### [14.04.2026] DEV-167: RANGE BOUNCE реально заработал
+
+**Проблема:** RANGE BOUNCE (DEV-110, включён 12.04) никогда не применялся — `pivot_cache` был пустым на момент расчёта SL/TP (пивоты не загружались до вызова). Все сделки получали reject "no pivot levels". Ошибка молчала на DEBUG уровне.
+**Решение:** `trade_simulator.py` — перед вызовом `calc_range_bounce_sl_tp` инициализируем `_pivot_calc` и загружаем daily/weekly пивоты для символа. `pivot_reversal` добавлен в список сигналов (было только confluence/watch_list_breach). Ошибки подняты до INFO/WARNING.
+**Результат:** RANGE сделки теперь получают пивотный SL/TP вместо ATR → корректный R:R в боковике.
+
+### [14.04.2026] DEV-166: RANGE min_strength 60→70, LONG_RANGE 75→78
+
+**Проблема:** RANGE режим = 52% всех сделок за 10 дней, WR=20%, avgR=-1.09. Порог 60 пропускал слишком много слабых сигналов в боковике.
+**Решение:** `config.yaml` RANGE: 60→70, LONG_RANGE: 75→78. Читается динамически — эффект немедленный. С активным CircuitBreaker (+10) итого: RANGE=80, LONG_RANGE=88.
+**Результат:** ожидаем сокращение объёма RANGE-сделок на ~30-40% (strength 60-69 отсекается).
+
+### [14.04.2026] DEV-111act + DEV-165: BTC gate в production + R_multiple clamp
+
+**Проблема:** BTC 4h gate был в shadow_mode — не блокировал LONG при TREND_DOWN/HIGH_VOL. R_multiple=−450 для ASR (sl_dist≈0) искажал всю аналитику и CircuitBreaker WR-счётчик.
+**Решение:** `config.yaml` shadow_mode → false. В `trade_simulator.py` добавлен clamp R ∈ [−15, +15] с WARNING логом при срабатывании.
+**Результат:** LONG в TREND_DOWN/HIGH_VOL теперь блокируются. Аномальные R больше не отравляют avgR / ARCH-аналитику.
+
+### [14.04.2026] DEV-163: CircuitBreaker — исправлена наблюдаемость (DEV-163)
+
+**Проблема:** ARCH видел `CB=closed` в каждом scan-цикле при WR=0% и думал, что торговый CircuitBreaker не срабатывает.
+**Решение:** `CB=closed` — это API CircuitBreaker (api_engine.py), к торговому CB отношения не имеет. Торговый CB логировал статус только на DEBUG (невидимо). DB-ошибки тоже заглушались на DEBUG. Исправлено: DB ошибки → WARNING; статус при активации/проверке → INFO; `scan_loop.py` теперь логирует `trading_cb=` отдельно от `api_cb=`.
+**Результат:** после рестарта каждые 15 мин в логах виден реальный статус торгового CB — легко отличить от API CB.
+
+### [14.04.2026] DEV-164: guard min_sl_dist_pct теперь работает без TP
+
+**Проблема:** SUI #6273 зарегистрирован с sl_dist=0.04% < порога 0.1%, R=-15.82. Guard DEV-157 был вложен в блок `if stop_loss is not None and take_profit is not None`. Если у сделки TP=None (VST без явного TP или tp1_price вместо take_profit), весь блок пропускался, и guard не запускался.
+
+**Решение:** в `trade_simulator.py` DEV-157 guard вынесен отдельным блоком `if stop_loss is not None and entry is not None and entry > 0` — до проверки take_profit. RR-фильтр (требует обоих) остался в отдельном блоке ниже. Лог изменён на `[DEV-157/164]`.
+
+**Результат:** Тест: entry=0.9054, SL=0.9050, TP=None → sl_dist_pct=0.044% < 0.1% → return None ✓. SUI case теперь блокируется на входе независимо от наличия TP.
+
+### [13.04.2026] ARCH — DEV-163/164: найдены два бага при анализе БД
+
+**Проблема:** при закрытии сессии ARCH проверил состояние БД. Rolling 50 закрытых сделок = 50 SL / 0 TP / WR=0.0%, avgR=-1.795. Несмотря на это CircuitBreaker показывает `CB=closed` — не сработал. Отдельно: SUI #6273 зарегистрирован с sl_dist=0.04% несмотря на guard 0.1% (DEV-157).
+
+**Решение:** созданы задачи DEV-163 (CircuitBreaker threshold/rolling window баг) и DEV-164 (guard не применяется к VST path). Зафиксированы в DISCUSSION.md и TASKS.md.
+
+**Результат:** без CircuitBreaker система открывает новые сделки в убыточной серии без защиты. Это приоритет для DEV.
+
+---
+
+### [13.04.2026] DEV-161 + DEV-148: Direction-aware EXHAUSTION gate + SQLite WAL финализирован
+
+**Проблема (DEV-161):** VerdictAggregator блокировал все EXHAUSTION без учёта направления. TRADER установил: OB_bias+LONG = WR=6.2% (блокировать), OS_bias+LONG = WR=50% (пропускать). Также TREND_CONTINUATION не имел gate-логики в shadow.
+
+**Решение:** Добавлена `get_wt_exhaustion_direction(wt_snap)` → "BEARISH"/"BULLISH"/"NEUTRAL" в `wt_specialist.py`. В `verdict_aggregator.py`: OB+LONG / OS+SHORT → WOULD_BLOCK; OS+LONG / OB+SHORT → PASS. TREND_CONTINUATION → shadow only (debug лог, нет эффекта). `trading_intelligence.py` передаёт exhaustion_dir в aggregate_verdicts().
+
+**Проблема (DEV-148):** `circuit_breaker.py` подключался с timeout=5 без PRAGMA; `trade_analyzer.py` — без timeout совсем. При пиковой записи → `database is locked`.
+
+**Решение:** circuit_breaker.py timeout=5→30 + PRAGMA busy_timeout=10000; trade_analyzer.py — оба connect + timeout=30 + PRAGMA.
+
+**Результат:** Тест: EXHAUSTION/BEARISH+LONG → would_block=True ✓; EXHAUSTION/BULLISH+LONG → would_block=False ✓. Все connect к БД унифицированы.
+
+### [13.04.2026] DEV-161 — VerdictGate: ML predict заменён на rule-based derive_wt_verdict
+
+**Проблема:** ML MTFWTSpecialist AUC=0.49, confidence всегда < 0.30, порог gate 0.65 не достигнут ни разу — VerdictGate молчал.
+
+**Решение:** в `core/trading_intelligence.py:977` заменён вызов `self._wt_specialist.predict(wt_snap)` (ML) на `derive_wt_verdict(wt_snap)` из CUBE-08 (rule-based). Confidence задан статически: EXHAUSTION=0.80, REVERSAL_SETUP=0.75. UNCLEAR не пишется в metadata. TREND_CONTINUATION отключён в wt_specialist.py.
+
+**Результат:** VerdictGate начнёт блокировать сигналы при 2+ TF в OB/OS (EXHAUSTION conf=0.80 > порог 0.65). REVERSAL_SETUP дополнительно триггерит ARCH-70 EventBus wt_verdict_strong (conf=0.75 ≥ 0.70). Требуется рестарт бота.
+
+---
+
+### [13.04.2026] TR-007 — wt_specialist баг + direction-aware gate вердикт (TRADER)
+
+**Проблема:** wt_specialist.py читал `atr_trend` (не существует в snap) вместо `trend`. TREND_CONTINUATION никогда не срабатывал. VerdictGate не активировать не ясно с какой логикой.
+
+**Решение:** Прогнал derive_wt_verdict() по 748 закрытым сделкам. Исправлен ключ, TREND_CONTINUATION отключён (антипаттерн: WR=8.3%, avgR=-1.045). Найден directional сплит: EXHAUSTION+OB+LONG=6.2%WR → нужен WOULD_BLOCK; EXHAUSTION+OS+LONG=50%WR → не блокировать.
+
+**Результат:** Вариант B (ARCH) поддержан с уточнением: direction-aware gate. DEV реализует `get_wt_exhaustion_direction()` + directional WOULD_BLOCK в VerdictAggregator.
+
+---
+
+### [13.04.2026] TR-007 + DEV-153 — VerdictGate включён, ML-gate неактивен → DEV-161
+
+**Проблема:** VerdictGate (DEV-146) был в shadow mode. TR-007 требовал валидации: насколько gate полезен?
+
+**Решение:** Анализ 2975 wt_verdict предсказаний в логах. MTFWTSpecialist AUC=0.493 — хуже случайного, средний confidence=0.161, макс=0.575. Порог блокировки 0.65 не достигнут ни разу. 97% предсказаний = EXHAUSTION (BTC обвал). Gate `enabled: true` — безопасен (нет ложных блоков), но не выдал ни одного реального блока.
+
+**Результат:** DEV-153 ✅ (gate включён). TR-007 ✅ (анализ проведён). Создана DEV-161 — заменить ML predict() на rule-based `derive_wt_verdict()` из CUBE-08, который уже тестирован и даёт детерминированные вердикты с confidence ≥ 0.65.
+
+---
+
+### [13.04.2026] ARCH-73..76 — Архитектурный план декомпозиции монолитов
+
+**Проблема:** три монолита (trading_intelligence.py 2578 стр, trade_simulator.py 1978 стр, monitoring.py 1436 стр) затрудняют тестирование, локализацию багов и независимое развитие ML-компонентов.
+
+**Решение:** ARCH зафиксировал спецификации четырёх задач в TASKS.md и DISCUSSION.md. ARCH-73 — MLSpecialist + StrengthAggregator из TI. ARCH-74 — TSLManager + MFETracker + ExchangeSyncGuard из trade_simulator (поглощает ARCH-62). ARCH-75 — SignalFilter + MessageDispatcher из monitoring. ARCH-76 — CubeNode интерфейс для Фрактального Куба (после LIVE).
+
+**Результат:** дорожная карта с конкретными триггерами: ARCH-74 ≈ 20.04, ARCH-73 ≈ 27.04, ARCH-75 ≈ 01.05, ARCH-76 — после LIVE. DEV берёт задачи в указанном порядке, монолиты не трогает до стабилизации текущих фиксов.
+
+---
+
+### [13.04.2026] CUBE-08 — Живые Сферы: WT Specialist + SMC Specialist
+
+**Проблема:** Куб Метатрона заполнял сферы только при ручном Full CALL триггере — без триггера `wt_verdict`, `smc_verdict`, `last_ohlcv_time` были пустыми, `spheres_ok=0` всегда.
+
+**Решение:** DEV создал два Specialist без API-запросов: `wt_specialist.py` (`derive_wt_verdict(wt_snap)`) и `smc_specialist.py` (`fast_smc_verdict(df_1h, df_4h)`). В `scan_loop.py` добавлена публикация `OHLCV_UPDATED`, `WT_VERDICT`, `SMC_VERDICT` каждый цикл для каждой пары. Счётчик `spheres_ok` = сумма 6 флагов: ohlcv_time, wt_snap, wt_verdict, smc_verdict, regime, last_signal_type.
+
+**Результат:** После перезапуска все 524 пары получают живые wt_verdict/smc_verdict без триггера. `spheres_ok ≥ 3` через первые 2 цикла. Разблокирует DEV-153 (VerdictGate) и Moment Score (ARCH-12.04 гипотеза).
+
+---
+
+### [13.04.2026] DEV-158/159/160 выполнены — VST теперь правильно открывает позиции
+
+**Проблема:** большинство VST сделок не попадало на BingX: 25 в симуляторе vs 7 на бирже. Причины: notional ниже MIN_NOTIONAL, SL в неверном направлении для SHORT, TSL откат обновлял stop_loss в неправильную сторону.
+
+**Решение:** DEV поднял `risk_pct: 0.5 → 1.5` в config.yaml (notional=8.25 USDT > MIN_NOTIONAL=5). Добавил SL-direction guard в `order_manager.py:140` — не открывать bracket если LONG SL ≥ entry или SHORT SL ≤ entry. Добавил TSL guard в `order_manager.py:343` — блокировать откат SL (LONG new_sl≤old, SHORT new_sl≥old) до проверки min_move_pct. Бот перезапущен.
+
+**Результат:** VST позиции теперь открываются с корректным SL в правильном направлении. Ожидаем рост числа BingX позиций до ~15-20 при следующих сигналах.
+
+### [13.04.2026] CUBE-08: Живые Сферы реализованы — wt_verdict + smc_verdict для всех пар
+
+**Проблема:** `wt_verdict` и `smc_verdict` были `null` для ~95% пар. Эти значения считались только внутри `analyze_symbol()` (Full CALL), который срабатывает лишь при обнаружении сигнала (~5% пар за цикл). Куб Метатрона должен держать все сферы живыми для всех пар постоянно.
+
+**Решение:** три изменения без единого дополнительного API запроса (данные уже в памяти).
+1. Новый файл `core/intelligence/wt_specialist.py` — `derive_wt_verdict(wt_snap)` → EXHAUSTION / REVERSAL_SETUP / TREND_CONTINUATION / UNCLEAR.
+2. Новый файл `core/smc/smc_specialist.py` — `fast_smc_verdict(df_1h, df_4h)` → STRONG/WEAK_BULL/BEAR_ZONE / NEUTRAL.
+3. В `bot/loops/scan_loop.py` (КУБ МЕТАТРОНА): публикация OHLCV_UPDATED + WT_VERDICT + SMC_VERDICT для каждой пары каждый цикл. В `pair_context.py`: счётчик `spheres_ok` из 6 признаков наличия данных.
+
+**Результат:** все 524 пары теперь получают `wt_verdict` и `smc_verdict` после первого цикла скана. `spheres_ok ≥ 3` — критерий готовности сферы к торговле. Требуется перезапуск бота.
+
+### [13.04.2026] CUBE-08: архитектура Живых Сфер — постановка задачи
+
+**Проблема:** Куб Метатрона показывал `wt_verdict=null` и `smc_verdict=null` для ~95% пар. Причина: MTF WT Specialist и SMC Specialist вызываются только внутри `analyze_symbol()` (Full CALL), который срабатывает лишь при обнаружении сигнала. Концепция Куба предполагает один режим — все сферы живые для всех пар всегда.
+
+**Решение (поставлено как CUBE-08):** вынести логику wt_verdict в `derive_wt_verdict(wt_snap)` и подписать на `WT_SNAP_UPDATED`; добавить `fast_smc_verdict(df_1h, df_4h)` с публикацией из `scan_one()`; добавить `OHLCV_UPDATED` в скан. Стоимость — нулевая (данные уже загружены, нет дополнительных API запросов).
+
+**Результат:** после CUBE-08 `/api/cube/context/*` вернёт живые wt_verdict + smc_verdict для всех 524 пар после первого цикла скана.
+
+### [13.04.2026] Диагноз разрыва Симулятор vs VST → задачи DEV-158/159/160
+
+**Проблема:** симулятор показывал 25 открытых позиций (+18.68R), BingX VST — только 7. SL/TP у большинства VST-позиций не отображался ("— —"). Причина не была очевидна.
+
+**Решение:** глубокий анализ кода выявил три независимые причины. 1) `risk_pct=0.5%` при балансе $72 даёт `risk_amount=$0.36` → для пар с широким SL notional < MIN_NOTIONAL=$5 → `open_bracket` молча возвращает `success=False` → 18 из 25 сделок никогда не попали на биржу. 2) Для части SHORT-сигналов SL рассчитывается НИЖЕ entry (baг swing/TSL fallback) — BingX либо отклоняет стоп, либо он срабатывает мгновенно. 3) TSL иногда вычисляет новый уровень "за ценой" (trendup вместо trenddown для SHORT в fallback-ветке) и обновляет `stop_loss` в БД на некорректное значение.
+
+**Результат:** созданы задачи DEV-158 (поднять risk_pct), DEV-159 (guard перед open_bracket), DEV-160 (TSL guard "за ценой"). Симулятор показывает прибыль корректно — это не баг симулятора, а разрыв между внутренним трекингом и требованиями биржевого API.
+
+### [12.04.2026] ROADMAP Этапы 15–20 + CUBE-01..07 концепция
+
+**Проблема:** ROADMAP.md заканчивался на Этапе 14 (март 2026), не было видения дальше.
+
+**Решение:** добавлены Этапы 15–20 с временной шкалой до Q4 2026: Signal Quality Gates (15, ✅), OTE Production (16), MCP External Layer (17), Moment Score + Uncertainty (18), Experience-Based Trading с Feature Store и Asymmetric Predictors (19), Production Readiness → LIVE (20). В TASKS.md создан раздел КУБ / MCP LAYER с CUBE-01..07. В DISCUSSION.md зафиксированы 4 гипотезы для проверки. Временная шкала: апрель → Этапы 15+16+17Ф1; май → Simulation Engine + Moment Score прототип; июнь–август → Feature Store + Hypothesis Engine; сентябрь → LIVE micro-lot.
+
+**Результат:** вся команда (DEV/ARCH/TRADER) имеет единое видение на 6 месяцев вперёд.
+
+---
+
+### [12.04.2026] CUBE-01 — MCP Фаза 1: Context Mirror + Event Injection + ML Trainer
+
+**Проблема:** Claude не мог читать живое состояние Куба без bash-скриптов. EventBus нельзя было триггернуть извне. ML переобучался только по расписанию.
+
+**Решение:** В `web/dashboard_server.py` добавлены 5 эндпоинтов `/api/cube/*`: GET context/{symbol} читает `PairContextBus.get_full_state()`, GET events возвращает лог шины, GET stats показывает состояние обеих шин, POST event инжектирует аналитическое событие в EventBus (whitelist 8 событий, защита от торговых триггеров), POST ml/train запускает `update_signal_weights()` + `OutcomePredictor.fit()` вручную.
+
+**Результат:** Куб Метатрона получил внешний AI-слой. Claude теперь может читать живое состояние любой пары, триггерить Full CALL и запускать ML. Основа для CUBE-02..07.
+
+---
+
+### [12.04.2026] Документация — Mermaid-диаграммы + DEV-89 + MCP-гайд
+
+**Проблема:** архитектуру проекта было сложно охватить взглядом — только ASCII и текстовые описания.
+
+**Решение:** В `docs/ARCHITECTURE.md` добавлен раздел 0 с 4 Mermaid-диаграммами: слои (flowchart), путь сигнала (flowchart), жизненный цикл сделки (stateDiagram), data-классы (classDiagram). Создан `docs/RESTART_CHECKLIST_12APR.md` с SQL-запросами для валидации DEV-155/156/157 + ARCH-55 после рестарта. Создан `docs/MCP_SETUP.md` с готовыми конфигами SQLite/Playwright/SeqThinking MCP. DEV-89 добавлен в TASKS.md с полным спеком (20 пар, 90 дней, критерий WR≥40% + Sharpe≥1.5 + n≥150).
+
+**Результат:** архитектура проекта теперь читается в VSCode/GitHub без знания кода. Чеклист рестарта — руководство для DEV при каждом деплое с новыми фильтрами.
+
+---
+
+### [12.04.2026] DEV-88 — OTE Step2: сравнение 4 конфигов, winner C1 (4h+CHoCH)
+
+**Проблема:** после DEV-87 (WR=35%) нужны дополнительные фильтры. Пользователь предложил расширить зону до 0.5/0.618 + WT разворот из OB/OS. Параллельно ARCH принял решение о фильтрах 4h+CHoCH.
+
+**Решение:** в `detect_ote_signal()` добавлены параметры `ote_zone_min_fib` и `require_wt_in_obos`. В `backtest_ote_mtf.py` сделано сравнение 4 конфигов на 5 парах / 60 дней.
+
+**Результат:** C1 (wide 0.705 + 4h + CHoCH, без OB/OS) — Sharpe=2.68 ✅, WR=41.7%, MaxDD=-7R (вдвое лучше baseline). Гипотеза про 0.5/0.618+OB/OS не подтвердилась — фильтр сокращает выборку на 70%, WR не растёт. Фильтры структуры (primary TF + BOS/CHoCH) работают лучше моментум-фильтров.
+
+---
+
 ### [12.04.2026] DEV-155 + DEV-156 + DEV-157 — три защитных фильтра сигналов
 
 **Проблема:** три независимых класса аномалий снижали качество торговли: (1) HIGH_VOL режим давал avgR=-1.55 и WR=5%, (2) whipsaw рынок при общем WR<15% не сигнализировал о плохих условиях, (3) бага расчёта SL давала дистанцию 0.002% — получали R=-450.

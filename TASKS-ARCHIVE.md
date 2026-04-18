@@ -108,3 +108,37 @@
 | ARCH-63 | 30.03 | Bear market filter: BTC 4h gate спек → DEV-111 |
 | ARCH-65 | 30.03 | Exchange Health Guard спек → DEV-103 |
 | ARCH-66 | 30.03 | RANGE BOUNCE стратегия спек → DEV-110 |
+| DEV-151 | 05.04 | Groq AI-комментарий к сигналам в TG (monitoring.py + TradeAnalyzer.analyze_signal) |
+| DEV-100 | 20.03 | chart_builder: try/except + blacklist малоликвидных пар (GAIB, BANANA) |
+| DEV-110 | 30.03 | RANGE BOUNCE: calc_range_bounce_sl_tp() в sl_tp_calculator.py |
+| DEV-127 | 25.03 | SMC None gate: smc_has_bos OR smc_has_choch (shadow) в wt_15m_reversal_scanner |
+| DEV-87  | 12.04 | OTE backtest v2: WR=35.1% SWING, 29.2% SCALP — нужны доп. фильтры (→ DEV-88) |
+| DEV-149 | 06.04 | OutcomePredictor: вектор 16→23 фич (distance_to_sl + sl_atr + wt1/2_15m + reversal_mode) |
+| ARCH-45 | 06.04 | OutcomePredictor ревью: AUC=0.41 → не активировать. Следующий: 20.04.2026 |
+| ARCH-55 | 30.03 | DEV-110 интеграция: MarketContext.pivot_cache_1d_1w + RANGE BOUNCE в calculate_levels() |
+| ARCH-64 | 22.03 | pivot_reversal weekly_bias gate: UNKNOWN→WATCH + против bias→-20 (shadow) |
+| ARCH-68 | 06.04 | Куб Метатрона Фаза 2+3: все компоненты shadow + EventBus 6 триггеров |
+| ARCH-70 | 06.04 | EventBus Full CALL шина: приоритетная очередь, cooldown 30 мин/пара, семафор 3 |
+| ARCH-71 | 10.04 | Real Full CALL: _fire_analysis() загружает все 6 TF + дивергенции + pre_fetched_dfs |
+| ARCH-72 | 10.04 | Feedback Loop: PostTradeAnalyser → update_weights каждые 50 + EventBus trade_closed |
+| DEV-146 | 06.04 | VerdictAggregator: WTVerdict+SMCVerdict → gate/strength (shadow, активирован 13.04) |
+| DEV-152 | 10.04 | EventBus диагностика: логи FIRE/CONSUMED/None добавлены |
+| CUBE-08 | 13.04 | Живые Сферы: WT Specialist + SMC Specialist → wt_verdict/smc_verdict для 524 пар |
+| TR-007  | 13.04 | Валидация MTF WT Specialist: AUC=0.49, conf<0.65 везде → gate безопасен, нужен rule-based |
+| DEV-154 | 10.04 | Position Sync fail-safe: get_positions error → skip cycle, не закрывать сделки |
+| DEV-147 | 07.04 | TSL SL накопление: update_sl() → cancel ALL STOP_MARKET → place one |
+| DEV-158 | 07.04 | VST: risk_pct 0.5%→1.5% — MIN_NOTIONAL fix (notional=8.25 > 5 USDT) |
+| DEV-159 | 08.04 | VST: SL-direction guard в order_manager.py:140 — LONG SL<entry, SHORT SL>entry |
+| DEV-160 | 09.04 | TSL guard в order_manager.py:343 — откат SL блокируется до min_move_pct |
+| DEV-148 | 09.04 | SQLite WAL mode + busy_timeout=10000 — circuit_breaker + trade_analyzer + position_sync |
+| DEV-157 | 11.04 | Фикс аномального SL: min_sl_dist_pct guard (ASR: -450R, XPIN: -81R при SL < 0.1%) |
+| DEV-155 | 12.04 | min_strength_by_regime: HIGH_VOL=85, LONG_RANGE=75 в config + is_actionable() |
+| DEV-156 | 12.04 | Circuit Breaker: rolling WR<15% за 50 сделок → +10 к min_strength на 30 мин |
+| DEV-111b| 12.04 | BTC 4h gate: HIGH_VOL в условие блока LONG + лог режима при каждом вызове |
+| DEV-153 | 13.04 | VerdictGate активация: verdict_gate.enabled: true (активирован 13.04) |
+| DEV-161 | 13.04 | VerdictGate: rule-based derive_wt_verdict() заменил ML predict() в trading_intelligence.py:977 |
+| DEV-163 | 13.04 | CircuitBreaker: лог-путаница API CB vs торговый CB исправлена; DB ошибки → WARNING |
+| DEV-164 | 13.04 | DEV-157 guard вынесен из TP-блока: проверяет SL независимо от наличия TP |
+| DEV-165 | 13.04 | R_multiple sanity clamp [-15,+15]: ASR R=-450 при P=-0.95% отравлял аналитику |
+| DEV-166 | 13.04 | RANGE min_strength 60→70, LONG_RANGE 75→78: 52% сделок в RANGE, WR=20% |
+| DEV-167 | 13.04 | RANGE BOUNCE реально заработал: pivot_cache был пуст + pivot_reversal добавлен |
