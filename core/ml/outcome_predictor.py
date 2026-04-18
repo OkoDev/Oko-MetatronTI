@@ -56,7 +56,7 @@ def _build_feature_vector(
     features_dict: Dict[str, Any],
     regime: Optional[str],
 ) -> List[float]:
-    """Строит вектор из 23 признаков (DEV-149: +7 новых).
+    """Строит вектор из 27 признаков (ARCH-90: +4 SMC-фичи).
 
     1-2:   strength, confidence
     3:     direction (LONG=1)
@@ -64,12 +64,17 @@ def _build_feature_vector(
     11:    volatility
     12:    price_change_24h
     13-16: regime one-hot (4 типа)
-    — новые (DEV-149) —
+    — DEV-149 —
     17:    distance_to_sl_pct (запас до SL, %)
     18:    sl_atr_ratio (SL в единицах ATR)
     19:    wt1_15m (WT1 на 15m из wt_snap)
     20:    wt2_15m (WT2 на 15m из wt_snap)
     21-23: reversal_mode one-hot (TREND/REVERSAL/UNCLEAR)
+    — ARCH-90: SMC snap —
+    24:    nearest_ob_strength (0..100, /100)
+    25:    price_in_ote (0/1)
+    26:    current_retracement (0..100, /100)
+    27:    bos_aligned (1 если last_bos_direction совпадает с direction)
     """
     # 1-2: strength, confidence
     v = [
@@ -107,6 +112,23 @@ def _build_feature_vector(
     rev_mode = (features_dict.get("reversal_mode") or "").upper()
     v += [1.0 if rev_mode == m else 0.0 for m in _REVERSAL_MODE_ORDER]
 
+    # ARCH-90: SMC snap fields (24-27)
+    ob_stg = features_dict.get("nearest_ob_strength")
+    try:
+        v.append(min(max(float(ob_stg) / 100.0, 0.0), 1.0) if ob_stg is not None else 0.0)
+    except (TypeError, ValueError):
+        v.append(0.0)
+    v.append(1.0 if features_dict.get("price_in_ote") else 0.0)
+    retr = features_dict.get("current_retracement")
+    try:
+        v.append(min(max(float(retr) / 100.0, 0.0), 2.0) if retr is not None else 0.0)
+    except (TypeError, ValueError):
+        v.append(0.0)
+    bos_dir = (features_dict.get("last_bos_direction") or "").upper()
+    _want_up = str(direction).upper() == "LONG"
+    bos_aligned = (bos_dir == "UP" and _want_up) or (bos_dir == "DOWN" and not _want_up)
+    v.append(1.0 if bos_dir and bos_aligned else 0.0)
+
     return v
 
 
@@ -119,7 +141,7 @@ class OutcomePredictor:
     def __init__(self):
         self._model = None
         self._trained = False
-        self._n_features = 23  # DEV-149: +7 новых фич
+        self._n_features = 27  # ARCH-90: +4 SMC-фичи (ob_strength, price_in_ote, retracement, bos_aligned)
         self._n_samples = 0
         self._cv_score: Optional[float] = None
         # DEV-12 (8.4.7): Confidence Calibrator
@@ -166,6 +188,9 @@ class OutcomePredictor:
                     fj = json.loads(r["features_json"] or "{}")
                     # DEV-50: исключаем баг-сделки (timezone bug) из обучения
                     if fj.get("data_quality") == "bug_timezone":
+                        continue
+                    # DEV-178: исключаем micro-SL артефакты — их WR=75% искажает модель
+                    if fj.get("data_era") == "micro_sl_artifact" or fj.get("is_micro_sl"):
                         continue
                     fv = _build_feature_vector(
                         r["signal_type"] or "",
@@ -266,6 +291,10 @@ class OutcomePredictor:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+            # ARCH-45 Этап A: обучаем только на post-TSL-fix данных (>= 15.04.2026).
+            # DEV-174 фиксил TSL баги до 14.04 — сделки 15.03..14.04 имеют сломанные исходы:
+            # победители записывались как SL из-за ошибки TSL → "хороший паттерн = loss".
+            # Micro-SL артефакты (data_era='micro_sl_artifact') исключаются дополнительно в fit().
             cur.execute("""
                 SELECT signal_type, direction, strength, confidence,
                        regime, status, features_json
@@ -273,6 +302,7 @@ class OutcomePredictor:
                 WHERE status IN ('TP', 'SL', 'TSL')
                   AND signal_type IS NOT NULL
                   AND direction IS NOT NULL
+                  AND created_at >= '2026-04-15'
             """)
             return [dict(r) for r in cur.fetchall()]
 

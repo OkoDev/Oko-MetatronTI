@@ -62,7 +62,7 @@ analysis:
   anomaly:
     max_per_cycle: 5
   confluence:
-    enabled: true
+    enabled: false  # DEV-171 14.04.2026: полный стоп — -348R за 3362 сделки (avgR=-0.103)
     use_state_machine: false
     lookback_bars: 8
     cross_fresh_bars: 5
@@ -121,15 +121,16 @@ outcome_predictor:
 strategy_name: multi_signal
 trading:
   execution_mode: vst
-  tp1_close_pct: 0.2
+  sl_limit_buffer_pct: 0.0  # DEV-175: >0 → STOP-LIMIT с буфером (0 = STOP_MARKET, 0.3 = limit 0.3% за SL)
+  tp1_close_pct: 0.3
   deposit_usdt: 110.0
-  risk_pct: 0.5
+  risk_pct: 1.0
   leverage: 5
   regime_direction_block:
-    enabled: true
+    enabled: false  # 14.04: убран — режимный классификатор ненадёжен, блокирует прибыльные входы
     TREND_DOWN: LONG
     TREND_UP: SHORT
-  blocked_regimes: []  # DEV-149: HIGH_VOL → фильтр по min_strength_by_regime вместо глобального блока
+  blocked_regimes: []
   pivot_proximity_filter:
     enabled: true
     hard_block_mult: 2
@@ -165,7 +166,7 @@ trading:
     against_bias_penalty: 20
     near_level_pct: 1.5
   l3_checker:
-    enabled: false
+    enabled: false  # 14.04: выключен — при включении блокирует всё (уже открыто >лимита)
     min_score: 85
     max_open_long: 2
     max_open_short: 2
@@ -185,9 +186,8 @@ trading:
     min_trend_strength: 50
     cooldown_sec: 300
     scalp_atr_multiplier: 1.0
-  active_strategy: wt_entry
+  active_strategy: pivot_reversal
   active_strategies:
-  - wt_entry
   - reversal
   - trend_following
   - pivot_reversal
@@ -222,8 +222,10 @@ trading:
       tp_rr: 3.0
   btc_market_gate:
     enabled: true
-    shadow_mode: true
-    block_short_in_uptrend: false
+    shadow_mode: false              # ARCH-78: активный блок (было shadow)
+    block_short_in_uptrend: true    # ARCH-78: блок SHORT при BTC BULL
+    counter_trend_min_strength: 75  # SHORT при BTC BULL требует strength >= 75
+    reversal_exception: true        # pivot_reversal всегда проходит (разворот у уровня)
   verdict_gate:
     enabled: true
     smc_block_confidence: 0.65
@@ -231,13 +233,18 @@ trading:
     strength_boost: 5.0
     strength_penalty: -10.0
   range_bounce:
-    enabled: false
+    enabled: true  # ARCH-55 shadow активирован 12.04.2026
     sl_buffer_pct: 0.003
     min_tp_r: 3.5
     max_sl_dist_pct: 0.02
   dual_tp:
     enabled: true
     tp1_fix_pct: 10
+  narrative:
+    enabled: true              # NarrativeBuilder включён (ARCH-90)
+    include_in_tg: true        # ARCH-91: показывать SMC-блок в TG-сигналах
+    max_factors_in_tg: 4       # не более N строк нарратива в TG
+    include_past_outcome: true # показывать прошлый исход на паре (если <4ч)
   use_tsl: true
   tsl_activation_r: 1.0
   tsl_min_move_pct: 0.15
@@ -250,7 +257,7 @@ trading:
     r_gradient_peak_min_r: 2.0
     r_gradient_rollback_pct: 0.75
   use_breakeven: false
-  use_be_after_tp1: false
+  use_be_after_tp1: true       # DEV-173: после хита TP1 → SL переносится в entry+0.1%
   expired_extend_min_r: 5.0
   expired_extend_hours: 120
   expired_management:
@@ -295,10 +302,25 @@ signal_quality:
   dedup_minutes: 30
   min_volume_usd: 0
   min_strength: 50
+  # ARCH-88: Per-pair Loss Memory — блок регистрации при серии SL подряд.
+  # Защита от сценария API3 (8 SL без автоматической остановки).
+  pair_cooldown_sl_streak: 5   # порог SL подряд для блока
+  pair_cooldown_shadow: true   # первые 48ч — только лог [PAIR-COOLDOWN SHADOW WOULD_BLOCK]
+  # DEV-170: Time-of-day gate — блок вне торговых сессий
+  # Данные: 09-18 UTC = прибыльно (+0.15R avg), 23-06 UTC = убыточно (-0.3R avg)
+  # TRADER (14.04): wt_signal хорош с 04:00 (04:00=+1.097R, 06:00=+1.285R)
+  time_gate:
+    enabled: false
+    start_hour_utc: 9
+    end_hour_utc: 18
+    overrides:
+      wt_signal:
+        start_hour_utc: 4
+        end_hour_utc: 18
   min_strength_register: 50  # DEV-149: было 63 — съедал ~40% валидных, возврат к прежнему уровню
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
-  ote_shadow_mode: true
+  ote_shadow_mode: false  # ARCH-87: активирован 18.04 — rejection 1W FVG [0.4235–0.4416]
   ote_zone_tfs:
   - 1h
   - 4h
@@ -306,53 +328,31 @@ signal_quality:
   ote_scalp_zone_tfs:
   - 15m
   ote_scalp_trigger_tf: 3m
-  min_strength_by_regime:
-    RANGE: 60       # DEV-149: 70→60, слишком агрессивный фильтр в RANGE
-    HIGH_VOL: 85    # DEV-155: 75→85 (avgR=-1.55 в HIGH_VOL за 07-10.04)
-  min_strength_by_direction_regime:
-    LONG_RANGE: 75  # DEV-155: WR=25.4% даже в нейтральный рынок
+  min_strength_by_regime: {}       # 14.04: убраны — режим ненадёжен как фильтр
+  min_strength_by_direction_regime: {}  # 14.04: убраны
   signal_regime_block:
+    # 14.04.2026: ВСЕ режимные блоки убраны.
+    # Причина: сделки без режима (NULL, до 04.03.2026) были прибыльны (+0.247R avg).
+    # MarketRegimeClassifier добавляет шум, а не сигнал — блоки по нему режут прибыльные входы.
+    # Активные фильтры: time_gate (DEV-170) + l3_checker (max 3 позиции).
     pivot_reversal:
       blocked_regimes: []
-      blocked_combos:
-      - direction: LONG
-        regime: TREND_DOWN
-      - direction: SHORT
-        regime: TREND_UP
-      # HIGH_VOL разблокирован: LONG +0.069R, ранее заблокирован ошибочно
-      - direction: LONG
-        regime: TREND_UP    # DATA-10.04: -0.642R (58 сделок)
-      - direction: SHORT
-        regime: HIGH_VOL    # DATA-10.04: -0.955R (7 сделок)
+      blocked_combos: []
     confluence:
       blocked_regimes: []
-      blocked_combos:
-      - direction: LONG
-        regime: TREND_DOWN
-      - direction: SHORT
-        regime: TREND_UP
-      - direction: SHORT
-        regime: HIGH_VOL    # -1.237R (31 сделок) — оставляем
-      # LONG HIGH_VOL разблокирован: +0.482R (12 сделок)
-      - direction: LONG
-        regime: TREND_UP    # -0.313R (62 сделки) — оставляем
-      - direction: LONG
-        regime: RANGE       # DATA-10.04: -0.289R (97 сделок!)
-      - direction: SHORT
-        regime: RANGE       # DATA-10.04: -0.297R (64 сделки)
+      blocked_combos: []
     wt_signal:
       blocked_regimes: []
-      blocked_combos:
-      - direction: LONG
-        regime: TREND_DOWN
-      - direction: SHORT
-        regime: TREND_UP
+      blocked_combos: []
   weekly_bias_gate:
     enabled: true
     shadow_mode: false
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
+  mtf_gate_enabled: true          # ARCH-84: блок SHORT при сильном LONG bias пары
+  mtf_bias_threshold: 0.70        # bias_strength > 0.70 → ~85% ТФ пары в LONG
+  mtf_gate_shadow: true           # true = только лог WOULD_BLOCK, false = реальный блок
   watch_list_ttl_hours: 4
   watch_list_breach_pct: 0.8
   wl_sl_buffer_pct: 0.5
@@ -399,7 +399,7 @@ strategy:
     min_confidence: 0.65
     conflict_threshold: 0.2
 ml:
-  use_outcome_predictor: false
+  use_outcome_predictor: true  # ARCH-45: AUC=0.582 после фикса features (>= 2026-04-15, 483 сделки)
 future_pivots:
   enabled: false
   broadcast_tg: false

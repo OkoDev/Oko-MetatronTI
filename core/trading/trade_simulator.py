@@ -103,6 +103,8 @@ class TradeSimulator:
         self._pivot_calc: object = None
         # DEV-148: защита от concurrent close одной сделки (database is locked cascade)
         self._close_in_progress: set = set()
+        # DEV-168: cooldown для LIVE-GUARD логов (не спамить каждую минуту)
+        self._live_guard_logged: dict = {}  # trade_id → datetime последнего WARNING
 
     def set_post_trade_callback(self, cb) -> None:
         """DEV-94: регистрирует PostTradeAnalyser.on_trade_closed как callback."""
@@ -178,12 +180,75 @@ class TradeSimulator:
                 ("exchange_order_id", "TEXT"),    # DEV-136: ID ордера на бирже (VST/LIVE)
                 ("exchange_sl_order_id", "TEXT"), # DEV-136: ID SL-ордера на бирже (для cancel+replace TSL)
                 ("qty", "REAL"),                  # DEV-136: qty позиции (для TSL updater)
+                ("actual_entry_price", "REAL"),   # Реальная цена исполнения с биржи (vs entry_price из сигнала)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
                 except Exception:
                     pass  # колонка уже существует
             conn.commit()
+
+        # DEV-178: backfill data_era в features_json для существующих сделок
+        # Запускается при каждом старте — пропускает уже размеченные (has data_era).
+        self._backfill_data_era()
+
+    def _backfill_data_era(self) -> None:
+        """
+        DEV-178: помечает существующие сделки полем data_era в features_json.
+        Идемпотентно — пропускает уже размеченные строки.
+        """
+        MICRO_SL_PCT = 0.1
+        ERA_DATES = [
+            ("post_fix",  "2026-04-15"),
+            ("post_157",  "2026-03-15"),
+        ]
+        try:
+            with self._db_connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, created_at, entry_price, stop_loss, features_json "
+                    "FROM simulated_trades "
+                    "WHERE features_json NOT LIKE '%\"data_era\"%' OR features_json IS NULL"
+                ).fetchall()
+                if not rows:
+                    return
+                updated = 0
+                for row in rows:
+                    fj: dict = {}
+                    raw = row[4]
+                    if raw:
+                        try:
+                            fj = json.loads(raw)
+                        except Exception:
+                            pass
+                    if "data_era" in fj:
+                        continue
+                    # micro-SL check
+                    try:
+                        ep = float(row[2] or 0)
+                        sl = float(row[3] or 0)
+                        is_micro = ep > 0 and sl > 0 and abs(ep - sl) / ep * 100 < MICRO_SL_PCT
+                    except Exception:
+                        is_micro = False
+                    if is_micro:
+                        fj["data_era"] = "micro_sl_artifact"
+                        fj["is_micro_sl"] = True
+                    else:
+                        created = row[1] or ""
+                        era = "pre_157"
+                        for era_name, era_date in ERA_DATES:
+                            if created >= era_date:
+                                era = era_name
+                                break
+                        fj["data_era"] = era
+                    conn.execute(
+                        "UPDATE simulated_trades SET features_json = ? WHERE id = ?",
+                        (json.dumps(fj, ensure_ascii=False), row[0]),
+                    )
+                    updated += 1
+                if updated:
+                    logger.info("TradeSimulator: DEV-178 backfill data_era — %d сделок размечено", updated)
+        except Exception as e:
+            logger.warning("TradeSimulator: _backfill_data_era ошибка — %s", e)
 
     def register_trade(self, recommendation: Any, regime: Optional[str] = None, extra_features: Optional[dict] = None) -> Optional[int]:
         """
@@ -291,24 +356,28 @@ class TradeSimulator:
                 MIN_RR = float(_cfg.get("trading.min_rr_ratio", 2.0))
             except Exception:
                 MIN_RR = 2.0
+            # DEV-164: guard вынесен ДО проверки take_profit — не зависит от наличия TP
+            # DEV-157: guard аномально малого SL (ASR R=-450 при sl_dist=0.002%)
+            if stop_loss is not None and entry is not None and entry > 0:
+                _sl_dist_raw = abs(float(entry) - float(stop_loss))
+                if _sl_dist_raw > 0:
+                    try:
+                        from core.config_loader import config as _cfg_sl
+                        MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
+                    except Exception:
+                        MIN_SL_DIST_PCT = 0.1
+                    _sl_dist_pct = _sl_dist_raw / float(entry) * 100
+                    if _sl_dist_pct < MIN_SL_DIST_PCT:
+                        logger.warning(
+                            "TradeSimulator: [DEV-157/164] пропуск %s %s — SL слишком близко: %.4f%% < %.2f%% (entry=%.6f SL=%.6f)",
+                            _direction_str(direction), symbol, _sl_dist_pct, MIN_SL_DIST_PCT, float(entry), float(stop_loss),
+                        )
+                        return None
+
+            # RR-фильтр: требует и SL и TP
             if stop_loss is not None and take_profit is not None and entry is not None and entry > 0:
                 sl_dist = abs(float(entry) - float(stop_loss))
                 tp_dist = abs(float(take_profit) - float(entry))
-
-                # DEV-157: guard аномально малого SL (ASR R=-450 при sl_dist=0.002%)
-                try:
-                    from core.config_loader import config as _cfg_sl
-                    MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
-                except Exception:
-                    MIN_SL_DIST_PCT = 0.1
-                if sl_dist > 0:
-                    sl_dist_pct = sl_dist / float(entry) * 100
-                    if sl_dist_pct < MIN_SL_DIST_PCT:
-                        logger.warning(
-                            "TradeSimulator: [DEV-157] пропуск %s %s — SL слишком близко: %.4f%% < %.2f%% (entry=%.6f SL=%.6f)",
-                            _direction_str(direction), symbol, sl_dist_pct, MIN_SL_DIST_PCT, float(entry), float(stop_loss),
-                        )
-                        return None
 
                 if sl_dist > 0:
                     actual_rr = tp_dist / sl_dist
@@ -413,6 +482,43 @@ class TradeSimulator:
             rev_mode = metadata.get("reversal_mode") if metadata else None
             if rev_mode:
                 features["reversal_mode"] = rev_mode
+
+            # ARCH-90: Narrative SMC-факторы + 4 плоских поля из state.smc_snap
+            _narr_meta = metadata.get("narrative") if metadata else None
+            if _narr_meta and isinstance(_narr_meta, dict):
+                _smc_factors = _narr_meta.get("smc_factors") or []
+                if _smc_factors:
+                    features.setdefault("narrative", {})["smc_factors"] = list(_smc_factors)
+                _smc_flat = _narr_meta.get("smc_flat") or {}
+                if _smc_flat:
+                    features["nearest_ob_strength"] = _smc_flat.get("nearest_ob_strength")
+                    features["price_in_ote"] = int(bool(_smc_flat.get("price_in_ote", False)))
+                    features["current_retracement"] = _smc_flat.get("current_retracement")
+                    features["last_bos_direction"] = _smc_flat.get("last_bos_direction")
+
+            # DEV-178: data_era — маркер эры данных для фильтрации в ML
+            # post_fix (>= 15.04.2026) = чистые данные (DEV-157 + DEV-174 + DEV-175 применены)
+            # Micro-SL guard: если SL слишком близко — артефакт, помечаем отдельно
+            try:
+                from datetime import date as _date
+                _now_date = _date.today()
+                _ep = float(entry) if entry else 0
+                _sl = float(stop_loss) if stop_loss else 0
+                _sl_dist_pct = abs(_ep - _sl) / _ep * 100 if _ep > 0 and _sl > 0 else 99.0
+                from core.config_loader import config as _cfg_era
+                _min_sl = float(_cfg_era.get("trading.min_sl_dist_pct", 0.1))
+                if _sl_dist_pct < _min_sl:
+                    features["data_era"] = "micro_sl_artifact"
+                    features["is_micro_sl"] = True
+                elif _now_date >= _date(2026, 4, 15):
+                    features["data_era"] = "post_fix"
+                elif _now_date >= _date(2026, 3, 15):
+                    features["data_era"] = "post_157"
+                else:
+                    features["data_era"] = "pre_157"
+            except Exception:
+                pass
+
             features_json = json.dumps(features) if features else None
 
             # DEV-12: Decision Trace
@@ -529,8 +635,9 @@ class TradeSimulator:
                     (symbol, timeframe, signal_type, direction, entry_price, stop_loss, take_profit,
                      tp1_price, tp2_price, tp3_price, strategy_type,
                      strength, confidence, regime, status, features_json, created_at,
-                     sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json,
+                     original_sl)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -555,6 +662,7 @@ class TradeSimulator:
                         strategy_name if isinstance(strategy_name, str) else None,
                         tsl_tf,
                         decision_trace_json,
+                        float(stop_loss) if stop_loss is not None else None,  # original_sl — не меняется после регистрации
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -576,6 +684,29 @@ class TradeSimulator:
         затем сохраняет сделку. Если data_collector недоступен — пишет regime=None.
         extra_features — доп. признаки (напр. distance_to_pivot_pct) для features_json.
         """
+        # DEV-170: Time-of-day gate — блокируем входы вне торговых сессий
+        # Данные: 09:00–18:00 UTC = avgR+, 23:00–06:00 UTC = avgR-0.3 (худшие)
+        # TRADER (14.04): wt_signal override 04:00–18:00 (азиатская ночь прибыльна)
+        try:
+            from core.config_loader import config as _cfg_170
+            if _cfg_170:
+                _tg = (_cfg_170.get("signal_quality") or {}).get("time_gate") or {}
+                if _tg.get("enabled", False):
+                    _hour_utc = datetime.now(timezone.utc).hour
+                    _sig_170  = str(_get_recommendation_value(recommendation, "signal_type") or "")
+                    _overrides = _tg.get("overrides") or {}
+                    _tg_sig   = _overrides.get(_sig_170) or {}
+                    _start_h  = int(_tg_sig.get("start_hour_utc", _tg.get("start_hour_utc", 9)))
+                    _end_h    = int(_tg_sig.get("end_hour_utc",   _tg.get("end_hour_utc", 18)))
+                    _in_window = _start_h <= _hour_utc < _end_h
+                    if not _in_window:
+                        _sym_170 = _get_recommendation_value(recommendation, "symbol") or ""
+                        logger.info("[DEV-170] %s БЛОК time_gate(%s): hour=%d вне [%d, %d) UTC",
+                                    _sym_170, _sig_170 or "default", _hour_utc, _start_h, _end_h)
+                        return None
+        except Exception as _e170:
+            logger.debug("[DEV-170] time_gate error: %s", _e170)
+
         # ARCH-42: Market Stress Gate — блок входов при массовых SL (shadow mode)
         try:
             from core.config_loader import config as _cfg_msg
@@ -646,6 +777,49 @@ class TradeSimulator:
                             logger.debug("[regime_v2] %s: shadow error — %s", symbol, _e90)
                 except Exception as e:
                     logger.debug("MarketRegime: не удалось определить для %s — %s", symbol, e)
+
+        # DEV-169: atr_trend_1h_bias — UP/DOWN/FLAT на основе ATR Trend 1h
+        # Записывается в features_json для накопления данных. Логики блокировки нет.
+        _atr_1h_bias: Optional[str] = None
+        if data_collector is not None and symbol:
+            try:
+                from core.indicators import calculate_trend
+                _df_1h_bias = await data_collector.get_ohlcv(symbol, "1h", 55)
+                if _df_1h_bias is not None and not _df_1h_bias.empty and len(_df_1h_bias) >= 44:
+                    _df_1h_bias = calculate_trend(_df_1h_bias)
+                    _last_trend = _df_1h_bias["trend"].iloc[-1]
+                    _atr_1h_bias = "UP" if _last_trend == 1 else "DOWN"
+                    logger.debug("[DEV-169] %s atr_trend_1h_bias=%s", symbol, _atr_1h_bias)
+            except Exception as _e169:
+                logger.debug("[DEV-169] atr_trend_1h_bias error %s: %s", symbol, _e169)
+
+        if _atr_1h_bias:
+            if extra_features is None:
+                extra_features = {}
+            extra_features["atr_trend_1h_bias"] = _atr_1h_bias
+
+        # ARCH-78 / DEV-172: Entry Priority Matrix — shadow mode
+        # Пишет entry_priority (1/2/3/None) в features_json. Не блокирует входы.
+        try:
+            from core.intelligence.entry_matrix import evaluate_entry_priority as _eval_ep
+            _ep_dir = _direction_str(_get_recommendation_value(recommendation, "direction"))
+            _ep_wt_snap = (recommendation.metadata or {}).get("wt_snap") if hasattr(recommendation, "metadata") else None
+            _ep_result = _eval_ep(
+                direction=_ep_dir or "",
+                wt_snap=_ep_wt_snap,
+                atr_trend_1h_bias=_atr_1h_bias,
+            )
+            _ep_priority = _ep_result.get("priority")
+            if extra_features is None:
+                extra_features = {}
+            extra_features["entry_priority"] = _ep_priority
+            extra_features["entry_priority_reason"] = _ep_result.get("reason")
+            logger.debug("[DEV-172] %s entry_priority=%s reason=%s bias=%s zone=%s trigger=%s",
+                         symbol, _ep_priority,
+                         _ep_result.get("reason"), _ep_result.get("bias_ok"),
+                         _ep_result.get("zone_ok"), _ep_result.get("trigger"))
+        except Exception as _e172:
+            logger.debug("[DEV-172] entry_matrix error %s: %s", symbol, _e172)
 
         # DEV-44 (ARCH-39 fix): Safety gate — второй рубеж, использует свежевычисленный regime
         # Теперь работает для ВСЕХ code-paths (analyze_symbol + WL breach + будущие)
@@ -766,11 +940,18 @@ class TradeSimulator:
             if _rb_cfg.get("enabled", False) and regime == "RANGE":
                 _rb_sig = str(_get_recommendation_value(recommendation, "signal_type") or "")
                 _rb_tf  = str(_get_recommendation_value(recommendation, "timeframe") or "")
-                if _rb_sig in ("confluence", "watch_list_breach") and _rb_tf == "15m":
+                if _rb_sig in ("confluence", "watch_list_breach", "pivot_reversal") and _rb_tf == "15m":
                     _rb_sym = str(_get_recommendation_value(recommendation, "symbol") or "")
                     _rb_dir = _direction_str(_get_recommendation_value(recommendation, "direction"))
                     _rb_entry = float(_get_recommendation_value(recommendation, "entry_price") or 0)
-                    if _rb_entry > 0 and self._pivot_calc is not None:
+                    if _rb_entry > 0:
+                        # Инициализируем pivot_calc и загружаем пивоты для символа
+                        if self._pivot_calc is None:
+                            from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_rb
+                            self._pivot_calc = _PCF_rb(db_path=self.db_path)
+                        if data_collector is not None:
+                            await self._pivot_calc.get_daily_pivots(_rb_sym, data_collector)
+                            await self._pivot_calc.get_weekly_pivots(_rb_sym, data_collector)
                         from core.smc.sl_tp_calculator import calc_range_bounce_sl_tp
                         _rb_sl, _rb_tp, _rb_r, _rb_reject = calc_range_bounce_sl_tp(
                             direction=_rb_dir,
@@ -795,9 +976,9 @@ class TradeSimulator:
                                 _rb_sym, _rb_dir, _rb_sl, _rb_tp, _rb_r,
                             )
                         else:
-                            logger.debug("[DEV-110] %s пропущен: %s", _rb_sym, _rb_reject)
+                            logger.info("[DEV-110] %s пропущен: %s", _rb_sym, _rb_reject)
         except Exception as _e_rb:
-            logger.debug("[DEV-110] RANGE BOUNCE error: %s", _e_rb)
+            logger.warning("[DEV-110] RANGE BOUNCE error: %s", _e_rb)
 
         trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features)
 
@@ -881,23 +1062,41 @@ class TradeSimulator:
         except Exception as e:
             logger.warning("TradeSimulator: set_exchange_sl_order_id #%d: %s", trade_id, e)
 
-    def set_exchange_order_id(self, trade_id: int, order_id: str, qty: float = 0.0) -> None:
+    def set_exchange_order_id(
+        self, trade_id: int, order_id: str, qty: float = 0.0,
+        actual_entry_price: float = 0.0,
+    ) -> None:
         """Привязывает реальный exchange_order_id к симуляторной сделке.
         Только такие сделки будут синхронизироваться с биржей в VST/LIVE режиме.
-        qty — размер позиции, нужен для TSL cancel+replace."""
+        qty — размер позиции, нужен для TSL cancel+replace.
+        actual_entry_price — реальная цена исполнения с биржи (avg_price из ордера).
+        """
         try:
             with self._db_connect() as conn:
-                if qty > 0:
+                if qty > 0 and actual_entry_price > 0:
+                    conn.execute(
+                        "UPDATE simulated_trades SET exchange_order_id = ?, qty = ?, actual_entry_price = ? WHERE id = ?",
+                        (str(order_id), qty, actual_entry_price, trade_id),
+                    )
+                elif qty > 0:
                     conn.execute(
                         "UPDATE simulated_trades SET exchange_order_id = ?, qty = ? WHERE id = ?",
                         (str(order_id), qty, trade_id),
+                    )
+                elif actual_entry_price > 0:
+                    conn.execute(
+                        "UPDATE simulated_trades SET exchange_order_id = ?, actual_entry_price = ? WHERE id = ?",
+                        (str(order_id), actual_entry_price, trade_id),
                     )
                 else:
                     conn.execute(
                         "UPDATE simulated_trades SET exchange_order_id = ? WHERE id = ?",
                         (str(order_id), trade_id),
                     )
-            logger.debug("TradeSimulator: trade #%d → exchange_order_id=%s qty=%.6f", trade_id, order_id, qty)
+            logger.debug(
+                "TradeSimulator: trade #%d → exchange_order_id=%s qty=%.6f actual_entry=%.6f",
+                trade_id, order_id, qty, actual_entry_price,
+            )
         except Exception as e:
             logger.warning("TradeSimulator: set_exchange_order_id #%d: %s", trade_id, e)
 
@@ -936,13 +1135,13 @@ class TradeSimulator:
             with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type FROM simulated_trades WHERE id = ? AND status = ?",
+                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type, original_sl FROM simulated_trades WHERE id = ? AND status = ?",
                     (trade_id, STATUS_OPEN),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return False
-                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db = row
+                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db, original_sl_db = row
                 strategy_type_db = str(strategy_type_db or "SINGLE")
                 entry = float(entry)
                 sl = float(sl) if sl is not None else None
@@ -952,11 +1151,14 @@ class TradeSimulator:
                 min_price_db = float(min_price_db) if min_price_db is not None else None
                 dir_up = str(direction).upper()
 
-                # R-multiple: 1R = |entry - stop_loss|
+                # R-multiple: 1R = |entry - original_sl| (оригинальный SL, не TSL'нутый)
+                # original_sl заполняется при регистрации и не меняется — честный риск.
+                # Fallback: sl (текущий) если original_sl отсутствует (старые сделки).
+                _sl_for_r = float(original_sl_db) if original_sl_db is not None else sl
                 one_r = None
                 r_multiple = None
-                if sl is not None and sl != entry:
-                    one_r = abs(entry - sl)
+                if _sl_for_r is not None and _sl_for_r != entry:
+                    one_r = abs(entry - _sl_for_r)
 
                 # profit_pct и R с учётом частичного TP1 (tp1_fix_pct% позиции)
                 if tp1_hit_at_db and tp1_price_db and one_r:
@@ -994,7 +1196,17 @@ class TradeSimulator:
                         else:
                             r_multiple = (entry - exit_price) / one_r
 
+                # Sanity clamp: ограничиваем R в [-15, +15] (ASR R=-450 = sl_dist≈0 баг)
+                if r_multiple is not None:
+                    if r_multiple < -15.0 or r_multiple > 15.0:
+                        logger.warning(
+                            "R_multiple clamp: id=%s %s R=%.2f → clamp (sl_dist слишком мал)",
+                            trade_id, dir_up, r_multiple,
+                        )
+                        r_multiple = round(max(-15.0, min(15.0, r_multiple)), 3)
+
                 # MFE: максимально достижимый R и % захваченного потенциала
+                # one_r уже от original_sl → корректный масштаб
                 max_R_possible = None
                 captured_R_pct = None
                 if one_r and one_r > 0:
@@ -1258,7 +1470,11 @@ class TradeSimulator:
                     _ws_price = await data_collector.get_current_price(symbol)
                 except Exception:
                     pass
-            if _ws_price and _sl_level and _tp_level and not _is_expired:
+            # DEV-TSL-PREFILTER: TSL-активированные сделки ВСЕГДА проверяем —
+            # TSL нужно двигать когда цена уходит В ПРОФИТ (прочь от стопа), а не к нему.
+            # Старый фильтр "пропускаем если далеко от SL/TP" глушил TSL-трекинг.
+            _tsl_active_pre = bool(trade.get("tsl_activated"))
+            if _ws_price and _sl_level and _tp_level and not _is_expired and not _tsl_active_pre:
                 _sl_f, _tp_f = float(_sl_level), float(_tp_level)
                 _tsl_f = float(_tsl_level) if _tsl_level else None
                 # Буфер 0.5% — если цена далеко от всех уровней, пропускаем тяжёлый REST
@@ -1321,9 +1537,13 @@ class TradeSimulator:
                     logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_low %.4f",
                                  symbol, _imp_l92)
                     del self._post_tsl_queue[symbol]
+            # DEV-TSL-R: current_r всегда от original_sl (не от TSL'нутого stop_loss).
+            # Иначе после подтяжки SL к BE one_r→0, current_r→∞ → нестабильный гейт активации.
             current_r = None
-            if sl is not None and sl != entry:
-                one_r = abs(entry - sl)
+            _orig_sl_val = trade.get("original_sl")
+            _sl_for_r = float(_orig_sl_val) if _orig_sl_val is not None else sl
+            if _sl_for_r is not None and _sl_for_r != entry:
+                one_r = abs(entry - _sl_for_r)
                 if direction == "LONG":
                     current_r = (current_price - entry) / one_r
                 else:
@@ -1691,9 +1911,21 @@ class TradeSimulator:
                                 break
 
                     if df_tsl is None:
-                        df_tsl = calculate_trend(df, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                        # DEV-TSL-DIRGUARD: fallback на entry-TF только если тренд совпадает с direction.
+                        # Противоположный тренд даёт TSL по другую сторону цены → мгновенное срабатывание.
+                        _df_fb = calculate_trend(df, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                        if len(_df_fb) > 0:
+                            _fb_trend = int(_df_fb["trend"].iloc[-1])
+                            if (direction == "LONG" and _fb_trend == 1) or \
+                               (direction == "SHORT" and _fb_trend == -1):
+                                df_tsl = _df_fb
+                            else:
+                                logger.debug(
+                                    "[TSL-DIRGUARD] %s %s: все TF против тренда → TSL пропущен",
+                                    symbol, direction,
+                                )
 
-                    trend_info = get_trend_info(df_tsl)
+                    trend_info = get_trend_info(df_tsl) if df_tsl is not None else None
 
                     if trend_info and trend_info["tsl"] > 0:
                         tsl_price = trend_info["tsl"]
@@ -1723,11 +1955,15 @@ class TradeSimulator:
                                 f"tsl={tsl_price:.4f} [tf={tsl_tf_used}]"
                             )
                             if _exchange_managed_trade:
-                                logger.warning(
-                                    "[TradeSimulator][LIVE-GUARD] %s #%d: TSL hit detected by simulator, "
-                                    "but trade is exchange-managed — waiting for exchange confirmation",
-                                    symbol, trade_id,
-                                )
+                                _lg_key = f"{trade_id}_tsl"
+                                _lg_last = self._live_guard_logged.get(_lg_key)
+                                if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
+                                    logger.warning(
+                                        "[TradeSimulator][LIVE-GUARD] %s #%d: TSL hit detected by simulator, "
+                                        "but trade is exchange-managed — waiting for exchange confirmation",
+                                        symbol, trade_id,
+                                    )
+                                    self._live_guard_logged[_lg_key] = now
                                 continue
                             if self.close_trade(trade_id, STATUS_TSL, current_price):
                                 closed_count += 1
@@ -1938,11 +2174,15 @@ class TradeSimulator:
             # EXPIRED: проверяем только если TP/SL/TSL не сработал за время жизни сделки
             if not exit_status and _is_expired:
                 if _exchange_managed_trade:
-                    logger.warning(
-                        "[TradeSimulator][LIVE-GUARD] %s #%d: EXPIRED detected by simulator, "
-                        "but trade is exchange-managed — waiting for exchange confirmation",
-                        symbol, trade_id,
-                    )
+                    _lg_key = f"{trade_id}_exp"
+                    _lg_last = self._live_guard_logged.get(_lg_key)
+                    if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
+                        logger.warning(
+                            "[TradeSimulator][LIVE-GUARD] %s #%d: EXPIRED detected by simulator, "
+                            "but trade is exchange-managed — waiting for exchange confirmation",
+                            symbol, trade_id,
+                        )
+                        self._live_guard_logged[_lg_key] = now
                     continue
                 try:
                     ticker = await data_collector.get_ticker(symbol)
@@ -1960,11 +2200,15 @@ class TradeSimulator:
 
             if exit_status and exit_price_val is not None:
                 if _exchange_managed_trade:
-                    logger.warning(
-                        "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected by simulator @ %.6f, "
-                        "but trade is exchange-managed — waiting for exchange confirmation",
-                        symbol, trade_id, exit_status, exit_price_val,
-                    )
+                    _lg_key = f"{trade_id}_exit"
+                    _lg_last = self._live_guard_logged.get(_lg_key)
+                    if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
+                        logger.warning(
+                            "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected by simulator @ %.6f, "
+                            "but trade is exchange-managed — waiting for exchange confirmation",
+                            symbol, trade_id, exit_status, exit_price_val,
+                        )
+                        self._live_guard_logged[_lg_key] = now
                     continue
                 if self.close_trade(trade_id, exit_status, exit_price_val):
                     closed_count += 1

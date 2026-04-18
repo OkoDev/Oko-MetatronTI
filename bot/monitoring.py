@@ -664,6 +664,7 @@ async def _get_btc_4h_regime(bot) -> str | None:
         if ohlcv is not None and not ohlcv.empty:
             regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv.values.tolist())
             bot._btc_4h_regime_cache = {"regime": regime, "ts": now}
+            logger.info("[BTC4h] режим=%s close=%.0f", regime, ohlcv['close'].iloc[-1])
             return regime
     except Exception as e:
         logger.debug("[BTC4h] режим не определён: %s", e)
@@ -807,11 +808,17 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             logger.info("[%s] BTC %s vs %s, сила %d, режим=%s — btc_counter_trend=True",
                         symbol, btc_regime, direction_val, strength_val, btc_filter_mode)
 
-    # Этап 5.3: BTC 4h Market Gate (ARCH-63, DEV-111) — shadow mode
+    # Этап 5.3: BTC 4h Market Gate (ARCH-78) — ATR Supertrend провайдер
     if recommendation is not None:
         _btc_gate_cfg = (bot.config.get("trading", {}) or {}).get("btc_market_gate", {})
         if _btc_gate_cfg.get("enabled", False):
-            _btc_4h = await _get_btc_4h_regime(bot)
+            # ARCH-78: BTCRegimeProvider (ATR Supertrend 43/1.25) — точнее MarketRegimeClassifier
+            _btc_prov78 = getattr(bot, "btc_regime_provider", None)
+            if _btc_prov78 is not None:
+                _btc_mode78 = _btc_prov78.get_btc_mode()  # BULL / BEAR / NEUTRAL
+                _btc_4h = {"BULL": "TREND_UP", "BEAR": "TREND_DOWN"}.get(_btc_mode78)
+            else:
+                _btc_4h = await _get_btc_4h_regime(bot)  # fallback: MarketRegimeClassifier
             if _btc_4h is not None:
                 _dir4h = getattr(recommendation.direction, "value",
                                  str(recommendation.direction))
@@ -819,29 +826,102 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 _should_block4h = False
                 _reason4h = None
 
-                # Правило 1: BTC 4h TREND_DOWN → блок LONG
+                # Правило 1: BTC BEAR → блок LONG
+                # Исключение: pivot_reversal с BULLISH weekly bias (разворот у уровня)
                 if _btc_4h == "TREND_DOWN" and _dir4h == "LONG":
-                    _sig_type = getattr(recommendation, "signal_type", "") or ""
-                    _wb = (recommendation.metadata or {}).get("weekly_bias", "UNKNOWN")
-                    # Исключение: pivot_reversal с BULLISH weekly bias
-                    if not (_sig_type == "pivot_reversal" and _wb == "BULLISH"):
+                    _has_pivot_rev1 = any(
+                        getattr(_s, "signal_type", None) and _s.signal_type.value == "pivot_reversal"
+                        for _s in (recommendation.supporting_signals or [])
+                    )
+                    _wb1 = (recommendation.metadata or {}).get("weekly_bias", "UNKNOWN")
+                    _reversal_exc1 = (
+                        _btc_gate_cfg.get("reversal_exception", True)
+                        and _has_pivot_rev1 and _wb1 == "BULLISH"
+                    )
+                    if not _reversal_exc1:
                         _should_block4h = True
-                        _reason4h = f"BTC 4h TREND_DOWN блокирует LONG"
+                        _reason4h = "BTC BEAR блокирует LONG"
 
-                # Правило 2: BTC 4h TREND_UP → блок SHORT (выключено по умолчанию)
+                # Правило 2: BTC BULL → умный блок SHORT
+                # Пропускаем: pivot_reversal у реального уровня (разворот даёт макс. прибыль)
+                # Пропускаем: strength >= counter_trend_min_strength (сильный сигнал)
                 elif (_btc_4h == "TREND_UP" and _dir4h == "SHORT"
                       and _btc_gate_cfg.get("block_short_in_uptrend", False)):
-                    _should_block4h = True
-                    _reason4h = "BTC 4h TREND_UP блокирует SHORT"
+                    _ct_min = int(_btc_gate_cfg.get("counter_trend_min_strength", 75))
+                    _str_val = getattr(recommendation, "overall_strength", 0)
+                    _reversal_types2 = {"pivot_reversal", "divergence"}
+                    _has_pivot_rev2 = any(
+                        getattr(_s, "signal_type", None) and _s.signal_type.value in _reversal_types2
+                        for _s in (recommendation.supporting_signals or [])
+                    )
+                    _reversal_exc2 = _btc_gate_cfg.get("reversal_exception", True) and _has_pivot_rev2
+                    if not _reversal_exc2 and _str_val < _ct_min:
+                        _should_block4h = True
+                        _reason4h = (f"BTC BULL блокирует SHORT str={_str_val}<{_ct_min}"
+                                     f" (pivot_reversal/divergence пропускается)")
 
                 if _should_block4h:
                     if _shadow4h:
-                        logger.info("[%s] ARCH-63 SHADOW WOULD_BLOCK %s btc_4h=%s reason=%s",
+                        logger.info("[%s] ARCH-78 SHADOW WOULD_BLOCK %s btc=%s reason=%s",
                                     symbol, _dir4h, _btc_4h, _reason4h)
                     else:
-                        logger.info("[%s] ARCH-63 btc_market_gate: %s→WATCH (%s)",
+                        logger.info("[%s] ARCH-78 btc_market_gate: %s→WATCH (%s)",
                                     symbol, recommendation.action, _reason4h)
                         recommendation.action = "WATCH"
+
+    # Этап 5.3b: ARCH-84 — MTF gate: SHORT при сильном LONG bias пары
+    # Данные: WR SHORT=33.5% vs LONG=67.6% (ROADMAP 16.03). Причина: шортим на бычьем рынке пары.
+    # Исключение: pivot_reversal (разворот у уровня — разворотный сетап допустим против bias)
+    if recommendation is not None and bot.config.get("signal_quality.mtf_gate_enabled", False):
+        try:
+            _mtf84 = (recommendation.metadata or {}).get("mtf_context", {})
+            _bias84 = _mtf84.get("direction_bias", "") if isinstance(_mtf84, dict) else ""
+            _bstr84 = float(_mtf84.get("bias_strength", 0.0)) if isinstance(_mtf84, dict) else 0.0
+            _thr84  = float(bot.config.get("signal_quality.mtf_bias_threshold", 0.70))
+            _shadow84 = bot.config.get("signal_quality.mtf_gate_shadow", True)
+            _dir84 = getattr(recommendation.direction, "value", "NEUTRAL")
+
+            if _bias84 == "LONG" and _bstr84 > _thr84 and _dir84 == "SHORT":
+                _has_pr84 = any(
+                    getattr(_s, "signal_type", None) and _s.signal_type.value == "pivot_reversal"
+                    for _s in (recommendation.supporting_signals or [])
+                )
+                if not _has_pr84:
+                    if _shadow84:
+                        logger.info("[%s] ARCH-84 SHADOW WOULD_BLOCK SHORT bias=LONG bstr=%.2f>%.2f",
+                                    symbol, _bstr84, _thr84)
+                    else:
+                        logger.info("[%s] ARCH-84 MTF gate: SHORT→WATCH bias=LONG bstr=%.2f>%.2f",
+                                    symbol, _bstr84, _thr84)
+                        recommendation.action = "WATCH"
+        except Exception as _e84:
+            logger.debug("[ARCH-84] ошибка: %s", _e84)
+
+    # Этап 5.3c: ARCH-88 — PAIR-COOLDOWN gate (Per-pair Loss Memory)
+    # Защита от сценария API3: 8 SL подряд без автоматической остановки.
+    # Shadow: 48ч только лог. Prod: блок регистрации при serie sl_streak >= limit.
+    if recommendation is not None:
+        try:
+            _pc_ctx88 = getattr(bot, "pair_context", None)
+            _pair_state88 = _pc_ctx88.get(symbol) if _pc_ctx88 is not None else None
+            _cooldown_cfg88 = bot.config.get("signal_quality", {}) or {}
+            _streak_limit88 = int(_cooldown_cfg88.get("pair_cooldown_sl_streak", 5))
+            _cooldown_shadow88 = bool(_cooldown_cfg88.get("pair_cooldown_shadow", True))
+            if (_pair_state88 is not None
+                    and _pair_state88.sl_streak_count >= _streak_limit88):
+                if _cooldown_shadow88:
+                    logger.info(
+                        "[PAIR-COOLDOWN SHADOW WOULD_BLOCK] %s: streak=%d >= %d",
+                        symbol, _pair_state88.sl_streak_count, _streak_limit88,
+                    )
+                else:
+                    logger.warning(
+                        "[PAIR-COOLDOWN] %s: %d SL подряд, блок регистрации",
+                        symbol, _pair_state88.sl_streak_count,
+                    )
+                    return
+        except Exception as _e88:
+            logger.debug("[ARCH-88] PAIR-COOLDOWN gate error %s: %s", symbol, _e88)
 
     # Этап 5.4: DEV-128 — weekly_bias gate для pivot_reversal RANGE
     # Данные: 62% pivot_reversal RANGE = weekly_bias=NONE, EV=-0.5—0.76R → блок
@@ -1064,6 +1144,24 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 extra["distance_to_pivot_pct"] = distance_to_pivot_pct
             if btc_counter_trend:
                 extra["btc_counter_trend"] = True   # shadow: для аналитики WR с/без BTC-фильтра
+            # ARCH-84: shadow данные MTF gate — для проверки эффективности блока
+            try:
+                _mtf84x = (recommendation.metadata or {}).get("mtf_context", {})
+                _bias84x = _mtf84x.get("direction_bias", "") if isinstance(_mtf84x, dict) else ""
+                _bstr84x = float(_mtf84x.get("bias_strength", 0.0)) if isinstance(_mtf84x, dict) else 0.0
+                _thr84x  = float(bot.config.get("signal_quality.mtf_bias_threshold", 0.70))
+                _dir84x  = getattr(recommendation.direction, "value", "NEUTRAL")
+                if _bias84x and _bstr84x > 0:
+                    extra["mtf_bias"] = _bias84x
+                    extra["mtf_bias_strength"] = round(_bstr84x, 3)
+                if _bias84x == "LONG" and _bstr84x > _thr84x and _dir84x == "SHORT":
+                    extra["arch84_would_block"] = True
+            except Exception:
+                pass
+            # ARCH-78: режим BTC 4h от BTCRegimeProvider (ATR Supertrend) — для ML и аналитики
+            _btc_prov_fx = getattr(bot, "btc_regime_provider", None)
+            if _btc_prov_fx is not None:
+                extra["btc_4h_regime"] = _btc_prov_fx.get_btc_mode()
             # Извлекаем факторы confluence для аналитики WR по каждому фактору
             conf_factors = []
             for sig in (recommendation.supporting_signals or []):
@@ -1136,6 +1234,15 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                         _oe_sl = float(recommendation.stop_loss or 0)
                         _oe_tp1 = float(recommendation.take_profit or 0)
                         _oe_tp2 = float(recommendation.tp1_price or 0) or None
+                        # tsl_only сигналы (take_profit=None) → fallback TP = entry ± 15 * sl_dist
+                        # Выступает safety valve; TSL закроет позицию раньше.
+                        if _oe_tp1 <= 0 and _oe_entry > 0 and _oe_sl > 0:
+                            _sl_dist = abs(_oe_entry - _oe_sl)
+                            if _oe_dir == "LONG":
+                                _oe_tp1 = _oe_entry + 15 * _sl_dist
+                            else:
+                                _oe_tp1 = _oe_entry - 15 * _sl_dist
+                            logger.info("[%s] tsl_only → fallback TP=%.6f (15R safety)", symbol, _oe_tp1)
                         if _oe_entry > 0 and _oe_sl > 0 and _oe_tp1 > 0:
                             # Реальный баланс с биржи (VST) или config (SIM)
                             _deposit = await _oe.get_available_balance()
@@ -1177,7 +1284,12 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                         )
                                     # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
                                     if _br.order_id and trade_id:
-                                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
+                                        # Сохраняем actual_entry_price — реальная цена исполнения с биржи
+                                        # (может отличаться от сигнальной entry_price из-за slippage)
+                                        bot.trade_simulator.set_exchange_order_id(
+                                            trade_id, _br.order_id, qty=_qty,
+                                            actual_entry_price=_br.entry_price,
+                                        )
                                         # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
                                         _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
                                         import asyncio as _asyncio
@@ -1287,6 +1399,33 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             text = text.rstrip() + f"\n─────────────\n❌ <i>Не зарегистрирован: {_reason_str}{_mtf_str}</i>"
             logger.info("[%s] Сделка не зарегистрирована: %s%s", symbol, _reason_str, _mtf_str)
 
+    # ── ARCH-91: Narrative блок в TG ─────────────────────────────────────────
+    if recommendation is not None and bot.config.get("trading.narrative.include_in_tg", False):
+        try:
+            _narr_cfg = bot.config.get("trading.narrative", {}) or {}
+            _max_n = int(_narr_cfg.get("max_factors_in_tg", 4))
+            _narr_meta = (recommendation.metadata or {}).get("narrative") or {}
+            _smc_f = list(_narr_meta.get("smc_factors") or [])
+            _key_f = list(_narr_meta.get("key_factors") or [])
+            _all_factors = (_smc_f + _key_f)[:_max_n]
+            _narr_parts: list[str] = []
+            if _all_factors:
+                _narr_parts.append("📖 <b>Нарратив:</b>\n" + "\n".join(f"• {f}" for f in _all_factors))
+            if _narr_cfg.get("include_past_outcome", True):
+                try:
+                    from core.intelligence.narrative_builder import _extract_past_outcome_line
+                    _pair_bus = getattr(bot, "pair_context", None)
+                    _ps = _pair_bus.get(symbol) if _pair_bus else None
+                    _past = _extract_past_outcome_line(_ps)
+                    if _past:
+                        _narr_parts.append(f"📜 {_past}")
+                except Exception:
+                    pass
+            if _narr_parts:
+                text = text.rstrip() + "\n─────────────\n" + "\n".join(_narr_parts)
+        except Exception as _e_narr_tg:
+            logger.debug("[ARCH-91] narrative TG block error: %s", _e_narr_tg)
+
     # ── DEV-151: Groq AI-комментарий к сигналу ───────────────────────────────
     if recommendation is not None and bot.config.get("trade_analyzer.signal_comment", True):
         try:
@@ -1330,16 +1469,43 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 _TG_BROADCAST_SEM = asyncio.Semaphore(25)  # DEV-120: Telegram safe rate ~25 msg/sec
 
 
-def _prepare_photo_caption(text: str, limit: int = 1024) -> str:
+def _prepare_photo_caption(text: str, limit: int = 980) -> str:
     """
-    Фото-caption короче обычного сообщения. Если резать HTML-строку как есть,
-    Telegram может получить незакрытый тег и отклонить отправку.
+    Caption для фото с сохранением HTML-разметки (ссылки кликабельны).
+    Telegram photo caption limit = 1024 знаков. Берём 980 для безопасности.
+    Отправляется с parse_mode="HTML".
     """
-    plain = re.sub(r"<[^>]+>", "", text or "")
-    plain = html.unescape(plain).strip()
-    if len(plain) <= limit:
-        return plain
-    return plain[: limit - 1].rstrip() + "…"
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    truncated = text[: limit - 1].rstrip()
+    # Если обрезка попала внутрь тега — откатиться до последнего '<'
+    last_open = truncated.rfind("<")
+    last_close = truncated.rfind(">")
+    if last_open > last_close:
+        truncated = truncated[:last_open].rstrip()
+    truncated += "…"
+    return _close_open_html_tags(truncated)
+
+
+def _close_open_html_tags(text: str) -> str:
+    """Закрывает незакрытые HTML-теги после обрезки текста."""
+    import re
+    open_tags = re.findall(r"<(b|i|u|s|code|pre|a)\b[^>]*>", text, re.IGNORECASE)
+    close_tags = re.findall(r"</(b|i|u|s|code|pre|a)>", text, re.IGNORECASE)
+    # Считаем незакрытые теги (стек)
+    stack = []
+    for tag in open_tags:
+        stack.append(tag.lower())
+    for tag in close_tags:
+        tag_lower = tag.lower()
+        if tag_lower in stack:
+            stack.remove(tag_lower)
+    # Закрываем в обратном порядке
+    for tag in reversed(stack):
+        text += f"</{tag}>"
+    return text
 
 
 async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
@@ -1371,7 +1537,7 @@ async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
                         chat_id=uid,
                         photo=BufferedInputFile(chart_png, filename="chart.png"),
                         caption=caption,
-                        parse_mode=None,
+                        parse_mode="HTML",
                     )
                 else:
                     await bot.bot.send_message(

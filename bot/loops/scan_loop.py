@@ -133,6 +133,29 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     except Exception as _e58:
         logger.debug("[WL-BREACH] %s: ошибка DEV-58 gate — %s", symbol, _e58)
 
+    # Gate 5: ARCH-78 BTC Market Gate — блок SHORT при BTC BULL
+    try:
+        _btc_gate_wl = (bot.config.get("trading") or {}).get("btc_market_gate") or {}
+        if _btc_gate_wl.get("enabled") and not _btc_gate_wl.get("shadow_mode"):
+            _btc_prov_wl = getattr(bot, "btc_regime_provider", None)
+            if _btc_prov_wl is not None:
+                _btc_mode_wl = _btc_prov_wl.get_btc_mode()
+                if (
+                    _btc_mode_wl == "BULL"
+                    and direction == "SHORT"
+                    and _btc_gate_wl.get("block_short_in_uptrend", False)
+                ):
+                    _ct_min_wl = int(_btc_gate_wl.get("counter_trend_min_strength", 75))
+                    if score < _ct_min_wl:
+                        logger.info(
+                            "[WL-BREACH ARCH-78] %s: пропуск — SHORT при BTC BULL, "
+                            "strength=%d < %d",
+                            symbol, score, _ct_min_wl,
+                        )
+                        return
+    except Exception as _e_btcwl:
+        logger.debug("[WL-BREACH] %s: ошибка ARCH-78 gate — %s", symbol, _e_btcwl)
+
     # SL = пробитый пивот ± 0.5% буфер (уровень стал support/resistance)
     sl_buffer_pct = float(bot.config.get("signal_quality.wl_sl_buffer_pct", 0.5)) / 100
     if direction == "LONG":
@@ -289,6 +312,14 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     _wl_breach_timestamps.append(datetime.now())
 
     # VST/LIVE: открываем реальный ордер на бирже
+    # tsl_only: tp=None → fallback TP = entry ± 15 * sl_dist (safety valve, TSL закроет раньше)
+    if tp is None and current_price and sl:
+        _sl_dist_wl = abs(current_price - sl)
+        if direction == "LONG":
+            tp = current_price + 15 * _sl_dist_wl
+        else:
+            tp = current_price - 15 * _sl_dist_wl
+        logger.info("[WL-BREACH] %s tsl_only → fallback TP=%.6f (15R safety)", symbol, tp)
     if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer") and tp is not None:
         try:
             _oe = bot.order_executor
@@ -541,6 +572,140 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 except Exception:
                     pass
 
+                # ═══ КУБ МЕТАТРОНА: публикуем снапы всех сфер в PairContextBus ═══
+                _bus = getattr(bot, "pair_context", None)
+                if _bus is not None:
+                    from core.context.pair_context import SphereEvent
+
+                    # CUBE-08 Шаг 2: Сфера 1 — OHLCV_UPDATED для всех пар (каждый цикл)
+                    _bus.publish(sym, SphereEvent.OHLCV_UPDATED, {
+                        "tf": _etf, "rows": len(df_entry),
+                    })
+
+                    # Сфера 6: Market Regime → bus
+                    if _pair_regime:
+                        _rev_mode = None
+                        try:
+                            _mrc = MarketRegimeClassifier()
+                            _rev_mode = _mrc.classify_mode(df_entry, df_1h, df_4h) if df_4h is not None else None
+                        except Exception:
+                            pass
+                        _bus.publish(sym, SphereEvent.REGIME_UPDATED, {
+                            "regime": _pair_regime,
+                            "mode": _rev_mode or "UNCLEAR",
+                        })
+
+                    # Сфера 3: WT snap → bus (все загруженные TF)
+                    _wt_snap_data = {}
+                    for _wt_tf, _wt_df in [(_etf, df_entry), ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)]:
+                        if _wt_df is not None and not _wt_df.empty and "wt1" in _wt_df.columns:
+                            _r = _wt_df.iloc[-1]
+                            _wt1_cur = float(_r.get("wt1", 0))
+                            _wt2_cur = float(_r.get("wt2", 0))
+                            # DEV-172 fix: wt_cross вычисляем вручную (calculate_wt не добавляет эту колонку)
+                            # 1 = bullish cross (wt1 пересёк wt2 снизу вверх), -1 = bearish, 0 = нет кросса
+                            _wt_cross_val = 0
+                            if len(_wt_df) >= 2:
+                                _prev_row = _wt_df.iloc[-2]
+                                _wt1_prev = float(_prev_row.get("wt1", 0))
+                                _wt2_prev = float(_prev_row.get("wt2", 0))
+                                if _wt1_prev <= _wt2_prev and _wt1_cur > _wt2_cur:
+                                    _wt_cross_val = 1   # bullish
+                                elif _wt1_prev >= _wt2_prev and _wt1_cur < _wt2_cur:
+                                    _wt_cross_val = -1  # bearish
+                            _wt_trend_val = float(_r.get("trend", 0))
+                            _wt_snap_data[_wt_tf] = {
+                                "wt1": round(_wt1_cur, 2),
+                                "wt2": round(_wt2_cur, 2),
+                                "zone": "OB" if _wt1_cur > 60 else ("OS" if _wt1_cur < -60 else "N"),
+                                "wt_cross": _wt_cross_val,
+                                # FIX: trend = +1/-1 из calculate_trend(), не trendup/trenddown (уровни цены)
+                                "trend": "UP" if _wt_trend_val == 1 else "DOWN",
+                                # atr_trend как int для entry_matrix.py (bias_ok check)
+                                "atr_trend": 1 if _wt_trend_val == 1 else -1,
+                            }
+                    if _wt_snap_data:
+                        _bus.publish(sym, SphereEvent.WT_SNAP_UPDATED, _wt_snap_data)
+
+                        # CUBE-08 Шаг 1: Сфера 3 — WT Verdict из snap (без API, ~0ms)
+                        try:
+                            from core.intelligence.wt_specialist import derive_wt_verdict
+                            _wt_v = derive_wt_verdict(_wt_snap_data)
+                            if _wt_v:
+                                _bus.publish(sym, SphereEvent.WT_VERDICT, {
+                                    "label": _wt_v, "confidence": 0.6,
+                                })
+                        except Exception as _wt_e:
+                            logger.debug("[CUBE-08] wt_verdict %s: %s", sym, _wt_e)
+
+                    # CUBE-08 Шаг 3: Сфера 4 — SMC Verdict из уже загруженных df (без API, ~0ms)
+                    try:
+                        from core.smc.smc_specialist import fast_smc_verdict
+                        _smc_v = fast_smc_verdict(df_1h, df_4h)
+                        if _smc_v:
+                            _bus.publish(sym, SphereEvent.SMC_VERDICT, {
+                                "label": _smc_v, "confidence": 0.5,
+                            })
+                    except Exception as _smc_e:
+                        logger.debug("[CUBE-08] smc_verdict %s: %s", sym, _smc_e)
+
+                    # ARCH-89: Сфера 4 — SMC_SNAP_UPDATED (FVG/OB/BOS/CHoCH/Fib → PairState)
+                    try:
+                        from core.smc.smc_snapshot import build_smc_snapshot
+                        _smc_ohlcv = {}
+                        if df_entry is not None and not df_entry.empty:
+                            _smc_ohlcv[_etf] = df_entry
+                        if df_1h is not None and not df_1h.empty:
+                            _smc_ohlcv["1h"] = df_1h
+                        if df_4h is not None and not df_4h.empty:
+                            _smc_ohlcv["4h"] = df_4h
+                        if df_1d is not None and not df_1d.empty:
+                            _smc_ohlcv["1d"] = df_1d
+                        _smc_snap = build_smc_snapshot(sym, _smc_ohlcv)
+                        if _smc_snap:
+                            _bus.publish(sym, SphereEvent.SMC_SNAP_UPDATED, _smc_snap)
+                            logger.info(
+                                "[SMC_SNAP] %s: OB_bull=%s OB_bear=%s BOS=%s CHoCH=%s in_OTE=%s retrace=%.1f%%",
+                                sym,
+                                bool(_smc_snap.get("nearest_bull_ob")),
+                                bool(_smc_snap.get("nearest_bear_ob")),
+                                (_smc_snap.get("last_bos") or {}).get("direction"),
+                                (_smc_snap.get("last_choch") or {}).get("direction"),
+                                _smc_snap.get("price_in_ote"),
+                                _smc_snap.get("current_retracement", 0.0),
+                            )
+                    except Exception as _smc_snap_e:
+                        logger.debug("[ARCH-89] smc_snap %s: %s", sym, _smc_snap_e)
+
+                    # Сфера 8: Pivot snap → bus
+                    _pc = getattr(bot, "pivot_calculator", None)
+                    if _pc is not None:
+                        _piv_cache = getattr(_pc, "pivot_cache", {}).get(sym)
+                        if _piv_cache:
+                            _bus.publish(sym, SphereEvent.PIVOT_SNAP_UPDATED, _piv_cache)
+
+                # ═══ КУБ: HTF детекторы → EventBus (trend_change_1h, wt_cross_4h/1d) ═══
+                _eb = getattr(bot, "event_bus", None)
+                if _eb is not None:
+                    _htf_det = getattr(bot, "_htf_detectors", None)
+                    if _htf_det is not None:
+                        _tc, _wc = _htf_det
+                        # Trend change 1h
+                        if df_1h is not None and not df_1h.empty:
+                            _tc_fired, _tc_data = _tc.check(sym, df_1h)
+                            if _tc_fired:
+                                asyncio.create_task(_eb.publish(sym, "trend_change_1h", priority=2, data=_tc_data))
+                        # WT cross 4h
+                        if df_4h is not None and not df_4h.empty:
+                            _wc_fired, _wc_data = _wc.check(sym, df_4h, "4h")
+                            if _wc_fired:
+                                asyncio.create_task(_eb.publish(sym, "wt_cross_4h", priority=2, data=_wc_data))
+                        # WT cross 1d
+                        if df_1d is not None and not df_1d.empty:
+                            _wc1d_fired, _wc1d_data = _wc.check(sym, df_1d, "1d")
+                            if _wc1d_fired:
+                                asyncio.create_task(_eb.publish(sym, "wt_cross_1d", priority=1, data=_wc1d_data))
+
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(
                     df_entry,
@@ -609,6 +774,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _eb = getattr(bot, "event_bus", None)
                             if _eb is not None:
                                 asyncio.create_task(_eb.publish(sym, "anomaly_volume", priority=4))
+                            # Куб: Сфера 7 → bus
+                            if _bus is not None:
+                                _bus.publish(sym, SphereEvent.ANOMALY_DETECTED, {
+                                    "volume_ratio": info.get("volume_ratio", 0),
+                                    "tf": _scan_tf,
+                                })
 
                     # 1a. DEV-81: FUNDING_EXTREME (shadow mode — только лог, не в TG)
                     if _scan_tf == _etf:
@@ -685,6 +856,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         bot.signal_counters["total"] += 1
                         signals_to_broadcast.append(("wt_signal", wt_message(sym, info), None))
                         all_scan_signals.append(sig)
+                        # Куб: Сфера 7 → bus
+                        if _bus is not None:
+                            _bus.publish(sym, SphereEvent.SIGNAL_DETECTED, {
+                                "signal_type": "wt_signal", "direction": sig.direction.value,
+                                "strength": sig.strength, "tf": _scan_tf,
+                            })
 
                 # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
@@ -731,6 +908,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _eb = getattr(bot, "event_bus", None)
                     if _eb is not None:
                         asyncio.create_task(_eb.publish(sym, "wt_confluence", priority=3))
+                    # Куб: Сфера 7 → bus
+                    if _bus is not None:
+                        _bus.publish(sym, SphereEvent.SIGNAL_DETECTED, {
+                            "signal_type": "confluence", "direction": sig.direction.value if sig.direction else "NEUTRAL",
+                            "strength": sig.strength, "tf": _etf,
+                        })
                     break  # Один confluence Full CALL на пару за цикл достаточно
 
                 # 5. WT-B Signal (1h): адаптивный OS/OB + дивергенция, WR=85%
@@ -771,6 +954,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 bot.signal_counters["divergence"] += 1
                                 bot.signal_counters["total"] += 1
                                 logger.info("[%s] MTF-дивергенция 1h+15m: %s", sym, mtf_info.get("type"))
+                                # Куб: Сфера 7 → bus
+                                if _bus is not None:
+                                    _bus.publish(sym, SphereEvent.DIVERGENCE_FOUND, {
+                                        "type": mtf_info.get("type"), "direction": mtf_info.get("direction"),
+                                        "tf": "1h", "strength": mtf_info.get("strength", 60),
+                                    })
                                 signals_to_broadcast.append(("mtf_divergence", mtf_divergence_message(sym, mtf_info), None))
                                 _dir = SignalDirection.LONG if mtf_info.get("direction") == "LONG" else SignalDirection.SHORT
                                 # Кешируем для меню "Дивергенции" без влияния на pre_signals analyze_symbol
@@ -929,7 +1118,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     pairs = list(bot.monitored_pairs)
     random.shuffle(pairs)  # равный шанс для всех пар, убирает алфавитный bias у confluence лимита
     stats = bot.data_collector._engine.cache_stats()
-    logger.info("Скан: %d пар | кеш=%d CB=%s", len(pairs), stats["cache_size"], stats["cb_state"])
+    try:
+        from core.trading.circuit_breaker import CircuitBreaker as _TradingCB
+        _tcb_status = _TradingCB().status_text()
+    except Exception:
+        _tcb_status = "n/a"
+    logger.info("Скан: %d пар | кеш=%d api_cb=%s trading_cb=%s",
+                len(pairs), stats["cache_size"], stats["cb_state"], _tcb_status)
     await asyncio.gather(*[scan_one(sym) for sym in pairs])
     elapsed = _time.monotonic() - cycle_start
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
@@ -985,6 +1180,15 @@ async def _check_btc_macro_shock(bot) -> None:
                 if ok:
                     published += 1
             logger.info("[ARCH-70] btc_macro_shock опубликован для %d пар", published)
+            # Куб: Сфера 5 (Cross-Market) → PairContextBus для ВСЕХ пар
+            _pcb = getattr(bot, "pair_context", None)
+            if _pcb is not None:
+                from core.context.pair_context import SphereEvent
+                for sym in watchlist[:30]:
+                    _pcb.publish(sym, SphereEvent.CROSS_MARKET, {
+                        "btc_regime": f"SHOCK_{direction.upper()}",
+                        "btc_move_pct": round(move_pct, 2),
+                    })
     except Exception as e:
         logger.debug("[ARCH-70] _check_btc_macro_shock error: %s", e)
 
@@ -1003,6 +1207,16 @@ async def monitor_market(bot) -> None:
         _pivot_cycle = 0
         _cascade_4h_cycle = 0
         _div_cycle = 0
+
+        # ARCH-78: принудительный warmup до первого цикла — чтобы gate не видел NEUTRAL
+        _btc_prov_warmup = getattr(bot, "btc_regime_provider", None)
+        if _btc_prov_warmup is not None:
+            try:
+                await _btc_prov_warmup.update(bot.data_collector)
+                logger.info("[ARCH-78] BTCRegimeProvider warmup: mode=%s", _btc_prov_warmup.get_btc_mode())
+            except Exception as _e_warmup:
+                logger.warning("[ARCH-78] BTCRegimeProvider warmup failed: %s", _e_warmup)
+
         while bot.is_monitoring:
             # Читаем цикловые интервалы из конфига (hot-reload)
             # DEV-103: пропустить цикл если биржа DOWN
@@ -1024,6 +1238,11 @@ async def monitor_market(bot) -> None:
 
             # ARCH-70: btc_macro_shock — проверяем BTC 15m каждый цикл
             asyncio.create_task(_check_btc_macro_shock(bot))
+
+            # ARCH-78: BTCRegimeProvider — обновляем режим (провайдер сам следит за TTL 5 мин)
+            _btc_prov = getattr(bot, "btc_regime_provider", None)
+            if _btc_prov is not None:
+                asyncio.create_task(_btc_prov.update(bot.data_collector))
 
             _div_cycle += 1
             _check_div = (_div_cycle % _div_n == 0)
