@@ -32,7 +32,7 @@
 | **DASHBOARD** | | | |
 | [DEV-144](#dev-144) | 🟡 | Полный редизайн дашборда: Live Control + Analytics + Settings | DEV |
 | [DEV-144f](#dev-144f) | 🟢 | P6: Единый CSS — тёмная тема, виджет-карточки, responsive grid | DEV |
-| [DEV-179](#dev-179) | 🟡 | Метрики стратегий: n/WR/median/Sharpe/p90/top20 вместо avg_R-only (урок 1 AUDIT_LESSONS) | DEV |
+| [DEV-179](#dev-179) | ✅ | Метрики стратегий: median/Sharpe/p90/top20_share + warning-подсветка — merged 19.04 | DEV |
 | **СТРАТЕГИЯ / СИГНАЛЫ** | | | |
 | [DEV-178](#dev-178) | ✅ | Data integrity: 6835 сделок размечены data_era, ML фильтр применён (18.04) | DEV |
 | [ARCH-83](#arch-83) | ✅ | Убрать wt_entry из active_strategies (WR 20%→5%, деградация) — выполнено 18.04 | ARCH/DEV |
@@ -49,7 +49,7 @@
 | [DEV-104](#dev-104) | 🔵 | Dead-Man Timer: emergency close all (Слой 3 ARCH-65) — только перед LIVE | DEV |
 | **ML / АНАЛИТИКА** | | | |
 | [ARCH-45](#arch-45) | ✅ | OutcomePredictor Этап A: AUC 0.41→0.582 (18.04). use_outcome_predictor: true активирован. Этап B при деградации. | ARCH/DEV |
-| [DEV-177](#dev-177) | 🟢 | Adaptive weights: EMA (half-life 50-100) вместо full-history avgR | DEV |
+| [DEV-177](#dev-177) | ✅ | Adaptive weights EMA (hl=50, era=post_fix) + dashboard trajectory — merged 19.04, тесты 6/6 PASS | DEV |
 | [DEV-162](#dev-162) | 🔵 | derive_wt_verdict: динамический confidence вместо статического (триггер: 200+ BLOCK) | DEV |
 | **КУБ МЕТАТРОНА** | | | |
 | [ARCH-77](#arch-77) | ⏸ | Миникуб WTMTF: ЗАМОРОЖЕН до Sharpe>1 в проде (множитель к убытку бесполезен) | ARCH/DEV |

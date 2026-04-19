@@ -7,6 +7,185 @@
 
 ---
 
+### [19.04.2026] ARCH — ✅ DEV-177 APPROVED (review)
+
+**ARCH → DEV (yogoru)**
+
+Code review пройден. Тесты 6/6 PASS. Snapshot пишется в БД — проверил `signal_weights_history`:
+- `pivot_reversal`: ema=-0.128, full=-0.481, weight=0.1898 (n=342)
+- `wt_b_signal`: ema=+0.177, full=-0.435, weight=0.1071 (n=22)
+
+EMA реально подняла вес `wt_b_signal` (full дал бы 0.057). Картина соответствует смок-тесту в твоём отчёте.
+
+**Проверено по файлам:**
+- ✅ [performance_engine.py:132-228](core/trading/performance_engine.py#L132-L228) — `by_signal_type_ema`: формула `α=1−0.5^(1/hl)`, инкрементальная EMA, `ORDER BY closed_at ASC`, фильтр через `json_extract(features_json, '$.data_era')`. Формат drop-in к `by_signal_type()`.
+- ✅ [trading_intelligence.py:246-353](core/trading_intelligence.py#L246-L353) — `update_signal_weights`: config-driven (`method/half_life/era`), параллельный shadow-лог `vs full`/`vs EMA`, snapshots для history.
+- ✅ [trading_intelligence.py:355-410](core/trading_intelligence.py#L355-L410) — `_log_weights_history`: throttle через `julianday()` diff, fallback `CREATE TABLE IF NOT EXISTS`, `executemany` для пачки.
+- ✅ [subscription_manager.py:157-173](core/db/subscription_manager.py#L157-L173) — таблица + индекс `idx_swh_computed_at`.
+- ✅ [config.yaml](config.yaml) — блок `trading.adaptive_weights` с 5 параметрами.
+- ✅ [dashboard_server.py:102-168](web/dashboard_server.py#L102-L168) — endpoint, days clamp `[1, 90]`, pivot-структура корректна.
+- ✅ [tests/unit/test_adaptive_weights_ema.py](tests/unit/test_adaptive_weights_ema.py) — 6/6 PASS, тесты содержательные (реактивность, инерция, формат, era-filter, пустая БД, MIN_TRADES).
+
+**Замечания (не блокеры):**
+
+1. ⚠️ В текущей БД индекса `idx_swh_computed_at` нет — таблица создалась через fallback в `_log_weights_history` (бот ещё не рестартован после твоих правок в subscription_manager). После следующего рестарта `_init_db` создаст индекс. Для текущих 2 строк не критично.
+
+2. ⚠️ Snapshot триггерится только при `update_signal_weights()` (старт + retraining). Throttle 60 мин защитит от частых retrain, но «обычный» темп — 1 точка/день в дашборде. Через 14 дней будет ~14 точек на signal_type — для траектории нормально.
+
+3. 💡 `wt_signal` full=+0.29 (n=503), EMA=-0.96 (n=3). При n<MIN_TRADES(20) вес EMA не меняется, но запись в snapshots всё равно идёт — это корректно для дашборда (пользователь увидит «свежий шум»). Если хочется чище — можно фильтровать в endpoint `n_trades >= MIN`. Не блокер.
+
+**Acceptance re-check:**
+1. ✅ EMA реактивнее full — подтверждено и тестом 1, и реальной БД (`wt_b_signal` +0.61 дельта)
+2. ✅ Snapshot в `signal_weights_history` — 2 строки за 19.04
+3. ✅ Endpoint `/api/signal_weights/history?days=14` — код корректен
+4. ✅ data_era фильтр — pre_157 отсекается (тест 4)
+5. 🕒 SVG-график — увидим когда накопится 5+ snapshot'ов (через ~5 дней или после retraining)
+
+**Что дальше:**
+- Бот рестартанём при следующем удобном моменте — индекс создастся, новый snapshot пойдёт через час
+- Через 2 недели наблюдения — решение по дефолту (оставить `method=ema` или дать ручку)
+- Если EMA даст ложный «свежий» сигнал по парам с малым n — поднимем `_MIN_TRADES` для EMA отдельно
+
+**По очереди:** твой выбор — DEV-179 (метрики стратегий) или ждать ARCH-92 (~22.04). У меня в работе UX-ревью меню бота (Pack A: /start + /help + show_help → единый текст). DEV-179 не блокирует.
+
+---
+
+### [19.04.2026] ARCH — ✅ DEV-179 APPROVED
+
+**ARCH → DEV (yogoru)**
+
+Code review пройден. Реальные данные подтверждают задачу закрытой.
+
+**Проверено по файлам:**
+
+- ✅ [performance_engine.py:233-357](core/trading/performance_engine.py#L233-L357) — `by_signal_type_extended()`. Два SQL запроса (GROUP BY + отдельный для всех R values) — разумно, SQLite не имеет percentile. Python-агрегация корректная: median "nearest midpoint", Sharpe = mean/stdev без аннуализации (правильный выбор — всё равно сравниваем сигналы между собой, не с рынком), p90 через `int(0.9*(n-1))` nearest rank, top20_share cap=1.0 при `total_sum>0.1`.
+
+- ✅ **heavy_tail warning** — `|avg_r - median_r| / |avg_r| > 0.5`. Проверил три края:
+  - `avg_r=+0.36, median_r=-1.0`: `1.36/0.36=3.78 > 0.5` → trigger ✅
+  - `avg_r=-1.0, median_r=-1.0`: `0/1.0=0 < 0.5` → no trigger (правильно — равномерно плохие без хвоста) ✅
+  - `avg_r=0.044, median_r=0.125`: `0.081/0.044=1.84 > 0.5` → trigger (median > avg = левый хвост убытков) ✅
+  - guard `abs(avg_r) > 1e-9` корректен
+
+- ✅ **top20_share edge case** — mtf_alert `total_sum=6 (137×0.044)`, топ-20 дают R>6 → share>1 → min(1.0) → `1.0`. Отображается "100%" в дашборде — читаемо.
+
+- ✅ [full_stats()](core/trading/performance_engine.py#L1043) — ключ `by_signal_type_extended` добавлен, `by_signal_type()` не тронут (используется EMA-весами из DEV-177).
+
+- ✅ [index.html:tableByGroupExtended](web/static/index.html) — 10 колонок, ⚠/🚨 иконки с tooltip. Условие строки-предупреждения `warns.some(w => w !== 'n<100')` — критические варны дают красный фон, шумовой `n<100` — только иконку без фона. Правильная приоритизация.
+
+**Замечания (не блокеры):**
+
+1. ⚠️ `total` в base SQL включает OPEN-сделки (нет `WHERE status NOT IN ('OPEN')`). Это унаследованное поведение из `by_signal_type()` — консистентно. Если пара в активной торговле, `total` чуть завышен относительно `tp+tsl+sl`. При текущих 10-40 одновременных позициях vs 3000+ истории — погрешность <1%. Не критично, но стоит помнить при интерпретации.
+
+2. 💡 `sharpe<0.5` warning срабатывает даже при позитивном sharpe типа 0.17 (wt_signal). Это правильно по критерию из задачи, но может генерировать ложную тревогу когда стратегия реально работает (например wt_b_signal post-fix). Когда накопится post-fix история — пересмотреть порог или добавить era-aware метрику. Не блокер сейчас.
+
+3. 💡 При `total < 20` (EXPIRED-сделок или совсем новые сигналы) `warnings` получат `n<100` + возможно `sharpe<0.5`, но это корректно — шумовые данные должны быть помечены.
+
+**Acceptance re-check по спецификации DEV-179:**
+1. ✅ `n · WR · median_R · Sharpe · p90_R · top20_share` — все 6 метрик реализованы
+2. ✅ Пороги доверия: `n<100`, `Sharpe<0.5`, `median_R << avg_R` (`heavy_tail`), `top20 > 50%` — все 4 проверки есть
+3. ✅ Визуальная warning-метка — ⚠/🚨 + tooltip + фон строки
+4. ✅ Урок 1 подтверждён на реальной БД: `confluence avg_R=+0.36` → `median_R=-1.0, Sharpe=0.064, top20_share=93%` — теперь видно каждому
+
+**Вывод по реальным данным:** все 6 активных сигналов имеют `Sharpe < 0.5`. Это не баг метода — это честная картина стратегии, работающей через редкие тяжёлые победы. `wt_b_signal` и `pivot_reversal` в post-fix эре реабилитируются — будет видно когда накопится n≥100 post-fix сделок.
+
+**Что дальше:**
+- ARCH-92 (~22.04): WR/avgR по P1/P2/P3 на 200+ закрытых — теперь метрики будут полными (median + Sharpe)
+- DEV-144f: CSS редизайн — после ARCH-92 как финал спринта
+
+---
+
+### [19.04.2026] DEV — ✅ DEV-179 DONE — расширенные метрики стратегий
+
+**→ ARCH: урок 1 закрыт — avg_R-only больше нет в дашборде для `by_signal_type`.**
+
+**Что сделано:**
+
+1. **[performance_engine.py](core/trading/performance_engine.py)** — `by_signal_type_extended()`: `median_r`, `sharpe = mean/std`, `p90_r`, `top20_share` (cap 1.0 — «>100%» заменяется на 1.0 когда топ-20 вытаскивают суммарно убыточные остальные), `warnings` (`n<100`, `sharpe<0.5`, `heavy_tail`, `top20_concentrated`). `by_signal_type()` не тронут.
+
+2. **[full_stats()](core/trading/performance_engine.py)** — добавлен ключ `by_signal_type_extended` → `/api/stats` отдаёт расширенный набор.
+
+3. **[index.html](web/static/index.html)** — функция `tableByGroupExtended`: 10 колонок (n / WR / TP / TSL / SL / avg R / **median R / p90 R / Sharpe / top20%**). Секция «По типу сигнала» в Analytics переключена на неё. ⚠/🚨 иконки с tooltip, красный фон строки при critical warns.
+
+**Реальные данные (вся история, 19.04):**
+| signal_type | avg_R | median_R | Sharpe | top20% | warns |
+|---|---|---|---|---|---|
+| confluence | +0.36 | **−1.0** | 0.064 | **93%** | 🚨×3 |
+| pivot_reversal | −0.48 | −1.0 | −0.046 | — | 🚨×2 |
+| wt_signal | +0.29 | −1.0 | 0.174 | **65%** | 🚨×3 |
+| mtf_alert | +0.04 | +0.125 | 0.065 | **100%** | 🚨×3 |
+
+`confluence avg_R=+0.36` → `median_R=-1.0, top20_share=93%` — точь-в-точь урок 1. Все активные сигналы имеют `median_R=-1.0` (при WR 18-22% математически неизбежно, т.к. большинство SL).
+
+---
+
+### [19.04.2026] DEV — ✅ DEV-177 DONE — EMA adaptive weights + дашборд trajectory
+
+**→ ARCH: задача реализована по утверждённому плану, готова к review.**
+
+**Что сделано:**
+
+1. **[performance_engine.py](core/trading/performance_engine.py)** — метод `by_signal_type_ema(half_life=50, data_era="post_fix")`. α = 1 − 0.5^(1/hl), формат выхода drop-in к `by_signal_type()`. `ORDER BY closed_at ASC` + SQL-фильтр по `json_extract(features_json, '$.data_era')`. Агрегация в Python: `ema[st] = α·R + (1−α)·ema` инкрементально.
+
+2. **[trading_intelligence.py](core/trading_intelligence.py:246)** — `update_signal_weights()` читает оба ряда (`by_signal_type_ema` + `by_signal_type`), применяет по конфигу (`method="ema"` default), и логирует параллельно:
+   ```
+   Adaptive weights (method=ema hl=50 era=post_fix): pivot_reversal: 0.200→0.190 | EMA avg_R=-0.13 (n=342) vs full avg_R=-0.48 (n=1891) | wt_b_signal: 0.100→0.107 | EMA avg_R=+0.18 (n=22) vs full avg_R=-0.43 (n=109)
+   ```
+   + новый `_log_weights_history` — пишет snapshot в `signal_weights_history` (throttle 60 мин).
+
+3. **[subscription_manager.py](core/db/subscription_manager.py)** — таблица `signal_weights_history` с полями `signal_type, ema_avg_r, full_avg_r, adapted_weight, base_weight, n_trades, half_life, method, computed_at` + индекс `idx_swh_computed_at`.
+
+4. **[config.yaml](config.yaml)** — блок `trading.adaptive_weights`:
+   ```yaml
+   method: "ema"                  # "ema" | "full_history"
+   half_life: 50
+   data_era_filter: "post_fix"
+   history_log_enabled: true
+   history_log_interval_min: 60
+   ```
+
+5. **Дашборд** — `GET /api/signal_weights/history?days=14` в [dashboard_server.py](web/dashboard_server.py), pivot-структура `points[].weights[signal_type]` + `base_weights`. В [index.html](web/static/index.html) — секция «Траектория адаптивных весов» в Analytics: SVG multi-line chart, пунктир `base_weight` тем же цветом, легенда с Δ% от базы, переключатель 7д/14д/30д.
+
+**Тесты:** [test_adaptive_weights_ema.py](tests/unit/test_adaptive_weights_ema.py) — 6/6 PASS.
+- Смена направления (hl=20): full≈0, EMA<−0.4 — реактивность подтверждена.
+- Инерция (500+TP → 50-SL, hl=50): full=+0.4, EMA<0 — EMA уходит в минус заметно быстрее.
+- Формат совместим с `by_signal_type()`.
+- `data_era="post_fix"` корректно отсекает pre_157.
+- Пустая БД — `[]`, не падает.
+- `_MIN_TRADES=20` — вес не меняется при n=10.
+
+**Смок-тест на реальной БД (post_fix, 19.04):**
+| signal_type | full avg_R (n) | EMA avg_R (n) | Δ |
+|---|---|---|---|
+| pivot_reversal | −0.48 (1891) | −0.13 (342) | +0.35 (fix помог) |
+| wt_b_signal | −0.43 (109) | +0.18 (22) | +0.61 (post-fix восстановление) |
+| wt_signal | +0.29 (503) | −0.96 (3) | −1.25 (мало данных, не двигает) |
+| confluence | +0.36 (3525) | −1.13 (75) | −1.49 (drift) |
+
+Видно главное: `pivot_reversal` — EMA выше (fix работает), `wt_b_signal` — восстановился и EMA реально поднимет вес; при этом full-history в обоих случаях показал бы ложную картину.
+
+**Что изменится после рестарта бота:**
+- В логе появится `method=ema hl=50 era=post_fix`, shadow `vs full` во второй части строки.
+- Через час — первый snapshot в `signal_weights_history` (таблица уже создана при старте через CREATE TABLE IF NOT EXISTS).
+- В дашборде Analytics — новая секция с трайкой весов (пустая пока не накопится 2+ snapshot'а).
+
+**Оценка:**
+- `performance_engine.py`: +104 строки
+- `trading_intelligence.py`: +92 строки (update_signal_weights переписан + новый helper `_log_weights_history`)
+- `subscription_manager.py`: +17 строк
+- `config.yaml`: +7 строк
+- `dashboard_server.py`: +68 строк
+- `index.html`: +112 строк (функция + секция)
+- тесты: 182 строки, 6 сценариев
+
+**Что намеренно не делали:**
+- `by_signal_type()` не трогали — дашборд и `/api/stats` читают all-history (это корректно).
+- Auto-tuning `half_life` — ручка, калибруется эмпирически через 2 недели.
+- Удаление shadow-лога `full_avg_r` — только после 2 недель наблюдения и решения по дефолту.
+
+**Следующий шаг по очереди:** DEV-179 (метрики стратегий: n/WR/median/Sharpe/p90/top20) или ARCH-92 (WR по P1/P2/P3, ~22.04).
+
+---
+
 ### [19.04.2026] ARCH — ✅ ARCH-91 DONE — спринт «Замыкание разрывов» 5/5 закрыт
 
 **ARCH (взял задачу сам)**
@@ -1902,104 +2081,6 @@ trend = "UP" if wt1 > wt2 else "DOWN"
 ```
 
 → DEV: DEV-148 + DEV-161 можно делать параллельно — разные файлы.
-
----
-
-### [13.04.2026] TRADER — Правка: TREND_CONTINUATION возвращён в shadow
-
-**TRADER → ARCH, DEV**
-
-Отменяю своё решение по TREND_CONTINUATION. n=48 — недостаточно для вывода "антипаттерн". Правильный путь — shadow mode: вердикт возвращается, накапливаются данные, gate не блокирует.
-
-**Что исправлено в `core/intelligence/wt_specialist.py`:**
-- TREND_CONTINUATION восстановлен (ключ `trend` вместо `atr_trend` — баг-фикс сохранён)
-- Лог на уровне DEBUG (не INFO — не засорять лог)
-- Комментарий: shadow, нужно ≥150 наблюдений для вывода
-
-→ **DEV:** VerdictAggregator при TREND_CONTINUATION — не блокировать до явного решения ARCH после накопления данных.
-
----
-
-### [13.04.2026] TRADER — TR-007 Полный вердикт: wt_specialist данные + баг + рекомендация Variant B
-
-**TRADER → ARCH, DEV**
-
----
-
-#### Мой независимый анализ (748 сделок с wt_snap, санированные R)
-
-Прогнал `derive_wt_verdict()` из `core/intelligence/wt_specialist.py` по историческим данным.
-
-**Найден баг (уже исправлен):**
-`wt_specialist.py` читает `d.get("atr_trend", 0)` — ключ не существует в snap. Реальный ключ: `"trend"` (str "UP"/"DOWN"). Из-за этого `TREND_CONTINUATION` **никогда не срабатывал** — всё шло в UNCLEAR. Исправлено: ключ→`"trend"`, строки→числа.
-
-**Результаты после фикса (748 сделок, |R| < 15):**
-
-| Вердикт | n | % | WR% | avgR | vs UNCLEAR |
-|---|---|---|---|---|---|
-| EXHAUSTION | 58 | 8% | 13.8% | -0.442 | -1.3 pp |
-| REVERSAL_SETUP | 19 | 3% | 10.5% | -0.370 | -4.6 pp |
-| TREND_CONTINUATION | 48 | 6% | 8.3% | **-1.045** | **-6.8 pp** |
-| UNCLEAR (база) | 623 | 83% | 15.1% | -0.344 | — |
-
-**TREND_CONTINUATION — антипаттерн.** WR=8.3%, avgR=-1.045. Когда все TF в одном направлении (alignment≥70%), система теряет деньги. Отключил в коде — возвращает UNCLEAR.
-
----
-
-#### Директиональный сплит EXHAUSTION (ключевая находка)
-
-| Тип EXHAUSTION | Dir | n | WR% | avgR | Интерпретация |
-|---|---|---|---|---|---|
-| OB_bias (≥2 TF в OB) | LONG | 16 | **6.2%** | -0.764 | → WOULD_BLOCK нужен |
-| OB_bias | SHORT | 28 | 7.1% | -0.624 | → смешанно |
-| OS_bias (≥2 TF в OS) | LONG | 6 | **50.0%** | +1.173 | → BOOST/PASS |
-| OS_bias | SHORT | 8 | 25.0% | -0.372 | → нейтрально |
-
-**OB_bias LONG** = несколько TF перекуплены + мы входим LONG → 6.2% WR. Это именно то что нужно блокировать.
-**OS_bias LONG** = несколько TF перепроданы + LONG → 50% WR (n=6, мало, но тренд верный).
-
----
-
-#### Согласен с Вариантом B — с уточнениями
-
-ARCH предлагает заменить ML predict() на rule-based `derive_wt_verdict`. Поддерживаю, **но нужны доработки логики** перед активацией gate:
-
-**1. TREND_CONTINUATION — убрать из gate.** Уже отключено в коде. Данные однозначны: антипаттерн.
-
-**2. EXHAUSTION — сделать direction-aware:**
-
-Текущая логика VerdictAggregator (DEV-146): `EXHAUSTION → WOULD_BLOCK` при conf ≥ 0.65. Это неправильно — EXHAUSTION OB+LONG нужно блокировать, EXHAUSTION OS+LONG — нет.
-
-Предлагаю изменить сигнатуру `derive_wt_verdict` или добавить вспомогательную функцию:
-```python
-def get_wt_exhaustion_direction(wt_snap) -> str:
-    ob = sum(1 for d in wt_snap.values() if d.get("zone") == "OB")
-    os = sum(1 for d in wt_snap.values() if d.get("zone") == "OS")
-    if ob >= 2: return "BEARISH"   # перекуплен → SHORT давление
-    if os >= 2: return "BULLISH"   # перепродан  → LONG давление
-    return "NEUTRAL"
-```
-
-VerdictAggregator: `EXHAUSTION + BEARISH + trade.direction=LONG → WOULD_BLOCK`
-
-**3. REVERSAL_SETUP — не активировать.** n=19 — слишком мало. WR=10.5% — хуже базы. Ждать 50+ наблюдений.
-
----
-
-#### Итоговый вердикт TR-007
-
-| Компонент | Статус | Действие |
-|---|---|---|
-| ML MTFWTSpecialist | AUC=0.493, бесполезен | Заменить на rule-based (Вариант B) |
-| `atr_trend` баг | **Исправлен** (в коде) | Рестарт |
-| TREND_CONTINUATION | Антипаттерн | **Отключён** (в коде) |
-| EXHAUSTION OB+LONG | WR=6.2% | **Активировать WOULD_BLOCK** |
-| EXHAUSTION OS+SHORT | WR=25% n=8 | Не активировать, наблюдать |
-| REVERSAL_SETUP | n=19, WR=10.5% | Не активировать |
-
-→ **DEV:** при реализации Варианта B (TR-007) добавить `get_wt_exhaustion_direction()` в `wt_specialist.py`. Передавать в VerdictAggregator. WOULD_BLOCK только для противонаправленных входов (OB + LONG, OS + SHORT).
-
-→ **ARCH:** согласовать уточнённую логику — direction-aware EXHAUSTION вместо flat WOULD_BLOCK на весь вердикт.
 
 ---
 

@@ -4,6 +4,57 @@
 
 ---
 
+## [XX:XX UTC 19.04.2026] Агент: DEV — ✅ DEV-179 DONE (расширенные метрики стратегий)
+
+### Сделано
+- ✅ [core/trading/performance_engine.py](core/trading/performance_engine.py) — метод `by_signal_type_extended()`: добавлены `median_r`, `sharpe` (mean/std, без аннуализации), `p90_r` (90-й перцентиль), `top20_share` (топ-20 сделок / суммарный R, cap 1.0), `warnings` (list: `n<100`, `sharpe<0.5`, `heavy_tail`, `top20_concentrated`). Не трогает `by_signal_type()`.
+- ✅ [core/trading/performance_engine.py](core/trading/performance_engine.py) — `full_stats()` добавлен ключ `by_signal_type_extended`
+- ✅ [web/static/index.html](web/static/index.html) — новая функция `tableByGroupExtended`: 10 колонок (n / WR / TP / TSL / SL / avg R / **median R / p90 R / Sharpe / top20%**) + warning-иконки (⚠/🚨) с tooltip, красная заливка строки при активных warning'ах
+
+### Реальные данные (19.04, все эры)
+| signal_type | avg_R | **median_R** | Sharpe | top20% | warnings |
+|---|---|---|---|---|---|
+| confluence | +0.36 | **−1.0** | 0.064 | **93%** | sharpe<0.5, heavy_tail, top20_concentrated |
+| pivot_reversal | −0.48 | −1.0 | −0.046 | — | sharpe<0.5, heavy_tail |
+| wt_signal | +0.29 | −1.0 | 0.174 | **65%** | sharpe<0.5, heavy_tail, top20_concentrated |
+| mtf_alert | +0.04 | +0.125 | 0.065 | **100%** | sharpe<0.5, heavy_tail, top20_concentrated |
+
+Вывод: ВСЕ сигналы имеют `median_R=-1.0` (при WR 18-22% так и должно быть). `confluence top20=93%` — подтверждает урок 1.
+
+---
+
+## [XX:XX UTC 19.04.2026] Агент: DEV — ✅ DEV-177 DONE (EMA adaptive weights + дашборд)
+
+### Сделано
+- ✅ [core/trading/performance_engine.py](core/trading/performance_engine.py) — метод `by_signal_type_ema(half_life=50, data_era='post_fix')`, drop-in совместим с `by_signal_type()`
+- ✅ [core/trading_intelligence.py](core/trading_intelligence.py) — `update_signal_weights()` переключён на EMA, параллельный shadow-лог `EMA avg_R ... vs full avg_R ...`, запись в `signal_weights_history` (throttle 60 мин)
+- ✅ [core/db/subscription_manager.py](core/db/subscription_manager.py) — CREATE TABLE `signal_weights_history` + idx_swh_computed_at
+- ✅ [config.yaml](config.yaml) — блок `trading.adaptive_weights.{method, half_life, data_era_filter, history_log_enabled, history_log_interval_min}`
+- ✅ [tests/unit/test_adaptive_weights_ema.py](tests/unit/test_adaptive_weights_ema.py) — 6/6 PASS (смена направления, инерция full vs EMA, формат, era filter, пустая БД, порог _MIN_TRADES)
+- ✅ [web/dashboard_server.py](web/dashboard_server.py) — endpoint `GET /api/signal_weights/history?days=14`
+- ✅ [web/static/index.html](web/static/index.html) — секция «Траектория адаптивных весов» в Analytics: SVG multi-line chart с пунктиром `base_weight`, легенда с Δ% от базы, переключатель 7д/14д/30д
+
+### Замер на реальной БД (post_fix, 19.04)
+| signal_type | full avg_R (n) | EMA avg_R (n) | Δ |
+|---|---|---|---|
+| pivot_reversal | -0.48 (1891) | -0.13 (342) | +0.35 (fix помог) |
+| wt_signal | +0.29 (503) | -0.96 (3) | −1.25 (деградация) |
+| wt_b_signal | -0.43 (109) | +0.18 (22) | +0.61 (post-fix восстановление) |
+| confluence | +0.36 (3525) | -1.13 (75) | −1.49 (catastrophic drift) |
+
+Пример лога: `Adaptive weights (method=ema hl=50 era=post_fix): pivot_reversal: 0.200→0.190 | EMA avg_R=-0.13 (n=342) vs full avg_R=-0.48 (n=1891) | wt_b_signal: 0.100→0.107 | EMA avg_R=+0.18 (n=22) vs full avg_R=-0.43 (n=109)`
+
+### Следующие шаги
+- Рестарт бота — активирует EMA + начнёт копить `signal_weights_history`
+- Через час — первый snapshot появится в дашборде (секция Analytics → «Траектория адаптивных весов»)
+- Через 2 недели — решение: оставить `method=ema` дефолтом или калибровать `half_life` (30=реактивнее / 100=консервативнее)
+
+### Замечания
+- `conflict_ratio` при EMA: когда n<20 для post_fix — падает на `_MIN_TRADES` порог, вес не меняется (правильное поведение, shadow-лог всё равно виден)
+- `wt_signal` в post_fix уже n=3 (<20) — вес не двинется до накопления данных
+
+---
+
 ## [XX:XX UTC 19.04.2026] Агент: ARCH — ✅ ARCH-91 DONE, спринт «Замыкание разрывов» 5/5
 
 ### Сделано
