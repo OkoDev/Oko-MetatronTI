@@ -121,7 +121,7 @@ outcome_predictor:
 strategy_name: multi_signal
 trading:
   execution_mode: vst
-  sl_limit_buffer_pct: 0.0  # DEV-175: >0 → STOP-LIMIT с буфером (0 = STOP_MARKET, 0.3 = limit 0.3% за SL)
+  sl_limit_buffer_pct: 0.3  # DEV-175: STOP-LIMIT с буфером 0.3% (0 = STOP_MARKET)
   tp1_close_pct: 0.3
   deposit_usdt: 110.0
   risk_pct: 1.0
@@ -245,6 +245,13 @@ trading:
     include_in_tg: true        # ARCH-91: показывать SMC-блок в TG-сигналах
     max_factors_in_tg: 4       # не более N строк нарратива в TG
     include_past_outcome: true # показывать прошлый исход на паре (если <4ч)
+  # DEV-177: адаптивные веса через EMA по хронологии закрытия
+  adaptive_weights:
+    method: "ema"                 # "ema" | "full_history" (shadow-режим для сравнения)
+    half_life: 50                 # сделок: 30=реактивно, 50=баланс, 100=консервативно
+    data_era_filter: "post_fix"   # null = все эры; "post_fix" = только >= 15.04
+    history_log_enabled: true     # писать снэпшот в signal_weights_history
+    history_log_interval_min: 60  # не чаще раз в N минут
   use_tsl: true
   tsl_activation_r: 1.0
   tsl_min_move_pct: 0.15

@@ -152,6 +152,26 @@ class SubscriptionManager:
                 )
             """)
 
+            # DEV-177: история адаптивных весов (траектория для дашборда и debug)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS signal_weights_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_type TEXT NOT NULL,
+                    ema_avg_r REAL,
+                    full_avg_r REAL,
+                    adapted_weight REAL,
+                    base_weight REAL,
+                    n_trades INTEGER,
+                    half_life REAL,
+                    method TEXT,
+                    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_swh_computed_at "
+                "ON signal_weights_history(computed_at)"
+            )
+
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, 

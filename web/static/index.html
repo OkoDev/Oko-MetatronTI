@@ -126,6 +126,9 @@
       <a class="nav-item" href="/backtest">
         <span class="icon">&#x1F4C9;</span> Бэктест
       </a>
+      <a class="nav-item" href="/performance">
+        <span class="icon">&#x1F3C6;</span> Перформанс
+      </a>
     </div>
   </aside>
   <div class="main-area">
@@ -362,17 +365,20 @@ async function loadLive() {
 
 async function load() {
   try {
-    const [r1, r2, r3, r4, r5] = await Promise.all([
+    const days = window._swhDays || 14;
+    const [r1, r2, r3, r4, r5, r6] = await Promise.all([
       fetch('/api/stats'), fetch('/api/stats/confluence'),
       fetch('/api/stats/breakeven'), fetch('/api/equity'),
-      fetch('/api/stats/analytics')
+      fetch('/api/stats/analytics'),
+      fetch('/api/signal_weights/history?days=' + days)
     ]);
     const d  = await r1.json();
     const cf = await r2.json();
     const be = await r3.json();
     const eq = await r4.json();
     const an = await r5.json();
-    render(d, cf, be, eq, an);
+    const swh = await r6.json();
+    render(d, cf, be, eq, an, swh);
     document.getElementById('updated').textContent =
       'Обновлено: ' + new Date().toLocaleTimeString('ru');
     updateModeBadge();
@@ -548,11 +554,9 @@ function calcEquity(trades, openTrades, deposit, riskPct, leverage, takerFeePct,
     const notional  = balance * (riskPct / 100) * leverage / sl_dist_pct;
     const commission = notional * feeRate * 2;
 
-    // Потери: SL = riskPct% от баланса (плечо не влияет)
-    // Прибыль: gain = riskPct% × leverage × R
-    const pnl = r >= 0
-      ? balance * (riskPct / 100) * leverage * r
-      : balance * (riskPct / 100) * r;
+    // P&L: riskPct% от баланса × R (симметрично для + и -)
+    // Плечо уже учтено в размере позиции через sl_dist_pct — не умножаем дважды
+    const pnl = balance * (riskPct / 100) * r;
     balance += pnl - commission;
     if (balance < 0) balance = 0;
 
@@ -648,6 +652,123 @@ function drawEquitySVG(points, startDeposit) {
     ${openDots}
     <circle cx="${px(points.length-1)}" cy="${py(lastBalance)}" r="4" fill="${isUp ? '#3fb950' : '#f85149'}"/>
   </svg>`;
+}
+
+// DEV-177: SVG multi-line chart — траектория адаптивных весов
+function drawWeightsTrajectorySVG(swh) {
+  if (!swh || !swh.points || swh.points.length < 2) {
+    return '<p class="note">Недостаточно данных — снэпшоты копятся раз в час.</p>';
+  }
+  const W = 900, H = 260, PAD = { t: 14, r: 16, b: 46, l: 56 };
+  const cW = W - PAD.l - PAD.r, cH = H - PAD.t - PAD.b;
+  const types = swh.signal_types || [];
+  const points = swh.points;
+  const baseW = swh.base_weights || {};
+
+  // Палитра — цвета уже используемые в теме
+  const palette = ['#3fb950', '#f85149', '#58a6ff', '#d29922', '#a371f7', '#ff7b72', '#56d4dd'];
+  const colorOf = (i) => palette[i % palette.length];
+
+  // Диапазон Y — общий по всем типам, base_weights включаем чтобы пунктиры были видны
+  let vals = [];
+  for (const p of points) for (const st of types) {
+    const v = p.weights[st];
+    if (v !== null && v !== undefined) vals.push(v);
+  }
+  for (const st of types) if (baseW[st] !== undefined) vals.push(baseW[st]);
+  if (!vals.length) return '<p class="note">Нет данных по весам.</p>';
+  const minV = Math.min(...vals, 0) * 0.92;
+  const maxV = Math.max(...vals) * 1.08;
+  const range = maxV - minV || 1;
+
+  const px = (i) => PAD.l + (i / (points.length - 1)) * cW;
+  const py = (v) => PAD.t + cH - ((v - minV) / range) * cH;
+
+  // Y labels
+  const yLabels = [minV, minV + range*0.25, minV + range*0.5, minV + range*0.75, maxV].map(v =>
+    `<text x="${PAD.l-6}" y="${py(v)+4}" text-anchor="end" font-size="10" fill="#484f58">${v.toFixed(3)}</text>`
+  ).join('');
+
+  // X labels (6 равномерных)
+  const xLabels = [];
+  const step = Math.max(1, Math.floor(points.length / 6));
+  for (let k = 0; k < points.length; k += step) {
+    const p = points[k];
+    const d = new Date(p.t);
+    const mo = (d.getMonth()+1).toString().padStart(2,'0');
+    const dy = d.getDate().toString().padStart(2,'0');
+    const x = px(k);
+    xLabels.push(`<line x1="${x}" y1="${PAD.t+cH}" x2="${x}" y2="${PAD.t+cH+4}" stroke="#30363d" stroke-width="1"/>`);
+    xLabels.push(`<text x="${x}" y="${PAD.t+cH+16}" text-anchor="middle" font-size="10" fill="#484f58">${mo}/${dy}</text>`);
+  }
+
+  // Линии по типам + пунктиры базовых весов
+  const lines = types.map((st, i) => {
+    const color = colorOf(i);
+    const poly = points
+      .map((p, idx) => {
+        const v = p.weights[st];
+        return (v !== null && v !== undefined) ? `${px(idx)},${py(v)}` : null;
+      })
+      .filter(s => s !== null).join(' ');
+    const base = baseW[st];
+    const baseLine = (base !== undefined)
+      ? `<line x1="${PAD.l}" y1="${py(base)}" x2="${PAD.l+cW}" y2="${py(base)}" stroke="${color}" stroke-width="1" stroke-dasharray="3,3" opacity="0.35"/>`
+      : '';
+    const lastIdx = points.length - 1;
+    const lastV = points[lastIdx].weights[st];
+    const lastDot = (lastV !== null && lastV !== undefined)
+      ? `<circle cx="${px(lastIdx)}" cy="${py(lastV)}" r="3" fill="${color}"/>`
+      : '';
+    return baseLine + `<polyline points="${poly}" fill="none" stroke="${color}" stroke-width="1.6"/>` + lastDot;
+  }).join('');
+
+  // Легенда
+  const legend = types.map((st, i) => {
+    const color = colorOf(i);
+    const lastIdx = points.length - 1;
+    const lastV = points[lastIdx].weights[st];
+    const base = baseW[st];
+    const delta = (lastV !== undefined && lastV !== null && base !== undefined)
+      ? ` (${lastV > base ? '+' : ''}${((lastV - base) / base * 100).toFixed(0)}%)`
+      : '';
+    const vTxt = (lastV !== null && lastV !== undefined) ? lastV.toFixed(3) : '—';
+    return `<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;font-size:.82rem">
+      <span style="width:14px;height:3px;background:${color};display:inline-block"></span>
+      <span style="color:#c9d1d9">${st}</span>
+      <span style="color:#8b949e">${vTxt}${delta}</span>
+    </span>`;
+  }).join('');
+
+  const xAxisLine = `<line x1="${PAD.l}" y1="${PAD.t+cH}" x2="${PAD.l+cW}" y2="${PAD.t+cH}" stroke="#21262d" stroke-width="1"/>`;
+  return `
+    <div style="margin-bottom:8px">${legend}</div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block">
+      ${xAxisLine}${yLabels}${xLabels.join('')}${lines}
+    </svg>
+    <p class="note" style="margin-top:6px">Пунктир — базовый вес из config. Линия — адаптивный вес (EMA). Снэпшот раз в час. Период: ${swh.days}д.</p>
+  `;
+}
+
+window._swhDays = parseInt(localStorage.getItem('swhDays') || '14', 10);
+window.setSwhDays = function(d) {
+  window._swhDays = d;
+  localStorage.setItem('swhDays', String(d));
+  load();
+};
+
+function weightsTrajectorySection(swh) {
+  const d = window._swhDays || 14;
+  const btn = (val, lbl) => `<button onclick="setSwhDays(${val})"
+    style="padding:4px 10px;border-radius:5px;border:1px solid #30363d;
+    background:${d===val?'#1f6feb':'#0d1117'};color:${d===val?'#fff':'#8b949e'};
+    cursor:pointer;font-size:.8rem;margin-right:4px">${lbl}</button>`;
+  return `
+  <section>
+    <h2>Траектория адаптивных весов <span style="font-size:.75rem;color:#8b949e;font-weight:400">(DEV-177 — пульс обучения Куба)</span></h2>
+    <div style="margin-bottom:10px">${btn(7,'7д')}${btn(14,'14д')}${btn(30,'30д')}</div>
+    ${drawWeightsTrajectorySVG(swh)}
+  </section>`;
 }
 
 window._eqZoom = localStorage.getItem('eqZoom') || 'ALL';
@@ -993,7 +1114,7 @@ function mfeScatter(rows) {
   </svg>`;
 }
 
-function render(d, cf, be, eq, an) {
+function render(d, cf, be, eq, an, swh) {
   // Обновляем Risk Exposure метаданные из API
   _riskMeta = {
     risk_exposure_pct:  d.risk_exposure_pct  ?? null,
@@ -1215,7 +1336,7 @@ function render(d, cf, be, eq, an) {
       </section>
       <section>
         <h2>По типу сигнала <span style="font-size:.75rem;color:#8b949e;font-weight:400">(детектор — confluence / wt_signal / pivot_reversal / …)</span></h2>
-        ${tableByGroup(d.by_signal_type, 'signal_type')}
+        ${tableByGroupExtended(d.by_signal_type_extended, 'signal_type')}
       </section>
       <section>
         <h2>По направлению</h2>
@@ -1245,6 +1366,7 @@ function render(d, cf, be, eq, an) {
         <h2>MFE vs Exit R <span style="font-size:.75rem;color:#8b949e;font-weight:400">(потенциал vs фактический выход)</span></h2>
         ${mfeScatter(an && an.mfe_scatter)}
       </section>
+      ${weightsTrajectorySection(swh)}
     </div>
   `;
   document.getElementById('app').innerHTML = html;
@@ -1308,6 +1430,53 @@ function tableByGroup(rows, labelKey) {
     <td class="${color(r.avg_profit_pct)}">${fmtPct(r.avg_profit_pct)}</td>
     <td class="${color(r.avg_r)}">${fmt(r.avg_r,2)}</td>
   </tr>`).join('') + '</tbody></table>';
+}
+
+// DEV-179: расширенная таблица с median/Sharpe/p90/top20 + warning-подсветка
+function tableByGroupExtended(rows, labelKey) {
+  if (!rows || !rows.length) return '<p class="note">Нет данных</p>';
+
+  const warnTip = (warnings) => {
+    if (!warnings || !warnings.length) return '';
+    const msgs = {
+      'n<100': 'Мало сделок (<100) — выводы шумовые',
+      'sharpe<0.5': 'Sharpe < 0.5 — стратегия живёт на удаче или хвосте',
+      'heavy_tail': 'Тяжёлый хвост: median_R << avg_R — среднее неинформативно',
+      'top20_concentrated': 'Топ-20 сделок дают >50% прибыли — проверь концентрацию',
+    };
+    const tips = warnings.map(w => msgs[w] || w).join('\n');
+    const icons = warnings.map(w => w === 'n<100' ? '⚠' : '🚨').join('');
+    return `<span title="${tips}" style="cursor:help;margin-left:4px;font-size:.75rem">${icons}</span>`;
+  };
+
+  const warnStyle = (warnings) => {
+    if (!warnings || !warnings.length) return '';
+    return warnings.some(w => w !== 'n<100') ? 'background:#161010;' : '';
+  };
+
+  return `<table><thead><tr>
+    <th>${labelKey}</th><th>n</th><th>WR%</th>
+    <th class="green">TP</th><th class="purple">TSL</th><th class="red">SL</th>
+    <th>avg R</th><th>median R</th><th>p90 R</th><th>Sharpe</th><th>top20%</th>
+  </tr></thead><tbody>` +
+  rows.map(r => {
+    const warns = r.warnings || [];
+    const style = warnStyle(warns);
+    return `<tr style="${style}">
+      <td><span${tip(r[labelKey])}${TOOLTIPS[r[labelKey]] ? ' style="cursor:help;border-bottom:1px dotted #8b949e"' : ''}>${r[labelKey] || '—'}</span>${warnTip(warns)}</td>
+      <td>${r.total}</td>
+      <td class="${(r.win_rate || 0) >= 50 ? 'green' : 'red'}">${r.win_rate != null ? r.win_rate + '%' : '—'}</td>
+      <td class="green">${r.tp_count ?? r.wins ?? 0}</td>
+      <td class="purple">${r.tsl_count ?? 0}</td>
+      <td class="red">${r.sl_count ?? r.losses ?? 0}</td>
+      <td class="${color(r.avg_r)}">${fmt(r.avg_r,2)}</td>
+      <td class="${color(r.median_r)}">${fmt(r.median_r,2)}</td>
+      <td class="${color(r.p90_r)}">${fmt(r.p90_r,2)}</td>
+      <td class="${r.sharpe != null ? (r.sharpe >= 0.5 ? 'green' : (r.sharpe >= 0 ? '' : 'red')) : ''}">${fmt(r.sharpe,2)}</td>
+      <td class="${(r.top20_share||0) > 0.5 ? 'red' : ''}">${r.top20_share != null ? Math.round(r.top20_share*100) + '%' : '—'}</td>
+    </tr>`;
+  }).join('') + '</tbody></table>' +
+  `<p class="note" style="margin-top:6px">⚠ n<100 — шумовые данные &nbsp;|&nbsp; 🚨 Sharpe<0.5 / heavy_tail / top20>50% — качество под вопросом</p>`;
 }
 
 function regimeSection(rows) {

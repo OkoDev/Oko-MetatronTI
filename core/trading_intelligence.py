@@ -246,12 +246,14 @@ class TradingIntelligence:
     def update_signal_weights(self, db_path: str = None) -> None:
         """
         Обновляет self.signal_weights на основе avg_R по типам сигналов из simulated_trades.
-        Вызывается при старте и после переобучения.
-        Минимум 20 закрытых сделок на тип — иначе вес не меняется.
+
+        DEV-177: по умолчанию — EMA по хронологии (half-life 50 сделок, data_era='post_fix').
+        Старый режим (full-history AVG) доступен через ``trading.adaptive_weights.method=full_history``.
+        Параллельно логируется второй режим для shadow-сравнения.
+        Минимум 20 закрытых сделок на тип (в отфильтрованной выборке) — иначе вес не меняется.
         """
         _MIN_TRADES = 20
         db = db_path or self._db_path
-        # Заполняем маппинг здесь, после объявления SignalType
         _map = {
             "pivot_reversal": SignalType.PIVOT_REVERSAL,
             "trend_signal":   SignalType.TREND_SIGNAL,
@@ -261,10 +263,31 @@ class TradingIntelligence:
             "divergence":     SignalType.DIVERGENCE,
             "mtf_bias":       SignalType.MTF_BIAS,
         }
+        # DEV-177: параметры из config
+        try:
+            from core.config_loader import config as _cfg
+            _aw = ((_cfg.get("trading") or {}).get("adaptive_weights") or {})
+        except Exception:
+            _aw = {}
+        _method = str(_aw.get("method", "ema")).lower()
+        _hl = float(_aw.get("half_life", 50))
+        _era = _aw.get("data_era_filter", "post_fix")
+        _hist_enabled = bool(_aw.get("history_log_enabled", True))
+        _hist_interval_min = float(_aw.get("history_log_interval_min", 60))
+
         try:
             from core.performance_engine import PerformanceEngine
-            rows = PerformanceEngine(db).by_signal_type()
+            pe = PerformanceEngine(db)
+            rows_ema = pe.by_signal_type_ema(half_life=_hl, data_era=_era)
+            rows_full = pe.by_signal_type()
+
+            # Основной источник по конфигу; shadow — второй для сравнения в логе
+            rows = rows_ema if _method == "ema" else rows_full
+            by_full: Dict[str, Dict[str, Any]] = {r["signal_type"]: r for r in rows_full}
+            by_ema: Dict[str, Dict[str, Any]] = {r["signal_type"]: r for r in rows_ema}
+
             changed = []
+            snapshots: List[Dict[str, Any]] = []
             for row in rows:
                 st = _map.get(row["signal_type"])
                 if st is None:
@@ -279,17 +302,121 @@ class TradingIntelligence:
                 new_w = round(base * factor, 4)
                 old_w = self.signal_weights.get(st, base)
                 self.signal_weights[st] = new_w
+
+                # Параллельное значение (shadow) — EMA если method=full_history, иначе full-history
+                _other_row = (by_full if _method == "ema" else by_ema).get(row["signal_type"], {}) or {}
+                _other_r = _other_row.get("avg_r")
+                _other_n = (_other_row.get("wins") or 0) + (_other_row.get("losses") or 0)
+                _other_label = "full" if _method == "ema" else "EMA"
+                _main_label = "EMA" if _method == "ema" else "full"
+
                 if abs(new_w - old_w) > 0.001:
-                    changed.append(
-                        f"{row['signal_type']}: {old_w:.3f}→{new_w:.3f} "
-                        f"(avg_R={avg_r:.2f}, n={closed})"
+                    _shadow_part = (
+                        f" vs {_other_label} avg_R={_other_r:+.2f} (n={_other_n})"
+                        if _other_r is not None else ""
                     )
+                    changed.append(
+                        f"{row['signal_type']}: {old_w:.3f}→{new_w:.3f} | "
+                        f"{_main_label} avg_R={avg_r:+.2f} (n={closed}){_shadow_part}"
+                    )
+
+                snapshots.append({
+                    "signal_type": row["signal_type"],
+                    "ema_avg_r": (by_ema.get(row["signal_type"], {}) or {}).get("avg_r"),
+                    "full_avg_r": (by_full.get(row["signal_type"], {}) or {}).get("avg_r"),
+                    "adapted_weight": new_w,
+                    "base_weight": base,
+                    "n_trades": closed,
+                })
+
             if changed:
-                logger.info("Adaptive weights updated: %s", " | ".join(changed))
+                logger.info(
+                    "Adaptive weights (method=%s hl=%g era=%s): %s",
+                    _method, _hl, _era, " | ".join(changed),
+                )
             else:
-                logger.debug("Adaptive weights: нет изменений (мало данных или изменения незначительны)")
+                logger.debug(
+                    "Adaptive weights (method=%s): нет изменений (мало данных или малая дельта)",
+                    _method,
+                )
+
+            # DEV-177: запись snapshot в signal_weights_history (не чаще раз в час)
+            if _hist_enabled and snapshots:
+                try:
+                    self._log_weights_history(
+                        db, snapshots, method=_method, half_life=_hl,
+                        min_interval_min=_hist_interval_min,
+                    )
+                except Exception as e:
+                    logger.debug("signal_weights_history write skipped: %s", e)
         except Exception as e:
             logger.warning("update_signal_weights: %s", e)
+
+    @staticmethod
+    def _log_weights_history(
+        db_path: str,
+        snapshots: List[Dict[str, Any]],
+        method: str,
+        half_life: float,
+        min_interval_min: float = 60.0,
+    ) -> None:
+        """DEV-177: запись снэпшота адаптивных весов в signal_weights_history.
+
+        Пишем не чаще чем раз в ``min_interval_min`` минут (от последней записи).
+        """
+        import sqlite3 as _sql
+        with _sql.connect(db_path, timeout=30) as conn:
+            cur = conn.cursor()
+            # Таблица должна существовать (создаётся в subscription_manager); на всякий случай
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS signal_weights_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_type TEXT NOT NULL,
+                    ema_avg_r REAL,
+                    full_avg_r REAL,
+                    adapted_weight REAL,
+                    base_weight REAL,
+                    n_trades INTEGER,
+                    half_life REAL,
+                    method TEXT,
+                    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Throttle по последней записи
+            row = cur.execute(
+                "SELECT MAX(computed_at) FROM signal_weights_history"
+            ).fetchone()
+            last_at = row[0] if row else None
+            if last_at:
+                try:
+                    delta = cur.execute(
+                        "SELECT (julianday('now') - julianday(?)) * 24 * 60",
+                        (last_at,),
+                    ).fetchone()[0]
+                    if delta is not None and delta < min_interval_min:
+                        return
+                except Exception:
+                    pass
+            cur.executemany(
+                """INSERT INTO signal_weights_history
+                   (signal_type, ema_avg_r, full_avg_r, adapted_weight,
+                    base_weight, n_trades, half_life, method)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        s["signal_type"],
+                        s.get("ema_avg_r"),
+                        s.get("full_avg_r"),
+                        s.get("adapted_weight"),
+                        s.get("base_weight"),
+                        s.get("n_trades"),
+                        half_life,
+                        method,
+                    )
+                    for s in snapshots
+                ],
+            )
+            conn.commit()
 
     def _initialize_performance_tracking(self):
         """Инициализирует отслеживание производительности сигналов"""
@@ -358,8 +485,8 @@ class TradingIntelligence:
         }
     
     # Приоритет стратегий для оркестровки (ARCH-09)
+    # wt_entry УДАЛЕНА 18.04.2026 (ARCH-83): WR=4.7% post-15.04, деградация подтверждена
     _STRATEGY_PRIORITY = [
-        "wt_entry",        # WT-based reversal вход (SignalType.CONFLUENCE + TSL + пивот + дивер)
         "reversal",        # качественный разворот (1 сигнал без count-penalty)
         "trend_following", # несколько трендовых подтверждений
     ]
@@ -379,11 +506,8 @@ class TradingIntelligence:
         if not all_recs:
             return None, "legacy"
 
-        # Priority-1: wt_entry
-        if rec := all_recs.get("wt_entry"):
-            return rec, "wt_entry"
-
-        # Priority-2: reversal / trend_following — max by overall_strength
+        # Priority-1: reversal / trend_following — max by overall_strength
+        # (wt_entry удалена ARCH-83: WR=4.7% post-15.04)
         candidates = {
             k: v for k, v in all_recs.items()
             if k in ("reversal", "trend_following")
@@ -970,22 +1094,30 @@ class TradingIntelligence:
                 except Exception as _e:
                     logger.debug("[DEV-139] smc_specialist.predict error: %s", _e)
 
-            # DEV-138: MTF WT Specialist shadow — predict + запись в metadata
+            # DEV-161: rule-based WT verdict (заменяет ML predict — AUC=0.49 был < случайного)
             if mtf_context is not None and mtf_context.wt_snap:
                 recommendation.metadata["wt_snap"] = mtf_context.wt_snap
                 try:
-                    _wt_verdict = self._wt_specialist.predict(mtf_context.wt_snap)
-                    if _wt_verdict is not None:
+                    from core.intelligence.wt_specialist import derive_wt_verdict as _derive_wt_verdict
+                    _wt_label = _derive_wt_verdict(mtf_context.wt_snap)
+                    # UNCLEAR не записываем — нет смысла буститься/блокировать при неопределённости
+                    if _wt_label and _wt_label != "UNCLEAR":
+                        _WT_RULE_CONF = {
+                            "EXHAUSTION":         0.80,  # 2+ TF в OB/OS → gate BLOCK (порог 0.65)
+                            "REVERSAL_SETUP":     0.75,  # кросс 4h/1h в зоне → strength boost
+                            "TREND_CONTINUATION": 0.70,  # резерв (отключён в derive_wt_verdict)
+                        }
+                        _wt_conf = _WT_RULE_CONF.get(_wt_label, 0.70)
                         recommendation.metadata["wt_verdict"] = {
-                            "label": _wt_verdict.label,
-                            "confidence": round(_wt_verdict.confidence, 3),
+                            "label":      _wt_label,
+                            "confidence": _wt_conf,
                         }
                         logger.info(
-                            "[%s][DEV-138] wt_verdict=%s conf=%.3f",
-                            symbol, _wt_verdict.label, _wt_verdict.confidence,
+                            "[%s][DEV-161] wt_verdict=%s conf=%.2f (rule-based)",
+                            symbol, _wt_label, _wt_conf,
                         )
                 except Exception as _e:
-                    logger.debug("[DEV-138] wt_specialist.predict error: %s", _e)
+                    logger.debug("[DEV-161] derive_wt_verdict error: %s", _e)
 
             # ARCH-70: wt_verdict_strong → EventBus Full CALL (publish если REVERSAL_SETUP conf≥0.7)
             try:
@@ -1041,12 +1173,22 @@ class TradingIntelligence:
                     _vgate_enabled = bool(
                         (self.config or {}).get("trading", {}).get("verdict_gate", {}).get("enabled", False)
                     )
+                    # TR-007: direction-aware EXHAUSTION gate
+                    _vg_exha_dir = None
+                    _vg_wt_snap = recommendation.metadata.get("wt_snap")
+                    if _vg_wt_snap and _vg_wt_v and _vg_wt_v.get("label") == "EXHAUSTION":
+                        try:
+                            from core.intelligence.wt_specialist import get_wt_exhaustion_direction as _get_exha_dir
+                            _vg_exha_dir = _get_exha_dir(_vg_wt_snap)
+                        except Exception:
+                            pass
                     _vgate = aggregate_verdicts(
                         direction=str(getattr(recommendation, "direction", "") or ""),
                         wt_verdict=_VGVrd(_vg_wt_v) if _vg_wt_v else None,
                         smc_verdict=_VGVrd(_vg_sc_v) if _vg_sc_v else None,
                         config=(self.config or {}).get("trading"),
                         enabled=_vgate_enabled,
+                        wt_exhaustion_dir=_vg_exha_dir,
                     )
                     recommendation.metadata["verdict_gate"] = {
                         "should_block": _vgate.should_block,
@@ -1086,6 +1228,11 @@ class TradingIntelligence:
                 _smc_vrd = _Vrd(_sc_v)  if _sc_v  else None
                 _p_out   = recommendation.metadata.get("p_win")
                 _btc_reg = recommendation.metadata.get("btc_4h_regime")
+                # ARCH-78: fallback — читаем из BTCRegimeProvider если metadata пуста
+                if _btc_reg is None:
+                    _btc_prov = getattr(self, "_btc_provider", None)
+                    if _btc_prov is not None:
+                        _btc_reg = _btc_prov.get_btc_mode()
                 _pair_bus = getattr(self, '_pair_context_bus', None)
                 _nb = NarrativeBuilder(_pair_bus)
                 _narrative = _nb.build(
@@ -1103,6 +1250,9 @@ class TradingIntelligence:
                     "mode": _narrative.mode,
                     "key_factors": _narrative.key_factors,
                     "confidence": _narrative.confidence,
+                    # ARCH-90: SMC-факторы + плоские поля для ML
+                    "smc_factors": _narrative.smc_factors,
+                    "smc_flat": _narrative.smc_flat,
                 }
                 if _narrative_enabled:
                     logger.info("[%s][DEV-141] narrative: %s", symbol, _narrative.text)
@@ -2156,14 +2306,37 @@ class TradingIntelligence:
                 "volatility": market_context.volatility or 0,
                 "price_change_24h": market_context.price_change_24h or 0,
             }
-            
+            # ARCH-45 Этап A: передаём фичи 17-23 из metadata (fix feature mismatch).
+            # Без этого модель получала 2 из 23 признаков → фичи distance_to_sl/wt_snap всегда 0.
+            _meta = recommendation.metadata or {}
+            # wt_snap → признаки 19-20 (wt1_15m, wt2_15m)
+            if _meta.get("wt_snap"):
+                features_dict["wt_snap"] = _meta["wt_snap"]
+            # reversal_mode → признаки 21-23 (one-hot TREND/REVERSAL/UNCLEAR)
+            if _meta.get("reversal_mode"):
+                features_dict["reversal_mode"] = _meta["reversal_mode"]
+            # distance_to_sl_pct → признак 17
+            if recommendation.entry_price and recommendation.stop_loss and recommendation.entry_price > 0:
+                features_dict["distance_to_sl_pct"] = round(
+                    abs(recommendation.entry_price - recommendation.stop_loss)
+                    / recommendation.entry_price * 100, 4
+                )
+            # sl_atr_ratio → признак 18
+            if (recommendation.atr_entry_tf and recommendation.atr_entry_tf > 0
+                    and "distance_to_sl_pct" in features_dict):
+                _sl_abs = features_dict["distance_to_sl_pct"] / 100.0 * recommendation.entry_price
+                features_dict["sl_atr_ratio"] = round(_sl_abs / recommendation.atr_entry_tf, 2)
+
+            # regime из market_context (было None → пустой one-hot)
+            _regime_ml = getattr(market_context, "regime", None) if market_context else None
+
             win_prob = self.outcome_predictor.predict_win_prob(
                 signal_type=sig_type,
                 direction=direction_str,
                 strength=recommendation.overall_strength,
                 confidence=recommendation.confidence,
                 features_dict=features_dict,
-                regime=None,
+                regime=_regime_ml,
             )
             
             if win_prob is not None:

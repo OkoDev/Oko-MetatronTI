@@ -18,6 +18,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Any, Dict
 
 from pathlib import Path
 from aiohttp import web
@@ -96,6 +97,75 @@ async def _handle_equity(request: web.Request) -> web.Response:
         )
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_signal_weights_history(request: web.Request) -> web.Response:
+    """DEV-177: GET /api/signal_weights/history?days=14 — траектория адаптивных весов.
+
+    Возвращает pivot-структуру для SVG multi-line chart в дашборде.
+    """
+    engine: PerformanceEngine = request.app["engine"]
+    try:
+        days = int(request.query.get("days", "14"))
+    except (TypeError, ValueError):
+        days = 14
+    days = max(1, min(days, 90))
+
+    try:
+        import sqlite3 as _sqlite3
+        db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+        with _sqlite3.connect(db_path, timeout=30) as conn:
+            conn.row_factory = _sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT computed_at, signal_type, adapted_weight, base_weight,
+                       ema_avg_r, full_avg_r, n_trades, method, half_life
+                FROM signal_weights_history
+                WHERE computed_at >= datetime('now', ?)
+                ORDER BY computed_at ASC
+                """,
+                (f"-{days} days",),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+        # Pivot: точки по computed_at с weights-map + base_weights
+        points: Dict[str, Dict[str, Any]] = {}
+        base_weights: Dict[str, float] = {}
+        ema_r_by_point: Dict[str, Dict[str, float]] = {}
+        signal_types: set = set()
+        for r in rows:
+            t = r["computed_at"]
+            st = r["signal_type"]
+            signal_types.add(st)
+            p = points.setdefault(t, {"t": t, "weights": {}})
+            p["weights"][st] = r["adapted_weight"]
+            ema_r_by_point.setdefault(t, {})[st] = r["ema_avg_r"]
+            if r["base_weight"] is not None:
+                base_weights[st] = r["base_weight"]
+
+        ordered_points = [
+            {"t": t, "weights": points[t]["weights"], "ema_avg_r": ema_r_by_point.get(t, {})}
+            for t in sorted(points.keys())
+        ]
+        data = {
+            "days": days,
+            "signal_types": sorted(signal_types),
+            "points": ordered_points,
+            "base_weights": base_weights,
+        }
+        return web.Response(
+            text=json.dumps(data, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("signal_weights_history error: %s", e)
+        return web.Response(
+            text=json.dumps({"error": str(e)}),
+            content_type="application/json",
+            status=500,
+        )
 
 
 def _current_price_from_cache(dc, symbol: str):
@@ -1261,6 +1331,243 @@ async def _handle_toggles_post(request: web.Request) -> web.Response:
 # _DASHBOARD_HTML moved to web/static/
 
 
+# ── /api/cube/* — Куб Метатрона: внешний MCP-слой (Фаза 1) ──────────────────
+
+# Разрешённые события для ручной инжекции (только аналитические, не торговые)
+_CUBE_EVENT_WHITELIST = {
+    "wt_cross_4h", "wt_cross_1d", "wt_confluence",
+    "regime_change", "trend_change_1h",
+    "anomaly_volume", "cascade", "ote_reentry",
+}
+
+
+async def _handle_cube_context(request: web.Request) -> web.Response:
+    """GET /api/cube/context/{symbol} — живое состояние пары из PairContextBus."""
+    bot = request.app.get("bot")
+    symbol = request.match_info.get("symbol", "")
+    # Символы в URL приходят с '_' вместо '/' (BTC_USDT → BTC/USDT)
+    symbol = symbol.replace("_", "/")
+    try:
+        pair_ctx = getattr(bot, "pair_context", None)
+        if pair_ctx is None:
+            return web.Response(
+                text=json.dumps({"error": "PairContextBus not available"}),
+                content_type="application/json", status=503,
+            )
+        state = pair_ctx.get_full_state(symbol)
+        return web.Response(
+            text=json.dumps(state, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("[cube/context] %s: %s", symbol, e)
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_cube_events(request: web.Request) -> web.Response:
+    """GET /api/cube/events?limit=50 — лог событий шины."""
+    bot = request.app.get("bot")
+    limit = int(request.rel_url.query.get("limit", 50))
+    try:
+        pair_ctx = getattr(bot, "pair_context", None)
+        if pair_ctx is None:
+            return web.Response(
+                text=json.dumps({"error": "PairContextBus not available"}),
+                content_type="application/json", status=503,
+            )
+        events = pair_ctx.get_event_log(limit=limit)
+        return web.Response(
+            text=json.dumps({"events": events, "count": len(events)}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_cube_stats(request: web.Request) -> web.Response:
+    """GET /api/cube/stats — статистика шины: пары, подписчики, очередь EventBus."""
+    bot = request.app.get("bot")
+    try:
+        pair_ctx = getattr(bot, "pair_context", None)
+        event_bus = getattr(bot, "event_bus", None)
+        ctx_stats = pair_ctx.stats() if pair_ctx else {}
+        bus_stats = event_bus.stats() if event_bus else {}
+        return web.Response(
+            text=json.dumps({"context_bus": ctx_stats, "event_bus": bus_stats}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_cube_event_inject(request: web.Request) -> web.Response:
+    """POST /api/cube/event — ручная инжекция события в EventBus (Full CALL триггер).
+
+    Body: {"symbol": "BTC/USDT", "event_type": "wt_confluence", "data": {...}}
+    Whitelist: только аналитические события, не торговые.
+    """
+    bot = request.app.get("bot")
+    try:
+        body = await request.json()
+    except Exception:
+        return web.Response(text=json.dumps({"error": "invalid JSON"}), content_type="application/json", status=400)
+
+    symbol = body.get("symbol", "").strip()
+    event_type = body.get("event_type", "").strip()
+    data = body.get("data") or {}
+
+    if not symbol or not event_type:
+        return web.Response(
+            text=json.dumps({"error": "symbol and event_type required"}),
+            content_type="application/json", status=400,
+        )
+    if event_type not in _CUBE_EVENT_WHITELIST:
+        return web.Response(
+            text=json.dumps({"error": f"event_type '{event_type}' not in whitelist", "allowed": sorted(_CUBE_EVENT_WHITELIST)}),
+            content_type="application/json", status=400,
+        )
+
+    event_bus = getattr(bot, "event_bus", None)
+    if event_bus is None:
+        return web.Response(
+            text=json.dumps({"error": "EventBus not available"}),
+            content_type="application/json", status=503,
+        )
+
+    data["_source"] = "MANUAL_INJECT"
+    accepted = await event_bus.publish(symbol, event_type, data)
+    logger.info("[cube/event] MANUAL_INJECT %s %s → accepted=%s", symbol, event_type, accepted)
+    return web.Response(
+        text=json.dumps({"ok": True, "accepted": accepted, "symbol": symbol, "event_type": event_type}),
+        content_type="application/json", charset="utf-8",
+    )
+
+
+async def _handle_cube_ml_train(request: web.Request) -> web.Response:
+    """POST /api/cube/ml/train — ручной запуск ML-обучения (веса + OutcomePredictor)."""
+    bot = request.app.get("bot")
+    try:
+        ti = getattr(bot, "trading_intelligence", None)
+        if ti is None:
+            return web.Response(
+                text=json.dumps({"error": "TradingIntelligence not available"}),
+                content_type="application/json", status=503,
+            )
+        # Обновляем адаптивные веса сигналов
+        weights_updated = False
+        if hasattr(ti, "update_signal_weights"):
+            ti.update_signal_weights()
+            weights_updated = True
+
+        # Переобучаем OutcomePredictor
+        op_result = None
+        if hasattr(ti, "outcome_predictor") and ti.outcome_predictor is not None:
+            db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+            ti.outcome_predictor.fit(db_path)
+            op_result = ti.outcome_predictor.info() if hasattr(ti.outcome_predictor, "info") else "ok"
+
+        logger.info("[cube/ml/train] MANUAL: weights=%s outcome_predictor=%s", weights_updated, op_result)
+        return web.Response(
+            text=json.dumps({"ok": True, "weights_updated": weights_updated, "outcome_predictor": str(op_result)},
+                            ensure_ascii=False),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("[cube/ml/train] %s", e)
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_performance_api(request: web.Request) -> web.Response:
+    """GET /api/performance — агрегированная аналитика (DEV-117)."""
+    engine: PerformanceEngine = request.app["engine"]
+    try:
+        data = {
+            "summary":       engine.summary(),
+            "by_signal":     engine.by_signal_type(),
+            "by_direction":  engine.by_direction(),
+            "by_regime":     engine.by_regime(),
+            "by_strategy":   engine.by_strategy(),
+            "top_pairs":     engine.top_pairs(20),
+            "weekly":        engine.weekly_summary(7),
+            "rolling_wr":    engine.rolling_win_rate(50),
+        }
+        return web.Response(
+            text=json.dumps(data, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("/api/performance error: %s", e)
+        return web.Response(status=500, text=str(e))
+
+
+async def _handle_pair_api(request: web.Request) -> web.Response:
+    """GET /api/pair/{symbol} — статистика + история по паре (DEV-117)."""
+    engine: PerformanceEngine = request.app["engine"]
+    dc = request.app.get("data_collector")
+    symbol = request.match_info.get("symbol", "").replace("_", "/")
+    try:
+        stats   = engine.pair_stats(symbol)
+        history = engine.pair_history(symbol, limit=50)
+        # Открытые сделки по паре
+        open_all = engine.open_trades()
+        open_pair = [t for t in open_all if t.get("symbol") == symbol]
+        # Обогащаем unrealized R
+        for t in open_pair:
+            cur = _current_price_from_cache(dc, symbol) if dc else None
+            t["current_price"] = cur
+            ep, sl = t.get("entry_price") or 0, t.get("stop_loss") or 0
+            sl_dist = abs(ep - sl) if ep and sl else 0
+            if cur and ep and sl_dist:
+                direction = t.get("direction", "LONG")
+                pnl_pct = (cur - ep) / ep * 100 if direction == "LONG" else (ep - cur) / ep * 100
+                t["unrealized_r"] = round(pnl_pct / (sl_dist / ep * 100), 2) if sl_dist else None
+            else:
+                t["unrealized_r"] = None
+        return web.Response(
+            text=json.dumps({"symbol": symbol, "stats": stats, "history": history, "open": open_pair},
+                            ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("/api/pair/%s error: %s", symbol, e)
+        return web.Response(status=500, text=str(e))
+
+
+async def _handle_sse(request: web.Request) -> web.StreamResponse:
+    """GET /api/events — SSE-поток обновлений stats (DEV-117).
+
+    Клиент подписывается один раз; сервер каждые 30 сек отправляет event: stats.
+    """
+    import asyncio as _aio
+    engine: PerformanceEngine = request.app["engine"]
+    resp = web.StreamResponse()
+    resp.headers["Content-Type"]  = "text/event-stream"
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    await resp.prepare(request)
+    try:
+        while True:
+            try:
+                summary = engine.summary()
+                rolling = engine.rolling_win_rate(50)
+                payload = json.dumps({"summary": summary, "rolling": rolling}, default=str)
+                await resp.write(f"event: stats\ndata: {payload}\n\n".encode())
+            except Exception as _e:
+                logger.debug("[SSE] ошибка сборки данных: %s", _e)
+            await _aio.sleep(30)
+    except (ConnectionResetError, _aio.CancelledError):
+        pass
+    return resp
+
+
+async def _handle_performance_page(request: web.Request) -> web.Response:
+    return web.FileResponse(Path(__file__).parent / "static/performance.html")
+
+
+async def _handle_pair_page(request: web.Request) -> web.Response:
+    return web.FileResponse(Path(__file__).parent / "static/pair.html")
+
+
 async def _handle_dashboard_page(request: web.Request) -> web.Response:
     return web.FileResponse(Path(__file__).parent / "static/operations.html")
 
@@ -1292,6 +1599,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/stats/breakeven", _handle_breakeven_stats)
     app.router.add_get("/api/stats/analytics", _handle_analytics)
     app.router.add_get("/api/equity", _handle_equity)
+    app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/api/trades/{trade_id}/trace", _handle_trade_trace)
@@ -1307,6 +1615,18 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/backtest/results", _handle_backtest_results)
     app.router.add_get("/api/backtest/status", _handle_backtest_status)
     app.router.add_post("/api/backtest/run", _handle_backtest_run)
+    # ── DEV-117: Performance + Pair pages + SSE ──
+    app.router.add_get("/performance",            _handle_performance_page)
+    app.router.add_get("/pair/{symbol}",          _handle_pair_page)
+    app.router.add_get("/api/performance",        _handle_performance_api)
+    app.router.add_get("/api/pair/{symbol}",      _handle_pair_api)
+    app.router.add_get("/api/events",             _handle_sse)
+    # ── Куб Метатрона — MCP Layer (Фаза 1) ──
+    app.router.add_get("/api/cube/context/{symbol}", _handle_cube_context)
+    app.router.add_get("/api/cube/events", _handle_cube_events)
+    app.router.add_get("/api/cube/stats", _handle_cube_stats)
+    app.router.add_post("/api/cube/event", _handle_cube_event_inject)
+    app.router.add_post("/api/cube/ml/train", _handle_cube_ml_train)
 
     runner = web.AppRunner(app)
     await runner.setup()

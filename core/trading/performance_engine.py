@@ -127,6 +127,236 @@ class PerformanceEngine:
             return []
 
     # ------------------------------------------------------------------
+    # DEV-177: EMA по хронологии закрытия (реактивное обучение весов)
+    # ------------------------------------------------------------------
+    def by_signal_type_ema(
+        self,
+        half_life: float = 50.0,
+        data_era: Optional[str] = "post_fix",
+    ) -> List[Dict[str, Any]]:
+        """DEV-177: EMA avg_R по signal_type, хронологически.
+
+        alpha = 1 - 0.5 ** (1 / half_life). При hl=50 ≈ 0.0138.
+        Сделка 50-й давности весит 1/2 от сегодняшней, 100-й — 1/4, 200-й — 1/16.
+
+        Формат выхода совместим с ``by_signal_type()`` (drop-in замена в
+        ``update_signal_weights``): signal_type, total, wins, losses,
+        tp_count, tsl_count, sl_count, win_rate, avg_r, avg_profit_pct.
+        Отличие: ``avg_r``/``avg_profit_pct`` — EMA, а не AVG.
+        ``total``/``wins``/``losses`` — по отфильтрованным сделкам (не всей истории).
+
+        :param half_life: период полураспада в сделках (30=реактивно, 50=баланс,
+            100=консервативно).
+        :param data_era: фильтр по ``features_json.data_era`` (``"post_fix"`` >= 15.04).
+            ``None`` — все эры (смешивание с pre-fix даст ложный EMA).
+        """
+        if half_life <= 0:
+            half_life = 50.0
+        alpha = 1.0 - 0.5 ** (1.0 / float(half_life))
+
+        era_clause = ""
+        era_params: tuple = ()
+        if data_era:
+            era_clause = "AND json_extract(features_json, '$.data_era') = ?"
+            era_params = (data_era,)
+
+        sql = f"""
+            SELECT signal_type, status, R_multiple, profit_pct
+            FROM simulated_trades
+            WHERE status IN ('TP','SL','TSL','EXPIRED')
+              AND R_multiple IS NOT NULL
+              {era_clause}
+            ORDER BY closed_at ASC
+        """
+
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute(sql, era_params)
+                rows = cur.fetchall()
+        except Exception as e:
+            logger.exception("PerformanceEngine.by_signal_type_ema: %s", e)
+            return []
+
+        agg: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            st = r["signal_type"] or "unknown"
+            status = r["status"]
+            rmult = float(r["R_multiple"]) if r["R_multiple"] is not None else 0.0
+            pnl = float(r["profit_pct"]) if r["profit_pct"] is not None else 0.0
+            a = agg.setdefault(st, {
+                "signal_type": st,
+                "total": 0, "tp_count": 0, "tsl_count": 0, "sl_count": 0,
+                "ema_r": None, "ema_pnl": None,
+            })
+            a["total"] += 1
+            if status == "TP":
+                a["tp_count"] += 1
+            elif status == "TSL":
+                a["tsl_count"] += 1
+            elif status == "SL":
+                a["sl_count"] += 1
+            # EMA init на первой сделке, иначе инкрементально
+            if a["ema_r"] is None:
+                a["ema_r"] = rmult
+            else:
+                a["ema_r"] = alpha * rmult + (1.0 - alpha) * a["ema_r"]
+            if a["ema_pnl"] is None:
+                a["ema_pnl"] = pnl
+            else:
+                a["ema_pnl"] = alpha * pnl + (1.0 - alpha) * a["ema_pnl"]
+
+        result: List[Dict[str, Any]] = []
+        for a in agg.values():
+            tp = a["tp_count"]
+            tsl = a["tsl_count"]
+            sl = a["sl_count"]
+            closed = tp + tsl + sl
+            result.append({
+                "signal_type":   a["signal_type"],
+                "total":         a["total"],
+                "tp_count":      tp,
+                "tsl_count":     tsl,
+                "sl_count":      sl,
+                "wins":          tp + tsl,
+                "losses":        sl,
+                "win_rate":      round((tp + tsl) / closed * 100, 1) if closed else None,
+                "avg_r":         round(a["ema_r"], 3) if a["ema_r"] is not None else None,
+                "avg_profit_pct": round(a["ema_pnl"], 3) if a["ema_pnl"] is not None else None,
+            })
+        result.sort(key=lambda x: -x["total"])
+        return result
+
+    # ------------------------------------------------------------------
+    # DEV-179: расширенные метрики — median/Sharpe/p90/top20_share
+    # ------------------------------------------------------------------
+    def by_signal_type_extended(self) -> List[Dict[str, Any]]:
+        """DEV-179: полный набор метрик по signal_type.
+
+        Возвращает все поля ``by_signal_type()`` плюс:
+          - ``median_r``  — медиана R_multiple
+          - ``sharpe``    — mean(R) / std(R) (без аннуализации)
+          - ``p90_r``     — 90-й перцентиль R_multiple
+          - ``top20_share`` — доля суммарного R, которую дают топ-20 сделок (0..1)
+          - ``warnings``  — list[str]: «n<100», «sharpe<0.5», «heavy_tail», «top20_concentrated»
+          - ``r_values``  — не включаем (большой список), только агрегаты
+
+        Читает все R_multiple из БД, агрегирует в Python (SQLite не имеет percentile).
+        Не затрагивает ``by_signal_type()`` — он используется в адаптивных весах.
+        """
+        import statistics as _stats
+
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                # Базовая статистика — идентично by_signal_type()
+                cur.execute("""
+                    SELECT
+                        signal_type,
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) AS tp_count,
+                        SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
+                        SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
+                        AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
+                    FROM simulated_trades
+                    GROUP BY signal_type
+                    ORDER BY total DESC
+                """)
+                base_rows = cur.fetchall()
+
+                # Все R значения по типу для percentile/std/top20
+                cur.execute("""
+                    SELECT signal_type, R_multiple
+                    FROM simulated_trades
+                    WHERE status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL
+                    ORDER BY signal_type, R_multiple DESC
+                """)
+                r_by_type: Dict[str, List[float]] = {}
+                for st, r in cur.fetchall():
+                    r_by_type.setdefault(st, []).append(float(r))
+        except Exception as e:
+            logger.exception("PerformanceEngine.by_signal_type_extended: %s", e)
+            return []
+
+        result: List[Dict[str, Any]] = []
+        for row in base_rows:
+            d = dict(row)
+            tp = d["tp_count"] or 0
+            tsl = d["tsl_count"] or 0
+            sl = d["sl_count"] or 0
+            closed = tp + tsl + sl
+            d["wins"] = tp + tsl
+            d["losses"] = sl
+            d["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
+            if d["avg_profit_pct"] is not None:
+                d["avg_profit_pct"] = round(d["avg_profit_pct"], 3)
+            if d["avg_r"] is not None:
+                d["avg_r"] = round(d["avg_r"], 3)
+
+            st = d["signal_type"]
+            rs = r_by_type.get(st, [])  # уже отсортированы DESC в SQL
+            rs_asc = list(reversed(rs))   # ascending для percentile
+
+            # Median
+            median_r: Optional[float] = None
+            if rs_asc:
+                n = len(rs_asc)
+                if n % 2 == 1:
+                    median_r = round(rs_asc[n // 2], 3)
+                else:
+                    median_r = round((rs_asc[n // 2 - 1] + rs_asc[n // 2]) / 2.0, 3)
+
+            # Sharpe = mean / std (простой, не аннуализированный)
+            sharpe: Optional[float] = None
+            if len(rs_asc) >= 2:
+                try:
+                    mean_r = sum(rs_asc) / len(rs_asc)
+                    std_r = _stats.stdev(rs_asc)
+                    sharpe = round(mean_r / std_r, 3) if std_r > 1e-9 else None
+                except Exception:
+                    pass
+
+            # p90 — 90th percentile
+            p90_r: Optional[float] = None
+            if rs_asc:
+                idx = int(0.9 * (len(rs_asc) - 1))
+                p90_r = round(rs_asc[idx], 3)
+
+            # top20_share — топ-20 сделок дают X% суммарного R (rs уже DESC)
+            # None если суммарный R ≤ 0 (концентрация бессмысленна при убыточной стратегии)
+            top20_share: Optional[float] = None
+            if rs:
+                total_sum = sum(rs)
+                if total_sum > 0.1:
+                    top20_sum = sum(rs[:20])
+                    share = top20_sum / total_sum
+                    # Если >1 — топ-20 «вытаскивают» суммарно убыточные остальные сделки
+                    # Показываем 1.0 как максимум (>100% = «остальные в минусе»)
+                    top20_share = round(min(1.0, max(0.0, share)), 3)
+
+            # Warnings
+            warnings: List[str] = []
+            if closed < 100:
+                warnings.append("n<100")
+            if sharpe is not None and sharpe < 0.5:
+                warnings.append("sharpe<0.5")
+            avg_r = d.get("avg_r") or 0.0
+            if median_r is not None and avg_r != 0 and abs(avg_r) > 1e-9:
+                if abs((avg_r - median_r) / avg_r) > 0.5:
+                    warnings.append("heavy_tail")
+            if top20_share is not None and top20_share > 0.5:
+                warnings.append("top20_concentrated")
+
+            d["median_r"] = median_r
+            d["sharpe"] = sharpe
+            d["p90_r"] = p90_r
+            d["top20_share"] = top20_share
+            d["warnings"] = warnings
+            result.append(d)
+        return result
+
+    # ------------------------------------------------------------------
     # По стратегии (strategy_name)
     # ------------------------------------------------------------------
     def by_strategy(self) -> List[Dict[str, Any]]:
@@ -338,6 +568,78 @@ class PerformanceEngine:
                 return [dict(r) for r in cur.fetchall()]
         except Exception:
             logger.exception("pair_history %s", symbol)
+            return []
+
+    def pair_stats(self, symbol: str) -> Dict[str, Any]:
+        """Агрегированная статистика по символу (DEV-117)."""
+        try:
+            with self._conn() as conn:
+                conn.row_factory = None
+                cur = conn.cursor()
+                row = cur.execute("""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END) as wins,
+                        AVG(CASE WHEN R_multiple IS NOT NULL THEN R_multiple END) as avg_r,
+                        MAX(R_multiple) as best_r,
+                        MIN(R_multiple) as worst_r,
+                        SUM(CASE WHEN direction='LONG' THEN 1 ELSE 0 END) as longs,
+                        SUM(CASE WHEN direction='SHORT' THEN 1 ELSE 0 END) as shorts,
+                        MIN(created_at) as first_trade,
+                        MAX(closed_at) as last_trade
+                    FROM simulated_trades
+                    WHERE symbol = ? AND status != 'OPEN'
+                """, (symbol,)).fetchone()
+                if not row or not row[0]:
+                    return {"total": 0, "wr_pct": None, "avg_r": None}
+                total, wins = int(row[0]), int(row[1] or 0)
+                return {
+                    "total":      total,
+                    "wins":       wins,
+                    "wr_pct":     round(wins / total * 100, 1) if total else None,
+                    "avg_r":      round(float(row[2]), 2) if row[2] is not None else None,
+                    "best_r":     round(float(row[3]), 2) if row[3] is not None else None,
+                    "worst_r":    round(float(row[4]), 2) if row[4] is not None else None,
+                    "longs":      int(row[5] or 0),
+                    "shorts":     int(row[6] or 0),
+                    "first_trade": row[7],
+                    "last_trade":  row[8],
+                }
+        except Exception:
+            logger.exception("pair_stats %s", symbol)
+            return {}
+
+    def top_pairs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Топ пар по количеству сделок + WR (DEV-117)."""
+        try:
+            with self._conn() as conn:
+                conn.row_factory = None
+                cur = conn.cursor()
+                rows = cur.execute("""
+                    SELECT
+                        symbol,
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END) as wins,
+                        AVG(CASE WHEN R_multiple IS NOT NULL THEN R_multiple END) as avg_r
+                    FROM simulated_trades
+                    WHERE status != 'OPEN'
+                    GROUP BY symbol
+                    ORDER BY total DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
+                result = []
+                for r in rows:
+                    total, wins = int(r[1]), int(r[2] or 0)
+                    result.append({
+                        "symbol":  r[0],
+                        "total":   total,
+                        "wins":    wins,
+                        "wr_pct":  round(wins / total * 100, 1) if total else None,
+                        "avg_r":   round(float(r[3]), 2) if r[3] is not None else None,
+                    })
+                return result
+        except Exception:
+            logger.exception("top_pairs")
             return []
 
     # ------------------------------------------------------------------
@@ -746,6 +1048,7 @@ class PerformanceEngine:
         return {
             "summary": self.summary(),
             "by_signal_type": self.by_signal_type(),
+            "by_signal_type_extended": self.by_signal_type_extended(),  # DEV-179
             "by_strategy": self.by_strategy(),
             "by_direction": self.by_direction(),
             "by_regime": self.by_regime(),
