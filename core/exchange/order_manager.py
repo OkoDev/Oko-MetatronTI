@@ -143,6 +143,38 @@ class OrderManager:
                 direction=direction, qty=qty, entry_price=entry_price,
                 sl=sl, tp1=tp1, tp2=tp2, error=f"qty={qty} <= 0", notional_usdt=notional,
             )
+
+        # DEV-164: guard — SL должен быть достаточно далеко от цены входа (мин. дистанция)
+        # Аналог guard в trade_simulator.py — защищает VST/LIVE path от аномально близких SL
+        if entry_price > 0 and sl > 0:
+            _sl_dist_pct = abs(entry_price - sl) / entry_price * 100
+            try:
+                from core.config_loader import config as _cfg_sl
+                _min_sl_dist = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
+            except Exception:
+                _min_sl_dist = 0.1
+            if _sl_dist_pct < _min_sl_dist:
+                err = (f"DEV-164 SL too close: {_sl_dist_pct:.4f}% < {_min_sl_dist:.2f}% "
+                       f"(entry={entry_price:.6g} sl={sl:.6g})")
+                logger.warning("[OrderManager] %s: %s", symbol, err)
+                return BracketResult(
+                    success=False, mode=self._mode.value, symbol=symbol,
+                    direction=direction, qty=qty, entry_price=entry_price,
+                    sl=sl, tp1=tp1, tp2=tp2, error=err, notional_usdt=notional,
+                )
+
+        # DEV-159: guard — SL должен быть в правильном направлении от цены входа
+        # LONG: SL < entry (стоп ниже), SHORT: SL > entry (стоп выше)
+        sl_direction_ok = (sl < entry_price) if direction == "LONG" else (sl > entry_price)
+        if not sl_direction_ok:
+            err = f"SL direction error: {direction} entry={entry_price:.6g} sl={sl:.6g}"
+            logger.error("[OrderManager] DEV-159 %s: %s", symbol, err)
+            return BracketResult(
+                success=False, mode=self._mode.value, symbol=symbol,
+                direction=direction, qty=qty, entry_price=entry_price,
+                sl=sl, tp1=tp1, tp2=tp2, error=err, notional_usdt=notional,
+            )
+
         if notional < MIN_NOTIONAL:
             return BracketResult(
                 success=False, mode=self._mode.value, symbol=symbol,
@@ -175,8 +207,10 @@ class OrderManager:
             client   = await self._get_client_synced()
             side     = "BUY" if direction == "LONG" else "SELL"
             leverage = int(self._cfg.get("trading.leverage", 5))
+            sl_buf   = float(self._cfg.get("trading.sl_limit_buffer_pct", 0) or 0)
             resp     = await client.place_bracket_order(symbol=symbol, side=side, qty=qty,
-                                                        sl=sl, tp=tp1, leverage=leverage)
+                                                        sl=sl, tp=tp1, leverage=leverage,
+                                                        sl_limit_buffer_pct=sl_buf)
             code = resp.get("code", -1)
             if code != 0:
                 msg = resp.get("msg", str(resp))
@@ -286,15 +320,45 @@ class OrderManager:
     async def place_sl_order(
         self, symbol: str, pos_side: str, sl_price: float, qty: float
     ) -> Optional[str]:
-        """Ставит новый STOP_MARKET ордер (SL) для существующей позиции."""
+        """Ставит STOP_MARKET или STOP (Limit) ордер (SL) для существующей позиции.
+
+        DEV-175: если sl_limit_buffer_pct > 0 в config → STOP (Limit) с буфером.
+        Для LONG SL: limit_price = sl_price * (1 - buffer).
+        Для SHORT SL: limit_price = sl_price * (1 + buffer).
+        Буфер 0 (default) → STOP_MARKET (старое поведение).
+        """
         if not self.is_live():
             return "SIM"
         try:
             side = "SELL" if pos_side.upper() == "LONG" else "BUY"
-            qty_floor = math.floor(qty * 100) / 100  # floor до 2 знаков — иначе биржа отклоняет
-            resp = await (await self._get_client_synced()).place_stop_order(
+            client = await self._get_client_synced()
+            # Dynamic precision из /openApi/swap/v2/quote/contracts (кэш на весь процесс).
+            qty_floor = await client.quantize_qty(symbol, qty)
+            if qty_floor <= 0:
+                logger.warning(
+                    "[OrderManager] place_sl_order %s: qty=%.8f округлилось в 0 (precision?) — skip",
+                    symbol, qty,
+                )
+                return None
+
+            # DEV-175: STOP-LIMIT если sl_limit_buffer_pct > 0
+            limit_price: float | None = None
+            try:
+                from core.config_loader import config as _cfg_sl
+                _buf = float(_cfg_sl.get("trading.sl_limit_buffer_pct", 0) or 0)
+                if _buf > 0:
+                    if pos_side.upper() == "LONG":
+                        limit_price = sl_price * (1.0 - _buf / 100.0)
+                    else:
+                        limit_price = sl_price * (1.0 + _buf / 100.0)
+                    logger.info("[OrderManager] STOP-LIMIT %s %s sl=%.6f limit=%.6f (buf=%.2f%%)",
+                                 symbol, pos_side, sl_price, limit_price, _buf)
+            except Exception:
+                pass
+
+            resp = await client.place_stop_order(
                 symbol=symbol, side=side, pos_side=pos_side.upper(),
-                stop_price=sl_price, qty=qty_floor,
+                stop_price=sl_price, qty=qty_floor, limit_price=limit_price,
             )
             if resp.get("code", -1) != 0:
                 msg = resp.get("msg", "")
@@ -303,12 +367,12 @@ class OrderManager:
                 if "must be less than the available amount" in msg:
                     real_qty = await self.get_position_qty(symbol, pos_side)
                     if real_qty and real_qty > 0:
-                        qty_retry = math.floor(real_qty * 100) / 100
+                        qty_retry = await client.quantize_qty(symbol, real_qty)
                         logger.info(
-                            "[OrderManager] place_sl_order %s: qty mismatch (%.4f→%.4f), retry",
+                            "[OrderManager] place_sl_order %s: qty mismatch (%.8f→%.8f), retry",
                             symbol, qty_floor, qty_retry,
                         )
-                        resp = await (await self._get_client_synced()).place_stop_order(
+                        resp = await client.place_stop_order(
                             symbol=symbol, side=side, pos_side=pos_side.upper(),
                             stop_price=sl_price, qty=qty_retry,
                         )
@@ -339,6 +403,21 @@ class OrderManager:
         """
         if not self.is_live():
             return None
+
+        # DEV-160: TSL guard — не двигать SL если новый уровень "за ценой" (хуже текущего)
+        # LONG: SL может только расти (trailing вверх). Если new < old → откат → пропуск.
+        # SHORT: SL может только падать (trailing вниз). Если new > old → откат → пропуск.
+        if old_sl_price > 0:
+            is_long = pos_side.upper() == "LONG"
+            if is_long and new_sl_price <= old_sl_price:
+                logger.debug("[OrderManager] DEV-160 %s LONG TSL: new_sl=%.6g <= old_sl=%.6g — пропуск (откат)",
+                             symbol, new_sl_price, old_sl_price)
+                return None
+            if not is_long and new_sl_price >= old_sl_price:
+                logger.debug("[OrderManager] DEV-160 %s SHORT TSL: new_sl=%.6g >= old_sl=%.6g — пропуск (откат)",
+                             symbol, new_sl_price, old_sl_price)
+                return None
+
         if old_sl_price > 0:
             move_pct = abs(new_sl_price - old_sl_price) / old_sl_price * 100
             if move_pct < min_move_pct:

@@ -34,13 +34,17 @@ EVENT_PRIORITY = {
     "liquidity_sweep":   1,
     "pivot_touch":       2,
     "funding_extreme":   2,
+    "wt_cross_4h":       2,   # Куб: WT кросс в OB/OS на 4h — редкий мощный сетап
+    "wt_cross_1d":       1,   # Куб: WT кросс в OB/OS на 1d — ещё мощнее
+    "trend_change_1h":   2,   # Куб: смена тренда на 1h — ранний сигнал разворота
     "wt_confluence":     3,
     "ote_reentry":       3,
     "cascade":           3,
     "ml_verdict":        3,
     "anomaly_volume":    4,
     "btc_macro":         4,
-    "trade_closed":      5,  # ARCH-72: Feedback Loop
+    "regime_change":     3,   # Куб: смена режима рынка для пары
+    "trade_closed":      5,   # ARCH-72: Feedback Loop
 }
 
 

@@ -1,6 +1,140 @@
 # Oko MTF Bot — Архитектурная карта
 
-> Актуально на: 2026-03-27 | 250+ тестов | 427 пар в мониторинге | 3 200+ сделок в БД
+> Актуально на: 2026-04-12 | 427 пар в мониторинге | 3 200+ сделок в БД
+
+---
+
+## 0. Mermaid-диаграммы (интерактивный обзор)
+
+> Рендерятся в VSCode (Mermaid Preview) и на GitHub автоматически.
+
+### 0.1 Архитектурные слои
+
+```mermaid
+flowchart TD
+    EP["🚀 Entry Point\nbot_with_subscriptions.py"]
+    BOT["🤖 Bot Layer · aiogram 3.4.1\nscan_loop · trade_tracker · ml_loop\nmonitoring.py · dashboard :8000"]
+    STR["♟️ Strategy Layer\nReversalScannerStrategy ★\nMTFBias · PivotReversal · regime_strategy"]
+    INT["🧠 Intelligence Layer\nTradingIntelligence\nsignal_aggregator · confidence_calculator\nrecommendation_generator · ml_enhancer"]
+    DET["📡 Signal Detectors × 9\nWT · WT-B · MTF · SMC\nDivergence · Pivot · Anomaly\nwt_15m_reversal_scanner · confluence_scanner"]
+    CORE["⚙️ Core Services\nindicators · market_regime · pivot_calc\ntrade_simulator · performance_engine\nOutcomePredictor · MLPredictor · RPredictor"]
+    SMC["🏗️ SMC Package\nswing · structure BOS/CHoCH\nfvg · order_blocks · fibonacci\nsl_tp_calculator"]
+    INFRA["🗄️ Infrastructure\nBingX API via ccxt · SQLite\nTelegram API"]
+
+    EP --> BOT
+    BOT --> STR
+    STR --> INT
+    INT --> DET
+    INT --> CORE
+    CORE --> SMC
+    CORE --> INFRA
+```
+
+---
+
+### 0.2 Путь сигнала: от биржи до Telegram
+
+```mermaid
+flowchart LR
+    EX[(BingX\nAPI)]
+    AE["ApiEngine\nLRU · CB · Retry · Sem20"]
+    DC["DataCollector\nOHLCV + Ticker"]
+    SC["scan_one\nasyncio.gather × 9"]
+    DET["Detectors\nWT/WT-B/MTF\nSMC/Div/Pivot"]
+    MON["monitoring.py\nis_actionable\nDEV-155·156·157"]
+    TI["TradingIntelligence\nanalyze_symbol\nSL/TP · ML · regime"]
+    REC["TradingRecommendation\nBUY / SELL / WATCH"]
+    GATE["Quality Gates\nRR·portfolio·regime\ncorrelation·stress"]
+    TG["📱 Telegram\nbroadcast"]
+    DB[(SQLite\nsimulated_trades)]
+
+    EX --> AE --> DC --> SC --> DET --> MON
+    MON -->|actionable| TI --> REC --> GATE
+    GATE --> TG
+    GATE --> DB
+    DB -.->|каждые 5 мин| TRK["trade_tracker\nBE / TSL / TP1-3"]
+    TRK -.->|closed| ML["ML retrain\nupdate_weights"]
+```
+
+---
+
+### 0.3 Жизненный цикл сделки
+
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN : register_trade_async\nQuality Gates passed
+
+    OPEN --> TP : price ≥ take_profit
+    OPEN --> SL : price ≤ stop_loss
+    OPEN --> TSL : trailing stop hit\nактивируется при +1R
+    OPEN --> EXPIRED : duration > 48h
+
+    OPEN --> OPEN : каждые 5 мин\n+0.8R → BE\n+1.0R → TSL вкл\nTP1/TP2/TP3 hit_at
+
+    TP --> [*] : update_weights\nOutcomePredictor.fit
+    SL --> [*] : update_weights\nOutcomePredictor.fit
+    TSL --> [*] : update_weights\nOutcomePredictor.fit
+    EXPIRED --> [*]
+```
+
+---
+
+### 0.4 Ключевые data-классы
+
+```mermaid
+classDiagram
+    class SignalData {
+        +symbol str
+        +signal_type SignalType
+        +direction SignalDirection
+        +strength int 0-100
+        +confidence float 0-1
+        +timeframe str
+        +entry_price float
+        +stop_loss float
+        +take_profit float
+        +description str
+        +interpretation str
+    }
+    class MarketContext {
+        +symbol str
+        +current_price float
+        +atr float
+        +swing_low float
+        +swing_high float
+        +regime str
+        +pivot_cache_1d_1w dict
+        +mtf_context MTFContext
+        +smc_context SMCContext
+    }
+    class TradingRecommendation {
+        +symbol str
+        +action str BUY/SELL/HOLD/WATCH
+        +direction SignalDirection
+        +overall_strength int 0-100
+        +confidence float 0-1
+        +entry_price float
+        +stop_loss float
+        +take_profit float
+        +sl_source str
+        +tp_source str
+        +strategy_type str
+    }
+    class MTFContext {
+        +direction_bias SignalDirection
+        +bias_strength float
+        +regime str
+        +phase str
+        +zone_state str
+        +reversal_mode str
+        +wt_snap dict
+        +smc_snap dict
+    }
+
+    TradingRecommendation --> MarketContext : market_context
+    TradingRecommendation --> SignalData : supporting_signals[ ]
+    MarketContext --> MTFContext : mtf_context
+```
 
 ---
 

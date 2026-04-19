@@ -17,6 +17,97 @@ from bot.monitoring import start_monitoring, stop_monitoring
 logger = logging.getLogger(__name__)
 
 
+def build_status_block(bot) -> str:
+    """Текущее состояние системы — 4 строки. Используется в /start и заголовках меню."""
+    is_mon = "🟢 запущен" if getattr(bot, "is_monitoring", False) else "⏹ остановлен"
+    n_pairs = len(getattr(bot, "monitored_pairs", []) or [])
+
+    open_count = "—"
+    wr_str = "—"
+    avg_r_str = "—"
+    try:
+        from core.performance_engine import PerformanceEngine
+        db = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+        pe = PerformanceEngine(db)
+        s = pe.summary() or {}
+        open_count = s.get("open_count", 0)
+        # WR/avgR за последние 50 закрытых
+        recent = pe.recent_closed(limit=50) or []
+        if recent:
+            rs = [t["R_multiple"] for t in recent if t.get("R_multiple") is not None]
+            if rs:
+                wins = sum(1 for r in rs if r > 0)
+                wr_str = f"{wins / len(rs) * 100:.0f}%"
+                avg_r_str = f"{sum(rs) / len(rs):+.2f}"
+    except Exception:
+        pass
+
+    return (
+        f"📊 <b>Статус системы:</b>\n"
+        f"• Мониторинг: {is_mon}\n"
+        f"• Пар отслеживается: <b>{n_pairs}</b>\n"
+        f"• Открытых сделок: <b>{open_count}</b>\n"
+        f"• WR за 50 сделок: <b>{wr_str}</b> · avgR: <b>{avg_r_str}</b>"
+    )
+
+
+def build_help_text() -> str:
+    """Единая справка — используется и /help, и кнопкой «ℹ️ Помощь»."""
+    return (
+        "📚 <b>СПРАВКА — Oko MTF Bot</b>\n\n"
+        "Бот анализирует крипторынок на 7 таймфреймах, генерирует сигналы и "
+        "регистрирует сделки в симуляторе для отслеживания эффективности.\n\n"
+
+        "<b>🔧 Основные команды:</b>\n"
+        "/start — главное меню + статус\n"
+        "/monitor — запустить/остановить мониторинг\n"
+        "/stats — счётчики сигналов и пар\n"
+        "/scan — скан рынка (топ-10 по силе)\n"
+        "/top — топ-10 пар по объёму\n"
+        "/reset — сбросить счётчики\n\n"
+
+        "<b>📊 Анализ пары:</b>\n"
+        "/intelligence BTC — комплексный AI-анализ\n"
+        "/deep BTC — глубокий разбор (SMC + MTF)\n"
+        "/pivots BTC — пивотные уровни\n"
+        "/check_pivot BTC — близость к пивотам\n"
+        "/mtf — MTF snapshot первой пары\n\n"
+
+        "<b>🔍 Watchlist:</b>\n"
+        "/watch add BTC — добавить пару\n"
+        "/watch remove BTC — удалить\n"
+        "/watchlist — мой watchlist\n"
+        "/wl — Signal Watch List (ожидающие)\n"
+        "/wlr — детальный отчёт по WL\n\n"
+
+        "<b>🎯 Типы сигналов:</b>\n"
+        "🚨 Аномалии — всплески объёма/цены\n"
+        "📊 WT — Wavetrend (отскоки от OB/OS)\n"
+        "📊 WT_B — WT-кросс в OS/OB + дивергенция на 1h\n"
+        "🔄 MTF — мультитаймфрейм-конфлюенция\n"
+        "📈 Тренд — мультитаймфрейм-тренд (4h→1h) + откат на 15m/5m\n"
+        "💎 Дивергенции — расхождение цены и WT\n"
+        "🎯 Развороты от пивотов\n"
+        "🧩 Confluence — комбо WT+пивот+SMC\n"
+        "📐 SMC — Smart Money Concepts (OB/FVG/BOS)\n\n"
+
+        "<b>📐 Глоссарий:</b>\n"
+        "• <b>R</b> — единица риска (1R = расстояние до SL)\n"
+        "• <b>WR</b> — % выигрышных сделок\n"
+        "• <b>avgR</b> — среднее R по закрытым\n"
+        "• <b>TSL</b> — Trailing Stop Loss (защита прибыли)\n"
+        "• <b>P1/P2/P3</b> — приоритет входа (Entry Matrix)\n"
+        "• <b>SMC</b> — Smart Money Concepts\n\n"
+
+        "<b>📟 Где смотреть результаты:</b>\n"
+        "• Дашборд — http://localhost:8000\n"
+        "• История сделок — кнопка «📚 История»\n"
+        "• Статистика по типам — «📊 Аналитика»\n\n"
+
+        "Используйте меню для навигации ↓"
+    )
+
+
 def get_router(bot) -> Router:
     router = Router()
 
@@ -30,55 +121,23 @@ def get_router(bot) -> Router:
             message.from_user.last_name,
         )
         bot.subscribers.add(user_id)
+
+        first = message.from_user.first_name or "трейдер"
+        status = build_status_block(bot)
+
         await message.answer(
-            "👋 <b>Добро пожаловать в Crypto Volume Bot!</b>\n\n"
-            "🚀 <b>Я анализирую криптовалюты и отправляю торговые сигналы:</b>\n"
-            "• 🚨 Аномалии объёма и цены\n"
-            "• 📊 WT сигналы (Wavetrend)\n"
-            "• 🔄 MTF анализ (мультитаймфрейм)\n"
-            "• 💎 Дивергенции\n"
-            "• 📊 Пивотные уровни\n\n"
-            "💎 <b>Подписки:</b>\n"
-            "• Бесплатно: 5 сигналов/день\n"
-            "• Premium: 50 сигналов/день\n\n"
-            "Выберите действие:",
+            f"👋 Привет, <b>{first}</b>!\n\n"
+            f"Я — <b>Oko MTF Bot</b>. Анализирую крипторынок на 7 таймфреймах "
+            f"и регистрирую сделки в симуляторе.\n\n"
+            f"{status}\n\n"
+            f"💡 /help — список команд и глоссарий\n"
+            f"Используйте меню ниже ↓",
             reply_markup=main_menu(),
         )
 
     @router.message(Command("help"))
     async def cmd_help(message: Message):
-        await message.answer(
-            "📚 <b>СПРАВКА ПО КОМАНДАМ</b>\n\n"
-            "<b>🔧 Основные:</b>\n"
-            "/start - Главное меню\n"
-            "/monitor - Запуск/остановка мониторинга\n"
-            "/stats - Статистика бота\n"
-            "/top - Топ-10 по объёму\n"
-            "/reset - Сбросить счетчики\n\n"
-            "<b>💎 Подписки:</b>\n"
-            "/subscribe - Подписаться бесплатно\n"
-            "/unsubscribe - Отписаться\n"
-            "/my_subscription - Моя подписка\n"
-            "/buy_subscription - Купить подписку\n\n"
-            "<b>📊 Анализ:</b>\n"
-            "/pivots - Недельные и дневные пивоты\n"
-            "/check_pivot - Проверка близости к пивотам\n\n"
-            "<b>🔍 Скан и Watchlist:</b>\n"
-            "/scan - Скан рынка (топ-10 по силе сигнала)\n"
-            "/watch add BTC - Добавить пару в watchlist\n"
-            "/watch remove BTC - Удалить пару из watchlist\n"
-            "/watchlist - Показать ваш watchlist\n\n"
-            "<b>🎯 Типы сигналов:</b>\n"
-            "🚨 Аномалии - всплески объёма/цены\n"
-            "📊 WT - сигналы по Wavetrend\n"
-            "🔄 MTF - мультитаймфрейм анализ\n"
-            "🎯 MTF Точки разворота - продвинутый анализ\n"
-            "📈 Тренд-сигналы - работа по тренду\n"
-            "💎 Дивергенции - расхождения цены и индикатора\n"
-            "📊 Пивоты - уровни поддержки/сопротивления\n"
-            "🔄 Развороты от пивотов - недельные уровни + FVG",
-            reply_markup=main_menu(),
-        )
+        await message.answer(build_help_text(), reply_markup=main_menu())
 
     @router.message(Command("monitor"))
     async def cmd_monitor(message: Message):

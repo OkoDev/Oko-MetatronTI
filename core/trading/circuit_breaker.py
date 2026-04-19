@@ -80,7 +80,8 @@ class CircuitBreaker:
 
         # Считаем WR за последние N сделок
         try:
-            with sqlite3.connect(db_path, timeout=5) as conn:
+            with sqlite3.connect(db_path, timeout=30) as conn:
+                conn.execute("PRAGMA busy_timeout=10000")  # DEV-148
                 row = conn.execute(
                     """
                     SELECT
@@ -96,15 +97,25 @@ class CircuitBreaker:
                     (cfg["lookback_trades"],),
                 ).fetchone()
         except Exception as e:
-            logger.debug("[CircuitBreaker] DB error: %s", e)
+            logger.warning("[CircuitBreaker] DB error (check пропущен): %s", e)
             return
 
         if not row or not row[0]:
             return
 
         total, wins = int(row[0]), int(row[1] or 0)
-        if total < 10:
-            # Недостаточно сделок для надёжного вывода
+        if total < 5:
+            # DEV-163: WR=0% fast-trigger — если 3+ сделок и ни одной победы
+            if total >= 3 and wins == 0 and cfg["enabled"]:
+                wr_pct = 0.0
+                self._last_wr = wr_pct
+                if self._active_since is None:
+                    logger.warning(
+                        "[CircuitBreaker] ON (WR=0%% fast-trigger) — n=%d сделок, все убыточные, +%d к min_strength",
+                        total, cfg["strength_bonus"],
+                    )
+                    self._active_since = datetime.now(timezone.utc)
+                    self.strength_floor_bonus = cfg["strength_bonus"]
             return
 
         wr_pct = wins / total * 100
@@ -132,13 +143,19 @@ class CircuitBreaker:
                 )
                 self._active_since = now
                 self.strength_floor_bonus = cfg["strength_bonus"]
-            # Уже активен — обновляем бонус на случай если config изменился
-            elif self.strength_floor_bonus != cfg["strength_bonus"]:
-                self.strength_floor_bonus = cfg["strength_bonus"]
+            else:
+                # Уже активен — обновляем бонус на случай если config изменился
+                if self.strength_floor_bonus != cfg["strength_bonus"]:
+                    self.strength_floor_bonus = cfg["strength_bonus"]
+                elapsed = (now - self._active_since).total_seconds() / 60
+                logger.info(
+                    "[CircuitBreaker] ACTIVE — WR=%.1f%% (n=%d), active %.0f мин, +%d к min_strength",
+                    wr_pct, total, elapsed, self.strength_floor_bonus,
+                )
         else:
             # WR в норме, CB не активен — ничего не делать
             if self._active_since is None:
-                logger.debug("[CircuitBreaker] OK — WR=%.1f%% (n=%d)", wr_pct, total)
+                logger.info("[CircuitBreaker] OK — WR=%.1f%% (n=%d)", wr_pct, total)
 
     def status_text(self) -> str:
         """Краткий статус для логов/диагностики."""

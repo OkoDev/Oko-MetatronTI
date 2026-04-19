@@ -14,7 +14,7 @@ from bot.keyboards import (
 )
 from bot.menus.ai import (
     handle_intelligence_analysis, handle_ml_predictions, show_statistics,
-    show_help, handle_stop_monitoring, handle_find_pair, show_active_signals,
+    show_help, handle_find_pair, show_active_signals,
     handle_pair_analysis, handle_trading_levels, show_ai_performance,
     handle_retrain_models, show_ml_statistics, show_ai_settings,
 )
@@ -29,13 +29,13 @@ from bot.menus.pivots import (
 )
 from bot.menus.risk import (
     show_risk_profile, show_active_positions, show_position_sizes,
-    show_stop_losses, show_risk_reward_ratio, show_risk_warnings,
+    show_risk_reward_ratio, show_risk_warnings,
     show_risk_statistics, show_risk_settings,
 )
 from bot.menus.history import (
     show_performance_analysis, show_performance_trend, show_analysis_by_type,
     show_signal_history, show_improvement_recommendations, show_detailed_statistics,
-    refresh_history_data, export_history_data,
+    export_history_data,
 )
 from bot.menus.subscriptions import (
     show_subscription_limits, show_usage_statistics,
@@ -43,8 +43,7 @@ from bot.menus.subscriptions import (
     cmd_my_subscription, cmd_buy_subscription, cmd_subscribe, cmd_unsubscribe,
 )
 from bot.menus.settings import (
-    show_general_settings, show_notification_settings, show_analysis_settings,
-    show_signal_settings, show_interface_settings, show_advanced_settings,
+    show_general_settings, show_analysis_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,8 +81,6 @@ class MenuHandler:
         try:
             if text == "🟢 Мониторинг":
                 await self._show_monitoring_menu(message)
-            elif text == "⏹ Остановить":
-                await handle_stop_monitoring(self.bot, message)
             elif text == "🧠 AI Анализ":
                 await self._show_ai_analysis_menu(message)
             elif text == "📊 Статистика":
@@ -188,9 +185,7 @@ class MenuHandler:
     async def handle_pivots_menu_buttons(self, message: Message, state: FSMContext):
         """Обработка кнопок меню пивотов."""
         text = message.text
-        if text == "📊 Недельные пивоты":
-            await show_pivots_request(self.bot, message, state)
-        elif text == "📅 Дневные пивоты":
+        if text == "📊 Пивоты пары":
             await show_pivots_request(self.bot, message, state)
         elif text == "🔍 Проверить пивоты":
             await show_check_pivot_request(self.bot, message, state)
@@ -214,8 +209,6 @@ class MenuHandler:
             await show_active_positions(self.bot, message)
         elif text == "💰 Размер позиций":
             await show_position_sizes(self.bot, message)
-        elif text == "🎯 Стоп-лоссы":
-            await show_stop_losses(self.bot, message)
         elif text == "📈 Соотношение риск/прибыль":
             await show_risk_reward_ratio(self.bot, message)
         elif text == "⚠️ Предупреждения":
@@ -244,8 +237,6 @@ class MenuHandler:
             await show_improvement_recommendations(self.bot, message)
         elif text == "📊 Детальная статистика":
             await show_detailed_statistics(self.bot, message)
-        elif text == "🔄 Обновить данные":
-            await refresh_history_data(self.bot, message)
         elif text == "📤 Экспорт данных":
             await export_history_data(self.bot, message)
         elif text == "⬅️ Назад в главное меню":
@@ -282,20 +273,12 @@ class MenuHandler:
         text = message.text
         if text == "⚙️ Общие настройки":
             await show_general_settings(self.bot, message)
-        elif text == "🔔 Уведомления":
-            await show_notification_settings(self.bot, message)
         elif text == "📊 Параметры анализа":
             await show_analysis_settings(self.bot, message)
-        elif text == "🎯 Настройки сигналов":
-            await show_signal_settings(self.bot, message)
         elif text == "🤖 AI настройки":
             await show_ai_settings(self.bot, message)
         elif text == "🛡️ Настройки рисков":
             await show_risk_settings(self.bot, message)
-        elif text == "📱 Интерфейс":
-            await show_interface_settings(self.bot, message)
-        elif text == "🔧 Дополнительно":
-            await show_advanced_settings(self.bot, message)
         elif text == "⬅️ Назад в главное меню":
             await self._show_main_menu(message)
         else:
@@ -323,8 +306,10 @@ class MenuHandler:
         await message.answer("\n".join(lines), reply_markup=_main_menu())
 
     async def _show_main_menu(self, message: Message):
+        from bot.handlers.core_handlers import build_status_block
+        status = build_status_block(self.bot)
         await message.answer(
-            "🏠 <b>Главное меню</b>\n\nВыберите раздел для работы:",
+            f"🏠 <b>Главное меню</b>\n\n{status}\n\nВыберите раздел ↓",
             reply_markup=main_menu()
         )
         self.current_menu = "main"
@@ -428,10 +413,10 @@ class MenuHandler:
     def _detect_menu_type(self, text: str) -> str:
         """Определяет тип меню по тексту кнопки."""
         if text in {
-            "🟢 Мониторинг", "⏹ Остановить", "🧠 AI Анализ", "📊 Статистика",
+            "🟢 Мониторинг", "🧠 AI Анализ", "📊 Статистика",
             "📈 Сигналы", "🎯 Пивоты", "🛡️ Риски", "📚 История",
             "💎 Подписки", "⚙️ Настройки", "📟 Дашборд", "ℹ️ Помощь",
-            "Мониторинг", "Остановить", "AI Анализ", "Статистика",
+            "Мониторинг", "AI Анализ", "Статистика",
             "Сигналы", "Пивоты", "Риски", "История", "Подписки", "Настройки", "Дашборд", "Помощь",
         }:
             return "main"
@@ -463,18 +448,18 @@ class MenuHandler:
             return "signals"
 
         if text in {
-            "📊 Недельные пивоты", "📅 Дневные пивоты", "🔍 Проверить пивоты",
+            "📊 Пивоты пары", "🔍 Проверить пивоты",
             "📈 Развороты от пивотов", "🎯 Ключевые уровни", "📊 Анализ пивотов",
-            "⬅️ Назад в главное меню", "Недельные пивоты", "Дневные пивоты", "Проверить пивоты",
+            "⬅️ Назад в главное меню", "Пивоты пары", "Проверить пивоты",
             "Развороты от пивотов", "Ключевые уровни", "Анализ пивотов", "Назад в главное меню",
         }:
             return "pivots"
 
         if text in {
-            "🛡️ Профиль риска", "📊 Позиции", "💰 Размер позиций", "🎯 Стоп-лоссы",
+            "🛡️ Профиль риска", "📊 Позиции", "💰 Размер позиций",
             "📈 Соотношение риск/прибыль", "⚠️ Предупреждения", "📊 Статистика рисков",
             "⚙️ Настройки рисков", "⬅️ Назад в главное меню", "Профиль риска", "Позиции",
-            "Размер позиций", "Стоп-лоссы", "Соотношение риск/прибыль", "Предупреждения",
+            "Размер позиций", "Соотношение риск/прибыль", "Предупреждения",
             "Статистика рисков", "Настройки рисков", "Назад в главное меню",
         }:
             return "risk_management"
@@ -482,10 +467,10 @@ class MenuHandler:
         if text in {
             "📊 Эффективность", "📈 Тренд производительности", "🎯 Анализ по типам",
             "📚 История сигналов", "💡 Рекомендации", "📊 Детальная статистика",
-            "🔄 Обновить данные", "📤 Экспорт данных", "⬅️ Назад в главное меню",
+            "📤 Экспорт данных", "⬅️ Назад в главное меню",
             "Эффективность", "Тренд производительности", "Анализ по типам",
             "История сигналов", "Рекомендации", "Детальная статистика",
-            "Обновить данные", "Экспорт данных", "Назад в главное меню",
+            "Экспорт данных", "Назад в главное меню",
         }:
             return "history"
 
@@ -499,12 +484,12 @@ class MenuHandler:
             return "subscriptions"
 
         if text in {
-            "⚙️ Общие настройки", "🔔 Уведомления", "📊 Параметры анализа",
-            "🎯 Настройки сигналов", "🤖 AI настройки", "🛡️ Настройки рисков",
-            "📱 Интерфейс", "🔧 Дополнительно", "⬅️ Назад в главное меню",
-            "Общие настройки", "Уведомления", "Параметры анализа",
-            "Настройки сигналов", "AI настройки", "Настройки рисков",
-            "Интерфейс", "Дополнительно", "Назад в главное меню",
+            "⚙️ Общие настройки", "📊 Параметры анализа",
+            "🤖 AI настройки", "🛡️ Настройки рисков",
+            "⬅️ Назад в главное меню",
+            "Общие настройки", "Параметры анализа",
+            "AI настройки", "Настройки рисков",
+            "Назад в главное меню",
         }:
             return "settings"
 

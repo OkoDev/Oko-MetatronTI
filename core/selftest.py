@@ -1,5 +1,5 @@
 """
-SelfTest система (ARCH-14).
+SelfTest система (ARCH-14 + ARCH-73).
 
 При каждом запуске бот проверяет работоспособность всех ключевых слоёв
 ПЕРЕД началом торговли. Если критический тест провален — бот не стартует.
@@ -17,6 +17,9 @@ SelfTest система (ARCH-14).
   L10 — TradeSimulator: проверка схемы БД и логики
   L11 — Config Integrity: dot-notation, типы, опасные значения
   L12 — Trade Lifecycle:  полный цикл register→open→close(TP)→verify→cleanup
+  L13 — Cube Spheres:     статус всех 13 сфер Куба (ACTIVE/SHADOW/MISSING)
+  L14 — Cube Edges:       рёбра — связи между сферами
+  L15 — Feedback Loops:   циклы обратной связи замкнуты
 
 Каждый тест возвращает SelfTestResult. Критические отказы блокируют запуск.
 """
@@ -52,6 +55,7 @@ class SelfTestReport:
     results: List[SelfTestResult] = field(default_factory=list)
     started_at: datetime = field(default_factory=datetime.now)
     total_duration_ms: float = 0.0
+    cube_text: str = ""   # L13-L15: отчёт Куба Метатрона (format_cube_report)
 
     @property
     def all_passed(self) -> bool:
@@ -94,6 +98,9 @@ class SelfTestReport:
         lines.append(f"Общее время: {self.total_duration_ms:.0f}ms")
         if not self.critical_passed:
             lines.append("\n🚫 <b>КРИТИЧЕСКИЙ ОТКАЗ — бот не может стартовать!</b>")
+        if self.cube_text:
+            lines.append("")
+            lines.extend(self.cube_text.split("\n"))
         return "\n".join(lines)
 
 
@@ -148,6 +155,15 @@ class SelfTest:
                 await self._notify(
                     f"🔴 <b>CRITICAL FAIL [{layer}] {name}</b>\n{result.error[:200]}"
                 )
+
+        # L13-L15: Куб Метатрона (сферы + рёбра + feedback loops)
+        if self.bot is not None:
+            try:
+                from core.selftest_cube import run_cube_selftest, format_cube_report
+                cube_results = await run_cube_selftest(self.bot)
+                report.cube_text = format_cube_report(cube_results)
+            except Exception as _ce:
+                report.cube_text = f"🔴 Cube selftest ошибка: {_ce}"
 
         report.total_duration_ms = (time.monotonic() - t0) * 1000
 

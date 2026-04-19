@@ -161,6 +161,30 @@ async def fetch_ohlcv(exch, symbol: str, tf: str, days: int,
 # ─── Trade simulation ─────────────────────────────────────────────────────────
 
 @dataclass
+class BacktestConfig:
+    label:              str
+    ote_zone_min_fib:   float = 0.705   # граница зоны (0.705 / 0.618 / 0.5)
+    require_wt_in_obos: bool  = False   # WT must be in OS(LONG) or OB(SHORT)
+    min_zone_tf:        str   = "1h"    # минимальный primary TF ("1h"=нет фильтра, "4h"=только 4h/1d)
+    choch_only:         bool  = False   # True → отклонять BOS-сигналы
+
+
+# Сравниваемые конфигурации
+CONFIGS = [
+    BacktestConfig(label="C0 baseline  [0.705-0.786]",
+                   ote_zone_min_fib=0.705, require_wt_in_obos=False, min_zone_tf="1h",  choch_only=False),
+    BacktestConfig(label="C1 DEV-88    [0.705]+4h+CHoCH",
+                   ote_zone_min_fib=0.705, require_wt_in_obos=False, min_zone_tf="4h",  choch_only=True),
+    BacktestConfig(label="C2 0.618+OB/OS+4h+CHoCH",
+                   ote_zone_min_fib=0.618, require_wt_in_obos=True,  min_zone_tf="4h",  choch_only=True),
+    BacktestConfig(label="C3 0.5+OB/OS+4h+CHoCH  ",
+                   ote_zone_min_fib=0.500, require_wt_in_obos=True,  min_zone_tf="4h",  choch_only=True),
+]
+
+_TF_ORDER = {"1h": 0, "4h": 1, "1d": 2}   # для min_zone_tf фильтра
+
+
+@dataclass
 class OTETrade:
     symbol:        str
     mode:          str        # "swing" | "scalp"
@@ -278,6 +302,7 @@ def backtest_pair(
     symbol: str,
     dfs: Dict[str, pd.DataFrame],
     days: int,
+    cfg: Optional["BacktestConfig"] = None,
 ) -> List[OTETrade]:
     """Полный бэктест одной пары — swing + scalp режимы.
 
@@ -286,6 +311,8 @@ def backtest_pair(
     analyze_smc вызовов до O(n_zone_bars).
     """
     trades: List[OTETrade] = []
+    if cfg is None:
+        cfg = CONFIGS[0]   # baseline по умолчанию
 
     # ── WT на всём trigger TF (одно вычисление) ───────────────────────────
     # calculate_wt сбрасывает индекс — восстанавливаем DatetimeIndex явно
@@ -340,9 +367,18 @@ def backtest_pair(
             sig = detect_ote_signal(
                 df_trigger=df_trig, symbol=symbol,
                 smc_contexts=smc_contexts, trigger_tf="15m", shadow_mode=False,
+                ote_zone_min_fib=cfg.ote_zone_min_fib,
+                require_wt_in_obos=cfg.require_wt_in_obos,
             )
             if sig is None:
                 continue
+
+            # Post-фильтры по cfg (не встроены в detect_ote_signal для backward-compat)
+            ptf = sig.data.get("primary_tf", "1h")
+            if _TF_ORDER.get(ptf, 0) < _TF_ORDER.get(cfg.min_zone_tf, 0):
+                continue   # primary TF слишком мелкий
+            if cfg.choch_only and sig.data.get("is_bos", False):
+                continue   # BOS не разрешён
 
             close = float(df_trig["close"].iloc[-1])
             atr   = float(df_trig["close"].rolling(ATR_PERIOD).std().iloc[-1]) * ATR_FACTOR
@@ -360,7 +396,7 @@ def backtest_pair(
                 result=result, exit_price=exit_price, r_multiple=r_mult,
                 confirmed_tfs=sig.data.get("confirmed_tfs", []),
                 primary_tf=sig.data.get("primary_tf", ""),
-                tight_ote=sig.data.get("tight_ote", False),
+                tight_ote=False,
                 is_bos=sig.data.get("is_bos", False),
             ))
             in_trade = True
@@ -503,34 +539,29 @@ def print_metrics(m: dict):
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def main(pairs: List[str], days: int):
-    print(f"\n{'='*60}")
-    print(f"  MTF OTE Backtest — {len(pairs)} пар / {days} дней")
+    print(f"\n{'='*68}")
+    print(f"  MTF OTE Backtest — {len(pairs)} пар / {days} дней  [СРАВНЕНИЕ КОНФИГОВ]")
     print(f"  SWING: 1h/4h/1d zone → 15m trigger")
-    print(f"  SCALP: 15m zone → 3m trigger")
-    print(f"{'='*60}")
+    print(f"{'='*68}")
 
     exch  = ccxt_async.binance({"enableRateLimit": False})
     cache = OHLCVCache()
 
-    all_trades_swing: List[OTETrade] = []
-    all_trades_scalp: List[OTETrade] = []
-    pair_results = []
+    # Загружаем данные один раз, запускаем бэктест для каждого конфига
+    all_dfs: Dict[str, Dict[str, pd.DataFrame]] = {}
 
     for symbol in pairs:
-        print(f"\n⏳ {symbol}...", end=" ", flush=True)
+        print(f"\n⏳ Загрузка {symbol}...", end=" ", flush=True)
         try:
-            # Загружаем все нужные TF параллельно (cache-first)
-            # 1d: ~270 баров; 4h: ~540; 1h: ~2160; 15m: ~8640; 3m: ~43200
             dfs_raw = await asyncio.gather(
                 fetch_ohlcv(exch, symbol, "1d",  days + 30, cache),
                 fetch_ohlcv(exch, symbol, "4h",  days + 30, cache),
                 fetch_ohlcv(exch, symbol, "1h",  days + 30, cache),
                 fetch_ohlcv(exch, symbol, "15m", days + 10, cache),
-                fetch_ohlcv(exch, symbol, "3m",  days + 3,  cache),
                 return_exceptions=True,
             )
             dfs = {}
-            for tf, df in zip(["1d","4h","1h","15m","3m"], dfs_raw):
+            for tf, df in zip(["1d","4h","1h","15m"], dfs_raw):
                 if isinstance(df, Exception) or (isinstance(df, pd.DataFrame) and df.empty):
                     logger.warning("[%s] %s: нет данных", symbol, tf)
                 else:
@@ -540,105 +571,67 @@ async def main(pairs: List[str], days: int):
                 print("SKIP (нет 15m)")
                 continue
 
-            trades = backtest_pair(symbol, dfs, days)
-            swing  = [t for t in trades if t.mode == "swing"]
-            scalp  = [t for t in trades if t.mode == "scalp"]
-
-            all_trades_swing.extend(swing)
-            all_trades_scalp.extend(scalp)
-            pair_results.append((symbol, len(swing), len(scalp)))
-            print(f"swing={len(swing)} scalp={len(scalp)}")
-
+            all_dfs[symbol] = dfs
+            print("OK")
         except Exception as e:
-            import traceback
             print(f"ERROR: {e}")
-            traceback.print_exc()
 
     await exch.close()
 
-    # ── Итоговые метрики ───────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print(f"  РЕЗУЛЬТАТЫ (все {len(pairs)} пар, {days} дней)")
-    print(f"{'='*60}")
+    # ── Запускаем все конфиги ─────────────────────────────────────────────
+    config_results: List[Dict] = []
 
-    m_swing = calc_metrics(all_trades_swing, days * len(pairs), f"SWING [1h/4h/1d→15m]  {len(all_trades_swing)} сделок")
-    m_scalp = calc_metrics(all_trades_scalp, days * len(pairs), f"SCALP [15m→3m]         {len(all_trades_scalp)} сделок")
-    print_metrics(m_swing)
-    print_metrics(m_scalp)
+    for cfg in CONFIGS:
+        print(f"\n{'─'*68}")
+        print(f"  {cfg.label}")
+        print(f"{'─'*68}")
+        all_trades: List[OTETrade] = []
 
-    # ── Конфлюенция vs одиночные — детальный разбор ───────────────────────
-    print(f"\n{'='*60}")
-    print("  SWING: Win Rate по числу подтверждающих TF")
-    print(f"{'='*60}")
-    for n in [1, 2, 3]:
-        group = [t for t in all_trades_swing if len(t.confirmed_tfs) == n and t.result in ("WIN","LOSS")]
-        if group:
-            wr = sum(1 for t in group if t.result == "WIN") / len(group) * 100
-            avg = np.mean([t.r_multiple for t in group])
-            print(f"  {n} TF: {len(group):3d} сделок  WR={wr:.1f}%  AvgR={avg:.3f}")
+        for symbol, dfs in all_dfs.items():
+            trades = backtest_pair(symbol, dfs, days, cfg=cfg)
+            swing  = [t for t in trades if t.mode == "swing"]
+            all_trades.extend(swing)
+            print(f"  {symbol:<15} swing={len(swing)}")
 
-    print(f"\n  SWING: Win Rate по primary_tf")
-    for ptf in ["1h", "4h", "1d"]:
-        group = [t for t in all_trades_swing if t.primary_tf == ptf and t.result in ("WIN","LOSS")]
-        if group:
-            wr = sum(1 for t in group if t.result == "WIN") / len(group) * 100
-            avg = np.mean([t.r_multiple for t in group])
-            print(f"  {ptf}: {len(group):3d} сделок  WR={wr:.1f}%  AvgR={avg:.3f}")
+        m = calc_metrics(all_trades, days * len(all_dfs), cfg.label)
+        print_metrics(m)
+        config_results.append(m)
 
-    print(f"\n  SWING: BOS vs CHoCH")
-    for flag, label in [(True,"BOS"), (False,"CHoCH")]:
-        group = [t for t in all_trades_swing if t.is_bos == flag and t.result in ("WIN","LOSS")]
-        if group:
-            wr = sum(1 for t in group if t.result == "WIN") / len(group) * 100
-            avg = np.mean([t.r_multiple for t in group])
-            print(f"  {label}: {len(group):3d} сделок  WR={wr:.1f}%  AvgR={avg:.3f}")
+    # ── Сравнительная таблица ─────────────────────────────────────────────
+    print(f"\n{'='*68}")
+    print("  СРАВНЕНИЕ КОНФИГОВ (SWING)")
+    print(f"{'='*68}")
+    header = f"  {'Конфиг':<38} {'Сделок':>6} {'WR%':>6} {'AvgR':>6} {'Sharpe':>7} {'MaxDD':>7}"
+    print(header)
+    print(f"  {'─'*64}")
+    for m in config_results:
+        if m.get("count", 0) == 0:
+            print(f"  {m['label']:<38} {'нет данных':>6}")
+            continue
+        wr_f = "✅" if m["wr"] >= 45 else ("⚠️" if m["wr"] >= 40 else "🔴")
+        print(
+            f"  {m['label']:<38} {m['closed']:>6} {m['wr']:>5.1f}% {wr_f}"
+            f" {m['avg_r']:>6.3f} {m['sharpe']:>7.2f} {m['max_dd_r']:>7.1f}R"
+        )
 
-    print(f"\n  SWING: Tight OTE [0.618-0.705] vs широкая зона [0.705-0.786]")
-    for flag, label in [(True,"Tight"), (False,"Wide")]:
-        group = [t for t in all_trades_swing if t.tight_ote == flag and t.result in ("WIN","LOSS")]
-        if group:
-            wr = sum(1 for t in group if t.result == "WIN") / len(group) * 100
-            avg = np.mean([t.r_multiple for t in group])
-            print(f"  {label}: {len(group):3d} сделок  WR={wr:.1f}%  AvgR={avg:.3f}")
-
-    # ── Топ/Флоп пары ─────────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("  WIN RATE ПО ПАРАМ (SWING)")
-    print(f"{'='*60}")
-    pair_stats = []
-    for sym in pairs:
-        group = [t for t in all_trades_swing if t.symbol == sym and t.result in ("WIN","LOSS")]
-        if len(group) >= 5:
-            wr = sum(1 for t in group if t.result == "WIN") / len(group) * 100
-            avg = np.mean([t.r_multiple for t in group])
-            pair_stats.append((sym, len(group), wr, avg))
-
-    for sym, cnt, wr, avg in sorted(pair_stats, key=lambda x: -x[2]):
-        flag = "✅" if wr >= 45 else ("⚠️" if wr >= 35 else "🔴")
-        print(f"  {flag} {sym:<15} {cnt:3d} сд  WR={wr:5.1f}%  AvgR={avg:.3f}")
-
-    # ── Итоговый вердикт ──────────────────────────────────────────────────
-    print(f"\n{'='*60}")
+    # ── Вердикт по конфигам ───────────────────────────────────────────────
+    print(f"\n{'='*68}")
     print("  ВЕРДИКТ")
-    print(f"{'='*60}")
-    total = len(all_trades_swing) + len(all_trades_scalp)
-    if total < 30:
-        print("  🔴 НЕДОСТАТОЧНО ДАННЫХ — менее 30 сделок. Нужно больше пар или период.")
-    else:
-        for m, mode in [(m_swing, "SWING"), (m_scalp, "SCALP")]:
-            if m.get("count", 0) < 10:
-                print(f"  {mode}: ⚠️ мало данных ({m.get('count',0)} сделок)")
-                continue
-            wr = m.get("wr", 0)
-            sh = m.get("sharpe", 0)
-            dd = m.get("max_dd_r", 0)
-            if wr >= 45 and sh >= 1.0 and dd >= -8:
-                verdict = "✅ ДЕПЛОЙ: включить shadow→production"
-            elif wr >= 38 and sh >= 0.5:
-                verdict = "⚠️ ОСТОРОЖНО: ещё 2 недели shadow + ревью"
-            else:
-                verdict = "🔴 ОТКАЗ: WR слишком низкий для production"
-            print(f"  {mode}: {verdict}  (WR={wr}% Sharpe={sh} MaxDD={dd}R)")
+    print(f"{'='*68}")
+    for m in config_results:
+        if m.get("count", 0) < 10:
+            print(f"  {m['label']}: ⚠️ мало данных ({m.get('count',0)} сделок)")
+            continue
+        wr = m.get("wr", 0)
+        sh = m.get("sharpe", 0)
+        dd = m.get("max_dd_r", 0)
+        if wr >= 45 and sh >= 1.0 and dd >= -8:
+            verdict = "✅ ДЕПЛОЙ: shadow→production"
+        elif wr >= 40 and sh >= 0.5:
+            verdict = "⚠️ ОСТОРОЖНО: ещё 2 недели shadow"
+        else:
+            verdict = "🔴 ОТКАЗ"
+        print(f"  {m['label']}: {verdict}  (WR={wr}% Sharpe={sh} MaxDD={dd}R)")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from core.exchange.position_sync import sync_positions
-from core.exchange.tsl_updater import update_tsl_on_exchange
+from core.exchange.tsl_updater import update_tsl_on_exchange, repair_missing_sl
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ async def trade_tracker_loop(bot) -> None:
             # ── Шаг 1: биржевой sync (VST/LIVE only) ──────────────────────
             if _is_live:
                 await sync_positions(bot)
+
+            # ── Шаг 1.5: repair — поставить SL на бирже для сделок без него
+            if _is_live and hasattr(bot, "order_executor"):
+                await repair_missing_sl(bot)
 
             # ── Шаг 2: симуляторный трекинг ───────────────────────────────
             closed, tsl_moved = await bot.trade_simulator.check_open_trades_with_tsl(

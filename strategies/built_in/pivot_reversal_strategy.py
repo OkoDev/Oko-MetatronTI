@@ -90,6 +90,7 @@ class PivotReversalStrategy(BaseStrategy):
         sl, tp, _ = self.calculate_sl_tp(entry, direction.value, atr, market_context)
         sl_dist = abs(entry - sl)
         tp1 = (entry + sl_dist) if direction == SignalDirection.LONG else (entry - sl_dist)
+        sl_source = "atr_14"
 
         data = winner.data or {}
         level = data.get("level", "")
@@ -100,6 +101,37 @@ class PivotReversalStrategy(BaseStrategy):
             reasoning.append(f"FVG {data.get('fvg_type')} на 3m")
         if data.get("has_confluence"):
             reasoning.append("Конфлюэнция 1W+1D")
+
+        # ARCH-55: RANGE BOUNCE — pivot-based SL/TP если режим RANGE и пивоты загружены
+        pivot_cache = getattr(market_context, "pivot_cache_1d_1w", None)
+        if (getattr(market_context, "regime", "") == "RANGE" and pivot_cache):
+            try:
+                from core.config_loader import config as _gcfg
+                from core.smc.sl_tp_calculator import calc_range_bounce_sl_tp
+                _rb_cfg = (_gcfg.get("trading", {}) or {}).get("range_bounce", {})
+                if _rb_cfg.get("enabled", False):
+                    rb_sl, rb_tp, rb_r, rb_reject = calc_range_bounce_sl_tp(
+                        direction=direction.value,
+                        entry=entry,
+                        pivot_cache=pivot_cache,
+                        symbol=market_context.symbol,
+                        sl_buffer_pct=_rb_cfg.get("sl_buffer_pct", 0.003),
+                        min_tp_r=_rb_cfg.get("min_tp_r", 3.5),
+                        max_sl_dist_pct=_rb_cfg.get("max_sl_dist_pct", 0.02),
+                    )
+                    if rb_reject is None and rb_sl and rb_tp:
+                        sl, tp = rb_sl, rb_tp
+                        sl_dist = abs(entry - sl)
+                        tp1 = rb_tp  # TP1 = TP (нет промежуточного уровня)
+                        sl_source = "range_bounce:pivot"
+                        reasoning.append(f"RANGE BOUNCE SL/TP от пивота (R={rb_r:.1f})")
+                        logger.info("[ARCH-55][pivot_reversal] %s RANGE BOUNCE SL=%.6g TP=%.6g R=%.1f",
+                                    market_context.symbol, sl, tp, rb_r)
+                    else:
+                        logger.debug("[ARCH-55][pivot_reversal] %s rejected: %s → ATR fallback",
+                                     market_context.symbol, rb_reject)
+            except Exception as _e55:
+                logger.debug("[ARCH-55][pivot_reversal] error: %s", _e55)
 
         return TradingRecommendation(
             symbol=market_context.symbol,
@@ -116,8 +148,10 @@ class PivotReversalStrategy(BaseStrategy):
             stop_loss=sl,
             take_profit=tp,
             tp1_price=tp1,
-            sl_source="atr_14",
-            tp_source=f"pivot_1W_{level}" if level else f"atr_rr_{self.tp_rr:.1f}",
+            sl_source=sl_source,
+            tp_source=f"range_bounce:pivot" if sl_source == "range_bounce:pivot" else (
+                f"pivot_1W_{level}" if level else f"atr_rr_{self.tp_rr:.1f}"
+            ),
             reasoning=reasoning,
         )
 

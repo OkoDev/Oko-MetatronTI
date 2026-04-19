@@ -195,8 +195,9 @@ class PositionManager:
 
         stats = {"ok": 0, "closed": 0}
         try:
-            # Используем BingXClient напрямую через OrderManager
-            client = order_manager._get_client()
+            # DEV-154: _get_client_synced() гарантирует синхронизацию времени
+            # чтобы избежать 109400 timestamp invalid при старте бота
+            client = await order_manager._get_client_synced()
             exchange_positions = await client.get_positions()
             # BingX символ: "BTC-USDT", наш: "BTC/USDT:USDT"
             open_syms: set = set()

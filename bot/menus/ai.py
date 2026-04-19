@@ -104,40 +104,9 @@ async def show_statistics(bot, message: Message) -> None:
 
 
 async def show_help(bot, message: Message) -> None:
-    """Показ справки."""
-    help_text = (
-        "🤖 <b>Crypto Volume Bot - Справка</b>\n\n"
-        "<b>📊 Основные функции:</b>\n"
-        "• Мониторинг криптовалютных рынков\n"
-        "• 8 типов технических сигналов\n"
-        "• AI-анализ с машинным обучением\n"
-        "• Управление рисками\n"
-        "• Исторический анализ\n\n"
-        "<b>🧠 AI Анализ:</b>\n"
-        "• Комплексные торговые рекомендации\n"
-        "• ML предсказания направления цены\n"
-        "• Автоматическое управление рисками\n"
-        "• Анализ эффективности\n\n"
-        "<b>📈 Типы сигналов:</b>\n"
-        "• Аномалии объема\n"
-        "• Wavetrend сигналы\n"
-        "• MTF анализ\n"
-        "• Тренд сигналы\n"
-        "• Дивергенции\n"
-        "• Пивотные уровни\n\n"
-        "<b>💎 Подписки:</b>\n"
-        "• Free: 5 сигналов/день\n"
-        "• Basic: $9.99/месяц\n"
-        "• Premium: $29.99/месяц\n"
-        "• Pro: $99.99/месяц\n\n"
-        "<b>🔧 Команды:</b>\n"
-        "• /start - Главное меню\n"
-        "• /intelligence SYMBOL - AI анализ\n"
-        "• /pivots - Пивотные уровни\n"
-        "• /stats - Статистика\n\n"
-        "Используйте меню для навигации по всем функциям!"
-    )
-    await message.answer(help_text)
+    """Показ справки — единый источник через build_help_text()."""
+    from bot.handlers.core_handlers import build_help_text
+    await message.answer(build_help_text())
 
 
 async def handle_stop_monitoring(bot, message: Message) -> None:

@@ -50,11 +50,12 @@ class VerdictGate:
 
 
 def aggregate_verdicts(
-    direction:    str,          # "LONG" / "SHORT"
-    wt_verdict:   Optional[Any],   # WTVerdict или None
-    smc_verdict:  Optional[Any],   # SMCVerdict или None
-    config:       Optional[dict] = None,
-    enabled:      bool = False,
+    direction:          str,            # "LONG" / "SHORT"
+    wt_verdict:         Optional[Any] = None,  # WTVerdict или None
+    smc_verdict:        Optional[Any] = None,  # SMCVerdict или None
+    config:             Optional[dict] = None,
+    enabled:            bool = False,
+    wt_exhaustion_dir:  Optional[str] = None,  # "BEARISH"|"BULLISH"|"NEUTRAL" (TR-007)
 ) -> VerdictGate:
     """
     Агрегирует WTVerdict + SMCVerdict для direction (LONG/SHORT).
@@ -100,18 +101,34 @@ def aggregate_verdicts(
     # ─── WT gate ────────────────────────────────────────────────────
     if wt_verdict is not None:
         if wt_label == _WT_EXHA and wt_conf >= wt_exha_thr:
-            # EXHAUSTION: текущее движение исчерпывается
-            # LONG при бычьем истощении → стоп; SHORT при медвежьем истощении → стоп
-            block = True
-            factors.append(f"WT={_WT_EXHA}({wt_conf:.2f})")
+            # TR-007 13.04.2026: direction-aware EXHAUSTION gate
+            # OB_bias (BEARISH) + LONG → WR=6.2% → BLOCK
+            # OS_bias (BULLISH) + SHORT → BLOCK (зеркально)
+            # OS_bias (BULLISH) + LONG → WR=50% → PASS
+            # NEUTRAL (нет info) → старое поведение (block)
+            exha_dir = wt_exhaustion_dir or "NEUTRAL"
+            is_counter = (
+                (exha_dir == "BEARISH" and direction == "LONG") or
+                (exha_dir == "BULLISH" and direction == "SHORT")
+            )
+            is_aligned = (
+                (exha_dir == "BULLISH" and direction == "LONG") or
+                (exha_dir == "BEARISH" and direction == "SHORT")
+            )
+            if is_counter or exha_dir == "NEUTRAL":
+                block = True
+                factors.append(f"WT={_WT_EXHA}/{exha_dir}({wt_conf:.2f})↔{direction}")
+            elif is_aligned:
+                # Истощение в нашу сторону → PASS (OS+LONG WR=50%)
+                factors.append(f"WT={_WT_EXHA}/{exha_dir}({wt_conf:.2f})✓{direction}")
         elif wt_label == _WT_REV and wt_conf >= 0.60:
             # REVERSAL_SETUP: усиливает контртрендовые входы
             delta += strength_boost
             factors.append(f"WT={_WT_REV}({wt_conf:.2f})✓")
-        elif wt_label == _WT_CONT and wt_conf >= 0.60:
-            # TREND_CONTINUATION: умеренный буст
-            delta += strength_boost * 0.4
-            factors.append(f"WT={_WT_CONT}({wt_conf:.2f})✓")
+        elif wt_label == _WT_CONT:
+            # TR-007 13.04.2026: TREND_CONTINUATION в shadow — только лог, нет буста/блока
+            # WR=8.3% avgR=-1.045 при n=48. Активировать при n≥150 с пересмотром логики.
+            logger.debug("WT=%s conf=%.2f — shadow (n<150, no gate)", _WT_CONT, wt_conf)
 
     # ─── Сборка результата ──────────────────────────────────────────
     gate.factors = factors

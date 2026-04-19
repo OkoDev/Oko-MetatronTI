@@ -181,6 +181,18 @@ class WsFeed:
                 if price and price > 0:
                     self._ws_prices[symbol] = (float(price), time.time())
                     self._ticker_updates += 1
+                    # Куб: Сфера 2 → PairContextBus (tick_price)
+                    _pcb = getattr(self, "_pair_context_bus", None)
+                    if _pcb is not None and self._ticker_updates % 10 == 0:
+                        # Throttle: публикуем каждый 10-й тик (не перегружать bus)
+                        try:
+                            from core.context.pair_context import SphereEvent
+                            _pcb.publish(symbol, SphereEvent.TICK_PRICE, {
+                                "price": float(price),
+                                "volume_24h": float(ticker.get("quoteVolume", 0) or 0),
+                            })
+                        except Exception:
+                            pass
         except asyncio.TimeoutError:
             logger.debug("[WsFeed] ticker timeout: %s", symbol)
         except asyncio.CancelledError:

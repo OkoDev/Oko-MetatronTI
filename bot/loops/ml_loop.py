@@ -126,7 +126,7 @@ async def circuit_breaker_loop(bot) -> None:
         try:
             db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
             cb.check(db_path)
-            logger.debug("[CircuitBreaker] status: %s", cb.status_text())
+            logger.info("[CircuitBreaker] status: %s", cb.status_text())
         except Exception as e:
             logger.exception("circuit_breaker_loop: %s", e)
         await asyncio.sleep(15 * 60)  # каждые 15 мин

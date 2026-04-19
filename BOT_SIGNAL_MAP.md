@@ -1,63 +1,77 @@
 # Карта сигнальных цепочек — Oko MTF Bot
 
-> Обновлено: 2026-03-27
+> Обновлено: 2026-04-18 | Структура: core/signals/, core/indicators/, core/pivots/, core/mtf/
+
+---
 
 ## ОБЩАЯ БЛОК-СХЕМА
 
 ```
-START monitoring
+START bot_with_subscriptions.py
   │
-  ├─ load_markets (фильтр: min_vol=1M USDT)
+  ├─ load_markets (фильтр: min_vol=5M USDT ← DEV-175)
   │
   ├─ monitor_market (цикл, каждые 60 сек)
+  │   │
+  │   ├─ btc_regime_provider.update() ← ARCH-78 (ATR Supertrend 4h, TTL 5 мин)
   │   │
   │   ├─ scan_all_pairs — Semaphore(20)
   │   │   └─ scan_one per pair
   │   │       ├─ OHLCV prefetch (15m+1h+3m, limit=160)
   │   │       ├─ check_anomaly_signals
   │   │       ├─ check_wt_signals → [ARCH-23] find_near_pivot() → если ±1% → CONFLUENCE +20str
-  │   │       ├─ confluence_sm.update() / scan_wt_15m_reversal() [pivot_cache передаётся]
-  │   │       ├─ check_wt_b_signals (1h)
+  │   │       ├─ scan_wt_15m_reversal() [ReversalScannerStrategy ★ АКТИВНАЯ]
+  │   │       ├─ check_wt_b_signals (1h) ← ★ WR=85%
+  │   │       ├─ check_smc_signals (df_15m) ← BOS/CHoCH
   │   │       └─ detect_mtf_divergence | detect_divergence → _div_passes_filters
   │   │
   │   │   СНАРУЖИ семафора (fire-and-forget):
   │   │   └─ _broadcast_intelligence_alert
+  │   │       ├─ _is_duplicate_signal (dedup 30 мин) — DEBUG лог
+  │   │       ├─ _is_in_sl_cooldown (4ч) — DEBUG лог
+  │   │       ├─ BTC regime gate ← BTCRegimeProvider (ARCH-78):
+  │   │       │     SHORT при BTC BULL: str<75 → BLOCK (кроме pivot_reversal)
+  │   │       │     HIGH_VOL: предупреждение
   │   │       ├─ async with _analyze_sem (max 3)
-  │   │       ├─ analyze_symbol (timeout 30s)
-  │   │       ├─ Фильтры: dedup / sl_cooldown / BTC-режим
-  │   │       ├─ is_actionable (strength>=50, BUY/SELL, not NEUTRAL)
-  │   │       ├─ should_register (strength>=75) → register_trade_async (DEV-68)
+  │   │       ├─ analyze_symbol (timeout 20s hard)
+  │   │       ├─ WATCH+NEUTRAL → skip (INFO лог)
+  │   │       ├─ DEV-155: min_strength по режиму (HIGH_VOL=85, LONG_RANGE=78)
+  │   │       ├─ DEV-156: CircuitBreaker WR<15% → +10 к min_strength
+  │   │       ├─ is_actionable (strength≥50, BUY/SELL, not NEUTRAL)
+  │   │       ├─ should_register (strength≥75) → register_trade_async (DEV-68)
   │   │       └─ broadcast_with_subscription_check → TG
   │   │
   │   ├─ watch_list_breach_check (каждые 60 сек, параллельно)
   │   │   └─ SignalWatchList: пары в режиме ожидания пробоя
-  │   │       ├─ WL breach: пробой pivot уровня → AUTO-ENTRY (без analyze_symbol)
-  │   │       ├─ min_strength_guard (DEV-68): strength >= min_strength_register (75)
-  │   │       └─ register_trade_async → INSERT simulated_trades
+  │   │       ├─ WL breach → AUTO-ENTRY (без analyze_symbol)
+  │   │       ├─ Escalation: WATCH+направление → дождаться пробоя → BUY/SELL
+  │   │       └─ min_strength guard (DEV-68): strength ≥ 75
   │   │
-  │   ├─ Каждые 5 мин: check_mtf_alerts, check_trend_signals, check_pivot_reversals
-  │   └─ Каждый час: check_cascade_divergences (4h→1h)
+  │   ├─ Каждые 5 мин: check_mtf_alerts, check_trend_signals, check_pivot_reversals — Sem(10)
+  │   └─ Каждый час: check_cascade_divergences (4h→1h) — Sem(5)
   │
   ├─ trade_tracker_loop (каждые 5 мин)
-  │   └─ check_open_trades_with_tsl → SL/TP/TSL → close_trade
+  │   └─ check_open_trades_with_tsl → BE(+0.8R) / TSL(+0.5R) / TP1/TP2/TP3 / SL / EXPIRED
   │
   └─ Dashboard http://localhost:8000 (read-only)
 ```
 
 ---
 
-## ТИПЫ СИГНАЛОВ И ИХ ФИЛЬТРЫ
+## ТИПЫ СИГНАЛОВ И ИХ ПАРАМЕТРЫ
 
 ### 1. ANOMALY (Аномалия объёма)
-- **Детектор:** `core/signal_checkers.py` → `check_anomaly_signals`
+- **Детектор:** `core/signals/signal_checkers.py` → `check_anomaly_signals`
 - **Условие:** volume_ratio > 3.0× (против 20-свечного MA)
 - **Сила:** min(volume_ratio × 10, 100)
 - **Направление:** по изменению close последних 2 свечей
-- **Внутренние фильтры:** только порог 3.0×
+- **Вес в TI:** 0.03
 - **Цикл:** scan_one (каждые 60 сек)
 
+---
+
 ### 2. WT_SIGNAL (WaveTrend) / CONFLUENCE (апгрейд, ARCH-23)
-- **Детектор:** `core/signal_checkers.py` → `check_wt_signals`
+- **Детектор:** `core/signals/signal_checkers.py` → `check_wt_signals`
 - **Условие LONG:** CrossUP (wt1 пересекает wt2 снизу вверх) + wt1 < -60, gap ≥ 3
 - **Условие SHORT:** CrossDOWN + wt1 > 60, gap ≥ 3
 - **Фильтр 1h:** если 1h-wt1 в противоположной зоне → отклонение
@@ -65,26 +79,78 @@ START monitoring
 - **ARCH-23 апгрейд** (в `scan_loop.py::scan_one`, после детекции):
   - `pivot_calculator.find_near_pivot(last_close, sym, threshold_pct=1.0)`
   - Если цена в ±1% от пивота (1M > 1W > 1D): `signal_type = CONFLUENCE`, `strength += 20` (cap 95)
-  - Данные: `sig.data["near_pivot/pivot_level/pivot_source"]`
 - **Данные:** avg_R без пивота +0.32, с пивотом +1.27 (4× разница)
+- **Адаптивный вес:** 0.133 (avg_R=+0.83)
+- **Time gate (DEV-170):** только 04:00–18:00 UTC
 - **Цикл:** scan_one (каждые 60 сек)
 
-### 3. MTF_SIGNAL (Мульти-таймфрейм)
-- **Детектор:** `core/signal_checkers.py` → `check_mtf_signals`
-- **Условие LONG:** тренд 1h=UP + WT 15m растёт + wt1_3m < -60
-- **Условие SHORT:** тренд 1h=DOWN + WT 15m падает + wt1_3m > 60
-- **Сила:** 85, confidence: 0.9
+---
+
+### 3. WT_B_SIGNAL (WaveTrend Type B — дивергенция в OS/OB) ★ WR=85%
+- **Детектор:** `core/signals/signal_checkers.py` → `check_wt_b_signals`
+- **Таймфрейм:** 1h (явно)
+- **Условие LONG:** CrossUP ВО время OS (wt1 < adaptive p10) + дивергенция (min2_wt > min1_wt, разрыв 3-20)
+- **Условие SHORT:** CrossDOWN ВО время OB (wt1 > adaptive p90) + дивергенция (max2_wt < max1_wt, разрыв 3-20)
+- **Adaptive OS/OB:** p10/p90 из серии wt1 (vs фиксированных ±60 у WT_SIGNAL)
+- **Фильтры:**
+  - `div_strength < 3` → пропуск (слишком слабый)
+  - `div_strength > 20` → пропуск (АНТИСИГНАЛ WR=33%, продолжение тренда)
+  - `lookback: 35 баров`
+- **Сила:**
+  - div_strength 10-20 → base=90 (WR=100% n=15 в бэктесте)
+  - div_strength 6-10 → base=80 (WR=82%)
+  - div_strength 3-6 → base=70 (WR=73%)
+  - LONG + depth < -70 → +5
+- **Вес в TI:** 0.15
+- **Бэктест:** 103 пары, 180 дней: WR=84.9%, avgRet=+4.82% (div_strength 3-20)
+- **Цикл:** через analyze_symbol (fire-and-forget из scan_one)
+
+---
+
+### 4. CONFLUENCE ★ (ReversalScannerStrategy — АКТИВНАЯ СТРАТЕГИЯ)
+- **Детектор:** `core/signals/wt_15m_reversal_scanner.py` → `scan_wt_15m_reversal()`
+- **Стратегия:** `ReversalScannerStrategy` (`strategies/built_in/reversal_scanner_strategy.py`)
+- **Таймфреймы:** 15m (WT, TSL) + 1W (пивоты)
+- **Обязательные гейты:**
+  - TSL cross (тренд меняется)
+  - WT cross (подтверждение)
+- **Факторы:** WT zone, pivot touch (0.15%), дивергенция
+- **Lookback:** 8 баров
+- **MTF контекст:** soft penalty floor=0.75 (макс. −25%)
+- **SL:** TSL-линия + буфер 0.3%, fallback ATR×1.5
+- **Статус DEV-171:** `analysis.confluence.enabled: false` — ПОЛНЫЙ СТОП (14.04.2026)
+  - Причина: -348R суммарный убыток, убыточен во все часы и все режимы
+- **Вес в TI:** 0.15
 - **Цикл:** scan_one (каждые 60 сек)
 
-### 4. MTF_ALERT (7 таймфреймов)
-- **Детектор:** `core/mtf_checker.py` → `check_mtf_alert`
-- **Таймфреймы:** 3m, 5m, 15m, 45m, 1h, 4h, 1d
-- **Режимы:** Classic / Aggressive / Conservative
-- **Сила:** 40–100 (адаптивная)
-- **Цикл:** фоновая задача, каждые 5 мин
+---
 
-### 5. DIVERGENCE (Дивергенция WT)
-- **Детектор:** `core/divergence_detector.py` → `detect_divergence`
+### 5. MTF_BIAS (Multi-Timeframe Bias) ★ ГЛАВНОЕ ЯДРО
+- **Детектор:** `core/mtf/mtf_interpreter.py` → `MTFInterpreter.interpret()`
+- **Таймфреймы:** 6 TF: 3m, 15m, 45m, 1h, 4h, 1d
+- **Модуль:** `core/intelligence/wt_specialist.py` → `derive_wt_verdict(wt_snap)`:
+  - EXHAUSTION — все/большинство TF в OS/OB → conf=0.80 → gate блокирует если OB+LONG
+  - REVERSAL_SETUP — кросс WT в нужной зоне → conf=0.75
+  - TREND_CONTINUATION — shadow (n=48, нужно ≥150)
+  - UNCLEAR → проходит
+- **Вес в TI:** 0.50 (★ tie-breaker — при strength≥70 фиксирует итоговое направление)
+- **Time gate (DEV-170):** только 09:00–18:00 UTC
+- **Цикл:** через analyze_symbol
+
+---
+
+### 6. SMC_STRUCTURE (Smart Money Concepts)
+- **Детектор:** `core/signals/signal_checkers.py` → `check_smc_signals`
+- **Engine:** `core/smc/structure.py` → BOS/CHoCH + Breaker Blocks
+- **Пакет:** `core/smc/` — swing, structure, fvg, order_blocks, fibonacci, liquidity, context
+- **Условие:** BOS (Break of Structure) или CHoCH (Change of Character) на 15m
+- **Вес в TI:** 0.12
+- **Цикл:** scan_one (каждые 60 сек)
+
+---
+
+### 7. DIVERGENCE (Дивергенция WT)
+- **Детектор:** `core/signals/divergence_detector.py` → `detect_divergence`
 - **Типы:**
   - Regular Bullish: цена LL + wt HL (оба пивота < -60) → разворот вверх
   - Regular Bearish: цена HH + wt LH (оба пивота > 60) → разворот вниз
@@ -97,86 +163,68 @@ START monitoring
   - Изменение цены: до 20 балл
   - Зона (OB/OS): до 30 балл
   - Бонус двойная: +15, тройная: +25
-- **ВНЕШНИЕ ФИЛЬТРЫ** (`_div_passes_filters` в monitoring.py):
+- **Внешние фильтры** (`_div_passes_filters` в monitoring.py):
   - Regular Bull: wt1_current < -40
   - Regular Bear: wt1_current > +40
   - Hidden Bull: wt1_current < 0 (не в OB)
   - Hidden Bear: wt1_current > 0 (не в OS)
   - Pivot proximity: цена в пределах 2% от дневного пивота
+- **Вес в TI:** 0.10
 - **Цикл:** scan_one (каждые 60 сек)
 
-### 6. MTF_DIVERGENCE (Каскадная конфлюэнция)
-- **Детектор:** `core/divergence_detector.py` → `detect_cascade_divergence(1h→15m)`
+---
+
+### 8. MTF_DIVERGENCE (Каскадная конфлюэнция)
+- **Детектор:** `core/signals/divergence_detector.py` → `detect_cascade_divergence(1h→15m)`
 - **Логика:** Hidden на 1h (тренд продолжается) + Regular на 15m (точка входа) в одном направлении
 - **Бонус иерархии:** 1W→1D: +25, 1D→4h: +20, 4h→1h: +15, 1h→15m: +10
 - **Те же внешние фильтры** что и у DIVERGENCE
 - **Приоритет:** проверяется ПЕРВОЙ, если найдена — обычная дивергенция не ищется
 - **Цикл:** scan_one (каждые 60 сек); 4h→1h — каждый час
 
-### 7. TREND_SIGNAL (Тренд EMA)
-- **Детектор:** `core/trend_signals.py` → `check_trend_following_signal`
-- **Таймфреймы:** 4h (тренд) + 1h (подтверждение) + 15m (откат) + 5m (вход)
-- **Условие LONG:** 4h UP + 1h UP + 15m WT нейтраль/OS + 5m разворот вверх
-- **Режимы:** Classic / Aggressive / Conservative
-- **Цикл:** фоновая задача, каждые 5 мин
+---
 
-### 8. PIVOT_REVERSAL (Разворот от пивота)
-- **Детектор:** `core/pivot_reversal.py` → `check_pivot_level_signal`
-- **Таймфреймы:** 15m (цена + тренд + WT из кеша scan_one, без лишних API-запросов) + 3m (FVG бонус)
+### 9. MTF_ALERT (7 таймфреймов, фоновый)
+- **Детектор:** `core/mtf/mtf_checker.py` → `check_mtf_alert`
+- **Таймфреймы:** 3m, 5m, 15m, 45m, 1h, 4h, 1d
+- **Режимы:** Classic / Aggressive / Conservative
+- **Сила:** 40–100 (адаптивная)
+- **Цикл:** фоновая задача, каждые 5 мин, Sem(10)
+
+---
+
+### 10. TREND_SIGNAL (Тренд 4h+1h+15m+5m, фоновый)
+- **Детектор:** `core/indicators/trend_signals.py` → `check_trend_following_signal`
+- **Паттерны:**
+  - Классический откат: 15m в OS + cross_up + 5m UP — confidence=HIGH
+  - Агрессивный вход: 1h в OS + 15m/5m UP (без cross) — confidence=MEDIUM ⚠️ (сомнительный)
+  - Консервативный: все ТФ UP + 5m из OS — confidence=VERY_HIGH
+- **Адаптивный вес:** 0.04 (avg_R=-0.50, деградировал)
+- **Цикл:** фоновая задача, каждые 5 мин, Sem(10)
+
+---
+
+### 11. PIVOT_REVERSAL (Разворот от пивота, фоновый)
+- **Детектор:** `core/pivots/pivot_reversal.py` → `check_pivot_level_signal`
+- **Таймфреймы:** 15m (цена + тренд + WT из кеша scan_one) + 3m (FVG бонус)
 - **Условие LONG:** цена в 0.5% от S1/S2/PP + WT CrossUP (OS/нейтраль) + тренд 15m UP
 - **Условие SHORT:** цена в 0.5% от R1/R2/PP + WT CrossDOWN (OB/нейтраль) + тренд 15m DOWN
 - **SL:** ATR(14) × 1.5, зажат в [1%, 4%]
-- **TP:** следующий недельный уровень (R1→R2→R3 для LONG, S1→S2→S3 для SHORT)
-- **Бонус:** FVG BULL/BEAR на 3m → confidence=VERY_HIGH, strength +10
-- **Бонус:** Конфлюэнция 1W+1D → strength +10
-- **Сила:** 60 базово + до 40 очков за WT кросс / смена тренда / FVG / конфлюэнцию
-- **Стратегия:** `PivotReversalStrategy` (`strategies/built_in/pivot_reversal_strategy.py`)
-- **Цикл:** фоновая задача, каждые 5 мин
+- **TP:** следующий недельный уровень (hierarchy: pivot → FVG → ATR)
+- **Бонусы:** FVG на 3m → confidence=VERY_HIGH + str +10; конфлюэнция 1W+1D → str +10
+- **Адаптивный вес:** 0.24 (avg_R=+0.50, лучший из трековых)
+- **BTC gate исключение:** pivot_reversal всегда проходит BTC SHORT блок (разворот у уровня)
+- **Цикл:** фоновая задача, каждые 5 мин, Sem(10)
 
-### 9. CONFLUENCE (Конфлюэнция факторов)
-- **Детектор:** `core/wt_15m_reversal_scanner.py` → `scan_wt_15m_reversal()`
-- **Стратегия:** `ReversalScannerStrategy` (`strategies/built_in/reversal_scanner_strategy.py`), зарегистрирована как `"reversal_scanner"`
-- **Таймфреймы:** 15m (WT, TSL) + 1W (пивоты)
-- **Обязательные гейты (mandatory):**
-  - TSL cross (тренд меняется)
-  - WT cross (подтверждение)
-- **Факторы силы:** WT zone, pivot touch (0.15%), дивергенция
-- **Lookback:** 8 баров (было 20)
-- **Убрано:** trend_1h, PP bias, dual_cross — обрабатывается через MTF контекст
-- **MTF контекст:** применяет soft penalty к CONFLUENCE сигналам: floor=0.75 (макс. −25%)
-- **SL:** TSL-линия из market_context.tsl_trendup/trenddown + буфер 0.3%, fallback ATR×1.5
-- **Цикл:** scan_one (каждые 60 сек)
-- **Legacy:** старый `core/confluence_scanner.py` (`scan_confluence()`) сохранён для обратной совместимости (state machine, бэктестинг)
+---
 
-### 10. WATCH_LIST_BREACH (пробой пивотного уровня)
-- **Детектор:** `core/signal_watch_list.py` → `SignalWatchList`
-- **Логика:** пара добавляется в WL вручную (`/watch add SYMBOL`) или автоматически. Ждёт пробоя пивота
-- **Условие:** цена пересекает pivot уровень (1M/1W/1D) в ожидаемом направлении
-- **Auto-entry:** без вызова analyze_symbol → прямой вызов register_trade_async
-- **min_strength guard (DEV-68):** strength < min_strength_register (75) → пропуск (исправлено: DOGE str=18 раньше проходил)
-- **SL/TP:** ATR-based
+### 12. WATCH_LIST_BREACH (пробой пивотного уровня)
+- **Детектор:** `core/db/signal_watch_list.py` → `SignalWatchList`
+- **Логика:** пара добавляется в WL (WATCH action + чёткое направление). Ждёт пробоя уровня.
+- **Auto-entry:** без analyze_symbol → прямой вызов register_trade_async
+- **Escalation:** WATCH → улучшение условий (div_count вырос) → форсируем BUY/SELL
+- **min_strength guard (DEV-68):** strength < 75 → пропуск
 - **Цикл:** scan_loop, каждые 60 сек (параллельно со scan_all_pairs)
-
-### 11. WT_B_SIGNAL (WaveTrend Type B — дивергенция в OS/OB)
-- **Детектор:** `core/signal_checkers.py` → `check_wt_b_signals`
-- **Таймфрейм:** 1h (явно)
-- **Условие LONG:** CrossUP ВО время OS (wt1 < adaptive p10) + дивергенция (min2_wt > min1_wt, разрыв 3-20)
-- **Условие SHORT:** CrossDOWN ВО время OB (wt1 > adaptive p90) + дивергенция (max2_wt < max1_wt, разрыв 3-20)
-- **Adaptive OS/OB:** p10/p90 из серии wt1 (vs фиксированных ±60 у WT_SIGNAL)
-- **Фильтры:**
-  - `div_strength < 3` → пропуск (слишком слабый сигнал)
-  - `div_strength > 20` → пропуск (АНТИСИГНАЛ, WR=33% — продолжение тренда)
-  - `lookback: 35 баров`
-- **Сила:**
-  - div_strength 10-20 → base=90 (WR=100% n=15 в бэктесте)
-  - div_strength 6-10 → base=80 (WR=82%)
-  - div_strength 3-6 → base=70 (WR=73%)
-  - LONG + depth < -70 → +5
-- **Confidence:** 0.88
-- **Вес в TradingIntelligence:** 0.15
-- **Цикл:** через analyze_symbol (fire-and-forget из scan_one)
-- **Бэктест:** 103 пары, 180 дней: WR=84.9%, avgRet=+4.82% (div_strength 3-20)
-- **config.yaml:** `analysis.wt_b: enabled/div_min/div_max/lookback`
 
 ---
 
@@ -189,10 +237,11 @@ START monitoring
      WT zone + pivot proximity
        ↓
 3. _broadcast_intelligence_alert:
-     WATCH+NEUTRAL → skip
-     is_duplicate_signal (dedup_minutes=30, ключ=symbol) → skip
-     is_in_sl_cooldown (sl_cooldown_hours=4) → skip
-     BTC контр-тренд: strength < 70 → block, >= 70 → warning
+     _is_duplicate_signal (dedup_minutes=30, ключ=symbol) → skip [DEBUG]
+     _is_in_sl_cooldown (sl_cooldown_hours=4) → skip [DEBUG]
+     BTC gate (ARCH-78, BTCRegimeProvider):
+       HIGH_VOL → предупреждение ⚠️
+       SHORT при BTC BULL + str<75 → block [INFO], кроме pivot_reversal
        ↓
 4. analyze_symbol (TradingIntelligence):
      _collect_all_signals (timeout 10s)
@@ -200,51 +249,81 @@ START monitoring
      _enhance_analysis_with_ml (timeout 5s)
      _generate_recommendation
        ↓
-5. is_actionable:
-     strength >= 50 AND action in (BUY,SELL) AND direction != NEUTRAL
-     → footer "Сделка зарегистрирована" в TG
+5. WATCH+NEUTRAL → skip [INFO]
        ↓
-6. should_register:
-     strength >= 75 (min_strength_register, DEV-68)
+6. DEV-155: min_strength по режиму
+     HIGH_VOL → 85, LONG_RANGE → 78, базовый → 50
+   DEV-156: CircuitBreaker
+     WR<15% rolling 50 → +10 к min_strength
+       ↓
+7. is_actionable:
+     strength ≥ min_strength AND action in (BUY,SELL) AND direction ≠ NEUTRAL
+     → сообщение в TG
+       ↓
+8. should_register:
+     strength ≥ 75 (min_strength_register, DEV-68)
      → register_trade_async — Quality Gates:
-         ① Market Stress Gate (DEV-48, shadow): high stress → block (в shadow — только лог)
-         ② Correlation Guard (DEV-38): коррелированные пары (BTC+WBTC, PAXG+XAUT) → skip дубли
-         ③ Regime Direction Block (DEV-64B): LONG в TREND_DOWN / SHORT в TREND_UP → block
-         ④ blocked_regimes (DEV-33): HIGH_VOL → block (WR=0%)
+         ① Market Stress Gate (DEV-48): high stress → block (shadow)
+         ② Correlation Guard (DEV-38): BTC/WBTC, PAXG/XAUT → skip дубли
+         ③ Regime Direction Block (DEV-64B): LONG в TREND_DOWN / SHORT в TREND_UP
+         ④ blocked_regimes (DEV-33): HIGH_VOL (настраивается в config)
          ⑤ signal_regime_block: явные запреты из config.yaml
-         ⑥ max_rr cap (DEV-64A): R:R > 3.0 → обрезать TP до max_rr=3.0
-         → INSERT simulated_trades
+         ⑥ max_rr cap (DEV-64A): R:R > 3.0 → обрезать TP
+         ⑦ DEV-157: sl_dist_pct < 0.1% → skip
+         ⑧ Portfolio Limit (DEV-52): 2L+2S+4 OPEN total
+         → INSERT simulated_trades + Entry Priority Matrix shadow (DEV-172)
        ↓
-7. broadcast_with_subscription_check → TG пользователям
+9. broadcast_with_subscription_check → TG пользователям
 ```
 
 ---
 
-## АДАПТИВНЫЕ ВЕСА СИГНАЛОВ (актуально на 15.03.2026)
+## АДАПТИВНЫЕ ВЕСА СИГНАЛОВ (актуально на 18.04.2026)
 
 | Тип | Базовый вес | После адаптации | Статус |
 |-----|------------|-----------------|--------|
-| **MTF_BIAS** | **0.50** | 0.50 | ★ ГЛАВНОЕ ЯДРО (tie-breaker) |
-| **PIVOT_REVERSAL** | **0.20** | 0.24 (avg_R=+0.50) | ★ второе ядро |
-| WT_B_SIGNAL | 0.15 | 0.15 | ★ новый (бэктест WR=85%, нужно 20+ сделок) |
-| CONFLUENCE | 0.15 | 0.15 | через ReversalScannerStrategy (reversal_scanner) |
+| **MTF_BIAS** | **0.50** | 0.50 | ★ ГЛАВНОЕ ЯДРО (tie-breaker при str≥70) |
+| **PIVOT_REVERSAL** | **0.20** | **0.24** (avg_R=+0.50) | ★ лучший реальный |
+| WT_B_SIGNAL | 0.15 | 0.15 | ★ WR=85% бэктест, нужно ≥20 реальных |
+| CONFLUENCE | 0.15 | 0.15 | ⛔ ОСТАНОВЛЕН (DEV-171, убыток -348R) |
 | SMC_STRUCTURE | 0.12 | 0.12 | BOS/CHoCH, только в pipeline |
 | DIVERGENCE | 0.10 | 0.10 | только фоновые задачи |
-| WT_SIGNAL | 0.08 | 0.133 (avg_R=+0.83) | — |
-| TREND_SIGNAL | 0.05 | 0.04 (avg_R=-0.50) | — |
+| WT_SIGNAL | 0.08 | **0.133** (avg_R=+0.83) | — |
+| TREND_SIGNAL | 0.10 | **0.04** (avg_R=-0.50) | — |
 | ANOMALY | 0.03 | 0.03 | — |
-| MTF_SIGNAL | — | — | ⚠️ LEGACY → заменён MTF_BIAS |
-| MTF_ALERT | — | — | ⚠️ LEGACY → заменён MTF_BIAS |
 
-**signal_type приоритет в БД (trade_simulator.py):**
-`wt_b_signal > mtf_bias > confluence > pivot_reversal > smc_structure > wt_signal > divergence > trend_signal > anomaly > mtf_signal`
+**signal_type приоритет в БД:**
+`wt_b_signal > mtf_bias > confluence > pivot_reversal > smc_structure > wt_signal > divergence > trend_signal > anomaly`
 
 Формула: `new_weight = base × clamp(1 + avg_R × 0.4, 0.5, 2.0)`
-Минимум 20 закрытых сделок по типу сигнала для адаптации.
+Минимум 20 закрытых сделок по типу для адаптации.
 
-> ⚠️ **Архитектурная особенность:** Дивергенции и пивоты НЕ собираются в `_collect_all_signals()` — только из фоновых задач. Это гарантирует отсутствие `conflict_ratio` в основном потоке.
+---
 
-> ⚠️ **MTF_BIAS** при `strength ≥ 70` и конфликте направлений — фиксирует итоговое направление рекомендации (tie-breaker).
+## ДОПОЛНИТЕЛЬНЫЕ КОМПОНЕНТЫ (не сигналы)
+
+### BTCRegimeProvider (ARCH-78, 16.04.2026)
+- **Файл:** `core/exchange/btc_regime_provider.py`
+- **Метод:** ATR Supertrend (43/1.25) на BTC 4h
+- **Выходы:** BULL / BEAR / NEUTRAL (переходный период)
+- **TTL:** 5 мин, singleton в bot.py
+- **Влияние:** gate в monitoring.py — SHORT при BULL str<75 → BLOCK (кроме pivot_reversal)
+
+### Entry Priority Matrix (DEV-172, shadow, 14.04.2026)
+- **Файл:** `core/intelligence/entry_matrix.py`
+- **Выход:** P1 / P2 / P3 / None → пишется в `features_json.entry_priority`
+- **Критерии:** bias_ok (ATR 1h согласован) + zone_ok (OS/OB на 1h/4h) + trigger (WT кросс 15m)
+- **Статус:** shadow, не блокирует. ⚠️ priority=None для всех сделок — баг не найден
+
+### PairContextBus / Event Bus / SphereRegistry (Куб Метатрона)
+- **Файлы:** `core/context/pair_context.py`, `core/context/event_bus.py`, `core/context/sphere_registry.py`
+- **Суть:** 22 типа событий, 38 полей PairState, 13 сфер, health_check()
+- **Selftest:** `core/selftest_cube.py` — L13/L14/L15 (27 проверок)
+
+### Self-Diagnostics Suite (DEV-121, 16.04.2026)
+- **Файлы:** `core/selftest.py` (L1-L12) + `core/selftest_cube.py` (L13-L15)
+- **Запуск:** `python core/selftest_cube.py`
+- **Проверяет:** 13 сфер (ACTIVE/SHADOW/MISSING) + 10 рёбер + 4 feedback loop
 
 ---
 
@@ -261,30 +340,12 @@ START monitoring
 | check_cascade_divs | 5 | MTF-дивергенции (4h→1h) |
 | _prefetch_pivots | 5 | прогрев кеша пивотов |
 
-| Операция | Таймаут | Следствие при превышении |
-|----------|---------|--------------------------|
+| Таймаут | Лимит | Следствие |
+|---------|-------|-----------|
 | _collect_all_signals | 10 сек | пустой список сигналов |
 | _get_market_context | 15 сек | fallback без контекста |
 | _enhance_analysis_with_ml | 5 сек | рекомендация без ML |
-
----
-
-## РЕГИСТРАЦИЯ СДЕЛКИ
-
-```
-register_trade_async(recommendation, data_collector)
-  ├─ Quality Gates (см. раздел выше):
-  │   Market Stress → Correlation → Regime Block → blocked_regimes → signal_regime_block → max_rr cap
-  ├─ MarketRegimeClassifier.classify_from_ohlcv
-  │   └─ ADX + ATR + EMA → TREND_UP / TREND_DOWN / RANGE / HIGH_VOL
-  ├─ get_pivot_tp_with_source → TP привязан к ближайшему пивоту (min R=1.5)
-  └─ INSERT simulated_trades:
-       symbol, timeframe (15m), signal_type, direction,
-       entry_price, stop_loss, take_profit, sl_source, tp_source,
-       strength, confidence, regime, created_at, status=OPEN,
-       tsl_activated=0, be_activated=0, tsl_tf=None,
-       features_json: {volume_24h, price_change_24h, volatility, ...}
-```
+| analyze_symbol HARD | 20 сек | return None |
 
 ---
 
@@ -292,86 +353,49 @@ register_trade_async(recommendation, data_collector)
 
 ```
 Каждые 5 минут:
-  check_open_trades_with_tsl
-    ├─ Получить текущие OHLCV (TF сделки, limit=200)
-    ├─ EXPIRED: если сделка старше max_duration_minutes
-    ├─ Обновить max_price / min_price (MFE трекинг)
-    ├─ TSL активация при current_r >= tsl_activation_r=1.0:
-    │   ├─ UPDATE tsl_activated=1 в БД
+  check_open_trades_with_tsl (DEV-174 фиксы применены)
+    ├─ MFE трекинг: max_price / min_price
+    ├─ BE при current_r (от original_sl) >= 0.8 → SL → entry ± 0.1%
+    ├─ TSL активация при current_r >= 0.5 (tsl_activation_r=0.5, снижено с 1.0):
     │   ├─ Cascade TSL (DEV-67): 15m → 1h → 4h
-    │   │   ├─ Если тренд 4h == направление → TSL по 4h (самый широкий)
-    │   │   ├─ Иначе если тренд 1h == направление → TSL по 1h
-    │   │   ├─ Иначе если тренд 15m == направление → TSL по 15m
-    │   │   └─ Fallback (DEV-67): разворот на всех TF → использовать prev_tsl_tf без trend gate
-    │   │       (защита от ошибки "no valid TF" при развороте тренда)
-    │   └─ factor=1.25 (DEV-66): TSL-линия немного шире → позиции держатся дольше
-    ├─ BE активация при current_r >= breakeven_activation_r=0.8:
-    │   └─ SL → entry_price ± 0.1% (безубыток)
-    ├─ LONG: если цена <= tsl → close TSL
-    ├─ SHORT: если цена >= tsl → close TSL
+    │   │   ├─ 4h тренд совпадает → TSL по 4h (самый широкий)
+    │   │   ├─ 1h тренд совпадает → TSL по 1h
+    │   │   ├─ 15m тренд совпадает → TSL по 15m
+    │   │   └─ Fallback: только при совпадающем тренде (DEV-174 фикс)
+    │   └─ factor=1.25 (DEV-66): TSL-линия шире → держатся дольше
+    ├─ TP1 hit → tp1_hit_at записан → BE обязателен (DEV-57)
+    ├─ LONG: если цена <= tsl → TSL close
+    ├─ SHORT: если цена >= tsl → TSL close
     ├─ SL: пробой stop_loss
-    ├─ TP1: первая цель (50% фиксация, обновляет tp1_hit_at → триггер безубытка)
-    └─ TP: достижение take_profit (если TP1 ещё не было)
+    └─ EXPIRED: > 48 часов
 ```
 
-**Параметры TSL:** `tsl_activation_r=1.0` (снижено с 1.5), `tsl_buffer_pct=0.5`
-**Поле `tsl_activated`:** 0 = не достигал порога активации, 1 = хотя бы раз пересёк +1R
-
----
-
-## СТРАТЕГИИ (strategies/)
-
-```
-strategies/
-  base.py          ← BaseStrategy(ABC): analyze(), calculate_sl_tp()
-  registry.py      ← @register_strategy("name"), get_strategy(name, config)
-  built_in/
-    confluence.py              ← ConfluenceStrategy
-    reversal_scanner_strategy.py   ← ReversalScannerStrategy ★ АКТИВНАЯ (зарег. как "reversal_scanner")
-    confluence_scanner_strategy.py ← ConfluenceScannerStrategy (legacy)
-    conservative.py            ← ConservativeStrategy
-    pivot_reversal_strategy.py ← PivotReversalStrategy
-    mtf_bias.py               ← MTFBiasStrategy (в разработке)
-```
-
-**Активная стратегия:** задаётся в `config.yaml` → `trading.active_strategy: reversal_scanner`
-**Переключение:** изменить значение и перезапустить бота
-**CLI бэктест:** `python run_backtest.py --strategy reversal_scanner --symbol BTC/USDT --days 30`
-
----
-
-## ИЗВЕСТНЫЕ ПРОБЛЕМЫ И ТЕХНИЧЕСКИЙ ДОЛГ
-
-1. ~~risk_manager.py~~ — удалён (active_positions был пустой, мёртвый код), pyc очищены 18.03
-2. **Fallback pivot**: если `analyze_symbol` упал по таймауту — pivot_reversal регистрируется без AI
-3. **Скрытые дивергенции**: фильтр `wt1 < 0` может быть мягким в боковом рынке
-4. **Прогрев пивотов**: `_prefetch_pivots` запускается как `create_task` — первый цикл стартует до завершения прогрева
-5. **analyze_symbol кеш**: TTL=5 мин, один и тот же символ может быть проанализирован повторно через разные сигнальные пути
-6. **DEV-59 (⚠️ не закрыт)**: `pivot_reversal` может обходить `max_rr=3.0` cap в своём code path — WR=9.1% из-за RR=17-23x, требует проверки
-7. **Weekly Bias данные** (DEV-56 bugfix 27.03): данные не накапливались — `weekly_bias` из metadata не передавался в `features_json`. Исправлено в monitoring.py. Production gate DEV-58 — после ≈30.03–06.04
+**Параметры TSL:** `tsl_activation_r=0.5` (снижено с 1.5→1.0→0.5), `tsl_buffer_pct=0.5`
 
 ---
 
 ## ДИАГНОСТИКА ПРОБЛЕМ
 
 ### Сигнал не попадает в БД:
-1. `is_duplicate_signal`? (одна пара < 30 мин)
-2. `is_in_sl_cooldown`? (SL по паре в последние 4 часа)
-3. `is_actionable`? (strength < 50 или direction=NEUTRAL)
-4. BTC контр-тренд + strength < 70?
-5. `analyze_symbol` вернул None (таймаут 30 сек)?
-6. Для дивергенций: `_div_passes_filters`?
-7. **should_register**: strength < 75 (`min_strength_register`, DEV-68)?
-8. **Regime block** (DEV-64B): LONG при TREND_DOWN или SHORT при TREND_UP?
-9. **blocked_regimes**: HIGH_VOL (DEV-33)?
-10. **signal_regime_block**: явный запрет в config.yaml?
+1. `_is_duplicate_signal`? (одна пара < 30 мин)
+2. `_is_in_sl_cooldown`? (SL по паре в последние 4 часа)
+3. BTC gate? (SHORT при BTC BULL str<75)
+4. `WATCH+NEUTRAL` фильтр?
+5. `is_actionable`? (strength < min_strength или direction=NEUTRAL)
+6. DEV-155 режимный порог? (HIGH_VOL=85, LONG_RANGE=78)
+7. DEV-156 CircuitBreaker? (WR<15% → +10 к порогу)
+8. `should_register`: strength < 75 (DEV-68)?
+9. Regime block (DEV-64B): LONG при TREND_DOWN или SHORT при TREND_UP?
+10. Portfolio limit: 2L+2S+4 OPEN total?
+11. sl_dist_pct < 0.1% (DEV-157)?
 
 ### Сигнал не отправляется в TG:
 1. Нет подписчиков?
-2. subscription-фильтры (`can_receive_signal`, дневной лимит)?
-3. WATCH+NEUTRAL фильтр?
+2. subscription-фильтры (can_receive_signal, дневной лимит)?
+3. analyze_symbol вернул None (таймаут 20 сек)?
 
 ### Сделка не закрывается:
-1. `trade_tracker_loop` работает?
-2. `trenddown`/`trendup` рассчитывается (calculate_trend)?
-3. `use_tsl=true` в config.yaml?
+1. trade_tracker_loop работает?
+2. trenddown/trendup рассчитывается (calculate_trend)?
+3. use_tsl=true в config.yaml?
+4. original_sl заполнен? (нужен для правильного current_r — DEV-174)

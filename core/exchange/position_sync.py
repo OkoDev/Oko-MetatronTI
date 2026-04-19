@@ -90,9 +90,33 @@ async def sync_positions(bot) -> None:
         for p in positions:
             sym_raw = p.get("symbol", "")   # "BTC-USDT"
             qty = float(p.get("positionAmt") or p.get("availableAmt") or 0)
-            if qty != 0:
+            margin = float(p.get("margin") or p.get("initialMargin") or p.get("isolatedMargin") or 0)
+            # BingX fallback: if no margin field, estimate from qty × price
+            if margin == 0 and qty != 0:
+                avg_price = float(p.get("avgPrice") or p.get("entryPrice") or p.get("markPrice") or 0)
+                leverage = float(p.get("leverage") or 5)
+                margin = abs(qty) * avg_price / leverage if avg_price else 999  # assume valid if no price
+            if qty != 0 and abs(margin) >= 0.01:
                 sym_our = sym_raw.replace("-", "/") + ":USDT"
                 open_on_exchange[sym_our] = p
+            elif qty != 0 and abs(margin) < 0.01:
+                sym_our = sym_raw.replace("-", "/") + ":USDT"
+                logger.info(
+                    "[POSITION-SYNC] %s dust position (margin=%.6f qty=%.8f) — closing on exchange",
+                    sym_our, margin, qty,
+                )
+                # Auto-close dust on exchange
+                try:
+                    side = "BUY" if qty > 0 else "SELL"  # positionAmt > 0 = LONG
+                    resp = await client.close_position_market(sym_our, side, abs(qty))
+                    if resp.get("code", 0) != 0:
+                        # Market order failed (qty too small) — try one-click close
+                        resp2 = await client.close_position_one_click(sym_our)
+                        logger.info("[POSITION-SYNC] %s dust one-click close: %s", sym_our, resp2.get("code"))
+                    else:
+                        logger.info("[POSITION-SYNC] %s dust closed on exchange OK", sym_our)
+                except Exception as _dust_err:
+                    logger.warning("[POSITION-SYNC] %s dust close failed: %s", sym_our, _dust_err)
 
         # DEV-149: защита от API-сбоя — пропускаем синхронизацию только если
         # snapshot был пустой ДВА цикла подряд. Одиночное пустое значение может
@@ -138,6 +162,62 @@ async def sync_positions(bot) -> None:
             if exit_price is None:
                 exit_price = float(trade.get("entry_price", 0))
                 logger.warning("[POSITION-SYNC] #%d %s: exit_price неизвестен, используем entry", trade_id, sym)
+
+            # ── SANITY CHECK: exit_price не должен давать аномальный R ──────
+            # Если position_sync получил текущую цену (а не реальный fill),
+            # цена могла уйти далеко от SL/TP → аномальный R.
+            # Fix: используем SL/TP цену как exit если status определён.
+            _entry = float(trade.get("entry_price", 0))
+            _sl = float(trade.get("stop_loss") or 0)
+            _tp = float(trade.get("take_profit") or 0)
+            _one_r = abs(_entry - _sl) if _sl and _entry != _sl else 0
+
+            if _one_r > 0 and exit_price:
+                if direction == "LONG":
+                    _r_calc = (exit_price - _entry) / _one_r
+                else:
+                    _r_calc = (_entry - exit_price) / _one_r
+
+                # SL не может дать R > 3 (или profit > entry×3%). Если даёт — exit_price ложный.
+                if status == "SL" and _r_calc > 3:
+                    logger.warning(
+                        "[POSITION-SYNC] #%d %s: SANITY FAIL — SL exit=%.6f даёт R=%.1f "
+                        "(>3). Заменяем на SL-цену %.6f",
+                        trade_id, sym, exit_price, _r_calc, _sl,
+                    )
+                    exit_price = _sl
+
+                # DEV-175: SL с огромным slippage — exit намного хуже SL (gap на бирже).
+                # Реальные деньги VST — exit_price НЕ меняем, только логируем для аудита.
+                # Root cause: STOP_MARKET на малоликвидных монетах, slippage > 2R → orphan R.
+                if status == "SL" and _r_calc < -2.0:
+                    _orig_sl = float(trade.get("original_sl") or 0)
+                    _orig_r = (_r_calc * _one_r) / abs(_entry - _orig_sl) if _orig_sl and abs(_entry - _orig_sl) > 0 else _r_calc
+                    logger.warning(
+                        "[POSITION-SYNC] #%d %s: SLIPPAGE — SL exit=%.6f R=%.1f (<-2). "
+                        "SL на бирже=%.6f, orig_sl=%.6f. STOP_MARKET gap %.2f%%",
+                        trade_id, sym, exit_price, _r_calc, _sl, _orig_sl,
+                        abs(exit_price - (_orig_sl or _sl)) / _entry * 100 if _entry else 0,
+                    )
+
+                # TP не может дать R < -1. Если даёт — exit_price ложный.
+                if status == "TP" and _r_calc < -1 and _tp:
+                    logger.warning(
+                        "[POSITION-SYNC] #%d %s: SANITY FAIL — TP exit=%.6f даёт R=%.1f "
+                        "(<-1). Заменяем на TP-цену %.6f",
+                        trade_id, sym, exit_price, _r_calc, _tp,
+                    )
+                    exit_price = _tp
+
+                # EXPIRED с огромным R — текущая цена ушла далеко от входа
+                if status == "EXPIRED" and abs(_r_calc) > 10 and _sl:
+                    logger.warning(
+                        "[POSITION-SYNC] #%d %s: EXPIRED exit=%.6f даёт R=%.1f "
+                        "(>10). Заменяем на SL-цену %.6f",
+                        trade_id, sym, exit_price, _r_calc, _sl,
+                    )
+                    exit_price = _sl
+                    status = "SL"
 
             try:
                 bot.trade_simulator.close_trade(trade_id, status, exit_price)

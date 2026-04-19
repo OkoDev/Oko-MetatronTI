@@ -139,7 +139,8 @@ class TradeAnalyzer:
     def _load_trade(self, trade_id: int) -> Optional[dict]:
         """Читает закрытую сделку из БД."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute("PRAGMA busy_timeout=10000")  # DEV-148
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """SELECT id, symbol, direction, signal_type, strength, confidence,
@@ -335,7 +336,8 @@ class TradeAnalyzer:
     def _save_analysis(self, trade_id: int, analysis: str, prompt_tokens: Optional[int]) -> None:
         """Сохраняет разбор в таблицу trade_analysis."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute("PRAGMA busy_timeout=10000")  # DEV-148
                 conn.execute(
                     """INSERT INTO trade_analysis (trade_id, analysis, model, prompt_tokens, created_at)
                        VALUES (?, ?, ?, ?, ?)""",

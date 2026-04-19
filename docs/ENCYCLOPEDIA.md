@@ -454,35 +454,38 @@ WT cross / аномалия объёма / CHoCH / пивот touch / дивер
 
 ---
 
-### Текущий статус Куба (02.04.2026)
+### Текущий статус Куба (11.04.2026)
 
 ```
-Сфера  1  DataCollector          ✅ активен
-Сфера  2  WSFeed                 ⚠️ файл есть, не подключён
-Сфера  3  MTF WT Specialist      ❌ нужно создать
-Сфера  4  MTF SMC Specialist     ❌ нужно создать (+ EQH/EQL)
-Сфера  5  Cross-Market Node      ⚠️ DEV-111 partial (BTC 4h only)
-Сфера  6  Market Regime          ⚠️ v1 active, Reversal Mode ❌
-Сфера  7  Signal Detectors       ✅ активны, ⚠️ изолированы (не mesh)
-Сфера  8  Pivot Levels           ✅ активен
-Сфера  9  Narrative Builder      ❌ главный отсутствующий узел
-Сфера 10  Exit Manager           ❌ ARCH-62 (в монолите)
-Сфера 11  Post-Trade Analyser    ✅ shadow, ⚠️ нет feedback в ML
-Сфера 12  Self-Diagnostics       ❌ DEV-121
+Сфера  1  DataCollector          ✅ активен → bus: OHLCV_UPDATED
+Сфера  2  WSFeed                 ✅ подключён → bus: TICK_PRICE (throttled 1/10)
+Сфера  3  MTF WT Specialist      ✅ активен → bus: WT_VERDICT, WT_SNAP_UPDATED
+Сфера  4  MTF SMC Specialist     ⚠️ shadow → bus: SMC_VERDICT
+Сфера  5  Cross-Market Node      ✅ BTC macro → bus: CROSS_MARKET
+Сфера  6  Market Regime          ✅ режим+mode → bus: REGIME_UPDATED
+Сфера  7  Signal Detectors       ✅ mesh → bus: SIGNAL_DETECTED, ANOMALY, DIVERGENCE, PIVOT_TOUCH
+                                  + HTF: trend_change_1h, wt_cross_4h, wt_cross_1d → EventBus
+Сфера  8  Pivot Levels           ✅ → bus: PIVOT_SNAP_UPDATED
+Сфера  9  Narrative Builder      ✅ читает full state → bus: NARRATIVE_BUILT
+Сфера 10  Exit Manager           ✅ → bus: TSL_MOVED, TP1_HIT, POSITION_CLOSED
+Сфера 11  Post-Trade Analyser    ✅ → bus: CASCADE_UPDATED, OTE_ZONE_SET + ARCH-72 feedback
+Сфера 12  Self-Diagnostics       ✅ SphereRegistry → подписан на все 22 типа событий
 ─────────────────────────────────────────────
-Центр     Shared Context Bus     ⚠️ частично (pair_context.py → нужен pub/sub)
+Центр     Shared Context Bus     ✅ ПОЛНЫЙ pub/sub (22 типа событий, 38 полей PairState)
 
-Платоновы тела:
-  Земля  (DB)       ✅
-  Воздух (API)      ✅ (WS не активирован)
-  Огонь  (Logic)    ⚠️ работает как конвейер
-  Вода   (UI)       ✅ (нарратив примитивный)
-  Эфир   (AI/ML)    ⚠️ базовый (специалисты отсутствуют)
+Mesh-связность (подписки между сферами):
+  Сфера 3 ← REGIME_UPDATED (режим влияет на WT verdict)
+  Сфера 6 ← WT_SNAP_UPDATED (WT 4h → reversal mode)
+  Сфера 9 ← SIGNAL_DETECTED (обновляет нарратив)
+  Сфера 10 ← DIVERGENCE_FOUND (дивергенция → подтянуть TSL)
+  Сфера 10 ← PIVOT_TOUCH (pivot near TP → проверка)
+  Сфера 11 ← POSITION_CLOSED (cascade)
+  Сфера 5 → all pairs (CROSS_MARKET при BTC shock)
+  Сфера 12 ← ВСЕ события (мониторинг здоровья)
 
-Итог: 4 из 12 сфер полностью активны
-      4 из 12 частично / shadow
-      4 из 12 отсутствуют
-      Центральная шина: частично
+Итог: 12 из 12 сфер подключены к шине ✅
+      Центральная шина: ПОЛНАЯ (pub/sub + auto-update PairState)
+      EventBus: 14 типов Full CALL триггеров
 ```
 
 ---

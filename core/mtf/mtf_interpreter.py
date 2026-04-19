@@ -166,18 +166,30 @@ def interpret(
                     "wt_cross": d.get("wt_cross", 0),
                 }
 
+        # ── ARCH-77: Миникуб WTMTF — три ребра (shadow, не влияют на strength) ──
+        _zone_depth   = _compute_zone_depth(snapshot, direction)
+        _cross_tf_div = _compute_cross_tf_divergence(snapshot, direction)
+        _momentum_flow = _compute_momentum_flow(snapshot, direction)
+
         dir_str = "LONG ↑" if direction == SignalDirection.LONG else "SHORT ↓"
         description = f"MTF Bias {dir_str} — {senior_matches}/3 senior, entry={entry_tf}"
         interpretation = (
             f"Alignment: {aligned_pct}% {expected_trend} | "
             f"Senior: {senior_matches}/3 | "
             f"entry_tf: {entry_tf} | "
-            f"regime: {regime or '?'}"
+            f"regime: {regime or '?'} | "
+            f"flow={_momentum_flow['flow']} div={_cross_tf_div['type']} depth={_zone_depth:.2f}"
         )
 
         logger.info(
             "[mtf_bias] %s: score=%d bull=%d%% bear=%d%% entry=%s senior=%d/3 regime=%s",
             "<symbol>", strength, bull_pct, bear_pct, entry_tf, senior_matches, regime
+        )
+        logger.debug(
+            "[ARCH-77] flow=%s(%d/3) div=%s(%.2f) depth=%.2f",
+            _momentum_flow["flow"], _momentum_flow["score"],
+            _cross_tf_div["type"], _cross_tf_div["strength"],
+            _zone_depth,
         )
 
         return SignalData(
@@ -198,6 +210,10 @@ def interpret(
                 "regime": regime,
                 "tf_table": tf_table,
                 "senior_reversal": detect_senior_reversal(snapshot),
+                # ARCH-77: три новых ребра Куба (shadow — сбор данных)
+                "zone_depth":    _zone_depth,
+                "cross_tf_div":  _cross_tf_div,
+                "momentum_flow": _momentum_flow,
             },
             description=description,
             interpretation=interpretation,
@@ -252,6 +268,127 @@ def detect_senior_reversal(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]
         "wt1": best["wt1"],
         "zone": best["zone"],
         "strength": strength,
+    }
+
+
+# ── ARCH-77: Миникуб WTMTF — три новых ребра (shadow, данные для анализа) ─────
+
+def _compute_zone_depth(snapshot: Dict[str, Any], direction: "SignalDirection") -> float:
+    """
+    Ребро 1: Zone Depth — глубина OS/OB зоны в направлении сигнала.
+
+    LONG:  берём TF с wt1 < -60 (OS), считаем среднее (|wt1| - 60) / 40 → 0.0–1.0
+    SHORT: берём TF с wt1 > +60 (OB), считаем среднее (wt1 - 60) / 40 → 0.0–1.0
+
+    0.0 = зона едва достигнута (-60/+60)
+    1.0 = экстремальная зона (-100/+100)
+    """
+    LONG = SignalDirection.LONG
+    depths = []
+    for tf in _TF_WEIGHTS:
+        d = snapshot.get(tf)
+        if not d:
+            continue
+        wt1 = d.get("wt1", 0)
+        if direction == LONG and wt1 < -60:
+            depths.append(min(1.0, (abs(wt1) - 60) / 40))
+        elif direction != LONG and wt1 > 60:
+            depths.append(min(1.0, (wt1 - 60) / 40))
+    return round(sum(depths) / len(depths), 3) if depths else 0.0
+
+
+def _compute_cross_tf_divergence(snapshot: Dict[str, Any], direction: "SignalDirection") -> dict:
+    """
+    Ребро 2: Cross-TF WT Divergence — расхождение между старшим и младшим TF.
+
+    Паттерны:
+      Bullish: 4h в OS (wt1<-60) + 1h тренд UP → смена структуры вверх
+      Bearish: 4h в OB (wt1>+60) + 1h тренд DOWN → смена структуры вниз
+
+    Возвращает:
+      type:     "bullish" | "bearish" | "none"
+      strength: 0.0 (нет) / 0.5 (частичная) / 1.0 (полная)
+      detail:   строка для лога
+    """
+    LONG = SignalDirection.LONG
+    is_long = (direction == LONG)
+
+    d4h = snapshot.get("4h", {})
+    d1h = snapshot.get("1h", {})
+    if not d4h or not d1h:
+        return {"type": "none", "strength": 0.0, "detail": "no 4h/1h data"}
+
+    wt1_4h   = d4h.get("wt1", 0)
+    trend_4h = d4h.get("trend", "")
+    wt1_1h   = d1h.get("wt1", 0)
+    trend_1h = d1h.get("trend", "")
+
+    if is_long:
+        # Полная bullish дивергенция: 4h OS + 1h уже UP
+        if wt1_4h < -60 and trend_1h == "UP":
+            strength = 1.0 if trend_4h == "DOWN" else 0.5
+            return {"type": "bullish", "strength": strength,
+                    "detail": f"4h_wt1={wt1_4h:.1f}(OS) 4h_trend={trend_4h} 1h_trend=UP"}
+        # Частичная: 4h OS, 1h ещё DOWN (но разворот в процессе)
+        if wt1_4h < -60 and trend_1h == "DOWN":
+            return {"type": "bullish_forming", "strength": 0.25,
+                    "detail": f"4h_wt1={wt1_4h:.1f}(OS) 1h_trend=DOWN (формируется)"}
+    else:
+        # Полная bearish дивергенция: 4h OB + 1h уже DOWN
+        if wt1_4h > 60 and trend_1h == "DOWN":
+            strength = 1.0 if trend_4h == "UP" else 0.5
+            return {"type": "bearish", "strength": strength,
+                    "detail": f"4h_wt1={wt1_4h:.1f}(OB) 4h_trend={trend_4h} 1h_trend=DOWN"}
+        if wt1_4h > 60 and trend_1h == "UP":
+            return {"type": "bearish_forming", "strength": 0.25,
+                    "detail": f"4h_wt1={wt1_4h:.1f}(OB) 1h_trend=UP (формируется)"}
+
+    return {"type": "none", "strength": 0.0,
+            "detail": f"4h_wt1={wt1_4h:.1f} 1h_trend={trend_1h}"}
+
+
+def _compute_momentum_flow(snapshot: Dict[str, Any], direction: "SignalDirection") -> dict:
+    """
+    Ребро 3: Momentum Flow — порядок смены тренда по TF (4h→1h→15m).
+
+    Здоровый сигнал:  4h тренд в направлении + 1h тренд в направлении + 15m триггер
+    Ранний сигнал:    15m/1h уже в направлении, но 4h ещё нет → риск ложного входа
+    Расходящийся:     смешанные направления без иерархии
+
+    Возвращает:
+      flow:    "healthy" | "early" | "diverging" | "weak"
+      score:   0–3 (сколько из 3 TF совпадают: 4h/1h/15m)
+      detail:  строка
+    """
+    LONG = SignalDirection.LONG
+    expected = "UP" if direction == LONG else "DOWN"
+
+    t4h  = snapshot.get("4h",  {}).get("trend", "")
+    t1h  = snapshot.get("1h",  {}).get("trend", "")
+    t15m = snapshot.get("15m", {}).get("trend", "")
+
+    match_4h  = (t4h  == expected)
+    match_1h  = (t1h  == expected)
+    match_15m = (t15m == expected)
+    score = sum([match_4h, match_1h, match_15m])
+
+    if score == 3:
+        flow = "healthy"
+    elif match_4h and match_1h and not match_15m:
+        flow = "healthy"   # 4h+1h достаточно, 15m запаздывает
+    elif not match_4h and match_1h and match_15m:
+        flow = "early"     # мелкие ТФ опережают старшие — риск
+    elif match_4h and not match_1h and match_15m:
+        flow = "diverging" # 1h против — конфликт в середине иерархии
+    elif score <= 1:
+        flow = "weak"
+    else:
+        flow = "partial"
+
+    return {
+        "flow":   flow,
+        "score":  score,
+        "detail": f"4h={t4h} 1h={t1h} 15m={t15m} → {flow}({score}/3)",
     }
 
 

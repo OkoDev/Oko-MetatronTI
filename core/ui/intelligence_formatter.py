@@ -25,7 +25,7 @@ _DIRECTION_LABEL = {
     "NEUTRAL": "NEUTRAL",
 }
 _SIGNAL_TYPE_RU = {
-    "trend_signal":    "Тренд EMA",
+    "trend_signal":    "Тренд ATR",
     "wt_signal":       "WaveTrend",
     "anomaly":         "Аномалия объёма",
     "divergence":      "Дивергенция",

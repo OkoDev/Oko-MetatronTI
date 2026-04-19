@@ -31,7 +31,10 @@
       "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/integration/test_reversal_scanner_e2e.py -v --tb=short)",
       "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pip install pytest pytest-asyncio --quiet)",
       "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/integration/test_reversal_scanner_e2e.py::TestConfigParams -v --tb=short)",
-      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -c \":*)"
+      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -c \":*)",
+      "Bash('C:\\\\Users\\\\yogoru\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe' -c ':*)",
+      "Bash(\"C:\\\\Users\\\\yogoru\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"import py_compile; py_compile.compile\\('core/exchange/position_sync.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(powershell -Command 'Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SelectVoice\\('\\\\''Microsoft Irina Desktop'\\\\''\\); $s.Speak\\('\\\\''Куб Метатрона реализован полностью. Двенадцать из двенадцати сфер подключены к шине. Двадцать два типа событий. Три новых детектора. Фикс позишн синк. Перезапускай бота.'\\\\''\\)')"
     ],
     "additionalDirectories": [
       "C:\\Users\\yogoru\\.claude"

@@ -29,7 +29,23 @@ async def fetch_and_save_sl_order_id(bot, trade_id: int, symbol: str, pos_side: 
                 return
         except Exception as e:
             logger.debug("[TSL-UPDATER] fetch_and_save_sl_order_id #%d attempt %d: %s", trade_id, attempt, e)
-    logger.warning("[TSL-UPDATER] trade #%d %s: SL orderId не найден на бирже после 3 попыток", trade_id, symbol)
+    # SL orderId не найден — bracket не создал SL. Ставим отдельным ордером.
+    logger.warning("[TSL-UPDATER] trade #%d %s: SL orderId не найден → создаю SL-ордер вручную", trade_id, symbol)
+    try:
+        om = bot.order_executor
+        trade = next((t for t in bot.trade_simulator.get_open_trades() if t.get("id") == trade_id), None)
+        if trade:
+            sl_price = float(trade.get("stop_loss") or 0)
+            direction = trade.get("direction", "LONG")
+            real_qty = await om.get_position_qty(symbol, pos_side)
+            if sl_price > 0 and real_qty and real_qty > 0:
+                sl_oid = await om.place_sl_order(symbol, pos_side, sl_price, real_qty)
+                if sl_oid:
+                    bot.trade_simulator.set_exchange_sl_order_id(trade_id, sl_oid)
+                    logger.info("[TSL-UPDATER] trade #%d %s: SL-ордер создан вручную, order_id=%s", trade_id, symbol, sl_oid)
+                    return
+    except Exception as e:
+        logger.warning("[TSL-UPDATER] trade #%d %s: ручное создание SL failed: %s", trade_id, symbol, e)
 
 
 async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
@@ -60,7 +76,18 @@ async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
                 if sl_oid:
                     ts.set_exchange_sl_order_id(trade_id, sl_oid)
                 else:
-                    logger.warning("[TSL-UPDATER] #%d %s: нет SL orderId — пропуск", trade_id, symbol)
+                    # SL-ордер отсутствует — создаём новый
+                    real_qty = await om.get_position_qty(symbol, pos_side)
+                    if real_qty and real_qty > 0:
+                        new_oid = await om.place_sl_order(symbol, pos_side, new_sl, real_qty)
+                        if new_oid:
+                            ts.set_exchange_sl_order_id(trade_id, new_oid)
+                            logger.info("[TSL-UPDATER] #%d %s: SL создан (не было) sl=%.6f order_id=%s",
+                                        trade_id, symbol, new_sl, new_oid)
+                        else:
+                            logger.warning("[TSL-UPDATER] #%d %s: не удалось создать SL", trade_id, symbol)
+                    else:
+                        logger.warning("[TSL-UPDATER] #%d %s: нет SL orderId и qty=0 — ORPHAN", trade_id, symbol)
                     continue
 
             # Шаг 2: qty для нового ордера
@@ -97,6 +124,78 @@ async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
                 ts.set_exchange_sl_order_id(trade_id, new_id)
                 logger.info("[TSL-UPDATER] ✅ #%d %s: SL %.6f → %.6f (order_id=%s)",
                             trade_id, symbol, old_sl, new_sl, new_id)
+            else:
+                # update_sl не вернул ID — возможны 2 случая:
+                #   (a) DEV-160 guard / min_move_pct skip — старый SL жив, ID в DB корректный
+                #   (b) cancel прошёл, place_sl_order упал — старый SL мёртв, DB держит stale ID
+                # Проверяем биржу: если SL там есть — просто лог, иначе чистим DB
+                # чтобы repair_missing_sl восстановил на следующем цикле.
+                live_oid = await om.get_sl_order_id(symbol, pos_side)
+                if not live_oid:
+                    ts.set_exchange_sl_order_id(trade_id, "")
+                    logger.warning(
+                        "[TSL-UPDATER] #%d %s: update_sl вернул None и SL отсутствует на бирже — "
+                        "DB exchange_sl_order_id очищен (repair восстановит)",
+                        trade_id, symbol,
+                    )
+                elif live_oid != sl_oid:
+                    ts.set_exchange_sl_order_id(trade_id, live_oid)
 
         except Exception as e:
             logger.warning("[TSL-UPDATER] #%d %s: %s", trade_id, symbol, e)
+
+
+async def repair_missing_sl(bot) -> None:
+    """
+    Находит OPEN VST-сделки без exchange_sl_order_id и ставит SL-ордер на бирже.
+    Вызывается каждый цикл trade_tracker (60 сек).
+    """
+    om = bot.order_executor
+    ts = bot.trade_simulator
+
+    for trade in ts.get_open_trades():
+        if not trade.get("exchange_order_id"):
+            continue  # SIM-only
+
+        trade_id = trade["id"]
+        symbol = trade.get("symbol", "")
+        direction = trade.get("direction", "LONG")
+        sl_price = float(trade.get("stop_loss") or 0)
+        pos_side = "LONG" if direction == "LONG" else "SHORT"
+        db_sl_oid = trade.get("exchange_sl_order_id") or ""
+
+        if sl_price <= 0:
+            continue
+
+        try:
+            # Биржа — источник истины. Не доверяем DB exchange_sl_order_id
+            # (может указывать на уже отменённый ордер после неудачного TSL update).
+            live_sl_oid = await om.get_sl_order_id(symbol, pos_side)
+            if live_sl_oid:
+                # На бирже SL есть. Синхронизируем DB если ID разошёлся.
+                if live_sl_oid != db_sl_oid:
+                    ts.set_exchange_sl_order_id(trade_id, live_sl_oid)
+                    logger.info("[REPAIR-SL] #%d %s: SL синхронизирован DB→%s (было %s)",
+                                trade_id, symbol, live_sl_oid, db_sl_oid or "∅")
+                continue
+
+            # На бирже SL нет. Если в DB был stale ID — чистим, чтобы не вводить в заблуждение.
+            if db_sl_oid:
+                ts.set_exchange_sl_order_id(trade_id, "")
+                logger.warning("[REPAIR-SL] #%d %s: stale exchange_sl_order_id=%s (на бирже SL отсутствует)",
+                               trade_id, symbol, db_sl_oid)
+
+            real_qty = await om.get_position_qty(symbol, pos_side)
+            if not real_qty or real_qty <= 0:
+                logger.debug("[REPAIR-SL] #%d %s: qty=0 на бирже — orphan, пропуск", trade_id, symbol)
+                continue
+
+            new_oid = await om.place_sl_order(symbol, pos_side, sl_price, real_qty)
+            if new_oid:
+                ts.set_exchange_sl_order_id(trade_id, new_oid)
+                logger.info("[REPAIR-SL] #%d %s %s: SL создан @ %.6f order_id=%s",
+                            trade_id, symbol, pos_side, sl_price, new_oid)
+            else:
+                logger.warning("[REPAIR-SL] #%d %s: place_sl_order вернул None", trade_id, symbol)
+        except Exception as e:
+            logger.warning("[REPAIR-SL] #%d %s: %s", trade_id, symbol, e)

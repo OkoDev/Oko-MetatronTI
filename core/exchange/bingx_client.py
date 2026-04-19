@@ -80,6 +80,10 @@ class BingXClient:
         # Синхронизируется один раз при первом запросе через sync_time()
         self._time_offset_ms: int = 0
         self._time_synced: bool = False
+        # Кэш precision контрактов: bx_symbol → {"qty": int, "price": int, "min_qty": float}
+        # Загружается один раз через _load_contracts() при первом quantize_qty().
+        self._contracts_cache: dict[str, dict] = {}
+        self._contracts_loaded: bool = False
 
     async def sync_time(self) -> int:
         """
@@ -108,6 +112,54 @@ class BingXClient:
         except Exception as e:
             logger.warning("[BingXClient] sync_time failed: %s — offset=0", e)
         return self._time_offset_ms
+
+    async def _load_contracts(self) -> None:
+        """Загружает precision для всех контрактов один раз. Публичный endpoint без подписи."""
+        import aiohttp
+        if self._contracts_loaded:
+            return
+        try:
+            url = f"{self._base}/openApi/swap/v2/quote/contracts"
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    data = await r.json()
+            items = data.get("data", []) or []
+            for item in items:
+                bx_symbol = item.get("symbol", "")
+                if not bx_symbol:
+                    continue
+                self._contracts_cache[bx_symbol] = {
+                    "qty":     int(item.get("quantityPrecision") or 2),
+                    "price":   int(item.get("pricePrecision") or 4),
+                    "min_qty": float(item.get("tradeMinQuantity") or 0),
+                }
+            self._contracts_loaded = True
+            logger.info("[BingXClient] contracts precision loaded: %d symbols", len(self._contracts_cache))
+        except Exception as e:
+            logger.warning("[BingXClient] _load_contracts failed: %s — fallback precision=4", e)
+            self._contracts_loaded = True  # не ретраить бесконечно
+
+    async def quantize_qty(self, symbol: str, qty: float) -> float:
+        """Floor qty к precision контракта. Fallback: 4 знака после запятой."""
+        if qty <= 0:
+            return 0.0
+        await self._load_contracts()
+        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        info = self._contracts_cache.get(bx_symbol)
+        prec = int(info["qty"]) if info else 4
+        factor = 10 ** prec
+        return math.floor(qty * factor) / factor
+
+    async def quantize_price(self, symbol: str, price: float) -> float:
+        """Round price к precision контракта. Fallback: 6 знаков."""
+        if price <= 0:
+            return 0.0
+        await self._load_contracts()
+        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        info = self._contracts_cache.get(bx_symbol)
+        prec = int(info["price"]) if info else 6
+        factor = 10 ** prec
+        return round(price * factor) / factor
 
     def _sign(self, params_str: str) -> str:
         return hmac.new(self._secret.encode(), params_str.encode(), hashlib.sha256).hexdigest()
@@ -247,8 +299,13 @@ class BingXClient:
     async def place_bracket_order(
         self, symbol: str, side: str, qty: float,
         sl: float, tp: float, leverage: int = 5,
+        sl_limit_buffer_pct: float = 0.0,
     ) -> dict:
-        """MARKET позиция с SL и TP (JSON-объекты, dual-signing)."""
+        """MARKET позиция с SL и TP (JSON-объекты, dual-signing).
+
+        sl_limit_buffer_pct > 0 → SL как STOP (Stop-Limit) вместо STOP_MARKET.
+        Для LONG: limit_price = sl * (1 - buf/100). Для SHORT: sl * (1 + buf/100).
+        """
         bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
         pos_side  = "LONG" if side == "BUY" else "SHORT"
 
@@ -260,7 +317,14 @@ class BingXClient:
         except Exception as e:
             logger.warning("[BingXClient] leverage error (продолжаем): %s", e)
 
-        sl_obj = json.dumps({"type": "STOP_MARKET",        "stopPrice": sl, "price": 0, "workingType": "MARK_PRICE"}, separators=(",", ":"))
+        if sl_limit_buffer_pct > 0:
+            sl_limit = sl * (1.0 - sl_limit_buffer_pct / 100.0) if pos_side == "LONG" \
+                else sl * (1.0 + sl_limit_buffer_pct / 100.0)
+            sl_obj = json.dumps({"type": "STOP", "stopPrice": sl, "price": round(sl_limit, 8), "workingType": "MARK_PRICE"}, separators=(",", ":"))
+            logger.info("[BingXClient] bracket STOP-LIMIT %s %s sl=%.6f limit=%.6f (buf=%.2f%%)",
+                        symbol, pos_side, sl, sl_limit, sl_limit_buffer_pct)
+        else:
+            sl_obj = json.dumps({"type": "STOP_MARKET", "stopPrice": sl, "price": 0, "workingType": "MARK_PRICE"}, separators=(",", ":"))
         tp_obj = json.dumps({"type": "TAKE_PROFIT_MARKET", "stopPrice": tp, "price": 0, "workingType": "MARK_PRICE"}, separators=(",", ":"))
 
         ts = self._ts()
@@ -275,18 +339,30 @@ class BingXClient:
     async def place_stop_order(
         self, symbol: str, side: str, pos_side: str,
         stop_price: float, qty: float,
+        limit_price: float | None = None,
     ) -> dict:
-        """Ставит STOP_MARKET ордер (для нового SL при TSL)."""
+        """Ставит STOP_MARKET или STOP (Limit) ордер (для нового SL при TSL).
+
+        Если limit_price задан → тип STOP (Stop-Limit): исполняется не хуже limit_price.
+        Иначе → STOP_MARKET: исполняется по рыночной цене (возможен slippage).
+
+        DEV-175: STOP (Limit) рекомендуется для VST через sl_limit_buffer_pct в config.
+        """
         bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
-        return await self.post("/openApi/swap/v2/trade/order", {
+        params: dict = {
             "symbol":       bx_symbol,
             "side":         side,
             "positionSide": pos_side,
-            "type":         "STOP_MARKET",
             "quantity":     str(qty),
             "stopPrice":    str(stop_price),
             "workingType":  "MARK_PRICE",
-        })
+        }
+        if limit_price is not None:
+            params["type"]  = "STOP"
+            params["price"] = str(limit_price)
+        else:
+            params["type"]  = "STOP_MARKET"
+        return await self.post("/openApi/swap/v2/trade/order", params)
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
         """Отменяет ордер."""
@@ -309,11 +385,26 @@ class BingXClient:
             "reduceOnly":   "true",
         }
         resp = await self.post("/openApi/swap/v2/trade/order", payload)
+        code = resp.get("code")
         msg = str(resp.get("msg", ""))
-        if resp.get("code") == 109400 and "ReduceOnly" in msg and "Hedge mode" in msg:
+        # Hedge mode: reduceOnly=true ломается двумя кодами:
+        #   109400 "ReduceOnly ... Hedge mode"
+        #   101205 "No position to close" (reduceOnly не видит позицию противоположной стороны)
+        if code == 109400 and "ReduceOnly" in msg and "Hedge mode" in msg:
+            payload.pop("reduceOnly", None)
+            return await self.post("/openApi/swap/v2/trade/order", payload)
+        if code == 101205 and payload.get("reduceOnly") == "true":
+            logger.info("[BingXClient] close_position_market %s: 101205 → retry без reduceOnly (hedge)", symbol)
             payload.pop("reduceOnly", None)
             return await self.post("/openApi/swap/v2/trade/order", payload)
         return resp
+
+    async def close_position_one_click(self, symbol: str) -> dict:
+        """BingX one-click close — закрывает всю позицию по символу (для dust)."""
+        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        return await self.post("/openApi/swap/v2/trade/closeAllPositions", {
+            "symbol": bx_symbol,
+        })
 
 
 # ── Фабрика клиента ─────────────────────────────────────────────────────────

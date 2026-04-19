@@ -29,6 +29,7 @@ from core.exchange import OrderManager as OrderExecutor
 from core.trading.position_sizer import PositionSizer
 from core.trading.position_manager import PositionManager
 from core.infra.ws_feed import WsFeed
+from core.exchange.btc_regime_provider import BTCRegimeProvider
 from bot.menus import MenuHandler
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,9 @@ class TradingAlertBot:
         self.trading_intelligence._event_bus = self.event_bus
         # Куб: PairContextBus → TradingIntelligence (NarrativeBuilder + wt_verdict persist)
         self.trading_intelligence._pair_context_bus = self.pair_context
+        # ARCH-78: BTCRegimeProvider — Сфера 5 (Cross-Market), глобальный BTC 4h режим
+        self.btc_regime_provider = BTCRegimeProvider(config=config)
+        self.trading_intelligence._btc_provider = self.btc_regime_provider
         # ARCH-72: Feedback Loop — PostTradeAnalyser получает доступ к intelligence + event_bus
         self.post_analyser._intelligence = self.trading_intelligence
         self.post_analyser._event_bus = self.event_bus

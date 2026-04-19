@@ -525,6 +525,244 @@ asyncio.gather возвращает результаты в порядке ар�
 
 ---
 
+---
+
+## 🔄 Этап 15 — Signal Quality & Adaptive Gates (апрель 2026, в работе)
+
+**Цель:** система фильтрует сама себя — не «что войти», а «когда НЕ входить».
+
+**Реализовано:**
+- ✅ DEV-155: `min_strength_by_regime` — HIGH_VOL=85, LONG_RANGE=75
+- ✅ DEV-156: Circuit Breaker — WR<15% → +10 к порогу на 30 мин
+- ✅ DEV-157: guard аномального SL (dist<0.1% → пропуск)
+- ✅ DEV-110/ARCH-55: RANGE BOUNCE — SL/TP от пивотов при RANGE режиме
+- 🔄 DEV-111b/act: BTC 4h gate с HIGH_VOL блоком (дедлайн 14.04)
+- 🔴 DEV-153: VerdictGate activation (verdict_gate.enabled: true)
+
+**Результат:** три независимых рубежа защиты качества сигналов работают последовательно.
+
+---
+
+## 🔲 Этап 16 — OTE Production & Shadow Extended (апрель–май 2026)
+
+**Цель:** OTE сигнал готов к production — первый сигнал с Sharpe > 2 в системе.
+
+**Шаги:**
+1. DEV-88: приземлить `min_zone_tf:"4h"` + `require_choch:true` в `detect_ote_signal()`
+2. DEV-89: shadow на 20 парах / 90 дней — критерий `WR≥40% ∧ Sharpe≥1.5 ∧ n≥150`
+3. Логировать `ote_confluence_count`, `ote_primary_tf`, `ote_entry_regime` в features_json
+4. При успехе DEV-89 → создать DEV-90 (OTE production, weight=0.15)
+
+**Почему важно:** C1 (4h+CHoCH) показал Sharpe=2.68 на бэктесте — это лучший риск-скорректированный результат в системе на сегодня. Если shadow подтвердит — это меняет струк��уру весов сигналов.
+
+---
+
+## 🔲 Этап 17 — Куб Метатрона: MCP External Layer (апрель–июнь 2026)
+
+**Цель:** Куб становится когнитивной системой с внешним AI-слоем.
+
+**Фаза 1 (✅ готово, 12.04.2026):** `/api/cube/context`, `/api/cube/event`, `/api/cube/ml/train`
+Claude читает живое состояние 12 сфер, триггерит Full CALL, запускает ML вручную.
+
+**Фаза 2 (следующий спринт):** `/api/cube/simulate`
+Быстрый параметризованный бэктест одной стратегии на одном символе (~5-10 сек).
+Использование: «проверь гипотезу — что если добавить SMC Bull OB как обязательный фильтр?»
+
+**Фаза 3 (май–июнь 2026):** MCP Server (Python SDK)
+Обернуть `/api/cube/*` в нативный MCP сервер — Claude видит `get_pair_context`, `inject_event`,
+`simulate` как встроенные инструменты без WebFetch. Добавить в `.claude/settings.json`.
+
+**Фаза 4 (CUBE-06, после накопления данных):** Narrative Builder v2
+Claude читает PairFullState (все 12 сфер + история событий) → строит развёрнутый торговый
+нарратив → публикует в TG. Отличие от текущего DEV-151: видит весь контекст, не только recommendation.
+
+---
+
+## 🔲 Этап 18 — Moment Score & Market Uncertainty (май–июнь 2026)
+
+**Цель:** от бинарных сигналов к градуированному «качеству момента».
+
+### 18.1 — Moment Score (Гипотеза 1)
+
+Идея: PairFullState хранит значительно больше информации чем используется для принятия решения.
+`cascade_count`, `wt_verdict`, `smc_verdict`, `reversal_mode`, `regime`, `wt_snap` по всем TF —
+это не отдельные сигналы, а **торговое давление**. Можно построить:
+
+```python
+moment_score = f(
+    wt_verdict_confidence,    # WT Specialist уверен?
+    smc_verdict_confidence,   # SMC Specialist уверен?
+    reversal_mode,            # REVERSAL > TREND > UNCLEAR
+    cascade_count_norm,       # норм. счётчик убытков (чем выше — хуже)
+    regime_quality,           # TREND > RANGE > HIGH_VOL
+    tf_alignment_pct,         # % TF смотрят в одном направлении
+)
+```
+
+Входить только при `moment_score > 75`. Проверка за 1 день: выгрузить features_json +
+PairState на момент каждой сделки → построить скор → корреляция с R_multiple.
+Если r > 0.3 — рабочий фильтр.
+
+### 18.2 — Market Uncertainty Score (Гипотеза 2)
+
+Идея: система должна знать когда она не знает.
+
+```python
+uncertainty_score = f(
+    cascade_count > 2,             # система в стрике убытков
+    reversal_mode == "UNCLEAR",    # MTF противоречие
+    wt_snap_contradiction,         # 4h bullish, 1d bearish — конфликт
+    regime == "HIGH_VOL",          # хаотичный рынок
+)
+```
+
+При `uncertainty_score > threshold` → не входить вообще (не поднимать порог, а блокировать).
+Разница: Circuit Breaker реагирует постфактум (WR упал). Uncertainty — проактивный сигнал
+«прямо сейчас непредсказуемо».
+
+**Реализация:** `core/context/moment_scorer.py` — читает PairState, возвращает (moment_score, uncertainty_score).
+Применяется в `is_actionable()` как дополнительное условие.
+
+---
+
+## 🔲 Этап 19 — Experience-Based Trading (июнь–сентябрь 2026)
+
+**Цель:** система использует собственную историю как базу знаний.
+
+### 19.1 — Feature Store (CUBE-03)
+
+Каждая сделка в `simulated_trades` с заполненным `features_json` — это вектор опыта.
+Feature Store превращает историю в retrieval engine:
+
+```
+Запрос: "найди ситуации похожие на текущий BTC — WT oversold 4h + CHoCH + pivot S1"
+→ Qdrant vector search → top-20 исторических сетапов
+→ avg_outcome: TP в 63%, avg_R: 0.82
+→ наиболее частые дополнительные условия при success: smc_bull_ob=True, cascade_count<2
+```
+
+Это **retrieval-augmented trading** — принципиально новый класс решений.
+Триггер: `n ≥ 5000 сделок` с заполненным features_json И AUC > 0.55.
+
+### 19.2 — Asymmetric Predictors (Гипотеза 4)
+
+Идея: LONG и SHORT — разные явления. Паника быстрее эйфории. SHORT-сигналы
+более технические и менее зашумлены сентиментом. Разделить OutcomePredictor:
+
+```python
+long_predictor  = OutcomePredictor(direction="LONG",  features=[...])
+short_predictor = OutcomePredictor(direction="SHORT", features=[...])
+```
+
+Гипотеза: SHORT-модель покажет AUC > LONG-модели при тех же данных.
+Реализация: разделить выборку в `outcome_predictor.py`, обучать два независимых RFC.
+Триггер: `n ≥ 300 LONG` И `n ≥ 300 SHORT` закрытых сделок с features.
+
+### 19.3 — Hypothesis Engine (CUBE-04)
+
+Замыкает петлю: Claude генерирует гипотезу → CUBE-02 тестирует → лучшие добавляются в shadow.
+
+```
+Цикл Hypothesis Engine:
+1. Claude анализирует PairState + недавние исходы
+2. Генерирует гипотезу: "добавить SMC Bull OB как фильтр для LONG в RANGE"
+3. POST /api/cube/simulate → WR: 41% → 56%, n=28
+4. Если дельта > 10pp → создать DEV-NNN "shadow test [гипотеза]"
+5. После 100 shadow сделок → ARCH review → production или discard
+```
+
+Это первая петля обратной связи человека-AI-системы. Система перестаёт быть инструментом
+и становится соавтором стратегии.
+
+---
+
+## 🔲 Этап 20 — Production Readiness & LIVE (август–сентябрь 2026)
+
+**Цель:** переход от симуляции к реальной торговле с доказанным edge.
+
+**Критерии готовности к LIVE:**
+- WR ≥ 38% (TP+TSL) на новых данных (апрель 2026+, без timezone-бага)
+- AUC OutcomePredictor ≥ 0.55 (модель умеет различать winners/losers)
+- Moment Score корреляция с R_multiple ≥ 0.3 (скор работает)
+- 500+ DUAL_TSL сделок → аудит split 10%/90% пройден (TRADER-AUDIT-002)
+- OTE C1 shadow WR ≥ 40% подтверждён (DEV-89)
+- Dead-Man Timer реализован (DEV-104) — emergency close all
+
+**Порядок включения:**
+1. VST (Virtual Spot Trading) — биржа, но виртуальные деньги. Уже работает.
+2. LIVE micro-lot (0.01% риска) — 2 недели наблюдения
+3. LIVE normal (1% риска) — при подтверждении edge
+
+### Этап 20.1 — Strategy Generator (CUBE-07, Q4 2026+)
+
+Только после стабильной прибыли в LIVE за 3+ месяца. Genetic optimizer стратегий,
+DSL условий, sandbox-тест. Это следующий проект, не эволюция текущего.
+
+---
+
+## 📊 Метрики прогресса
+
+> Обновлено: 12.04.2026
+
+| Метрика | Сейчас | Цель (Этап 20) |
+|---------|--------|----------------|
+| Сделок в БД | 3 200+ | 10 000+ |
+| WR (TP+TSL, апр. данные) | ~25% | ≥ 38% |
+| OutcomePredictor AUC | 0.41 | ≥ 0.55 |
+| OTE C1 WR (shadow) | 41.7% (бэктест) | ≥ 40% (real shadow) |
+| RANGE BOUNCE активен | ✅ 12.04 | ≥ 20 сделок для оценки |
+| MCP Layer (Cube API) | ✅ Фаза 1 | Фаза 3 (proper MCP SDK) |
+| Hypothesis Engine | 🔲 | CUBE-04 реализован |
+| Режим торговли | VST (симуляция) | LIVE micro-lot |
+
+---
+
+## 🗺️ Временная шкала
+
+```
+Апрель 2026:
+  ├─ Этап 15 ✅ (signal quality guards)
+  ├─ Этап 16 🔄 (OTE shadow start)
+  └─ Этап 17 Фаза 1 ✅ (MCP Layer)
+
+Май 2026:
+  ├─ Этап 17 Фаза 2 (Simulation Engine)
+  ├─ Этап 18.1 (Moment Score прототип)
+  └─ ARCH-45: OutcomePredictor ревью (цель AUC > 0.55)
+
+Июнь 2026:
+  ├─ Этап 17 Фаза 3 (proper MCP Server)
+  ├─ Этап 18.2 (Market Uncertainty)
+  └─ Этап 19.2 (Asymmetric Predictors, если n≥300)
+
+Июль–Август 2026:
+  ├─ Этап 19.1 (Feature Store, если n≥5000)
+  ├─ Этап 19.3 (Hypothesis Engine прототип)
+  └─ Этап 20 подготовка (Dead-Man Timer, LIVE checklist)
+
+Сентябрь 2026+:
+  └─ Этап 20: LIVE micro-lot → LIVE normal
+
+Q4 2026+:
+  ├─ Этап 20.1: Strategy Generator (R&D)
+  └─ Этап 21: CubeNode — Фрактальный Куб Метатрона
+
+После LIVE + стабильная прибыль 30+ дней:
+  Этап 21.1 — CubeNode интерфейс:
+    subscribe(event, handler) / publish(event, data) / get_state() / as_sphere()
+    Каждый Specialist становится самостоятельным кубом
+  Этап 21.2 — Fractal Specialists:
+    WTCube:     5 TF как сферы (15m, 1h, 4h, 1d, 1w)
+    SMCCube:    4 структуры (OB, FVG, CHoCH, Liquidity)
+    RegimeCube: 3 индикатора (ADX, ATR, EMA)
+  Этап 21.3 — MarketCube:
+    524 пары как CubeNode-сферы
+    Корреляционные события между парами (BTC_SHOCK → блок всех SHORT)
+    Горизонтальное масштабирование: WTCube на отдельном процессе
+```
+
+---
+
 ## Метрики прогресса
 
 > Обновлено: 27.03.2026
@@ -629,3 +867,59 @@ asyncio.gather возвращает результаты в порядке ар�
 | 2026-03-26 | DEV-64B: signal_regime_block — явный список запрещённых (режим+направление) пар |
 | 2026-03-26 | DEV-66: TSL factor 1.1→1.25 (бэктест +0.041R), бот перезапущен |
 | 2026-03-27 | OutcomePredictor отключён (AUC=0.329 < 0.5), min_strength_register 65→75 |
+| 2026-03-29 | ARCH-54: core/ разбит по подпапкам (signals/ indicators/ mtf/ pivots/ trading/ ml/ smc/ intelligence/ context/ exchange/ db/ infra/ ui/) |
+| 2026-03-29 | Принято решение «Куб Метатрона» — Reactive Graph инкрементальный план (Фаза 0→3) |
+| 2026-04-11 | Куб Метатрона ПОЛНАЯ РЕАЛИЗАЦИЯ: PairContextBus 38 полей, 22 события, SphereRegistry, NarrativeBuilder, HTFDetectors, 13 сфер подключены к шине |
+| 2026-04-12 | DUAL_TSL 10%/90% — стандарт по бэктесту 5564 сделок (+847R). DUAL_TSL strategy_type |
+| 2026-04-12 | DEV-87/88: OTE Step2 бэктест C1 — WR=41.7% Sharpe=2.68 (4h+CHoCH), остаётся в shadow |
+| 2026-04-12 | DEV-155: min_strength по режиму HIGH_VOL=85, LONG_RANGE=78 |
+| 2026-04-12 | DEV-156: CircuitBreaker — WR<15% rolling 50 → +10 к min_strength на 30 мин |
+| 2026-04-12 | DEV-157: sl_dist_pct < 0.1% → skip guard в register_trade |
+| 2026-04-13 | ARCH-73..76: спеки декомпозиции TI/TradeSimulator/Monitoring + CubeNode интерфейс |
+| 2026-04-13 | DEV-161: VerdictGate rule-based (EXHAUSTION direction-aware, REVERSAL_SETUP) |
+| 2026-04-14 | DEV-170: Time-of-day gate 09-18 UTC (wt_signal 04-18) |
+| 2026-04-14 | DEV-171: Confluence полный стоп (убыток -348R, убыточен во всех режимах) |
+| 2026-04-14 | DEV-172: Entry Priority Matrix shadow P1/P2/P3 → features_json |
+| 2026-04-14 | DEV-121 Cube Selftest L13/L14/L15: 27 проверок (13 сфер + 10 рёбер + 4 loop) |
+| 2026-04-15 | DEV-173: Orphan epidemic fix — dynamic contract precision, tsl_updater биржа как истина |
+| 2026-04-15 | DEV-174: TSL системный аудит — 3 бага (pre-filter, orig_sl current_r, direction fallback) |
+| 2026-04-16 | ARCH-78: BTCRegimeProvider (ATR Supertrend 4h) production — gate SHORT при BTC BULL |
+| 2026-04-16 | DEV-175: slippage fix — min_volume_usd=5M, STOP-LIMIT, sanity check R<-2 |
+| 2026-04-18 | docs/CUBE_ARCHITECTURE.md: 8 Mermaid-диаграмм полной схемы Куба Метатрона |
+
+---
+
+## 🔲 Этап 15 — Куб Метатрона: Валидация и Фаза 1 (апрель-май 2026)
+
+**Цель:** доказать ценность каждого узла изолированно → соединить
+
+- **DEV-89** (🟡): OTE C1 shadow 20 пар / 90 дней. Критерий ~26.04: WR≥40% ∧ Sharpe≥1.5 ∧ n≥150
+- **ARCH-55-VAL** (🟢): RANGE BOUNCE валидация shadow → 23.04
+- **ARCH-45** (🟢): OutcomePredictor ревью 20.04 (цель AUC > 0.55)
+- **ARCH-77** (🟡): Миникуб WTMTF — 3 ребра в derive_wt_verdict (Cross-TF Div, Momentum Flow, Zone Depth)
+- **DEV-172** (🟡): Entry Priority Matrix баг — priority=None у всех сделок, нужна диагностика
+- **DEV-93** (Фаза 1): PairContextBus production (post_tsl_queue, cascade_count)
+- **DEV-94** (Фаза 2): PostTradeAnalyser — SL→reversal WL, TSL→OTE Re-entry
+- **DEV-95** (Фаза 3): TriggerBus event-driven scan (vs uniform polling)
+
+## 🔲 Этап 16 — Декомпозиция монолитов (ARCH-73..75, май 2026)
+
+**Предусловие:** LIVE стабилен ≥ 2 недели
+
+- **ARCH-73**: trading_intelligence.py (2578 строк) → MLSpecialist + StrengthAggregator
+- **ARCH-74**: trade_simulator.py (1978 строк) → TSLManager + MFETracker + ExchangeSyncGuard
+- **ARCH-75**: monitoring.py (1436 строк) → SignalFilter + MessageDispatcher
+
+## 🔲 Этап 17 — CubeNode + Фрактальный Куб (ARCH-76, июнь+ 2026)
+
+**Предусловие:** LIVE + стабильная прибыль ≥ 30 дней + AUC > 0.55 + ≥5000 сделок
+
+```python
+class CubeNode:
+    def subscribe(self, event_type, handler): ...
+    def publish(self, event): ...
+    def get_state(self) -> dict: ...
+    def as_sphere(self) -> dict: ...
+```
+
+**Философия:** Полносвязная система. Emergent Intelligence — система знает вещи которые ни один индикатор не вычислит сам по себе.
