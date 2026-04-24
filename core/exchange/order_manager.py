@@ -11,8 +11,10 @@ OrderManager — биржевой слой исполнения ордеров.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import traceback
 from typing import Optional, TYPE_CHECKING
 
 from core.exchange.bingx_client import (
@@ -221,20 +223,47 @@ class OrderManager:
                     sl=sl, tp1=tp1, tp2=tp2, error=msg, notional_usdt=notional,
                 )
 
-            order_data   = resp.get("data", {}).get("order", {})
+            # BUGFIX 24.04: защита от BingX API возвращающего JSON-строки вместо dict
+            data_obj = resp.get("data", {})
+            if isinstance(data_obj, str):
+                try: data_obj = json.loads(data_obj)
+                except Exception: data_obj = {}
+            order_data = data_obj.get("order", {}) if isinstance(data_obj, dict) else {}
+            if isinstance(order_data, str):
+                try: order_data = json.loads(order_data)
+                except Exception: order_data = {}
+            if not isinstance(order_data, dict):
+                logger.error("[OrderManager] %s bracket resp malformed: %s", symbol, resp)
+                order_data = {}
             order_id     = str(order_data.get("orderId", ""))
             filled_price = float(order_data.get("avgPrice") or entry_price)
-            logger.info("[OrderManager][%s] ✅ %s %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
+            tp_field = order_data.get("takeProfit") or {}
+            if isinstance(tp_field, str):
+                try: tp_field = json.loads(tp_field)
+                except Exception: tp_field = {}
+            sl_field = order_data.get("stopLoss") or {}
+            if isinstance(sl_field, str):
+                try: sl_field = json.loads(sl_field)
+                except Exception: sl_field = {}
+            tp_oid = str(tp_field.get("orderId") or "") if isinstance(tp_field, dict) else ""
+            sl_oid = str(sl_field.get("orderId") or "") if isinstance(sl_field, dict) else ""
+            tp_oid = tp_oid or None
+            sl_oid = sl_oid or None
+            logger.info("[OrderManager][%s] ✅ %s %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s tp_oid=%s sl_oid=%s notional=%.2f",
                         self._mode.value.upper(), symbol, direction, qty,
-                        filled_price, sl, tp1, order_id, notional)
+                        filled_price, sl, tp1, order_id, tp_oid, sl_oid, notional)
             return BracketResult(
                 success=True, mode=self._mode.value, symbol=symbol,
                 direction=direction, qty=qty, entry_price=filled_price,
                 sl=sl, tp1=tp1, tp2=tp2, order_id=order_id,
+                tp_order_id=tp_oid, sl_order_id=sl_oid,
                 notional_usdt=notional, metadata={"raw": resp},
             )
         except Exception as e:
-            logger.error("[OrderManager] %s open_bracket exception: %s", symbol, e)
+            logger.error(
+                "[OrderManager] %s open_bracket exception: %s\nTRACEBACK:\n%s\nRAW RESP: %r",
+                symbol, e, traceback.format_exc(), locals().get("resp", "<no resp>"),
+            )
             return BracketResult(
                 success=False, mode=self._mode.value, symbol=symbol,
                 direction=direction, qty=qty, entry_price=entry_price,
@@ -269,16 +298,38 @@ class OrderManager:
     # ── TSL: обновление SL на бирже ─────────────────────────────────────────
 
     async def get_sl_order_id(self, symbol: str, pos_side: str) -> Optional[str]:
-        """Находит STOP_MARKET orderId для позиции через GET openOrders."""
+        """Находит SL orderId (STOP_MARKET ИЛИ STOP Limit) для позиции.
+
+        Bug fix 20.04: раньше искал только STOP_MARKET → при `sl_limit_buffer_pct > 0`
+        SL создаётся как STOP (DEV-175) → get_sl_order_id возвращал None →
+        repair_missing_sl каждые 60с ставил новый SL → накопление 20-30 ордеров.
+
+        Если найдено несколько SL того же pos_side — возвращаем самый свежий,
+        остальные отменяем (анти-накопление).
+        """
         if not self.is_live():
             return None
         try:
             orders = await (await self._get_client_synced()).get_open_orders(symbol)
-            for o in orders:
-                if (o.get("type") == "STOP_MARKET"
-                        and o.get("positionSide", "").upper() == pos_side.upper()):
-                    return str(o["orderId"])
-            return None
+            sl_orders = [
+                o for o in orders
+                if o.get("type") in ("STOP_MARKET", "STOP")
+                and o.get("positionSide", "").upper() == pos_side.upper()
+            ]
+            if not sl_orders:
+                return None
+            # Самый свежий по времени (BingX orderTime мс)
+            sl_orders.sort(key=lambda o: int(o.get("time") or o.get("updateTime") or 0), reverse=True)
+            keep = sl_orders[0]
+            extras = sl_orders[1:]
+            if extras:
+                logger.warning(
+                    "[OrderManager] %s %s: найдено %d SL-ордеров, оставляем #%s, отменяем %d дубликатов",
+                    symbol, pos_side, len(sl_orders), keep.get("orderId"), len(extras),
+                )
+                for o in extras:
+                    await self.cancel_order(symbol, str(o["orderId"]))
+            return str(keep["orderId"])
         except Exception as e:
             logger.warning("[OrderManager] get_sl_order_id %s %s: %s", symbol, pos_side, e)
             return None
@@ -341,6 +392,26 @@ class OrderManager:
                 )
                 return None
 
+            # Bug fix 20.04: анти-дубликат перед place_sl_order.
+            # Если на бирже уже есть SL того же pos_side (race: fetch_and_save + repair) —
+            # отменяем их, чтобы не накапливать. После cancel → place нового.
+            try:
+                existing = await client.get_open_orders(symbol)
+                existing_sl = [
+                    o for o in existing
+                    if o.get("type") in ("STOP_MARKET", "STOP")
+                    and o.get("positionSide", "").upper() == pos_side.upper()
+                ]
+                if existing_sl:
+                    logger.warning(
+                        "[OrderManager] place_sl_order %s %s: уже есть %d SL — отменяю перед новым",
+                        symbol, pos_side, len(existing_sl),
+                    )
+                    for o in existing_sl:
+                        await self.cancel_order(symbol, str(o["orderId"]))
+            except Exception as _e_clean:
+                logger.debug("[OrderManager] place_sl_order precheck %s: %s", symbol, _e_clean)
+
             # DEV-175: STOP-LIMIT если sl_limit_buffer_pct > 0
             limit_price: float | None = None
             try:
@@ -387,6 +458,22 @@ class OrderManager:
             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
             logger.info("[OrderManager] ✅ новый SL %s %s sl=%.6f order_id=%s",
                         symbol, pos_side, sl_price, oid)
+            # Post-write verification (19.04 fix B3): через 3 сек проверяем что ордер
+            # реально есть в open_orders. Если нет — логируем алерт, возвращаем None.
+            if oid:
+                import asyncio as _asyncio
+                await _asyncio.sleep(3.0)
+                try:
+                    _verify = await client.get_open_orders(symbol)
+                    _found = any(str(o.get("orderId", "")) == oid for o in _verify)
+                    if not _found:
+                        logger.error(
+                            "[OrderManager] ⚠️ SL VERIFY FAIL %s %s order_id=%s — ордер не найден через 3с!",
+                            symbol, pos_side, oid,
+                        )
+                        return None
+                except Exception as _ve:
+                    logger.warning("[OrderManager] SL verify %s: %s (считаем OK)", symbol, _ve)
             return oid or None
         except Exception as e:
             logger.warning("[OrderManager] place_sl_order %s: %s", symbol, e)
@@ -425,16 +512,17 @@ class OrderManager:
                              symbol, move_pct, min_move_pct)
                 return None
 
-        # Отменяем ВСЕ STOP_MARKET по символу+pos_side (атомарная очистка накопленных ордеров)
+        # Отменяем ВСЕ STOP / STOP_MARKET по символу+pos_side (атомарная очистка накопленных ордеров)
+        # Bug fix 19.04: type="STOP" (Stop-Limit, DEV-175) раньше не ловился → ордера накапливались
         try:
             orders = await (await self._get_client_synced()).get_open_orders(symbol)
             sl_orders = [
                 o for o in orders
-                if o.get("type") == "STOP_MARKET"
+                if o.get("type") in ("STOP_MARKET", "STOP")
                 and o.get("positionSide", "").upper() == pos_side.upper()
             ]
             if sl_orders:
-                logger.info("[OrderManager] update_sl %s %s: отменяем %d STOP_MARKET ордеров",
+                logger.info("[OrderManager] update_sl %s %s: отменяем %d SL ордеров (STOP_MARKET+STOP)",
                             symbol, pos_side, len(sl_orders))
                 for o in sl_orders:
                     await self.cancel_order(symbol, str(o["orderId"]))
