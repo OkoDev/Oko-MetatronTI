@@ -6,7 +6,7 @@ import pytest
 import logging
 from typing import List
 
-from core.signal_models import (
+from core.signals.signal_models import (
     SignalData, SignalType, SignalDirection, MarketContext, TradingRecommendation
 )
 from strategies import get_strategy, list_strategies, BaseStrategy

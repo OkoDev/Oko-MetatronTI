@@ -50,14 +50,14 @@ def _make_ohlcv(n=120, base=50_000.0, trend=0.02, vol=0.005) -> pd.DataFrame:
 
 def _make_bot_stub(tmp_db: str):
     """Минимальный stub-бот со всеми компонентами Куба."""
-    from core.config_loader import config
+    from core.infra.config_loader import config
     from core.context.pair_context import PairContextBus
     from core.trading.post_trade_analyser import PostTradeAnalyser
     from core.exchange.btc_regime_provider import BTCRegimeProvider
-    from core.trade_simulator import TradeSimulator
+    from core.trading.trade_simulator import TradeSimulator
     from core.trading_intelligence import TradingIntelligence
-    from core.data_collector import RealTimeData
-    from core.pivot_calculator_fixed import PivotCalculatorFixed
+    from core.infra.data_collector import RealTimeData
+    from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
 
     # DataCollector (без реальной биржи — методы мокаем)
     dc = MagicMock(spec=RealTimeData)
@@ -280,8 +280,8 @@ class TestBTCRegimeInMetadata:
         from core.exchange.btc_regime_provider import BTCRegimeProvider
         from core.trading_intelligence import TradingIntelligence
         from core.context.pair_context import PairContextBus
-        from core.config_loader import config
-        from core.pivot_calculator_fixed import PivotCalculatorFixed
+        from core.infra.config_loader import config
+        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
 
         df = _make_ohlcv(n=120, trend=0.05)
 
@@ -326,7 +326,7 @@ class TestBTCRegimeInMetadata:
 class TestPostTradeCallback:
     def test_callback_registered(self, tmp_path):
         """TradeSimulator._post_trade_callback должен быть установлен."""
-        from core.trade_simulator import TradeSimulator
+        from core.trading.trade_simulator import TradeSimulator
         from core.context.pair_context import PairContextBus
         from core.trading.post_trade_analyser import PostTradeAnalyser
 
@@ -339,7 +339,7 @@ class TestPostTradeCallback:
 
     def test_pta_linked_to_pair_context(self, tmp_path):
         """PostTradeAnalyser._ctx — это тот же экземпляр PairContextBus."""
-        from core.trade_simulator import TradeSimulator
+        from core.trading.trade_simulator import TradeSimulator
         from core.context.pair_context import PairContextBus
         from core.trading.post_trade_analyser import PostTradeAnalyser
 
@@ -350,8 +350,8 @@ class TestPostTradeCallback:
 
     def test_adaptive_weights_method_exists(self, tmp_path):
         """TradingIntelligence.update_signal_weights() доступен."""
-        from core.config_loader import config
-        from core.pivot_calculator_fixed import PivotCalculatorFixed
+        from core.infra.config_loader import config
+        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
         dc  = MagicMock()
         dc.get_ohlcv = AsyncMock(return_value=_make_ohlcv())
         pc  = MagicMock(spec=PivotCalculatorFixed)
@@ -379,7 +379,7 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "test.db")
-        from core.subscription_manager import SubscriptionManager
+        from core.db.subscription_manager import SubscriptionManager
         SubscriptionManager(db)
 
         bot = _make_bot_stub(db)

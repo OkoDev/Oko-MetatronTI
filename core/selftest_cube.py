@@ -162,7 +162,7 @@ def _check_sphere_5_cross_market(bot) -> CubeCheckResult:
 
 def _check_sphere_6_market_regime(bot) -> CubeCheckResult:
     try:
-        from core.market_regime import MarketRegimeClassifier
+        from core.indicators.market_regime import MarketRegimeClassifier
         _ = MarketRegimeClassifier()
         return CubeCheckResult("L13_sphere", "S6", "MarketRegime", ACTIVE, "classify доступен")
     except Exception as e:
@@ -344,7 +344,7 @@ def _edge_dc_to_mr(bot) -> CubeCheckResult:
     if dc is None:
         return CubeCheckResult("L14_edge", "E_DC_MR", "DataCollector→MarketRegime", MISSING)
     try:
-        from core.market_regime import MarketRegimeClassifier
+        from core.indicators.market_regime import MarketRegimeClassifier
         _ = MarketRegimeClassifier()
         return CubeCheckResult("L14_edge", "E_DC_MR", "DataCollector→MarketRegime", ACTIVE,
                                "classify_from_dataframes готов")
@@ -449,7 +449,7 @@ def _edge_mr_to_ti(bot) -> CubeCheckResult:
     if not ti:
         return CubeCheckResult("L14_edge", "E_MR_TI", "MarketRegime→TradingIntelligence", MISSING)
     try:
-        from core.market_regime import MarketRegimeClassifier
+        from core.indicators.market_regime import MarketRegimeClassifier
         has_classify = hasattr(MarketRegimeClassifier, "classify_from_dataframes")
         return CubeCheckResult("L14_edge", "E_MR_TI", "MarketRegime→TradingIntelligence",
                                ACTIVE if has_classify else SHADOW,

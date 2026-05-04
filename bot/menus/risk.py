@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_pe(bot):
-    from core.performance_engine import PerformanceEngine
+    from core.trading.performance_engine import PerformanceEngine
     db = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
     return PerformanceEngine(db)
 
@@ -54,7 +54,7 @@ async def show_active_positions(bot, message: Message) -> None:
 
 async def show_position_sizes(bot, message: Message) -> None:
     """Информация о размерах позиций из конфига."""
-    from core.config_loader import config
+    from core.infra.config_loader import config
     risk_pct = config.get("trading.risk_per_trade_pct", 1.0)
     sl_pct = config.get("trading.sl_pct", 2.0)
     tp_pct = config.get("trading.tp_pct", 4.0)
@@ -130,7 +130,7 @@ async def show_risk_statistics(bot, message: Message) -> None:
 
 async def show_risk_settings(bot, message: Message) -> None:
     """Настройки риска из конфига."""
-    from core.config_loader import config
+    from core.infra.config_loader import config
     lines = [
         "<b>Настройки риска</b>",
         f"Риск на сделку: {config.get('trading.risk_per_trade_pct', 1.0)}%",

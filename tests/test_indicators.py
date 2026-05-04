@@ -9,13 +9,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Any
 
-from core.data_collector import RealTimeData
-from core.indicators import (
+from core.infra.data_collector import RealTimeData
+from core.indicators.indicators import (
     calculate_trend, calculate_wt, get_trend_info,
     calculate_trend_strength, detect_fvg
 )
-from core.signal_checkers import check_anomaly_signals, check_divergence_signals
-from core.market_regime import MarketRegimeClassifier
+from core.signals.signal_checkers import check_anomaly_signals, check_divergence_signals
+from core.indicators.market_regime import MarketRegimeClassifier
 
 logger = logging.getLogger(__name__)
 

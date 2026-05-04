@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from core.auto_calibrator import (
+from core.ml.auto_calibrator import (
     AutoCalibrator,
     CalibrationResult,
     SegmentStats,
@@ -18,7 +18,7 @@ from core.auto_calibrator import (
     EXPECTANCY_WEAK_THRESHOLD,
     EXPECTANCY_STRONG_THRESHOLD,
 )
-from core.signal_models import MTFContext, SignalDirection
+from core.signals.signal_models import MTFContext, SignalDirection
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

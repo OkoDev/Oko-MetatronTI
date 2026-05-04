@@ -12,7 +12,7 @@ import shutil
 import glob
 from datetime import datetime
 
-from core.config_loader import config
+from core.infra.config_loader import config
 
 # ==============================
 # Логирование

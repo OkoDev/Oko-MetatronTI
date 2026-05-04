@@ -146,7 +146,7 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
 
         # История сделок по паре
         try:
-            from core.performance_engine import PerformanceEngine
+            from core.trading.performance_engine import PerformanceEngine
             pe = PerformanceEngine(bot.trade_simulator.db_path)
             history = pe.pair_history(target_symbol, limit=5)
             if history:

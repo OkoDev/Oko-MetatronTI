@@ -17,8 +17,8 @@ import numpy as np
 from datetime import datetime, timezone
 from typing import Optional
 
-from core.data_collector import RealTimeData
-from core.indicators import calculate_trend, get_trend_info
+from core.infra.data_collector import RealTimeData
+from core.indicators.indicators import calculate_trend, get_trend_info
 
 logging.basicConfig(level=logging.WARNING)
 

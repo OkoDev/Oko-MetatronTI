@@ -24,8 +24,8 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.wt_15m_reversal_scanner import scan_wt_15m_reversal
-from core.signal_models import SignalType, SignalDirection
+from core.signals.wt_15m_reversal_scanner import scan_wt_15m_reversal
+from core.signals.signal_models import SignalType, SignalDirection
 
 
 # ─────────────────────────────────────────────────────────────────────────────

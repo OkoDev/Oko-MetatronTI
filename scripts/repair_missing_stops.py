@@ -22,11 +22,11 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.config_loader import config
+from core.infra.config_loader import config
 from core.exchange.order_manager import OrderManager
 
 
-APPROVED_TRADE_IDS = {6498}
+APPROVED_TRADE_IDS = {6498, 7081, 7129, 7188, 7261, 7262, 7264, 7265, 7266, 7270, 7271, 7272, 7274, 7278}
 
 
 def parse_ids(raw: str | None) -> list[int]:
@@ -171,7 +171,7 @@ async def repair_trades(db_path: str, trade_ids: list[int], apply_changes: bool)
         open_orders = await client.get_open_orders(symbol)
         sl_orders = [
             o for o in open_orders
-            if o.get("type") == "STOP_MARKET"
+            if o.get("type") in ("STOP_MARKET", "STOP")
             and (o.get("positionSide") or "").upper() == pos_side
         ]
         if sl_orders:

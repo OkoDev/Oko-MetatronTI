@@ -18,7 +18,7 @@ TP: entry ± sl_dist × tp_rr (дефолт 3.0 = RR 1:3)
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from core.signal_models import (
+from core.signals.signal_models import (
     SignalData, SignalType, SignalDirection, MarketContext, TradingRecommendation
 )
 from strategies.base import BaseStrategy
@@ -143,7 +143,9 @@ class ConfluenceScannerStrategy(BaseStrategy):
         Fallback (TSL слишком близко или недоступна): ATR × 1.5, зажат в [min, max]%.
         TP: entry ± sl_dist × tp_rr.
         """
+        from core.trading.tsl_engine import is_side_valid as _tsl_side_valid
         is_long = direction.upper() == "LONG"
+        _dir = "LONG" if is_long else "SHORT"
         buf = self.sl_buffer_pct / 100.0
 
         # Попробуем взять TSL-линию
@@ -152,14 +154,9 @@ class ConfluenceScannerStrategy(BaseStrategy):
         ) if market_context else None
 
         sl = None
-        if tsl_line and tsl_line > 0 and entry_price > 0:
-            if is_long:
-                sl_candidate = tsl_line * (1 - buf)
-                dist_pct = (entry_price - sl_candidate) / entry_price * 100
-            else:
-                sl_candidate = tsl_line * (1 + buf)
-                dist_pct = (sl_candidate - entry_price) / entry_price * 100
-
+        if entry_price > 0 and _tsl_side_valid(_dir, tsl_line, entry_price):
+            sl_candidate = tsl_line * (1 - buf) if is_long else tsl_line * (1 + buf)
+            dist_pct = abs(entry_price - sl_candidate) / entry_price * 100
             if self.tsl_min_dist <= dist_pct <= self.tsl_max_dist:
                 sl = sl_candidate
 

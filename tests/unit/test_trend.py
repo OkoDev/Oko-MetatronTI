@@ -6,7 +6,7 @@
 
 import pandas as pd
 import numpy as np
-from core.indicators import calculate_trend, get_trend_info
+from core.indicators.indicators import calculate_trend, get_trend_info
 
 def create_test_data():
     """Создает тестовые данные для проверки"""

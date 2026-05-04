@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from core.confluence_state_machine import (
+from core.confluence.confluence_state_machine import (
     ConfluenceStateMachine,
     ConfluenceState,
     SymbolDirectionState,
@@ -214,11 +214,11 @@ class TestConfluenceStateMachine:
         # update() пересчитывает индикаторы через calculate_wt/calculate_trend,
         # что перезаписывает тестовые значения. Мокируем — возвращаем df как есть.
         self._patch_wt = patch(
-            "core.confluence_state_machine.calculate_wt",
+            "core.confluence.confluence_state_machine.calculate_wt",
             side_effect=lambda df, **kw: df,
         )
         self._patch_trend = patch(
-            "core.confluence_state_machine.calculate_trend",
+            "core.confluence.confluence_state_machine.calculate_trend",
             side_effect=lambda df, **kw: df,
         )
         self._patch_wt.start()
@@ -333,8 +333,8 @@ class TestConfluenceStateMachine:
 
         pivot_cache = {"SIG/USDT_1D": {"PP": 100.0, "S1": 99.0, "R1": 101.0}}
 
-        with patch("core.confluence_state_machine._check_near_support", return_value=(False, "")), \
-             patch("core.confluence_state_machine._check_bullish_divergence_wt", return_value=(False, "")):
+        with patch("core.confluence.confluence_state_machine._check_near_support", return_value=(False, "")), \
+             patch("core.confluence.confluence_state_machine._check_bullish_divergence_wt", return_value=(False, "")):
             results = self.sm.update("SIG/USDT", df, None, pivot_cache)
 
         assert len(results) == 1

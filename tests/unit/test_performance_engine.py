@@ -4,7 +4,7 @@
 """
 import sqlite3
 import pytest
-from core.performance_engine import PerformanceEngine
+from core.trading.performance_engine import PerformanceEngine
 
 
 # ──────────────────────────────────────────────────────────────────────────────

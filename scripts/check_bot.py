@@ -9,8 +9,8 @@ try:
     # 1. Импорты
     print('1️⃣ Импорты...')
     from core.trading_intelligence import TradingIntelligence
-    from core.data_collector import RealTimeData
-    from core.config_loader import config
+    from core.infra.data_collector import RealTimeData
+    from core.infra.config_loader import config
     from strategies import list_strategies, get_strategy
     print('   ✅ Все импорты OK')
 

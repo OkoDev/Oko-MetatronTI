@@ -11,7 +11,7 @@ from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
 from bot.keyboards import main_menu
-from core.mtf_checker import collect_mtf_data
+from core.mtf.mtf_checker import collect_mtf_data
 from bot.monitoring import start_monitoring, stop_monitoring
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ def build_status_block(bot) -> str:
     wr_str = "—"
     avg_r_str = "—"
     try:
-        from core.performance_engine import PerformanceEngine
+        from core.trading.performance_engine import PerformanceEngine
         db = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
         pe = PerformanceEngine(db)
         s = pe.summary() or {}

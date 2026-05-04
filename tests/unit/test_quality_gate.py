@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.signal_models import (
+from core.signals.signal_models import (
     MarketContext,
     SignalData,
     SignalDirection,

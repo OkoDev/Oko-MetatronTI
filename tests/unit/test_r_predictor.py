@@ -3,7 +3,7 @@
 Обучение модели не тестируется (требует 100+ сделок и sklearn), только пограничные случаи.
 """
 import pytest
-from core.r_predictor import RPredictor
+from core.ml.r_predictor import RPredictor
 
 
 class TestKellyFraction:

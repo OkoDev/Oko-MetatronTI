@@ -59,6 +59,6 @@ def ohlcv_volatile():
 def tmp_db(tmp_path):
     """Временная БД SQLite для тестов trade_simulator / subscription_manager."""
     db_path = str(tmp_path / "test.db")
-    from core.subscription_manager import SubscriptionManager
+    from core.db.subscription_manager import SubscriptionManager
     SubscriptionManager(db_path)  # создаёт таблицы
     return db_path

@@ -21,7 +21,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.config_loader import config
+from core.infra.config_loader import config
 from core.exchange.order_manager import OrderManager
 
 

@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from core.trade_simulator import TradeSimulator
+from core.trading.trade_simulator import TradeSimulator
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

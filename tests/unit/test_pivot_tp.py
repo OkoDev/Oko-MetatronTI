@@ -2,7 +2,7 @@
 Тесты для PivotCalculatorFixed.get_pivot_tp — Этап 6: Динамический TP.
 """
 import pytest
-from core.pivot_calculator_fixed import PivotCalculatorFixed
+from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
 
 
 def _calc_with_cache(symbol: str, pivot_prices: list) -> PivotCalculatorFixed:

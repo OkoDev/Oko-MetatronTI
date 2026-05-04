@@ -6,7 +6,7 @@
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from core.signal_models import (
+from core.signals.signal_models import (
     SignalData, SignalType, SignalDirection, MarketContext, TradingRecommendation
 )
 from strategies.base import BaseStrategy

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import ccxt.async_support as ccxt_async
 
-from core.indicators import calculate_wt, calculate_trend
+from core.indicators.indicators import calculate_wt, calculate_trend
 
 # ── Параметры (зеркало сканера) ───────────────────────────────────────────────
 WT_N1, WT_N2     = 10, 21

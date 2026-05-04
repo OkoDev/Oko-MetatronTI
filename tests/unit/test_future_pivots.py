@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
-from core.pivot_calculator_fixed import PivotCalculatorFixed
-from core.confluence_scanner import check_future_classic_confluence
+from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
+from core.confluence.confluence_scanner import check_future_classic_confluence
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

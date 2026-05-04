@@ -5,7 +5,7 @@
 import os
 import yaml
 import pytest
-from core.config_loader import ConfigLoader
+from core.infra.config_loader import ConfigLoader
 
 
 MINIMAL_YAML = {

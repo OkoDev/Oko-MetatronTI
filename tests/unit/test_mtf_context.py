@@ -4,7 +4,7 @@ ARCH-12: Тесты MTFContext — analyze_context() + direction/zone multiplier
 import pytest
 from datetime import datetime
 
-from core.signal_models import SignalData, SignalType, SignalDirection, MTFContext
+from core.signals.signal_models import SignalData, SignalType, SignalDirection, MTFContext
 
 
 # ── Фикстуры ─────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ class TestAnalyzeContext:
     """Тесты analyze_context()."""
 
     def test_all_bull_returns_long_bias(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(
             bull_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"],
         )
@@ -67,7 +67,7 @@ class TestAnalyzeContext:
         assert ctx.senior_matches == 3
 
     def test_all_bear_returns_short_bias(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(
             bear_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"],
         )
@@ -77,7 +77,7 @@ class TestAnalyzeContext:
         assert ctx.bias_strength == 1.0
 
     def test_mixed_returns_neutral(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         # Примерно 50/50 по весам
         snapshot = _make_snapshot(
             bull_tfs=["3m", "5m", "15m"],
@@ -90,7 +90,7 @@ class TestAnalyzeContext:
         assert ctx.direction_bias == SignalDirection.SHORT
 
     def test_neutral_when_close_to_50_50(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         # bull = 5m+15m+1h+1d = 5+8+12+20=45, bear = 3m+45m+4h = 3+10+15=28
         # bull_pct = 45/73*100 = 62% < 65% threshold
         snapshot = _make_snapshot(
@@ -101,7 +101,7 @@ class TestAnalyzeContext:
         assert ctx.direction_bias == SignalDirection.NEUTRAL
 
     def test_wt_spreads_calculated(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(
             bull_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"],
             wt_values={
@@ -116,34 +116,34 @@ class TestAnalyzeContext:
         assert ctx.wt_spreads["1d"] == 5.0
 
     def test_price_zone_at_pp(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(bull_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"])
         weekly = {"PP": 100.0, "S5": 80.0, "R5": 120.0}
         ctx = analyze_context(snapshot, current_price=100.0, weekly_pivots=weekly)
         assert 0.45 <= ctx.price_zone <= 0.55  # ~0.5 (at PP)
 
     def test_price_zone_at_s5(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(bull_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"])
         weekly = {"PP": 100.0, "S5": 80.0, "R5": 120.0}
         ctx = analyze_context(snapshot, current_price=80.0, weekly_pivots=weekly)
         assert ctx.price_zone == 0.0
 
     def test_price_zone_at_r5(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(bull_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"])
         weekly = {"PP": 100.0, "S5": 80.0, "R5": 120.0}
         ctx = analyze_context(snapshot, current_price=120.0, weekly_pivots=weekly)
         assert ctx.price_zone == 1.0
 
     def test_empty_snapshot_returns_neutral(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         ctx = analyze_context({})
         assert ctx.direction_bias == SignalDirection.NEUTRAL
         assert ctx.bias_strength == 0.0
 
     def test_regime_passed_through(self):
-        from core.mtf_interpreter import analyze_context
+        from core.mtf.mtf_interpreter import analyze_context
         snapshot = _make_snapshot(bull_tfs=["3m", "5m", "15m", "45m", "1h", "4h", "1d"])
         ctx = analyze_context(snapshot, regime="TREND_UP")
         assert ctx.regime == "TREND_UP"

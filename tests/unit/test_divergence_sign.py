@@ -7,7 +7,7 @@
 import numpy as np
 import pandas as pd
 import pytest
-from core.divergence_detector import DivergenceDetector
+from core.indicators.divergence_detector import DivergenceDetector
 
 
 def _make_bearish_divergence_df() -> pd.DataFrame:

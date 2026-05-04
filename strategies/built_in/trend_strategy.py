@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from core.signal_models import (
+from core.signals.signal_models import (
     MarketContext,
     SignalData,
     SignalDirection,

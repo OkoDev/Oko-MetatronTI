@@ -74,8 +74,8 @@ async def wr_health_check_loop(bot) -> None:
     Если rolling WR (window=50) < 40% → WARNING лог.
     Если < 30% → CRITICAL лог + TG уведомление всем подписчикам.
     """
-    from core.performance_engine import PerformanceEngine
-    from core.config_loader import config as _cfg
+    from core.trading.performance_engine import PerformanceEngine
+    from core.infra.config_loader import config as _cfg
     await asyncio.sleep(300)  # 5 мин после старта — дать боту прогреться
     while True:
         try:
@@ -142,8 +142,8 @@ async def auto_review_loop(bot) -> None:
       - Топ символов по WR
     Логирует отчёт + отправляет в TG администратору.
     """
-    from core.performance_engine import PerformanceEngine
-    from core.config_loader import config as _cfg
+    from core.trading.performance_engine import PerformanceEngine
+    from core.infra.config_loader import config as _cfg
 
     await asyncio.sleep(600)  # 10 мин после старта
 

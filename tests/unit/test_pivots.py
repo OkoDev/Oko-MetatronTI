@@ -11,8 +11,8 @@ from pathlib import Path
 # Добавляем путь к проекту
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.data_collector import RealTimeData
-from core.pivot_levels import PivotLevels
+from core.infra.data_collector import RealTimeData
+from core.pivots.pivot_levels import PivotLevels
 
 
 async def test_pivots():

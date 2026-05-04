@@ -14,7 +14,7 @@ pytest.importorskip("aiogram")
 # Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.config_loader import config
+from core.infra.config_loader import config
 from bot.menus import MenuHandler
 
 # Настройка логирования

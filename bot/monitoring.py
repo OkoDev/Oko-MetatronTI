@@ -12,15 +12,15 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Optional
 
-from core.message_builder import anomaly_message, wt_message
-from core.mtf_checker import collect_mtf_data, check_mtf_alert, mtf_alert_message
-from core.trend_signals import check_trend_following_signal, trend_signal_message
-from core.divergence_detector import divergence_message, mtf_divergence_message
-from core.pivot_reversal import check_pivot_level_signal, pivot_level_signal_message
+from core.ui.message_builder import anomaly_message, wt_message
+from core.mtf.mtf_checker import collect_mtf_data, check_mtf_alert, mtf_alert_message
+from core.indicators.trend_signals import check_trend_following_signal, trend_signal_message
+from core.indicators.divergence_detector import divergence_message, mtf_divergence_message
+from core.pivots.pivot_reversal import check_pivot_level_signal, pivot_level_signal_message
 from core.trading_intelligence import format_intelligence_message
-from core.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals
-from core.entry_config import get_primary_entry_tf
-from core.signal_models import SignalData, SignalType, SignalDirection
+from core.signals.signal_checkers import check_anomaly_signals, check_wt_signals as _check_wt_signals
+from core.infra.entry_config import get_primary_entry_tf
+from core.signals.signal_models import SignalData, SignalType, SignalDirection
 from bot.keyboards import main_menu
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,7 @@ def _make_pivot_recommendation(info: dict):
     _sl    = info.get("stop_loss")
     if _entry and _sl and tp_main:
         try:
-            from core.config_loader import config as _cfg59
+            from core.infra.config_loader import config as _cfg59
             _max_rr = float(_cfg59.get("trading.sl_management.max_rr", 6.0))
         except Exception:
             _max_rr = 6.0
@@ -165,7 +165,18 @@ def _make_pivot_recommendation(info: dict):
                 tp_main = (float(_entry) + _sl_dist * _max_rr) if is_long else (float(_entry) - _sl_dist * _max_rr)
                 if tp1 and abs(float(tp1) - float(_entry)) / _sl_dist > _max_rr:
                     tp1 = tp_main
-    _sig = SimpleNamespace(signal_type=SimpleNamespace(value="pivot_reversal"))
+    # DEV-188 (shadow): пробрасываем real_touch/volume_z из info → sig.data → features_json.
+    _sig = SimpleNamespace(
+        signal_type=SimpleNamespace(value="pivot_reversal"),
+        data={
+            "level": info.get("level_price"),
+            "pivot_type": "support" if is_long else "resistance",
+            "real_touch": info.get("real_touch", 0),
+            "close_rejection": info.get("close_rejection", 0),
+            "volume_z": info.get("volume_z", 0),
+            "trend_changed": int(bool(info.get("trend_changed", False))),
+        },
+    )
     return SimpleNamespace(
         symbol=info.get("symbol", ""),
         entry_price=info.get("entry_price"),
@@ -181,7 +192,8 @@ def _make_pivot_recommendation(info: dict):
         conflicting_signals=[],
         sl_source=info.get("sl_source", "atr_14"),
         tp_source=f"pivot_1W_{level}" if level else "pivot_1W",
-        metadata={},
+        # ARCH-95 H1: detector_price = entry_price при детекции (для pivot path)
+        metadata={"detector_price": info.get("entry_price")},
     )
 
 
@@ -327,7 +339,7 @@ async def check_mtf_alerts(bot):
                     return
                 is_alert, sig = check_mtf_alert(snapshot)
                 if is_alert:
-                    from core.mtf_checker import analyze_mtf_strength
+                    from core.mtf.mtf_checker import analyze_mtf_strength
                     strength = analyze_mtf_strength(snapshot, sig)
                     raw_text = mtf_alert_message(sym, snapshot, sig)
                     pre = [_make_signal_stub(sym, SignalType.MTF_ALERT, sig, strength=strength)]
@@ -458,7 +470,7 @@ async def check_pivot_reversals(bot):
                     # get_ohlcv возвращает raw OHLCV → нужен calculate_wt перед использованием
                     _pre_dfs: dict = {}
                     try:
-                        from core.indicators import calculate_wt as _calc_wt_pivot
+                        from core.indicators.indicators import calculate_wt as _calc_wt_pivot
                         for _tf, _lim in [("15m", 50), ("1h", 30), ("4h", 30)]:
                             try:
                                 _df = await bot.data_collector.get_ohlcv(sym, _tf, limit=_lim)
@@ -502,7 +514,7 @@ async def check_future_pivot_alerts(bot):
     if pivot_calc is None:
         return
 
-    from core.confluence_scanner import check_future_classic_confluence
+    from core.confluence.confluence_scanner import check_future_classic_confluence
 
     async def _one(sym):
         async with sem:
@@ -641,7 +653,7 @@ async def _get_btc_regime(bot):
     if cache and (now - cache["ts"]) < 300:
         return cache["regime"]
     try:
-        from core.market_regime import MarketRegimeClassifier
+        from core.indicators.market_regime import MarketRegimeClassifier
         ohlcv = await bot.data_collector.get_ohlcv("BTC/USDT:USDT", "1h", limit=50)
         if ohlcv is not None and not ohlcv.empty:
             regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv.values.tolist())
@@ -659,7 +671,7 @@ async def _get_btc_4h_regime(bot) -> str | None:
     if cache and (now - cache["ts"]) < 300:
         return cache["regime"]
     try:
-        from core.market_regime import MarketRegimeClassifier
+        from core.indicators.market_regime import MarketRegimeClassifier
         ohlcv = await bot.data_collector.get_ohlcv("BTC/USDT:USDT", "4h", limit=50)
         if ohlcv is not None and not ohlcv.empty:
             regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv.values.tolist())
@@ -699,7 +711,7 @@ def _get_kelly_footer(bot) -> str:
             return ""
         total, wins, avg_r = int(row[0]), int(row[1] or 0), float(row[2])
         win_rate = wins / total
-        from core.r_predictor import RPredictor
+        from core.ml.r_predictor import RPredictor
         kelly_f = RPredictor.kelly_fraction(win_rate, avg_r)
         if kelly_f <= 0:
             _kelly_stats_cache = {"ts": now, "text": ""}
@@ -896,6 +908,44 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                         recommendation.action = "WATCH"
         except Exception as _e84:
             logger.debug("[ARCH-84] ошибка: %s", _e84)
+
+    # Этап 5.3d: DEV-186 — wt_signal SHORT в TREND_UP / HIGH_VOL: regime mismatch
+    # Данные RE-AUDIT 25.04: SHORT TREND_UP=22 сделки avgR=-1.12, SHORT HIGH_VOL=12 avgR=-0.77.
+    # Открываем разворот вверх в восходящем тренде / в хаосе — закономерный убыток.
+    # FIX 27.04: recommendation.regime ещё не установлен на этом этапе (заполняется в register_trade).
+    # Берём regime из pair_context (актуальный classifier, тот же что попадёт в БД).
+    if recommendation is not None and bot.config.get("signal_quality.dev186_wt_signal_regime_gate", True):
+        try:
+            _has_wt_signal_186 = any(
+                getattr(_s, "signal_type", None) and _s.signal_type.value == "wt_signal"
+                for _s in (recommendation.supporting_signals or [])
+            )
+            _dir186 = getattr(recommendation.direction, "value", "NEUTRAL")
+            # Источники regime в порядке приоритета: pair_context → recommendation → market_context
+            _reg186 = ""
+            try:
+                _pc186 = getattr(bot, "pair_context", None)
+                if _pc186 is not None:
+                    _ps186 = _pc186.get(symbol)
+                    if _ps186 is not None:
+                        _reg186 = getattr(_ps186, "regime", "") or ""
+            except Exception:
+                pass
+            if not _reg186:
+                _reg186 = getattr(recommendation, "regime", "") or ""
+            if not _reg186:
+                _mc186 = getattr(recommendation, "market_context", None)
+                if _mc186 is not None:
+                    _reg186 = getattr(_mc186, "regime", "") or ""
+            _shadow186 = bool(bot.config.get("signal_quality.dev186_shadow", False))
+            if _has_wt_signal_186 and _dir186 == "SHORT" and _reg186 in ("TREND_UP", "HIGH_VOL"):
+                if _shadow186:
+                    logger.info("[%s] DEV-186 SHADOW WOULD_BLOCK wt_signal SHORT regime=%s", symbol, _reg186)
+                else:
+                    logger.info("[%s] DEV-186 wt_signal SHORT в %s → WATCH", symbol, _reg186)
+                    recommendation.action = "WATCH"
+        except Exception as _e186:
+            logger.debug("[DEV-186] gate error %s: %s", symbol, _e186)
 
     # Этап 5.3c: ARCH-88 — PAIR-COOLDOWN gate (Per-pair Loss Memory)
     # Защита от сценария API3: 8 SL подряд без автоматической остановки.
@@ -1218,6 +1268,22 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                 extra["wt_zone"] = "OS" if _w1 <= -60 else "OB" if _w1 >= 60 else "N"
                         except Exception:
                             pass
+            # NEAR_PIVOT shadow flag — записываем для всех сигналов независимо от confluence.enabled
+            _pivot_calc_np = getattr(bot, "pivot_calculator", None)
+            if _pivot_calc_np is not None:
+                try:
+                    _np_price = float(recommendation.entry_price or 0)
+                    if _np_price > 0:
+                        _np_result = _pivot_calc_np.find_near_pivot(_np_price, symbol)
+                        if _np_result:
+                            _np_lvl, _np_src = _np_result
+                            extra["near_pivot_level"] = round(_np_lvl, 8)
+                            extra["near_pivot_pct"] = round(abs(_np_price - _np_lvl) / _np_price * 100, 3)
+                            extra["near_pivot_source"] = _np_src
+                        else:
+                            extra["near_pivot_pct"] = None
+                except Exception:
+                    pass
             trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:
@@ -1290,12 +1356,18 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                             trade_id, _br.order_id, qty=_qty,
                                             actual_entry_price=_br.entry_price,
                                         )
-                                        # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
+                                        # ARCH-94: сохраняем TP orderId сразу из bracket ответа
+                                        if _br.tp_order_id:
+                                            bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
+                                        # SL orderId: сначала из bracket ответа, иначе асинхронный fetch
                                         _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
-                                        import asyncio as _asyncio
-                                        from core.exchange.tsl_updater import fetch_and_save_sl_order_id
-                                        _asyncio.create_task(fetch_and_save_sl_order_id(
-                                            bot, trade_id, symbol, _pos_side))
+                                        if _br.sl_order_id:
+                                            bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
+                                        else:
+                                            import asyncio as _asyncio
+                                            from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                                            _asyncio.create_task(fetch_and_save_sl_order_id(
+                                                bot, trade_id, symbol, _pos_side))
                             else:
                                 logger.warning("[%s] OrderExecutor: qty=0 (deposit=%.2f risk=%.1f%% sl_dist=?)",
                                                symbol, _deposit, _risk_pct)
@@ -1371,7 +1443,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 None
             )
             if _mtf_bias_sig is not None:
-                from core.mtf_interpreter import mtf_bias_message
+                from core.mtf.mtf_interpreter import mtf_bias_message
                 text = mtf_bias_message(symbol, _mtf_bias_sig)
             else:
                 _show_fvg = bot.config.get("signals.show_fvg_confluences", True)
@@ -1442,7 +1514,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     png_bytes = None
     if bot.config.get("signals.send_chart", False):
         try:
-            from core.chart_builder import build_signal_chart
+            from core.ui.chart_builder import build_signal_chart
             chart_tf   = bot.config.get("signals.chart_tf", "1h")
             chart_bars = int(bot.config.get("signals.chart_bars", 300))
             _chart_fvg_all = (getattr(recommendation, "metadata", None) or {}).get("fvg_confluences") or []
@@ -1588,7 +1660,7 @@ def format_weekly_report(stats: dict) -> str:
 
 
 async def send_weekly_report(bot) -> None:
-    from core.performance_engine import PerformanceEngine
+    from core.trading.performance_engine import PerformanceEngine
     try:
         pe = PerformanceEngine(bot.trade_simulator.db_path)
         stats = pe.weekly_summary(days_back=7)

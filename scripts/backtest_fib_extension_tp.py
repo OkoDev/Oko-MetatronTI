@@ -37,8 +37,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 import pandas as pd
 import numpy as np
 
-from core.data_collector import RealTimeData
-from core.indicators import calculate_wt, calculate_trend
+from core.infra.data_collector import RealTimeData
+from core.indicators.indicators import calculate_wt, calculate_trend
 from core.smc.structure import detect_structure, BreakType
 from core.smc.fibonacci import _calc_fib_levels, _calc_ote, FibZone
 

@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 import ccxt.async_support as ccxt_async
 
-from core.indicators import calculate_trend, calculate_wt
+from core.indicators.indicators import calculate_trend, calculate_wt
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)

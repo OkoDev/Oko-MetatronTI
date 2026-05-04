@@ -12,8 +12,8 @@
 
 import pytest
 from datetime import datetime, timedelta
-from core.bounce_detector import BounceDetector, BounceSignal, TradeMode, ImpulseTracker
-from core.multi_tf_resolver import MultiTFResolver, TFSignal, ResolverDecision
+from core.indicators.bounce_detector import BounceDetector, BounceSignal, TradeMode, ImpulseTracker
+from core.mtf.multi_tf_resolver import MultiTFResolver, TFSignal, ResolverDecision
 
 
 # ---------------------------------------------------------------------------

@@ -49,7 +49,7 @@ async def show_pivot_reversals(bot, message: Message) -> None:
     if not bot.monitored_pairs:
         await message.answer("⚠️ Сначала запустите мониторинг /monitor", reply_markup=main_menu())
         return
-    from core.pivot_reversal import check_pivot_level_signal
+    from core.pivots.pivot_reversal import check_pivot_level_signal
 
     symbols = bot.monitored_pairs[:30]
     semaphore = asyncio.Semaphore(10)

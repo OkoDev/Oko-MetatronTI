@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_pe(bot):
-    from core.performance_engine import PerformanceEngine
+    from core.trading.performance_engine import PerformanceEngine
     db = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
     return PerformanceEngine(db)
 

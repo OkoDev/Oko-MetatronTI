@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from core.divergence_detector import DivergenceDetector
+from core.indicators.divergence_detector import DivergenceDetector
 
 
 # ─── Фабрики данных ────────────────────────────────────────────────────────────
@@ -296,7 +296,7 @@ class TestEdgeCases:
 
     def test_distance_keys_present(self, det):
         """Если дивергенция найдена — поле 'distance' должно быть >= min_bars_between."""
-        from core.divergence_detector import DivergenceDetector
+        from core.indicators.divergence_detector import DivergenceDetector
         from tests.unit.test_divergence_sign import _make_bearish_divergence_df
         df = _make_bearish_divergence_df()
         result = det.detect_regular_bearish(df, indicator_col="wt1")

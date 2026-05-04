@@ -14,10 +14,10 @@ from datetime import datetime, timedelta, timezone
 
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
-from core.entry_config import get_primary_entry_tf
+from core.infra.entry_config import get_primary_entry_tf
 
 from bot.keyboards import main_menu
-from core.signal_models import SignalType
+from core.signals.signal_models import SignalType
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ async def _state_scan(bot, check_fn, limit: int, sem_size: int = 20) -> list:
 async def _wt_state(sym: str, dc) -> dict | None:
     """WT: пара сейчас в зоне OB (>50) или OS (<-50)."""
     try:
-        from core.indicators import calculate_wt
+        from core.indicators.indicators import calculate_wt
         df = await dc.get_ohlcv(sym, get_primary_entry_tf(), limit=100)
         if df is None or len(df) < 50:
             return None
@@ -130,7 +130,7 @@ async def _anomaly_state(sym: str, dc) -> dict | None:
 async def _trend_state(sym: str, dc) -> dict | None:
     """Тренд: пара устойчиво в UP или DOWN тренде (последние 5 баров)."""
     try:
-        from core.indicators import calculate_trend
+        from core.indicators.indicators import calculate_trend
         df = await dc.get_ohlcv(sym, "1h", limit=100)
         if df is None or len(df) < 60:
             return None
@@ -151,7 +151,7 @@ async def _trend_state(sym: str, dc) -> dict | None:
 async def _pivot_state(sym: str, dc) -> dict | None:
     """Пивот: цена рядом с локальным уровнем поддержки/сопротивления (< 1.5%)."""
     try:
-        from core.indicators import calculate_trend
+        from core.indicators.indicators import calculate_trend
         df = await dc.get_ohlcv(sym, "1h", limit=150)
         if df is None or len(df) < 50:
             return None

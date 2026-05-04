@@ -12,7 +12,7 @@
 
 import pytest
 from datetime import datetime, timedelta
-from core.multi_tf_resolver import (
+from core.mtf.multi_tf_resolver import (
     TFSignal, MultiTFResolver, ResolverDecision,
     validate_multi_tf_config, TF_PRIORITY,
 )

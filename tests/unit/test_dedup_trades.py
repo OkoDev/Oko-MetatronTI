@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from core.trade_simulator import TradeSimulator, STATUS_OPEN
+from core.trading.trade_simulator import TradeSimulator, STATUS_OPEN
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ def _make_recommendation(
     tp: float = 53_000.0,
 ) -> Any:
     """Минимальная заглушка TradingRecommendation."""
-    from core.signal_models import SignalDirection
+    from core.signals.signal_models import SignalDirection
     rec = MagicMock()
     rec.symbol = symbol
     rec.entry_price = entry

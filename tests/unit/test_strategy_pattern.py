@@ -15,7 +15,7 @@ from datetime import datetime
 
 import pytest
 
-from core.signal_models import (
+from core.signals.signal_models import (
     MarketContext,
     SignalData,
     SignalDirection,

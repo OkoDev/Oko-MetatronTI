@@ -5,7 +5,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Any
-from core.signal_models import SignalData, TradingRecommendation, MarketContext, SignalDirection
+from core.signals.signal_models import SignalData, TradingRecommendation, MarketContext, SignalDirection
 
 
 class BaseStrategy(ABC):

@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.config_loader import config
+from core.infra.config_loader import config
 
 print("Тест конфигурации...")
 print("=" * 40)

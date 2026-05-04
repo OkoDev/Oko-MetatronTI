@@ -179,6 +179,9 @@ CONFIGS = [
                    ote_zone_min_fib=0.618, require_wt_in_obos=True,  min_zone_tf="4h",  choch_only=True),
     BacktestConfig(label="C3 0.5+OB/OS+4h+CHoCH  ",
                    ote_zone_min_fib=0.500, require_wt_in_obos=True,  min_zone_tf="4h",  choch_only=True),
+    # 04.05.2026 — продовый конфиг после правки: full OTE, без жёстких фильтров
+    BacktestConfig(label="C4 PROD 0.5  no-gates ",
+                   ote_zone_min_fib=0.500, require_wt_in_obos=False, min_zone_tf="1h",  choch_only=False),
 ]
 
 _TF_ORDER = {"1h": 0, "4h": 1, "1d": 2}   # для min_zone_tf фильтра

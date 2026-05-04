@@ -20,7 +20,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.config_loader import config
+from core.infra.config_loader import config
 from core.exchange.order_manager import OrderManager
 
 
@@ -80,7 +80,7 @@ async def build_report(db_path: str) -> dict[str, Any]:
                 "status": o.get("status"),
             }
             for o in open_orders
-            if o.get("type") == "STOP_MARKET"
+            if o.get("type") in ("STOP_MARKET", "STOP")
             and (o.get("positionSide") or "").upper() == pos_side
         ]
 

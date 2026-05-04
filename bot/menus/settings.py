@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 async def show_general_settings(bot, message: Message) -> None:
     """Показ общих настроек из config.yaml."""
     try:
-        from core.config_loader import config
+        from core.infra.config_loader import config
         cfg = config.get_all()
         lines = [
             "⚙️ <b>Общие настройки</b>",
@@ -33,7 +33,7 @@ async def show_notification_settings(bot, message: Message) -> None:
 
 async def show_analysis_settings(bot, message: Message) -> None:
     """Показ параметров анализа из config."""
-    from core.config_loader import config
+    from core.infra.config_loader import config
     a = config.get("analysis", {})
     lines = [
         "📊 <b>Параметры анализа</b>",

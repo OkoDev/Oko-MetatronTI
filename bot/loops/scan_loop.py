@@ -10,21 +10,21 @@ import time as _time
 from collections import deque
 from datetime import datetime, timezone
 
-from core.entry_config import get_primary_entry_tf, get_entry_timeframes
-from core.message_builder import (
+from core.infra.entry_config import get_primary_entry_tf, get_entry_timeframes
+from core.ui.message_builder import (
     anomaly_message, wt_message, wt_b_message as _wt_b_message,
     funding_extreme_message as _funding_message,
     liquidity_sweep_message as _sweep_message,
 )
-from core.divergence_detector import divergence_message, mtf_divergence_message
-from core.signal_checkers import (
+from core.indicators.divergence_detector import divergence_message, mtf_divergence_message
+from core.signals.signal_checkers import (
     check_anomaly_signals,
     check_wt_signals as _check_wt_signals,
     check_wt_b_signals as _check_wt_b_signals,
 )
-from core.signal_models import SignalData, SignalType, SignalDirection
-from core.wt_15m_reversal_scanner import scan_wt_15m_reversal, reversal_message as _confluence_message
-from core.data_quality import check_ohlcv_quality, MIN_BARS
+from core.signals.signal_models import SignalData, SignalType, SignalDirection
+from core.signals.wt_15m_reversal_scanner import scan_wt_15m_reversal, reversal_message as _confluence_message
+from core.infra.data_quality import check_ohlcv_quality, MIN_BARS
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
 
     # Gate 1: режим HIGH_VOL — не входим
     try:
-        from core.market_regime import MarketRegimeClassifier
+        from core.indicators.market_regime import MarketRegimeClassifier
         regime = MarketRegimeClassifier().classify_from_ohlcv(df_entry)
         if regime == "HIGH_VOL":
             logger.info("[WL-BREACH] %s: пропуск — режим HIGH_VOL", symbol)
@@ -190,7 +190,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     # DEV-41 Фикс 2: fallback ATR-based TP если get_tp_by_hierarchy вернул None
     if tp is None and sl is not None and current_price > 0:
         try:
-            from core.indicators import compute_atr as _compute_atr
+            from core.indicators.indicators import compute_atr as _compute_atr
             _atr = _compute_atr(df_entry, period=14)
             if _atr and _atr > 0:
                 _sign = 1.0 if direction == "LONG" else -1.0
@@ -274,7 +274,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     except Exception:
         _extra_wl["weekly_bias"] = "UNKNOWN"
     try:
-        from core.indicators import calculate_wt as _calc_wt_wl
+        from core.indicators.indicators import calculate_wt as _calc_wt_wl
         _df_1h_wl = await bot.data_collector.get_ohlcv(symbol, "1h", limit=30)
         if _df_1h_wl is not None and len(_df_1h_wl) >= 10:
             _df_1h_wl = _calc_wt_wl(_df_1h_wl)  # DEV-126: raw OHLCV не имеет wt1
@@ -349,12 +349,18 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                     # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
                     if _br.order_id and trade_id:
                         bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
-                        # Асинхронно получаем и сохраняем SL orderId для TSL cancel+replace
+                        # ARCH-94: сохраняем TP orderId сразу из bracket ответа
+                        if _br.tp_order_id:
+                            bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
+                        # SL orderId: сначала из bracket ответа, иначе асинхронный fetch
                         _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
-                        import asyncio as _asyncio_wl
-                        from core.exchange.tsl_updater import fetch_and_save_sl_order_id
-                        _asyncio_wl.create_task(fetch_and_save_sl_order_id(
-                            bot, trade_id, symbol, _pos_side_wl))
+                        if _br.sl_order_id:
+                            bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
+                        else:
+                            import asyncio as _asyncio_wl
+                            from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                            _asyncio_wl.create_task(fetch_and_save_sl_order_id(
+                                bot, trade_id, symbol, _pos_side_wl))
                 elif _br.error != "position_already_open":
                     logger.warning("[WL-BREACH] OrderExecutor error: %s", _br.error)
         except Exception as _oe_e:
@@ -542,8 +548,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                 # ARCH-18: pre-compute индикаторы один раз на все основные TF.
                 # Детекторы проверяют наличие колонок и пропускают пересчёт.
-                from core.indicators import calculate_wt as _calc_wt, calculate_trend as _calc_trend
-                from core.config_loader import config as _cfg_scan
+                from core.indicators.indicators import calculate_wt as _calc_wt, calculate_trend as _calc_trend
+                from core.infra.config_loader import config as _cfg_scan
                 _scan_atr_p = int(_cfg_scan.get("analysis.indicators.trend.atr_period", 43))
                 _scan_factor = float(_cfg_scan.get("analysis.indicators.trend.factor", 1.0))
                 df_entry = _calc_wt(df_entry)
@@ -565,7 +571,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # Используется в WT/confluence детекторах для dynamic_os в RANGE
                 _pair_regime = ""
                 try:
-                    from core.market_regime import MarketRegimeClassifier
+                    from core.indicators.market_regime import MarketRegimeClassifier
                     _pair_regime = MarketRegimeClassifier().classify_from_dataframes(
                         df_entry, df_1h
                     ) or ""
@@ -836,7 +842,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         if _multi_tf:
                             sig.timeframe = _scan_tf  # тегируем ТФ
                         # ARCH-23: апгрейд wt_signal → confluence если цена у пивота (±1%)
-                        if _pivot_calc is not None and not _df_tf.empty:
+                        # DEV-177 24.04: gated по confluence.enabled — иначе wt_signal утекал в БД
+                        # как signal_type=confluence даже при выключенном детекторе.
+                        _conf_enabled = bool(bot.config.get("confluence.enabled", False))
+                        if _conf_enabled and _pivot_calc is not None and not _df_tf.empty:
                             _price = float(_df_tf["close"].iloc[-1])
                             _near = _pivot_calc.find_near_pivot(_price, sym)
                             if _near:
@@ -864,9 +873,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             })
 
                 # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
+                # DEV-177 24.04: gated по confluence.enabled — иначе утечка в signal_type=confluence.
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
+                _conf_enabled_block = bool(bot.config.get("confluence.enabled", False))
                 _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
                 _confluence_sigs = []
+                if not _conf_enabled_block:
+                    _use_sm = False  # пропускаем оба ветки ниже
 
                 # DEV-127: SMC контекст для SMC None gate (shadow) в wt_15m_reversal_scanner
                 _smc_ctx_scan = None
@@ -888,7 +901,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h,
                             market_regime=_pair_regime, smc_context=_smc_ctx_scan,
                         )
-                else:
+                elif _conf_enabled_block:
                     _confluence_sigs = scan_wt_15m_reversal(
                         sym, df_entry, df_1h, pivot_cache, cfg=bot.config, df_4h=df_4h,
                         market_regime=_pair_regime, smc_context=_smc_ctx_scan,
@@ -1035,8 +1048,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             # Получаем MTF Bias из уже имеющихся сигналов (MTF_BIAS генерируется в analyze_symbol,
             # но мы можем быстро получить direction из старших TF snapshot)
             try:
-                from core.mtf_interpreter import analyze_context
-                from core.mtf_checker import collect_mtf_data
+                from core.mtf.mtf_interpreter import analyze_context
+                from core.mtf.mtf_checker import collect_mtf_data
                 _snapshot = await collect_mtf_data(sym, bot.data_collector)
                 if _snapshot:
                     _cur_price = float(df_entry['close'].iloc[-1]) if df_entry is not None and len(df_entry) > 0 else 0
@@ -1048,7 +1061,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             except Exception:
                 pass  # MTF Bias — бонус, не блокирует работу
 
-            from core.multi_tf_resolver import TFSignal
+            from core.mtf.multi_tf_resolver import TFSignal
             for sig in all_scan_signals:
                 _dir = getattr(sig.direction, "value", str(sig.direction)) if sig.direction else ""
                 if _dir in ("LONG", "SHORT"):

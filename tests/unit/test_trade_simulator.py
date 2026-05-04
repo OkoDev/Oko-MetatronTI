@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, AsyncMock
 
-from core.trade_simulator import TradeSimulator, STATUS_OPEN, STATUS_TP, STATUS_SL, STATUS_EXPIRED
+from core.trading.trade_simulator import TradeSimulator, STATUS_OPEN, STATUS_TP, STATUS_SL, STATUS_EXPIRED
 
 
 def make_recommendation(

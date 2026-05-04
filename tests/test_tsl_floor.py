@@ -10,21 +10,26 @@
 5. SL check: VST -> wick, SIM -> close (для tsl_line источников)
 """
 
-# ── Чистый unit-тест логики floor — без импорта тяжёлых модулей ──
+# ── Thin wrappers вокруг core.trading.tsl_engine.apply_floor ──
+# Новый canonical path: core/trading/tsl_engine.py::apply_floor.
+# Эти обёртки оставлены чтобы сохранить совместимость с существующими тестами
+# ниже (они проверяют сценарии prod-логики для LONG/SHORT).
 
-_TSL_FLOOR_PCT = 0.003  # 0.3%
+from core.trading.tsl_engine import apply_floor, DEFAULT_FLOOR_PCT
+
+_TSL_FLOOR_PCT = DEFAULT_FLOOR_PCT
 
 
 def tsl_floor_long(tsl_price: float, entry: float) -> float:
-    """Повторяет логику из trade_simulator.py:1650-1652"""
-    _floor = entry * (1 - _TSL_FLOOR_PCT)
-    return max(tsl_price, _floor)
+    sl, _ = apply_floor("LONG", entry, tsl_price)
+    return sl
 
 
 def tsl_floor_short(tsl_price: float, entry: float) -> float:
-    """Повторяет логику из trade_simulator.py:1654-1655"""
-    _ceil = entry * (1 + _TSL_FLOOR_PCT)
-    return min(tsl_price, _ceil)
+    # Canonical: max(raw, entry*(1+floor)) — поднимает перевёрнутый SL выше entry.
+    # Ранее здесь был min(), что ломало SHORT (см. REAL #7264).
+    sl, _ = apply_floor("SHORT", entry, tsl_price)
+    return sl
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -103,50 +108,50 @@ def test_long_tsl_slightly_below_entry():
 # SHORT тесты
 # ═══════════════════════════════════════════════════════════════════
 
-def test_short_tsl_below_entry():
-    """SHORT: trendup ниже entry -> TSL фиксирует прибыль, ceiling не вмешивается"""
+def test_short_tsl_below_entry_pulled_up():
+    """SHORT: raw_tsl=97 ниже entry — перевёрнутый SL, floor поднимает до entry*1.003.
+
+    Старая логика (min) оставляла 97 и биржа отвергала ордер (REAL #7264).
+    Новая логика (max) подтягивает SL на сторону выше entry."""
     entry = 100.0
-    tsl = 97.0  # цена упала, SHORT в прибыли
+    tsl = 97.0
     result = tsl_floor_short(tsl, entry)
-    assert result == 97.0, f"Ожидали 97.0, получили {result}"
-    print(f"  PASS: SHORT tsl={tsl} < entry={entry} -> SL={result} (прибыль зафиксирована)")
+    expected = entry * (1 + _TSL_FLOOR_PCT)
+    assert abs(result - expected) < 1e-9, f"Ожидали {expected}, получили {result}"
+    assert result > entry
+    print(f"  PASS: SHORT raw={tsl} -> floor={result:.4f} (перевёрнутый SL исправлен)")
 
 
-def test_short_tsl_above_entry():
-    """SHORT: trendup выше entry -> ceiling ограничивает SL на entry*1.003"""
+def test_short_tsl_above_floor_passthrough():
+    """SHORT: raw_tsl=102 уже выше floor=100.3 — max выбирает raw (далёкий SL остаётся)."""
     entry = 100.0
-    tsl = 102.0  # откат вверх
+    tsl = 102.0
     result = tsl_floor_short(tsl, entry)
-    expected = entry * (1 + _TSL_FLOOR_PCT)  # 100.3
-    assert result == expected, f"Ожидали {expected}, получили {result}"
-    assert result > entry, f"Ceiling должен быть ВЫШЕ entry: {result} <= {entry}"
-    print(f"  PASS: SHORT tsl={tsl} > entry={entry} -> SL={result:.4f} (буфер 0.3% выше entry)")
+    assert result == 102.0, f"Ожидали 102.0, получили {result}"
+    print(f"  PASS: SHORT raw={tsl} -> SL={result} (не floored)")
 
 
 def test_short_wick_survives():
-    """SHORT: wick вверх до entry+0.1% не выбивает позицию"""
+    """SHORT: wick вверх до entry+0.1% не выбивает позицию когда floor сработал."""
     entry = 100.0
-    tsl = 102.0
-    ceil_sl = tsl_floor_short(tsl, entry)
-
+    # raw ниже entry → floor поднимает до 100.3
+    ceil_sl = tsl_floor_short(97.0, entry)
     wick_price = entry * 1.001  # фитиль +0.1% от entry
     assert wick_price < ceil_sl, (
-        f"Wick {wick_price:.4f} должен быть НИЖЕ ceiling SL {ceil_sl:.4f} — позиция жива"
+        f"Wick {wick_price:.4f} должен быть НИЖЕ floor SL {ceil_sl:.4f} — позиция жива"
     )
-    print(f"  PASS: SHORT wick={wick_price:.4f} < ceil={ceil_sl:.4f} -> позиция выживает")
+    print(f"  PASS: SHORT wick={wick_price:.4f} < floor={ceil_sl:.4f} -> позиция выживает")
 
 
-def test_short_real_sl_triggers():
-    """SHORT: цена растёт выше ceiling -> SL срабатывает"""
+def test_short_real_sl_triggers_above_floor():
+    """SHORT: рост выше floor SL -> SL срабатывает."""
     entry = 100.0
-    tsl = 102.0
-    ceil_sl = tsl_floor_short(tsl, entry)
-
-    pump_price = entry * 1.005  # рост +0.5%
-    assert pump_price > ceil_sl, (
-        f"Pump {pump_price:.4f} должен быть ВЫШЕ ceiling SL {ceil_sl:.4f} — SL срабатывает"
+    floor_sl = tsl_floor_short(97.0, entry)  # 100.3
+    pump_price = entry * 1.005  # 100.5 — выше floor
+    assert pump_price > floor_sl, (
+        f"Pump {pump_price:.4f} должен быть ВЫШЕ floor SL {floor_sl:.4f} — SL срабатывает"
     )
-    print(f"  PASS: SHORT pump={pump_price:.4f} > ceil={ceil_sl:.4f} -> SL сработал")
+    print(f"  PASS: SHORT pump={pump_price:.4f} > floor={floor_sl:.4f} -> SL сработал")
 
 
 # ═══════════════════════════════════════════════════════════════════

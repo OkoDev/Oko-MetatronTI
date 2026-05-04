@@ -6,8 +6,8 @@ import asyncio
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
-from core.trade_simulator import TradeSimulator
-from core.indicators import calculate_trend, get_trend_info
+from core.trading.trade_simulator import TradeSimulator
+from core.indicators.indicators import calculate_trend, get_trend_info
 
 
 async def test_tsl_calculation():

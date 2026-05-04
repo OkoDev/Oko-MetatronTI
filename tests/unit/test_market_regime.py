@@ -2,7 +2,7 @@
 Тесты MarketRegimeClassifier.
 """
 import pytest
-from core.market_regime import MarketRegimeClassifier, _ema, _atr, _adx
+from core.indicators.market_regime import MarketRegimeClassifier, _ema, _atr, _adx
 
 
 def make_ohlcv_list(closes, spread=0.5):

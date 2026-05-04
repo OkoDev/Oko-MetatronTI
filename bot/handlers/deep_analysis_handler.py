@@ -88,7 +88,7 @@ def get_router(bot) -> Router:
 
         try:
             from core.smc.deep_analysis import build_deep_analysis
-            from core.chart_builder import build_deep_chart
+            from core.ui.chart_builder import build_deep_chart
 
             text, fvg_zones, cross_pivots, df, daily_piv, weekly_piv, all_fvgs = \
                 await build_deep_analysis(target_symbol, tf, bot)

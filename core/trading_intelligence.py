@@ -11,21 +11,21 @@ import pandas as pd
 import numpy as np
 
 # Модели данных
-from core.signal_models import (
+from core.signals.signal_models import (
     SignalType, SignalDirection, SignalStrength,
     SignalData, MarketContext, TradingRecommendation, MTFContext,
 )
 
 # Проверки сигналов
-from core.signal_checkers import (
+from core.signals.signal_checkers import (
     check_anomaly_signals, check_wt_signals,
     check_trend_signals, check_mtf_bias_signal, check_wt_b_signals,
 )
 
 # Форматтер рекомендаций
-from core.intelligence_formatter import format_intelligence_message  # noqa: F401 — re-export
-from core.data_quality import check_ohlcv_quality
-from core.entry_config import get_primary_entry_tf
+from core.ui.intelligence_formatter import format_intelligence_message  # noqa: F401 — re-export
+from core.infra.data_quality import check_ohlcv_quality
+from core.infra.entry_config import get_primary_entry_tf
 
 # Strategy Pattern
 try:
@@ -35,7 +35,7 @@ except ImportError:
     STRATEGIES_AVAILABLE = False
 
 try:
-    from core.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr, compute_volatility
+    from core.indicators.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr, compute_volatility
 except ImportError:
     import logging as _log
     _log.getLogger(__name__).error(
@@ -63,7 +63,7 @@ except ImportError:
 
 # Импорт ML модуля
 try:
-    from core.ml_predictor import MLPredictor, MLPrediction, PredictionType
+    from core.ml.ml_predictor import MLPredictor, MLPrediction, PredictionType
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
@@ -97,7 +97,7 @@ class TradingIntelligence:
         self._db_path = db_path
         # ARCH-38 / DEV-45: Singleton — один инстанс на весь цикл, кеш живёт с db_path
         # Если передан внешний инстанс (bot.pivot_calculator) — используем его кеш (DEV-45 fix)
-        from core.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_cls
+        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF_cls
         self._pivot_calc_shared: _PCF_cls = pivot_calculator or _PCF_cls(db_path=db_path)
 
         # Веса сигналов: MTF_BIAS = главное WaveTrend-ядро (7 TF, alignment, senior gate)
@@ -159,7 +159,7 @@ class TradingIntelligence:
             logger.info("OutcomePredictor отключён: ml.use_outcome_predictor=false (AUC<0.5)")
         else:
             try:
-                from core.outcome_predictor import OutcomePredictor
+                from core.ml.outcome_predictor import OutcomePredictor
                 op = OutcomePredictor()
                 # ARCH-21: скользящее окно из конфига (None = вся история)
                 _tw = (config.get("outcome_predictor.training_window") if config else None)
@@ -194,7 +194,7 @@ class TradingIntelligence:
         # ARCH-12.5: AutoCalibrator — rule-based калибровка MTF multipliers
         self._auto_calibrator = None
         try:
-            from core.auto_calibrator import AutoCalibrator
+            from core.ml.auto_calibrator import AutoCalibrator
             self._auto_calibrator = AutoCalibrator(db_path=db_path)
             logger.info("AutoCalibrator: загружен (%s)", self._auto_calibrator.calibration_path)
         except Exception as e:
@@ -265,7 +265,7 @@ class TradingIntelligence:
         }
         # DEV-177: параметры из config
         try:
-            from core.config_loader import config as _cfg
+            from core.infra.config_loader import config as _cfg
             _aw = ((_cfg.get("trading") or {}).get("adaptive_weights") or {})
         except Exception:
             _aw = {}
@@ -276,7 +276,7 @@ class TradingIntelligence:
         _hist_interval_min = float(_aw.get("history_log_interval_min", 60))
 
         try:
-            from core.performance_engine import PerformanceEngine
+            from core.trading.performance_engine import PerformanceEngine
             pe = PerformanceEngine(db)
             rows_ema = pe.by_signal_type_ema(half_life=_hl, data_era=_era)
             rows_full = pe.by_signal_type()
@@ -845,6 +845,13 @@ class TradingIntelligence:
                 _scalp_trigger_tf = (self.config or {}).get("signal_quality", {}).get(
                     "ote_scalp_trigger_tf", "3m"
                 )
+                # 04.05.2026: full OTE [0.5–0.786] + ATR-trend gate отключён
+                _ote_zone_min_fib = (self.config or {}).get("signal_quality", {}).get(
+                    "ote_zone_min_fib", 0.5
+                )
+                _ote_use_trend_gate = (self.config or {}).get("signal_quality", {}).get(
+                    "ote_use_trend_gate", False
+                )
                 _arch51_fields = {"4h": "smc_h4", "1d": "smc_d1"}
                 _pdfs = pre_fetched_dfs or {}  # уже загруженные df из scan_one
 
@@ -881,7 +888,8 @@ class TradingIntelligence:
                         smc_contexts=_smc_contexts,
                         trigger_tf=_entry_tf,
                         shadow_mode=_ote_shadow,
-                        df_trend_ref=_pdfs.get("1h"),  # DEV-85: ATR-trend gate на 1h
+                        ote_zone_min_fib=_ote_zone_min_fib,
+                        df_trend_ref=_pdfs.get("1h") if _ote_use_trend_gate else None,
                     )
                     if ote_sig is not None:
                         filtered_signals.append(ote_sig)
@@ -903,6 +911,7 @@ class TradingIntelligence:
                         smc_contexts=_scalp_smc_contexts,
                         trigger_tf=_scalp_trigger_tf,
                         shadow_mode=_ote_shadow,
+                        ote_zone_min_fib=_ote_zone_min_fib,
                     )
                     if ote_scalp_sig is not None:
                         filtered_signals.append(ote_scalp_sig)
@@ -1005,6 +1014,9 @@ class TradingIntelligence:
             if recommendation is not None:
                 recommendation.metadata = recommendation.metadata or {}
                 recommendation.metadata["strategy_name"] = chosen_strategy
+                # ARCH-95 H1: detector_price — цена close бара при детекции (shadow)
+                if market_context and getattr(market_context, "current_price", 0) > 0:
+                    recommendation.metadata["detector_price"] = market_context.current_price
                 # Все остальные рекомендации — для раздельной регистрации в monitoring
                 other_recs = {k: v for k, v in all_recs.items() if k != chosen_strategy}
                 if other_recs:
@@ -1518,7 +1530,7 @@ class TradingIntelligence:
 
             # DEV-52: L3 условия 3+5 — shadow mode (только лог, не блокирует)
             try:
-                from core.config_loader import config as _cfg_52ti
+                from core.infra.config_loader import config as _cfg_52ti
                 _l3_52 = (_cfg_52ti.get("trading", {}) or {}).get("l3_checker", {}) if _cfg_52ti else {}
                 if _l3_52:
                     _min_score_52 = _l3_52.get("min_score", 85)
@@ -1530,7 +1542,7 @@ class TradingIntelligence:
                     _cond3 = True
                     _cond3_note = "no_data"
                     try:
-                        from core.structure_detector import detect_structure as _det_struct_52
+                        from core.signals.structure_detector import detect_structure as _det_struct_52
                         _df_1h_52 = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
                         if _df_1h_52 is not None and len(_df_1h_52) >= 20:
                             _struct_52 = _det_struct_52(_df_1h_52)
@@ -1875,7 +1887,7 @@ class TradingIntelligence:
 
             # DEV-40: ATR entry TF → используется в register_trade для ATR-based TP1
             try:
-                from core.entry_config import ENTRY_TO_TP1_TF as _TP1_TF_MAP
+                from core.infra.entry_config import ENTRY_TO_TP1_TF as _TP1_TF_MAP
                 _entry_tf_40 = get_primary_entry_tf(self.config)
                 _atr_tf_40 = _TP1_TF_MAP.get(_entry_tf_40, "15m")
                 _df_atr40 = await self.data_collector.get_ohlcv(symbol, _atr_tf_40, limit=20)
@@ -2014,7 +2026,7 @@ class TradingIntelligence:
             # ── Regime: определяем режим рынка для mtf_bias ──────────────────
             _regime: Optional[str] = None
             try:
-                from core.market_regime import MarketRegimeClassifier
+                from core.indicators.market_regime import MarketRegimeClassifier
                 _regime = MarketRegimeClassifier().classify_from_dataframes(df_15m, df_1h)
             except Exception:
                 logger.debug("[%s] MarketRegime: не удалось определить", symbol)
@@ -2070,8 +2082,8 @@ class TradingIntelligence:
         Данные из кешированного collect_mtf_data + weekly_pivots + regime.
         """
         try:
-            from core.mtf_checker import collect_mtf_data
-            from core.mtf_interpreter import analyze_context
+            from core.mtf.mtf_checker import collect_mtf_data
+            from core.mtf.mtf_interpreter import analyze_context
 
             snapshot = await collect_mtf_data(symbol, self.data_collector)
             if not snapshot:
@@ -2099,7 +2111,7 @@ class TradingIntelligence:
             df_1h = None
             df_4h = None
             try:
-                from core.market_regime import MarketRegimeClassifier
+                from core.indicators.market_regime import MarketRegimeClassifier
                 df_15m = await self.data_collector.get_ohlcv(symbol, get_primary_entry_tf(self.config), limit=100)
                 df_1h = await self.data_collector.get_ohlcv(symbol, "1h", limit=100)
                 df_4h = await self.data_collector.get_ohlcv(symbol, "4h", limit=60)

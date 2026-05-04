@@ -77,7 +77,7 @@ def dashboard_status_text(bot) -> str:
     wr = 0.0
     avg_r = 0.0
     try:
-        from core.performance_engine import PerformanceEngine
+        from core.trading.performance_engine import PerformanceEngine
         engine = PerformanceEngine(db_path=bot.trade_simulator.db_path)
         stats = engine.full_stats()
         open_count = stats.get("open_count", 0)

@@ -178,7 +178,7 @@ class SelfTest:
     def _test_config(self) -> SelfTestResult:
         t0 = time.monotonic()
         try:
-            from core.config_loader import config as cfg
+            from core.infra.config_loader import config as cfg
             required_keys = [
                 "exchanges.default",
                 "analysis.check_interval",
@@ -234,21 +234,21 @@ class SelfTest:
         t0 = time.monotonic()
         errors = []
         modules = [
-            "core.indicators",
-            "core.signal_checkers",
+            "core.indicators.indicators",
+            "core.signals.signal_checkers",
             "core.trading_intelligence",
-            "core.trade_simulator",
-            "core.pivot_calculator_fixed",
-            "core.divergence_detector",
-            "core.entry_config",
-            "core.multi_tf_resolver",
-            "core.wt_15m_reversal_scanner",
-            "core.trend_signals",
-            "core.pivot_reversal",
-            "core.mtf_checker",
-            "core.auto_calibrator",
-            "core.market_regime",
-            "core.regime_strategy",
+            "core.trading.trade_simulator",
+            "core.pivots.pivot_calculator_fixed",
+            "core.indicators.divergence_detector",
+            "core.infra.entry_config",
+            "core.mtf.multi_tf_resolver",
+            "core.signals.wt_15m_reversal_scanner",
+            "core.indicators.trend_signals",
+            "core.pivots.pivot_reversal",
+            "core.mtf.mtf_checker",
+            "core.ml.auto_calibrator",
+            "core.indicators.market_regime",
+            "core.trading.regime_strategy",
             "bot.loops.scan_loop",
             "bot.monitoring",
             "web.dashboard_server",
@@ -278,7 +278,7 @@ class SelfTest:
     def _test_indicators(self) -> SelfTestResult:
         t0 = time.monotonic()
         try:
-            from core.indicators import calculate_wt, calculate_trend, compute_atr, detect_fvg
+            from core.indicators.indicators import calculate_wt, calculate_trend, compute_atr, detect_fvg
 
             n = 100
             np.random.seed(42)
@@ -406,8 +406,8 @@ class SelfTest:
             if self.bot and hasattr(self.bot, "data_collector"):
                 dc = self.bot.data_collector
             else:
-                from core.config_loader import config as cfg
-                from core.data_collector import RealTimeData
+                from core.infra.config_loader import config as cfg
+                from core.infra.data_collector import RealTimeData
                 exchange_id = cfg.get("exchanges.default", "bingx")
                 dc = RealTimeData(exchange_id=exchange_id)
 
@@ -444,8 +444,8 @@ class SelfTest:
     def _test_multi_tf_config(self) -> SelfTestResult:
         t0 = time.monotonic()
         try:
-            from core.entry_config import get_entry_timeframes
-            from core.multi_tf_resolver import validate_multi_tf_config
+            from core.infra.entry_config import get_entry_timeframes
+            from core.mtf.multi_tf_resolver import validate_multi_tf_config
 
             cfg = self.config if self.config else None
             tfs = get_entry_timeframes(cfg)
@@ -470,7 +470,7 @@ class SelfTest:
     def _test_pivot_calculator(self) -> SelfTestResult:
         t0 = time.monotonic()
         try:
-            from core.pivot_calculator_fixed import PivotCalculatorFixed
+            from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
             pc = PivotCalculatorFixed(db_path=":memory:")
             pivots = pc.calculate_traditional_pivots(high=110, low=90, close=100)
             if not pivots or "PP" not in pivots:
@@ -542,7 +542,7 @@ class SelfTest:
     def _test_strategies(self) -> SelfTestResult:
         t0 = time.monotonic()
         try:
-            from core.config_loader import config as cfg
+            from core.infra.config_loader import config as cfg
             declared = cfg.get("trading.active_strategies") or []
             if not declared:
                 return SelfTestResult(
@@ -642,7 +642,7 @@ class SelfTest:
         t0 = time.monotonic()
         warnings = []
         try:
-            from core.config_loader import config as cfg
+            from core.infra.config_loader import config as cfg
 
             # 1. Проверяем что TradingIntelligence получает ConfigLoader, а не dict
             if self.bot and hasattr(self.bot, "trading_intelligence"):
@@ -681,7 +681,7 @@ class SelfTest:
             # 4. Проверяем что все signal types из strategy weights валидны
             weights = cfg.get("strategy.confluence.signal_weights")
             if weights and isinstance(weights, dict):
-                from core.signal_models import SignalType
+                from core.signals.signal_models import SignalType
                 valid = {st.value for st in SignalType}
                 unknown = [k for k in weights if k not in valid]
                 if unknown:

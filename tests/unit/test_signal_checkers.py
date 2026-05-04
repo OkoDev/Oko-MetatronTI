@@ -9,14 +9,14 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from core.signal_checkers import (
+from core.signals.signal_checkers import (
     check_anomaly_signals,
     check_wt_signals,
     check_trend_signals,
     check_divergence_signals,
     check_pivot_signals,
 )
-from core.signal_models import SignalDirection, SignalType
+from core.signals.signal_models import SignalDirection, SignalType
 
 
 def make_df(n=150, base=100.0, trend=0.0, vol=0.5, seed=42) -> pd.DataFrame:
@@ -125,7 +125,7 @@ class TestWTSignals:
     @pytest.mark.asyncio
     async def test_long_signal_on_oversold_crossover(self):
         """Форсируем crossover WT1>WT2 при WT1 < -60 (OS зона) — ожидаем LONG."""
-        from core.indicators import calculate_wt
+        from core.indicators.indicators import calculate_wt
         df = make_df(n=150, seed=7)
         df_wt = calculate_wt(df, n1=10, n2=21)
         if "wt1" not in df_wt.columns or "wt2" not in df_wt.columns:

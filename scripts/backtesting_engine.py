@@ -17,14 +17,14 @@ from dataclasses import dataclass
 from enum import Enum
 
 import ccxt.async_support as ccxt_async
-from core.data_collector import RealTimeData
-from core.indicators import calculate_trend, calculate_wt, get_trend_info, calculate_trend_strength
-from core.signal_checkers import (
+from core.infra.data_collector import RealTimeData
+from core.indicators.indicators import calculate_trend, calculate_wt, get_trend_info, calculate_trend_strength
+from core.signals.signal_checkers import (
     check_anomaly_signals, check_wt_signals,
     check_trend_signals, check_divergence_signals, check_pivot_signals,
 )
-from core.market_regime import MarketRegimeClassifier
-from core.trade_simulator import STATUS_TP, STATUS_SL, STATUS_TSL, STATUS_EXPIRED
+from core.indicators.market_regime import MarketRegimeClassifier
+from core.trading.trade_simulator import STATUS_TP, STATUS_SL, STATUS_TSL, STATUS_EXPIRED
 
 logger = logging.getLogger(__name__)
 
@@ -435,7 +435,7 @@ class BacktestingEngine:
         2. WT 1h crossover в OB/OS зоне (совпадающее с уровнем направление)
         3. Возвращает сигнал с tp_price = следующий pivot level
         """
-        from core.indicators import calculate_wt
+        from core.indicators.indicators import calculate_wt
 
         pivots = full_pivots.get(_week_start_ms(bar_time))
         if not pivots:
@@ -637,7 +637,7 @@ class BacktestingEngine:
 
                     # Фильтр 5: FVG подтверждение на LTF (опциональный)
                     if self.config.use_fvg and len(fvg_times) > 0:
-                        from core.indicators import detect_fvg
+                        from core.indicators.indicators import detect_fvg
                         ltf_idx = int(np.searchsorted(fvg_times, bar_time, side='right')) - 1
                         if ltf_idx >= 3 and df_ltf is not None:
                             context_fvg = df_ltf.iloc[ltf_idx - 4:ltf_idx + 1]
@@ -676,7 +676,7 @@ class BacktestingEngine:
 
                     # Усилитель 1: FVG на LTF (не фильтр, а бонус к силе)
                     if self.config.use_fvg_boost and len(fvg_times) > 0:
-                        from core.indicators import detect_fvg
+                        from core.indicators.indicators import detect_fvg
                         ltf_idx = int(np.searchsorted(fvg_times, bar_time, side='right')) - 1
                         if ltf_idx >= 3 and df_ltf is not None:
                             context_fvg = df_ltf.iloc[ltf_idx - 4:ltf_idx + 1]
@@ -712,8 +712,8 @@ class BacktestingEngine:
             # Confluence Scanner детектор (всегда, если use_confluence=True)
             if self.config.use_confluence:
                 try:
-                    from core.confluence_scanner import scan_confluence
-                    from core.signal_models import SignalDirection as _SD
+                    from core.confluence.confluence_scanner import scan_confluence
+                    from core.signals.signal_models import SignalDirection as _SD
                     _pivots_flat = {}
                     if full_pivots:
                         week_key = _week_start_ms(bar_time)
@@ -1509,7 +1509,7 @@ async def run_bot_backtest(
             continue
 
         # BUY/SELL → direction явная; WATCH → по rec.direction
-        from core.signal_models import SignalDirection
+        from core.signals.signal_models import SignalDirection
         if rec.action == 'BUY':
             direction = 'LONG'
         elif rec.action == 'SELL':

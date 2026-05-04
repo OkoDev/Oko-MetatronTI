@@ -10,19 +10,19 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from core.config_loader import config
-from core.subscription_manager import SubscriptionManager
-from core.watchlist_manager import WatchlistManager
-from core.data_collector import RealTimeData
-from core.divergence_detector import DivergenceDetector
-from core.pivot_calculator_fixed import PivotCalculatorFixed
+from core.infra.config_loader import config
+from core.db.subscription_manager import SubscriptionManager
+from core.db.watchlist_manager import WatchlistManager
+from core.infra.data_collector import RealTimeData
+from core.indicators.divergence_detector import DivergenceDetector
+from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
 from core.trading_intelligence import TradingIntelligence
-from core.trade_simulator import TradeSimulator
-from core.r_predictor import RPredictor
-from core.confluence_state_machine import ConfluenceStateMachine
-from core.multi_tf_resolver import MultiTFResolver
-from core.bounce_detector import BounceDetector
-from core.signal_watch_list import SignalWatchList
+from core.trading.trade_simulator import TradeSimulator
+from core.ml.r_predictor import RPredictor
+from core.confluence.confluence_state_machine import ConfluenceStateMachine
+from core.mtf.multi_tf_resolver import MultiTFResolver
+from core.indicators.bounce_detector import BounceDetector
+from core.signals.signal_watch_list import SignalWatchList
 from core.context.pair_context import PairContextBus
 from core.trading.post_trade_analyser import PostTradeAnalyser
 from core.exchange import OrderManager as OrderExecutor

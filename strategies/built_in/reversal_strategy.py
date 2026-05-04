@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from core.signal_models import (
+from core.signals.signal_models import (
     MarketContext,
     SignalData,
     SignalDirection,
@@ -57,9 +57,11 @@ class ReversalStrategy(BaseStrategy):
         self.min_confidence  = float(cfg.get("min_confidence", 0.60))
         self.conflict_margin = float(cfg.get("conflict_margin", 0.15))
         self.tp_rr           = float(cfg.get("tp_rr",         2.0))
+        self.sl_min_pct      = float(cfg.get("sl_min_pct",    0.5))
+        self.sl_max_pct      = float(cfg.get("sl_max_pct",    3.0))
         self.logger.info(
-            "ReversalStrategy: min_strength=%d min_confidence=%.2f tp_rr=%.1f",
-            self.min_strength, self.min_confidence, self.tp_rr,
+            "ReversalStrategy: min_strength=%d min_confidence=%.2f tp_rr=%.1f sl=[%.1f%%,%.1f%%]",
+            self.min_strength, self.min_confidence, self.tp_rr, self.sl_min_pct, self.sl_max_pct,
         )
 
     # ── analyze ──────────────────────────────────────────────────────────────
@@ -171,6 +173,13 @@ class ReversalStrategy(BaseStrategy):
         if not atr or atr <= 0:
             atr = (entry_price or 1.0) * 0.02
         sl_dist = atr * 1.5
+        # DEV-SL-MIN (04.05.2026): зажать в [sl_min_pct, sl_max_pct] — иначе tiny ATR
+        # даёт SL=0.03% и при overshoot 2% получаем R=-60 вместо ожидаемых -1.
+        if entry_price > 0:
+            sl_dist = max(
+                entry_price * self.sl_min_pct / 100,
+                min(sl_dist, entry_price * self.sl_max_pct / 100),
+            )
         tp_dist = sl_dist * self.tp_rr
         is_long = direction.upper() == "LONG"
         sl = (entry_price - sl_dist) if is_long else (entry_price + sl_dist)

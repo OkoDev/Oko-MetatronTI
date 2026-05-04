@@ -2,7 +2,7 @@
 Тесты для core/regime_strategy.py (ARCH-04).
 """
 import pytest
-from core.regime_strategy import (
+from core.trading.regime_strategy import (
     get_regime_params,
     apply_regime_to_strategy,
     RegimeParams,

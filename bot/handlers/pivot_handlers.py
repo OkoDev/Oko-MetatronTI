@@ -10,7 +10,7 @@ from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 
 from bot.keyboards import main_menu
-from core.message_builder import tv_link
+from core.ui.message_builder import tv_link
 from bot.states import PivotStates
 
 logger = logging.getLogger(__name__)

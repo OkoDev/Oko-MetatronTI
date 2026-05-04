@@ -171,7 +171,7 @@ class BotTester:
         logger.info("🧪 Тестирование загрузки конфигурации...")
         
         try:
-            from core.config_loader import ConfigLoader
+            from core.infra.config_loader import ConfigLoader
             
             config_loader = ConfigLoader()
             config = config_loader.load_config()
@@ -218,7 +218,7 @@ class BotTester:
         logger.info("🧪 Тестирование менеджера подписок...")
         
         try:
-            from core.subscription_manager import SubscriptionManager
+            from core.db.subscription_manager import SubscriptionManager
             
             subscription_manager = SubscriptionManager()
             
@@ -258,7 +258,7 @@ class BotTester:
         logger.info("🧪 Тестирование сборщика данных...")
         
         try:
-            from core.data_collector import DataCollector
+            from core.infra.data_collector import DataCollector
             
             data_collector = DataCollector()
             
@@ -286,7 +286,7 @@ class BotTester:
         logger.info("🧪 Тестирование технических индикаторов...")
         
         try:
-            from core.indicators import Indicators
+            from core.indicators.indicators import Indicators
             import pandas as pd
             import numpy as np
             

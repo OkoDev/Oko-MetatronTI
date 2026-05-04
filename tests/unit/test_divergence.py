@@ -11,9 +11,9 @@ import pandas as pd
 # Добавляем путь к проекту
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.data_collector import RealTimeData
-from core.divergence_detector import DivergenceDetector
-from core.indicators import calculate_wt
+from core.infra.data_collector import RealTimeData
+from core.indicators.divergence_detector import DivergenceDetector
+from core.indicators.indicators import calculate_wt
 
 
 def print_divergence_details(div_info, symbol):

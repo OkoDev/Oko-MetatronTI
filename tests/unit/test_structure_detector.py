@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from core.structure_detector import (
+from core.signals.structure_detector import (
     detect_swing_highs_lows,
     detect_choch,
     detect_bos,

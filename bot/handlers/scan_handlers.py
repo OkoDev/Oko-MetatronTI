@@ -51,8 +51,8 @@ def _resolve_sym(bot, raw: str):
 
 async def _build_wlr_message(bot, symbol: str) -> str:
     """Собирает WL Report для символа из всех доступных источников."""
-    from core.indicators import calculate_wt, calculate_trend
-    from core.market_regime import MarketRegimeClassifier
+    from core.indicators.indicators import calculate_wt, calculate_trend
+    from core.indicators.market_regime import MarketRegimeClassifier
 
     lines = [f"📊 <b>{symbol.split('/')[0]}/USDT — WL Report</b>"]
 

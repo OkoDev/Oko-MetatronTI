@@ -179,7 +179,7 @@ class EMAAdaptiveWeightsTests(unittest.TestCase):
     def test_6_below_min_trades_weight_unchanged(self):
         """10 сделок (<20) → update_signal_weights не меняет вес."""
         from core.trading_intelligence import TradingIntelligence
-        from core.signal_models import SignalType
+        from core.signals.signal_models import SignalType
 
         db = _make_tmp_db()
         try:

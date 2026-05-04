@@ -19,7 +19,7 @@ TP: TP1 = первый недельный уровень в направлени
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from core.signal_models import (
+from core.signals.signal_models import (
     SignalData, SignalType, SignalDirection, MarketContext, TradingRecommendation
 )
 from strategies.base import BaseStrategy
@@ -106,7 +106,7 @@ class PivotReversalStrategy(BaseStrategy):
         pivot_cache = getattr(market_context, "pivot_cache_1d_1w", None)
         if (getattr(market_context, "regime", "") == "RANGE" and pivot_cache):
             try:
-                from core.config_loader import config as _gcfg
+                from core.infra.config_loader import config as _gcfg
                 from core.smc.sl_tp_calculator import calc_range_bounce_sl_tp
                 _rb_cfg = (_gcfg.get("trading", {}) or {}).get("range_bounce", {})
                 if _rb_cfg.get("enabled", False):

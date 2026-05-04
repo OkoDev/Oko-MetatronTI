@@ -11,8 +11,8 @@ import pandas as pd
 from datetime import datetime
 from unittest.mock import patch
 
-from core.wt_15m_reversal_scanner import scan_wt_15m_reversal
-from core.signal_models import (
+from core.signals.wt_15m_reversal_scanner import scan_wt_15m_reversal
+from core.signals.signal_models import (
     SignalData, SignalType, SignalDirection, MarketContext,
 )
 from strategies import get_strategy
