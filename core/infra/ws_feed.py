@@ -35,12 +35,16 @@ _OHLCV_TF        = "15m" # TF для OHLCV-подписок (фаза 2)
 class WsFeed:
     """WebSocket feed: real-time тикеры и OHLCV через ccxt.pro BingX."""
 
-    def __init__(self, ohlcv_cache=None):
+    def __init__(self, ohlcv_cache=None, api_key: str = "", secret: str = ""):
         """
         Args:
             ohlcv_cache: ссылка на ApiEngine._cache — для обновления из WS (фаза 2)
+            api_key: BingX API ключ (должен совпадать с execution_mode: VST или LIVE)
+            secret:  BingX Secret ключ
         """
         self._ohlcv_cache = ohlcv_cache
+        self._api_key = api_key
+        self._secret  = secret
 
         # {symbol: (price, timestamp)} — обновляется при каждом тике
         self._ws_prices: Dict[str, tuple] = {}
@@ -131,11 +135,12 @@ class WsFeed:
     # ── Внутренние методы ─────────────────────────
 
     def _make_exchange(self):
-        """Создаёт отдельный ccxt.pro инстанс для батча (изоляция соединений)."""
+        """Создаёт отдельный ccxt.pro инстанс для батча (изоляция соединений).
+
+        watch_ticker на BingX — публичный стрим, ключи не нужны и вызывают 100413.
+        """
         import ccxt.pro as ccxtpro
         return ccxtpro.bingx({
-            "apiKey":  os.getenv("BINGX_API_KEY", ""),
-            "secret":  os.getenv("BINGX_SECRET_KEY", ""),
             "options": {"defaultType": "swap"},
             "enableRateLimit": False,
         })
@@ -198,7 +203,10 @@ class WsFeed:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.debug("[WsFeed] ticker error %s: %s", symbol, e)
+            if self._errors < 3:  # первые 3 ошибки — WARNING для диагностики
+                logger.warning("[WsFeed] ticker error %s: %s (%s)", symbol, e, type(e).__name__)
+            else:
+                logger.debug("[WsFeed] ticker error %s: %s", symbol, e)
             self._errors += 1
         finally:
             self._active_tickers.discard(symbol)
