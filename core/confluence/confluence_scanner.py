@@ -33,9 +33,9 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import pandas as pd
 
-from core.entry_config import get_primary_entry_tf
-from core.indicators import calculate_trend, calculate_wt
-from core.signal_models import SignalData, SignalType, SignalDirection
+from core.infra.entry_config import get_primary_entry_tf
+from core.indicators.indicators import calculate_trend, calculate_wt
+from core.signals.signal_models import SignalData, SignalType, SignalDirection
 
 logger = logging.getLogger(__name__)
 
@@ -541,7 +541,7 @@ def check_future_classic_confluence(
 
 def confluence_message(symbol: str, sig: "SignalData") -> str:
     """Форматирует TG-сообщение для confluence сигнала (LONG и SHORT)."""
-    from core.message_builder import tv_link
+    from core.ui.message_builder import tv_link
     data = sig.data or {}
     factors = data.get("factors", [])
     score = data.get("score", 0)
@@ -588,7 +588,7 @@ def confluence_message(symbol: str, sig: "SignalData") -> str:
         lines.append(f"  {arrow} {div_desc}")
     if price:
         try:
-            from core.intelligence_formatter import _fmt_price
+            from core.ui.intelligence_formatter import _fmt_price
             lines += ["", f"  Цена: <code>{_fmt_price(float(price))}</code>"]
         except Exception:
             lines += ["", f"  Цена: {price}"]

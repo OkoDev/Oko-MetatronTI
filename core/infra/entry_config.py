@@ -2,7 +2,7 @@
 Единая точка конфигурации Entry Timeframe.
 
 Все файлы, которым нужен entry TF, импортируют:
-    from core.entry_config import get_entry_timeframes, get_primary_entry_tf
+    from core.infra.entry_config import get_entry_timeframes, get_primary_entry_tf
 
 Конфигурация через config.yaml:
     trading:

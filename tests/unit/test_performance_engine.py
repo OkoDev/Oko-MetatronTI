@@ -21,7 +21,13 @@ CREATE TABLE simulated_trades (
     status TEXT DEFAULT 'OPEN',
     exit_price REAL, profit_pct REAL, R_multiple REAL, closed_at TEXT,
     duration_minutes INTEGER, features_json TEXT,
-    max_price REAL, min_price REAL, max_R_possible REAL, captured_R_pct REAL
+    max_price REAL, min_price REAL, max_R_possible REAL, captured_R_pct REAL,
+    sl_source TEXT, tp_source TEXT,
+    tsl_activated INTEGER DEFAULT 0,
+    strategy_name TEXT, tsl_tf TEXT DEFAULT '15m',
+    tp1_price REAL, tp2_price REAL, tp3_price REAL,
+    tp1_hit_at TEXT, strategy_type TEXT,
+    decision_trace_json TEXT, original_sl REAL
 )
 """
 
@@ -44,14 +50,19 @@ def _make_db(tmp_path, rows):
     return db
 
 
+def _recent(days_ago=1):
+    """Дата days_ago дней назад (для weekly_summary который фильтрует по дате)."""
+    from datetime import datetime, timedelta
+    return (datetime.utcnow() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
 SAMPLE_ROWS = [
     # symbol, signal_type, direction, status, profit_pct, R_multiple, closed_at, max_R_possible, regime
-    ("BTC/USDT", "wt_signal",       "LONG",  "TP",      5.0,  2.0,  "2026-03-01 10:00:00", 3.0, "TREND_UP"),
-    ("BTC/USDT", "wt_signal",       "SHORT", "SL",     -2.0, -1.0,  "2026-03-01 12:00:00", 0.5, "TREND_DOWN"),
-    ("ETH/USDT", "trend_signal",    "LONG",  "TP",      4.0,  1.5,  "2026-03-02 08:00:00", 2.0, "RANGE"),
-    ("ETH/USDT", "trend_signal",    "SHORT", "SL",     -2.0, -1.0,  "2026-03-02 09:00:00", 0.8, "RANGE"),
-    ("ADA/USDT", "pivot_reversal",  "LONG",  "TP",      8.0,  3.0,  "2026-03-03 10:00:00", 4.0, "TREND_UP"),
-    ("ADA/USDT", "pivot_reversal",  "LONG",  "OPEN",   None, None,  None,                  None, None),
+    ("BTC/USDT", "wt_signal",       "LONG",  "TP",      5.0,  2.0,  _recent(3), 3.0, "TREND_UP"),
+    ("BTC/USDT", "wt_signal",       "SHORT", "SL",     -2.0, -1.0,  _recent(3), 0.5, "TREND_DOWN"),
+    ("ETH/USDT", "trend_signal",    "LONG",  "TP",      4.0,  1.5,  _recent(2), 2.0, "RANGE"),
+    ("ETH/USDT", "trend_signal",    "SHORT", "SL",     -2.0, -1.0,  _recent(2), 0.8, "RANGE"),
+    ("ADA/USDT", "pivot_reversal",  "LONG",  "TP",      8.0,  3.0,  _recent(1), 4.0, "TREND_UP"),
+    ("ADA/USDT", "pivot_reversal",  "LONG",  "OPEN",   None, None,  None,       None, None),
 ]
 
 

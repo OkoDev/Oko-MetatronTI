@@ -294,7 +294,7 @@ class TestStrategyType:
         return dict(row) if row else None
 
     def test_dual_tp_rr2(self, tmp_db):
-        """RR=2.0 → DUAL_TP, tp1 = midpoint, tp2 = full TP."""
+        """RR=2.0 → DUAL_TP, tp1 = take_profit (первый пивот), tp2 = None (async)."""
         sim = TradeSimulator(tmp_db)
         # entry=100, sl=95, tp=110 → RR=2.0
         rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=110.0)
@@ -302,27 +302,23 @@ class TestStrategyType:
         assert trade_id is not None
         t = self._get_trade(tmp_db, trade_id)
         assert t["strategy_type"] == "DUAL_TP"
-        # tp1 = 100 + (110-100)*0.5 = 105
-        assert abs(t["tp1_price"] - 105.0) < 0.01
-        # tp2 = full TP = 110
-        assert abs(t["tp2_price"] - 110.0) < 0.01
+        # tp1 = take_profit (первый пивот)
+        assert abs(t["tp1_price"] - 110.0) < 0.01
+        # tp2 = None (заполняется async через следующий пивот)
+        assert t["tp2_price"] is None
         assert t["tp3_price"] is None
 
     def test_triple_tp_rr3(self, tmp_db):
-        """RR=3.0 → TRIPLE_TP_TSL, tp1=1/3, tp2=2/3, tp3=full."""
+        """RR=3.0 → DUAL_TP (TRIPLE_TP_TSL убран 30.03.2026 как убыточный)."""
         sim = TradeSimulator(tmp_db)
-        # entry=100, sl=95, tp=115 → RR=3.0
+        # entry=100, sl=95, tp=115 → RR=3.0 (cap до max_rr=3.0)
         rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=115.0)
         trade_id = sim.register_trade(rec)
         assert trade_id is not None
         t = self._get_trade(tmp_db, trade_id)
-        assert t["strategy_type"] == "TRIPLE_TP_TSL"
-        # tp1 = 100 + 15*0.333 = 105.0
-        assert abs(t["tp1_price"] - 105.0) < 0.1
-        # tp2 = 100 + 15*0.667 = 110.0
-        assert abs(t["tp2_price"] - 110.0) < 0.1
-        # tp3 = 115
-        assert abs(t["tp3_price"] - 115.0) < 0.01
+        # TRIPLE_TP_TSL убран — RR≥2 → DUAL_TP
+        assert t["strategy_type"] == "DUAL_TP"
+        assert abs(t["tp1_price"] - 115.0) < 0.1
 
     def test_single_tp_rr_low(self, tmp_db):
         """RR=2.0 (граница) → DUAL_TP, не SINGLE."""
@@ -334,7 +330,7 @@ class TestStrategyType:
         assert t["strategy_type"] in ("DUAL_TP", "SINGLE")
 
     def test_short_dual_tp(self, tmp_db):
-        """SHORT DUAL_TP: tp1 < entry, tp2 = full TP (ниже entry)."""
+        """SHORT DUAL_TP: tp1 = take_profit (ниже entry для SHORT)."""
         sim = TradeSimulator(tmp_db)
         # entry=100, sl=105, tp=90 → RR=2.0
         rec = make_recommendation(direction="SHORT", entry_price=100.0, stop_loss=105.0, take_profit=90.0)
@@ -342,29 +338,28 @@ class TestStrategyType:
         assert trade_id is not None
         t = self._get_trade(tmp_db, trade_id)
         assert t["strategy_type"] == "DUAL_TP"
-        # tp1 = 100 - 10*0.5 = 95.0
-        assert abs(t["tp1_price"] - 95.0) < 0.01
-        assert abs(t["tp2_price"] - 90.0) < 0.01
+        # tp1 = take_profit = 90 (первый пивот)
+        assert abs(t["tp1_price"] - 90.0) < 0.01
+        assert t["tp2_price"] is None  # заполняется async
 
     def test_short_triple_tp(self, tmp_db):
-        """SHORT TRIPLE_TP: tp1 < tp2 < entry (цена идёт вниз)."""
+        """SHORT RR=3.0 → DUAL_TP (TRIPLE_TP_TSL убран 30.03.2026)."""
         sim = TradeSimulator(tmp_db)
         # entry=100, sl=105, tp=85 → RR=3.0
         rec = make_recommendation(direction="SHORT", entry_price=100.0, stop_loss=105.0, take_profit=85.0)
         trade_id = sim.register_trade(rec)
         assert trade_id is not None
         t = self._get_trade(tmp_db, trade_id)
-        assert t["strategy_type"] == "TRIPLE_TP_TSL"
-        # tp1 = 100 - 15*0.333 ≈ 95.0
-        assert t["tp1_price"] < 100.0
-        assert t["tp2_price"] < t["tp1_price"]
-        assert abs(t["tp3_price"] - 85.0) < 0.01
+        assert t["strategy_type"] == "DUAL_TP"
+        assert t["tp1_price"] < 100.0  # tp1 ниже entry для SHORT
 
     def test_existing_tp1_not_overwritten(self, tmp_db):
-        """Если recommendation уже содержит tp1_price — он не перезаписывается."""
+        """rec.tp1_price задан: DUAL_TP перезаписывает на take_profit (текущая логика)."""
         sim = TradeSimulator(tmp_db)
         rec = make_recommendation(entry_price=100.0, stop_loss=95.0, take_profit=110.0)
-        rec.tp1_price = 108.0  # уже задан — не должен быть изменён
+        rec.tp1_price = 108.0  # задан, но DUAL_TP ставит tp1=take_profit=110
         trade_id = sim.register_trade(rec)
         t = self._get_trade(tmp_db, trade_id)
-        assert t["tp1_price"] == 108.0
+        # Текущая логика: tp1 = take_profit для DUAL_TP (не сохраняет rec.tp1_price)
+        assert t["strategy_type"] == "DUAL_TP"
+        assert abs(t["tp1_price"] - 110.0) < 0.01

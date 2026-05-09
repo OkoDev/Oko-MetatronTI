@@ -1,7 +1,7 @@
 from datetime import datetime
 import urllib.parse
 import re
-from core.config_loader import config
+from core.infra.config_loader import config
 
 def _normalize_to_tv(symbol: str) -> str:
     """
@@ -125,7 +125,7 @@ def mtf_message(symbol: str, info: dict) -> str:
 
 def funding_extreme_message(symbol: str, sig: "SignalData") -> str:
     """DEV-81: Форматирует сигнал экстремального funding rate."""
-    from core.signal_models import SignalDirection
+    from core.signals.signal_models import SignalDirection
     is_long = sig.direction == SignalDirection.LONG
     emoji = "💰"
     dir_label = "LONG ↑" if is_long else "SHORT ↓"
@@ -149,7 +149,7 @@ def funding_extreme_message(symbol: str, sig: "SignalData") -> str:
 
 def liquidity_sweep_message(symbol: str, sig: "SignalData") -> str:
     """DEV-82: Форматирует сигнал вынос ликвидности (liquidity sweep)."""
-    from core.signal_models import SignalDirection
+    from core.signals.signal_models import SignalDirection
     is_long = sig.direction == SignalDirection.LONG
     emoji = "🌊"
     dir_label = "LONG ↑" if is_long else "SHORT ↓"
@@ -178,7 +178,7 @@ def liquidity_sweep_message(symbol: str, sig: "SignalData") -> str:
 
 def wt_b_message(symbol: str, sig: "SignalData") -> str:
     """Форматирует WT-B (1h) сигнал — адаптивный OS/OB + дивергенция."""
-    from core.signal_models import SignalDirection
+    from core.signals.signal_models import SignalDirection
     is_long = sig.direction == SignalDirection.LONG
     emoji   = "🔵"   # WT-B синий — отличается от стандартного WT
     dir_label = "LONG ↑" if is_long else "SHORT ↓"

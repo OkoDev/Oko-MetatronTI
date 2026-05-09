@@ -34,27 +34,27 @@ class TrendChangeDetector:
     def __init__(self) -> None:
         self._prev_trend: Dict[str, str] = {}   # symbol → "UP" / "DOWN"
 
-    def check(self, symbol: str, df_1h: pd.DataFrame) -> Tuple[bool, Optional[dict]]:
+    def check(self, symbol: str, df: pd.DataFrame, tf: str = "1h") -> Tuple[bool, Optional[dict]]:
         """
-        Проверяет смену тренда на 1h.
+        Проверяет смену тренда на заданном TF.
 
         Args:
-            df_1h: DataFrame с колонками trendup/trenddown (из calculate_trend)
+            df: DataFrame с колонками trendup/trenddown (из calculate_trend)
+            tf: таймфрейм ("15m", "1h", "4h", "1d") — ключ дедупликации
 
         Returns:
             (fired, event_data) — fired=True если тренд сменился
         """
-        if df_1h is None or df_1h.empty or len(df_1h) < 3:
+        if df is None or df.empty or len(df) < 3:
             return False, None
 
-        if "trendup" not in df_1h.columns or "trenddown" not in df_1h.columns:
+        if "trendup" not in df.columns or "trenddown" not in df.columns:
             return False, None
 
-        last = df_1h.iloc[-1]
+        last = df.iloc[-1]
         tu = last.get("trendup", 0)
         td = last.get("trenddown", 0)
 
-        # Определяем текущий тренд
         if tu and tu > 0 and (not td or td == 0):
             current_trend = "UP"
         elif td and td > 0 and (not tu or tu == 0):
@@ -62,27 +62,25 @@ class TrendChangeDetector:
         else:
             return False, None
 
-        prev = self._prev_trend.get(symbol)
-        self._prev_trend[symbol] = current_trend
+        key = f"{symbol}:{tf}"
+        prev = self._prev_trend.get(key)
+        self._prev_trend[key] = current_trend
 
-        # Первая проверка — запоминаем, не стреляем
         if prev is None:
             return False, None
 
-        # Тренд изменился
         if current_trend != prev:
-            # Дополнительно: WT 1h для контекста
-            wt1_1h = float(df_1h["wt1"].iloc[-1]) if "wt1" in df_1h.columns else None
-
+            wt1 = float(df["wt1"].iloc[-1]) if "wt1" in df.columns else None
             event_data = {
+                "tf": tf,
                 "old_trend": prev,
                 "new_trend": current_trend,
-                "wt1_1h": wt1_1h,
+                "wt1": wt1,
                 "close": float(last.get("close", 0)),
             }
             logger.info(
-                "[HTF] %s trend_change_1h: %s → %s (wt1=%.1f)",
-                symbol, prev, current_trend, wt1_1h or 0,
+                "[HTF] %s trend_change_%s: %s → %s (wt1=%.1f)",
+                symbol, tf, prev, current_trend, wt1 or 0,
             )
             return True, event_data
 
@@ -166,3 +164,125 @@ class WTCrossHTFDetector:
             symbol, tf, direction, zone, wt1, wt2, gap,
         )
         return True, event_data
+
+
+class ZoneEntryDetector:
+    """
+    Сфера 7 → EventBus: обнаруживает вход WT в зону OB/OS на любом TF.
+
+    Логика:
+      - Зона: "N" (нейтраль), "OS" (oversold, wt1 < -60), "OB" (overbought, wt1 > 60)
+      - Хранит предыдущую зону per symbol:tf
+      - Стреляет только при ВХОДЕ в зону (N→OS, N→OB)
+      - Не стреляет при ВЫХОДЕ (уже отрабатывает wt_cross)
+
+    Почему важно:
+      - Вход в OS = WT начал перепроданность → ждём cross_up → LONG setup
+      - Куб узнаёт раньше чем сформируется кросс → время подготовиться
+    """
+
+    def __init__(self, ob_threshold: float = 60.0, os_threshold: float = -60.0) -> None:
+        self._ob = ob_threshold
+        self._os = os_threshold
+        self._prev_zone: Dict[str, str] = {}   # f"{symbol}:{tf}" → "N" / "OS" / "OB"
+
+    def check(self, symbol: str, df: pd.DataFrame, tf: str) -> Tuple[bool, Optional[dict]]:
+        """
+        Проверяет вход в зону OB/OS.
+
+        Args:
+            df: DataFrame с колонкой wt1
+            tf: таймфрейм для ключа дедупликации
+
+        Returns:
+            (fired, event_data) — fired=True только при ВХОДЕ в OS или OB
+        """
+        if df is None or df.empty or "wt1" not in df.columns:
+            return False, None
+
+        wt1 = float(df["wt1"].iloc[-1])
+
+        if wt1 <= self._os:
+            current_zone = "OS"
+        elif wt1 >= self._ob:
+            current_zone = "OB"
+        else:
+            current_zone = "N"
+
+        key = f"{symbol}:{tf}"
+        prev_zone = self._prev_zone.get(key, "N")
+        self._prev_zone[key] = current_zone
+
+        # Стреляем только при входе в OS или OB (не при выходе и не при пребывании)
+        if current_zone != "N" and prev_zone == "N":
+            event_data = {
+                "tf": tf,
+                "zone": current_zone,
+                "wt1": round(wt1, 2),
+                "direction": "LONG" if current_zone == "OS" else "SHORT",
+                "close": float(df["close"].iloc[-1]) if "close" in df.columns else 0,
+            }
+            logger.info(
+                "[HTF] %s zone_enter_%s_%s: wt1=%.1f",
+                symbol, current_zone.lower(), tf, wt1,
+            )
+            return True, event_data
+
+        return False, None
+
+
+class WTExtremeDetector:
+    """
+    Сфера 7 → EventBus: обнаруживает экстремальные уровни WT1 (< -80 или > +80).
+
+    Логика:
+      - wt1 < -80: экстремальная перепроданность → ранний LONG setup
+      - wt1 > +80: экстремальная перекупленность → ранний SHORT setup
+      - Хранит предыдущее состояние per symbol:tf (не повторяет вход в экстрему)
+      - Стреляет только при ВХОДЕ в экстрему (N→EXT), не при пребывании
+    """
+
+    def __init__(self, extreme_pos: float = 80.0, extreme_neg: float = -80.0) -> None:
+        self._ext_pos = extreme_pos
+        self._ext_neg = extreme_neg
+        self._prev_extreme: Dict[str, str] = {}   # f"{symbol}:{tf}" → "N"/"EXT_OS"/"EXT_OB"
+
+    def check(self, symbol: str, df: pd.DataFrame, tf: str) -> Tuple[bool, Optional[dict]]:
+        """
+        Проверяет вход WT1 в экстремальную зону (< -80 или > +80).
+
+        Returns:
+            (fired, event_data) — fired=True только при ВХОДЕ в экстрему
+        """
+        if df is None or df.empty or "wt1" not in df.columns:
+            return False, None
+
+        wt1 = float(df["wt1"].iloc[-1])
+
+        if wt1 <= self._ext_neg:
+            current = "EXT_OS"
+        elif wt1 >= self._ext_pos:
+            current = "EXT_OB"
+        else:
+            current = "N"
+
+        key = f"{symbol}:{tf}"
+        prev = self._prev_extreme.get(key, "N")
+        self._prev_extreme[key] = current
+
+        if current != "N" and prev == "N":
+            direction = "LONG" if current == "EXT_OS" else "SHORT"
+            event_data = {
+                "tf": tf,
+                "zone": current,
+                "wt1": round(wt1, 2),
+                "direction": direction,
+                "close": float(df["close"].iloc[-1]) if "close" in df.columns else 0,
+            }
+            logger.info(
+                "[HTF] %s wt_extreme_%s: wt1=%.1f direction=%s",
+                symbol, tf, wt1, direction,
+            )
+            return True, event_data
+
+        return False, None

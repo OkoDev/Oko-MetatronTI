@@ -111,6 +111,8 @@ class PairState:
     # ── Сфера 6: Market Regime ──────────────────────────────────────────
     regime: Optional[str] = None              # TREND_UP / TREND_DOWN / RANGE / HIGH_VOL
     reversal_mode: Optional[str] = None       # TREND / REVERSAL / UNCLEAR
+    sideways_bars: int = 0                    # счётчик последовательных RANGE-циклов
+    sideways_mode_active: bool = False        # True когда sideways_bars >= threshold
 
     # ── Сфера 7: Signal Detectors ───────────────────────────────────────
     last_signal_type: Optional[str] = None
@@ -278,6 +280,12 @@ class PairContextBus:
         elif event_type == SphereEvent.REGIME_UPDATED:
             state.regime = data.get("regime")
             state.reversal_mode = data.get("mode")
+            if state.regime == "RANGE":
+                state.sideways_bars = min(state.sideways_bars + 1, 10)
+            else:
+                state.sideways_bars = 0
+            threshold = data.get("sideways_threshold", 3)
+            state.sideways_mode_active = (state.sideways_bars >= threshold)
 
         elif event_type == SphereEvent.SIGNAL_DETECTED:
             state.last_signal_type = data.get("signal_type")

@@ -53,16 +53,21 @@ analysis:
     - MATIC
     - AVAX
   wt_b:
-    enabled: false  # DATA-10.04: WR<10%, avgR -0.7..-1.1R, все комбо убыточны
+    enabled: true  # DATA-10.04: WR<10%, avgR -0.7..-1.1R, все комбо убыточны
     div_min: 3.0
     div_max: 20.0
     lookback: 35
+    # DEV-187 (26.04.2026): floor для adaptive порогов p10/p90.
+    # На трендовом рынке pXX падают к нулю → детектор пускает входы в N зоне.
+    # SHORT при wt1_1h в +10..+30 → avgR=-2.44 (n=7). Откат: floor=0.
+    os_floor: -30.0   # os_ = min(p10, -30) — LONG только при wt1<-30
+    ob_floor: 30.0    # ob_ = max(p90, +30) — SHORT только при wt1>+30
   divergence:
-    pivot_proximity_pct: 0.5
+    pivot_proximity_pct: 0.3
   anomaly:
     max_per_cycle: 5
   confluence:
-    enabled: false  # DEV-171 14.04.2026: полный стоп — -348R за 3362 сделки (avgR=-0.103)
+    enabled: true   # 05.05.2026: разблокирован для сбора данных; BIAS фильтрует направление
     use_state_machine: false
     lookback_bars: 8
     cross_fresh_bars: 5
@@ -72,7 +77,7 @@ analysis:
     pivot_touch_pct: 0.15
     div_min_bars: 9
     max_per_cycle: 10
-    dynamic_os_enabled: false
+    dynamic_os_enabled: true
     dyn_os_k: 1.2
     dyn_os_window: 50
     4h_gate_enabled: false
@@ -119,18 +124,33 @@ monitoring:
 outcome_predictor:
   training_window: null
 strategy_name: multi_signal
+
+sideways_mode:
+  enabled: true
+  min_sideways_bars: 3      # N последовательных RANGE-циклов для активации (защита от флуктуаций)
+  timeframe: 30m            # ТФ для WT OS/OB детекции (бэктест: 30m лучший в боковике)
+  min_strength: 60          # минимальный strength для регистрации
+
 trading:
   execution_mode: vst
-  sl_limit_buffer_pct: 0.3  # DEV-175: STOP-LIMIT с буфером 0.3% (0 = STOP_MARKET)
-  tp1_close_pct: 0.3
-  deposit_usdt: 110.0
+  sl_limit_buffer_pct: 1.0  # DEV-185 (26.04.2026): 0.0→1.0. Корень catastrophic slippage: STOP_MARKET без буфера. Расследование: 121 сделок overshoot ≥0.5% = -465R. Buffer 1% защитит ~51 сделку (-113R экономии). Risk: non-execution при overshoot >1% — позиция повисит до TP/EXPIRED/manual. Через 48ч мерить p90 overshoot, при ОК → 2.0 + watchdog. Откат: sl_limit_buffer_pct: 0.0
+  # DEV-185.2 (27.04.2026): emergency watchdog для STOP-LIMIT non-execution.
+  # Подтверждение из боя: #8010 APE 26.04 — overshoot 32.7% R=-11.83 за 3ч (limit-ордер не fill, позиция висла).
+  # Watchdog проверяет каждый цикл sync_positions (60s): если current_price ушла за SL > overshoot_threshold
+  # и удерживается > dwell_seconds → emergency market close.
+  # Откат: dev185_2_emergency_enabled: false
+  dev185_2_emergency_enabled: true
+  dev185_2_overshoot_threshold_pct: 0.5    # цена за SL > 0.5% от entry → старт таймера
+  dev185_2_dwell_seconds: 300              # 5 минут удержания → emergency close
+  tp1_close_pct: 0.2
+  deposit_usdt: 100.0
   risk_pct: 1.0
   leverage: 5
   regime_direction_block:
     enabled: false  # 14.04: убран — режимный классификатор ненадёжен, блокирует прибыльные входы
     TREND_DOWN: LONG
     TREND_UP: SHORT
-  blocked_regimes: []
+  blocked_regimes: [HIGH_VOL]  # P1.5 24.04: откат DEV-149 — HIGH_VOL режим статистически убыточен
   pivot_proximity_filter:
     enabled: true
     hard_block_mult: 2
@@ -205,6 +225,8 @@ trading:
       min_confidence: 0.6
       conflict_margin: 0.15
       tp_rr: 3.0
+      sl_min_pct: 0.5   # DEV-SL-MIN 04.05: зажим снизу (до: 116 сделок с SL<0.5% → catast)
+      sl_max_pct: 3.0   # DEV-SL-MIN: зажим сверху
     trend_following:
       min_signals: 2
       min_strength: 55
@@ -273,7 +295,7 @@ trading:
     - TREND_UP
     - TREND_DOWN
   max_positions_per_direction: 0
-  min_sl_dist_pct: 0.1    # DEV-157: пропуск если SL < 0.1% от entry (защита от R=-450)
+  min_sl_dist_pct: 0.3    # DEV-157: пропуск если SL < 0.1% от entry (защита от R=-450)
   sl_tp:
     atr_multiplier: 1.0
     sl_min_pct: 0.5
@@ -305,9 +327,9 @@ event_bus:
   max_concurrent: 3
   btc_macro_shock_pct: 2.5
 signal_quality:
-  sl_cooldown_hours: 2.0
+  sl_cooldown_hours: 1.0
   dedup_minutes: 30
-  min_volume_usd: 0
+  min_volume_usd: 5000000  # DEV-185.3 04.05: 13 катастроф (R<=-5) — все DOLO/CLO/GIGGLE/VELODROME, low liquidity
   min_strength: 50
   # ARCH-88: Per-pair Loss Memory — блок регистрации при серии SL подряд.
   # Защита от сценария API3 (8 SL без автоматической остановки).
@@ -324,7 +346,15 @@ signal_quality:
       wt_signal:
         start_hour_utc: 4
         end_hour_utc: 18
-  min_strength_register: 50  # DEV-149: было 63 — съедал ~40% валидных, возврат к прежнему уровню
+  # DEV-186 (26.04.2026): wt_signal SHORT блок в TREND_UP/HIGH_VOL.
+  # Данные RE-AUDIT: TREND_UP n=22 avgR=-1.12, HIGH_VOL n=12 avgR=-0.77.
+  # 27.04: фикс кода monitoring.py:903 (regime через pair_context, был баг recommendation.regime пустое). Требует restart #2.
+  # 4 пост-restart SHORT прошли gate (+TP среднее +R≈4) — НО gate физически не работал из-за бага. Не достоверная выборка для пересмотра гипотезы.
+  # После restart #2 gate начнёт работать корректно — собираем чистую выборку N≥30 → решение по shadow/откату.
+  # Откат: dev186_wt_signal_regime_gate: false. Shadow: dev186_shadow: true.
+  dev186_wt_signal_regime_gate: true
+  dev186_shadow: false
+  min_strength_register: 60  # P1.5 24.04: откат DEV-149 (50→60) — 50 пропускал слабые сигналы, 63 был слишком строг
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
   ote_shadow_mode: false  # ARCH-87: активирован 18.04 — rejection 1W FVG [0.4235–0.4416]
@@ -335,6 +365,10 @@ signal_quality:
   ote_scalp_zone_tfs:
   - 15m
   ote_scalp_trigger_tf: 3m
+  # 04.05.2026: ОТКАТ — бэктест C4 (0.5, no-gates) дал WR=23.7%, −588R за 90 дней
+  # Возврат к wide-only [0.705–0.786] + ATR-trend gate включён
+  ote_zone_min_fib: 0.705
+  ote_use_trend_gate: true
   min_strength_by_regime: {}       # 14.04: убраны — режим ненадёжен как фильтр
   min_strength_by_direction_regime: {}  # 14.04: убраны
   signal_regime_block:
@@ -426,7 +460,7 @@ risk_management:
   regime_strategy:
     enabled: true
     trend_sl_factor: 0.85
-    trend_strategy_type: DUAL_TSL
+    trend_strategy_type: DUAL_TP   # DEV-184 (26.04.2026): DUAL_TSL → DUAL_TP. Причина: DUAL_TSL avgR=-0.61 vs SINGLE -0.19 vs DUAL_TP -0.23 за 10 дней (-290R). Откат: вернуть DUAL_TSL после RE-AUDIT slippage.
     trend_position_multiplier: 1.0
     range_sl_factor: 1.15
     range_strategy_type: SINGLE
@@ -438,4 +472,4 @@ risk_management:
 trade_analyzer:
   provider: groq
   api_key: ${GROQ_API_KEY}
-  model: llama-3.1-8b-instant
+  model: llama-3.3-70b-versatile  # 70B — намного меньше галлюцинаций, free tier на Groq

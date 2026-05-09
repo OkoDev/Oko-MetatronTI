@@ -1,3 +1,10 @@
+---
+tags: [doc/readme, project-intro, getting-started]
+type: reference
+date: "2026-04-30"
+parent: "[[Project-MOC]]"
+---
+
 # Oko MTF Bot — Telegram-бот для технического анализа крипторынка
 
 Самообучающийся бот для BingX: сигналы по 8 стратегиям, симуляция сделок, ML на реальных исходах, каскадный TSL.
@@ -255,3 +262,16 @@ BINGX_SECRET_KEY=...
 | [docs/INDICATORS_GUIDE.md](docs/INDICATORS_GUIDE.md) | Руководство по индикаторам |
 | [docs/SMC_GUIDE.md](docs/SMC_GUIDE.md) | Smart Money Concepts — теория и реализация |
 | [DISCUSSION.md](DISCUSSION.md) | Живой диалог агентов (23–27.03) |
+
+---
+
+## 🔗 Связанные заметки в Obsidian
+
+- [[Project-MOC]] — Map of Content (главная)
+- [[START]] — Быстрый контекст сессии
+- [[STATUS]] — Текущее состояние (29.04.2026)
+- [[ROADMAP-2026]] — Полная временная шкала всех этапов
+- [[Architecture/Cube-Metotron]] — Куб Метатрона (полная реализация)
+- [[Sessions/2026-04-29]] — Последняя сессия (документация + Data Era v4)
+- [[Data-Invalidation-Log]] — ARCH-86 (критично для ML)
+- [[Architecture/ARCH-95-Real-Killers]] — Спринт "Реальные убийцы" (Фаза 0)

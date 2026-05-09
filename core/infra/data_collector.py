@@ -6,7 +6,7 @@ import logging
 import re
 import time as _time
 
-from core.api_engine import ApiEngine
+from core.infra.api_engine import ApiEngine
 
 # DEV-81: TTL кеша funding rate (30 мин)
 _FUNDING_CACHE_TTL = 1800

@@ -18,8 +18,8 @@ from core.signals.signal_models import (
 from strategies import get_strategy
 
 # Адреса для патчинга (calculate_wt/calculate_trend перезапишут тестовые значения)
-_PATCH_WT    = "core.wt_15m_reversal_scanner.calculate_wt"
-_PATCH_TREND = "core.wt_15m_reversal_scanner.calculate_trend"
+_PATCH_WT    = "core.signals.wt_15m_reversal_scanner.calculate_wt"
+_PATCH_TREND = "core.signals.wt_15m_reversal_scanner.calculate_trend"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

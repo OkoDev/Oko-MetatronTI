@@ -34,21 +34,29 @@ _PROVIDER_DEFAULTS = {
 }
 
 _PROMPT_TEMPLATE = """\
-Ты — аналитик торгового бота по крипторынку. Сделка закрылась по Stop Loss (убыток). \
-Дай краткий разбор: что пошло не так и какой рыночный контекст проигнорировал бот.
+Ты — аналитик торгового бота по крипторынку. Сделка закрылась по Stop Loss (убыток).
+Твоя задача: на основе ТОЛЬКО переданных данных объяснить что пошло не так.
+
+СТРОГИЕ ПРАВИЛА:
+1. Используй ТОЛЬКО значения из блока КОНТЕКСТ. Если поля нет — не упоминай его.
+2. НЕ выдумывай пороги, лимиты, проценты, имена фильтров (типа "strong=80", "минимум 90%").
+3. Если max_R_possible >= 1.0 — сделка БЫЛА в плюсе и развернулась (TSL/exit problem).
+4. Если direction противоречит mtf_direction_bias — вход против старшего тренда.
+5. Если pivot_real_touch=0 — реального касания уровня НЕ БЫЛО (плохой вход).
+6. Если sl_atr_ratio < 1.5 — SL слишком узкий, шум выбил.
+7. Если данных мало — напиши "Недостаточно контекста для разбора" и не выдумывай.
+8. Длина: 3-5 коротких предложений на русском, как трейдер. Без воды.
 
 СДЕЛКА:
-  Символ:      {symbol}
-  Направление: {direction}
-  Тип сигнала: {signal_type}
-  Сила:        {strength}%  confidence={confidence:.2f}
-  Результат:   R={r_multiple}  profit={profit_pct:.2f}%
+  Символ:       {symbol}
+  Направление:  {direction}
+  Тип сигнала:  {signal_type}
+  Сила/уверен.: {strength}%  conf={confidence:.2f}
+  Результат:    R={r_multiple}  profit={profit_pct:.2f}%
   Длительность: {duration} мин
 
-КОНТЕКСТ РЕШЕНИЯ:
-{context_block}
-
-Ответь кратко как трейдер 2–3 предложениями на русском языке. Только факты из контекста, без домыслов.\
+КОНТЕКСТ:
+{context_block}\
 """
 
 
@@ -67,7 +75,7 @@ class TradeAnalyzer:
     def _load_config(self) -> dict:
         """Читает блок trade_analyzer из config.yaml."""
         try:
-            from core.config_loader import config
+            from core.infra.config_loader import config
             cfg = config.get("trade_analyzer", {}) or {}
             return cfg if isinstance(cfg, dict) else {}
         except Exception:
@@ -145,6 +153,9 @@ class TradeAnalyzer:
                 row = conn.execute(
                     """SELECT id, symbol, direction, signal_type, strength, confidence,
                               R_multiple, profit_pct, duration_minutes,
+                              regime, sl_source, tp_source,
+                              max_R_possible, captured_R_pct, tsl_activated,
+                              entry_price, stop_loss, take_profit,
                               features_json, decision_trace_json
                        FROM simulated_trades WHERE id=? AND status='SL'""",
                     (trade_id,),
@@ -155,41 +166,124 @@ class TradeAnalyzer:
             return None
 
     def _build_context_block(self, trade: dict) -> str:
-        """Формирует краткий контекст из features_json + decision_trace_json."""
+        """Формирует подробный контекст для LLM-разбора.
+        Источники: колонки simulated_trades + features_json + decision_trace_json.
+        Цель: дать модели достаточно фактов чтобы не пришлось выдумывать.
+        """
         lines = []
 
+        # === Прямые колонки из БД ===
+        regime = trade.get("regime")
+        if regime:
+            lines.append(f"Режим: {regime}")
+        sl_src = trade.get("sl_source")
+        tp_src = trade.get("tp_source")
+        if sl_src:
+            lines.append(f"SL источник: {sl_src}")
+        if tp_src:
+            lines.append(f"TP источник: {tp_src}")
+
+        entry, sl, tp = trade.get("entry_price"), trade.get("stop_loss"), trade.get("take_profit")
+        if entry and sl:
+            sl_dist_pct = abs(float(entry) - float(sl)) / float(entry) * 100
+            lines.append(f"SL дистанция: {sl_dist_pct:.2f}% от entry")
+
+        # MFE-индикаторы (был ли trade в плюсе)
+        max_r = trade.get("max_R_possible")
+        cap_r = trade.get("captured_R_pct")
+        tsl_act = trade.get("tsl_activated")
+        if max_r is not None:
+            lines.append(f"Max R достигнут: {max_r:.2f}R")
+        if cap_r is not None:
+            lines.append(f"Captured R: {cap_r:.1f}% от потенциала")
+        if tsl_act is not None:
+            lines.append(f"TSL активирован: {'да' if tsl_act else 'нет'} (порог +1R)")
+
+        # === features_json ===
+        if trade.get("features_json"):
+            try:
+                fj = json.loads(trade["features_json"])
+
+                # MTF контекст
+                mtf_bias = fj.get("mtf_direction_bias")
+                if mtf_bias:
+                    lines.append(f"MTF старший тренд: {mtf_bias}")
+                mtf_str = fj.get("mtf_bias_strength")
+                if mtf_str is not None:
+                    lines.append(f"MTF bias strength: {mtf_str}")
+                atr_bias = fj.get("atr_trend_1h_bias")
+                if atr_bias:
+                    lines.append(f"ATRtrend 1h: {atr_bias}")
+                rev_mode = fj.get("reversal_mode")
+                if rev_mode:
+                    lines.append(f"Reversal mode: {rev_mode}")
+
+                # SMC
+                smc_facts = []
+                if fj.get("smc_has_bos"): smc_facts.append("BOS")
+                if fj.get("smc_has_choch"): smc_facts.append("CHoCH")
+                if fj.get("smc_has_bullish_bos"): smc_facts.append("bull_BOS")
+                if fj.get("smc_has_bearish_bos"): smc_facts.append("bear_BOS")
+                if smc_facts:
+                    lines.append(f"SMC: {', '.join(smc_facts)}")
+
+                # Объём/волатильность
+                vol = fj.get("volatility")
+                if isinstance(vol, (int, float)):
+                    lines.append(f"Волатильность: {vol:.2f}%")
+                vol_24h = fj.get("volume_24h")
+                if isinstance(vol_24h, (int, float)) and vol_24h > 0:
+                    lines.append(f"Volume 24h: ${vol_24h/1e6:.1f}M")
+
+                # Качество SL/входа
+                sl_atr = fj.get("sl_atr_ratio")
+                if sl_atr is not None:
+                    lines.append(f"SL/ATR: {sl_atr}")
+                rr = fj.get("rr_at_entry")
+                if rr is not None:
+                    lines.append(f"RR при входе: {rr}")
+                ep = fj.get("entry_priority")
+                if ep is not None:
+                    lines.append(f"Entry priority: {ep}")
+
+                # DEV-188 — pivot_reversal качество входа
+                ptouch = fj.get("pivot_real_touch")
+                if ptouch is not None:
+                    lines.append(f"Касание уровня: {'да' if ptouch else 'нет (входим без касания)'}")
+                pvz = fj.get("pivot_volume_z")
+                if pvz is not None:
+                    lines.append(f"Volume Z (объём входа): {pvz}")
+                pcr = fj.get("pivot_close_rejection")
+                if pcr is not None:
+                    lines.append(f"Close rejection: {'да' if pcr else 'нет'}")
+
+                # Сессия
+                session = fj.get("session")
+                if session:
+                    lines.append(f"Сессия: {session}")
+
+                # BTC контекст
+                btc_reg = fj.get("btc_regime")
+                if btc_reg:
+                    lines.append(f"BTC режим: {btc_reg}")
+
+                # Confluence
+                confl = fj.get("confluence_factors")
+                if confl:
+                    lines.append(f"Confluence: {confl}")
+            except Exception:
+                pass
+
+        # === decision_trace ===
         if trade.get("decision_trace_json"):
             try:
                 dt = json.loads(trade["decision_trace_json"])
                 filters = dt.get("filters", [])
-                if filters:
-                    lines.append("Фильтры:")
-                    for f in filters[:8]:
-                        name   = f.get("name", "?")
-                        passed = "✅" if f.get("passed") else "❌"
-                        reason = f.get("reason", "")
-                        lines.append(f"  {passed} {name}: {reason}")
-                mtf = dt.get("mtf_context", {})
-                if mtf:
-                    lines.append(f"MTF bias={mtf.get('direction_bias','?')} "
-                                 f"strength={mtf.get('bias_strength','?')} "
-                                 f"zone={mtf.get('price_zone','?')}")
-            except Exception:
-                pass
-
-        if trade.get("features_json"):
-            try:
-                fj = json.loads(trade["features_json"])
-                regime = fj.get("regime") or fj.get("market_regime")
-                if regime:
-                    lines.append(f"Режим рынка: {regime}")
-                vol = fj.get("volatility")
-                if vol:
-                    lines.append(f"Волатильность: {vol:.2f}%")
-                for key in ("confluence_factors", "sl_source", "tp_source"):
-                    val = fj.get(key)
-                    if val:
-                        lines.append(f"{key}: {val}")
+                blocked = [f for f in filters if not f.get("passed")]
+                if blocked:
+                    lines.append("Заблокированные фильтры (но сделка прошла):")
+                    for f in blocked[:5]:
+                        lines.append(f"  - {f.get('name','?')}: {f.get('reason','')}")
             except Exception:
                 pass
 
@@ -256,7 +350,7 @@ class TradeAnalyzer:
         if not self._enabled or self._client is None:
             return None
         try:
-            from core.signal_models import TradingRecommendation
+            from core.signals.signal_models import TradingRecommendation
             symbol    = getattr(recommendation, "symbol", "?")
             direction = str(getattr(recommendation, "direction", "?"))
             if hasattr(recommendation.direction, "value"):

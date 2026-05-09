@@ -21,8 +21,8 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 import pandas as pd
 
-from core.indicators import calculate_trend, calculate_wt
-from core.signal_models import SignalData, SignalType, SignalDirection
+from core.indicators.indicators import calculate_trend, calculate_wt
+from core.signals.signal_models import SignalData, SignalType, SignalDirection
 from core.confluence.confluence_scanner import (  # ARCH-54: прямой путь (stub не экспортирует _private)
     _check_near_support, _check_near_resistance,
     _check_bullish_divergence_wt, _check_bearish_divergence_wt,

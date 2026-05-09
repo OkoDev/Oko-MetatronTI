@@ -1,12 +1,37 @@
+---
+tags: [doc/status, session, project-overview]
+type: status-overview
+date: "2026-04-30"
+sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
+---
+
 # 🚀 START — Быстрый контекст сессии
 
 **Проект:** Oko MTF TG Bot — Telegram-бот технического анализа крипторынка (BingX, 15m таймфрейм)
 **Запуск:** `python bot_with_subscriptions.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
 
+## 🧊 Stabilization Sprint (04.05–25.05.2026)
+
+**План:** [`/root/.claude/plans/fluttering-snacking-whale.md`](/root/.claude/plans/fluttering-snacking-whale.md) — «Возврат управляемости».
+
+**Корень:** в БД попадает ~4% детектируемых сигналов. Остальные 96% — silent drops. ML обучается на 30-40% данных. Сначала возвращаем видимость, потом разбиваем монолиты.
+
+**Заморожено до Phase 4 (~25.05):** ARCH-74, ARCH-74-EXT, ARCH-96..99, ARCH-101..111. Только Phase 0-3 + активный спринт «Реальные убийцы».
+
+**Прогресс:**
+- 🔄 Phase 0.1 — заморозка фич (TASKS.md, START.md) — **в работе 04.05**
+- ⏳ Phase 0.2 — DecisionTrace в 14 gates → колонка `decision_trace_json` уже готова
+- ⏳ Phase 0.3 — таблица `signal_drops` для отброшенных сигналов
+- ⏳ Phase 1 — `audit_mode` shadow + `audit_filter_efficacy.py`
+- ⏳ Phase 2 — coverage matrix + ML skipped-rows visibility
+- ⏳ Phase 3 — `bot/loops/broadcast_pipeline.py` + 14 gate-файлов
+
+**Критерий выхода:** monitoring.py < 800 строк, coverage critical полей ≥ 90%, 7 дней без регрессии avgR.
+
 ---
 
-## 📌 Текущий статус (18.04.2026)
+## 📌 Текущий статус (29.04.2026)
 
 **Последние изменения (сессия 18.04):**
 - ✅ DEV-178 — Data integrity: 6835 сделок размечены `data_era`, ML фильтр применён (backfill при рестарте)
@@ -49,3 +74,13 @@
 - [DISCUSSION.md](DISCUSSION.md) — живой диалог агентов
 - [memory/MEMORY.md](memory/MEMORY.md) — архитектурные решения
 - [PROJECT-LOG.md](PROJECT-LOG.md) — история изменений
+
+## 🔗 Связанные заметки в Obsidian
+
+- [[Project-MOC]] — Map of Content (главная)
+- [[Sessions/2026-04-29]] — Последняя сессия (29.04.2026)
+- [[Architecture/ARCH-95-Real-Killers]] — Спринт "Реальные убийцы"
+- [[Architecture/Data-Invalidation-Log]] — ARCH-86 (критично для ML)
+- [[Architecture/Cube-Metotron]] — Куб Метатрона (полная реализация)
+- [[Features/DEV-190-Effective-Status]] — Корректная разметка результатов
+- [[Roadmap-2026]] — Временная шкала всех этапов

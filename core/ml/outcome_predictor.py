@@ -201,7 +201,9 @@ class OutcomePredictor:
                         r["regime"],
                     )
                     X.append(fv)
-                    y.append(1 if r["status"] in ("TP", "TSL") else 0)
+                    # DEV-190: is_win учитывает скрытые TSL exits (status='SL'+tsl_act+R>0.1)
+                    from core.trading.effective_status import is_win as _is_win
+                    y.append(1 if _is_win(r["status"], r.get("R_multiple"), r.get("tsl_activated")) else 0)
                 except Exception as row_err:
                     logger.debug("OutcomePredictor: пропуск строки — %s", row_err)
                     continue
@@ -295,9 +297,10 @@ class OutcomePredictor:
             # DEV-174 фиксил TSL баги до 14.04 — сделки 15.03..14.04 имеют сломанные исходы:
             # победители записывались как SL из-за ошибки TSL → "хороший паттерн = loss".
             # Micro-SL артефакты (data_era='micro_sl_artifact') исключаются дополнительно в fit().
+            # DEV-190: добавлены tsl_activated и R_multiple для is_win helper
             cur.execute("""
                 SELECT signal_type, direction, strength, confidence,
-                       regime, status, features_json
+                       regime, status, features_json, tsl_activated, R_multiple
                 FROM simulated_trades
                 WHERE status IN ('TP', 'SL', 'TSL')
                   AND signal_type IS NOT NULL

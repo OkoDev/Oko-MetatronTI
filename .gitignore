@@ -170,3 +170,25 @@ scripts/trader_schedule.json
 # Claude Code
 # ===============================
 .claude/settings.local.json
+
+# ===============================
+# Obsidian vault (large, local-only)
+# ===============================
+obsidian/
+.obsidian/
+
+# ===============================
+# SQLite WAL files
+# ===============================
+*.db-wal
+*.db-shm
+
+# ===============================
+# Случайные файлы / мусор
+# ===============================
+=
+dashboard.md.md
+Untitled Kanban.md
+-lacat CLAUDE.md
+_hub_meta.yaml
+_hub_metrics.py

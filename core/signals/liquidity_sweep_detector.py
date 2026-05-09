@@ -151,7 +151,7 @@ def detect_liquidity_sweep(
 
     if not _has_wt(df):
         try:
-            from core.indicators import calculate_wt
+            from core.indicators.indicators import calculate_wt
 
             df = calculate_wt(df)
         except Exception:

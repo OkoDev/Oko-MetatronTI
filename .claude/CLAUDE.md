@@ -121,6 +121,97 @@ grep -n "factor\|atr_period" config.yaml   # перед тем как назва
 
 ---
 
+## 📚 Obsidian Vault — карта знаний проекта
+
+**Путь:** `/workspace/obsidian/` (~650 файлов, граф из задач, обсуждений, концепций)
+
+### 🗂️ Структура vault'я
+
+```
+obsidian/
+  Project-MOC.md              ← ⭐ ГЛАВНЫЙ ХАБ — начинай поиск отсюда
+  Tasks/Tasks.md              ← индекс 164+ закрытых DEV/ARCH/TR задач
+  Discussions/Discussions.md  ← индекс 405 обсуждений (хронология)
+  Architecture/Architecture.md ← навигация по ARCH-эпикам
+  Strategies/Strategies.md    ← OTE, RANGE-BOUNCE, Weekly-Bias и др.
+  Concepts/Concepts.md        ← 20 концепций (TSL, MFE, R-Multiple, SMC, WT...)
+  Code-Map/README.md          ← карта 12 ключевых модулей
+  Months/2026-XX.md           ← хабы месяцев (связывают все задачи периода)
+  Sessions/                   ← дневные сводки
+```
+
+### 🔍 Как искать контекст в Obsidian (для агентов)
+
+**Когда искать в Obsidian:**
+- Нужна история задачи (DEV-XXX, ARCH-XX) → `Tasks/DEV-XXX.md`
+- Нужно понять концепцию (TSL, MFE, OTE) → `Concepts/<Name>.md`
+- Нужна архитектурная цепочка → `Architecture/Architecture.md`
+- Нужны исторические обсуждения (когда/кем решено) → grep в `Discussions/`
+
+**Команды для агента:**
+```bash
+# Прочитать главный хаб (всегда первый шаг)
+Read /workspace/obsidian/Project-MOC.md
+
+# Найти задачу по ID
+Read /workspace/obsidian/Tasks/DEV-184.md
+
+# Найти концепт
+Read /workspace/obsidian/Concepts/TSL.md
+
+# Поиск по всем задачам месяца
+Read /workspace/obsidian/Months/2026-04.md
+
+# Поиск через grep (если ID неизвестен)
+Bash "grep -rln 'ключевое_слово' /workspace/obsidian/Tasks/"
+```
+
+### 📝 Правила ведения (детали в `obsidian/OBSIDIAN-RULES.md`)
+
+**1. Wikilinks vs Tags — критично для графа:**
+- ✅ Используй wikilinks для **связей**: `[[Months/2026-04]]`, `[[DEV-184]]`, `[[Concepts/TSL]]`
+- ✅ Теги только для **фильтрации**: `#status/done`, `#role/dev`, `#area/strategy`, `#priority/high`
+- ❌ НЕ используй теги месяцев `#month/YYYY-MM` — создают "звёздные" узлы вне графа
+  → Вместо них: `month: "[[Months/YYYY-MM]]"` в frontmatter
+
+**2. Имена индексов = имена папок:**
+- `Tasks/Tasks.md`, `Discussions/Discussions.md`, `Architecture/Architecture.md` (НЕ `INDEX.md`)
+- Исключение: `Code-Map/README.md` (соглашение)
+
+**3. После завершения DEV/ARCH задачи:**
+```bash
+python3 /workspace/scripts/build_obsidian_vault.py  # пересоздаст Tasks/, Discussions/
+python3 /workspace/scripts/validate_obsidian_vault.py  # проверка orphans/broken links
+```
+
+**4. Frontmatter новых задач:**
+```yaml
+---
+tags: ['#role/dev', '#status/active', '#area/strategy', '#priority/high']
+id: DEV-NNN
+role: dev
+status: active
+created: 2026-MM-DD
+type: task
+parent: "[[Project-MOC]]"
+month: "[[Months/2026-MM]]"   # ← wikilink, НЕ тег
+---
+```
+
+### 🔧 Полезные скрипты
+
+- `/workspace/scripts/build_obsidian_vault.py` — генератор vault из TASKS-ARCHIVE.md, DISCUSSION.md
+- `/workspace/scripts/validate_obsidian_vault.py` — проверка orphans, broken links, duplicate IDs
+- `/workspace/scripts/migrate_month_tags.py` — миграция тегов месяцев → wikilinks (для будущих месяцев)
+
+### ⚠️ Известные особенности
+
+- Узлы-теги (status/role/area) намеренно НЕ привязаны к корню — они для фильтрации, не навигации
+- Если граф показывает "звёздный" одинокий узел тега — значит этот тег нельзя превратить в wikilink (системный)
+- В графе Obsidian можно скрыть теги: `Filters → ☐ Tags`
+
+---
+
 ## Проект: Oko MTF TG Bot
 
 Telegram-бот для технического анализа крипторынка с симуляцией сделок и самообучением.

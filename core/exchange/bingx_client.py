@@ -364,6 +364,23 @@ class BingXClient:
             params["type"]  = "STOP_MARKET"
         return await self.post("/openApi/swap/v2/trade/order", params)
 
+    async def place_tp_order(
+        self, symbol: str, side: str, pos_side: str,
+        stop_price: float, qty: float,
+    ) -> dict:
+        """Ставит TAKE_PROFIT_MARKET ордер (для восстановления TP при потере)."""
+        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        params = {
+            "symbol":       bx_symbol,
+            "side":         side,
+            "positionSide": pos_side,
+            "type":         "TAKE_PROFIT_MARKET",
+            "quantity":     str(qty),
+            "stopPrice":    str(stop_price),
+            "workingType":  "MARK_PRICE",
+        }
+        return await self.post("/openApi/swap/v2/trade/order", params)
+
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
         """Отменяет ордер."""
         bx_symbol = symbol.replace("/", "-").replace(":USDT", "")

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from core.data_collector import RealTimeData
+    from core.infra.data_collector import RealTimeData
 
 logger = logging.getLogger(__name__)
 

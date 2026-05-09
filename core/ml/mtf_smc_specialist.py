@@ -120,44 +120,64 @@ def _build_smc_snap_from_df(
         from core.smc.order_blocks import detect_order_blocks
         from core.smc.fvg import detect_fvg
         from core.smc.liquidity import detect_liquidity, detect_equal_highs_lows
+        from core.smc.fibonacci import detect_fibonacci
 
-        # Structure: CHoCH / BOS
-        sa = detect_structure(df, swing_period=5)
-        if sa.last_break:
-            snap["choch"] = sa.last_break.is_choch
-            snap["bos"]   = sa.last_break.is_bos
+        # ── Базовый анализ структуры и свингов ──
+        # detect_structure возвращает StructureAnalysis (нужен для OB и Fib)
+        # detect_swing_points возвращает SwingAnalysis (нужен для liquidity)
+        structure = detect_structure(df, swing_period=5)
+        swings_analysis = detect_swing_points(df, period=5)
 
-        # Order Blocks
-        swings = detect_swing_points(df, period=5)
-        obs = detect_order_blocks(df, swings)
-        bull_obs = [ob for ob in obs if ob.direction == "LONG" and ob.is_active]
-        if bull_obs and current_price > 0:
-            # Ближайший бычий OB
-            nearest = min(bull_obs, key=lambda ob: abs(ob.level - current_price))
-            snap["ob_bull"] = True
-            snap["ob_distance_pct"] = abs(nearest.level - current_price) / current_price * 100
+        # CHoCH / BOS из structure.last_break
+        if structure.last_break:
+            snap["choch"] = structure.last_break.is_choch
+            snap["bos"] = structure.last_break.is_bos
 
-        # FVG
-        fvgs = detect_fvg(df)
-        snap["fvg_open"] = any(not fvg.filled for fvg in fvgs)
-
-        # OTE zone (Fib 0.705–0.786) — упрощённая проверка по последнему swing
+        # ── Order Blocks ──
+        # detect_order_blocks возвращает OBAnalysis с готовыми nearest_bull/nearest_bear.
+        # Раньше код передавал swings вместо structure → AttributeError → весь блок падал.
         try:
-            from core.smc.fibonacci import detect_ote_zone
-            fib = detect_ote_zone(df)
-            if fib and fib.active_ote:
-                snap["ote_zone"] = fib.active_ote.price_in_ote
-        except Exception:
-            pass
+            obs = detect_order_blocks(df, structure)
+            if obs.nearest_bull and current_price > 0:
+                snap["ob_bull"] = True
+                snap["ob_distance_pct"] = abs(obs.nearest_bull.midpoint - current_price) / current_price * 100
+        except Exception as e:
+            logger.debug("smc_snap OB error: %s", e)
 
-        # EQH/EQL
-        eqhl = detect_equal_highs_lows(df, threshold_pct=0.01, lookback=50)
-        snap["eqh_near"] = eqhl["eqh_near"]
-        snap["eql_near"] = eqhl["eql_near"]
+        # ── FVG ──
+        # detect_fvg возвращает FVGAnalysis с active_bull/active_bear списками.
+        # Раньше код пытался итерироваться по объекту → TypeError.
+        try:
+            fvgs = detect_fvg(df)
+            snap["fvg_open"] = bool(fvgs.active_bull) or bool(fvgs.active_bear)
+        except Exception as e:
+            logger.debug("smc_snap FVG error: %s", e)
 
-        # Liquidity above
-        liq = detect_liquidity(df, swings)
-        snap["liquidity_above"] = liq.nearest_buy is not None
+        # ── OTE zone (Fib 0.705–0.786) ──
+        # Раньше код импортировал несуществующий detect_ote_zone → ImportError.
+        # Реальная функция: detect_fibonacci(df, structure) → FibAnalysis с active_ote.
+        try:
+            fib = detect_fibonacci(df, structure)
+            if fib.active_ote and fib.active_ote.price_in_ote:
+                snap["ote_zone"] = True
+        except Exception as e:
+            logger.debug("smc_snap OTE error: %s", e)
+
+        # ── Equal Highs / Equal Lows ──
+        try:
+            eqhl = detect_equal_highs_lows(df, threshold_pct=0.01, lookback=50)
+            snap["eqh_near"] = bool(eqhl.get("eqh_near", False))
+            snap["eql_near"] = bool(eqhl.get("eql_near", False))
+        except Exception as e:
+            logger.debug("smc_snap EQH/EQL error: %s", e)
+
+        # ── Liquidity ──
+        # detect_liquidity ожидает SwingAnalysis объект, не список свингов.
+        try:
+            liq = detect_liquidity(df, swings_analysis)
+            snap["liquidity_above"] = liq.nearest_buy is not None
+        except Exception as e:
+            logger.debug("smc_snap LIQ error: %s", e)
 
     except Exception as e:
         logger.debug("_build_smc_snap_from_df error: %s", e)
@@ -199,7 +219,9 @@ class MTFSMCSpecialist:
                     if fv is None:
                         continue
                     X.append(fv)
-                    y.append(1 if r["status"] in ("TP", "TSL") else 0)
+                    # DEV-190: учёт скрытых TSL exits под status='SL'
+                    from core.trading.effective_status import is_win as _is_win
+                    y.append(1 if _is_win(r["status"], r.get("R_multiple"), r.get("tsl_activated")) else 0)
                 except Exception as row_err:
                     logger.debug("MTFSMCSpecialist: пропуск строки — %s", row_err)
                     continue
@@ -278,8 +300,9 @@ class MTFSMCSpecialist:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+            # DEV-190: добавлены tsl_activated и R_multiple для is_win helper
             cur.execute("""
-                SELECT status, features_json
+                SELECT status, features_json, tsl_activated, R_multiple
                 FROM simulated_trades
                 WHERE status IN ('TP', 'SL', 'TSL')
                   AND features_json IS NOT NULL

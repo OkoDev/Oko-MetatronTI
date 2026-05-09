@@ -67,9 +67,11 @@ class ConfidenceCalibrator:
                 )
                 return False
 
+            # DEV-190: учёт скрытых TSL exits через is_win helper
+            from core.trading.effective_status import is_win as _is_win
             confs = [float(r["confidence"]) for r in rows if r["confidence"] is not None]
             labels = [
-                1 if r["status"] in ("TP", "TSL") else 0
+                1 if _is_win(r["status"], r.get("R_multiple"), r.get("tsl_activated")) else 0
                 for r in rows if r["confidence"] is not None
             ]
 
@@ -187,8 +189,9 @@ class ConfidenceCalibrator:
     def _load_trades(db_path: str) -> List[Dict]:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
+            # DEV-190: добавлены tsl_activated и R_multiple для is_win helper
             cur = conn.execute("""
-                SELECT confidence, status
+                SELECT confidence, status, tsl_activated, R_multiple
                 FROM simulated_trades
                 WHERE status IN ('TP', 'SL', 'TSL')
                   AND confidence IS NOT NULL

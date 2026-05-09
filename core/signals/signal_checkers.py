@@ -8,16 +8,16 @@ from typing import List
 
 import pandas as pd
 
-from core.entry_config import get_primary_entry_tf
-from core.signal_models import SignalData, SignalDirection, SignalType
+from core.infra.entry_config import get_primary_entry_tf
+from core.signals.signal_models import SignalData, SignalDirection, SignalType
 
 try:
-    from core.config_loader import config as _cfg
+    from core.infra.config_loader import config as _cfg
 except ImportError:
     _cfg = None
 
 try:
-    from core.dynamic_thresholds import compute_dynamic_thresholds, os_method_label as _os_method_label
+    from core.indicators.dynamic_thresholds import compute_dynamic_thresholds, os_method_label as _os_method_label
     _DYN_THRESH_AVAILABLE = True
 except ImportError:
     _DYN_THRESH_AVAILABLE = False
@@ -26,14 +26,14 @@ except ImportError:
 _anomaly_models: dict = {}
 
 try:
-    from core.anomaly_model import AnomalyModel as _AnomalyModel
+    from core.indicators.anomaly_model import AnomalyModel as _AnomalyModel
     _IF_AVAILABLE = True
 except ImportError:
     _IF_AVAILABLE = False
     _AnomalyModel = None
 
 try:
-    from core.indicators import (
+    from core.indicators.indicators import (
         calculate_trend, calculate_wt,
         compute_volume_ratio as _compute_volume_ratio,
     )
@@ -340,6 +340,23 @@ async def check_wt_b_signals(symbol: str, df_1h: pd.DataFrame) -> list:
         os_ = float(np.percentile(wt1_arr, 10))
         ob  = float(np.percentile(wt1_arr, 90))
 
+        # DEV-187 (26.04.2026): жёсткий floor поверх adaptive.
+        # Причина RE-AUDIT: на трендовом рынке p10/p90 падают к нулю → детектор
+        # разрешает входы в N зоне. SHORT при wt1_1h в +10..+30 → avgR=-2.44 (n=7).
+        # Floor: os_<=-30 (LONG), ob_>=+30 (SHORT). Откат: floor=0 в config.
+        if _cfg is not None:
+            try:
+                _os_floor = float(_cfg.get("analysis.wt_b.os_floor", -30.0))
+                _ob_floor = float(_cfg.get("analysis.wt_b.ob_floor", 30.0))
+                _os_orig, _ob_orig = os_, ob
+                os_ = min(os_, _os_floor)   # не выше -30 даже на тренде
+                ob  = max(ob,  _ob_floor)   # не ниже +30 даже на тренде
+                if os_ != _os_orig or ob != _ob_orig:
+                    logger.debug("[wt_b] %s floor: adaptive os=%.1f→%.1f, ob=%.1f→%.1f",
+                                 symbol, _os_orig, os_, _ob_orig, ob)
+            except Exception:
+                pass
+
         wt1_last, wt2_last = wt1_arr[-1], wt2_arr[-1]
         wt1_prev, wt2_prev = wt1_arr[-2], wt2_arr[-2]
 
@@ -432,7 +449,7 @@ async def check_smc_signals(symbol: str, df: pd.DataFrame) -> List[SignalData]:
         if df is None or len(df) < 30:
             return signals
 
-        from core.structure_detector import detect_structure
+        from core.signals.structure_detector import detect_structure
         result = detect_structure(df)
 
         if result["signal"] is None:
@@ -480,8 +497,8 @@ async def check_mtf_bias_signal(
     """
     signals = []
     try:
-        from core.mtf_checker import collect_mtf_data
-        from core.mtf_interpreter import interpret
+        from core.mtf.mtf_checker import collect_mtf_data
+        from core.mtf.mtf_interpreter import interpret
 
         snapshot = await collect_mtf_data(symbol, data_collector)
         if not snapshot:
@@ -517,8 +534,8 @@ async def check_divergence_signals(symbol: str, df: pd.DataFrame) -> List[Signal
         if df is None or len(df) < 100:
             return signals
 
-        from core.divergence_detector import DivergenceDetector
-        from core.indicators import calculate_wt as _calc_wt
+        from core.indicators.divergence_detector import DivergenceDetector
+        from core.indicators.indicators import calculate_wt as _calc_wt
 
         det = DivergenceDetector()
         df_wt = _calc_wt(df.copy(), n1=10, n2=21)
@@ -581,11 +598,29 @@ async def check_pivot_signals(
         resistance = float(hist["high"].max())
         support    = float(hist["low"].min())
 
+        # DEV-188 (shadow): real_touch + volume_z для проверки качества входа.
+        # Не блокирует — только пишет в data сигнала → features_json.
+        # Источник плохих pivot_reversal входов: цена близко к уровню,
+        # но касания (wick через уровень) и отказа (close обратно) не было.
+        recent_high = float(df["high"].iloc[-3:].max()) if len(df) >= 3 else 0.0
+        recent_low = float(df["low"].iloc[-3:].min()) if len(df) >= 3 else 0.0
+        vol_last = float(df["volume"].iloc[-1]) if "volume" in df.columns else 0.0
+        if "volume" in df.columns and len(df) >= 21:
+            vol_avg_20 = float(df["volume"].iloc[-21:-1].mean())
+        else:
+            vol_avg_20 = 0.0
+        volume_z = round(vol_last / vol_avg_20, 2) if vol_avg_20 > 0 else 0.0
+
         # Цена у сопротивления → SHORT
         dist_res = abs(current_price - resistance) / resistance * 100
         if current_price < resistance and dist_res <= proximity_pct:
             strength = max(40, min(80, int((1 - dist_res / proximity_pct) * 40 + 40)))
-            logger.debug("[%s] PIVOT SHORT near resistance=%.6g dist=%.2f%%", symbol, resistance, dist_res)
+            short_real_touch = 1 if recent_high >= resistance * 0.999 else 0
+            short_close_rejection = 1 if current_price < resistance else 0
+            logger.debug(
+                "[%s] PIVOT SHORT near resistance=%.6g dist=%.2f%% touch=%d vol_z=%.2f",
+                symbol, resistance, dist_res, short_real_touch, volume_z,
+            )
             signals.append(SignalData(
                 symbol=symbol,
                 signal_type=SignalType.PIVOT_REVERSAL,
@@ -593,7 +628,14 @@ async def check_pivot_signals(
                 strength=strength,
                 confidence=0.65,
                 timestamp=datetime.now(),
-                data={"level": resistance, "pivot_type": "resistance", "distance_pct": dist_res},
+                data={
+                    "level": resistance,
+                    "pivot_type": "resistance",
+                    "distance_pct": dist_res,
+                    "real_touch": short_real_touch,
+                    "close_rejection": short_close_rejection,
+                    "volume_z": volume_z,
+                },
                 timeframe=get_primary_entry_tf(_cfg),
             ))
 
@@ -601,7 +643,12 @@ async def check_pivot_signals(
         dist_sup = abs(current_price - support) / support * 100
         if current_price > support and dist_sup <= proximity_pct:
             strength = max(40, min(80, int((1 - dist_sup / proximity_pct) * 40 + 40)))
-            logger.debug("[%s] PIVOT LONG near support=%.6g dist=%.2f%%", symbol, support, dist_sup)
+            long_real_touch = 1 if recent_low <= support * 1.001 else 0
+            long_close_rejection = 1 if current_price > support else 0
+            logger.debug(
+                "[%s] PIVOT LONG near support=%.6g dist=%.2f%% touch=%d vol_z=%.2f",
+                symbol, support, dist_sup, long_real_touch, volume_z,
+            )
             signals.append(SignalData(
                 symbol=symbol,
                 signal_type=SignalType.PIVOT_REVERSAL,
@@ -609,7 +656,14 @@ async def check_pivot_signals(
                 strength=strength,
                 confidence=0.65,
                 timestamp=datetime.now(),
-                data={"level": support, "pivot_type": "support", "distance_pct": dist_sup},
+                data={
+                    "level": support,
+                    "pivot_type": "support",
+                    "distance_pct": dist_sup,
+                    "real_touch": long_real_touch,
+                    "close_rejection": long_close_rejection,
+                    "volume_z": volume_z,
+                },
                 timeframe=get_primary_entry_tf(_cfg),
             ))
     except Exception:

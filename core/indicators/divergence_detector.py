@@ -1,7 +1,7 @@
 import logging
 import pandas as pd
 import numpy as np
-from core.indicators import calculate_wt, find_swing_highs, find_swing_lows
+from core.indicators.indicators import calculate_wt, find_swing_highs, find_swing_lows
 
 logger = logging.getLogger(__name__)
 
@@ -706,7 +706,7 @@ class DivergenceDetector:
 # Функция для форматирования сообщения (обновленная)
 def divergence_message(symbol: str, div_info: dict) -> str:
     """Форматирует сообщение о дивергенции"""
-    from core.message_builder import tv_link
+    from core.ui.message_builder import tv_link
     from datetime import datetime
     
     div_type = div_info.get("type", "")
@@ -878,7 +878,7 @@ def divergence_message(symbol: str, div_info: dict) -> str:
 
 def mtf_divergence_message(symbol: str, div_info: dict) -> str:
     """Форматирует сообщение о MTF-конфлюэнции дивергенций."""
-    from core.message_builder import tv_link
+    from core.ui.message_builder import tv_link
     from datetime import datetime
 
     direction = div_info.get("direction", "LONG")

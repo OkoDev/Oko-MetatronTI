@@ -5,7 +5,7 @@
 import numpy as np
 from typing import List
 
-from core.signal_models import SignalData, MarketContext, SignalType
+from core.signals.signal_models import SignalData, MarketContext, SignalType
 
 
 def calculate_advanced_confidence(

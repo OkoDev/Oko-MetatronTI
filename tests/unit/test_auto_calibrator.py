@@ -33,7 +33,9 @@ def _create_test_db(path: str, trades: list):
             status TEXT, R_multiple REAL, strength INTEGER,
             confidence REAL, regime TEXT, features_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tsl_activated INTEGER DEFAULT 0,
+            max_R_possible REAL
         )
     """)
     for t in trades:

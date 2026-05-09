@@ -33,7 +33,11 @@ def _make_tmp_db() -> str:
                 R_multiple REAL,
                 profit_pct REAL,
                 features_json TEXT,
-                closed_at TEXT
+                closed_at TEXT,
+                tsl_activated INTEGER DEFAULT 0,
+                max_R_possible REAL,
+                regime TEXT,
+                direction TEXT
             )
         """)
         conn.commit()

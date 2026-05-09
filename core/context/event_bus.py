@@ -36,7 +36,10 @@ EVENT_PRIORITY = {
     "funding_extreme":   2,
     "wt_cross_4h":       2,   # Куб: WT кросс в OB/OS на 4h — редкий мощный сетап
     "wt_cross_1d":       1,   # Куб: WT кросс в OB/OS на 1d — ещё мощнее
+    "trend_change_15m":  3,   # Куб: смена тренда на 15m — скальп
     "trend_change_1h":   2,   # Куб: смена тренда на 1h — ранний сигнал разворота
+    "trend_change_4h":   1,   # Куб: смена тренда на 4h — swing сетап
+    "trend_change_1d":   1,   # Куб: смена тренда на 1d — позиционный разворот
     "wt_confluence":     3,
     "ote_reentry":       3,
     "cascade":           3,
@@ -45,6 +48,31 @@ EVENT_PRIORITY = {
     "btc_macro":         4,
     "regime_change":     3,   # Куб: смена режима рынка для пары
     "trade_closed":      5,   # ARCH-72: Feedback Loop
+    # Слой 1 детекторы — подключены к кубу 04.05.2026 (Вариант А)
+    "wt_b_signal":       1,   # WR=85% бэктест — наивысший приоритет
+    "pivot_reversal":    2,   # avg_R=+0.50 — второй приоритет
+    "divergence":        3,   # Regular/Hidden + MTF cascade
+    "mtf_alert":         4,   # 7 TF фоновый
+    "trend_signal":      4,   # фоновый, avg_R=-0.50 — низкий приоритет
+    # WT cross младшие TF
+    "wt_cross_1h":       2,   # кросс в OB/OS на 1h — важный сетап
+    "wt_cross_15m":      3,   # кросс в OB/OS на 15m — триггер входа
+    # Вход в зону OB/OS — ранний сигнал, раньше кросса
+    "zone_enter_os":     2,   # WT вошёл в OS → ждём LONG кросс
+    "zone_enter_ob":     2,   # WT вошёл в OB → ждём SHORT кросс
+    # Экстремальные уровни WT — очень редко, очень мощный сетап
+    "wt_extreme":        1,   # wt1 < -80 или > +80 — исторически максимальный WR
+    # SMC структурные переломы
+    "smc_bos_detected":  2,   # Break of Structure — слом структуры, смена тренда
+    "smc_choch_detected": 1,  # Change of Character — разворот тренда (сильнее BOS)
+    # FVG касание — ICT ключевая точка входа
+    "fvg_touch":         2,   # цена вошла в открытый Fair Value Gap
+    # Volume Spike — отдельно от anomaly_volume (PairContextBus алерт)
+    "volume_spike":      3,   # внезапный всплеск объёма без аномалии (ratio > 3x)
+    # ATR Trend Change — смена направления supertrend (DEV-199, backtest R6-R8)
+    "atr_change_15m":    2,   # смена supertrend на 15m — скальп триггер
+    "atr_change_1h":     1,   # смена supertrend на 1h — swing сетап
+    "atr_change_4h":     1,   # смена supertrend на 4h — позиционный разворот
 }
 
 
@@ -83,7 +111,7 @@ class EventBus:
         self.max_concurrent: int = int(_cfg("max_concurrent", 3))
 
         self._heap: list[_QueueItem] = []   # heapq (min-heap)
-        self._in_queue: set[str]     = set()  # symbol деdup
+        self._in_queue: dict[str, int]   = {}  # symbol → current priority in queue
         self._cooldowns: dict[str, datetime] = {}
         self._semaphore  = asyncio.Semaphore(self.max_concurrent)
         self._wake       = asyncio.Event()
@@ -120,16 +148,28 @@ class EventBus:
 
         prio = priority if priority is not None else EVENT_PRIORITY.get(event_type, 5)
 
-        if symbol in self._in_queue:
-            # Пара уже в очереди — пропускаем (можно улучшить до update priority, но YAGNI)
-            logger.debug("[EventBus] %s already in queue, skip %s", symbol, event_type)
-            return False
+        existing_prio = self._in_queue.get(symbol)
+        if existing_prio is not None:
+            if prio >= existing_prio:
+                # Новый сигнал не приоритетнее — пропускаем
+                logger.debug("[EventBus] %s already in queue prio=%d, skip %s prio=%d",
+                             symbol, existing_prio, event_type, prio)
+                return False
+            # Новый сигнал ПРИОРИТЕТНЕЕ — заменяем в очереди
+            # heapq не поддерживает удаление O(1); помечаем старый как invalid и добавляем новый
+            for item in self._heap:
+                if item.symbol == symbol:
+                    item.priority = 999  # вытолкнуть на дно — будет пропущен при consume
+                    break
+            heapq.heapify(self._heap)
+            logger.info("[EventBus] %s priority upgrade: prio=%d → %d (%s)",
+                        symbol, existing_prio, prio, event_type)
 
         self._seq += 1
         item = _QueueItem(priority=prio, seq=self._seq, symbol=symbol,
                           event_type=event_type, data=data)
         heapq.heappush(self._heap, item)
-        self._in_queue.add(symbol)
+        self._in_queue[symbol] = prio
         self._wake.set()
 
         logger.info(
@@ -158,7 +198,14 @@ class EventBus:
                     continue
 
                 item = heapq.heappop(self._heap)
-                self._in_queue.discard(item.symbol)
+
+                # Пропускаем инвалидированные элементы (priority upgrade)
+                if item.priority == 999:
+                    continue
+
+                # Убираем из очереди только если это текущий актуальный элемент
+                if self._in_queue.get(item.symbol) == item.priority:
+                    del self._in_queue[item.symbol]
 
                 # Double-check cooldown (мог пройти пока был в очереди)
                 last = self._cooldowns.get(item.symbol)

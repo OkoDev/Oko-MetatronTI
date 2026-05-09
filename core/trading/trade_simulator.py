@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
-from core.regime_strategy import apply_regime_to_strategy, get_regime_params
+from core.trading.regime_strategy import apply_regime_to_strategy, get_regime_params
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ STATUS_TSL = "TSL"
 STATUS_EXPIRED = "EXPIRED"
 
 # Дефолты — entry TF из core.entry_config
-from core.entry_config import get_primary_entry_tf, get_cascade_tfs, get_tsl_tf
+from core.infra.entry_config import get_primary_entry_tf, get_cascade_tfs, get_tsl_tf
 DEFAULT_TIMEFRAME = get_primary_entry_tf()  # из config.yaml → trading.entry_timeframe
 MAX_DURATION_MINUTES = 48 * 60  # 48 часов — затем EXPIRED
 
@@ -161,7 +161,8 @@ class TradeSimulator:
                     strategy_type TEXT DEFAULT 'SINGLE',
                     exchange_order_id TEXT,
                     exchange_sl_order_id TEXT,
-                    qty REAL
+                    qty REAL,
+                    original_sl REAL
                 )
             """)
             # Миграция для существующих БД
@@ -179,8 +180,10 @@ class TradeSimulator:
                 ("decision_trace_json", "TEXT"),  # DEV-12: полный аудит решения
                 ("exchange_order_id", "TEXT"),    # DEV-136: ID ордера на бирже (VST/LIVE)
                 ("exchange_sl_order_id", "TEXT"), # DEV-136: ID SL-ордера на бирже (для cancel+replace TSL)
+                ("exchange_tp_order_id", "TEXT"), # ARCH-94: ID TP-ордера на бирже (аудит рассинхрона)
                 ("qty", "REAL"),                  # DEV-136: qty позиции (для TSL updater)
                 ("actual_entry_price", "REAL"),   # Реальная цена исполнения с биржи (vs entry_price из сигнала)
+                ("original_sl", "REAL"),          # SL при регистрации (не изменяется TSL'ом)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -325,7 +328,7 @@ class TradeSimulator:
 
             # DEV-14: Correlation Guard — лимит открытых позиций по направлению
             try:
-                from core.config_loader import config as _cfg_cg
+                from core.infra.config_loader import config as _cfg_cg
                 _max_per_dir = int(_cfg_cg.get("trading.max_positions_per_direction", 5))
                 _dir_str = _direction_str(direction)
                 if _max_per_dir > 0 and _dir_str in ("LONG", "SHORT") and "__SELFTEST__" not in str(symbol):
@@ -352,7 +355,7 @@ class TradeSimulator:
 
             # RR-фильтр: при WR=40% нужен RR≥2.0 для положительного EV
             try:
-                from core.config_loader import config as _cfg
+                from core.infra.config_loader import config as _cfg
                 MIN_RR = float(_cfg.get("trading.min_rr_ratio", 2.0))
             except Exception:
                 MIN_RR = 2.0
@@ -362,7 +365,7 @@ class TradeSimulator:
                 _sl_dist_raw = abs(float(entry) - float(stop_loss))
                 if _sl_dist_raw > 0:
                     try:
-                        from core.config_loader import config as _cfg_sl
+                        from core.infra.config_loader import config as _cfg_sl
                         MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
                     except Exception:
                         MIN_SL_DIST_PCT = 0.1
@@ -400,7 +403,7 @@ class TradeSimulator:
                 if hasattr(s, "signal_type") and hasattr(s.signal_type, "value")
             ))
             # tsl_tf: для MTF_BIAS сигналов берём старший TF для trailing
-            from core.entry_config import ENTRY_TO_TSL_TF
+            from core.infra.entry_config import ENTRY_TO_TSL_TF
             tsl_tf = DEFAULT_TIMEFRAME
             for _sig in supporting:
                 if getattr(getattr(_sig, "signal_type", None), "value", "") == "mtf_bias":
@@ -411,6 +414,29 @@ class TradeSimulator:
             if all_signal_types:
                 features["all_signal_types"] = all_signal_types
                 features["n_supporting"] = len(supporting)
+            # DEV-188 (shadow): pivot_reversal качество входа — real_touch + volume_z.
+            # Источник: signal_checkers.check_pivot_signals → sig.data.
+            # Цель: после 50+ SHORT TREND_DOWN сделок сравнить WR(real_touch=1) vs WR(0).
+            # Не блокирует, только пишет в features_json для shadow-анализа.
+            for _sig in supporting:
+                _stype = getattr(getattr(_sig, "signal_type", None), "value", "")
+                _pdata = getattr(_sig, "data", None) or {}
+                if _stype == "pivot_reversal":
+                    if "real_touch" in _pdata:
+                        features["pivot_real_touch"] = _pdata.get("real_touch")
+                        features["pivot_close_rejection"] = _pdata.get("close_rejection")
+                        features["pivot_volume_z"] = _pdata.get("volume_z")
+                        features["pivot_level"] = _pdata.get("level")
+                        features["pivot_type"] = _pdata.get("pivot_type")
+                        features["pivot_trend_changed"] = _pdata.get("trend_changed")
+                elif _stype == "wt_b_signal":
+                    if "div_strength" in _pdata:
+                        features["wt_b_div_strength"] = _pdata.get("div_strength")
+                        features["wt_b_depth"] = _pdata.get("depth")
+                        features["wt_b_wt1"] = _pdata.get("wt1")
+                        features["wt_b_zone"] = _pdata.get("zone")
+                        features["wt_b_os_adaptive"] = _pdata.get("os_adaptive")
+                        features["wt_b_ob_adaptive"] = _pdata.get("ob_adaptive")
             if ctx:
                 features["volume_24h"] = getattr(ctx, "volume_24h", None)
                 features["price_change_24h"] = getattr(ctx, "price_change_24h", None)
@@ -505,7 +531,7 @@ class TradeSimulator:
                 _ep = float(entry) if entry else 0
                 _sl = float(stop_loss) if stop_loss else 0
                 _sl_dist_pct = abs(_ep - _sl) / _ep * 100 if _ep > 0 and _sl > 0 else 99.0
-                from core.config_loader import config as _cfg_era
+                from core.infra.config_loader import config as _cfg_era
                 _min_sl = float(_cfg_era.get("trading.min_sl_dist_pct", 0.1))
                 if _sl_dist_pct < _min_sl:
                     features["data_era"] = "micro_sl_artifact"
@@ -516,6 +542,31 @@ class TradeSimulator:
                     features["data_era"] = "post_157"
                 else:
                     features["data_era"] = "pre_157"
+            except Exception:
+                pass
+
+            # ARCH-95 H1: entry timing shadow (лаг детекции → регистрация)
+            # detector_ts = время создания рекомендации (когда TradingIntelligence увидел сигнал)
+            # register_ts = время записи в БД (сейчас)
+            # entry_lag_seconds = задержка — ключевая метрика гипотезы H1
+            # detector_price = close бара при детекции; entry_price_lag_pct = slippage
+            try:
+                _det_ts = getattr(recommendation, "timestamp", None)
+                if _det_ts is not None:
+                    if getattr(_det_ts, "tzinfo", None) is None:
+                        _det_ts = _det_ts.replace(tzinfo=timezone.utc)
+                    _reg_ts = datetime.now(timezone.utc)
+                    features["detector_ts"] = _det_ts.isoformat()
+                    features["register_ts"] = _reg_ts.isoformat()
+                    features["entry_lag_seconds"] = round(
+                        (_reg_ts - _det_ts).total_seconds(), 1
+                    )
+                _det_price = (metadata or {}).get("detector_price") if metadata else None
+                if _det_price and entry and float(entry) > 0:
+                    features["detector_price"] = float(_det_price)
+                    features["entry_price_lag_pct"] = round(
+                        (float(entry) - float(_det_price)) / float(_det_price) * 100, 4
+                    )
             except Exception:
                 pass
 
@@ -548,7 +599,7 @@ class TradeSimulator:
                     sign = 1.0 if dir_str == "LONG" else -1.0
                     # DEV-64A: global max_rr cap в register_trade (основной путь)
                     try:
-                        from core.config_loader import config as _cfg64a
+                        from core.infra.config_loader import config as _cfg64a
                         _sl_tp_64a = (_cfg64a.get("trading") or {}).get("sl_management") or {}
                         _max_rr_64a = float(
                             _sl_tp_64a.get("max_rr_range" if regime == "RANGE" else "max_rr", 3.0)
@@ -567,7 +618,7 @@ class TradeSimulator:
                         # Проверяем dual_tp.enabled из конфига
                         _dual_tp_enabled = True
                         try:
-                            from core.config_loader import config as _cfg_dtp
+                            from core.infra.config_loader import config as _cfg_dtp
                             _dual_tp_enabled = bool(
                                 (_cfg_dtp.get("trading.dual_tp") or {}).get("enabled", True)
                             )
@@ -590,7 +641,7 @@ class TradeSimulator:
             # Адаптируем strategy_type и TP1 на основе режима рынка (ARCH-04)
             if regime and stop_loss is not None and take_profit is not None and entry is not None:
                 try:
-                    from core.config_loader import config as _cfg_rs  # DEV-70: cfg для risk_management.regime_strategy
+                    from core.infra.config_loader import config as _cfg_rs  # DEV-70: cfg для risk_management.regime_strategy
                     strategy_type, tp1_price = apply_regime_to_strategy(
                         strategy_type=strategy_type,
                         entry=float(entry),
@@ -688,7 +739,7 @@ class TradeSimulator:
         # Данные: 09:00–18:00 UTC = avgR+, 23:00–06:00 UTC = avgR-0.3 (худшие)
         # TRADER (14.04): wt_signal override 04:00–18:00 (азиатская ночь прибыльна)
         try:
-            from core.config_loader import config as _cfg_170
+            from core.infra.config_loader import config as _cfg_170
             if _cfg_170:
                 _tg = (_cfg_170.get("signal_quality") or {}).get("time_gate") or {}
                 if _tg.get("enabled", False):
@@ -709,7 +760,7 @@ class TradeSimulator:
 
         # ARCH-42: Market Stress Gate — блок входов при массовых SL (shadow mode)
         try:
-            from core.config_loader import config as _cfg_msg
+            from core.infra.config_loader import config as _cfg_msg
             _msg = (_cfg_msg.get("trading", {}) or {}).get("market_stress_gate", {}) if _cfg_msg else {}
             if _msg:
                 _threshold = int(_msg.get("sl_threshold", 5))
@@ -731,7 +782,7 @@ class TradeSimulator:
 
         # DEV-38: Correlation Guard — блок если по коррелированному активу уже открыта сделка
         try:
-            from core.config_loader import config as _cfg_cg38
+            from core.infra.config_loader import config as _cfg_cg38
             _corr_groups = (_cfg_cg38.get("trading", {}).get("correlation_groups", [])
                             if _cfg_cg38 else [])
             if _corr_groups:
@@ -755,14 +806,14 @@ class TradeSimulator:
             symbol = _get_recommendation_value(recommendation, "symbol") or ""
             if symbol:
                 try:
-                    from core.market_regime import MarketRegimeClassifier
+                    from core.indicators.market_regime import MarketRegimeClassifier
                     ohlcv = await data_collector.get_ohlcv(symbol, DEFAULT_TIMEFRAME, 50)
                     if ohlcv is not None and not ohlcv.empty:
                         regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv)
                         logger.debug("MarketRegime для %s: %s", symbol, regime)
                         # DEV-90 / ARCH-59: shadow logging classify_v2 (сравниваем с текущим)
                         try:
-                            from core.config_loader import config as _cfg90
+                            from core.infra.config_loader import config as _cfg90
                             _use_v2 = _cfg90.get("market_regime.use_v2", False) if _cfg90 else False
                             _clf90 = MarketRegimeClassifier()
                             _df_1h90 = await data_collector.get_ohlcv(symbol, "1h", 50)
@@ -783,7 +834,7 @@ class TradeSimulator:
         _atr_1h_bias: Optional[str] = None
         if data_collector is not None and symbol:
             try:
-                from core.indicators import calculate_trend
+                from core.indicators.indicators import calculate_trend
                 _df_1h_bias = await data_collector.get_ohlcv(symbol, "1h", 55)
                 if _df_1h_bias is not None and not _df_1h_bias.empty and len(_df_1h_bias) >= 44:
                     _df_1h_bias = calculate_trend(_df_1h_bias)
@@ -825,7 +876,7 @@ class TradeSimulator:
         # Теперь работает для ВСЕХ code-paths (analyze_symbol + WL breach + будущие)
         if regime:
             try:
-                from core.config_loader import config as _cfg_44
+                from core.infra.config_loader import config as _cfg_44
                 if _cfg_44:
                     _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
                     _dir_44 = _direction_str(_get_recommendation_value(recommendation, "direction"))
@@ -862,7 +913,7 @@ class TradeSimulator:
         # DEV-155: Guard — min_strength по режиму/направлению (HIGH_VOL=85, LONG_RANGE=75)
         if regime:
             try:
-                from core.config_loader import config as _cfg_155
+                from core.infra.config_loader import config as _cfg_155
                 if _cfg_155:
                     _str155 = int(_get_recommendation_value(recommendation, "overall_strength") or
                                   getattr(recommendation, "overall_strength", 0) or 0)
@@ -888,7 +939,7 @@ class TradeSimulator:
         # Находка 2 (ARCH 29.03.2026): WR=4.5% avgR=−0.735R при strength≥80; чем выше strength → хуже
         # Порог: signal_quality.pivot_reversal_max_strength (default 79 = блок ≥80)
         try:
-            from core.config_loader import config as _cfg_98
+            from core.infra.config_loader import config as _cfg_98
             if _cfg_98:
                 _pms = int(_cfg_98.get("signal_quality.pivot_reversal_max_strength", 100))
                 _sig98 = str(_get_recommendation_value(recommendation, "signal_type") or "")
@@ -903,7 +954,7 @@ class TradeSimulator:
 
         # DEV-52: L3 Портфельный лимит (условие 6) — shadow mode
         try:
-            from core.config_loader import config as _cfg_52
+            from core.infra.config_loader import config as _cfg_52
             _l3 = (_cfg_52.get("trading", {}) or {}).get("l3_checker", {}) if _cfg_52 else {}
             if _l3:
                 _max_long  = _l3.get("max_open_long", 2)
@@ -935,7 +986,7 @@ class TradeSimulator:
         # DEV-110 / ARCH-66: RANGE BOUNCE — переопределяем SL/TP от пивотов
         # Активируется только: RANGE + confluence/watch_list_breach + 15m + entry у края (≤2%)
         try:
-            from core.config_loader import config as _cfg_rb
+            from core.infra.config_loader import config as _cfg_rb
             _rb_cfg = (_cfg_rb.get("trading", {}) or {}).get("range_bounce", {})
             if _rb_cfg.get("enabled", False) and regime == "RANGE":
                 _rb_sig = str(_get_recommendation_value(recommendation, "signal_type") or "")
@@ -985,7 +1036,7 @@ class TradeSimulator:
         # DUAL_TP: рассчитываем TP2 = следующий пивот после TP1 (30.03.2026)
         if trade_id and data_collector is not None:
             try:
-                from core.config_loader import config as _cfg_dtp2
+                from core.infra.config_loader import config as _cfg_dtp2
                 _dual_enabled = bool(
                     (_cfg_dtp2.get("trading.dual_tp") or {}).get("enabled", True)
                 )
@@ -1062,6 +1113,18 @@ class TradeSimulator:
         except Exception as e:
             logger.warning("TradeSimulator: set_exchange_sl_order_id #%d: %s", trade_id, e)
 
+    def set_exchange_tp_order_id(self, trade_id: int, tp_order_id: str) -> None:
+        """Сохраняет orderId TP-ордера на бирже. ARCH-94: аудит рассинхрона TP."""
+        try:
+            with self._db_connect() as conn:
+                conn.execute(
+                    "UPDATE simulated_trades SET exchange_tp_order_id = ? WHERE id = ?",
+                    (str(tp_order_id), trade_id),
+                )
+            logger.debug("TradeSimulator: trade #%d → exchange_tp_order_id=%s", trade_id, tp_order_id)
+        except Exception as e:
+            logger.warning("TradeSimulator: set_exchange_tp_order_id #%d: %s", trade_id, e)
+
     def set_exchange_order_id(
         self, trade_id: int, order_id: str, qty: float = 0.0,
         actual_entry_price: float = 0.0,
@@ -1105,9 +1168,9 @@ class TradeSimulator:
         if not self._trade_analyzer_init:
             self._trade_analyzer_init = True
             try:
-                from core.config_loader import config as _cfg
+                from core.infra.config_loader import config as _cfg
                 if _cfg.get("anthropic.enabled", True):
-                    from core.trade_analyzer import TradeAnalyzer
+                    from core.trading.trade_analyzer import TradeAnalyzer
                     self._trade_analyzer = TradeAnalyzer(self.db_path)
                     if not self._trade_analyzer._enabled:
                         self._trade_analyzer = None
@@ -1165,7 +1228,7 @@ class TradeSimulator:
                     # Читаем tp1_fix_pct из конфига (default 70%)
                     _tp1_fix = 0.7
                     try:
-                        from core.config_loader import config as _cfg_fix
+                        from core.infra.config_loader import config as _cfg_fix
                         _tp1_fix = float(
                             (_cfg_fix.get("trading.dual_tp") or {}).get("tp1_fix_pct", 70)
                         ) / 100.0
@@ -1251,7 +1314,7 @@ class TradeSimulator:
             # DEV-39: Market Event Marker — скользящее окно SL
             if status == STATUS_SL:
                 try:
-                    from core.config_loader import config as _cfg
+                    from core.infra.config_loader import config as _cfg
                     _me = _cfg.get("trading", {}).get("market_event_marker", {}) if _cfg else {}
                     if _me.get("enabled", True):
                         _sl_count_thr = int(_me.get("sl_count", 5))
@@ -1406,7 +1469,12 @@ class TradeSimulator:
             trade_id = trade["id"]
             symbol = trade["symbol"]
             direction = (trade["direction"] or "").upper()
-            _exchange_managed_trade = bool(trade.get("exchange_order_id"))
+            # Системный фикс sim_only режима: order_manager возвращает "SIM" как
+            # exchange_order_id для sim-сделок. Без этой проверки LIVE-GUARD считал
+            # их биржевыми и блокировал close → 200+ stuck OPEN в strip-боте.
+            # vst/live: _exch_id — реальный order_id, поведение не меняется.
+            _exch_id = trade.get("exchange_order_id")
+            _exchange_managed_trade = bool(_exch_id) and _exch_id != "SIM"
             entry = float(trade["entry_price"])
             sl = trade["stop_loss"]
             tp = trade["take_profit"]
@@ -1441,7 +1509,7 @@ class TradeSimulator:
             now = datetime.now(timezone.utc)
             age_minutes = (now - created_dt).total_seconds() / 60.0
             try:
-                from core.config_loader import config as _cfg
+                from core.infra.config_loader import config as _cfg
                 _max_dur = float(_cfg.get("trading.max_trade_duration_hours", 48)) * 60
                 # DEV-124: ракеты (текущий R >= expired_extend_min_r) получают удлинённый лимит
                 _ext_min_r = float(_cfg.get("trading.expired_extend_min_r", 5.0))
@@ -1555,7 +1623,8 @@ class TradeSimulator:
             _be_trigger_r = (use_breakeven and not be_activated and current_r is not None and current_r >= breakeven_activation_r)
             _be_trigger_tp1 = (use_be_after_tp1 and not be_activated and tp1_hit_at is not None)
             if (_be_trigger_r or _be_trigger_tp1) and sl is not None:
-                be_sl = entry * (1.001 if direction == "LONG" else 0.999)
+                from core.trading.tsl_engine import breakeven_sl as _be_calc
+                be_sl = _be_calc(direction, entry)
                 should_move = (
                     (direction == "LONG" and sl < be_sl) or
                     (direction == "SHORT" and sl > be_sl)
@@ -1585,7 +1654,7 @@ class TradeSimulator:
             _trade_regime = trade.get("regime", "")
             _tsl_act_r = tsl_activation_r
             try:
-                from core.config_loader import config as _cfg_tsl
+                from core.infra.config_loader import config as _cfg_tsl
                 if _trade_regime == "RANGE":
                     _tsl_act_r = float(_cfg_tsl.get("trading.tsl_activation_r_range", tsl_activation_r))
             except Exception:
@@ -1604,8 +1673,8 @@ class TradeSimulator:
                     pass
 
                 try:
-                    from core.indicators import calculate_trend, get_trend_info
-                    from core.config_loader import config as _cfg_trend
+                    from core.indicators.indicators import calculate_trend, get_trend_info
+                    from core.infra.config_loader import config as _cfg_trend
                     _tsl_atr_p = int(_cfg_trend.get("analysis.indicators.trend.atr_period", 43))
                     _tsl_factor = float(_cfg_trend.get("analysis.indicators.trend.factor", 1.0))
 
@@ -1670,7 +1739,7 @@ class TradeSimulator:
                             # Условия: R >= порога AND WT на текущем ТФ исчерпан
                             # AND младший ТФ даёт более тесный TSL.
                             try:
-                                from core.config_loader import config as _cfg_ts
+                                from core.infra.config_loader import config as _cfg_ts
                                 _de_esc_r = float(_cfg_ts.get("trading.cascade_tsl_deescalation_r", 5.0))
                                 _wt_ob = float(_cfg_ts.get("analysis.indicators.wavetrend.ob_threshold", 60.0))
                                 _wt_os = float(_cfg_ts.get("analysis.indicators.wavetrend.os_threshold", -60.0))
@@ -1746,7 +1815,7 @@ class TradeSimulator:
                                     _wt1_4h = None
                                     _wt1_1h = None
                                     try:
-                                        from core.indicators import calculate_wt
+                                        from core.indicators.indicators import calculate_wt
                                         # 4h WT (текущий df_tsl)
                                         _df_wt_chk = calculate_wt(df_tsl)
                                         _wt1_4h = float(_df_wt_chk["wt1"].iloc[-1])
@@ -1831,12 +1900,8 @@ class TradeSimulator:
                                                         _lower_info["tsl"] > 0 and _curr_info["tsl"] > 0):
                                                     _lower_tsl = _lower_info["tsl"]
                                                     _curr_tsl = _curr_info["tsl"]
-                                                    # SHORT: тесней = trendup ниже (ближе к цене сверху)
-                                                    # LONG:  тесней = trenddown выше (ближе к цене снизу)
-                                                    _is_tighter = (
-                                                        (direction == "SHORT" and _lower_tsl < _curr_tsl) or
-                                                        (direction == "LONG" and _lower_tsl > _curr_tsl)
-                                                    )
+                                                    from core.trading.tsl_engine import is_tighter as _tsl_is_tighter
+                                                    _is_tighter = _tsl_is_tighter(direction, _lower_tsl, _curr_tsl)
                                                     if _is_tighter:
                                                         logger.info(
                                                             "[cascade_tsl] %s: de-escalate %s → %s "
@@ -1928,25 +1993,35 @@ class TradeSimulator:
                     trend_info = get_trend_info(df_tsl) if df_tsl is not None else None
 
                     if trend_info and trend_info["tsl"] > 0:
-                        tsl_price = trend_info["tsl"]
+                        # DEV-191: брать trendup/trenddown по direction, не tsl.
+                        # trend_info["tsl"] = trendup если trend=1, trenddown если trend=-1.
+                        # При флипе тренда против позиции tsl возвращает неправильную линию
+                        # → raw_tsl инвертирован → floor вынужден его исправлять каждый цикл.
+                        _raw_tsl = (
+                            trend_info["trendup"] if direction == "LONG"
+                            else trend_info["trenddown"]
+                        )
+                        from core.trading.tsl_engine import compute_tsl as _compute_tsl
+                        _decision = _compute_tsl(
+                            direction,
+                            entry=entry,
+                            current_price=current_price,
+                            raw_tsl=_raw_tsl,
+                        )
+                        tsl_price = _decision.new_sl
+                        tsl_triggered = _decision.triggered
 
-                        # DEV-132 / DEV-149: TSL floor с буфером.
-                        # Биржевой STOP_MARKET срабатывает на wick (не на close),
-                        # поэтому TSL на entry → мгновенное закрытие R=0 при любом фитиле.
-                        # Буфер 0.3% — минимальный зазор чтобы wick не выбил позицию.
-                        _tsl_floor_pct = 0.003  # 0.3%
-                        if direction == "LONG":
-                            _floor = entry * (1 - _tsl_floor_pct)
-                            tsl_price = max(tsl_price, _floor)
-                        elif direction == "SHORT":
-                            _ceil = entry * (1 + _tsl_floor_pct)
-                            tsl_price = min(tsl_price, _ceil)
-
-                        # Проверка срабатывания TSL
-                        if direction == "LONG" and current_price <= tsl_price:
-                            tsl_triggered = True
-                        elif direction == "SHORT" and current_price >= tsl_price:
-                            tsl_triggered = True
+                        # DEV-191: логируем инверсию raw_tsl (floored=True означает
+                        # что trenddown/trendup оказался на неправильной стороне от цены)
+                        if _decision.floored:
+                            logger.warning(
+                                "[TSL-FLOOR] %s #%d %s: raw_tsl=%.6f floored -> sl=%.6f "
+                                "entry=%.6f current=%.6f reason=%s tf=%s",
+                                symbol, trade_id, direction,
+                                trend_info["tsl"], tsl_price,
+                                entry, current_price, _decision.reason,
+                                tsl_tf_used,
+                            )
 
                         if tsl_triggered:
                             logger.info(
@@ -2210,6 +2285,26 @@ class TradeSimulator:
                         )
                         self._live_guard_logged[_lg_key] = now
                     continue
+                # SIM-режим: SL после движения TSL — это TSL-exit (SL был сдвинут выше entry).
+                # Критерий: original_sl != stop_loss (SL реально двигался), не tsl_activated
+                # (флаг ставится при +1R, но SL мог не двинуться если тренд неблагоприятен).
+                # Без этой переклассификации strip-бот и SIM-сделки в main показывают TSL=0,
+                # а прибыльные TSL-выходы (R>0) маскируются под SL.
+                if exit_status == STATUS_SL:
+                    _orig_sl_classify = trade.get("original_sl")
+                    _curr_sl_classify = float(trade.get("stop_loss") or 0)
+                    _sl_moved = (
+                        _orig_sl_classify is not None
+                        and _curr_sl_classify > 0
+                        and abs(_curr_sl_classify - float(_orig_sl_classify)) / float(_orig_sl_classify) > 0.0001
+                    )
+                    if _sl_moved:
+                        exit_status = STATUS_TSL
+                        logger.info(
+                            "[TSL-SIM] #%d %s %s: SL→TSL (orig_sl=%.6f → curr_sl=%.6f)",
+                            trade_id, symbol, direction,
+                            float(_orig_sl_classify), _curr_sl_classify,
+                        )
                 if self.close_trade(trade_id, exit_status, exit_price_val):
                     closed_count += 1
                     # DEV-15: LLM-разбор для SL-сделок

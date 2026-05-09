@@ -8,9 +8,9 @@
   3. Static fallback        — хардкоженные тексты в message_composer.py
 """
 from typing import Optional
-from core.signal_models import TradingRecommendation
-from core.message_builder import tv_link
-from core.message_composer import get_composer
+from core.signals.signal_models import TradingRecommendation
+from core.ui.message_builder import tv_link
+from core.ui.message_composer import get_composer
 
 _ACTION_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡", "WATCH": "👀"}
 _ACTION_LABEL = {

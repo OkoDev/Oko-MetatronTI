@@ -1,6 +1,6 @@
 import logging
-from core.indicators import calculate_trend, calculate_wt, get_zone
-from core.config_loader import config as _cfg_ts
+from core.indicators.indicators import calculate_trend, calculate_wt, get_zone
+from core.infra.config_loader import config as _cfg_ts
 _TS_ATR_P = int(_cfg_ts.get("analysis.indicators.trend.atr_period", 43))
 _TS_FACTOR = float(_cfg_ts.get("analysis.indicators.trend.factor", 1.0))
 
@@ -57,7 +57,7 @@ async def check_trend_following_signal(symbol, data_collector, divergence_detect
             return False, None
         
         # === 3. Ищем откат на 15m ===
-        from core.entry_config import get_primary_entry_tf
+        from core.infra.entry_config import get_primary_entry_tf
         df_15m = await data_collector.get_ohlcv(symbol, get_primary_entry_tf(), limit=150)
         if df_15m is None or df_15m.empty:
             return False, None
@@ -314,7 +314,7 @@ def trend_signal_message(symbol: str, info: dict) -> str:
     """
     Форматирует сообщение о тренд-сигнале с красивым оформлением
     """
-    from core.message_builder import tv_link
+    from core.ui.message_builder import tv_link
     from datetime import datetime
     
     is_long = "LONG" in info.get("type", "")

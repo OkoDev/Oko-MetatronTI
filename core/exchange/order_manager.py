@@ -151,7 +151,7 @@ class OrderManager:
         if entry_price > 0 and sl > 0:
             _sl_dist_pct = abs(entry_price - sl) / entry_price * 100
             try:
-                from core.config_loader import config as _cfg_sl
+                from core.infra.config_loader import config as _cfg_sl
                 _min_sl_dist = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
             except Exception:
                 _min_sl_dist = 0.1
@@ -334,6 +334,103 @@ class OrderManager:
             logger.warning("[OrderManager] get_sl_order_id %s %s: %s", symbol, pos_side, e)
             return None
 
+    async def get_tp_order_id(self, symbol: str, pos_side: str) -> Optional[str]:
+        """Находит TP orderId (TAKE_PROFIT_MARKET или TAKE_PROFIT) для позиции.
+
+        По аналогии с get_sl_order_id: если найдено несколько TP того же pos_side —
+        возвращаем самый свежий, остальные отменяем (анти-накопление).
+        """
+        if not self.is_live():
+            return None
+        try:
+            orders = await (await self._get_client_synced()).get_open_orders(symbol)
+            tp_orders = [
+                o for o in orders
+                if o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")
+                and o.get("positionSide", "").upper() == pos_side.upper()
+            ]
+            if not tp_orders:
+                return None
+            tp_orders.sort(key=lambda o: int(o.get("time") or o.get("updateTime") or 0), reverse=True)
+            keep = tp_orders[0]
+            extras = tp_orders[1:]
+            if extras:
+                logger.warning(
+                    "[OrderManager] %s %s: найдено %d TP-ордеров, оставляем #%s, отменяем %d дубликатов",
+                    symbol, pos_side, len(tp_orders), keep.get("orderId"), len(extras),
+                )
+                for o in extras:
+                    await self.cancel_order(symbol, str(o["orderId"]))
+            return str(keep["orderId"])
+        except Exception as e:
+            logger.warning("[OrderManager] get_tp_order_id %s %s: %s", symbol, pos_side, e)
+            return None
+
+    async def place_tp_order(
+        self, symbol: str, pos_side: str, tp_price: float, qty: float
+    ) -> Optional[str]:
+        """Ставит TAKE_PROFIT_MARKET для существующей позиции."""
+        if not self.is_live():
+            return "SIM"
+        try:
+            side = "SELL" if pos_side.upper() == "LONG" else "BUY"
+            client = await self._get_client_synced()
+            qty_floor = await client.quantize_qty(symbol, qty)
+            if qty_floor <= 0:
+                logger.warning(
+                    "[OrderManager] place_tp_order %s: qty=%.8f округлилось в 0 — skip",
+                    symbol, qty,
+                )
+                return None
+
+            # Анти-дубликат: отменяем существующие TP того же pos_side перед новым.
+            try:
+                existing = await client.get_open_orders(symbol)
+                existing_tp = [
+                    o for o in existing
+                    if o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")
+                    and o.get("positionSide", "").upper() == pos_side.upper()
+                ]
+                if existing_tp:
+                    logger.warning(
+                        "[OrderManager] place_tp_order %s %s: уже есть %d TP — отменяю перед новым",
+                        symbol, pos_side, len(existing_tp),
+                    )
+                    for o in existing_tp:
+                        await self.cancel_order(symbol, str(o["orderId"]))
+            except Exception as _e_clean:
+                logger.debug("[OrderManager] place_tp_order precheck %s: %s", symbol, _e_clean)
+
+            resp = await client.place_tp_order(
+                symbol=symbol, side=side, pos_side=pos_side.upper(),
+                stop_price=tp_price, qty=qty_floor,
+            )
+            if resp.get("code", -1) != 0:
+                msg = resp.get("msg", "")
+                if "must be less than the available amount" in msg:
+                    real_qty = await self.get_position_qty(symbol, pos_side)
+                    if real_qty and real_qty > 0:
+                        qty_retry = await client.quantize_qty(symbol, real_qty)
+                        resp = await client.place_tp_order(
+                            symbol=symbol, side=side, pos_side=pos_side.upper(),
+                            stop_price=tp_price, qty=qty_retry,
+                        )
+                        if resp.get("code", -1) == 0:
+                            oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+                            logger.info("[OrderManager] ✅ новый TP %s %s tp=%.6f order_id=%s (retry qty)",
+                                        symbol, pos_side, tp_price, oid)
+                            return oid or None
+                logger.warning("[OrderManager] place_tp_order %s %s tp=%.6f: %s",
+                               symbol, pos_side, tp_price, msg or resp)
+                return None
+            oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+            logger.info("[OrderManager] ✅ новый TP %s %s tp=%.6f order_id=%s",
+                        symbol, pos_side, tp_price, oid)
+            return oid or None
+        except Exception as e:
+            logger.warning("[OrderManager] place_tp_order %s: %s", symbol, e)
+            return None
+
     async def get_position_qty(self, symbol: str, pos_side: str) -> float:
         """Возвращает qty открытой позиции с биржи."""
         if not self.is_live():
@@ -415,7 +512,7 @@ class OrderManager:
             # DEV-175: STOP-LIMIT если sl_limit_buffer_pct > 0
             limit_price: float | None = None
             try:
-                from core.config_loader import config as _cfg_sl
+                from core.infra.config_loader import config as _cfg_sl
                 _buf = float(_cfg_sl.get("trading.sl_limit_buffer_pct", 0) or 0)
                 if _buf > 0:
                     if pos_side.upper() == "LONG":

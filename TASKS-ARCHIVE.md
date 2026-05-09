@@ -142,3 +142,19 @@
 | DEV-165 | 13.04 | R_multiple sanity clamp [-15,+15]: ASR R=-450 при P=-0.95% отравлял аналитику |
 | DEV-166 | 13.04 | RANGE min_strength 60→70, LONG_RANGE 75→78: 52% сделок в RANGE, WR=20% |
 | DEV-167 | 13.04 | RANGE BOUNCE реально заработал: pivot_cache был пуст + pivot_reversal добавлен |
+| DEV-168 | 14.04 | LIVE-GUARD лог спам: cooldown 1ч/пара в trade_simulator.py |
+| DEV-169 | 14.04 | atr_trend_1h_bias: UP/DOWN пишется в features_json (сбор данных) |
+| DEV-170 | 14.04 | Time-of-day gate: блок входов вне 09:00–18:00 UTC, wt_signal=04:00–18:00 |
+| DEV-171 | 14.04 | confluence полный стоп: `enabled: false` — было 6 combos, теперь всё |
+| DEV-121 | 16.04 | Self-Diagnostics Suite: L13/L14/L15 Куб реализован |
+| ARCH-78 | 16.04 | S5 BTC gate → S7/S13: BTCRegimeProvider → market_context + NarrativeBuilder |
+| ARCH-83 | 18.04 | wt_entry удалена из active_strategies (WR 20%→5%, деградация) |
+| DEV-178 | 18.04 | Data integrity: 6835 сделок размечены data_era, ML фильтр применён |
+| ARCH-45 | 18.04 | OutcomePredictor Этап A: AUC 0.41→0.582, use_outcome_predictor активирован |
+| ARCH-88 | 19.04 | Per-pair Loss Memory: код merged, shadow активен до ~21.04 |
+| ARCH-89 | 19.04 | SMC_SNAP_UPDATED издатель: smc_snapshot.py + scan_loop publish (benchmark 56.9мс) |
+| ARCH-90 | 19.04 | NarrativeBuilder читает smc_snap + 4 SMC-фичи в OutcomePredictor (27-вектор) |
+| ARCH-91 | 19.04 | Narrative TG-блок + classify_lost_reason + narrative_outcome feedback (10/10 PASS) |
+| DEV-172-FIX | 19.04 | Диагностика priority=None: NOT-A-BUG (P1/P2/P3=49/280/176 за 4д) |
+| DEV-177 | 19.04 | Adaptive weights EMA (hl=50, era=post_fix) + dashboard trajectory (6/6 PASS) |
+| DEV-179 | 19.04 | Метрики стратегий: median/Sharpe/p90/top20_share + warning badges |

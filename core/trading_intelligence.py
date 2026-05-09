@@ -845,12 +845,13 @@ class TradingIntelligence:
                 _scalp_trigger_tf = (self.config or {}).get("signal_quality", {}).get(
                     "ote_scalp_trigger_tf", "3m"
                 )
-                # 04.05.2026: full OTE [0.5–0.786] + ATR-trend gate отключён
+                # 04.05.2026: откат к wide-only [0.705–0.786] + ATR-trend gate включён
+                # C4 бэктест (0.5, no-gates): WR=23.7%, −588R/90дн → ОТКАЗ
                 _ote_zone_min_fib = (self.config or {}).get("signal_quality", {}).get(
-                    "ote_zone_min_fib", 0.5
+                    "ote_zone_min_fib", 0.705
                 )
                 _ote_use_trend_gate = (self.config or {}).get("signal_quality", {}).get(
-                    "ote_use_trend_gate", False
+                    "ote_use_trend_gate", True
                 )
                 _arch51_fields = {"4h": "smc_h4", "1d": "smc_d1"}
                 _pdfs = pre_fetched_dfs or {}  # уже загруженные df из scan_one
@@ -1021,7 +1022,7 @@ class TradingIntelligence:
                 other_recs = {k: v for k, v in all_recs.items() if k != chosen_strategy}
                 if other_recs:
                     recommendation.metadata["all_strategy_recs"] = other_recs
-                if chosen_strategy != self.active_strategy_name:
+                if chosen_strategy != self.active_strategy_name and chosen_strategy != "legacy":
                     logger.info(
                         "[%s] ARCH-09 выбрана стратегия '%s' (active='%s')",
                         symbol, chosen_strategy, self.active_strategy_name,

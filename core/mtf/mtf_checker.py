@@ -1,6 +1,6 @@
 import logging
-from core.indicators import calculate_wt, get_zone
-from core.message_builder import tv_link  # Добавили импорт
+from core.indicators.indicators import calculate_wt, get_zone
+from core.ui.message_builder import tv_link  # Добавили импорт
 
 logger = logging.getLogger(__name__)
 

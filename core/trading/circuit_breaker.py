@@ -43,7 +43,7 @@ class CircuitBreaker:
     @staticmethod
     def _get_cfg():
         try:
-            from core.config_loader import config as _cfg
+            from core.infra.config_loader import config as _cfg
             cb = (_cfg.get("trading.circuit_breaker") or {}) if _cfg else {}
             return {
                 "lookback_trades": int(cb.get("lookback_trades", 50)),
@@ -79,16 +79,20 @@ class CircuitBreaker:
         self._last_check = now
 
         # Считаем WR за последние N сделок
+        # DEV-190: effective_status — учитываем скрытые TSL exits (status='SL'+tsl_act=1+R>0.1).
+        # Без этого WR занижается на ~30%, CircuitBreaker срабатывает на ровном месте.
         try:
+            from core.trading.effective_status import SQL_IS_WIN_CASE
             with sqlite3.connect(db_path, timeout=30) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")  # DEV-148
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT
                         COUNT(*) as total,
-                        SUM(CASE WHEN status IN ('TP', 'TSL') THEN 1 ELSE 0 END) as wins
+                        SUM(is_win) as wins
                     FROM (
-                        SELECT status FROM simulated_trades
+                        SELECT {SQL_IS_WIN_CASE} AS is_win
+                        FROM simulated_trades
                         WHERE status IN ('TP', 'TSL', 'SL', 'EXPIRED')
                         ORDER BY closed_at DESC
                         LIMIT ?

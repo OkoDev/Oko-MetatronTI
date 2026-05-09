@@ -27,7 +27,7 @@ class AnalystAgent(BaseAgent):
     def _get_analyzer(self):
         if self._analyzer is None:
             try:
-                from core.trade_analyzer import TradeAnalyzer
+                from core.trading.trade_analyzer import TradeAnalyzer
                 self._analyzer = TradeAnalyzer(self.db_path)
             except Exception as e:
                 logger.debug("AnalystAgent: TradeAnalyzer недоступен — %s", e)

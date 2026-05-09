@@ -1,6 +1,98 @@
+---
+tags: [doc/roadmap, planning, phases]
+type: roadmap
+date: "2026-04-30"
+parent: "[[Project-MOC]]"
+---
+
 # ROADMAP — Oko MTF Bot
 
-Документ прогресса: от текущего состояния к самообучающейся торговой системе.
+Документ прогресса: от текущего состояния (29.04.2026) к самообучающейся торговой системе.
+Включает [[Data-Invalidation-Log]] (ARCH-86) — критична для ML decisions.
+
+---
+
+## 🚀 Этап 12 — Confirmation-Driven Architecture (09.05–23.05.2026)
+
+**Корневое архитектурное изменение** на основе исследований R1–R8 (90 дней backtest, 10 топ-пар, реальный OHLCV BingX).
+
+### Принятый ЗАКОН
+**«Чем больше независимых подтверждений — тем лучше сигнал.»**
+
+Заменяет парадигму «один сигнал → strength по хардкод формуле» на «множество подтверждений → strength = Σ weight × confidence».
+
+### Что меняется
+
+**Триггеры (всегда работают, без regime gates):**
+- `atr_change_1h` — universal trigger (avgR=+0.281 за 90 дней, n=733), вес 15
+- `atr_change_4h` — премиум trigger (avgR=+0.287, n=186), вес 18
+- `atr_change_15m` — entry trigger (avgR=+0.123, n=3165), вес 8
+
+**НЕ использовать как trigger:** `atr_change_1d` (avgR=−0.4, WR=20% — late signal).
+
+**Confluence boost (по ЗАКОНУ):**
+- Zone OS на 1h при LONG → +10 веса (avgR boost +0.428R по R8)
+- Zone OB на 1h при SHORT → +5
+- 15m predecessor → +2..+5
+- WT cross same side → +3
+- CHoCH 1h+ → +6..+8
+- BOS, EQL/EQH sweep, FVG fill, OTE zone, pivot touch, volume spike, divergences
+
+Полный каталог 22+ confirmations в [docs/TASKS_DETAILS.md → DEV-200](docs/TASKS_DETAILS.md).
+
+### Архитектурный сдвиг
+
+| Аспект | До v2 | После v2 |
+|---|---|---|
+| strength формула | хардкод `base + bonuses` | `Σ weight × confidence` |
+| Куб Метатрона | 10/12 сфер активны | каждое confirmation = ребро от сферы → шина |
+| EventBus | 22 events, 14 публикуются | 30+ confirmations публикуются |
+| ML обучение | per signal_type (5 ярлыков) | per confirmation (30+ feature importance) |
+| Regime gate | RANGE/TREND блокирует | analytics-only, НЕ блокирует |
+
+### Спринт-задачи (DEV-199..205 + ARCH-112 + TR-003)
+
+1. **DEV-199** 🔴 ATR Trend Change events publisher (15m/1h/4h)
+2. **DEV-200** 🔴 ConfirmationRegistry (22+ types, dataclass)
+3. **DEV-201** 🔴 SignalAggregator v2 (Σ weight × confidence)
+4. **DEV-202** 🟡 features_json: confirmations[] гранулярно
+5. **DEV-203** 🟡 DecisionTrace в 14 gates (Phase 0 Stabilization, параллельно)
+6. **DEV-204** 🟢 ML Outcome retrain weights (после 200+ trades)
+7. **DEV-205** 🟢 audit_mode shadow + audit_trades (Phase 1+2 Stabilization)
+8. **ARCH-112** 🟢 архитектурный аудит соответствия Кубу
+9. **TR-003** 🟡 валидация Confirmation Registry (20 SHADOW сделок)
+
+### Acceptance criteria этапа
+
+- ✅ За 24h после рестарта в БД новые `atr_change` события 3-х ТФ
+- ✅ Все новые сделки имеют `features_json.confirmations: list[dict]` (среднее ≥2.5 на сделку)
+- ✅ `signal_drops` дашборд показывает топ-10 reasons (закрытие 96% molчaliвых потерь)
+- ✅ Регрессия: 7 дней без падения avgR ниже baseline −0.437
+- ✅ Прогресс: avgR за 14 дней → ≥ −0.10 (цель: ≥+0.10 за 30 дней)
+
+### Опровергнуто исследованиями (НЕ делаем)
+
+- ❌ DEEP_CASCADE с 3m WT cross (R1: 0 событий / avgR=−0.131)
+- ❌ Adaptive entry TF от regime (regime gate отменён)
+- ❌ 1d ATR change как trigger (R8: avgR=−0.4)
+- ❌ Cascade-фильтр (требовать 15m predecessor) — Δ=+0.014R (бесполезно)
+- ❌ Trend-only alignment без zone (R2: avg ≈0R, шум)
+- ❌ Высокий MTF alignment (≥80%) для pivot_reversal — ВРЕДИТ (R5: avgR=−0.58)
+
+### Backtest данные (91 дней, 10 топ-пар, реальный OHLCV BingX)
+
+| Setup | n | avgR | totalR | WR% |
+|---|---|---|---|---|
+| 1h_LONG ATR change | 733 | **+0.281** | +206 | 53.8% |
+| 4h_SHORT ATR change | 186 | **+0.287** | +53 | 54.3% |
+| 1h_SHORT ATR change | 739 | **+0.164** | +121 | 51.4% |
+| 4h_LONG ATR change | 183 | +0.169 | +31 | 44.3% |
+| 15m_LONG ATR change | 3165 | +0.123 | +390 | 52.1% |
+| 15m_SHORT ATR change | 3168 | +0.036 | +114 | 47.7% |
+| Zone OS confluence (1h_LONG) | 15 | **+0.701** | +10.5 | 66.7% |
+| **1d ATR change** | 9-11 | **−0.378..−0.489** | -8.8 | 18-22% |
+
+Скрипты: `e:\tmp\R1_deep_cascade.py` ... `e:\tmp\R8_atr_90days.py`.
 
 ---
 
@@ -543,6 +635,65 @@ asyncio.gather возвращает результаты в порядке ар�
 
 ---
 
+## 📍 ТЕКУЩАЯ ТОЧКА (29.04.2026) — Спринт «Реальные убийцы» (Фаза 0)
+
+**Контекст:** система технически работает, но теряет деньги (-780R/10дней).
+D1 (диагностика) + RE-AUDIT (правильные метрики) показали 5 реальных убийц.
+
+**Фаза 0 — фиксы убийц (25.04–02.05.2026):**
+- ✅ DEV-190: effective_status (скрытые TSL_hidden_win видимы в аналитике)
+- ✅ DEV-185.2: emergency watchdog (catastrophic slippage → market close)
+- 🔄 DEV-185: catastrophic slippage расследование + sl_limit_buffer
+- 🔄 DEV-184: отключить DUAL_TSL strategy_type (−290R/10дн)
+- 🔄 DEV-186: wt_signal regime gate SHORT→TREND_UP (−24R)
+- 🔄 DEV-187: wt_b floor для адаптивных порогов (−17R)
+- 🔄 DEV-188: pivot_reversal SHORT TREND_DOWN: касание уровня shadow
+
+**Фаза 1 — архитектурный долг Куба (май 2026):**
+- ARCH-101: Mesh шины (11 детекторов → EventBus)
+- ARCH-102: BTCRegimeProvider → cross_market publish
+- ARCH-103: reversal_mode production (зависит от +avgR в Фазе 0)
+- ARCH-104: унификация нумерации сфер (до новых сфер)
+- ARCH-96: Execution Sphere S14 (блокирует LIVE)
+
+**Фаза 1.5 — TriggerBus + data (май–июнь 2026):**
+- ARCH-105: Order Flow & Macro data sources
+- ARCH-106: TriggerBus + persistence (100k+ событий)
+
+**Фаза 2 — новые сферы ML (июнь 2026):**
+- ARCH-97: Anomaly Detection Sphere S15
+- ARCH-98: Portfolio Manager Sphere S16
+- ARCH-99: Meta-Learning Sphere S17
+
+**Фаза 2.5 — Setup Engine v1 (июль 2026):**
+- ARCH-107: Setup Engine S18 (state machine + persistence)
+- ARCH-108: Predictive entries (limit orders в зоне)
+
+**Фаза 3 — Execution (после Setup Engine):**
+- ARCH-109: Strategy DSL (yaml-стратегии)
+- TR-002: бэктест H1-H10 на TriggerBus данных
+
+---
+
+## ⚠️ Data Invalidation Log (ARCH-86)
+
+Артефакты данных живут дольше фиксов в коде. Сделки до следующих дат нельзя использовать в ML/анализе:
+
+| Фикс | Дата | Что инвалидирует |
+|---|---|---|
+| DEV-157 (min_sl_dist_pct) | 2026-03-15 | data_era v1 → data_era v2: SL < 0.2% → micro-SL артефакт. 180+ сделок с R=+112 по пампу |
+| DEV-171 (confluence strategy) | 2026-04-14 | data_era v2 → v3: confluence выключена как стратегия. Avg_R=+3.48 = иллюзия (median=-1.0) |
+| DEV-174 (TSL 3 бага) | 2026-04-15 | data_era v3: TSL не активировалась, не двигала SL, писала неверные статусы. Все сделки до 15.04 с tsl_activated=1 — подозрительны |
+| DEV-175 (slippage) | 2026-04-15 | data_era v3: SL исполнялся по рыночной цене без буфера → аномальный slippage. 16% сделок R < -1.5 артефакт |
+| LIVE-GUARD fix (sim_only) | 2026-04-29 | execution_mode=sim_only был сломан: exchange_order_id="SIM" → bool=True → SL execution заблокирован. Strip-бот накопил 200+ stuck OPEN. Не влияет на main (vst), но любые pre-fix sim_only данные = мусор |
+| smc_snap fix (5 багов в `_build_smc_snap_from_df`) | 2026-04-29 | data_era v3 → **v4**: 6 из 9 SMC полей всегда False (ob/fvg/ote/eqh/eql/liq) — wrong API calls + ImportError detect_ote_zone. Активных значений: 2/36 → 16-19/36. **MTFSMCSpecialist обучался на мусоре.** Все pre-fix smc_snap бесполезны для ML |
+
+**Правило для ML:** обучать только на `created_at >= '2026-04-15'` (data_era v3) для общих фичей.
+**Правило для SMC ML (MTFSMCSpecialist):** обучать только на `created_at >= '2026-04-29 22:00'` (data_era v4).
+**Правило для аналитики:** перед утверждением «N% сделок плохие по X» — указывать data_era в запросе.
+
+---
+
 ## 🔲 Этап 16 — OTE Production & Shadow Extended (апрель–май 2026)
 
 **Цель:** OTE сигнал готов к production — первый сигнал с Sharpe > 2 в системе.
@@ -923,3 +1074,16 @@ class CubeNode:
 ```
 
 **Философия:** Полносвязная система. Emergent Intelligence — система знает вещи которые ни один индикатор не вычислит сам по себе.
+
+---
+
+## 🔗 Связанные заметки в Obsidian
+
+- [[Project-MOC]] — Map of Content (главная)
+- [[Architecture/ARCH-95-Real-Killers]] — Спринт "Реальные убийцы" (25.04–02.05.2026)
+- [[Architecture/ARCH-74-EXT-Smart-TSL]] — TSL система (расширение ARCH-74)
+- [[Architecture/ARCH-103-Price-Forecast]] — Прогнозирование цены (5 слотов)
+- [[Features/DEV-190-Effective-Status]] — Корректная разметка (8 модулей)
+- [[Data-Invalidation-Log]] — ARCH-86 (критично для ML и аналитики)
+- [[Sessions/2026-04-25]] — Спринт начало
+- [[Sessions/2026-04-29]] — Документация и Data Era v4

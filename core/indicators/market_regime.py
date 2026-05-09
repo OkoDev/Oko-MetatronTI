@@ -17,7 +17,7 @@ Market Regime Classifier — Этап 4 / ARCH-09п6.
   ATR > 1.8×median → HIGH_VOL
 
 Использование:
-    from core.market_regime import MarketRegimeClassifier
+    from core.indicators.market_regime import MarketRegimeClassifier
 
     clf = MarketRegimeClassifier()
     regime = clf.classify_from_ohlcv(ohlcv)          # ohlcv: list of [ts, o, h, l, c, v]
@@ -27,7 +27,7 @@ Market Regime Classifier — Этап 4 / ARCH-09п6.
 import logging
 from typing import List, Optional
 import pandas as pd
-from core.indicators import compute_atr_values, compute_ema_values, compute_adx
+from core.indicators.indicators import compute_atr_values, compute_ema_values, compute_adx
 
 logger = logging.getLogger(__name__)
 

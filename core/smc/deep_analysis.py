@@ -287,7 +287,7 @@ async def build_deep_analysis(symbol: str, tf: str, bot) -> str:
     """
     try:
         # 1. OHLCV данные: кол-во баров зависит от TF + 80 баров warmup для WT
-        from core.chart_builder import _bars_for_tf
+        from core.ui.chart_builder import _bars_for_tf
         _WARMUP = 80
         _BARS   = _bars_for_tf(tf)
         df_full = await bot.data_collector.get_ohlcv(symbol, tf, limit=_BARS + _WARMUP)

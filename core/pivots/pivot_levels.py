@@ -2,7 +2,7 @@ import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from core.indicators import calculate_pivot_points as _calculate_pivot_points
+from core.indicators.indicators import calculate_pivot_points as _calculate_pivot_points
 
 logger = logging.getLogger(__name__)
 
@@ -425,7 +425,7 @@ class PivotLevels:
 
 def pivot_message(symbol: str, pivots: dict, current_price: float) -> str:
     """Форматирует сообщение об уровнях пивотов"""
-    from core.message_builder import tv_link
+    from core.ui.message_builder import tv_link
     
     if not pivots:
         return "Нет данных о пивотах"

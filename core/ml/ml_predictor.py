@@ -68,7 +68,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 try:
-    from core.indicators import (
+    from core.indicators.indicators import (
         compute_volatility as _compute_volatility,
         compute_rsi as _compute_rsi,
         compute_volume_ratio as _compute_volume_ratio,

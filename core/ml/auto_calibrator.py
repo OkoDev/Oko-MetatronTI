@@ -330,8 +330,9 @@ class AutoCalibrator:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
+                # DEV-190: добавлен tsl_activated для is_win helper
                 rows = conn.execute("""
-                    SELECT symbol, direction, signal_type, status,
+                    SELECT symbol, direction, signal_type, status, tsl_activated,
                            R_multiple, strength, confidence, regime,
                            features_json, created_at, closed_at
                     FROM simulated_trades
@@ -368,7 +369,9 @@ class AutoCalibrator:
             direction = t.get("direction", "")
             status = t.get("status", "")
             r_mult = t.get("R_multiple") or 0.0
-            is_win = status in ("TP", "TSL")
+            # DEV-190: учёт скрытых TSL exits (status='SL'+tsl_act+R>0.1)
+            from core.trading.effective_status import is_win as _is_win_fn
+            is_win = _is_win_fn(status, r_mult, t.get("tsl_activated"))
 
             mtf_bias = feat.get("mtf_direction_bias", "NEUTRAL")
             price_zone = feat.get("mtf_price_zone")

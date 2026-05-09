@@ -16,7 +16,7 @@ from typing import List, Optional
 
 import pandas as pd
 
-from core.indicators import find_swing_highs, find_swing_lows
+from core.indicators.indicators import find_swing_highs, find_swing_lows
 
 logger = logging.getLogger(__name__)
 

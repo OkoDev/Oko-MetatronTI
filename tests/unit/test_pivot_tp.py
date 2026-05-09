@@ -148,15 +148,12 @@ class TestGetTpByHierarchy:
     # ── TF-уровни ─────────────────────────────────────────────────────────────
 
     def test_1m_level_used_when_no_1w_1d(self):
-        """[03] DEV-75: только 1M в кеше (нет 1W и 1D) → берём 1M-уровень."""
+        """[03] DEV-130: только 1M в кеше → возвращает None (1M заблокирован как TP, WR=4%, avg_R=-0.779)."""
         calc = self._calc({
             "SYM_1M": {"PP": 95.0, "R1": 115.0},
         })
         result = calc.get_tp_by_hierarchy("LONG", 100.0, "SYM", stop_loss=95.0, min_r=2.0)
-        assert result is not None
-        tp, src = result
-        assert "pivot_1M" in src
-        assert tp == 115.0
+        assert result is None  # DEV-130: 1M TP заблокирован
 
     def test_1w_fallback_when_no_1m(self):
         """[04] Нет 1M → берём 1W-уровень."""

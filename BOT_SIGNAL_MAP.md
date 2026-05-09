@@ -1,8 +1,16 @@
+---
+tags: [doc/architecture, signals, pipeline]
+type: architecture
+date: "2026-04-30"
+parent: "[[Project-MOC]]"
+---
+
 # Карта сигнальных цепочек — Oko MTF Bot
 
-> Обновлено: 2026-04-18 | Структура: core/signals/, core/indicators/, core/pivots/, core/mtf/
-
----
+> Обновлено: 2026-04-30 | Структура: core/signals/, core/indicators/, core/pivots/, core/mtf/
+>
+> 🔴 **Полная карта запуска шины и Куба** (RAW → детекторы → шина → сферы S1–S17 → roadmap):
+> [[docs/SIGNAL_BUS_CUBE_MAP.md]](docs/SIGNAL_BUS_CUBE_MAP.md)
 
 ## ОБЩАЯ БЛОК-СХЕМА
 
@@ -58,6 +66,32 @@ START bot_with_subscriptions.py
 
 ---
 
+## АРХИТЕКТУРА features_json (три слоя)
+
+> Обновлено: 2026-05-04 | Источник: `core/trading/trade_simulator.py` строки 411-563
+
+```
+Слой 1: Universal (ВСЕГДА для всех сигналов через extra_features из TradingIntelligence)
+  wt_snap, smc_snap, mtf_context (mtf_aligned_pct, mtf_senior_matches, ...),
+  session, data_era, entry_tf, rr_at_entry, sl_atr_ratio, distance_to_sl_pct,
+  entry_lag_seconds, detector_price, volatility, volume_24h, price_change_24h,
+  btc_4h_regime, atr_trend_1h_bias, weekly_bias, wt1_value, wt2_value, wt_zone
+
+Слой 2: Signal-specific (только для своего типа, из signal.data через supporting_signals)
+  pivot_reversal  → pivot_real_touch, pivot_close_rejection, pivot_volume_z,
+                    pivot_level, pivot_type, pivot_trend_changed
+  wt_b_signal     → wt_b_div_strength, wt_b_depth, wt_b_wt1, wt_b_zone,
+                    wt_b_os_adaptive, wt_b_ob_adaptive
+  watch_list_breach → wl_score, wl_pivot_key  (fast path, Слой 1 неполный)
+
+Слой 3: Strat metadata (в отдельных колонках БД, не в features_json)
+  sl_source, tp_source, signal_type, regime
+```
+
+**⚠️ watch_list_breach** обходит `analyze_symbol()` → Слой 1 неполный (~20 полей вместо ~82).
+
+---
+
 ## ТИПЫ СИГНАЛОВ И ИХ ПАРАМЕТРЫ
 
 ### 1. ANOMALY (Аномалия объёма)
@@ -104,6 +138,7 @@ START bot_with_subscriptions.py
 - **Вес в TI:** 0.15
 - **Бэктест:** 103 пары, 180 дней: WR=84.9%, avgRet=+4.82% (div_strength 3-20)
 - **Цикл:** через analyze_symbol (fire-and-forget из scan_one)
+- **features_json (Слой 2):** `wt_b_div_strength`, `wt_b_depth`, `wt_b_wt1`, `wt_b_zone`, `wt_b_os_adaptive`, `wt_b_ob_adaptive` ← добавлено 04.05.2026
 
 ---
 
@@ -215,6 +250,7 @@ START bot_with_subscriptions.py
 - **Адаптивный вес:** 0.24 (avg_R=+0.50, лучший из трековых)
 - **BTC gate исключение:** pivot_reversal всегда проходит BTC SHORT блок (разворот у уровня)
 - **Цикл:** фоновая задача, каждые 5 мин, Sem(10)
+- **features_json (Слой 2):** `pivot_real_touch`, `pivot_close_rejection`, `pivot_volume_z`, `pivot_level`, `pivot_type`, `pivot_trend_changed` ← добавлено 02-04.05.2026
 
 ---
 
@@ -399,3 +435,16 @@ START bot_with_subscriptions.py
 2. trenddown/trendup рассчитывается (calculate_trend)?
 3. use_tsl=true в config.yaml?
 4. original_sl заполнен? (нужен для правильного current_r — DEV-174)
+
+---
+
+## 🔗 Связанные заметки в Obsidian
+
+- [[Project-MOC]] — Map of Content (главная)
+- [[Architecture/ARCH-78-BTC-Regime]] — BTC gate (ATR Supertrend 4h)
+- [[Features/DEV-190-Effective-Status]] — Классификация исходов сделок
+- [[Features/DEV-185-Slippage-Guard]] — STOP-LIMIT buffer система
+- [[Features/DEV-156-Circuit-Breaker]] — WR monitor и адаптивные пороги
+- [[Features/DEV-155-Regime-Strength]] — Режимные пороги силы сигналов
+- [[Signals/MTF-Bias-Generator]] — Главное ядро (tie-breaker)
+- [[Signals/Pivot-Reversal]] — Разворот от уровней (лучший по avg_R)

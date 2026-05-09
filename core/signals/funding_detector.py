@@ -92,7 +92,7 @@ def detect_funding_extreme(
     # Если wt не pre-computed — вычисляем
     if not _has_wt(df):
         try:
-            from core.indicators import calculate_wt
+            from core.indicators.indicators import calculate_wt
             df = calculate_wt(df)
         except Exception:
             logger.debug("[FUNDING] %s: не удалось вычислить WT", symbol)

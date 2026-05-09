@@ -334,8 +334,8 @@ class TestConfigParams:
         # Используем синтетические данные с явным паттерном в баре n-7
         from unittest.mock import patch
 
-        _PATCH_WT    = "core.wt_15m_reversal_scanner.calculate_wt"
-        _PATCH_TREND = "core.wt_15m_reversal_scanner.calculate_trend"
+        _PATCH_WT    = "core.signals.wt_15m_reversal_scanner.calculate_wt"
+        _PATCH_TREND = "core.signals.wt_15m_reversal_scanner.calculate_trend"
 
         n = 60
         close = 100.0
@@ -447,8 +447,8 @@ class TestSignalStructure:
     def test_signal_confidence_equals_score_div_100(self):
         """confidence = round(score / 100, 2) — сканер устанавливает сам."""
         from unittest.mock import patch
-        _PATCH_WT    = "core.wt_15m_reversal_scanner.calculate_wt"
-        _PATCH_TREND = "core.wt_15m_reversal_scanner.calculate_trend"
+        _PATCH_WT    = "core.signals.wt_15m_reversal_scanner.calculate_wt"
+        _PATCH_TREND = "core.signals.wt_15m_reversal_scanner.calculate_trend"
 
         n, close = 50, 100.0
         df = pd.DataFrame({

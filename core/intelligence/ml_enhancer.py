@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from core.signal_models import SignalDirection
+from core.signals.signal_models import SignalDirection
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def apply_ml_corrections(
         for prediction in ml_predictions:
             # Lazy import to avoid hard dependency when ML unavailable
             try:
-                from core.ml_predictor import PredictionType
+                from core.ml.ml_predictor import PredictionType
             except ImportError:
                 PredictionType = None
 

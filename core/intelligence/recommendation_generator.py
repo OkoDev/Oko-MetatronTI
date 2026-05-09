@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.signal_models import (
+from core.signals.signal_models import (
     SignalData, SignalDirection, SignalType,
     MarketContext, TradingRecommendation,
 )
@@ -225,20 +225,15 @@ def calculate_levels(
 
     # ── 3. TSL-линия — если swing, S1 и FVG недоступны ────────────────────
     if "swing_" not in sl_source and "s1:" not in sl_source and "fvg_" not in sl_source and "smc_ob" not in sl_source:
+        from core.trading.tsl_engine import is_side_valid as _tsl_side_valid
         tsl_line = market_context.tsl_trendup if is_long else market_context.tsl_trenddown
-        if tsl_line and tsl_line > 0:
-            if is_long and tsl_line < entry_price:
-                tsl_dist_pct = (entry_price - tsl_line) / entry_price * 100
-                tsl_sl_pct   = tsl_dist_pct + struct_buf
-                if sl_min <= tsl_sl_pct <= sl_max:
-                    sl_pct    = tsl_sl_pct
-                    sl_source = "tsl_line:trendup"
-            elif is_short and tsl_line > entry_price:
-                tsl_dist_pct = (tsl_line - entry_price) / entry_price * 100
-                tsl_sl_pct   = tsl_dist_pct + struct_buf
-                if sl_min <= tsl_sl_pct <= sl_max:
-                    sl_pct    = tsl_sl_pct
-                    sl_source = "tsl_line:trenddown"
+        _direction = "LONG" if is_long else "SHORT"
+        if _tsl_side_valid(_direction, tsl_line, entry_price):
+            tsl_dist_pct = (abs(entry_price - tsl_line) / entry_price) * 100
+            tsl_sl_pct   = tsl_dist_pct + struct_buf
+            if sl_min <= tsl_sl_pct <= sl_max:
+                sl_pct    = tsl_sl_pct
+                sl_source = "tsl_line:trendup" if is_long else "tsl_line:trenddown"
 
     # ── TP: ATR × fallback_rr (реальный уровень устанавливается постобработкой в monitoring.py)
     fallback_rr = sl_cfg.get("tp_fallback_rr", 3.0)

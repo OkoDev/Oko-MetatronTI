@@ -19,7 +19,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from core.signal_models import SignalData, SignalType, SignalDirection, MTFContext
+from core.signals.signal_models import SignalData, SignalType, SignalDirection, MTFContext
 
 logger = logging.getLogger(__name__)
 
@@ -650,5 +650,5 @@ def analyze_context(
 
 def mtf_bias_message(symbol: str, sig: "SignalData") -> str:
     """Форматирует TG-сообщение для MTF_BIAS сигнала. Thin wrapper над format_signal_message."""
-    from core.intelligence_formatter import format_signal_message
+    from core.ui.intelligence_formatter import format_signal_message
     return format_signal_message(symbol, sig, signal_type="mtf_bias")

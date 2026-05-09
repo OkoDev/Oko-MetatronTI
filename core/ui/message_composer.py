@@ -139,7 +139,7 @@ class MessageComposer:
 def _load_key_from_config() -> Optional[str]:
     """Ищет anthropic_api_key в config.yaml."""
     try:
-        from core.config_loader import load_config
+        from core.infra.config_loader import load_config
         cfg = load_config()
         return cfg.get("anthropic_api_key") or cfg.get("ai", {}).get("anthropic_api_key")
     except Exception:

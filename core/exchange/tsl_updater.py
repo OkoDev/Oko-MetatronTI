@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from core.trading.tsl_engine import is_side_valid
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,6 +72,19 @@ async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
         pos_side  = "LONG" if direction == "LONG" else "SHORT"
 
         try:
+            # TSL-engine guard: проверяем new_sl до любых биржевых действий.
+            # Защита от перевёрнутого SL (REAL #7264).
+            try:
+                _cur = await bot.data_collector.get_current_price(symbol)
+            except Exception:
+                _cur = None
+            if _cur and not is_side_valid(direction, new_sl, float(_cur)):
+                logger.warning(
+                    "[TSL-UPDATER] #%d %s %s: skip — new_sl=%.6f на неверной стороне от price=%.6f",
+                    trade_id, symbol, pos_side, new_sl, float(_cur),
+                )
+                continue
+
             # Шаг 1: получаем SL orderId если нет
             if not sl_oid:
                 sl_oid = await om.get_sl_order_id(symbol, pos_side)
@@ -145,6 +160,79 @@ async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
             logger.warning("[TSL-UPDATER] #%d %s: %s", trade_id, symbol, e)
 
 
+async def repair_missing_tp(bot) -> None:
+    """
+    Находит OPEN VST-сделки без exchange_tp_order_id и ставит TAKE_PROFIT_MARKET на бирже.
+    Вызывается каждый цикл trade_tracker (60 сек), по аналогии с repair_missing_sl.
+
+    Причина: BingX placeOrder response НЕ возвращает TP orderId даже при bracket-ордере
+    (проверено по офиц. docs 24.04.2026). TP-ордера создаются биржей, но их ID
+    в нашу БД не попадают → нужно подбирать post-factum через get_open_orders.
+    Без этого сделка доходит до TP, но не фиксирует прибыль на бирже.
+    """
+    om = bot.order_executor
+    ts = bot.trade_simulator
+
+    for trade in ts.get_open_trades():
+        if not trade.get("exchange_order_id"):
+            continue  # SIM-only
+
+        trade_id = trade["id"]
+        symbol = trade.get("symbol", "")
+        direction = trade.get("direction", "LONG")
+        tp_price = float(trade.get("take_profit") or 0)
+        pos_side = "LONG" if direction == "LONG" else "SHORT"
+        db_tp_oid = trade.get("exchange_tp_order_id") or ""
+
+        if tp_price <= 0:
+            continue
+
+        try:
+            live_tp_oid = await om.get_tp_order_id(symbol, pos_side)
+            if live_tp_oid:
+                if live_tp_oid != db_tp_oid:
+                    ts.set_exchange_tp_order_id(trade_id, live_tp_oid)
+                    logger.info("[REPAIR-TP] #%d %s: TP синхронизирован DB→%s (было %s)",
+                                trade_id, symbol, live_tp_oid, db_tp_oid or "∅")
+                continue
+
+            # На бирже TP нет. Если в DB был stale ID — чистим.
+            if db_tp_oid:
+                ts.set_exchange_tp_order_id(trade_id, "")
+                logger.warning("[REPAIR-TP] #%d %s: stale exchange_tp_order_id=%s (на бирже TP отсутствует)",
+                               trade_id, symbol, db_tp_oid)
+
+            real_qty = await om.get_position_qty(symbol, pos_side)
+            if not real_qty or real_qty <= 0:
+                logger.debug("[REPAIR-TP] #%d %s: qty=0 на бирже — orphan, пропуск", trade_id, symbol)
+                continue
+
+            # Sanity: TP должен быть по верной стороне от текущей цены.
+            try:
+                cur_price = await bot.data_collector.get_current_price(symbol)
+            except Exception:
+                cur_price = None
+            if cur_price:
+                cp = float(cur_price)
+                wrong_side = (direction == "LONG" and tp_price <= cp) or (direction == "SHORT" and tp_price >= cp)
+                if wrong_side:
+                    logger.warning(
+                        "[REPAIR-TP] #%d %s %s: skip place_tp_order — TP=%.6f уже пройден ценой %.6f",
+                        trade_id, symbol, pos_side, tp_price, cp,
+                    )
+                    continue
+
+            new_oid = await om.place_tp_order(symbol, pos_side, tp_price, real_qty)
+            if new_oid:
+                ts.set_exchange_tp_order_id(trade_id, new_oid)
+                logger.info("[REPAIR-TP] #%d %s %s: TP создан @ %.6f order_id=%s",
+                            trade_id, symbol, pos_side, tp_price, new_oid)
+            else:
+                logger.warning("[REPAIR-TP] #%d %s: place_tp_order вернул None", trade_id, symbol)
+        except Exception as e:
+            logger.warning("[REPAIR-TP] #%d %s: %s", trade_id, symbol, e)
+
+
 async def repair_missing_sl(bot) -> None:
     """
     Находит OPEN VST-сделки без exchange_sl_order_id и ставит SL-ордер на бирже.
@@ -188,6 +276,20 @@ async def repair_missing_sl(bot) -> None:
             real_qty = await om.get_position_qty(symbol, pos_side)
             if not real_qty or real_qty <= 0:
                 logger.debug("[REPAIR-SL] #%d %s: qty=0 на бирже — orphan, пропуск", trade_id, symbol)
+                continue
+
+            # TSL-engine guard: не шлём перевёрнутый SL на биржу.
+            # REAL #7264 (19.04.2026): SHORT SL записывался ниже entry → биржа отвергала
+            # `Stop Loss price should be greater than the current price`.
+            try:
+                cur_price = await bot.data_collector.get_current_price(symbol)
+            except Exception:
+                cur_price = None
+            if cur_price and not is_side_valid(direction, sl_price, float(cur_price)):
+                logger.warning(
+                    "[REPAIR-SL] #%d %s %s: skip place_sl_order — SL=%.6f на неверной стороне от price=%.6f",
+                    trade_id, symbol, pos_side, sl_price, float(cur_price),
+                )
                 continue
 
             new_oid = await om.place_sl_order(symbol, pos_side, sl_price, real_qty)

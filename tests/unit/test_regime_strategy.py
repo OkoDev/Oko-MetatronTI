@@ -25,19 +25,19 @@ class TestGetRegimeParams:
 
     def test_trend_up_params(self):
         p = get_regime_params("TREND_UP")
-        assert p.sl_factor < 1.0           # тёсный SL
-        assert p.min_strategy_type == "TRIPLE_TP_TSL"
+        assert p.sl_factor < 1.0           # тесный SL
+        assert p.min_strategy_type is None  # DEV-124: SINGLE лучше в TREND (DUAL/TRIPLE хуже)
         assert p.position_size_multiplier == 1.0
 
     def test_trend_down_params(self):
         p = get_regime_params("TREND_DOWN")
         assert p.sl_factor < 1.0
-        assert p.min_strategy_type == "TRIPLE_TP_TSL"
+        assert p.min_strategy_type is None  # DEV-124: SINGLE лучше в TREND
 
     def test_range_params(self):
         p = get_regime_params("RANGE")
         assert p.sl_factor > 1.0           # широкий SL
-        assert p.max_strategy_type == "DUAL_TP"
+        assert p.max_strategy_type == "SINGLE"  # DEV-124: RANGE фиксирует на первом пивоте
         assert p.min_strategy_type is None
 
     def test_high_vol_params(self):
@@ -97,38 +97,39 @@ class TestApplyRegimeToStrategy:
         assert st == "DUAL_TP"
 
     def test_trend_upgrades_single_to_triple(self):
-        """TREND_UP должен поднять SINGLE → TRIPLE_TP_TSL (min_strategy_type)."""
+        """DEV-124: TREND_UP НЕ поднимает (min_strategy_type=None, SINGLE лучше в тренде)."""
         st, tp1 = apply_regime_to_strategy(
             strategy_type="SINGLE", regime="TREND_UP", **self.BASE
         )
-        assert st == "TRIPLE_TP_TSL"
-        assert tp1 is not None
+        assert st == "SINGLE"
 
     def test_trend_upgrades_dual_to_triple(self):
+        """DEV-124: TREND_UP не меняет DUAL_TP."""
         st, tp1 = apply_regime_to_strategy(
             strategy_type="DUAL_TP", regime="TREND_UP", **self.BASE
         )
-        assert st == "TRIPLE_TP_TSL"
+        assert st == "DUAL_TP"
 
     def test_triple_stays_triple_in_trend(self):
+        """TRIPLE_TP_TSL остаётся без изменений в TREND_UP."""
         st, _ = apply_regime_to_strategy(
             strategy_type="TRIPLE_TP_TSL", regime="TREND_UP", **self.BASE
         )
         assert st == "TRIPLE_TP_TSL"
 
     def test_range_downgrades_triple_to_dual(self):
-        """RANGE ограничивает максимум на DUAL_TP."""
+        """RANGE ограничивает максимум на SINGLE (DEV-124: DUAL_TP убыточен в RANGE)."""
         st, tp1 = apply_regime_to_strategy(
             strategy_type="TRIPLE_TP_TSL", regime="RANGE", **self.BASE
         )
-        assert st == "DUAL_TP"
-        assert tp1 is not None
+        assert st == "SINGLE"
 
     def test_range_keeps_dual(self):
+        """RANGE понижает DUAL_TP до SINGLE."""
         st, _ = apply_regime_to_strategy(
             strategy_type="DUAL_TP", regime="RANGE", **self.BASE
         )
-        assert st == "DUAL_TP"
+        assert st == "SINGLE"
 
     def test_range_keeps_single(self):
         """RANGE не повышает SINGLE — нет min_strategy_type."""
@@ -152,18 +153,17 @@ class TestApplyRegimeToStrategy:
         assert st == "DUAL_TP"
 
     def test_short_direction_tp1_below_entry(self):
-        """SHORT: TP1 должен быть НИЖЕ entry."""
+        """DEV-124: TREND_DOWN не меняет SINGLE, tp1 остаётся None."""
         st, tp1 = apply_regime_to_strategy(
             strategy_type="SINGLE",
             entry=100.0, stop_loss=103.0, take_profit=94.0,
             tp1_price=None, direction="SHORT",
             regime="TREND_DOWN",
         )
-        assert st == "TRIPLE_TP_TSL"
-        assert tp1 < 100.0   # TP1 ниже entry для SHORT
+        assert st == "SINGLE"  # DEV-124: нет апгрейда
 
     def test_tp1_not_overwritten_if_already_set(self):
-        """Если tp1_price уже задан, apply не трогает при trend-upgrade."""
+        """DEV-124: TREND_UP не меняет DUAL_TP, tp1 остаётся заданным."""
         existing_tp1 = 102.0
         st, tp1 = apply_regime_to_strategy(
             strategy_type="DUAL_TP",
@@ -171,10 +171,8 @@ class TestApplyRegimeToStrategy:
             tp1_price=existing_tp1, direction="LONG",
             regime="TREND_UP",
         )
-        # После апгрейда в TRIPLE_TP_TSL tp1 пересчитывается
-        assert st == "TRIPLE_TP_TSL"
-        # tp1 должен быть ~102 (1/3 × 6 = 2, entry + 2 = 102)
-        assert tp1 == pytest.approx(102.0, abs=0.01)
+        assert st == "DUAL_TP"  # DEV-124: нет апгрейда
+        assert tp1 == pytest.approx(existing_tp1, abs=0.01)  # tp1 не изменился
 
     def test_high_vol_tp1_overrides_existing(self):
         """HIGH_VOL всегда форсирует tp1 независимо от заданного значения."""

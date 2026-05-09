@@ -208,7 +208,7 @@ class PivotCalculatorFixed:
 
     def calculate_traditional_pivots(self, high: float, low: float, close: float) -> Dict[str, float]:
         """Traditional Pivot Points — делегирует в calculate_pivot_points из core/indicators.py."""
-        from core.indicators import calculate_pivot_points
+        from core.indicators.indicators import calculate_pivot_points
         return calculate_pivot_points(high, low, close)
 
     # ──────────────────────────────────────────────────────
@@ -1145,7 +1145,7 @@ class PivotCalculatorFixed:
         return None
 
     def format_pivot_message(self, symbol: str, pivots_data: Dict, current_price: float) -> str:
-        from core.message_builder import tv_link
+        from core.ui.message_builder import tv_link
         from datetime import datetime as dt
 
         parts = [

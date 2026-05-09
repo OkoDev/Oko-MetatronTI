@@ -5,6 +5,32 @@
 
 ---
 
+## 📊 Event Stream
+
+<!-- Формат: YYYY-MM-DD HH:MM | tag | message (одна строка = одно событие) -->
+<!-- Теги: session-start | session-end | decision | fix | analysis | deploy | incident | milestone -->
+<!-- Новые записи — СВЕРХУ этого блока, перед разделителем -->
+
+2026-05-04 ev.~ | milestone | 🧊 Stabilization Sprint Phase 0.1 (заморозка): ARCH-74/74-EXT/96..99/101..111 → FROZEN до Phase 4 (~25.05). План /root/.claude/plans/fluttering-snacking-whale.md. Корень: ~4% сигналов попадает в БД, decision_trace.py готов но не вызывается. Phase 0.2 — DecisionTrace в 14 gates (отдельная сессия, ~1 день)
+2026-05-05 04:30 | decision | confluence разблокирован (enabled: false → true). Логика: BIAS уже фильтрует направление, избыточные фильтры скрывают данные. Март: avgR=+0.64 (2591 сд), апрель: -0.42 (937 сд) — слом в боковике. Наблюдаем 3-5 дней
+2026-05-05 04:00 | fix | EventBus priority upgrade: set→dict, вытеснение старого элемента (priority=999) если новый приоритетнее. Баг: wt_extreme (prio=1) блокировался zone_enter_ob (prio=2) уже в очереди. Дедупликация BOS/CHoCH: ключ (tf,direction) вместо (price,bar_idx). Фильтр нулевых FVG (top-bottom < 1e-8). Лог legacy fallback понижен до non-info
+2026-05-04 17:00 | fix | EventBus: +5 новых событий — wt_extreme (prio=1, вход WT < −80/+80), smc_choch_detected (prio=1), smc_bos_detected (prio=2), fvg_touch (prio=2), regime_change (prio=3). WTExtremeDetector добавлен в htf_detectors.py + bot.py. SMC snap кешируется как bot._last_smc_snap[sym]. volume_spike → PairContextBus. Куб теперь реагирует на все вычисляемые данные
+2026-05-04 15:30 | fix | Слой 1 детекторы подключены к EventBus куба: WT-B (prio=1), Pivot Reversal (prio=2), Divergence MTF+single (prio=3), MTF Alert (prio=4), Trend Signal (prio=4), Cascade (prio=3). Правки: event_bus.py, scan_loop.py, monitoring.py — +1 строка на детектор. Куб теперь видит все Слой 1 сигналы
+2026-05-04 14:00 | decision | OTE сигнал реанимирован: ote_zone_min_fib 0.705→0.5 (full OTE 0.5/0.618/0.705/0.786), ATR-trend gate отключён (ote_use_trend_gate: false). Причина: 0 сделок в БД за 16 дней с активации (18.04→04.05) — wide-only зона + 1h trend gate резали все срабатывания. OTE = вход в локальный разворот, гейт по тренду старшего TF противоречит сути. Параметризовано в config.yaml для отката
+2026-04-30 21:15 | fix | DEV-191-TSL HOTFIX: apply_floor SHORT floor anchored to current_price (не entry). Корень −780R/10дн: TSL застывал у entry±0.3% на всех SHORT в профите. 42/42 unit tests passed. Скопировано в strip. Ожидается рестарт бота
+2026-04-29 04:00 | milestone | TASKS.md реорганизован (1777→130 строк) + docs/TASKS_DETAILS.md создан; ROADMAP.md: 6 фаз + Data Invalidation Log
+2026-04-29 03:00 | analysis | ARCH-95 H5+H6: audit_slippage_mtf.py — atr_trend_1h_bias gate WR 13.4% vs 7.0%; slippage не критичен (~0.01-0.05%)
+2026-04-28 22:10 | decision | ARCH-95: отказ от быстрых фиксов ATR×2.0; выбран комплекс мер с акцентом на TSL-реструктуризацию
+2026-04-28 04:00 | milestone | Написаны скрипты H3/H4 (audit_pivot_direction.py, audit_cube_snapshots.py); H1+H2 в DISCUSSION.md
+2026-04-27 22:00 | fix | DEV-185.2: emergency watchdog реализован (position_sync.py:_emergency_close_check)
+2026-04-27 18:00 | fix | DEV-190: effective_status helper интегрирован в 8 модулей
+2026-04-27 04:00 | decision | Smart TSL план утверждён как тех-долг (ARCH-74-EXT + ARCH-103)
+2026-04-26 12:00 | deploy | sl_limit_buffer_pct: 0.0 → 1.0 (катастрофический slippage: −113R эффект)
+2026-04-25 10:00 | milestone | Спринт «Реальные убийцы» открыт: DEV-184/185/186/187/188 (цель: −780R/10дн)
+2026-04-24 03:32 | fix | fix(order_manager): защитный парсер bracket-ответа BingX + STOP-поиск SL
+
+---
+
 ## 🧩 Компоненты системы
 
 Описания появляются здесь при первом упоминании в истории изменений.
@@ -19,6 +45,134 @@
 ---
 
 ## 📅 История изменений
+
+### [04.05.2026] ARCH: 🧊 Stabilization Sprint Phase 0.1 — заморозка vision до Phase 4
+
+**Проблема:** −501R за 6064 сделки, 100+ правок за 2 месяца, метрики не сдвинулись. Пользователь рассматривал закрытие проекта. Две разведки (data flow + signal pipeline) показали корень: **в БД попадает ~4% детектируемых сигналов**, остальные 96% теряются молча — 40% silent внутри детекторов, 15% DEDUP без лога, 8% SL_COOLDOWN без лога, 3% PIVOT_TP без лога, 20% переходят в WATCH (видны но не регистрируются), 5% `register_trade_async` возвращает None. ML обучается на 30-40% данных. Любая попытка декомпозиции в этих условиях — операция вслепую.
+
+**Главное открытие:** `core/intelligence/decision_trace.py` **уже реализован** (полный API: `add_filter`, `add_mtf_multiplier`, `set_ml_adjustment`) + колонка `decision_trace_json` в БД + эндпоинт `/api/trades/{id}/trace`. Но в `_broadcast_intelligence_alert` (bot/monitoring.py:726-1527) **ни разу не вызывается** — DEV-12 (Этап 8.4.6) был написан, но финальная интеграция не доведена. Это quick win: инфраструктура готова, не хватает только подключения.
+
+**Решение:** план [`/root/.claude/plans/fluttering-snacking-whale.md`](/root/.claude/plans/fluttering-snacking-whale.md) «Возврат управляемости». 4 фазы, 11-17 рабочих дней по 2-3ч (3-4 календарные недели). Phase 0 — DecisionTrace + `signal_drops` таблица; Phase 1 — `audit_mode` shadow + `audit_filter_efficacy.py`; Phase 2 — coverage matrix + ML skipped-rows visibility; Phase 3 — `bot/loops/broadcast_pipeline.py` + 14 gate-файлов. Принципы: read-only first, видимость > архитектура, право на остановку после каждой фазы. Бот всё это время на VST в текущем виде.
+
+**Результат Phase 0.1 (выполнено сегодня):** TASKS.md — добавлен блок «Stabilization Sprint», статусы ARCH-74, ARCH-74-EXT, ARCH-96..99, ARCH-101..104, ARCH-105..111 переведены в 🧊 FROZEN до Phase 4. START.md — добавлен блок с прогрессом фаз. Активный спринт «Реальные убийцы» (DEV-184..193) **продолжается** — он стабилизирующий, не vision.
+
+**Что НЕ заморожено:** DEV-184..193 (фиксы), ARCH-92/93/94/95 (диагностика), ARCH-100 (re-audit ✅).
+
+**Следующий шаг:** Phase 0.2 — DecisionTrace integration в [bot/monitoring.py:726-1527](bot/monitoring.py) — отдельная сессия, ~1 день. Не начинать без явного согласия пользователя (риск регрессий + конфликт с активной работой DEV в той же функции).
+
+---
+
+### [28.04.2026] ARCH: Smart TSL — план утверждён как тех-долг (расширение ARCH-74 + ARCH-103)
+
+**Проблема:** TSL сейчас статичный — `factor=1.25`, `floor_pct=0.3%` одинаково для BTC (ATR%≈1.5) и для PEPE (ATR%≈8). Боли: преждевременные выходы на шуме у low-cap, поздние выходы на ракетах в TREND, разница TREND vs RANGE требует разной чувствительности. Sphere 10 в Кубе зарезервирован под Exit Manager, хранит флаги, но решений не принимает.
+
+**Решение:** план [`/root/.claude/plans/humble-noodling-frog.md`](/root/.claude/plans/humble-noodling-frog.md). Расширяем планируемую [ARCH-74](TASKS.md#arch-74) до **ARCH-74-EXT — Smart TSL**: `core/trading/tsl_manager.py` с adaptive params per-pair/regime. 5 этапов с verification gates: Research → Skeleton → Shadow → Measurement → Prod switch → RL hook. Открыт ARCH-103 — Roadmap прогнозирования цены (H1-H5: VolatilityForecast, DirectionPredictor, RegimeChange, Cascade, PerSymbolCalibration) как слоты в TSLManager.
+
+**Результат:** записи в DISCUSSION.md и TASKS.md (ARCH-74-EXT, ARCH-103). Триггер реализации — после стабилизации спринта «Реальные убийцы» (~1-я неделя мая 2026). Никакого кода сейчас — только тех-долг с полной спецификацией.
+
+---
+
+### [27.04.2026] ARCH: DEV-185.2 emergency watchdog для STOP-LIMIT non-execution
+
+**Проблема:** Подтверждение из боя — #8010 APE 26.04 LONG TREND_DOWN, TSL подтянул SL до +2.3% от entry, STOP-LIMIT trigger=0.14980 сработал, но limit-ордер (на 1% ниже) не исполнился из-за gap на бирже. Позиция висла 3 часа, в итоге закрылась через position_sync по 0.1019 → R=−11.83 (overshoot 32.7%). Один такой инцидент стирает 12 нормальных побед.
+
+**Решение:** [core/exchange/position_sync.py](core/exchange/position_sync.py) — новая функция `_emergency_close_check()` (~95 строк) + интеграция в sync_positions циклом перед основным закрытием. Алгоритм: каждый цикл (60s) для VST OPEN позиции считаем overshoot (cur_price за SL > 0.5% от entry → старт таймера в bot._emergency_dwell_state). Если удерживается 5 минут → emergency `close_position_market` + лог `[STOP_LIMIT_EMERGENCY_FILL]`. State в памяти, без БД. Если цена вернулась в норму до dwell expiry — таймер сброс (false alarm защита). Config: `dev185_2_emergency_enabled/overshoot_threshold_pct/dwell_seconds`.
+
+**Прогноз:** по таблице overshoot из расследования DEV-185 — для 70 сделок с overshoot >1% (которые сейчас не fill через STOP-LIMIT), watchdog закроет с overshoot ~0.5-1.5% вместо 5-30%. Экономия ~−228R/10дней дополнительно к −113R от buffer. Суммарно DEV-185 + 185.2 ≈ −341R/10дней. Откат: `dev185_2_emergency_enabled: false`.
+
+---
+
+### [27.04.2026] ARCH: Post-restart sanity + 2 фикса (DEV-186 regime источник, sanity cutoff)
+
+**Проблема:** После рестарта 26.04 17:30 sanity-проверка выявила что [DEV-186 wt_signal regime gate](bot/monitoring.py) не сработал на #8026 MONAD (SHORT в TREND_UP). 0 упоминаний `[DEV-186]` в логах. Причина: брал `recommendation.regime`, но это поле заполняется позже (в register_trade через MarketRegimeClassifier), на момент моего gate было пустой строкой.
+
+**Решение:** Изменил источник regime в [bot/monitoring.py:902](bot/monitoring.py#L902) на fallback chain: pair_context.get(symbol).regime → recommendation.regime → market_context.regime. Это тот же путь что у DEV-155 (стр 1072). Также исправил cutoff bug в sanity скрипте: `"2026-04-26 12:00"` сравнивался лексикографически с ISO `"2026-04-26T..."`, `'T' > ' '` → все ISO-записи проходили как post-cutoff. Изменил DEFAULT_RESTART на `"2026-04-26T17:30"`.
+
+**Подтверждённые в проде фиксы (post-restart):** DEV-184 (DUAL_TSL=0 в новых сделках), DEV-185 (STOP-LIMIT placements с buf=1.00% в логах), DEV-190 (WR raw=20% → effective=26.3%, +6.3pp). **Catastrophic #8010 APE R=−11.83 (overshoot 32.7%)** — non-execution STOP-LIMIT, позиция повисла 3ч и закрылась через position_sync. Подтверждает срочность DEV-185.2 watchdog. Нужен ещё рестарт для подхвата DEV-186 fix.
+
+---
+
+### [27.04.2026] ARCH: DEV-190 effective_status helper — single source of truth для классификации исходов
+
+**Проблема:** Каждые сутки бот обучает ML на искажённой разметке. Из 369 VST с tsl_activated=1 → 120 (32%) реально TSL exits, но БД пишет status='SL' (бот не размещает TRAILING_STOP_MARKET, position_sync видит STOP_MARKET → 'SL'). ML учится «pivot_reversal с TSL → поражение» в трети случаев, дашборд показывает WR в 3 раза ниже реального, CircuitBreaker может сработать на ровном месте.
+
+**Решение:** [core/trading/effective_status.py](core/trading/effective_status.py) — pure helper с двумя API:
+- `effective_status(status, R, tsl_act)` → 'OPEN' | 'TP' | 'TSL_native' | 'TSL_hidden_win' | 'BE_area' | 'SL_clean' | 'SL_slipped' | 'EXPIRED'
+- `is_win(...)` для ML target
+- SQL-fragments для прямых SQL без Python loop
+
+**Интегрирован в 8 модулей:** [performance_engine](core/trading/performance_engine.py), [circuit_breaker](core/trading/circuit_breaker.py), [outcome_predictor](core/ml/outcome_predictor.py), [mtf_wt_specialist](core/ml/mtf_wt_specialist.py), [mtf_smc_specialist](core/ml/mtf_smc_specialist.py), [auto_calibrator](core/ml/auto_calibrator.py), [confidence_calibrator](core/intelligence/confidence_calibrator.py), [dashboard_server](web/dashboard_server.py).
+
+**Результат:** после рестарта дашборд покажет реальный TSL counter (~120/мес вместо 8), ML переобучится на корректной разметке, CircuitBreaker не срабатывает на ложном WR=0%. БД не модифицирована (историю не трогаем). Откат: `win_rate_raw` поле сохранено для параллельного контроля.
+
+---
+
+### [26.04.2026] ARCH: DEV-185 Шаг 1 — buffer 0.0→1.0 для STOP-LIMIT защиты от slippage
+
+**Проблема:** Catastrophic slippage VST: 121 SL сделка с overshoot ≥0.5% = −465R за 10 дней. Корень — `sl_limit_buffer_pct: 0.0` в config.yaml:129. Механика STOP-LIMIT уже была реализована в DEV-175 ([order_manager.py:512-525](core/exchange/order_manager.py#L512)), но никогда не активирована. Комментарий «19.04: включено» обманывает — git history показывает 0.0 в production всегда.
+
+**Решение:** [config.yaml:129](config.yaml#L129) `sl_limit_buffer_pct: 0.0 → 1.0` — 1 строка, ноль кода. Новые SL-ордера автоматически становятся STOP-LIMIT с буфером 1% (limit-цена на 1% хуже trigger).
+
+**Результат:** ожидаемая экономия −113R/10дней (защитит 51 сделку с overshoot 0.5-2%). Риск: 70 сделок с overshoot >1% не исполнятся → позиция повисит до TP/EXPIRED. На VST допустимо — emergency watchdog (DEV-185.2) приоритет перед LIVE. Через 48ч мерить p90 overshoot, при ОК → buffer=2.0.
+
+---
+
+### [26.04.2026] ARCH: Фаза 1 спринта «Реальные убийцы» — DEV-184/186/187 реализованы
+
+**Проблема:** RE-AUDIT 25.04 показал 3 точечных источника −330R/10дней:
+- DUAL_TSL даёт −0.4R хуже SINGLE для одного и того же сигнала (−290R)
+- wt_signal SHORT в TREND_UP/HIGH_VOL — ловим разворот в тренде (−24R)
+- wt_b пороги адаптивные → на тренде разрешают входы в N зоне (−17R)
+
+**Решение:** 3 минимальных изменения с config-флагами для отката.
+
+- **DEV-184:** [config.yaml:429](config.yaml#L429) `trend_strategy_type: DUAL_TSL` → `DUAL_TP`. Теперь TREND режимы поднимают только до DUAL_TP.
+- **DEV-186:** новый gate в [bot/monitoring.py:902-920](bot/monitoring.py#L902) — блок wt_signal SHORT в TREND_UP/HIGH_VOL. Управляется флагом `signal_quality.dev186_wt_signal_regime_gate`.
+- **DEV-187:** [signal_checkers.py:340-360](core/signals/signal_checkers.py#L340) — floor для wt_b adaptive порогов: `os_=min(p10,-30), ob_=max(p90,+30)`. Конфигурируется в `analysis.wt_b.os_floor/ob_floor`.
+
+**Результат:** ожидаемая экономия −330R/10дней (≈ +0.10R/сделку). Все три фикса откатываются через config без правок кода. Требуется рестарт бота для подхвата.
+
+---
+
+### [25.04.2026] ARCH: D1 диагностика — 6 багов локализованы, 3 вывода аудита оказались ложными (ARCH-95)
+
+**Проблема:** ARCH-95 H1-H7 + Слой A показал 8 подозрений (поздние входы, скрытые TSL, BE не работает, sl_source искажение). Без локализации в коде — фиксы превращаются в угадывание.
+
+**Решение:** Phase D1 — TRACE через pipeline для каждого подозрения. Без правок кода. Только grep+чтение+SQL для подтверждения гипотез эмпирически.
+
+**Результат — 6 багов локализованы до конкретных строк:**
+- B1 sl_source: [reversal_strategy.py:151](strategies/built_in/reversal_strategy.py#L151) жёстко `atr_1.5`; код в pivot_reversal.py — мёртвый. 0/1594 сделок имеют pivot SL.
+- B2 status='TSL' для VST=0 (8/1740): бот не размещает TRAILING_STOP_MARKET. **238/589 "SL" с tsl_activated=1 имеют R>0** = скрытые TSL exits под маской SL.
+- B3 SL не апдейтится в БД для SIM (80%): `_is_real_move` в [trade_simulator.py:1980](core/trading/trade_simulator.py#L1980) требует exchange_order_id для UPDATE.
+- B4 BE=0 для SINGLE (0/1694): `use_breakeven: false` + `use_be_after_tp1` требует tp1_hit, которого у SINGLE нет.
+- B5 wt1_value: [monitoring.py:1206](bot/monitoring.py#L1206) пишет 15m wt1, а wt_b детектор работает на 1h — разные TF.
+- B6 distance_to_pivot_pct: [monitoring.py:1034](bot/monitoring.py#L1034) — это TP distance, не entry-trigger proximity.
+
+**3 вывода ARCH-95 оказались ложными методологически** (B2/B5/B6) — сравнивались несопоставимые метрики. Реальные проблемы существуют, но другие.
+
+**Что дальше:** обсудить приоритет фиксов в DISCUSSION.md, переоткрыть аудит с корректными метриками.
+
+---
+
+### [20.04.2026] ARCH: Фикс дубликатов SL на бирже (30/24 ордера на одну позицию)
+
+**Проблема:** На BingX скапливалось до 30 SL-ордеров на одной открытой позиции (CAKE 30, PUMPBTC 24). [order_manager.py:get_sl_order_id](core/exchange/order_manager.py) искал только `STOP_MARKET`, но при `sl_limit_buffer_pct: 0.3` в [config.yaml](config.yaml) SL создавался как `STOP` (stop-limit, DEV-175). → функция возвращала None → `repair_missing_sl` каждую минуту думал «SL нет» и ставил новый.
+
+**Решение:** `get_sl_order_id` теперь ловит `STOP_MARKET` И `STOP`, при найденных >1 — оставляет самый свежий и отменяет остальные. `place_sl_order` получил precheck: отмена существующих SL того же pos_side перед place (защита от race `fetch_and_save` + `repair`). Создан [scripts/cleanup_duplicate_sl.py](scripts/cleanup_duplicate_sl.py) — dry-run скрипт для чистки уже накопленных дубликатов на бирже.
+
+**Результат:** после рестарта бота накопление остановится. Скрипт чистки запускается `python scripts/cleanup_duplicate_sl.py --apply`. Урок: любой фикс «поиск SL на бирже» — проверять все call-site'ы сразу (19.04 `update_sl` уже был расширен на STOP, но `get_sl_order_id` — нет).
+
+---
+
+### [19.04.2026] ARCH: TSL Engine — консолидация после REAL #7264
+
+**Проблема:** SHORT-сделка #7264 не могла открыть SL на BingX — «Stop Loss price should be greater than the current price». Причина: floor-логика для SHORT использовала `min()` вместо `max()`, SL записывался НИЖЕ entry (перевёрнутый). Логика TSL была размазана по 4 файлам ([trade_simulator.py](core/trading/trade_simulator.py), [tsl_updater.py](core/exchange/tsl_updater.py), стратегии, [recommendation_generator.py](core/intelligence/recommendation_generator.py)) — один и тот же баг мог возникнуть в разных местах по-разному.
+
+**Решение:** создан [core/trading/tsl_engine.py](core/trading/tsl_engine.py) — единая точка всех вычислений TSL (pure functions, без I/O, без async). 8 чистых функций: `apply_floor`, `breakeven_sl`, `is_side_valid`, `is_tsl_triggered`, `is_tighter`, `should_update`, `compute_tsl`, `get_entry_sl`. Плюс re-export каскадных gate-функций из [cascade_tsl.py](core/trading/cascade_tsl.py). Все потребители переведены на engine: trade_simulator (BE, compute_tsl, is_tighter), tsl_updater (is_side_valid перед cancel+replace и в repair), обе стратегии и recommendation_generator (is_side_valid для tsl_line). Тесты: 42 unit + 15 e2e = 57/57 PASS, включая регрессию REAL #7264 (entry=0.07209, raw_sl=0.070349 → floored на entry×1.003).
+
+**Результат:** защита от перевёрнутого SL теперь в 5 слоях вместо 0. Если TSL снова сломается — смотрим в одном файле, а не по всей кодовой базе. Новый «элемент Куба» — pure-core с I/O-обёртками, этот паттерн можно переносить на Risk Intelligence (Сфера 3): `RiskDecider` + `RiskApplier`.
+
+---
 
 ### [19.04.2026] ARCH: ARCH-91 — Narrative в TG + lost_reason + feedback loop (спринт 5/5, финал)
 

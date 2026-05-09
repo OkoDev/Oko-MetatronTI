@@ -32,11 +32,11 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import pandas as pd
 
-from core.dynamic_thresholds import compute_dynamic_thresholds, os_method_label
-from core.entry_config import get_primary_entry_tf
-from core.indicators import calculate_trend, calculate_wt
-from core.pivot_calculator_fixed import PivotCalculatorFixed
-from core.signal_models import SignalData, SignalType, SignalDirection
+from core.indicators.dynamic_thresholds import compute_dynamic_thresholds, os_method_label
+from core.infra.entry_config import get_primary_entry_tf
+from core.indicators.indicators import calculate_trend, calculate_wt
+from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed
+from core.signals.signal_models import SignalData, SignalType, SignalDirection
 
 logger = logging.getLogger(__name__)
 
@@ -785,5 +785,5 @@ def _check_hidden_bearish_divergence_wt(
 
 def reversal_message(symbol: str, sig: "SignalData") -> str:
     """Форматирует TG-сообщение для reversal сигнала. Thin wrapper над format_signal_message."""
-    from core.intelligence_formatter import format_signal_message
+    from core.ui.intelligence_formatter import format_signal_message
     return format_signal_message(symbol, sig, signal_type="reversal")

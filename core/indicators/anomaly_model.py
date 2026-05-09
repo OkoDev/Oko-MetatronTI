@@ -72,8 +72,10 @@ def _extract_features(df: pd.DataFrame, window: int = 20) -> Optional[np.ndarray
         # high-low spread %
         hl_spread = (high - low) / np.where(close < 1e-10, 1e-10, close) * 100
 
-        # volume MA ratio
-        vol_ma   = np.where(vol_mean < 1e-10, 1.0, vol / vol_mean)
+        # volume MA ratio (safe: заменяем нули в знаменателе до деления,
+        # иначе np.where всё равно вычисляет vol/vol_mean → RuntimeWarning)
+        safe_vol_mean = np.where(vol_mean < 1e-10, 1.0, vol_mean)
+        vol_ma = np.where(vol_mean < 1e-10, 1.0, vol / safe_vol_mean)
 
         # Собираем матрицу признаков
         features = np.column_stack([

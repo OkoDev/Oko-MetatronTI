@@ -140,7 +140,9 @@ class MTFWTSpecialist:
                     if fv is None:
                         continue
                     X.append(fv)
-                    y.append(1 if r["status"] in ("TP", "TSL") else 0)
+                    # DEV-190: учёт скрытых TSL exits под status='SL'
+                    from core.trading.effective_status import is_win as _is_win
+                    y.append(1 if _is_win(r["status"], r.get("R_multiple"), r.get("tsl_activated")) else 0)
                 except Exception as row_err:
                     logger.debug("MTFWTSpecialist: пропуск строки — %s", row_err)
                     continue
@@ -225,8 +227,9 @@ class MTFWTSpecialist:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+            # DEV-190: добавлены tsl_activated и R_multiple для is_win helper
             cur.execute("""
-                SELECT status, features_json
+                SELECT status, features_json, tsl_activated, R_multiple
                 FROM simulated_trades
                 WHERE status IN ('TP', 'SL', 'TSL')
                   AND features_json IS NOT NULL

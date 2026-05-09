@@ -40,7 +40,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Порядок стратегий от «слабейшей» к «сильнейшей»
-_STRATEGY_ORDER = ["SINGLE", "DUAL_TP", "DUAL_TSL"]
+_STRATEGY_ORDER = ["SINGLE", "DUAL_TP", "DUAL_TSL", "TRIPLE_TP_TSL"]
 
 
 @dataclass

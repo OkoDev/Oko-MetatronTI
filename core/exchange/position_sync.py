@@ -6,6 +6,10 @@ position_sync.py — синхронизация биржевых позиций 
   GET /allOrders → ищем FILLED STOP_MARKET (→ SL) или TAKE_PROFIT_MARKET (→ TP/TSL),
   берём avgPrice как exit_price.
 
+  TSL NOTE: наш TSL двигает обычный STOP ордер (cancel+replace), поэтому при срабатывании
+  он возвращается как STOP_MARKET → "SL". После _resolve_exit проверяем tsl_activated=1
+  и корректируем статус на "TSL".
+
   Если filled ордер не найден (редкая ситуация: позиция закрыта вручную или API лаг)
   — используем текущую mark_price с биржи (не угадываем статус, ставим EXPIRED).
 """
@@ -56,6 +60,126 @@ async def _resolve_exit(client, symbol: str, direction: str, mark_price: float |
 
     # Fallback: позиция закрыта вручную или данных нет — ставим EXPIRED с mark_price
     return "EXPIRED", mark_price
+
+
+async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> bool:
+    """
+    DEV-185.2 (27.04.2026): Emergency watchdog для STOP-LIMIT non-execution.
+
+    Сценарий: STOP-LIMIT trigger срабатывает, но limit-ордер не fill из-за gap
+    (цена ушла >buffer за trigger). Позиция остаётся открытой → продолжает терять.
+    Пример: #8010 APE 26.04 — overshoot 32.7%, R=-11.83 за 3 часа.
+
+    Алгоритм:
+      1. Текущая цена ушла за stop_loss > overshoot_threshold (default 0.5%)
+      2. Прошло > dwell_seconds (default 300=5 мин) с момента первого нарушения
+      3. → emergency market close, лог STOP_LIMIT_EMERGENCY_FILL
+
+    Возвращает True если выполнили emergency close (вызывающий должен пропустить trade).
+    """
+    cfg = bot.config
+    if not cfg.get("trading.dev185_2_emergency_enabled", True):
+        return False
+
+    trade_id = trade.get("id")
+    direction = trade.get("direction", "LONG")
+    sl = float(trade.get("stop_loss") or 0)
+    entry = float(trade.get("entry_price") or 0)
+    if sl <= 0 or entry <= 0:
+        return False
+
+    overshoot_threshold = float(cfg.get("trading.dev185_2_overshoot_threshold_pct", 0.5))
+    dwell_seconds = int(cfg.get("trading.dev185_2_dwell_seconds", 300))
+
+    # Текущая цена — из position data (markPrice) или с тикера
+    cur_price = 0.0
+    try:
+        cur_price = float(position.get("markPrice") or position.get("avgPrice") or 0)
+    except Exception:
+        pass
+    if cur_price <= 0:
+        try:
+            cur_price = await bot.data_collector.get_current_price(sym)
+        except Exception:
+            return False
+
+    # Считаем overshoot (положительный = цена ушла за SL в плохую для нас сторону)
+    if direction == "LONG":
+        overshoot_pct = (sl - cur_price) / entry * 100  # cur_price ниже SL → overshoot >0
+    else:
+        overshoot_pct = (cur_price - sl) / entry * 100  # cur_price выше SL → overshoot >0
+
+    # State: dict {trade_id: first_seen_ts} в bot
+    dwell_state = getattr(bot, "_emergency_dwell_state", None)
+    if dwell_state is None:
+        dwell_state = {}
+        bot._emergency_dwell_state = dwell_state
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
+    if overshoot_pct < overshoot_threshold:
+        # Норма — очищаем state если был
+        if trade_id in dwell_state:
+            del dwell_state[trade_id]
+        return False
+
+    # Цена за SL > threshold
+    first_seen = dwell_state.get(trade_id)
+    if first_seen is None:
+        dwell_state[trade_id] = now
+        logger.info(
+            "[DEV-185.2] %s #%d: overshoot %.2f%% > %.2f%% — start dwell timer (%ds)",
+            sym, trade_id, overshoot_pct, overshoot_threshold, dwell_seconds,
+        )
+        return False
+
+    elapsed = (now - first_seen).total_seconds()
+    if elapsed < dwell_seconds:
+        return False
+
+    # Триггер emergency close
+    qty = float(trade.get("qty") or 0)
+    if qty <= 0:
+        try:
+            qty = float(position.get("positionAmt") or position.get("availableAmt") or 0)
+            qty = abs(qty)
+        except Exception:
+            pass
+    if qty <= 0:
+        logger.warning(
+            "[DEV-185.2][EMERGENCY] %s #%d: qty неизвестен — не могу закрыть market",
+            sym, trade_id,
+        )
+        return False
+
+    try:
+        order_mgr = getattr(bot, "order_executor", None)
+        if order_mgr is None or not order_mgr.is_live():
+            return False
+        client = await order_mgr._get_client_synced()
+        side_close = "SELL" if direction == "LONG" else "BUY"
+        logger.warning(
+            "[DEV-185.2][EMERGENCY][STOP_LIMIT_EMERGENCY_FILL] %s #%d %s: "
+            "overshoot %.2f%% за %.0fс — market close qty=%s",
+            sym, trade_id, direction, overshoot_pct, elapsed, qty,
+        )
+        resp = await client.close_position_market(sym, side_close, qty)
+        code = resp.get("code", 0) if isinstance(resp, dict) else 0
+        if code != 0:
+            # Fallback: one-click
+            resp2 = await client.close_position_one_click(sym)
+            logger.warning(
+                "[DEV-185.2][EMERGENCY] %s #%d one-click fallback: code=%s",
+                sym, trade_id, resp2.get("code") if isinstance(resp2, dict) else "?",
+            )
+        # Удаляем из state — следующий цикл sync_positions подхватит закрытие
+        if trade_id in dwell_state:
+            del dwell_state[trade_id]
+        return True
+    except Exception as e:
+        logger.warning("[DEV-185.2][EMERGENCY] %s #%d ошибка: %s", sym, trade_id, e)
+        return False
 
 
 async def sync_positions(bot) -> None:
@@ -138,6 +262,20 @@ async def sync_positions(bot) -> None:
         open_sim = bot.trade_simulator.get_open_trades()
         synced = 0
 
+        # DEV-185.2: emergency watchdog — перед основным циклом закрытия проверяем
+        # "висящие" позиции (STOP-LIMIT trigger сработал, но limit не fill из-за gap).
+        for trade in open_sim:
+            if not trade.get("exchange_order_id"):
+                continue
+            sym_w = trade.get("symbol", "")
+            pos_w = open_on_exchange.get(sym_w)
+            if pos_w is None:
+                continue  # позиции на бирже нет — обработается основным циклом
+            try:
+                await _emergency_close_check(bot, sym_w, trade, pos_w)
+            except Exception as _ew:
+                logger.debug("[DEV-185.2] watchdog error %s: %s", sym_w, _ew)
+
         for trade in open_sim:
             if not trade.get("exchange_order_id"):
                 continue  # SIM-сделка — не трогаем
@@ -158,6 +296,24 @@ async def sync_positions(bot) -> None:
                 pass
 
             status, exit_price = await _resolve_exit(client, sym, direction, mark_price)
+
+            # TSL реализован через STOP ордер (cancel+replace), поэтому на бирже он
+            # срабатывает как STOP_MARKET → _resolve_exit возвращает "SL".
+            # Критерий TSL-exit: original_sl != stop_loss (SL реально двигался TSL'ом).
+            # Это надёжнее tsl_activated (флаг ставится при +1R, но SL мог не двинуться).
+            if status == "SL":
+                _orig_sl = trade.get("original_sl")
+                _curr_sl = float(trade.get("stop_loss") or 0)
+                if (
+                    _orig_sl is not None
+                    and _curr_sl > 0
+                    and abs(_curr_sl - float(_orig_sl)) / float(_orig_sl) > 0.0001
+                ):
+                    status = "TSL"
+                    logger.info(
+                        "[POSITION-SYNC] #%d %s: SL→TSL (orig_sl=%.6f → curr_sl=%.6f)",
+                        trade_id, sym, float(_orig_sl), _curr_sl,
+                    )
 
             if exit_price is None:
                 exit_price = float(trade.get("entry_price", 0))

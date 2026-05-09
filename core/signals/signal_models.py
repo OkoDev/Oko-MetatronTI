@@ -23,6 +23,8 @@ class SignalType(Enum):
     OTE_SIGNAL = "ote_signal"         # Optimal Trade Entry (ICT 0.618–0.786 Fibonacci + WT trigger)
     FUNDING_EXTREME = "funding_extreme"  # DEV-81: экстремальный funding rate → squeeze (shadow mode)
     LIQUIDITY_SWEEP = "liquidity_sweep"  # DEV-82: вынос стопов за swing_low/high → разворот
+    WT_SIDEWAYS = "wt_sideways"          # Sideways Mode: WT OS/OB на 30m при RANGE-режиме
+    ATR_CHANGE  = "atr_change"           # DEV-199/sprintCA: Supertrend cross → прямой вход в тренд
 
 
 class SignalDirection(Enum):

@@ -11,12 +11,12 @@ Indicators Layer — технические индикаторы.
   dynamic_thresholds  — адаптивные пороги по волатильности
 
 Использование:
-  from core.indicators import calculate_wt, calculate_trend
+  from core.indicators.indicators import calculate_wt, calculate_trend
   from core.indicators.market_regime import MarketRegimeClassifier
   from core.indicators.divergence_detector import DivergenceDetector
 """
 # Re-export публичного API из indicators.py — сохраняет совместимость
-# с кодом который делает: from core.indicators import calculate_wt
+# с кодом который делает: from core.indicators.indicators import calculate_wt
 from core.indicators.indicators import (  # noqa: F401
     calculate_wt, calculate_trend, get_zone, detect_fvg,
     calculate_trend_strength, get_trend_info,

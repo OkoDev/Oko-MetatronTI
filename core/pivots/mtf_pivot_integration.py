@@ -4,8 +4,8 @@
 import logging
 from typing import Dict, Optional, List, Tuple
 from core.pivot_calculator import PivotCalculator
-from core.mtf_checker import collect_mtf_data
-from core.message_builder import tv_link
+from core.mtf.mtf_checker import collect_mtf_data
+from core.ui.message_builder import tv_link
 
 logger = logging.getLogger(__name__)
 

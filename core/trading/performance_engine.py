@@ -1,10 +1,18 @@
 """
 Performance Engine — агрегирует статистику из simulated_trades для дашборда.
 Читает только из БД, не пишет ничего.
+
+DEV-190 (26.04.2026): WR/avgR метрики используют effective_status helper.
+Скрытые TSL exits (status='SL' + tsl_act=1 + R>0.1, для VST) учитываются как wins.
+Без этого VST метрики занижают TSL effectiveness в 30 раз (8/1740 vs 32% реальных).
+Совместимость: добавлены *_raw поля со старым расчётом для контроля.
+Откат: trading.effective_status_enabled: false (но raw по-прежнему работает).
 """
 import sqlite3
 import logging
 from typing import Any, Dict, List, Optional
+
+from core.trading.effective_status import SQL_IS_WIN_CASE
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +44,8 @@ class PerformanceEngine:
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cur.execute("""
+                # DEV-190: effective_status — скрытые TSL exits VST учитываются как wins
+                cur.execute(f"""
                     SELECT
                         COUNT(*) AS total,
                         SUM(CASE WHEN status='OPEN'    THEN 1 ELSE 0 END) AS open_count,
@@ -44,11 +53,13 @@ class PerformanceEngine:
                         SUM(CASE WHEN status='SL'      THEN 1 ELSE 0 END) AS sl_count,
                         SUM(CASE WHEN status='TSL'     THEN 1 ELSE 0 END) AS tsl_count,
                         SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired_count,
+                        SUM(CASE WHEN status='SL' AND tsl_activated=1 AND R_multiple > 0.10 THEN 1 ELSE 0 END) AS tsl_hidden_count,
+                        SUM({SQL_IS_WIN_CASE}) AS eff_wins,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r,
-                        AVG(CASE WHEN status IN ('TP','TSL') THEN R_multiple END) AS avg_r_win,
-                        AVG(CASE WHEN status='SL' THEN R_multiple END) AS avg_r_loss,
-                        AVG(CASE WHEN status='TSL' THEN R_multiple END) AS avg_r_tsl,
+                        AVG(CASE WHEN {SQL_IS_WIN_CASE} = 1 THEN R_multiple END) AS avg_r_win,
+                        AVG(CASE WHEN status='SL' AND NOT (tsl_activated=1 AND R_multiple > 0.10) THEN R_multiple END) AS avg_r_loss,
+                        AVG(CASE WHEN status='TSL' OR (status='SL' AND tsl_activated=1 AND R_multiple > 0.10) THEN R_multiple END) AS avg_r_tsl,
                         MIN(created_at) AS first_trade_at,
                         MAX(created_at) AS last_trade_at
                     FROM simulated_trades
@@ -57,11 +68,18 @@ class PerformanceEngine:
                 tp = row["tp_count"] or 0
                 sl = row["sl_count"] or 0
                 tsl = row["tsl_count"] or 0
+                hidden = row["tsl_hidden_count"] or 0
+                eff_wins = row["eff_wins"] or 0
                 closed = tp + sl + tsl
-                # TSL = Win (активируется только после +1R)
-                row["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
+                # DEV-190: WR с учётом скрытых TSL exits (главная метрика)
+                row["win_rate"] = round(eff_wins / closed * 100, 1) if closed else None
+                row["win_rate_raw"] = round((tp + tsl) / closed * 100, 1) if closed else None  # старый расчёт для контроля
                 row["win_rate_tp_only"] = round(tp / closed * 100, 1) if closed else None
                 row["closed_count"] = closed
+                # tsl_count теперь = native + hidden (для дашборда)
+                row["tsl_count_effective"] = tsl + hidden
+                row["tsl_count_native"] = tsl
+                row["tsl_count_hidden"] = hidden
                 for k in ("avg_profit_pct", "avg_r", "avg_r_win", "avg_r_loss", "avg_r_tsl"):
                     if row[k] is not None:
                         row[k] = round(row[k], 3)
@@ -89,16 +107,19 @@ class PerformanceEngine:
     # По типу сигнала
     # ------------------------------------------------------------------
     def by_signal_type(self) -> List[Dict[str, Any]]:
+        # DEV-190: WR/wins/losses учитывают скрытые TSL exits (status='SL'+tsl_act=1+R>0.1)
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         signal_type,
                         COUNT(*) AS total,
                         SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) AS tp_count,
                         SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
                         SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
+                        SUM(CASE WHEN status='SL' AND tsl_activated=1 AND R_multiple > 0.10 THEN 1 ELSE 0 END) AS tsl_hidden_count,
+                        SUM({SQL_IS_WIN_CASE}) AS eff_wins,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
                     FROM simulated_trades
@@ -112,10 +133,15 @@ class PerformanceEngine:
                     tp = d["tp_count"] or 0
                     tsl = d["tsl_count"] or 0
                     sl = d["sl_count"] or 0
+                    hidden = d["tsl_hidden_count"] or 0
+                    eff_wins = d["eff_wins"] or 0
                     closed = tp + tsl + sl
-                    d["wins"] = tp + tsl
-                    d["losses"] = sl
-                    d["win_rate"] = round((tp + tsl) / closed * 100, 1) if closed else None
+                    # DEV-190: wins / win_rate с учётом скрытых TSL
+                    d["wins"] = eff_wins
+                    d["losses"] = closed - eff_wins  # SL_clean + SL_slipped + BE_area (без exit_OK)
+                    d["win_rate"] = round(eff_wins / closed * 100, 1) if closed else None
+                    d["win_rate_raw"] = round((tp + tsl) / closed * 100, 1) if closed else None
+                    d["tsl_hidden_count"] = hidden
                     if d["avg_profit_pct"] is not None:
                         d["avg_profit_pct"] = round(d["avg_profit_pct"], 3)
                     if d["avg_r"] is not None:
@@ -160,8 +186,9 @@ class PerformanceEngine:
             era_clause = "AND json_extract(features_json, '$.data_era') = ?"
             era_params = (data_era,)
 
+        # DEV-190: добавлен tsl_activated для классификации скрытых TSL exits
         sql = f"""
-            SELECT signal_type, status, R_multiple, profit_pct
+            SELECT signal_type, status, R_multiple, profit_pct, tsl_activated
             FROM simulated_trades
             WHERE status IN ('TP','SL','TSL','EXPIRED')
               AND R_multiple IS NOT NULL
@@ -184,9 +211,11 @@ class PerformanceEngine:
             status = r["status"]
             rmult = float(r["R_multiple"]) if r["R_multiple"] is not None else 0.0
             pnl = float(r["profit_pct"]) if r["profit_pct"] is not None else 0.0
+            tsl_act = r["tsl_activated"]
             a = agg.setdefault(st, {
                 "signal_type": st,
                 "total": 0, "tp_count": 0, "tsl_count": 0, "sl_count": 0,
+                "tsl_hidden_count": 0,
                 "ema_r": None, "ema_pnl": None,
             })
             a["total"] += 1
@@ -196,6 +225,9 @@ class PerformanceEngine:
                 a["tsl_count"] += 1
             elif status == "SL":
                 a["sl_count"] += 1
+                # DEV-190: скрытый TSL exit (status='SL' но R>0.1 при активном TSL)
+                if tsl_act and rmult > 0.10:
+                    a["tsl_hidden_count"] += 1
             # EMA init на первой сделке, иначе инкрементально
             if a["ema_r"] is None:
                 a["ema_r"] = rmult
@@ -211,16 +243,21 @@ class PerformanceEngine:
             tp = a["tp_count"]
             tsl = a["tsl_count"]
             sl = a["sl_count"]
+            hidden = a["tsl_hidden_count"]
             closed = tp + tsl + sl
+            # DEV-190: wins = TP + TSL_native + TSL_hidden_win
+            eff_wins = tp + tsl + hidden
             result.append({
                 "signal_type":   a["signal_type"],
                 "total":         a["total"],
                 "tp_count":      tp,
                 "tsl_count":     tsl,
                 "sl_count":      sl,
-                "wins":          tp + tsl,
-                "losses":        sl,
-                "win_rate":      round((tp + tsl) / closed * 100, 1) if closed else None,
+                "tsl_hidden_count": hidden,
+                "wins":          eff_wins,
+                "losses":        closed - eff_wins,
+                "win_rate":      round(eff_wins / closed * 100, 1) if closed else None,
+                "win_rate_raw":  round((tp + tsl) / closed * 100, 1) if closed else None,
                 "avg_r":         round(a["ema_r"], 3) if a["ema_r"] is not None else None,
                 "avg_profit_pct": round(a["ema_pnl"], 3) if a["ema_pnl"] is not None else None,
             })
@@ -885,8 +922,9 @@ class PerformanceEngine:
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cur.execute("""
-                    SELECT status
+                # DEV-190: учёт скрытых TSL exits через is_win SQL fragment
+                cur.execute(f"""
+                    SELECT {SQL_IS_WIN_CASE} AS is_win
                     FROM simulated_trades
                     WHERE status IN ('TP', 'SL', 'TSL')
                     ORDER BY closed_at DESC
@@ -896,7 +934,7 @@ class PerformanceEngine:
             n = len(rows)
             if n < max(10, window // 5):
                 return {"win_rate": None, "wins": 0, "losses": 0, "n": n, "status": "insufficient_data"}
-            wins = sum(1 for s in rows if s in ("TP", "TSL"))
+            wins = sum(rows)
             losses = n - wins
             wr = round(wins / n * 100, 1)
             if wr < 30.0:

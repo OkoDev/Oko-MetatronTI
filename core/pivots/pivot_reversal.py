@@ -1,5 +1,5 @@
 import logging
-from core.indicators import detect_fvg, calculate_trend, calculate_wt, get_zone, compute_atr
+from core.indicators.indicators import detect_fvg, calculate_trend, calculate_wt, get_zone, compute_atr
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
 
         # === 4. WT + Trend из одного df_15m (не нужен 5m) ===
         df_15m = calculate_wt(df_15m)
-        from core.config_loader import config as _cfg_pr
+        from core.infra.config_loader import config as _cfg_pr
         df_15m = calculate_trend(df_15m,
                                  atr_period=int(_cfg_pr.get("analysis.indicators.trend.atr_period", 43)),
                                  factor=float(_cfg_pr.get("analysis.indicators.trend.factor", 1.0)))
@@ -114,6 +114,22 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
             except Exception:
                 pass
 
+        # DEV-188 (shadow): real_touch + volume_z для качества входа от уровня.
+        # Не блокирует — пишет в info dict → features_json для shadow-анализа
+        # после 50+ закрытых сделок: WR(real_touch=1) vs WR(0).
+        try:
+            recent_high_15m = float(df_15m["high"].iloc[-3:].max())
+            recent_low_15m  = float(df_15m["low"].iloc[-3:].min())
+            vol_last_15m    = float(df_15m["volume"].iloc[-1]) if "volume" in df_15m.columns else 0.0
+            if "volume" in df_15m.columns and len(df_15m) >= 21:
+                vol_avg_20_15m = float(df_15m["volume"].iloc[-21:-1].mean())
+            else:
+                vol_avg_20_15m = 0.0
+            volume_z_15m = round(vol_last_15m / vol_avg_20_15m, 2) if vol_avg_20_15m > 0 else 0.0
+        except Exception:
+            recent_high_15m = recent_low_15m = 0.0
+            volume_z_15m = 0.0
+
         # === Вспомогательные функции ===
         def _strength(wt_ok, trend_changed, has_fvg, fvg_ok, has_confluence):
             s = 60
@@ -131,6 +147,13 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
             tp_distance = abs(tp_levels[0]['price'] - current_price) if tp_levels else 0
             rr_ratio = tp_distance / actual_sl_dist if actual_sl_dist > 0 else 0
             strength = _strength(wt_ok, trend_changed, has_fvg, fvg_ok, has_confluence)
+            # DEV-188 (shadow): real_touch для weekly-pivot пути
+            if "LONG" in type_str:
+                _real_touch = 1 if recent_low_15m <= level_price * 1.001 else 0
+                _close_rejection = 1 if current_price > level_price else 0
+            else:
+                _real_touch = 1 if recent_high_15m >= level_price * 0.999 else 0
+                _close_rejection = 1 if current_price < level_price else 0
             return {
                 'symbol': symbol,
                 'type': type_str,
@@ -159,6 +182,9 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 'strength': strength,
                 'confidence': 'VERY_HIGH' if (has_confluence and has_fvg and fvg_ok) else 'HIGH',
                 'weekly_pivots': weekly_pivots,
+                'real_touch': _real_touch,
+                'close_rejection': _close_rejection,
+                'volume_z': volume_z_15m,
             }
 
         # === LONG: у поддержки ===
@@ -212,7 +238,7 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
 
 def pivot_level_signal_message(symbol: str, info: dict) -> str:
     """Форматирует сообщение о входе от уровня."""
-    from core.message_builder import tv_link
+    from core.ui.message_builder import tv_link
     from datetime import datetime
 
     is_long = "LONG" in info.get("type", "")
