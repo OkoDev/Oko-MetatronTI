@@ -160,6 +160,16 @@ async def _check_pivot_touches(bot, ctx, pivot_trigger, shadow_mode: bool) -> No
                         "[TriggerLoop][DEV-129] %s PIVOT_TOUCH → analyze: %s",
                         sym, result.reason,
                     )
+                    # Куб: публикуем в PairContextBus (Сфера 7) и EventBus
+                    _bus = getattr(bot, "pair_context", None)
+                    if _bus is not None:
+                        from core.context.pair_context import SphereEvent
+                        _bus.publish(sym, SphereEvent.PIVOT_TOUCH, {
+                            "reason": result.reason, "price": current_price,
+                        })
+                    _eb = getattr(bot, "event_bus", None)
+                    if _eb is not None:
+                        await _eb.publish(sym, "pivot_touch", priority=2)
                     await _fire_analysis(bot, sym, "pivot_touch")
 
         except asyncio.CancelledError:

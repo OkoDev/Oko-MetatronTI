@@ -3,9 +3,11 @@
 Извлечено из TradingIntelligence._analyze_signals_advanced и _calculate_adaptive_weighted_strength.
 """
 import logging
-from typing import Dict, List, Any
+import time
+from collections import defaultdict
+from typing import Dict, List, Any, Optional
 
-from core.signal_models import SignalData, SignalDirection, SignalType, MarketContext
+from core.signals.signal_models import SignalData, SignalDirection, SignalType, MarketContext
 
 logger = logging.getLogger(__name__)
 
@@ -129,3 +131,92 @@ def analyze_signals_advanced(
         "conflicting_signals": conflicting_signals,
         "total_signals":      len(signals),
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# DEV-201 — ConfirmationAggregator (Confirmation-Driven Architecture)
+# strength = Σ weight × confidence по всем подтверждениям.
+# Требует минимум 1 trigger, иначе strength=0.
+# ══════════════════════════════════════════════════════════════════
+
+class ConfirmationAggregator:
+    """Аккумулирует Confirmation объекты и вычисляет итоговый strength.
+
+    Окно window_seconds (600s по умолчанию) — максимальный возраст confirmation.
+    Старый _compute_overall_strength остаётся как fallback (backward-compat).
+    """
+
+    def __init__(self, window_seconds: int = 600):
+        self.window = window_seconds
+        # (symbol, side) → list[Confirmation]
+        self._pending: Dict = defaultdict(list)
+
+    def on_confirmation(self, conf) -> None:
+        """Добавить confirmation в буфер и вычистить устаревшие."""
+        key = (conf.symbol, conf.side)
+        self._pending[key].append(conf)
+        cutoff = conf.ts_ms - self.window * 1000
+        self._pending[key] = [c for c in self._pending[key] if c.ts_ms >= cutoff]
+
+    def aggregate(self, symbol: str, side: str) -> dict:
+        """Вернуть strength + список confirmations для symbol/side.
+
+        Returns:
+            dict с ключами: strength(0-100), confirmations(list), signal_mode(str),
+                            has_trigger(bool), strength_breakdown(dict)
+        """
+        from core.confirmations.registry import is_trigger as _is_trigger
+
+        key = (symbol, side)
+        confs = self._pending.get(key, [])
+
+        # Вычистить устаревшие по текущему времени
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - self.window * 1000
+        confs = [c for c in confs if c.ts_ms >= cutoff]
+        self._pending[key] = confs
+
+        if not confs:
+            return {'strength': 0, 'confirmations': [], 'has_trigger': False,
+                    'signal_mode': 'unknown', 'strength_breakdown': {}}
+
+        triggers = [c for c in confs if _is_trigger(c.source)]
+        if not triggers:
+            return {'strength': 0, 'confirmations': [], 'has_trigger': False,
+                    'signal_mode': 'unknown', 'strength_breakdown': {}}
+
+        trigger_strength = sum(c.weight * c.confidence for c in triggers)
+        conf_strength = sum(c.weight * c.confidence for c in confs if not _is_trigger(c.source))
+        total = trigger_strength + conf_strength
+
+        return {
+            'strength': min(int(total), 100),
+            'has_trigger': True,
+            'signal_mode': self._classify_mode(confs),
+            'confirmations': [c.to_dict() for c in confs],
+            'strength_breakdown': {
+                'trigger': round(trigger_strength, 1),
+                'confirmations_total': round(conf_strength, 1),
+                'final': min(int(total), 100),
+            },
+        }
+
+    def clear(self, symbol: str, side: Optional[str] = None) -> None:
+        """Сбросить буфер — после регистрации сделки."""
+        if side:
+            self._pending.pop((symbol, side), None)
+        else:
+            for s in ('LONG', 'SHORT'):
+                self._pending.pop((symbol, s), None)
+
+    @staticmethod
+    def _classify_mode(confs) -> str:
+        """REVERSAL / CASCADE / MOMENTUM / UNKNOWN — для аналитики, не gate."""
+        sources = {c.source for c in confs}
+        if 'atr_change_4h' in sources and ('zone_OS_4h' in sources or 'zone_OB_4h' in sources):
+            return 'reversal'
+        if 'atr_change_1h' in sources and 'atr_change_15m_pre_1h' in sources:
+            return 'cascade'
+        if 'atr_change_1h' in sources or 'atr_change_4h' in sources:
+            return 'momentum'
+        return 'unknown'

@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -134,8 +135,16 @@ class TradingAlertBot:
         self.post_analyser._event_bus = self.event_bus
 
         # ═══ КУБ МЕТАТРОНА: HTF детекторы (Сфера 7) ═══
-        from core.signals.htf_detectors import TrendChangeDetector, WTCrossHTFDetector
-        self._htf_detectors = (TrendChangeDetector(), WTCrossHTFDetector())
+        from core.signals.htf_detectors import TrendChangeDetector, WTCrossHTFDetector, ZoneEntryDetector, WTExtremeDetector
+        self._htf_detectors = (TrendChangeDetector(), WTCrossHTFDetector(), ZoneEntryDetector(), WTExtremeDetector())
+
+        # ═══ КУБ: ATR Trend Change Detector (DEV-199) ═══
+        from core.signals.atr_change_detector import ATRChangeDetector
+        self.atr_change_detector = ATRChangeDetector()
+
+        # ═══ КУБ: Confirmation Aggregator (DEV-201/202) ═══
+        from core.intelligence.signal_aggregator import ConfirmationAggregator
+        self.confirmation_aggregator = ConfirmationAggregator(window_seconds=600)
 
         # ═══ КУБ: Sphere Registry (Сфера 12 — Self-Diagnostics) ═══
         from core.context.sphere_registry import SphereRegistry
@@ -145,8 +154,14 @@ class TradingAlertBot:
         self._wire_cube_subscriptions()
 
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
+        # WS всегда использует LIVE ключи — VST ключи работают только с REST.
+        # WsFeed читает только рыночные данные (не торгует), режим execution_mode не влияет.
+        _ws_api_key = os.environ.get("BINGX_API_KEY") or config.get("exchanges.api_keys.bingx.api_key", "")
+        _ws_secret  = os.environ.get("BINGX_SECRET_KEY") or config.get("exchanges.api_keys.bingx.secret", "")
         self.ws_feed = WsFeed(
             ohlcv_cache=self.data_collector._engine._cache,
+            api_key=_ws_api_key,
+            secret=_ws_secret,
         )
         self.data_collector.set_ws_feed(self.ws_feed)  # data_collector.get_current_price() → WS first
         # Куб: WsFeed → PairContextBus (Сфера 2 → Central Hub)
@@ -329,6 +344,11 @@ class TradingAlertBot:
             from bot.loops.trigger_loop import run_trigger_loop
             from bot.loops.health_loop import health_check_loop
             from web.dashboard_server import start_dashboard
+            from core.observability import decision_trace as _dt
+
+            # DEV-203: DecisionTrace — инициализация и фоновый flush
+            _dt.configure(self.trade_simulator.db_path)
+            asyncio.create_task(_dt.flush_periodically(30))
 
             asyncio.create_task(health_check_loop(self))        # DEV-103: Exchange Health Guard
             asyncio.create_task(trade_tracker_loop(self))

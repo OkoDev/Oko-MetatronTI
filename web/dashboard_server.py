@@ -23,7 +23,7 @@ from typing import Any, Dict
 from pathlib import Path
 from aiohttp import web
 
-from core.performance_engine import PerformanceEngine
+from core.trading.performance_engine import PerformanceEngine
 
 
 
@@ -495,10 +495,12 @@ async def _handle_live(request: web.Request) -> web.Response:
                     "liquidation_price": float(p.get("liquidationPrice") or 0),
                 })
             # JOIN с simulated_trades по символу → получаем SL/TP для отображения
+            # BingX symbol "ATOM-USDT" → БД "ATOM/USDT:USDT"
             if result["positions"]:
-                syms = list({p["symbol"].replace("-", "/").replace(":USDT", "/USDT")
-                             for p in result["positions"]})
-                # symbol в БД: "BTC/USDT", на бирже: "BTC-USDT"
+                def _bx_to_db(sym: str) -> str:
+                    return sym.replace("-", "/") + ":USDT"
+
+                syms = list({_bx_to_db(p["symbol"]) for p in result["positions"]})
                 engine = request.app.get("engine")
                 db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
                 sl_tp_map: dict = {}
@@ -513,15 +515,22 @@ async def _handle_live(request: web.Request) -> web.Response:
                             syms,
                         ).fetchall()
                         for row in rows:
-                            sl_tp_map[row["symbol"]] = {
-                                "stop_loss":  row["stop_loss"],
-                                "take_profit": row["take_profit"],
-                            }
+                            sl = row["stop_loss"]
+                            tp = row["take_profit"]
+                            # Фильтруем нечисловые значения ("OPEN" — legacy артефакт)
+                            try:
+                                sl = float(sl) if sl and sl != "OPEN" else None
+                            except (TypeError, ValueError):
+                                sl = None
+                            try:
+                                tp = float(tp) if tp else None
+                            except (TypeError, ValueError):
+                                tp = None
+                            sl_tp_map[row["symbol"]] = {"stop_loss": sl, "take_profit": tp}
                 except Exception as db_e:
                     logger.debug("_handle_live JOIN failed: %s", db_e)
                 for pos in result["positions"]:
-                    # symbol в live = "BTC-USDT", в БД = "BTC/USDT"
-                    db_sym = pos["symbol"].replace("-", "/").replace(":USDT", "/USDT")
+                    db_sym = _bx_to_db(pos["symbol"])
                     st = sl_tp_map.get(db_sym) or {}
                     pos["stop_loss"]  = st.get("stop_loss")
                     pos["take_profit"] = st.get("take_profit")
@@ -535,6 +544,106 @@ async def _handle_live(request: web.Request) -> web.Response:
         text=json.dumps(result, ensure_ascii=False, default=str),
         content_type="application/json", charset="utf-8",
     )
+
+
+async def _handle_exchange_history(request: web.Request) -> web.Response:
+    """GET /api/exchange_history?days=7 — история LIVE сделок из simulated_trades.
+
+    Возвращает закрытые сделки с exchange_order_id за последние N дней.
+    Включает все метрики: profit_pct, R_multiple, duration, signal_type, direction.
+    """
+    try:
+        days = int(request.rel_url.query.get("days", "7"))
+        days = max(1, min(days, 90))
+        engine = request.app.get("engine")
+        db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
+
+        import sqlite3 as _sq
+        from datetime import timezone as _tz, timedelta as _td
+        cutoff = (datetime.now(_tz.utc) - _td(days=days)).isoformat()
+
+        with _sq.connect(db_path) as conn:
+            conn.row_factory = _sq.Row
+            rows = conn.execute(
+                """
+                SELECT id, symbol, direction, signal_type,
+                       entry_price, actual_entry_price, exit_price,
+                       stop_loss, take_profit,
+                       status, profit_pct, R_multiple,
+                       strength, confidence, regime,
+                       created_at, closed_at, duration_minutes,
+                       exchange_order_id, tsl_activated
+                FROM simulated_trades
+                WHERE exchange_order_id IS NOT NULL
+                  AND status IN ('TP','SL','TSL','EXPIRED')
+                  AND closed_at >= ?
+                ORDER BY closed_at DESC
+                LIMIT 500
+                """,
+                (cutoff,),
+            ).fetchall()
+
+        # DEV-190: effective_status — учёт скрытых TSL exits для VST
+        from core.trading.effective_status import effective_status as _eff
+        trades = []
+        for r in rows:
+            ep = r["actual_entry_price"] or r["entry_price"]
+            eff = _eff(r["status"], r["R_multiple"], r["tsl_activated"])
+            trades.append({
+                "id":              r["id"],
+                "symbol":          r["symbol"],
+                "direction":       r["direction"],
+                "signal_type":     r["signal_type"],
+                "entry_price":     ep,
+                "exit_price":      r["exit_price"],
+                "stop_loss":       r["stop_loss"],
+                "take_profit":     r["take_profit"],
+                "status":          r["status"],
+                "effective_status": eff,  # DEV-190
+                "profit_pct":      r["profit_pct"],
+                "R_multiple":      r["R_multiple"],
+                "strength":        r["strength"],
+                "confidence":      r["confidence"],
+                "regime":          r["regime"],
+                "created_at":      r["created_at"],
+                "closed_at":       r["closed_at"],
+                "duration_minutes": r["duration_minutes"],
+            })
+
+        # Агрегированные метрики (effective)
+        tp_cnt        = sum(1 for t in trades if t["status"] == "TP")
+        sl_cnt        = sum(1 for t in trades if t["status"] == "SL")
+        tsl_cnt       = sum(1 for t in trades if t["status"] == "TSL")
+        tsl_hidden_n  = sum(1 for t in trades if t["effective_status"] == "TSL_hidden_win")
+        sl_slipped_n  = sum(1 for t in trades if t["effective_status"] == "SL_slipped")
+        closed        = tp_cnt + sl_cnt + tsl_cnt
+        eff_wins      = tp_cnt + tsl_cnt + tsl_hidden_n
+        r_vals        = [t["R_multiple"] for t in trades if t["R_multiple"] is not None]
+        avg_r         = round(sum(r_vals) / len(r_vals), 3) if r_vals else None
+
+        return web.Response(
+            text=json.dumps({
+                "days":     days,
+                "total":    len(trades),
+                "summary": {
+                    "tp":             tp_cnt,
+                    "sl":             sl_cnt,
+                    "tsl":            tsl_cnt,
+                    "tsl_hidden":     tsl_hidden_n,    # DEV-190: скрытые TSL exits
+                    "tsl_effective":  tsl_cnt + tsl_hidden_n,
+                    "sl_slipped":     sl_slipped_n,    # сделки с overshoot >1R (DEV-185)
+                    "win_rate":       round(eff_wins / closed * 100, 1) if closed else None,
+                    "win_rate_raw":   round((tp_cnt + tsl_cnt) / closed * 100, 1) if closed else None,
+                    "avg_r":          avg_r,
+                },
+                "trades": trades,
+            }, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("_handle_exchange_history: %s", e)
+        return web.Response(status=500, text=json.dumps({"error": str(e)}),
+                            content_type="application/json")
 
 
 async def _handle_trading_page(request: web.Request) -> web.Response:
@@ -1572,12 +1681,41 @@ async def _handle_dashboard_page(request: web.Request) -> web.Response:
     return web.FileResponse(Path(__file__).parent / "static/operations.html")
 
 
+# ── DEV-203: DecisionTrace — dropped signals endpoint ──────────────────────
+
+async def _handle_dropped(request: web.Request) -> web.Response:
+    """GET /api/dropped — топ gate_name по drops за последние hours часов.
+
+    Query params:
+      hours  — окно анализа (default: 24)
+      limit  — максимум строк (default: 20)
+      detail — если '1', возвращает последние drops (recent view)
+    """
+    from core.observability.decision_trace import get_top_drops, get_recent_drops
+    engine: PerformanceEngine = request.app["engine"]
+    db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+
+    try:
+        hours = int(request.rel_url.query.get("hours", 24))
+        limit = int(request.rel_url.query.get("limit", 20))
+        detail = request.rel_url.query.get("detail", "0") == "1"
+    except (ValueError, TypeError):
+        hours, limit, detail = 24, 20, False
+
+    if detail:
+        data = get_recent_drops(db_path, limit=limit, hours=hours)
+        return web.json_response({"recent": data, "hours": hours, "limit": limit})
+    else:
+        data = get_top_drops(db_path, limit=limit, hours=hours)
+        return web.json_response({"drops": data, "hours": hours, "limit": limit})
+
+
 async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000,
                           config=None, data_collector=None, trade_simulator=None, bot=None) -> None:
     """Запускает aiohttp-сервер. Вызывать через asyncio.create_task()."""
     import asyncio
     if config is None:
-        from core.config_loader import config as _cfg
+        from core.infra.config_loader import config as _cfg
         config = _cfg
 
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
@@ -1605,6 +1743,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/trades/{trade_id}/trace", _handle_trade_trace)
     app.router.add_get("/api/live_orders", _handle_live_orders)
     app.router.add_get("/api/live", _handle_live)
+    app.router.add_get("/api/exchange_history", _handle_exchange_history)
     app.router.add_get("/trading", _handle_trading_page)
     app.router.add_get("/api/trading/status", _handle_trading_status)
     app.router.add_get("/api/trading/instrument_info", _handle_trading_instrument_info)
@@ -1621,12 +1760,14 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/performance",        _handle_performance_api)
     app.router.add_get("/api/pair/{symbol}",      _handle_pair_api)
     app.router.add_get("/api/events",             _handle_sse)
-    # ── Куб Метатрона — MCP Layer (Фаза 1) ──
+    # ── Куб Метатрана — MCP Layer (Фаза 1) ──
     app.router.add_get("/api/cube/context/{symbol}", _handle_cube_context)
     app.router.add_get("/api/cube/events", _handle_cube_events)
     app.router.add_get("/api/cube/stats", _handle_cube_stats)
     app.router.add_post("/api/cube/event", _handle_cube_event_inject)
     app.router.add_post("/api/cube/ml/train", _handle_cube_ml_train)
+    # ── DEV-203: DecisionTrace — видимость отброшенных сигналов ──
+    app.router.add_get("/api/dropped", _handle_dropped)
 
     runner = web.AppRunner(app)
     await runner.setup()

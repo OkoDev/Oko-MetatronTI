@@ -106,7 +106,14 @@ class SubscriptionManager:
                     strategy_name TEXT,
                     tsl_tf TEXT DEFAULT '15m',
                     exchange_order_id TEXT,
-                    exchange_sl_order_id TEXT
+                    exchange_sl_order_id TEXT,
+                    tp1_price REAL,
+                    tp2_price REAL,
+                    tp3_price REAL,
+                    tp1_hit_at TIMESTAMP,
+                    strategy_type TEXT,
+                    decision_trace_json TEXT,
+                    original_sl REAL
                 )
             """)
 
@@ -120,6 +127,13 @@ class SubscriptionManager:
                 ("tsl_tf", "TEXT DEFAULT '15m'"),
                 ("exchange_order_id", "TEXT"),
                 ("exchange_sl_order_id", "TEXT"),
+                ("tp1_price", "REAL"),
+                ("tp2_price", "REAL"),
+                ("tp3_price", "REAL"),
+                ("tp1_hit_at", "TIMESTAMP"),
+                ("strategy_type", "TEXT"),
+                ("decision_trace_json", "TEXT"),
+                ("original_sl", "REAL"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")
@@ -170,6 +184,29 @@ class SubscriptionManager:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_swh_computed_at "
                 "ON signal_weights_history(computed_at)"
+            )
+
+            # DEV-203: таблица отброшенных сигналов (DecisionTrace)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS signal_drops (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    signal_type TEXT,
+                    direction TEXT,
+                    strength INTEGER,
+                    gate_name TEXT NOT NULL,
+                    drop_reason TEXT NOT NULL,
+                    features_json TEXT,
+                    dropped_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_drops_gate "
+                "ON signal_drops(gate_name, dropped_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_drops_symbol "
+                "ON signal_drops(symbol, dropped_at)"
             )
 
             conn.commit()

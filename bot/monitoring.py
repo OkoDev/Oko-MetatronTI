@@ -22,6 +22,7 @@ from core.signals.signal_checkers import check_anomaly_signals, check_wt_signals
 from core.infra.entry_config import get_primary_entry_tf
 from core.signals.signal_models import SignalData, SignalType, SignalDirection
 from bot.keyboards import main_menu
+from core.observability import decision_trace  # DEV-203: DecisionTrace gate visibility
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,10 @@ async def check_mtf_alerts(bot):
                                                         fallback_rec=mtf_fallback, pre_signals=pre)
                     bot.signal_counters["mtf_alert"] += 1
                     bot.signal_counters["total"] += 1
+                    # Куб: MTF Alert → EventBus (prio=4)
+                    _eb = getattr(bot, "event_bus", None)
+                    if _eb is not None:
+                        await _eb.publish(sym, "mtf_alert", priority=4)
             except Exception:
                 logger.exception("Ошибка check_mtf_alerts для %s", sym)
 
@@ -389,6 +394,10 @@ async def check_cascade_divergences(bot, senior_tf: str, junior_tf: str):
                     await _broadcast_intelligence_alert(bot, sym, raw_text, "mtf_divergence", pre_signals=pre)
                     bot.signal_counters["divergence"] += 1
                     bot.signal_counters["total"] += 1
+                    # Куб: Cascade Divergence → EventBus (prio=3)
+                    _eb = getattr(bot, "event_bus", None)
+                    if _eb is not None:
+                        await _eb.publish(sym, "divergence", priority=3)
                     logger.info("[%s] Cascade-дивергенция %s→%s: %s (сила %d)",
                                 sym, senior_tf, junior_tf, cascade_info.get("type"), cascade_info.get("strength"))
             except Exception:
@@ -416,6 +425,10 @@ async def check_trend_signals(bot):
                     bot.signal_counters["trend_signal"] += 1
                     bot.signal_counters["total"] += 1
                     logger.info("[%s] Тренд-сигнал: %s", sym, info.get("pattern"))
+                    # Куб: Trend Signal → EventBus (prio=4, avg_R=-0.50 — низкий приоритет)
+                    _eb = getattr(bot, "event_bus", None)
+                    if _eb is not None:
+                        await _eb.publish(sym, "trend_signal", priority=4)
             except Exception:
                 logger.exception("Ошибка check_trend_signals для %s", sym)
 
@@ -491,6 +504,10 @@ async def check_pivot_reversals(bot):
                     bot.signal_counters["pivot_reversal"] += 1
                     bot.signal_counters["total"] += 1
                     logger.info("[%s] Вход от уровня: %s R:R=%.1f", sym, info.get("level"), info.get("rr_ratio", 0))
+                    # Куб: Pivot Reversal → EventBus (prio=2, avg_R=+0.50)
+                    _eb = getattr(bot, "event_bus", None)
+                    if _eb is not None:
+                        await _eb.publish(sym, "pivot_reversal", priority=2)
             except Exception:
                 logger.exception("Ошибка check_pivot_reversals для %s", sym)
 
@@ -738,8 +755,20 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 
     # Фильтры качества сигналов (Этап 5.1 + 8.4.4)
     if hasattr(bot, "_last_signal") and _is_duplicate_signal(bot, symbol, signal_type, direction):
+        # DEV-203: gate — dedup
+        asyncio.create_task(decision_trace.record_drop(
+            symbol=symbol, gate_name="dedup",
+            drop_reason=f"duplicate {signal_type}/{direction} within dedup_minutes",
+            signal_type=signal_type, direction=direction,
+        ))
         return
     if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol):
+        # DEV-203: gate — sl_cooldown
+        asyncio.create_task(decision_trace.record_drop(
+            symbol=symbol, gate_name="sl_cooldown",
+            drop_reason=f"sl_cooldown active for {symbol}",
+            signal_type=signal_type, direction=direction,
+        ))
         return
 
     recommendation = None
@@ -813,6 +842,12 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             if btc_filter_mode == "block" and strength_val < ct_thr:
                 logger.info("[%s] BTC %s vs %s, сила %d < %d — пропущен (block mode)",
                             symbol, btc_regime, direction_val, strength_val, ct_thr)
+                # DEV-203: gate — btc_counter_trend
+                asyncio.create_task(decision_trace.record_drop(
+                    symbol=symbol, gate_name="btc_counter_trend",
+                    drop_reason=f"btc={btc_regime} vs dir={direction_val} strength={strength_val}<{ct_thr}",
+                    signal_type=signal_type, direction=direction_val, strength=strength_val,
+                ))
                 return
             regime_ru = "восходящем" if btc_regime == "TREND_UP" else "нисходящем"
             dir_ru = "шорт" if direction_val == "SHORT" else "лонг"
@@ -1133,11 +1168,38 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
     is_actionable = _dir_ok and recommendation.overall_strength >= min_strength
     should_register = _dir_ok and recommendation.overall_strength >= min_strength_register
 
+    # DEV-203: gate — min_strength / min_strength_register
+    if recommendation is not None and _dir_ok:
+        _rec_str_val = int(getattr(recommendation, "overall_strength", 0))
+        _rec_dir_val = getattr(getattr(recommendation, "direction", None), "value", None)
+        _rec_sig_val = getattr(recommendation, "signal_type", signal_type)
+        if not should_register:
+            asyncio.create_task(decision_trace.record_drop(
+                symbol=symbol, gate_name="min_strength_register",
+                drop_reason=f"strength={_rec_str_val} < min_register={min_strength_register}",
+                signal_type=str(_rec_sig_val) if _rec_sig_val else signal_type,
+                direction=_rec_dir_val, strength=_rec_str_val,
+            ))
+        elif not is_actionable:
+            asyncio.create_task(decision_trace.record_drop(
+                symbol=symbol, gate_name="min_strength",
+                drop_reason=f"strength={_rec_str_val} < min={min_strength} (registered only)",
+                signal_type=str(_rec_sig_val) if _rec_sig_val else signal_type,
+                direction=_rec_dir_val, strength=_rec_str_val,
+            ))
+
     # WATCH+NEUTRAL — нет торгового решения, не спамим
     if (recommendation is not None
             and getattr(recommendation, "action", "WATCH") in ("WATCH", "HOLD")
             and getattr(recommendation.direction, "value", "NEUTRAL") == "NEUTRAL"):
         logger.info("[%s] Пропущен WATCH+NEUTRAL — нет торгового решения", symbol)
+        # DEV-203: gate — watch_neutral
+        asyncio.create_task(decision_trace.record_drop(
+            symbol=symbol, gate_name="watch_neutral",
+            drop_reason=f"action={getattr(recommendation, 'action', 'WATCH')} direction=NEUTRAL",
+            signal_type=signal_type, direction="NEUTRAL",
+            strength=int(getattr(recommendation, "overall_strength", 0)),
+        ))
         return
 
     # ── DEV-22: WATCH LIST ─────────────────────────────────────────────────────
@@ -1284,11 +1346,34 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                             extra["near_pivot_pct"] = None
                 except Exception:
                     pass
+            # ═══ DEV-202: ConfirmationAggregator → features_json.confirmations[] ═══
+            _conf_agg_m = getattr(bot, "confirmation_aggregator", None)
+            _conf_side_m = None
+            if _conf_agg_m is not None:
+                try:
+                    _dir_val = getattr(recommendation.direction, 'value', str(recommendation.direction))
+                    _conf_side_m = 'LONG' if 'LONG' in _dir_val.upper() else 'SHORT'
+                    _agg_res = _conf_agg_m.aggregate(symbol, _conf_side_m)
+                    if _agg_res.get('confirmations'):
+                        if extra is None:
+                            extra = {}
+                        extra['confirmations'] = _agg_res['confirmations']
+                        extra['signal_mode'] = _agg_res['signal_mode']
+                        extra['strength_breakdown'] = _agg_res['strength_breakdown']
+                except Exception as _ca_m_e:
+                    logger.debug("[DEV-202] %s confirmation_aggregator error: %s", symbol, _ca_m_e)
+
             trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
             trade_registered = trade_id is not None
             if not trade_registered:
                 logger.info("[%s] register_trade → None (заблокировано: regime/SL/TP/gate) — сделка НЕ сохранена", symbol)
             else:
+                # DEV-202: сбросить буфер confirmations после успешной регистрации
+                if _conf_agg_m is not None and _conf_side_m is not None:
+                    try:
+                        _conf_agg_m.clear(symbol, _conf_side_m)
+                    except Exception:
+                        pass
                 if hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
                     bot.ws_feed.update_priority_pairs([symbol])
                 # DEV-77: OrderExecutor — VST/LIVE исполнение (SIM_ONLY = только лог)

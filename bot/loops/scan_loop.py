@@ -293,6 +293,18 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     except Exception:
         pass
 
+    # DEV-202: confirmations из агрегатора
+    _wl_conf_agg = getattr(bot, "confirmation_aggregator", None)
+    if _wl_conf_agg is not None:
+        try:
+            _wl_side = rec.direction.value if hasattr(rec.direction, 'value') else str(rec.direction)
+            _wl_side = 'LONG' if 'LONG' in _wl_side.upper() else 'SHORT'
+            _wl_res = _wl_conf_agg.aggregate(rec.symbol, _wl_side)
+            _extra_wl['confirmations'] = _wl_res.get('confirmations', [])
+            _extra_wl['signal_mode'] = _wl_res.get('signal_mode', 'unknown')
+        except Exception:
+            _extra_wl['confirmations'] = []
+
     # Регистрируем сделку (dedup по открытым сделкам — внутри register_trade)
     trade_id = None
     if hasattr(bot, "trade_simulator"):
@@ -468,6 +480,264 @@ async def _prefetch_pivots(bot) -> None:
         logger.debug("Pivot diagnostics TG send error: %s", e)
 
 
+def _select_optimal_sl_long(
+    entry: float,
+    df: "pd.DataFrame",
+    trendline: "Optional[float]",
+    live_mode: bool = False,
+) -> "tuple[float, str]":
+    """Выбирает оптимальный SL для ATR change LONG из нескольких кандидатов.
+
+    Кандидаты:
+      1. trendup (supertrend линия — согласована с сигналом)
+      2. swing_low(20) — структурный минимум последних 20 баров
+      3. entry - 2×ATR(14) — быстрый ATR-based уровень
+
+    Фильтр: 0.3% ≤ sl_dist ≤ 10% от entry.
+    Выбор: ближайший к цене (tight SL = лучшее R).
+
+    live_mode=True добавляет 0.15% буфер ниже выбранного уровня,
+    чтобы компенсировать TSL-касание внутри свечи (vs симуляция = close).
+    """
+    candidates: list[tuple[float, str]] = []
+
+    # 1. trendup — supertrend линия
+    if trendline and 0.0 < trendline < entry:
+        candidates.append((trendline, "atr_trendline"))
+
+    # 2. swing_low за последние 20 баров
+    try:
+        if df is not None and len(df) >= 20 and "low" in df.columns:
+            swing_low = float(df["low"].iloc[-20:].min())
+            if 0.0 < swing_low < entry:
+                candidates.append((swing_low, "swing_low_20"))
+    except Exception:
+        pass
+
+    # 3. entry - 2×ATR(14) быстрый
+    try:
+        if df is not None and len(df) >= 15 and "high" in df.columns and "low" in df.columns:
+            hl = df["high"] - df["low"]
+            atr14 = float(hl.rolling(14).mean().iloc[-1])
+            sl_atr = entry - 2.0 * atr14
+            if 0.0 < sl_atr < entry:
+                candidates.append((sl_atr, "atr14_2x"))
+    except Exception:
+        pass
+
+    # Фильтр: 0.3% ≤ dist ≤ 10%
+    valid: list[tuple[float, str, float]] = []
+    for sl_price, src in candidates:
+        dist_pct = (entry - sl_price) / entry
+        if 0.003 <= dist_pct <= 0.10:
+            valid.append((sl_price, src, dist_pct))
+
+    if not valid:
+        # fallback — trendup если есть, иначе 5%
+        if trendline and 0.0 < trendline < entry:
+            final_sl, final_src = trendline, "atr_trendline_fallback"
+        else:
+            final_sl, final_src = entry * 0.95, "fixed_5pct_fallback"
+    else:
+        # ближайший к цене (минимум dist_pct)
+        valid.sort(key=lambda x: x[2])
+        final_sl, final_src, _ = valid[0]
+
+    # live_mode: буфер 0.15% ниже уровня (TSL срабатывает при касании, не при close)
+    if live_mode:
+        final_sl = final_sl * (1.0 - 0.0015)
+        final_src += "_buf"
+
+    return final_sl, final_src
+
+
+async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> None:
+    """Прямой вход по ATR change LONG — Supertrend cross → сделка без полного analyze_symbol.
+
+    Только LONG (backtest: SHORT avgR=-0.2 без фильтра).
+    Только 1h и 4h (15m слишком шумный).
+    SL выбирается оптимально из: trendup / swing_low(20) / ATR14×2.
+    TP = 3R.
+    """
+    try:
+        from core.signals.signal_models import (
+            TradingRecommendation, SignalDirection, MarketContext,
+        )
+        from core.confirmations.registry import get_weight as _gw
+
+        entry = ev.price
+        if entry <= 0:
+            return
+
+        # live_mode: биржевой TSL срабатывает при касании → нужен буфер
+        _exec_mode = bot.config.get("trading.execution_mode", "simulation")
+        _live_mode = _exec_mode in ("vst", "live")
+
+        sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
+
+        sl_dist = abs(entry - sl)
+        if sl_dist <= 0 or sl / entry >= 1.0:
+            logger.debug("[ATRChange] %s %s: невалидный SL %.6f (entry=%.6f)", symbol, tf, sl, entry)
+            return
+
+        # Strength: базовый вес trigger + zone OS confluence
+        strength = _gw(f"atr_change_{tf}", "LONG")
+        if ev.zone == "OS":
+            strength += _gw(f"zone_OS_{tf}", "LONG")
+
+        min_str = int(bot.config.get("signal_quality.min_strength_register", 40))
+        if strength < min_str:
+            logger.debug("[ATRChange] %s %s: strength=%d < %d", symbol, tf, strength, min_str)
+            return
+
+        tp = entry + sl_dist * 3.0
+        confidence = 0.85 if ev.zone == "OS" else 0.65
+
+        logger.info(
+            "[ATRChange] %s %s LONG: entry=%.4f sl=%.4f (src=%s dist=%.2f%%) tp=%.4f zone=%s",
+            symbol, tf, entry, sl, sl_source, 100 * sl_dist / entry, tp, ev.zone,
+        )
+
+        rec = TradingRecommendation(
+            symbol=symbol,
+            action="BUY",
+            direction=SignalDirection.LONG,
+            overall_strength=min(strength, 100),
+            confidence=confidence,
+            risk_level="MEDIUM",
+            signals_count=1,
+            supporting_signals=[],
+            conflicting_signals=[],
+            market_context=MarketContext(
+                symbol=symbol, current_price=entry,
+                volume_24h=0.0, volume_change_24h=0.0, price_change_24h=0.0,
+            ),
+            entry_price=entry,
+            stop_loss=sl,
+            take_profit=tp,
+            sl_source=sl_source,
+            tp_source="atr_rr_3.0",
+        )
+
+        extra = {
+            "trigger_source": f"atr_change_{tf}",
+            "atr_tf": tf,
+            "zone": ev.zone,
+            "wt1": ev.wt1,
+            "signal_mode": "momentum",
+            "confirmations": [],
+        }
+
+        # DEV-202: confirmations из агрегатора
+        _ca = getattr(bot, "confirmation_aggregator", None)
+        if _ca:
+            try:
+                _res = _ca.aggregate(symbol, "LONG")
+                if _res.get("confirmations"):
+                    extra["confirmations"] = _res["confirmations"]
+                    extra["signal_mode"] = _res["signal_mode"]
+                    extra["strength_breakdown"] = _res["strength_breakdown"]
+            except Exception:
+                pass
+
+        trade_id = await bot.trade_simulator.register_trade_async(
+            rec, bot.data_collector, extra_features=extra
+        )
+        if trade_id:
+            logger.info("[ATRChange] %s %s LONG → #%d registered (sl_source=%s)", symbol, tf, trade_id, sl_source)
+            if _ca:
+                try:
+                    _ca.clear(symbol, "LONG")
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.debug("[ATRChange] %s %s execute error: %s", symbol, tf, e)
+
+
+async def _execute_sideways_signal(bot, rec) -> None:
+    """Регистрирует wt_sideways сделку и размещает ордер на бирже (VST/LIVE)."""
+    try:
+        _meta = getattr(rec, "metadata", {}) or {}
+        _extra = {
+            "sideways_mode":   True,
+            "wt1_at_signal":   _meta.get("wt1"),
+            "sideways_bars":   _meta.get("sideways_bars"),
+        }
+        # DEV-202: добавить confirmations из агрегатора (если есть ATR накопленные)
+        _sw_conf_agg = getattr(bot, "confirmation_aggregator", None)
+        if _sw_conf_agg is not None:
+            try:
+                _sw_dir = getattr(rec.direction, 'value', str(rec.direction))
+                _sw_side = 'LONG' if 'LONG' in _sw_dir.upper() else 'SHORT'
+                _sw_res = _sw_conf_agg.aggregate(rec.symbol, _sw_side)
+                _extra['confirmations'] = _sw_res.get('confirmations', [])
+                _extra['signal_mode'] = _sw_res.get('signal_mode', 'unknown')
+                if _sw_res.get('strength_breakdown'):
+                    _extra['strength_breakdown'] = _sw_res['strength_breakdown']
+            except Exception:
+                _extra['confirmations'] = []
+        trade_id = await bot.trade_simulator.register_trade_async(
+            rec, bot.data_collector, extra_features=_extra
+        )
+        if trade_id is None:
+            return
+        logger.info("[sideways] #%d %s %s — зарегистрирована", trade_id, rec.symbol, rec.direction.value)
+
+        if not hasattr(bot, "order_executor"):
+            return
+        try:
+            _oe     = bot.order_executor
+            _dir    = rec.direction.value
+            _entry  = float(rec.entry_price or 0)
+            _sl     = float(rec.stop_loss or 0)
+            _tp     = float(rec.take_profit or 0)
+            if _entry <= 0 or _sl <= 0 or _tp <= 0:
+                return
+            _deposit  = await _oe.get_available_balance()
+            _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+            _leverage = int(bot.config.get("trading.leverage", 5))
+            _qty = bot.position_sizer.calc_qty(
+                entry_price=_entry, sl_price=_sl,
+                deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
+            )
+            if _qty <= 0:
+                logger.warning("[sideways] %s qty=0 (deposit=%.2f risk=%.1f%%)", rec.symbol, _deposit, _risk_pct)
+                return
+            _br = await _oe.open_bracket(
+                symbol=rec.symbol, direction=_dir,
+                entry_price=_entry, sl=_sl, tp1=_tp, tp2=None, qty=_qty,
+            )
+            if not _br.success:
+                if _br.error != "position_already_open":
+                    logger.warning("[sideways] %s OrderExecutor: %s", rec.symbol, _br.error)
+                return
+            logger.info(
+                "[sideways] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
+                _br.mode.upper(), _dir, _qty, _entry, _sl, _tp, _br.order_id, _br.notional_usdt,
+            )
+            if hasattr(bot, "position_manager"):
+                bot.position_manager.register(
+                    symbol=rec.symbol, side=_dir, qty=_qty,
+                    sim_trade_id=trade_id, exchange_order_id=_br.order_id,
+                )
+            if _br.order_id:
+                bot.trade_simulator.set_exchange_order_id(
+                    trade_id, _br.order_id, qty=_qty, actual_entry_price=_br.entry_price,
+                )
+                if _br.tp_order_id:
+                    bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
+                if _br.sl_order_id:
+                    bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
+                else:
+                    from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                    asyncio.create_task(fetch_and_save_sl_order_id(bot, trade_id, rec.symbol, _dir))
+        except Exception as _oe_e:
+            logger.warning("[sideways] %s OrderExecutor: %s", rec.symbol, _oe_e)
+    except Exception as _e:
+        logger.warning("[sideways] _execute_sideways_signal: %s", _e)
+
+
 async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     """Один проход по всем парам: для каждой пары все проверки подряд,
     затем broadcast СНАРУЖИ семафора — analyze_symbol не блокирует OHLCV-слоты."""
@@ -596,10 +866,39 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _rev_mode = _mrc.classify_mode(df_entry, df_1h, df_4h) if df_4h is not None else None
                         except Exception:
                             pass
+                        _sw_threshold = int((bot.config.get("sideways_mode") or {}).get("min_sideways_bars", 3))
                         _bus.publish(sym, SphereEvent.REGIME_UPDATED, {
                             "regime": _pair_regime,
                             "mode": _rev_mode or "UNCLEAR",
+                            "sideways_threshold": _sw_threshold,
                         })
+
+                    # Sideways Mode: параллельный сигнал при RANGE-режиме
+                    # Двойной gate: sideways_mode_active (счётчик) И текущий _pair_regime == RANGE
+                    _sw_cfg = bot.config.get("sideways_mode") or {}
+                    if _sw_cfg.get("enabled", True):
+                        _pair_st = _bus.get(sym) if _bus else None
+                        _sw_regime_ok = (_pair_regime == "RANGE")
+                        if _pair_st is not None and getattr(_pair_st, "sideways_mode_active", False) and _sw_regime_ok:
+                            try:
+                                from strategies.built_in.wt_sideways_strategy import analyze_sideways
+                                _sw_tf  = _sw_cfg.get("timeframe", "30m")
+                                _sw_str = int(_sw_cfg.get("min_strength", 60))
+                                _df_sw  = await bot.data_collector.get_ohlcv(sym, _sw_tf, limit=200)
+                                if _df_sw is not None and not _df_sw.empty:
+                                    _sw_rec = analyze_sideways(sym, _df_sw, min_strength=_sw_str)
+                                    if _sw_rec is not None:
+                                        # Добавляем sideways_bars в metadata для features_json
+                                        if _sw_rec.metadata is None:
+                                            _sw_rec.metadata = {}
+                                        _sw_rec.metadata["sideways_bars"] = getattr(_pair_st, "sideways_bars", 0)
+                                        asyncio.create_task(
+                                            _execute_sideways_signal(bot, _sw_rec)
+                                        )
+                                        logger.info("[sideways] %s: сигнал %s — запущен execute",
+                                                    sym, _sw_rec.direction.value)
+                            except Exception as _sw_e:
+                                logger.debug("[sideways] %s: ошибка: %s", sym, _sw_e)
 
                     # Сфера 3: WT snap → bus (все загруженные TF)
                     _wt_snap_data = {}
@@ -670,6 +969,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         _smc_snap = build_smc_snapshot(sym, _smc_ohlcv)
                         if _smc_snap:
                             _bus.publish(sym, SphereEvent.SMC_SNAP_UPDATED, _smc_snap)
+                            # Кешируем для SMC BOS/CHoCH EventBus (ниже по коду)
+                            if not hasattr(bot, "_last_smc_snap"):
+                                bot._last_smc_snap = {}
+                            bot._last_smc_snap[sym] = _smc_snap
                             logger.info(
                                 "[SMC_SNAP] %s: OB_bull=%s OB_bear=%s BOS=%s CHoCH=%s in_OTE=%s retrace=%.1f%%",
                                 sym,
@@ -695,12 +998,37 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 if _eb is not None:
                     _htf_det = getattr(bot, "_htf_detectors", None)
                     if _htf_det is not None:
-                        _tc, _wc = _htf_det
+                        _tc, _wc, _ze, _wxt = _htf_det
+                        # Trend change 15m (скальп)
+                        if df_entry is not None and not df_entry.empty:
+                            _tc_fired, _tc_data = _tc.check(sym, df_entry, "15m")
+                            if _tc_fired:
+                                asyncio.create_task(_eb.publish(sym, "trend_change_15m", priority=3, data=_tc_data))
                         # Trend change 1h
                         if df_1h is not None and not df_1h.empty:
-                            _tc_fired, _tc_data = _tc.check(sym, df_1h)
+                            _tc_fired, _tc_data = _tc.check(sym, df_1h, "1h")
                             if _tc_fired:
                                 asyncio.create_task(_eb.publish(sym, "trend_change_1h", priority=2, data=_tc_data))
+                        # Trend change 4h
+                        if df_4h is not None and not df_4h.empty:
+                            _tc4h_fired, _tc4h_data = _tc.check(sym, df_4h, "4h")
+                            if _tc4h_fired:
+                                asyncio.create_task(_eb.publish(sym, "trend_change_4h", priority=1, data=_tc4h_data))
+                        # Trend change 1d
+                        if df_1d is not None and not df_1d.empty:
+                            _tc1d_fired, _tc1d_data = _tc.check(sym, df_1d, "1d")
+                            if _tc1d_fired:
+                                asyncio.create_task(_eb.publish(sym, "trend_change_1d", priority=1, data=_tc1d_data))
+                        # WT cross 15m
+                        if df_entry is not None and not df_entry.empty:
+                            _wc15_fired, _wc15_data = _wc.check(sym, df_entry, "15m")
+                            if _wc15_fired:
+                                asyncio.create_task(_eb.publish(sym, "wt_cross_15m", priority=3, data=_wc15_data))
+                        # WT cross 1h
+                        if df_1h is not None and not df_1h.empty:
+                            _wc1h_fired, _wc1h_data = _wc.check(sym, df_1h, "1h")
+                            if _wc1h_fired:
+                                asyncio.create_task(_eb.publish(sym, "wt_cross_1h", priority=2, data=_wc1h_data))
                         # WT cross 4h
                         if df_4h is not None and not df_4h.empty:
                             _wc_fired, _wc_data = _wc.check(sym, df_4h, "4h")
@@ -711,6 +1039,153 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _wc1d_fired, _wc1d_data = _wc.check(sym, df_1d, "1d")
                             if _wc1d_fired:
                                 asyncio.create_task(_eb.publish(sym, "wt_cross_1d", priority=1, data=_wc1d_data))
+                        # Zone entry OS/OB — все TF
+                        for _ze_df, _ze_tf in [
+                            (df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h"), (df_1d, "1d"),
+                        ]:
+                            if _ze_df is not None and not _ze_df.empty:
+                                _ze_fired, _ze_data = _ze.check(sym, _ze_df, _ze_tf)
+                                if _ze_fired:
+                                    _ze_event = f"zone_enter_{_ze_data['zone'].lower()}"
+                                    asyncio.create_task(_eb.publish(sym, _ze_event, priority=2, data=_ze_data))
+                        # WT Extreme (< -80 / > +80) — все TF
+                        for _wxt_df, _wxt_tf in [
+                            (df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h"), (df_1d, "1d"),
+                        ]:
+                            if _wxt_df is not None and not _wxt_df.empty:
+                                _wxt_fired, _wxt_data = _wxt.check(sym, _wxt_df, _wxt_tf)
+                                if _wxt_fired:
+                                    asyncio.create_task(_eb.publish(sym, "wt_extreme", priority=1, data=_wxt_data))
+
+                # ═══ КУБ: ATR Trend Change Detector → EventBus + ConfirmationAggregator (DEV-199/202) ═══
+                # 1d не публикуется: backtest R8 avgR=-0.4
+                _atr_det = getattr(bot, "atr_change_detector", None)
+                _eb_atr = getattr(bot, "event_bus", None)
+                _conf_agg = getattr(bot, "confirmation_aggregator", None)
+                if _atr_det is not None and _eb_atr is not None:
+                    for _atr_df, _atr_tf in [(df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h")]:
+                        try:
+                            if _atr_df is None or _atr_df.empty:
+                                continue
+                            _atr_ev = _atr_det.detect(sym, _atr_tf, _atr_df)
+                            if _atr_ev is None:
+                                continue
+                            _prio = 2 if _atr_tf == "15m" else 1
+                            asyncio.create_task(_eb_atr.publish(sym, f"atr_change_{_atr_tf}", priority=_prio, data=_atr_ev.to_dict()))
+                            # DEV-199: прямой вход по ATR change LONG (только 1h/4h, SHORT avgR=-0.2)
+                            if _atr_tf in ('1h', '4h') and _atr_ev.side == 'UP':
+                                asyncio.create_task(_execute_atr_change_signal(bot, sym, _atr_ev, _atr_tf, df=_atr_df))
+                            # → ConfirmationAggregator: накапливаем для features_json (DEV-202)
+                            if _conf_agg is not None:
+                                try:
+                                    from core.confirmations.models import Confirmation as _Conf
+                                    from core.confirmations.registry import get_weight as _gw
+                                    _side = 'LONG' if _atr_ev.side == 'UP' else 'SHORT'
+                                    _src = f'atr_change_{_atr_tf}'
+                                    _conf_agg.on_confirmation(_Conf(
+                                        source=_src, symbol=sym, side=_side,
+                                        weight=_gw(_src, _side), confidence=1.0,
+                                        evidence={'price': _atr_ev.price, 'wt1': _atr_ev.wt1, 'zone': _atr_ev.zone},
+                                        tf=_atr_tf,
+                                    ))
+                                    # Zone OS/OB как дополнительное подтверждение
+                                    if _atr_ev.zone == 'OS' and _side == 'LONG':
+                                        _zs = f'zone_OS_{_atr_tf}'
+                                        _zw = _gw(_zs, _side)
+                                        if _zw > 0:
+                                            _conf_agg.on_confirmation(_Conf(
+                                                source=_zs, symbol=sym, side=_side,
+                                                weight=_zw, confidence=1.0,
+                                                evidence={'wt1': _atr_ev.wt1}, tf=_atr_tf,
+                                            ))
+                                    elif _atr_ev.zone == 'OB' and _side == 'SHORT':
+                                        _zs = f'zone_OB_{_atr_tf}'
+                                        _zw = _gw(_zs, _side)
+                                        if _zw > 0:
+                                            _conf_agg.on_confirmation(_Conf(
+                                                source=_zs, symbol=sym, side=_side,
+                                                weight=_zw, confidence=1.0,
+                                                evidence={'wt1': _atr_ev.wt1}, tf=_atr_tf,
+                                            ))
+                                except Exception as _ca_e:
+                                    logger.debug("[ConfAgg] %s %s: %s", sym, _atr_tf, _ca_e)
+                        except Exception as _atr_e:
+                            logger.debug("[ATRChangeDetector] %s error %s: %s", _atr_tf, sym, _atr_e)
+
+                # ═══ KYB: Режим рынка → regime_change ═══
+                _eb2 = getattr(bot, "event_bus", None)
+                if _eb2 is not None and _pair_regime:
+                    _prev_regimes = getattr(bot, "_prev_regimes", {})
+                    if not hasattr(bot, "_prev_regimes"):
+                        bot._prev_regimes = {}
+                    _old_regime = bot._prev_regimes.get(sym)
+                    if _old_regime is not None and _old_regime != _pair_regime:
+                        asyncio.create_task(_eb2.publish(sym, "regime_change", priority=3, data={
+                            "old": _old_regime, "new": _pair_regime,
+                        }))
+                        logger.info("[KUB] %s regime_change: %s → %s", sym, _old_regime, _pair_regime)
+                    bot._prev_regimes[sym] = _pair_regime
+
+                # ═══ КУБ: SMC BOS/CHoCH → EventBus ═══
+                if _eb2 is not None:
+                    try:
+                        _smc_snap_local = getattr(bot, "_last_smc_snap", {}).get(sym)
+                        if _smc_snap_local:
+                            _last_bos   = _smc_snap_local.get("last_bos")
+                            _last_choch = _smc_snap_local.get("last_choch")
+                            _bos_cache  = getattr(bot, "_prev_bos_id", {})
+                            _choch_cache = getattr(bot, "_prev_choch_id", {})
+                            if not hasattr(bot, "_prev_bos_id"):
+                                bot._prev_bos_id, bot._prev_choch_id = {}, {}
+                            if _last_bos:
+                                # Ключ: (tf, direction) — новый BOS = смена tf или direction
+                                _bos_id = (_last_bos.get("tf"), _last_bos.get("direction"))
+                                if bot._prev_bos_id.get(sym) != _bos_id:
+                                    bot._prev_bos_id[sym] = _bos_id
+                                    asyncio.create_task(_eb2.publish(sym, "smc_bos_detected", priority=2, data=_last_bos))
+                                    logger.info("[KUB] %s smc_bos_detected: %s tf=%s", sym, _last_bos.get("direction"), _last_bos.get("tf"))
+                            if _last_choch:
+                                _choch_id = (_last_choch.get("tf"), _last_choch.get("direction"))
+                                if bot._prev_choch_id.get(sym) != _choch_id:
+                                    bot._prev_choch_id[sym] = _choch_id
+                                    asyncio.create_task(_eb2.publish(sym, "smc_choch_detected", priority=1, data=_last_choch))
+                                    logger.info("[KUB] %s smc_choch_detected: %s tf=%s", sym, _last_choch.get("direction"), _last_choch.get("tf"))
+                            # FVG Touch — цена вошла в открытый Fair Value Gap
+                            _cur_price_fvg = float(df_entry["close"].iloc[-1]) if df_entry is not None and not df_entry.empty else 0
+                            if _cur_price_fvg > 0:
+                                _fvg_fired_key = getattr(bot, "_prev_fvg_touch", {})
+                                if not hasattr(bot, "_prev_fvg_touch"):
+                                    bot._prev_fvg_touch = {}
+                                for _fvg in _smc_snap_local.get("bull_fvg_active", []):
+                                    if _fvg.get("top", 0) - _fvg.get("bottom", 0) < 1e-8:
+                                        continue  # нулевой FVG — артефакт detect_fvg
+                                    if _fvg.get("bottom", 0) <= _cur_price_fvg <= _fvg.get("top", 0):
+                                        _fvg_key = (sym, "bull", round(_fvg.get("bottom", 0), 4))
+                                        if bot._prev_fvg_touch.get(_fvg_key) != True:
+                                            bot._prev_fvg_touch[_fvg_key] = True
+                                            asyncio.create_task(_eb2.publish(sym, "fvg_touch", priority=2, data={
+                                                "type": "bull", "bottom": _fvg.get("bottom"), "top": _fvg.get("top"),
+                                                "tf": _fvg.get("tf", _etf), "price": _cur_price_fvg,
+                                            }))
+                                            logger.info("[KUB] %s fvg_touch: BULL FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                    else:
+                                        bot._prev_fvg_touch.pop((sym, "bull", round(_fvg.get("bottom", 0), 4)), None)
+                                for _fvg in _smc_snap_local.get("bear_fvg_active", []):
+                                    if _fvg.get("top", 0) - _fvg.get("bottom", 0) < 1e-8:
+                                        continue  # нулевой FVG — артефакт detect_fvg
+                                    if _fvg.get("bottom", 0) <= _cur_price_fvg <= _fvg.get("top", 0):
+                                        _fvg_key = (sym, "bear", round(_fvg.get("top", 0), 4))
+                                        if bot._prev_fvg_touch.get(_fvg_key) != True:
+                                            bot._prev_fvg_touch[_fvg_key] = True
+                                            asyncio.create_task(_eb2.publish(sym, "fvg_touch", priority=2, data={
+                                                "type": "bear", "bottom": _fvg.get("bottom"), "top": _fvg.get("top"),
+                                                "tf": _fvg.get("tf", _etf), "price": _cur_price_fvg,
+                                            }))
+                                            logger.info("[KUB] %s fvg_touch: BEAR FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                    else:
+                                        bot._prev_fvg_touch.pop((sym, "bear", round(_fvg.get("top", 0), 4)), None)
+                    except Exception as _smc_ev_e:
+                        logger.debug("[KUB] smc_events %s: %s", sym, _smc_ev_e)
 
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(
@@ -780,11 +1255,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _eb = getattr(bot, "event_bus", None)
                             if _eb is not None:
                                 asyncio.create_task(_eb.publish(sym, "anomaly_volume", priority=4))
-                            # Куб: Сфера 7 → bus
+                            # Куб: Сфера 7 → bus (ANOMALY + VOLUME_SPIKE)
                             if _bus is not None:
+                                _v_ratio = info.get("volume_ratio", 0)
                                 _bus.publish(sym, SphereEvent.ANOMALY_DETECTED, {
-                                    "volume_ratio": info.get("volume_ratio", 0),
+                                    "volume_ratio": _v_ratio,
                                     "tf": _scan_tf,
+                                })
+                                # VOLUME_SPIKE в PairContextBus (отдельное событие)
+                                _bus.publish(sym, SphereEvent.VOLUME_SPIKE, {
+                                    "ratio": _v_ratio, "tf": _scan_tf,
                                 })
 
                     # 1a. DEV-81: FUNDING_EXTREME (shadow mode — только лог, не в TG)
@@ -939,6 +1419,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         all_scan_signals.append(sig)
                         signals_to_broadcast.append(("wt_b", _wt_b_message(sym, sig), None))
                         logger.info("[wt_b] %s: %s str=%d", sym, sig.direction.value, sig.strength)
+                        # Куб: WT-B → EventBus (prio=1, WR=85%)
+                        _eb = getattr(bot, "event_bus", None)
+                        if _eb is not None:
+                            await _eb.publish(sym, "wt_b_signal", priority=1)
 
                 # 6. MTF alerts — вынесены в check_mtf_alerts (каждые 5 мин),
                 # т.к. collect_mtf_data фетчит 7 TF (5m, 45m, 4h, 1d не в кеше)
@@ -967,6 +1451,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 bot.signal_counters["divergence"] += 1
                                 bot.signal_counters["total"] += 1
                                 logger.info("[%s] MTF-дивергенция 1h+15m: %s", sym, mtf_info.get("type"))
+                                # Куб: Divergence → EventBus
+                                _eb = getattr(bot, "event_bus", None)
+                                if _eb is not None:
+                                    await _eb.publish(sym, "divergence", priority=3)
                                 # Куб: Сфера 7 → bus
                                 if _bus is not None:
                                     _bus.publish(sym, SphereEvent.DIVERGENCE_FOUND, {
@@ -1006,6 +1494,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         bot.signal_counters["divergence"] += 1
                                         bot.signal_counters["total"] += 1
                                         logger.info("[%s] Дивергенция на %s: %s", sym, tf, div_info.get("type"))
+                                        # Куб: Divergence → EventBus
+                                        _eb = getattr(bot, "event_bus", None)
+                                        if _eb is not None:
+                                            await _eb.publish(sym, "divergence", priority=3)
                                         signals_to_broadcast.append(("divergence", divergence_message(sym, div_info), None))
                                         _dir = SignalDirection.LONG if div_info.get("direction") == "LONG" else SignalDirection.SHORT
                                         # Кешируем для меню "Дивергенции" без влияния на pre_signals analyze_symbol

@@ -363,6 +363,75 @@ async function loadLive() {
   } catch(_) {}
 }
 
+async function loadExchangeHistory(days) {
+  const histSection = document.getElementById('exchangeHistSection');
+  const histBody    = document.getElementById('exchHistBody');
+  const histSummary = document.getElementById('exchHistSummary');
+  if (!histSection) return;
+
+  try {
+    const r = await fetch('/api/exchange_history?days=' + (days || 7));
+    if (!r.ok) return;
+    const d = await r.json();
+
+    if (!d.total) {
+      histSection.style.display = 'none';
+      return;
+    }
+    histSection.style.display = '';
+
+    const s = d.summary;
+    const wrStr  = s.win_rate != null ? `WR ${s.win_rate}%` : '';
+    const avgStr = s.avg_r    != null ? `avg R ${s.avg_r > 0 ? '+' : ''}${s.avg_r}` : '';
+    histSummary.innerHTML =
+      `<span style="color:#3fb950">TP ${s.tp}</span> ` +
+      `<span style="color:#b87eff">TSL ${s.tsl}</span> ` +
+      `<span style="color:#f85149">SL ${s.sl}</span>` +
+      (wrStr  ? ` &nbsp;·&nbsp; ${wrStr}`  : '') +
+      (avgStr ? ` &nbsp;·&nbsp; <span style="color:${s.avg_r >= 0 ? '#3fb950' : '#f85149'}">${avgStr}</span>` : '');
+
+    const fmtP = v => v != null ? parseFloat(v).toPrecision(4) : '—';
+    const fmtR = v => v != null ? (v > 0 ? '+' : '') + parseFloat(v).toFixed(2) + 'R' : '—';
+    const fmtPct = v => v != null ? (v > 0 ? '+' : '') + parseFloat(v).toFixed(2) + '%' : '—';
+    const STATUS_COLOR = {TP:'#3fb950', TSL:'#b87eff', SL:'#f85149', EXPIRED:'#d29922'};
+    const fmtTime = s => s ? s.replace('T',' ').slice(0,16) : '—';
+    const fmtDur = m => {
+      if (!m) return '—';
+      if (m < 60) return m + 'м';
+      return Math.round(m/60) + 'ч ' + (m%60) + 'м';
+    };
+
+    const rows = d.trades.map(t => {
+      const sc = STATUS_COLOR[t.status] || '#8b949e';
+      const rColor = t.R_multiple != null ? (t.R_multiple >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
+      const sym = (t.symbol||'').replace(':USDT','');
+      return `<tr>
+        <td style="font-size:.78em;color:#8b949e">${fmtTime(t.closed_at)}</td>
+        <td><a href="/pair/${encodeURIComponent(t.symbol)}" style="color:#58a6ff;text-decoration:none">${sym}</a></td>
+        <td style="color:${t.direction==='LONG'?'#3fb950':'#f85149'};font-weight:600">${t.direction}</td>
+        <td style="font-size:.78em;color:#8b949e">${t.signal_type||'—'}</td>
+        <td style="font-size:.82em">${fmtP(t.entry_price)}</td>
+        <td style="font-size:.82em">${fmtP(t.exit_price)}</td>
+        <td style="font-size:.8em;color:#8b949e">${fmtP(t.stop_loss)}&nbsp;/&nbsp;${fmtP(t.take_profit)}</td>
+        <td style="color:${sc};font-weight:700">${t.status}</td>
+        <td style="color:${rColor};font-weight:600">${fmtR(t.R_multiple)}</td>
+        <td style="color:${rColor}">${fmtPct(t.profit_pct)}</td>
+        <td style="font-size:.78em;color:#8b949e">${fmtDur(t.duration_minutes)}</td>
+        <td style="font-size:.75em;color:#484f58">${t.regime||'—'}</td>
+      </tr>`;
+    }).join('');
+
+    histBody.innerHTML = `<div style="overflow-x:auto"><table style="font-size:.83em">
+      <thead><tr>
+        <th>Закрыто</th><th>Пара</th><th>Сторона</th><th>Сигнал</th>
+        <th>Вход</th><th>Выход</th><th>SL / TP</th>
+        <th>Статус</th><th>R</th><th>P&L%</th><th>Время</th><th>Режим</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch(_) {}
+}
+
 async function load() {
   try {
     const days = window._swhDays || 14;
@@ -383,6 +452,7 @@ async function load() {
       'Обновлено: ' + new Date().toLocaleTimeString('ru');
     updateModeBadge();
     loadLive();
+    loadExchangeHistory(7);
   } catch(e) {
     document.getElementById('updated').textContent = 'Ошибка загрузки: ' + e.message;
   }
@@ -1307,6 +1377,19 @@ function render(d, cf, be, eq, an, swh) {
         <h2>Позиции BingX <span id="exchangePosCount" style="color:#8b949e;font-size:.9em;font-weight:400"></span> <span style="color:#58a6ff;font-size:.75em;font-weight:400">(прямой запрос к бирже)</span></h2>
         <div id="exchangePosBody"></div>
       </section>
+      <section id="exchangeHistSection" style="display:none">
+        <h2>История LIVE сделок
+          <span id="exchHistSummary" style="color:#8b949e;font-size:.82em;font-weight:400;margin-left:8px"></span>
+          <span style="float:right;font-size:.78em;font-weight:400">
+            <select id="exchHistDays" style="background:#161b22;color:#8b949e;border:1px solid #30363d;border-radius:4px;padding:2px 6px;cursor:pointer">
+              <option value="7" selected>7 дней</option>
+              <option value="14">14 дней</option>
+              <option value="30">30 дней</option>
+            </select>
+          </span>
+        </h2>
+        <div id="exchHistBody"></div>
+      </section>
     </div>
 
     <!-- ═══ PAGE: ИСТОРИЯ ═══ -->
@@ -1980,6 +2063,13 @@ function regimeDonut(rows) {
 
 load();
 setInterval(load, 30000);
+
+// Смена периода истории LIVE сделок
+document.addEventListener('change', e => {
+  if (e.target && e.target.id === 'exchHistDays') {
+    loadExchangeHistory(parseInt(e.target.value));
+  }
+});
 </script>
 </body>
 </html>
