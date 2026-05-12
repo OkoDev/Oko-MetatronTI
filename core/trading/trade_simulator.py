@@ -99,6 +99,8 @@ class TradeSimulator:
         self._post_tsl_queue: dict = {}
         # DEV-94: callback от PostTradeAnalyser (устанавливается при старте бота)
         self._post_trade_callback = None
+        # SSE broadcast: async callback(trade_id) для дашборда (устанавливается из dashboard_server)
+        self._sse_trade_closed = None
         # DEV-89: общий PivotCalculatorFixed — создаётся один раз, не на каждую сделку
         self._pivot_calc: object = None
         # DEV-148: защита от concurrent close одной сделки (database is locked cascade)
@@ -109,6 +111,10 @@ class TradeSimulator:
     def set_post_trade_callback(self, cb) -> None:
         """DEV-94: регистрирует PostTradeAnalyser.on_trade_closed как callback."""
         self._post_trade_callback = cb
+
+    def set_sse_trade_closed(self, cb) -> None:
+        """Регистрирует async callback(trade_id) для SSE broadcast при закрытии сделки."""
+        self._sse_trade_closed = cb
 
     def _db_connect(self, timeout: int = 30):
         """DEV-148: единое место для настройки соединения — WAL + busy_timeout на каждом connect."""
@@ -1385,6 +1391,14 @@ class TradeSimulator:
                 except Exception as _ecb:
                     logger.debug("[DEV-94] post_trade_callback error: %s", _ecb)
 
+            # SSE broadcast: уведомляем дашборд о закрытой сделке
+            if self._sse_trade_closed:
+                try:
+                    import asyncio as _aio_sse
+                    _aio_sse.create_task(self._sse_trade_closed(trade_id))
+                except Exception as _esse:
+                    logger.debug("[SSE] sse_trade_closed callback error: %s", _esse)
+
             return True
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка close_trade {trade_id} — {e}")
@@ -1582,6 +1596,19 @@ class TradeSimulator:
                             "[trade %d] нет баров после created_at (%s) — пропуск чека SL/TP",
                             trade_id, created_at,
                         )
+                        if _is_expired and not _exchange_managed_trade:
+                            try:
+                                _ticker_nb = await data_collector.get_ticker(symbol)
+                                if _ticker_nb:
+                                    _last_nb = float(_ticker_nb.get("last") or _ticker_nb.get("close") or entry)
+                                    if self.close_trade(trade_id, STATUS_EXPIRED, _last_nb):
+                                        closed_count += 1
+                                        logger.info(
+                                            "TradeSimulator: EXPIRED (no-bars) %s #%d age=%.0fh price=%.6f",
+                                            symbol, trade_id, age_minutes / 60, _last_nb,
+                                        )
+                            except Exception as _e_nb:
+                                logger.debug("TradeSimulator: EXPIRED no-bars ticker %s — %s", symbol, _e_nb)
                         continue
                     df = df_filtered
                 except Exception:
@@ -2044,30 +2071,27 @@ class TradeSimulator:
                                 closed_count += 1
                             continue
                         else:
-                            # TSL активен, не сработал — фиксируем движение SL для обновления на бирже
+                            # TSL активен, не сработал — фиксируем движение SL.
+                            # DEV-189 (12.05.2026): UPDATE stop_loss выполняется ВСЕГДА при
+                            # реальном движении (≥0.15%), не только для биржевых сделок.
+                            # До фикса: _is_real_move требовал exchange_order_id → SIM сделки
+                            # не апдейтили БД (~80% случаев) → SL читался старый при следующем
+                            # check_open_trades → закрытие по застывшему SL вместо реального TSL.
+                            # Эффект на 12.05: wt_sideways sim avgR=-0.63 vs exchange +0.67 (Δ240R).
                             _exch_sl_id = trade.get("exchange_sl_order_id")
                             _old_sl = float(trade.get("stop_loss") or 0)
                             _exch_order_id = trade.get("exchange_order_id")
                             # Фильтр ≥0.15% — устраняет float-equality "движения" и повторный cancel+replace
-                            _min_move = 0.15  # % — tsl_updater применит тот же порог при реальном move
-                            _is_real_move = (
-                                _exch_order_id and tsl_price and _old_sl > 0
+                            _min_move = 0.15  # %
+                            _sl_changed = bool(
+                                tsl_price and _old_sl > 0
                                 and abs(tsl_price - _old_sl) / _old_sl * 100 >= _min_move
                             )
-                            if _is_real_move:
-                                # qty — из оригинального ордера (посчитаем из notional или берём из БД)
-                                _qty = float(trade.get("qty") or 0)
-                                tsl_moved.append({
-                                    "trade_id":            trade_id,
-                                    "symbol":              symbol,
-                                    "direction":           direction,
-                                    "qty":                 _qty,
-                                    "new_sl_price":        tsl_price,
-                                    "old_sl_price":        _old_sl,
-                                    "exchange_sl_order_id": _exch_sl_id,
-                                    "exchange_order_id":   _exch_order_id,
-                                })
-                                # Обновляем stop_loss в БД → текущий TSL уровень виден в дашборде
+                            # Биржевой cancel+replace только если есть биржевой ордер
+                            _needs_exchange_update = _sl_changed and bool(_exch_order_id)
+
+                            if _sl_changed:
+                                # 1) UPDATE stop_loss в БД — для SIM и для exchange (DEV-189 fix)
                                 try:
                                     with self._db_connect() as _tsl_conn:
                                         _tsl_conn.execute(
@@ -2077,7 +2101,8 @@ class TradeSimulator:
                                         _tsl_conn.commit()
                                 except Exception as _ue:
                                     logger.debug("TSL: stop_loss update #%d: %s", trade_id, _ue)
-                                # Куб: Сфера 10 → bus: TSL_MOVED
+
+                                # 2) Publish TSL_MOVED — для аналитики (обе venue)
                                 _pcb = getattr(self, "_pair_context_bus", None)
                                 if _pcb is not None:
                                     try:
@@ -2090,6 +2115,20 @@ class TradeSimulator:
                                         })
                                     except Exception:
                                         pass
+
+                            if _needs_exchange_update:
+                                # 3) Биржевой cancel+replace SL-ордера (только для exchange-managed)
+                                _qty = float(trade.get("qty") or 0)
+                                tsl_moved.append({
+                                    "trade_id":            trade_id,
+                                    "symbol":              symbol,
+                                    "direction":           direction,
+                                    "qty":                 _qty,
+                                    "new_sl_price":        tsl_price,
+                                    "old_sl_price":        _old_sl,
+                                    "exchange_sl_order_id": _exch_sl_id,
+                                    "exchange_order_id":   _exch_order_id,
+                                })
 
                 except Exception as e:
                     logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")

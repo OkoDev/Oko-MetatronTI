@@ -61,7 +61,7 @@
 | [DEV-186](#dev-186) | 🟡 | **wt_signal regime gate:** SHORT block в TREND_UP/HIGH_VOL. 22 сделки avgR=−1.12 в TREND_UP. Эффект: −24R/10дн | DEV |
 | [DEV-187](#dev-187) | 🟡 | **wt_b жёсткий floor для порогов:** wt1_1h<−30 (LONG) / >+30 (SHORT) поверх adaptive p10/p90. Сейчас 7 SHORT в N зоне avgR=−2.44. Эффект: −17R/10дн | DEV |
 | [DEV-188](#dev-188) | 🟡 | **pivot_reversal SHORT TREND_DOWN:** проверка реального касания (wick через уровень) + объёма. 93 сделки avgR=−0.77. Эффект: −72R/10дн | DEV |
-| [DEV-189](#dev-189) | 🟢 | **B3 фикс:** UPDATE stop_loss вынести из-под `_is_real_move` в trade_simulator.py:1980. Сейчас SIM сделки не апдейтят БД при TSL движении (80%) | DEV |
+| [DEV-189](#dev-189) | ✅ | **B3 фикс (12.05):** `_sl_changed` отделён от `_needs_exchange_update`. UPDATE stop_loss теперь ВСЕГДА при движении ≥0.15%, биржевой cancel+replace — только при exchange_order_id. До фикса SIM avgR=-0.63 vs exchange +0.67 (Δ240R за сутки) | DEV |
 | [DEV-190](#dev-190) | ✅ | **effective_status helper готов** (27.04). Интегрирован в 8 модулей: performance_engine, circuit_breaker, outcome_predictor, mtf_wt/smc_specialist, auto_calibrator, confidence_calibrator, dashboard. Подхватится при рестарте | DEV |
 | [DEV-191](#dev-191) | 🟢 | **wt1_at_trigger_tf поле в features_json:** для wt_b писать wt1 на 1h, не на 15m. B5 фикс | DEV |
 | [DEV-192](#dev-192) | 🟢 | **entry_to_trigger_distance_pct в features_json:** для pivot_reversal — расстояние от entry до триггерного пивота (не до TP). B6 фикс | DEV |
