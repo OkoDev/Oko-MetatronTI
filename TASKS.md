@@ -41,21 +41,18 @@
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
 | **🚀 СПРИНТ «CONFIRMATION-DRIVEN ARCHITECTURE» (09.05–23.05.2026)** — на основе R6/R7/R8: ATR Trend change cascade подтверждён, ЗАКОН confluence | | | |
-| [DEV-199](#dev-199) | ✅ | **ATR Trend Change events:** `core/signals/atr_change_detector.py` + EventBus publish 15m/1h/4h. 1d не публикуется. Реализовано 09.05 | DEV |
-| [DEV-200](#dev-200) | ✅ | **ConfirmationRegistry:** `core/confirmations/registry.py` — 25 типов (3 trigger + 22 confirmation), веса 1-18. 58/58 тестов PASSED. Реализовано 09.05 | DEV |
-| [DEV-201](#dev-201) | ✅ | **SignalAggregator v2:** `ConfirmationAggregator` в `signal_aggregator.py`. `strength = Σ weight × confidence`, режимы cascade/reversal/momentum. Реализовано 09.05 | DEV |
-| [DEV-202](#dev-202) | ✅ | **features_json: confirmations[]:** гранулярная запись подтверждений в monitoring.py + scan_loop.py. Реализовано 09.05 | DEV |
-| [DEV-203](#dev-203) | ✅ | **DecisionTrace в gates:** `core/observability/decision_trace.py`, таблица `signal_drops`, 6 gates покрыты, `/api/dropped` дашборд. Реализовано 09.05 | DEV |
+| [DEV-199](#dev-199) | 🔴 | **ATR Trend Change events:** publisher для `atr_change_15m/1h/4h` в EventBus. НЕ публиковать `atr_change_1d` (R8: avgR=−0.4). Acceptance: за 24h после рестарта в БД появляются события всех 3 ТФ | DEV |
+| [DEV-200](#dev-200) | 🔴 | **ConfirmationRegistry:** `core/confirmations/registry.py` — каталог 12 базовых confirmation типов с весами. Datadclass `Confirmation(source, weight, confidence, evidence, ts)`. Acceptance: каждый детектор публикует Confirmation events | DEV |
+| [DEV-201](#dev-201) | 🔴 | **SignalAggregator v2:** `strength = Σ weight × confidence` по window=N мин. Заменить хардкод формулу `base + senior_bonus + cross_bonus`. Acceptance: новые сделки имеют разнообразный signal_mode | DEV |
+| [DEV-202](#dev-202) | 🟡 | **features_json: confirmations[]:** гранулярная запись всех подтверждений (не плоские поля). Для будущего ML обучения весов. Acceptance: 100% новых сделок имеют поле `confirmations` (list[dict]) | DEV |
+| [DEV-203](#dev-203) | 🟡 | **DecisionTrace в gates** (Phase 0 Stabilization, параллельно): таблица `signal_drops` + дашборд топ-10 reasons. Закрывает 96% molчaliвых потерь | DEV |
 | [DEV-204](#dev-204) | 🟢 | **ML Outcome retrain weights:** после 200+ сделок → переобучение confirmation весов через RandomForest feature importance. Триггер: `signal_drops` стабилен 7 дней + 200+ trades с confirmations[] | DEV |
-| [DEV-206](#dev-206) | ⏸ | **ML OutcomePredictor: re-enable после набора данных.** Отключён 09.05 (AUC=0.56 → blend 0.3 убивал все сигналы, conf падала с 0.65 → 0.50). Триггер: ≥200 новых закрытых сделок + AUC ≥ 0.62 при CV. Шаги: (1) `python -c "from core.ml.outcome_predictor import OutcomePredictor; op=OutcomePredictor(); op.fit('subscriptions.db'); print(op.info())"` — проверить AUC. (2) Если AUC ≥ 0.62 → `ml.use_outcome_predictor: true` + `ml.blend_weight: 0.1` (вынести 0.3 из кода). (3) Через неделю → 0.2 если WR не упал. Дата проверки: ~30.05.2026 | DEV |
 | [DEV-205](#dev-205) | 🟢 | **Phase 0→2 расширение:** audit_mode shadow + audit_trades + alerts на коллапс данных + ML skipped-rows visibility (из исходного Stabilization Sprint Phase 1+2) | DEV |
-| [DEV-208](docs/TASKS_DETAILS.md) | 🔴 | **Мониторинг Confirmation-Driven после рестарта (12.05).** Проверить 24-48ч после деплоя Этапов 1-4: (1) `_publish_conf` вызывается без exceptions для всех 13 типов; (2) `signal_drops` растёт (gate=strength_too_low, invalid_sl, register_returned_none); (3) atr_change сделки имеют `confirmations[]` ≥2 в features_json; (4) количество сделок atr_change_1h/4h выросло vs baseline (3/3 дня → ≥30/24ч ожидание); (5) avgR не упал ниже −0.437. SQL-проверки в [docs/TASKS_DETAILS.md → DEV-208](docs/TASKS_DETAILS.md) | DEV/TRADER |
 | [TR-003](#tr-003) | 🟡 | TRADER валидация Confirmation Registry: ручной разбор 20 SHADOW-сделок по новой v2 логике. Подтвердить веса confirmations | TRADER |
-| [TR-004](#tr-004) | 🟡 | **Наблюдение DEV-89ext: SHORT/LONG к Daily R/S уровням при counter-bias.** 09.05: расширили weekly_bias исключение с Weekly → Weekly+Daily (пример: VVV SHORT к 1D R1 при BTC BULLISH блокировался). Собрать ≥20 сделок где сработало исключение (`[DEV-58] ALLOWED — near tp_src:pivot_1D_R*`). Оценить: (1) RR реальный vs ожидаемый 1:3.4+ (2) WR при Daily vs Weekly уровнях (3) Логика: TP достигнут до возврата к weekly trend? Если WR < 30% или avgR < 0 → откатить (вернуть "1W" only), если OK → оставить. Триггер: 20+ сделок или 3 недели наблюдения (~30.05.2026) | TRADER |
-| [ARCH-112](#arch-112) | ✅ | Аудит выполнен 12.05.2026 (DISCUSSION.md). 25 confirmation покрывают 6/13 сфер: S2/S3/S4/S7/S8/S11. 3 онтологических edge case (atr_change → S6 vs S7, ote_zone двойная, pivot_touch S7 vs S8). 3 GAP сфер (S5 Cross-Market, S6 MarketRegime, S9 Narrative) — кандидаты ARCH-112-EXT (бэклог после Phase 4) | ARCH |
+| [ARCH-112](#arch-112) | 🟢 | Архитектурный аудит после DEV-200..202: проверка соответствия Кубу Метатрана (каждое подтверждение = ребро между сферой-источником и центральной шиной) | ARCH |
 | **🚀 СПРИНТ «РЕАЛЬНЫЕ УБИЙЦЫ» (25.04–02.05.2026)** — после D1+RE-AUDIT: фикс не D1-багов, а реальных источников −780R/10дн | | | |
 | [DEV-191-TSL](#dev-191-tsl) | ✅ | **HOTFIX apply_floor:** SHORT floor = current_price*(1+0.3%) вместо entry*(1+0.3%). Корень TSL-заморозки: все SHORT в профите держали SL у entry±0.3%. 42/42 тестов ✅. Рестарт нужен | DEV |
-| [DEV-184](#dev-184) | ✅ | **Отключить DUAL_TSL strategy_type:** `trend_strategy_type: DUAL_TP` в config.yaml (26.04.2026). DUAL_TSL avgR=-0.61 → DUAL_TP -0.23 | DEV |
+| [DEV-184](#dev-184) | 🔴 | **Отключить DUAL_TSL strategy_type** (config флаг). Эффект: −290R/10дн. Acceptance: DUAL_TSL не появляется 24ч, SINGLE+DUAL_TP остаются | DEV |
 | [DEV-185](#dev-185) | 🔄 | **Catastrophic slippage:** ✅ Расследовано (DISCUSSION.md). ✅ Шаг 1: `sl_limit_buffer_pct: 0.0→1.0` (−113R). ⏳ 48ч наблюдения → решение по 2.0 + watchdog | DEV/ARCH |
 | DEV-185.2 | ✅ | **Emergency watchdog реализован** (27.04). [position_sync.py:_emergency_close_check](core/exchange/position_sync.py). Триггер: overshoot за SL >0.5% от entry, dwell 5 мин → market close. Подхватится при рестарте | DEV |
 | DEV-185.3 | ✅ | **Volume whitelist** `signal_quality.min_volume_usd: 5000000` (04.05). 13 catast (DOLO/CLO/GIGGLE/VELODROME) — low liquidity. Применено | DEV |
@@ -95,9 +92,8 @@
 | **DASHBOARD** | | | |
 | [DEV-144](#dev-144) | 🟡 | Полный редизайн дашборда: Live Control + Analytics + Settings | DEV |
 | [DEV-144f](#dev-144f) | 🟢 | P6: Единый CSS — тёмная тема, виджет-карточки, responsive grid | DEV |
-| [DEV-207](docs/TASKS_DETAILS.md) | ✅ | **Dropped Signals UI + ATR Change visualization** реализовано 11.05. Backend: `/api/atr_stats` + `recent_closed` теперь возвращает `features_json`. Frontend: nav Drops (топ-10 gates карточки + recent таблица с фильтрами + sparkline + переключатель 1h/6h/24h/7d), ATR Change секция на summary (3 карточки 1h/4h/15m), фильтр Trigger + колонки Trig/Zone/Str в истории, stack-bar `strength_breakdown`. Smoke: 15m WR=44.2% n=172, 4h WR=41.7% n=12. Заработает после рестарта | DEV |
 | **СТРАТЕГИЯ / СИГНАЛЫ** | | | |
-| [ARCH-84](#arch-84) | ✅ | MTF gate ЗАКРЫТ (09.05): 0 срабатываний за 3 недели shadow. Данные опровергли гипотезу (SHORT в LONG-рынке avgR=−0.141 vs SHORT в BEAR avgR=−0.487). Код удалён из monitoring.py, параметры из config.yaml | ARCH/DEV |
+| [ARCH-84](#arch-84) | 🔄 | MTF gate shadow активен (18.04) — ждём 2 дня данных WOULD_BLOCK до активации | ARCH/DEV |
 | [DEV-172](#dev-172) | 🟢 | Entry Priority Matrix shadow: P1/P2/P3 пишется в features_json (200+ сделок → анализ) | DEV |
 | [DEV-111act](#dev-111act) | ⏸ | BTC 4h gate production: отложен — риск блокировки alt-pumps при BTC боковике | DEV |
 | [DEV-88](#dev-88) | 🟡 | OTE Step2: C1 (4h+CHoCH) Sharpe=2.68 ✅, WR=41.7%. Нужна расширенная выборка | DEV |
@@ -113,7 +109,7 @@
 | **КУБ МЕТАТРОНА** | | | |
 | [ARCH-77](#arch-77) | ⏸ | Миникуб WTMTF: ЗАМОРОЖЕН до Sharpe>1 в проде (множитель к убытку бесполезен) | ARCH/DEV |
 | [ARCH-79](#arch-79) | 🔵 | S10→S11: PostTradeAnalyser → NarrativeBuilder feedback (narrative_outcome в PairCtx) | DEV |
-| [ARCH-55-VAL](#arch-55-val) | 🔄 | RANGE BOUNCE валидация: TRADER 27.04 — range_bounce WR+7.6pp, не вреден. Наблюдение 2 недели на чистой выборке (до ~11.05). ⚠️ Срок истекает — нужно финальное решение ARCH | ARCH/DEV |
+| [ARCH-55-VAL](#arch-55-val) | 🔄 | RANGE BOUNCE валидация: shadow перезапущен 16.04 (фикс: pivot_reversal теперь использует range_bounce SL/TP). Новый дедлайн: 23.04 | ARCH/DEV |
 | **АРХИТЕКТУРА** | | | |
 | [ARCH-87](#arch-87) | 🔵 | Fibonacci контекст в PairState: swing H/L + 0.618/0.705/0.79 в features_json для ML. Триггер: 50+ OTE сделок | ARCH/DEV |
 | [ARCH-85](#arch-85) | 🟡 | Формализация статусов стратегий (ACTIVE/SHADOW/DEPRECATED/REMOVED) + deprecated confluence/multi_signal (урок 2 AUDIT_LESSONS) — после спринта | ARCH |

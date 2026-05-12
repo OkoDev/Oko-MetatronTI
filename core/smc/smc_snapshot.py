@@ -198,8 +198,6 @@ def build_smc_snapshot(
     fib_levels: Dict[str, float] = {}
     price_in_ote = False
     current_retracement = 0.0
-    ote_direction: Optional[str] = None  # "LONG" | "SHORT" | None (Этап 2 Confirmation-Driven)
-    ote_tf: Optional[str] = None
 
     if senior_tf is not None and senior_tf in structures_by_tf:
         df_sr = ohlcv_by_tf[senior_tf]
@@ -225,8 +223,6 @@ def build_smc_snapshot(
                 impulse_low = sa.last_low.value
                 if impulse_high > impulse_low:
                     direction = "LONG" if sa.last_high.index > sa.last_low.index else "SHORT"
-                    ote_direction = direction
-                    ote_tf = senior_tf
                     fib_levels = _calc_fib_levels(impulse_high, impulse_low, direction)
                     diff = impulse_high - impulse_low
                     if diff > 0:
@@ -260,7 +256,5 @@ def build_smc_snapshot(
         "fib_levels": fib_levels,
         "price_in_ote": price_in_ote,
         "current_retracement": current_retracement,
-        "ote_direction": ote_direction,
-        "ote_tf": ote_tf,
     }
     return snap

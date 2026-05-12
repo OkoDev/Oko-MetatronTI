@@ -261,17 +261,6 @@ async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
     ARCH-71: Real Full CALL — расширенный анализ на всех 6 TF.
     trade_closed — feedback-событие, не запускает Full CALL (только NarrativeBuilder).
     """
-    # Confirmation-Driven (TRADER 09.05.2026): atr_change_* — самостоятельный trigger
-    # с прямым входом через _execute_atr_change_signal. Не нужно запускать analyze_symbol —
-    # это плодит "попутные" сделки чужих типов (mtf_bias / wt_signal), которые могут идти
-    # против ATR направления. Publish остаётся для наблюдения и confirmation cascade.
-    if event_type.startswith("atr_change_"):
-        logger.info(
-            "[EventBus] %s event=%s → analyze_symbol skipped (direct path active)",
-            symbol, event_type,
-        )
-        return
-
     # trade_closed: ARCH-72 Feedback Loop — обновляем веса и ML, не запускаем Full CALL
     if event_type == "trade_closed":
         try:

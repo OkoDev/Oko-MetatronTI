@@ -129,7 +129,7 @@ sideways_mode:
   enabled: true
   min_sideways_bars: 3      # N последовательных RANGE-циклов для активации (защита от флуктуаций)
   timeframe: 30m            # ТФ для WT OS/OB детекции (бэктест: 30m лучший в боковике)
-  min_strength: 75          # минимальный strength для регистрации (повышен 09.05: 60→75, wt_sideways 80% сделок были убыточны)
+  min_strength: 60          # минимальный strength для регистрации
 
 trading:
   execution_mode: vst
@@ -329,10 +329,8 @@ event_bus:
 signal_quality:
   sl_cooldown_hours: 1.0
   dedup_minutes: 30
-  min_volume_usd: 2000000  # DEV-185.3 04.05: 13 катастроф (R<=-5) — все DOLO/CLO/GIGGLE/VELODROME, low liquidity
+  min_volume_usd: 5000000  # DEV-185.3 04.05: 13 катастроф (R<=-5) — все DOLO/CLO/GIGGLE/VELODROME, low liquidity
   min_strength: 50
-  min_strength_atr_change: 40  # Этап 3 (12.05): Confirmation-Driven — strength = Σ(trigger + confirmations).
-                                # 40 = trigger(15-18) + 1-2 средних confirmations. Без confluence → drop в signal_drops.
   # ARCH-88: Per-pair Loss Memory — блок регистрации при серии SL подряд.
   # Защита от сценария API3 (8 SL без автоматической остановки).
   pair_cooldown_sl_streak: 5   # порог SL подряд для блока
@@ -393,7 +391,9 @@ signal_quality:
   counter_trend_strength_threshold: 30
   btc_filter_enabled: false
   btc_filter_mode: shadow
-
+  mtf_gate_enabled: true          # ARCH-84: блок SHORT при сильном LONG bias пары
+  mtf_bias_threshold: 0.70        # bias_strength > 0.70 → ~85% ТФ пары в LONG
+  mtf_gate_shadow: true           # true = только лог WOULD_BLOCK, false = реальный блок
   watch_list_ttl_hours: 4
   watch_list_breach_pct: 0.8
   wl_sl_buffer_pct: 0.5
@@ -440,7 +440,7 @@ strategy:
     min_confidence: 0.65
     conflict_threshold: 0.2
 ml:
-  use_outcome_predictor: false  # 09.05: отключён — AUC=0.56 систематически снижает confidence до 0.48, блокирует все сигналы. Откат: true
+  use_outcome_predictor: true  # ARCH-45: AUC=0.582 после фикса features (>= 2026-04-15, 483 сделки)
 future_pivots:
   enabled: false
   broadcast_tg: false
@@ -472,5 +472,4 @@ risk_management:
 trade_analyzer:
   provider: groq
   api_key: ${GROQ_API_KEY}
-  model: llama-3.1-8b-instant     # 500K TPD (vs 100K у 70b-versatile) — достаточно для 80 анализов/день
-  max_per_day: 80                  # throttle: не более 80 вызовов/день (~64K токенов)
+  model: llama-3.3-70b-versatile  # 70B — намного меньше галлюцинаций, free tier на Groq
