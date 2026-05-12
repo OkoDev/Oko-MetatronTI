@@ -480,6 +480,80 @@ async def _prefetch_pivots(bot) -> None:
         logger.debug("Pivot diagnostics TG send error: %s", e)
 
 
+def _publish_conf(
+    bot,
+    symbol: str,
+    source: str,
+    side: str,
+    tf: str = "",
+    evidence: dict = None,
+    confidence: float = 1.0,
+) -> None:
+    """Опубликовать Confirmation в aggregator (DEV-202 / Этап 2 Confirmation-Driven).
+
+    Берёт вес из registry. Если weight ≤ 0 для данной side — пропускаем (нет в реестре).
+    """
+    _ca = getattr(bot, "confirmation_aggregator", None)
+    if _ca is None:
+        return
+    try:
+        from core.confirmations.models import Confirmation as _Conf
+        from core.confirmations.registry import get_weight as _gw
+        w = _gw(source, side)
+        if w <= 0:
+            return
+        _ca.on_confirmation(_Conf(
+            source=source, symbol=symbol, side=side,
+            weight=w, confidence=confidence,
+            evidence=evidence or {}, tf=tf,
+        ))
+    except Exception as _pc_e:
+        logger.debug("[ConfAgg] %s %s/%s: %s", symbol, source, side, _pc_e)
+
+
+def _publish_conf_both(bot, symbol: str, source: str, tf: str = "", evidence: dict = None, confidence: float = 1.0) -> None:
+    """Публикует confirmation на обе стороны (LONG и SHORT) — для side-нейтральных событий (volume spike)."""
+    _publish_conf(bot, symbol, source, "LONG", tf, evidence, confidence)
+    _publish_conf(bot, symbol, source, "SHORT", tf, evidence, confidence)
+
+
+def _record_drop_atr_change(
+    bot,
+    symbol: str,
+    tf: str,
+    side: str,
+    strength: int,
+    gate_name: str,
+    drop_reason: str,
+    agg_res: dict = None,
+) -> None:
+    """Этап 4 (DEV-203): записать отклонённый ATR change сигнал в signal_drops для аудита."""
+    try:
+        from core.observability.decision_trace import record_drop
+        features = {
+            "trigger_source": f"atr_change_{tf}",
+            "atr_tf": tf,
+            "agg_strength": strength,
+        }
+        if agg_res:
+            features["confirmations_count"] = len(agg_res.get("confirmations", []))
+            features["signal_mode"] = agg_res.get("signal_mode")
+            features["strength_breakdown"] = agg_res.get("strength_breakdown")
+        asyncio.create_task(record_drop(
+            symbol=symbol,
+            gate_name=gate_name,
+            drop_reason=drop_reason,
+            signal_type=f"atr_change_{tf}",
+            direction=side,
+            strength=strength,
+            features=features,
+        ))
+        logger.info("[ATRChange] %s %s %s → DROP gate=%s reason=%s str=%d",
+                    symbol, tf, side, gate_name, drop_reason, strength)
+    except Exception as _rd_e:
+        logger.debug("[ATRChange] %s record_drop failed: %s", symbol, _rd_e)
+
+
 def _select_optimal_sl_long(
     entry: float,
     df: "pd.DataFrame",
@@ -551,19 +625,90 @@ def _select_optimal_sl_long(
     return final_sl, final_src
 
 
-async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> None:
+def _select_optimal_sl_short(
+    entry: float,
+    df: "pd.DataFrame",
+    trendline: "Optional[float]",
+    live_mode: bool = False,
+) -> "tuple[float, str]":
+    """Выбирает оптимальный SL для ATR change SHORT из нескольких кандидатов.
+
+    Кандидаты (зеркало _select_optimal_sl_long):
+      1. trenddown (supertrend линия — согласована с сигналом)
+      2. swing_high(20) — структурный максимум последних 20 баров
+      3. entry + 2×ATR(14) — быстрый ATR-based уровень
+
+    Фильтр: 0.3% ≤ sl_dist ≤ 10% от entry.
+    Выбор: ближайший к цене (tight SL = лучшее R).
+
+    live_mode=True добавляет 0.15% буфер выше выбранного уровня.
+    """
+    candidates: list[tuple[float, str]] = []
+
+    # 1. trenddown — supertrend линия
+    if trendline and trendline > entry > 0.0:
+        candidates.append((trendline, "atr_trendline"))
+
+    # 2. swing_high за последние 20 баров
+    try:
+        if df is not None and len(df) >= 20 and "high" in df.columns:
+            swing_high = float(df["high"].iloc[-20:].max())
+            if swing_high > entry:
+                candidates.append((swing_high, "swing_high_20"))
+    except Exception:
+        pass
+
+    # 3. entry + 2×ATR(14) быстрый
+    try:
+        if df is not None and len(df) >= 15 and "high" in df.columns and "low" in df.columns:
+            hl = df["high"] - df["low"]
+            atr14 = float(hl.rolling(14).mean().iloc[-1])
+            sl_atr = entry + 2.0 * atr14
+            if sl_atr > entry:
+                candidates.append((sl_atr, "atr14_2x"))
+    except Exception:
+        pass
+
+    valid: list[tuple[float, str, float]] = []
+    for sl_price, src in candidates:
+        dist_pct = (sl_price - entry) / entry
+        if 0.003 <= dist_pct <= 0.10:
+            valid.append((sl_price, src, dist_pct))
+
+    if not valid:
+        if trendline and trendline > entry > 0.0:
+            final_sl, final_src = trendline, "atr_trendline_fallback"
+        else:
+            final_sl, final_src = entry * 1.05, "fixed_5pct_fallback"
+    else:
+        valid.sort(key=lambda x: x[2])
+        final_sl, final_src, _ = valid[0]
+
+    if live_mode:
+        final_sl = final_sl * (1.0 + 0.0015)
+        final_src += "_buf"
+
+    return final_sl, final_src
+
+
+async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None, side: str = "LONG") -> None:
     """Прямой вход по ATR change LONG — Supertrend cross → сделка без полного analyze_symbol.
 
-    Только LONG (backtest: SHORT avgR=-0.2 без фильтра).
-    Только 1h и 4h (15m слишком шумный).
-    SL выбирается оптимально из: trendup / swing_low(20) / ATR14×2.
-    TP = 3R.
+    LONG: SL из trendup / swing_low(20) / ATR14×2, TP = entry + 3R.
+    SHORT: SL из trenddown / swing_high(20) / ATR14×2, TP = entry - 3R.
+
+    Только 1h и 4h (15m слишком шумный по R8).
+    SHORT разрешён по R8: 1h_SHORT avgR=+0.164 (n=739), 4h_SHORT avgR=+0.287 (n=186).
     """
     try:
         from core.signals.signal_models import (
             TradingRecommendation, SignalDirection, MarketContext,
         )
         from core.confirmations.registry import get_weight as _gw
+
+        side = side.upper()
+        if side not in ("LONG", "SHORT"):
+            return
 
         entry = ev.price
         if entry <= 0:
@@ -573,36 +718,85 @@ async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> 
         _exec_mode = bot.config.get("trading.execution_mode", "simulation")
         _live_mode = _exec_mode in ("vst", "live")
 
-        sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
+        if side == "LONG":
+            sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
+            if sl_source.startswith("fixed_5pct"):
+                pass
+            sl_dist = entry - sl
+            valid_sl = sl > 0 and sl < entry
+        else:
+            sl, sl_source = _select_optimal_sl_short(entry, df, ev.trendline, live_mode=_live_mode)
+            sl_dist = sl - entry
+            valid_sl = sl > entry
 
-        sl_dist = abs(entry - sl)
-        if sl_dist <= 0 or sl / entry >= 1.0:
-            logger.debug("[ATRChange] %s %s: невалидный SL %.6f (entry=%.6f)", symbol, tf, sl, entry)
+        if not valid_sl or sl_dist <= 0:
+            logger.debug("[ATRChange] %s %s %s: невалидный SL %.6f (entry=%.6f)", symbol, tf, side, sl, entry)
+            _record_drop_atr_change(bot, symbol, tf, side, 0, "invalid_sl",
+                                    f"sl={sl:.6f} entry={entry:.6f} src={sl_source}")
             return
 
-        # Strength: базовый вес trigger + zone OS confluence
-        strength = _gw(f"atr_change_{tf}", "LONG")
-        if ev.zone == "OS":
-            strength += _gw(f"zone_OS_{tf}", "LONG")
+        # Этап 3 (TRADER 09.05 Confirmation-Driven): strength = Σ weight × confidence по всем
+        # confirmations в окне 600s (atr_change trigger + zone + wt_cross + smc + pivot + volume +
+        # divergence + ote + fvg + eq_swept + cascade_pre). Это ЗАКОН confluence.
+        _ca = getattr(bot, "confirmation_aggregator", None)
+        agg_strength = 0
+        agg_res = None
+        if _ca:
+            try:
+                agg_res = _ca.aggregate(symbol, side)
+                if agg_res.get("has_trigger"):
+                    agg_strength = int(agg_res.get("strength", 0))
+            except Exception as _agg_e:
+                logger.debug("[ATRChange] %s %s %s: aggregate error: %s", symbol, tf, side, _agg_e)
 
-        min_str = int(bot.config.get("signal_quality.min_strength_register", 40))
+        # Fallback: если aggregator пустой (например холодный старт без накопления) —
+        # старая логика trigger + zone confluence. Эта ветка не должна срабатывать в стабильной работе.
+        if agg_strength <= 0:
+            agg_strength = _gw(f"atr_change_{tf}", side)
+            if side == "LONG" and ev.zone == "OS":
+                agg_strength += _gw(f"zone_OS_{tf}", "LONG")
+            elif side == "SHORT" and ev.zone == "OB":
+                agg_strength += _gw(f"zone_OB_{tf}", "SHORT")
+
+        strength = min(agg_strength, 100)
+
+        min_str = int(bot.config.get("signal_quality.min_strength_atr_change", 40))
         if strength < min_str:
-            logger.debug("[ATRChange] %s %s: strength=%d < %d", symbol, tf, strength, min_str)
+            logger.debug("[ATRChange] %s %s %s: strength=%d < %d (drop)", symbol, tf, side, strength, min_str)
+            _record_drop_atr_change(bot, symbol, tf, side, strength, "strength_too_low",
+                                    f"strength={strength} < min={min_str}", agg_res)
             return
 
-        tp = entry + sl_dist * 3.0
-        confidence = 0.85 if ev.zone == "OS" else 0.65
+        if side == "LONG":
+            tp = entry + sl_dist * 3.0
+            confidence = 0.85 if ev.zone == "OS" else 0.65
+            action = "BUY"
+            direction = SignalDirection.LONG
+        else:
+            tp = entry - sl_dist * 3.0
+            confidence = 0.85 if ev.zone == "OB" else 0.65
+            action = "SELL"
+            direction = SignalDirection.SHORT
+
+        # Confidence boost от количества confirmations (если их много — увереннее)
+        if agg_res and agg_res.get("confirmations"):
+            _n_conf = len(agg_res["confirmations"])
+            if _n_conf >= 4:
+                confidence = min(0.95, confidence + 0.10)
+            elif _n_conf >= 2:
+                confidence = min(0.90, confidence + 0.05)
 
         logger.info(
-            "[ATRChange] %s %s LONG: entry=%.4f sl=%.4f (src=%s dist=%.2f%%) tp=%.4f zone=%s",
-            symbol, tf, entry, sl, sl_source, 100 * sl_dist / entry, tp, ev.zone,
+            "[ATRChange] %s %s %s: entry=%.4f sl=%.4f (src=%s dist=%.2f%%) tp=%.4f zone=%s str=%d conf=%d",
+            symbol, tf, side, entry, sl, sl_source, 100 * sl_dist / entry, tp, ev.zone,
+            strength, len((agg_res or {}).get("confirmations", [])),
         )
 
         rec = TradingRecommendation(
             symbol=symbol,
-            action="BUY",
-            direction=SignalDirection.LONG,
-            overall_strength=min(strength, 100),
+            action=action,
+            direction=direction,
+            overall_strength=strength,
             confidence=confidence,
             risk_level="MEDIUM",
             signals_count=1,
@@ -624,35 +818,33 @@ async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> 
             "atr_tf": tf,
             "zone": ev.zone,
             "wt1": ev.wt1,
-            "signal_mode": "momentum",
-            "confirmations": [],
+            "signal_mode": (agg_res or {}).get("signal_mode", "momentum"),
+            "confirmations": (agg_res or {}).get("confirmations", []),
+            "strength_breakdown": (agg_res or {}).get("strength_breakdown", {}),
         }
-
-        # DEV-202: confirmations из агрегатора
-        _ca = getattr(bot, "confirmation_aggregator", None)
-        if _ca:
-            try:
-                _res = _ca.aggregate(symbol, "LONG")
-                if _res.get("confirmations"):
-                    extra["confirmations"] = _res["confirmations"]
-                    extra["signal_mode"] = _res["signal_mode"]
-                    extra["strength_breakdown"] = _res["strength_breakdown"]
-            except Exception:
-                pass
 
         trade_id = await bot.trade_simulator.register_trade_async(
             rec, bot.data_collector, extra_features=extra
         )
         if trade_id:
-            logger.info("[ATRChange] %s %s LONG → #%d registered (sl_source=%s)", symbol, tf, trade_id, sl_source)
+            logger.info("[ATRChange] %s %s %s → #%d registered str=%d (sl_source=%s)",
+                        symbol, tf, side, trade_id, strength, sl_source)
             if _ca:
                 try:
-                    _ca.clear(symbol, "LONG")
+                    _ca.clear(symbol, side)
                 except Exception:
                     pass
+        else:
+            # register_trade_async вернул None — отброшен gate'ами (dedup / sl_cooldown / volume / streak)
+            _record_drop_atr_change(bot, symbol, tf, side, strength,
+                                    "register_returned_none",
+                                    "register_trade_async returned None (blocked by gate)",
+                                    agg_res)
 
     except Exception as e:
-        logger.debug("[ATRChange] %s %s execute error: %s", symbol, tf, e)
+        logger.warning("[ATRChange] %s %s %s execute error: %s", symbol, tf, side, e)
+        _record_drop_atr_change(bot, symbol, tf, side, 0, "exception",
+                                f"exception: {type(e).__name__}: {e}")
 
 
 async def _execute_sideways_signal(bot, rec) -> None:
@@ -788,6 +980,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _add_fetch(tf, _ohlcv_limit)
                 _add_fetch("1h", _ohlcv_limit)
                 _add_fetch("4h", 60)
+                # Этап 2: 5m нужен только для cascade atr_change_5m_pre_1h (read-only в history)
+                # 60 свечей × 5m = 5h — достаточно для окна cascade 2h и atr_period=43
+                _add_fetch("5m", 60)
 
                 _fetched = await asyncio.gather(*[
                     bot.data_collector.get_ohlcv(sym, tf, limit=limit)
@@ -802,6 +997,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 }
                 df_1h = _fetched_map.get(("1h", _ohlcv_limit))
                 df_4h = _fetched_map.get(("4h", 60))
+                df_5m = _fetched_map.get(("5m", 60))
                 df_3m = None
                 df_1d = None
                 # Primary entry для совместимости (используется в divergence, confluence, etc.)
@@ -833,6 +1029,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 if df_4h is not None and not df_4h.empty:
                     df_4h = _calc_wt(df_4h)
                     df_4h = _calc_trend(df_4h, atr_period=_scan_atr_p, factor=_scan_factor)
+                if df_5m is not None and not df_5m.empty:
+                    df_5m = _calc_trend(df_5m, atr_period=_scan_atr_p, factor=_scan_factor)
                 if df_1d is not None and not df_1d.empty:
                     df_1d = _calc_wt(df_1d)
                     df_1d = _calc_trend(df_1d, atr_period=_scan_atr_p, factor=_scan_factor)
@@ -1019,35 +1217,42 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _tc1d_fired, _tc1d_data = _tc.check(sym, df_1d, "1d")
                             if _tc1d_fired:
                                 asyncio.create_task(_eb.publish(sym, "trend_change_1d", priority=1, data=_tc1d_data))
-                        # WT cross 15m
-                        if df_entry is not None and not df_entry.empty:
-                            _wc15_fired, _wc15_data = _wc.check(sym, df_entry, "15m")
-                            if _wc15_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_15m", priority=3, data=_wc15_data))
-                        # WT cross 1h
-                        if df_1h is not None and not df_1h.empty:
-                            _wc1h_fired, _wc1h_data = _wc.check(sym, df_1h, "1h")
-                            if _wc1h_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_1h", priority=2, data=_wc1h_data))
-                        # WT cross 4h
-                        if df_4h is not None and not df_4h.empty:
-                            _wc_fired, _wc_data = _wc.check(sym, df_4h, "4h")
-                            if _wc_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_4h", priority=2, data=_wc_data))
-                        # WT cross 1d
-                        if df_1d is not None and not df_1d.empty:
-                            _wc1d_fired, _wc1d_data = _wc.check(sym, df_1d, "1d")
-                            if _wc1d_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_1d", priority=1, data=_wc1d_data))
-                        # Zone entry OS/OB — все TF
+                        # WT cross 15m/1h/4h/1d — публикуем в EB и aggregator (wt_cross_same_dir)
+                        for _wc_df, _wc_tf, _wc_prio in [
+                            (df_entry, "15m", 3), (df_1h, "1h", 2),
+                            (df_4h, "4h", 2),     (df_1d, "1d", 1),
+                        ]:
+                            if _wc_df is None or _wc_df.empty:
+                                continue
+                            _wcN_fired, _wcN_data = _wc.check(sym, _wc_df, _wc_tf)
+                            if not _wcN_fired:
+                                continue
+                            asyncio.create_task(_eb.publish(sym, f"wt_cross_{_wc_tf}", priority=_wc_prio, data=_wcN_data))
+                            # Этап 2: confirmation для Confirmation-Driven Architecture
+                            _wc_dir = _wcN_data.get("direction")
+                            if _wc_dir in ("LONG", "SHORT"):
+                                _publish_conf(
+                                    bot, sym, "wt_cross_same_dir", _wc_dir, tf=_wc_tf,
+                                    evidence={"wt1": _wcN_data.get("wt1"), "wt2": _wcN_data.get("wt2"),
+                                              "gap": _wcN_data.get("gap"), "zone": _wcN_data.get("zone")},
+                                )
+                        # Zone entry OS/OB — все TF (в aggregator только 1h/4h, как в реестре)
                         for _ze_df, _ze_tf in [
                             (df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h"), (df_1d, "1d"),
                         ]:
                             if _ze_df is not None and not _ze_df.empty:
                                 _ze_fired, _ze_data = _ze.check(sym, _ze_df, _ze_tf)
                                 if _ze_fired:
-                                    _ze_event = f"zone_enter_{_ze_data['zone'].lower()}"
+                                    _ze_zone = _ze_data['zone']  # "OS" | "OB"
+                                    _ze_event = f"zone_enter_{_ze_zone.lower()}"
                                     asyncio.create_task(_eb.publish(sym, _ze_event, priority=2, data=_ze_data))
+                                    # Этап 2: confirmation (только 1h/4h, реестр не имеет 15m/1d zone)
+                                    if _ze_tf in ("1h", "4h"):
+                                        _ze_side = "LONG" if _ze_zone == "OS" else "SHORT"
+                                        _publish_conf(
+                                            bot, sym, f"zone_{_ze_zone}_{_ze_tf}", _ze_side, tf=_ze_tf,
+                                            evidence={"wt1": _ze_data.get("wt1")},
+                                        )
                         # WT Extreme (< -80 / > +80) — все TF
                         for _wxt_df, _wxt_tf in [
                             (df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h"), (df_1d, "1d"),
@@ -1063,6 +1268,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 _eb_atr = getattr(bot, "event_bus", None)
                 _conf_agg = getattr(bot, "confirmation_aggregator", None)
                 if _atr_det is not None and _eb_atr is not None:
+                    # Этап 2: 5m — детектируем только для записи в history (cascade atr_change_5m_pre_1h).
+                    # Не публикуем в EB (не trigger по реестру) и не запускаем _execute_atr_change_signal.
+                    if df_5m is not None and not df_5m.empty:
+                        try:
+                            _ = _atr_det.detect(sym, "5m", df_5m)
+                        except Exception as _atr5_e:
+                            logger.debug("[ATRChangeDetector] 5m %s error: %s", sym, _atr5_e)
+
                     for _atr_df, _atr_tf in [(df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h")]:
                         try:
                             if _atr_df is None or _atr_df.empty:
@@ -1070,43 +1283,57 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _atr_ev = _atr_det.detect(sym, _atr_tf, _atr_df)
                             if _atr_ev is None:
                                 continue
+                            # Этап 4: INFO лог для каждого detected cross
+                            logger.info(
+                                "[ATRChange] %s %s detected: side=%s price=%.6f wt1=%s zone=%s",
+                                sym, _atr_tf, _atr_ev.side, _atr_ev.price,
+                                _atr_ev.wt1, _atr_ev.zone,
+                            )
                             _prio = 2 if _atr_tf == "15m" else 1
                             asyncio.create_task(_eb_atr.publish(sym, f"atr_change_{_atr_tf}", priority=_prio, data=_atr_ev.to_dict()))
-                            # DEV-199: прямой вход по ATR change LONG (только 1h/4h, SHORT avgR=-0.2)
-                            if _atr_tf in ('1h', '4h') and _atr_ev.side == 'UP':
-                                asyncio.create_task(_execute_atr_change_signal(bot, sym, _atr_ev, _atr_tf, df=_atr_df))
+                            # DEV-199: прямой вход по ATR change на 1h/4h.
+                            # По R8 (90 дней): 1h_LONG +0.281 (n=733), 4h_LONG +0.169 (n=183),
+                            #                  1h_SHORT +0.164 (n=739), 4h_SHORT +0.287 (n=186).
+                            # Оба направления статистически положительны → разрешены оба.
+                            if _atr_tf in ('1h', '4h'):
+                                _atr_side = 'LONG' if _atr_ev.side == 'UP' else 'SHORT'
+                                asyncio.create_task(
+                                    _execute_atr_change_signal(bot, sym, _atr_ev, _atr_tf, df=_atr_df, side=_atr_side)
+                                )
                             # → ConfirmationAggregator: накапливаем для features_json (DEV-202)
                             if _conf_agg is not None:
                                 try:
-                                    from core.confirmations.models import Confirmation as _Conf
-                                    from core.confirmations.registry import get_weight as _gw
                                     _side = 'LONG' if _atr_ev.side == 'UP' else 'SHORT'
                                     _src = f'atr_change_{_atr_tf}'
-                                    _conf_agg.on_confirmation(_Conf(
-                                        source=_src, symbol=sym, side=_side,
-                                        weight=_gw(_src, _side), confidence=1.0,
+                                    _publish_conf(
+                                        bot, sym, _src, _side, tf=_atr_tf,
                                         evidence={'price': _atr_ev.price, 'wt1': _atr_ev.wt1, 'zone': _atr_ev.zone},
-                                        tf=_atr_tf,
-                                    ))
+                                    )
                                     # Zone OS/OB как дополнительное подтверждение
                                     if _atr_ev.zone == 'OS' and _side == 'LONG':
-                                        _zs = f'zone_OS_{_atr_tf}'
-                                        _zw = _gw(_zs, _side)
-                                        if _zw > 0:
-                                            _conf_agg.on_confirmation(_Conf(
-                                                source=_zs, symbol=sym, side=_side,
-                                                weight=_zw, confidence=1.0,
-                                                evidence={'wt1': _atr_ev.wt1}, tf=_atr_tf,
-                                            ))
+                                        _publish_conf(
+                                            bot, sym, f'zone_OS_{_atr_tf}', _side, tf=_atr_tf,
+                                            evidence={'wt1': _atr_ev.wt1},
+                                        )
                                     elif _atr_ev.zone == 'OB' and _side == 'SHORT':
-                                        _zs = f'zone_OB_{_atr_tf}'
-                                        _zw = _gw(_zs, _side)
-                                        if _zw > 0:
-                                            _conf_agg.on_confirmation(_Conf(
-                                                source=_zs, symbol=sym, side=_side,
-                                                weight=_zw, confidence=1.0,
-                                                evidence={'wt1': _atr_ev.wt1}, tf=_atr_tf,
-                                            ))
+                                        _publish_conf(
+                                            bot, sym, f'zone_OB_{_atr_tf}', _side, tf=_atr_tf,
+                                            evidence={'wt1': _atr_ev.wt1},
+                                        )
+                                    # Этап 2: cascade — atr_change_*_pre_1h (TRADER R8).
+                                    # 15m_pre_1h: 15m cross в ту же сторону за последние 8h.
+                                    # 5m_pre_1h:  5m cross в ту же сторону за последние 2h.
+                                    if _atr_tf == '1h':
+                                        if _atr_det.recent_cross_in_window(sym, '15m', _atr_ev.side, window_s=28800):
+                                            _publish_conf(
+                                                bot, sym, 'atr_change_15m_pre_1h', _side, tf='15m→1h',
+                                                evidence={'window_s': 28800, 'trigger_tf': '1h'},
+                                            )
+                                        if _atr_det.recent_cross_in_window(sym, '5m', _atr_ev.side, window_s=7200):
+                                            _publish_conf(
+                                                bot, sym, 'atr_change_5m_pre_1h', _side, tf='5m→1h',
+                                                evidence={'window_s': 7200, 'trigger_tf': '1h'},
+                                            )
                                 except Exception as _ca_e:
                                     logger.debug("[ConfAgg] %s %s: %s", sym, _atr_tf, _ca_e)
                         except Exception as _atr_e:
@@ -1144,12 +1371,28 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                     bot._prev_bos_id[sym] = _bos_id
                                     asyncio.create_task(_eb2.publish(sym, "smc_bos_detected", priority=2, data=_last_bos))
                                     logger.info("[KUB] %s smc_bos_detected: %s tf=%s", sym, _last_bos.get("direction"), _last_bos.get("tf"))
+                                    # Этап 2: confirmation (реестр имеет только smc_bos_1h)
+                                    _bos_tf = (_last_bos.get("tf") or "").lower()
+                                    _bos_dir = _last_bos.get("direction")
+                                    if _bos_tf == "1h" and _bos_dir in ("LONG", "SHORT"):
+                                        _publish_conf(
+                                            bot, sym, "smc_bos_1h", _bos_dir, tf="1h",
+                                            evidence={"price": _last_bos.get("price"), "level": _last_bos.get("level")},
+                                        )
                             if _last_choch:
                                 _choch_id = (_last_choch.get("tf"), _last_choch.get("direction"))
                                 if bot._prev_choch_id.get(sym) != _choch_id:
                                     bot._prev_choch_id[sym] = _choch_id
                                     asyncio.create_task(_eb2.publish(sym, "smc_choch_detected", priority=1, data=_last_choch))
                                     logger.info("[KUB] %s smc_choch_detected: %s tf=%s", sym, _last_choch.get("direction"), _last_choch.get("tf"))
+                                    # Этап 2: confirmation (реестр имеет smc_choch_1h и smc_choch_4h)
+                                    _choch_tf = (_last_choch.get("tf") or "").lower()
+                                    _choch_dir = _last_choch.get("direction")
+                                    if _choch_tf in ("1h", "4h") and _choch_dir in ("LONG", "SHORT"):
+                                        _publish_conf(
+                                            bot, sym, f"smc_choch_{_choch_tf}", _choch_dir, tf=_choch_tf,
+                                            evidence={"price": _last_choch.get("price"), "level": _last_choch.get("level")},
+                                        )
                             # FVG Touch — цена вошла в открытый Fair Value Gap
                             _cur_price_fvg = float(df_entry["close"].iloc[-1]) if df_entry is not None and not df_entry.empty else 0
                             if _cur_price_fvg > 0:
@@ -1163,11 +1406,18 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         _fvg_key = (sym, "bull", round(_fvg.get("bottom", 0), 4))
                                         if bot._prev_fvg_touch.get(_fvg_key) != True:
                                             bot._prev_fvg_touch[_fvg_key] = True
+                                            _fvg_tf = _fvg.get("tf", _etf)
                                             asyncio.create_task(_eb2.publish(sym, "fvg_touch", priority=2, data={
                                                 "type": "bull", "bottom": _fvg.get("bottom"), "top": _fvg.get("top"),
-                                                "tf": _fvg.get("tf", _etf), "price": _cur_price_fvg,
+                                                "tf": _fvg_tf, "price": _cur_price_fvg,
                                             }))
                                             logger.info("[KUB] %s fvg_touch: BULL FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                            # Этап 2: bull FVG = LONG side
+                                            _publish_conf(
+                                                bot, sym, "fvg_fill", "LONG", tf=_fvg_tf,
+                                                evidence={"type": "bull", "top": _fvg.get("top"),
+                                                          "bottom": _fvg.get("bottom"), "price": _cur_price_fvg},
+                                            )
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bull", round(_fvg.get("bottom", 0), 4)), None)
                                 for _fvg in _smc_snap_local.get("bear_fvg_active", []):
@@ -1177,15 +1427,161 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         _fvg_key = (sym, "bear", round(_fvg.get("top", 0), 4))
                                         if bot._prev_fvg_touch.get(_fvg_key) != True:
                                             bot._prev_fvg_touch[_fvg_key] = True
+                                            _fvg_tf = _fvg.get("tf", _etf)
                                             asyncio.create_task(_eb2.publish(sym, "fvg_touch", priority=2, data={
                                                 "type": "bear", "bottom": _fvg.get("bottom"), "top": _fvg.get("top"),
-                                                "tf": _fvg.get("tf", _etf), "price": _cur_price_fvg,
+                                                "tf": _fvg_tf, "price": _cur_price_fvg,
                                             }))
                                             logger.info("[KUB] %s fvg_touch: BEAR FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                            # Этап 2: bear FVG = SHORT side
+                                            _publish_conf(
+                                                bot, sym, "fvg_fill", "SHORT", tf=_fvg_tf,
+                                                evidence={"type": "bear", "top": _fvg.get("top"),
+                                                          "bottom": _fvg.get("bottom"), "price": _cur_price_fvg},
+                                            )
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bear", round(_fvg.get("top", 0), 4)), None)
                     except Exception as _smc_ev_e:
                         logger.debug("[KUB] smc_events %s: %s", sym, _smc_ev_e)
+
+                # ═══ Этап 2: OTE zone (0.618-0.786 fib) → ConfirmationAggregator ═══
+                # Реестр: ote_zone (7/7). Цена в OTE зоне от старшего swing импульса.
+                # Direction: LONG если импульс был UP (откат вниз к 0.618-0.786), SHORT если импульс DOWN.
+                try:
+                    _smc_snap_ote = getattr(bot, "_last_smc_snap", {}).get(sym)
+                    if (_smc_snap_ote and _smc_snap_ote.get("price_in_ote")
+                            and getattr(bot, "confirmation_aggregator", None)):
+                        _ote_dir = _smc_snap_ote.get("ote_direction")
+                        _ote_tf = _smc_snap_ote.get("ote_tf") or ""
+                        if _ote_dir in ("LONG", "SHORT"):
+                            # Дедупликация: один publish per (sym, ote_dir, retrace bucket) до выхода из зоны
+                            _ote_state = getattr(bot, "_prev_ote_zone", None)
+                            if _ote_state is None:
+                                bot._prev_ote_zone = {}
+                                _ote_state = bot._prev_ote_zone
+                            _ote_key = (sym, _ote_dir, _ote_tf)
+                            if not _ote_state.get(_ote_key):
+                                _ote_state[_ote_key] = True
+                                _publish_conf(
+                                    bot, sym, "ote_zone", _ote_dir, tf=_ote_tf,
+                                    evidence={
+                                        "retracement_pct": _smc_snap_ote.get("current_retracement"),
+                                        "swing_high": (_smc_snap_ote.get("swing_high") or {}).get("price"),
+                                        "swing_low": (_smc_snap_ote.get("swing_low") or {}).get("price"),
+                                    },
+                                )
+                        else:
+                            # Цена вышла из OTE — сбрасываем все ключи для этой пары
+                            _ote_state = getattr(bot, "_prev_ote_zone", {})
+                            for _k in list(_ote_state.keys()):
+                                if _k[0] == sym:
+                                    _ote_state.pop(_k, None)
+                    else:
+                        # price_in_ote=False → сброс
+                        _ote_state = getattr(bot, "_prev_ote_zone", {})
+                        if _ote_state:
+                            for _k in list(_ote_state.keys()):
+                                if _k[0] == sym:
+                                    _ote_state.pop(_k, None)
+                except Exception as _ote_e:
+                    logger.debug("[ConfAgg] %s OTE: %s", sym, _ote_e)
+
+                # ═══ Этап 2: Pivot proximity (±0.3%) → ConfirmationAggregator ═══
+                # pivot_touch_within_03 (4/4): любое касание уровня в ±0.3%.
+                # pivot_confluence_2plus (6/6): 2+ уровней в радиусе ±0.3% → confluence.
+                # S* → LONG (отскок вверх), R* → SHORT (отскок вниз), PP → нейтрально.
+                try:
+                    _pc_pivot = getattr(bot, "pivot_calculator", None)
+                    if (_pc_pivot is not None and df_entry is not None
+                            and not df_entry.empty and getattr(bot, "confirmation_aggregator", None)):
+                        _cur_price_pv = float(df_entry["close"].iloc[-1])
+
+                        # Сканируем все уровни в радиусе 0.3% по всем TF
+                        _pv_hits: list = []  # [(level_price, source_str, level_name), ...]
+                        for _pv_tf in ("1M", "1W", "1D"):
+                            _pv_cache = (_pc_pivot.pivot_cache or {}).get(f"{sym}_{_pv_tf}")
+                            if not _pv_cache:
+                                continue
+                            for _lk in ("PP", "S1", "S2", "S3", "R1", "R2", "R3"):
+                                _lvl_v = _pv_cache.get(_lk)
+                                if not _lvl_v or _lvl_v <= 0:
+                                    continue
+                                _dist_pct = abs(_cur_price_pv - _lvl_v) / _cur_price_pv * 100
+                                if _dist_pct <= 0.3:
+                                    _pv_hits.append((_lvl_v, f"{_pv_tf}:{_lk}", _lk))
+
+                        if _pv_hits:
+                            # Для одиночного касания — pivot_touch_within_03
+                            # Для 2+ касаний — pivot_confluence_2plus (мощнее)
+                            _conf_src = "pivot_confluence_2plus" if len(_pv_hits) >= 2 else "pivot_touch_within_03"
+
+                            # Side: считаем S/R/PP среди hit'ов
+                            _s_count = sum(1 for _, _, n in _pv_hits if n.startswith("S"))
+                            _r_count = sum(1 for _, _, n in _pv_hits if n.startswith("R"))
+
+                            _pv_evidence = {
+                                "hits": [{"source": s, "level": l} for l, s, _ in _pv_hits],
+                                "count": len(_pv_hits),
+                                "price": _cur_price_pv,
+                            }
+                            _pv_tf_evi = _pv_hits[0][1].split(":")[0]
+
+                            if _s_count > 0 and _r_count == 0:
+                                _publish_conf(bot, sym, _conf_src, "LONG", tf=_pv_tf_evi, evidence=_pv_evidence)
+                            elif _r_count > 0 and _s_count == 0:
+                                _publish_conf(bot, sym, _conf_src, "SHORT", tf=_pv_tf_evi, evidence=_pv_evidence)
+                            else:
+                                # Смешанные S/R рядом (squeeze zone) или только PP — нейтрально
+                                _publish_conf_both(bot, sym, _conf_src, tf=_pv_tf_evi, evidence=_pv_evidence)
+                except Exception as _pv_e:
+                    logger.debug("[ConfAgg] %s pivot proximity: %s", sym, _pv_e)
+
+                # ═══ Этап 2: EQL/EQH sweep → ConfirmationAggregator ═══
+                # EQH swept: цена прокололала равные high и вернулась ниже → SHORT trap.
+                # EQL swept: цена прокололала равные low и вернулась выше → LONG trap.
+                # Реестр: smc_eql_swept (5/0 LONG), smc_eqh_swept (0/5 SHORT). TF=1h.
+                try:
+                    if (df_1h is not None and len(df_1h) >= 10
+                            and getattr(bot, "confirmation_aggregator", None)):
+                        from core.smc.liquidity import detect_equal_highs_lows
+                        _eq = detect_equal_highs_lows(df_1h, threshold_pct=0.005, lookback=50)
+                        _eq_state = getattr(bot, "_prev_eq_sweep", None)
+                        if _eq_state is None:
+                            bot._prev_eq_sweep = {}
+                            _eq_state = bot._prev_eq_sweep
+                        # Проверяем sweep на последних 3 свечах
+                        _check_window = df_1h.iloc[-3:]
+                        _last_close = float(df_1h["close"].iloc[-1])
+                        # EQH sweep: high > level И close < level (failed breakout вверх)
+                        if _eq.get("eqh_level") and _eq.get("eqh_count", 0) >= 2:
+                            _eqh_lvl = float(_eq["eqh_level"])
+                            _swept_eqh = (_check_window["high"].max() > _eqh_lvl) and (_last_close < _eqh_lvl)
+                            _eqh_key = (sym, "EQH", round(_eqh_lvl, 6))
+                            if _swept_eqh and not _eq_state.get(_eqh_key):
+                                _eq_state[_eqh_key] = True
+                                _publish_conf(
+                                    bot, sym, "smc_eqh_swept", "SHORT", tf="1h",
+                                    evidence={"level": _eqh_lvl, "count": _eq["eqh_count"],
+                                              "close": _last_close, "wick_high": float(_check_window["high"].max())},
+                                )
+                            elif not _swept_eqh:
+                                _eq_state.pop(_eqh_key, None)
+                        # EQL sweep: low < level И close > level (failed breakout вниз)
+                        if _eq.get("eql_level") and _eq.get("eql_count", 0) >= 2:
+                            _eql_lvl = float(_eq["eql_level"])
+                            _swept_eql = (_check_window["low"].min() < _eql_lvl) and (_last_close > _eql_lvl)
+                            _eql_key = (sym, "EQL", round(_eql_lvl, 6))
+                            if _swept_eql and not _eq_state.get(_eql_key):
+                                _eq_state[_eql_key] = True
+                                _publish_conf(
+                                    bot, sym, "smc_eql_swept", "LONG", tf="1h",
+                                    evidence={"level": _eql_lvl, "count": _eq["eql_count"],
+                                              "close": _last_close, "wick_low": float(_check_window["low"].min())},
+                                )
+                            elif not _swept_eql:
+                                _eq_state.pop(_eql_key, None)
+                except Exception as _eq_e:
+                    logger.debug("[ConfAgg] %s EQ sweep: %s", sym, _eq_e)
 
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(
@@ -1256,8 +1652,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             if _eb is not None:
                                 asyncio.create_task(_eb.publish(sym, "anomaly_volume", priority=4))
                             # Куб: Сфера 7 → bus (ANOMALY + VOLUME_SPIKE)
+                            _v_ratio = info.get("volume_ratio", 0)
                             if _bus is not None:
-                                _v_ratio = info.get("volume_ratio", 0)
                                 _bus.publish(sym, SphereEvent.ANOMALY_DETECTED, {
                                     "volume_ratio": _v_ratio,
                                     "tf": _scan_tf,
@@ -1266,6 +1662,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 _bus.publish(sym, SphereEvent.VOLUME_SPIKE, {
                                     "ratio": _v_ratio, "tf": _scan_tf,
                                 })
+                            # Этап 2: volume_spike_z25 — side-нейтральный, публикуем на оба
+                            # (ratio>=2.5 эквивалент z-score 2.5 в реестре)
+                            if _v_ratio >= 2.5:
+                                _publish_conf_both(
+                                    bot, sym, "volume_spike_z25", tf=_scan_tf,
+                                    evidence={"ratio": _v_ratio, "tf": _scan_tf},
+                                )
 
                     # 1a. DEV-81: FUNDING_EXTREME (shadow mode — только лог, не в TG)
                     if _scan_tf == _etf:
@@ -1324,7 +1727,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         # ARCH-23: апгрейд wt_signal → confluence если цена у пивота (±1%)
                         # DEV-177 24.04: gated по confluence.enabled — иначе wt_signal утекал в БД
                         # как signal_type=confluence даже при выключенном детекторе.
-                        _conf_enabled = bool(bot.config.get("confluence.enabled", False))
+                        _conf_enabled = bool(bot.config.get("analysis.confluence.enabled", False))
                         if _conf_enabled and _pivot_calc is not None and not _df_tf.empty:
                             _price = float(_df_tf["close"].iloc[-1])
                             _near = _pivot_calc.find_near_pivot(_price, sym)
@@ -1355,7 +1758,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
                 # DEV-177 24.04: gated по confluence.enabled — иначе утечка в signal_type=confluence.
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
-                _conf_enabled_block = bool(bot.config.get("confluence.enabled", False))
+                _conf_enabled_block = bool(bot.config.get("analysis.confluence.enabled", False))
                 _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
                 _confluence_sigs = []
                 if not _conf_enabled_block:
@@ -1461,6 +1864,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         "type": mtf_info.get("type"), "direction": mtf_info.get("direction"),
                                         "tf": "1h", "strength": mtf_info.get("strength", 60),
                                     })
+                                # Этап 2: MTF cascade 1h+15m → div_cascade_1h_15m
+                                _mtf_dir = mtf_info.get("direction")
+                                if _mtf_dir in ("LONG", "SHORT"):
+                                    _publish_conf(
+                                        bot, sym, "div_cascade_1h_15m", _mtf_dir, tf="1h+15m",
+                                        evidence={"type": mtf_info.get("type"),
+                                                  "strength": mtf_info.get("strength", 60)},
+                                    )
                                 signals_to_broadcast.append(("mtf_divergence", mtf_divergence_message(sym, mtf_info), None))
                                 _dir = SignalDirection.LONG if mtf_info.get("direction") == "LONG" else SignalDirection.SHORT
                                 # Кешируем для меню "Дивергенции" без влияния на pre_signals analyze_symbol
@@ -1498,6 +1909,26 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         _eb = getattr(bot, "event_bus", None)
                                         if _eb is not None:
                                             await _eb.publish(sym, "divergence", priority=3)
+                                        # Этап 2: divergence → confirmation
+                                        # Реестр имеет только *_15m — для других TF skip.
+                                        _div_type = (div_info.get("type") or "").upper()
+                                        _div_dir = div_info.get("direction")
+                                        _div_src = None
+                                        if tf == "15m" and _div_dir in ("LONG", "SHORT"):
+                                            if _div_type == "REGULAR_BULLISH":
+                                                _div_src = "div_regular_bull_15m"
+                                            elif _div_type == "REGULAR_BEARISH":
+                                                _div_src = "div_regular_bear_15m"
+                                            elif _div_type == "HIDDEN_BULLISH":
+                                                _div_src = "div_hidden_bull_15m"
+                                            elif _div_type == "HIDDEN_BEARISH":
+                                                _div_src = "div_hidden_bear_15m"
+                                            if _div_src:
+                                                _publish_conf(
+                                                    bot, sym, _div_src, _div_dir, tf="15m",
+                                                    evidence={"type": _div_type,
+                                                              "strength": div_info.get("strength", 50)},
+                                                )
                                         signals_to_broadcast.append(("divergence", divergence_message(sym, div_info), None))
                                         _dir = SignalDirection.LONG if div_info.get("direction") == "LONG" else SignalDirection.SHORT
                                         # Кешируем для меню "Дивергенции" без влияния на pre_signals analyze_symbol

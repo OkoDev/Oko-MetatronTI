@@ -13,8 +13,10 @@ Debouncing встроен: один event per (symbol, tf) до следующе
 from __future__ import annotations
 
 import logging
+import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -50,10 +52,29 @@ class ATRChangeDetector:
     Не публикует atr_change_1d (R8: avgR=-0.4).
     """
 
-    def __init__(self, atr_period: int = 43, factor: float = 1.25) -> None:
+    def __init__(self, atr_period: int = 43, factor: float = 1.25, history_max_age_s: int = 28800) -> None:
         self.atr_period = atr_period
         self.factor = factor
         self._last_trend: Dict[Tuple[str, str], int] = {}  # (symbol, tf) → +1/-1
+        # История кроссов для cascade-проверок (atr_change_15m_pre_1h и т.п.).
+        # 28800 = 8 часов — максимальное окно для cascade (TRADER 09.05).
+        self._history: Dict[Tuple[str, str], Deque[Tuple[int, str]]] = {}
+        self._history_max_age_s = history_max_age_s
+
+    def recent_cross_in_window(self, symbol: str, tf: str, side: str, window_s: int) -> bool:
+        """Возвращает True если был cross в данную сторону на (sym, tf) за окно window_s секунд.
+
+        Используется для cascade-confirmations (atr_change_15m_pre_1h: 15m UP за 8h до 1h UP).
+        """
+        key = (symbol, tf)
+        hist = self._history.get(key)
+        if not hist:
+            return False
+        cutoff = int(time.time()) - window_s
+        for ts, ev_side in hist:
+            if ts >= cutoff and ev_side == side:
+                return True
+        return False
 
     def detect(self, symbol: str, tf: str, df_ohlcv: pd.DataFrame) -> Optional[ATRChangeEvent]:
         """Возвращает ATRChangeEvent если произошёл cross, иначе None.
@@ -79,10 +100,27 @@ class ATRChangeDetector:
             key = (symbol, tf)
             prev = self._last_trend.get(key)
 
+            # Горячий старт: при первом вызове после рестарта инициализируем prev
+            # из предпоследней свечи. Это позволяет поймать cross на последней закрытой
+            # свече сразу, не теряя его до следующего изменения тренда.
+            if prev is None and len(df) >= 2:
+                _prev_val = df["trend"].iloc[-2]
+                if _prev_val is not None and not pd.isna(_prev_val):
+                    prev = int(_prev_val)
+
             self._last_trend[key] = current
 
             if prev is not None and prev != current:
                 side = "UP" if current == 1 else "DOWN"
+
+                # История для cascade (atr_change_15m_pre_1h и т.п.) — добавляем
+                # и чистим устаревшие записи.
+                _now_s = int(time.time())
+                _hist = self._history.setdefault(key, deque(maxlen=50))
+                _hist.append((_now_s, side))
+                _cutoff = _now_s - self._history_max_age_s
+                while _hist and _hist[0][0] < _cutoff:
+                    _hist.popleft()
 
                 # wt1 если уже посчитан в df, иначе None
                 wt1: Optional[float] = None
