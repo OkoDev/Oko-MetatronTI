@@ -985,7 +985,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 _sw_str = int(_sw_cfg.get("min_strength", 60))
                                 _df_sw  = await bot.data_collector.get_ohlcv(sym, _sw_tf, limit=200)
                                 if _df_sw is not None and not _df_sw.empty:
-                                    _sw_rec = analyze_sideways(sym, _df_sw, min_strength=_sw_str)
+                                    # DEV-209-ext: передаём df_1h для gate atr_trend_1h_bias (ARCH-95 H6)
+                                    _sw_rec = analyze_sideways(sym, _df_sw, min_strength=_sw_str, df_1h=df_1h)
                                     if _sw_rec is not None:
                                         # Добавляем sideways_bars в metadata для features_json
                                         if _sw_rec.metadata is None:

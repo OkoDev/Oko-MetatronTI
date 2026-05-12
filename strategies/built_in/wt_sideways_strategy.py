@@ -78,9 +78,16 @@ def analyze_sideways(
     symbol: str,
     df_30m: pd.DataFrame,
     min_strength: int = 60,
+    df_1h: Optional[pd.DataFrame] = None,
 ) -> Optional[SimpleNamespace]:
     """
     Анализирует 30m данные на предмет WT OS/OB crossover.
+
+    Cross-gate (DEV-209-ext / ARCH-95 H6, 12.05.2026):
+        Если передан df_1h с колонкой trend — блокируем сделку против 1h тренда.
+        SHORT при atr_1h_bias=UP → return None.
+        LONG  при atr_1h_bias=DOWN → return None.
+        Источник: ARCH-95 H6 — ALIGNED WR 13.4% vs AGAINST 7.0%, avgR -0.22 vs -0.46.
 
     Возвращает recommendation-like объект или None.
     """
@@ -118,6 +125,29 @@ def analyze_sideways(
         return None
 
     direction = "LONG" if bull_cross else "SHORT"
+
+    # ── Cross-gate atr_trend_1h_bias (ARCH-95 H6) ──────────────────────────
+    # Используем закрытую свечу 1h (iloc[-2]) — тот же принцип что у atr_change_detector
+    # после фикса 4790f06. Если df_1h не передан или нет колонки trend — gate не работает.
+    if df_1h is not None and "trend" in df_1h.columns and len(df_1h) >= 2:
+        try:
+            _trend_1h_closed = df_1h["trend"].iloc[-2]
+            if not pd.isna(_trend_1h_closed):
+                atr_1h_bias = "UP" if int(_trend_1h_closed) == 1 else "DOWN"
+                if direction == "SHORT" and atr_1h_bias == "UP":
+                    logger.info(
+                        "[sideways] %s: SHORT блок — atr_trend_1h_bias=UP (gate ARCH-95 H6)",
+                        symbol,
+                    )
+                    return None
+                if direction == "LONG" and atr_1h_bias == "DOWN":
+                    logger.info(
+                        "[sideways] %s: LONG блок — atr_trend_1h_bias=DOWN (gate ARCH-95 H6)",
+                        symbol,
+                    )
+                    return None
+        except Exception as _ge:
+            logger.debug("[sideways] %s: gate atr_1h_bias err: %s", symbol, _ge)
 
     # SL по TSL-линии
     if direction == "LONG":
