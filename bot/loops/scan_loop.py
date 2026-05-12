@@ -551,19 +551,85 @@ def _select_optimal_sl_long(
     return final_sl, final_src
 
 
-async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> None:
-    """Прямой вход по ATR change LONG — Supertrend cross → сделка без полного analyze_symbol.
+def _select_optimal_sl_short(
+    entry: float,
+    df: "pd.DataFrame",
+    trendline: "Optional[float]",
+    live_mode: bool = False,
+) -> "tuple[float, str]":
+    """Зеркало _select_optimal_sl_long для SHORT (DEV-209).
 
-    Только LONG (backtest: SHORT avgR=-0.2 без фильтра).
-    Только 1h и 4h (15m слишком шумный).
-    SL выбирается оптимально из: trendup / swing_low(20) / ATR14×2.
-    TP = 3R.
+    Кандидаты SL над ценой:
+      1. trenddown (supertrend линия — согласована с сигналом)
+      2. swing_high(20)
+      3. entry + 2×ATR(14)
+    Фильтр 0.3-10% от entry. Tight SL = лучше R.
+    """
+    candidates: list[tuple[float, str]] = []
+
+    if trendline and trendline > entry > 0.0:
+        candidates.append((trendline, "atr_trendline"))
+
+    try:
+        if df is not None and len(df) >= 20 and "high" in df.columns:
+            swing_high = float(df["high"].iloc[-20:].max())
+            if swing_high > entry:
+                candidates.append((swing_high, "swing_high_20"))
+    except Exception:
+        pass
+
+    try:
+        if df is not None and len(df) >= 15 and "high" in df.columns and "low" in df.columns:
+            hl = df["high"] - df["low"]
+            atr14 = float(hl.rolling(14).mean().iloc[-1])
+            sl_atr = entry + 2.0 * atr14
+            if sl_atr > entry:
+                candidates.append((sl_atr, "atr14_2x"))
+    except Exception:
+        pass
+
+    valid: list[tuple[float, str, float]] = []
+    for sl_price, src in candidates:
+        dist_pct = (sl_price - entry) / entry
+        if 0.003 <= dist_pct <= 0.10:
+            valid.append((sl_price, src, dist_pct))
+
+    if not valid:
+        if trendline and trendline > entry > 0.0:
+            final_sl, final_src = trendline, "atr_trendline_fallback"
+        else:
+            final_sl, final_src = entry * 1.05, "fixed_5pct_fallback"
+    else:
+        valid.sort(key=lambda x: x[2])
+        final_sl, final_src, _ = valid[0]
+
+    if live_mode:
+        final_sl = final_sl * (1.0 + 0.0015)
+        final_src += "_buf"
+
+    return final_sl, final_src
+
+
+async def _execute_atr_change_signal(
+    bot, symbol: str, ev, tf: str, df=None, side: str = "LONG",
+) -> None:
+    """Прямой вход по ATR change на 1h/4h/15m (DEV-209: LONG + SHORT, 15m только в OTE зоне).
+
+    LONG (side='LONG'): SL ниже entry (trendup/swing_low/ATR14×2), TP = entry + 3R.
+    SHORT (side='SHORT'): SL выше entry (trenddown/swing_high/ATR14×2), TP = entry - 3R.
+
+    Strength = aggregator.aggregate() — Σ trigger + confirmations
+    (atr_change_{tf} + zone_OS/OB_{tf} + ote_zone + другие confluence через per-source window).
     """
     try:
         from core.signals.signal_models import (
             TradingRecommendation, SignalDirection, MarketContext,
         )
         from core.confirmations.registry import get_weight as _gw
+
+        side = side.upper()
+        if side not in ("LONG", "SHORT"):
+            return
 
         entry = ev.price
         if entry <= 0:
@@ -573,36 +639,79 @@ async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> 
         _exec_mode = bot.config.get("trading.execution_mode", "simulation")
         _live_mode = _exec_mode in ("vst", "live")
 
-        sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
+        if side == "LONG":
+            sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
+            sl_dist = entry - sl
+            valid_sl = sl > 0 and sl < entry
+        else:
+            sl, sl_source = _select_optimal_sl_short(entry, df, ev.trendline, live_mode=_live_mode)
+            sl_dist = sl - entry
+            valid_sl = sl > entry
 
-        sl_dist = abs(entry - sl)
-        if sl_dist <= 0 or sl / entry >= 1.0:
-            logger.debug("[ATRChange] %s %s: невалидный SL %.6f (entry=%.6f)", symbol, tf, sl, entry)
+        if not valid_sl or sl_dist <= 0:
+            logger.debug("[ATRChange] %s %s %s: невалидный SL %.6f (entry=%.6f)",
+                         symbol, tf, side, sl, entry)
             return
 
-        # Strength: базовый вес trigger + zone OS confluence
-        strength = _gw(f"atr_change_{tf}", "LONG")
-        if ev.zone == "OS":
-            strength += _gw(f"zone_OS_{tf}", "LONG")
+        # DEV-209: strength через aggregator (Σ trigger + confirmations с per-source window)
+        # Это включает atr_change_{tf}, zone_OS/OB, ote_zone, cascade pre_1h и т.д.
+        _ca = getattr(bot, "confirmation_aggregator", None)
+        agg_strength = 0
+        agg_res = None
+        if _ca:
+            try:
+                agg_res = _ca.aggregate(symbol, side)
+                if agg_res.get("has_trigger"):
+                    agg_strength = int(agg_res.get("strength", 0))
+            except Exception as _agg_e:
+                logger.debug("[ATRChange] %s %s %s: aggregate err: %s",
+                             symbol, tf, side, _agg_e)
+
+        # Fallback: если aggregator пуст (cold start) — старая логика trigger + zone
+        if agg_strength <= 0:
+            agg_strength = _gw(f"atr_change_{tf}", side)
+            if side == "LONG" and ev.zone == "OS":
+                agg_strength += _gw(f"zone_OS_{tf}", "LONG")
+            elif side == "SHORT" and ev.zone == "OB":
+                agg_strength += _gw(f"zone_OB_{tf}", "SHORT")
+
+        strength = min(agg_strength, 100)
 
         min_str = int(bot.config.get("signal_quality.min_strength_register", 40))
         if strength < min_str:
-            logger.debug("[ATRChange] %s %s: strength=%d < %d", symbol, tf, strength, min_str)
+            logger.debug("[ATRChange] %s %s %s: strength=%d < %d",
+                         symbol, tf, side, strength, min_str)
             return
 
-        tp = entry + sl_dist * 3.0
-        confidence = 0.85 if ev.zone == "OS" else 0.65
+        if side == "LONG":
+            tp = entry + sl_dist * 3.0
+            action = "BUY"
+            direction_enum = SignalDirection.LONG
+            confidence = 0.85 if ev.zone == "OS" else 0.65
+        else:
+            tp = entry - sl_dist * 3.0
+            action = "SELL"
+            direction_enum = SignalDirection.SHORT
+            confidence = 0.85 if ev.zone == "OB" else 0.65
+
+        # Confidence boost от количества confirmations
+        if agg_res and agg_res.get("confirmations"):
+            _n = len(agg_res["confirmations"])
+            if _n >= 4:
+                confidence = min(0.95, confidence + 0.10)
+            elif _n >= 2:
+                confidence = min(0.90, confidence + 0.05)
 
         logger.info(
-            "[ATRChange] %s %s LONG: entry=%.4f sl=%.4f (src=%s dist=%.2f%%) tp=%.4f zone=%s",
-            symbol, tf, entry, sl, sl_source, 100 * sl_dist / entry, tp, ev.zone,
+            "[ATRChange] %s %s %s: entry=%.4f sl=%.4f (src=%s dist=%.2f%%) tp=%.4f zone=%s str=%d",
+            symbol, tf, side, entry, sl, sl_source, 100 * sl_dist / entry, tp, ev.zone, strength,
         )
 
         rec = TradingRecommendation(
             symbol=symbol,
-            action="BUY",
-            direction=SignalDirection.LONG,
-            overall_strength=min(strength, 100),
+            action=action,
+            direction=direction_enum,
+            overall_strength=strength,
             confidence=confidence,
             risk_level="MEDIUM",
             signals_count=1,
@@ -624,35 +733,25 @@ async def _execute_atr_change_signal(bot, symbol: str, ev, tf: str, df=None) -> 
             "atr_tf": tf,
             "zone": ev.zone,
             "wt1": ev.wt1,
-            "signal_mode": "momentum",
-            "confirmations": [],
+            "signal_mode": (agg_res or {}).get("signal_mode", "momentum"),
+            "confirmations": (agg_res or {}).get("confirmations", []),
+            "strength_breakdown": (agg_res or {}).get("strength_breakdown", {}),
         }
-
-        # DEV-202: confirmations из агрегатора
-        _ca = getattr(bot, "confirmation_aggregator", None)
-        if _ca:
-            try:
-                _res = _ca.aggregate(symbol, "LONG")
-                if _res.get("confirmations"):
-                    extra["confirmations"] = _res["confirmations"]
-                    extra["signal_mode"] = _res["signal_mode"]
-                    extra["strength_breakdown"] = _res["strength_breakdown"]
-            except Exception:
-                pass
 
         trade_id = await bot.trade_simulator.register_trade_async(
             rec, bot.data_collector, extra_features=extra
         )
         if trade_id:
-            logger.info("[ATRChange] %s %s LONG → #%d registered (sl_source=%s)", symbol, tf, trade_id, sl_source)
+            logger.info("[ATRChange] %s %s %s → #%d registered str=%d (sl_source=%s)",
+                        symbol, tf, side, trade_id, strength, sl_source)
             if _ca:
                 try:
-                    _ca.clear(symbol, "LONG")
+                    _ca.clear(symbol, side)
                 except Exception:
                     pass
 
     except Exception as e:
-        logger.debug("[ATRChange] %s %s execute error: %s", symbol, tf, e)
+        logger.warning("[ATRChange] %s %s %s execute error: %s", symbol, tf, side, e)
 
 
 async def _execute_sideways_signal(bot, rec) -> None:
@@ -1059,9 +1158,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                 # ═══ КУБ: ATR Trend Change Detector → EventBus + ConfirmationAggregator (DEV-199/202) ═══
                 # 1d не публикуется: backtest R8 avgR=-0.4
+                # DEV-209: 15m расширен в OTE зоне; LONG+SHORT; auto ote_zone confirmation.
                 _atr_det = getattr(bot, "atr_change_detector", None)
                 _eb_atr = getattr(bot, "event_bus", None)
                 _conf_agg = getattr(bot, "confirmation_aggregator", None)
+                # SMC snapshot для OTE проверки (один раз на пару)
+                _smc_snap_atr = (getattr(bot, "_last_smc_snap", {}) or {}).get(sym, {}) or {}
+                _price_in_ote = bool(_smc_snap_atr.get("price_in_ote"))
+                _ote_dir = _smc_snap_atr.get("ote_direction")  # "LONG" | "SHORT" | None
+                _ote_tf  = _smc_snap_atr.get("ote_tf")
+
                 if _atr_det is not None and _eb_atr is not None:
                     for _atr_df, _atr_tf in [(df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h")]:
                         try:
@@ -1070,17 +1176,20 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _atr_ev = _atr_det.detect(sym, _atr_tf, _atr_df)
                             if _atr_ev is None:
                                 continue
+                            _side = 'LONG' if _atr_ev.side == 'UP' else 'SHORT'
+
+                            # Публикация в EventBus (для наблюдения и совместимости)
                             _prio = 2 if _atr_tf == "15m" else 1
-                            asyncio.create_task(_eb_atr.publish(sym, f"atr_change_{_atr_tf}", priority=_prio, data=_atr_ev.to_dict()))
-                            # DEV-199: прямой вход по ATR change LONG (только 1h/4h, SHORT avgR=-0.2)
-                            if _atr_tf in ('1h', '4h') and _atr_ev.side == 'UP':
-                                asyncio.create_task(_execute_atr_change_signal(bot, sym, _atr_ev, _atr_tf, df=_atr_df))
-                            # → ConfirmationAggregator: накапливаем для features_json (DEV-202)
+                            asyncio.create_task(_eb_atr.publish(
+                                sym, f"atr_change_{_atr_tf}", priority=_prio, data=_atr_ev.to_dict()
+                            ))
+
+                            # → ConfirmationAggregator: trigger + zone + ote_zone confirmations
                             if _conf_agg is not None:
                                 try:
                                     from core.confirmations.models import Confirmation as _Conf
                                     from core.confirmations.registry import get_weight as _gw
-                                    _side = 'LONG' if _atr_ev.side == 'UP' else 'SHORT'
+
                                     _src = f'atr_change_{_atr_tf}'
                                     _conf_agg.on_confirmation(_Conf(
                                         source=_src, symbol=sym, side=_side,
@@ -1107,8 +1216,41 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                                 weight=_zw, confidence=1.0,
                                                 evidence={'wt1': _atr_ev.wt1}, tf=_atr_tf,
                                             ))
+                                    # DEV-209: AUTO ote_zone confirmation если cross ВНУТРИ OTE
+                                    # и направление совпадает с импульсом OTE.
+                                    if _price_in_ote and _ote_dir == _side:
+                                        _oz_w = _gw('ote_zone', _side)
+                                        if _oz_w > 0:
+                                            _conf_agg.on_confirmation(_Conf(
+                                                source='ote_zone', symbol=sym, side=_side,
+                                                weight=_oz_w, confidence=1.0,
+                                                evidence={
+                                                    'ote_tf': _ote_tf,
+                                                    'retracement_pct': _smc_snap_atr.get('current_retracement'),
+                                                    'price': _atr_ev.price,
+                                                },
+                                                tf=_ote_tf or _atr_tf,
+                                            ))
                                 except Exception as _ca_e:
                                     logger.debug("[ConfAgg] %s %s: %s", sym, _atr_tf, _ca_e)
+
+                            # DEV-209: прямой вход
+                            #   1h/4h — всегда (оба side, по R8 SHORT avgR=+0.164/+0.287)
+                            #   15m — только когда price_in_ote и направление совпадает с OTE impulse
+                            _allow_entry = False
+                            if _atr_tf in ('1h', '4h'):
+                                _allow_entry = True
+                            elif _atr_tf == '15m' and _price_in_ote and _ote_dir == _side:
+                                _allow_entry = True
+                                logger.info(
+                                    "[ATRChange] %s 15m %s в OTE %s — разрешён прямой вход",
+                                    sym, _side, _ote_tf,
+                                )
+
+                            if _allow_entry:
+                                asyncio.create_task(_execute_atr_change_signal(
+                                    bot, sym, _atr_ev, _atr_tf, df=_atr_df, side=_side,
+                                ))
                         except Exception as _atr_e:
                             logger.debug("[ATRChangeDetector] %s error %s: %s", _atr_tf, sym, _atr_e)
 

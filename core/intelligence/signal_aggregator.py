@@ -143,20 +143,42 @@ class ConfirmationAggregator:
     """Аккумулирует Confirmation объекты и вычисляет итоговый strength.
 
     Окно window_seconds (600s по умолчанию) — максимальный возраст confirmation.
-    Старый _compute_overall_strength остаётся как fallback (backward-compat).
+
+    DEV-209: per-source окно через `per_source_window`. Например atr_change_15m=1800s
+    (30 мин) даёт триггеру дольше жить чем wt_sideways/confluence (600s),
+    чтобы успел накопить confluence (zone, ote_zone, pivot, etc).
     """
 
-    def __init__(self, window_seconds: int = 600):
+    # DEV-209: окна жизни confirmation per source (в секундах)
+    DEFAULT_PER_SOURCE_WINDOW = {
+        'atr_change_15m': 1800,  # 30 мин — trigger 15m живёт дольше для накопления confluence
+        'atr_change_1h':  1800,
+        'atr_change_4h':  3600,  # 1 час — старший trigger хранится дольше всего
+    }
+
+    def __init__(self, window_seconds: int = 600, per_source_window: Optional[Dict[str, int]] = None):
         self.window = window_seconds
+        self.per_source_window = {**self.DEFAULT_PER_SOURCE_WINDOW, **(per_source_window or {})}
         # (symbol, side) → list[Confirmation]
         self._pending: Dict = defaultdict(list)
 
+    def _window_for(self, source: str) -> int:
+        """Окно (сек) для конкретного source. Если в карте нет — общий window."""
+        return self.per_source_window.get(source, self.window)
+
+    def _cleanup(self, key) -> list:
+        """Удалить устаревшие confirmations per-source. Возвращает актуальный список."""
+        now_ms = int(time.time() * 1000)
+        confs = self._pending.get(key, [])
+        confs = [c for c in confs if c.ts_ms >= now_ms - self._window_for(c.source) * 1000]
+        self._pending[key] = confs
+        return confs
+
     def on_confirmation(self, conf) -> None:
-        """Добавить confirmation в буфер и вычистить устаревшие."""
+        """Добавить confirmation в буфер и вычистить устаревшие (per-source window)."""
         key = (conf.symbol, conf.side)
         self._pending[key].append(conf)
-        cutoff = conf.ts_ms - self.window * 1000
-        self._pending[key] = [c for c in self._pending[key] if c.ts_ms >= cutoff]
+        self._cleanup(key)
 
     def aggregate(self, symbol: str, side: str) -> dict:
         """Вернуть strength + список confirmations для symbol/side.
@@ -168,13 +190,7 @@ class ConfirmationAggregator:
         from core.confirmations.registry import is_trigger as _is_trigger
 
         key = (symbol, side)
-        confs = self._pending.get(key, [])
-
-        # Вычистить устаревшие по текущему времени
-        now_ms = int(time.time() * 1000)
-        cutoff = now_ms - self.window * 1000
-        confs = [c for c in confs if c.ts_ms >= cutoff]
-        self._pending[key] = confs
+        confs = self._cleanup(key)
 
         if not confs:
             return {'strength': 0, 'confirmations': [], 'has_trigger': False,
@@ -219,4 +235,6 @@ class ConfirmationAggregator:
             return 'cascade'
         if 'atr_change_1h' in sources or 'atr_change_4h' in sources:
             return 'momentum'
+        if 'atr_change_15m' in sources:
+            return 'entry'
         return 'unknown'
