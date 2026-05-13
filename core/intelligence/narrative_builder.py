@@ -85,6 +85,8 @@ def _extract_smc_narrative(
         "price_in_ote": False,
         "current_retracement": 0.0,
         "last_bos_direction": None,
+        "ote_direction": None,   # DEV-209: направление OTE impulse (LONG/SHORT)
+        "ote_tf": None,          # DEV-209: TF на котором посчитан impulse
     }
     if not smc_snap or not isinstance(smc_snap, dict):
         return factors, flat
@@ -97,6 +99,9 @@ def _extract_smc_narrative(
     flat["current_retracement"] = float(smc_snap.get("current_retracement", 0.0) or 0.0)
     last_bos = smc_snap.get("last_bos") or {}
     flat["last_bos_direction"] = last_bos.get("direction")  # "UP" / "DOWN" / None
+    # DEV-209: переносим направление и TF OTE из snap для аудита через features_json
+    flat["ote_direction"] = smc_snap.get("ote_direction")  # "LONG" / "SHORT" / None
+    flat["ote_tf"] = smc_snap.get("ote_tf")
 
     # Выбор OB по направлению (bull для LONG, bear для SHORT)
     if is_long:

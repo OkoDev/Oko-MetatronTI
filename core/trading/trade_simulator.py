@@ -527,6 +527,11 @@ class TradeSimulator:
                     features["price_in_ote"] = int(bool(_smc_flat.get("price_in_ote", False)))
                     features["current_retracement"] = _smc_flat.get("current_retracement")
                     features["last_bos_direction"] = _smc_flat.get("last_bos_direction")
+                    # DEV-209 (12.05): направление OTE impulse + TF — нужно для DEV-208 аудита
+                    if _smc_flat.get("ote_direction") is not None:
+                        features["ote_direction"] = _smc_flat.get("ote_direction")
+                    if _smc_flat.get("ote_tf") is not None:
+                        features["ote_tf"] = _smc_flat.get("ote_tf")
 
             # DEV-178: data_era — маркер эры данных для фильтрации в ML
             # post_fix (>= 15.04.2026) = чистые данные (DEV-157 + DEV-174 + DEV-175 применены)
