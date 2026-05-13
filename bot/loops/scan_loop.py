@@ -531,6 +531,9 @@ def _select_optimal_sl_long(
         dist_pct = (entry - sl_price) / entry
         if 0.003 <= dist_pct <= 0.10:
             valid.append((sl_price, src, dist_pct))
+        else:
+            logger.debug("[SL_SELECT LONG] %s отброшен: dist=%.2f%% (entry=%.6f sl=%.6f)",
+                         src, dist_pct * 100, entry, sl_price)
 
     if not valid:
         # fallback — trendup если есть, иначе 5%
@@ -593,6 +596,9 @@ def _select_optimal_sl_short(
         dist_pct = (sl_price - entry) / entry
         if 0.003 <= dist_pct <= 0.10:
             valid.append((sl_price, src, dist_pct))
+        else:
+            logger.debug("[SL_SELECT SHORT] %s отброшен: dist=%.2f%% (entry=%.6f sl=%.6f)",
+                         src, dist_pct * 100, entry, sl_price)
 
     if not valid:
         if trendline and trendline > entry > 0.0:
@@ -651,6 +657,17 @@ async def _execute_atr_change_signal(
         if not valid_sl or sl_dist <= 0:
             logger.debug("[ATRChange] %s %s %s: невалидный SL %.6f (entry=%.6f)",
                          symbol, tf, side, sl, entry)
+            try:
+                from core.observability.decision_trace import record_drop
+                asyncio.create_task(record_drop(
+                    symbol=symbol, gate_name="invalid_sl",
+                    drop_reason=f"atr_change_{tf}/{side}: sl={sl:.6f} entry={entry:.6f} src={sl_source}",
+                    signal_type=f"atr_change_{tf}", direction=side, strength=0,
+                    features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf,
+                              "sl_source": sl_source, "trendline": ev.trendline},
+                ))
+            except Exception:
+                pass
             return
 
         # DEV-209: strength через aggregator (Σ trigger + confirmations с per-source window)
@@ -679,8 +696,37 @@ async def _execute_atr_change_signal(
 
         min_str = int(bot.config.get("signal_quality.min_strength_register", 40))
         if strength < min_str:
-            logger.debug("[ATRChange] %s %s %s: strength=%d < %d",
+            # A2 (14.05): запись в signal_drops для observability — раньше был silent debug.
+            # Нужно знать сколько atr_change cross теряем по этому gate и какие confluence
+            # обычно собираются. Данные нужны для калибровки min_strength_atr_change (A1).
+            logger.debug("[ATRChange] %s %s %s: strength=%d < %d (drop)",
                          symbol, tf, side, strength, min_str)
+            try:
+                from core.observability.decision_trace import record_drop
+                _conf_count = len((agg_res or {}).get("confirmations", []))
+                _conf_sources = [c.get("source") for c in (agg_res or {}).get("confirmations", [])]
+                asyncio.create_task(record_drop(
+                    symbol=symbol,
+                    gate_name="strength_too_low",
+                    drop_reason=f"atr_change_{tf}/{side}: strength={strength} < min={min_str}",
+                    signal_type=f"atr_change_{tf}",
+                    direction=side,
+                    strength=strength,
+                    features={
+                        "trigger_source": f"atr_change_{tf}",
+                        "atr_tf": tf,
+                        "agg_strength": strength,
+                        "confirmations_count": _conf_count,
+                        "confirmations_sources": _conf_sources,
+                        "signal_mode": (agg_res or {}).get("signal_mode"),
+                        "strength_breakdown": (agg_res or {}).get("strength_breakdown"),
+                        "zone": ev.zone,
+                        "wt1": ev.wt1,
+                        "entry_price": entry,
+                    },
+                ))
+            except Exception as _rd_e:
+                logger.debug("[ATRChange] record_drop failed: %s", _rd_e)
             return
 
         if side == "LONG":
@@ -729,6 +775,7 @@ async def _execute_atr_change_signal(
         )
 
         extra = {
+            "signal_type_override": "atr_change",
             "trigger_source": f"atr_change_{tf}",
             "atr_tf": tf,
             "zone": ev.zone,
@@ -749,9 +796,34 @@ async def _execute_atr_change_signal(
                     _ca.clear(symbol, side)
                 except Exception:
                     pass
+        else:
+            # A2: register_trade_async вернул None — отрезано gate'ами trade_simulator
+            # (dedup / sl_cooldown / pair_cooldown_sl_streak / min_volume / ...)
+            try:
+                from core.observability.decision_trace import record_drop
+                asyncio.create_task(record_drop(
+                    symbol=symbol, gate_name="register_returned_none",
+                    drop_reason=f"atr_change_{tf}/{side}: register_trade_async() returned None",
+                    signal_type=f"atr_change_{tf}", direction=side, strength=strength,
+                    features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf,
+                              "agg_strength": strength, "entry_price": entry, "sl": sl,
+                              "confirmations_count": len((agg_res or {}).get("confirmations", []))},
+                ))
+            except Exception:
+                pass
 
     except Exception as e:
         logger.warning("[ATRChange] %s %s %s execute error: %s", symbol, tf, side, e)
+        try:
+            from core.observability.decision_trace import record_drop
+            asyncio.create_task(record_drop(
+                symbol=symbol, gate_name="exception",
+                drop_reason=f"atr_change_{tf}/{side}: {type(e).__name__}: {e}",
+                signal_type=f"atr_change_{tf}", direction=side, strength=0,
+                features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf},
+            ))
+        except Exception:
+            pass
 
 
 async def _execute_sideways_signal(bot, rec) -> None:
