@@ -175,8 +175,16 @@ class ConfirmationAggregator:
         return confs
 
     def on_confirmation(self, conf) -> None:
-        """Добавить confirmation в буфер и вычистить устаревшие (per-source window)."""
+        """Добавить confirmation в буфер и вычистить устаревшие (per-source window).
+
+        DEV-209 fix (14.05): дедупликация по source. Один source в окне может быть
+        опубликован только однажды — повторная публикация обновляет ts, не плодит дубли.
+        Без этого scan_loop публиковал atr_change_4h 4-8 раз в окне → trigger=72 вместо 18
+        → strength искусственно проходил min=40 → 7/7 SL на atr_change_4h за 13.05.
+        """
         key = (conf.symbol, conf.side)
+        # Удалить ВСЕ предыдущие записи с тем же source (дедупликация)
+        self._pending[key] = [c for c in self._pending[key] if c.source != conf.source]
         self._pending[key].append(conf)
         self._cleanup(key)
 
