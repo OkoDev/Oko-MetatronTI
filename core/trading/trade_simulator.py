@@ -398,6 +398,8 @@ class TradeSimulator:
                         return None
 
             signal_type = _signal_type_from_recommendation(recommendation)
+            if extra_features and extra_features.get("signal_type_override"):
+                signal_type = extra_features["signal_type_override"]
             sl_source = _get_recommendation_value(recommendation, "sl_source") or None
             tp_source = _get_recommendation_value(recommendation, "tp_source") or None
             metadata = _get_recommendation_value(recommendation, "metadata") or {}

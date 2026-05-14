@@ -527,13 +527,14 @@ def _select_optimal_sl_long(
 
     # Фильтр: 0.3% ≤ dist ≤ 10%
     valid: list[tuple[float, str, float]] = []
+    rejected: list[tuple[str, float, str]] = []
     for sl_price, src in candidates:
         dist_pct = (entry - sl_price) / entry
         if 0.003 <= dist_pct <= 0.10:
             valid.append((sl_price, src, dist_pct))
         else:
-            logger.debug("[SL_SELECT LONG] %s отброшен: dist=%.2f%% (entry=%.6f sl=%.6f)",
-                         src, dist_pct * 100, entry, sl_price)
+            reason = "dist<0.3%" if dist_pct < 0.003 else "dist>10%"
+            rejected.append((src, dist_pct * 100, reason))
 
     if not valid:
         # fallback — trendup если есть, иначе 5%
@@ -541,10 +542,18 @@ def _select_optimal_sl_long(
             final_sl, final_src = trendline, "atr_trendline_fallback"
         else:
             final_sl, final_src = entry * 0.95, "fixed_5pct_fallback"
+        if rejected:
+            logger.info("[SL_SELECT LONG] entry=%.6f fallback=%s — все кандидаты отброшены: %s",
+                        entry, final_src,
+                        ", ".join(f"{s}={d:.2f}% ({r})" for s, d, r in rejected))
     else:
         # ближайший к цене (минимум dist_pct)
         valid.sort(key=lambda x: x[2])
         final_sl, final_src, _ = valid[0]
+        if rejected:
+            logger.info("[SL_SELECT LONG] entry=%.6f выбран=%s dist=%.2f%% | отброшены: %s",
+                        entry, final_src, valid[0][2] * 100,
+                        ", ".join(f"{s}={d:.2f}% ({r})" for s, d, r in rejected))
 
     # live_mode: буфер 0.15% ниже уровня (TSL срабатывает при касании, не при close)
     if live_mode:
@@ -592,22 +601,31 @@ def _select_optimal_sl_short(
         pass
 
     valid: list[tuple[float, str, float]] = []
+    rejected: list[tuple[str, float, str]] = []
     for sl_price, src in candidates:
         dist_pct = (sl_price - entry) / entry
         if 0.003 <= dist_pct <= 0.10:
             valid.append((sl_price, src, dist_pct))
         else:
-            logger.debug("[SL_SELECT SHORT] %s отброшен: dist=%.2f%% (entry=%.6f sl=%.6f)",
-                         src, dist_pct * 100, entry, sl_price)
+            reason = "dist<0.3%" if dist_pct < 0.003 else "dist>10%"
+            rejected.append((src, dist_pct * 100, reason))
 
     if not valid:
         if trendline and trendline > entry > 0.0:
             final_sl, final_src = trendline, "atr_trendline_fallback"
         else:
             final_sl, final_src = entry * 1.05, "fixed_5pct_fallback"
+        if rejected:
+            logger.info("[SL_SELECT SHORT] entry=%.6f fallback=%s — все кандидаты отброшены: %s",
+                        entry, final_src,
+                        ", ".join(f"{s}={d:.2f}% ({r})" for s, d, r in rejected))
     else:
         valid.sort(key=lambda x: x[2])
         final_sl, final_src, _ = valid[0]
+        if rejected:
+            logger.info("[SL_SELECT SHORT] entry=%.6f выбран=%s dist=%.2f%% | отброшены: %s",
+                        entry, final_src, valid[0][2] * 100,
+                        ", ".join(f"{s}={d:.2f}% ({r})" for s, d, r in rejected))
 
     if live_mode:
         final_sl = final_sl * (1.0 + 0.0015)
