@@ -4,6 +4,161 @@
 
 ---
 
+## [14.05.2026 ~12:00 UTC] Агент: Developer — Бэктесты A1+B + 2 фикса
+
+### ✅ Сделано
+
+**Бэктест A1** (`e:/tmp/A1_min_strength_backtest.py`, 15 пар, 60 дней):
+- 1h LONG avgR=+0.120 (n=757), 4h LONG avgR=+0.275 (n=192) ← прибыльны
+- 1h SHORT avgR=-0.179, 4h SHORT avgR=-0.438 ← убыточны в текущем бычьем рынке
+- По неделям: 1h LONG нестабилен (−0.805 в W11, +0.812 в W18)
+- **Решение:** min_strength_atr_change=15 (торгуем все crosses, наблюдаем)
+
+**Бэктест B1** (`e:/tmp/B1_wt_sideways_tsl.py`, 2118 сделок):
+- SHORT в TREND_UP: n=891, avgR=+0.211, totalR=+187.7 ← gate 3e1ca17 блокировал это!
+- Pre-gate avgR=+0.050 vs post-gate avgR=−0.046
+- TSL activated avgR=+0.982 vs TSL NOT activated avgR=−0.797
+- 680 SL сделок с MFE>0.5R → потенциал TSL@0.5R
+
+**Коммит a6fb69e** `fix(A1+B)`:
+1. `config.yaml`: `min_strength_atr_change: 15`
+2. `scan_loop._execute_atr_change_signal`: читает `min_strength_atr_change`
+3. `wt_sideways_strategy.py`: gate atr_trend_1h_bias убран, bias только в metadata
+
+**Коммит 3e152ec** `fix(TRADER-14.05)`:
+1. `trade_simulator.py`: signal_type_override обрабатывается → atr_change не composite
+2. `scan_loop._select_optimal_sl_long/short`: SL candidates logging INFO
+
+### ⚠️ ТРЕБУЕТСЯ РЕСТАРТ
+
+После рестарта ожидать:
+- atr_change сделок с signal_type='atr_change' (не composite)
+- wt_sideways сделок без gate (SHORT в TREND_UP разрешены)
+- SL кандидаты в логах (INFO [SL_SELECT LONG/SHORT])
+
+### 🔄 Pending
+
+- **C**: бэктест TP variants (3R vs pivot) — ждёт накопления atr_change сделок при min=15
+- **TSL@0.5R wt_sideways**: отдельная задача после 24ч данных
+- **E**: DEV-207 metadata SQL+JSON скетч
+
+---
+
+## [14.05.2026 ~10:00 UTC] Агент: Developer — TRADER fixes + аудит за ночь
+
+### ✅ Сделано
+
+1. **Аудит данных за ночь (30ч, БД + crypto_bot.log):**
+   - signal_drops собран: 1313 записей, top reasons: dedup 981, strength_too_low 241, sl_cooldown 81
+   - **atr_change drops: 123 (1h) + 101 (4h) + 17 (15m) — ВСЕ strength_too_low**
+   - Дистрибуция strength: 130×15 (чистый 1h), 91×18 (чистый 4h), 18 случаев 20-26 (с confluence). **0 случаев strength≥30** → confluence не накапливает много.
+   - 12 composite сделок 13.05 ДО дедупа (c948be4), 9/12 SL. После c948be4 → 0 atr_change сделок за 36ч (отсекаются по min_strength_register=40)
+   - **wt_signal катастрофа**: 47 сделок SHORT (нет LONG), avgR=-1.23. RANGE 26 сделок avgR=-1.69 — главный убийца ночи
+   - watch_list_breach +0.29 ✅, mtf_bias +2.07 ✅, pivot_reversal -0.25
+
+2. **Расследование DEV-209 OTE confluence:**
+   - В логах: 19+ `[ATRChange] 15m в OTE — разрешён прямой вход` за ночь
+   - OTE логика работает: `price_in_ote=True` ~4% сканов, `ote_zone` confirmation добавляется
+   - **Проблема не в DEV-209** — strength = trigger(8/15/18) + ote_zone(7) = 15-25 < min=40
+   - → задача A1 (калибровка min_strength_atr_change по данным)
+
+3. **Коммит 3e152ec `fix(TRADER-14.05)`:**
+   - `signal_type_override` обрабатывается в `trade_simulator.py:401-402` (раньше игнорировалось → composite вместо atr_change)
+   - `_select_optimal_sl_long/short`: SL candidates logging повышен debug→INFO, добавлен список отброшенных + причина (dist<0.3% / dist>10%)
+   - Эффект: новые atr_change сделки в БД получат `signal_type='atr_change'`, TRADER TR-003 сможет фильтровать. SL логи покажут почему swing_low/atr14_2x отбрасываются (для решения по max_dist 10%→15%)
+
+### 🔄 Pending (от 14.05 ~01:00)
+
+Без изменений:
+- **A1**: после 24-48ч сбора drops → калибровка min_strength_atr_change (15/25/30/40) по данным
+- **B**: откат wt_sideways gate (3e1ca17) + tsl_activation_r=0 + бэктесты
+- **C**: бэктест TP variants (фикс 3R vs PivotCalculatorFixed.get_pivot_tp DEV-110)
+- **E**: DEV-207 metadata SQL+JSON скетч для веб-разработчика
+
+### ⚠️ Накопленные проблемы (требуют решения после данных)
+
+- **wt_signal SHORT в RANGE**: 26 сделок avgR=-1.69 за 30ч. Пользователь сказал «никаких блоков» — нужно искать другой подход (веса, soft penalty)
+- **wt_sideways 1 сделка за 30ч** — gate 3e1ca17 чрезмерно жёсткий, ждёт B
+- **0 exchange сделок за 30ч** — бот в SIM-only? Или поле другое. Проверить
+
+### Незакоммиченные изменения (для отдельной задачи)
+
+- `core/confirmations/registry.py`: `atr_change_15m SHORT` 8→5 — кто-то правил, не моя сессия
+- DISCUSSION.md, TASKS.md, monitoring.py и др. — не трогал, оставлены как есть
+
+---
+
+## [14.05.2026 ~01:00 UTC] Агент: Developer — DEV-209 серия фиксов + observability
+
+### ✅ Сделано (коммиты по порядку)
+
+1. **4790f06** `fix(atr_change_detector)` — cross на закрытой свече iloc[-2] (симуляционный TSL паттерн). Решил false flip-flop SHORT/LONG/SHORT каждые 10 мин на 4h. Тест: 39 false drops/день/пара → 0.
+
+2. **88beec8** `feat(DEV-209)` — per-source window aggregator (atr_change_15m/1h=1800s, 4h=3600s), параметризация _execute_atr_change_signal LONG/SHORT, 15m+OTE условие, auto ote_zone confirmation, _select_optimal_sl_short, ote_direction/ote_tf в snap.
+
+3. **3e1ca17** `fix(wt_sideways)` — cross-gate atr_trend_1h_bias через df_1h. Откатить если 0 wt_sideways сделок продолжается (сейчас наблюдается слишком жёсткий блок).
+
+4. **752a6a0** `fix(DEV-189)` — TSL UPDATE stop_loss для SIM сделок. Отделено `_sl_changed` от `_needs_exchange_update`. Эффект: SIM avgR -0.63 → -0.40, TSL captured% 50→207.
+
+5. **b3e06bc** `fix(DEV-209)` — ote_direction/ote_tf через `_extract_smc_narrative` → features_json (для DEV-208 аудита).
+
+6. **c948be4** `fix(DEV-209)` — дедупликация source в ConfirmationAggregator. До: 4×atr_change_4h в окне → trigger=72 → ложные сделки (7/7 SL 13.05). После: один source = один вес.
+
+7. **3787aea** `fix(DEV-209/A2)` — record_drop в silent skip ветках `_execute_atr_change_signal` (strength_too_low/invalid_sl/register_returned_none/exception). Observability для калибровки min_strength_atr_change по данным.
+
+### 🔄 В ПРОЦЕССЕ (прерван компактом)
+
+**Ожидается рестарт пользователем** для сбора данных signal_drops с новым A2 record_drop.
+
+**TODO следующих шагов:**
+- **A1 (бэктест)**: после 24-48ч сбора drops → определить оптимальный min_strength_atr_change (15/25/30/40) по данным
+- **B**: откат wt_sideways gate (3e1ca17) + tsl_activation_r=0 (TSL@entry) + бэктесты
+- **C**: бэктесты вариантов TP — фиксированный 3R vs `PivotCalculatorFixed.get_pivot_tp()` (узел уже есть, DEV-110/Этап 7 ROADMAP)
+- **E**: DEV-207 metadata SQL+JSON скетч для веб-разработчика (match exchange↔БД)
+
+### 🔍 Контекст диагностики 14.05
+
+Реальные cross supertrend(43,1.25) на 1h:
+- ENA: 3 cross за 24-48ч (12-13.05)
+- GRT: 3 cross
+- BTC: 3 cross (включая 13.05 18:00 UP)
+
+В БД: **0 atr_change_1h сделок за 48ч**. Корень — `min_strength_register=40` отрезает чистые atr_change (вес 15-25 < 40). До дедупа (c948be4) проходили только за счёт 4×inflate.
+
+После c948be4 + рестарта: atr_change pipeline даст 0 сделок пока не снизим порог или не накопится confluence. A2 record_drop покажет в БД сколько теряется.
+
+**Артефакты от старого пайплайна** (12 atr_change_4h сделок 13.05, 7/7 SL) — следствие dedup bug. После рестарта не повторится.
+
+### ⚠️ Проблемы накопленные
+
+- **115 → 33 → ? открытых позиций** — потенциальная перегрузка risk_management
+- **wt_sideways 0 за 10 мин после 3e1ca17** — gate слишком жёсткий, нужен откат + soft penalty
+- **ote_direction=None в features_json** до b3e06bc — теперь должен заполняться (после рестарта)
+- **TASKS.md модифицирован пользователем** — DEV-199/200/201 статусы 🔴 (видимо хочет пересмотреть), DEV-189 ✅
+
+### Следующая сессия
+
+1. Прочитать `current_state.md` (этот файл)
+2. Проверить через SQL signal_drops за период с момента рестарта — сколько atr_change cross теряем по strength_too_low
+3. На основе данных → A1 решение по min_strength_atr_change
+4. После — B/C бэктесты
+
+История коммитов:
+```
+3787aea fix(DEV-209/A2): record_drop в silent skip ветках
+c948be4 fix(DEV-209): дедупликация source в ConfirmationAggregator
+b3e06bc fix(DEV-209): ote_direction/ote_tf через narrative → features_json
+752a6a0 fix(DEV-189): TSL UPDATE stop_loss для SIM сделок
+3e1ca17 fix(wt_sideways): cross-gate atr_trend_1h_bias
+88beec8 feat(DEV-209): ATR change 15m в OTE + per-source window + LONG/SHORT
+4790f06 fix(atr_change_detector): cross только на закрытой свече
+3502de8 fix(tasks): сохранить DEV-209 (ARCH-112 update) после revert
+ef24889 Revert "feat(confirmation-driven)..."
+0d6a394 (revert'ed)
+```
+
+---
+
 ## [09.05.2026 ~15:30 UTC] Агент: Developer — DEV-199/200/201/203 завершены (параллельные субагенты)
 
 ### ✅ Сделано

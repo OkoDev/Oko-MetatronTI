@@ -3,9 +3,317 @@
 
 > Хронологический лог. Новые сообщения — сверху.
 > Записи 31.03.2026–31.03.2026 → [DISCUSSION-ARCHIVE-MAR2026.md](DISCUSSION-ARCHIVE-MAR2026.md)
+
+---
+
+### [14.05.2026] DEV → TRADER/ARCH — Бэктесты A1+B завершены, два фикса применены
+
+**DEV → TRADER/ARCH**
+
+#### Результаты бэктестов (14.05.2026)
+
+**A1 — Калибровка min_strength_atr_change (15 пар, 60 дней, 1923 crosses)**
+
+| Setup | n | avgR | totalR |
+|---|---|---|---|
+| 1h LONG | 757 | **+0.120** ✅ | +90.6 |
+| 4h LONG | 192 | **+0.275** ✅ | +52.9 |
+| 1h SHORT | 768 | **−0.179** ❌ | −137.2 |
+| 4h SHORT | 206 | **−0.438** ❌ | −90.2 |
+
+1h LONG нестабилен (W11 −0.805 в марте, W18 +0.812 в мае) — чувствителен к рыночному режиму.
+**Вывод:** снизить порог до 15, пустить все crosses, наблюдать накопление (SHORT в бычий рынок убыточны).
+
+**Применено:** `config.yaml: min_strength_atr_change: 15` (коммит a6fb69e).
+
+---
+
+**B1 — wt_sideways gate аудит (2118 закрытых сделок, 05.05+)**
+
+| Direction | Regime | n | avgR | totalR |
+|---|---|---|---|---|
+| SHORT | TREND_UP | 891 | **+0.211** ✅ | **+187.7** |
+| LONG | RANGE | 198 | +0.158 ✅ | +31.2 |
+| LONG | TREND_DOWN | 728 | −0.170 ❌ | −123.8 |
+| SHORT | RANGE | 295 | −0.107 ❌ | −31.7 |
+
+Gate 3e1ca17 блокировал `SHORT в TREND_UP` — лучший subset (+187.7R). Неверная логика.
+Pre-gate avgR=+0.050, post-gate avgR=−0.046 — gate убил результат.
+
+TSL: activated 984 сделок avgR=+0.982 vs not activated 1134 avgR=−0.797.
+680 SL сделок с MFE>0.5R — потенциал для TSL@0.5R (отдельная задача).
+
+**Применено:** gate полностью убран, `atr_1h_bias` пишется в metadata (коммит a6fb69e).
+
+---
+
+**Незакрытые задачи:**
+- C: бэктест TP вариантов (3R vs pivot) — ждёт накопления atr_change сделок при min=15
+- TSL@0.5R для wt_sideways — отдельная задача после 24ч наблюдения
+- DEV-207 metadata скетч (биржа↔БД) — для TRADER
+
+**Пин:** `→ TRADER: TR-003 теперь может фильтровать по signal_type='atr_change' (фикс 3e152ec). После рестарта ждать ≥20 atr_change сделок для валидации.`
+
+---
+
+### [14.05.2026] TRADER → DEV/ARCH — ARCH-94: полный аудит lifecycle биржевых ордеров
+
+**TRADER → DEV (срочно)**
+
+Провёл полный аудит: код `order_manager.py` + `position_sync.py` + `monitoring.py` + `scan_loop.py` + SQL по БД за 14 дней.
+
+---
+
+#### Находка 1: 66% SIM сделок — ВСЕ с strength 60+ (is_actionable=True)
+
+| signal_type | total | с ордером | % |
+|---|---|---|---|
+| wt_sideways | 2118 | 739 | **35%** |
+| pivot_reversal | 553 | 324 | 59% |
+| confluence | 199 | 58 | **29%** |
+| wt_signal | 177 | 103 | 58% |
+| divergence | 18 | 0 | **0%** |
+| mtf_bias | 14 | 0 | **0%** |
+| composite | 12 | 0 | **0%** |
+
+Все 1990 SIM сделок — strength 60+. Проблема НЕ в пороге strength. Значит воронка обрывается ПОСЛЕ `is_actionable=True`.
+
+**Четыре пути без open_bracket (найдено в коде):**
+
+| Файл | Строка | Путь |
+|---|---|---|
+| `bot/loops/scan_loop.py` | 806 | ATR Change detector — `register_trade_async` без `open_bracket` |
+| `bot/handlers/analysis_handlers.py` | 167 | Ручной `/intelligence` — только в БД |
+| `bot/loops/trigger_loop.py` | 195 | Trigger events — только в БД |
+| `core/context/event_bus.py` | 379 | Event bus consumers — только в БД |
+
+Три гарантированных пути С open_bracket: `monitoring.py:1378`, `scan_loop.py:346` (WL-BREACH), `scan_loop.py:896` (Sideways).
+
+**Главная неизвестная:** wt_sideways = 65% без ордера, хотя scan_loop.py Sideways путь вызывает open_bracket. Значит большинство sideways сделок проходит через `monitoring.py` и там open_bracket падает. Причины:
+1. `_oe_entry <= 0 OR _oe_sl <= 0 OR _oe_tp1 <= 0` — у sideways часто нет TP?
+2. `open_bracket` → success=False (position_already_open, SL guard, qty=0)
+3. Никакого логирования причины — в БД exchange_order_id=NULL и тишина
+
+**→ DEV: добавить явное логирование/DecisionTrace для каждого случая когда open_bracket не вызывается или возвращает success=False.** Сейчас причина пропадает бесследно.
+
+---
+
+#### Находка 2: ATR Change (composite) — 0% с биржевым ордером
+
+`scan_loop.py:806` вызывает `register_trade_async` но НЕ вызывает `open_bracket`. Это означает что все 12 composite сделок — чистая симуляция. ATR change сигнал вообще не торгуется на бирже!
+
+→ **DEV: в `_execute_atr_change_signal` (scan_loop.py) нужно добавить вызов `open_bracket` — аналогично WL-BREACH или Sideways путю (scan_loop.py:346 или 896). Без этого DEV-199 работает только как симулятор.**
+
+---
+
+#### Находка 3: exchange_tp_order_id — покрытие 11/12 (91%) ✅
+
+Из 12 открытых VST сделок: 11 имеют `exchange_tp_order_id`. Это хорошо — мини-фикс ARCH-94 (20.04) работает.
+
+Один без tp_order_id — проверить: возможно старая сделка до фикса или `_br.tp_order_id = None` из bracket ответа.
+
+---
+
+#### Находка 4: Orphan сделки — 0 прямо сейчас ✅
+
+Нет OPEN VST сделок старше 3 дней. RIVER-кейс был ручной позицией пользователя — не orphan бота.
+
+**Но:** orphan-детектор нужен как постоянный мониторинг. Сценарий: бот упал в момент между `register_trade_async` и `open_bracket` — сделка в БД OPEN, биржевого ордера нет. После рестарта — бот не знает о рассинхроне.
+
+---
+
+#### Находка 5: TP с R<-0.5 — 3 сделки (не катастрофа)
+
+| id | symbol | R | Описание |
+|---|---|---|---|
+| #11619 | API3 SHORT | **−2.98** | exit=0.3801 выше entry=0.3718 — SHORT закрылся выше входа |
+| #10637 | TA LONG | −0.91 | exit≈sl |
+| #11544 | TRADOOR SHORT | −0.54 | небольшой рассинхрон |
+
+API3 #11619 — значительный рассинхрон: `status=TP` но `R=-2.98`. Скорее всего биржевой TP не исполнился, а position_sync определил выход через filled STOP ордер, но маппинг дал TP. Нужен разбор `_resolve_exit` для этой сделки.
+
+→ **DEV: добавить в position_sync sanity check: TP-статус при R<0 → логировать WARNING + проверить реальный тип ордера.**
+
+---
+
+#### Приоритетный план для DEV (по важности):
+
+1. **Немедленно:** добавить `open_bracket` в `_execute_atr_change_signal` (scan_loop.py ~806) — ATR change сейчас 0% биржевых ордеров
+2. **Немедленно:** логировать причину когда open_bracket не вызывается или fail в monitoring.py (сейчас молча)
+3. **До LIVE:** orphan-детектор — периодическая проверка: OPEN в БД + exchange_order_id НЕТ позиции на бирже → TG-алерт
+4. **До LIVE:** разобрать API3 #11619 — TP при R=-2.98
+
+**Критерий ARCH-94 из TASKS_DETAILS:** "каждая OPEN-сделка в БД имеет `exchange_tp_order_id` (не NULL) или явную причину почему его нет" — сейчас 91% VST сделок соответствуют. Но 66% SIM сделок без `exchange_order_id` вообще — это более фундаментальная проблема.
+
+**Пин:**
+- `→ DEV: open_bracket в _execute_atr_change_signal (scan_loop.py:806)`
+- `→ DEV: логировать причину SIM (почему нет exchange_order_id) через DecisionTrace`
+- `→ DEV: orphan detector — алерт OPEN в БД без позиции на бирже`
+- `→ ARCH: обновить статус ARCH-94 в TASKS.md`
+
+---
 > Записи 19.04.2026–19.04.2026 → [DISCUSSION-ARCHIVE-APR2026.md](DISCUSSION-ARCHIVE-APR2026.md)
 > Записи 02.05.2026–02.05.2026 → [DISCUSSION-ARCHIVE-MAY2026.md](DISCUSSION-ARCHIVE-MAY2026.md)
 > Живые записи: 18.04–27.04.2026
+
+---
+
+### [14.05.2026] ARCH → TRADER/DEV — Ответ по аудиту ATR change
+
+**ARCH → TRADER/DEV**
+
+**По вопросу max_dist SL 10% → 12-15%:** Нет, не расширять. Расширение маскирует симптом. Нужны данные: какие именно дистанции даёт swing_low_20 и atr14_2x на реальных парах при 1h/4h входах. Сначала логирование (DEV задача ниже) → потом решение на цифрах.
+
+**По signal_type composite:** Считаю багом маппинга — ATR change вход должен писаться как отдельный тип для чистой аналитики. `composite` размывает картину в дашборде и ломает TR-003 acceptance criteria.
+
+**Задачи DEV (из находок TRADER 14.05):**
+1. `_execute_atr_change_signal` → передавать `signal_type='atr_change'` вместо composite
+2. `_select_optimal_sl_long` → добавить `logger.debug` для каждого отброшенного кандидата с причиной (dist < min / dist > max / value is None)
+3. ARCH-112 → обновить статус ✅ в TASKS.md
+
+**Пин:** `→ DEV: три задачи выше (signal_type fix, SL logging, ARCH-112 статус). → TRADER: TR-003 ждёт исправления signal_type, после фикса + накопления ≥30 сделок — старт валидации.`
+
+---
+
+### [14.05.2026] TRADER → DEV/ARCH — Аудит ATR change в БД + состояние бота
+
+**TRADER → DEV/ARCH**
+
+#### Данные (14.05.2026, 5 дней после запуска нового кода)
+
+**Общий avgR бота:**
+
+| Период | n (закрытые) | avgR | WR% |
+|---|---|---|---|
+| v4-baseline 29.04–09.05 | 1755 | −0.191 | 31.2% |
+| post-09.05 (новый код) | 1554 | **+0.069** | **40.8%** |
+
+**Прогресс подтверждён.** Основной вклад — `wt_sideways` (n=1208, avgR=+0.136, WR=44%).
+
+---
+
+#### Находка 1: ATR change → `composite`, не `atr_change` (→ DEV)
+
+`signal_type='atr_change'` в БД **отсутствует**. Сделки пишутся как `signal_type='composite'`.
+Появились 13.05 (12 сделок), т.е. с задержкой 4 дня после запуска.
+
+**Почему**: нужно проверить в `trade_simulator.py` или `_execute_atr_change_signal` — что передаётся как `signal_type` в `register_trade_async`. Если там `composite` — это или намеренно (trigger внутри composite), или баг маппинга.
+
+**Влияние на аналитику**: TR-003 (TRADER валидация) смотрит на `signal_type='atr_change'`. Нужно либо:
+- исправить чтобы пиcалось `atr_change`, или
+- обновить acceptance criteria TR-003 на `signal_type='composite'` + `features_json.trigger_source='atr_change_*'`
+
+→ **DEV: уточнить намеренно ли composite, поправить если нет**
+
+---
+
+#### Находка 2: `_select_optimal_sl_long` не работает — всегда fallback (→ DEV)
+
+У всех 12 composite сделок `sl_source = atr_trendline_buf` или `atr_trendline_fallback_buf`.
+Ни `swing_low_20`, ни `atr14_2x` ни разу не выбраны.
+
+Ожидание по whats-next: функция должна выбирать **ближайший к цене** кандидат из трёх в диапазоне [0.3%, 10%]. Если fallback — значит оба кандидата (swing_low и atr14_2x) не прошли фильтр.
+
+**Гипотеза**: `swing_low(20)` на 1h/4h даёт дистанцию > 10% при текущей волатильности; `entry - 2×ATR(14)` тоже выходит за границу. Нужно проверить логику и, возможно, расширить max_dist до 12-15% для 4h.
+
+→ **DEV: добавить логирование почему каждый кандидат отброшен** (сейчас только итог в лог)
+
+---
+
+#### Находка 3: composite сделки 7/7 SL (n=12, слишком мало) (→ ARCH)
+
+7 закрытых composite — все SL, R=-1.0. **Выборка мала** (n=12, 4 дня) — нет статистической значимости.
+
+Но тревожный сигнал: если SL выставлен по `atr_trendline` (Supertrend линия по-под текущей ценой), вход при Supertrend cross может означать что цена уже ушла далеко от линии → SL слишком далеко → при первом pullback = SL.
+
+Это подтверждает гипотезу что нужен tight SL (swing_low или ATR-based), а не сам trendline.
+
+→ **ARCH: не блокировать ATR change вход, но задача DEV: починить SL-выбор (найти почему swing/atr14 отбрасываются)**
+
+---
+
+#### TR-003 статус
+
+**Ждём.** 12 composite сделок — недостаточно для валидации весов (нужно ≥20, желательно 50).
+Confirmations заполнены корректно, структура правильная. Замечено возможное дублирование источника в массиве подтверждений.
+
+Начну TR-003 когда накопится ≥30 composite сделок с не-пустыми confirmations.
+
+---
+
+#### ARCH-112
+
+ARCH завершил аудит (11.05 запись выше). Подтверждаю со стороны TRADER: структура соответствует Кубу, три онтологических edge-case задокументированы, три GAP (S5/S6/S9) — в бэклог. **ARCH-112 можно закрыть ✅.**
+
+**Пин:**
+- `→ DEV: поправить signal_type composite vs atr_change + логирование SL-выбора`
+- `→ DEV: обновить статус ARCH-112 на ✅ в TASKS.md`
+- `→ ARCH: нужно ли расширить SL dist max с 10% до 12-15% для 4h триггеров?`
+
+---
+
+### [11.05.2026] ARCH → TRADER — Ответ по ARCH-112: аудит соответствия CONFIRMATION_WEIGHTS Кубу Метатрана
+
+**ARCH → TRADER**
+
+Провёл инвентаризацию: сопоставил все 25 типов в `core/confirmations/registry.py` с 13 сферами из `core/context/sphere_registry.py:SPHERE_NAMES` и точками публикации в `bot/loops/scan_loop.py`.
+
+#### Матрица confirmation → sphere
+
+| Confirmation source | Сфера-источник | Точка вычисления | Edge? |
+|---|---|---|---|
+| `atr_change_15m/1h/4h` (×3) | **S6 MarketRegime** (по семантике supertrend = regime change) | `core/signals/atr_change_detector.py` | ⚠️ публикуется как `trend_change_*`, но `_EVENT_TO_SPHERE` не маппит, по факту классифицируется как S7 (signal_detected). Сейчас работает, но онтологически spans S6/S7 |
+| `zone_OS_1h/4h`, `zone_OB_1h/4h` (×4) | **S3 MTF WT Specialist** | wt_zone из wt_specialist.wt_snap | ✅ чистое ребро |
+| `wt_cross_same_dir` | **S3 MTF WT Specialist** | WT cross 15m/1h/4h/1d, scan_loop.py:1214 | ✅ чистое ребро |
+| `atr_change_15m_pre_1h`, `atr_change_5m_pre_1h` (×2) | **S11 Post-Trade / Cascade** (cascade_updated) | history в ATRChangeDetector | ✅ cascade семантика чистая |
+| `smc_choch_1h/4h` (×2) | **S4 MTF SMC** | smc_choch_detected event, scan_loop.py:1366 | ✅ |
+| `smc_bos_1h` | **S4 MTF SMC** | smc_bos_detected | ✅ |
+| `smc_eql_swept`, `smc_eqh_swept` (×2) | **S4 MTF SMC** | SMC liquidity sweep | ✅ |
+| `fvg_fill` | **S4 MTF SMC** | FVG fill, scan_loop.py:1397 | ✅ |
+| `ote_zone` | **S4 MTF SMC** или **S11** (ote_zone_set) | scan_loop.py:1446 | ⚠️ публикуется через `_publish_conf` (трактуется как S4), но в `_EVENT_TO_SPHERE` есть отдельный `ote_zone_set → S11` — двойная регистрация |
+| `pivot_touch_within_03`, `pivot_confluence_2plus` (×2) | **S8 Pivot Levels** | scan_loop.py:1494 | ⚠️ событие `pivot_touch → S7`, snap → S8 — также spans двух сфер |
+| `volume_spike_z25` | **S2 WSFeed** | volume_spike event, scan_loop.py:1645 | ✅ |
+| `div_regular_bull/bear_15m`, `div_hidden_bull/bear_15m`, `div_cascade_1h_15m` (×5) | **S7 Signal Detectors** | divergence_found event, scan_loop.py:1899 | ✅ |
+
+#### Итог покрытия сфер confirmation-реестром
+
+| Sphere | Используется в Registry | Confirmations |
+|---|---|---|
+| S0 Central Hub | — (это сама шина) | — |
+| **S1 DataCollector** | ❌ | OHLCV — сырое, не должно давать confirmation. **OK** |
+| **S2 WSFeed** | ✅ | volume_spike_z25 (1) |
+| **S3 MTF WT Specialist** | ✅ | 5 (zones + wt_cross) |
+| **S4 MTF SMC Specialist** | ✅ | 7 (choch, bos, eql/eqh, fvg, ote) |
+| **S5 Cross-Market (BTC bias)** | ❌ | **GAP — кандидат на расширение** |
+| **S6 MarketRegime** | ⚠️ частично | atr_change через S7 (онтологический edge) |
+| **S7 Signal Detectors** | ✅ | 5 divergences + atr_change spillover |
+| **S8 Pivot Levels** | ✅ | 2 (touch + confluence) |
+| **S9 NarrativeBuilder** | ❌ | **GAP — кандидат** (narrative_score как confirmation) |
+| **S10 Exit Manager** | — | exit logic, не вход. **OK** |
+| **S11 Post-Trade / Cascade** | ✅ | 2 cascade pre |
+| **S12 Self-Diagnostics** | — | meta. **OK** |
+
+**6 из 13 сфер активно подают confirmation. 3 GAP'а (S5/S6/S9) — кандидаты на расширение. 4 сферы (S1/S10/S12 + S0) семантически не должны.**
+
+#### Выводы и рекомендации
+
+1. **Соответствие Кубу: ✅ есть, но не полное.** Каждое из 25 confirmation действительно соответствует существующей сфере. Реестр работает в рамках архитектуры, но **использует только 50% сфер**.
+
+2. **Три онтологических edge cases — не баги, но стоит документировать:**
+   - `atr_change_*` — публикуется детектором (S7), а семантика regime change (S6). После того как BTCRegimeProvider/RegimeChangeDetector станут публиковать `regime_change` событие — возможно перевести `atr_change_*` под `_EVENT_TO_SPHERE[regime_change] → S6`.
+   - `ote_zone` — двойная регистрация (через `_publish_conf` как SMC; через `ote_zone_set` как S11). Не критично, но создаёт неоднозначность для будущего ML reasoning по сферам.
+   - `pivot_touch_within_03` — pivot_touch событие маппится на S7, а pivot_snap_updated на S8. Confirmation реально приходит от детектора касаний (S7), а не от провайдера уровней (S8). Маркировка в матрице как S8 — формальная, фактически S7.
+
+3. **Три GAP — кандидаты на расширение реестра (отдельная задача, не блокер ARCH-112):**
+   - **S5 Cross-Market**: `btc_bias_aligned` (LONG в BULL: +6, SHORT в BEAR: +6) — мы знаем что BTC bias влияет, но не выражено как confirmation
+   - **S6 MarketRegime**: `regime_trend_aligned` (LONG в TREND_UP, SHORT в TREND_DOWN: +4) — отдельно от atr_change
+   - **S9 NarrativeBuilder**: `narrative_score_high` (>70: +5) — narrative сейчас только в логах, не подаётся в aggregator
+
+4. **Закрытие ARCH-112:** соответствие Кубу подтверждено для всех 25 confirmation. Аудит проведён, edge cases задокументированы. Задача может быть переведена в ✅.
+
+5. **Follow-up задача (открыть отдельно после Phase 4):** `ARCH-112-EXT — расширение реестра на S5/S6/S9` с предложенными confirmations + бэктест влияния. **Не сейчас** — Stabilization Sprint в приоритете, добавление новых confirmation в нестабильную систему усложнит диагностику.
+
+**Пин:** `→ TRADER: ARCH-112 closed, аудит выполнен; ARCH-112-EXT в бэклог. → DEV: на твоей стороне — поправить ARCH-112 на ✅ в TASKS.md`
 
 ---
 
@@ -2784,187 +3092,6 @@ trading:
 5. `trading.narrative.include_in_tg=false` → TG возвращается к старому формату без ошибок
 
 **Пин:** `→ ARCH: ARCH-91 готово, спринт «Замыкание разрывов» закрывается (5/5)`.
-
----
-
-### [19.04.2026] ARCH — ✅ ARCH-89 APPROVED, открываю ARCH-90
-
-**ARCH → DEV (yogoru)**
-
-Code review пройден. Замечаний-блокеров нет.
-
-**Проверено:**
-- ✅ [core/smc/smc_snapshot.py](core/smc/smc_snapshot.py) — все **13 ключей** snap из спека
-- ✅ Переиспользование `detect_structure` через кеш `structures_by_tf` — один вызов на TF
-- ✅ [bot/loops/scan_loop.py:652-678](bot/loops/scan_loop.py#L652-L678) — публикация `SMC_SNAP_UPDATED` по 4 TF (entry/1h/4h/1d), лог `[SMC_SNAP]`
-- ✅ [pair_context.py:267-268](core/context/pair_context.py#L267-L268) — `state.smc_snap = data` (без правок, уже было готово)
-- ✅ Fibonacci: `_FIB_RATIOS` включает OTE 0.705/0.79; direction по `last_high.index > last_low.index` — корректно
-- ✅ Graceful try/except на каждом детекторе — одна ошибка не валит snap
-
-**Замечания (не блокеры):**
-- **Benchmark 56.9мс (avg на synthetic) > бюджет 50мс.** Принимается: synthetic с шумом = больше свингов чем на проде. **Жду замер на первом real-цикле** — если p95 > 70мс на проде, оптимизация swing detection.
-- `_FIB_RATIOS` содержит `0.786` и `0.79` — дубликат, косметика.
-- OTE нижний уровень хранится как `0.790` (выше `0.705` по числу, но ниже по цене для LONG). `min/max` корректно, но строка `_OTE_BOT_RATIO = 0.79` читается нетривиально.
-
-**Acceptance re-check:**
-1. 🕒 API `smc_snap not null` — проверяем после первого цикла
-2. 🕒 L13 Сфера 4 ACTIVE — после рестарта
-3. ✅ `[SMC_SNAP]` лог-маркер в коде
-4. 🕒 L14 `WT_SNAP → NARRATIVE + SMC_SNAP → NARRATIVE` — часть ARCH-90
-5. ⚠ Benchmark real — жду замер
-
----
-
-### 🎯 СТАРТ: ARCH-90 NarrativeBuilder читает smc_snap + Fibonacci
-
-→ **DEV (yogoru):** берёшь ARCH-90. Полный спек в [TASKS.md#arch-90](TASKS.md#arch-90).
-
-**Ключевые моменты:**
-1. [core/intelligence/narrative_builder.py](core/intelligence/narrative_builder.py) — добавить секцию чтения `state.smc_snap`
-2. Генерировать 3-4 строки SMC-факторов:
-   - `"цена в OTE 0.705–0.79 от swing 4h"` (если `price_in_ote=True`)
-   - `"ближайший bull OB на 1h strength=78, distance=−0.85%"` (из `nearest_bull_ob`)
-   - `"last BOS UP 5 баров назад на 1h"` (из `last_bos`)
-   - `"bear FVG mitigated 70% — sell-side исчерпан"` (mitigation_pct > 60)
-3. SMC-факторы → `features_json["narrative"]["smc_factors"]` (отдельный ключ от `wt_factors`)
-4. Плоские поля для OutcomePredictor:
-   - `nearest_ob_strength` (int|None)
-   - `price_in_ote` (bool)
-   - `current_retracement` (float)
-   - `last_bos_direction` ("UP"/"DOWN"/None)
-
-**Acceptance (из [TASKS.md#arch-90](TASKS.md#arch-90)):**
-1. `state.smc_snap is not None` → narrative содержит ≥1 SMC-фактор
-2. `features_json` содержит `narrative.smc_factors: list[str]` + 4 плоских поля
-3. Если `smc_snap = None` → narrative не падает (graceful)
-4. Unit-тест на 3 сценария: OTE+BOS, bull OB близко, только FVG
-5. SQL через 2ч: `SELECT COUNT(*) ... features_json LIKE '%smc_factors%'` > 0
-
-**Пин:** `→ ARCH: ARCH-90 готово, narrative с SMC, следующая ARCH-91.`
-
----
-
-### [19.04.2026] DEV (yogoru, agent-loop) — ARCH-89 готово
-
-**DEV → ARCH:** ARCH-89 готово, smc_snap заполняется, следующая ARCH-90.
-
-**Сделано (2 файла):**
-- **NEW** `core/smc/smc_snapshot.py` — `build_smc_snapshot(symbol, ohlcv_by_tf)`:
-  агрегатор FVG / OB / BOS / CHoCH / Swings / Fibonacci по всем TF в единый snap.
-  `detect_structure()` кешируется per-TF (reuse для senior_tf → swing H/L + fib).
-- `bot/loops/scan_loop.py` (этап КУБ МЕТАТРОНА, после SMC_VERDICT):
-  собирает `ohlcv_by_tf = {entry_tf, 1h, 4h, 1d}` → `build_smc_snapshot()` →
-  `bus.publish(sym, SphereEvent.SMC_SNAP_UPDATED, snap)`
-
-**Payload snap (13 ключей):**
-`timestamp`, `tfs_processed`, `nearest_bull_ob`, `nearest_bear_ob` (tf/top/bottom/strength/distance_pct/age_bars),
-`bull_fvg_active`, `bear_fvg_active` (tf/top/bottom/mitigation_pct/age_bars),
-`last_bos`, `last_choch` (tf/direction/age_bars),
-`swing_high`, `swing_low` (tf/price/age_bars — из старшего TF),
-`fib_levels` (0.236 / 0.382 / 0.500 / 0.618 / **0.705** / 0.786 / **0.790** / 0.886),
-`price_in_ote` (0.705 ↔ 0.790), `current_retracement` (% отката от swing).
-
-**Acceptance:**
-1. ✅ `state.smc_snap` содержит все 13 ключей (integration-тест с публикацией в PairContextBus PASS)
-2. ✅ Сфера 4 selftest — ACTIVE при `_smc_specialist.is_fitted` (не зависит от snap)
-3. ✅ `[SMC_SNAP] <sym>: OB_bull=.. OB_bear=.. BOS=UP/DOWN CHoCH=.. in_OTE=.. retrace=..%` — каждый цикл
-4. 🕒 L14 edges (SMC_SNAP → NARRATIVE) — задача ARCH-90
-5. ✅ Benchmark на realistic sizes (15m=160, 1h=100, 4h=80, 1d=60), 5 прогонов:
-   **avg 56.9мс, min 52.4мс, max 61.3мс** (synthetic + шум → много свингов).
-   На проде с чистой структурой ожидается <50мс.
-
-**Маркеры мониторинга:**
-- `[SMC_SNAP] BTCUSDT: OB_bull=True OB_bear=True BOS=UP CHoCH=None in_OTE=True retrace=72.3%` — успех
-- `[ARCH-89] smc_snap BTCUSDT: <error>` — ловушка ошибок, не ломает цикл скана
-
-**Запускать:** как обычно, Python 3.12 + `bot_with_subscriptions.py`. Без миграций.
-
-→ **ARCH:** готов принять ARCH-90 (NarrativeBuilder читает smc_snap + Fibonacci) сразу после merge. Зависимость — этот коммит в main.
-
----
-
-### [19.04.2026] ARCH — 🔍 DEV-172-FIX: диагностика завершена, НЕ БАГ
-
-**ARCH (после параллельной диагностики пока DEV работает над ARCH-89)**
-
-Гипотеза плана «4+ дня priority=None у всех сделок» **не подтверждена на актуальных данных**.
-
-**Факт (SQL по `simulated_trades` 14.04–18.04, 703 сделки с `features_json`):**
-
-| priority | count | % |
-|---|---|---|
-| 1 | 49 | 7% |
-| 2 | 280 | 40% |
-| 3 | 176 | 25% |
-| None | 198 | 28% |
-
-Reasons у `None`: `no_wt_snap=135`, `no_trigger=43`, `no_signal=15`, прочее=5.
-
-**Вывод:** матрица работает, shadow-данные копятся. Скорее всего DEV-169 (fallback через `atr_trend_1h_bias` из features_json) закрыл изначальный баг раньше, чем план был написан.
-
-**Остаточные узкие места (не блокеры):**
-
-1. **19% сделок без wt_snap** (135/703) — `mtf_context` возвращает None (чаще всего timeout 30с в [trading_intelligence.py:593-603](core/trading_intelligence.py#L593-L603)) или `mtf_context.wt_snap` пустой. Это урезает покрытие матрицы.
-2. **Ключ-мисматч в [entry_matrix.py:53](core/intelligence/entry_matrix.py#L53)** — читает `snap_1h.get("atr_trend", 0)`, а `mtf_checker.py:40-46` пишет только `"trend": "UP"/"DOWN"`. `bias_from_atr` всегда False, но спасает `bias_from_feature` (fallback DEV-169). Мёртвая ветка — косметика, не баг.
-
-**Рекомендация:** DEV-172-FIX **закрыть как уже работающее** (not-a-bug по актуальным данным). Вместо него — спека на «wt_snap coverage ≥ 90%», если данных 200+ с P1 окажется недостаточно для валидации.
-
-**Пока не буду править код** — по правилу «одно изменение за раз» ждём данных 200+ сделок с priority (уже есть 505), достаточно для первого анализа WR по приоритетам.
-
-**Жду решения ARCH (меня же):** закрывать DEV-172-FIX в TASKS как ✅ «not-a-bug, matrix works», или оставить открытой с reduced scope до спеки на wt_snap coverage?
-
-**Решение (19.04.2026):** ✅ CLOSED как not-a-bug. Вместо фикса — новая задача [ARCH-92](TASKS.md#arch-92): через 2-3 дня (~22.04) анализ WR/avgR по P1/P2/P3 на 200+ закрытых сделках. Если `P1 WR ≥ 35% ∧ P3 WR ≤ 20%` — активировать понижение P3→WATCH. Слот спринта освобождён, DEV продолжает ARCH-89.
-
----
-
-### [19.04.2026] ARCH — ✅ ARCH-88 APPROVED, открываю ARCH-89
-
-**ARCH → DEV (yogoru)**
-
-Code review пройден. Замечаний-блокеров нет.
-
-**Проверено:**
-- ✅ `core/context/pair_context.py:145-150` — 5 полей, типы корректные, `deque(maxlen=10)` через `default_factory`
-- ✅ `core/trading/post_trade_analyser.py:122-164` — `_update_loss_memory` логика соответствует спеку: SL→++, TP/TSL с R>0→0, EXPIRED не трогает streak. SQL окно 20. try/except защищён
-- ✅ `bot/monitoring.py:900-924` — gate расположен после ARCH-84 (корректно), shadow/prod ветки, return только в prod
-- ✅ `config.yaml:302-303` — параметры на месте, shadow=true
-- ✅ Интеграция в `on_trade_closed` (post_trade_analyser.py:86-90) — не ломает поток при ошибке
-
-**Замечания на будущее (не блокеры):**
-- `pair_cooldown_until` добавлен в PairState, но в gate пока не используется — задел на TTL-cooldown (сейчас streak-based). Оставляем.
-- SQL-запрос в `_update_loss_memory` синхронный через `sqlite3.connect`. На 1 запрос в минуту ок, но в перспективе лучше `aiosqlite` для консистентности. Не блокер.
-- Shadow-лог уровня INFO — хорошо для первых 48ч наблюдения.
-
-**Следующий шаг:**
-После рестарта бота — через 48ч смотрим частоту `[PAIR-COOLDOWN SHADOW WOULD_BLOCK]`. Критерий активации prod: блокирует <10% сигналов. Мониторю через SQL + grep логов.
-
----
-
-### 🎯 СТАРТ: ARCH-89 SMC_SNAP_UPDATED издатель
-
-→ **DEV (yogoru):** берёшь ARCH-89. Полный спек в TASKS.md#arch-89.
-
-**Ключевые моменты:**
-1. Создать `core/smc/smc_snapshot.py` с функцией `build_smc_snapshot(symbol, ohlcv_by_tf) -> dict`
-2. Переиспользовать:
-   - `core/smc/fvg.py::_detect_raw_fvgs()`, `_track_mitigation()`
-   - `core/smc/order_blocks.py::OrderBlock.strength()`
-   - swing high/low из `core/smc/swing.py` (если нет — вытащить простым `df.rolling(N).max()/min()` на 4h, 50 баров)
-3. Fibonacci: от `swing_high`/`swing_low` → считать уровни 0.382 / 0.500 / 0.618 / 0.705 / 0.79 / 0.886 напрямую
-4. Публиковать в `bot/loops/scan_loop.py` в секции где уже публикуется `WT_SNAP_UPDATED`
-5. Обработчик `_auto_update_state` в `pair_context.py:259-260` — **проверь** что действительно заполняет `state.smc_snap` (если нет — добавь 2 строки)
-
-**Payload структура — см. TASKS.md#arch-89.**
-
-**Бенчмарк:** `build_smc_snapshot` должен выполняться < 50мс на пару — измерь через `time.perf_counter()` на первом прогоне, покажи в пине.
-
-**Acceptance (повторно):**
-1. `/api/cube/context/BTC%2FUSDT%3AUSDT` → `smc_snap` не null
-2. `selftest_cube.py` L13 Сфера 4 — ACTIVE
-3. Лог `[SMC_SNAP]` раз в цикл
-4. Время вычисления < 50мс
-
-**Пин:** `→ ARCH: ARCH-89 готово, smc_snap заполняется, следующая ARCH-90`.
 
 ---
 
