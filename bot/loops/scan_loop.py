@@ -801,6 +801,7 @@ async def _execute_atr_change_signal(
             "signal_mode": (agg_res or {}).get("signal_mode", "momentum"),
             "confirmations": (agg_res or {}).get("confirmations", []),
             "strength_breakdown": (agg_res or {}).get("strength_breakdown", {}),
+            "trade_mode": "atr_change",  # dedup: разные режимы с wt_sideways не блокируют друг друга
         }
 
         trade_id = await bot.trade_simulator.register_trade_async(
