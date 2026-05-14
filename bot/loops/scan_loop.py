@@ -815,6 +815,42 @@ async def _execute_atr_change_signal(
                     _ca.clear(symbol, side)
                 except Exception:
                     pass
+            if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer"):
+                try:
+                    _oe = bot.order_executor
+                    _deposit = await _oe.get_available_balance()
+                    _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+                    _leverage = int(bot.config.get("trading.leverage", 5))
+                    _qty = bot.position_sizer.calc_qty(
+                        entry_price=entry, sl_price=sl,
+                        deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
+                    )
+                    if _qty > 0:
+                        _br = await _oe.open_bracket(
+                            symbol=symbol, direction=side,
+                            entry_price=entry, sl=sl, tp1=tp, tp2=None, qty=_qty,
+                        )
+                        if not _br.success:
+                            if _br.error != "position_already_open":
+                                logger.warning("[ATRChange] %s OrderExecutor: %s", symbol, _br.error)
+                        else:
+                            logger.info(
+                                "[ATRChange] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
+                                _br.mode.upper(), side, _qty, entry, sl, tp, _br.order_id, _br.notional_usdt,
+                            )
+                            if hasattr(bot, "position_manager"):
+                                bot.position_manager.register(
+                                    symbol=symbol, side=side, qty=_qty,
+                                    sim_trade_id=trade_id,
+                                    exchange_order_id=_br.order_id,
+                                )
+                            if _live_mode:
+                                from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                                asyncio.create_task(fetch_and_save_sl_order_id(bot, trade_id, symbol, side))
+                    else:
+                        logger.warning("[ATRChange] %s qty=0 (deposit=%.2f risk=%.1f%%)", symbol, _deposit, _risk_pct)
+                except Exception as _oe_e:
+                    logger.warning("[ATRChange] %s OrderExecutor exception: %s", symbol, _oe_e)
         else:
             # A2: register_trade_async вернул None — отрезано gate'ами trade_simulator
             # (dedup / sl_cooldown / pair_cooldown_sl_streak / min_volume / ...)
