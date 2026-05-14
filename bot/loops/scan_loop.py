@@ -712,11 +712,11 @@ async def _execute_atr_change_signal(
 
         strength = min(agg_strength, 100)
 
-        min_str = int(bot.config.get("signal_quality.min_strength_register", 40))
+        # A1 (14.05): отдельный порог для atr_change (бэктест: 1h_LONG+0.12 при min=15).
+        min_str = int(bot.config.get("signal_quality.min_strength_atr_change",
+                      bot.config.get("signal_quality.min_strength_register", 40)))
         if strength < min_str:
-            # A2 (14.05): запись в signal_drops для observability — раньше был silent debug.
-            # Нужно знать сколько atr_change cross теряем по этому gate и какие confluence
-            # обычно собираются. Данные нужны для калибровки min_strength_atr_change (A1).
+            # A2 (14.05): запись в signal_drops для observability.
             logger.debug("[ATRChange] %s %s %s: strength=%d < %d (drop)",
                          symbol, tf, side, strength, min_str)
             try:

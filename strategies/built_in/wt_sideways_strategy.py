@@ -83,11 +83,9 @@ def analyze_sideways(
     """
     Анализирует 30m данные на предмет WT OS/OB crossover.
 
-    Cross-gate (DEV-209-ext / ARCH-95 H6, 12.05.2026):
-        Если передан df_1h с колонкой trend — блокируем сделку против 1h тренда.
-        SHORT при atr_1h_bias=UP → return None.
-        LONG  при atr_1h_bias=DOWN → return None.
-        Источник: ARCH-95 H6 — ALIGNED WR 13.4% vs AGAINST 7.0%, avgR -0.22 vs -0.46.
+    Cross-gate убран 14.05 (B1 backtest):
+        SHORT в TREND_UP = +187.7R (n=891, avgR=+0.211) — gate блокировал прибыльные сделки.
+        df_1h используется только для записи atr_1h_bias в metadata (observability).
 
     Возвращает recommendation-like объект или None.
     """
@@ -126,28 +124,19 @@ def analyze_sideways(
 
     direction = "LONG" if bull_cross else "SHORT"
 
-    # ── Cross-gate atr_trend_1h_bias (ARCH-95 H6) ──────────────────────────
-    # Используем закрытую свечу 1h (iloc[-2]) — тот же принцип что у atr_change_detector
-    # после фикса 4790f06. Если df_1h не передан или нет колонки trend — gate не работает.
+    # ── atr_trend_1h_bias для observability (gate УБРАН 14.05) ─────────────
+    # Gate 3e1ca17 (12.05): SHORT в TREND_UP блокировался.
+    # Бэктест B1 (14.05): SHORT в TREND_UP = +187.7R (n=891, avgR=+0.211) — counter-trend работает!
+    # LONG в TREND_DOWN = -123.8R — тоже убыточно, но не блокируем (правило: нет блоков).
+    # Bias записывается в metadata для последующего анализа.
+    _atr_1h_bias = None
     if df_1h is not None and "trend" in df_1h.columns and len(df_1h) >= 2:
         try:
             _trend_1h_closed = df_1h["trend"].iloc[-2]
             if not pd.isna(_trend_1h_closed):
-                atr_1h_bias = "UP" if int(_trend_1h_closed) == 1 else "DOWN"
-                if direction == "SHORT" and atr_1h_bias == "UP":
-                    logger.info(
-                        "[sideways] %s: SHORT блок — atr_trend_1h_bias=UP (gate ARCH-95 H6)",
-                        symbol,
-                    )
-                    return None
-                if direction == "LONG" and atr_1h_bias == "DOWN":
-                    logger.info(
-                        "[sideways] %s: LONG блок — atr_trend_1h_bias=DOWN (gate ARCH-95 H6)",
-                        symbol,
-                    )
-                    return None
+                _atr_1h_bias = "UP" if int(_trend_1h_closed) == 1 else "DOWN"
         except Exception as _ge:
-            logger.debug("[sideways] %s: gate atr_1h_bias err: %s", symbol, _ge)
+            logger.debug("[sideways] %s: atr_1h_bias err: %s", symbol, _ge)
 
     # SL по TSL-линии
     if direction == "LONG":
@@ -179,8 +168,10 @@ def analyze_sideways(
     strength = min(85, min_strength + int((depth - 45) * 0.5))
 
     logger.info(
-        "[sideways] %s: %s crossover wt1_prev=%.1f→wt1=%.1f entry=%.6f sl=%.6f tp=%.6f str=%d",
-        symbol, direction, wt1_prev, wt1_cur, entry, sl, tp, strength,
+        "[sideways] %s: %s crossover wt1_prev=%.1f→wt1=%.1f entry=%.6f sl=%.6f tp=%.6f str=%d bias_1h=%s",
+        symbol, direction, wt1_prev, wt1_cur, entry, sl, tp, strength, _atr_1h_bias,
     )
 
-    return _build_rec(symbol, direction, entry, sl, tp, strength, wt1_cur)
+    rec = _build_rec(symbol, direction, entry, sl, tp, strength, wt1_cur)
+    rec.metadata["atr_1h_bias"] = _atr_1h_bias  # для observability
+    return rec

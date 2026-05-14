@@ -355,6 +355,7 @@ signal_quality:
   dev186_wt_signal_regime_gate: true
   dev186_shadow: false
   min_strength_register: 60  # P1.5 24.04: откат DEV-149 (50→60) — 50 пропускал слабые сигналы, 63 был слишком строг
+  min_strength_atr_change: 15  # A1 14.05: снижен с 40 → 15 (backtest: 1h_LONG+0.12, 4h_LONG+0.275)
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
   ote_shadow_mode: false  # ARCH-87: активирован 18.04 — rejection 1W FVG [0.4235–0.4416]
