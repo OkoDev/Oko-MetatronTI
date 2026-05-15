@@ -474,3 +474,50 @@ trade_analyzer:
   provider: groq
   api_key: ${GROQ_API_KEY}
   model: llama-3.3-70b-versatile  # 70B — намного меньше галлюцинаций, free tier на Groq
+
+# ── TradeRouter (Сфера 9 Куба Метатрона — Phase 1, 15.05.2026) ────────────────
+# Единый узел регистрации сделок. Soft scoring (без блоков): hard блоки только
+# для technical safety (validate, dedup, sl_cooldown, min_sl_dist, rr_filter).
+# Trading gates → soft penalty к strength.
+signal_router:
+  enabled: false                              # true после dual_run верификации
+  shadow_compare:
+    enabled: false                            # dual_run shadow для cutover (Этап 1.Б)
+    log_path: logs/router_shadow.log
+  default_policy:
+    min_strength: 50
+    exchange_enabled: true
+    trade_mode: ""
+    soft_gates_enabled:
+      - strength_threshold
+      - regime_safety
+      - btc_market
+      - time_gate
+      - correlation_guard
+      - market_stress
+      - pair_cooldown_streak
+  source_policies:
+    monitoring:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    monitoring_escal:  {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    atr_change:        {min_strength: 15, exchange_enabled: true,  trade_mode: "atr_change"}
+    wt_sideways:       {min_strength: 60, exchange_enabled: true,  trade_mode: "sideways"}
+    wl_breach:         {min_strength: 45, exchange_enabled: true,  trade_mode: "wl_breach"}
+    trigger_loop:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    event_bus:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    intelligence_cmd:  {min_strength: 0,  exchange_enabled: false, trade_mode: ""}
+    other_strategy:    {min_strength: 40, exchange_enabled: false, trade_mode: ""}
+  penalties:
+    regime_safety:
+      wt_signal_short_trend_up: 15            # DEV-186 история avgR=-1.12
+      short_in_trend_up: 0                    # пока без penalty
+      long_in_trend_down: 0
+    btc_market:
+      counter_trend: 10                       # BTC 4h vs direction
+    time_gate:
+      off_session: 5                          # DEV-170 ночное окно
+    correlation_guard:
+      per_direction_overflow: 8
+    market_stress:
+      sl_serie: 12                            # ARCH-42 серия SL
+    pair_cooldown_streak:
+      after_5_sl: 15                          # ARCH-88 серия SL по паре

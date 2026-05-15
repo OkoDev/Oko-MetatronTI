@@ -60,8 +60,10 @@ class SphereEvent:
     # Сфера 8 — Pivot Levels
     PIVOT_SNAP_UPDATED = "pivot_snap_updated"   # {1W: {PP, S1, R1, ...}, 1D: {...}}
 
-    # Сфера 9 — Narrative Builder
+    # Сфера 9 — Narrative Builder / TradeRouter (Decision Core)
     NARRATIVE_BUILT    = "narrative_built"       # {text, action, p_win, key_factors}
+    POSITION_OPENED    = "position_opened"       # {side, source, trade_id, final_strength, soft_penalties, regime}
+    POSITION_DROPPED   = "position_dropped"      # {side, source, hard_drops, soft_penalties, strength, regime}
 
     # Сфера 10 — Exit Manager
     TSL_MOVED          = "tsl_moved"            # {trade_id, old_sl, new_sl, tf}

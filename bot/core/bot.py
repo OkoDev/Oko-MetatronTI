@@ -81,6 +81,13 @@ class TradingAlertBot:
         self.position_manager = PositionManager(db_path=_pm_db)
         logger.info("[Bot] execution_mode=%s", self.order_executor.mode.value)
 
+        # Сфера 9 Куба Метатрона (Phase 1) — TradeRouter: единый узел регистрации.
+        # Включается через config.yaml → signal_router.enabled=true после dual_run.
+        from core.trading.trade_router import TradeRouter
+        self.trade_router = TradeRouter(self)
+        _sr_enabled = bool(config.get("signal_router.enabled", False))
+        logger.info("[Bot] TradeRouter инициализирован (enabled=%s)", _sr_enabled)
+
         self.watchlist_manager = WatchlistManager(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )

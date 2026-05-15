@@ -134,6 +134,7 @@ class SubscriptionManager:
                 ("strategy_type", "TEXT"),
                 ("decision_trace_json", "TEXT"),
                 ("original_sl", "REAL"),
+                ("source_router", "TEXT"),   # TradeRouter: имя источника (atr_change/monitoring/...)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")
