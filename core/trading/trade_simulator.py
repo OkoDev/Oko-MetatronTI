@@ -924,6 +924,9 @@ class TradeSimulator:
                 logger.debug("[DEV-44] Safety gate error: %s", _e44)
 
         # DEV-155: Guard — min_strength по режиму/направлению (HIGH_VOL=85, LONG_RANGE=75)
+        # TradeRouter Этап 1.Б (15.05.2026): для signal_type='atr_change' используем
+        # min_strength_atr_change (=15), т.к. base avgR положительный по бэктесту A1.
+        # Cleanup Этап 1.Е перенесёт всю эту логику в core/trading/gates/.
         if regime:
             try:
                 from core.infra.config_loader import config as _cfg_155
@@ -932,17 +935,24 @@ class TradeSimulator:
                                   getattr(recommendation, "overall_strength", 0) or 0)
                     _sym155 = _get_recommendation_value(recommendation, "symbol") or symbol
                     _dir155 = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                    # Per-signal_type override для atr_change (с signal_type_override extra_features)
+                    _sig_type_155 = str(_get_recommendation_value(recommendation, "signal_type") or "")
+                    if extra_features and extra_features.get("signal_type_override"):
+                        _sig_type_155 = str(extra_features["signal_type_override"])
                     # direction+regime ключ: "LONG_HIGH_VOL" / "LONG_RANGE" / "SHORT_HIGH_VOL" / etc.
                     _dir_regime_key = f"{_dir155}_{regime}"
                     _by_dir_regime = (_cfg_155.get("signal_quality.min_strength_by_direction_regime") or {})
                     _by_regime = (_cfg_155.get("signal_quality.min_strength_by_regime") or {})
-                    _base_min = int(_cfg_155.get("signal_quality.min_strength_register", 50))
+                    if _sig_type_155 == "atr_change":
+                        _base_min = int(_cfg_155.get("signal_quality.min_strength_atr_change", 15))
+                    else:
+                        _base_min = int(_cfg_155.get("signal_quality.min_strength_register", 50))
                     _eff_min = _by_dir_regime.get(_dir_regime_key,
                                _by_regime.get(regime, _base_min))
                     if _str155 < _eff_min:
                         logger.info(
-                            "[DEV-155] %s БЛОК %s/%s strength=%d < %d",
-                            _sym155, _dir155, regime, _str155, _eff_min,
+                            "[DEV-155] %s БЛОК %s/%s/%s strength=%d < %d",
+                            _sym155, _dir155, regime, _sig_type_155 or "?", _str155, _eff_min,
                         )
                         return None
             except Exception as _e155:
