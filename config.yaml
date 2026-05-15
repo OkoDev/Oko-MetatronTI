@@ -497,11 +497,24 @@ signal_router:
       - market_stress
       - pair_cooldown_streak
   source_policies:
-    monitoring:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    monitoring_escal:  {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    # ── Уже подключённые источники (Этапы 1.Б, 1.В) ───────────────────
     atr_change:        {min_strength: 15, exchange_enabled: true,  trade_mode: "atr_change"}
     wt_sideways:       {min_strength: 60, exchange_enabled: true,  trade_mode: "sideways"}
     wl_breach:         {min_strength: 45, exchange_enabled: true,  trade_mode: "wl_breach"}
+    # ── Per-signal_type sources через monitoring main path (Этап 1.Д) ─
+    mtf_alert:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    mtf_bias:          {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    pivot_reversal:    {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    wt_signal:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    wt_b_signal:       {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    confluence:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    divergence:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    anomaly:           {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    trend_signal:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    composite:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    monitoring:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}  # fallback для неопознанных
+    monitoring_escal:  {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    # ── Источники для Этапа 1.Г ───────────────────────────────────────
     trigger_loop:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     event_bus:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     intelligence_cmd:  {min_strength: 0,  exchange_enabled: false, trade_mode: ""}

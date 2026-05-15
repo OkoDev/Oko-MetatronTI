@@ -916,33 +916,6 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     symbol, recommendation.action, _reason4h)
                         recommendation.action = "WATCH"
 
-    # Этап 5.3b: ARCH-84 — MTF gate: SHORT при сильном LONG bias пары
-    # Данные: WR SHORT=33.5% vs LONG=67.6% (ROADMAP 16.03). Причина: шортим на бычьем рынке пары.
-    # Исключение: pivot_reversal (разворот у уровня — разворотный сетап допустим против bias)
-    if recommendation is not None and bot.config.get("signal_quality.mtf_gate_enabled", False):
-        try:
-            _mtf84 = (recommendation.metadata or {}).get("mtf_context", {})
-            _bias84 = _mtf84.get("direction_bias", "") if isinstance(_mtf84, dict) else ""
-            _bstr84 = float(_mtf84.get("bias_strength", 0.0)) if isinstance(_mtf84, dict) else 0.0
-            _thr84  = float(bot.config.get("signal_quality.mtf_bias_threshold", 0.70))
-            _shadow84 = bot.config.get("signal_quality.mtf_gate_shadow", True)
-            _dir84 = getattr(recommendation.direction, "value", "NEUTRAL")
-
-            if _bias84 == "LONG" and _bstr84 > _thr84 and _dir84 == "SHORT":
-                _has_pr84 = any(
-                    getattr(_s, "signal_type", None) and _s.signal_type.value == "pivot_reversal"
-                    for _s in (recommendation.supporting_signals or [])
-                )
-                if not _has_pr84:
-                    if _shadow84:
-                        logger.info("[%s] ARCH-84 SHADOW WOULD_BLOCK SHORT bias=LONG bstr=%.2f>%.2f",
-                                    symbol, _bstr84, _thr84)
-                    else:
-                        logger.info("[%s] ARCH-84 MTF gate: SHORT→WATCH bias=LONG bstr=%.2f>%.2f",
-                                    symbol, _bstr84, _thr84)
-                        recommendation.action = "WATCH"
-        except Exception as _e84:
-            logger.debug("[ARCH-84] ошибка: %s", _e84)
 
     # Этап 5.3d: DEV-186 — wt_signal SHORT в TREND_UP / HIGH_VOL: regime mismatch
     # Данные RE-AUDIT 25.04: SHORT TREND_UP=22 сделки avgR=-1.12, SHORT HIGH_VOL=12 avgR=-0.77.
@@ -1256,18 +1229,13 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 extra["distance_to_pivot_pct"] = distance_to_pivot_pct
             if btc_counter_trend:
                 extra["btc_counter_trend"] = True   # shadow: для аналитики WR с/без BTC-фильтра
-            # ARCH-84: shadow данные MTF gate — для проверки эффективности блока
             try:
                 _mtf84x = (recommendation.metadata or {}).get("mtf_context", {})
                 _bias84x = _mtf84x.get("direction_bias", "") if isinstance(_mtf84x, dict) else ""
                 _bstr84x = float(_mtf84x.get("bias_strength", 0.0)) if isinstance(_mtf84x, dict) else 0.0
-                _thr84x  = float(bot.config.get("signal_quality.mtf_bias_threshold", 0.70))
-                _dir84x  = getattr(recommendation.direction, "value", "NEUTRAL")
                 if _bias84x and _bstr84x > 0:
                     extra["mtf_bias"] = _bias84x
                     extra["mtf_bias_strength"] = round(_bstr84x, 3)
-                if _bias84x == "LONG" and _bstr84x > _thr84x and _dir84x == "SHORT":
-                    extra["arch84_would_block"] = True
             except Exception:
                 pass
             # ARCH-78: режим BTC 4h от BTCRegimeProvider (ATR Supertrend) — для ML и аналитики
@@ -1363,101 +1331,149 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 except Exception as _ca_m_e:
                     logger.debug("[DEV-202] %s confirmation_aggregator error: %s", symbol, _ca_m_e)
 
-            trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
-            trade_registered = trade_id is not None
-            if not trade_registered:
-                logger.info("[%s] register_trade → None (заблокировано: regime/SL/TP/gate) — сделка НЕ сохранена", symbol)
+            # Этап 1.Д (16.05.2026): main path через TradeRouter с per-signal_type source.
+            # Откат: config.yaml → signal_router.enabled=false (использует старый путь в else).
+            if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+                # Per-signal_type source — каждый тип получает свою policy в config
+                _sr_source = signal_type if signal_type else "monitoring"
+                # Проверка что policy существует, иначе fallback на "monitoring"
+                _known_sources = (
+                    bot.config.get("signal_router.source_policies", {}) or {}
+                ).keys()
+                if _sr_source not in _known_sources:
+                    _sr_source = "monitoring"
+                try:
+                    _sr_result = await bot.trade_router.submit(
+                        recommendation, source=_sr_source, extra_features=extra or None,
+                    )
+                    trade_id = _sr_result.trade_id
+                    trade_registered = trade_id is not None
+                    if not trade_registered:
+                        _hd = ",".join(g for g, _ in _sr_result.hard_drops) or "none"
+                        logger.info("[%s] router dropped (%s): %s str=%d",
+                                    symbol, _sr_source, _hd, _sr_result.final_strength)
+                    else:
+                        logger.info(
+                            "[%s] router #%d source=%s str=%d->%d soft=%d exch=%s",
+                            symbol, trade_id, _sr_source,
+                            int(getattr(recommendation, "overall_strength", 0) or 0),
+                            _sr_result.final_strength, len(_sr_result.soft_penalties),
+                            _sr_result.exchange_order_id or "none",
+                        )
+                        if hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
+                            bot.ws_feed.update_priority_pairs([symbol])
+                except Exception as _sr_e:
+                    logger.warning("[%s] router.submit error: %s", symbol, _sr_e, exc_info=True)
+                    trade_id = None
+                    trade_registered = False
             else:
-                # DEV-202: сбросить буфер confirmations после успешной регистрации
-                if _conf_agg_m is not None and _conf_side_m is not None:
-                    try:
-                        _conf_agg_m.clear(symbol, _conf_side_m)
-                    except Exception:
-                        pass
-                if hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
-                    bot.ws_feed.update_priority_pairs([symbol])
-                # DEV-77: OrderExecutor — VST/LIVE исполнение (SIM_ONLY = только лог)
-                if hasattr(bot, "order_executor") and is_actionable:
-                    try:
-                        _oe = bot.order_executor
-                        _oe_dir = getattr(recommendation.direction, "value", "LONG")
-                        _oe_entry = float(recommendation.entry_price or 0)
-                        _oe_sl = float(recommendation.stop_loss or 0)
-                        _oe_tp1 = float(recommendation.take_profit or 0)
-                        _oe_tp2 = float(recommendation.tp1_price or 0) or None
-                        # tsl_only сигналы (take_profit=None) → fallback TP = entry ± 15 * sl_dist
-                        # Выступает safety valve; TSL закроет позицию раньше.
-                        if _oe_tp1 <= 0 and _oe_entry > 0 and _oe_sl > 0:
-                            _sl_dist = abs(_oe_entry - _oe_sl)
-                            if _oe_dir == "LONG":
-                                _oe_tp1 = _oe_entry + 15 * _sl_dist
-                            else:
-                                _oe_tp1 = _oe_entry - 15 * _sl_dist
-                            logger.info("[%s] tsl_only → fallback TP=%.6f (15R safety)", symbol, _oe_tp1)
-                        if _oe_entry > 0 and _oe_sl > 0 and _oe_tp1 > 0:
-                            # Реальный баланс с биржи (VST) или config (SIM)
-                            _deposit = await _oe.get_available_balance()
-                            _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
-                            _leverage = int(bot.config.get("trading.leverage", 5))
-                            _qty = bot.position_sizer.calc_qty(
-                                entry_price=_oe_entry,
-                                sl_price=_oe_sl,
-                                deposit=_deposit,
-                                risk_pct=_risk_pct,
-                                leverage=_leverage,
-                            )
-                            if _qty > 0:
-                                _br = await _oe.open_bracket(
-                                    symbol=symbol,
-                                    direction=_oe_dir,
-                                    entry_price=_oe_entry,
-                                    sl=_oe_sl,
-                                    tp1=_oe_tp1,
-                                    tp2=_oe_tp2,
-                                    qty=_qty,
-                                )
-                                if not _br.success:
-                                    if _br.error != "position_already_open":
-                                        logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
+                # Старый путь (signal_router.enabled=false)
+                trade_id = await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra or None)
+                trade_registered = trade_id is not None
+                if not trade_registered:
+                    logger.info("[%s] register_trade → None (заблокировано: regime/SL/TP/gate) — сделка НЕ сохранена", symbol)
+                else:
+                    # DEV-202: сбросить буфер confirmations после успешной регистрации
+                    if _conf_agg_m is not None and _conf_side_m is not None:
+                        try:
+                            _conf_agg_m.clear(symbol, _conf_side_m)
+                        except Exception:
+                            pass
+                    if hasattr(bot, "ws_feed") and bot.ws_feed.is_alive():
+                        bot.ws_feed.update_priority_pairs([symbol])
+                    # DEV-77: OrderExecutor — VST/LIVE исполнение (SIM_ONLY = только лог)
+                    if hasattr(bot, "order_executor") and is_actionable:
+                        try:
+                            _oe = bot.order_executor
+                            _oe_dir = getattr(recommendation.direction, "value", "LONG")
+                            _oe_entry = float(recommendation.entry_price or 0)
+                            _oe_sl = float(recommendation.stop_loss or 0)
+                            _oe_tp1 = float(recommendation.take_profit or 0)
+                            _oe_tp2 = float(recommendation.tp1_price or 0) or None
+                            # tsl_only сигналы (take_profit=None) → fallback TP = entry ± 15 * sl_dist
+                            if _oe_tp1 <= 0 and _oe_entry > 0 and _oe_sl > 0:
+                                _sl_dist = abs(_oe_entry - _oe_sl)
+                                if _oe_dir == "LONG":
+                                    _oe_tp1 = _oe_entry + 15 * _sl_dist
                                 else:
-                                    logger.info(
-                                        "[%s] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
-                                        symbol, _br.mode.upper(), _oe_dir, _qty,
-                                        _oe_entry, _oe_sl, _oe_tp1, _br.order_id, _br.notional_usdt,
+                                    _oe_tp1 = _oe_entry - 15 * _sl_dist
+                                logger.info("[%s] tsl_only → fallback TP=%.6f (15R safety)", symbol, _oe_tp1)
+                            if _oe_entry > 0 and _oe_sl > 0 and _oe_tp1 > 0:
+                                _deposit = await _oe.get_available_balance()
+                                _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+                                _leverage = int(bot.config.get("trading.leverage", 5))
+                                _qty = bot.position_sizer.calc_qty(
+                                    entry_price=_oe_entry,
+                                    sl_price=_oe_sl,
+                                    deposit=_deposit,
+                                    risk_pct=_risk_pct,
+                                    leverage=_leverage,
+                                )
+                                if _qty > 0:
+                                    _br = await _oe.open_bracket(
+                                        symbol=symbol,
+                                        direction=_oe_dir,
+                                        entry_price=_oe_entry,
+                                        sl=_oe_sl,
+                                        tp1=_oe_tp1,
+                                        tp2=_oe_tp2,
+                                        qty=_qty,
                                     )
-                                    # Записываем в live_orders для трекинга
-                                    if hasattr(bot, "position_manager"):
-                                        _pos_dir = "LONG" if _oe_dir == "LONG" else "SHORT"
-                                        bot.position_manager.register(
-                                            symbol=symbol, side=_pos_dir, qty=_qty,
-                                            sim_trade_id=trade_id,
-                                            exchange_order_id=_br.order_id,
+                                    if not _br.success:
+                                        if _br.error != "position_already_open":
+                                            logger.warning("[%s] OrderExecutor ошибка: %s", symbol, _br.error)
+                                        asyncio.create_task(decision_trace.record_drop(
+                                            symbol=symbol, gate_name="open_bracket_fail",
+                                            drop_reason=_br.error or "unknown",
+                                            signal_type=signal_type, direction=_oe_dir,
+                                            strength=int(getattr(recommendation, "overall_strength", 0) or 0),
+                                        ))
+                                    else:
+                                        logger.info(
+                                            "[%s] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
+                                            symbol, _br.mode.upper(), _oe_dir, _qty,
+                                            _oe_entry, _oe_sl, _oe_tp1, _br.order_id, _br.notional_usdt,
                                         )
-                                    # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
-                                    if _br.order_id and trade_id:
-                                        # Сохраняем actual_entry_price — реальная цена исполнения с биржи
-                                        # (может отличаться от сигнальной entry_price из-за slippage)
-                                        bot.trade_simulator.set_exchange_order_id(
-                                            trade_id, _br.order_id, qty=_qty,
-                                            actual_entry_price=_br.entry_price,
-                                        )
-                                        # ARCH-94: сохраняем TP orderId сразу из bracket ответа
-                                        if _br.tp_order_id:
-                                            bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
-                                        # SL orderId: сначала из bracket ответа, иначе асинхронный fetch
-                                        _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
-                                        if _br.sl_order_id:
-                                            bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
-                                        else:
-                                            import asyncio as _asyncio
-                                            from core.exchange.tsl_updater import fetch_and_save_sl_order_id
-                                            _asyncio.create_task(fetch_and_save_sl_order_id(
-                                                bot, trade_id, symbol, _pos_side))
+                                        if hasattr(bot, "position_manager"):
+                                            _pos_dir = "LONG" if _oe_dir == "LONG" else "SHORT"
+                                            bot.position_manager.register(
+                                                symbol=symbol, side=_pos_dir, qty=_qty,
+                                                sim_trade_id=trade_id,
+                                                exchange_order_id=_br.order_id,
+                                            )
+                                        if _br.order_id and trade_id:
+                                            bot.trade_simulator.set_exchange_order_id(
+                                                trade_id, _br.order_id, qty=_qty,
+                                                actual_entry_price=_br.entry_price,
+                                            )
+                                            if _br.tp_order_id:
+                                                bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
+                                            _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
+                                            if _br.sl_order_id:
+                                                bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
+                                            else:
+                                                import asyncio as _asyncio
+                                                from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                                                _asyncio.create_task(fetch_and_save_sl_order_id(
+                                                    bot, trade_id, symbol, _pos_side))
+                                else:
+                                    logger.warning("[%s] OrderExecutor: qty=0", symbol)
+                                    asyncio.create_task(decision_trace.record_drop(
+                                        symbol=symbol, gate_name="qty_zero",
+                                        drop_reason=f"qty=0 deposit={_deposit:.2f} risk={_risk_pct:.1f}% entry={_oe_entry:.6g} sl={_oe_sl:.6g}",
+                                        signal_type=signal_type, direction=_oe_dir,
+                                        strength=int(getattr(recommendation, "overall_strength", 0) or 0),
+                                    ))
                             else:
-                                logger.warning("[%s] OrderExecutor: qty=0 (deposit=%.2f risk=%.1f%% sl_dist=?)",
-                                               symbol, _deposit, _risk_pct)
-                    except Exception as _oe_e:
-                        logger.warning("[%s] OrderExecutor: %s", symbol, _oe_e)
+                                _zero = [f for f, v in [("entry", _oe_entry), ("sl", _oe_sl), ("tp", _oe_tp1)] if v <= 0]
+                                asyncio.create_task(decision_trace.record_drop(
+                                    symbol=symbol, gate_name="order_params_zero",
+                                    drop_reason=f"нулевые поля {_zero}: entry={_oe_entry:.6g} sl={_oe_sl:.6g} tp={_oe_tp1:.6g}",
+                                    signal_type=signal_type, direction=_oe_dir,
+                                    strength=int(getattr(recommendation, "overall_strength", 0) or 0),
+                                ))
+                        except Exception as _oe_e:
+                            logger.warning("[%s] OrderExecutor: %s", symbol, _oe_e)
         except Exception as e:
             logger.warning("TradeSimulator register_trade для %s (%s): %s", symbol, signal_type, e, exc_info=True)
 
@@ -1510,10 +1526,21 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     _or_extra[_or_k2] = round(float(_or_df["wt2"].iloc[-1]), 1)
                                 except Exception:
                                     pass
-                    await bot.trade_simulator.register_trade_async(
-                        other_rec, bot.data_collector,
-                        extra_features=_or_extra or None,
-                    )
+                    # Этап 1.Д: other_recs через router (source='other_strategy', exchange_enabled=false)
+                    if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+                        try:
+                            await bot.trade_router.submit(
+                                other_rec, source="other_strategy",
+                                extra_features=_or_extra or None,
+                            )
+                        except Exception as _or_sr_e:
+                            logger.debug("[%s] router.submit other_strategy '%s' error: %s",
+                                         symbol, strat_name, _or_sr_e)
+                    else:
+                        await bot.trade_simulator.register_trade_async(
+                            other_rec, bot.data_collector,
+                            extra_features=_or_extra or None,
+                        )
                     logger.debug("[%s] Стратегия '%s' зарегистрирована в БД", symbol, strat_name)
             except Exception as e:
                 logger.debug("register_trade стратегии '%s' для %s: %s", strat_name, symbol, e)
