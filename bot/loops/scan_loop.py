@@ -305,78 +305,104 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         except Exception:
             _extra_wl['confirmations'] = []
 
-    # Регистрируем сделку (dedup по открытым сделкам — внутри register_trade)
-    trade_id = None
-    if hasattr(bot, "trade_simulator"):
-        try:
-            trade_id = await bot.trade_simulator.register_trade_async(
-                rec, bot.data_collector,
-                extra_features=_extra_wl,
-            )
-        except Exception as e:
-            logger.warning("[WL-BREACH] %s: ошибка register_trade — %s", symbol, e)
-
-    if trade_id is None:
-        logger.info("[WL-BREACH] %s: сделка не зарегистрирована (дубль или нет SL/TP)", symbol)
-        return
-
-    # DEV-41: фиксируем время успешного входа для rate-limit
-    _wl_breach_timestamps.append(datetime.now())
-
-    # VST/LIVE: открываем реальный ордер на бирже
     # tsl_only: tp=None → fallback TP = entry ± 15 * sl_dist (safety valve, TSL закроет раньше)
+    # Делаем ДО регистрации, чтобы router/trade_simulator получили валидный TP.
     if tp is None and current_price and sl:
         _sl_dist_wl = abs(current_price - sl)
         if direction == "LONG":
             tp = current_price + 15 * _sl_dist_wl
         else:
             tp = current_price - 15 * _sl_dist_wl
-        logger.info("[WL-BREACH] %s tsl_only → fallback TP=%.6f (15R safety)", symbol, tp)
-    if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer") and tp is not None:
         try:
-            _oe = bot.order_executor
-            _deposit = await _oe.get_available_balance()
-            _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
-            _leverage = int(bot.config.get("trading.leverage", 5))
-            _qty = bot.position_sizer.calc_qty(
-                entry_price=current_price, sl_price=sl,
-                deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
+            rec.take_profit = tp
+        except Exception:
+            pass
+        logger.info("[WL-BREACH] %s tsl_only → fallback TP=%.6f (15R safety)", symbol, tp)
+
+    # Этап 1.В (16.05.2026): WL breach через TradeRouter (source='wl_breach')
+    trade_id = None
+    if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+        try:
+            _sr_result = await bot.trade_router.submit(
+                rec, source="wl_breach", extra_features=_extra_wl,
             )
-            if _qty > 0:
-                _br = await _oe.open_bracket(
-                    symbol=symbol, direction=direction,
-                    entry_price=current_price, sl=sl, tp1=tp, qty=_qty,
+            trade_id = _sr_result.trade_id
+            if trade_id:
+                logger.info(
+                    "[WL-BREACH] router #%d %s %s str=%d->%d soft=%d exch=%s",
+                    trade_id, symbol, direction, int(score), _sr_result.final_strength,
+                    len(_sr_result.soft_penalties), _sr_result.exchange_order_id or "none",
                 )
-                if _br.success:
-                    logger.info("[WL-BREACH][%s] ✅ %s %s qty=%.6f order_id=%s",
-                                _br.mode.upper(), symbol, direction, _qty, _br.order_id)
-                    # Записываем в live_orders для трекинга
-                    if hasattr(bot, "position_manager"):
-                        _pos_dir_wl = "LONG" if direction == "LONG" else "SHORT"
-                        bot.position_manager.register(
-                            symbol=symbol, side=_pos_dir_wl, qty=_qty,
-                            sim_trade_id=trade_id,
-                            exchange_order_id=_br.order_id,
-                        )
-                    # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
-                    if _br.order_id and trade_id:
-                        bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
-                        # ARCH-94: сохраняем TP orderId сразу из bracket ответа
-                        if _br.tp_order_id:
-                            bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
-                        # SL orderId: сначала из bracket ответа, иначе асинхронный fetch
-                        _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
-                        if _br.sl_order_id:
-                            bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
-                        else:
-                            import asyncio as _asyncio_wl
-                            from core.exchange.tsl_updater import fetch_and_save_sl_order_id
-                            _asyncio_wl.create_task(fetch_and_save_sl_order_id(
-                                bot, trade_id, symbol, _pos_side_wl))
-                elif _br.error != "position_already_open":
-                    logger.warning("[WL-BREACH] OrderExecutor error: %s", _br.error)
-        except Exception as _oe_e:
-            logger.warning("[WL-BREACH] OrderExecutor exception: %s", _oe_e)
+                _wl_breach_timestamps.append(datetime.now())  # DEV-41 rate-limit
+            else:
+                _hd = ",".join(g for g, _ in _sr_result.hard_drops) or "none"
+                logger.info("[WL-BREACH] router dropped %s %s: %s", symbol, direction, _hd)
+                return
+        except Exception as e:
+            logger.warning("[WL-BREACH] %s: ошибка router.submit — %s", symbol, e)
+            return
+    else:
+        # Старый путь (signal_router.enabled=false)
+        if hasattr(bot, "trade_simulator"):
+            try:
+                trade_id = await bot.trade_simulator.register_trade_async(
+                    rec, bot.data_collector,
+                    extra_features=_extra_wl,
+                )
+            except Exception as e:
+                logger.warning("[WL-BREACH] %s: ошибка register_trade — %s", symbol, e)
+
+        if trade_id is None:
+            logger.info("[WL-BREACH] %s: сделка не зарегистрирована (дубль или нет SL/TP)", symbol)
+            return
+
+        # DEV-41: фиксируем время успешного входа для rate-limit
+        _wl_breach_timestamps.append(datetime.now())
+
+        # VST/LIVE: открываем реальный ордер на бирже
+        if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer") and tp is not None:
+            try:
+                _oe = bot.order_executor
+                _deposit = await _oe.get_available_balance()
+                _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+                _leverage = int(bot.config.get("trading.leverage", 5))
+                _qty = bot.position_sizer.calc_qty(
+                    entry_price=current_price, sl_price=sl,
+                    deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
+                )
+                if _qty > 0:
+                    _br = await _oe.open_bracket(
+                        symbol=symbol, direction=direction,
+                        entry_price=current_price, sl=sl, tp1=tp, qty=_qty,
+                    )
+                    if _br.success:
+                        logger.info("[WL-BREACH][%s] %s %s qty=%.6f order_id=%s",
+                                    _br.mode.upper(), symbol, direction, _qty, _br.order_id)
+                        # Записываем в live_orders для трекинга
+                        if hasattr(bot, "position_manager"):
+                            _pos_dir_wl = "LONG" if direction == "LONG" else "SHORT"
+                            bot.position_manager.register(
+                                symbol=symbol, side=_pos_dir_wl, qty=_qty,
+                                sim_trade_id=trade_id,
+                                exchange_order_id=_br.order_id,
+                            )
+                        # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
+                        if _br.order_id and trade_id:
+                            bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
+                            if _br.tp_order_id:
+                                bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
+                            _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
+                            if _br.sl_order_id:
+                                bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
+                            else:
+                                import asyncio as _asyncio_wl
+                                from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                                _asyncio_wl.create_task(fetch_and_save_sl_order_id(
+                                    bot, trade_id, symbol, _pos_side_wl))
+                    elif _br.error != "position_already_open":
+                        logger.warning("[WL-BREACH] OrderExecutor error: %s", _br.error)
+            except Exception as _oe_e:
+                logger.warning("[WL-BREACH] OrderExecutor exception: %s", _oe_e)
 
     # TG-алерт
     dir_emoji = "🟢" if direction == "LONG" else "🔴"
@@ -905,7 +931,11 @@ async def _execute_atr_change_signal(
 
 
 async def _execute_sideways_signal(bot, rec) -> None:
-    """Регистрирует wt_sideways сделку и размещает ордер на бирже (VST/LIVE)."""
+    """Регистрирует wt_sideways сделку и размещает ордер на бирже (VST/LIVE).
+
+    Этап 1.В (16.05.2026): подключено к TradeRouter (source='wt_sideways').
+    Откат: config.yaml → signal_router.enabled=false (использует старый путь в else).
+    """
     try:
         _meta = getattr(rec, "metadata", {}) or {}
         _extra = {
@@ -926,6 +956,28 @@ async def _execute_sideways_signal(bot, rec) -> None:
                     _extra['strength_breakdown'] = _sw_res['strength_breakdown']
             except Exception:
                 _extra['confirmations'] = []
+
+        # Этап 1.В: через TradeRouter (единый узел регистрации)
+        if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+            _sr_result = await bot.trade_router.submit(
+                rec, source="wt_sideways", extra_features=_extra,
+            )
+            if _sr_result.trade_id:
+                logger.info(
+                    "[sideways] router #%d %s %s str=%d->%d soft=%d exch=%s",
+                    _sr_result.trade_id, rec.symbol, rec.direction.value,
+                    int(getattr(rec, "overall_strength", 0) or 0), _sr_result.final_strength,
+                    len(_sr_result.soft_penalties), _sr_result.exchange_order_id or "none",
+                )
+            else:
+                _hd = ",".join(g for g, _ in _sr_result.hard_drops) or "none"
+                logger.info(
+                    "[sideways] router dropped %s %s: %s str=%d",
+                    rec.symbol, rec.direction.value, _hd, _sr_result.final_strength,
+                )
+            return
+
+        # Старый путь (signal_router.enabled=false)
         trade_id = await bot.trade_simulator.register_trade_async(
             rec, bot.data_collector, extra_features=_extra
         )

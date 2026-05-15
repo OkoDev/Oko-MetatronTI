@@ -450,8 +450,8 @@ future_pivots:
   pre_alert_pct: 1.0
   strength_bonus: 15
 signals:
-  mtf_alert_enabled: false
-  mtf_alert_register: false
+  mtf_alert_enabled: true   # 16.05: включён для полного наблюдения через router
+  mtf_alert_register: true  # 16.05: регистрируем в БД
   cascade_div_enabled: true
   send_chart: true
   show_fvg_confluences: true
