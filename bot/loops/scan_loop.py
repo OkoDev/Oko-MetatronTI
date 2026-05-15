@@ -814,7 +814,7 @@ async def _execute_atr_change_signal(
             trade_id = _sr_result.trade_id
             if trade_id:
                 logger.info(
-                    "[ATRChange] %s %s %s → #%d via router str=%d→%d soft=%d exch=%s sl_src=%s",
+                    "[ATRChange] %s %s %s router #%d str=%d->%d soft=%d exch=%s sl_src=%s",
                     symbol, tf, side, trade_id, strength, _sr_result.final_strength,
                     len(_sr_result.soft_penalties),
                     _sr_result.exchange_order_id or "none", sl_source,

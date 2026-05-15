@@ -691,6 +691,9 @@ class TradeSimulator:
                 except Exception as _re:
                     logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
+            # TradeRouter Этап 1.Б: source_router из extra_features
+            _source_router = (extra_features or {}).get("source_router")
+
             with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -700,8 +703,8 @@ class TradeSimulator:
                      tp1_price, tp2_price, tp3_price, strategy_type,
                      strength, confidence, regime, status, features_json, created_at,
                      sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json,
-                     original_sl)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     original_sl, source_router)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -727,6 +730,7 @@ class TradeSimulator:
                         tsl_tf,
                         decision_trace_json,
                         float(stop_loss) if stop_loss is not None else None,  # original_sl — не меняется после регистрации
+                        _source_router,
                     ),
                 )
                 trade_id = cursor.lastrowid
