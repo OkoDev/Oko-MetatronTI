@@ -804,68 +804,91 @@ async def _execute_atr_change_signal(
             "trade_mode": "atr_change",  # dedup: разные режимы с wt_sideways не блокируют друг друга
         }
 
-        trade_id = await bot.trade_simulator.register_trade_async(
-            rec, bot.data_collector, extra_features=extra
-        )
-        if trade_id:
-            logger.info("[ATRChange] %s %s %s → #%d registered str=%d (sl_source=%s)",
-                        symbol, tf, side, trade_id, strength, sl_source)
-            if _ca:
+        # Этап 1.Б (15.05.2026): pilot atr_change через TradeRouter.
+        # Router обходит DEV-155 (min_strength_register=60 блок) — strength_threshold SOFT.
+        # Откат: config.yaml → signal_router.enabled=false.
+        if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+            _sr_result = await bot.trade_router.submit(
+                rec, source="atr_change", extra_features=extra,
+            )
+            trade_id = _sr_result.trade_id
+            if trade_id:
+                logger.info(
+                    "[ATRChange] %s %s %s → #%d via router str=%d→%d soft=%d exch=%s sl_src=%s",
+                    symbol, tf, side, trade_id, strength, _sr_result.final_strength,
+                    len(_sr_result.soft_penalties),
+                    _sr_result.exchange_order_id or "none", sl_source,
+                )
+            else:
+                _hd_names = ",".join(g for g, _ in _sr_result.hard_drops) or "none"
+                logger.info(
+                    "[ATRChange] %s %s %s router dropped: %s str=%d",
+                    symbol, tf, side, _hd_names, _sr_result.final_strength,
+                )
+        else:
+            # Старый путь (signal_router.enabled=false)
+            trade_id = await bot.trade_simulator.register_trade_async(
+                rec, bot.data_collector, extra_features=extra,
+            )
+            if trade_id:
+                logger.info("[ATRChange] %s %s %s → #%d registered str=%d (sl_source=%s)",
+                            symbol, tf, side, trade_id, strength, sl_source)
+                if _ca:
+                    try:
+                        _ca.clear(symbol, side)
+                    except Exception:
+                        pass
+                if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer"):
+                    try:
+                        _oe = bot.order_executor
+                        _deposit = await _oe.get_available_balance()
+                        _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
+                        _leverage = int(bot.config.get("trading.leverage", 5))
+                        _qty = bot.position_sizer.calc_qty(
+                            entry_price=entry, sl_price=sl,
+                            deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
+                        )
+                        if _qty > 0:
+                            _br = await _oe.open_bracket(
+                                symbol=symbol, direction=side,
+                                entry_price=entry, sl=sl, tp1=tp, tp2=None, qty=_qty,
+                            )
+                            if not _br.success:
+                                if _br.error != "position_already_open":
+                                    logger.warning("[ATRChange] %s OrderExecutor: %s", symbol, _br.error)
+                            else:
+                                logger.info(
+                                    "[ATRChange] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
+                                    _br.mode.upper(), side, _qty, entry, sl, tp, _br.order_id, _br.notional_usdt,
+                                )
+                                if hasattr(bot, "position_manager"):
+                                    bot.position_manager.register(
+                                        symbol=symbol, side=side, qty=_qty,
+                                        sim_trade_id=trade_id,
+                                        exchange_order_id=_br.order_id,
+                                    )
+                                if _live_mode:
+                                    from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                                    asyncio.create_task(fetch_and_save_sl_order_id(bot, trade_id, symbol, side))
+                        else:
+                            logger.warning("[ATRChange] %s qty=0 (deposit=%.2f risk=%.1f%%)", symbol, _deposit, _risk_pct)
+                    except Exception as _oe_e:
+                        logger.warning("[ATRChange] %s OrderExecutor exception: %s", symbol, _oe_e)
+            else:
+                # A2: register_trade_async вернул None — отрезано gate'ами trade_simulator
+                # (dedup / sl_cooldown / pair_cooldown_sl_streak / min_volume / ...)
                 try:
-                    _ca.clear(symbol, side)
+                    from core.observability.decision_trace import record_drop
+                    asyncio.create_task(record_drop(
+                        symbol=symbol, gate_name="register_returned_none",
+                        drop_reason=f"atr_change_{tf}/{side}: register_trade_async() returned None",
+                        signal_type=f"atr_change_{tf}", direction=side, strength=strength,
+                        features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf,
+                                  "agg_strength": strength, "entry_price": entry, "sl": sl,
+                                  "confirmations_count": len((agg_res or {}).get("confirmations", []))},
+                    ))
                 except Exception:
                     pass
-            if hasattr(bot, "order_executor") and hasattr(bot, "position_sizer"):
-                try:
-                    _oe = bot.order_executor
-                    _deposit = await _oe.get_available_balance()
-                    _risk_pct = float(bot.config.get("trading.risk_pct", 1.0))
-                    _leverage = int(bot.config.get("trading.leverage", 5))
-                    _qty = bot.position_sizer.calc_qty(
-                        entry_price=entry, sl_price=sl,
-                        deposit=_deposit, risk_pct=_risk_pct, leverage=_leverage,
-                    )
-                    if _qty > 0:
-                        _br = await _oe.open_bracket(
-                            symbol=symbol, direction=side,
-                            entry_price=entry, sl=sl, tp1=tp, tp2=None, qty=_qty,
-                        )
-                        if not _br.success:
-                            if _br.error != "position_already_open":
-                                logger.warning("[ATRChange] %s OrderExecutor: %s", symbol, _br.error)
-                        else:
-                            logger.info(
-                                "[ATRChange] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
-                                _br.mode.upper(), side, _qty, entry, sl, tp, _br.order_id, _br.notional_usdt,
-                            )
-                            if hasattr(bot, "position_manager"):
-                                bot.position_manager.register(
-                                    symbol=symbol, side=side, qty=_qty,
-                                    sim_trade_id=trade_id,
-                                    exchange_order_id=_br.order_id,
-                                )
-                            if _live_mode:
-                                from core.exchange.tsl_updater import fetch_and_save_sl_order_id
-                                asyncio.create_task(fetch_and_save_sl_order_id(bot, trade_id, symbol, side))
-                    else:
-                        logger.warning("[ATRChange] %s qty=0 (deposit=%.2f risk=%.1f%%)", symbol, _deposit, _risk_pct)
-                except Exception as _oe_e:
-                    logger.warning("[ATRChange] %s OrderExecutor exception: %s", symbol, _oe_e)
-        else:
-            # A2: register_trade_async вернул None — отрезано gate'ами trade_simulator
-            # (dedup / sl_cooldown / pair_cooldown_sl_streak / min_volume / ...)
-            try:
-                from core.observability.decision_trace import record_drop
-                asyncio.create_task(record_drop(
-                    symbol=symbol, gate_name="register_returned_none",
-                    drop_reason=f"atr_change_{tf}/{side}: register_trade_async() returned None",
-                    signal_type=f"atr_change_{tf}", direction=side, strength=strength,
-                    features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf,
-                              "agg_strength": strength, "entry_price": entry, "sl": sl,
-                              "confirmations_count": len((agg_res or {}).get("confirmations", []))},
-                ))
-            except Exception:
-                pass
 
     except Exception as e:
         logger.warning("[ATRChange] %s %s %s execute error: %s", symbol, tf, side, e)

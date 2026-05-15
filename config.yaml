@@ -480,9 +480,9 @@ trade_analyzer:
 # для technical safety (validate, dedup, sl_cooldown, min_sl_dist, rr_filter).
 # Trading gates → soft penalty к strength.
 signal_router:
-  enabled: false                              # true после dual_run верификации
+  enabled: true                               # Этап 1.Б 15.05.2026: pilot atr_change через router
   shadow_compare:
-    enabled: false                            # dual_run shadow для cutover (Этап 1.Б)
+    enabled: false                            # dual_run пока не нужен — atr_change полностью переключен
     log_path: logs/router_shadow.log
   default_policy:
     min_strength: 50
