@@ -180,8 +180,9 @@ async def _check_pivot_touches(bot, ctx, pivot_trigger, shadow_mode: bool) -> No
 
 async def _fire_analysis(bot, symbol: str, trigger_name: str) -> None:
     """
-    Тонкая обёртка: analyze_symbol → register_trade_async.
-    Не дублирует broadcast — только регистрирует сделку если сигнал actionable.
+    Тонкая обёртка: analyze_symbol → router.submit() / register_trade_async.
+    Этап 1.Г (16.05.2026): подключено к TradeRouter (source='trigger_loop').
+    Откат: config.yaml → signal_router.enabled=false.
     """
     try:
         recommendation = await bot.trading_intelligence.analyze_symbol(symbol)
@@ -192,12 +193,24 @@ async def _fire_analysis(bot, symbol: str, trigger_name: str) -> None:
         direction = getattr(recommendation.direction, "value", "NEUTRAL") if recommendation.direction else "NEUTRAL"
         min_str = int(bot.config.get("signal_quality.min_strength", 50))
         if action in ("BUY", "SELL") and direction != "NEUTRAL" and strength >= min_str:
-            trade_id = await bot.trade_simulator.register_trade_async(
-                recommendation, bot.data_collector,
-                extra_features={"trigger_source": trigger_name},
-            )
-            if trade_id:
-                logger.info("[TriggerLoop] %s trigger=%s → trade_id=%d strength=%d",
-                            symbol, trigger_name, trade_id, strength)
+            _extra = {"trigger_source": trigger_name}
+            if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+                _sr_result = await bot.trade_router.submit(
+                    recommendation, source="trigger_loop", extra_features=_extra,
+                )
+                if _sr_result.trade_id:
+                    logger.info(
+                        "[TriggerLoop] router #%d %s trigger=%s str=%d->%d exch=%s",
+                        _sr_result.trade_id, symbol, trigger_name,
+                        strength, _sr_result.final_strength,
+                        _sr_result.exchange_order_id or "none",
+                    )
+            else:
+                trade_id = await bot.trade_simulator.register_trade_async(
+                    recommendation, bot.data_collector, extra_features=_extra,
+                )
+                if trade_id:
+                    logger.info("[TriggerLoop] %s trigger=%s → trade_id=%d strength=%d",
+                                symbol, trigger_name, trade_id, strength)
     except Exception as e:
         logger.warning("[TriggerLoop] _fire_analysis %s: %s", symbol, e)

@@ -164,7 +164,13 @@ async def _run_intelligence_analysis(bot, message: Message, target_symbol: str, 
 
         try:
             extra = {"distance_to_pivot_pct": distance_to_pivot_pct} if distance_to_pivot_pct else None
-            await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
+            # Этап 1.Г (16.05.2026): через TradeRouter (source='intelligence_cmd', exchange_enabled=false)
+            if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+                await bot.trade_router.submit(
+                    recommendation, source="intelligence_cmd", extra_features=extra,
+                )
+            else:
+                await bot.trade_simulator.register_trade_async(recommendation, bot.data_collector, extra_features=extra)
         except Exception as e:
             logger.debug("TradeSimulator register_trade: %s", e)
 

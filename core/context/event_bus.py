@@ -376,15 +376,28 @@ async def _fire_analysis(bot, symbol: str, event_type: str) -> None:
         min_str = int(bot.config.get("signal_quality.min_strength", 50))
 
         if action in ("BUY", "SELL") and direction != "NEUTRAL" and strength >= min_str:
-            trade_id = await bot.trade_simulator.register_trade_async(
-                recommendation, bot.data_collector,
-                extra_features={"trigger_source": f"event_bus:{event_type}"},
-            )
-            if trade_id:
-                logger.info(
-                    "[EventBus] %s event=%s → trade_id=%d strength=%.0f (%.2fs)",
-                    symbol, event_type, trade_id, strength, elapsed,
+            _extra = {"trigger_source": f"event_bus:{event_type}"}
+            # Этап 1.Г (16.05.2026): через TradeRouter (source='event_bus')
+            if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+                _sr_result = await bot.trade_router.submit(
+                    recommendation, source="event_bus", extra_features=_extra,
                 )
+                if _sr_result.trade_id:
+                    logger.info(
+                        "[EventBus] router #%d %s event=%s str=%.0f->%d exch=%s (%.2fs)",
+                        _sr_result.trade_id, symbol, event_type,
+                        strength, _sr_result.final_strength,
+                        _sr_result.exchange_order_id or "none", elapsed,
+                    )
+            else:
+                trade_id = await bot.trade_simulator.register_trade_async(
+                    recommendation, bot.data_collector, extra_features=_extra,
+                )
+                if trade_id:
+                    logger.info(
+                        "[EventBus] %s event=%s → trade_id=%d strength=%.0f (%.2fs)",
+                        symbol, event_type, trade_id, strength, elapsed,
+                    )
         else:
             logger.info(
                 "[EventBus] %s event=%s -> not actionable (action=%s dir=%s str=%.0f %.2fs)",
