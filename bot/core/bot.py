@@ -1,6 +1,6 @@
 """
 Класс TradingAlertBot — ядро бота: инициализация зависимостей и запуск цикла.
-Точка входа: bot_with_subscriptions.py
+Точка входа: oko_mtf.py (бывш. bot_with_subscriptions.py, переим. 15.05.2026)
 """
 import asyncio
 import logging
@@ -350,6 +350,8 @@ class TradingAlertBot:
             from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop, circuit_breaker_loop
             from bot.loops.trigger_loop import run_trigger_loop
             from bot.loops.health_loop import health_check_loop
+            from bot.loops.obsidian_loop import obsidian_daily_loop
+            from bot.loops.watchlist_loop import watchlist_loop
             from web.dashboard_server import start_dashboard
             from core.observability import decision_trace as _dt
 
@@ -374,6 +376,8 @@ class TradingAlertBot:
             asyncio.create_task(wr_health_check_loop(self))    # DEV-27: rolling WR monitor
             asyncio.create_task(auto_review_loop(self))        # DEV-12/8.4.9: weekly auto-review
             asyncio.create_task(circuit_breaker_loop(self))   # DEV-156: Circuit Breaker
+            asyncio.create_task(obsidian_daily_loop(self))   # Obsidian pipeline: 00:05 UTC
+            asyncio.create_task(watchlist_loop(self))         # Watch List: каждые 4ч
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())

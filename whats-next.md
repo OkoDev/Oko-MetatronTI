@@ -1,246 +1,277 @@
 # What's Next — Handoff Document
 
-> Последнее обновление: **2026-05-09 ~17:30 UTC** (Агент: Developer/Sonnet).
-> Предыдущая запись (09.05 ~15:30 UTC) — в разделе `<previous_session>` ниже.
+> Последнее обновление: **2026-05-17 ~UTC** (Агент: TRADER/Sonnet).
+> Предыдущая запись (09.05 ~17:30 UTC) — в разделе `<previous_session>` ниже.
 
 ---
 
 <current_session>
 
 <original_task>
-Продолжение спринта «Confirmation-Driven Architecture» (DEV-199..205).
+Реализация TR-001: ежедневный Watch List с живыми свечами.
 
-1. Завершить wiring ATR change → прямой вход (вызов `_execute_atr_change_signal` из блока детекции)
-2. Реализовать оптимальный SL вместо жёсткого trendup: выбор из трёх кандидатов
-3. Проверить тесты и сделки с утра
-4. Починить WsFeed (не работал с апреля — `updates=0 errors=миллионы`)
+Запрос: расширить `tools/daily_trade_review.py` — топ-N символов из БД, fetch OHLCV (15m/1h/4h)
+с BingX, composite PNG (15m/1h/4h), Gemini Vision анализ → вывод в TG + файлы.
+
+Финал сессии: три улучшения к реализованному пайплайну:
+1. Числовой TA снимок (wt1/zone/trend) как дополнительный контекст в vision промпт
+2. Периодический запуск каждые 4ч через asyncio task в боте
+3. Символы из `signal_drops` (последние 4ч) добавить в Watch List
 </original_task>
 
 <work_completed>
 
-## 1. ATR Change → прямой вход LONG (DEV-199 завершён полностью)
+## 1. Полный rewrite `tools/daily_trade_review.py` (~900 строк)
 
-**Файл:** `bot/loops/scan_loop.py`
+**Двухфазный Gemini пайплайн:**
 
-### 1а. Добавлен вызов `_execute_atr_change_signal`
+**Phase 1 (текст):**
+- `fetch_trades(hours)` — SELECT из `simulated_trades`
+- `fetch_watchlist_symbols(n)` — топ-N символов (7 дней) + signal_drops (4ч)
+- `_fetch_all_ohlcv(symbols, tfs, limit)` — parallel fetch через ccxt.bingx (shared exchange)
+- `compute_ta_snapshot(symbol, dfs)` — wt1/wt2/zone/trend по каждому TF
+- `call_gemini()` — текстовый дайджест сделок + Watch List TA снимок
+- Парсинг `TOP3: SYM1, SYM2, SYM3` из ответа Gemini
 
-**Строки ~994-996** — после `asyncio.create_task(_eb_atr.publish(...))`:
+**Phase 2 (vision):**
+- `build_composite_png(symbol, dfs)` — 3-panel PNG через `chart_builder._render` + PIL склейка
+- `call_gemini_vision(png_bytes, symbol, ta_snapshot)` — Gemini Vision анализ с числовым снимком
+- TG: фото + отдельное текстовое сообщение (Telegram limit: caption 1024 символа)
+
+**Output:** `memory/last_trade_review.md` + `obsidian/Daily-Review/YYYY-MM-DD.md` + TG
+
+**Запуск при старте бота:** `oko_mtf.py:106` — `[py, "tools/daily_trade_review.py", "--quiet", "--max-age-hours", "18"]`
+
+## 2. Улучшение 1: TA снимок в vision промпт
+
+**Файл:** `tools/daily_trade_review.py`
+
+**Новая функция** `_fmt_ta_snapshot_line(ta_snapshot: dict | None) -> str`:
+- Форматирует строку вида: `TA snapshot: 15m wt1=+12.3 zone=~ trend=UP · 1h wt1=-52.1 zone=OS trend=DN · 4h ...`
+- Вставляется в vision промпт перед шаблоном через replace: `"Выжимка строго по шаблону."` → `"{snapshot_line}\n\nВыжимка строго по шаблону."`
+
+**`call_gemini_vision`** теперь принимает `ta_snapshot: dict | None = None`
+
+**В `main()`** при vision вызове передаётся snapshot нужного символа:
 ```python
-# DEV-199: прямой вход по ATR change LONG (только 1h/4h, SHORT avgR=-0.2)
-if _atr_tf in ('1h', '4h') and _atr_ev.side == 'UP':
-    asyncio.create_task(_execute_atr_change_signal(bot, sym, _atr_ev, _atr_tf, df=_atr_df))
-```
-Условия: только LONG (`side == 'UP'`), только 1h и 4h (15m слишком шумный — R8).
-
-### 1б. Функция `_select_optimal_sl_long` (новая, перед `_execute_atr_change_signal`)
-
-**Строки ~483-551** — выбор оптимального SL из трёх кандидатов:
-
-| Кандидат | Источник |
-|----------|----------|
-| `trendup` | Supertrend линия (согласована с сигналом) |
-| `swing_low(20)` | Структурный минимум последних 20 баров |
-| `entry - 2×ATR(14)` | Быстрый ATR-based уровень |
-
-Логика:
-- Фильтр: 0.3% ≤ dist ≤ 10% от entry
-- Из валидных — **ближайший к цене** (tight SL = лучшее R)
-- Fallback: trendup если есть, иначе 5% от entry
-- `live_mode=True` (execution_mode=vst/live): буфер −0.15% — компенсирует TSL-касание vs close симуляции
-
-### 1в. Функция `_execute_atr_change_signal` обновлена
-
-- Параметр `df=None` добавлен (передаётся `_atr_df`)
-- `sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)`
-- `sl_source` логируется: `[ATRChange] BTC 1h LONG: entry=X sl=Y (src=swing_low_20 dist=2.1%) tp=Z`
-- `MarketContext` исправлен: передаются обязательные поля (symbol, current_price, volume_24h=0, ...)
-- `sl_source` в БД = `swing_low_20` / `atr_trendline` / `atr14_2x` / `*_fallback` / `*_buf` (с буфером)
-
-**Синтаксис:** `py_compile` — OK ✅
-
-## 2. WsFeed починен (баг с апреля 2026)
-
-**Корень:** `watch_ticker` BingX — **публичный WebSocket стрим, ключи не нужны и вызывают 100413.**
-ccxt.pro при наличии apiKey/secret пытается авторизовать соединение → BingX отвергает.
-Без ключей → подключается к публичному стриму → работает.
-
-**Доказательство (e:\tmp\ws_test.py):**
-```
-[WITH keys]    ERROR: ExchangeError: bingx code:100413 Incorrect apiKey
-[WITHOUT keys] OK — price=80368.6
+sym_snapshot = next((s for s in snapshots if s["symbol"] == sym), None)
+analysis = call_gemini_vision(png, sym, ta_snapshot=sym_snapshot)
 ```
 
-**История:** с апреля 2026 `updates=0 errors=миллионы` — reconnect-loop без пауз.
-Ещё одна проблема: `return_exceptions=True` в `asyncio.gather` → exception не пробрасывается → `except Exception` в `_ticker_batch` никогда не срабатывает → нет задержки reconnect → 300+ ошибок/сек.
+## 3. Улучшение 2: Периодический запуск 4ч
 
-**Фикс в `core/infra/ws_feed.py` — `_make_exchange()`:**
+**Новый файл:** `bot/loops/watchlist_loop.py`
+
 ```python
-# watch_ticker на BingX — публичный стрим, ключи не нужны и вызывают 100413.
-return ccxtpro.bingx({
-    "options": {"defaultType": "swap"},
-    "enableRateLimit": False,
-})
+async def watchlist_loop(_bot) -> None:
+    """Каждые 4ч запускает Watch List review → TG."""
+    while True:
+        await asyncio.sleep(4 * 3600)   # первый запуск через 4ч после старта
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "tools/daily_trade_review.py", "--quiet", ...
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=300)
 ```
 
-**Попутно:**
-- `WsFeed.__init__` добавлены параметры `api_key=""`, `secret=""` (для будущего если понадобятся приватные стримы)
-- `bot/core/bot.py` — WS всегда берёт LIVE ключи (не VST), но в итоге они не нужны
-- `import os` добавлен в `bot/core/bot.py`
-- Диагностика: первые 3 ошибки логируются WARNING (а не debug) для видимости проблем
-
-**Результат после фикса:**
-```
-✅ LIVE | tickers=242 updates=71177 errors=0 uptime=299s
+**`bot/core/bot.py`** — добавлены строки ~354 и ~379:
+```python
+from bot.loops.watchlist_loop import watchlist_loop
+asyncio.create_task(watchlist_loop(self))   # Watch List: каждые 4ч
 ```
 
-## 3. Анализ сделок с утра
+## 4. Улучшение 3: signal_drops в Watch List
 
-**30 сделок, ключевые находки:**
+**`fetch_watchlist_symbols`** теперь двухэтапный:
+1. Топ-N символов из `simulated_trades` за 7 дней (как раньше)
+2. +уникальные символы из `signal_drops` за последние 4ч
+3. Объединяет, дедуплицирует, возвращает топ-N
+4. Graceful fallback если `signal_drops` нет (старые инсталляции)
+5. Логирует `[watch] +N символов из signal_drops`
 
-| Находка | Вердикт |
-|---------|---------|
-| `atr_trendline_30m` у 204 сделок | Правильный `sl_source` — sideways стратегия работает на 30m. НО `timeframe=15m` в БД — баг DEFAULT_TIMEFRAME в INSERT (trade_simulator.py:695) |
-| R=-8.96 у CFX, R=-5.42 у YFI | VST биржевое proскальзывание: STOP_MARKET исполнился по market price далеко ниже стоп-цены. При sl_dist=0.86% это даёт огромный R. Не баг кода. |
-| ATR change сделок нет | Бот не был перезапущен с новым кодом |
+## 5. Ключевые константы (daily_trade_review.py)
 
-## 4. Тесты
+```python
+WATCHLIST_N = 10
+WATCHLIST_TFS = ["15m", "1h", "4h"]
+WATCHLIST_OHLCV_LIMIT = 120        # дефолт для 15m/4h
+WATCHLIST_TF_LIMITS = {"15m": 120, "1h": 530, "4h": 120}   # 1h = 530 для недельных пивотов
+GEMINI_MODEL_PRIMARY = "gemini-2.5-flash"
+MAX_OUTPUT_TOKENS = 10000
+```
 
-`pytest tests/test_confirmations.py` — **58/58 PASSED** ✅
+## 6. VISION_PROMPT (финальный формат, ~18 строк)
+
+```
+📡 {symbol}
+📈 15m [↗/↘/→] · 1h [↗/↘/→] · 4h [↗/↘/→]
+〰 WT
+  15m [OS/OB/нейтрал] [↑/↓] [крест если есть]
+  1h  [...]
+  4h  [...]
+🏛 Пивоты W: PP · S1/R1 · S2/R2 ← цена выше↑/ниже↓ W:PP
+          D: PP · S1/R1 · S2/R2 ← ближайший уровень
+🎯 [LONG/SHORT/Ждать: причина]
+  Вход: / SL: / TP1: / TP2:
+```
+
+## 7. Пример финального вывода в TG (протестировано)
+
+```
+📡 TRB/USDT:USDT
+
+📈 15m ↘ DN · 1h ↘ DN · 4h ↘ DN
+
+〰 WT
+  15m нейтрал ↓ крест ↓
+  1h  OS ↓
+  4h  OS ↓
+
+🏛 Пивоты
+  W: 20.263 · S1 19.34 · S2 18.463 ← цена ниже ↓ W:PP
+  D: 17.45 · S1 17.04 · R1 18.06 ← ближайшая поддержка S1 17.04
+
+🎯 Ждать: подтверждения разворота
+  Вход:  17.04 - 17.20
+  SL:    16.80 (1.4% за S1)
+  TP1:   17.45 (D:PP)
+  TP2:   18.06 (D:R1)
+```
 
 </work_completed>
 
 <work_remaining>
 
-## Немедленно — проверить ATR change в БД
+## Протестировать три улучшения
 
-Бот запущен с новым кодом (~17:23 UTC). Ждать первый Supertrend cross UP на 1h или 4h.
-Проверить через несколько часов:
+Запустить тест вручную:
+```
+cd "e:\MTF BOT\CURSOR\crypto_volume_bot"
+python e:\tmp\test_vision.py   # или запустить основной скрипт
+python tools/daily_trade_review.py --quiet
+```
+
+Проверить в логах/TG:
+1. Строка `TA snapshot: 15m wt1=... zone=... trend=...` появляется в консоли перед Gemini Vision вызовом
+2. После 4ч работы бота в логах: `[watchlist_loop] старт Watch List review`
+3. При наличии signal_drops: `[watch] +N символов из signal_drops`
+
+## TR-003: TRADER валидация ConfirmationRegistry
+
+Статус: ждёт накопления ATR change сделок.
+Нужно: ≥30 composite сделок с `features_json.confirmations[]`.
+Блокер: сделок с `atr_change` пока мало (бот работает с 17.05).
+
+Как проверить:
 ```sql
-SELECT id, symbol, direction, sl_source, strength, status, created_at
-FROM simulated_trades WHERE signal_type='atr_change' ORDER BY created_at DESC LIMIT 20;
-```
-Ожидаемый `sl_source`: `swing_low_20`, `atr_trendline`, `atr14_2x` — но НЕ `atr_trendline_30m` (это sideways).
-
-В логе при входе:
-```
-[ATRChange] SYMBOL 1h LONG: entry=X sl=Y (src=swing_low_20 dist=2.1%) tp=Z
-[ATRChange] SYMBOL 1h LONG → #NNNN registered (sl_source=swing_low_20)
+SELECT id, symbol, signal_type, direction, R_multiple, created_at,
+       json_extract(features_json, '$.confirmations') as confs
+FROM simulated_trades
+WHERE signal_type='atr_change' OR json_extract(features_json, '$.confirmations') IS NOT NULL
+ORDER BY created_at DESC LIMIT 30;
 ```
 
-## Незакоммиченные изменения (коммит нужен)
+## DEV-200: ConfirmationRegistry — главный блокер спринта
 
-```
-M  bot/core/bot.py          — WsFeed ключи + import os + ConfirmationAggregator
-M  bot/loops/scan_loop.py   — _select_optimal_sl_long + _execute_atr_change_signal wiring
-M  core/infra/ws_feed.py    — убраны ключи из _make_exchange + диагностика WARNING
-M  + все изменения из предыдущих сессий (DEV-199..203)
-```
+Статус по TASKS.md: 🔴 срочно. `core/confirmations/registry.py` существует, тесты 58/58 PASSED.
+Acceptance: каждый детектор публикует Confirmation events.
+Следующий шаг DEV — проверить что все 25 типов реально публикуются в live данных.
 
-Стратегия коммитов:
-1. `feat(DEV-199): ATR change LONG прямой вход + _select_optimal_sl_long`
-2. `fix(ws_feed): watch_ticker публичный стрим — убраны ключи (100413)`
-3. `feat(DEV-199/202): ConfirmationAggregator wiring + signal_drops`
+## DEV-201: SignalAggregator v2
 
-## DEV-204: ML retrain на confirmations (ждёт данных)
+`strength = Σ weight × confidence` — заменить хардкод формулу.
+Проверить что `signal_mode` разнообразен у новых сделок.
 
-- Триггер: 200+ новых сделок с `features_json.confirmations[]` не пустым
-- Задача: обновить веса ConfirmationRegistry на основе feature importance
-- Пока — ждать накопления (ATR change сделок ~0, confirmations только начали писаться)
+## DEV-188: pivot_reversal SHORT TREND_DOWN
 
-## DEV-205: audit_mode shadow + audit_trades
+93 сделки avgR=−0.77, эффект −72R/10дн. Ещё не исправлено.
+Нужно: проверка реального касания (wick через уровень) + объём.
 
-Не начата. Детали в `docs/TASKS_DETAILS.md`.
+## ARCH-95: Глобальное расследование "почему торгуем в минус"
 
-## ARCH-112: аудит соответствия Кубу Метатрона
+6 аудит-скриптов (H1..H7). Пока не запущены.
 
-Не начат. ATR change = Сфера 1 (новый trigger). Проверить все 13 сфер.
+## Коммиты (давно нужны)
 
-## TR-003: TRADER валидация 20 SHADOW сделок
-
-Не начата. Нужно накопить 20 atr_change сделок после запуска.
-
-## Известный баг: timeframe=15m в БД для всех сделок
-
-`trade_simulator.py:695` — `DEFAULT_TIMEFRAME` хардкодом в INSERT вместо `rec.timeframe`.
-Sideways (30m), ATR change (1h/4h) — все пишутся как 15m.
-**Не критично** для торговли, но мешает аналитике по timeframe.
-Можно починить: заменить `DEFAULT_TIMEFRAME` на `str(_get_recommendation_value(recommendation, "timeframe") or DEFAULT_TIMEFRAME)`.
+Незакоммиченных файлов 25+. Стратегия:
+1. `feat(TR-001): Watch List pipeline — composite PNG + Gemini Vision + периодический запуск 4ч`
+2. `feat(TR-001): signal_drops в Watch List + TA снимок в vision промпт`
 
 </work_remaining>
 
 <attempted_approaches>
 
-## Что пробовали и не сработало
+## Что пробовали и не сработало (в ходе разработки daily_trade_review.py)
 
-### 1. WsFeed — VST ключи вместо LIVE
-Первая гипотеза: бот в VST режиме, WsFeed берёт LIVE ключи → 100413.
-Изменили на VST ключи → та же ошибка 100413.
-→ Проблема не в VST vs LIVE, а в том что watch_ticker публичный.
+### 1. 30 параллельных ccxt экземпляров → RequestTimeout
+Каждый `ccxt.bingx()` при инициализации загружает `/contracts`. 30 параллельных → rate limit → timeout.
+→ Фикс: один shared `exch = ccxt_async.bingx()` + `await exch.load_markets()` один раз + `Semaphore(5)`.
 
-### 2. WsFeed — передача ключей через __init__
-Добавили `api_key`, `secret` параметры в `WsFeed.__init__` и `bot.py`.
-Не помогло — ключи вообще не нужны.
-→ Финальный фикс: убрать ключи полностью из `_make_exchange()`.
+### 2. `Part.from_text()` без keyword → TypeError
+Новая google-genai SDK требует keyword аргумент.
+→ Фикс: `Part.from_text(text=VISION_PROMPT.format(...))` вместо `Part.from_text(VISION_PROMPT...)`.
 
-### 3. MarketContext() без аргументов
-В первой версии `_execute_atr_change_signal` был вызов `MarketContext()` без аргументов.
-Упало бы при первом вызове — у MarketContext 5 обязательных полей.
-→ Исправлено: `MarketContext(symbol=symbol, current_price=entry, volume_24h=0.0, ...)`.
+### 3. TG caption обрезается на 1024 символах
+Анализ (400+ символов) обрывался на середине предложения.
+→ Фикс: `send_tg_photo(png, short_caption)` + отдельный `send_tg_text(full_analysis, parse_mode=None)`.
 
-### 4. `import pandas as pd as _pd` — синтаксическая ошибка
-При написании `_select_optimal_sl_long` случайно написал `import pandas as pd as _pd`.
-→ Удалён, pandas уже импортирован на уровне модуля.
+### 4. Markdown `**bold**` отображается как сырой текст
+При `parse_mode=None` теги видны пользователю.
+→ Фикс: в system_instruction добавлено "БЕЗ markdown разметки — никаких **, *, _, #".
+
+### 5. Недельные пивоты "отсутствуют на графике"
+120 свечей 1h = 5 дней. `_calc_pivot_levels` требует 3+ недели = 530 свечей.
+→ Фикс: `WATCHLIST_TF_LIMITS = {"15m": 120, "1h": 530, "4h": 120}`.
+
+### 6. MAX_TOKENS обрезка при `max_output_tokens=3000`
+Gemini 2.5 Flash тратит thinking tokens на внутренние рассуждения — на output почти ничего.
+→ Фикс: `ThinkingConfig(thinking_budget=0)`.
+
+### 7. Слишком длинный анализ (2582 символа)
+Структурированный, но избыточный — пользователю нужна выжимка.
+→ VISION_PROMPT переписан в компактный шаблон с emoji, ограничен 18 строками.
 
 </attempted_approaches>
 
 <critical_context>
 
-## WsFeed — публичный vs приватный
+## WATCHLIST_TF_LIMITS — критически важно
 
-BingX `watch_ticker` для SWAP (perpetual futures) = **публичный WebSocket**.
-Ключи не нужны и вызывают ошибку аутентификации.
-Если в будущем понадобится `watch_orders`/`watch_balance` (приватные стримы) — ключи нужны будут тогда.
+`"1h": 530` свечей обязательно — `_calc_pivot_levels` в `chart_builder.py` требует 3+ полных недели
+для вычисления недельных пивотов. Меньше → W: PP/S1/R1 просто не появятся на графике.
+`"15m": 120`, `"4h": 120` — достаточно для отображения последних ~1-2 дней / ~3 недели соотв.
 
-## TSL симуляция vs биржа — критически важно для SL выбора
+## ThinkingConfig(thinking_budget=0) — обязательно
 
-- **Симуляция** TSL: срабатывает при **close** свечи ниже TSL линии
-- **Биржа (VST/LIVE)** TSL: срабатывает при **касании** (low < stop price)
+Gemini 2.5 Flash имеет внутренний thinking budget. При `max_output_tokens=2000` без отключения
+thinking — бюджет тратится на reasoning, на output почти ничего. Результат: обрезка на 50-100 символах.
+`thinking_budget=0` отключает это, весь лимит идёт на output.
 
-Для `_select_optimal_sl_long` добавлен `live_mode` буфер −0.15%:
-- `execution_mode = vst/live` → `live_mode=True` → SL с запасом ниже уровня
-- `sl_source` при этом получает суффикс `_buf` (напр. `swing_low_20_buf`)
+## send_tg_photo + send_tg_text раздельно
 
-## ATR change LONG — только 1h и 4h
+Telegram API: `sendPhoto` caption ≤ 1024 символа. Анализ Vision ~380-500 символов.
+Сейчас: caption = короткий заголовок `📡 *SYMBOL* — 15m / 1h / 4h`, анализ — отдельный sendMessage.
+`parse_mode=None` для текста vision — Gemini instructed не писать markdown.
 
-SHORT не использовать без дополнительного фильтра: R8 backtest дал `SHORT avgR=-0.202 WR=35%`.
-LONG: `1h avgR=+0.281, WR=56%`, `4h avgR=+0.287, WR=58%` — стабильно positive 7/7 двухнедельных окон.
+## watchlist_loop — первый запуск через 4ч
 
-## SL dist фильтры в `_select_optimal_sl_long`
+При старте бота `_spawn_llm_background_jobs()` уже запускает daily_trade_review.py.
+Поэтому `watchlist_loop` начинает с `await asyncio.sleep(4 * 3600)` — нет дублирования.
 
-- Минимум 0.3% — защита от noise SL (иначе R может быть -30 при быстром движении)
-- Максимум 10% — защита от too-wide SL (плохое R)
-- Если ни один не прошёл — fallback на trendup (согласован с сигналом)
+## signal_drops таблица — graceful fallback
 
-## `atr_trendline_30m` в sl_source
+`fetch_watchlist_symbols` оборачивает signal_drops запрос в `try/except` — таблица появилась
+только после DEV-203 (09.05.2026). Старые инсталляции без неё не сломаются.
 
-Это НЕ ошибка нового кода. Это хардкод из `strategies/built_in/wt_sideways_strategy.py:67`.
-Sideways стратегия работает на 30m timeframe — sl_source правильный.
-НО в БД `timeframe=15m` (баг DEFAULT_TIMEFRAME в INSERT).
+## build_composite_png — импорт из core/ui/chart_builder.py
 
-## Накопленные незакоммиченные изменения (с прошлых сессий)
+Функции `_calculate_wt`, `_render`, `_calc_pivot_levels` — protected (underscore).
+Используются напрямую т.к. публичный API `build_signal_chart` async и требует trade объект.
+Если chart_builder.py изменится — нужно проверить эти 3 функции.
 
-Из предыдущего whats-next (сессия ~15:30): DEV-199, DEV-200, DEV-201, DEV-202, DEV-203 — все реализованы.
-Всего незакоммиченных файлов: ~25+. Коммит давно нужен.
+## Паттерн watchlist_loop по образцу obsidian_loop
 
-## Acceptance criteria спринта (напоминание)
-
-1. DEV-199 ✅: за 24h после рестарта в БД сделки с `signal_type='atr_change'`
-2. DEV-200 ✅: registry.py + 25 типов + 58/58 pytest
-3. DEV-201 ✅: signal_mode работает (reversal/cascade/momentum)
-4. DEV-202 ✅: confirmations[] пишутся в features_json
-5. DEV-203 ✅: signal_drops таблица + дашборд /dropped
-6. Регрессия: 7 дней avgR не падает ниже −0.437
-7. Прогресс: 14 дней → avgR ≥ −0.10
+Оба в `bot/loops/`, оба используют `asyncio.create_subprocess_exec`, timeout для subprocess.
+`obsidian_loop` запускается в 00:05 UTC (фиксированное время), `watchlist_loop` — через 4ч интервал.
 
 </critical_context>
 
@@ -250,36 +281,43 @@ Sideways стратегия работает на 30m timeframe — sl_source п
 
 | Файл | Статус |
 |------|--------|
-| `core/signals/atr_change_detector.py` | ✅ создан, `trendline` поле добавлено |
-| `core/confirmations/__init__.py` / `models.py` / `registry.py` | ✅ создан, 25 типов |
-| `core/intelligence/signal_aggregator.py` | ✅ `ConfirmationAggregator` добавлен |
-| `core/observability/decision_trace.py` | ✅ создан |
-| `core/db/subscription_manager.py` | ✅ таблица `signal_drops` |
-| `bot/monitoring.py` | ✅ 6 gates + DEV-202 confirmations |
-| `bot/core/bot.py` | ✅ ATRChangeDetector + ConfirmationAggregator + WsFeed фикс |
-| `bot/loops/scan_loop.py` | ✅ `_select_optimal_sl_long` + `_execute_atr_change_signal` + вызов |
-| `core/infra/ws_feed.py` | ✅ ключи убраны из `_make_exchange` |
-| `web/dashboard_server.py` | ✅ endpoint `/api/dropped` |
-| `tests/test_confirmations.py` | ✅ 58/58 PASSED |
-| `config.yaml` | ✅ `sl_cooldown_hours: 1.0` (было 2.0) |
+| `tools/daily_trade_review.py` | ✅ реализован + 3 улучшения (сессия 17.05) |
+| `bot/loops/watchlist_loop.py` | ✅ создан (новый файл) |
+| `bot/core/bot.py` | ✅ watchlist_loop подключён |
+| `core/signals/atr_change_detector.py` | ✅ (из предыдущей сессии) |
+| `core/confirmations/registry.py` | ✅ (из предыдущей сессии) |
+| `core/observability/decision_trace.py` | ✅ (из предыдущей сессии) |
+| `bot/loops/scan_loop.py` | ✅ (из предыдущей сессии) |
 
-## Бот — текущий статус (17:28 UTC)
+## Пайплайн — статус
 
-- **Запущен** с 17:23 UTC
-- **WsFeed**: `✅ LIVE | tickers=242 updates=71177 errors=0` — работает впервые с апреля ✅
-- **ATR change**: ни одной сделки в БД — ждём первого 1h/4h Supertrend cross UP
-- **Selftest S2 (WSFeed)**: станет `ACTIVE` при следующем `/selftest`
-- **Открытых сделок**: 84 total, ~63 сегодня — большинство `wt_sideways` 30m
+| Компонент | Статус |
+|-----------|--------|
+| Fetch OHLCV (ccxt shared + Semaphore) | ✅ протестировано, работает |
+| TA snapshot (wt1/zone/trend) | ✅ протестировано |
+| Composite PNG (PIL склейка 3 панелей) | ✅ протестировано |
+| Gemini Vision анализ (~380 символов) | ✅ протестировано, качество норм |
+| TG: фото + текст раздельно | ✅ протестировано |
+| TA snapshot в vision промпт | ✅ реализовано (17.05, не протестировано в TG) |
+| Периодический запуск 4ч | ✅ реализовано (17.05, не протестировано — нужен рестарт бота) |
+| signal_drops в Watch List | ✅ реализовано (17.05, не протестировано) |
+
+## Блокирующие задачи спринта
+
+- **DEV-200** 🔴: ConfirmationRegistry — основной блокер спринта
+- **DEV-201** 🔴: SignalAggregator v2
+- **TR-003** 🟡: заблокирована — ждёт накопления ATR change сделок + фикс SL-выбора
 
 ## Коммиты
 
-**Не сделано** — нужен коммит всех изменений сессии.
+Незакоммиченных изменений: 25+ файлов (накопилось за несколько сессий 09.05–17.05).
+Нужно сделать 2 коммита (см. `<work_remaining>`).
 
-## Что ждать в ближайшее время
+## Что нужно после рестарта бота
 
-1. **Первые ATR change сделки** — появятся при Supertrend cross на 1h/4h любой пары. Проверить через 2-4 часа.
-2. **Confirmations в features_json** — у новых ATR change сделок должны быть `confirmations[]` непустые.
-3. **DEV-204** — когда накопится 200+ сделок с confirmations.
+1. Через несколько минут: `[watchlist_loop] запланирован через 4 ч` в логах
+2. Через 4ч: автоматический запуск Watch List → TG получит фото + анализ
+3. Проверить signal_drops логирование: `[watch] +N символов из signal_drops`
 
 </current_state>
 
@@ -289,9 +327,11 @@ Sideways стратегия работает на 30m timeframe — sl_source п
 
 <previous_session>
 
-> Сессия 09.05.2026 ~15:30 UTC. DEV-199/200/201/202/203 реализованы. Детали в git log.
-> Краткое содержание: ATRChangeDetector создан, ConfirmationRegistry 25 типов, ConfirmationAggregator,
-> DecisionTrace + signal_drops, confirmations[] в features_json. 58/58 тестов. Бот перезапущен.
+> Сессия 09.05.2026 ~17:30 UTC. ATR Change прямой вход + _select_optimal_sl_long + WsFeed фикс.
+>
+> Краткое: wiring `_execute_atr_change_signal` в scan_loop, SL из 3 кандидатов (trendup/swing_low_20/atr14_2x),
+> WsFeed починен (watch_ticker публичный стрим — ключи вызывали 100413), 58/58 тестов.
+> Бот перезапущен в 17:23 UTC. WsFeed: tickers=242 updates=71177 errors=0.
 
 Полный handoff предыдущей сессии доступен в git history (`whats-next.md` до этого коммита).
 
