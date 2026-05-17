@@ -144,6 +144,22 @@ class TradeRouter:
         if policy.trade_mode and "trade_mode" not in ctx.extra_features:
             ctx.extra_features["trade_mode"] = policy.trade_mode
 
+        # ── Pre-registration strength check ──────────────────────────────
+        if ctx.strength < policy.min_strength:
+            reason = f"str={ctx.strength} < min={policy.min_strength}"
+            hard_drops.append(("below_min_strength", reason))
+            logger.info("[TradeRouter] %s DROP %s %s: %s", symbol, direction, source, reason)
+            await self._record_drop_plain(ctx, "below_min_strength", reason)
+            await self._publish_position_dropped(ctx, hard_drops, soft_penalties)
+            return SubmitResult(
+                trade_id=None,
+                exchange_order_id=None,
+                soft_penalties=soft_penalties,
+                hard_drops=hard_drops,
+                final_strength=ctx.strength,
+                is_registered=False,
+            )
+
         # ── Persist ──────────────────────────────────────────────────────
         try:
             trade_id = await self.bot.trade_simulator.register_trade_async(
@@ -255,6 +271,18 @@ class TradeRouter:
                 "[TradeRouter] [%s] bracket: %s qty=%.6f entry=%.6f SL=%.6f TP=%.6f order_id=%s notional=%.2f",
                 br.mode.upper(), ctx.direction, qty, entry, sl, tp, order_id, br.notional_usdt,
             )
+
+            # ARCH-94: записать exchange_order_id в БД (ранее не делалось через router)
+            try:
+                import sqlite3 as _sq
+                with _sq.connect(self.bot.trade_simulator.db_path) as _conn:
+                    _conn.execute(
+                        "UPDATE simulated_trades SET exchange_order_id=? WHERE id=?",
+                        (order_id, trade_id),
+                    )
+            except Exception as _upd_e:
+                logger.warning("[TradeRouter] exchange_order_id update failed for #%d: %s",
+                               trade_id, _upd_e)
 
             if hasattr(self.bot, "position_manager"):
                 try:
