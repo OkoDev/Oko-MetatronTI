@@ -126,7 +126,7 @@ outcome_predictor:
 strategy_name: multi_signal
 
 sideways_mode:
-  enabled: true
+  enabled: false  # 17.05.2026: отключён — -131R/24ч, 50% убыточного флоу (решение команды + пользователя)
   min_sideways_bars: 3      # N последовательных RANGE-циклов для активации (защита от флуктуаций)
   timeframe: 30m            # ТФ для WT OS/OB детекции (бэктест: 30m лучший в боковике)
   min_strength: 60          # минимальный strength для регистрации
@@ -328,6 +328,11 @@ event_bus:
   btc_macro_shock_pct: 2.5
 signal_quality:
   sl_cooldown_hours: 1.0
+  # Per-signal_type cooldown (16.05.2026): какие signal_type ИГНОРИРУЮТ какие источники SL.
+  # Корень: wt_sideways генерит много SL → блокирует независимые сигналы (anomaly затих 6 дней).
+  # anomaly не зависит от SL-серий wt_sideways — это event-driven сигнал на объём/цену.
+  sl_cooldown_ignore_sources:
+    anomaly: [wt_sideways]
   dedup_minutes: 30
   min_volume_usd: 5000000  # DEV-185.3 04.05: 13 катастроф (R<=-5) — все DOLO/CLO/GIGGLE/VELODROME, low liquidity
   min_strength: 50

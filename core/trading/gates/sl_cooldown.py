@@ -28,11 +28,14 @@ class SlCooldownGate(Gate):
         try:
             db_path = ctx.bot.trade_simulator.db_path
             cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-            cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+            # DEV-215 bug fix: strftime с пробелом vs ISO 'T' в closed_at — SQLite
+            # string compare давал T(84) > ' '(32) → все ISO timestamps всегда >= cutoff.
+            # datetime() нормализует оба формата корректно.
+            cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
             with sqlite3.connect(db_path) as conn:
                 row = conn.execute(
                     "SELECT id, closed_at FROM simulated_trades "
-                    "WHERE symbol=? AND status='SL' AND closed_at>=? "
+                    "WHERE symbol=? AND status='SL' AND datetime(closed_at)>=datetime(?) "
                     "ORDER BY closed_at DESC LIMIT 1",
                     (ctx.symbol, cutoff_str),
                 ).fetchone()

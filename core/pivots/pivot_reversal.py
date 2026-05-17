@@ -1,5 +1,14 @@
 import logging
 from core.indicators.indicators import detect_fvg, calculate_trend, calculate_wt, get_zone, compute_atr
+from core.indicators.market_regime import MarketRegimeClassifier as _MRC
+try:
+    from core.smc.fvg import detect_fvg as _smc_detect_fvg
+    from core.smc.confluence import find_fvg_pivot_confluences as _find_fvg_piv_conf
+    _FVG_PIVOT_ENABLED = True
+except ImportError:
+    _smc_detect_fvg = None
+    _find_fvg_piv_conf = None
+    _FVG_PIVOT_ENABLED = False
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +22,7 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
     2. WT кросс на 15m в нужном направлении
     3. Тренд на 15m соответствует направлению
     4. БОНУС: FVG на 3m для усиления confidence
-    5. SL: ATR(14) × 1.5, зажат в [1%, 4%] от цены
+    5. SL: swing_low/high (primary, avgR=+0.846) → fallback pivot±0.3%
     6. TP: следующие пивоты (R1→R2→R3 для LONG, S1→S2→S3 для SHORT)
 
     Данные 15m берутся из кеша (уже загружены scan_one) — нет лишних API-вызовов.
@@ -83,6 +92,12 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
         trend_15m_prev = int(df_15m['trend'].iloc[-2])
         trend_changed  = (trend_15m != trend_15m_prev)
 
+        # ── Режим монеты для pivot gates (df_15m уже с trend+wt после шагов 4+) ──
+        try:
+            _regime = _MRC().classify_from_dataframes(df_15m) or "RANGE"
+        except Exception:
+            _regime = "RANGE"
+
         # === 5. ATR — только для fallback, не основной SL ===
         try:
             atr_series = compute_atr(df_15m, period=14)
@@ -90,11 +105,37 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
         except Exception:
             atr_val = None
 
-        # DEV-30 (Вариант A): SL = 0.3% под/над уровнем пивота (бэктест EV=0.256 vs ATR 0.115)
-        # Если level_price недоступен — fallback на ATR
-        _pivot_buf = 0.003  # 0.3% буфер под/над уровнем
-        _sl_long_pivot  = level_price * (1 - _pivot_buf)   # LONG: ниже уровня поддержки
-        _sl_short_pivot = level_price * (1 + _pivot_buf)   # SHORT: выше уровня сопротивления
+        # DEV-30 (Вариант A): SL = 0.3% под/над уровнем пивота — fallback
+        _pivot_buf = 0.003
+        _sl_long_pivot  = level_price * (1 - _pivot_buf)
+        _sl_short_pivot = level_price * (1 + _pivot_buf)
+
+        # Swing SL (primary, 17.05.2026): структурный экстремум за последние 30 свечей 15m.
+        # avgR(swing_high SL)=+0.846 n=41 vs pivot_buf. Fallback → pivot_buf если нет swing или слишком широкий.
+        _swing_sl_long  = None
+        _swing_sl_short = None
+        try:
+            if df_15m is not None and len(df_15m) >= 30:
+                _wing = 4
+                _rec30 = df_15m.iloc[-30:].reset_index(drop=True)
+                _sw_lows, _sw_highs = [], []
+                for _si in range(_wing, len(_rec30) - _wing):
+                    _lo = float(_rec30["low"].iloc[_si])
+                    _hi = float(_rec30["high"].iloc[_si])
+                    if (_lo < _rec30["low"].iloc[_si - _wing: _si].min() and
+                            _lo < _rec30["low"].iloc[_si + 1: _si + _wing + 1].min() and
+                            _lo < current_price):
+                        _sw_lows.append(_lo)
+                    if (_hi > _rec30["high"].iloc[_si - _wing: _si].max() and
+                            _hi > _rec30["high"].iloc[_si + 1: _si + _wing + 1].max() and
+                            _hi > current_price):
+                        _sw_highs.append(_hi)
+                if _sw_lows:
+                    _swing_sl_long  = float(min(_sw_lows))
+                if _sw_highs:
+                    _swing_sl_short = float(max(_sw_highs))
+        except Exception:
+            pass
 
         # fallback sl_dist для rr_ratio вычислений (всё ещё нужен в _build_result)
         if atr_val and atr_val > 0:
@@ -114,6 +155,26 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
             except Exception:
                 pass
 
+        # ── FVG+Pivot confluence (17.05.2026) ───────────────────────────────────
+        # Shadow: пишем в features_json для аккумуляции данных; не блокирует.
+        _fvg_pivot_zones = []
+        if _FVG_PIVOT_ENABLED and df_3m is not None and len(df_3m) >= 3:
+            try:
+                _fvg_full = _smc_detect_fvg(df_3m)
+                _piv_flat = {}
+                for _tf in ("1W", "1D", "1M"):
+                    _src = pivots_data.get(_tf, {})
+                    if isinstance(_src, dict):
+                        for _k, _v in _src.items():
+                            if isinstance(_v, (int, float)) and _v > 0 and _k != "confluence":
+                                _piv_flat[f"{_tf}_{_k}"] = _v
+                if _piv_flat:
+                    _fvg_pivot_zones = _find_fvg_piv_conf(
+                        _fvg_full, _piv_flat, current_price, tolerance_pct=0.5
+                    )
+            except Exception:
+                pass
+
         # DEV-188 (shadow): real_touch + volume_z для качества входа от уровня.
         # Не блокирует — пишет в info dict → features_json для shadow-анализа
         # после 50+ закрытых сделок: WR(real_touch=1) vs WR(0).
@@ -129,6 +190,9 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
         except Exception:
             recent_high_15m = recent_low_15m = 0.0
             volume_z_15m = 0.0
+
+        # Soft penalty от режима — применяется внутри _build_result (closure)
+        _regime_str_penalty = 0
 
         # === Вспомогательные функции ===
         def _strength(wt_ok, trend_changed, has_fvg, fvg_ok, has_confluence):
@@ -147,6 +211,11 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
             tp_distance = abs(tp_levels[0]['price'] - current_price) if tp_levels else 0
             rr_ratio = tp_distance / actual_sl_dist if actual_sl_dist > 0 else 0
             strength = _strength(wt_ok, trend_changed, has_fvg, fvg_ok, has_confluence)
+            strength = max(0, strength - _regime_str_penalty)  # мягкий режимный штраф
+            # Бонус за FVG+Pivot конфлюэнцию (17.05)
+            _has_fvg_piv_conf = bool(_fvg_pivot_zones and _fvg_pivot_zones[0].score >= 25)
+            if _has_fvg_piv_conf:
+                strength = min(strength + 8, 100)
             # DEV-188 (shadow): real_touch для weekly-pivot пути
             if "LONG" in type_str:
                 _real_touch = 1 if recent_low_15m <= level_price * 1.001 else 0
@@ -180,17 +249,41 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 'take_profits': tp_levels,
                 'rr_ratio': rr_ratio,
                 'strength': strength,
-                'confidence': 'VERY_HIGH' if (has_confluence and has_fvg and fvg_ok) else 'HIGH',
+                'confidence': ('VERY_HIGH' if (
+                    _has_fvg_piv_conf or (has_confluence and has_fvg and fvg_ok)
+                ) else 'HIGH'),
                 'weekly_pivots': weekly_pivots,
                 'real_touch': _real_touch,
                 'close_rejection': _close_rejection,
                 'volume_z': volume_z_15m,
+                'fvg_pivot_zones': [z.to_dict() for z in _fvg_pivot_zones[:3]],
+                'has_fvg_pivot_conf': _has_fvg_piv_conf,
+                'regime': _regime,
             }
 
         # === LONG: у поддержки ===
         if level_type in ['support', 'pivot']:
+            # ── Regime soft penalties (17.05.2026, аудит 650 сделок post-v4) ────
+            # Не hard block — рынок цикличен, текущие данные из медвежьей фазы.
+            # Штраф к strength снижает шанс прохода min_strength в TradeRouter.
+            if _regime == "TREND_UP":
+                # avgR=-0.523 WR=12% за 9/9 недель — сильный штраф
+                _regime_str_penalty = 25
+                logger.debug("[PivotReversal] %s LONG+TREND_UP soft_penalty=%d", symbol, _regime_str_penalty)
+            elif _regime == "RANGE" and current_price <= level_price:
+                # RANGE без rejection: avgR=-0.272 vs -0.044 с rejection
+                _regime_str_penalty = 15
+                logger.debug("[PivotReversal] %s LONG+RANGE no_rejection soft_penalty=%d", symbol, _regime_str_penalty)
             wt_ok   = cross_up and zone_15m in ['OS', 'N']
             trend_ok = (trend_15m == 1)
+
+            # Swing SL (primary) — не дальше 5% ниже уровня, иначе fallback
+            if _swing_sl_long is not None and _swing_sl_long >= level_price * 0.95:
+                _sl_long  = _swing_sl_long
+                _sl_src_l = f'swing_low:{_swing_sl_long:.6g}'
+            else:
+                _sl_long  = _sl_long_pivot
+                _sl_src_l = f'pivot_{level_name}:0.3%'
 
             if wt_ok and trend_ok:
                 target_levels = ['PP', 'R1', 'R2', 'R3'] if 'S' in level_name else ['R1', 'R2', 'R3']
@@ -204,14 +297,22 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 has_confluence = any(c['weekly_level'] == level_name for c in confluence)
                 return True, _build_result(
                     'PIVOT_LEVEL_LONG', 'вверх', 'UP', 'вверх',
-                    _sl_long_pivot, tp_levels, has_confluence,
-                    sl_source_str=f'pivot_{level_name}:0.3%'
+                    _sl_long, tp_levels, has_confluence,
+                    sl_source_str=_sl_src_l
                 )
 
         # === SHORT: у сопротивления ===
         elif level_type in ['resistance', 'pivot']:
             wt_ok   = cross_down and zone_15m in ['OB', 'N']
             trend_ok = (trend_15m == -1)
+
+            # Swing SL (primary) — не дальше 5% выше уровня, иначе fallback
+            if _swing_sl_short is not None and _swing_sl_short <= level_price * 1.05:
+                _sl_short  = _swing_sl_short
+                _sl_src_s  = f'swing_high:{_swing_sl_short:.6g}'
+            else:
+                _sl_short  = _sl_short_pivot
+                _sl_src_s  = f'pivot_{level_name}:0.3%'
 
             if wt_ok and trend_ok:
                 target_levels = ['PP', 'S1', 'S2', 'S3'] if 'R' in level_name else ['S1', 'S2', 'S3']
@@ -225,8 +326,8 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 has_confluence = any(c['weekly_level'] == level_name for c in confluence)
                 return True, _build_result(
                     'PIVOT_LEVEL_SHORT', 'вниз', 'DOWN', 'вниз',
-                    _sl_short_pivot, tp_levels, has_confluence,
-                    sl_source_str=f'pivot_{level_name}:0.3%'
+                    _sl_short, tp_levels, has_confluence,
+                    sl_source_str=_sl_src_s
                 )
 
         return False, None

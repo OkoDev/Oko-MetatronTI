@@ -35,11 +35,14 @@ class MarketStressGate(Gate):
         try:
             db_path = ctx.bot.trade_simulator.db_path
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_min)
-            cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+            # ISO 'T' separator — SQLite datetime() нормализует оба формата.
+            # Bug fix DEV-215: strftime("%Y-%m-%d %H:%M:%S") давал пробел вместо 'T',
+            # SQLite string compare 'T'(84) > ' '(32) → все ISO closed_at всегда >= cutoff.
+            cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
             with sqlite3.connect(db_path) as conn:
                 row = conn.execute(
                     "SELECT COUNT(*) FROM simulated_trades "
-                    "WHERE status='SL' AND closed_at>=?",
+                    "WHERE status='SL' AND datetime(closed_at)>=datetime(?)",
                     (cutoff_str,),
                 ).fetchone()
             sl_count = int(row[0] if row else 0)

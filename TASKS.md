@@ -41,25 +41,25 @@
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
 | **🚀 СПРИНТ «CONFIRMATION-DRIVEN ARCHITECTURE» (09.05–23.05.2026)** — на основе R6/R7/R8: ATR Trend change cascade подтверждён, ЗАКОН confluence | | | |
-| [DEV-199](#dev-199) | 🔴 | **ATR Trend Change events:** publisher для `atr_change_15m/1h/4h` в EventBus. НЕ публиковать `atr_change_1d` (R8: avgR=−0.4). Acceptance: за 24h после рестарта в БД появляются события всех 3 ТФ | DEV |
+| [DEV-199](#dev-199) | ✅ | **ATR Trend Change events (17.05 закрыт):** `core/signals/atr_change_detector.py` + EventBus publisher `atr_change_15m/1h/4h` в `scan_loop.py`. Подключён в bot.py. НЕ публикует `atr_change_1d` | DEV |
 | [DEV-200](#dev-200) | 🔴 | **ConfirmationRegistry:** `core/confirmations/registry.py` — каталог 12 базовых confirmation типов с весами. Datadclass `Confirmation(source, weight, confidence, evidence, ts)`. Acceptance: каждый детектор публикует Confirmation events | DEV |
 | [DEV-201](#dev-201) | 🔴 | **SignalAggregator v2:** `strength = Σ weight × confidence` по window=N мин. Заменить хардкод формулу `base + senior_bonus + cross_bonus`. Acceptance: новые сделки имеют разнообразный signal_mode | DEV |
 | [DEV-202](#dev-202) | 🟡 | **features_json: confirmations[]:** гранулярная запись всех подтверждений (не плоские поля). Для будущего ML обучения весов. Acceptance: 100% новых сделок имеют поле `confirmations` (list[dict]) | DEV |
-| [DEV-203](#dev-203) | 🟡 | **DecisionTrace в gates** (Phase 0 Stabilization, параллельно): таблица `signal_drops` + дашборд топ-10 reasons. Закрывает 96% molчaliвых потерь | DEV |
+| [DEV-203](#dev-203) | ✅ | **DecisionTrace в gates (17.05 закрыт):** `core/observability/decision_trace.py` + таблица `signal_drops` (23515 записей) + `/api/dropped` дашборд. Top drop: dedup 64%, below_min_strength 17%, validate_inputs 1%. Работает. | DEV |
 | [DEV-204](#dev-204) | 🟢 | **ML Outcome retrain weights:** после 200+ сделок → переобучение confirmation весов через RandomForest feature importance. Триггер: `signal_drops` стабилен 7 дней + 200+ trades с confirmations[] | DEV |
 | [DEV-205](#dev-205) | 🟢 | **Phase 0→2 расширение:** audit_mode shadow + audit_trades + alerts на коллапс данных + ML skipped-rows visibility (из исходного Stabilization Sprint Phase 1+2) | DEV |
-| [DEV-209](#dev-209) | 🟡 | **ATR 15m + OTE zone trigger (вариант Б+В).** Закрыть архитектурную дыру: ATR change 15m видится ботом (params 43/1.25 = TradingView OKO Suite), но не конвертируется в сделки. Реализовать: (1) расширить `_execute_atr_change_signal` на 15m с условием `smc_snap.price_in_ote=True` для LONG и DOWN+in_OTE для SHORT (SMC snapshot уже считается); (2) per-source window в `ConfirmationAggregator`: 1800с для `atr_change_15m`, 600с для остальных (сейчас единое 600с гасит trigger быстрее чем приходит wt_sideways/confluence); (3) confirmation `ote_zone` (w=7) добавлять автоматом при ATR cross внутри OTE — синергия. Файлы: `scan_loop.py`, `signal_aggregator.py`. Acceptance: ≥20 сделок trigger=atr_change_15m с ote_zone confirmation за 7 дней, avgR ≥ +0.10. Контекст: STRK SHORT сетап 11.05 — цена в OTE 4h + ATR 15m DOWN, но dedup+отсутствие механизма блокировали сделку | DEV |
-| [TR-003](#tr-003) | 🟡 | TRADER валидация Confirmation Registry: ручной разбор 20 SHADOW-сделок по новой v2 логике. Подтвердить веса confirmations | TRADER |
-| [ARCH-112](#arch-112) | 🟢 | Архитектурный аудит после DEV-200..202: проверка соответствия Кубу Метатрана (каждое подтверждение = ребро между сферой-источником и центральной шиной) | ARCH |
+| [DEV-209](#dev-209) | ✅ | **ATR 15m + OTE zone trigger (17.05 закрыт):** `scan_loop.py:1370-1446` OTE zone trigger с `price_in_ote` + auto confirmation `ote_zone` (w=7) + per-source window 1800с для 15m. Acceptance: ≥20 сделок за 7 дней | DEV |
+| [TR-003](#tr-003) | 🟡 | TRADER валидация Confirmation Registry: ручной разбор ≥30 composite сделок с confirmations[] по v2 логике. Сейчас n=12 (13.05–14.05) — ждём накопления. Предварительно: signal_type=composite (не atr_change), sl_source=atr_trendline_buf (DEV нужен фикс SL-выбора) | TRADER |
+| [ARCH-112](#arch-112) | ✅ | Архитектурный аудит 11.05: 25 confirmations соответствуют Кубу, 6/13 сфер активны, 3 edge cases задокументированы, 3 GAP (S5/S6/S9) → бэклог ARCH-112-EXT | ARCH |
 | **🚀 СПРИНТ «РЕАЛЬНЫЕ УБИЙЦЫ» (25.04–02.05.2026)** — после D1+RE-AUDIT: фикс не D1-багов, а реальных источников −780R/10дн | | | |
 | [DEV-191-TSL](#dev-191-tsl) | ✅ | **HOTFIX apply_floor:** SHORT floor = current_price*(1+0.3%) вместо entry*(1+0.3%). Корень TSL-заморозки: все SHORT в профите держали SL у entry±0.3%. 42/42 тестов ✅. Рестарт нужен | DEV |
-| [DEV-184](#dev-184) | 🔴 | **Отключить DUAL_TSL strategy_type** (config флаг). Эффект: −290R/10дн. Acceptance: DUAL_TSL не появляется 24ч, SINGLE+DUAL_TP остаются | DEV |
-| [DEV-185](#dev-185) | 🔄 | **Catastrophic slippage:** ✅ Расследовано (DISCUSSION.md). ✅ Шаг 1: `sl_limit_buffer_pct: 0.0→1.0` (−113R). ⏳ 48ч наблюдения → решение по 2.0 + watchdog | DEV/ARCH |
+| [DEV-184](#dev-184) | ✅ | **DUAL_TSL отключён (17.05):** `config.yaml` `trend_strategy_type: DUAL_TP` (было DUAL_TSL). Эффект: −290R/10дн устранён | DEV |
+| [DEV-185](#dev-185) | ✅ | **Catastrophic slippage (17.05 закрыт):** ✅ `sl_limit_buffer_pct: 1.0` (−113R) ✅ watchdog `position_sync.py:_emergency_close_check` ✅ volume whitelist `min_volume_usd: 5M`. Все 3 шага выполнены | DEV/ARCH |
 | DEV-185.2 | ✅ | **Emergency watchdog реализован** (27.04). [position_sync.py:_emergency_close_check](core/exchange/position_sync.py). Триггер: overshoot за SL >0.5% от entry, dwell 5 мин → market close. Подхватится при рестарте | DEV |
 | DEV-185.3 | ✅ | **Volume whitelist** `signal_quality.min_volume_usd: 5000000` (04.05). 13 catast (DOLO/CLO/GIGGLE/VELODROME) — low liquidity. Применено | DEV |
 | DEV-193 | ✅ | **sl_min в reversal_strategy.py** (04.05): SL зажат в [0.5%, 3.0%]. До: 116 сделок SL<0.5%, VELODROME R=-7.03→-0.49. Тесты 15/15 OK | DEV |
-| [DEV-186](#dev-186) | 🟡 | **wt_signal regime gate:** SHORT block в TREND_UP/HIGH_VOL. 22 сделки avgR=−1.12 в TREND_UP. Эффект: −24R/10дн | DEV |
-| [DEV-187](#dev-187) | 🟡 | **wt_b жёсткий floor для порогов:** wt1_1h<−30 (LONG) / >+30 (SHORT) поверх adaptive p10/p90. Сейчас 7 SHORT в N зоне avgR=−2.44. Эффект: −17R/10дн | DEV |
+| [DEV-186](#dev-186) | ✅ | **wt_signal regime gate (17.05 закрыт):** `monitoring.py:951` `dev186_wt_signal_regime_gate: True`, SHORT блокируется в TREND_UP/HIGH_VOL. Эффект: −24R/10дн устранён | DEV |
+| [DEV-187](#dev-187) | ✅ | **wt_b жёсткий floor (17.05 закрыт):** `config.yaml` `os_floor: -30.0`, `ob_floor: 30.0` применены. Эффект: −17R/10дн устранён | DEV |
 | [DEV-188](#dev-188) | 🟡 | **pivot_reversal SHORT TREND_DOWN:** проверка реального касания (wick через уровень) + объёма. 93 сделки avgR=−0.77. Эффект: −72R/10дн | DEV |
 | [DEV-189](#dev-189) | ✅ | **B3 фикс (12.05):** `_sl_changed` отделён от `_needs_exchange_update`. UPDATE stop_loss теперь ВСЕГДА при движении ≥0.15%, биржевой cancel+replace — только при exchange_order_id. До фикса SIM avgR=-0.63 vs exchange +0.67 (Δ240R за сутки) | DEV |
 | [DEV-190](#dev-190) | ✅ | **effective_status helper готов** (27.04). Интегрирован в 8 модулей: performance_engine, circuit_breaker, outcome_predictor, mtf_wt/smc_specialist, auto_calibrator, confidence_calibrator, dashboard. Подхватится при рестарте | DEV |
@@ -69,7 +69,7 @@
 | **🚀 СПРИНТ «ЗАМЫКАНИЕ РАЗРЫВОВ» (19.04–26.04.2026)** — ✅ ARCH-88/89/90/91, DEV-172-FIX закрыты (→ TASKS-ARCHIVE) | | | |
 | [ARCH-92](#arch-92) | 🟢 | Анализ WR/avgR по Entry Priority (P1/P2/P3) на 200+ закрытых сделках (~22.04). Решение: P3→WATCH или оставить shadow | ARCH |
 | [ARCH-93](#arch-93) | 🟢 | Research: Future pivots touch→reaction на истории (20 пар, переходные часы day/week). Решение: добавлять feature или нет | ARCH/DEV |
-| [ARCH-94](#arch-94) | 🔴 | Полный аудит TP-lifecycle: биржа vs БД рассинхрон, exchange_tp_order_id, TSL-отмена TP, position_sync верификация | ARCH/DEV |
+| [ARCH-94](#arch-94) | 🟡 | **Аудит lifecycle ордеров (14.05):** ✅ open_bracket в atr_change_signal (scan_loop.py:878) ✅ DecisionTrace логирование SIM причин (DEV-203). ❌ Orphan-детектор (OPEN в БД без позиции на бирже → алерт) — не реализован | ARCH/DEV |
 | [ARCH-95](#arch-95) | 🔴 | Глобальное расследование: почему торгуем в минус. 6 read-only аудит-скриптов (H1 entry timing/SL близко, H2 SL distance vs исход, H3 pivot S/R×direction, H4 куб snapshots, H5 detector→entry slippage, H6 MTF alignment, H7 EMA per-strategy) | ARCH/DEV |
 | **🆕 СИСТЕМНЫЕ СФЕРЫ КУБА (Claude consult 25.04 — параллельно с фиксами Слоя D ARCH-95)** | | | |
 | [ARCH-96](#arch-96) | 🧊 | Execution Sphere (Сфера 14): IdempotencyGuard + SlippagePredictor + OrderTypeSelector + ExecutionTracker. Закрывает SL-дубликаты архитектурно, режет slippage. КРИТИЧНО перед LIVE — **FROZEN до Phase 4** | ARCH/DEV |
@@ -94,8 +94,8 @@
 | [DEV-144](#dev-144) | 🟡 | Полный редизайн дашборда: Live Control + Analytics + Settings | DEV |
 | [DEV-144f](#dev-144f) | 🟢 | P6: Единый CSS — тёмная тема, виджет-карточки, responsive grid | DEV |
 | **СТРАТЕГИЯ / СИГНАЛЫ** | | | |
-| [ARCH-84](#arch-84) | 🔄 | MTF gate shadow активен (18.04) — ждём 2 дня данных WOULD_BLOCK до активации | ARCH/DEV |
-| [DEV-172](#dev-172) | 🟢 | Entry Priority Matrix shadow: P1/P2/P3 пишется в features_json (200+ сделок → анализ) | DEV |
+| [ARCH-84](#arch-84) | ✅ | MTF gate shadow → production (16.05): `verdict_gate.enabled: true` в config.yaml. EXHAUSTION gate блокирует OB_bias+LONG (WR=6.2%). Данные WOULD_BLOCK собраны | ARCH/DEV |
+| [DEV-172](#dev-172) | ✅ | **Entry Priority Matrix (17.05 закрыт):** `core/intelligence/entry_matrix.py` + `evaluate_entry_priority()` в `trade_simulator.py:870-881`, пишет `entry_priority` P1/P2/P3 в features_json | DEV |
 | [DEV-111act](#dev-111act) | ⏸ | BTC 4h gate production: отложен — риск блокировки alt-pumps при BTC боковике | DEV |
 | [DEV-88](#dev-88) | 🟡 | OTE Step2: C1 (4h+CHoCH) Sharpe=2.68 ✅, WR=41.7%. Нужна расширенная выборка | DEV |
 | [DEV-89](#dev-89) | 🟢 | OTE C1 shadow: 20 пар / 90 дней. Критерий: WR≥40% ∧ Sharpe≥1.5 ∧ n≥150 | DEV |
@@ -110,7 +110,14 @@
 | **КУБ МЕТАТРОНА** | | | |
 | [ARCH-77](#arch-77) | ⏸ | Миникуб WTMTF: ЗАМОРОЖЕН до Sharpe>1 в проде (множитель к убытку бесполезен) | ARCH/DEV |
 | [ARCH-79](#arch-79) | 🔵 | S10→S11: PostTradeAnalyser → NarrativeBuilder feedback (narrative_outcome в PairCtx) | DEV |
-| [ARCH-55-VAL](#arch-55-val) | 🔄 | RANGE BOUNCE валидация: shadow перезапущен 16.04 (фикс: pivot_reversal теперь использует range_bounce SL/TP). Новый дедлайн: 23.04 | ARCH/DEV |
+| [ARCH-55-VAL](#arch-55-val) | ✅ | RANGE BOUNCE валидация завершена (16.05): `range_bounce: enabled: true` в config.yaml, sl_source=range_bounce активен. Закрыто в DISCUSSION.md 27.04 | ARCH/DEV |
+| **🆕 PIVOT RESEARCH ACTIONS (17.05.2026)** — на основе командного исследования 650 сделок post-v4 | | | |
+| [DEV-210](#dev-210) | ✅ | **Pivot regime gates + FVG+pivot confluence (17.05):** TREND_UP LONG soft_penalty=-25 ✅, RANGE+no_rejection soft_penalty=-15 ✅, FVG+pivot confluence shadow в features_json ✅. Acceptance: через 7 дней avgR pivot_reversal улучшается | DEV |
+| [DEV-213](#dev-213) | ✅ | **wt_sideways отключён (17.05):** `sideways_mode.enabled: false` в config.yaml. Причина: -131R/24ч, 50% убыточного флоу. Возврат при изменении данных | DEV |
+| [DEV-214](#dev-214) | ✅ | **Swing SL для pivot_reversal (17.05):** swing_low/high primary SL (avgR=+0.846 n=41), fallback на pivot±0.3% если swing >5% от уровня или не найден | DEV |
+| [DEV-215](#dev-215) | ✅ | **datetime timezone bug (17.05):** `closed_at` в БД хранится как ISO `T`-format, cutoff как `%Y-%m-%d %H:%M:%S` (пробел). SQLite string compare: `T`(84) > `' '`(32) → все ISO timestamps всегда >= cutoff → market_stress/sl_cooldown всегда срабатывали. Фикс: `datetime(closed_at)>=datetime(?)` + `'%Y-%m-%dT%H:%M:%S'`. 3 файла: `gates/market_stress.py`, `gates/sl_cooldown.py`, `bot/monitoring.py` | DEV |
+| [DEV-211](#dev-211) | 🟡 | **MTFPivotAnalyzer deprecation + upgrade:** старый класс в mtf_pivot_integration.py использует `45m` (нестандартный TF) + старые импорты. Пометить deprecated; pivot confluence работает через PivotCalculatorFixed.find_confluences() | ARCH/DEV |
+| [DEV-212](#dev-212) | 🟢 | **pivot_confluence_2plus activation:** registry имеет вес=6 но никто не генерирует. После 50+ fvg_pivot_zones записей — подключить как ConfirmationRegistry confirmation | DEV |
 | **АРХИТЕКТУРА** | | | |
 | [ARCH-87](#arch-87) | 🔵 | Fibonacci контекст в PairState: swing H/L + 0.618/0.705/0.79 в features_json для ML. Триггер: 50+ OTE сделок | ARCH/DEV |
 | [ARCH-85](#arch-85) | 🟡 | Формализация статусов стратегий (ACTIVE/SHADOW/DEPRECATED/REMOVED) + deprecated confluence/multi_signal (урок 2 AUDIT_LESSONS) — после спринта | ARCH |

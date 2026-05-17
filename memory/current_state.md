@@ -4,6 +4,98 @@
 
 ---
 
+## [17.05.2026 вечер] Агент: Developer — wt_sideways off + swing SL + Куб статус
+
+### ✅ Сделано
+
+**DEV-213: wt_sideways отключён**
+- `config.yaml` строка 129: `sideways_mode.enabled: false`
+- Причина: -131R/24ч, 50% убыточного сигнал-флоу (решение команды + пользователя)
+- Возврат: включить обратно если данные изменятся (бычий цикл)
+
+**DEV-214: Swing SL реализован в pivot_reversal.py**
+- `core/pivots/pivot_reversal.py`: swing_low (LONG) / swing_high (SHORT) как primary SL
+- Алгоритм: wing=4, lookback=30 свечей 15m, берём min(lows_below_price) / max(highs_above_price)
+- Fallback → pivot±0.3% если swing не найден или >5% от уровня
+- sl_source: `swing_low:X.XXX` / `swing_high:X.XXX` / `pivot_LEVEL:0.3%`
+- Данные: avgR(swing_high)=+0.846 n=41 — значительно лучше atr_14
+
+**DEV-210: уточнение** — реализовано как SOFT PENALTY (не hard block):
+- TREND_UP LONG: `_regime_str_penalty = 25` (strength -= 25)
+- RANGE no_rejection: `_regime_str_penalty = 15` (strength -= 15)
+- Философия: рынок цикличен, hard block рискует пропустить бычий разворот
+
+**Куб Метатрона — текущий статус:**
+- 11/12 сфер активны (согласно ENCYCLOPEDIA от 11.04.2026)
+- Единственная в shadow: Сфера 4 (MTF SMC Specialist) — ждёт 200+ SMC сделок для ML
+- Решение: оставить как концепцию, не упрощать до Event-driven
+
+**DEV-215: datetime timezone bug (критический) — исправлен**
+- Root cause: `closed_at` в `simulated_trades` хранится как ISO `2026-05-17T01:03:24+00:00`
+- `market_stress.py` и `sl_cooldown.py` использовали `strftime("%Y-%m-%d %H:%M:%S")` — пробел вместо 'T'
+- SQLite string compare: 'T'(84) > ' '(32) → все ISO timestamps ВСЕГДА >= любого naive cutoff
+- Следствие: market_stress ВСЕГДА давал penalty=12 (15-12=3, 18-12=6) + sl_cooldown ВСЕГДА блокировал
+- Фикс: `datetime(closed_at)>=datetime(?)` + cutoff в формате `%Y-%m-%dT%H:%M:%S`
+- 3 файла: `core/trading/gates/market_stress.py`, `core/trading/gates/sl_cooldown.py`, `bot/monitoring.py`
+- Эффект: 269 ложных дропов `below_min_strength` + 208 ложных `sl_cooldown` дропов исчезнут
+
+### ⚠️ Незакоммичено (36+ файлов)
+- `core/pivots/pivot_reversal.py` — DEV-210 + DEV-214
+- `config.yaml` — wt_sideways off + другие изменения сессии
+- `TASKS.md`, `memory/current_state.md`, `DISCUSSION.md`
+- `core/trading/trade_router.py` — pre-registration strength check
+- `core/trading/gates/market_stress.py` — DEV-215 datetime fix
+- `core/trading/gates/sl_cooldown.py` — DEV-215 datetime fix
+- `bot/monitoring.py` — DEV-215 datetime fix
+
+### 🔄 Следующие задачи
+1. **Закоммитить всё** — DEV-210/213/214/215 + TradeRouter + gate fixes
+2. **Рестарт бота** — DEV-215 требует рестарта для применения фикса
+3. **Наблюдение 7 дней** → avgR pivot_reversal должен улучшиться; sl_cooldown корректно работает
+4. **DEV-212** — pivot_confluence_2plus после 50+ fvg_pivot_zones записей
+5. **DEV-211** — MTFPivotAnalyzer deprecated
+
+---
+
+## [16.05.2026 ~12:53 UTC] Агент: Developer — TradeRouter Phase 1 завершена
+
+### ✅ Сделано
+
+**TradeRouter Этапы 1.А–1.Г — полностью реализованы и подтверждены данными:**
+
+- Единый узел маршрутизации для всех 8 точек входа сигналов
+- `source_router` записывается в БД у всех сделок (поле корректное)
+- 303 сделки за 15 минут после рестарта 12:38:58 — все через router
+
+**Распределение по source_router (первые 15 мин):**
+```
+wt_sideways      151 (50%) — 28 open, 123 закрыты быстро
+atr_change       116 (38%) — 49 open
+wt_signal         19 (6%)  — 1 open
+wl_breach         13 (4%)  — 3 open
+other_strategy     2 (<1%) — pivot_reversal
+pivot_reversal     1 (<1%)
+trend_signal       1 (<1%) — 1 open
+```
+
+**Drops (всё корректно):**
+- dedup: 8 (старый monitoring dedup, до router — норма)
+- sl_cooldown: 8 (HARD gate в router — корректно)
+- dedup_open: 1 (HARD gate в router — корректно)
+
+**Скорость:** ~1200 сделок/час — норма для активного рынка.
+
+### 🔄 Pending
+
+- **Этап 1.Е** — cleanup дублей gates в `trade_simulator.py` — ТОЛЬКО после 48ч стабильности (не ранее 16.05.2026 ~12:39 + 48ч = 18.05.2026 ~12:39)
+- **Данные через 24-48ч** → первые avgR по source_router → решение что включать на VST, что отключать
+
+### ⚠️ Проблемы
+
+Нет новых проблем. Бот стабилен.
+
+---
+
 ## [14.05.2026 ~12:00 UTC] Агент: Developer — Бэктесты A1+B + 2 фикса
 
 ### ✅ Сделано

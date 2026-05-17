@@ -625,22 +625,49 @@ async def check_future_pivot_alerts(bot):
     await asyncio.gather(*[_one(sym) for sym in bot.monitored_pairs])
 
 
-def _is_in_sl_cooldown(bot, symbol: str) -> bool:
-    """Возвращает True если по этой паре было SL-закрытие в течение sl_cooldown_hours."""
+def _is_in_sl_cooldown(bot, symbol: str, signal_type: str = "") -> bool:
+    """Возвращает True если по этой паре было SL-закрытие в течение sl_cooldown_hours.
+
+    Per-signal_type cooldown (16.05.2026): если в config задана матрица
+    `signal_quality.sl_cooldown_ignore_sources: {<signal_type>: [<exclude source signal_types>]}`,
+    то для signal_type из матрицы SL от excluded источников НЕ считается за cooldown.
+
+    Пример: `anomaly: [wt_sideways]` — anomaly игнорирует SL-серии от wt_sideways.
+
+    Backward-compat: signal_type="" → старое поведение (любой SL блокирует).
+    """
     hours = bot.config.get("signal_quality.sl_cooldown_hours", 4)
     if hours <= 0:
         return False
+
+    # Per-signal_type матрица исключений
+    excluded_sources: list = []
+    if signal_type:
+        ignore_map = bot.config.get("signal_quality.sl_cooldown_ignore_sources") or {}
+        excluded_sources = list(ignore_map.get(signal_type, []) or [])
+
     try:
         db_path = bot.trade_simulator.db_path
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        # DEV-215: datetime() нормализует ISO 'T' и naive форматы для правильного сравнения.
+        cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
         with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM simulated_trades WHERE symbol=? AND status='SL' AND closed_at>=? LIMIT 1",
-                (symbol, cutoff_str),
-            ).fetchone()
+            if excluded_sources:
+                placeholders = ",".join("?" * len(excluded_sources))
+                query = (
+                    "SELECT 1 FROM simulated_trades "
+                    f"WHERE symbol=? AND status='SL' AND datetime(closed_at)>=datetime(?) "
+                    f"AND signal_type NOT IN ({placeholders}) LIMIT 1"
+                )
+                row = conn.execute(query, (symbol, cutoff_str, *excluded_sources)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM simulated_trades WHERE symbol=? AND status='SL' AND datetime(closed_at)>=datetime(?) LIMIT 1",
+                    (symbol, cutoff_str),
+                ).fetchone()
         if row:
-            logger.debug("[%s] Cooldown после SL — сигнал пропущен (%dh)", symbol, hours)
+            logger.debug("[%s] Cooldown после SL — сигнал %s пропущен (%dh, excl=%s)",
+                         symbol, signal_type or "?", hours, excluded_sources)
             return True
     except Exception as e:
         logger.debug("sl_cooldown check error для %s: %s", symbol, e)
@@ -762,11 +789,11 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             signal_type=signal_type, direction=direction,
         ))
         return
-    if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol):
-        # DEV-203: gate — sl_cooldown
+    if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol, signal_type):
+        # DEV-203: gate — sl_cooldown (per-signal_type с 16.05.2026 — учитывает sl_cooldown_ignore_sources)
         asyncio.create_task(decision_trace.record_drop(
             symbol=symbol, gate_name="sl_cooldown",
-            drop_reason=f"sl_cooldown active for {symbol}",
+            drop_reason=f"sl_cooldown active for {symbol} ({signal_type})",
             signal_type=signal_type, direction=direction,
         ))
         return
