@@ -1655,6 +1655,17 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         except Exception as _e_ta:
             logger.debug("[DEV-151] Groq signal comment error: %s", _e_ta)
 
+    # ── Хэштеги для навигации по истории TG (вариант B) ─────────────────────
+    _ht_sym = symbol.replace("-", "").replace("/", "").replace(":", "").upper()
+    _ht_dir = ""
+    if recommendation is not None:
+        _ht_dir = getattr(recommendation.direction, "value", "")
+    if not _ht_dir:
+        _ht_dir = direction.upper() if direction else ""
+    _ht_sig = signal_type.replace(".", "_").upper()
+    _hashtags = f"#{_ht_sym} #{_ht_dir} #{_ht_sig}" if _ht_dir else f"#{_ht_sym} #{_ht_sig}"
+    text = text.rstrip() + f"\n\n{_hashtags}"
+
     # ── PNG-график (если send_chart: true в config) ───────────────────────────
     png_bytes = None
     if bot.config.get("signals.send_chart", False):
@@ -1796,6 +1807,65 @@ async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
             logger.debug("[DEV-222] Ошибка сохранения tg_messages: %s", _e)
 
 
+async def send_tsl_activated_alert(
+    bot,
+    trade_id: int,
+    symbol: str,
+    direction: str,
+    current_r: float | None,
+    tsl_tf: str,
+) -> None:
+    """DEV-223: Пуш в TG когда TSL впервые активировался для сделки."""
+    try:
+        db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(db_path, timeout=10) as _conn:
+            rows = _conn.execute(
+                "SELECT user_id, message_id FROM tg_messages WHERE trade_id=?", (trade_id,)
+            ).fetchall()
+
+        sym_short = symbol.split("/")[0]
+        dir_arrow = "↑ LONG" if direction == "LONG" else "↓ SHORT"
+        r_str = f"+{current_r:.2f}R" if current_r else "?"
+
+        text = (
+            f"🔒 <b>TSL активирован</b> · <b>{sym_short}</b> {dir_arrow}\n"
+            f"Прибыль зафиксирована от {r_str} · TSL следит на {tsl_tf}\n"
+            f"<i>Позиция защищена — SL двигается за ценой</i>"
+        )
+
+        if rows:
+            # Отвечаем reply на сообщение об открытии
+            for user_id, message_id in rows:
+                try:
+                    async with _TG_BROADCAST_SEM:
+                        await bot.bot.send_message(
+                            chat_id=user_id,
+                            text=text,
+                            reply_to_message_id=message_id,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
+                except Exception as _eu:
+                    logger.debug("[DEV-223] TSL alert reply error user=%d: %s", user_id, _eu)
+        else:
+            # Нет message_id (atr_change или старая сделка) — просто broadcast
+            uids = list(getattr(bot, "subscribers", []))
+            for uid in uids:
+                try:
+                    async with _TG_BROADCAST_SEM:
+                        await bot.bot.send_message(
+                            chat_id=uid, text=text, parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
+                except Exception as _eu:
+                    logger.debug("[DEV-223] TSL alert error user=%d: %s", uid, _eu)
+
+        logger.info("[DEV-223] TSL алерт отправлен trade_id=%d %s R=%s tf=%s", trade_id, sym_short, r_str, tsl_tf)
+    except Exception as _e:
+        logger.debug("[DEV-223] send_tsl_activated_alert error: %s", _e)
+
+
 async def send_trade_close_reply(
     bot,
     trade_id: int,
@@ -1838,7 +1908,12 @@ async def send_trade_close_reply(
         elif status == "TP":
             lines.append("✅ Цель достигнута")
 
-        text = "\n".join(lines)
+        # Хэштег закрытия для навигации
+        _close_tag = {"TSL": "#TSL_CLOSED", "TP": "#TP_CLOSED", "SL": "#SL_CLOSED", "EXPIRED": "#EXPIRED"}.get(status, "")
+        _ht_sym = symbol.replace("-", "").replace("/", "").replace(":", "").upper()
+        _ht_dir = direction.upper() if direction else ""
+        _close_hashtags = f"#{_ht_sym} #{_ht_dir} {_close_tag}".strip() if _ht_dir else f"#{_ht_sym} {_close_tag}".strip()
+        text = "\n".join(lines) + f"\n\n{_close_hashtags}"
 
         # Шлём reply каждому подписчику
         for user_id, message_id in rows:
@@ -1903,3 +1978,89 @@ async def send_weekly_report(bot) -> None:
         logger.info("Еженедельный отчёт отправлен (%d сделок)", stats["total"])
     except Exception:
         logger.exception("Ошибка отправки еженедельного отчёта")
+
+
+# ---------------------------------------------------------------------------
+# DEV-224 — Утренний дайджест 07:00 UTC
+# ---------------------------------------------------------------------------
+
+async def send_morning_digest(bot) -> None:
+    """Отправляет дайджест за прошедшую ночь: закрытые сделки + открытые позиции."""
+    import sqlite3 as _sqlite3
+    from datetime import datetime, timezone, timedelta
+
+    db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=8)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with _sqlite3.connect(db_path, timeout=10) as _conn:
+            _conn.row_factory = _sqlite3.Row
+            # Закрытые за последние 8 часов
+            closed = _conn.execute(
+                "SELECT symbol, direction, signal_type, status, R_multiple, tsl_activated "
+                "FROM simulated_trades WHERE status != 'OPEN' AND closed_at >= ? "
+                "ORDER BY closed_at ASC",
+                (cutoff_str,),
+            ).fetchall()
+            # Открытые сейчас
+            open_trades = _conn.execute(
+                "SELECT id, symbol, direction, signal_type, entry_price, stop_loss, tsl_activated, created_at "
+                "FROM simulated_trades WHERE status='OPEN' ORDER BY id DESC LIMIT 10",
+            ).fetchall()
+    except Exception:
+        logger.exception("[DEV-224] morning_digest DB error")
+        return
+
+    lines = [f"🌅 <b>Утренний дайджест</b> · {now_utc.strftime('%d.%m %H:%M')} UTC"]
+
+    # ── Закрытые сделки за ночь ──
+    if closed:
+        total_r = sum(r["R_multiple"] or 0 for r in closed)
+        wins = sum(1 for r in closed if (r["R_multiple"] or 0) > 0)
+        losses = len(closed) - wins
+        tp_cnt  = sum(1 for r in closed if r["status"] == "TP")
+        tsl_cnt = sum(1 for r in closed if r["status"] == "TSL")
+        sl_cnt  = sum(1 for r in closed if r["status"] == "SL")
+        exp_cnt = sum(1 for r in closed if r["status"] == "EXPIRED")
+
+        _r_emoji = "🟢" if total_r >= 0 else "🔴"
+        lines.append(f"\n<b>Ночь (8ч):</b> {len(closed)} сделок · {_r_emoji} <b>{total_r:+.2f}R</b>")
+        _parts = []
+        if tp_cnt:  _parts.append(f"TP×{tp_cnt}")
+        if tsl_cnt: _parts.append(f"TSL×{tsl_cnt}")
+        if sl_cnt:  _parts.append(f"SL×{sl_cnt}")
+        if exp_cnt: _parts.append(f"EXP×{exp_cnt}")
+        lines.append(f"W/L: {wins}/{losses} · " + " · ".join(_parts))
+
+        # Топ-3 по |R|
+        top3 = sorted(closed, key=lambda r: abs(r["R_multiple"] or 0), reverse=True)[:3]
+        for t in top3:
+            _sym = t["symbol"].replace("-USDT", "").replace("/USDT", "")
+            _dir = "↑" if t["direction"] == "LONG" else "↓"
+            _r   = t["R_multiple"] or 0
+            _re  = "🟢" if _r > 0 else "🔴"
+            _tsl = " 🔒" if t["tsl_activated"] else ""
+            lines.append(f"  {_re} {_sym}{_dir} {_r:+.2f}R [{t['status']}]{_tsl}")
+    else:
+        lines.append("\n<i>Ночью сделок не закрывалось</i>")
+
+    # ── Открытые позиции ──
+    if open_trades:
+        lines.append(f"\n<b>Открыто сейчас:</b> {len(open_trades)}")
+        # Показываем до 5 с TSL-статусом
+        for t in open_trades[:5]:
+            _sym = t["symbol"].replace("-USDT", "").replace("/USDT", "")
+            _dir = "↑" if t["direction"] == "LONG" else "↓"
+            _tsl = " 🔒TSL" if t["tsl_activated"] else ""
+            lines.append(f"  #{t['id']} {_sym}{_dir}{_tsl}")
+        if len(open_trades) > 5:
+            lines.append(f"  … ещё {len(open_trades) - 5} · /позиции")
+    else:
+        lines.append("\n<i>Открытых позиций нет</i>")
+
+    text = "\n".join(lines)
+    await broadcast_with_subscription_check(bot, text, "morning_digest")
+    logger.info("[DEV-224] Утренний дайджест отправлен: %d закрытых, %d открытых",
+                len(closed), len(open_trades))

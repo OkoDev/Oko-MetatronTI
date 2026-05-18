@@ -103,6 +103,8 @@ class TradeSimulator:
         self._sse_trade_closed = None
         # DEV-222: TG reply callback — async(trade_id, status, symbol, direction, r_multiple, tsl_activated, max_r_possible)
         self._tg_close_callback = None
+        # DEV-223: TG алерт при активации TSL — async(trade_id, symbol, direction, current_r, tsl_tf)
+        self._tg_tsl_alert_callback = None
         # DEV-89: общий PivotCalculatorFixed — создаётся один раз, не на каждую сделку
         self._pivot_calc: object = None
         # DEV-148: защита от concurrent close одной сделки (database is locked cascade)
@@ -121,6 +123,10 @@ class TradeSimulator:
     def set_tg_close_callback(self, cb) -> None:
         """DEV-222: TG reply при закрытии — async(trade_id, status, symbol, direction, r_multiple, tsl_activated, max_r_possible)."""
         self._tg_close_callback = cb
+
+    def set_tg_tsl_alert_callback(self, cb) -> None:
+        """DEV-223: TG алерт при первой активации TSL — async(trade_id, symbol, direction, current_r, tsl_tf)."""
+        self._tg_tsl_alert_callback = cb
 
     def _db_connect(self, timeout: int = 30):
         """DEV-148: единое место для настройки соединения — WAL + busy_timeout на каждом connect."""
@@ -1774,15 +1780,31 @@ class TradeSimulator:
                     pass
             if use_tsl and _tsl_gate:
                 # Активируем TSL после достижения прибыли — помечаем в БД
+                _tsl_just_activated = False
                 try:
                     with self._db_connect() as _c:
-                        _c.execute(
+                        _cur = _c.execute(
                             "UPDATE simulated_trades SET tsl_activated=1 WHERE id=? AND tsl_activated=0",
                             (trade_id,),
                         )
                         _c.commit()
+                        _tsl_just_activated = _cur.rowcount > 0
                 except Exception:
                     pass
+
+                # DEV-223: TG алерт при первой активации TSL
+                if _tsl_just_activated and self._tg_tsl_alert_callback:
+                    try:
+                        import asyncio as _aio_tsl
+                        _aio_tsl.create_task(self._tg_tsl_alert_callback(
+                            trade_id=trade_id,
+                            symbol=symbol,
+                            direction=direction,
+                            current_r=current_r,
+                            tsl_tf=tf,
+                        ))
+                    except Exception as _etsl:
+                        logger.debug("[DEV-223] tg_tsl_alert error: %s", _etsl)
 
                 try:
                     from core.indicators.indicators import calculate_trend, get_trend_info

@@ -237,3 +237,23 @@ async def weekly_report_loop(bot) -> None:
         except Exception as e:
             logger.exception("weekly_report_loop: %s", e)
             await asyncio.sleep(3600)
+
+
+async def morning_digest_loop(bot) -> None:
+    """DEV-224: Отправляет утренний дайджест каждый день в 07:00 UTC."""
+    from bot.monitoring import send_morning_digest
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            target = now.replace(hour=7, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            sleep_sec = (target - now).total_seconds()
+            logger.info("[DEV-224] Утренний дайджест через %.0f мин", sleep_sec / 60)
+            await asyncio.sleep(sleep_sec)
+            await send_morning_digest(bot)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.exception("morning_digest_loop: %s", e)
+            await asyncio.sleep(3600)

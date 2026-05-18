@@ -263,6 +263,73 @@ def get_router(bot) -> Router:
 
         await message.answer("\n".join(lines), reply_markup=main_menu())
 
+    # DEV-223: /позиции — открытые сделки с текущим P&L
+    @router.message(Command("позиции", "positions", "pos"))
+    async def cmd_positions(message: Message):
+        try:
+            import sqlite3 as _sq
+            db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+            with _sq.connect(db_path, timeout=10) as _conn:
+                rows = _conn.execute(
+                    "SELECT id, symbol, direction, signal_type, entry_price, stop_loss, "
+                    "take_profit, tsl_activated, tsl_tf, original_sl, created_at "
+                    "FROM simulated_trades WHERE status='OPEN' ORDER BY created_at DESC LIMIT 20"
+                ).fetchall()
+        except Exception as _e:
+            await message.answer(f"⚠️ Ошибка чтения БД: {_e}")
+            return
+
+        if not rows:
+            await message.answer("📭 <b>Нет открытых сделок</b>", parse_mode="HTML")
+            return
+
+        lines = [f"📊 <b>Открытые сделки ({len(rows)})</b>\n"]
+        ws = getattr(bot, "ws_feed", None)
+
+        for row in rows:
+            tid, sym, direction, sig_type, entry, sl, tp, tsl_act, tsl_tf, orig_sl, created_at = row
+            entry = float(entry or 0)
+            sl_orig = float(orig_sl or sl or 0)
+            one_r = abs(entry - sl_orig) if sl_orig and sl_orig != entry else None
+
+            # Текущая цена — сначала WsFeed, потом None
+            cur = None
+            if ws is not None:
+                cur = ws.get_price(sym)
+
+            # R-multiple от текущей цены
+            r_str = "—"
+            r_emoji = "⚪"
+            if cur and one_r and one_r > 0:
+                r = (cur - entry) / one_r if direction == "LONG" else (entry - cur) / one_r
+                r_str = f"{r:+.2f}R"
+                r_emoji = "🟢" if r > 0 else ("🔴" if r < -0.5 else "🟡")
+
+            # Время в позиции
+            age_str = ""
+            try:
+                from datetime import timezone
+                _dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                _ago = datetime.now(timezone.utc) - _dt
+                _h = int(_ago.total_seconds() // 3600)
+                _m = int((_ago.total_seconds() % 3600) // 60)
+                age_str = f"{_h}ч {_m}м" if _h else f"{_m}м"
+            except Exception:
+                pass
+
+            dir_arrow = "↑" if direction == "LONG" else "↓"
+            tsl_badge = f" 🔒TSL({tsl_tf or '15m'})" if tsl_act else ""
+            sym_short = sym.split("/")[0]
+            cur_str = f" | цена {cur:.5g}" if cur else ""
+
+            lines.append(
+                f"{r_emoji} <b>#{tid} {sym_short}</b> {dir_arrow} {sig_type}\n"
+                f"   вход {entry:.5g}{cur_str} | {r_str}{tsl_badge}\n"
+                f"   ⏱ {age_str}"
+            )
+
+        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
+
     # Универсальный обработчик кнопок меню — должен быть последним в роутере
     @router.message(F.text)
     async def handle_any_button(message: Message, state: FSMContext):

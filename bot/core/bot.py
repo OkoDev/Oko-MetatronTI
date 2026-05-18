@@ -73,10 +73,15 @@ class TradingAlertBot:
         self.trade_simulator.set_post_trade_callback(self.post_analyser.on_trade_closed)
         # DEV-222: TG reply при закрытии сделки
         from bot.monitoring import send_trade_close_reply as _tg_reply
+        from bot.monitoring import send_tsl_activated_alert as _tg_tsl_alert
         _bot_ref = self
         async def _tg_close_cb(**kwargs):
             await _tg_reply(_bot_ref, **kwargs)
+        async def _tg_tsl_cb(**kwargs):
+            await _tg_tsl_alert(_bot_ref, **kwargs)
         self.trade_simulator.set_tg_close_callback(_tg_close_cb)
+        # DEV-223: TG алерт при активации TSL
+        self.trade_simulator.set_tg_tsl_alert_callback(_tg_tsl_cb)
         # Куб: Сфера 10 (Exit Manager) → PairContextBus
         self.trade_simulator._pair_context_bus = self.pair_context
 
@@ -353,7 +358,7 @@ class TradingAlertBot:
                     logger.warning("[Bot] reconcile error (не критично): %s", _re)
 
             from bot.monitoring import trade_tracker_loop
-            from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop, circuit_breaker_loop
+            from bot.loops.ml_loop import ml_training_loop, weekly_report_loop, wr_health_check_loop, auto_review_loop, circuit_breaker_loop, morning_digest_loop
             from bot.loops.trigger_loop import run_trigger_loop
             from bot.loops.health_loop import health_check_loop
             from bot.loops.obsidian_loop import obsidian_daily_loop
@@ -384,6 +389,7 @@ class TradingAlertBot:
             asyncio.create_task(circuit_breaker_loop(self))   # DEV-156: Circuit Breaker
             asyncio.create_task(obsidian_daily_loop(self))   # Obsidian pipeline: 00:05 UTC
             asyncio.create_task(watchlist_loop(self))         # Watch List: каждые 4ч
+            asyncio.create_task(morning_digest_loop(self))   # DEV-224: Утренний дайджест 07:00 UTC
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())
