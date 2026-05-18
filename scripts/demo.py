@@ -198,7 +198,7 @@ async def main():
     print("   • .claude/CLAUDE.md — техническая документация")
     print()
     print("🚀 ГОТОВЫ К ИСПОЛЬЗОВАНИЮ:")
-    print("   • python bot_with_subscriptions.py — запуск бота")
+    print("   • python oko_mtf.py — запуск бота")
     print("   • python run_all_tests.py — комплексное тестирование")
     print("   • http://localhost:8000 — веб-дашборд")
     print()

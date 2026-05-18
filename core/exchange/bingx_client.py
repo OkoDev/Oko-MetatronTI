@@ -77,9 +77,9 @@ class BingXClient:
         self._secret  = secret
         self._base    = base_url.rstrip("/")
         # DEV-145: time_offset корректирует расхождение local clock с BingX (ms)
-        # Синхронизируется один раз при первом запросе через sync_time()
         self._time_offset_ms: int = 0
         self._time_synced: bool = False
+        self._time_synced_at: float = 0.0  # монотонное время последней синхронизации
         # Кэш precision контрактов: bx_symbol → {"qty": int, "price": int, "min_qty": float}
         # Загружается один раз через _load_contracts() при первом quantize_qty().
         self._contracts_cache: dict[str, dict] = {}
@@ -87,30 +87,33 @@ class BingXClient:
 
     async def sync_time(self) -> int:
         """
-        DEV-145: Получает время BingX-сервера и вычисляет offset.
-        Вызывать один раз при старте клиента (make_client).
+        DEV-145: Получает время BingX-сервера и вычисляет offset с учётом RTT.
+        offset = local_mid - server, где local_mid = (t_before + t_after) / 2.
         Возвращает offset в миллисекундах (local - server).
         """
         import aiohttp
         try:
             url = f"{self._base}/openApi/swap/v2/server/time"
+            t_before = int(time.time() * 1000)
             async with aiohttp.ClientSession() as s:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
                     data = await r.json()
+            t_after = int(time.time() * 1000)
             server_ts = (
                 data.get("data", {}).get("serverTime")
                 or data.get("serverTime")
             )
             if server_ts:
-                local_ts = int(time.time() * 1000)
-                self._time_offset_ms = local_ts - int(server_ts)
+                local_mid = (t_before + t_after) // 2
+                self._time_offset_ms = local_mid - int(server_ts)
                 self._time_synced = True
+                self._time_synced_at = time.monotonic()
                 logger.info(
-                    "[BingXClient] time sync: local=%d server=%d offset=%+dms",
-                    local_ts, int(server_ts), self._time_offset_ms,
+                    "[BingXClient] time sync: local_mid=%d server=%d offset=%+dms rtt=%dms",
+                    local_mid, int(server_ts), self._time_offset_ms, t_after - t_before,
                 )
         except Exception as e:
-            logger.warning("[BingXClient] sync_time failed: %s — offset=0", e)
+            logger.warning("[BingXClient] sync_time failed: %s — offset без изменений", e)
         return self._time_offset_ms
 
     async def _load_contracts(self) -> None:

@@ -8,7 +8,7 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 # 🚀 START — Быстрый контекст сессии
 
 **Проект:** Oko MTF TG Bot — Telegram-бот технического анализа крипторынка (BingX, 15m таймфрейм)
-**Запуск:** `python bot_with_subscriptions.py` | **Дашборд:** `http://localhost:8000`
+**Запуск:** `python oko_mtf.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
 
 ## 🧊 Stabilization Sprint (04.05–25.05.2026)
@@ -31,7 +31,23 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 
 ---
 
-## 📌 Текущий статус (29.04.2026)
+## 📌 Текущий статус (18.05.2026)
+
+**Последние изменения (сессия 18.05 ~00:00):**
+- ✅ Аналитика TAIKO/USDT: action=WATCH → watchlist (не потеря), пивоты через PivotCalculatorFixed
+- ✅ DISCUSSION.md: блок WPP-магнит + конфлюенции TAIKO записан
+- 🔄 Три действия роя ждут 24ч наблюдения (pivot_cache fix был 17.05)
+- 🔄 Этап 1.Е TradeRouter — не ранее 18.05 ~12:39 UTC (48ч стабильности)
+- ⚠️ 36+ файлов незакоммичено — нужны коммиты
+
+**Приоритеты следующей сессии:**
+1. Проверить логи 24ч → реализовать 3 действия роя (pivot_reversal off, atr_change LONG off, confluence boost)
+2. Этап 1.Е TradeRouter (cleanup дублей в trade_simulator.py)
+3. Коммиты (6 групп)
+
+---
+
+## 📌 Архивный статус (29.04.2026)
 
 **Последние изменения (сессия 18.04):**
 - ✅ DEV-178 — Data integrity: 6835 сделок размечены `data_era`, ML фильтр применён (backfill при рестарте)

@@ -114,6 +114,10 @@
       <div class="nav-item" data-page="analytics" onclick="showPage('analytics')">
         <span class="icon">&#x1F4C8;</span> Аналитика
       </div>
+      <div class="nav-item" data-page="drops" onclick="showPage('drops')">
+        <span class="icon">&#x1F6AB;</span> Drops
+        <span class="nav-badge" id="navDropsCount">—</span>
+      </div>
     </nav>
     <div class="sidebar-footer">
       <div class="nav-label" style="padding:10px 14px 5px">Инструменты</div>
@@ -447,15 +451,277 @@ async function load() {
     const eq = await r4.json();
     const an = await r5.json();
     const swh = await r6.json();
-    render(d, cf, be, eq, an, swh);
-    document.getElementById('updated').textContent =
-      'Обновлено: ' + new Date().toLocaleTimeString('ru');
-    updateModeBadge();
-    loadLive();
-    loadExchangeHistory(7);
+    applyDashboardPayload({
+      stats: d,
+      confluence: cf,
+      breakeven: be,
+      equity: eq,
+      analytics: an,
+      signal_weights: swh
+    }, 'REST');
   } catch(e) {
     document.getElementById('updated').textContent = 'Ошибка загрузки: ' + e.message;
   }
+}
+
+function selectedExchangeHistoryDays() {
+  const el = document.getElementById('exchHistDays');
+  return parseInt((el && el.value) || '7', 10);
+}
+
+let _lastLiveRefreshAt = 0;
+let _lastExchangeHistoryRefreshAt = 0;
+const LIVE_REFRESH_MS = 10000;
+const EXCHANGE_HISTORY_REFRESH_MS = 30000;
+
+function captureExternalPanels() {
+  const posSection = document.getElementById('exchangePosSection');
+  const posBody = document.getElementById('exchangePosBody');
+  const posCount = document.getElementById('exchangePosCount');
+  const histSection = document.getElementById('exchangeHistSection');
+  const histBody = document.getElementById('exchHistBody');
+  const histSummary = document.getElementById('exchHistSummary');
+  const g = id => document.getElementById(id);
+  return {
+    posDisplay: posSection ? posSection.style.display : null,
+    posBody: posBody ? posBody.innerHTML : null,
+    posCount: posCount ? posCount.textContent : null,
+    histDisplay: histSection ? histSection.style.display : null,
+    histBody: histBody ? histBody.innerHTML : null,
+    histSummary: histSummary ? histSummary.innerHTML : null,
+    fStatus:  g('fStatus')  ? g('fStatus').value  : null,
+    fDir:     g('fDir')     ? g('fDir').value     : null,
+    fSig:     g('fSig')     ? g('fSig').value     : null,
+    fRegime:  g('fRegime')  ? g('fRegime').value  : null,
+    fTf:      g('fTf')      ? g('fTf').value      : null,
+    fTrigger: g('fTrigger') ? g('fTrigger').value : null,
+    closedPage: _closedPage || 1,
+  };
+}
+
+function restoreExternalPanels(state) {
+  if (!state) return;
+  const posSection = document.getElementById('exchangePosSection');
+  const posBody = document.getElementById('exchangePosBody');
+  const posCount = document.getElementById('exchangePosCount');
+  const histSection = document.getElementById('exchangeHistSection');
+  const histBody = document.getElementById('exchHistBody');
+  const histSummary = document.getElementById('exchHistSummary');
+  if (posSection && state.posDisplay !== null) posSection.style.display = state.posDisplay;
+  if (posBody && state.posBody !== null) posBody.innerHTML = state.posBody;
+  if (posCount && state.posCount !== null) posCount.textContent = state.posCount;
+  if (histSection && state.histDisplay !== null) histSection.style.display = state.histDisplay;
+  if (histBody && state.histBody !== null) histBody.innerHTML = state.histBody;
+  const sv = (id, val) => { if (val === null) return; const el = document.getElementById(id); if (el) el.value = val; };
+  sv('fStatus',  state.fStatus);
+  sv('fDir',     state.fDir);
+  sv('fSig',     state.fSig);
+  sv('fRegime',  state.fRegime);
+  sv('fTf',      state.fTf);
+  sv('fTrigger', state.fTrigger);
+  if (state.closedPage) _closedPage = state.closedPage;
+  if (histSummary && state.histSummary !== null) histSummary.innerHTML = state.histSummary;
+}
+
+function refreshExternalPanelsIfDue(force) {
+  const now = Date.now();
+  if (force || now - _lastLiveRefreshAt > LIVE_REFRESH_MS) {
+    _lastLiveRefreshAt = now;
+    loadLive();
+  }
+  if (force || now - _lastExchangeHistoryRefreshAt > EXCHANGE_HISTORY_REFRESH_MS) {
+    _lastExchangeHistoryRefreshAt = now;
+    loadExchangeHistory(selectedExchangeHistoryDays());
+  }
+}
+
+// ── Флаг первого рендера — DOM создаётся один раз ─────────────────────────
+let _appBootstrapped = false;
+
+function applyDashboardPayload(payload, source) {
+  if (!payload || !payload.stats) return;
+  if (!_appBootstrapped) {
+    // Первый рендер: полная замена DOM (создаём скелет страниц)
+    _appBootstrapped = true;
+    const externalState = captureExternalPanels();
+    render(
+      payload.stats,
+      payload.confluence,
+      payload.breakeven,
+      payload.equity,
+      payload.analytics,
+      payload.signal_weights
+    );
+    restoreExternalPanels(externalState);
+  } else {
+    // Последующие обновления: патчим только данные, не трогаем DOM страниц
+    patchData(payload);
+  }
+  document.getElementById('updated').textContent =
+    (source || 'SSE') + ': ' + new Date().toLocaleTimeString('ru');
+  updateModeBadge();
+  refreshExternalPanelsIfDue(false);
+}
+
+// ── Точечное обновление данных без пересоздания DOM ───────────────────────
+// Обновляет только изменяемые секции: Сводка, Открытые, Аналитика.
+// Страницы История и Drops НЕ трогаются при SSE (у них собственный цикл загрузки).
+function patchData(payload) {
+  const d   = payload.stats;
+  const cf  = payload.confluence;
+  const be  = payload.breakeven;
+  const eq  = payload.equity;
+  const an  = payload.analytics;
+  const swh = payload.signal_weights;
+
+  if (!d) return;
+
+  // ── Обновляем метаданные риска (используются в карточках) ───────────────
+  _riskMeta = {
+    risk_exposure_pct:  d.risk_exposure_pct  ?? null,
+    risk_exposure_usdt: d.risk_exposure_usdt ?? null,
+    deposit_usdt:       d.deposit_usdt       ?? null,
+    open_pnl_r:         d.open_pnl_r         ?? null,
+  };
+
+  // ── Страница Сводка: обновляем внутренний контейнер ─────────────────────
+  const summaryContent = document.getElementById('page-summary-content');
+  if (summaryContent) {
+    const _pDep  = document.getElementById('projDeposit')?.value;
+    const _pRisk = document.getElementById('projRisk')?.value;
+    const _pMode = document.getElementById('projMode')?.value;
+    const _pHeroHtml = document.getElementById('heroBalance')?.innerHTML;
+    const _pAtrHtml  = document.getElementById('atrChangeCards')?.innerHTML;
+    summaryContent.innerHTML = buildSummaryContent(d, eq);
+    const sv2 = (id, val) => { if (!val) return; const el = document.getElementById(id); if (el) el.value = val; };
+    sv2('projDeposit', _pDep); sv2('projRisk', _pRisk); sv2('projMode', _pMode);
+    if (_pHeroHtml) { const el = document.getElementById('heroBalance'); if (el) el.innerHTML = _pHeroHtml; }
+    if (_pAtrHtml)  { const el = document.getElementById('atrChangeCards'); if (el) el.innerHTML = _pAtrHtml; }
+    setTimeout(() => {
+      if (window.updateProj) window.updateProj();
+      if (window.updateEquity) window.updateEquity();
+    }, 0);
+  }
+
+  // ── Страница Открытые: обновляем только tbody (уже работает) ────────────
+  const openTbl = document.getElementById('openTblBody');
+  if (openTbl && d.open_trades) {
+    _openRows = d.open_trades;
+    openTbl.innerHTML = renderOpenRows(d.open_trades);
+  }
+  // Счётчик открытых в sidebar
+  const oc = document.getElementById('navOpenCount');
+  if (oc) oc.textContent = (d.open_trades || []).length;
+
+  // ── Страница Аналитика: обновляем внутренний контейнер ──────────────────
+  const analyticsContent = document.getElementById('page-analytics-content');
+  if (analyticsContent) {
+    analyticsContent.innerHTML = buildAnalyticsContent(d, cf, be, an, swh);
+  }
+
+  // ── Топбар: BTC 4h badge + Exchange Health ───────────────────────────────
+  _patchTopbarBadges(d);
+}
+
+// ── Обновление badge-ей в topbar (вынесено из render) ─────────────────────
+function _patchTopbarBadges(d) {
+  const b4h = document.getElementById('btc4hBadge');
+  if (b4h) {
+    const r4h = d.btc_4h_regime;
+    if (r4h) {
+      const c4h = {TREND_UP:'#2ea043',TREND_DOWN:'#f85149',RANGE:'#d29922',HIGH_VOL:'#a371f7'}[r4h]||'#8b949e';
+      const lbl = {TREND_UP:'BTC 4h ↑',TREND_DOWN:'BTC 4h ↓',RANGE:'BTC 4h ⇄',HIGH_VOL:'BTC 4h ⚡'}[r4h]||('BTC 4h '+r4h);
+      b4h.textContent = lbl;
+      b4h.style.color = c4h;
+      b4h.style.borderColor = c4h+'44';
+      b4h.style.background = c4h+'18';
+      b4h.style.display = '';
+    } else {
+      b4h.style.display = 'none';
+    }
+  }
+  const ehBadge = document.getElementById('exchangeHealthBadge');
+  if (ehBadge) {
+    const eh = d.exchange_health || 'HEALTHY';
+    const lat = d.exchange_latency_ms != null ? d.exchange_latency_ms : null;
+    const latStr = lat != null ? ` ${lat}ms` : '';
+    const ehCfg = {
+      HEALTHY:  { bg: '#1a3a1f', color: '#3fb950', label: '● BingX' + latStr },
+      DEGRADED: { bg: '#3a2a1a', color: '#d29922', label: '⚠ BingX' + latStr },
+      DOWN:     { bg: '#3a1a1a', color: '#f85149', label: '✕ BingX DOWN' },
+    }[eh] || { bg: '#1a2a3a', color: '#8b949e', label: '? BingX' };
+    ehBadge.textContent  = ehCfg.label;
+    ehBadge.style.background   = ehCfg.bg;
+    ehBadge.style.color        = ehCfg.color;
+    ehBadge.style.borderColor  = ehCfg.color + '44';
+  }
+}
+
+let _dashboardEvents = null;
+let _dashboardFallbackTimer = null;
+let _dashboardWatchdogTimer = null;
+let _dashboardLastEventAt = 0;
+
+function stopDashboardFallback() {
+  if (_dashboardFallbackTimer) {
+    clearInterval(_dashboardFallbackTimer);
+    _dashboardFallbackTimer = null;
+  }
+}
+
+function startDashboardFallback() {
+  if (_dashboardFallbackTimer) return;
+  _dashboardFallbackTimer = setInterval(load, 5000);
+}
+
+function startDashboardWatchdog() {
+  if (_dashboardWatchdogTimer) clearInterval(_dashboardWatchdogTimer);
+  _dashboardLastEventAt = Date.now();
+  _dashboardWatchdogTimer = setInterval(() => {
+    if (Date.now() - _dashboardLastEventAt > 12000) {
+      startDashboardFallback();
+    }
+  }, 3000);
+}
+
+function startDashboardSse() {
+  if (_dashboardEvents) {
+    _dashboardEvents.close();
+    _dashboardEvents = null;
+  }
+  if (!window.EventSource) {
+    startDashboardFallback();
+    return;
+  }
+  const days = window._swhDays || 14;
+  const es = new EventSource('/api/events?dashboard=1&days=' + encodeURIComponent(days));
+  _dashboardEvents = es;
+  startDashboardWatchdog();
+  es.addEventListener('dashboard', e => {
+    try {
+      _dashboardLastEventAt = Date.now();
+      stopDashboardFallback();
+      applyDashboardPayload(JSON.parse(e.data), 'SSE');
+    } catch (err) {
+      document.getElementById('updated').textContent = 'SSE parse error: ' + err.message;
+    }
+  });
+  // ── SSE event: trade_closed — добавляем строку в начало таблицы истории ──
+  es.addEventListener('trade_closed', e => {
+    try {
+      const trade = JSON.parse(e.data);
+      prependClosedTrade(trade);
+    } catch (err) {
+      console.warn('trade_closed parse error:', err);
+    }
+  });
+  es.onopen = () => {
+    document.getElementById('updated').textContent = 'SSE connected...';
+  };
+  es.onerror = () => {
+    document.getElementById('updated').textContent = 'SSE reconnecting...';
+    startDashboardFallback();
+  };
 }
 
 function breakevenSection(be) {
@@ -825,6 +1091,7 @@ window.setSwhDays = function(d) {
   window._swhDays = d;
   localStorage.setItem('swhDays', String(d));
   load();
+  startDashboardSse();
 };
 
 function weightsTrajectorySection(swh) {
@@ -1023,7 +1290,8 @@ const PAGE_TITLES = {
   summary:   'Сводка',
   open:      'Открытые позиции',
   history:   'История сделок',
-  analytics: 'Аналитика'
+  analytics: 'Аналитика',
+  drops:     'Dropped Signals'
 };
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1035,7 +1303,9 @@ function showPage(name) {
   const title = document.getElementById('pageTitle');
   if (title) title.textContent = PAGE_TITLES[name] || name;
   localStorage.setItem('activePage', name);
-  if (name === 'history' && _closedTotal === 0) loadClosedPage(1);
+  if (name === 'history') { _closedInitialized = true; loadClosedPage(_closedPage || 1); }
+  if (name === 'drops') loadDropsPage();
+  if (name === 'summary') loadAtrCards();
 }
 
 // ── DEV-116: Session Heatmap ─────────────────────────────────────────────────
@@ -1184,29 +1454,19 @@ function mfeScatter(rows) {
   </svg>`;
 }
 
-function render(d, cf, be, eq, an, swh) {
-  // Обновляем Risk Exposure метаданные из API
-  _riskMeta = {
-    risk_exposure_pct:  d.risk_exposure_pct  ?? null,
-    risk_exposure_usdt: d.risk_exposure_usdt ?? null,
-    deposit_usdt:       d.deposit_usdt       ?? null,
-    open_pnl_r:         d.open_pnl_r         ?? null,
-  };
+// ── Строит HTML для секции Сводки (для первого render и patchData) ─────────
+// Включает: hero-grid, equity curve, KPI карточки, ATR Change секцию.
+function buildSummaryContent(d, eq) {
   const s = d.summary || {};
-
-  // --- EV и Profit Factor ---
   const wr = (s.win_rate ?? 0) / 100;
   const rWin  = s.avg_r_win  ?? 0;
-  const rLoss = s.avg_r_loss ?? 0;   // отрицательное число (напр. -0.80)
+  const rLoss = s.avg_r_loss ?? 0;
   const ev = wr * rWin + (1 - wr) * rLoss;
   const evRound = Math.round(ev * 100) / 100;
   const pfDenom = (1 - wr) * Math.abs(rLoss);
   const pf = pfDenom > 0 ? Math.round(wr * rWin / pfDenom * 100) / 100 : null;
+  const cpdAll = s.closed_per_day ?? 0;
 
-  // --- Прогноз депозита (с реинвестированием) ---
-  const cpdAll = s.closed_per_day ?? 0; // все сигналы бота (79+)
-
-  // Макс. ожидаемая серия проигрышей: log(N) / log(1/lossRate)
   function maxLoseStreak(n, wr) {
     const lossRate = 1 - wr;
     if (lossRate <= 0) return 0;
@@ -1216,13 +1476,19 @@ function render(d, cf, be, eq, an, swh) {
     return Math.round((1 - Math.pow(1 - riskPct / 100, streak)) * 1000) / 10;
   }
 
+  // Сохраняем для updateProj
+  window._ev = ev;
+  window._wr = wr;
+  window._cpdAll = cpdAll;
+  window.maxLoseStreak = maxLoseStreak;
+  window.maxDD = maxDD;
+
   const projRow = ev > 0 ? `
     <div class="card" style="min-width:380px;flex:2;border-color:#3fb95044" id="projCard">
       <div class="label" style="font-size:.85rem;color:#c9d1d9;font-weight:600">
         &#x1F4B0; Калькулятор роста депозита (compound)
         <span style="color:#555;font-size:.7rem"> EV = ${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R/сделку</span>
       </div>
-
       <div style="display:flex;gap:10px;align-items:center;margin:8px 0 10px;flex-wrap:wrap">
         <div><div class="label">Депозит $</div>
           <input id="projDeposit" type="number" value="100" min="10" max="1000000"
@@ -1240,7 +1506,6 @@ function render(d, cf, be, eq, an, swh) {
             <option value="auto" ${cpdAll > 0 ? '' : 'disabled'}>Авторежим · все (${cpdAll}/день)</option>
           </select></div>
       </div>
-
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:4px">
         <div style="text-align:center">
           <div class="label">Рост за 30 дней</div>
@@ -1258,18 +1523,12 @@ function render(d, cf, be, eq, an, swh) {
           <div class="label">при серии SL</div>
         </div>
       </div>
-
       <div style="margin-top:10px;font-size:.75rem;color:#555;border-top:1px solid #21262d;padding-top:6px">
         ⚠️ Compound-прогноз на основе симуляции. WR 33% при 2370 сделок → до 19 SL подряд статистически.
         Авторежим берёт <b>все</b> сигналы бота — нужен малый риск (0.1-0.3%) чтобы выдержать просадку.
       </div>
     </div>` : '';
 
-  window._ev = ev;
-  window._wr = wr;
-  window._cpdAll = cpdAll;
-  window.maxLoseStreak = maxLoseStreak;
-  window.maxDD = maxDD;
   window.updateProj = function() {
     const dep  = parseFloat(document.getElementById('projDeposit')?.value || 100);
     const risk = parseFloat(document.getElementById('projRisk')?.value || 1);
@@ -1279,26 +1538,20 @@ function render(d, cf, be, eq, an, swh) {
     const tpdMap = { manual3: 3, manual5: 5, manual10: 10, auto: window._cpdAll || 10 };
     const tpd = tpdMap[mode] || 3;
     const n = tpd * 30;
-
     if (ev_ <= 0) {
       document.getElementById('projPct').textContent = '—';
       document.getElementById('projFin').textContent = '—';
       return;
     }
-
     const finalDep = dep * Math.pow(1 + (risk / 100) * ev_, n);
     const gain = finalDep - dep;
     const pct = Math.round(gain / dep * 1000) / 10;
     document.getElementById('projPct').textContent = (gain > 0 ? '+' : '') + pct + '%';
     document.getElementById('projFin').textContent = '$' + Math.round(finalDep);
-
-    // Просадка
     const streak = maxLoseStreak(n, wr_);
     const dd = maxDD(streak, risk);
     document.getElementById('projStreak').textContent = streak;
     document.getElementById('projDD').textContent = '-' + dd + '%';
-
-    // Цвет просадки
     const ddEl = document.getElementById('projDD');
     if (ddEl) ddEl.className = 'value ' + (dd > 30 ? 'red' : dd > 15 ? 'yellow' : 'green') + ' ';
     ddEl.style.fontSize = '1.6rem';
@@ -1306,65 +1559,141 @@ function render(d, cf, be, eq, an, swh) {
     if (pctEl) { pctEl.className = 'value green'; pctEl.style.fontSize = '1.6rem'; }
   };
 
-  const html = `
-    <!-- ═══ PAGE: СВОДКА ═══ -->
-    <div class="page" id="page-summary">
-      <!-- DEV-144d: Hero grid — 3 карточки вверху -->
-      <div class="hero-grid">
-        <!-- Карточка 1: BingX Equity (заполняется loadLive) -->
-        <div class="hero-card" id="heroBalance" style="border-color:#58a6ff33">
-          <div class="hc-label">BingX Equity</div>
-          <div class="hc-val blue" id="heroBalVal">—</div>
-          <div class="hc-sub" id="heroBalSub">загрузка…</div>
-        </div>
-        <!-- Карточка 2: Risk Exposure -->
-        <div class="hero-card" id="heroRisk">
-          <div class="hc-label">Risk Exposure</div>
-          <div class="hc-val" id="heroRiskVal" style="color:${(_riskMeta.risk_exposure_pct||0) > 10 ? '#f85149' : (_riskMeta.risk_exposure_pct||0) > 5 ? '#d29922' : '#3fb950'}">${_riskMeta.risk_exposure_pct != null ? _riskMeta.risk_exposure_pct.toFixed(1) + '%' : '—'}</div>
-          <div class="hc-sub">${_riskMeta.risk_exposure_usdt != null && _riskMeta.deposit_usdt != null ? '$' + _riskMeta.risk_exposure_usdt.toFixed(0) + ' из $' + _riskMeta.deposit_usdt.toFixed(0) : 'нет данных о депозите'}</div>
-          <div class="hc-bar"><div class="hc-bar-fill" id="heroRiskBar" style="width:${Math.min(_riskMeta.risk_exposure_pct||0, 100)}%;background:${(_riskMeta.risk_exposure_pct||0) > 10 ? '#f85149' : (_riskMeta.risk_exposure_pct||0) > 5 ? '#d29922' : '#3fb950'}"></div></div>
-        </div>
-        <!-- Карточка 3: Позиций / WR -->
-        <div class="hero-card">
-          <div class="hc-label">Позиций открыто / WR</div>
-          <div class="hc-val">${s.open_count ?? 0} <span style="font-size:1.1rem;color:#8b949e;font-weight:400">/ ${s.total ?? 0}</span></div>
-          <div class="hc-row">
-            <div class="hc-mini green">TP ${s.tp_count ?? 0}</div>
-            <div class="hc-mini purple">TSL ${s.tsl_count ?? 0}</div>
-            <div class="hc-mini red">SL ${s.sl_count ?? 0}</div>
-            <div class="hc-mini" style="margin-left:auto;font-size:.95rem;font-weight:700" class="${wr >= 0.5 ? 'green' : 'red'}">
-              <span style="color:${wr >= 0.5 ? '#3fb950' : '#f85149'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</span>
-              <span style="color:#8b949e;font-size:.7rem;font-weight:400"> WR</span>
-            </div>
+  return `
+    <!-- DEV-144d: Hero grid — 3 карточки вверху -->
+    <div class="hero-grid">
+      <!-- Карточка 1: BingX Equity (заполняется loadLive) -->
+      <div class="hero-card" id="heroBalance" style="border-color:#58a6ff33">
+        <div class="hc-label">BingX Equity</div>
+        <div class="hc-val blue" id="heroBalVal">—</div>
+        <div class="hc-sub" id="heroBalSub">загрузка…</div>
+      </div>
+      <!-- Карточка 2: Risk Exposure -->
+      <div class="hero-card" id="heroRisk">
+        <div class="hc-label">Risk Exposure</div>
+        <div class="hc-val" id="heroRiskVal" style="color:${(_riskMeta.risk_exposure_pct||0) > 10 ? '#f85149' : (_riskMeta.risk_exposure_pct||0) > 5 ? '#d29922' : '#3fb950'}">${_riskMeta.risk_exposure_pct != null ? _riskMeta.risk_exposure_pct.toFixed(1) + '%' : '—'}</div>
+        <div class="hc-sub">${_riskMeta.risk_exposure_usdt != null && _riskMeta.deposit_usdt != null ? '$' + _riskMeta.risk_exposure_usdt.toFixed(0) + ' из $' + _riskMeta.deposit_usdt.toFixed(0) : 'нет данных о депозите'}</div>
+        <div class="hc-bar"><div class="hc-bar-fill" id="heroRiskBar" style="width:${Math.min(_riskMeta.risk_exposure_pct||0, 100)}%;background:${(_riskMeta.risk_exposure_pct||0) > 10 ? '#f85149' : (_riskMeta.risk_exposure_pct||0) > 5 ? '#d29922' : '#3fb950'}"></div></div>
+      </div>
+      <!-- Карточка 3: Позиций / WR -->
+      <div class="hero-card">
+        <div class="hc-label">Позиций открыто / WR</div>
+        <div class="hc-val">${s.open_count ?? 0} <span style="font-size:1.1rem;color:#8b949e;font-weight:400">/ ${s.total ?? 0}</span></div>
+        <div class="hc-row">
+          <div class="hc-mini green">TP ${s.tp_count ?? 0}</div>
+          <div class="hc-mini purple">TSL ${s.tsl_count ?? 0}</div>
+          <div class="hc-mini red">SL ${s.sl_count ?? 0}</div>
+          <div class="hc-mini" style="margin-left:auto;font-size:.95rem;font-weight:700" class="${wr >= 0.5 ? 'green' : 'red'}">
+            <span style="color:${wr >= 0.5 ? '#3fb950' : '#f85149'}">${s.win_rate != null ? s.win_rate + '%' : '—'}</span>
+            <span style="color:#8b949e;font-size:.7rem;font-weight:400"> WR</span>
           </div>
         </div>
       </div>
-      <!-- Equity curve -->
-      ${renderEquitySection(eq, d.open_trades)}
-      <!-- KPI карточки -->
-      <section>
-        <h2>Метрики стратегии</h2>
-        <div class="cards">
-          <div class="card" style="border-color:${evRound > 0 ? '#3fb950' : '#f85149'}44">
-            <div class="label">EV / сделку <span style="color:#444;font-size:.7rem" title="Expected Value = WR×R_win + (1-WR)×R_loss">ожидаемый R</span></div>
-            <div class="value ${evRound > 0 ? 'green' : 'red'}">${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R</div>
-            <div class="label" style="margin-top:4px">${evRound > 0 ? '✅ Система прибыльна' : '❌ Система убыточна'}</div></div>
-          <div class="card"><div class="label">Profit Factor</div>
-            <div class="value ${pf >= 1.5 ? 'green' : pf >= 1 ? 'yellow' : 'red'}">${pf != null ? pf.toFixed(2) : '—'}</div>
-            <div class="label" style="margin-top:4px">${pf >= 1.5 ? '🔥 Отличный' : pf >= 1.2 ? '👍 Хороший' : pf >= 1 ? '⚡ Слабый' : '❌ < 1'}</div></div>
-          <div class="card"><div class="label">Avg R (Win / Loss)</div>
-            <div class="value" style="font-size:1.2rem">
-              <span class="green">+${fmt(rWin,2)}</span>
-              <span style="color:#444;font-weight:400"> / </span>
-              <span class="red">${fmt(rLoss,2)}</span>
-            </div>
-            <div class="label" style="margin-top:4px">Сделок/день: <span style="color:#c9d1d9">${cpdAll}</span> · ${s.days_active || 0} дней</div></div>
-          <div class="card"><div class="label">Open P&L</div>
-            <div class="value" style="color:${(_riskMeta.open_pnl_r||0) >= 0 ? '#3fb950' : '#f85149'}">${_riskMeta.open_pnl_r != null ? ((_riskMeta.open_pnl_r >= 0 ? '+' : '') + _riskMeta.open_pnl_r.toFixed(2) + 'R') : '—'}</div>
-            <div class="label" style="margin-top:4px">нереализованный R</div></div>
-          ${projRow}
-        </div>
+    </div>
+    <!-- Equity curve -->
+    ${renderEquitySection(eq, d.open_trades)}
+    <!-- KPI карточки -->
+    <section>
+      <h2>Метрики стратегии</h2>
+      <div class="cards">
+        <div class="card" style="border-color:${evRound > 0 ? '#3fb950' : '#f85149'}44">
+          <div class="label">EV / сделку <span style="color:#444;font-size:.7rem" title="Expected Value = WR×R_win + (1-WR)×R_loss">ожидаемый R</span></div>
+          <div class="value ${evRound > 0 ? 'green' : 'red'}">${evRound > 0 ? '+' : ''}${evRound.toFixed(2)}R</div>
+          <div class="label" style="margin-top:4px">${evRound > 0 ? '✅ Система прибыльна' : '❌ Система убыточна'}</div></div>
+        <div class="card"><div class="label">Profit Factor</div>
+          <div class="value ${pf >= 1.5 ? 'green' : pf >= 1 ? 'yellow' : 'red'}">${pf != null ? pf.toFixed(2) : '—'}</div>
+          <div class="label" style="margin-top:4px">${pf >= 1.5 ? '🔥 Отличный' : pf >= 1.2 ? '👍 Хороший' : pf >= 1 ? '⚡ Слабый' : '❌ < 1'}</div></div>
+        <div class="card"><div class="label">Avg R (Win / Loss)</div>
+          <div class="value" style="font-size:1.2rem">
+            <span class="green">+${fmt(rWin,2)}</span>
+            <span style="color:#444;font-weight:400"> / </span>
+            <span class="red">${fmt(rLoss,2)}</span>
+          </div>
+          <div class="label" style="margin-top:4px">Сделок/день: <span style="color:#c9d1d9">${cpdAll}</span> · ${s.days_active || 0} дней</div></div>
+        <div class="card"><div class="label">Open P&L</div>
+          <div class="value" style="color:${(_riskMeta.open_pnl_r||0) >= 0 ? '#3fb950' : '#f85149'}">${_riskMeta.open_pnl_r != null ? ((_riskMeta.open_pnl_r >= 0 ? '+' : '') + _riskMeta.open_pnl_r.toFixed(2) + 'R') : '—'}</div>
+          <div class="label" style="margin-top:4px">нереализованный R</div></div>
+        ${projRow}
+      </div>
+    </section>
+    <!-- DEV-207: ATR Change visualization -->
+    <section id="atrChangeSection">
+      <h2>ATR Change стратегия <span style="font-size:.75rem;color:#8b949e;font-weight:400">(R8 backtest: 1h_LONG +0.281R, 4h_SHORT +0.287R)</span></h2>
+      <div id="atrChangeCards" class="cards" style="grid-template-columns:repeat(3,1fr)">
+        <div class="card"><div class="label">⏳ Загрузка…</div></div>
+      </div>
+    </section>`;
+}
+
+// ── Строит HTML для секции Аналитики (для первого render и patchData) ──────
+function buildAnalyticsContent(d, cf, be, an, swh) {
+  return `
+    <!-- DEV-144e: Donut charts — распределение сигналов и режимов -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:4px">
+      <section style="margin-bottom:0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px">
+        <h2 style="border-bottom:none;padding-bottom:0;margin-bottom:10px">Распределение сигналов</h2>
+        ${signalDonut(d.by_signal_type)}
       </section>
+      <section style="margin-bottom:0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px">
+        <h2 style="border-bottom:none;padding-bottom:0;margin-bottom:10px">Режимы рынка</h2>
+        ${regimeDonut(d.by_regime)}
+      </section>
+    </div>
+    <section>
+      <h2>По конфигурации <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Strategy Pattern — confluence / conservative / mtf_bias)</span></h2>
+      ${tableByGroup(d.by_strategy, 'strategy_name')}
+    </section>
+    <section>
+      <h2>По типу сигнала <span style="font-size:.75rem;color:#8b949e;font-weight:400">(детектор — confluence / wt_signal / pivot_reversal / …)</span></h2>
+      ${tableByGroupExtended(d.by_signal_type_extended, 'signal_type')}
+    </section>
+    <section>
+      <h2>По направлению</h2>
+      ${tableByGroup(d.by_direction, 'direction')}
+    </section>
+    ${confluenceBreakdown(cf)}
+    ${breakevenSection(be)}
+    <section>
+      <h2>По режиму рынка</h2>
+      ${regimeSection(d.by_regime)}
+    </section>
+    <!-- ── DEV-116: аналитические графики ─────────────────────────── -->
+    <section>
+      <h2>По торговым сессиям <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Asia / London / NY)</span></h2>
+      ${sessionHeatmap(an && an.by_session)}
+    </section>
+    <section>
+      <h2>Распределение R-multiple <span style="font-size:.75rem;color:#8b949e;font-weight:400">(гистограмма закрытых сделок)</span></h2>
+      ${rDistributionChart(an && an.r_distribution)}
+    </section>
+    <section>
+      <h2>P&amp;L календарь <span style="font-size:.75rem;color:#8b949e;font-weight:400">(последние 35 дней)</span></h2>
+      ${pnlCalendar(an && an.pnl_calendar)}
+    </section>
+    <section>
+      <h2>MFE vs Exit R <span style="font-size:.75rem;color:#8b949e;font-weight:400">(потенциал vs фактический выход)</span></h2>
+      ${mfeScatter(an && an.mfe_scatter)}
+    </section>
+    ${weightsTrajectorySection(swh)}`;
+}
+
+function render(d, cf, be, eq, an, swh) {
+  // Обновляем Risk Exposure метаданные из API
+  _riskMeta = {
+    risk_exposure_pct:  d.risk_exposure_pct  ?? null,
+    risk_exposure_usdt: d.risk_exposure_usdt ?? null,
+    deposit_usdt:       d.deposit_usdt       ?? null,
+    open_pnl_r:         d.open_pnl_r         ?? null,
+  };
+  const s = d.summary || {};
+
+  // Создаём полный HTML-скелет всех страниц (только при первом вызове)
+  const html = `
+    <!-- ═══ PAGE: СВОДКА ═══ -->
+    <div class="page" id="page-summary">
+      <div id="page-summary-content">
+        ${buildSummaryContent(d, eq)}
+      </div>
     </div>
 
     <!-- ═══ PAGE: ОТКРЫТЫЕ ═══ -->
@@ -1395,99 +1724,33 @@ function render(d, cf, be, eq, an, swh) {
     <!-- ═══ PAGE: ИСТОРИЯ ═══ -->
     <div class="page" id="page-history">
       <section>
-        <h2>Закрытые сделки <span id="closedTotalHeader" style="color:#8b949e;font-size:.85em"></span></h2>
+        <h2>Закрытые сделки <span id="closedTotalHeader" style="color:#8b949e;font-size:.85em"></span>
+          <button onclick="_closedInitialized=true;loadClosedPage(_closedPage||1)"
+            style="margin-left:10px;background:#21262d;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:2px 10px;font-size:.8rem;cursor:pointer;vertical-align:middle"
+            title="Обновить историю">↻</button>
+        </h2>
         ${recentTable(d.recent_closed)}
       </section>
     </div>
 
     <!-- ═══ PAGE: АНАЛИТИКА ═══ -->
     <div class="page" id="page-analytics">
-      <!-- DEV-144e: Donut charts — распределение сигналов и режимов -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:4px">
-        <section style="margin-bottom:0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px">
-          <h2 style="border-bottom:none;padding-bottom:0;margin-bottom:10px">Распределение сигналов</h2>
-          ${signalDonut(d.by_signal_type)}
-        </section>
-        <section style="margin-bottom:0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px">
-          <h2 style="border-bottom:none;padding-bottom:0;margin-bottom:10px">Режимы рынка</h2>
-          ${regimeDonut(d.by_regime)}
-        </section>
+      <div id="page-analytics-content">
+        ${buildAnalyticsContent(d, cf, be, an, swh)}
       </div>
-      <section>
-        <h2>По конфигурации <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Strategy Pattern — confluence / conservative / mtf_bias)</span></h2>
-        ${tableByGroup(d.by_strategy, 'strategy_name')}
-      </section>
-      <section>
-        <h2>По типу сигнала <span style="font-size:.75rem;color:#8b949e;font-weight:400">(детектор — confluence / wt_signal / pivot_reversal / …)</span></h2>
-        ${tableByGroupExtended(d.by_signal_type_extended, 'signal_type')}
-      </section>
-      <section>
-        <h2>По направлению</h2>
-        ${tableByGroup(d.by_direction, 'direction')}
-      </section>
-      ${confluenceBreakdown(cf)}
-      ${breakevenSection(be)}
-      <section>
-        <h2>По режиму рынка</h2>
-        ${regimeSection(d.by_regime)}
-      </section>
+    </div>
 
-      <!-- ── DEV-116: аналитические графики ─────────────────────────── -->
-      <section>
-        <h2>По торговым сессиям <span style="font-size:.75rem;color:#8b949e;font-weight:400">(Asia / London / NY)</span></h2>
-        ${sessionHeatmap(an && an.by_session)}
-      </section>
-      <section>
-        <h2>Распределение R-multiple <span style="font-size:.75rem;color:#8b949e;font-weight:400">(гистограмма закрытых сделок)</span></h2>
-        ${rDistributionChart(an && an.r_distribution)}
-      </section>
-      <section>
-        <h2>P&amp;L календарь <span style="font-size:.75rem;color:#8b949e;font-weight:400">(последние 35 дней)</span></h2>
-        ${pnlCalendar(an && an.pnl_calendar)}
-      </section>
-      <section>
-        <h2>MFE vs Exit R <span style="font-size:.75rem;color:#8b949e;font-weight:400">(потенциал vs фактический выход)</span></h2>
-        ${mfeScatter(an && an.mfe_scatter)}
-      </section>
-      ${weightsTrajectorySection(swh)}
+    <!-- ═══ PAGE: DROPPED SIGNALS (DEV-207) ═══ -->
+    <div class="page" id="page-drops">
+      <div id="dropsContent"><p class="note">⏳ Загрузка drops…</p></div>
     </div>
   `;
   document.getElementById('app').innerHTML = html;
   // Обновить счётчик открытых в sidebar
   const oc = document.getElementById('navOpenCount');
   if (oc) oc.textContent = (d.open_trades||[]).length;
-  // BTC 4h badge
-  const b4h = document.getElementById('btc4hBadge');
-  if (b4h) {
-    const r4h = d.btc_4h_regime;
-    if (r4h) {
-      const c4h = {TREND_UP:'#2ea043',TREND_DOWN:'#f85149',RANGE:'#d29922',HIGH_VOL:'#a371f7'}[r4h]||'#8b949e';
-      const lbl = {TREND_UP:'BTC 4h ↑',TREND_DOWN:'BTC 4h ↓',RANGE:'BTC 4h ⇄',HIGH_VOL:'BTC 4h ⚡'}[r4h]||('BTC 4h '+r4h);
-      b4h.textContent = lbl;
-      b4h.style.color = c4h;
-      b4h.style.borderColor = c4h+'44';
-      b4h.style.background = c4h+'18';
-      b4h.style.display = '';
-    } else {
-      b4h.style.display = 'none';
-    }
-  }
-  // Exchange Health badge (DEV-103)
-  const ehBadge = document.getElementById('exchangeHealthBadge');
-  if (ehBadge) {
-    const eh = d.exchange_health || 'HEALTHY';
-    const lat = d.exchange_latency_ms != null ? d.exchange_latency_ms : null;
-    const latStr = lat != null ? ` ${lat}ms` : '';
-    const ehCfg = {
-      HEALTHY:  { bg: '#1a3a1f', color: '#3fb950', label: '● BingX' + latStr },
-      DEGRADED: { bg: '#3a2a1a', color: '#d29922', label: '⚠ BingX' + latStr },
-      DOWN:     { bg: '#3a1a1a', color: '#f85149', label: '✕ BingX DOWN' },
-    }[eh] || { bg: '#1a2a3a', color: '#8b949e', label: '? BingX' };
-    ehBadge.textContent  = ehCfg.label;
-    ehBadge.style.background   = ehCfg.bg;
-    ehBadge.style.color        = ehCfg.color;
-    ehBadge.style.borderColor  = ehCfg.color + '44';
-  }
+  // Обновить badges в topbar
+  _patchTopbarBadges(d);
   // Восстановить активную страницу
   showPage(localStorage.getItem('activePage') || 'summary');
   setTimeout(() => {
@@ -1759,6 +2022,29 @@ function cascadeBadge(level) {
   return `<span style="color:${c};font-size:.72rem;font-weight:700" title="TSL cascade level: ${level}">${lbl}</span>`;
 }
 
+function signalModeBadge(mode, confSources) {
+  const modeColors = {
+    'momentum':  ['#58a6ff', 'MOM'],
+    'reversal':  ['#2ea043', 'REV'],
+    'cascade':   ['#d29922', 'CAS'],
+    'unknown':   ['#555',    '—'],
+  };
+  const [mc, ml] = modeColors[mode] || ['#555', mode || '—'];
+  const sources = (confSources || []).filter(s => s);
+  const tip = sources.length
+    ? sources.map(s => s.replace('atr_change_','ATR-').replace('zone_os_','OS-').replace('zone_ob_','OB-')).join(' + ')
+    : (mode || '—');
+  const dots = sources.map(s => {
+    if (s.includes('atr_change_1h'))  return '<span style="color:#f8c400;font-size:.8rem" title="ATR 1h">●</span>';
+    if (s.includes('atr_change_4h'))  return '<span style="color:#2ea043;font-size:.8rem" title="ATR 4h">●</span>';
+    if (s.includes('atr_change_15m')) return '<span style="color:#58a6ff;font-size:.8rem" title="ATR 15m">●</span>';
+    if (s.includes('zone_os'))        return '<span style="color:#a371f7;font-size:.8rem" title="Zone OS">◆</span>';
+    if (s.includes('zone_ob'))        return '<span style="color:#f85149;font-size:.8rem" title="Zone OB">◆</span>';
+    return '<span style="color:#8b949e;font-size:.8rem">·</span>';
+  }).join('');
+  return `<span style="color:${mc};font-size:.7rem;font-weight:700" title="${tip}">${ml}</span> ${dots}`;
+}
+
 function renderOpenRows(rows) {
   return rows.map(r => {
     const pnl = r.unrealized_pct;
@@ -1778,6 +2064,7 @@ function renderOpenRows(rows) {
       <td>${symLink(r.symbol)}${tfLabel}</td>
       <td class="${r.direction==='LONG'?'green':'red'}">${r.direction}</td>
       <td>${r.signal_type||'—'}</td>
+      <td>${signalModeBadge(r.signal_mode, r.conf_sources)}</td>
       <td>${regimeBadge(r.regime)}</td>
       <td>${fmt(r.entry_price,4)}</td>
       <td>${curStr}</td>
@@ -1802,6 +2089,7 @@ function openTradesTable(rows) {
     <th>Символ</th>
     <th class="sortable" onclick="sortOpenBy('direction',this)">Dir</th>
     <th class="sortable" onclick="sortOpenBy('signal_type',this)">Сигнал</th>
+    <th title="signal_mode + confirmations (ATR/Zone)">Mode</th>
     <th class="sortable" onclick="sortOpenBy('regime',this)">Режим</th>
     <th>Вход</th><th>Сейчас</th>
     <th class="sortable" onclick="sortOpenBy('unrealized_pct',this)">P&L%</th>
@@ -1833,8 +2121,87 @@ async function closeTrade(id, btn) {
 let _recentRows = [];
 let _closedPage = 1;
 let _closedPerPage = 50;
+let _closedInitialized = false;
 let _closedTotal = 0;
 let _closedTotalPages = 1;
+
+// ── Вставка новой закрытой сделки в начало таблицы (SSE trade_closed) ─────
+// Работает без перезагрузки: добавляет строку в начало tbody и обновляет счётчик.
+function prependClosedTrade(trade) {
+  // Обновляем внутренний счётчик
+  _closedTotal++;
+  const hdr = document.getElementById('closedTotalHeader');
+  if (hdr) hdr.textContent = `(всего ${_closedTotal})`;
+
+  // Добавляем в массив данных (для фильтров и сортировки)
+  _recentRows.unshift(trade);
+  // Держим массив в разумных пределах (не дублируем из пагинации)
+  if (_recentRows.length > _closedPerPage * 2) {
+    _recentRows.pop();
+  }
+
+  // Вставляем строку в начало таблицы истории (если страница открыта)
+  const wrap = document.getElementById('recentTableWrap');
+  if (!wrap) return;
+
+  // Проверяем: есть ли уже таблица (история загружена)
+  const tbl = wrap.querySelector('table#closedTradesTbl');
+  if (!tbl) {
+    // Таблица ещё не создана — просто перерисуем всё
+    wrap.innerHTML = renderRecentRows(_recentRows);
+    return;
+  }
+  const tbody = tbl.querySelector('tbody');
+  if (!tbody) return;
+
+  // Рендерим одну строку и вставляем в начало
+  const tempDiv = document.createElement('div');
+  // renderRecentRows возвращает полную таблицу, нам нужна только строка
+  const rowHtml = _renderSingleClosedRow(trade);
+  tempDiv.innerHTML = rowHtml;
+  const newRow = tempDiv.firstElementChild;
+  if (newRow && tbody.firstChild) {
+    tbody.insertBefore(newRow, tbody.firstChild);
+  } else if (newRow) {
+    tbody.appendChild(newRow);
+  }
+}
+
+// ── Рендер одной строки закрытой сделки (используется в prependClosedTrade) ─
+function _renderSingleClosedRow(r) {
+  const capPct = r.captured_R_pct != null ? fmt(r.captured_R_pct,0)+'%' : '—';
+  const capClass = r.captured_R_pct != null ? (r.captured_R_pct >= 60 ? 'green' : r.captured_R_pct >= 30 ? 'yellow' : 'red') : '';
+  const tpSrc = (r.tp_source||'').replace('pivot_','').split(':')[0] || '—';
+  const durStr = r.duration_minutes != null
+    ? (r.duration_minutes < 60 ? Math.round(r.duration_minutes)+'м'
+      : r.duration_minutes < 1440 ? (r.duration_minutes/60).toFixed(1)+'ч'
+      : (r.duration_minutes/1440).toFixed(1)+'д')
+    : '—';
+  const fc = parseTradeFeatures(r);
+  const trigCell = atrChipForTrigger(fc.triggerCat) || '<span style="color:#444">—</span>';
+  const trigTitle = fc.triggerSource || 'без trigger_source';
+  const breakdownBar = strengthBreakdownBar(fc.breakdown);
+  return `<tr>
+    <td>${r.id}</td>
+    <td>${symLink(r.symbol)}</td>
+    <td class="${r.direction==='LONG'?'green':'red'}">${r.direction||'—'}</td>
+    <td>${r.signal_type||'—'}</td>
+    <td title="${trigTitle}">${trigCell}</td>
+    <td>${zoneCell(fc.zone)}</td>
+    <td>${regimeBadge(r.regime)}</td>
+    <td style="color:#8b949e;font-size:.75rem">${r.timeframe||'—'}</td>
+    <td>${r.status === 'TSL' ? `<span class="badge badge-tsl" title="TF: ${r.tsl_tf||'?'}">TSL ${r.tsl_tf||'?'}</span>` : badge(r.status)}</td>
+    <td class="${color(r.profit_pct)}">${fmtPct(r.profit_pct)}</td>
+    <td class="${color(r.R_multiple)}">${fmt(r.R_multiple,2)}</td>
+    <td>${breakdownBar || '<span style="color:#444">—</span>'}</td>
+    <td class="yellow">${r.max_R_possible != null ? fmt(r.max_R_possible,2) : '—'}</td>
+    <td class="${capClass}">${capPct}</td>
+    <td style="color:#8b949e;font-size:.75rem">${tpSrc}</td>
+    <td style="color:#8b949e">${durStr}</td>
+    <td style="color:#8b949e;font-size:.8rem">${fmtLocalShort(r.created_at)}</td>
+    <td style="font-size:.85rem">${fmtLocalShort(r.closed_at)}</td>
+  </tr>`;
+}
 
 async function loadClosedPage(page) {
   _closedPage = page;
@@ -1902,9 +2269,105 @@ function updateFilterOptions() {
   mkOpts('fSig', sigs);
 }
 
+// ── DEV-207: trigger_source helper ─────────────────────────────────────────
+// Парсит features_json (строка или объект) и возвращает trigger_source / atr_tf / zone / strength_breakdown.
+function parseTradeFeatures(r) {
+  if (r._featCache) return r._featCache;
+  let fj = r.features_json;
+  if (typeof fj === 'string') {
+    try { fj = JSON.parse(fj); } catch { fj = null; }
+  }
+  fj = fj || {};
+  // Прямые поля (если когда-то будут писаться)
+  let triggerSource = fj.trigger_source || null;
+  let atrTf = fj.atr_tf || null;
+  let zone = fj.zone || fj.wt_zone || null;
+  // Сканируем confirmations[] — реальный источник истины (DEV-202)
+  const confs = Array.isArray(fj.confirmations) ? fj.confirmations : [];
+  if (!triggerSource || !atrTf || !zone) {
+    let best = null;  // confirmation с max weight + source 'atr_change_*'
+    for (const c of confs) {
+      if (!c || typeof c !== 'object') continue;
+      const s = c.source || '';
+      if (typeof s !== 'string') continue;
+      if (s.startsWith('atr_change_')) {
+        const w = c.weight || 0;
+        if (best == null || w > best.weight) best = c;
+      }
+    }
+    if (best) {
+      if (!triggerSource) triggerSource = best.source;
+      if (!atrTf) atrTf = best.source.slice('atr_change_'.length);
+      if (!zone && best.evidence && best.evidence.zone) zone = best.evidence.zone;
+    }
+  }
+  let triggerCat = 'other';
+  if (typeof triggerSource === 'string') {
+    if (triggerSource.startsWith('atr_change_')) {
+      triggerCat = triggerSource;
+    } else if (triggerSource.startsWith('event_bus')) {
+      triggerCat = 'event_bus';
+    } else {
+      triggerCat = triggerSource;
+    }
+  }
+  const cache = {
+    triggerSource,
+    triggerCat,
+    atrTf,
+    zone,
+    breakdown: fj.strength_breakdown || null,
+    confirmations: confs.length ? confs : null,
+  };
+  Object.defineProperty(r, '_featCache', { value: cache, enumerable: false });
+  return cache;
+}
+
+function atrChipForTrigger(triggerCat) {
+  if (!triggerCat || triggerCat === 'other') return '';
+  if (triggerCat === 'atr_change_1h')  return '<span style="color:#f8c400;font-size:.85rem;margin-right:3px" title="ATR Change 1h">●</span>';
+  if (triggerCat === 'atr_change_4h')  return '<span style="color:#2ea043;font-size:.85rem;margin-right:3px" title="ATR Change 4h">●</span>';
+  if (triggerCat === 'atr_change_15m') return '<span style="color:#58a6ff;font-size:.85rem;margin-right:3px" title="ATR Change 15m">●</span>';
+  if (triggerCat === 'event_bus')      return '<span style="color:#a371f7;font-size:.78rem;margin-right:3px" title="EventBus">◆</span>';
+  return '';
+}
+
+function zoneCell(zone) {
+  if (!zone) return '<span style="color:#444">—</span>';
+  const z = String(zone).toUpperCase();
+  if (z.includes('OS')) return '<span style="color:#a371f7;font-size:.72rem;font-weight:700" title="Oversold">OS</span>';
+  if (z.includes('OB')) return '<span style="color:#f85149;font-size:.72rem;font-weight:700" title="Overbought">OB</span>';
+  return `<span style="color:#8b949e;font-size:.72rem">${z.slice(0,4)}</span>`;
+}
+
+// Stack-bar для strength_breakdown { trigger: N, confirmations: M, ... }
+function strengthBreakdownBar(breakdown) {
+  if (!breakdown || typeof breakdown !== 'object') return '';
+  const entries = Object.entries(breakdown).filter(([k, v]) => typeof v === 'number' && v > 0);
+  if (!entries.length) return '';
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  if (total <= 0) return '';
+  const colors = { trigger: '#1f6feb', confirmations: '#2ea043', confirmations_total: '#2ea043',
+                   base: '#1f6feb', divergence: '#a371f7', volume: '#d29922', mtf: '#58a6ff' };
+  const W = 70, H = 8;
+  let x = 0;
+  const segs = entries.map(([k, v]) => {
+    const w = Math.max(1, Math.round(v / total * W));
+    const c = colors[k] || '#8b949e';
+    const r = `<rect x="${x}" y="0" width="${w}" height="${H}" fill="${c}"><title>${k}: ${v}</title></rect>`;
+    x += w;
+    return r;
+  }).join('');
+  const tip = entries.map(([k, v]) => `${k}=${v}`).join(' / ');
+  return `<svg width="${W}" height="${H}" style="vertical-align:middle" title="${tip}">${segs}</svg>`;
+}
+
 function recentTable(rows) {
   _recentRows = rows || [];
-  setTimeout(() => loadClosedPage(1), 0);
+  if (!_closedInitialized) {
+    _closedInitialized = true;
+    setTimeout(() => loadClosedPage(1), 0);
+  }
   return `
   <div class="filter-bar">
     <label>Статус:</label>
@@ -1929,6 +2392,15 @@ function recentTable(rows) {
       <option value="4h">4h</option>
       <option value="1d">1d</option>
     </select>
+    <label>Trigger:</label>
+    <select id="fTrigger" onchange="applyFilters()">
+      <option value="">Все</option>
+      <option value="atr_change_1h">ATR 1h</option>
+      <option value="atr_change_4h">ATR 4h</option>
+      <option value="atr_change_15m">ATR 15m</option>
+      <option value="event_bus">EventBus</option>
+      <option value="other">Прочее</option>
+    </select>
     <button onclick="resetFilters()">✕ Сброс</button>
   </div>
   <div id="closedPagination" style="margin:10px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
@@ -1941,8 +2413,10 @@ function renderRecentRows(rows) {
     `<th class="sortable" onclick="sortClosedBy('${key}',this)">${label}</th>`;
   return `<table id="closedTradesTbl"><thead><tr>
     ${s('id','#')}<th>Символ</th>${s('direction','Dir')}
-    ${s('signal_type','Сигнал')}${s('regime','Режим')}<th>TF</th>${s('status','Статус')}
-    ${s('profit_pct','Profit%')}${s('R_multiple','R')}${s('max_R_possible','Max R')}${s('captured_R_pct','Cap%')}
+    ${s('signal_type','Сигнал')}<th title="ATR trigger / EventBus">Trig</th><th title="OS/OB зона">Zone</th>
+    ${s('regime','Режим')}<th>TF</th>${s('status','Статус')}
+    ${s('profit_pct','Profit%')}${s('R_multiple','R')}<th title="strength_breakdown">Str</th>
+    ${s('max_R_possible','Max R')}${s('captured_R_pct','Cap%')}
     <th>TP src</th>${s('duration_minutes','Длит')}${s('created_at','Открыта')}${s('closed_at','Закрыта')}
   </tr></thead><tbody>` +
   rows.map(r => {
@@ -1954,16 +2428,23 @@ function renderRecentRows(rows) {
         : r.duration_minutes < 1440 ? (r.duration_minutes/60).toFixed(1)+'ч'
         : (r.duration_minutes/1440).toFixed(1)+'д')
       : '—';
+    const fc = parseTradeFeatures(r);
+    const trigCell = atrChipForTrigger(fc.triggerCat) || '<span style="color:#444">—</span>';
+    const trigTitle = fc.triggerSource || 'без trigger_source';
+    const breakdownBar = strengthBreakdownBar(fc.breakdown);
     return `<tr>
       <td>${r.id}</td>
       <td>${symLink(r.symbol)}</td>
       <td class="${r.direction==='LONG'?'green':'red'}">${r.direction||'—'}</td>
       <td>${r.signal_type||'—'}</td>
+      <td title="${trigTitle}">${trigCell}</td>
+      <td>${zoneCell(fc.zone)}</td>
       <td>${regimeBadge(r.regime)}</td>
       <td style="color:#8b949e;font-size:.75rem">${r.timeframe||'—'}</td>
       <td>${r.status === 'TSL' ? `<span class="badge badge-tsl" title="TF: ${r.tsl_tf||'?'}">TSL ${r.tsl_tf||'?'}</span>` : badge(r.status)}</td>
       <td class="${color(r.profit_pct)}">${fmtPct(r.profit_pct)}</td>
       <td class="${color(r.R_multiple)}">${fmt(r.R_multiple,2)}</td>
+      <td>${breakdownBar || '<span style="color:#444">—</span>'}</td>
       <td class="yellow">${r.max_R_possible != null ? fmt(r.max_R_possible,2) : '—'}</td>
       <td class="${capClass}">${capPct}</td>
       <td style="color:#8b949e;font-size:.75rem">${tpSrc}</td>
@@ -1975,28 +2456,340 @@ function renderRecentRows(rows) {
 }
 
 function applyFilters() {
-  const st  = document.getElementById('fStatus')?.value  || '';
-  const dir = document.getElementById('fDir')?.value     || '';
-  const sig = document.getElementById('fSig')?.value     || '';
-  const reg = document.getElementById('fRegime')?.value  || '';
-  const tf  = document.getElementById('fTf')?.value      || '';
-  const filtered = _recentRows.filter(r =>
-    (!st  || r.status     === st)  &&
-    (!dir || r.direction  === dir) &&
-    (!sig || r.signal_type=== sig) &&
-    (!reg || r.regime     === reg) &&
-    (!tf  || r.timeframe  === tf)
-  );
+  const st   = document.getElementById('fStatus')?.value  || '';
+  const dir  = document.getElementById('fDir')?.value     || '';
+  const sig  = document.getElementById('fSig')?.value     || '';
+  const reg  = document.getElementById('fRegime')?.value  || '';
+  const tf   = document.getElementById('fTf')?.value      || '';
+  const trig = document.getElementById('fTrigger')?.value || '';
+  const filtered = _recentRows.filter(r => {
+    if (st  && r.status      !== st)  return false;
+    if (dir && r.direction   !== dir) return false;
+    if (sig && r.signal_type !== sig) return false;
+    if (reg && r.regime      !== reg) return false;
+    if (tf  && r.timeframe   !== tf)  return false;
+    if (trig) {
+      const cat = parseTradeFeatures(r).triggerCat;
+      if (cat !== trig) return false;
+    }
+    return true;
+  });
   const wrap = document.getElementById('recentTableWrap');
   if (wrap) wrap.innerHTML = renderRecentRows(filtered);
 }
 
 function resetFilters() {
-  ['fStatus','fDir','fSig','fRegime','fTf'].forEach(id => {
+  ['fStatus','fDir','fSig','fRegime','fTf','fTrigger'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
   applyFilters();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// DEV-207: Dropped Signals UI + ATR Change visualization
+// ════════════════════════════════════════════════════════════════════════════
+
+let _dropsHours = 24;
+let _dropsFilters = { symbol: '', gate: '', signal: '', direction: '' };
+let _dropsRecent = [];
+let _dropsRecentPage = 1;
+const DROPS_PER_PAGE = 50;
+
+const GATE_COLORS = {
+  'dedup': '#58a6ff',
+  'sl_cooldown': '#fb8500',
+  'pair_cooldown_sl_streak': '#f85149',
+  'strength_too_low': '#f8c400',
+  'min_strength_register': '#f8c400',
+  'min_volume_usd': '#8b949e',
+};
+function gateColor(gate) {
+  return GATE_COLORS[gate] || '#a371f7';
+}
+
+async function loadDropsPage() {
+  const root = document.getElementById('dropsContent');
+  if (!root) return;
+  try {
+    const [topResp, recentResp] = await Promise.all([
+      fetch(`/api/dropped?hours=${_dropsHours}&limit=10`),
+      fetch(`/api/dropped?hours=${_dropsHours}&limit=200&detail=1`),
+    ]);
+    const top = await topResp.json();
+    const recent = await recentResp.json();
+    _dropsRecent = recent.recent || [];
+    _dropsRecentPage = 1;
+    // Нормализуем ключи (decision_trace.get_top_drops отдаёт `gate`, не `gate_name`)
+    const drops = (top.drops || []).map(d => ({
+      gate_name: d.gate_name || d.gate,
+      count: d.count,
+      symbols: d.symbols,
+    }));
+    root.innerHTML = renderDropsPage(drops);
+    renderDropsRecentTable();
+    // Update sidebar badge
+    const totalCnt = drops.reduce((s, d) => s + (d.count || 0), 0);
+    const badge = document.getElementById('navDropsCount');
+    if (badge) badge.textContent = totalCnt > 999 ? (totalCnt/1000).toFixed(1)+'k' : String(totalCnt);
+  } catch (e) {
+    console.error('loadDropsPage:', e);
+    root.innerHTML = '<p class="note red">Ошибка загрузки: ' + (e.message || e) + '</p>';
+  }
+}
+
+function changeDropsPeriod(hours) {
+  _dropsHours = parseInt(hours);
+  loadDropsPage();
+}
+
+function renderDropsPage(topGates) {
+  const totalDrops = topGates.reduce((s, d) => s + (d.count || 0), 0);
+  const top1 = topGates[0] || null;
+  const top1Pct = top1 && totalDrops ? (top1.count / totalDrops * 100).toFixed(0) : 0;
+  const periodLabel = _dropsHours <= 1 ? '1ч' : _dropsHours <= 6 ? '6ч' : _dropsHours <= 24 ? '24ч' : '7д';
+
+  const periodBtn = (h, lbl) => {
+    const active = _dropsHours === h;
+    return `<button onclick="changeDropsPeriod(${h})"
+      style="background:${active?'#1f6feb':'#21262d'};color:${active?'#fff':'#c9d1d9'};
+             border:1px solid ${active?'#1f6feb':'#30363d'};border-radius:6px;
+             padding:4px 12px;font-size:.8rem;cursor:pointer;font-weight:${active?'700':'400'}">
+      ${lbl}</button>`;
+  };
+
+  return `
+  <!-- Метрики верхней панели -->
+  <section style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <span style="color:#8b949e;font-size:.8rem">Период:</span>
+      ${periodBtn(1, '1ч')}
+      ${periodBtn(6, '6ч')}
+      ${periodBtn(24, '24ч')}
+      ${periodBtn(168, '7д')}
+      <button onclick="loadDropsPage()" style="margin-left:auto;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:4px 10px;font-size:.78rem;cursor:pointer">↻ Обновить</button>
+    </div>
+    <div class="cards" style="grid-template-columns:repeat(3,1fr)">
+      <div class="card">
+        <div class="label">Total drops за ${periodLabel}</div>
+        <div class="value" style="color:#f85149">${totalDrops.toLocaleString('ru')}</div>
+        <div class="label" style="margin-top:4px">отброшено gate-фильтрами</div>
+      </div>
+      <div class="card">
+        <div class="label">Топ gate</div>
+        <div class="value" style="font-size:1.15rem;color:${top1?gateColor(top1.gate_name):'#8b949e'}">${top1 ? top1.gate_name : '—'}</div>
+        <div class="label" style="margin-top:4px">${top1 ? top1.count + ' (' + top1Pct + '%)' : 'нет данных'}</div>
+      </div>
+      <div class="card">
+        <div class="label">Drops/час (sparkline 24ч)</div>
+        <div id="dropsSparkline" style="margin-top:4px;height:42px">${renderDropsSparkline()}</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Топ-10 gates -->
+  <section>
+    <h2>Топ gates за ${periodLabel}</h2>
+    ${renderTopGatesCards(topGates, totalDrops)}
+  </section>
+
+  <!-- Recent drops -->
+  <section>
+    <h2>Последние drops <span style="color:#8b949e;font-size:.8em;font-weight:400">(${_dropsRecent.length} записей)</span></h2>
+    <div class="filter-bar">
+      <label>Символ:</label>
+      <input id="dfSymbol" type="text" placeholder="BTC" oninput="onDropsFilter()" style="width:90px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 7px;font-size:.8rem">
+      <label>Gate:</label>
+      <select id="dfGate" onchange="onDropsFilter()"><option value="">Все</option></select>
+      <label>Сигнал:</label>
+      <select id="dfSignal" onchange="onDropsFilter()"><option value="">Все</option></select>
+      <label>Dir:</label>
+      <select id="dfDir" onchange="onDropsFilter()">
+        <option value="">Все</option><option value="LONG">LONG</option><option value="SHORT">SHORT</option>
+      </select>
+      <button onclick="resetDropsFilters()">✕ Сброс</button>
+    </div>
+    <div id="dropsRecentPagination" style="margin:10px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
+    <div id="dropsRecentWrap"><p class="note">Загрузка…</p></div>
+  </section>`;
+}
+
+function renderTopGatesCards(rows, total) {
+  if (!rows || !rows.length) return '<p class="note">Нет drops за период</p>';
+  const max = Math.max(...rows.map(r => r.count));
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">
+    ${rows.map(r => {
+      const c = gateColor(r.gate_name);
+      const pct = total ? (r.count / total * 100).toFixed(1) : 0;
+      const barW = max ? Math.round(r.count / max * 100) : 0;
+      const symStr = r.symbols != null ? `${r.symbols} пар` : '';
+      return `<div style="background:#161b22;border:1px solid ${c}44;border-left:3px solid ${c};border-radius:8px;padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px">
+          <div style="font-weight:700;color:${c};font-size:.88rem">${r.gate_name}</div>
+          <div style="font-size:1.15rem;font-weight:700;color:#c9d1d9">${r.count}</div>
+        </div>
+        <div style="background:#21262d;border-radius:3px;height:4px;margin:6px 0">
+          <div style="background:${c};width:${barW}%;height:100%;border-radius:3px"></div>
+        </div>
+        <div style="font-size:.7rem;color:#8b949e">${symStr} <span style="color:#484f58">·</span> ${pct}% от total</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderDropsSparkline() {
+  if (!_dropsRecent || !_dropsRecent.length) return '<span style="color:#484f58;font-size:.78rem">нет данных</span>';
+  const buckets = new Array(24).fill(0);
+  const now = Date.now();
+  _dropsRecent.forEach(d => {
+    const t = Date.parse((d.dropped_at || '').replace(' ', 'T') + 'Z');
+    if (isNaN(t)) return;
+    const hAgo = Math.floor((now - t) / 3600_000);
+    if (hAgo >= 0 && hAgo < 24) buckets[23 - hAgo]++;
+  });
+  const max = Math.max(...buckets, 1);
+  const W = 220, H = 42, bW = W / 24;
+  const bars = buckets.map((c, i) => {
+    const h = Math.round(c / max * (H - 4));
+    return `<rect x="${i * bW}" y="${H - h}" width="${bW - 0.6}" height="${h}" fill="#f85149aa" rx="1"><title>${c} drops, ${23-i}ч назад</title></rect>`;
+  }).join('');
+  return `<svg width="${W}" height="${H}" style="display:block">${bars}</svg>`;
+}
+
+function onDropsFilter() {
+  _dropsFilters.symbol = (document.getElementById('dfSymbol')?.value || '').trim().toUpperCase();
+  _dropsFilters.gate = document.getElementById('dfGate')?.value || '';
+  _dropsFilters.signal = document.getElementById('dfSignal')?.value || '';
+  _dropsFilters.direction = document.getElementById('dfDir')?.value || '';
+  _dropsRecentPage = 1;
+  renderDropsRecentTable();
+}
+
+function resetDropsFilters() {
+  _dropsFilters = { symbol: '', gate: '', signal: '', direction: '' };
+  ['dfSymbol','dfGate','dfSignal','dfDir'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  _dropsRecentPage = 1;
+  renderDropsRecentTable();
+}
+
+function filterDrops(rows) {
+  const f = _dropsFilters;
+  return rows.filter(r =>
+    (!f.symbol || (r.symbol || '').toUpperCase().includes(f.symbol)) &&
+    (!f.gate   || r.gate_name === f.gate) &&
+    (!f.signal || (r.signal_type || '') === f.signal) &&
+    (!f.direction || r.direction === f.direction)
+  );
+}
+
+function renderDropsRecentTable() {
+  // Filter dropdowns: fill once from full dataset
+  const fillOnce = (id, vals) => {
+    const el = document.getElementById(id);
+    if (!el || el.options.length > 1) return;
+    el.innerHTML = '<option value="">Все</option>' +
+      [...new Set(vals.filter(Boolean))].sort().map(v => `<option value="${v}">${v}</option>`).join('');
+  };
+  fillOnce('dfGate',   _dropsRecent.map(r => r.gate_name));
+  fillOnce('dfSignal', _dropsRecent.map(r => r.signal_type));
+
+  const filtered = filterDrops(_dropsRecent);
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / DROPS_PER_PAGE));
+  if (_dropsRecentPage > totalPages) _dropsRecentPage = totalPages;
+  const from = (_dropsRecentPage - 1) * DROPS_PER_PAGE;
+  const slice = filtered.slice(from, from + DROPS_PER_PAGE);
+
+  const wrap = document.getElementById('dropsRecentWrap');
+  if (!wrap) return;
+  if (!filtered.length) {
+    wrap.innerHTML = '<p class="note">Нет drops по фильтру</p>';
+  } else {
+    wrap.innerHTML = `<table><thead><tr>
+      <th>Время</th><th>Символ</th><th>Сигнал</th><th>Dir</th><th>Strength</th>
+      <th>Gate</th><th>Причина</th>
+    </tr></thead><tbody>${slice.map(d => {
+      const c = gateColor(d.gate_name);
+      const reason = (d.drop_reason || '').replace(/"/g, '&quot;');
+      const short = (d.drop_reason || '').slice(0, 70);
+      return `<tr>
+        <td style="color:#8b949e;font-size:.78rem;white-space:nowrap">${fmtLocalShort(d.dropped_at)}</td>
+        <td>${symLink(d.symbol)}</td>
+        <td>${d.signal_type || '—'}</td>
+        <td class="${d.direction==='LONG'?'green':d.direction==='SHORT'?'red':''}">${d.direction || '—'}</td>
+        <td style="color:#c9d1d9">${d.strength != null ? d.strength : '—'}</td>
+        <td><span style="color:${c};font-weight:700">${d.gate_name}</span></td>
+        <td style="color:#8b949e;font-size:.78rem" title="${reason}">${short}${(d.drop_reason||'').length>70?'…':''}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  }
+
+  // Pagination
+  const pgEl = document.getElementById('dropsRecentPagination');
+  if (pgEl) {
+    if (totalPages <= 1) { pgEl.innerHTML = ''; return; }
+    const btn = (lbl, p, dis) =>
+      `<button onclick="gotoDropsPage(${p})" ${dis?'disabled':''}
+        style="background:${dis?'#161b22':'#21262d'};border:1px solid ${dis?'#21262d':'#30363d'};
+               color:${dis?'#484f58':'#c9d1d9'};border-radius:6px;padding:3px 9px;
+               font-size:.78rem;cursor:${dis?'default':'pointer'}">${lbl}</button>`;
+    const isFirst = _dropsRecentPage <= 1, isLast = _dropsRecentPage >= totalPages;
+    pgEl.innerHTML =
+      btn('‹', _dropsRecentPage - 1, isFirst) +
+      `<span style="padding:3px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;font-size:.78rem;color:#8b949e">
+         стр.&nbsp;<strong style="color:#c9d1d9">${_dropsRecentPage}</strong>&nbsp;/&nbsp;${totalPages}
+         <span style="color:#484f58;margin:0 6px">·</span>
+         <strong style="color:#c9d1d9">${total}</strong> drops
+       </span>` +
+      btn('›', _dropsRecentPage + 1, isLast);
+  }
+}
+
+function gotoDropsPage(p) {
+  _dropsRecentPage = Math.max(1, p);
+  renderDropsRecentTable();
+}
+
+// ── DEV-207: ATR Change cards (summary page) ─────────────────────────────
+async function loadAtrCards() {
+  const wrap = document.getElementById('atrChangeCards');
+  if (!wrap) return;
+  try {
+    const r = await fetch('/api/atr_stats');
+    const j = await r.json();
+    const atr = j.atr || {};
+    const order = ['1h', '4h', '15m'];
+    const colors = { '1h': '#f8c400', '4h': '#2ea043', '15m': '#58a6ff' };
+    wrap.innerHTML = order.map(tf => {
+      const s = atr[tf] || { closed: 0, open: 0, wr: 0, avg_r: 0, total_r: 0, best_r: null };
+      const c = colors[tf];
+      const wrCls = s.wr >= 50 ? 'green' : s.wr >= 40 ? 'yellow' : 'red';
+      const arCls = s.avg_r > 0 ? 'green' : s.avg_r < 0 ? 'red' : '';
+      const trCls = s.total_r > 0 ? 'green' : s.total_r < 0 ? 'red' : '';
+      const bestStr = s.best_r != null ? (s.best_r >= 0 ? '+' : '') + s.best_r.toFixed(2) + 'R' : '—';
+      const arStr = (s.avg_r >= 0 ? '+' : '') + s.avg_r.toFixed(3) + 'R';
+      const trStr = (s.total_r >= 0 ? '+' : '') + s.total_r.toFixed(1) + 'R';
+      return `<div class="card" style="border-color:${c}55;border-left:3px solid ${c}">
+        <div class="label" style="display:flex;align-items:center;gap:5px">
+          <span style="color:${c};font-size:1rem">●</span>
+          <span style="color:${c};font-weight:700">ATR Change ${tf}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+          <div><div class="label">Сделок</div><div style="font-weight:700;color:#c9d1d9">${s.closed}</div></div>
+          <div><div class="label">Открытых</div><div style="font-weight:700;color:#c9d1d9">${s.open}</div></div>
+          <div><div class="label">WR</div><div class="${wrCls}" style="font-weight:700">${s.wr.toFixed(1)}%</div></div>
+          <div><div class="label">avg R</div><div class="${arCls}" style="font-weight:700">${arStr}</div></div>
+          <div><div class="label">Total R</div><div class="${trCls}" style="font-weight:700">${trStr}</div></div>
+          <div><div class="label">Best R</div><div class="green" style="font-weight:700">${bestStr}</div></div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    console.error('loadAtrCards:', e);
+    wrap.innerHTML = '<p class="note red">Ошибка загрузки ATR метрик</p>';
+  }
 }
 
 // ── DEV-144e: SVG Donut chart ─────────────────────────────────────────────
@@ -2062,11 +2855,12 @@ function regimeDonut(rows) {
 }
 
 load();
-setInterval(load, 30000);
+startDashboardSse();
 
 // Смена периода истории LIVE сделок
 document.addEventListener('change', e => {
   if (e.target && e.target.id === 'exchHistDays') {
+    _lastExchangeHistoryRefreshAt = 0;
     loadExchangeHistory(parseInt(e.target.value));
   }
 });

@@ -4,6 +4,96 @@
 
 ---
 
+## [18.05.2026 ~00:00 UTC] Агент: TRADER — Аналитика TAIKO/USDT: watchlist + пивоты + WPP
+
+### ✅ Сделано
+
+**Вопрос: куда попадает action=WATCH — в watchlist или теряется?**
+- Подтверждено кодом ([monitoring.py:1230-1252](bot/monitoring.py)): WATCH + direction → `_wl.add()`, TTL 4h
+- pivot_level = stop_loss рекомендации (не пивот как таковой, а граница идеи)
+- Эскалация: score +5, новая дивергенция, MTF NEUTRAL→совпал → action→BUY/SELL
+
+**Реальные пивоты TAIKO/USDT из PivotCalculatorFixed (17.05 ~19:30 UTC):**
+- Цена: 0.11000 — прямо на D:PP=0.11007 (+0.06%)
+- Конфлюенции: W:S1/D:R3=0.116 (0.20%), D:R1/W:source_low=0.112 (0.53%), W:S2/D:S1=0.107 (0.80%)
+- W:PP = 0.12180 — дистанция 9.7% → как TP нельзя (EV отрицательный по таблице >3%)
+
+**Записано в DISCUSSION.md** — блок [17.05.2026] TRADER — TAIKO/USDT: анализ пивотов
+
+### ⚠️ Незакоммичено
+- `DISCUSSION.md` — добавлен блок TAIKO анализа (остальные изменения без изменений)
+- Все 36+ файлов из предыдущих сессий по-прежнему не закоммичены
+
+### 📋 Следующая сессия — порядок
+- Закоммитить накопленное (36+ файлов)
+- Проверить 24ч данных после pivot_cache bug fix → реализовать 3 действия роя если подтверждены
+- Этап 1.Е TradeRouter — cleanup дублей в trade_simulator.py (не ранее 18.05 ~12:39)
+- Отслеживать TAIKO watchlist — эскалировал ли в BUY
+
+---
+
+## [17.05.2026 поздний вечер] Агент: TRADER/Developer — Расследование пропущенных + Рой (2 раунда)
+
+### ✅ Сделано
+
+**Расследование `register_returned_none` (88 случаев/24ч):**
+- Причина: DEV-44 HIGH_VOL HARD block в `trade_simulator.py` — корректное поведение
+- Вторичная: DEV-155 min_strength_by_direction_regime (SHORT/TREND_DOWN требует ≥60)
+- НЕ утечка сигналов — фильтры работают как задумано
+
+**Расследование FHE +7.9% пропущен:**
+- Root cause: новый листинг, 111 баров < 160 MIN_BARS для divergence детектора
+- `core/infra/data_quality.py`: `MIN_BARS = {"divergence": 160, ...}`
+- Не баг — защита от недостаточных исторических данных
+
+**Расследование KAITO +14% пропущен (16.05):**
+- 10:07: TriggerLoop PIVOT_TOUCH 1W_S2 → analyze_symbol returned None (pre_collected=False)
+- 10:16: zone_enter_os → MTF SHORT 3/3, SMC=STRONG_BEAR_ZONE, BTC=BEAR, Режим=HIGH_VOL → DEV-44 HARD BLOCK
+- 11:13: wt_cross_15m LONG in OS — уже поздно
+- "Парадокс дна": у любого дна контекст ВСЕГДА медвежий → тренд-следящий бот не входит
+
+**pivot_cache bug исправлен (4 места):**
+- `pivot_cache.get(symbol)` → `pivot_cache.get(f"{symbol}_1W")` в 4 местах кода
+- FVG+pivot confluence bonus НИКОГДА не работал до сегодня
+- После рестарта бонус начнёт применяться → нужно 24ч наблюдения
+
+**Рой раунд 1 ("Парадокс дна"):**
+- Вопрос: HIGH_VOL exception для W:S1/S2 + WT OS
+- Консенсус 5/5: HIGH_VOL shadow на 2 недели с исключением у W:S1/S2 + WT OS
+
+**Рой раунд 2 (с данными из DISCUSSION.md):**
+- Новые данные: pivot_reversal убыточен везде (n=3136, все 4 контекста avgR<0)
+- atr_change LONG = -56.9R/7дн (WR=8.8%), SHORT = +26.3R (WR=63.2%)
+- atr_change SHORT @ W:S1 (±1%) = avgR+0.637, WR=80% — PREMIUM паттерн
+- Золотой паттерн: confluence W_UP + D_above_PP = avgR+0.978, n=888, WR=32.7%
+- Консенсус 5/5 на 3 действия (НЕ РЕАЛИЗОВАНЫ — ждут 24ч наблюдения)
+
+### 🔄 ОЖИДАЕТ РЕАЛИЗАЦИИ (после 24ч наблюдения)
+
+**Три действия от роя (утверждены 5/5, ждут данных после pivot_cache fix):**
+1. `pivot_reversal: min_strength: 100` или `enabled: false` — убыточен везде n=3136
+2. `atr_change LONG = off` (или strength penalty -30) + SHORT только в TREND_DOWN
+3. confluence W_UP + D_above_PP: strength += 20 (золотой паттерн +0.978R)
+
+**Решение по 24 открытым atr_change LONG:** Mistral говорит закрыть (сохранить ~17R), Nemotron — дать доживать. Пользователь не принял решение.
+
+**TAIKO str=94 WATCH:** MTF=68% не дотянул до BUY. Рассмотреть снижение порога до 65%.
+
+### ⚠️ НЕ ЗАКОММИЧЕНО
+
+Все предыдущие незакоммиченные файлы + `core/pivots/pivot_reversal.py` (pivot_cache bug fix 4 места).
+Итого 37+ файлов незакоммичено.
+
+### 📋 Следующая сессия — порядок
+
+1. Проверить логи бота после 24ч: появились ли FVG+pivot confluence бонусы?
+2. Проверить статистику atr_change LONG/SHORT за сутки
+3. Если данные подтверждают → реализовать 3 действия роя
+4. Закоммитить всё накопленное (37+ файлов)
+5. Решить по открытым atr_change LONG позициям
+
+---
+
 ## [17.05.2026 вечер] Агент: Developer — wt_sideways off + swing SL + Куб статус
 
 ### ✅ Сделано

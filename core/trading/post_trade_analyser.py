@@ -6,7 +6,7 @@ PostTradeAnalyser — DEV-94 / ARCH-60 / Куб Метатрона Фаза 2.
 Режим работы: shadow (2 недели) — логирует что «сделал бы», не меняет поведение скана.
 Переключение в production: убрать [SHADOW] из логов + раскомментировать WL-вызовы.
 
-Регистрация в боте (bot_with_subscriptions.py):
+Регистрация в боте (oko_mtf.py):
     bot.pair_context  = PairContextBus()
     bot.post_analyser = PostTradeAnalyser(bot.pair_context, bot.data_collector)
     bot.trade_simulator.set_post_trade_callback(bot.post_analyser.on_trade_closed)

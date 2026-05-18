@@ -120,7 +120,7 @@ dashboard:
 
 ```powershell
 cd "E:\MTF BOT\CURSOR\crypto_volume_bot_strip"
-C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe bot_with_subscriptions.py
+C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe oko_mtf.py
 ```
 
 Должны увидеть:

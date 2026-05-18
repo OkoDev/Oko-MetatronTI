@@ -1,6 +1,6 @@
 CONFIRMATION_WEIGHTS = {
     # ── TRIGGERS (is_trigger=True) ──
-    'atr_change_15m':         {'LONG': 8,  'SHORT': 8,  'is_trigger': True},
+    'atr_change_15m':         {'LONG': 8,  'SHORT': 5,  'is_trigger': True},
     'atr_change_1h':          {'LONG': 15, 'SHORT': 15, 'is_trigger': True},
     'atr_change_4h':          {'LONG': 18, 'SHORT': 18, 'is_trigger': True},
 

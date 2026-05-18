@@ -11,6 +11,7 @@
 <!-- Теги: session-start | session-end | decision | fix | analysis | deploy | incident | milestone -->
 <!-- Новые записи — СВЕРХУ этого блока, перед разделителем -->
 
+2026-05-11 23:55 | fix | DEV-207: дашборд Drops/ATR. Backend +1 stroka (recent_closed→features_json) + новый /api/atr_stats (87 строк: SQL агрегаты по confirmations[]). Frontend +~280 строк в web/static/index.html: nav «Drops», page-drops (топ-10 gates карточками + recent таблица с фильтрами + sparkline), ATR Change секция на summary (3 карточки 1h/4h/15m: closed/open/WR/avgR/totalR/best), фильтр Trigger + колонки Trig/Zone/Str в истории, stack-bar strength_breakdown. Smoke на копии БД: 15m closed=172 WR=44.2% totalR=+12.88; 4h closed=12 WR=41.7%. Заработает после рестарта бота
 2026-05-04 ev.~ | milestone | 🧊 Stabilization Sprint Phase 0.1 (заморозка): ARCH-74/74-EXT/96..99/101..111 → FROZEN до Phase 4 (~25.05). План /root/.claude/plans/fluttering-snacking-whale.md. Корень: ~4% сигналов попадает в БД, decision_trace.py готов но не вызывается. Phase 0.2 — DecisionTrace в 14 gates (отдельная сессия, ~1 день)
 2026-05-05 04:30 | decision | confluence разблокирован (enabled: false → true). Логика: BIAS уже фильтрует направление, избыточные фильтры скрывают данные. Март: avgR=+0.64 (2591 сд), апрель: -0.42 (937 сд) — слом в боковике. Наблюдаем 3-5 дней
 2026-05-05 04:00 | fix | EventBus priority upgrade: set→dict, вытеснение старого элемента (priority=999) если новый приоритетнее. Баг: wt_extreme (prio=1) блокировался zone_enter_ob (prio=2) уже в очереди. Дедупликация BOS/CHoCH: ключ (tf,direction) вместо (price,bar_idx). Фильтр нулевых FVG (top-bottom < 1e-8). Лог legacy fallback понижен до non-info
@@ -45,6 +46,19 @@
 ---
 
 ## 📅 История изменений
+
+### [11.05.2026] DEV: DEV-207 — Dropped Signals UI + ATR Change visualization
+
+**Проблема:** Backend для двух фич готов (signal_drops таблица с DEV-203, confirmations[] в features_json с DEV-202), но в дашборде они не видны. ATR Change стратегия — главный trigger по Confirmation-Driven Architecture (R8: 1h_LONG +0.281R), а её отдачу нельзя посмотреть в одном месте. Drops 1500+ записей в сутки молча копятся в БД.
+
+**Решение:**
+- Backend (минимально, ~90 строк): новый endpoint `/api/atr_stats` (агрегаты closed/open/WR/avgR/totalR/best по TF, извлекает atr_tf из `features_json.confirmations[]` беря confirmation с max weight). Расширил `PerformanceEngine.recent_closed()` чтобы вернуть `features_json` (1 строка).
+- Frontend (~280 строк в `web/static/index.html`): новая страница «Drops» в sidebar nav с тремя верхними карточками (total/top-1/sparkline 24ч), сеткой топ-10 gates (color-coded по типу), таблицей recent drops с фильтрами symbol/gate/signal/dir + пагинацией. На сводке — секция «ATR Change стратегия» (3 карточки 1h/4h/15m). В истории сделок — фильтр Trigger (atr_change_1h/4h/15m/event_bus/other), колонки Trig (цветной чип) и Zone (OS/OB), stack-bar `strength_breakdown` в каждой строке.
+- Парсер `parseTradeFeatures` в JS: кэширующий хелпер, читающий `confirmations[]` и извлекающий atr_tf/zone (т.к. прямых полей trigger_source/atr_tf в features_json нет — спека ошибалась, реально только массив confirmations).
+
+**Результат:** Smoke-тест endpoint'ов на копии БД (бот держал блокировку): /api/atr_stats отдаёт `15m closed=172 WR=44.2% totalR=+12.88`, `4h closed=12 WR=41.7%`. /api/dropped возвращает 379 dedup + 180 sl_cooldown за 24ч. Заработает после рестарта бота.
+
+---
 
 ### [04.05.2026] ARCH: 🧊 Stabilization Sprint Phase 0.1 — заморозка vision до Phase 4
 

@@ -528,7 +528,8 @@ class PerformanceEngine:
                            entry_price, exit_price, profit_pct, R_multiple,
                            status, created_at, closed_at, duration_minutes,
                            max_R_possible, captured_R_pct,
-                           sl_source, tp_source, tsl_tf
+                           sl_source, tp_source, tsl_tf,
+                           features_json
                     FROM simulated_trades
                     WHERE status != 'OPEN'
                     ORDER BY closed_at DESC
@@ -576,7 +577,8 @@ class PerformanceEngine:
                            strength, confidence, created_at,
                            tsl_activated, tsl_tf,
                            tp_source, sl_source,
-                           max_price, min_price, max_R_possible
+                           max_price, min_price, max_R_possible,
+                           features_json
                     FROM simulated_trades
                     WHERE status = 'OPEN'
                     ORDER BY created_at DESC

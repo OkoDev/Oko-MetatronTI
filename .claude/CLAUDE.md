@@ -217,7 +217,7 @@ month: "[[Months/2026-MM]]"   # ← wikilink, НЕ тег
 Telegram-бот для технического анализа крипторынка с симуляцией сделок и самообучением.
 Биржа: BingX (через ccxt). Таймфрейм по умолчанию: 15m.
 
-**Запуск:** `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe bot_with_subscriptions.py`
+**Запуск:** `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe oko_mtf.py`
 **Дашборд:** `http://localhost:8000` (aiohttp, запускается автоматически с ботом)
 **БД:** `subscriptions.db` (SQLite) — основная таблица `simulated_trades`
 
@@ -230,7 +230,7 @@ Telegram-бот для технического анализа крипторы�
 → **Полная структура:** `docs/ENCYCLOPEDIA.md` → раздел "Структура проекта"
 
 ```
-bot_with_subscriptions.py   ← точка входа
+oko_mtf.py                  ← точка входа (бывш. bot_with_subscriptions.py, 15.05.2026)
 config.yaml                 ← конфигурация
 core/                       ← бизнес-логика (infra/ indicators/ signals/ pivots/ mtf/ trading/ ml/ ui/ db/ smc/ intelligence/ agents/)
 bot/                        ← UI-слой aiogram (handlers/ menus/ filters/)

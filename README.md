@@ -14,7 +14,7 @@ parent: "[[Project-MOC]]"
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # заполнить TELEGRAM_TOKEN, ADMIN_ID, BINGX_API_KEY, BINGX_SECRET_KEY
-python bot_with_subscriptions.py
+python oko_mtf.py
 ```
 
 > **Важно:** Использовать Python 3.12. `.venv` (Python 3.13) и системный `python` не имеют aiogram.
@@ -62,7 +62,7 @@ python bot_with_subscriptions.py
 ## Архитектура
 
 ```
-bot_with_subscriptions.py   -- точка входа (aiogram 3.4.1)
+oko_mtf.py                  -- точка входа (aiogram 3.4.1)
 config.yaml                 -- параметры (редактируются через браузер)
 subscriptions.db            -- SQLite
 

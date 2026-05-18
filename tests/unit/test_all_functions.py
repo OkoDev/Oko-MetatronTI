@@ -135,7 +135,10 @@ class BotTester:
         logger.info("🧪 Тестирование FSM состояний...")
         
         try:
-            from bot_with_subscriptions import PivotStates, SubscriptionStates, AIAnalysisStates
+            try:
+                from oko_mtf import PivotStates, SubscriptionStates, AIAnalysisStates
+            except ImportError:  # backward-compat
+                from bot_with_subscriptions import PivotStates, SubscriptionStates, AIAnalysisStates
             
             # Проверяем, что состояния определены
             states = [

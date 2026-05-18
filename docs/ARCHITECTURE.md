@@ -12,7 +12,7 @@
 
 ```mermaid
 flowchart TD
-    EP["🚀 Entry Point\nbot_with_subscriptions.py"]
+    EP["🚀 Entry Point\noko_mtf.py"]
     BOT["🤖 Bot Layer · aiogram 3.4.1\nscan_loop · trade_tracker · ml_loop\nmonitoring.py · dashboard :8000"]
     STR["♟️ Strategy Layer\nReversalScannerStrategy ★\nMTFBias · PivotReversal · regime_strategy"]
     INT["🧠 Intelligence Layer\nTradingIntelligence\nsignal_aggregator · confidence_calculator\nrecommendation_generator · ml_enhancer"]
@@ -143,7 +143,7 @@ classDiagram
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        🚀 ENTRY POINT                                  │
-│                   bot_with_subscriptions.py (75 строк)                  │
+│                   oko_mtf.py (~105 строк, +LLM hooks)                   │
 │                   Только запуск → TradingAlertBot.run()                 │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │

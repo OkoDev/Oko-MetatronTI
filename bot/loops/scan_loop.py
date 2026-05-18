@@ -83,8 +83,8 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         logger.debug("[WL-BREACH] %s: ошибка определения режима — %s", symbol, e)
         regime = None
 
-    # Gate 2: cooldown после SL
-    if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol):
+    # Gate 2: cooldown после SL (per-signal_type: wl_breach может игнорировать SL от других стратегий)
+    if hasattr(bot, "trade_simulator") and _is_in_sl_cooldown(bot, symbol, "watch_list_breach"):
         logger.info("[WL-BREACH] %s: пропуск — SL cooldown", symbol)
         return
 
@@ -681,6 +681,24 @@ async def _execute_atr_change_signal(
         if side not in ("LONG", "SHORT"):
             return
 
+        # Soft фильтр: atr_change режимный (18.05.2026)
+        # LONG: штраф к strength (не блок) — рынок цикличен, штраф снизит до min_strength в плохом контексте
+        # SHORT: только в TREND_DOWN (avgR=+0.488, WR=78.8% vs RANGE avgR=+0.031)
+        _atrc_cfg = bot.config.get("signal_quality.atr_change") or {}
+        _atrc_regime = None
+        if df is not None and len(df) >= 30:
+            try:
+                from core.indicators.market_regime import MarketRegimeClassifier
+                _atrc_regime = MarketRegimeClassifier().classify_from_ohlcv(df)
+            except Exception:
+                pass
+        _allow_sr = _atrc_cfg.get("allow_short_regimes")
+        if side == "SHORT" and _allow_sr and _atrc_regime:
+            if _atrc_regime not in _allow_sr:
+                logger.info("[ATRChange] %s SHORT пропущен: режим %s не в %s",
+                            symbol, _atrc_regime, _allow_sr)
+                return
+
         entry = ev.price
         if entry <= 0:
             return
@@ -737,6 +755,16 @@ async def _execute_atr_change_signal(
                 agg_strength += _gw(f"zone_OB_{tf}", "SHORT")
 
         strength = min(agg_strength, 100)
+
+        # Soft penalty для LONG atr_change (18.05.2026, не блок — рынок цикличен)
+        # avgR=-0.711, WR=8.8% (n=80, 7дн) — снижаем strength, TradeRouter отфильтрует слабые
+        if side == "LONG":
+            _long_penalty = int((_atrc_cfg or {}).get("long_strength_penalty", 0))
+            if _long_penalty > 0:
+                strength = max(0, strength - _long_penalty)
+                logger.debug("[ATRChange] %s LONG soft_penalty=%d → strength=%d",
+                             symbol, _long_penalty, strength)
+
 
         # A1 (14.05): отдельный порог для atr_change (бэктест: 1h_LONG+0.12 при min=15).
         min_str = int(bot.config.get("signal_quality.min_strength_atr_change",
@@ -1288,10 +1316,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     except Exception as _smc_snap_e:
                         logger.debug("[ARCH-89] smc_snap %s: %s", sym, _smc_snap_e)
 
-                    # Сфера 8: Pivot snap → bus
+                    # Сфера 8: Pivot snap → bus  {1W: {PP,S1,...}, 1D: {...}, 1M: {...}}
                     _pc = getattr(bot, "pivot_calculator", None)
                     if _pc is not None:
-                        _piv_cache = getattr(_pc, "pivot_cache", {}).get(sym)
+                        _raw = getattr(_pc, "pivot_cache", {})
+                        _piv_cache = {
+                            tf: _raw[f"{sym}_{tf}"]
+                            for tf in ("1W", "1D", "1M")
+                            if f"{sym}_{tf}" in _raw
+                        }
                         if _piv_cache:
                             _bus.publish(sym, SphereEvent.PIVOT_SNAP_UPDATED, _piv_cache)
 
@@ -1667,9 +1700,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         if _multi_tf:
                             sig.timeframe = _scan_tf  # тегируем ТФ
                         # ARCH-23: апгрейд wt_signal → confluence если цена у пивота (±1%)
-                        # DEV-177 24.04: gated по confluence.enabled — иначе wt_signal утекал в БД
+                        # DEV-177 24.04: gated по analysis.confluence.enabled — иначе wt_signal утекал в БД
                         # как signal_type=confluence даже при выключенном детекторе.
-                        _conf_enabled = bool(bot.config.get("confluence.enabled", False))
+                        # 16.05.2026 FIX: ключ был "confluence.enabled" (плоский) → None → False.
+                        # В config.yaml ключ вложенный analysis.confluence.enabled. Фикс вернул confluence в работу.
+                        _conf_enabled = bool(bot.config.get("analysis.confluence.enabled", False))
                         if _conf_enabled and _pivot_calc is not None and not _df_tf.empty:
                             _price = float(_df_tf["close"].iloc[-1])
                             _near = _pivot_calc.find_near_pivot(_price, sym)
@@ -1698,9 +1733,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             })
 
                 # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
-                # DEV-177 24.04: gated по confluence.enabled — иначе утечка в signal_type=confluence.
+                # DEV-177 24.04: gated по analysis.confluence.enabled — иначе утечка в signal_type=confluence.
+                # 16.05.2026 FIX: ключ был "confluence.enabled" → None → False; фикс — analysis.confluence.enabled.
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
-                _conf_enabled_block = bool(bot.config.get("confluence.enabled", False))
+                _conf_enabled_block = bool(bot.config.get("analysis.confluence.enabled", False))
                 _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
                 _confluence_sigs = []
                 if not _conf_enabled_block:
@@ -1890,7 +1926,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 _snapshot = await collect_mtf_data(sym, bot.data_collector)
                 if _snapshot:
                     _cur_price = float(df_entry['close'].iloc[-1]) if df_entry is not None and len(df_entry) > 0 else 0
-                    _wp = getattr(bot.pivot_calculator, "pivot_cache", {}).get(sym, {}).get("1W", {})
+                    _wp = getattr(bot.pivot_calculator, "pivot_cache", {}).get(f"{sym}_1W", {})
                     _ctx = analyze_context(_snapshot, _cur_price, _wp, regime=None)
                     if _ctx and _ctx.direction_bias:
                         _bias_dir = getattr(_ctx.direction_bias, "value", str(_ctx.direction_bias))

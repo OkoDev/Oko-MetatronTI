@@ -49,9 +49,15 @@ class OrderManager:
         return self._client
 
     async def _get_client_synced(self) -> BingXClient:
-        """DEV-145: Возвращает клиент с синхронизированным временем (один раз)."""
+        """DEV-145: Возвращает клиент с синхронизированным временем.
+        Ресинхронизируется раз в 5 минут чтобы предотвратить накопление drift."""
+        import time as _time
         client = self._get_client()
-        if not client._time_synced:
+        needs_sync = (
+            not client._time_synced
+            or (_time.monotonic() - client._time_synced_at) > 300
+        )
+        if needs_sync:
             await client.sync_time()
         return client
 

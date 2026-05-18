@@ -36,10 +36,12 @@ def get_py_files(dirs):
         for f in p.rglob("*.py"):
             if not any(ex in f.parts for ex in EXCLUDE_DIRS):
                 files.append(f)
-    # Добавить bot_with_subscriptions.py
-    main_file = ROOT / "bot_with_subscriptions.py"
-    if main_file.exists():
-        files.append(main_file)
+    # Добавить точку входа (новое имя oko_mtf.py, fallback на старое)
+    for entry_name in ("oko_mtf.py", "bot_with_subscriptions.py"):
+        main_file = ROOT / entry_name
+        if main_file.exists():
+            files.append(main_file)
+            break
     return sorted(files)
 
 

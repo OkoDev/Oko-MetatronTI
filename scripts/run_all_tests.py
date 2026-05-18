@@ -113,7 +113,7 @@ async def main():
     if passed == total:
         print("✅ ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!")
         print("\n🎯 Система готова к использованию!")
-        print("📈 Рекомендуется запустить бота: python bot_with_subscriptions.py")
+        print("📈 Рекомендуется запустить бота: python oko_mtf.py")
     else:
         print("⚠️ НЕКОТОРЫЕ ТЕСТЫ ПРОВАЛЕНЫ!")
         print("🔧 Проверьте логи выше и исправьте проблемы.")

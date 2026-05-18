@@ -48,4 +48,4 @@ elif not admin_id:
     print("3. Формат: ADMIN_ID=123456789")
 else:
     print("OK - Основные переменные настроены!")
-    print("Можете запускать бота: python bot_with_subscriptions.py")
+    print("Можете запускать бота: python oko_mtf.py")

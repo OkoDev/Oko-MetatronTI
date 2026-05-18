@@ -15,7 +15,7 @@ parent: "[[Project-MOC]]"
 ## ОБЩАЯ БЛОК-СХЕМА
 
 ```
-START bot_with_subscriptions.py
+START oko_mtf.py
   │
   ├─ load_markets (фильтр: min_vol=5M USDT ← DEV-175)
   │

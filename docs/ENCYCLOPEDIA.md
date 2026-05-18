@@ -824,7 +824,7 @@ hit_sl = close <= sl if _sl_check_close else low <= sl  # LONG
 
 | Модуль | Назначение | Строк |
 |---|---|---|
-| `bot_with_subscriptions.py` | точка входа, TradingAlertBot | ~75 |
+| `oko_mtf.py` | точка входа, TradingAlertBot (бывш. `bot_with_subscriptions.py`, 15.05) | ~105 |
 | `core/trading_intelligence.py` | агрегация сигналов → рекомендация | ~1850 |
 | `core/trading/trade_simulator.py` | SL/TP/TSL трекинг, запись сделок | ~1300 |
 | `bot/loops/scan_loop.py` | основной цикл сканирования | ~700 |

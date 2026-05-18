@@ -104,18 +104,27 @@ def _find_sweep_level_and_direction(
             break
 
     try:
-        pivots = pivot_cache.get(symbol, {})
+        # pivot_cache ключи: "{symbol}_1W", "{symbol}_1D", "{symbol}_1M"
+        # значения: {"PP": ..., "S1": ..., "S2": ..., "R1": ..., "R2": ...}
+        pivots_1w = pivot_cache.get(f"{symbol}_1W", {})
+        pivots_1d = pivot_cache.get(f"{symbol}_1D", {})
+        pivots_1m = pivot_cache.get(f"{symbol}_1M", {})
+        _pivot_srcs = [s for s in (pivots_1w, pivots_1d, pivots_1m) if s]
         long_pivot = next(
             (
-                float(pv) for key in ("W:S1", "W:S2")
-                if (pv := pivots.get(key)) and bar_low < float(pv) < bar_close
+                float(pv)
+                for src in _pivot_srcs
+                for key in ("S1", "S2", "S3")
+                if (pv := src.get(key)) and bar_low < float(pv) < bar_close
             ),
             None,
         )
         short_pivot = next(
             (
-                float(pv) for key in ("W:R1", "W:R2")
-                if (pv := pivots.get(key)) and bar_high > float(pv) > bar_close
+                float(pv)
+                for src in _pivot_srcs
+                for key in ("R1", "R2", "R3")
+                if (pv := src.get(key)) and bar_high > float(pv) > bar_close
             ),
             None,
         )

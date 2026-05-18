@@ -90,12 +90,64 @@ def _backup_database(db_path: str = "subscriptions.db", backup_dir: str = "backu
             pass
 
 
+def _spawn_llm_background_jobs():
+    """Fire-and-forget запуск Gemini-скриптов: trade review, log digest, post-mortem.
+
+    Скрипты сами проверяют свежесть (--max-age-hours=18) — лишний рестарт бота не
+    приведёт к лишним вызовам Gemini. Stdout/stderr пишутся в logs/llm_hooks.log.
+    """
+    import subprocess
+    py = sys.executable
+    log_dir = os.path.join(os.path.dirname(__file__) or ".", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "llm_hooks.log")
+    jobs = [
+        # daily trade review (разбор последних 24ч)
+        [py, "tools/daily_trade_review.py", "--quiet", "--max-age-hours", "18"],
+        # log digest (сжатие WARN/ERROR из последних 50MB лога)
+        [py, "tools/daily_log_digest.py", "--quiet", "--max-age-hours", "18"],
+        # post-mortem на R<-2 за 24ч (только новых, существующие не трогает)
+        [py, "tools/trade_postmortem.py", "--quiet", "--hours", "24",
+         "--threshold", "-2.0", "--limit", "5"],
+        # session brief (если SessionStart hook не успел)
+        [py, "tools/context_brief.py", "--quiet", "--max-age-hours", "6"],
+        # Obsidian daily pipeline — ежедневный хаб Sessions/YYYY-MM-DD.md
+        [py, "tools/daily_pipeline.py", "--quiet"],
+        # Obsidian weekly digest — обновляем каждый запуск (идемпотентно)
+        [py, "tools/weekly_digest.py", "--quiet"],
+        # Obsidian indexer — пересобирает Index/TIMELINE.md
+        [py, "tools/obsidian_indexer.py", "--quiet"],
+        # Task linker — связывает задачи со сделками по signal_type+дате
+        [py, "tools/task_linker.py", "--quiet"],
+    ]
+    try:
+        with open(log_file, "a", encoding="utf-8") as fout:
+            fout.write(f"\n=== {datetime.now().isoformat()} bot startup ===\n")
+            for cmd in jobs:
+                try:
+                    # Detached: бот стартует не дожидаясь
+                    creationflags = 0
+                    if platform.system() == "Windows":
+                        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
+                    subprocess.Popen(
+                        cmd, stdout=fout, stderr=fout,
+                        cwd=os.path.dirname(__file__) or ".",
+                        creationflags=creationflags,
+                    )
+                    logging.info("LLM hook spawned: %s", " ".join(cmd[1:]))
+                except Exception as e:
+                    logging.warning("LLM hook failed to spawn %s: %s", cmd, e)
+    except Exception as e:
+        logging.warning("LLM hooks setup failed: %s", e)
+
+
 if __name__ == "__main__":
     # Гарантируем запуск из директории проекта (чтобы subscriptions.db был единым)
     _project_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(_project_dir)
 
     _backup_database()
+    _spawn_llm_background_jobs()
 
     if not _acquire_single_instance_lock():
         print("⚠️ Бот уже запущен (обнаружен lock-файл). Закрываю второй экземпляр.")

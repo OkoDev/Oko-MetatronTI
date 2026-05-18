@@ -35,6 +35,25 @@ logger = logging.getLogger(__name__)
 # _SETTINGS_HTML moved to web/static/
 # _BACKTEST_HTML moved to web/static/
 
+# ── SSE broadcast: список активных dashboard-клиентов ──────────────────────
+# Каждый элемент — asyncio.Queue, в которую кладём строки SSE-событий.
+_sse_dashboard_clients: list = []
+
+
+async def _sse_broadcast(event_str: str) -> None:
+    """Отправить сырую SSE-строку всем подключённым dashboard-клиентам."""
+    dead = []
+    for q in _sse_dashboard_clients:
+        try:
+            q.put_nowait(event_str)
+        except Exception:
+            dead.append(q)
+    for q in dead:
+        try:
+            _sse_dashboard_clients.remove(q)
+        except ValueError:
+            pass
+
 
 async def _handle_index(request: web.Request) -> web.Response:
     return web.FileResponse(Path(__file__).parent / "static/index.html")
@@ -221,10 +240,17 @@ async def _handle_stats(request: web.Request) -> web.Response:
                     import json as _json
                     _fj = _json.loads(fj) if isinstance(fj, str) else fj
                     t["cascade_level"] = _fj.get("cascade_level") or _fj.get("tsl_tf")
+                    t["signal_mode"] = _fj.get("signal_mode") or _fj.get("trigger_source")
+                    confs = _fj.get("confirmations") or []
+                    t["conf_sources"] = [c.get("source", "") for c in confs if isinstance(c, dict)]
                 else:
                     t["cascade_level"] = t.get("tsl_tf")
+                    t["signal_mode"] = None
+                    t["conf_sources"] = []
             except Exception:
                 t["cascade_level"] = t.get("tsl_tf")
+                t["signal_mode"] = None
+                t["conf_sources"] = []
 
         # BTC 4h regime
         bot = request.app.get("bot")
@@ -329,6 +355,29 @@ async def _handle_close_trade(request: web.Request) -> web.Response:
         ok = ts.close_trade(trade_id, "EXPIRED", float(cur_price))
         if ok:
             logger.info("Dashboard: ручное закрытие сделки #%d %s @ %.5f", trade_id, symbol, cur_price)
+            # ── SSE broadcast: уведомить все dashboard-вкладки о новой закрытой сделке ──
+            try:
+                import sqlite3 as _sq2
+                with _sq2.connect(ts.db_path) as _c2:
+                    _c2.row_factory = _sq2.Row
+                    _closed_row = _c2.execute(
+                        """SELECT id, symbol, direction, signal_type, timeframe, regime,
+                                  status, profit_pct, R_multiple, max_R_possible,
+                                  captured_R_pct, tp_source, duration_minutes,
+                                  created_at, closed_at, features_json, tsl_tf
+                           FROM simulated_trades WHERE id=?""",
+                        (trade_id,)
+                    ).fetchone()
+                if _closed_row:
+                    _trade_dict = dict(_closed_row)
+                    _sse_str = (
+                        "event: trade_closed\n"
+                        f"data: {json.dumps(_trade_dict, ensure_ascii=False, default=str)}\n\n"
+                    )
+                    import asyncio as _aio2
+                    _aio2.ensure_future(_sse_broadcast(_sse_str))
+            except Exception as _be:
+                logger.debug("SSE broadcast trade_closed failed: %s", _be)
             return web.Response(
                 text=json.dumps({"ok": True, "trade_id": trade_id, "price": cur_price}, ensure_ascii=False),
                 content_type="application/json",
@@ -1645,17 +1694,54 @@ async def _handle_pair_api(request: web.Request) -> web.Response:
 async def _handle_sse(request: web.Request) -> web.StreamResponse:
     """GET /api/events — SSE-поток обновлений stats (DEV-117).
 
-    Клиент подписывается один раз; сервер каждые 30 сек отправляет event: stats.
+    Клиент подписывается один раз; сервер каждые 5 сек отправляет event: dashboard.
+    Также немедленно передаёт event: trade_closed при ручном закрытии сделки.
     """
     import asyncio as _aio
     engine: PerformanceEngine = request.app["engine"]
+    send_dashboard = request.rel_url.query.get("dashboard") == "1"
+
+    def _response_json(resp: web.Response) -> dict:
+        if resp.status >= 400:
+            raise RuntimeError(f"HTTP {resp.status}: {resp.text}")
+        body = resp.text
+        if body is None and resp.body is not None:
+            body = resp.body.decode("utf-8")
+        return json.loads(body or "{}")
+
+    async def _safe_json(name: str, handler) -> dict:
+        try:
+            return _response_json(await handler(request))
+        except Exception as exc:
+            logger.warning("[SSE] dashboard block %s failed: %s", name, exc)
+            return {}
+
     resp = web.StreamResponse()
     resp.headers["Content-Type"]  = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
     await resp.prepare(request)
+
+    # ── Регистрируем клиента в broadcast-списке ────────────────────────────
+    # Очередь для внеплановых событий (trade_closed и др.)
+    _client_queue: _aio.Queue = _aio.Queue(maxsize=50)
+    if send_dashboard:
+        _sse_dashboard_clients.append(_client_queue)
+
     try:
         while True:
+            # ── Отправляем внеплановые события из очереди (trade_closed и др.) ──
+            while not _client_queue.empty():
+                try:
+                    _evt = _client_queue.get_nowait()
+                    await resp.write(_evt.encode("utf-8"))
+                    await resp.drain()
+                except _aio.QueueEmpty:
+                    break
+                except Exception as _qe:
+                    logger.debug("[SSE] queue drain error: %s", _qe)
+                    break
+
             try:
                 summary = engine.summary()
                 rolling = engine.rolling_win_rate(50)
@@ -1663,9 +1749,31 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
                 await resp.write(f"event: stats\ndata: {payload}\n\n".encode())
             except Exception as _e:
                 logger.debug("[SSE] ошибка сборки данных: %s", _e)
-            await _aio.sleep(30)
+            if send_dashboard:
+                try:
+                    stats = _response_json(await _handle_stats(request))
+                    dashboard_payload = {
+                        "stats": stats,
+                        "confluence": await _safe_json("confluence", _handle_confluence_breakdown),
+                        "breakeven": await _safe_json("breakeven", _handle_breakeven_stats),
+                        "equity": await _safe_json("equity", _handle_equity),
+                        "analytics": await _safe_json("analytics", _handle_analytics),
+                        "signal_weights": await _safe_json("signal_weights", _handle_signal_weights_history),
+                    }
+                    payload = json.dumps(dashboard_payload, ensure_ascii=False, default=str)
+                    await resp.write(f"event: dashboard\ndata: {payload}\n\n".encode("utf-8"))
+                    await resp.drain()
+                except Exception as _e:
+                    logger.debug("[SSE] dashboard payload error: %s", _e)
+            await _aio.sleep(5)
     except (ConnectionResetError, _aio.CancelledError):
         pass
+    finally:
+        # ── Удаляем клиента из broadcast-списка ───────────────────────────
+        try:
+            _sse_dashboard_clients.remove(_client_queue)
+        except ValueError:
+            pass
     return resp
 
 
@@ -1710,6 +1818,102 @@ async def _handle_dropped(request: web.Request) -> web.Response:
         return web.json_response({"drops": data, "hours": hours, "limit": limit})
 
 
+# ── DEV-207: ATR Change стратегия — агрегаты по trigger_source ──────────────
+
+async def _handle_atr_stats(request: web.Request) -> web.Response:
+    """GET /api/atr_stats — метрики ATR Change стратегии (1h / 4h / 15m).
+
+    Группирует сделки по features_json.atr_tf (если указан) или
+    извлекает таймфрейм из features_json.trigger_source ('atr_change_1h' → '1h').
+
+    Возвращает по каждому TF: closed (n), open, wr, avg_r, total_r, best_r.
+    """
+    import sqlite3
+    engine: PerformanceEngine = request.app["engine"]
+    db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+
+    def _tf_from_row(features_json):
+        """Извлекает TF ATR-триггера. Сначала пробует прямые поля,
+        затем сканирует features_json.confirmations[] на source='atr_change_*'.
+        Если есть несколько — берёт с максимальным weight (старший TF).
+        """
+        if not features_json:
+            return None
+        try:
+            fj = json.loads(features_json)
+        except Exception:
+            return None
+        # Прямые поля (новые сделки или ручная разметка)
+        tf = fj.get("atr_tf")
+        if tf:
+            return str(tf)
+        src = fj.get("trigger_source", "")
+        if isinstance(src, str) and src.startswith("atr_change_"):
+            return src[len("atr_change_"):]
+        # Сканируем confirmations[]
+        confs = fj.get("confirmations") or []
+        best = None
+        for c in confs:
+            if not isinstance(c, dict):
+                continue
+            s = c.get("source", "")
+            if isinstance(s, str) and s.startswith("atr_change_"):
+                w = c.get("weight") or 0
+                tf_c = s[len("atr_change_"):]
+                if best is None or w > best[0]:
+                    best = (w, tf_c)
+        return best[1] if best else None
+
+    buckets = {
+        "1h": {"closed": 0, "open": 0, "wins": 0, "r_sum": 0.0, "best_r": None},
+        "4h": {"closed": 0, "open": 0, "wins": 0, "r_sum": 0.0, "best_r": None},
+        "15m": {"closed": 0, "open": 0, "wins": 0, "r_sum": 0.0, "best_r": None},
+    }
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT status, R_multiple, features_json
+                FROM simulated_trades
+                WHERE features_json IS NOT NULL
+                  AND (features_json LIKE '%atr_change_%' OR features_json LIKE '%"atr_tf"%')
+            """)
+            for row in cur.fetchall():
+                tf = _tf_from_row(row["features_json"])
+                if tf not in buckets:
+                    continue
+                b = buckets[tf]
+                if row["status"] == "OPEN":
+                    b["open"] += 1
+                    continue
+                b["closed"] += 1
+                r = row["R_multiple"]
+                if r is not None:
+                    b["r_sum"] += float(r)
+                    if float(r) > 0:
+                        b["wins"] += 1
+                    if b["best_r"] is None or float(r) > b["best_r"]:
+                        b["best_r"] = float(r)
+    except Exception as e:
+        logger.exception("dashboard /api/atr_stats error: %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+    result = {}
+    for tf, b in buckets.items():
+        n = b["closed"]
+        result[tf] = {
+            "closed": n,
+            "open": b["open"],
+            "wr": round(b["wins"] / n * 100, 1) if n else 0.0,
+            "avg_r": round(b["r_sum"] / n, 3) if n else 0.0,
+            "total_r": round(b["r_sum"], 2),
+            "best_r": round(b["best_r"], 2) if b["best_r"] is not None else None,
+        }
+    return web.json_response({"atr": result})
+
+
 async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000,
                           config=None, data_collector=None, trade_simulator=None, bot=None) -> None:
     """Запускает aiohttp-сервер. Вызывать через asyncio.create_task()."""
@@ -1726,6 +1930,31 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app["data_collector"] = data_collector   # для получения текущей цены
     app["trade_simulator"] = trade_simulator  # для ручного закрытия сделок
     app["backtest_state"] = {"running": False, "error": None, "log": [], "done": 0, "total": 0}
+
+    # Регистрируем SSE callback — при автоматическом закрытии (TP/SL/TSL) бродкастим trade_closed
+    if trade_simulator is not None and hasattr(trade_simulator, "set_sse_trade_closed"):
+        async def _on_auto_close(trade_id: int) -> None:
+            try:
+                import sqlite3 as _sq
+                with _sq.connect(trade_simulator.db_path) as _c:
+                    _c.row_factory = _sq.Row
+                    _row = _c.execute(
+                        """SELECT id, symbol, direction, signal_type, timeframe, regime,
+                                  status, profit_pct, R_multiple, max_R_possible,
+                                  captured_R_pct, tp_source, duration_minutes,
+                                  created_at, closed_at, features_json, tsl_tf
+                           FROM simulated_trades WHERE id=?""",
+                        (trade_id,)
+                    ).fetchone()
+                if _row:
+                    _evt = (
+                        "event: trade_closed\n"
+                        f"data: {json.dumps(dict(_row), ensure_ascii=False, default=str)}\n\n"
+                    )
+                    await _sse_broadcast(_evt)
+            except Exception as _e:
+                logger.debug("SSE auto-close broadcast error: %s", _e)
+        trade_simulator.set_sse_trade_closed(_on_auto_close)
     app["bot"] = bot
     app.router.add_get("/", _handle_index)
     app.router.add_get("/dashboard", _handle_dashboard_page)
@@ -1768,6 +1997,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_post("/api/cube/ml/train", _handle_cube_ml_train)
     # ── DEV-203: DecisionTrace — видимость отброшенных сигналов ──
     app.router.add_get("/api/dropped", _handle_dropped)
+    # ── DEV-207: ATR Change стратегия ──
+    app.router.add_get("/api/atr_stats", _handle_atr_stats)
 
     runner = web.AppRunner(app)
     await runner.setup()

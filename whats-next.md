@@ -1,11 +1,299 @@
 # What's Next — Handoff Document
 
-> Последнее обновление: **2026-05-17 ~UTC** (Агент: TRADER/Sonnet).
-> Предыдущая запись (09.05 ~17:30 UTC) — в разделе `<previous_session>` ниже.
+> Последнее обновление: **2026-05-18 ~00:00 UTC** (Агент: TRADER/Sonnet).
+> Предыдущая запись (17.05 вечер) — в разделе `<previous_session>` ниже.
 
 ---
 
 <current_session>
+
+<original_task>
+Аналитическая сессия (короткая): вопросы по работе watchlist + пивоты TAIKO/USDT.
+Код не менялся — только анализ и запись в DISCUSSION.md.
+</original_task>
+
+<work_completed>
+
+## 1. Разобрали механику action=WATCH
+
+- `action=WATCH` → **добавляется в SignalWatchList**, не теряется ([monitoring.py:1230-1252](bot/monitoring.py))
+- `pivot_level = recommendation.stop_loss` — граница аннулирования идеи
+- Эскалация WATCH→BUY: score+5, новая дивергенция, MTF NEUTRAL→совпал
+- Пробой pivot_level вниз (LONG) → запись удаляется. Пробой вверх → `_handle_wl_breach_entry`
+- TTL 4 часа, `cleanup_expired()` каждый цикл
+
+## 2. Реальные пивоты TAIKO/USDT (через PivotCalculatorFixed)
+
+Цена 0.11000 (17.05 ~19:30 UTC):
+
+| Уровень | Цена | Расстояние |
+|---|---|---|
+| D:PP | 0.11007 | +0.06% ← цена здесь |
+| D:R1 | 0.11160 | +1.46% |
+| W:source_low | 0.11220 | +2.00% |
+| D:S1 | 0.10766 | -2.12% |
+| W:S2 | 0.10680 | -2.91% |
+| W:PP | 0.12180 | +10.73% |
+
+**Конфлюенции:** W:S1/D:R3=0.116 (0.20%), D:R1/W:source_low=0.112 (0.53%), W:S2/D:S1=0.107 (0.80%)
+
+## 3. Применили таблицу WPP-магнита к TAIKO
+
+Дистанция до W:PP = 9.7% → строка >5% в таблице. Вероятность <2%, avgR при промахе ≈-1.5R.
+→ W:PP как TP нельзя. TP только D:R1/D:R2 (1.5-4.2% от входа).
+
+## 4. Записано в DISCUSSION.md
+
+Блок `[17.05.2026] TRADER — TAIKO/USDT: анализ пивотов и позиции относительно WPP`.
+
+</work_completed>
+
+<work_remaining>
+
+## 🔴 ПРИОРИТЕТ 1: Три действия роя (ждут 24ч наблюдения с момента pivot_cache fix)
+
+Нужно проверить логи: появились ли FVG+pivot confluence бонусы?
+```sql
+SELECT signal_type, direction, COUNT(*), AVG(R_multiple)
+FROM simulated_trades
+WHERE created_at > datetime('now', '-24 hours')
+GROUP BY signal_type, direction;
+```
+
+**Три действия (утверждены 5/5):**
+1. `pivot_reversal: min_strength: 100` или `enabled: false` — avgR<0 везде n=3136
+2. `atr_change LONG = off` + SHORT только в TREND_DOWN
+3. `confluence W_UP + D_above_PP: strength += 20`
+
+## 🔴 ПРИОРИТЕТ 2: Этап 1.Е TradeRouter
+
+Cleanup дублей gates в `trade_simulator.py`. **Не ранее 18.05.2026 ~12:39 UTC** (48ч стабильности).
+
+## 🟡 Коммиты (36+ файлов)
+
+```
+fix(pivot_cache): get(symbol_1W) в 4 местах — FVG+pivot confluence fix
+fix(DEV-215): datetime timezone + market_stress + sl_cooldown + monitoring
+fix(DEV-213): wt_sideways off (-131R/24ч)
+fix(DEV-214): swing SL в pivot_reversal
+feat(TradeRouter): этапы 1.А–1.Г
+feat(TR-001): Watch List pipeline + Gemini Vision + watchlist_loop 4ч
+```
+
+## 🟡 Открытые atr_change LONG позиции
+
+24 позиции. Mistral: закрыть → ~17R. Nemotron: дать доживать. Решение пользователя не принято.
+
+## 🟢 TAIKO watchlist
+
+Пара добавлена в WL с pivot_level=0.10827, TTL 4ч. Проверить эскалировала ли.
+
+</work_remaining>
+
+<critical_context>
+
+## Ключевые числа (аудит)
+
+| Сигнал | n | avgR | Решение |
+|---|---|---|---|
+| pivot_reversal (все) | 3136 | -0.168..-1.584 | ОТКЛЮЧИТЬ |
+| atr_change LONG | 80 | -0.711 WR=8.8% | ОТКЛЮЧИТЬ |
+| atr_change SHORT | 87 | +0.302 WR=63.2% | ТОЛЬКО TREND_DOWN |
+| atr_change SHORT @ W:S1 | ~10 | +0.637 WR=80% | PREMIUM бонус |
+| confluence W_UP+D_above_PP | 888 | +0.978 WR=32.7% | УСИЛИТЬ +20 |
+
+## WPP-магнит (таблица из DISCUSSION)
+
+TP на W:PP валиден **только если entry в зоне 0-3% от WPP**.
+Дальше 3% → вероятность <8%, EV отрицательный.
+
+## pivot_cache fix (17.05)
+
+До фикса FVG+pivot confluence НИКОГДА не применялся (баг в 4 местах `pivot_reversal.py`).
+Все исторические avgR confluence занижены — данные ненадёжны до накопления post-fix.
+
+</critical_context>
+
+</current_session>
+
+---
+
+---
+
+<current_session>
+
+<original_task>
+Расследование пропущенных трейдов (FHE +7.9%, KAITO +14%) + "Парадокс дна" + два раунда роя.
+Финал: 24ч наблюдения из-за pivot_cache bug (FVG+pivot confluence начинает работать впервые).
+</original_task>
+
+<work_completed>
+
+## 1. Расследованы root cause пропущенных трейдов
+
+**FHE +7.9%:** новый листинг, 111 баров < 160 MIN_BARS для divergence → scan_loop пропустил пару. Не баг.
+
+**KAITO +14%:** TriggerLoop видел PIVOT_TOUCH → None (pre_collected=False) → далее zone_enter_os с MTF SHORT 3/3 + HIGH_VOL → DEV-44 HARD BLOCK.
+
+**register_returned_none (88 случаев/24ч):** DEV-44 HIGH_VOL HARD block. Корректное поведение.
+
+## 2. "Парадокс дна" (системная проблема)
+
+У любого дна (W:S2/S1) контекст ВСЕГДА медвежий → тренд-следящий бот не входит.
+KAITO: отбой от W:S2 +14%. FHE: аналогично.
+
+## 3. pivot_cache bug исправлен
+
+4 места: `pivot_cache.get(symbol)` → `pivot_cache.get(f"{symbol}_1W")`.
+**FVG+pivot confluence bonus НИКОГДА не работал до сегодня.**
+После рестарта бонус начнёт применяться.
+
+## 4. Два раунда роя
+
+**Раунд 1:** HIGH_VOL exception для W:S1/S2 + WT OS → консенсус 5/5 (shadow 2 недели).
+
+**Раунд 2** (с данными DISCUSSION.md — отменяет раунд 1):
+- pivot_reversal убыточен везде n=3136 (avgR -0.168 до -1.584)
+- atr_change LONG = -56.9R/7дн WR=8.8% = катастрофа
+- atr_change SHORT = +26.3R WR=63.2%, @ W:S1 = WR=80% PREMIUM
+- confluence W_UP+D_above_PP = avgR+0.978 n=888 = лучший сигнал бота
+- Консенсус 5/5: три действия (не реализованы — ждут 24ч)
+
+</work_completed>
+
+<work_remaining>
+
+## 🔴 ПРИОРИТЕТ 1: Наблюдение 24ч (отсчёт с рестарта бота после pivot_cache fix)
+
+**Что наблюдать:**
+- Появились ли `FVG+pivot confluence` бонусы в логах? (раньше никогда не применялись)
+- Как изменился strength у confluence сигналов?
+- atr_change LONG/SHORT статистика за сутки
+
+**Как проверить:**
+```sql
+SELECT signal_type, direction, COUNT(*), AVG(R_multiple), AVG(strength)
+FROM simulated_trades
+WHERE created_at > datetime('now', '-24 hours')
+GROUP BY signal_type, direction;
+```
+
+## 🔴 ПРИОРИТЕТ 2: Три действия роя (после 24ч данных)
+
+**Действие 1:** pivot_reversal отключить
+```yaml
+# config.yaml
+# Вариант А (мягко): min_strength: 100 (никогда не достигается)
+# Вариант Б (чисто): enabled: false
+```
+**Данные:** n=3136, avgR<0 во ВСЕХ 4 контекстах. DEV-188 в TASKS.md.
+
+**Действие 2:** atr_change LONG = off
+```python
+# В config.yaml или code: блок на atr_change LONG
+# SHORT только в TREND_DOWN режиме
+# Бонус: near_S1 (±1% от W:S1) → strength += 15
+```
+**Данные:** LONG -56.9R WR=8.8% / SHORT +26.3R WR=63.2% за 7 дней.
+
+**Действие 3:** confluence W_UP + D_above_PP boost
+```python
+# В core/trading_intelligence.py или confluence detector:
+# if weekly_bias == UP and price > daily_pp:
+#     strength += 20
+```
+**Данные:** avgR=+0.978 n=888 WR=32.7% — ЛУЧШИЙ сигнал бота.
+
+## 🟡 Решить: 24 открытых atr_change LONG
+
+Mistral: закрыть → сохранить ~17R.
+Nemotron: дать доживать, новые LONG блокировать.
+Пользователь должен принять решение.
+
+## 🟡 TAIKO BUY порог
+
+str=94 MTF=68% WATCH. Рассмотреть снижение MTF порога с 70% до 65%.
+A/B тест: shadow режим с порогом 65% на 7 дней.
+
+## 🟡 Коммиты (37+ файлов накопилось)
+
+Группировать по задачам:
+1. `fix(pivot_cache): get(symbol_1W) в 4 местах — FVG+pivot confluence fix`
+2. `fix(DEV-215): datetime timezone + market_stress + sl_cooldown + monitoring`
+3. `fix(DEV-213): wt_sideways off (-131R/24ч)`
+4. `fix(DEV-214): swing SL в pivot_reversal`
+5. `feat(TradeRouter): этапы 1.А–1.Г`
+6. `feat(TR-001): Watch List pipeline + vision + периодический запуск`
+
+## 🟢 DEV-200/201: ConfirmationRegistry в live данных
+
+Проверить что все 25 типов confirmations публикуются:
+```sql
+SELECT json_extract(features_json, '$.confirmations') FROM simulated_trades
+WHERE created_at > datetime('now', '-24 hours') LIMIT 10;
+```
+
+</work_remaining>
+
+<critical_context>
+
+## Ключевые числа (проверены на данных БД)
+
+| Сигнал | n | avgR | Решение |
+|--------|---|------|---------|
+| pivot_reversal (все контексты) | 3136 | -0.168 до -1.584 | ОТКЛЮЧИТЬ |
+| atr_change LONG | 80 | -0.711 WR=8.8% | ОТКЛЮЧИТЬ |
+| atr_change SHORT | 87 | +0.302 WR=63.2% | ОСТАВИТЬ ТОЛЬКО TREND_DOWN |
+| atr_change SHORT @ W:S1 | ~10 | +0.637 WR=80% | PREMIUM → бонус |
+| confluence W_UP+D_above_PP | 888 | +0.978 WR=32.7% | УСИЛИТЬ +20 |
+
+## pivot_cache fix — важно для интерпретации данных
+
+До сегодняшнего дня `FVG+pivot confluence` НИКОГДА не применялся (баг в 4 местах).
+Все исторические данные по confluence — БЕЗ этого бонуса.
+После рестарта с фиксом → новые сигналы начнут получать бонус.
+**Это значит: исторические avgR confluence могут быть занижены.**
+
+## DEV-44 HIGH_VOL HARD block — намеренно
+
+`trading.blocked_regimes: [HIGH_VOL]` в config.yaml (строка 153).
+88 случаев register_returned_none/24ч = корректное поведение, не утечка.
+"Парадокс дна" — системная ограниченность тренд-следящего бота.
+Пока нет решения без данных о качестве W:S1/S2 сигналов в HIGH_VOL.
+
+## Следующий старт сессии
+
+1. Прочитать `memory/current_state.md`
+2. Проверить логи после рестарта: pivot_cache fix применился?
+3. SQL статистика atr_change LONG/SHORT за 24ч
+4. Принять решение по трём действиям роя
+5. Решить по открытым atr_change LONG (закрыть или нет)
+
+</critical_context>
+
+<current_state>
+
+## Статус бота
+
+- Рестарт нужен для применения pivot_cache fix (4 места исправлены сегодня)
+- Если рестарт был: FVG+pivot confluence начал применяться
+- Если нет: нужно сделать первым делом
+
+## Незакоммиченное (37+ файлов)
+
+Накопилось за сессии 14.05–17.05. Список в `current_state.md`. Не критично — файлы на диске.
+
+## Ожидаем данные 24ч (с момента рестарта)
+
+Без данных: действия роя не реализуем (pivot_reversal off, atr_change LONG off, confluence boost).
+
+</current_state>
+
+</current_session>
+
+---
+
+<previous_session>
 
 <original_task>
 Реализация TR-001: ежедневный Watch List с живыми свечами.
@@ -327,7 +615,7 @@ Telegram API: `sendPhoto` caption ≤ 1024 символа. Анализ Vision ~
 
 <previous_session>
 
-> Сессия 09.05.2026 ~17:30 UTC. ATR Change прямой вход + _select_optimal_sl_long + WsFeed фикс.
+> Сессия 09.05–17.05 дневная. Watch List pipeline + TR-001 + swing SL + pivot_cache fix.
 >
 > Краткое: wiring `_execute_atr_change_signal` в scan_loop, SL из 3 кандидатов (trendup/swing_low_20/atr14_2x),
 > WsFeed починен (watch_ticker публичный стрим — ключи вызывали 100413), 58/58 тестов.

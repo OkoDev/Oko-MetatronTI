@@ -60,7 +60,7 @@
 ## 🗺️ Карта кода (ключевые файлы)
 
 ```
-bot_with_subscriptions.py      ← точка входа
+oko_mtf.py                     ← точка входа (бывш. bot_with_subscriptions.py)
 config.yaml                    ← вся конфигурация
 subscriptions.db               ← SQLite (сделки, пользователи)
 

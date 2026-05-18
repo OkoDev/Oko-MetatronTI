@@ -167,13 +167,27 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
         resp = await client.close_position_market(sym, side_close, qty)
         code = resp.get("code", 0) if isinstance(resp, dict) else 0
         if code != 0:
+            logger.warning(
+                "[DEV-185.2][EMERGENCY] %s #%d market close failed code=%s — one-click fallback",
+                sym, trade_id, code,
+            )
             # Fallback: one-click
             resp2 = await client.close_position_one_click(sym)
+            code2 = resp2.get("code", 0) if isinstance(resp2, dict) else 0
             logger.warning(
                 "[DEV-185.2][EMERGENCY] %s #%d one-click fallback: code=%s",
-                sym, trade_id, resp2.get("code") if isinstance(resp2, dict) else "?",
+                sym, trade_id, code2,
             )
-        # Удаляем из state — следующий цикл sync_positions подхватит закрытие
+            if code2 != 0:
+                # Оба метода провалились — сбрасываем таймер, retry через dwell_seconds
+                dwell_state[trade_id] = now
+                logger.error(
+                    "[DEV-185.2][EMERGENCY] %s #%d: оба закрытия провалились "
+                    "(market=%s, one-click=%s) — retry через %ds",
+                    sym, trade_id, code, code2, dwell_seconds,
+                )
+                return False
+        # Удаляем из state — закрытие прошло успешно
         if trade_id in dwell_state:
             del dwell_state[trade_id]
         return True

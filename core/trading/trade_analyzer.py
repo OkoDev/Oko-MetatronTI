@@ -70,6 +70,8 @@ class TradeAnalyzer:
         self._provider = "disabled"
         self._model = ""
         self._enabled = False
+        self._day_count = 0
+        self._day_date = ""
         self._init_client()
 
     def _load_config(self) -> dict:
@@ -290,9 +292,28 @@ class TradeAnalyzer:
         return "\n".join(lines) if lines else "Контекст недоступен"
 
     # ------------------------------------------------------------------
+    def _check_daily_limit(self) -> bool:
+        """True если дневной лимит не исчерпан. Сбрасывает счётчик при смене дня."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self._day_date:
+            self._day_date = today
+            self._day_count = 0
+        try:
+            from core.infra.config_loader import config as _cfg
+            max_per_day = int(_cfg.get("trade_analyzer.max_per_day", 80))
+        except Exception:
+            max_per_day = 80
+        if self._day_count >= max_per_day:
+            logger.debug("TradeAnalyzer: дневной лимит %d исчерпан", max_per_day)
+            return False
+        self._day_count += 1
+        return True
+
     async def analyze_sl_trade(self, trade_id: int) -> Optional[str]:
         """Анализирует SL-сделку через LLM и сохраняет в trade_analysis."""
         if not self._enabled or self._client is None:
+            return None
+        if not self._check_daily_limit():
             return None
 
         trade = self._load_trade(trade_id)
@@ -348,6 +369,8 @@ class TradeAnalyzer:
         Возвращает 1-3 предложения анализа или None если LLM недоступен.
         """
         if not self._enabled or self._client is None:
+            return None
+        if not self._check_daily_limit():
             return None
         try:
             from core.signals.signal_models import TradingRecommendation

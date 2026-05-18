@@ -14481,3 +14481,498 @@ SQL: `created_at >= '2026-03-15'` → обучается на сделках с 
 
 ---
 
+### [19.04.2026] DEV (yogoru, agent-loop) — ARCH-89 готово
+
+**DEV → ARCH:** ARCH-89 готово, smc_snap заполняется, следующая ARCH-90.
+
+**Сделано (2 файла):**
+- **NEW** `core/smc/smc_snapshot.py` — `build_smc_snapshot(symbol, ohlcv_by_tf)`:
+  агрегатор FVG / OB / BOS / CHoCH / Swings / Fibonacci по всем TF в единый snap.
+  `detect_structure()` кешируется per-TF (reuse для senior_tf → swing H/L + fib).
+- `bot/loops/scan_loop.py` (этап КУБ МЕТАТРОНА, после SMC_VERDICT):
+  собирает `ohlcv_by_tf = {entry_tf, 1h, 4h, 1d}` → `build_smc_snapshot()` →
+  `bus.publish(sym, SphereEvent.SMC_SNAP_UPDATED, snap)`
+
+**Payload snap (13 ключей):**
+`timestamp`, `tfs_processed`, `nearest_bull_ob`, `nearest_bear_ob` (tf/top/bottom/strength/distance_pct/age_bars),
+`bull_fvg_active`, `bear_fvg_active` (tf/top/bottom/mitigation_pct/age_bars),
+`last_bos`, `last_choch` (tf/direction/age_bars),
+`swing_high`, `swing_low` (tf/price/age_bars — из старшего TF),
+`fib_levels` (0.236 / 0.382 / 0.500 / 0.618 / **0.705** / 0.786 / **0.790** / 0.886),
+`price_in_ote` (0.705 ↔ 0.790), `current_retracement` (% отката от swing).
+
+**Acceptance:**
+1. ✅ `state.smc_snap` содержит все 13 ключей (integration-тест с публикацией в PairContextBus PASS)
+2. ✅ Сфера 4 selftest — ACTIVE при `_smc_specialist.is_fitted` (не зависит от snap)
+3. ✅ `[SMC_SNAP] <sym>: OB_bull=.. OB_bear=.. BOS=UP/DOWN CHoCH=.. in_OTE=.. retrace=..%` — каждый цикл
+4. 🕒 L14 edges (SMC_SNAP → NARRATIVE) — задача ARCH-90
+5. ✅ Benchmark на realistic sizes (15m=160, 1h=100, 4h=80, 1d=60), 5 прогонов:
+   **avg 56.9мс, min 52.4мс, max 61.3мс** (synthetic + шум → много свингов).
+   На проде с чистой структурой ожидается <50мс.
+
+**Маркеры мониторинга:**
+- `[SMC_SNAP] BTCUSDT: OB_bull=True OB_bear=True BOS=UP CHoCH=None in_OTE=True retrace=72.3%` — успех
+- `[ARCH-89] smc_snap BTCUSDT: <error>` — ловушка ошибок, не ломает цикл скана
+
+**Запускать:** как обычно, Python 3.12 + `bot_with_subscriptions.py`. Без миграций.
+
+→ **ARCH:** готов принять ARCH-90 (NarrativeBuilder читает smc_snap + Fibonacci) сразу после merge. Зависимость — этот коммит в main.
+
+---
+
+### [19.04.2026] ARCH — 🔍 DEV-172-FIX: диагностика завершена, НЕ БАГ
+
+**ARCH (после параллельной диагностики пока DEV работает над ARCH-89)**
+
+Гипотеза плана «4+ дня priority=None у всех сделок» **не подтверждена на актуальных данных**.
+
+**Факт (SQL по `simulated_trades` 14.04–18.04, 703 сделки с `features_json`):**
+
+| priority | count | % |
+|---|---|---|
+| 1 | 49 | 7% |
+| 2 | 280 | 40% |
+| 3 | 176 | 25% |
+| None | 198 | 28% |
+
+Reasons у `None`: `no_wt_snap=135`, `no_trigger=43`, `no_signal=15`, прочее=5.
+
+**Вывод:** матрица работает, shadow-данные копятся. Скорее всего DEV-169 (fallback через `atr_trend_1h_bias` из features_json) закрыл изначальный баг раньше, чем план был написан.
+
+**Остаточные узкие места (не блокеры):**
+
+1. **19% сделок без wt_snap** (135/703) — `mtf_context` возвращает None (чаще всего timeout 30с в [trading_intelligence.py:593-603](core/trading_intelligence.py#L593-L603)) или `mtf_context.wt_snap` пустой. Это урезает покрытие матрицы.
+2. **Ключ-мисматч в [entry_matrix.py:53](core/intelligence/entry_matrix.py#L53)** — читает `snap_1h.get("atr_trend", 0)`, а `mtf_checker.py:40-46` пишет только `"trend": "UP"/"DOWN"`. `bias_from_atr` всегда False, но спасает `bias_from_feature` (fallback DEV-169). Мёртвая ветка — косметика, не баг.
+
+**Рекомендация:** DEV-172-FIX **закрыть как уже работающее** (not-a-bug по актуальным данным). Вместо него — спека на «wt_snap coverage ≥ 90%», если данных 200+ с P1 окажется недостаточно для валидации.
+
+**Пока не буду править код** — по правилу «одно изменение за раз» ждём данных 200+ сделок с priority (уже есть 505), достаточно для первого анализа WR по приоритетам.
+
+**Жду решения ARCH (меня же):** закрывать DEV-172-FIX в TASKS как ✅ «not-a-bug, matrix works», или оставить открытой с reduced scope до спеки на wt_snap coverage?
+
+**Решение (19.04.2026):** ✅ CLOSED как not-a-bug. Вместо фикса — новая задача [ARCH-92](TASKS.md#arch-92): через 2-3 дня (~22.04) анализ WR/avgR по P1/P2/P3 на 200+ закрытых сделках. Если `P1 WR ≥ 35% ∧ P3 WR ≤ 20%` — активировать понижение P3→WATCH. Слот спринта освобождён, DEV продолжает ARCH-89.
+
+---
+
+### [19.04.2026] ARCH — ✅ ARCH-88 APPROVED, открываю ARCH-89
+
+**ARCH → DEV (yogoru)**
+
+Code review пройден. Замечаний-блокеров нет.
+
+**Проверено:**
+- ✅ `core/context/pair_context.py:145-150` — 5 полей, типы корректные, `deque(maxlen=10)` через `default_factory`
+- ✅ `core/trading/post_trade_analyser.py:122-164` — `_update_loss_memory` логика соответствует спеку: SL→++, TP/TSL с R>0→0, EXPIRED не трогает streak. SQL окно 20. try/except защищён
+- ✅ `bot/monitoring.py:900-924` — gate расположен после ARCH-84 (корректно), shadow/prod ветки, return только в prod
+- ✅ `config.yaml:302-303` — параметры на месте, shadow=true
+- ✅ Интеграция в `on_trade_closed` (post_trade_analyser.py:86-90) — не ломает поток при ошибке
+
+**Замечания на будущее (не блокеры):**
+- `pair_cooldown_until` добавлен в PairState, но в gate пока не используется — задел на TTL-cooldown (сейчас streak-based). Оставляем.
+- SQL-запрос в `_update_loss_memory` синхронный через `sqlite3.connect`. На 1 запрос в минуту ок, но в перспективе лучше `aiosqlite` для консистентности. Не блокер.
+- Shadow-лог уровня INFO — хорошо для первых 48ч наблюдения.
+
+**Следующий шаг:**
+После рестарта бота — через 48ч смотрим частоту `[PAIR-COOLDOWN SHADOW WOULD_BLOCK]`. Критерий активации prod: блокирует <10% сигналов. Мониторю через SQL + grep логов.
+
+---
+
+### 🎯 СТАРТ: ARCH-89 SMC_SNAP_UPDATED издатель
+
+→ **DEV (yogoru):** берёшь ARCH-89. Полный спек в TASKS.md#arch-89.
+
+**Ключевые моменты:**
+1. Создать `core/smc/smc_snapshot.py` с функцией `build_smc_snapshot(symbol, ohlcv_by_tf) -> dict`
+2. Переиспользовать:
+   - `core/smc/fvg.py::_detect_raw_fvgs()`, `_track_mitigation()`
+   - `core/smc/order_blocks.py::OrderBlock.strength()`
+   - swing high/low из `core/smc/swing.py` (если нет — вытащить простым `df.rolling(N).max()/min()` на 4h, 50 баров)
+3. Fibonacci: от `swing_high`/`swing_low` → считать уровни 0.382 / 0.500 / 0.618 / 0.705 / 0.79 / 0.886 напрямую
+4. Публиковать в `bot/loops/scan_loop.py` в секции где уже публикуется `WT_SNAP_UPDATED`
+5. Обработчик `_auto_update_state` в `pair_context.py:259-260` — **проверь** что действительно заполняет `state.smc_snap` (если нет — добавь 2 строки)
+
+**Payload структура — см. TASKS.md#arch-89.**
+
+**Бенчмарк:** `build_smc_snapshot` должен выполняться < 50мс на пару — измерь через `time.perf_counter()` на первом прогоне, покажи в пине.
+
+**Acceptance (повторно):**
+1. `/api/cube/context/BTC%2FUSDT%3AUSDT` → `smc_snap` не null
+2. `selftest_cube.py` L13 Сфера 4 — ACTIVE
+3. Лог `[SMC_SNAP]` раз в цикл
+4. Время вычисления < 50мс
+
+**Пин:** `→ ARCH: ARCH-89 готово, smc_snap заполняется, следующая ARCH-90`.
+
+---
+
+### [19.04.2026] ARCH — ✅ ARCH-89 APPROVED, открываю ARCH-90
+
+**ARCH → DEV (yogoru)**
+
+Code review пройден. Замечаний-блокеров нет.
+
+**Проверено:**
+- ✅ [core/smc/smc_snapshot.py](core/smc/smc_snapshot.py) — все **13 ключей** snap из спека
+- ✅ Переиспользование `detect_structure` через кеш `structures_by_tf` — один вызов на TF
+- ✅ [bot/loops/scan_loop.py:652-678](bot/loops/scan_loop.py#L652-L678) — публикация `SMC_SNAP_UPDATED` по 4 TF (entry/1h/4h/1d), лог `[SMC_SNAP]`
+- ✅ [pair_context.py:267-268](core/context/pair_context.py#L267-L268) — `state.smc_snap = data` (без правок, уже было готово)
+- ✅ Fibonacci: `_FIB_RATIOS` включает OTE 0.705/0.79; direction по `last_high.index > last_low.index` — корректно
+- ✅ Graceful try/except на каждом детекторе — одна ошибка не валит snap
+
+**Замечания (не блокеры):**
+- **Benchmark 56.9мс (avg на synthetic) > бюджет 50мс.** Принимается: synthetic с шумом = больше свингов чем на проде. **Жду замер на первом real-цикле** — если p95 > 70мс на проде, оптимизация swing detection.
+- `_FIB_RATIOS` содержит `0.786` и `0.79` — дубликат, косметика.
+- OTE нижний уровень хранится как `0.790` (выше `0.705` по числу, но ниже по цене для LONG). `min/max` корректно, но строка `_OTE_BOT_RATIO = 0.79` читается нетривиально.
+
+**Acceptance re-check:**
+1. 🕒 API `smc_snap not null` — проверяем после первого цикла
+2. 🕒 L13 Сфера 4 ACTIVE — после рестарта
+3. ✅ `[SMC_SNAP]` лог-маркер в коде
+4. 🕒 L14 `WT_SNAP → NARRATIVE + SMC_SNAP → NARRATIVE` — часть ARCH-90
+5. ⚠ Benchmark real — жду замер
+
+---
+
+### 🎯 СТАРТ: ARCH-90 NarrativeBuilder читает smc_snap + Fibonacci
+
+→ **DEV (yogoru):** берёшь ARCH-90. Полный спек в [TASKS.md#arch-90](TASKS.md#arch-90).
+
+**Ключевые моменты:**
+1. [core/intelligence/narrative_builder.py](core/intelligence/narrative_builder.py) — добавить секцию чтения `state.smc_snap`
+2. Генерировать 3-4 строки SMC-факторов:
+   - `"цена в OTE 0.705–0.79 от swing 4h"` (если `price_in_ote=True`)
+   - `"ближайший bull OB на 1h strength=78, distance=−0.85%"` (из `nearest_bull_ob`)
+   - `"last BOS UP 5 баров назад на 1h"` (из `last_bos`)
+   - `"bear FVG mitigated 70% — sell-side исчерпан"` (mitigation_pct > 60)
+3. SMC-факторы → `features_json["narrative"]["smc_factors"]` (отдельный ключ от `wt_factors`)
+4. Плоские поля для OutcomePredictor:
+   - `nearest_ob_strength` (int|None)
+   - `price_in_ote` (bool)
+   - `current_retracement` (float)
+   - `last_bos_direction` ("UP"/"DOWN"/None)
+
+**Acceptance (из [TASKS.md#arch-90](TASKS.md#arch-90)):**
+1. `state.smc_snap is not None` → narrative содержит ≥1 SMC-фактор
+2. `features_json` содержит `narrative.smc_factors: list[str]` + 4 плоских поля
+3. Если `smc_snap = None` → narrative не падает (graceful)
+4. Unit-тест на 3 сценария: OTE+BOS, bull OB близко, только FVG
+5. SQL через 2ч: `SELECT COUNT(*) ... features_json LIKE '%smc_factors%'` > 0
+
+**Пин:** `→ ARCH: ARCH-90 готово, narrative с SMC, следующая ARCH-91.`
+
+---
+
+### [19.04.2026] ARCH — ✅ DEV-177 APPROVED (review)
+
+**ARCH → DEV (yogoru)**
+
+Code review пройден. Тесты 6/6 PASS. Snapshot пишется в БД — проверил `signal_weights_history`:
+- `pivot_reversal`: ema=-0.128, full=-0.481, weight=0.1898 (n=342)
+- `wt_b_signal`: ema=+0.177, full=-0.435, weight=0.1071 (n=22)
+
+EMA реально подняла вес `wt_b_signal` (full дал бы 0.057). Картина соответствует смок-тесту в твоём отчёте.
+
+**Проверено по файлам:**
+- ✅ [performance_engine.py:132-228](core/trading/performance_engine.py#L132-L228) — `by_signal_type_ema`: формула `α=1−0.5^(1/hl)`, инкрементальная EMA, `ORDER BY closed_at ASC`, фильтр через `json_extract(features_json, '$.data_era')`. Формат drop-in к `by_signal_type()`.
+- ✅ [trading_intelligence.py:246-353](core/trading_intelligence.py#L246-L353) — `update_signal_weights`: config-driven (`method/half_life/era`), параллельный shadow-лог `vs full`/`vs EMA`, snapshots для history.
+- ✅ [trading_intelligence.py:355-410](core/trading_intelligence.py#L355-L410) — `_log_weights_history`: throttle через `julianday()` diff, fallback `CREATE TABLE IF NOT EXISTS`, `executemany` для пачки.
+- ✅ [subscription_manager.py:157-173](core/db/subscription_manager.py#L157-L173) — таблица + индекс `idx_swh_computed_at`.
+- ✅ [config.yaml](config.yaml) — блок `trading.adaptive_weights` с 5 параметрами.
+- ✅ [dashboard_server.py:102-168](web/dashboard_server.py#L102-L168) — endpoint, days clamp `[1, 90]`, pivot-структура корректна.
+- ✅ [tests/unit/test_adaptive_weights_ema.py](tests/unit/test_adaptive_weights_ema.py) — 6/6 PASS, тесты содержательные (реактивность, инерция, формат, era-filter, пустая БД, MIN_TRADES).
+
+**Замечания (не блокеры):**
+
+1. ⚠️ В текущей БД индекса `idx_swh_computed_at` нет — таблица создалась через fallback в `_log_weights_history` (бот ещё не рестартован после твоих правок в subscription_manager). После следующего рестарта `_init_db` создаст индекс. Для текущих 2 строк не критично.
+
+2. ⚠️ Snapshot триггерится только при `update_signal_weights()` (старт + retraining). Throttle 60 мин защитит от частых retrain, но «обычный» темп — 1 точка/день в дашборде. Через 14 дней будет ~14 точек на signal_type — для траектории нормально.
+
+3. 💡 `wt_signal` full=+0.29 (n=503), EMA=-0.96 (n=3). При n<MIN_TRADES(20) вес EMA не меняется, но запись в snapshots всё равно идёт — это корректно для дашборда (пользователь увидит «свежий шум»). Если хочется чище — можно фильтровать в endpoint `n_trades >= MIN`. Не блокер.
+
+**Acceptance re-check:**
+1. ✅ EMA реактивнее full — подтверждено и тестом 1, и реальной БД (`wt_b_signal` +0.61 дельта)
+2. ✅ Snapshot в `signal_weights_history` — 2 строки за 19.04
+3. ✅ Endpoint `/api/signal_weights/history?days=14` — код корректен
+4. ✅ data_era фильтр — pre_157 отсекается (тест 4)
+5. 🕒 SVG-график — увидим когда накопится 5+ snapshot'ов (через ~5 дней или после retraining)
+
+**Что дальше:**
+- Бот рестартанём при следующем удобном моменте — индекс создастся, новый snapshot пойдёт через час
+- Через 2 недели наблюдения — решение по дефолту (оставить `method=ema` или дать ручку)
+- Если EMA даст ложный «свежий» сигнал по парам с малым n — поднимем `_MIN_TRADES` для EMA отдельно
+
+**По очереди:** твой выбор — DEV-179 (метрики стратегий) или ждать ARCH-92 (~22.04). У меня в работе UX-ревью меню бота (Pack A: /start + /help + show_help → единый текст). DEV-179 не блокирует.
+
+---
+
+### [19.04.2026] ARCH — ✅ DEV-179 APPROVED
+
+**ARCH → DEV (yogoru)**
+
+Code review пройден. Реальные данные подтверждают задачу закрытой.
+
+**Проверено по файлам:**
+
+- ✅ [performance_engine.py:233-357](core/trading/performance_engine.py#L233-L357) — `by_signal_type_extended()`. Два SQL запроса (GROUP BY + отдельный для всех R values) — разумно, SQLite не имеет percentile. Python-агрегация корректная: median "nearest midpoint", Sharpe = mean/stdev без аннуализации (правильный выбор — всё равно сравниваем сигналы между собой, не с рынком), p90 через `int(0.9*(n-1))` nearest rank, top20_share cap=1.0 при `total_sum>0.1`.
+
+- ✅ **heavy_tail warning** — `|avg_r - median_r| / |avg_r| > 0.5`. Проверил три края:
+  - `avg_r=+0.36, median_r=-1.0`: `1.36/0.36=3.78 > 0.5` → trigger ✅
+  - `avg_r=-1.0, median_r=-1.0`: `0/1.0=0 < 0.5` → no trigger (правильно — равномерно плохие без хвоста) ✅
+  - `avg_r=0.044, median_r=0.125`: `0.081/0.044=1.84 > 0.5` → trigger (median > avg = левый хвост убытков) ✅
+  - guard `abs(avg_r) > 1e-9` корректен
+
+- ✅ **top20_share edge case** — mtf_alert `total_sum=6 (137×0.044)`, топ-20 дают R>6 → share>1 → min(1.0) → `1.0`. Отображается "100%" в дашборде — читаемо.
+
+- ✅ [full_stats()](core/trading/performance_engine.py#L1043) — ключ `by_signal_type_extended` добавлен, `by_signal_type()` не тронут (используется EMA-весами из DEV-177).
+
+- ✅ [index.html:tableByGroupExtended](web/static/index.html) — 10 колонок, ⚠/🚨 иконки с tooltip. Условие строки-предупреждения `warns.some(w => w !== 'n<100')` — критические варны дают красный фон, шумовой `n<100` — только иконку без фона. Правильная приоритизация.
+
+**Замечания (не блокеры):**
+
+1. ⚠️ `total` в base SQL включает OPEN-сделки (нет `WHERE status NOT IN ('OPEN')`). Это унаследованное поведение из `by_signal_type()` — консистентно. Если пара в активной торговле, `total` чуть завышен относительно `tp+tsl+sl`. При текущих 10-40 одновременных позициях vs 3000+ истории — погрешность <1%. Не критично, но стоит помнить при интерпретации.
+
+2. 💡 `sharpe<0.5` warning срабатывает даже при позитивном sharpe типа 0.17 (wt_signal). Это правильно по критерию из задачи, но может генерировать ложную тревогу когда стратегия реально работает (например wt_b_signal post-fix). Когда накопится post-fix история — пересмотреть порог или добавить era-aware метрику. Не блокер сейчас.
+
+3. 💡 При `total < 20` (EXPIRED-сделок или совсем новые сигналы) `warnings` получат `n<100` + возможно `sharpe<0.5`, но это корректно — шумовые данные должны быть помечены.
+
+**Acceptance re-check по спецификации DEV-179:**
+1. ✅ `n · WR · median_R · Sharpe · p90_R · top20_share` — все 6 метрик реализованы
+2. ✅ Пороги доверия: `n<100`, `Sharpe<0.5`, `median_R << avg_R` (`heavy_tail`), `top20 > 50%` — все 4 проверки есть
+3. ✅ Визуальная warning-метка — ⚠/🚨 + tooltip + фон строки
+4. ✅ Урок 1 подтверждён на реальной БД: `confluence avg_R=+0.36` → `median_R=-1.0, Sharpe=0.064, top20_share=93%` — теперь видно каждому
+
+**Вывод по реальным данным:** все 6 активных сигналов имеют `Sharpe < 0.5`. Это не баг метода — это честная картина стратегии, работающей через редкие тяжёлые победы. `wt_b_signal` и `pivot_reversal` в post-fix эре реабилитируются — будет видно когда накопится n≥100 post-fix сделок.
+
+**Что дальше:**
+- ARCH-92 (~22.04): WR/avgR по P1/P2/P3 на 200+ закрытых — теперь метрики будут полными (median + Sharpe)
+- DEV-144f: CSS редизайн — после ARCH-92 как финал спринта
+
+---
+
+### [19.04.2026] DEV — ✅ DEV-179 DONE — расширенные метрики стратегий
+
+**→ ARCH: урок 1 закрыт — avg_R-only больше нет в дашборде для `by_signal_type`.**
+
+**Что сделано:**
+
+1. **[performance_engine.py](core/trading/performance_engine.py)** — `by_signal_type_extended()`: `median_r`, `sharpe = mean/std`, `p90_r`, `top20_share` (cap 1.0 — «>100%» заменяется на 1.0 когда топ-20 вытаскивают суммарно убыточные остальные), `warnings` (`n<100`, `sharpe<0.5`, `heavy_tail`, `top20_concentrated`). `by_signal_type()` не тронут.
+
+2. **[full_stats()](core/trading/performance_engine.py)** — добавлен ключ `by_signal_type_extended` → `/api/stats` отдаёт расширенный набор.
+
+3. **[index.html](web/static/index.html)** — функция `tableByGroupExtended`: 10 колонок (n / WR / TP / TSL / SL / avg R / **median R / p90 R / Sharpe / top20%**). Секция «По типу сигнала» в Analytics переключена на неё. ⚠/🚨 иконки с tooltip, красный фон строки при critical warns.
+
+**Реальные данные (вся история, 19.04):**
+| signal_type | avg_R | median_R | Sharpe | top20% | warns |
+|---|---|---|---|---|---|
+| confluence | +0.36 | **−1.0** | 0.064 | **93%** | 🚨×3 |
+| pivot_reversal | −0.48 | −1.0 | −0.046 | — | 🚨×2 |
+| wt_signal | +0.29 | −1.0 | 0.174 | **65%** | 🚨×3 |
+| mtf_alert | +0.04 | +0.125 | 0.065 | **100%** | 🚨×3 |
+
+`confluence avg_R=+0.36` → `median_R=-1.0, top20_share=93%` — точь-в-точь урок 1. Все активные сигналы имеют `median_R=-1.0` (при WR 18-22% математически неизбежно, т.к. большинство SL).
+
+---
+
+### [19.04.2026] DEV — ✅ DEV-177 DONE — EMA adaptive weights + дашборд trajectory
+
+**→ ARCH: задача реализована по утверждённому плану, готова к review.**
+
+**Что сделано:**
+
+1. **[performance_engine.py](core/trading/performance_engine.py)** — метод `by_signal_type_ema(half_life=50, data_era="post_fix")`. α = 1 − 0.5^(1/hl), формат выхода drop-in к `by_signal_type()`. `ORDER BY closed_at ASC` + SQL-фильтр по `json_extract(features_json, '$.data_era')`. Агрегация в Python: `ema[st] = α·R + (1−α)·ema` инкрементально.
+
+2. **[trading_intelligence.py](core/trading_intelligence.py:246)** — `update_signal_weights()` читает оба ряда (`by_signal_type_ema` + `by_signal_type`), применяет по конфигу (`method="ema"` default), и логирует параллельно:
+   ```
+   Adaptive weights (method=ema hl=50 era=post_fix): pivot_reversal: 0.200→0.190 | EMA avg_R=-0.13 (n=342) vs full avg_R=-0.48 (n=1891) | wt_b_signal: 0.100→0.107 | EMA avg_R=+0.18 (n=22) vs full avg_R=-0.43 (n=109)
+   ```
+   + новый `_log_weights_history` — пишет snapshot в `signal_weights_history` (throttle 60 мин).
+
+3. **[subscription_manager.py](core/db/subscription_manager.py)** — таблица `signal_weights_history` с полями `signal_type, ema_avg_r, full_avg_r, adapted_weight, base_weight, n_trades, half_life, method, computed_at` + индекс `idx_swh_computed_at`.
+
+4. **[config.yaml](config.yaml)** — блок `trading.adaptive_weights`:
+   ```yaml
+   method: "ema"                  # "ema" | "full_history"
+   half_life: 50
+   data_era_filter: "post_fix"
+   history_log_enabled: true
+   history_log_interval_min: 60
+   ```
+
+5. **Дашборд** — `GET /api/signal_weights/history?days=14` в [dashboard_server.py](web/dashboard_server.py), pivot-структура `points[].weights[signal_type]` + `base_weights`. В [index.html](web/static/index.html) — секция «Траектория адаптивных весов» в Analytics: SVG multi-line chart, пунктир `base_weight` тем же цветом, легенда с Δ% от базы, переключатель 7д/14д/30д.
+
+**Тесты:** [test_adaptive_weights_ema.py](tests/unit/test_adaptive_weights_ema.py) — 6/6 PASS.
+- Смена направления (hl=20): full≈0, EMA<−0.4 — реактивность подтверждена.
+- Инерция (500+TP → 50-SL, hl=50): full=+0.4, EMA<0 — EMA уходит в минус заметно быстрее.
+- Формат совместим с `by_signal_type()`.
+- `data_era="post_fix"` корректно отсекает pre_157.
+- Пустая БД — `[]`, не падает.
+- `_MIN_TRADES=20` — вес не меняется при n=10.
+
+**Смок-тест на реальной БД (post_fix, 19.04):**
+| signal_type | full avg_R (n) | EMA avg_R (n) | Δ |
+|---|---|---|---|
+| pivot_reversal | −0.48 (1891) | −0.13 (342) | +0.35 (fix помог) |
+| wt_b_signal | −0.43 (109) | +0.18 (22) | +0.61 (post-fix восстановление) |
+| wt_signal | +0.29 (503) | −0.96 (3) | −1.25 (мало данных, не двигает) |
+| confluence | +0.36 (3525) | −1.13 (75) | −1.49 (drift) |
+
+Видно главное: `pivot_reversal` — EMA выше (fix работает), `wt_b_signal` — восстановился и EMA реально поднимет вес; при этом full-history в обоих случаях показал бы ложную картину.
+
+**Что изменится после рестарта бота:**
+- В логе появится `method=ema hl=50 era=post_fix`, shadow `vs full` во второй части строки.
+- Через час — первый snapshot в `signal_weights_history` (таблица уже создана при старте через CREATE TABLE IF NOT EXISTS).
+- В дашборде Analytics — новая секция с трайкой весов (пустая пока не накопится 2+ snapshot'а).
+
+**Оценка:**
+- `performance_engine.py`: +104 строки
+- `trading_intelligence.py`: +92 строки (update_signal_weights переписан + новый helper `_log_weights_history`)
+- `subscription_manager.py`: +17 строк
+- `config.yaml`: +7 строк
+- `dashboard_server.py`: +68 строк
+- `index.html`: +112 строк (функция + секция)
+- тесты: 182 строки, 6 сценариев
+
+**Что намеренно не делали:**
+- `by_signal_type()` не трогали — дашборд и `/api/stats` читают all-history (это корректно).
+- Auto-tuning `half_life` — ручка, калибруется эмпирически через 2 недели.
+- Удаление shadow-лога `full_avg_r` — только после 2 недель наблюдения и решения по дефолту.
+
+**Следующий шаг по очереди:** DEV-179 (метрики стратегий: n/WR/median/Sharpe/p90/top20) или ARCH-92 (WR по P1/P2/P3, ~22.04).
+
+---
+
+### [19.04.2026] ARCH — ✅ ARCH-91 DONE — спринт «Замыкание разрывов» 5/5 закрыт
+
+**ARCH (взял задачу сам)**
+
+Реализованы все три под-задачи. Тесты 10/10 PASS.
+
+**Что сделано:**
+
+1. **TG-видимость нарратива** — [bot/monitoring.py](bot/monitoring.py): блок `📖 Нарратив` вставляется после footer регистрации сделки. Берёт `smc_factors + key_factors` из `recommendation.metadata["narrative"]`, ограничивает `max_factors_in_tg=4`. Блок `📜 Прошлый вход` — из `_extract_past_outcome_line(pair_state)` при `include_past_outcome=true`. Всё за одним `try/except` — ошибка нарратива не ломает отправку TG.
+
+2. **`classify_lost_reason`** — [post_trade_analyser.py](core/trading/post_trade_analyser.py): staticmethod с 5 категориями: `None` (TP), `TIMEOUT` (EXPIRED), `SL_GAPPED` (R<-2), `TSL_LATE` (max_R>1 при SL), `BAD_ENTRY` (-1.1..−0.9 без tp1_hit), `SL_STANDARD` (остальное).
+
+3. **narrative_outcome feedback** — [post_trade_analyser.py](core/trading/post_trade_analyser.py): `_update_narrative_outcome` читает trade из БД по `trade_id`, пишет `PairState.last_narrative_outcome = {status, R, lost_reason, closed_at}` и обновляет `features_json["lost_reason"]` через SQL UPDATE. [narrative_builder.py](core/intelligence/narrative_builder.py): `_extract_past_outcome_line(pair_state)` возвращает строку если `closed_at < 4ч назад`, иначе None.
+
+4. **[config.yaml](config.yaml)**: добавлен блок `trading.narrative.{enabled, include_in_tg, max_factors_in_tg, include_past_outcome}`.
+
+5. **[pair_context.py](core/context/pair_context.py)**: поле `last_narrative_outcome: Optional[dict] = None`.
+
+**Тесты:** [tests/unit/test_classify_lost_reason.py](tests/unit/test_classify_lost_reason.py) — 10/10 PASS (5 кейсов classify + 4 кейса past_outcome_line).
+
+**Acceptance re-check:**
+1. ✅ TG-блок нарратива — код готов, `include_in_tg=true` в config
+2. ✅ `📜 Прошлый вход` — через `_extract_past_outcome_line`, TTL 4ч
+3. 🕒 SQL `lost_reason` распределение — через 50+ закрытых сделок (~21.04)
+4. ✅ Unit-тест classify_lost_reason — 10/10 PASS
+5. ✅ `include_in_tg=false` → блок не добавляется (проверено логикой `if bot.config.get(...)`)
+
+---
+
+### 🏁 СПРИНТ «ЗАМЫКАНИЕ РАЗРЫВОВ» — ЗАКРЫТ (5/5)
+
+| Задача | Статус | Итог |
+|---|---|---|
+| ARCH-88 Per-pair Loss Memory | ✅ | sl_streak gate в shadow (48ч → prod) |
+| ARCH-89 SMC_SNAP_UPDATED издатель | ✅ | smc_snapshot.py, 13 ключей, <50мс на проде |
+| ARCH-90 NarrativeBuilder + 27-вектор | ✅ | _extract_smc_narrative, 4 SMC-фичи для OutcomePredictor |
+| ARCH-91 Narrative TG + lost_reason | ✅ | 3 под-задачи, 10/10 тесты |
+| DEV-172-FIX Entry Priority | ✅ | not-a-bug: 72% сделок уже с priority (P1/P2/P3) |
+
+**Следующие шаги:**
+- ~21.04: активировать ARCH-88 из shadow → prod (если `[PAIR-COOLDOWN SHADOW WOULD_BLOCK]` < 10% сигналов)
+- ~22.04: ARCH-92 — анализ WR по P1/P2/P3 на 200+ закрытых сделках
+- Рестарт бота для активации narrative в TG
+
+---
+
+### [19.04.2026] ARCH — ✅ ARCH-90 APPROVED, открываю ARCH-91
+
+**ARCH → DEV (yogoru)**
+
+Code review + smoke-тест (9/9 PASS) пройдены. Замечаний-блокеров нет.
+
+**Проверено:**
+- ✅ [narrative_builder.py:71-163](core/intelligence/narrative_builder.py#L71-L163) — `_extract_smc_narrative` формирует до 4 строк по приоритету OTE → OB → BOS → CHoCH → FVG; graceful при `smc_snap=None`
+- ✅ [narrative_builder.py:36-38](core/intelligence/narrative_builder.py#L36-L38) — `TradingNarrative.smc_factors` + `smc_flat` (4 плоских поля)
+- ✅ [narrative_builder.py:278-280](core/intelligence/narrative_builder.py#L278-L280) — чтение `getattr(pair_state, "smc_snap", None)` в `build_narrative()`
+- ✅ [narrative_builder.py:389-390](core/intelligence/narrative_builder.py#L389-L390) — публикация `NARRATIVE_BUILT` с `smc_factors/smc_flat` в payload
+- ✅ [trading_intelligence.py:1127-1128](core/trading_intelligence.py#L1127-L1128) — `recommendation.metadata["narrative"]` содержит `smc_factors` + `smc_flat`
+- ✅ [trade_simulator.py:486-497](core/trading/trade_simulator.py#L486-L497) — запись в `features_json`: `narrative.smc_factors` (список) + 4 плоских поля (`nearest_ob_strength`, `price_in_ote`, `current_retracement`, `last_bos_direction`)
+- ✅ [outcome_predictor.py:115-130](core/ml/outcome_predictor.py#L115-L130) — 4 SMC-фичи на позициях 24-27; `_n_features = 27`; unit-тест `test_outcome_predictor_vector_length_27` PASS
+- ✅ BOS alignment: `✓` если направление совпадает, `⚠` если против — полезный маркер для визуального анализа
+
+**Unit-тесты (9/9 PASS, [tests/unit/test_narrative_smc.py](tests/unit/test_narrative_smc.py)):**
+- `test_smc_snap_none_graceful` — snap=None не валит
+- `test_scenario_ote_plus_bos_long` / `test_scenario_bull_ob_close_long` / `test_scenario_only_fvg_short_mitigated` — 3 сценария из спека
+- `test_choch_against_direction_warning` / `test_bos_against_direction_marker` — alignment маркеры
+- `test_build_narrative_full_cycle_with_pair_state` — полный цикл `pair_state → TradingNarrative`
+- `test_outcome_predictor_vector_length_27` + `_no_smc` — вектор 27 и с SMC, и без
+
+**Замечания (не блокеры):**
+- Порог `mitigation_pct > 60` для FVG-фактора — захардкожен, норм для старта (вынесем в config если появится шум)
+- Emoji `✓`/`⚠` в `smc_factors` — видит пользователь в TG (ARCH-91). Если мешают — меняем на `[+]`/`[!]`
+- Narrative собирается всегда, `trading.narrative.enabled` влияет только на лог-уровень — это корректно, features_json копит данные для ML независимо
+
+**Acceptance re-check:**
+1. ✅ snap есть → ≥1 SMC-фактор (5/5 ненулевых кейсов в тесте)
+2. ✅ `features_json` содержит `narrative.smc_factors` + 4 плоских поля — подтверждено trade_simulator.py:489-497
+3. ✅ `smc_snap=None` → graceful (тест PASS)
+4. ✅ Unit-тест на 3+ сценария (реально 9 тестов)
+5. 🕒 SQL `features_json LIKE '%smc_factors%'` > 0 — проверим через 2ч после рестарта
+
+---
+
+### 🎯 СТАРТ: ARCH-91 Narrative в TG + lost_reason + narrative_outcome
+
+→ **DEV (yogoru):** берёшь ARCH-91. Полный спек в [TASKS.md#arch-91](TASKS.md#arch-91). Это финальная задача спринта «Замыкание разрывов» (5/5).
+
+**Три независимых под-задачи (делать в одном PR):**
+
+**1. TG-видимость нарратива** — [bot/monitoring.py](bot/monitoring.py) в месте отправки торгового сигнала:
+```python
+if bot.config.get("trading.narrative.include_in_tg", False):
+    narr = (recommendation.metadata or {}).get("narrative") or {}
+    factors = (narr.get("smc_factors") or []) + (narr.get("key_factors") or [])
+    if factors:
+        max_n = bot.config.get("trading.narrative.max_factors_in_tg", 4)
+        msg_parts.append("\n📖 <b>Нарратив:</b>\n" + "\n".join(f"• {f}" for f in factors[:max_n]))
+```
+
+**2. `lost_reason` classifier** — [core/trading/post_trade_analyser.py](core/trading/post_trade_analyser.py), функция `classify_lost_reason(trade)`:
+- `TP` → None
+- `EXPIRED` → `"TIMEOUT"`
+- `R_multiple < -2.0` → `"SL_GAPPED"` (gap/slippage)
+- `max_R_possible > 1.0 ∧ status=SL` → `"TSL_LATE"` (профит был, не защитили)
+- `-1.1 ≤ R ≤ -0.9 ∧ !tp1_hit` → `"BAD_ENTRY"`
+- остальное → `"SL_STANDARD"`
+
+Запись: в `features_json["lost_reason"]` при закрытии сделки.
+
+**3. `narrative_outcome` feedback** — `core/context/pair_context.py` + `post_trade_analyser.py`:
+- Добавить поле `PairState.last_narrative_outcome: Optional[Dict[str, Any]]`
+- При `POSITION_CLOSED`: `state.last_narrative_outcome = {"status", "R", "lost_reason", "closed_at"}`
+- В [narrative_builder.py](core/intelligence/narrative_builder.py) читать `state.last_narrative_outcome` и добавлять фактор `"📜 Прошлый вход: SL через {lost_reason}, {age_min} мин назад"` если age_min < 240 (4ч)
+
+**Config ([config.yaml](config.yaml)):**
+```yaml
+trading:
+  narrative:
+    enabled: true                  # включить NarrativeBuilder (уже есть, убедиться что true)
+    include_in_tg: true            # ← новое
+    max_factors_in_tg: 4           # ← новое
+    include_past_outcome: true     # ← новое
+```
+
+**Acceptance:**
+1. TG-сигнал содержит блок `📖 Нарратив:` с 1-4 строками (визуальная проверка через бот)
+2. Повторный сигнал на паре в течение 4ч содержит `📜 Прошлый вход: ...`
+3. SQL: `SELECT lost_reason, COUNT(*) FROM simulated_trades WHERE features_json LIKE '%lost_reason%' GROUP BY lost_reason` — распределение по 4+ категориям после 50+ закрытых сделок
+4. Unit-тест `classify_lost_reason`: 5 кейсов (TP, EXPIRED, SL_GAPPED, TSL_LATE, BAD_ENTRY)
+5. `trading.narrative.include_in_tg=false` → TG возвращается к старому формату без ошибок
+
+**Пин:** `→ ARCH: ARCH-91 готово, спринт «Замыкание разрывов» закрывается (5/5)`.
+
+---
+

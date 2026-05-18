@@ -303,6 +303,17 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
 
         # === SHORT: у сопротивления ===
         elif level_type in ['resistance', 'pivot']:
+            # Soft penalties для SHORT pivot_reversal (18.05.2026, n=3136 везде avgR < 0)
+            if _regime == "TREND_DOWN" and current_price > weekly_pivots.get('PP', 0):
+                # W_DOWN + D_above_PP: avgR=-1.584, n=375 — самый убыточный контекст
+                _regime_str_penalty = 40
+                logger.debug("[PivotReversal] %s SHORT+TREND_DOWN+above_PP soft_penalty=%d",
+                             symbol, _regime_str_penalty)
+            elif _regime in ("TREND_DOWN", "RANGE"):
+                # SHORT в медвежьем/нейтральном рынке: avgR -0.17..-0.30
+                _regime_str_penalty = 20
+                logger.debug("[PivotReversal] %s SHORT+%s soft_penalty=%d",
+                             symbol, _regime, _regime_str_penalty)
             wt_ok   = cross_down and zone_15m in ['OB', 'N']
             trend_ok = (trend_15m == -1)
 
