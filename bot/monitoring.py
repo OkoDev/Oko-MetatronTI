@@ -816,7 +816,12 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             if smc_ctx is not None and smc_ctx.fvg is not None:
                 # Строим плоский dict пивотов из кеша: {"1W_S2": 0.004406, ...}
                 flat_pivots: dict = {}
-                sym_pivots = getattr(bot.pivot_calculator, "pivot_cache", {}).get(symbol, {})
+                _raw_cache = getattr(bot.pivot_calculator, "pivot_cache", {})
+                sym_pivots = {
+                    tf: _raw_cache[f"{symbol}_{tf}"]
+                    for tf in ("1W", "1D", "1M")
+                    if f"{symbol}_{tf}" in _raw_cache
+                }
                 for tf_key, levels in sym_pivots.items():
                     if isinstance(levels, dict):
                         for lk, lv in levels.items():
@@ -1249,6 +1254,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
 
     # Регистрируем сделку ДО отправки TG — чтобы footer "зарегистрирована" соответствовал реальности
     trade_registered = False
+    trade_id = None
     if should_register:
         try:
             extra: dict = {}
@@ -1667,7 +1673,9 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
         except Exception:
             logger.exception("Ошибка генерации графика для %s", symbol)
 
-    await broadcast_with_subscription_check(bot, text, signal_type, chart_png=png_bytes)
+    # DEV-222: trade_id передаётся только для зарегистрированных сделок (не WATCH)
+    _broadcast_trade_id = trade_id if trade_registered else None
+    await broadcast_with_subscription_check(bot, text, signal_type, chart_png=png_bytes, trade_id=_broadcast_trade_id)
 
     # fallback_rec отключён: analyze_symbol с MTF multiplier — единственный путь регистрации.
     # Старый fallback обходил MTF context → strength 70-100 при bias AGAINST → WR=8.7%.
@@ -1720,7 +1728,8 @@ def _close_open_html_tags(text: str) -> str:
 
 
 async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
-                                             chart_png: bytes | None = None):
+                                             chart_png: bytes | None = None,
+                                             trade_id: int | None = None):
     if not bot.subscribers:
         logger.warning("Нет подписчиков для отправки сигнала %s", signal_type)
         return
@@ -1729,47 +1738,130 @@ async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
     logger.info("Отправка сигнала %s для %d подписчиков (chart=%s)",
                 signal_type, len(uids), chart_png is not None)
 
-    sent_results = []
-
-    async def _send_one(uid: int) -> bool:
+    # DEV-222: собираем message_id per user для reply при закрытии
+    async def _send_one(uid: int) -> tuple[int, int] | None:
         try:
             if not bot.subscription_manager.can_receive_signal(uid, signal_type):
                 logger.debug("Пользователь %s не может получить сигнал %s", uid, signal_type)
-                return False
+                return None
             if not bot.subscription_manager.can_send_signal_today(uid):
                 logger.debug("Пользователь %s достиг дневного лимита", uid)
-                return False
+                return None
 
             async with _TG_BROADCAST_SEM:
                 if chart_png:
                     caption = _prepare_photo_caption(text)
                     from aiogram.types import BufferedInputFile
-                    await bot.bot.send_photo(
+                    msg = await bot.bot.send_photo(
                         chat_id=uid,
                         photo=BufferedInputFile(chart_png, filename="chart.png"),
                         caption=caption,
                         parse_mode="HTML",
                     )
                 else:
-                    await bot.bot.send_message(
+                    msg = await bot.bot.send_message(
                         chat_id=uid, text=text, disable_web_page_preview=True, parse_mode="HTML"
                     )
 
             bot.subscription_manager.record_signal_sent(uid, signal_type)
             logger.debug("Сигнал %s отправлен пользователю %s", signal_type, uid)
-            return True
+            return (uid, msg.message_id)
         except Exception:
             logger.exception("Ошибка отправки сообщения %s", uid)
-            return False
+            return None
 
     # DEV-120: параллельная рассылка всем подписчикам
-    sent_results = await asyncio.gather(*[_send_one(uid) for uid in uids])
-    sent_count = sum(sent_results)
+    results = await asyncio.gather(*[_send_one(uid) for uid in uids])
+    sent = [r for r in results if r is not None]
+    sent_count = len(sent)
 
     if sent_count == 0:
         logger.warning("Сигнал %s не отправлен ни одному подписчику", signal_type)
     else:
         logger.info("Сигнал %s отправлен %d/%d подписчикам", signal_type, sent_count, len(uids))
+
+    # DEV-222: сохраняем message_id только для зарегистрированных сделок
+    if trade_id and sent:
+        try:
+            db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect(db_path, timeout=10) as _conn:
+                _conn.executemany(
+                    "INSERT OR REPLACE INTO tg_messages (trade_id, user_id, message_id) VALUES (?,?,?)",
+                    [(trade_id, uid, mid) for uid, mid in sent],
+                )
+                _conn.commit()
+            logger.debug("[DEV-222] Сохранены message_id для trade_id=%d: %d пользователей", trade_id, len(sent))
+        except Exception as _e:
+            logger.debug("[DEV-222] Ошибка сохранения tg_messages: %s", _e)
+
+
+async def send_trade_close_reply(
+    bot,
+    trade_id: int,
+    status: str,
+    symbol: str,
+    direction: str,
+    r_multiple: float,
+    tsl_activated: int,
+    max_r_possible: float | None,
+) -> None:
+    """DEV-222: Reply на TG-сообщение об открытии при закрытии сделки."""
+    try:
+        db_path = getattr(bot.trade_simulator, "db_path", "subscriptions.db")
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(db_path, timeout=10) as _conn:
+            rows = _conn.execute(
+                "SELECT user_id, message_id FROM tg_messages WHERE trade_id=?", (trade_id,)
+            ).fetchall()
+
+        if not rows:
+            return  # WATCH или старая сделка без message_id
+
+        # Формируем текст закрытия
+        _status_icons = {"TP": "🎯", "TSL": "💚", "SL": "❌", "EXPIRED": "⏰"}
+        _status_labels = {"TP": "Тейк-профит", "TSL": "Трейлинг-стоп", "SL": "Стоп-лосс", "EXPIRED": "Истёк"}
+        icon = _status_icons.get(status, "📋")
+        label = _status_labels.get(status, status)
+
+        _r_str = f"{r_multiple:+.2f}R" if r_multiple is not None else "?"
+        _r_emoji = "🟢" if r_multiple and r_multiple > 0 else "🔴"
+
+        lines = [f"{icon} <b>{label}</b> · {_r_emoji} {_r_str} · <b>{symbol}</b>"]
+
+        if tsl_activated and status == "SL":
+            lines.append("⚠️ TSL был активирован, но цена вернулась к SL")
+        elif status == "TSL":
+            if max_r_possible and max_r_possible > 0:
+                _captured = round(r_multiple / max_r_possible * 100) if r_multiple and max_r_possible else 0
+                lines.append(f"📊 Захвачено {_captured}% потенциала (пик {max_r_possible:+.2f}R)")
+        elif status == "TP":
+            lines.append("✅ Цель достигнута")
+
+        text = "\n".join(lines)
+
+        # Шлём reply каждому подписчику
+        for user_id, message_id in rows:
+            try:
+                async with _TG_BROADCAST_SEM:
+                    await bot.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        reply_to_message_id=message_id,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                logger.debug("[DEV-222] Reply отправлен trade_id=%d user=%d status=%s", trade_id, user_id, status)
+            except Exception as _eu:
+                logger.debug("[DEV-222] Reply error user=%d: %s", user_id, _eu)
+
+        # Чистим запись — reply уже отправлен
+        with _sqlite3.connect(db_path, timeout=10) as _conn:
+            _conn.execute("DELETE FROM tg_messages WHERE trade_id=?", (trade_id,))
+            _conn.commit()
+
+    except Exception as _e:
+        logger.debug("[DEV-222] send_trade_close_reply error: %s", _e)
 
 
 def trade_tracker_loop(bot):

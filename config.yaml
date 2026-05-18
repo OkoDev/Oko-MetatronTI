@@ -487,6 +487,7 @@ risk_management:
     high_vol_position_multiplier: 0.5
     high_vol_tp1_r: 0.5
 trade_analyzer:
+  signal_comment: false  # отключён: Groq лимиты улетают без ощутимой пользы
   provider: groq
   api_key: ${GROQ_API_KEY}
   model: llama-3.3-70b-versatile  # 70B — намного меньше галлюцинаций, free tier на Groq

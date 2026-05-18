@@ -101,6 +101,8 @@ class TradeSimulator:
         self._post_trade_callback = None
         # SSE broadcast: async callback(trade_id) для дашборда (устанавливается из dashboard_server)
         self._sse_trade_closed = None
+        # DEV-222: TG reply callback — async(trade_id, status, symbol, direction, r_multiple, tsl_activated, max_r_possible)
+        self._tg_close_callback = None
         # DEV-89: общий PivotCalculatorFixed — создаётся один раз, не на каждую сделку
         self._pivot_calc: object = None
         # DEV-148: защита от concurrent close одной сделки (database is locked cascade)
@@ -115,6 +117,10 @@ class TradeSimulator:
     def set_sse_trade_closed(self, cb) -> None:
         """Регистрирует async callback(trade_id) для SSE broadcast при закрытии сделки."""
         self._sse_trade_closed = cb
+
+    def set_tg_close_callback(self, cb) -> None:
+        """DEV-222: TG reply при закрытии — async(trade_id, status, symbol, direction, r_multiple, tsl_activated, max_r_possible)."""
+        self._tg_close_callback = cb
 
     def _db_connect(self, timeout: int = 30):
         """DEV-148: единое место для настройки соединения — WAL + busy_timeout на каждом connect."""
@@ -1419,6 +1425,32 @@ class TradeSimulator:
                     _aio_sse.create_task(self._sse_trade_closed(trade_id))
                 except Exception as _esse:
                     logger.debug("[SSE] sse_trade_closed callback error: %s", _esse)
+
+            # DEV-222: TG reply при закрытии (reply на сообщение об открытии)
+            if self._tg_close_callback:
+                try:
+                    import asyncio as _aio_tg
+                    # Читаем tsl_activated из БД (обновлён в check_open_trades)
+                    _tsl_act = 0
+                    try:
+                        with self._db_connect() as _tg_conn:
+                            _tg_row = _tg_conn.execute(
+                                "SELECT tsl_activated FROM simulated_trades WHERE id=?", (trade_id,)
+                            ).fetchone()
+                            _tsl_act = int(_tg_row[0]) if _tg_row else 0
+                    except Exception:
+                        pass
+                    _aio_tg.create_task(self._tg_close_callback(
+                        trade_id=trade_id,
+                        status=status,
+                        symbol=symbol,
+                        direction=str(direction).upper() if direction else "LONG",
+                        r_multiple=r_multiple if r_multiple is not None else 0.0,
+                        tsl_activated=_tsl_act,
+                        max_r_possible=max_R_possible,
+                    ))
+                except Exception as _etg:
+                    logger.debug("[DEV-222] tg_close_callback error: %s", _etg)
 
             return True
         except Exception as e:

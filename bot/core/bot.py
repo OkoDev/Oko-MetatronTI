@@ -71,6 +71,12 @@ class TradingAlertBot:
         self.pair_context = PairContextBus()
         self.post_analyser = PostTradeAnalyser(self.pair_context, self.data_collector)
         self.trade_simulator.set_post_trade_callback(self.post_analyser.on_trade_closed)
+        # DEV-222: TG reply при закрытии сделки
+        from bot.monitoring import send_trade_close_reply as _tg_reply
+        _bot_ref = self
+        async def _tg_close_cb(**kwargs):
+            await _tg_reply(_bot_ref, **kwargs)
+        self.trade_simulator.set_tg_close_callback(_tg_close_cb)
         # Куб: Сфера 10 (Exit Manager) → PairContextBus
         self.trade_simulator._pair_context_bus = self.pair_context
 

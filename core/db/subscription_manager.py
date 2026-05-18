@@ -210,6 +210,20 @@ class SubscriptionManager:
                 "ON signal_drops(symbol, dropped_at)"
             )
 
+            # DEV-222: хранение TG message_id для reply при закрытии сделки
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tg_messages (
+                    trade_id INTEGER NOT NULL,
+                    user_id  INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    PRIMARY KEY (trade_id, user_id)
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tg_messages_trade "
+                "ON tg_messages(trade_id)"
+            )
+
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, 
