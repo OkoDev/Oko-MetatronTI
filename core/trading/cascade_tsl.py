@@ -2,9 +2,10 @@
 cascade_tsl.py — ARCH-62 Шаг 1: логика каскадного TSL, вынесенная из trade_simulator.
 
 Содержит gate-функции:
-  - get_cascade_cap_tf()      — ARCH-62: cap_tf="1h" после tp1_hit, не эскалировать до 4h
-  - should_skip_degradation() — DEV-123: anti-degradation gate для ракет R >= N
-  - check_r_gradient_drop()   — DEV-91: R-gradient drop как реальный триггер де-эскалации
+  - get_cascade_cap_tf()        — ARCH-62: cap_tf="1h" после tp1_hit, не эскалировать до 4h
+  - should_skip_degradation()   — DEV-123: anti-degradation gate для ракет R >= N
+  - check_r_gradient_drop()     — DEV-91: R-gradient drop как реальный триггер де-эскалации
+  - is_price_in_adverse_ob()    — DEV-221: цена вернулась в OB против направления → force close
 """
 import logging
 from typing import Optional
@@ -74,6 +75,46 @@ def should_skip_degradation(
         direction,
     )
     return True
+
+
+def is_price_in_adverse_ob(
+    df,
+    direction: str,
+    current_price: float,
+    lookback: int = 30,
+) -> bool:
+    """
+    DEV-221: Проверяет что цена вернулась в Order Block против направления сделки.
+
+    LONG: цена упала в bearish OB (зона сопротивления) → сигнал разворота
+    SHORT: цена выросла в bullish OB (зона поддержки) → сигнал разворота
+
+    Используется при де-эскалации как триггер форс-закрытия позиции.
+    При ошибке импорта / расчёта — возвращает False (не блокирует TSL).
+    """
+    try:
+        if df is None or len(df) < lookback:
+            return False
+        import pandas as pd
+        from core.smc.structure import detect_structure
+        from core.smc.order_blocks import detect_order_blocks
+        df_slice = df.tail(lookback + 10).copy().reset_index(drop=True)
+        struct = detect_structure(df_slice)
+        obs = detect_order_blocks(df_slice, struct)
+        # Для LONG: ищем bearish OB — зона сопротивления куда цена могла вернуться
+        # Для SHORT: ищем bullish OB — зона поддержки куда цена могла вернуться
+        check_obs = obs.active_bear if direction == "LONG" else obs.active_bull
+        for ob in check_obs:
+            if ob.bottom <= current_price <= ob.top:
+                logger.info(
+                    "[DEV-221] Цена %.6f в %s OB [%.6f–%.6f] direction=%s → force close",
+                    current_price, "bearish" if direction == "LONG" else "bullish",
+                    ob.bottom, ob.top, direction,
+                )
+                return True
+    except Exception as _e:
+        logger.debug("[DEV-221] is_price_in_adverse_ob: %s", _e)
+    return False
 
 
 def check_r_gradient_drop(

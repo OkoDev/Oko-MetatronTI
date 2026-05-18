@@ -69,7 +69,7 @@
 | **🚀 СПРИНТ «ЗАМЫКАНИЕ РАЗРЫВОВ» (19.04–26.04.2026)** — ✅ ARCH-88/89/90/91, DEV-172-FIX закрыты (→ TASKS-ARCHIVE) | | | |
 | [ARCH-92](#arch-92) | 🟢 | Анализ WR/avgR по Entry Priority (P1/P2/P3) на 200+ закрытых сделках (~22.04). Решение: P3→WATCH или оставить shadow | ARCH |
 | [ARCH-93](#arch-93) | 🟢 | Research: Future pivots touch→reaction на истории (20 пар, переходные часы day/week). Решение: добавлять feature или нет | ARCH/DEV |
-| [ARCH-94](#arch-94) | 🟡 | **Аудит lifecycle ордеров (14.05):** ✅ open_bracket в atr_change_signal (scan_loop.py:878) ✅ DecisionTrace логирование SIM причин (DEV-203). ❌ Orphan-детектор (OPEN в БД без позиции на бирже → алерт) — не реализован | ARCH/DEV |
+| [ARCH-94](#arch-94) | ✅ | **Аудит lifecycle ордеров (17.05 закрыт):** Root cause exchange_order_id=NULL — TradeRouter не делал UPDATE в БД после открытия ордера. Фикс: UPDATE SET exchange_order_id=? в _place_exchange_order() (ARCH-94). atr_change исправлен DEV-215. Orphan=0 подтверждён | ARCH/DEV |
 | [ARCH-95](#arch-95) | 🔴 | Глобальное расследование: почему торгуем в минус. 6 read-only аудит-скриптов (H1 entry timing/SL близко, H2 SL distance vs исход, H3 pivot S/R×direction, H4 куб snapshots, H5 detector→entry slippage, H6 MTF alignment, H7 EMA per-strategy) | ARCH/DEV |
 | **🆕 СИСТЕМНЫЕ СФЕРЫ КУБА (Claude consult 25.04 — параллельно с фиксами Слоя D ARCH-95)** | | | |
 | [ARCH-96](#arch-96) | 🧊 | Execution Sphere (Сфера 14): IdempotencyGuard + SlippagePredictor + OrderTypeSelector + ExecutionTracker. Закрывает SL-дубликаты архитектурно, режет slippage. КРИТИЧНО перед LIVE — **FROZEN до Phase 4** | ARCH/DEV |
@@ -118,6 +118,13 @@
 | [DEV-215](#dev-215) | ✅ | **datetime timezone bug (17.05):** `closed_at` в БД хранится как ISO `T`-format, cutoff как `%Y-%m-%d %H:%M:%S` (пробел). SQLite string compare: `T`(84) > `' '`(32) → все ISO timestamps всегда >= cutoff → market_stress/sl_cooldown всегда срабатывали. Фикс: `datetime(closed_at)>=datetime(?)` + `'%Y-%m-%dT%H:%M:%S'`. 3 файла: `gates/market_stress.py`, `gates/sl_cooldown.py`, `bot/monitoring.py` | DEV |
 | [DEV-211](#dev-211) | 🟡 | **MTFPivotAnalyzer deprecation + upgrade:** старый класс в mtf_pivot_integration.py использует `45m` (нестандартный TF) + старые импорты. Пометить deprecated; pivot confluence работает через PivotCalculatorFixed.find_confluences() | ARCH/DEV |
 | [DEV-212](#dev-212) | 🟢 | **pivot_confluence_2plus activation:** registry имеет вес=6 но никто не генерирует. После 50+ fvg_pivot_zones записей — подключить как ConfirmationRegistry confirmation | DEV |
+| **🆕 TSL/SL ROЙ-КОНСЕНСУС (18.05.2026)** — результаты team-ask 4/6 моделей, консенсус 5/5 | | | |
+| [DEV-216](#dev-216) | ✅ | **De-escalation fix (18.05):** `r_gradient_rollback_pct: 0.75→0.25` + `r_gradient_peak_min_r: 2.0→2.5`. TSL де-эскалирует при 75% откате от пика (было: 25%). TSL живёт дольше на старшем ТФ | DEV |
+| [DEV-217](#dev-217) | ✅ | **Per-strategy TSL activation (18.05):** `tsl_activation_r_per_strategy` в config.yaml + чтение в trade_simulator.py:1703. pivot=0.5R, wt_b=0.8R, wt_signal=1.0R, atr_change=1.5R | DEV |
+| [DEV-218](#dev-218) | ✅ | **Swing SL fix (18.05):** `_compute_swing_levels` в trading_intelligence.py:2530 — `min→max` для LONG (ближайший swing low), `max→min` для SHORT. Причина: раньше брался самый дальний → всегда >3% → fallback ATR | DEV |
+| [DEV-219](#dev-219) | ✅ | **SL кап 2% (18.05):** `sl_max_pct: 3.0→2.0` в двух местах config.yaml. Данные: SL 2-3% avgR=-0.206 (убыточен) | DEV |
+| [DEV-220](#dev-220) | 🟢 | **MTF событийная TSL активация:** активация по 1h ATR-trend flip (не по +R порогу). Триггер: DEV-199 EventBus уже публикует ATR trend events. Требует интеграции в check_open_trades_with_tsl | DEV |
+| [DEV-221](#dev-221) | 🔵 | **SMC OB exit при де-эскалации:** если цена вернулась в Order Block при де-эскалации → закрывать позицию. Уникальная идея Mistral из team-ask | DEV |
 | **АРХИТЕКТУРА** | | | |
 | [ARCH-87](#arch-87) | 🔵 | Fibonacci контекст в PairState: swing H/L + 0.618/0.705/0.79 в features_json для ML. Триггер: 50+ OTE сделок | ARCH/DEV |
 | [ARCH-85](#arch-85) | 🟡 | Формализация статусов стратегий (ACTIVE/SHADOW/DEPRECATED/REMOVED) + deprecated confluence/multi_signal (урок 2 AUDIT_LESSONS) — после спринта | ARCH |

@@ -226,7 +226,7 @@ trading:
       conflict_margin: 0.15
       tp_rr: 3.0
       sl_min_pct: 0.5   # DEV-SL-MIN 04.05: зажим снизу (до: 116 сделок с SL<0.5% → catast)
-      sl_max_pct: 3.0   # DEV-SL-MIN: зажим сверху
+      sl_max_pct: 2.0   # рой-консенсус 18.05: снижен с 3.0% → кап SL для снижения 1R-порога
     trend_following:
       min_signals: 2
       min_strength: 55
@@ -278,13 +278,20 @@ trading:
   tsl_activation_r: 1.0
   tsl_min_move_pct: 0.15
   tsl_activation_r_range: 0.7
+  tsl_activation_r_per_strategy:
+    pivot_reversal: 0.5
+    wt_b: 0.8
+    wt_signal: 1.0
+    wt_sideways: 0.8
+    atr_change: 1.5
+    confluence: 1.0
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5
   cascade_tsl_opts:
     cap_tf_after_tp1: 1h
     no_degrade_above_r: 3.0
-    r_gradient_peak_min_r: 2.0
-    r_gradient_rollback_pct: 0.75
+    r_gradient_peak_min_r: 2.5
+    r_gradient_rollback_pct: 0.25
   use_breakeven: false
   use_be_after_tp1: true       # DEV-173: после хита TP1 → SL переносится в entry+0.1%
   expired_extend_min_r: 5.0
@@ -299,7 +306,7 @@ trading:
   sl_tp:
     atr_multiplier: 1.0
     sl_min_pct: 0.5
-    sl_max_pct: 3.0
+    sl_max_pct: 2.0
     tp_fallback_rr: 3.0
     max_rr: 3.0
     max_rr_range: 2.5
@@ -361,6 +368,10 @@ signal_quality:
   dev186_shadow: false
   min_strength_register: 60  # P1.5 24.04: откат DEV-149 (50→60) — 50 пропускал слабые сигналы, 63 был слишком строг
   min_strength_atr_change: 15  # A1 14.05: снижен с 40 → 15 (backtest: 1h_LONG+0.12, 4h_LONG+0.275)
+  atr_change:
+    long_strength_penalty: 35  # SOFT: avgR=-0.711, WR=8.8% (n=80, 7дн) — штраф, не блок
+    allow_short_regimes:       # SHORT только в TREND_DOWN
+      - "TREND_DOWN"           # avgR=+0.488, WR=78.8% (n=52) vs RANGE avgR=+0.031 (n=34)
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
   ote_shadow_mode: false  # ARCH-87: активирован 18.04 — rejection 1W FVG [0.4235–0.4416]

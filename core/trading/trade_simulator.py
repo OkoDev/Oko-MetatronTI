@@ -1705,9 +1705,41 @@ class TradeSimulator:
                 from core.infra.config_loader import config as _cfg_tsl
                 if _trade_regime == "RANGE":
                     _tsl_act_r = float(_cfg_tsl.get("trading.tsl_activation_r_range", tsl_activation_r))
+                # Рой-консенсус: per-strategy пороги (pivot=0.5R, wt_b=0.8R, wt_signal=1.0R, atr_change=1.5R)
+                _sig_type_trade = trade.get("signal_type", "")
+                _per_strategy_tsl = _cfg_tsl.get("trading.tsl_activation_r_per_strategy", {})
+                if _sig_type_trade and isinstance(_per_strategy_tsl, dict) and _sig_type_trade in _per_strategy_tsl:
+                    _tsl_act_r = float(_per_strategy_tsl[_sig_type_trade])
             except Exception:
                 pass
             _tsl_gate = (current_r is not None and current_r >= _tsl_act_r)
+            # DEV-220: MTF событийная активация — при R >= порог*0.5 + 1h ATR-trend подтверждает
+            # Рой-консенсус: не ждём жёсткий +R, а смотрим на структуру старшего ТФ
+            if use_tsl and not _tsl_gate and current_r is not None and current_r >= max(_tsl_act_r * 0.5, 0.3):
+                try:
+                    from core.indicators.indicators import calculate_trend as _calc_trend_mtf
+                    from core.infra.config_loader import config as _cfg_mtf220
+                    _mtf220_atr_p = int(_cfg_mtf220.get("analysis.indicators.trend.atr_period", 43))
+                    _mtf220_factor = float(_cfg_mtf220.get("analysis.indicators.trend.factor", 1.0))
+                    _df_1h_mtf = await data_collector.get_ohlcv(symbol, "1h", limit=55)
+                    if _df_1h_mtf is not None and len(_df_1h_mtf) >= 50:
+                        _df_1h_tr = _calc_trend_mtf(_df_1h_mtf, atr_period=_mtf220_atr_p, factor=_mtf220_factor)
+                        _1h_trend_now = int(_df_1h_tr["trend"].iloc[-1])
+                        _1h_trend_prev = int(_df_1h_tr["trend"].iloc[-2]) if len(_df_1h_tr) >= 2 else _1h_trend_now
+                        _1h_flip = (_1h_trend_now != _1h_trend_prev)
+                        _1h_align = (
+                            (direction == "LONG" and _1h_trend_now == 1) or
+                            (direction == "SHORT" and _1h_trend_now == -1)
+                        )
+                        if _1h_align:
+                            _tsl_gate = True
+                            logger.info(
+                                "[DEV-220] %s id=%d MTF early TSL: R=%.2f>=%.2f*0.5 + 1h %s%s",
+                                symbol, trade_id, current_r, _tsl_act_r,
+                                "trend align", " (flip!)" if _1h_flip else "",
+                            )
+                except Exception:
+                    pass
             if use_tsl and _tsl_gate:
                 # Активируем TSL после достижения прибыли — помечаем в БД
                 try:
@@ -1728,6 +1760,7 @@ class TradeSimulator:
 
                     df_tsl = None
                     tsl_tf_used = tf
+                    _ob_force_close = False  # DEV-221: OB return при де-эскалации
 
                     if cascade_tsl:
                         # Каскадный TSL (ARCH-10 + DEV-28): двунаправленный каскад.
@@ -1922,6 +1955,15 @@ class TradeSimulator:
                                     except Exception as _e91:
                                         logger.debug("[DEV-91] r_gradient: %s", _e91)
 
+                                    # DEV-221: если r_gradient_drop И цена в OB → force close
+                                    if _r_gradient_drop and df_tsl is not None and current_price:
+                                        try:
+                                            from core.trading.cascade_tsl import is_price_in_adverse_ob
+                                            if is_price_in_adverse_ob(df_tsl, direction, current_price):
+                                                _ob_force_close = True
+                                        except Exception:
+                                            pass
+
                                     # DEV-123: anti-degradation gate для ракет
                                     _skip_degrade = False
                                     try:
@@ -2058,6 +2100,15 @@ class TradeSimulator:
                         )
                         tsl_price = _decision.new_sl
                         tsl_triggered = _decision.triggered
+
+                        # DEV-221: OB return при де-эскалации → принудительное закрытие
+                        if _ob_force_close and not tsl_triggered:
+                            tsl_triggered = True
+                            tsl_price = current_price
+                            logger.info(
+                                "[DEV-221] %s #%d %s: OB return + gradient drop R=%.2f → force TSL close",
+                                symbol, trade_id, direction, current_r or 0,
+                            )
 
                         # DEV-191: логируем инверсию raw_tsl (floored=True означает
                         # что trenddown/trendup оказался на неправильной стороне от цены)

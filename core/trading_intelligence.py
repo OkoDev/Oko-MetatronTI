@@ -1733,17 +1733,20 @@ class TradingIntelligence:
                         _near_s = bool(_near_s_label)
                         _near_r = bool(_near_r_label)
 
-                        # DEV-89 sub-task: tp_source содержит Weekly уровень → разрешить
-                        # Если get_tp_by_hierarchy() вернул Weekly S/R как TP — сигнал уже
-                        # находится в контексте Weekly зоны (дневных уровней между ценой и TP нет)
+                        # DEV-89 sub-task: tp_source содержит Weekly/Daily уровень → разрешить
+                        # Если get_tp_by_hierarchy() вернул W/D S/R как TP — сигнал уже
+                        # находится в контексте этой зоны (reversal у уровня)
                         _tp_src_89 = str(getattr(recommendation, "tp_source", None) or "")
-                        if "1W" in _tp_src_89 or "1w" in _tp_src_89.lower():
-                            if _dir_48 == "LONG" and any(x in _tp_src_89 for x in ("S1","S2","S3","PP")):
-                                _near_s = True
-                                _near_s_label = _near_s_label or f"tp_src:{_tp_src_89}"
-                            elif _dir_48 == "SHORT" and any(x in _tp_src_89 for x in ("R1","R2","R3","PP")):
-                                _near_r = True
-                                _near_r_label = _near_r_label or f"tp_src:{_tp_src_89}"
+                        _tp_src_lower = _tp_src_89.lower()
+                        for _tf_tag in ("1W", "1w", "1D", "1d"):
+                            if _tf_tag in _tp_src_89 or _tf_tag.lower() in _tp_src_lower:
+                                if _dir_48 == "LONG" and any(x in _tp_src_89 for x in ("S1","S2","S3","PP")):
+                                    _near_s = True
+                                    _near_s_label = _near_s_label or f"tp_src:{_tp_src_89}"
+                                elif _dir_48 == "SHORT" and any(x in _tp_src_89 for x in ("R1","R2","R3","PP")):
+                                    _near_r = True
+                                    _near_r_label = _near_r_label or f"tp_src:{_tp_src_89}"
+                                break
 
                         if _dir_48 == "LONG" and _weekly_bias_48 == "BEARISH":
                             if _near_s:
@@ -2523,9 +2526,11 @@ class TradingIntelligence:
                     lows_candidates.append(low_i)
                 if high_i > left_h.max() and high_i > right_h.max() and high_i > current_price:
                     highs_candidates.append(high_i)
-            # "За вершину" = самый ДАЛЬНИЙ экстремум (min low / max high)
-            swing_low  = float(min(lows_candidates))  if lows_candidates  else None
-            swing_high = float(max(highs_candidates)) if highs_candidates else None
+            # Ближайший значимый экстремум — SL за него тесней, в пределах sl_max кода
+            # Для LONG: самый высокий swing low ниже цены (ближайший снизу)
+            # Для SHORT: самый низкий swing high выше цены (ближайший сверху)
+            swing_low  = float(max(lows_candidates))  if lows_candidates  else None
+            swing_high = float(min(highs_candidates)) if highs_candidates else None
             return swing_low, swing_high
         except Exception:
             return None, None
