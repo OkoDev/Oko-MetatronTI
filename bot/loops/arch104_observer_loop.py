@@ -28,14 +28,19 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Scan период — 5 минут (по умолчанию)
-OBSERVER_INTERVAL_SECONDS = 300
+# Scan период — 10 минут (D-029 2026-05-21: было 300s, повышено до 600s
+# чтобы снизить фоновую нагрузку на BingX API. Patterns живут часами,
+# scan каждые 10 мин достаточен для shadow logging.)
+OBSERVER_INTERVAL_SECONDS = 600
 
 # Минимум баров для compute_flags
 MIN_BARS = 200
 
 # Параллелизм — observer не должен душить API больше чем scan_loop
-OBSERVER_CONCURRENCY = 8
+# D-029 2026-05-21: было 8, снижено до 4 — main scan_loop тоже параллелит API,
+# суммарная нагрузка на 241 паре приводила к HARD timeout в trading_intelligence
+# (+70% timeout/час post-restart vs pre-restart).
+OBSERVER_CONCURRENCY = 4
 
 
 async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_SECONDS):
