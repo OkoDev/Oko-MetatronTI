@@ -272,6 +272,574 @@ patterns:
     test_WR: 83.5
     weight: 13
 
+
+  # ─────────── TIER 2 (D-031, 2026-05-21) ───────────
+  # ═══════════════════════════ LONG Tier 2 ═══════════════════════════
+
+  T2_L_01:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_4h
+      - discount_1h
+      - wt_os_1d
+      - wt_os_1h
+    test_n: 103
+    test_avgR: 1.239
+    test_WR: 78.6
+    mht_p_adj: 0.0000
+    weight: 11
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_02:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_4h
+      - discount_4h
+      - wt_os_1d
+      - wt_os_1h
+    test_n: 82
+    test_avgR: 1.208
+    test_WR: 79.3
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_03:
+    direction: LONG
+    anchor_factors:
+      - atr_cross_up_1d
+      - atr_up_4h
+      - bull_div_4h
+    test_n: 46
+    test_avgR: 1.295
+    test_WR: 84.8
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_04:
+    direction: LONG
+    anchor_factors:
+      - atr_cross_up_1d
+      - bull_div_4h
+      - vol_spike_1d
+    test_n: 50
+    test_avgR: 1.171
+    test_WR: 80.0
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_05:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_4h
+      - rsi_os_1h
+      - wt_os_1d
+      - wt_os_1h
+    test_n: 60
+    test_avgR: 1.180
+    test_WR: 73.3
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_06:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_4h
+      - vol_spike_1h
+      - wt_os_1d
+      - wt_os_1h
+    test_n: 35
+    test_avgR: 1.222
+    test_WR: 80.0
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_07:
+    direction: LONG
+    anchor_factors:
+      - bull_div_1d
+      - bull_ob_4h
+      - wt_os_4h
+    test_n: 135
+    test_avgR: 0.984
+    test_WR: 71.9
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_08:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_in_4h
+      - wt_os_1d
+      - wt_os_1h
+    test_n: 41
+    test_avgR: 1.150
+    test_WR: 78.0
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_09:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_4h
+      - bull_ob_4h
+      - wt_os_1d
+      - wt_os_1h
+    test_n: 78
+    test_avgR: 1.018
+    test_WR: 71.8
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_10:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_in_1h
+      - wt_os_1d
+      - wt_os_4h
+    test_n: 125
+    test_avgR: 0.727
+    test_WR: 78.4
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_11:
+    direction: LONG
+    anchor_factors:
+      - bull_bos_1d
+      - bull_bos_4h
+      - discount_1h
+    test_n: 32
+    test_avgR: 0.976
+    test_WR: 75.0
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_12:
+    direction: LONG
+    anchor_factors:
+      - atr_cross_up_1d
+      - bull_div_4h
+      - rsi_os_1d
+    test_n: 35
+    test_avgR: 0.955
+    test_WR: 71.4
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_13:
+    direction: LONG
+    anchor_factors:
+      - atr_cross_up_1d
+      - bull_mom_1d
+      - discount_1h
+      - pivot_near_S3_1W
+    test_n: 39
+    test_avgR: 0.846
+    test_WR: 76.9
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_14:
+    direction: LONG
+    anchor_factors:
+      - bull_mom_1d
+      - vol_spike_1h
+      - wt_os_1d
+    test_n: 38
+    test_avgR: 0.888
+    test_WR: 73.7
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_L_15:
+    direction: LONG
+    anchor_factors:
+      - eql_sweep_4h
+      - wt_os_1d
+      - wt_os_4h
+    test_n: 40
+    test_avgR: 0.806
+    test_WR: 77.5
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 3
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+
+  # ═══════════════════════════ SHORT Tier 2 ═══════════════════════════
+
+  T2_S_01:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - premium_1h
+      - rsi_cross50_down_1d
+      - vol_spike_1d
+    test_n: 380
+    test_avgR: 1.180
+    test_WR: 80.5
+    mht_p_adj: 0.0000
+    weight: 14
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_02:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_in_1h
+      - below_ema200_1d
+      - rsi_cross50_down_1d
+    test_n: 289
+    test_avgR: 1.200
+    test_WR: 82.0
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_03:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_ob_1d
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 345
+    test_avgR: 1.184
+    test_WR: 80.6
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_04:
+    direction: SHORT
+    anchor_factors:
+      - below_ema200_1h
+      - premium_1d
+      - premium_4h
+      - wt_ob_1h
+    test_n: 105
+    test_avgR: 1.439
+    test_WR: 82.9
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_05:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_1h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 368
+    test_avgR: 1.158
+    test_WR: 80.4
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_06:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - below_ema50_1h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 388
+    test_avgR: 1.144
+    test_WR: 79.4
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_07:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_ob_1h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 317
+    test_avgR: 1.166
+    test_WR: 80.4
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_08:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_in_1h
+      - ema50_below_ema200_1d
+      - rsi_cross50_down_1d
+    test_n: 214
+    test_avgR: 1.222
+    test_WR: 81.8
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_09:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - below_ema200_1d
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 360
+    test_avgR: 1.136
+    test_WR: 80.0
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_10:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_in_1h
+      - rsi_cross50_down_1d
+      - vol_spike_1d
+    test_n: 284
+    test_avgR: 1.168
+    test_WR: 81.0
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_11:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - below_ema200_1h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 402
+    test_avgR: 1.125
+    test_WR: 78.9
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_12:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - below_ema50_1d
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 402
+    test_avgR: 1.125
+    test_WR: 78.9
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_13:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - pivot_below_PP_1W
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 402
+    test_avgR: 1.125
+    test_WR: 78.9
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_14:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - ema50_below_ema200_1h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 402
+    test_avgR: 1.125
+    test_WR: 78.9
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
+  T2_S_15:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - below_ema50_4h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 402
+    test_avgR: 1.125
+    test_WR: 78.9
+    mht_p_adj: 0.0000
+    weight: 13
+    priority: 3
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 48
+
 # Defaults для всех patterns
 defaults:
   min_signal_strength: 60       # composite scoring threshold
