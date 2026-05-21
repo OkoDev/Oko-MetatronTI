@@ -1523,6 +1523,155 @@ patterns:
       fallback_tp_r: 2.0
     time_exit_hours: 24
 
+
+  # ─────────── TIER 3 D2 (D-033, 2026-05-21) ───────────
+  # 4h+1h HTF base, intraday/mid-cycle паттерны
+  # Фильтр: n≥50, avgR≥0.5, WR≥60.0
+  # Anchors предложены роем (mistral lead, 2026-05-21)
+
+  # ─── D2 LONG ───
+
+  D2_L_L1_5m_01:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - above_ema200_5m
+      - atr_up_4h
+      - bull_fvg_1h
+      - bull_fvg_5m
+      - bull_ob_1h
+      - ema50_above_ema200_5m
+      - pivot_bounce_up_S2_1D
+    test_n: 85
+    test_avgR: 1.117
+    test_WR: 72.9
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L1_5m_02:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - above_ema200_5m
+      - atr_up_4h
+      - atr_up_5m
+      - bull_fvg_1h
+      - bull_ob_1h
+      - ema50_above_ema200_5m
+      - pivot_bounce_up_S2_1D
+    test_n: 105
+    test_avgR: 0.828
+    test_WR: 62.9
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L1_5m_03:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - above_ema200_5m
+      - atr_up_4h
+      - bull_fvg_1h
+      - bull_ob_1h
+      - bull_ob_near_5m
+      - ema50_above_ema200_5m
+      - pivot_bounce_up_S2_1D
+    test_n: 122
+    test_avgR: 0.770
+    test_WR: 60.7
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L1_15m_01:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - above_ema50_15m
+      - atr_up_4h
+      - bull_fvg_1h
+      - bull_ob_1h
+      - bull_ob_near_15m
+      - pivot_bounce_up_S2_1D
+    test_n: 67
+    test_avgR: 0.742
+    test_WR: 65.7
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L1_15m_02:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - atr_up_4h
+      - bull_fvg_1h
+      - bull_fvg_in_15m
+      - bull_ob_1h
+      - pivot_bounce_up_R1_1D
+      - pivot_bounce_up_R3_1W
+    test_n: 157
+    test_avgR: 0.633
+    test_WR: 60.5
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L1_15m_03:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - above_ema50_15m
+      - atr_up_4h
+      - bull_fvg_1h
+      - bull_ob_15m
+      - bull_ob_1h
+      - pivot_bounce_up_S2_1D
+    test_n: 78
+    test_avgR: 0.650
+    test_WR: 65.4
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
 # Defaults для всех patterns
 defaults:
   min_signal_strength: 60       # composite scoring threshold
