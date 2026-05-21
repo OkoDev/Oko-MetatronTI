@@ -551,3 +551,13 @@ signal_router:
       sl_serie: 12                            # ARCH-42 серия SL
     pair_cooldown_streak:
       after_5_sl: 15                          # ARCH-88 серия SL по паре
+
+# ─── ARCH-104: Pattern Mining + Risk Intelligence (D-030, 21.05.2026) ───
+# Observer loop сканит 241 пары × 4 TF каждые 10 мин. Когда RI v1 решает
+# apply=True → регистрирует сделку через trade_simulator (VST).
+# Отключить: vst_trading.enabled: false → только shadow logging
+# в risk_decisions_log без сделок.
+arch104:
+  vst_trading:
+    enabled: true             # D-030: торговля 15 паттернов на VST
+    signal_type: "arch104"    # в БД simulated_trades для разделения

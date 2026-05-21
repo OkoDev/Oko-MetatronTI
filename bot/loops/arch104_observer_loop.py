@@ -1,19 +1,19 @@
 """
-ARCH-104 Observer Loop — parallel observation без вмешательства в trading.
+ARCH-104 Observer Loop — наблюдение + опциональная регистрация VST сделок.
 
 Запускается параллельно с основным scan_loop. Раз в N минут:
 1. Для каждой пары собирает текущие active SMC/indicator flags
 2. Прогоняет через ARCH104SignalAdapter (registry + RI v1)
 3. Логирует решения в `risk_decisions_log` table
+4. Если `arch104.vst_trading.enabled` в config + decision.apply=True —
+   регистрирует сделку через trade_simulator (signal_type='arch104').
 
-Через 1-2 недели можно сравнить ARCH-104 decisions vs actual VST trades бота.
+D-028 (2026-05-20): VST на BingX = production execution с реальными ценами.
+Shadow поверх не нужен — VST trading сразу даёт реальные R-multiple данные.
 
-Mode:
-  observer (default): только логирование, НЕ блокирует и НЕ форсит сделки
-  active (future):    переключение в production — adapter принимает решения
-
-D-028 (2026-05-20): VST уже = production execution с реальными ценами,
-shadow_mode не нужен. Observer loop собирает decision quality data.
+D-030 (2026-05-21): VST trading enabled — паттерны открывают позиции через
+register_trade_async когда decision.apply=True. signal_type='arch104' для
+разделения с остальными стратегиями в БД.
 """
 from __future__ import annotations
 
@@ -283,8 +283,111 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
                     symbol, det_tf, direction, decision.pattern_id,
                     decision.apply, decision.risk_pct, sl_price,
                 )
+                # D-030: VST trading — если decision.apply и flag в config
+                if decision.apply and bool(bot.config.get("arch104.vst_trading.enabled", False)):
+                    await _try_register_vst_trade(
+                        bot, symbol, det_tf, direction, decision,
+                        adapter.registry, price, sl_price,
+                    )
 
     return any_decision
+
+
+# ─────────── VST trading helper (D-030) ───────────
+
+async def _try_register_vst_trade(
+    bot, symbol: str, det_tf: str, direction: str, decision,
+    registry, price: float, sl_price: float,
+):
+    """Регистрирует ARCH-104 сделку через trade_simulator (VST).
+
+    SL = sl_price (swing low/high из _scan_one_pair, lookahead-safe)
+    TP = entry ± fallback_tp_r × SL distance (по pattern.tp.fallback_tp_r)
+    signal_type = 'arch104' (override в extra_features)
+    """
+    try:
+        from core.signals.signal_models import (
+            TradingRecommendation, SignalDirection, MarketContext,
+        )
+    except ImportError as e:
+        logger.warning("[ARCH-104 VST] import failed: %s", e)
+        return
+
+    pattern = registry.get(decision.pattern_id)
+    if pattern is None:
+        return
+
+    sl_dist = abs(price - sl_price)
+    if sl_dist <= 0:
+        return
+
+    fallback_tp_r = float(getattr(pattern, "fallback_tp_r", 2.0))
+    if direction == "LONG":
+        tp_price = price + fallback_tp_r * sl_dist
+        side_enum = SignalDirection.LONG
+        action = "BUY"
+    else:
+        tp_price = price - fallback_tp_r * sl_dist
+        side_enum = SignalDirection.SHORT
+        action = "SELL"
+
+    # strength = производная от pattern.weight (10-19) → 60-95
+    strength = max(60, min(95, 50 + int(getattr(pattern, "weight", 10)) * 2))
+    confidence = max(0.55, min(0.95, 0.55 + float(decision.risk_pct) * 0.1))
+
+    rec = TradingRecommendation(
+        symbol=symbol,
+        action=action,
+        direction=side_enum,
+        overall_strength=strength,
+        confidence=confidence,
+        risk_level="MEDIUM",
+        signals_count=1,
+        supporting_signals=[],
+        conflicting_signals=[],
+        market_context=MarketContext(
+            symbol=symbol, current_price=price,
+            volume_24h=0.0, volume_change_24h=0.0, price_change_24h=0.0,
+        ),
+        entry_price=price,
+        stop_loss=sl_price,
+        take_profit=tp_price,
+        sl_source=f"arch104:swing_{det_tf}",
+        tp_source=f"arch104:{getattr(pattern, 'tp_strategy', 'no_trail')}_r{fallback_tp_r}",
+    )
+
+    extra = {
+        "signal_type_override": "arch104",
+        "trigger_source": f"arch104:{decision.pattern_id}",
+        "arch104_pattern_id": decision.pattern_id,
+        "arch104_detection_tf": det_tf,
+        "arch104_risk_pct": float(decision.risk_pct),
+        "arch104_leverage": int(getattr(decision, "leverage", 1)),
+        "arch104_time_exit_hours": int(getattr(pattern, "time_exit_hours", 24)),
+        "arch104_tp_strategy": getattr(pattern, "tp_strategy", "no_trail"),
+        "arch104_matched_patterns": list(getattr(decision, "matched_patterns", [])),
+        "trade_mode": "arch104",   # dedup: разные режимы не блокируют
+    }
+
+    try:
+        trade_id = await bot.trade_simulator.register_trade_async(
+            rec, bot.data_collector, extra_features=extra,
+        )
+    except Exception as e:
+        logger.exception("[ARCH-104 VST] %s register_trade_async error: %s", symbol, e)
+        return
+
+    if trade_id:
+        logger.info(
+            "[ARCH-104 VST] %s@%s %s pattern=%s → trade #%d str=%d sl=%.4f tp=%.4f risk=%.2f%%",
+            symbol, det_tf, direction, decision.pattern_id,
+            trade_id, strength, sl_price, tp_price, float(decision.risk_pct),
+        )
+    else:
+        logger.info(
+            "[ARCH-104 VST] %s@%s %s pattern=%s — dropped (dedup/gate/strength)",
+            symbol, det_tf, direction, decision.pattern_id,
+        )
 
 
 # ─────────── Self-test ───────────
