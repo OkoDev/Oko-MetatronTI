@@ -1,0 +1,65 @@
+# Auto-generated per-pair volatility bucket assignment
+# Source: tools/pattern_mining/per_pair_volatility_buckets.py
+# Bucket boundaries (ATR_norm % on 1h, EMA-14):
+#   very_low_vol: [0.0-0.9%]
+#   low_vol: [0.9-1.0%]
+#   mid_vol: [1.0-1.2%]
+#   high_vol: [1.2-1.3%]
+#   micro_vol: [1.3-1000.0%]
+
+buckets:
+  very_low_vol:
+    symbols:
+      - TRXUSDT
+      - BNBUSDT
+      - BTCUSDT
+      - LTCUSDT
+      - XRPUSDT
+      - ETHUSDT
+      - RUNEUSDT
+      - ATOMUSDT
+      - SOLUSDT
+  low_vol:
+    symbols:
+      - LINKUSDT
+      - TONUSDT
+      - ETCUSDT
+      - AVAXUSDT
+      - DOGEUSDT
+      - ADAUSDT
+      - GRTUSDT
+      - STXUSDT
+      - SEIUSDT
+  mid_vol:
+    symbols:
+      - UNIUSDT
+      - ENSUSDT
+      - MATICUSDT
+      - KASUSDT
+      - DOTUSDT
+      - SUIUSDT
+      - INJUSDT
+      - NEARUSDT
+      - AAVEUSDT
+  high_vol:
+    symbols:
+      - 1000BONKUSDT
+      - FILUSDT
+      - TNSRUSDT
+      - APTUSDT
+      - TIAUSDT
+      - JUPUSDT
+      - OPUSDT
+      - ARBUSDT
+      - APEUSDT
+  micro_vol:
+    symbols:
+      - WIFUSDT
+      - WLDUSDT
+      - RENDERUSDT
+      - FETUSDT
+      - GALAUSDT
+      - CRVUSDT
+      - ENAUSDT
+      - ZROUSDT
+      - DYDXUSDT

@@ -1,0 +1,299 @@
+# ARCH-104 Production Patterns Registry
+# Generated from Phase 1.A walkforward_full_mht (12002 MHT-passed patterns)
+# + Phase 1.B nested multi-anchor + Phase 1.F Risk Intelligence policies
+#
+# Каждый паттерн = entry trigger для Confirmation Registry в Phase 7 DEV-270.
+# Веса распределены по test_avgR из walk-forward.
+
+version: 1
+generated: 2026-05-20
+source_mht: data/research/2026-05-20--ph1/walkforward_full_mht.csv
+
+patterns:
+
+  # ═══════════════════════════ LONG ═══════════════════════════
+
+  L1_golden:
+    direction: LONG
+    anchor_factors:
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+    test_n: 29
+    test_avgR: 1.892
+    test_WR: 100.0
+    mht_p_adj: 0.0000
+    weight: 18                  # max weight для топ-паттерна
+    priority: 1
+    sl:
+      source: swing_low
+      lookback_bars: 10
+      buffer_pct: 0.1
+    tp:
+      strategy: no_trail          # D-022: TP grid winner avgR+6.07 WR=87%
+      fallback_tp_r: 2.0
+    time_exit_hours: 24           # D-022: 12-24h sweet spot, 72h+ deg
+
+  L2_wt_double_fvg:
+    direction: LONG
+    anchor_factors:
+      - wt_os_1d
+      - bull_fvg_4h
+      - wt_os_1h
+    test_n: 103
+    test_avgR: 1.239
+    test_WR: 78.6
+    weight: 15
+    priority: 2
+    time_exit_hours: 120
+
+  L3_premium_long:
+    direction: LONG
+    anchor_factors:
+      - wt_os_1d
+      - bull_fvg_4h
+      - wt_os_1h
+      - discount_1d
+      - ote_long_4h
+    test_n: 37
+    test_avgR: 1.527
+    test_WR: 89.2
+    weight: 16
+    priority: 1
+    time_exit_hours: 120
+
+  # LTF nested entries (HTF context + LTF trigger — full chain in anchor_factors)
+  L1_golden_LTF_15m:
+    direction: LONG
+    parent: L1_golden                # для documentation
+    anchor_factors:                  # HTF + LTF trigger (all must be True)
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+      - bull_ob_near_15m
+    test_n: 73
+    test_avgR: 1.979
+    test_WR: 100.0
+    weight: 17
+    priority: 2
+    sl:
+      source: swing_low
+      lookback_bars: 10               # на 15m TF
+      buffer_pct: 0.1
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 24              # 96 баров 15m = 24h
+    detection_tf: 15m
+
+  L1_golden_LTF_15m_balanced:
+    direction: LONG
+    parent: L1_golden
+    anchor_factors:                   # сильная версия с двумя триггерами
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+      - bull_ob_near_15m
+      - atr_up_15m
+    test_n: 73
+    test_avgR: 1.979
+    test_WR: 100.0
+    weight: 18
+    priority: 1
+    sl:
+      lookback_bars: 10
+    tp:
+      strategy: no_trail
+    time_exit_hours: 24
+    detection_tf: 15m
+
+  L1_golden_LTF_5m:
+    direction: LONG
+    parent: L1_golden
+    anchor_factors:                  # 5m trigger требует HTF context актив
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+      - atr_up_5m
+    test_n: 268
+    test_avgR: 1.762
+    test_WR: 97.0
+    weight: 16
+    priority: 2
+    sl:
+      lookback_bars: 20               # 20 баров 5m = ~1.5h lookback
+    tp:
+      strategy: no_trail
+    time_exit_hours: 12               # 144 бара 5m (12h, не 24h — D-026)
+    detection_tf: 5m
+
+  # ─── Multi-TF Scaling family (D-026): 4 independent системы на одной паре ───
+  # Каждая своим SL/exit/risk, могут торговаться одновременно
+
+  L1_golden_scale_5m:
+    direction: LONG
+    parent: L1_golden
+    anchor_factors:
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+      - atr_up_5m
+    test_n: 68
+    test_avgR: 1.994
+    test_WR: 55.9
+    weight: 14
+    priority: 3
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+    time_exit_hours: 12
+    detection_tf: 5m
+    scaling_role: "fast"             # quick fixation
+
+  L1_golden_scale_15m:
+    direction: LONG
+    parent: L1_golden
+    anchor_factors:
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+      - bull_ob_near_15m
+    test_n: 66
+    test_avgR: 3.412
+    test_WR: 63.6
+    weight: 16
+    priority: 2
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+    time_exit_hours: 24
+    detection_tf: 15m
+    scaling_role: "medium"
+
+  L1_golden_scale_1h:
+    direction: LONG
+    parent: L1_golden
+    anchor_factors:                  # = L1_golden + atr_up_1h boost factor
+      - bull_div_1d
+      - bull_fvg_4h
+      - wt_os_4h
+      - atr_up_1h
+    test_n: 61
+    test_avgR: 6.074
+    test_WR: 86.9
+    weight: 19                        # max weight (D-022 winner)
+    priority: 1
+    sl:
+      lookback_bars: 10
+    tp:
+      strategy: no_trail               # D-022 grid winner
+    time_exit_hours: 24
+    detection_tf: 1h
+    scaling_role: "anchor"
+
+  # ═══════════════════════════ SHORT ══════════════════════════
+
+  S1_bos_atr_premium:
+    direction: SHORT
+    anchor_factors:
+      - atr_cross_down_1d
+      - bear_bos_1d
+      - premium_4h
+    test_n: 319
+    test_avgR: 1.214
+    test_WR: 83.1
+    weight: 14
+    priority: 1
+    time_exit_hours: 168
+    risk_policy_ref: S1_bos_premium   # из risk_policies.yaml
+
+  S2_fvg_bos_premium:
+    direction: SHORT
+    anchor_factors:
+      - bear_fvg_in_1h
+      - bear_bos_1d
+      - premium_4h
+    test_n: 281
+    test_avgR: 1.271
+    test_WR: 84.7
+    weight: 14
+
+  S3_full_short:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_in_1h
+      - below_ema50_1h
+      - premium_4h
+    test_n: 272
+    test_avgR: 1.315
+    test_WR: 86.0
+    weight: 15
+    risk_policy_ref: S3_full_short
+
+  S4_strong_short:
+    direction: SHORT
+    anchor_factors:
+      - atr_cross_down_1d
+      - bear_bos_1d
+      - bear_fvg_1d
+      - bear_fvg_in_4h
+      - premium_4h
+    test_n: 130
+    test_avgR: 1.456
+    test_WR: 89.2
+    weight: 17
+    priority: 1
+
+  S8_ote_strong:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_in_1h
+      - ote_short_1h
+      - premium_4h
+    test_n: 164
+    test_avgR: 1.339
+    test_WR: 90.2
+    weight: 16
+
+  # SHORT с rsi_cross (новые из DEV-210 walkforward_full)
+  S_rsi_cross_premium:
+    direction: SHORT
+    anchor_factors:
+      - bear_bos_1d
+      - bear_fvg_in_1h
+      - premium_1h
+      - rsi_cross50_down_1d
+    test_n: 255
+    test_avgR: 1.245
+    test_WR: 83.5
+    weight: 13
+
+# Defaults для всех patterns
+defaults:
+  min_signal_strength: 60       # composite scoring threshold
+  sl_lookback_bars: 10
+  sl_buffer_pct: 0.1
+  max_open_positions_per_pattern: 2
+  intra_pair_correlation_cap: 1   # max 1 позиция per pair per pattern (D-011)
+
+# Risk Intelligence integration
+risk_intelligence:
+  v1_enabled: true               # формульный (DEV-260)
+  v2_enabled: true               # ML ensemble (DEV-261)
+  decision_fusion_strategy: v2_with_v1_safeguard
+  v2_threshold_p_win: 0.55
+  # D-028 (2026-05-20): не нужен shadow — VST на BingX уже даёт production-like
+  # execution с виртуальными деньгами. Сразу VST → LIVE.
+  vst_observation_until: 2026-06-03   # 14 дней VST с новыми ARCH-104 patterns
+  live_capital_ramp_start: 2026-06-04  # Stage 2 LIVE 10%
+
+# Auto-retire (Phase 7 DEV-275)
+auto_retire:
+  enabled: true
+  pattern_avgR_30d_threshold: 0.5   # × baseline
+  min_trades_for_check: 20
+  retire_action: shadow_only

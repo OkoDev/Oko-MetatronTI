@@ -1,0 +1,71 @@
+# Risk Policies — per-pattern конфигурация для Risk Intelligence v1
+# Заполняется автоматически из anti-patterns mining (Phase 1 DEV-212)
+# и обновляется в Phase 6 DEV-263 финальной версии.
+#
+# Структура per pattern:
+#   - base_risk_multiplier: 1.0 (нейтральный мультипликатор)
+#   - kill_switches: list of factors, при которых allow_entry = False
+#   - boost_factors: list of factors → +X% confidence (risk_pct multiplier)
+#   - penalty_factors: list of factors → -X% (но не блок)
+
+version: 1
+generated_from: "data/research/2026-05-20--ph1/antipatterns_v1.csv"
+generated_date: 2026-05-20
+
+patterns:
+
+  # L1_golden: bull_div_1d + bull_fvg_4h + wt_os_4h
+  L1_golden:
+    base_risk_multiplier: 1.0
+    direction: LONG
+    # Будут заполнены после DEV-212 для этого якоря (только premium_short в текущем CSV)
+    kill_switches: []
+    boost_factors: []
+    penalty_factors: []
+
+  # S1: atr_cross_down_1d + bear_bos_1d + premium_4h
+  S1_bos_premium:
+    base_risk_multiplier: 1.0
+    direction: SHORT
+    kill_switches:
+      - factor: atr_cross_down_1h
+        reason: "WR падает 83→18% (timing проблема)"
+      - factor: bear_ob_near_4h
+        reason: "WR падает 83→18% (зона уже сработала)"
+      - factor: atr_down_1h
+        reason: "WR падает 83→15%"
+      - factor: bear_fvg_in_1h
+        reason: "WR падает (контр-сигнал)"
+    boost_factors:
+      - factor: atr_up_1h
+        delta_wr_pct: +72
+        delta_avgR: +1.72
+        multiplier_bonus: 1.3
+        reason: "Bull 1h context при bear 1d setup = идеальный pullback short"
+      - factor: bull_ob_1h
+        delta_wr_pct: +25
+        delta_avgR: +0.78
+        multiplier_bonus: 1.2
+        reason: "Bull OB на 1h рядом с премиум = pullback к нему"
+      - factor: bull_fvg_1h
+        delta_wr_pct: +15
+        delta_avgR: +0.57
+        multiplier_bonus: 1.15
+      - factor: rsi_ob_1h
+        delta_wr_pct: +15
+        delta_avgR: +0.60
+        multiplier_bonus: 1.15
+      - factor: pivot_bounce_down_S3_1W
+        n: 9
+        wr_when_true: 100
+        avgR_when_true: 2.00
+        multiplier_bonus: 1.5
+        reason: "100% WR — премиум сигнал но малая выборка"
+    penalty_factors:
+      - factor: bull_div_1d
+        delta_wr_pct: -21
+        multiplier_penalty: 0.5
+        reason: "Дневная bull divergence — главный TF сигналит разворот"
+
+# Risk Intelligence v1 будет загружать этот YAML при инициализации
+# и применять multiplier per pattern + проверять kill/boost factors из feature dict

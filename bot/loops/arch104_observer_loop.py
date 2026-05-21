@@ -1,0 +1,298 @@
+"""
+ARCH-104 Observer Loop — parallel observation без вмешательства в trading.
+
+Запускается параллельно с основным scan_loop. Раз в N минут:
+1. Для каждой пары собирает текущие active SMC/indicator flags
+2. Прогоняет через ARCH104SignalAdapter (registry + RI v1)
+3. Логирует решения в `risk_decisions_log` table
+
+Через 1-2 недели можно сравнить ARCH-104 decisions vs actual VST trades бота.
+
+Mode:
+  observer (default): только логирование, НЕ блокирует и НЕ форсит сделки
+  active (future):    переключение в production — adapter принимает решения
+
+D-028 (2026-05-20): VST уже = production execution с реальными ценами,
+shadow_mode не нужен. Observer loop собирает decision quality data.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# Scan период — 5 минут (по умолчанию)
+OBSERVER_INTERVAL_SECONDS = 300
+
+# Минимум баров для compute_flags
+MIN_BARS = 200
+
+# Параллелизм — observer не должен душить API больше чем scan_loop
+OBSERVER_CONCURRENCY = 8
+
+
+async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_SECONDS):
+    """Главный loop — раз в interval_seconds логирует ARCH-104 decisions для всех пар."""
+    # Lazy imports
+    try:
+        from core.intelligence.arch104_signal_adapter import ARCH104SignalAdapter
+    except ImportError as e:
+        logger.error("ARCH-104 adapter import failed: %s", e)
+        return
+
+    adapter = ARCH104SignalAdapter(
+        db_path=str(getattr(bot, "db_path", "subscriptions.db")),
+        enable_v2=False,           # v2 отключён в Stage 1
+        enable_lifecycle_check=True,
+    )
+    logger.info("[ARCH-104 observer] started. %d patterns loaded. Interval=%ds",
+                len(adapter.registry.patterns), interval_seconds)
+
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            t0 = time.time()
+            scanned = 0
+            decisions = 0
+
+            # Получаем список пар из active subscriptions / pairs
+            pairs = await _get_active_pairs(bot)
+            if not pairs:
+                logger.debug("[ARCH-104 observer] no active pairs")
+                continue
+
+            sem = asyncio.Semaphore(OBSERVER_CONCURRENCY)
+            scanned_lock = asyncio.Lock()
+            counters = {"scanned": 0, "decisions": 0}
+
+            async def _bounded_scan(sym):
+                async with sem:
+                    try:
+                        result = await _scan_one_pair(bot, sym, adapter)
+                        async with scanned_lock:
+                            counters["scanned"] += 1
+                            if result:
+                                counters["decisions"] += 1
+                    except Exception as e:
+                        logger.debug("[ARCH-104 observer] %s: %s", sym, e)
+
+            await asyncio.gather(*[_bounded_scan(s) for s in pairs])
+            scanned = counters["scanned"]
+            decisions = counters["decisions"]
+
+            elapsed = time.time() - t0
+            logger.info("[ARCH-104 observer] scanned=%d decisions=%d in %.1fs (pairs=%d)",
+                        scanned, decisions, elapsed, len(pairs))
+            if elapsed > interval_seconds * 0.9:
+                logger.warning("[ARCH-104 observer] цикл %.1fs близок к interval %ds — рассмотреть OBSERVER_CONCURRENCY+",
+                               elapsed, interval_seconds)
+
+        except asyncio.CancelledError:
+            logger.info("[ARCH-104 observer] cancelled")
+            break
+        except Exception as e:
+            logger.exception("[ARCH-104 observer] error: %s", e)
+            await asyncio.sleep(60)
+
+
+async def _get_active_pairs(bot) -> list[str]:
+    """Get pairs из bot context — те же что сканит scan_all_pairs."""
+    # 1. Primary: bot.monitored_pairs (тот же источник что и scan_all_pairs)
+    mp = getattr(bot, "monitored_pairs", None)
+    if mp:
+        try:
+            pairs = list(mp)
+            if pairs:
+                return pairs
+        except Exception:
+            pass
+
+    # 2. Fallback: top пары
+    return [
+        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT",
+        "XRP/USDT:USDT", "DOGE/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
+        "DOT/USDT:USDT", "MATIC/USDT:USDT",
+    ]
+
+
+async def _fetch_df(data_collector, symbol: str, tf: str, limit: int):
+    """Загружает OHLCV, приводит к стандартному виду."""
+    try:
+        df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit)
+    except Exception:
+        return None
+    if df is None or len(df) < 50:
+        return None
+    df = df.copy()
+    df.columns = [c.lower() for c in df.columns]
+    if "ts" in df.columns:
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True, errors="coerce")
+        df = df.set_index("ts")
+    return df[["open", "high", "low", "close", "volume"]].dropna().sort_index()
+
+
+async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
+    """Scan одной пары на ВСЕХ 4 TF (5m, 15m, 1h, 4h) → log decisions per TF.
+
+    Логика:
+      - Fetch данные для всех 4 TF параллельно
+      - Compute flags на каждом TF (свои значения)
+      - Для каждой LTF (5m/15m): aggregate flags с HTF (1h/4h/1d) через reindex
+      - Pass total flag set в adapter для каждого TF detection
+    """
+    data_collector = getattr(bot, "data_collector", None)
+    if data_collector is None:
+        return False
+
+    # Fetch 4 TF параллельно
+    fetch_tasks = await asyncio.gather(
+        _fetch_df(data_collector, symbol, "5m", 500),
+        _fetch_df(data_collector, symbol, "15m", 400),
+        _fetch_df(data_collector, symbol, "1h", 300),
+        _fetch_df(data_collector, symbol, "4h", 200),
+        return_exceptions=False,
+    )
+    df_5m, df_15m, df_1h, df_4h = fetch_tasks
+    if df_1h is None or len(df_1h) < MIN_BARS:
+        return False
+
+    # Lazy import combinator
+    try:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools" / "pattern_mining"))
+        import combinator_v2 as cb
+    except Exception as e:
+        logger.debug("[ARCH-104] combinator_v2 import: %s", e)
+        return False
+
+    # Compute flags per TF (исходные значения на собственной сетке)
+    try:
+        f_1h = cb.compute_flags(df_1h, "1h")
+        f_4h_src = cb.compute_flags(df_4h, "4h") if df_4h is not None and len(df_4h) >= 30 else None
+        f_1d_src = cb.compute_flags(cb.aggregate_tf(df_1h, "1d"), "1d")
+        f_15m_src = cb.compute_flags(df_15m, "15m") if df_15m is not None and len(df_15m) >= 100 else None
+        f_5m_src = cb.compute_flags(df_5m, "5m") if df_5m is not None and len(df_5m) >= 100 else None
+    except Exception as e:
+        logger.debug("[ARCH-104] %s compute_flags failed: %s", symbol, e)
+        return False
+
+    # Shift HTF index перед reindex (lookahead-safe — D-001)
+    def _shift(df_src, hours):
+        if df_src is None:
+            return None
+        c = df_src.copy()
+        c.index = c.index + pd.Timedelta(hours=hours)
+        return c
+
+    f_4h_shifted = _shift(f_4h_src, 4)
+    f_1d_shifted = _shift(f_1d_src, 24)
+
+    # Контекст (минимальный — TODO: расширить из bot state)
+    context = {
+        "signal_strength": 75,
+        "regime": "UNKNOWN",
+        "btc_regime": "UNKNOWN",
+        "funding_pct_8h": 0.0,
+        "ema_avg_r_30d": 0.0,
+        "sharpe_30d": 0.0,
+        "n_trades_30d": 0,
+        "warnings_24h": 0,
+    }
+
+    any_decision = False
+
+    # ─── Per-TF scan ───
+    # Каждый TF — своя detection grid + reindexed HTF flags
+    tf_configs = [
+        ("5m",  df_5m,  f_5m_src,  10),    # sl_lookback bars
+        ("15m", df_15m, f_15m_src, 10),
+        ("1h",  df_1h,  f_1h,      10),
+        ("4h",  df_4h,  f_4h_src,  10),
+    ]
+
+    for det_tf, df_det, f_det_src, sl_lookback in tf_configs:
+        if df_det is None or f_det_src is None or len(df_det) < sl_lookback + 10:
+            continue
+
+        # Combine flags: detection TF native + HTF reindexed (lookahead-safe)
+        try:
+            target_idx = df_det.index
+            combined = [f_det_src]
+            if f_4h_shifted is not None and det_tf != "4h":
+                combined.append(f_4h_shifted.reindex(target_idx, method="ffill").fillna(False))
+            if f_1d_shifted is not None:
+                combined.append(f_1d_shifted.reindex(target_idx, method="ffill").fillna(False))
+            # Для 5m: добавить 15m+1h в reindex
+            if det_tf == "5m":
+                if f_15m_src is not None:
+                    f_15m_shift = _shift(f_15m_src, 0)   # 15m close = current bar
+                    f_15m_shift.index = f_15m_shift.index + pd.Timedelta(minutes=15)
+                    combined.append(f_15m_shift.reindex(target_idx, method="ffill").fillna(False))
+                f_1h_shift = f_1h.copy()
+                f_1h_shift.index = f_1h_shift.index + pd.Timedelta(hours=1)
+                combined.append(f_1h_shift.reindex(target_idx, method="ffill").fillna(False))
+            elif det_tf == "15m":
+                f_1h_shift = f_1h.copy()
+                f_1h_shift.index = f_1h_shift.index + pd.Timedelta(hours=1)
+                combined.append(f_1h_shift.reindex(target_idx, method="ffill").fillna(False))
+
+            all_flags_df = pd.concat(combined, axis=1).astype(bool)
+        except Exception as e:
+            logger.debug("[ARCH-104] %s %s combine failed: %s", symbol, det_tf, e)
+            continue
+
+        # Last row = текущее состояние на этом TF
+        last_row = all_flags_df.iloc[-1]
+        active_flags = set(last_row[last_row].index.tolist())
+        if not active_flags:
+            continue
+
+        price = float(df_det["close"].iloc[-1])
+        sl_long = float(df_det["low"].iloc[-(sl_lookback + 1):].min()) * 0.999
+        sl_short = float(df_det["high"].iloc[-(sl_lookback + 1):].max()) * 1.001
+
+        # Per direction
+        for direction in ["LONG", "SHORT"]:
+            sl_price = sl_long if direction == "LONG" else sl_short
+            decision = adapter.process(
+                symbol=f"{symbol}@{det_tf}",
+                direction=direction,
+                active_flags=active_flags,
+                price=price,
+                sl_price=sl_price,
+                context=context,
+                detection_tf=det_tf,         # NEW: фильтр patterns по их detection_tf
+            )
+            if decision.pattern_id:
+                any_decision = True
+                logger.info(
+                    "[ARCH-104] %s@%s %s pattern=%s apply=%s risk_pct=%.2f%% sl=%.4f",
+                    symbol, det_tf, direction, decision.pattern_id,
+                    decision.apply, decision.risk_pct, sl_price,
+                )
+
+    return any_decision
+
+
+# ─────────── Self-test ───────────
+
+if __name__ == "__main__":
+    import sys
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
+
+    # Mock test — без bot context
+    print("ARCH-104 Observer Loop — standalone module")
+    print(f"  Default interval: {OBSERVER_INTERVAL_SECONDS}s ({OBSERVER_INTERVAL_SECONDS//60} min)")
+    print("  Logs decisions to risk_decisions_log table")
+    print("  Modes: observer (default), active (future)")
+    print("\n✅ Ready to integrate via:")
+    print("  asyncio.create_task(arch104_observer_loop(bot))  # in bot/core/bot.py")

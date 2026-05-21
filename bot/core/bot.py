@@ -390,6 +390,13 @@ class TradingAlertBot:
             asyncio.create_task(obsidian_daily_loop(self))   # Obsidian pipeline: 00:05 UTC
             asyncio.create_task(watchlist_loop(self))         # Watch List: каждые 4ч
             asyncio.create_task(morning_digest_loop(self))   # DEV-224: Утренний дайджест 07:00 UTC
+            # ═══ ARCH-104: parallel observer для validation новых паттернов в VST/LIVE ═══
+            try:
+                from bot.loops.arch104_observer_loop import arch104_observer_loop
+                asyncio.create_task(arch104_observer_loop(self))   # ARCH-104: каждые 5 мин
+                logger.info("[ARCH-104 observer] task spawned")
+            except Exception as e:
+                logger.warning("[ARCH-104 observer] failed to start: %s", e)
             await self.dp.start_polling(self.bot)
 
         asyncio.run(_run())
