@@ -454,38 +454,45 @@ WT cross / аномалия объёма / CHoCH / пивот touch / дивер
 
 ---
 
-### Текущий статус Куба (11.04.2026)
+### Текущий статус Куба (21.05.2026)
+
+> Подробнее: `docs/CURRENT_ARCHITECTURE.md` — два потока (Reactive Bot + ARCH-104), рёбра Куба, roadmap.
 
 ```
 Сфера  1  DataCollector          ✅ активен → bus: OHLCV_UPDATED
-Сфера  2  WSFeed                 ✅ подключён → bus: TICK_PRICE (throttled 1/10)
+Сфера  2  WSFeed                 ✅ real-time тикеры → TICK_PRICE (throttled)
 Сфера  3  MTF WT Specialist      ✅ активен → bus: WT_VERDICT, WT_SNAP_UPDATED
-Сфера  4  MTF SMC Specialist     ⚠️ shadow → bus: SMC_VERDICT
-Сфера  5  Cross-Market Node      ✅ BTC macro → bus: CROSS_MARKET
-Сфера  6  Market Regime          ✅ режим+mode → bus: REGIME_UPDATED
-Сфера  7  Signal Detectors       ✅ mesh → bus: SIGNAL_DETECTED, ANOMALY, DIVERGENCE, PIVOT_TOUCH
-                                  + HTF: trend_change_1h, wt_cross_4h, wt_cross_1d → EventBus
-Сфера  8  Pivot Levels           ✅ → bus: PIVOT_SNAP_UPDATED
-Сфера  9  Narrative Builder      ✅ читает full state → bus: NARRATIVE_BUILT
-Сфера 10  Exit Manager           ✅ → bus: TSL_MOVED, TP1_HIT, POSITION_CLOSED
-Сфера 11  Post-Trade Analyser    ✅ → bus: CASCADE_UPDATED, OTE_ZONE_SET + ARCH-72 feedback
-Сфера 12  Self-Diagnostics       ✅ SphereRegistry → подписан на все 22 типа событий
-─────────────────────────────────────────────
-Центр     Shared Context Bus     ✅ ПОЛНЫЙ pub/sub (22 типа событий, 38 полей PairState)
+Сфера  4  MTF SMC Specialist     ⚠️ shadow (ждёт 200+ SMC сделок)
+Сфера  5  Cross-Market Node      ✅ BTC 4h режим → bus: CROSS_MARKET
+Сфера  6  Market Regime          ✅ режим+mode+verdict_gate (ARCH-84) → REGIME_UPDATED
+Сфера  7  Signal Detectors       ✅ 6 детекторов (wt_sideways отключён DEV-213)
+                                  + HTF: trend_change_1h/4h/15m, wt_cross, zone_entry
+Сфера  8  Pivot Levels           ✅ swing SL (DEV-214) + FVG confluence → PIVOT_SNAP_UPDATED
+Сфера  9  Narrative Builder      ✅ TradeRouter (DEV-199) = единый узел регистрации
+                                  + ARCH-104 Decision Adapter (новое ребро, 21.05)
+Сфера 10  Exit Manager           ✅ TSL + emergency watchdog (DEV-185.2) → POSITION_CLOSED
+Сфера 11  Post-Trade Analyser    ✅ feedback + signal weights + PatternLifecycle (ARCH-104)
+Сфера 12  Self-Diagnostics       ✅ SphereRegistry + DecisionTrace/signal_drops (DEV-203)
+─────────────────────────────────────────────────────────────────────
+Центр     Shared Context Bus     ✅ pub/sub 22 события, 38 полей PairState
 
-Mesh-связность (подписки между сферами):
-  Сфера 3 ← REGIME_UPDATED (режим влияет на WT verdict)
-  Сфера 6 ← WT_SNAP_UPDATED (WT 4h → reversal mode)
-  Сфера 9 ← SIGNAL_DETECTED (обновляет нарратив)
-  Сфера 10 ← DIVERGENCE_FOUND (дивергенция → подтянуть TSL)
-  Сфера 10 ← PIVOT_TOUCH (pivot near TP → проверка)
-  Сфера 11 ← POSITION_CLOSED (cascade)
-  Сфера 5 → all pairs (CROSS_MARKET при BTC shock)
-  Сфера 12 ← ВСЕ события (мониторинг здоровья)
+Mesh-связность (оригинальные + новые рёбра ARCH-104):
+  Сфера 3  ← REGIME_UPDATED
+  Сфера 6  ← WT_SNAP_UPDATED
+  Сфера 9  ← SIGNAL_DETECTED
+  Сфера 10 ← DIVERGENCE_FOUND, PIVOT_TOUCH
+  Сфера 11 ← POSITION_CLOSED
+  Сфера 5  → all pairs (CROSS_MARKET при BTC shock)
+  Сфера 12 ← ВСЕ события
+  [ARCH-104] Сфера 7 → ARCH-104 Adapter → Pattern Matcher   🆕
+  [ARCH-104] Pattern Matcher → RiskIntelligence              🆕
+  [ARCH-104] RiskIntelligence → DecisionFusion → Сфера 9    🆕
+  [ARCH-104] PatternLifecycle → Сфера 11 (auto_retire)       🆕
 
 Итог: 12 из 12 сфер подключены к шине ✅
-      Центральная шина: ПОЛНАЯ (pub/sub + auto-update PairState)
+      4 новых ребра от ARCH-104 (Pattern Mining + Risk Intelligence)
       EventBus: 14 типов Full CALL триггеров
+      ARCH-104 Stage 1 запущен: 241 пара, 15 паттернов, 10% capital (21.05.2026)
 ```
 
 ---
@@ -493,33 +500,33 @@ Mesh-связность (подписки между сферами):
 ### Дорожная карта Куба
 
 ```
-Фаза 0 (апрель 2026) — Фундамент: валидируем shadow компоненты
-  ✅ PostTradeAnalyser shadow
-  ✅ OTE shadow
-  🔄 Market Regime v2 shadow
-  🔄 BTC 4h gate shadow (DEV-111)
+Фаза 0 (апрель 2026) — Фундамент              ✅ ЗАВЕРШЕНА
+  ✅ PostTradeAnalyser + feedback loop
+  ✅ Market Regime + verdict_gate production
+  ✅ BTC 4h Cross-Market Node (Сфера 5)
+  ✅ Self-Diagnostics / SphereRegistry (Сфера 12)
 
-Фаза 1 (апрель-май) — Рёбра Куба
-  ARCH-62: Exit Manager (Сфера 10) — разделить монолит
-  DEV-121: Self-Diagnostics (Сфера 12)
-  Shared Context Bus: расширить pair_context до pub/sub
+Фаза 1 (апрель-май 2026) — Рёбра Куба         ✅ ЗАВЕРШЕНА
+  ✅ TradeRouter — Сфера 9 как единый узел (DEV-199)
+  ✅ Exit Manager watchdog (DEV-185.2)
+  ✅ DecisionTrace / signal_drops (DEV-203)
+  ✅ Swing SL + FVG confluence для pivot (DEV-214)
 
-Фаза 2 (май-июнь) — ML Специалисты
-  ARCH-67: MTF WT Specialist (Сфера 3)
-  ARCH-67: MTF SMC Specialist (Сфера 4) + EQH/EQL детектор
-  ARCH-67: Reversal Mode (Сфера 6 расширение)
-  ARCH-67: Cross-Market Node полный (Сфера 5)
+Фаза 2 (май 2026) — ARCH-104 Pattern Mining    ✅ ЗАВЕРШЕНА
+  ✅ 12 002 паттернов → 15 production (BH-FDR-валидация)
+  ✅ RiskIntelligenceV1 + leverage formula
+  ✅ DecisionFusion v1+v2 (LightGBM Phase 1.5)
+  ✅ VST observer Stage 1: 241 пара, 10% capital (21.05.2026)
 
-Фаза 3 (июнь+) — Narrative Builder
-  ARCH-67: Narrative Builder (Сфера 9) — Decision Core
-  Feedback loop: PostTradeAnalyser → все ML специалисты
-  WSFeed: подключить Сферу 2
+Фаза 3 (май-июнь 2026) — Стабилизация         🔄 АКТИВНА
+  🔄 ARCH-104 capital ramp: Stage 2→5 (10→100%)
+  🔴 Confirmation-Driven Sprint (DEV-200/201/202)
+  🔴 ARCH-95-EXEC: расследование H1-H5 убытков
+  ⚠️ Сфера 4 (SMC Specialist) — ждёт 200+ SMC сделок
 
-Фаза 4 (после валидации) — Полный Куб
-  Все 12 сфер активны
-  Mesh-связность через pub/sub шину
-  Full CALL при любом событии
-  Система самообучается через feedback loop
+Фаза 4 (~июнь-июль 2026) — Полный Куб         ⏸ FROZEN
+  ARCH-74-EXT, ARCH-96..99, ARCH-101..111
+  Разморозка при: 7 дней без регрессии avgR + ARCH-104 Stage 3+
 ```
 
 ---

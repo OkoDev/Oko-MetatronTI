@@ -4,6 +4,51 @@
 
 ---
 
+## [22.05.2026 ~02:00 UTC] Агент: Developer — TSL SHORT bug fix + аудит TASKS + obsidian loop
+
+### ✅ Сделано
+
+**TSL SHORT баг (критический) — исправлен:**
+- Root cause: `trade_simulator.py:2212` — `_sl_changed` не проверял `is_tighter`
+- При росте цены против SHORT: `apply_floor = current_price * 1.003` поднимался вверх
+- БД обновлялась с `stop_loss > entry` → TSL закрывал SHORT с гарантированным убытком
+- Данные подтверждали: 120/129 проигравших TSL шортов (92%), 77% имели `stop_loss > entry`
+- **Фикс:** добавлен `_tsl_is_tighter_upd(direction, tsl_price, old_sl)` в условие `_sl_changed`
+- `core/trading/trade_simulator.py` ~строка 2210 — 3 строки добавлены
+
+**Obsidian Daily Loop — создан:**
+- Новый файл: `bot/loops/obsidian_loop.py` — запускает 4 скрипта последовательно в 00:05 UTC
+- `bot/core/bot.py` — добавлен `asyncio.create_task(obsidian_daily_loop(self))`
+
+**TASKS.md аудит — 12 задач закрыты:**
+- DEV-199/184/185/186/187/209/172/180/88/89/181/182 → ✅
+- ARCH-94 → 🟡 (orphan-detector остался)
+- Добавлен блок архитектурных ссылок в начало TASKS.md
+
+**docs/CURRENT_ARCHITECTURE.md — создан:**
+- Два параллельных потока A (Reactive Bot) + B (ARCH-104 Pattern-Driven)
+- Куб Метатрона — статус 21.05.2026 + 4 новых ребра ARCH-104
+
+**ENCYCLOPEDIA.md обновлён:**
+- "Куб Метатрана" раздел: Phase 3 активна, Phase 4 заморожена, 4 новых ребра
+
+### ⚠️ Незакоммичено
+- `core/trading/trade_simulator.py` — TSL is_tighter fix (DEV-TSL-ONESIDED)
+- `bot/loops/obsidian_loop.py` — новый файл
+- `bot/core/bot.py` — obsidian_daily_loop
+- `TASKS.md` — 12 задач закрыты + архитектурный блок
+- `docs/CURRENT_ARCHITECTURE.md` — новый файл
+- `docs/ENCYCLOPEDIA.md` — обновлён Куб Метатрана
+
+### 📋 Следующие задачи
+1. **Перезапустить бота** — TSL фикс требует рестарта
+2. Наблюдать 2-3 дня: TSL SHORT не должен больше писать `stop_loss > entry`
+3. Закоммитить накопленное (все файлы выше)
+4. DEV-193: sl_min 0.5% не применяется к range_bounce:pivot sl_source (REDSTONE 0.028%)
+5. ARCH-95-EXEC: H1-H5 расследование убытков
+
+---
+
 ## [18.05.2026 ~00:00 UTC] Агент: TRADER — Аналитика TAIKO/USDT: watchlist + пивоты + WPP
 
 ### ✅ Сделано

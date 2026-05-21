@@ -34,6 +34,14 @@
 
 ---
 
+## 🗺️ Архитектура
+
+> **Два потока, Куб, статусы сфер:** [`docs/CURRENT_ARCHITECTURE.md`](docs/CURRENT_ARCHITECTURE.md) ← читать при потере ориентации
+> **Куб Метатрона (концепция):** [`docs/ENCYCLOPEDIA.md`](docs/ENCYCLOPEDIA.md) → раздел "Куб Метатрона"
+> **ARCH-104 migration plan:** [`docs/MIGRATION_ARCH104.md`](docs/MIGRATION_ARCH104.md)
+
+---
+
 ## 📊 Активные задачи
 
 **Статусы:** 🔴 срочно | 🟡 важно | 🟢 в плане | 🔵 бэклог | 🔄 в работе | ⏸ отложено | 🧊 FROZEN до Phase 4
@@ -43,7 +51,7 @@
 | **🚀 СПРИНТ «CONFIRMATION-DRIVEN ARCHITECTURE» (09.05–23.05.2026)** — на основе R6/R7/R8: ATR Trend change cascade подтверждён, ЗАКОН confluence | | | |
 | [DEV-199](#dev-199) | ✅ | **ATR Trend Change events (17.05 закрыт):** `core/signals/atr_change_detector.py` + EventBus publisher `atr_change_15m/1h/4h` в `scan_loop.py`. Подключён в bot.py. НЕ публикует `atr_change_1d` | DEV |
 | [DEV-200](#dev-200) | 🔴 | **ConfirmationRegistry:** `core/confirmations/registry.py` — каталог 12 базовых confirmation типов с весами. Datadclass `Confirmation(source, weight, confidence, evidence, ts)`. Acceptance: каждый детектор публикует Confirmation events | DEV |
-| [DEV-201](#dev-201) | 🔴 | **SignalAggregator v2:** `strength = Σ weight × confidence` по window=N мин. Заменить хардкод формулу `base + senior_bonus + cross_bonus`. Acceptance: новые сделки имеют разнообразный signal_mode | DEV |
+| [DEV-201](#dev-201) | 🔴 | **SignalAggregator v2 (fallback path):** `strength = Σ weight × confidence` для НЕ-ARCH-104 сделок (wt_b, pivot_reversal, divergence). ARCH-104 flow идёт через decision_fusion.py. Scope сужен. | DEV |
 | [DEV-202](#dev-202) | 🟡 | **features_json: confirmations[]:** гранулярная запись всех подтверждений (не плоские поля). Для будущего ML обучения весов. Acceptance: 100% новых сделок имеют поле `confirmations` (list[dict]) | DEV |
 | [DEV-203](#dev-203) | ✅ | **DecisionTrace в gates (17.05 закрыт):** `core/observability/decision_trace.py` + таблица `signal_drops` (23515 записей) + `/api/dropped` дашборд. Top drop: dedup 64%, below_min_strength 17%, validate_inputs 1%. Работает. | DEV |
 | [DEV-204](#dev-204) | 🟢 | **ML Outcome retrain weights:** после 200+ сделок → переобучение confirmation весов через RandomForest feature importance. Триггер: `signal_drops` стабилен 7 дней + 200+ trades с confirmations[] | DEV |
@@ -70,7 +78,7 @@
 | [ARCH-92](#arch-92) | 🟢 | Анализ WR/avgR по Entry Priority (P1/P2/P3) на 200+ закрытых сделках (~22.04). Решение: P3→WATCH или оставить shadow | ARCH |
 | [ARCH-93](#arch-93) | 🟢 | Research: Future pivots touch→reaction на истории (20 пар, переходные часы day/week). Решение: добавлять feature или нет | ARCH/DEV |
 | [ARCH-94](#arch-94) | ✅ | **Аудит lifecycle ордеров (17.05 закрыт):** Root cause exchange_order_id=NULL — TradeRouter не делал UPDATE в БД после открытия ордера. Фикс: UPDATE SET exchange_order_id=? в _place_exchange_order() (ARCH-94). atr_change исправлен DEV-215. Orphan=0 подтверждён | ARCH/DEV |
-| [ARCH-95](#arch-95) | 🔴 | Глобальное расследование: почему торгуем в минус. 6 read-only аудит-скриптов (H1 entry timing/SL близко, H2 SL distance vs исход, H3 pivot S/R×direction, H4 куб snapshots, H5 detector→entry slippage, H6 MTF alignment, H7 EMA per-strategy) | ARCH/DEV |
+| [ARCH-95](#arch-95) | 🔴 | **Расследование убытков (H1-H5 актуальны):** H6 MTF alignment + H7 адаптивные веса покрыты ARCH-104. Открыты: H1 поздние входы scan-on-close, H2 тесный SL, H3 pivot direction, H4 cube snapshots, H5 slippage. Переименовано: ARCH-95-EXEC. | ARCH/DEV |
 | **🆕 СИСТЕМНЫЕ СФЕРЫ КУБА (Claude consult 25.04 — параллельно с фиксами Слоя D ARCH-95)** | | | |
 | [ARCH-96](#arch-96) | 🧊 | Execution Sphere (Сфера 14): IdempotencyGuard + SlippagePredictor + OrderTypeSelector + ExecutionTracker. Закрывает SL-дубликаты архитектурно, режет slippage. КРИТИЧНО перед LIVE — **FROZEN до Phase 4** | ARCH/DEV |
 | [ARCH-97](#arch-97) | 🧊 | Anomaly Detection Sphere (Сфера 15): self-observability на execution/trading/ML drift. Поймала бы DEV-174/175/SL-dup за 1-72ч до человека — **FROZEN до Phase 4** | ARCH/DEV |
@@ -97,15 +105,15 @@
 | [ARCH-84](#arch-84) | ✅ | MTF gate shadow → production (16.05): `verdict_gate.enabled: true` в config.yaml. EXHAUSTION gate блокирует OB_bias+LONG (WR=6.2%). Данные WOULD_BLOCK собраны | ARCH/DEV |
 | [DEV-172](#dev-172) | ✅ | **Entry Priority Matrix (17.05 закрыт):** `core/intelligence/entry_matrix.py` + `evaluate_entry_priority()` в `trade_simulator.py:870-881`, пишет `entry_priority` P1/P2/P3 в features_json | DEV |
 | [DEV-111act](#dev-111act) | ⏸ | BTC 4h gate production: отложен — риск блокировки alt-pumps при BTC боковике | DEV |
-| [DEV-88](#dev-88) | 🟡 | OTE Step2: C1 (4h+CHoCH) Sharpe=2.68 ✅, WR=41.7%. Нужна расширенная выборка | DEV |
-| [DEV-89](#dev-89) | 🟢 | OTE C1 shadow: 20 пар / 90 дней. Критерий: WR≥40% ∧ Sharpe≥1.5 ∧ n≥150 | DEV |
+| [DEV-88](#dev-88) | ✅ | **OTE C1 покрыт ARCH-104 (21.05):** `S8_ote_strong` в arch104_patterns.yaml (n=164, avgR=+1.339, WR=90.2%) — superset C1. Данные собраны VST observer. | DEV |
+| [DEV-89](#dev-89) | ✅ | **OTE shadow покрыт ARCH-104 (21.05):** Stage 1 VST observer на 241 паре (вкл. S8_ote) = superset 20-пар shadow. | DEV |
 | [DEV-104](#dev-104) | 🔵 | Dead-Man Timer: emergency close all (Слой 3 ARCH-65) — только перед LIVE | DEV |
 | **ML / АНАЛИТИКА** | | | |
 | [DEV-162](#dev-162) | 🔵 | derive_wt_verdict: динамический confidence вместо статического (триггер: 200+ BLOCK) | DEV |
 | **RISK INTELLIGENCE (Сфера 3 Куба) — обсуждение 19.04** | | | |
-| DEV-180 | 🟢 | Risk Intelligence v1 формульный: risk_pct multiplier от EMA avg_R + Sharpe + warnings (shadow) | DEV |
-| DEV-181 | 🟢 | Leverage selection: формула от SL distance + funding-awareness (треб. поле funding_paid) | DEV |
-| DEV-182 | 🔵 | Risk Intelligence ML-слой: RandomForest на фичах контекста (ждёт 3–4 недели post_fix) | DEV |
+| DEV-180 | ✅ | **Risk Intelligence v1 shadow (17.05 закрыт):** `core/intelligence/risk_intelligence.py` — RiskIntelligenceV1, shadow mode, логирует решения без применения | DEV |
+| DEV-181 | ✅ | **Leverage formula реализована в ARCH-104 (21.05):** `risk_intelligence.py:171-174` — `leverage = ceil(risk_pct / sl_distance_pct × safety_buffer)`. Shadow only → активация в Stage 3 ARCH-104. | DEV |
+| DEV-182 | ✅ | **Risk ML покрыт ARCH-104 Stage 3 (21.05):** `decision_fusion.py` принимает `V2MLPrediction` (p_win, predicted_mfe_r). LightGBM Phase 1.5 задокументирован. Реализуется в рамках Stage 3 ARCH-104. | DEV |
 | DEV-183 | 🔵 | Position count cap + correlation cap по BTC | ARCH/DEV |
 | **КУБ МЕТАТРОНА** | | | |
 | [ARCH-77](#arch-77) | ⏸ | Миникуб WTMTF: ЗАМОРОЖЕН до Sharpe>1 в проде (множитель к убытку бесполезен) | ARCH/DEV |

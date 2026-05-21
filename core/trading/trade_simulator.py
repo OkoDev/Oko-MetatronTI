@@ -2208,10 +2208,16 @@ class TradeSimulator:
                             _old_sl = float(trade.get("stop_loss") or 0)
                             _exch_order_id = trade.get("exchange_order_id")
                             # Фильтр ≥0.15% — устраняет float-equality "движения" и повторный cancel+replace
+                            # DEV-TSL-ONESIDED: TSL двигается только тесней (LONG: вверх, SHORT: вниз).
+                            # Без is_tighter floor=current*1.003 поднимал SL вверх для SHORT при цене
+                            # против позиции → stop_loss > entry → выход с гарантированным убытком.
                             _min_move = 0.15  # %
+                            from core.trading.tsl_engine import is_tighter as _tsl_is_tighter_upd
+                            _tighter = _old_sl <= 0 or _tsl_is_tighter_upd(direction, tsl_price, _old_sl)
                             _sl_changed = bool(
                                 tsl_price and _old_sl > 0
                                 and abs(tsl_price - _old_sl) / _old_sl * 100 >= _min_move
+                                and _tighter
                             )
                             # Биржевой cancel+replace только если есть биржевой ордер
                             _needs_exchange_update = _sl_changed and bool(_exch_order_id)
