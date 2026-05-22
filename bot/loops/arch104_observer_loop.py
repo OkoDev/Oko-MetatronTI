@@ -60,9 +60,16 @@ async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_S
     logger.info("[ARCH-104 observer] started. %d patterns loaded. Interval=%ds",
                 len(adapter.registry.patterns), interval_seconds)
 
+    # D-045 (2026-05-23): первый scan через 60s warmup (вместо полного interval).
+    # Раньше после рестарта observer ждал 10 мин до первого scan + 5-7 мин scan =
+    # 15-17 мин до первого результата. Теперь — 60s + 5-7 мин = ~7 мин total.
+    # 60s достаточно для warmup data_collector кеша при старте.
+    first_cycle = True
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
+            sleep_sec = 60 if first_cycle else interval_seconds
+            first_cycle = False
+            await asyncio.sleep(sleep_sec)
             t0 = time.time()
             scanned = 0
             decisions = 0
