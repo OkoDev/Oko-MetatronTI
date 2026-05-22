@@ -178,9 +178,14 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
         logger.debug("[ARCH-104] combinator_v2 import: %s", e)
         return False
 
-    # Compute flags per TF (исходные значения на собственной сетке)
+    # Compute flags per TF (исходные значения на собственной сетке).
+    # D-035 (2026-05-22): include_pivots=True для 1h — без этого pivot_*_1D/1W
+    # флаги всегда FALSE, и паттерны registry с pivot anchors никогда не срабатывают
+    # в live observer (хотя в backtest pivot flags считаются через cb.process_symbol).
+    # Это был корень decisions=0 на 9+ часов — registry имеет десятки patterns с pivot,
+    # они невидимы без этого флага.
     try:
-        f_1h = cb.compute_flags(df_1h, "1h")
+        f_1h = cb.compute_flags(df_1h, "1h", include_pivots=True)
         f_4h_src = cb.compute_flags(df_4h, "4h") if df_4h is not None and len(df_4h) >= 30 else None
         f_1d_src = cb.compute_flags(cb.aggregate_tf(df_1h, "1d"), "1d")
         f_15m_src = cb.compute_flags(df_15m, "15m") if df_15m is not None and len(df_15m) >= 100 else None

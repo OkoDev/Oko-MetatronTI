@@ -128,10 +128,15 @@ def add_pivot_flags(df_1h: pd.DataFrame, out: dict, label: str = "1D"):
         out[f"pivot_above_{k}_{label}"] = above
         out[f"pivot_below_{k}_{label}"] = below
 
-    # Bounce: коснулись за последние 3 бара и сейчас вернулись
+    # Bounce: коснулись за последние 3 бара и сейчас вернулись.
+    # D-034 (2026-05-22): persistent flag — TRUE ещё 10 баров после event,
+    # чтобы live observer (last-bar scan каждые 10 мин) мог поймать setup
+    # после первоначального касания. Без этого bounce — узкое событие на
+    # 1-2 барах, almost never TRUE при `iloc[-1]` lookup.
+    BOUNCE_PERSIST = 10
     for k, vals in pp_arr.items():
-        bounce_up   = np.zeros(n, dtype=bool)   # коснулись снизу (low touched) и сейчас выше
-        bounce_down = np.zeros(n, dtype=bool)   # коснулись сверху (high touched) и сейчас ниже
+        bounce_up   = np.zeros(n, dtype=bool)
+        bounce_down = np.zeros(n, dtype=bool)
         for i in range(3, n):
             if np.isnan(vals[i]): continue
             for j in range(max(0, i-3), i):
@@ -140,8 +145,11 @@ def add_pivot_flags(df_1h: pd.DataFrame, out: dict, label: str = "1D"):
                     bounce_up[i] = True
                 if high[j] >= vals[j] * (1 - TOL) and high[j] <= vals[j] * (1 + 0.003) and close[i] < vals[i]:
                     bounce_down[i] = True
-        out[f"pivot_bounce_up_{k}_{label}"]   = bounce_up
-        out[f"pivot_bounce_down_{k}_{label}"] = bounce_down
+        # Forward-fill: flag остаётся TRUE BOUNCE_PERSIST баров после события
+        bounce_up_p   = pd.Series(bounce_up).rolling(window=BOUNCE_PERSIST, min_periods=1).max().fillna(0).astype(bool).values
+        bounce_down_p = pd.Series(bounce_down).rolling(window=BOUNCE_PERSIST, min_periods=1).max().fillna(0).astype(bool).values
+        out[f"pivot_bounce_up_{k}_{label}"]   = bounce_up_p
+        out[f"pivot_bounce_down_{k}_{label}"] = bounce_down_p
 
 
 # ───────── SMC + indicators флаги ─────────
