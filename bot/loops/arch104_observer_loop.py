@@ -128,7 +128,16 @@ async def _get_active_pairs(bot) -> list[str]:
 
 
 async def _fetch_df(data_collector, symbol: str, tf: str, limit: int):
-    """Загружает OHLCV, приводит к стандартному виду."""
+    """Загружает OHLCV, приводит к стандартному виду.
+
+    D-042 (2026-05-23): bot.data_collector.get_ohlcv возвращает колонку 'time'
+    (не 'ts' как ccxt direct). Без преобразования в datetime index
+    pd.Timedelta shift в _shift() не работает корректно — flags после shift
+    некорректны → reindex даёт мусор → active_flags пусто → decisions=0
+    на каждом scan. Это был root cause 5+ часов decisions=0 после
+    D-035/D-036/D-040 фиксов — pivots и hidden div считались правильно,
+    но observer не доходил до find_matching с правильными active_flags.
+    """
     try:
         df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit)
     except Exception:
@@ -137,9 +146,14 @@ async def _fetch_df(data_collector, symbol: str, tf: str, limit: int):
         return None
     df = df.copy()
     df.columns = [c.lower() for c in df.columns]
-    if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True, errors="coerce")
-        df = df.set_index("ts")
+    # Поддерживаем оба формата: 'ts' (ccxt) и 'time' (data_collector)
+    ts_col = "ts" if "ts" in df.columns else ("time" if "time" in df.columns else None)
+    if ts_col is not None:
+        df[ts_col] = pd.to_datetime(df[ts_col], unit="ms", utc=True, errors="coerce")
+        df = df.set_index(ts_col)
+    # Если index всё ещё не datetime — bail (lookahead-shift не сработает корректно)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return None
     return df[["open", "high", "low", "close", "volume"]].dropna().sort_index()
 
 
