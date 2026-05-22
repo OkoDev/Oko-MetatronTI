@@ -278,6 +278,66 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"wt_cross_up_{label}"]   = wt_cu
     out[f"wt_cross_down_{label}"] = wt_cd
 
+    # ─ WT Divergences: 4 типа (regular + hidden, bull + bear) — D-040 (2026-05-22) ─
+    # По образцу bull_div/bear_div (RSI ниже), но на WT и + hidden варианты.
+    # Hidden = continuation: bull hidden = price HL + wt LL (тренд UP продолжается);
+    # bear hidden = price LH + wt HH (тренд DOWN продолжается).
+    # Persistent на 10 баров (как pivot_bounce).
+    L_DIV = 14
+    WT_DELTA = 1.5
+    DIV_PERSIST = 10
+    wt_div_bull_reg = np.zeros(n, dtype=bool)
+    wt_div_bear_reg = np.zeros(n, dtype=bool)
+    wt_div_bull_hid = np.zeros(n, dtype=bool)
+    wt_div_bear_hid = np.zeros(n, dtype=bool)
+    for i in range(L_DIV, n):
+        w = wt[i-L_DIV:i]
+        if np.isnan(w).all():
+            continue
+        lo_w = low[i-L_DIV:i]
+        hi_w = high[i-L_DIV:i]
+        first_half_wt = wt[i-L_DIV:i-L_DIV//2]
+        # ─ Lows analysis (bull side) ─
+        idx_min_p = int(np.argmin(lo_w))
+        if 2 < idx_min_p < L_DIV-2:
+            first_lo_min = lo_w[:idx_min_p].min()
+            cur_low = low[i-1]
+            if not np.isnan(first_half_wt).all():
+                first_wt_min = np.nanmin(first_half_wt)
+                if not np.isnan(first_wt_min):
+                    cur_wt = wt[i-1]
+                    if not np.isnan(cur_wt):
+                        # Bull regular: price LL (cur < first) + wt HL (cur > first)
+                        if cur_low < first_lo_min and cur_wt > first_wt_min + WT_DELTA:
+                            wt_div_bull_reg[i] = True
+                        # Bull hidden: price HL (cur > first) + wt LL (cur < first)
+                        if cur_low > first_lo_min and cur_wt < first_wt_min - WT_DELTA:
+                            wt_div_bull_hid[i] = True
+        # ─ Highs analysis (bear side) ─
+        idx_max_p = int(np.argmax(hi_w))
+        if 2 < idx_max_p < L_DIV-2:
+            first_hi_max = hi_w[:idx_max_p].max()
+            cur_high = high[i-1]
+            if not np.isnan(first_half_wt).all():
+                first_wt_max = np.nanmax(first_half_wt)
+                if not np.isnan(first_wt_max):
+                    cur_wt = wt[i-1]
+                    if not np.isnan(cur_wt):
+                        # Bear regular: price HH + wt LH
+                        if cur_high > first_hi_max and cur_wt < first_wt_max - WT_DELTA:
+                            wt_div_bear_reg[i] = True
+                        # Bear hidden: price LH + wt HH
+                        if cur_high < first_hi_max and cur_wt > first_wt_max + WT_DELTA:
+                            wt_div_bear_hid[i] = True
+    # Persistent rolling
+    for arr, name in [
+        (wt_div_bull_reg, f"wt_div_bull_reg_{label}"),
+        (wt_div_bear_reg, f"wt_div_bear_reg_{label}"),
+        (wt_div_bull_hid, f"wt_div_bull_hidden_{label}"),
+        (wt_div_bear_hid, f"wt_div_bear_hidden_{label}"),
+    ]:
+        out[name] = pd.Series(arr).rolling(window=DIV_PERSIST, min_periods=1).max().fillna(0).astype(bool).values
+
     # ─ RSI ────────────────────────────────────────────────────────────────
     r = rsi(close, 14)
     out[f"rsi_os_{label}"] = r < RSI_OS
@@ -324,6 +384,41 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
                             bear_div[i] = True
     out[f"bull_div_{label}"] = bull_div
     out[f"bear_div_{label}"] = bear_div
+
+    # ─ RSI Hidden Divergence — D-040 (2026-05-22) ─
+    # Bull hidden: price HL + RSI LL → continuation UP
+    # Bear hidden: price LH + RSI HH → continuation DOWN
+    rsi_div_bull_hid = np.zeros(n, dtype=bool)
+    rsi_div_bear_hid = np.zeros(n, dtype=bool)
+    L_RH = 14
+    RSI_DELTA = 3.0
+    DIV_PERSIST_RSI = 10
+    for i in range(L_RH, n):
+        lo_w = low[i-L_RH:i]
+        hi_w = high[i-L_RH:i]
+        r_w_first = r[i-L_RH:i-L_RH//2]
+        if np.isnan(r_w_first).all() or np.isnan(r[i-1]):
+            continue
+        # Bull hidden: price HL + RSI LL
+        idx_min_p = int(np.argmin(lo_w))
+        if 2 < idx_min_p < L_RH-2:
+            first_lo_min = lo_w[:idx_min_p].min()
+            cur_low = low[i-1]
+            first_r_min = np.nanmin(r_w_first)
+            if not np.isnan(first_r_min):
+                if cur_low > first_lo_min and r[i-1] < first_r_min - RSI_DELTA:
+                    rsi_div_bull_hid[i] = True
+        # Bear hidden: price LH + RSI HH
+        idx_max_p = int(np.argmax(hi_w))
+        if 2 < idx_max_p < L_RH-2:
+            first_hi_max = hi_w[:idx_max_p].max()
+            cur_high = high[i-1]
+            first_r_max = np.nanmax(r_w_first)
+            if not np.isnan(first_r_max):
+                if cur_high < first_hi_max and r[i-1] > first_r_max + RSI_DELTA:
+                    rsi_div_bear_hid[i] = True
+    out[f"rsi_div_bull_hidden_{label}"] = pd.Series(rsi_div_bull_hid).rolling(window=DIV_PERSIST_RSI, min_periods=1).max().fillna(0).astype(bool).values
+    out[f"rsi_div_bear_hidden_{label}"] = pd.Series(rsi_div_bear_hid).rolling(window=DIV_PERSIST_RSI, min_periods=1).max().fillna(0).astype(bool).values
 
     # ─ EQH/EQL sweep ──────────────────────────────────────────────────────
     eqh_sw = np.zeros(n, dtype=bool); eql_sw = np.zeros(n, dtype=bool)
