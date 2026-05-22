@@ -168,18 +168,28 @@ def main():
             lines.append(f"    time_exit_hours: {6 if r['ltf']=='5m' else 12}")
             lines.append("")
 
-    # Append to main config (before defaults: marker)
+    # Replace D2 block in main config (idempotent — повторный запуск переписывает)
     with open(CONFIG_PATH, encoding="utf-8") as f:
         main_text = f.read()
-    marker = "# Defaults для всех patterns\ndefaults:"
-    if marker not in main_text:
+    marker_end = "# Defaults для всех patterns\ndefaults:"
+    if marker_end not in main_text:
         print("❌ Маркер defaults не найден в config")
         return
+
+    # Удаляем старый D2 блок если есть (между маркером TIER 3 D2 и Defaults)
+    import re
+    d2_start_pattern = re.compile(r"\n  # ─{3,} TIER 3 D2.*?(?=# Defaults для всех patterns)", re.DOTALL)
+    if d2_start_pattern.search(main_text):
+        main_text = d2_start_pattern.sub("\n", main_text)
+        print("🔄 Старый D2 блок удалён, добавляю новый")
+    else:
+        print("➕ Старого D2 блока нет, добавляю новый")
+
     fragment = "\n".join(lines) + "\n"
-    new_text = main_text.replace(marker, fragment + marker)
+    new_text = main_text.replace(marker_end, fragment + marker_end)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         f.write(new_text)
-    print(f"✅ Добавлено в config/arch104_patterns.yaml")
+    print(f"✅ Обновлён config/arch104_patterns.yaml")
 
     # Test loading
     from core.confirmations.arch104_patterns import ARCH104Registry

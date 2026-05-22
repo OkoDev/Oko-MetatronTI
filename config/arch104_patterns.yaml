@@ -1524,6 +1524,7 @@ patterns:
     time_exit_hours: 24
 
 
+
   # ─────────── TIER 3 D2 (D-033, 2026-05-21) ───────────
   # 4h+1h HTF base, intraday/mid-cycle паттерны
   # Фильтр: n≥50, avgR≥0.5, WR≥60.0
@@ -1535,16 +1536,16 @@ patterns:
     direction: LONG
     parent: D2_L1_revival_4h
     anchor_factors:
-      - above_ema200_5m
+      - above_ema50_5m
       - atr_up_4h
       - bull_fvg_1h
-      - bull_fvg_5m
       - bull_ob_1h
       - ema50_above_ema200_5m
       - pivot_bounce_up_S2_1D
-    test_n: 85
-    test_avgR: 1.117
-    test_WR: 72.9
+      - pivot_near_S1_1D
+    test_n: 52
+    test_avgR: 1.489
+    test_WR: 88.5
     weight: 10
     priority: 4
     detection_tf: 5m
@@ -1561,14 +1562,13 @@ patterns:
     anchor_factors:
       - above_ema200_5m
       - atr_up_4h
-      - atr_up_5m
       - bull_fvg_1h
       - bull_ob_1h
-      - ema50_above_ema200_5m
       - pivot_bounce_up_S2_1D
-    test_n: 105
-    test_avgR: 0.828
-    test_WR: 62.9
+      - pivot_near_S1_1D
+    test_n: 72
+    test_avgR: 1.228
+    test_WR: 83.3
     weight: 10
     priority: 4
     detection_tf: 5m
@@ -1578,21 +1578,65 @@ patterns:
       strategy: no_trail
       fallback_tp_r: 2.0
     time_exit_hours: 6
+
+  D2_L_L3_15m_01:
+    direction: LONG
+    parent: D2_L3_ema_bounce
+    anchor_factors:
+      - atr_up_4h
+      - below_ema200_1h
+      - bull_fvg_1h
+      - pivot_bounce_up_S2_1D
+      - pivot_bounce_up_S3_1W
+    test_n: 87
+    test_avgR: 1.103
+    test_WR: 80.5
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L3_15m_02:
+    direction: LONG
+    parent: D2_L3_ema_bounce
+    anchor_factors:
+      - atr_up_4h
+      - below_ema200_1h
+      - bull_fvg_1h
+      - pivot_bounce_up_S2_1D
+      - wt_cross_up_15m
+    test_n: 65
+    test_avgR: 1.073
+    test_WR: 83.1
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
 
   D2_L_L1_5m_03:
     direction: LONG
     parent: D2_L1_revival_4h
     anchor_factors:
-      - above_ema200_5m
       - atr_up_4h
       - bull_fvg_1h
+      - bull_fvg_5m
       - bull_ob_1h
-      - bull_ob_near_5m
       - ema50_above_ema200_5m
       - pivot_bounce_up_S2_1D
-    test_n: 122
-    test_avgR: 0.770
-    test_WR: 60.7
+      - pivot_near_S1_1D
+    test_n: 60
+    test_avgR: 1.157
+    test_WR: 76.7
     weight: 10
     priority: 4
     detection_tf: 5m
@@ -1603,19 +1647,158 @@ patterns:
       fallback_tp_r: 2.0
     time_exit_hours: 6
 
-  D2_L_L1_15m_01:
+  D2_L_L3_5m_04:
+    direction: LONG
+    parent: D2_L3_ema_bounce
+    anchor_factors:
+      - atr_up_4h
+      - below_ema200_1h
+      - bull_fvg_1h
+      - discount_5m
+      - ema50_above_ema200_5m
+      - pivot_bounce_up_R1_1W
+      - wt_os_5m
+    test_n: 95
+    test_avgR: 0.965
+    test_WR: 65.3
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L3_5m_05:
+    direction: LONG
+    parent: D2_L3_ema_bounce
+    anchor_factors:
+      - atr_up_4h
+      - below_ema200_1h
+      - bull_fvg_1h
+      - ema50_above_ema200_5m
+      - pivot_bounce_up_R1_1W
+      - rsi_os_5m
+      - wt_os_5m
+    test_n: 62
+    test_avgR: 0.984
+    test_WR: 66.1
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L2_5m_06:
+    direction: LONG
+    parent: D2_L2_bounce_1h
+    anchor_factors:
+      - bull_fvg_1h
+      - discount_1h
+      - pivot_bounce_up_S1_1D
+      - rsi_os_5m
+      - wt_os_1h
+    test_n: 55
+    test_avgR: 0.964
+    test_WR: 65.5
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L3_15m_03:
+    direction: LONG
+    parent: D2_L3_ema_bounce
+    anchor_factors:
+      - above_ema50_15m
+      - atr_up_4h
+      - below_ema200_1h
+      - bull_fvg_1h
+      - pivot_bounce_up_S2_1D
+    test_n: 992
+    test_avgR: 0.578
+    test_WR: 62.4
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L2_5m_07:
+    direction: LONG
+    parent: D2_L2_bounce_1h
+    anchor_factors:
+      - bull_fvg_1h
+      - discount_1h
+      - discount_5m
+      - pivot_bounce_up_S1_1W
+      - wt_os_1h
+    test_n: 119
+    test_avgR: 0.810
+    test_WR: 60.5
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L3_5m_08:
+    direction: LONG
+    parent: D2_L3_ema_bounce
+    anchor_factors:
+      - atr_up_4h
+      - below_ema200_1h
+      - bull_fvg_1h
+      - discount_5m
+      - pivot_bounce_up_PP_1D
+      - pivot_bounce_up_R1_1W
+      - wt_os_5m
+    test_n: 109
+    test_avgR: 0.817
+    test_WR: 60.6
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_L_L1_15m_04:
     direction: LONG
     parent: D2_L1_revival_4h
     anchor_factors:
       - above_ema50_15m
+      - atr_up_15m
       - atr_up_4h
       - bull_fvg_1h
       - bull_ob_1h
       - bull_ob_near_15m
       - pivot_bounce_up_S2_1D
-    test_n: 67
-    test_avgR: 0.742
-    test_WR: 65.7
+    test_n: 306
+    test_avgR: 0.586
+    test_WR: 64.4
     weight: 10
     priority: 4
     detection_tf: 15m
@@ -1626,30 +1809,7 @@ patterns:
       fallback_tp_r: 2.0
     time_exit_hours: 12
 
-  D2_L_L1_15m_02:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_fvg_in_15m
-      - bull_ob_1h
-      - pivot_bounce_up_R1_1D
-      - pivot_bounce_up_R3_1W
-    test_n: 157
-    test_avgR: 0.633
-    test_WR: 60.5
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L1_15m_03:
+  D2_L_L1_15m_05:
     direction: LONG
     parent: D2_L1_revival_4h
     anchor_factors:
@@ -1658,10 +1818,499 @@ patterns:
       - bull_fvg_1h
       - bull_ob_15m
       - bull_ob_1h
+      - bull_ob_near_15m
       - pivot_bounce_up_S2_1D
-    test_n: 78
-    test_avgR: 0.650
-    test_WR: 65.4
+    test_n: 429
+    test_avgR: 0.548
+    test_WR: 61.5
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L1_15m_06:
+    direction: LONG
+    parent: D2_L1_revival_4h
+    anchor_factors:
+      - above_ema200_15m
+      - above_ema50_15m
+      - atr_up_15m
+      - atr_up_4h
+      - bull_fvg_1h
+      - bull_ob_1h
+      - pivot_bounce_up_S2_1D
+    test_n: 163
+    test_avgR: 0.571
+    test_WR: 69.9
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L2_15m_07:
+    direction: LONG
+    parent: D2_L2_bounce_1h
+    anchor_factors:
+      - atr_up_15m
+      - bull_fvg_1h
+      - bull_fvg_in_15m
+      - discount_1h
+      - pivot_bounce_up_S1_1D
+      - wt_os_1h
+    test_n: 58
+    test_avgR: 0.761
+    test_WR: 60.3
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_L_L2_5m_09:
+    direction: LONG
+    parent: D2_L2_bounce_1h
+    anchor_factors:
+      - bull_choch_5m
+      - bull_fvg_1h
+      - bull_ob_5m
+      - discount_1h
+      - wt_os_1h
+    test_n: 91
+    test_avgR: 0.595
+    test_WR: 67.0
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  # ─── D2 SHORT ───
+
+  D2_S_S1_15m_01:
+    direction: SHORT
+    parent: D2_S1_exhaust_4h
+    anchor_factors:
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_below_PP_1W
+      - pivot_bounce_down_R1_1W
+      - premium_1h
+    test_n: 50
+    test_avgR: 1.300
+    test_WR: 86.0
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S1_15m_02:
+    direction: SHORT
+    parent: D2_S1_exhaust_4h
+    anchor_factors:
+      - atr_down_15m
+      - atr_down_4h
+      - bear_ob_1h
+      - below_ema200_15m
+      - pivot_bounce_down_S1_1W
+      - pivot_near_R1_1D
+      - premium_1h
+    test_n: 60
+    test_avgR: 1.330
+    test_WR: 80.0
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S2_5m_01:
+    direction: SHORT
+    parent: D2_S2_fade_1h
+    anchor_factors:
+      - bear_ob_1h
+      - ote_short_5m
+      - pivot_bounce_down_PP_1W
+      - pivot_bounce_down_R1_1D
+      - premium_1h
+      - wt_ob_1h
+    test_n: 54
+    test_avgR: 1.333
+    test_WR: 77.8
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S1_15m_03:
+    direction: SHORT
+    parent: D2_S1_exhaust_4h
+    anchor_factors:
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_bounce_down_R1_1D
+      - pivot_bounce_down_S3_1W
+      - premium_1h
+    test_n: 79
+    test_avgR: 1.185
+    test_WR: 75.9
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S2_5m_02:
+    direction: SHORT
+    parent: D2_S2_fade_1h
+    anchor_factors:
+      - bear_ob_1h
+      - below_ema200_5m
+      - pivot_bounce_down_PP_1D
+      - pivot_bounce_down_PP_1W
+      - premium_1h
+      - wt_ob_1h
+    test_n: 69
+    test_avgR: 1.142
+    test_WR: 76.8
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S2_5m_03:
+    direction: SHORT
+    parent: D2_S2_fade_1h
+    anchor_factors:
+      - bear_ob_1h
+      - below_ema200_5m
+      - pivot_below_PP_1D
+      - pivot_bounce_down_PP_1W
+      - premium_1h
+      - wt_ob_1h
+    test_n: 75
+    test_avgR: 1.055
+    test_WR: 73.3
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S3_5m_04:
+    direction: SHORT
+    parent: D2_S3_ema_reject
+    anchor_factors:
+      - above_ema200_1h
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_bounce_down_PP_1D
+      - pivot_bounce_down_R2_1W
+      - pivot_bounce_down_S1_1D
+    test_n: 221
+    test_avgR: 0.885
+    test_WR: 67.9
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S1_5m_05:
+    direction: SHORT
+    parent: D2_S1_exhaust_4h
+    anchor_factors:
+      - atr_down_4h
+      - bear_ob_1h
+      - below_ema50_5m
+      - pivot_bounce_down_R1_1D
+      - pivot_bounce_down_S1_1W
+      - pivot_near_R1_1D
+      - premium_1h
+    test_n: 229
+    test_avgR: 0.905
+    test_WR: 64.2
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S3_5m_06:
+    direction: SHORT
+    parent: D2_S3_ema_reject
+    anchor_factors:
+      - above_ema200_1h
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_bounce_down_PP_1D
+      - pivot_bounce_down_S1_1D
+      - pivot_near_R2_1W
+    test_n: 130
+    test_avgR: 0.937
+    test_WR: 66.9
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S2_15m_04:
+    direction: SHORT
+    parent: D2_S2_fade_1h
+    anchor_factors:
+      - atr_down_15m
+      - bear_ob_1h
+      - pivot_bounce_down_R1_1D
+      - pivot_bounce_down_R3_1W
+      - premium_15m
+      - premium_1h
+      - wt_ob_1h
+    test_n: 73
+    test_avgR: 0.907
+    test_WR: 75.3
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S1_5m_07:
+    direction: SHORT
+    parent: D2_S1_exhaust_4h
+    anchor_factors:
+      - atr_cross_down_5m
+      - atr_down_4h
+      - bear_ob_1h
+      - below_ema50_5m
+      - pivot_bounce_down_R1_1D
+      - pivot_bounce_down_S1_1W
+      - premium_1h
+    test_n: 177
+    test_avgR: 0.871
+    test_WR: 64.4
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S3_15m_05:
+    direction: SHORT
+    parent: D2_S3_ema_reject
+    anchor_factors:
+      - above_ema200_1h
+      - atr_down_4h
+      - bear_ob_15m
+      - bear_ob_1h
+      - pivot_bounce_down_R1_1W
+      - pivot_bounce_down_S2_1D
+      - premium_15m
+    test_n: 67
+    test_avgR: 1.015
+    test_WR: 67.2
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S3_15m_06:
+    direction: SHORT
+    parent: D2_S3_ema_reject
+    anchor_factors:
+      - above_ema200_1h
+      - atr_down_4h
+      - bear_ob_1h
+      - bear_ob_near_15m
+      - pivot_bounce_down_R1_1W
+      - pivot_bounce_down_S2_1D
+      - premium_15m
+    test_n: 60
+    test_avgR: 1.000
+    test_WR: 66.7
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S3_5m_08:
+    direction: SHORT
+    parent: D2_S3_ema_reject
+    anchor_factors:
+      - above_ema200_1h
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_bounce_down_PP_1D
+      - pivot_bounce_down_S1_1D
+      - pivot_bounce_down_S2_1D
+    test_n: 55
+    test_avgR: 0.880
+    test_WR: 76.4
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S3_15m_07:
+    direction: SHORT
+    parent: D2_S3_ema_reject
+    anchor_factors:
+      - above_ema200_1h
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_bounce_down_PP_1D
+      - pivot_bounce_down_R1_1W
+      - pivot_bounce_down_S2_1D
+    test_n: 63
+    test_avgR: 0.883
+    test_WR: 73.0
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S1_5m_09:
+    direction: SHORT
+    parent: D2_S1_exhaust_4h
+    anchor_factors:
+      - atr_down_4h
+      - bear_ob_1h
+      - pivot_below_PP_1W
+      - pivot_near_R2_1D
+      - pivot_near_R3_1D
+      - premium_1h
+    test_n: 97
+    test_avgR: 0.887
+    test_WR: 64.9
+    weight: 10
+    priority: 4
+    detection_tf: 5m
+    sl:
+      lookback_bars: 20
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 6
+
+  D2_S_S2_15m_08:
+    direction: SHORT
+    parent: D2_S2_fade_1h
+    anchor_factors:
+      - bear_fvg_in_15m
+      - bear_ob_1h
+      - pivot_bounce_down_S1_1W
+      - premium_1h
+      - wt_ob_1h
+    test_n: 84
+    test_avgR: 0.768
+    test_WR: 66.7
+    weight: 10
+    priority: 4
+    detection_tf: 15m
+    sl:
+      lookback_bars: 15
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 12
+
+  D2_S_S2_15m_09:
+    direction: SHORT
+    parent: D2_S2_fade_1h
+    anchor_factors:
+      - bear_fvg_15m
+      - bear_ob_1h
+      - bear_ob_near_15m
+      - pivot_bounce_down_S1_1W
+      - premium_1h
+      - wt_ob_1h
+    test_n: 217
+    test_avgR: 0.586
+    test_WR: 61.3
     weight: 10
     priority: 4
     detection_tf: 15m
