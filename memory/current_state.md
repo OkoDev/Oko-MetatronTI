@@ -4,6 +4,39 @@
 
 ---
 
+## [22.05.2026 ~04:30 UTC] Агент: Developer — Cascade TSL де-эскалация фикс + SL аудит открытых
+
+### ✅ Сделано
+
+**SL аудит открытых позиций (108 шт):**
+- `scripts/fix_sl_audit.py` — создан и запущен. Найдено: 28 позиций с SL > initial_sl (TSL баг)
+- 11 SIM + 17 VST обновлены в БД (stop_loss восстановлен из sl_source)
+- LONG: 0 проблем. BILL (12.5%) и RUNE (5.08%) — ATR-based, оставлены как есть
+- `scripts/repair_vst_sl.py` — создан для обновления exchange SL-ордеров у 17 VST позиций
+  - Статус: скрипт готов, но ошибка `bingx requires "secret" credential"` — нужен .env с BINGX_VST_* ключами
+
+**Cascade TSL де-эскалация — диагностика + фикс:**
+- Найден конфликт параметров: `cascade_tsl_deescalation_r: 2.5` vs `no_degrade_above_r: 3.0`
+- Окно де-эскалации было только 0.5R — позиции ≥3R заблокированы навсегда
+- CATI +5.38R (из скрина) никогда не де-эскалировалась несмотря на истощённый WT
+- Фикс в `config.yaml`:
+  - `no_degrade_above_r: 3.0 → 8.0` (защищать только реальные ракеты 8R+)
+  - `r_gradient_rollback_pct: 0.25 → 0.40` (триггер при -60% от пика, не -75%)
+
+### ⚠️ Требует внимания
+- **17 VST exchange SL ордеров**: DB исправлена, но биржевые ордера всё ещё имеют старые (завышенные) SL.
+  Разница ~0.3%. При следующем TSL цикле бот автоматически обнаружит расхождение и cancel+replace.
+  repair_vst_sl.py готов если нужно принудительно исправить (с остановленным ботом).
+- **Бот запущен** — cascade TSL фикс (config.yaml) применится без рестарта при следующем reload
+
+### 📋 Следующие задачи
+1. Наблюдать CATI/IDOL/RESOLV/TRX — должны де-эскалировать при истощении WT
+2. DEV-193: sl_min 0.5% не применяется к range_bounce:pivot (REDSTONE 0.028%)
+3. ARCH-95-EXEC: H1-H5 расследование убытков
+4. ARCH-94: orphan-detector (open trades без exchange position → TG alert)
+
+---
+
 ## [22.05.2026 ~02:00 UTC] Агент: Developer — TSL SHORT bug fix + аудит TASKS + obsidian loop
 
 ### ✅ Сделано

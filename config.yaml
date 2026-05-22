@@ -289,9 +289,9 @@ trading:
   cascade_tsl_deescalation_r: 2.5
   cascade_tsl_opts:
     cap_tf_after_tp1: 1h
-    no_degrade_above_r: 3.0
+    no_degrade_above_r: 8.0    # было 3.0 — 22.05.2026: поднят, т.к. 2.5-3.0R окно блокировало все позиции ≥3R
     r_gradient_peak_min_r: 2.5
-    r_gradient_rollback_pct: 0.25
+    r_gradient_rollback_pct: 0.40  # было 0.25 — триггер при -60% от пика (было -75%, слишком поздно)
   use_breakeven: false
   use_be_after_tp1: true       # DEV-173: после хита TP1 → SL переносится в entry+0.1%
   expired_extend_min_r: 5.0
