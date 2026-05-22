@@ -531,6 +531,8 @@ signal_router:
     composite:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     monitoring:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}  # fallback для неопознанных
     monitoring_escal:  {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    # ── ARCH-104 / D-044 (2026-05-23): подключаем VST exchange execution ───
+    arch104:           {min_strength: 50, exchange_enabled: true,  trade_mode: "arch104"}
     # ── Источники для Этапа 1.Г ───────────────────────────────────────
     trigger_loop:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     event_bus:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}

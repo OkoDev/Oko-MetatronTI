@@ -393,19 +393,44 @@ async def _try_register_vst_trade(
         "trade_mode": "arch104",   # dedup: разные режимы не блокируют
     }
 
-    try:
-        trade_id = await bot.trade_simulator.register_trade_async(
-            rec, bot.data_collector, extra_features=extra,
-        )
-    except Exception as e:
-        logger.exception("[ARCH-104 VST] %s register_trade_async error: %s", symbol, e)
-        return
+    # D-044 (2026-05-23): идём через trade_router (как atr_change/confluence/etc.)
+    # для exchange execution на VST. Без router register_trade_async создаёт
+    # только SIM запись (exchange_order_id=NULL).
+    trade_id = None
+    exchange_id = None
+    if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+        try:
+            _sr_result = await bot.trade_router.submit(
+                rec, source="arch104", extra_features=extra,
+            )
+            trade_id = _sr_result.trade_id
+            exchange_id = getattr(_sr_result, "exchange_order_id", None)
+            if not trade_id:
+                _hd_names = ",".join(g for g, _ in getattr(_sr_result, "hard_drops", [])) or "none"
+                logger.info(
+                    "[ARCH-104 VST] %s@%s %s pattern=%s router dropped: %s",
+                    symbol, det_tf, direction, decision.pattern_id, _hd_names,
+                )
+                return
+        except Exception as e:
+            logger.exception("[ARCH-104 VST] %s router error: %s", symbol, e)
+            return
+    else:
+        # Fallback (router отключён) — SIM-only
+        try:
+            trade_id = await bot.trade_simulator.register_trade_async(
+                rec, bot.data_collector, extra_features=extra,
+            )
+        except Exception as e:
+            logger.exception("[ARCH-104 VST] %s register_trade_async error: %s", symbol, e)
+            return
 
     if trade_id:
         logger.info(
-            "[ARCH-104 VST] %s@%s %s pattern=%s → trade #%d str=%d sl=%.4f tp=%.4f risk=%.2f%%",
+            "[ARCH-104 VST] %s@%s %s pattern=%s → trade #%d str=%d sl=%.4f tp=%.4f risk=%.2f%% exch=%s",
             symbol, det_tf, direction, decision.pattern_id,
             trade_id, strength, sl_price, tp_price, float(decision.risk_pct),
+            exchange_id or "none",
         )
     else:
         logger.info(
