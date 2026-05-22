@@ -246,27 +246,32 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
         if df_det is None or f_det_src is None or len(df_det) < sl_lookback + 10:
             continue
 
-        # Combine flags: detection TF native + HTF reindexed (lookahead-safe)
+        # Combine flags: detection TF native + HTF reindexed (lookahead-safe).
+        # D-043 (2026-05-23): astype(bool) после fillna убирает pandas FutureWarning
+        # про downcasting object dtype. Reindex даёт object dtype (NaN на новых index'ах),
+        # fillna(False) заменяет NaN, astype(bool) явно конвертирует — без warning.
+        def _reindex_bool(df_src, idx):
+            return df_src.reindex(idx, method="ffill").fillna(False).astype(bool)
         try:
             target_idx = df_det.index
             combined = [f_det_src]
             if f_4h_shifted is not None and det_tf != "4h":
-                combined.append(f_4h_shifted.reindex(target_idx, method="ffill").fillna(False))
+                combined.append(_reindex_bool(f_4h_shifted, target_idx))
             if f_1d_shifted is not None:
-                combined.append(f_1d_shifted.reindex(target_idx, method="ffill").fillna(False))
+                combined.append(_reindex_bool(f_1d_shifted, target_idx))
             # Для 5m: добавить 15m+1h в reindex
             if det_tf == "5m":
                 if f_15m_src is not None:
-                    f_15m_shift = _shift(f_15m_src, 0)   # 15m close = current bar
+                    f_15m_shift = _shift(f_15m_src, 0)
                     f_15m_shift.index = f_15m_shift.index + pd.Timedelta(minutes=15)
-                    combined.append(f_15m_shift.reindex(target_idx, method="ffill").fillna(False))
+                    combined.append(_reindex_bool(f_15m_shift, target_idx))
                 f_1h_shift = f_1h.copy()
                 f_1h_shift.index = f_1h_shift.index + pd.Timedelta(hours=1)
-                combined.append(f_1h_shift.reindex(target_idx, method="ffill").fillna(False))
+                combined.append(_reindex_bool(f_1h_shift, target_idx))
             elif det_tf == "15m":
                 f_1h_shift = f_1h.copy()
                 f_1h_shift.index = f_1h_shift.index + pd.Timedelta(hours=1)
-                combined.append(f_1h_shift.reindex(target_idx, method="ffill").fillna(False))
+                combined.append(_reindex_bool(f_1h_shift, target_idx))
 
             all_flags_df = pd.concat(combined, axis=1).astype(bool)
         except Exception as e:
