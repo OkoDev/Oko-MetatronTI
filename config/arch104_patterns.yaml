@@ -2885,6 +2885,86 @@ patterns:
       fallback_tp_r: 2.0
     time_exit_hours: 48
 
+
+  # ─────────── TIER 5 CONTINUATION (D-038, 2026-05-22) ───────────
+  # Continuation/trend-following patterns. БЕЗ 1d-факторов,
+  # БЕЗ reversal markers (os/ob/div/sweep), БЕЗ pivot_bounce.
+  # Фильтр: BH-FDR, n≥50, avgR≥0.5, WR≥55.0.
+
+  # ─── T5 LONG ───
+
+  T5_L_01:
+    direction: LONG
+    anchor_factors:
+      - pivot_near_S1_1D
+      - pivot_near_S3_1W
+      - vol_spike_1h
+    test_n: 88
+    test_avgR: 0.834
+    test_WR: 63.6
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 5
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 24
+
+  T5_L_02:
+    direction: LONG
+    anchor_factors:
+      - discount_1h
+      - pivot_near_S1_1D
+      - pivot_near_S3_1W
+    test_n: 412
+    test_avgR: 0.658
+    test_WR: 59.5
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 5
+    detection_tf: 1h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 24
+
+  T5_L_03:
+    direction: LONG
+    anchor_factors:
+      - bull_fvg_4h
+      - pivot_near_S1_1D
+      - pivot_near_S3_1W
+    test_n: 113
+    test_avgR: 0.756
+    test_WR: 61.1
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 5
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 24
+
+  T5_L_04:
+    direction: LONG
+    anchor_factors:
+      - atr_up_4h
+      - pivot_near_S1_1D
+      - pivot_near_S3_1W
+    test_n: 145
+    test_avgR: 0.686
+    test_WR: 56.6
+    mht_p_adj: 0.0000
+    weight: 10
+    priority: 5
+    detection_tf: 4h
+    tp:
+      strategy: no_trail
+      fallback_tp_r: 2.0
+    time_exit_hours: 24
+
 # Defaults для всех patterns
 defaults:
   min_signal_strength: 60       # composite scoring threshold
