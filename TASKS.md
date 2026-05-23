@@ -154,6 +154,20 @@
 | **TRADER** | | | |
 | [TR-001](#tr-001) | 🔄 | Ежедневный разбор Watch List с живыми свечами | TRADER |
 | [TRADER-AUDIT-002](#trader-audit-002) | 🟢 | Аудит DUAL_TSL split 10%/90%: grid search после 500+ новых DUAL_TSL сделок (~30.04) | TRADER |
+| **🚀 СПРИНТ «ARCH-104/105 LIVE» (22.05.2026)** — pipeline жив, ARCH-105 hidden div в проде | | | |
+| D-046 | 🟡 | **Separate Isolated Margin mode** на BingX (Hedge уже есть) для D-026 Multi-TF Scaling. Закрыть все позиции → переключить mode → убрать "позиция уже открыта" check в OrderManager + уникальный trade_mode per (det_tf, pattern_id). Даёт N независимых позиций per пара. | DEV |
+| D-047 | 🔴 | **Trigger gate `wt_cross_*_1h`** — walkforward завершён 23.05 15:58. **ГИПОТЕЗА ПОДТВЕРЖДЕНА**: D047_S2 5m top n=40 avgR=+1.55 WR=85% (vs baseline T7 +1.12 WR=70%). 10/12 CSV готовы (D047_S3 = T4_S_09 family 0 валидаций — слабая семья). **TODO:** d047_integrate.py → Tier-8 в registry → restart | DEV |
+| D-049 | ✅ | **SL exit_price slippage fix (23.05 commit 80f5c26):** при status='SL' и R<-2.0 заменяем `exit_price = SL_price` вместо artifact mark_price. Корень: position_sync берёт current mark при не-нахождении filled order. HANA T4_S_09: 3 SL все по exit=0.03829 → R=-7.58 (вместо -1). Backlog D-049.2 — правильный fetch_order(exchange_order_id) | DEV |
+| DOC-PAT-01 | 🟢 | **Pattern Library Reference** (`show_pattern.py` готов 23.05): CLI lookup tool для 175 patterns. **TODO расширить:** markdown docs в `obsidian/Architecture/ARCH-104-Pattern-Library/` со словесными описаниями каждого pattern ("Bull continuation through 4h trend + 1h FVG support") + readable таблицы по tier'ам | DEV/ARCH |
+| D-048 | 🟢 | **Re-entry from watchlist** после SL: pair → arch104_watchlist (TTL 4-8h) → ждать divergence + cross_*_15m → re-entry на confirmation. Использует сохранённый HTF context | DEV |
+| D-049 | 🔴 | **SL exit_price bug investigation:** T4_S_09 HANA 3 sell trades все закрылись по exit=0.03829 при разных closure times (23:17, 00:36, 02:17). Slippage 4-5% от SL. Возможно `close_trade` берёт кеш цену не at SL fill time. Grep callers + позиция_sync logic | DEV |
+| **🚀 СПРИНТ «OBSIDIAN AUTOMATION» (23.05.2026)** — реализовано в одну сессию | | | |
+| ARCH-OBS-01 | ✅ | **`tools/obsidian_status_sync.py`** — frontmatter sync TASKS.md ↔ Tasks/*.md. `.git/hooks/post-commit`. 23 файла обновлено | DEV |
+| ARCH-OBS-02 | ✅ | **`tools/vault_health.py`** → `obsidian/Meta/HEALTH.md` — orphans 65%, broken 17%, untagged 2.1%. Daily в obsidian_loop | DEV |
+| ARCH-OBS-03 | ✅ | **`tools/obsidian_autolink.py`** — wikilinks по ID. `.git/hooks/post-merge`. 164 known IDs, 2779 потенциальных links | DEV |
+| ARCH-OBS-04 | ✅ | **`tools/obsidian_weekly_digest.py`** → `obsidian/Index/WEEKLY-*.md`. Weekly в obsidian_loop (воскресенье) | DEV |
+| ARCH-OBS-05 | ✅ | **`tools/obsidian_dedup_discussions.py`** — LLM semantic dedup (Groq→Gemini). → `obsidian/Meta/DEDUP-REPORT.md` | DEV |
+| ARCH-OBS-06 | ✅ | **`tools/obsidian_archive.py`** — файлы >90 дней без ссылок → `_archive/`. Weekly в obsidian_loop (воскресенье) | DEV |
 
 ---
 
