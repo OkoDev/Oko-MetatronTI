@@ -161,9 +161,11 @@ class TradeRouter:
             )
 
         # ── Persist ──────────────────────────────────────────────────────
+        _reg_reason: list = []
         try:
             trade_id = await self.bot.trade_simulator.register_trade_async(
                 recommendation, self.bot.data_collector, extra_features=ctx.extra_features,
+                _reason_out=_reg_reason,
             )
         except Exception as e:
             logger.warning("[TradeRouter] %s/%s register_trade_async error: %s",
@@ -172,8 +174,9 @@ class TradeRouter:
 
         if not trade_id:
             # trade_simulator вернул None — внутренние gates ещё работают
-            hard_drops.append(("register_returned_none", f"{source}: register_trade_async() returned None"))
-            await self._record_drop_register_none(ctx)
+            _internal_reason = _reg_reason[0] if _reg_reason else "unknown"
+            hard_drops.append(("register_returned_none", f"{source}: register_trade_async() returned None ({_internal_reason})"))
+            await self._record_drop_register_none(ctx, reason=_internal_reason)
             await self._publish_position_dropped(ctx, hard_drops, soft_penalties)
             return SubmitResult(
                 trade_id=None,
@@ -339,15 +342,19 @@ class TradeRouter:
         except Exception:
             pass
 
-    async def _record_drop_register_none(self, ctx: GateContext) -> None:
+    async def _record_drop_register_none(self, ctx: GateContext, reason: str = "") -> None:
         try:
             from core.observability.decision_trace import record_drop
             asyncio.create_task(record_drop(
                 symbol=ctx.symbol, gate_name="register_returned_none",
-                drop_reason=f"{ctx.source}/{ctx.direction}: register_trade_async() returned None",
+                drop_reason=f"{ctx.source}/{ctx.direction}: {reason or 'register_trade_async() returned None'}",
                 signal_type=ctx.signal_type, direction=ctx.direction,
                 strength=ctx.strength,
-                features={"source": ctx.source, "soft_penalties": ctx.extra_features.get("soft_penalties", [])},
+                features={
+                    "source": ctx.source,
+                    "soft_penalties": ctx.extra_features.get("soft_penalties", []),
+                    "internal_reason": reason,
+                },
             ))
         except Exception:
             pass

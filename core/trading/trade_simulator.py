@@ -758,6 +758,7 @@ class TradeSimulator:
         recommendation: Any,
         data_collector: Any = None,
         extra_features: Optional[dict] = None,
+        _reason_out: Optional[list] = None,
     ) -> Optional[int]:
         """
         Async-обёртка над register_trade: получает OHLCV, определяет режим рынка,
@@ -783,6 +784,7 @@ class TradeSimulator:
                         _sym_170 = _get_recommendation_value(recommendation, "symbol") or ""
                         logger.info("[DEV-170] %s БЛОК time_gate(%s): hour=%d вне [%d, %d) UTC",
                                     _sym_170, _sig_170 or "default", _hour_utc, _start_h, _end_h)
+                        if _reason_out is not None: _reason_out.append("DEV-170:time_gate")
                         return None
         except Exception as _e170:
             logger.debug("[DEV-170] time_gate error: %s", _e170)
@@ -802,6 +804,7 @@ class TradeSimulator:
                     if _msg.get("enabled"):
                         logger.info("[ARCH-42] %s БЛОК market_stress: %d SL за %d мин",
                                     _sym_msg, len(_recent_sl), _window_min)
+                        if _reason_out is not None: _reason_out.append("ARCH-42:market_stress")
                         return None
                     else:
                         logger.info("[ARCH-42] shadow %s: %d SL за %d мин (gate disabled)",
@@ -826,6 +829,7 @@ class TradeSimulator:
                                 "[DEV-38] Correlation Guard: блок %s — уже открыта %s из той же группы",
                                 _new_sym, _conflict,
                             )
+                            if _reason_out is not None: _reason_out.append("DEV-38:correlation_guard")
                             return None
         except Exception as _e:
             logger.debug("[DEV-38] Correlation Guard error: %s", _e)
@@ -912,11 +916,13 @@ class TradeSimulator:
                     # Guard 1: blocked_regimes (DEV-33 fallback)
                     if regime in (_cfg_44.get("trading.blocked_regimes") or []):
                         logger.info("[DEV-44] %s БЛОК blocked_regime: %s", _sym_44, regime)
+                        if _reason_out is not None: _reason_out.append(f"DEV-44:blocked_regime:{regime}")
                         return None
                     # Guard 2: regime_direction_block (DEV-32 fallback)
                     _rdb = _cfg_44.get("trading.regime_direction_block") or {}
                     if _rdb.get("enabled") and _rdb.get(regime) == _dir_44:
                         logger.info("[DEV-44] %s БЛОК regime_direction: %s/%s", _sym_44, regime, _dir_44)
+                        if _reason_out is not None: _reason_out.append(f"DEV-44:regime_direction:{regime}/{_dir_44}")
                         return None
                     # Guard 3: signal_regime_block (DEV-64B) — блок мёртвых signal_type × regime комбинаций
                     _srb = _cfg_44.get("signal_quality.signal_regime_block") or {}
@@ -928,6 +934,7 @@ class TradeSimulator:
                             logger.info(
                                 "[DEV-64B] %s БЛОК signal_regime_block: %s/%s", _sym_44, _sig_type_44, regime
                             )
+                            if _reason_out is not None: _reason_out.append(f"DEV-64B:signal_regime_block:{_sig_type_44}/{regime}")
                             return None
                         # Guard 3B: blocked_combos (DEV-133) — direction × regime, хирургические блоки
                         for _combo in (_srb_sig.get("blocked_combos") or []):
@@ -935,6 +942,7 @@ class TradeSimulator:
                                 logger.info(
                                     "[DEV-133] %s БЛОК combo: %s/%s/%s", _sym_44, _sig_type_44, _dir_44, regime
                                 )
+                                if _reason_out is not None: _reason_out.append(f"DEV-133:blocked_combo:{_sig_type_44}/{_dir_44}/{regime}")
                                 return None
             except Exception as _e44:
                 logger.debug("[DEV-44] Safety gate error: %s", _e44)
@@ -970,6 +978,7 @@ class TradeSimulator:
                             "[DEV-155] %s БЛОК %s/%s/%s strength=%d < %d",
                             _sym155, _dir155, regime, _sig_type_155 or "?", _str155, _eff_min,
                         )
+                        if _reason_out is not None: _reason_out.append(f"DEV-155:min_strength:{regime}/{_dir155}:{_str155}<{_eff_min}")
                         return None
             except Exception as _e155:
                 logger.debug("[DEV-155] gate error: %s", _e155)
@@ -987,6 +996,7 @@ class TradeSimulator:
                 if _sig98 == "pivot_reversal" and _pms < 100 and _str98 >= _pms:
                     _sym98 = _get_recommendation_value(recommendation, "symbol") or symbol
                     logger.info("[DEV-98] %s БЛОК pivot_reversal strength=%d >= %d", _sym98, _str98, _pms)
+                    if _reason_out is not None: _reason_out.append(f"DEV-98:pivot_reversal_strength:{_str98}>={_pms}")
                     return None
         except Exception as _e98:
             logger.debug("[DEV-98] gate error: %s", _e98)
@@ -1015,6 +1025,7 @@ class TradeSimulator:
                 if _blocked_52:
                     if _l3.get("enabled"):
                         logger.info("[DEV-52] %s: портфельный лимит %s", _sym_52, _blocked_52)
+                        if _reason_out is not None: _reason_out.append(f"DEV-52:portfolio_limit:{_blocked_52}")
                         return None
                     else:
                         logger.info("[DEV-52] shadow %s: портфельный лимит %s (gate disabled)",
