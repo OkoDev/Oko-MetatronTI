@@ -357,18 +357,28 @@ async def sync_positions(bot) -> None:
                     )
                     exit_price = _sl
 
-                # DEV-175: SL с огромным slippage — exit намного хуже SL (gap на бирже).
-                # Реальные деньги VST — exit_price НЕ меняем, только логируем для аудита.
-                # Root cause: STOP_MARKET на малоликвидных монетах, slippage > 2R → orphan R.
+                # DEV-175 / D-049 (2026-05-23): SL с slippage R<-2 — artifact mark_price
+                # fallback. _resolve_exit может не найти filled order (>50 limit, или
+                # cancelled/replaced TSL'ом) → fallback на current mark_price.
+                # Между fill time (T0) и position_sync detect (T1, +30-60s polling)
+                # цена могла уйти далеко → artificial -7R loss.
+                #
+                # Реальный кейс HANA T4_S_09: 3 SHORT trades все закрылись по
+                # exit=0.03829 в разные times (23:17, 00:36, 02:17). exit ≈ current
+                # mark, not actual fill.
+                #
+                # Conservative fix: заменить exit на SL price (R = -1.0).
+                # Сохраняем real slippage в log для аудита.
                 if status == "SL" and _r_calc < -2.0:
                     _orig_sl = float(trade.get("original_sl") or 0)
-                    _orig_r = (_r_calc * _one_r) / abs(_entry - _orig_sl) if _orig_sl and abs(_entry - _orig_sl) > 0 else _r_calc
                     logger.warning(
-                        "[POSITION-SYNC] #%d %s: SLIPPAGE — SL exit=%.6f R=%.1f (<-2). "
-                        "SL на бирже=%.6f, orig_sl=%.6f. STOP_MARKET gap %.2f%%",
+                        "[POSITION-SYNC][D-049] #%d %s: SLIPPAGE — mark=%.6f R=%.1f (<-2). "
+                        "SL=%.6f, orig_sl=%.6f. STOP_MARKET gap %.2f%%. "
+                        "Заменяем exit_price=mark→SL (artifact mark_price fallback).",
                         trade_id, sym, exit_price, _r_calc, _sl, _orig_sl,
                         abs(exit_price - (_orig_sl or _sl)) / _entry * 100 if _entry else 0,
                     )
+                    exit_price = _sl
 
                 # TP не может дать R < -1. Если даёт — exit_price ложный.
                 if status == "TP" and _r_calc < -1 and _tp:
