@@ -87,7 +87,9 @@ class OrderManager:
                            balance, fallback)
             return fallback
         except Exception as e:
-            logger.warning("[OrderManager] get_balance error: %s", e)
+            # D-057: type(e).__name__ для exceptions без message (TimeoutError()
+            # имеет пустой str(e) → лог "error:" не информативен)
+            logger.warning("[OrderManager] get_balance error: %s: %s", type(e).__name__, e)
             return fallback
 
     async def get_exchange_snapshot(self) -> dict:
@@ -112,8 +114,9 @@ class OrderManager:
                 "error": None,
             }
         except Exception as e:
-            logger.warning("[OrderManager] get_exchange_snapshot: %s", e)
-            return {"balance": None, "positions": [], "error": str(e)}
+            # D-057
+            logger.warning("[OrderManager] get_exchange_snapshot: %s: %s", type(e).__name__, e)
+            return {"balance": None, "positions": [], "error": f"{type(e).__name__}: {e}"}
 
     # ── Открытие позиции ────────────────────────────────────────────────────
 

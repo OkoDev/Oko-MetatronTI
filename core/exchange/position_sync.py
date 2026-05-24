@@ -219,8 +219,10 @@ async def sync_positions(bot) -> None:
         try:
             positions = await client.get_positions()
         except Exception as _pos_err:
+            # D-057: type(e).__name__ для exceptions без message
             logger.warning(
-                "[POSITION-SYNC] get_positions failed → пропуск синхронизации: %s", _pos_err
+                "[POSITION-SYNC] get_positions failed → пропуск синхронизации: %s: %s",
+                type(_pos_err).__name__, _pos_err,
             )
             return
 
