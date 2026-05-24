@@ -256,13 +256,14 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
         # Combine flags: detection TF native + HTF reindexed (lookahead-safe).
         # D-043 (2026-05-23): astype(bool) после fillna убирает pandas FutureWarning
         # про downcasting object dtype. Reindex даёт object dtype (NaN на новых index'ах),
-        # D-052 (2026-05-24): infer_objects(copy=False) перед astype(bool) убирает
-        # pandas FutureWarning о downcasting object dtype. reindex добавляет NaN
-        # (что делает dtype object), fillna(False) оставляет object dtype —
-        # без явного infer_objects pandas сейчас auto-downcast'ит, но в future
-        # versions это уберут. Canonical pattern для bool reindex.
+        # D-052 v2 (2026-05-24): pandas FutureWarning о downcasting object dtype
+        # генерируется внутри `.fillna(False)` (когда df bool + reindex даёт NaN).
+        # `.infer_objects()` после — бесполезно (warning уже выпущен).
+        #
+        # Правильно: `reindex(fill_value=False)` — заполняет NaN сразу как False
+        # в момент reindex, БЕЗ object dtype intermediate. Native bool throughout.
         def _reindex_bool(df_src, idx):
-            return df_src.reindex(idx, method="ffill").fillna(False).infer_objects(copy=False).astype(bool)
+            return df_src.reindex(idx, method="ffill", fill_value=False).astype(bool)
         try:
             target_idx = df_det.index
             combined = [f_det_src]
