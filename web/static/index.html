@@ -141,6 +141,7 @@
       <div style="display:flex;align-items:center;gap:10px">
         <span id="btc4hBadge" style="display:none;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;border:1px solid #30363d"></span>
         <span id="exchangeHealthBadge" title="Статус соединения с BingX" style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;border:1px solid #30363d;background:#1a2a1a;color:#3fb950">● BingX</span>
+        <span id="scanHealthBadge" title="Статус scan_loop (D-053 detection)" style="padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:700;border:1px solid #30363d;background:#1a2a3a;color:#8b949e">? Скан</span>
         <span id="updated">загрузка...</span>
         <a id="modeBadge" href="/trading" style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:10px;font-size:.72rem;font-weight:700;background:#21262d;color:#8b949e;border:1px solid #30363d;text-decoration:none;cursor:pointer">
           <span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block"></span>
@@ -654,6 +655,28 @@ function _patchTopbarBadges(d) {
     ehBadge.style.background   = ehCfg.bg;
     ehBadge.style.color        = ehCfg.color;
     ehBadge.style.borderColor  = ehCfg.color + '44';
+  }
+
+  // D-056: scan_loop health badge (D-053 cascade crash detection)
+  const shBadge = document.getElementById('scanHealthBadge');
+  if (shBadge) {
+    const st = d.status || {};
+    const sh = st.scan_health || 'unknown';
+    const mp = st.monitored_pairs || 0;
+    const ageSec = st.scan_age_sec;
+    const ageStr = ageSec != null ? (ageSec < 60 ? `${ageSec}s` : `${Math.floor(ageSec/60)}m`) : '';
+    const lastPairs = (st.last_scan && st.last_scan.pairs) || 0;
+    const shCfg = {
+      ok:       { bg: '#1a3a1f', color: '#3fb950', label: `● ${lastPairs} пар ${ageStr}` },
+      delayed:  { bg: '#3a2a1a', color: '#d29922', label: `⚠ ${lastPairs} пар ${ageStr}` },
+      DEAD:     { bg: '#3a1a1a', color: '#f85149', label: `✕ SCAN DEAD ${ageStr}` },
+      unknown:  { bg: '#1a2a3a', color: '#8b949e', label: `? Скан (мп ${mp})` },
+    }[sh] || { bg: '#1a2a3a', color: '#8b949e', label: '? Скан' };
+    shBadge.textContent       = shCfg.label;
+    shBadge.style.background  = shCfg.bg;
+    shBadge.style.color       = shCfg.color;
+    shBadge.style.borderColor = shCfg.color + '44';
+    shBadge.title             = `monitored_pairs=${mp}, last_scan=${lastPairs}пар, age=${ageStr}, health=${sh}`;
   }
 }
 
