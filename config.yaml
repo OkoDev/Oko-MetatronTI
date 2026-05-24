@@ -563,3 +563,10 @@ arch104:
   vst_trading:
     enabled: true             # D-030: торговля 15 паттернов на VST
     signal_type: "arch104"    # в БД simulated_trades для разделения
+  # D-051 (2026-05-24): shadow logging per-TF trigger gate.
+  # Если включено — каждая ARCH-104 сделка получает в features_json:
+  #   arch104_shadow_trigger_flag: "wt_cross_up_5m" / "wt_cross_down_15m" etc
+  #   arch104_shadow_trigger_passed: true/false
+  # НЕ блокирует сделки. Через 1-2 недели → SQL анализ WR/avgR per passed.
+  shadow_trigger_check:
+    enabled: true
