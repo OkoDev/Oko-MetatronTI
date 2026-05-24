@@ -1377,47 +1377,103 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                     _dir_v = getattr(recommendation.direction, "value", str(recommendation.direction))
                     _rsid = "LONG" if "LONG" in _dir_v.upper() else "SHORT"
                     _rconfs = []
+                    _no_dup201 = lambda s: not any(c.get("source") == s for c in _rconfs)
 
-                    # WT zone (OS/OB) на entry TF
+                    # ─── Блок A: confluence_factors (основной источник для confluence/wt_b сигналов) ───
+                    _cfs_r = (extra or {}).get("confluence_factors") or []
+                    if isinstance(_cfs_r, list) and _cfs_r:
+                        # WT cross in zone → zone + cross (conf 1.0)
+                        if _rsid == "LONG" and "WT_CROSS_IN_OS" in _cfs_r:
+                            for _src_cf, _ev_cf in (("zone_OS_1h", {}), ("wt_cross_same_dir", {"wt_cross_quality": "in_zone"})):
+                                if _no_dup201(_src_cf):
+                                    _w = _rgw(_src_cf, _rsid)
+                                    if _w > 0:
+                                        _rconfs.append(_RConf(source=_src_cf, symbol=symbol, side=_rsid,
+                                            weight=_w, confidence=1.0, tf="15m", evidence=_ev_cf).to_dict())
+                        elif _rsid == "SHORT" and "WT_CROSS_IN_OB" in _cfs_r:
+                            for _src_cf, _ev_cf in (("zone_OB_1h", {}), ("wt_cross_same_dir", {"wt_cross_quality": "in_zone"})):
+                                if _no_dup201(_src_cf):
+                                    _w = _rgw(_src_cf, _rsid)
+                                    if _w > 0:
+                                        _rconfs.append(_RConf(source=_src_cf, symbol=symbol, side=_rsid,
+                                            weight=_w, confidence=1.0, tf="15m", evidence=_ev_cf).to_dict())
+                        # WT cross out of zone (conf 0.7)
+                        _cross_key_r = "WT_CROSS_UP" if _rsid == "LONG" else "WT_CROSS_DOWN"
+                        if _cross_key_r in _cfs_r and _no_dup201("wt_cross_same_dir"):
+                            _w = _rgw("wt_cross_same_dir", _rsid)
+                            if _w > 0:
+                                _rconfs.append(_RConf(source="wt_cross_same_dir", symbol=symbol, side=_rsid,
+                                    weight=_w, confidence=0.7, tf="15m",
+                                    evidence={"wt_cross_quality": "out_zone"}).to_dict())
+                        # WT zone без cross (от confluence_scanner: WT_OS / WT_OB)
+                        _zone_key_r = "WT_OS" if _rsid == "LONG" else "WT_OB"
+                        _zone_src_r = "zone_OS_1h" if _rsid == "LONG" else "zone_OB_1h"
+                        if _zone_key_r in _cfs_r and _no_dup201(_zone_src_r):
+                            _w = _rgw(_zone_src_r, _rsid)
+                            if _w > 0:
+                                _rconfs.append(_RConf(source=_zone_src_r, symbol=symbol, side=_rsid,
+                                    weight=_w, confidence=0.8, tf="15m").to_dict())
+                        # Divergence из confluence_factors
+                        if "WT_HIDDEN_DIV" in _cfs_r:
+                            _dsrc = "div_hidden_bull_15m" if _rsid == "LONG" else "div_hidden_bear_15m"
+                            if _no_dup201(_dsrc):
+                                _w = _rgw(_dsrc, _rsid)
+                                if _w > 0:
+                                    _rconfs.append(_RConf(source=_dsrc, symbol=symbol, side=_rsid,
+                                        weight=_w, confidence=0.85, tf="15m",
+                                        evidence={"cf_factor": "WT_HIDDEN_DIV"}).to_dict())
+                        elif "WT_DIVERGENCE" in _cfs_r:
+                            _dsrc = "div_regular_bull_15m" if _rsid == "LONG" else "div_regular_bear_15m"
+                            if _no_dup201(_dsrc):
+                                _w = _rgw(_dsrc, _rsid)
+                                if _w > 0:
+                                    _rconfs.append(_RConf(source=_dsrc, symbol=symbol, side=_rsid,
+                                        weight=_w, confidence=0.85, tf="15m",
+                                        evidence={"cf_factor": "WT_DIVERGENCE"}).to_dict())
+                        # Pivot из confluence_factors
+                        if ("PIVOT_TOUCH" in _cfs_r or "PIVOT_CONFLUENCE" in _cfs_r) and _no_dup201("pivot_touch_within_03"):
+                            _w = _rgw("pivot_touch_within_03", _rsid)
+                            if _w > 0:
+                                _rconfs.append(_RConf(source="pivot_touch_within_03", symbol=symbol, side=_rsid,
+                                    weight=_w, confidence=0.85, tf="15m",
+                                    evidence={"cf_factor": "PIVOT_TOUCH"}).to_dict())
+
+                    # ─── Блок B: flat extra keys (fallback / divergence / pivot_reversal) ───
+                    # WT zone (OS/OB) из pre_fetched_dfs
                     _wt_zone_r = (extra or {}).get("wt_zone")
-                    if _wt_zone_r == "OS" and _rsid == "LONG":
+                    if _wt_zone_r == "OS" and _rsid == "LONG" and _no_dup201("zone_OS_1h"):
                         _w = _rgw("zone_OS_1h", _rsid)
                         if _w > 0:
                             _rconfs.append(_RConf(source="zone_OS_1h", symbol=symbol, side=_rsid,
                                 weight=_w, confidence=1.0, tf="1h").to_dict())
-                    elif _wt_zone_r == "OB" and _rsid == "SHORT":
+                    elif _wt_zone_r == "OB" and _rsid == "SHORT" and _no_dup201("zone_OB_1h"):
                         _w = _rgw("zone_OB_1h", _rsid)
                         if _w > 0:
                             _rconfs.append(_RConf(source="zone_OB_1h", symbol=symbol, side=_rsid,
                                 weight=_w, confidence=1.0, tf="1h").to_dict())
-
-                    # Divergence (из wt_div_type или hidden_div)
+                    # Divergence из wt_div_type (supporting signals)
                     _div_t_r = (extra or {}).get("wt_div_type")
                     _div_src_r = {
-                        "regular_bull": "div_regular_bull_15m",
-                        "regular_bear": "div_regular_bear_15m",
-                        "hidden_bull": "div_hidden_bull_15m",
-                        "hidden_bear": "div_hidden_bear_15m",
+                        "regular_bull": "div_regular_bull_15m", "regular_bear": "div_regular_bear_15m",
+                        "hidden_bull": "div_hidden_bull_15m",   "hidden_bear": "div_hidden_bear_15m",
                     }.get(_div_t_r)
-                    if _div_src_r:
+                    if _div_src_r and _no_dup201(_div_src_r):
                         _w = _rgw(_div_src_r, _rsid)
                         if _w > 0:
                             _rconfs.append(_RConf(source=_div_src_r, symbol=symbol, side=_rsid,
                                 weight=_w, confidence=0.9, tf="15m",
                                 evidence={"div_type": _div_t_r}).to_dict())
-
-                    # WT cross (confluence)
+                    # WT cross из wt_cross_quality (supporting signals)
                     _wt_cq_r = (extra or {}).get("wt_cross_quality")
-                    if _wt_cq_r and signal_type == "confluence":
+                    if _wt_cq_r and _no_dup201("wt_cross_same_dir"):
                         _w = _rgw("wt_cross_same_dir", _rsid)
                         if _w > 0:
                             _rconfs.append(_RConf(source="wt_cross_same_dir", symbol=symbol, side=_rsid,
                                 weight=_w, confidence=1.0 if _wt_cq_r == "in_zone" else 0.7,
                                 tf="15m", evidence={"wt_cross_quality": _wt_cq_r}).to_dict())
-
-                    # Pivot touch (pivot_reversal / watch_list_breach / любой сигнал рядом с уровнем)
+                    # Pivot touch из near_pivot_pct (pivot_calculator)
                     _near_pct_r = (extra or {}).get("near_pivot_pct")
-                    if _near_pct_r is not None and _near_pct_r < 0.5:
+                    if _near_pct_r is not None and _near_pct_r < 0.5 and _no_dup201("pivot_touch_within_03"):
                         _w = _rgw("pivot_touch_within_03", _rsid)
                         if _w > 0:
                             _rconfs.append(_RConf(source="pivot_touch_within_03", symbol=symbol, side=_rsid,
@@ -1428,8 +1484,9 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                         if extra is None:
                             extra = {}
                         extra["confirmations"] = _rconfs
-                        logger.debug("[DEV-201] %s %s %s: %d confirmations записано",
-                                     symbol, signal_type, _rsid, len(_rconfs))
+                        logger.debug("[DEV-201] %s %s %s: %d confs [%s]",
+                                     symbol, signal_type, _rsid, len(_rconfs),
+                                     ",".join(c["source"] for c in _rconfs))
                 except Exception as _dev201_e:
                     logger.debug("[DEV-201] %s reactive confirmations error: %s", symbol, _dev201_e)
 
