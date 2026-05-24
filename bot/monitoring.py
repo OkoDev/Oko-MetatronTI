@@ -1364,6 +1364,75 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 except Exception as _ca_m_e:
                     logger.debug("[DEV-202] %s confirmation_aggregator error: %s", symbol, _ca_m_e)
 
+            # ═══ DEV-201: confirmations[] для реактивных сигналов (confluence/divergence/pivot_reversal) ═══
+            # Не влияет на торговые решения — только записывает в features_json для ML.
+            # Выполняется ПОСЛЕ DEV-202: не перезаписывает confirmations от atr_change потока.
+            # Безопасно: весь блок в try/except, side-effect только к extra['confirmations'].
+            if not (extra or {}).get("confirmations") and signal_type and signal_type not in (
+                "atr_change", "atr_change_15m", "atr_change_1h", "atr_change_4h",
+            ) and not str(signal_type or "").startswith("atr_change_"):
+                try:
+                    from core.confirmations.models import Confirmation as _RConf
+                    from core.confirmations.registry import get_weight as _rgw
+                    _dir_v = getattr(recommendation.direction, "value", str(recommendation.direction))
+                    _rsid = "LONG" if "LONG" in _dir_v.upper() else "SHORT"
+                    _rconfs = []
+
+                    # WT zone (OS/OB) на entry TF
+                    _wt_zone_r = (extra or {}).get("wt_zone")
+                    if _wt_zone_r == "OS" and _rsid == "LONG":
+                        _w = _rgw("zone_OS_1h", _rsid)
+                        if _w > 0:
+                            _rconfs.append(_RConf(source="zone_OS_1h", symbol=symbol, side=_rsid,
+                                weight=_w, confidence=1.0, tf="1h").to_dict())
+                    elif _wt_zone_r == "OB" and _rsid == "SHORT":
+                        _w = _rgw("zone_OB_1h", _rsid)
+                        if _w > 0:
+                            _rconfs.append(_RConf(source="zone_OB_1h", symbol=symbol, side=_rsid,
+                                weight=_w, confidence=1.0, tf="1h").to_dict())
+
+                    # Divergence (из wt_div_type или hidden_div)
+                    _div_t_r = (extra or {}).get("wt_div_type")
+                    _div_src_r = {
+                        "regular_bull": "div_regular_bull_15m",
+                        "regular_bear": "div_regular_bear_15m",
+                        "hidden_bull": "div_hidden_bull_15m",
+                        "hidden_bear": "div_hidden_bear_15m",
+                    }.get(_div_t_r)
+                    if _div_src_r:
+                        _w = _rgw(_div_src_r, _rsid)
+                        if _w > 0:
+                            _rconfs.append(_RConf(source=_div_src_r, symbol=symbol, side=_rsid,
+                                weight=_w, confidence=0.9, tf="15m",
+                                evidence={"div_type": _div_t_r}).to_dict())
+
+                    # WT cross (confluence)
+                    _wt_cq_r = (extra or {}).get("wt_cross_quality")
+                    if _wt_cq_r and signal_type == "confluence":
+                        _w = _rgw("wt_cross_same_dir", _rsid)
+                        if _w > 0:
+                            _rconfs.append(_RConf(source="wt_cross_same_dir", symbol=symbol, side=_rsid,
+                                weight=_w, confidence=1.0 if _wt_cq_r == "in_zone" else 0.7,
+                                tf="15m", evidence={"wt_cross_quality": _wt_cq_r}).to_dict())
+
+                    # Pivot touch (pivot_reversal / watch_list_breach / любой сигнал рядом с уровнем)
+                    _near_pct_r = (extra or {}).get("near_pivot_pct")
+                    if _near_pct_r is not None and _near_pct_r < 0.5:
+                        _w = _rgw("pivot_touch_within_03", _rsid)
+                        if _w > 0:
+                            _rconfs.append(_RConf(source="pivot_touch_within_03", symbol=symbol, side=_rsid,
+                                weight=_w, confidence=max(0.5, 1.0 - _near_pct_r * 2),
+                                tf="15m", evidence={"near_pivot_pct": _near_pct_r}).to_dict())
+
+                    if _rconfs:
+                        if extra is None:
+                            extra = {}
+                        extra["confirmations"] = _rconfs
+                        logger.debug("[DEV-201] %s %s %s: %d confirmations записано",
+                                     symbol, signal_type, _rsid, len(_rconfs))
+                except Exception as _dev201_e:
+                    logger.debug("[DEV-201] %s reactive confirmations error: %s", symbol, _dev201_e)
+
             # Этап 1.Д (16.05.2026): main path через TradeRouter с per-signal_type source.
             # Откат: config.yaml → signal_router.enabled=false (использует старый путь в else).
             if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
@@ -1656,7 +1725,7 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             logger.debug("[DEV-151] Groq signal comment error: %s", _e_ta)
 
     # ── Хэштеги для навигации по истории TG (вариант B) ─────────────────────
-    _ht_sym = symbol.replace("-", "").replace("/", "").replace(":", "").upper()
+    _ht_sym = symbol.split("/")[0].split("-")[0].split(":")[0].upper() + "USDT"
     _ht_dir = ""
     if recommendation is not None:
         _ht_dir = getattr(recommendation.direction, "value", "")
@@ -1910,7 +1979,7 @@ async def send_trade_close_reply(
 
         # Хэштег закрытия для навигации
         _close_tag = {"TSL": "#TSL_CLOSED", "TP": "#TP_CLOSED", "SL": "#SL_CLOSED", "EXPIRED": "#EXPIRED"}.get(status, "")
-        _ht_sym = symbol.replace("-", "").replace("/", "").replace(":", "").upper()
+        _ht_sym = symbol.split("/")[0].split("-")[0].split(":")[0].upper() + "USDT"
         _ht_dir = direction.upper() if direction else ""
         _close_hashtags = f"#{_ht_sym} #{_ht_dir} {_close_tag}".strip() if _ht_dir else f"#{_ht_sym} {_close_tag}".strip()
         text = "\n".join(lines) + f"\n\n{_close_hashtags}"
