@@ -1376,11 +1376,28 @@ async def _handle_dashboard_api(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
 
     # Live status
+    # D-056: last_scan + health detection (D-053 cascade crash visibility)
+    _last_scan = getattr(bot, "_last_scan", None) if bot else None
+    _scan_health = "unknown"
+    _scan_age_sec = None
+    if _last_scan:
+        import time as _t_mod
+        _scan_age_sec = round(_t_mod.time() - _last_scan["ts"])
+        if _scan_age_sec < 360:    # < 6 min — здоров
+            _scan_health = "ok"
+        elif _scan_age_sec < 900:  # 6-15 min — задержка
+            _scan_health = "delayed"
+        else:                      # > 15 min — мёртв (D-053 cascade)
+            _scan_health = "DEAD"
+
     status = {
         "is_monitoring": getattr(bot, "is_monitoring", False) if bot else False,
         "monitored_pairs": len(getattr(bot, "monitored_pairs", [])) if bot else 0,
         "signal_counters": dict(getattr(bot, "signal_counters", {})) if bot else {},
         "start_time": getattr(bot, "start_time", None),
+        "last_scan": _last_scan,                # {ts, pairs, elapsed_sec} или None
+        "scan_age_sec": _scan_age_sec,          # сколько секунд прошло с последнего scan
+        "scan_health": _scan_health,            # ok / delayed / DEAD / unknown
     }
     if status["start_time"]:
         status["start_time"] = status["start_time"].isoformat()

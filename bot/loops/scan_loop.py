@@ -2020,6 +2020,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
     if elapsed > _slow_cycle:
         logger.warning("⚠️ Цикл превысил %.0f сек — рассмотреть увеличение Semaphore или sleep", _slow_cycle)
+    # D-056 (2026-05-24): tracking для дашборда — D-053 detection (когда scan_loop умирает)
+    import time as _t_mod
+    bot._last_scan = {
+        "ts": _t_mod.time(),
+        "pairs": len(pairs),
+        "elapsed_sec": round(elapsed, 1),
+    }
 
 
 _btc_macro_prev_close: float | None = None  # последняя известная close BTC/15m
