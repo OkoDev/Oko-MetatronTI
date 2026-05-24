@@ -1118,14 +1118,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 _add_fetch("1h", _ohlcv_limit)
                 _add_fetch("4h", 60)
 
-                # D-055v2 (2026-05-24): sequential TF fetch per pair вместо parallel.
-                # Корень throttling: semaphore=10 пар × 4 TF parallel = 40 burst API
-                # calls на BingX. Minor pairs (SHIB/ZK/мемы) throttled на 8-15s.
-                # Sequential per pair → max 10 concurrent (semaphore), не 40.
-                # На fast pairs (BTC) разница незаметна (in-flight dedup + cache).
-                _fetched = []
-                for _tf, _limit in _fetch_plan:
-                    _fetched.append(await bot.data_collector.get_ohlcv(sym, _tf, limit=_limit))
+                # D-055v2 REVERTED (2026-05-24 17:46 MSK): sequential TF fetch замедлял
+                # scan_loop → cascade через 54 мин (raньше 8-9ч). Возврат на parallel.
+                _fetched = await asyncio.gather(*[
+                    bot.data_collector.get_ohlcv(sym, tf, limit=limit)
+                    for tf, limit in _fetch_plan
+                ])
                 _fetched_map = {
                     (tf, limit): df for (tf, limit), df in zip(_fetch_plan, _fetched)
                 }
