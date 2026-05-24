@@ -323,6 +323,7 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
                     await _try_register_vst_trade(
                         bot, symbol, det_tf, direction, decision,
                         adapter.registry, price, sl_price,
+                        active_flags=active_flags,   # D-051: для shadow trigger check
                     )
 
     return any_decision
@@ -333,6 +334,7 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
 async def _try_register_vst_trade(
     bot, symbol: str, det_tf: str, direction: str, decision,
     registry, price: float, sl_price: float,
+    active_flags: Optional[set] = None,   # D-051: shadow trigger check
 ):
     """Регистрирует ARCH-104 сделку через trade_simulator (VST).
 
@@ -391,6 +393,17 @@ async def _try_register_vst_trade(
         tp_source=f"arch104:{getattr(pattern, 'tp_strategy', 'no_trail')}_r{fallback_tp_r}",
     )
 
+    # D-051 (2026-05-24): shadow logging для per-TF trigger gate.
+    # Проверяем wt_cross_<dir>_<det_tf> в active_flags. Log only, НЕ блокирует.
+    # Через 1-2 недели данных → SQL анализ WR/avgR per shadow_trigger_passed.
+    # Если passed-trades дают +R, failed -R → гипотеза подтверждена → enable runtime gate.
+    shadow_trigger_passed = None
+    shadow_trigger_flag = None
+    if bool(bot.config.get("arch104.shadow_trigger_check.enabled", False)) and active_flags is not None:
+        cross_dir = "up" if direction == "LONG" else "down"
+        shadow_trigger_flag = f"wt_cross_{cross_dir}_{det_tf}"
+        shadow_trigger_passed = shadow_trigger_flag in active_flags
+
     extra = {
         "signal_type_override": "arch104",
         "trigger_source": f"arch104:{decision.pattern_id}",
@@ -402,6 +415,9 @@ async def _try_register_vst_trade(
         "arch104_tp_strategy": getattr(pattern, "tp_strategy", "no_trail"),
         "arch104_matched_patterns": list(getattr(decision, "matched_patterns", [])),
         "trade_mode": "arch104",   # dedup: разные режимы не блокируют
+        # D-051 shadow trigger check (log only)
+        "arch104_shadow_trigger_flag": shadow_trigger_flag,
+        "arch104_shadow_trigger_passed": shadow_trigger_passed,
     }
 
     # D-044 (2026-05-23): идём через trade_router (как atr_change/confluence/etc.)
