@@ -1,0 +1,22 @@
+{
+  "name": "oko-mtf-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DEV-144 — Vue 3 + Vite dashboard for Oko MTF TG Bot (parallel to web/static/index.html, Stage 1 setup).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vueuse/core": "^10.7.0",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.0",
+    "vue-router": "^4.2.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}

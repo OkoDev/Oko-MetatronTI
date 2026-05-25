@@ -388,6 +388,76 @@ async def _handle_close_trade(request: web.Request) -> web.Response:
         return web.Response(status=500, text=str(e))
 
 
+async def _handle_v2_index(request: web.Request) -> web.Response:
+    """GET /v2/ + /v2/{any}  — отдаём Vue dashboard SPA index.html.
+
+    DEV-144: prod bundle Vue 3 живёт в web/dashboard/dist/. Все non-asset пути
+    отдают index.html (history mode роутинга — vue-router сам разрулит).
+    Статика /v2/assets/* регистрируется через add_static отдельно.
+    """
+    index_path = Path(__file__).resolve().parent / "dashboard" / "dist" / "index.html"
+    if not index_path.exists():
+        return web.Response(
+            status=503,
+            text="Vue dashboard не собран. Выполните `cd web/dashboard && npm run build`.",
+            content_type="text/plain",
+        )
+    return web.FileResponse(index_path)
+
+
+async def _handle_patterns(request: web.Request) -> web.Response:
+    """GET /api/patterns — список ARCH-104 production patterns из config/arch104_patterns.yaml.
+
+    DEV-144 Stage 5: данные для страницы «Паттерны». Возвращает per-pattern walkforward
+    статистику (test_n / test_avgR / test_WR) + структуру anchor_factors. Live статистика
+    из simulated_trades — TODO (требует pattern_id в features_json).
+    """
+    try:
+        import yaml as _yaml
+        from pathlib import Path as _Path
+        yaml_path = _Path(__file__).resolve().parent.parent / "config" / "arch104_patterns.yaml"
+        if not yaml_path.exists():
+            return web.Response(
+                text=json.dumps({"patterns": [], "error": "arch104_patterns.yaml not found"}),
+                content_type="application/json",
+            )
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f) or {}
+
+        out = []
+        for pid, pdata in (cfg.get("patterns") or {}).items():
+            if not isinstance(pdata, dict):
+                continue
+            out.append({
+                "id": pid,
+                "direction": pdata.get("direction"),
+                "anchor_factors": pdata.get("anchor_factors") or [],
+                "test_n": pdata.get("test_n"),
+                "test_avgR": pdata.get("test_avgR"),
+                "test_WR": pdata.get("test_WR"),
+                "mht_p_adj": pdata.get("mht_p_adj"),
+                "weight": pdata.get("weight"),
+                "priority": pdata.get("priority"),
+                "sl_source": (pdata.get("sl") or {}).get("source"),
+                "tp_strategy": (pdata.get("tp") or {}).get("strategy"),
+                "time_exit_hours": pdata.get("time_exit_hours"),
+                "status": "live",  # TODO: вычислять из retire/shadow триггеров
+            })
+        return web.Response(
+            text=json.dumps({
+                "patterns": out,
+                "version": cfg.get("version"),
+                "generated": str(cfg.get("generated") or ""),
+                "count": len(out),
+            }, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("_handle_patterns: %s", e)
+        return web.Response(status=500, text=str(e))
+
+
 async def _handle_trade_trace(request: web.Request) -> web.Response:
     """GET /api/trades/{trade_id}/trace — Decision Trace для сделки (DEV-12)."""
     ts = request.app.get("trade_simulator")
@@ -1987,6 +2057,14 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
     app.router.add_get("/api/trades/{trade_id}/trace", _handle_trade_trace)
+    app.router.add_get("/api/patterns", _handle_patterns)
+    # ── DEV-144: Vue 3 dashboard (prod bundle) под /v2/ ──
+    _v2_dist = Path(__file__).parent / "dashboard" / "dist"
+    if (_v2_dist / "assets").exists():
+        app.router.add_static("/v2/assets", _v2_dist / "assets")
+    app.router.add_get("/v2", _handle_v2_index)
+    app.router.add_get("/v2/", _handle_v2_index)
+    app.router.add_get("/v2/{tail:.*}", _handle_v2_index)
     app.router.add_get("/api/live_orders", _handle_live_orders)
     app.router.add_get("/api/live", _handle_live)
     app.router.add_get("/api/exchange_history", _handle_exchange_history)
