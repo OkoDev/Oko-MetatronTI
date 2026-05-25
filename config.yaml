@@ -259,6 +259,13 @@ trading:
     sl_buffer_pct: 0.003
     min_tp_r: 3.5
     max_sl_dist_pct: 0.02
+  # ARCH-113: TPSelector — Intelligent TP Gravity Engine
+  # Исследование: 156K уровней, alpha=1.5 доказан, FVG <0.3R = 73-86% reach
+sl_tp_engine:
+  tp_selector_enabled: false   # A/B флаг — включить когда tp_selector.py готов
+  tp_selector_eps_pct: 0.5     # ±% для кластеризации магнитов
+  tp_selector_alpha: 1.5       # score = gravity / dist^alpha (оптимум из исследования)
+  tp_selector_max_dist_pct: 15.0  # фильтр дальних уровней
   dual_tp:
     enabled: true
     tp1_fix_pct: 10
@@ -427,7 +434,9 @@ performance:
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
   cascade_div_semaphore_size: 3
-  api_rps: 15
+  # D-065 (24.05): rps 15→30 — официальный потолок BingX market data = 500 req/10s per IP = 50 RPS.
+  # 30 RPS = 60% потолка с buffer на bursts. Ожидаемый эффект: scan cycle 474s → ~250s (2× speedup).
+  api_rps: 30
   api_semaphore_size: 10
   ohlcv_scan_limit: 161
   # D-055 откатан (пороги обратно). Реальный fix — sequential TF fetch в scan_loop.

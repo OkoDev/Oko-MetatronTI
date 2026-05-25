@@ -248,6 +248,34 @@ def calculate_levels(
     take_profit = tp1_price
     tp_source   = "atr_fallback"  # ARCH-58: явная метка, monitoring.py перезапишет на pivot_*
 
+    # ARCH-113: TPSelector — заменить ATR fallback на gravity-based магниты
+    # Вызывается только если sl_tp_engine.tp_selector_enabled: true в config
+    tp2_candidate = None
+    try:
+        _tp_cfg = config.get("sl_tp_engine", {})
+        if _tp_cfg.get("tp_selector_enabled", False) and stop_loss is not None:
+            from core.smc.tp_selector import TPSelector
+            _sl_dist_pct = abs(entry_price - stop_loss) / entry_price * 100
+            _tp1_cand, _tp2_cand = TPSelector().select(
+                entry=entry_price,
+                direction="LONG" if is_long else "SHORT",
+                sl_dist_pct=_sl_dist_pct,
+                market_context=market_context,
+                config=_tp_cfg,
+            )
+            if _tp1_cand is not None:
+                take_profit = _tp1_cand.price
+                tp1_price   = _tp1_cand.price
+                tp_source   = _tp1_cand.label
+                logger.info("[ARCH-113] %s TP1=%s score=%.2f src=%s",
+                            market_context.symbol, take_profit, _tp1_cand.score, tp_source)
+            if _tp2_cand is not None:
+                tp2_candidate = _tp2_cand
+                logger.info("[ARCH-113] %s TP2=%s score=%.2f src=%s",
+                            market_context.symbol, _tp2_cand.price, _tp2_cand.score, _tp2_cand.label)
+    except Exception as _e113:
+        logger.debug("[ARCH-113] TPSelector failed, using fallback: %s", _e113)
+
     # DEV-35: R:R cap — ограничить нереалистичный R:R (PAXG 24x → 6x, CRCLX 32x → 6x)
     max_rr = sl_cfg.get("max_rr", 0)
     if max_rr > 0 and stop_loss and take_profit:
@@ -258,7 +286,7 @@ def calculate_levels(
             tp1_price   = take_profit  # синхронизируем
             tp_source   = f"{tp_source}|capped_rr_{max_rr:.1f}"
 
-    return entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source
+    return entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source, tp2_candidate
 
 
 def generate_recommendation(
@@ -303,7 +331,7 @@ def generate_recommendation(
 
     risk_level = determine_risk_level(strength, confidence, market_context)
     reasoning  = generate_reasoning(signals, analysis, market_context)
-    entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source = calculate_levels(
+    entry_price, stop_loss, take_profit, tp1_price, sl_source, tp_source, tp2_candidate = calculate_levels(
         symbol, direction, market_context, signals, config
     )
 
@@ -322,8 +350,10 @@ def generate_recommendation(
         stop_loss=stop_loss,
         take_profit=take_profit,
         tp1_price=tp1_price,
+        tp2_price=tp2_candidate.price if tp2_candidate else None,
         sl_source=sl_source,
         tp_source=tp_source,
+        tp2_source=tp2_candidate.label if tp2_candidate else "",
         reasoning=reasoning,
         timestamp=datetime.now(timezone.utc),  # DEV-49
     )

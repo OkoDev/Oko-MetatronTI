@@ -206,8 +206,10 @@ class TradingRecommendation:
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     tp1_price: Optional[float] = None   # уровень частичного TP (50% позиции при 3R)
+    tp2_price: Optional[float] = None   # ARCH-113: HTF магнит для пирамидинга (dist 1-3R)
     sl_source: str = ""   # "tsl_line" | "swing_low" | "structural" | "atr_14" | "fallback"
     tp_source: str = ""   # "pivot_1M" | "pivot_1W" | "pivot_1D" | "atr_rr_3.0" | "fallback"
+    tp2_source: str = ""  # ARCH-113: источник HTF TP2: "fvg_4h+pwh@47200" | ""
     atr_entry_tf: Optional[float] = None  # ATR(entry_tf) для ATR-based TP1 (DEV-40)
     reasoning: List[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))  # DEV-49

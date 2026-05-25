@@ -795,10 +795,15 @@ class TradingIntelligence:
                 market_context.regime = getattr(mtf_context, "regime", "") or ""
 
             # ARCH-55: RANGE BOUNCE — загружаем пивоты если режим RANGE и фича включена
+            # ARCH-113: также загружаем если tp_selector_enabled (нужны PDH/PWH для TPSelector)
             try:
                 _rb_cfg = (self.config or {}).get("trading", {}).get("range_bounce", {})
-                if (_rb_cfg.get("enabled", False) and market_context.regime == "RANGE"
-                        and self.data_collector is not None):
+                _tp_sel_enabled = (self.config or {}).get("sl_tp_engine", {}).get("tp_selector_enabled", False)
+                _need_pivots = (
+                    (_rb_cfg.get("enabled", False) and market_context.regime == "RANGE")
+                    or _tp_sel_enabled
+                )
+                if _need_pivots and self.data_collector is not None:
                     _pcf = self._pivot_calc_shared
                     _1d = await _pcf.get_daily_pivots(symbol, self.data_collector) or {}
                     _1w = await _pcf.get_weekly_pivots(symbol, self.data_collector) or {}
@@ -806,8 +811,8 @@ class TradingIntelligence:
                         f"{symbol}_1D": _1d,
                         f"{symbol}_1W": _1w,
                     }
-                    logger.debug("[ARCH-55] %s RANGE — pivot_cache загружен: 1D=%d 1W=%d уровней",
-                                 symbol, len(_1d), len(_1w))
+                    logger.debug("[ARCH-55/113] %s pivot_cache загружен (regime=%s tp_sel=%s): 1D=%d 1W=%d уровней",
+                                 symbol, market_context.regime, _tp_sel_enabled, len(_1d), len(_1w))
             except Exception as _e55:
                 logger.debug("[ARCH-55] pivot_cache load failed: %s", _e55)
 
