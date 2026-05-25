@@ -6,6 +6,7 @@
         <tr>
           <th>Символ</th>
           <th>Side</th>
+          <th>TSL</th>
           <th>Размер</th>
           <th>Плечо</th>
           <th>Вход</th>
@@ -22,6 +23,10 @@
         <tr v-for="p in positions" :key="p.symbol + p.side">
           <td class="mono">{{ formatSymbol(p.symbol) }}</td>
           <td :class="sideClass(p.side)"><b>{{ p.side }}</b></td>
+          <td>
+            <span v-if="p.tsl_activated" class="badge badge-tsl" :title="p.tsl_tf ? `TSL активен на ${p.tsl_tf}` : 'TSL активен'">TSL</span>
+            <span v-else style="color:#484f58">—</span>
+          </td>
           <td class="mono">{{ fmt(p.size) }}</td>
           <td>{{ p.leverage }}x</td>
           <td class="mono">{{ fmt(p.entry_price, 5) }}</td>

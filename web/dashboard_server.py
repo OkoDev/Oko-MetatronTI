@@ -680,7 +680,8 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                     _conn.row_factory = _sq.Row
                     ph = ",".join("?" * len(syms))
                     rows = _conn.execute(
-                        f"SELECT symbol, stop_loss, take_profit FROM simulated_trades "
+                        f"SELECT symbol, stop_loss, take_profit, tsl_activated, tsl_tf "
+                        f"FROM simulated_trades "
                         f"WHERE status='OPEN' AND symbol IN ({ph})",
                         syms,
                     ).fetchall()
@@ -696,7 +697,12 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                             tp = float(tp) if tp else None
                         except (TypeError, ValueError):
                             tp = None
-                        sl_tp_map[row["symbol"]] = {"stop_loss": sl, "take_profit": tp}
+                        sl_tp_map[row["symbol"]] = {
+                            "stop_loss": sl,
+                            "take_profit": tp,
+                            "tsl_activated": bool(row["tsl_activated"]),
+                            "tsl_tf": row["tsl_tf"],
+                        }
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
             for pos in result["positions"]:
@@ -704,6 +710,8 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 st = sl_tp_map.get(db_sym) or {}
                 pos["stop_loss"]  = st.get("stop_loss")
                 pos["take_profit"] = st.get("take_profit")
+                pos["tsl_activated"] = st.get("tsl_activated", False)
+                pos["tsl_tf"] = st.get("tsl_tf")
 
         result["error"] = snapshot.get("error")
 
