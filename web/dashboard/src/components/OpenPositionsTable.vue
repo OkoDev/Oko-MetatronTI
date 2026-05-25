@@ -7,6 +7,7 @@
           <th class="sortable" :class="sortClass('id')" @click="sortBy('id')">#</th>
           <th class="sortable" :class="sortClass('symbol')" @click="sortBy('symbol')">Символ</th>
           <th class="sortable" :class="sortClass('direction')" @click="sortBy('direction')">Напр.</th>
+          <th class="sortable" :class="sortClass('tsl_activated')" @click="sortBy('tsl_activated')">TSL</th>
           <th class="sortable" :class="sortClass('signal_type')" @click="sortBy('signal_type')">Сигнал</th>
           <th class="sortable" :class="sortClass('entry_price')" @click="sortBy('entry_price')">Вход</th>
           <th class="sortable" :class="sortClass('current_price')" @click="sortBy('current_price')">Тек.</th>
@@ -27,6 +28,10 @@
           <td class="mono">{{ formatSymbol(t.symbol) }}</td>
           <td :class="directionClass(t.direction)" style="font-weight: bold;">
             {{ t.direction ?? dash }}
+          </td>
+          <td>
+            <span v-if="t.tsl_activated" class="badge badge-tsl" :title="t.tsl_tf ? `TSL активен на ${t.tsl_tf}` : 'TSL активен'">TSL</span>
+            <span v-else style="color:#484f58">—</span>
           </td>
           <td :title="t.signal_type || ''">{{ t.signal_type ?? dash }}</td>
           <td class="mono">{{ formatNumber(t.entry_price) }}</td>

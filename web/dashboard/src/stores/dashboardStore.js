@@ -36,15 +36,26 @@ export const useDashboardStore = defineStore('dashboard', () => {
     lastUpdate.value = new Date()
   }
 
+  // Helper: fetch с timeout 5с — backend под нагрузкой может висеть.
+  async function fetchWithTimeout(url, ms = 5000) {
+    const ctrl = new AbortController()
+    const id = setTimeout(() => ctrl.abort(), ms)
+    try {
+      return await fetch(url, { signal: ctrl.signal })
+    } finally {
+      clearTimeout(id)
+    }
+  }
+
   async function pollStatusOnce() {
     try {
-      const res = await fetch('/api/dashboard')
+      const res = await fetchWithTimeout('/api/dashboard', 5000)
       if (!res.ok) return
       const data = await res.json()
       status.value = data.status || {}
       if (data.btc_regime !== undefined) status.value.btc_regime = data.btc_regime
     } catch {
-      // silent
+      // silent (timeout/abort/network)
     }
   }
 
@@ -57,15 +68,18 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   // Первичный быстрый fetch, чтобы карточки не висели пустыми
   // 5-15с пока придёт первый тяжёлый SSE event:dashboard payload.
+  // С timeout 10с — backend может тормозить под нагрузкой scan_loop/ws_feed.
   async function primeFetch() {
     try {
-      const [statsRes, equityRes] = await Promise.all([
-        fetch('/api/stats'),
-        fetch('/api/equity'),
+      const [statsRes, equityRes] = await Promise.allSettled([
+        fetchWithTimeout('/api/stats', 10000),
+        fetchWithTimeout('/api/equity', 10000),
       ])
-      if (statsRes.ok) stats.value = await statsRes.json()
-      if (equityRes.ok) {
-        const e = await equityRes.json()
+      if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
+        stats.value = await statsRes.value.json()
+      }
+      if (equityRes.status === 'fulfilled' && equityRes.value.ok) {
+        const e = await equityRes.value.json()
         equity.value = Array.isArray(e) ? e : []
       }
       lastUpdate.value = new Date()

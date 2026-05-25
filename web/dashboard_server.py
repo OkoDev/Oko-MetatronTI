@@ -571,10 +571,33 @@ async def _handle_live_orders(request: web.Request) -> web.Response:
                             content_type="application/json")
 
 
+# ── DEV-144 (ARCH утверждено 25.05): /api/live cache TTL=10s + stale fallback ──
+# BingX в DEGRADED/DOWN отдаёт snapshot за 5-10с, что блокирует event loop бота
+# при N клиентах × 30s polling. Cache даёт 1 BingX call/10с независимо от вкладок.
+# Stale fallback: если новый snapshot fail (timeout) → отдаём предыдущий + age в header.
+import asyncio as _asyncio_live
+_LIVE_CACHE = {"payload": None, "ts": 0.0, "ttl": 10.0}
+_LIVE_LOCK = _asyncio_live.Lock()
+
+
 async def _handle_live(request: web.Request) -> web.Response:
     """GET /api/live — реальный баланс BingX + позиции (DEV-144c).
     В SIM_ONLY режиме возвращает mode=SIM и пустые данные.
+    Cache TTL=10с — все клиенты в окне 10с получают один и тот же snapshot.
     """
+    import time as _time
+    now = _time.time()
+
+    # Cache hit: отдаём cached payload (без BingX call).
+    cached = _LIVE_CACHE["payload"]
+    if cached is not None and (now - _LIVE_CACHE["ts"]) < _LIVE_CACHE["ttl"]:
+        return web.Response(
+            text=json.dumps(cached, ensure_ascii=False, default=str),
+            content_type="application/json",
+            charset="utf-8",
+            headers={"X-Cache": "HIT", "X-Cache-Age": f"{now - _LIVE_CACHE['ts']:.1f}"},
+        )
+
     bot = request.app.get("bot")
     cfg = request.app.get("config", {})
 
@@ -591,78 +614,129 @@ async def _handle_live(request: web.Request) -> web.Response:
     }
 
     if bot and hasattr(bot, "order_executor") and mode in ("VST", "LIVE"):
-        try:
-            snapshot = await bot.order_executor.get_exchange_snapshot()
-            result["balance"] = snapshot.get("balance")
-            # Нормализуем поля позиций BingX → удобный формат
-            raw_positions = snapshot.get("positions", [])
-            for p in raw_positions:
-                amt = float(p.get("positionAmt") or p.get("availableAmt") or 0)
-                if amt == 0:
-                    continue
-                # BingX Hedge Mode: positionSide = "LONG"/"SHORT" (positionAmt всегда ≥ 0)
-                pos_side = p.get("positionSide") or ("LONG" if amt > 0 else "SHORT")
-                result["positions"].append({
-                    "symbol":            p.get("symbol", ""),
-                    "side":              pos_side,
-                    "size":              abs(amt),
-                    "entry_price":       float(p.get("avgPrice") or p.get("entryPrice") or 0),
-                    "mark_price":        float(p.get("markPrice") or 0),
-                    "unrealized_pnl":    float(p.get("unrealizedProfit") or 0),
-                    "leverage":          int(p.get("leverage") or 1),
-                    "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
-                    "liquidation_price": float(p.get("liquidationPrice") or 0),
-                })
-            # JOIN с simulated_trades по символу → получаем SL/TP для отображения
-            # BingX symbol "ATOM-USDT" → БД "ATOM/USDT:USDT"
-            if result["positions"]:
-                def _bx_to_db(sym: str) -> str:
-                    return sym.replace("-", "/") + ":USDT"
+        # Lock: parallel запросы между TTL не должны множить BingX calls.
+        # После acquire — снова чек cache: первый клиент мог уже наполнить.
+        async with _LIVE_LOCK:
+            now2 = _time.time()
+            cached2 = _LIVE_CACHE["payload"]
+            if cached2 is not None and (now2 - _LIVE_CACHE["ts"]) < _LIVE_CACHE["ttl"]:
+                return web.Response(
+                    text=json.dumps(cached2, ensure_ascii=False, default=str),
+                    content_type="application/json",
+                    charset="utf-8",
+                    headers={"X-Cache": "HIT-LOCK", "X-Cache-Age": f"{now2 - _LIVE_CACHE['ts']:.1f}"},
+                )
+            return await _live_fetch_and_cache(request, result, bot)
 
-                syms = list({_bx_to_db(p["symbol"]) for p in result["positions"]})
-                engine = request.app.get("engine")
-                db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
-                sl_tp_map: dict = {}
-                try:
-                    import sqlite3 as _sq
-                    with _sq.connect(db_path) as _conn:
-                        _conn.row_factory = _sq.Row
-                        ph = ",".join("?" * len(syms))
-                        rows = _conn.execute(
-                            f"SELECT symbol, stop_loss, take_profit FROM simulated_trades "
-                            f"WHERE status='OPEN' AND symbol IN ({ph})",
-                            syms,
-                        ).fetchall()
-                        for row in rows:
-                            sl = row["stop_loss"]
-                            tp = row["take_profit"]
-                            # Фильтруем нечисловые значения ("OPEN" — legacy артефакт)
-                            try:
-                                sl = float(sl) if sl and sl != "OPEN" else None
-                            except (TypeError, ValueError):
-                                sl = None
-                            try:
-                                tp = float(tp) if tp else None
-                            except (TypeError, ValueError):
-                                tp = None
-                            sl_tp_map[row["symbol"]] = {"stop_loss": sl, "take_profit": tp}
-                except Exception as db_e:
-                    logger.debug("_handle_live JOIN failed: %s", db_e)
-                for pos in result["positions"]:
-                    db_sym = _bx_to_db(pos["symbol"])
-                    st = sl_tp_map.get(db_sym) or {}
-                    pos["stop_loss"]  = st.get("stop_loss")
-                    pos["take_profit"] = st.get("take_profit")
-
-            result["error"] = snapshot.get("error")
-        except Exception as e:
-            logger.warning("_handle_live error: %s", e)
-            result["error"] = str(e)
-
+    # SIM mode — без cache, сразу отдаём пустой payload.
     return web.Response(
         text=json.dumps(result, ensure_ascii=False, default=str),
         content_type="application/json", charset="utf-8",
     )
+
+
+async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.Response:
+    """Делает BingX snapshot, сохраняет в _LIVE_CACHE.
+
+    При ошибке/таймауте — fallback на stale cache (если есть): отдаём предыдущий
+    snapshot + X-Cache: STALE header. Это лучше пустого ответа когда BingX лежит.
+    """
+    import time as _time
+    try:
+        snapshot = await bot.order_executor.get_exchange_snapshot()
+        result["balance"] = snapshot.get("balance")
+        # Нормализуем поля позиций BingX → удобный формат
+        raw_positions = snapshot.get("positions", [])
+        for p in raw_positions:
+            amt = float(p.get("positionAmt") or p.get("availableAmt") or 0)
+            if amt == 0:
+                continue
+            # BingX Hedge Mode: positionSide = "LONG"/"SHORT" (positionAmt всегда ≥ 0)
+            pos_side = p.get("positionSide") or ("LONG" if amt > 0 else "SHORT")
+            result["positions"].append({
+                "symbol":            p.get("symbol", ""),
+                "side":              pos_side,
+                "size":              abs(amt),
+                "entry_price":       float(p.get("avgPrice") or p.get("entryPrice") or 0),
+                "mark_price":        float(p.get("markPrice") or 0),
+                "unrealized_pnl":    float(p.get("unrealizedProfit") or 0),
+                "leverage":          int(p.get("leverage") or 1),
+                "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
+                "liquidation_price": float(p.get("liquidationPrice") or 0),
+            })
+        # JOIN с simulated_trades по символу → получаем SL/TP для отображения
+        # BingX symbol "ATOM-USDT" → БД "ATOM/USDT:USDT"
+        if result["positions"]:
+            def _bx_to_db(sym: str) -> str:
+                return sym.replace("-", "/") + ":USDT"
+
+            syms = list({_bx_to_db(p["symbol"]) for p in result["positions"]})
+            engine = request.app.get("engine")
+            db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
+            sl_tp_map: dict = {}
+            try:
+                import sqlite3 as _sq
+                with _sq.connect(db_path) as _conn:
+                    _conn.row_factory = _sq.Row
+                    ph = ",".join("?" * len(syms))
+                    rows = _conn.execute(
+                        f"SELECT symbol, stop_loss, take_profit FROM simulated_trades "
+                        f"WHERE status='OPEN' AND symbol IN ({ph})",
+                        syms,
+                    ).fetchall()
+                    for row in rows:
+                        sl = row["stop_loss"]
+                        tp = row["take_profit"]
+                        # Фильтруем нечисловые значения ("OPEN" — legacy артефакт)
+                        try:
+                            sl = float(sl) if sl and sl != "OPEN" else None
+                        except (TypeError, ValueError):
+                            sl = None
+                        try:
+                            tp = float(tp) if tp else None
+                        except (TypeError, ValueError):
+                            tp = None
+                        sl_tp_map[row["symbol"]] = {"stop_loss": sl, "take_profit": tp}
+            except Exception as db_e:
+                logger.debug("_handle_live JOIN failed: %s", db_e)
+            for pos in result["positions"]:
+                db_sym = _bx_to_db(pos["symbol"])
+                st = sl_tp_map.get(db_sym) or {}
+                pos["stop_loss"]  = st.get("stop_loss")
+                pos["take_profit"] = st.get("take_profit")
+
+        result["error"] = snapshot.get("error")
+
+        # ── Сохраняем в cache (успех) ──
+        _LIVE_CACHE["payload"] = result
+        _LIVE_CACHE["ts"] = _time.time()
+
+        return web.Response(
+            text=json.dumps(result, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+            headers={"X-Cache": "MISS"},
+        )
+
+    except Exception as e:
+        logger.warning("_handle_live error: %s", e)
+        # ── Fallback на stale cache (если был хоть один успех) ──
+        stale = _LIVE_CACHE["payload"]
+        if stale is not None:
+            age = _time.time() - _LIVE_CACHE["ts"]
+            stale_resp = dict(stale)
+            stale_resp["error"] = f"using stale cache (age={age:.1f}s), live error: {e}"
+            return web.Response(
+                text=json.dumps(stale_resp, ensure_ascii=False, default=str),
+                content_type="application/json", charset="utf-8",
+                headers={"X-Cache": "STALE", "X-Cache-Age": f"{age:.1f}"},
+            )
+        # Cache пуст → отдаём пустой payload с error
+        result["error"] = str(e)
+        return web.Response(
+            text=json.dumps(result, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+            headers={"X-Cache": "ERROR"},
+        )
 
 
 async def _handle_exchange_history(request: web.Request) -> web.Response:

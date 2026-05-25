@@ -9,8 +9,12 @@ export const useLiveStore = defineStore('live', () => {
   let _timer = null
 
   async function fetchOnce() {
+    // AbortController с 3с timeout: backend /api/live может висеть 5-10с
+    // при BingX DEGRADED/timeout — не блокируем UI ожиданием.
+    const ctrl = new AbortController()
+    const timeoutId = setTimeout(() => ctrl.abort(), 3000)
     try {
-      const r = await fetch('/api/live')
+      const r = await fetch('/api/live', { signal: ctrl.signal })
       if (!r.ok) {
         error.value = `HTTP ${r.status}`
         return
@@ -18,7 +22,9 @@ export const useLiveStore = defineStore('live', () => {
       data.value = await r.json()
       error.value = null
     } catch (e) {
-      error.value = e.message
+      error.value = e.name === 'AbortError' ? 'timeout 3s (BingX медленна)' : e.message
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
