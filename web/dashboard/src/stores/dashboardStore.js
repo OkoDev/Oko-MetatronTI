@@ -95,6 +95,21 @@ export const useDashboardStore = defineStore('dashboard', () => {
     }
   }
 
+  // Lazy fetch — вызывается только при раскрытии соответствующей секции.
+  // Эти endpoints тяжёлые (SQL агрегация), не имеет смысла дёргать на каждый mount.
+  async function fetchConfluence() {
+    try {
+      const r = await fetchWithTimeout('/api/stats/confluence', 10000)
+      if (r.ok) confluence.value = await r.json()
+    } catch { /* silent */ }
+  }
+  async function fetchBreakeven() {
+    try {
+      const r = await fetchWithTimeout('/api/stats/breakeven', 10000)
+      if (r.ok) breakeven.value = await r.json()
+    } catch { /* silent */ }
+  }
+
   // Public actions
   function connect() {
     if (_sseHandle) return
@@ -146,6 +161,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
     // actions
     connect,
     disconnect,
+    fetchConfluence,
+    fetchBreakeven,
     // getters
     summary,
     criticalAlertData

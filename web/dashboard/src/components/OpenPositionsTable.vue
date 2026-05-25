@@ -20,6 +20,7 @@
           <th class="sortable" :class="sortClass('confidence')" @click="sortBy('confidence')">Конф.</th>
           <th class="sortable" :class="sortClass('regime')" @click="sortBy('regime')">Режим</th>
           <th class="sortable" :class="sortClass('created_at')" @click="sortBy('created_at')">Открыта</th>
+          <th>Действие</th>
         </tr>
       </thead>
       <tbody>
@@ -45,6 +46,15 @@
           <td>{{ formatConfidence(t.confidence) }}</td>
           <td>{{ t.regime ?? dash }}</td>
           <td>{{ formatDate(t.created_at) }}</td>
+          <td>
+            <button
+              :disabled="closingId === t.id"
+              :title="closingId === t.id ? 'Закрываю…' : 'Закрыть сделку вручную (POST /api/trades/{id}/close)'"
+              @click="closeTrade(t)"
+              style="padding:2px 8px;font-size:.78rem;background:#3a1a1a;color:#f85149;border:1px solid #f85149;border-radius:4px;cursor:pointer">
+              {{ closingId === t.id ? '…' : '× закрыть' }}
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -61,8 +71,36 @@ const props = defineProps({
   }
 })
 
+const emit = defineEmits(['trade-closed'])
+
 const sort = ref({ key: 'created_at', dir: 'desc' })
+const closingId = ref(null)
 const dash = '—'
+
+async function closeTrade(t) {
+  const sym = formatSymbol(t.symbol)
+  if (!confirm(`Закрыть сделку #${t.id} ${sym} ${t.direction}?\n\nЭто пометит сделку как EXPIRED в БД (и закроет позицию на бирже если VST/LIVE).`)) {
+    return
+  }
+  closingId.value = t.id
+  try {
+    const r = await fetch(`/api/trades/${t.id}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    if (!r.ok) {
+      const text = await r.text()
+      alert(`Ошибка закрытия: HTTP ${r.status}\n${text}`)
+      return
+    }
+    emit('trade-closed', t.id)
+  } catch (e) {
+    alert(`Сетевая ошибка: ${e.message}`)
+  } finally {
+    closingId.value = null
+  }
+}
 
 function sortClass(col) {
   return {

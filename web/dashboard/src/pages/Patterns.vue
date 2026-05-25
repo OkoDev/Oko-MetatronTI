@@ -32,6 +32,16 @@
     <div v-else-if="error" class="note red">Ошибка: {{ error }}</div>
     <div v-else-if="!filtered.length" class="note">Нет паттернов под текущие фильтры.</div>
 
+    <!-- Heatmap (collapsible) -->
+    <details v-if="!loading && !error && filtered.length" class="section-collapsible" style="margin-bottom:14px">
+      <summary>Heatmap (215 × 4 режима)
+        <span style="font-size:.75rem;color:#8b949e;font-weight:400">
+          цвет по walkforward test_avgR · клетки RANGE/HIGH_VOL — TBD до live JOIN с features_json
+        </span>
+      </summary>
+      <PatternHeatmap :patterns="filtered" />
+    </details>
+
     <!-- Таблица -->
     <table v-else>
       <thead>
@@ -80,6 +90,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import PatternHeatmap from '@/components/PatternHeatmap.vue'
 
 const loading = ref(true)
 const error = ref(null)
