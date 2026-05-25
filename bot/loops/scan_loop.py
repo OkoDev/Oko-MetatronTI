@@ -2013,7 +2013,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         _tcb_status = "n/a"
     logger.info("Скан: %d пар | кеш=%d api_cb=%s trading_cb=%s",
                 len(pairs), stats["cache_size"], stats["cb_state"], _tcb_status)
-    await asyncio.gather(*[scan_one(sym) for sym in pairs])
+    await asyncio.gather(*[scan_one(sym) for sym in pairs], return_exceptions=True)
     elapsed = _time.monotonic() - cycle_start
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
     if elapsed > _slow_cycle:
@@ -2089,7 +2089,7 @@ async def _check_btc_macro_shock(bot) -> None:
 
 
 async def monitor_market(bot) -> None:
-    """Главный цикл мониторинга: запускает скан каждые N сек + фоновые задачи."""
+    """D-053 fix: Главный цикл мониторинга с автоматическим восстановлением после краша."""
     from bot.monitoring import (
         check_mtf_alerts,
         check_trend_signals,
@@ -2097,22 +2097,30 @@ async def monitor_market(bot) -> None:
         check_cascade_divergences,
         check_future_pivot_alerts,
     )
-    try:
-        _last_pivot_day = datetime.utcnow().date()  # уже прогрет в start_monitoring
-        _pivot_cycle = 0
-        _cascade_4h_cycle = 0
-        _div_cycle = 0
+    _mm_restart_count = 0
+    while bot.is_monitoring:
+        if _mm_restart_count > 0:
+            logger.error("[monitor_market] D-053: перезапуск #%d через 10s", _mm_restart_count)
+            await asyncio.sleep(10)
+            if not bot.is_monitoring:
+                break
+        _mm_restart_count += 1
+        try:
+          _last_pivot_day = datetime.utcnow().date()  # уже прогрет в start_monitoring
+          _pivot_cycle = 0
+          _cascade_4h_cycle = 0
+          _div_cycle = 0
 
-        # ARCH-78: принудительный warmup до первого цикла — чтобы gate не видел NEUTRAL
-        _btc_prov_warmup = getattr(bot, "btc_regime_provider", None)
-        if _btc_prov_warmup is not None:
-            try:
-                await _btc_prov_warmup.update(bot.data_collector)
-                logger.info("[ARCH-78] BTCRegimeProvider warmup: mode=%s", _btc_prov_warmup.get_btc_mode())
-            except Exception as _e_warmup:
-                logger.warning("[ARCH-78] BTCRegimeProvider warmup failed: %s", _e_warmup)
+          # ARCH-78: принудительный warmup до первого цикла — чтобы gate не видел NEUTRAL
+          _btc_prov_warmup = getattr(bot, "btc_regime_provider", None)
+          if _btc_prov_warmup is not None:
+              try:
+                  await _btc_prov_warmup.update(bot.data_collector)
+                  logger.info("[ARCH-78] BTCRegimeProvider warmup: mode=%s", _btc_prov_warmup.get_btc_mode())
+              except Exception as _e_warmup:
+                  logger.warning("[ARCH-78] BTCRegimeProvider warmup failed: %s", _e_warmup)
 
-        while bot.is_monitoring:
+          while bot.is_monitoring:
             # Читаем цикловые интервалы из конфига (hot-reload)
             # DEV-103: пропустить цикл если биржа DOWN
             if getattr(bot, "exchange_health", "HEALTHY") == "DOWN":
@@ -2164,8 +2172,8 @@ async def monitor_market(bot) -> None:
                 _wl.cleanup_expired()
 
             await asyncio.sleep(bot.config.get("analysis.check_interval", 60))
-    except asyncio.CancelledError:
-        logger.info("Мониторинг остановлен")
-        raise
-    except Exception:
-        logger.exception("Ошибка в monitor_market")
+        except asyncio.CancelledError:
+            logger.info("Мониторинг остановлен")
+            raise
+        except Exception:
+            logger.exception("[monitor_market] D-053: crash в итерации #%d — перезапуск", _mm_restart_count)

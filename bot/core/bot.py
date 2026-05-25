@@ -284,27 +284,74 @@ class TradingAlertBot:
         self.dp.include_router(core_router(self))     # содержит F.text catch-all
         self.dp.include_router(callback_router(self))
 
+    async def _ohlcv_cache_snapshot_loop(self, path: str) -> None:
+        """D-069: периодический snapshot OHLCV cache (защита от kill -9)."""
+        while True:
+            await asyncio.sleep(300)   # каждые 5 минут
+            try:
+                saved = self.data_collector._engine._cache.save_to_disk(path)
+                logger.debug("[D-069] periodic snapshot: %d entries", saved)
+            except Exception as e:
+                logger.warning("[D-069] periodic snapshot error: %s", e)
+
     async def _start_ws_feed(self) -> None:
-        """Запускает WsFeed после прогрева пар (ждёт до 30 сек пока monitored_pairs заполнится)."""
-        for _ in range(30):
+        """D-053 fix: Запускает WsFeed и автоматически перезапускает при падении.
+
+        D-068: ждёт прогрева пар до 5 мин, потом retry каждую минуту.
+        D-053: restart-петля — если ws_feed.start() завершается, перезапускаем через 30s.
+        """
+        # Стартовый wait до 5 мин (300 сек), потом retry каждые 60 сек бесконечно
+        for _ in range(300):
             if self.monitored_pairs:
                 break
             await asyncio.sleep(1)
+        # Если за 5 мин не заполнилось — retry каждую минуту (не блокируем остальную инициализацию)
+        retry_count = 0
+        while not self.monitored_pairs and retry_count < 30:   # макс 30 мин общий wait
+            retry_count += 1
+            logger.warning(
+                "[WsFeed] monitored_pairs пусты — retry #%d через 60s",
+                retry_count,
+            )
+            await asyncio.sleep(60)
         if not self.monitored_pairs:
-            logger.warning("[WsFeed] monitored_pairs пусты — WsFeed не запущен")
+            logger.error("[WsFeed] monitored_pairs пусты 30+ мин — WsFeed не запущен")
             return
-        pairs = list(self.monitored_pairs)
-        # Фаза 2: OHLCV для пар с открытыми сделками (get_open_trades — sync)
-        priority_pairs = []
-        try:
-            open_trades = self.trade_simulator.get_open_trades()
-            priority_pairs = list({t.get("symbol") for t in open_trades if t.get("symbol")})
-        except Exception as e:
-            logger.debug("[WsFeed] priority_pairs error: %s", e)
-        logger.info("[WsFeed] Старт: %d пар, %d priority OHLCV", len(pairs), len(priority_pairs))
-        # DEV-101: логируем stats через 5 мин после старта для верификации
-        asyncio.create_task(self._log_ws_stats_after_warmup())
-        await self.ws_feed.start(pairs, priority_pairs=priority_pairs)
+
+        # D-053: restart-петля — WsFeed не должен умирать навсегда
+        restart_count = 0
+        while True:
+            pairs = list(self.monitored_pairs)
+            # D-066 STABLE (25.05 21:15): откат к Phase D — OHLCV WS только для открытых сделок.
+            # Phase F (1×240) дал плато scan_loop 750s. Stable Phase D × 109 пар = 175-238s.
+            priority_pairs = []
+            try:
+                open_trades = self.trade_simulator.get_open_trades()
+                priority_pairs = list({t.get("symbol") for t in open_trades if t.get("symbol")})
+            except Exception as e:
+                logger.debug("[WsFeed] priority_pairs error: %s", e)
+
+            if restart_count == 0:
+                logger.info("[WsFeed] Старт: %d пар, %d priority OHLCV (STABLE)", len(pairs), len(priority_pairs))
+                asyncio.create_task(self._log_ws_stats_after_warmup())
+            else:
+                logger.warning(
+                    "[WsFeed] D-053: перезапуск #%d: %d пар, %d priority OHLCV",
+                    restart_count, len(pairs), len(priority_pairs),
+                )
+
+            try:
+                self.ws_feed.reset()
+                await self.ws_feed.start(pairs, priority_pairs=priority_pairs)
+            except asyncio.CancelledError:
+                logger.info("[WsFeed] WsFeed отменён — остановка")
+                return
+            except Exception as e:
+                logger.error("[WsFeed] D-053: start() ошибка: %s", e)
+
+            restart_count += 1
+            logger.warning("[WsFeed] D-053: WsFeed остановлен — перезапуск через 30s (#%d)", restart_count)
+            await asyncio.sleep(30)
 
     async def _log_ws_stats_after_warmup(self) -> None:
         """DEV-101: через 5 мин после старта WS — логируем статус для верификации."""
@@ -370,6 +417,18 @@ class TradingAlertBot:
             _dt.configure(self.trade_simulator.db_path)
             asyncio.create_task(_dt.flush_periodically(30))
 
+            # D-069 (25.05): Persistent OHLCV cache — load с диска при старте.
+            # Устраняет initial REST tax (~1159s/cycle при пустом cache).
+            try:
+                _cache_path = "cache/ohlcv_snapshot.pkl"
+                _loaded = self.data_collector._engine._cache.load_from_disk(_cache_path)
+                if _loaded > 0:
+                    logger.info("[D-069] OHLCV cache loaded: %d entries from %s", _loaded, _cache_path)
+                # Периодический snapshot каждые 5 мин (страховка от kill -9)
+                asyncio.create_task(self._ohlcv_cache_snapshot_loop(_cache_path))
+            except Exception as e:
+                logger.warning("[D-069] cache load error (не критично): %s", e)
+
             asyncio.create_task(health_check_loop(self))        # DEV-103: Exchange Health Guard
             asyncio.create_task(trade_tracker_loop(self))
             asyncio.create_task(run_trigger_loop(self))     # DEV-95: Куб Метатрона — OTE/Cascade триггеры
@@ -397,6 +456,15 @@ class TradingAlertBot:
                 logger.info("[ARCH-104 observer] task spawned")
             except Exception as e:
                 logger.warning("[ARCH-104 observer] failed to start: %s", e)
-            await self.dp.start_polling(self.bot)
+            try:
+                await self.dp.start_polling(self.bot)
+            finally:
+                # D-069: graceful save OHLCV cache при остановке (Ctrl+C / SIGTERM)
+                try:
+                    _cache_path = "cache/ohlcv_snapshot.pkl"
+                    _saved = self.data_collector._engine._cache.save_to_disk(_cache_path)
+                    logger.info("[D-069] OHLCV cache saved: %d entries to %s", _saved, _cache_path)
+                except Exception as e:
+                    logger.warning("[D-069] cache save error: %s", e)
 
         asyncio.run(_run())
