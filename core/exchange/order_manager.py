@@ -11,6 +11,7 @@ OrderManager — биржевой слой исполнения ордеров.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -39,7 +40,25 @@ class OrderManager:
         self._mode = ExecutionMode(config.get("trading.execution_mode", "sim_only"))
         self._tp1_close_pct = float(config.get("trading.tp1_close_pct", 0.20))
         self._client: Optional[BingXClient] = None
-        logger.info("[OrderManager] mode=%s", self._mode.value)
+        # D-059: balance cache (30s TTL) — защита от BingX 100410 temp ban
+        # asyncio.Lock предотвращает thundering herd: при cache miss только один
+        # coroutine идёт к REST, остальные ждут и получают результат из кеша.
+        self._balance_cache: Optional[float] = None
+        self._balance_ts: float = 0.0
+        self._balance_ttl: float = float(config.get("trading.balance_cache_ttl_sec", 30.0))
+        self._balance_lock: Optional[asyncio.Lock] = None  # создаётся при первом вызове
+        # D-061: positions cache (15s TTL) — 7 callsites × 239 pairs
+        self._positions_cache: Optional[list] = None
+        self._positions_ts: float = 0.0
+        self._positions_ttl: float = float(config.get("trading.positions_cache_ttl_sec", 15.0))
+        # D-062: per-symbol open_orders cache (10s TTL) — 8 callsites,
+        # TSL trail на 70 OPEN позиций бьёт endpoint каждый цикл
+        self._oo_cache: dict[str, tuple[float, list]] = {}  # {symbol: (ts, orders)}
+        self._oo_ttl: float = float(config.get("trading.open_orders_cache_ttl_sec", 10.0))
+        logger.info(
+            "[OrderManager] mode=%s cache(balance=%.0fs positions=%.0fs orders=%.0fs)",
+            self._mode.value, self._balance_ttl, self._positions_ttl, self._oo_ttl,
+        )
 
     def _get_client(self) -> BingXClient:
         if self._client is None:
@@ -73,24 +92,87 @@ class OrderManager:
     async def get_available_balance(self) -> float:
         if not self.is_live():
             return float(self._cfg.get("trading.deposit_usdt", 1000.0))
-        fallback = float(self._cfg.get("trading.deposit_usdt", 1000.0))
-        try:
-            raw_balance = await (await self._get_client_synced()).get_balance()
-            if raw_balance is None:
-                logger.warning("[OrderManager] get_balance unavailable, fallback to config deposit %.2f",
-                               fallback)
+        import time as _t
+        # Fast path: cache hit без lock (87% случаев)
+        now = _t.monotonic()
+        if self._balance_cache is not None and (now - self._balance_ts) < self._balance_ttl:
+            logger.debug("[OrderManager] balance CACHE HIT age=%.1fs val=%.2f",
+                         now - self._balance_ts, self._balance_cache)
+            return self._balance_cache
+        # Slow path: thundering herd guard — только один coroutine идёт к REST
+        if self._balance_lock is None:
+            self._balance_lock = asyncio.Lock()
+        async with self._balance_lock:
+            # Double-check после acquire: предыдущий waiter уже мог заполнить кеш
+            now = _t.monotonic()
+            if self._balance_cache is not None and (now - self._balance_ts) < self._balance_ttl:
+                logger.debug("[OrderManager] balance CACHE HIT (post-lock) age=%.1fs", now - self._balance_ts)
+                return self._balance_cache
+            fallback = float(self._cfg.get("trading.deposit_usdt", 1000.0))
+            logger.debug("[OrderManager] balance CACHE MISS → REST call (ttl=%.0fs, age=%.1fs)",
+                         self._balance_ttl,
+                         (now - self._balance_ts) if self._balance_cache is not None else -1)
+            try:
+                raw_balance = await (await self._get_client_synced()).get_balance()
+                if raw_balance is None:
+                    logger.warning("[OrderManager] get_balance unavailable, fallback=%.2f", fallback)
+                    self._balance_cache = fallback
+                    self._balance_ts = now
+                    return fallback
+                balance = float(raw_balance)
+                if math.isfinite(balance) and balance >= 0:
+                    self._balance_cache = balance
+                    self._balance_ts = now
+                    return balance
+                logger.warning("[OrderManager] get_balance non-finite %.8f, fallback=%.2f", balance, fallback)
+                self._balance_cache = fallback
+                self._balance_ts = now
                 return fallback
-            balance = float(raw_balance)
-            if math.isfinite(balance) and balance >= 0:
-                return balance
-            logger.warning("[OrderManager] get_balance returned non-finite %.8f, fallback to config deposit %.2f",
-                           balance, fallback)
-            return fallback
-        except Exception as e:
-            # D-057: type(e).__name__ для exceptions без message (TimeoutError()
-            # имеет пустой str(e) → лог "error:" не информативен)
-            logger.warning("[OrderManager] get_balance error: %s: %s", type(e).__name__, e)
-            return fallback
+            except Exception as e:
+                logger.warning("[OrderManager] get_balance error: %s: %s", type(e).__name__, e)
+                self._balance_cache = fallback
+                self._balance_ts = now
+                return fallback
+
+    # D-061/D-062: внутренние cached-обёртки для биржевых endpoints
+    # ВНУТРЕННИЕ — все вызовы get_positions/get_open_orders в OrderManager
+    # должны идти через них (вместо прямого client.get_positions()).
+    async def _get_positions_cached(self, force: bool = False) -> list:
+        """Возвращает позиции с биржи. Кеш TTL=positions_ttl (по умолчанию 15с).
+        force=True — игнорировать кеш (для post-trade reconciliation)."""
+        import time as _t
+        now = _t.monotonic()
+        if (not force and self._positions_cache is not None
+                and (now - self._positions_ts) < self._positions_ttl):
+            return self._positions_cache
+        client = await self._get_client_synced()
+        positions = await client.get_positions()
+        self._positions_cache = positions
+        self._positions_ts = now
+        return positions
+
+    async def _get_open_orders_cached(self, symbol: str, force: bool = False) -> list:
+        """Возвращает open_orders по символу. Per-symbol кеш TTL=oo_ttl (10с).
+        force=True — игнорировать кеш (после нашего place/cancel)."""
+        import time as _t
+        now = _t.monotonic()
+        if not force:
+            cached = self._oo_cache.get(symbol)
+            if cached is not None and (now - cached[0]) < self._oo_ttl:
+                return cached[1]
+        client = await self._get_client_synced()
+        orders = await client.get_open_orders(symbol)
+        self._oo_cache[symbol] = (now, orders)
+        return orders
+
+    def _invalidate_open_orders(self, symbol: str) -> None:
+        """Сбрасывает кеш open_orders для символа (после place/cancel)."""
+        self._oo_cache.pop(symbol, None)
+
+    def _invalidate_positions(self) -> None:
+        """Сбрасывает кеш positions (после открытия/закрытия позиции)."""
+        self._positions_cache = None
+        self._positions_ts = 0.0
 
     async def get_exchange_snapshot(self) -> dict:
         """Возвращает баланс + позиции с биржи (для /api/live дашборда).
@@ -101,7 +183,8 @@ class OrderManager:
         try:
             client = await self._get_client_synced()
             balance_resp = await client.get("/openApi/swap/v2/user/balance")
-            positions = await client.get_positions()
+            # D-061: positions через кеш (15s) — дашборд /api/live терпит staleness
+            positions = await self._get_positions_cached()
             bd = balance_resp.get("data", {}).get("balance", {})
             return {
                 "balance": {
@@ -126,7 +209,8 @@ class OrderManager:
             return False
         try:
             bx_sym = symbol.replace("/", "-").replace(":USDT", "")
-            positions = await (await self._get_client_synced()).get_positions()
+            # D-061: positions через кеш (15s)
+            positions = await self._get_positions_cached()
             for p in positions:
                 if (p.get("symbol") == bx_sym
                         and abs(float(p.get("positionAmt") or p.get("availableAmt") or 0)) > 0):
@@ -232,6 +316,10 @@ class OrderManager:
                     sl=sl, tp1=tp1, tp2=tp2, error=msg, notional_usdt=notional,
                 )
 
+            # D-061/D-062: bracket placed → new position + new SL/TP orders
+            self._invalidate_positions()
+            self._invalidate_open_orders(symbol)
+
             # BUGFIX 24.04: защита от BingX API возвращающего JSON-строки вместо dict
             data_obj = resp.get("data", {})
             if isinstance(data_obj, str):
@@ -319,7 +407,8 @@ class OrderManager:
         if not self.is_live():
             return None
         try:
-            orders = await (await self._get_client_synced()).get_open_orders(symbol)
+            # D-062: кеш open_orders (10s)
+            orders = await self._get_open_orders_cached(symbol)
             sl_orders = [
                 o for o in orders
                 if o.get("type") in ("STOP_MARKET", "STOP")
@@ -352,7 +441,8 @@ class OrderManager:
         if not self.is_live():
             return None
         try:
-            orders = await (await self._get_client_synced()).get_open_orders(symbol)
+            # D-062: кеш open_orders (10s)
+            orders = await self._get_open_orders_cached(symbol)
             tp_orders = [
                 o for o in orders
                 if o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")
@@ -394,7 +484,8 @@ class OrderManager:
 
             # Анти-дубликат: отменяем существующие TP того же pos_side перед новым.
             try:
-                existing = await client.get_open_orders(symbol)
+                # D-062: кеш open_orders — окей для dup-check (свежесть 10с достаточна)
+                existing = await self._get_open_orders_cached(symbol)
                 existing_tp = [
                     o for o in existing
                     if o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")
@@ -426,6 +517,7 @@ class OrderManager:
                         )
                         if resp.get("code", -1) == 0:
                             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+                            self._invalidate_open_orders(symbol)
                             logger.info("[OrderManager] ✅ новый TP %s %s tp=%.6f order_id=%s (retry qty)",
                                         symbol, pos_side, tp_price, oid)
                             return oid or None
@@ -433,6 +525,8 @@ class OrderManager:
                                symbol, pos_side, tp_price, msg or resp)
                 return None
             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+            # D-062: TP placed → invalidate per-symbol cache
+            self._invalidate_open_orders(symbol)
             logger.info("[OrderManager] ✅ новый TP %s %s tp=%.6f order_id=%s",
                         symbol, pos_side, tp_price, oid)
             return oid or None
@@ -446,7 +540,8 @@ class OrderManager:
             return 0.0
         try:
             bx_sym = symbol.replace("/", "-").replace(":USDT", "")
-            positions = await (await self._get_client_synced()).get_positions()
+            # D-061: positions через кеш (15s)
+            positions = await self._get_positions_cached()
             for p in positions:
                 if (p.get("symbol") == bx_sym
                         and p.get("positionSide", "").upper() == pos_side.upper()):
@@ -461,6 +556,8 @@ class OrderManager:
             return True
         try:
             resp = await (await self._get_client_synced()).cancel_order(symbol, order_id)
+            # D-062: state mutated → invalidate per-symbol cache
+            self._invalidate_open_orders(symbol)
             code = resp.get("code", -1)
             if code == 0:
                 return True
@@ -502,7 +599,8 @@ class OrderManager:
             # Если на бирже уже есть SL того же pos_side (race: fetch_and_save + repair) —
             # отменяем их, чтобы не накапливать. После cancel → place нового.
             try:
-                existing = await client.get_open_orders(symbol)
+                # D-062: кеш open_orders — окей для dup-check (свежесть 10с достаточна)
+                existing = await self._get_open_orders_cached(symbol)
                 existing_sl = [
                     o for o in existing
                     if o.get("type") in ("STOP_MARKET", "STOP")
@@ -555,6 +653,7 @@ class OrderManager:
                         )
                         if resp.get("code", -1) == 0:
                             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+                            self._invalidate_open_orders(symbol)
                             logger.info("[OrderManager] ✅ новый SL %s %s sl=%.6f order_id=%s (retry qty)",
                                         symbol, pos_side, sl_price, oid)
                             return oid or None
@@ -562,6 +661,8 @@ class OrderManager:
                                symbol, pos_side, sl_price, msg or resp)
                 return None
             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))
+            # D-062: SL placed → invalidate per-symbol cache
+            self._invalidate_open_orders(symbol)
             logger.info("[OrderManager] ✅ новый SL %s %s sl=%.6f order_id=%s",
                         symbol, pos_side, sl_price, oid)
             # Post-write verification (19.04 fix B3): через 3 сек проверяем что ордер
@@ -570,7 +671,8 @@ class OrderManager:
                 import asyncio as _asyncio
                 await _asyncio.sleep(3.0)
                 try:
-                    _verify = await client.get_open_orders(symbol)
+                    # D-062: verify post-place — нужен свежий fetch (force=True)
+                    _verify = await self._get_open_orders_cached(symbol, force=True)
                     _found = any(str(o.get("orderId", "")) == oid for o in _verify)
                     if not _found:
                         logger.error(
@@ -621,7 +723,8 @@ class OrderManager:
         # Отменяем ВСЕ STOP / STOP_MARKET по символу+pos_side (атомарная очистка накопленных ордеров)
         # Bug fix 19.04: type="STOP" (Stop-Limit, DEV-175) раньше не ловился → ордера накапливались
         try:
-            orders = await (await self._get_client_synced()).get_open_orders(symbol)
+            # D-062: атомарная очистка ВСЕХ SL — нужен свежий fetch (force=True)
+            orders = await self._get_open_orders_cached(symbol, force=True)
             sl_orders = [
                 o for o in orders
                 if o.get("type") in ("STOP_MARKET", "STOP")

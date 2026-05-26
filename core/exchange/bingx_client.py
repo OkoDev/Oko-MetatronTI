@@ -90,15 +90,26 @@ class BingXClient:
         DEV-145: Получает время BingX-сервера и вычисляет offset с учётом RTT.
         offset = local_mid - server, где local_mid = (t_before + t_after) / 2.
         Возвращает offset в миллисекундах (local - server).
+
+        D-071 Quick Win #3 (26.05): throttle — не чаще раз в 60 сек.
+        При активном рынке BingX медленный → timestamp invalid → sync_time → timeout → retry...
+        Throttle разрывает порочный круг.
         """
+        # Throttle: успешный sync → 60s, неудачный → 30s между попытками (BingX лагает).
+        _now = time.monotonic()
+        if self._time_synced and (_now - self._time_synced_at) < 60.0:
+            return self._time_offset_ms
+        if not self._time_synced and self._time_synced_at and (_now - self._time_synced_at) < 30.0:
+            return self._time_offset_ms  # soft-fail throttle
         import aiohttp
         try:
             url = f"{self._base}/openApi/swap/v2/server/time"
             t_before = int(time.time() * 1000)
             async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     data = await r.json()
             t_after = int(time.time() * 1000)
+            rtt = t_after - t_before
             server_ts = (
                 data.get("data", {}).get("serverTime")
                 or data.get("serverTime")
@@ -108,12 +119,21 @@ class BingXClient:
                 self._time_offset_ms = local_mid - int(server_ts)
                 self._time_synced = True
                 self._time_synced_at = time.monotonic()
-                logger.info(
-                    "[BingXClient] time sync: local_mid=%d server=%d offset=%+dms rtt=%dms",
-                    local_mid, int(server_ts), self._time_offset_ms, t_after - t_before,
+                level = "WARNING" if abs(self._time_offset_ms) > 5000 else "INFO"
+                logger.log(
+                    logging.WARNING if level == "WARNING" else logging.INFO,
+                    "[BingXClient] time sync: offset=%+dms rtt=%dms%s",
+                    self._time_offset_ms, rtt,
+                    " ⚠️ БОЛЬШОЙ DRIFT — синхронизируй системные часы!" if abs(self._time_offset_ms) > 5000 else "",
                 )
         except Exception as e:
-            logger.warning("[BingXClient] sync_time failed: %s — offset без изменений", e)
+            # Soft-fail: throttle retry на 30s даже при ошибке.
+            # Windows clock синхронизирован через w32tm (offset ~0) — offset_ms=0 работает.
+            # При реальном дрейфе поймаем 109400 → exception handler там сделает resync.
+            self._time_synced_at = time.monotonic()  # throttle 30s
+            self._time_synced = False  # но _synced=False чтобы при следующем вызове через 30s попробовать снова
+            logger.warning("[BingXClient] sync_time failed: %s (%s) — fallback offset_ms=%d, retry через 30s",
+                           e or "(timeout)", type(e).__name__, self._time_offset_ms)
         return self._time_offset_ms
 
     async def _load_contracts(self) -> None:
@@ -124,7 +144,7 @@ class BingXClient:
         try:
             url = f"{self._base}/openApi/swap/v2/quote/contracts"
             async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
                     data = await r.json()
             items = data.get("data", []) or []
             for item in items:
@@ -181,7 +201,7 @@ class BingXClient:
         url = f"{self._base}{path}?{qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers={"X-BX-APIKEY": self._api_key},
-                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+                             timeout=aiohttp.ClientTimeout(total=30)) as r:
                 resp = await r.json()
         # DEV-145 авто-ресинхронизация: при timestamp drift ресинхронизируем и ретраим
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
@@ -193,7 +213,7 @@ class BingXClient:
             url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
             async with aiohttp.ClientSession() as s:
                 async with s.get(url2, headers={"X-BX-APIKEY": self._api_key},
-                                 timeout=aiohttp.ClientTimeout(total=10)) as r:
+                                 timeout=aiohttp.ClientTimeout(total=30)) as r:
                     resp = await r.json()
         return resp
 
@@ -206,7 +226,7 @@ class BingXClient:
         url = f"{self._base}{path}?{qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
             async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
-                              timeout=aiohttp.ClientTimeout(total=10)) as r:
+                              timeout=aiohttp.ClientTimeout(total=30)) as r:
                 return await r.json()
 
     async def post_raw(self, path: str, raw_qs: str, url_qs: str) -> dict:
@@ -216,7 +236,7 @@ class BingXClient:
         url = f"{self._base}{path}?{url_qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
             async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
-                              timeout=aiohttp.ClientTimeout(total=10)) as r:
+                              timeout=aiohttp.ClientTimeout(total=30)) as r:
                 return await r.json()
 
     async def delete(self, path: str, params: dict | None = None) -> dict:
@@ -228,7 +248,7 @@ class BingXClient:
         url = f"{self._base}{path}?{qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
             async with s.delete(url, headers={"X-BX-APIKEY": self._api_key},
-                                timeout=aiohttp.ClientTimeout(total=10)) as r:
+                                timeout=aiohttp.ClientTimeout(total=30)) as r:
                 return await r.json()
 
     # ── Высокоуровневые методы ──────────────────────────────────────────────
@@ -242,7 +262,35 @@ class BingXClient:
                 await self.sync_time()
                 resp = await self.get("/openApi/swap/v2/user/balance")
             if resp.get("code") != 0:
-                logger.warning("[BingXClient] get_balance error: %s", resp)
+                code = resp.get("code")
+                import re as _re
+                msg_str = str(resp.get("msg", ""))
+                if code == 100410:
+                    # Rate-limit ban: парсим время разблокировки из msg
+                    srv_ts = resp.get("timestamp", 0)
+                    m = _re.search(r'after\s+(\d+)', msg_str)
+                    if m and srv_ts:
+                        ban_sec = (int(m.group(1)) - int(srv_ts)) / 1000
+                        logger.warning(
+                            "[BingX RATE-LIMIT 100410] /user/balance banned for %.0fs — слишком частые REST calls",
+                            ban_sec,
+                        )
+                    else:
+                        logger.warning("[BingX RATE-LIMIT 100410] /user/balance: %s", resp)
+                elif code == 109429:
+                    # Бан за 20+ timestamp ошибок: парсим retry-after
+                    m = _re.search(r'retry after time:\s*(\d+)', msg_str)
+                    if m:
+                        retry_ts = int(m.group(1))
+                        ban_sec = max(0, (retry_ts - int(resp.get("timestamp", retry_ts))) / 1000)
+                        logger.warning(
+                            "[BingX TIMESTAMP-BAN 109429] /user/balance banned for %.0fs "
+                            "— 20+ ошибок 109400. ИСПРАВЬ СИСТЕМНЫЕ ЧАСЫ WINDOWS!", ban_sec,
+                        )
+                    else:
+                        logger.warning("[BingX TIMESTAMP-BAN 109429] /user/balance: %s", resp)
+                else:
+                    logger.warning("[BingXClient] get_balance error code=%s: %s", code, resp)
                 return None
 
         balance = resp.get("data", {}).get("balance", {}) or {}
