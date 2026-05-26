@@ -195,10 +195,9 @@ class PositionManager:
 
         stats = {"ok": 0, "closed": 0}
         try:
-            # DEV-154: _get_client_synced() гарантирует синхронизацию времени
-            # чтобы избежать 109400 timestamp invalid при старте бота
-            client = await order_manager._get_client_synced()
-            exchange_positions = await client.get_positions()
+            # D-061: через OrderManager кеш (15s TTL) — экономия API calls
+            # DEV-154: _get_client_synced() внутри _get_positions_cached
+            exchange_positions = await order_manager._get_positions_cached()
             # BingX символ: "BTC-USDT", наш: "BTC/USDT:USDT"
             open_syms: set = set()
             for p in exchange_positions:

@@ -216,8 +216,9 @@ async def sync_positions(bot) -> None:
         # FAIL-CLOSED: если get_positions() бросает — пропускаем весь цикл.
         # Пустой список из-за ошибки API нельзя считать "нет позиций" —
         # это приводит к массовому ложному закрытию tracked сделок.
+        # D-061: через OrderManager кеш (15s TTL) — экономия API calls
         try:
-            positions = await client.get_positions()
+            positions = await order_mgr._get_positions_cached()
         except Exception as _pos_err:
             # D-057: type(e).__name__ для exceptions без message
             logger.warning(
@@ -412,8 +413,72 @@ async def sync_positions(bot) -> None:
         if synced:
             logger.info("[POSITION-SYNC] синхронизировано %d закрытых позиций", synced)
 
+        # D-070 (25.05): Orphan position detector.
+        # На бирже есть позиция, в БД нет соответствующей status='OPEN' записи.
+        # Это критическая ситуация: бот не контролирует позицию (нет SL/TP в БД,
+        # TSL не работает, position_sync не закроет). Источник: ручное открытие,
+        # рассинхрон после bot crash, или баг закрытия (как PIEVERSE 25.05).
+        try:
+            await _detect_orphans(bot, open_on_exchange, open_sim)
+        except Exception as _orphan_err:
+            logger.warning("[D-070] orphan detector error: %s", _orphan_err)
+
     except Exception as e:
         logger.warning("[POSITION-SYNC] ошибка: %s", e)
+
+
+async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
+    """D-070: находит позиции на бирже без OPEN записи в БД, шлёт Telegram alert.
+
+    Throttle: один алерт на символ раз в 30 минут (orphan может жить долго).
+    """
+    if not open_on_exchange:
+        return
+    # Множество символов с OPEN записью в БД
+    tracked_syms = {t.get("symbol") for t in open_sim if t.get("symbol")}
+    orphans = [
+        (sym, pos) for sym, pos in open_on_exchange.items()
+        if sym not in tracked_syms
+    ]
+    if not orphans:
+        return
+
+    import time as _t
+    state = getattr(bot, "_orphan_alert_last", None)
+    if state is None:
+        state = {}
+        bot._orphan_alert_last = state
+    now = _t.time()
+    THROTTLE_SEC = 1800   # 30 минут на символ
+
+    for sym, pos in orphans:
+        last = state.get(sym, 0)
+        if (now - last) < THROTTLE_SEC:
+            continue
+        state[sym] = now
+
+        qty = float(pos.get("positionAmt") or pos.get("availableAmt") or 0)
+        side = "LONG" if qty > 0 else "SHORT"
+        mark = float(pos.get("markPrice") or 0)
+        leverage = int(pos.get("leverage") or 1)
+        margin = float(pos.get("margin") or pos.get("initialMargin") or 0)
+        pnl = float(pos.get("unrealizedProfit") or 0)
+        notional = abs(qty) * mark if mark else 0
+
+        text = (
+            f"🚨 *D-070 ORPHAN POSITION*\n"
+            f"`{sym}` {side} (без OPEN в БД!)\n"
+            f"qty=`{qty:.4f}`  mark=`{mark:.6f}`\n"
+            f"notional=`${notional:.2f}`  leverage=`{leverage}x`\n"
+            f"margin=`${margin:.2f}`  unrealPnL=`${pnl:+.2f}`\n"
+            f"⚠️ Бот НЕ управляет позицией. Проверь BingX UI и закрой вручную либо разберись с рассинхроном."
+        )
+        logger.error("[D-070] ORPHAN %s %s qty=%.4f mark=%.6f pnl=%.2f", sym, side, qty, mark, pnl)
+        try:
+            from bot.monitoring import broadcast_with_subscription_check
+            await broadcast_with_subscription_check(bot, text, "orphan_position")
+        except Exception as _alert_err:
+            logger.warning("[D-070] TG alert error: %s", _alert_err)
 
 
 async def fix_zero_r_trades(bot, dry_run: bool = True) -> int:
