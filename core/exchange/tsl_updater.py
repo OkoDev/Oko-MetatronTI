@@ -143,23 +143,18 @@ async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
             # Шаг 2: qty для нового ордера
             qty = float(item.get("qty") or 0)
             real_qty = await om.get_position_qty(symbol, pos_side)
-            # ORPHAN: симулятор держит OPEN, но позиции на бирже нет (qty=0)
-            # → закрываем в симуляторе как EXPIRED с текущей ценой (нет данных о SL/TP)
+            # 27.05.2026 (orphan crisis): убран close_trade(EXPIRED) при qty=0.
+            # Причина: get_position_qty использует _get_positions_cached (15s TTL).
+            # Если BingX вернул пустой positions snapshot (rate-limit/timeout/glitch),
+            # все OPEN сделки за 15с массово закрывались как EXPIRED, а реальные
+            # позиции оставались жить на бирже → orphan crisis (10 LONG без БД).
+            # Решение: пропускаем TSL update этого цикла, position_sync разберётся
+            # через _resolve_exit + filled_orders (надёжнее) + DEV-149 (2 snapshot guard).
             if not real_qty:
-                try:
-                    cur_price = await bot.data_collector.get_current_price(symbol)
-                except Exception:
-                    cur_price = None
-                if cur_price is None or cur_price <= 0:
-                    cur_price = float(item.get("new_sl_price") or item.get("old_sl_price") or 0)
                 logger.warning(
-                    "[TSL-UPDATER] #%d %s: ORPHAN на бирже qty=0 → close_trade(EXPIRED) @ %.6f",
-                    trade_id, symbol, cur_price,
+                    "[TSL-UPDATER] #%d %s: qty=0 на бирже — TSL update пропущен (position_sync решит судьбу сделки)",
+                    trade_id, symbol,
                 )
-                try:
-                    ts.close_trade(trade_id, "EXPIRED", float(cur_price))
-                except Exception as _ce:
-                    logger.warning("[TSL-UPDATER] #%d close_trade EXPIRED error: %s", trade_id, _ce)
                 continue
             if not qty:
                 qty = real_qty

@@ -430,18 +430,20 @@ async def sync_positions(bot) -> None:
 async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
     """D-070: находит позиции на бирже без OPEN записи в БД, шлёт Telegram alert.
 
-    Throttle: один алерт на символ раз в 30 минут (orphan может жить долго).
+    Hedge mode: одна пара может быть и LONG, и SHORT одновременно — это две
+    независимые позиции с разным positionSide. Ключ orphan'а — (symbol, side),
+    direction берётся из positionSide (НЕ из знака positionAmt — в hedge он
+    всегда положительный).
+
+    Throttle: один алерт на (symbol, side) раз в 30 минут.
     """
     if not open_on_exchange:
         return
-    # Множество символов с OPEN записью в БД
-    tracked_syms = {t.get("symbol") for t in open_sim if t.get("symbol")}
-    orphans = [
-        (sym, pos) for sym, pos in open_on_exchange.items()
-        if sym not in tracked_syms
-    ]
-    if not orphans:
-        return
+    # Множество (symbol, direction) с OPEN записью в БД
+    tracked_pairs = {
+        (t.get("symbol"), (t.get("direction") or "").upper())
+        for t in open_sim if t.get("symbol")
+    }
 
     import time as _t
     state = getattr(bot, "_orphan_alert_last", None)
@@ -449,31 +451,38 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
         state = {}
         bot._orphan_alert_last = state
     now = _t.time()
-    THROTTLE_SEC = 1800   # 30 минут на символ
+    THROTTLE_SEC = 1800   # 30 минут на (symbol, side)
 
-    for sym, pos in orphans:
-        last = state.get(sym, 0)
+    for sym, pos in open_on_exchange.items():
+        qty_raw = float(pos.get("positionAmt") or pos.get("availableAmt") or 0)
+        side = (pos.get("positionSide", "") or "").upper()
+        if side not in ("LONG", "SHORT"):
+            side = "LONG" if qty_raw > 0 else "SHORT"   # one-way mode fallback
+
+        if (sym, side) in tracked_pairs:
+            continue   # есть OPEN запись — не orphan
+
+        key = f"{sym}:{side}"
+        last = state.get(key, 0)
         if (now - last) < THROTTLE_SEC:
             continue
-        state[sym] = now
+        state[key] = now
 
-        qty = float(pos.get("positionAmt") or pos.get("availableAmt") or 0)
-        side = "LONG" if qty > 0 else "SHORT"
         mark = float(pos.get("markPrice") or 0)
         leverage = int(pos.get("leverage") or 1)
         margin = float(pos.get("margin") or pos.get("initialMargin") or 0)
         pnl = float(pos.get("unrealizedProfit") or 0)
-        notional = abs(qty) * mark if mark else 0
+        notional = abs(qty_raw) * mark if mark else 0
 
         text = (
             f"🚨 *D-070 ORPHAN POSITION*\n"
             f"`{sym}` {side} (без OPEN в БД!)\n"
-            f"qty=`{qty:.4f}`  mark=`{mark:.6f}`\n"
+            f"qty=`{qty_raw:.4f}`  mark=`{mark:.6f}`\n"
             f"notional=`${notional:.2f}`  leverage=`{leverage}x`\n"
             f"margin=`${margin:.2f}`  unrealPnL=`${pnl:+.2f}`\n"
             f"⚠️ Бот НЕ управляет позицией. Проверь BingX UI и закрой вручную либо разберись с рассинхроном."
         )
-        logger.error("[D-070] ORPHAN %s %s qty=%.4f mark=%.6f pnl=%.2f", sym, side, qty, mark, pnl)
+        logger.error("[D-070] ORPHAN %s %s qty=%.4f mark=%.6f pnl=%.2f", sym, side, qty_raw, mark, pnl)
         try:
             from bot.monitoring import broadcast_with_subscription_check
             await broadcast_with_subscription_check(bot, text, "orphan_position")
