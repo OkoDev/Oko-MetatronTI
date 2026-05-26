@@ -137,8 +137,12 @@ class ConfluenceStateMachine:
             _atr_p = int(cfg.get("analysis.indicators.trend.atr_period", 43))
 
         try:
-            df = calculate_wt(df_15m.copy(), n1=10, n2=21)
-            df = calculate_trend(df, atr_period=_atr_p, factor=_factor)
+            # D-063: ARCH-18 — если scan_one уже pre-compute (есть wt1+trend) — reuse
+            if "wt1" in df_15m.columns and "trend" in df_15m.columns:
+                df = df_15m
+            else:
+                df = calculate_wt(df_15m.copy(), n1=10, n2=21)
+                df = calculate_trend(df, atr_period=_atr_p, factor=_factor)
         except Exception as e:
             logger.debug("[csm] indicator error %s: %s", symbol, e)
             return results
@@ -149,8 +153,12 @@ class ConfluenceStateMachine:
         trend_1h = 0
         if df_1h is not None and len(df_1h) >= 50:
             try:
-                df_1h_t = calculate_trend(df_1h.copy(), atr_period=_atr_p, factor=_factor)
-                trend_1h = int(df_1h_t["trend"].iloc[-1])
+                # D-063: reuse pre-computed trend если есть
+                if "trend" in df_1h.columns:
+                    trend_1h = int(df_1h["trend"].iloc[-1])
+                else:
+                    df_1h_t = calculate_trend(df_1h.copy(), atr_period=_atr_p, factor=_factor)
+                    trend_1h = int(df_1h_t["trend"].iloc[-1])
             except Exception:
                 pass
 

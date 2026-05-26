@@ -365,9 +365,10 @@ class DivergenceDetector:
             
             if df is None or len(df) < limit:
                 return False, None
-            
-            # Рассчитываем WT
-            df = calculate_wt(df, n1=10, n2=21)
+
+            # D-063: ARCH-18 reuse pre-computed WT если есть
+            if "wt1" not in df.columns or "wt2" not in df.columns:
+                df = calculate_wt(df, n1=10, n2=21)
             
             # Проверяем дивергенции в порядке приоритета
             ind_pivots_low  = self.find_pivot_lows(df['wt1'], self.pivot_period)
@@ -476,7 +477,9 @@ class DivergenceDetector:
             if df_senior is None or len(df_senior) < limit:
                 return False, None
 
-            df_senior = calculate_wt(df_senior, n1=10, n2=21)
+            # D-063: reuse pre-computed WT если есть
+            if "wt1" not in df_senior.columns or "wt2" not in df_senior.columns:
+                df_senior = calculate_wt(df_senior, n1=10, n2=21)
 
             hidden_dir = None
             hidden_strength = 0
@@ -499,7 +502,9 @@ class DivergenceDetector:
             if df_junior is None or len(df_junior) < limit:
                 return False, None
 
-            df_junior = calculate_wt(df_junior, n1=10, n2=21)
+            # D-063: reuse pre-computed WT если есть
+            if "wt1" not in df_junior.columns or "wt2" not in df_junior.columns:
+                df_junior = calculate_wt(df_junior, n1=10, n2=21)
 
             bull_str = "бычья" if hidden_dir == "LONG" else "медвежья"
             if hidden_dir == "LONG":

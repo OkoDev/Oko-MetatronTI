@@ -110,8 +110,12 @@ def scan_confluence(
         _factor = 1.0
         if cfg is not None and hasattr(cfg, "get"):
             _factor = float(cfg.get("analysis.indicators.trend.factor", 1.0))
-        df = calculate_wt(df_15m, n1=10, n2=21)
-        df = calculate_trend(df, atr_period=43, factor=_factor)
+        # D-063: ARCH-18 — если scan_one уже pre-compute — reuse, иначе вычисляем
+        if "wt1" in df_15m.columns and "trend" in df_15m.columns:
+            df = df_15m
+        else:
+            df = calculate_wt(df_15m, n1=10, n2=21)
+            df = calculate_trend(df, atr_period=43, factor=_factor)
 
         # Исключаем открытую (незакрытую) свечу из lookback — lookahead bias
         window = df.iloc[-lookback_bars - 1:-1].reset_index(drop=True)
@@ -177,11 +181,15 @@ def scan_confluence(
         trend_1h = 0  # 0 = неизвестен, 1 = UP, -1 = DOWN
         if df_1h is not None and len(df_1h) >= 50:
             try:
-                _atr_p = 43
-                if cfg is not None and hasattr(cfg, "get"):
-                    _atr_p = int(cfg.get("analysis.indicators.trend.atr_period", 43))
-                df_1h_t = calculate_trend(df_1h, atr_period=_atr_p, factor=_factor)
-                trend_1h = int(df_1h_t["trend"].iloc[-1])
+                # D-063: reuse pre-computed trend если есть
+                if "trend" in df_1h.columns:
+                    trend_1h = int(df_1h["trend"].iloc[-1])
+                else:
+                    _atr_p = 43
+                    if cfg is not None and hasattr(cfg, "get"):
+                        _atr_p = int(cfg.get("analysis.indicators.trend.atr_period", 43))
+                    df_1h_t = calculate_trend(df_1h, atr_period=_atr_p, factor=_factor)
+                    trend_1h = int(df_1h_t["trend"].iloc[-1])
             except Exception:
                 pass
 
