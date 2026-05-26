@@ -14,10 +14,11 @@ _FUNDING_CACHE_TTL = 1800
 logger = logging.getLogger(__name__)
 
 # TTL кеша — оставляем для обратной совместимости (используется в api_engine)
+# D-066 (25.05): TTL = длина свечи (WS обновляет cache, gap между updates может быть до closure)
 _CACHE_TTL = {
-    "1m": 15, "3m": 30, "5m": 45,
-    "15m": 60, "45m": 120,
-    "1h": 180, "4h": 900, "1d": 1800,  # ARCH-51: 4h/1d грузятся в каждом scan_one → увеличен TTL (900s/1800s)
+    "1m": 60, "3m": 180, "5m": 300,
+    "15m": 900, "45m": 2700,
+    "1h": 3600, "4h": 14400, "1d": 86400,
 }
 _DEFAULT_TTL = 60
 
@@ -27,7 +28,15 @@ class RealTimeData:
         self.exchange_id = exchange_id.lower()
         self.exchange = getattr(ccxt, exchange_id)({
             "enableRateLimit": False,   # ApiEngine управляет rate limiting сам
-            "options": {"defaultType": "future"}
+            "options": {
+                "defaultType": "future",
+                # D-071 Quick Win #1 (26.05): отключаем автоматический market reload.
+                # Без этого ccxt сам зовёт fetchMarkets() при каждом запросе → 300+ calls/час
+                # на /contracts и /symbols когда BingX тормозит. load_markets() вызывается
+                # явно (раз в час из watchlist_loop, при старте, по команде).
+                "fetchMarketsThrottle": 3600 * 1000,   # 1h между авто-reloads
+            },
+            "timeout": 30000,   # D-071 Quick Win #2: 10s → 30s (default ccxt = 10s)
         })
         self.price_history = {}
         self.volume_history = {}
