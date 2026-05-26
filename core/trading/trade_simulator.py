@@ -912,6 +912,12 @@ class TradeSimulator:
                     _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
                     _dir_44 = _direction_str(_get_recommendation_value(recommendation, "direction"))
                     _sig_type_44 = str(_get_recommendation_value(recommendation, "signal_type") or "")
+                    # 27.05.2026: fallback на signal_type_override из extra_features.
+                    # TradingRecommendation не имеет поля signal_type → DEV-222 exception
+                    # blocked_regimes_exceptions=[arch104] не срабатывал и arch104 валился
+                    # в HIGH_VOL. То же для будущих источников через override (как в DEV-155).
+                    if extra_features and extra_features.get("signal_type_override"):
+                        _sig_type_44 = str(extra_features["signal_type_override"])
                     # Guard 1: blocked_regimes (DEV-33 fallback)
                     _br_exceptions = _cfg_44.get("trading.blocked_regimes_exceptions") or []
                     if regime in (_cfg_44.get("trading.blocked_regimes") or []) and _sig_type_44 not in _br_exceptions:
