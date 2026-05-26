@@ -3,6 +3,7 @@
     <div v-for="(alert, idx) in alerts" :key="idx" :class="['alert-banner', alert.type]">
       <span class="alert-icon">{{ alert.icon }}</span>
       {{ alert.text }}
+      <a v-if="alert.link" :href="alert.link" target="_blank" rel="noopener" class="alert-link">{{ alert.linkText }}</a>
       <span class="alert-detail">{{ alert.detail }}</span>
     </div>
   </section>
@@ -29,12 +30,16 @@ const alerts = computed(() => {
   const list = []
 
   // BingX group (mutually exclusive)
+  // D-076 (26.05): ссылка на cryptohopper external status — отличает наши баги от проблем биржи
+  const bingxStatusUrl = 'https://status.cryptohopper.com/exchange.html?detail=bingx'
   if (exchangeHealth.value === 'DOWN') {
     list.push({
       type: 'red',
       icon: '⛔',
       text: 'BingX недоступен',
-      detail: 'бот не открывает live ордера'
+      detail: 'бот не открывает live ордера',
+      link: bingxStatusUrl,
+      linkText: 'проверить статус BingX'
     })
   } else if (
     exchangeHealth.value === 'DEGRADED' ||
@@ -45,7 +50,9 @@ const alerts = computed(() => {
       type: 'amber',
       icon: '⚠',
       text: 'BingX лагает',
-      detail: `latency=${lat}ms`
+      detail: `latency=${lat}ms`,
+      link: bingxStatusUrl,
+      linkText: 'проверить статус BingX'
     })
   }
 
@@ -79,3 +86,15 @@ const alerts = computed(() => {
   return list
 })
 </script>
+
+<style scoped>
+.alert-link {
+  color: inherit;
+  text-decoration: underline;
+  margin-left: 6px;
+  font-weight: 400;
+  font-size: .82rem;
+  opacity: 0.9;
+}
+.alert-link:hover { opacity: 1; }
+</style>
