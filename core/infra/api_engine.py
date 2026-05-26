@@ -21,10 +21,15 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # TTL (сек) совпадает с data_collector._CACHE_TTL
+# D-065 (24.05): 4h 900→3600 (1ч), 1d 1800→7200 (2ч) — свечи меняются раз в 4ч/24ч,
+# агрессивный TTL даёт -200 calls/cycle (~17% scan time экономии).
+# D-066 (25.05): 5m 45→300, 15m 60→900, 45m 120→2700, 1h 180→3600 — TTL = длина свечи.
+# WS постоянно обновляет cache через replace/append, TTL должен покрывать gap между WS update'ами
+# (15m: WS может тихо стоять до закрытия бара). Без WS — кеш expires к моменту нового бара.
 _CACHE_TTL: dict[str, float] = {
-    "1m": 15, "3m": 30, "5m": 45,
-    "15m": 60, "45m": 120,
-    "1h": 180, "4h": 900, "1d": 1800, "1w": 3600,  # ARCH-51: 4h/1d грузятся в каждом scan_one → TTL увеличен
+    "1m": 60, "3m": 180, "5m": 300,
+    "15m": 900, "45m": 2700,
+    "1h": 3600, "4h": 14400, "1d": 86400, "1w": 3600,
 }
 _DEFAULT_TTL: float = 60.0
 
@@ -53,6 +58,15 @@ class OhlcvCache:
         self._data.move_to_end(key)
         return entry["df"].copy()
 
+    def get_stale(self, key: tuple, limit: int) -> Optional[pd.DataFrame]:
+        """Возвращает кеш без проверки TTL (stale-on-error fallback при BingX DEGRADED)."""
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        if entry["limit"] < limit:
+            return None
+        return entry["df"].copy()
+
     def set(self, key: tuple, df: pd.DataFrame, limit: int) -> None:
         """Записывает запись в кеш, вытесняя старейшую при переполнении."""
         if key in self._data:
@@ -62,8 +76,128 @@ class OhlcvCache:
         while len(self._data) > self._maxsize:
             self._data.popitem(last=False)
 
+    def merge(self, key: tuple, new_df: pd.DataFrame) -> str:
+        """D-066 Phase B: merge новой WS свечи с существующим кешем.
+
+        Args:
+            key: (symbol, timeframe)
+            new_df: DataFrame с колонками time/open/high/low/close/volume
+                    (формат как у REST fetch_ohlcv в api_engine).
+                    WS обычно даёт 1 строку — текущая активная свеча.
+
+        Returns:
+            'replace' | 'append' | 'init' | 'stale' | 'invalid'
+
+        Логика:
+            - Кеш пустой → init (set as-is)
+            - new_df.last_time == cache.last_time → replace last row (свеча обновляется)
+            - new_df.last_time > cache.last_time → append + drop oldest (новый bar открылся)
+            - new_df.last_time < cache.last_time → stale (игнор)
+        """
+        if new_df is None or new_df.empty or "time" not in new_df.columns:
+            return "invalid"
+        entry = self._data.get(key)
+        if entry is None:
+            # D-066 fix: НЕ делаем init с малым limit (WS даёт 1 bar = limit=1).
+            # scan_loop запрашивает limit=200+ → cache.get(limit=200) вернёт None
+            # потому что entry["limit"]=1 < 200 → REST fetch → регрессия scan_loop.
+            # Ждём пока REST загрузит первые N баров, потом WS только replace/append.
+            return "skip_no_cache"
+        existing = entry["df"]
+        if "time" not in existing.columns:
+            # Несовместимый формат в кеше — overwrite
+            self.set(key, new_df.copy(), limit=len(new_df))
+            return "init"
+        try:
+            new_last_t = int(new_df["time"].iloc[-1])
+            cache_last_t = int(existing["time"].iloc[-1])
+        except (ValueError, TypeError, IndexError):
+            return "invalid"
+        if new_last_t < cache_last_t:
+            return "stale"
+        if new_last_t == cache_last_t:
+            # Тот же bar — обновляем последнюю строку in-place
+            for col in ("open", "high", "low", "close", "volume"):
+                if col in new_df.columns:
+                    existing.iloc[-1, existing.columns.get_loc(col)] = new_df[col].iloc[-1]
+            entry["ts"] = time.monotonic()
+            return "replace"
+        # Новый bar (new_last_t > cache_last_t): append + drop oldest, держим длину неизменной
+        merged = pd.concat([existing, new_df.iloc[[-1]]], ignore_index=True)
+        if len(merged) > entry["limit"]:
+            merged = merged.iloc[len(merged) - entry["limit"]:].reset_index(drop=True)
+        entry["df"] = merged
+        entry["ts"] = time.monotonic()
+        return "append"
+
     def __len__(self) -> int:
         return len(self._data)
+
+    def save_to_disk(self, path: str) -> int:
+        """D-069 (25.05): сохраняет cache на диск через pickle.
+
+        Сохраняем wall-clock timestamp (time.time()), а НЕ monotonic —
+        после рестарта Python monotonic сбрасывается. При load восстанавливаем
+        ts через виртуальный monotonic = now - age_wallclock.
+
+        Returns: количество сохранённых entries.
+        """
+        import pickle
+        import os
+        snapshot = {}
+        now_wall = time.time()
+        for key, entry in self._data.items():
+            age = time.monotonic() - entry["ts"]
+            snapshot[key] = {
+                "df": entry["df"],
+                "limit": entry["limit"],
+                "ts_wall": now_wall - age,   # фактический момент set
+            }
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                pickle.dump(snapshot, f, protocol=pickle.HIGHEST_PROTOCOL)
+            return len(snapshot)
+        except Exception as e:
+            logger.error("[OhlcvCache] save_to_disk error: %s", e)
+            return 0
+
+    def load_from_disk(self, path: str, max_ttl: float = 86400.0) -> int:
+        """D-069 (25.05): загружает cache с диска, валидируя age по wall-clock.
+
+        Args:
+            max_ttl: отбрасываем entries старше N секунд (default 24h —
+                     максимальный TTL в _CACHE_TTL для 1d свечей).
+
+        Returns: количество загруженных entries.
+        """
+        import pickle
+        import os
+        if not os.path.exists(path):
+            return 0
+        try:
+            with open(path, "rb") as f:
+                snapshot = pickle.load(f)
+        except Exception as e:
+            logger.warning("[OhlcvCache] load_from_disk error: %s", e)
+            return 0
+        now_wall = time.time()
+        now_mono = time.monotonic()
+        loaded = 0
+        for key, entry in snapshot.items():
+            age = now_wall - entry["ts_wall"]
+            if age < 0 or age > max_ttl:
+                continue  # stale или future ts (защита от системного clock skew)
+            # Виртуальный monotonic timestamp: "как будто" set был age секунд назад
+            self._data[key] = {
+                "df": entry["df"],
+                "ts": now_mono - age,
+                "limit": entry["limit"],
+            }
+            loaded += 1
+            if loaded >= self._maxsize:
+                break
+        return loaded
 
 
 class CircuitBreaker:
@@ -256,9 +390,12 @@ class ApiEngine:
             self._cb.record_failure()
             if not fut.done():
                 fut.set_exception(exc)
-                # Подавляем "Future exception was never retrieved" если нет waiters
                 fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
-            return None
+            # Stale-on-error: при BingX DEGRADED лучше вернуть устаревший кеш чем None
+            stale = self._cache.get_stale(cache_key, limit)
+            if stale is not None:
+                logger.debug("[ApiEngine] STALE fallback %s %s (REST err: %s)", symbol, timeframe, type(exc).__name__)
+            return stale
         finally:
             self._in_flight.pop(dedup_key, None)
 
