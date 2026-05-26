@@ -389,9 +389,14 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                         # Привязываем exchange_order_id — только эти сделки будут синхронизироваться с биржей
                         if _br.order_id and trade_id:
                             bot.trade_simulator.set_exchange_order_id(trade_id, _br.order_id, qty=_qty)
+                            _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
                             if _br.tp_order_id:
                                 bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
-                            _pos_side_wl = "LONG" if direction == "LONG" else "SHORT"
+                            else:
+                                import asyncio as _asyncio_wl
+                                from core.exchange.tsl_updater import fetch_and_save_tp_order_id
+                                _asyncio_wl.create_task(fetch_and_save_tp_order_id(
+                                    bot, trade_id, symbol, _pos_side_wl))
                             if _br.sl_order_id:
                                 bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
                             else:
@@ -1056,6 +1061,9 @@ async def _execute_sideways_signal(bot, rec) -> None:
                 )
                 if _br.tp_order_id:
                     bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
+                else:
+                    from core.exchange.tsl_updater import fetch_and_save_tp_order_id
+                    asyncio.create_task(fetch_and_save_tp_order_id(bot, trade_id, rec.symbol, _dir))
                 if _br.sl_order_id:
                     bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
                 else:
@@ -2013,6 +2021,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         _tcb_status = "n/a"
     logger.info("Скан: %d пар | кеш=%d api_cb=%s trading_cb=%s",
                 len(pairs), stats["cache_size"], stats["cb_state"], _tcb_status)
+    # Event loop lag probe: sleep(0) должен вернуться немедленно (<5ms).
+    # Задержка >50ms = event loop заблокирован тяжёлым sync-кодом.
+    _lag_t0 = _time.monotonic()
+    await asyncio.sleep(0)
+    _el_lag = _time.monotonic() - _lag_t0
+    if _el_lag > 0.05:
+        logger.warning("[EventLoop] LAG %.3fs перед scan_gather — event loop был заблокирован!", _el_lag)
+    elif _el_lag > 0.01:
+        logger.info("[EventLoop] lag %.3fs перед scan_gather", _el_lag)
     await asyncio.gather(*[scan_one(sym) for sym in pairs], return_exceptions=True)
     elapsed = _time.monotonic() - cycle_start
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
