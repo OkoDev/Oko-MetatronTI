@@ -151,6 +151,7 @@ trading:
     TREND_DOWN: LONG
     TREND_UP: SHORT
   blocked_regimes: [HIGH_VOL]  # P1.5 24.04: откат DEV-149 — HIGH_VOL режим статистически убыточен
+  blocked_regimes_exceptions: [arch104]  # DEV-222 26.05: arch104 торгует в HIGH_VOL (A/B: +0.351R с BE@0.5R)
   pivot_proximity_filter:
     enabled: true
     hard_block_mult: 2
@@ -299,7 +300,8 @@ sl_tp_engine:
     no_degrade_above_r: 8.0    # было 3.0 — 22.05.2026: поднят, т.к. 2.5-3.0R окно блокировало все позиции ≥3R
     r_gradient_peak_min_r: 2.5
     r_gradient_rollback_pct: 0.40  # было 0.25 — триггер при -60% от пика (было -75%, слишком поздно)
-  use_breakeven: false
+  use_breakeven: true           # 26.05.2026: BE@0.5R активирован (A/B: +0.32..+0.47R vs -0.14..−0.25R current)
+  breakeven_activation_r: 0.5  # SL → entry после +0.5R (54.4% сделок достигают)
   use_be_after_tp1: true       # DEV-173: после хита TP1 → SL переносится в entry+0.1%
   expired_extend_min_r: 5.0
   expired_extend_hours: 120
@@ -373,7 +375,7 @@ signal_quality:
   # Откат: dev186_wt_signal_regime_gate: false. Shadow: dev186_shadow: true.
   dev186_wt_signal_regime_gate: true
   dev186_shadow: false
-  min_strength_register: 60  # P1.5 24.04: откат DEV-149 (50→60) — 50 пропускал слабые сигналы, 63 был слишком строг
+  min_strength_register: 50  # 26.05.2026: 60→50 — увеличиваем трафик divergence/arch104 (50→40 в source_policies)
   min_strength_atr_change: 15  # A1 14.05: снижен с 40 → 15 (backtest: 1h_LONG+0.12, 4h_LONG+0.275)
   atr_change:
     long_strength_penalty: 35  # SOFT: avgR=-0.711, WR=8.8% (n=80, 7дн) — штраф, не блок
@@ -429,7 +431,7 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
-  scan_semaphore_size: 10
+  scan_semaphore_size: 6   # 26.05: 10→6 при BingX DEGRADED — освободить event loop для dashboard
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
@@ -531,18 +533,21 @@ signal_router:
     # ── Per-signal_type sources через monitoring main path (Этап 1.Д) ─
     mtf_alert:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     mtf_bias:          {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    pivot_reversal:    {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    wt_signal:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    pivot_reversal:    {min_strength: 80, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→80 (avg=-0.22R, WR=29%)
+    wt_signal:         {min_strength: 80, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→80 (avg=-0.48R, WR=32%)
     wt_b_signal:       {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    confluence:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    divergence:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
+    confluence:        {min_strength: 80, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→80 (avg=-0.58R, WR=31%)
+    divergence:        {min_strength: 40, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→40 (avg=+0.74R, WR=52%, n=174)
     anomaly:           {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     trend_signal:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     composite:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     monitoring:        {min_strength: 50, exchange_enabled: true,  trade_mode: ""}  # fallback для неопознанных
     monitoring_escal:  {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     # ── ARCH-104 / D-044 (2026-05-23): подключаем VST exchange execution ───
-    arch104:           {min_strength: 50, exchange_enabled: true,  trade_mode: "arch104"}
+    # D-051 (26.05.2026): soft_gates_enabled: [] — все soft gates отключены для arch104.
+    # Arch104 имеет RiskIntelligenceV1 + lifecycle check внутри адаптера.
+    # Единственный вход-гейт: wt_cross_up/down в observer_loop (hard, до router).
+    arch104:           {min_strength: 40, exchange_enabled: true,  trade_mode: "arch104", soft_gates_enabled: []}
     # ── Источники для Этапа 1.Г ───────────────────────────────────────
     trigger_loop:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     event_bus:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
@@ -573,10 +578,8 @@ arch104:
   vst_trading:
     enabled: true             # D-030: торговля 15 паттернов на VST
     signal_type: "arch104"    # в БД simulated_trades для разделения
-  # D-051 (2026-05-24): shadow logging per-TF trigger gate.
-  # Если включено — каждая ARCH-104 сделка получает в features_json:
-  #   arch104_shadow_trigger_flag: "wt_cross_up_5m" / "wt_cross_down_15m" etc
-  #   arch104_shadow_trigger_passed: true/false
-  # НЕ блокирует сделки. Через 1-2 недели → SQL анализ WR/avgR per passed.
+  # D-051 (26.05.2026): wt_cross стал HARD gate в observer_loop (shadow убран).
+  # Бэктест: +183% avg_R на 15m, +78% на 1h. Гипотеза доказана.
+  # wt_cross_up_{det_tf} для LONG, wt_cross_down_{det_tf} для SHORT.
   shadow_trigger_check:
-    enabled: true
+    enabled: false  # устарело — gate теперь в observer_loop напрямую

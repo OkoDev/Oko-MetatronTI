@@ -913,8 +913,10 @@ class TradeSimulator:
                 if _cfg_44:
                     _sym_44 = _get_recommendation_value(recommendation, "symbol") or ""
                     _dir_44 = _direction_str(_get_recommendation_value(recommendation, "direction"))
+                    _sig_type_44 = str(_get_recommendation_value(recommendation, "signal_type") or "")
                     # Guard 1: blocked_regimes (DEV-33 fallback)
-                    if regime in (_cfg_44.get("trading.blocked_regimes") or []):
+                    _br_exceptions = _cfg_44.get("trading.blocked_regimes_exceptions") or []
+                    if regime in (_cfg_44.get("trading.blocked_regimes") or []) and _sig_type_44 not in _br_exceptions:
                         logger.info("[DEV-44] %s БЛОК blocked_regime: %s", _sym_44, regime)
                         if _reason_out is not None: _reason_out.append(f"DEV-44:blocked_regime:{regime}")
                         return None
@@ -927,7 +929,6 @@ class TradeSimulator:
                     # Guard 3: signal_regime_block (DEV-64B) — блок мёртвых signal_type × regime комбинаций
                     _srb = _cfg_44.get("signal_quality.signal_regime_block") or {}
                     if _srb:
-                        _sig_type_44 = str(_get_recommendation_value(recommendation, "signal_type") or "")
                         _srb_sig = _srb.get(_sig_type_44) or {}
                         # Guard 3A: blocked_regimes (legacy — без направления)
                         if regime in (_srb_sig.get("blocked_regimes") or []):
