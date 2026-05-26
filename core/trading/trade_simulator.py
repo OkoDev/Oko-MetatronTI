@@ -23,7 +23,6 @@ STATUS_EXPIRED = "EXPIRED"
 # Дефолты — entry TF из core.entry_config
 from core.infra.entry_config import get_primary_entry_tf, get_cascade_tfs, get_tsl_tf
 DEFAULT_TIMEFRAME = get_primary_entry_tf()  # из config.yaml → trading.entry_timeframe
-MAX_DURATION_MINUTES = 48 * 60  # 48 часов — затем EXPIRED
 
 
 def _get_recommendation_value(rec: Any, attr: str, default=None):
@@ -86,9 +85,8 @@ class TradeSimulator:
     по OHLC (hit SL / hit TP / EXPIRED).
     """
 
-    def __init__(self, db_path: str = "subscriptions.db", max_duration_minutes: float = MAX_DURATION_MINUTES):
+    def __init__(self, db_path: str = "subscriptions.db"):
         self.db_path = db_path
-        self.max_duration_minutes = max_duration_minutes
         self.init_database()
         # DEV-15: LLM-анализатор SL-сделок (инициализируется лениво при первом SL)
         self._trade_analyzer = None
@@ -1593,21 +1591,6 @@ class TradeSimulator:
 
             now = datetime.now(timezone.utc)
             age_minutes = (now - created_dt).total_seconds() / 60.0
-            try:
-                from core.infra.config_loader import config as _cfg
-                _max_dur = float(_cfg.get("trading.max_trade_duration_hours", 48)) * 60
-                # DEV-124: ракеты (текущий R >= expired_extend_min_r) получают удлинённый лимит
-                _ext_min_r = float(_cfg.get("trading.expired_extend_min_r", 5.0))
-                _ext_hours = float(_cfg.get("trading.expired_extend_hours", 120))
-                # Быстрый подсчёт R из БД: max_R_possible как прокси для текущего потенциала
-                _max_r_db = trade.get("max_R_possible")
-                if _max_r_db is not None and float(_max_r_db) >= _ext_min_r:
-                    _max_dur = max(_max_dur, _ext_hours * 60)
-                    logger.debug("[DEV-124] %s: max_R_possible=%.1f >= %.1f → продлеваем до %.0fh",
-                                 symbol, float(_max_r_db), _ext_min_r, _ext_hours)
-            except Exception:
-                _max_dur = self.max_duration_minutes
-            _is_expired = age_minutes >= _max_dur
 
             tf = trade.get("timeframe") or DEFAULT_TIMEFRAME
 
@@ -1627,7 +1610,7 @@ class TradeSimulator:
             # TSL нужно двигать когда цена уходит В ПРОФИТ (прочь от стопа), а не к нему.
             # Старый фильтр "пропускаем если далеко от SL/TP" глушил TSL-трекинг.
             _tsl_active_pre = bool(trade.get("tsl_activated"))
-            if _ws_price and _sl_level and _tp_level and not _is_expired and not _tsl_active_pre:
+            if _ws_price and _sl_level and _tp_level and not _tsl_active_pre:
                 _sl_f, _tp_f = float(_sl_level), float(_tp_level)
                 _tsl_f = float(_tsl_level) if _tsl_level else None
                 # Буфер 0.5% — если цена далеко от всех уровней, пропускаем тяжёлый REST
@@ -1667,19 +1650,6 @@ class TradeSimulator:
                             "[trade %d] нет баров после created_at (%s) — пропуск чека SL/TP",
                             trade_id, created_at,
                         )
-                        if _is_expired and not _exchange_managed_trade:
-                            try:
-                                _ticker_nb = await data_collector.get_ticker(symbol)
-                                if _ticker_nb:
-                                    _last_nb = float(_ticker_nb.get("last") or _ticker_nb.get("close") or entry)
-                                    if self.close_trade(trade_id, STATUS_EXPIRED, _last_nb):
-                                        closed_count += 1
-                                        logger.info(
-                                            "TradeSimulator: EXPIRED (no-bars) %s #%d age=%.0fh price=%.6f",
-                                            symbol, trade_id, age_minutes / 60, _last_nb,
-                                        )
-                            except Exception as _e_nb:
-                                logger.debug("TradeSimulator: EXPIRED no-bars ticker %s — %s", symbol, _e_nb)
                         continue
                     df = df_filtered
                 except Exception:
@@ -2429,32 +2399,6 @@ class TradeSimulator:
                 except Exception as e:
                     logger.debug(f"TradeSimulator: MFE update error {trade_id} — {e}")
 
-            # EXPIRED: проверяем только если TP/SL/TSL не сработал за время жизни сделки
-            if not exit_status and _is_expired:
-                if _exchange_managed_trade:
-                    _lg_key = f"{trade_id}_exp"
-                    _lg_last = self._live_guard_logged.get(_lg_key)
-                    if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
-                        logger.warning(
-                            "[TradeSimulator][LIVE-GUARD] %s #%d: EXPIRED detected by simulator, "
-                            "but trade is exchange-managed — waiting for exchange confirmation",
-                            symbol, trade_id,
-                        )
-                        self._live_guard_logged[_lg_key] = now
-                    continue
-                try:
-                    ticker = await data_collector.get_ticker(symbol)
-                    if ticker:
-                        last = float(ticker.get("last") or ticker.get("close") or entry)
-                        if self.close_trade(trade_id, STATUS_EXPIRED, last):
-                            closed_count += 1
-                            logger.info(
-                                "TradeSimulator: EXPIRED %s %s age=%.0fh price=%.6f",
-                                symbol, direction, age_minutes / 60, last,
-                            )
-                except Exception as e:
-                    logger.debug(f"TradeSimulator: EXPIRED get_ticker {symbol} — {e}")
-                continue
 
             if exit_status and exit_price_val is not None:
                 if _exchange_managed_trade:
