@@ -123,7 +123,7 @@ def calculate_levels(
         sl_source = "fallback:2.0%"
 
     if direction not in (SignalDirection.LONG, SignalDirection.SHORT):
-        return entry_price, None, None, None, "", ""
+        return entry_price, None, None, None, "", "", None
 
     # ── -1. RANGE BOUNCE — pivot-based SL/TP для RANGE режима (ARCH-55/DEV-110) ─
     # Имеет наивысший приоритет: если pivot подходит — возвращаем сразу
@@ -144,7 +144,7 @@ def calculate_levels(
             )
             if rb_reject is None and rb_sl and rb_tp:
                 logger.info("[ARCH-55] %s RANGE BOUNCE SL=%.6g TP=%.6g R=%.1f", symbol, rb_sl, rb_tp, rb_r)
-                return entry_price, rb_sl, rb_tp, rb_tp, "range_bounce:pivot", "range_bounce:pivot"
+                return entry_price, rb_sl, rb_tp, rb_tp, "range_bounce:pivot", "range_bounce:pivot", None
             logger.debug("[ARCH-55] %s RANGE BOUNCE rejected: %s → fallback standard", symbol, rb_reject)
         except Exception as _e55:
             logger.debug("[ARCH-55] range_bounce error: %s", _e55)
