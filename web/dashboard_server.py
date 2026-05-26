@@ -200,7 +200,42 @@ def _current_price_from_cache(dc, symbol: str):
     return None
 
 
+_STATS_CACHE = {"payload": None, "ts": 0.0, "ttl": 5.0}
+_STATS_LOCK = None   # lazy init в _handle_stats (asyncio.Lock требует running loop)
+
+
 async def _handle_stats(request: web.Request) -> web.Response:
+    global _STATS_LOCK
+    if _STATS_LOCK is None:
+        import asyncio as _aio
+        _STATS_LOCK = _aio.Lock()
+    """GET /api/stats — D-074 (26.05): cache TTL=5s. Per-client aggregation
+    блокировала event loop при N клиентах × 5s polling (SSE inline call)."""
+    import time as _time
+    now = _time.time()
+    cached = _STATS_CACHE["payload"]
+    if cached is not None and (now - _STATS_CACHE["ts"]) < _STATS_CACHE["ttl"]:
+        return web.Response(
+            text=cached,
+            content_type="application/json", charset="utf-8",
+            headers={"X-Cache": "HIT", "X-Cache-Age": f"{now - _STATS_CACHE['ts']:.1f}"},
+        )
+
+    async with _STATS_LOCK:
+        # Double-check: первый клиент через lock мог уже заполнить cache
+        now2 = _time.time()
+        cached2 = _STATS_CACHE["payload"]
+        if cached2 is not None and (now2 - _STATS_CACHE["ts"]) < _STATS_CACHE["ttl"]:
+            return web.Response(
+                text=cached2,
+                content_type="application/json", charset="utf-8",
+                headers={"X-Cache": "HIT-LOCK", "X-Cache-Age": f"{now2 - _STATS_CACHE['ts']:.1f}"},
+            )
+        return await _stats_compute_and_cache(request)
+
+
+async def _stats_compute_and_cache(request: web.Request) -> web.Response:
+    import time as _time
     engine: PerformanceEngine = request.app["engine"]
     dc = request.app.get("data_collector")
     try:
@@ -289,13 +324,25 @@ async def _handle_stats(request: web.Request) -> web.Response:
         data["exchange_health"]      = getattr(bot, "exchange_health", "HEALTHY") if bot else "HEALTHY"
         data["exchange_latency_ms"]  = round(getattr(bot, "exchange_latency_ms", 0.0), 0) if bot else 0
 
+        # D-074: сериализация один раз → cache + ответ
+        payload_str = json.dumps(data, ensure_ascii=False, default=str)
+        _STATS_CACHE["payload"] = payload_str
+        _STATS_CACHE["ts"] = _time.time()
         return web.Response(
-            text=json.dumps(data, ensure_ascii=False, default=str),
+            text=payload_str,
             content_type="application/json",
             charset="utf-8",
+            headers={"X-Cache": "MISS"},
         )
     except Exception as e:
         logger.exception("dashboard /api/stats error: %s", e)
+        # Stale fallback: при ошибке отдаём предыдущий cached payload если есть
+        if _STATS_CACHE["payload"] is not None:
+            return web.Response(
+                text=_STATS_CACHE["payload"],
+                content_type="application/json", charset="utf-8",
+                headers={"X-Cache": "STALE", "X-Cache-Age": f"{_time.time() - _STATS_CACHE['ts']:.0f}"},
+            )
         return web.Response(status=500, text=str(e))
 
 
@@ -395,6 +442,12 @@ async def _handle_v2_index(request: web.Request) -> web.Response:
     отдают index.html (history mode роутинга — vue-router сам разрулит).
     Статика /v2/assets/* регистрируется через add_static отдельно.
     """
+    # TEMP DISABLED: снижение нагрузки на BingX API (100410 rate-limit + scan_loop деградация)
+    return web.Response(
+        status=503,
+        text="Dashboard v2 временно отключён для снижения нагрузки на BingX API.",
+        content_type="text/plain",
+    )
     index_path = Path(__file__).resolve().parent / "dashboard" / "dist" / "index.html"
     if not index_path.exists():
         return web.Response(
@@ -613,22 +666,40 @@ async def _handle_live(request: web.Request) -> web.Response:
         "error": None,
     }
 
+    # 26.05: safety-bound /api/live — get_exchange_snapshot с timeout 5s.
+    # При таймауте → cached (stale) если есть, иначе пустой payload.
+    # Это защищает event loop от зависания на BingX REST.
     if bot and hasattr(bot, "order_executor") and mode in ("VST", "LIVE"):
-        # Lock: parallel запросы между TTL не должны множить BingX calls.
-        # После acquire — снова чек cache: первый клиент мог уже наполнить.
         async with _LIVE_LOCK:
             now2 = _time.time()
-            cached2 = _LIVE_CACHE["payload"]
-            if cached2 is not None and (now2 - _LIVE_CACHE["ts"]) < _LIVE_CACHE["ttl"]:
+            cached2 = _LIVE_CACHE.get("payload")
+            if cached2 is not None and (now2 - _LIVE_CACHE.get("ts", 0)) < _LIVE_CACHE.get("ttl", 10):
                 return web.Response(
                     text=json.dumps(cached2, ensure_ascii=False, default=str),
-                    content_type="application/json",
-                    charset="utf-8",
-                    headers={"X-Cache": "HIT-LOCK", "X-Cache-Age": f"{now2 - _LIVE_CACHE['ts']:.1f}"},
+                    content_type="application/json", charset="utf-8",
+                    headers={"X-Cache": "HIT"},
                 )
-            return await _live_fetch_and_cache(request, result, bot)
+            # Try fetch с timeout 5s
+            try:
+                return await asyncio.wait_for(
+                    _live_fetch_and_cache(request, result, bot),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("[/api/live] BingX snapshot timeout 5s — fallback to stale cache")
+                if cached2 is not None:
+                    return web.Response(
+                        text=json.dumps(cached2, ensure_ascii=False, default=str),
+                        content_type="application/json", charset="utf-8",
+                        headers={"X-Cache": "STALE-TIMEOUT"},
+                    )
+                return web.Response(
+                    text=json.dumps(result, ensure_ascii=False, default=str),
+                    content_type="application/json", charset="utf-8",
+                    headers={"X-Cache": "EMPTY-TIMEOUT"},
+                )
 
-    # SIM mode — без cache, сразу отдаём пустой payload.
+    # SIM mode
     return web.Response(
         text=json.dumps(result, ensure_ascii=False, default=str),
         content_type="application/json", charset="utf-8",
@@ -664,7 +735,9 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
                 "liquidation_price": float(p.get("liquidationPrice") or 0),
             })
-        # JOIN с simulated_trades по символу → получаем SL/TP для отображения
+        # JOIN с simulated_trades через live_orders → получаем SL/TP для отображения
+        # Используем live_orders.sim_trade_id как мост, чтобы корректно находить
+        # "зомби" позиции (live_orders=OPEN, но simulated_trades=TSL/SL/EXPIRED).
         # BingX symbol "ATOM-USDT" → БД "ATOM/USDT:USDT"
         if result["positions"]:
             def _bx_to_db(sym: str) -> str:
@@ -679,10 +752,13 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 with _sq.connect(db_path) as _conn:
                     _conn.row_factory = _sq.Row
                     ph = ",".join("?" * len(syms))
+                    # Через live_orders чтобы найти sim_trade_id независимо от статуса
                     rows = _conn.execute(
-                        f"SELECT symbol, stop_loss, take_profit, tsl_activated, tsl_tf "
-                        f"FROM simulated_trades "
-                        f"WHERE status='OPEN' AND symbol IN ({ph})",
+                        f"SELECT lo.symbol, st.stop_loss, st.take_profit, "
+                        f"st.tsl_activated, st.tsl_tf "
+                        f"FROM live_orders lo "
+                        f"JOIN simulated_trades st ON lo.sim_trade_id = st.id "
+                        f"WHERE lo.status='OPEN' AND lo.symbol IN ({ph})",
                         syms,
                     ).fetchall()
                     for row in rows:
@@ -697,12 +773,14 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                             tp = float(tp) if tp else None
                         except (TypeError, ValueError):
                             tp = None
-                        sl_tp_map[row["symbol"]] = {
-                            "stop_loss": sl,
-                            "take_profit": tp,
-                            "tsl_activated": bool(row["tsl_activated"]),
-                            "tsl_tf": row["tsl_tf"],
-                        }
+                        # Не перезаписываем если уже есть данные (первая запись = приоритет)
+                        if row["symbol"] not in sl_tp_map:
+                            sl_tp_map[row["symbol"]] = {
+                                "stop_loss": sl,
+                                "take_profit": tp,
+                                "tsl_activated": bool(row["tsl_activated"]),
+                                "tsl_tf": row["tsl_tf"],
+                            }
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
             for pos in result["positions"]:
