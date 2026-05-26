@@ -50,6 +50,41 @@ async def fetch_and_save_sl_order_id(bot, trade_id: int, symbol: str, pos_side: 
         logger.warning("[TSL-UPDATER] trade #%d %s: ручное создание SL failed: %s", trade_id, symbol, e)
 
 
+async def fetch_and_save_tp_order_id(bot, trade_id: int, symbol: str, pos_side: str) -> None:
+    """
+    После открытия bracket-ордера — получаем TP orderId с биржи и сохраняем в БД.
+    Retry 3 раза с паузой 2 сек: BingX иногда создаёт trigger-ордера за 3-5 сек.
+    Запускается через asyncio.create_task() если _br.tp_order_id is None.
+    """
+    for attempt in (1, 2, 3):
+        await asyncio.sleep(2)
+        try:
+            tp_order_id = await bot.order_executor.get_tp_order_id(symbol, pos_side)
+            if tp_order_id:
+                bot.trade_simulator.set_exchange_tp_order_id(trade_id, tp_order_id)
+                logger.info("[TSL-UPDATER] trade #%d %s %s → exchange_tp_order_id=%s (attempt %d)",
+                            trade_id, symbol, pos_side, tp_order_id, attempt)
+                return
+        except Exception as e:
+            logger.debug("[TSL-UPDATER] fetch_and_save_tp_order_id #%d attempt %d: %s", trade_id, attempt, e)
+    # TP orderId не найден — bracket не создал TP. Ставим отдельным ордером.
+    logger.warning("[TSL-UPDATER] trade #%d %s: TP orderId не найден → создаю TP-ордер вручную", trade_id, symbol)
+    try:
+        om = bot.order_executor
+        trade = next((t for t in bot.trade_simulator.get_open_trades() if t.get("id") == trade_id), None)
+        if trade:
+            tp_price = float(trade.get("take_profit") or 0)
+            real_qty = await om.get_position_qty(symbol, pos_side)
+            if tp_price > 0 and real_qty and real_qty > 0:
+                tp_oid = await om.place_tp_order(symbol, pos_side, tp_price, real_qty)
+                if tp_oid:
+                    bot.trade_simulator.set_exchange_tp_order_id(trade_id, tp_oid)
+                    logger.info("[TSL-UPDATER] trade #%d %s: TP-ордер создан вручную, order_id=%s", trade_id, symbol, tp_oid)
+                    return
+    except Exception as e:
+        logger.warning("[TSL-UPDATER] trade #%d %s: ручное создание TP failed: %s", trade_id, symbol, e)
+
+
 async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
     """
     Для каждой сделки из tsl_moved (TradeSimulator сообщил о движении TSL):

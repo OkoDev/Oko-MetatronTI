@@ -300,8 +300,10 @@ class TradeRouter:
             # TSL tracker — только для live (vst тоже подходит)
             if str(self.config.get("trading.execution_mode", "")) in ("vst", "live"):
                 try:
-                    from core.exchange.tsl_updater import fetch_and_save_sl_order_id
+                    from core.exchange.tsl_updater import fetch_and_save_sl_order_id, fetch_and_save_tp_order_id
                     asyncio.create_task(fetch_and_save_sl_order_id(
+                        self.bot, trade_id, ctx.symbol, ctx.direction))
+                    asyncio.create_task(fetch_and_save_tp_order_id(
                         self.bot, trade_id, ctx.symbol, ctx.direction))
                 except Exception as _tsl_e:
                     logger.debug("[TradeRouter] tsl_updater: %s", _tsl_e)

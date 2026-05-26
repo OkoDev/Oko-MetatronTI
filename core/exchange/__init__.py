@@ -15,12 +15,12 @@ from core.exchange.bingx_client import (
 )
 from core.exchange.order_manager import OrderManager
 from core.exchange.position_sync import sync_positions
-from core.exchange.tsl_updater import update_tsl_on_exchange, fetch_and_save_sl_order_id
+from core.exchange.tsl_updater import update_tsl_on_exchange, fetch_and_save_sl_order_id, fetch_and_save_tp_order_id
 
 __all__ = [
     "BingXClient", "BracketResult", "PartialCloseResult",
     "ExecutionMode", "MIN_NOTIONAL", "VST_BASE_URL", "LIVE_BASE_URL", "make_client",
     "OrderManager",
     "sync_positions",
-    "update_tsl_on_exchange", "fetch_and_save_sl_order_id",
+    "update_tsl_on_exchange", "fetch_and_save_sl_order_id", "fetch_and_save_tp_order_id",
 ]

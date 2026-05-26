@@ -1605,9 +1605,14 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                                 trade_id, _br.order_id, qty=_qty,
                                                 actual_entry_price=_br.entry_price,
                                             )
+                                            _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
                                             if _br.tp_order_id:
                                                 bot.trade_simulator.set_exchange_tp_order_id(trade_id, _br.tp_order_id)
-                                            _pos_side = "LONG" if _oe_dir == "LONG" else "SHORT"
+                                            else:
+                                                import asyncio as _asyncio
+                                                from core.exchange.tsl_updater import fetch_and_save_tp_order_id
+                                                _asyncio.create_task(fetch_and_save_tp_order_id(
+                                                    bot, trade_id, symbol, _pos_side))
                                             if _br.sl_order_id:
                                                 bot.trade_simulator.set_exchange_sl_order_id(trade_id, _br.sl_order_id)
                                             else:
