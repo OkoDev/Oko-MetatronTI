@@ -57,12 +57,6 @@ class WsFeed:
         self._running     = False
         self._tasks: List[asyncio.Task] = []
 
-        # D-066 Phase E: multi-instance OHLCV + dynamic add.
-        # {batch_idx: {"exchange": ccxt, "pairs": Set[str], "tasks": dict[symbol, Task]}}
-        self._ohlcv_batches: Dict[int, dict] = {}
-        self._ohlcv_batch_seq = 0   # счётчик idx для новых батчей
-        self._ohlcv_lock: Optional[asyncio.Lock] = None   # создаётся в start() (требует loop)
-
         # Счётчики
         self._ticker_updates = 0
         self._ohlcv_updates  = 0
@@ -97,8 +91,6 @@ class WsFeed:
         """Запускает WsFeed. Вызывать через asyncio.create_task."""
         self._running    = True
         self._started_at = time.time()
-        if self._ohlcv_lock is None:
-            self._ohlcv_lock = asyncio.Lock()
 
         # Фаза 1: ticker-батчи по _BATCH_SIZE пар — стартуем с задержкой 2 сек между батчами
         # чтобы не создавать spike соединений на BingX и не throttlить REST API скана
@@ -109,29 +101,19 @@ class WsFeed:
                 await asyncio.sleep(2.0)  # 2 сек между батчами
             ticker_tasks.append(asyncio.create_task(self._ticker_batch(batch, idx)))
 
-        # D-066 Phase E: multi-instance OHLCV — все priority_pairs распределяются
-        # по N батчам ≤ _OHLCV_BATCH_SIZE. Каждый batch = свой ccxt instance.
-        # 240 пар × 100 = 3 батча (3 WS connection). Dynamic add через
-        # update_priority_pairs → новые пары попадают в свободный слот или
-        # создаётся новый batch автоматически.
+        # D-073 (26.05): Phase A/B простая архитектура — 1 batch × все priority_pairs
+        # на одном ccxt.pro instance через asyncio.gather. Этот код работал на
+        # 24.05 = 2M updates / 2 errors за 4ч. STABLE rollback теперь честный.
         ohlcv_tasks = []
         if priority_pairs and self._ohlcv_cache is not None:
-            _ohlcv_pairs = list(priority_pairs)
-            ohlcv_batches = [
-                _ohlcv_pairs[i:i+_OHLCV_BATCH_SIZE]
-                for i in range(0, len(_ohlcv_pairs), _OHLCV_BATCH_SIZE)
-            ]
+            _ohlcv_pairs = list(priority_pairs)[:_OHLCV_BATCH_SIZE]   # cap at 120
             logger.info(
-                "[WsFeed][D-066 PhE] OHLCV multi-instance: %d пар → %d батча × ~%d",
-                len(_ohlcv_pairs), len(ohlcv_batches), _OHLCV_BATCH_SIZE,
+                "[WsFeed][D-066] OHLCV simple batch: %d пар на 1 instance",
+                len(_ohlcv_pairs),
             )
-            for idx, batch in enumerate(ohlcv_batches):
-                if idx > 0:
-                    await asyncio.sleep(2.0)  # spacing connections (как у tickers)
-                self._ohlcv_batch_seq = max(self._ohlcv_batch_seq, idx + 1)
-                ohlcv_tasks.append(asyncio.create_task(
-                    self._ohlcv_batch_loop(batch, batch_idx=idx)
-                ))
+            ohlcv_tasks.append(asyncio.create_task(
+                self._ohlcv_batch_loop(_ohlcv_pairs, batch_idx=0)
+            ))
 
         self._tasks = ticker_tasks + ohlcv_tasks
         logger.info("[WsFeed] Старт: %d пар → %d ticker батчей + %d OHLCV батчей",
@@ -158,70 +140,14 @@ class WsFeed:
         self._ws_prices = {}
         self._active_tickers = set()
         self._active_ohlcv = set()
-        self._ohlcv_batches = {}
-        self._ohlcv_batch_seq = 0
-        self._ohlcv_lock = None  # пересоздаётся в start()
 
     def update_priority_pairs(self, priority_pairs: List[str]) -> None:
-        """Фаза 2 (D-066 Phase E): dynamic add OHLCV-подписок при открытии сделки.
-
-        Стратегия:
-          - Для каждой новой пары: найти batch с len(pairs) < _OHLCV_BATCH_SIZE
-          - Если найден → добавить task в существующий instance
-          - Если все batches полные → создать новый batch_loop (новый WS connection)
+        """D-073 (26.05): после rollback к Phase A/B — SKIP dynamic add.
+        Batch фиксированно стартует при start(). Новые пары при открытии сделок
+        идут через REST (TTL fixes D-066 покрывают). Dynamic add вернётся вместе
+        с D-072 (data_service отдельный процесс).
         """
-        if self._ohlcv_cache is None or not self._running:
-            return
-        new_pairs = [s for s in priority_pairs if s not in self._active_ohlcv]
-        if not new_pairs:
-            return
-        # schedule async add (метод не async — вызывается из sync кода)
-        asyncio.create_task(self._add_pairs_async(new_pairs))
-
-    async def _add_pairs_async(self, new_pairs: List[str]) -> None:
-        """Добавление пар в существующие батчи или создание новых."""
-        async with self._ohlcv_lock:
-            added_to_existing = 0
-            overflow: List[str] = []
-            for sym in new_pairs:
-                if sym in self._active_ohlcv:
-                    continue
-                # Найти batch с местом
-                target_batch = None
-                for idx, info in self._ohlcv_batches.items():
-                    if len(info["pairs"]) < _OHLCV_BATCH_SIZE:
-                        target_batch = (idx, info)
-                        break
-                if target_batch is None:
-                    overflow.append(sym)
-                    continue
-                idx, info = target_batch
-                info["pairs"].add(sym)
-                info["tasks"][sym] = asyncio.create_task(
-                    self._watch_ohlcv_single(info["exchange"], sym)
-                )
-                added_to_existing += 1
-
-            if added_to_existing:
-                logger.info(
-                    "[WsFeed][D-066 PhE] dynamic add: %d пар → существующие батчи",
-                    added_to_existing,
-                )
-
-            # Overflow → создать новый batch
-            while overflow:
-                chunk = overflow[:_OHLCV_BATCH_SIZE]
-                overflow = overflow[_OHLCV_BATCH_SIZE:]
-                new_idx = self._ohlcv_batch_seq
-                self._ohlcv_batch_seq += 1
-                logger.info(
-                    "[WsFeed][D-066 PhE] dynamic NEW batch=%d создан для %d пар",
-                    new_idx, len(chunk),
-                )
-                task = asyncio.create_task(
-                    self._ohlcv_batch_loop(chunk, batch_idx=new_idx)
-                )
-                self._tasks.append(task)
+        return
 
     # ── Внутренние методы ─────────────────────────
 
@@ -307,74 +233,46 @@ class WsFeed:
         finally:
             self._active_tickers.discard(symbol)
 
-    async def _ohlcv_batch_loop(self, initial_pairs: List[str], batch_idx: int) -> None:
-        """D-066 Phase E: multi-instance OHLCV с dynamic add.
+    async def _ohlcv_batch_loop(self, batch_pairs: List[str], batch_idx: int) -> None:
+        """D-073 ROLLBACK к Phase A/B (26.05): простой asyncio.gather + bare reconnect.
 
-        Каждый batch держит свой ccxt instance + dict per-symbol tasks
-        (НЕ gather — чтобы можно было добавлять/убирать пары на лету).
-        Health-check loop: при массовых ошибках (>50% tasks dead) reconnect.
+        Phase E (per-symbol tasks + health-check 50%) создавала cascade reconnects
+        при BingX DEGRADED — рой 3/3 LLM рекомендовал откат. Архитектура копирует
+        _ticker_batch который работает на 100 парах/instance с 0 errors.
 
-        State хранится в self._ohlcv_batches[batch_idx]:
-            {"exchange": ex, "pairs": Set[str], "tasks": dict[symbol, Task]}
+        На любой exception в gather → cancel + close + reconnect (exponential delay).
         """
         if self._ohlcv_cache is None:
             return
-        consecutive_reconnects = 0
+        consecutive_errors = 0
         while self._running:
             exchange = self._make_exchange()
-            info = {
-                "exchange": exchange,
-                "pairs": set(initial_pairs),
-                "tasks": {},
-            }
-            self._ohlcv_batches[batch_idx] = info
             logger.info(
-                "[WsFeed][D-066 PhE] batch=%d START: %d пар на 1 instance",
-                batch_idx, len(initial_pairs),
+                "[WsFeed][D-066] batch=%d START: %d пар на 1 instance (Phase A/B simple)",
+                batch_idx, len(batch_pairs),
             )
-            # Создаём task на каждую пару
-            for sym in initial_pairs:
-                info["tasks"][sym] = asyncio.create_task(
-                    self._watch_ohlcv_single(exchange, sym)
-                )
-
             try:
-                # Health-check: периодически проверяем что tasks живы.
-                # При массовом fail (>50% мертвы) → reconnect всего instance.
-                while self._running:
-                    await asyncio.sleep(30.0)
-                    tasks = info["tasks"]
-                    if not tasks:
-                        continue
-                    dead = sum(1 for t in tasks.values() if t.done())
-                    if dead >= max(2, len(tasks) // 2):
-                        raise RuntimeError(
-                            f"batch={batch_idx} unhealthy: {dead}/{len(tasks)} tasks dead"
-                        )
-                consecutive_reconnects = 0
+                await asyncio.gather(
+                    *[self._watch_ohlcv_single(exchange, sym) for sym in batch_pairs],
+                    return_exceptions=True,
+                )
+                consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                consecutive_reconnects += 1
+                consecutive_errors += 1
                 self._errors += 1
-                delay = min(_RECONNECT_DELAY * consecutive_reconnects, 60.0)
+                delay = min(_RECONNECT_DELAY * consecutive_errors, 60.0)
                 logger.warning(
-                    "[WsFeed][D-066 PhE] batch=%d reconnect #%d: %s (%s) — через %.0fs",
-                    batch_idx, consecutive_reconnects, e, type(e).__name__, delay,
+                    "[WsFeed][D-066] batch=%d reconnect #%d: %s (%s) — через %.0fs",
+                    batch_idx, consecutive_errors, e, type(e).__name__, delay,
                 )
-                # initial_pairs для recreate = текущий snapshot pairs из info
-                initial_pairs = list(info["pairs"])
                 await asyncio.sleep(delay)
             finally:
-                # Cancel all per-symbol tasks
-                for t in list(info["tasks"].values()):
-                    if not t.done():
-                        t.cancel()
                 try:
                     await exchange.close()
                 except Exception:
                     pass
-                self._ohlcv_batches.pop(batch_idx, None)
 
     async def _watch_ohlcv_single(self, exchange, symbol: str) -> None:
         """Подписка watch_ohlcv для одного символа на shared exchange instance.
