@@ -14,6 +14,20 @@ _SCRIPTS = [
     ["tools/weekly_digest.py", "--quiet"],
     ["tools/obsidian_indexer.py", "--quiet"],
     ["tools/task_linker.py", "--quiet"],
+    # ARCH-OBS-01: sync TASKS.md statuses → obsidian/Tasks/ frontmatter
+    ["tools/obsidian_status_sync.py", "--quiet"],
+    # ARCH-OBS-02: vault health report → obsidian/Meta/HEALTH.md
+    ["tools/vault_health.py"],
+]
+
+# Weekly-only scripts (запускаются по воскресеньям)
+_WEEKLY_SCRIPTS = [
+    # ARCH-OBS-04: weekly digest через Gemini → obsidian/Index/WEEKLY-*.md
+    ["tools/obsidian_weekly_digest.py"],
+    # ARCH-OBS-05: dedup Team-Discussions → obsidian/Meta/DEDUP-REPORT.md
+    ["tools/obsidian_dedup_discussions.py"],
+    # ARCH-OBS-06: archive orphan files >90 days
+    ["tools/obsidian_archive.py", "--quiet"],
 ]
 
 
@@ -59,4 +73,12 @@ async def obsidian_daily_loop(_bot) -> None:
         logger.info("[obsidian] daily pipeline start")
         for script in _SCRIPTS:
             await _run_script(script)
+
+        # По воскресеньям — расширенный pipeline
+        if datetime.now(timezone.utc).weekday() == 6:
+            logger.info("[obsidian] weekly pipeline start (Sunday)")
+            for script in _WEEKLY_SCRIPTS:
+                await _run_script(script)
+            logger.info("[obsidian] weekly pipeline done")
+
         logger.info("[obsidian] daily pipeline done")
