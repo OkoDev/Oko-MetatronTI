@@ -108,7 +108,7 @@ def _get_tsl_tf(db_path: str, trade_id: int) -> Optional[str]:
 @pytest.fixture()
 def tmp_db(tmp_path):
     db_path = str(tmp_path / "test.db")
-    sim = TradeSimulator(db_path=db_path, max_duration_minutes=48 * 60)
+    sim = TradeSimulator(db_path=db_path)
     return sim, db_path
 
 
