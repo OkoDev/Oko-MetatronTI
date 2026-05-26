@@ -394,16 +394,22 @@ async def _try_register_vst_trade(
         tp_source=f"arch104:{getattr(pattern, 'tp_strategy', 'no_trail')}_r{fallback_tp_r}",
     )
 
-    # D-051 (2026-05-24): shadow logging для per-TF trigger gate.
-    # Проверяем wt_cross_<dir>_<det_tf> в active_flags. Log only, НЕ блокирует.
-    # Через 1-2 недели данных → SQL анализ WR/avgR per shadow_trigger_passed.
-    # Если passed-trades дают +R, failed -R → гипотеза подтверждена → enable runtime gate.
-    shadow_trigger_passed = None
-    shadow_trigger_flag = None
-    if bool(bot.config.get("arch104.shadow_trigger_check.enabled", False)) and active_flags is not None:
-        cross_dir = "up" if direction == "LONG" else "down"
-        shadow_trigger_flag = f"wt_cross_{cross_dir}_{det_tf}"
-        shadow_trigger_passed = shadow_trigger_flag in active_flags
+    # D-051 (26.05.2026): wt_cross HARD gate для паттернов БЕЗ wt_cross_*_1h в anchor.
+    # T8 паттерны уже содержат wt_cross_{dir}_1h в anchor_factors — им gate не нужен
+    # (D-051 retest 26.05 показал: без 1h cross якорь деградирует в шум WR=37%).
+    # Остальные паттерны требуют wt_cross_{dir}_{det_tf} как дополнительное подтверждение.
+    cross_dir = "up" if direction == "LONG" else "down"
+    wt_cross_1h = f"wt_cross_{cross_dir}_1h"
+    anchor_factors = list(getattr(pattern, "anchor_factors", []))
+    wt_cross_flag = None
+    if wt_cross_1h not in anchor_factors:
+        wt_cross_flag = f"wt_cross_{cross_dir}_{det_tf}"
+        if active_flags is None or wt_cross_flag not in active_flags:
+            logger.debug(
+                "[ARCH-104 VST] %s@%s %s pattern=%s SKIP: no %s (D-051 gate)",
+                symbol, det_tf, direction, decision.pattern_id, wt_cross_flag,
+            )
+            return
 
     extra = {
         "signal_type_override": "arch104",
@@ -416,9 +422,7 @@ async def _try_register_vst_trade(
         "arch104_tp_strategy": getattr(pattern, "tp_strategy", "no_trail"),
         "arch104_matched_patterns": list(getattr(decision, "matched_patterns", [])),
         "trade_mode": "arch104",   # dedup: разные режимы не блокируют
-        # D-051 shadow trigger check (log only)
-        "arch104_shadow_trigger_flag": shadow_trigger_flag,
-        "arch104_shadow_trigger_passed": shadow_trigger_passed,
+        "arch104_wt_cross_flag": wt_cross_flag,  # D-051: подтверждённый gate flag
     }
 
     # D-044 (2026-05-23): идём через trade_router (как atr_change/confluence/etc.)
