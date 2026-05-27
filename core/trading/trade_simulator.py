@@ -486,6 +486,15 @@ class TradeSimulator:
                 features["volatility"] = getattr(ctx, "volatility", None)
             if extra_features:
                 features.update(extra_features)
+            # ARCH-113 shadow: переносим tp_selector_shadow из recommendation.metadata
+            try:
+                _rec_meta = getattr(recommendation, "metadata", None) or {}
+                _tps_shadow = _rec_meta.get("tp_selector_shadow")
+                if _tps_shadow:
+                    for _k, _v in _tps_shadow.items():
+                        features[f"tp_selector_{_k}"] = _v
+            except Exception as _shadow_e:
+                logger.debug("[ARCH-113 shadow] write to features_json failed: %s", _shadow_e)
             # ML-CONTEXT: entry quality metrics (TF-agnostic)
             _entry_tf_val = _get_recommendation_value(recommendation, "timeframe")
             features["entry_tf"] = str(_entry_tf_val) if isinstance(_entry_tf_val, str) else DEFAULT_TIMEFRAME

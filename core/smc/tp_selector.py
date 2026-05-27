@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,6 +69,8 @@ class TPSelector:
         self.eps     = float(cfg.get("tp_selector_eps_pct",     self.EPS_PCT))
         self.alpha   = float(cfg.get("tp_selector_alpha",       self.ALPHA))
         self.max_dist= float(cfg.get("tp_selector_max_dist_pct",self.MAX_DIST))
+        # Shadow diagnostics — заполняется в select() для последующей записи в features_json
+        self.last_diagnostics: Dict[str, Any] = {}
 
     def select(
         self,
@@ -82,21 +85,37 @@ class TPSelector:
         tp1 = ближайший кластер dist <1R
         tp2 = максимальный score dist >1R (HTF, для пирамидинга)
         """
+        _t0 = time.monotonic()
+        self.last_diagnostics = {
+            "magnets_count": 0, "clusters_count": 0,
+            "tp1_found": False, "tp2_found": False,
+            "skip_reason": None, "elapsed_ms": 0,
+        }
         if not entry or entry <= 0 or sl_dist_pct <= 0:
+            self.last_diagnostics["skip_reason"] = "invalid_input"
+            self.last_diagnostics["elapsed_ms"] = round((time.monotonic() - _t0) * 1000, 1)
             return None, None
 
         try:
             magnets = self._collect_magnets(entry, direction, market_context)
         except Exception as e:
             logger.debug("[TPSelector] _collect_magnets failed: %s", e)
+            self.last_diagnostics["skip_reason"] = f"collect_error:{type(e).__name__}"
+            self.last_diagnostics["elapsed_ms"] = round((time.monotonic() - _t0) * 1000, 1)
             return None, None
 
+        self.last_diagnostics["magnets_count"] = len(magnets)
         if not magnets:
+            self.last_diagnostics["skip_reason"] = "no_magnets"
+            self.last_diagnostics["elapsed_ms"] = round((time.monotonic() - _t0) * 1000, 1)
             logger.debug("[TPSelector] нет магнитов для %s", getattr(market_context, "symbol", "?"))
             return None, None
 
         clusters = self._cluster(magnets, entry)
+        self.last_diagnostics["clusters_count"] = len(clusters)
         if not clusters:
+            self.last_diagnostics["skip_reason"] = "no_clusters"
+            self.last_diagnostics["elapsed_ms"] = round((time.monotonic() - _t0) * 1000, 1)
             return None, None
 
         # Считаем dist_R и score для каждого кластера
@@ -109,6 +128,10 @@ class TPSelector:
 
         tp1 = self._pick_tp1(clusters)
         tp2 = self._pick_tp2(clusters, tp1)
+
+        self.last_diagnostics["tp1_found"] = tp1 is not None
+        self.last_diagnostics["tp2_found"] = tp2 is not None
+        self.last_diagnostics["elapsed_ms"] = round((time.monotonic() - _t0) * 1000, 1)
 
         if tp1:
             logger.info("[ARCH-113] TP1=%.6g dist=%.2f%% (%.2fR) score=%.3f src=%s",

@@ -248,31 +248,73 @@ def calculate_levels(
     take_profit = tp1_price
     tp_source   = "atr_fallback"  # ARCH-58: явная метка, monitoring.py перезапишет на pivot_*
 
-    # ARCH-113: TPSelector — заменить ATR fallback на gravity-based магниты
-    # Вызывается только если sl_tp_engine.tp_selector_enabled: true в config
+    # ARCH-113: TPSelector — gravity-based магниты вместо ATR fallback
+    # enabled=true → применяем; shadow=true (без enabled) → только вычисляем + пишем в market_context
     tp2_candidate = None
     try:
         _tp_cfg = config.get("sl_tp_engine", {})
-        if _tp_cfg.get("tp_selector_enabled", False) and stop_loss is not None:
+        _tp_enabled = _tp_cfg.get("tp_selector_enabled", False)
+        _tp_shadow  = _tp_cfg.get("tp_selector_shadow", False)
+        if (_tp_enabled or _tp_shadow) and stop_loss is not None:
             from core.smc.tp_selector import TPSelector
             _sl_dist_pct = abs(entry_price - stop_loss) / entry_price * 100
-            _tp1_cand, _tp2_cand = TPSelector().select(
+            _tps = TPSelector(config=_tp_cfg)
+            _tp1_cand, _tp2_cand = _tps.select(
                 entry=entry_price,
                 direction="LONG" if is_long else "SHORT",
                 sl_dist_pct=_sl_dist_pct,
                 market_context=market_context,
                 config=_tp_cfg,
             )
+            # Shadow data — пишем в market_context для последующего сохранения в features_json
+            _shadow_data: dict = {
+                "mode": "production" if _tp_enabled else "shadow",
+                "actual_tp_source": tp_source,  # что использовали по факту до TPSelector
+                "actual_tp": take_profit,
+                "sl_dist_pct": round(_sl_dist_pct, 4),
+                **_tps.last_diagnostics,
+            }
             if _tp1_cand is not None:
-                take_profit = _tp1_cand.price
-                tp1_price   = _tp1_cand.price
-                tp_source   = _tp1_cand.label
-                logger.info("[ARCH-113] %s TP1=%s score=%.2f src=%s",
-                            market_context.symbol, take_profit, _tp1_cand.score, tp_source)
+                _shadow_data.update({
+                    "tp1_price": _tp1_cand.price,
+                    "tp1_dist_R": round(_tp1_cand.dist_R, 3),
+                    "tp1_score": round(_tp1_cand.score, 3),
+                    "tp1_label": _tp1_cand.label,
+                    "tp1_n_sources": len(_tp1_cand.sources),
+                })
             if _tp2_cand is not None:
-                tp2_candidate = _tp2_cand
-                logger.info("[ARCH-113] %s TP2=%s score=%.2f src=%s",
-                            market_context.symbol, _tp2_cand.price, _tp2_cand.score, _tp2_cand.label)
+                _shadow_data.update({
+                    "tp2_price": _tp2_cand.price,
+                    "tp2_dist_R": round(_tp2_cand.dist_R, 3),
+                    "tp2_score": round(_tp2_cand.score, 3),
+                    "tp2_label": _tp2_cand.label,
+                    "tp2_n_sources": len(_tp2_cand.sources),
+                })
+            try:
+                setattr(market_context, "tp_selector_shadow_data", _shadow_data)
+            except Exception:
+                pass
+            # Production: применяем
+            if _tp_enabled:
+                if _tp1_cand is not None:
+                    take_profit = _tp1_cand.price
+                    tp1_price   = _tp1_cand.price
+                    tp_source   = _tp1_cand.label
+                    logger.info("[ARCH-113] %s TP1=%s score=%.2f src=%s",
+                                market_context.symbol, take_profit, _tp1_cand.score, tp_source)
+                if _tp2_cand is not None:
+                    tp2_candidate = _tp2_cand
+                    logger.info("[ARCH-113] %s TP2=%s score=%.2f src=%s",
+                                market_context.symbol, _tp2_cand.price, _tp2_cand.score, _tp2_cand.label)
+            else:
+                # Shadow log: видим что бы выбрал, но НЕ применяем
+                logger.info("[ARCH-113][SHADOW] %s magnets=%d clusters=%d tp1=%s tp2=%s elapsed=%sms",
+                            market_context.symbol,
+                            _shadow_data.get("magnets_count", 0),
+                            _shadow_data.get("clusters_count", 0),
+                            _shadow_data.get("tp1_label", "—"),
+                            _shadow_data.get("tp2_label", "—"),
+                            _shadow_data.get("elapsed_ms", 0))
     except Exception as _e113:
         logger.debug("[ARCH-113] TPSelector failed, using fallback: %s", _e113)
 
@@ -335,6 +377,12 @@ def generate_recommendation(
         symbol, direction, market_context, signals, config
     )
 
+    # ARCH-113 shadow: переносим tp_selector_shadow_data из market_context в metadata
+    _meta: dict = {}
+    _tps_shadow = getattr(market_context, "tp_selector_shadow_data", None)
+    if _tps_shadow:
+        _meta["tp_selector_shadow"] = _tps_shadow
+
     return TradingRecommendation(
         symbol=symbol,
         action=action,
@@ -356,4 +404,5 @@ def generate_recommendation(
         tp2_source=tp2_candidate.label if tp2_candidate else "",
         reasoning=reasoning,
         timestamp=datetime.now(timezone.utc),  # DEV-49
+        metadata=_meta or None,
     )

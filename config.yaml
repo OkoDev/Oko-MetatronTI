@@ -263,7 +263,8 @@ trading:
   # ARCH-113: TPSelector — Intelligent TP Gravity Engine
   # Исследование: 156K уровней, alpha=1.5 доказан, FVG <0.3R = 73-86% reach
 sl_tp_engine:
-  tp_selector_enabled: false   # A/B флаг — включить когда tp_selector.py готов
+  tp_selector_enabled: false   # A/B флаг — включить когда shadow mode подтвердит выигрыш
+  tp_selector_shadow: true     # 27.05.2026: shadow mode — вычисляем TPSelector, пишем в features_json, НО не применяем
   tp_selector_eps_pct: 0.5     # ±% для кластеризации магнитов
   tp_selector_alpha: 1.5       # score = gravity / dist^alpha (оптимум из исследования)
   tp_selector_max_dist_pct: 15.0  # фильтр дальних уровней
