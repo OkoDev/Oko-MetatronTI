@@ -4,6 +4,37 @@
 
 ---
 
+## [27.05.2026 ~19:27 UTC] Агент: Developer — ARCH-104 расследование + D-051 observability (D-073 ✅)
+
+### ✅ Расследование (data-аудит за 7 дней с 2026-05-20)
+
+- **arch104: 88 сделок** (vs confluence 591, ×6.7 меньше), avgR=+0.45 — 4-е место по качеству среди массовых источников.
+- **31/215 паттернов задействовано (14%)**, 21 паттерн с n=1 (шум), только 3 паттерна с n>10.
+- **Главный душитель — D-051 wt_cross hard gate** (введён 26.05 коммит 3348afa): поток упал с 20/день до 1-3/день.
+- **T5_L_02 avgR=+6.41 — артефакт SWARMS+AIN pump-кластера** (4 сделки SWARMS подряд за 2.5ч по +15R). Без них: avgR=−0.71R на n=5. Это не паттерн работает.
+- **D2_L_L3_15m_03 — лидер шума:** n=17 avgR=−0.41 WR_TP=0%.
+- **RI v1 НЕ режет:** 828/829 apply=1 (99%). 90% потерь — между risk_decisions_log и register_trade (router gates / dedup / strength).
+- **D-051 was a blind spot:** silent `return` без логирования в БД.
+
+### ✅ Коммиты (3)
+- `f7356ac` — `bot/loops/arch104_observer_loop.py` +17 строк: `await record_drop(gate_name='arch104_d051_no_wt_cross', ...)` с pattern_id/det_tf/required_flag/anchor_factors/active_flags_count.
+- `05b2b5e` — TASKS.md: D-073 ✅, D-074/075/076 в плане.
+- `cc3d17e` — TASKS.md: D-073-FOLLOWUP action plan с дедлайном.
+
+### 🚀 Рестарт бота: 27.05.2026 ~19:27 UTC
+- D-073 patch активирован — за первые 2.5 часа (до ~21:48 UTC) накоплено **20 записей** `arch104_d051_no_wt_cross`.
+- За последние 30 мин — 4-й по объёму gate (выше только dedup/dedup_open/validate_inputs/strength_too_low).
+- **Per-pattern первый срез:** L2_wt_double_fvg=7, T2L_L_L2_15m_05=4, T2_L_10=4, T7_S_A3_15m_01=4, T2L_L_L3_15m_08=1.
+- **По TF:** 1h=11, 15m=9 (примерно 50/50 — TF-зависимый soft вариант D-074 потенциально оправдан).
+- **По направлению:** LONG=16, SHORT=4.
+
+### 🔄 Следующие задачи (D-073-FOLLOWUP в TASKS)
+- **Дедлайн 31.05.2026** (через 3 дня от рестарта 28.05) — прогнать SQL по `signal_drops` + per-pattern + per-TF breakdown → решить D-074 (soft / TF-зависимый / keep hard).
+- Если за это время на одной паре появится 3+ arch104 сделок за <6h — D-076 → 🔴 (single-position guard, защита от SWARMS-pyramid).
+- D-075 (disable D2_L_L3_15m_03) — пока ждём, n=17 на грани значимости.
+
+---
+
 ## [27.05.2026 ~11:00 UTC] Агент: Developer — Stability hotfixes + ARCH-113 + Signal Quality Shadow
 
 ### ✅ Сессия 26-27.05: 16 коммитов в 3 волны
