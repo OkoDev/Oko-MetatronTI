@@ -245,10 +245,24 @@ class BingXClient:
         async with aiohttp.ClientSession() as s:
             async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
                               timeout=aiohttp.ClientTimeout(total=30)) as r:
-                return await r.json()
+                resp = await r.json()
+        # 27.05.2026: timestamp drift retry — асимметрия с GET (там был, в POST нет → 2 wl_breach в SIM)
+        if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
+            logger.warning("[BingXClient] POST timestamp is invalid — ресинхронизация и retry")
+            await self.sync_time()
+            p["timestamp"] = self._ts()
+            qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
+            sig2 = self._sign(qs2)
+            url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url2, headers={"X-BX-APIKEY": self._api_key},
+                                  timeout=aiohttp.ClientTimeout(total=30)) as r:
+                    resp = await r.json()
+        return resp
 
     async def post_raw(self, path: str, raw_qs: str, url_qs: str) -> dict:
-        """POST с разделением: raw_qs для подписи HMAC, url_qs для URL (JSON URL-encoded)."""
+        """POST с разделением: raw_qs для подписи HMAC, url_qs для URL (JSON URL-encoded).
+        ВНИМАНИЕ: timestamp внутри raw_qs/url_qs — caller должен сам ресинкать при 109400."""
         import aiohttp
         sig = self._sign(raw_qs)
         url = f"{self._base}{path}?{url_qs}&signature={sig}"
@@ -267,7 +281,19 @@ class BingXClient:
         async with aiohttp.ClientSession() as s:
             async with s.delete(url, headers={"X-BX-APIKEY": self._api_key},
                                 timeout=aiohttp.ClientTimeout(total=30)) as r:
-                return await r.json()
+                resp = await r.json()
+        if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
+            logger.warning("[BingXClient] DELETE timestamp is invalid — ресинхронизация и retry")
+            await self.sync_time()
+            p["timestamp"] = self._ts()
+            qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
+            sig2 = self._sign(qs2)
+            url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
+            async with aiohttp.ClientSession() as s:
+                async with s.delete(url2, headers={"X-BX-APIKEY": self._api_key},
+                                    timeout=aiohttp.ClientTimeout(total=30)) as r:
+                    resp = await r.json()
+        return resp
 
     # ── Высокоуровневые методы ──────────────────────────────────────────────
 
