@@ -269,7 +269,11 @@ class TradeSimulator:
         except Exception as e:
             logger.warning("TradeSimulator: _backfill_data_era ошибка — %s", e)
 
-    def register_trade(self, recommendation: Any, regime: Optional[str] = None, extra_features: Optional[dict] = None) -> Optional[int]:
+    def register_trade(
+        self, recommendation: Any, regime: Optional[str] = None,
+        extra_features: Optional[dict] = None,
+        _reason_out: Optional[list] = None,
+    ) -> Optional[int]:
         """
         Сохраняет сделку в БД при выдаче рекомендации.
         Возвращает id записи или None при ошибке / пропуске.
@@ -281,11 +285,13 @@ class TradeSimulator:
                 entry = getattr(ctx, "current_price", None)
             if entry is None or entry <= 0:
                 logger.debug("TradeSimulator: пропуск регистрации — нет entry_price")
+                if _reason_out is not None: _reason_out.append("input:no_entry_price")
                 return None
 
             direction = _get_recommendation_value(recommendation, "direction")
             if _direction_str(direction) not in ("LONG", "SHORT"):
                 logger.debug("TradeSimulator: пропуск регистрации — направление NEUTRAL")
+                if _reason_out is not None: _reason_out.append("input:neutral_direction")
                 return None
 
             stop_loss  = _get_recommendation_value(recommendation, "stop_loss")
@@ -293,6 +299,7 @@ class TradeSimulator:
             tp1_price  = _get_recommendation_value(recommendation, "tp1_price")
             if stop_loss is None and take_profit is None:
                 logger.debug("TradeSimulator: пропуск регистрации — нет SL и TP")
+                if _reason_out is not None: _reason_out.append("input:no_sl_no_tp")
                 return None
 
             symbol = _get_recommendation_value(recommendation, "symbol") or ""
@@ -326,6 +333,7 @@ class TradeSimulator:
                                         "TradeSimulator: [dedup] пропуск %s %s — уже открыта #%d (%s, mode=%s)",
                                         _direction_str(direction), symbol, row[0], row[1], ex_mode,
                                     )
+                                    if _reason_out is not None: _reason_out.append(f"dedup:same_mode:{ex_mode}")
                                     return None
                             # Разные trade_mode → допускаем (SWING + SCALP)
                             logger.info(
@@ -338,6 +346,7 @@ class TradeSimulator:
                                 "TradeSimulator: [dedup] пропуск %s %s — уже открыта #%d (%s)",
                                 _direction_str(direction), symbol, existing_rows[0][0], existing_rows[0][1],
                             )
+                            if _reason_out is not None: _reason_out.append(f"dedup:no_mode:open_id={existing_rows[0][0]}")
                             return None
                 except Exception as _e:
                     logger.debug("TradeSimulator: [dedup] ошибка проверки — %s", _e)
@@ -358,6 +367,7 @@ class TradeSimulator:
                             "TradeSimulator: [corr_guard] пропуск %s %s — открыто %d/%d %s позиций",
                             _dir_str, symbol, _open_count, _max_per_dir, _dir_str,
                         )
+                        if _reason_out is not None: _reason_out.append(f"DEV-14:corr_guard:{_dir_str}:{_open_count}/{_max_per_dir}")
                         return None
             except Exception as _cg_e:
                 logger.debug("TradeSimulator: [corr_guard] ошибка — %s", _cg_e)
@@ -391,6 +401,7 @@ class TradeSimulator:
                             "TradeSimulator: [DEV-157/164] пропуск %s %s — SL слишком близко: %.4f%% < %.2f%% (entry=%.6f SL=%.6f)",
                             _direction_str(direction), symbol, _sl_dist_pct, MIN_SL_DIST_PCT, float(entry), float(stop_loss),
                         )
+                        if _reason_out is not None: _reason_out.append(f"DEV-157/164:sl_too_close:{_sl_dist_pct:.3f}%<{MIN_SL_DIST_PCT}%")
                         return None
 
             # RR-фильтр: требует и SL и TP
@@ -405,6 +416,7 @@ class TradeSimulator:
                             f"TradeSimulator: пропуск {_direction_str(direction)} {_get_recommendation_value(recommendation,'symbol')} "
                             f"— RR={actual_rr:.2f} < {MIN_RR} (SL={stop_loss:.4f}, TP={take_profit:.4f}, entry={entry:.4f})"
                         )
+                        if _reason_out is not None: _reason_out.append(f"rr_filter:rr={actual_rr:.2f}<{MIN_RR}")
                         return None
 
             signal_type = _signal_type_from_recommendation(recommendation)
@@ -749,6 +761,7 @@ class TradeSimulator:
             return trade_id
         except Exception as e:
             logger.exception(f"TradeSimulator: ошибка регистрации сделки — {e}")
+            if _reason_out is not None: _reason_out.append(f"exception:{type(e).__name__}:{str(e)[:80]}")
             return None
 
     async def register_trade_async(
@@ -1086,7 +1099,7 @@ class TradeSimulator:
         except Exception as _e_rb:
             logger.warning("[DEV-110] RANGE BOUNCE error: %s", _e_rb)
 
-        trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features)
+        trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out)
 
         # DUAL_TP: рассчитываем TP2 = следующий пивот после TP1 (30.03.2026)
         if trade_id and data_collector is not None:

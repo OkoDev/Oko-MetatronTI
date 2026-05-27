@@ -533,10 +533,10 @@ signal_router:
     # ── Per-signal_type sources через monitoring main path (Этап 1.Д) ─
     mtf_alert:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     mtf_bias:          {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    pivot_reversal:    {min_strength: 80, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→80 (avg=-0.22R, WR=29%)
-    wt_signal:         {min_strength: 80, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→80 (avg=-0.48R, WR=32%)
+    pivot_reversal:    {min_strength: 70, exchange_enabled: true,  trade_mode: ""}  # 27.05.2026: 80→70 (трафик упал, ищем компромисс)
+    wt_signal:         {min_strength: 70, exchange_enabled: true,  trade_mode: ""}  # 27.05.2026: 80→70 (трафик упал, ищем компромисс)
     wt_b_signal:       {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    confluence:        {min_strength: 80, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→80 (avg=-0.58R, WR=31%)
+    confluence:        {min_strength: 70, exchange_enabled: true,  trade_mode: ""}  # 27.05.2026: 80→70 (трафик упал, ищем компромисс)
     divergence:        {min_strength: 40, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→40 (avg=+0.74R, WR=52%, n=174)
     anomaly:           {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     trend_signal:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
