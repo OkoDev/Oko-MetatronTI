@@ -351,10 +351,14 @@ class TradeSimulator:
                 except Exception as _e:
                     logger.debug("TradeSimulator: [dedup] ошибка проверки — %s", _e)
 
-            # DEV-14: Correlation Guard — лимит открытых позиций по направлению
+            # DEV-14: Correlation Guard — лимит открытых позиций по направлению.
+            # 27.05.2026: hard guard деактивирован (default=0). Защита от концентрированной
+            # экспозиции теперь обеспечивается: circuit_breaker, RiskIntelligenceV1, ARCH-88
+            # Loss Memory, per-source min_strength, TSL+BE. Soft penalty в gates/correlation_guard.py
+            # остаётся (штрафует strength при превышении, но не блокирует).
             try:
                 from core.infra.config_loader import config as _cfg_cg
-                _max_per_dir = int(_cfg_cg.get("trading.max_positions_per_direction", 5))
+                _max_per_dir = int(_cfg_cg.get("trading.max_positions_per_direction", 0))
                 _dir_str = _direction_str(direction)
                 if _max_per_dir > 0 and _dir_str in ("LONG", "SHORT") and "__SELFTEST__" not in str(symbol):
                     with self._db_connect() as _c:
