@@ -206,25 +206,20 @@ class OrderManager:
     async def has_open_position(self, symbol: str, pos_side: Optional[str] = None) -> bool:
         """True если на бирже уже есть открытая позиция по символу (VST/LIVE).
 
-        Hedge mode (27.05.2026): pos_side='LONG'|'SHORT' — проверяет только это
-        направление. pos_side=None (legacy) — любое направление по символу,
-        НО это блокирует hedge-открытие противоположного направления!
-        Всегда передавай direction если открываешь в hedge mode.
+        Hedge-aware (через core.exchange.position_parser): pos_side='LONG'|'SHORT' —
+        только это направление; pos_side=None — любое направление по символу.
+        Всегда передавай direction если открываешь в hedge mode (см. open_bracket).
         """
         if not self.is_live():
             return False
         try:
-            bx_sym = symbol.replace("/", "-").replace(":USDT", "")
-            # D-061: positions через кеш (15s)
+            from core.exchange.position_parser import parse_positions
             positions = await self._get_positions_cached()
-            for p in positions:
-                if p.get("symbol") != bx_sym:
+            parsed = parse_positions(positions)
+            for pp in parsed:
+                if pp.symbol_our != symbol:
                     continue
-                if abs(float(p.get("positionAmt") or p.get("availableAmt") or 0)) <= 0:
-                    continue
-                if pos_side is None:
-                    return True
-                if (p.get("positionSide", "") or "").upper() == pos_side.upper():
+                if pos_side is None or pp.side == pos_side.upper():
                     return True
             return False
         except Exception as e:
@@ -548,17 +543,15 @@ class OrderManager:
             return None
 
     async def get_position_qty(self, symbol: str, pos_side: str) -> float:
-        """Возвращает qty открытой позиции с биржи."""
+        """Возвращает qty открытой позиции с биржи (hedge-aware через position_parser)."""
         if not self.is_live():
             return 0.0
         try:
-            bx_sym = symbol.replace("/", "-").replace(":USDT", "")
-            # D-061: positions через кеш (15s)
+            from core.exchange.position_parser import parse_positions
             positions = await self._get_positions_cached()
-            for p in positions:
-                if (p.get("symbol") == bx_sym
-                        and p.get("positionSide", "").upper() == pos_side.upper()):
-                    return float(p.get("positionAmt") or p.get("availableAmt") or 0)
+            for pp in parse_positions(positions):
+                if pp.symbol_our == symbol and pp.side == pos_side.upper():
+                    return pp.qty
         except Exception as e:
             logger.warning("[OrderManager] get_position_qty %s %s: %s", symbol, pos_side, e)
         return 0.0

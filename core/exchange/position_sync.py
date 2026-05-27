@@ -227,37 +227,34 @@ async def sync_positions(bot) -> None:
             )
             return
 
-        open_on_exchange: dict = {}   # sym_our → position_data
-        for p in positions:
-            sym_raw = p.get("symbol", "")   # "BTC-USDT"
-            qty = float(p.get("positionAmt") or p.get("availableAmt") or 0)
-            margin = float(p.get("margin") or p.get("initialMargin") or p.get("isolatedMargin") or 0)
-            # BingX fallback: if no margin field, estimate from qty × price
-            if margin == 0 and qty != 0:
-                avg_price = float(p.get("avgPrice") or p.get("entryPrice") or p.get("markPrice") or 0)
-                leverage = float(p.get("leverage") or 5)
-                margin = abs(qty) * avg_price / leverage if avg_price else 999  # assume valid if no price
-            if qty != 0 and abs(margin) >= 0.01:
-                sym_our = sym_raw.replace("-", "/") + ":USDT"
-                open_on_exchange[sym_our] = p
-            elif qty != 0 and abs(margin) < 0.01:
-                sym_our = sym_raw.replace("-", "/") + ":USDT"
+        # 27.05.2026: парсинг через core.exchange.position_parser (DRY + hedge-aware).
+        # До этого hedge-bug в dust-close: side = "BUY" if qty>0 else "SELL" — для SHORT
+        # positionAmt тоже >0 (hedge) → BUY на SHORT, биржа отвергала.
+        from core.exchange.position_parser import parse_positions, by_symbol_side
+        parsed_all = parse_positions(positions)
+        open_pairs: dict[tuple[str, str], object] = {}  # (sym_our, side) → ParsedPosition
+        for pp in parsed_all:
+            if pp.margin >= 0.01:
+                open_pairs[(pp.symbol_our, pp.side)] = pp
+            else:
                 logger.info(
-                    "[POSITION-SYNC] %s dust position (margin=%.6f qty=%.8f) — closing on exchange",
-                    sym_our, margin, qty,
+                    "[POSITION-SYNC] %s %s dust position (margin=%.6f qty=%.8f) — closing on exchange",
+                    pp.symbol_our, pp.side, pp.margin, pp.qty,
                 )
-                # Auto-close dust on exchange
                 try:
-                    side = "BUY" if qty > 0 else "SELL"  # positionAmt > 0 = LONG
-                    resp = await client.close_position_market(sym_our, side, abs(qty))
+                    close_side = "SELL" if pp.side == "LONG" else "BUY"
+                    resp = await client.close_position_market(pp.symbol_our, close_side, pp.qty)
                     if resp.get("code", 0) != 0:
-                        # Market order failed (qty too small) — try one-click close
-                        resp2 = await client.close_position_one_click(sym_our)
-                        logger.info("[POSITION-SYNC] %s dust one-click close: %s", sym_our, resp2.get("code"))
+                        resp2 = await client.close_position_one_click(pp.symbol_our)
+                        logger.info("[POSITION-SYNC] %s dust one-click close: %s", pp.symbol_our, resp2.get("code"))
                     else:
-                        logger.info("[POSITION-SYNC] %s dust closed on exchange OK", sym_our)
+                        logger.info("[POSITION-SYNC] %s dust closed on exchange OK", pp.symbol_our)
                 except Exception as _dust_err:
-                    logger.warning("[POSITION-SYNC] %s dust close failed: %s", sym_our, _dust_err)
+                    logger.warning("[POSITION-SYNC] %s dust close failed: %s", pp.symbol_our, _dust_err)
+        # Legacy совместимость для основного цикла + _detect_orphans (sym → raw position).
+        # ВНИМАНИЕ: ключ без direction — для hedge пар одна перезаписывает другую.
+        # Основной цикл ниже использует open_pairs (sym, dir) для hedge-aware lookup.
+        open_on_exchange: dict = {pp.symbol_our: pp.raw for pp in open_pairs.values()}
 
         # DEV-149: защита от API-сбоя — пропускаем синхронизацию только если
         # snapshot был пустой ДВА цикла подряд. Одиночное пустое значение может
@@ -299,9 +296,12 @@ async def sync_positions(bot) -> None:
 
             sym       = trade.get("symbol", "")
             trade_id  = trade.get("id")
-            direction = trade.get("direction", "LONG")
+            direction = (trade.get("direction") or "LONG").upper()
 
-            if sym in open_on_exchange:
+            # 27.05.2026 (hedge): lookup по (sym, direction). Раньше lookup был по sym
+            # без направления → если на бирже жил противоположный direction по той же паре,
+            # этот trade ошибочно считался "ещё открытым".
+            if (sym, direction) in open_pairs:
                 continue  # позиция ещё открыта — всё нормально
 
             # Позиции нет на бирже → закрылась (SL/TP/TSL/вручную)
@@ -430,16 +430,14 @@ async def sync_positions(bot) -> None:
 async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
     """D-070: находит позиции на бирже без OPEN записи в БД, шлёт Telegram alert.
 
-    Hedge mode: одна пара может быть и LONG, и SHORT одновременно — это две
-    независимые позиции с разным positionSide. Ключ orphan'а — (symbol, side),
-    direction берётся из positionSide (НЕ из знака positionAmt — в hedge он
-    всегда положительный).
+    Hedge-aware: каждая (symbol, side) пара — независимая позиция.
+    Парсинг через core.exchange.position_parser (один источник правды).
 
     Throttle: один алерт на (symbol, side) раз в 30 минут.
     """
+    from core.exchange.position_parser import parse_position
     if not open_on_exchange:
         return
-    # Множество (symbol, direction) с OPEN записью в БД
     tracked_pairs = {
         (t.get("symbol"), (t.get("direction") or "").upper())
         for t in open_sim if t.get("symbol")
@@ -454,35 +452,29 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
     THROTTLE_SEC = 1800   # 30 минут на (symbol, side)
 
     for sym, pos in open_on_exchange.items():
-        qty_raw = float(pos.get("positionAmt") or pos.get("availableAmt") or 0)
-        side = (pos.get("positionSide", "") or "").upper()
-        if side not in ("LONG", "SHORT"):
-            side = "LONG" if qty_raw > 0 else "SHORT"   # one-way mode fallback
+        pp = parse_position(pos)
+        if pp is None:
+            continue
 
-        if (sym, side) in tracked_pairs:
+        if (pp.symbol_our, pp.side) in tracked_pairs:
             continue   # есть OPEN запись — не orphan
 
-        key = f"{sym}:{side}"
+        key = f"{pp.symbol_our}:{pp.side}"
         last = state.get(key, 0)
         if (now - last) < THROTTLE_SEC:
             continue
         state[key] = now
 
-        mark = float(pos.get("markPrice") or 0)
-        leverage = int(pos.get("leverage") or 1)
-        margin = float(pos.get("margin") or pos.get("initialMargin") or 0)
-        pnl = float(pos.get("unrealizedProfit") or 0)
-        notional = abs(qty_raw) * mark if mark else 0
-
         text = (
             f"🚨 *D-070 ORPHAN POSITION*\n"
-            f"`{sym}` {side} (без OPEN в БД!)\n"
-            f"qty=`{qty_raw:.4f}`  mark=`{mark:.6f}`\n"
-            f"notional=`${notional:.2f}`  leverage=`{leverage}x`\n"
-            f"margin=`${margin:.2f}`  unrealPnL=`${pnl:+.2f}`\n"
+            f"`{pp.symbol_our}` {pp.side} (без OPEN в БД!)\n"
+            f"qty=`{pp.qty:.4f}`  mark=`{pp.mark:.6f}`\n"
+            f"notional=`${pp.notional:.2f}`  leverage=`{pp.leverage}x`\n"
+            f"margin=`${pp.margin:.2f}`  unrealPnL=`${pp.unrealized_pnl:+.2f}`\n"
             f"⚠️ Бот НЕ управляет позицией. Проверь BingX UI и закрой вручную либо разберись с рассинхроном."
         )
-        logger.error("[D-070] ORPHAN %s %s qty=%.4f mark=%.6f pnl=%.2f", sym, side, qty_raw, mark, pnl)
+        logger.error("[D-070] ORPHAN %s %s qty=%.4f mark=%.6f pnl=%.2f",
+                     pp.symbol_our, pp.side, pp.qty, pp.mark, pp.unrealized_pnl)
         try:
             from bot.monitoring import broadcast_with_subscription_check
             await broadcast_with_subscription_check(bot, text, "orphan_position")
