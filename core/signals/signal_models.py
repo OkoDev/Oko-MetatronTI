@@ -33,6 +33,24 @@ class SignalDirection(Enum):
     NEUTRAL = "NEUTRAL"
 
 
+def to_direction(value) -> str:
+    """Нормализация направления к "LONG"|"SHORT"|"NEUTRAL".
+
+    Принимает: SignalDirection enum, строки ("LONG"/"long"/"BUY"/"SELL"/...),
+    None, любые объекты с .value. Единственный источник правды — раньше
+    эта функция дублировалась как _direction_str в trade_simulator и trade_router.
+    """
+    if value is None:
+        return "NEUTRAL"
+    raw = getattr(value, "value", None) or str(value)
+    val = raw.upper()
+    if "LONG" in val or val == "BUY":
+        return "LONG"
+    if "SHORT" in val or val == "SELL":
+        return "SHORT"
+    return "NEUTRAL"
+
+
 class SignalStrength(Enum):
     VERY_HIGH = "VERY_HIGH"  # 80-100
     HIGH = "HIGH"            # 60-79

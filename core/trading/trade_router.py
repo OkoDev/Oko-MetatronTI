@@ -435,15 +435,9 @@ def _get(obj: Any, name: str, default=None):
 
 
 def _direction_str(direction: Any) -> str:
-    if direction is None:
-        return "NEUTRAL"
-    val = getattr(direction, "value", None) or str(direction)
-    val = val.upper()
-    if "LONG" in val or val in ("BUY",):
-        return "LONG"
-    if "SHORT" in val or val in ("SELL",):
-        return "SHORT"
-    return "NEUTRAL"
+    """Legacy wrapper над core.signals.signal_models.to_direction (DRY 27.05.2026)."""
+    from core.signals.signal_models import to_direction
+    return to_direction(direction)
 
 
 def _signal_type_from(rec: Any, extra: dict) -> str:

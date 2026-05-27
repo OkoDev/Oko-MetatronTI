@@ -31,9 +31,10 @@ def _get_recommendation_value(rec: Any, attr: str, default=None):
 
 
 def _direction_str(direction) -> str:
-    if hasattr(direction, "value"):
-        return str(direction.value)
-    return str(direction) if direction else "NEUTRAL"
+    """Legacy wrapper над core.signals.signal_models.to_direction (DRY 27.05.2026).
+    Сохранён для обратной совместимости — внешние модули могут импортировать."""
+    from core.signals.signal_models import to_direction
+    return to_direction(direction)
 
 
 def _signal_type_from_recommendation(rec: Any) -> str:
