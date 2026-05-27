@@ -358,8 +358,12 @@ class TradeSimulator:
                 _dir_str = _direction_str(direction)
                 if _max_per_dir > 0 and _dir_str in ("LONG", "SHORT") and "__SELFTEST__" not in str(symbol):
                     with self._db_connect() as _c:
+                        # 27.05.2026: исключаем adopted_orphan — это позиции, открытые НЕ ботом,
+                        # а захваченные через scripts/adopt_orphans.py. Считать их в лимит = терять трафик.
                         _open_count = _c.execute(
-                            "SELECT COUNT(*) FROM simulated_trades WHERE status=? AND direction=?",
+                            "SELECT COUNT(*) FROM simulated_trades "
+                            "WHERE status=? AND direction=? "
+                            "AND (strategy_name IS NULL OR strategy_name != 'adopted_orphan')",
                             (STATUS_OPEN, _dir_str),
                         ).fetchone()[0]
                     if _open_count >= _max_per_dir:

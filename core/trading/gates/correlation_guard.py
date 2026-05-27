@@ -24,9 +24,12 @@ class CorrelationGuardGate(Gate):
         if max_per_dir <= 0:
             return self._pass()
 
+        # 27.05.2026: исключаем adopted_orphan — позиции, захваченные через
+        # scripts/adopt_orphans.py, а не открытые ботом по сигналу.
         open_in_dir = sum(
             1 for t in ctx.open_trades
             if (t.get("direction") or "").upper() == ctx.direction
+            and (t.get("strategy_name") or "") != "adopted_orphan"
         )
 
         if open_in_dir >= max_per_dir:
