@@ -26,6 +26,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from core.observability.decision_trace import record_drop
+
 logger = logging.getLogger(__name__)
 
 # Scan период — 10 минут (D-029 2026-05-21: было 300s, повышено до 600s
@@ -408,6 +410,21 @@ async def _try_register_vst_trade(
             logger.debug(
                 "[ARCH-104 VST] %s@%s %s pattern=%s SKIP: no %s (D-051 gate)",
                 symbol, det_tf, direction, decision.pattern_id, wt_cross_flag,
+            )
+            await record_drop(
+                symbol=symbol,
+                gate_name="arch104_d051_no_wt_cross",
+                drop_reason=f"arch104/{direction}: missing {wt_cross_flag} for pattern={decision.pattern_id}",
+                signal_type="arch104",
+                direction=direction,
+                strength=int(strength),
+                features={
+                    "pattern_id": decision.pattern_id,
+                    "detection_tf": det_tf,
+                    "required_flag": wt_cross_flag,
+                    "anchor_factors": anchor_factors,
+                    "active_flags_count": len(active_flags) if active_flags else 0,
+                },
             )
             return
 
