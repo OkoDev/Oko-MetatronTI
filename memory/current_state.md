@@ -4,6 +4,68 @@
 
 ---
 
+## [27.05.2026 ~11:00 UTC] Агент: Developer — Stability hotfixes + ARCH-113 + Signal Quality Shadow
+
+### ✅ Сессия 26-27.05: 16 коммитов в 3 волны
+
+**Волна 1 — Stability hotfixes (26.05 вечер, 7 коммитов):**
+- `7d413a5` **D-073**: WsFeed rollback к Phase A/B (был cascade с 1006 timeouts/день, рой 5/5 рекомендовал)
+- `e664120` **D-074**: BingX thundering herd (asyncio.Lock в OrderManager.get_balance) + sync_time soft-fail
+- `58af9ab` **D-074**: dashboard safety — `/api/live` timeout 5s + `/v2/` disabled + JOIN через live_orders (фикс "——" зомби)
+- `f2c932d` `api_engine`: stale-on-error fallback при BingX DEGRADED
+- `2d48f67` **ARCH-113**: fix tp2_candidate в 2 early-exit return (6→7 unpack)
+- `731e7a4` `trade_simulator`: убран 48h EXPIRED таймаут (зомби позиции)
+- `575d749` `scan_loop`: EventLoop lag probe + TP order_id fetch fallback
+
+**Волна 2 — Подхватили чужие изменения и закоммитили (27.05 утро, 6 коммитов):**
+- `2e1aa00` **D-063/ARCH-18**: reuse pre-computed indicators в детекторах (confluence/divergence/trend)
+- `e3d3193` **D-061+D-070**: cached positions через OrderManager + orphan detector
+- `5832619` **D-066/D-071**: TTL cache = длина свечи + ccxt fetchMarketsThrottle
+- `b712e3e` **TP order_id fallback** в tsl_updater + monitoring + trade_router
+- `02b0823` **ARCH-OBS**: расширение obsidian daily/weekly pipeline (5 новых скриптов)
+- `d37947a` **D-067**: Dashboard Quick Wins (Critical Alerts + Collapsible + Drops card)
+
+**Между ними:** `07663bd` пользователь — DEV-222 arch104 исключён из blocked_regimes HIGH_VOL
+
+**Волна 3 — ARCH-113 Shadow + Signal Quality Shadow (27.05 ~10:00, 3 коммита):**
+- `49eafbc` **ARCH-113** TPSelector Shadow Mode + diagnostics — `tp_selector_shadow: true` в config, вычисляем но не применяем, пишем `tp_selector_*` поля в features_json
+- `e843315` `pivot_cache` грузится в shadow mode (был bug — только при `enabled=true`)
+- `eb3f0d0` **Signal Quality Shadow** — 4 правки роя (5/5 моделей): pivot real_touch+volume, wt confirmation aggregation, confluence divergence, timing-guard scan>250s. Все shadow в `features_json["shadow_*"]`.
+
+### 🔬 Источник правок: рой 5/5 LLM (27.05)
+`obsidian/Team-Discussions/2026-05-27-улучшить-триггеры-входа-3-убыточных-стратегий-дета.md`
+
+Корень убытков (post-15.04, n=8409 закрытых):
+- confluence -654R (n=1206, WR=39.6%, avgR=-0.543)
+- pivot_reversal -405R (n=1787, WR=15.4%, avgR=-0.226)
+- wt_signal -152R (n=323, WR=29.4%, avgR=-0.470)
+
+Прибыльный для сравнения: divergence +0.714R (n=176, WR=41.5%).
+
+### 📊 Что собирает shadow в features_json (после рестарта 27.05 утром)
+
+**ARCH-113 TPSelector shadow:**
+`tp_selector_mode/magnets_count/clusters_count/tp1_price/tp1_dist_R/tp1_score/tp1_label/tp1_n_sources/tp2_*` + `elapsed_ms`.
+
+**Signal Quality shadow:**
+- `shadow_pivot_real_touch` (wick через level + close возврат)
+- `shadow_pivot_volume_spike` (vol[-1] > avg[-20]×1.3)
+- `shadow_pivot_would_pass` (real_touch AND volume)
+- `shadow_wt_confirm_sources/count/would_pass` (≥1 из SMC/OTE/pivot/div)
+- `shadow_confluence_div_count/would_pass`
+- `shadow_scan_loop_late/duration_s` (>250s)
+
+### 🎯 Следующая задача (поставлена в TASKS.md)
+Через 24-48ч (50-100 закрытых сделок) — A/B анализ shadow данных, решение про production hard gate. См. **DEV-223** в TASKS.md.
+
+### ⚠️ Что НЕ закоммичено (правки пользователя в config.yaml)
+Пользователь параллельно правит config.yaml (D-055/D-056 пороги, DEV-222 exception). Не трогаю — это его решения.
+
+### 🔴 НЕ закоммичено мной (не моё):
+В рабочей копии остались некоторые правки других сессий (если есть). `git status` покажет.
+
+---
+
 ## [27.05.2026 ~02:30 UTC] Агент: Developer — DRY-рефакторинг helper-модулей + 53 unit-теста
 
 ### ✅ Создано 6 helper-модулей (single source of truth)
