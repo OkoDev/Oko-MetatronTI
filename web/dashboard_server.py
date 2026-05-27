@@ -245,33 +245,36 @@ async def _stats_compute_and_cache(request: web.Request) -> web.Response:
             cur = _current_price_from_cache(dc, t["symbol"]) if dc else None
             t["current_price"] = cur
             ep = t.get("entry_price") or 0
-            # 27.05.2026: для 1R reference используем original_sl (исходный риск трейда),
-            # fallback на stop_loss если NULL. До фикса использовался текущий stop_loss,
-            # который TSL подтягивает к entry → sl_dist≈0 → R=+8000 артефакт (#15101 SWARMS).
-            osl = t.get("original_sl") or 0
-            sl  = t.get("stop_loss") or 0
-            r_ref = osl if osl else sl
+            osl = t.get("original_sl") or None
+            sl  = t.get("stop_loss") or None
             direction = t.get("direction", "LONG")
-            sl_dist = abs(ep - r_ref) if ep and r_ref else 0
-            if cur is not None and ep and sl_dist:
+            # 27.05.2026 (r_math refactor): все вычисления R через core.trading.r_math.
+            # 1R = |entry - original_sl| (исходный риск); если NULL → fallback на текущий
+            # stop_loss. Sanity clamp [-15,+15] защищает от sl_dist≈0 артефактов
+            # (#15101 SWARMS показал +8103R через текущий stop_loss).
+            from core.trading.r_math import compute_one_r, compute_r, clamp_r
+            one_r, _r_src = compute_one_r(ep, osl, fallback_sl=sl)
+            if cur is not None and ep:
                 if direction == "LONG":
                     pnl_pct = (cur - ep) / ep * 100
                 else:
                     pnl_pct = (ep - cur) / ep * 100
                 t["unrealized_pct"] = round(pnl_pct, 2)
-                t["unrealized_r"] = round(pnl_pct / (sl_dist / ep * 100), 2) if sl_dist else None
+                _r = compute_r(direction, ep, cur, one_r) if one_r else None
+                _r = clamp_r(_r)
+                t["unrealized_r"] = round(_r, 2) if _r is not None else None
             else:
                 t["unrealized_pct"] = None
                 t["unrealized_r"] = None
             # MFE: max R достигнутый за время жизни сделки. Тоже от original_sl.
             max_r = t.get("max_R_possible")
-            if max_r is None and ep and sl_dist:
+            if max_r is None and ep and one_r:
                 max_p = t.get("max_price")
                 min_p = t.get("min_price")
-                if direction == "LONG" and max_p:
-                    max_r = round((float(max_p) - ep) / sl_dist, 2)
-                elif direction == "SHORT" and min_p:
-                    max_r = round((ep - float(min_p)) / sl_dist, 2)
+                _peak = float(max_p) if direction == "LONG" and max_p else (
+                        float(min_p) if direction == "SHORT" and min_p else None)
+                if _peak is not None:
+                    max_r = clamp_r(compute_r(direction, ep, _peak, one_r))
             t["mfe_r"] = round(max_r, 2) if max_r is not None else None
             # Cascade level из features_json
             try:

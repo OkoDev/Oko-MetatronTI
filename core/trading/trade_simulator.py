@@ -1294,18 +1294,14 @@ class TradeSimulator:
                 min_price_db = float(min_price_db) if min_price_db is not None else None
                 dir_up = str(direction).upper()
 
-                # R-multiple: 1R = |entry - original_sl| (оригинальный SL, не TSL'нутый)
-                # original_sl заполняется при регистрации и не меняется — честный риск.
-                # Fallback: sl (текущий) если original_sl отсутствует (старые сделки).
-                _sl_for_r = float(original_sl_db) if original_sl_db is not None else sl
-                one_r = None
+                # R-multiple: вся математика через core.trading.r_math (27.05.2026).
+                # 1R = |entry - original_sl| (исходный риск), fallback на текущий sl.
+                from core.trading.r_math import compute_one_r, compute_r, clamp_r
+                one_r, _r_src = compute_one_r(entry, original_sl_db, fallback_sl=sl)
                 r_multiple = None
-                if _sl_for_r is not None and _sl_for_r != entry:
-                    one_r = abs(entry - _sl_for_r)
 
                 # profit_pct и R с учётом частичного TP1 (tp1_fix_pct% позиции)
                 if tp1_hit_at_db and tp1_price_db and one_r:
-                    # Читаем tp1_fix_pct из конфига (default 70%)
                     _tp1_fix = 0.7
                     try:
                         from core.infra.config_loader import config as _cfg_fix
@@ -1315,16 +1311,14 @@ class TradeSimulator:
                     except Exception:
                         pass
                     _tp2_fix = 1.0 - _tp1_fix
+                    r_tp1  = compute_r(dir_up, entry, tp1_price_db, one_r) or 0.0
+                    r_exit = compute_r(dir_up, entry, exit_price,    one_r) or 0.0
                     if dir_up == "LONG":
-                        r_tp1  = (tp1_price_db - entry) / one_r
-                        r_exit = (exit_price - entry) / one_r
                         pct_tp1  = (tp1_price_db - entry) / entry * 100.0
-                        pct_exit = (exit_price - entry) / entry * 100.0
+                        pct_exit = (exit_price    - entry) / entry * 100.0
                     else:
-                        r_tp1  = (entry - tp1_price_db) / one_r
-                        r_exit = (entry - exit_price) / one_r
                         pct_tp1  = (entry - tp1_price_db) / entry * 100.0
-                        pct_exit = (entry - exit_price) / entry * 100.0
+                        pct_exit = (entry - exit_price)    / entry * 100.0
                     r_multiple = round(_tp1_fix * r_tp1 + _tp2_fix * r_exit, 3)
                     profit_pct = round(_tp1_fix * pct_tp1 + _tp2_fix * pct_exit, 4)
                 else:
@@ -1334,29 +1328,28 @@ class TradeSimulator:
                     else:
                         profit_pct = (entry - exit_price) / entry * 100.0
                     if one_r:
-                        if dir_up == "LONG":
-                            r_multiple = (exit_price - entry) / one_r
-                        else:
-                            r_multiple = (entry - exit_price) / one_r
+                        r_multiple = compute_r(dir_up, entry, exit_price, one_r)
 
-                # Sanity clamp: ограничиваем R в [-15, +15] (ASR R=-450 = sl_dist≈0 баг)
+                # Sanity clamp: ограничиваем R в [-15, +15] (ASR R=-450 = sl_dist≈0 баг).
+                # Логируем когда clamp реально срабатывает — отличается от исходного.
                 if r_multiple is not None:
-                    if r_multiple < -15.0 or r_multiple > 15.0:
+                    _clamped = clamp_r(r_multiple)
+                    if _clamped != r_multiple:
                         logger.warning(
-                            "R_multiple clamp: id=%s %s R=%.2f → clamp (sl_dist слишком мал)",
-                            trade_id, dir_up, r_multiple,
+                            "R_multiple clamp: id=%s %s R=%.2f → %.2f (sl_dist слишком мал, src=%s)",
+                            trade_id, dir_up, r_multiple, _clamped, _r_src,
                         )
-                        r_multiple = round(max(-15.0, min(15.0, r_multiple)), 3)
+                    r_multiple = round(_clamped, 3)
 
                 # MFE: максимально достижимый R и % захваченного потенциала
-                # one_r уже от original_sl → корректный масштаб
+                # one_r от original_sl → корректный масштаб
                 max_R_possible = None
                 captured_R_pct = None
                 if one_r and one_r > 0:
-                    if str(direction).upper() == "LONG" and max_price_db:
-                        max_R_possible = round((max_price_db - entry) / one_r, 3)
-                    elif str(direction).upper() == "SHORT" and min_price_db:
-                        max_R_possible = round((entry - min_price_db) / one_r, 3)
+                    _peak = max_price_db if dir_up == "LONG" else min_price_db
+                    if _peak:
+                        _mfe = compute_r(dir_up, entry, _peak, one_r)
+                        max_R_possible = round(clamp_r(_mfe), 3) if _mfe is not None else None
                     if max_R_possible and max_R_possible > 0 and r_multiple is not None:
                         captured_R_pct = round((r_multiple / max_R_possible) * 100.0, 1)
 
