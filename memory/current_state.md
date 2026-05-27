@@ -56,7 +56,9 @@
 - `shadow_scan_loop_late/duration_s` (>250s)
 
 ### 🎯 Следующая задача (поставлена в TASKS.md)
-Через 24-48ч (50-100 закрытых сделок) — A/B анализ shadow данных, решение про production hard gate. См. **DEV-223** в TASKS.md.
+Через 24-48ч (50-100 закрытых сделок) — A/B анализ shadow данных, решение про production hard gate. См. **DEV-224** в TASKS.md.
+
+**NB:** Параллельно (27.05 ~19:00 UTC) пользователь уже перевёл **pivot_reversal SHORT real_touch** в production HARD через DEV-188 (commit 2e7abc8): wick должен достичь `level*0.999`, volume_z<0.8 → +10 penalty. То есть shadow для pivot_reversal SHORT уже отыграл — остался LONG + другие стратегии.
 
 ### ⚠️ Что НЕ закоммичено (правки пользователя в config.yaml)
 Пользователь параллельно правит config.yaml (D-055/D-056 пороги, DEV-222 exception). Не трогаю — это его решения.
