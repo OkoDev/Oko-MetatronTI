@@ -4,6 +4,175 @@
 
 ---
 
+## [27.05.2026 ~02:30 UTC] Агент: Developer — DRY-рефакторинг helper-модулей + 53 unit-теста
+
+### ✅ Создано 6 helper-модулей (single source of truth)
+1. **`core/trading/r_math.py`** (`91c8622`) — compute_one_r/compute_r/clamp_r/compute_unrealized_r.
+   1R всегда = `|entry - original_sl|`, fallback на текущий sl, sanity clamp [-15,+15].
+   До этого расчёт R дублировался в trade_simulator/dashboard/position_sync.
+2. **`core/exchange/position_parser.py`** (`666cec4`) — parse_position/parse_positions/by_symbol_side.
+   Hedge-aware: direction всегда из `positionSide`, не из знака qty.
+   Закрыт класс багов (трижды фиксили: order_manager/position_sync/adopt_orphans).
+3. **`bingx_client.to_bingx_symbol / from_bingx_symbol`** (`7986d6d`) — заменено 11+9 inline `.replace(...)`.
+4. **`core/infra/trading_settings.py`** (`90db4eb`) — get_deposit/risk_pct/leverage/is_live + TradingSettings dataclass.
+   Единые defaults (1000/1.0/5/sim_only); LIVE_MODES=(vst,live).
+5. **`signal_models.to_direction()`** (`92c5854`) — норм direction (LONG/SHORT/NEUTRAL) с поддержкой BUY/SELL/enum/None.
+   До этого `_direction_str` дублировался в trade_simulator и trade_router с разной логикой.
+6. **`core/infra/time_utils.py`** (`cb1c0e1`) — utc_now/utc_iso/parse_iso_utc/ensure_utc.
+   Helper для будущего кода; massive replace 29+ мест не делал — слишком инвазивно.
+
+### ✅ Сопутствующие баг-фиксы по пути
+- **`position_sync` основной цикл** (`666cec4`): lookup по `(sym, direction)` вместо просто `sym` — раньше для hedge противоположный direction мешал.
+- **`position_sync` dust-close** (`666cec4`): `side="BUY"/"SELL"` из `positionSide` (был hedge bug: BUY на SHORT).
+- **`_detect_orphans`**: hedge-aware (теперь positionSide вместо знака qty).
+- **`bingx_client` POST/DELETE timestamp retry** (`e1bc283`): асимметрия с GET — POST не имел retry на `code=109400 timestamp invalid` → wl_breach попадали в SIM. Добавлен симметричный retry.
+- **TP overshoot warning** (`69b1c37`): `position_sync` логирует если status=TP и R > tp_rr+1 (VST artefact как #15191 FHE R=+15).
+
+### ✅ Тесты (`0f19503`): 53 unit-теста для всех helper'ов
+- `test_r_math.py` — 18 (compute_one_r/r/clamp + SWARMS artefact scenario)
+- `test_position_parser.py` — 11 (LONG/SHORT hedge mode, one-way fallback, margin estimate)
+- `test_dry_helpers.py` — 24 (symbol round-trip, TradingSettings, to_direction, time_utils)
+- Запуск: `pytest tests/unit/test_r_math.py tests/unit/test_position_parser.py tests/unit/test_dry_helpers.py`
+
+### 📊 Эффект сессии
+- **+15R за 27.05** на P&L календаре (vs -0.94 .. +0.95 за предыдущие дни)
+- 7 регистраций за 30 минут после рестарта, **5/7 на бирже** (раньше 2/11)
+- 0 `register_returned_none` за 30 мин (раньше 105 за 6ч)
+- 25 OPEN+exch=биржа sync восстановлен
+
+### ⚠️ Что не доделано (необязательное)
+- `time_utils` helpers есть, но 29+ мест ещё используют raw `datetime.now(timezone.utc)`. Будущий код должен использовать helpers.
+- `position_sync.open_on_exchange` legacy dict передаётся в `_detect_orphans` — можно заменить на `open_pairs (sym, side)` для полной hedge-чистоты.
+
+---
+
+## [27.05.2026 ~01:30 UTC] Агент: Developer — adopt_orphans + hedge mode bugfix + EXPIRED root cause
+
+### ✅ Сделано (две итерации)
+1. **Скрипт `scripts/adopt_orphans.py`**: adopt orphan-позиций в БД с правильным direction
+   - **Hedge mode**: BingX возвращает `positionAmt` как абсолютное значение, direction берётся из поля `positionSide`. Первая версия скрипта (`direction = LONG if qty>0 else SHORT`) была НЕВЕРНА → создала 10 записей с противоположным direction. Откачено `DELETE WHERE id BETWEEN 15149 AND 15158`
+   - **Ключ orphan** = `(symbol, side)` а не `symbol` (одна пара может быть и LONG и SHORT одновременно в hedge)
+   - **Финальный adopt**: trade_ids 15159-15168 — BANK SHORT, BARD SHORT, BROCCOLI SHORT, COW SHORT, FF LONG, PI SHORT, SOLV SHORT, THE SHORT, TOSHI SHORT, WET SHORT
+   - У ВСЕХ 10 уже был SL на бирже (просто `get_sl_order_id` искал не для того direction в diagnostic-фазе)
+   - **Sync восстановлен**: OPEN+exch = 23 = биржа
+
+2. **EXPIRED ложное закрытие — root cause фикс** в [tsl_updater.py:148-163](core/exchange/tsl_updater.py#L148-L163):
+   - Было: `if not real_qty: ts.close_trade(trade_id, "EXPIRED", ...)`
+   - Проблема: `get_position_qty` использует `_get_positions_cached` (TTL 15s). Пустой snapshot от BingX (rate-limit/glitch) попадал в кеш на 15с → все OPEN с tsl_moved за эти 15с массово закрывались EXPIRED, позиции на бирже жили дальше → orphan
+   - Фикс: убран `close_trade(EXPIRED)`, остался warning + continue. `position_sync` сам разберётся через `_resolve_exit + filled_orders` + DEV-149 (2-snapshot guard)
+   - Это второй EXPIRED-источник (первый = 48h timeout в trade_simulator, убран commit `0000341`)
+
+### ⚠️ Известный косметический баг
+- `_detect_orphans` в [position_sync.py:461](core/exchange/position_sync.py#L461): `side = "LONG" if qty > 0 else "SHORT"` — тот же hedge-mode баг, что был в adopt-скрипте. D-070 TG-алерты показывали все позиции как LONG, реально 9 из них SHORT. Текстовая косметика, но желательно пофиксить через `positionSide`
+
+### 🔥 Root cause найден и пофикшен
+- `tsl_updater.update_tsl_on_exchange:148-163` закрывал OPEN сделки как EXPIRED при `get_position_qty=0`
+- `get_position_qty` использует `_get_positions_cached` (TTL 15s) — пустой snapshot от BingX (rate-limit/glitch) попадал в кеш на 15с
+- Все OPEN с tsl_moved за эти 15с массово получали `close_trade(EXPIRED)`, а позиции на бирже жили дальше → orphan
+- **Фикс**: убран `close_trade(EXPIRED)`, остался только warning + continue. `position_sync` сам разберётся через `_resolve_exit + filled_orders` (надёжнее) + DEV-149 (2-snapshot guard)
+- Пользователь подтвердил: "это EXPIRED и именно поэтому я его убрал вообще" (имел в виду commit 0000341 — 48h timeout в trade_simulator). Это второй EXPIRED-источник
+
+---
+
+## [26.05.2026 ~17:30 UTC] Агент: Developer — D-051 wt_cross HARD gate + soft_gates отключены
+
+### ✅ Сделано
+- **Бэктест подтверждён**: wt_cross_up (LONG) / wt_cross_down (SHORT) дают +183% avg_R на 15m, +78% на 1h
+- **D-051 реализован как hard gate** в `bot/loops/arch104_observer_loop.py:397-407`
+  - Без `wt_cross_{dir}_{det_tf}` в active_flags → trade не регистрируется
+  - Shadow logging убран (гипотеза доказана)
+- **Soft gates отключены для arch104** в `config.yaml:546`
+  - `soft_gates_enabled: []` — arch104 имеет RI v1 + lifecycle check внутри
+- **config.yaml:585**: `shadow_trigger_check.enabled: false` (устарело)
+
+### 🔄 Следующие задачи
+
+---
+
+## [26.05.2026 ~14:00 UTC] Агент: Developer — SL/TP orderId crisis fix + root cause
+
+### ✅ Сделано (сессия: live positions без SL/TP)
+
+**Проблема**: 53 из 53 OPEN позиций в live_orders имели NULL sl_order_id. BingX API 3062ms при старте — bracket response приходил с пустыми orderId.
+
+**Результат** (все 53 исправлены):
+- **36 позиций**: get_sl_order_id()/get_tp_order_id() нашли orderId на бирже → записаны в БД
+- **16 призраков** (qty=0 на бирже): status='CLOSED' в live_orders (ids: 4248,4257,4264,4516,4519,4523,4573,4615,4617,4627,4639,4667,4679,4683,4685,4689)
+- **2 позиции** (SPK id=4270, BANK id=4350): SL выставлен вручную через place_sl_order → orderId записан
+
+**Root cause fix** (предотвращение повторения):
+- Добавлена `fetch_and_save_tp_order_id()` в `core/exchange/tsl_updater.py` (аналог SL: 3 retry + ручное place_tp_order)
+- Добавлены вызовы в `bot/loops/scan_loop.py` (2 места: WL breach + sideways), `bot/monitoring.py`, `core/trading/trade_router.py`
+- Обновлён `core/exchange/__init__.py` — экспорт новой функции
+
+**Скрипты** (в e:\tmp\): `diag_live_orders.py`, `check_exchange_orders.py`, `fix_sl_tp_orders.py`, `check_positions_alive.py`, `close_ghost_positions.py`, `fix_remaining_sl.py`
+
+### 🔄 Следующие задачи
+1. **D-047** 🔴 — Integrate wt_cross_*_1h gate (walkforward avgR=+1.55 WR=85%)
+2. **ARCH-113 Phase 2** — SLSelector: OB edge + CHoCH/BOS confirmation
+3. **D-054** 🟡 — API throttling minor pairs
+4. Наблюдение: накопить 200+ новых сделок post-26.05 → SQL анализ эффекта фильтров
+5. **BingX 3062ms latency** — исследовать причину медленного старта API
+
+---
+
+## [26.05.2026 ~11:00 UTC] Агент: Developer — Signal filter + BE engine (D-055, D-056, D-057)
+
+### ✅ Сделано (сессия: сигнальная фильтрация + усиление прибыльных)
+
+**Все изменения только в `config.yaml`, код не менялся. Бот перезапущен — 242 пары в мониторинге.**
+
+**D-055 — Noise mute (source_policies min_strength 50→80):**
+- `pivot_reversal`: 50→80 (avg=-0.22R, WR=29%, n=1781)
+- `wt_signal`: 50→80 (avg=-0.48R, WR=32%, n=321)
+- `confluence`: 50→80 (avg=-0.58R, WR=31%, n=1147)
+
+**D-056 — BE engine активирован:**
+- `use_breakeven: true` (было false, код DEV-40 уже был готов)
+- `breakeven_activation_r: 0.5` (добавлено явно)
+- Порядок: BE при +0.5R → SL в entry; TSL при +1.0R → трейлинг (current_r от original_sl, не ломается)
+
+**D-057 — Усиление прибыльных (source_policies min_strength 50→40):**
+- `divergence`: 50→40 (avg=+0.74R, WR=52%, n=174)
+- `arch104`: 50→40 (avg=+0.60R, WR=40%, n=77)
+- `min_strength_register`: 60→50 (bonus: liquidity_sweep base_strength=55 теперь полностью проходит)
+- `liquidity_sweep` отдельной секции в source_policies нет — идёт прямым каналом через all_scan_signals
+
+**Данные A/B теста (основа решений):** 8163 сделок post-15.04.2026
+
+### 🔄 Следующие задачи
+1. **D-047** 🔴 — Integrate wt_cross_*_1h gate (walkforward avgR=+1.55 WR=85%)
+2. **ARCH-113 Phase 2** — SLSelector: OB edge + CHoCH/BOS confirmation
+3. **D-054** 🟡 — API throttling minor pairs
+4. Наблюдение: накопить 200+ новых сделок post-26.05 → SQL анализ эффекта фильтров
+
+---
+
+## [26.05.2026 ~00:00 UTC] Агент: Developer — ARCH-113 Phase 1 РЕАЛИЗОВАН И ЗАКОММИЧЕН
+
+### ✅ Сделано (сессия ARCH-113 Phase 1 Implementation)
+
+**Коммит: `01d4e4d` feat(ARCH-113): TPSelector — Intelligent TP Gravity Engine (Phase 1)**
+
+- `core/smc/tp_selector.py` **СОЗДАН** (301 строка): TPSelector класс с gravity scoring, кластеризацией ±0.5%, _WEIGHTS FVG/PDH/PWH/psycho
+- `core/intelligence/recommendation_generator.py`: `calculate_levels()` возвращает 7 значений (+ tp2_candidate), интеграция TPSelector
+- `core/signals/signal_models.py`: TradingRecommendation.tp2_price + tp2_source
+- `core/trading_intelligence.py`: pivot_cache загружается при `tp_selector_enabled` (не только RANGE)
+- `config.yaml`: новая секция `sl_tp_engine` с A/B флагом `tp_selector_enabled: false`
+
+**Тесты пройдены:**
+- import OK, smoke test OK (7-значный return, backward compat)
+- TPSelector: TP1=68120 (pdh+psycho@68120, 0.93R), TP2=69971 (psycho+pwh+std_r2@69971, 2.46R) ✓
+
+**Включить в проде:** `config.yaml → sl_tp_engine.tp_selector_enabled: true`
+
+**Следующие шаги (Phase 2):**
+- Добавить FVG multi-TF источники (smc_snap → 4h/1h FVG) для TP1 магнитов
+- SLSelector: OB edge, CHoCH/BOS confirmation, параметрический буфер
+- Pyramiding: PYRAMID_ADD signal при достижении TP1
+
+---
+
 ## [25.05.2026 ~18:00 UTC] Агент: Architect — ARCH-113 ПОЛНОЕ ИССЛЕДОВАНИЕ ЗАВЕРШЕНО
 
 ### ✅ Сделано (сессия ARCH-113 TPSelector Research)
