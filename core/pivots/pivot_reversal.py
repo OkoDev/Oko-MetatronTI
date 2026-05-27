@@ -325,6 +325,19 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
                 _sl_short  = _sl_short_pivot
                 _sl_src_s  = f'pivot_{level_name}:0.3%'
 
+            # DEV-188: wick должен реально достичь уровня (не только close-proximity)
+            _real_touch_short = recent_high_15m >= level_price * 0.999
+            if not _real_touch_short:
+                logger.debug(
+                    "[PivotReversal] %s SHORT SKIP no_real_touch: high=%.6g < level=%.6g",
+                    symbol, recent_high_15m, level_price,
+                )
+                return False, None
+
+            # DEV-188: низкий объём → дополнительный штраф
+            if 0 < volume_z_15m < 0.8:
+                _regime_str_penalty += 10
+
             if wt_ok and trend_ok:
                 target_levels = ['PP', 'S1', 'S2', 'S3'] if 'R' in level_name else ['S1', 'S2', 'S3']
                 tp_levels = [
