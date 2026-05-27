@@ -748,10 +748,8 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
         # "зомби" позиции (live_orders=OPEN, но simulated_trades=TSL/SL/EXPIRED).
         # BingX symbol "ATOM-USDT" → БД "ATOM/USDT:USDT"
         if result["positions"]:
-            def _bx_to_db(sym: str) -> str:
-                return sym.replace("-", "/") + ":USDT"
-
-            syms = list({_bx_to_db(p["symbol"]) for p in result["positions"]})
+            from core.exchange.bingx_client import from_bingx_symbol
+            syms = list({from_bingx_symbol(p["symbol"]) for p in result["positions"]})
             engine = request.app.get("engine")
             db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
             sl_tp_map: dict = {}

@@ -58,7 +58,8 @@ def parse_position(p: dict[str, Any]) -> Optional[ParsedPosition]:
         # one-way mode fallback (positionSide может быть пустой)
         side = "LONG" if qty_raw > 0 else "SHORT"
 
-    sym_our = sym_bx.replace("-", "/") + ":USDT"
+    from core.exchange.bingx_client import from_bingx_symbol
+    sym_our = from_bingx_symbol(sym_bx)
     qty = abs(qty_raw)
 
     def _f(key: str, *fallbacks: str) -> float:

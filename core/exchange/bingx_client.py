@@ -25,6 +25,24 @@ VST_BASE_URL  = "https://open-api-vst.bingx.com"
 LIVE_BASE_URL = "https://open-api.bingx.com"
 
 
+# ── Symbol format conversions ─────────────────────────────────────────────
+# Наш формат (ccxt-style): "BTC/USDT:USDT" — base/quote:settle
+# BingX REST формат:       "BTC-USDT"      — base-quote (settle всегда USDT)
+# Эти 2 функции — единственная правда о конверсии между форматами.
+
+def to_bingx_symbol(symbol_our: str) -> str:
+    """'BTC/USDT:USDT' → 'BTC-USDT' (формат BingX REST API)."""
+    return (symbol_our or "").replace("/", "-").replace(":USDT", "")
+
+
+def from_bingx_symbol(symbol_bx: str) -> str:
+    """'BTC-USDT' → 'BTC/USDT:USDT' (наш ccxt-like формат)."""
+    s = (symbol_bx or "").strip()
+    if not s:
+        return ""
+    return s.replace("-", "/") + ":USDT"
+
+
 # ── Режим исполнения ────────────────────────────────────────────────────────
 class ExecutionMode(str, Enum):
     SIM_ONLY = "sim_only"
@@ -167,7 +185,7 @@ class BingXClient:
         if qty <= 0:
             return 0.0
         await self._load_contracts()
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         info = self._contracts_cache.get(bx_symbol)
         prec = int(info["qty"]) if info else 4
         factor = 10 ** prec
@@ -178,7 +196,7 @@ class BingXClient:
         if price <= 0:
             return 0.0
         await self._load_contracts()
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         info = self._contracts_cache.get(bx_symbol)
         prec = int(info["price"]) if info else 6
         factor = 10 ** prec
@@ -326,7 +344,7 @@ class BingXClient:
         """Возвращает открытые ордера (опционально по символу)."""
         params = {}
         if symbol:
-            params["symbol"] = symbol.replace("/", "-").replace(":USDT", "")
+            params["symbol"] = to_bingx_symbol(symbol)
         resp = await self.get("/openApi/swap/v2/trade/openOrders", params or None)
         return resp.get("data", {}).get("orders", []) or []
 
@@ -335,7 +353,7 @@ class BingXClient:
         Используется в position_sync для определения реального exit price и статуса (SL/TP).
         BingX endpoint: GET /openApi/swap/v2/trade/allOrders
         """
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         resp = await self.get("/openApi/swap/v2/trade/allOrders", {
             "symbol": bx_symbol,
             "limit":  str(limit),
@@ -357,7 +375,7 @@ class BingXClient:
         sl_limit_buffer_pct > 0 → SL как STOP (Stop-Limit) вместо STOP_MARKET.
         Для LONG: limit_price = sl * (1 - buf/100). Для SHORT: sl * (1 + buf/100).
         """
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         pos_side  = "LONG" if side == "BUY" else "SHORT"
 
         try:
@@ -399,7 +417,7 @@ class BingXClient:
 
         DEV-175: STOP (Limit) рекомендуется для VST через sl_limit_buffer_pct в config.
         """
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         params: dict = {
             "symbol":       bx_symbol,
             "side":         side,
@@ -420,7 +438,7 @@ class BingXClient:
         stop_price: float, qty: float,
     ) -> dict:
         """Ставит TAKE_PROFIT_MARKET ордер (для восстановления TP при потере)."""
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         params = {
             "symbol":       bx_symbol,
             "side":         side,
@@ -434,14 +452,14 @@ class BingXClient:
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
         """Отменяет ордер."""
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         return await self.delete("/openApi/swap/v2/trade/order", {
             "symbol": bx_symbol, "orderId": order_id,
         })
 
     async def close_position_market(self, symbol: str, side: str, qty: float) -> dict:
         """Закрывает часть позиции (reduce-only MARKET)."""
-        bx_symbol  = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol  = to_bingx_symbol(symbol)
         close_side = "SELL" if side == "BUY" else "BUY"
         pos_side   = "LONG" if side == "BUY" else "SHORT"
         payload = {
@@ -469,7 +487,7 @@ class BingXClient:
 
     async def close_position_one_click(self, symbol: str) -> dict:
         """BingX one-click close — закрывает всю позицию по символу (для dust)."""
-        bx_symbol = symbol.replace("/", "-").replace(":USDT", "")
+        bx_symbol = to_bingx_symbol(symbol)
         return await self.post("/openApi/swap/v2/trade/closeAllPositions", {
             "symbol": bx_symbol,
         })

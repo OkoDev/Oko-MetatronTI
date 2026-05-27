@@ -198,14 +198,9 @@ class PositionManager:
             # D-061: через OrderManager кеш (15s TTL) — экономия API calls
             # DEV-154: _get_client_synced() внутри _get_positions_cached
             exchange_positions = await order_manager._get_positions_cached()
-            # BingX символ: "BTC-USDT", наш: "BTC/USDT:USDT"
-            open_syms: set = set()
-            for p in exchange_positions:
-                qty = float(p.get("positionAmt") or p.get("availableAmt") or 0)
-                if qty != 0:
-                    bx_sym = p.get("symbol", "")
-                    our_sym = bx_sym.replace("-", "/") + ":USDT"
-                    open_syms.add(our_sym)
+            # 27.05.2026: парсинг через position_parser (hedge-aware, single source).
+            from core.exchange.position_parser import parse_positions
+            open_syms: set = {pp.symbol_our for pp in parse_positions(exchange_positions)}
         except Exception as e:
             logger.warning("[PositionManager] sync: не удалось получить позиции с биржи: %s", e)
             return stats
