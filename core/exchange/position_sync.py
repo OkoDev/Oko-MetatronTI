@@ -392,6 +392,19 @@ async def sync_positions(bot) -> None:
                     )
                     exit_price = _tp
 
+                # 27.05.2026: TP overshoot — exit_price даёт R сильно выше планируемого
+                # tp_rr (типично 3R). На LIVE такого не должно быть — реальный TP закрывается
+                # на TP-цене или близко к ней. На VST бывают artefact'ы fill engine
+                # (FHE #15191: TP=3R, но exit_price=0.0308 → R=+15 clamp). Пока только
+                # лог — наблюдаем частоту; exit_price НЕ подменяем (LIVE данные не трогаем).
+                _tp_rr_guess = abs(_tp - _entry) / _one_r if _one_r and _tp else 0
+                if status == "TP" and _r_calc > _tp_rr_guess + 1 and _tp_rr_guess > 0:
+                    logger.warning(
+                        "[POSITION-SYNC][TP-OVERSHOOT] #%d %s: exit=%.6f R=%.1f >> tp_rr=%.1f+1 "
+                        "(TP planned=%.6f). VST artefact или реальный gap — exit_price НЕ заменён.",
+                        trade_id, sym, exit_price, _r_calc, _tp_rr_guess, _tp,
+                    )
+
                 # EXPIRED с огромным R — текущая цена ушла далеко от входа
                 if status == "EXPIRED" and abs(_r_calc) > 10 and _sl:
                     logger.warning(
