@@ -67,6 +67,8 @@ class TradingAlertBot:
         self.trade_simulator = TradeSimulator(
             db_path=getattr(self.subscription_manager, "db_path", "subscriptions.db")
         )
+        # 27.05: weakref bot для shadow_signal_quality (нужен ConfirmationAggregator)
+        self.trade_simulator.set_bot_ref(self)
         # DEV-93/DEV-94/DEV-95: Куб Метатрона — Shared Context Bus + PostTradeAnalyser
         self.pair_context = PairContextBus()
         self.post_analyser = PostTradeAnalyser(self.pair_context, self.data_collector)

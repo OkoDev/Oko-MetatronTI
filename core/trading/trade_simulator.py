@@ -88,6 +88,7 @@ class TradeSimulator:
 
     def __init__(self, db_path: str = "subscriptions.db"):
         self.db_path = db_path
+        self._bot_ref = None  # weakref на bot (для confirmation_aggregator)
         self.init_database()
         # DEV-15: LLM-анализатор SL-сделок (инициализируется лениво при первом SL)
         self._trade_analyzer = None
@@ -110,6 +111,11 @@ class TradeSimulator:
         self._close_in_progress: set = set()
         # DEV-168: cooldown для LIVE-GUARD логов (не спамить каждую минуту)
         self._live_guard_logged: dict = {}  # trade_id → datetime последнего WARNING
+
+    def set_bot_ref(self, bot) -> None:
+        """27.05: weakref на bot для shadow_signal_quality (нужен ConfirmationAggregator)."""
+        import weakref
+        self._bot_ref = weakref.ref(bot)
 
     def set_post_trade_callback(self, cb) -> None:
         """DEV-94: регистрирует PostTradeAnalyser.on_trade_closed как callback."""
@@ -495,6 +501,30 @@ class TradeSimulator:
                         features[f"tp_selector_{_k}"] = _v
             except Exception as _shadow_e:
                 logger.debug("[ARCH-113 shadow] write to features_json failed: %s", _shadow_e)
+            # 27.05: signal_quality shadow (4 правки роя) — pivot real_touch/volume,
+            # wt confirmation aggregation, confluence divergence, scan timing.
+            try:
+                _bot_ref = self._bot_ref() if self._bot_ref else None
+                if _bot_ref is not None:
+                    from core.observability.shadow_signal_quality import compute_shadow_flags
+                    # df_15m из ApiEngine кеша (sync, без REST)
+                    _df_15m = None
+                    try:
+                        _sym_for_df = getattr(recommendation, "symbol", "") or ""
+                        if _sym_for_df and data_collector is not None and hasattr(data_collector, "_engine"):
+                            _df_15m = data_collector._engine._cache.get_stale((_sym_for_df, "15m"), limit=30)
+                    except Exception:
+                        pass
+                    _scan_dur = (extra_features or {}).get("scan_loop_duration_sec")
+                    _shadow = compute_shadow_flags(
+                        _bot_ref, recommendation,
+                        df_15m=_df_15m,
+                        scan_loop_duration_sec=_scan_dur,
+                    )
+                    if _shadow:
+                        features.update(_shadow)
+            except Exception as _sq_e:
+                logger.debug("[shadow_signal_quality] error: %s (%s)", _sq_e, type(_sq_e).__name__)
             # ML-CONTEXT: entry quality metrics (TF-agnostic)
             _entry_tf_val = _get_recommendation_value(recommendation, "timeframe")
             features["entry_tf"] = str(_entry_tf_val) if isinstance(_entry_tf_val, str) else DEFAULT_TIMEFRAME
