@@ -306,16 +306,20 @@ class TradeSimulator:
 
             # Dedup открытых позиций: блокируем если по символу уже есть открытая сделка
             # ARCH-15: при bounce_mode допускаем 2 сделки с разным trade_mode (SWING + SCALP)
+            # 27.05.2026 (hedge fix): дубли считаем ТОЛЬКО при совпадении direction.
+            # На бирже LONG и SHORT по одной паре в hedge mode — независимые позиции.
+            # До фикса: confluence LONG TRB блокировался если adopted SHORT TRB уже OPEN.
             trade_mode = ""
             if extra_features:
                 trade_mode = extra_features.get("trade_mode", "")
+            _dir_dedup = _direction_str(direction)
             if symbol:
                 try:
                     with self._db_connect() as _c:
                         existing_rows = _c.execute(
                             "SELECT id, direction, features_json FROM simulated_trades "
-                            "WHERE symbol=? AND status=? LIMIT 5",
-                            (symbol, STATUS_OPEN),
+                            "WHERE symbol=? AND status=? AND direction=? LIMIT 5",
+                            (symbol, STATUS_OPEN, _dir_dedup),
                         ).fetchall()
                     if existing_rows:
                         # Если есть trade_mode — проверяем совместимость
@@ -331,20 +335,20 @@ class TradeSimulator:
                                     # Тот же trade_mode → дубль
                                     logger.info(
                                         "TradeSimulator: [dedup] пропуск %s %s — уже открыта #%d (%s, mode=%s)",
-                                        _direction_str(direction), symbol, row[0], row[1], ex_mode,
+                                        _dir_dedup, symbol, row[0], row[1], ex_mode,
                                     )
                                     if _reason_out is not None: _reason_out.append(f"dedup:same_mode:{ex_mode}")
                                     return None
                             # Разные trade_mode → допускаем (SWING + SCALP)
                             logger.info(
                                 "TradeSimulator: [bounce] допускаем %s %s mode=%s — есть открытая с другим mode",
-                                _direction_str(direction), symbol, trade_mode,
+                                _dir_dedup, symbol, trade_mode,
                             )
                         else:
-                            # Без trade_mode → старая логика: блокируем
+                            # Без trade_mode → старая логика: блокируем (но уже только same direction)
                             logger.info(
                                 "TradeSimulator: [dedup] пропуск %s %s — уже открыта #%d (%s)",
-                                _direction_str(direction), symbol, existing_rows[0][0], existing_rows[0][1],
+                                _dir_dedup, symbol, existing_rows[0][0], existing_rows[0][1],
                             )
                             if _reason_out is not None: _reason_out.append(f"dedup:no_mode:open_id={existing_rows[0][0]}")
                             return None

@@ -203,8 +203,14 @@ class OrderManager:
 
     # ── Открытие позиции ────────────────────────────────────────────────────
 
-    async def has_open_position(self, symbol: str) -> bool:
-        """True если на бирже уже есть открытая позиция по символу (VST/LIVE)."""
+    async def has_open_position(self, symbol: str, pos_side: Optional[str] = None) -> bool:
+        """True если на бирже уже есть открытая позиция по символу (VST/LIVE).
+
+        Hedge mode (27.05.2026): pos_side='LONG'|'SHORT' — проверяет только это
+        направление. pos_side=None (legacy) — любое направление по символу,
+        НО это блокирует hedge-открытие противоположного направления!
+        Всегда передавай direction если открываешь в hedge mode.
+        """
         if not self.is_live():
             return False
         try:
@@ -212,8 +218,13 @@ class OrderManager:
             # D-061: positions через кеш (15s)
             positions = await self._get_positions_cached()
             for p in positions:
-                if (p.get("symbol") == bx_sym
-                        and abs(float(p.get("positionAmt") or p.get("availableAmt") or 0)) > 0):
+                if p.get("symbol") != bx_sym:
+                    continue
+                if abs(float(p.get("positionAmt") or p.get("availableAmt") or 0)) <= 0:
+                    continue
+                if pos_side is None:
+                    return True
+                if (p.get("positionSide", "") or "").upper() == pos_side.upper():
                     return True
             return False
         except Exception as e:
@@ -278,9 +289,11 @@ class OrderManager:
                 error=f"notional={notional:.2f} < {MIN_NOTIONAL} min", notional_usdt=notional,
             )
 
-        # Дедупликация: не открывать если позиция уже есть на бирже
-        if self.is_live() and await self.has_open_position(symbol):
-            logger.info("[OrderManager] %s — позиция уже открыта, пропуск", symbol)
+        # Дедупликация: не открывать если позиция уже есть на бирже В ТОМ ЖЕ направлении.
+        # 27.05.2026 (hedge fix): pos_side=direction. Без этого LONG-сигнал блокировался
+        # если на бирже уже был SHORT по той же паре → 9 wl_breach LONG ушли в SIM.
+        if self.is_live() and await self.has_open_position(symbol, pos_side=direction):
+            logger.info("[OrderManager] %s %s — позиция уже открыта, пропуск", symbol, direction)
             return BracketResult(
                 success=False, mode=self._mode.value, symbol=symbol,
                 direction=direction, qty=qty, entry_price=entry_price,

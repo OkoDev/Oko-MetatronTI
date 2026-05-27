@@ -267,6 +267,13 @@ class TradeRouter:
                 if br.error != "position_already_open":
                     logger.warning("[TradeRouter] %s OrderExecutor: %s", ctx.symbol, br.error)
                     await self._record_drop_plain(ctx, "open_bracket_fail", br.error or "unknown")
+                else:
+                    # 27.05.2026: position_already_open ранее был молчаливым → невидимый блок.
+                    # Теперь видим в логе и в signal_drops (отдельный gate чтобы отличать).
+                    logger.info("[TradeRouter] %s %s position_already_open — exchange skipped (SIM-only)",
+                                ctx.symbol, ctx.direction)
+                    await self._record_drop_plain(ctx, "exchange_position_already_open",
+                                                  f"{ctx.direction} skipped (other direction already on exchange)")
                 return None
 
             order_id = br.order_id
