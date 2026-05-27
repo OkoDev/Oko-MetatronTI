@@ -103,7 +103,7 @@ class BingXClient:
         self._contracts_cache: dict[str, dict] = {}
         self._contracts_loaded: bool = False
 
-    async def sync_time(self) -> int:
+    async def sync_time(self, force: bool = False) -> int:
         """
         DEV-145: Получает время BingX-сервера и вычисляет offset с учётом RTT.
         offset = local_mid - server, где local_mid = (t_before + t_after) / 2.
@@ -112,13 +112,18 @@ class BingXClient:
         D-071 Quick Win #3 (26.05): throttle — не чаще раз в 60 сек.
         При активном рынке BingX медленный → timestamp invalid → sync_time → timeout → retry...
         Throttle разрывает порочный круг.
+
+        27.05.2026: добавлен параметр force=True — игнорирует throttle.
+        Используется в POST/DELETE retry при code=109400 (timestamp invalid)
+        и в _get_client_synced при drift > 3000ms.
         """
         # Throttle: успешный sync → 60s, неудачный → 30s между попытками (BingX лагает).
         _now = time.monotonic()
-        if self._time_synced and (_now - self._time_synced_at) < 60.0:
-            return self._time_offset_ms
-        if not self._time_synced and self._time_synced_at and (_now - self._time_synced_at) < 30.0:
-            return self._time_offset_ms  # soft-fail throttle
+        if not force:
+            if self._time_synced and (_now - self._time_synced_at) < 60.0:
+                return self._time_offset_ms
+            if not self._time_synced and self._time_synced_at and (_now - self._time_synced_at) < 30.0:
+                return self._time_offset_ms  # soft-fail throttle
         import aiohttp
         try:
             url = f"{self._base}/openApi/swap/v2/server/time"
@@ -223,8 +228,8 @@ class BingXClient:
                 resp = await r.json()
         # DEV-145 авто-ресинхронизация: при timestamp drift ресинхронизируем и ретраим
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
-            logger.warning("[BingXClient] timestamp is invalid — ресинхронизация и retry")
-            await self.sync_time()
+            logger.warning("[BingXClient] timestamp is invalid — ресинхронизация (force) и retry")
+            await self.sync_time(force=True)
             p["timestamp"] = self._ts()
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
             sig2 = self._sign(qs2)
@@ -248,8 +253,8 @@ class BingXClient:
                 resp = await r.json()
         # 27.05.2026: timestamp drift retry — асимметрия с GET (там был, в POST нет → 2 wl_breach в SIM)
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
-            logger.warning("[BingXClient] POST timestamp is invalid — ресинхронизация и retry")
-            await self.sync_time()
+            logger.warning("[BingXClient] POST timestamp is invalid — ресинхронизация (force) и retry")
+            await self.sync_time(force=True)
             p["timestamp"] = self._ts()
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
             sig2 = self._sign(qs2)
@@ -283,8 +288,8 @@ class BingXClient:
                                 timeout=aiohttp.ClientTimeout(total=30)) as r:
                 resp = await r.json()
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
-            logger.warning("[BingXClient] DELETE timestamp is invalid — ресинхронизация и retry")
-            await self.sync_time()
+            logger.warning("[BingXClient] DELETE timestamp is invalid — ресинхронизация (force) и retry")
+            await self.sync_time(force=True)
             p["timestamp"] = self._ts()
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
             sig2 = self._sign(qs2)
@@ -302,8 +307,8 @@ class BingXClient:
         resp = await self.get("/openApi/swap/v2/user/balance")
         if resp.get("code") != 0:
             if "timestamp is invalid" in str(resp.get("msg", "")).lower():
-                logger.warning("[BingXClient] get_balance timestamp invalid, resync and retry")
-                await self.sync_time()
+                logger.warning("[BingXClient] get_balance timestamp invalid, resync (force) and retry")
+                await self.sync_time(force=True)
                 resp = await self.get("/openApi/swap/v2/user/balance")
             if resp.get("code") != 0:
                 code = resp.get("code")

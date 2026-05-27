@@ -70,12 +70,21 @@ class OrderManager:
 
     async def _get_client_synced(self) -> BingXClient:
         """DEV-145: Возвращает клиент с синхронизированным временем.
-        Ресинхронизируется раз в 5 минут чтобы предотвратить накопление drift."""
+
+        27.05.2026: интервал 300→120 сек. На Windows time service бывает drift
+        до 1 сек/мин (наблюдалось -6076ms за 5 мин при 1124 timestamp invalid).
+        BingX recvWindow=5000ms → нужно ресинкать минимум каждые 2 минуты.
+        Если предыдущий sync_time провалился (TimeoutError) — повторяем чаще (60с).
+        """
         import time as _time
         client = self._get_client()
+        age = _time.monotonic() - client._time_synced_at
+        # Интервал зависит от того, был ли последний sync успешным
+        max_age = 120 if client._time_synced else 60
         needs_sync = (
             not client._time_synced
-            or (_time.monotonic() - client._time_synced_at) > 300
+            or age > max_age
+            or abs(client._time_offset_ms) > 3000   # большой drift → форсируем
         )
         if needs_sync:
             await client.sync_time()
