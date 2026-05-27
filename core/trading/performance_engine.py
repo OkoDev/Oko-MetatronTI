@@ -573,7 +573,7 @@ class PerformanceEngine:
                 cur = conn.cursor()
                 cur.execute("""
                     SELECT id, symbol, timeframe, direction, signal_type, regime,
-                           entry_price, stop_loss, take_profit,
+                           entry_price, stop_loss, original_sl, take_profit,
                            strength, confidence, created_at,
                            tsl_activated, tsl_tf,
                            tp_source, sl_source,

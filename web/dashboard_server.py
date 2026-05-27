@@ -245,9 +245,14 @@ async def _stats_compute_and_cache(request: web.Request) -> web.Response:
             cur = _current_price_from_cache(dc, t["symbol"]) if dc else None
             t["current_price"] = cur
             ep = t.get("entry_price") or 0
-            sl = t.get("stop_loss") or 0
+            # 27.05.2026: для 1R reference используем original_sl (исходный риск трейда),
+            # fallback на stop_loss если NULL. До фикса использовался текущий stop_loss,
+            # который TSL подтягивает к entry → sl_dist≈0 → R=+8000 артефакт (#15101 SWARMS).
+            osl = t.get("original_sl") or 0
+            sl  = t.get("stop_loss") or 0
+            r_ref = osl if osl else sl
             direction = t.get("direction", "LONG")
-            sl_dist = abs(ep - sl) if ep and sl else 0
+            sl_dist = abs(ep - r_ref) if ep and r_ref else 0
             if cur is not None and ep and sl_dist:
                 if direction == "LONG":
                     pnl_pct = (cur - ep) / ep * 100
@@ -258,7 +263,7 @@ async def _stats_compute_and_cache(request: web.Request) -> web.Response:
             else:
                 t["unrealized_pct"] = None
                 t["unrealized_r"] = None
-            # MFE: max R достигнутый за время жизни сделки
+            # MFE: max R достигнутый за время жизни сделки. Тоже от original_sl.
             max_r = t.get("max_R_possible")
             if max_r is None and ep and sl_dist:
                 max_p = t.get("max_price")
