@@ -22,6 +22,7 @@ from core.exchange.bingx_client import (
     BingXClient, BracketResult, PartialCloseResult,
     ExecutionMode, MIN_NOTIONAL, make_client,
 )
+from core.infra.trading_settings import get_deposit
 
 if TYPE_CHECKING:
     pass
@@ -91,7 +92,7 @@ class OrderManager:
 
     async def get_available_balance(self) -> float:
         if not self.is_live():
-            return float(self._cfg.get("trading.deposit_usdt", 1000.0))
+            return get_deposit(self._cfg)
         import time as _t
         # Fast path: cache hit без lock (87% случаев)
         now = _t.monotonic()
@@ -108,7 +109,7 @@ class OrderManager:
             if self._balance_cache is not None and (now - self._balance_ts) < self._balance_ttl:
                 logger.debug("[OrderManager] balance CACHE HIT (post-lock) age=%.1fs", now - self._balance_ts)
                 return self._balance_cache
-            fallback = float(self._cfg.get("trading.deposit_usdt", 1000.0))
+            fallback = get_deposit(self._cfg)
             logger.debug("[OrderManager] balance CACHE MISS → REST call (ttl=%.0fs, age=%.1fs)",
                          self._balance_ttl,
                          (now - self._balance_ts) if self._balance_cache is not None else -1)

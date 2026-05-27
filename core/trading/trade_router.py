@@ -34,6 +34,7 @@ from core.trading.gates.correlation_guard import CorrelationGuardGate
 from core.trading.gates.market_stress import MarketStressGate
 from core.trading.gates.pair_cooldown_streak import PairCooldownStreakGate
 from core.trading.source_policies import SourcePolicy
+from core.infra.trading_settings import is_live as _is_live_fn, get_risk_pct, get_leverage
 
 logger = logging.getLogger(__name__)
 
@@ -190,11 +191,10 @@ class TradeRouter:
         # ── Exchange placement ───────────────────────────────────────────
         exchange_order_id = None
         below_min = ctx.strength < policy.min_strength
-        execution_mode = str(self.config.get("trading.execution_mode", "simulation") or "simulation")
         can_open = (
             policy.exchange_enabled
             and not below_min
-            and execution_mode in ("vst", "live")
+            and _is_live_fn(self.config)
             and hasattr(self.bot, "order_executor")
             and hasattr(self.bot, "position_sizer")
         )
@@ -248,8 +248,8 @@ class TradeRouter:
         try:
             oe = self.bot.order_executor
             deposit  = await oe.get_available_balance()
-            risk_pct = float(self.config.get("trading.risk_pct", 1.0))
-            leverage = int(self.config.get("trading.leverage", 5))
+            risk_pct = get_risk_pct(self.config)
+            leverage = get_leverage(self.config)
             qty = self.bot.position_sizer.calc_qty(
                 entry_price=entry, sl_price=sl,
                 deposit=deposit, risk_pct=risk_pct, leverage=leverage,
@@ -305,7 +305,7 @@ class TradeRouter:
                     logger.debug("[TradeRouter] position_manager.register: %s", _pm_e)
 
             # TSL tracker — только для live (vst тоже подходит)
-            if str(self.config.get("trading.execution_mode", "")) in ("vst", "live"):
+            if _is_live_fn(self.config):
                 try:
                     from core.exchange.tsl_updater import fetch_and_save_sl_order_id, fetch_and_save_tp_order_id
                     asyncio.create_task(fetch_and_save_sl_order_id(

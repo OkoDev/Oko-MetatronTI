@@ -11,6 +11,7 @@ import logging
 
 from core.exchange.position_sync import sync_positions
 from core.exchange.tsl_updater import update_tsl_on_exchange, repair_missing_sl, repair_missing_tp
+from core.infra.trading_settings import is_live as _is_live_fn
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,7 @@ async def trade_tracker_loop(bot) -> None:
     use_be_after_tp1       = bot.config.get("trading.use_be_after_tp1", False)
     cascade_tsl            = bot.config.get("trading.cascade_tsl", True)
 
-    _mode    = bot.config.get("trading.execution_mode", "sim_only")
-    _is_live = _mode in ("vst", "live")
+    _is_live = _is_live_fn(bot.config)
 
     while True:
         try:
