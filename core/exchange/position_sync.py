@@ -415,6 +415,29 @@ async def sync_positions(bot) -> None:
                     exit_price = _sl
                     status = "SL"
 
+            # 28.05.2026: статус EXPIRED отменён полностью. Если closing-ордер не найден
+            # (manual close / TSL cancel+replace / >50 orders / API лаг), позиция всё равно
+            # закрыта на бирже — классифицируем по факту P&L, чтобы не плодить зомби-OPEN
+            # и не писать EXPIRED. profit → TP (TSL если SL двигался), loss → SL.
+            if status == "EXPIRED":
+                if _one_r > 0 and exit_price:
+                    _r_final = ((exit_price - _entry) if direction == "LONG"
+                                else (_entry - exit_price)) / _one_r
+                else:
+                    _r_final = 0.0
+                _orig_sl_x = trade.get("original_sl")
+                _curr_sl_x = float(trade.get("stop_loss") or 0)
+                _sl_moved = (
+                    _orig_sl_x and _curr_sl_x > 0
+                    and abs(_curr_sl_x - float(_orig_sl_x)) / float(_orig_sl_x) > 0.0001
+                )
+                status = "SL" if _r_final < 0 else ("TSL" if _sl_moved else "TP")
+                logger.info(
+                    "[POSITION-SYNC] #%d %s: closing-ордер не найден → классифицирован "
+                    "по P&L: R=%.2f → %s (EXPIRED отменён)",
+                    trade_id, sym, _r_final, status,
+                )
+
             try:
                 bot.trade_simulator.close_trade(trade_id, status, exit_price)
                 logger.info("[POSITION-SYNC] #%d %s %s → %s @ %.6f",
