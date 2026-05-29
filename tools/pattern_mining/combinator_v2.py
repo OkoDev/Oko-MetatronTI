@@ -152,6 +152,267 @@ def add_pivot_flags(df_1h: pd.DataFrame, out: dict, label: str = "1D"):
         out[f"pivot_bounce_down_{k}_{label}"] = bounce_down_p
 
 
+# ───────── Дивергенции (DEV-233): порт Pine "Divergence for Many Indicators v4") ─────────
+# Эталон: memory/reference_pine_divergence.md. source="Close" (по выбору ARCH 29.05).
+# Все сравнения и trendline — по CLOSE (не low/high): пивоты по close, точки сравнения close,
+# обе линии валидации (цена + осциллятор) по close. Реальные пивоты pivothigh/low(prd,prd)
+# вместо argmin скользящего окна. Trendline non-intersection. Без persistent rolling.
+DIV_PIVOT_PRD = 5      # prd: баров подтверждения с каждой стороны (Pine default)
+DIV_MAX_PP    = 10     # maxpp: сколько пивотов назад проверять
+DIV_MAX_BARS  = 100    # maxbars: макс. расстояние между пивотами
+
+
+def _wtx_divergences(wt: np.ndarray, low: np.ndarray, high: np.ndarray):
+    """Дивергенции по WT — порт индикатора WT_X (Oscilador WaveTrend).
+
+    ОТЛИЧАЕТСЯ от LonesomeTheBlue (RSI): пивот = williams-фрактал на САМОМ WT
+    (центр = wt[i-2], 2 бара слева + 2 справа), цена сравнивается по LOW/HIGH (тени),
+    БЕЗ trendline. Сравнение с ПРЕДЫДУЩИМ WT-фракталом того же типа.
+    Pine offset=-2: фрактал подтверждается через 2 бара.
+
+      bull regular: WT-фрактал-low + low[fr] < low[prev_fr] + wt[fr] > wt[prev_fr]
+      bull hidden:  WT-фрактал-low + low[fr] > low[prev_fr] + wt[fr] < wt[prev_fr]
+      bear regular: WT-фрактал-high + high[fr] > high[prev_fr] + wt[fr] < wt[prev_fr]
+      bear hidden:  WT-фрактал-high + high[fr] < high[prev_fr] + wt[fr] > wt[prev_fr]
+
+    Флаг ставится на баре подтверждения фрактала (i, центр i-2). Возвращает
+    (bull_reg, bear_reg, bull_hid, bear_hid) длины n.
+    """
+    n = len(wt)
+    bull_reg = np.zeros(n, dtype=bool)
+    bear_reg = np.zeros(n, dtype=bool)
+    bull_hid = np.zeros(n, dtype=bool)
+    bear_hid = np.zeros(n, dtype=bool)
+
+    prev_top_wt = prev_top_price = None   # предыдущий WT-фрактал-high
+    prev_bot_wt = prev_bot_price = None   # предыдущий WT-фрактал-low
+
+    for i in range(4, n):
+        s = wt
+        # f_top_fractal: s[i-4]<s[i-2] and s[i-3]<s[i-2] and s[i-2]>s[i-1] and s[i-2]>s[i]
+        c = s[i-2]
+        if np.isnan(c) or np.isnan(s[i-4]) or np.isnan(s[i-1]) or np.isnan(s[i]) or np.isnan(s[i-3]):
+            continue
+        is_top = s[i-4] < c and s[i-3] < c and c > s[i-1] and c > s[i]
+        is_bot = s[i-4] > c and s[i-3] > c and c < s[i-1] and c < s[i]
+        if is_top:
+            hp = high[i-2]
+            if prev_top_wt is not None:
+                # bear regular: price HH + wt LH
+                if hp > prev_top_price and c < prev_top_wt:
+                    bear_reg[i] = True
+                # bear hidden: price LH + wt HH
+                if hp < prev_top_price and c > prev_top_wt:
+                    bear_hid[i] = True
+            prev_top_wt, prev_top_price = c, hp
+        if is_bot:
+            lp = low[i-2]
+            if prev_bot_wt is not None:
+                # bull regular: price LL + wt HL
+                if lp < prev_bot_price and c > prev_bot_wt:
+                    bull_reg[i] = True
+                # bull hidden: price HL + wt LL
+                if lp > prev_bot_price and c < prev_bot_wt:
+                    bull_hid[i] = True
+            prev_bot_wt, prev_bot_price = c, lp
+
+    return bull_reg, bear_reg, bull_hid, bear_hid
+
+
+def _pivot_indices(arr: np.ndarray, prd: int, is_high: bool) -> list:
+    """Реальные пивоты (аналог ta.pivothigh/pivotlow): бар i — пивот, если он строго
+    экстремальнее prd баров слева И prd баров справа. Возвращает список (idx, value),
+    отсортированный по idx по возрастанию. Подтверждение запаздывает на prd баров."""
+    n = len(arr)
+    pivots = []
+    for i in range(prd, n - prd):
+        v = arr[i]
+        if np.isnan(v):
+            continue
+        left = arr[i-prd:i]
+        right = arr[i+1:i+prd+1]
+        if is_high:
+            if v > left.max() and v >= right.max():
+                pivots.append((i, v))
+        else:
+            if v < left.min() and v <= right.min():
+                pivots.append((i, v))
+    return pivots
+
+
+def _calc_divergence(close: np.ndarray, osc: np.ndarray, prd: int,
+                     maxpp: int, maxbars: int, persist: int = 3):
+    """Порт Pine "Divergence for Many Indicators v4", source="Close".
+
+    Сравнение ПИВОТ-К-ПИВОТУ (как Pine): когда подтверждается новый пивот (idx+prd),
+    сравниваем его с предыдущими maxpp пивотами того же типа. Дивергенция = расхождение
+    цены и осциллятора между двумя пивотами + trendline non-intersection между ними.
+    Флаг ставится на баре подтверждения правого пивота (cur_idx + prd) — это реальный
+    момент когда дивергенцию видно (lookahead-safe). persist держит флаг N баров
+    (anchor-логике ARCH-104 нужен живой флаг на момент LTF-входа; Pine рисует линию,
+    у нас флаг).
+
+    Возвращает 4 bool-массива длины n: (bull_reg, bear_reg, bull_hid, bear_hid).
+    """
+    n = len(close)
+    bull_reg = np.zeros(n, dtype=bool)
+    bear_reg = np.zeros(n, dtype=bool)
+    bull_hid = np.zeros(n, dtype=bool)
+    bear_hid = np.zeros(n, dtype=bool)
+
+    pl = _pivot_indices(close, prd, is_high=False)  # пивоты-low (по close)
+    ph = _pivot_indices(close, prd, is_high=True)   # пивоты-high (по close)
+
+    def _trendline_ok(i_a, i_b, series, line_lo: bool):
+        """Прямая между точками series[i_a]→series[i_b]. line_lo=True: ни один бар между
+        ними не НИЖЕ прямой (bull). line_lo=False: не ВЫШЕ прямой (bear)."""
+        span = i_b - i_a
+        if span <= 1:
+            return True
+        va, vb = series[i_a], series[i_b]
+        if np.isnan(va) or np.isnan(vb):
+            return True
+        slope = (vb - va) / span
+        for k in range(1, span):
+            vline = va + slope * k
+            y = series[i_a + k]
+            if np.isnan(y):
+                continue
+            if line_lo and y < vline:
+                return False
+            if (not line_lo) and y > vline:
+                return False
+        return True
+
+    # ── Bull side: для каждого пивота-low сравниваем с предыдущими ──
+    for j in range(1, len(pl)):
+        i2, c2 = pl[j]           # текущий (правый) пивот-low
+        o2 = osc[i2]
+        if np.isnan(o2):
+            continue
+        confirm_bar = i2 + prd   # бар, на котором пивот подтверждён
+        if confirm_bar >= n:
+            continue
+        # ищем назад до maxpp предыдущих пивотов
+        for k in range(j - 1, max(-1, j - 1 - maxpp), -1):
+            i1, c1 = pl[k]
+            length = i2 - i1
+            if length <= 5:
+                continue
+            if length > maxbars:
+                break
+            o1 = osc[i1]
+            if np.isnan(o1):
+                continue
+            # Bull regular: price LL (c2<c1) + osc HL (o2>o1)
+            if c2 < c1 and o2 > o1:
+                if _trendline_ok(i1, i2, close, True) and _trendline_ok(i1, i2, osc, True):
+                    bull_reg[confirm_bar] = True
+                    break
+            # Bull hidden: price HL (c2>c1) + osc LL (o2<o1)
+            if c2 > c1 and o2 < o1:
+                if _trendline_ok(i1, i2, close, True) and _trendline_ok(i1, i2, osc, True):
+                    bull_hid[confirm_bar] = True
+                    break
+
+    # ── Bear side: для каждого пивота-high ──
+    for j in range(1, len(ph)):
+        i2, c2 = ph[j]
+        o2 = osc[i2]
+        if np.isnan(o2):
+            continue
+        confirm_bar = i2 + prd
+        if confirm_bar >= n:
+            continue
+        for k in range(j - 1, max(-1, j - 1 - maxpp), -1):
+            i1, c1 = ph[k]
+            length = i2 - i1
+            if length <= 5:
+                continue
+            if length > maxbars:
+                break
+            o1 = osc[i1]
+            if np.isnan(o1):
+                continue
+            # Bear regular: price HH (c2>c1) + osc LH (o2<o1)
+            if c2 > c1 and o2 < o1:
+                if _trendline_ok(i1, i2, close, False) and _trendline_ok(i1, i2, osc, False):
+                    bear_reg[confirm_bar] = True
+                    break
+            # Bear hidden: price LH (c2<c1) + osc HH (o2>o1)
+            if c2 < c1 and o2 > o1:
+                if _trendline_ok(i1, i2, close, False) and _trendline_ok(i1, i2, osc, False):
+                    bear_hid[confirm_bar] = True
+                    break
+
+    # ── LIVE-ветка (Pine dontconfirm=true): на КАЖДОМ баре сравниваем текущий бар
+    # с последним подтверждённым пивотом (правый конец = живой бар, не ждём пока он
+    # станет пивотом). Так маркер появляется в тот же момент, что на TradingView.
+    # Левый конец остаётся подтверждённым пивотом. Фильтр входа: osc/price разворот.
+    def _last_confirmed_pivot(pivs, i):
+        """Последний пивот, чей правый край подтверждён к бару i (idx+prd <= i)."""
+        best = None
+        for (pidx, pval) in pivs:
+            if pidx + prd <= i:
+                best = (pidx, pval)
+            else:
+                break
+        return best
+
+    for i in range(prd + 6, n):
+        if np.isnan(osc[i]) or np.isnan(osc[i-1]):
+            continue
+        # Bull: вход если осц растёт ИЛИ цена растёт (начало отскока вверх).
+        # Правый конец дивергенции = самый низкий close ПОСЛЕ левого пивота (running-min),
+        # а не текущий бар — Pine рисует линию к фактическому экстремуму. Текущий бар лишь
+        # триггер «отскок начался».
+        if osc[i] > osc[i-1] or close[i] > close[i-1]:
+            piv = _last_confirmed_pivot(pl, i)
+            if piv is not None:
+                i1, c1 = piv
+                if 5 < (i - i1) <= maxbars and not np.isnan(osc[i1]):
+                    seg = close[i1+1:i+1]
+                    i2 = i1 + 1 + int(np.argmin(seg))   # фактический low после пивота
+                    c2, o2, o1 = close[i2], osc[i2], osc[i1]
+                    if not np.isnan(o2) and (i2 - i1) > 1:
+                        # Bull regular: price LL + osc HL
+                        if c2 < c1 and o2 > o1:
+                            if _trendline_ok(i1, i2, close, True) and _trendline_ok(i1, i2, osc, True):
+                                bull_reg[i] = True
+                        # Bull hidden: price HL + osc LL
+                        elif c2 > c1 and o2 < o1:
+                            if _trendline_ok(i1, i2, close, True) and _trendline_ok(i1, i2, osc, True):
+                                bull_hid[i] = True
+        # Bear: вход если осц падает ИЛИ цена падает (начало отката вниз).
+        # Правый конец = самый высокий close после левого пивота (running-max).
+        if osc[i] < osc[i-1] or close[i] < close[i-1]:
+            piv = _last_confirmed_pivot(ph, i)
+            if piv is not None:
+                i1, c1 = piv
+                if 5 < (i - i1) <= maxbars and not np.isnan(osc[i1]):
+                    seg = close[i1+1:i+1]
+                    i2 = i1 + 1 + int(np.argmax(seg))   # фактический high после пивота
+                    c2, o2, o1 = close[i2], osc[i2], osc[i1]
+                    if not np.isnan(o2) and (i2 - i1) > 1:
+                        # Bear regular: price HH + osc LH
+                        if c2 > c1 and o2 < o1:
+                            if _trendline_ok(i1, i2, close, False) and _trendline_ok(i1, i2, osc, False):
+                                bear_reg[i] = True
+                        # Bear hidden: price LH + osc HH
+                        elif c2 < c1 and o2 > o1:
+                            if _trendline_ok(i1, i2, close, False) and _trendline_ok(i1, i2, osc, False):
+                                bear_hid[i] = True
+
+    # persist: держим флаг N баров (для anchor-матчинга на момент LTF-входа)
+    if persist > 1:
+        for arr in (bull_reg, bear_reg, bull_hid, bear_hid):
+            src = arr.copy()
+            for i in range(n):
+                if src[i]:
+                    arr[i:min(n, i + persist)] = True
+    return bull_reg, bear_reg, bull_hid, bear_hid
+
+
 # ───────── SMC + indicators флаги ─────────
 def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) -> pd.DataFrame:
     n = len(df)
@@ -267,76 +528,36 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"atr_cross_down_{label}"] = atr_cd
 
     # ─ WaveTrend ──────────────────────────────────────────────────────────
-    wt = wavetrend(df).values
+    wt = wavetrend(df).values            # wt1 (EMA21)
+    wt2 = pd.Series(wt).rolling(window=4, min_periods=1).mean().values  # сигнальная SMA4
     out[f"wt_os_{label}"] = wt < WT_OS
     out[f"wt_ob_{label}"] = wt > WT_OB
+    # DEV-234: wt_cross = кросс wt1×wt2 В ЗОНЕ OS/OB (как confluence_scanner / mtf_checker /
+    # WT_X), НЕ кросс нуля. До 29.05 combinator считал кросс нуля → ARCH-104 паттерны с
+    # wt_cross_up/down якорями (вкл. D-051 gate) матчились на неверном событии. Выровнено
+    # с каноничной логикой основного бота (confluence_scanner.py:172-178).
     wt_cu = np.zeros(n, dtype=bool); wt_cd = np.zeros(n, dtype=bool)
     for i in range(1, n):
-        for j in range(max(1, i-2), i+1):
-            if wt[j-1] < 0 and wt[j] >= 0: wt_cu[i] = True
-            if wt[j-1] >= 0 and wt[j] < 0: wt_cd[i] = True
+        if np.isnan(wt[i]) or np.isnan(wt[i-1]) or np.isnan(wt2[i]) or np.isnan(wt2[i-1]):
+            continue
+        # cross up из зоны OS: wt1 пересекает wt2 снизу вверх, был в OS
+        if wt[i-1] <= wt2[i-1] and wt[i] > wt2[i] and wt[i-1] < WT_OS:
+            wt_cu[i] = True
+        # cross down из зоны OB: wt1 пересекает wt2 сверху вниз, был в OB
+        if wt[i-1] >= wt2[i-1] and wt[i] < wt2[i] and wt[i-1] > WT_OB:
+            wt_cd[i] = True
     out[f"wt_cross_up_{label}"]   = wt_cu
     out[f"wt_cross_down_{label}"] = wt_cd
 
-    # ─ WT Divergences: 4 типа (regular + hidden, bull + bear) — D-040 (2026-05-22) ─
-    # По образцу bull_div/bear_div (RSI ниже), но на WT и + hidden варианты.
-    # Hidden = continuation: bull hidden = price HL + wt LL (тренд UP продолжается);
-    # bear hidden = price LH + wt HH (тренд DOWN продолжается).
-    # Persistent на 10 баров (как pivot_bounce).
-    L_DIV = 14
-    WT_DELTA = 1.5
-    DIV_PERSIST = 10
-    wt_div_bull_reg = np.zeros(n, dtype=bool)
-    wt_div_bear_reg = np.zeros(n, dtype=bool)
-    wt_div_bull_hid = np.zeros(n, dtype=bool)
-    wt_div_bear_hid = np.zeros(n, dtype=bool)
-    for i in range(L_DIV, n):
-        w = wt[i-L_DIV:i]
-        if np.isnan(w).all():
-            continue
-        lo_w = low[i-L_DIV:i]
-        hi_w = high[i-L_DIV:i]
-        first_half_wt = wt[i-L_DIV:i-L_DIV//2]
-        # ─ Lows analysis (bull side) ─
-        idx_min_p = int(np.argmin(lo_w))
-        if 2 < idx_min_p < L_DIV-2:
-            first_lo_min = lo_w[:idx_min_p].min()
-            cur_low = low[i-1]
-            if not np.isnan(first_half_wt).all():
-                first_wt_min = np.nanmin(first_half_wt)
-                if not np.isnan(first_wt_min):
-                    cur_wt = wt[i-1]
-                    if not np.isnan(cur_wt):
-                        # Bull regular: price LL (cur < first) + wt HL (cur > first)
-                        if cur_low < first_lo_min and cur_wt > first_wt_min + WT_DELTA:
-                            wt_div_bull_reg[i] = True
-                        # Bull hidden: price HL (cur > first) + wt LL (cur < first)
-                        if cur_low > first_lo_min and cur_wt < first_wt_min - WT_DELTA:
-                            wt_div_bull_hid[i] = True
-        # ─ Highs analysis (bear side) ─
-        idx_max_p = int(np.argmax(hi_w))
-        if 2 < idx_max_p < L_DIV-2:
-            first_hi_max = hi_w[:idx_max_p].max()
-            cur_high = high[i-1]
-            if not np.isnan(first_half_wt).all():
-                first_wt_max = np.nanmax(first_half_wt)
-                if not np.isnan(first_wt_max):
-                    cur_wt = wt[i-1]
-                    if not np.isnan(cur_wt):
-                        # Bear regular: price HH + wt LH
-                        if cur_high > first_hi_max and cur_wt < first_wt_max - WT_DELTA:
-                            wt_div_bear_reg[i] = True
-                        # Bear hidden: price LH + wt HH
-                        if cur_high < first_hi_max and cur_wt > first_wt_max + WT_DELTA:
-                            wt_div_bear_hid[i] = True
-    # Persistent rolling
-    for arr, name in [
-        (wt_div_bull_reg, f"wt_div_bull_reg_{label}"),
-        (wt_div_bear_reg, f"wt_div_bear_reg_{label}"),
-        (wt_div_bull_hid, f"wt_div_bull_hidden_{label}"),
-        (wt_div_bear_hid, f"wt_div_bear_hidden_{label}"),
-    ]:
-        out[name] = pd.Series(arr).rolling(window=DIV_PERSIST, min_periods=1).max().fillna(0).astype(bool).values
+    # ─ WT Divergences (DEV-233): порт WT_X (фрактал на WT + low/high) ─
+    # WT_X ≠ LonesomeTheBlue: пивот = williams-фрактал на самом WT, цена по low/high,
+    # без trendline, сравнение с предыдущим WT-фракталом. RSI ниже — другой алгоритм (close).
+    wt_div_bull_reg, wt_div_bear_reg, wt_div_bull_hid, wt_div_bear_hid = _wtx_divergences(
+        wt, low, high)
+    out[f"wt_div_bull_reg_{label}"]    = wt_div_bull_reg
+    out[f"wt_div_bear_reg_{label}"]    = wt_div_bear_reg
+    out[f"wt_div_bull_hidden_{label}"] = wt_div_bull_hid
+    out[f"wt_div_bear_hidden_{label}"] = wt_div_bear_hid
 
     # ─ RSI ────────────────────────────────────────────────────────────────
     r = rsi(close, 14)
@@ -351,74 +572,15 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"rsi_cross50_up_{label}"]   = rsi_x_up
     out[f"rsi_cross50_down_{label}"] = rsi_x_dn
 
-    # ─ Divergence (RSI vs price, упрощённо: цена ниже за окно но RSI выше) ─
-    bull_div = np.zeros(n, dtype=bool); bear_div = np.zeros(n, dtype=bool)
-    L = 14
-    for i in range(L, n):
-        # Bull div: цена сделала lower low, RSI сделал higher low
-        recent_lows_price = low[i-L:i]
-        recent_lows_rsi   = r[i-L:i] if not np.isnan(r[i-L:i]).all() else None
-        if recent_lows_rsi is not None:
-            idx_min_p = np.argmin(recent_lows_price)
-            if idx_min_p > 2 and idx_min_p < L-2:
-                first_part = recent_lows_price[:idx_min_p]; sec_part = recent_lows_price[idx_min_p:]
-                if len(first_part)>0 and len(sec_part)>0:
-                    if recent_lows_price[-1] < first_part.min() and not np.isnan(r[i-1]):
-                        # цена ниже но RSI выше предыдущего минимума?
-                        first_half = r[i-L:i-L//2]
-                        if not np.isnan(first_half).all():
-                            first_rsi_min = np.nanmin(first_half)
-                            if not np.isnan(first_rsi_min) and r[i-1] > first_rsi_min + 3:
-                                bull_div[i] = True
-        # Bear div зеркально
-        recent_highs_price = high[i-L:i]
-        recent_highs_rsi = r[i-L:i] if not np.isnan(r[i-L:i]).all() else None
-        if recent_highs_rsi is not None:
-            idx_max_p = np.argmax(recent_highs_price)
-            if 2 < idx_max_p < L-2:
-                if recent_highs_price[-1] > recent_highs_price[:idx_max_p].max():
-                    first_half = r[i-L:i-L//2]
-                    if not np.isnan(first_half).all():
-                        first_rsi_max = np.nanmax(first_half)
-                        if not np.isnan(first_rsi_max) and r[i-1] < first_rsi_max - 3:
-                            bear_div[i] = True
-    out[f"bull_div_{label}"] = bull_div
-    out[f"bear_div_{label}"] = bear_div
-
-    # ─ RSI Hidden Divergence — D-040 (2026-05-22) ─
-    # Bull hidden: price HL + RSI LL → continuation UP
-    # Bear hidden: price LH + RSI HH → continuation DOWN
-    rsi_div_bull_hid = np.zeros(n, dtype=bool)
-    rsi_div_bear_hid = np.zeros(n, dtype=bool)
-    L_RH = 14
-    RSI_DELTA = 3.0
-    DIV_PERSIST_RSI = 10
-    for i in range(L_RH, n):
-        lo_w = low[i-L_RH:i]
-        hi_w = high[i-L_RH:i]
-        r_w_first = r[i-L_RH:i-L_RH//2]
-        if np.isnan(r_w_first).all() or np.isnan(r[i-1]):
-            continue
-        # Bull hidden: price HL + RSI LL
-        idx_min_p = int(np.argmin(lo_w))
-        if 2 < idx_min_p < L_RH-2:
-            first_lo_min = lo_w[:idx_min_p].min()
-            cur_low = low[i-1]
-            first_r_min = np.nanmin(r_w_first)
-            if not np.isnan(first_r_min):
-                if cur_low > first_lo_min and r[i-1] < first_r_min - RSI_DELTA:
-                    rsi_div_bull_hid[i] = True
-        # Bear hidden: price LH + RSI HH
-        idx_max_p = int(np.argmax(hi_w))
-        if 2 < idx_max_p < L_RH-2:
-            first_hi_max = hi_w[:idx_max_p].max()
-            cur_high = high[i-1]
-            first_r_max = np.nanmax(r_w_first)
-            if not np.isnan(first_r_max):
-                if cur_high < first_hi_max and r[i-1] > first_r_max + RSI_DELTA:
-                    rsi_div_bear_hid[i] = True
-    out[f"rsi_div_bull_hidden_{label}"] = pd.Series(rsi_div_bull_hid).rolling(window=DIV_PERSIST_RSI, min_periods=1).max().fillna(0).astype(bool).values
-    out[f"rsi_div_bear_hidden_{label}"] = pd.Series(rsi_div_bear_hid).rolling(window=DIV_PERSIST_RSI, min_periods=1).max().fillna(0).astype(bool).values
+    # ─ RSI Divergences (DEV-233): pivot-based порт Pine, source="Close" ─
+    # Единый алгоритм с WT (тот же _calc_divergence). bull_div/bear_div = regular,
+    # rsi_div_*_hidden = hidden. Заменил argmin-окно (regular + D-040 hidden).
+    rsi_bull_reg, rsi_bear_reg, rsi_bull_hid, rsi_bear_hid = _calc_divergence(
+        close, r, DIV_PIVOT_PRD, DIV_MAX_PP, DIV_MAX_BARS)
+    out[f"bull_div_{label}"] = rsi_bull_reg   # имя сохранено для обратной совместимости
+    out[f"bear_div_{label}"] = rsi_bear_reg
+    out[f"rsi_div_bull_hidden_{label}"] = rsi_bull_hid
+    out[f"rsi_div_bear_hidden_{label}"] = rsi_bear_hid
 
     # ─ EQH/EQL sweep ──────────────────────────────────────────────────────
     eqh_sw = np.zeros(n, dtype=bool); eql_sw = np.zeros(n, dtype=bool)
