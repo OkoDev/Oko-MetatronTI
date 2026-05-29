@@ -1,155 +1,48 @@
 # What's Next — Handoff Document
 
-> Последнее обновление: **2026-05-25 ~18:00 UTC** (Агент: Architect/Sonnet 4.6).
+> Последнее обновление: **2026-05-30 ~02:30 UTC** (Агент: Developer/Opus 4.8).
 
 ---
 
-<current_session>
+## 🎯 Сессия 30.05: исправление дивергенций + ретробэктест + изоляция golden
 
-<original_task>
-ARCH-113: TPSelector — Intelligent TP Gravity Engine.
-Полное исследование + рой + документация + TASK на реализацию.
-</original_task>
+### ✅ Закрыто за сессию
+**Стабилизация потока данных:**
+- **DEV-226/227** — TSL не активировался при R>1 (pre-filter мёртвая зона + stale-кэш). Фикс: early-profit check + force REST bypass.
+- **DEV-230** — WS перегружал event loop (scan 76s→8s, health 339×DEGRADED→HEALTHY). Kill-switch `performance.ws_enabled: false` (REST-only).
+- **DEV-232** — observer фетчил 5m для всех 242 пар (цикл 3168s→~350s). HTF-gate + кэш HTF (TTL 600).
 
-<work_completed>
+**Дивергенции (корневой баг):**
+- **DEV-233** — RSI-дивергенции → LonesomeTheBlue (пивоты по close + trendline + live-ветка).
+- **DEV-233b** — WT-дивергенции → WT_X (фрактал на WT + low/high, БЕЗ trendline). RSI и WT = ДВА разных индикатора.
+- **DEV-234** — wt_cross выровнен на wt1×wt2 в OS/OB (было: кросс нуля).
+- Эталоны: `memory/reference_pine_divergence.md`. Чарты: `tmp_charts/trx_divergence.png`, `trx_wtx_div.png`.
 
-## Исследование ARCH-113 TPSelector (7 скриптов, 156K+ уровней)
+**Ретробэктест + чистка:**
+- **DEV-235** — 3 этапа (1h/5m/15m, 45-46 пар × 2.4г) на исправленном combinator. ВЕРДИКТ: re-mining НЕ нужен. Golden-семейство = иллюзия сломанной div (L1_golden_LTF_5m 97%→44.7%). Костяк (T2L/SHORT/pivot) — реальный edge. Скрипты: `retrobacktest_dev235.py`, `_ltf.py`. CSV в `tmp_charts/`.
+- **DEV-236** — изолировано 28 паттернов (`enabled: false`). Registry: +поле enabled, фильтр в find_matching + htf_gate_open. 215→187 активных. Подтверждено в проде (decisions 21→6, golden=0).
 
-### Ключевые выводы:
-1. **Woodie/Camarilla → EXCLUDED** (overlap 89.5%, unique hits 0%)
-2. **Gravity scoring: score = gravity / dist^1.5** (alpha=1.5 доказан → top10%=83% reach)
-3. **FVG decay**: effective_weight = base × exp(-age/tau). 1h FVG: 73.8% → 16.3% (age 0-3 vs 60+)
-4. **Pyramiding подтверждён**: P(4h FVG | 15m FVG hit) = 65.8% vs 51.3% → Lift +14-21%
-5. **42% SL сделок** имели max_R_possible > 0.5R — потенциал конверсии с правильным TP
-6. **Прогноз**: WR 25% → 70-85% при FVG магнитах, expectancy +0.75R (vs -0.44R сейчас)
+### 📌 Следующие шаги (порядок роя, вариант A)
+1. **Наблюдение** — дать боту неделю поторговать на чистом костяке (187 паттернов). Фаза 2 (доказать «+» на честных паттернах).
+2. **ARCH-117** — WT/RSI как единые сферы Куба (устранить 7 копий формулы). `core/intelligence/wt_service.py` уже есть (заготовка).
+3. **ARCH-118** — стандартизация features_json (единый снимок 211 флагов, live=бэктест). Устраняет самоподтверждение в корне.
+4. **Потом** — ML/re-mining на чистых данных.
 
-### Созданные файлы:
-- `scripts/pivot_comparison_test.py` — Woodie/Camarilla excluded
-- `scripts/tp_levels_comprehensive_test.py` — reach по источникам
-- `scripts/gravity_cluster_test.py` — кластеризация + lift
-- `scripts/gravity_alpha_optimizer.py` — alpha=1.5 оптимум
-- `scripts/tp_atr_normalized_test.py` — ATR-нормировка, FVG decay
-- `scripts/tp_reach_over_time.py` — временная динамика (504h)
-- `scripts/mtf_pyramid_test.py` — MTF иерархия + P(HTF|LTF)
+### ⚠️ Открытые задачи (TASKS)
+- **DEV-231** 🟡 — дашборд `/api/dashboard` timeout >10с (full_stats тяжёлый к БД).
+- **DEV-230-FU** ⏸ — постоянное решение по WS (REST-only / D-072 / урезанный).
+- **TR-232a/b** — разбор T5_L_02 (+6.41R) и убытков (46% SL).
 
-### Документация:
-- `obsidian/Tasks/ARCH-113.md` — ОБНОВЛЁН: полный план Phase 1/2/3
-- `obsidian/Research/ARCH-113-TPSelector-Research-2026-05-25.md` — СОЗДАН
-- `memory/project_confluence_principle.md` — СОЗДАН
-- `TASKS.md` — ARCH-113 обновлён
-- Team Discussion: `obsidian/Team-Discussions/2026-05-25-arch-113-tpselector-plan-реализации-intelligent-sl.md`
+### 🔧 Состояние бота
+- PID 14248 (рестарт 01:22), REST-only, observer на 242 парах, gate работает.
+- health периодически DEGRADED 2.4-3.2s — фоновая деградация BingX REST (не event loop, известно).
+- WS отключён (`ws_enabled: false`).
 
-## Рой-синтез (4/6 моделей):
-- **Начать с TPSelector** (3/4 моделей — WR TP сейчас 8-13%, это критичнее SL)
-- **MVP источников**: FVG(young 0-3 bars) + PDH + psycho (консенсус 5/5)
-- **Интеграция**: plugin-layer `apply_tp_selector()` + config флаг `tp_selector_enabled: false`
-- **Хранение**: on-the-fly в calculate_levels(), LRU cache TTL=30s
-- **Pyramiding**: signal type `PYRAMID_ADD` → через monitoring.py
-
-</work_completed>
-
-<next_session_priorities>
-
-## 🔴 ПРИОРИТЕТ 1: D-053 (в параллельной сессии)
-WsFeed cascade crash — scan_loop dies. 105 случаев за 3 дня. КРИТИЧЕСКИЙ БАГ.
-Обрабатывается отдельно.
-
-## 🔴 ПРИОРИТЕТ 2: ARCH-113 Phase 1 — TPSelector MVP
-
-**Задача: создать `core/smc/tp_selector.py`**
-
-### Шаг 1: Структура модуля
-```python
-# core/smc/tp_selector.py
-import math
-from dataclasses import dataclass
-from typing import Optional
-
-@dataclass
-class TPCandidate:
-    price: float
-    gravity: float
-    dist_pct: float
-    score: float          # gravity / dist^1.5
-    sources: list[str]    # ['fvg_1h', 'psycho']
-    label: str            # для tp_source в БД
-
-class TPSelector:
-    EPS_PCT = 0.5          # ±0.5% кластеризация
-    ALPHA = 1.5            # score = gravity / dist^alpha
-    MAX_DIST_PCT = 15.0    # фильтр дальних уровней
-    
-    DECAY_TAU = {'5m': 60, '15m': 40, '1h': 20, '4h': 15}
-    BASE_WEIGHTS = {
-        'fvg_5m': 2, 'fvg_15m': 3, 'fvg_1h': 4, 'fvg_4h': 5,
-        'pdh': 3, 'pdl': 3, 'pwh': 4, 'pwl': 4,
-        'psycho': 2, 'vp_poc': 3, 'std_r1': 2, 'std_r2': 1,
-    }
-    
-    def select(self, entry, direction, market_context, signals):
-        magnets = self._collect_magnets(entry, direction, market_context, signals)
-        clusters = self._cluster(magnets)
-        ranked = sorted(clusters, key=lambda c: c.score, reverse=True)
-        tp1 = self._pick_tp1(ranked)  # dist <0.5R, ближайший хороший
-        tp2 = self._pick_tp2(ranked, tp1)  # dist 1-3R, макс гравитация
-        return tp1, tp2
-```
-
-### Шаг 2: Интеграция в recommendation_generator.py
-```python
-# В calculate_levels(), ПОСЛЕ расчёта SL, ПЕРЕД возвратом:
-def apply_tp_selector(entry, direction, sl_pct, market_context, signals, config):
-    if not config.get('sl_tp_engine', {}).get('tp_selector_enabled', False):
-        return None, None
-    try:
-        from core.smc.tp_selector import TPSelector
-        tp1, tp2 = TPSelector().select(entry, direction, market_context, signals)
-        return tp1, tp2
-    except Exception as e:
-        logger.warning('TPSelector failed: %s', e)
-        return None, None
-```
-
-### Шаг 3: config.yaml
-```yaml
-sl_tp_engine:
-  tp_selector_enabled: false   # A/B флаг (включить на 50% пар для теста)
-  tp_selector_eps_pct: 0.5     # кластеризация ±%
-  tp_selector_alpha: 1.5       # gravity score alpha
-  tp_selector_max_dist_pct: 15.0
-```
-
-### Шаг 4: Источники данных в market_context
-Проверить что доступно в MarketContext при вызове calculate_levels():
-- FVG bull/bear по TF: `grep "fvg\|bear_fvg\|bull_fvg" core/signals/signal_models.py`
-- PDH/PDL: `grep "prev_day_high\|pdh" core/`
-- Psycho: нужно добавить в MarketContext или вычислять inline
-- VP POC: `grep "vp_poc\|volume_profile" core/`
-
-## 🔴 ПРИОРИТЕТ 3: D-047
-Интеграция wt_cross_*_1h gate. Walkforward avgR=+1.55 WR=85% подтверждён.
-
-</next_session_priorities>
-
-<context_for_next_agent>
-
-### Что нужно знать следующей сессии:
-
-**Основа решения:** данные из 7 исследований (156K уровней) однозначно показывают:
-- FVG <0.3R: 73-86% reach за 24h (ЛУЧШИЙ источник TP)
-- Gravity кластер 2+: +14-21% lift
-- Alpha=1.5 оптимум для score = gravity/dist^alpha
-
-**Что НЕ трогать:**
-- RANGE BOUNCE SL/TP (`core/smc/sl_tp_calculator.py`) — отдельная стратегия, остаётся
-- ARCH-104 паттерны — у них свой SL через `arch104:no_trail_r2.0`
-- Текущую иерархию SL в `calculate_levels()` — Phase 2 задача, не Phase 1
-
-**Флаг для безопасного A/B:**
-`tp_selector_enabled: false` — по умолчанию выключен, включить только для тестовой группы пар
-
-**Ключевой файл:** `obsidian/Tasks/ARCH-113.md` — полный план с acceptance criteria
-
-</context_for_next_agent>
-
-</current_session>
+### 📂 Изменённые файлы (незакоммичено)
+- `tools/pattern_mining/combinator_v2.py` (дивергенции + wt_cross)
+- `core/confirmations/arch104_patterns.py` (enabled + htf_gate_open)
+- `config/arch104_patterns.yaml` (28× enabled:false)
+- `tools/pattern_mining/retrobacktest_dev235.py`, `_ltf.py` (новые)
+- `bot/loops/arch104_observer_loop.py`, `bot/core/bot.py`, `config.yaml` (DEV-230/232)
+- `core/trading/trade_simulator.py`, `core/infra/api_engine.py`, `core/infra/data_collector.py` (DEV-226/227)
+- `memory/`: golden_pattern_invalidated.md, reference_pine_divergence.md, current_state.md

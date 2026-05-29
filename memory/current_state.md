@@ -4,6 +4,291 @@
 
 ---
 
+## [29.05.2026] Агент: Developer — DEV-233/234: WT/RSI дивергенции + wt_cross исправлены, ARCH-117 поставлена
+
+### Корень (вопрос ARCH «где WT/RSI вычисляются»)
+- WT-формула в 7+ файлах независимо. Производные (cross/div) каждый потребитель считает по-своему.
+- combinator_v2 (ARCH-104) ОТСТАЛ: wt_cross=кросс нуля (надо wt1×wt2 в OS/OB), div=argmin/low (надо фрактал/close).
+- Основной бот (confluence/mtf) считал ВЕРНО — мусор только в arch104-ветке.
+
+### ✅ Исправлено
+- **DEV-233 (RSI-div):** LonesomeTheBlue — пивоты close + trendline + live-ветка. bull_div/bear_div/rsi_div_*_hidden.
+- **DEV-233b (WT-div):** `_wtx_divergences()` — фрактал на WT + low/high, БЕЗ trendline (другой индикатор!). Совпал с WT_X на TRX.
+- **DEV-234 (wt_cross):** wt1×wt2 в OS/OB (было кросс нуля). Частота 50-80→4-8/пара. Затрагивало D-051 gate + T8.
+- Чарты: tmp_charts/trx_divergence.png (RSI), trx_wtx_div.png (WT). py_compile OK.
+
+### ✅ DEV-235 ЭТАП 1 (ретробэктест HTF) — ВЫПОЛНЕН
+- `tools/pattern_mining/retrobacktest_dev235.py` + `tmp_charts/dev235_retrobacktest.csv`. 88 HTF-паттернов на исправленном combinator (46 пар × 2.4г).
+- **L1_golden +1.89→+0.46, L1_golden_scale_1h +6.07→+0.47** — держались на сломанных div, edge просел.
+- SHORT (S1-S8 +1.2..1.46) устойчивы. Перевернулось в минус 4. Сильными осталось 52.
+- Вывод: старые LONG-golden метрики были ЗАВЫШЕНЫ ложными div. SHORT/pivot реальны.
+
+### ✅ DEV-235.2 ЭТАП 2 (5m+15m) — ГОТОВ. ФИНАЛ: re-mining НЕ нужен
+- `retrobacktest_dev235_ltf.py` + dev235_ltf_5m/15m.csv. 5m: 0 в минус/31 сильных. 15m: 0 в минус/33 сильных.
+- **Рушится ТОЛЬКО golden (bull_div_1d):** L1_golden_LTF_5m 97%→44.7%, _15m 100%→68%, scale +6→+0.5. Костяк T2L/D2_S/SHORT — Δ=0.0, реальный edge.
+- **golden = флагман проекта (PATTERN_MINING) оказался иллюзией сломанной div.** Стратегическая переоценка фундамента → решение TRADER.
+- Бот уже рестартнут (243 пары) на исправленном combinator.
+
+### ✅ DEV-236 — изолировано 28 паттернов (enabled:false, 30.05)
+- Registry: +поле `enabled`, фильтр в find_matching + htf_gate_open. 215→187 активных.
+- Изолированы: golden ×7 (L1_golden*), T4_L div ×8, T2_L div ×4, T2L_L_L1 ×6, T6_L_02, T7_S_A4_5m_02 — все с div/cross-якорем + деградация ≥0.5R.
+- НЕ тронуты 15 паттернов с деградацией БЕЗ div/cross (причина = разница симуляции).
+- Обратимо (enabled:true вернёт).
+- ✅ ПОДТВЕРЖДЕНО В ПРОДЕ (рестарт PID 8340, цикл 00:13): decisions 21→6, golden/T4_L/T2_L_12 в decisions = 0. Фильтр enabled работает в живом боте. Цикл 352с.
+- Далее по порядку (рой A): ARCH-118 стандартизация features_json → потом ML/re-mining. Golden остаётся в файле для возможного re-mining после ARCH-117/118.
+
+### 🏛️ ARCH-117 (после "+")
+- WaveService/RsiService как единые сферы Куба → Shared Context Bus. Устранить 7 копий WT. Разбор в DISCUSSION.
+
+### 📂 Файлы
+- `tools/pattern_mining/combinator_v2.py` (div WT_X + RSI LonesomeTheBlue + wt_cross wt1×wt2)
+- `DISCUSSION.md`, `TASKS.md`, `memory/reference_pine_divergence.md`, `current_state.md`
+
+---
+
+## [29.05.2026-DUP] DEV-233 первичная запись (см. выше актуальную)
+
+### Контекст
+- Старый расчёт div в combinator_v2 неверен (рой 5/5): argmin-окно вместо пивотов, по low вместо close, без trendline, rolling 10.
+- ARCH выбрал source="Close". Pine-эталон → `memory/reference_pine_divergence.md`.
+
+### ✅ Реализовано
+- `_pivot_indices(arr, prd=5)` — реальные пивоты close.
+- `_calc_divergence(close, osc, 5, 10, 100, persist=3)` — **пивот-к-пивоту**, trendline по обеим линиям (close+осц), флаг на `правый_пивот_idx+prd`.
+- Заменены WT-div (4 типа) + RSI-div (regular bull_div/bear_div + hidden). Имена сохранены.
+- Частота 0.8-2.5% баров (была залипающей 10-бар). py_compile OK.
+- ⚠️ Задержка подтверждения prd=5 баров (фундаментально, как Pine).
+
+### ⚠️ ТРЕБУЕТ
+- **Ретробэктест паттернов** — бэктест считался на старом алгоритме → 72 5m-паттерна с div-якорями могут быть невалидны.
+- Рестарт — observer подхватит новый расчёт.
+- Вопрос ARCH: persist=3 достаточно для anchor-матчинга?
+
+### 📂 Изменённые файлы
+- `tools/pattern_mining/combinator_v2.py`
+- `DISCUSSION.md`, `TASKS.md`, `memory/reference_pine_divergence.md`, `current_state.md`
+
+---
+
+## [29.05.2026 ~evening UTC] Агент: Developer — EXPIRED фикс финальный
+
+- ✅ Сделано: `position_sync._resolve_exit` возвращал `"EXPIRED"` как fallback когда closing-ордер не найден в filled orders → бот слал уведомление «Истёк #EXPIRED» в TG. Добавлен блок реклассификации по P&L: R<0 → SL, R≥0+SL moved → TSL, R≥0 → TP. EXPIRED в БД больше не попадает.
+- 📂 Изменён: `core/exchange/position_sync.py` (строки 422-436)
+- ⚠️ Требует рестарта бота для вступления в силу.
+
+---
+
+## [29.05.2026] Агент: Developer — DEV-232: HTF-gate + кэш HTF для 5m ARCH-104
+
+### Контекст
+- ARCH-104 observer фетчил 5m для всех 242 пар → цикл 1020-3168с (target 600с). Корень: нет HTF-gate на фетче.
+- Рой (4/6) подтвердил: gate безопасен. Проверено 0/72 5m-паттернов без HTF-anchor.
+
+### ✅ Реализовано
+- `core/confirmations/arch104_patterns.py`: `htf_gate_open(active_htf_flags, detection_tf)` — открыт если у паттерна все HTF-anchors активны. fail-open для паттерна без HTF-anchor.
+- `bot/loops/arch104_observer_loop.py`: `_scan_one_pair` → HTF first (15m+1h+4h) → compute HTF-флаги → gate (кэш per-symbol TTL **600с**) → 5m только при open. 15m не тронут (cache-hit от scan).
+- TTL 600 (не 1800): gate реагирует на созревание HTF-сетапа за ~1 цикл → нет лага раннего входа. N-1 идея отклонена (раздувает охват 4.4×, входу не помогает — нужен полный HTF+5m-триггер).
+- Лог `[DEV-232 gate: ltf_fetched=N htf_only=M]`.
+- Тест на реальных флагах: golden/short→open, empty/partial→closed. py_compile OK.
+
+### ✅ ПОДТВЕРЖДЕНО ПОСЛЕ РЕСТАРТА (PID 18144, цикл 06:59)
+- `scanned=243 decisions=19 in 568.0s [DEV-232 gate: ltf_fetched=1 htf_only=241]`
+- Цикл: 1020-3168с → **568с** (впервые ≤ target 600). 5m фетч: 243→**1** пара (gate отсёк 99.6% холостых). decisions=19 (норма 15-37, не просели).
+- Gate работает идеально: 15m/1h/4h-паттерны как прежде, отсечены только заведомо-холостые 5m-фетчи.
+
+### 📂 Изменённые файлы
+- `core/confirmations/arch104_patterns.py`, `bot/loops/arch104_observer_loop.py`
+- `DISCUSSION.md`, `TASKS.md`, `memory/current_state.md`
+
+---
+
+## [28.05.2026] Агент: Developer — DEV-230: WS перегрузил event loop → деградация всего потока
+
+### Диагноз
+- Симптом ARCH: «после WS всё упало и не вернулось», дашборд `⚠ BingX 2156ms`, глючит.
+- Логи: health 339×DEGRADED 0×восстановлен (latency 2156-4250ms), scan ohlcv 76-96s/символ (норма ~15s).
+- Корень: **5 ccxt.pro WS на одном event loop** (4 ticker×75 + 1 OHLCV×80, [bot.py:181](bot/core/bot.py#L181)) + scan+tracker+health+дашборд. watch_ohlcv залипает (SLOW await 64-92s ×110) → блокирует loop → все async встают в очередь. Сеть BingX ок (ccxt из отд. процесса быстр) — latency = задержка loop, не RTT.
+
+### ✅ DEV-230 kill-switch (тест-откат, выбран ARCH)
+- `config.yaml performance.ws_enabled: false`.
+- `bot.py _start_ws_feed`: ранний return при ws_enabled=false ([:299](bot/core/bot.py#L299)). WsFeed-объект жив (fallback/stats не падают), WS-соединений нет.
+- REST-only: scan REST (loop свободен), fetch_candles фон, trade checker = force REST (DEV-227).
+- py_compile OK. **ТРЕБУЕТ РЕСТАРТ.**
+
+### ✅ ДИАГНОЗ ПОДТВЕРЖДЁН (рестарт PID 40420, 22:05)
+- WS отключён (лог 22:06:12 «[WsFeed] ОТКЛЮЧЁН … REST-only»).
+- **scan ohlcv: 76-96s → 7.8-10.8s** (8-10× быстрее).
+- **health: последний DEGRADED 22:06:45 (warmup), после — ни одного → HEALTHY** (было 339×DEGRADED 0×recover).
+- WS был причиной деградации всего потока. Подтверждено.
+- ⚠️ Остаточно: дашборд `/api/dashboard` timeout >10с — вероятно тяжёлый full_stats к БД (отдельный вопрос, не event loop). Кандидат на оптимизацию.
+
+### DEV-230-FU: постоянное решение (открыто, ARCH)
+- (A) остаться REST-only (force REST + fetch_candles покрывают) — сейчас работает.
+- (B) D-072 WS отдельным процессом. (C) урезанный WS (только ticker).
+
+### 📂 Изменённые файлы
+- `config.yaml` (ws_enabled), `bot/core/bot.py` (kill-switch)
+- `DISCUSSION.md`, `TASKS.md`, `memory/current_state.md`
+
+---
+
+## [28.05.2026 ~23:00 UTC] Агент: Developer+Researcher — Elliott Wave глубокое исследование
+
+### ✅ Сделано
+- **Запущен и завершён** `scripts/elliott_n_down_backtest.py` (n=3597, 255 пар). Ключевой результат: теория инвертирована — divergence SHORT при n_down=4 даёт avgR=+3.372 WR=79.4%; лучший комбо 4h=4,1h=0 → avgR=+1.403 WR=51.6% n=93.
+- **DEV-227 расширен** до ALL стратегий (Wave3 OTE SHORT + BearBOS Counter-LONG)
+- **DEV-228 закрыт** (бэктест завершён)
+- **Elliott Wave углублённое исследование** (автономно, ~4 часа): изучены правила разметки, fibonacci projections, OTE/ICT интеграция, liquidity sweep + волны, crypto-специфика, ошибки разметки.
+
+### 📄 Созданы три новых документа:
+- `obsidian/Concepts/Elliott-Wave-Labeling.md` — 16 разделов: degree, импульс, коррекции (zigzag/flat/triangle), diagonals, SMC↔Elliott карта, trading setups, Python checklist
+- `obsidian/Concepts/Elliott-Wave-Fibonacci-Tools.md` — формулы price targets для каждой волны, Fibonacci cluster algorithm, OTE zone calculator, liquidity sweep types, Phase Detector (Python), confluence score
+- `obsidian/Concepts/Elliott-Wave-Crypto-Practice.md` — ошибки разметки (волна 3 vs C, волна 4 vs A), крипто-специфика (ликвидационные каскады, 24/7, funding rate), связь с сигналами бота
+
+### 🔑 Ключевые инсайты:
+- `n_down=0 + htf=down` ≠ просто "начало волны 3" — это может быть конец коррекции 2/4 (SHORT OK) ИЛИ начало восходящего тренда (STOP SHORT). Без htf_direction = метрика бесполезна.
+- divergence SHORT + n_down=4 = волна 5 финал = ЗОЛОТО (WR=79%)
+- Лучший SHORT КОМБО: 4h n_down=4, 1h n_down=0 = глубокий HTF тренд + MTF отскок
+
+### 🔄 В процессе (не завершено):
+- DEV-227: бэктест конкретных стратегий (Wave3 OTE SHORT + BearBOS Counter-LONG) — нужны скрипты
+- DEV-225 🔴: ATRChange SHORT Daily PP gate (shadow поля) — не начат
+- DEV-226 Phase 2: elliott_n_down в остальных execute функциях — не начат
+
+### ⚠️ Незакоммиченные изменения:
+- `scripts/elliott_n_down_backtest.py` (создан + фикс парсинга дат)
+- `core/indicators/indicators.py` (calculate_n_down, calculate_n_up)
+- `core/indicators/__init__.py` (экспорт)
+- `bot/loops/scan_loop.py` (Elliott snap)
+- `TASKS.md` (DEV-226..228, DEV-227 расширен)
+- `docs/STRATEGIES/WAVE3_OTE_SHORT.md` (статус уточнён)
+- `docs/STRATEGIES/BEARBOS_COUNTER_LONG.md` (создан)
+- `docs/SHORT_ENTRY_RULES.md`, `docs/LONG_ENTRY_RULES.md`, `docs/CONCEPT_MAP.md` (созданы)
+- `obsidian/Concepts/Elliott-Wave*.md` (4 файла обновлены/созданы)
+- `memory/MEMORY.md` (Elliott Wave раздел обновлён)
+
+---
+
+## [28.05.2026] Агент: Developer — DEV-226: WS pre-filter глушил активацию TSL
+
+### ✅ Сделано
+- **Найден root cause:** WS pre-filter в [trade_simulator.py:1676-1693](core/trading/trade_simulator.py#L1676) делал `continue` (пропуск REST + блока активации) для сделок с `tsl_activated=0`, если WS-цена дальше 0.5% от SL/TP. Сделки в профите (+2R), но в «мёртвой зоне» между уровнями → активация TSL/BE/MTF-220 никогда не выполнялась.
+- **Симптом:** UNI SHORT +2.25R, BERA +2.58R, ICNT +2.14R, BCH +1.76R — все `tsl_activated=0` в БД, хотя пороги (confluence 1.0R, atr_change 1.5R) пройдены.
+- **Подтверждение «рулетки»:** TAO #15233 активировалась 04:16 только потому, что в момент +2.30R цена была в 0.05% от TP (попала в буфер). UNI/BERA не подошли к TP → застряли.
+- **Фикс A применён:** в pre-filter считаем `current_r` по WS-цене от `original_sl`, не пропускаем если `R >= 0.3` (мин. триггер DEV-220/BE/per-strategy TSL). py_compile OK.
+- **Записан разбор в DISCUSSION.md** (причины + связь с WS + 3 вопроса ARCH/TRADER/DEV).
+- **UI оказался исправен** — `tslBadge` честно показывал «—» при `tsl_activated=0`, UI-патч не потребовался.
+
+### 🔴 ВТОРОЙ КОРЕНЬ (главный) — stale WS-кэш OHLCV
+- Рестарт сделан (PID 25776 старт 05:42 > фикс 05:37, бот на новом коде), НО проблема осталась → фикс A решает только pre-filter слой.
+- **Настоящий корень:** `TradeSimulator` считает `current_r` по `get_ohlcv().iloc[-1].close`, который протух. Для UNI/BERA WS OHLCV-обновление фейлит (`ohlcv error UNI: Connection timeout`), `ApiEngine.fetch_ohlcv` отдаёт `get_stale` (без TTL, [api_engine.py:395](core/infra/api_engine.py#L395)) или `None` при circuit breaker open ([:363](core/infra/api_engine.py#L363)).
+- Доказательство: UNI min_price=3.235 (stale, R=+0.41) vs реальный close 3.077 (R=+2.21); BERA min/max=None; ccxt REST напрямую работает (API ок, протух кэш бота).
+- Симптом `tsl_activated=0` при R>1 имеет ДВА корня: (1) pre-filter мёртвая зона [фикс A], (2) stale OHLCV-кэш [открыт].
+- Затрагивает не только TSL: SL/TP-мониторинг, BE, min/max → ML-метки.
+
+### ✅ Слой 2 (вариант 1) реализован — DEV-226.2 cross-source R
+- `trade_simulator.py` после строки 1750: корректируем `current_r` вверх по `_ws_price` (get_current_price — WS ticker / 1m кэш). py_compile OK.
+- Берём более профитный R → триггеры gate/BE/cascade включаются вовремя, минуя stale 15m кэш. Экзиты SL/TP не затронуты.
+- **ТРЕБУЕТ РЕСТАРТ** (оба фикса: DEV-226 pre-filter + DEV-226.2 cross-source).
+
+### ❌ Вариант 1 (cross-source) НЕ помог — 0/6 после рестарта
+- Причина: для UNI/BERA/ICNT/SOON застрял ВЕСЬ WS-слой (15m OHLCV + ticker + 1m кэш) → `_ws_price` тоже stale. Бот видит UNI +0.41R при реальных +2.37R (REST).
+- Единственный свежий источник — прямой REST.
+
+### ✅ Вариант 2 реализован — DEV-226.3 stale-guard + REST bypass
+- `ApiEngine.fetch_ohlcv(force_refresh=True)` — обход LRU + circuit breaker → реальный REST, пишет в кэш.
+- `data_collector.get_ohlcv(force_refresh=...)` — проброс.
+- `trade_simulator` после get_ohlcv: детект stale (возраст бара > 2×TF или None) → force REST. Лог `[DEV-227]`.
+- py_compile OK (3 файла). **ТРЕБУЕТ РЕСТАРТ.**
+
+### ✅ ФИКС ПОДТВЕРЖДЁН РАБОТАЮЩИМ (14:35, ~8ч после рестарта PID 6808)
+- Финальная форма: throttled безусловный force REST для НЕ-активированных OPEN (150с/сделку) + всегда при df None. Детект-по-времени выкинут (последний бар всегда «свежий»).
+- Доказательство: `[DEV-227] force REST refresh` count=272, идёт постоянно (WLFI/ZRO/JUP/ICNT в 14:47).
+- Все 5 зависших активировали TSL: BCH TP +3.00R, BERA TP +3.00R, SOON EXPIRED +3.31R, ICNT OPEN tsl=1, UNI TSL.
+- Системно: OPEN 67, tsl_activated=1 → 19 (28%) vs baseline 10/107 (9%).
+- **UNI #15292 = острая форма бага:** exit 3.651 при entry 3.271 (SHORT, памп +11.6%), R=−4.33. Бот видел stale min/max 3.26/3.274 — НЕ видел памп → не среагировал. Закрылась 06:04 (до фикса). Баг давал не только упущенную прибыль, но и реальные убытки (скрытое движение против позиции).
+
+### 🔍 В расследование (TASKS, 🔵)
+- **DEV-228** — почему WS-слой целиком мёртв для UNI/BERA (первопричина, ws_feed.py).
+- **DEV-229** — аудит масштаба stale-кэша по всем OPEN.
+- Связь: рецидив DEV-73→DEV-40→DEV-174→17.05.
+
+### 📂 Изменённые файлы (сессия)
+- `core/trading/trade_simulator.py` (DEV-226 pre-filter + DEV-226.2 cross-source + DEV-226.3 stale-guard)
+- `core/infra/api_engine.py`, `core/infra/data_collector.py` (force_refresh)
+- `DISCUSSION.md`, `TASKS.md`, `memory/current_state.md`
+
+### 📂 Изменённые файлы
+- `core/trading/trade_simulator.py` (фикс A, ~14 строк)
+- `DISCUSSION.md`, `memory/current_state.md`
+
+---
+
+## [28.05.2026 вечер] Агент: TRADER — полный бэктест ALL сигналов + генерация документации
+
+### ✅ Сделано
+
+- **Полный бэктест n=3587 ALL signal_type × direction (18 комбо):** pivot PP, Elliott n_waves, ChoCH/BOS, HTF direction.
+- **Скрипт:** `e:/tmp/full_backtest_all_signals.py`
+- **Рой #1 (5/6 моделей):** анализ пробелов в документации → консенсус: 3 документа нужны
+- **Рой #2 (запущен):** генерация markdown контента для 8 расширений документации
+
+### 🔑 Ключевые находки полного бэктеста
+
+1. **liquidity_sweep LONG = лучший:** avgR=+4.418, WR=64.7%. AbovePP=WR=89% (ИНВЕРСИЯ! обычное правило — BelowPP для LONG)
+2. **divergence SHORT = самодостаточный:** avgR=+0.922, WR=56.5%. НЕ зависит от PP/Elliott/ChoCH. Даже в W20 = +1.127 WR=60%.
+3. **atr_change LONG = убийца:** avgR=-0.569, WR=9.9% — катастрофа по всем неделям
+4. **Universal rule SHORT:** AbovePP всегда лучше для ВСЕХ SHORT сигналов (кроме divergence, liquidity_sweep)
+5. **Universal rule LONG:** BelowPP+BearBOS = лучшее комбо для watch_list_breach (+1.556 WR=61%), arch104 (+2.001 WR=56%)
+6. **Elliott подтверждён:** n=4 → avgR=-1.814 WR=10% для atr_change; n=4 → -2.701 для confluence
+7. **wt_sideways плохой в обе стороны:** LONG=-0.159 WR=23%, SHORT=-0.898 WR=39%
+
+### ✅ Дополнение: документация по 8 расширениям вставлена (28.05.2026 ночь)
+
+Рой #2 завершён (6/6 моделей, консенсус 5/5), контент вставлен во все документы:
+
+- **SMC_GUIDE.md → Модуль 2 CHoCH:** добавлен подраздел "CHoCH × Контекст волн Эллиотта (матрица n_down)"
+- **SMC_GUIDE.md → Модуль 6 OTE:** добавлен подраздел "OTE как зона коррекционной волны Эллиотта"
+- **ENCYCLOPEDIA.md → Сфера 4:** добавлены 4 shadow признака (elliott_n_down, pvt_above_daily_pp, pvt_nearest_level, htf_price_dir)
+- **ENCYCLOPEDIA.md → Сфера 6:** добавлен "Reversal Mode = Переход Волна 5 → ABC по Эллиотту"
+- **ENCYCLOPEDIA.md → Сфера 8:** добавлен "PP/S1/R1/S2/R2/S3/R3 как Fibonacci-прокси"
+- **docs/LONG_ENTRY_RULES.md** — СОЗДАН (полное руководство LONG: 5 правил + матрица по сигналам + liquidity_sweep инверсия)
+- **docs/CONCEPT_MAP.md** — СОЗДАН (карта 6 концепций + взаимодействие на HTF/MTF/LTF + формулы сигналов)
+- **INDICATORS_GUIDE.md:** добавлен раздел "n_down / n_up как прокси волнового счёта Эллиотта"
+
+### 🔄 Следующие задачи
+
+- **DEV-225 (🔴):** реализовать shadow поля elliott_n_down/pvt_above_daily_pp/pvt_nearest_level/htf_price_dir в features_json
+- **DEV-224 (🔴):** A/B Shadow Mode анализ (ARCH-113)
+- **D-073-FOLLOWUP (🔴):** 31.05.2026 deadline — проверить данные arch104_d051_no_wt_cross gate
+
+---
+
+## [28.05.2026] Агент: TRADER — ретробэктест ATRChange SHORT (pivot + Эллиотт + ChoCH/BOS)
+
+### ✅ Сделано
+
+- **DEV-223 закрыта (✅):** `allow_short_regimes: ["TREND_DOWN"]` подтверждён данными W19. Все режимные фильтры обоснованы.
+- **Ретробэктест n=367 ATRChange SHORT (14-24 мая):** три слоя анализа — Pivot PP, Эллиотт, ChoCH/BOS.
+- **Инсайты зафиксированы в DISCUSSION.md** (28.05.2026, "ОЧЕНЬ ВАЖНО!").
+- **DEV-225 расширена и добавлена в TASKS.md:** shadow phase с 7 полями.
+
+### 🔑 Главные находки
+
+1. **Daily PP = THE фильтр:** above PP → avgR=+0.342 WR=57.6%, W20=-0.010. Below PP → avgR=-0.934, W20=-1.049. Блокирует 79% W20 плохих.
+2. **Near S1/S2 = block:** WR=2.8% (n=72). Цена у поддержки = гарантированный отскок.
+3. **n_down=3 (волна 3 Эллиотта) = лучший момент:** W19 avgR=+1.001 WR=71%.
+4. **n_down≥4 + below PP = worst:** avgR=-1.682, W20 WR=3.7%.
+5. **ChoCH при n_down<3 = усилитель (WR+), при n_down≥3 = блок (W20 -2.181).**
+6. **WT1 парадокс:** чем ближе к OS тем хуже в W20. Медиана wt1=-19.4 (не OS).
+
+### 🔄 Следующий шаг
+
+- **DEV-225 Phase 1:** добавить df_1d загрузку в scan_loop.py:1145 + передать df_htf/df_1d в `_execute_atr_change_signal` + писать 7 shadow полей в features_json.
+- Бэктест-скрипты: `e:/tmp/choch_pivot_backtest.py`, `e:/tmp/pivot_analysis3.py`, `e:/tmp/elliott_proxy_backtest.py`
+
+---
+
 ## [27.05.2026 ~19:27 UTC] Агент: Developer — ARCH-104 расследование + D-051 observability (D-073 ✅)
 
 ### ✅ Расследование (data-аудит за 7 дней с 2026-05-20)
