@@ -47,6 +47,7 @@ class ARCH104Pattern:
     ltf_triggers: list[str] = field(default_factory=list)
     detection_tf: str = "1h"                # NEW: на каком TF искать срабатывание
     scaling_role: Optional[str] = None      # NEW: fast/medium/anchor/slow (D-026)
+    enabled: bool = True                    # DEV-236: false → паттерн не матчится (изоляция)
 
 
 class ARCH104Registry:
@@ -92,6 +93,7 @@ class ARCH104Registry:
                 ltf_triggers=cfg.get("ltf_triggers", []),
                 detection_tf=cfg.get("detection_tf", "1h"),
                 scaling_role=cfg.get("scaling_role"),
+                enabled=cfg.get("enabled", True),
             )
 
         logger.info("ARCH-104 Registry loaded: %d patterns", len(self.patterns))
@@ -108,6 +110,8 @@ class ARCH104Registry:
         """
         matches = []
         for pat in self.patterns.values():
+            if not pat.enabled:                 # DEV-236: изолированные паттерны не матчатся
+                continue
             if pat.direction != direction:
                 continue
             if detection_tf is not None and pat.detection_tf != detection_tf:
@@ -118,6 +122,32 @@ class ARCH104Registry:
 
     def list_by_direction(self, direction: str) -> list[ARCH104Pattern]:
         return [p for p in self.patterns.values() if p.direction == direction]
+
+    def htf_gate_open(self, active_htf_flags: set[str], detection_tf: str) -> bool:
+        """DEV-232: можно ли вообще фетчить LTF (5m) для пары.
+
+        Gate открыт, если СУЩЕСТВУЕТ хотя бы один паттерн данного detection_tf,
+        у которого ВСЕ его HTF-anchor-флаги (не-LTF подмножество anchor_factors)
+        присутствуют в active_htf_flags. HTF-anchors — необходимое условие
+        срабатывания паттерна: без них он не сматчится даже после fetch LTF.
+
+        Проверено (29.05): 0 из 72 5m-паттернов без HTF-anchor → gate ничего
+        не блокирует, только отсекает заведомо-холостые LTF-фетчи.
+        """
+        suffix = "_" + detection_tf
+        for pat in self.patterns.values():
+            if not pat.enabled:                 # DEV-236: изолированные не открывают gate
+                continue
+            if pat.detection_tf != detection_tf:
+                continue
+            htf_anchors = [f for f in pat.anchor_factors if not f.endswith(suffix)]
+            if not htf_anchors:
+                # Паттерн вообще без HTF-anchor — gate нельзя применять (выпал бы).
+                # Сейчас таких нет, но если появятся — открываем gate (fail-open).
+                return True
+            if all(f in active_htf_flags for f in htf_anchors):
+                return True
+        return False
 
     def get_risk_intel_config(self) -> dict:
         return self.risk_intel_config
