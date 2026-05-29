@@ -447,6 +447,18 @@ performance:
   divergence_slow_threshold_sec: 3.0
   pair_slow_threshold_sec: 10.0
   scan_cycle_warning_threshold_sec: 70.0
+  # 28.05 DEV-230: kill-switch WS. false → WsFeed не запускается, поток данных на REST.
+  # Тест-откат: WS перегружал общий event loop (5 ccxt.pro соединений → SLOW await 64-92s,
+  # scan ohlcv 76-96s, health 339×DEGRADED). REST-only разгружает loop.
+  ws_enabled: false
+  # 27.05: WsFeed настройки выведены из ws_feed.py хардкодов.
+  # Шаг B — снижены под текущий deg BingX (был 100/120/2.0).
+  # Лимит BingX: 200 подписок/WS + 500 req/10s per IP.
+  ws_ticker_batch_size: 75         # 243 пары / 75 = 4 батча × WS (было 3 × 100)
+  ws_ohlcv_batch_size: 80          # 80 пар на 1 instance (было 120)
+  ws_batch_start_delay_sec: 5.0    # пауза между стартом батчей (был 2)
+  ws_reconnect_base_delay_sec: 5.0 # × consecutive_errors, max 60
+  ws_ohlcv_error_pause_sec: 1.0    # пауза после OHLCV error per-symbol
 strategy:
   name: multi_signal
   multi_signal:

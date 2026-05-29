@@ -44,6 +44,13 @@ MIN_BARS = 200
 # (+70% timeout/час post-restart vs pre-restart).
 OBSERVER_CONCURRENCY = 4
 
+# DEV-232: TTL кэша HTF-флагов. Снижен 1800→600с (= ~1 цикл observer) чтобы
+# gate реагировал на СОЗРЕВАНИЕ HTF-сетапа без лага → не запаздывать с ранним
+# 5m-входом. Разгрузка сохраняется (строгость gate не трогаем, только свежесть).
+# Стоимость: compute_flags на 1h/4h каждый цикл — дёшево (данные из общего кэша,
+# REST не делается, только пересчёт индикаторов).
+HTF_FLAGS_CACHE_TTL = 600.0
+
 
 async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_SECONDS):
     """Главный loop — раз в interval_seconds логирует ARCH-104 decisions для всех пар."""
@@ -67,6 +74,8 @@ async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_S
     # 15-17 мин до первого результата. Теперь — 60s + 5-7 мин = ~7 мин total.
     # 60s достаточно для warmup data_collector кеша при старте.
     first_cycle = True
+    # DEV-232: кэш HTF-флагов per-symbol между циклами. {symbol: (htf_flags_set, ts)}
+    htf_flags_cache: dict[str, tuple[set, float]] = {}
     while True:
         try:
             sleep_sec = 60 if first_cycle else interval_seconds
@@ -75,6 +84,8 @@ async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_S
             t0 = time.time()
             scanned = 0
             decisions = 0
+            # DEV-232: счётчики разгрузки — сколько пар прошло HTF-gate (фетчили 5m)
+            gate_stats = {"htf_only": 0, "ltf_fetched": 0}
 
             # Получаем список пар из active subscriptions / pairs
             pairs = await _get_active_pairs(bot)
@@ -89,7 +100,8 @@ async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_S
             async def _bounded_scan(sym):
                 async with sem:
                     try:
-                        result = await _scan_one_pair(bot, sym, adapter)
+                        result = await _scan_one_pair(bot, sym, adapter,
+                                                      htf_flags_cache, gate_stats)
                         async with scanned_lock:
                             counters["scanned"] += 1
                             if result:
@@ -102,8 +114,10 @@ async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_S
             decisions = counters["decisions"]
 
             elapsed = time.time() - t0
-            logger.info("[ARCH-104 observer] scanned=%d decisions=%d in %.1fs (pairs=%d)",
-                        scanned, decisions, elapsed, len(pairs))
+            logger.info("[ARCH-104 observer] scanned=%d decisions=%d in %.1fs (pairs=%d) "
+                        "[DEV-232 gate: ltf_fetched=%d htf_only=%d]",
+                        scanned, decisions, elapsed, len(pairs),
+                        gate_stats["ltf_fetched"], gate_stats["htf_only"])
             if elapsed > interval_seconds * 0.9:
                 logger.warning("[ARCH-104 observer] цикл %.1fs близок к interval %ds — рассмотреть OBSERVER_CONCURRENCY+",
                                elapsed, interval_seconds)
@@ -166,29 +180,23 @@ async def _fetch_df(data_collector, symbol: str, tf: str, limit: int):
     return df[["open", "high", "low", "close", "volume"]].dropna().sort_index()
 
 
-async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
-    """Scan одной пары на ВСЕХ 4 TF (5m, 15m, 1h, 4h) → log decisions per TF.
+async def _scan_one_pair(bot, symbol: str, adapter,
+                         htf_flags_cache: Optional[dict] = None,
+                         gate_stats: Optional[dict] = None) -> bool:
+    """Scan одной пары → log decisions per TF.
+
+    DEV-232: HTF-gate на фетче. Сначала HTF (1h+4h+1d), вычисляем HTF-флаги
+    (с кэшем между циклами), проверяем — может ли вообще сработать хоть один
+    5m-паттерн (все его HTF-anchors активны). 5m фетчим ТОЛЬКО если gate открыт.
+    15m фетчим всегда (дёшево — cache-hit от scan_loop, 15m=primary entry TF).
 
     Логика:
-      - Fetch данные для всех 4 TF параллельно
-      - Compute flags на каждом TF (свои значения)
-      - Для каждой LTF (5m/15m): aggregate flags с HTF (1h/4h/1d) через reindex
-      - Pass total flag set в adapter для каждого TF detection
+      - Fetch HTF (1h/4h) + compute HTF flags (+1d агрегат из 1h)
+      - HTF-gate: open → fetch 5m, closed → skip 5m (экономия REST)
+      - Для каждого detection TF: aggregate flags с HTF через reindex
     """
     data_collector = getattr(bot, "data_collector", None)
     if data_collector is None:
-        return False
-
-    # Fetch 4 TF параллельно
-    fetch_tasks = await asyncio.gather(
-        _fetch_df(data_collector, symbol, "5m", 500),
-        _fetch_df(data_collector, symbol, "15m", 400),
-        _fetch_df(data_collector, symbol, "1h", 300),
-        _fetch_df(data_collector, symbol, "4h", 200),
-        return_exceptions=False,
-    )
-    df_5m, df_15m, df_1h, df_4h = fetch_tasks
-    if df_1h is None or len(df_1h) < MIN_BARS:
         return False
 
     # Lazy import combinator
@@ -201,21 +209,62 @@ async def _scan_one_pair(bot, symbol: str, adapter) -> bool:
         logger.debug("[ARCH-104] combinator_v2 import: %s", e)
         return False
 
-    # Compute flags per TF (исходные значения на собственной сетке).
-    # D-035 (2026-05-22): include_pivots=True для 1h — без этого pivot_*_1D/1W
-    # флаги всегда FALSE, и паттерны registry с pivot anchors никогда не срабатывают
-    # в live observer (хотя в backtest pivot flags считаются через cb.process_symbol).
-    # Это был корень decisions=0 на 9+ часов — registry имеет десятки patterns с pivot,
-    # они невидимы без этого флага.
+    # ─── DEV-232: Шаг 1 — HTF first (1h+4h, 15m тоже — дёшев из кэша scan) ───
+    fetch_tasks = await asyncio.gather(
+        _fetch_df(data_collector, symbol, "15m", 400),
+        _fetch_df(data_collector, symbol, "1h", 300),
+        _fetch_df(data_collector, symbol, "4h", 200),
+        return_exceptions=False,
+    )
+    df_15m, df_1h, df_4h = fetch_tasks
+    if df_1h is None or len(df_1h) < MIN_BARS:
+        return False
+
+    # Compute HTF flags (исходные значения на собственной сетке).
+    # D-035: include_pivots=True для 1h — без этого pivot_*_1D/1W всегда FALSE.
     try:
         f_1h = cb.compute_flags(df_1h, "1h", include_pivots=True)
         f_4h_src = cb.compute_flags(df_4h, "4h") if df_4h is not None and len(df_4h) >= 30 else None
         f_1d_src = cb.compute_flags(cb.aggregate_tf(df_1h, "1d"), "1d")
         f_15m_src = cb.compute_flags(df_15m, "15m") if df_15m is not None and len(df_15m) >= 100 else None
-        f_5m_src = cb.compute_flags(df_5m, "5m") if df_5m is not None and len(df_5m) >= 100 else None
     except Exception as e:
         logger.debug("[ARCH-104] %s compute_flags failed: %s", symbol, e)
         return False
+
+    # ─── DEV-232: Шаг 2 — HTF-gate. Активные HTF-флаги (last row 1h/4h/1d) ───
+    # Кэшируем между циклами — HTF меняется медленно (1h-бар = 3600с).
+    _now = time.time()
+    active_htf_flags: Optional[set] = None
+    if htf_flags_cache is not None:
+        _cached = htf_flags_cache.get(symbol)
+        if _cached and (_now - _cached[1]) < HTF_FLAGS_CACHE_TTL:
+            active_htf_flags = _cached[0]
+    if active_htf_flags is None:
+        active_htf_flags = set()
+        for _f_htf in (f_1h, f_4h_src, f_1d_src):
+            if _f_htf is not None and len(_f_htf) > 0:
+                _last = _f_htf.iloc[-1]
+                active_htf_flags |= set(_last[_last].index.tolist())
+        if htf_flags_cache is not None:
+            htf_flags_cache[symbol] = (active_htf_flags, _now)
+
+    # Gate: фетчим 5m только если хоть один 5m-паттерн может сработать
+    _gate_5m_open = adapter.registry.htf_gate_open(active_htf_flags, "5m")
+    df_5m = None
+    f_5m_src = None
+    if _gate_5m_open:
+        df_5m = await _fetch_df(data_collector, symbol, "5m", 500)
+        if df_5m is not None and len(df_5m) >= 100:
+            try:
+                f_5m_src = cb.compute_flags(df_5m, "5m")
+            except Exception as e:
+                logger.debug("[ARCH-104] %s 5m compute_flags failed: %s", symbol, e)
+                df_5m = None
+        if gate_stats is not None:
+            gate_stats["ltf_fetched"] = gate_stats.get("ltf_fetched", 0) + 1
+    else:
+        if gate_stats is not None:
+            gate_stats["htf_only"] = gate_stats.get("htf_only", 0) + 1
 
     # Shift HTF index перед reindex (lookahead-safe — D-001)
     def _shift(df_src, hours):

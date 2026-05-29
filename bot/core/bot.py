@@ -302,6 +302,16 @@ class TradingAlertBot:
         D-068: ждёт прогрева пар до 5 мин, потом retry каждую минуту.
         D-053: restart-петля — если ws_feed.start() завершается, перезапускаем через 30s.
         """
+        # DEV-230 kill-switch: при ws_enabled=false WsFeed не запускается — поток данных
+        # работает на REST (event loop не забивается ccxt.pro watch-задачами). WsFeed-объект
+        # существует (get_current_price → fallback, stats() → пустые), соединений нет.
+        try:
+            from core.infra.config_loader import config as _cfg_ws
+            if not _cfg_ws.get("performance.ws_enabled", True):
+                logger.warning("[WsFeed] ОТКЛЮЧЁН (performance.ws_enabled=false) — REST-only поток данных (DEV-230)")
+                return
+        except Exception:
+            pass
         # Стартовый wait до 5 мин (300 сек), потом retry каждые 60 сек бесконечно
         for _ in range(300):
             if self.monitored_pairs:
