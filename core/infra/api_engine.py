@@ -347,20 +347,27 @@ class ApiEngine:
         timeframe: str,
         limit: int,
         since: Optional[int] = None,
+        force_refresh: bool = False,
     ) -> Optional[pd.DataFrame]:
-        """Основной метод получения OHLCV. Thread-safe для asyncio."""
+        """Основной метод получения OHLCV. Thread-safe для asyncio.
+
+        force_refresh=True (DEV-227 stale-guard): обходит LRU-кэш и circuit breaker,
+        делает реальный REST. Для активных OPEN сделок, чьи символы потеряли WS-обновление
+        кэша (stale df → заниженный current_r). Свежий результат пишется обратно в кэш.
+        """
         cache_key = (symbol, timeframe)
         dedup_key = (symbol, timeframe, limit)
         ttl = _CACHE_TTL.get(timeframe, _DEFAULT_TTL)
 
-        # 1. Кеш
-        cached = self._cache.get(cache_key, limit, ttl)
-        if cached is not None:
-            return cached
+        if not force_refresh:
+            # 1. Кеш
+            cached = self._cache.get(cache_key, limit, ttl)
+            if cached is not None:
+                return cached
 
-        # 2. Circuit breaker
-        if self._cb.is_open():
-            return None
+            # 2. Circuit breaker
+            if self._cb.is_open():
+                return None
 
         # 3. In-flight deduplication
         if dedup_key in self._in_flight:

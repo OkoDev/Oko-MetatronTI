@@ -111,6 +111,8 @@ class TradeSimulator:
         self._close_in_progress: set = set()
         # DEV-168: cooldown для LIVE-GUARD логов (не спамить каждую минуту)
         self._live_guard_logged: dict = {}  # trade_id → datetime последнего WARNING
+        # DEV-227: throttle для force REST (stale-guard). trade_id → ts последнего force-refresh.
+        self._force_rest_ts: dict = {}
 
     def set_bot_ref(self, bot) -> None:
         """27.05: weakref на bot для shadow_signal_quality (нужен ConfirmationAggregator)."""
@@ -1687,7 +1689,22 @@ class TradeSimulator:
                              (_dir == "SHORT" and _ws_price >= _sl_f - _buf)
                 _tp_hit_ws = (_dir == "LONG" and _ws_price >= _tp_f - _buf) or \
                              (_dir == "SHORT" and _ws_price <= _tp_f + _buf)
-                if not (_near_sl or _near_tp or _near_tsl or _sl_hit_ws or _tp_hit_ws):
+                # DEV-226: НЕ пропускать сделку, уже достигшую порога ранней активации.
+                # TSL/BE/MTF-220 триггерят от 0.3R (см. early-MTF gate ниже: max(act_r*0.5, 0.3)).
+                # Без этого сделка в глубоком профите, но далеко от SL и TP ("мёртвая зона"
+                # фильтра), навсегда остаётся tsl_activated=0 — pre-filter каждый цикл делает
+                # continue ДО блока активации. Инцидент: UNI +2.25R / BERA +2.58R с tsl=0.
+                _early_r_ws = None
+                _osl_pre = trade.get("original_sl")
+                _osl_pre_v = float(_osl_pre) if _osl_pre is not None else _sl_f
+                if _osl_pre_v and _osl_pre_v != entry:
+                    _one_r_pre = abs(entry - _osl_pre_v)
+                    if _one_r_pre > 0:
+                        _early_r_ws = ((_ws_price - entry) if _dir == "LONG"
+                                       else (entry - _ws_price)) / _one_r_pre
+                _profit_for_activation = _early_r_ws is not None and _early_r_ws >= 0.3
+                if not (_near_sl or _near_tp or _near_tsl or _sl_hit_ws or _tp_hit_ws
+                        or _profit_for_activation):
                     logger.debug("[WS-skip] %s price=%.4f далеко от SL/TP/TSL — пропуск REST",
                                  symbol, _ws_price)
                     continue  # цена далеко — этот цикл пропускаем, следующий догонит
@@ -1696,7 +1713,29 @@ class TradeSimulator:
                 df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200)
             except Exception as e:
                 logger.debug(f"TradeSimulator: get_ohlcv {symbol} — {e}")
-                continue
+                df = None
+
+            # DEV-227 stale-guard: WS-кэш может быть ОТРАВЛЕН — последний бар имеет свежий
+            # timestamp (текущий формирующийся бар), но цены в нём устаревшие, т.к. WS-обновление
+            # символа умерло (UNI/BERA: ohlcv timeout). Детект по возрасту бара бесполезен (бар
+            # «свежий» по времени). current_r считается по stale цене → TSL/BE не активируются
+            # (UNI: бот видит +0.41R при реальных +2.29R). Решение: для НЕ-активированных OPEN
+            # периодически (throttle 150с/сделку) форсим реальный REST в обход кэша+circuit breaker.
+            # Если df пуст/None — форсим всегда. Активированные идут обычным путём (TSL уже трекается).
+            _now_ts = datetime.now(timezone.utc).timestamp()
+            _need_force = df is None or len(df) == 0
+            if not _need_force and not bool(trade.get("tsl_activated")):
+                if (_now_ts - self._force_rest_ts.get(trade_id, 0.0)) > 150:
+                    _need_force = True
+            if _need_force:
+                self._force_rest_ts[trade_id] = _now_ts
+                try:
+                    _df_fresh = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200, force_refresh=True)
+                    if _df_fresh is not None and len(_df_fresh) > 0:
+                        df = _df_fresh
+                        logger.info("[DEV-227] %s id=%d force REST refresh (stale-guard)", symbol, trade_id)
+                except Exception as _e227:
+                    logger.debug("[DEV-227] %s force_refresh error: %s", symbol, _e227)
 
             if df is None or len(df) == 0:
                 continue
@@ -1748,6 +1787,18 @@ class TradeSimulator:
                     current_r = (current_price - entry) / one_r
                 else:
                     current_r = (entry - current_price) / one_r
+                # DEV-226 слой 2: cross-source R — защита от stale 15m OHLCV-кэша.
+                # При сбоях WS OHLCV-обновления (UNI/BERA: Connection timeout) fetch_ohlcv
+                # отдаёт протухший df → current_r по df.close занижен (UNI: stale +0.41R при
+                # реальных +2.15R) → триггеры gate TSL/BE/cascade не срабатывают. _ws_price
+                # (get_current_price: WS ticker / 1m кэш) — отдельный, более свежий источник.
+                # Корректируем заниженный R вверх (профит реален → защита включается вовремя).
+                # Экзиты SL/TP не затрагиваются — они идут отдельно по свече (current_price).
+                if _ws_price and one_r > 0:
+                    _r_ws_gate = ((_ws_price - entry) if direction == "LONG"
+                                  else (entry - _ws_price)) / one_r
+                    if current_r is None or _r_ws_gate > current_r:
+                        current_r = _r_ws_gate
 
             # DEV-40: Безубыток — перенести SL в entry ± 0.1% после достижения breakeven_activation_r
             # use_be_after_tp1: альтернативный триггер — BE при хите TP1 (независимо от R)

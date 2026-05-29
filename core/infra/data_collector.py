@@ -216,11 +216,12 @@ class RealTimeData:
         normalized = self.normalize_symbol(symbol)
         return await self.symbol_exists(normalized)
 
-    async def get_ohlcv(self, symbol, timeframe="15m", limit=150, since=None):
+    async def get_ohlcv(self, symbol, timeframe="15m", limit=150, since=None, force_refresh=False):
         """Возвращает pandas.DataFrame с колонками: time, open, high, low, close, volume.
-        Делегирует в ApiEngine: LRU cache → in-flight dedup → retry → circuit breaker."""
+        Делегирует в ApiEngine: LRU cache → in-flight dedup → retry → circuit breaker.
+        force_refresh=True (DEV-227): обход кэша/circuit breaker, реальный REST."""
         normalized_symbol = self.normalize_symbol(symbol)
-        return await self._engine.fetch_ohlcv(normalized_symbol, timeframe, limit, since)
+        return await self._engine.fetch_ohlcv(normalized_symbol, timeframe, limit, since, force_refresh=force_refresh)
 
     async def get_funding_rate(self, symbol: str) -> Optional[float]:
         """
