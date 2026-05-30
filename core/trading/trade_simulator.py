@@ -1171,6 +1171,33 @@ class TradeSimulator:
         except Exception as _e_rb:
             logger.warning("[DEV-110] RANGE BOUNCE error: %s", _e_rb)
 
+        # ARCH-118 SHADOW: единый снимок признаков (вариант B — live=бэктест ОДНИМ
+        # калькулятором combinator_v2.compute_flags). Пишем в features_json параллельно
+        # текущим полям; на вход НЕ влияет. Здесь (после гейтов) — только для реально
+        # регистрируемых сделок, без лишних fetch на заблокированных.
+        try:
+            from core.infra.config_loader import config as _cfg_a118
+            if (_cfg_a118 and _cfg_a118.get("arch118.shadow_enabled", False)
+                    and data_collector is not None and symbol):
+                from core.intelligence.feature_snapshot import build_df_by_tf, snapshot_features
+                _df_by_tf = await build_df_by_tf(data_collector, symbol)
+                if _df_by_tf:
+                    _a118_tf = str(_get_recommendation_value(recommendation, "timeframe")
+                                   or DEFAULT_TIMEFRAME)
+                    _a118_sig = {
+                        "signal_type": str(_get_recommendation_value(recommendation, "signal_type") or ""),
+                    }
+                    _a118_snap = snapshot_features(_df_by_tf, entry_tf=_a118_tf, signal=_a118_sig)
+                    if extra_features is None:
+                        extra_features = {}
+                    extra_features["arch118_snapshot"] = _a118_snap
+                    logger.debug("[ARCH-118 shadow] %s снимок: %d/%d флагов, TF=%s",
+                                 symbol, _a118_snap["meta"]["n_true"],
+                                 _a118_snap["meta"]["n_total"], _a118_snap["meta"]["tfs"])
+        except Exception as _e_a118:
+            logger.debug("[ARCH-118 shadow] snapshot error %s: %s",
+                         locals().get("symbol", "?"), _e_a118)
+
         trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out)
 
         # DUAL_TP: рассчитываем TP2 = следующий пивот после TP1 (30.03.2026)

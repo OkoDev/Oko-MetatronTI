@@ -455,6 +455,10 @@ performance:
   # Тест-откат: WS перегружал общий event loop (5 ccxt.pro соединений → SLOW await 64-92s,
   # scan ohlcv 76-96s, health 339×DEGRADED). REST-only разгружает loop.
   ws_enabled: false
+  # DEV-231 (30.05): event loop debug — логает медленные callback'и для диагностики
+  # blocking-кода. Включать ТОЛЬКО на время расследования (много логов).
+  event_loop_debug: true
+  slow_callback_threshold_sec: 0.5
   # 27.05: WsFeed настройки выведены из ws_feed.py хардкодов.
   # Шаг B — снижены под текущий deg BingX (был 100/120/2.0).
   # Лимит BingX: 200 подписок/WS + 500 req/10s per IP.
@@ -600,3 +604,12 @@ arch104:
   # wt_cross_up_{det_tf} для LONG, wt_cross_down_{det_tf} для SHORT.
   shadow_trigger_check:
     enabled: false  # устарело — gate теперь в observer_loop напрямую
+
+# ─── ARCH-118: Единый снимок признаков (snapshot_features, 30.05.2026) ───
+# Вариант B: live=бэктест ОДНИМ калькулятором combinator_v2.compute_flags.
+# SHADOW-режим: пишет снимок ~211 флагов (sparse) в features_json.arch118_snapshot
+# параллельно текущим полям. На входы/решения НЕ влияет. Стоимость: ~3 get_ohlcv
+# (1h/15m/4h, 1d из resample) на КАЖДУЮ регистрируемую сделку (входы редки).
+# Цель: накопить консистентные снимки для проверки parity (Шаг 3) и ML.
+arch118:
+  shadow_enabled: true

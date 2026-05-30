@@ -39,11 +39,16 @@ SCHEMA_VERSION = 2
 _PIVOT_TF = "1h"
 
 
-def _import_compute_flags():
-    """Импорт единого калькулятора с защитой от import-time side-effects combinator_v2.
+def _import_cb():
+    """Импорт ЕДИНОГО калькулятора (combinator_v2) с защитой от import-time side-effects.
 
     combinator_v2.py при импорте делает `sys.stdout = TextIOWrapper(...)` (строка 21) —
-    в проде это сломало бы stdout/логирование. Сохраняем и восстанавливаем stdout.
+    в проде это сломало бы stdout/логирование. Сохраняем и восстанавливаем stdout, а
+    созданный combinator'ом wrapper отвязываем от buffer'а через detach() (иначе его
+    __del__ при GC закроет общий buffer → "I/O operation on closed file").
+
+    При повторном вызове модуль берётся из sys.modules (тело не выполняется заново),
+    sys.stdout не трогается → detach пропускается.
     """
     saved_stdout = sys.stdout
     saved_path = list(sys.path)
@@ -55,20 +60,76 @@ def _import_compute_flags():
         if pm_dir not in sys.path:
             sys.path.insert(0, pm_dir)
         import combinator_v2 as cb  # noqa: WPS433 (намеренно локальный импорт)
-        # combinator_v2 при импорте присвоил sys.stdout НОВЫЙ TextIOWrapper над общим
-        # buffer'ом. При сборке мусора его __del__ ЗАКРОЕТ buffer → сломает оригинальный
-        # stdout ("I/O operation on closed file"). detach() отвязывает wrapper от buffer,
-        # чтобы он не закрыл его при удалении.
         new_wrapper = sys.stdout
         if new_wrapper is not saved_stdout:
             try:
-                new_wrapper.detach()
+                new_wrapper.detach()  # сервать от buffer, чтобы __del__ его не закрыл
             except Exception:
                 pass
-        return cb.compute_flags
+        return cb
     finally:
         sys.stdout = saved_stdout  # откатываем side-effect
         sys.path[:] = saved_path
+
+
+def _import_compute_flags():
+    """Единый калькулятор флагов (combinator_v2.compute_flags)."""
+    return _import_cb().compute_flags
+
+
+async def _fetch_df(data_collector: Any, symbol: str, tf: str, limit: int):
+    """Загрузить OHLCV и привести к стандартному виду (как arch104 observer, parity).
+
+    Поддерживает оба формата индекса: 'ts' (ccxt) и 'time' (data_collector, D-042).
+    """
+    try:
+        df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit)
+    except Exception:
+        return None
+    if df is None or len(df) < 50:
+        return None
+    df = df.copy()
+    df.columns = [c.lower() for c in df.columns]
+    ts_col = "ts" if "ts" in df.columns else ("time" if "time" in df.columns else None)
+    if ts_col is not None:
+        df[ts_col] = pd.to_datetime(df[ts_col], unit="ms", utc=True, errors="coerce")
+        df = df.set_index(ts_col)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return None
+    return df[["open", "high", "low", "close", "volume"]].dropna().sort_index()
+
+
+async def build_df_by_tf(
+    data_collector: Any,
+    symbol: str,
+    *,
+    want_5m: bool = False,
+) -> dict[str, "pd.DataFrame"]:
+    """Собрать df_by_tf ТЕМ ЖЕ способом, что arch104 observer и бэктест (parity).
+
+    1d = `aggregate_tf(df_1h)` (resample из 1h, как в бэктесте process_symbol),
+    остальные TF — нативный fetch. 1h обязателен (без него снимок бессмыслен).
+    """
+    out: dict[str, Any] = {}
+    df_1h = await _fetch_df(data_collector, symbol, "1h", 300)
+    if df_1h is None or len(df_1h) < 50:
+        return out
+    out["1h"] = df_1h
+    df_15m = await _fetch_df(data_collector, symbol, "15m", 400)
+    if df_15m is not None:
+        out["15m"] = df_15m
+    df_4h = await _fetch_df(data_collector, symbol, "4h", 200)
+    if df_4h is not None and len(df_4h) >= 30:
+        out["4h"] = df_4h
+    try:
+        out["1d"] = _import_cb().aggregate_tf(df_1h, "1d")  # resample = parity
+    except Exception:
+        pass
+    if want_5m:
+        df_5m = await _fetch_df(data_collector, symbol, "5m", 500)
+        if df_5m is not None and len(df_5m) >= 100:
+            out["5m"] = df_5m
+    return out
 
 
 def _domain_of(flag: str) -> str:

@@ -22,8 +22,9 @@
 
 ### ⏭️ ARCH-118 реализация `snapshot_features` (вариант B) — В РАБОТЕ
 1. **✅ ШАГ 1 ГОТОВ** — `core/intelligence/feature_snapshot.py`: чистая функция `snapshot_features(df_by_tf, entry_tf, signal) → dict` + декодер `snapshot_to_vector`. Импортирует ЕДИНЫЙ `combinator_v2.compute_flags` (инвариант). Проверено на реальных данных: **211 флагов**, sparse JSON **1160 B/сделка** (~18 MB на 15539), декодер консистентен. Фикс: `_import_compute_flags` делает `detach()` combinator-wrapper'а (combinator_v2 строка 21 переопределяет sys.stdout → закрывал buffer).
-2. ⏭️ ШАГ 2 — вызов в `register_trade_async` (live): df_by_tf через `data_collector.get_ohlcv(symbol, tf)`, писать в SHADOW-поле features_json (параллельно текущему).
-3. ⏭️ ШАГ 3 — вызов в бэктест-движках (parity live=бэктест).
+2. **✅ ШАГ 2 ГОТОВ** — live shadow. `feature_snapshot.build_df_by_tf(dc, symbol)` (тот же способ, что arch104 observer: fetch 1h/15m/4h + 1d=aggregate_tf(1h), parity). Shadow-блок в `register_trade_async` ПЕРЕД `register_trade` (строка ~1174, после гейтов) → пишет `features_json.arch118_snapshot`. Config `arch118.shadow_enabled: true`. Не влияет на входы. Проверено end-to-end (mock dc): 258 флагов, sparse 1358 B. **Требует рестарт бота.**
+   - ⚠️ Parity-наблюдение: 1d=aggregate(df_1h@300)→~12 баров, ema200_1d неточна — но идентично live observer. Сверить в Шаге 3 (live vs бэктест с полной историей).
+3. ⏭️ ШАГ 3 — вызов в бэктест-движках + СВЕРКА parity live↔бэктест на накопленных shadow-снимках.
 4. ⏭️ ШАГ 4 — свёртка pivot 70→3 (nearest_level + distance_pct + relation).
 5. ⏭️ ШАГ 5 — таблица `trade_features`(FK) + generated-колонки + переключение с shadow.
 - **🔴 ДОЛГ:** вынести `compute_flags`+indicators в `core/` модуль БЕЗ import-side-effects (combinator_v2 = скрипт с sys.stdout hack + HISTORY_DIR). Нужно для чистого инварианта.
