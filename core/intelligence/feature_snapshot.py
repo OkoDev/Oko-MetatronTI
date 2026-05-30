@@ -37,6 +37,8 @@ SCHEMA_VERSION = 2
 
 # TF, для которых compute_flags вызывает pivot-флаги (эталон: только исходный 1h)
 _PIVOT_TF = "1h"
+# Канонический порядок TF (для сортировки в snapshot_from_flags_row)
+_TF_ORDER = ["5m", "15m", "1h", "4h", "1d"]
 
 
 def _import_cb():
@@ -169,9 +171,7 @@ def snapshot_features(
     """
     compute_flags = _compute_flags or _import_compute_flags()
 
-    context: dict[str, dict[str, int]] = {}
-    n_true = 0
-    n_total = 0
+    flag_items: list[tuple[str, bool]] = []
     tfs_used: list[str] = []
 
     for tf, df in df_by_tf.items():
@@ -182,25 +182,71 @@ def snapshot_features(
             continue
         last = flags_df.iloc[-1]  # момент входа = последняя закрытая свеча TF
         tfs_used.append(tf)
-        for col in flags_df.columns:
-            n_total += 1
-            if bool(last[col]):
-                n_true += 1
-                context.setdefault(_domain_of(col), {})[col] = 1  # SPARSE: только true
+        flag_items.extend((col, bool(last[col])) for col in flags_df.columns)
 
-    snapshot = {
+    context, n_true, n_total = _pack_context(flag_items)
+    return _build_snapshot(context, n_true, n_total, entry_tf, tfs_used,
+                           signal, source="live",
+                           snapshot_ts=datetime.now(timezone.utc).isoformat())
+
+
+def snapshot_from_flags_row(
+    flags_row: "pd.Series",
+    entry_tf: str,
+    *,
+    signal: Optional[dict] = None,
+    snapshot_ts: Optional[str] = None,
+) -> dict:
+    """Собрать снимок из ГОТОВОЙ строки combinator-флагов (для бэктест-движков).
+
+    В бэктесте `all_flags` (мульти-TF combinator-флаги с суффиксом _{tf}) уже посчитан
+    одним проходом — снимок на момент входа = `all_flags.iloc[entry_idx]`. Та же схема,
+    что live `snapshot_features`, → parity ПО ОПРЕДЕЛЕНИЮ (один калькулятор, одна упаковка).
+
+    Args:
+        flags_row:   pd.Series — одна строка combinator-флагов (имена `{flag}_{tf}`).
+        entry_tf:    TF входа (для meta).
+        signal:      specifics сигнала.
+        snapshot_ts: ISO-время бара входа (если есть); иначе None.
+    """
+    flag_items = [(col, bool(flags_row[col])) for col in flags_row.index]
+    context, n_true, n_total = _pack_context(flag_items)
+    tfs_used = sorted({c.rsplit("_", 1)[1] for c in flags_row.index
+                       if c.rsplit("_", 1)[-1] in _TF_ORDER},
+                      key=lambda t: _TF_ORDER.index(t))
+    return _build_snapshot(context, n_true, n_total, entry_tf, tfs_used,
+                           signal, source="backtest", snapshot_ts=snapshot_ts)
+
+
+def _pack_context(flag_items) -> tuple[dict, int, int]:
+    """Упаковать (flag, bool) → sparse-context по доменам + счётчики. Общий код live+бэктест."""
+    context: dict[str, dict[str, int]] = {}
+    n_true = 0
+    n_total = 0
+    for col, val in flag_items:
+        n_total += 1
+        if val:
+            n_true += 1
+            context.setdefault(_domain_of(col), {})[col] = 1  # SPARSE: только true
+    return context, n_true, n_total
+
+
+def _build_snapshot(context, n_true, n_total, entry_tf, tfs_used,
+                    signal, *, source, snapshot_ts) -> dict:
+    """Собрать финальную структуру снимка (единая для live и backtest)."""
+    return {
         "schema_version": SCHEMA_VERSION,
         "meta": {
             "entry_tf": entry_tf,
             "tfs": tfs_used,
-            "snapshot_ts": datetime.now(timezone.utc).isoformat(),
+            "snapshot_ts": snapshot_ts,
+            "source": source,
             "n_true": n_true,
             "n_total": n_total,
         },
         "context": context,
         "signal": signal or {},
     }
-    return snapshot
 
 
 def snapshot_to_vector(snapshot: dict, canon_flags: list[str]) -> dict[str, int]:
