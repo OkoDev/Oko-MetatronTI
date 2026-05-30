@@ -91,14 +91,10 @@ async def _fetch_ohlcv(symbol: str, tf: str, limit: int) -> pd.DataFrame:
 # ─── WaveTrend ────────────────────────────────────────────────────────────────
 
 def _calculate_wt(df: pd.DataFrame, n1: int = 10, n2: int = 21) -> pd.DataFrame:
-    ap  = (df["high"] + df["low"] + df["close"]) / 3
-    esa = ap.ewm(span=n1, adjust=False).mean()
-    d   = (ap - esa).abs().ewm(span=n1, adjust=False).mean()
-    ci  = (ap - esa) / (0.015 * d.replace(0, np.nan)).fillna(0)
-    tci = ci.ewm(span=n2, adjust=False).mean()
-    df  = df.copy()
-    df["wt1"] = tci
-    df["wt2"] = tci.rolling(4).mean()
+    # ARCH-117 ph2: wt1/wt2 из канона (indicators.calculate_wt) — убрана 5-я копия
+    # формулы. Cross-маркеры для графика остаются здесь (chart-специфичны).
+    from core.indicators.indicators import calculate_wt
+    df = calculate_wt(df.copy(), n1=n1, n2=n2)
     cross_up   = (df["wt1"].shift(1) < df["wt2"].shift(1)) & (df["wt1"] > df["wt2"])
     cross_down = (df["wt1"].shift(1) > df["wt2"].shift(1)) & (df["wt1"] < df["wt2"])
     df["cross_up"]   = np.where(cross_up,   df["wt2"], np.nan)

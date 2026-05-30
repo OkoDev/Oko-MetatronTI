@@ -319,9 +319,10 @@ class MLPredictor:
             features = {}
 
             # Технические индикаторы — единые функции из core/indicators.py
+            # ARCH-117 ph2: только канон compute_rsi (Wilder RMA). Убран дубль
+            # _calculate_rsi (SMA-based, расходился с каноном). Fallback → 50.0.
             features['rsi'] = (
-                _compute_rsi(df['close'], period=14)
-                if _compute_rsi else self._calculate_rsi(df['close'], 14)
+                _compute_rsi(df['close'], period=14) if _compute_rsi else None
             ) or 50.0
             features['macd'] = self._calculate_macd(df['close'])
             features['bb_position'] = self._calculate_bollinger_position(df['close'])
@@ -380,18 +381,8 @@ class MLPredictor:
             logger.exception(f"Ошибка извлечения признаков сигнала: {e}")
             return {}
     
-    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> float:
-        """Рассчитывает RSI"""
-        try:
-            delta = prices.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            return rsi.iloc[-1] if not rsi.empty else 50.0
-        except:
-            return 50.0
-    
+    # ARCH-117 ph2: _calculate_rsi удалён — дубль compute_rsi (канон Wilder RMA).
+
     def _calculate_macd(self, prices: pd.Series) -> float:
         """Рассчитывает MACD"""
         try:
