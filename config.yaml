@@ -66,8 +66,12 @@ analysis:
     pivot_proximity_pct: 0.3
   anomaly:
     max_per_cycle: 5
+    # DEV-224 (30.05.2026): ВЫКЛЮЧЕН. Shadow A/B + n=3597 + история: confluence убыточен везде.
+    # Recent: n=151 avgR=-0.387 (147 SHORT -0.374), 0/151 имели divergence. Историч. -654R.
+    # ARCH-23 апгрейд wt→confluence не требовал divergence (детект div идёт ПОЗЖЕ в scan_loop:1845).
+    # Базовый wt_signal продолжает идти со своими гейтами. Возврат при divergence-gated confluence (ARCH-115/117).
   confluence:
-    enabled: true   # 05.05.2026: разблокирован для сбора данных; BIAS фильтрует направление
+    enabled: false  # было true (05.05 для сбора данных — данные собраны, вердикт: убыток)
     use_state_machine: false
     lookback_bars: 8
     cross_fresh_bars: 5
@@ -263,8 +267,8 @@ trading:
   # ARCH-113: TPSelector — Intelligent TP Gravity Engine
   # Исследование: 156K уровней, alpha=1.5 доказан, FVG <0.3R = 73-86% reach
 sl_tp_engine:
-  tp_selector_enabled: false   # A/B флаг — включить когда shadow mode подтвердит выигрыш
-  tp_selector_shadow: true     # 27.05.2026: shadow mode — вычисляем TPSelector, пишем в features_json, НО не применяем
+  tp_selector_enabled: true    # DEV-224 (30.05): shadow A/B подтвердил +0.298R/сделку (n=133, +39.6R), liquidity_sweep +0.327R. Включено.
+  tp_selector_shadow: true     # оставляем shadow-запись для A/B мониторинга production vs прежние выходы
   tp_selector_eps_pct: 0.5     # ±% для кластеризации магнитов
   tp_selector_alpha: 1.5       # score = gravity / dist^alpha (оптимум из исследования)
   tp_selector_max_dist_pct: 15.0  # фильтр дальних уровней
