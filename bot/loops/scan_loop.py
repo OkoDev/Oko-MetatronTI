@@ -1338,17 +1338,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     except Exception as _smc_snap_e:
                         logger.debug("[ARCH-120] smc_sub_cube %s: %s", sym, _smc_snap_e)
 
-                    # Сфера 8: Pivot snap → bus  {1W: {PP,S1,...}, 1D: {...}, 1M: {...}}
+                    # ARCH-123: Сфера 8 = PivotSphere (формализован, + fibonacci_equiv).
+                    # Заменил inline-публикацию. Снап: {1W/1D/1M: {PP,S1..R3}} + fib-карта.
                     _pc = getattr(bot, "pivot_calculator", None)
                     if _pc is not None:
-                        _raw = getattr(_pc, "pivot_cache", {})
-                        _piv_cache = {
-                            tf: _raw[f"{sym}_{tf}"]
-                            for tf in ("1W", "1D", "1M")
-                            if f"{sym}_{tf}" in _raw
-                        }
-                        if _piv_cache:
-                            _bus.publish(sym, SphereEvent.PIVOT_SNAP_UPDATED, _piv_cache)
+                        from core.pivots.pivot_sphere import get_pivot_sphere
+                        get_pivot_sphere().compute_and_publish(sym, _pc, ctx_bus=_bus)
 
                 # ═══ КУБ: HTF детекторы → EventBus (trend_change_1h, wt_cross_4h/1d) ═══
                 _eb = getattr(bot, "event_bus", None)
