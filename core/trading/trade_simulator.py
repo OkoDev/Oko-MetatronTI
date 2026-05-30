@@ -767,6 +767,24 @@ class TradeSimulator:
                 except Exception as _re:
                     logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
+            # ARCH-122 Phase 1a: TP2 из TPSelector магнитов (вместо pivot-иерархии async).
+            # Когда tp_selector_enabled и рекомендация несёт tp2_price (gravity-кластер
+            # HTF 1-3R) — используем его. Не None → async-заполнение pivot пропускается
+            # (trade_simulator:1172). Только DUAL_TP (DUAL_TSL остаток идёт по TSL).
+            if strategy_type == "DUAL_TP" and tp2_price is None:
+                try:
+                    from core.infra.config_loader import config as _cfg_tp2
+                    _tps_en = bool((_cfg_tp2.get("sl_tp_engine") or {}).get("tp_selector_enabled", False))
+                    if _tps_en:
+                        _rec_tp2 = _get_recommendation_value(recommendation, "tp2_price")
+                        if isinstance(_rec_tp2, (int, float)) and _rec_tp2 > 0:
+                            tp2_price = float(_rec_tp2)
+                            _rec_tp2_src = _get_recommendation_value(recommendation, "tp2_source")
+                            logger.info("[ARCH-122] %s TP2 из магнитов=%.6g src=%s (не pivot)",
+                                        symbol, tp2_price, _rec_tp2_src or "?")
+                except Exception as _tp2e:
+                    logger.debug("[ARCH-122] tp2 from magnets failed: %s", _tp2e)
+
             # TradeRouter Этап 1.Б: source_router из extra_features
             _source_router = (extra_features or {}).get("source_router")
 
