@@ -181,9 +181,11 @@ def interpret(
             f"flow={_momentum_flow['flow']} div={_cross_tf_div['type']} depth={_zone_depth:.2f}"
         )
 
+        # FIX 30.05: символ недоступен в interpret(snapshot) — заполняется в
+        # check_mtf_bias_signal. Убран placeholder "<symbol>" из лога (вводил в заблуждение).
         logger.info(
-            "[mtf_bias] %s: score=%d bull=%d%% bear=%d%% entry=%s senior=%d/3 regime=%s",
-            "<symbol>", strength, bull_pct, bear_pct, entry_tf, senior_matches, regime
+            "[mtf_bias] score=%d bull=%d%% bear=%d%% entry=%s senior=%d/3 regime=%s",
+            strength, bull_pct, bear_pct, entry_tf, senior_matches, regime
         )
         logger.debug(
             "[ARCH-77] flow=%s(%d/3) div=%s(%.2f) depth=%.2f",
