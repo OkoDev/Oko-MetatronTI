@@ -832,6 +832,18 @@ class TradingIntelligence:
             except Exception:
                 logger.debug("[%s] analyze_smc failed", symbol, exc_info=True)
 
+            # ARCH-122: богатый multi-TF SMC snap из Bus (SMC Sub-куб) → market_context.
+            # TPSelector._collect_magnets читает его для OB/multi-TF-FVG/EQH-EQL/Fib магнитов.
+            try:
+                _pcb = getattr(self, "_pair_context_bus", None)
+                if _pcb is not None:
+                    _st = _pcb.get(symbol)
+                    _bus_snap = getattr(_st, "smc_snap", None) if _st else None
+                    if _bus_snap:
+                        market_context.smc_snap = _bus_snap
+            except Exception:
+                logger.debug("[%s] smc_snap inject failed", symbol, exc_info=True)
+
             # ARCH-51 + ARCH-53: единый MTF блок
             # Приоритет: pre_fetched_dfs (переданы из scan_one — уже загружены и wt рассчитан)
             #            → fallback: fetch через data_collector (ручной /intelligence запрос)

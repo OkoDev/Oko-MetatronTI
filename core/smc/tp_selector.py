@@ -35,6 +35,11 @@ _WEIGHTS: Dict[str, float] = {
     "std_r2":  1.0,
     "std_s1":  2.0,
     "std_s2":  1.0,
+    # ARCH-122: источники из Bus smc_snap (SMC Sub-куб)
+    "ob":      3.5,   # order block (магнит/реакция)
+    "eqh":     3.0,   # equal highs liquidity pool
+    "eql":     3.0,   # equal lows liquidity pool
+    "fib_ext": 2.5,   # fibonacci extension target
 }
 
 
@@ -150,22 +155,35 @@ class TPSelector:
 
         symbol = getattr(ctx, "symbol", "")
 
-        # 1. FVG из smc_context
-        smc = getattr(ctx, "smc_context", None)
-        if smc is not None:
-            fvg_analysis = getattr(smc, "fvg", None)
-            if fvg_analysis is not None:
-                # LONG ищет Bear FVG ВЫШЕ цены (магнит заполнения)
-                # SHORT ищет Bull FVG НИЖЕ цены
-                fvg_list = (
-                    getattr(fvg_analysis, "active_bear", []) if is_long
-                    else getattr(fvg_analysis, "active_bull", [])
-                )
-                for fvg in (fvg_list or []):
-                    mid = getattr(fvg, "midpoint", None)
-                    if mid and mid > 0:
-                        if (is_long and mid > entry) or (not is_long and mid < entry):
-                            magnets.append(_Magnet(mid, "fvg_1h", _WEIGHTS["fvg_1h"]))
+        # ARCH-122: богатый multi-TF snap из Bus (SMC Sub-куб) — приоритетный источник.
+        # Содержит OB / multi-TF FVG(с tf) / EQH-EQL liquidity / Fib. Если есть — берём его,
+        # иначе fallback на single-TF smc_context.fvg (старый путь).
+        snap = getattr(ctx, "smc_snap", None)
+        used_snap = False
+        if isinstance(snap, dict):
+            try:
+                self._magnets_from_snap(snap, entry, is_long, magnets)
+                used_snap = True
+            except Exception as e:
+                logger.debug("[TPSelector] _magnets_from_snap error: %s", e)
+
+        # 1. FVG из smc_context — FALLBACK когда нет Bus snap
+        if not used_snap:
+            smc = getattr(ctx, "smc_context", None)
+            if smc is not None:
+                fvg_analysis = getattr(smc, "fvg", None)
+                if fvg_analysis is not None:
+                    # LONG ищет Bear FVG ВЫШЕ цены (магнит заполнения)
+                    # SHORT ищет Bull FVG НИЖЕ цены
+                    fvg_list = (
+                        getattr(fvg_analysis, "active_bear", []) if is_long
+                        else getattr(fvg_analysis, "active_bull", [])
+                    )
+                    for fvg in (fvg_list or []):
+                        mid = getattr(fvg, "midpoint", None)
+                        if mid and mid > 0:
+                            if (is_long and mid > entry) or (not is_long and mid < entry):
+                                magnets.append(_Magnet(mid, "fvg_1h", _WEIGHTS["fvg_1h"]))
 
         # 2. Swing high/low
         if is_long:
@@ -217,6 +235,49 @@ class TPSelector:
                 result.append(m)
 
         return result
+
+    # ── ARCH-122: магниты из Bus smc_snap (OB/multi-TF FVG/EQH-EQL/Fib) ─────────
+
+    def _magnets_from_snap(self, snap: dict, entry: float, is_long: bool,
+                           magnets: List[_Magnet]) -> None:
+        """Добавляет магниты из богатого SMC snap (SMC Sub-куб через Bus).
+
+        Направление TP (в прибыль): LONG → магниты ВЫШЕ entry, SHORT → НИЖЕ.
+        """
+        def _add(price, source):
+            if price and price > 0 and ((is_long and price > entry) or (not is_long and price < entry)):
+                magnets.append(_Magnet(float(price), source, _WEIGHTS.get(source, 2.0)))
+
+        # 1. Multi-TF FVG (реальный tf-лейбл и вес). LONG → bear FVG выше; SHORT → bull FVG ниже.
+        fvg_list = snap.get("bear_fvg_active" if is_long else "bull_fvg_active") or []
+        for fvg in fvg_list:
+            top, bot = fvg.get("top"), fvg.get("bottom")
+            if top and bot:
+                mid = (float(top) + float(bot)) / 2.0
+                tf = fvg.get("tf", "1h")
+                _add(mid, f"fvg_{tf}" if f"fvg_{tf}" in _WEIGHTS else "fvg_1h")
+
+        # 2. Order Block: LONG → bear OB (resistance) выше; SHORT → bull OB (support) ниже.
+        ob = snap.get("nearest_bear_ob" if is_long else "nearest_bull_ob")
+        if isinstance(ob, dict):
+            top, bot = ob.get("top"), ob.get("bottom")
+            if top and bot:
+                _add((float(top) + float(bot)) / 2.0, "ob")
+
+        # 3. EQH/EQL liquidity pools. LONG → EQH выше; SHORT → EQL ниже.
+        _add(snap.get("eqh_level") if is_long else None, "eqh")
+        _add(None if is_long else snap.get("eql_level"), "eql")
+
+        # 4. Fibonacci extension targets (за импульсом, в сторону прибыли).
+        fib = snap.get("fib_levels") or {}
+        for ratio_key, price in fib.items():
+            try:
+                ratio = float(ratio_key)
+            except (ValueError, TypeError):
+                continue
+            # extension = за пределами импульса (ratio < 0 для продолжения по Fib-конвенции snap)
+            if ratio <= 0.0 or ratio >= 1.0:
+                _add(price, "fib_ext")
 
     # ── Психологические уровни ────────────────────────────────────────────────
 
