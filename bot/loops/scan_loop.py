@@ -851,6 +851,9 @@ async def _execute_atr_change_signal(
             tp_source="atr_rr_3.0",
         )
 
+        # DEV-226: Elliott context из кэша scan_loop
+        _ell_snap = getattr(bot, "_elliott_snap", {}).get(symbol, {})
+
         extra = {
             "signal_type_override": "atr_change",
             "trigger_source": f"atr_change_{tf}",
@@ -861,6 +864,13 @@ async def _execute_atr_change_signal(
             "confirmations": (agg_res or {}).get("confirmations", []),
             "strength_breakdown": (agg_res or {}).get("strength_breakdown", {}),
             "trade_mode": "atr_change",  # dedup: разные режимы с wt_sideways не блокируют друг друга
+            "elliott_n_down":     _ell_snap.get("elliott_n_down", 0),      # HTF 4h
+            "elliott_n_up":       _ell_snap.get("elliott_n_up", 0),
+            "elliott_n_down_1h":  _ell_snap.get("elliott_n_down_1h", 0),   # MTF 1h
+            "elliott_n_up_1h":    _ell_snap.get("elliott_n_up_1h", 0),
+            "elliott_n_down_ltf": _ell_snap.get("elliott_n_down_ltf", 0),  # LTF entry TF
+            "elliott_n_up_ltf":   _ell_snap.get("elliott_n_up_ltf", 0),
+            "elliott_htf_tf":     _ell_snap.get("htf_tf", "4h"),
         }
 
         # Этап 1.Б (15.05.2026): pilot atr_change через TradeRouter.
@@ -1176,6 +1186,36 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     df_1d = _calc_wt(df_1d)
                     df_1d = _calc_trend(df_1d, atr_period=_scan_atr_p, factor=_scan_factor)
 
+                # DEV-226: Elliott n_down/n_up на всех TF (HTF/MTF/LTF)
+                # n_down=2-3 → Волна 3 SHORT оптимальна; n_down=4+ → STOP SHORT
+                try:
+                    from core.indicators.indicators import find_swing_highs, find_swing_lows, calculate_n_down, calculate_n_up
+
+                    def _calc_elliott(df_, period=5):
+                        if df_ is None or len(df_) < period * 2 + 2:
+                            return 0, 0
+                        sh = find_swing_highs(df_["high"], period=period)
+                        sl = find_swing_lows(df_["low"], period=period)
+                        return calculate_n_down(sh), calculate_n_up(sl)
+
+                    _nd_4h, _nu_4h = _calc_elliott(df_4h) if (df_4h is not None and not df_4h.empty) else (0, 0)
+                    _nd_1h, _nu_1h = _calc_elliott(df_1h) if (df_1h is not None and not df_1h.empty) else (0, 0)
+                    _nd_ltf, _nu_ltf = _calc_elliott(df_entry, period=3)  # LTF — меньший period для 15m
+
+                    if not hasattr(bot, "_elliott_snap"):
+                        bot._elliott_snap = {}
+                    bot._elliott_snap[sym] = {
+                        "elliott_n_down":     _nd_4h,   # HTF (4h) — основной
+                        "elliott_n_up":       _nu_4h,
+                        "elliott_n_down_1h":  _nd_1h,   # MTF (1h)
+                        "elliott_n_up_1h":    _nu_1h,
+                        "elliott_n_down_ltf": _nd_ltf,  # LTF (15m/entry)
+                        "elliott_n_up_ltf":   _nu_ltf,
+                        "htf_tf": "4h" if (df_4h is not None and not df_4h.empty) else "1h",
+                    }
+                except Exception as _ell_e:
+                    logger.debug("[Elliott] %s n_down/n_up error: %s", sym, _ell_e)
+
                 # DEV-108: вычисляем market_regime один раз для всего скана пары
                 # Используется в WT/confluence детекторах для dynamic_os в RANGE
                 _pair_regime = ""
@@ -1240,35 +1280,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             except Exception as _sw_e:
                                 logger.debug("[sideways] %s: ошибка: %s", sym, _sw_e)
 
-                    # Сфера 3: WT snap → bus (все загруженные TF)
-                    _wt_snap_data = {}
-                    for _wt_tf, _wt_df in [(_etf, df_entry), ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)]:
-                        if _wt_df is not None and not _wt_df.empty and "wt1" in _wt_df.columns:
-                            _r = _wt_df.iloc[-1]
-                            _wt1_cur = float(_r.get("wt1", 0))
-                            _wt2_cur = float(_r.get("wt2", 0))
-                            # DEV-172 fix: wt_cross вычисляем вручную (calculate_wt не добавляет эту колонку)
-                            # 1 = bullish cross (wt1 пересёк wt2 снизу вверх), -1 = bearish, 0 = нет кросса
-                            _wt_cross_val = 0
-                            if len(_wt_df) >= 2:
-                                _prev_row = _wt_df.iloc[-2]
-                                _wt1_prev = float(_prev_row.get("wt1", 0))
-                                _wt2_prev = float(_prev_row.get("wt2", 0))
-                                if _wt1_prev <= _wt2_prev and _wt1_cur > _wt2_cur:
-                                    _wt_cross_val = 1   # bullish
-                                elif _wt1_prev >= _wt2_prev and _wt1_cur < _wt2_cur:
-                                    _wt_cross_val = -1  # bearish
-                            _wt_trend_val = float(_r.get("trend", 0))
-                            _wt_snap_data[_wt_tf] = {
-                                "wt1": round(_wt1_cur, 2),
-                                "wt2": round(_wt2_cur, 2),
-                                "zone": "OB" if _wt1_cur > 60 else ("OS" if _wt1_cur < -60 else "N"),
-                                "wt_cross": _wt_cross_val,
-                                # FIX: trend = +1/-1 из calculate_trend(), не trendup/trenddown (уровни цены)
-                                "trend": "UP" if _wt_trend_val == 1 else "DOWN",
-                                # atr_trend как int для entry_matrix.py (bias_ok check)
-                                "atr_trend": 1 if _wt_trend_val == 1 else -1,
-                            }
+                    # Сфера 3/15 (ARCH-117): WT snap → bus через WTService.
+                    # Единый источник: zone(±60), wt_cross(сырой, обр.совместимость),
+                    # cross_in_zone(строгий — wt1 был в OS/OB ДО кросса).
+                    from core.intelligence.wt_service import build_wt_snap
+                    _wt_snap_data = build_wt_snap(
+                        [(_etf, df_entry), ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)]
+                    )
                     if _wt_snap_data:
                         _bus.publish(sym, SphereEvent.WT_SNAP_UPDATED, _wt_snap_data)
 
