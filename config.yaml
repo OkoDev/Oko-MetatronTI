@@ -249,7 +249,7 @@ trading:
       tp_rr: 3.0
   btc_market_gate:
     enabled: true
-    shadow_mode: false              # ARCH-78: активный блок (было shadow)
+    shadow_mode: true               # DEV-237 30.05: shadow (было false). BTC флэт +0.51%/48ч метится BEAR (Supertrend streak 17 баров) → блок LONG → paper. Тест 24-48ч возврата потока. Откат: false
     block_short_in_uptrend: true    # ARCH-78: блок SHORT при BTC BULL
     counter_trend_min_strength: 75  # SHORT при BTC BULL требует strength >= 75
     reversal_exception: true        # pivot_reversal всегда проходит (разворот у уровня)
