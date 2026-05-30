@@ -91,10 +91,13 @@ async def _fetch_ohlcv(symbol: str, tf: str, limit: int) -> pd.DataFrame:
 # ─── WaveTrend ────────────────────────────────────────────────────────────────
 
 def _calculate_wt(df: pd.DataFrame, n1: int = 10, n2: int = 21) -> pd.DataFrame:
-    # ARCH-117 ph2: wt1/wt2 из канона (indicators.calculate_wt) — убрана 5-я копия
-    # формулы. Cross-маркеры для графика остаются здесь (chart-специфичны).
+    # ARCH-117 ph2: wt1/wt2 из канона (indicators.calculate_wt) — убрана 5-я копия.
+    # FIX 30.05: calculate_wt делает reset_index(drop=True) → теряется DatetimeIndex,
+    # нужный mplfinance. Сохраняем и восстанавливаем индекс (длина/порядок те же).
     from core.indicators.indicators import calculate_wt
+    _idx = df.index
     df = calculate_wt(df.copy(), n1=n1, n2=n2)
+    df.index = _idx
     cross_up   = (df["wt1"].shift(1) < df["wt2"].shift(1)) & (df["wt1"] > df["wt2"])
     cross_down = (df["wt1"].shift(1) > df["wt2"].shift(1)) & (df["wt1"] < df["wt2"])
     df["cross_up"]   = np.where(cross_up,   df["wt2"], np.nan)
