@@ -158,3 +158,57 @@ n_down, n_up                # Elliott прокси (consecutive swings)
 - Хранение: вложенный JSON по группам или плоско (queryability в SQL)?
 
 Каталоги: `e:/tmp/combinator_flags_full.txt` (117 на 1h), `e:/tmp/full_ind_catalog.txt`.
+
+---
+
+## 🔧 NAMING CONVENTION (стандарт ДО упаковки) — 30.05
+
+Аудит вскрыл **непоследовательность имён** — её надо устранить перед единым снимком.
+
+### Проблема: дивергенции — 3 разные схемы
+| Сейчас | Что | Дефект |
+|---|---|---|
+| `bull_div_{tf}` / `bear_div_{tf}` | RSI regular | нет `rsi_` префикса, нет типа |
+| `rsi_div_bull_hidden_{tf}` | RSI hidden | OK |
+| `wt_div_bull_reg_{tf}` | WT regular | `reg` сокращён (не `regular`) |
+| `wt_div_bull_hidden_{tf}` | WT hidden | OK |
+
+### СТАНДАРТ: `{indicator}_div_{dir}_{type}_{tf}`
+- indicator: `rsi` \| `wt` \| (будущие: `mfi`, `macd`)
+- dir: `bull` \| `bear`
+- type: `regular` \| `hidden`
+- tf: `5m`\|`15m`\|`1h`\|`4h`\|`1d`
+
+**Переименования (4 базовых) — ✅ ВЫПОЛНЕНО 30.05 (вариант A):**
+```
+bull_div          → rsi_div_bull_regular   ✅
+bear_div          → rsi_div_bear_regular   ✅
+wt_div_bull_reg   → wt_div_bull_regular    ✅
+wt_div_bear_reg   → wt_div_bear_regular    ✅
+```
+Синхронно: combinator_v2.py (out-ключи) + arch104_patterns.yaml (anchor_factors).
+End-to-end проверено: combinator выдаёт новые имена, старые исчезли, registry 187
+enabled, активный T6_L_03 (rsi_div_bull_regular_4h) матчится. **Требует рестарт.**
+
+### Общие правила нейминга (для всех флагов)
+| Категория | Шаблон | Пример |
+|---|---|---|
+| SMC structure | `{dir}_{type}_{tf}` | `bull_bos_1h`, `bear_fvg_4h` |
+| SMC zone | `{zone}_{tf}` | `premium_1h`, `ote_long_4h` |
+| WT/RSI зона | `{ind}_{zone}_{tf}` | `wt_os_1h`, `rsi_ob_4h` |
+| дивергенция | `{ind}_div_{dir}_{type}_{tf}` | `rsi_div_bull_regular_1h` |
+| pivot | `pivot_{rel}_{level}_{1D\|1W}` | `pivot_above_PP_1D` |
+| числовое | `{ind}_value_{tf}` или `{ind}_{tf}` | `wt1_value_1h`, `rsi_1h` |
+
+### TF-идентификация (ответ на вопрос)
+- **SMC/индикаторные** (bos/choch/fvg/ob/div/wt/rsi/atr/ema) — суффикс `_{tf}`: 5m/15m/1h/4h/1d ✓
+- **pivot** — суффикс `_{1D|1W}` (только дневные/недельные уровни, статика) ✓
+- **числовые indicators.py** — суффикс `_{tf}` по необходимости
+
+### ⚠️ Порядок (важно)
+Стандартизировать нейминг → потом упаковывать в единый снимок. Иначе закодируем
+бардак в схему. Переименование combinator+YAML = атомарная миграция (или alias-слой
+старые→новые для обратной совместимости YAML).
+
+**Связь:** делать в рамках ARCH-117 (единые сферы WT/RSI задают канонический нейминг
+дивергенций) — там же alias для миграции без поломки активных паттернов.

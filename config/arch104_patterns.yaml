@@ -17,7 +17,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
     test_n: 29
@@ -69,7 +69,7 @@ patterns:
     direction: LONG
     parent: L1_golden                # для documentation
     anchor_factors:                  # HTF + LTF trigger (all must be True)
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
       - bull_ob_near_15m
@@ -93,7 +93,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:                   # сильная версия с двумя триггерами
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
       - bull_ob_near_15m
@@ -115,7 +115,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:                  # 5m trigger требует HTF context актив
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
       - atr_up_5m
@@ -139,7 +139,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
       - atr_up_5m
@@ -161,7 +161,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
       - bull_ob_near_15m
@@ -183,7 +183,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:                  # = L1_golden + atr_up_1h boost factor
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
       - atr_up_1h
@@ -327,7 +327,7 @@ patterns:
     anchor_factors:
       - atr_cross_up_1d
       - atr_up_4h
-      - bull_div_4h
+      - rsi_div_bull_regular_4h
     test_n: 46
     test_avgR: 1.295
     test_WR: 84.8
@@ -345,7 +345,7 @@ patterns:
     direction: LONG
     anchor_factors:
       - atr_cross_up_1d
-      - bull_div_4h
+      - rsi_div_bull_regular_4h
       - vol_spike_1d
     test_n: 50
     test_avgR: 1.171
@@ -401,7 +401,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - wt_os_4h
     test_n: 135
@@ -494,7 +494,7 @@ patterns:
     direction: LONG
     anchor_factors:
       - atr_cross_up_1d
-      - bull_div_4h
+      - rsi_div_bull_regular_4h
       - rsi_os_1d
     test_n: 35
     test_avgR: 0.955
@@ -950,7 +950,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_15m
       - wt_os_4h
@@ -994,7 +994,7 @@ patterns:
     direction: LONG
     parent: L1_golden
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_15m
       - bull_fvg_4h
       - wt_os_4h
@@ -1061,7 +1061,7 @@ patterns:
     anchor_factors:
       - above_ema200_5m
       - atr_up_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
     test_n: 396
@@ -1084,7 +1084,7 @@ patterns:
     anchor_factors:
       - above_ema200_5m
       - above_ema50_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_fvg_5m
       - bull_ob_near_5m
@@ -1108,7 +1108,7 @@ patterns:
     parent: L1_golden
     anchor_factors:
       - atr_up_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_fvg_5m
       - wt_os_4h
@@ -1153,7 +1153,7 @@ patterns:
     parent: L1_golden
     anchor_factors:
       - atr_up_15m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_os_4h
     test_n: 145
@@ -2350,7 +2350,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - rsi_os_4h
       - wt_os_4h
@@ -2371,7 +2371,7 @@ patterns:
     direction: LONG
     anchor_factors:
       - atr_up_1h
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - wt_os_4h
     test_n: 99
@@ -2390,7 +2390,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - bull_ob_near_1h
       - wt_os_4h
@@ -2429,7 +2429,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_1h
       - bull_ob_4h
       - wt_os_4h
@@ -2449,7 +2449,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_1h
       - bull_ob_4h
       - wt_os_4h
@@ -2469,7 +2469,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - ote_long_1h
       - wt_os_4h
@@ -2489,7 +2489,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - discount_1h
       - wt_os_4h
@@ -2509,7 +2509,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - discount_1d
       - wt_os_4h
@@ -2529,7 +2529,7 @@ patterns:
     enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
     direction: LONG
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_ob_4h
       - discount_4h
       - wt_os_4h
@@ -2993,7 +2993,7 @@ patterns:
 
 
   # ─────────── TIER 6 4H-REVERSAL (D-039, 2026-05-22) ───────────
-  # 4h-only reversal patterns: bull_div_4h / wt_os_4h / bear_div_4h / wt_ob_4h.
+  # 4h-only reversal patterns: rsi_div_bull_regular_4h / wt_os_4h / rsi_div_bear_regular_4h / wt_ob_4h.
   # БЕЗ 1d-факторов (lowercase suffixes — все), БЕЗ pivot_bounce_*.
   # Фильтр: BH-FDR, n≥50, avgR≥0.5, WR≥60.0.
 
@@ -3022,7 +3022,7 @@ patterns:
     direction: LONG
     anchor_factors:
       - atr_up_4h
-      - bull_div_4h
+      - rsi_div_bull_regular_4h
       - wt_cross_up_1d
     test_n: 52
     test_avgR: 0.962
@@ -3039,7 +3039,7 @@ patterns:
   T6_L_03:
     direction: LONG
     anchor_factors:
-      - bull_div_4h
+      - rsi_div_bull_regular_4h
       - ema50_above_ema200_1h
       - wt_cross_up_1d
     test_n: 84
@@ -3057,7 +3057,7 @@ patterns:
   T6_L_04:
     direction: LONG
     anchor_factors:
-      - bull_div_4h
+      - rsi_div_bull_regular_4h
       - bull_fvg_in_1h
       - wt_os_4h
     test_n: 88
@@ -3114,7 +3114,7 @@ patterns:
       - discount_5m
       - ote_long_5m
       - wt_div_bull_hidden_5m
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 67
     test_avgR: 0.881
@@ -3183,8 +3183,8 @@ patterns:
       - bull_ob_5m
       - discount_5m
       - ote_long_5m
-      - wt_div_bull_reg_4h
-      - wt_div_bull_reg_5m
+      - wt_div_bull_regular_4h
+      - wt_div_bull_regular_5m
       - wt_os_4h
     test_n: 56
     test_avgR: 0.749
@@ -3229,8 +3229,8 @@ patterns:
       - bull_ob_near_5m
       - discount_5m
       - ote_long_5m
-      - wt_div_bull_reg_4h
-      - wt_div_bull_reg_5m
+      - wt_div_bull_regular_4h
+      - wt_div_bull_regular_5m
       - wt_os_4h
     test_n: 53
     test_avgR: 0.735
@@ -3254,7 +3254,7 @@ patterns:
       - bull_fvg_4h
       - bull_ob_15m
       - pivot_bounce_up_PP_1D
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 56
     test_avgR: 0.678
@@ -3278,7 +3278,7 @@ patterns:
       - bear_ob_4h
       - pivot_bounce_down_R2_1D
       - pivot_near_R1_1D
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 58
     test_avgR: 1.120
@@ -3300,7 +3300,7 @@ patterns:
     anchor_factors:
       - bear_ob_4h
       - pivot_bounce_down_R3_1D
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 73
     test_avgR: 1.036
@@ -3324,7 +3324,7 @@ patterns:
       - ema50_below_ema200_5m
       - pivot_bounce_down_R2_1W
       - wt_div_bear_hidden_4h
-      - wt_div_bear_reg_5m
+      - wt_div_bear_regular_5m
     test_n: 66
     test_avgR: 1.025
     test_WR: 71.2
@@ -3504,8 +3504,8 @@ patterns:
     anchor_factors:
       - bear_ob_4h
       - pivot_bounce_down_PP_1D
-      - wt_div_bear_reg_15m
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_15m
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 95
     test_avgR: 0.942
@@ -3549,7 +3549,7 @@ patterns:
       - bear_ob_4h
       - pivot_bounce_down_S1_1D
       - pivot_near_R2_1W
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 71
     test_avgR: 0.986
@@ -3571,7 +3571,7 @@ patterns:
       - bear_ob_4h
       - below_ema200_5m
       - pivot_near_R1_1D
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 259
     test_avgR: 0.802
@@ -3592,8 +3592,8 @@ patterns:
     anchor_factors:
       - bear_ob_4h
       - pivot_near_R2_1D
-      - wt_div_bear_reg_4h
-      - wt_div_bear_reg_5m
+      - wt_div_bear_regular_4h
+      - wt_div_bear_regular_5m
       - wt_ob_4h
     test_n: 52
     test_avgR: 0.998
@@ -3635,8 +3635,8 @@ patterns:
     parent: A4_bear_reg_4h
     anchor_factors:
       - bear_ob_4h
-      - wt_div_bear_reg_15m
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_15m
+      - wt_div_bear_regular_4h
       - wt_ob_15m
       - wt_ob_4h
     test_n: 54
@@ -3659,7 +3659,7 @@ patterns:
       - bear_fvg_15m
       - bear_ob_4h
       - pivot_near_R1_1D
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 137
     test_avgR: 0.736
@@ -3680,7 +3680,7 @@ patterns:
     anchor_factors:
       - bear_ob_4h
       - pivot_below_PP_1W
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 62
     test_avgR: 0.783
@@ -3702,7 +3702,7 @@ patterns:
       - bear_ob_4h
       - below_ema50_15m
       - pivot_near_R1_1D
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 106
     test_avgR: 0.721
@@ -3731,7 +3731,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - atr_up_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - wt_cross_up_1h
       - wt_div_bull_hidden_5m
@@ -3753,7 +3753,7 @@ patterns:
     direction: LONG
     parent: D047_L3_golden_trig
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_15m
       - bull_ob_near_15m
@@ -3777,7 +3777,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - atr_up_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_5m
       - wt_cross_up_1h
@@ -3800,7 +3800,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - atr_up_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_near_5m
       - wt_cross_up_1h
@@ -3823,7 +3823,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - above_ema50_15m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_15m
       - wt_cross_up_1h
@@ -3846,7 +3846,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - above_ema50_15m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_near_15m
       - wt_cross_up_1h
@@ -3869,7 +3869,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - atr_up_5m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_fvg_5m
       - wt_cross_up_1h
@@ -3892,7 +3892,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - atr_up_15m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_15m
       - wt_cross_up_1h
@@ -3915,7 +3915,7 @@ patterns:
     parent: D047_L3_golden_trig
     anchor_factors:
       - atr_up_15m
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_near_15m
       - wt_cross_up_1h
@@ -3937,7 +3937,7 @@ patterns:
     direction: LONG
     parent: D047_L3_golden_trig
     anchor_factors:
-      - bull_div_1d
+      - rsi_div_bull_regular_1d
       - bull_fvg_4h
       - bull_ob_5m
       - bull_ob_near_5m
@@ -4196,7 +4196,7 @@ patterns:
       - pivot_above_PP_1D
       - rsi_div_bull_hidden_15m
       - wt_cross_up_1h
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 33
     test_avgR: 1.008
@@ -4220,7 +4220,7 @@ patterns:
       - bull_ob_near_15m
       - pivot_bounce_up_PP_1D
       - wt_cross_up_1h
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 31
     test_avgR: 1.011
@@ -4244,7 +4244,7 @@ patterns:
       - pivot_above_PP_1D
       - pivot_bounce_up_PP_1D
       - wt_cross_up_1h
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 31
     test_avgR: 1.011
@@ -4268,7 +4268,7 @@ patterns:
       - bull_fvg_4h
       - pivot_bounce_up_PP_1D
       - wt_cross_up_1h
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 33
     test_avgR: 0.781
@@ -4292,7 +4292,7 @@ patterns:
       - pivot_above_PP_1D
       - pivot_bounce_up_PP_1D
       - wt_cross_up_1h
-      - wt_div_bull_reg_4h
+      - wt_div_bull_regular_4h
       - wt_os_4h
     test_n: 35
     test_avgR: 0.765
@@ -4392,7 +4392,7 @@ patterns:
       - bear_ob_4h
       - pivot_bounce_down_R1_1D
       - wt_cross_down_1h
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 50
     test_avgR: 1.247
@@ -4465,7 +4465,7 @@ patterns:
       - pivot_near_R1_1D
       - rsi_div_bear_hidden_5m
       - wt_cross_down_1h
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 43
     test_avgR: 1.233
@@ -4488,7 +4488,7 @@ patterns:
       - pivot_bounce_down_R1_1D
       - rsi_div_bear_hidden_5m
       - wt_cross_down_1h
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 45
     test_avgR: 1.200
@@ -4511,7 +4511,7 @@ patterns:
       - pivot_near_R1_1D
       - wt_cross_down_1h
       - wt_div_bear_hidden_5m
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 83
     test_avgR: 1.060
@@ -4580,7 +4580,7 @@ patterns:
       - below_ema200_5m
       - pivot_bounce_down_R1_1D
       - wt_cross_down_1h
-      - wt_div_bear_reg_4h
+      - wt_div_bear_regular_4h
       - wt_ob_4h
     test_n: 83
     test_avgR: 0.980

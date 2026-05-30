@@ -554,8 +554,8 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     # без trendline, сравнение с предыдущим WT-фракталом. RSI ниже — другой алгоритм (close).
     wt_div_bull_reg, wt_div_bear_reg, wt_div_bull_hid, wt_div_bear_hid = _wtx_divergences(
         wt, low, high)
-    out[f"wt_div_bull_reg_{label}"]    = wt_div_bull_reg
-    out[f"wt_div_bear_reg_{label}"]    = wt_div_bear_reg
+    out[f"wt_div_bull_regular_{label}"] = wt_div_bull_reg  # ARCH-118 naming: reg→regular
+    out[f"wt_div_bear_regular_{label}"] = wt_div_bear_reg
     out[f"wt_div_bull_hidden_{label}"] = wt_div_bull_hid
     out[f"wt_div_bear_hidden_{label}"] = wt_div_bear_hid
 
@@ -577,8 +577,8 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     # rsi_div_*_hidden = hidden. Заменил argmin-окно (regular + D-040 hidden).
     rsi_bull_reg, rsi_bear_reg, rsi_bull_hid, rsi_bear_hid = _calc_divergence(
         close, r, DIV_PIVOT_PRD, DIV_MAX_PP, DIV_MAX_BARS)
-    out[f"bull_div_{label}"] = rsi_bull_reg   # имя сохранено для обратной совместимости
-    out[f"bear_div_{label}"] = rsi_bear_reg
+    out[f"rsi_div_bull_regular_{label}"] = rsi_bull_reg  # ARCH-118 naming: bull_div→rsi_div_bull_regular
+    out[f"rsi_div_bear_regular_{label}"] = rsi_bear_reg
     out[f"rsi_div_bull_hidden_{label}"] = rsi_bull_hid
     out[f"rsi_div_bear_hidden_{label}"] = rsi_bear_hid
 
