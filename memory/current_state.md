@@ -13,6 +13,7 @@
 - **Реальный каталог:** combinator (47 инд + 35 pivot) + indicators.py (15 числовых) = ~770 признаков.
 - **Нейминг дивергенций (A):** bull_div→rsi_div_bull_regular, wt_div_*_reg→wt_div_*_regular. combinator + 64 паттерна YAML синхронно. Рестарт применён (PID 944).
 - **Рой ARCH-118 (5/5):** вложенный JSON {meta,context,signal}, сбор на входе, версионирование, свёртка pivot. **Решение: вариант B** (combinator один код live+бэктест = parity).
+- **🔴🔴 Спор хранения ЗАКРЫТ на реальных данных** (15539 сделок, SQLite 3.45.3 JSON1): отдельная таблица `trade_features`(FK) + вложенный JSON по доменам + **sparse-булевы** (dense 770=207MB→sparse=22MB) + **generated-колонки**. Pivot 490→свёртка. Ложится на Куб = persistence-проекция `PairFullState`, замыкает feedback loop Сферы 11. **ИНВАРИАНТ «один калькулятор»** (combinator≡Bus). Зафиксировано: `memory/arch118_snapshot_decision.md`, `docs/ENCYCLOPEDIA.md` (ИНВАРИАНТ ВЫСШЕГО УРОВНЯ), `docs/FEATURES_JSON_AUDIT.md` (РЕШЕНИЕ), `whats-next.md`, auto-MEMORY.md.
 
 ### ⏭️ Следующая сессия
 - Реализация `snapshot_features` (вариант B): обёртка compute_flags → register_trade + бэктест → features_json вложенный schema_v2, SHADOW сначала.

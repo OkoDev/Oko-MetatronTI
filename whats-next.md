@@ -14,13 +14,19 @@
 - **Стандартизация нейминга дивергенций** (вариант A): `bull_div→rsi_div_bull_regular`, `wt_div_*_reg→wt_div_*_regular`. Синхронно combinator + 64 паттерна YAML. End-to-end OK, рестарт применён.
 - **Вердикт роя по ARCH-118** (5 моделей): вложенный JSON {meta, context:{wt,rsi,smc,trend,pivot}, signal}, сбор на входе, версионирование, свёртка pivot. **Решение: вариант B** — снимок = combinator.compute_flags() одним кодом в live+бэктест → parity ПО ОПРЕДЕЛЕНИЮ.
 
-### ⏭️ СЛЕДУЮЩИЙ ШАГ (ARCH-118 реализация, новая сессия)
-**`snapshot_features` — прототип единого снимка (вариант B):**
-1. `snapshot_features(df_by_tf, entry_idx) → dict` — обёртка над `compute_flags` для всех TF на момент входа.
-2. Вызов в `register_trade` (live) + в бэктест-движках.
-3. Запись ~211 флагов в features_json (вложенная схема {meta, context, signal} + schema_version=2).
-4. Свёртка pivot → nearest_level + distance_pct + relation.
-5. Сначала SHADOW (параллельно текущему features_json), потом переключение.
+### ✅ Спор хранения ЗАКРЫТ (30.05, на реальных данных 15539 сделок) — ВЫСШИЙ УРОВЕНЬ
+Вердикт: **отдельная таблица `trade_features`(FK) + вложенный JSON по доменам + sparse-булевы + generated-колонки**. Цифры: dense 770=207MB ❌→ sparse=22MB ✅. Pivot→свёртка. schema_version=2.
+Ложится на Куб = persistence-проекция `PairFullState`, замыкает feedback loop Сферы 11.
+🔴 **ИНВАРИАНТ «ОДИН КАЛЬКУЛЯТОР»** (combinator≡Bus, одна формула).
+→ `memory/arch118_snapshot_decision.md` · `docs/FEATURES_JSON_AUDIT.md` РЕШЕНИЕ · `docs/ENCYCLOPEDIA.md` ИНВАРИАНТ.
+
+### ⏭️ ARCH-118 реализация `snapshot_features` (вариант B) — В РАБОТЕ
+1. **✅ ШАГ 1 ГОТОВ** — `core/intelligence/feature_snapshot.py`: чистая функция `snapshot_features(df_by_tf, entry_tf, signal) → dict` + декодер `snapshot_to_vector`. Импортирует ЕДИНЫЙ `combinator_v2.compute_flags` (инвариант). Проверено на реальных данных: **211 флагов**, sparse JSON **1160 B/сделка** (~18 MB на 15539), декодер консистентен. Фикс: `_import_compute_flags` делает `detach()` combinator-wrapper'а (combinator_v2 строка 21 переопределяет sys.stdout → закрывал buffer).
+2. ⏭️ ШАГ 2 — вызов в `register_trade_async` (live): df_by_tf через `data_collector.get_ohlcv(symbol, tf)`, писать в SHADOW-поле features_json (параллельно текущему).
+3. ⏭️ ШАГ 3 — вызов в бэктест-движках (parity live=бэктест).
+4. ⏭️ ШАГ 4 — свёртка pivot 70→3 (nearest_level + distance_pct + relation).
+5. ⏭️ ШАГ 5 — таблица `trade_features`(FK) + generated-колонки + переключение с shadow.
+- **🔴 ДОЛГ:** вынести `compute_flags`+indicators в `core/` модуль БЕЗ import-side-effects (combinator_v2 = скрипт с sys.stdout hack + HISTORY_DIR). Нужно для чистого инварианта.
 - Детали схемы: `docs/FEATURES_JSON_AUDIT.md`. ARCH-117 (сферы→Bus) = параллельный трек, слить позже.
 
 ### 🔧 Состояние бота (часть 2)
