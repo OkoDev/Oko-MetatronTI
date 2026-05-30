@@ -15,8 +15,13 @@
 - **Рой ARCH-118 (5/5):** вложенный JSON {meta,context,signal}, сбор на входе, версионирование, свёртка pivot. **Решение: вариант B** (combinator один код live+бэктест = parity).
 - **🔴🔴 Спор хранения ЗАКРЫТ на реальных данных** (15539 сделок, SQLite 3.45.3 JSON1): отдельная таблица `trade_features`(FK) + вложенный JSON по доменам + **sparse-булевы** (dense 770=207MB→sparse=22MB) + **generated-колонки**. Pivot 490→свёртка. Ложится на Куб = persistence-проекция `PairFullState`, замыкает feedback loop Сферы 11. **ИНВАРИАНТ «один калькулятор»** (combinator≡Bus). Зафиксировано: `memory/arch118_snapshot_decision.md`, `docs/ENCYCLOPEDIA.md` (ИНВАРИАНТ ВЫСШЕГО УРОВНЯ), `docs/FEATURES_JSON_AUDIT.md` (РЕШЕНИЕ), `whats-next.md`, auto-MEMORY.md.
 
-### ⏭️ Следующая сессия
-- Реализация `snapshot_features` (вариант B): обёртка compute_flags → register_trade + бэктест → features_json вложенный schema_v2, SHADOW сначала.
+### ✅ ARCH-118 Шаги 1-2 ВЫПОЛНЕНЫ (30.05, коммиты b1fe5d8 + a5b72d4)
+- **Шаг 1:** `core/intelligence/feature_snapshot.py` — `snapshot_features` + `snapshot_to_vector`. 211→258 флагов, sparse. Инвариант «один калькулятор» (импорт combinator_v2.compute_flags). Фикс stdout detach.
+- **Шаг 2:** live shadow — `build_df_by_tf` (parity с observer) + блок в `register_trade_async` перед `register_trade`. config `arch118.shadow_enabled: true`. **Подтверждено в проде:** id=16075 MNT pivot_reversal, arch118_snapshot записан, n_true=52/258, домены smc/trend/pivot/rsi/wt/mom. Бот рестартован 18:32 UTC.
+
+### ⏭️ Следующая сессия (Шаг 3)
+- Вызов `snapshot_features` в бэктест-движках + СВЕРКА parity live↔бэктест на накопленных shadow-снимках. Выявить расхождение глубины 1d (live: aggregate(df_1h@300)→~12 баров vs бэктест: вся история).
+- Потом: Шаг 4 (свёртка pivot 70→3), Шаг 5 (таблица trade_features + generated-колонки + переключение). Долг: вынести compute_flags в core/ без import-side-effects.
 
 ---
 
