@@ -1119,10 +1119,19 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
             )
             if pivot_result:
                 pivot_tp, pivot_src = pivot_result
-                recommendation.take_profit = pivot_tp
-                recommendation.tp_source = pivot_src
-                distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
-                logger.debug("[%s] Pivot TP (hierarchy): %.6f (%.2f%%, %s, src=%s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val, pivot_src)
+                # ARCH-122 ч.1b: НЕ перетираем TPSelector магнит pivot'ом.
+                # calculate_levels при tp_selector_enabled уже поставил tp1 из gravity-
+                # кластера (метка содержит '@'). Иначе (atr_fallback) — pivot применяем.
+                _tps_en = bool((bot.config.get("sl_tp_engine") or {}).get("tp_selector_enabled", False))
+                _cur_src = str(getattr(recommendation, "tp_source", "") or "")
+                if _tps_en and "@" in _cur_src:
+                    distance_to_pivot_pct = abs(float(recommendation.take_profit) - entry_price) / entry_price * 100 if recommendation.take_profit else 0.0
+                    logger.info("[%s] ARCH-122: TPSelector магнит сохранён (src=%s), pivot override пропущен", symbol, _cur_src)
+                else:
+                    recommendation.take_profit = pivot_tp
+                    recommendation.tp_source = pivot_src
+                    distance_to_pivot_pct = abs(pivot_tp - entry_price) / entry_price * 100
+                    logger.debug("[%s] Pivot TP (hierarchy): %.6f (%.2f%%, %s, src=%s)", symbol, pivot_tp, distance_to_pivot_pct, direction_val, pivot_src)
             elif bot.config.get("trading.sl_tp.require_pivot_tp", False):
                 # Вариант C (п.6): если pivot TP не найден и require_pivot_tp=true → пропуск регистрации
                 logger.info("[%s] Пропуск регистрации: require_pivot_tp=true, pivot не найден в 2-20R", symbol)
@@ -1669,7 +1678,11 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                     min_r=bot.config.get("trading.sl_tp.tp_pivot_min_r", 2.0),
                                 )
                                 if _ores:
-                                    other_rec.take_profit, other_rec.tp_source = _ores
+                                    # ARCH-122 ч.1b: не перетираем TPSelector магнит (см. main path)
+                                    _tps_en_o = bool((bot.config.get("sl_tp_engine") or {}).get("tp_selector_enabled", False))
+                                    _osrc = str(getattr(other_rec, "tp_source", "") or "")
+                                    if not (_tps_en_o and "@" in _osrc):
+                                        other_rec.take_profit, other_rec.tp_source = _ores
                         except Exception as _e58:
                             logger.debug("[ARCH-58/other_recs] %s '%s': %s", symbol, strat_name, _e58)
                     # DEV-126: передаём weekly_bias + htf_wt из контекста основной рекомендации
