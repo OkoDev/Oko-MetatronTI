@@ -289,3 +289,30 @@ live `snapshot_features` = independent `iloc[-1]` на каждом TF → ра�
 
 **Вывод:** ~12-15/211 флагов (только HTF) расходятся ДО фикса. Чинить в Шаге 4 ДО любого ML —
 иначе модель учится на неконсистентных HTF-фичах (тот же класс ошибки, что самоподтверждение).
+
+---
+
+## ✅ ШАГ 4 — PARITY ДОСТИГНУТ (30.05, рой 7/7 консенсус)
+
+> Сверка после фикса (`scripts/arch118_parity_check.py`): **0 расхождений** vs backtest-эталон
+> (было 34 флага-расхождения на @300). Оба источника устранены.
+
+**Рой team-ask (7 моделей):** консенсус 7/7 на `HTFHistoryCache` и bit-identity; 5/7 на
+канон `independent-last`. Полный разбор: `memory/last_team_discussion.md`.
+
+**(a) КАНОН `independent-last` (выравнивание):** `snapshot_features_at(df_by_tf, entry_ts,
+closed_only=True)` — снимок на историческую точку = последняя ЗАКРЫТАЯ свеча каждого TF
+(trade-time, не bar-time; БЕЗ lookahead). Идентично live `snapshot_features`. Заменяет
+reindex+shift ДЛЯ СНИМКА-ФИЧИ. ⚠️ combinator-matching паттернов (`find_matching`) остаётся
+на reindex+shift — это отдельный слой (matching ≠ feature-snapshot).
+
+**(b) `HTFHistoryCache` (глубина, рой 7/7):** per-symbol кэш глубокого 1h ≥4320 баров
+(3×1440 пагинация; BingX max 1440/запрос, код 109400 при >1440; TTL 1800с). 4h/1d =
+resample(deep 1h) → достаточная глубина (1d≈167 баров, ema200_1d сходится) + resample-parity.
+Замер сходимости: 1h@300→48 расхождений, @1000→23, @2000→14, **@4000→0**. Прод-путь:
+4 get_ohlcv на сделку (раз в TTL), `build_df_by_tf(deep_htf=True)`.
+
+**bit-identity:** `closed_only=True` исключает текущую формирующуюся свечу (приоритет рой 7/7:
+identity > freshness).
+
+**Итог:** live ≡ backtest по 211 флагам (0 расхождений). Снимок готов для ML/re-mining.

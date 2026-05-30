@@ -33,7 +33,15 @@
 - **ЗАПРЕТ:** два независимых пути расчёта одного признака. Второй калькулятор ДОЛЖЕН вызывать
   первый, а не дублировать. Дублирование = возврат корня самоподтверждения.
 
-## Следующий шаг (реализация)
-`snapshot_features(df_by_tf, entry_idx) → dict` — обёртка над `compute_flags` для всех TF на
-момент входа. Вызов в `register_trade` (live) + бэктест-движках. Сначала SHADOW параллельно
-текущему features_json, потом переключение. Связь: [[arch117_wt_audit]] (единые сферы).
+## Реализация (Шаги 1-4 готовы, 30.05)
+- **Шаг 1:** `core/intelligence/feature_snapshot.py` — `snapshot_features` + `snapshot_to_vector`.
+- **Шаг 2:** live shadow — `build_df_by_tf` + блок в `register_trade_async`. config `arch118.shadow_enabled`.
+- **Шаг 3:** сверка parity → вариант B НЕ даёт parity сам по себе. 2 источника (только HTF): глубина + выравнивание.
+- **Шаг 4 — PARITY ДОСТИГНУТ (0 расхождений, рой 7/7):**
+  - КАНОН выравнивания = **independent-last** (рой 5/7): `snapshot_features_at(df_by_tf, entry_ts, closed_only=True)` — последняя ЗАКРЫТАЯ свеча каждого TF (trade-time, без lookahead). Заменяет reindex+shift ДЛЯ СНИМКА. combinator-matching паттернов остаётся reindex+shift (отдельный слой!).
+  - **HTFHistoryCache** (рой 7/7): кэш глубокого 1h ≥4320 баров (3×1440 пагинация, BingX max 1440, TTL 1800с). 4h/1d=resample(deep 1h). Замер: @300→48 расхождений, @4000→0.
+  - bit-identity > freshness (рой 7/7): `closed_only` исключает формирующуюся свечу.
+
+## Следующий шаг (Шаг 5)
+Свёртка pivot 70→3 (nearest_level+distance_pct+relation) → таблица `trade_features`(FK) +
+generated-колонки → переключение с shadow. Связь: [[arch117_wt_audit]] (единые сферы Bus).

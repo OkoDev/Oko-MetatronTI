@@ -28,8 +28,11 @@
    - **(2) ГЛУБИНА [приоритет 1, системно]:** live `build_df_by_tf` грузит 1h@300→1d≈13 баров → `ema200_1d`/`wt_ob_1d` недостоверны. `ema50_above/below_ema200_1d` расходится **10/12**, `wt_ob_1d` 10/12. Фикс: грузить HTF (4h/1d) с достаточной глубиной (нативный fetch 1d@300/4h@300 ИЛИ 1h@1500+). Бэктест на полной истории корректен → live должен догнать глубину.
    - **(1) ВЫРАВНИВАНИЕ [приоритет 2]:** backtest reindex+shift HTF на 1h-сетку (анти-lookahead) vs live independent iloc[-1] → расхождение на 1 HTF-период (`bear_mom_1d` 8/12, `vol_spike_4h` 8/12). Нужно выбрать КАНОНИЧЕСКИЙ метод (обсудить): independent-last семантичнее для live-входа, shift нужен в историческом бэктесте.
    - **Вывод:** ~12-15/211 флагов (только HTF) расходятся до фикса. Чинить в Шаге 4 ДО обучения ML (иначе модель учится на неконсистентных HTF-фичах).
-4. ⏭️ ШАГ 4 — (a) ФИКС PARITY HTF: глубина + унификация выравнивания; (b) свёртка pivot 70→3 (nearest_level + distance_pct + relation).
-5. ⏭️ ШАГ 5 — таблица `trade_features`(FK) + generated-колонки + переключение с shadow.
+4. **✅ ШАГ 4 ГОТОВ — PARITY ДОСТИГНУТ** (рой 7/7 консенсус). Сверка после фикса: **0 расхождений** vs backtest-эталон (было 34 флага). Два фикса:
+   - **(a) КАНОН `independent-last`** (рой 5/7): `snapshot_features_at(df_by_tf, entry_ts, closed_only=True)` — снимок на историческую точку = последняя ЗАКРЫТАЯ свеча каждого TF (trade-time, БЕЗ lookahead). Заменяет reindex+shift для снимка-фичи (combinator-matching паттернов остаётся на reindex+shift — отдельный слой). Live snapshot_features уже был independent-last.
+   - **(b) `HTFHistoryCache` (рой 7/7):** per-symbol кэш глубокого 1h (≥4320 баров = 3×1440 пагинация, BingX max 1440/запрос; TTL 1800с). 4h/1d = resample(deep 1h) → глубина + resample-parity. Замер: 1h@300→48 расхождений, @4000→0. Прод-путь: 4 get_ohlcv/сделка, 1d=167 баров. `build_df_by_tf(deep_htf=True)`.
+   - bit-identity: `closed_only` исключает текущую формирующуюся свечу.
+5. ⏭️ ШАГ 5 — (a) свёртка pivot 70→3 (nearest_level + distance_pct + relation); (b) таблица `trade_features`(FK) + generated-колонки + переключение с shadow.
 - **🔴 ДОЛГ:** вынести `compute_flags`+indicators в `core/` модуль БЕЗ import-side-effects (combinator_v2 = скрипт с sys.stdout hack + HISTORY_DIR). Нужно для чистого инварианта.
 - Детали схемы: `docs/FEATURES_JSON_AUDIT.md`. ARCH-117 (сферы→Bus) = параллельный трек, слить позже.
 

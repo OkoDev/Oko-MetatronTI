@@ -39,36 +39,30 @@ def _flat(snap: dict) -> set:
     return set(out)
 
 
-def check_pair(path: str, cb) -> dict:
-    cf = cb.compute_flags
-    df = _load(path)
-    if len(df) < 300:
-        return {}
-    df4 = cb.aggregate_tf(df, "4h")
-    df1d = cb.aggregate_tf(df, "1d")
+_DEEP = 4320  # глубина 1h в live после HTFHistoryCache (Шаг 4)
 
-    # backtest all_flags: reindex+shift на 1h-сетку (process_symbol style)
-    f1 = cf(df, "1h", include_pivots=True)
-    f4 = cf(df4, "4h"); f4.index = f4.index + pd.Timedelta(hours=4)
-    f4 = f4.reindex(df.index, method="ffill").fillna(False)
-    fd = cf(df1d, "1d"); fd.index = fd.index + pd.Timedelta(days=1)
-    fd = fd.reindex(df.index, method="ffill").fillna(False)
-    allf = pd.concat([f1, f4, fd], axis=1).astype(bool)
-    bt = _flat(snapshot_from_flags_row(allf.iloc[-1], entry_tf="1h"))
 
-    # live full-depth (independent last per TF)
-    live = _flat(snapshot_features({"1h": df, "4h": df4, "1d": df1d}, entry_tf="1h"))
-
-    # live shallow-depth (1h@300, как build_df_by_tf в проде)
-    d300 = df.tail(300)
-    sh = _flat(snapshot_features(
-        {"1h": d300, "4h": cb.aggregate_tf(d300, "4h"), "1d": cb.aggregate_tf(d300, "1d")},
+def _snap_indep(cb, df_1h):
+    """Снимок independent-last из заданной глубины 1h (HTF=resample). Канон Шага 4."""
+    return _flat(snapshot_features(
+        {"1h": df_1h, "4h": cb.aggregate_tf(df_1h, "4h"), "1d": cb.aggregate_tf(df_1h, "1d")},
         entry_tf="1h"))
 
+
+def check_pair(path: str, cb) -> dict:
+    df = _load(path)
+    if len(df) < 4500:
+        return {}
+
+    # КАНОН (рой 5/7): independent-last обе стороны.
+    # backtest-эталон = full-depth independent-last; live = deep_htf (HTFHistoryCache@4320).
+    bt_canon = _snap_indep(cb, df)              # backtest snapshot_features_at (full)
+    live_deep = _snap_indep(cb, df.tail(_DEEP))  # live build_df_by_tf(deep_htf=True)
+    live_shallow = _snap_indep(cb, df.tail(300))  # СТАРЫЙ live (до Шага 4) — для контраста
+
     return {
-        "align_diff": (bt ^ live),          # (1) метод выравнивания
-        "depth_diff": (live ^ sh),          # (2) глубина
-        "bt_n": len(bt), "live_n": len(live),
+        "fixed_diff": (bt_canon ^ live_deep),     # после Шага 4 (канон+глубина) → цель ~0
+        "old_diff": (bt_canon ^ live_shallow),    # до Шага 4 (мелкая глубина)
     }
 
 
@@ -76,24 +70,27 @@ def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 10
     cb = _import_cb()
     files = sorted(glob.glob("data/history/1h/*.parquet"))[:n]
-    align_total: dict = {}
-    depth_total: dict = {}
+    fixed_total: dict = {}
+    old_total: dict = {}
     pairs = 0
     for p in files:
         r = check_pair(p, cb)
         if not r:
             continue
         pairs += 1
-        for f in r["align_diff"]:
-            align_total[f] = align_total.get(f, 0) + 1
-        for f in r["depth_diff"]:
-            depth_total[f] = depth_total.get(f, 0) + 1
-    print(f"\nПар проверено: {pairs}")
-    print(f"\n=== (1) РАСХОЖДЕНИЯ МЕТОДА ВЫРАВНИВАНИЯ (backtest reindex+shift vs live indep) ===")
-    for f, c in sorted(align_total.items(), key=lambda x: -x[1]):
+        for f in r["fixed_diff"]:
+            fixed_total[f] = fixed_total.get(f, 0) + 1
+        for f in r["old_diff"]:
+            old_total[f] = old_total.get(f, 0) + 1
+    print(f"\nПар проверено (>=4500 1h): {pairs}")
+    print(f"\n=== ПОСЛЕ ШАГА 4 (independent-last канон + deep@{_DEEP}) vs backtest-эталон ===")
+    if not fixed_total:
+        print("  ✅ 0 расхождений — PARITY ДОСТИГНУТ")
+    for f, c in sorted(fixed_total.items(), key=lambda x: -x[1]):
         print(f"  {c:3d}/{pairs}  {f}")
-    print(f"\n=== (2) РАСХОЖДЕНИЯ ГЛУБИНЫ (live full vs live@300) ===")
-    for f, c in sorted(depth_total.items(), key=lambda x: -x[1]):
+    print(f"\n=== ДО ШАГА 4 (мелкая глубина@300) vs эталон — для контраста ===")
+    print(f"  всего расхождений-флагов: {sum(old_total.values())} (уник: {len(old_total)})")
+    for f, c in sorted(old_total.items(), key=lambda x: -x[1])[:8]:
         print(f"  {c:3d}/{pairs}  {f}")
 
 

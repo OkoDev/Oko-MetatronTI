@@ -79,16 +79,24 @@ def _import_compute_flags():
     return _import_cb().compute_flags
 
 
-async def _fetch_df(data_collector: Any, symbol: str, tf: str, limit: int):
+async def _fetch_df(data_collector: Any, symbol: str, tf: str, limit: int,
+                    since: Optional[int] = None):
     """Загрузить OHLCV и привести к стандартному виду (как arch104 observer, parity).
 
     Поддерживает оба формата индекса: 'ts' (ccxt) и 'time' (data_collector, D-042).
+    since (ms) — для пагинации истории назад (HTFHistoryCache).
     """
     try:
-        df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit)
+        df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit, since=since)
+    except TypeError:
+        # data_collector без since в сигнатуре — fallback
+        try:
+            df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit)
+        except Exception:
+            return None
     except Exception:
         return None
-    if df is None or len(df) < 50:
+    if df is None or len(df) < 2:
         return None
     df = df.copy()
     df.columns = [c.lower() for c in df.columns]
@@ -101,32 +109,92 @@ async def _fetch_df(data_collector: Any, symbol: str, tf: str, limit: int):
     return df[["open", "high", "low", "close", "volume"]].dropna().sort_index()
 
 
+# ── HTFHistoryCache (ARCH-118 Шаг 4, рой 7/7) ──────────────────────────────
+# Глубина 1h для сходимости HTF-индикаторов (ema200_1d). Эмпирически (12 пар):
+# 1h@300→48 расхождений, @1000→23, @2000→14, @4000→0. Цель ≥4000.
+# BingX max 1440/запрос → пагинация 3 страницы. TTL длинный (HTF меняется медленно).
+_HTF_TARGET_BARS = 4320       # 3 × 1440, запас над 4000 (0 HTF-расхождений vs full)
+_HTF_PAGE = 1440              # BingX max OHLCV за один запрос (код 109400 при >1440)
+_HTF_CACHE_TTL = 1800.0       # сек; HTF медленный, пере-загрузка раз в 30 мин
+_TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+
+
+class _HTFHistoryCache:
+    """Per-symbol кэш ГЛУБОКОЙ 1h-истории (≥4320 баров) с пагинацией.
+
+    Резолвит источник (2) расхождения parity: live грузил 1h@300 → 1d≈12 баров →
+    ema200_1d недостоверна. Кэш даёт ~180 1d баров → HTF-индикаторы сходятся к full.
+    HTF (4h/1d) ресемплятся из этого 1h → resample-parity с бэктестом сохранён.
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[str, tuple[Any, float]] = {}
+
+    async def get_deep_1h(self, data_collector: Any, symbol: str):
+        import time as _t
+        ent = self._store.get(symbol)
+        if ent is not None and (_t.monotonic() - ent[1]) < _HTF_CACHE_TTL \
+                and len(ent[0]) >= _HTF_TARGET_BARS * 0.9:
+            return ent[0]
+        df = await self._paginate_1h(data_collector, symbol)
+        if df is not None and len(df) > 0:
+            self._store[symbol] = (df, _t.monotonic())
+        return df
+
+    async def _paginate_1h(self, data_collector: Any, symbol: str):
+        """Собрать ~_HTF_TARGET_BARS 1h через несколько since-окон назад от now."""
+        from datetime import datetime, timezone
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        step_ms = _HTF_PAGE * _TF_SECONDS["1h"] * 1000
+        pages = (_HTF_TARGET_BARS + _HTF_PAGE - 1) // _HTF_PAGE
+        frames = []
+        for k in range(pages):
+            # окно k: [now - (k+1)*page, now - k*page]
+            since_ms = now_ms - (k + 1) * step_ms
+            d = await _fetch_df(data_collector, symbol, "1h", _HTF_PAGE, since=since_ms)
+            if d is not None and len(d) > 0:
+                frames.append(d)
+        if not frames:
+            # fallback: обычный неглубокий fetch (parity деградирует, но снимок не None)
+            return await _fetch_df(data_collector, symbol, "1h", 300)
+        full = pd.concat(frames)
+        full = full[~full.index.duplicated(keep="last")].sort_index()
+        return full
+
+
+_HTF_CACHE = _HTFHistoryCache()
+
+
 async def build_df_by_tf(
     data_collector: Any,
     symbol: str,
     *,
     want_5m: bool = False,
+    deep_htf: bool = True,
 ) -> dict[str, "pd.DataFrame"]:
-    """Собрать df_by_tf ТЕМ ЖЕ способом, что arch104 observer и бэктест (parity).
+    """Собрать df_by_tf для снимка. HTF (4h/1d) = resample глубокого 1h (parity + глубина).
 
-    1d = `aggregate_tf(df_1h)` (resample из 1h, как в бэктесте process_symbol),
-    остальные TF — нативный fetch. 1h обязателен (без него снимок бессмыслен).
+    deep_htf=True (ARCH-118 Шаг 4): 1h берётся из HTFHistoryCache (≥4320 баров) →
+    ema200_1d/wt_ob_1d сходятся к backtest (0 HTF-расхождений). 4h/1d ресемплятся из
+    того же 1h (resample-parity). 15m/5m — нативный fetch (LTF, parity уже идеален).
     """
     out: dict[str, Any] = {}
-    df_1h = await _fetch_df(data_collector, symbol, "1h", 300)
+    if deep_htf:
+        df_1h = await _HTF_CACHE.get_deep_1h(data_collector, symbol)
+    else:
+        df_1h = await _fetch_df(data_collector, symbol, "1h", 300)
     if df_1h is None or len(df_1h) < 50:
         return out
     out["1h"] = df_1h
     df_15m = await _fetch_df(data_collector, symbol, "15m", 400)
     if df_15m is not None:
         out["15m"] = df_15m
-    df_4h = await _fetch_df(data_collector, symbol, "4h", 200)
-    if df_4h is not None and len(df_4h) >= 30:
-        out["4h"] = df_4h
-    try:
-        out["1d"] = _import_cb().aggregate_tf(df_1h, "1d")  # resample = parity
-    except Exception:
-        pass
+    cb = _import_cb()
+    for htf in ("4h", "1d"):
+        try:
+            out[htf] = cb.aggregate_tf(df_1h, htf)  # resample из глубокого 1h = parity
+        except Exception:
+            pass
     if want_5m:
         df_5m = await _fetch_df(data_collector, symbol, "5m", 500)
         if df_5m is not None and len(df_5m) >= 100:
@@ -188,6 +256,47 @@ def snapshot_features(
     return _build_snapshot(context, n_true, n_total, entry_tf, tfs_used,
                            signal, source="live",
                            snapshot_ts=datetime.now(timezone.utc).isoformat())
+
+
+def snapshot_features_at(
+    df_by_tf: dict[str, "pd.DataFrame"],
+    entry_ts,
+    entry_tf: str,
+    *,
+    signal: Optional[dict] = None,
+    closed_only: bool = True,
+    _compute_flags: Any = None,
+) -> dict:
+    """Снимок на ИСТОРИЧЕСКУЮ точку входа entry_ts — КАНОН independent-last (рой 5/7).
+
+    Для бэктеста: на момент входа берётся последняя ЗАКРЫТАЯ свеча каждого TF
+    (df[df.index + tf <= entry_ts]) → compute_flags → last. Это идентично live
+    snapshot_features (последняя закрытая HTF-свеча, БЕЗ lookahead, trade-time не
+    bar-time). Заменяет reindex+shift для снимка-фичи (combinator-matching паттернов
+    остаётся на reindex+shift — отдельный слой).
+
+    closed_only=True: исключить свечу, ещё не закрытую к entry_ts (анти-lookahead).
+    """
+    entry_ts = pd.Timestamp(entry_ts)
+    if entry_ts.tzinfo is None:
+        entry_ts = entry_ts.tz_localize("UTC")
+    sliced: dict[str, Any] = {}
+    for tf, df in df_by_tf.items():
+        if df is None or len(df) == 0:
+            continue
+        if closed_only:
+            tf_sec = _TF_SECONDS.get(tf, 0)
+            # свеча с open=T закрыта к entry_ts если T + tf <= entry_ts
+            cutoff = entry_ts - pd.Timedelta(seconds=tf_sec)
+            d = df[df.index <= cutoff]
+        else:
+            d = df[df.index <= entry_ts]
+        if len(d) > 0:
+            sliced[tf] = d
+    snap = snapshot_features(sliced, entry_tf, signal=signal, _compute_flags=_compute_flags)
+    snap["meta"]["source"] = "backtest"
+    snap["meta"]["snapshot_ts"] = entry_ts.isoformat()
+    return snap
 
 
 def snapshot_from_flags_row(
