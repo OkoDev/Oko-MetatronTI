@@ -4,6 +4,50 @@
 
 ---
 
+## [30.05.2026 часть 2] Агент: Developer — ARCH-118 подготовка + нейминг
+
+### ✅ Сделано
+- **Коммиты в main** (5 целевых + ARCH-118). main ahead origin ~210, push НЕ делал.
+- **Аудит features_json** (`docs/FEATURES_JSON_AUDIT.md`): 170 ключей, каждый signal_type свой набор → нет единого снимка.
+- **Удалён `extended_indicators.py`** (429 строк мёртвого кода). ADX жив (indicators.py).
+- **Реальный каталог:** combinator (47 инд + 35 pivot) + indicators.py (15 числовых) = ~770 признаков.
+- **Нейминг дивергенций (A):** bull_div→rsi_div_bull_regular, wt_div_*_reg→wt_div_*_regular. combinator + 64 паттерна YAML синхронно. Рестарт применён (PID 944).
+- **Рой ARCH-118 (5/5):** вложенный JSON {meta,context,signal}, сбор на входе, версионирование, свёртка pivot. **Решение: вариант B** (combinator один код live+бэктест = parity).
+
+### ⏭️ Следующая сессия
+- Реализация `snapshot_features` (вариант B): обёртка compute_flags → register_trade + бэктест → features_json вложенный schema_v2, SHADOW сначала.
+
+---
+
+## [30.05.2026] Агент: Developer — ARCH-117 Phase 1 + DEV-224 (TPSelector ВКЛ, confluence ВЫКЛ)
+
+### ✅ ARCH-117 Phase 1 — WTService
+- Создан `core/intelligence/wt_service.py`: единый источник WT — `wt_cross`(сырой, обр.совместимость), `cross_in_zone`(строгий: wt1 был в OS/OB ДО кросса), `zone`(±60 стандарт).
+- scan_loop wt_snap переведён на `build_wt_snap()` (вместо inline-расчёта).
+- 17 unit-тестов `tests/unit/test_wt_service.py` ✅. py_compile OK.
+- Аудит: `memory/arch117_wt_audit.md` (4 разных порога зоны, wt2 EWM≠SMA, WT_X vs LonesomeTheBlue).
+- dynamic_thresholds = опция (DEV-23, не активировано). Default ±60.
+- Phase 2 (после ARCH-118): RSIService, миграция extended_indicators (wt2 EWM→SMA), chart_builder, скрипты.
+
+### ✅ DEV-224 — A/B Shadow закрыт (n=610 закрытых с 27.05 11:00)
+- **(A) TPSelector ВКЛЮЧЁН:** симуляция выхода по tp1 на n=133: avgR -0.222→+0.076 (Δ+0.298R, +39.6R). liquidity_sweep +0.327. → `config.yaml tp_selector_enabled: true`.
+- **(B) Confluence ОТКЛЮЧЁН:** n=151 avgR=-0.387, 0/151 имели divergence, -58.4R. → `analysis.confluence.enabled: false`.
+- ARCH-23 апгрейд wt→confluence не требовал div (детект div ПОЗЖЕ scan_loop:1845) → divergence-gate невозможен в live → disable как wt_sideways.
+- Скрипты: `e:/tmp/dev224_analysis.py`, `dev224_deep.py`.
+
+### ⚠️ ТРЕБУЕТ РЕСТАРТ
+- DEV-224: оба config-изменения (tp_selector_enabled, confluence.enabled).
+- ARCH-117: scan_loop wt_snap (новое поле cross_in_zone в Bus).
+
+### ⚠️ Незакоммичено
+- `core/intelligence/wt_service.py` (создан)
+- `tests/unit/test_wt_service.py` (создан)
+- `bot/loops/scan_loop.py` (wt_snap → build_wt_snap)
+- `config.yaml` (tp_selector_enabled:true, confluence.enabled:false)
+- `TASKS.md`, `DISCUSSION.md`, `memory/arch117_wt_audit.md`, `memory/feedback_wt_cross_zone.md`
+
+---
+
 ## [29.05.2026] Агент: Developer — DEV-233/234: WT/RSI дивергенции + wt_cross исправлены, ARCH-117 поставлена
 
 ### Корень (вопрос ARCH «где WT/RSI вычисляются»)

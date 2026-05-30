@@ -1,10 +1,34 @@
 # What's Next — Handoff Document
 
-> Последнее обновление: **2026-05-30 ~02:30 UTC** (Агент: Developer/Opus 4.8).
+> Последнее обновление: **2026-05-30 ~07:30 UTC** (Агент: Developer/Opus 4.8).
 
 ---
 
-## 🎯 Сессия 30.05: исправление дивергенций + ретробэктест + изоляция golden
+## 🎯 ПРОДОЛЖЕНИЕ 30.05 (часть 2): ARCH-118 подготовка + нейминг
+
+### ✅ Сделано (часть 2)
+- **Коммиты в main** собраны (5 целевых + ARCH-118): TSL/stale, WS/observer, дивергенции, изоляция golden, аудит, нейминг. main ahead origin ~210 (push НЕ делал).
+- **ARCH-118 аудит features_json** (`docs/FEATURES_JSON_AUDIT.md`): 170 ключей в БД, каждый signal_type пишет свой набор (36 vs 129) — нет единого снимка. Только 16 CORE-полей универсальны.
+- **Удалён мёртвый `extended_indicators.py`** (429 строк: Bollinger/Ichimoku/MACD/Stoch/VWAP/MFI — никто не импортировал). ADX НЕ затронут (живёт в indicators.py, market_regime).
+- **Реальный индикаторный каталог:** combinator (47 индикаторных + 35 pivot базовых) + indicators.py (15 числовых). Снимок ~770 признаков.
+- **Стандартизация нейминга дивергенций** (вариант A): `bull_div→rsi_div_bull_regular`, `wt_div_*_reg→wt_div_*_regular`. Синхронно combinator + 64 паттерна YAML. End-to-end OK, рестарт применён.
+- **Вердикт роя по ARCH-118** (5 моделей): вложенный JSON {meta, context:{wt,rsi,smc,trend,pivot}, signal}, сбор на входе, версионирование, свёртка pivot. **Решение: вариант B** — снимок = combinator.compute_flags() одним кодом в live+бэктест → parity ПО ОПРЕДЕЛЕНИЮ.
+
+### ⏭️ СЛЕДУЮЩИЙ ШАГ (ARCH-118 реализация, новая сессия)
+**`snapshot_features` — прототип единого снимка (вариант B):**
+1. `snapshot_features(df_by_tf, entry_idx) → dict` — обёртка над `compute_flags` для всех TF на момент входа.
+2. Вызов в `register_trade` (live) + в бэктест-движках.
+3. Запись ~211 флагов в features_json (вложенная схема {meta, context, signal} + schema_version=2).
+4. Свёртка pivot → nearest_level + distance_pct + relation.
+5. Сначала SHADOW (параллельно текущему features_json), потом переключение.
+- Детали схемы: `docs/FEATURES_JSON_AUDIT.md`. ARCH-117 (сферы→Bus) = параллельный трек, слить позже.
+
+### 🔧 Состояние бота (часть 2)
+- PID 944 (рестарт 07:04), REST-only, registry 215 паттернов (187 enabled), нейминг применён, 0 ошибок.
+
+---
+
+## 🎯 Сессия 30.05 (часть 1): исправление дивергенций + ретробэктест + изоляция golden
 
 ### ✅ Закрыто за сессию
 **Стабилизация потока данных:**
