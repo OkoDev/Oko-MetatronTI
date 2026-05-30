@@ -23,6 +23,7 @@ from core.indicators.indicators import (  # noqa: F401
     compute_atr_values, compute_atr, compute_ema_values, compute_ema,
     compute_sma, compute_volatility, compute_adx, compute_rsi,
     compute_volume_ratio, find_swing_highs, find_swing_lows,
+    calculate_n_down, calculate_n_up,
     calculate_pivot_points,
 )
 from core.indicators.market_regime import MarketRegimeClassifier  # noqa: F401
@@ -33,5 +34,6 @@ __all__ = [
     "compute_atr_values", "compute_atr", "compute_ema_values", "compute_ema",
     "compute_sma", "compute_volatility", "compute_adx", "compute_rsi",
     "compute_volume_ratio", "find_swing_highs", "find_swing_lows",
+    "calculate_n_down", "calculate_n_up",
     "calculate_pivot_points", "MarketRegimeClassifier",
 ]

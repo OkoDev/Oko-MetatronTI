@@ -191,6 +191,20 @@ class PairFullState:
   EQH на 1h + OTE на 15m = классический stop hunt setup → SHORT setup
   EQL на 1h + OTE на 15m = liquidity grab → LONG setup
   Детектор: нет в проекте, нужно добавить в core/smc/liquidity.py
+
+Расширенные признаки — Elliott + Pivot (DEV-225, shadow phase):
+  Добавить 4 признака → итого 40:
+    elliott_n_down (int)      — число consecutive снижающихся swing highs на HTF
+                                 n_down=4 + SHORT → avgR=-1.814 (сильнейший предиктор убытка)
+                                 n_down=2-3 + SHORT → WR=46-71% (оптимальная волна 3)
+    pvt_above_daily_pp (bool) — цена выше дневного PP при входе
+                                 False при SHORT → avgR=-0.624 (надёжный предиктор провала)
+    pvt_nearest_level (str)   — ближайший уровень: PP/S1/S2/S3/R1/R2/R3
+                                 S2/S3 при SHORT = ОПАСНОСТЬ (глубокая поддержка)
+    htf_price_dir (str)       — направление HTF последних 5 баров: up/down/flat
+                                 aligned с direction → WR выше (особенно wt_b_signal SHORT)
+  Эти признаки кодируют рыночный контекст (фаза волны, позиция PP),
+  а не локальный паттерн → предсказательная сила выше текущих 36 признаков.
 ```
 
 #### Сфера 5 — Cross-Market Node
@@ -232,6 +246,18 @@ Reversal Mode условия (все три):
   27-29.03: confluence avg_R=+0.49R (тренд активен)
   01.04:    pivot_reversal WR=41.7%, +0.81R (разворот начался)
   Система не знала о смене → теряла деньги в переходный период
+
+Reversal Mode = Переход Волна 5 → ABC по Эллиотту:
+  Три условия Reversal Mode = точное описание конца 5-волнового импульса:
+    WT 4h в OS/OB  = истощение Волны 5 (часто сопровождается WT дивергенцией)
+    ADX снижается  = momentum иссякает (конец импульсной волны)
+    CHoCH на HTF   = структурный слом (начало ABC коррекции)
+
+  Сильнейший сигнал Reversal Mode (эмпирика W20 n=154):
+    n_down ≥ 4 + BullishChoCH + WT OS → ЗАПРЕТ SHORT (WR=0%, avgR=-2.181)
+
+  Для SHORT: mode=REVERSAL = ЗАПРЕТ (идёт ABC коррекция вверх)
+  Для LONG:  mode=REVERSAL из нисходящего тренда = разворот → вход
 
 Публикует в шину: regime, mode
 Читает из шины:  wt_snap (4h WT для exhaustion проверки)
@@ -278,6 +304,24 @@ Reversal Mode условия (все три):
   - Exit Manager: TP targets
   - MTF SMC Specialist: признаки входной модели
 Важно: S1 = pp*2.003 - high, R1 = pp*1.997 - low (проверено, НЕ МЕНЯТЬ)
+
+PP/S1/R1/S2/R2/S3/R3 как Fibonacci-прокси:
+  Уровни PP соответствуют уровням Фибоначчи от дневного диапазона:
+    PP  = (High + Low + Close) / 3  ≈ 50% Fibonacci (центр равновесия дня)
+    R1  = pp*1.997 - Low            ≈ 0.382 Fib выше PP
+    R2  = pp + (H-L)                ≈ 0.618 Fib = OTE зона вверх (цель LONG волны 3)
+    R3  = R1 + (H-L)                ≈ 1.0 расширение (цель LONG волны 3 → экстремум)
+    S1  = pp*2.003 - High           ≈ 0.382 Fib ниже PP
+    S2  = pp - (H-L)                ≈ 0.618 Fib = OTE зона вниз (цель SHORT волны 3)
+    S3  = S1 - (H-L)                ≈ 1.0 расширение (цель SHORT волны 3 → экстремум)
+
+  Торговые правила (эмпирика n=3587, post-14.05.2026):
+    SHORT: входить AbovePP → цель S1, расширение S2/S3
+           above_pp SHORT лучше во ВСЕХ сигналах кроме divergence/liquidity_sweep
+    LONG:  входить BelowPP → цель R1, расширение R2/R3
+           below_pp LONG лучше во ВСЕХ сигналах кроме divergence/liquidity_sweep
+    ОПАСНОСТЬ: S2/S3 при входе SHORT = глубокая поддержка → SHORT катастрофичен
+    ИСКЛЮЧЕНИЕ: liquidity_sweep LONG AbovePP WR=89% (свип ниже PP = bullish recovery)
 ```
 
 #### Сфера 9 — Narrative Builder (Decision Core)
@@ -367,6 +411,137 @@ Feedback loop (СЕЙЧАС ОТСУТСТВУЕТ):
   features_json      — все ключи присутствуют
 Выход: "✅ Куб OK" или "❌ Сфера N: описание проблемы"
 Запуск: автоматически в ml_loop + по запросу /diagnostics
+```
+
+---
+
+### Sub-кубы — Фрактальный Куб Метатрона (29.05.2026)
+
+> **Принцип фрактальности:** каждая сфера Куба САМА может быть Кубом — набором внутренних сфер соединённых своей шиной. Это позволяет масштабировать систему горизонтально без изменения внешних интерфейсов.
+
+**Детальные интерфейсы и реализация:** → `docs/CUBE_SUBCUBES.md`
+
+**Три запланированных Sub-куба:**
+
+```
+Главный Куб Метатрона
+│
+├── Сфера 4 — MTF SMC Specialist  ←──── SMC Sub-куб (ARCH-120) ★ ПЕРВЫЙ
+│                                         │
+│                                   ┌─────┴──────┐
+│                                OBSphere   FVGSphere
+│                                StructSphere LiqSphere
+│                                    └── SMCContext (центр)
+│
+├── Сфера 8 — Pivot Levels       ←──── Elliott-Pivot Sub-куб (vision)
+│  + Сфера 14 — WaveService              │
+│                                   ┌─────┴──────┐
+│                               WaveSphere  PivotSphere
+│                                FibClusters
+│                                    └── PricePositionContext (центр)
+│
+└── Сфера 3 — MTF WT Specialist  ←──── WT Sub-куб (Этап 21, vision)
+                                         │
+                                   ┌─────┴──────────┐
+                                 WT_15m  WT_1h  WT_4h
+                                 WT_1d   WT_1w
+                                    └── MTF_WT_Verdict (центр)
+```
+
+#### Sub-куб 1: SMC (самый зрелый, ARCH-120)
+
+```
+Статус: core/smc/ содержит все 6 модулей. Первый фрактальный Sub-куб.
+Триггер: data_era v4 (post-29.04.2026) накопила данные SMC признаков.
+
+Внутренние сферы:
+  OBSphere    ← order_blocks.py    → ob_bull, ob_bear, ob_distance_pct
+  FVGSphere   ← fvg.py             → fvg_open, fvg_age_bars, fvg_dist_R
+  StructSphere← structure.py       → choch, bos, last_break_dir, bars_ago
+  LiqSphere   ← liquidity.py       → eqh_near, eql_near, sweep_recent
+  OTESphere   ← ote.py             → ote_zone_active, ote_optimal_price
+
+Центр Sub-куба (SMCContext):
+  Агрегирует все 5 → SMCVerdict:
+    STRONG_BEAR_ZONE / WEAK_ZONE / STRONG_BULL_ZONE / NEUTRAL
+    + confidence 0.0-1.0
+    + key_factors: list[str]
+
+Интерфейс (как Сфера в главном Кубе):
+  SMCSubCube.compute(sym, {df_4h, df_1h, df_15m}) → SMCContext
+  SMCSubCube.publish(sym, ctx_bus)                → обновляет smc_snap в Bus
+```
+
+#### Sub-куб 2: Elliott-Pivot (ARCH-117/118, реализуется сейчас)
+
+```
+Статус: компоненты строятся (DEV-226 Elliott ✅, ARCH-118 Pivot 🟢, ARCH-117 Wave 🟡)
+
+Внутренние сферы:
+  WaveSphere  ← wave_service.py    → n_down, n_up, elliott_phase, confidence
+  PivotSphere ← pivot_calculator.py→ PP, S1-S3, R1-R3, fibonacci_equiv
+  FibSphere   ← (новый)           → fibonacci_cluster_score, ote_zones
+
+Центр Sub-куба (PricePositionContext):
+  Объединяет волновую фазу + позицию в пространстве + Fibonacci:
+    phase: str             "wave3_mid" | "wave5_final" | "ABC_waveB" | ...
+    above_pp: bool
+    space_direction: str   "room_to_short" | "room_to_long" | "congested"
+    invalidation_level: float  где счёт волн становится неверным
+    tp_phase_modifier: float   1.6 (w3) | 0.5 (w5) | 0.55 (ABC_B)
+    fib_cluster_at_tp: int     число совпавших Fib уровней у TP цели
+
+Выгода для TPSelector:
+  Вместо: score = gravity / dist**1.5
+  Новое:  score = gravity / dist**1.5 * phase_modifier * fib_cluster_bonus
+```
+
+#### Sub-куб 3: WT (Этап 21, vision)
+
+```
+Статус: vision. Реализовать после LIVE стабилен ≥30 дней.
+
+Концепция (из ROADMAP.md Этап 21.2):
+  5 TF каждый как отдельная WT-сфера:
+    WT_15m, WT_1h, WT_4h, WT_1d, WT_1w
+  Каждая сфера: {wt1, wt2, zone, cross, atr_trend, divergence_active}
+  Центр (MTF_WT_Verdict): агрегирует все 5 → TREND / REVERSAL / EXHAUSTION / UNCLEAR
+
+Почему это мощнее текущего MTFInterpreter:
+  Сейчас: 5 TF → одно число "76% медвежий" (теряем 27/28 признаков)
+  Sub-куб: 5 TF как самостоятельные агенты → центр видит ВЕСЬ контекст
+  ML обучается не на сжатом числе, а на 35 признаках (7 TF × 5 полей)
+```
+
+#### Принцип интеграции Sub-кубов в главный Куб
+
+```python
+# Каждый Sub-куб снаружи выглядит как обычная сфера:
+
+class SMCSubCube:
+    """Снаружи = Сфера 4. Внутри = полноценный мини-Куб."""
+
+    def compute_and_publish(self, sym: str, dfs: dict, ctx_bus: SharedContextBus):
+        # Внутренние сферы вычисляются синхронно
+        ob_result    = self._ob_sphere.compute(dfs['df_4h'])
+        fvg_result   = self._fvg_sphere.compute(dfs['df_1h'])
+        struct_result= self._struct_sphere.compute(dfs['df_4h'])
+        liq_result   = self._liq_sphere.compute(dfs['df_1h'])
+
+        # Центр агрегирует
+        verdict = self._smc_context.aggregate(ob_result, fvg_result,
+                                               struct_result, liq_result)
+        # Публикуем в главный Bus как единый результат
+        ctx_bus.update(sym, {
+            "smc_snap":     verdict.to_dict(),
+            "smc_verdict":  verdict.label,
+            "smc_conf":     verdict.confidence,
+        })
+        return verdict
+
+# В scan_loop:
+smc_verdict = smc_sub_cube.compute_and_publish(sym, dfs, ctx_bus)
+# Всё — execute-функции читают smc_snap из Bus как раньше
 ```
 
 ---
@@ -822,6 +997,41 @@ sl = pivot_level * (1.0 - wl_sl_buffer_pct/100)  # LONG: 0.5% ниже проб�
 _sl_check_close = sl_source.startswith("tsl_line") or sl_source.startswith("wl_pivot_tsl")
 hit_sl = close <= sl if _sl_check_close else low <= sl  # LONG
 ```
+
+---
+
+### Волновая теория Эллиотта — применение в боте
+
+> **Полный документ:** `obsidian/Concepts/Elliott-Wave.md`
+> **Эмпирика:** ретробэктест n=367 ATRChange SHORT, 14-24 мая 2026 (28.05.2026)
+
+**Структура:** рынок движется в 5-волновых импульсах (1-2-3-4-5) + 3-волновых коррекциях (A-B-C). Волны вкладываются на всех TF (фракталы).
+
+**Прокси в боте — `n_down`:** число consecutive снижающихся swing highs на HTF ≈ номер нисходящей волны.
+
+**Ключевые данные (ATRChange SHORT):**
+
+| n_down | Волна | W19 avgR | W20 avgR | Вывод |
+|---|---|---|---|---|
+| 2-3 | **Волна 3 — лучший SHORT** | **+1.001 WR=71%** | -0.673 | ВХОДИТЬ |
+| 4+ | Волна 5 / финал | +0.651 | **-1.548 WR=13%** | ОСТОРОЖНО |
+| ChoCH + n_down≥3 | Конец 5 волн → ABC | — | **-2.181 WR=0%** | СТОП SHORT |
+
+**Fibonacci OTE (Optimal Trade Entry):**
+- Волна 2 откатывает 61.8–78.6% волны 1 → **OTE зона SHORT** (0.618–0.786 ретрейсмент)
+- Волна 4 откатывает 38.2% волны 3 → более мелкий SHORT entry
+- OTE зона в боте: `ote_zone` (bool, 0.705–0.786 в config) — код: `core/signals/ote_detector.py`
+
+**Daily PP как Fibonacci-прокси:**
+- Цена выше PP = ещё не прошла медиану волны → SHORT имеет пространство (W20 avgR=-0.010)
+- Цена ниже PP = уже у нижней зоны волны → SHORT рискован (W20 avgR=-1.049)
+
+**Три stop-short сигнала (в порядке силы):**
+1. `ChoCH bullish + n_down ≥ 3` — конец 5 волн → ABC вверх (W20 avgR=-2.181)
+2. `цена ниже Daily PP` — прошла медиану, у поддержки (79% W20 блокируется)
+3. `HTF price direction = up` — ABC коррекция уже идёт (W20 WR=7.1%)
+
+**Shadow поля DEV-225:** `elliott_down_waves`, `pvt_above_daily_pp`, `pvt_nearest_level`, `smc_htf_last_break`, `htf_price_dir`
 
 ---
 

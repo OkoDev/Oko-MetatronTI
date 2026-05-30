@@ -573,6 +573,46 @@ def find_swing_lows(
     return pivots
 
 
+def calculate_n_down(swing_highs: List[dict]) -> int:
+    """Число consecutive СНИЖАЮЩИХСЯ swing highs с конца = прокси нисходящей волны Эллиотта.
+
+    Принимает список dict {'index': int, 'value': float} из find_swing_highs().
+    n_down=2-3 → Волна 3 вниз (оптимальный SHORT, WR=46-71%).
+    n_down=4+  → Волна 5 / ловушка (WR=10%, avgR=-1.814, SHORT запрещён).
+    n_down=0   → нет нисходящей структуры.
+    """
+    if len(swing_highs) < 2:
+        return 0
+    values = [p["value"] for p in swing_highs]
+    n = 0
+    for i in range(len(values) - 1, 0, -1):
+        if values[i] < values[i - 1]:
+            n += 1
+        else:
+            break
+    return n
+
+
+def calculate_n_up(swing_lows: List[dict]) -> int:
+    """Число consecutive РАСТУЩИХ swing lows с конца = прокси восходящей волны Эллиотта.
+
+    Принимает список dict {'index': int, 'value': float} из find_swing_lows().
+    n_up=2-3 → Волна 3 вверх (оптимальный LONG).
+    n_up=4+  → Волна 5 / ловушка (LONG запрещён).
+    n_up=0   → нет восходящей структуры.
+    """
+    if len(swing_lows) < 2:
+        return 0
+    values = [p["value"] for p in swing_lows]
+    n = 0
+    for i in range(len(values) - 1, 0, -1):
+        if values[i] > values[i - 1]:
+            n += 1
+        else:
+            break
+    return n
+
+
 def calculate_pivot_points(high: float, low: float, close: float) -> Dict[str, float]:
     """Traditional Pivot Points — Единый источник формул для всего проекта.
 

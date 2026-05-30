@@ -532,6 +532,72 @@ grep "зарегистрир\|Сделка не\|action=WATCH" crypto_bot.log | 
 
 ---
 
+## n_down / n_up — прокси волнового счёта Эллиотта
+
+`find_swing_highs()` и `find_swing_lows()` используются не только для поиска уровней, но и для вычисления волнового контекста через `n_down` и `n_up`.
+
+### Алгоритм
+
+```python
+# find_swing_highs(series, period) → List[int] — индексы локальных максимумов
+# Локальный максимум: series[i] = max(series[i-period:i+period+1])
+
+def calculate_n_down(swing_high_values: list[float]) -> int:
+    """
+    Число последовательных СНИЖАЮЩИХСЯ swing highs с конца = прокси нисходящей волны.
+    Берём список значений swing highs (не индексы), считаем подряд идущие вниз с конца.
+    """
+    n = 0
+    for i in range(len(swing_high_values)-1, 0, -1):
+        if swing_high_values[i] < swing_high_values[i-1]:
+            n += 1
+        else:
+            break
+    return n
+
+def calculate_n_up(swing_low_values: list[float]) -> int:
+    """Зеркально: число consecutive РАСТУЩИХ swing lows = прокси восходящей волны."""
+    n = 0
+    for i in range(len(swing_low_values)-1, 0, -1):
+        if swing_low_values[i] > swing_low_values[i-1]:
+            n += 1
+        else:
+            break
+    return n
+```
+
+### Интерпретация по теории Эллиотта
+
+| n_down | Волна Elliott | SHORT исход (n=3587) | Действие |
+|---|---|---|---|
+| 1 | Волна 1 вниз | умеренный | Осторожно |
+| 2-3 | **Волна 3 — ОПТИМУМ** | **WR=46-71%, avgR=+0.194** | ✅ SHORT OK |
+| 4+ | Волна 5 / ЛОВУШКА | **WR=10%, avgR=-1.814** | ❌ STOP SHORT |
+
+| n_up | Волна Elliott | LONG исход | Действие |
+|---|---|---|---|
+| 1 | Волна 1 вверх | умеренный | Осторожно |
+| 2-3 | **Волна 3 — ОПТИМУМ** | Лучшие LONG | ✅ LONG OK |
+| 4+ | Волна 5 / ЛОВУШКА | По аналогии | ❌ STOP LONG |
+
+### Связь с CHoCH
+
+При `n_down ≥ 3` + BullishChoCH: WR=0%, avgR=-2.181 → **STOP SHORT** (конец 5 волн, начало ABC коррекции вверх). Подробнее: `docs/SMC_GUIDE.md` → раздел "CHoCH × n_down".
+
+### Использование в проекте
+
+```python
+# DEV-225: shadow поля в features_json
+features = {
+    "elliott_n_down": calculate_n_down(swing_high_values_htf),
+    "pvt_above_daily_pp": current_price > daily_pp,
+    "htf_price_dir": "down" if htf_trend < 0 else "up",
+    ...
+}
+```
+
+---
+
 ## 📁 Ключевые файлы
 
 | Файл | Назначение |
