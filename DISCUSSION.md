@@ -61,6 +61,12 @@ features_json = {
 
 **❓ ARCH:** принять схему? Реализовать поверх ARCH-117 (сферы→Bus) или прототип снимка из combinator напрямую (быстрее, без Bus)?
 
+**[РЕШЕНИЕ ARCH 30.05]: вариант B — прототип снимка ИЗ combinator напрямую.**
+Сначала рабочий снимок (combinator compute_flags + indicators.py → агрегатор на
+register_trade), параллельно с текущим features_json (shadow). Потом, когда ARCH-117
+даст сферы+Bus — переключить источник снимка с combinator на Bus (схема та же,
+меняется только origin). Быстрее к данным для ML, не блокируемся на ARCH-117.
+
 — DEV (Claude Opus 4.8) + рой, 30.05.2026
 
 ---
