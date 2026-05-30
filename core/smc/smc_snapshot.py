@@ -23,6 +23,7 @@ import pandas as pd
 from core.smc.fvg import detect_fvg
 from core.smc.order_blocks import detect_order_blocks
 from core.smc.structure import detect_structure, BreakType
+from core.smc.liquidity import detect_equal_highs_lows
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,21 @@ def build_smc_snapshot(
         except Exception as e:
             logger.debug("[SMC_SNAP] %s senior_tf(%s) error: %s", symbol, senior_tf, e)
 
+    # ARCH-120: EQH/EQL liquidity pools на senior TF (магниты для TPSelector/ARCH-122)
+    eqh_level: Optional[float] = None
+    eql_level: Optional[float] = None
+    eqh_near = False
+    eql_near = False
+    if senior_tf is not None and senior_tf in ohlcv_by_tf:
+        try:
+            _liq = detect_equal_highs_lows(ohlcv_by_tf[senior_tf])
+            eqh_level = _liq.get("eqh_level")
+            eql_level = _liq.get("eql_level")
+            eqh_near = bool(_liq.get("eqh_near"))
+            eql_near = bool(_liq.get("eql_near"))
+        except Exception as e:
+            logger.debug("[SMC_SNAP] %s detect_equal_highs_lows(%s) error: %s", symbol, senior_tf, e)
+
     snap = {
         "timestamp": pd.Timestamp.utcnow().isoformat(),
         "tfs_processed": tfs_processed,
@@ -262,5 +278,11 @@ def build_smc_snapshot(
         "current_retracement": current_retracement,
         "ote_direction": ote_direction,  # DEV-209
         "ote_tf": ote_tf,                # DEV-209
+        # ARCH-120: liquidity pools (EQH/EQL) — магниты + stop-hunt контекст
+        "eqh_level": eqh_level,
+        "eql_level": eql_level,
+        "eqh_near": eqh_near,
+        "eql_near": eql_near,
+        "liq_tf": senior_tf,
     }
     return snap

@@ -1301,20 +1301,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         except Exception as _wt_e:
                             logger.debug("[CUBE-08] wt_verdict %s: %s", sym, _wt_e)
 
-                    # CUBE-08 Шаг 3: Сфера 4 — SMC Verdict из уже загруженных df (без API, ~0ms)
+                    # ARCH-120: Сфера 4 = SMC Sub-куб (единый вход: snapshot + verdict → Bus).
+                    # Заменил два раздельных вызова (fast_smc_verdict + build_smc_snapshot).
+                    # snap включает OB/FVG-multiTF/BOS/CHoCH/Fib/swing/OTE + liquidity(EQH/EQL).
                     try:
-                        from core.smc.smc_specialist import fast_smc_verdict
-                        _smc_v = fast_smc_verdict(df_1h, df_4h)
-                        if _smc_v:
-                            _bus.publish(sym, SphereEvent.SMC_VERDICT, {
-                                "label": _smc_v, "confidence": 0.5,
-                            })
-                    except Exception as _smc_e:
-                        logger.debug("[CUBE-08] smc_verdict %s: %s", sym, _smc_e)
-
-                    # ARCH-89: Сфера 4 — SMC_SNAP_UPDATED (FVG/OB/BOS/CHoCH/Fib → PairState)
-                    try:
-                        from core.smc.smc_snapshot import build_smc_snapshot
+                        from core.smc.sub_cube import get_smc_sub_cube
                         _smc_ohlcv = {}
                         if df_entry is not None and not df_entry.empty:
                             _smc_ohlcv[_etf] = df_entry
@@ -1324,25 +1315,28 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _smc_ohlcv["4h"] = df_4h
                         if df_1d is not None and not df_1d.empty:
                             _smc_ohlcv["1d"] = df_1d
-                        _smc_snap = build_smc_snapshot(sym, _smc_ohlcv)
+                        _smc_snap = get_smc_sub_cube().compute_and_publish(
+                            sym, _smc_ohlcv, ctx_bus=_bus, df_1h=df_1h, df_4h=df_4h,
+                        )
                         if _smc_snap:
-                            _bus.publish(sym, SphereEvent.SMC_SNAP_UPDATED, _smc_snap)
                             # Кешируем для SMC BOS/CHoCH EventBus (ниже по коду)
                             if not hasattr(bot, "_last_smc_snap"):
                                 bot._last_smc_snap = {}
                             bot._last_smc_snap[sym] = _smc_snap
                             logger.info(
-                                "[SMC_SNAP] %s: OB_bull=%s OB_bear=%s BOS=%s CHoCH=%s in_OTE=%s retrace=%.1f%%",
+                                "[SMC_SNAP] %s: OB_bull=%s OB_bear=%s BOS=%s CHoCH=%s in_OTE=%s EQH=%s EQL=%s verdict=%s",
                                 sym,
                                 bool(_smc_snap.get("nearest_bull_ob")),
                                 bool(_smc_snap.get("nearest_bear_ob")),
                                 (_smc_snap.get("last_bos") or {}).get("direction"),
                                 (_smc_snap.get("last_choch") or {}).get("direction"),
                                 _smc_snap.get("price_in_ote"),
-                                _smc_snap.get("current_retracement", 0.0),
+                                bool(_smc_snap.get("eqh_level")),
+                                bool(_smc_snap.get("eql_level")),
+                                _smc_snap.get("smc_verdict"),
                             )
                     except Exception as _smc_snap_e:
-                        logger.debug("[ARCH-89] smc_snap %s: %s", sym, _smc_snap_e)
+                        logger.debug("[ARCH-120] smc_sub_cube %s: %s", sym, _smc_snap_e)
 
                     # Сфера 8: Pivot snap → bus  {1W: {PP,S1,...}, 1D: {...}, 1M: {...}}
                     _pc = getattr(bot, "pivot_calculator", None)
