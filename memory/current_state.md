@@ -4,6 +4,36 @@
 
 ---
 
+## [31.05.2026 ~12:00 UTC] Агент: Claude — DEV-224 дополнение + 3 новые подзадачи
+
+### ✅ Сделано
+- **DEV-224 дополнение:** SQL-анализ shadow данных через +4 дня после старта shadow mode (n=643 closed с 27.05 11:00). Пользователь уже закрыл (A)+(B) 30.05 (TPSelector ВКЛ + Confluence ВЫКЛ). Дополнил 3 новыми finding для wt_signal/pivot_LONG/timing.
+- **3 новые задачи в TASKS.md:**
+  - **DEV-238 🔴** — расследование wt_signal=0 confirmations (100% сделок без подтверждений, ConfirmationAggregator integration баг)
+  - **DEV-239 🟡** — фикс shadow_pivot_LONG df_15m=None (`_engine._cache.get_stale()` возвращает None)
+  - **DEV-240 🟢** — timing-guard scan>250s ОПРОВЕРГНУТ данными (LATE сделки лучше FAST на Δ +0.477R), НЕ внедрять
+
+### 📊 Ключевые данные shadow (n=643 closed, 27.05-31.05)
+| Стратегия | n | finding |
+|---|---|---|
+| wt_signal | 19/19 | `shadow_wt_confirm_count=0` у всех, avgR=-1.444 |
+| pivot LONG | 53/53 | shadow real_touch/volume_spike NULL (df_15m bug) |
+| timing FAST (<250s) | 212 | avgR=-0.612 WR=47.2% |
+| timing LATE (>250s) | 418 | **avgR=-0.135 WR=50.5%** (lift +0.477R) |
+
+### 🎯 Главный сюрприз
+**Timing-guard инвертирован** — рекомендация роя (cerebras) опровергнута. Гипотеза `scan>250s = skip entries` была единственной от cerebras (1/5 моделей), остальные 4 не упоминали. Данные показали обратное: LATE сделки **лучше** FAST. Возможные объяснения: (a) LATE циклы успевают накопить больше confirmations через event_bus; (b) scan_loop_duration коррелирует с волатильностью рынка (высокая волатильность = более качественные сигналы).
+
+### 🔬 SQL-скрипты
+Все запросы выполнены через `python -c "import sqlite3; ..."` встроенно. Можно вынести в `scripts/dev224_shadow_analysis.py` если потребуется повторный анализ.
+
+### ⚠️ Уроки
+- **wt_signal architectural debt:** генерируется в `monitoring.py:check_wt_signals` отдельным циклом, ConfirmationAggregator не синхронизируется. Это блокер для всех HARD gates на основе ConfirmationRegistry.
+- **shadow df_15m bug:** `_engine._cache.get_stale()` пути не учитывают что limit=30 может превышать содержимое кеша. Альтернатива — извлекать df через `market_context.mtf_context`.
+- **timing наоборот:** не доверять единственной рекомендации роя без проверки данными.
+
+---
+
 ## [31.05.2026] Агент: Claude — ARCH-125 Metatron Kernel (видение зафиксировано)
 
 ### ✅ Сделано
