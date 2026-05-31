@@ -336,3 +336,38 @@ identity > freshness).
 importance. Снимок (`feature_snapshot._pack_context`) пишет value-колонки ЗНАЧЕНИЕМ (не sparse-bool).
 Проверено: combinator-майнинг `astype(bool)` не падает, 0 ссылок на числовые pivot в 187
 паттернах (matching не затронут), parity числовых live==backtest ✅.
+
+---
+
+## ✅ ШАГ 5b — таблица trade_features (материализация, финал ARCH-118) — 30.05
+
+> Архивный слой Куба — persistence-проекция `PairFullState`. Снимок переехал из
+> `features_json.arch118_snapshot` (legacy shadow) в отдельную таблицу `trade_features`.
+
+**Схема** (`subscription_manager.py`, 1:1 с simulated_trades):
+```sql
+trade_features (
+  trade_id INTEGER PRIMARY KEY,            -- FK → simulated_trades(id)
+  schema_version INTEGER DEFAULT 2,
+  source TEXT,                             -- live|backtest
+  entry_tf TEXT, snapshot_ts TEXT, n_true INTEGER, n_total INTEGER,
+  features_json TEXT,                      -- вложенный sparse снимок {meta,context,signal}
+  created_at TEXT DEFAULT (datetime('now'))
+)
+INDEX idx_trade_features_schema(schema_version, entry_tf)
+```
+Горячие поля — top-level колонки (query/индекс); вложенные — через `json_extract`
+(проверено: `$.context.pivot.pivot_nearest_1D` → 'S1').
+
+**Запись:** `trade_simulator._write_trade_features(trade_id, snapshot)` после `register_trade`
+(нужен trade_id). Конфиг `arch118.write_table: true` → prod-путь (таблица), `features_json`
+НЕ дублируется. `shadow_enabled` — legacy дубль в features_json (пропускается при write_table).
+
+**data-era граница:** backfill старых сделок невозможен (нет снимка) → таблица заполняется
+с момента включения. Старые сделки — только в legacy features_json (где есть).
+
+**Проверено на staging:** CREATE TABLE идемпотентен, запись/чтение/индекс/json_extract OK,
+py_compile OK. Миграция применена к прод БД (требует рестарт для активации записи).
+
+**ARCH-118 ЗАВЕРШЁН:** единый parity-консистентный снимок (211 булевых + числовые pivot +
+глубокий HTF) материализуется в `trade_features`. Готов для ML/re-mining на чистых данных.

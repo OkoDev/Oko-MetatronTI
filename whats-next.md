@@ -32,7 +32,10 @@
    - **(a) КАНОН `independent-last`** (рой 5/7): `snapshot_features_at(df_by_tf, entry_ts, closed_only=True)` — снимок на историческую точку = последняя ЗАКРЫТАЯ свеча каждого TF (trade-time, БЕЗ lookahead). Заменяет reindex+shift для снимка-фичи (combinator-matching паттернов остаётся на reindex+shift — отдельный слой). Live snapshot_features уже был independent-last.
    - **(b) `HTFHistoryCache` (рой 7/7):** per-symbol кэш глубокого 1h (≥4320 баров = 3×1440 пагинация, BingX max 1440/запрос; TTL 1800с). 4h/1d = resample(deep 1h) → глубина + resample-parity. Замер: 1h@300→48 расхождений, @4000→0. Прод-путь: 4 get_ohlcv/сделка, 1d=167 баров. `build_df_by_tf(deep_htf=True)`.
    - bit-identity: `closed_only` исключает текущую формирующуюся свечу.
-5. ШАГ 5 (финал) — **(a) ✅ ГОТОВ: свёртка pivot (вариант B, рой 6/7)** — combinator.add_pivot_flags выдаёт 3 числовых на TF (`pivot_nearest/dist_pct/relation_{1D|1W}`) ПАРАЛЛЕЛЬНО 70 булевым (один калькулятор, инвариант цел). Снимок пишет value-колонки значением. Parity 0 (булевы) + числовые live==backtest. 187 паттернов не затронуты (0 ссылок на числовые). **Требует рестарт** (combinator изменён). ⏭️ **(b) таблица `trade_features`(FK) + generated-колонки + переключение с shadow.**
+5. **✅ ШАГ 5 ГОТОВ — ARCH-118 ЗАВЕРШЁН.**
+   - **(a) свёртка pivot (вариант B, рой 6/7):** combinator + 3 числовых на TF (`pivot_nearest/dist_pct/relation_{1D|1W}`) ПАРАЛЛЕЛЬНО 70 булевым (один калькулятор). Снимок пишет значением. Parity 0. 187 паттернов целы. Подтверждён в проде (id=16104).
+   - **(b) таблица `trade_features`(FK):** `subscription_manager` CREATE TABLE (trade_id PK, schema_version/source/entry_tf top-level + индекс, features_json вложенный). `_write_trade_features` после register_trade. config `arch118.write_table: true` (prod-путь, features_json не дублируется). data-era граница (backfill невозможен). Staging OK (запись/индекс/json_extract), миграция применена к прод БД. **Требует рестарт** (combinator + write_table код).
+   - Долг (отдельно, ARCH-117 ph3): вынести compute_flags в core/ без import-side-effects.
 - **🔴 ДОЛГ:** вынести `compute_flags`+indicators в `core/` модуль БЕЗ import-side-effects (combinator_v2 = скрипт с sys.stdout hack + HISTORY_DIR). Нужно для чистого инварианта.
 - Детали схемы: `docs/FEATURES_JSON_AUDIT.md`. ARCH-117 (сферы→Bus) = параллельный трек, слить позже.
 

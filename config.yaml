@@ -612,4 +612,8 @@ arch104:
 # (1h/15m/4h, 1d из resample) на КАЖДУЮ регистрируемую сделку (входы редки).
 # Цель: накопить консистентные снимки для проверки parity (Шаг 3) и ML.
 arch118:
-  shadow_enabled: true
+  shadow_enabled: true     # legacy: дубль снимка в features_json.arch118_snapshot
+  # Шаг 5b: снимок в отдельную таблицу trade_features (FK, generated/индексы).
+  # write_table=true → prod-путь (таблица); features_json НЕ дублируется (data-era граница
+  # = момент включения, backfill старых сделок невозможен — нет снимка).
+  write_table: true

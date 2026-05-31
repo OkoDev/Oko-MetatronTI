@@ -141,6 +141,31 @@ class TradeSimulator:
         conn.execute("PRAGMA busy_timeout=10000")
         return conn
 
+    def _write_trade_features(self, trade_id: int, snapshot: dict) -> None:
+        """ARCH-118 Шаг 5b: записать единый снимок признаков в таблицу trade_features (1:1, FK).
+
+        Архивный слой Куба. Горячие поля (schema_version/source/entry_tf) — top-level колонки,
+        полный снимок — features_json. Не критично к торговле (try/except у вызывающего).
+        """
+        meta = snapshot.get("meta") or {}
+        with self._db_connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO trade_features "
+                "(trade_id, schema_version, source, entry_tf, snapshot_ts, n_true, n_total, features_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(trade_id),
+                    int(snapshot.get("schema_version", 2)),
+                    meta.get("source"),
+                    meta.get("entry_tf"),
+                    meta.get("snapshot_ts"),
+                    meta.get("n_true"),
+                    meta.get("n_total"),
+                    json.dumps(snapshot, separators=(",", ":")),
+                ),
+            )
+            conn.commit()
+
     def init_database(self):
         """Создает таблицу simulated_trades в базе данных"""
         with self._db_connect() as conn:
@@ -1171,14 +1196,19 @@ class TradeSimulator:
         except Exception as _e_rb:
             logger.warning("[DEV-110] RANGE BOUNCE error: %s", _e_rb)
 
-        # ARCH-118 SHADOW: единый снимок признаков (вариант B — live=бэктест ОДНИМ
-        # калькулятором combinator_v2.compute_flags). Пишем в features_json параллельно
-        # текущим полям; на вход НЕ влияет. Здесь (после гейтов) — только для реально
-        # регистрируемых сделок, без лишних fetch на заблокированных.
+        # ARCH-118: единый снимок признаков (вариант B — live=бэктест ОДНИМ калькулятором
+        # combinator_v2.compute_flags). На вход НЕ влияет. Здесь (после гейтов) — только для
+        # реально регистрируемых сделок, без лишних fetch на заблокированных.
+        #   write_table=true  → снимок в таблицу trade_features (Шаг 5b, prod).
+        #   shadow_enabled=true → дубль в features_json.arch118_snapshot (legacy; пропускаем
+        #                         если write_table, чтобы не дублировать данные).
+        _a118_snap = None
+        _a118_write_table = False
         try:
             from core.infra.config_loader import config as _cfg_a118
-            if (_cfg_a118 and _cfg_a118.get("arch118.shadow_enabled", False)
-                    and data_collector is not None and symbol):
+            _a118_write_table = bool(_cfg_a118 and _cfg_a118.get("arch118.write_table", False))
+            _a118_shadow = bool(_cfg_a118 and _cfg_a118.get("arch118.shadow_enabled", False))
+            if (_a118_write_table or _a118_shadow) and data_collector is not None and symbol:
                 from core.intelligence.feature_snapshot import build_df_by_tf, snapshot_features
                 _df_by_tf = await build_df_by_tf(data_collector, symbol)
                 if _df_by_tf:
@@ -1188,17 +1218,26 @@ class TradeSimulator:
                         "signal_type": str(_get_recommendation_value(recommendation, "signal_type") or ""),
                     }
                     _a118_snap = snapshot_features(_df_by_tf, entry_tf=_a118_tf, signal=_a118_sig)
-                    if extra_features is None:
-                        extra_features = {}
-                    extra_features["arch118_snapshot"] = _a118_snap
-                    logger.debug("[ARCH-118 shadow] %s снимок: %d/%d флагов, TF=%s",
+                    if _a118_shadow and not _a118_write_table:
+                        if extra_features is None:
+                            extra_features = {}
+                        extra_features["arch118_snapshot"] = _a118_snap  # legacy shadow в features_json
+                    logger.debug("[ARCH-118] %s снимок: %d/%d флагов, TF=%s (table=%s)",
                                  symbol, _a118_snap["meta"]["n_true"],
-                                 _a118_snap["meta"]["n_total"], _a118_snap["meta"]["tfs"])
+                                 _a118_snap["meta"]["n_total"], _a118_snap["meta"]["tfs"],
+                                 _a118_write_table)
         except Exception as _e_a118:
-            logger.debug("[ARCH-118 shadow] snapshot error %s: %s",
+            logger.debug("[ARCH-118] snapshot error %s: %s",
                          locals().get("symbol", "?"), _e_a118)
 
         trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out)
+
+        # ARCH-118 Шаг 5b: снимок в таблицу trade_features (FK), когда есть trade_id.
+        if trade_id and _a118_write_table and _a118_snap is not None:
+            try:
+                self._write_trade_features(trade_id, _a118_snap)
+            except Exception as _e_tf:
+                logger.debug("[ARCH-118] _write_trade_features #%s error: %s", trade_id, _e_tf)
 
         # DUAL_TP: рассчитываем TP2 = следующий пивот после TP1 (30.03.2026)
         if trade_id and data_collector is not None:

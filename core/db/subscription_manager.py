@@ -224,6 +224,30 @@ class SubscriptionManager:
                 "ON tg_messages(trade_id)"
             )
 
+            # ARCH-118 Шаг 5b: единый снимок признаков (вариант B, live=backtest parity).
+            # Архивный слой Куба — persistence-проекция PairFullState на момент входа.
+            # 1:1 с simulated_trades (trade_id PK = FK). features_json = вложенный sparse
+            # снимок {meta, context:{smc,wt,rsi,trend,mom,pivot}, signal}. Горячие поля
+            # (schema_version/source/entry_tf) — top-level колонки для query/индексов.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trade_features (
+                    trade_id INTEGER PRIMARY KEY,
+                    schema_version INTEGER NOT NULL DEFAULT 2,
+                    source TEXT,
+                    entry_tf TEXT,
+                    snapshot_ts TEXT,
+                    n_true INTEGER,
+                    n_total INTEGER,
+                    features_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (trade_id) REFERENCES simulated_trades(id)
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_features_schema "
+                "ON trade_features(schema_version, entry_tf)"
+            )
+
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, 
