@@ -43,15 +43,23 @@
 - **arch104 НЕ затронут:** идёт своим observer loop мимо monitoring.py, `soft_gates_enabled:[]`, `exchange_enabled:true` — единственный путь на биржу в BTC BEAR.
 - **Рой (3 модели):** консенсус — btc_market_gate главный виновник. Спор агрессивно(cerebras/mistral) vs консервативно(openrouter).
 - **🔴 Runtime-проверка (`/tmp/check_btc.py`):** BTC флэт (+0.51%/48ч), но Supertrend держит BEAR 17 баров. NEUTRAL-фикс роя бесполезен (NEUTRAL только 1 цикл при смене). 
-- **ПРИМЕНЕНО (вариант A):** `config.yaml` btc_market_gate `shadow_mode: false→true`. **Требуется рестарт бота** для применения.
+- **ПРИМЕНЕНО (вариант A):** `config.yaml` btc_market_gate `shadow_mode: false→true`.
 
-### 🔄 В процессе / следующее
-- Наблюдение 24-48ч: доля `exch≠none` на main path должна вырасти с ~0%. Следить за WR LONG (риск контр-трендовых LONG в настоящем BEAR).
-- Вариант B (постоянное решение): флэт-детектор по фактическому движению BTC (|move 48ч|<2% → не блокировать) — в проектировании.
-- Откат: `shadow_mode: false`.
+### ✅ Подтверждено в проде (рестарт 22:50 UTC, наблюдение ~1ч50м)
+- paper 0/7, биржа 7/7, 3 LONG на бирже (#16081 SXT, #16082 TURTLE), 15 `SHADOW WOULD_BLOCK` залогировано без блока. Цель DEV-237 достигнута.
+- **Коммит `885377f`** — только `config.yaml`, подробное описание. НЕ запушено (main ahead 232+1).
 
-### ⚠️ Незакоммичено
-- `config.yaml` (btc_market_gate shadow), `PROJECT-LOG.md`, `DISCUSSION.md`, `memory/current_state.md`.
+### ✅ TASKS.md обновлён (НЕ закоммичен — решение пользователя: оставить Developer'у)
+- DEV-237 → ✅ РЕШЕНО + резюме. Новые: DEV-237-OBS 🟢 (наблюдение WR LONG 24-48ч, тревога WR<35% на N≥10), DEV-237-B 🔵❓ (флэт-детектор, под вопросом).
+- Кросс-ссылки: ARCH-124 ↔ DEV-237 (режимные классификаторы); ФАЗА2/arch104 (минует режимные гейты); DEV-226 (TSL не стартует на paper-сделках — проверить «2-й корень»).
+
+### 🔄 Следующее (DEV-237-OBS)
+- Ревью ~01-02.06: WR LONG на бирже после 30.05 22:50. Если <35% на N≥10 → откат `shadow_mode:false` или ускорить DEV-237-B.
+- Watchdog НЕ трогали (добавлял проверку → откатил по просьбе). Наблюдение живёт как задача.
+- Откат фикса: `shadow_mode: false`. Память: [[project_btc_regime_provider_lag]].
+
+### ⚠️ Незакоммичено (оставлено Developer'у — смешано с реоргом параллельных сессий)
+- `TASKS.md`, `PROJECT-LOG.md`, `DISCUSSION.md`, `memory/current_state.md` — правки нескольких сессий 30-31.05.
 
 ---
 
@@ -72,8 +80,11 @@
 - **Шаг 3:** сверка parity → вариант B НЕ даёт parity сам по себе. 2 источника (только HTF): глубина + выравнивание.
 - **Шаг 4 — PARITY ДОСТИГНУТ (0 расхождений на 10 парах, было 100):** рой team-ask 7 моделей (7/7 кэш+bit-identity, 5/7 independent-last). (a) КАНОН `independent-last`: `snapshot_features_at(entry_ts, closed_only=True)` (combinator-matching паттернов остаётся reindex+shift — отдельный слой!). (b) `HTFHistoryCache` ≥4320 баров 1h (3×1440 пагинация since, BingX max 1440, TTL 1800с), 4h/1d=resample(deep). Замер: @300→48, @4000→0. **Подтверждён в проде:** id=16096 ICNT, deep снимок, 1d-флаги, 0 ошибок пагинации. Бот рестартован 23:59 UTC (deep_htf=True активен).
 
-### ⏭️ Следующая сессия (Шаг 5 — финал ARCH-118)
-- (a) свёртка pivot 70→3 (nearest_level+distance_pct+relation). (b) таблица `trade_features`(FK) + generated-колонки + переключение с shadow. Долг: вынести compute_flags в core/ без import-side-effects (ARCH-117 ph3).
+### ✅ Шаг 5a ГОТОВ — свёртка pivot (вариант B, рой 6/7, коммит b94df4e)
+- combinator.add_pivot_flags + 3 числовых на TF (`pivot_nearest/dist_pct/relation_{1D|1W}`) ПАРАЛЛЕЛЬНО 70 булевым (один калькулятор, инвариант цел). Снимок пишет value-колонки значением. Parity булевых 0, числовых live==backtest. 187 паттернов не затронуты. **Подтверждён в проде:** id=16104 C/USDT, числовые pivot (nearest=PP dist=1.264% above). Рестарт ~00:42 UTC.
+
+### ⏭️ Следующая сессия (Шаг 5b — финал ARCH-118)
+- (b) таблица `trade_features`(FK) + generated-колонки + запись снимка туда + переключение с shadow (features_json.arch118_snapshot → trade_features). preflight_db_change. data-era граница (backfill невозможен). Долг: вынести compute_flags в core/ без import-side-effects (ARCH-117 ph3).
 
 ---
 
