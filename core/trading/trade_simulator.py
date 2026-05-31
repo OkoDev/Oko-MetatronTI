@@ -1152,8 +1152,12 @@ class TradeSimulator:
         # Активируется только: RANGE + confluence/watch_list_breach + 15m + entry у края (≤2%)
         try:
             from core.infra.config_loader import config as _cfg_rb
+            from core.trading.exit_manager import magnet_tp_locked
             _rb_cfg = (_cfg_rb.get("trading", {}) or {}).get("range_bounce", {})
-            if _rb_cfg.get("enabled", False) and regime == "RANGE":
+            # ARCH-122 ч.1b (ExitManager): магнит важнее range_bounce-pivot.
+            # ARCH-124: RANGE 78% мислейбл тренда → range_bounce на неверной метке.
+            if (_rb_cfg.get("enabled", False) and regime == "RANGE"
+                    and not magnet_tp_locked(recommendation, _cfg_rb)):
                 _rb_sig = str(_get_recommendation_value(recommendation, "signal_type") or "")
                 _rb_tf  = str(_get_recommendation_value(recommendation, "timeframe") or "")
                 if _rb_sig in ("confluence", "watch_list_breach", "pivot_reversal") and _rb_tf == "15m":
