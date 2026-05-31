@@ -250,7 +250,7 @@ def snapshot_features(
             continue
         last = flags_df.iloc[-1]  # момент входа = последняя закрытая свеча TF
         tfs_used.append(tf)
-        flag_items.extend((col, bool(last[col])) for col in flags_df.columns)
+        flag_items.extend((col, last[col]) for col in flags_df.columns)  # raw (value-cols сохранятся)
 
     context, n_true, n_total = _pack_context(flag_items)
     return _build_snapshot(context, n_true, n_total, entry_tf, tfs_used,
@@ -318,7 +318,7 @@ def snapshot_from_flags_row(
         signal:      specifics сигнала.
         snapshot_ts: ISO-время бара входа (если есть); иначе None.
     """
-    flag_items = [(col, bool(flags_row[col])) for col in flags_row.index]
+    flag_items = [(col, flags_row[col]) for col in flags_row.index]  # raw (value-cols сохранятся)
     context, n_true, n_total = _pack_context(flag_items)
     tfs_used = sorted({c.rsplit("_", 1)[1] for c in flags_row.index
                        if c.rsplit("_", 1)[-1] in _TF_ORDER},
@@ -327,14 +327,36 @@ def snapshot_from_flags_row(
                            signal, source="backtest", snapshot_ts=snapshot_ts)
 
 
+# Числовые/категориальные колонки (ARCH-118 Шаг 5, вариант B): пишутся ЗНАЧЕНИЕМ,
+# не sparse-bool. Это свёртка pivot (nearest/dist/relation) из combinator (один калькулятор).
+_VALUE_PREFIXES = ("pivot_nearest_", "pivot_dist_pct_", "pivot_relation_")
+
+
+def _is_value_col(col: str) -> bool:
+    return col.startswith(_VALUE_PREFIXES)
+
+
 def _pack_context(flag_items) -> tuple[dict, int, int]:
-    """Упаковать (flag, bool) → sparse-context по доменам + счётчики. Общий код live+бэктест."""
-    context: dict[str, dict[str, int]] = {}
+    """Упаковать (flag, value) → context по доменам + счётчики. Общий код live+бэктест.
+
+    Булевы флаги — SPARSE (пишутся только true=1). Числовые/категориальные value-колонки
+    (pivot nearest/dist/relation) — пишутся ЗНАЧЕНИЕМ в домен pivot (не участвуют в n_true/n_total).
+    """
+    context: dict[str, dict] = {}
     n_true = 0
     n_total = 0
     for col, val in flag_items:
+        if _is_value_col(col):
+            if col.startswith("pivot_dist_pct_"):
+                fv = float(val) if val is not None else float("nan")
+                if fv == fv:  # не nan
+                    context.setdefault("pivot", {})[col] = round(fv, 3)
+            else:  # nearest / relation — категория
+                if val is not None and str(val) != "nan":
+                    context.setdefault("pivot", {})[col] = str(val)
+            continue
         n_total += 1
-        if val:
+        if bool(val):
             n_true += 1
             context.setdefault(_domain_of(col), {})[col] = 1  # SPARSE: только true
     return context, n_true, n_total

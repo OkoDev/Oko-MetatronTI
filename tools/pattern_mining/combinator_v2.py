@@ -151,6 +151,30 @@ def add_pivot_flags(df_1h: pd.DataFrame, out: dict, label: str = "1D"):
         out[f"pivot_bounce_up_{k}_{label}"]   = bounce_up_p
         out[f"pivot_bounce_down_{k}_{label}"] = bounce_down_p
 
+    # ── Числовые pivot-фичи (ARCH-118 Шаг 5, вариант B — рой team-ask 6/7) ──
+    # ТОТ ЖЕ калькулятор (pp_arr), что и булевы → инвариант «один калькулятор».
+    # Свёртка 70 булевых → 3 числовых (nearest/dist/relation) ПАРАЛЛЕЛЬНО булевым
+    # (булевы остаются для 187 паттернов, числовые — для ML feature importance).
+    level_names = ["PP", "R1", "R2", "R3", "S1", "S2", "S3"]
+    mat = np.vstack([pp_arr[k] for k in level_names])          # (7, n) значения уровней
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signed_pct = (close[None, :] - mat) / mat * 100.0      # (7, n) знаковое % до уровня
+    abs_pct = np.abs(signed_pct)
+    all_nan = np.all(np.isnan(abs_pct), axis=0)                # бары без активных пивотов
+    safe = np.where(np.isnan(abs_pct), np.inf, abs_pct)
+    nearest_li = np.argmin(safe, axis=0)                       # индекс ближайшего уровня
+    cols = np.arange(n)
+    nearest_dist = signed_pct[nearest_li, cols]                # знаковое % до ближайшего
+    nearest_name = np.array(level_names, dtype=object)[nearest_li]
+    relation = np.where(np.abs(nearest_dist) < TOL * 100, "near",
+                        np.where(nearest_dist > 0, "above", "below")).astype(object)
+    nearest_name[all_nan] = None
+    nearest_dist[all_nan] = np.nan
+    relation[all_nan] = None
+    out[f"pivot_nearest_{label}"] = nearest_name               # категория: PP/R1../S3
+    out[f"pivot_dist_pct_{label}"] = nearest_dist              # float: знаковое % (+ выше, - ниже)
+    out[f"pivot_relation_{label}"] = relation                  # above/below/near
+
 
 # ───────── Дивергенции (DEV-233): порт Pine "Divergence for Many Indicators v4") ─────────
 # Эталон: memory/reference_pine_divergence.md. source="Close" (по выбору ARCH 29.05).
