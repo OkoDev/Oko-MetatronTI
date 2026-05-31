@@ -42,6 +42,16 @@
   - **HTFHistoryCache** (рой 7/7): кэш глубокого 1h ≥4320 баров (3×1440 пагинация, BingX max 1440, TTL 1800с). 4h/1d=resample(deep 1h). Замер: @300→48 расхождений, @4000→0.
   - bit-identity > freshness (рой 7/7): `closed_only` исключает формирующуюся свечу.
 
-## Следующий шаг (Шаг 5)
-Свёртка pivot 70→3 (nearest_level+distance_pct+relation) → таблица `trade_features`(FK) +
-generated-колонки → переключение с shadow. Связь: [[arch117_wt_audit]] (единые сферы Bus).
+## Шаг 5 — ЗАВЕРШЁН (ARCH-118 закрыт, 31.05)
+- **5a свёртка pivot (рой 6/7 вариант B):** combinator.add_pivot_flags + 3 числовых на TF
+  (`pivot_nearest/dist_pct/relation_{1D|1W}`) ПАРАЛЛЕЛЬНО 70 булевым (один калькулятор).
+  Снимок (`_pack_context`) пишет value-колонки значением. 187 паттернов целы (0 ссылок на числовые).
+- **5b таблица trade_features:** `subscription_manager` CREATE TABLE (trade_id PK=FK,
+  schema_version/source/entry_tf top-level+индекс, features_json вложенный). `_write_trade_features`
+  после register_trade. config `arch118.write_table:true` (prod, features_json не дублируется).
+  data-era граница (backfill невозможен).
+
+## Статус: ARCH-118 ЗАВЕРШЁН (коммиты b1fe5d8→97918ce)
+Единый parity-консистентный снимок (211 булевых + числовые pivot + глубокий HTF, live≡backtest)
+в `trade_features`. Готов для ML/re-mining на чистых данных. Долг: вынести compute_flags в core/
+без import-side-effects ([[arch117_wt_audit]] ph3).
