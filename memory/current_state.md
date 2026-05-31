@@ -4,6 +4,57 @@
 
 ---
 
+## [31.05.2026] Агент: Claude — ARCH-125 Metatron Kernel (видение зафиксировано)
+
+### ✅ Сделано
+- **Док [docs/METATRON-KERNEL.md](docs/METATRON-KERNEL.md)** — переносимый скелет архитектуры Куба. Три вещи разведены: (1) kernel `metatron-core` (Bus/Sphere/SubCube/Port/Connector, ноль доменной логики), (2) `AdvisorPort` (новый примитив, Hexagonal), (3) рой как standalone мини-Куб.
+- **Новый примитив AdvisorPort:** Куб ПОДКЛЮЧАЕТ внешние недетерминированные/переиспользуемые сервисы (рой, ML), а НЕ встраивает. Контракт `consult(AdvisoryRequest)→AdvisoryVerdict|None` + `AdvisorConnector` (timeout+circuit breaker) → `advisor_snap` в Bus (опциональный). Основа — рой 6/7 за независимый сервис.
+- **Заведена ADR-конвенция** ([docs/adr/](docs/adr/)) + **ADR-001** (external services via port, accepted, MADR-формат).
+- **ARCH-125** в TASKS.md, инвариант ВЫСШЕГО УРОВНЯ в ENCYCLOPEDIA (рядом с Sub-кубами).
+- **Фикс контекста team_ask.py:** per-provider бюджет (`CONTEXT_BUDGET_CHARS`) + авто-retry с ужатием при 413/400 + per-provider `OUTPUT_TOKENS`. Краш `content=None` в llm_ask.py → понятная ошибка. Рой 7/7 проходит с полным контекстом.
+
+### 🔄 Дальше (отдельные задачи после ARCH-125)
+- §B извлечь `metatron-core` (когда абстракции стабильны)
+- Рой → `swarm-service` (отдельный репо, мини-Куб + API + team-update)
+- Порт в `scan_loop` бота (после готовности роя-сервиса)
+- §C template-репо (cookiecutter/copier) для новых проектов
+
+---
+
+## [30.05.2026] Агент: Claude — Обновление роя LLM (tools/llm_ask.py + team_ask.py)
+
+### ✅ Сделано (всё проверено живьём через models.list + smoke-test)
+- **Модели обновлены:** groq `gpt-oss-120b` (было llama-4-scout-17b), cerebras `zai-glm-4.7` (было gpt-oss, диверсификация), gemini `gemini-3.5-flash` (было 2.5), github_models `gpt-4.1-mini` (было gpt-4o-mini). openrouter `nemotron-3-super-120b:free` и mistral `magistral-medium` — без изменений (стабильны).
+- **Фикс 2 мёртвых reasoning-дефолтов:** cerebras `qwen-3-235b...` → 404, openrouter `arcee-ai/trinity-large-thinking:free` → 404. Заменены на zai-glm-4.7 / deepseek-v4-flash. Cerebras теперь отдаёт ТОЛЬКО gpt-oss-120b + zai-glm-4.7.
+- **Подключён REASONING_MODELS** (был мёртвый код — определён, но не использовался): `--reasoning` теперь реально берёт thinking-модель провайдера.
+- **Срез `<think>...</think>`** в ask_openai_compat (DeepSeek-R1 течёт reasoning в текст).
+- **+2 новых провайдера.** `sambanova` — ✅ **АКТИВЕН** (ключ в .env с 31.05), дефолт `DeepSeek-V3.2` (R1/MiniMax на free платные → 402). `nvidia` NIM — ⚠️ регистрация заблокирована из РФ (+7), scaffolding есть, без ключа неактивен. **Рой = 7 активных голосов.**
+
+### 📌 Вывод по «свободному Claude»
+- Бесплатного Claude (Opus/Sonnet) для API НЕТ: OpenRouter free его не отдаёт, GitHub Models inference тоже (Claude только в Copilot-агенте, не API). Ближайшие free-аналоги Opus — **DeepSeek-R1**, GLM-4.7, Nemotron-3 120B.
+- OpenRouter free-reasoners (deepseek-v4/minimax-m2.5/kimi-k2.6/qwen3-next) часто отдают 429/503 upstream → не годятся в дефолт, nemotron оставлен как стабильный.
+
+---
+
+## [30.05.2026 часть 3] Агент: ARCH — DEV-237 btc_market_gate → shadow
+
+### ✅ Сделано
+- **DEV-237 расследование:** сигналы уходят в paper (exch=none), т.к. ARCH-78 `btc_market_gate` понижает BUY→WATCH → main path не вызывает TradeRouter → сделка пролезает как `source=other_strategy` (exchange_enabled=false) → paper. Карта всех активных гейтов + история отключений (из Obsidian) записаны в DISCUSSION.md.
+- **arch104 НЕ затронут:** идёт своим observer loop мимо monitoring.py, `soft_gates_enabled:[]`, `exchange_enabled:true` — единственный путь на биржу в BTC BEAR.
+- **Рой (3 модели):** консенсус — btc_market_gate главный виновник. Спор агрессивно(cerebras/mistral) vs консервативно(openrouter).
+- **🔴 Runtime-проверка (`/tmp/check_btc.py`):** BTC флэт (+0.51%/48ч), но Supertrend держит BEAR 17 баров. NEUTRAL-фикс роя бесполезен (NEUTRAL только 1 цикл при смене). 
+- **ПРИМЕНЕНО (вариант A):** `config.yaml` btc_market_gate `shadow_mode: false→true`. **Требуется рестарт бота** для применения.
+
+### 🔄 В процессе / следующее
+- Наблюдение 24-48ч: доля `exch≠none` на main path должна вырасти с ~0%. Следить за WR LONG (риск контр-трендовых LONG в настоящем BEAR).
+- Вариант B (постоянное решение): флэт-детектор по фактическому движению BTC (|move 48ч|<2% → не блокировать) — в проектировании.
+- Откат: `shadow_mode: false`.
+
+### ⚠️ Незакоммичено
+- `config.yaml` (btc_market_gate shadow), `PROJECT-LOG.md`, `DISCUSSION.md`, `memory/current_state.md`.
+
+---
+
 ## [30.05.2026 часть 2] Агент: Developer — ARCH-118 подготовка + нейминг
 
 ### ✅ Сделано
@@ -15,13 +66,14 @@
 - **Рой ARCH-118 (5/5):** вложенный JSON {meta,context,signal}, сбор на входе, версионирование, свёртка pivot. **Решение: вариант B** (combinator один код live+бэктест = parity).
 - **🔴🔴 Спор хранения ЗАКРЫТ на реальных данных** (15539 сделок, SQLite 3.45.3 JSON1): отдельная таблица `trade_features`(FK) + вложенный JSON по доменам + **sparse-булевы** (dense 770=207MB→sparse=22MB) + **generated-колонки**. Pivot 490→свёртка. Ложится на Куб = persistence-проекция `PairFullState`, замыкает feedback loop Сферы 11. **ИНВАРИАНТ «один калькулятор»** (combinator≡Bus). Зафиксировано: `memory/arch118_snapshot_decision.md`, `docs/ENCYCLOPEDIA.md` (ИНВАРИАНТ ВЫСШЕГО УРОВНЯ), `docs/FEATURES_JSON_AUDIT.md` (РЕШЕНИЕ), `whats-next.md`, auto-MEMORY.md.
 
-### ✅ ARCH-118 Шаги 1-2 ВЫПОЛНЕНЫ (30.05, коммиты b1fe5d8 + a5b72d4)
-- **Шаг 1:** `core/intelligence/feature_snapshot.py` — `snapshot_features` + `snapshot_to_vector`. 211→258 флагов, sparse. Инвариант «один калькулятор» (импорт combinator_v2.compute_flags). Фикс stdout detach.
-- **Шаг 2:** live shadow — `build_df_by_tf` (parity с observer) + блок в `register_trade_async` перед `register_trade`. config `arch118.shadow_enabled: true`. **Подтверждено в проде:** id=16075 MNT pivot_reversal, arch118_snapshot записан, n_true=52/258, домены smc/trend/pivot/rsi/wt/mom. Бот рестартован 18:32 UTC.
+### ✅ ARCH-118 Шаги 1-4 ВЫПОЛНЕНЫ — PARITY ДОСТИГНУТ (30-31.05, коммиты b1fe5d8 a5b72d4 0e95fad 0a43f5b a00da35)
+- **Шаг 1:** `core/intelligence/feature_snapshot.py` — `snapshot_features` + `snapshot_to_vector`. 258 флагов, sparse. Фикс stdout detach.
+- **Шаг 2:** live shadow — `build_df_by_tf` + блок в `register_trade_async`. config `arch118.shadow_enabled`. Подтверждён в проде (id 16075/16076).
+- **Шаг 3:** сверка parity → вариант B НЕ даёт parity сам по себе. 2 источника (только HTF): глубина + выравнивание.
+- **Шаг 4 — PARITY ДОСТИГНУТ (0 расхождений на 10 парах, было 100):** рой team-ask 7 моделей (7/7 кэш+bit-identity, 5/7 independent-last). (a) КАНОН `independent-last`: `snapshot_features_at(entry_ts, closed_only=True)` (combinator-matching паттернов остаётся reindex+shift — отдельный слой!). (b) `HTFHistoryCache` ≥4320 баров 1h (3×1440 пагинация since, BingX max 1440, TTL 1800с), 4h/1d=resample(deep). Замер: @300→48, @4000→0. **Подтверждён в проде:** id=16096 ICNT, deep снимок, 1d-флаги, 0 ошибок пагинации. Бот рестартован 23:59 UTC (deep_htf=True активен).
 
-### ⏭️ Следующая сессия (Шаг 3)
-- Вызов `snapshot_features` в бэктест-движках + СВЕРКА parity live↔бэктест на накопленных shadow-снимках. Выявить расхождение глубины 1d (live: aggregate(df_1h@300)→~12 баров vs бэктест: вся история).
-- Потом: Шаг 4 (свёртка pivot 70→3), Шаг 5 (таблица trade_features + generated-колонки + переключение). Долг: вынести compute_flags в core/ без import-side-effects.
+### ⏭️ Следующая сессия (Шаг 5 — финал ARCH-118)
+- (a) свёртка pivot 70→3 (nearest_level+distance_pct+relation). (b) таблица `trade_features`(FK) + generated-колонки + переключение с shadow. Долг: вынести compute_flags в core/ без import-side-effects (ARCH-117 ph3).
 
 ---
 
