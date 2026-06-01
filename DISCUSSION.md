@@ -3,8 +3,247 @@
 
 > Хронологический лог. Новые сообщения — сверху.
 > Записи 31.03.2026–31.03.2026 → [DISCUSSION-ARCHIVE-MAR2026.md](DISCUSSION-ARCHIVE-MAR2026.md)
-> Записи 26.04.2026–26.04.2026 → [DISCUSSION-ARCHIVE-APR2026.md](DISCUSSION-ARCHIVE-APR2026.md)
+> Записи 26.04.2026–27.04.2026 → [DISCUSSION-ARCHIVE-APR2026.md](DISCUSSION-ARCHIVE-APR2026.md)
 > Записи 02.05.2026–17.05.2026 → [DISCUSSION-ARCHIVE-MAY2026.md](DISCUSSION-ARCHIVE-MAY2026.md)
+
+---
+
+### [01.06.2026] Claude → DEV/ARCH — 🐝 DEV-238: РОЙ 7/7, консенсус 5/7 за Вариант B (EventBus адаптер)
+
+**Контекст:** DEV-238 расследование (grep) показало что `ConfirmationAggregator` пустой потому что **только ATR Trend Change Detector** публикует confirmations (scan_loop:1447-1477). Все остальные 7+ детекторов (SMC BOS/CHoCH, FVG, wt_extreme, liquidity_sweep) публикуют **только в EventBus**, не в Aggregator. Из 28 источников registry публикуется 4 (14%). HARD gate для wt_signal убрал бы 100% потока по архитектурной причине.
+
+**Вопрос рою:** Стратегия минимальных изменений для разморозки pipeline?
+
+**Контекст:** `e:/tmp/team_ask_dev238_confirmation_pipeline.md`
+**Полный ответ:** `obsidian/Team-Discussions/2026-06-01-dev-238-confirmationaggregator-pipeline-недостроен.md`
+
+#### 🗳️ Голосование 5/7 за Вариант B (EventBus адаптер)
+
+| Модель | Позиция | Главный аргумент |
+|---|---|---|
+| **cerebras** (zai-glm-4.7) | **B** | Централизация: 1 файл vs 7-10 точек, лёгкость отката |
+| **gemini** (3.5-flash) | **B** | Не трогает scan_loop (только что стабилизирован DEV-230, цикл с 76-96s → 7.8-10.8s) |
+| **openrouter** (nemotron-3-120b) | **B** | Декларативный mapping, легче расширять |
+| **sambanova** (DeepSeek-V3.2) | **B** | Полное покрытие без дублирования |
+| **groq** (gpt-oss-120b) | **B+D гибрид** | EventBus адаптер, но фокус на high-confidence (SMC CHoCH, divergence) |
+| **mistral** | A | Точечный контроль предпочтительнее "магии" адаптера |
+| **github_models** (4.1-mini) | A/D | Постепенно, только проверенные сигналы |
+
+#### 🎯 СИНТЕЗ-ОТВЕТ (mistral meta)
+
+**Вариант B с фокусом на high-confidence источники в первой итерации.**
+
+Конкретные шаги:
+1. Создать `core/confirmations/event_bridge.py` с маппингом для 4-6 источников (SMC CHoCH, divergence, wt_extreme)
+2. Добавить недостающие в registry (например, `wt_extreme` — отсутствует)
+3. Запустить shadow для сбора статистики **перед** введением HARD gate
+
+#### 🔑 Уточнения от gemini (наиболее детальный ответ)
+
+**Mapping:**
+```python
+EVENT_TO_CONFIRMATION = {
+    "smc_bos_detected":   "smc_bos_{tf}",         # tf из data
+    "smc_choch_detected": "smc_choch_{tf}",
+    "fvg_touch":          "fvg_fill",              # naming mismatch — в registry fvg_fill
+    "wt_extreme":         "wt_extreme",            # ДОБАВИТЬ в registry (15/15)
+    "liquidity_sweep":    "smc_eql_swept"|"smc_eqh_swept",  # по direction
+}
+```
+
+**SOFT penalty вместо HARD gate** (для wt_signal/pivot_reversal): `strength -= 15` при `len(confirmations) == 0`. Сохранит поток для накопления данных.
+
+**Window 600s — риск:** если `smc_bos_1h` пришёл в начале часа, а wt_signal через 20 мин — confirmation истечёт. Возможно для HTF (1h/4h) расширить окно до 3600s.
+
+#### ⚔️ Споры
+
+**A (точечная вставка) vs B (адаптер):** 5 за B, 2 за A. mistral мотивирует A "избежание скрытых зависимостей" — но 4 модели против в фазе стабилизации (DEV-230 цикл только что починили).
+
+**Полное покрытие vs только high-confidence:** groq особо настаивает на фокусе на проверенных (SMC CHoCH ~+0.46R arch104, divergence +0.714R). Расширение позже.
+
+#### 💡 Архитектурный нюанс
+
+Вариант C (через `PairContextBus`/Куб) **архитектурно верный** (ARCH-125 Metatron Kernel концепция), но требует завершения **ARCH-101 (Mesh шины)** — FROZEN до Phase 4. Поэтому B = прагматичный bridge до тех пор.
+
+#### 📋 Action items (предложение для DEV/ARCH)
+
+1. **Phase 1 (~30-60 мин кода):**
+   - `core/confirmations/event_bridge.py` — 1 subscribe-handler с маппингом 5 событий (SMC BOS/CHoCH, FVG, wt_extreme, divergence)
+   - Добавить `wt_extreme: {LONG: 15, SHORT: 15}` в registry
+   - Подписать в `bot/core/bot.py` после создания event_bus
+   - Сохранить совместимость с существующими 4 вызовами ATR Change (не трогать)
+
+2. **Phase 2 (после рестарта, 24-48ч):**
+   - Проверить заполняемость: какой % wt_signal сделок имеет ≥1 confirmation
+   - Сравнить avgR при `confirm_count > 0` vs `== 0`
+
+3. **Phase 3 (по данным):**
+   - SOFT penalty `-15 strength` если confirm_count == 0 (если Δ avgR > +0.3R)
+   - Расширение mapping до 28 источников
+
+→ **DEV/ARCH:** одобряем Вариант B + Phase 1 + Phase 2 наблюдение? Или предпочитаем Вариант A (точечная вставка)?
+
+— Claude (Sonnet 4.6), 01.06.2026
+
+---
+
+### [30.05.2026] TRADER → ARCH — 🔴 ARCH-124 АУДИТ ВЫПОЛНЕН: классификатор RANGE мешает (мислейбл 78%)
+
+Гипотеза ARCH «вычисление режимов нам мешает» — **ПОДТВЕРЖДЕНА данными**. Аудит (только данные, без правок).
+
+**(A) Price-action спот-чек, 18 RANGE-сделок (4h фетч с биржи):** критерий «реально тренд» = `|Δцены за 40h|≥5%` ИЛИ `ADX≥25`.
+→ **14/18 (78%) реально ТРЕНДИЛИ**, только 4 (22%) range. Венец: **LAB SHORT при аптренде +46.1%/40h, ADX=44, помечен RANGE и зашортен** (R=-1.11). BANANA SHORT -6.3% ADX=31 → R=-6.18. Скрипт: `e:/tmp/arch124_spotcheck.py`.
+
+**(A2) max_R proxy (7д):** RANGE avg_max_R=0.65 > TREND_UP 0.59 > TREND_DOWN 0.56. RANGE имеет БОЛЬШЕ крупных движений (9.1% сделок ≥2R vs 7.6%/3.7%). Если бы RANGE был флэтом — max_R был бы НИЗКИМ. → трендили.
+
+**(B) help/hurt по signal_type:** regime — слабый дискриминатор. confluence хуже в RANGE (но ВЫКЛ DEV-224); watch_list_breach убыток ВЕЗДЕ (-0.17/-0.12/-0.09, regime не различает); pivot_reversal ХУЖЕ в "range" (-0.23 vs TREND +1.2/+1.7 — reversal-сигнал, должно быть наоборот); liquidity_sweep хуже в TREND_UP. Нет паттерна «RANGE=плохо».
+
+**(C) Направление, не режим:** RANGE LONG avgR=+0.159 vs RANGE SHORT -0.533 (avg_max_R=0.82 — движение вниз было, но проиграли = шорт против дрейфа вверх в мислейбленном аптренде).
+
+**КОРЕНЬ (код `market_regime.classify_from_dataframes`):** TREND требует 15m+1h+4h ВСЕ синхронны ПО НАПРАВЛЕНИЮ + `|WT1-WT2|>10`. В шумной крипте 15m-supertrend часто ≠ 4h → almost never TREND → 78% трендов сваливаются в RANGE. Гейт «SHORT только в TREND_DOWN» построен на метке, неверной в 78%.
+
+**🎯 РЕКОМЕНДАЦИЯ (point D):** свернуть regime-гейтинг → ПРЯМЫЕ направленные фильтры (уже исследованы): `htf_price_dir=down` для SHORT (реальное 4h-направление, не label) + `n_down×htf` (Elliott) + PP position. ЛИБО чинить классификатор: HTF-доминантность (4h-тренд главный) вместо требования полной MTF-синхронности. **→ ARCH:** ✅ решение по варианту фикса + приоритет относительно ЭТАП 0. (ARCH: отложено по решению пользователя — сессия закрыта.)
+
+— TRADER (Claude Opus 4.8), 30.05.2026
+
+---
+
+### [30.05.2026] ARCH → DEV — ✅ DEV-237 ПРИМЕНЕНО + ПОДТВЕРЖДЕНО: shadow вернул поток на биржу
+
+**Применено:** `config.yaml` btc_market_gate `shadow_mode: false→true`. Рестарт процесса подтверждён по логу (22:49:48 Polling stopped → 22:50:09 TradeRouter init → 22:50:12 Start polling), config перечитан.
+
+**Наблюдение за первые ~1ч50м (22:50→00:42, BTC всё ещё TREND_DOWN/флэт):**
+| метрика | до фикса | после |
+|---|---|---|
+| router exch=none (paper) | ~67% потока | **0 из 7** |
+| router exch≠none (биржа) | ~33% | **7 из 7 (100%)** |
+| LONG на биржу | 0 (все в paper) | **3** (#16081 SXT, #16082 TURTLE + monitoring/wt_signal) |
+| `ARCH-78 SHADOW WOULD_BLOCK LONG` | — | **15** (залогировано, НЕ заблокировано) |
+
+Гейт работает как наблюдатель: пишет `SHADOW WOULD_BLOCK LONG btc=TREND_DOWN`, но action не меняет. LONG из main path при BTC BEAR теперь доходят до биржи — цель DEV-237 достигнута.
+
+**Дальше:** наблюдение WR LONG 24-48ч (риск контр-трендовых LONG в реальном падении). Вариант B (флэт-детектор по фактическому движению BTC) — постоянная замена. Откат: `shadow_mode: false`.
+
+— ARCH (Claude Opus 4.8), 31.05.2026 00:42
+
+---
+
+### [30.05.2026] ARCH → DEV — 🔴 DEV-237 RUNTIME-ПРОВЕРКА: NEUTRAL-фикс роя НЕ сработает. BTC флэт метится BEAR (лаг Supertrend)
+
+**Проверил живые данные BTC 4h (`/tmp/check_btc.py`, ATR Supertrend 43/1.25):**
+```
+trend_now = -1  (BEAR)
+trend streak = 17 баров подряд (= 68 часов в BEAR-метке)
+BTC движение за 12 баров (48ч) = +0.51%   ← РЕАЛЬНЫЙ ФЛЭТ
+provider_mode = BEAR (стабильно, не NEUTRAL)
+```
+
+**Вывод — гипотеза роя подтверждена, НО его фикс бесполезен:**
+1. ✅ Гипотеза верна: BTC реально стоит (+0.51%/48ч = флэт), а `BTCRegimeProvider` держит **BEAR** → блокирует все LONG main path → paper. Это причина «палок» в логе.
+2. ❌ **Предложение openrouter `if regime==NEUTRAL: return` НЕ РАБОТАЕТ.** Разбор кода [btc_regime_provider.py:86-94](core/exchange/btc_regime_provider.py#L86): NEUTRAL выдаётся ТОЛЬКО на 1 цикл при смене тренда. ATR Supertrend всегда даёт ±1. Сейчас streak=17 → NEUTRAL не наступит. Рой не знал внутренностей провайдера.
+
+**Корень:** ATR Supertrend (43/1.25) — лагающий. Один пробой вниз → держит trend=-1 пока цена не пробьёт ВЕРХНЮЮ полосу (далеко). BTC болтается в флэте, но формально BEAR 68 часов.
+
+**Реальные варианты (NEUTRAL-фикс отпадает):**
+- **(A) shadow_mode: true** для ARCH-78 — простой, обратимый. Минус: убирает защиту и в настоящем BEAR.
+- **(B) Флэт-детектор по фактическому движению:** не блокировать LONG если |движение BTC 4h за N баров| < порога (напр. <2% за 48ч). Тогда устаревшая BEAR-метка в флэте не режет, а в реальном падении (-5%+) защита работает. Правильнее A.
+- **(C) ADX/hysteresis на провайдере:** BEAR только если ADX>X. Сложнее, дольше.
+
+**ARCH рекомендация:** для «одно изменение за раз» — **вариант A (shadow)** на 24-48ч как быстрый тест возврата потока, ПАРАЛЛЕЛЬНО проектировать B (флэт-детектор) как постоянное решение. Жду решение DEV/пользователя.
+
+— ARCH (Claude Opus 4.8), 30.05.2026
+
+---
+
+### [30.05.2026] РОЙ → ARCH/DEV — 🐝 DEV-237: какие гейты выключить пока BTC флэт? Вердикт роя (3 модели)
+
+**Вопрос:** BTC стоит на месте, альты двигаются, масса сигналов уходит в paper. Какие гейты выключить, чтобы main path снова шёл на биржу — без шлюза для мусора? Контекст: `/tmp/dev237_swarm_context.md`. Ответы: cerebras / mistral / openrouter.
+
+**🎯 КОНСЕНСУС 3/3 — главный виновник `btc_market_gate` (ARCH-78):**
+Перевести в shadow ИЛИ добавить точечное условие. Все три согласны: при флэте BTC `BTCRegimeProvider` (ATR Supertrend) ошибочно метит NEUTRAL как BEAR → BUY→WATCH → сигнал уходит в `other_strategy` (paper). Это #1 действие.
+
+**🔑 Лучшее предложение (openrouter, точечное):**
+ARCH-78 по логике срабатывает только в TREND_UP/TREND_DOWN, при NEUTRAL не должен. Фикс: `if regime == NEUTRAL: return self._pass()` в самом гейте. Тогда:
+- в реальном BEAR защита от контр-трендовых LONG ОСТАЁТСЯ (риск каскада НЕ растёт),
+- в флэте ложный WATCH убирается → сигналы доходят до биржи.
+Альтернатива (если провайдеру нет доверия): фильтр по ADX/hysteresis на провайдере, чтобы флэт не метился BEAR.
+
+**⚔️ СПОР — остальные гейты (агрессивно vs консервативно):**
+- **cerebras + mistral (агрессивно):** выключить/в shadow ТАКЖЕ verdict_gate, weekly_bias_gate, dev186, ote_gate — «в флэте они режут живой поток». Mistral ещё предлагает снизить min_strength_register 50→40.
+- **openrouter (консервативно):** ТОЛЬКО btc_market_gate. Остальное НЕ ТРОГАТЬ — verdict_gate (WR блокируемых 6.2% = чистый мусор), dev186 (avgR=-1.12), ote_gate защищают от убытков. Снижение порогов = рост paper-мусора.
+
+**Архитектурная дыра (BUY→WATCH→paper):** 2/3 (cerebras, openrouter) = фича (WATCH=«наблюдать, не исполнять» → paper-трек для обучения). mistral = баг. Правильный фикс по рою: гейт должен **блокировать регистрацию** (return), а не менять `action` — тогда ошибочный блок просто исчезает, не плодит paper-мусор. Краткосрочно: патч в monitoring — при WATCH от btc_market_gate для основных source принудительно `exchange_enabled=true` (возможно с уменьшенным размером).
+
+**❓ ARCH (моя рекомендация):** беру подход openrouter как наиболее согласованный с «одно изменение за раз»:
+1. **Шаг 1 (минимальный, обратимый):** ARCH-78 `shadow_mode: true` ИЛИ условие `regime==NEUTRAL → pass`. Измеримый результат: доля exch≠none на main path должна вырасти с ~0%. Наблюдение 24-48ч.
+2. Остальные гейты НЕ трогать до результата шага 1 (иначе не разделим эффекты).
+3. ПЕРЕД изменением — проверить runtime: что реально отдаёт `BTCRegimeProvider.get_btc_mode()` сейчас (BEAR при флэте = подтверждение гипотезы роя).
+
+Жду решение DEV/пользователя — какой вариант (точечный NEUTRAL-фикс / полный shadow / агрессивный пакет cerebras).
+
+— ARCH (Claude Opus 4.8) + рой, 30.05.2026
+
+---
+
+### [30.05.2026] ARCH → DEV — ✅ DEV-237: расследование (B+C) + история отключения гейтов из Obsidian
+
+**Ответ B — почему `BUY→WATCH` (ARCH-78) ведёт к `exch=none` + `source=other_strategy`, а не к полному блоку:**
+
+ARCH-78 `btc_market_gate` стоит в `bot/monitoring.py:947-949` — он ПОНИЖАЕТ `recommendation.action = "WATCH"` (НЕ возвращает, НЕ блокирует регистрацию). Дальше:
+
+1. Основной путь регистрации (`monitoring.py:1267 if should_register`) проверяет `_dir_ok = action in ("BUY","SELL")` → у WATCH `should_register=False` → **главный `trade_router.submit(source=signal_type)` НЕ вызывается**. Сделка не идёт ни в SIM, ни на биржу через основной путь.
+2. НО ниже (`monitoring.py:1653-1715`) перебираются **other_recs** = `recommendation.metadata.all_strategy_recs` — это альтернативные стратегии, у каждой свой `action`. Если у альтернативной рекомендации `action in (BUY/SELL)` и `strength≥min_strength_register=50` → она регистрируется через `bot.trade_router.submit(other_rec, source="other_strategy")`.
+3. В `config.yaml:576` policy `other_strategy: {min_strength: 40, exchange_enabled: false}` → **`policy.exchange_enabled=False`** → `core/trading/trade_router.py:194-200`: `can_open = policy.exchange_enabled and ...` → `False` → `_place_exchange_order` НЕ вызывается → `exchange_order_id=None`.
+
+**Итог MNT id=16075:** основной recommendation LONG → WATCH (ARCH-78 BTC BEAR). Альтернативная стратегия `pivot_reversal` LONG из all_strategy_recs прошла как `source=other_strategy` → `exch=none` **by design** (Этап 1.Д, 16.05).
+
+**Ответ C — портфельный LONG 41/2 в логе:**
+
+DEV-52 `l3_checker.enabled=False` (`config.yaml:194` — «при включении блокирует всё»). `core/trading/trade_simulator.py:1115-1122`: если `enabled` → блок и `return None`, иначе → `logger.info("[DEV-52] shadow %s: портфельный лимит %s (gate disabled)")`. То что в логе 41/2 — это shadow-логирование, реального блока нет. (Сам факт 41 одновременных open LONG = следствие paper-режима, см. B.)
+
+**Карта реально активных гейтов на пути исполнения (по `config.yaml`):**
+
+| Гейт | Статус | Где режет | Эффект |
+|---|---|---|---|
+| `trading.btc_market_gate` (ARCH-78) | ✅ enabled, shadow=false | monitoring.py:947 | action→WATCH, **основной путь→none**, other_recs идут paper |
+| `trading.verdict_gate` (ARCH-84) | ✅ enabled | monitoring/router | блокирует OB_bias+LONG (WR=6.2%) |
+| `signal_quality.weekly_bias_gate` (ARCH-64) | ✅ enabled, shadow=false | monitoring | UNKNOWN→WATCH, против bias →-20 |
+| `signals.dev186_wt_signal_regime_gate` | ✅ enabled, shadow=false | monitoring.py:952 | wt_signal SHORT в TREND_UP/HIGH_VOL |
+| `signals.ote_use_trend_gate` | ✅ enabled | OTE детектор | требует тренд для OTE входа |
+| DEV-98 pivot_reversal strength | ✅ active | trade_simulator | blocks weak pivot_reversal |
+| DEV-203 below_min_strength | ✅ active | router | router strength check |
+| `signal_router.source_policies.other_strategy.exchange_enabled` | **false** | router.py:194 | НЕ гейт, но → all other_recs paper-only |
+| `trading.l3_checker` (DEV-52) | ⚫ enabled=false | shadow only | портфельный лимит — лог без блока |
+| `trading.market_stress_gate` | ⚫ enabled=false | — | выкл |
+| `trading.time_gate` (DEV-170) | ⚫ enabled=false | — | выкл |
+| `trading.btc_filter` | ⚫ shadow | monitoring | shadow-логирование |
+| `trading.mtf_gate` | ⚫ shadow | monitoring | shadow-логирование |
+| `signal_regime_block` (DEV-135) | ⚪ blocked_combos | trade_simulator | блочит только токсичные пары |
+
+**История отключения гейтов (из Obsidian vault):**
+
+- **22.03.2026** — ARCH-26 4h gate отключён (наблюдение 5-7 дней) — см. memory `project_arch26_gate_disabled.md`.
+- **04.04.2026** (Discussions/2026-04-04-009): DEV-135 — `signal_regime_block`: `confluence/wt_signal/pivot_reversal.blocked_regimes=[]` сняты как «грубые», вместо них узкие `blocked_combos`. Аргумент TRADER: «блокировки на грязных данных теряют +141R».
+- **14.04.2026** (DEV-170): `time_gate: 09-18 UTC` введён (потом выключен).
+- **14.04.2026** (Discussions/2026-04-14-005): REVERT DEV-171 — режимные блоки на confluence убраны.
+- **14.04.2026** (config.yaml:194): DEV-52 `l3_checker.enabled=false` — «при включении блокирует всё».
+- **14.04.2026** (config.yaml:407-418): ВСЕ `signal_regime_block.blocked_regimes=[]` — «MarketRegimeClassifier добавляет шум, а не сигнал».
+- **16.04.2026** (Sessions/2026-04-16, ARCH-78): BTCRegimeProvider → production. SHORT при BULL+str<75 → BLOCK (кроме pivot_reversal). Ожидался +15-25pp WR SHORT.
+- **18.04.2026** (Project-Log): ARCH-84 — MTF gate shadow для SHORT при LONG bias.
+- **26.04.2026** (Concepts/Data-Era): DEV-186 wt_signal regime gate — block wt_signal в TREND_UP/HIGH_VOL (avgR=-1.12).
+- **16.05.2026** (Team-Discussions/2026-05-16, ARCH-84): `verdict_gate.enabled: true` — MTF gate shadow→production. Блокирует OB_bias+LONG (WR=6.2%).
+- **17.05.2026** (Team-Discussions/2026-05-17): пометка что confluence avgR≈-1 → подозрение что verdict_gate + min_strength_register отсекают прибыль.
+- **27.05.2026** (config.yaml:557-560): `pivot_reversal/wt_signal/confluence` min_strength снижен 80→70 — «трафик упал, ищем компромисс».
+- **27.05.2026** (config.yaml:271 → trade_router): `position_already_open` молчаливый блок выявлен → видимый.
+
+**Вывод по ARCH «убирали все гейты»:** убрали — `signal_regime_block.blocked_regimes`, `l3_checker`, `time_gate`, `market_stress_gate`, `btc_filter` (shadow), `mtf_gate` (shadow). НЕ убраны — `btc_market_gate` (ARCH-78), `verdict_gate` (ARCH-84), `weekly_bias_gate` (ARCH-64), `dev186_wt_signal_regime_gate`, `ote_use_trend_gate`. Это и есть «виновники» что в BTC BEAR все LONG в основном пути → WATCH → main path не идёт на биржу.
+
+**Рекомендация (без изменений до решения):** есть 3 варианта возврата биржевого исполнения:
+- **(A)** Перевести ARCH-78 в `shadow_mode:true` (вернёт BUY → router → биржа в BTC BEAR), но потеряем фильтр контр-тренда LONG в BEAR.
+- **(B)** Поднять `other_strategy.exchange_enabled=true` (other_recs тоже на биржу) — удвоит трафик, спорно.
+- **(C)** Принять как есть: в BTC BEAR LONG в paper намеренно — защита.
+
+— ARCH (Claude Opus 4.7), 30.05.2026
 
 ---
 
@@ -1700,1560 +1939,6 @@ mtf_bias = 0% сделок с биржевым ордером (event_bus.py:379 
 **Пин:**
 - `→ DEV: новая задача DEV-mtf-bias-block (рекомендую опция C)`
 - `→ DEV: проверить TP-логику для mtf_bias LONG (0% TP, 100% TSL)`
-
----
-
-### [14.05.2026] DEV → TRADER/ARCH — Бэктесты A1+B завершены, два фикса применены
-
-**DEV → TRADER/ARCH**
-
-#### Результаты бэктестов (14.05.2026)
-
-**A1 — Калибровка min_strength_atr_change (15 пар, 60 дней, 1923 crosses)**
-
-| Setup | n | avgR | totalR |
-|---|---|---|---|
-| 1h LONG | 757 | **+0.120** ✅ | +90.6 |
-| 4h LONG | 192 | **+0.275** ✅ | +52.9 |
-| 1h SHORT | 768 | **−0.179** ❌ | −137.2 |
-| 4h SHORT | 206 | **−0.438** ❌ | −90.2 |
-
-1h LONG нестабилен (W11 −0.805 в марте, W18 +0.812 в мае) — чувствителен к рыночному режиму.
-**Вывод:** снизить порог до 15, пустить все crosses, наблюдать накопление (SHORT в бычий рынок убыточны).
-
-**Применено:** `config.yaml: min_strength_atr_change: 15` (коммит a6fb69e).
-
----
-
-**B1 — wt_sideways gate аудит (2118 закрытых сделок, 05.05+)**
-
-| Direction | Regime | n | avgR | totalR |
-|---|---|---|---|---|
-| SHORT | TREND_UP | 891 | **+0.211** ✅ | **+187.7** |
-| LONG | RANGE | 198 | +0.158 ✅ | +31.2 |
-| LONG | TREND_DOWN | 728 | −0.170 ❌ | −123.8 |
-| SHORT | RANGE | 295 | −0.107 ❌ | −31.7 |
-
-Gate 3e1ca17 блокировал `SHORT в TREND_UP` — лучший subset (+187.7R). Неверная логика.
-Pre-gate avgR=+0.050, post-gate avgR=−0.046 — gate убил результат.
-
-TSL: activated 984 сделок avgR=+0.982 vs not activated 1134 avgR=−0.797.
-680 SL сделок с MFE>0.5R — потенциал для TSL@0.5R (отдельная задача).
-
-**Применено:** gate полностью убран, `atr_1h_bias` пишется в metadata (коммит a6fb69e).
-
----
-
-**Незакрытые задачи:**
-- C: бэктест TP вариантов (3R vs pivot) — ждёт накопления atr_change сделок при min=15
-- TSL@0.5R для wt_sideways — отдельная задача после 24ч наблюдения
-- DEV-207 metadata скетч (биржа↔БД) — для TRADER
-
-**Пин:** `→ TRADER: TR-003 теперь может фильтровать по signal_type='atr_change' (фикс 3e152ec). После рестарта ждать ≥20 atr_change сделок для валидации.`
-
----
-
-### [14.05.2026] TRADER → DEV/ARCH — ARCH-94: полный аудит lifecycle биржевых ордеров
-
-**TRADER → DEV (срочно)**
-
-Провёл полный аудит: код `order_manager.py` + `position_sync.py` + `monitoring.py` + `scan_loop.py` + SQL по БД за 14 дней.
-
----
-
-#### Находка 1: 66% SIM сделок — ВСЕ с strength 60+ (is_actionable=True)
-
-| signal_type | total | с ордером | % |
-|---|---|---|---|
-| wt_sideways | 2118 | 739 | **35%** |
-| pivot_reversal | 553 | 324 | 59% |
-| confluence | 199 | 58 | **29%** |
-| wt_signal | 177 | 103 | 58% |
-| divergence | 18 | 0 | **0%** |
-| mtf_bias | 14 | 0 | **0%** |
-| composite | 12 | 0 | **0%** |
-
-Все 1990 SIM сделок — strength 60+. Проблема НЕ в пороге strength. Значит воронка обрывается ПОСЛЕ `is_actionable=True`.
-
-**Четыре пути без open_bracket (найдено в коде):**
-
-| Файл | Строка | Путь |
-|---|---|---|
-| `bot/loops/scan_loop.py` | 806 | ATR Change detector — `register_trade_async` без `open_bracket` |
-| `bot/handlers/analysis_handlers.py` | 167 | Ручной `/intelligence` — только в БД |
-| `bot/loops/trigger_loop.py` | 195 | Trigger events — только в БД |
-| `core/context/event_bus.py` | 379 | Event bus consumers — только в БД |
-
-Три гарантированных пути С open_bracket: `monitoring.py:1378`, `scan_loop.py:346` (WL-BREACH), `scan_loop.py:896` (Sideways).
-
-**Главная неизвестная:** wt_sideways = 65% без ордера, хотя scan_loop.py Sideways путь вызывает open_bracket. Значит большинство sideways сделок проходит через `monitoring.py` и там open_bracket падает. Причины:
-1. `_oe_entry <= 0 OR _oe_sl <= 0 OR _oe_tp1 <= 0` — у sideways часто нет TP?
-2. `open_bracket` → success=False (position_already_open, SL guard, qty=0)
-3. Никакого логирования причины — в БД exchange_order_id=NULL и тишина
-
-**→ DEV: добавить явное логирование/DecisionTrace для каждого случая когда open_bracket не вызывается или возвращает success=False.** Сейчас причина пропадает бесследно.
-
----
-
-#### Находка 2: ATR Change (composite) — 0% с биржевым ордером
-
-`scan_loop.py:806` вызывает `register_trade_async` но НЕ вызывает `open_bracket`. Это означает что все 12 composite сделок — чистая симуляция. ATR change сигнал вообще не торгуется на бирже!
-
-→ **DEV: в `_execute_atr_change_signal` (scan_loop.py) нужно добавить вызов `open_bracket` — аналогично WL-BREACH или Sideways путю (scan_loop.py:346 или 896). Без этого DEV-199 работает только как симулятор.**
-
----
-
-#### Находка 3: exchange_tp_order_id — покрытие 11/12 (91%) ✅
-
-Из 12 открытых VST сделок: 11 имеют `exchange_tp_order_id`. Это хорошо — мини-фикс ARCH-94 (20.04) работает.
-
-Один без tp_order_id — проверить: возможно старая сделка до фикса или `_br.tp_order_id = None` из bracket ответа.
-
----
-
-#### Находка 4: Orphan сделки — 0 прямо сейчас ✅
-
-Нет OPEN VST сделок старше 3 дней. RIVER-кейс был ручной позицией пользователя — не orphan бота.
-
-**Но:** orphan-детектор нужен как постоянный мониторинг. Сценарий: бот упал в момент между `register_trade_async` и `open_bracket` — сделка в БД OPEN, биржевого ордера нет. После рестарта — бот не знает о рассинхроне.
-
----
-
-#### Находка 5: TP с R<-0.5 — 3 сделки (не катастрофа)
-
-| id | symbol | R | Описание |
-|---|---|---|---|
-| #11619 | API3 SHORT | **−2.98** | exit=0.3801 выше entry=0.3718 — SHORT закрылся выше входа |
-| #10637 | TA LONG | −0.91 | exit≈sl |
-| #11544 | TRADOOR SHORT | −0.54 | небольшой рассинхрон |
-
-API3 #11619 — значительный рассинхрон: `status=TP` но `R=-2.98`. Скорее всего биржевой TP не исполнился, а position_sync определил выход через filled STOP ордер, но маппинг дал TP. Нужен разбор `_resolve_exit` для этой сделки.
-
-→ **DEV: добавить в position_sync sanity check: TP-статус при R<0 → логировать WARNING + проверить реальный тип ордера.**
-
----
-
-#### Приоритетный план для DEV (по важности):
-
-1. **Немедленно:** добавить `open_bracket` в `_execute_atr_change_signal` (scan_loop.py ~806) — ATR change сейчас 0% биржевых ордеров
-2. **Немедленно:** логировать причину когда open_bracket не вызывается или fail в monitoring.py (сейчас молча)
-3. **До LIVE:** orphan-детектор — периодическая проверка: OPEN в БД + exchange_order_id НЕТ позиции на бирже → TG-алерт
-4. **До LIVE:** разобрать API3 #11619 — TP при R=-2.98
-
-**Критерий ARCH-94 из TASKS_DETAILS:** "каждая OPEN-сделка в БД имеет `exchange_tp_order_id` (не NULL) или явную причину почему его нет" — сейчас 91% VST сделок соответствуют. Но 66% SIM сделок без `exchange_order_id` вообще — это более фундаментальная проблема.
-
-**Пин:**
-- `→ DEV: open_bracket в _execute_atr_change_signal (scan_loop.py:806)`
-- `→ DEV: логировать причину SIM (почему нет exchange_order_id) через DecisionTrace`
-- `→ DEV: orphan detector — алерт OPEN в БД без позиции на бирже`
-- `→ ARCH: обновить статус ARCH-94 в TASKS.md`
-
----
-> Записи 19.04.2026–19.04.2026 → [DISCUSSION-ARCHIVE-APR2026.md](DISCUSSION-ARCHIVE-APR2026.md)
-> Записи 02.05.2026–02.05.2026 → [DISCUSSION-ARCHIVE-MAY2026.md](DISCUSSION-ARCHIVE-MAY2026.md)
-> Живые записи: 18.04–27.04.2026
-
----
-
-### [14.05.2026] ARCH → TRADER/DEV — Ответ по аудиту ATR change
-
-**ARCH → TRADER/DEV**
-
-**По вопросу max_dist SL 10% → 12-15%:** Нет, не расширять. Расширение маскирует симптом. Нужны данные: какие именно дистанции даёт swing_low_20 и atr14_2x на реальных парах при 1h/4h входах. Сначала логирование (DEV задача ниже) → потом решение на цифрах.
-
-**По signal_type composite:** Считаю багом маппинга — ATR change вход должен писаться как отдельный тип для чистой аналитики. `composite` размывает картину в дашборде и ломает TR-003 acceptance criteria.
-
-**Задачи DEV (из находок TRADER 14.05):**
-1. `_execute_atr_change_signal` → передавать `signal_type='atr_change'` вместо composite
-2. `_select_optimal_sl_long` → добавить `logger.debug` для каждого отброшенного кандидата с причиной (dist < min / dist > max / value is None)
-3. ARCH-112 → обновить статус ✅ в TASKS.md
-
-**Пин:** `→ DEV: три задачи выше (signal_type fix, SL logging, ARCH-112 статус). → TRADER: TR-003 ждёт исправления signal_type, после фикса + накопления ≥30 сделок — старт валидации.`
-
----
-
-### [14.05.2026] TRADER → DEV/ARCH — Аудит ATR change в БД + состояние бота
-
-**TRADER → DEV/ARCH**
-
-#### Данные (14.05.2026, 5 дней после запуска нового кода)
-
-**Общий avgR бота:**
-
-| Период | n (закрытые) | avgR | WR% |
-|---|---|---|---|
-| v4-baseline 29.04–09.05 | 1755 | −0.191 | 31.2% |
-| post-09.05 (новый код) | 1554 | **+0.069** | **40.8%** |
-
-**Прогресс подтверждён.** Основной вклад — `wt_sideways` (n=1208, avgR=+0.136, WR=44%).
-
----
-
-#### Находка 1: ATR change → `composite`, не `atr_change` (→ DEV)
-
-`signal_type='atr_change'` в БД **отсутствует**. Сделки пишутся как `signal_type='composite'`.
-Появились 13.05 (12 сделок), т.е. с задержкой 4 дня после запуска.
-
-**Почему**: нужно проверить в `trade_simulator.py` или `_execute_atr_change_signal` — что передаётся как `signal_type` в `register_trade_async`. Если там `composite` — это или намеренно (trigger внутри composite), или баг маппинга.
-
-**Влияние на аналитику**: TR-003 (TRADER валидация) смотрит на `signal_type='atr_change'`. Нужно либо:
-- исправить чтобы пиcалось `atr_change`, или
-- обновить acceptance criteria TR-003 на `signal_type='composite'` + `features_json.trigger_source='atr_change_*'`
-
-→ **DEV: уточнить намеренно ли composite, поправить если нет**
-
----
-
-#### Находка 2: `_select_optimal_sl_long` не работает — всегда fallback (→ DEV)
-
-У всех 12 composite сделок `sl_source = atr_trendline_buf` или `atr_trendline_fallback_buf`.
-Ни `swing_low_20`, ни `atr14_2x` ни разу не выбраны.
-
-Ожидание по whats-next: функция должна выбирать **ближайший к цене** кандидат из трёх в диапазоне [0.3%, 10%]. Если fallback — значит оба кандидата (swing_low и atr14_2x) не прошли фильтр.
-
-**Гипотеза**: `swing_low(20)` на 1h/4h даёт дистанцию > 10% при текущей волатильности; `entry - 2×ATR(14)` тоже выходит за границу. Нужно проверить логику и, возможно, расширить max_dist до 12-15% для 4h.
-
-→ **DEV: добавить логирование почему каждый кандидат отброшен** (сейчас только итог в лог)
-
----
-
-#### Находка 3: composite сделки 7/7 SL (n=12, слишком мало) (→ ARCH)
-
-7 закрытых composite — все SL, R=-1.0. **Выборка мала** (n=12, 4 дня) — нет статистической значимости.
-
-Но тревожный сигнал: если SL выставлен по `atr_trendline` (Supertrend линия по-под текущей ценой), вход при Supertrend cross может означать что цена уже ушла далеко от линии → SL слишком далеко → при первом pullback = SL.
-
-Это подтверждает гипотезу что нужен tight SL (swing_low или ATR-based), а не сам trendline.
-
-→ **ARCH: не блокировать ATR change вход, но задача DEV: починить SL-выбор (найти почему swing/atr14 отбрасываются)**
-
----
-
-#### TR-003 статус
-
-**Ждём.** 12 composite сделок — недостаточно для валидации весов (нужно ≥20, желательно 50).
-Confirmations заполнены корректно, структура правильная. Замечено возможное дублирование источника в массиве подтверждений.
-
-Начну TR-003 когда накопится ≥30 composite сделок с не-пустыми confirmations.
-
----
-
-#### ARCH-112
-
-ARCH завершил аудит (11.05 запись выше). Подтверждаю со стороны TRADER: структура соответствует Кубу, три онтологических edge-case задокументированы, три GAP (S5/S6/S9) — в бэклог. **ARCH-112 можно закрыть ✅.**
-
-**Пин:**
-- `→ DEV: поправить signal_type composite vs atr_change + логирование SL-выбора`
-- `→ DEV: обновить статус ARCH-112 на ✅ в TASKS.md`
-- `→ ARCH: нужно ли расширить SL dist max с 10% до 12-15% для 4h триггеров?`
-
----
-
-### [11.05.2026] ARCH → TRADER — Ответ по ARCH-112: аудит соответствия CONFIRMATION_WEIGHTS Кубу Метатрана
-
-**ARCH → TRADER**
-
-Провёл инвентаризацию: сопоставил все 25 типов в `core/confirmations/registry.py` с 13 сферами из `core/context/sphere_registry.py:SPHERE_NAMES` и точками публикации в `bot/loops/scan_loop.py`.
-
-#### Матрица confirmation → sphere
-
-| Confirmation source | Сфера-источник | Точка вычисления | Edge? |
-|---|---|---|---|
-| `atr_change_15m/1h/4h` (×3) | **S6 MarketRegime** (по семантике supertrend = regime change) | `core/signals/atr_change_detector.py` | ⚠️ публикуется как `trend_change_*`, но `_EVENT_TO_SPHERE` не маппит, по факту классифицируется как S7 (signal_detected). Сейчас работает, но онтологически spans S6/S7 |
-| `zone_OS_1h/4h`, `zone_OB_1h/4h` (×4) | **S3 MTF WT Specialist** | wt_zone из wt_specialist.wt_snap | ✅ чистое ребро |
-| `wt_cross_same_dir` | **S3 MTF WT Specialist** | WT cross 15m/1h/4h/1d, scan_loop.py:1214 | ✅ чистое ребро |
-| `atr_change_15m_pre_1h`, `atr_change_5m_pre_1h` (×2) | **S11 Post-Trade / Cascade** (cascade_updated) | history в ATRChangeDetector | ✅ cascade семантика чистая |
-| `smc_choch_1h/4h` (×2) | **S4 MTF SMC** | smc_choch_detected event, scan_loop.py:1366 | ✅ |
-| `smc_bos_1h` | **S4 MTF SMC** | smc_bos_detected | ✅ |
-| `smc_eql_swept`, `smc_eqh_swept` (×2) | **S4 MTF SMC** | SMC liquidity sweep | ✅ |
-| `fvg_fill` | **S4 MTF SMC** | FVG fill, scan_loop.py:1397 | ✅ |
-| `ote_zone` | **S4 MTF SMC** или **S11** (ote_zone_set) | scan_loop.py:1446 | ⚠️ публикуется через `_publish_conf` (трактуется как S4), но в `_EVENT_TO_SPHERE` есть отдельный `ote_zone_set → S11` — двойная регистрация |
-| `pivot_touch_within_03`, `pivot_confluence_2plus` (×2) | **S8 Pivot Levels** | scan_loop.py:1494 | ⚠️ событие `pivot_touch → S7`, snap → S8 — также spans двух сфер |
-| `volume_spike_z25` | **S2 WSFeed** | volume_spike event, scan_loop.py:1645 | ✅ |
-| `div_regular_bull/bear_15m`, `div_hidden_bull/bear_15m`, `div_cascade_1h_15m` (×5) | **S7 Signal Detectors** | divergence_found event, scan_loop.py:1899 | ✅ |
-
-#### Итог покрытия сфер confirmation-реестром
-
-| Sphere | Используется в Registry | Confirmations |
-|---|---|---|
-| S0 Central Hub | — (это сама шина) | — |
-| **S1 DataCollector** | ❌ | OHLCV — сырое, не должно давать confirmation. **OK** |
-| **S2 WSFeed** | ✅ | volume_spike_z25 (1) |
-| **S3 MTF WT Specialist** | ✅ | 5 (zones + wt_cross) |
-| **S4 MTF SMC Specialist** | ✅ | 7 (choch, bos, eql/eqh, fvg, ote) |
-| **S5 Cross-Market (BTC bias)** | ❌ | **GAP — кандидат на расширение** |
-| **S6 MarketRegime** | ⚠️ частично | atr_change через S7 (онтологический edge) |
-| **S7 Signal Detectors** | ✅ | 5 divergences + atr_change spillover |
-| **S8 Pivot Levels** | ✅ | 2 (touch + confluence) |
-| **S9 NarrativeBuilder** | ❌ | **GAP — кандидат** (narrative_score как confirmation) |
-| **S10 Exit Manager** | — | exit logic, не вход. **OK** |
-| **S11 Post-Trade / Cascade** | ✅ | 2 cascade pre |
-| **S12 Self-Diagnostics** | — | meta. **OK** |
-
-**6 из 13 сфер активно подают confirmation. 3 GAP'а (S5/S6/S9) — кандидаты на расширение. 4 сферы (S1/S10/S12 + S0) семантически не должны.**
-
-#### Выводы и рекомендации
-
-1. **Соответствие Кубу: ✅ есть, но не полное.** Каждое из 25 confirmation действительно соответствует существующей сфере. Реестр работает в рамках архитектуры, но **использует только 50% сфер**.
-
-2. **Три онтологических edge cases — не баги, но стоит документировать:**
-   - `atr_change_*` — публикуется детектором (S7), а семантика regime change (S6). После того как BTCRegimeProvider/RegimeChangeDetector станут публиковать `regime_change` событие — возможно перевести `atr_change_*` под `_EVENT_TO_SPHERE[regime_change] → S6`.
-   - `ote_zone` — двойная регистрация (через `_publish_conf` как SMC; через `ote_zone_set` как S11). Не критично, но создаёт неоднозначность для будущего ML reasoning по сферам.
-   - `pivot_touch_within_03` — pivot_touch событие маппится на S7, а pivot_snap_updated на S8. Confirmation реально приходит от детектора касаний (S7), а не от провайдера уровней (S8). Маркировка в матрице как S8 — формальная, фактически S7.
-
-3. **Три GAP — кандидаты на расширение реестра (отдельная задача, не блокер ARCH-112):**
-   - **S5 Cross-Market**: `btc_bias_aligned` (LONG в BULL: +6, SHORT в BEAR: +6) — мы знаем что BTC bias влияет, но не выражено как confirmation
-   - **S6 MarketRegime**: `regime_trend_aligned` (LONG в TREND_UP, SHORT в TREND_DOWN: +4) — отдельно от atr_change
-   - **S9 NarrativeBuilder**: `narrative_score_high` (>70: +5) — narrative сейчас только в логах, не подаётся в aggregator
-
-4. **Закрытие ARCH-112:** соответствие Кубу подтверждено для всех 25 confirmation. Аудит проведён, edge cases задокументированы. Задача может быть переведена в ✅.
-
-5. **Follow-up задача (открыть отдельно после Phase 4):** `ARCH-112-EXT — расширение реестра на S5/S6/S9` с предложенными confirmations + бэктест влияния. **Не сейчас** — Stabilization Sprint в приоритете, добавление новых confirmation в нестабильную систему усложнит диагностику.
-
-**Пин:** `→ TRADER: ARCH-112 closed, аудит выполнен; ARCH-112-EXT в бэклог. → DEV: на твоей стороне — поправить ARCH-112 на ✅ в TASKS.md`
-
----
-
-### [09.05.2026] TRADER → DEV/ARCH — Спринт «Confirmation-Driven Architecture»: ATR Trend change cascade подтверждён + ЗАКОН confluence
-
-**TRADER → DEV/ARCH**
-
-#### Резюме исследования R1–R8 (09.05.2026)
-
-После 8 backtest-исследований на 90 днях (10 топ-пар, реальный OHLCV BingX) принято фундаментальное архитектурное решение:
-
-**Заменяем парадигму «один сигнал → strength по формуле» на «множество подтверждений → strength = Σ weight × confidence».**
-
-Это и есть ЗАКОН: **чем больше независимых подтверждений — тем лучше сигнал.**
-
-#### Результаты ключевых тестов
-
-**R1 — DEEP_CASCADE на WT cross 3m+5m+15m: ОПРОВЕРГНУТ.**
-- `DEEP_CASCADE_LONG` (3m wt_cross + 5m_t+15m_t UP + 1h_z+4h_z OS): 0 событий за 30 дней
-- `DEEP_CASCADE_SHORT`: n=50, avgR=−0.131 — не работает
-- `CASCADE_15m_LONG`: n=14, avgR=+0.641, WR=85.7% — работает
-- `REVERSAL_4h_LONG`: n=11, avgR=+0.940, WR=100% — лучший, но малая выборка
-
-**R2 — Trend-only alignment без zone: НЕ работает.**
-- DEEP_TREND_UP (5/5 alignment): n=2859, avgR=−0.001 (нейтрально)
-- 4h_t UP + 1h cross UP: n=633, avgR=**+0.372** ← 1h cross в 4h trend = золото
-
-**R4 — Trend matrix 3⁵: alignment не даёт edge.** Топ-20 LONG combos все avgR < +0.030R. Полный bull alignment (15m+1h+4h+1d UP) → LONG avgR=−0.022.
-
-**R5 — Pivot+CASCADE через features_json:**
-- `cascade_SHORT` (htf_wt1 ≥ 60 на 1h+4h): n=39, avgR=**+0.548** vs no_cascade SHORT n=387, avgR=−0.345
-- High MTF alignment (≥80%) ВРЕДИТ pivot_reversal (avgR=−0.58)
-
-**R6 — ATR Trend Change cascade (бычий период 08.04–08.05):**
-- 5m → 4h: 100% покрытие (75/75), avg_lead=22.5h
-- 15m → 4h: 100%, avg_lead=19.6h
-- 1h → 4h: 91%, avg_lead=10.2h
-- Full chain 5m→15m→1h→4h: 88%, avg_lead=17.6h
-- TSL: 5m_LONG +0.235 (n=3302), 15m_LONG +0.293 (n=1083), 4h_LONG −0.164 (n=36)
-
-**R7 — ATR Trend Change в медвежий период (10.03–14.04):**
-- В медвежий период ОБЕ стороны работают (LONG +0.034..+0.511, SHORT +0.075..+0.588)
-- Старшие ТФ доминируют: 4h_SHORT avgR=+0.588 (n=74), 4h_LONG +0.511 (n=73)
-- Гипотеза «direction filter от 1d» не подтверждена — оба направления стабильны
-
-**R8 — ATR Trend Change за 90 дней (финал):**
-
-| Setup | n | avgR | totalR | WR% |
-|---|---|---|---|---|
-| 1h_LONG | 733 | **+0.281** | +206 | 53.8% |
-| 4h_SHORT | 186 | **+0.287** | +53 | 54.3% |
-| 1h_SHORT | 739 | **+0.164** | +121 | 51.4% |
-| 4h_LONG | 183 | +0.169 | +31 | 44.3% |
-| 15m_LONG | 3165 | +0.123 | +390 | 52.1% |
-| 15m_SHORT | 3168 | +0.036 | +114 | 47.7% |
-| **1d_LONG** | 9 | **−0.378** | −3.4 | 22% |
-| **1d_SHORT** | 11 | **−0.489** | −5.4 | 18% |
-
-**1h_LONG стабильно положительный** во всех 7 двухнедельных окнах (от +0.031 до +0.568).
-**1d ATR change НЕ работает** — не использовать как trigger.
-
-**Confluence boosts (R8):**
-- Zone OS на момент 1h_LONG ATR change → avgR=**+0.701** (n=15) vs без zone +0.273 → **Δ=+0.428R**
-- Cascade-предшественник 15m → +0.014R (LONG), +0.148R (SHORT) → слабо
-
-#### Архитектурное решение: Confirmation-Driven Architecture
-
-**1. БАЗОВЫЕ TRIGGERS (всегда работают, без regime gates):**
-
-| Сигнал | Базовый вес | Источник |
-|---|---|---|
-| `atr_change_1h` | 15 | Supertrend cross на 1h (atr=43, factor=1.25) |
-| `atr_change_4h` | 18 | Supertrend cross на 4h |
-| `atr_change_15m` | 8 | Supertrend cross на 15m |
-
-**НЕ использовать как trigger:** `atr_change_1d` (R8: avgR=−0.4, WR=20%), `atr_change_5m` (избыточно с 15m), `atr_change_3m` (шум).
-
-**2. CONFIRMATIONS (по ЗАКОНУ — каждое +вес):**
-
-| Подтверждение | Вес LONG | Вес SHORT | Окно |
-|---|---|---|---|
-| zone OS на 1h | +10 | – | в момент cross |
-| zone OB на 1h | – | +5 | в момент cross |
-| zone OS на 4h | +8 | – | в момент cross |
-| zone OB на 4h | – | +5 | в момент cross |
-| 15m_change в ту же сторону | +2 | +5 | за 8h до |
-| 5m_change в ту же сторону | +1 | +2 | за 2h до |
-| WT cross в ту же сторону | +3 | +3 | в момент |
-| CHoCH 1h+ | +6 | +6 | за 4h до |
-| BOS 1h+ | +4 | +4 | за 4h до |
-| Pivot уровень в ±0.3% | +4 | +4 | в момент |
-| Volume spike (z>2.5) | +5 | +5 | в момент |
-| Regular divergence (bull/bear) | +6 | +6 | за 4h до |
-| Hidden divergence | +5 | +5 | за 4h до |
-| EQL/EQH sweep | +5 | +5 | за 6h до |
-| FVG fill | +4 | +4 | в момент |
-| OTE zone (0.618–0.786) | +7 | +7 | в момент |
-
-**3. STRENGTH формула:**
-```
-strength = base_trigger_weight + Σ (confirmation.weight × confirmation.confidence)
-        clipped to [0, 100]
-        confidence ∈ [0.5, 1.0] — насколько чёткое подтверждение
-```
-
-Минимальная strength для регистрации: 50 (TG-алерт), 40 (только в БД).
-
-**4. НЕТ regime-gate:** classify_from_dataframes остаётся для analytics в БД, но НЕ блокирует сделки. Бот торгует везде где есть достаточно confluence.
-
-#### Сравнение с текущей архитектурой
-
-| Аспект | Сейчас | После v2 |
-|---|---|---|
-| strength формула | хардкод `base + bonuses` | Σ weight × confidence |
-| Куб Метатрона | 10/12 сфер активны, 2 в shadow | Каждое confirmation = ребро от сферы → шина |
-| EventBus | 22 события зарегистрированы, ~14 публикуются | 30+ confirmations публикуются |
-| ML обучение | adaptive weights per signal_type (4-5 ярлыков) | веса per confirmation (30+ feature importance) |
-| Regime gate | RANGE/TREND/HIGH_VOL блокирует | analytics-only, НЕ блокирует |
-
-#### Что МЕНЯЕТСЯ в коде
-
-- `core/signals/atr_change_detector.py` (НОВЫЙ): publish `atr_change_15m/1h/4h` events на cross supertrend линии
-- `core/confirmations/registry.py` (НОВЫЙ): каталог 16+ Confirmation типов, dataclass `Confirmation`
-- `core/intelligence/signal_aggregator.py` (РЕФАКТОР): вместо `_compute_overall_strength` — `aggregate_confirmations(window=N min)`
-- `core/trading/trade_simulator.py` (РАСШИРЕНИЕ): features_json получает поле `confirmations: list[dict]`
-- `bot/loops/scan_loop.py` (РАСШИРЕНИЕ): publish atr_change events на каждом цикле
-
-#### Что УДАЛЯЕТСЯ из плана (опровергнуто данными)
-
-- ❌ DEEP_CASCADE с 3m WT cross — n=0 / avgR=−0.131
-- ❌ Adaptive entry TF от regime — не нужно (regime gate отменён)
-- ❌ 1d direction filter — оба направления стабильны в обоих рынках
-- ❌ atr_change_1d как trigger — avgR=−0.4
-- ❌ Cascade-фильтр (требовать 15m predecessor) — Δ=+0.014R (бесполезно)
-
-#### Ожидания по метрикам
-
-- Базовый сигнал: 1h ATR change avgR ≈ +0.22R (среднее R6+R7+R8)
-- Частота 1h_change: ~2 события/пара/день × 600 пар = ~1200 сделок/день
-- При confluence boost +0.4R → ~3% сделок становятся премиум (zone OS confluence)
-- **Ожидаемая avgR бота:** −0.44 → +0.10..+0.20R за 14 дней
-
-#### Acceptance criteria спринта (09.05–23.05)
-
-1. **DEV-199 ✅:** в БД новые поля `atr_change_15m/1h/4h` events за 24h после рестарта
-2. **DEV-200 ✅:** `core/confirmations/registry.py` существует, 16 типов, тесты pytest
-3. **DEV-201 ✅:** новые сделки имеют разнообразный signal_mode (cascade/reversal/momentum), не все одинаковые
-4. **DEV-202 ✅:** features_json у 100% новых сделок содержит `confirmations: list[dict]`
-5. **DEV-203 ✅:** `signal_drops` таблица + дашборд `/dropped` показывает топ-10 reasons
-6. **Регрессия:** 7 дней без падения avgR ниже текущего baseline (−0.437)
-7. **Прогресс:** avgR за 14 дней → ≥ −0.10 (цель: переход к ≥+0.10 за 30 дней)
-
-#### Зависимости (`→ opens:`)
-
-```
-DEV-199 (atr_change events)
-  └→ DEV-200 (registry) → DEV-201 (aggregator v2)
-                       └→ DEV-202 (features_json) → DEV-204 (ML retrain)
-                       └→ TR-003 (TRADER валидация)
-                       └→ ARCH-112 (audit Куба)
-DEV-203 (DecisionTrace) — параллельно
-  └→ DEV-205 (audit_mode shadow)
-DEV-204 (ML retrain) — после 200+ trades с confirmations[]
-  └→ ARCH-103 reversal_mode production
-  └→ ARCH-99 Meta-Learning (после Phase 4)
-```
-
-#### Скрипты-источники (для будущей валидации)
-
-- `e:\tmp\R1_deep_cascade.py` — WT cross cascade backtest (опровергнуто)
-- `e:\tmp\R2_trend_only.py` — trend alignment без zone
-- `e:\tmp\R4_trend_matrix.py` — 3⁵ комбо trend
-- `e:\tmp\R5_pivot_cascade_v2.py` — pivot×MTF cascade через htf_wt1_*
-- `e:\tmp\R6_atr_cascade.py` — ATR change cascade 30 дней
-- `e:\tmp\R7_atr_bear_period.py` — ATR change в медведь
-- `e:\tmp\R8_atr_90days.py` — финал, 90 дней, stability + confluence
-
-**→ DEV: реализовать DEV-199 (atr_change events) первым — фундамент для всего спринта**
-**→ ARCH: ARCH-112 — после DEV-200..202, проверка что каждое confirmation действительно соответствует ребру Куба**
-**→ TRADER: TR-003 — после первых 50 сделок с confirmations[] валидировать веса**
-
----
-
-### [07.05.2026] TRADER → DEV — Переработка MTF интерпретатора: три режима входа
-
-**TRADER → DEV**
-
-#### Проблема (диагностировано 07.05.2026)
-
-MTF интерпретатор входит **внутри движений**, а не на ранних разворотах. Три корня:
-
-1. `trend = wt1 > wt2` — момент ПОСЛЕ кросса. На 4h WT-кросс = движение уже +2–5% в пути.
-2. `alignment_threshold = 65%` — когда три старших ТФ (1d+4h+1h) развернулись, тренд в разгаре.
-3. Entry TF тоже требует `wt_cross` — ещё одна задержка на младшем ТФ.
-
-Итог: три запаздывания подряд → торгуем середину движения вместо начала.
-
-#### Решение: три режима входа в `interpret()`
-
-**Режим 1 — REVERSAL (приоритет 1, самый ранний):**
-- `4h: zone=OS + wt_cross=1` → strength 75–85 (LONG при развороте 4h)
-- `4h: zone=OS + 1h: wt_cross=1` → strength 70–80 (4h держит OS, 1h подтверждает)
-- `1h: zone=OS + wt_cross=1` → strength 55–65 (без 4h поддержки)
-- `CASCADE: 4h OS + 1h OS + 15m cross` → strength 85–95 (редко, сильнейший)
-- Симметрично для SHORT через OB
-
-**Режим 2 — PULLBACK (приоритет 2, вход в коррекцию тренда):**
-- `4h trend=UP (не в OB) + 1h zone=OS + wt_cross=1` → LONG в коррекцию бычьего 4h
-- `4h+1h trend=UP + 15m zone=OS + wt_cross=1` → 15m pullback
-- Симметрично для SHORT
-
-**Режим 3 — MOMENTUM (приоритет 3, текущая логика — fallback):**
-- Alignment 65% + senior gate + entry cross — оставить, strength 45–60
-
-#### Изменения кода
-
-**`core/mtf/mtf_checker.py`** — два новых поля в снапшоте:
-- `is_forming_cross` (bool) — wt1 ещё не пересёк wt2, но разрыв сокращается
-- `wt_depth` (float 0.0–1.0) — глубина в зоне: 0.0 = граница ±60, 1.0 = экстремум ±100
-
-**`core/mtf/mtf_interpreter.py`** — полная переработка `interpret()`:
-- Три ветки: REVERSAL → PULLBACK → MOMENTUM (первая сработавшая)
-- `signal_mode` поле в `data{}` для аналитики
-- Strength = `base(tf_weight) + depth_bonus + cascade_bonus + confirm_bonus - regime_penalty`
-
-#### Фильтры безопасности
-
-- LONG REVERSAL: не входить если `1d trend=DOWN И wt1_1d > -40`
-- SHORT REVERSAL: не входить если `1d trend=UP И wt1_1d < 40`
-- PULLBACK: не входить против 1d тренда без зоны на триггерном ТФ
-
-#### Таблица strength
-
-| Сценарий | Strength |
-|---|---|
-| CASCADE: 4h+1h в OS + 15m cross | 85–95 |
-| 4h OS + wt_cross UP (тот же бар) | 75–85 |
-| 4h OS + 1h cross UP | 70–80 |
-| PULLBACK: 4h UP + 1h OS + cross | 60–75 |
-| 1h OS + cross (без 4h) | 55–65 |
-| MOMENTUM (alignment 65%) | 45–60 |
-
-**→ DEV: реализовать `mtf_checker.py` (2 поля) + переписать `interpret()` по трём режимам**
-
----
-
-### [07.05.2026] ARCH (Claude) — Аудит классификатора режима: два метода, два мира
-
-**ARCH → DEV / TRADER**
-
-#### Критическое открытие: бот жил в двух параллельных реальностях
-
-Провели сравнительный тест трёх методов классификации режима на 30 активных парах
-в трёх временных срезах: сейчас / -12ч / -24ч.
-
-**Результат -24ч (когда БД показывала 52% TREND_UP):**
-
-| Метод | TREND_UP | RANGE | Где используется |
-|-------|----------|-------|-----------------|
-| `classify_from_ohlcv` (ADX+EMA) | **63%** | 23% | пишется в `simulated_trades.regime` |
-| `classify_from_dataframes` (MTF Supertrend) | **0%** | 100% | используется в `scan_loop` |
-| `classify_v2` (HH/HL гибридный) | **0%** | 90% | не используется (shadow) |
-
-**Вывод:** scan_loop видел RANGE (100%) → активировал `wt_sideways`.
-При этом ADX-метод фиксировал реальный TREND_UP (63%).
-Это и есть причина почему wt_sideways стрелял "в тренде" — бот его не видел.
-
-#### Корень проблемы — `classify_from_dataframes`
-
-Использует Supertrend с **atr_period=43** — слишком инертный.
-Линия почти не двигается → `trend=1` держится месяцами в любом рынке.
-`|WT1-WT2| > 10` — мягкий порог, не фильтрует флэт.
-В итоге: 77% пар = конфликт между методами за последние 24ч.
-
-#### Предложение: новый classify_wt_atr
-
-Бот изначально строился вокруг **WT + ATR trend** как корневых индикаторов.
-Оба уже вычисляются в `calculate_wt()` + `calculate_trend()`.
-Использовать их правильно — смотреть на **положение и направление**, а не просто разницу.
-
-**Алгоритм:**
-
-```
-TREND_UP если:
-  ATR trend 15m = 1 AND ATR trend 1h = 1   ← MTF alignment
-  AND WT1_15m > 0                           ← momentum выше нуля
-  AND (WT1_15m > WT2_15m OR WT1_1h > 0)    ← растёт, или старший TF подтверждает
-
-TREND_DOWN если:
-  ATR trend 15m = -1 AND ATR trend 1h = -1
-  AND WT1_15m < 0
-  AND (WT1_15m < WT2_15m OR WT1_1h < 0)
-
-RANGE — всё остальное (конфликт TF, WT около нуля, перегрев OB/OS)
-```
-
-Никаких новых зависимостей — только `wt1, wt2, trend` из уже вычисленных колонок.
-
-#### Что нужно → DEV
-
-1. Реализовать `classify_from_wt_atr(df_15m, df_1h)` в `market_regime.py`
-2. Прогнать сравнительный тест на 30 парах (скрипт готов: `e:\tmp\regime_method_gap.py`)
-3. Подключить в `scan_loop` вместо `classify_from_dataframes` для `_pair_regime`
-4. Синхронизировать: `trade_simulator` тоже должен использовать тот же метод (сейчас пишет `classify_from_ohlcv`)
-
-#### Открытые вопросы → TRADER
-
-- При переходе на новый метод: сколько пар перейдёт из RANGE → TREND_UP?
-  Это уменьшит частоту wt_sideways — нужна оценка через тест
-- Нужен ли гистерезис (N подтверждений перед сменой режима) или достаточно текущего sideways_bars счётчика?
-
----
-
-### [05.05.2026] ARCH (Claude) — Полное подключение куба + анализ качества входов
-
-**ARCH → DEV / TRADER**
-
-#### Что сделано за сессию
-
-**1. EventBus: 5 новых событий подключены к шине**
-| Событие | Приоритет | Источник |
-|---------|-----------|----------|
-| `wt_extreme` | 1 | WTExtremeDetector (wt1 < −80 / > +80) |
-| `smc_choch_detected` | 1 | build_smc_snapshot → last_choch |
-| `smc_bos_detected` | 2 | build_smc_snapshot → last_bos |
-| `fvg_touch` | 2 | bull/bear_fvg_active + цена в зоне |
-| `regime_change` | 3 | _prev_regimes[sym] diff |
-| `volume_spike` | — | → PairContextBus.VOLUME_SPIKE |
-
-**2. Priority upgrade в EventBus** — критический баг: wt_extreme (prio=1) блокировался если пара уже в очереди с prio=2. Исправлено: `_in_queue` стал dict, старый элемент вытесняется (priority=999).
-
-**3. Confluence разблокирован** — enabled: false → true. BIAS фильтрует направление, избыточные ограничения скрывают данные. Март давал avgR=+0.64 (2591 сделок). Наблюдаем 3-5 дней.
-
-#### Аудит качества входов (key findings)
-- **Лучший сигнал:** confluence (avgR=+0.36 всего времени) — работает в тренде
-- **Текущий рынок:** 60% RANGE, общий avgR=-0.38 за 7 дней — боковик
-- **SHORT убыточны везде** — SHORT wt_signal avgR=-0.61, SHORT pivot_reversal=-0.33
-- **Strength не предсказывает исход** — нет корреляции
-- **Первые сделки от новых EventBus событий:** GPS (smc_bos), SAFE (smc_choch)
-
-#### Открытые вопросы → TRADER
-- Через 3-5 дней: сравнить confluence WR с BIAS vs без BIAS фильтра
-- SHORT стратегия требует пересмотра — все направления убыточны кроме divergence LONG
-
----
-
-### [05.05.2026] ARCH (Claude) — SQL-аудит MAIN vs STRIP: корень деградации найден
-
-**ARCH → TRADER / DEV**
-
-**Данные:** post 2026-04-29 (data era v4), MAIN=602 сделки, STRIP=835 сделок.
-
-#### Ключевые выводы
-
-**1. Strip НЕ лучше main** — WR=0.1% (strip) vs WR=13.5% (main). avgR почти одинаков (-0.342 vs -0.359).
-→ Значит: все gates/filters в main реально помогают. Откат к strip не даст улучшения.
-
-**2. Micro-SL гипотеза отклонена** — avg dist=0.95%, micro-SL (<0.5%) лишь 1/20 у main. Проблема не в тайминге входа.
-
-**3. Убийцы avgR по signal_type (MAIN):**
-| Тип | n | WR | avgR |
-|-----|---|----|----|
-| wt_b_signal | 18 | 22.2% | **+0.555** ← единственный прибыльный |
-| pivot_reversal | 449 | 14.5% | -0.324 |
-| watch_list_breach | 57 | 5.3% | -0.310 ← дренаж |
-| wt_signal | 68 | 13.2% | -0.879 ← худший по avgR |
-
-**4. Убийца по режиму:**
-- TREND_UP: n=195, WR=10.8%, avgR=**-0.631** ← больший объём, худший результат
-- RANGE: n=360, avgR=-0.214 ← лучший, но всё ещё отрицательный
-
-#### Рекомендации (без остановки бота)
-
-**TRADER — нужно решение:**
-- A) Отключить `watch_list_breach` (WR=5.3%, дренаж -0.310/сделку, 57 сделок)
-- B) Заблокировать `pivot_reversal` в режиме TREND_UP (avgR=-0.631, 195 сделок)
-- C) Отключить или заморозить `wt_signal` (avgR=-0.879, худший)
-- D) Повысить вес `wt_b_signal` или запустить его отдельно (единственный +avgR)
-
-**DEV — реализовать после TRADER решения:**
-- config.yaml: `watch_list_breach.enabled: false` (или weight: 0)
-- config.yaml: добавить `blocked_regimes: [TREND_UP]` для pivot_reversal
-- config.yaml: `wt_signal.weight: 0.03` (снизить с текущего)
-
----
-
-### [04.05.2026] ARCH (Claude) — OTE сигнал: ОТКАТ после бэктеста
-
-**ARCH → DEV / TRADER**
-
-**Статус:** ✅ Откат выполнен. `config.yaml` и `core/trading_intelligence.py` возвращены к безопасным настройкам.
-
-#### Что произошло
-
-OTE детектор (`ote_shadow_mode: false` с 18.04) дал **0 сделок за 16 дней** в проде.  
-Гипотеза: слишком жёсткие фильтры (wide-only `[0.705–0.786]` + ATR-trend gate на 1h).  
-Попытка fix: расширить зону до `0.5` (full OTE) + убрать ATR-trend gate.
-
-#### Результат бэктеста (19 пар, 90 дней, 5 конфигов)
-
-| Конфиг | Сделок | WR | Avg R | Sharpe | MaxDD |
-|---|---:|---:|---:|---:|---:|
-| C0 baseline `[0.705]` без CHoCH | 639 | 34.6% | +0.038 | 0.42 | -44R |
-| C1 `[0.705]`+4h+CHoCH | 388 | **36.9%** | **+0.106** | **1.16** | -30R |
-| C2 `0.618`+OB/OS+4h+CHoCH | 136 | 32.4% | -0.029 | -0.33 | -21R |
-| C3 `0.5`+OB/OS+4h+CHoCH | 166 | 26.5% | -0.205 | -2.46 | -38R |
-| **C4 PROD `0.5` no-gates** | **2043** | **23.7%** | **-0.288** | **-3.58** | **-588R** 🔴 |
-
-**C4 (предложенный конфиг) — худший.** Сигнал ожил (2043 сделки), но WR=23.7% → стабильный убыток −588R/квартал.
-
-#### Вывод
-
-Гейты (`[0.705]` + ATR-trend) — не баг, а необходимые фильтры. Без них OTE = рандомные входы в тренд без подтверждения. ATR-trend gate резал всё → поэтому 0 сделок в проде.
-
-**Корень проблемы:** OTE сам по себе (WT cross в Fib-зоне) не является достаточным сигналом для входа. Нужна конфлюенция с чем-то ещё.
-
-#### Откат (уже выполнен)
-- `config.yaml`: `ote_zone_min_fib: 0.705`, `ote_use_trend_gate: true`
-- `core/trading_intelligence.py`: defaults восстановлены
-
-#### Открытые вопросы
-
-- [ ] **DEV/TRADER:** что делать с OTE дальше? Варианты:
-  1. Оставить `ote_shadow_mode: true` — только как компонент конфлюенции, не самостоятельный сигнал
-  2. Попробовать C1 в проде — нужна доработка детектора (`min_zone_tf=4h`, `choch_only=true`)
-  3. Принять, что OTE не работает в текущей архитектуре без дополнительных фильтров
-
----
-
-### [04.05.2026] ARCH (Claude) — Аудит confluence стратегии: отключена на грязных данных
-
-**ARCH → TRADER**
-
-**Вопрос:** confluence была отключена 14.04. Решение принято на основании avgR в период whipsaw 07-14.04. Нужна проверка — были ли данные репрезентативными?
-
-#### SQL аудит по периодам (все данные)
-
-| период | n | WR | avgR |
-|---|---|---|---|
-| до 15.03 | 1137 | 23.7% | **+1.422** ✅ |
-| 15.03-31.03 | 1454 | 18.8% | +0.020 |
-| 01-06.04 (норм) | 326 | **35.0%** | +0.050 ✅ |
-| 07-14.04 (whipsaw) | 531 | 9.8% | **-0.645** ← **здесь отключили** |
-| 15.04+ (v3, post-disable) | 80 | 3.8% | -0.920 |
-
-**Вывод:** confluence была отключена в самый ненормальный период (whipsaw 07-14.04). До и сразу после восстановления нормальных условий (01-06.04) — **WR=35%, avgR=+0.050**. Стратегия НЕ сломана — она жертва плохого маркет-режима + грязных данных.
-
-#### По sl_source (все периоды)
-
-| sl_source | n | avgR |
-|---|---|---|
-| swing_low | ~10 | **+12.313** ✅ |
-| tsl_line:trendup | ~15 | **+4.276** ✅ |
-| tsl_line (generic) | ~300+ | -0.238 |
-
-**Ключевое:** generic `tsl_line` SL — главный источник убытков. `swing_low` (правильный SL для confluence) показывает +12R.
-
-#### Предложение
-
-1. **near_pivot_flag (shadow):** добавить `near_pivot_pct` и `near_pivot_level` в features_json для ЛЮБОГО сигнала без изменения signal_type. Это позволит отследить сколько сделок происходит вблизи пивота.
-2. **Confluence shadow reactivation:** включить обратно в RANGE-режиме только (не HIGH_VOL) с SL = swing_low. Shadow mode — торгуем, но метрики отдельно.
-3. **НЕ трогать HIGH_VOL:** именно в HIGH_VOL confluence генерирует whipsaw.
-
-**Открытые вопросы:**
-- [ ] **TRADER:** согласен с shadow reactivation в RANGE only?
-- [ ] **DEV:** добавить `near_pivot_pct` в features_json через `find_near_pivot()` для всех сигналов в scan_loop
-
----
-
-### [27.04.2026] 🟡 ARCH (Claude) — Smart TSL: план утверждён как тех-долг (расширение ARCH-74)
-
-**Контекст:** TSL на разных парах работает по-разному (`factor=1.25` единый, `floor=0.3%` единый — для BTC и для PEPE одинаково). yogoru поднял вопрос про умный TSL и Sphere в Кубе.
-
-**Phase 1 research:** TSL уже частично разделён —
-- pure logic: [tsl_engine.py](core/trading/tsl_engine.py)
-- cascade gates: [cascade_tsl.py](core/trading/cascade_tsl.py)
-- применение/I/O: trade_simulator.py (~600 строк)
-- биржа: tsl_updater.py + DEV-185 buffer + DEV-185.2 watchdog
-- Sphere 10 в Кубе — флаги, события `TSL_MOVED`, **решений не принимает**
-
-**Главное открытие:** "Sphere 7 ExitManager" дублирует уже планируемую [ARCH-74](TASKS.md#arch-74) (`core/trading/tsl_manager.py`). Поэтому **расширяем ARCH-74**, не плодим новую сферу.
-
-#### План (полный текст: `/root/.claude/plans/humble-noodling-frog.md`)
-
-**Этапы (с verification gates):**
-1. **Этап 0 — Research** (1-2 дня): `scripts/audit_tsl_per_symbol.py` — корреляция captured_R% / slip% с ATR%, regime. Counterfactual factor 1.0/1.25/1.5 на исторических MFE. **Gate:** если ATR% не объясняет captured_R разброс — adaptive factor бессмыслен
-2. **Этап 1 — Skeleton** (2 дня): `core/trading/tsl_manager.py` + unit tests. ExitDecision dataclass
-3. **Этап 2 — Shadow** (1-2 дня): параллельный вызов в check_open_trades_with_tsl, новая таблица `tsl_shadow_log`. **НЕ меняет торговое поведение**
-4. **Этап 3 — Measurement** (7-14 дней): counterfactual analysis по `max_price/min_price`. **Gate:** sum_R diff > 0 → переходим в prod
-5. **Этап 4 — Prod switch**: один config flag `tsl_manager_enabled`
-6. **Этап 5 — RL hook** (триггер: 3000+ MFE): `set_predictor()` слот готов
-
-#### Связи со сферами (не блокируют, расширяют)
-
-| ARCH | Связь с TSLManager |
-|---|---|
-| **ARCH-96** Execution Sphere | даёт `predicted_slippage` как input для adaptive |
-| **ARCH-97** Anomaly Detection | следит drift метрик TSLManager |
-| **ARCH-98** Portfolio Manager | может VETO; TSLManager уважает |
-| **ARCH-99** Meta-Learning | long-term: XGBoost подход для exit |
-| **ARCH-79** PostTradeAnalyser feedback | per-symbol persistent calibration |
-| **ARCH-101** Mesh шины | `signal_detected` events для реакции на divergence |
-
-#### 🔮 Roadmap прогнозирования цены — H1-H5 гипотезы
-
-Slot'ы в TSLManager сейчас, реализация — после Этапа 4.
-
-| H | Что | Зачем для TSL | Сложность | Триггер |
-|---|---|---|---|---|
-| **H1** Volatility forecast (ATR через 1-4ч) | linear + GBM на ATR_15m/1h, BTC_vol, hour_utc | factor ужесточается если ↑ vol | низкая | сразу после Этапа 4 |
-| **H5** Per-symbol persistent calibration | rule-based memory из ARCH-79 narrative | "PEPE floor 0.5% > 0.3% за 30дн" | низкая | сразу после Этапа 4 |
-| **H3** Regime change probability | `P(regime_t+30min ≠ regime_t) = f(...)` | preemptive switch params | средняя | после ARCH-80 |
-| **H2** Direction predictor (5bars вперёд) | XGBoost на wt_snap+smc_snap, AUC>0.6 порог | вместо TIGHTEN → CLOSE_NOW при развороте | высокая | после ARCH-99 инфра |
-| **H4** Liquidation cascade predictor | funding + OI + BTC_dom | preventive close | очень высокая | long-term |
-
-**Reuse:** [auto_calibrator.py](core/ml/auto_calibrator.py) (XGBoost), [mtf_wt_specialist.py](core/ml/mtf_wt_specialist.py), [mtf_smc_specialist.py](core/ml/mtf_smc_specialist.py).
-
-#### Открытые вопросы (часть Этапа 0)
-
-- [ ] Корреляция captured_R% с ATR% — есть ли значимый сигнал?
-- [ ] DEV-185.2 watchdog vs TSLManager CLOSE_NOW — разделение: watchdog = безусловный safety, TSLManager = умное решение
-- [ ] ARCH-101 предусловие — без `signal_detected` events TSLManager не сможет реагировать на divergence
-- [ ] DUAL_TP в trend (n=24) — собрать ещё перед adaptive решениями
-
-#### Что нужно от yogoru / TRADER
-
-1. **Приоритет ARCH-74-EXT** — поднять с 🔵 на 🟡 после стабилизации текущего спринта (~10.05.2026)
-2. **H1-H5 как параллельный backlog** — отдельные DEV-задачи, делаем после Этапа 4
-3. **Не блокировать DEV-185.2 watchdog** — независимая защита, остаётся
-
-**Triggered:** после стабилизации спринта «Реальные убийцы». Ориентир — 1-я неделя мая 2026.
-
----
-
-### [27.04.2026] 🔴🔴 ARCH (Claude) — watch_list_breach: семантический баг pivot_level → вход на пике, не breakout
-
-**ARCH (Claude) → DEV (yogoru)**
-
-WL-breach стабильно теряет (-0.30R, n=301, 78% SL post-fix). Корень — архитектурный баг: pivot_level используется как SL-источник, а WL код ждёт resistance/support pivot.
-
-#### Pipeline баг
-
-[monitoring.py:1154](bot/monitoring.py#L1154): `_pivot_level = recommendation.stop_loss` ← SL ниже цены для LONG
-
-[signal_watch_list.py:155](core/signals/signal_watch_list.py#L155): «LONG: цена пробила resistance вверх = вход» ← ОЖИДАЕТ resistance.
-
-**Семантика расходится.** Реально:
-1. WATCH-рекомендация: `stop_loss=100, current_price=102` (LONG, цена ВЫШЕ SL по определению)
-2. WL.add(pivot_level=100)
-3. Следующий scan tick: `current_price (102) > pivot_level (100) + 1%` → **True мгновенно**
-4. Open trade: entry=102, sl=100 (sl_dist 1.96%)
-5. Цена откатывается → SL за **3.7 минут** (min duration)
-
-Это работает как «WATCH → instant entry на пике», не breakout.
-
-#### Подтверждение через wl_pivot_key
-
-Все доминирующие pivot_keys — **SL-источники** (tsl_line, atr_1.5, range_bounce):
-
-| pivot_key | n | avgR |
-|---|---|---|
-| tsl_line:trenddown | 57 | -0.26 |
-| tsl_line:trendup | 50 | -0.61 |
-| tsl_line | 35 | -0.36 |
-| range_bounce:pivot | 31 | -0.51 |
-| atr_1.5 | 12 | -0.30 |
-
-Настоящих weekly resistance/support pivots — единицы.
-
-#### Метрики
-
-| период | n | sl_dist median | avgR | SL share |
-|---|---|---|---|---|
-| pre-fix (15.04—26.04) | 301 | 1.83% | -0.30 | 78% |
-| post-restart | 9 | 1.47% | **-2.05** | 89% |
-
-Структура одна — WL-breach был сломан **с самого начала**, post-restart выборка просто маленькая + 1 catastrophic тянет.
-
-#### Решения (обсуждаем)
-
-**🔴 A — Отключить WL-breach (рекомендую):** +90R/30 дней (по статистике −0.30 × 301). Минус: 33 winners (TSL/TP) теряются.
-
-**🟡 B — Настоящий resistance/support pivot:** weekly R1/R2 для LONG, S1/S2 для SHORT. Реальный breakout. Требует pivot_calculator интеграции в WL.add.
-
-**🟢 C — Delay-confirmation:** entry только если price удерживается N минут выше pivot+1%.
-
-#### Открытые вопросы
-
-- [ ] **DEV:** есть config-флаг для отключения WL-breach? Если нет — добавить `signal_quality.watch_list_breach_enabled: false`
-- [ ] **TRADER/ARCH:** WL-breach изначально проектировался как breakout? Есть документация?
-
----
-
-### [27.04.2026] TRADER — закрытие 4 хвостов: SL cleanup, ARCH-55-VAL, TR-002 TSL, Risk Intelligence
-
-**TRADER → ARCH, DEV**
-
-Закрываю просроченные хвосты с 18-25.04. Все ответы на свежих данных из БД (snapshot 27.04 18:26 UTC).
-
----
-
-#### 1. ✅ SL дубликаты на бирже (CAKE/PUMPBTC) — CLEAN
-
-`scripts/cleanup_duplicate_sl.py` dry-run:
-```
-Открытых позиций: 16
-все 16 пар: SL=1 — OK
-DRY-RUN: дубликатов=0 отменено=0
-```
-
-Фикс ARCH 20.04 (`get_sl_order_id` ловит и `STOP_MARKET` и `STOP`, precheck в `place_sl_order`) **работает**. Накопления дубликатов не наблюдается уже неделю. Закрываю вопрос.
-
-→ **DEV:** утилита `cleanup_duplicate_sl.py` остаётся в репо как страховка. Ничего не требуется.
-
----
-
-#### 2. ✅ ARCH-55-VAL: RANGE BOUNCE — порог 20+ сделок пройден
-
-Финальная статистика `sl_source LIKE '%range_bounce%'` (16.04–26.04):
-
-| Метрика | Значение |
-|---|---|
-| n (закрытых) | 41 |
-| WR (TP+TSL) | **18.4%** |
-| TP / TSL / SL | 3 / 4 / 31 |
-| avgR | **−0.287** |
-
-**Контекст для оценки** (post-fix 15.04+ из аудитов ARCH-95):
-- pivot_reversal базовый: WR=10.8%, avgR=−0.27
-- watch_list_breach: WR=10.6%, avgR=−0.34
-
-range_bounce SL даёт **+7.6pp WR** над базовым pivot_reversal при том же avgR. Динамика по дням:
-
-| Период | n | win | sl | avgR |
-|---|---|---|---|---|
-| 16-22.04 | 29 | 4 | 22 | −0.51 |
-| 23-26.04 | 12 | 3 | 9 | **+0.05** |
-
-**Вердикт TRADER:** range_bounce SL источник **не вреден**, последняя неделя в плюсе. Но эффект мал и пересекается с TSL катастрофой (см. п.3) — улучшение WR утилизируется не полностью, потому что 70% TSL активаций уходят в SL.
-
-→ **ARCH:** не отключать range_bounce; продолжить наблюдение ещё 2 недели на чистой выборке после фикса TSL (если будет).
-
----
-
-#### 3. 🔴 TR-002: ARCH-95 Слой A подтверждён + усугубился за 2 дня
-
-Запросил БД на свежих данных по ACT=1→SL post-fix (с 15.04):
-
-| signal_type | ACT=1→SL | avgR | maxR | captured% |
-|---|---|---|---|---|
-| **pivot_reversal** | **365** | −0.661 | 0.964 | **−32.5%** 🔴 |
-| watch_list_breach | 92 | −0.492 | 1.044 | +221% |
-| confluence | 24 | −0.954 | 1.754 | −509% |
-| wt_signal | 18 | −0.459 | 0.97 | +12% |
-| wt_b_signal | 17 | −0.231 | 1.243 | +64% |
-| mtf_bias | 8 | −0.418 | 1.356 | −5.5% |
-| **TOTAL** | **532** | — | — | — |
-
-**За 2 дня (25→27.04): +44 ACT=1→SL сделки.** Темп ~22/день. Кровотечение продолжается.
-
-**TSL state breakdown post-fix:**
-
-| TSL state | status | n | avgR |
-|---|---|---|---|
-| TSL_OFF | SL | 714 | −1.126 |
-| TSL_OFF | TP | 14 | +5.075 |
-| TSL_ON | SL | **532** | **−0.62** |
-| TSL_ON | TP | 49 | +4.351 |
-| TSL_ON | TSL | 100 | +2.487 |
-| TSL_ON | EXPIRED | 84 | +0.9 |
-
-Ratio `TSL_ON: SL/TSL = 5.3:1`. Каждые 5 раз когда позиция прошла +1R, она потом возвращается в SL вместо BE+ профита. Это согласуется с ARCH-95 цифрой 70% (488/693).
-
-**Согласен с ARCH-95 диагнозом:** корневая поломка не в фильтрах входа, а в TSL+BE защите выхода. Точечные правки на входе не помогут.
-
-→ **TRADER рекомендует приоритет реструктуризации:**
-
-1. **Reactive SL move на entry+0.3R при +1R** — самый быстрый win, не зависит от per-strategy конфига. Защита прибыли > попытка trail.
-2. **Per-strategy TSL только для pivot_reversal** (главный пациент 365 сделок). Остальные signal_type (≤92) трогать только после валидации фикса на pivot_reversal.
-3. **Cascade TSL стартовый TF=1h для pivot_reversal** — 15m шум главный убийца (838 SL on 15m vs 161 SL on 1h).
-
-**На что НЕ согласен в плане ARCH-95:**
-- Per-strategy матрица TSL для wt_b_signal (`activation_r=1.0, atr=43`) — у меня `wt_b_signal` post-fix только 17 ACT=1→SL, n слишком мал для отдельной конфигурации. Объединить с wt_signal в один профиль.
-
-→ **DEV:** прежде чем строить план — провести репро-тест на 5 pivot_reversal сделках ACT=1→SL (например `#7264, #7986` если они подходят). Без репро реструктуризация = угадывание.
-
----
-
-#### 4. 💬 Risk Intelligence (Сфера 3) — TRADER позиция
-
-Согласен с подходом ARCH (20.04): **fixed-fraction table v1, Kelly v2**.
-
-**Аргументация TRADER (с торгового угла):**
-
-a) **Динамический сайзинг сейчас усугубит проблему, не решит.** Для `pivot_reversal` post-fix EMA avg_R=−0.40, даже multiplier=0.5 даёт −0.20R на убыточном сигнале. Сначала нужно вытащить avg_R в плюс через TR-002 фиксы (TSL), потом включать сайзинг.
-
-b) **Fixed-fraction table симпатичен — он интерпретируем под живой торговлей.** Когда трейдер видит multiplier=0.8 → понимает: «EMA в зоне [0, +0.2)». Kelly с guards я не смогу объяснить пользователю в дашборде.
-
-c) **Возражение по shadow 3 недели:** мало. Нужно **минимум 4 недели** или **до закрытия ARCH-95 Слой A**. Иначе формула risk_pct multiplier обучается на сломанных данных (TSL уносит 70% активаций → EMA avg_R занижен).
-
-d) **Leverage от SL distance** (DEV-181b) — поддерживаю отделение от funding. У нас текущий leverage 5x на BingX, funding 0.01%/8h редко критичен на сделках <12ч. Добавить как поле, но не тормозить v1 ради него.
-
-e) **Position count cap (DEV-183)** — ставлю выше DEV-180/181 по приоритету. Сейчас открываются 28 одновременных pivot_reversal в RANGE при avgR=−1.5 (TR-001 18.04). Жёсткий cap=5 в HIGH_VOL/RANGE даст быстрый эффект без формул.
-
-**Резюме:**
-- ✅ Сфера 3 отдельная (как ARCH согласовал)
-- ✅ Fixed-fraction v1, не Kelly
-- ⚠️ Shadow 4 недели вместо 3, **И** не запускать пока TSL катастрофа не починена
-- 🔴 **DEV-183 (position count cap) приоритетнее DEV-180** — решает проблему «28 однотипных позиций в плохом регимe» без формул
-
-→ **ARCH:** согласен ли с приоритетом DEV-183 → DEV-180 → DEV-181 (вместо DEV-180 → 181)?
-
----
-
-### [27.04.2026] 🔄 ARCH (Claude) — Ревизия моего анализа Phase 1: 2 из 3 leaks были артефактом cutoff
-
-**Параллельный агент уже зафиксировал реальную картину** ([T+5ч sanity](#post-restart-sanity)). Мой анализ был с неправильным cutoff (12:00 UTC, реальный restart 17:30 UTC). Исправляю свои выводы.
-
-#### Реальные результаты Phase 1 после restart 17:30
-
-| Фикс | Мой ошибочный вывод | Реальность |
-|---|---|---|
-| DEV-184 DUAL_TSL → DUAL_TP | "leak: #7986 QNT" | ✅ работает (#7986 был ДО restart 17:30, не leak) |
-| DEV-185 STOP-LIMIT buffer | "не работает (5 catastrophic)" | ✅ buffer применяется (логи `STOP-LIMIT ... buf=1.00%`); 4/5 catastrophic из них тоже до restart 17:30 |
-| DEV-186 wt_signal SHORT блок | "leak: 4 SHORT прошли" | 🔴 реальный баг кода (regime пустое); 4 leak'а валидны, но gate физически не выполнился — не данные о рынке |
-| DEV-187 wt_b floor | "работает" | ✅ работает |
-
-**1 из 4 фиксов реально проблемен — DEV-186, и параллельный агент уже его исправил в working tree.**
-
-#### Откатил свой edit `dev186_shadow: true`
-
-Опирался на 4 SHORT post-restart с +TP — **выборка нерепрезентативна**: gate физически не работал, мы не знаем что бы он заблокировал. Сохраняю `dev186_shadow: false` для чистого теста после restart #2.
-
-#### Что важно
-
-1. **Самая жирная находка из моего захода — config caching** была неверна: ConfigLoader действительно требует restart, но рестарт **был** в 17:30 UTC. Все мои интерпретации после "restart 12:00" имели лишних 5.5 часов pre-restart данных.
-2. **Реальный приоритет — DEV-185.2 emergency watchdog** (его уже сделал параллельный агент): #8010 APE catastrophic non-execution = -11.83R, единичный инцидент стирает 12 побед. Buffer 1% сам по себе недостаточен.
-3. **Reset cutoffs во всех аудит-скриптах** на `2026-04-26T17:30` вместо `12:00`.
-
-#### Открытые точки
-
-- [ ] Restart #2 для DEV-186 fix (regime через pair_context)
-- [ ] DEV-185.2 watchdog активация (если не сделан)
-- [ ] Спустя 24-48ч пост-restart-2 переоценить avgR и WR на чистой выборке
-
----
-
-### [27.04.2026] ✅ ARCH (Claude) — DEV-185.2 emergency watchdog реализован
-
-**Контекст:** #8010 APE подтвердил угрозу non-execution STOP-LIMIT (overshoot 32.7%, R=−11.83 за 3ч). Решение принято — реализовать сразу, не ждать ещё инцидент.
-
-#### Что реализовано
-
-**Файл:** [core/exchange/position_sync.py](core/exchange/position_sync.py) — новая функция `_emergency_close_check(bot, sym, trade, position)` (~95 строк) + интеграция в `sync_positions()` циклом перед основной логикой закрытия.
-
-**Алгоритм:**
-1. Каждый цикл sync_positions (60s) — для каждой VST OPEN позиции на бирже:
-2. Получить current_price (markPrice из position data, fallback — тикер)
-3. Посчитать overshoot:
-   - LONG: `(stop_loss - current_price) / entry × 100`
-   - SHORT: `(current_price - stop_loss) / entry × 100`
-4. Если `overshoot > overshoot_threshold` (0.5% по умолчанию):
-   - Если первый раз → запоминаем `first_seen` в `bot._emergency_dwell_state[trade_id]`
-   - Если уже в state и elapsed > `dwell_seconds` (300=5 мин) → **emergency market close**
-5. Если overshoot вернулся в норму → удаляем из state (false alarm)
-
-**Лог:** `[DEV-185.2][EMERGENCY][STOP_LIMIT_EMERGENCY_FILL] {sym} #{id} {dir}: overshoot {X.XX}% за {N}с — market close qty={qty}`
-
-**Fallback при ошибке market close:** `close_position_one_click()`.
-
-#### Config параметры
-
-```yaml
-trading:
-  dev185_2_emergency_enabled: true              # вкл/выкл watchdog
-  dev185_2_overshoot_threshold_pct: 0.5         # цена за SL > 0.5% от entry → старт таймера
-  dev185_2_dwell_seconds: 300                   # 5 минут удержания → emergency close
-```
-
-**Откат:** `dev185_2_emergency_enabled: false` — без правок кода.
-
-#### Защитные механизмы
-
-- ✅ State хранится в памяти (`bot._emergency_dwell_state` dict) — лёгкий, без БД
-- ✅ Если цена вернулась в норму до dwell expiry — state очищается, false alarm не приводит к закрытию
-- ✅ Только VST/LIVE: `if order_mgr is None or not order_mgr.is_live(): return False`
-- ✅ Игнорирует SIM сделки (без exchange_order_id)
-- ✅ Защита от qty=0 — пропускает с warning
-- ✅ Не модифицирует БД напрямую — следующий цикл sync_positions подхватит закрытие через стандартный `_resolve_exit()` → `close_trade()`
-
-#### Sanity сценарии (logic verified)
-
-| Кейс | Result |
-|---|---|
-| LONG cur выше SL (норма) | NO TRIGGER |
-| LONG cur=APE-like (overshoot 30%) | TRIGGER START |
-| SHORT cur выше SL на 4% | TRIGGER START |
-| dwell elapsed=120s (< 300s) | WAIT |
-| dwell elapsed=350s | EMERGENCY CLOSE |
-
-#### Прогноз эффекта
-
-По данным DEV-185 расследования:
-- Overshoot 1-2%: 30 сделок, avgR=−2.46 → buffer 1% защищает (теперь STOP-LIMIT fill)
-- Overshoot 2-5%: 48 сделок, avgR=−3.74 → STOP-LIMIT не fill, watchdog при 0.5% threshold + 5min = **закрывается с overshoot ~0.5-1%**, экономия ~1.7-2.2R per trade × 48 = **~96R/10дн**
-- Overshoot 5-10%: 16 сделок, avgR=−6.27 → watchdog закроет с overshoot ~0.5-1.5%, экономия ~4-5R × 16 = **~72R/10дн**
-- Overshoot 10%+: 6 сделок (включая APE), avgR=−12.04 → watchdog закроет, экономия ~10R × 6 = **~60R/10дн**
-
-**Итого DEV-185.2: ~−228R/10дней дополнительно к −113R от buffer.** Суммарно DEV-185 + 185.2 ≈ **−341R/10дней**.
-
-#### Что нужно от DEV (oko.webdev) — единый рестарт
-
-**Один рестарт** подхватит и DEV-186 fix (regime через pair_context) и DEV-185.2 (новая функция). После рестарта:
-
-1. **Через 1ч** проверить:
-   - `grep "DEV-186" logs/` — должны появиться срабатывания (если есть wt_signal SHORT в TREND_UP)
-   - `grep "DEV-185.2" logs/` — должны быть `start dwell timer` для overshoot >0.5%
-2. **Через 24ч** запустить `python3 scripts/sprint_phase1_sanity.py` — увидим:
-   - Снижение catastrophic R<-5 в overshoot ≥5% bucket
-   - DEV-186 не пропускает wt_signal SHORT в TREND_UP/HIGH_VOL
-3. **Если будут срабатывания EMERGENCY** — посмотреть финальный exit_price vs current_price на момент close. Должно быть ~ stop_loss + 0.5-1% overshoot (не 30% как у APE).
-
-#### Что не делается
-
-- ❌ Не пишем в БД из watchdog — следующий sync_positions цикл (через 60s) увидит что позиции на бирже нет, вызовет `_resolve_exit()` + `close_trade(STATUS_SL)` стандартным путём
-- ❌ Не используем `close_trade()` напрямую — оставляем дисциплину (один путь записи закрытия)
-- ❌ Не трогаем SIM сделки — они в trade_simulator закрываются по другой логике
-
-#### Спринт сводка после DEV-185.2
-
-| ID | Тип | Эффект 10дн |
-|---|---|---|
-| DEV-184 DUAL_TSL→DUAL_TP | config | −290R |
-| DEV-186 wt_signal regime gate | code (с фиксом regime источника) | −24R |
-| DEV-187 wt_b floor ±30 | code+config | −17R |
-| DEV-185 buffer 1.0 | config | −113R |
-| **DEV-185.2 watchdog** | **code+config** | **−228R** |
-| DEV-190 effective_status | code (8 модулей) | + корректная аналитика |
-
-**Суммарно: ~−672R/10дней сэкономлено** ≈ +0.34R/сделку (выводит стратегию в плюс).
-
----
-
-### [27.04.2026] 📊 ARCH (Claude) — Post-restart sanity (T+5ч): 3 успеха, 2 находки, 1 критичный фикс DEV-186
-
-**Бот рестартован 26.04 в 17:30 UTC** (из логов: `Run polling for bot @OkoVolume_bot`). Прошло ~6 часов. Sanity-проверка показала смешанные результаты.
-
-#### ✅ Что РАБОТАЕТ
-
-| Фикс | Подтверждение |
-|---|---|
-| **DEV-184 DUAL_TSL отключён** | 27 пост-рестарт сделок: SINGLE=18, DUAL_TP=9, **DUAL_TSL=0** ✓ |
-| **DEV-185 STOP-LIMIT buffer 1%** | Десятки placements в логах: `bracket STOP-LIMIT ... limit=... (buf=1.00%)` (OPENEDEN, ACX, ETC, MEME, QTUM, WIF, US, LA SHORT, NFP SHORT, AXL SHORT...) ✓ |
-| **DEV-190 effective_status** | Live запрос: WR raw=20% → effective=26.3% (+6.3pp). 466 скрытых TSL exits за всю историю обнаружены ✓ |
-
-#### 🔴 Что ВЫЯВИЛИ — 2 проблемы post-restart
-
-##### 1. DEV-186 НЕ сработал — баг в моём коде (исправлено)
-
-**Симптом:** #8026 MONAD wt_signal SHORT в TREND_UP создан 21:46 (post-restart), gate должен был блокировать. **0 упоминаний `[DEV-186]` в логах** — код не выполнился.
-
-**Корень:** в [monitoring.py:902](bot/monitoring.py#L902) брал `recommendation.regime`, но это поле заполняется **позже** в `register_trade` (через MarketRegimeClassifier), а не на этапе моего gate. На момент проверки `regime=""` → условие `"" in ('TREND_UP','HIGH_VOL')` = False.
-
-**Фикс:** изменил источник на `pair_context.get(symbol).regime` (как DEV-155 на стр 1072). Fallback chain: pair_context → recommendation → market_context. Syntax check ✓.
-
-**Нужен ещё один рестарт** для подхвата фикса. Без рестарта DEV-186 продолжит пропускать wt_signal SHORT в TREND_UP.
-
-##### 2. #8010 APE — catastrophic R=−11.83 (overshoot 32.7%) — STOP-LIMIT non-execution
-
-**Расклад:** 
-- LONG (в TREND_DOWN — мисматч стратегии)
-- entry=0.1465, **TSL подтянул stop_loss до 0.14980** (+2.3% от entry, после успешной фазы +1R)
-- Сработал STOP-LIMIT trigger=0.14980, limit=0.148302
-- Цена резко ушла down → **limit не исполнился**
-- Позиция оставалась открытой ~3 часа
-- Closed at 21:32 по цене **0.1019** (−30% от entry)
-
-**Это именно тот сценарий который мы предсказывали в Q2** ARCH ответе ([26.04 ответы](DISCUSSION.md#L173)): non-execution приведёт к "висящей позиции до TP/EXPIRED/manual". В реальности: позиция закрыта через position_sync в гораздо худшей точке.
-
-**Вывод:** **DEV-185.2 emergency watchdog нужен СРОЧНО**, не "когда понадобится". Один такой инцидент стирает 12 побед.
-
-#### Sanity скрипт — нашли cutoff bug
-
-Cutoff `"2026-04-26 12:00"` сравнивался лексикографически с ISO `"2026-04-26T..."`. `'T' (0x54) > ' ' (0x20)` → ВСЕ записи проходили как post-cutoff, давало false positives.
-
-**Фикс:** изменил DEFAULT_RESTART на `"2026-04-26T17:30"` (с `T` сепаратором, как в БД). [scripts/sprint_phase1_sanity.py](scripts/sprint_phase1_sanity.py) и [scripts/sprint_phase1_report.py](scripts/sprint_phase1_report.py) обновлены.
-
-#### Что нужно от DEV (oko.webdev) — 2 действия
-
-1. **Рестарт #2** для подхвата DEV-186 fix (regime через pair_context)
-   - Без него wt_signal SHORT в TREND_UP продолжит проходить gate
-   - Все остальные фиксы уже в работе
-
-2. **Решение по DEV-185.2 emergency watchdog** — реализовать сейчас или ждать ещё инцидент?
-   - Подтверждение: catastrophic non-execution случается реально (#8010 APE −11.83R)
-   - Без watchdog buffer 1% защищает только от мелкого slip, не от gap >1%
-
-#### Метрики post-restart (T+6ч, 27 сделок, 19 закрытых)
-
-- WR (effective): 15.8% (мало данных)
-- avgR: −1.52 (вся выборка с включённым #8010 APE)
-- Без #8010: avgR значительно выше — 1 catastrophic портит всю статистику
-
-**Вывод:** baseline пока не показателен (короткая выборка + outlier). Полную картину дадут T+24h sanity и T+72h report.
-
----
-
-### [27.04.2026] ✅ ARCH (Claude) — DEV-190 effective_status helper реализован (8 модулей)
-
-**Контекст:** RE-AUDIT показал что статистика искажена скрытыми TSL exits под маской 'SL'. Каждый день бот обучает ML на этой грязной разметке. yogoru поднял DEV-190 в приоритет.
-
-#### Single source of truth — [core/trading/effective_status.py](core/trading/effective_status.py)
-
-Pure helper:
-- `effective_status(status, R_multiple, tsl_activated)` → классификация: `OPEN | TP | TSL_native | TSL_hidden_win | BE_area | SL_clean | SL_slipped | EXPIRED`
-- `is_win(status, R, tsl_act)` → bool для ML target
-- `SQL_IS_WIN_CASE` / `SQL_EFFECTIVE_STATUS_CASE` — фрагменты для прямых SQL без Python loop
-
-**Пороги:**
-- `R > 0.10` при `tsl_activated=1` + `status='SL'` → `TSL_hidden_win` (главный фикс B2)
-- `-0.20 ≤ R ≤ 0.10` при `tsl_act=1` → `BE_area`
-- `R < -1.05` → `SL_slipped` (catastrophic, DEV-185)
-
-#### Где интегрирован (8 потребителей)
-
-| Модуль | Что меняется |
-|---|---|
-| [core/trading/performance_engine.py](core/trading/performance_engine.py) | `summary()`, `by_signal_type()`, `by_signal_type_ema()`, `rolling_win_rate()` — все WR/avgR пересчитаны |
-| [core/trading/circuit_breaker.py](core/trading/circuit_breaker.py) | Триггер по WR с учётом скрытых TSL — больше не сработает на ровном месте |
-| [core/ml/outcome_predictor.py](core/ml/outcome_predictor.py) | Target `y` через is_win |
-| [core/ml/mtf_wt_specialist.py](core/ml/mtf_wt_specialist.py) | Target `y` через is_win |
-| [core/ml/mtf_smc_specialist.py](core/ml/mtf_smc_specialist.py) | Target `y` через is_win |
-| [core/ml/auto_calibrator.py](core/ml/auto_calibrator.py) | `is_win` сегментации MTF через helper |
-| [core/intelligence/confidence_calibrator.py](core/intelligence/confidence_calibrator.py) | Labels reliability curve через helper |
-| [web/dashboard_server.py](web/dashboard_server.py) | `/api/exchange-history` — новые поля `tsl_hidden`, `tsl_effective`, `sl_slipped`, `win_rate` (effective) + `win_rate_raw` |
-
-**rl_exit_agent НЕ трогали** — он учится на MFE/captured_R, не на is_win.
-
-#### Обратная совместимость
-- `win_rate` теперь = effective (главная метрика). `win_rate_raw` сохранён для контроля
-- `tsl_count` остался как raw, добавлены `tsl_count_native/hidden/effective`
-- API дашборда не сломан — старые поля на месте, новые добавлены
-
-#### Сразу после рестарта
-1. Дашборд покажет реальный WR (вместо ~10% будет ~30-40%)
-2. CircuitBreaker перестанет срабатывать на ложном "WR=0%"
-3. ML модели переобучатся на корректной разметке при ближайшем cycle
-4. Adaptive weights станут считать avgR с учётом скрытых TSL
-
-#### Тесты
-- ✅ Sanity test: 10 кейсов классификации
-- ✅ 9 затронутых модулей импортируются без ошибок (verified)
-- ⏳ Live verification: после рестарта grep по логам, проверка дашборда
-
-#### Откат
-- Soft: WR raw сохранён в API как `win_rate_raw` — yogoru может смотреть оба значения параллельно
-- Жёсткий: `git revert` каждого commit'а
-
-#### Что **НЕ** делали
-- ❌ Не модифицировали БД (никаких ALTER TABLE / UPDATE) — историю не трогаем
-- ❌ Не удаляли старую логику — везде raw как fallback
-- ❌ Не меняли поведение трейдинга — только классификация исхода
-
-#### Что нужно от DEV (oko.webdev)
-1. Рестарт бота для подхвата (только Python код, config не трогали)
-2. Открыть дашборд — увидеть реальный TSL counter (~120/мес вместо 8)
-3. Через 1ч проверить: ML cycle перезапустился ли с новыми метками? (логи `OutcomePredictor` / `mtf_*_specialist`)
-
-#### Эффект на спринт
-- ARCH-100 финальный re-audit (T+72h `sprint_phase1_report.py`) теперь покажет корректные цифры
-- ML больше не учится что pivot_reversal с tsl_act → SL = поражение в 32% случаев
-- adaptive weights перестанут занижать pivot_reversal/wt_signal коэффициенты
-
----
-
-### [27.04.2026] ✅ R_multiple расследование — данные в БД корректны, баг в audit-скрипте
-
-**ARCH (Claude) → DEV (yogoru)**
-
-`audit_data_integrity.py` показал «R_multiple некорректен в 65.6% сделок post-fix». **Это false alarm — баг в самом скрипте, не в данных.**
-
----
-
-#### Расследование
-
-[audit_data_integrity.py:294-296](scripts/audit_data_integrity.py#L294):
-```python
-expected_r = (exit_p - entry) / sl_dist_orig if entry < exit_p else -(entry - exit_p) / sl_dist_orig
-```
-
-**Два бага скрипта:**
-
-1. **SHORT direction не учитывается.** Формула определяет знак R через `entry < exit_p` — это работает только для LONG. Для SHORT прибыльной сделки (exit_p < entry) скрипт даёт **отрицательный** expected_r, а в БД хранится **положительный**. Все SHORT попадают в «аномалии».
-
-2. **TP1 split не учитывается.** [trade_simulator.py:1198](core/trading/trade_simulator.py#L1198) считает blended formula:
-   ```python
-   r_multiple = _tp1_fix × r_tp1 + (1 - _tp1_fix) × r_exit
-   ```
-   Где `_tp1_fix` берётся из config (`dual_tp.tp1_fix_pct`). Сейчас **10/100 = 0.10**, не 0.70. Аудит-скрипт игнорирует tp1_hit_at.
-
----
-
-#### Проверка (sample 500 post-fix сделок)
-
-| Формула | Аномалии | % |
-|---|---|---|
-| Naive (audit-скрипт, SHORT инверсия) | 328 | 65.6% |
-| Корректная (с правильной direction + tp1_fix) | **2** | **0.4%** |
-
-В выборке: **72% — SHORT сделки** (358/500). Все попали в naive-аномалии. После фикса формулы — 2 реальных аномалии.
-
-**Примеры false anomalies (SHORT):**
-| id | dir | st | rmul (БД) | naive expected | correct expected |
-|---|---|---|---|---|---|
-| 6522 | SHORT | SL | -1.24 | +1.24 | -1.24 |
-| 6531 | SHORT | TP | +0.81 | -0.81 | +0.81 |
-| 6543 | SHORT | SL | +0.45 | -0.45 | +0.45 |
-
----
-
-#### 2 реальные аномалии (защитное поведение)
-
-| id | direction | one_r | rmul (БД) | correct |
-|---|---|---|---|---|
-| #6547 | LONG SINGLE | **0.0000074** | -15.00 | -249.62 |
-| #6622 | LONG DUAL_TSL | 0.0000285 | -15.00 | -42.15 |
-
-Оба случая — **микроскопический `sl_dist` → реальный R уходит в -42..-249 → sanity clamp ±15** ([trade_simulator.py:1213-1219](core/trading/trade_simulator.py#L1213)). Это **защитное поведение** против R=-450 багов из DEV-149. Работает корректно.
-
----
-
-#### Вывод: данные доверяемы
-
-✅ R_multiple в БД корректен. Все avgR/WR метрики предыдущих аудитов валидны.
-
-✅ Эффект DEV-184/186/187 можно мерить через avgR — шум 0.4% не мешает.
-
-✅ Аномалии R<-15 у DEV-185 (overshoot >>1R) — это реальный slippage, **не** баг формулы. R_multiple = (exit - entry) / one_r корректно показывает крупные потери; clamp срабатывает только при микроскопическом sl_dist.
-
----
-
-#### Фикс для audit-скрипта (низкий приоритет)
-
-Заменить блок [audit_data_integrity.py:286-300](scripts/audit_data_integrity.py#L286) на корректную формулу:
-```python
-sl_for_r = orig_sl if orig_sl else sl
-one_r = abs(entry - sl_for_r)
-if tp1_hit_at and tp1_price and one_r:
-    _tp1_fix = float(config.get('trading.dual_tp.tp1_fix_pct', 10)) / 100.0
-    if direction == 'LONG':
-        r_tp1 = (tp1_price - entry) / one_r
-        r_exit = (exit_p - entry) / one_r
-    else:
-        r_tp1 = (entry - tp1_price) / one_r
-        r_exit = (entry - exit_p) / one_r
-    expected_r = _tp1_fix * r_tp1 + (1.0 - _tp1_fix) * r_exit
-else:
-    expected_r = ((exit_p - entry) if direction == 'LONG' else (entry - exit_p)) / one_r
-```
-
-Также добавить `direction`, `tp1_hit_at`, `tp1_price` в SELECT.
-
----
-
-#### Урок
-
-Прежде чем публиковать «X% аномалий R_multiple» — проверить что **формула проверки** соответствует **формуле вычисления** в коде. Я этого не сделал, создал тревогу.
-
-То же что было с моими H1+H5 раньше: метрика измеряет одно, я интерпретирую другое.
-
----
-
-### [26.04.2026] 📋 ARCH (Claude) — План сбора данных post-restart (скрипты готовы)
-
-**Контекст:** рестарт прошёл ~12:00 UTC 26.04.2026 с 4 фиксами (DEV-184/185/186/187). Schedule remote-агентов недоступен (no remote env). Создал автономные SQL-скрипты — yogoru запускает локально через 24ч/72ч.
-
-**Скрипты (scripts/):**
-
-#### 1. `sprint_phase1_sanity.py` — T+24ч (запустить ~27.04 12:00 UTC)
-```bash
-python scripts/sprint_phase1_sanity.py
-```
-Что делает:
-- DEV-184: COUNT(*) DUAL_TSL post-restart → ожидаем 0
-- DEV-186: wt_signal SHORT в TREND_UP/HIGH_VOL → ожидаем 0
-- DEV-187: wt_b сделки c wt1_1h в N зоне → ожидаем 0 (floor работает)
-- DEV-185: distribution overshoot новых VST SL + p90
-- Cumulative R / WR
-
-Возвращает флаг **GREEN/YELLOW/RED**:
-- 🟢 GREEN — всё работает, exit 0
-- 🟡 YELLOW — 1+ предупреждение, exit 0
-- 🔴 RED — ошибка/откат, exit 1
-
-#### 2. `sprint_phase1_report.py` — T+72ч (запустить ~29.04 12:00 UTC)
-```bash
-python scripts/sprint_phase1_report.py
-```
-Полный отчёт:
-- avgR/WR по strategy_type (vs pre-fix baseline)
-- wt_signal × direction × regime (DEV-186 эффект)
-- wt_b × wt1_1h zone (DEV-187 эффект)
-- DEV-185: полная distribution overshoot, p50/p90/max, catastrophic ≥5%
-- Cumulative R + effective WR (с учётом скрытых TSL)
-- avgR по signal_type
-- 4 вопроса с критериями принятия решений (Q1-Q4)
-
-#### Особенности
-- Скрипты read-only, бот может одновременно писать (retry с busy_timeout=15s, до 10 попыток с задержкой 3s)
-- Default cutoff: `2026-04-26 12:00`. Переопределить: `--since "2026-04-26 13:30"`
-- Ничего не пишут в БД, только SELECT
-- Бесопасно запускать многократно
-
-**После запуска T+24h sanity:**
-1. Если 🟢 — продолжаем наблюдение, ждём T+72h
-2. Если 🟡 — yogoru сам решает (например, малая выборка) или сообщает в DISCUSSION
-3. Если 🔴 — yogoru пингует ARCH в DISCUSSION с выводом скрипта для расследования
-
-**После T+72h:**
-1. yogoru запускает скрипт, копирует вывод в DISCUSSION
-2. ARCH (в новой сессии) читает данные, отвечает на Q1-Q4, предлагает следующий шаг (Фаза 3 / эскалация buffer / watchdog / финал)
-
-**Альтернатива cron:** если есть желание автоматизировать — можно добавить bash-cron на VPS:
-```bash
-# T+24h
-echo "26 12 27 4 * cd /workspace && python3 scripts/sprint_phase1_sanity.py >> logs/sprint_sanity.log 2>&1" | crontab -e
-# T+72h
-echo "26 12 29 4 * cd /workspace && python3 scripts/sprint_phase1_report.py >> logs/sprint_report.log 2>&1" | crontab -e
-```
-
----
-
-### [26.04.2026] ✅ ARCH (Claude) — DEV-185 Шаг 1 применён + ответы на открытые вопросы
-
-**Принято решение по расследованию DEV-185 (запись ниже):** Шаг 1 применён сразу — Шаги 2-4 в очередь.
-
-#### Что сделано
-
-[config.yaml:129](config.yaml#L129): `sl_limit_buffer_pct: 0.0 → 1.0` (1 строка)
-- DEV-175 механика STOP-LIMIT уже была реализована, но никогда не активирована
-- Откат: вернуть `0.0` в той же строке
-- Эффект (по таблице overshoot из расследования): защитит 51 сделку с overshoot 0.5-2% = **−113R/10дней экономии**
-- Риск: 70 сделок с overshoot >1% — STOP-LIMIT не исполнится, позиция повисит до TP/EXPIRED/ручного закрытия
-
-#### Ответы ARCH на 3 открытых вопроса из расследования
-
-**Q1: проверить что BingX VST API stable принимает STOP-LIMIT с buffer (нет rate-limit / ошибок)?**
-→ DEV (oko.webdev): после рестарта проверить логи `place_sl_order` — должны появиться записи `STOP-LIMIT ... limit=...` ([order_manager.py:512-525](core/exchange/order_manager.py#L512)). Если первые 5-10 ордеров проходят без ошибок API — buffer работает. Если ошибки `INVALID_PARAM`/`PRICE_FILTER` — значит BingX требует другой формат limit-цены, тогда откат.
-
-**Q2: допустим ли non-execution риск в текущей фазе (VST = тестовый)?**
-→ ДА, допустим. Логика: VST — тестовый счёт, non-execution в худшем случае = открытая позиция продолжит "ловить" движение. Но это **то же самое что сейчас при catastrophic slip** — только теперь позиция остаётся открытой явно (видна в `OPEN`), а не "закрыта с −15R". Скорее всего position_sync через 60 сек подхватит и сообщит. Emergency watchdog нужен будет перед LIVE, **сейчас не критично**.
-
-**Q3: значение buffer 1.0 / 1.5 / 2.0 — нужен бэктест?**
-→ Старт с **1.0** (консервативно). Бэктест не нужен — данные уже в таблице overshoot:
-- 1.0% защитит 51 сделку, не fill 70 (>1%) — половина экономии (~113R)
-- 2.0% защитит 99, не fill 22 (>5%) — больше экономии (~293R), но больше "висящих" позиций
-- Лестница: 1.0 → 48ч мерить → если ОК (filled rate >80% от STOP-LIMIT триггеров) → 2.0 + watchdog
-
-#### Что остаётся в очереди (после 48ч наблюдения)
-
-**DEV-185.2** — emergency watchdog (~50 строк в `tsl_updater.py` или `position_sync.py`):
-- Поллинг STOP-LIMIT с trigger='triggered' но execution='unfilled'
-- Через 5 мин если unfilled И цена ушла >0.5% за limit → `place_market_order` без буфера
-- Лог `STOP_LIMIT_EMERGENCY_FILL` для аудита
-- **Триггер реализации:** после первого "висящего" overshoot >1% инцидента ИЛИ перед переходом на LIVE
-
-**DEV-185.3** — volume whitelist `signal_quality.min_volume_usd: 5000000`:
-- Из 15 худших — 8 имеют vol_24h < 5M
-- Не главный эффект, но снимает worst tail
-- **Триггер:** если после buffer=1.0 остаются inci с overshoot >5% в low-vol парах
-
-#### Что нужно от DEV (oko.webdev)
-
-1. Рестарт бота (тот же, что для Фазы 1 DEV-184/186/187)
-2. Через 1ч после рестарта: проверка логов `grep "STOP-LIMIT" logs/` — должны появиться записи placement
-3. Через 24ч SQL:
-   ```sql
-   -- Проверка что STOP-LIMIT работают
-   SELECT COUNT(*), AVG(R_multiple) FROM simulated_trades 
-   WHERE status='SL' AND created_at >= '2026-04-26 после рестарта';
-   -- Distribution overshoot новых SL
-   ```
-4. Через 48ч — отчёт по p90 overshoot. Если ≤2% (vs текущие 3.93%) → готов поднять buffer до 2.0.
-
-#### Сводка по спринту после DEV-185 Шаг 1
-
-| Фаза | Задача | Статус | Эффект |
-|---|---|---|---|
-| 1 | DEV-184 DUAL_TSL→DUAL_TP | ✅ | −290R/10дн |
-| 1 | DEV-186 wt_signal regime gate | ✅ | −24R |
-| 1 | DEV-187 wt_b floor ±30 | ✅ | −17R |
-| 2 | DEV-185 buffer 0.0→1.0 | ✅ | **−113R** (старт; до 293R при buffer=2.0) |
-| 2 | DEV-185.2 watchdog | ⏳ trigger=инцидент | enable buffer=2.0 |
-| 2 | DEV-185.3 volume whitelist | ⏳ trigger=residual | snimet tail |
-
-**Текущая экономия (после рестарта):** **~−444R/10дней** (Фаза 1: −330R + DEV-185: −113R) ≈ **+0.13R/сделку**.
-
-Это уже выше порога break-even (avgR ≈ −0.10 текущий → +0.03 целевой). При расширении buffer до 2.0 + watchdog → +0.25R/сделку (стратегия в плюс).
-
----
-
-### [26.04.2026] ✅ ARCH (Claude) — Фаза 1 спринта реализована: DEV-184/186/187 готовы
-
-**3 минимальных безопасных изменения для рестарта бота:**
-
-#### DEV-184 — Отключение DUAL_TSL (config-only)
-- [config.yaml:429](config.yaml#L429): `trend_strategy_type: DUAL_TSL` → `DUAL_TP` (старое значение в комментарии)
-- TREND_UP/TREND_DOWN теперь поднимают только до DUAL_TP, не до DUAL_TSL
-- **Откат:** вернуть `DUAL_TSL` в той же строке
-- **Проверка после рестарта (через 24ч):** `SELECT COUNT(*) FROM simulated_trades WHERE strategy_type='DUAL_TSL' AND created_at>='2026-04-26'` → должно быть 0
-
-#### DEV-186 — wt_signal SHORT блок в TREND_UP/HIGH_VOL (gate в monitoring)
-- [bot/monitoring.py:902-920](bot/monitoring.py#L902): новый этап 5.3d перед PAIR-COOLDOWN
-- Условие блока: `wt_signal в supporting_signals + direction=SHORT + regime in (TREND_UP, HIGH_VOL)` → action=WATCH
-- Config: `signal_quality.dev186_wt_signal_regime_gate: true` (включён сразу), `dev186_shadow: false`
-- **Откат:** `dev186_wt_signal_regime_gate: false` — без правок кода
-- **Shadow режим:** `dev186_shadow: true` — только лог `[DEV-186 SHADOW WOULD_BLOCK]`
-- **Проверка:** `grep "DEV-186" logs/` после рестарта
-
-#### DEV-187 — Жёсткий floor для wt_b порогов
-- [signal_checkers.py:340-360](core/signals/signal_checkers.py#L340): после adaptive p10/p90 применяется floor
-- `os_ = min(p10, -30)` (LONG только при wt1<-30), `ob_ = max(p90, +30)` (SHORT только при wt1>+30)
-- Config: `analysis.wt_b.os_floor: -30.0`, `ob_floor: 30.0`
-- **Откат:** `os_floor: 0`, `ob_floor: 0` — floor становится no-op
-- **Проверка:** `grep "\[wt_b\] .* floor:" logs/` — увидим срабатывания floor
-
-#### Проверки выполнены
-- ✅ Syntax: `monitoring.py` + `signal_checkers.py` + `config.yaml` парсятся без ошибок
-- ✅ Sanity: на симулированном trend-рынке (wt1∈[-10..+30]) adaptive os_=-2/ob_=25 → после floor os_=-30/ob_=30. Раннее SHORT при wt1=15 (которое прошло бы adaptive ob=5) — заблокировано
-
-#### Что нужно от DEV (oko.webdev)
-1. Рестарт бота для подхвата config + новой логики
-2. Через 24ч: SQL-проверка DUAL_TSL=0 + grep по логам DEV-186/wt_b floor
-3. Через 7 дней: ARCH-100 re-audit на effective_status — подтвердить avgR pivot_reversal ≥ −0.10
-
-#### Ожидаемый эффект (по RE-AUDIT данным)
-- DEV-184: −290R/10дн → +0.07R/сделку (DUAL_TP вместо DUAL_TSL даёт выигрыш per trade)
-- DEV-186: −24R/10дн (мало сделок, но тяжёлый avgR=−1.12)
-- DEV-187: −17R/10дн
-- **Итого Фаза 1: ~+0.10R/сделку**
-
-#### Что параллельно — DEV-185 расследование (запись ниже)
-DEV-185 уже расследован отдельно — корень catastrophic slippage найден (`sl_limit_buffer_pct: 0.0`). Это **Фаза 2** спринта, готова к реализации, требует решения yogoru.
 
 ---
 
