@@ -315,6 +315,7 @@ class TradeSimulator:
         self, recommendation: Any, regime: Optional[str] = None,
         extra_features: Optional[dict] = None,
         _reason_out: Optional[list] = None,
+        regime_v2: Optional[str] = None,
     ) -> Optional[int]:
         """
         Сохраняет сделку в БД при выдаче рекомендации.
@@ -898,7 +899,7 @@ class TradeSimulator:
                         _magnet_tp_price,
                         _magnet_tp_rr,
                         _magnet_tp_src,
-                        _regime_v2,
+                        regime_v2,
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -1287,7 +1288,7 @@ class TradeSimulator:
             logger.debug("[ARCH-118] snapshot error %s: %s",
                          locals().get("symbol", "?"), _e_a118)
 
-        trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out)
+        trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out, regime_v2=_regime_v2)
 
         # ARCH-118 Шаг 5b: снимок в таблицу trade_features (FK), когда есть trade_id.
         if trade_id and _a118_write_table and _a118_snap is not None:
