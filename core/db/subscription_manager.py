@@ -113,7 +113,10 @@ class SubscriptionManager:
                     tp1_hit_at TIMESTAMP,
                     strategy_type TEXT,
                     decision_trace_json TEXT,
-                    original_sl REAL
+                    original_sl REAL,
+                    magnet_tp_price REAL,
+                    magnet_tp_rr REAL,
+                    magnet_tp_src TEXT
                 )
             """)
 
@@ -135,6 +138,9 @@ class SubscriptionManager:
                 ("decision_trace_json", "TEXT"),
                 ("original_sl", "REAL"),
                 ("source_router", "TEXT"),   # TradeRouter: имя источника (atr_change/monitoring/...)
+                ("magnet_tp_price", "REAL"),  # ARCH-122 P2 shadow: gravity-магнит цена (не закрывает)
+                ("magnet_tp_rr", "REAL"),     # ARCH-122 P2 shadow: RR магнита от entry
+                ("magnet_tp_src", "TEXT"),    # ARCH-122 P2 shadow: метка кластера
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")

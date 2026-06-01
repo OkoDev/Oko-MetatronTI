@@ -212,7 +212,10 @@ class TradeSimulator:
                     exchange_order_id TEXT,
                     exchange_sl_order_id TEXT,
                     qty REAL,
-                    original_sl REAL
+                    original_sl REAL,
+                    magnet_tp_price REAL,
+                    magnet_tp_rr REAL,
+                    magnet_tp_src TEXT
                 )
             """)
             # Миграция для существующих БД
@@ -234,6 +237,9 @@ class TradeSimulator:
                 ("qty", "REAL"),                  # DEV-136: qty позиции (для TSL updater)
                 ("actual_entry_price", "REAL"),   # Реальная цена исполнения с биржи (vs entry_price из сигнала)
                 ("original_sl", "REAL"),          # SL при регистрации (не изменяется TSL'ом)
+                ("magnet_tp_price", "REAL"),      # ARCH-122 P2 shadow: gravity-магнит цена (не закрывает)
+                ("magnet_tp_rr", "REAL"),         # ARCH-122 P2 shadow: RR магнита от entry
+                ("magnet_tp_src", "TEXT"),        # ARCH-122 P2 shadow: метка кластера (ob+eqh+fvg@price)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -792,11 +798,15 @@ class TradeSimulator:
                 except Exception as _re:
                     logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
-            # ═══ ARCH-122 Phase 2: ExitManager — магнит-TP в ТОЧКЕ СХОЖДЕНИЯ каналов ═══
+            # ═══ ARCH-122 Phase 2 SHADOW: ExitManager — магнит как ТЕНЬ (не закрывает) ═══
             # Сюда сходятся ВСЕ источники (atr_change/wl_breach/pivot/intelligence).
-            # TPSelector раньше сидел в calculate_levels (один канал) → магниты орфаны.
-            # Здесь резолвим главный TP из Bus smc_snap для ЛЮБОГО канала. RR-aware
-            # (tp2 main, dist_R≥1). Не нашли магнит → сохраняем TP канала.
+            # ИЗМЕРИТЕЛЬНАЯ ФАЗА: магнит НЕ перетирает take_profit (живое закрытие = TP
+            # канала, проверенный pivot/atr). Магнит пишется в shadow-поля. Постфактум
+            # по max_R_possible (peak excursion): дошла ли цена до магнита/pivot, и
+            # развернулась ли У МАГНИТА не дойдя до pivot → доказываем порог по данным.
+            _magnet_tp_price = None
+            _magnet_tp_rr = None
+            _magnet_tp_src = None
             try:
                 from core.infra.config_loader import config as _cfg_em
                 _em_en = bool((_cfg_em.get("sl_tp_engine") or {}).get("tp_selector_enabled", False))
@@ -810,25 +820,19 @@ class TradeSimulator:
                     )
                     if _mag is not None:
                         _mtp, _mlbl = _mag
-                        # max_rr cap (как DEV-64A) — не выпускаем нереалистичный RR
                         _sld = max(abs(float(entry) - float(stop_loss)), 1e-9)
-                        _sign = 1.0 if dir_str == "LONG" else -1.0
-                        _max_rr_em = 3.0
-                        try:
-                            _max_rr_em = float(((_cfg_em.get("trading") or {}).get("sl_management") or {}).get("max_rr", 3.0))
-                        except Exception:
-                            pass
-                        _mag_rr = abs(_mtp - float(entry)) / _sld
-                        if _mag_rr > _max_rr_em:
-                            _mtp = float(entry) + _sign * _sld * _max_rr_em
-                            _mlbl = f"{_mlbl}|capped_rr_{_max_rr_em:.1f}"
-                        take_profit = _mtp
-                        tp1_price = _mtp
-                        tp_source = _mlbl
-                        logger.info("[ExitManager P2] %s магнит-TP=%.6g src=%s (канал %s, был %s)",
-                                    symbol, _mtp, _mlbl, signal_type, _cur_src or "?")
+                        _magnet_tp_price = float(_mtp)
+                        _magnet_tp_rr = round(abs(_mtp - float(entry)) / _sld, 3)
+                        _magnet_tp_src = _mlbl
+                        # RR прежнего TP канала — для сравнения в логе (магнит дальше/ближе?)
+                        _cur_tp_rr = abs(float(take_profit) - float(entry)) / _sld
+                        _rel = "дальше" if _magnet_tp_rr > _cur_tp_rr else "ближе"
+                        logger.info(
+                            "[ExitManager P2 shadow] %s магнит=%.6g RR=%.2f (%s pivot RR=%.2f) src=%s канал=%s — TP канала сохранён",
+                            symbol, _mtp, _magnet_tp_rr, _rel, _cur_tp_rr, _mlbl, signal_type,
+                        )
             except Exception as _em_e:
-                logger.debug("[ExitManager P2] %s resolve failed: %s", symbol, _em_e)
+                logger.debug("[ExitManager P2 shadow] %s resolve failed: %s", symbol, _em_e)
 
             # ARCH-122 Phase 1a: TP2 из TPSelector магнитов (вместо pivot-иерархии async).
             # Когда tp_selector_enabled и рекомендация несёт tp2_price (gravity-кластер
@@ -860,8 +864,9 @@ class TradeSimulator:
                      tp1_price, tp2_price, tp3_price, strategy_type,
                      strength, confidence, regime, status, features_json, created_at,
                      sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json,
-                     original_sl, source_router)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     original_sl, source_router,
+                     magnet_tp_price, magnet_tp_rr, magnet_tp_src)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -888,6 +893,9 @@ class TradeSimulator:
                         decision_trace_json,
                         float(stop_loss) if stop_loss is not None else None,  # original_sl — не меняется после регистрации
                         _source_router,
+                        _magnet_tp_price,
+                        _magnet_tp_rr,
+                        _magnet_tp_src,
                     ),
                 )
                 trade_id = cursor.lastrowid
