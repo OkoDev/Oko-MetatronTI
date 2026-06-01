@@ -792,6 +792,44 @@ class TradeSimulator:
                 except Exception as _re:
                     logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
+            # ═══ ARCH-122 Phase 2: ExitManager — магнит-TP в ТОЧКЕ СХОЖДЕНИЯ каналов ═══
+            # Сюда сходятся ВСЕ источники (atr_change/wl_breach/pivot/intelligence).
+            # TPSelector раньше сидел в calculate_levels (один канал) → магниты орфаны.
+            # Здесь резолвим главный TP из Bus smc_snap для ЛЮБОГО канала. RR-aware
+            # (tp2 main, dist_R≥1). Не нашли магнит → сохраняем TP канала.
+            try:
+                from core.infra.config_loader import config as _cfg_em
+                _em_en = bool((_cfg_em.get("sl_tp_engine") or {}).get("tp_selector_enabled", False))
+                _cur_src = str(tp_source or "")
+                if (_em_en and "@" not in _cur_src
+                        and entry and stop_loss is not None and take_profit is not None):
+                    from core.trading.exit_manager import resolve_magnet_tp
+                    _mag = resolve_magnet_tp(
+                        symbol, float(entry), float(stop_loss), dir_str,
+                        getattr(self, "_pair_context_bus", None), self._pivot_calc, _cfg_em,
+                    )
+                    if _mag is not None:
+                        _mtp, _mlbl = _mag
+                        # max_rr cap (как DEV-64A) — не выпускаем нереалистичный RR
+                        _sld = max(abs(float(entry) - float(stop_loss)), 1e-9)
+                        _sign = 1.0 if dir_str == "LONG" else -1.0
+                        _max_rr_em = 3.0
+                        try:
+                            _max_rr_em = float(((_cfg_em.get("trading") or {}).get("sl_management") or {}).get("max_rr", 3.0))
+                        except Exception:
+                            pass
+                        _mag_rr = abs(_mtp - float(entry)) / _sld
+                        if _mag_rr > _max_rr_em:
+                            _mtp = float(entry) + _sign * _sld * _max_rr_em
+                            _mlbl = f"{_mlbl}|capped_rr_{_max_rr_em:.1f}"
+                        take_profit = _mtp
+                        tp1_price = _mtp
+                        tp_source = _mlbl
+                        logger.info("[ExitManager P2] %s магнит-TP=%.6g src=%s (канал %s, был %s)",
+                                    symbol, _mtp, _mlbl, signal_type, _cur_src or "?")
+            except Exception as _em_e:
+                logger.debug("[ExitManager P2] %s resolve failed: %s", symbol, _em_e)
+
             # ARCH-122 Phase 1a: TP2 из TPSelector магнитов (вместо pivot-иерархии async).
             # Когда tp_selector_enabled и рекомендация несёт tp2_price (gravity-кластер
             # HTF 1-3R) — используем его. Не None → async-заполнение pivot пропускается
