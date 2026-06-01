@@ -4,6 +4,38 @@
 
 ---
 
+## [31.05.2026 ~12:30 UTC] Агент: Claude — DEV-238 РАССЛЕДОВАНО (grep)
+
+### 🔬 Расследование почему wt_signal=0 confirmations
+
+**Корень: только ATR Trend Change Detector публикует в ConfirmationAggregator.** Все остальные детекторы (SMC BOS/CHoCH, FVG touch, wt_extreme, zone_enter, liquidity_sweep, divergence) публикуют ТОЛЬКО в EventBus.
+
+**Доказательства (grep):**
+- `on_confirmation` — 4 вызова, ВСЕ в `scan_loop.py:1447-1477` (внутри ATR Change блока). Источники: `atr_change_{tf}`, `zone_OS/OB_{tf}`, `ote_zone`.
+- `event_bus.publish` — SMC/FVG/wt_extreme идут сюда (scan_loop:1410/1540/1546/1561/1575) — но НЕ в ConfirmationAggregator.
+
+**Два механизма не синхронизированы:**
+- EventBus = async dispatch (launching Full CALL)
+- ConfirmationAggregator = strength через CONFIRMATION_WEIGHTS registry
+
+**Бонусом — баг в моём shadow_signal_quality.py:**
+`_WT_REQUIRED_CONFIRM_SOURCES` содержит несуществующие имена:
+- `smc_bos_15m` ❌ (в registry только `smc_bos_1h`)
+- `hidden_div_15m/1h` ❌ (в registry `div_hidden_bull/bear_15m`)
+- `fvg_touch` ❌ (в registry `fvg_fill`)
+- `wt_extreme` ❌ (в registry НЕТ вообще)
+
+Из 10 имён моего массива реально публикуется только `ote_zone` (и то только в ATR change блоке).
+
+### 🎯 Главные выводы
+1. **DEV-238 — НЕ баг shadow, а архитектурный пробел.** Это блокер для **DEV-200/DEV-201** (Confirmation-Driven Architecture недореализована).
+2. HARD gate `len(confirmations) >= 1` для wt_signal убрал бы 100% потока **по архитектурной причине, не по качеству**.
+3. После реализации DEV-200/DEV-201 — обновить `_WT_REQUIRED_CONFIRM_SOURCES` на реальные имена из registry + повторить shadow A/B.
+
+### 📝 DEV-238 закрыт как ✅ "расследовано", action items переданы в DEV-200/DEV-201.
+
+---
+
 ## [31.05.2026 ~12:00 UTC] Агент: Claude — DEV-224 дополнение + 3 новые подзадачи
 
 ### ✅ Сделано
