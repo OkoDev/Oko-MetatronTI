@@ -215,7 +215,8 @@ class TradeSimulator:
                     original_sl REAL,
                     magnet_tp_price REAL,
                     magnet_tp_rr REAL,
-                    magnet_tp_src TEXT
+                    magnet_tp_src TEXT,
+                    regime_v2 TEXT
                 )
             """)
             # Миграция для существующих БД
@@ -240,6 +241,7 @@ class TradeSimulator:
                 ("magnet_tp_price", "REAL"),      # ARCH-122 P2 shadow: gravity-магнит цена (не закрывает)
                 ("magnet_tp_rr", "REAL"),         # ARCH-122 P2 shadow: RR магнита от entry
                 ("magnet_tp_src", "TEXT"),        # ARCH-122 P2 shadow: метка кластера (ob+eqh+fvg@price)
+                ("regime_v2", "TEXT"),            # ARCH-124 shadow: HTF-доминантная метка режима (vs regime v1)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coldef}")
@@ -865,8 +867,8 @@ class TradeSimulator:
                      strength, confidence, regime, status, features_json, created_at,
                      sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json,
                      original_sl, source_router,
-                     magnet_tp_price, magnet_tp_rr, magnet_tp_src)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     magnet_tp_price, magnet_tp_rr, magnet_tp_src, regime_v2)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -896,6 +898,7 @@ class TradeSimulator:
                         _magnet_tp_price,
                         _magnet_tp_rr,
                         _magnet_tp_src,
+                        _regime_v2,
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -989,6 +992,7 @@ class TradeSimulator:
             logger.debug("[DEV-38] Correlation Guard error: %s", _e)
 
         regime: Optional[str] = None
+        _regime_v2: Optional[str] = None   # ARCH-124 shadow: HTF-доминантная метка
         if data_collector is not None:
             symbol = _get_recommendation_value(recommendation, "symbol") or ""
             if symbol:
@@ -1004,7 +1008,10 @@ class TradeSimulator:
                             _use_v2 = _cfg90.get("market_regime.use_v2", False) if _cfg90 else False
                             _clf90 = MarketRegimeClassifier()
                             _df_1h90 = await data_collector.get_ohlcv(symbol, "1h", 50)
-                            _v2 = _clf90.classify_v2(ohlcv, _df_1h90)
+                            # ARCH-124: HTF-доминантному v2 нужен 4h (60 баров > atr_period=43)
+                            _df_4h90 = await data_collector.get_ohlcv(symbol, "4h", 60)
+                            _v2 = _clf90.classify_v2(ohlcv, _df_1h90, _df_4h90)
+                            _regime_v2 = _v2
                             if _use_v2:
                                 regime = _v2
                                 logger.debug("[regime_v2] %s: v2=%s (production)", symbol, _v2)

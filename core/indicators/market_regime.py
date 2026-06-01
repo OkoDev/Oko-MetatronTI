@@ -291,59 +291,84 @@ class MarketRegimeClassifier:
         self,
         df_15m: "pd.DataFrame",
         df_1h:  "Optional[pd.DataFrame]" = None,
+        df_4h:  "Optional[pd.DataFrame]" = None,
     ) -> str:
         """
-        DEV-90 / ARCH-59: Гибридный классификатор v2 (3 слоя).
+        ARCH-124 (02.06.2026): HTF-доминантный классификатор v2 (shadow).
 
-        Слой 1 — Spike Guard: spike за последние 5 баров → HIGH_VOL (быстрый override).
-        Слой 2 — Структурный режим на 1h: HH/HL паттерн через detect_structural_regime().
-        Слой 3 — MTF подтверждение: classify_from_dataframes(df_15m, df_1h).
-                  Если Слой 2 и Слой 3 согласованы → возвращаем результат.
-                  Конфликт → RANGE (консервативно).
+        Корень мислейбла v1 (classify_from_dataframes): требует синхронности ВСЕХ
+        TF (15m==1h==4h), иначе RANGE. Аудит 30.05 (спот-чек 18 сделок): 78%
+        RANGE-сделок реально ТРЕНДИЛИ — 15m-шум рассинхронизирует с 4h → тренды
+        сваливаются в RANGE → гейты на метке бесполезны.
 
-        Shadow mode: не заменяет текущий classify_from_ohlcv/classify_from_dataframes.
-        Управляется через config: market_regime.use_v2 (default: false).
+        v2: 4h-supertrend = ГЛАВНЫЙ (fallback 1h если нет 4h). 15m/1h НЕ требуют
+        синхронности и НЕ блокируют тренд. RANGE только если HTF-тренд реально
+        затухает (WT-дивергенция мала И ADX слабый).
+
+          Spike (15m, 5 баров) → HIGH_VOL (override)
+          HTF trend=1 + (|WT1-WT2|>10 ИЛИ ADX>25) → TREND_UP
+          HTF trend=-1 + сила                      → TREND_DOWN
+          HTF тренд слабый (нет силы)              → RANGE
+
+        Один калькулятор: trend/wt через те же calculate_trend/calculate_wt, что и
+        весь проект (ARCH-118). Shadow mode: use_v2=false → НЕ влияет на торговлю,
+        пишется в shadow-поле regime_v2 для сравнения с v1.
         """
         try:
-            from core.signals.structure_detector import detect_structural_regime
+            from core.indicators.indicators import calculate_trend, calculate_wt
 
-            # Слой 1: Spike Guard по df_15m
-            if df_15m is not None and len(df_15m) >= _MIN_CANDLES:
-                if "high" in df_15m.columns and "low" in df_15m.columns:
-                    ranges = (df_15m["high"] - df_15m["low"]).tolist()
-                    if ranges:
-                        med_range = sorted(ranges)[len(ranges) // 2]
-                        if med_range > 0 and any(r > 3 * med_range for r in ranges[-5:]):
-                            return "HIGH_VOL"
+            # Слой 1: HIGH_VOL по ATR на 15m (тот же метод, что v1 — устойчивее
+            # range-spike: last_atr > 1.8×median_atr. Старый range>3×med давал
+            # ложный HIGH_VOL почти всегда в волатильной крипте).
+            if (df_15m is not None and len(df_15m) >= _MIN_CANDLES
+                    and all(c in df_15m.columns for c in ("high", "low", "close"))):
+                _av = _atr(df_15m["high"].tolist(), df_15m["low"].tolist(),
+                           df_15m["close"].tolist(), self.atr_period)
+                if _av:
+                    _last, _med = _av[-1], sorted(_av)[len(_av) // 2]
+                    if _med > 0 and _last > _ATR_HIGH_VOL_MULT * _med:
+                        return "HIGH_VOL"
 
-            # Слой 2: Структурный режим по 1h DF
-            struct_regime = None
-            if df_1h is not None and len(df_1h) >= _MIN_CANDLES:
-                struct_regime = detect_structural_regime(df_1h, period=5)
-
-            # Слой 3: MTF подтверждение
-            mtf_regime = self.classify_from_dataframes(df_15m, df_1h)
-
-            # Решение
-            if struct_regime is None:
-                # Недостаточно swing points — доверяем MTF
-                return mtf_regime or "RANGE"
-
-            if mtf_regime in ("TREND_UP", "TREND_DOWN", "RANGE"):
-                # Согласованность: оба указывают на тренд или оба — RANGE
-                if struct_regime == mtf_regime:
-                    return struct_regime
-                # Один тренд, другой RANGE → RANGE (консервативно)
-                if "TREND" in struct_regime and "TREND" in (mtf_regime or ""):
-                    # Оба тренд, но разные направления (редко) → RANGE
-                    if struct_regime != mtf_regime:
-                        return "RANGE"
+            # Слой 2: HTF-доминанта — 4h главный, fallback 1h
+            htf = df_4h if (df_4h is not None and len(df_4h) >= _MIN_CANDLES) else df_1h
+            if htf is None or len(htf) < _MIN_CANDLES:
                 return "RANGE"
 
-            # mtf_regime is None или HIGH_VOL
-            if mtf_regime == "HIGH_VOL":
-                return "HIGH_VOL"
-            return struct_regime or "RANGE"
+            # trend через единый calculate_trend (НЕ требуем синхронности с 15m)
+            if "trend" not in htf.columns:
+                htf = calculate_trend(htf.copy())
+            try:
+                t_htf = int(htf["trend"].iloc[-1])  # 1 (UP) / -1 (DOWN)
+            except Exception:
+                return "RANGE"
+
+            # Сила тренда: WT-дивергенция ИЛИ ADX на HTF
+            wt_diff = 0.0
+            if "wt1" not in htf.columns or "wt2" not in htf.columns:
+                try:
+                    htf = calculate_wt(htf)
+                except Exception:
+                    pass
+            if "wt1" in htf.columns and "wt2" in htf.columns:
+                try:
+                    wt_diff = abs(float(htf["wt1"].iloc[-1]) - float(htf["wt2"].iloc[-1]))
+                except Exception:
+                    wt_diff = 0.0
+
+            adx_htf = None
+            if all(c in htf.columns for c in ("high", "low", "close")):
+                try:
+                    adx_htf = _adx(htf["high"].tolist(), htf["low"].tolist(),
+                                   htf["close"].tolist(), self.adx_period)
+                except Exception:
+                    adx_htf = None
+
+            strong = (wt_diff > 10) or (adx_htf is not None and adx_htf > _ADX_TREND_THRESHOLD)
+            if not strong:
+                # HTF-тренд затухает → реально флэт
+                return "RANGE"
+
+            return "TREND_UP" if t_htf == 1 else "TREND_DOWN"
 
         except Exception as e:
             logger.warning("[classify_v2] error: %s", e)
