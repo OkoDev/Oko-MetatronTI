@@ -49,13 +49,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   async function pollStatusOnce() {
     try {
-      const res = await fetchWithTimeout('/api/dashboard', 5000)
-      if (!res.ok) return
+      // 15с — endpoint вызывает engine.full_stats() (heavy), 5с не хватало.
+      const res = await fetchWithTimeout('/api/dashboard', 15000)
+      if (!res.ok) {
+        console.warn('[dashboardStore] /api/dashboard HTTP', res.status)
+        return
+      }
       const data = await res.json()
       status.value = data.status || {}
       if (data.btc_regime !== undefined) status.value.btc_regime = data.btc_regime
-    } catch {
-      // silent (timeout/abort/network)
+    } catch (e) {
+      console.warn('[dashboardStore] /api/dashboard fail:', e.name, e.message)
     }
   }
 
@@ -68,12 +72,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   // Первичный быстрый fetch, чтобы карточки не висели пустыми
   // 5-15с пока придёт первый тяжёлый SSE event:dashboard payload.
-  // С timeout 10с — backend может тормозить под нагрузкой scan_loop/ws_feed.
+  // 15с timeout: /api/stats тяжёлый (full_stats на 15k+ сделок), 10с не хватало.
   async function primeFetch() {
     try {
       const [statsRes, equityRes] = await Promise.allSettled([
-        fetchWithTimeout('/api/stats', 10000),
-        fetchWithTimeout('/api/equity', 10000),
+        fetchWithTimeout('/api/stats', 15000),
+        fetchWithTimeout('/api/equity', 15000),
       ])
       if (statsRes.status === 'fulfilled' && statsRes.value.ok) {
         stats.value = await statsRes.value.json()
