@@ -352,11 +352,13 @@ async def sync_positions(bot) -> None:
                     _r_calc = (_entry - exit_price) / _one_r
 
                 # SL не может дать R > 3 (или profit > entry×3%). Если даёт — exit_price ложный.
-                if status == "SL" and _r_calc > 3:
+                # DEV-241 (02.06.2026): покрываем и TSL — TSL исполняется как STOP_MARKET,
+                # переклассифицируется в "TSL" выше (строка 329) ДО этой проверки.
+                if status in ("SL", "TSL") and _r_calc > 3:
                     logger.warning(
-                        "[POSITION-SYNC] #%d %s: SANITY FAIL — SL exit=%.6f даёт R=%.1f "
+                        "[POSITION-SYNC] #%d %s: SANITY FAIL — %s exit=%.6f даёт R=%.1f "
                         "(>3). Заменяем на SL-цену %.6f",
-                        trade_id, sym, exit_price, _r_calc, _sl,
+                        trade_id, sym, status, exit_price, _r_calc, _sl,
                     )
                     exit_price = _sl
 
@@ -372,13 +374,19 @@ async def sync_positions(bot) -> None:
                 #
                 # Conservative fix: заменить exit на SL price (R = -1.0).
                 # Сохраняем real slippage в log для аудита.
-                if status == "SL" and _r_calc < -2.0:
+                #
+                # DEV-241 (02.06.2026): РАСШИРЕНО на "TSL". Корень: SL→TSL переклассификация
+                # (строка 329) происходит ДО этого sanity-check → 22 биржевых SHORT с
+                # status=TSL проскакивали мимо D-049 → artifact mark → R=-15 (-174.5R).
+                # Для TSL _sl = текущая TSL-линия (DEV-189 обновляет stop_loss при движении,
+                # только tighter) → exit на TSL-линии даёт реальный R (симуляция: -174.5R → +12R).
+                if status in ("SL", "TSL") and _r_calc < -2.0:
                     _orig_sl = float(trade.get("original_sl") or 0)
                     logger.warning(
-                        "[POSITION-SYNC][D-049] #%d %s: SLIPPAGE — mark=%.6f R=%.1f (<-2). "
+                        "[POSITION-SYNC][D-049/DEV-241] #%d %s: SLIPPAGE — %s mark=%.6f R=%.1f (<-2). "
                         "SL=%.6f, orig_sl=%.6f. STOP_MARKET gap %.2f%%. "
                         "Заменяем exit_price=mark→SL (artifact mark_price fallback).",
-                        trade_id, sym, exit_price, _r_calc, _sl, _orig_sl,
+                        trade_id, sym, status, exit_price, _r_calc, _sl, _orig_sl,
                         abs(exit_price - (_orig_sl or _sl)) / _entry * 100 if _entry else 0,
                     )
                     exit_price = _sl
