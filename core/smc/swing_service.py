@@ -285,13 +285,30 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     Возвращает {'levels': {fib: price}, 'ote': (low, high), 'direction': 'long'/'short'}.
     """
     rng = swing_b - swing_a
-    fibs = [0.0, 0.382, 0.5, 0.618, 0.705, 0.786, 1.0]
+    # Набор уровней пользователя (TradingView OTE): 0.5/0.62/0.705/0.79
+    fibs = [0.0, 0.5, 0.62, 0.705, 0.79, 1.0]
     levels = {f: swing_a + f * rng for f in fibs}
-    # OTE-зона между 0.705 и 0.786
-    o1, o2 = levels[0.705], levels[0.786]
+    # OTE-зона = 0.705-0.79 (как разметка пользователя)
+    o1, o2 = levels[0.705], levels[0.79]
     ote = (min(o1, o2), max(o1, o2))
     direction = "long" if swing_a > swing_b else "short"   # импульс вниз → ждём LONG из OTE
     return {"levels": levels, "ote": ote, "direction": direction}
+
+
+def last_impulse_ote(zz: List[tuple]) -> Optional[dict]:
+    """Авто-OTE от последнего завершённого импульса ZigZag (нога high→low или low→high).
+
+    zz = точки ZigZag [(ts, price)]. Берёт последнюю ногу (zz[-2]→zz[-1]) как импульс,
+    строит OTE. direction='long' если нога вниз (откат вверх = LONG-сетап).
+    Возвращает dict build_ote + {'from': (ts,price), 'to': (ts,price)} или None.
+    """
+    if not zz or len(zz) < 2:
+        return None
+    (a_ts, a), (b_ts, b) = zz[-2], zz[-1]
+    res = build_ote(a, b)
+    res["from"] = (a_ts, a)
+    res["to"] = (b_ts, b)
+    return res
 
 
 def zigzag_atr(
