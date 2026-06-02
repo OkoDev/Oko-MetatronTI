@@ -45,6 +45,7 @@ def render_verify(
     hlines: Optional[dict] = None,         # {label: price}
     zones: Optional[list] = None,          # [(y_low, y_high, color, label)]
     labels: Optional[list] = None,         # [(ts, price, text)] — метки HH/HL/LH/LL
+    hsegments: Optional[list] = None,      # [(ts_from, ts_to, price, color, label)] — линии BOS/CHoCH
     out: str = "tmp_charts/chart_verify.png",
 ) -> str:
     """Рисует candlestick + overlay-слои → PNG. df: DatetimeIndex + OHLC."""
@@ -98,6 +99,19 @@ def render_verify(
             ax.axhspan(y_low, y_high, color=color, alpha=0.15)
             ax.text(0.01, (y_low + y_high) / 2, label, transform=ax.get_yaxis_transform(),
                     color=color, fontsize=8, va="center")
+    # горизонтальные линии BOS/CHoCH (от свинга до пробоя, пунктир + метка) — как OKO-SM
+    if hsegments:
+        ax = axes[0]
+        posh = {ts: k for k, ts in enumerate(d.index)}
+        for seg in hsegments:
+            ts_from, ts_to, price, color, label = seg
+            x1, x2 = posh.get(ts_from), posh.get(ts_to)
+            if x1 is None or x2 is None:
+                continue
+            ax.plot([x1, x2], [price, price], "--", color=color, linewidth=1.0, alpha=0.9)
+            ax.annotate(label, (x2, price), color=color, fontsize=7, fontweight="bold",
+                        ha="left", va="center", xytext=(3, 0), textcoords="offset points")
+
     # текстовые метки HH/HL/LH/LL — по позиции бара (x = iloc)
     if labels:
         ax = axes[0]

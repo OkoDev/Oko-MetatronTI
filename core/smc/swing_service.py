@@ -93,12 +93,13 @@ def detect_swings(
 
 @dataclass(frozen=True)
 class StructureBreak:
-    ts: object
-    idx: int
+    ts: object            # бар пробоя
+    idx: int              # бар пробоя (iloc)
     price: float          # пробитый уровень (swing)
     kind: Literal["BOS", "CHoCH"]
     direction: Literal["bull", "bear"]
     has_volume: bool      # объём на пробое выше среднего (критерий настоящего слома)
+    from_idx: int = -1    # бар свинга-уровня (откуда тянуть линию до пробоя)
 
 
 def detect_structure_breaks(
@@ -123,32 +124,31 @@ def detect_structure_breaks(
     vol_avg = (pd.Series(vol).rolling(vol_len).mean().values if vol is not None else None)
     sw = _swings_luxalgo(d, length)   # [(idx, price, 'H'/'L')], idx = экстремум
     # активируем уровень с бара (idx + length) — момент подтверждения свинга (как Pine)
-    highs = sorted([(idx + length, price) for idx, price, k in sw if k == "H"])
-    lows = sorted([(idx + length, price) for idx, price, k in sw if k == "L"])
+    # храним (confirm_idx, swing_idx, price) — swing_idx = откуда тянуть линию
+    highs = sorted([(idx + length, idx, price) for idx, price, k in sw if k == "H"])
+    lows = sorted([(idx + length, idx, price) for idx, price, k in sw if k == "L"])
 
     out: List[StructureBreak] = []
     trend = 0
     top_y: Optional[float] = None
     btm_y: Optional[float] = None
+    top_from = btm_from = -1
     top_cross = btm_cross = False
     hi_ptr = lo_ptr = 0
     for i in range(n):
-        # обновить активные swing-уровни, подтверждённые к бару i
         while hi_ptr < len(highs) and highs[hi_ptr][0] <= i:
-            top_y = highs[hi_ptr][1]; top_cross = True; hi_ptr += 1
+            top_y = highs[hi_ptr][2]; top_from = highs[hi_ptr][1]; top_cross = True; hi_ptr += 1
         while lo_ptr < len(lows) and lows[lo_ptr][0] <= i:
-            btm_y = lows[lo_ptr][1]; btm_cross = True; lo_ptr += 1
+            btm_y = lows[lo_ptr][2]; btm_from = lows[lo_ptr][1]; btm_cross = True; lo_ptr += 1
         has_vol = bool(vol is not None and not pd.isna(vol_avg[i]) and vol[i] > vol_avg[i] * vol_mult)
-        # bull break: close пробил swing high
         if top_y is not None and top_cross and close[i] > top_y:
             kind = "CHoCH" if trend < 0 else "BOS"
-            out.append(StructureBreak(d.index[i], i, float(top_y), kind, "bull", has_vol))  # type: ignore
+            out.append(StructureBreak(d.index[i], i, float(top_y), kind, "bull", has_vol, top_from))  # type: ignore
             top_cross = False
             trend = 1
-        # bear break: close пробил swing low
         elif btm_y is not None and btm_cross and close[i] < btm_y:
             kind = "CHoCH" if trend > 0 else "BOS"
-            out.append(StructureBreak(d.index[i], i, float(btm_y), kind, "bear", has_vol))  # type: ignore
+            out.append(StructureBreak(d.index[i], i, float(btm_y), kind, "bear", has_vol, btm_from))  # type: ignore
             btm_cross = False
             trend = -1
     return out
