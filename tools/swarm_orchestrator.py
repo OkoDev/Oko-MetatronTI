@@ -21,46 +21,23 @@ import concurrent.futures
 import json
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(_ROOT))
 import llm_ask  # noqa: E402
 import team_ask  # noqa: E402
+# Контракт — из вынесенного advisor_contract (зерно metatron-core, общий с портом)
+from core.intelligence.advisor_contract import (  # noqa: E402
+    AdvisoryRequest, AdvisoryVerdict, SCHEMA_VERSION,
+)
 
 DS_PROVIDER = "deepseek"
 MIN_MODELS = 3                 # ниже — нет смысла в рое
 DS_PLAN_TOKENS = 4000
 DS_SYNTH_TOKENS = 4000
-
-
-# ─────────── Контракт AdvisorPort (ARCH-125 §2; локально до metatron-core) ───────────
-# 🔒 FROZEN (02.06.2026): сигнатуры AdvisoryRequest/Verdict заморожены — их импортирует
-# advisor_connector.py (порт в scan_loop, параллельная сессия). НЕ менять поля без
-# согласования: смена ломает импорт на стороне бота. Эволюция — через schema_version + ADR.
-SCHEMA_VERSION = 1
-
-
-@dataclass(frozen=True)
-class AdvisoryRequest:
-    snapshot: dict
-    intent: str = "free_question"          # "trade_decision" | "audit" | "free_question"
-    question: Optional[str] = None
-    deadline_ms: int = 60000               # advisor-домен канон: LLM-рой медленный (НЕ 5000 как trade-decision)
-    schema_version: int = SCHEMA_VERSION   # R4: выравнивание с ARCH-125 §2
-    meta: dict = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class AdvisoryVerdict:
-    label: str
-    confidence: float
-    rationale: str
-    key_factors: list = field(default_factory=list)
-    advisor_id: str = "swarm-ds@v1"
-    latency_ms: int = 0
-    meta: dict = field(default_factory=dict)   # по-модельные голоса, план DS
 
 
 def _ds_call(prompt: str, max_tokens: int) -> Optional[str]:
@@ -137,7 +114,12 @@ class SwarmOrchestrator:
         if not self.health():
             print("[swarm-ds] health=False → fallback на обычный team_ask", file=sys.stderr)
             return None  # клиент падает на team_ask.main()
-        context = team_ask.collect_context()
+        # Контекст по intent: market_brief/trade_decision — из snapshot (рынок/портфель/пара);
+        # free_question/audit — bundle проекта (brief+timeline+TASKS).
+        if req.intent in ("market_brief", "trade_decision") and req.snapshot:
+            context = json.dumps(req.snapshot, ensure_ascii=False, indent=2, default=str)
+        else:
+            context = team_ask.collect_context()
         plan = self._plan(req, context)
         # рассылка: по плану DS (выжимка+подвопрос) или fallback на общий вопрос+trim
         def ask(p):
