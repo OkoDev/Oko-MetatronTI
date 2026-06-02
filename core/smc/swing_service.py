@@ -256,6 +256,28 @@ def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
     return out
 
 
+def build_ote(swing_a: float, swing_b: float) -> dict:
+    """OTE/Fib от импульса swing_a → swing_b (как разметка пользователя на XLM).
+
+    Fib: 0 = swing_a (начало импульса), 1 = swing_b (конец). Уровни между.
+    OTE-зона = 0.705-0.786 (Optimal Trade Entry — глубокий откат к началу).
+    Пример пользователя (импульс вниз high 0.22928→low 0.21478):
+      0.382=0.22127, 0.5=0.22003, 0.618=0.21879, 0.705=0.21787, 0.786=0.21702.
+
+    direction вычисляется из знака: swing_a>swing_b → импульс ВНИЗ → откат вверх (LONG-сетап,
+    OTE снизу). swing_a<swing_b → импульс ВВЕРХ → SHORT-сетап.
+    Возвращает {'levels': {fib: price}, 'ote': (low, high), 'direction': 'long'/'short'}.
+    """
+    rng = swing_b - swing_a
+    fibs = [0.0, 0.382, 0.5, 0.618, 0.705, 0.786, 1.0]
+    levels = {f: swing_a + f * rng for f in fibs}
+    # OTE-зона между 0.705 и 0.786
+    o1, o2 = levels[0.705], levels[0.786]
+    ote = (min(o1, o2), max(o1, o2))
+    direction = "long" if swing_a > swing_b else "short"   # импульс вниз → ждём LONG из OTE
+    return {"levels": levels, "ote": ote, "direction": direction}
+
+
 def zigzag_atr(
     df: pd.DataFrame,
     depth: int = 11,
