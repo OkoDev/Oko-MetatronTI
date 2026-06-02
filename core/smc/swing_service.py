@@ -295,6 +295,30 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     return {"levels": levels, "ote": ote, "direction": direction}
 
 
+def find_choch_ote(zz: List[tuple], breaks: List["StructureBreak"]) -> Optional[dict]:
+    """OTE после CHoCH (механика пользователя): импульс, который ПРИВЁЛ к CHoCH.
+
+    LONG: bull-CHoCH (разворот вверх) → импульс = последняя нога ВНИЗ перед сломом
+          (по H/L: swing high → swing low). OTE 0.705-0.79 = ранний LONG-вход (ловим пик
+          разворота). SHORT: bear-CHoCH → импульс ВВЕРХ (инвертировано по H/L).
+    Берёт последний CHoCH + предшествующую ногу ZigZag (по H/L экстремумам).
+    Торговля вероятностей — не гарантия, edge на откате в OTE.
+    """
+    chochs = [b for b in breaks if b.kind == "CHoCH"]
+    if not chochs or len(zz) < 2:
+        return None
+    b = chochs[-1]
+    pts = [(ts, p) for ts, p in zz if ts <= b.ts] or zz[:2]
+    if len(pts) < 2:
+        return None
+    (a_ts, a), (c_ts, c) = pts[-2], pts[-1]   # последняя нога ZigZag перед CHoCH (H/L)
+    ote = build_ote(a, c)                       # 0=начало импульса, 1=конец (по H/L)
+    ote["from"] = (a_ts, a)
+    ote["to"] = (c_ts, c)
+    ote["choch"] = b
+    return ote
+
+
 def last_impulse_ote(zz: List[tuple]) -> Optional[dict]:
     """Авто-OTE от последнего завершённого импульса ZigZag (нога high→low или low→high).
 

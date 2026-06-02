@@ -47,6 +47,7 @@ def render_verify(
     labels: Optional[list] = None,         # [(ts, price, text)] — метки HH/HL/LH/LL
     hsegments: Optional[list] = None,      # [(ts_from, ts_to, price, color, label)] — линии BOS/CHoCH
     boxes: Optional[list] = None,          # [(ts_left, top, bottom, color, label)] — OB/FVG боксы (extend вправо)
+    trendlines: Optional[list] = None,     # [(ts1, p1, ts2, p2, color, label)] — наклонные (импульс)
     out: str = "tmp_charts/chart_verify.png",
 ) -> str:
     """Рисует candlestick + overlay-слои → PNG. df: DatetimeIndex + OHLC."""
@@ -100,6 +101,17 @@ def render_verify(
             ax.axhspan(y_low, y_high, color=color, alpha=0.15)
             ax.text(0.01, (y_low + y_high) / 2, label, transform=ax.get_yaxis_transform(),
                     color=color, fontsize=8, va="center")
+    # наклонные линии импульса (от high до low) — якоря OTE
+    if trendlines:
+        ax = axes[0]
+        post = {ts: k for k, ts in enumerate(d.index)}
+        for tl in trendlines:
+            ts1, p1, ts2, p2, color, label = tl
+            x1, x2 = post.get(ts1), post.get(ts2)
+            if x1 is None or x2 is None:
+                continue
+            ax.plot([x1, x2], [p1, p2], "--", color=color, linewidth=1.2, alpha=0.9)
+
     # OB/FVG боксы (прямоугольник от left до правого края, extend вправо)
     if boxes:
         from matplotlib.patches import Rectangle
