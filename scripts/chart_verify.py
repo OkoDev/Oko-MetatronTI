@@ -44,7 +44,7 @@ def render_verify(
     zigzag: Optional[list] = None,         # [(ts, price)]
     hlines: Optional[dict] = None,         # {label: price}
     zones: Optional[list] = None,          # [(y_low, y_high, color, label)]
-    out: str = "e:/tmp/chart_verify.png",
+    out: str = "tmp_charts/chart_verify.png",
 ) -> str:
     """Рисует candlestick + overlay-слои → PNG. df: DatetimeIndex + OHLC."""
     d = df.copy()
@@ -111,7 +111,7 @@ def _smoke():
     o = ex.fetch_ohlcv("BTC/USDT:USDT", "4h", limit=120)
     df = pd.DataFrame(o, columns=["ts", "open", "high", "low", "close", "volume"])
     df.index = pd.to_datetime(df["ts"], unit="ms", utc=True)
-    render_verify(df, "BTC 4h — smoke (рендер OK)", out="e:/tmp/chart_verify_smoke.png")
+    render_verify(df, "BTC 4h — smoke (рендер OK)", out="tmp_charts/chart_verify_smoke.png")
 
 
 if __name__ == "__main__":
