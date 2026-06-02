@@ -57,6 +57,7 @@ class SwarmOrchestrator:
     """AdvisorPort-адаптер: DS дирижирует роем."""
 
     def __init__(self, providers: Optional[list] = None):
+        llm_ask.load_env()   # ключи из .env (иначе has_key=False при прямом запуске)
         all_p = [p for p in team_ask.ALL_PROVIDERS if llm_ask.has_key(p)]
         # дирижёр (deepseek) исключается из опрашиваемых — он голова, не голос
         self.providers = [p for p in (providers or all_p) if p != DS_PROVIDER]
