@@ -86,11 +86,23 @@ class SwarmOrchestrator:
     # ── Phase 1: синтез дирижёра на ПОЛНОМ контексте ──
     def _synthesize(self, req: AdvisoryRequest, answers: dict, context: str) -> Optional[AdvisoryVerdict]:
         votes = "\n\n".join(f"### {m}\n{a}" for m, a in answers.items())
+        # market_brief: label из enum + разбор исходов (C свёрнут в B). Иначе — свободный вердикт.
+        if req.intent == "market_brief":
+            label_rule = ('"label" ∈ {RISK_ON, RISK_OFF, CAUTION, HOLD} (поза рынка/риск)')
+            task_extra = (
+                "Контекст = snapshot рынка/портфеля (btc_mode, portfolio agg, recent_closed[20]).\n"
+                "4. РАЗБОР ИСХОДОВ (recent_closed): какие signal_type/regime/direction работали "
+                "(по R_multiple/status), какие нет → 1-2 темы в key_factors.\n"
+                "5. Поза рынка и уровень риска с учётом btc_mode + portfolio avg_r.\n"
+            )
+        else:
+            label_rule = '"label" = краткий вердикт'
+            task_extra = ""
         prompt = (
             "Ты — ДИРИЖЁР роя. У тебя ПОЛНЫЙ контекст + ответы моделей. Синтезируй:\n"
             "1. Где консенсус, где спор. 2. Скорректируй галлюцинации (ты видишь реальный "
-            "контекст, модели — нет). 3. Итоговый вердикт.\n"
-            "Верни JSON: {\"label\": \"краткий вердикт\", \"confidence\": 0.0-1.0, "
+            "контекст, модели — нет). 3. Итоговый вердикт.\n" + task_extra +
+            f"Верни JSON: {{{label_rule}, \"confidence\": 0.0-1.0, "
             "\"rationale\": \"1-3 предложения\", \"key_factors\": [\"...\"]}\n\n"
             f"ВОПРОС: {req.question}\n\nОТВЕТЫ МОДЕЛЕЙ:\n{votes}\n\nКОНТЕКСТ:\n{context}"
         )
@@ -103,11 +115,13 @@ class SwarmOrchestrator:
             return AdvisoryVerdict(
                 label=d.get("label", "?"), confidence=float(d.get("confidence", 0.5)),
                 rationale=d.get("rationale", ""), key_factors=d.get("key_factors", []),
-                meta={"votes": answers, "raw_synthesis": raw},
+                advisor_id="swarm-ds@v1",
+                meta={"votes": answers, "raw_synthesis": raw, "intent": req.intent},
             )
         except Exception:
             return AdvisoryVerdict(label="synthesis_parse_error", confidence=0.3,
-                                   rationale=raw[:500], meta={"votes": answers})
+                                   rationale=raw[:500], advisor_id="swarm-ds@v1",
+                                   meta={"votes": answers})
 
     def consult(self, req: AdvisoryRequest) -> Optional[AdvisoryVerdict]:
         t0 = time.monotonic()
