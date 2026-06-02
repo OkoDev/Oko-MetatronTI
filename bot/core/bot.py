@@ -382,6 +382,45 @@ class TradingAlertBot:
         logger.info("Запуск бота с поддержкой подписок...")
 
         async def _run():
+            # DEV-231 (30.05): event loop профайлер — логает блокирующие callback'и >threshold.
+            # Корень: rtt BingX в боте 9-17с при ~1с извне. WS off не помог (DEV-230).
+            # Включается через config performance.event_loop_debug: true.
+            try:
+                from core.infra.config_loader import config as _cfg_el
+                if _cfg_el.get("performance.event_loop_debug", False):
+                    _threshold = float(_cfg_el.get("performance.slow_callback_threshold_sec", 0.5))
+                    _loop = asyncio.get_running_loop()
+                    _loop.set_debug(True)
+                    _loop.slow_callback_duration = _threshold
+                    logger.warning("[EventLoop] DEBUG ON — slow_callback_threshold=%.2fs", _threshold)
+                    # Task sampler — раз в 30с логирует топ типов pending tasks.
+                    # Если очередь растёт / dominates один тип — это и есть bottleneck.
+                    async def _task_sampler():
+                        from collections import Counter
+                        while True:
+                            await asyncio.sleep(30)
+                            try:
+                                tasks = asyncio.all_tasks()
+                                names = Counter()
+                                for t in tasks:
+                                    try:
+                                        coro = t.get_coro()
+                                        n = getattr(coro, '__qualname__', None) or getattr(coro, '__name__', 'unknown')
+                                    except Exception:
+                                        n = 'unknown'
+                                    names[n] += 1
+                                top = names.most_common(15)
+                                logger.warning(
+                                    "[TaskSampler] total=%d top15: %s",
+                                    len(tasks),
+                                    " ".join(f"{n}={c}" for n, c in top),
+                                )
+                            except Exception as _se:
+                                logger.warning("[TaskSampler] error: %s", _se)
+                    asyncio.create_task(_task_sampler())
+            except Exception as _e:
+                logger.warning("[EventLoop] debug setup failed: %s", _e)
+
             # === SELFTEST при старте (ARCH-14) ===
             from core.selftest import run_selftest
             selftest_report = await run_selftest(config=self.config, bot=self)
@@ -422,6 +461,7 @@ class TradingAlertBot:
             from bot.loops.health_loop import health_check_loop
             from bot.loops.obsidian_loop import obsidian_daily_loop
             from bot.loops.watchlist_loop import watchlist_loop
+            from bot.loops.advisor_loop import spawn_advisor   # ARCH-125: AdvisorPort (shadow, gated)
             from web.dashboard_server import start_dashboard
             from core.observability import decision_trace as _dt
 
@@ -461,6 +501,7 @@ class TradingAlertBot:
             asyncio.create_task(obsidian_daily_loop(self))   # Obsidian pipeline: 00:05 UTC
             asyncio.create_task(watchlist_loop(self))         # Watch List: каждые 4ч
             asyncio.create_task(morning_digest_loop(self))   # DEV-224: Утренний дайджест 07:00 UTC
+            spawn_advisor(self)   # ARCH-125: AdvisorPort брифинг (gated config advisor.enabled, default off)
             # ═══ ARCH-104: parallel observer для validation новых паттернов в VST/LIVE ═══
             try:
                 from bot.loops.arch104_observer_loop import arch104_observer_loop

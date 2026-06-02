@@ -577,8 +577,9 @@ class PerformanceEngine:
                            strength, confidence, created_at,
                            tsl_activated, tsl_tf,
                            tp_source, sl_source,
+                           magnet_tp_src, magnet_tp_rr,
                            max_price, min_price, max_R_possible,
-                           features_json
+                           features_json, exchange_order_id
                     FROM simulated_trades
                     WHERE status = 'OPEN'
                     ORDER BY created_at DESC

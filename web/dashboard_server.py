@@ -59,10 +59,19 @@ async def _handle_index(request: web.Request) -> web.Response:
     return web.FileResponse(Path(__file__).parent / "static/index.html")
 
 
+# DEV-231 (30.05): тяжёлые SQL handlers вынесены в thread pool через run_in_executor.
+# Корень: 823 RequestHandler slow callbacks / 5 мин, total 968s блокировок event loop.
+# sync_time HTTP стояли в очереди → timestamp invalid (recvWindow=5000ms expired).
+async def _run_sync(fn, *args, **kwargs):
+    """Helper: запустить sync функцию в thread pool, не блокируя event loop."""
+    _loop = asyncio.get_running_loop()
+    return await _loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+
 async def _handle_confluence_breakdown(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
     try:
-        data = engine.confluence_breakdown()
+        data = await _run_sync(engine.confluence_breakdown)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -75,7 +84,7 @@ async def _handle_confluence_breakdown(request: web.Request) -> web.Response:
 async def _handle_breakeven_stats(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
     try:
-        data = engine.breakeven_stats()
+        data = await _run_sync(engine.breakeven_stats)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -85,16 +94,21 @@ async def _handle_breakeven_stats(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+def _analytics_compute_sync(engine) -> dict:
+    """4 sync вызова engine — выполняются в thread pool. DEV-231."""
+    return {
+        "by_session":    engine.by_session(),
+        "r_distribution": engine.r_distribution(),
+        "pnl_calendar":  engine.pnl_calendar(),
+        "mfe_scatter":   engine.mfe_scatter(),
+    }
+
+
 async def _handle_analytics(request: web.Request) -> web.Response:
     """GET /api/stats/analytics — данные для DEV-116 графиков."""
     engine: PerformanceEngine = request.app["engine"]
     try:
-        data = {
-            "by_session":    engine.by_session(),
-            "r_distribution": engine.r_distribution(),
-            "pnl_calendar":  engine.pnl_calendar(),
-            "mfe_scatter":   engine.mfe_scatter(),
-        }
+        data = await _run_sync(_analytics_compute_sync, engine)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -108,14 +122,59 @@ async def _handle_analytics(request: web.Request) -> web.Response:
 async def _handle_equity(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
     try:
-        data = engine.equity_data()
+        # DEV-231: тяжёлый payload (3.77 MB) — sync вычисление + JSON serialize в thread pool
+        data = await _run_sync(engine.equity_data)
+        payload_str = await _run_sync(json.dumps, data, ensure_ascii=False, default=str)
         return web.Response(
-            text=json.dumps(data, ensure_ascii=False, default=str),
+            text=payload_str,
             content_type="application/json",
             charset="utf-8",
         )
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+def _signal_weights_compute_sync(engine, days: int) -> dict:
+    """DEV-231: SQL + pivot для signal_weights_history — выполняется в thread pool."""
+    import sqlite3 as _sqlite3
+    db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+    with _sqlite3.connect(db_path, timeout=30) as conn:
+        conn.row_factory = _sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT computed_at, signal_type, adapted_weight, base_weight,
+                   ema_avg_r, full_avg_r, n_trades, method, half_life
+            FROM signal_weights_history
+            WHERE computed_at >= datetime('now', ?)
+            ORDER BY computed_at ASC
+            """,
+            (f"-{days} days",),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    points: Dict[str, Dict[str, Any]] = {}
+    base_weights: Dict[str, float] = {}
+    ema_r_by_point: Dict[str, Dict[str, float]] = {}
+    signal_types: set = set()
+    for r in rows:
+        t = r["computed_at"]
+        st = r["signal_type"]
+        signal_types.add(st)
+        p = points.setdefault(t, {"t": t, "weights": {}})
+        p["weights"][st] = r["adapted_weight"]
+        ema_r_by_point.setdefault(t, {})[st] = r["ema_avg_r"]
+        if r["base_weight"] is not None:
+            base_weights[st] = r["base_weight"]
+    ordered_points = [
+        {"t": t, "weights": points[t]["weights"], "ema_avg_r": ema_r_by_point.get(t, {})}
+        for t in sorted(points.keys())
+    ]
+    return {
+        "days": days,
+        "signal_types": sorted(signal_types),
+        "points": ordered_points,
+        "base_weights": base_weights,
+    }
 
 
 async def _handle_signal_weights_history(request: web.Request) -> web.Response:
@@ -131,48 +190,8 @@ async def _handle_signal_weights_history(request: web.Request) -> web.Response:
     days = max(1, min(days, 90))
 
     try:
-        import sqlite3 as _sqlite3
-        db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
-        with _sqlite3.connect(db_path, timeout=30) as conn:
-            conn.row_factory = _sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT computed_at, signal_type, adapted_weight, base_weight,
-                       ema_avg_r, full_avg_r, n_trades, method, half_life
-                FROM signal_weights_history
-                WHERE computed_at >= datetime('now', ?)
-                ORDER BY computed_at ASC
-                """,
-                (f"-{days} days",),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-
-        # Pivot: точки по computed_at с weights-map + base_weights
-        points: Dict[str, Dict[str, Any]] = {}
-        base_weights: Dict[str, float] = {}
-        ema_r_by_point: Dict[str, Dict[str, float]] = {}
-        signal_types: set = set()
-        for r in rows:
-            t = r["computed_at"]
-            st = r["signal_type"]
-            signal_types.add(st)
-            p = points.setdefault(t, {"t": t, "weights": {}})
-            p["weights"][st] = r["adapted_weight"]
-            ema_r_by_point.setdefault(t, {})[st] = r["ema_avg_r"]
-            if r["base_weight"] is not None:
-                base_weights[st] = r["base_weight"]
-
-        ordered_points = [
-            {"t": t, "weights": points[t]["weights"], "ema_avg_r": ema_r_by_point.get(t, {})}
-            for t in sorted(points.keys())
-        ]
-        data = {
-            "days": days,
-            "signal_types": sorted(signal_types),
-            "points": ordered_points,
-            "base_weights": base_weights,
-        }
+        # DEV-231: SQL + pivot в thread pool
+        data = await _run_sync(_signal_weights_compute_sync, engine, days)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -234,106 +253,123 @@ async def _handle_stats(request: web.Request) -> web.Response:
         return await _stats_compute_and_cache(request)
 
 
+def _compute_stats_payload_sync(engine, dc, bot) -> str:
+    """DEV-231 (30.05): тяжёлая sync часть _handle_stats для run_in_executor.
+    Раньше блокировала event loop на 1.24s avg (493s/5min из task sampler).
+    SQL + open_trades enrichment + JSON dumps теперь в thread pool, не event loop.
+    """
+    data = engine.full_stats()
+    # Обогащаем open_trades текущей ценой, нереализованным P&L и MFE
+    for t in data.get("open_trades", []):
+        cur = _current_price_from_cache(dc, t["symbol"]) if dc else None
+        t["current_price"] = cur
+        ep = t.get("entry_price") or 0
+        osl = t.get("original_sl") or None
+        sl  = t.get("stop_loss") or None
+        direction = t.get("direction", "LONG")
+        # 27.05.2026 (r_math refactor): все вычисления R через core.trading.r_math.
+        # 1R = |entry - original_sl| (исходный риск); если NULL → fallback на текущий
+        # stop_loss. Sanity clamp [-15,+15] защищает от sl_dist≈0 артефактов
+        # (#15101 SWARMS показал +8103R через текущий stop_loss).
+        from core.trading.r_math import compute_one_r, compute_r, clamp_r
+        one_r, _r_src = compute_one_r(ep, osl, fallback_sl=sl)
+        if cur is not None and ep:
+            if direction == "LONG":
+                pnl_pct = (cur - ep) / ep * 100
+            else:
+                pnl_pct = (ep - cur) / ep * 100
+            t["unrealized_pct"] = round(pnl_pct, 2)
+            _r = compute_r(direction, ep, cur, one_r) if one_r else None
+            _r = clamp_r(_r)
+            t["unrealized_r"] = round(_r, 2) if _r is not None else None
+        else:
+            t["unrealized_pct"] = None
+            t["unrealized_r"] = None
+        # MFE: max R достигнутый за время жизни сделки. Тоже от original_sl.
+        max_r = t.get("max_R_possible")
+        if max_r is None and ep and one_r:
+            max_p = t.get("max_price")
+            min_p = t.get("min_price")
+            _peak = float(max_p) if direction == "LONG" and max_p else (
+                    float(min_p) if direction == "SHORT" and min_p else None)
+            if _peak is not None:
+                max_r = clamp_r(compute_r(direction, ep, _peak, one_r))
+        t["mfe_r"] = round(max_r, 2) if max_r is not None else None
+        # Cascade level из features_json
+        try:
+            fj = t.get("features_json")
+            if fj:
+                import json as _json
+                _fj = _json.loads(fj) if isinstance(fj, str) else fj
+                t["cascade_level"] = _fj.get("cascade_level") or _fj.get("tsl_tf")
+                t["signal_mode"] = _fj.get("signal_mode") or _fj.get("trigger_source")
+                confs = _fj.get("confirmations") or []
+                t["conf_sources"] = [c.get("source", "") for c in confs if isinstance(c, dict)]
+            else:
+                t["cascade_level"] = t.get("tsl_tf")
+                t["signal_mode"] = None
+                t["conf_sources"] = []
+        except Exception:
+            t["cascade_level"] = t.get("tsl_tf")
+            t["signal_mode"] = None
+            t["conf_sources"] = []
+
+    # BTC 4h regime
+    btc_4h_regime = None
+    if bot:
+        _cache = getattr(bot, "_btc_4h_regime_cache", None)
+        if _cache:
+            btc_4h_regime = _cache.get("regime")
+
+    # Risk Exposure + Open P&L R
+    open_trades = data.get("open_trades", [])
+    deposit_usdt = 1000.0
+    risk_pct = 1.0
+    try:
+        import sqlite3 as _sqlite3
+        db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+        with _sqlite3.connect(db_path) as _conn:
+            _row = _conn.execute(
+                "SELECT deposit_usdt, risk_pct FROM user_settings ORDER BY user_id LIMIT 1"
+            ).fetchone()
+            if _row:
+                deposit_usdt = float(_row[0]) or deposit_usdt
+                risk_pct = float(_row[1]) or risk_pct
+    except Exception:
+        pass
+    # DEV-231 (30.05): разделение OPEN на VST (есть exchange_order_id) и shadow (нет).
+    n_open = len(open_trades)
+    n_vst    = sum(1 for t in open_trades if t.get("exchange_order_id"))
+    n_shadow = n_open - n_vst
+    for t in open_trades:
+        t["is_shadow"] = not bool(t.get("exchange_order_id"))
+    total_risk_usdt = n_vst * deposit_usdt * risk_pct / 100.0
+    total_risk_pct  = total_risk_usdt / deposit_usdt * 100.0 if deposit_usdt else 0.0
+    open_pnl_r = sum(t["unrealized_r"] for t in open_trades if t.get("unrealized_r") is not None)
+    data["btc_4h_regime"]      = btc_4h_regime
+    data["open_count"]         = n_open
+    data["open_vst_count"]     = n_vst
+    data["open_shadow_count"]  = n_shadow
+    data["risk_exposure_pct"]  = round(total_risk_pct, 2)
+    data["risk_exposure_usdt"] = round(total_risk_usdt, 2)
+    data["deposit_usdt"]       = deposit_usdt
+    data["open_pnl_r"]         = round(open_pnl_r, 2)
+    data["exchange_health"]      = getattr(bot, "exchange_health", "HEALTHY") if bot else "HEALTHY"
+    data["exchange_latency_ms"]  = round(getattr(bot, "exchange_latency_ms", 0.0), 0) if bot else 0
+    return json.dumps(data, ensure_ascii=False, default=str)
+
+
 async def _stats_compute_and_cache(request: web.Request) -> web.Response:
     import time as _time
     engine: PerformanceEngine = request.app["engine"]
     dc = request.app.get("data_collector")
+    bot = request.app.get("bot")
     try:
-        data = engine.full_stats()
-        # Обогащаем open_trades текущей ценой, нереализованным P&L и MFE
-        for t in data.get("open_trades", []):
-            cur = _current_price_from_cache(dc, t["symbol"]) if dc else None
-            t["current_price"] = cur
-            ep = t.get("entry_price") or 0
-            osl = t.get("original_sl") or None
-            sl  = t.get("stop_loss") or None
-            direction = t.get("direction", "LONG")
-            # 27.05.2026 (r_math refactor): все вычисления R через core.trading.r_math.
-            # 1R = |entry - original_sl| (исходный риск); если NULL → fallback на текущий
-            # stop_loss. Sanity clamp [-15,+15] защищает от sl_dist≈0 артефактов
-            # (#15101 SWARMS показал +8103R через текущий stop_loss).
-            from core.trading.r_math import compute_one_r, compute_r, clamp_r
-            one_r, _r_src = compute_one_r(ep, osl, fallback_sl=sl)
-            if cur is not None and ep:
-                if direction == "LONG":
-                    pnl_pct = (cur - ep) / ep * 100
-                else:
-                    pnl_pct = (ep - cur) / ep * 100
-                t["unrealized_pct"] = round(pnl_pct, 2)
-                _r = compute_r(direction, ep, cur, one_r) if one_r else None
-                _r = clamp_r(_r)
-                t["unrealized_r"] = round(_r, 2) if _r is not None else None
-            else:
-                t["unrealized_pct"] = None
-                t["unrealized_r"] = None
-            # MFE: max R достигнутый за время жизни сделки. Тоже от original_sl.
-            max_r = t.get("max_R_possible")
-            if max_r is None and ep and one_r:
-                max_p = t.get("max_price")
-                min_p = t.get("min_price")
-                _peak = float(max_p) if direction == "LONG" and max_p else (
-                        float(min_p) if direction == "SHORT" and min_p else None)
-                if _peak is not None:
-                    max_r = clamp_r(compute_r(direction, ep, _peak, one_r))
-            t["mfe_r"] = round(max_r, 2) if max_r is not None else None
-            # Cascade level из features_json
-            try:
-                fj = t.get("features_json")
-                if fj:
-                    import json as _json
-                    _fj = _json.loads(fj) if isinstance(fj, str) else fj
-                    t["cascade_level"] = _fj.get("cascade_level") or _fj.get("tsl_tf")
-                    t["signal_mode"] = _fj.get("signal_mode") or _fj.get("trigger_source")
-                    confs = _fj.get("confirmations") or []
-                    t["conf_sources"] = [c.get("source", "") for c in confs if isinstance(c, dict)]
-                else:
-                    t["cascade_level"] = t.get("tsl_tf")
-                    t["signal_mode"] = None
-                    t["conf_sources"] = []
-            except Exception:
-                t["cascade_level"] = t.get("tsl_tf")
-                t["signal_mode"] = None
-                t["conf_sources"] = []
-
-        # BTC 4h regime
-        bot = request.app.get("bot")
-        btc_4h_regime = None
-        if bot:
-            _cache = getattr(bot, "_btc_4h_regime_cache", None)
-            if _cache:
-                btc_4h_regime = _cache.get("regime")
-
-        # Risk Exposure + Open P&L R
-        open_trades = data.get("open_trades", [])
-        deposit_usdt = 1000.0
-        risk_pct = 1.0
-        try:
-            import sqlite3 as _sqlite3
-            db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
-            with _sqlite3.connect(db_path) as _conn:
-                _row = _conn.execute(
-                    "SELECT deposit_usdt, risk_pct FROM user_settings ORDER BY user_id LIMIT 1"
-                ).fetchone()
-                if _row:
-                    deposit_usdt = float(_row[0]) or deposit_usdt
-                    risk_pct = float(_row[1]) or risk_pct
-        except Exception:
-            pass
-        n_open = len(open_trades)
-        total_risk_usdt = n_open * deposit_usdt * risk_pct / 100.0
-        total_risk_pct  = total_risk_usdt / deposit_usdt * 100.0 if deposit_usdt else 0.0
-        open_pnl_r = sum(t["unrealized_r"] for t in open_trades if t.get("unrealized_r") is not None)
-        data["btc_4h_regime"]      = btc_4h_regime
-        data["risk_exposure_pct"]  = round(total_risk_pct, 2)
-        data["risk_exposure_usdt"] = round(total_risk_usdt, 2)
-        data["deposit_usdt"]       = deposit_usdt
-        data["open_pnl_r"]         = round(open_pnl_r, 2)
-        # DEV-103: Exchange Health badge
-        data["exchange_health"]      = getattr(bot, "exchange_health", "HEALTHY") if bot else "HEALTHY"
-        data["exchange_latency_ms"]  = round(getattr(bot, "exchange_latency_ms", 0.0), 0) if bot else 0
-
-        # D-074: сериализация один раз → cache + ответ
-        payload_str = json.dumps(data, ensure_ascii=False, default=str)
+        # DEV-231 (30.05): тяжёлая sync работа в thread pool — НЕ блокирует event loop.
+        # До правки: 399 RequestHandler slow callbacks за 5 мин, avg 1.24s, total 493s
+        # (event loop был занят дашбордом >100% времени → sync_time HTTP стояли в очереди).
+        _loop = asyncio.get_running_loop()
+        payload_str = await _loop.run_in_executor(None, _compute_stats_payload_sync, engine, dc, bot)
         _STATS_CACHE["payload"] = payload_str
         _STATS_CACHE["ts"] = _time.time()
         return web.Response(
@@ -790,7 +826,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
             for pos in result["positions"]:
-                db_sym = _bx_to_db(pos["symbol"])
+                db_sym = from_bingx_symbol(pos["symbol"])
                 st = sl_tp_map.get(db_sym) or {}
                 pos["stop_loss"]  = st.get("stop_loss")
                 pos["take_profit"] = st.get("take_profit")
@@ -842,93 +878,93 @@ async def _handle_exchange_history(request: web.Request) -> web.Response:
         days = max(1, min(days, 90))
         engine = request.app.get("engine")
         db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
-
-        import sqlite3 as _sq
-        from datetime import timezone as _tz, timedelta as _td
-        cutoff = (datetime.now(_tz.utc) - _td(days=days)).isoformat()
-
-        with _sq.connect(db_path) as conn:
-            conn.row_factory = _sq.Row
-            rows = conn.execute(
-                """
-                SELECT id, symbol, direction, signal_type,
-                       entry_price, actual_entry_price, exit_price,
-                       stop_loss, take_profit,
-                       status, profit_pct, R_multiple,
-                       strength, confidence, regime,
-                       created_at, closed_at, duration_minutes,
-                       exchange_order_id, tsl_activated
-                FROM simulated_trades
-                WHERE exchange_order_id IS NOT NULL
-                  AND status IN ('TP','SL','TSL','EXPIRED')
-                  AND closed_at >= ?
-                ORDER BY closed_at DESC
-                LIMIT 500
-                """,
-                (cutoff,),
-            ).fetchall()
-
-        # DEV-190: effective_status — учёт скрытых TSL exits для VST
-        from core.trading.effective_status import effective_status as _eff
-        trades = []
-        for r in rows:
-            ep = r["actual_entry_price"] or r["entry_price"]
-            eff = _eff(r["status"], r["R_multiple"], r["tsl_activated"])
-            trades.append({
-                "id":              r["id"],
-                "symbol":          r["symbol"],
-                "direction":       r["direction"],
-                "signal_type":     r["signal_type"],
-                "entry_price":     ep,
-                "exit_price":      r["exit_price"],
-                "stop_loss":       r["stop_loss"],
-                "take_profit":     r["take_profit"],
-                "status":          r["status"],
-                "effective_status": eff,  # DEV-190
-                "profit_pct":      r["profit_pct"],
-                "R_multiple":      r["R_multiple"],
-                "strength":        r["strength"],
-                "confidence":      r["confidence"],
-                "regime":          r["regime"],
-                "created_at":      r["created_at"],
-                "closed_at":       r["closed_at"],
-                "duration_minutes": r["duration_minutes"],
-            })
-
-        # Агрегированные метрики (effective)
-        tp_cnt        = sum(1 for t in trades if t["status"] == "TP")
-        sl_cnt        = sum(1 for t in trades if t["status"] == "SL")
-        tsl_cnt       = sum(1 for t in trades if t["status"] == "TSL")
-        tsl_hidden_n  = sum(1 for t in trades if t["effective_status"] == "TSL_hidden_win")
-        sl_slipped_n  = sum(1 for t in trades if t["effective_status"] == "SL_slipped")
-        closed        = tp_cnt + sl_cnt + tsl_cnt
-        eff_wins      = tp_cnt + tsl_cnt + tsl_hidden_n
-        r_vals        = [t["R_multiple"] for t in trades if t["R_multiple"] is not None]
-        avg_r         = round(sum(r_vals) / len(r_vals), 3) if r_vals else None
-
+        # DEV-231: SQL LIMIT 500 + 500x effective_status + JSON serialize (255KB) — в thread pool
+        payload_str = await _run_sync(_exchange_history_compute_sync, db_path, days)
         return web.Response(
-            text=json.dumps({
-                "days":     days,
-                "total":    len(trades),
-                "summary": {
-                    "tp":             tp_cnt,
-                    "sl":             sl_cnt,
-                    "tsl":            tsl_cnt,
-                    "tsl_hidden":     tsl_hidden_n,    # DEV-190: скрытые TSL exits
-                    "tsl_effective":  tsl_cnt + tsl_hidden_n,
-                    "sl_slipped":     sl_slipped_n,    # сделки с overshoot >1R (DEV-185)
-                    "win_rate":       round(eff_wins / closed * 100, 1) if closed else None,
-                    "win_rate_raw":   round((tp_cnt + tsl_cnt) / closed * 100, 1) if closed else None,
-                    "avg_r":          avg_r,
-                },
-                "trades": trades,
-            }, ensure_ascii=False, default=str),
+            text=payload_str,
             content_type="application/json", charset="utf-8",
         )
     except Exception as e:
         logger.exception("_handle_exchange_history: %s", e)
         return web.Response(status=500, text=json.dumps({"error": str(e)}),
                             content_type="application/json")
+
+
+def _exchange_history_compute_sync(db_path: str, days: int) -> str:
+    """DEV-231: SQL + effective_status + JSON для /api/exchange_history."""
+    import sqlite3 as _sq
+    from datetime import timezone as _tz, timedelta as _td
+    cutoff = (datetime.now(_tz.utc) - _td(days=days)).isoformat()
+    with _sq.connect(db_path) as conn:
+        conn.row_factory = _sq.Row
+        rows = conn.execute(
+            """
+            SELECT id, symbol, direction, signal_type,
+                   entry_price, actual_entry_price, exit_price,
+                   stop_loss, take_profit,
+                   status, profit_pct, R_multiple,
+                   strength, confidence, regime,
+                   created_at, closed_at, duration_minutes,
+                   exchange_order_id, tsl_activated
+            FROM simulated_trades
+            WHERE exchange_order_id IS NOT NULL
+              AND status IN ('TP','SL','TSL','EXPIRED')
+              AND closed_at >= ?
+            ORDER BY closed_at DESC
+            LIMIT 500
+            """,
+            (cutoff,),
+        ).fetchall()
+    from core.trading.effective_status import effective_status as _eff
+    trades = []
+    for r in rows:
+        ep = r["actual_entry_price"] or r["entry_price"]
+        eff = _eff(r["status"], r["R_multiple"], r["tsl_activated"])
+        trades.append({
+            "id":              r["id"],
+            "symbol":          r["symbol"],
+            "direction":       r["direction"],
+            "signal_type":     r["signal_type"],
+            "entry_price":     ep,
+            "exit_price":      r["exit_price"],
+            "stop_loss":       r["stop_loss"],
+            "take_profit":     r["take_profit"],
+            "status":          r["status"],
+            "effective_status": eff,
+            "profit_pct":      r["profit_pct"],
+            "R_multiple":      r["R_multiple"],
+            "strength":        r["strength"],
+            "confidence":      r["confidence"],
+            "regime":          r["regime"],
+            "created_at":      r["created_at"],
+            "closed_at":       r["closed_at"],
+            "duration_minutes": r["duration_minutes"],
+        })
+    tp_cnt        = sum(1 for t in trades if t["status"] == "TP")
+    sl_cnt        = sum(1 for t in trades if t["status"] == "SL")
+    tsl_cnt       = sum(1 for t in trades if t["status"] == "TSL")
+    tsl_hidden_n  = sum(1 for t in trades if t["effective_status"] == "TSL_hidden_win")
+    sl_slipped_n  = sum(1 for t in trades if t["effective_status"] == "SL_slipped")
+    closed        = tp_cnt + sl_cnt + tsl_cnt
+    eff_wins      = tp_cnt + tsl_cnt + tsl_hidden_n
+    r_vals        = [t["R_multiple"] for t in trades if t["R_multiple"] is not None]
+    avg_r         = round(sum(r_vals) / len(r_vals), 3) if r_vals else None
+    return json.dumps({
+        "days":     days,
+        "total":    len(trades),
+        "summary": {
+            "tp":             tp_cnt,
+            "sl":             sl_cnt,
+            "tsl":            tsl_cnt,
+            "tsl_hidden":     tsl_hidden_n,
+            "tsl_effective":  tsl_cnt + tsl_hidden_n,
+            "sl_slipped":     sl_slipped_n,
+            "win_rate":       round(eff_wins / closed * 100, 1) if closed else None,
+            "win_rate_raw":   round((tp_cnt + tsl_cnt) / closed * 100, 1) if closed else None,
+            "avg_r":          avg_r,
+        },
+        "trades": trades,
+    }, ensure_ascii=False, default=str)
 
 
 async def _handle_trading_page(request: web.Request) -> web.Response:
@@ -952,12 +988,19 @@ async def _handle_trading_status(request: web.Request) -> web.Response:
         "vst_balance": None,
     }
 
-    # Для VST/LIVE — получаем реальный баланс
+    # Для VST/LIVE — получаем реальный баланс (DEV-231: wait_for 2s — защита от висящего BingX).
+    # При DEGRADED биже get_available_balance может зависнуть >10s и заблокировать event loop.
+    # На timeout отдаём vst_balance=None — UI не блокируется, бот работает.
     if mode_label in ("VST", "LIVE"):
         try:
             bot = request.app.get("bot")
             if bot and hasattr(bot, "order_executor"):
-                result["vst_balance"] = round(await bot.order_executor.get_available_balance(), 2)
+                result["vst_balance"] = round(
+                    await asyncio.wait_for(bot.order_executor.get_available_balance(), timeout=2.0),
+                    2,
+                )
+        except asyncio.TimeoutError:
+            logger.debug("[/api/trading/status] BingX balance timeout 2s — vst_balance=None")
         except Exception:
             pass
 
@@ -2005,6 +2048,19 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
             if send_dashboard:
                 try:
                     stats = _response_json(await _handle_stats(request))
+                    # FIX 26.05: добавляем status/btc_regime блок (из _handle_dashboard_api)
+                    # в stats — иначе topbar badges scan_health/BingX/BTC4h не получают
+                    # данные (SSE event:dashboard их раньше не слал). Это исправляет
+                    # давний баг "? Скан (мп 0)" в старом дашборде.
+                    try:
+                        dash_data = _response_json(await _handle_dashboard_api(request))
+                        if isinstance(dash_data, dict):
+                            stats["status"] = dash_data.get("status", {})
+                            stats["btc_regime"] = dash_data.get("btc_regime")
+                            stats["btc_4h_regime"] = dash_data.get("btc_4h_regime") or dash_data.get("btc_regime")
+                    except Exception as _de:
+                        logger.debug("[SSE] dashboard status enrich failed: %s", _de)
+
                     dashboard_payload = {
                         "stats": stats,
                         "confluence": await _safe_json("confluence", _handle_confluence_breakdown),
@@ -2063,47 +2119,34 @@ async def _handle_dropped(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         hours, limit, detail = 24, 20, False
 
+    # DEV-231: SQL в thread pool
     if detail:
-        data = get_recent_drops(db_path, limit=limit, hours=hours)
+        data = await _run_sync(get_recent_drops, db_path, limit=limit, hours=hours)
         return web.json_response({"recent": data, "hours": hours, "limit": limit})
     else:
-        data = get_top_drops(db_path, limit=limit, hours=hours)
+        data = await _run_sync(get_top_drops, db_path, limit=limit, hours=hours)
         return web.json_response({"drops": data, "hours": hours, "limit": limit})
 
 
 # ── DEV-207: ATR Change стратегия — агрегаты по trigger_source ──────────────
 
-async def _handle_atr_stats(request: web.Request) -> web.Response:
-    """GET /api/atr_stats — метрики ATR Change стратегии (1h / 4h / 15m).
-
-    Группирует сделки по features_json.atr_tf (если указан) или
-    извлекает таймфрейм из features_json.trigger_source ('atr_change_1h' → '1h').
-
-    Возвращает по каждому TF: closed (n), open, wr, avg_r, total_r, best_r.
-    """
+def _atr_stats_compute_sync(db_path: str) -> dict:
+    """DEV-231: SQL + агрегация ATR stats — в thread pool."""
     import sqlite3
-    engine: PerformanceEngine = request.app["engine"]
-    db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
 
     def _tf_from_row(features_json):
-        """Извлекает TF ATR-триггера. Сначала пробует прямые поля,
-        затем сканирует features_json.confirmations[] на source='atr_change_*'.
-        Если есть несколько — берёт с максимальным weight (старший TF).
-        """
         if not features_json:
             return None
         try:
             fj = json.loads(features_json)
         except Exception:
             return None
-        # Прямые поля (новые сделки или ручная разметка)
         tf = fj.get("atr_tf")
         if tf:
             return str(tf)
         src = fj.get("trigger_source", "")
         if isinstance(src, str) and src.startswith("atr_change_"):
             return src[len("atr_change_"):]
-        # Сканируем confirmations[]
         confs = fj.get("confirmations") or []
         best = None
         for c in confs:
@@ -2122,37 +2165,31 @@ async def _handle_atr_stats(request: web.Request) -> web.Response:
         "4h": {"closed": 0, "open": 0, "wins": 0, "r_sum": 0.0, "best_r": None},
         "15m": {"closed": 0, "open": 0, "wins": 0, "r_sum": 0.0, "best_r": None},
     }
-
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT status, R_multiple, features_json
-                FROM simulated_trades
-                WHERE features_json IS NOT NULL
-                  AND (features_json LIKE '%atr_change_%' OR features_json LIKE '%"atr_tf"%')
-            """)
-            for row in cur.fetchall():
-                tf = _tf_from_row(row["features_json"])
-                if tf not in buckets:
-                    continue
-                b = buckets[tf]
-                if row["status"] == "OPEN":
-                    b["open"] += 1
-                    continue
-                b["closed"] += 1
-                r = row["R_multiple"]
-                if r is not None:
-                    b["r_sum"] += float(r)
-                    if float(r) > 0:
-                        b["wins"] += 1
-                    if b["best_r"] is None or float(r) > b["best_r"]:
-                        b["best_r"] = float(r)
-    except Exception as e:
-        logger.exception("dashboard /api/atr_stats error: %s", e)
-        return web.json_response({"error": str(e)}, status=500)
-
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT status, R_multiple, features_json
+            FROM simulated_trades
+            WHERE features_json IS NOT NULL
+              AND (features_json LIKE '%atr_change_%' OR features_json LIKE '%"atr_tf"%')
+        """)
+        for row in cur.fetchall():
+            tf = _tf_from_row(row["features_json"])
+            if tf not in buckets:
+                continue
+            b = buckets[tf]
+            if row["status"] == "OPEN":
+                b["open"] += 1
+                continue
+            b["closed"] += 1
+            r = row["R_multiple"]
+            if r is not None:
+                b["r_sum"] += float(r)
+                if float(r) > 0:
+                    b["wins"] += 1
+                if b["best_r"] is None or float(r) > b["best_r"]:
+                    b["best_r"] = float(r)
     result = {}
     for tf, b in buckets.items():
         n = b["closed"]
@@ -2164,8 +2201,25 @@ async def _handle_atr_stats(request: web.Request) -> web.Response:
             "total_r": round(b["r_sum"], 2),
             "best_r": round(b["best_r"], 2) if b["best_r"] is not None else None,
         }
-    return web.json_response({"atr": result})
+    return result
 
+
+async def _handle_atr_stats(request: web.Request) -> web.Response:
+    """GET /api/atr_stats — метрики ATR Change стратегии (1h / 4h / 15m).
+
+    Группирует сделки по features_json.atr_tf (если указан) или
+    извлекает таймфрейм из features_json.trigger_source ('atr_change_1h' → '1h').
+
+    Возвращает по каждому TF: closed (n), open, wr, avg_r, total_r, best_r.
+    """
+    engine: PerformanceEngine = request.app["engine"]
+    db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+    try:
+        result = await _run_sync(_atr_stats_compute_sync, db_path)
+        return web.json_response({"atr": result})
+    except Exception as e:
+        logger.exception("dashboard /api/atr_stats error: %s", e)
+        return web.json_response({"error": str(e)}, status=500)
 
 async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000,
                           config=None, data_collector=None, trade_simulator=None, bot=None) -> None:

@@ -24,13 +24,14 @@ from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-# Пар на один WS-батч. BingX лимит ~200-300 подписок на соединение.
-# 100 пар × 1 подписка = безопасный запас. 534 пары → 6 батчей.
-_BATCH_SIZE      = 100
+# Defaults (fallback при отсутствии config). Реальные значения читаются из
+# performance.ws_* в config.yaml при __init__ инстанса (27.05.2026).
+# BingX лимит ~200 подписок на соединение, 500 req/10s per IP.
+_BATCH_SIZE      = 100  # default ticker batch (config: performance.ws_ticker_batch_size)
 # D-066 STABLE (25.05 21:15): rollback к Phase D — 1 instance × ≤120 пар.
 # Phase F (1×240) дал плато scan_loop 750s — нелинейный overhead в ccxt.pro.
-_OHLCV_BATCH_SIZE = 120
-_RECONNECT_DELAY = 5.0   # пауза перед reconnect (сек)
+_OHLCV_BATCH_SIZE = 120  # default ohlcv batch (config: performance.ws_ohlcv_batch_size)
+_RECONNECT_DELAY = 5.0   # default reconnect base (config: performance.ws_reconnect_base_delay_sec)
 _PRICE_TTL       = 60.0  # цена считается устаревшей через N сек
 _OHLCV_TF        = "15m" # TF для OHLCV-подписок (фаза 2)
 
@@ -63,6 +64,22 @@ class WsFeed:
         self._errors         = 0
         self._started_at: Optional[float] = None
 
+        # 27.05.2026: конфигурируемые параметры. Защита от ImportError —
+        # тесты импортируют WsFeed без полной инициализации config.
+        try:
+            from core.infra.config_loader import config as _cfg
+            self._batch_size           = int(_cfg.get("performance.ws_ticker_batch_size", _BATCH_SIZE))
+            self._ohlcv_batch_size     = int(_cfg.get("performance.ws_ohlcv_batch_size", _OHLCV_BATCH_SIZE))
+            self._batch_start_delay    = float(_cfg.get("performance.ws_batch_start_delay_sec", 2.0))
+            self._reconnect_base_delay = float(_cfg.get("performance.ws_reconnect_base_delay_sec", _RECONNECT_DELAY))
+            self._ohlcv_error_pause    = float(_cfg.get("performance.ws_ohlcv_error_pause_sec", 1.0))
+        except Exception:
+            self._batch_size           = _BATCH_SIZE
+            self._ohlcv_batch_size     = _OHLCV_BATCH_SIZE
+            self._batch_start_delay    = 2.0
+            self._reconnect_base_delay = _RECONNECT_DELAY
+            self._ohlcv_error_pause    = 1.0
+
     # ── Публичный API ──────────────────────────────
 
     def get_price(self, symbol: str) -> Optional[float]:
@@ -92,13 +109,18 @@ class WsFeed:
         self._running    = True
         self._started_at = time.time()
 
-        # Фаза 1: ticker-батчи по _BATCH_SIZE пар — стартуем с задержкой 2 сек между батчами
+        logger.info("[WsFeed] config: ticker_batch=%d ohlcv_batch=%d start_delay=%.1fs "
+                    "reconnect_base=%.1fs ohlcv_err_pause=%.1fs",
+                    self._batch_size, self._ohlcv_batch_size, self._batch_start_delay,
+                    self._reconnect_base_delay, self._ohlcv_error_pause)
+
+        # Фаза 1: ticker-батчи по self._batch_size пар — стартуем со staggered delay
         # чтобы не создавать spike соединений на BingX и не throttlить REST API скана
-        batches = [pairs[i:i+_BATCH_SIZE] for i in range(0, len(pairs), _BATCH_SIZE)]
+        batches = [pairs[i:i+self._batch_size] for i in range(0, len(pairs), self._batch_size)]
         ticker_tasks = []
         for idx, batch in enumerate(batches):
             if idx > 0:
-                await asyncio.sleep(2.0)  # 2 сек между батчами
+                await asyncio.sleep(self._batch_start_delay)
             ticker_tasks.append(asyncio.create_task(self._ticker_batch(batch, idx)))
 
         # D-073 (26.05): Phase A/B простая архитектура — 1 batch × все priority_pairs
@@ -106,7 +128,7 @@ class WsFeed:
         # 24.05 = 2M updates / 2 errors за 4ч. STABLE rollback теперь честный.
         ohlcv_tasks = []
         if priority_pairs and self._ohlcv_cache is not None:
-            _ohlcv_pairs = list(priority_pairs)[:_OHLCV_BATCH_SIZE]   # cap at 120
+            _ohlcv_pairs = list(priority_pairs)[:self._ohlcv_batch_size]
             logger.info(
                 "[WsFeed][D-066] OHLCV simple batch: %d пар на 1 instance",
                 len(_ohlcv_pairs),
@@ -168,7 +190,7 @@ class WsFeed:
         })
 
     async def _ticker_batch(self, batch: List[str], batch_idx: int) -> None:
-        """Непрерывный батч-цикл: один exchange на _BATCH_SIZE пар, reconnect при ошибке."""
+        """Непрерывный батч-цикл: один exchange на N пар (self._batch_size), reconnect при ошибке."""
         exchange = self._make_exchange()
         consecutive_errors = 0
 
@@ -185,7 +207,7 @@ class WsFeed:
             except Exception as e:
                 consecutive_errors += 1
                 self._errors += 1
-                delay = min(_RECONNECT_DELAY * consecutive_errors, 60.0)
+                delay = min(self._reconnect_base_delay * consecutive_errors, 60.0)
                 logger.warning("[WsFeed] batch=%d ошибка #%d: %s — reconnect через %.0fs",
                                batch_idx, consecutive_errors, e, delay)
                 await asyncio.sleep(delay)
@@ -262,7 +284,7 @@ class WsFeed:
             except Exception as e:
                 consecutive_errors += 1
                 self._errors += 1
-                delay = min(_RECONNECT_DELAY * consecutive_errors, 60.0)
+                delay = min(self._reconnect_base_delay * consecutive_errors, 60.0)
                 logger.warning(
                     "[WsFeed][D-066] batch=%d reconnect #%d: %s (%s) — через %.0fs",
                     batch_idx, consecutive_errors, e, type(e).__name__, delay,
@@ -332,7 +354,7 @@ class WsFeed:
                     if (now - loop_window_start) >= 60:
                         loop_window_start = now
                         loop_errors = 0
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(self._ohlcv_error_pause)
         finally:
             self._active_ohlcv.discard(symbol)
 

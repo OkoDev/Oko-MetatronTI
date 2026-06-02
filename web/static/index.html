@@ -634,9 +634,14 @@ function patchData(payload) {
     _openRows = d.open_trades;
     openTbl.innerHTML = renderOpenRows(d.open_trades);
   }
-  // Счётчик открытых в sidebar
+  // Счётчик открытых в sidebar — VST основной + shadow в title (DEV-231)
   const oc = document.getElementById('navOpenCount');
-  if (oc) oc.textContent = (d.open_trades || []).length;
+  if (oc) {
+    const vst = d.open_vst_count ?? (d.open_trades || []).length;
+    const shadow = d.open_shadow_count ?? 0;
+    oc.textContent = shadow > 0 ? `${vst}/${vst + shadow}` : `${vst}`;
+    oc.title = shadow > 0 ? `${vst} VST + ${shadow} shadow (BingX отказал)` : `${vst} VST позиций`;
+  }
 
   // ── Страница Аналитика: обновляем внутренний контейнер ──────────────────
   const analyticsContent = document.getElementById('page-analytics-content');
@@ -1845,7 +1850,7 @@ function render(d, cf, be, eq, an, swh) {
     <!-- ═══ PAGE: ОТКРЫТЫЕ ═══ -->
     <div class="page" id="page-open">
       <section>
-        <h2>Открытые позиции <span style="color:#8b949e;font-size:.9em;font-weight:400">(${(d.open_trades||[]).length})</span></h2>
+        <h2>Открытые позиции <span style="color:#8b949e;font-size:.9em;font-weight:400">(${d.open_vst_count ?? (d.open_trades||[]).length} VST${d.open_shadow_count ? ` <span style="color:#f0883e" title="Shadow trades — BingX отказал при открытии, только в симуляции">+ ${d.open_shadow_count} shadow</span>` : ''})</span></h2>
         ${openTradesTable(d.open_trades)}
       </section>
       <section id="exchangePosSection" style="display:none">
@@ -1892,9 +1897,14 @@ function render(d, cf, be, eq, an, swh) {
     </div>
   `;
   document.getElementById('app').innerHTML = html;
-  // Обновить счётчик открытых в sidebar
+  // Обновить счётчик открытых в sidebar — VST основной + shadow в title (DEV-231)
   const oc = document.getElementById('navOpenCount');
-  if (oc) oc.textContent = (d.open_trades||[]).length;
+  if (oc) {
+    const vst = d.open_vst_count ?? (d.open_trades || []).length;
+    const shadow = d.open_shadow_count ?? 0;
+    oc.textContent = shadow > 0 ? `${vst}/${vst + shadow}` : `${vst}`;
+    oc.title = shadow > 0 ? `${vst} VST + ${shadow} shadow (BingX отказал)` : `${vst} VST позиций`;
+  }
   // Обновить badges в topbar
   _patchTopbarBadges(d);
   // Восстановить активную страницу
@@ -2040,7 +2050,7 @@ function mfeCell(mfe_r) {
   return `<span style="color:${color};font-weight:600" title="Max R достигнутый за жизнь сделки">${mfe_r >= 0 ? '+' : ''}${mfe_r.toFixed(2)}R</span>`;
 }
 
-function tpCell(tp_price, tp_source, entry, direction) {
+function tpCell(tp_price, tp_source, entry, direction, magnet_src, magnet_rr) {
   if (!tp_price) return '<span style="color:#444">—</span>';
   let dist_pct = '';
   if (entry) {
@@ -2051,7 +2061,12 @@ function tpCell(tp_price, tp_source, entry, direction) {
   }
   const src = tp_source ? ` title="Источник: ${tp_source}"` : '';
   const srcLabel = tp_source ? ` <span style="color:#555;font-size:.68rem">${tp_source}</span>` : '';
-  return `<span class="green"${src}>${fmt(tp_price,4)}</span>${dist_pct}${srcLabel}`;
+  // ARCH-122 P2: магнит-тень (gravity), НЕ закрывает позицию — отдельная метка
+  const magRr = (magnet_rr != null) ? ` RR=${(+magnet_rr).toFixed(1)}` : '';
+  const magLabel = magnet_src
+    ? ` <span style="color:#b87333;font-size:.66rem" title="Магнит (shadow, не закрывает): ${magnet_src}${magRr}">🧲${magnet_src}</span>`
+    : '';
+  return `<span class="green"${src}>${fmt(tp_price,4)}</span>${dist_pct}${srcLabel}${magLabel}`;
 }
 
 // ── Сортировка ────────────────────────────────────────────────────────────
@@ -2218,7 +2233,7 @@ function renderOpenRows(rows) {
       <td class="${rClass}">${rStr}</td>
       <td>${mfeCell(r.mfe_r)}</td>
       <td class="red" title="${r.sl_source||''}">${fmt(r.stop_loss,4)}</td>
-      <td>${tpCell(r.take_profit, r.tp_source, r.entry_price, r.direction)}</td>
+      <td>${tpCell(r.take_profit, r.tp_source, r.entry_price, r.direction, r.magnet_tp_src, r.magnet_tp_rr)}</td>
       <td>${tslBadge(r.tsl_activated, r.tsl_tf)}</td>
       <td>${cascadeBadge(r.cascade_level)}</td>
       <td>${ageCell(r.created_at)}</td>
