@@ -311,11 +311,42 @@ def find_choch_ote(zz: List[tuple], breaks: List["StructureBreak"]) -> Optional[
     pts = [(ts, p) for ts, p in zz if ts <= b.ts] or zz[:2]
     if len(pts) < 2:
         return None
-    (a_ts, a), (c_ts, c) = pts[-2], pts[-1]   # последняя нога ZigZag перед CHoCH (H/L)
-    ote = build_ote(a, c)                       # 0=начало импульса, 1=конец (по H/L)
-    ote["from"] = (a_ts, a)
-    ote["to"] = (c_ts, c)
+    (a_ts, a), (c_ts, c) = pts[-2], pts[-1]   # последняя нога ZigZag (по H/L)
+    # H/L экстремумы ноги
+    if a >= c:
+        hp, hp_ts, lp, lp_ts = a, a_ts, c, c_ts
+    else:
+        hp, hp_ts, lp, lp_ts = c, c_ts, a, a_ts
+    # Правило пользователя: bull = от Low до High (OTE откат вниз, near low → LONG);
+    #                       bear = от High до Low (OTE откат вверх, near high → SHORT).
+    if b.direction == "bull":
+        ote = build_ote(hp, lp)               # 0=high, 1=low → direction long, OTE near low
+        ote["from"], ote["to"] = (hp_ts, hp), (lp_ts, lp)
+    else:
+        ote = build_ote(lp, hp)               # 0=low, 1=high → direction short, OTE near high
+        ote["from"], ote["to"] = (lp_ts, lp), (hp_ts, hp)
     ote["choch"] = b
+    return ote
+
+
+def last_swing_leg_ote(df: pd.DataFrame, length: int = 20) -> Optional[dict]:
+    """OTE от последней ЗНАЧИМОЙ последовательной ноги структуры (привязка к swing H/L).
+
+    Импульс = две последние СОСЕДНИЕ swing-точки (swings(length)) — реальная нога
+    high→low или low→high, привязанная к экстремумам (не глобальный поиск, не мелкая
+    ZigZag-нога). bull (нога вниз high→low) → OTE near low; bear (вверх) → near high.
+    """
+    sw = _swings_luxalgo(df, length)   # [(idx, price, 'H'/'L')] в порядке времени
+    if len(sw) < 2:
+        return None
+    (ai, ap, ak), (ci, cp, ck) = sw[-2], sw[-1]   # последняя нога: ap=начало, cp=конец
+    a_ts, c_ts = df.index[ai], df.index[ci]
+    # Правило пользователя: 0 = КОНЕЦ импульса (cp), 1 = НАЧАЛО (ap). Откат к началу.
+    #   нога low→high (импульс ВВЕРХ) → 0=high, 1=low → OTE near low → LONG (откат вниз)
+    #   нога high→low (импульс ВНИЗ)  → 0=low, 1=high → OTE near high → SHORT (откат вверх)
+    ote = build_ote(cp, ap)
+    ote["from"], ote["to"] = (a_ts, ap), (c_ts, cp)   # наклонная: начало→конец (реальное направление)
+    ote["leg"] = f"{ak}->{ck}"
     return ote
 
 
