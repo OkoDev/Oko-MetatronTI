@@ -68,12 +68,15 @@ class SwarmOrchestrator:
     # ── Phase 1: план дирижёра — выжимка + подвопрос на каждую модель ──
     def _plan(self, req: AdvisoryRequest, context: str) -> Optional[dict]:
         prompt = (
+            # prompt-cache DeepSeek (×50-120): СТАТИКА (инструкция+формат+context) ПЕРВОЙ
+            # и идентичной → кэшируется префикс; ПЕРЕМЕННОЕ (вопрос) — в самом КОНЦЕ.
             "Ты — ДИРИЖЁР роя LLM. У тебя ПОЛНЫЙ контекст проекта. Задача: подготовить "
             f"опрос для моделей {self.providers}. Для каждой верни JSON:\n"
-            '{"model": {"excerpt": "релевантная выжимка контекста ПОД этот вопрос (не весь, '
-            'только нужное)", "subquestion": "конкретный подвопрос модели"}}\n\n'
-            f"ВОПРОС: {req.question}\n\nПОЛНЫЙ КОНТЕКСТ:\n{context}\n\n"
-            "Верни ТОЛЬКО JSON, ключи = имена моделей."
+            '{"model": {"excerpt": "релевантная выжимка контекста ПОД вопрос (не весь, '
+            'только нужное)", "subquestion": "конкретный подвопрос модели"}}\n'
+            "Верни ТОЛЬКО JSON, ключи = имена моделей.\n\n"
+            f"ПОЛНЫЙ КОНТЕКСТ:\n{context}\n\n"
+            f"ВОПРОС (в конце — не ломает кэш-префикс): {req.question}"
         )
         raw = _ds_call(prompt, DS_PLAN_TOKENS)
         if not raw:
@@ -105,7 +108,8 @@ class SwarmOrchestrator:
             "контекст, модели — нет). 3. Итоговый вердикт.\n" + task_extra +
             f"Верни JSON: {{{label_rule}, \"confidence\": 0.0-1.0, "
             "\"rationale\": \"1-3 предложения\", \"key_factors\": [\"...\"]}\n\n"
-            f"ВОПРОС: {req.question}\n\nОТВЕТЫ МОДЕЛЕЙ:\n{votes}\n\nКОНТЕКСТ:\n{context}"
+            # prompt-cache: статичный КОНТЕКСТ перед переменными votes/вопросом
+            f"КОНТЕКСТ:\n{context}\n\nОТВЕТЫ МОДЕЛЕЙ:\n{votes}\n\nВОПРОС: {req.question}"
         )
         raw = _ds_call(prompt, DS_SYNTH_TOKENS)
         advisor_id = "swarm-ds@v1"
