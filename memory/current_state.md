@@ -4,6 +4,15 @@
 
 ---
 
+## [31.05.2026 ~01:40 UTC] Агент: Claude — ARCH-118 ЗАВЕРШЁН (все 5 шагов) + закрытие сессии
+- **ARCH-118 полностью закрыт** (9 коммитов b1fe5d8→42472ec, TASKS ✅). Единый снимок признаков: PARITY достигнут (рой 7/7: independent-last + HTFHistoryCache, 0 расхождений на 10 парах), свёртка pivot (рой 6/7 вариант B), материализация в таблицу `trade_features`(FK). Детали — раздел ниже + `docs/FEATURES_JSON_AUDIT.md` + `memory/arch118_snapshot_decision.md`.
+- **Подтверждено в проде:** id=16107 NXPC — снимок в `trade_features`, features_json НЕ дублирует, json_extract по вложенным pivot работает.
+- **🔧 Бот:** жив, рестарт ~01:34 UTC (208 пар), `arch118.write_table:true`, `deep_htf:true`. **trade_features копит снимки** (232+ записей, растёт). 0 ошибок ARCH-118/HTFCache в логе.
+- **Долг ARCH-118** (отдельный трек, не блокирует): вынести `compute_flags`+indicators в `core/` без import-side-effects (combinator_v2 = скрипт с stdout-хаком + HISTORY_DIR). Пересекается с ARCH-117 ph3.
+- **Незакоммичено:** только чужое/линтер (ENCYCLOPEDIA, bingx_client) + pipeline-артефакты memory/*. Мои файлы закоммичены.
+
+---
+
 ## [31.05.2026 ~12:30 UTC] Агент: Claude — DEV-238 РАССЛЕДОВАНО (grep)
 
 ### 🔬 Расследование почему wt_signal=0 confirmations
@@ -63,6 +72,22 @@
 - **wt_signal architectural debt:** генерируется в `monitoring.py:check_wt_signals` отдельным циклом, ConfirmationAggregator не синхронизируется. Это блокер для всех HARD gates на основе ConfirmationRegistry.
 - **shadow df_15m bug:** `_engine._cache.get_stale()` пути не учитывают что limit=30 может превышать содержимое кеша. Альтернатива — извлекать df через `market_context.mtf_context`.
 - **timing наоборот:** не доверять единственной рекомендации роя без проверки данными.
+
+---
+
+## [02.06.2026] Агент: Claude (порт) — ARCH-125 AdvisorPort бот-сторона ГОТОВА (B+C, shadow)
+
+### ✅ Сделано (координация с DS-сессией через DISCUSSION)
+- **Высота B+C** (не scan_loop!): глобальный стратегический брифинг роя 1/час + ревью исходов — НЕ per-pair (дублировало бы 11 сфер + рой слеп DEV-240 + ×240 дорого).
+- `core/intelligence/advisor_connector.py` — обёртка `AdvisorPort`: timeout (asyncio.to_thread, не блокирует loop) + circuit breaker (3 сбоя→open, 30мин cooldown) + shadow + persist (`memory/advisor_brief.md` + `advisor_brief_log.jsonl`). Зависит ТОЛЬКО от `advisor_contract` (DS вынес, 05e654e, FROZEN).
+- `bot/loops/advisor_loop.py` — `advisor_loop` (1 consult/час, snapshot=btc_mode+portfolio+recent_closed) + `spawn_advisor()` (gated, тяжёлый SwarmOrchestrator грузится только при enabled).
+- `bot/core/bot.py` — 1 строка `spawn_advisor(self)`. `config.yaml` блок `advisor` (enabled: **false** по умолчанию).
+- Smoke ✅ (GOOD→persist, breaker open после 3, timeout→None), py_compile ✅. DI: SwarmOrchestrator инжектится как порт.
+- **Разделение зон с DS:** я — бот-порт; DS — swarm (оркестратор + team-update). Контракт FROZEN, эволюция через schema_version+ADR.
+
+### 🔄 Дальше
+- Включить `advisor.enabled: true` (нужен DEEPSEEK_API_KEY — есть в .env) → shadow-сбор `advisor_brief_log.jsonl` → A/B → решение о soft-влиянии.
+- team-update — за DS. §B полное извлечение metatron-core — gated (порт = gate-1 готов; bus≠mesh + ARCH-117/118 ещё в полёте).
 
 ---
 
