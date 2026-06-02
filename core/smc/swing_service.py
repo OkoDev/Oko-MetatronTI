@@ -161,6 +161,8 @@ class OrderBlock:
     bottom: float
     kind: Literal["bull", "bear"]
     break_idx: int        # бар слома, при котором OB сформирован
+    mitigated_idx: int = -1   # бар пробоя OB (close за боксом) → невалиден; -1 = активен
+    is_breaker: bool = False  # пробитый OB сменил роль (breaker block)
 
 
 def detect_order_blocks(
@@ -204,9 +206,29 @@ def detect_order_blocks(
                     best_val = high[i]; best_idx = i
         if best_idx is None:
             continue
-        out.append(OrderBlock(best_idx, float(high[best_idx]), float(low[best_idx]),
-                              b.direction, b.idx))  # type: ignore
+        ob_top, ob_btm = float(high[best_idx]), float(low[best_idx])
+        # mitigation: первый бар ПОСЛЕ слома, где close пробивает OB (LuxAlgo remove)
+        close_arr = d["close"].values
+        mit = -1
+        for j in range(b.idx + 1, len(d)):
+            if b.direction == "bull" and close_arr[j] < ob_btm:
+                mit = j; break
+            if b.direction == "bear" and close_arr[j] > ob_top:
+                mit = j; break
+        out.append(OrderBlock(best_idx, ob_top, ob_btm, b.direction, b.idx, mit))  # type: ignore
     return out
+
+
+def active_order_blocks(obs: List[OrderBlock], n_bars: int, per_side: int = 5) -> List[OrderBlock]:
+    """Только ВАЛИДНЫЕ OB к концу данных (непробитые), последние per_side каждого типа.
+
+    Как LuxAlgo: пробитый OB удаляется (mitigated_idx != -1 и < n_bars). Показываем
+    активные (mitigated_idx == -1) — последние per_side bull + per_side bear.
+    """
+    active = [o for o in obs if o.mitigated_idx == -1]
+    bull = [o for o in active if o.kind == "bull"][-per_side:]
+    bear = [o for o in active if o.kind == "bear"][-per_side:]
+    return sorted(bull + bear, key=lambda o: o.left_idx)
 
 
 def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
