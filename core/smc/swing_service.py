@@ -154,6 +154,61 @@ def detect_structure_breaks(
     return out
 
 
+@dataclass(frozen=True)
+class OrderBlock:
+    left_idx: int         # бар OB-свечи (левый край бокса)
+    top: float
+    bottom: float
+    kind: Literal["bull", "bear"]
+    break_idx: int        # бар слома, при котором OB сформирован
+
+
+def detect_order_blocks(
+    df: pd.DataFrame,
+    breaks: List["StructureBreak"],
+    atr_len: int = 200,
+) -> List[OrderBlock]:
+    """Order Blocks (LuxAlgo ob_coord): при сломе структуры — последняя «спокойная»
+    свеча (размер < 2×ATR) с экстремумом в интервале [свинг..пробой].
+
+    bull-слом → bullish OB = lowest-свеча (поддержка, институционал покупал).
+    bear-слом → bearish OB = highest-свеча (сопротивление).
+    OB-бокс = (high, low) той свечи. Фильтр Atr (ta.atr(200)).
+    """
+    d = df.copy()
+    d.columns = [c.lower() for c in d.columns]
+    high, low = d["high"].values, d["low"].values
+    tr = pd.concat([
+        d["high"] - d["low"],
+        (d["high"] - d["close"].shift()).abs(),
+        (d["low"] - d["close"].shift()).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
+
+    out: List[OrderBlock] = []
+    for b in breaks:
+        loc = b.from_idx if b.from_idx >= 0 else b.idx
+        a, z = min(loc, b.idx), max(loc, b.idx)
+        if z - a < 1:
+            continue
+        best_idx = None
+        best_val = None
+        for i in range(a, z + 1):
+            if (high[i] - low[i]) >= (atr[i] if not pd.isna(atr[i]) else 1e9) * 2:
+                continue   # волатильная свеча — пропуск (фильтр Atr)
+            if b.direction == "bull":
+                if best_val is None or low[i] < best_val:
+                    best_val = low[i]; best_idx = i
+            else:
+                if best_val is None or high[i] > best_val:
+                    best_val = high[i]; best_idx = i
+        if best_idx is None:
+            continue
+        out.append(OrderBlock(best_idx, float(high[best_idx]), float(low[best_idx]),
+                              b.direction, b.idx))  # type: ignore
+    return out
+
+
 def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
     """Swing Structure HH/HL/LH/LL (LuxAlgo, «Show Swings Points = length»).
 

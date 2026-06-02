@@ -46,6 +46,7 @@ def render_verify(
     zones: Optional[list] = None,          # [(y_low, y_high, color, label)]
     labels: Optional[list] = None,         # [(ts, price, text)] — метки HH/HL/LH/LL
     hsegments: Optional[list] = None,      # [(ts_from, ts_to, price, color, label)] — линии BOS/CHoCH
+    boxes: Optional[list] = None,          # [(ts_left, top, bottom, color, label)] — OB/FVG боксы (extend вправо)
     out: str = "tmp_charts/chart_verify.png",
 ) -> str:
     """Рисует candlestick + overlay-слои → PNG. df: DatetimeIndex + OHLC."""
@@ -99,6 +100,22 @@ def render_verify(
             ax.axhspan(y_low, y_high, color=color, alpha=0.15)
             ax.text(0.01, (y_low + y_high) / 2, label, transform=ax.get_yaxis_transform(),
                     color=color, fontsize=8, va="center")
+    # OB/FVG боксы (прямоугольник от left до правого края, extend вправо)
+    if boxes:
+        from matplotlib.patches import Rectangle
+        ax = axes[0]
+        posb = {ts: k for k, ts in enumerate(d.index)}
+        x_right = len(d) - 1
+        for bx in boxes:
+            ts_left, top, bottom, color, label = bx
+            xl = posb.get(ts_left)
+            if xl is None:
+                continue
+            ax.add_patch(Rectangle((xl, bottom), x_right - xl, top - bottom,
+                                    facecolor=color, edgecolor=color, alpha=0.22, linewidth=0.6))
+            ax.annotate(label, (xl, (top + bottom) / 2), color=color, fontsize=6,
+                        ha="right", va="center", xytext=(-2, 0), textcoords="offset points")
+
     # горизонтальные линии BOS/CHoCH (от свинга до пробоя, пунктир + метка) — как OKO-SM
     if hsegments:
         ax = axes[0]
