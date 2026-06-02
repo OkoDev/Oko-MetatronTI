@@ -119,11 +119,19 @@ class BingXClient:
         """
         # Throttle: успешный sync → 60s, неудачный → 30s между попытками (BingX лагает).
         _now = time.monotonic()
+        # 27.05.2026: throttle применяется и к force=True при СВЕЖЕМ ФЕЙЛЕ.
+        # Без этого: order timeout (109400) → force sync → 15s timeout → retry → force → каскад.
+        # Force на здоровом BingX работает как раньше (когда _time_synced=True).
+        if (not self._time_synced and self._time_synced_at
+                and (_now - self._time_synced_at) < 30.0):
+            if force:
+                logger.info("[BingXClient] force sync_time throttled — last fail %.1fs ago, "
+                            "возвращаю cached offset_ms=%d",
+                            _now - self._time_synced_at, self._time_offset_ms)
+            return self._time_offset_ms  # soft-fail throttle (включая force)
         if not force:
             if self._time_synced and (_now - self._time_synced_at) < 60.0:
                 return self._time_offset_ms
-            if not self._time_synced and self._time_synced_at and (_now - self._time_synced_at) < 30.0:
-                return self._time_offset_ms  # soft-fail throttle
         import aiohttp
         try:
             url = f"{self._base}/openApi/swap/v2/server/time"
