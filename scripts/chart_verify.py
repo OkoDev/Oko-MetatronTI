@@ -44,6 +44,7 @@ def render_verify(
     zigzag: Optional[list] = None,         # [(ts, price)]
     hlines: Optional[dict] = None,         # {label: price}
     zones: Optional[list] = None,          # [(y_low, y_high, color, label)]
+    labels: Optional[list] = None,         # [(ts, price, text)] — метки HH/HL/LH/LL
     out: str = "tmp_charts/chart_verify.png",
 ) -> str:
     """Рисует candlestick + overlay-слои → PNG. df: DatetimeIndex + OHLC."""
@@ -97,6 +98,19 @@ def render_verify(
             ax.axhspan(y_low, y_high, color=color, alpha=0.15)
             ax.text(0.01, (y_low + y_high) / 2, label, transform=ax.get_yaxis_transform(),
                     color=color, fontsize=8, va="center")
+    # текстовые метки HH/HL/LH/LL — по позиции бара (x = iloc)
+    if labels:
+        ax = axes[0]
+        pos = {ts: k for k, ts in enumerate(d.index)}
+        for ts, price, text in labels:
+            x = pos.get(ts)
+            if x is None:
+                continue
+            col = "#f23645" if text in ("LH", "HH") else "#089981"  # high-метки красные, low зелёные
+            up = text in ("LL", "HL")
+            ax.annotate(text, (x, price), color=col, fontsize=8, fontweight="bold",
+                        ha="center", va=("top" if not up else "bottom"),
+                        xytext=(0, 8 if up else -8), textcoords="offset points")
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=120, bbox_inches="tight", facecolor="#131722")
     plt.close(fig)

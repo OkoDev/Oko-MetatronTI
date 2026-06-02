@@ -91,6 +91,31 @@ def detect_swings(
     return res
 
 
+def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
+    """Swing Structure HH/HL/LH/LL (LuxAlgo, «Show Swings Points = length»).
+
+    swings(length) → классификация по предыдущему экстремуму того же типа:
+      swing-high: HH если > пред. high, иначе LH
+      swing-low:  LL если < пред. low,  иначе HL
+    Возвращает [(ts, price, label)] где label ∈ {HH,HL,LH,LL}. Отдельный слой
+    от ZigZag (структурные точки, не волновая линия).
+    """
+    raw = _swings_luxalgo(df, length)   # [(idx, price, 'H'/'L')]
+    out: List[tuple] = []
+    prev_high: Optional[float] = None
+    prev_low: Optional[float] = None
+    for idx, price, kind in raw:
+        if kind == "H":
+            label = "HH" if (prev_high is not None and price > prev_high) else ("LH" if prev_high is not None else "HH")
+            prev_high = price
+        else:
+            label = "LL" if (prev_low is not None and price < prev_low) else ("HL" if prev_low is not None else "LL")
+            prev_low = price
+        ts = df.index[idx] if idx < len(df.index) else idx
+        out.append((ts, float(price), label))
+    return out
+
+
 def zigzag_atr(
     df: pd.DataFrame,
     depth: int = 11,
