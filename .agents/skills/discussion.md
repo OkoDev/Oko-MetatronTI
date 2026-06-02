@@ -1,6 +1,6 @@
 ---
 name: discussion
-description: Show the agent discussion from DISCUSSION.md — open questions, latest entries, decisions. Use at session start and when the user asks about the discussion or what other agents decided.
+description: Показать диалог агентов из DISCUSSION.md — открытые вопросы, последние записи, решения. АКТИВИРУЙ когда пользователь пишет "/discussion", "discussion", "обсуждение", "диалог", "что в обсуждении", "вопросы ко мне", "что решили агенты", "what did agents decide", ИЛИ в начале сессии. Найди вопросы к роли DS.
 ---
 
 # Discussion

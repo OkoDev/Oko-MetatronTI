@@ -1,6 +1,6 @@
 ---
 name: tasks
-description: Show current tasks from TASKS.md — active, in-progress, priorities by role (DEV/ARCH/TRADER/DS). Use when the user asks about tasks, what to work on, or task status.
+description: Показать текущие задачи из TASKS.md. АКТИВИРУЙ когда пользователь пишет "/tasks", "tasks", "задачи", "покажи задачи", "что в работе", "task status", "what to work on", "приоритеты", или спрашивает про статус/список задач любой роли (DEV/ARCH/TRADER/DS).
 ---
 
 # Tasks
