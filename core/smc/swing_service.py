@@ -256,6 +256,22 @@ def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
     return out
 
 
+def premium_discount(top: float, btm: float) -> dict:
+    """Premium/Discount/Equilibrium зоны (LuxAlgo) — упрощённое Фибо-деление диапазона.
+
+    top = Strong High (trail_up), btm = Weak Low (trail_dn). Связь с Фибо:
+      equilibrium ≈ 0.5; discount = нижняя зона (где OTE-LONG 0.705-0.786);
+      premium = верхняя (где OTE-SHORT). Грубая рамка «где торговать»:
+      покупать в discount, продавать в premium.
+    """
+    return {
+        "premium": (0.95 * top + 0.05 * btm, top),                       # верх
+        "equilibrium": (0.475 * top + 0.525 * btm, 0.525 * top + 0.475 * btm),  # ~0.5
+        "discount": (btm, 0.95 * btm + 0.05 * top),                      # низ
+        "eq_mid": (top + btm) / 2,
+    }
+
+
 def build_ote(swing_a: float, swing_b: float) -> dict:
     """OTE/Fib от импульса swing_a → swing_b (как разметка пользователя на XLM).
 
