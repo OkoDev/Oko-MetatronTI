@@ -107,21 +107,47 @@ class SwarmOrchestrator:
             f"ВОПРОС: {req.question}\n\nОТВЕТЫ МОДЕЛЕЙ:\n{votes}\n\nКОНТЕКСТ:\n{context}"
         )
         raw = _ds_call(prompt, DS_SYNTH_TOKENS)
+        advisor_id = "swarm-ds@v1"
         if not raw:
-            return None
+            # DS недоступен (баланс 0 / ключ / ошибка) → деградация в mistral-meta синтез.
+            # balance=0 НЕ ломает: рой опрошен → mistral синтезирует → обычный рой, не None.
+            raw = self._fallback_synth(votes, req)
+            advisor_id = "swarm-mistral-fallback@v1"
+        if not raw:
+            # и mistral недоступен → сырая агрегация голосов (лучше чем None для клиента)
+            return AdvisoryVerdict(
+                label="swarm_raw", confidence=0.3,
+                rationale="DS+mistral недоступны — сырые голоса роя в meta.votes",
+                advisor_id="swarm-raw@v1", meta={"votes": answers, "intent": req.intent},
+            )
         try:
             s = raw[raw.find("{"): raw.rfind("}") + 1]
             d = json.loads(s)
             return AdvisoryVerdict(
                 label=d.get("label", "?"), confidence=float(d.get("confidence", 0.5)),
                 rationale=d.get("rationale", ""), key_factors=d.get("key_factors", []),
-                advisor_id="swarm-ds@v1",
+                advisor_id=advisor_id,
                 meta={"votes": answers, "raw_synthesis": raw, "intent": req.intent},
             )
         except Exception:
             return AdvisoryVerdict(label="synthesis_parse_error", confidence=0.3,
-                                   rationale=raw[:500], advisor_id="swarm-ds@v1",
+                                   rationale=raw[:500], advisor_id=advisor_id,
                                    meta={"votes": answers})
+
+    def _fallback_synth(self, votes: str, req: AdvisoryRequest) -> Optional[str]:
+        """Деградация: синтез через mistral (llm_ask), когда DS-дирижёр недоступен."""
+        if not llm_ask.has_key("mistral"):
+            return None
+        prompt = (
+            "Синтезируй ответы роя LLM: консенсус, споры, итоговый вердикт. "
+            'Верни JSON: {"label": "...", "confidence": 0.0-1.0, "rationale": "1-3 предл.", '
+            '"key_factors": ["..."]}\n\n'
+            f"ВОПРОС: {req.question}\n\nОТВЕТЫ:\n{votes}"
+        )
+        try:
+            return llm_ask.ask_openai_compat("mistral", prompt, llm_ask.DEFAULT_MODELS["mistral"], 3000)
+        except Exception:
+            return None
 
     def consult(self, req: AdvisoryRequest) -> Optional[AdvisoryVerdict]:
         t0 = time.monotonic()
