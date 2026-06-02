@@ -102,12 +102,13 @@ def render_verify(
     if labels:
         ax = axes[0]
         pos = {ts: k for k, ts in enumerate(d.index)}
-        for ts, price, text in labels:
+        for lab in labels:
+            ts, price, text = lab[0], lab[1], lab[2]
+            col = lab[3] if len(lab) > 3 else ("#f23645" if text in ("LH", "HH") else "#089981")
             x = pos.get(ts)
             if x is None:
                 continue
-            col = "#f23645" if text in ("LH", "HH") else "#089981"  # high-метки красные, low зелёные
-            up = text in ("LL", "HL")
+            up = text in ("LL", "HL") or "↑" in str(text)
             ax.annotate(text, (x, price), color=col, fontsize=8, fontweight="bold",
                         ha="center", va=("top" if not up else "bottom"),
                         xytext=(0, 8 if up else -8), textcoords="offset points")

@@ -91,6 +91,69 @@ def detect_swings(
     return res
 
 
+@dataclass(frozen=True)
+class StructureBreak:
+    ts: object
+    idx: int
+    price: float          # пробитый уровень (swing)
+    kind: Literal["BOS", "CHoCH"]
+    direction: Literal["bull", "bear"]
+    has_volume: bool      # объём на пробое выше среднего (критерий настоящего слома)
+
+
+def detect_structure_breaks(
+    df: pd.DataFrame,
+    length: int = 50,
+    vol_len: int = 20,
+    vol_mult: float = 1.2,
+) -> List[StructureBreak]:
+    """BOS/CHoCH (LuxAlgo) + критерий пользователя: пробой + ОБЪЁМ + закрепление.
+
+    LuxAlgo: close пробивает последний swing high (bull) / low (bear).
+      BOS   = пробой ПО тренду (продолжение)
+      CHoCH = первый пробой ПРОТИВ тренда (смена характера)
+    Критерий пользователя (настоящий слом): закрепление = пробой по CLOSE (тело, не
+    фитиль — уже в LuxAlgo) + объём на баре пробоя > среднего (has_volume=True).
+    """
+    d = df.copy()
+    d.columns = [c.lower() for c in d.columns]
+    n = len(d)
+    close = d["close"].values
+    vol = d["volume"].values if "volume" in d.columns else None
+    vol_avg = (pd.Series(vol).rolling(vol_len).mean().values if vol is not None else None)
+    sw = _swings_luxalgo(d, length)   # [(idx, price, 'H'/'L')], idx = экстремум
+    # активируем уровень с бара (idx + length) — момент подтверждения свинга (как Pine)
+    highs = sorted([(idx + length, price) for idx, price, k in sw if k == "H"])
+    lows = sorted([(idx + length, price) for idx, price, k in sw if k == "L"])
+
+    out: List[StructureBreak] = []
+    trend = 0
+    top_y: Optional[float] = None
+    btm_y: Optional[float] = None
+    top_cross = btm_cross = False
+    hi_ptr = lo_ptr = 0
+    for i in range(n):
+        # обновить активные swing-уровни, подтверждённые к бару i
+        while hi_ptr < len(highs) and highs[hi_ptr][0] <= i:
+            top_y = highs[hi_ptr][1]; top_cross = True; hi_ptr += 1
+        while lo_ptr < len(lows) and lows[lo_ptr][0] <= i:
+            btm_y = lows[lo_ptr][1]; btm_cross = True; lo_ptr += 1
+        has_vol = bool(vol is not None and not pd.isna(vol_avg[i]) and vol[i] > vol_avg[i] * vol_mult)
+        # bull break: close пробил swing high
+        if top_y is not None and top_cross and close[i] > top_y:
+            kind = "CHoCH" if trend < 0 else "BOS"
+            out.append(StructureBreak(d.index[i], i, float(top_y), kind, "bull", has_vol))  # type: ignore
+            top_cross = False
+            trend = 1
+        # bear break: close пробил swing low
+        elif btm_y is not None and btm_cross and close[i] < btm_y:
+            kind = "CHoCH" if trend > 0 else "BOS"
+            out.append(StructureBreak(d.index[i], i, float(btm_y), kind, "bear", has_vol))  # type: ignore
+            btm_cross = False
+            trend = -1
+    return out
+
+
 def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
     """Swing Structure HH/HL/LH/LL (LuxAlgo, «Show Swings Points = length»).
 
