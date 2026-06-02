@@ -97,47 +97,73 @@ def zigzag_atr(
     dev_mult: float = 3.0,
     atr_len: int = 10,
 ) -> List[tuple]:
-    """ZigZag с ATR-deviation порогом (OKO-SM "Waves").
+    """ZigZag «Waves» — порт OKO-SM Pine 1:1 (depth=11, dev=3 = настройки пользователя).
 
-    Свинг = pivot (выше/ниже всех ±depth/2) И разворот от пред. пивота ≥ dev_thresh,
-    где dev_thresh = atr(atr_len)/close*100 × dev_mult. Возвращает [(ts, price)].
+    Pine-точно:
+      • pivot подтверждается ЧЕРЕЗ length=depth//2 баров (НЕ look-ahead): на баре i
+        проверяется кандидат src[i-length] против окна [i-2length .. i] (только прошлое).
+      • high-pivot имеет приоритет над low на одном баре (Pine: if iH else iL).
+      • dev_thresh = atr(10)/close*100 × dev_mult (Wilder RMA, как ta.atr).
+      • pivotFound: то же направление → продлить экстремум; разворот → новый свинг
+        только если abs(calc_dev) > dev_thresh.
+    Возвращает [(ts, price)] подтверждённых точек.
     """
     d = df.copy()
     d.columns = [c.lower() for c in d.columns]
     n = len(d)
-    half = max(1, depth // 2)
-    if n < depth + atr_len + 2:
+    length = max(1, depth // 2)        # Pine: i_depth/2
+    l2 = length * 2
+    if n < l2 + atr_len + 2:
         return []
     high, low, close = d["high"].values, d["low"].values, d["close"].values
-    # ATR (Wilder упрощённо через TR rolling mean)
+    # ATR Wilder RMA (как ta.atr): ewm alpha=1/period, adjust=False
     tr = pd.concat([
         d["high"] - d["low"],
         (d["high"] - d["close"].shift()).abs(),
         (d["low"] - d["close"].shift()).abs(),
     ], axis=1).max(axis=1)
-    atr = tr.rolling(atr_len).mean().values
+    atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
 
-    def is_pivot(i, hi):
-        c = high[i] if hi else low[i]
-        for j in range(max(0, i - half), min(n, i + half + 1)):
-            if j == i:
+    def pivot_at(i, hi):
+        """Pine pivots(): кандидат = src[i-length], окно [i-l2 .. i] (прошлое). None если не pivot."""
+        c_idx = i - length
+        if c_idx < 0:
+            return None
+        c = high[c_idx] if hi else low[c_idx]
+        for j in range(i - l2, i + 1):
+            if j < 0 or j == c_idx:
                 continue
             if hi and high[j] > c:
-                return False
+                return None
             if not hi and low[j] < c:
-                return False
-        return True
+                return None
+        return c_idx, float(c)
 
     pts: List[tuple] = []
-    last_price = close[half]
-    for i in range(half, n - half):
+    last_is_high: Optional[bool] = None
+    last_price = None
+
+    for i in range(l2, n):
         thr = (atr[i] / close[i] * 100 * dev_mult) if (not pd.isna(atr[i]) and close[i]) else 1e9
-        for hi in (True, False):
-            if is_pivot(i, hi):
-                price = high[i] if hi else low[i]
-                dev = abs(100 * (price - last_price) / price) if price else 0
-                if not pts or dev > thr:
-                    pts.append((d.index[i], float(price)))
-                    last_price = price
-                break
+        # high приоритет (Pine: if not na(iH) ... else if not na(iL))
+        ph = pivot_at(i, True)
+        pl = pivot_at(i, False) if ph is None else None
+        cand = (True, ph) if ph is not None else ((False, pl) if pl is not None else None)
+        if cand is None:
+            continue
+        hi, (c_idx, price) = cand
+        if last_is_high is None:
+            last_is_high, last_price = hi, price
+            pts.append((d.index[c_idx], price))
+            continue
+        if hi == last_is_high:
+            # продлить экстремум в том же направлении
+            if (hi and price > last_price) or (not hi and price < last_price):
+                last_price = price
+                pts[-1] = (d.index[c_idx], price)
+        else:
+            dev = abs(100 * (price - last_price) / price) if price else 0
+            if dev > thr:
+                last_is_high, last_price = hi, price
+                pts.append((d.index[c_idx], price))
     return pts

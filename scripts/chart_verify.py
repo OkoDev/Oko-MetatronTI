@@ -67,12 +67,12 @@ def render_verify(
         if ser.notna().any():
             addplots.append(mpf.make_addplot(ser, type="scatter", markersize=size, marker=marker, color=col))
 
-    # ZigZag — ломаная через alines
+    # ZigZag — ломаная через alines (белый Dotted, как OKO-SM Waves)
     alines = None
     if zigzag and len(zigzag) >= 2:
         pts = [(ts, p) for ts, p in zigzag if ts in d.index]
         if len(pts) >= 2:
-            alines = dict(alines=pts, colors=["#ffaa00"], linewidths=[1.2], alpha=0.9)
+            alines = dict(alines=pts, colors=["#ffffff"], linewidths=[1.4], linestyle=":", alpha=0.95)
 
     hl = None
     if hlines:
