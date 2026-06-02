@@ -18,19 +18,24 @@ Auto-routing (--provider auto):
   - дефолт                            → groq
 
 Auto-fallback при 429/503:
-  cerebras → groq → openrouter → mistral → github_models → gemini
+  cerebras → groq → openrouter → mistral → github_models → sambanova → nvidia → gemini
 
-Провайдеры:
-  groq           — Llama 3.3 70B (14 400 RPD, 30 RPM, ~500 tok/s)
-  cerebras       — Llama 3.3 70B (14 400 RPD, 30 RPM, 2200 tok/s)
-  gemini         — Gemini 2.5 Flash (250 RPD, 1M context, multimodal)
-  mistral        — Mistral Large 3 (1B токенов/мес, 1 req/s)
-  openrouter     — DeepSeek R1 / Llama 3.3 free (50 RPD, 20 RPM)
-  github_models  — GPT-4o / Claude 3.5 Sonnet (50-150 RPD, 10-15 RPM)
+Провайдеры (модели проверены живьём 30.05.2026):
+  groq           — gpt-oss-120b (быстро, ~14 400 RPD, 30 RPM)
+  cerebras       — GLM-4.7 thinking (30 RPM, 1M tok/day; отдаёт только gpt-oss-120b + zai-glm-4.7)
+  gemini         — Gemini 3.5 Flash (250 RPD, 1M context, multimodal)
+  mistral        — Magistral Medium (1B токенов/мес, 1 req/s, reasoning)
+  openrouter     — Nemotron-3 Super 120B free (стабилен; deepseek-v4/minimax/kimi часто 429)
+  github_models  — DeepSeek-R1 (≈аналог Opus, ~50 RPD, 10 RPM; нет бесплатного Claude)
+  sambanova      — DeepSeek-V3.2 (persistent free tier ✅ активен; cloud.sambanova.ai)
+  nvidia         — NVIDIA NIM (⚠️ регистрация заблокирована из РФ; scaffolding без ключа)
+
+Свободного Claude (Opus/Sonnet) для API НЕТ: OpenRouter free его не отдаёт,
+GitHub Models inference тоже. Ближайшие free-аналоги — DeepSeek-R1 / GLM-4.7 / Nemotron.
 
 Ключи в .env:
-  GROQ_API_KEY, GEMINI_API_KEY, CEREBRAS_API_KEY,
-  MISTRAL_API_KEY, OPENROUTER_API_KEY, GITHUB_MODELS_TOKEN
+  GROQ_API_KEY, GEMINI_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY,
+  OPENROUTER_API_KEY, GITHUB_MODELS_TOKEN, SAMBANOVA_API_KEY, NVIDIA_API_KEY
 
 Возвращает: текст ответа на stdout. Лог провайдера в stderr.
 """
@@ -46,24 +51,34 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
 
-# Дефолтные модели по провайдеру
-# Cerebras free: zai-glm-4.7, gpt-oss-120b, llama3.1-8b, qwen-3-235b-a22b-instruct-2507
-# OpenRouter free (актуально 25.05.2026): deepseek/deepseek-v4-flash:free, openai/gpt-oss-120b:free,
-#   nvidia/nemotron-3-super-120b-a12b:free, nousresearch/hermes-3-llama-3.1-405b:free
-# GitHub Models: /models endpoint → 404 (API изменился, gpt-4o-mini оставляем)
+# Дефолтные модели по провайдеру (проверено живьём 30.05.2026 через models.list + smoke-test)
+# Cerebras free: gpt-oss-120b, zai-glm-4.7  (qwen-3-235b УДАЛЁН → 404; только эти две сейчас)
+# OpenRouter free: nemotron-3-super-120b (стабилен), deepseek-v4-flash/minimax-m2.5/kimi-k2.6/
+#   qwen3-next-80b — часто 429/503 upstream → НЕ дефолт. gpt-oss-120b:free, hermes-405b:free, glm-4.5-air:free.
+# GitHub Models: /models list → 404, но конкретные ID работают. Доступны deepseek/DeepSeek-R1,
+#   openai/gpt-4.1-mini, openai/gpt-4o. (grok-3-mini → unknown_model)
+# Gemini: gemini-3.5-flash (GA), gemini-3.1-flash-lite, gemini-2.5-flash/pro.
 DEFAULT_MODELS = {
-    "groq": "meta-llama/llama-4-scout-17b-16e-instruct",         # Llama 4 Scout MoE (upd 25.05.2026)
-    "cerebras": "gpt-oss-120b",                                  # стабильнее Qwen 235B (та часто 429)
-    "gemini": "gemini-2.5-flash",
-    "mistral": "magistral-medium-latest",                        # reasoning/synthesis (upd 25.05.2026)
-    "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",      # nemotron 120B стабильно (deepseek-v4 402)
-    "github_models": "openai/gpt-4o-mini",
+    "groq": "openai/gpt-oss-120b",                               # 120B reasoner на скорости Groq (было llama-4-scout-17b)
+    "cerebras": "zai-glm-4.7",                                   # GLM-4.7 thinking — диверсифицирует от groq gpt-oss
+    "gemini": "gemini-3.5-flash",                                # upd 30.05.2026 (было 2.5-flash)
+    "mistral": "magistral-medium-latest",                        # reasoning/synthesis voice
+    "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",      # единственный стабильный free на OpenRouter
+    "github_models": "openai/gpt-4.1-mini",                      # чистый/надёжный (было gpt-4o-mini). DeepSeek-R1 → --reasoning (течёт <think> в swarm)
+    # --- новые провайдеры (активируются при наличии ключа; см. ENV_KEYS) ---
+    "sambanova": "DeepSeek-V3.2",                                # free tier ✅ (проверено 31.05). Каталог: DeepSeek-V3.1/V3.2, Llama-4-Maverick, Meta-Llama-3.3-70B, gpt-oss-120b. (R1/MiniMax — платные)
+    "nvidia": "deepseek-ai/deepseek-r1",                         # ⚠️ НЕ проверено: NVIDIA NIM (build.nvidia.com) блокирует регистрацию из РФ (+7). Без ключа неактивен.
+    "deepseek": "deepseek-chat",                                 # ПРЯМОЙ api.deepseek.com (платный, дёшево ~$0.3/1M, 1M ctx). v4 non-thinking. Активен при DEEPSEEK_API_KEY. Сильный голос ≈Opus для роя.
 }
 
-# Модели для --reasoning (специализированные thinking-модели)
+# Модели для --reasoning (специализированные thinking-модели; проверено 30.05.2026)
 REASONING_MODELS = {
-    "openrouter": "arcee-ai/trinity-large-thinking:free",
-    "cerebras": "qwen-3-235b-a22b-instruct-2507",
+    "github_models": "deepseek/DeepSeek-R1",                     # самый надёжный reasoner (не флакает как OpenRouter)
+    "openrouter": "deepseek/deepseek-v4-flash:free",             # native reasoning 1M ctx (arcee-trinity → 404, убрано)
+    "cerebras": "zai-glm-4.7",                                   # qwen-3-235b → 404, заменено
+    "sambanova": "DeepSeek-V3.2",                                # R1 на free-tier SambaNova недоступен
+    "nvidia": "deepseek-ai/deepseek-r1",
+    "deepseek": "deepseek-reasoner",                             # v4 thinking-режим (нативный reasoning, 1M ctx)
 }
 
 # Base URLs для OpenAI-совместимых провайдеров
@@ -73,6 +88,9 @@ OPENAI_COMPAT_URLS = {
     "mistral": "https://api.mistral.ai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "github_models": "https://models.github.ai/inference",
+    "sambanova": "https://api.sambanova.ai/v1",                  # ключ: https://cloud.sambanova.ai (persistent free tier)
+    "nvidia": "https://integrate.api.nvidia.com/v1",            # ключ: https://build.nvidia.com (40 RPM free)
+    "deepseek": "https://api.deepseek.com",                     # ключ: https://platform.deepseek.com (платный). OpenAI-совместимый.
 }
 
 # ENV-имена ключей
@@ -83,10 +101,14 @@ ENV_KEYS = {
     "mistral": "MISTRAL_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "github_models": "GITHUB_MODELS_TOKEN",
+    "sambanova": "SAMBANOVA_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
 }
 
-# Цепочка fallback при 429/503
-FALLBACK_ORDER = ["cerebras", "groq", "openrouter", "mistral", "github_models", "gemini"]
+# Цепочка fallback при 429/503 (sambanova/nvidia в конце — активны только при наличии ключа)
+FALLBACK_ORDER = ["cerebras", "groq", "openrouter", "mistral", "github_models",
+                  "sambanova", "deepseek", "nvidia", "gemini"]
 
 
 def load_env() -> None:
@@ -118,10 +140,11 @@ def auto_route(file_text: Optional[str], has_image: bool, reasoning: bool) -> st
     if has_image:
         return "gemini"
 
-    # 2. Reasoning → openrouter (DeepSeek R1 free) или gemini как backup
+    # 2. Reasoning → deepseek (v4 нативный reasoner, 1M ctx) → github_models (R1) → sambanova → openrouter → gemini
     if reasoning:
-        if has_key("openrouter"):
-            return "openrouter"
+        for p in ["deepseek", "github_models", "sambanova", "openrouter"]:
+            if has_key(p):
+                return p
         return "gemini"
 
     # 3. Гигантский файл (>200k токенов) → mistral (1B/мес, большой контекст)
@@ -169,7 +192,22 @@ def ask_openai_compat(provider: str, prompt: str, model: str, max_tokens: int,
             "X-Title": "Oko MTF Bot",
         }
     resp = client.chat.completions.create(**kwargs)
-    content = resp.choices[0].message.content
+    msg = resp.choices[0].message
+    content = msg.content
+    # Reasoning-модели (GLM-4.7, DeepSeek-R1) при finish_reason=length могут вернуть content=None
+    # (весь бюджет ушёл в thinking) — пробуем reasoning_content, иначе понятная ошибка вместо краша.
+    if content is None:
+        content = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+        if not content:
+            finish = getattr(resp.choices[0], "finish_reason", "?")
+            raise RuntimeError(
+                f"{provider}/{model}: пустой ответ (content=None, finish_reason={finish}) — "
+                f"reasoning-модель не уложилась в max_tokens={max_tokens}"
+            )
+    # Reasoning-модели (DeepSeek-R1 и др.) вшивают <think>...</think> прямо в текст —
+    # берём финальный ответ после закрывающего тега (если он есть).
+    if isinstance(content, str) and "</think>" in content:
+        content = content.split("</think>")[-1].strip()
     # Thinking-модели (magistral, deepseek-r1 и др.) возвращают content как список блоков
     if isinstance(content, list):
         # Сначала ищем text-блоки верхнего уровня
@@ -273,7 +311,8 @@ def main() -> int:
     parser.add_argument("--image", type=Path, help="Картинка (только gemini)")
     parser.add_argument(
         "--provider",
-        choices=["auto", "groq", "cerebras", "gemini", "mistral", "openrouter", "github_models"],
+        choices=["auto", "groq", "cerebras", "gemini", "mistral", "openrouter",
+                 "github_models", "sambanova", "nvidia"],
         default="auto",
         help="LLM-провайдер (по умолчанию auto)",
     )
@@ -298,7 +337,8 @@ def main() -> int:
 
     if args.list_keys:
         print("Available keys:")
-        for p in ["groq", "cerebras", "gemini", "mistral", "openrouter", "github_models"]:
+        for p in ["groq", "cerebras", "gemini", "mistral", "openrouter",
+                  "github_models", "sambanova", "nvidia"]:
             mark = "[+]" if has_key(p) else "[ ]"
             print(f"  {mark} {p:15s} ({ENV_KEYS[p]})")
         return 0
@@ -321,6 +361,10 @@ def main() -> int:
     if not has_key(provider):
         print(f"ERROR: ключ для {provider} не задан ({ENV_KEYS[provider]} в .env)", file=sys.stderr)
         return 1
+
+    # --reasoning без явной --model → берём thinking-модель провайдера
+    if args.reasoning and not args.model and provider in REASONING_MODELS:
+        args.model = REASONING_MODELS[provider]
 
     if args.image and provider != "gemini":
         print(f"WARNING: --image игнорируется при provider={provider} (только gemini multimodal)",

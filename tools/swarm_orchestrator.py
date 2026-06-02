@@ -36,12 +36,16 @@ DS_SYNTH_TOKENS = 4000
 
 
 # ─────────── Контракт AdvisorPort (ARCH-125 §2; локально до metatron-core) ───────────
+SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class AdvisoryRequest:
     snapshot: dict
     intent: str = "free_question"          # "trade_decision" | "audit" | "free_question"
     question: Optional[str] = None
-    deadline_ms: int = 60000
+    deadline_ms: int = 60000               # advisor-домен канон: LLM-рой медленный (НЕ 5000 как trade-decision)
+    schema_version: int = SCHEMA_VERSION   # R4: выравнивание с ARCH-125 §2
     meta: dict = field(default_factory=dict)
 
 
@@ -143,7 +147,8 @@ class SwarmOrchestrator:
             return team_ask.get_answer(p, q, ctx)
         answers = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.providers)) as ex:
-            for prov, ans, _model in ex.map(ask, self.providers):
+            # get_answer → (provider, model, text); берём text как ans (R1 fix)
+            for prov, _model, ans in ex.map(ask, self.providers):
                 answers[prov] = ans
         verdict = self._synthesize(req, answers, context)
         if verdict:
