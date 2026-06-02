@@ -104,10 +104,13 @@ def main():
     spas = len(cat.get("★ разворот У МАГНИТА (магнит СПАС бы)", []))
     rezal = len(cat.get("прошло насквозь до pivot (магнит РЕЗАЛ бы)", []))
     print("\n=== ВЕРДИКТ (магнит ближе pivot) ===")
+    MIN_N_VERDICT = 10   # ниже — статистика недостоверна (metrics-hygiene: n<10 = шум)
     if spas + rezal:
         share = spas / (spas + rezal) * 100
         print(f"  магнит СПАС бы: {spas} | РЕЗАЛ бы: {rezal} | доля 'спас' = {share:.0f}%")
-        if share >= 60:
+        if spas + rezal < MIN_N_VERDICT:
+            print(f"  ⏳ n={spas + rezal} < {MIN_N_VERDICT} — РАНО решать. Вердикт «live» НЕ давать, копить «магнит ближе» кейсы.")
+        elif share >= 60:
             print("  → магнит-ближе ОПРАВДАН: цена чаще разворачивается у магнита. Включать live.")
         elif share <= 40:
             print("  → магнит-ближе ВРЕДИТ: цена чаще проходит до pivot. Порог dist_R поднять / только магнит-дальше.")
