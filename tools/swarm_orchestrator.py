@@ -36,6 +36,9 @@ DS_SYNTH_TOKENS = 4000
 
 
 # ─────────── Контракт AdvisorPort (ARCH-125 §2; локально до metatron-core) ───────────
+# 🔒 FROZEN (02.06.2026): сигнатуры AdvisoryRequest/Verdict заморожены — их импортирует
+# advisor_connector.py (порт в scan_loop, параллельная сессия). НЕ менять поля без
+# согласования: смена ломает импорт на стороне бота. Эволюция — через schema_version + ADR.
 SCHEMA_VERSION = 1
 
 
