@@ -295,36 +295,58 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     return {"levels": levels, "ote": ote, "direction": direction}
 
 
-def find_choch_ote(zz: List[tuple], breaks: List["StructureBreak"]) -> Optional[dict]:
-    """OTE после CHoCH (механика пользователя): импульс, который ПРИВЁЛ к CHoCH.
+def find_choch_ote(
+    breaks: List["StructureBreak"],
+    df_for_swings: Optional["pd.DataFrame"] = None,
+    swing_len: int = 20,
+) -> Optional[dict]:
+    """OTE на ЗНАЧИМОМ импульсе, что ВЫЗВАЛ последний CHoCH (механика пользователя).
 
-    LONG: bull-CHoCH (разворот вверх) → импульс = последняя нога ВНИЗ перед сломом
-          (по H/L: swing high → swing low). OTE 0.705-0.79 = ранний LONG-вход (ловим пик
-          разворота). SHORT: bear-CHoCH → импульс ВВЕРХ (инвертировано по H/L).
-    Берёт последний CHoCH + предшествующую ногу ZigZag (по H/L экстремумам).
-    Торговля вероятностей — не гарантия, edge на откате в OTE.
+    bull-CHoCH: импульс ВВЕРХ (последний swing low → swing high, что пробил структуру)
+        → OTE near low → LONG (ждём откат вниз в OTE для покупки).
+    bear-CHoCH: импульс ВНИЗ (swing high → swing low) → OTE near high → SHORT.
+    Импульс = «первый левый от низа до верха» (значимая нога, не последняя мелкая).
+    0=КОНЕЦ импульса, 1=НАЧАЛО. Торговля вероятностей — цена может НЕ зайти в OTE.
     """
     chochs = [b for b in breaks if b.kind == "CHoCH"]
-    if not chochs or len(zz) < 2:
+    if not chochs:
         return None
     b = chochs[-1]
-    pts = [(ts, p) for ts, p in zz if ts <= b.ts] or zz[:2]
+    # ЗНАЧИМЫЙ импульс, что вызвал CHoCH: структурные swing-точки ДО слома.
+    sw = _swings_luxalgo(df_for_swings, swing_len) if (df_for_swings is not None) else []
+    pts = [(i, p, k) for i, p, k in sw if df_for_swings.index[i] <= b.ts]
     if len(pts) < 2:
         return None
-    (a_ts, a), (c_ts, c) = pts[-2], pts[-1]   # последняя нога ZigZag (по H/L)
-    # H/L экстремумы ноги
-    if a >= c:
-        hp, hp_ts, lp, lp_ts = a, a_ts, c, c_ts
-    else:
-        hp, hp_ts, lp, lp_ts = c, c_ts, a, a_ts
-    # Правило пользователя: bull = от Low до High (OTE откат вниз, near low → LONG);
-    #                       bear = от High до Low (OTE откат вверх, near high → SHORT).
+    highs = [(i, p) for i, p, k in pts if k == "H"]
+    lows = [(i, p) for i, p, k in pts if k == "L"]
+    low_arr = df_for_swings["low"].values
+    high_arr = df_for_swings["high"].values
     if b.direction == "bull":
-        ote = build_ote(hp, lp)               # 0=high, 1=low → direction long, OTE near low
-        ote["from"], ote["to"] = (hp_ts, hp), (lp_ts, lp)
+        # bull-CHoCH: импульс = ПОСЛЕДНЯЯ восходящая волна (дно→вершина).
+        # вершина = последний swing high перед сломом; дно = минимум low от предыдущей
+        # вершины до этой (самый глубокий LL, с которого начался рост — «от низа до верха»).
+        if not highs:
+            return None
+        hi, hp = highs[-1]
+        prev_hi = highs[-2][0] if len(highs) >= 2 else 0
+        seg_lows = low_arr[prev_hi:hi + 1]
+        if len(seg_lows) == 0:
+            return None
+        rel = int(seg_lows.argmin()); li = prev_hi + rel; lp = float(low_arr[li])
+        ote = build_ote(hp, lp)               # 0=high(конец), 1=low(начало) → long, OTE near low
+        ote["from"], ote["to"] = (df_for_swings.index[li], lp), (df_for_swings.index[hi], hp)
     else:
-        ote = build_ote(lp, hp)               # 0=low, 1=high → direction short, OTE near high
-        ote["from"], ote["to"] = (lp_ts, lp), (hp_ts, hp)
+        # bear-CHoCH: импульс = последняя нисходящая волна (вершина→дно).
+        if not lows:
+            return None
+        li, lp = lows[-1]
+        prev_lo = lows[-2][0] if len(lows) >= 2 else 0
+        seg_highs = high_arr[prev_lo:li + 1]
+        if len(seg_highs) == 0:
+            return None
+        rel = int(seg_highs.argmax()); hi = prev_lo + rel; hp = float(high_arr[hi])
+        ote = build_ote(lp, hp)               # 0=low(конец), 1=high(начало) → short, OTE near high
+        ote["from"], ote["to"] = (df_for_swings.index[hi], hp), (df_for_swings.index[li], lp)
     ote["choch"] = b
     return ote
 
