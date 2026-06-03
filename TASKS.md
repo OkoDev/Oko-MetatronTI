@@ -25,7 +25,8 @@
 |---|---|---|---|
 | ARCH-128 | ✅ | **Эталон OKO-SM в коде** — `core/smc/smc_engine.py`: ZigZag(+фикс плато)/structure/BOS-CHoCH(защищённые)/OB/OTE 0.5-0.79/EQH-EQL/FVG(+overlap)/Эллиотт(+extension). Провалидирован GRT/SOL/AVAX. Ветка `arch-128-oko-sm`. + `docs/PRICE_PATTERNS_LIBRARY.md` | Claude |
 | DS-312 | ✅ | **Аудит parity детекторов** — карта 8 признаков × реализации. 🔴 Swing(5 версий)/OB(naive)/Premium-Discount(ОТСУТСТВУЕТ). Связал swing→DS-311 OTE=0 | DS |
-| **DS-313** | 🔴 | **Шаг 1 «один калькулятор»** — заменить naive в `combinator_v2.compute_flags` + `structure_detector` на вызовы `smc_engine` (имена флагов те же). Границы: НЕ трогать features_json schema (Шаг 2 = Claude) | DS |
+| **DS-313** | ✅ | **Шаг 1 «один калькулятор»** — `swing_service_bridge.py` + naive в `compute_flags` заменены на `smc_engine`. Smoke BTC 15m OK (47 cols). Claude → Шаг 2 | DS |
+| **DS-314** | 🔴 | **Унификация направлений** — 3 словаря (bull/bear · long/short · up/down) → 1 канон `dir_label`+`dir(±1)` в ETL. Правило {long,up}→bull, {short,down}→bear. Таблица в DISCUSSION | DS |
 | ARCH-128-S2 | ⏳ | **Шаг 2: наполнить features_json** эталонными полями (`premium_discount`/`ob_mitigated`/`fvg_overlap`/`elliott_phase`) + schema-миграция `trade_features`. ПОВЕРХ DS-313 | Claude |
 | ARCH-128-S3 | ⏳ | **Шаг 3: ре-майнинг** 187 паттернов на эталонных признаках → «честный костяк» | DS+Claude |
 
