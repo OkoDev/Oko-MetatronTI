@@ -215,6 +215,29 @@ def etl_eql_eql(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     return {"eqh_sweep": eqh, "eql_sweep": eql}
 
 
+def etl_swing_structure(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128 Шаг 2: явные HH/HL/LH/LL флаги — тип swing-точки (состояние структуры).
+
+    classify_structure (LuxAlgo Swings=50): HH/LH для вершин, LL/HL для доньев.
+    Отличается от BOS/CHoCH (слом) и regime (грубый режим) — это ДЕТАЛЬНЫЙ тип точки.
+    Майнинг: «вход на HL в восходящей», «LH перед сломом» и т.п.
+    """
+    from core.smc.smc_engine import classify_structure
+
+    n = len(df)
+    hh = np.zeros(n, dtype=bool); hl = np.zeros(n, dtype=bool)
+    lh = np.zeros(n, dtype=bool); ll = np.zeros(n, dtype=bool)
+    for ts, _price, label in classify_structure(df):
+        bar = _bar_of(df, ts, n)
+        if bar is None:
+            continue
+        if label == "HH": hh[bar] = True
+        elif label == "HL": hl[bar] = True
+        elif label == "LH": lh[bar] = True
+        elif label == "LL": ll[bar] = True
+    return {"hh": hh, "hl": hl, "lh": lh, "ll": ll}
+
+
 # ── ARCH-128 Шаг 2 (Claude): fvg_overlap / elliott / regime троичный ──────────
 def _bar_of(df, ts_or_idx, n):
     """Timestamp|int → позиция бара (или None если вне диапазона)."""

@@ -452,6 +452,7 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     from tools.pattern_mining.swing_service_bridge import (
         etl_fvg, etl_order_blocks, etl_bos_choch, etl_ote_premium, etl_eql_eql,
         etl_fvg_overlap, etl_elliott, etl_regime,   # ARCH-128 Шаг 2 (Claude)
+        etl_swing_structure,                         # HH/HL/LH/LL
     )
 
     # ─ FVG (ARCH-128: структурный, порог значимости) ─────────────────────
@@ -580,6 +581,9 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"regime_range_{label}"] = reg["regime_range"]
     out[f"regime_bear_{label}"]  = reg["regime_bear"]
     out[f"regime_dir_{label}"]   = reg["regime_dir"]   # числовой троичный (+1/0/−1)
+    sw = etl_swing_structure(df)                        # HH/HL/LH/LL — тип swing-точки
+    out[f"hh_{label}"] = sw["hh"]; out[f"hl_{label}"] = sw["hl"]
+    out[f"lh_{label}"] = sw["lh"]; out[f"ll_{label}"] = sw["ll"]
 
     # ─ Volume spike ───────────────────────────────────────────────────────
     if "volume" in df.columns:
@@ -603,6 +607,40 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"below_ema200_{label}"] = close < ema200
     out[f"ema50_above_ema200_{label}"] = ema50 > ema200    # бычий tend
     out[f"ema50_below_ema200_{label}"] = ema50 < ema200    # медвежий
+
+    # ─ CMA Lines (Фибо-SMA 21/55/89/144/233 — MA-магниты, OKO-SM пользователя) ──
+    # Нестандартные Фибо-периоды (не 50/100/200) — уровни-магниты, не дублируют EMA.
+    cma_periods = [21, 55, 89, 144, 233]
+    cmas = {p: pd.Series(close).rolling(p, min_periods=1).mean().values for p in cma_periods}
+    for p in cma_periods:
+        out[f"cma{p}_above_{label}"] = close > cmas[p]   # позиция относительно Фибо-MA
+    cma_near = np.zeros(n, dtype=bool)                    # магнит: цена ≤0.3% к любой CMA
+    for p in cma_periods:
+        cma_near |= np.abs(close - cmas[p]) / np.where(close != 0, close, 1) <= 0.003
+    out[f"cma_near_{label}"] = cma_near
+    cma_stack = np.vstack([cmas[p] for p in cma_periods])  # кластер: все 5 CMA ≤0.5% спред = сильный уровень
+    out[f"cma_cluster_{label}"] = (cma_stack.max(0) - cma_stack.min(0)) / np.where(close != 0, close, 1) <= 0.005
+
+    # ─ Dynamic Channel (linreg slope + 2σ канал, OKO-SM пользователя) ───────────
+    # slope → тренд (дублирует regime/ATR — берём для полноты), границы → зоны разворота (уникально).
+    dc_len = 100
+    dc_su = np.zeros(n, dtype=bool); dc_sd = np.zeros(n, dtype=bool)
+    dc_up = np.zeros(n, dtype=bool); dc_lo = np.zeros(n, dtype=bool)
+    if n >= dc_len:
+        xs = np.arange(dc_len); xm = xs.mean(); xvar = ((xs - xm) ** 2).sum()
+        for i in range(dc_len, n):
+            y = close[i - dc_len:i]
+            slope = np.dot(xs - xm, y - y.mean()) / xvar
+            reg = slope * (dc_len - 1) + (y.mean() - slope * xm)   # линия на тек. баре
+            dev = (y - (slope * xs + (y.mean() - slope * xm))).std() * 2
+            if slope > 0: dc_su[i] = True
+            elif slope < 0: dc_sd[i] = True
+            if close[i] >= reg + dev: dc_up[i] = True        # у верхней границы
+            elif close[i] <= reg - dev: dc_lo[i] = True      # у нижней границы
+    out[f"dc_slope_up_{label}"]   = dc_su
+    out[f"dc_slope_down_{label}"] = dc_sd
+    out[f"dc_at_upper_{label}"]   = dc_up
+    out[f"dc_at_lower_{label}"]   = dc_lo
 
     # ─ Pivots (только для исходного 1h TF) ────────────────────────────────
     if include_pivots:
