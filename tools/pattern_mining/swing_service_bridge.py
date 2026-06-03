@@ -1,0 +1,210 @@
+"""
+DS-313/DS-314: Эталонные детекторы для combinator_v2 через smc_engine.
+Конвертирует результаты smc_engine в boolean-массивы для compute_flags.
+DS-314: унификация направлений — каждый признак получает dir_label (bull/bear) + dir (±1).
+Правило: {long, up} → bull/+1, {short, down} → bear/−1.
+"""
+import numpy as np
+import pandas as pd
+from typing import List, Dict
+
+# ── Канон направлений (DS-314) — ТРОИЧНЫЙ ──────────────────────────
+# dir ∈ {+1, 0, −1}   ·   dir_label ∈ {bull, range, bear}
+CANON = {
+    "bull": ("bull", +1), "bear": ("bear", -1),
+    "long": ("bull", +1), "short": ("bear", -1),
+    "up": ("bull", +1), "down": ("bear", -1),
+    "range": ("range", 0), "neutral": ("range", 0), "eq": ("range", 0),
+}
+
+
+def _norm_dir(raw_dir: str):
+    """Нормализовать направление → (dir_label, dir_val)."""
+    if raw_dir in CANON:
+        return CANON[raw_dir]
+    return (raw_dir, 0)  # неизвестное
+
+
+def _add_dir_meta(result: dict, prefix: str, raw_dir: str):
+    """Добавить dir_label_{prefix} и dir_{prefix} в result."""
+    label, val = _norm_dir(raw_dir)
+    result[f"dir_label_{prefix}"] = label
+    result[f"dir_{prefix}"] = val
+
+
+def _to_bool_array(n: int, indices: List[int]) -> np.ndarray:
+    arr = np.zeros(n, dtype=bool)
+    for idx in indices:
+        if 0 <= idx < n:
+            arr[idx] = True
+    return arr
+
+
+def etl_fvg(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128: FVG через detect_fvg → bool массивы."""
+    from core.smc.smc_engine import detect_fvg
+
+    n = len(df)
+    close = df["close"].values
+    fvgs = detect_fvg(df)  # List[(bar, lvl1, lvl2, dir, extra1, extra2)]
+
+    bull_idx, bear_idx = [], []
+    bull_in = np.zeros(n, dtype=bool)
+    bear_in = np.zeros(n, dtype=bool)
+
+    for f in fvgs:
+        bar_raw, l1, l2, direction = f[0], f[1], f[2], f[3]
+        # bar может быть Timestamp или int
+        bar = df.index.get_loc(bar_raw) if hasattr(bar_raw, 'timestamp') else int(bar_raw)
+        bot, top = min(l1, l2), max(l1, l2)
+        if direction == "bull":
+            bull_idx.append(bar)
+        else:
+            bear_idx.append(bar)
+        for j in range(bar, min(bar + 20, n)):
+            if bot * 0.998 <= close[j] <= top * 1.002:
+                if direction == "bull":
+                    bull_in[j] = True
+                else:
+                    bear_in[j] = True
+
+    ret = {"bull_fvg": _to_bool_array(n, bull_idx), "bear_fvg": _to_bool_array(n, bear_idx),
+            "bull_fvg_in": bull_in, "bear_fvg_in": bear_in}
+    _add_dir_meta(ret, "fvg", "bull")  # FVG всегда знает сторону
+    return ret
+
+
+def etl_order_blocks(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128: структурные OB с ATR(200) + mitigation."""
+    from core.smc.smc_engine import detect_structure_breaks, detect_order_blocks, active_order_blocks
+
+    n = len(df)
+    breaks = detect_structure_breaks(df)
+    obs = detect_order_blocks(df, breaks)       # List[OrderBlock]
+    active = active_order_blocks(obs, n_bars=30, per_side=5)
+
+    close = df["close"].values
+    bull_idx, bear_idx = [], []
+    bull_near, bear_near = [], []
+
+    for ob in active:
+        idx = ob.break_idx
+        if not (0 <= idx < n):
+            continue
+        if ob.kind == "bull":
+            bull_idx.append(idx)
+            for j in range(idx, min(idx + 10, n)):
+                if -0.5 <= (close[j] - ob.top) / close[j] * 100 <= 3:
+                    bull_near.append(j)
+        else:
+            bear_idx.append(idx)
+            for j in range(idx, min(idx + 10, n)):
+                if -0.5 <= (ob.bottom - close[j]) / close[j] * 100 <= 3:
+                    bear_near.append(j)
+
+    ret = {"bull_ob": _to_bool_array(n, bull_idx), "bear_ob": _to_bool_array(n, bear_idx),
+            "bull_ob_near": _to_bool_array(n, bull_near), "bear_ob_near": _to_bool_array(n, bear_near)}
+    _add_dir_meta(ret, "ob", "bull")
+    return ret
+
+
+def etl_bos_choch(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128: BOS/CHoCH через detect_structure_breaks."""
+    from core.smc.smc_engine import detect_structure_breaks, zigzag_atr, find_setups_zz
+
+    n = len(df)
+    breaks = detect_structure_breaks(df)
+
+    # Из StructureBreak объектов
+    bull_bos_idx = [b.idx for b in breaks if b.kind == "BOS" and b.direction == "bull"]
+    bear_bos_idx = [b.idx for b in breaks if b.kind == "BOS" and b.direction == "bear"]
+    bull_choch_idx = [b.idx for b in breaks if b.kind == "CHoCH" and b.direction == "bull"]
+    bear_choch_idx = [b.idx for b in breaks if b.kind == "CHoCH" and b.direction == "bear"]
+
+    # Дополнительно: ZigZag-based сетапы (find_setups_zz)
+    zz = zigzag_atr(df)
+    setups = find_setups_zz(zz, df)
+    for s in setups:
+        bar = s.get("bar", 0)
+        if s.get("kind") == "BOS" and s.get("dir") == "bull":
+            if bar not in bull_bos_idx: bull_bos_idx.append(bar)
+        elif s.get("kind") == "BOS" and s.get("dir") == "bear":
+            if bar not in bear_bos_idx: bear_bos_idx.append(bar)
+        elif s.get("kind") == "CHoCH" and s.get("dir") == "bull":
+            if bar not in bull_choch_idx: bull_choch_idx.append(bar)
+        elif s.get("kind") == "CHoCH" and s.get("dir") == "bear":
+            if bar not in bear_choch_idx: bear_choch_idx.append(bar)
+
+    ret = {"bull_bos": _to_bool_array(n, bull_bos_idx), "bear_bos": _to_bool_array(n, bear_bos_idx),
+            "bull_choch": _to_bool_array(n, bull_choch_idx), "bear_choch": _to_bool_array(n, bear_choch_idx)}
+    _add_dir_meta(ret, "bos_choch", "bull")
+    return ret
+
+
+def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128: OTE + Premium/Discount."""
+    from core.smc.smc_engine import premium_discount, build_ote, find_choch_ote, detect_structure_breaks
+
+    n = len(df)
+    close, high, low = df["close"].values, df["high"].values, df["low"].values
+
+    ote_long = np.zeros(n, dtype=bool)
+    ote_short = np.zeros(n, dtype=bool)
+    premium = np.zeros(n, dtype=bool)
+    discount = np.zeros(n, dtype=bool)
+
+    # Premium/Discount от глобального диапазона
+    pd_zones = premium_discount(high.max(), low.min())
+    prem_lo, prem_hi = pd_zones["premium"]
+    disc_lo, disc_hi = pd_zones["discount"]
+
+    for i in range(n):
+        c = close[i]
+        if prem_lo <= c <= prem_hi:
+            premium[i] = True
+        elif disc_lo <= c <= disc_hi:
+            discount[i] = True
+
+    # OTE от CHoCH
+    breaks = detect_structure_breaks(df)
+    choch_ote = find_choch_ote(breaks, df)
+    if choch_ote:
+        zone = choch_ote.get("ote_zone", (0, 0))
+        direction = choch_ote.get("direction", "")
+        for i in range(n):
+            c = close[i]
+            if zone[0] <= c <= zone[1]:
+                if direction == "long":
+                    ote_long[i] = True
+                elif direction == "short":
+                    ote_short[i] = True
+
+    ret = {"ote_long": ote_long, "ote_short": ote_short,
+            "premium": premium, "discount": discount}
+    _add_dir_meta(ret, "ote", "long")  # long → bull/+1
+    return ret
+
+
+def etl_eql_eql(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128: EQH/EQL через detect_equal_levels."""
+    from core.smc.smc_engine import detect_equal_levels
+
+    n = len(df)
+    high, low = df["high"].values, df["low"].values
+
+    # detect_equal_levels → List[(bar, level, bar2, level2, kind)]
+    levels = detect_equal_levels(df)
+    eqh = np.zeros(n, dtype=bool)
+    eql = np.zeros(n, dtype=bool)
+
+    for lvl in levels:
+        bar_raw, lvl_price = lvl[0], lvl[1]
+        bar = df.index.get_loc(bar_raw) if hasattr(bar_raw, 'timestamp') else int(bar_raw)
+        kind = lvl[4]
+        if 0 <= bar < n:
+            if kind == "EQH" and high[bar] > lvl_price * 1.003:
+                eqh[bar] = True
+            elif kind == "EQL" and low[bar] < lvl_price * 0.997:
+                eql[bar] = True
+
+    return {"eqh_sweep": eqh, "eql_sweep": eql}

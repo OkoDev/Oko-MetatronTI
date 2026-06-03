@@ -448,98 +448,48 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
 
     out = {}
 
-    # ─ FVG ────────────────────────────────────────────────────────────────
-    bull_fvg = np.zeros(n, dtype=bool); bull_fvg_in = np.zeros(n, dtype=bool)
-    bear_fvg = np.zeros(n, dtype=bool); bear_fvg_in = np.zeros(n, dtype=bool)
-    L = 30
-    for i in range(2, n):
-        bz = None; sz = None
-        for j in range(i, max(2, i-L), -1):
-            if bz is None and j >= 2 and low[j] > high[j-2]:
-                bot, top = high[j-2], low[j]
-                if (top-bot)/bot*100 >= 0.05 and i > j and low[j+1:i+1].min() > bot * 0.998:
-                    bz = (bot, top)
-            if sz is None and j >= 2 and high[j] < low[j-2]:
-                top, bot = low[j-2], high[j]
-                if (top-bot)/bot*100 >= 0.05 and i > j and high[j+1:i+1].max() < top * 1.002:
-                    sz = (bot, top)
-            if bz and sz: break
-        if bz:
-            bull_fvg[i] = True
-            if bz[0]*0.998 <= close[i] <= bz[1]*1.002: bull_fvg_in[i] = True
-        if sz:
-            bear_fvg[i] = True
-            if sz[0]*0.998 <= close[i] <= sz[1]*1.002: bear_fvg_in[i] = True
+    # ── ARCH-128 эталон через smc_engine bridge ──────────────────────────
+    from tools.pattern_mining.swing_service_bridge import (
+        etl_fvg, etl_order_blocks, etl_bos_choch, etl_ote_premium, etl_eql_eql,
+    )
+
+    # ─ FVG (ARCH-128: структурный, порог значимости) ─────────────────────
+    fvg_etl = etl_fvg(df)
+    bull_fvg = fvg_etl["bull_fvg"]; bull_fvg_in = fvg_etl["bull_fvg_in"]
+    bear_fvg = fvg_etl["bear_fvg"]; bear_fvg_in = fvg_etl["bear_fvg_in"]
     out[f"bull_fvg_{label}"]    = bull_fvg
     out[f"bull_fvg_in_{label}"] = bull_fvg_in
     out[f"bear_fvg_{label}"]    = bear_fvg
     out[f"bear_fvg_in_{label}"] = bear_fvg_in
 
-    # ─ OB ─────────────────────────────────────────────────────────────────
-    bull_ob = np.zeros(n, dtype=bool); bull_ob_near = np.zeros(n, dtype=bool)
-    bear_ob = np.zeros(n, dtype=bool); bear_ob_near = np.zeros(n, dtype=bool)
-    L = 25
-    for i in range(4, n):
-        bz = None; sz = None
-        for j in range(i-2, max(4, i-L), -1):
-            if bz is None and j+2 < n and close[j] < open_[j]:
-                if close[j+1] > close[j] and close[j+2] > close[j+1]:
-                    ob_bot, ob_top = low[j], high[j]
-                    if low[j+1:i+1].min() > ob_bot * 0.999: bz = (ob_bot, ob_top)
-            if sz is None and j+2 < n and close[j] > open_[j]:
-                if close[j+1] < close[j] and close[j+2] < close[j+1]:
-                    ob_bot, ob_top = low[j], high[j]
-                    if high[j+1:i+1].max() < ob_top * 1.001: sz = (ob_bot, ob_top)
-            if bz and sz: break
-        if bz:
-            bull_ob[i] = True
-            if -0.5 <= (close[i] - bz[1])/close[i]*100 <= 3: bull_ob_near[i] = True
-        if sz:
-            bear_ob[i] = True
-            if -0.5 <= (sz[0] - close[i])/close[i]*100 <= 3: bear_ob_near[i] = True
+    # ─ OB (ARCH-128: структурный слом + ATR(200) + mitigation) ───────────
+    ob_etl = etl_order_blocks(df)
+    bull_ob = ob_etl["bull_ob"]; bull_ob_near = ob_etl["bull_ob_near"]
+    bear_ob = ob_etl["bear_ob"]; bear_ob_near = ob_etl["bear_ob_near"]
     out[f"bull_ob_{label}"]      = bull_ob
     out[f"bull_ob_near_{label}"] = bull_ob_near
     out[f"bear_ob_{label}"]      = bear_ob
     out[f"bear_ob_near_{label}"] = bear_ob_near
 
-    # ─ BOS/CHoCH ──────────────────────────────────────────────────────────
-    bull_bos = np.zeros(n, dtype=bool); bear_bos = np.zeros(n, dtype=bool)
-    bull_choch = np.zeros(n, dtype=bool); bear_choch = np.zeros(n, dtype=bool)
-    L = 20
-    for i in range(L, n):
-        hi_max = high[i-L:i].max()
-        lo_min = low[i-L:i].min()
-        if close[i] > hi_max:
-            bull_bos[i] = True
-            if bear_bos[i-L+5:i].any(): bull_choch[i] = True
-        if close[i] < lo_min:
-            bear_bos[i] = True
-            if bull_bos[i-L+5:i].any(): bear_choch[i] = True
+    # ─ BOS/CHoCH (ARCH-128: LuxAlgo + объём + закрепление) ───────────────
+    bos_etl = etl_bos_choch(df)
+    bull_bos = bos_etl["bull_bos"]; bear_bos = bos_etl["bear_bos"]
+    bull_choch = bos_etl["bull_choch"]; bear_choch = bos_etl["bear_choch"]
     out[f"bull_bos_{label}"]    = bull_bos
     out[f"bear_bos_{label}"]    = bear_bos
     out[f"bull_choch_{label}"]  = bull_choch
     out[f"bear_choch_{label}"]  = bear_choch
 
-    # ─ OTE & Premium/Discount ─────────────────────────────────────────────
-    ote_long  = np.zeros(n, dtype=bool); ote_short = np.zeros(n, dtype=bool)
-    premium   = np.zeros(n, dtype=bool); discount  = np.zeros(n, dtype=bool)
-    L = 40
-    for i in range(L, n):
-        hi = high[i-L:i].max(); lo = low[i-L:i].min()
-        rng = hi - lo
-        if rng < 1e-8: continue
-        c = close[i]
-        if hi - 0.79*rng <= c <= hi - 0.62*rng: ote_long[i] = True
-        if lo + 0.62*rng <= c <= lo + 0.79*rng: ote_short[i] = True
-        mid = (hi+lo)/2
-        if c >= mid: premium[i] = True
-        else:        discount[i] = True
+    # ─ OTE & Premium/Discount (ARCH-128: build_ote + find_choch_ote) ─────
+    ote_etl = etl_ote_premium(df)
+    ote_long = ote_etl["ote_long"]; ote_short = ote_etl["ote_short"]
+    premium = ote_etl["premium"]; discount = ote_etl["discount"]
     out[f"ote_long_{label}"]  = ote_long
     out[f"ote_short_{label}"] = ote_short
     out[f"premium_{label}"]   = premium
     out[f"discount_{label}"]  = discount
 
-    # ─ ATR Supertrend ─────────────────────────────────────────────────────
+    # ─ ATR Supertrend (оставлен как есть — не SMC) ──────────────────────
     atr = atr_supertrend(df)
     out[f"atr_up_{label}"]   = atr == 1
     out[f"atr_down_{label}"] = atr == -1
@@ -606,16 +556,9 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"rsi_div_bull_hidden_{label}"] = rsi_bull_hid
     out[f"rsi_div_bear_hidden_{label}"] = rsi_bear_hid
 
-    # ─ EQH/EQL sweep ──────────────────────────────────────────────────────
-    eqh_sw = np.zeros(n, dtype=bool); eql_sw = np.zeros(n, dtype=bool)
-    L = 30; TOL = 0.0015
-    for i in range(L, n):
-        rh = high[i-L:i]; max_h = rh.max()
-        if sum(1 for h in rh if abs(h-max_h)/max_h < TOL) >= 2 and high[i] > max_h*(1+TOL) and close[i] < max_h:
-            eqh_sw[i] = True
-        rl = low[i-L:i]; min_l = rl.min()
-        if sum(1 for l in rl if abs(l-min_l)/min_l < TOL) >= 2 and low[i] < min_l*(1-TOL) and close[i] > min_l:
-            eql_sw[i] = True
+    # ─ EQH/EQL (ARCH-128: структурные уровни) ────────────────────────────
+    eql_etl = etl_eql_eql(df)
+    eqh_sw = eql_etl["eqh_sweep"]; eql_sw = eql_etl["eql_sweep"]
     out[f"eqh_sweep_{label}"] = eqh_sw
     out[f"eql_sweep_{label}"] = eql_sw
 
