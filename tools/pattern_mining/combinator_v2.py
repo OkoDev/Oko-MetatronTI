@@ -451,6 +451,7 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     # ── ARCH-128 эталон через smc_engine bridge ──────────────────────────
     from tools.pattern_mining.swing_service_bridge import (
         etl_fvg, etl_order_blocks, etl_bos_choch, etl_ote_premium, etl_eql_eql,
+        etl_fvg_overlap, etl_elliott, etl_regime,   # ARCH-128 Шаг 2 (Claude)
     )
 
     # ─ FVG (ARCH-128: структурный, порог значимости) ─────────────────────
@@ -470,6 +471,8 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"bull_ob_near_{label}"] = bull_ob_near
     out[f"bear_ob_{label}"]      = bear_ob
     out[f"bear_ob_near_{label}"] = bear_ob_near
+    out[f"bull_ob_mitigated_{label}"] = ob_etl["bull_ob_mitigated"]   # ARCH-128 Шаг 2
+    out[f"bear_ob_mitigated_{label}"] = ob_etl["bear_ob_mitigated"]
 
     # ─ BOS/CHoCH (ARCH-128: LuxAlgo + объём + закрепление) ───────────────
     bos_etl = etl_bos_choch(df)
@@ -561,6 +564,22 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     eqh_sw = eql_etl["eqh_sweep"]; eql_sw = eql_etl["eql_sweep"]
     out[f"eqh_sweep_{label}"] = eqh_sw
     out[f"eql_sweep_{label}"] = eql_sw
+
+    # ─ FVG overlap / Эллиотт / Regime троичный (ARCH-128 Шаг 2, Claude) ───
+    ovr = etl_fvg_overlap(df)
+    out[f"bull_fvg_overlap_{label}"]      = ovr["bull_fvg_overlap"]
+    out[f"bear_fvg_overlap_{label}"]      = ovr["bear_fvg_overlap"]
+    out[f"bull_fvg_overlap_held_{label}"] = ovr["bull_fvg_overlap_held"]
+    out[f"bear_fvg_overlap_held_{label}"] = ovr["bear_fvg_overlap_held"]
+    ell = etl_elliott(df)
+    out[f"elliott_bull_impulse_{label}"] = ell["elliott_bull_impulse"]
+    out[f"elliott_bear_impulse_{label}"] = ell["elliott_bear_impulse"]
+    out[f"elliott_textbook_{label}"]     = ell["elliott_textbook"]
+    reg = etl_regime(df)
+    out[f"regime_bull_{label}"]  = reg["regime_bull"]
+    out[f"regime_range_{label}"] = reg["regime_range"]
+    out[f"regime_bear_{label}"]  = reg["regime_bear"]
+    out[f"regime_dir_{label}"]   = reg["regime_dir"]   # числовой троичный (+1/0/−1)
 
     # ─ Volume spike ───────────────────────────────────────────────────────
     if "volume" in df.columns:

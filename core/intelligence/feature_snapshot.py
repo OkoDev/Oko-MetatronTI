@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3   # v3 (ARCH-128 Шаг 2): +fvg_overlap, elliott, regime троичный, ob_mitigated
 
 # TF, для которых compute_flags вызывает pivot-флаги (эталон: только исходный 1h)
 _PIVOT_TF = "1h"

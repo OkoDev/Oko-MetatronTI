@@ -102,8 +102,13 @@ def etl_order_blocks(df: pd.DataFrame) -> Dict[str, np.ndarray]:
                 if -0.5 <= (ob.bottom - close[j]) / close[j] * 100 <= 3:
                     bear_near.append(j)
 
+    # ARCH-128 Шаг 2: митигация OB (флаг на баре пробоя блока) — из ВСЕХ obs, не только active
+    bull_mit = [ob.mitigated_idx for ob in obs if ob.kind == "bull" and ob.mitigated_idx >= 0]
+    bear_mit = [ob.mitigated_idx for ob in obs if ob.kind == "bear" and ob.mitigated_idx >= 0]
+
     ret = {"bull_ob": _to_bool_array(n, bull_idx), "bear_ob": _to_bool_array(n, bear_idx),
-            "bull_ob_near": _to_bool_array(n, bull_near), "bear_ob_near": _to_bool_array(n, bear_near)}
+            "bull_ob_near": _to_bool_array(n, bull_near), "bear_ob_near": _to_bool_array(n, bear_near),
+            "bull_ob_mitigated": _to_bool_array(n, bull_mit), "bear_ob_mitigated": _to_bool_array(n, bear_mit)}
     _add_dir_meta(ret, "ob", "bull")
     return ret
 
@@ -208,3 +213,100 @@ def etl_eql_eql(df: pd.DataFrame) -> Dict[str, np.ndarray]:
                 eql[bar] = True
 
     return {"eqh_sweep": eqh, "eql_sweep": eql}
+
+
+# ── ARCH-128 Шаг 2 (Claude): fvg_overlap / elliott / regime троичный ──────────
+def _bar_of(df, ts_or_idx, n):
+    """Timestamp|int → позиция бара (или None если вне диапазона)."""
+    bar = df.index.get_loc(ts_or_idx) if hasattr(ts_or_idx, "timestamp") else int(ts_or_idx)
+    return bar if 0 <= bar < n else None
+
+
+def etl_fvg_overlap(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128 Шаг 2: перекрытие bull×bear FVG = зона разворота (вероятностная).
+
+    detect_fvg_overlap → [dict(lo, hi, direction up/down, since, held, ...)].
+    up→bull-разворот, down→bear. held = зона удержалась на откате (подтверждение).
+    """
+    from core.smc.smc_engine import detect_fvg_overlap
+
+    n = len(df)
+    bull_ov = np.zeros(n, dtype=bool); bear_ov = np.zeros(n, dtype=bool)
+    bull_ov_held = np.zeros(n, dtype=bool); bear_ov_held = np.zeros(n, dtype=bool)
+    for o in detect_fvg_overlap(df):
+        bar = _bar_of(df, o["since"], n)
+        if bar is None:
+            continue
+        if o["direction"] == "up":
+            bull_ov[bar] = True
+            if o.get("held"): bull_ov_held[bar] = True
+        else:
+            bear_ov[bar] = True
+            if o.get("held"): bear_ov_held[bar] = True
+    ret = {"bull_fvg_overlap": bull_ov, "bear_fvg_overlap": bear_ov,
+           "bull_fvg_overlap_held": bull_ov_held, "bear_fvg_overlap_held": bear_ov_held}
+    _add_dir_meta(ret, "fvg_overlap", "up")  # up → bull/+1
+    return ret
+
+
+def etl_elliott(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128 Шаг 2: Эллиотт 5-волновой импульс (направление + textbook).
+
+    Флаг ставится на баре волны 5 (конец импульса) — там завершается структура.
+    elliott_textbook = фибо-соотношения волн в норме (сильная разметка).
+    """
+    from core.smc.smc_engine import zigzag_atr, detect_elliott_impulse
+
+    n = len(df)
+    bull_imp = np.zeros(n, dtype=bool); bear_imp = np.zeros(n, dtype=bool)
+    textbook = np.zeros(n, dtype=bool)
+    for imp in detect_elliott_impulse(zigzag_atr(df)):
+        bar = _bar_of(df, imp["waves"][5][0], n)
+        if bar is None:
+            continue
+        if imp["direction"] == "up":
+            bull_imp[bar] = True
+        else:
+            bear_imp[bar] = True
+        if imp.get("textbook"):
+            textbook[bar] = True
+    return {"elliott_bull_impulse": bull_imp, "elliott_bear_impulse": bear_imp,
+            "elliott_textbook": textbook}
+
+
+def etl_regime(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """ARCH-128 Шаг 2: рыночный РЕЖИМ — ТРОИЧНЫЙ (bull/range/bear) контекст.
+
+    Рынок имеет 3 направления (↑↓→). regime на каждом баре:
+      bull (+1) — последний слом вверх и цена НЕ в equilibrium;
+      bear (−1) — последний слом вниз и не в equilibrium;
+      range (0) — equilibrium-зона Premium/Discount (боковик/консолидация) или нет слома.
+    regime_dir — числовой канон (+1/0/−1) для ML; regime_{bull,range,bear} — булевы.
+    """
+    from core.smc.smc_engine import zigzag_atr, find_setups_zz, premium_discount
+
+    n = len(df)
+    close = df["close"].values
+    eq_lo, eq_hi = premium_discount(df["high"].max(), df["low"].min())["equilibrium"]
+    # ZigZag-структура чувствительнее swing(50) — даёт сломы и на коротких данных.
+    setups = find_setups_zz(zigzag_atr(df), df)
+    breaks = sorted(
+        (b for b in ((_bar_of(df, s["choch_ts"], n), s["struct"]) for s in setups) if b[0] is not None),
+        key=lambda x: x[0],
+    )
+
+    regime_bull = np.zeros(n, dtype=bool); regime_bear = np.zeros(n, dtype=bool)
+    regime_range = np.zeros(n, dtype=bool); regime_dir = np.zeros(n, dtype=int)
+    last_dir, bi = 0, 0
+    for i in range(n):
+        while bi < len(breaks) and breaks[bi][0] <= i:
+            last_dir = +1 if breaks[bi][1] == "bull" else -1
+            bi += 1
+        if eq_lo <= close[i] <= eq_hi or last_dir == 0:   # боковик/equilibrium → range
+            regime_range[i] = True; regime_dir[i] = 0
+        elif last_dir > 0:
+            regime_bull[i] = True; regime_dir[i] = +1
+        else:
+            regime_bear[i] = True; regime_dir[i] = -1
+    return {"regime_bull": regime_bull, "regime_range": regime_range,
+            "regime_bear": regime_bear, "regime_dir": regime_dir}
