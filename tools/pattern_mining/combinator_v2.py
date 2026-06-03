@@ -21,6 +21,11 @@ import sys, io, time
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from pathlib import Path
+# ARCH-128 (DS-313): bridge импортирует core.smc.smc_engine + tools.pattern_mining (абсолютные) →
+# нужен КОРЕНЬ проекта в sys.path, иначе CLI-скрипты pattern_mining падают «No module named tools/core».
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 from itertools import combinations
 import pandas as pd
 import numpy as np
@@ -621,22 +626,26 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     cma_stack = np.vstack([cmas[p] for p in cma_periods])  # кластер: все 5 CMA ≤0.5% спред = сильный уровень
     out[f"cma_cluster_{label}"] = (cma_stack.max(0) - cma_stack.min(0)) / np.where(close != 0, close, 1) <= 0.005
 
-    # ─ Dynamic Channel (linreg slope + 2σ канал, OKO-SM пользователя) ───────────
-    # slope → тренд (дублирует regime/ATR — берём для полноты), границы → зоны разворота (уникально).
+    # ─ Dynamic Channel (linreg slope + 2σ канал, OKO-SM) — ВЕКТОРНО (sliding_window) ──
+    # slope → тренд (дублирует regime/ATR), границы → зоны разворота (уникально).
     dc_len = 100
     dc_su = np.zeros(n, dtype=bool); dc_sd = np.zeros(n, dtype=bool)
     dc_up = np.zeros(n, dtype=bool); dc_lo = np.zeros(n, dtype=bool)
-    if n >= dc_len:
-        xs = np.arange(dc_len); xm = xs.mean(); xvar = ((xs - xm) ** 2).sum()
-        for i in range(dc_len, n):
-            y = close[i - dc_len:i]
-            slope = np.dot(xs - xm, y - y.mean()) / xvar
-            reg = slope * (dc_len - 1) + (y.mean() - slope * xm)   # линия на тек. баре
-            dev = (y - (slope * xs + (y.mean() - slope * xm))).std() * 2
-            if slope > 0: dc_su[i] = True
-            elif slope < 0: dc_sd[i] = True
-            if close[i] >= reg + dev: dc_up[i] = True        # у верхней границы
-            elif close[i] <= reg - dev: dc_lo[i] = True      # у нижней границы
+    if n > dc_len:
+        from numpy.lib.stride_tricks import sliding_window_view
+        W = sliding_window_view(close, dc_len)            # (n-dc_len+1, dc_len)
+        k = np.arange(dc_len); km = k.mean(); kvar = ((k - km) ** 2).sum()
+        ym = W.mean(axis=1)
+        slope = ((W - ym[:, None]) * (k - km)).sum(axis=1) / kvar
+        intercept = ym - slope * km
+        reg = slope * (dc_len - 1) + intercept            # линия на последнем баре окна
+        dev = (W - (slope[:, None] * k + intercept[:, None])).std(axis=1) * 2
+        ii = np.arange(dc_len, n)                          # бар i → окно close[i-dc_len:i] = W[i-dc_len]
+        sl = slope[:len(ii)]; rg = reg[:len(ii)]; dv = dev[:len(ii)]; ci = close[ii]
+        dc_su[ii] = sl > 0
+        dc_sd[ii] = sl < 0
+        dc_up[ii] = ci >= rg + dv
+        dc_lo[ii] = ci <= rg - dv
     out[f"dc_slope_up_{label}"]   = dc_su
     out[f"dc_slope_down_{label}"] = dc_sd
     out[f"dc_at_upper_{label}"]   = dc_up
