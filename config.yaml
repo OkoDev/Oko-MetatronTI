@@ -352,7 +352,7 @@ event_bus:
 advisor:
   enabled: true           # ✅ ВКЛ 02.06.2026 (shadow) — spawn_advisor() поднимает advisor_loop. balance=0 → mistral-fallback
   shadow: true            # вердикт пишется в advisor_snap, НОЛЬ влияния на исполнение
-  interval_hours: 1       # 1 consult/цикл (не per-pair — дёшево, latency-tolerant)
+  interval_hours: 4       # 03.06: 1ч→4ч (экономия API роя ×4). 1 consult/цикл, latency-tolerant
   timeout_s: 600          # часовой shadow-брифинг — латентность неважна; каскад без баланса бывает >200с
   send_telegram: true     # слать брифинг в ТГ с #тегом
   telegram_tag: "#брифинг"
