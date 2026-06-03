@@ -68,11 +68,11 @@ cb.MIN_N = 20
 
 PROJECT_ROOT = Path("E:/MTF BOT/CURSOR/crypto_volume_bot")
 HISTORY_1H = PROJECT_ROOT / "data" / "history" / "1h"
-INPUT_CSV = PROJECT_ROOT / "data" / "research" / "_baseline_2026-05-19" / "combinator_v2_results.csv"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "research" / "2026-05-20--ph1"
+INPUT_CSV = PROJECT_ROOT / "data" / "research" / "2026-06-03--ds315" / "combinator_v2_results.csv"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "research" / "2026-06-03--ds315"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-TRAIN_END = pd.Timestamp("2025-07-01", tz="UTC")
+TRAIN_END = pd.Timestamp("2026-03-01", tz="UTC")
 MIN_N_TRAIN = 30
 
 
