@@ -668,6 +668,76 @@ def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
     return setups
 
 
+def ote_retest_setups(
+    df: "pd.DataFrame",
+    *,
+    dev_mult: float = 3.0,
+    retest_bars: int = 60,
+    only_choch: bool = True,
+) -> List[dict]:
+    """ARCH-128 — OTE-Retest Engine (ядро): слом → импульс → OTE → РЕТЕСТ → вход+стоп+конфлюенция.
+
+    Логика входа (метод пользователя):
+      1. Значимый слом структуры (CHoCH) — `find_setups_zz`.
+      2. Импульс слома → OTE-зона 0.5-0.79 (`build_ote`).
+      3. РЕТЕСТ: первый бар ПОСЛЕ слома, где цена вернулась в OTE-зону (откат).
+      4. КОНФЛЮЕНЦИЯ: OB/FVG той же стороны внутри OTE = усиление (+/++).
+      5. ВХОД = середина OTE (0.645), СТОП за 1.0 (начало импульса) + буфер.
+    direction: long (bull-CHoCH, OTE near low) / short (bear-CHoCH, near high).
+    Возвращает [dict(choch_ts, entry_ts, entry, sl, risk, direction, ote, confluence, from, to)].
+    TP не считается здесь — отдельный слой (магниты/фибо/пивоты).
+    """
+    zz = zigzag_atr(df, 11, dev_mult)
+    setups = find_setups_zz(zz, df)
+    breaks = detect_structure_breaks(df)
+    obs = detect_order_blocks(df, breaks)
+    fvgs = detect_fvg(df)
+    pos = {ts: i for i, ts in enumerate(df.index)}
+    low_a, high_a = df["low"].values, df["high"].values
+    n = len(df)
+    out: List[dict] = []
+
+    for s in setups:
+        if only_choch and s.get("kind") != "CHoCH":
+            continue
+        ote_lo, ote_hi = s["ote"]
+        direction = s["direction"]            # long / short
+        ci = pos.get(s["choch_ts"])
+        if ci is None:
+            continue
+        # 3. РЕТЕСТ — первый бар после слома, коснувшийся OTE-зоны
+        entry_i = None
+        for j in range(ci + 1, min(ci + 1 + retest_bars, n)):
+            if low_a[j] <= ote_hi and high_a[j] >= ote_lo:
+                entry_i = j
+                break
+        if entry_i is None:
+            continue
+        entry = (ote_lo + ote_hi) / 2.0       # середина зоны (~0.645)
+        # 4. КОНФЛЮЕНЦИЯ — OB/FVG той же стороны в OTE-зоне
+        want = "bull" if direction == "long" else "bear"
+        confl = 0
+        for ob in obs:
+            if ob.kind == want and min(ob.top, ob.bottom) <= ote_hi and max(ob.top, ob.bottom) >= ote_lo:
+                confl += 1
+        for fv in fvgs:
+            ftop, fbot = max(fv[1], fv[2]), min(fv[1], fv[2])
+            if fv[3] == want and fbot <= ote_hi and ftop >= ote_lo:
+                confl += 1
+        # 5. СТОП за 1.0 (начало импульса = s['to'] для long(низ)? — точка 1.0 build_ote)
+        one_level = s["levels"][1.0]          # 1.0 = начало импульса
+        sl = one_level
+        risk = abs(entry - sl)
+        if risk <= 0:
+            continue
+        out.append(dict(
+            choch_ts=s["choch_ts"], entry_ts=df.index[entry_i], entry=round(entry, 8),
+            sl=round(sl, 8), risk=round(risk, 8), direction=direction,
+            ote=(ote_lo, ote_hi), confluence=confl, **{"from": s["from"], "to": s["to"]},
+        ))
+    return out
+
+
 def last_swing_leg_ote(df: pd.DataFrame, length: int = 20) -> Optional[dict]:
     """OTE от последней ЗНАЧИМОЙ последовательной ноги структуры (привязка к swing H/L).
 
