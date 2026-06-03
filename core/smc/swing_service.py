@@ -537,6 +537,25 @@ def detect_elliott_impulse(zz: List[tuple]) -> List[dict]:
             continue
         if l3 < l1 and l3 < l5:        # R2: волна 3 не самая короткая
             continue
+        # EXTENSION волны 5: продлить до финального экстремума. Волна 5 часто расширяется
+        # под-волнами (GRT 15m: 19:30 → откат 21:30 → новое дно 23:15). Тянем точку 5 до
+        # последнего low(bear)/high(bull), пока цена не развернулась ЗА волну 4 (конец импульса).
+        w5_ts, w5_p = ts[5], ps[5]
+        k = i + 6
+        while k < len(typed):
+            kt, kp, kk = typed[k]
+            if direction == "down":
+                if kk == "H" and kp > p4:        # разворот вверх за волну 4 = импульс закончен
+                    break
+                if kk == "L" and kp < w5_p:       # новое дно — продлеваем волну 5
+                    w5_ts, w5_p = kt, kp
+            else:
+                if kk == "L" and kp < p4:
+                    break
+                if kk == "H" and kp > w5_p:
+                    w5_ts, w5_p = kt, kp
+            k += 1
+        l5 = abs(w5_p - p4)
         # Фибо-соотношения волн (docs/ENCYCLOPEDIA.md «Волновая теория Эллиотта»):
         #   w2 откат 0.618-0.786 волны 1 = классика (OTE SHORT/LONG); w4 откат ~0.382 волны 3;
         #   w3 расширение ≥1.618 волны 1 = сильный импульс. textbook = все три в норме.
@@ -544,7 +563,8 @@ def detect_elliott_impulse(zz: List[tuple]) -> List[dict]:
         w4_retr = abs(p4 - p3) / l3 if l3 else 0.0
         w3_ext = l3 / l1 if l1 else 0.0
         textbook = (0.5 <= w2_retr <= 0.886) and (0.236 <= w4_retr <= 0.618) and w3_ext >= 1.3
-        out.append(dict(waves=[(ts[k], ps[k]) for k in range(6)], direction=direction,
+        waves = [(ts[k2], ps[k2]) for k2 in range(5)] + [(w5_ts, w5_p)]
+        out.append(dict(waves=waves, direction=direction,
                         lens=(l1, l3, l5), w2_retr=round(w2_retr, 3), w4_retr=round(w4_retr, 3),
                         w3_ext=round(w3_ext, 3), textbook=textbook))
     return out
