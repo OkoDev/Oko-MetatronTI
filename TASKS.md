@@ -29,7 +29,9 @@
 | **DS-314** | ✅ | **Унификация направлений:** троичный канон `bull(+1)/range(0)/bear(−1)`. Dir-мета в bridge → ждёт Шаг 2 | DS |
 | ARCH-128-S2 | ✅ | **Шаг 2: features_json эталонные поля** — `fvg_overlap`/`elliott`/`regime`(троичный +`regime_dir`)/`ob_mitigated` в bridge ETL + compute_flags (60 cols). schema v2→3. Коммит 58b9088. Нюанс: elliott постфактум. `memory/arch128_step2_features.md` | Claude |
 | ARCH-128-S3 | 🔄 | **Шаг 3: ре-майнинг** на 75 признаках. A=Claude (ре-чек 215 текущих), B=DS-315 (полный walkforward+MHT). Интерпретация+калибровка OTE/EQH = Claude | DS+Claude |
-| **DS-315** | 🔴 | **Шаг 3B: полный walkforward** на эталоне (75 признаков) + MHT → `walkforward_full_v2.csv`. ⚠️ проверить скорость Dynamic Channel polyfit на полной истории | DS |
+| **DS-315** | ✅ | **Шаг 3B: walkforward+MHT** — 14789 паттернов → **6906 MHT-значимых, 2683 стабильных** (n≥50). FVG доминирует, fvg_overlap(Шаг2)=716 выживших. ⚠️ regime убран; CMA/HH-HL/dc не вошли (нет bull/bear префикса в генерации) | DS |
+| **DS-316** | 🔴 | **Закрыть LTF-дыру** — nested 15m/5m майнинг. DS-315 только HTF (1h+), LTF=0. 🚨 БЕЗ заложничества HTF (как L1_golden_LTF_5m): HTF-контекст МЯГКИЙ, LTF-триггер свободный, каскад без дыр | DS |
+| ARCH-128-ENGINE | 🔄 | **OTE-Retest Engine** (ВХОД-движок): слом→импульс→OTE→ретест→вход+SL. Ядро `ote_retest_setups`. Baseline бэктест (TP1=0, data-era). TP→TPSelector(вклад: отриц.фибо+EQL/FVG), TSL→tsl_updater, SL-решение→ExitManager Ph2 | Claude |
 | ARCH-128-EXT | ✅ | **Эталон полный (75 признаков)** — +CMA Фибо(21-233) +Dynamic Channel +HH/HL/LH/LL. Коммит 25a8d98. Hull+Kahlman отложен | Claude |
 | **ARCH-128-MON** | ⏳ | **Мониторинг качества OTE / Premium-Discount** — периодическая отрисовка фибо на чартах для визуальной сверки (правильно ли определяются OTE-зона и premium/discount). Контроль эталона после изменений | Claude |
 
