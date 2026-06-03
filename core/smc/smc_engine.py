@@ -1,18 +1,16 @@
-"""ARCH-128 — Swing Service: двухуровневые свинги + ZigZag (порт OKO-SM эталона).
+"""ARCH-128 — SMC Engine: эталонный движок SMC (порт OKO-SM Pine, единый калькулятор).
 
-Корень "мелких свингов" (DS-311 OTE, точность входа): бот использовал fractal
-period=5 без фильтра значимости. Эталон пользователя (OKO-SM Pine) даёт ДВА метода:
+Воспроизводит индикатор пользователя OKO-SM слой-в-слой. НЕ только свинги (имя
+swing_service устарело 03.06 → smc_engine): ZigZag · structure HH/HL/LH/LL · BOS/CHoCH
+(защищённые уровни) · Order Blocks (+mitigation) · Premium/Discount · OTE (0.5-0.79) ·
+EQH/EQL · FVG (+overlap) · Эллиотт (5-волн +extension, мульти-масштаб).
 
+Базис значимости свингов (корень «мелких свингов» DS-311 OTE):
 1. swings(length) — LuxAlgo: значимый (major, len=50) vs internal (minor, len=5).
-   os := high[len] > highest(len) ? 0 : low[len] < lowest(len) ? 1 : os[1]
-   Свинг подтверждается СДВИГОМ на `length` баров (не симметричный fractal).
+2. ZigZag с ATR-deviation: разворот ≥ k×ATR% (dev=3, depth=11). Отсекает шум.
 
-2. ZigZag с ATR-deviation: свинг засчитывается только если разворот ≥ k×ATR%
-   (i_dev_thresh = atr(10)/close*100 × dev_mult). Отсекает шум.
-
-Источник формул: memory/reference_oko_sm_indicator.md.
-Используется: SMC-структура (BOS/CHoCH на major), OTE (Fib от свинга слома),
-магниты, Elliott. Заменяет наивный find_swing_highs/lows для значимой структуры.
+ЕДИНЫЙ КАЛЬКУЛЯТОР (ARCH-118): combinator/features_json/сферы Bus вызывают ЭТОТ модуль,
+не дублируют формулы. Источник: memory/reference_oko_sm_indicator.md, docs/PRICE_PATTERNS_LIBRARY.md.
 """
 from __future__ import annotations
 

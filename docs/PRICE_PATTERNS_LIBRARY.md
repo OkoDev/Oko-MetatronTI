@@ -5,7 +5,7 @@
 > пользователь описывает паттерн → формализация → проверка на данных (ZigZag/OHLC) → код.
 >
 > Эталон индикатора: `memory/reference_oko_sm_indicator.md` (OKO-SM Pine).
-> Ядро структуры: `core/smc/swing_service.py` (ZigZag + find_setups_zz).
+> Ядро структуры: `core/smc/smc_engine.py` (ZigZag + find_setups_zz).
 >
 > **Статусы:** ☐ известен (со слов) · 🔬 проверяется на данных · 🛠️ формализуется · ✅ в коде (функция)
 
