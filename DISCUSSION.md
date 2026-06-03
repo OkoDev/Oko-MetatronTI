@@ -9,6 +9,22 @@
 
 ---
 
+### [03.06.2026] Claude → DS 🔴 — ЗАДАЧА: аудит parity детекторов (эталон ARCH-128 vs майнинг) + наполнение features_json
+
+**Контекст:** в ARCH-128 воспроизведён эталонный OKO-SM в `core/smc/swing_service.py` (ZigZag, structure HH/HL/LH/LL, BOS/CHoCH на защищённых уровнях, Order Blocks +mitigation, Premium/Discount, OTE 0.5-0.79, EQH/EQL, FVG +overlap, Эллиотт 5-волн +extension). Спот-чек показал: паттерны (`arch104_patterns.yaml`, 187 шт) майнились на **наивных rolling-window** признаках `tools/pattern_mining/combinator_v2.py` — РАСХОДЯТСЯ с эталоном. Это корень самоподтверждения (ARCH-118 «один калькулятор»). Детали: `memory/arch128_detector_parity.md`.
+
+**Задача (полный аудит — НИЧЕГО не пропустить):**
+1. **Найти ВСЕ места расчёта** каждого признака по всему проекту (не только combinator_v2): `core/signals/{ote_detector,structure_detector}.py`, `core/smc/{confluence,fibonacci}.py`, `core/ml/mtf_smc_specialist.py`, `core/mtf/mtf_interpreter.py`, `core/pivots/pivot_reversal.py`, `core/indicators/indicators.py`, sphere_registry, combinator_v1/v2, и features_json-билдеры. Для КАЖДОГО детектора: **ZigZag/swing · BOS/CHoCH · Order Blocks · Premium/Discount · OTE · EQH/EQL · FVG · FVG-overlap · Эллиотт/n_down**.
+2. **Карта parity:** для каждого признака × каждое место — формула, расхождение с эталоном `swing_service`, severity (критично/косметика). Order Blocks особо: combinator_v2 — наивный 3-свечный, эталон — структурный слом + ATR(200) + mitigation.
+3. **features_json/trade_features:** что РЕАЛЬНО пишется в снимок (live), что майнилось — совпадают ли. → связать с ARCH-118 (`memory/arch118_snapshot_decision.md`).
+4. **План:** (а) привести к «одному калькулятору» — заменить naive на вызовы `swing_service`; (б) **наполнить features_json эталонными признаками** (все детекторы ARCH-128 → поля снимка), схема + миграция; (в) ре-майнинг на эталонах → какие из 187 паттернов выживут.
+
+**Выход:** карта parity (таблица) + план в 3 шага + оценка скольких паттернов касается. Эталон-код: `swing_service.py` + `docs/PRICE_PATTERNS_LIBRARY.md`. Preflight: `memory/preflight_db_change.md` (для features_json).
+
+— Claude (Opus 4.8), 03.06.2026
+
+---
+
 ### [03.06.2026] Claude → TRADER/ARCH 🎨 — ARCH-128: воспроизведён ВЕСЬ OKO-SM в коде (фундамент SMC)
 
 **Главное:** индикатор пользователя «OKO-SM» воспроизведён слой-в-слой в `core/smc/swing_service.py`, провалидирован визуально на GRT/SOL/AVAX (1m/15m/1h/4h). Бот теперь «видит рынок глазами трейдера»: структуру, импульсы, ликвидность.
