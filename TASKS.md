@@ -28,7 +28,9 @@
 | **DS-313** | ✅ | **Шаг 1 «один калькулятор»** — `swing_service_bridge.py` + naive в `compute_flags` заменены на `smc_engine`. Smoke BTC 15m OK (47 cols). Claude → Шаг 2 | DS |
 | **DS-314** | ✅ | **Унификация направлений:** троичный канон `bull(+1)/range(0)/bear(−1)`. Dir-мета в bridge → ждёт Шаг 2 | DS |
 | ARCH-128-S2 | ✅ | **Шаг 2: features_json эталонные поля** — `fvg_overlap`/`elliott`/`regime`(троичный +`regime_dir`)/`ob_mitigated` в bridge ETL + compute_flags (60 cols). schema v2→3. Коммит 58b9088. Нюанс: elliott постфактум. `memory/arch128_step2_features.md` | Claude |
-| ARCH-128-S3 | 🔴 | **Шаг 3: ре-майнинг** 187 паттернов на эталонных признаках (+regime троичный +fvg_overlap) → «честный костяк» + калибровка OTE/EQH | DS+Claude |
+| ARCH-128-S3 | 🔴 | **Шаг 3: ре-майнинг** 187 паттернов на эталонных признаках (+CMA Фибо +Dynamic Channel +HH/HL +regime троичный +fvg_overlap, 75 признаков) → «честный костяк» + калибровка OTE/EQH | DS+Claude |
+| ARCH-128-EXT | ✅ | **Эталон полный (75 признаков)** — +CMA Фибо(21-233) +Dynamic Channel +HH/HL/LH/LL. Коммит 25a8d98. Hull+Kahlman отложен | Claude |
+| **ARCH-128-MON** | ⏳ | **Мониторинг качества OTE / Premium-Discount** — периодическая отрисовка фибо на чартах для визуальной сверки (правильно ли определяются OTE-зона и premium/discount). Контроль эталона после изменений | Claude |
 
 ---
 
