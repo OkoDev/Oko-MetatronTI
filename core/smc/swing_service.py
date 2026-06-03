@@ -503,6 +503,70 @@ def detect_fvg_overlap(
     return out
 
 
+def detect_elliott_impulse(zz: List[tuple]) -> List[dict]:
+    """ARCH-128 — Эллиотт: 5-волновой импульс на ZigZag (1-3-5 импульсные, 2-4 коррекции).
+
+    Окно из 6 ZigZag-точек = 5 волн. Hard-правила Эллиотта (обязательные):
+      R1. Волна 2 не откатывает ЗА начало волны 1.
+      R2. Волна 3 НЕ самая короткая из (1,3,5).
+      R3. Волна 4 не заходит в территорию волны 1 (не перекрывает её конец).
+    bull-импульс (вверх): точки L,H,L,H,L,H; bear (вниз): H,L,H,L,H,L.
+    Большая волновая фибо строится на всём импульсе (точка0 → точка5) → откат к OTE.
+    Возвращает [dict(waves=[(ts,price)×6], direction, lens=(w1,w3,w5))]. Самый свежий — последний.
+    """
+    typed = _zz_typed(zz)
+    out: List[dict] = []
+    for i in range(len(typed) - 5):
+        seg = typed[i:i + 6]
+        kinds = [t for _, _, t in seg]
+        ps = [p for _, p, _ in seg]
+        ts = [t for t, _, _ in seg]
+        p0, p1, p2, p3, p4, p5 = ps
+        if kinds == ["L", "H", "L", "H", "L", "H"]:
+            # bull: w2 выше старта (R1), w3 новый max + не перекрытие w1 (R3), w5 новый max
+            if not (p1 > p0 and p2 > p0 and p3 > p1 and p4 > p1 and p5 > p3):
+                continue
+            l1, l3, l5 = p1 - p0, p3 - p2, p5 - p4
+            direction = "up"
+        elif kinds == ["H", "L", "H", "L", "H", "L"]:
+            if not (p1 < p0 and p2 < p0 and p3 < p1 and p4 < p1 and p5 < p3):
+                continue
+            l1, l3, l5 = p0 - p1, p2 - p3, p4 - p5
+            direction = "down"
+        else:
+            continue
+        if l3 < l1 and l3 < l5:        # R2: волна 3 не самая короткая
+            continue
+        # Фибо-соотношения волн (docs/ENCYCLOPEDIA.md «Волновая теория Эллиотта»):
+        #   w2 откат 0.618-0.786 волны 1 = классика (OTE SHORT/LONG); w4 откат ~0.382 волны 3;
+        #   w3 расширение ≥1.618 волны 1 = сильный импульс. textbook = все три в норме.
+        w2_retr = abs(p2 - p1) / l1 if l1 else 0.0
+        w4_retr = abs(p4 - p3) / l3 if l3 else 0.0
+        w3_ext = l3 / l1 if l1 else 0.0
+        textbook = (0.5 <= w2_retr <= 0.886) and (0.236 <= w4_retr <= 0.618) and w3_ext >= 1.3
+        out.append(dict(waves=[(ts[k], ps[k]) for k in range(6)], direction=direction,
+                        lens=(l1, l3, l5), w2_retr=round(w2_retr, 3), w4_retr=round(w4_retr, 3),
+                        w3_ext=round(w3_ext, 3), textbook=textbook))
+    return out
+
+
+def detect_elliott_mtf(df: "pd.DataFrame", devs: tuple = (3.0, 5.0, 8.0)) -> List[dict]:
+    """Эллиотт на НЕСКОЛЬКИХ масштабах ZigZag — волновой мульти-масштаб (фрактальность).
+
+    Одно движение на мелком dev = под-волны (не проходит правила), на крупном = чистый
+    импульс. Перебираем dev → собираем импульсы с пометкой scale. GRT 02.06: на 1m dev=3
+    импульса нет (под-волны), на 15m — есть. Каждый импульс несёт 'scale'=dev (масштаб волны).
+    Возвращает [dict(... + scale)], от мелкого масштаба к крупному.
+    """
+    res: List[dict] = []
+    for dev in devs:
+        zz = zigzag_atr(df, 11, float(dev))
+        for imp in detect_elliott_impulse(zz):
+            imp = dict(imp); imp["scale"] = dev
+            res.append(imp)
+    return res
+
+
 def _zz_typed(zz: List[tuple]) -> List[tuple]:
     """ZigZag-точки с типом H/L (строгое чередование). [(ts, price, 'H'/'L')].
 
