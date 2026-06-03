@@ -456,8 +456,8 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     # ── ARCH-128 эталон через smc_engine bridge ──────────────────────────
     from tools.pattern_mining.swing_service_bridge import (
         etl_fvg, etl_order_blocks, etl_bos_choch, etl_ote_premium, etl_eql_eql,
-        etl_fvg_overlap, etl_elliott, etl_regime,   # ARCH-128 Шаг 2 (Claude)
-        etl_swing_structure,                         # HH/HL/LH/LL
+        etl_fvg_overlap, etl_elliott,   # ARCH-128 Шаг 2 (Claude)
+        etl_swing_structure,             # HH/HL/LH/LL
     )
 
     # ─ FVG (ARCH-128: структурный, порог значимости) ─────────────────────
@@ -581,11 +581,8 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"elliott_bull_impulse_{label}"] = ell["elliott_bull_impulse"]
     out[f"elliott_bear_impulse_{label}"] = ell["elliott_bear_impulse"]
     out[f"elliott_textbook_{label}"]     = ell["elliott_textbook"]
-    reg = etl_regime(df)
-    out[f"regime_bull_{label}"]  = reg["regime_bull"]
-    out[f"regime_range_{label}"] = reg["regime_range"]
-    out[f"regime_bear_{label}"]  = reg["regime_bear"]
-    out[f"regime_dir_{label}"]   = reg["regime_dir"]   # числовой троичный (+1/0/−1)
+    # regime УБРАН (03.06): классификатор боковика не нужен — торгуем ДВИЖЕНИЯ, не боковик.
+    # Направление = ATR-trend + HH/HL (прямые признаки). Решение ARCH: волна+вход+TP, не режим.
     sw = etl_swing_structure(df)                        # HH/HL/LH/LL — тип swing-точки
     out[f"hh_{label}"] = sw["hh"]; out[f"hl_{label}"] = sw["hl"]
     out[f"lh_{label}"] = sw["lh"]; out[f"ll_{label}"] = sw["ll"]

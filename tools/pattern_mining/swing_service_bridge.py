@@ -297,39 +297,8 @@ def etl_elliott(df: pd.DataFrame) -> Dict[str, np.ndarray]:
             "elliott_textbook": textbook}
 
 
-def etl_regime(df: pd.DataFrame) -> Dict[str, np.ndarray]:
-    """ARCH-128 Шаг 2: рыночный РЕЖИМ — ТРОИЧНЫЙ (bull/range/bear) контекст.
-
-    Рынок имеет 3 направления (↑↓→). regime на каждом баре:
-      bull (+1) — последний слом вверх и цена НЕ в equilibrium;
-      bear (−1) — последний слом вниз и не в equilibrium;
-      range (0) — equilibrium-зона Premium/Discount (боковик/консолидация) или нет слома.
-    regime_dir — числовой канон (+1/0/−1) для ML; regime_{bull,range,bear} — булевы.
-    """
-    from core.smc.smc_engine import zigzag_atr, find_setups_zz, premium_discount
-
-    n = len(df)
-    close = df["close"].values
-    eq_lo, eq_hi = premium_discount(df["high"].max(), df["low"].min())["equilibrium"]
-    # ZigZag-структура чувствительнее swing(50) — даёт сломы и на коротких данных.
-    setups = find_setups_zz(zigzag_atr(df), df)
-    breaks = sorted(
-        (b for b in ((_bar_of(df, s["choch_ts"], n), s["struct"]) for s in setups) if b[0] is not None),
-        key=lambda x: x[0],
-    )
-
-    regime_bull = np.zeros(n, dtype=bool); regime_bear = np.zeros(n, dtype=bool)
-    regime_range = np.zeros(n, dtype=bool); regime_dir = np.zeros(n, dtype=int)
-    last_dir, bi = 0, 0
-    for i in range(n):
-        while bi < len(breaks) and breaks[bi][0] <= i:
-            last_dir = +1 if breaks[bi][1] == "bull" else -1
-            bi += 1
-        if eq_lo <= close[i] <= eq_hi or last_dir == 0:   # боковик/equilibrium → range
-            regime_range[i] = True; regime_dir[i] = 0
-        elif last_dir > 0:
-            regime_bull[i] = True; regime_dir[i] = +1
-        else:
-            regime_bear[i] = True; regime_dir[i] = -1
-    return {"regime_bull": regime_bull, "regime_range": regime_range,
-            "regime_bear": regime_bear, "regime_dir": regime_dir}
+# etl_regime УДАЛЁН (03.06, решение ARCH): regime-классификатор не нужен — торгуем ДВИЖЕНИЯ,
+# не боковик. Любой regime врёт/дёргается (ARCH-124 уже доказал). Направление = ATR-trend + HH/HL
+# (прямые признаки). Стратегия = волна(Эллиотт) + зона входа(OTE/FVG/OB) + TP-цели, а не режим.
+# Изучали Range Filter (=ATR-trend) + Range Detector (боковик) + debounce — рабочий honest-regime
+# получился, НО боковик стратегически не нужен → не внедрён. Прототипы: tmp_charts/regime_*.png.
