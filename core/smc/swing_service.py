@@ -288,8 +288,9 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     # Набор уровней пользователя (TradingView OTE): 0.5/0.62/0.705/0.79
     fibs = [0.0, 0.5, 0.62, 0.705, 0.79, 1.0]
     levels = {f: swing_a + f * rng for f in fibs}
-    # OTE-зона = 0.705-0.79 (как разметка пользователя)
-    o1, o2 = levels[0.705], levels[0.79]
+    # Зона входа = 0.5-0.79 (уточнение пользователя 02.06: вход в диапазоне discount/premium,
+    # не только глубокий 0.705-0.79; 0.705/0.79 — наиболее вероятные точки отскока внутри).
+    o1, o2 = levels[0.5], levels[0.79]
     ote = (min(o1, o2), max(o1, o2))
     direction = "long" if swing_a > swing_b else "short"   # импульс вниз → ждём LONG из OTE
     return {"levels": levels, "ote": ote, "direction": direction}
@@ -349,6 +350,240 @@ def find_choch_ote(
         ote["from"], ote["to"] = (df_for_swings.index[hi], hp), (df_for_swings.index[li], lp)
     ote["choch"] = b
     return ote
+
+
+def _pivots(df: "pd.DataFrame", length: int, is_high: bool) -> List[tuple]:
+    """Pivot-точки (строгий left, нестрогий right — анти-дубль плато, как zigzag_atr).
+
+    Кандидат на баре c — экстремум окна [c-length .. c+length]. Возвращает [(idx, price)].
+    Используется для EQH/EQL (eq_len=3) и любой fixed-pivot разметки.
+    """
+    d = df
+    src = d["high"].values if is_high else d["low"].values
+    n = len(d)
+    out: List[tuple] = []
+    for c in range(length, n - length):
+        val = src[c]
+        ok = True
+        for j in range(c - length, c + length + 1):
+            if j == c:
+                continue
+            left = j < c
+            if is_high:
+                if (left and src[j] >= val) or (not left and src[j] > val):
+                    ok = False; break
+            else:
+                if (left and src[j] <= val) or (not left and src[j] < val):
+                    ok = False; break
+        if ok:
+            out.append((c, float(val)))
+    return out
+
+
+def detect_equal_levels(
+    df: "pd.DataFrame",
+    eq_len: int = 3,
+    threshold: float = 0.1,
+    atr_len: int = 200,
+) -> List[tuple]:
+    """EQH/EQL (LuxAlgo) — равные хаи/лоу = зоны ликвидности (скопления стопов).
+
+    Два СОСЕДНИХ pivot(eq_len) того же типа «равны», если |Δцены| < threshold×ATR.
+    EQH = равные вершины (ликвидность сверху, цель для свипа вверх); EQL = равные донья.
+    Возвращает [(ts1, p1, ts2, p2, 'EQH'/'EQL')] — пары уровней.
+    """
+    d = df.copy()
+    d.columns = [c.lower() for c in d.columns]
+    tr = pd.concat([
+        d["high"] - d["low"],
+        (d["high"] - d["close"].shift()).abs(),
+        (d["low"] - d["close"].shift()).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
+    out: List[tuple] = []
+    for is_high, lab in ((True, "EQH"), (False, "EQL")):
+        pv = _pivots(d, eq_len, is_high)
+        for (i1, p1), (i2, p2) in zip(pv, pv[1:]):
+            thr = threshold * atr[i2] if not pd.isna(atr[i2]) else 0.0
+            if abs(p2 - p1) < thr:
+                out.append((d.index[i1], p1, d.index[i2], p2, lab))
+    return out
+
+
+def detect_fvg(
+    df: "pd.DataFrame",
+    threshold: Optional[float] = None,
+) -> List[tuple]:
+    """FVG / Fair Value Gap (LuxAlgo) — трёхсвечный имбаланс (незаполненный гэп).
+
+    bull-FVG: low[i] > high[i-2] и close[i-1] > high[i-2] → гэп ВВЕРХ (бокс high[i-2]..low[i]).
+    bear-FVG: high[i] < low[i-2] и close[i-1] < low[i-2] → гэп ВНИЗ (бокс high[i]..low[i-2]).
+    Фильтр значимости: Δ% > threshold (auto = средний |Δ%| × 2 — отсекает мелкие гэпы).
+    mitigated = бар, где цена ЗАКРЫЛА гэп (вошла насквозь); -1 = активен.
+    Возвращает [(ts_left, top, bottom, kind, ts_i, mitigated_ts_or_None)].
+    Конфлюенция: FVG внутри OTE-зоны = усиление сигнала («+»).
+    """
+    d = df.copy()
+    d.columns = [c.lower() for c in d.columns]
+    high, low, close = d["high"].values, d["low"].values, d["close"].values
+    n = len(d)
+    raw = []
+    for i in range(2, n):
+        if low[i] > high[i - 2] and close[i - 1] > high[i - 2]:
+            dper = (low[i] - high[i - 2]) / high[i - 2] * 100
+            raw.append((i, "bull", float(low[i]), float(high[i - 2]), dper))
+        elif high[i] < low[i - 2] and close[i - 1] < low[i - 2]:
+            dper = (low[i - 2] - high[i]) / high[i] * 100
+            raw.append((i, "bear", float(low[i - 2]), float(high[i]), dper))
+    if threshold is None:
+        # LuxAlgo auto: средний |gap%| по ВСЕМ барам (gap=0 где нет) × 2. Считать
+        # только по FVG-барам НЕЛЬЗЯ — редкие крупные гэпы задирают порог и режут валидные.
+        allgaps = [max(0.0, low[i] - high[i - 2], low[i - 2] - high[i]) / close[i] * 100
+                   for i in range(2, n)]
+        threshold = (sum(allgaps) / len(allgaps)) * 2 if allgaps else 0.0
+    out = []
+    for i, kind, top, bottom, dper in raw:
+        if dper <= threshold:
+            continue
+        mit = None
+        for j in range(i + 1, n):
+            # mitigation по CLOSE за противоположной границей (полное закрытие гэпа),
+            # НЕ касание фитилём — иначе тренд закрывает валидные FVG откатами.
+            if kind == "bull" and close[j] < bottom:
+                mit = d.index[j]; break
+            if kind == "bear" and close[j] > top:
+                mit = d.index[j]; break
+        out.append((d.index[i - 2], top, bottom, kind, d.index[i], mit))
+    return out
+
+
+def detect_fvg_overlap(
+    df: "pd.DataFrame",
+    threshold: Optional[float] = None,
+) -> List[dict]:
+    """Перекрытие bull×bear FVG = ПОТЕНЦИАЛЬНЫЙ разворот (НЕ гарантия — наблюдать).
+
+    bull-FVG перекрывает bear-FVG (bull сформирован ПОЗЖЕ, зоны пересекаются) → bull-импульс
+    снял bear-сопротивление → возможный разворот ВВЕРХ. Bear часто уже mitigated (его и
+    закрыл этот bull). Зеркально: bear перекрыл bull → разворот ВНИЗ.
+    held = зона перекрытия удержалась (после формирования цена не закрылась за противоположной
+    границей зоны) — подтверждение, что разворот пока в силе. Правило пользователя 03.06:
+    сигнал вероятностный, требует наблюдения за откатом, не вход «вслепую».
+    Возвращает [dict(lo, hi, direction 'up'/'down', since_ts, held, bull, bear)].
+    """
+    fvgs = detect_fvg(df, threshold)
+    close = df["close"].values
+    n = len(df)
+    pos = {ts: i for i, ts in enumerate(df.index)}
+    def lohi(f):
+        return min(f[1], f[2]), max(f[1], f[2])
+    bulls = [f for f in fvgs if f[3] == "bull"]
+    bears = [f for f in fvgs if f[3] == "bear"]
+    out: List[dict] = []
+    # bull(активный) перекрыл bear(любой) → разворот вверх
+    for bu in [f for f in bulls if f[5] is None]:
+        bl, bh = lohi(bu)
+        for be in bears:
+            rl, rh = lohi(be)
+            if bl <= rh and rl <= bh and bu[4] > be[4]:
+                lo, hi = max(bl, rl), min(bh, rh)
+                i0 = pos[bu[4]]
+                held = all(close[j] >= lo for j in range(i0 + 1, n)) if i0 + 1 < n else True
+                out.append(dict(lo=lo, hi=hi, direction="up", since=bu[4], held=held, bull=bu, bear=be))
+    # bear(активный) перекрыл bull(любой) → разворот вниз
+    for be in [f for f in bears if f[5] is None]:
+        rl, rh = lohi(be)
+        for bu in bulls:
+            bl, bh = lohi(bu)
+            if bl <= rh and rl <= bh and be[4] > bu[4]:
+                lo, hi = max(bl, rl), min(bh, rh)
+                i0 = pos[be[4]]
+                held = all(close[j] <= hi for j in range(i0 + 1, n)) if i0 + 1 < n else True
+                out.append(dict(lo=lo, hi=hi, direction="down", since=be[4], held=held, bull=bu, bear=be))
+    return out
+
+
+def _zz_typed(zz: List[tuple]) -> List[tuple]:
+    """ZigZag-точки с типом H/L (строгое чередование). [(ts, price, 'H'/'L')].
+
+    ZigZag по построению чередует вершины/донья. Тип первой определяется сравнением
+    со второй, дальше чередование. Нужен для структурного анализа (HH/HL/LH/LL, слом).
+    """
+    if not zz:
+        return []
+    if len(zz) == 1:
+        return [(zz[0][0], zz[0][1], "H")]
+    first_is_high = zz[0][1] > zz[1][1]
+    out = []
+    for k, (ts, p) in enumerate(zz):
+        is_high = first_is_high == (k % 2 == 0)
+        out.append((ts, p, "H" if is_high else "L"))
+    return out
+
+
+def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
+    """ARCH-128 ЯДРО АВТОПОИСКА — сетапы на ZigZag-структуре (точные вершины LuxAlgo пропускает).
+
+    Перебирает ВСЕ значимые сломы (не «последний CHoCH»). Слом структуры на ZigZag:
+      • новый zz-high > предыдущего zz-high → пробой хая вверх (bull).
+          trend<0 (была нисходящая LL/LH) → CHoCH (смена характера); иначе BOS (продолжение).
+      • новый zz-low < предыдущего zz-low → пробой лоу вниз (bear). Симметрично.
+    ИМПУЛЬС СЛОМА (для фибо) = тот, что пробил структуру: от zz-экстремума-начала
+    (low перед bull-сломом / high перед bear-сломом) до zz-вершины слома. На GRT 02.06:
+    LL 19:33(0.02284) → H 19:53(0.02348) пробил LH 19:00(0.02342) = bull-CHoCH, OTE near low.
+
+    Логика BOS/CHoCH/trend — LuxAlgo; источник свингов — ZigZag (точнее swings(50)).
+    Возвращает [dict] (build_ote + from/to/kind/struct/choch_ts/broken_level), хронологически.
+    """
+    typed = _zz_typed(zz)
+    if len(typed) < 3:
+        return []
+    setups: List[dict] = []
+    trend = 0
+    # ЗАЩИТНЫЕ структурные уровни (держатся, пока тренд жив — НЕ сосед):
+    #   prot_high — пробой вверх = bull-слом; prot_low — пробой вниз = bear-слом.
+    # cand_* — последний swing того же типа (кандидат: начало импульса слома + новый защитный).
+    prot_high: Optional[tuple] = None   # (ts, price)
+    prot_low: Optional[tuple] = None
+    cand_high: Optional[tuple] = None
+    cand_low: Optional[tuple] = None
+    for ts, p, t in typed:
+        if t == "H":
+            if prot_high is not None and p > prot_high[1]:
+                # пробой защитного high → bull-слом. CHoCH если был нисходящий тренд, иначе BOS.
+                kind = "CHoCH" if trend < 0 else "BOS"
+                if cand_low is not None:
+                    lp, hp = cand_low[1], p
+                    ote = build_ote(hp, lp)                 # 0=high(конец), 1=low(начало) → long, near low
+                    ote["from"], ote["to"] = (cand_low[0], lp), (ts, hp)
+                    ote.update(kind=kind, struct="bull", choch_ts=ts,
+                               broken_level=prot_high[1], broken_ts=prot_high[0])
+                    setups.append(ote)
+                trend = 1
+                prot_high = (ts, p)
+                if cand_low is not None:
+                    prot_low = cand_low      # защитный low поднят на HL подтверждённой структуры
+            elif prot_high is None:
+                prot_high = (ts, p)
+            cand_high = (ts, p)
+        else:
+            if prot_low is not None and p < prot_low[1]:
+                kind = "CHoCH" if trend > 0 else "BOS"
+                if cand_high is not None:
+                    hp, lp = cand_high[1], p
+                    ote = build_ote(lp, hp)                 # 0=low(конец), 1=high(начало) → short, near high
+                    ote["from"], ote["to"] = (cand_high[0], hp), (ts, lp)
+                    ote.update(kind=kind, struct="bear", choch_ts=ts,
+                               broken_level=prot_low[1], broken_ts=prot_low[0])
+                    setups.append(ote)
+                trend = -1
+                prot_low = (ts, p)
+                if cand_high is not None:
+                    prot_high = cand_high
+            elif prot_low is None:
+                prot_low = (ts, p)
+            cand_low = (ts, p)
+    return setups
 
 
 def last_swing_leg_ote(df: pd.DataFrame, length: int = 20) -> Optional[dict]:
@@ -430,10 +665,20 @@ def zigzag_atr(
         for j in range(i - l2, i + 1):
             if j < 0 or j == c_idx:
                 continue
-            if hi and high[j] > c:
-                return None
-            if not hi and low[j] < c:
-                return None
+            # Анти-дубль плато: слева СТРОГО (>=/<=  отменяет), справа нестрого (>/<).
+            # На ровном плато проходит только ПЕРВЫЙ бар; если слева есть равный —
+            # не пивот (убирает лишние zz-точки 18:06/18:36 GRT 02.06, сохраняя значимые).
+            left = j < c_idx
+            if hi:
+                if left and high[j] >= c:
+                    return None
+                if not left and high[j] > c:
+                    return None
+            else:
+                if left and low[j] <= c:
+                    return None
+                if not left and low[j] < c:
+                    return None
         return c_idx, float(c)
 
     pts: List[tuple] = []

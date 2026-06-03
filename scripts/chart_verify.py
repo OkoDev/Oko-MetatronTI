@@ -48,6 +48,7 @@ def render_verify(
     hsegments: Optional[list] = None,      # [(ts_from, ts_to, price, color, label)] — линии BOS/CHoCH
     boxes: Optional[list] = None,          # [(ts_left, top, bottom, color, label)] — OB/FVG боксы (extend вправо)
     trendlines: Optional[list] = None,     # [(ts1, p1, ts2, p2, color, label)] — наклонные (импульс)
+    wt: Optional[tuple] = None,            # (wt1_series, wt2_series) — WaveTrend на нижней панели
     out: str = "tmp_charts/chart_verify.png",
 ) -> str:
     """Рисует candlestick + overlay-слои → PNG. df: DatetimeIndex + OHLC."""
@@ -83,9 +84,19 @@ def render_verify(
         hl = dict(hlines=list(hlines.values()), colors=["#bbbbbb"] * len(hlines),
                   linestyle="--", linewidths=0.7)
 
+    # WaveTrend на нижней панели (panel=1)
+    if wt is not None:
+        wt1, wt2 = wt
+        wt1 = pd.Series(list(wt1), index=d.index)
+        wt2 = pd.Series(list(wt2), index=d.index)
+        addplots.append(mpf.make_addplot(wt1, panel=1, color="#26c6da", width=1.1, ylabel="WT"))
+        addplots.append(mpf.make_addplot(wt2, panel=1, color="#ff7043", width=1.0))
+
     style = mpf.make_mpf_style(base_mpf_style="nightclouds", facecolor="#131722", gridcolor="#222")
     kw = dict(type="candle", style=style, title=title, ylabel="", figratio=(16, 9),
               figscale=1.4, returnfig=True, tight_layout=True)
+    if wt is not None:
+        kw["panel_ratios"] = (3, 1)
     if addplots:
         kw["addplot"] = addplots
     if alines:
@@ -94,6 +105,11 @@ def render_verify(
         kw["hlines"] = hl
 
     fig, axes = mpf.plot(d, **kw)
+    # WT-панель: зоны OB/OS ±60 и ноль
+    if wt is not None and len(axes) > 2:
+        wax = axes[2]
+        for lvl, col in ((60, "#ff5252"), (0, "#666666"), (-60, "#00e676")):
+            wax.axhline(lvl, color=col, linewidth=0.7, linestyle="--", alpha=0.7)
     # зоны (OTE/premium/discount) — горизонтальные полосы
     if zones:
         ax = axes[0]
