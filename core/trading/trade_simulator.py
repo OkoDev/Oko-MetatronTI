@@ -2069,6 +2069,8 @@ class TradeSimulator:
                     df_tsl = None
                     tsl_tf_used = tf
                     _ob_force_close = False  # DEV-221: OB return при де-эскалации
+                    # DS-321: гибрид включён?
+                    _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
 
                     if cascade_tsl:
                         # Каскадный TSL (ARCH-10 + DEV-28): двунаправленный каскад.
@@ -2340,6 +2342,10 @@ class TradeSimulator:
 
                         if best_tsl_tf:
                             tsl_tf_used = best_tsl_tf
+                            # DS-321: append hybrid gear for dashboard visibility
+                            if _use_hybrid and current_r is not None:
+                                _gear = 3 if current_r >= 4.0 else (2 if current_r >= 2.0 else 1)
+                                tsl_tf_used = f"hybrid_gear{_gear}_mfe{current_r:.1f}r"
                             if best_tsl_tf != prev_tsl_tf:
                                 action_label = "de-escalate" if _feat_js.get("tsl_degraded") and not _tsl_degraded else "trend confirmed"
                                 logger.info(
@@ -2399,7 +2405,7 @@ class TradeSimulator:
                             trend_info["trendup"] if direction == "LONG"
                             else trend_info["trenddown"]
                         )
-                        from core.trading.tsl_engine import compute_tsl as _compute_tsl
+                        # DS-321: _use_hybrid defined at top of try block
                         # DS-321: гибридная коробка передач (откат через config)
                         _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
                         if _use_hybrid:
