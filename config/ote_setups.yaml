@@ -24,6 +24,27 @@ execution:
   tp1: { level_R: 1.0, close_pct: 50 }    # частичный: 50% на +1R
   runner: "остаток до target (pull→OTE-зона, cont→HTF-target), SL→BE после TP1"
   trail: "ATRTrend + TSL (ExitManager / tsl_updater — другой движок)"
+  # 🔴 ВЫСТРЕЛ 04.06: касание+реакция (база) + СТЕК ПОДТВЕРЖДЕНИЙ ≥ min_confirmations.
+  # Подтверждения (один калькулятор combinator + сырой WT): div · fvg_held · vol ·
+  # liq_sweep (eql/eqh) · wt_cross (СЫРОЙ, не strict OS<-60) · atr (3m/15m, не шумный 5m).
+  # ATRTrend = ОДИН голос, не единственное вето (5m шумит → ложно блокит чистый вход).
+  min_confirmations: 3           # XLM LONG 5m имел 5 → выстрелит; слабые (1-2) отсекутся
+  # 🔴 КАЛИБРОВКА 04.06 (сверка с OKO-SM на XLM 5m): detect_structure_breaks length
+  # default=50 СЛЕПНЕТ на свежих разворотах (лаг). length=5 = эталон Pine: CHoCH верный.
+  choch_length_ltf: 5            # для LTF-структуры/разворота (под OKO-SM pivot)
+  choch_length_micro: 3         # опц. микро-BOS (больше шума)
+
+# 🔴 ZIGZAG параметры PER-ТФ (OKO-SM Waves: Глубина=depth, Отклонение=dev)
+# Default zigzag_atr(11,3) ВРЁТ на 1h (пропускает пики → OTE смещена). Эталон = настройки
+# пользователя per-ТФ. Урок 04.06: индикаторы НЕ идеальны, дефолты сверять с OKO-SM.
+# find_setups_zz/ote_retest_setups должны брать depth/dev по ТФ, не хардкод.
+zigzag_params:
+  "1h": { depth: 8, dev: 2 }    # ✅ подтверждено (XLM 1h ловит истинный пик 0.2742)
+  # TODO собрать у пользователя настройки OKO-SM Waves для остальных ТФ:
+  "5m":  { depth: null, dev: null }
+  "15m": { depth: null, dev: null }
+  "4h":  { depth: null, dev: null }
+  "1d":  { depth: null, dev: null }
 
 # Веса по тирам (стартовые, калибруются update_signal_weights на закрытых VST-сделках)
 tier_weights:

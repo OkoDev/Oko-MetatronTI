@@ -115,14 +115,16 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
     for sig in signals:
         if sig.status == "ARMED":
             armed += 1
-            logger.info("[OTE armed] %s [%s T%d] %s zone=%s trgN=%d unconf=%s",
+            logger.info("[OTE armed] %s [%s T%d] %s zone=%s trgN=%d conf=%d%s unconf=%s",
                         symbol, sig.setup_id, sig.tier, sig.direction,
-                        sig.ote_zone, sig.meta.get("triggers_n"), sig.meta.get("unconfirmed"))
+                        sig.ote_zone, sig.meta.get("triggers_n"), sig.conf_score,
+                        sig.confirmations, sig.meta.get("unconfirmed"))
         elif sig.status == "FIRE":
             fired += 1
-            logger.info("[OTE FIRE] %s [%s T%d] %s entry=%s SL=%s TP1=%s trg=%s ATR↑=%s",
+            logger.info("[OTE FIRE] %s [%s T%d] %s entry=%s SL=%s TP1=%s trg=%s conf=%d%s",
                         symbol, sig.setup_id, sig.tier, sig.direction,
-                        sig.entry, sig.sl, sig.tp1, sig.trigger_type, sig.atr_trend_up)
+                        sig.entry, sig.sl, sig.tp1, sig.trigger_type,
+                        sig.conf_score, sig.confirmations)
             if bool(bot.config.get("ote.vst_trading.enabled", False)):
                 await _register_ote_trade(bot, sig)
     return armed, fired
