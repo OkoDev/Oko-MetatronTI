@@ -668,12 +668,48 @@ def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
     return setups
 
 
+def append_provisional_leg(zz: List[tuple], df: "pd.DataFrame") -> tuple:
+    """LIVE: дорисовывает ТЕКУЩУЮ формирующуюся ногу как НЕПОДТВЕРЖДЁННЫЙ pivot.
+
+    Решает критичный лаг zigzag (zigzag_lag_live_critical): последняя нога подтверждается
+    только через depth//2 баров (4h=20ч!), поэтому live-движок СЛЕП к свежему слому.
+    Provisional = текущий rolling-экстремум после последней zz-точки = то, что трейдер
+    рисует ГЛАЗОМ+рукой, не дожидаясь индикатора. Проверено XLM 1h: воспроизводит
+    ручную SHORT-OTE пользователя до фибо (все 6 уровней совпали).
+
+    Возвращает (zz_extended, provisional_ts | None). Если новой ноги нет — (zz, None).
+    """
+    if not zz:
+        return zz, None
+    typed = _zz_typed(zz)
+    if not typed:
+        return zz, None
+    last_ts, last_p, last_t = typed[-1]
+    pos = {ts: i for i, ts in enumerate(df.index)}
+    li = pos.get(last_ts)
+    if li is None or li >= len(df) - 1:
+        return zz, None
+    after = df.iloc[li + 1:]
+    if last_t == "H":                                   # формируется LOW
+        pi = li + 1 + int(after["low"].values.argmin()); pp = float(after["low"].min())
+        if pp >= last_p:
+            return zz, None                             # не ниже последней H → нет новой ноги
+    else:                                               # формируется HIGH
+        pi = li + 1 + int(after["high"].values.argmax()); pp = float(after["high"].max())
+        if pp <= last_p:
+            return zz, None
+    prov_ts = df.index[pi]
+    return list(zz) + [(prov_ts, pp)], prov_ts
+
+
 def ote_retest_setups(
     df: "pd.DataFrame",
     *,
     dev_mult: float = 3.0,
     retest_bars: int = 60,
     only_choch: bool = True,
+    depth: int = 11,
+    provisional: bool = False,
 ) -> List[dict]:
     """ARCH-128 — OTE-Retest Engine (ядро): слом → импульс → OTE → РЕТЕСТ → вход+стоп+конфлюенция.
 
@@ -687,7 +723,10 @@ def ote_retest_setups(
     Возвращает [dict(choch_ts, entry_ts, entry, sl, risk, direction, ote, confluence, from, to)].
     TP не считается здесь — отдельный слой (магниты/фибо/пивоты).
     """
-    zz = zigzag_atr(df, 11, dev_mult)
+    zz = zigzag_atr(df, depth, dev_mult)
+    prov_ts = None
+    if provisional:
+        zz, prov_ts = append_provisional_leg(zz, df)   # live: дорисовать текущую ногу
     setups = find_setups_zz(zz, df)
     breaks = detect_structure_breaks(df)
     obs = detect_order_blocks(df, breaks)
@@ -734,6 +773,7 @@ def ote_retest_setups(
             choch_ts=s["choch_ts"], entry_ts=df.index[entry_i], entry=round(entry, 8),
             sl=round(sl, 8), risk=round(risk, 8), direction=direction,
             ote=(ote_lo, ote_hi), confluence=confl, **{"from": s["from"], "to": s["to"]},
+            unconfirmed=bool(prov_ts is not None and s["to"][0] == prov_ts),  # provisional нога
         ))
     return out
 
