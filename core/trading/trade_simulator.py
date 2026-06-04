@@ -2422,6 +2422,9 @@ class TradeSimulator:
                             )
                         tsl_price = _decision.new_sl
                         tsl_triggered = _decision.triggered
+                        # DS-321: пишем гибридный gear в tsl_tf для дашборда
+                        if _use_hybrid and _decision.new_sl is not None:
+                            tsl_tf_used = _decision.reason  # hybrid_gear1_mfe0.5atr
 
                         # DEV-221: OB return при де-эскалации → принудительное закрытие
                         if _ob_force_close and not tsl_triggered:
