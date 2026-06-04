@@ -155,7 +155,7 @@ trading:
     TREND_DOWN: LONG
     TREND_UP: SHORT
   blocked_regimes: [HIGH_VOL]  # P1.5 24.04: откат DEV-149 — HIGH_VOL режим статистически убыточен
-  blocked_regimes_exceptions: [arch104]  # DEV-222 26.05: arch104 торгует в HIGH_VOL (A/B: +0.351R с BE@0.5R)
+  blocked_regimes_exceptions: [arch104, ote_nested]  # DEV-222: arch104 в HIGH_VOL (+0.351R). ARCH-128 04.06: ote_nested НЕ использует regime (логика=OTE-геометрия+htf_dir 4h, ARCH-124 «свернуть regime-гейт»), register считает свой regime → DEV-44 ложно блокил OTE в HIGH_VOL
   pivot_proximity_filter:
     enabled: true
     hard_block_mult: 2
