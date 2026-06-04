@@ -729,7 +729,12 @@ class TradeSimulator:
                         )
                     except Exception:
                         _max_rr_64a = 3.0
-                    if rr > _max_rr_64a:
+                    # ARCH-128: OTE исключён из RR-cap. runner = HTF-target (далёкий),
+                    # частичный TP1=1R фиксирует 50%, остаток бежит до цели + TSL. Cap до 3R
+                    # при компактном SL (0.2-0.3%) давал мизерный TP в % → срезал прибыль cont.
+                    _is_ote_64a = bool(extra_features and
+                                       extra_features.get("signal_type_override") == "ote_nested")
+                    if rr > _max_rr_64a and not _is_ote_64a:
                         take_profit = float(entry) + sign * sl_dist * _max_rr_64a
                         tp_dist = abs(float(take_profit) - float(entry))
                         rr = _max_rr_64a
