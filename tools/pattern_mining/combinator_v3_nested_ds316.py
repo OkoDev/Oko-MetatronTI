@@ -80,6 +80,25 @@ TOP_3F = 25
 TOP_4F = 15
 TOP_5F = 10
 
+# ── DS-318: Комбо hidden_HTF + regular_LTF ───────────────────────────
+DIV_COMBO_PAIRS = [("4h","15m"),("4h","5m"),("1h","15m"),("1h","5m")]
+DIV_TYPES = ["wt_div", "rsi_div"]
+DIV_DIRS = ["bull", "bear"]
+
+
+def add_divergence_combos(ltf_flags, htf_flags, ltf_idx, ltf_label: str, htf_label: str):
+    """DS-318: hidden_HTF & regular_LTF комбо-флаги в ltf_flags."""
+    for dt in DIV_TYPES:
+        for d in DIV_DIRS:
+            htf_col = f"{dt}_{d}_hidden_{htf_label}"
+            ltf_col = f"{dt}_{d}_regular_{ltf_label}"
+            if htf_col not in htf_flags.columns or ltf_col not in ltf_flags.columns:
+                continue
+            htf_s = htf_flags[htf_col].reindex(ltf_idx, method="ffill").fillna(False).astype(bool)
+            combo = f"{dt}_{d}_hidden{htf_label}_regular{ltf_label}"
+            ltf_flags[combo] = htf_s.values & ltf_flags[ltf_col].values
+    return ltf_flags
+
 
 def compute_context_masks(path_1h: Path) -> dict:
     """
@@ -166,6 +185,20 @@ def process_pair(symbol: str) -> list:
 
         # LTF SMC + индикаторы
         ltf_flags = compute_ltf_flags(df_ltf, LTF)
+
+        # ── DS-318: hidden_HTF + regular_LTF комбо ──
+        for htf_label in ["4h", "1h"]:
+            path_htf = HISTORY_LTF_BASE / htf_label / f"{symbol}.parquet"
+            if path_htf.exists():
+                df_htf = pd.read_parquet(path_htf)
+                df_htf.columns = [c.lower() for c in df_htf.columns]
+                if "ts" in df_htf.columns:
+                    df_htf["ts"] = pd.to_datetime(df_htf["ts"], unit="ms", utc=True, errors="coerce")
+                    df_htf = df_htf.set_index("ts")
+                df_htf = df_htf[["open","high","low","close","volume"]].dropna().sort_index()
+                if len(df_htf) >= 200:
+                    htf_flags = compute_ltf_flags(df_htf, htf_label)
+                    ltf_flags = add_divergence_combos(ltf_flags, htf_flags, df_ltf.index, LTF, htf_label)
 
         results = []
         for (direction, ci), htf_mask_1h in context_masks.items():
