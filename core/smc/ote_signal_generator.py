@@ -104,6 +104,9 @@ class OTESignalGenerator:
         self.execution = cfg.get("execution", {})
         # выстрел = касание+реакция + score подтверждений ≥ min_confirmations (config)
         self.min_confirmations = int(self.execution.get("min_confirmations", 3))
+        # runner должен давать ≥ этого RR (иначе rr_filter роутера зарежет → скип FIRE заранее).
+        # ДОЛЖНО совпадать с config.yaml → trading.min_rr_ratio (2.0).
+        self.min_runner_rr = float(self.execution.get("min_runner_rr", 2.0))
         self.tier_weights = cfg.get("tier_weights", {1: 1.0, 2: 0.6, 3: 0.3})
         self.zigzag_params = cfg.get("zigzag_params", {})
         self.ds_patterns = cfg.get("ds_patterns", {})
@@ -312,8 +315,15 @@ class OTESignalGenerator:
         if risk <= 0:
             return None
         tp1 = entry + risk if direction == "long" else entry - risk
-        if (direction == "long" and tp_runner <= entry) or (direction == "short" and tp_runner >= entry):
-            tp_runner = tp1
+        # RR-фильтр ЗАРАНЕЕ: rr_filter роутера/register режут RR<2.0 (строго). Не плодим
+        # мёртвый FIRE — если runner не даёт >= min_runner_rr, остаёмся ARMED (ждём цель/вход).
+        runner_ok = ((direction == "long" and tp_runner > entry) or
+                     (direction == "short" and tp_runner < entry))
+        rr_runner = abs(tp_runner - entry) / risk if runner_ok else 0.0
+        if status == "FIRE" and rr_runner < self.min_runner_rr:
+            status, trg_type, trg_zone = "ARMED", "", (0.0, 0.0)   # цель < min RR → не стреляем
+        if not runner_ok:
+            tp_runner = tp1                                        # для ARMED-отчётности
         return OTESignal(
             symbol=symbol, setup_id=st["id"], tier=st["tier"],
             weight=self.tier_weights.get(st["tier"], 0.3),

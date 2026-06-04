@@ -29,6 +29,9 @@ execution:
   # liq_sweep (eql/eqh) · wt_cross (СЫРОЙ, не strict OS<-60) · atr (3m/15m, не шумный 5m).
   # ATRTrend = ОДИН голос, не единственное вето (5m шумит → ложно блокит чистый вход).
   min_confirmations: 3           # XLM LONG 5m имел 5 → выстрелит; слабые (1-2) отсекутся
+  # runner должен давать >= этого RR, иначе rr_filter роутера зарежет (RR<2.0 строго).
+  # Скип FIRE заранее (ARMED) вместо мёртвого дропа. = config.yaml trading.min_rr_ratio.
+  min_runner_rr: 2.0
   # 🔴 КАЛИБРОВКА 04.06 (сверка с OKO-SM на XLM 5m): detect_structure_breaks length
   # default=50 СЛЕПНЕТ на свежих разворотах (лаг). length=5 = эталон Pine: CHoCH верный.
   choch_length_ltf: 5            # для LTF-структуры/разворота (под OKO-SM pivot)
