@@ -412,25 +412,33 @@ def detect_equal_levels(
 class SponsoredCandle:
     ts: object               # бар SC
     idx: int                 # iloc
-    top: float               # верх ТЕЛА (max open/close)
-    bottom: float            # низ ТЕЛА (min open/close)
+    top: float               # верх box (bull: max(o,c); bear: high-фитиль)
+    bottom: float            # низ box (bull: low-фитиль; bear: min(o,c))
     direction: Literal["bull", "bear"]
-    body_atr: float          # тело / ATR (размер импульса)
-    wick_ratio: float        # доля теней в диапазоне (малая = чистый импульс)
+    mt: float                # Mean Threshold = 0.5 box (крупный капитал тестит середину)
+    open_level: float        # уровень открытия SC (первичная поддержка/сопротивление)
+    swept: float             # пробитый экстремум (снятая ликвидность)
 
 
 def detect_sponsored_candle(
     df: "pd.DataFrame",
-    sc_mult: float = 1.5,
-    wick_max: float = 0.35,
+    lookback: int = 10,
     atr_len: int = 14,
+    min_body_atr: float = 0.5,
+    min_wick_frac: float = 0.3,
 ) -> List[SponsoredCandle]:
-    """SC (Sponsored Candle / Спонсируемая свеча) — большая импульсная свеча одного цвета,
-    «спонсированная» крупным капиталом: тело > sc_mult×ATR, маленькие тени (<wick_max).
+    """SC (Sponsored Candle) — свеча, СНИМАЮЩАЯ ликвидность + РАЗВОРОТ (эталон пользователя/ICT).
 
-    Отличие от OB: SC — НЕ последняя свеча перед импульсом, а сама импульсная (продавливает
-    цену сквозь плотность), оставляет имбаланс внутри. Самостоятельный разворотный/трендовый
-    уровень (поддержка/сопротивление). Тело SC = зона, цена возвращается заполнить имбаланс.
+    Два условия:
+      1. Снятие ликвидности: длинный фитиль обновляет пред. важный экстремум (lookback),
+         снимая стопы ритейла.
+      2. Импульс-разворот: сразу после свипа цена резко в ОБРАТНУЮ сторону (close против фитиля),
+         часто оставляя имбаланс (FVG).
+
+    Разметка box:
+      • Bull SC (свип МИНИМУМА → разворот вверх): top=max(o,c) [верх тела], bottom=low [фитиль].
+      • Bear SC (свип МАКСИМУМА → разворот вниз): top=high [фитиль], bottom=min(o,c) [низ тела].
+    Уровни: MT (0.5 box) — середина, тестится капиталом; open_level — открытие SC.
     """
     d = df.copy()
     d.columns = [c.lower() for c in d.columns]
@@ -442,19 +450,26 @@ def detect_sponsored_candle(
     ], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
     out: List[SponsoredCandle] = []
-    for i in range(1, len(d)):
+    for i in range(lookback, len(d)):
         if pd.isna(atr[i]) or atr[i] <= 0:
             continue
-        body = abs(c[i] - o[i]); rng = h[i] - l[i]
-        if rng <= 0 or body <= sc_mult * atr[i]:
+        body = abs(c[i] - o[i])
+        if body < min_body_atr * atr[i]:
             continue
-        wick = (h[i] - max(o[i], c[i]) + min(o[i], c[i]) - l[i]) / rng
-        if wick >= wick_max:
-            continue
-        out.append(SponsoredCandle(
-            d.index[i], i, float(max(o[i], c[i])), float(min(o[i], c[i])),
-            "bull" if c[i] > o[i] else "bear", round(body / atr[i], 2), round(wick, 2),
-        ))
+        prev_min = l[i - lookback:i].min()
+        prev_max = h[i - lookback:i].max()
+        lower_wick = min(o[i], c[i]) - l[i]
+        upper_wick = h[i] - max(o[i], c[i])
+        # Bull SC: фитиль снял МИНИМУМ (свип sell-side) + закрытие вверх (разворот)
+        if l[i] < prev_min and c[i] > o[i] and lower_wick > min_wick_frac * body:
+            top = float(max(o[i], c[i])); bot = float(l[i])
+            out.append(SponsoredCandle(d.index[i], i, top, bot, "bull",
+                round((top + bot) / 2, 8), float(o[i]), float(prev_min)))
+        # Bear SC: фитиль снял МАКСИМУМ (свип buy-side) + закрытие вниз (разворот)
+        elif h[i] > prev_max and c[i] < o[i] and upper_wick > min_wick_frac * body:
+            top = float(h[i]); bot = float(min(o[i], c[i]))
+            out.append(SponsoredCandle(d.index[i], i, top, bot, "bear",
+                round((top + bot) / 2, 8), float(o[i]), float(prev_max)))
     return out
 
 
