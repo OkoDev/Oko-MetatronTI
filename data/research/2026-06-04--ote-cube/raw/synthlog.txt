@@ -1,0 +1,22 @@
+4h->15m done 201s
+4h->5m done 622s
+
+=== СИНТЕЗ: LTF-СЛОМ в OTE + дивергенция-ВАЛИДАТОР (не точка входа) ===
+
+4h OTE → 15m слом:
+  A. слом в зоне (SL=LTF)   : n= 109 avgR=+0.471 WR= 72% sumR=+51 maxR=+8.0
+  A2. слом (SL=инвалид 1.0): n= 109 avgR=+0.056 WR= 51% sumR=+6 maxR=+2.4
+  B. +regular ВАЛИДАТОР    : n=   6 avgR=+0.000 WR= 67% sumR=+0 maxR=+0.5
+  C. +hidden ВАЛИДАТОР     : n=  70 avgR=+0.779 WR= 81% sumR=+55 maxR=+8.0
+  D. +оба валидатора       : n=   4 avgR=+0.500 WR=100% sumR=+2 maxR=+0.5
+  D2. оба + SL=инвалидация : n=   4 avgR=+0.774 WR= 75% sumR=+3 maxR=+2.1
+     [D split] long: n=   2 avgR=+0.500 WR=100% sumR=+1 maxR=+0.5 | short: n=   2 avgR=+0.500 WR=100% sumR=+1 maxR=+0.5
+
+4h OTE → 5m слом:
+  A. слом в зоне (SL=LTF)   : n=  71 avgR=+0.385 WR= 68% sumR=+27 maxR=+8.5
+  A2. слом (SL=инвалид 1.0): n=  71 avgR=+0.093 WR= 55% sumR=+7 maxR=+2.2
+  B. +regular ВАЛИДАТОР    : n=  10 avgR=+0.050 WR= 70% sumR=+0 maxR=+0.5
+  C. +hidden ВАЛИДАТОР     : n=  47 avgR=+0.300 WR= 68% sumR=+14 maxR=+5.1
+  D. +оба валидатора       : n=   8 avgR=-0.062 WR= 62% sumR=-0 maxR=+0.5
+  D2. оба + SL=инвалидация : n=   8 avgR=+0.898 WR= 88% sumR=+7 maxR=+2.2
+     [D split] long: n=   6 avgR=+0.250 WR= 83% sumR=+2 maxR=+0.5 | short: n=   2 avgR=-1.000 WR=  0% sumR=-2 maxR=-1.0

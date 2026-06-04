@@ -1,0 +1,15 @@
+BTCUSDT htf=49 nested=0 4s
+ETHUSDT htf=39 nested=1 9s
+SOLUSDT htf=49 nested=5 13s
+GRTUSDT htf=46 nested=6 18s
+DOGEUSDT htf=42 nested=18 23s
+
+=== ВЛОЖЕННЫЙ: вход 5m в 4h-OTE, TP=4h target ===
+NESTED  всего: n=  18 avgR=+0.599 med=-1.00 WR= 17% sumR=+11 maxR=+10.5
+NESTED   long: n=   8 avgR=-0.122 med=-1.00 WR= 12% sumR=-1 maxR=+6.0
+NESTED  short: n=  10 avgR=+1.176 med=-1.00 WR= 20% sumR=+12 maxR=+10.5
+
+=== ПЛОСКИЙ 4h (тот же сетап, вход по 4h, SL за 4h 1.0) ===
+FLAT4h  всего: n= 224 avgR=+0.081 med=-1.00 WR= 38% sumR=+18 maxR=+1.8
+
+Средний risk: 5m-вход=1.7041  4h-вход=19.2055  → ужатие риска x11.3

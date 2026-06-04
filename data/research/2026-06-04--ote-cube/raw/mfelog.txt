@@ -1,0 +1,21 @@
+BTCUSDT done 20s
+ETHUSDT done 41s
+SOLUSDT done 70s
+GRTUSDT done 94s
+DOGEUSDT done 122s
+
+=== MFE-распределение nested-входов (n=346) ===
+Какую долю входов цена дотягивает до уровня R прежде чем развернуться:
+  MFE>=0.5R:   86% входов
+  MFE>=  1R:   66% входов
+  MFE>=  2R:   39% входов
+  MFE>=  3R:   29% входов
+  MFE>=  5R:   18% входов
+  MFE>=  8R:    9% входов
+
+Исходы: {'sl': np.int64(316), 'tp': np.int64(30)}
+
+=== Частичный TP: 50% на TP1, 50% runner до 4h target ===
+  TP1=1R: avgR=+0.415 WR=66% sumR=+144
+  TP1=2R: avgR=+0.217 WR=39% sumR=+75
+  TP1=3R: avgR=+0.175 WR=30% sumR=+61

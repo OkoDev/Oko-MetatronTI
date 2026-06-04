@@ -1,0 +1,16 @@
+BTCUSDT htf=16 nested=9 14s
+ETHUSDT htf=14 nested=19 29s
+SOLUSDT htf=29 nested=38 43s
+GRTUSDT htf=20 nested=54 58s
+DOGEUSDT htf=25 nested=72 73s
+
+=== NESTED (5m в 4h-OTE, синхрон окон) ===
+ всего: n=  72 avgR=+0.152 med=-1.00 WR= 12% sumR=+11 maxR=+16.0
+  long: n=  36 avgR=-0.555 med=-1.00 WR=  6% sumR=-20 maxR=+8.0
+ short: n=  36 avgR=+0.858 med=-1.00 WR= 19% sumR=+31 maxR=+16.0
+
+=== FLAT 4h (те же сетапы) ===
+ всего: n= 103 avgR=+0.067 med=-1.00 WR= 38% sumR=+7 maxR=+1.8
+
+risk: 5m=49.093 4h=495.040 → x10.1
+по парам nested: {'BTCUSDT': np.int64(9), 'DOGEUSDT': np.int64(18), 'ETHUSDT': np.int64(10), 'GRTUSDT': np.int64(16), 'SOLUSDT': np.int64(19)}

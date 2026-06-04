@@ -1,0 +1,10 @@
+BTCUSDT cont=25 pull=35 14s
+ETHUSDT cont=39 pull=65 25s
+SOLUSDT cont=63 pull=101 37s
+GRTUSDT cont=88 pull=135 50s
+DOGEUSDT cont=109 pull=168 63s
+
+=== ДВУНАПРАВЛЕННЫЙ КУБ 4h→15m (обе стороны) ===
+ПРОДОЛЖЕНИЕ (по тренду, TP=4h target): n= 109 avgR=+0.471 med=+0.50 WR= 72% sumR=+51 maxR=+8.0
+ОТКАТ      (контр-тренд, TP=4h OTE)   : n= 168 avgR=+0.600 med=+0.50 WR= 78% sumR=+101 maxR=+5.4
+ОБЕ ВЕТКИ вместе                      : n= 277 avgR=+0.549 med=+0.50 WR= 76% sumR=+152 maxR=+8.0

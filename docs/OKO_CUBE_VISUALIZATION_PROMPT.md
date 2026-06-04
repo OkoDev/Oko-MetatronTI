@@ -213,3 +213,81 @@ flat design, white background, simple diagram, watermark
 - `DATA INGESTION` / `core/infra/ • BingX REST+WS`
 - `TRADE EXECUTION` / `core/exchange/ • VST→LIVE`
 - `NARRATIVE BUILDER` / `TG alerts • Dashboard`
+
+---
+
+# 🌀 МАНИФЕСТ КУБА v2 (04.06.2026) — актуальное состояние
+
+> Дельта к схеме v1 выше. Всё что ниже — ПЕРЕЗАПИСЫВАЕТ устаревшее в v1.
+> Причина: research OTE-куб (03-04.06) + удаление regime (03.06) + DEV-200 агрегатор (04.06).
+
+## ❌ УБРАТЬ из схемы (умерло)
+
+| Что | Почему |
+|---|---|
+| **Сфера «Market Regime» (S6)** | УБРАН 03.06 (коммит ba1336d). Классификатор врёт (ARCH-124: 78% мислейбл). Торгуем ДВИЖЕНИЯ, не боковик |
+| **Все стрелки «Regime → Weight Adaptation»** | regime больше не модулирует веса. Петля мертва |
+| **confluence в Signal Detectors** | отключён (DEV-224) — был источником −95R |
+| Mode REVERSAL/TREND | часть regime, тоже убрано |
+
+## 🔄 ОБНОВИТЬ (изменилось)
+
+| Сфера | Было (v1) | Стало (v2) |
+|---|---|---|
+| **MTF SMC Specialist** | 35-40 признаков, `mtf_smc_specialist.py` | **71 признак** (эталон combinator), `core/smc/smc_engine.py` (переим. из swing_service). +OTE/FVG overlap/Elliott/structure HH-HL/CMA/DC/ob_mitigated |
+| **Направление** | из Market Regime | **прямые признаки**: ATR-trend (atr_up/down) + structure (HH/HL/LH/LL). Троичный канон bull/range/bear (dir∈{+1,0,−1}) |
+| **Shared Context Bus** | PairFullState 38 fields | + снимок `trade_features` (FK-таблица, schema v3, sparse-bool, 71 признак) — ARCH-118 |
+| **SMC Sub-куб** | OB+FVG+Struct+Liq+OTE | + **OTE-Retest движок** (nested-куб, шкаф 18 сетапов) — вход живёт ВНУТРИ SMC, не отдельный узел |
+
+## 🆕 ДОБАВИТЬ (новые узлы/связи)
+
+**1. ConfirmationAggregator (новый слой между Signal Detectors → Narrative Builder)**
+```
+core/intelligence/signal_aggregator.py · core/confirmations/registry.py
+strength = Σ weight × confidence · ~70 источников (26 в registry → расширяется)
+DEV-200 Phase 1/2 в проде (co-located helper, observe-режим)
+«больше независимых подтверждений → сильнее сигнал» (ЗАКОН Этапа 12)
+```
+
+**2. OTE-Retest вход (внутри SMC Sub-куба, golden glow)**
+```
+smc_engine.ote_retest_setups · фрактальный nested-куб (HTF-зона × LTF-слом)
+Шкаф 18 сетапов по тирам (откаты доминируют, риск ×10, частичный TP1=1R+runner)
+Покрытие: {откат/продолжение} × {LONG/SHORT} × {масштабы 1h/4h/1d × 5m/15m/1h}
+```
+
+**3. 🔴 ИНВАРИАНТ «ОДИН КАЛЬКУЛЯТОР» (ARCH-118) — центральная связь-закон**
+```
+combinator.compute_flags (71 признак) → Shared Context Bus → ВСЕ потребители
+(Aggregator · EventBus · Стратегии · feature_snapshot · Detectors)
+ЗАПРЕТ двух путей расчёта = parity live==бэктест. Корень анти-самоподтверждения.
+Рисовать как яркую осевую линию от combinator через центр ко всем сферам.
+```
+
+## 🎯 СТАТУС СФЕР v2
+
+```
+Активны: 11 (Bus·DataCollector·WSFeed·WT Spec·SMC Spec·Signal Detectors·
+             Pivot·Narrative·Trade Sim·Exit Manager·Post-Trade·Diagnostics)
+Умерла:  Market Regime (была S6)
+Новый под-слой: ConfirmationAggregator (между детекторами и Narrative)
+Sub-кубы: SMC (✅, +OTE-Retest) · Elliott-Pivot (🔄) · WT (🔵 vision)
+Инвариант: ОДИН КАЛЬКУЛЯТОР (combinator→Bus, ARCH-118)
+```
+
+## 📝 ОБНОВЛЁННЫЙ ПРОМПТ-ФРАГМENT (заменить regime-часть)
+
+```
+...emerald green for ML intelligence (MTF WT Specialist, SMC Specialist with 71 features,
+Narrative Builder), a NEW translucent layer "Confirmation Aggregator" between signal
+detectors and narrative (strength = sum of weighted confirmations, ~70 sources),
+golden OTE-Retest fractal nested inside the SMC sub-cube (cascading zones HTF→LTF),
+ONE bright central axis line labeled "ONE CALCULATOR" from combinator through the bus
+to all spheres (data parity invariant), NO market-regime sphere (removed), NO regime-weight
+feedback arrows...
+```
+
+## 🔗 Источники истины для v2
+`docs/RESEARCH_OTE_CUBE_2026-06-03.md` · `data/research/2026-06-04--ote-cube/SETUP_LIBRARY.md` (шкаф) ·
+`memory/ote_nested_mtf_strategy.md` · `memory/market_three_directions.md` (regime убран) ·
+`ROADMAP.md` Этап 13 (один калькулятор) · `memory/arch118_snapshot_decision.md`.

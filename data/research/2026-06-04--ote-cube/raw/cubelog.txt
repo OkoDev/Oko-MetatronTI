@@ -1,0 +1,18 @@
+cache BTCUSDT 19s
+cache ETHUSDT 36s
+cache SOLUSDT 54s
+cache GRTUSDT 72s
+cache DOGEUSDT 89s
+
+=== КУБ: КАСКАДНАЯ вложенность (зона⊃зона⊃вход), TP=корневой target ===
+цепочка                   n    avgR    WR   sumR   maxR  risk×
+1d→1h→15m                16  +0.182   75%     +3   +1.4   3.4x
+  (91s)
+1d→4h→15m                 9  +0.861  100%     +8   +1.4   1.5x ★
+  (92s)
+4h→1h→15m                34  +0.288   68%    +10   +2.7   1.7x
+  (97s)
+1d→4h→1h→15m              5  +1.150  100%     +6   +1.4   1.4x ★
+  (97s)
+1d→1h→15m→5m              8  -0.062   62%     -0   +0.5   8.3x
+  (99s)

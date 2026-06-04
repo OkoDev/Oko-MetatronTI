@@ -1,0 +1,88 @@
+[1/45] 1000BONKUSDT 117s
+[2/45] AAVEUSDT 231s
+[3/45] ADAUSDT 341s
+[4/45] APEUSDT 455s
+[5/45] APTUSDT 563s
+[6/45] ARBUSDT 671s
+[7/45] ATOMUSDT 779s
+[8/45] AVAXUSDT 894s
+[9/45] BNBUSDT 1020s
+[10/45] BTCUSDT 1150s
+[11/45] CRVUSDT 1238s
+[12/45] DOGEUSDT 1360s
+[13/45] DOTUSDT 1471s
+[14/45] DYDXUSDT 1548s
+[15/45] ENAUSDT 1655s
+[16/45] ENSUSDT 1771s
+[17/45] ETCUSDT 1886s
+[18/45] ETHUSDT 2009s
+[19/45] FETUSDT 2119s
+[20/45] FILUSDT 2219s
+[21/45] GALAUSDT 2311s
+[22/45] GRTUSDT 2423s
+[23/45] INJUSDT 2532s
+[24/45] JUPUSDT 2638s
+[25/45] KASUSDT 2742s
+[26/45] LINKUSDT 2851s
+[27/45] LTCUSDT 2957s
+[28/45] MKRUSDT 2999s
+[29/45] NEARUSDT 3113s
+[30/45] OPUSDT 3214s
+[31/45] RENDERUSDT 3308s
+[32/45] RUNEUSDT 3415s
+[33/45] SEIUSDT 3525s
+[34/45] SOLUSDT 3644s
+[35/45] STXUSDT 3754s
+[36/45] SUIUSDT 3872s
+[37/45] TIAUSDT 3980s
+[38/45] TNSRUSDT 4076s
+[39/45] TONUSDT 4199s
+[40/45] TRXUSDT 4320s
+[41/45] UNIUSDT 4446s
+[42/45] WIFUSDT 4569s
+[43/45] WLDUSDT 4692s
+[44/45] XRPUSDT 4818s
+[45/45] ZROUSDT 4926s
+
+=== ВЕЕР: все сетапы (HTF>LTF|тип), сорт по avgR ===
+сетап                    n    avgR    WR   sumR  POSTn POSTavgR
+4h>5m|pull             786  +0.960   79%   +755     46   +0.753 ★
+1h>5m|pull            2183  +0.822   81%  +1794    168   +0.546 ★
+1d>1h|pull             297  +0.710   78%   +211      2   +2.603 ★
+1d>15m|pull            339  +0.701   72%   +238      5   +0.077 ★
+1d>15m|cont            310  +0.669   73%   +207      9   -0.167
+1d>4h|pull             175  +0.651   75%   +114      2   +0.821 ★
+4h>15m|pull           1427  +0.585   75%   +835     43   +0.581 ★
+1d>15m|cont+hid        198  +0.565   71%   +112      1   -1.000
+1d>5m|pull             159  +0.549   66%    +87      6   +3.003 ★
+1d>1h|cont+hid         149  +0.540   72%    +80      1   +0.500 ★
+1d>4h|cont+hid         108  +0.523   81%    +56      1   +0.500 ★
+1d>1h|cont             218  +0.508   73%   +111      2   -0.250
+1h>15m|pull           3445  +0.501   74%  +1727    101   +0.213 ★
+1d>5m|cont             159  +0.487   70%    +77      9   +0.000
+4h>1h|pull             844  +0.459   71%   +388     20   +0.859 ★
+1d>4h|cont             168  +0.432   77%    +73      2   -0.250
+1h>5m|cont+hid         861  +0.375   69%   +323     66   +0.350
+1h>5m|cont            1376  +0.368   68%   +506    113   +0.356
+4h>15m|cont+hid        572  +0.356   67%   +204     26   +0.006
+4h>1h|cont+hid         574  +0.352   71%   +202     16   +0.193
+4h>5m|cont             628  +0.315   71%   +198     36   +0.142
+4h>5m|cont+hid         384  +0.304   71%   +117     31   +0.182
+4h>15m|cont            925  +0.286   66%   +264     30   -0.028
+4h>1h|cont             938  +0.274   68%   +257     17   +0.211
+1h>15m|cont+hid       2211  +0.244   65%   +540     80   +0.267
+1h>15m|cont           3523  +0.194   64%   +683    130   +0.230
+1d>5m|cont+hid         112  +0.180   71%    +20      1   -1.000
+
+=== 🏆 ПОБЕДИТЕЛИ (avgR≥0.4, n≥50, POST>0) ===
+  4h>5m|pull           n=  786 avgR=+0.960 WR=79% POST=+0.753(n46)
+  1h>5m|pull           n= 2183 avgR=+0.822 WR=81% POST=+0.546(n168)
+  1d>1h|pull           n=  297 avgR=+0.710 WR=78% POST=+2.603(n2)
+  1d>15m|pull          n=  339 avgR=+0.701 WR=72% POST=+0.077(n5)
+  1d>4h|pull           n=  175 avgR=+0.651 WR=75% POST=+0.821(n2)
+  4h>15m|pull          n= 1427 avgR=+0.585 WR=75% POST=+0.581(n43)
+  1d>5m|pull           n=  159 avgR=+0.549 WR=66% POST=+3.003(n6)
+  1d>1h|cont+hid       n=  149 avgR=+0.540 WR=72% POST=+0.500(n1)
+  1d>4h|cont+hid       n=  108 avgR=+0.523 WR=81% POST=+0.500(n1)
+  1h>15m|pull          n= 3445 avgR=+0.501 WR=74% POST=+0.213(n101)
+  4h>1h|pull           n=  844 avgR=+0.459 WR=71% POST=+0.859(n20)

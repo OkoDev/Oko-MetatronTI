@@ -1,0 +1,13 @@
+BTCUSDT base_c=9 div_c=4 90s
+ETHUSDT base_c=19 div_c=8 186s
+SOLUSDT base_c=38 div_c=12 306s
+GRTUSDT base_c=54 div_c=15 415s
+DOGEUSDT base_c=71 div_c=20 541s
+
+=== 4h→5m: БЕЗ дивергенции vs С 5m RSI-дивергенцией ===
+[БЕЗ фильтра  ] ПРОДОЛЖ: n=  71 avgR=+0.385 med=+0.50 WR= 68% sumR=+27 maxR=+8.5
+[БЕЗ фильтра  ] ОТКАТ  : n=  96 avgR=+1.128 med=+0.50 WR= 83% sumR=+108 maxR=+18.8
+[БЕЗ фильтра  ] ОБЕ    : n= 167 avgR=+0.812 med=+0.50 WR= 77% sumR=+136 maxR=+18.8
+[С 5m-div     ] ПРОДОЛЖ: n=  20 avgR=+0.200 med=+0.50 WR= 80% sumR=+4 maxR=+0.5
+[С 5m-div     ] ОТКАТ  : n=  34 avgR=+0.015 med=+0.50 WR= 68% sumR=+0 maxR=+0.5
+[С 5m-div     ] ОБЕ    : n=  54 avgR=+0.083 med=+0.50 WR= 72% sumR=+4 maxR=+0.5

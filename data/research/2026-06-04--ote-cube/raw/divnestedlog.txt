@@ -1,0 +1,22 @@
+1d->15m done 129s
+1d->5m done 380s
+4h->15m done 508s
+4h->5m done 792s
+
+=== ВЛОЖЕННОСТЬ ДИВЕРГЕНЦИЙ: HTF hidden + LTF regular (runner cap 8R) ===
+
+1d hidden → 15m regular:
+  LTF regular ОДИН : n=38785 avgR=-0.054 WR= 45% sumR=-2086 maxR=+4.5
+  + HTF hidden GATE: n=18684 avgR=-0.065 WR= 45% sumR=-1214 maxR=+4.5
+
+1d hidden → 5m regular:
+  LTF regular ОДИН : n=54030 avgR=-0.070 WR= 45% sumR=-3786 maxR=+4.5
+  + HTF hidden GATE: n=29653 avgR=-0.074 WR= 45% sumR=-2200 maxR=+4.5
+
+4h hidden → 15m regular:
+  LTF regular ОДИН : n=38785 avgR=-0.054 WR= 45% sumR=-2086 maxR=+4.5
+  + HTF hidden GATE: n=19777 avgR=-0.070 WR= 45% sumR=-1386 maxR=+4.5
+
+4h hidden → 5m regular:
+  LTF regular ОДИН : n=54030 avgR=-0.070 WR= 45% sumR=-3786 maxR=+4.5
+  + HTF hidden GATE: n=29125 avgR=-0.088 WR= 44% sumR=-2570 maxR=+4.5

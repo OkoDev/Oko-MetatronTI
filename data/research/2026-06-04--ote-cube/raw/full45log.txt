@@ -1,0 +1,65 @@
+[1/45] 1000BONKUSDT 16s
+[2/45] AAVEUSDT 31s
+[3/45] ADAUSDT 48s
+[4/45] APEUSDT 65s
+[5/45] APTUSDT 84s
+[6/45] ARBUSDT 101s
+[7/45] ATOMUSDT 117s
+[8/45] AVAXUSDT 136s
+[9/45] BNBUSDT 157s
+[10/45] BTCUSDT 178s
+[11/45] CRVUSDT 188s
+[12/45] DOGEUSDT 205s
+[13/45] DOTUSDT 220s
+[14/45] DYDXUSDT 231s
+[15/45] ENAUSDT 251s
+[16/45] ENSUSDT 273s
+[17/45] ETCUSDT 293s
+[18/45] ETHUSDT 315s
+[19/45] FETUSDT 332s
+[20/45] FILUSDT 350s
+[21/45] GALAUSDT 365s
+[22/45] GRTUSDT 387s
+[23/45] INJUSDT 407s
+[24/45] JUPUSDT 429s
+[25/45] KASUSDT 446s
+[26/45] LINKUSDT 465s
+[27/45] LTCUSDT 482s
+[28/45] MKRUSDT 494s
+[29/45] NEARUSDT 513s
+[30/45] OPUSDT 533s
+[31/45] RENDERUSDT 551s
+[32/45] RUNEUSDT 571s
+[33/45] SEIUSDT 591s
+[34/45] SOLUSDT 612s
+[35/45] STXUSDT 628s
+[36/45] SUIUSDT 644s
+[37/45] TIAUSDT 662s
+[38/45] TNSRUSDT 677s
+[39/45] TONUSDT 691s
+[40/45] TRXUSDT 715s
+[41/45] UNIUSDT 732s
+[42/45] WIFUSDT 748s
+[43/45] WLDUSDT 765s
+[44/45] XRPUSDT 784s
+[45/45] ZROUSDT 799s
+
+=== ФИНАЛ 45 пар: формула куба C + откат, data-era split (граница 15.04) ===
+
+A. 4h OTE->15m слом (baseline):
+  ВСЕ : n=  925 avgR=+0.286 WR= 66% sumR=+264 maxR=+8.2
+  PRE : n=  895 avgR=+0.296 WR= 66% sumR=+265 maxR=+8.2
+  POST: n=   30 avgR=-0.028 WR= 50% sumR=-1 maxR=+5.6
+  long: n=  449 avgR=+0.230 WR= 63% sumR=+103 maxR=+7.2 | short: n=  476 avgR=+0.338 WR= 68% sumR=+161 maxR=+8.2
+
+C. +hidden-ВАЛИДАТОР (формула):
+  ВСЕ : n=  572 avgR=+0.356 WR= 67% sumR=+204 maxR=+8.2
+  PRE : n=  546 avgR=+0.373 WR= 68% sumR=+204 maxR=+8.2
+  POST: n=   26 avgR=+0.006 WR= 50% sumR=+0 maxR=+5.6
+  long: n=  277 avgR=+0.333 WR= 65% sumR=+92 maxR=+6.4 | short: n=  295 avgR=+0.378 WR= 69% sumR=+112 maxR=+8.2
+
+ОТКАТ 4h OTE->5m (контр-тренд):
+  ВСЕ : n=  786 avgR=+0.960 WR= 79% sumR=+755 maxR=+28.0
+  PRE : n=  740 avgR=+0.973 WR= 80% sumR=+720 maxR=+28.0
+  POST: n=   46 avgR=+0.753 WR= 67% sumR=+35 maxR=+7.6
+  long: n=  379 avgR=+0.888 WR= 77% sumR=+336 maxR=+28.0 | short: n=  407 avgR=+1.028 WR= 81% sumR=+418 maxR=+7.9

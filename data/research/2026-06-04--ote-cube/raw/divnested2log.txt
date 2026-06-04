@@ -1,0 +1,20 @@
+1d->15m done 146s
+4h->15m done 294s
+4h->5m done 612s
+
+=== ВЛОЖЕННОСТЬ ДИВЕРГЕНЦИЙ (узкое окно 2.5 HTF-бара, дедуп gap=30) ===
+
+1d hidden → 15m regular:
+  A. hidden+regular (подтв) : n= 441 avgR=-0.078 WR= 45% sumR=-34 maxR=+4.5
+  B. hidden БЕЗ regular     : n=  52 avgR=+0.029 WR= 48% sumR=+2 maxR=+4.5
+  C. regular один (baseline): n=5333 avgR=-0.049 WR= 46% sumR=-261 maxR=+4.5
+
+4h hidden → 15m regular:
+  A. hidden+regular (подтв) : n= 455 avgR=+0.040 WR= 49% sumR=+18 maxR=+4.5
+  B. hidden БЕЗ regular     : n= 386 avgR=+0.262 WR= 59% sumR=+101 maxR=+4.5
+  C. regular один (baseline): n=5333 avgR=-0.049 WR= 46% sumR=-261 maxR=+4.5
+
+4h hidden → 5m regular:
+  A. hidden+regular (подтв) : n= 648 avgR=+0.007 WR= 45% sumR=+4 maxR=+4.5
+  B. hidden БЕЗ regular     : n= 174 avgR=+0.181 WR= 56% sumR=+32 maxR=+4.5
+  C. regular один (baseline): n=7449 avgR=-0.020 WR= 45% sumR=-151 maxR=+4.5

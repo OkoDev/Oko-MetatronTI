@@ -1,0 +1,20 @@
+BTCUSDT done 15s
+ETHUSDT done 31s
+SOLUSDT done 50s
+GRTUSDT done 67s
+DOGEUSDT done 84s
+
+=== БЕЗ фильтра ===
+ всего: n=  72 avgR=+0.152 med=-1.00 WR= 12% sumR=+11 maxR=+16.0
+  long: n=  36 avgR=-0.555 med=-1.00 WR=  6% sumR=-20 maxR=+8.0
+ short: n=  36 avgR=+0.858 med=-1.00 WR= 19% sumR=+31 maxR=+16.0
+
+=== confluence≥1 ===
+ всего: n=  72 avgR=+0.152 med=-1.00 WR= 12% sumR=+11 maxR=+16.0
+  long: n=  36 avgR=-0.555 med=-1.00 WR=  6% sumR=-20 maxR=+8.0
+ short: n=  36 avgR=+0.858 med=-1.00 WR= 19% sumR=+31 maxR=+16.0
+
+=== confluence≥1 + SL-буфер30% ===
+ всего: n=  72 avgR=-0.085 med=-1.00 WR= 12% sumR=-6 maxR=+12.3
+  long: n=  36 avgR=-0.645 med=-1.00 WR=  6% sumR=-23 maxR=+6.1
+ short: n=  36 avgR=+0.474 med=-1.00 WR= 19% sumR=+17 maxR=+12.3

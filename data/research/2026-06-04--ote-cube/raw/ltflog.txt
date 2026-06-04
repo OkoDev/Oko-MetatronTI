@@ -1,0 +1,11 @@
+15m done rows=927 30s
+5m done rows=1989 63s
+
+=== OTE-Retest LTF (15m+5m, 6 пар, tail 20K) ===
+ВСЕГО: n= 1989 avgR=+0.202 med=-1.00 WR= 43% sumR=+403 Sharpe=0.15
+-- по ТФ --
+   15m: n=  927 avgR=+0.197 med=-1.00 WR= 43% sumR=+183 Sharpe=0.14
+    5m: n= 1062 avgR=+0.207 med=-1.00 WR= 43% sumR=+220 Sharpe=0.15
+-- направление --
+   long: n= 1020 avgR=+0.237 med=-1.00 WR= 44% sumR=+242 Sharpe=0.17
+  short: n=  969 avgR=+0.166 med=-1.00 WR= 41% sumR=+161 Sharpe=0.12

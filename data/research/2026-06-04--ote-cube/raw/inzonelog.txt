@@ -1,0 +1,16 @@
+4h->15m done 121s
+4h->5m done 379s
+
+=== ДИВЕРГЕНЦИИ В OTE-ЗОНЕ (не в воздухе!) — continuation вход ===
+
+4h OTE → 15m вход:
+  A. голый OTE-ретест      : n= 214 avgR=-0.507 WR= 14% sumR=-109 maxR=+7.7
+  B. OTE + regular В ЗОНЕ  : n= 173 avgR=-0.277 WR= 39% sumR=-48 maxR=+10.9
+  B2. ...+ SL=инвалидация  : n= 173 avgR=-0.136 WR= 44% sumR=-24 maxR=+2.0
+  C. OTE+regular+HTF hidden: n= 108 avgR=-0.186 WR= 43% sumR=-20 maxR=+10.9
+
+4h OTE → 5m вход:
+  A. голый OTE-ретест      : n= 101 avgR=-0.568 WR= 11% sumR=-57 maxR=+13.3
+  B. OTE + regular В ЗОНЕ  : n=  91 avgR=-0.341 WR= 44% sumR=-31 maxR=+0.5
+  B2. ...+ SL=инвалидация  : n=  90 avgR=-0.163 WR= 42% sumR=-15 maxR=+1.6
+  C. OTE+regular+HTF hidden: n=  59 avgR=-0.288 WR= 47% sumR=-17 maxR=+0.5
