@@ -24,7 +24,7 @@
           <td class="mono">{{ formatSymbol(p.symbol) }}</td>
           <td :class="sideClass(p.side)"><b>{{ p.side }}</b></td>
           <td>
-            <span v-if="p.tsl_activated" class="badge badge-tsl" :title="p.tsl_tf ? `TSL активен на ${p.tsl_tf}` : 'TSL активен'">TSL</span>
+            <span v-if="p.tsl_activated" :class="tslBadgeClass(p.tsl_tf)" :title="tslGearTooltip(p.tsl_tf)">TSL</span>
             <span v-else style="color:#484f58">—</span>
           </td>
           <td class="mono">{{ fmt(p.size) }}</td>
@@ -49,6 +49,25 @@ defineProps({
 })
 
 const dash = '—'
+// DS-321: TSL badge color by gear
+function tslGear(tslTf) {
+  if (!tslTf || !tslTf.startsWith('hybrid_gear')) return 0
+  const m = tslTf.match(/hybrid_gear(\d)/)
+  return m ? parseInt(m[1]) : 0
+}
+function tslBadgeClass(tslTf) {
+  const g = tslGear(tslTf)
+  if (g === 2) return 'badge badge-tsl-gear2'
+  if (g === 3) return 'badge badge-tsl-gear3'
+  return 'badge badge-tsl'
+}
+function tslGearTooltip(tslTf) {
+  const g = tslGear(tslTf)
+  const labels = {1:'защита', 2:'дышит', 3:'фиксация'}
+  if (g) return `TSL: ${labels[g]} (${tslTf})`
+  return tslTf ? `TSL: ${tslTf}` : 'TSL активен'
+}
+
 
 function formatSymbol(s) {
   if (!s) return dash

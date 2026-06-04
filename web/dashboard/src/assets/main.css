@@ -321,6 +321,8 @@ th.sort-desc::after {
 .badge-tp { background: var(--bg-green); color: var(--green); }
 .badge-sl { background: var(--bg-red); color: var(--red); }
 .badge-tsl { background: var(--bg-purple); color: var(--purple); }
+.badge-tsl-gear2 { background: var(--bg-amber); color: var(--amber); }
+.badge-tsl-gear3 { background: var(--bg-green); color: var(--green); }
 .badge-exp { background: var(--bg-amber); color: var(--amber); }
 .badge-open { background: var(--bg-blue); color: var(--blue); }
 
