@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Scan период — 10 минут (D-029 2026-05-21: было 300s, повышено до 600s
 # чтобы снизить фоновую нагрузку на BingX API. Patterns живут часами,
 # scan каждые 10 мин достаточен для shadow logging.)
-OBSERVER_INTERVAL_SECONDS = 600
+OBSERVER_INTERVAL_SECONDS = 900
 
 # Минимум баров для compute_flags
 MIN_BARS = 200

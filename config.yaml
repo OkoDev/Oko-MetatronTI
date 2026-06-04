@@ -449,7 +449,7 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
-  scan_semaphore_size: 6   # 26.05: 10→6 при BingX DEGRADED — освободить event loop для dashboard
+  scan_semaphore_size: 5   # 26.05: 10→6 при BingX DEGRADED — освободить event loop для dashboard
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5

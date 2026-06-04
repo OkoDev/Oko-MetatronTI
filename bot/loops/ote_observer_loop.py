@@ -27,7 +27,7 @@ from bot.loops.arch104_observer_loop import _get_active_pairs, _fetch_df
 
 logger = logging.getLogger(__name__)
 
-OTE_OBSERVER_INTERVAL_SECONDS = 300   # 5 мин — выстрел нужен timely, зоны живут часами
+OTE_OBSERVER_INTERVAL_SECONDS = 600   # 5 мин — выстрел нужен timely, зоны живут часами
 OTE_OBSERVER_CONCURRENCY = 3          # детекторы тяжелее compute_flags → мягче к API
 MIN_BARS = 50
 
