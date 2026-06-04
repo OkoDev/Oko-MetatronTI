@@ -107,7 +107,7 @@ async def arch104_observer_loop(bot, interval_seconds: int = OBSERVER_INTERVAL_S
                             if result:
                                 counters["decisions"] += 1
                     except Exception as e:
-                        logger.debug("[ARCH-104 observer] %s: %s", sym, e)
+                        logger.warning("[ARCH-104 observer] %s: %s", sym, e)
 
             await asyncio.gather(*[_bounded_scan(s) for s in pairs])
             scanned = counters["scanned"]
@@ -244,7 +244,10 @@ async def _scan_one_pair(bot, symbol: str, adapter,
         for _f_htf in (f_1h, f_4h_src, f_1d_src):
             if _f_htf is not None and len(_f_htf) > 0:
                 _last = _f_htf.iloc[-1]
-                active_htf_flags |= set(_last[_last].index.tolist())
+                # Только bool колонки — исключить числовые pivot-уровни (R2, S3, цены)
+                _true_cols = [c for c in _last.index
+                              if isinstance(_last[c], (bool, __import__('numpy').bool_))]
+                active_htf_flags |= set(_true_cols)
         if htf_flags_cache is not None:
             htf_flags_cache[symbol] = (active_htf_flags, _now)
 

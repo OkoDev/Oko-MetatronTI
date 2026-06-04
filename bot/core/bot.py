@@ -518,6 +518,30 @@ class TradingAlertBot:
                 logger.warning("[OTE observer] failed to start: %s", e)
             try:
                 await self.dp.start_polling(self.bot)
+            except Exception as e:
+                msg = str(e)
+                if "TelegramNetworkError" in type(e).__name__ or "Connect call failed" in msg:
+                    logger.warning("[Bot] Telegram недоступен — автостарт сканирования + дашборд")
+                    # Автостарт мониторинга без Telegram
+                    try:
+                        from bot.monitoring import start_monitoring
+                        from unittest.mock import MagicMock
+                        fake_msg = MagicMock()
+                        fake_msg.from_user.id = 1
+                        fake_msg.from_user.username = "auto"
+                        fake_msg.from_user.first_name = "Auto"
+                        fake_msg.from_user.last_name = ""
+                        async def _noop(*a, **kw): return None
+                        fake_msg.answer = _noop
+                        fake_msg.reply = _noop
+                        await start_monitoring(self, fake_msg)
+                        logger.info("[Bot] Мониторинг запущен (headless)")
+                    except Exception as se:
+                        logger.warning("[Bot] Не удалось автостартовать мониторинг: %s", se)
+                    while True:
+                        await asyncio.sleep(3600)
+                else:
+                    raise
             finally:
                 # D-069: graceful save OHLCV cache при остановке (Ctrl+C / SIGTERM)
                 try:

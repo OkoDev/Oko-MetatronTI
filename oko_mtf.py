@@ -3,10 +3,19 @@
 Бизнес-логика и инициализация — в bot/core/bot.py.
 """
 import logging
+import logging.handlers
 import platform
 import sys
 import os
 import atexit
+
+# ── Monkey-patch: aiohttp 3.9+ убрал loop=, ccxt всё ещё передаёт ──
+import aiohttp.connector as _aiohttp_connector
+_original_init = _aiohttp_connector.TCPConnector.__init__
+def _patched_init(self, *args, **kwargs):
+    kwargs.pop('loop', None)
+    _original_init(self, *args, **kwargs)
+_aiohttp_connector.TCPConnector.__init__ = _patched_init
 import asyncio
 import shutil
 import glob
@@ -21,7 +30,11 @@ logging.basicConfig(
     level=getattr(logging, config.get("logging.level", "INFO")),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("crypto_bot.log", encoding="utf-8"),
+        logging.handlers.RotatingFileHandler(
+            "logs/crypto_bot.log", encoding="utf-8",
+            maxBytes=50 * 1024 * 1024,  # 50 MB
+            backupCount=10,             # хранить 10 архивов
+        ),
         logging.StreamHandler(sys.stdout),
     ],
 )

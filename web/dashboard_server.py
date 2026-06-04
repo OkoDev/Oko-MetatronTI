@@ -2265,6 +2265,25 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app["bot"] = bot
     app.router.add_get("/", _handle_index)
     app.router.add_get("/dashboard", _handle_dashboard_page)
+
+    # ── DS: временный API старта сканирования (Telegram недоступен) ──
+    async def _handle_start_scan(request: web.Request) -> web.Response:
+        from bot.monitoring import start_monitoring
+        from unittest.mock import MagicMock
+        msg = MagicMock()
+        msg.from_user.id = 1
+        msg.from_user.username = "admin"
+        msg.from_user.first_name = "Admin"
+        msg.from_user.last_name = ""
+        async def _noop(*a, **kw): return None
+        msg.answer = _noop
+        msg.reply = _noop
+        try:
+            await start_monitoring(bot, msg)
+            return web.json_response({"status": "ok", "monitoring": bot.is_monitoring})
+        except Exception as e:
+            return web.json_response({"status": "error", "error": str(e)}, status=500)
+    app.router.add_get("/api/start_scan", _handle_start_scan)
     app.router.add_static("/static", Path(__file__).parent / "static")
     app.router.add_get("/api/dashboard", _handle_dashboard_api)
     app.router.add_post("/api/toggles", _handle_toggles_post)
