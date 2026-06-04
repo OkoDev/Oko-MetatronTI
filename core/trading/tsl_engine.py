@@ -252,6 +252,7 @@ __all__ = [
     "breakeven_sl",
     "check_r_gradient_drop",
     "compute_tsl",
+    "compute_hybrid_tsl",
     "get_cascade_cap_tf",
     "get_entry_sl",
     "is_side_valid",
@@ -260,3 +261,112 @@ __all__ = [
     "should_skip_degradation",
     "should_update",
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DS-321: Гибридный TSL — коробка передач (v1/v2/v3)
+# ═══════════════════════════════════════════════════════════════════════
+
+def compute_hybrid_tsl(
+    direction: str,
+    entry: float,
+    current_price: float,
+    original_sl: float,
+    duration_minutes: float = 0.0,
+    mfe_atr: Optional[float] = None,
+    floor_pct: float = DEFAULT_FLOOR_PCT,
+) -> TSLDecision:
+    """
+    Гибридная коробка передач TSL (DS-321).
+    
+    Переключается между режимами по ходу сделки:
+      Gear 1 (v1 ATR): MFE < 2 ATR — защита, BE при 1 ATR
+      Gear 2 (v2 multi): MFE >= 2 ATR — расширение (HTF-контекст)
+      Gear 3 (v1 tight): MFE >= 4 ATR или >12ч — фиксация
+    
+    Args:
+        direction: LONG или SHORT
+        entry: цена входа
+        current_price: текущая цена
+        original_sl: исходный SL
+        duration_minutes: сколько минут в сделке
+        mfe_atr: MFE в ATR (если None — вычисляется из current_price)
+        floor_pct: буфер для floor guard
+    """
+    d = _norm_direction(direction)
+    sl_dist = abs(entry - original_sl)
+    if sl_dist <= 0:
+        return TSLDecision(new_sl=None, triggered=False, floored=False,
+                          side_valid=False, reason="no_sl_dist")
+
+    # Оценка ATR из SL (SL ≈ 1.5 ATR)
+    entry_atr = sl_dist / 1.5
+
+    # MFE в ATR
+    if mfe_atr is None:
+        if d == "LONG":
+            mfe_atr = (current_price - entry) / entry_atr
+        else:
+            mfe_atr = (entry - current_price) / entry_atr
+
+    # ── Gear selection ──
+    if mfe_atr >= 4.0 or duration_minutes > 720:
+        gear = 3  # tight — фиксация
+    elif mfe_atr >= 2.0:
+        gear = 2  # wide — дать дышать
+    else:
+        gear = 1  # protect — защита
+
+    # ── BE ──
+    be_price = breakeven_sl(direction, entry)
+    new_sl = original_sl
+
+    if mfe_atr >= 1.0:
+        # BE: сдвигаем SL к breakeven
+        if d == "LONG":
+            new_sl = max(new_sl, be_price)
+        else:
+            new_sl = min(new_sl, be_price)
+
+    # ── TSL distance per gear ──
+    if mfe_atr > 0.5:
+        if gear == 1:
+            # v1: жёсткая защита, TSL сжимается с прибылью
+            tsl_atr_dist = max(0.3, 0.8 - mfe_atr * 0.15)
+            tsl_atr = entry_atr
+        elif gear == 2:
+            # v2: широкий режим с HTF-оценкой
+            htf_atr_est = entry_atr * 1.5  # консервативная оценка HTF ATR
+            effective_atr = max(entry_atr, htf_atr_est * 0.3)
+            tsl_atr_dist = max(0.4, 1.0 - mfe_atr * 0.2) * 1.5
+            tsl_atr = effective_atr
+        else:  # gear == 3
+            # v3: агрессивная фиксация
+            tsl_atr_dist = max(0.1, 0.3 - (mfe_atr - 4) * 0.03)
+            tsl_atr = entry_atr
+
+        tsl_distance = tsl_atr_dist * tsl_atr
+
+        if d == "LONG":
+            tsl_level = max(entry, current_price - tsl_distance)
+            new_sl = max(new_sl, tsl_level)
+        else:
+            tsl_level = min(entry, current_price + tsl_distance)
+            new_sl = min(new_sl, tsl_level)
+
+    # ── Floor guard ──
+    new_sl, was_floored = apply_floor(direction, entry, new_sl, floor_pct, current_price)
+
+    # ── Trigger check ──
+    triggered = is_tsl_triggered(direction, current_price, new_sl)
+
+    # ── Side validity ──
+    side_ok = is_side_valid(direction, new_sl, current_price)
+
+    return TSLDecision(
+        new_sl=new_sl,
+        triggered=triggered,
+        floored=was_floored,
+        side_valid=side_ok,
+        reason=f"hybrid_gear{gear}_mfe{mfe_atr:.1f}atr",
+    )

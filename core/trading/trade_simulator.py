@@ -2400,12 +2400,26 @@ class TradeSimulator:
                             else trend_info["trenddown"]
                         )
                         from core.trading.tsl_engine import compute_tsl as _compute_tsl
-                        _decision = _compute_tsl(
-                            direction,
-                            entry=entry,
-                            current_price=current_price,
-                            raw_tsl=_raw_tsl,
-                        )
+                        # DS-321: гибридная коробка передач (откат через config)
+                        _use_hybrid = bool(self._config.get("trading.tsl_hybrid_enabled", False))
+                        if _use_hybrid:
+                            from core.trading.tsl_engine import compute_hybrid_tsl as _compute_hybrid
+                            _orig_sl = float(trade.get("original_sl", entry))
+                            _age_m = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0 if created_dt else 0
+                            _decision = _compute_hybrid(
+                                direction,
+                                entry=entry,
+                                current_price=current_price,
+                                original_sl=_orig_sl,
+                                duration_minutes=_age_m,
+                            )
+                        else:
+                            _decision = _compute_tsl(
+                                direction,
+                                entry=entry,
+                                current_price=current_price,
+                                raw_tsl=_raw_tsl,
+                            )
                         tsl_price = _decision.new_sl
                         tsl_triggered = _decision.triggered
 

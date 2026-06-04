@@ -288,6 +288,7 @@ sl_tp_engine:
     history_log_enabled: true     # писать снэпшот в signal_weights_history
     history_log_interval_min: 60  # не чаще раз в N минут
   use_tsl: true
+  tsl_hybrid_enabled: true   # DS-321: гибридная коробка передач (false=откат на текущий)
   tsl_activation_r: 1.0
   tsl_min_move_pct: 0.15
   tsl_activation_r_range: 0.7
