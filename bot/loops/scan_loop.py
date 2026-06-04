@@ -23,6 +23,7 @@ from core.signals.signal_checkers import (
     check_wt_b_signals as _check_wt_b_signals,
 )
 from core.signals.signal_models import SignalData, SignalType, SignalDirection
+from core.intelligence.signal_aggregator import attach_confirmations
 from core.signals.wt_15m_reversal_scanner import scan_wt_15m_reversal, reversal_message as _confluence_message
 from core.infra.data_quality import check_ohlcv_quality, MIN_BARS
 
@@ -329,17 +330,12 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     except Exception:
         pass
 
-    # DEV-202: confirmations из агрегатора
-    _wl_conf_agg = getattr(bot, "confirmation_aggregator", None)
-    if _wl_conf_agg is not None:
-        try:
-            _wl_side = rec.direction.value if hasattr(rec.direction, 'value') else str(rec.direction)
-            _wl_side = 'LONG' if 'LONG' in _wl_side.upper() else 'SHORT'
-            _wl_res = _wl_conf_agg.aggregate(rec.symbol, _wl_side)
-            _extra_wl['confirmations'] = _wl_res.get('confirmations', [])
-            _extra_wl['signal_mode'] = _wl_res.get('signal_mode', 'unknown')
-        except Exception:
-            _extra_wl['confirmations'] = []
+    # DEV-202/200: confirmations из агрегатора (aggregate→observe→flag, единый helper)
+    _wl_side = rec.direction.value if hasattr(rec.direction, 'value') else str(rec.direction)
+    _wl_side = 'LONG' if 'LONG' in _wl_side.upper() else 'SHORT'
+    _extra_wl = attach_confirmations(
+        getattr(bot, "confirmation_aggregator", None), rec.symbol, _wl_side, _extra_wl,
+    )
 
     # tsl_only: tp=None → fallback TP = entry ± 15 * sl_dist (safety valve, TSL закроет раньше)
     # Делаем ДО регистрации, чтобы router/trade_simulator получили валидный TP.
@@ -898,6 +894,7 @@ async def _execute_atr_change_signal(
             "wt1": ev.wt1,
             "signal_mode": (agg_res or {}).get("signal_mode", "momentum"),
             "confirmations": (agg_res or {}).get("confirmations", []),
+            "confirmations_no_trigger": not (agg_res or {}).get("has_trigger", False),  # DEV-200
             "strength_breakdown": (agg_res or {}).get("strength_breakdown", {}),
             "trade_mode": "atr_change",  # dedup: разные режимы с wt_sideways не блокируют друг друга
             "elliott_n_down":     _ell_snap.get("elliott_n_down", 0),      # HTF 4h
@@ -1022,19 +1019,12 @@ async def _execute_sideways_signal(bot, rec) -> None:
             "wt1_at_signal":   _meta.get("wt1"),
             "sideways_bars":   _meta.get("sideways_bars"),
         }
-        # DEV-202: добавить confirmations из агрегатора (если есть ATR накопленные)
-        _sw_conf_agg = getattr(bot, "confirmation_aggregator", None)
-        if _sw_conf_agg is not None:
-            try:
-                _sw_dir = getattr(rec.direction, 'value', str(rec.direction))
-                _sw_side = 'LONG' if 'LONG' in _sw_dir.upper() else 'SHORT'
-                _sw_res = _sw_conf_agg.aggregate(rec.symbol, _sw_side)
-                _extra['confirmations'] = _sw_res.get('confirmations', [])
-                _extra['signal_mode'] = _sw_res.get('signal_mode', 'unknown')
-                if _sw_res.get('strength_breakdown'):
-                    _extra['strength_breakdown'] = _sw_res['strength_breakdown']
-            except Exception:
-                _extra['confirmations'] = []
+        # DEV-202/200: confirmations из агрегатора (aggregate→observe→flag, единый helper)
+        _sw_dir = getattr(rec.direction, 'value', str(rec.direction))
+        _sw_side = 'LONG' if 'LONG' in _sw_dir.upper() else 'SHORT'
+        _extra = attach_confirmations(
+            getattr(bot, "confirmation_aggregator", None), rec.symbol, _sw_side, _extra,
+        )
 
         # Этап 1.В: через TradeRouter (единый узел регистрации)
         if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):

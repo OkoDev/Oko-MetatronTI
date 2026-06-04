@@ -5,7 +5,7 @@
 trigger, тогда как aggregate() (gate) прячет их пока нет atr_change-trigger.
 Это и есть причина «пустого агрегатора» из DEV-238 для wt_signal/pivot_reversal.
 """
-from core.intelligence.signal_aggregator import ConfirmationAggregator
+from core.intelligence.signal_aggregator import ConfirmationAggregator, attach_confirmations
 from core.confirmations.models import Confirmation
 from core.confirmations.registry import get_weight
 
@@ -63,3 +63,63 @@ class TestObserveWithoutTrigger:
         agg.on_confirmation(_conf("smc_eql_swept", "LONG"))
         assert agg.observe("BTC/USDT", "SHORT")["confirm_count"] == 0
         assert agg.observe("BTC/USDT", "LONG")["confirm_count"] == 1
+
+
+class TestAttachConfirmations:
+    """DEV-200 Phase 2: единый helper aggregate→observe→flag для всех путей."""
+
+    def test_trigger_path_flag_false(self):
+        """Есть trigger → confirmations из aggregate, флаг False."""
+        agg = ConfirmationAggregator()
+        agg.on_confirmation(_conf("atr_change_1h", "LONG"))
+        agg.on_confirmation(_conf("fvg_fill", "LONG"))
+        extra = attach_confirmations(agg, "BTC/USDT", "LONG", {})
+        srcs = {c["source"] for c in extra["confirmations"]}
+        assert srcs == {"atr_change_1h", "fvg_fill"}
+        assert extra["confirmations_no_trigger"] is False
+
+    def test_no_trigger_observe_surfaces_flag_true(self):
+        """Нет trigger → observe достаёт буфер, флаг True."""
+        agg = ConfirmationAggregator()
+        agg.on_confirmation(_conf("smc_choch_1h", "LONG"))
+        agg.on_confirmation(_conf("fvg_fill", "LONG"))
+        extra = attach_confirmations(agg, "BTC/USDT", "LONG", {})
+        srcs = {c["source"] for c in extra["confirmations"]}
+        assert srcs == {"smc_choch_1h", "fvg_fill"}
+        assert extra["confirmations_no_trigger"] is True
+
+    def test_flag_set_on_existing_confluence_no_buffer(self):
+        """КЛЮЧЕВОЙ ФИКС: extra уже с DEV-201 confluence, буфер пуст →
+        флаг ставится по существующим (pivot_touch не trigger → True)."""
+        agg = ConfirmationAggregator()  # пустой буфер
+        extra = {"confirmations": [
+            Confirmation(source="pivot_touch_within_03", symbol="BTC/USDT",
+                         side="LONG", weight=4, confidence=0.9).to_dict()
+        ]}
+        extra = attach_confirmations(agg, "BTC/USDT", "LONG", extra)
+        assert extra["confirmations_no_trigger"] is True
+        assert len(extra["confirmations"]) == 1
+
+    def test_merge_dedup_by_source(self):
+        """observe не дублирует source, уже лежащий в extra."""
+        agg = ConfirmationAggregator()
+        agg.on_confirmation(_conf("fvg_fill", "LONG"))
+        extra = {"confirmations": [
+            Confirmation(source="fvg_fill", symbol="BTC/USDT", side="LONG",
+                         weight=4, confidence=1.0).to_dict()
+        ]}
+        extra = attach_confirmations(agg, "BTC/USDT", "LONG", extra)
+        assert len([c for c in extra["confirmations"] if c["source"] == "fvg_fill"]) == 1
+
+    def test_none_aggregator_returns_extra(self):
+        extra = {"foo": 1}
+        out = attach_confirmations(None, "BTC/USDT", "LONG", extra)
+        assert out == {"foo": 1}
+        assert "confirmations_no_trigger" not in out
+
+    def test_empty_no_keys_added(self):
+        """Нет confirmations нигде → флаг не пишется (sparse)."""
+        agg = ConfirmationAggregator()
+        extra = attach_confirmations(agg, "ETH/USDT", "SHORT", {})
+        assert "confirmations_no_trigger" not in extra
+        assert "confirmations" not in extra

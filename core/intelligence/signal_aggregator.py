@@ -265,3 +265,47 @@ class ConfirmationAggregator:
         if 'atr_change_15m' in sources:
             return 'entry'
         return 'unknown'
+
+
+def attach_confirmations(conf_agg, symbol: str, side: str, extra: Optional[dict] = None) -> dict:
+    """DEV-200 Phase 2: единая запись confirmations в extra для ВСЕХ путей регистрации.
+
+    Заменяет дублированные блоки `aggregate()→extra['confirmations']` в scan_loop
+    (watch_list/atr/sideways) и monitoring. Порядок:
+      1) `aggregate()` (gate, нужен trigger) — если есть, берём confirmations +
+         signal_mode + strength_breakdown.
+      2) иначе `observe()` (наблюдатель, без trigger) — буферизованные helper-confs.
+    Результат мержится по `source` (без дублей) с уже лежащими в extra confirmations
+    (DEV-201 confluence-derived). Если итоговый набор НЕ пуст — выставляет
+    `confirmations_no_trigger` = (нет trigger-источника среди confirmations).
+
+    Идемпотентен и никогда не бросает. Возвращает extra (создаёт dict, если был None).
+    Gate `aggregate()` НЕ модифицируется — это только запись в features_json.
+    """
+    from core.confirmations.registry import is_trigger as _is_trigger
+
+    if extra is None:
+        extra = {}
+    if conf_agg is None or side not in ('LONG', 'SHORT'):
+        return extra
+    try:
+        agg = conf_agg.aggregate(symbol, side)
+        if agg.get('confirmations'):
+            base = agg['confirmations']
+            extra['signal_mode'] = agg.get('signal_mode', 'unknown')
+            if agg.get('strength_breakdown'):
+                extra['strength_breakdown'] = agg['strength_breakdown']
+        else:
+            base = conf_agg.observe(symbol, side).get('confirmations', [])
+        merged = list(extra.get('confirmations') or [])
+        seen = {c.get('source') for c in merged}
+        for c in base:
+            if c.get('source') not in seen:
+                merged.append(c)
+                seen.add(c.get('source'))
+        if merged:
+            extra['confirmations'] = merged
+            extra['confirmations_no_trigger'] = not any(_is_trigger(c.get('source')) for c in merged)
+    except Exception as _e:
+        logger.debug("[DEV-200 attach] %s %s: %s", symbol, side, _e)
+    return extra
