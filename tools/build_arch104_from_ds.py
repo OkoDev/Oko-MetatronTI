@@ -26,7 +26,7 @@ OUT = ROOT / "config/arch104_patterns.yaml"
 # ── пороги отбора ───────────────────────────────────────────────────────────
 MIN_AVGR = 0.8          # test_avgR (качество)
 MIN_N = 30              # test_n (статзначимость)
-LIMIT = 150             # топ-N по composite_score (баланс long/short пополам)
+LIMIT = 200             # квоты по src×direction (50 каждая: HTF/LTF × LONG/SHORT)
 _TF_ORDER = {"5m": 0, "15m": 1, "1h": 2, "4h": 3, "1d": 4, "1w": 5}
 
 
@@ -60,13 +60,28 @@ def _slug(direction: str, factors: list[str], i: int) -> str:
 
 
 def load_ds315() -> pd.DataFrame:
+    """HTF паттерны (1h/4h/1d), walkforward+MHT-валидированы."""
     df = pd.read_csv(DS315)
     df = df[(df["mht_passed"] == True) & (df["stable"] == True)]
     df = df[(df["test_avgR"] >= MIN_AVGR) & (df["test_n"] >= MIN_N)]
     df["factors"] = df["pattern"].map(_factors)
     df["nfac"] = df["factors"].map(len)
-    df = df[df["nfac"] >= 2]                               # минимум 2 фактора (не одиночки)
-    return df
+    df = df[df["nfac"] >= 2]
+    df["src"] = "DS-315"
+    return df[["pattern", "direction", "test_avgR", "test_n", "test_WR", "composite_score", "factors", "nfac", "src"]]
+
+
+def load_ds316() -> pd.DataFrame:
+    """LTF 15m nested паттерны. НЕ walkforward (простой бэктест) → пороги СТРОЖЕ
+    (avgR>=1.0, n>=40) для защиты от оверфита. detection_tf=15m → частые срабатывания."""
+    df = pd.read_csv(DS316)
+    df = df.rename(columns={"avgR": "test_avgR", "n": "test_n", "WR": "test_WR", "score": "composite_score"})
+    df = df[(df["test_avgR"] >= 1.0) & (df["test_n"] >= 40)]   # строже: нет walkforward-валидации
+    df["factors"] = df["pattern"].map(_factors)
+    df["nfac"] = df["factors"].map(len)
+    df = df[df["nfac"] >= 2]
+    df["src"] = "DS-316"
+    return df[["pattern", "direction", "test_avgR", "test_n", "test_WR", "composite_score", "factors", "nfac", "src"]]
 
 
 def dedup(df: pd.DataFrame) -> pd.DataFrame:
@@ -86,11 +101,13 @@ def dedup(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def select(df: pd.DataFrame) -> pd.DataFrame:
-    """Топ-LIMIT по composite, баланс LONG/SHORT пополам."""
+    """Квоты по src×direction: HTF(DS-315) + LTF(DS-316), баланс LONG/SHORT.
+    LTF даёт частые срабатывания (15m), HTF — редкие но сильные конфлюенции."""
     out = []
-    for d in ("LONG", "SHORT"):
-        sub = df[df["direction"] == d].nlargest(LIMIT // 2, "composite_score")
-        out.append(sub)
+    for src in ("DS-315", "DS-316"):
+        for d in ("LONG", "SHORT"):
+            sub = df[(df["src"] == src) & (df["direction"] == d)].nlargest(LIMIT // 4, "composite_score")
+            out.append(sub)
     return pd.concat(out).reset_index(drop=True)
 
 
@@ -113,9 +130,25 @@ def to_patterns(df: pd.DataFrame) -> dict:
             "fallback_tp_r": 2.0,
             "tp_strategy": "no_trail",
             "time_exit_hours": 24,
-            "source": "DS-315 walkforward_mht (эталон ARCH-118)",
+            "source": str(r["src"]) + (" walkforward_mht" if r["src"] == "DS-315" else " LTF-15m nested"),
         }
     return pats
+
+
+def _combinator_schema() -> set:
+    """Полная схема combinator-флагов (все TF). Паттерн валиден ⟺ его факторы ⊆ схемы
+    (ARCH-118 один калькулятор: не заливать флаги, которых live combinator не генерит)."""
+    import sys as _s
+    _s.path.insert(0, str(ROOT / "tools" / "pattern_mining"))
+    import ccxt, pandas as _pd, combinator_v2 as cb
+    ex = ccxt.bingx(); schema = set()
+    for tf in ("5m", "15m", "1h", "4h", "1d"):
+        o = ex.fetch_ohlcv("BTC/USDT:USDT", tf if tf != "1d" else "4h", limit=400)
+        df = _pd.DataFrame(o, columns=["ts", "open", "high", "low", "close", "volume"])
+        df["ts"] = _pd.to_datetime(df["ts"], unit="ms", utc=True); df = df.set_index("ts")
+        try: schema |= set(cb.compute_flags(df, tf, include_pivots=True).columns)
+        except Exception: schema |= set(cb.compute_flags(df, tf).columns)
+    return schema
 
 
 def main():
@@ -123,13 +156,20 @@ def main():
     ap.add_argument("--write", action="store_true")
     args = ap.parse_args()
 
-    df = load_ds315()
-    print(f"DS-315 после порогов (mht+stable, avgR>={MIN_AVGR}, n>={MIN_N}, >=2 фактора): {len(df)}")
+    schema = _combinator_schema()
+    print(f"combinator schema: {len(schema)} флагов")
+    d315 = load_ds315(); d316 = load_ds316()
+    for _d in (d315, d316):                                # фильтр несовместимых флагов
+        _d.drop(_d[~_d["factors"].map(lambda fs: all(f in schema for f in fs))].index, inplace=True)
+    print(f"DS-315 HTF (mht+stable, avgR>={MIN_AVGR}, n>={MIN_N}): {len(d315)}")
+    print(f"DS-316 LTF-15m (avgR>=1.0, n>=40, строже — нет walkforward): {len(d316)}")
+    df = pd.concat([d315, d316]).reset_index(drop=True)
     df = dedup(df)
     print(f"после дедупа надмножеств: {len(df)}")
     df = select(df)
-    print(f"после отбора топ-{LIMIT} (баланс): {len(df)} "
-          f"(LONG={sum(df['direction']=='LONG')} SHORT={sum(df['direction']=='SHORT')})")
+    print(f"после отбора топ-{LIMIT} (квоты HTF/LTF × L/S): {len(df)} "
+          f"(LONG={sum(df['direction']=='LONG')} SHORT={sum(df['direction']=='SHORT')} | "
+          f"HTF={sum(df['src']=='DS-315')} LTF={sum(df['src']=='DS-316')})")
     pats = to_patterns(df)
 
     # превью
