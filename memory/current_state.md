@@ -4,6 +4,29 @@
 
 ---
 
+## [04.06.2026] Агент: Claude — DEV-200 Phase 1 ГОТОВ (ConfirmationRegistry pipeline)
+- ✅ **Сделано:** закрыт корень DEV-238 (4/28 источников → ≥9 публикуют в ConfirmationAggregator). Реализован вердикт роя 01.06 (co-located helper, исправленный Вариант B — НЕ bus-subscriber, т.к. `bot.event_bus` = приоритетная очередь без subscribe()).
+  - `bot/loops/scan_loop.py`: helper `_publish_and_confirm()` (publish в EventBus + on_confirmation в агрегатор) + 5 точек: wt_extreme(1410), smc_bos(UP/DOWN→side), smc_choch, fvg_touch×2(→fvg_fill), liquidity_sweep(direction→smc_eql/eqh_swept).
+  - `core/confirmations/registry.py`: +`wt_extreme {6,6}`, +`smc_bos_4h {6,6}`/`smc_bos_15m {3,3}` (28 типов; bos_4h/15m — закрыт gap weight=0 событийного слоя, веса одобрены OTE-сессией в DISCUSSION 04.06).
+  - `core/intelligence/signal_aggregator.py`: метод `observe(symbol,side)` — ВСЕ confirmations в окне БЕЗ требования trigger (gate `aggregate()` НЕ тронут — для wt_signal без atr_change он пуст по дизайну).
+  - `bot/monitoring.py`: fallback-merge observe() в `extra['confirmations']` (после DEV-201 блока, дедуп по source) + флаг `confirmations_no_trigger` для Phase 2.
+- **Тесты:** 65 ✅ (test_confirmations 26 типов + новый `tests/test_confirmation_aggregator.py` 5 шт на observe vs aggregate). Runtime-smoke: 6 publish, 5 confirms в буфере, aggregate gate=0. Заодно выровнял устаревший тест `atr_change_15m_short` (registry=5 после DEV-209, тест ждал 8).
+- ✅ **Рестарт выполнен (04.06 ~02:44 UTC, 202 пары).** Подтверждено в `logs/crypto_bot.log`: smc_bos/choch/fvg_touch/liquidity_sweep публикуются (02:47+), **0 ошибок** helper'а (grep `DEV-200 confirm|observe error`=0). Tracebacks в логе — только инфра (TG send_photo timeout, aiohttp), не от pipeline. Observation-only: торговых решений Phase 1 НЕ меняет (gate не тронут). ⚠️ Нюанс: smc_bos в registry только `_1h` → tf=4h/15m события публикуются, но confirmation weight=0 (только 1h копит). Учесть при Phase 2.
+- 🔄 **Next:** **TR-241** (создан 04.06, триггер ~06.06) — замер заполняемости % + avgR(confirm>0 vs ==0). Если Δ>+0.3R → Phase 3 (SOFT penalty -15). Расширение 26→~70 источников = **DEV-200.2** (соседняя сессия, мост combinator.compute_flags). DEV-201 остаток: observe()→реальный strength. Координация записана в DISCUSSION 04.06.
+- **Незакоммичено:** registry.py, scan_loop.py, signal_aggregator.py, monitoring.py, tests/*, TASKS.md, current_state.md.
+
+---
+
+## [03.06.2026] Агент: Claude — Order-Book разведка (BTC/SOL) + бэклог OB-DATA + закрытие
+- **Исследование стакана крупных игроков** по запросу пользователя (магниты цены, позиционные уровни). Боевой код НЕ трогали → **рестарт бота НЕ нужен**.
+- **Источник: Binance spot depth limit 5000** (публичный, без ключа) — признан лучшим: глубже BingX, реальная ликвидность (BingX торгуется ~0.45% ниже рынка). BingX — только для исполнения.
+- **Инструменты в `e:/tmp/`** (вне git): `binance_full_analysis.py`, `binance_depth_deep.py`, `binance_level_history.py` (+ BingX-аналоги). Пивоты по формуле бота `calculate_pivot_points`.
+- **Разборы:** BTC (спот бычий +44%, стена 66000=$8M, конфлюенция с D-S3) и SOL (даунтренд −50%, нейтральный стакан, лесенка китов 70→50 пик $4M, чистое небо до 77.5). Прогнозы роя по Эллиотту: BTC 7/7, SOL 6/7 → `obsidian/Team-Discussions/2026-06-03-*`.
+- **Записано:** DISCUSSION.md (запись 03.06 Claude→TRADER/swarm по SOL), `memory/order_book_backlog.md` (полная наработка), задача **OB-DATA** 🔵 бэклог в TASKS.md, указатель в auto-MEMORY.md. Идея интеграции: OrderBookSphere (дневной снимок стен → Bus как магниты).
+- **Незакоммичено:** DISCUSSION.md, TASKS.md, memory/order_book_backlog.md, current_state.md (+ ранее незакоммиченные чужие/pipeline-артефакты). Скрипты в `e:/tmp/` — временные, при необходимости перенести в `tools/orderbook/`.
+
+---
+
 ## [31.05.2026 ~01:40 UTC] Агент: Claude — ARCH-118 ЗАВЕРШЁН (все 5 шагов) + закрытие сессии
 - **ARCH-118 полностью закрыт** (9 коммитов b1fe5d8→42472ec, TASKS ✅). Единый снимок признаков: PARITY достигнут (рой 7/7: independent-last + HTFHistoryCache, 0 расхождений на 10 парах), свёртка pivot (рой 6/7 вариант B), материализация в таблицу `trade_features`(FK). Детали — раздел ниже + `docs/FEATURES_JSON_AUDIT.md` + `memory/arch118_snapshot_decision.md`.
 - **Подтверждено в проде:** id=16107 NXPC — снимок в `trade_features`, features_json НЕ дублирует, json_extract по вложенным pivot работает.

@@ -32,6 +32,42 @@ logger = logging.getLogger(__name__)
 _wl_breach_timestamps: deque = deque()
 
 
+def _publish_and_confirm(
+    bot, sym: str, event_name: str, *, priority: int, data=None,
+    conf_source: str, side: str, tf: str = "", confidence: float = 1.0,
+    evidence=None,
+) -> None:
+    """DEV-200: публикует событие в EventBus И регистрирует Confirmation в агрегаторе.
+
+    Co-located helper (вердикт роя 01.06, исправленный Вариант B): единый mapping
+    event→confirmation рядом с существующим publish(), БЕЗ bus-subscriber
+    (`bot.event_bus` — приоритетная очередь без subscribe(), не pub/sub).
+
+    Phase 1 = observation-only: confirmation попадает в буфер агрегатора для
+    `observe()`/shadow, но gate `aggregate()` (требует trigger) НЕ трогаем.
+    Если source отсутствует в registry (weight=0) — только публикуем событие.
+    """
+    _eb = getattr(bot, "event_bus", None)
+    if _eb is not None:
+        asyncio.create_task(_eb.publish(sym, event_name, priority=priority, data=data))
+
+    _ca = getattr(bot, "confirmation_aggregator", None)
+    if _ca is None or side not in ("LONG", "SHORT") or not conf_source:
+        return
+    try:
+        from core.confirmations.models import Confirmation as _Conf
+        from core.confirmations.registry import get_weight as _gw
+        _w = _gw(conf_source, side)
+        if _w > 0:
+            _ca.on_confirmation(_Conf(
+                source=conf_source, symbol=sym, side=side,
+                weight=_w, confidence=confidence,
+                evidence=evidence or {}, tf=tf,
+            ))
+    except Exception as _e:
+        logger.debug("[DEV-200 confirm] %s %s: %s", sym, conf_source, _e)
+
+
 async def _send_wl_alert(bot, symbol: str, text: str) -> None:
     """Отправляет короткое WL-уведомление всем подписчикам."""
     try:
@@ -1407,7 +1443,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             if _wxt_df is not None and not _wxt_df.empty:
                                 _wxt_fired, _wxt_data = _wxt.check(sym, _wxt_df, _wxt_tf)
                                 if _wxt_fired:
-                                    asyncio.create_task(_eb.publish(sym, "wt_extreme", priority=1, data=_wxt_data))
+                                    _publish_and_confirm(
+                                        bot, sym, "wt_extreme", priority=1, data=_wxt_data,
+                                        conf_source="wt_extreme",
+                                        side=(_wxt_data or {}).get("direction", ""),
+                                        tf=_wxt_tf, evidence=_wxt_data,
+                                    )
 
                 # ═══ КУБ: ATR Trend Change Detector → EventBus + ConfirmationAggregator (DEV-199/202) ═══
                 # 1d не публикуется: backtest R8 avgR=-0.4
@@ -1537,13 +1578,25 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 _bos_id = (_last_bos.get("tf"), _last_bos.get("direction"))
                                 if bot._prev_bos_id.get(sym) != _bos_id:
                                     bot._prev_bos_id[sym] = _bos_id
-                                    asyncio.create_task(_eb2.publish(sym, "smc_bos_detected", priority=2, data=_last_bos))
+                                    _bos_tf = _last_bos.get("tf", "")
+                                    _bos_side = "LONG" if _last_bos.get("direction") == "UP" else "SHORT"
+                                    _publish_and_confirm(
+                                        bot, sym, "smc_bos_detected", priority=2, data=_last_bos,
+                                        conf_source=f"smc_bos_{_bos_tf}", side=_bos_side, tf=_bos_tf,
+                                        evidence=_last_bos,
+                                    )
                                     logger.info("[KUB] %s smc_bos_detected: %s tf=%s", sym, _last_bos.get("direction"), _last_bos.get("tf"))
                             if _last_choch:
                                 _choch_id = (_last_choch.get("tf"), _last_choch.get("direction"))
                                 if bot._prev_choch_id.get(sym) != _choch_id:
                                     bot._prev_choch_id[sym] = _choch_id
-                                    asyncio.create_task(_eb2.publish(sym, "smc_choch_detected", priority=1, data=_last_choch))
+                                    _choch_tf = _last_choch.get("tf", "")
+                                    _choch_side = "LONG" if _last_choch.get("direction") == "UP" else "SHORT"
+                                    _publish_and_confirm(
+                                        bot, sym, "smc_choch_detected", priority=1, data=_last_choch,
+                                        conf_source=f"smc_choch_{_choch_tf}", side=_choch_side, tf=_choch_tf,
+                                        evidence=_last_choch,
+                                    )
                                     logger.info("[KUB] %s smc_choch_detected: %s tf=%s", sym, _last_choch.get("direction"), _last_choch.get("tf"))
                             # FVG Touch — цена вошла в открытый Fair Value Gap
                             _cur_price_fvg = float(df_entry["close"].iloc[-1]) if df_entry is not None and not df_entry.empty else 0
@@ -1558,10 +1611,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         _fvg_key = (sym, "bull", round(_fvg.get("bottom", 0), 4))
                                         if bot._prev_fvg_touch.get(_fvg_key) != True:
                                             bot._prev_fvg_touch[_fvg_key] = True
-                                            asyncio.create_task(_eb2.publish(sym, "fvg_touch", priority=2, data={
+                                            _fvg_data = {
                                                 "type": "bull", "bottom": _fvg.get("bottom"), "top": _fvg.get("top"),
                                                 "tf": _fvg.get("tf", _etf), "price": _cur_price_fvg,
-                                            }))
+                                            }
+                                            _publish_and_confirm(
+                                                bot, sym, "fvg_touch", priority=2, data=_fvg_data,
+                                                conf_source="fvg_fill", side="LONG",
+                                                tf=_fvg.get("tf", _etf), evidence=_fvg_data,
+                                            )
                                             logger.info("[KUB] %s fvg_touch: BULL FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bull", round(_fvg.get("bottom", 0), 4)), None)
@@ -1572,10 +1630,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         _fvg_key = (sym, "bear", round(_fvg.get("top", 0), 4))
                                         if bot._prev_fvg_touch.get(_fvg_key) != True:
                                             bot._prev_fvg_touch[_fvg_key] = True
-                                            asyncio.create_task(_eb2.publish(sym, "fvg_touch", priority=2, data={
+                                            _fvg_data = {
                                                 "type": "bear", "bottom": _fvg.get("bottom"), "top": _fvg.get("top"),
                                                 "tf": _fvg.get("tf", _etf), "price": _cur_price_fvg,
-                                            }))
+                                            }
+                                            _publish_and_confirm(
+                                                bot, sym, "fvg_touch", priority=2, data=_fvg_data,
+                                                conf_source="fvg_fill", side="SHORT",
+                                                tf=_fvg.get("tf", _etf), evidence=_fvg_data,
+                                            )
                                             logger.info("[KUB] %s fvg_touch: BEAR FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bear", round(_fvg.get("top", 0), 4)), None)
@@ -1704,9 +1767,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                     ("liquidity_sweep", _sweep_message(sym, _sweep_sig), None)
                                 )
                                 # ARCH-70: EventBus — liquidity_sweep запускает Full CALL (prio=1)
-                                _eb = getattr(bot, "event_bus", None)
-                                if _eb is not None:
-                                    asyncio.create_task(_eb.publish(sym, "liquidity_sweep", priority=1))
+                                # DEV-200: + confirmation eql/eqh_swept по направлению свипа
+                                _sw_side = getattr(_sweep_sig.direction, "value", str(_sweep_sig.direction))
+                                _sw_src = "smc_eql_swept" if _sw_side == "LONG" else "smc_eqh_swept"
+                                _publish_and_confirm(
+                                    bot, sym, "liquidity_sweep", priority=1,
+                                    conf_source=_sw_src, side=_sw_side,
+                                    tf="1h", evidence={"level": getattr(_sweep_sig, "price", None)},
+                                )
                         except Exception as _se:
                             logger.debug("[LIQSWEEP] %s error: %s", sym, _se)
 

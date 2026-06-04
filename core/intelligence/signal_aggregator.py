@@ -225,6 +225,25 @@ class ConfirmationAggregator:
             },
         }
 
+    def observe(self, symbol: str, side: str) -> dict:
+        """DEV-200: вернуть ВСЕ confirmations в окне БЕЗ требования trigger.
+
+        В отличие от `aggregate()` (gate — пусто пока нет trigger), observe() —
+        чистый наблюдатель: отдаёт буфер для shadow/features_json. НЕ влияет на
+        торговое решение. Нужен потому что wt_signal/pivot_reversal часто стреляют
+        без atr_change-trigger → их SMC/wt_extreme/fvg/sweep confirmations иначе
+        невидимы (DEV-238 находка).
+        """
+        from core.confirmations.registry import is_trigger as _is_trigger
+
+        key = (symbol, side)
+        confs = self._cleanup(key)
+        return {
+            'confirmations': [c.to_dict() for c in confs],
+            'confirm_count': len(confs),
+            'has_trigger': any(_is_trigger(c.source) for c in confs),
+        }
+
     def clear(self, symbol: str, side: Optional[str] = None) -> None:
         """Сбросить буфер — после регистрации сделки."""
         if side:

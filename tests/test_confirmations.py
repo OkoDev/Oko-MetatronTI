@@ -20,8 +20,8 @@ from core.confirmations import (
 
 class TestRegistryStructure:
     def test_total_count(self):
-        """Ровно 25 типов confirmations."""
-        assert len(CONFIRMATION_WEIGHTS) == 25
+        """Ровно 28 типов confirmations (DEV-200: +wt_extreme, +smc_bos_4h/15m)."""
+        assert len(CONFIRMATION_WEIGHTS) == 28
 
     def test_all_entries_have_required_keys(self):
         """Каждая запись содержит LONG, SHORT, is_trigger."""
@@ -84,7 +84,8 @@ class TestGetWeight:
         assert get_weight('atr_change_15m', 'LONG') == 8
 
     def test_atr_change_15m_short(self):
-        assert get_weight('atr_change_15m', 'SHORT') == 8
+        # DEV-209: SHORT занижен до 5 (LONG/SHORT асимметрия 15m-триггера)
+        assert get_weight('atr_change_15m', 'SHORT') == 5
 
     def test_atr_change_1h_long(self):
         assert get_weight('atr_change_1h', 'LONG') == 15
@@ -143,6 +144,14 @@ class TestGetWeight:
         assert get_weight('wt_cross_same_dir', 'LONG') == 3
         assert get_weight('wt_cross_same_dir', 'SHORT') == 3
 
+    # WT extreme (DEV-200)
+    def test_wt_extreme(self):
+        assert get_weight('wt_extreme', 'LONG') == 6
+        assert get_weight('wt_extreme', 'SHORT') == 6
+
+    def test_wt_extreme_not_trigger(self):
+        assert is_trigger('wt_extreme') is False
+
     # SMC
     def test_smc_choch_1h(self):
         assert get_weight('smc_choch_1h', 'LONG') == 6
@@ -155,6 +164,16 @@ class TestGetWeight:
     def test_smc_bos_1h(self):
         assert get_weight('smc_bos_1h', 'LONG') == 4
         assert get_weight('smc_bos_1h', 'SHORT') == 4
+
+    def test_smc_bos_4h(self):
+        # DEV-200: старший TF надёжнее (bos_4h > bos_1h), но < choch_4h(8)
+        assert get_weight('smc_bos_4h', 'LONG') == 6
+        assert get_weight('smc_bos_4h', 'SHORT') == 6
+
+    def test_smc_bos_15m(self):
+        # DEV-200: младший TF шумнее
+        assert get_weight('smc_bos_15m', 'LONG') == 3
+        assert get_weight('smc_bos_15m', 'SHORT') == 3
 
     def test_smc_eql_swept_asymmetric(self):
         assert get_weight('smc_eql_swept', 'LONG') == 5

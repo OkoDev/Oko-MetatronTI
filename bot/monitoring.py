@@ -1497,6 +1497,29 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                 except Exception as _dev201_e:
                     logger.debug("[DEV-201] %s reactive confirmations error: %s", symbol, _dev201_e)
 
+            # ═══ DEV-200: observe() — буферизованные confirmations без trigger ═══
+            # Helper _publish_and_confirm() (scan_loop) кладёт smc_bos/choch, wt_extreme,
+            # fvg_fill, eql/eqh_swept в буфер агрегатора. Если trigger (atr_change) нет —
+            # aggregate() их прячет → дотягиваем через observe() (наблюдатель, gate не трогаем).
+            # Мерж с DEV-201/202 по source (без дублей). Флаг для Phase 2 анализа.
+            if _conf_agg_m is not None and _conf_side_m:
+                try:
+                    _obs = _conf_agg_m.observe(symbol, _conf_side_m)
+                    _obs_confs = _obs.get('confirmations') or []
+                    if _obs_confs:
+                        _existing = list((extra or {}).get('confirmations') or [])
+                        _seen_src = {c.get('source') for c in _existing}
+                        for _oc in _obs_confs:
+                            if _oc.get('source') not in _seen_src:
+                                _existing.append(_oc)
+                                _seen_src.add(_oc.get('source'))
+                        if extra is None:
+                            extra = {}
+                        extra['confirmations'] = _existing
+                        extra['confirmations_no_trigger'] = not _obs.get('has_trigger', False)
+                except Exception as _obs_e:
+                    logger.debug("[DEV-200] %s observe error: %s", symbol, _obs_e)
+
             # Этап 1.Д (16.05.2026): main path через TradeRouter с per-signal_type source.
             # Откат: config.yaml → signal_router.enabled=false (использует старый путь в else).
             if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):

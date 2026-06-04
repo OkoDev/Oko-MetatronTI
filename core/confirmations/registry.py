@@ -17,10 +17,15 @@ CONFIRMATION_WEIGHTS = {
     # ── WT cross ──
     'wt_cross_same_dir':      {'LONG': 3,  'SHORT': 3,  'is_trigger': False},
 
+    # ── WT extreme (DEV-200) ── HTF WT вошёл в экстремум OS/OB (EXT_OS→LONG, EXT_OB→SHORT)
+    'wt_extreme':             {'LONG': 6,  'SHORT': 6,  'is_trigger': False},
+
     # ── SMC ──
     'smc_choch_1h':           {'LONG': 6,  'SHORT': 6,  'is_trigger': False},
     'smc_choch_4h':           {'LONG': 8,  'SHORT': 8,  'is_trigger': False},
     'smc_bos_1h':             {'LONG': 4,  'SHORT': 4,  'is_trigger': False},
+    'smc_bos_4h':             {'LONG': 6,  'SHORT': 6,  'is_trigger': False},  # DEV-200: старший = надёжнее
+    'smc_bos_15m':            {'LONG': 3,  'SHORT': 3,  'is_trigger': False},  # DEV-200: младший = шумнее
     'smc_eql_swept':          {'LONG': 5,  'SHORT': 0,  'is_trigger': False},
     'smc_eqh_swept':          {'LONG': 0,  'SHORT': 5,  'is_trigger': False},
     'fvg_fill':               {'LONG': 4,  'SHORT': 4,  'is_trigger': False},
