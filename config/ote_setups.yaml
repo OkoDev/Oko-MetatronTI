@@ -1,0 +1,103 @@
+# 💀 Шкаф сетапов OTE-куба — машиночитаемый конфиг для движка генерации
+# Источник: data/research/2026-06-04--ote-cube/SETUP_LIBRARY.md (бэктест 45 пар, tail 120K)
+# Движок генерации читает этот файл → генерит VST-сделки по enabled-сетапам.
+# Метрики (avgR/wr/n/post) = из бэктеста, для приоритизации и калибровки весов.
+#
+# ТИП сетапа:
+#   pull = откат (контр-тренд к OTE-зоне HTF, TP=OTE-зона, цель близкая)
+#   cont = продолжение (по тренду от OTE-зоны, TP=HTF-target, цель далёкая)
+#   cont+hid = продолжение + HTF hidden-дивергенция как валидатор тренда
+# НАПРАВЛЕНИЕ: both (откаты и тренд работают в обе стороны long/short)
+
+meta:
+  version: 1
+  created: "2026-06-04"
+  source: "OTE-куб research (ARCH-128), шкаф 18 сетапов, 0 брака"
+  engine: "smc_engine.ote_retest_setups (эталон — ОДИН калькулятор, ARCH-118)"
+  mode: VST            # виртуальная торговля, без shadow
+
+# Общая механика исполнения (для всех сетапов)
+execution:
+  entry: "LTF-слом структуры внутри OTE-зоны HTF (ote_retest_setups)"
+  ote_zone: [0.5, 0.79]          # зона входа (эталон smc_engine)
+  sl: "LTF-структура (компактный, риск ×10) — НЕ инвалидационный для слома"
+  tp1: { level_R: 1.0, close_pct: 50 }    # частичный: 50% на +1R
+  runner: "остаток до target (pull→OTE-зона, cont→HTF-target), SL→BE после TP1"
+  trail: "ATRTrend + TSL (ExitManager / tsl_updater — другой движок)"
+
+# Веса по тирам (стартовые, калибруются update_signal_weights на закрытых VST-сделках)
+tier_weights:
+  1: 1.0      # пенка — полный вес
+  2: 0.6      # тело — средний
+  3: 0.3      # зерно — малый (маргинальные/редкие фазы)
+
+# ───────────────────────────────────────────────────────────────
+# 🥇 TIER 1 — ПЕНКА (avgR≥0.6, POST>0) · все откаты · enabled
+# ───────────────────────────────────────────────────────────────
+tier1:
+  - { id: 4h_5m_pull,  htf: 4h, ltf: 5m,  type: pull, direction: both, avgR: 0.960, wr: 79, n: 786,  post_avgR: 0.75, post_n: 46,  enabled: true }
+  - { id: 1h_5m_pull,  htf: 1h, ltf: 5m,  type: pull, direction: both, avgR: 0.822, wr: 81, n: 2183, post_avgR: 0.55, post_n: 168, enabled: true }
+  - { id: 1d_1h_pull,  htf: 1d, ltf: 1h,  type: pull, direction: both, avgR: 0.710, wr: 78, n: 297,  post_avgR: 2.60, post_n: 2,   enabled: true }
+  - { id: 1d_15m_pull, htf: 1d, ltf: 15m, type: pull, direction: both, avgR: 0.701, wr: 72, n: 339,  post_avgR: 0.08, post_n: 5,   enabled: true }
+  - { id: 1d_4h_pull,  htf: 1d, ltf: 4h,  type: pull, direction: both, avgR: 0.651, wr: 75, n: 175,  post_avgR: 0.82, post_n: 2,   enabled: true }
+
+# ───────────────────────────────────────────────────────────────
+# ☕ TIER 2 — ТЕЛО (avgR 0.3-0.6, POST>0) · 4 откат + 2 тренд · enabled
+# ───────────────────────────────────────────────────────────────
+tier2:
+  - { id: 4h_15m_pull, htf: 4h, ltf: 15m, type: pull, direction: both, avgR: 0.585, wr: 75, n: 1427, post_avgR: 0.58, post_n: 43,  enabled: true }
+  - { id: 1d_5m_pull,  htf: 1d, ltf: 5m,  type: pull, direction: both, avgR: 0.549, wr: 66, n: 159,  post_avgR: 3.00, post_n: 6,   enabled: true }
+  - { id: 1h_15m_pull, htf: 1h, ltf: 15m, type: pull, direction: both, avgR: 0.501, wr: 74, n: 3445, post_avgR: 0.21, post_n: 101, enabled: true }
+  - { id: 4h_1h_pull,  htf: 4h, ltf: 1h,  type: pull, direction: both, avgR: 0.459, wr: 71, n: 844,  post_avgR: 0.86, post_n: 20,  enabled: true }
+  - { id: 1h_5m_cont,  htf: 1h, ltf: 5m,  type: cont, direction: both, avgR: 0.368, wr: 68, n: 1376, post_avgR: 0.36, post_n: 113, enabled: true }
+  - { id: 4h_5m_cont,  htf: 4h, ltf: 5m,  type: cont, direction: both, avgR: 0.315, wr: 71, n: 628,  post_avgR: 0.14, post_n: 36,  enabled: true }
+
+# ───────────────────────────────────────────────────────────────
+# 🫘 TIER 3 — ЗЕРНО (avgR>0, POST слаб/мал) · все continuation
+# enabled: false по умолчанию (включать осознанно — маргинальные/трендовые фазы)
+# ───────────────────────────────────────────────────────────────
+tier3:
+  - { id: 1d_15m_cont, htf: 1d, ltf: 15m, type: cont, direction: both, avgR: 0.669, wr: 73, n: 310,  post_avgR: -0.17, post_n: 9,   enabled: false }
+  - { id: 1d_1h_cont,  htf: 1d, ltf: 1h,  type: cont, direction: both, avgR: 0.508, wr: 73, n: 218,  post_avgR: -0.25, post_n: 2,   enabled: false }
+  - { id: 1d_5m_cont,  htf: 1d, ltf: 5m,  type: cont, direction: both, avgR: 0.487, wr: 70, n: 159,  post_avgR: 0.00,  post_n: 9,   enabled: false }
+  - { id: 1d_4h_cont,  htf: 1d, ltf: 4h,  type: cont, direction: both, avgR: 0.432, wr: 77, n: 168,  post_avgR: -0.25, post_n: 2,   enabled: false }
+  - { id: 4h_15m_cont, htf: 4h, ltf: 15m, type: cont, direction: both, avgR: 0.286, wr: 66, n: 925,  post_avgR: -0.03, post_n: 30,  enabled: false }
+  - { id: 4h_1h_cont,  htf: 4h, ltf: 1h,  type: cont, direction: both, avgR: 0.274, wr: 68, n: 938,  post_avgR: 0.21,  post_n: 17,  enabled: false }
+  - { id: 1h_15m_cont, htf: 1h, ltf: 15m, type: cont, direction: both, avgR: 0.194, wr: 64, n: 3523, post_avgR: 0.23,  post_n: 130, enabled: false }
+
+# ───────────────────────────────────────────────────────────────
+# DS-паттерны = ТРИГГЕРЫ входа ВНУТРИ OTE-зоны сетапа
+# Логика: OTE-сетап даёт ГДЕ (зона+риск), DS-паттерн даёт ЧЕМ триггерить LTF-вход
+# (вместо «любого слома» — конкретный fvg+div). Имена = реальные флаги combinator_v3.
+# Источники: DS-315 (HTF context) · DS-316 (LTF trigger) · DS-318 (hidden+regular вертикаль)
+# ───────────────────────────────────────────────────────────────
+ds_patterns:
+  status: "DS-318 ГОТОВ (04.06) — hidden+regular вертикаль подтвердила нашу гипотезу"
+  source: "data/research/2026-06-03--ds316/nested_ltf_15m_results.csv (7550) + ds315 (6906 MHT)"
+  note: "FVG = ядро всех топов · SHORT>LONG (+63%) · hidden_1h+regular_15m рабочая вертикаль · +FVG=+0.3R"
+
+  # LTF-триггеры SHORT (вход вниз в OTE-зоне, 15m)
+  short_triggers:
+    - { pattern: "bear_fvg_15m + rsi_ob_15m + pivot_bounce_down_PP_1D", n: 173, avgR: 1.983, wr: 99, src: ds316 }
+    - { pattern: "bear_fvg_15m + wt_ob_15m",                            n: 282, avgR: 1.902, wr: 97, src: ds316 }
+    - { pattern: "bear_fvg_15m + rsi_div_bear_hidden1h_regular15m",     n: 67,  avgR: 1.840, wr: 96, src: ds318 }  # наша вертикаль
+    - { pattern: "rsi_div_bear_hidden1h_regular15m (solo)",             n: 353, avgR: 1.545, wr: 85, src: ds318 }
+
+  # LTF-триггеры LONG (вход вверх в OTE-зоне, 15m)
+  long_triggers:
+    - { pattern: "bull_fvg_overlap_held_15m + wt_div_bull_hidden_15m",  n: 54,   avgR: 1.842, wr: 100, src: ds318 }
+    - { pattern: "bull_fvg_overlap_held_15m (solo, наш Шаг 2)",         n: 1888, avgR: 1.552, wr: 97,  src: ds316 }
+    - { pattern: "bull_fvg_15m + rsi_div_bull_hidden1h_regular15m",     n: 128,  avgR: 1.503, wr: 90,  src: ds318 }  # наша вертикаль
+    - { pattern: "rsi_div_bull_hidden1h_regular15m (solo)",            n: 842,  avgR: 0.943, wr: 68,  src: ds318 }
+
+  # HTF-контекст (DS-315, фильтр старшего ТФ — усиливает направление сетапа)
+  htf_context:
+    - { pattern: "bull_fvg_1d + bull_fvg_4h + discount_1h (LONG стек)", n: 53, avgR: 1.728, wr: 100, dir: long, src: ds315 }
+    - { pattern: "atr_down_1d + bear_fvg_1h + pivot_bounce_R1 + wt_ob", n: 56, avgR: 1.741, wr: 96,  dir: short, src: ds315 }
+
+  # Вертикаль дивергенций (ARCH-128 наш C-валидатор, подтверждён DS-318)
+  divergence_vertical:
+    rule: "hidden на HTF (1h) = валидатор тренда + regular на LTF (15m) = триггер входа"
+    note: "hidden БЕЗ regular слабее (DS подтвердил). +FVG = +0.3R буст. SHORT-ветка сильнее."
+    best_short: "bear_fvg_15m + rsi_div_bear_hidden1h_regular15m → +1.840 WR96%"
+    best_long:  "bull_fvg_overlap_held_15m + wt_div_bull_hidden → +1.842 WR100%"
