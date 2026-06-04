@@ -806,6 +806,16 @@ class TradeSimulator:
                 except Exception as _re:
                     logger.debug("[regime_strategy] Ошибка применения: %s", _re)
 
+            # ═══ ARCH-128: OTE живёт по TSL (без частичного TP1) ═══
+            # DEV-124: SINGLE +1866R vs DUAL_TP/TSL -88.5R. Компактный SL → 1R=свеча,
+            # частичный фикс убивает идею. Вся позиция под TSL: активируется после +1R
+            # (BE@0.5R защищает раньше), ведёт до конца. take_profit=runner (далёкий потолок).
+            if extra_features and extra_features.get("signal_type_override") == "ote_nested":
+                strategy_type = "SINGLE"
+                tp1_price = None
+                tp2_price = None
+                tp3_price = None
+
             # ═══ ARCH-122 Phase 2 SHADOW: ExitManager — магнит как ТЕНЬ (не закрывает) ═══
             # Сюда сходятся ВСЕ источники (atr_change/wl_breach/pivot/intelligence).
             # ИЗМЕРИТЕЛЬНАЯ ФАЗА: магнит НЕ перетирает take_profit (живое закрытие = TP
