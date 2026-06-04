@@ -96,7 +96,7 @@ def main():
 
     # (B)/(C) avgR split
     print("\n=== (B) avgR: confirm>0 vs ==0 | (C) trigger vs observe ===")
-    for st in sorted(by_type, key=lambda s: (s not in FOCUS, s)):
+    for st in sorted(by_type, key=lambda s: (s not in FOCUS, s or "")):
         d = by_type[st]
         conf, noconf = _agg(d["conf"]), _agg(d["noconf"])
         mark = " [FOCUS]" if st in FOCUS else ""
