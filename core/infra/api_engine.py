@@ -356,13 +356,20 @@ class ApiEngine:
         кэша (stale df → заниженный current_r). Свежий результат пишется обратно в кэш.
         """
         cache_key = (symbol, timeframe)
-        dedup_key = (symbol, timeframe, limit)
+        # DS-322: нормализация limit для 1h/4h — все кэшируют 200 баров, отдают сколько просят
+        _fetch_limit = limit
+        if timeframe in ("1h", "4h", "1d") and limit < 200:
+            _fetch_limit = 200  # кэшируем полный объём, отдаём limit последних
+        dedup_key = (symbol, timeframe, _fetch_limit)
         ttl = _CACHE_TTL.get(timeframe, _DEFAULT_TTL)
 
         if not force_refresh:
             # 1. Кеш
-            cached = self._cache.get(cache_key, limit, ttl)
+            cached = self._cache.get(cache_key, _fetch_limit, ttl)
             if cached is not None:
+                # DS-322: отдаём только запрошенное количество баров
+                if len(cached) > limit:
+                    return cached.iloc[-limit:]
                 return cached
 
             # 2. Circuit breaker
@@ -374,7 +381,11 @@ class ApiEngine:
             fut = self._in_flight[dedup_key]
             try:
                 df = await asyncio.shield(fut)
-                return df.copy() if df is not None else None
+                if df is not None:
+                    if len(df) > limit:
+                        return df.iloc[-limit:].copy()
+                    return df.copy()
+                return None
             except Exception:
                 return None
 
@@ -388,7 +399,7 @@ class ApiEngine:
             # Любой ответ от API (даже пустой) = API доступен → success
             self._cb.record_success()
             if result is not None:
-                self._cache.set(cache_key, result, limit)
+                self._cache.set(cache_key, result, _fetch_limit)
             if not fut.done():
                 fut.set_result(result)
             return result.copy() if result is not None else None
