@@ -298,6 +298,7 @@ sl_tp_engine:
     wt_sideways: 0.8
     atr_change: 1.5
     confluence: 1.0
+    ote_nested: 4.0   # ARCH-128 04.06: компактный SL → R-единицы малы в %, TSL рано выбивал runner. BE@0.5R защищает раньше, TSL поздно (+4R) → runner до HTF-target дышит
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5
   cascade_tsl_opts:
@@ -613,9 +614,11 @@ arch104:
   vst_trading:
     enabled: true             # D-030: торговля 15 паттернов на VST
     signal_type: "arch104"    # в БД simulated_trades для разделения
-  # D-051 (26.05.2026): wt_cross стал HARD gate в observer_loop (shadow убран).
-  # Бэктест: +183% avg_R на 15m, +78% на 1h. Гипотеза доказана.
-  # wt_cross_up_{det_tf} для LONG, wt_cross_down_{det_tf} для SHORT.
+  # D-051 (26.05.2026): wt_cross HARD gate для СТАРЫХ паттернов (+183% на 15m тогда).
+  # ARCH-128 04.06: ВЫКЛЮЧЕН. Душил весь DS-реестр (200/200 без wt_cross в anchor →
+  # требовал strict wt_cross_{tf} в OS/OB → 0 срабатываний = arch104 молчал). DS-паттерны
+  # walkforford-валидированы БЕЗ wt_cross, их конфлюенция сама = подтверждение.
+  d051_wt_cross_gate: false   # true только если вернуть старые паттерны с wt_cross-якорем
   shadow_trigger_check:
     enabled: false  # устарело — gate теперь в observer_loop напрямую
 

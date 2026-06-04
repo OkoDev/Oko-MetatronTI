@@ -446,14 +446,17 @@ async def _try_register_vst_trade(
     )
 
     # D-051 (26.05.2026): wt_cross HARD gate для паттернов БЕЗ wt_cross_*_1h в anchor.
-    # T8 паттерны уже содержат wt_cross_{dir}_1h в anchor_factors — им gate не нужен
-    # (D-051 retest 26.05 показал: без 1h cross якорь деградирует в шум WR=37%).
-    # Остальные паттерны требуют wt_cross_{dir}_{det_tf} как дополнительное подтверждение.
+    # T8 паттерны уже содержат wt_cross_{dir}_1h в anchor_factors — им gate не нужен.
+    # ARCH-128 04.06: gate ДУШИЛ весь DS-реестр (200/200 без wt_cross в anchor → требовал
+    # strict wt_cross_{tf} в OS/OB зоне, активен редко → 0 срабатываний). DS-паттерны
+    # намайнены walkforford БЕЗ wt_cross — конфлюенция anchor сама = подтверждение.
+    # Gate теперь под config-флагом (default OFF — старых паттернов в реестре нет).
     cross_dir = "up" if direction == "LONG" else "down"
     wt_cross_1h = f"wt_cross_{cross_dir}_1h"
     anchor_factors = list(getattr(pattern, "anchor_factors", []))
     wt_cross_flag = None
-    if wt_cross_1h not in anchor_factors:
+    _d051_enabled = bool(bot.config.get("arch104.d051_wt_cross_gate", False))
+    if _d051_enabled and wt_cross_1h not in anchor_factors:
         wt_cross_flag = f"wt_cross_{cross_dir}_{det_tf}"
         if active_flags is None or wt_cross_flag not in active_flags:
             logger.debug(
