@@ -113,6 +113,8 @@ class TradeSimulator:
         self._live_guard_logged: dict = {}  # trade_id → datetime последнего WARNING
         # DEV-227: throttle для force REST (stale-guard). trade_id → ts последнего force-refresh.
         self._force_rest_ts: dict = {}
+        # DS-322: throttle REPAIR-SL для старых SIM-сделок. trade_id → ts последней проверки.
+        self._repair_checked: dict = {}
 
     def set_bot_ref(self, bot) -> None:
         """27.05: weakref на bot для shadow_signal_quality (нужен ConfirmationAggregator)."""
@@ -1815,6 +1817,14 @@ class TradeSimulator:
             now = datetime.now(timezone.utc)
             age_minutes = (now - created_dt).total_seconds() / 60.0
 
+            # DS-322: throttle REPAIR-SL — старые SIM-сделки без exchange SL не чинятся,
+            # только жрут OHLCV. Проверяем раз в час, не каждый цикл.
+            _exch_sl = trade.get("exchange_sl_order_id")
+            if (not trade.get("tsl_activated") and not _exch_sl and age_minutes > 60):
+                _last_check = self._repair_checked.get(trade_id, 0)
+                if _now_ts - _last_check < 3600:
+                    continue  # throttle: проверяли < 1ч назад
+
             tf = trade.get("timeframe") or DEFAULT_TIMEFRAME
 
             # WS pre-filter: если WsFeed даёт цену — проверим, нужен ли вообще REST
@@ -2691,6 +2701,8 @@ class TradeSimulator:
                              trade_id, STATUS_OPEN),
                         )
                         conn.commit()
+                        # DS-322: запомнить что проверили эту сделку
+                        self._repair_checked[trade_id] = _now_ts
                 except Exception as e:
                     logger.debug(f"TradeSimulator: MFE update error {trade_id} — {e}")
 
