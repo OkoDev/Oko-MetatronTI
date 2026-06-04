@@ -2401,7 +2401,7 @@ class TradeSimulator:
                         )
                         from core.trading.tsl_engine import compute_tsl as _compute_tsl
                         # DS-321: гибридная коробка передач (откат через config)
-                        _use_hybrid = bool(_cfg_trend.get("trading.tsl_hybrid_enabled", False))
+                        _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
                         if _use_hybrid:
                             from core.trading.tsl_engine import compute_hybrid_tsl as _compute_hybrid
                             _orig_sl = float(trade.get("original_sl", entry))
