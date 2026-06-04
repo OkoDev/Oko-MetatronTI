@@ -509,6 +509,13 @@ class TradingAlertBot:
                 logger.info("[ARCH-104 observer] task spawned")
             except Exception as e:
                 logger.warning("[ARCH-104 observer] failed to start: %s", e)
+            # ═══ ARCH-128: OTE observer — скелеты сетапов (геометрия OTE → FIRE) ═══
+            try:
+                from bot.loops.ote_observer_loop import ote_observer_loop
+                asyncio.create_task(ote_observer_loop(self))   # ARCH-128: каждые 5 мин
+                logger.info("[OTE observer] task spawned")
+            except Exception as e:
+                logger.warning("[OTE observer] failed to start: %s", e)
             try:
                 await self.dp.start_polling(self.bot)
             finally:

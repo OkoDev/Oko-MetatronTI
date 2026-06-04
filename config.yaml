@@ -580,6 +580,9 @@ signal_router:
     # Arch104 имеет RiskIntelligenceV1 + lifecycle check внутри адаптера.
     # Единственный вход-гейт: wt_cross_up/down в observer_loop (hard, до router).
     arch104:           {min_strength: 40, exchange_enabled: true,  trade_mode: "arch104", soft_gates_enabled: []}
+    # ── ARCH-128: OTE скелеты. Свой строгий гейт уже в выстреле (касание+реакция+
+    # ATRTrend+конфлюенция) — soft gates off, как arch104. signal_type='ote_nested'.
+    ote_nested:        {min_strength: 40, exchange_enabled: true,  trade_mode: "ote_nested", soft_gates_enabled: []}
     # ── Источники для Этапа 1.Г ───────────────────────────────────────
     trigger_loop:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     event_bus:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
@@ -615,6 +618,17 @@ arch104:
   # wt_cross_up_{det_tf} для LONG, wt_cross_down_{det_tf} для SHORT.
   shadow_trigger_check:
     enabled: false  # устарело — gate теперь в observer_loop напрямую
+
+# ─── ARCH-128: OTE Observer — скелеты сетапов (геометрия OTE → выстрел) ───
+# ote_observer_loop сканит пары каждые 5 мин: строит OTE-зону (provisional нога),
+# собирает зональные триггеры (OB/FVG/EQL/SC), проверяет ВЫСТРЕЛ (касание+реакция+ATRTrend).
+# ARMED (цена в зоне, ждём) → лог. FIRE (выстрел) → register_trade signal_type='ote_nested'.
+# Шкаф сетапов: config/ote_setups.yaml (11 enabled). Старт в SHADOW (наблюдение).
+ote:
+  vst_trading:
+    enabled: true             # ВКЛЮЧЕНО 04.06: FIRE → register_trade → БД → дашборд.
+                              # Откат при мусоре: enabled false + рестарт.
+    signal_type: "ote_nested" # в БД simulated_trades для разделения
 
 # ─── ARCH-118: Единый снимок признаков (snapshot_features, 30.05.2026) ───
 # Вариант B: live=бэктест ОДНИМ калькулятором combinator_v2.compute_flags.
