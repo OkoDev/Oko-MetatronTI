@@ -1401,22 +1401,42 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         if df_entry is not None and not df_entry.empty:
                             _wc15_fired, _wc15_data = _wc.check(sym, df_entry, "15m")
                             if _wc15_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_15m", priority=3, data=_wc15_data))
+                                _publish_and_confirm(
+                                    bot, sym, "wt_cross_15m", priority=3, data=_wc15_data,
+                                    conf_source="wt_cross_same_dir",
+                                    side=(_wc15_data or {}).get("direction", ""),
+                                    tf="15m", evidence=_wc15_data,  # cross в зоне OS/OB → confidence 1.0
+                                )
                         # WT cross 1h
                         if df_1h is not None and not df_1h.empty:
                             _wc1h_fired, _wc1h_data = _wc.check(sym, df_1h, "1h")
                             if _wc1h_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_1h", priority=2, data=_wc1h_data))
+                                _publish_and_confirm(
+                                    bot, sym, "wt_cross_1h", priority=2, data=_wc1h_data,
+                                    conf_source="wt_cross_same_dir",
+                                    side=(_wc1h_data or {}).get("direction", ""),
+                                    tf="1h", evidence=_wc1h_data,
+                                )
                         # WT cross 4h
                         if df_4h is not None and not df_4h.empty:
                             _wc_fired, _wc_data = _wc.check(sym, df_4h, "4h")
                             if _wc_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_4h", priority=2, data=_wc_data))
+                                _publish_and_confirm(
+                                    bot, sym, "wt_cross_4h", priority=2, data=_wc_data,
+                                    conf_source="wt_cross_same_dir",
+                                    side=(_wc_data or {}).get("direction", ""),
+                                    tf="4h", evidence=_wc_data,
+                                )
                         # WT cross 1d
                         if df_1d is not None and not df_1d.empty:
                             _wc1d_fired, _wc1d_data = _wc.check(sym, df_1d, "1d")
                             if _wc1d_fired:
-                                asyncio.create_task(_eb.publish(sym, "wt_cross_1d", priority=1, data=_wc1d_data))
+                                _publish_and_confirm(
+                                    bot, sym, "wt_cross_1d", priority=1, data=_wc1d_data,
+                                    conf_source="wt_cross_same_dir",
+                                    side=(_wc1d_data or {}).get("direction", ""),
+                                    tf="1d", evidence=_wc1d_data,
+                                )
                         # Zone entry OS/OB — все TF
                         for _ze_df, _ze_tf in [
                             (df_entry, "15m"), (df_1h, "1h"), (df_4h, "4h"), (df_1d, "1d"),
@@ -1907,10 +1927,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                 bot.signal_counters["divergence"] += 1
                                 bot.signal_counters["total"] += 1
                                 logger.info("[%s] MTF-дивергенция 1h+15m: %s", sym, mtf_info.get("type"))
-                                # Куб: Divergence → EventBus
-                                _eb = getattr(bot, "event_bus", None)
-                                if _eb is not None:
-                                    await _eb.publish(sym, "divergence", priority=3)
+                                # Куб: Divergence → EventBus + ConfirmationAggregator (DEV-200.x событийный слой)
+                                # MTF 1h+15m дивергенция → div_cascade_1h_15m (вес 8/8)
+                                _publish_and_confirm(
+                                    bot, sym, "divergence", priority=3,
+                                    conf_source="div_cascade_1h_15m",
+                                    side=mtf_info.get("direction", ""),
+                                    tf="1h", confidence=0.9,
+                                    evidence={"type": mtf_info.get("type"),
+                                              "strength": mtf_info.get("strength")},
+                                )
                                 # Куб: Сфера 7 → bus
                                 if _bus is not None:
                                     _bus.publish(sym, SphereEvent.DIVERGENCE_FOUND, {
