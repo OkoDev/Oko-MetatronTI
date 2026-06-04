@@ -2356,7 +2356,7 @@ class TradeSimulator:
                                     with self._db_connect() as _c:
                                         _c.execute(
                                             "UPDATE simulated_trades SET tsl_tf=?, features_json=? WHERE id=?",
-                                            (best_tsl_tf, json.dumps(_feat_js), trade_id),
+                                            (tsl_tf_used, json.dumps(_feat_js), trade_id),
                                         )
                                         _c.commit()
                                 except Exception:
