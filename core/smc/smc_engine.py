@@ -418,6 +418,9 @@ class SponsoredCandle:
     mt: float                # Mean Threshold = 0.5 box (крупный капитал тестит середину)
     open_level: float        # уровень открытия SC (первичная поддержка/сопротивление)
     swept: float             # пробитый экстремум (снятая ликвидность)
+    broke_structure: bool    # критерий 2: импульс после = BOS (обновил экстремум)
+    has_imbalance: bool      # критерий 3: FVG сразу после
+    confirmed: bool          # ИСТИННЫЙ SC = свип+разворот + BOS + FVG (все 3 критерия)
 
 
 def detect_sponsored_candle(
@@ -426,31 +429,55 @@ def detect_sponsored_candle(
     atr_len: int = 14,
     min_body_atr: float = 0.5,
     min_wick_frac: float = 0.3,
+    confirm_bars: int = 5,
 ) -> List[SponsoredCandle]:
     """SC (Sponsored Candle) — свеча, СНИМАЮЩАЯ ликвидность + РАЗВОРОТ (эталон пользователя/ICT).
 
-    Два условия:
-      1. Снятие ликвидности: длинный фитиль обновляет пред. важный экстремум (lookback),
-         снимая стопы ритейла.
-      2. Импульс-разворот: сразу после свипа цена резко в ОБРАТНУЮ сторону (close против фитиля),
-         часто оставляя имбаланс (FVG).
+    Свеча-кандидат (2 условия):
+      1. Снятие ликвидности: фитиль обновляет пред. экстремум (lookback), снимая стопы.
+      2. Импульс-разворот: close против фитиля.
+    ИСТИННЫЙ SC (confirmed) — + ещё 2 критерия (как у истинного OB):
+      3. Ломает структуру: импульс после = CHoCH (для разворотной SC слом ПРОТИВ тренда =
+         смена характера, НЕ BOS; пробивает противотрендовый защитный экстремум).
+      4. Оставляет имбаланс: FVG сразу после свечи.
 
     Разметка box:
-      • Bull SC (свип МИНИМУМА → разворот вверх): top=max(o,c) [верх тела], bottom=low [фитиль].
-      • Bear SC (свип МАКСИМУМА → разворот вниз): top=high [фитиль], bottom=min(o,c) [низ тела].
-    Уровни: MT (0.5 box) — середина, тестится капиталом; open_level — открытие SC.
+      • Bull SC (свип МИНИМУМА → вверх): top=max(o,c) [тело], bottom=low [фитиль].
+      • Bear SC (свип МАКСИМУМА → вниз): top=high [фитиль], bottom=min(o,c) [тело].
+    Уровни: MT (0.5 box), open_level. Поля broke_structure/has_imbalance/confirmed = критерии 3-4.
     """
     d = df.copy()
     d.columns = [c.lower() for c in d.columns]
     o, h, l, c = d["open"].values, d["high"].values, d["low"].values, d["close"].values
+    n = len(d)
     tr = pd.concat([
         d["high"] - d["low"],
         (d["high"] - d["close"].shift()).abs(),
         (d["low"] - d["close"].shift()).abs(),
     ], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
+
+    def _confirm(i: int, bull: bool):
+        """Критерии 3-4: CHoCH (слом ПРОТИВ тренда = смена характера) + FVG в окне после."""
+        w_end = min(i + 1 + confirm_bars, n)
+        if w_end <= i + 1:
+            return False, False
+        if bull:
+            # bull SC свипнул МИНИМУМ (тренд был вниз) → пробой пред. HIGH вверх = CHoCH bull
+            choch = h[i + 1:w_end].max() > h[i - lookback:i + 1].max()
+        else:
+            # bear SC свипнул МАКСИМУМ (тренд был вверх) → пробой пред. LOW вниз = CHoCH bear
+            choch = l[i + 1:w_end].min() < l[i - lookback:i + 1].min()
+        fvg = False                                                    # трёхсвечный имбаланс после
+        for j in range(i + 1, min(i + confirm_bars, n - 1)):
+            if bull and l[j + 1] > h[j - 1]:
+                fvg = True; break
+            if (not bull) and h[j + 1] < l[j - 1]:
+                fvg = True; break
+        return bool(choch), bool(fvg)
+
     out: List[SponsoredCandle] = []
-    for i in range(lookback, len(d)):
+    for i in range(lookback, n):
         if pd.isna(atr[i]) or atr[i] <= 0:
             continue
         body = abs(c[i] - o[i])
@@ -460,16 +487,18 @@ def detect_sponsored_candle(
         prev_max = h[i - lookback:i].max()
         lower_wick = min(o[i], c[i]) - l[i]
         upper_wick = h[i] - max(o[i], c[i])
-        # Bull SC: фитиль снял МИНИМУМ (свип sell-side) + закрытие вверх (разворот)
+        # Bull SC: фитиль снял МИНИМУМ + закрытие вверх
         if l[i] < prev_min and c[i] > o[i] and lower_wick > min_wick_frac * body:
+            bos, fvg = _confirm(i, True)
             top = float(max(o[i], c[i])); bot = float(l[i])
             out.append(SponsoredCandle(d.index[i], i, top, bot, "bull",
-                round((top + bot) / 2, 8), float(o[i]), float(prev_min)))
-        # Bear SC: фитиль снял МАКСИМУМ (свип buy-side) + закрытие вниз (разворот)
+                round((top + bot) / 2, 8), float(o[i]), float(prev_min), bos, fvg, bos and fvg))
+        # Bear SC: фитиль снял МАКСИМУМ + закрытие вниз
         elif h[i] > prev_max and c[i] < o[i] and upper_wick > min_wick_frac * body:
+            bos, fvg = _confirm(i, False)
             top = float(h[i]); bot = float(min(o[i], c[i]))
             out.append(SponsoredCandle(d.index[i], i, top, bot, "bear",
-                round((top + bot) / 2, 8), float(o[i]), float(prev_max)))
+                round((top + bot) / 2, 8), float(o[i]), float(prev_max), bos, fvg, bos and fvg))
     return out
 
 
