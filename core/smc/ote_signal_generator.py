@@ -280,16 +280,23 @@ class OTESignalGenerator:
         status, trg_type, trg_zone, entry = "ARMED", "", (0.0, 0.0), price
         bar_hi = bar_lo = 0.0
         confs: list = []
-        # ВЫСТРЕЛ = касание+реакция (база) + score подтверждений ≥ min_confirmations
-        if triggers:
-            touched, e, bh, bl = self._check_shot(triggers[0], df_ltf, direction)
+        # ВЫСТРЕЛ = касание+реакция (база) + score подтверждений ≥ min_confirmations.
+        # Перебор ВСЕХ триггеров (не только сильнейшего!) — цена реагирует от зоны ГДЕ ОНА,
+        # а сильнейший по конфлюенции может быть в стороне. Среди коснувшихся — сильнейший.
+        fired = None
+        for tg in triggers:                              # отсортированы по силе
+            touched, e, bh, bl = self._check_shot(tg, df_ltf, direction)
             if touched:
-                if ltf not in flags_cache:
-                    flags_cache[ltf] = self._ltf_flags(dfs.get(ltf), ltf)
-                confs = self._confirmations(direction, dfs, ltf, flags_cache[ltf])
-                if len(confs) >= self.min_confirmations:
-                    status, entry, bar_hi, bar_lo = "FIRE", e, bh, bl
-                    trg_type, trg_zone = triggers[0][0], (triggers[0][2], triggers[0][3])
+                fired = (tg, e, bh, bl)
+                break
+        if fired:
+            tg, e, bh, bl = fired
+            if ltf not in flags_cache:
+                flags_cache[ltf] = self._ltf_flags(dfs.get(ltf), ltf)
+            confs = self._confirmations(direction, dfs, ltf, flags_cache[ltf])
+            if len(confs) >= self.min_confirmations:
+                status, entry, bar_hi, bar_lo = "FIRE", e, bh, bl
+                trg_type, trg_zone = tg[0], (tg[2], tg[3])
         atr_up = "atr" in confs
         # SL компактный (риск ×10 — ядро nested-куба):
         # FIRE → за СВЕЧУ РЕАКЦИИ (бар выстрела = точка инвалидации), не за всю merged-зону.
