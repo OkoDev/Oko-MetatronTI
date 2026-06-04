@@ -1,4695 +1,2445 @@
-# ARCH-104 Production Patterns Registry
-# Generated from Phase 1.A walkforward_full_mht (12002 MHT-passed patterns)
-# + Phase 1.B nested multi-anchor + Phase 1.F Risk Intelligence policies
-#
-# Каждый паттерн = entry trigger для Confirmation Registry в Phase 7 DEV-270.
-# Веса распределены по test_avgR из walk-forward.
-
-version: 1
-generated: 2026-05-20
-source_mht: data/research/2026-05-20--ph1/walkforward_full_mht.csv
-
+version: 2
+generated: '2026-06-04'
+source: DS-315/316 walkforward_mht на эталонных признаках (ARCH-118 один калькулятор)
+note: 'Поток 2 ARCH-128: заменил старый реестр 2026-05-20 (устаревший combinator). Отбор: mht+stable, avgR>=0.8, n>=30, дедуп,
+  топ-150 баланс.'
 patterns:
-
-  # ═══════════════════════════ LONG ═══════════════════════════
-
-  L1_golden:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
+  DS_L001_pivotb_bullfv:
+    enabled: true
     direction: LONG
     anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-    test_n: 29
-    test_avgR: 1.892
-    test_WR: 100.0
-    mht_p_adj: 0.0000
-    weight: 18                  # max weight для топ-паттерна
-    priority: 1
-    sl:
-      source: swing_low
-      lookback_bars: 10
-      buffer_pct: 0.1
-    tp:
-      strategy: no_trail          # D-022: TP grid winner avgR+6.07 WR=87%
-      fallback_tp_r: 2.0
-    time_exit_hours: 24           # D-022: 12-24h sweet spot, 72h+ deg
-
-  L2_wt_double_fvg:
-    direction: LONG
-    anchor_factors:
-      - wt_os_1d
-      - bull_fvg_4h
-      - wt_os_1h
-    test_n: 103
-    test_avgR: 1.239
-    test_WR: 78.6
-    weight: 15
-    priority: 2
-    time_exit_hours: 120
-
-  L3_premium_long:
-    direction: LONG
-    anchor_factors:
-      - wt_os_1d
-      - bull_fvg_4h
-      - wt_os_1h
-      - discount_1d
-      - ote_long_4h
-    test_n: 37
-    test_avgR: 1.527
-    test_WR: 89.2
+    - pivot_bounce_up_PP_1D
+    - bull_fvg_1d
+    detection_tf: 4h
     weight: 16
-    priority: 1
-    time_exit_hours: 120
-
-  # LTF nested entries (HTF context + LTF trigger — full chain in anchor_factors)
-  L1_golden_LTF_15m:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
+    test_n: 1587
+    test_avgR: 1.201
+    test_WR: 92.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L002_bullfv_bullfv:
+    enabled: true
     direction: LONG
-    parent: L1_golden                # для documentation
-    anchor_factors:                  # HTF + LTF trigger (all must be True)
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-      - bull_ob_near_15m
-    test_n: 73
-    test_avgR: 1.979
-    test_WR: 100.0
+    anchor_factors:
+    - bull_fvg_1h
+    - bull_fvg_1d
+    detection_tf: 1h
     weight: 17
-    priority: 2
-    sl:
-      source: swing_low
-      lookback_bars: 10               # на 15m TF
-      buffer_pct: 0.1
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24              # 96 баров 15m = 24h
-    detection_tf: 15m
-
-  L1_golden_LTF_15m_balanced:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
+    test_n: 377
+    test_avgR: 1.434
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L003_bullfv_bullfv_discou:
+    enabled: true
     direction: LONG
-    parent: L1_golden
-    anchor_factors:                   # сильная версия с двумя триггерами
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-      - bull_ob_near_15m
-      - atr_up_15m
-    test_n: 73
-    test_avgR: 1.979
-    test_WR: 100.0
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 236
+    test_avgR: 1.467
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L004_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 4h
+    weight: 17
+    test_n: 238
+    test_avgR: 1.463
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L005_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - pivot_bounce_up_PP_1D
+    detection_tf: 4h
+    weight: 17
+    test_n: 238
+    test_avgR: 1.463
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L006_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
     weight: 18
-    priority: 1
-    sl:
-      lookback_bars: 10
-    tp:
-      strategy: no_trail
+    test_n: 151
+    test_avgR: 1.578
+    test_WR: 98.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
     time_exit_hours: 24
-    detection_tf: 15m
-
-  L1_golden_LTF_5m:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L007_bullfv_bullfv_discou:
+    enabled: true
     direction: LONG
-    parent: L1_golden
-    anchor_factors:                  # 5m trigger требует HTF context актив
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-      - atr_up_5m
-    test_n: 268
-    test_avgR: 1.762
-    test_WR: 97.0
-    weight: 16
-    priority: 2
-    sl:
-      lookback_bars: 20               # 20 баров 5m = ~1.5h lookback
-    tp:
-      strategy: no_trail
-    time_exit_hours: 12               # 144 бара 5m (12h, не 24h — D-026)
-    detection_tf: 5m
-
-  # ─── Multi-TF Scaling family (D-026): 4 independent системы на одной паре ───
-  # Каждая своим SL/exit/risk, могут торговаться одновременно
-
-  L1_golden_scale_5m:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
     anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-      - atr_up_5m
-    test_n: 68
-    test_avgR: 1.994
-    test_WR: 55.9
-    weight: 14
-    priority: 3
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-    time_exit_hours: 12
-    detection_tf: 5m
-    scaling_role: "fast"             # quick fixation
-
-  L1_golden_scale_15m:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-      - bull_ob_near_15m
-    test_n: 66
-    test_avgR: 3.412
-    test_WR: 63.6
-    weight: 16
-    priority: 2
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-    time_exit_hours: 24
-    detection_tf: 15m
-    scaling_role: "medium"
-
-  L1_golden_scale_1h:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:                  # = L1_golden + atr_up_1h boost factor
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-      - atr_up_1h
-    test_n: 61
-    test_avgR: 6.074
-    test_WR: 86.9
-    weight: 19                        # max weight (D-022 winner)
-    priority: 1
-    sl:
-      lookback_bars: 10
-    tp:
-      strategy: no_trail               # D-022 grid winner
-    time_exit_hours: 24
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_4h
+    - pivot_bounce_up_PP_1D
     detection_tf: 1h
-    scaling_role: "anchor"
-
-  # ═══════════════════════════ SHORT ══════════════════════════
-
-  S1_bos_atr_premium:
-    direction: SHORT
+    weight: 18
+    test_n: 152
+    test_avgR: 1.57
+    test_WR: 98.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L008_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
     anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - premium_4h
-    test_n: 319
-    test_avgR: 1.214
-    test_WR: 83.1
-    weight: 14
-    priority: 1
-    time_exit_hours: 168
-    risk_policy_ref: S1_bos_premium   # из risk_policies.yaml
-
-  S2_fvg_bos_premium:
-    direction: SHORT
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1d
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 154
+    test_avgR: 1.563
+    test_WR: 98.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L009_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
     anchor_factors:
-      - bear_fvg_in_1h
-      - bear_bos_1d
-      - premium_4h
-    test_n: 281
-    test_avgR: 1.271
-    test_WR: 84.7
-    weight: 14
-
-  S3_full_short:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - below_ema50_1h
-      - premium_4h
-    test_n: 272
-    test_avgR: 1.315
-    test_WR: 86.0
-    weight: 15
-    risk_policy_ref: S3_full_short
-
-  S4_strong_short:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - bear_fvg_1d
-      - bear_fvg_in_4h
-      - premium_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 18
     test_n: 130
-    test_avgR: 1.456
-    test_WR: 89.2
-    weight: 17
-    priority: 1
-
-  S8_ote_strong:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - ote_short_1h
-      - premium_4h
-    test_n: 164
-    test_avgR: 1.339
-    test_WR: 90.2
-    weight: 16
-
-  # SHORT с rsi_cross (новые из DEV-210 walkforward_full)
-  S_rsi_cross_premium:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 255
-    test_avgR: 1.245
-    test_WR: 83.5
-    weight: 13
-
-
-  # ─────────── TIER 2 (D-031, 2026-05-21) ───────────
-  # ═══════════════════════════ LONG Tier 2 ═══════════════════════════
-
-  T2_L_01:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - discount_1h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 103
-    test_avgR: 1.239
-    test_WR: 78.6
-    mht_p_adj: 0.0000
-    weight: 11
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_02:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - discount_4h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 82
-    test_avgR: 1.208
-    test_WR: 79.3
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_03:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - atr_cross_up_1d
-      - atr_up_4h
-      - rsi_div_bull_regular_4h
-    test_n: 46
-    test_avgR: 1.295
-    test_WR: 84.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_04:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - atr_cross_up_1d
-      - rsi_div_bull_regular_4h
-      - vol_spike_1d
-    test_n: 50
-    test_avgR: 1.171
-    test_WR: 80.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_05:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - rsi_os_1h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 60
-    test_avgR: 1.180
-    test_WR: 73.3
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_06:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - vol_spike_1h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 35
-    test_avgR: 1.222
-    test_WR: 80.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_07:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - wt_os_4h
-    test_n: 135
-    test_avgR: 0.984
-    test_WR: 71.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_08:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_in_4h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 41
-    test_avgR: 1.150
-    test_WR: 78.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_09:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_4h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 78
-    test_avgR: 1.018
-    test_WR: 71.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_10:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_in_1h
-      - wt_os_1d
-      - wt_os_4h
-    test_n: 125
-    test_avgR: 0.727
-    test_WR: 78.4
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_11:
-    direction: LONG
-    anchor_factors:
-      - bull_bos_1d
-      - bull_bos_4h
-      - discount_1h
-    test_n: 32
-    test_avgR: 0.976
-    test_WR: 75.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_12:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - atr_cross_up_1d
-      - rsi_div_bull_regular_4h
-      - rsi_os_1d
-    test_n: 35
-    test_avgR: 0.955
-    test_WR: 71.4
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_13:
-    direction: LONG
-    anchor_factors:
-      - atr_cross_up_1d
-      - bull_mom_1d
-      - discount_1h
-      - pivot_near_S3_1W
-    test_n: 39
-    test_avgR: 0.846
-    test_WR: 76.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_14:
-    direction: LONG
-    anchor_factors:
-      - bull_mom_1d
-      - vol_spike_1h
-      - wt_os_1d
-    test_n: 38
-    test_avgR: 0.888
-    test_WR: 73.7
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_L_15:
-    direction: LONG
-    anchor_factors:
-      - eql_sweep_4h
-      - wt_os_1d
-      - wt_os_4h
-    test_n: 40
-    test_avgR: 0.806
-    test_WR: 77.5
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 3
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-
-  # ═══════════════════════════ SHORT Tier 2 ═══════════════════════════
-
-  T2_S_01:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - premium_1h
-      - rsi_cross50_down_1d
-      - vol_spike_1d
-    test_n: 380
-    test_avgR: 1.180
-    test_WR: 80.5
-    mht_p_adj: 0.0000
-    weight: 14
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_02:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - below_ema200_1d
-      - rsi_cross50_down_1d
-    test_n: 289
-    test_avgR: 1.200
-    test_WR: 82.0
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_03:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_ob_1d
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 345
-    test_avgR: 1.184
-    test_WR: 80.6
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_04:
-    direction: SHORT
-    anchor_factors:
-      - below_ema200_1h
-      - premium_1d
-      - premium_4h
-      - wt_ob_1h
-    test_n: 105
-    test_avgR: 1.439
-    test_WR: 82.9
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_05:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_1h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 368
-    test_avgR: 1.158
-    test_WR: 80.4
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_06:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - below_ema50_1h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 388
-    test_avgR: 1.144
-    test_WR: 79.4
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_07:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_ob_1h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 317
-    test_avgR: 1.166
-    test_WR: 80.4
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_08:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - ema50_below_ema200_1d
-      - rsi_cross50_down_1d
-    test_n: 214
-    test_avgR: 1.222
-    test_WR: 81.8
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_09:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - below_ema200_1d
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 360
-    test_avgR: 1.136
-    test_WR: 80.0
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_10:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - rsi_cross50_down_1d
-      - vol_spike_1d
-    test_n: 284
-    test_avgR: 1.168
-    test_WR: 81.0
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_11:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - below_ema200_1h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 402
-    test_avgR: 1.125
-    test_WR: 78.9
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_12:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - below_ema50_1d
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 402
-    test_avgR: 1.125
-    test_WR: 78.9
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_13:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - pivot_below_PP_1W
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 402
-    test_avgR: 1.125
-    test_WR: 78.9
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_14:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - ema50_below_ema200_1h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 402
-    test_avgR: 1.125
-    test_WR: 78.9
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T2_S_15:
-    direction: SHORT
-    anchor_factors:
-      - bear_bos_1d
-      - below_ema50_4h
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 402
-    test_avgR: 1.125
-    test_WR: 78.9
-    mht_p_adj: 0.0000
-    weight: 13
-    priority: 3
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-
-  # ─────────── TIER 2 LTF (D-032, 2026-05-21) ───────────
-  # nested_v3 LTF patterns — top-3 per (anchor × ltf)
-  # Фильтр: n≥40, avgR≥1.0, WR≥75% (strict — nested без BH-FDR)
-
-
-  # ─── LONG LTF Tier 2 ───
-
-  T2L_L_L2_5m_01:
-    direction: LONG
-    parent: L2_wt_double
-    anchor_factors:
-      - bull_fvg_4h
-      - pivot_bounce_up_S3_1W
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 63
-    test_avgR: 1.905
-    test_WR: 96.8
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L2_5m_02:
-    direction: LONG
-    parent: L2_wt_double
-    anchor_factors:
-      - bull_fvg_4h
-      - pivot_near_S3_1W
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 49
-    test_avgR: 1.816
-    test_WR: 93.9
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L2_15m_01:
-    direction: LONG
-    parent: L2_wt_double
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_near_15m
-      - pivot_near_S2_1D
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 78
-    test_avgR: 1.617
-    test_WR: 88.5
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L2_15m_02:
-    direction: LONG
-    parent: L2_wt_double
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_15m
-      - pivot_near_S2_1D
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 80
-    test_avgR: 1.589
-    test_WR: 87.5
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L1_15m_03:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_15m
-      - wt_os_4h
-    test_n: 185
-    test_avgR: 1.391
-    test_WR: 83.8
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L2_5m_03:
-    direction: LONG
-    parent: L2_wt_double
-    anchor_factors:
-      - bull_fvg_4h
-      - ote_long_5m
-      - pivot_near_S1_1D
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 45
-    test_avgR: 1.733
-    test_WR: 91.1
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L1_15m_04:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_15m
-      - bull_fvg_4h
-      - wt_os_4h
-    test_n: 148
-    test_avgR: 1.368
-    test_WR: 85.1
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L2_15m_05:
-    direction: LONG
-    parent: L2_wt_double
-    anchor_factors:
-      - atr_up_15m
-      - bull_fvg_4h
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 466
-    test_avgR: 1.177
-    test_WR: 78.8
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L3_5m_04:
-    direction: LONG
-    parent: L3_wt_atr
-    anchor_factors:
-      - above_ema50_5m
-      - atr_up_4h
-      - pivot_near_S3_1D
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 60
-    test_avgR: 1.537
-    test_WR: 88.3
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L1_5m_05:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - above_ema200_5m
-      - atr_up_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-    test_n: 396
-    test_avgR: 1.183
-    test_WR: 76.3
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L1_5m_06:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - above_ema200_5m
-      - above_ema50_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_fvg_5m
-      - bull_ob_near_5m
-      - wt_os_4h
-    test_n: 458
-    test_avgR: 1.159
-    test_WR: 76.0
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L1_5m_07:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - atr_up_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_fvg_5m
-      - wt_os_4h
-    test_n: 431
-    test_avgR: 1.173
-    test_WR: 75.6
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L3_5m_08:
-    direction: LONG
-    parent: L3_wt_atr
-    anchor_factors:
-      - atr_up_4h
-      - bull_fvg_5m
-      - pivot_near_S1_1W
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 40
-    test_avgR: 1.625
-    test_WR: 87.5
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L1_15m_06:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    parent: L1_golden
-    anchor_factors:
-      - atr_up_15m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_os_4h
-    test_n: 145
-    test_avgR: 1.284
-    test_WR: 80.7
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L3_5m_09:
-    direction: LONG
-    parent: L3_wt_atr
-    anchor_factors:
-      - atr_up_4h
-      - bull_ob_near_5m
-      - pivot_bounce_up_S3_1D
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 43
-    test_avgR: 1.581
-    test_WR: 86.0
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_L_L3_15m_07:
-    direction: LONG
-    parent: L3_wt_atr
-    anchor_factors:
-      - atr_up_4h
-      - pivot_bounce_up_S2_1D
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 70
-    test_avgR: 1.369
-    test_WR: 85.7
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L3_15m_08:
-    direction: LONG
-    parent: L3_wt_atr
-    anchor_factors:
-      - atr_up_4h
-      - bull_ob_near_15m
-      - discount_15m
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 167
-    test_avgR: 1.193
-    test_WR: 77.2
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_L_L3_15m_09:
-    direction: LONG
-    parent: L3_wt_atr
-    anchor_factors:
-      - atr_up_4h
-      - bull_ob_15m
-      - discount_15m
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 177
-    test_avgR: 1.171
-    test_WR: 76.3
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-
-  # ─── SHORT LTF Tier 2 ───
-
-  T2L_S_S1_5m_01:
-    direction: SHORT
-    parent: S1_bos_premium
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - bear_fvg_in_5m
-      - below_ema50_5m
-      - premium_4h
-      - premium_5m
-    test_n: 89
-    test_avgR: 1.596
-    test_WR: 86.5
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_S_S1_15m_01:
-    direction: SHORT
-    parent: S1_bos_premium
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - premium_4h
-      - wt_ob_15m
-    test_n: 90
     test_avgR: 1.567
-    test_WR: 85.6
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
+    test_WR: 99.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
     time_exit_hours: 24
-
-  T2L_S_S3_15m_02:
-    direction: SHORT
-    parent: S3_full_short
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - below_ema50_1h
-      - premium_4h
-      - wt_ob_15m
-    test_n: 85
-    test_avgR: 1.576
-    test_WR: 85.9
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_S_S1_5m_02:
-    direction: SHORT
-    parent: S1_bos_premium
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - bear_fvg_in_5m
-      - bear_ob_5m
-      - below_ema200_5m
-      - ote_short_5m
-      - premium_4h
-    test_n: 155
-    test_avgR: 1.284
-    test_WR: 76.1
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_S_S1_15m_03:
-    direction: SHORT
-    parent: S1_bos_premium
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - premium_15m
-      - premium_4h
-      - rsi_ob_15m
-    test_n: 172
-    test_avgR: 1.250
-    test_WR: 75.0
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_S_S3_15m_04:
-    direction: SHORT
-    parent: S3_full_short
-    anchor_factors:
-      - atr_down_15m
-      - bear_bos_1d
-      - bear_fvg_15m
-      - bear_fvg_in_1h
-      - bear_ob_near_15m
-      - below_ema50_1h
-      - premium_4h
-    test_n: 333
-    test_avgR: 1.087
-    test_WR: 76.0
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_S_S1_5m_03:
-    direction: SHORT
-    parent: S1_bos_premium
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - bear_fvg_in_5m
-      - bear_ob_near_5m
-      - below_ema200_5m
-      - ote_short_5m
-      - premium_4h
-    test_n: 141
-    test_avgR: 1.277
-    test_WR: 75.9
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_S_S3_5m_04:
-    direction: SHORT
-    parent: S3_full_short
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_5m
-      - bear_fvg_in_1h
-      - bear_mom_5m
-      - bear_ob_5m
-      - below_ema50_1h
-      - premium_4h
-      - premium_5m
-    test_n: 85
-    test_avgR: 1.329
-    test_WR: 77.6
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_S_S3_5m_05:
-    direction: SHORT
-    parent: S3_full_short
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_5m
-      - bear_fvg_in_1h
-      - bear_mom_5m
-      - bear_ob_near_5m
-      - below_ema50_1h
-      - premium_4h
-      - premium_5m
-    test_n: 85
-    test_avgR: 1.329
-    test_WR: 77.6
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_S_S3_5m_06:
-    direction: SHORT
-    parent: S3_full_short
-    anchor_factors:
-      - atr_down_5m
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - bear_fvg_in_5m
-      - below_ema50_1h
-      - below_ema50_5m
-      - premium_4h
-      - premium_5m
-    test_n: 51
-    test_avgR: 1.412
-    test_WR: 80.4
-    weight: 10
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T2L_S_S3_15m_05:
-    direction: SHORT
-    parent: S3_full_short
-    anchor_factors:
-      - bear_bos_1d
-      - bear_fvg_in_1h
-      - bear_ob_15m
-      - below_ema50_1h
-      - premium_15m
-      - premium_4h
-      - rsi_ob_15m
-    test_n: 48
-    test_avgR: 1.375
-    test_WR: 79.2
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T2L_S_S1_15m_06:
-    direction: SHORT
-    parent: S1_bos_premium
-    anchor_factors:
-      - atr_cross_down_15m
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - premium_15m
-      - premium_4h
-    test_n: 57
-    test_avgR: 1.215
-    test_WR: 82.5
-    weight: 10
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-
-
-  # ─────────── TIER 3 D2 (D-033, 2026-05-21) ───────────
-  # 4h+1h HTF base, intraday/mid-cycle паттерны
-  # Фильтр: n≥50, avgR≥0.5, WR≥60.0
-  # Anchors предложены роем (mistral lead, 2026-05-21)
-
-  # ─── D2 LONG ───
-
-  D2_L_L1_5m_01:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - above_ema50_5m
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_ob_1h
-      - ema50_above_ema200_5m
-      - pivot_bounce_up_S2_1D
-      - pivot_near_S1_1D
-    test_n: 52
-    test_avgR: 1.489
-    test_WR: 88.5
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L1_5m_02:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - above_ema200_5m
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_ob_1h
-      - pivot_bounce_up_S2_1D
-      - pivot_near_S1_1D
-    test_n: 72
-    test_avgR: 1.228
-    test_WR: 83.3
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L3_15m_01:
-    direction: LONG
-    parent: D2_L3_ema_bounce
-    anchor_factors:
-      - atr_up_4h
-      - below_ema200_1h
-      - bull_fvg_1h
-      - pivot_bounce_up_S2_1D
-      - pivot_bounce_up_S3_1W
-    test_n: 87
-    test_avgR: 1.103
-    test_WR: 80.5
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L3_15m_02:
-    direction: LONG
-    parent: D2_L3_ema_bounce
-    anchor_factors:
-      - atr_up_4h
-      - below_ema200_1h
-      - bull_fvg_1h
-      - pivot_bounce_up_S2_1D
-      - wt_cross_up_15m
-    test_n: 65
-    test_avgR: 1.073
-    test_WR: 83.1
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L1_5m_03:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_fvg_5m
-      - bull_ob_1h
-      - ema50_above_ema200_5m
-      - pivot_bounce_up_S2_1D
-      - pivot_near_S1_1D
-    test_n: 60
-    test_avgR: 1.157
-    test_WR: 76.7
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L3_5m_04:
-    direction: LONG
-    parent: D2_L3_ema_bounce
-    anchor_factors:
-      - atr_up_4h
-      - below_ema200_1h
-      - bull_fvg_1h
-      - discount_5m
-      - ema50_above_ema200_5m
-      - pivot_bounce_up_R1_1W
-      - wt_os_5m
-    test_n: 95
-    test_avgR: 0.965
-    test_WR: 65.3
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L3_5m_05:
-    direction: LONG
-    parent: D2_L3_ema_bounce
-    anchor_factors:
-      - atr_up_4h
-      - below_ema200_1h
-      - bull_fvg_1h
-      - ema50_above_ema200_5m
-      - pivot_bounce_up_R1_1W
-      - rsi_os_5m
-      - wt_os_5m
-    test_n: 62
-    test_avgR: 0.984
-    test_WR: 66.1
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L2_5m_06:
-    direction: LONG
-    parent: D2_L2_bounce_1h
-    anchor_factors:
-      - bull_fvg_1h
-      - discount_1h
-      - pivot_bounce_up_S1_1D
-      - rsi_os_5m
-      - wt_os_1h
-    test_n: 55
-    test_avgR: 0.964
-    test_WR: 65.5
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L3_15m_03:
-    direction: LONG
-    parent: D2_L3_ema_bounce
-    anchor_factors:
-      - above_ema50_15m
-      - atr_up_4h
-      - below_ema200_1h
-      - bull_fvg_1h
-      - pivot_bounce_up_S2_1D
-    test_n: 992
-    test_avgR: 0.578
-    test_WR: 62.4
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L2_5m_07:
-    direction: LONG
-    parent: D2_L2_bounce_1h
-    anchor_factors:
-      - bull_fvg_1h
-      - discount_1h
-      - discount_5m
-      - pivot_bounce_up_S1_1W
-      - wt_os_1h
-    test_n: 119
-    test_avgR: 0.810
-    test_WR: 60.5
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L3_5m_08:
-    direction: LONG
-    parent: D2_L3_ema_bounce
-    anchor_factors:
-      - atr_up_4h
-      - below_ema200_1h
-      - bull_fvg_1h
-      - discount_5m
-      - pivot_bounce_up_PP_1D
-      - pivot_bounce_up_R1_1W
-      - wt_os_5m
-    test_n: 109
-    test_avgR: 0.817
-    test_WR: 60.6
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_L_L1_15m_04:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - above_ema50_15m
-      - atr_up_15m
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_ob_1h
-      - bull_ob_near_15m
-      - pivot_bounce_up_S2_1D
-    test_n: 306
-    test_avgR: 0.586
-    test_WR: 64.4
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L1_15m_05:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - above_ema50_15m
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_ob_15m
-      - bull_ob_1h
-      - bull_ob_near_15m
-      - pivot_bounce_up_S2_1D
-    test_n: 429
-    test_avgR: 0.548
-    test_WR: 61.5
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L1_15m_06:
-    direction: LONG
-    parent: D2_L1_revival_4h
-    anchor_factors:
-      - above_ema200_15m
-      - above_ema50_15m
-      - atr_up_15m
-      - atr_up_4h
-      - bull_fvg_1h
-      - bull_ob_1h
-      - pivot_bounce_up_S2_1D
-    test_n: 163
-    test_avgR: 0.571
-    test_WR: 69.9
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L2_15m_07:
-    direction: LONG
-    parent: D2_L2_bounce_1h
-    anchor_factors:
-      - atr_up_15m
-      - bull_fvg_1h
-      - bull_fvg_in_15m
-      - discount_1h
-      - pivot_bounce_up_S1_1D
-      - wt_os_1h
-    test_n: 58
-    test_avgR: 0.761
-    test_WR: 60.3
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_L_L2_5m_09:
-    direction: LONG
-    parent: D2_L2_bounce_1h
-    anchor_factors:
-      - bull_choch_5m
-      - bull_fvg_1h
-      - bull_ob_5m
-      - discount_1h
-      - wt_os_1h
-    test_n: 91
-    test_avgR: 0.595
-    test_WR: 67.0
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  # ─── D2 SHORT ───
-
-  D2_S_S1_15m_01:
-    direction: SHORT
-    parent: D2_S1_exhaust_4h
-    anchor_factors:
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_below_PP_1W
-      - pivot_bounce_down_R1_1W
-      - premium_1h
-    test_n: 50
-    test_avgR: 1.300
-    test_WR: 86.0
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S1_15m_02:
-    direction: SHORT
-    parent: D2_S1_exhaust_4h
-    anchor_factors:
-      - atr_down_15m
-      - atr_down_4h
-      - bear_ob_1h
-      - below_ema200_15m
-      - pivot_bounce_down_S1_1W
-      - pivot_near_R1_1D
-      - premium_1h
-    test_n: 60
-    test_avgR: 1.330
-    test_WR: 80.0
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S2_5m_01:
-    direction: SHORT
-    parent: D2_S2_fade_1h
-    anchor_factors:
-      - bear_ob_1h
-      - ote_short_5m
-      - pivot_bounce_down_PP_1W
-      - pivot_bounce_down_R1_1D
-      - premium_1h
-      - wt_ob_1h
-    test_n: 54
-    test_avgR: 1.333
-    test_WR: 77.8
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S1_15m_03:
-    direction: SHORT
-    parent: D2_S1_exhaust_4h
-    anchor_factors:
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_bounce_down_R1_1D
-      - pivot_bounce_down_S3_1W
-      - premium_1h
-    test_n: 79
-    test_avgR: 1.185
-    test_WR: 75.9
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S2_5m_02:
-    direction: SHORT
-    parent: D2_S2_fade_1h
-    anchor_factors:
-      - bear_ob_1h
-      - below_ema200_5m
-      - pivot_bounce_down_PP_1D
-      - pivot_bounce_down_PP_1W
-      - premium_1h
-      - wt_ob_1h
-    test_n: 69
-    test_avgR: 1.142
-    test_WR: 76.8
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S2_5m_03:
-    direction: SHORT
-    parent: D2_S2_fade_1h
-    anchor_factors:
-      - bear_ob_1h
-      - below_ema200_5m
-      - pivot_below_PP_1D
-      - pivot_bounce_down_PP_1W
-      - premium_1h
-      - wt_ob_1h
-    test_n: 75
-    test_avgR: 1.055
-    test_WR: 73.3
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S3_5m_04:
-    direction: SHORT
-    parent: D2_S3_ema_reject
-    anchor_factors:
-      - above_ema200_1h
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_bounce_down_PP_1D
-      - pivot_bounce_down_R2_1W
-      - pivot_bounce_down_S1_1D
-    test_n: 221
-    test_avgR: 0.885
-    test_WR: 67.9
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S1_5m_05:
-    direction: SHORT
-    parent: D2_S1_exhaust_4h
-    anchor_factors:
-      - atr_down_4h
-      - bear_ob_1h
-      - below_ema50_5m
-      - pivot_bounce_down_R1_1D
-      - pivot_bounce_down_S1_1W
-      - pivot_near_R1_1D
-      - premium_1h
-    test_n: 229
-    test_avgR: 0.905
-    test_WR: 64.2
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S3_5m_06:
-    direction: SHORT
-    parent: D2_S3_ema_reject
-    anchor_factors:
-      - above_ema200_1h
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_bounce_down_PP_1D
-      - pivot_bounce_down_S1_1D
-      - pivot_near_R2_1W
-    test_n: 130
-    test_avgR: 0.937
-    test_WR: 66.9
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S2_15m_04:
-    direction: SHORT
-    parent: D2_S2_fade_1h
-    anchor_factors:
-      - atr_down_15m
-      - bear_ob_1h
-      - pivot_bounce_down_R1_1D
-      - pivot_bounce_down_R3_1W
-      - premium_15m
-      - premium_1h
-      - wt_ob_1h
-    test_n: 73
-    test_avgR: 0.907
-    test_WR: 75.3
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S1_5m_07:
-    direction: SHORT
-    parent: D2_S1_exhaust_4h
-    anchor_factors:
-      - atr_cross_down_5m
-      - atr_down_4h
-      - bear_ob_1h
-      - below_ema50_5m
-      - pivot_bounce_down_R1_1D
-      - pivot_bounce_down_S1_1W
-      - premium_1h
-    test_n: 177
-    test_avgR: 0.871
-    test_WR: 64.4
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S3_15m_05:
-    direction: SHORT
-    parent: D2_S3_ema_reject
-    anchor_factors:
-      - above_ema200_1h
-      - atr_down_4h
-      - bear_ob_15m
-      - bear_ob_1h
-      - pivot_bounce_down_R1_1W
-      - pivot_bounce_down_S2_1D
-      - premium_15m
-    test_n: 67
-    test_avgR: 1.015
-    test_WR: 67.2
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S3_15m_06:
-    direction: SHORT
-    parent: D2_S3_ema_reject
-    anchor_factors:
-      - above_ema200_1h
-      - atr_down_4h
-      - bear_ob_1h
-      - bear_ob_near_15m
-      - pivot_bounce_down_R1_1W
-      - pivot_bounce_down_S2_1D
-      - premium_15m
-    test_n: 60
-    test_avgR: 1.000
-    test_WR: 66.7
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S3_5m_08:
-    direction: SHORT
-    parent: D2_S3_ema_reject
-    anchor_factors:
-      - above_ema200_1h
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_bounce_down_PP_1D
-      - pivot_bounce_down_S1_1D
-      - pivot_bounce_down_S2_1D
-    test_n: 55
-    test_avgR: 0.880
-    test_WR: 76.4
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S3_15m_07:
-    direction: SHORT
-    parent: D2_S3_ema_reject
-    anchor_factors:
-      - above_ema200_1h
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_bounce_down_PP_1D
-      - pivot_bounce_down_R1_1W
-      - pivot_bounce_down_S2_1D
-    test_n: 63
-    test_avgR: 0.883
-    test_WR: 73.0
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S1_5m_09:
-    direction: SHORT
-    parent: D2_S1_exhaust_4h
-    anchor_factors:
-      - atr_down_4h
-      - bear_ob_1h
-      - pivot_below_PP_1W
-      - pivot_near_R2_1D
-      - pivot_near_R3_1D
-      - premium_1h
-    test_n: 97
-    test_avgR: 0.887
-    test_WR: 64.9
-    weight: 10
-    priority: 4
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 6
-
-  D2_S_S2_15m_08:
-    direction: SHORT
-    parent: D2_S2_fade_1h
-    anchor_factors:
-      - bear_fvg_in_15m
-      - bear_ob_1h
-      - pivot_bounce_down_S1_1W
-      - premium_1h
-      - wt_ob_1h
-    test_n: 84
-    test_avgR: 0.768
-    test_WR: 66.7
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  D2_S_S2_15m_09:
-    direction: SHORT
-    parent: D2_S2_fade_1h
-    anchor_factors:
-      - bear_fvg_15m
-      - bear_ob_1h
-      - bear_ob_near_15m
-      - pivot_bounce_down_S1_1W
-      - premium_1h
-      - wt_ob_1h
-    test_n: 217
-    test_avgR: 0.586
-    test_WR: 61.3
-    weight: 10
-    priority: 4
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-
-  # ─────────── TIER 4 NO-BOUNCE (D-037, 2026-05-22) ───────────
-  # Persistent-only patterns (без pivot_bounce_*) для часто-срабатывающих setups.
-  # Цель: закрыть mid-cycle покрытие без зависимости от event-based pivot bounces.
-  # Фильтр: BH-FDR прошли, n≥50, avgR≥0.5, WR≥60.0, без pivot_bounce_*
-
-  # ─── T4 LONG ───
-
-  T4_L_01:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L010_bullfv_bullfv:
+    enabled: true
     direction: LONG
     anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - rsi_os_4h
-      - wt_os_4h
-    test_n: 102
-    test_avgR: 1.317
-    test_WR: 82.4
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
+    - bull_fvg_4h
+    - bull_fvg_1d
     detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_02:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - atr_up_1h
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - wt_os_4h
-    test_n: 99
-    test_avgR: 1.287
-    test_WR: 83.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_03:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - bull_ob_near_1h
-      - wt_os_4h
-    test_n: 104
-    test_avgR: 1.274
-    test_WR: 80.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_04:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - discount_1d
-      - wt_os_1d
-      - wt_os_1h
-    test_n: 103
-    test_avgR: 1.239
-    test_WR: 78.6
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_05:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_1h
-      - bull_ob_4h
-      - wt_os_4h
-    test_n: 60
-    test_avgR: 1.336
-    test_WR: 81.7
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_06:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_1h
-      - bull_ob_4h
-      - wt_os_4h
-    test_n: 117
-    test_avgR: 1.183
-    test_WR: 77.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_07:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - ote_long_1h
-      - wt_os_4h
-    test_n: 71
-    test_avgR: 1.144
-    test_WR: 77.5
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_08:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - discount_1h
-      - wt_os_4h
-    test_n: 125
-    test_avgR: 1.038
-    test_WR: 72.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_09:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - discount_1d
-      - wt_os_4h
-    test_n: 135
-    test_avgR: 0.984
-    test_WR: 71.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_10:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_ob_4h
-      - discount_4h
-      - wt_os_4h
-    test_n: 135
-    test_avgR: 0.984
-    test_WR: 71.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_11:
-    direction: LONG
-    anchor_factors:
-      - bull_mom_1d
-      - pivot_near_S3_1W
-      - rsi_os_1h
-    test_n: 222
-    test_avgR: 0.949
-    test_WR: 65.8
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_12:
-    direction: LONG
-    anchor_factors:
-      - bull_ob_near_1d
-      - discount_4h
-      - pivot_near_S3_1W
-      - rsi_os_1h
-    test_n: 185
-    test_avgR: 0.967
-    test_WR: 65.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_13:
-    direction: LONG
-    anchor_factors:
-      - bull_ob_near_1d
-      - discount_1h
-      - pivot_near_S3_1W
-      - rsi_os_1h
-    test_n: 227
-    test_avgR: 0.830
-    test_WR: 61.7
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_14:
-    direction: LONG
-    anchor_factors:
-      - bull_mom_1d
-      - discount_1h
-      - ote_long_1d
-      - pivot_near_S3_1W
-    test_n: 58
-    test_avgR: 0.937
-    test_WR: 69.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_L_15:
-    direction: LONG
-    anchor_factors:
-      - bull_mom_1d
-      - discount_1h
-      - ote_long_1h
-      - pivot_near_S3_1W
-    test_n: 172
-    test_avgR: 0.820
-    test_WR: 61.6
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  # ─── T4 SHORT ───
-
-  T4_S_01:
-    direction: SHORT
-    anchor_factors:
-      - bear_fvg_1d
-      - below_ema50_4h
-      - rsi_ob_1d
-    test_n: 70
-    test_avgR: 1.119
-    test_WR: 92.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_02:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - bear_fvg_in_1h
-    test_n: 416
-    test_avgR: 0.978
-    test_WR: 73.6
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_03:
-    direction: SHORT
-    anchor_factors:
-      - bear_fvg_1d
-      - below_ema200_1h
-      - rsi_ob_1d
-    test_n: 78
-    test_avgR: 1.010
-    test_WR: 92.3
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_04:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - ote_short_4h
-      - rsi_cross50_down_1d
-    test_n: 98
-    test_avgR: 1.052
-    test_WR: 81.6
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_05:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - premium_1h
-    test_n: 558
-    test_avgR: 0.891
-    test_WR: 69.9
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_06:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_fvg_in_1d
-      - wt_ob_1h
-    test_n: 139
-    test_avgR: 1.057
-    test_WR: 70.5
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_07:
-    direction: SHORT
-    anchor_factors:
-      - below_ema200_1h
-      - premium_1d
-      - wt_ob_1h
-    test_n: 179
-    test_avgR: 0.989
-    test_WR: 68.7
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_08:
-    direction: SHORT
-    anchor_factors:
-      - bear_fvg_1d
-      - bear_fvg_4h
-      - rsi_ob_1d
-    test_n: 126
-    test_avgR: 0.879
-    test_WR: 80.2
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_09:
-    direction: SHORT
-    anchor_factors:
-      - bear_fvg_in_1d
-      - bear_fvg_in_4h
-      - wt_ob_1h
-    test_n: 215
-    test_avgR: 0.943
-    test_WR: 66.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_10:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - rsi_ob_1h
-    test_n: 87
-    test_avgR: 1.036
-    test_WR: 71.3
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_11:
-    direction: SHORT
-    anchor_factors:
-      - bear_fvg_in_1d
-      - ote_short_4h
-      - wt_ob_1h
-    test_n: 210
-    test_avgR: 0.890
-    test_WR: 65.7
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_12:
-    direction: SHORT
-    anchor_factors:
-      - below_ema50_4h
-      - ote_short_4h
-      - rsi_cross50_down_1d
-    test_n: 157
-    test_avgR: 0.806
-    test_WR: 71.3
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_13:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - pivot_near_R1_1D
-      - rsi_cross50_down_1d
-    test_n: 156
-    test_avgR: 0.857
-    test_WR: 66.7
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_14:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - bear_bos_1d
-      - vol_spike_1d
-    test_n: 902
-    test_avgR: 0.673
-    test_WR: 62.0
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-  T4_S_15:
-    direction: SHORT
-    anchor_factors:
-      - atr_cross_down_1d
-      - premium_1h
-      - rsi_cross50_down_1d
-    test_n: 1223
-    test_avgR: 0.657
-    test_WR: 60.2
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 48
-
-
-  # ─────────── TIER 5 CONTINUATION (D-038, 2026-05-22) ───────────
-  # Continuation/trend-following patterns. БЕЗ 1d-факторов,
-  # БЕЗ reversal markers (os/ob/div/sweep), БЕЗ pivot_bounce.
-  # Фильтр: BH-FDR, n≥50, avgR≥0.5, WR≥55.0.
-
-  # ─── T5 LONG ───
-
-  T5_L_01:
-    direction: LONG
-    anchor_factors:
-      - pivot_near_S1_1D
-      - pivot_near_S3_1W
-      - vol_spike_1h
-    test_n: 88
-    test_avgR: 0.834
-    test_WR: 63.6
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 5
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T5_L_02:
-    direction: LONG
-    anchor_factors:
-      - discount_1h
-      - pivot_near_S1_1D
-      - pivot_near_S3_1W
-    test_n: 412
-    test_avgR: 0.658
-    test_WR: 59.5
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 5
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T5_L_03:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - pivot_near_S1_1D
-      - pivot_near_S3_1W
-    test_n: 113
-    test_avgR: 0.756
-    test_WR: 61.1
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 5
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T5_L_04:
-    direction: LONG
-    anchor_factors:
-      - atr_up_4h
-      - pivot_near_S1_1D
-      - pivot_near_S3_1W
-    test_n: 145
-    test_avgR: 0.686
-    test_WR: 56.6
-    mht_p_adj: 0.0000
-    weight: 10
-    priority: 5
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-
-  # ─────────── TIER 6 4H-REVERSAL (D-039, 2026-05-22) ───────────
-  # 4h-only reversal patterns: rsi_div_bull_regular_4h / wt_os_4h / rsi_div_bear_regular_4h / wt_ob_4h.
-  # БЕЗ 1d-факторов (lowercase suffixes — все), БЕЗ pivot_bounce_*.
-  # Фильтр: BH-FDR, n≥50, avgR≥0.5, WR≥60.0.
-
-  # ─── T6 LONG ───
-
-  T6_L_01:
-    direction: LONG
-    anchor_factors:
-      - bull_fvg_4h
-      - discount_1h
-      - wt_os_4h
-    test_n: 83
-    test_avgR: 0.831
-    test_WR: 67.5
-    mht_p_adj: 0.0000
-    weight: 11
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T6_L_02:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: LONG
-    anchor_factors:
-      - atr_up_4h
-      - rsi_div_bull_regular_4h
-      - wt_cross_up_1d
-    test_n: 52
-    test_avgR: 0.962
-    test_WR: 61.5
-    mht_p_adj: 0.0000
-    weight: 11
-    priority: 4
-    detection_tf: 4h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T6_L_03:
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_4h
-      - ema50_above_ema200_1h
-      - wt_cross_up_1d
-    test_n: 84
-    test_avgR: 0.835
-    test_WR: 61.9
-    mht_p_adj: 0.0000
-    weight: 11
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T6_L_04:
-    direction: LONG
-    anchor_factors:
-      - rsi_div_bull_regular_4h
-      - bull_fvg_in_1h
-      - wt_os_4h
-    test_n: 88
-    test_avgR: 0.543
-    test_WR: 61.4
-    mht_p_adj: 0.0000
-    weight: 11
-    priority: 4
-    detection_tf: 1h
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-
-  # ─────────── TIER 7 ARCH-105 (D-041, 2026-05-22) ───────────
-  # Hidden divergence patterns — continuation/reversal через WT div.
-  # 4 anchor families: A1/A2 (LONG hidden/reg), A3/A4 (SHORT hidden/reg).
-  # Фильтр: n≥50, avgR≥0.5, WR≥60.0.
-  # Persistent на 10 баров (как pivot_bounce).
-
-  # ─── T7 LONG ───
-
-  T7_L_A1_5m_01:
-    direction: LONG
-    parent: A1_bull_hidden_4h
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - discount_5m
-      - pivot_above_PP_1D
-      - pivot_near_S2_1W
-      - rsi_os_5m
-      - wt_div_bull_hidden_4h
-    test_n: 68
-    test_avgR: 0.941
-    test_WR: 64.7
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A2_5m_01:
-    direction: LONG
-    parent: A2_bull_reg_4h
-    anchor_factors:
-      - above_ema200_5m
-      - bull_fvg_4h
-      - discount_5m
-      - ote_long_5m
-      - wt_div_bull_hidden_5m
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 67
-    test_avgR: 0.881
-    test_WR: 62.7
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A1_5m_02:
-    direction: LONG
-    parent: A1_bull_hidden_4h
-    anchor_factors:
-      - above_ema200_4h
-      - above_ema50_5m
-      - bull_fvg_4h
-      - discount_5m
-      - pivot_bounce_up_R1_1W
-      - pivot_bounce_up_R3_1D
-      - wt_div_bull_hidden_4h
-    test_n: 62
-    test_avgR: 0.885
-    test_WR: 62.9
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A1_5m_03:
-    direction: LONG
-    parent: A1_bull_hidden_4h
-    anchor_factors:
-      - above_ema200_4h
-      - atr_up_5m
-      - bull_fvg_4h
-      - pivot_bounce_up_S2_1W
-      - wt_div_bull_hidden_4h
-    test_n: 86
-    test_avgR: 0.703
-    test_WR: 66.3
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A2_5m_02:
-    direction: LONG
-    parent: A2_bull_reg_4h
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_5m
-      - discount_5m
-      - ote_long_5m
-      - wt_div_bull_regular_4h
-      - wt_div_bull_regular_5m
-      - wt_os_4h
-    test_n: 56
-    test_avgR: 0.749
-    test_WR: 60.7
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A1_5m_04:
-    direction: LONG
-    parent: A1_bull_hidden_4h
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - bull_fvg_5m
-      - pivot_bounce_up_S2_1W
-      - wt_div_bull_hidden_4h
-    test_n: 107
-    test_avgR: 0.611
-    test_WR: 63.6
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A2_5m_03:
-    direction: LONG
-    parent: A2_bull_reg_4h
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_near_5m
-      - discount_5m
-      - ote_long_5m
-      - wt_div_bull_regular_4h
-      - wt_div_bull_regular_5m
-      - wt_os_4h
-    test_n: 53
-    test_avgR: 0.735
-    test_WR: 60.4
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_L_A2_15m_01:
-    direction: LONG
-    parent: A2_bull_reg_4h
-    anchor_factors:
-      - above_ema50_15m
-      - bull_fvg_15m
-      - bull_fvg_4h
-      - bull_ob_15m
-      - pivot_bounce_up_PP_1D
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 56
-    test_avgR: 0.678
-    test_WR: 62.5
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  # ─── T7 SHORT ───
-
-  T7_S_A4_5m_01:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_bounce_down_R2_1D
-      - pivot_near_R1_1D
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 58
-    test_avgR: 1.120
-    test_WR: 70.7
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A4_5m_02:
-    enabled: false   # DEV-236 изолирован (artefact div/cross, ретробэктест)
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_bounce_down_R3_1D
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 73
-    test_avgR: 1.036
-    test_WR: 71.2
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_5m_01:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - ema50_below_ema200_5m
-      - pivot_bounce_down_R2_1W
-      - wt_div_bear_hidden_4h
-      - wt_div_bear_regular_5m
-    test_n: 66
-    test_avgR: 1.025
-    test_WR: 71.2
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_5m_02:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_near_R2_1W
-      - wt_cross_down_5m
-      - wt_div_bear_hidden_4h
-    test_n: 76
-    test_avgR: 1.029
-    test_WR: 68.4
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_5m_03:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - bear_ob_5m
-      - below_ema200_4h
-      - below_ema200_5m
-      - pivot_bounce_down_R2_1W
-      - pivot_near_R2_1W
-      - wt_div_bear_hidden_4h
-    test_n: 397
-    test_avgR: 0.806
-    test_WR: 62.2
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_5m_04:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_fvg_5m
-      - bear_ob_4h
-      - below_ema200_4h
-      - below_ema200_5m
-      - pivot_bounce_down_R2_1W
-      - pivot_near_R2_1W
-      - wt_div_bear_hidden_4h
-    test_n: 364
-    test_avgR: 0.797
-    test_WR: 62.1
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_15m_01:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_bounce_down_PP_1D
-      - pivot_bounce_down_R2_1W
-      - wt_div_bear_hidden_4h
-    test_n: 451
-    test_avgR: 0.714
-    test_WR: 65.6
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A3_5m_05:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - bear_ob_near_5m
-      - below_ema200_4h
-      - below_ema200_5m
-      - pivot_bounce_down_R2_1W
-      - pivot_near_R2_1W
-      - wt_div_bear_hidden_4h
-    test_n: 382
-    test_avgR: 0.783
-    test_WR: 61.5
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_15m_02:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - ema50_below_ema200_15m
-      - pivot_near_R2_1W
-      - wt_div_bear_hidden_4h
-    test_n: 235
-    test_avgR: 0.818
-    test_WR: 63.4
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A3_15m_03:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_bounce_down_R2_1W
-      - wt_cross_down_15m
-      - wt_div_bear_hidden_4h
-    test_n: 69
-    test_avgR: 0.914
-    test_WR: 72.5
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A4_15m_01:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_bounce_down_PP_1D
-      - wt_div_bear_regular_15m
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 95
-    test_avgR: 0.942
-    test_WR: 65.3
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A3_15m_04:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - atr_down_15m
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_bounce_down_R3_1W
-      - wt_div_bear_hidden_4h
-    test_n: 99
-    test_avgR: 0.834
-    test_WR: 72.7
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A4_5m_03:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_bounce_down_S1_1D
-      - pivot_near_R2_1W
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 71
-    test_avgR: 0.986
-    test_WR: 66.2
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A4_5m_04:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_5m
-      - pivot_near_R1_1D
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 259
-    test_avgR: 0.802
-    test_WR: 61.4
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A4_5m_05:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_near_R2_1D
-      - wt_div_bear_regular_4h
-      - wt_div_bear_regular_5m
-      - wt_ob_4h
-    test_n: 52
-    test_avgR: 0.998
-    test_WR: 69.2
-    weight: 11
-    priority: 3
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T7_S_A3_15m_05:
-    direction: SHORT
-    parent: A3_bear_hidden_4h
-    anchor_factors:
-      - atr_down_15m
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_near_R2_1W
-      - wt_div_bear_hidden_4h
-    test_n: 167
-    test_avgR: 0.781
-    test_WR: 68.3
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A4_15m_02:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - wt_div_bear_regular_15m
-      - wt_div_bear_regular_4h
-      - wt_ob_15m
-      - wt_ob_4h
-    test_n: 54
-    test_avgR: 0.863
-    test_WR: 70.4
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A4_15m_03:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_fvg_15m
-      - bear_ob_4h
-      - pivot_near_R1_1D
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 137
-    test_avgR: 0.736
-    test_WR: 63.5
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A4_15m_04:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_below_PP_1W
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 62
-    test_avgR: 0.783
-    test_WR: 69.4
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T7_S_A4_15m_05:
-    direction: SHORT
-    parent: A4_bear_reg_4h
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema50_15m
-      - pivot_near_R1_1D
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 106
-    test_avgR: 0.721
-    test_WR: 63.2
-    weight: 11
-    priority: 3
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-
-
-  # ─────────── TIER 8 D-047 TRIGGER-GATE (D-050, 2026-05-23) ───────────
-  # Trigger-gated patterns: anchors + wt_cross_*_1h как обязательное событие.
-  # Гипотеза пользователя подтверждена walkforward'ом — WR ↑ при ↓ false entries.
-  # Фильтр: n≥30, avgR≥0.7, WR≥65.0.
-
-  # ─── T8 LONG ───
-
-  T8_L_L3_5m_01:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - atr_up_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_5m
-      - wt_os_4h
-    test_n: 48
-    test_avgR: 1.938
-    test_WR: 97.9
     weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L3_15m_01:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_15m
-      - bull_ob_near_15m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 45
-    test_avgR: 1.933
-    test_WR: 97.8
-    weight: 16
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L3_5m_02:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - atr_up_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_5m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 110
-    test_avgR: 1.673
-    test_WR: 89.1
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L3_5m_03:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - atr_up_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_near_5m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 110
-    test_avgR: 1.673
-    test_WR: 89.1
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L3_15m_02:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - above_ema50_15m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_15m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 40
-    test_avgR: 1.913
-    test_WR: 97.5
-    weight: 16
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L3_15m_03:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - above_ema50_15m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_near_15m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 38
-    test_avgR: 1.921
-    test_WR: 97.4
-    weight: 16
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L3_5m_04:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - atr_up_5m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_fvg_5m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 102
-    test_avgR: 1.647
-    test_WR: 88.2
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L3_15m_04:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - atr_up_15m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_15m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 37
-    test_avgR: 1.906
-    test_WR: 97.3
-    weight: 16
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L3_15m_05:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - atr_up_15m
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_near_15m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 35
-    test_avgR: 1.914
-    test_WR: 97.1
-    weight: 16
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L3_5m_05:
-    direction: LONG
-    parent: D047_L3_golden_trig
-    anchor_factors:
-      - rsi_div_bull_regular_1d
-      - bull_fvg_4h
-      - bull_ob_5m
-      - bull_ob_near_5m
-      - wt_cross_up_1h
-      - wt_os_4h
-    test_n: 162
-    test_avgR: 1.500
-    test_WR: 83.3
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L1_5m_01:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-      - wt_div_bull_hidden_5m
-    test_n: 67
-    test_avgR: 1.554
-    test_WR: 86.6
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L1_5m_02:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - pivot_above_PP_1D
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 95
-    test_avgR: 1.388
-    test_WR: 88.4
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L1_5m_03:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - bull_ob_near_5m
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 113
-    test_avgR: 1.334
-    test_WR: 86.7
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L1_5m_04:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - bull_ob_5m
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 113
-    test_avgR: 1.334
-    test_WR: 86.7
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L1_5m_05:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - pivot_near_S1_1W
-      - rsi_div_bull_hidden_5m
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 44
-    test_avgR: 1.623
-    test_WR: 88.6
-    weight: 16
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_L_L1_15m_01:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - bull_ob_15m
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 45
-    test_avgR: 1.054
-    test_WR: 80.0
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L1_15m_02:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - atr_up_15m
-      - bull_fvg_4h
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 32
-    test_avgR: 1.096
-    test_WR: 84.4
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L1_15m_03:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - pivot_above_PP_1W
-      - pivot_bounce_up_R1_1W
-      - pivot_bounce_up_S1_1D
-      - rsi_div_bull_hidden_15m
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 30
-    test_avgR: 1.125
-    test_WR: 83.3
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L1_15m_04:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - bull_ob_near_15m
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 42
-    test_avgR: 1.066
-    test_WR: 78.6
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L1_15m_05:
-    direction: LONG
-    parent: D047_L1_hidden_trig
-    anchor_factors:
-      - above_ema200_4h
-      - bull_fvg_4h
-      - pivot_bounce_up_PP_1D
-      - pivot_near_S1_1W
-      - wt_cross_up_1h
-      - wt_div_bull_hidden_4h
-    test_n: 42
-    test_avgR: 1.025
-    test_WR: 78.6
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L2_15m_01:
-    direction: LONG
-    parent: D047_L2_reg_trig
-    anchor_factors:
-      - bull_fvg_4h
-      - pivot_above_PP_1D
-      - rsi_div_bull_hidden_15m
-      - wt_cross_up_1h
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 33
-    test_avgR: 1.008
-    test_WR: 75.8
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L2_15m_02:
-    direction: LONG
-    parent: D047_L2_reg_trig
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_15m
-      - bull_ob_near_15m
-      - pivot_bounce_up_PP_1D
-      - wt_cross_up_1h
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 31
-    test_avgR: 1.011
-    test_WR: 71.0
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L2_15m_03:
-    direction: LONG
-    parent: D047_L2_reg_trig
-    anchor_factors:
-      - bull_fvg_4h
-      - bull_ob_near_15m
-      - pivot_above_PP_1D
-      - pivot_bounce_up_PP_1D
-      - wt_cross_up_1h
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 31
-    test_avgR: 1.011
-    test_WR: 71.0
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L2_15m_04:
-    direction: LONG
-    parent: D047_L2_reg_trig
-    anchor_factors:
-      - above_ema50_15m
-      - bull_fvg_15m
-      - bull_fvg_4h
-      - pivot_bounce_up_PP_1D
-      - wt_cross_up_1h
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 33
-    test_avgR: 0.781
-    test_WR: 69.7
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  T8_L_L2_15m_05:
-    direction: LONG
-    parent: D047_L2_reg_trig
-    anchor_factors:
-      - bull_fvg_15m
-      - bull_fvg_4h
-      - pivot_above_PP_1D
-      - pivot_bounce_up_PP_1D
-      - wt_cross_up_1h
-      - wt_div_bull_regular_4h
-      - wt_os_4h
-    test_n: 35
-    test_avgR: 0.765
-    test_WR: 68.6
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-  # ─── T8 SHORT ───
-
-  T8_S_S1_5m_01:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_below_PP_1W
-      - pivot_bounce_down_PP_1W
-      - pivot_bounce_down_S2_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
-      - wt_div_bear_hidden_5m
-    test_n: 71
-    test_avgR: 1.204
-    test_WR: 83.1
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S1_5m_02:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
-    anchor_factors:
-      - atr_down_5m
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_bounce_down_PP_1W
-      - pivot_bounce_down_S2_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
-      - wt_div_bear_hidden_5m
-    test_n: 40
+    test_n: 580
     test_avgR: 1.273
-    test_WR: 87.5
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S1_5m_03:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
+    test_WR: 92.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L011_bullfv_bullfv:
+    enabled: true
+    direction: LONG
     anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - below_ema200_5m
-      - ema50_below_ema200_5m
-      - pivot_bounce_down_PP_1D
-      - pivot_near_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 16
+    test_n: 1010
+    test_avgR: 1.2
+    test_WR: 88.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L012_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 115
+    test_avgR: 1.548
+    test_WR: 97.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L013_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 113
+    test_avgR: 1.554
+    test_WR: 97.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L014_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 195
+    test_avgR: 1.428
+    test_WR: 94.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L015_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 114
+    test_avgR: 1.544
+    test_WR: 97.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L016_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1d
+    - ema50_above_ema200_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 100
+    test_avgR: 1.585
+    test_WR: 97.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L017_abovee_abovee_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 70
+    test_avgR: 1.689
+    test_WR: 98.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L018_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 70
+    test_avgR: 1.689
+    test_WR: 98.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L019_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - rsi_div_bull_hidden_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 82
+    test_avgR: 1.604
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L020_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - rsi_div_bull_hidden_1d
+    detection_tf: 4h
+    weight: 18
+    test_n: 82
+    test_avgR: 1.604
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L021_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - rsi_div_bull_hidden_1d
+    detection_tf: 4h
+    weight: 18
+    test_n: 82
+    test_avgR: 1.604
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L022_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 120
+    test_avgR: 1.497
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L023_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 191
+    test_avgR: 1.416
+    test_WR: 94.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L024_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 191
+    test_avgR: 1.416
+    test_WR: 94.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L025_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 111
+    test_avgR: 1.548
+    test_WR: 96.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L026_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 95
+    test_avgR: 1.592
+    test_WR: 96.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L027_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - ema50_above_ema200_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 117
+    test_avgR: 1.497
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L028_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 90
+    test_avgR: 1.611
+    test_WR: 96.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L029_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - above_ema50_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 1033
+    test_avgR: 1.165
+    test_WR: 85.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L030_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 116
+    test_avgR: 1.48
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L031_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 116
+    test_avgR: 1.48
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L032_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - ema50_above_ema200_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 113
+    test_avgR: 1.48
+    test_WR: 98.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L033_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - ema50_above_ema200_4h
+    detection_tf: 1h
+    weight: 17
+    test_n: 113
+    test_avgR: 1.48
+    test_WR: 98.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L034_pivotb_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - pivot_bounce_up_S1_1D
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 376
+    test_avgR: 1.254
+    test_WR: 92.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L035_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 69
+    test_avgR: 1.669
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L036_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - rsi_div_bull_hidden_4h
+    detection_tf: 1h
+    weight: 19
+    test_n: 53
+    test_avgR: 1.728
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L037_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_in_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 84
+    test_avgR: 1.581
+    test_WR: 97.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L038_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 134
+    test_avgR: 1.471
+    test_WR: 94.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L039_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 18
     test_n: 68
-    test_avgR: 1.250
-    test_WR: 75.0
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S2_5m_01:
-    direction: SHORT
-    parent: D047_S2_reg_trig
-    anchor_factors:
-      - bear_fvg_in_5m
-      - bear_ob_4h
-      - pivot_bounce_down_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 50
-    test_avgR: 1.247
-    test_WR: 76.0
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S1_5m_04:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - below_ema50_5m
-      - pivot_bounce_down_PP_1W
-      - pivot_bounce_down_S2_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
-      - wt_div_bear_hidden_5m
-    test_n: 85
-    test_avgR: 1.052
-    test_WR: 76.5
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S1_5m_05:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - below_ema200_5m
-      - pivot_below_PP_1W
-      - pivot_bounce_down_PP_1D
-      - pivot_near_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
-    test_n: 71
-    test_avgR: 1.155
-    test_WR: 71.8
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S2_5m_02:
-    direction: SHORT
-    parent: D047_S2_reg_trig
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_near_R1_1D
-      - rsi_div_bear_hidden_5m
-      - wt_cross_down_1h
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 43
-    test_avgR: 1.233
-    test_WR: 74.4
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S2_5m_03:
-    direction: SHORT
-    parent: D047_S2_reg_trig
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_bounce_down_R1_1D
-      - rsi_div_bear_hidden_5m
-      - wt_cross_down_1h
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 45
-    test_avgR: 1.200
-    test_WR: 73.3
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S2_5m_04:
-    direction: SHORT
-    parent: D047_S2_reg_trig
-    anchor_factors:
-      - bear_ob_4h
-      - pivot_near_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_5m
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 83
-    test_avgR: 1.060
-    test_WR: 68.7
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S1_15m_01:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
-    anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - below_ema50_15m
-      - pivot_near_R2_1W
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
-    test_n: 37
-    test_avgR: 1.116
-    test_WR: 78.4
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
+    test_avgR: 1.664
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
     time_exit_hours: 24
-
-  T8_S_S1_15m_02:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L040_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
     anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_bounce_down_R2_1D
-      - rsi_div_bear_hidden_15m
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 68
+    test_avgR: 1.664
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L041_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 86
+    test_avgR: 1.569
+    test_WR: 96.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L042_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 126
+    test_avgR: 1.476
+    test_WR: 94.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L043_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - rsi_div_bull_hidden_4h
+    detection_tf: 4h
+    weight: 18
+    test_n: 57
+    test_avgR: 1.663
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L044_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - rsi_div_bull_hidden_4h
+    detection_tf: 4h
+    weight: 18
+    test_n: 57
+    test_avgR: 1.663
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L045_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 130
+    test_avgR: 1.455
+    test_WR: 94.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L046_bullfv_bullfv_rsidiv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - rsi_div_bull_hidden_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 129
+    test_avgR: 1.433
+    test_WR: 96.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L047_bullfv_discou_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_1h
+    - discount_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2309
+    test_avgR: 1.077
+    test_WR: 80.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L048_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2327
+    test_avgR: 1.076
+    test_WR: 80.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L049_ema50a_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - ema50_above_ema200_4h
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 1115
+    test_avgR: 1.117
+    test_WR: 84.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L050_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2338
+    test_avgR: 1.072
+    test_WR: 79.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L051_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2336
+    test_avgR: 1.07
+    test_WR: 79.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L052_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - ema50_above_ema200_4h
+    - pivot_above_PP_1W
+    detection_tf: 1h
+    weight: 18
+    test_n: 64
+    test_avgR: 1.605
+    test_WR: 98.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L053_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - ema50_above_ema200_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 67
+    test_avgR: 1.586
+    test_WR: 98.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L054_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 1h
+    weight: 19
+    test_n: 47
+    test_avgR: 1.741
+    test_WR: 97.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L055_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 19
     test_n: 46
-    test_avgR: 1.059
-    test_WR: 73.9
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
+    test_avgR: 1.736
+    test_WR: 97.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
     time_exit_hours: 24
-
-  T8_S_S2_5m_05:
-    direction: SHORT
-    parent: D047_S2_reg_trig
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L056_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
     anchor_factors:
-      - bear_ob_4h
-      - below_ema200_5m
-      - pivot_bounce_down_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_regular_4h
-      - wt_ob_4h
-    test_n: 83
-    test_avgR: 0.980
-    test_WR: 68.7
-    weight: 12
-    priority: 2
-    detection_tf: 5m
-    sl:
-      lookback_bars: 20
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 12
-
-  T8_S_S1_15m_03:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 1h
+    weight: 19
+    test_n: 46
+    test_avgR: 1.736
+    test_WR: 97.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L057_abovee_bullfv_discou:
+    enabled: true
+    direction: LONG
     anchor_factors:
-      - bear_ob_4h
-      - below_ema200_4h
-      - pivot_below_PP_1D
-      - pivot_near_R2_1W
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_4h
+    - above_ema50_1h
+    - bull_fvg_1d
+    - discount_1h
+    - discount_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1416
+    test_avgR: 1.058
+    test_WR: 84.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L058_bullfv_discou_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - discount_1d
+    - discount_1h
+    - discount_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1507
+    test_avgR: 1.053
+    test_WR: 83.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L059_bullfv_discou_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - discount_1h
+    - discount_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1507
+    test_avgR: 1.053
+    test_WR: 83.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L060_abovee_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1h
+    - bull_fvg_1d
+    - discount_1d
+    - discount_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1426
+    test_avgR: 1.055
+    test_WR: 83.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L061_abovee_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1h
+    - bull_fvg_1d
+    - discount_1d
+    - discount_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1432
+    test_avgR: 1.052
+    test_WR: 84.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L062_rsicro_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - rsi_cross50_up_1h
+    - bull_fvg_1d
+    detection_tf: 1h
+    weight: 17
+    test_n: 121
+    test_avgR: 1.457
+    test_WR: 91.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L063_bullfv_discou_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - discount_1h
+    - discount_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 1517
+    test_avgR: 1.051
+    test_WR: 83.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L064_discou_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - discount_1h
+    - bull_fvg_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 1517
+    test_avgR: 1.051
+    test_WR: 83.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L065_bullfv_discou_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - discount_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 1523
+    test_avgR: 1.048
+    test_WR: 83.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L066_discou_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - discount_4h
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 1523
+    test_avgR: 1.048
+    test_WR: 83.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L067_bullfv_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - pivot_above_PP_1W
+    - vol_spike_1d
+    detection_tf: 1h
+    weight: 19
+    test_n: 32
+    test_avgR: 1.828
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L068_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_1h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - vol_spike_1d
+    detection_tf: 1h
+    weight: 19
+    test_n: 32
+    test_avgR: 1.828
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L069_bullfv_bullfv_volspi:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - bull_fvg_1d
+    - vol_spike_1d
+    detection_tf: 1h
+    weight: 19
+    test_n: 32
+    test_avgR: 1.828
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L070_bullfv_pivotn:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - pivot_near_S1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 246
+    test_avgR: 1.334
+    test_WR: 86.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L071_atrup1_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1h
+    - bull_fvg_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2058
+    test_avgR: 0.988
+    test_WR: 83.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L072_bullfv_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - ema50_above_ema200_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2105
+    test_avgR: 1.048
+    test_WR: 78.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L073_abovee_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1h
+    - bull_fvg_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2516
+    test_avgR: 0.981
+    test_WR: 81.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L074_bullfv_bullfv_atrcro:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - atr_cross_up_1d
+    detection_tf: 1h
+    weight: 17
+    test_n: 106
+    test_avgR: 1.435
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_L075_pivota_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - pivot_above_PP_1D
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 2479
+    test_avgR: 0.973
+    test_WR: 82.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S001_bearfv_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 498
+    test_avgR: 1.481
+    test_WR: 89.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S002_bearfv_wtob1h_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - wt_ob_1h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 139
+    test_avgR: 1.648
+    test_WR: 95.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S003_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 16
+    test_n: 463
+    test_avgR: 1.231
+    test_WR: 98.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S004_bearfv_wtob1h:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 280
+    test_avgR: 1.439
+    test_WR: 91.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S005_bearfv_ema50b_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1d
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 213
+    test_avgR: 1.474
+    test_WR: 92.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S006_rsicro_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 163
+    test_avgR: 1.529
+    test_WR: 93.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S007_bearfv_belowe_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_1d
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 211
+    test_avgR: 1.472
+    test_WR: 91.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S008_bearfv_pivotn_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R1_1D
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 224
+    test_avgR: 1.461
+    test_WR: 91.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S009_bearfv_rsiob1_rsiob4:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - rsi_ob_4h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 119
+    test_avgR: 1.59
+    test_WR: 94.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S010_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1029
+    test_avgR: 1.087
+    test_WR: 94.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S011_bearfv_rsiob1_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - pivot_bounce_down_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 117
+    test_avgR: 1.595
+    test_WR: 92.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S012_atrdow_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 114
+    test_avgR: 1.599
+    test_WR: 92.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S013_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 3973
+    test_avgR: 0.994
+    test_WR: 84.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S014_bearfv_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 307
+    test_avgR: 1.353
+    test_WR: 89.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S015_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 4027
+    test_avgR: 0.992
+    test_WR: 84.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S016_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    - vol_spike_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 73
+    test_avgR: 1.675
+    test_WR: 95.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S017_bearfv_rsiob1_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - bear_fvg_in_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 96
+    test_avgR: 1.586
+    test_WR: 92.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S018_bearfv_belowe_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_1d
+    - pivot_near_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 76
+    test_avgR: 1.649
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S019_bearfv_ema50b_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1d
+    - pivot_near_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 76
+    test_avgR: 1.649
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S020_pivotb_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_bounce_down_PP_1D
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 1736
+    test_avgR: 0.996
+    test_WR: 88.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S021_bearfv_rsiob1_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 80
+    test_avgR: 1.619
+    test_WR: 92.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S022_bearfv_atrdow:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - atr_down_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2238
+    test_avgR: 1.005
+    test_WR: 84.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S023_bearfv_pivotb_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 19
+    test_n: 32
+    test_avgR: 1.875
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S024_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema50_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2606
+    test_avgR: 0.984
+    test_WR: 83.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S025_pivotb_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_bounce_down_R1_1D
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 435
+    test_avgR: 1.134
+    test_WR: 94.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S026_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 84
+    test_avgR: 1.464
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S027_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2394
+    test_avgR: 0.992
+    test_WR: 83.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S028_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_4h
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 752
+    test_avgR: 1.026
+    test_WR: 95.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S029_bearfv_wtob1h_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - wt_ob_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 19
+    test_n: 41
+    test_avgR: 1.783
+    test_WR: 97.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S030_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R3_1D
+    - rsi_ob_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 64
+    test_avgR: 1.622
+    test_WR: 95.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S031_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    - rsi_ob_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 63
+    test_avgR: 1.652
+    test_WR: 93.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S032_bearfv_rsiob1_volspi:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - vol_spike_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 62
+    test_avgR: 1.614
+    test_WR: 95.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S033_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 15
+    test_n: 1372
+    test_avgR: 1.031
+    test_WR: 85.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S034_bearfv_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - below_ema50_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 16
+    test_n: 250
+    test_avgR: 1.191
+    test_WR: 96.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S035_atrdow_bearfv_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 72
+    test_avgR: 1.585
+    test_WR: 93.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S036_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R2_1D
+    - rsi_ob_1h
+    - vol_spike_1h
+    detection_tf: 1h
+    weight: 19
+    test_n: 45
+    test_avgR: 1.731
+    test_WR: 95.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S037_bearfv_atrcro_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - atr_cross_down_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 4h
+    weight: 19
+    test_n: 38
+    test_avgR: 1.72
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S038_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 1117
+    test_avgR: 0.992
+    test_WR: 89.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S039_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_in_4h
+    - pivot_bounce_down_PP_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 19
+    test_n: 37
+    test_avgR: 1.757
+    test_WR: 97.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S040_bearfv_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - ema50_below_ema200_4h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 16
+    test_n: 225
+    test_avgR: 1.19
+    test_WR: 95.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S041_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1754
+    test_avgR: 0.97
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S042_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_PP_1D
+    detection_tf: 1h
+    weight: 15
+    test_n: 1855
+    test_avgR: 0.958
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S043_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2145
+    test_avgR: 0.939
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S044_bearfv_pivotn_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R1_1D
+    - pivot_bounce_down_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 71
+    test_avgR: 1.56
+    test_WR: 90.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S045_bearfv_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - below_ema50_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 45
+    test_avgR: 1.565
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S046_atrdow_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - ema50_below_ema200_4h
+    detection_tf: 1h
+    weight: 17
+    test_n: 87
+    test_avgR: 1.348
+    test_WR: 98.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S047_bearfv_rsiob4:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_4h
+    detection_tf: 1h
+    weight: 16
+    test_n: 485
+    test_avgR: 1.118
+    test_WR: 86.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S048_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_in_4h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 40
+    test_avgR: 1.693
+    test_WR: 95.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S049_bearfv_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R2_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 128
+    test_avgR: 1.355
+    test_WR: 89.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S050_bearfv_pivotb_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - pivot_bounce_down_R2_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 57
+    test_avgR: 1.593
+    test_WR: 91.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S051_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - pivot_bounce_down_PP_1D
+    - rsi_cross50_down_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 32
+    test_avgR: 1.693
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S052_bearfv_pivotb_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_1h
+    - pivot_bounce_down_S3_1D
+    - rsi_cross50_down_1d
+    detection_tf: 1h
+    weight: 17
+    test_n: 111
+    test_avgR: 1.397
+    test_WR: 89.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S053_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - ema50_below_ema200_1d
+    detection_tf: 4h
+    weight: 14
+    test_n: 3347
+    test_avgR: 0.862
+    test_WR: 83.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S054_bearfv_rsiob1_rsiob4:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - rsi_ob_4h
+    - vol_spike_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 47
+    test_avgR: 1.604
+    test_WR: 93.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S055_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - below_ema200_1d
+    detection_tf: 4h
+    weight: 14
+    test_n: 3324
+    test_avgR: 0.856
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S056_atrdow_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 38
+    test_avgR: 1.584
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S057_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    - vol_spike_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 47
+    test_avgR: 1.596
+    test_WR: 93.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S058_bearfv_volspi:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - vol_spike_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 516
+    test_avgR: 1.047
+    test_WR: 87.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S059_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_below_PP_1W
+    detection_tf: 1h
+    weight: 15
+    test_n: 1612
+    test_avgR: 0.931
+    test_WR: 83.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S060_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - pivot_bounce_down_R1_1D
+    - rsi_div_bear_regular_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 31
+    test_avgR: 1.631
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S061_pivotb_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_below_PP_1D
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 14
+    test_n: 3160
+    test_avgR: 0.826
+    test_WR: 83.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S062_bearfv_atrdow:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - atr_down_4h
+    detection_tf: 1h
+    weight: 14
+    test_n: 2036
+    test_avgR: 0.895
+    test_WR: 81.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S063_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema50_4h
+    detection_tf: 1h
+    weight: 14
+    test_n: 1787
+    test_avgR: 0.896
+    test_WR: 82.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S064_atrcro_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 16
+    test_n: 258
+    test_avgR: 1.112
+    test_WR: 89.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S065_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R2_1D
+    detection_tf: 1h
+    weight: 15
+    test_n: 648
+    test_avgR: 0.991
+    test_WR: 85.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S066_bearfv_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - ema50_below_ema200_1h
+    - pivot_below_PP_1W
+    detection_tf: 1h
+    weight: 17
+    test_n: 64
+    test_avgR: 1.334
+    test_WR: 98.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S067_bearfv_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - ema50_below_ema200_1h
+    - ema50_below_ema200_4h
+    detection_tf: 1h
+    weight: 17
+    test_n: 60
+    test_avgR: 1.346
+    test_WR: 98.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S068_bearfv_pivotn_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R2_1D
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 52
+    test_avgR: 1.515
+    test_WR: 90.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S069_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_in_1h
+    detection_tf: 1h
+    weight: 14
+    test_n: 2287
+    test_avgR: 0.861
+    test_WR: 81.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S070_bearfv_volspi_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - vol_spike_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 44
+    test_avgR: 1.525
+    test_WR: 93.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S071_bearfv_volspi:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - vol_spike_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 537
+    test_avgR: 0.998
+    test_WR: 85.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S072_bearfv_wtob1d:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - wt_ob_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 199
+    test_avgR: 1.085
+    test_WR: 93.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S073_bearfv_bearfv_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - bear_fvg_in_1h
+    - rsi_cross50_down_1d
+    detection_tf: 1h
+    weight: 16
+    test_n: 123
+    test_avgR: 1.213
+    test_WR: 91.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S074_bearfv_ema50b_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1h
+    - rsi_ob_1h
+    - vol_spike_1h
+    detection_tf: 1h
+    weight: 18
     test_n: 35
-    test_avgR: 1.066
-    test_WR: 77.1
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
+    test_avgR: 1.594
+    test_WR: 94.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
     time_exit_hours: 24
-
-  T8_S_S1_15m_04:
+    source: DS-315 walkforward_mht (эталон ARCH-118)
+  DS_S075_rsiob4_bearfv:
+    enabled: true
     direction: SHORT
-    parent: D047_S1_hidden_trig
     anchor_factors:
-      - bear_ob_4h
-      - bear_ob_near_15m
-      - below_ema200_4h
-      - below_ema50_15m
-      - pivot_near_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_15m
-      - wt_div_bear_hidden_4h
-    test_n: 34
-    test_avgR: 1.049
-    test_WR: 73.5
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
+    - rsi_ob_4h
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 158
+    test_avgR: 1.323
+    test_WR: 79.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
     time_exit_hours: 24
-
-  T8_S_S1_15m_05:
-    direction: SHORT
-    parent: D047_S1_hidden_trig
-    anchor_factors:
-      - bear_ob_15m
-      - bear_ob_4h
-      - below_ema200_4h
-      - below_ema50_15m
-      - pivot_near_R1_1D
-      - wt_cross_down_1h
-      - wt_div_bear_hidden_15m
-      - wt_div_bear_hidden_4h
-    test_n: 34
-    test_avgR: 1.049
-    test_WR: 73.5
-    weight: 12
-    priority: 2
-    detection_tf: 15m
-    sl:
-      lookback_bars: 15
-    tp:
-      strategy: no_trail
-      fallback_tp_r: 2.0
-    time_exit_hours: 24
-
-# Defaults для всех patterns
-defaults:
-  min_signal_strength: 60       # composite scoring threshold
-  sl_lookback_bars: 10
-  sl_buffer_pct: 0.1
-  max_open_positions_per_pattern: 2
-  intra_pair_correlation_cap: 1   # max 1 позиция per pair per pattern (D-011)
-
-# Risk Intelligence integration
-risk_intelligence:
-  v1_enabled: true               # формульный (DEV-260)
-  v2_enabled: true               # ML ensemble (DEV-261)
-  decision_fusion_strategy: v2_with_v1_safeguard
-  v2_threshold_p_win: 0.55
-  # D-028 (2026-05-20): не нужен shadow — VST на BingX уже даёт production-like
-  # execution с виртуальными деньгами. Сразу VST → LIVE.
-  vst_observation_until: 2026-06-03   # 14 дней VST с новыми ARCH-104 patterns
-  live_capital_ramp_start: 2026-06-04  # Stage 2 LIVE 10%
-
-# Auto-retire (Phase 7 DEV-275)
-auto_retire:
-  enabled: true
-  pattern_avgR_30d_threshold: 0.5   # × baseline
-  min_trades_for_check: 20
-  retire_action: shadow_only
+    source: DS-315 walkforward_mht (эталон ARCH-118)
