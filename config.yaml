@@ -471,7 +471,7 @@ performance:
   # DEV-231 (30.05): event loop debug — логает медленные callback'и для диагностики
   # blocking-кода. Включать ТОЛЬКО на время расследования (много логов).
   event_loop_debug: true
-  slow_callback_threshold_sec: 0.5
+  slow_callback_threshold_sec: 1.0
   # 27.05: WsFeed настройки выведены из ws_feed.py хардкодов.
   # Шаг B — снижены под текущий deg BingX (был 100/120/2.0).
   # Лимит BingX: 200 подписок/WS + 500 req/10s per IP.
