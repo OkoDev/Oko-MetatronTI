@@ -2335,30 +2335,20 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     # ── DEV-207: ATR Change стратегия ──
     app.router.add_get("/api/atr_stats", _handle_atr_stats)
 
-    # DS-322: быстрые цены для дашборда (кэш 15с)
-    request.app["_pcache"] = {"ts": 0, "data": {}}
+    # DS-322: быстрые цены для дашборда (из кэша, без API-запроса)
     async def _handle_prices(request: web.Request) -> web.Response:
-        import time
-        _pc = request.app.get("_pcache", {})
-        if time.time() - _pc.get("ts", 0) < 15:
-            return web.json_response(_pc.get("data", {}))
         bot = request.app.get("bot")
         dc = bot.data_collector if bot else None
         if not dc:
             return web.json_response({})
         prices = {}
-        for sym in getattr(bot, "monitored_pairs", [])[:50]:
+        for sym in getattr(bot, "monitored_pairs", [])[:50]:  # top-50 открытых
             try:
                 p = await dc.get_current_price(sym)
-                if not p:
-                    df = await dc.get_ohlcv(sym, "15m", limit=2)
-                    if df is not None and len(df) > 0:
-                        p = float(df.iloc[-1]["close"])
                 if p:
                     prices[sym] = p
             except Exception:
                 pass
-        request.app["_pcache"] = {"ts": time.time(), "data": prices}
         return web.json_response(prices)
     app.router.add_get("/api/prices", _handle_prices)
 
