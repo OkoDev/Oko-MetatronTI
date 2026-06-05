@@ -2342,11 +2342,12 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
         if not dc:
             return web.json_response({})
         prices = {}
-        for sym in getattr(bot, "monitored_pairs", [])[:50]:  # top-50 открытых
+        for sym in getattr(bot, "monitored_pairs", [])[:50]:
             try:
-                p = await dc.get_current_price(sym)
-                if p:
-                    prices[sym] = p
+                # get_current_price ищет 1m кэш (пустой). Берём из 15m.
+                cached = dc._engine._cache.get((sym, "15m"), limit=2, ttl=120)
+                if cached is not None and len(cached) > 0:
+                    prices[sym] = float(cached.iloc[-1]["close"])
             except Exception:
                 pass
         return web.json_response(prices)
