@@ -258,7 +258,7 @@ async def repair_missing_tp(bot) -> None:
                 logger.info("[REPAIR-TP] #%d %s %s: TP создан @ %.6f order_id=%s",
                             trade_id, symbol, pos_side, tp_price, new_oid)
             else:
-                logger.warning("[REPAIR-TP] #%d %s: place_tp_order вернул None", trade_id, symbol)
+                logger.debug("[REPAIR-TP] #%d %s: place_tp_order вернул None", trade_id, symbol)
         except Exception as e:
             logger.warning("[REPAIR-TP] #%d %s: %s", trade_id, symbol, e)
 
@@ -328,6 +328,6 @@ async def repair_missing_sl(bot) -> None:
                 logger.info("[REPAIR-SL] #%d %s %s: SL создан @ %.6f order_id=%s",
                             trade_id, symbol, pos_side, sl_price, new_oid)
             else:
-                logger.warning("[REPAIR-SL] #%d %s: place_sl_order вернул None", trade_id, symbol)
+                logger.debug("[REPAIR-SL] #%d %s: place_sl_order вернул None", trade_id, symbol)
         except Exception as e:
             logger.warning("[REPAIR-SL] #%d %s: %s", trade_id, symbol, e)

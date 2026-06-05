@@ -732,7 +732,7 @@ async def _execute_atr_change_signal(
         _allow_sr = _atrc_cfg.get("allow_short_regimes")
         if side == "SHORT" and _allow_sr and _atrc_regime:
             if _atrc_regime not in _allow_sr:
-                logger.info("[ATRChange] %s SHORT пропущен: режим %s не в %s",
+                logger.debug("[ATRChange] %s SHORT пропущен: режим %s не в %s",
                             symbol, _atrc_regime, _allow_sr)
                 return
 
@@ -933,7 +933,7 @@ async def _execute_atr_change_signal(
                 rec, bot.data_collector, extra_features=extra,
             )
             if trade_id:
-                logger.info("[ATRChange] %s %s %s → #%d registered str=%d (sl_source=%s)",
+                logger.debug("[ATRChange] %s %s %s → #%d registered str=%d (sl_source=%s)",
                             symbol, tf, side, trade_id, strength, sl_source)
                 if _ca:
                     try:
@@ -1569,7 +1569,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         asyncio.create_task(_eb2.publish(sym, "regime_change", priority=3, data={
                             "old": _old_regime, "new": _pair_regime,
                         }))
-                        logger.info("[KUB] %s regime_change: %s → %s", sym, _old_regime, _pair_regime)
+                        logger.debug("[KUB] %s regime_change: %s → %s", sym, _old_regime, _pair_regime)
                     bot._prev_regimes[sym] = _pair_regime
 
                 # ═══ КУБ: SMC BOS/CHoCH → EventBus ═══
@@ -1595,7 +1595,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         conf_source=f"smc_bos_{_bos_tf}", side=_bos_side, tf=_bos_tf,
                                         evidence=_last_bos,
                                     )
-                                    logger.info("[KUB] %s smc_bos_detected: %s tf=%s", sym, _last_bos.get("direction"), _last_bos.get("tf"))
+                                    logger.debug("[KUB] %s smc_bos_detected: %s tf=%s", sym, _last_bos.get("direction"), _last_bos.get("tf"))
                             if _last_choch:
                                 _choch_id = (_last_choch.get("tf"), _last_choch.get("direction"))
                                 if bot._prev_choch_id.get(sym) != _choch_id:
@@ -1607,7 +1607,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         conf_source=f"smc_choch_{_choch_tf}", side=_choch_side, tf=_choch_tf,
                                         evidence=_last_choch,
                                     )
-                                    logger.info("[KUB] %s smc_choch_detected: %s tf=%s", sym, _last_choch.get("direction"), _last_choch.get("tf"))
+                                    logger.debug("[KUB] %s smc_choch_detected: %s tf=%s", sym, _last_choch.get("direction"), _last_choch.get("tf"))
                             # FVG Touch — цена вошла в открытый Fair Value Gap
                             _cur_price_fvg = float(df_entry["close"].iloc[-1]) if df_entry is not None and not df_entry.empty else 0
                             if _cur_price_fvg > 0:
@@ -1630,7 +1630,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                                 conf_source="fvg_fill", side="LONG",
                                                 tf=_fvg.get("tf", _etf), evidence=_fvg_data,
                                             )
-                                            logger.info("[KUB] %s fvg_touch: BULL FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                            logger.debug("[KUB] %s fvg_touch: BULL FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bull", round(_fvg.get("bottom", 0), 4)), None)
                                 for _fvg in _smc_snap_local.get("bear_fvg_active", []):
@@ -1649,7 +1649,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                                 conf_source="fvg_fill", side="SHORT",
                                                 tf=_fvg.get("tf", _etf), evidence=_fvg_data,
                                             )
-                                            logger.info("[KUB] %s fvg_touch: BEAR FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                            logger.debug("[KUB] %s fvg_touch: BEAR FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bear", round(_fvg.get("top", 0), 4)), None)
                     except Exception as _smc_ev_e:
