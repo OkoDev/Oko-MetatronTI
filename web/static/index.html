@@ -2240,7 +2240,7 @@ function renderOpenRows(rows) {
       <td>${signalModeBadge(r.signal_mode, r.conf_sources)}</td>
       <td>${regimeBadge(r.regime)}</td>
       <td>${fmt(r.entry_price,4)}</td>
-      <td>${curStr}</td>
+      <td data-price-sym="${r.symbol?.replace(/:USDT$/, "") || ""}">${curStr}</td>
       <td class="${pnlClass}">${pnlStr}</td>
       <td class="${rClass}">${rStr}</td>
       <td>${mfeCell(r.mfe_r)}</td>
@@ -3037,6 +3037,18 @@ document.addEventListener('change', e => {
     loadExchangeHistory(parseInt(e.target.value));
   }
 });
+
+// DS-322: быстрый поллер цен (3s) — обновляет цены без тяжёлого stats
+setInterval(async () => {
+  try {
+    const r = await fetch('/api/prices');
+    const prices = await r.json();
+    document.querySelectorAll('[data-price-sym]').forEach(el => {
+      const sym = el.dataset.priceSym;
+      if (prices[sym]) el.textContent = Number(prices[sym]).toPrecision(6);
+    });
+  } catch(e) {}
+}, 3000);
 </script>
 </body>
 </html>

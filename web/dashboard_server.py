@@ -486,7 +486,7 @@ async def _handle_v2_index(request: web.Request) -> web.Response:
     отдают index.html (history mode роутинга — vue-router сам разрулит).
     Статика /v2/assets/* регистрируется через add_static отдельно.
     """
-    # TEMP DISABLED: снижение нагрузки на BingX API (100410 rate-limit + scan_loop деградация)
+    # TEMP DISABLED: снижение нагрузки на BingX API
     return web.Response(
         status=503,
         text="Dashboard v2 временно отключён для снижения нагрузки на BingX API.",
@@ -1654,6 +1654,7 @@ async def _handle_dashboard_api(request: web.Request) -> web.Response:
     bot = request.app.get("bot")
     engine: PerformanceEngine = request.app["engine"]
 
+    
     # Live status
     # D-056: last_scan + health detection (D-053 cascade crash visibility)
     _last_scan = getattr(bot, "_last_scan", None) if bot else None
@@ -2333,6 +2334,23 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.
     app.router.add_get("/api/dropped", _handle_dropped)
     # ── DEV-207: ATR Change стратегия ──
     app.router.add_get("/api/atr_stats", _handle_atr_stats)
+
+    # DS-322: быстрые цены для дашборда (из кэша, без API-запроса)
+    async def _handle_prices(request: web.Request) -> web.Response:
+        bot = request.app.get("bot")
+        dc = bot.data_collector if bot else None
+        if not dc:
+            return web.json_response({})
+        prices = {}
+        for sym in getattr(bot, "monitored_pairs", [])[:50]:  # top-50 открытых
+            try:
+                p = await dc.get_current_price(sym)
+                if p:
+                    prices[sym] = p
+            except Exception:
+                pass
+        return web.json_response(prices)
+    app.router.add_get("/api/prices", _handle_prices)
 
     runner = web.AppRunner(app)
     await runner.setup()
