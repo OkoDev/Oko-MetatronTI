@@ -2675,6 +2675,12 @@ class TradeSimulator:
             # Обновляем MFE экстремумы + first_profit_r / first_drawdown_r
             new_max = max_high if max_high > 0 else None
             new_min = min_low if min_low < float("inf") else None
+            # DS-322: fallback — если OHLCV не дал данных, используем WS-цену
+            if new_max is None and _ws_price is not None:
+                if direction == "LONG" and _ws_price > entry:
+                    new_max = _ws_price
+                elif direction == "SHORT" and _ws_price < entry:
+                    new_min = _ws_price
 
             # first_profit_r / first_drawdown_r — заполняем один раз (первое наблюдение)
             fp_r = trade.get("first_profit_r")   # None = ещё не фиксировали
