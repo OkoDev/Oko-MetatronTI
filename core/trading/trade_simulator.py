@@ -6,6 +6,7 @@ import sqlite3
 import pandas as pd
 import logging
 import json
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -1820,6 +1821,7 @@ class TradeSimulator:
             # DS-322: throttle REPAIR-SL — старые SIM-сделки без exchange SL не чинятся,
             # только жрут OHLCV. Проверяем раз в час, не каждый цикл.
             _exch_sl = trade.get("exchange_sl_order_id")
+            _now_ts = time.time()
             if (not trade.get("tsl_activated") and not _exch_sl and age_minutes > 60):
                 _last_check = self._repair_checked.get(trade_id, 0)
                 if _now_ts - _last_check < 3600:
