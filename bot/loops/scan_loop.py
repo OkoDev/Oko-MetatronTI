@@ -69,6 +69,125 @@ def _publish_and_confirm(
         logger.debug("[DEV-200 confirm] %s %s: %s", sym, conf_source, _e)
 
 
+# ──── DEV-200.2: combinator-флаги → EventBus + ConfirmationAggregator ────
+# Флаги, которые НЕ публикуем (домен Claude — 5 событийных детекторов):
+#   fvg/bos/choch/eql/eqh — эти концепты уже идут через scan_loop SMC-блок
+_COMBINATOR_EXCLUDED_PREFIXES = (
+    'bull_fvg_', 'bear_fvg_',      # Claude: fvg_fill
+    'bull_bos_', 'bear_bos_',      # Claude: smc_bos_*
+    'bull_choch_', 'bear_choch_',  # Claude: smc_choch_*
+    'eqh_sweep_', 'eql_sweep_',    # Claude: liquidity_sweep
+)
+
+# Флаг → (side). BOTH = публикуется LONG и SHORT раздельно.
+_COMBINATOR_FLAG_SIDE = {
+    # ── SMC (не-Claude) ──
+    'bull_ob': 'LONG', 'bear_ob': 'SHORT',
+    'bull_ob_near': 'LONG', 'bear_ob_near': 'SHORT',
+    'bull_ob_mitigated': 'LONG', 'bear_ob_mitigated': 'SHORT',
+    'ote_long': 'LONG', 'ote_short': 'SHORT',
+    'premium': 'SHORT', 'discount': 'LONG',
+    'bull_fvg_overlap': 'LONG', 'bear_fvg_overlap': 'SHORT',
+    'bull_fvg_overlap_held': 'LONG', 'bear_fvg_overlap_held': 'SHORT',
+    # ── Elliott ──
+    'elliott_bull_impulse': 'LONG', 'elliott_bear_impulse': 'SHORT',
+    'elliott_textbook': 'BOTH',
+    # ── Structure ──
+    'hh': 'LONG', 'hl': 'LONG', 'lh': 'SHORT', 'll': 'SHORT',
+    # ── WT ──
+    'wt_os': 'LONG', 'wt_ob': 'SHORT',
+    'wt_cross_up': 'LONG', 'wt_cross_down': 'SHORT',
+    'wt_state_up': 'LONG', 'wt_state_down': 'SHORT',
+    'wt_div_bull_regular': 'LONG', 'wt_div_bear_regular': 'SHORT',
+    'wt_div_bull_hidden': 'LONG', 'wt_div_bear_hidden': 'SHORT',
+    # ── RSI ──
+    'rsi_os': 'LONG', 'rsi_ob': 'SHORT',
+    'rsi_cross50_up': 'LONG', 'rsi_cross50_down': 'SHORT',
+    'rsi_div_bull_regular': 'LONG', 'rsi_div_bear_regular': 'SHORT',
+    'rsi_div_bull_hidden': 'LONG', 'rsi_div_bear_hidden': 'SHORT',
+    # ── ATR ──
+    'atr_up': 'LONG', 'atr_down': 'SHORT',
+    'atr_cross_up': 'LONG', 'atr_cross_down': 'SHORT',
+    # ── EMA ──
+    'above_ema50': 'LONG', 'above_ema200': 'LONG',
+    'below_ema50': 'SHORT', 'below_ema200': 'SHORT',
+    'ema50_above_ema200': 'LONG', 'ema50_below_ema200': 'SHORT',
+    # ── CMA ──
+    'cma21_above': 'LONG', 'cma55_above': 'LONG',
+    'cma89_above': 'LONG', 'cma144_above': 'LONG', 'cma233_above': 'LONG',
+    'cma_near': 'BOTH', 'cma_cluster': 'BOTH',
+    # ── Dynamic Channel ──
+    'dc_slope_up': 'LONG', 'dc_slope_down': 'SHORT',
+    'dc_at_upper': 'SHORT', 'dc_at_lower': 'LONG',
+    # ── Momentum / Volume ──
+    'bull_mom': 'LONG', 'bear_mom': 'SHORT',
+    'vol_spike': 'BOTH',
+}
+
+
+def _publish_combinator_confirmations(bot, sym: str, df_1h) -> None:
+    """DEV-200.2: вычисляет combinator-флаги на 1h и публикует в агрегатор.
+
+    Вызывается из scan_one ПОСЛЕ SMC-блока — df_1h уже загружен и обогащён
+    WT/trend колонками. Публикуются ТОЛЬКО флаги, изменившие состояние с
+    прошлого цикла (edge-detection): persistent-флаги не спамят.
+
+    Граница с Claude: bos/choch/fvg/eql/eqh — НЕ публикуем (5 событийных
+    детекторов Claude уже шлют их через _publish_and_confirm в том же scan_one).
+    """
+    if df_1h is None or df_1h.empty:
+        return
+    try:
+        from core.calculators.combinator_core import compute_flags as _cf
+        flags_df = _cf(df_1h, '1h', include_pivots=False)
+    except Exception as e:
+        logger.debug("[DEV-200.2] %s compute_flags: %s", sym, e)
+        return
+
+    last = flags_df.iloc[-1]
+    if not hasattr(bot, '_prev_combinator_flags'):
+        bot._prev_combinator_flags = {}
+    prev = bot._prev_combinator_flags.get(sym, {})
+
+    published = 0
+    for col in flags_df.columns:
+        if not last[col]:
+            continue
+        # Пропускаем Claude-домены
+        if col.startswith(_COMBINATOR_EXCLUDED_PREFIXES):
+            continue
+        # Извлекаем base (без _tf) и tf
+        base = col
+        tf = '1h'
+        for _suffix in ('_1h', '_4h', '_1d', '_15m', '_5m'):
+            if col.endswith(_suffix) and len(col) > len(_suffix):
+                base = col[:-len(_suffix)]
+                tf = _suffix[1:]
+                break
+        side_raw = _COMBINATOR_FLAG_SIDE.get(base)
+        if side_raw is None:
+            continue
+        sides = ('LONG', 'SHORT') if side_raw == 'BOTH' else (side_raw,)
+
+        for side in sides:
+            conf_source = f'{base}_{tf}'
+            # Edge-detection: публикуем только при изменении состояния
+            prev_key = f'{conf_source}:{side}'
+            if prev.get(prev_key):
+                continue
+            _publish_and_confirm(
+                bot, sym, f'combinator_{base}', priority=3,
+                conf_source=conf_source, side=side, tf=tf,
+                confidence=1.0, evidence={'flag': col},
+            )
+            prev[prev_key] = True
+            published += 1
+
+    bot._prev_combinator_flags[sym] = prev
+    if published:
+        logger.debug("[DEV-200.2] %s: +%d combinator flags → aggregator", sym, published)
+
+
 async def _send_wl_alert(bot, symbol: str, text: str) -> None:
     """Отправляет короткое WL-уведомление всем подписчикам."""
     try:
@@ -1654,6 +1773,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                         bot._prev_fvg_touch.pop((sym, "bear", round(_fvg.get("top", 0), 4)), None)
                     except Exception as _smc_ev_e:
                         logger.debug("[KUB] smc_events %s: %s", sym, _smc_ev_e)
+
+                # ═══ DEV-200.2: combinator-флаги → EventBus + агрегатор ═══
+                # Публикует флаги из compute_flags (1h) как confirmations,
+                # исключая 5 Claude-доменов (bos/choch/fvg/eql/eqh).
+                if df_1h is not None and not df_1h.empty:
+                    try:
+                        _publish_combinator_confirmations(bot, sym, df_1h)
+                    except Exception as _comb_e:
+                        logger.debug("[DEV-200.2] %s: %s", sym, _comb_e)
 
                 # Проверка качества OHLCV: глубина, свежесть, NaN-пробелы
                 ok, reason = check_ohlcv_quality(

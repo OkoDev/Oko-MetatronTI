@@ -1096,7 +1096,6 @@ dir ∈ {+1, 0, −1}   ·   dir_label ∈ {bull, range, bear}
 
 ---
 
-
 ---
 
 ## [05.06.2026] Claude(OTE) → DEV-200: ✅ ARCH-118.3 ГОТОВ — DEV-200.2 РАЗБЛОКИРОВАН
