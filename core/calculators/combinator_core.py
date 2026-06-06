@@ -507,6 +507,13 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"wt_cross_up_{label}"]   = wt_cu
     out[f"wt_cross_down_{label}"] = wt_cd
 
+    # ─ WT СОСТОЯНИЕ (persistent) — wt1 vs wt2, бычий/медвежий момент WT ─────
+    # В ОТЛИЧИЕ от точечного strict-cross выше (1 бар, в зоне OS/OB): держится ОТ
+    # up-cross ДО down-cross. Для гейтов «конфликт направления» (не шортить при
+    # бычьем WT на HTF). Пользователь 05.06: «wt_cross_up = состояние до wt_cross_down».
+    out[f"wt_state_up_{label}"]   = wt > wt2    # wt1 выше wt2 = бычий WT (между up→down)
+    out[f"wt_state_down_{label}"] = wt < wt2    # wt1 ниже wt2 = медвежий WT
+
     # ─ WT Divergences (DEV-233): порт WT_X (фрактал на WT + low/high) ─
     # WT_X ≠ LonesomeTheBlue: пивот = williams-фрактал на самом WT, цена по low/high,
     # без trendline, сравнение с предыдущим WT-фракталом. RSI ниже — другой алгоритм (close).
