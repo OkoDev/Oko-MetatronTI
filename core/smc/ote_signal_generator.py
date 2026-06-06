@@ -28,12 +28,10 @@ _CONFIG = Path(__file__).resolve().parents[2] / "config" / "ote_setups.yaml"
 
 _CB = None
 def _combinator():
-    """Lazy-загрузка combinator_v2 (эталон, ОДИН калькулятор). Кэш на процесс."""
+    """ARCH-118.3: ЧИСТЫЙ единый калькулятор из core (без sys.path/combinator_v2 хака)."""
     global _CB
     if _CB is None:
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "pattern_mining"))
-        import combinator_v2 as m
+        from core.calculators import combinator_core as m
         _CB = m
     return _CB
 

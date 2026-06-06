@@ -42,41 +42,17 @@ _TF_ORDER = ["5m", "15m", "1h", "4h", "1d"]
 
 
 def _import_cb():
-    """Импорт ЕДИНОГО калькулятора (combinator_v2) с защитой от import-time side-effects.
-
-    combinator_v2.py при импорте делает `sys.stdout = TextIOWrapper(...)` (строка 21) —
-    в проде это сломало бы stdout/логирование. Сохраняем и восстанавливаем stdout, а
-    созданный combinator'ом wrapper отвязываем от buffer'а через detach() (иначе его
-    __del__ при GC закроет общий buffer → "I/O operation on closed file").
-
-    При повторном вызове модуль берётся из sys.modules (тело не выполняется заново),
-    sys.stdout не трогается → detach пропускается.
-    """
-    saved_stdout = sys.stdout
-    saved_path = list(sys.path)
-    try:
-        pm_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "tools", "pattern_mining",
-        )
-        if pm_dir not in sys.path:
-            sys.path.insert(0, pm_dir)
-        import combinator_v2 as cb  # noqa: WPS433 (намеренно локальный импорт)
-        new_wrapper = sys.stdout
-        if new_wrapper is not saved_stdout:
-            try:
-                new_wrapper.detach()  # сервать от buffer, чтобы __del__ его не закрыл
-            except Exception:
-                pass
-        return cb
-    finally:
-        sys.stdout = saved_stdout  # откатываем side-effect
-        sys.path[:] = saved_path
+    """ARCH-118.3 (05.06): ЧИСТЫЙ импорт единого калькулятора из core/calculators/.
+    Хак с sys.stdout detach + sys.path больше НЕ нужен — combinator_core не имеет
+    import-time side-effects (вынесен из combinator_v2). Инвариант «один калькулятор»."""
+    from core.calculators import combinator_core
+    return combinator_core
 
 
 def _import_compute_flags():
-    """Единый калькулятор флагов (combinator_v2.compute_flags)."""
-    return _import_cb().compute_flags
+    """Единый калькулятор флагов (core.calculators.combinator_core.compute_flags)."""
+    from core.calculators.combinator_core import compute_flags
+    return compute_flags
 
 
 async def _fetch_df(data_collector: Any, symbol: str, tf: str, limit: int,

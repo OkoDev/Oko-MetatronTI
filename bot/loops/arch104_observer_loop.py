@@ -199,14 +199,11 @@ async def _scan_one_pair(bot, symbol: str, adapter,
     if data_collector is None:
         return False
 
-    # Lazy import combinator
+    # ARCH-118.3: ЧИСТЫЙ единый калькулятор из core (без sys.path/combinator_v2 хака)
     try:
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools" / "pattern_mining"))
-        import combinator_v2 as cb
+        from core.calculators import combinator_core as cb
     except Exception as e:
-        logger.debug("[ARCH-104] combinator_v2 import: %s", e)
+        logger.debug("[ARCH-104] combinator_core import: %s", e)
         return False
 
     # ─── DEV-232: Шаг 1 — HTF first (1h+4h, 15m тоже — дёшев из кэша scan) ───
