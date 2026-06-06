@@ -1,7 +1,9 @@
 version: 2
 generated: '2026-06-04'
-source: DS-315/316 walkforward_mht на эталонных признаках (ARCH-118 один калькулятор)
-note: 'Поток 2 ARCH-128: заменил старый реестр 2026-05-20 (устаревший combinator). Отбор: mht+stable, avgR>=0.8, n>=30, дедуп,
+source: DS-315/316 walkforward_mht на эталонных признаках (ARCH-118
+  один калькулятор)
+note: 'Поток 2 ARCH-128: заменил старый реестр 2026-05-20
+  (устаревший combinator). Отбор: mht+stable, avgR>=0.8, n>=30, дедуп,
   топ-200 баланс.'
 patterns:
   DS_L001_pivotb_bullfv:
@@ -35,7 +37,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L003_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -44,9 +46,9 @@ patterns:
     - pivot_bounce_up_PP_1D
     detection_tf: 1h
     weight: 17
-    test_n: 236
-    test_avgR: 1.467
-    test_WR: 98.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -61,15 +63,15 @@ patterns:
     - pivot_bounce_up_PP_1D
     detection_tf: 4h
     weight: 17
-    test_n: 238
-    test_avgR: 1.463
-    test_WR: 98.3
+    test_n: 8
+    test_avgR: .nan
+    test_WR: 87.5
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L005_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -78,15 +80,15 @@ patterns:
     - pivot_bounce_up_PP_1D
     detection_tf: 4h
     weight: 17
-    test_n: 238
-    test_avgR: 1.463
-    test_WR: 98.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L006_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -95,9 +97,9 @@ patterns:
     - pivot_bounce_up_PP_1D
     detection_tf: 1h
     weight: 18
-    test_n: 151
-    test_avgR: 1.578
-    test_WR: 98.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -112,9 +114,9 @@ patterns:
     - pivot_bounce_up_PP_1D
     detection_tf: 1h
     weight: 18
-    test_n: 152
-    test_avgR: 1.57
-    test_WR: 98.0
+    test_n: 1
+    test_avgR: 2.0
+    test_WR: 100.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -129,9 +131,9 @@ patterns:
     - pivot_bounce_up_PP_1D
     detection_tf: 1h
     weight: 18
-    test_n: 154
-    test_avgR: 1.563
-    test_WR: 98.1
+    test_n: 1
+    test_avgR: 2.0
+    test_WR: 100.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -193,15 +195,15 @@ patterns:
     - discount_1d
     detection_tf: 1h
     weight: 18
-    test_n: 115
-    test_avgR: 1.548
-    test_WR: 97.4
+    test_n: 1
+    test_avgR: 2.0
+    test_WR: 100.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L013_bullfv_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -210,15 +212,15 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 18
-    test_n: 113
-    test_avgR: 1.554
-    test_WR: 97.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L014_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -227,15 +229,15 @@ patterns:
     - discount_1d
     detection_tf: 4h
     weight: 17
-    test_n: 195
-    test_avgR: 1.428
-    test_WR: 94.9
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L015_bullfv_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -244,15 +246,15 @@ patterns:
     - discount_4h
     detection_tf: 1h
     weight: 18
-    test_n: 114
-    test_avgR: 1.544
-    test_WR: 97.4
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L016_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -261,9 +263,9 @@ patterns:
     - ema50_above_ema200_4h
     detection_tf: 1h
     weight: 18
-    test_n: 100
-    test_avgR: 1.585
-    test_WR: 97.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -304,7 +306,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L019_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -313,15 +315,15 @@ patterns:
     - rsi_div_bull_hidden_1d
     detection_tf: 4h
     weight: 18
-    test_n: 82
-    test_avgR: 1.604
-    test_WR: 100.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L020_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -330,15 +332,15 @@ patterns:
     - rsi_div_bull_hidden_1d
     detection_tf: 4h
     weight: 18
-    test_n: 82
-    test_avgR: 1.604
-    test_WR: 100.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L021_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -347,15 +349,15 @@ patterns:
     - rsi_div_bull_hidden_1d
     detection_tf: 1h
     weight: 18
-    test_n: 82
-    test_avgR: 1.604
-    test_WR: 100.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L022_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -364,15 +366,15 @@ patterns:
     - discount_1d
     detection_tf: 4h
     weight: 17
-    test_n: 120
-    test_avgR: 1.497
-    test_WR: 98.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L023_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -381,15 +383,15 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 17
-    test_n: 191
-    test_avgR: 1.416
-    test_WR: 94.8
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L024_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -398,9 +400,9 @@ patterns:
     - discount_4h
     detection_tf: 4h
     weight: 17
-    test_n: 191
-    test_avgR: 1.416
-    test_WR: 94.8
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -423,7 +425,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L026_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -432,15 +434,15 @@ patterns:
     - discount_1d
     detection_tf: 1h
     weight: 18
-    test_n: 95
-    test_avgR: 1.592
-    test_WR: 96.8
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L027_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -449,15 +451,15 @@ patterns:
     - ema50_above_ema200_4h
     detection_tf: 4h
     weight: 17
-    test_n: 117
-    test_avgR: 1.497
-    test_WR: 98.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L028_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -466,9 +468,9 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 18
-    test_n: 90
-    test_avgR: 1.611
-    test_WR: 96.7
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -489,7 +491,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L030_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -498,15 +500,15 @@ patterns:
     - discount_4h
     detection_tf: 4h
     weight: 17
-    test_n: 116
-    test_avgR: 1.48
-    test_WR: 98.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L031_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -515,15 +517,15 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 17
-    test_n: 116
-    test_avgR: 1.48
-    test_WR: 98.3
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L032_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -532,15 +534,15 @@ patterns:
     - ema50_above_ema200_4h
     detection_tf: 1h
     weight: 17
-    test_n: 113
-    test_avgR: 1.48
-    test_WR: 98.2
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L033_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -549,9 +551,9 @@ patterns:
     - ema50_above_ema200_4h
     detection_tf: 4h
     weight: 17
-    test_n: 113
-    test_avgR: 1.48
-    test_WR: 98.2
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -572,7 +574,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L035_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -582,15 +584,15 @@ patterns:
     - discount_1d
     detection_tf: 1h
     weight: 18
-    test_n: 69
-    test_avgR: 1.669
-    test_WR: 97.1
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L036_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -599,9 +601,9 @@ patterns:
     - rsi_div_bull_hidden_4h
     detection_tf: 1h
     weight: 19
-    test_n: 53
-    test_avgR: 1.728
-    test_WR: 100.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -624,7 +626,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L038_atrup1_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_up_1d
@@ -633,15 +635,15 @@ patterns:
     - discount_1d
     detection_tf: 4h
     weight: 17
-    test_n: 134
-    test_avgR: 1.471
-    test_WR: 94.8
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L039_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -651,15 +653,15 @@ patterns:
     - discount_4h
     detection_tf: 1h
     weight: 18
-    test_n: 68
-    test_avgR: 1.664
-    test_WR: 97.1
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L040_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -669,9 +671,9 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 18
-    test_n: 68
-    test_avgR: 1.664
-    test_WR: 97.1
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -694,7 +696,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L042_atrup1_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_up_1d
@@ -703,15 +705,15 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 17
-    test_n: 126
-    test_avgR: 1.476
-    test_WR: 94.4
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L043_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -720,15 +722,15 @@ patterns:
     - rsi_div_bull_hidden_4h
     detection_tf: 4h
     weight: 18
-    test_n: 57
-    test_avgR: 1.663
-    test_WR: 100.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L044_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -737,15 +739,15 @@ patterns:
     - rsi_div_bull_hidden_4h
     detection_tf: 4h
     weight: 18
-    test_n: 57
-    test_avgR: 1.663
-    test_WR: 100.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L045_atrup1_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_up_1d
@@ -754,9 +756,9 @@ patterns:
     - discount_4h
     detection_tf: 4h
     weight: 17
-    test_n: 130
-    test_avgR: 1.455
-    test_WR: 94.6
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -778,7 +780,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L047_bullfv_discou_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1h
@@ -786,9 +788,9 @@ patterns:
     - discount_1d
     detection_tf: 1h
     weight: 15
-    test_n: 2309
-    test_avgR: 1.077
-    test_WR: 80.0
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -801,9 +803,9 @@ patterns:
     - discount_1h
     detection_tf: 1h
     weight: 15
-    test_n: 2327
-    test_avgR: 1.076
-    test_WR: 80.0
+    test_n: 67
+    test_avgR: .nan
+    test_WR: 77.6
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -831,9 +833,9 @@ patterns:
     - discount_4h
     detection_tf: 1h
     weight: 15
-    test_n: 2338
-    test_avgR: 1.072
-    test_WR: 79.9
+    test_n: 76
+    test_avgR: .nan
+    test_WR: 75.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -1790,31 +1792,31 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L061_discou_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - discount_15m
     - bull_fvg_overlap_held_15m
     detection_tf: 15m
     weight: 18
-    test_n: 1499
-    test_avgR: 1.532
-    test_WR: 96.9
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L062_discou_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - discount_15m
     - bull_fvg_overlap_15m
     detection_tf: 15m
     weight: 18
-    test_n: 1520
-    test_avgR: 1.529
-    test_WR: 96.9
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
@@ -2326,16 +2328,16 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L096_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
     - discount_15m
     detection_tf: 15m
     weight: 16
-    test_n: 43947
-    test_avgR: 1.129
-    test_WR: 77.4
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
