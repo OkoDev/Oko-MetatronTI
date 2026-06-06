@@ -158,13 +158,28 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     premium = np.zeros(n, dtype=bool)
     discount = np.zeros(n, dtype=bool)
 
-    # Premium/Discount от глобального диапазона
-    pd_zones = premium_discount(high.max(), low.min())
-    prem_lo, prem_hi = pd_zones["premium"]
-    disc_lo, disc_hi = pd_zones["discount"]
-
+    # Premium/Discount от ROLLING dealing range (последний ПОДТВЕРЖДЁННЫЙ swing H/L до бара).
+    # ARCH-118 (05.06): глобальный high.max/low.min был НЕСТАБИЛЕН (зависел от глубины истории
+    # → 8/10 parity-расхождений: full=давний ATH vs deep=недавний) И семантически неверен +
+    # lookahead (весь df включая будущее). SMC меряет от dealing range ТЕКУЩЕЙ структуры.
+    # Rolling per bar (swing подтверждён через length баров) → lookahead-safe + parity
+    # (last bar = последний confirmed leg, одинаков на любой глубине истории).
+    from core.smc.smc_engine import _swings_luxalgo
+    _LEN = 20
+    _sw = sorted(_swings_luxalgo(df, _LEN), key=lambda x: x[0])   # [(idx, price, 'H'/'L')]
+    _last_h = _last_l = None
+    _si = 0
     for i in range(n):
+        while _si < len(_sw) and _sw[_si][0] + _LEN <= i:         # swing подтверждён к бару i
+            _idx, _price, _kind = _sw[_si]
+            if _kind == "H": _last_h = _price
+            else:            _last_l = _price
+            _si += 1
+        if _last_h is None or _last_l is None:
+            continue                                              # структура не определена
+        _z = premium_discount(max(_last_h, _last_l), min(_last_h, _last_l))
         c = close[i]
+        prem_lo, prem_hi = _z["premium"]; disc_lo, disc_hi = _z["discount"]
         if prem_lo <= c <= prem_hi:
             premium[i] = True
         elif disc_lo <= c <= disc_hi:
