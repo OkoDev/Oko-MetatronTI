@@ -170,6 +170,8 @@ scripts/trader_schedule.json
 # Claude Code
 # ===============================
 .claude/settings.local.json
+.claude/agents/
+.claude/commands/
 
 # ===============================
 # Obsidian vault (large, local-only)
@@ -190,5 +192,19 @@ obsidian/
 dashboard.md.md
 Untitled Kanban.md
 -lacat CLAUDE.md
-_hub_meta.yaml
-_hub_metrics.py
+tmp_charts/
+
+# ===============================
+# Runtime-generated memory (генерируется ботом/роем)
+# ===============================
+memory/last_*.md
+memory/advisor_brief.md
+memory/advisor_brief_log.jsonl
+memory/session_brief.md
+memory/log_digest.md
+memory/project_timeline.md
+
+# ===============================
+# Log rotation (crypto_bot.log.1, .2, ...)
+# ===============================
+*.log.*

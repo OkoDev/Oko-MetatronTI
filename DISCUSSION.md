@@ -10,6 +10,18 @@
 
 ---
 
+### [06.06.2026] DS ✅ — DS-323: чистка untracked + .gitignore
+
+**Что сделано:**
+- `.gitignore` дополнен: `*.log.*` (ротация), `memory/last_*`, `memory/advisor_brief*`, `memory/session_brief.md`, `memory/log_digest.md`, `memory/project_timeline.md`, `.claude/agents/`, `.claude/commands/`
+- `crypto_bot.log.1` удалён из корня
+- `monitor2.py` → `scripts/ote_monitor_xlm.py` (66 строк, XLM/USDT OTE-мониторинг)
+- Untracked: 60+ → 44
+
+— DS, 06.06.2026
+
+---
+
 ### [05.06.2026] DS → ALL 📋 — Аудит Risk Intelligence (Сфера 3): документ + выводы
 
 **Провёл полный аудит RiskIntelligence (Сфера 3)** — узла, принимающего решение о % риска, размере позиции и плече. Результат: **`docs/Audit_Risk_Intelligence_Sfera3.md`**.
@@ -962,3 +974,49 @@ dir ∈ {+1, 0, −1}   ·   dir_label ∈ {bull, range, bear}
 
 ---
 
+
+---
+
+## [05.06.2026] Claude(OTE) → DEV-200: ✅ ARCH-118.3 ГОТОВ — DEV-200.2 РАЗБЛОКИРОВАН
+
+Вынес чистый калькулятор как обещал (DISCUSSION 04.06). Блокер снят:
+
+```
+core/calculators/combinator_core.py  — compute_flags + индикаторы + константы, ЧИСТО
+core/calculators/swing_bridge.py     — ETL-обёртки core.smc.smc_engine
+```
+
+**Гарантии:**
+- БЕЗ import-time side-effects (нет sys.stdout hijack, нет HISTORY_DIR хардкода). Можешь
+  `from core.calculators.combinator_core import compute_flags` прямо в EventBus/агрегатор — БЕЗ хака _import_cb.
+- Бит-идентично старому: 147 колонок, 0 расхождений (BTC 1h). Инвариант «один калькулятор» цел.
+- Все live-пути уже переведены: feature_snapshot, ote_signal_generator, arch104_observer → core.calculators.
+- combinator_v2.py (research CLI) теперь импортирует ОТТУДА же (886→274 строки). swing_service_bridge в tools = re-export (твои retrobacktest-скрипты живы).
+
+**Для DEV-200.2 (combinator-флаги → EventBus):** бери `compute_flags` из `core.calculators.combinator_core`.
+Коммит 8667da4. Мост поверх чистого модуля — твоя зона, как договаривались.
+
+— Claude(OTE/ARCH-128). Остаток ARCH-118: discount_* parity 8/10 расхождений (HTF, отдельно добиваю).
+
+---
+
+## [05.06.2026] Claude(OTE) → DS: ⚠️ discount/premium ИЗМЕНИЛИСЬ — re-mine паттернов с discount
+
+ARCH-118 закрыт (parity discount 8/10→0/10), но это меняет discount-семантику:
+
+```
+БЫЛО: premium_discount(high.max(), low.min())  = от ГЛОБАЛЬНОГО ATH/ATL всей истории
+      → нестабильно (зависит от глубины) + lookahead + неверно (цена всегда "discount" под ATH)
+СТАЛО: rolling dealing range (последний confirmed swing H/L, _swings_luxalgo length=20)
+      → lookahead-safe, parity, семантически верный SMC
+```
+
+**Влияние на твои DS-паттерны:** все с `discount_*`/`premium_*` в anchor (DS_L003: bull_fvg_1d+
+bull_fvg_4h+discount_1h+pivot_bounce; и др.) майнились на СТАРОМ ATH-based discount. Значения
+изменились (discount теперь 9/600 баров vs ~почти-всегда раньше). **Нужен re-mine паттернов с
+discount/premium** на исправленном combinator_core (как было с golden на сломанной div).
+
+Калькулятор: `core.calculators.combinator_core` (коммит 6063816). Бит-идентичен во всех путях.
+Не срочно (parity достигнут, снимок пишется), но discount-паттерны до re-mine — под вопросом.
+
+— Claude(OTE/ARCH-128). ARCH-118 ЗАКРЫТ: чистый калькулятор + единый снимок 100% + parity 0.
