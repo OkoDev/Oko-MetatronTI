@@ -184,7 +184,7 @@ class OrderManager:
             cached = self._oo_cache.get(symbol)
             if cached is not None and (now - cached[0]) < self._oo_ttl:
                 return cached[1]
-        client = await self._get_client_synced()
+        client = await self._get_client_synced(symbol)
         orders = await client.get_open_orders(symbol)
         self._oo_cache[symbol] = (now, orders)
         return orders
@@ -331,7 +331,7 @@ class OrderManager:
             )
 
         try:
-            client   = await self._get_client_synced()
+            client   = await self._get_client_synced(symbol)
             side     = "BUY" if direction == "LONG" else "SELL"
             leverage = int(self._cfg.get("trading.leverage", 5))
             sl_buf   = float(self._cfg.get("trading.sl_limit_buffer_pct", 0) or 0)
@@ -411,7 +411,7 @@ class OrderManager:
                                       close_qty=close_qty, close_price=current_price, order_id="SIM")
         try:
             side = "BUY" if direction == "LONG" else "SELL"
-            resp = await (await self._get_client_synced()).close_position_market(symbol, side, close_qty)
+            resp = await (await self._get_client_synced(symbol)).close_position_market(symbol, side, close_qty)
             if resp.get("code", -1) != 0:
                 return PartialCloseResult(success=False, symbol=symbol,
                                           close_qty=close_qty, close_price=current_price,
@@ -505,7 +505,7 @@ class OrderManager:
             return "SIM"
         try:
             side = "SELL" if pos_side.upper() == "LONG" else "BUY"
-            client = await self._get_client_synced()
+            client = await self._get_client_synced(symbol)
             qty_floor = await client.quantize_qty(symbol, qty)
             if qty_floor <= 0:
                 logger.warning(
@@ -585,7 +585,7 @@ class OrderManager:
         if not self.is_live():
             return True
         try:
-            resp = await (await self._get_client_synced()).cancel_order(symbol, order_id)
+            resp = await (await self._get_client_synced(symbol)).cancel_order(symbol, order_id)
             # D-062: state mutated → invalidate per-symbol cache
             self._invalidate_open_orders(symbol)
             code = resp.get("code", -1)
@@ -615,7 +615,7 @@ class OrderManager:
             return "SIM"
         try:
             side = "SELL" if pos_side.upper() == "LONG" else "BUY"
-            client = await self._get_client_synced()
+            client = await self._get_client_synced(symbol)
             # Dynamic precision из /openApi/swap/v2/quote/contracts (кэш на весь процесс).
             qty_floor = await client.quantize_qty(symbol, qty)
             if qty_floor <= 0:
