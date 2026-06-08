@@ -190,7 +190,7 @@ class OTESignalGenerator:
         return sorted(out, key=lambda x: -x[5])             # сильнейшие первыми
 
     # ── курок: касание триггера + реакция (БАЗА, обязательна) ───────────────────
-    def _check_shot(self, trg, df_ltf, direction, look=3):
+    def _check_shot(self, trg, df_ltf, direction, look=5):
         """Возвращает (touched_react, entry, bar) — касание триггер-зоны + бычья/медвежья
         РЕАКЦИЯ (свеча). ATRTrend убран из обязательных → стал голосом в confirmation-score."""
         _, _, a, b, mid, _ = trg
