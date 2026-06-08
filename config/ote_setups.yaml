@@ -29,10 +29,11 @@ execution:
   # liq_sweep (eql/eqh) · wt_cross (СЫРОЙ, не strict OS<-60) · atr (3m/15m, не шумный 5m).
   # ATRTrend = ОДИН голос, не единственное вето (5m шумит → ложно блокит чистый вход).
   min_confirmations: 3           # XLM LONG 5m имел 5 → выстрелит; слабые (1-2) отсекутся
-  # runner должен давать >= этого RR. 08.06 КАЧЕСТВО: поднят 2.0→3.0 (юзер «нужно качество»).
-  # Data: real_avgR (R−slippage 1.1R) при rr≥2=+0.41 (net+318), rr≥3=+0.50 (net+347).
-  # Режет слабые runner (782→693 сделок), реальный edge ↑. = НЕ ниже config trading.min_rr_ratio.
-  min_runner_rr: 3.0
+  # runner должен давать >= этого RR. 08.06 ОТКАТ 3.0→2.0: порог 3.0 зарезал поток на
+  # БОКОВОМ рынке (runner<3R → FIRE→ARMED → флагман молчал 5ч, arch104 захватил). Историческая
+  # выгода rr≥3 (real+0.50 vs +0.41) была на ТРЕНДОВОМ периоде — на боковике 3.0=смерть потока.
+  # TODO: адаптивный порог (тренд→3.0, боковик→2.0) вместо статики. = НЕ ниже trading.min_rr_ratio.
+  min_runner_rr: 2.0
   # 🔴 КАЛИБРОВКА 04.06 (сверка с OKO-SM на XLM 5m): detect_structure_breaks length
   # default=50 СЛЕПНЕТ на свежих разворотах (лаг). length=5 = эталон Pine: CHoCH верный.
   choch_length_ltf: 5            # для LTF-структуры/разворота (под OKO-SM pivot)
