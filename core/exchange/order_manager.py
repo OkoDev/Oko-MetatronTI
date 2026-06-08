@@ -169,8 +169,26 @@ class OrderManager:
         if (not force and self._positions_cache is not None
                 and (now - self._positions_ts) < self._positions_ttl):
             return self._positions_cache
-        client = await self._get_client_synced()
-        positions = await client.get_positions()
+        if self._multiacct:
+            # ARCH-96 Ф3: агрегируем позиции ВСЕХ субаккаунтов (помечаем _account).
+            router = self._get_router()
+            positions = []
+            for acc in router.accounts:
+                cli = router.client_for_account(acc)
+                if cli is None:
+                    continue
+                try:
+                    await cli.sync_time()
+                    pos = await cli.get_positions()
+                    for p in pos:
+                        if isinstance(p, dict):
+                            p["_account"] = acc
+                    positions.extend(pos)
+                except Exception as e:
+                    logger.warning("[OrderManager] get_positions account=%s: %s", acc, e)
+        else:
+            client = await self._get_client_synced()
+            positions = await client.get_positions()
         self._positions_cache = positions
         self._positions_ts = now
         return positions
