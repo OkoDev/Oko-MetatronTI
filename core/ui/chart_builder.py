@@ -247,9 +247,12 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
     next_monday = last_t.normalize() + pd.Timedelta(days=days_to_mon)
     bars_to_eow = max(1, int((next_monday - last_t).total_seconds() / bar_sec))
 
-    x_eod = x_end + bars_to_eod
-    x_eow = x_end + bars_to_eow
-    x_right = max(x_eow, x_eod) + 2 + n * 0.50
+    # Ограничиваем проекцию до конца дня/недели: на младших ТФ (5m: до 2016 баров до
+    # конца недели) правое поле съедало график, свечи сжимались. Кап = 20% ширины.
+    _max_proj = int(n * 0.20)
+    x_eod = x_end + min(bars_to_eod, _max_proj)
+    x_eow = x_end + min(bars_to_eow, _max_proj)
+    x_right = max(x_eow, x_eod) + 2 + n * 0.12   # фикс-поле 0.50→0.12 (было 33% пустое)
 
     last_date = last_t.date()
     day_start = next((i for i, t in enumerate(df.index) if t.date() == last_date), 0)
