@@ -80,31 +80,46 @@ def wave_smc_caption(sym, tf, ex):
                     mtf.append(f"{_mtf} {_dr}{_was}")
             except Exception:
                 pass
-        # сборка
-        lines = [f"🌊 <b>{sym} {tf}</b>  цена <code>{price:.5f}</code>"]
+        # MTF bias по СТАРШИМ ТФ (1d/4h) — определяет приоритетный сценарий
+        _htf = [m for m in mtf if m.startswith("1d") or m.startswith("4h")]
+        _nl = sum("LONG" in m for m in _htf); _ns = sum("SHORT" in m for m in _htf)
+        _bias = "LONG" if _nl > _ns else ("SHORT" if _ns > _nl else "MIX")
+        # уровни целей/SL из 4h-пивотов (вверх/вниз от цены)
+        _ups = sorted([v for v in h4.values() if v > price])
+        _dns = sorted([v for v in h4.values() if v < price], reverse=True)
+        _tpL = _ups[0] if _ups else price * 1.04
+        _tpL2 = _ups[1] if len(_ups) > 1 else _tpL
+        _slL = _dns[0] if _dns else price * 0.98
+        _tpS = _dns[0] if _dns else price * 0.96
+        _slS = _ups[0] if _ups else price * 1.02
+        _rrL = abs(_tpL - price) / abs(price - _slL) if price != _slL else 0
+        _rrS = abs(_tpS - price) / abs(_slS - price) if _slS != price else 0
+        # вердикт (сценарное мышление: что делать + что если не прав)
+        if _bias == "LONG":
+            _verdict = "старший тренд ↑ → ПРИОРИТЕТ LONG. Не прав → ниже SL: откат глубже, ждать след. OTE"
+        elif _bias == "SHORT":
+            _verdict = "старший тренд ↓ → ПРИОРИТЕТ SHORT. Не прав → выше SL: разворот, искать LONG"
+        else:
+            _verdict = "MTF разнобой → НЕ торопиться, ждать согласования старших ТФ"
+        # ── сборка (быстрое чтение) ──
+        _ar = lambda d: "📈" if "LONG" in d else "📉"
+        L = [f"🌊 <b>{sym}</b> · {tf} · <code>{price:.5f}</code>"]
         if mtf:
-            lines.append("📊 MTF: " + " · ".join(mtf))
-        lines.append(f"волна: {wave}  |  SMC: {smc}")
+            L.append("📊 MTF:  " + "   ".join(f"{m.split()[0]}{_ar(m)}{'✓' if '✓был' in m else ''}" for m in mtf))
+        L.append(f"〰️ {wave}  ·  SMC: {smc} ({tf})")
+        L.append("━━━━━━━━━━━━━━")
+        L.append(f"🟢 <b>LONG</b>{' ⭐' if _bias=='LONG' else ''}  →  <code>{_tpL:.5f}</code> · <code>{_tpL2:.5f}</code>")
+        L.append(f"     SL <code>{_slL:.5f}</code>  ·  RR <b>1:{_rrL:.1f}</b>")
+        L.append(f"🔴 <b>SHORT</b>{' ⭐' if _bias=='SHORT' else ''}  →  <code>{_tpS:.5f}</code>")
+        L.append(f"     SL <code>{_slS:.5f}</code>  ·  RR <b>1:{_rrS:.1f}</b>")
+        L.append("━━━━━━━━━━━━━━")
         if ote:
-            zlo, zhi = ote[0.786], ote[0.618]
-            in_zone = min(zlo, zhi) <= price <= max(zlo, zhi)
-            lines.append(f"🌀 OTE {direction}: <code>{ote[0.618]:.5f}–{ote[0.786]:.5f}</code>"
-                         f"{'  ✅ ЦЕНА В ЗОНЕ' if in_zone else ''}")
-            # вход/SL/TP/RR если в зоне
-            if in_zone and direction:
-                entry = price
-                sl = ote[0.786] * (0.997 if direction == "LONG" else 1.003)  # за дальнюю границу
-                # TP = ближайший пивот в сторону
-                tps = sorted([v for v in h4.values() if (v > entry) == (direction == "LONG")],
-                             key=lambda v: abs(v - entry))
-                tp = tps[0] if tps else entry * (1.04 if direction == "LONG" else 0.96)
-                risk = abs(entry - sl); rr = abs(tp - entry) / risk if risk > 0 else 0
-                lines.append(f"💰 вход <code>{entry:.5f}</code> | SL <code>{sl:.5f}</code> "
-                             f"| TP <code>{tp:.5f}</code> | R:R <b>1:{rr:.1f}</b>")
+            _iz = min(ote[0.786], ote[0.618]) <= price <= max(ote[0.786], ote[0.618])
+            L.append(f"🌀 OTE {direction}: <code>{ote[0.618]:.5f}–{ote[0.786]:.5f}</code>{' ✅В ЗОНЕ' if _iz else ''}")
         if confl:
-            lines.append("⭐ конфлюэнция: " + " · ".join(confl[:3]))
-        lines.append("— Oko-MetatronTI · Wave+SMC")
-        return "\n".join(lines)
+            L.append("⭐ Conf: " + " · ".join(confl[:2]))
+        L.append(f"📍 {_verdict}")
+        return "\n".join(L)
     except Exception as e:
         return f"🌊 {sym} {tf} (caption err: {str(e)[:50]})"
 
