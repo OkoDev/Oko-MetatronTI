@@ -360,23 +360,22 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                     _z1 = _pb - 0.618 * _rng; _z2 = _pb - 0.786 * _rng
                     ax_price.axhspan(min(_z1, _z2), max(_z1, _z2), xmin=max(0, _ib) / n,
                                      color="#ffd700", alpha=0.07, zorder=1)
-                    ax_price.annotate("OTE", (n - 1, (_z1 + _z2) / 2), color="#ffd700",
-                                      fontsize=8, fontweight="bold", va="center", ha="left", zorder=6)
-            # 💧 EQL/EQH (ликвидность — «вынос перед волной-3»)
-            for _eq in detect_equal_levels(_d)[-5:]:
-                _elvl = _eq[1]; _ekind = _eq[4] if len(_eq) > 4 else "EQ"
-                ax_price.axhline(_elvl, color="#ab47bc", linestyle=(0, (1, 2)), linewidth=0.7, alpha=0.5, zorder=2)
-                ax_price.annotate(_ekind, (_eq[0], _elvl), color="#ab47bc", fontsize=6, zorder=6)
-            # 🎯 КОНФЛЮЭНЦИЯ: Фибо-OTE × 4h-пивот совпадают (<0.5%) → подсветка точки входа
-            if _ote_levels and h4_pivots:
-                for _ff, _flvl in _ote_levels.items():
-                    for _pk, _pv in h4_pivots.items():
-                        if abs(_flvl - _pv) / _pr < 0.005:
-                            ax_price.scatter([n - 1], [(_flvl + _pv) / 2], s=90, marker="*",
-                                             color="#ffffff", edgecolor="#ffd700", zorder=8)
-                            ax_price.annotate(f"{_ff}x{_pk}", (n - 1, (_flvl + _pv) / 2),
-                                              color="#ffffff", fontsize=7, fontweight="bold",
-                                              va="bottom", ha="right", zorder=8)
+            # 💧 EQL/EQH (ликвидность) — только АКТИВНЫЕ (цена НЕ прошла за уровень = не снят)
+            for _eq in detect_equal_levels(_d)[-8:]:
+                _i1, _ep1, _i2, _ekind = _eq[0], _eq[1], _eq[2], _eq[4]
+                _after = _d.iloc[_i2 + 1:]
+                _swept = False
+                if len(_after):
+                    if _ekind == "EQH" and _after["high"].max() > _ep1 * 1.001:
+                        _swept = True
+                    if _ekind == "EQL" and _after["low"].min() < _ep1 * 0.999:
+                        _swept = True
+                if _swept:
+                    continue  # снятая ликвидность — не рисуем
+                ax_price.axhline(_ep1, color="#ab47bc", linestyle=(0, (1, 2)), linewidth=0.7, alpha=0.5, zorder=2)
+                ax_price.annotate(_ekind, (_i1, _ep1), color="#ab47bc", fontsize=6, zorder=6)
+            # КОНФЛЮЭНЦИЯ (Фибо-OTE × 4h-пивот) — НЕ рисуем на чарте (смешивалось),
+            # выводим ТЕКСТОМ в caption (wave_chart_send / WAVE-WATCH).
         except Exception as _e:
             logger.warning("[chart_builder] wave_overlay %s: %s", symbol, _e)
 
