@@ -335,13 +335,17 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 ax_price.add_patch(plt.Rectangle((_f[0], min(_top, _bot)), n - _f[0],
                                    abs(_top - _bot), facecolor=_fc, alpha=0.13,
                                    edgecolor=_fc, linewidth=0.5, zorder=1, hatch="///"))
-            # 4h-пивоты (для младших ТФ — ближние интрадей-уровни, релевантнее daily)
+            # 4h-пивоты (для младших ТФ) — рисуем ТОЛЬКО в пределах последней 4h-свечи
+            # (правый край = текущий 4h-период), а не на весь чарт.
             if h4_pivots:
+                _tf_min = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60}.get(tf, 60)
+                _x4 = max(0, n - max(1, int(240 / _tf_min)))  # старт последнего 4h-периода
                 for _k, _c2 in [("R2", "#ef5350"), ("R1", "#ff9800"), ("PP", "#ffeb3b"),
                                 ("S1", "#4caf50"), ("S2", "#26a69a")]:
                     if _k in h4_pivots:
                         _v = h4_pivots[_k]
-                        ax_price.axhline(_v, color=_c2, linestyle="--", linewidth=0.8, alpha=0.6, zorder=2)
+                        ax_price.plot([_x4, n - 1], [_v, _v], color=_c2, linestyle="--",
+                                      linewidth=0.8, alpha=0.6, zorder=2)
                         ax_price.annotate(f"4h-{_k}", (n - 1, _v), color=_c2, fontsize=7,
                                           va="center", ha="left", zorder=6)
             # 🌀 ФИБО/OTE-ЗОНА последнего движения (ЯДРО входа: откат волны-2 → волна-3)
