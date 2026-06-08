@@ -93,7 +93,7 @@ async def main():
     # рендерим чарты на каждом ТФ
     media = []
     for tf in tfs:
-        png = await build_signal_chart(full, tf, bot=None)
+        png = await build_signal_chart(full, tf, bot=None, wave_overlay=True)
         if png:
             media.append((tf, png))
         else:

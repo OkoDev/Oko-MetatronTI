@@ -158,7 +158,8 @@ def _calc_pivot_levels(df1h: pd.DataFrame, tz_offset_hours: int = 3) -> tuple[di
 
 def _render(df: pd.DataFrame, symbol: str, tf: str,
             daily_pivots: dict | None = None,
-            weekly_pivots: dict | None = None) -> bytes:
+            weekly_pivots: dict | None = None,
+            wave_overlay: bool = False) -> bytes:
     if daily_pivots is None:
         daily_pivots = _calc_daily_pivots(df)
     if weekly_pivots is None:
@@ -285,6 +286,45 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                  {"PP": "#ffd700", "R1": "#ff1744", "R2": "#ff174466",
                   "S1": "#00e676", "S2": "#00e67666"}, "-", 1.2, "W:")
 
+    # WAVE-CHART overlay: ZigZag-волна (нумерация с 0) + OB-зоны + FVG на ТФ входа
+    if wave_overlay:
+        try:
+            from core.smc.smc_engine import (zigzag_atr, detect_structure_breaks,
+                                             detect_order_blocks, detect_fvg, _zz_typed)
+            _d = df.reset_index(drop=True)  # позиционный индекс для smc (совпадает с mpf x)
+            _dev, _bd = 3.0, 1e9            # adaptive dev (целевое ~8 swing под TF)
+            for _dv in (1.5, 2.0, 2.5, 3.0, 4.0):
+                _nn = len(zigzag_atr(_d, 11, _dv))
+                if abs(_nn - 8) < _bd:
+                    _bd, _dev = abs(_nn - 8), _dv
+            _typed = _zz_typed(zigzag_atr(_d, 11, _dev))
+            if _typed:
+                ax_price.plot([i for i, _, _ in _typed], [p for _, p, _ in _typed],
+                              color="#ffa726", linewidth=1.3, zorder=6, alpha=0.85)
+                for _k, (_i, _p, _t) in enumerate(_typed[-8:]):
+                    ax_price.annotate(str(_k), (_i, _p), color="#ffd54f", fontsize=11,
+                                      fontweight="bold", zorder=7, ha="center",
+                                      va="bottom" if _t == "H" else "top")
+            _brks = detect_structure_breaks(_d, length=5)
+            for _b in detect_order_blocks(_d, _brks):
+                if _b.mitigated_idx != -1:
+                    continue
+                _col = "#26a69a" if _b.kind == "bull" else "#ef5350"
+                ax_price.add_patch(plt.Rectangle((_b.left_idx, _b.bottom), n - _b.left_idx,
+                                   _b.top - _b.bottom, facecolor=_col, alpha=0.10,
+                                   edgecolor=_col, linewidth=0.7, zorder=1))
+            _pr = df["close"].iloc[-1]
+            for _f in detect_fvg(_d)[-10:]:
+                _top, _bot, _kind = _f[1], _f[2], _f[3]
+                if abs((_top + _bot) / 2 - _pr) / _pr > 0.03:
+                    continue
+                _fc = "#42a5f5" if _kind == "bull" else "#ff7043"
+                ax_price.add_patch(plt.Rectangle((_f[0], min(_top, _bot)), n - _f[0],
+                                   abs(_top - _bot), facecolor=_fc, alpha=0.13,
+                                   edgecolor=_fc, linewidth=0.5, zorder=1, hatch="///"))
+        except Exception as _e:
+            logger.warning("[chart_builder] wave_overlay %s: %s", symbol, _e)
+
     for ax in [axes[0], axes[2], axes[4]]:
         ax.set_xlim(-0.5, x_right)
 
@@ -298,7 +338,8 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
 
 async def build_signal_chart(symbol: str, tf: str = "1h",
                               bars: int = 300, warmup: int = 80,
-                              bot=None, fvg_zones=None) -> bytes | None:
+                              bot=None, fvg_zones=None,
+                              wave_overlay: bool = False) -> bytes | None:
     """Генерирует PNG-график для сигнала. Возвращает bytes или None при ошибке."""
     if not _MPF_OK:
         logger.warning("chart_builder: mplfinance не установлен")
@@ -362,7 +403,8 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
         daily_pivots, weekly_pivots = _calc_pivot_levels(df_pivot1h, tz_offset_hours=3) if df_pivot1h is not None and not df_pivot1h.empty else ({}, {})
         return _render(df, symbol, tf,
                        daily_pivots=daily_pivots,
-                       weekly_pivots=weekly_pivots)
+                       weekly_pivots=weekly_pivots,
+                       wave_overlay=wave_overlay)
     except Exception:
         logger.exception("chart_builder: ошибка генерации графика для %s", symbol)
         return None
