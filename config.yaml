@@ -613,7 +613,11 @@ signal_router:
 # в risk_decisions_log без сделок.
 arch104:
   vst_trading:
-    enabled: true             # D-030: торговля 15 паттернов на VST
+    enabled: false            # 08.06 SHADOW (B, мягко): real_avgR −0.25 (slippage 0.48R > edge
+                              # +0.23R) → −453R утечка на VST market-fill. Сигнал ОК, исполнение
+                              # убивает. Observer логирует decisions (копим), НЕ торгует. Вернуть
+                              # true когда: (1) лимитные ордера (DS exec, убьют slippage) ИЛИ
+                              # (2) волновой анализ даст качественный фильтр (юзер: «там решение»).
     signal_type: "arch104"    # в БД simulated_trades для разделения
   # D-051 (26.05.2026): wt_cross HARD gate для СТАРЫХ паттернов (+183% на 15m тогда).
   # ARCH-128 04.06: ВЫКЛЮЧЕН. Душил весь DS-реестр (200/200 без wt_cross в anchor →
