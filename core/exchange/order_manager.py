@@ -580,6 +580,26 @@ class OrderManager:
             logger.warning("[OrderManager] get_position_qty %s %s: %s", symbol, pos_side, e)
         return 0.0
 
+    async def _get_position_id(self, symbol: str, pos_side: str) -> Optional[str]:
+        """Separate Isolated mode: positionId открытой позиции (для SL/close-ордеров)."""
+        if not self.is_live():
+            return None
+        try:
+            from core.exchange.bingx_client import to_bingx_symbol
+            positions = await self._get_positions_cached()
+            bx = to_bingx_symbol(symbol)
+            for p in positions:
+                amt = float(p.get("positionAmt", 0) or 0)
+                if (p.get("symbol") == bx
+                        and p.get("positionSide", "").upper() == pos_side.upper()
+                        and amt != 0):
+                    pid = p.get("positionId")
+                    if pid:
+                        return str(pid)
+        except Exception as e:
+            logger.warning("[OrderManager] _get_position_id %s %s: %s", symbol, pos_side, e)
+        return None
+
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Отменяет ордер. False = ордер уже исполнен/не существует."""
         if not self.is_live():
@@ -661,9 +681,12 @@ class OrderManager:
             except Exception:
                 pass
 
+            # Separate Isolated mode: получаем positionId (BingX требует для close-ордеров)
+            position_id = await self._get_position_id(symbol, pos_side)
             resp = await client.place_stop_order(
                 symbol=symbol, side=side, pos_side=pos_side.upper(),
                 stop_price=sl_price, qty=qty_floor, limit_price=limit_price,
+                position_id=position_id,
             )
             if resp.get("code", -1) != 0:
                 msg = resp.get("msg", "")
@@ -680,6 +703,7 @@ class OrderManager:
                         resp = await client.place_stop_order(
                             symbol=symbol, side=side, pos_side=pos_side.upper(),
                             stop_price=sl_price, qty=qty_retry,
+                            position_id=position_id,
                         )
                         if resp.get("code", -1) == 0:
                             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))

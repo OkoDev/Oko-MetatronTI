@@ -483,6 +483,7 @@ class BingXClient:
         self, symbol: str, side: str, pos_side: str,
         stop_price: float, qty: float,
         limit_price: float | None = None,
+        position_id: str | None = None,
     ) -> dict:
         """Ставит STOP_MARKET или STOP (Limit) ордер (для нового SL при TSL).
 
@@ -500,6 +501,9 @@ class BingXClient:
             "stopPrice":    str(stop_price),
             "workingType":  "MARK_PRICE",
         }
+        # Separate Isolated mode: BingX требует positionId для close-ордеров (SL=close).
+        if position_id:
+            params["positionId"] = str(position_id)
         if limit_price is not None:
             params["type"]  = "STOP"
             params["price"] = str(limit_price)
