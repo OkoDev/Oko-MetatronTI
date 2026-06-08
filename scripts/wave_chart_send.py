@@ -84,14 +84,25 @@ def wave_smc_caption(sym, tf, ex):
         _htf = [m for m in mtf if m.startswith("1d") or m.startswith("4h")]
         _nl = sum("LONG" in m for m in _htf); _ns = sum("SHORT" in m for m in _htf)
         _bias = "LONG" if _nl > _ns else ("SHORT" if _ns > _nl else "MIX")
-        # уровни целей/SL из 4h-пивотов (вверх/вниз от цены)
-        _ups = sorted([v for v in h4.values() if v > price])
-        _dns = sorted([v for v in h4.values() if v < price], reverse=True)
-        _tpL = _ups[0] if _ups else price * 1.04
-        _tpL2 = _ups[1] if len(_ups) > 1 else _tpL
-        _slL = _dns[0] if _dns else price * 0.98
-        _tpS = _dns[0] if _dns else price * 0.96
-        _slS = _ups[0] if _ups else price * 1.02
+        # SL = под/над последний SWING (инвалидация структуры, КОМПАКТНЫЙ)
+        _sl_lo = [p for _, p, t in typed if t == "L"]
+        _sl_hi = [p for _, p, t in typed if t == "H"]
+        _slL = (_sl_lo[-1] * 0.998) if _sl_lo else price * 0.99
+        _slS = (_sl_hi[-1] * 1.002) if _sl_hi else price * 1.01
+        # TP = ЗНАЧИМЫЕ цели: daily-пивоты + дневная Фибо (ДАЛЬШЕ интрадей-мелочи)
+        _dp = {}
+        try:
+            _o1 = ex.fetch_ohlcv(f"{sym}/USDT:USDT", "1d", limit=3)
+            _d1 = pd.DataFrame(_o1, columns=["t", "o", "h", "l", "c", "v"]); _pp1 = _d1.iloc[-2]
+            _dp = calculate_pivot_points(float(_pp1["h"]), float(_pp1["l"]), float(_pp1["c"]))
+        except Exception:
+            pass
+        _allT = {**h4, **_dp}  # 4h + daily уровни
+        _upsT = sorted([v for v in _allT.values() if v > price * 1.005])   # значимые выше (>0.5%)
+        _dnsT = sorted([v for v in _allT.values() if v < price * 0.995], reverse=True)  # ниже
+        _tpL = _upsT[0] if _upsT else price * 1.04
+        _tpL2 = _upsT[1] if len(_upsT) > 1 else (_upsT[0] if _upsT else price * 1.07)
+        _tpS = _dnsT[0] if _dnsT else price * 0.96
         _rrL = abs(_tpL - price) / abs(price - _slL) if price != _slL else 0
         _rrS = abs(_tpS - price) / abs(_slS - price) if _slS != price else 0
         # вердикт (сценарное мышление: что делать + что если не прав)
