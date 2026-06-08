@@ -4,6 +4,37 @@
 
 ---
 
+## [08.06.2026] Агент: Claude (Opus 4.8) — Баланс-фикс + Раннеры + 🌊 Золотая связка Волна+SMC
+
+**Параллельно с DS (он закрыл af7bfae: slippage-аудит + TSL-профили + funding-node).**
+
+### Балансовый блок (баланс VST шёл в минус)
+- ✅ **Корень минуса найден (НЕ arch104!):** моя оценка slippage 0.45% была ОШИБОЧНА (взял спред BingX-vs-рынок). DS-аудит `vst_slippage_audit.py`: реальный entry-slip **~0.1%**. arch104 real +0.12R (ПЛЮС). OTE+arch104=+1501R на VST. **Реальный минус = pivot_reversal (−1272R, WR27%) + confluence.**
+- ✅ **OTE min-rr 2.0→3.0** (`config/ote_setups.yaml`, качество: real +0.41→+0.50). `89ea436`.
+- ✅ **Раннеры: clamp 15→50** (`r_math.py` R_CLAMP_MAX, юзер заметил 26% OTE TP упирались в +15.00R потолок). Метрика раннеров была занижена. `40f043c`.
+- ✅ **arch104 вернул из shadow** (моя ошибка → исправил). `config.yaml`.
+- ✅ **pivot_reversal + confluence → SHADOW** (`signal_router exchange_enabled:false`) — реальный минус, копят SIM-данные для волнового фикса. `1c283bf`.
+
+### 🌊 Золотая связка Волна+SMC (главный прорыв)
+- ✅ **PIVOT-CONTEXT раскрыт:** pivot LONG = чистая функция рынка (РОСТ W16 +0.99 WR60%, ОБВАЛ W12 −0.94 WR2%). Слеп к фазе (DS-приоритет#2).
+- ✅ **BTC 4h классифицирован:** textbook 5-волновой импульс ВНИЗ (10.05→05.06) — алгоритм сам вынес «pivot LONG=НОЖ» без ручной разметки.
+- ✅ **MTF-фрактальность:** структура видна на разных TF (4h «?»→1h импульс). Согласование TF = карта.
+- ✅ **Связка CHoCH(разворот)+BOS(тренд)+откат+волна** — оба режима.
+- ✅ **🔥 БЭКТЕСТ ВАЛИДИРОВАЛ** (n=743, walk-forward): edge **+0.45..+0.72R** vs pivot baseline −0.36. REVERSAL_SHORT WR72%, TREND_SHORT WR66% n=500. → `memory/wave_smc_backtest_validated.md`.
+- ✅ **Инструмент `scripts/wave_smc_entry.py`** — анализ входа: MTF волна+SMC+OTE+пивоты → КОНФЛЮЭНЦИЯ (Фибо×Пивот) + вердикт. `6eb218f`. XLM: вход 0.19765 (4h-OTE0.618×S1), TP 0.21458, RR~6.
+- ✅ **Эталон волн:** PDF-гайды IKIGAI (`docs/`) → `memory/reference_elliott_wave_guide.md` (полная таксономия).
+
+### 🔄 NEXT (записаны в TASKS)
+- **WAVE-WATCH** (🟡, юзеру зашло) — `--watch` мониторинг: алерт когда цена в конфлюэнт-зоне + LTF CHoCH-триггер. Польза руками + обкатка ядра.
+- **WAVE-FLAGMAN** (🔴, идея юзера) — новый усиленный движок раннеров (связка как ядро, SINGLE+TSL clamp50). НЕ встраивать в OTE — отдельный signal_type='wave_smc'.
+- **PIVOT-WAVE-GATE** (🟡) — вернуть pivot из shadow с волновым гейтом (бэктест обосновал).
+- **WAVE-SERVICE** (🔴) — формализация: per-ТФ структура → Bus wave_snap → движки по фазе. Добавить коррекции (зигзаг/плоскость) для покрытия >импульса.
+
+### ⚠️ РЕСТАРТ нужен (config+code изменения)
+arch104 вернул + OTE min-rr 3.0 + clamp 50 + pivot/confluence shadow + DS TSL-профили(ote 3/8/24) + funding-node.
+
+---
+
 ## [04.06.2026 ~13:20 UTC] Агент: Claude (DS-сессия) — ARCH-128 OTE движок В ПРОДЕ + Поток2
 - ✅ **OTE-движок торгует** (ote_observer_loop, signal_type='ote_nested'): веер 18 пар, RR avg 3.2, 0 дропов. Первая #16610 H SHORT.
 - ✅ **Скелет→прод (10 коммитов):** генератор (триггеры OB/FVG/EQL/SC + merge конфлюенции + выстрел) → confirmation-score≥3 (div/fvg_held/vol/liq_sweep/wt_cross-СЫРОЙ/atr, вместо ATR-вето) → перебор ВСЕХ триггеров (не только сильнейший) → RR-скип заранее → observer по образцу arch104 (общий кэш).
