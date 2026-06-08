@@ -94,6 +94,11 @@ class BingXClient:
         self._api_key = api_key
         self._secret  = secret
         self._base    = base_url.rstrip("/")
+        # ARCH-96 Ф1: IP-троттлинг торговых запросов через ОБЩИЙ GlobalRateLimiter
+        # (синглтон = один IP-бюджет на все клиенты/субаккаунты, вердикт роя 08.06).
+        # Лечит 100410-каскад: при бане set_ban() глобально паузит ВСЕ запросы.
+        from core.infra.api_engine import get_global_rate_limiter
+        self._rl = get_global_rate_limiter()
         # DEV-145: time_offset корректирует расхождение local clock с BingX (ms)
         self._time_offset_ms: int = 0
         self._time_synced: bool = False
@@ -223,8 +228,32 @@ class BingXClient:
         corrected = int(time.time() * 1000) - self._time_offset_ms
         return str(corrected)
 
+    def _maybe_set_ban(self, resp: dict) -> None:
+        """ARCH-96 Ф1: при rate-limit/timestamp-бане (100410/109429) → ГЛОБАЛЬНАЯ пауза
+        ВСЕХ запросов через лимитер (раньше get_balance лишь логировал ban_sec)."""
+        code = resp.get("code")
+        if code not in (100410, 109429):
+            return
+        import re as _re
+        msg = str(resp.get("msg", ""))
+        srv_ts = int(resp.get("timestamp", 0) or 0)
+        ban_sec = 0.0
+        if code == 100410:
+            m = _re.search(r"after\s+(\d+)", msg)
+            if m and srv_ts:
+                ban_sec = max(0.0, (int(m.group(1)) - srv_ts) / 1000)
+        else:  # 109429 timestamp-ban
+            m = _re.search(r"retry after time:\s*(\d+)", msg)
+            if m:
+                ban_sec = max(0.0, (int(m.group(1)) - srv_ts) / 1000)
+        if ban_sec <= 0:
+            ban_sec = 5.0  # дефолт если msg не распарсился
+        logger.warning("[ARCH-96 IP-throttle] code=%s → глобальный бан %.1fs (все клиенты/субы)", code, ban_sec)
+        self._rl.set_ban(ban_sec)
+
     async def get(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
+        await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         p = dict(params or {})
         p["timestamp"] = self._ts()
         qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
@@ -246,10 +275,12 @@ class BingXClient:
                 async with s.get(url2, headers={"X-BX-APIKEY": self._api_key},
                                  timeout=aiohttp.ClientTimeout(total=30)) as r:
                     resp = await r.json()
+        self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
     async def post(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
+        await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         p = dict(params or {})
         p["timestamp"] = self._ts()
         qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
@@ -271,21 +302,26 @@ class BingXClient:
                 async with s.post(url2, headers={"X-BX-APIKEY": self._api_key},
                                   timeout=aiohttp.ClientTimeout(total=30)) as r:
                     resp = await r.json()
+        self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
     async def post_raw(self, path: str, raw_qs: str, url_qs: str) -> dict:
         """POST с разделением: raw_qs для подписи HMAC, url_qs для URL (JSON URL-encoded).
         ВНИМАНИЕ: timestamp внутри raw_qs/url_qs — caller должен сам ресинкать при 109400."""
         import aiohttp
+        await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         sig = self._sign(raw_qs)
         url = f"{self._base}{path}?{url_qs}&signature={sig}"
         async with aiohttp.ClientSession() as s:
             async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
                               timeout=aiohttp.ClientTimeout(total=30)) as r:
-                return await r.json()
+                resp = await r.json()
+        self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
+        return resp
 
     async def delete(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
+        await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         p = dict(params or {})
         p["timestamp"] = self._ts()
         qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
@@ -306,6 +342,7 @@ class BingXClient:
                 async with s.delete(url2, headers={"X-BX-APIKEY": self._api_key},
                                     timeout=aiohttp.ClientTimeout(total=30)) as r:
                     resp = await r.json()
+        self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
     # ── Высокоуровневые методы ──────────────────────────────────────────────
