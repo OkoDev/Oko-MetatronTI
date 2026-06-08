@@ -690,6 +690,23 @@ class OrderManager:
             )
             if resp.get("code", -1) != 0:
                 msg = resp.get("msg", "")
+                # SL УЖЕ ПРОБИТ ценой (LONG: цена ниже SL / SHORT: выше SL) — биржа отвергает
+                # STOP выше/ниже рынка. Позиция в убытке за SL → закрываем ПО РЫНКУ немедленно.
+                if "should be lower" in msg or "should be higher" in msg:
+                    logger.warning("[OrderManager] SL %s %s пробит ценой → close market (%s)",
+                                   symbol, pos_side, msg)
+                    try:
+                        cr = await client.close_position_market(symbol, side, qty_floor)
+                        if cr.get("code", -1) == 0:
+                            logger.info("[OrderManager] ✅ %s %s закрыта по рынку (SL был пробит)",
+                                        symbol, pos_side)
+                            self._invalidate_open_orders(symbol)
+                        else:
+                            logger.warning("[OrderManager] close после SL-пробоя %s: %s",
+                                           symbol, cr.get("msg", cr))
+                    except Exception as ce:
+                        logger.warning("[OrderManager] close после SL-пробоя %s: %s", symbol, ce)
+                    return None
                 # "order size must be less than available amount X TOKEN"
                 # → реальный qty с биржи отличается от сохранённого (частичное закрытие / округление)
                 if "must be less than the available amount" in msg:
