@@ -267,6 +267,30 @@ __all__ = [
 # DS-321: Гибридный TSL — коробка передач (v1/v2/v3)
 # ═══════════════════════════════════════════════════════════════════════
 
+@dataclass(frozen=True)
+class TSLProfile:
+    """Per-strategy Gear-пороги для hybrid TSL (TSL-PROFILE, 08.06.2026).
+
+    Рой 5-6/6: движок универсален, Gear-параметры задаёт СТРАТЕГИЯ.
+    DS добавляет profile param, Claude задаёт OTE-профиль.
+
+    Дефолт = текущие значения (DS-321 backtest +1.95R).
+    """
+    gear2_atr: float = 2.0     # MFE >= N ATR → Gear 2 (wide)
+    gear3_atr: float = 4.0     # MFE >= N ATR → Gear 3 (tight lock)
+    gear3_hours: float = 12.0  # или > N часов → Gear 3
+
+# ── Профили стратегий ──
+TSL_PROFILES: dict = {
+    # Дефолт (arch104, wt_signal, pivot_reversal, etc.)
+    "default": TSLProfile(gear2_atr=2.0, gear3_atr=4.0, gear3_hours=12.0),
+    # OTE long-runner: дышит дольше (target 8-22R)
+    "ote_nested": TSLProfile(gear2_atr=3.0, gear3_atr=8.0, gear3_hours=24.0),
+    # wt_sideways: средний горизонт
+    "wt_sideways": TSLProfile(gear2_atr=2.5, gear3_atr=5.0, gear3_hours=16.0),
+}
+
+
 def compute_hybrid_tsl(
     direction: str,
     entry: float,
@@ -275,15 +299,16 @@ def compute_hybrid_tsl(
     duration_minutes: float = 0.0,
     mfe_atr: Optional[float] = None,
     floor_pct: float = DEFAULT_FLOOR_PCT,
+    profile: Optional[TSLProfile] = None,
 ) -> TSLDecision:
     """
-    Гибридная коробка передач TSL (DS-321).
-    
+    Гибридная коробка передач TSL (DS-321 + TSL-PROFILE).
+
     Переключается между режимами по ходу сделки:
-      Gear 1 (v1 ATR): MFE < 2 ATR — защита, BE при 1 ATR
-      Gear 2 (v2 multi): MFE >= 2 ATR — расширение (HTF-контекст)
-      Gear 3 (v1 tight): MFE >= 4 ATR или >12ч — фиксация
-    
+      Gear 1 (protect): MFE < gear2_atr — защита, BE при 1 ATR
+      Gear 2 (wide):    MFE >= gear2_atr — расширение, дать дышать
+      Gear 3 (lock):    MFE >= gear3_atr или >gear3_hours — фиксация
+
     Args:
         direction: LONG или SHORT
         entry: цена входа
@@ -292,7 +317,11 @@ def compute_hybrid_tsl(
         duration_minutes: сколько минут в сделке
         mfe_atr: MFE в ATR (если None — вычисляется из current_price)
         floor_pct: буфер для floor guard
+        profile: per-strategy профиль (дефолт = TSLProfile())
     """
+    if profile is None:
+        profile = TSL_PROFILES["default"]
+
     d = _norm_direction(direction)
     sl_dist = abs(entry - original_sl)
     if sl_dist <= 0:
@@ -309,10 +338,10 @@ def compute_hybrid_tsl(
         else:
             mfe_atr = (entry - current_price) / entry_atr
 
-    # ── Gear selection ──
-    if mfe_atr >= 4.0 or duration_minutes > 720:
+    # ── Gear selection (per-profile thresholds) ──
+    if mfe_atr >= profile.gear3_atr or duration_minutes > profile.gear3_hours * 60:
         gear = 3  # tight — фиксация
-    elif mfe_atr >= 2.0:
+    elif mfe_atr >= profile.gear2_atr:
         gear = 2  # wide — дать дышать
     else:
         gear = 1  # protect — защита
@@ -322,7 +351,6 @@ def compute_hybrid_tsl(
     new_sl = original_sl
 
     if mfe_atr >= 1.0:
-        # BE: сдвигаем SL к breakeven
         if d == "LONG":
             new_sl = max(new_sl, be_price)
         else:
@@ -331,18 +359,15 @@ def compute_hybrid_tsl(
     # ── TSL distance per gear ──
     if mfe_atr > 0.5:
         if gear == 1:
-            # v1: жёсткая защита, TSL сжимается с прибылью
             tsl_atr_dist = max(0.3, 0.8 - mfe_atr * 0.15)
             tsl_atr = entry_atr
         elif gear == 2:
-            # v2: широкий режим с HTF-оценкой
-            htf_atr_est = entry_atr * 1.5  # консервативная оценка HTF ATR
+            htf_atr_est = entry_atr * 1.5
             effective_atr = max(entry_atr, htf_atr_est * 0.3)
             tsl_atr_dist = max(0.4, 1.0 - mfe_atr * 0.2) * 1.5
             tsl_atr = effective_atr
         else:  # gear == 3
-            # v3: агрессивная фиксация
-            tsl_atr_dist = max(0.1, 0.3 - (mfe_atr - 4) * 0.03)
+            tsl_atr_dist = max(0.1, 0.3 - (mfe_atr - profile.gear3_atr) * 0.03)
             tsl_atr = entry_atr
 
         tsl_distance = tsl_atr_dist * tsl_atr

@@ -2421,15 +2421,19 @@ class TradeSimulator:
                         # DS-321: гибридная коробка передач (откат через config)
                         _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
                         if _use_hybrid:
-                            from core.trading.tsl_engine import compute_hybrid_tsl as _compute_hybrid
+                            from core.trading.tsl_engine import compute_hybrid_tsl as _compute_hybrid, TSL_PROFILES
                             _orig_sl = float(trade.get("original_sl", entry))
                             _age_m = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0 if created_dt else 0
+                            # TSL-PROFILE: per-strategy Gear-пороги
+                            _sig_type = str(trade.get("signal_type", ""))
+                            _profile = TSL_PROFILES.get(_sig_type, TSL_PROFILES["default"])
                             _decision = _compute_hybrid(
                                 direction,
                                 entry=entry,
                                 current_price=current_price,
                                 original_sl=_orig_sl,
                                 duration_minutes=_age_m,
+                                profile=_profile,
                             )
                         else:
                             _decision = _compute_tsl(
