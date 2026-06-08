@@ -234,20 +234,18 @@ class BingXClient:
         code = resp.get("code")
         if code not in (100410, 109429):
             return
-        import re as _re
+        import re as _re, time as _t
         msg = str(resp.get("msg", ""))
-        srv_ts = int(resp.get("timestamp", 0) or 0)
+        # retry-time в msg = АБСОЛЮТНЫЙ unix-ms. srv_ts fallback на локальное время
+        # (иначе при отсутствии timestamp в resp ban = абсолютный_ts/1000 = десятки лет!).
+        srv_ts = int(resp.get("timestamp", 0) or 0) or int(_t.time() * 1000)
         ban_sec = 0.0
-        if code == 100410:
-            m = _re.search(r"after\s+(\d+)", msg)
-            if m and srv_ts:
-                ban_sec = max(0.0, (int(m.group(1)) - srv_ts) / 1000)
-        else:  # 109429 timestamp-ban
-            m = _re.search(r"retry after time:\s*(\d+)", msg)
-            if m:
-                ban_sec = max(0.0, (int(m.group(1)) - srv_ts) / 1000)
-        if ban_sec <= 0:
-            ban_sec = 5.0  # дефолт если msg не распарсился
+        m = _re.search(r"after\s+time:\s*(\d+)", msg) or _re.search(r"after\s+(\d+)", msg)
+        if m:
+            ban_sec = (int(m.group(1)) - srv_ts) / 1000
+        # CAP [0, 300]: любой ban > 5 мин = ошибка парсинга (абс. ts вместо дельты)
+        if ban_sec <= 0 or ban_sec > 300:
+            ban_sec = 5.0
         logger.warning("[ARCH-96 IP-throttle] code=%s → глобальный бан %.1fs (все клиенты/субы)", code, ban_sec)
         self._rl.set_ban(ban_sec)
 
