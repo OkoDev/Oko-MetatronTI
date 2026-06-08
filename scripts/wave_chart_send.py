@@ -64,8 +64,26 @@ def wave_smc_caption(sym, tf, ex):
             for pk, pv in h4.items():
                 if abs(flvl - pv) / price < 0.005:
                     confl.append(f"{f}×4h-{pk} @{(flvl+pv)/2:.5f}")
+        # MTF-OTE контекст: направление + OTE-зона по СТАРШИМ ТФ (основа сетапа)
+        mtf = []
+        for _mtf in ("1d", "4h", "1h"):
+            try:
+                _om = ex.fetch_ohlcv(f"{sym}/USDT:USDT", _mtf, limit=150)
+                _dm = pd.DataFrame(_om, columns=["ts", "open", "high", "low", "close", "volume"])
+                _tm = _zz_typed(zigzag_atr(_dm, 11, 3.0))
+                if len(_tm) >= 2:
+                    (_a, _pa2, _ta2), (_b2, _pb2, _tb2) = _tm[-2], _tm[-1]
+                    _dr = "LONG" if _tb2 == "H" else "SHORT"
+                    _rg2 = _pb2 - _pa2
+                    _olo, _ohi = _pb2 - 0.786 * _rg2, _pb2 - 0.618 * _rg2
+                    _was = "✓был" if (_mtf in ("1d", "4h") and _dm["low"].min() <= min(_olo, _ohi)) else ""
+                    mtf.append(f"{_mtf} {_dr}{_was}")
+            except Exception:
+                pass
         # сборка
         lines = [f"🌊 <b>{sym} {tf}</b>  цена <code>{price:.5f}</code>"]
+        if mtf:
+            lines.append("📊 MTF: " + " · ".join(mtf))
         lines.append(f"волна: {wave}  |  SMC: {smc}")
         if ote:
             zlo, zhi = ote[0.786], ote[0.618]
