@@ -611,6 +611,13 @@ signal_router:
 # apply=True → регистрирует сделку через trade_simulator (VST).
 # Отключить: vst_trading.enabled: false → только shadow logging
 # в risk_decisions_log без сделок.
+# ═══ ARCH-96: Мульти-аккаунт (субаккаунты BingX) ═══════════════════════════
+arch96:
+  multiaccount:
+    enabled: true             # 08.06 Ф2 ВКЛЮЧЁН: existing-пары закреплены за main (pre-seed),
+                              # новые → least-loaded (sub, 10000 VST). Разгрузка лимита 100/акк.
+                              # Ф3 sync агрегирует оба. OFF → один клиент (account=1, старое).
+
 arch104:
   vst_trading:
     enabled: true             # 08.06 ВЕРНУЛ из shadow: моя оценка slippage 0.45% была ОШИБОЧНА
