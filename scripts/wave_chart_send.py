@@ -57,25 +57,55 @@ def send_tg(png_bytes, caption, chat, token):
     return r.json()
 
 
+def send_media_group(media_list, caption, chat, token):
+    """media_list = [(tf, png_bytes)]. Несколько чартов ОДНИМ постом (мульти-TF фрактал)."""
+    import json
+    url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
+    media, files = [], {}
+    for i, (tf, png) in enumerate(media_list):
+        files[f"file{i}"] = (f"{tf}.png", png)
+        m = {"type": "photo", "media": f"attach://file{i}"}
+        if i == 0:  # caption на первом фото = подпись всего альбома
+            m["caption"] = caption; m["parse_mode"] = "HTML"
+        media.append(m)
+    r = requests.post(url, data={"chat_id": chat, "media": json.dumps(media)},
+                      files=files, timeout=60)
+    return r.json()
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("symbol")
-    ap.add_argument("--tf", default="1h")
+    ap.add_argument("--tfs", default="5m,15m,1h",
+                    help="ТФ через запятую (мульти-TF одним постом). Один ТФ = одиночный чарт.")
     ap.add_argument("--chat", default=DEFAULT_CHAT)
     a = ap.parse_args()
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
         print("TELEGRAM_TOKEN не найден в .env"); return
     sym = a.symbol.upper()
-    full = f"{sym}/USDT:USDT"  # полный формат для chart_builder
-    # стандартный сигнал-чарт бота (WT + volume + уровни), без bot → fallback ccxt
-    png = await build_signal_chart(full, a.tf, bot=None)
-    if not png:
-        print(f"чарт не построился для {sym} {a.tf} (blacklist / нет данных?)"); return
+    full = f"{sym}/USDT:USDT"
+    tfs = [t.strip() for t in a.tfs.split(",") if t.strip()]
     ex = ccxt.bingx()
-    cap = wave_smc_caption(sym, a.tf, ex)
-    resp = send_tg(png, cap, a.chat, token)
-    print("TG:", "✅ отправлено" if resp.get("ok") else f"❌ {resp.get('description', resp)}")
+    # caption по СТАРШЕМУ ТФ (контекст) — последний в списке
+    cap = wave_smc_caption(sym, tfs[-1], ex)
+    cap = f"{cap}\n📊 мульти-TF: {' · '.join(tfs)}"
+    # рендерим чарты на каждом ТФ
+    media = []
+    for tf in tfs:
+        png = await build_signal_chart(full, tf, bot=None)
+        if png:
+            media.append((tf, png))
+        else:
+            print(f"  {tf}: не построился (blacklist/нет данных)")
+    if not media:
+        print(f"ни один чарт не построился для {sym}"); return
+    if len(media) == 1:
+        resp = send_tg(media[0][1], cap, a.chat, token)
+    else:
+        resp = send_media_group(media, cap, a.chat, token)
+    ok = resp.get("ok") if isinstance(resp, dict) else False
+    print(f"TG: {'✅ отправлено '+str(len(media))+' чарт(ов)' if ok else '❌ '+str(resp)[:80]}")
 
 
 if __name__ == "__main__":
