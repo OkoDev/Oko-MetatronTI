@@ -568,20 +568,26 @@ class BingXClient:
 
 
 # ── Фабрика клиента ─────────────────────────────────────────────────────────
-def make_client(mode: str, config) -> BingXClient | None:
-    """Создаёт BingXClient для VST или LIVE из env + config. None для SIM_ONLY."""
+def make_client(mode: str, config, account: int = 1) -> BingXClient | None:
+    """Создаёт BingXClient для VST или LIVE из env + config. None для SIM_ONLY.
+
+    ARCH-96 Ф2: account=1 — основной (BINGX_VST_API_KEY), account>=2 — субаккаунт
+    (BINGX_VST_API_KEY_2/3...). Все клиенты делят ОДИН GlobalRateLimiter (Ф1, общий IP-бюджет).
+    """
     import os
+    sfx = "" if account == 1 else f"_{account}"
     if mode == "vst":
-        api_key = os.environ.get("BINGX_VST_API_KEY") or config.get("exchanges.api_keys.bingx_vst.api_key", "")
-        secret  = os.environ.get("BINGX_VST_SECRET_KEY") or config.get("exchanges.api_keys.bingx_vst.secret", "")
+        api_key = os.environ.get(f"BINGX_VST_API_KEY{sfx}") or config.get(f"exchanges.api_keys.bingx_vst{sfx}.api_key", "")
+        secret  = os.environ.get(f"BINGX_VST_SECRET_KEY{sfx}") or config.get(f"exchanges.api_keys.bingx_vst{sfx}.secret", "")
         base    = VST_BASE_URL
     elif mode == "live":
-        api_key = os.environ.get("BINGX_API_KEY") or config.get("exchanges.api_keys.bingx.api_key", "")
-        secret  = os.environ.get("BINGX_SECRET_KEY") or config.get("exchanges.api_keys.bingx.secret", "")
+        api_key = os.environ.get(f"BINGX_API_KEY{sfx}") or config.get(f"exchanges.api_keys.bingx{sfx}.api_key", "")
+        secret  = os.environ.get(f"BINGX_SECRET_KEY{sfx}") or config.get(f"exchanges.api_keys.bingx{sfx}.secret", "")
         base    = LIVE_BASE_URL
     else:
         return None
     if not api_key:
-        logger.warning("[BingXClient] API key не найден для mode=%s", mode)
+        logger.warning("[BingXClient] API key не найден для mode=%s account=%s", mode, account)
         return None
+    logger.info("[BingXClient] клиент создан: mode=%s account=%s", mode, account)
     return BingXClient(api_key, secret, base)
