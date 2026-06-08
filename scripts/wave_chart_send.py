@@ -66,6 +66,7 @@ def wave_smc_caption(sym, tf, ex):
                     confl.append(f"{f}×4h-{pk} @{(flvl+pv)/2:.5f}")
         # MTF-OTE контекст: направление + OTE-зона по СТАРШИМ ТФ (основа сетапа)
         mtf = []
+        _d_ote, _d_dir = {}, None  # daily OTE-уровни 0.618/0.705/0.786 (для вердикта «след. зона»)
         for _mtf in ("1d", "4h", "1h"):
             try:
                 _om = ex.fetch_ohlcv(f"{sym}/USDT:USDT", _mtf, limit=150)
@@ -78,40 +79,92 @@ def wave_smc_caption(sym, tf, ex):
                     _olo, _ohi = _pb2 - 0.786 * _rg2, _pb2 - 0.618 * _rg2
                     _was = "✓был" if (_mtf in ("1d", "4h") and _dm["low"].min() <= min(_olo, _ohi)) else ""
                     mtf.append(f"{_mtf} {_dr}{_was}")
+                    if _mtf == "1d":
+                        _d_dir = _dr
+                        for _ff in (0.618, 0.705, 0.786):
+                            _d_ote[_ff] = _pb2 - _ff * _rg2
             except Exception:
                 pass
         # MTF bias по СТАРШИМ ТФ (1d/4h) — определяет приоритетный сценарий
         _htf = [m for m in mtf if m.startswith("1d") or m.startswith("4h")]
         _nl = sum("LONG" in m for m in _htf); _ns = sum("SHORT" in m for m in _htf)
         _bias = "LONG" if _nl > _ns else ("SHORT" if _ns > _nl else "MIX")
-        # SL = под/над последний SWING (инвалидация структуры, КОМПАКТНЫЙ)
-        _sl_lo = [p for _, p, t in typed if t == "L"]
-        _sl_hi = [p for _, p, t in typed if t == "H"]
-        _slL = (_sl_lo[-1] * 0.998) if _sl_lo else price * 0.99
-        _slS = (_sl_hi[-1] * 1.002) if _sl_hi else price * 1.01
+        # SL = БЛИЖАЙШИЙ swing к цене (компактная инвалидация, не дальняя вершина/дно)
+        _below = [p for _, p, t in typed if t == "L" and p < price]
+        _above = [p for _, p, t in typed if t == "H" and p > price]
+        _slL = (max(_below) * 0.998) if _below else price * 0.985
+        _slS = (min(_above) * 1.002) if _above else price * 1.015
         # TP = ЗНАЧИМЫЕ цели: daily-пивоты + дневная Фибо (ДАЛЬШЕ интрадей-мелочи)
         _dp = {}
+        _dhi = _dlo = None
         try:
-            _o1 = ex.fetch_ohlcv(f"{sym}/USDT:USDT", "1d", limit=3)
+            _o1 = ex.fetch_ohlcv(f"{sym}/USDT:USDT", "1d", limit=20)
             _d1 = pd.DataFrame(_o1, columns=["t", "o", "h", "l", "c", "v"]); _pp1 = _d1.iloc[-2]
             _dp = calculate_pivot_points(float(_pp1["h"]), float(_pp1["l"]), float(_pp1["c"]))
+            _dhi, _dlo = float(_d1["h"].max()), float(_d1["l"].min())  # потолок/пол старшего ТФ
         except Exception:
             pass
-        _allT = {**h4, **_dp}  # 4h + daily уровни
-        _upsT = sorted([v for v in _allT.values() if v > price * 1.005])   # значимые выше (>0.5%)
-        _dnsT = sorted([v for v in _allT.values() if v < price * 0.995], reverse=True)  # ниже
-        _tpL = _upsT[0] if _upsT else price * 1.04
-        _tpL2 = _upsT[1] if len(_upsT) > 1 else (_upsT[0] if _upsT else price * 1.07)
-        _tpS = _dnsT[0] if _dnsT else price * 0.96
-        _rrL = abs(_tpL - price) / abs(price - _slL) if price != _slL else 0
-        _rrS = abs(_tpS - price) / abs(_slS - price) if _slS != price else 0
-        # вердикт (сценарное мышление: что делать + что если не прав)
+        # ЦЕЛИ = 4h+daily пивоты + daily high/low (СУТЬ MTF: цель старшего ТФ = ДАЛЬНЯЯ)
+        _allT = {**h4, **_dp}
+        _upsT = sorted(v for v in list(_allT.values()) + ([_dhi] if _dhi else []) if v > price * 1.005)
+        _dnsT = sorted((v for v in list(_allT.values()) + ([_dlo] if _dlo else []) if v < price * 0.995), reverse=True)
+        _tpL = _upsT[0] if _upsT else price * 1.03            # TP1 = ближняя фиксация
+        _tpLf = _upsT[-1] if _upsT else price * 1.10          # TP2 = ДАЛЬНЯЯ цель старшего ТФ
+        _tpS = _dnsT[0] if _dnsT else price * 0.97
+        _tpSf = _dnsT[-1] if _dnsT else price * 0.90
+        # приоритетный сценарий = РАННЕР (дальняя цель старшего ТФ); контр-тренд = откат (ближняя)
+        _tgtL = _tpLf if _bias != "SHORT" else _tpL
+        _tgtS = _tpSf if _bias == "SHORT" else _tpS
+        _rrL = abs(_tgtL - price) / abs(price - _slL) if price != _slL else 0
+        _rrS = abs(_tgtS - price) / abs(_slS - price) if _slS != price else 0
+        # вердикт (сценарное мышление: что делать + что если не прав → СЛЕД. daily OTE-зона)
+        _fname = {0.618: "0.618", 0.705: "0.705", 0.786: "0.786"}
         if _bias == "LONG":
-            _verdict = "старший тренд ↑ → ПРИОРИТЕТ LONG. Не прав → ниже SL: откат глубже, ждать след. OTE"
+            # след. зона = ближайшая daily OTE НИЖЕ цены (более глубокий откат, обычно там OB)
+            _deeper = [(f, l) for f, l in sorted(_d_ote.items(), reverse=True) if l < price * 0.998]
+            if _deeper:
+                _f0, _l0 = _deeper[0]
+                _verdict = f"тренд ↑ → ПРИОРИТЕТ LONG. Ниже SL → след. daily OTE {_fname[_f0]} ≈ {_l0:.5f} (ищи OB)"
+            else:
+                _verdict = "тренд ↑ → ПРИОРИТЕТ LONG. Ниже SL: откат глубже целевой OTE, ждать"
         elif _bias == "SHORT":
-            _verdict = "старший тренд ↓ → ПРИОРИТЕТ SHORT. Не прав → выше SL: разворот, искать LONG"
+            _higher = [(f, l) for f, l in sorted(_d_ote.items()) if l > price * 1.002]
+            if _higher:
+                _f0, _l0 = _higher[0]
+                _verdict = f"тренд ↓ → ПРИОРИТЕТ SHORT. Выше SL → след. daily OTE {_fname[_f0]} ≈ {_l0:.5f}"
+            else:
+                _verdict = "тренд ↓ → ПРИОРИТЕТ SHORT. Выше SL: разворот, искать LONG"
         else:
             _verdict = "MTF разнобой → НЕ торопиться, ждать согласования старших ТФ"
+        # 🧲 ЗОНЫ-МАГНИТЫ: HTF-FVG (1d/4h активные) × weekly/daily пивот = конфлюэнт спрос/предложение
+        # (та же формула FVG что у магнитов бота build_smc_snapshot → TPSelector; здесь — для подписи)
+        _zones = []
+        try:
+            from core.smc.smc_engine import detect_fvg as _dfz
+            _ow = ex.fetch_ohlcv(f"{sym}/USDT:USDT", "1w", limit=3)
+            _dw = pd.DataFrame(_ow, columns=["t", "o", "h", "l", "c", "v"]); _pw = _dw.iloc[-2]
+            _wp = calculate_pivot_points(float(_pw["h"]), float(_pw["l"]), float(_pw["c"]))
+            _piv_all = {**{f"W:{k}": v for k, v in _wp.items()}, **{f"D:{k}": v for k, v in _dp.items()}}
+            for _htf in ("1d", "4h"):
+                _oh = ex.fetch_ohlcv(f"{sym}/USDT:USDT", _htf, limit=200)
+                _dh = pd.DataFrame(_oh, columns=["ts", "open", "high", "low", "close", "volume"])
+                _dh.index = pd.to_datetime(_dh["ts"], unit="ms")
+                for _fz in _dfz(_dh):
+                    if _fz[5] is not None:          # mitigated — пропуск
+                        continue
+                    _ft, _fb, _fk = _fz[1], _fz[2], _fz[3]
+                    _fmid = (_ft + _fb) / 2
+                    if abs(_fmid - price) / price > 0.12:
+                        continue
+                    for _pn, _pv in _piv_all.items():
+                        if min(_ft, _fb) <= _pv <= max(_ft, _fb) or abs(_fmid - _pv) / price < 0.008:
+                            _side = "спрос" if _fk == "bull" else "предложение"
+                            _zones.append((abs(_fmid - price),
+                                           f"{_htf} {_fk}-FVG×{_pn} {min(_fb,_ft):.5f}–{max(_fb,_ft):.5f} ({_side})"))
+                            break
+            _zones.sort()
+        except Exception:
+            pass
         # ── сборка (быстрое чтение) ──
         _ar = lambda d: "📈" if "LONG" in d else "📉"
         L = [f"🌊 <b>{sym}</b> · {tf} · <code>{price:.5f}</code>"]
@@ -119,9 +172,16 @@ def wave_smc_caption(sym, tf, ex):
             L.append("📊 MTF:  " + "   ".join(f"{m.split()[0]}{_ar(m)}{'✓' if '✓был' in m else ''}" for m in mtf))
         L.append(f"〰️ {wave}  ·  SMC: {smc} ({tf})")
         L.append("━━━━━━━━━━━━━━")
-        L.append(f"🟢 <b>LONG</b>{' ⭐' if _bias=='LONG' else ''}  →  <code>{_tpL:.5f}</code> · <code>{_tpL2:.5f}</code>")
+        _tagL = " ⭐ПРИОРИТЕТ" if _bias == "LONG" else (" ⚠️контр-тренд" if _bias == "SHORT" else "")
+        _tagS = " ⭐ПРИОРИТЕТ" if _bias == "SHORT" else (" ⚠️контр-тренд" if _bias == "LONG" else "")
+        # приоритет = раннер (TP1⟶TP2 дальняя цель), контр-тренд = откат (только ближняя TP)
+        _ltp = (f"TP <code>{_tpL:.5f}</code> ⟶ <code>{_tpLf:.5f}</code>" if _bias != "SHORT"
+                else f"TP <code>{_tpL:.5f}</code>")
+        _stp = (f"TP <code>{_tpS:.5f}</code> ⟶ <code>{_tpSf:.5f}</code>" if _bias == "SHORT"
+                else f"TP <code>{_tpS:.5f}</code>")
+        L.append(f"🟢 <b>LONG</b>{_tagL}  →  {_ltp}")
         L.append(f"     SL <code>{_slL:.5f}</code>  ·  RR <b>1:{_rrL:.1f}</b>")
-        L.append(f"🔴 <b>SHORT</b>{' ⭐' if _bias=='SHORT' else ''}  →  <code>{_tpS:.5f}</code>")
+        L.append(f"🔴 <b>SHORT</b>{_tagS}  →  {_stp}")
         L.append(f"     SL <code>{_slS:.5f}</code>  ·  RR <b>1:{_rrS:.1f}</b>")
         L.append("━━━━━━━━━━━━━━")
         if ote:
@@ -129,6 +189,8 @@ def wave_smc_caption(sym, tf, ex):
             L.append(f"🌀 OTE {direction}: <code>{ote[0.618]:.5f}–{ote[0.786]:.5f}</code>{' ✅В ЗОНЕ' if _iz else ''}")
         if confl:
             L.append("⭐ Conf: " + " · ".join(confl[:2]))
+        if _zones:
+            L.append("🧲 Зоны: " + "  ·  ".join(z for _, z in _zones[:2]))
         L.append(f"📍 {_verdict}")
         return "\n".join(L)
     except Exception as e:

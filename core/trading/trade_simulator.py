@@ -1498,7 +1498,7 @@ class TradeSimulator:
 
                 # R-multiple: вся математика через core.trading.r_math (27.05.2026).
                 # 1R = |entry - original_sl| (исходный риск), fallback на текущий sl.
-                from core.trading.r_math import compute_one_r, compute_r, clamp_r
+                from core.trading.r_math import compute_one_r, compute_r, clamp_r, clamp_r_smart
                 one_r, _r_src = compute_one_r(entry, original_sl_db, fallback_sl=sl)
                 r_multiple = None
 
@@ -1532,13 +1532,13 @@ class TradeSimulator:
                     if one_r:
                         r_multiple = compute_r(dir_up, entry, exit_price, one_r)
 
-                # Sanity clamp: ограничиваем R в [-15, +15] (ASR R=-450 = sl_dist≈0 баг).
-                # Логируем когда clamp реально срабатывает — отличается от исходного.
+                # Умный clamp по ПРИЧИНЕ (sl_dist), не величине: раннеры (sl_dist>=0.3%) дышат
+                # без потолка, артефакт sl_dist≈0 (ASR R=-450) клампится. Логируем срабатывание.
                 if r_multiple is not None:
-                    _clamped = clamp_r(r_multiple)
+                    _clamped = clamp_r_smart(r_multiple, entry, one_r)
                     if _clamped != r_multiple:
                         logger.warning(
-                            "R_multiple clamp: id=%s %s R=%.2f → %.2f (sl_dist слишком мал, src=%s)",
+                            "R_multiple clamp: id=%s %s R=%.2f → %.2f (sl_dist≈0 артефакт, src=%s)",
                             trade_id, dir_up, r_multiple, _clamped, _r_src,
                         )
                     r_multiple = round(_clamped, 3)
@@ -1551,7 +1551,7 @@ class TradeSimulator:
                     _peak = max_price_db if dir_up == "LONG" else min_price_db
                     if _peak:
                         _mfe = compute_r(dir_up, entry, _peak, one_r)
-                        max_R_possible = round(clamp_r(_mfe), 3) if _mfe is not None else None
+                        max_R_possible = round(clamp_r_smart(_mfe, entry, one_r), 3) if _mfe is not None else None
                     if max_R_possible and max_R_possible > 0 and r_multiple is not None:
                         captured_R_pct = round((r_multiple / max_R_possible) * 100.0, 1)
 

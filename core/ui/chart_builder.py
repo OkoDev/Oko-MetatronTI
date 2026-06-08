@@ -160,7 +160,8 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
             daily_pivots: dict | None = None,
             weekly_pivots: dict | None = None,
             wave_overlay: bool = False,
-            h4_pivots: dict | None = None) -> bytes:
+            h4_pivots: dict | None = None,
+            htf_fvg: list | None = None) -> bytes:
     if daily_pivots is None:
         daily_pivots = _calc_daily_pivots(df)
     if weekly_pivots is None:
@@ -301,12 +302,9 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                     _bd, _dev = abs(_nn - 8), _dv
             _typed = _zz_typed(zigzag_atr(_d, 11, _dev))
             if _typed:
+                # zigzag-линия БЕЗ нумерации (zigzag не различает импульс 1-5 / коррекцию ABC)
                 ax_price.plot([i for i, _, _ in _typed], [p for _, p, _ in _typed],
                               color="#ffa726", linewidth=1.3, zorder=6, alpha=0.85)
-                for _k, (_i, _p, _t) in enumerate(_typed[-8:]):
-                    ax_price.annotate(str(_k), (_i, _p), color="#ffd54f", fontsize=11,
-                                      fontweight="bold", zorder=7, ha="center",
-                                      va="bottom" if _t == "H" else "top")
             _brks = detect_structure_breaks(_d, length=5)
             for _b in detect_order_blocks(_d, _brks):
                 if _b.mitigated_idx != -1:
@@ -315,6 +313,10 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 ax_price.add_patch(plt.Rectangle((_b.left_idx, _b.bottom), n - _b.left_idx,
                                    _b.top - _b.bottom, facecolor=_col, alpha=0.10,
                                    edgecolor=_col, linewidth=0.7, zorder=1))
+                # подпись OB с ТФ по центру бокса (bull/bear уже различимы цветом)
+                ax_price.annotate(f"OB-{tf}", ((_b.left_idx + n) / 2, (_b.top + _b.bottom) / 2),
+                                  color=_col, fontsize=6, fontweight="bold", va="center",
+                                  ha="center", zorder=6, alpha=0.85)
             # BOS/CHoCH линии слома (CHoCH=сплошная=разворот, BOS=пунктир=продолжение)
             for _br in _brks[-5:]:
                 _bc = "#26a69a" if _br.direction == "bull" else "#ef5350"
@@ -322,8 +324,9 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 _frm = _br.from_idx if _br.from_idx >= 0 else _br.idx
                 ax_price.plot([_frm, _br.idx], [_br.price, _br.price], color=_bc,
                               linestyle=_bls, linewidth=1.0, alpha=0.7, zorder=5)
-                ax_price.annotate(_br.kind, (_br.idx, _br.price), color=_bc, fontsize=7,
-                                  fontweight="bold", zorder=6, va="bottom")
+                # подпись по СЕРЕДИНЕ линии слома (не на правом конце)
+                ax_price.annotate(_br.kind, ((_frm + _br.idx) / 2, _br.price), color=_bc, fontsize=7,
+                                  fontweight="bold", zorder=6, va="bottom", ha="center")
             _pr = df["close"].iloc[-1]
             for _f in detect_fvg(_d)[-15:]:
                 if _f[5] is not None:    # пробитый (mitigated) FVG — не рисуем (каша слева)
@@ -348,6 +351,22 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                                       linewidth=0.8, alpha=0.6, zorder=2)
                         ax_price.annotate(f"4h-{_k}", (n - 1, _v), color=_c2, fontsize=7,
                                           va="center", ha="left", zorder=6)
+            # 🟦 HTF-FVG (daily/4h активные) — зоны-магниты СТАРШЕГО ТФ (origin за окном
+            # младшего ТФ невидим; рисуем боксом у правого края = «куда тянет цену»).
+            if htf_fvg:
+                for _hf in htf_fvg:
+                    _hl, _ht, _hb, _hk, _hx = _hf  # (label, top, bottom, kind, x_origin)
+                    _hc = "#1e88e5" if _hk == "bull" else "#e53935"
+                    _hmid = (_ht + _hb) / 2
+                    # широкий залитый бокс от origin-свечи (_hx) вправо до текущего бара (OKO-SM стиль)
+                    ax_price.add_patch(plt.Rectangle((_hx, min(_ht, _hb)), n - 1 - _hx,
+                                       abs(_ht - _hb), facecolor=_hc, alpha=0.15,
+                                       edgecolor=_hc, linewidth=1.0, zorder=2))
+                    # midline 0.5 (consequent encroachment) + подпись по ЦЕНТРУ бокса
+                    ax_price.plot([_hx, n - 1], [_hmid, _hmid], color=_hc,
+                                  linewidth=0.7, alpha=0.6, zorder=3)
+                    ax_price.annotate(f"FVG-{_hl}", ((_hx + n - 1) / 2, _hmid), color=_hc,
+                                      fontsize=6, fontweight="bold", va="center", ha="center", zorder=6, alpha=0.85)
             # 🌀 ФИБО/OTE-ЗОНА последнего движения (ЯДРО входа: откат волны-2 → волна-3)
             _ote_levels = {}
             if len(_typed) >= 2:
@@ -469,11 +488,42 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
                     h4_pivots = _pivot_levels(*_h4.iloc[-2][["high", "low", "close"]])
             except Exception:
                 pass
+        # HTF-FVG (1D+4h активные, рядом с ценой) — зоны-магниты старшего ТФ для overlay
+        htf_fvg = None
+        if wave_overlay:
+            try:
+                from core.smc.smc_engine import detect_fvg as _dfvg
+                _pr = float(df["close"].iloc[-1])
+                _htf_src = {"1D": df_pivot1h.resample("1D").agg(
+                                {"high": "max", "low": "min", "close": "last", "open": "first"}).dropna()
+                            if df_pivot1h is not None else None,
+                            "4h": df_pivot1h.resample("4h").agg(
+                                {"high": "max", "low": "min", "close": "last", "open": "first"}).dropna()
+                            if df_pivot1h is not None else None}
+                htf_fvg = []
+                for _lbl, _src in _htf_src.items():
+                    if _src is None or len(_src) < 5:
+                        continue
+                    for _fv in _dfvg(_src):
+                        if _fv[5] is not None:          # mitigated (перекрыт) — пропуск (инвалидация)
+                            continue
+                        _t, _b = _fv[1], _fv[2]
+                        if abs((_t + _b) / 2 - _pr) / _pr <= 0.28:   # в пределах ±28% (вся стопка как OKO-SM)
+                            # привязка к СРЕДНЕЙ свече паттерна (i-1 = импульсная, создавшая gap):
+                            # i-2 уезжал влево («была до образования»), i — вправо. Середина = impulse-бар
+                            _xl = int(df.index.searchsorted(_fv[0]))  # 1-я свеча (i-2)
+                            _xi = int(df.index.searchsorted(_fv[4]))  # 3-я свеча (i, подтверждение)
+                            _xo = max(0, min((_xl + _xi) // 2, len(df) - 1))
+                            htf_fvg.append((_lbl, _t, _b, _fv[3], _xo))
+                htf_fvg = htf_fvg[:6] or None
+            except Exception as _e:
+                logger.warning("[chart_builder] htf_fvg %s: %s", symbol, _e)
         return _render(df, symbol, tf,
                        daily_pivots=daily_pivots,
                        weekly_pivots=weekly_pivots,
                        wave_overlay=wave_overlay,
-                       h4_pivots=h4_pivots)
+                       h4_pivots=h4_pivots,
+                       htf_fvg=htf_fvg)
     except Exception:
         logger.exception("chart_builder: ошибка генерации графика для %s", symbol)
         return None

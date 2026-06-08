@@ -271,7 +271,7 @@ def _compute_stats_payload_sync(engine, dc, bot) -> str:
         # 1R = |entry - original_sl| (исходный риск); если NULL → fallback на текущий
         # stop_loss. Sanity clamp [-15,+15] защищает от sl_dist≈0 артефактов
         # (#15101 SWARMS показал +8103R через текущий stop_loss).
-        from core.trading.r_math import compute_one_r, compute_r, clamp_r
+        from core.trading.r_math import compute_one_r, compute_r, clamp_r_smart
         one_r, _r_src = compute_one_r(ep, osl, fallback_sl=sl)
         if cur is not None and ep:
             if direction == "LONG":
@@ -280,7 +280,7 @@ def _compute_stats_payload_sync(engine, dc, bot) -> str:
                 pnl_pct = (ep - cur) / ep * 100
             t["unrealized_pct"] = round(pnl_pct, 2)
             _r = compute_r(direction, ep, cur, one_r) if one_r else None
-            _r = clamp_r(_r)
+            _r = clamp_r_smart(_r, ep, one_r)
             t["unrealized_r"] = round(_r, 2) if _r is not None else None
         else:
             t["unrealized_pct"] = None
@@ -293,7 +293,7 @@ def _compute_stats_payload_sync(engine, dc, bot) -> str:
             _peak = float(max_p) if direction == "LONG" and max_p else (
                     float(min_p) if direction == "SHORT" and min_p else None)
             if _peak is not None:
-                max_r = clamp_r(compute_r(direction, ep, _peak, one_r))
+                max_r = clamp_r_smart(compute_r(direction, ep, _peak, one_r), ep, one_r)
         t["mfe_r"] = round(max_r, 2) if max_r is not None else None
         # Cascade level из features_json
         try:
