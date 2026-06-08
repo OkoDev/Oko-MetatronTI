@@ -613,11 +613,10 @@ signal_router:
 # в risk_decisions_log без сделок.
 arch104:
   vst_trading:
-    enabled: false            # 08.06 SHADOW (B, мягко): real_avgR −0.25 (slippage 0.48R > edge
-                              # +0.23R) → −453R утечка на VST market-fill. Сигнал ОК, исполнение
-                              # убивает. Observer логирует decisions (копим), НЕ торгует. Вернуть
-                              # true когда: (1) лимитные ордера (DS exec, убьют slippage) ИЛИ
-                              # (2) волновой анализ даст качественный фильтр (юзер: «там решение»).
+    enabled: true             # 08.06 ВЕРНУЛ из shadow: моя оценка slippage 0.45% была ОШИБОЧНА
+                              # (взял спред BingX-vs-рынок). DS-аудит (vst_slippage_audit.py): реальный
+                              # entry-slip ~0.1% → arch104 real_avgR ≈ +0.12 (ПЛЮС!). OTE+arch104 = +1501R
+                              # на VST. Реальный минус проекта = pivot_reversal+confluence (−1865R).
     signal_type: "arch104"    # в БД simulated_trades для разделения
   # D-051 (26.05.2026): wt_cross HARD gate для СТАРЫХ паттернов (+183% на 15m тогда).
   # ARCH-128 04.06: ВЫКЛЮЧЕН. Душил весь DS-реестр (200/200 без wt_cross в anchor →
