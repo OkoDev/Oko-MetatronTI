@@ -22,32 +22,73 @@ DEFAULT_CHAT = "-1001549739381"  # Oko - Alerts
 
 
 def wave_smc_caption(sym, tf, ex):
-    """Краткий вердикт: волновая фаза + SMC (CHoCH/BOS) для caption."""
+    """Полный сигнал-вердикт: волна + OTE-зона + конфлюэнция + вход/SL/TP/RR + SMC."""
     try:
+        from core.smc.smc_engine import _zz_typed, detect_equal_levels
+        from core.indicators.indicators import calculate_pivot_points
         o = ex.fetch_ohlcv(f"{sym}/USDT:USDT", tf, limit=150)
         df = pd.DataFrame(o, columns=["ts", "open", "high", "low", "close", "volume"])
         price = df["close"].iloc[-1]
+        # волна
         li = None
         for d in (3.0, 5.0):
             for imp in detect_elliott_impulse(zigzag_atr(df, 11, d)):
                 if li is None or imp["waves"][-1][0] > li["waves"][-1][0]:
                     li = imp
-        if li:
-            dd = "ВНИЗ ↓" if li["direction"] == "down" else "ВВЕРХ ↑"
-            wave = f"импульс {dd}{' ✓textbook' if li['textbook'] else ''}"
-        else:
-            wave = "коррекция/боковик (импульс не классифицирован)"
+        wave = (f"импульс {'ВНИЗ ↓' if li['direction']=='down' else 'ВВЕРХ ↑'}"
+                f"{' ✓textbook' if li['textbook'] else ''}") if li else "коррекция/боковик"
+        # SMC
         brks = detect_structure_breaks(df, length=5)
-        smc = "—"
-        if brks:
-            b = brks[-1]
-            smc = f"{b.kind} {b.direction}{'+V' if b.has_volume else ''}"
-        return (f"🌊 <b>{sym} {tf}</b>  цена {price:.5f}\n"
-                f"волна: {wave}\n"
-                f"SMC: {smc}\n"
-                f"— Wave+SMC analyzer (Oko-MetatronTI)")
+        smc = f"{brks[-1].kind} {brks[-1].direction}{'+V' if brks[-1].has_volume else ''}" if brks else "—"
+        # OTE-зона последнего движения (Фибо)
+        typed = _zz_typed(zigzag_atr(df, 11, 3.0))
+        ote, direction = {}, None
+        if len(typed) >= 2:
+            (_ia, _pa, _ta), (_ib, _pb, _tb) = typed[-2], typed[-1]
+            rng = _pb - _pa
+            if abs(rng) / price > 0.003:
+                for f in (0.618, 0.705, 0.786):
+                    ote[f] = _pb - f * rng
+                direction = "LONG" if _tb == "H" else "SHORT"  # откат после H = LONG-сетап
+        # 4h-пивоты (для конфлюэнции)
+        h4 = {}
+        try:
+            o4 = ex.fetch_ohlcv(f"{sym}/USDT:USDT", "4h", limit=3)
+            d4 = pd.DataFrame(o4, columns=["ts", "h2", "h", "l", "c", "v"]); pr = d4.iloc[-2]
+            h4 = calculate_pivot_points(float(pr["h"]), float(pr["l"]), float(pr["c"]))
+        except Exception:
+            pass
+        # конфлюэнция Фибо × 4h-пивот (<0.5%)
+        confl = []
+        for f, flvl in ote.items():
+            for pk, pv in h4.items():
+                if abs(flvl - pv) / price < 0.005:
+                    confl.append(f"{f}×4h-{pk} @{(flvl+pv)/2:.5f}")
+        # сборка
+        lines = [f"🌊 <b>{sym} {tf}</b>  цена <code>{price:.5f}</code>"]
+        lines.append(f"волна: {wave}  |  SMC: {smc}")
+        if ote:
+            zlo, zhi = ote[0.786], ote[0.618]
+            in_zone = min(zlo, zhi) <= price <= max(zlo, zhi)
+            lines.append(f"🌀 OTE {direction}: <code>{ote[0.618]:.5f}–{ote[0.786]:.5f}</code>"
+                         f"{'  ✅ ЦЕНА В ЗОНЕ' if in_zone else ''}")
+            # вход/SL/TP/RR если в зоне
+            if in_zone and direction:
+                entry = price
+                sl = ote[0.786] * (0.997 if direction == "LONG" else 1.003)  # за дальнюю границу
+                # TP = ближайший пивот в сторону
+                tps = sorted([v for v in h4.values() if (v > entry) == (direction == "LONG")],
+                             key=lambda v: abs(v - entry))
+                tp = tps[0] if tps else entry * (1.04 if direction == "LONG" else 0.96)
+                risk = abs(entry - sl); rr = abs(tp - entry) / risk if risk > 0 else 0
+                lines.append(f"💰 вход <code>{entry:.5f}</code> | SL <code>{sl:.5f}</code> "
+                             f"| TP <code>{tp:.5f}</code> | R:R <b>1:{rr:.1f}</b>")
+        if confl:
+            lines.append("⭐ конфлюэнция: " + " · ".join(confl[:3]))
+        lines.append("— Oko-MetatronTI · Wave+SMC")
+        return "\n".join(lines)
     except Exception as e:
-        return f"🌊 {sym} {tf} (caption err: {str(e)[:40]})"
+        return f"🌊 {sym} {tf} (caption err: {str(e)[:50]})"
 
 
 def send_tg(png_bytes, caption, chat, token):
