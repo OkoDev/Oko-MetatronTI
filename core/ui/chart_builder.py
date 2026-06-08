@@ -291,7 +291,8 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
     if wave_overlay:
         try:
             from core.smc.smc_engine import (zigzag_atr, detect_structure_breaks,
-                                             detect_order_blocks, detect_fvg, _zz_typed)
+                                             detect_order_blocks, detect_fvg,
+                                             detect_equal_levels, _zz_typed)
             _d = df.reset_index(drop=True)  # позиционный индекс для smc (совпадает с mpf x)
             _dev, _bd = 3.0, 1e9            # adaptive dev (целевое ~8 swing под TF)
             for _dv in (1.5, 2.0, 2.5, 3.0, 4.0):
@@ -343,6 +344,39 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                         ax_price.axhline(_v, color=_c2, linestyle="--", linewidth=0.8, alpha=0.6, zorder=2)
                         ax_price.annotate(f"4h-{_k}", (n - 1, _v), color=_c2, fontsize=7,
                                           va="center", ha="left", zorder=6)
+            # 🌀 ФИБО/OTE-ЗОНА последнего движения (ЯДРО входа: откат волны-2 → волна-3)
+            _ote_levels = {}
+            if len(_typed) >= 2:
+                (_ia, _pa, _ta) = _typed[-2]
+                (_ib, _pb, _tb) = _typed[-1]
+                _rng = _pb - _pa
+                if abs(_rng) / _pr > 0.003:
+                    for _ff, _fc, _lw in [(0.618, "#ffd700", 0.8), (0.705, "#ffa726", 1.1), (0.786, "#ffd700", 0.8)]:
+                        _lvl = _pb - _ff * _rng
+                        _ote_levels[_ff] = _lvl
+                        ax_price.plot([_ib, n - 1], [_lvl, _lvl], color=_fc, linestyle=":",
+                                      linewidth=_lw, alpha=0.75, zorder=3)
+                        ax_price.annotate(f"{_ff}", (_ib, _lvl), color=_fc, fontsize=6, zorder=6, ha="right")
+                    _z1 = _pb - 0.618 * _rng; _z2 = _pb - 0.786 * _rng
+                    ax_price.axhspan(min(_z1, _z2), max(_z1, _z2), xmin=max(0, _ib) / n,
+                                     color="#ffd700", alpha=0.07, zorder=1)
+                    ax_price.annotate("OTE", (n - 1, (_z1 + _z2) / 2), color="#ffd700",
+                                      fontsize=8, fontweight="bold", va="center", ha="left", zorder=6)
+            # 💧 EQL/EQH (ликвидность — «вынос перед волной-3»)
+            for _eq in detect_equal_levels(_d)[-5:]:
+                _elvl = _eq[1]; _ekind = _eq[4] if len(_eq) > 4 else "EQ"
+                ax_price.axhline(_elvl, color="#ab47bc", linestyle=(0, (1, 2)), linewidth=0.7, alpha=0.5, zorder=2)
+                ax_price.annotate(_ekind, (_eq[0], _elvl), color="#ab47bc", fontsize=6, zorder=6)
+            # 🎯 КОНФЛЮЭНЦИЯ: Фибо-OTE × 4h-пивот совпадают (<0.5%) → подсветка точки входа
+            if _ote_levels and h4_pivots:
+                for _ff, _flvl in _ote_levels.items():
+                    for _pk, _pv in h4_pivots.items():
+                        if abs(_flvl - _pv) / _pr < 0.005:
+                            ax_price.scatter([n - 1], [(_flvl + _pv) / 2], s=90, marker="*",
+                                             color="#ffffff", edgecolor="#ffd700", zorder=8)
+                            ax_price.annotate(f"{_ff}x{_pk}", (n - 1, (_flvl + _pv) / 2),
+                                              color="#ffffff", fontsize=7, fontweight="bold",
+                                              va="bottom", ha="right", zorder=8)
         except Exception as _e:
             logger.warning("[chart_builder] wave_overlay %s: %s", symbol, _e)
 
