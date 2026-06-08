@@ -516,28 +516,48 @@ class TradingAlertBot:
                 logger.info("[OTE observer] task spawned")
             except Exception as e:
                 logger.warning("[OTE observer] failed to start: %s", e)
+            # Автостарт мониторинга ВСЕГДА (не ждём кнопку ТГ — scan стартует сам при
+            # запуске бота, независимо от доступности Telegram). Раньше стартовал только
+            # headless при падении polling → при доступном TG бот ждал ручной /start.
+            self._monitoring_autostarted = False
+            try:
+                from bot.monitoring import start_monitoring
+                from unittest.mock import MagicMock
+                fake_msg = MagicMock()
+                fake_msg.from_user.id = 1
+                fake_msg.from_user.username = "auto"
+                fake_msg.from_user.first_name = "Auto"
+                fake_msg.from_user.last_name = ""
+                async def _noop(*a, **kw): return None
+                fake_msg.answer = _noop
+                fake_msg.reply = _noop
+                await start_monitoring(self, fake_msg)
+                self._monitoring_autostarted = True
+                logger.info("[Bot] Мониторинг АВТОЗАПУЩЕН при старте (не ждём кнопку ТГ)")
+            except Exception as se:
+                logger.warning("[Bot] автостарт мониторинга: %s", se)
             try:
                 await self.dp.start_polling(self.bot)
             except Exception as e:
                 msg = str(e)
                 if "TelegramNetworkError" in type(e).__name__ or "Connect call failed" in msg:
-                    logger.warning("[Bot] Telegram недоступен — автостарт сканирования + дашборд")
-                    # Автостарт мониторинга без Telegram
-                    try:
-                        from bot.monitoring import start_monitoring
-                        from unittest.mock import MagicMock
-                        fake_msg = MagicMock()
-                        fake_msg.from_user.id = 1
-                        fake_msg.from_user.username = "auto"
-                        fake_msg.from_user.first_name = "Auto"
-                        fake_msg.from_user.last_name = ""
-                        async def _noop(*a, **kw): return None
-                        fake_msg.answer = _noop
-                        fake_msg.reply = _noop
-                        await start_monitoring(self, fake_msg)
-                        logger.info("[Bot] Мониторинг запущен (headless)")
-                    except Exception as se:
-                        logger.warning("[Bot] Не удалось автостартовать мониторинг: %s", se)
+                    logger.warning("[Bot] Telegram недоступен — дашборд (scan уже автозапущен)")
+                    if not self._monitoring_autostarted:
+                        try:
+                            from bot.monitoring import start_monitoring
+                            from unittest.mock import MagicMock
+                            fake_msg = MagicMock()
+                            fake_msg.from_user.id = 1
+                            fake_msg.from_user.username = "auto"
+                            fake_msg.from_user.first_name = "Auto"
+                            fake_msg.from_user.last_name = ""
+                            async def _noop(*a, **kw): return None
+                            fake_msg.answer = _noop
+                            fake_msg.reply = _noop
+                            await start_monitoring(self, fake_msg)
+                            logger.info("[Bot] Мониторинг запущен (headless fallback)")
+                        except Exception as se:
+                            logger.warning("[Bot] Не удалось автостартовать мониторинг: %s", se)
                     while True:
                         await asyncio.sleep(3600)
                 else:
