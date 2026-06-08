@@ -567,10 +567,10 @@ signal_router:
     # ── Per-signal_type sources через monitoring main path (Этап 1.Д) ─
     mtf_alert:         {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     mtf_bias:          {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    pivot_reversal:    {min_strength: 70, exchange_enabled: true,  trade_mode: ""}  # 27.05.2026: 80→70 (трафик упал, ищем компромисс)
+    pivot_reversal:    {min_strength: 70, exchange_enabled: false, trade_mode: ""}  # 08.06 SHADOW: −1126R слив (слеп к рыночной фазе, LONG на обвале WR2-7%). SIM-данные копятся для волнового фикса (PIVOT-CONTEXT). exchange off = не льёт VST. Вернуть после WaveService/контекст-гейт.
     wt_signal:         {min_strength: 70, exchange_enabled: true,  trade_mode: ""}  # 27.05.2026: 80→70 (трафик упал, ищем компромисс)
     wt_b_signal:       {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
-    confluence:        {min_strength: 70, exchange_enabled: true,  trade_mode: ""}  # 27.05.2026: 80→70 (трафик упал, ищем компромисс)
+    confluence:        {min_strength: 70, exchange_enabled: false, trade_mode: ""}  # 08.06 SHADOW: SHORT −203R контр-фаза (общий +610R, но Эра-4 минус). SIM копится для волнового фикса. Вернуть после WaveService.
     divergence:        {min_strength: 40, exchange_enabled: true,  trade_mode: ""}  # 26.05.2026: 50→40 (avg=+0.74R, WR=52%, n=174)
     anomaly:           {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
     trend_signal:      {min_strength: 50, exchange_enabled: true,  trade_mode: ""}
