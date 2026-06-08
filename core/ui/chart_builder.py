@@ -159,7 +159,8 @@ def _calc_pivot_levels(df1h: pd.DataFrame, tz_offset_hours: int = 3) -> tuple[di
 def _render(df: pd.DataFrame, symbol: str, tf: str,
             daily_pivots: dict | None = None,
             weekly_pivots: dict | None = None,
-            wave_overlay: bool = False) -> bytes:
+            wave_overlay: bool = False,
+            h4_pivots: dict | None = None) -> bytes:
     if daily_pivots is None:
         daily_pivots = _calc_daily_pivots(df)
     if weekly_pivots is None:
@@ -313,8 +314,19 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 ax_price.add_patch(plt.Rectangle((_b.left_idx, _b.bottom), n - _b.left_idx,
                                    _b.top - _b.bottom, facecolor=_col, alpha=0.10,
                                    edgecolor=_col, linewidth=0.7, zorder=1))
+            # BOS/CHoCH линии слома (CHoCH=сплошная=разворот, BOS=пунктир=продолжение)
+            for _br in _brks[-5:]:
+                _bc = "#26a69a" if _br.direction == "bull" else "#ef5350"
+                _bls = "-" if _br.kind == "CHoCH" else (0, (3, 3))
+                _frm = _br.from_idx if _br.from_idx >= 0 else _br.idx
+                ax_price.plot([_frm, _br.idx], [_br.price, _br.price], color=_bc,
+                              linestyle=_bls, linewidth=1.0, alpha=0.7, zorder=5)
+                ax_price.annotate(_br.kind, (_br.idx, _br.price), color=_bc, fontsize=7,
+                                  fontweight="bold", zorder=6, va="bottom")
             _pr = df["close"].iloc[-1]
-            for _f in detect_fvg(_d)[-10:]:
+            for _f in detect_fvg(_d)[-15:]:
+                if _f[5] is not None:    # пробитый (mitigated) FVG — не рисуем (каша слева)
+                    continue
                 _top, _bot, _kind = _f[1], _f[2], _f[3]
                 if abs((_top + _bot) / 2 - _pr) / _pr > 0.03:
                     continue
@@ -322,6 +334,15 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 ax_price.add_patch(plt.Rectangle((_f[0], min(_top, _bot)), n - _f[0],
                                    abs(_top - _bot), facecolor=_fc, alpha=0.13,
                                    edgecolor=_fc, linewidth=0.5, zorder=1, hatch="///"))
+            # 4h-пивоты (для младших ТФ — ближние интрадей-уровни, релевантнее daily)
+            if h4_pivots:
+                for _k, _c2 in [("R2", "#ef5350"), ("R1", "#ff9800"), ("PP", "#ffeb3b"),
+                                ("S1", "#4caf50"), ("S2", "#26a69a")]:
+                    if _k in h4_pivots:
+                        _v = h4_pivots[_k]
+                        ax_price.axhline(_v, color=_c2, linestyle="--", linewidth=0.8, alpha=0.6, zorder=2)
+                        ax_price.annotate(f"4h-{_k}", (n - 1, _v), color=_c2, fontsize=7,
+                                          va="center", ha="left", zorder=6)
         except Exception as _e:
             logger.warning("[chart_builder] wave_overlay %s: %s", symbol, _e)
 
@@ -401,10 +422,21 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
         df_full = _calculate_wt(df_full)
         df = df_full.iloc[-bars:].copy()
         daily_pivots, weekly_pivots = _calc_pivot_levels(df_pivot1h, tz_offset_hours=3) if df_pivot1h is not None and not df_pivot1h.empty else ({}, {})
+        # 4h-пивоты для МЛАДШИХ ТФ (ресемпл 1h→4h) — ближние интрадей-уровни, релевантнее daily
+        h4_pivots = None
+        if tf in ("1m", "3m", "5m", "15m", "30m") and df_pivot1h is not None and not df_pivot1h.empty:
+            try:
+                _h4 = (df_pivot1h.resample("4h")
+                       .agg({"high": "max", "low": "min", "close": "last"}).dropna())
+                if len(_h4) >= 2:
+                    h4_pivots = _pivot_levels(*_h4.iloc[-2][["high", "low", "close"]])
+            except Exception:
+                pass
         return _render(df, symbol, tf,
                        daily_pivots=daily_pivots,
                        weekly_pivots=weekly_pivots,
-                       wave_overlay=wave_overlay)
+                       wave_overlay=wave_overlay,
+                       h4_pivots=h4_pivots)
     except Exception:
         logger.exception("chart_builder: ошибка генерации графика для %s", symbol)
         return None
