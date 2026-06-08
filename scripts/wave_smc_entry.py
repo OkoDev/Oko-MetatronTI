@@ -83,9 +83,9 @@ def ote_zone(df):
     return dict(dir=direction, a=a, b=b, zones=zones)
 
 
-def daily_pivots(ex, sym):
-    """Daily-пивоты по предыдущей завершённой дневной свече."""
-    df = fetch(ex, sym, "1d", 5)
+def pivots_tf(ex, sym, tf="1d"):
+    """Пивоты по предыдущей завершённой свече ТФ. 1d=свинг, 4h=интрадей (мелкие ТФ)."""
+    df = fetch(ex, sym, tf, 5)
     prev = df.iloc[-2]  # предыдущая завершённая
     return calculate_pivot_points(float(prev["high"]), float(prev["low"]), float(prev["close"]))
 
@@ -141,18 +141,20 @@ def main():
             for f in FIB:
                 pts.append((f"{tf}", f"OTE{f}", z[f]))
 
-    # ── Пивоты (тоже в конфлюэнцию) ──
-    try:
-        piv = daily_pivots(ex, sym)
-        print(f"\n  ── Daily Pivots (вчерашняя свеча) ──")
-        for k in ["R3", "R2", "R1", "PP", "S1", "S2", "S3"]:
-            if k in piv:
-                v = piv[k]; dist = (v - price) / price * 100
-                mark = " ← цена" if abs(dist) < 0.5 else ""
-                print(f"      {k:>3} {v:.5f}  ({dist:+.1f}%){mark}")
-                pts.append(("PIV", k, v))
-    except Exception as e:
-        print(f"  пивоты err: {str(e)[:40]}")
+    # ── Пивоты: 4h (интрадей, для мелких ТФ) + Daily (свинг), оба в конфлюэнцию ──
+    for ptf, plabel, ptag in [("4h", "4h Pivots (интрадей — для мелких ТФ)", "P4h"),
+                               ("1d", "Daily Pivots (свинг)", "PIV")]:
+        try:
+            piv = pivots_tf(ex, sym, ptf)
+            print(f"\n  ── {plabel} ──")
+            for k in ["R3", "R2", "R1", "PP", "S1", "S2", "S3"]:
+                if k in piv:
+                    v = piv[k]; dist = (v - price) / price * 100
+                    mark = " ← цена" if abs(dist) < 0.4 else ""
+                    print(f"      {k:>3} {v:.5f}  ({dist:+.1f}%){mark}")
+                    pts.append((ptag, k, v))
+        except Exception as e:
+            print(f"  {ptf} пивоты err: {str(e)[:40]}")
 
     # ── Конфлюэнция (OTE × OTE × Пивоты), уровни ближе 1% ──
     confl = []
