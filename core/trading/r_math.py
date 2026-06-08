@@ -20,8 +20,10 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 
-R_CLAMP_MIN: float = -15.0
-R_CLAMP_MAX: float = 15.0
+R_CLAMP_MIN: float = -15.0   # защита от sl_dist≈0 баг (R=-450); loss редко >1R
+R_CLAMP_MAX: float = 50.0    # 08.06: 15→50 — раннеры до HTF-target дышат (OTE RR 22-40 режется
+                             # на 15!). clamp@15 прятал реальный edge SINGLE+runner. Баг +450 всё
+                             # равно клампится (→50), DEV-157 min_sl_dist 0.3% защищает на входе.
 
 
 def compute_one_r(
