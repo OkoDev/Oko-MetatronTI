@@ -41,6 +41,9 @@ class OrderManager:
         self._mode = ExecutionMode(config.get("trading.execution_mode", "sim_only"))
         self._tp1_close_pct = float(config.get("trading.tp1_close_pct", 0.20))
         self._client: Optional[BingXClient] = None
+        # ARCH-96 Ф2: мультиаккаунт-роутер (опц., флаг). OFF → один клиент (как раньше).
+        self._multiacct = bool(config.get("arch96.multiaccount.enabled", False))
+        self._router = None  # lazy AccountRouter
         # D-059: balance cache (30s TTL) — защита от BingX 100410 temp ban
         # asyncio.Lock предотвращает thundering herd: при cache miss только один
         # coroutine идёт к REST, остальные ждут и получают результат из кеша.
@@ -61,15 +64,26 @@ class OrderManager:
             self._mode.value, self._balance_ttl, self._positions_ttl, self._oo_ttl,
         )
 
-    def _get_client(self) -> BingXClient:
+    def _get_router(self):
+        if self._router is None:
+            from core.exchange.account_router import AccountRouter
+            self._router = AccountRouter(self._mode.value, self._cfg, "subscriptions.db")
+        return self._router
+
+    def _get_client(self, symbol: Optional[str] = None) -> BingXClient:
+        # ARCH-96 Ф2: при включённом мультиаккаунте и известном symbol → роутер (sticky суб).
+        if self._multiacct and symbol:
+            return self._get_router().get_client(symbol)
         if self._client is None:
             self._client = make_client(self._mode.value, self._cfg)
             if self._client is None:
                 raise ValueError(f"[OrderManager] API ключ не найден для mode={self._mode.value}")
         return self._client
 
-    async def _get_client_synced(self) -> BingXClient:
+    async def _get_client_synced(self, symbol: Optional[str] = None) -> BingXClient:
         """DEV-145: Возвращает клиент с синхронизированным временем.
+
+        ARCH-96 Ф2: symbol → роутер выбирает субаккаунт (sticky). None → основной (account=1).
 
         27.05.2026: интервал 300→120 сек. На Windows time service бывает drift
         до 1 сек/мин (наблюдалось -6076ms за 5 мин при 1124 timestamp invalid).
@@ -77,7 +91,7 @@ class OrderManager:
         Если предыдущий sync_time провалился (TimeoutError) — повторяем чаще (60с).
         """
         import time as _time
-        client = self._get_client()
+        client = self._get_client(symbol)
         age = _time.monotonic() - client._time_synced_at
         # Интервал зависит от того, был ли последний sync успешным
         max_age = 120 if client._time_synced else 60
