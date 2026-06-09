@@ -190,6 +190,17 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
         # Удаляем из state — закрытие прошло успешно
         if trade_id in dwell_state:
             del dwell_state[trade_id]
+        # OPS-06 (09.06): emergency закрыл ПОЗИЦИЮ НА БИРЖЕ — синхронно закрыть БД с РЕАЛЬНЫМ
+        # статусом/R (через _resolve_exit по filled-ордеру). Без этого sync_positions уже не
+        # видит позицию (закрыта) → orphan висит OPEN навсегда → потеря реального SL (−1R),
+        # искажение метрик (avgR/WR завышены = «бумажная иллюзия»). Корень USELESS #21703.
+        try:
+            _st6, _px6 = await _resolve_exit(client, sym, direction, cur_price)
+            if bot.trade_simulator.close_trade(trade_id, _st6, _px6):
+                logger.info("[OPS-06] %s #%d: БД закрыта %s @ %.6f после emergency (orphan-prevent)",
+                            sym, trade_id, _st6, _px6 or 0)
+        except Exception as _e6:
+            logger.error("[OPS-06] %s #%d close_trade после emergency: %s", sym, trade_id, _e6)
         return True
     except Exception as e:
         logger.warning("[DEV-185.2][EMERGENCY] %s #%d ошибка: %s", sym, trade_id, e)
