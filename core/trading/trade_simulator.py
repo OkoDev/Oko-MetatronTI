@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 import json
 import time
+import asyncio  # OPS-05
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -1774,363 +1775,350 @@ class TradeSimulator:
 
         closed_count = 0
         tsl_moved: list = []   # сделки где TSL активен и SL-цена изменилась
-        for trade in open_trades:
-            trade_id = trade["id"]
-            symbol = trade["symbol"]
-            direction = (trade["direction"] or "").upper()
-            # Системный фикс sim_only режима: order_manager возвращает "SIM" как
-            # exchange_order_id для sim-сделок. Без этой проверки LIVE-GUARD считал
-            # их биржевыми и блокировал close → 200+ stuck OPEN в strip-боте.
-            # vst/live: _exch_id — реальный order_id, поведение не меняется.
-            _exch_id = trade.get("exchange_order_id")
-            _exchange_managed_trade = bool(_exch_id) and _exch_id != "SIM"
-            entry = float(trade["entry_price"])
-            sl = trade["stop_loss"]
-            tp = trade["take_profit"]
-            tp1_price  = trade.get("tp1_price")
-            tp1_hit_at = trade.get("tp1_hit_at")
-            tp2_price  = trade.get("tp2_price")
-            tp2_hit_at = trade.get("tp2_hit_at")
-            tp3_price  = trade.get("tp3_price")
-            tp3_hit_at = trade.get("tp3_hit_at")
-            if sl is not None:
-                sl = float(sl)
-            if tp is not None:
-                tp = float(tp)
-            if tp1_price is not None:
-                tp1_price = float(tp1_price)
-            if tp2_price is not None:
-                tp2_price = float(tp2_price)
-            if tp3_price is not None:
-                tp3_price = float(tp3_price)
+        # OPS-05: параллелизация check_open (gather+Semaphore) — лечит saturation
+        from core.infra.config_loader import config as _ops05_cfg
+        _sem_n = int(_ops05_cfg.get('performance.check_open_semaphore', 15)) if _ops05_cfg else 15
+        _sem = asyncio.Semaphore(_sem_n)
+        if getattr(self, '_ops05_piv_lock', None) is None:
+            self._ops05_piv_lock = asyncio.Lock()
 
-            created_at = trade["created_at"]
-            try:
-                if isinstance(created_at, str):
-                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                else:
-                    created_dt = created_at
-                if created_dt.tzinfo is None:
-                    created_dt = created_dt.replace(tzinfo=timezone.utc)
-            except Exception:
-                created_dt = datetime.now(timezone.utc)
+        async def _proc(trade):
+            _ops05c = 0
+            _ops05tsl = []
+            async with _sem:
+                trade_id = trade["id"]
+                symbol = trade["symbol"]
+                direction = (trade["direction"] or "").upper()
+                # Системный фикс sim_only режима: order_manager возвращает "SIM" как
+                # exchange_order_id для sim-сделок. Без этой проверки LIVE-GUARD считал
+                # их биржевыми и блокировал close → 200+ stuck OPEN в strip-боте.
+                # vst/live: _exch_id — реальный order_id, поведение не меняется.
+                _exch_id = trade.get("exchange_order_id")
+                _exchange_managed_trade = bool(_exch_id) and _exch_id != "SIM"
+                entry = float(trade["entry_price"])
+                sl = trade["stop_loss"]
+                tp = trade["take_profit"]
+                tp1_price  = trade.get("tp1_price")
+                tp1_hit_at = trade.get("tp1_hit_at")
+                tp2_price  = trade.get("tp2_price")
+                tp2_hit_at = trade.get("tp2_hit_at")
+                tp3_price  = trade.get("tp3_price")
+                tp3_hit_at = trade.get("tp3_hit_at")
+                if sl is not None:
+                    sl = float(sl)
+                if tp is not None:
+                    tp = float(tp)
+                if tp1_price is not None:
+                    tp1_price = float(tp1_price)
+                if tp2_price is not None:
+                    tp2_price = float(tp2_price)
+                if tp3_price is not None:
+                    tp3_price = float(tp3_price)
 
-            now = datetime.now(timezone.utc)
-            age_minutes = (now - created_dt).total_seconds() / 60.0
-
-            # DS-322: throttle REPAIR-SL — старые SIM-сделки без exchange SL не чинятся,
-            # только жрут OHLCV. Проверяем раз в час, не каждый цикл.
-            _exch_sl = trade.get("exchange_sl_order_id")
-            _now_ts = time.time()
-            if (not trade.get("tsl_activated") and not _exch_sl and age_minutes > 60):
-                _last_check = self._repair_checked.get(trade_id, 0)
-                if _now_ts - _last_check < 3600:
-                    continue  # throttle: проверяли < 1ч назад
-
-            tf = trade.get("timeframe") or DEFAULT_TIMEFRAME
-
-            # WS pre-filter: если WsFeed даёт цену — проверим, нужен ли вообще REST
-            # Пропускаем OHLCV-fetch если цена далеко от всех уровней (экономим REST)
-            _sl_level  = trade.get("stop_loss")
-            _tp_level  = trade.get("take_profit")
-            _tsl_level = trade.get("tsl_price")
-            _dir       = trade.get("direction", "LONG")
-            _ws_price  = None
-            if hasattr(data_collector, "get_current_price"):
+                created_at = trade["created_at"]
                 try:
-                    _ws_price = await data_collector.get_current_price(symbol)
-                except Exception:
-                    pass
-            # DEV-TSL-PREFILTER: TSL-активированные сделки ВСЕГДА проверяем —
-            # TSL нужно двигать когда цена уходит В ПРОФИТ (прочь от стопа), а не к нему.
-            # Старый фильтр "пропускаем если далеко от SL/TP" глушил TSL-трекинг.
-            _tsl_active_pre = bool(trade.get("tsl_activated"))
-            if _ws_price and _sl_level and _tp_level and not _tsl_active_pre:
-                _sl_f, _tp_f = float(_sl_level), float(_tp_level)
-                _tsl_f = float(_tsl_level) if _tsl_level else None
-                # Буфер 0.5% — если цена далеко от всех уровней, пропускаем тяжёлый REST
-                _buf = _ws_price * 0.005
-                _near_sl  = abs(_ws_price - _sl_f) <= _buf
-                _near_tp  = abs(_ws_price - _tp_f) <= _buf
-                _near_tsl = _tsl_f is not None and abs(_ws_price - _tsl_f) <= _buf
-                # Для LONG: SL пробит если цена НИЖЕ SL
-                _sl_hit_ws = (_dir == "LONG" and _ws_price <= _sl_f + _buf) or \
-                             (_dir == "SHORT" and _ws_price >= _sl_f - _buf)
-                _tp_hit_ws = (_dir == "LONG" and _ws_price >= _tp_f - _buf) or \
-                             (_dir == "SHORT" and _ws_price <= _tp_f + _buf)
-                # DEV-226: НЕ пропускать сделку, уже достигшую порога ранней активации.
-                # TSL/BE/MTF-220 триггерят от 0.3R (см. early-MTF gate ниже: max(act_r*0.5, 0.3)).
-                # Без этого сделка в глубоком профите, но далеко от SL и TP ("мёртвая зона"
-                # фильтра), навсегда остаётся tsl_activated=0 — pre-filter каждый цикл делает
-                # continue ДО блока активации. Инцидент: UNI +2.25R / BERA +2.58R с tsl=0.
-                _early_r_ws = None
-                _osl_pre = trade.get("original_sl")
-                _osl_pre_v = float(_osl_pre) if _osl_pre is not None else _sl_f
-                if _osl_pre_v and _osl_pre_v != entry:
-                    _one_r_pre = abs(entry - _osl_pre_v)
-                    if _one_r_pre > 0:
-                        _early_r_ws = ((_ws_price - entry) if _dir == "LONG"
-                                       else (entry - _ws_price)) / _one_r_pre
-                _profit_for_activation = _early_r_ws is not None and _early_r_ws >= 0.3
-                if not (_near_sl or _near_tp or _near_tsl or _sl_hit_ws or _tp_hit_ws
-                        or _profit_for_activation):
-                    logger.debug("[WS-skip] %s price=%.4f далеко от SL/TP/TSL — пропуск REST",
-                                 symbol, _ws_price)
-                    continue  # цена далеко — этот цикл пропускаем, следующий догонит
-
-            try:
-                df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200)
-            except Exception as e:
-                logger.debug(f"TradeSimulator: get_ohlcv {symbol} — {e}")
-                df = None
-
-            # DEV-227 stale-guard: WS-кэш может быть ОТРАВЛЕН — последний бар имеет свежий
-            # timestamp (текущий формирующийся бар), но цены в нём устаревшие, т.к. WS-обновление
-            # символа умерло (UNI/BERA: ohlcv timeout). Детект по возрасту бара бесполезен (бар
-            # «свежий» по времени). current_r считается по stale цене → TSL/BE не активируются
-            # (UNI: бот видит +0.41R при реальных +2.29R). Решение: для НЕ-активированных OPEN
-            # периодически (throttle 150с/сделку) форсим реальный REST в обход кэша+circuit breaker.
-            # Если df пуст/None — форсим всегда. Активированные идут обычным путём (TSL уже трекается).
-            _now_ts = datetime.now(timezone.utc).timestamp()
-            _need_force = df is None or len(df) == 0
-            if not _need_force and not bool(trade.get("tsl_activated")):
-                if (_now_ts - self._force_rest_ts.get(trade_id, 0.0)) > 150:
-                    _need_force = True
-            if _need_force:
-                self._force_rest_ts[trade_id] = _now_ts
-                try:
-                    _df_fresh = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200, force_refresh=True)
-                    if _df_fresh is not None and len(_df_fresh) > 0:
-                        df = _df_fresh
-                        logger.info("[DEV-227] %s id=%d force REST refresh (stale-guard)", symbol, trade_id)
-                except Exception as _e227:
-                    logger.debug("[DEV-227] %s force_refresh error: %s", symbol, _e227)
-
-            if df is None or len(df) == 0:
-                continue
-
-            # Оставляем только свечи после created_at
-            if "time" in df.columns:
-                df = df.copy()
-                df["time"] = pd.to_numeric(df["time"], errors="coerce")
-                try:
-                    ts_sec = created_dt.timestamp()
-                    df_filtered = df[df["time"] >= ts_sec * 1000].copy()
-                    # OPS-01a анти-#1910 (аудит 09.06): пустой фильтр = часы хоста сбиты вперёд?
-                    # РАНЬШЕ слепой continue → SL НЕ проверялся → APR висела -9.74R вместо -1R.
-                    # ТЕПЕРЬ sanity: проверяем SL по ПОСЛЕДНЕЙ свече (текущая рыночная цена, не
-                    # pre-entry бары) — стоп сработает даже при сбитых системных часах.
-                    if len(df_filtered) == 0:
-                        logger.warning(
-                            "[OPS-01a/#1910] trade %d: 0 баров после created_at (%s) — sanity-чек SL "
-                            "по текущей свече (НЕ слепой пропуск). Проверь часы хоста!",
-                            trade_id, created_at,
-                        )
-                        df = df.tail(1).copy()   # текущая свеча = рыночная цена сейчас
+                    if isinstance(created_at, str):
+                        created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     else:
-                        df = df_filtered
+                        created_dt = created_at
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    created_dt = datetime.now(timezone.utc)
+
+                now = datetime.now(timezone.utc)
+                age_minutes = (now - created_dt).total_seconds() / 60.0
+
+                # DS-322: throttle REPAIR-SL — старые SIM-сделки без exchange SL не чинятся,
+                # только жрут OHLCV. Проверяем раз в час, не каждый цикл.
+                _exch_sl = trade.get("exchange_sl_order_id")
+                _now_ts = time.time()
+                if (not trade.get("tsl_activated") and not _exch_sl and age_minutes > 60):
+                    _last_check = self._repair_checked.get(trade_id, 0)
+                    if _now_ts - _last_check < 3600:
+                        return (_ops05c, _ops05tsl)  # throttle: проверяли < 1ч назад
+
+                tf = trade.get("timeframe") or DEFAULT_TIMEFRAME
+
+                # WS pre-filter: если WsFeed даёт цену — проверим, нужен ли вообще REST
+                # Пропускаем OHLCV-fetch если цена далеко от всех уровней (экономим REST)
+                _sl_level  = trade.get("stop_loss")
+                _tp_level  = trade.get("take_profit")
+                _tsl_level = trade.get("tsl_price")
+                _dir       = trade.get("direction", "LONG")
+                _ws_price  = None
+                if hasattr(data_collector, "get_current_price"):
+                    try:
+                        _ws_price = await data_collector.get_current_price(symbol)
+                    except Exception:
+                        pass
+                # DEV-TSL-PREFILTER: TSL-активированные сделки ВСЕГДА проверяем —
+                # TSL нужно двигать когда цена уходит В ПРОФИТ (прочь от стопа), а не к нему.
+                # Старый фильтр "пропускаем если далеко от SL/TP" глушил TSL-трекинг.
+                _tsl_active_pre = bool(trade.get("tsl_activated"))
+                if _ws_price and _sl_level and _tp_level and not _tsl_active_pre:
+                    _sl_f, _tp_f = float(_sl_level), float(_tp_level)
+                    _tsl_f = float(_tsl_level) if _tsl_level else None
+                    # Буфер 0.5% — если цена далеко от всех уровней, пропускаем тяжёлый REST
+                    _buf = _ws_price * 0.005
+                    _near_sl  = abs(_ws_price - _sl_f) <= _buf
+                    _near_tp  = abs(_ws_price - _tp_f) <= _buf
+                    _near_tsl = _tsl_f is not None and abs(_ws_price - _tsl_f) <= _buf
+                    # Для LONG: SL пробит если цена НИЖЕ SL
+                    _sl_hit_ws = (_dir == "LONG" and _ws_price <= _sl_f + _buf) or \
+                                 (_dir == "SHORT" and _ws_price >= _sl_f - _buf)
+                    _tp_hit_ws = (_dir == "LONG" and _ws_price >= _tp_f - _buf) or \
+                                 (_dir == "SHORT" and _ws_price <= _tp_f + _buf)
+                    # DEV-226: НЕ пропускать сделку, уже достигшую порога ранней активации.
+                    # TSL/BE/MTF-220 триггерят от 0.3R (см. early-MTF gate ниже: max(act_r*0.5, 0.3)).
+                    # Без этого сделка в глубоком профите, но далеко от SL и TP ("мёртвая зона"
+                    # фильтра), навсегда остаётся tsl_activated=0 — pre-filter каждый цикл делает
+                    # continue ДО блока активации. Инцидент: UNI +2.25R / BERA +2.58R с tsl=0.
+                    _early_r_ws = None
+                    _osl_pre = trade.get("original_sl")
+                    _osl_pre_v = float(_osl_pre) if _osl_pre is not None else _sl_f
+                    if _osl_pre_v and _osl_pre_v != entry:
+                        _one_r_pre = abs(entry - _osl_pre_v)
+                        if _one_r_pre > 0:
+                            _early_r_ws = ((_ws_price - entry) if _dir == "LONG"
+                                           else (entry - _ws_price)) / _one_r_pre
+                    _profit_for_activation = _early_r_ws is not None and _early_r_ws >= 0.3
+                    if not (_near_sl or _near_tp or _near_tsl or _sl_hit_ws or _tp_hit_ws
+                            or _profit_for_activation):
+                        logger.debug("[WS-skip] %s price=%.4f далеко от SL/TP/TSL — пропуск REST",
+                                     symbol, _ws_price)
+                        return (_ops05c, _ops05tsl)  # цена далеко — этот цикл пропускаем, следующий догонит
+
+                try:
+                    df = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200)
+                except Exception as e:
+                    logger.debug(f"TradeSimulator: get_ohlcv {symbol} — {e}")
+                    df = None
+
+                # DEV-227 stale-guard: WS-кэш может быть ОТРАВЛЕН — последний бар имеет свежий
+                # timestamp (текущий формирующийся бар), но цены в нём устаревшие, т.к. WS-обновление
+                # символа умерло (UNI/BERA: ohlcv timeout). Детект по возрасту бара бесполезен (бар
+                # «свежий» по времени). current_r считается по stale цене → TSL/BE не активируются
+                # (UNI: бот видит +0.41R при реальных +2.29R). Решение: для НЕ-активированных OPEN
+                # периодически (throttle 150с/сделку) форсим реальный REST в обход кэша+circuit breaker.
+                # Если df пуст/None — форсим всегда. Активированные идут обычным путём (TSL уже трекается).
+                _now_ts = datetime.now(timezone.utc).timestamp()
+                _need_force = df is None or len(df) == 0
+                if not _need_force and not bool(trade.get("tsl_activated")):
+                    if (_now_ts - self._force_rest_ts.get(trade_id, 0.0)) > 150:
+                        _need_force = True
+                if _need_force:
+                    self._force_rest_ts[trade_id] = _now_ts
+                    try:
+                        _df_fresh = await data_collector.get_ohlcv(symbol, timeframe=tf, limit=200, force_refresh=True)
+                        if _df_fresh is not None and len(_df_fresh) > 0:
+                            df = _df_fresh
+                            logger.info("[DEV-227] %s id=%d force REST refresh (stale-guard)", symbol, trade_id)
+                    except Exception as _e227:
+                        logger.debug("[DEV-227] %s force_refresh error: %s", symbol, _e227)
+
+                if df is None or len(df) == 0:
+                    return (_ops05c, _ops05tsl)
+
+                # Оставляем только свечи после created_at
+                if "time" in df.columns:
+                    df = df.copy()
+                    df["time"] = pd.to_numeric(df["time"], errors="coerce")
+                    try:
+                        ts_sec = created_dt.timestamp()
+                        df_filtered = df[df["time"] >= ts_sec * 1000].copy()
+                        # OPS-01a анти-#1910 (аудит 09.06): пустой фильтр = часы хоста сбиты вперёд?
+                        # РАНЬШЕ слепой continue → SL НЕ проверялся → APR висела -9.74R вместо -1R.
+                        # ТЕПЕРЬ sanity: проверяем SL по ПОСЛЕДНЕЙ свече (текущая рыночная цена, не
+                        # pre-entry бары) — стоп сработает даже при сбитых системных часах.
+                        if len(df_filtered) == 0:
+                            logger.warning(
+                                "[OPS-01a/#1910] trade %d: 0 баров после created_at (%s) — sanity-чек SL "
+                                "по текущей свече (НЕ слепой пропуск). Проверь часы хоста!",
+                                trade_id, created_at,
+                            )
+                            df = df.tail(1).copy()   # текущая свеча = рыночная цена сейчас
+                        else:
+                            df = df_filtered
+                    except Exception:
+                        pass
+                if len(df) == 0:
+                    return (_ops05c, _ops05tsl)
+
+                # Расчет текущего R-multiple для проверки активации TSL
+                current_price = df.iloc[-1]["close"]
+
+                # DEV-92: инвалидация _post_tsl_queue по пробою impulse
+                _q92 = self._post_tsl_queue.get(symbol)
+                if _q92:
+                    _imp_h92 = _q92.get("impulse_high")
+                    _imp_l92 = _q92.get("impulse_low")
+                    if _q92["direction"] == "SHORT" and _imp_h92 and current_price > _imp_h92:
+                        logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_high %.4f",
+                                     symbol, _imp_h92)
+                        del self._post_tsl_queue[symbol]
+                    elif _q92["direction"] == "LONG" and _imp_l92 and current_price < _imp_l92:
+                        logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_low %.4f",
+                                     symbol, _imp_l92)
+                        del self._post_tsl_queue[symbol]
+                # DEV-TSL-R: current_r всегда от original_sl (не от TSL'нутого stop_loss).
+                # Иначе после подтяжки SL к BE one_r→0, current_r→∞ → нестабильный гейт активации.
+                current_r = None
+                _orig_sl_val = trade.get("original_sl")
+                _sl_for_r = float(_orig_sl_val) if _orig_sl_val is not None else sl
+                if _sl_for_r is not None and _sl_for_r != entry:
+                    one_r = abs(entry - _sl_for_r)
+                    if direction == "LONG":
+                        current_r = (current_price - entry) / one_r
+                    else:
+                        current_r = (entry - current_price) / one_r
+                    # DEV-226 слой 2: cross-source R — защита от stale 15m OHLCV-кэша.
+                    # При сбоях WS OHLCV-обновления (UNI/BERA: Connection timeout) fetch_ohlcv
+                    # отдаёт протухший df → current_r по df.close занижен (UNI: stale +0.41R при
+                    # реальных +2.15R) → триггеры gate TSL/BE/cascade не срабатывают. _ws_price
+                    # (get_current_price: WS ticker / 1m кэш) — отдельный, более свежий источник.
+                    # Корректируем заниженный R вверх (профит реален → защита включается вовремя).
+                    # Экзиты SL/TP не затрагиваются — они идут отдельно по свече (current_price).
+                    if _ws_price and one_r > 0:
+                        _r_ws_gate = ((_ws_price - entry) if direction == "LONG"
+                                      else (entry - _ws_price)) / one_r
+                        if current_r is None or _r_ws_gate > current_r:
+                            current_r = _r_ws_gate
+
+                # DEV-40: Безубыток — перенести SL в entry ± 0.1% после достижения breakeven_activation_r
+                # use_be_after_tp1: альтернативный триггер — BE при хите TP1 (независимо от R)
+                be_activated = bool(trade.get("be_activated"))
+                _be_trigger_r = (use_breakeven and not be_activated and current_r is not None and current_r >= breakeven_activation_r)
+                _be_trigger_tp1 = (use_be_after_tp1 and not be_activated and tp1_hit_at is not None)
+                if (_be_trigger_r or _be_trigger_tp1) and sl is not None:
+                    from core.trading.tsl_engine import breakeven_sl as _be_calc
+                    be_sl = _be_calc(direction, entry)
+                    should_move = (
+                        (direction == "LONG" and sl < be_sl) or
+                        (direction == "SHORT" and sl > be_sl)
+                    )
+                    if should_move:
+                        try:
+                            with self._db_connect() as _c:
+                                _c.execute(
+                                    "UPDATE simulated_trades SET stop_loss=?, be_activated=1 WHERE id=? AND status=?",
+                                    (be_sl, trade_id, STATUS_OPEN),
+                                )
+                                _c.commit()
+                            sl = be_sl
+                            be_activated = True
+                            logger.info("[DEV-40] Breakeven %s id=%d sl→%.6f (R=%.2f)", symbol, trade_id, be_sl, current_r)
+                        except Exception as _be_e:
+                            logger.debug("[DEV-40] breakeven update error: %s", _be_e)
+
+                # TSL логика
+                tsl_triggered = False
+                tsl_price = None
+
+                # DEV-73: TSL активируется по current_r для ВСЕХ стратегий (был баг: DUAL/TRIPLE ждали tp1_hit_at)
+                _strategy_type = trade.get("strategy_type", "SINGLE")
+                _is_multi_tp = _strategy_type in ("DUAL_TP", "TRIPLE_TP_TSL")
+                # DEV-122: RANGE — активируем TSL раньше (tsl_activation_r_range=0.7)
+                _trade_regime = trade.get("regime", "")
+                _tsl_act_r = tsl_activation_r
+                try:
+                    from core.infra.config_loader import config as _cfg_tsl
+                    if _trade_regime == "RANGE":
+                        _tsl_act_r = float(_cfg_tsl.get("trading.tsl_activation_r_range", tsl_activation_r))
+                    # Рой-консенсус: per-strategy пороги (pivot=0.5R, wt_b=0.8R, wt_signal=1.0R, atr_change=1.5R)
+                    _sig_type_trade = trade.get("signal_type", "")
+                    _per_strategy_tsl = _cfg_tsl.get("trading.tsl_activation_r_per_strategy", {})
+                    if _sig_type_trade and isinstance(_per_strategy_tsl, dict) and _sig_type_trade in _per_strategy_tsl:
+                        _tsl_act_r = float(_per_strategy_tsl[_sig_type_trade])
                 except Exception:
                     pass
-            if len(df) == 0:
-                continue
-
-            # Расчет текущего R-multiple для проверки активации TSL
-            current_price = df.iloc[-1]["close"]
-
-            # DEV-92: инвалидация _post_tsl_queue по пробою impulse
-            _q92 = self._post_tsl_queue.get(symbol)
-            if _q92:
-                _imp_h92 = _q92.get("impulse_high")
-                _imp_l92 = _q92.get("impulse_low")
-                if _q92["direction"] == "SHORT" and _imp_h92 and current_price > _imp_h92:
-                    logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_high %.4f",
-                                 symbol, _imp_h92)
-                    del self._post_tsl_queue[symbol]
-                elif _q92["direction"] == "LONG" and _imp_l92 and current_price < _imp_l92:
-                    logger.debug("[POST_TSL_QUEUE] %s: удалён — пробой impulse_low %.4f",
-                                 symbol, _imp_l92)
-                    del self._post_tsl_queue[symbol]
-            # DEV-TSL-R: current_r всегда от original_sl (не от TSL'нутого stop_loss).
-            # Иначе после подтяжки SL к BE one_r→0, current_r→∞ → нестабильный гейт активации.
-            current_r = None
-            _orig_sl_val = trade.get("original_sl")
-            _sl_for_r = float(_orig_sl_val) if _orig_sl_val is not None else sl
-            if _sl_for_r is not None and _sl_for_r != entry:
-                one_r = abs(entry - _sl_for_r)
-                if direction == "LONG":
-                    current_r = (current_price - entry) / one_r
-                else:
-                    current_r = (entry - current_price) / one_r
-                # DEV-226 слой 2: cross-source R — защита от stale 15m OHLCV-кэша.
-                # При сбоях WS OHLCV-обновления (UNI/BERA: Connection timeout) fetch_ohlcv
-                # отдаёт протухший df → current_r по df.close занижен (UNI: stale +0.41R при
-                # реальных +2.15R) → триггеры gate TSL/BE/cascade не срабатывают. _ws_price
-                # (get_current_price: WS ticker / 1m кэш) — отдельный, более свежий источник.
-                # Корректируем заниженный R вверх (профит реален → защита включается вовремя).
-                # Экзиты SL/TP не затрагиваются — они идут отдельно по свече (current_price).
-                if _ws_price and one_r > 0:
-                    _r_ws_gate = ((_ws_price - entry) if direction == "LONG"
-                                  else (entry - _ws_price)) / one_r
-                    if current_r is None or _r_ws_gate > current_r:
-                        current_r = _r_ws_gate
-
-            # DEV-40: Безубыток — перенести SL в entry ± 0.1% после достижения breakeven_activation_r
-            # use_be_after_tp1: альтернативный триггер — BE при хите TP1 (независимо от R)
-            be_activated = bool(trade.get("be_activated"))
-            _be_trigger_r = (use_breakeven and not be_activated and current_r is not None and current_r >= breakeven_activation_r)
-            _be_trigger_tp1 = (use_be_after_tp1 and not be_activated and tp1_hit_at is not None)
-            if (_be_trigger_r or _be_trigger_tp1) and sl is not None:
-                from core.trading.tsl_engine import breakeven_sl as _be_calc
-                be_sl = _be_calc(direction, entry)
-                should_move = (
-                    (direction == "LONG" and sl < be_sl) or
-                    (direction == "SHORT" and sl > be_sl)
-                )
-                if should_move:
+                _tsl_gate = (current_r is not None and current_r >= _tsl_act_r)
+                # DEV-220: MTF событийная активация — при R >= порог*0.5 + 1h ATR-trend подтверждает
+                # Рой-консенсус: не ждём жёсткий +R, а смотрим на структуру старшего ТФ
+                if use_tsl and not _tsl_gate and current_r is not None and current_r >= max(_tsl_act_r * 0.5, 0.3):
+                    try:
+                        from core.indicators.indicators import calculate_trend as _calc_trend_mtf
+                        from core.infra.config_loader import config as _cfg_mtf220
+                        _mtf220_atr_p = int(_cfg_mtf220.get("analysis.indicators.trend.atr_period", 43))
+                        _mtf220_factor = float(_cfg_mtf220.get("analysis.indicators.trend.factor", 1.0))
+                        _df_1h_mtf = await data_collector.get_ohlcv(symbol, "1h", limit=55)
+                        if _df_1h_mtf is not None and len(_df_1h_mtf) >= 50:
+                            _df_1h_tr = _calc_trend_mtf(_df_1h_mtf, atr_period=_mtf220_atr_p, factor=_mtf220_factor)
+                            _1h_trend_now = int(_df_1h_tr["trend"].iloc[-1])
+                            _1h_trend_prev = int(_df_1h_tr["trend"].iloc[-2]) if len(_df_1h_tr) >= 2 else _1h_trend_now
+                            _1h_flip = (_1h_trend_now != _1h_trend_prev)
+                            _1h_align = (
+                                (direction == "LONG" and _1h_trend_now == 1) or
+                                (direction == "SHORT" and _1h_trend_now == -1)
+                            )
+                            if _1h_align:
+                                _tsl_gate = True
+                                logger.info(
+                                    "[DEV-220] %s id=%d MTF early TSL: R=%.2f>=%.2f*0.5 + 1h %s%s",
+                                    symbol, trade_id, current_r, _tsl_act_r,
+                                    "trend align", " (flip!)" if _1h_flip else "",
+                                )
+                    except Exception:
+                        pass
+                if use_tsl and _tsl_gate:
+                    # Активируем TSL после достижения прибыли — помечаем в БД
+                    _tsl_just_activated = False
                     try:
                         with self._db_connect() as _c:
-                            _c.execute(
-                                "UPDATE simulated_trades SET stop_loss=?, be_activated=1 WHERE id=? AND status=?",
-                                (be_sl, trade_id, STATUS_OPEN),
+                            _cur = _c.execute(
+                                "UPDATE simulated_trades SET tsl_activated=1 WHERE id=? AND tsl_activated=0",
+                                (trade_id,),
                             )
                             _c.commit()
-                        sl = be_sl
-                        be_activated = True
-                        logger.info("[DEV-40] Breakeven %s id=%d sl→%.6f (R=%.2f)", symbol, trade_id, be_sl, current_r)
-                    except Exception as _be_e:
-                        logger.debug("[DEV-40] breakeven update error: %s", _be_e)
+                            _tsl_just_activated = _cur.rowcount > 0
+                    except Exception:
+                        pass
 
-            # TSL логика
-            tsl_triggered = False
-            tsl_price = None
-
-            # DEV-73: TSL активируется по current_r для ВСЕХ стратегий (был баг: DUAL/TRIPLE ждали tp1_hit_at)
-            _strategy_type = trade.get("strategy_type", "SINGLE")
-            _is_multi_tp = _strategy_type in ("DUAL_TP", "TRIPLE_TP_TSL")
-            # DEV-122: RANGE — активируем TSL раньше (tsl_activation_r_range=0.7)
-            _trade_regime = trade.get("regime", "")
-            _tsl_act_r = tsl_activation_r
-            try:
-                from core.infra.config_loader import config as _cfg_tsl
-                if _trade_regime == "RANGE":
-                    _tsl_act_r = float(_cfg_tsl.get("trading.tsl_activation_r_range", tsl_activation_r))
-                # Рой-консенсус: per-strategy пороги (pivot=0.5R, wt_b=0.8R, wt_signal=1.0R, atr_change=1.5R)
-                _sig_type_trade = trade.get("signal_type", "")
-                _per_strategy_tsl = _cfg_tsl.get("trading.tsl_activation_r_per_strategy", {})
-                if _sig_type_trade and isinstance(_per_strategy_tsl, dict) and _sig_type_trade in _per_strategy_tsl:
-                    _tsl_act_r = float(_per_strategy_tsl[_sig_type_trade])
-            except Exception:
-                pass
-            _tsl_gate = (current_r is not None and current_r >= _tsl_act_r)
-            # DEV-220: MTF событийная активация — при R >= порог*0.5 + 1h ATR-trend подтверждает
-            # Рой-консенсус: не ждём жёсткий +R, а смотрим на структуру старшего ТФ
-            if use_tsl and not _tsl_gate and current_r is not None and current_r >= max(_tsl_act_r * 0.5, 0.3):
-                try:
-                    from core.indicators.indicators import calculate_trend as _calc_trend_mtf
-                    from core.infra.config_loader import config as _cfg_mtf220
-                    _mtf220_atr_p = int(_cfg_mtf220.get("analysis.indicators.trend.atr_period", 43))
-                    _mtf220_factor = float(_cfg_mtf220.get("analysis.indicators.trend.factor", 1.0))
-                    _df_1h_mtf = await data_collector.get_ohlcv(symbol, "1h", limit=55)
-                    if _df_1h_mtf is not None and len(_df_1h_mtf) >= 50:
-                        _df_1h_tr = _calc_trend_mtf(_df_1h_mtf, atr_period=_mtf220_atr_p, factor=_mtf220_factor)
-                        _1h_trend_now = int(_df_1h_tr["trend"].iloc[-1])
-                        _1h_trend_prev = int(_df_1h_tr["trend"].iloc[-2]) if len(_df_1h_tr) >= 2 else _1h_trend_now
-                        _1h_flip = (_1h_trend_now != _1h_trend_prev)
-                        _1h_align = (
-                            (direction == "LONG" and _1h_trend_now == 1) or
-                            (direction == "SHORT" and _1h_trend_now == -1)
-                        )
-                        if _1h_align:
-                            _tsl_gate = True
-                            logger.info(
-                                "[DEV-220] %s id=%d MTF early TSL: R=%.2f>=%.2f*0.5 + 1h %s%s",
-                                symbol, trade_id, current_r, _tsl_act_r,
-                                "trend align", " (flip!)" if _1h_flip else "",
-                            )
-                except Exception:
-                    pass
-            if use_tsl and _tsl_gate:
-                # Активируем TSL после достижения прибыли — помечаем в БД
-                _tsl_just_activated = False
-                try:
-                    with self._db_connect() as _c:
-                        _cur = _c.execute(
-                            "UPDATE simulated_trades SET tsl_activated=1 WHERE id=? AND tsl_activated=0",
-                            (trade_id,),
-                        )
-                        _c.commit()
-                        _tsl_just_activated = _cur.rowcount > 0
-                except Exception:
-                    pass
-
-                # DEV-223: TG алерт при первой активации TSL
-                if _tsl_just_activated and self._tg_tsl_alert_callback:
-                    try:
-                        import asyncio as _aio_tsl
-                        _aio_tsl.create_task(self._tg_tsl_alert_callback(
-                            trade_id=trade_id,
-                            symbol=symbol,
-                            direction=direction,
-                            current_r=current_r,
-                            tsl_tf=tf,
-                        ))
-                    except Exception as _etsl:
-                        logger.debug("[DEV-223] tg_tsl_alert error: %s", _etsl)
-
-                try:
-                    from core.indicators.indicators import calculate_trend, get_trend_info
-                    from core.infra.config_loader import config as _cfg_trend
-                    _tsl_atr_p = int(_cfg_trend.get("analysis.indicators.trend.atr_period", 43))
-                    _tsl_factor = float(_cfg_trend.get("analysis.indicators.trend.factor", 1.0))
-
-                    df_tsl = None
-                    tsl_tf_used = tf
-                    _ob_force_close = False  # DEV-221: OB return при де-эскалации
-                    # DS-321: гибрид включён?
-                    _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
-
-                    if cascade_tsl:
-                        # Каскадный TSL (ARCH-10 + DEV-28): двунаправленный каскад.
-                        # Эскалация: 15m → 1h → 4h при подтверждении тренда.
-                        # Де-эскалация: 4h → 1h при R>=N и истощении WT (DEV-28).
-                        _CASCADE_TFS = get_cascade_tfs(DEFAULT_TIMEFRAME)
-                        prev_tsl_tf = trade.get("tsl_tf") or DEFAULT_TIMEFRAME
-                        best_tsl_tf = None
-
-                        # Читаем флаг де-эскалации из features_json
-                        _feat_js: dict = {}
+                    # DEV-223: TG алерт при первой активации TSL
+                    if _tsl_just_activated and self._tg_tsl_alert_callback:
                         try:
-                            _feat_js = json.loads(trade.get("features_json") or "{}")
-                        except Exception:
-                            pass
-                        _tsl_degraded = bool(_feat_js.get("tsl_degraded", False))
+                            import asyncio as _aio_tsl
+                            _aio_tsl.create_task(self._tg_tsl_alert_callback(
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                direction=direction,
+                                current_r=current_r,
+                                tsl_tf=tf,
+                            ))
+                        except Exception as _etsl:
+                            logger.debug("[DEV-223] tg_tsl_alert error: %s", _etsl)
 
-                        if _tsl_degraded:
-                            # После де-эскалации — используем сохранённый ТФ, не повышаем.
-                            _ctf = prev_tsl_tf
+                    try:
+                        from core.indicators.indicators import calculate_trend, get_trend_info
+                        from core.infra.config_loader import config as _cfg_trend
+                        _tsl_atr_p = int(_cfg_trend.get("analysis.indicators.trend.atr_period", 43))
+                        _tsl_factor = float(_cfg_trend.get("analysis.indicators.trend.factor", 1.0))
+
+                        df_tsl = None
+                        tsl_tf_used = tf
+                        _ob_force_close = False  # DEV-221: OB return при де-эскалации
+                        # DS-321: гибрид включён?
+                        _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
+
+                        if cascade_tsl:
+                            # Каскадный TSL (ARCH-10 + DEV-28): двунаправленный каскад.
+                            # Эскалация: 15m → 1h → 4h при подтверждении тренда.
+                            # Де-эскалация: 4h → 1h при R>=N и истощении WT (DEV-28).
+                            _CASCADE_TFS = get_cascade_tfs(DEFAULT_TIMEFRAME)
+                            prev_tsl_tf = trade.get("tsl_tf") or DEFAULT_TIMEFRAME
+                            best_tsl_tf = None
+
+                            # Читаем флаг де-эскалации из features_json
+                            _feat_js: dict = {}
                             try:
-                                df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
-                                if df_c is not None and len(df_c) >= 50:
-                                    df_c_trend = calculate_trend(df_c, atr_period=_tsl_atr_p, factor=_tsl_factor)
-                                    trend_val = int(df_c_trend["trend"].iloc[-1])
-                                    if (direction == "LONG" and trend_val == 1) or \
-                                       (direction == "SHORT" and trend_val == -1):
-                                        best_tsl_tf = _ctf
-                                        df_tsl = df_c_trend
+                                _feat_js = json.loads(trade.get("features_json") or "{}")
                             except Exception:
                                 pass
-                        else:
-                            # ARCH-62 Шаг 1: cap_tf после tp1_hit — не эскалировать выше "1h"
-                            from core.trading.cascade_tsl import get_cascade_cap_tf
-                            _tp1_hit_now = bool(trade.get("tp1_hit_at"))
-                            _cap_tf = get_cascade_cap_tf(_tp1_hit_now, _cfg_trend)
-                            _cascade_tfs_capped = (
-                                [t for t in _CASCADE_TFS if _CASCADE_TFS.index(t) <= _CASCADE_TFS.index(_cap_tf)]
-                                if _cap_tf and _cap_tf in _CASCADE_TFS else _CASCADE_TFS
-                            )
+                            _tsl_degraded = bool(_feat_js.get("tsl_degraded", False))
 
-                            # Нормальная эскалация: самый старший ТФ где тренд совпадает.
-                            for _ctf in _cascade_tfs_capped:
+                            if _tsl_degraded:
+                                # После де-эскалации — используем сохранённый ТФ, не повышаем.
+                                _ctf = prev_tsl_tf
                                 try:
                                     df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
                                     if df_c is not None and len(df_c) >= 50:
@@ -2142,627 +2130,658 @@ class TradeSimulator:
                                             df_tsl = df_c_trend
                                 except Exception:
                                     pass
-
-                            # ── DEV-28: Де-эскалация при истощении импульса ──────────
-                            # Условия: R >= порога AND WT на текущем ТФ исчерпан
-                            # AND младший ТФ даёт более тесный TSL.
-                            try:
-                                from core.infra.config_loader import config as _cfg_ts
-                                _de_esc_r = float(_cfg_ts.get("trading.cascade_tsl_deescalation_r", 5.0))
-                                _wt_ob = float(_cfg_ts.get("analysis.indicators.wavetrend.ob_threshold", 60.0))
-                                _wt_os = float(_cfg_ts.get("analysis.indicators.wavetrend.os_threshold", -60.0))
-                            except Exception:
-                                _de_esc_r, _wt_ob, _wt_os = 5.0, 60.0, -60.0
-
-                            # ── DEV-106: Pivot Touch Fast Exit → force 15m TSL ──────
-                            # Weekly OR Monthly pivot touch + R >= 2.0 → прыжок на 15m напрямую.
-                            # Анализ 512 TSL сделок: pivot touch захватывал 58% пика (avg 4.1R из 7.8R max).
-                            # При force 15m: +2.44R avg на 181 сделке (лучше 165, хуже только 16).
-                            # 1M R1/R2/R3 исключены — они пробойные, не разворотные (данные).
-                            _pivot_tsl_already = _feat_js.get("pivot_tsl_15m", False)
-                            if (best_tsl_tf is not None and current_r is not None and
-                                    current_r >= 2.0 and not _pivot_tsl_already and
-                                    best_tsl_tf != "15m"):
-                                _near_w106 = False
-                                _near_m106 = False
-                                try:
-                                    from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF106
-                                    if self._pivot_calc is None:
-                                        self._pivot_calc = _PCF106(db_path=self.db_path)
-                                    def _pw106(lvl, price=current_price, pct=0.02):
-                                        return bool(lvl and price and abs(price - float(lvl)) / price <= pct)
-                                    # Weekly touch
-                                    _wp106 = await self._pivot_calc.get_weekly_pivots(symbol, data_collector)
-                                    if _wp106:
-                                        if direction == "SHORT":
-                                            _near_w106 = any(_pw106(_wp106.get(k)) for k in ("S1","S2","S3","PP"))
-                                        else:
-                                            _near_w106 = any(_pw106(_wp106.get(k)) for k in ("R1","R2","R3","PP"))
-                                    # Monthly touch (1M R1/R2/R3 для LONG исключены — пробойные)
-                                    _mp106 = await self._pivot_calc.get_monthly_pivots(symbol, data_collector)
-                                    if _mp106:
-                                        if direction == "SHORT":
-                                            _near_m106 = any(_pw106(_mp106.get(k)) for k in ("S1","S2","S3","PP"))
-                                        else:
-                                            _near_m106 = _pw106(_mp106.get("PP"))
-                                except Exception as _e106:
-                                    logger.debug("[DEV-106] pivot check: %s", _e106)
-
-                                if _near_w106 or _near_m106:
-                                    _touch_lbl = ("1W+1M" if (_near_w106 and _near_m106)
-                                                  else ("1W" if _near_w106 else "1M"))
-                                    try:
-                                        _df_15m_106 = await data_collector.get_ohlcv(
-                                            symbol, timeframe="15m", limit=100
-                                        )
-                                        if _df_15m_106 is not None and len(_df_15m_106) >= 50:
-                                            _df_15m_tr = calculate_trend(_df_15m_106, atr_period=_tsl_atr_p, factor=_tsl_factor)
-                                            _inf_15m = get_trend_info(_df_15m_tr)
-                                            _inf_cur = get_trend_info(df_tsl)
-                                            if (_inf_15m and _inf_cur and
-                                                    _inf_15m["tsl"] > 0 and _inf_cur["tsl"] > 0):
-                                                logger.info(
-                                                    "[DEV-106] %s: %s touch R=%.1fR → force 15m TSL "
-                                                    "(%.4f → %.4f)",
-                                                    symbol, _touch_lbl, current_r,
-                                                    _inf_cur["tsl"], _inf_15m["tsl"],
-                                                )
-                                                best_tsl_tf = "15m"
-                                                df_tsl = _df_15m_tr
-                                                _feat_js["pivot_tsl_15m"] = True
-                                                _feat_js["tsl_degraded"] = True
-                                    except Exception as _e106b:
-                                        logger.debug("[DEV-106] 15m apply: %s", _e106b)
-
-                            if (best_tsl_tf is not None and current_r is not None and
-                                    current_r >= _de_esc_r and best_tsl_tf in _CASCADE_TFS):
-                                _cas_idx = _CASCADE_TFS.index(best_tsl_tf)  # DEV-107 fix: was df_tsl (DataFrame)
-                                if _cas_idx > 0:
-                                    # DEV-89: OR логика — 4h WT ИЛИ 1h WT (фикс бага: 1h WT игнорировался)
-                                    _wt_exhausted = False
-                                    _wt1_4h = None
-                                    _wt1_1h = None
-                                    try:
-                                        from core.indicators.indicators import calculate_wt
-                                        # 4h WT (текущий df_tsl)
-                                        _df_wt_chk = calculate_wt(df_tsl)
-                                        _wt1_4h = float(_df_wt_chk["wt1"].iloc[-1])
-                                        # 1h WT (фетч)
-                                        _df_1h_wt89 = await data_collector.get_ohlcv(symbol, "1h", limit=50)
-                                        if _df_1h_wt89 is not None and len(_df_1h_wt89) >= 20:
-                                            _df_1h_wt89 = calculate_wt(_df_1h_wt89)
-                                            _wt1_1h = float(_df_1h_wt89["wt1"].iloc[-1])
-                                        # OR: истощён если 4h ИЛИ 1h
-                                        _wt_4h_exh = (
-                                            (direction == "SHORT" and _wt1_4h is not None and _wt1_4h < _wt_os) or
-                                            (direction == "LONG"  and _wt1_4h is not None and _wt1_4h > _wt_ob)
-                                        )
-                                        _wt_1h_exh = (
-                                            (direction == "SHORT" and _wt1_1h is not None and _wt1_1h < _wt_os) or
-                                            (direction == "LONG"  and _wt1_1h is not None and _wt1_1h > _wt_ob)
-                                        )
-                                        _wt_exhausted = _wt_4h_exh or _wt_1h_exh
-                                    except Exception:
-                                        pass
-
-                                    # DEV-89: weekly pivot touch — де-эскалировать у W_S/R уровней
-                                    _near_weekly = False
-                                    try:
-                                        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF89
-                                        if self._pivot_calc is None:
-                                            self._pivot_calc = _PCF89(db_path=self.db_path)
-                                        _wp89 = await self._pivot_calc.get_weekly_pivots(symbol, data_collector)
-                                        if _wp89 and current_price:
-                                            def _w89(lvl, pct=0.015):
-                                                return lvl and abs(current_price - float(lvl)) / current_price <= pct
-                                            if direction == "SHORT":
-                                                _near_weekly = any(_w89(_wp89.get(k)) for k in ("S1","S2","S3","PP"))
-                                            else:
-                                                _near_weekly = any(_w89(_wp89.get(k)) for k in ("R1","R2","R3","PP"))
-                                    except Exception as _e89w:
-                                        logger.debug("[DEV-89] weekly pivot: %s", _e89w)
-
-                                    # DEV-91: R-gradient drop — реальный триггер де-эскалации (убран shadow mode)
-                                    _r_gradient_drop = False
-                                    _max_r_achieved = 0.0
-                                    try:
-                                        from core.trading.cascade_tsl import check_r_gradient_drop
-                                        _mp_grad = trade.get("max_price")
-                                        _lp_grad = trade.get("min_price")
-                                        _sl_dist_grad = abs(entry - sl) if sl and sl > 0 else 0.0
-                                        if _sl_dist_grad > 0:
-                                            if direction == "LONG" and _mp_grad:
-                                                _max_r_achieved = (float(_mp_grad) - entry) / _sl_dist_grad
-                                            elif direction == "SHORT" and _lp_grad:
-                                                _max_r_achieved = (entry - float(_lp_grad)) / _sl_dist_grad
-                                        if current_r is not None:
-                                            _r_gradient_drop = check_r_gradient_drop(
-                                                current_r, _max_r_achieved, _cfg_ts
-                                            )
-                                    except Exception as _e91:
-                                        logger.debug("[DEV-91] r_gradient: %s", _e91)
-
-                                    # DEV-221: если r_gradient_drop И цена в OB → force close
-                                    if _r_gradient_drop and df_tsl is not None and current_price:
-                                        try:
-                                            from core.trading.cascade_tsl import is_price_in_adverse_ob
-                                            if is_price_in_adverse_ob(df_tsl, direction, current_price):
-                                                _ob_force_close = True
-                                        except Exception:
-                                            pass
-
-                                    # DEV-123: anti-degradation gate для ракет
-                                    _skip_degrade = False
-                                    try:
-                                        from core.trading.cascade_tsl import should_skip_degradation
-                                        if current_r is not None:
-                                            _skip_degrade = should_skip_degradation(
-                                                current_r, _max_r_achieved, direction,
-                                                _wt1_1h, _wt1_4h, _cfg_ts
-                                            )
-                                    except Exception as _e123:
-                                        logger.debug("[DEV-123] skip_degrade: %s", _e123)
-
-                                    if not _skip_degrade and (_wt_exhausted or _near_weekly or _r_gradient_drop):
-                                        lower_tf = _CASCADE_TFS[_cas_idx - 1]
-                                        try:
-                                            df_lower = await data_collector.get_ohlcv(
-                                                symbol, timeframe=lower_tf, limit=100
-                                            )
-                                            if df_lower is not None and len(df_lower) >= 50:
-                                                df_lower_trend = calculate_trend(df_lower, atr_period=_tsl_atr_p, factor=_tsl_factor)
-                                                _lower_info = get_trend_info(df_lower_trend)
-                                                _curr_info = get_trend_info(df_tsl)
-                                                if (_lower_info and _curr_info and
-                                                        _lower_info["tsl"] > 0 and _curr_info["tsl"] > 0):
-                                                    _lower_tsl = _lower_info["tsl"]
-                                                    _curr_tsl = _curr_info["tsl"]
-                                                    from core.trading.tsl_engine import is_tighter as _tsl_is_tighter
-                                                    _is_tighter = _tsl_is_tighter(direction, _lower_tsl, _curr_tsl)
-                                                    if _is_tighter:
-                                                        logger.info(
-                                                            "[cascade_tsl] %s: de-escalate %s → %s "
-                                                            "(R=%.1fR, WT4h=%s 1h=%s near_w=%s, TSL %.4f → %.4f тесней)",
-                                                            symbol, best_tsl_tf, lower_tf,
-                                                            current_r,
-                                                            f"{_wt1_4h:.1f}" if _wt1_4h is not None else "?",
-                                                            f"{_wt1_1h:.1f}" if _wt1_1h is not None else "?",
-                                                            
-                                                            _near_weekly, _curr_tsl, _lower_tsl,
-                                                        )
-                                                        best_tsl_tf = lower_tf
-                                                        df_tsl = df_lower_trend
-                                                        _feat_js["tsl_degraded"] = True
-                                        except Exception:
-                                            pass
-
-                        if not best_tsl_tf and _tsl_degraded:
-                            logger.info(
-                                "[cascade_tsl] %s: degraded TF %s потерял тренд → fallback entry TF",
-                                symbol, prev_tsl_tf,
-                            )
-                            # DEV-67: cascade TSL fallback при развороте тренда
-                            if df_tsl is None and prev_tsl_tf != DEFAULT_TIMEFRAME:
-                                try:
-                                    df_fallback = await data_collector.get_ohlcv(
-                                        symbol, timeframe=prev_tsl_tf, limit=100
-                                    )
-                                    if df_fallback is not None and len(df_fallback) >= 50:
-                                        df_tsl = calculate_trend(df_fallback, atr_period=_tsl_atr_p, factor=_tsl_factor)
-                                        tsl_tf_used = prev_tsl_tf
-                                        logger.info(
-                                            "[cascade_tsl] %s: trend reversed, fallback to prev_tsl_tf=%s",
-                                            symbol, prev_tsl_tf,
-                                        )
-                                except Exception:
-                                    pass
-
-                        if best_tsl_tf:
-                            tsl_tf_used = best_tsl_tf
-                            # DS-321: append hybrid gear for dashboard visibility
-                            if _use_hybrid and current_r is not None:
-                                _gear = 3 if current_r >= 4.0 else (2 if current_r >= 2.0 else 1)
-                                tsl_tf_used = f"hybrid_gear{_gear}_mfe{current_r:.1f}r"
-                            if best_tsl_tf != prev_tsl_tf:
-                                action_label = "de-escalate" if _feat_js.get("tsl_degraded") and not _tsl_degraded else "trend confirmed"
-                                logger.info(
-                                    "[cascade_tsl] %s: TSL %s → %s (%s)",
-                                    symbol, prev_tsl_tf, best_tsl_tf, action_label,
-                                )
-                                try:
-                                    with self._db_connect() as _c:
-                                        _c.execute(
-                                            "UPDATE simulated_trades SET tsl_tf=?, features_json=? WHERE id=?",
-                                            (tsl_tf_used, json.dumps(_feat_js), trade_id),
-                                        )
-                                        _c.commit()
-                                except Exception:
-                                    pass
-                    else:
-                        # Классический TSL: один предпочтительный TF
-                        preferred_tsl_tf = trade.get("tsl_tf") or DEFAULT_TIMEFRAME
-                        for _tsl_try in ([preferred_tsl_tf] if preferred_tsl_tf != tf else ["1h"]):
-                            try:
-                                df_senior = await data_collector.get_ohlcv(symbol, timeframe=_tsl_try, limit=100)
-                                if df_senior is not None and len(df_senior) >= 50:
-                                    df_senior_trend = calculate_trend(df_senior, atr_period=_tsl_atr_p, factor=_tsl_factor)
-                                    trend_val = int(df_senior_trend["trend"].iloc[-1])
-                                    if (direction == "LONG" and trend_val == 1) or \
-                                       (direction == "SHORT" and trend_val == -1):
-                                        df_tsl = df_senior_trend
-                                        tsl_tf_used = _tsl_try
-                            except Exception:
-                                pass
-                            if df_tsl is not None:
-                                break
-
-                    if df_tsl is None:
-                        # DEV-TSL-DIRGUARD: fallback на entry-TF только если тренд совпадает с direction.
-                        # Противоположный тренд даёт TSL по другую сторону цены → мгновенное срабатывание.
-                        _df_fb = calculate_trend(df, atr_period=_tsl_atr_p, factor=_tsl_factor)
-                        if len(_df_fb) > 0:
-                            _fb_trend = int(_df_fb["trend"].iloc[-1])
-                            if (direction == "LONG" and _fb_trend == 1) or \
-                               (direction == "SHORT" and _fb_trend == -1):
-                                df_tsl = _df_fb
                             else:
-                                logger.debug(
-                                    "[TSL-DIRGUARD] %s %s: все TF против тренда → TSL пропущен",
-                                    symbol, direction,
+                                # ARCH-62 Шаг 1: cap_tf после tp1_hit — не эскалировать выше "1h"
+                                from core.trading.cascade_tsl import get_cascade_cap_tf
+                                _tp1_hit_now = bool(trade.get("tp1_hit_at"))
+                                _cap_tf = get_cascade_cap_tf(_tp1_hit_now, _cfg_trend)
+                                _cascade_tfs_capped = (
+                                    [t for t in _CASCADE_TFS if _CASCADE_TFS.index(t) <= _CASCADE_TFS.index(_cap_tf)]
+                                    if _cap_tf and _cap_tf in _CASCADE_TFS else _CASCADE_TFS
                                 )
 
-                    trend_info = get_trend_info(df_tsl) if df_tsl is not None else None
-
-                    if trend_info and trend_info["tsl"] > 0:
-                        # DEV-191: брать trendup/trenddown по direction, не tsl.
-                        # trend_info["tsl"] = trendup если trend=1, trenddown если trend=-1.
-                        # При флипе тренда против позиции tsl возвращает неправильную линию
-                        # → raw_tsl инвертирован → floor вынужден его исправлять каждый цикл.
-                        _raw_tsl = (
-                            trend_info["trendup"] if direction == "LONG"
-                            else trend_info["trenddown"]
-                        )
-                        # DS-321: _use_hybrid defined at top of try block
-                        # DS-321: гибридная коробка передач (откат через config)
-                        _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
-                        if _use_hybrid:
-                            from core.trading.tsl_engine import compute_hybrid_tsl as _compute_hybrid, TSL_PROFILES
-                            _orig_sl = float(trade.get("original_sl", entry))
-                            _age_m = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0 if created_dt else 0
-                            # TSL-PROFILE: per-strategy Gear-пороги
-                            _sig_type = str(trade.get("signal_type", ""))
-                            _profile = TSL_PROFILES.get(_sig_type, TSL_PROFILES["default"])
-                            _decision = _compute_hybrid(
-                                direction,
-                                entry=entry,
-                                current_price=current_price,
-                                original_sl=_orig_sl,
-                                duration_minutes=_age_m,
-                                profile=_profile,
-                            )
-                        else:
-                            _decision = _compute_tsl(
-                                direction,
-                                entry=entry,
-                                current_price=current_price,
-                                raw_tsl=_raw_tsl,
-                            )
-                        tsl_price = _decision.new_sl
-                        tsl_triggered = _decision.triggered
-                        # DS-321: пишем гибридный gear в tsl_tf для дашборда
-                        if _use_hybrid and _decision.new_sl is not None:
-                            tsl_tf_used = _decision.reason  # hybrid_gear1_mfe0.5atr
-
-                        # DEV-221: OB return при де-эскалации → принудительное закрытие
-                        if _ob_force_close and not tsl_triggered:
-                            tsl_triggered = True
-                            tsl_price = current_price
-                            logger.info(
-                                "[DEV-221] %s #%d %s: OB return + gradient drop R=%.2f → force TSL close",
-                                symbol, trade_id, direction, current_r or 0,
-                            )
-
-                        # DEV-191: логируем инверсию raw_tsl (floored=True означает
-                        # что trenddown/trendup оказался на неправильной стороне от цены)
-                        if _decision.floored:
-                            logger.warning(
-                                "[TSL-FLOOR] %s #%d %s: raw_tsl=%.6f floored -> sl=%.6f "
-                                "entry=%.6f current=%.6f reason=%s tf=%s",
-                                symbol, trade_id, direction,
-                                trend_info["tsl"], tsl_price,
-                                entry, current_price, _decision.reason,
-                                tsl_tf_used,
-                            )
-
-                        if tsl_triggered:
-                            logger.info(
-                                f"TradeSimulator: TSL сработал для {symbol} {direction} "
-                                f"entry={entry:.4f} current={current_price:.4f} "
-                                f"tsl={tsl_price:.4f} [tf={tsl_tf_used}]"
-                            )
-                            if _exchange_managed_trade:
-                                _lg_key = f"{trade_id}_tsl"
-                                _lg_last = self._live_guard_logged.get(_lg_key)
-                                if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
-                                    logger.warning(
-                                        "[TradeSimulator][LIVE-GUARD] %s #%d: TSL hit detected by simulator, "
-                                        "but trade is exchange-managed — waiting for exchange confirmation",
-                                        symbol, trade_id,
-                                    )
-                                    self._live_guard_logged[_lg_key] = now
-                                continue
-                            if self.close_trade(trade_id, STATUS_TSL, current_price):
-                                closed_count += 1
-                            continue
-                        else:
-                            # TSL активен, не сработал — фиксируем движение SL.
-                            # DEV-189 (12.05.2026): UPDATE stop_loss выполняется ВСЕГДА при
-                            # реальном движении (≥0.15%), не только для биржевых сделок.
-                            # До фикса: _is_real_move требовал exchange_order_id → SIM сделки
-                            # не апдейтили БД (~80% случаев) → SL читался старый при следующем
-                            # check_open_trades → закрытие по застывшему SL вместо реального TSL.
-                            # Эффект на 12.05: wt_sideways sim avgR=-0.63 vs exchange +0.67 (Δ240R).
-                            _exch_sl_id = trade.get("exchange_sl_order_id")
-                            _old_sl = float(trade.get("stop_loss") or 0)
-                            _exch_order_id = trade.get("exchange_order_id")
-                            # Фильтр ≥0.15% — устраняет float-equality "движения" и повторный cancel+replace
-                            # DEV-TSL-ONESIDED: TSL двигается только тесней (LONG: вверх, SHORT: вниз).
-                            # Без is_tighter floor=current*1.003 поднимал SL вверх для SHORT при цене
-                            # против позиции → stop_loss > entry → выход с гарантированным убытком.
-                            _min_move = 0.15  # %
-                            from core.trading.tsl_engine import is_tighter as _tsl_is_tighter_upd
-                            _tighter = _old_sl <= 0 or _tsl_is_tighter_upd(direction, tsl_price, _old_sl)
-                            _sl_changed = bool(
-                                tsl_price and _old_sl > 0
-                                and abs(tsl_price - _old_sl) / _old_sl * 100 >= _min_move
-                                and _tighter
-                            )
-                            # Биржевой cancel+replace только если есть биржевой ордер
-                            _needs_exchange_update = _sl_changed and bool(_exch_order_id)
-
-                            if _sl_changed:
-                                # 1) UPDATE stop_loss в БД — для SIM и для exchange (DEV-189 fix)
-                                try:
-                                    with self._db_connect() as _tsl_conn:
-                                        _tsl_conn.execute(
-                                            "UPDATE simulated_trades SET stop_loss=? WHERE id=? AND status='OPEN'",
-                                            (tsl_price, trade_id),
-                                        )
-                                        _tsl_conn.commit()
-                                except Exception as _ue:
-                                    logger.debug("TSL: stop_loss update #%d: %s", trade_id, _ue)
-
-                                # 2) Publish TSL_MOVED — для аналитики (обе venue)
-                                _pcb = getattr(self, "_pair_context_bus", None)
-                                if _pcb is not None:
+                                # Нормальная эскалация: самый старший ТФ где тренд совпадает.
+                                for _ctf in _cascade_tfs_capped:
                                     try:
-                                        from core.context.pair_context import SphereEvent
-                                        _pcb.publish(symbol, SphereEvent.TSL_MOVED, {
-                                            "trade_id": trade_id,
-                                            "old_sl": _old_sl,
-                                            "new_sl": tsl_price,
-                                            "tf": tsl_tf or "15m",
-                                        })
+                                        df_c = await data_collector.get_ohlcv(symbol, timeframe=_ctf, limit=100)
+                                        if df_c is not None and len(df_c) >= 50:
+                                            df_c_trend = calculate_trend(df_c, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                                            trend_val = int(df_c_trend["trend"].iloc[-1])
+                                            if (direction == "LONG" and trend_val == 1) or \
+                                               (direction == "SHORT" and trend_val == -1):
+                                                best_tsl_tf = _ctf
+                                                df_tsl = df_c_trend
                                     except Exception:
                                         pass
 
-                            if _needs_exchange_update:
-                                # 3) Биржевой cancel+replace SL-ордера (только для exchange-managed)
-                                _qty = float(trade.get("qty") or 0)
-                                tsl_moved.append({
-                                    "trade_id":            trade_id,
-                                    "symbol":              symbol,
-                                    "direction":           direction,
-                                    "qty":                 _qty,
-                                    "new_sl_price":        tsl_price,
-                                    "old_sl_price":        _old_sl,
-                                    "exchange_sl_order_id": _exch_sl_id,
-                                    "exchange_order_id":   _exch_order_id,
-                                })
+                                # ── DEV-28: Де-эскалация при истощении импульса ──────────
+                                # Условия: R >= порога AND WT на текущем ТФ исчерпан
+                                # AND младший ТФ даёт более тесный TSL.
+                                try:
+                                    from core.infra.config_loader import config as _cfg_ts
+                                    _de_esc_r = float(_cfg_ts.get("trading.cascade_tsl_deescalation_r", 5.0))
+                                    _wt_ob = float(_cfg_ts.get("analysis.indicators.wavetrend.ob_threshold", 60.0))
+                                    _wt_os = float(_cfg_ts.get("analysis.indicators.wavetrend.os_threshold", -60.0))
+                                except Exception:
+                                    _de_esc_r, _wt_ob, _wt_os = 5.0, 60.0, -60.0
 
-                except Exception as e:
-                    logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
+                                # ── DEV-106: Pivot Touch Fast Exit → force 15m TSL ──────
+                                # Weekly OR Monthly pivot touch + R >= 2.0 → прыжок на 15m напрямую.
+                                # Анализ 512 TSL сделок: pivot touch захватывал 58% пика (avg 4.1R из 7.8R max).
+                                # При force 15m: +2.44R avg на 181 сделке (лучше 165, хуже только 16).
+                                # 1M R1/R2/R3 исключены — они пробойные, не разворотные (данные).
+                                _pivot_tsl_already = _feat_js.get("pivot_tsl_15m", False)
+                                if (best_tsl_tf is not None and current_r is not None and
+                                        current_r >= 2.0 and not _pivot_tsl_already and
+                                        best_tsl_tf != "15m"):
+                                    _near_w106 = False
+                                    _near_m106 = False
+                                    try:
+                                        from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF106
+                                        if self._pivot_calc is None:
+                                            self._pivot_calc = _PCF106(db_path=self.db_path)
+                                        def _pw106(lvl, price=current_price, pct=0.02):
+                                            return bool(lvl and price and abs(price - float(lvl)) / price <= pct)
+                                        # Weekly touch
+                                        _wp106 = await self._pivot_calc.get_weekly_pivots(symbol, data_collector)
+                                        if _wp106:
+                                            if direction == "SHORT":
+                                                _near_w106 = any(_pw106(_wp106.get(k)) for k in ("S1","S2","S3","PP"))
+                                            else:
+                                                _near_w106 = any(_pw106(_wp106.get(k)) for k in ("R1","R2","R3","PP"))
+                                        # Monthly touch (1M R1/R2/R3 для LONG исключены — пробойные)
+                                        _mp106 = await self._pivot_calc.get_monthly_pivots(symbol, data_collector)
+                                        if _mp106:
+                                            if direction == "SHORT":
+                                                _near_m106 = any(_pw106(_mp106.get(k)) for k in ("S1","S2","S3","PP"))
+                                            else:
+                                                _near_m106 = _pw106(_mp106.get("PP"))
+                                    except Exception as _e106:
+                                        logger.debug("[DEV-106] pivot check: %s", _e106)
 
-            # Стандартная проверка SL/TP1/TP (если TSL не сработал)
-            exit_status = None
-            exit_price_val = None
-            max_high = 0.0
-            min_low = float("inf")
+                                    if _near_w106 or _near_m106:
+                                        _touch_lbl = ("1W+1M" if (_near_w106 and _near_m106)
+                                                      else ("1W" if _near_w106 else "1M"))
+                                        try:
+                                            _df_15m_106 = await data_collector.get_ohlcv(
+                                                symbol, timeframe="15m", limit=100
+                                            )
+                                            if _df_15m_106 is not None and len(_df_15m_106) >= 50:
+                                                _df_15m_tr = calculate_trend(_df_15m_106, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                                                _inf_15m = get_trend_info(_df_15m_tr)
+                                                _inf_cur = get_trend_info(df_tsl)
+                                                if (_inf_15m and _inf_cur and
+                                                        _inf_15m["tsl"] > 0 and _inf_cur["tsl"] > 0):
+                                                    logger.info(
+                                                        "[DEV-106] %s: %s touch R=%.1fR → force 15m TSL "
+                                                        "(%.4f → %.4f)",
+                                                        symbol, _touch_lbl, current_r,
+                                                        _inf_cur["tsl"], _inf_15m["tsl"],
+                                                    )
+                                                    best_tsl_tf = "15m"
+                                                    df_tsl = _df_15m_tr
+                                                    _feat_js["pivot_tsl_15m"] = True
+                                                    _feat_js["tsl_degraded"] = True
+                                        except Exception as _e106b:
+                                            logger.debug("[DEV-106] 15m apply: %s", _e106b)
 
-            # DEV-88: SL по CLOSE (не LOW) для источников на основе TSL-линии.
-            # TSL линия — индикаторный уровень, свечной фитиль через неё не = выход.
-            # Реальный выход подтверждается закрытием ниже (LONG) / выше (SHORT).
-            # DEV-149: Для exchange-managed (VST) сделок всегда по wick (low/high),
-            # т.к. биржевой STOP_MARKET срабатывает на wick, не на close.
-            _sl_src = (trade.get("sl_source") or "").lower()
-            _sl_check_close = (
-                (_sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl"))
-                and not _exchange_managed_trade  # VST → wick, SIM → close
-            )
-            _tsl_is_active = bool(trade.get("tsl_activated"))
+                                if (best_tsl_tf is not None and current_r is not None and
+                                        current_r >= _de_esc_r and best_tsl_tf in _CASCADE_TFS):
+                                    _cas_idx = _CASCADE_TFS.index(best_tsl_tf)  # DEV-107 fix: was df_tsl (DataFrame)
+                                    if _cas_idx > 0:
+                                        # DEV-89: OR логика — 4h WT ИЛИ 1h WT (фикс бага: 1h WT игнорировался)
+                                        _wt_exhausted = False
+                                        _wt1_4h = None
+                                        _wt1_1h = None
+                                        try:
+                                            from core.indicators.indicators import calculate_wt
+                                            # 4h WT (текущий df_tsl)
+                                            _df_wt_chk = calculate_wt(df_tsl)
+                                            _wt1_4h = float(_df_wt_chk["wt1"].iloc[-1])
+                                            # 1h WT (фетч)
+                                            _df_1h_wt89 = await data_collector.get_ohlcv(symbol, "1h", limit=50)
+                                            if _df_1h_wt89 is not None and len(_df_1h_wt89) >= 20:
+                                                _df_1h_wt89 = calculate_wt(_df_1h_wt89)
+                                                _wt1_1h = float(_df_1h_wt89["wt1"].iloc[-1])
+                                            # OR: истощён если 4h ИЛИ 1h
+                                            _wt_4h_exh = (
+                                                (direction == "SHORT" and _wt1_4h is not None and _wt1_4h < _wt_os) or
+                                                (direction == "LONG"  and _wt1_4h is not None and _wt1_4h > _wt_ob)
+                                            )
+                                            _wt_1h_exh = (
+                                                (direction == "SHORT" and _wt1_1h is not None and _wt1_1h < _wt_os) or
+                                                (direction == "LONG"  and _wt1_1h is not None and _wt1_1h > _wt_ob)
+                                            )
+                                            _wt_exhausted = _wt_4h_exh or _wt_1h_exh
+                                        except Exception:
+                                            pass
 
-            for _, row in df.iterrows():
-                high  = float(row.get("high",  0) or 0)
-                low   = float(row.get("low",   0) or 0)
-                close = float(row.get("close", 0) or 0)
-                open_ = float(row.get("open",  0) or 0)
+                                        # DEV-89: weekly pivot touch — де-эскалировать у W_S/R уровней
+                                        _near_weekly = False
+                                        try:
+                                            from core.pivots.pivot_calculator_fixed import PivotCalculatorFixed as _PCF89
+                                            if self._pivot_calc is None:
+                                                self._pivot_calc = _PCF89(db_path=self.db_path)
+                                            _wp89 = await self._pivot_calc.get_weekly_pivots(symbol, data_collector)
+                                            if _wp89 and current_price:
+                                                def _w89(lvl, pct=0.015):
+                                                    return lvl and abs(current_price - float(lvl)) / current_price <= pct
+                                                if direction == "SHORT":
+                                                    _near_weekly = any(_w89(_wp89.get(k)) for k in ("S1","S2","S3","PP"))
+                                                else:
+                                                    _near_weekly = any(_w89(_wp89.get(k)) for k in ("R1","R2","R3","PP"))
+                                        except Exception as _e89w:
+                                            logger.debug("[DEV-89] weekly pivot: %s", _e89w)
 
-                if high > 0:
-                    max_high = max(max_high, high)
-                if low > 0:
-                    min_low = min(min_low, low)
+                                        # DEV-91: R-gradient drop — реальный триггер де-эскалации (убран shadow mode)
+                                        _r_gradient_drop = False
+                                        _max_r_achieved = 0.0
+                                        try:
+                                            from core.trading.cascade_tsl import check_r_gradient_drop
+                                            _mp_grad = trade.get("max_price")
+                                            _lp_grad = trade.get("min_price")
+                                            _sl_dist_grad = abs(entry - sl) if sl and sl > 0 else 0.0
+                                            if _sl_dist_grad > 0:
+                                                if direction == "LONG" and _mp_grad:
+                                                    _max_r_achieved = (float(_mp_grad) - entry) / _sl_dist_grad
+                                                elif direction == "SHORT" and _lp_grad:
+                                                    _max_r_achieved = (entry - float(_lp_grad)) / _sl_dist_grad
+                                            if current_r is not None:
+                                                _r_gradient_drop = check_r_gradient_drop(
+                                                    current_r, _max_r_achieved, _cfg_ts
+                                                )
+                                        except Exception as _e91:
+                                            logger.debug("[DEV-91] r_gradient: %s", _e91)
 
-                if direction == "LONG":
-                    hit_sl = sl is not None and (close <= sl if _sl_check_close else low <= sl)
-                    # TP1 фиксирует часть — только если ещё не сработал
-                    if tp1_price and tp1_hit_at is None and high >= tp1_price:
-                        tp1_hit_at = datetime.now(timezone.utc).isoformat()
-                        try:
-                            with self._db_connect() as _c:
-                                _c.execute(
-                                    "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
-                                    (tp1_hit_at, trade_id, STATUS_OPEN),
+                                        # DEV-221: если r_gradient_drop И цена в OB → force close
+                                        if _r_gradient_drop and df_tsl is not None and current_price:
+                                            try:
+                                                from core.trading.cascade_tsl import is_price_in_adverse_ob
+                                                if is_price_in_adverse_ob(df_tsl, direction, current_price):
+                                                    _ob_force_close = True
+                                            except Exception:
+                                                pass
+
+                                        # DEV-123: anti-degradation gate для ракет
+                                        _skip_degrade = False
+                                        try:
+                                            from core.trading.cascade_tsl import should_skip_degradation
+                                            if current_r is not None:
+                                                _skip_degrade = should_skip_degradation(
+                                                    current_r, _max_r_achieved, direction,
+                                                    _wt1_1h, _wt1_4h, _cfg_ts
+                                                )
+                                        except Exception as _e123:
+                                            logger.debug("[DEV-123] skip_degrade: %s", _e123)
+
+                                        if not _skip_degrade and (_wt_exhausted or _near_weekly or _r_gradient_drop):
+                                            lower_tf = _CASCADE_TFS[_cas_idx - 1]
+                                            try:
+                                                df_lower = await data_collector.get_ohlcv(
+                                                    symbol, timeframe=lower_tf, limit=100
+                                                )
+                                                if df_lower is not None and len(df_lower) >= 50:
+                                                    df_lower_trend = calculate_trend(df_lower, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                                                    _lower_info = get_trend_info(df_lower_trend)
+                                                    _curr_info = get_trend_info(df_tsl)
+                                                    if (_lower_info and _curr_info and
+                                                            _lower_info["tsl"] > 0 and _curr_info["tsl"] > 0):
+                                                        _lower_tsl = _lower_info["tsl"]
+                                                        _curr_tsl = _curr_info["tsl"]
+                                                        from core.trading.tsl_engine import is_tighter as _tsl_is_tighter
+                                                        _is_tighter = _tsl_is_tighter(direction, _lower_tsl, _curr_tsl)
+                                                        if _is_tighter:
+                                                            logger.info(
+                                                                "[cascade_tsl] %s: de-escalate %s → %s "
+                                                                "(R=%.1fR, WT4h=%s 1h=%s near_w=%s, TSL %.4f → %.4f тесней)",
+                                                                symbol, best_tsl_tf, lower_tf,
+                                                                current_r,
+                                                                f"{_wt1_4h:.1f}" if _wt1_4h is not None else "?",
+                                                                f"{_wt1_1h:.1f}" if _wt1_1h is not None else "?",
+                                                            
+                                                                _near_weekly, _curr_tsl, _lower_tsl,
+                                                            )
+                                                            best_tsl_tf = lower_tf
+                                                            df_tsl = df_lower_trend
+                                                            _feat_js["tsl_degraded"] = True
+                                            except Exception:
+                                                pass
+
+                            if not best_tsl_tf and _tsl_degraded:
+                                logger.info(
+                                    "[cascade_tsl] %s: degraded TF %s потерял тренд → fallback entry TF",
+                                    symbol, prev_tsl_tf,
                                 )
-                                _c.commit()
-                        except Exception:
-                            pass
-                        logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                        # Куб: Сфера 10 → bus: TP1_HIT
-                        _pcb = getattr(self, "_pair_context_bus", None)
-                        if _pcb is not None:
+                                # DEV-67: cascade TSL fallback при развороте тренда
+                                if df_tsl is None and prev_tsl_tf != DEFAULT_TIMEFRAME:
+                                    try:
+                                        df_fallback = await data_collector.get_ohlcv(
+                                            symbol, timeframe=prev_tsl_tf, limit=100
+                                        )
+                                        if df_fallback is not None and len(df_fallback) >= 50:
+                                            df_tsl = calculate_trend(df_fallback, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                                            tsl_tf_used = prev_tsl_tf
+                                            logger.info(
+                                                "[cascade_tsl] %s: trend reversed, fallback to prev_tsl_tf=%s",
+                                                symbol, prev_tsl_tf,
+                                            )
+                                    except Exception:
+                                        pass
+
+                            if best_tsl_tf:
+                                tsl_tf_used = best_tsl_tf
+                                # DS-321: append hybrid gear for dashboard visibility
+                                if _use_hybrid and current_r is not None:
+                                    _gear = 3 if current_r >= 4.0 else (2 if current_r >= 2.0 else 1)
+                                    tsl_tf_used = f"hybrid_gear{_gear}_mfe{current_r:.1f}r"
+                                if best_tsl_tf != prev_tsl_tf:
+                                    action_label = "de-escalate" if _feat_js.get("tsl_degraded") and not _tsl_degraded else "trend confirmed"
+                                    logger.info(
+                                        "[cascade_tsl] %s: TSL %s → %s (%s)",
+                                        symbol, prev_tsl_tf, best_tsl_tf, action_label,
+                                    )
+                                    try:
+                                        with self._db_connect() as _c:
+                                            _c.execute(
+                                                "UPDATE simulated_trades SET tsl_tf=?, features_json=? WHERE id=?",
+                                                (tsl_tf_used, json.dumps(_feat_js), trade_id),
+                                            )
+                                            _c.commit()
+                                    except Exception:
+                                        pass
+                        else:
+                            # Классический TSL: один предпочтительный TF
+                            preferred_tsl_tf = trade.get("tsl_tf") or DEFAULT_TIMEFRAME
+                            for _tsl_try in ([preferred_tsl_tf] if preferred_tsl_tf != tf else ["1h"]):
+                                try:
+                                    df_senior = await data_collector.get_ohlcv(symbol, timeframe=_tsl_try, limit=100)
+                                    if df_senior is not None and len(df_senior) >= 50:
+                                        df_senior_trend = calculate_trend(df_senior, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                                        trend_val = int(df_senior_trend["trend"].iloc[-1])
+                                        if (direction == "LONG" and trend_val == 1) or \
+                                           (direction == "SHORT" and trend_val == -1):
+                                            df_tsl = df_senior_trend
+                                            tsl_tf_used = _tsl_try
+                                except Exception:
+                                    pass
+                                if df_tsl is not None:
+                                    break
+
+                        if df_tsl is None:
+                            # DEV-TSL-DIRGUARD: fallback на entry-TF только если тренд совпадает с direction.
+                            # Противоположный тренд даёт TSL по другую сторону цены → мгновенное срабатывание.
+                            _df_fb = calculate_trend(df, atr_period=_tsl_atr_p, factor=_tsl_factor)
+                            if len(_df_fb) > 0:
+                                _fb_trend = int(_df_fb["trend"].iloc[-1])
+                                if (direction == "LONG" and _fb_trend == 1) or \
+                                   (direction == "SHORT" and _fb_trend == -1):
+                                    df_tsl = _df_fb
+                                else:
+                                    logger.debug(
+                                        "[TSL-DIRGUARD] %s %s: все TF против тренда → TSL пропущен",
+                                        symbol, direction,
+                                    )
+
+                        trend_info = get_trend_info(df_tsl) if df_tsl is not None else None
+
+                        if trend_info and trend_info["tsl"] > 0:
+                            # DEV-191: брать trendup/trenddown по direction, не tsl.
+                            # trend_info["tsl"] = trendup если trend=1, trenddown если trend=-1.
+                            # При флипе тренда против позиции tsl возвращает неправильную линию
+                            # → raw_tsl инвертирован → floor вынужден его исправлять каждый цикл.
+                            _raw_tsl = (
+                                trend_info["trendup"] if direction == "LONG"
+                                else trend_info["trenddown"]
+                            )
+                            # DS-321: _use_hybrid defined at top of try block
+                            # DS-321: гибридная коробка передач (откат через config)
+                            _use_hybrid = bool(_cfg_trend.get("sl_tp_engine.tsl_hybrid_enabled", False))
+                            if _use_hybrid:
+                                from core.trading.tsl_engine import compute_hybrid_tsl as _compute_hybrid, TSL_PROFILES
+                                _orig_sl = float(trade.get("original_sl", entry))
+                                _age_m = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0 if created_dt else 0
+                                # TSL-PROFILE: per-strategy Gear-пороги
+                                _sig_type = str(trade.get("signal_type", ""))
+                                _profile = TSL_PROFILES.get(_sig_type, TSL_PROFILES["default"])
+                                _decision = _compute_hybrid(
+                                    direction,
+                                    entry=entry,
+                                    current_price=current_price,
+                                    original_sl=_orig_sl,
+                                    duration_minutes=_age_m,
+                                    profile=_profile,
+                                )
+                            else:
+                                _decision = _compute_tsl(
+                                    direction,
+                                    entry=entry,
+                                    current_price=current_price,
+                                    raw_tsl=_raw_tsl,
+                                )
+                            tsl_price = _decision.new_sl
+                            tsl_triggered = _decision.triggered
+                            # DS-321: пишем гибридный gear в tsl_tf для дашборда
+                            if _use_hybrid and _decision.new_sl is not None:
+                                tsl_tf_used = _decision.reason  # hybrid_gear1_mfe0.5atr
+
+                            # DEV-221: OB return при де-эскалации → принудительное закрытие
+                            if _ob_force_close and not tsl_triggered:
+                                tsl_triggered = True
+                                tsl_price = current_price
+                                logger.info(
+                                    "[DEV-221] %s #%d %s: OB return + gradient drop R=%.2f → force TSL close",
+                                    symbol, trade_id, direction, current_r or 0,
+                                )
+
+                            # DEV-191: логируем инверсию raw_tsl (floored=True означает
+                            # что trenddown/trendup оказался на неправильной стороне от цены)
+                            if _decision.floored:
+                                logger.warning(
+                                    "[TSL-FLOOR] %s #%d %s: raw_tsl=%.6f floored -> sl=%.6f "
+                                    "entry=%.6f current=%.6f reason=%s tf=%s",
+                                    symbol, trade_id, direction,
+                                    trend_info["tsl"], tsl_price,
+                                    entry, current_price, _decision.reason,
+                                    tsl_tf_used,
+                                )
+
+                            if tsl_triggered:
+                                logger.info(
+                                    f"TradeSimulator: TSL сработал для {symbol} {direction} "
+                                    f"entry={entry:.4f} current={current_price:.4f} "
+                                    f"tsl={tsl_price:.4f} [tf={tsl_tf_used}]"
+                                )
+                                if _exchange_managed_trade:
+                                    _lg_key = f"{trade_id}_tsl"
+                                    _lg_last = self._live_guard_logged.get(_lg_key)
+                                    if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
+                                        logger.warning(
+                                            "[TradeSimulator][LIVE-GUARD] %s #%d: TSL hit detected by simulator, "
+                                            "but trade is exchange-managed — waiting for exchange confirmation",
+                                            symbol, trade_id,
+                                        )
+                                        self._live_guard_logged[_lg_key] = now
+                                    return (_ops05c, _ops05tsl)
+                                if self.close_trade(trade_id, STATUS_TSL, current_price):
+                                    _ops05c += 1
+                                return (_ops05c, _ops05tsl)
+                            else:
+                                # TSL активен, не сработал — фиксируем движение SL.
+                                # DEV-189 (12.05.2026): UPDATE stop_loss выполняется ВСЕГДА при
+                                # реальном движении (≥0.15%), не только для биржевых сделок.
+                                # До фикса: _is_real_move требовал exchange_order_id → SIM сделки
+                                # не апдейтили БД (~80% случаев) → SL читался старый при следующем
+                                # check_open_trades → закрытие по застывшему SL вместо реального TSL.
+                                # Эффект на 12.05: wt_sideways sim avgR=-0.63 vs exchange +0.67 (Δ240R).
+                                _exch_sl_id = trade.get("exchange_sl_order_id")
+                                _old_sl = float(trade.get("stop_loss") or 0)
+                                _exch_order_id = trade.get("exchange_order_id")
+                                # Фильтр ≥0.15% — устраняет float-equality "движения" и повторный cancel+replace
+                                # DEV-TSL-ONESIDED: TSL двигается только тесней (LONG: вверх, SHORT: вниз).
+                                # Без is_tighter floor=current*1.003 поднимал SL вверх для SHORT при цене
+                                # против позиции → stop_loss > entry → выход с гарантированным убытком.
+                                _min_move = 0.15  # %
+                                from core.trading.tsl_engine import is_tighter as _tsl_is_tighter_upd
+                                _tighter = _old_sl <= 0 or _tsl_is_tighter_upd(direction, tsl_price, _old_sl)
+                                _sl_changed = bool(
+                                    tsl_price and _old_sl > 0
+                                    and abs(tsl_price - _old_sl) / _old_sl * 100 >= _min_move
+                                    and _tighter
+                                )
+                                # Биржевой cancel+replace только если есть биржевой ордер
+                                _needs_exchange_update = _sl_changed and bool(_exch_order_id)
+
+                                if _sl_changed:
+                                    # 1) UPDATE stop_loss в БД — для SIM и для exchange (DEV-189 fix)
+                                    try:
+                                        with self._db_connect() as _tsl_conn:
+                                            _tsl_conn.execute(
+                                                "UPDATE simulated_trades SET stop_loss=? WHERE id=? AND status='OPEN'",
+                                                (tsl_price, trade_id),
+                                            )
+                                            _tsl_conn.commit()
+                                    except Exception as _ue:
+                                        logger.debug("TSL: stop_loss update #%d: %s", trade_id, _ue)
+
+                                    # 2) Publish TSL_MOVED — для аналитики (обе venue)
+                                    _pcb = getattr(self, "_pair_context_bus", None)
+                                    if _pcb is not None:
+                                        try:
+                                            from core.context.pair_context import SphereEvent
+                                            _pcb.publish(symbol, SphereEvent.TSL_MOVED, {
+                                                "trade_id": trade_id,
+                                                "old_sl": _old_sl,
+                                                "new_sl": tsl_price,
+                                                "tf": tsl_tf or "15m",
+                                            })
+                                        except Exception:
+                                            pass
+
+                                if _needs_exchange_update:
+                                    # 3) Биржевой cancel+replace SL-ордера (только для exchange-managed)
+                                    _qty = float(trade.get("qty") or 0)
+                                    _ops05tsl.append({
+                                        "trade_id":            trade_id,
+                                        "symbol":              symbol,
+                                        "direction":           direction,
+                                        "qty":                 _qty,
+                                        "new_sl_price":        tsl_price,
+                                        "old_sl_price":        _old_sl,
+                                        "exchange_sl_order_id": _exch_sl_id,
+                                        "exchange_order_id":   _exch_order_id,
+                                    })
+
+                    except Exception as e:
+                        logger.debug(f"TradeSimulator: TSL calculation error {symbol} — {e}")
+
+                # Стандартная проверка SL/TP1/TP (если TSL не сработал)
+                exit_status = None
+                exit_price_val = None
+                max_high = 0.0
+                min_low = float("inf")
+
+                # DEV-88: SL по CLOSE (не LOW) для источников на основе TSL-линии.
+                # TSL линия — индикаторный уровень, свечной фитиль через неё не = выход.
+                # Реальный выход подтверждается закрытием ниже (LONG) / выше (SHORT).
+                # DEV-149: Для exchange-managed (VST) сделок всегда по wick (low/high),
+                # т.к. биржевой STOP_MARKET срабатывает на wick, не на close.
+                _sl_src = (trade.get("sl_source") or "").lower()
+                _sl_check_close = (
+                    (_sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl"))
+                    and not _exchange_managed_trade  # VST → wick, SIM → close
+                )
+                _tsl_is_active = bool(trade.get("tsl_activated"))
+
+                for _, row in df.iterrows():
+                    high  = float(row.get("high",  0) or 0)
+                    low   = float(row.get("low",   0) or 0)
+                    close = float(row.get("close", 0) or 0)
+                    open_ = float(row.get("open",  0) or 0)
+
+                    if high > 0:
+                        max_high = max(max_high, high)
+                    if low > 0:
+                        min_low = min(min_low, low)
+
+                    if direction == "LONG":
+                        hit_sl = sl is not None and (close <= sl if _sl_check_close else low <= sl)
+                        # TP1 фиксирует часть — только если ещё не сработал
+                        if tp1_price and tp1_hit_at is None and high >= tp1_price:
+                            tp1_hit_at = datetime.now(timezone.utc).isoformat()
                             try:
-                                from core.context.pair_context import SphereEvent
-                                _r_at_tp1 = (tp1_price - entry) / abs(entry - sl) if sl and entry != sl else 0
-                                _pcb.publish(symbol, SphereEvent.TP1_HIT, {
-                                    "trade_id": trade_id, "r_at_tp1": round(abs(_r_at_tp1), 2),
-                                })
+                                with self._db_connect() as _c:
+                                    _c.execute(
+                                        "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
+                                        (tp1_hit_at, trade_id, STATUS_OPEN),
+                                    )
+                                    _c.commit()
                             except Exception:
                                 pass
-                    # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
-                    if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
-                        tp2_hit_at = datetime.now(timezone.utc).isoformat()
-                        try:
-                            with self._db_connect() as _c:
-                                _c.execute(
-                                    "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
-                                    (tp2_hit_at, trade_id, STATUS_OPEN),
-                                )
-                                _c.commit()
-                        except Exception:
-                            pass
-                        logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
-                        exit_status, exit_price_val = STATUS_TP, tp2_price
-                    # Обычный TP (SINGLE — tp1/tp2 не используются)
-                    # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
-                    # TSL сам закроет сделку при развороте тренда.
-                    hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and high >= tp)
-                    if not exit_status:
-                        if hit_sl and hit_tp:
-                            exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
-                        elif hit_sl:
-                            exit_status, exit_price_val = STATUS_SL, sl
-                        elif hit_tp:
-                            exit_status, exit_price_val = STATUS_TP, tp
-                else:  # SHORT
-                    hit_sl = sl is not None and (close >= sl if _sl_check_close else high >= sl)
-                    if tp1_price and tp1_hit_at is None and low <= tp1_price:
-                        tp1_hit_at = datetime.now(timezone.utc).isoformat()
-                        try:
-                            with self._db_connect() as _c:
-                                _c.execute(
-                                    "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
-                                    (tp1_hit_at, trade_id, STATUS_OPEN),
-                                )
-                                _c.commit()
-                        except Exception:
-                            pass
-                        logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                    # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
-                    if tp2_price and tp2_hit_at is None and tp1_hit_at and low <= tp2_price:
-                        tp2_hit_at = datetime.now(timezone.utc).isoformat()
-                        try:
-                            with self._db_connect() as _c:
-                                _c.execute(
-                                    "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
-                                    (tp2_hit_at, trade_id, STATUS_OPEN),
-                                )
-                                _c.commit()
-                        except Exception:
-                            pass
-                        logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
-                        exit_status, exit_price_val = STATUS_TP, tp2_price
-                    # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
-                    hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and low <= tp)
-                    if not exit_status:
-                        if hit_sl and hit_tp:
-                            exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
-                        elif hit_sl:
-                            exit_status, exit_price_val = STATUS_SL, sl
-                        elif hit_tp:
-                            exit_status, exit_price_val = STATUS_TP, tp
-                if exit_status:
-                    break
+                            logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                            # Куб: Сфера 10 → bus: TP1_HIT
+                            _pcb = getattr(self, "_pair_context_bus", None)
+                            if _pcb is not None:
+                                try:
+                                    from core.context.pair_context import SphereEvent
+                                    _r_at_tp1 = (tp1_price - entry) / abs(entry - sl) if sl and entry != sl else 0
+                                    _pcb.publish(symbol, SphereEvent.TP1_HIT, {
+                                        "trade_id": trade_id, "r_at_tp1": round(abs(_r_at_tp1), 2),
+                                    })
+                                except Exception:
+                                    pass
+                        # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
+                        if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
+                            tp2_hit_at = datetime.now(timezone.utc).isoformat()
+                            try:
+                                with self._db_connect() as _c:
+                                    _c.execute(
+                                        "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
+                                        (tp2_hit_at, trade_id, STATUS_OPEN),
+                                    )
+                                    _c.commit()
+                            except Exception:
+                                pass
+                            logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
+                            exit_status, exit_price_val = STATUS_TP, tp2_price
+                        # Обычный TP (SINGLE — tp1/tp2 не используются)
+                        # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
+                        # TSL сам закроет сделку при развороте тренда.
+                        hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and high >= tp)
+                        if not exit_status:
+                            if hit_sl and hit_tp:
+                                exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
+                            elif hit_sl:
+                                exit_status, exit_price_val = STATUS_SL, sl
+                            elif hit_tp:
+                                exit_status, exit_price_val = STATUS_TP, tp
+                    else:  # SHORT
+                        hit_sl = sl is not None and (close >= sl if _sl_check_close else high >= sl)
+                        if tp1_price and tp1_hit_at is None and low <= tp1_price:
+                            tp1_hit_at = datetime.now(timezone.utc).isoformat()
+                            try:
+                                with self._db_connect() as _c:
+                                    _c.execute(
+                                        "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
+                                        (tp1_hit_at, trade_id, STATUS_OPEN),
+                                    )
+                                    _c.commit()
+                            except Exception:
+                                pass
+                            logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                        # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
+                        if tp2_price and tp2_hit_at is None and tp1_hit_at and low <= tp2_price:
+                            tp2_hit_at = datetime.now(timezone.utc).isoformat()
+                            try:
+                                with self._db_connect() as _c:
+                                    _c.execute(
+                                        "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
+                                        (tp2_hit_at, trade_id, STATUS_OPEN),
+                                    )
+                                    _c.commit()
+                            except Exception:
+                                pass
+                            logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
+                            exit_status, exit_price_val = STATUS_TP, tp2_price
+                        # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
+                        hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and low <= tp)
+                        if not exit_status:
+                            if hit_sl and hit_tp:
+                                exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
+                            elif hit_sl:
+                                exit_status, exit_price_val = STATUS_SL, sl
+                            elif hit_tp:
+                                exit_status, exit_price_val = STATUS_TP, tp
+                    if exit_status:
+                        break
 
-            # Обновляем MFE экстремумы + first_profit_r / first_drawdown_r
-            new_max = max_high if max_high > 0 else None
-            new_min = min_low if min_low < float("inf") else None
-            # DS-322: fallback — если OHLCV не дал данных, используем WS-цену
-            if new_max is None and _ws_price is not None:
-                if direction == "LONG" and _ws_price > entry:
-                    new_max = _ws_price
-                elif direction == "SHORT" and _ws_price < entry:
-                    new_min = _ws_price
+                # Обновляем MFE экстремумы + first_profit_r / first_drawdown_r
+                new_max = max_high if max_high > 0 else None
+                new_min = min_low if min_low < float("inf") else None
+                # DS-322: fallback — если OHLCV не дал данных, используем WS-цену
+                if new_max is None and _ws_price is not None:
+                    if direction == "LONG" and _ws_price > entry:
+                        new_max = _ws_price
+                    elif direction == "SHORT" and _ws_price < entry:
+                        new_min = _ws_price
 
-            # first_profit_r / first_drawdown_r — заполняем один раз (первое наблюдение)
-            fp_r = trade.get("first_profit_r")   # None = ещё не фиксировали
-            fd_r = trade.get("first_drawdown_r")
-            new_fp_r = new_fd_r = None
-            if current_r is not None:  # значит one_r вычислен и sl != entry
-                if fp_r is None and current_r > 0.1:
-                    new_fp_r = round(current_r, 3)
-                if fd_r is None and current_r < -0.1:
-                    new_fd_r = round(current_r, 3)
+                # first_profit_r / first_drawdown_r — заполняем один раз (первое наблюдение)
+                fp_r = trade.get("first_profit_r")   # None = ещё не фиксировали
+                fd_r = trade.get("first_drawdown_r")
+                new_fp_r = new_fd_r = None
+                if current_r is not None:  # значит one_r вычислен и sl != entry
+                    if fp_r is None and current_r > 0.1:
+                        new_fp_r = round(current_r, 3)
+                    if fd_r is None and current_r < -0.1:
+                        new_fd_r = round(current_r, 3)
 
-            if new_max is not None or new_min is not None or new_fp_r is not None or new_fd_r is not None:
-                try:
-                    with self._db_connect() as conn:
-                        conn.execute(
-                            """UPDATE simulated_trades
-                               SET max_price=?, min_price=?,
-                                   first_profit_r  = CASE WHEN first_profit_r  IS NULL AND ? IS NOT NULL THEN ? ELSE first_profit_r  END,
-                                   first_drawdown_r= CASE WHEN first_drawdown_r IS NULL AND ? IS NOT NULL THEN ? ELSE first_drawdown_r END
-                               WHERE id=? AND status=?""",
-                            (new_max, new_min,
-                             new_fp_r, new_fp_r,
-                             new_fd_r, new_fd_r,
-                             trade_id, STATUS_OPEN),
-                        )
-                        conn.commit()
-                        # DS-322: запомнить что проверили эту сделку
-                        self._repair_checked[trade_id] = _now_ts
-                except Exception as e:
-                    logger.debug(f"TradeSimulator: MFE update error {trade_id} — {e}")
+                if new_max is not None or new_min is not None or new_fp_r is not None or new_fd_r is not None:
+                    try:
+                        with self._db_connect() as conn:
+                            conn.execute(
+                                """UPDATE simulated_trades
+                                   SET max_price=?, min_price=?,
+                                       first_profit_r  = CASE WHEN first_profit_r  IS NULL AND ? IS NOT NULL THEN ? ELSE first_profit_r  END,
+                                       first_drawdown_r= CASE WHEN first_drawdown_r IS NULL AND ? IS NOT NULL THEN ? ELSE first_drawdown_r END
+                                   WHERE id=? AND status=?""",
+                                (new_max, new_min,
+                                 new_fp_r, new_fp_r,
+                                 new_fd_r, new_fd_r,
+                                 trade_id, STATUS_OPEN),
+                            )
+                            conn.commit()
+                            # DS-322: запомнить что проверили эту сделку
+                            self._repair_checked[trade_id] = _now_ts
+                    except Exception as e:
+                        logger.debug(f"TradeSimulator: MFE update error {trade_id} — {e}")
 
 
-            if exit_status and exit_price_val is not None:
-                if _exchange_managed_trade:
-                    _lg_key = f"{trade_id}_exit"
-                    _lg_last = self._live_guard_logged.get(_lg_key)
-                    if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
-                        logger.warning(
-                            "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected by simulator @ %.6f, "
-                            "but trade is exchange-managed — waiting for exchange confirmation",
-                            symbol, trade_id, exit_status, exit_price_val,
-                        )
-                        self._live_guard_logged[_lg_key] = now
-                    continue
-                # SIM-режим: SL после движения TSL — это TSL-exit (SL был сдвинут выше entry).
-                # Критерий: original_sl != stop_loss (SL реально двигался), не tsl_activated
-                # (флаг ставится при +1R, но SL мог не двинуться если тренд неблагоприятен).
-                # Без этой переклассификации strip-бот и SIM-сделки в main показывают TSL=0,
-                # а прибыльные TSL-выходы (R>0) маскируются под SL.
-                if exit_status == STATUS_SL:
-                    _orig_sl_classify = trade.get("original_sl")
-                    _curr_sl_classify = float(trade.get("stop_loss") or 0)
-                    _sl_moved = (
-                        _orig_sl_classify is not None
-                        and _curr_sl_classify > 0
-                        and abs(_curr_sl_classify - float(_orig_sl_classify)) / float(_orig_sl_classify) > 0.0001
-                    )
-                    if _sl_moved:
-                        exit_status = STATUS_TSL
-                        logger.info(
-                            "[TSL-SIM] #%d %s %s: SL→TSL (orig_sl=%.6f → curr_sl=%.6f)",
-                            trade_id, symbol, direction,
-                            float(_orig_sl_classify), _curr_sl_classify,
-                        )
-                if self.close_trade(trade_id, exit_status, exit_price_val):
-                    closed_count += 1
-                    # DEV-15: LLM-разбор для SL-сделок
+                if exit_status and exit_price_val is not None:
+                    if _exchange_managed_trade:
+                        _lg_key = f"{trade_id}_exit"
+                        _lg_last = self._live_guard_logged.get(_lg_key)
+                        if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
+                            logger.warning(
+                                "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected by simulator @ %.6f, "
+                                "but trade is exchange-managed — waiting for exchange confirmation",
+                                symbol, trade_id, exit_status, exit_price_val,
+                            )
+                            self._live_guard_logged[_lg_key] = now
+                        return (_ops05c, _ops05tsl)
+                    # SIM-режим: SL после движения TSL — это TSL-exit (SL был сдвинут выше entry).
+                    # Критерий: original_sl != stop_loss (SL реально двигался), не tsl_activated
+                    # (флаг ставится при +1R, но SL мог не двинуться если тренд неблагоприятен).
+                    # Без этой переклассификации strip-бот и SIM-сделки в main показывают TSL=0,
+                    # а прибыльные TSL-выходы (R>0) маскируются под SL.
                     if exit_status == STATUS_SL:
-                        analyzer = self._get_trade_analyzer()
-                        if analyzer is not None:
-                            import asyncio
-                            asyncio.create_task(analyzer.analyze_sl_trade(trade_id))
+                        _orig_sl_classify = trade.get("original_sl")
+                        _curr_sl_classify = float(trade.get("stop_loss") or 0)
+                        _sl_moved = (
+                            _orig_sl_classify is not None
+                            and _curr_sl_classify > 0
+                            and abs(_curr_sl_classify - float(_orig_sl_classify)) / float(_orig_sl_classify) > 0.0001
+                        )
+                        if _sl_moved:
+                            exit_status = STATUS_TSL
+                            logger.info(
+                                "[TSL-SIM] #%d %s %s: SL→TSL (orig_sl=%.6f → curr_sl=%.6f)",
+                                trade_id, symbol, direction,
+                                float(_orig_sl_classify), _curr_sl_classify,
+                            )
+                    if self.close_trade(trade_id, exit_status, exit_price_val):
+                        _ops05c += 1
+                        # DEV-15: LLM-разбор для SL-сделок
+                        if exit_status == STATUS_SL:
+                            analyzer = self._get_trade_analyzer()
+                            if analyzer is not None:
+                                import asyncio
+                                asyncio.create_task(analyzer.analyze_sl_trade(trade_id))
 
+                return (_ops05c, _ops05tsl)
+
+        _results = await asyncio.gather(*[_proc(t) for t in open_trades], return_exceptions=True)
+        for _r in _results:
+            if isinstance(_r, tuple):
+                closed_count += _r[0]; tsl_moved.extend(_r[1])
+            elif isinstance(_r, Exception):
+                logger.error('[OPS-05] _proc error: %s', _r)
         return closed_count, tsl_moved

@@ -449,6 +449,7 @@ detectors:
     strength_trend_multiplier: 12
     strength_counter_multiplier: 8
 performance:
+  check_open_semaphore: 15  # OPS-05: параллелизм check_open (старт 15 → тест → 20)
   scan_semaphore_size: 5   # 26.05: 10→6 при BingX DEGRADED — освободить event loop для dashboard
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
