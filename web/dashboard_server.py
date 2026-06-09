@@ -2221,9 +2221,14 @@ async def _handle_atr_stats(request: web.Request) -> web.Response:
         logger.exception("dashboard /api/atr_stats error: %s", e)
         return web.json_response({"error": str(e)}, status=500)
 
-async def start_dashboard(db_path: str = "subscriptions.db", host: str = "0.0.0.0", port: int = 8000,
+async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.0.1", port: int = 8000,
                           config=None, data_collector=None, trade_simulator=None, bot=None) -> None:
-    """Запускает aiohttp-сервер. Вызывать через asyncio.create_task()."""
+    """Запускает aiohttp-сервер. Вызывать через asyncio.create_task().
+
+    SEC-01a (аудит 09.06): default bind = 127.0.0.1 (НЕ 0.0.0.0) — дашборд пишет config.yaml
+    и закрывает сделки через POST без auth/CSRF. Внешний доступ — ТОЛЬКО осознанно через
+    config `dashboard.host: 0.0.0.0` (и только после SEC-01b token-auth).
+    """
     import asyncio
     if config is None:
         from core.infra.config_loader import config as _cfg

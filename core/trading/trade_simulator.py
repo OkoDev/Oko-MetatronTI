@@ -1916,14 +1916,19 @@ class TradeSimulator:
                 try:
                     ts_sec = created_dt.timestamp()
                     df_filtered = df[df["time"] >= ts_sec * 1000].copy()
-                    # DEV-49: при пустом фильтре — пропускаем чек (не используем pre-entry бары)
+                    # OPS-01a анти-#1910 (аудит 09.06): пустой фильтр = часы хоста сбиты вперёд?
+                    # РАНЬШЕ слепой continue → SL НЕ проверялся → APR висела -9.74R вместо -1R.
+                    # ТЕПЕРЬ sanity: проверяем SL по ПОСЛЕДНЕЙ свече (текущая рыночная цена, не
+                    # pre-entry бары) — стоп сработает даже при сбитых системных часах.
                     if len(df_filtered) == 0:
                         logger.warning(
-                            "[trade %d] нет баров после created_at (%s) — пропуск чека SL/TP",
+                            "[OPS-01a/#1910] trade %d: 0 баров после created_at (%s) — sanity-чек SL "
+                            "по текущей свече (НЕ слепой пропуск). Проверь часы хоста!",
                             trade_id, created_at,
                         )
-                        continue
-                    df = df_filtered
+                        df = df.tail(1).copy()   # текущая свеча = рыночная цена сейчас
+                    else:
+                        df = df_filtered
                 except Exception:
                     pass
             if len(df) == 0:

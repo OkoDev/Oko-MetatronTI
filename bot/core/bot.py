@@ -488,6 +488,7 @@ class TradingAlertBot:
             asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket
             asyncio.create_task(start_dashboard(
                 db_path=self.trade_simulator.db_path,
+                host=config.get("dashboard.host", "127.0.0.1"),  # SEC-01a: localhost по умолчанию
                 config=config,
                 data_collector=self.data_collector,
                 trade_simulator=self.trade_simulator,

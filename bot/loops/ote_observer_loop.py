@@ -151,6 +151,15 @@ async def _register_ote_trade(bot, sig):
     strength = max(60, min(95, 55 + int(sig.weight * 30)))
     confidence = max(0.55, min(0.9, 0.55 + sig.weight * 0.3))
 
+    # реальный 24h оборот (был хардкод 0.0 → ломал LIQ-GATE эксперимент: нечем split ликвид/неликвид)
+    _vol24 = 0.0
+    try:
+        _tk = await bot.data_collector.get_ticker(sig.symbol)
+        if _tk:
+            _vol24 = float(_tk.get("quoteVolume") or 0.0)
+    except Exception:
+        pass
+
     rec = TradingRecommendation(
         symbol=sig.symbol,
         action=action,
@@ -163,7 +172,7 @@ async def _register_ote_trade(bot, sig):
         conflicting_signals=[],
         market_context=MarketContext(
             symbol=sig.symbol, current_price=sig.entry,
-            volume_24h=0.0, volume_change_24h=0.0, price_change_24h=0.0,
+            volume_24h=_vol24, volume_change_24h=0.0, price_change_24h=0.0,
         ),
         entry_price=sig.entry,
         stop_loss=sig.sl,

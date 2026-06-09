@@ -424,6 +424,15 @@ async def _try_register_vst_trade(
     strength = max(60, min(95, 50 + int(getattr(pattern, "weight", 10)) * 2))
     confidence = max(0.55, min(0.95, 0.55 + float(decision.risk_pct) * 0.1))
 
+    # реальный 24h оборот (был хардкод 0.0 → ломал LIQ-GATE эксперимент: нечем split ликвид/неликвид)
+    _vol24 = 0.0
+    try:
+        _tk = await bot.data_collector.get_ticker(symbol)
+        if _tk:
+            _vol24 = float(_tk.get("quoteVolume") or 0.0)
+    except Exception:
+        pass
+
     rec = TradingRecommendation(
         symbol=symbol,
         action=action,
@@ -436,7 +445,7 @@ async def _try_register_vst_trade(
         conflicting_signals=[],
         market_context=MarketContext(
             symbol=symbol, current_price=price,
-            volume_24h=0.0, volume_change_24h=0.0, price_change_24h=0.0,
+            volume_24h=_vol24, volume_change_24h=0.0, price_change_24h=0.0,
         ),
         entry_price=price,
         stop_loss=sl_price,
