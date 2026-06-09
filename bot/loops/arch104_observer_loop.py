@@ -138,6 +138,11 @@ async def _get_active_pairs(bot) -> list[str]:
         try:
             pairs = list(mp)
             if pairs:
+                # ScanFairness (09.06): monitored_pairs = sorted (алфавит) → при нагрузке/семафоре
+                # хвост (W-Z) систематически реже получал входы. scan уже shuffle'ит (scan_loop:2234),
+                # а торговые observers (arch104/ote через _get_active_pairs) — НЕТ. Уравниваем.
+                import random
+                random.shuffle(pairs)
                 return pairs
         except Exception:
             pass
