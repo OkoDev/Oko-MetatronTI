@@ -6,6 +6,139 @@
 
 ---
 
+## 🔴 АУДИТ 2026-06-09 — HIGH PRIORITY (из 360° аудита)
+
+> Источник: `docs/audit/AUDIT_2026-06-09.md`. Блок «не теряй деньги и не утекай» — закрыть в 1–2 недели.
+> MEDIUM («честный edge») и LONG-TERM («платформа») — см. §7 отчёта.
+
+### [SEC-01] Закрыть веб-дашборд (auth + CSRF + bind 127.0.0.1)
+**Агент:** Developer
+**Приоритет:** 🔴 Критический
+**Статус:** 🆕 Новая
+
+**Проблема (верифицировано):** `web/dashboard_server.py:2454` — `host="0.0.0.0"` без аутентификации.
+`POST /api/settings` перезаписывает `config.yaml` (стопы/тейки/WT-пороги, hot-reload),
+`POST /api/trades/{id}/close` закрывает сделки. Нет auth, нет CSRF, `SameSite` не задан →
+любой в сети (или вредоносный сайт через CSRF) меняет стратегию работающего бота.
+
+**Что сделать:**
+1. `start_dashboard(host=...)` — дефолт `127.0.0.1`; вынести в `config.yaml` (`dashboard.host`/`port`).
+2. Токен-auth на все мутирующие эндпоинты (`POST /api/settings`, `POST /api/trades/*/close`) —
+   заголовок `X-Auth-Token`, секрет из `.env` (`DASHBOARD_TOKEN`).
+3. CSRF-токен в форму `/settings` (или `SameSite=Strict` cookie + проверка Origin).
+4. Задействовать `ADMIN_ID` (`config_loader.get_admin_id()` сейчас загружается, но не вызывается).
+
+**Файлы:** `web/dashboard_server.py`, `core/config_loader.py`, `config.yaml`, `.env.example`
+
+---
+
+### [OPS-01] Sanity-guard на сделки + биржевой источник времени (анти-#1910)
+**Агент:** Developer (архитектуру форс-клоуза согласовать с Architect)
+**Приоритет:** 🔴 Критический
+**Статус:** 🆕 Новая
+
+**Проблема (доказанный отказ):** инцидент #1910 APR/USDT (`current_state.md:3–12`) — сделка
+застряла `OPEN` при −21% ниже SL (−9.74R вместо −1R), потому что часы Windows ушли на +3ч и
+фильтр `df[time >= created_at]` вернул пустой df → SL не проверялся. Быстрый фолбэк уже добавлен,
+но корень (доверие системным часам + отсутствие sanity-алерта) не закрыт.
+
+**Что сделать:**
+1. `created_at` и время трекинга брать из **биржевого** времени (`exchange.milliseconds()` /
+   timestamp последней свечи), не из `datetime.now()`.
+2. Sanity-guard в `check_open_trades_with_tsl()`: если для `OPEN` цена ушла дальше
+   `sl ± guard_pct` (например, >1.5× от расстояния до SL) — форс-клоуз по SL + WARNING-алерт админу.
+3. Watchdog: алерт, если `trade_tracker_loop` не делал успешный проход N минут.
+
+**Файлы:** `core/trade_simulator.py`, `bot/loops/trade_tracker.py`, `core/data_collector.py`
+
+---
+
+### [OPS-02] SQLite-устойчивость: WAL + busy_timeout + неблокирующая запись
+**Агент:** Developer
+**Приоритет:** 🔴 Критический
+**Статус:** 🆕 Новая
+
+**Проблема (верифицировано):** соединения открываются без WAL/`busy_timeout`
+(`subscription_manager.py:28`, `trade_simulator.py:95`). Параллельная запись `scan_loop`
+(регистрация) ↔ `trade_tracker_loop` (закрытие) → риск `database is locked`. Плюс 5+ вложенных
+синхронных `sqlite3.connect()` в `check_open_trades_with_tsl()` (`trade_simulator.py:609–818`)
+блокируют event loop.
+
+**Что сделать:**
+1. Во всех `init_database()`/коннектах: `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`,
+   `PRAGMA synchronous=NORMAL`.
+2. Единый хелпер коннекта (DRY) вместо россыпи `sqlite3.connect()`.
+3. Тяжёлые блоки записи вынести в `run_in_executor` (по образцу `bot/loops/ml_loop.py:25`).
+
+**Файлы:** `core/subscription_manager.py`, `core/trade_simulator.py`, `core/performance_engine.py`
+
+---
+
+### [OPS-03] Починить чистую установку и Docker
+**Агент:** Developer
+**Приоритет:** 🔴 Высокий
+**Статус:** 🆕 Новая
+
+**Проблема (верифицировано):** `scikit-learn` отсутствует в `requirements.txt` (есть только в
+README-тексте) → на чистой машине `core/ml_predictor.py` падает на импорте. Dockerfile без
+healthcheck/restart-policy.
+
+**Что сделать:**
+1. Добавить `scikit-learn`, `joblib` в `requirements.txt` с пинами.
+2. Dockerfile/`docker-compose.yml`: `HEALTHCHECK` + `restart: unless-stopped` для основного сервиса;
+   `volume` для `subscriptions.db`.
+3. Убрать хардкод-путь к Python из README/доков → секция запуска через venv/Docker.
+
+**Файлы:** `requirements.txt`, `Dockerfile`, `docker-compose.yml`, `README.md`
+
+---
+
+### [OPS-04] Устойчивость основного цикла: авто-рестарт + убрать молчаливые except
+**Агент:** Developer
+**Приоритет:** 🔴 Высокий
+**Статус:** 🆕 Новая
+
+**Проблема (верифицировано):** необработанное исключение в `monitor_market()` логируется, но цикл
+**не перезапускается** → тихая остановка мониторинга до ручного вмешательства. `except Exception: pass`
+в `bot/monitoring.py:101` (и в `_fetch_one` пивотов) скрывает ошибки.
+
+**Что сделать:**
+1. Обернуть тело `monitor_market()` в supervisor с авто-рестартом и backoff (сохранить корректную
+   обработку `asyncio.CancelledError`).
+2. Заменить все `except Exception: pass` на логирование с контекстом.
+3. Добавить graceful shutdown (отмена фоновых задач + `asyncio.gather(..., return_exceptions=True)`,
+   закрытие SQLite/ccxt) — `bot/core/bot.py:107–115`.
+
+**Файлы:** `bot/loops/scan_loop.py`, `bot/monitoring.py`, `bot/core/bot.py`
+
+---
+
+### [ML-01] (MEDIUM, но критично по сути) Честная ML-валидация + selection bias
+**Агент:** Architect (методология) → Developer (реализация)
+**Приоритет:** 🟠 Средний / Высокая важность
+**Статус:** 🆕 Новая — стартовать после HIGH-блока
+
+**Проблема (верифицировано):** разрыв бэктест↔реальность (WR 85% → 34–48%). Причины:
+- `cross_val_score` с K-Fold вместо `TimeSeriesSplit` (`outcome_predictor.py:133`, `r_predictor.py:68`)
+  → CV AUC 0.56 завышен, ≈ случайному 0.5.
+- Selection bias: `RPredictor` фильтрует `WHERE max_R_possible > 0` и предсказывает MFE-идеал, а не
+  реализованный R (`r_predictor.py:94–107`) → Kelly завышает позицию.
+- `regime=None` на инференсе (`trading_intelligence.py:691`) → 4 признака мертвы.
+- Обучение только на `TP/SL`, без `TSL/EXPIRED` (`outcome_predictor.py:201`).
+
+**Что сделать:**
+1. Перейти на `TimeSeriesSplit`; получить честный AUC. Если ≈0.5 — **не подмешивать** P(win) в
+   `confidence` (сейчас `0.7×orig + 0.3×P(win)`).
+2. `RPredictor`: убрать фильтр по таргету, предсказывать реализованный R.
+3. Прокинуть реальный `regime` на инференс; включить `TSL/EXPIRED` в обучение с корректным таргетом.
+4. Сделать out-of-sample обязательным gate для новых сигналов; начать вести честный пер-сигнальный
+   трек-рекорд из БД.
+
+**Файлы:** `core/outcome_predictor.py`, `core/r_predictor.py`, `core/intelligence/ml_enhancer.py`,
+`core/trading_intelligence.py`
+
+---
+
 ## 🔥 В РАБОТЕ (In Progress)
 
 ### [DEV-WT-B-1] ✅ wt_b_signal — реализация и запуск — ГОТОВО
