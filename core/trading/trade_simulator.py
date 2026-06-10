@@ -1925,8 +1925,25 @@ class TradeSimulator:
                     df = df.copy()
                     df["time"] = pd.to_numeric(df["time"], errors="coerce")
                     try:
-                        ts_sec = created_dt.timestamp()
-                        df_filtered = df[df["time"] >= ts_sec * 1000].copy()
+                        created_ms = created_dt.timestamp() * 1000
+                        # OPS-01b анти-#1910 (КОРЕНЬ, 10.06): created_at пишется СИСТЕМНЫМИ часами
+                        # хоста (Windows, datetime.now при register), а df["time"] — БИРЖЕВОЕ время
+                        # свечей. Если часы хоста ушли ВПЕРЁД, created_ms оказывается «в будущем»
+                        # относительно реальных биржевых баров → фильтр пуст → SL не проверяется
+                        # (#1910, APR −9.74R). Биржевое время последнего бара = источник правды
+                        # (уже лежит в df["time"], без лишнего fetch_time). Детектим рассинхрон,
+                        # клампим created_ms к биржевой шкале — SL проверится по реальным свечам.
+                        _exch_last_ms = float(df["time"].iloc[-1])
+                        if created_ms > _exch_last_ms:
+                            _skew_min = (created_ms - _exch_last_ms) / 60000.0
+                            logger.warning(
+                                "[OPS-01b/#1910] trade %d: created_at (%s) ОПЕРЕЖАЕТ биржевое время "
+                                "на %.1f мин — часы хоста сбиты ВПЕРЁД. Клампим к биржевой шкале "
+                                "(SL-чек по текущей свече, биржа=правда).",
+                                trade_id, created_at, _skew_min,
+                            )
+                            created_ms = _exch_last_ms  # биржевое время = источник правды
+                        df_filtered = df[df["time"] >= created_ms].copy()
                         # OPS-01a анти-#1910 (аудит 09.06): пустой фильтр = часы хоста сбиты вперёд?
                         # РАНЬШЕ слепой continue → SL НЕ проверялся → APR висела -9.74R вместо -1R.
                         # ТЕПЕРЬ sanity: проверяем SL по ПОСЛЕДНЕЙ свече (текущая рыночная цена, не
