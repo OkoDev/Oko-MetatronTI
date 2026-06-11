@@ -338,7 +338,9 @@ sl_tp_engine:
     struct_sl_max_dist: 2.0
     tsl_too_tight_pct: 1.0
 market_regime:
-  use_v2: false
+  use_v2: true   # АКТИВИРОВАН 11.06 (REGIME-V2 Э4): Bus публикует classify_v2 (HTF-доминанта),
+                 # ВСЕ гейты (scan_loop:234/848) видят v2. A/B: +334R сум, раннеры целы, HIGH_VOL
+                 # ложные блоки убраны (876→102), RANGE-мислейбл чинится (3420→1645). Откат: false.
 trigger_bus:
   shadow: false
   cascade_min: 3
@@ -394,11 +396,17 @@ signal_quality:
   dev186_wt_signal_regime_gate: true
   dev186_shadow: false
   min_strength_register: 50  # 26.05.2026: 60→50 — увеличиваем трафик divergence/arch104 (50→40 в source_policies)
-  min_strength_atr_change: 15  # A1 14.05: снижен с 40 → 15 (backtest: 1h_LONG+0.12, 4h_LONG+0.275)
+  min_strength_atr_change: 0   # ГЕЙТ СНЯТ 11.06 (REGIME-V2): strength atr_change = trigger-вес (15-18) + confirmations,
+                               # НЕ качество (направление ±1 бинарно из ATRTrend) → порог 15 = формальность (trigger≥15).
+                               # Реальный фильтр качества = OTE-позиция (PLAN_ATR_CHANGE_OTE, шаг 3). Было: 15.
   atr_change:
-    long_strength_penalty: 35  # SOFT: avgR=-0.711, WR=8.8% (n=80, 7дн) — штраф, не блок
-    allow_short_regimes:       # SHORT только в TREND_DOWN
-      - "TREND_DOWN"           # avgR=+0.488, WR=78.8% (n=52) vs RANGE avgR=+0.031 (n=34)
+    # REGIME-V2/arch124 (11.06): СНЯТЫ режимные гейты atr_change.
+    # Причина: atr_change SHORT = ATRTrend −1 → направление УЖЕ в сигнале (regime-гейт = тавтология);
+    # реальный фильтр качества = OTE-зона (atr_change слеп к структуре — входит на ATR-всплеске
+    # вслепую: иногда в OTE-откате=хороший R, иногда на дне импульса=плохой R → шум +0.072).
+    # −178R утечки (arch124). Снято для чистого сбора + OTE-интеграции (atr_change как триггер в OTE).
+    long_strength_penalty: 0   # снят (был 35 — SOFT-штраф LONG на regime-метке)
+    # allow_short_regimes снят (был [TREND_DOWN] HARD-блок). min_strength_atr_change тоже снят (→0, формальность).
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
   ote_shadow_mode: false  # ARCH-87: активирован 18.04 — rejection 1W FVG [0.4235–0.4416]
@@ -626,6 +634,9 @@ arch104:
                               # entry-slip ~0.1% → arch104 real_avgR ≈ +0.12 (ПЛЮС!). OTE+arch104 = +1501R
                               # на VST. Реальный минус проекта = pivot_reversal+confluence (−1865R).
     signal_type: "arch104"    # в БД simulated_trades для разделения
+  # C-01 (11.06.2026): слепота CHoCH/SMC length=50. Эталон OKO-SM = 5.
+  # 5 → живой на 5m/15m (0 CHoCH при 50). Переключить после ре-майнинга + A/B бэктеста.
+  choch_length: 50             # дефолт=50 (текущее). Поменять на 5 после ре-майнинга 69 паттернов.
   # D-051 (26.05.2026): wt_cross HARD gate для СТАРЫХ паттернов (+183% на 15m тогда).
   # ARCH-128 04.06: ВЫКЛЮЧЕН. Душил весь DS-реестр (200/200 без wt_cross в anchor →
   # требовал strict wt_cross_{tf} в OS/OB → 0 срабатываний = arch104 молчал). DS-паттерны
