@@ -93,23 +93,48 @@ def make_event_handler(bot):
     return on_event
 
 
-def start_exec_ws(bot) -> Optional[object]:
-    """Запуск UserDataStream если trading.exec_ws.enabled. Возвращает asyncio.Task или None."""
+def start_exec_ws(bot) -> Optional[list]:
+    """Запуск UserDataStream на КАЖДЫЙ аккаунт (multi-account) если trading.exec_ws.enabled.
+
+    Корень: бот торгует на 2 VST-аккаунтах (arch96.multiaccount) → нужен отдельный WS
+    (listenKey) на каждый, иначе сделки др. аккаунта не видны (как JUP/REDSTONE на acc2).
+    Возвращает список asyncio.Task (по одному на аккаунт) или None.
+    """
     import asyncio
+    import os
     cfg = bot.config
     if not bool(cfg.get("trading.exec_ws.enabled", False)):
         return None
     is_vst = str(cfg.get("trading.execution_mode", "vst")).lower() == "vst"
-    import os
-    key = (os.getenv("BINGX_VST_API_KEY") if is_vst else os.getenv("BINGX_API_KEY")) or ""
-    secret = (os.getenv("BINGX_VST_SECRET_KEY") if is_vst else os.getenv("BINGX_SECRET_KEY")) or ""
-    if not key:
+
+    # Список (tag, api_key, secret) по доступным ключам
+    accounts = []
+    if is_vst:
+        for tag, ke, se in (
+            ("acc1", "BINGX_VST_API_KEY", "BINGX_VST_SECRET_KEY"),
+            ("acc2", "BINGX_VST_API_KEY_2", "BINGX_VST_SECRET_KEY_2"),
+        ):
+            k = os.getenv(ke)
+            if k:
+                accounts.append((tag, k, os.getenv(se) or ""))
+    else:
+        k = os.getenv("BINGX_API_KEY")
+        if k:
+            accounts.append(("live", k, os.getenv("BINGX_SECRET_KEY") or ""))
+
+    if not accounts:
         logger.warning("[EXEC-WS] enabled, но нет ключей (is_vst=%s) — не запускаю", is_vst)
         return None
+
     from core.exchange.user_data_ws import UserDataStream
-    uds = UserDataStream(key, secret, is_vst=is_vst, on_event=make_event_handler(bot), account_tag="acc1")
-    bot._exec_ws = uds
-    task = asyncio.create_task(uds.run())
-    logger.info("[EXEC-WS] запущен (is_vst=%s, write_exch_id=%s)",
-                is_vst, cfg.get("trading.exec_ws.write_exch_id", False))
-    return task
+    handler = make_event_handler(bot)
+    bot._exec_ws_list = []
+    tasks = []
+    for tag, k, s in accounts:
+        uds = UserDataStream(k, s, is_vst=is_vst, on_event=handler, account_tag=tag)
+        bot._exec_ws_list.append(uds)
+        tasks.append(asyncio.create_task(uds.run()))
+    logger.info("[EXEC-WS] запущено %d аккаунтов %s (is_vst=%s, write_exch_id=%s)",
+                len(accounts), [a[0] for a in accounts], is_vst,
+                cfg.get("trading.exec_ws.write_exch_id", False))
+    return tasks
