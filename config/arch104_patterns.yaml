@@ -2328,16 +2328,17 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L096_bullfv_discou:
-    enabled: false
+    enabled: true   # C-01 (11.06): ВОЗВРАЩЁН — был ложно убит 1h-ремайном (length=50→en=0).
+                    # MTF-ремайн length=5 (DS, 8 символов): en=13 avgR+0.281 WR69%. Живой edge.
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
     - discount_15m
     detection_tf: 15m
     weight: 16
-    test_n: 0
-    test_avgR: 0.0
-    test_WR: 0.0
+    test_n: 13
+    test_avgR: 0.281
+    test_WR: 69.0
     fallback_tp_r: 2.0
     tp_strategy: no_trail
     time_exit_hours: 24
