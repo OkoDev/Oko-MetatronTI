@@ -113,6 +113,8 @@ class TradeSimulator:
         self._close_in_progress: set = set()
         # DEV-168: cooldown для LIVE-GUARD логов (не спамить каждую минуту)
         self._live_guard_logged: dict = {}  # trade_id → datetime последнего WARNING
+        # OPS-06: таймаут LIVE-GUARD. trade_id → datetime ПЕРВОГО детекта exit (для force-close по таймауту)
+        self._live_guard_first_detect: dict = {}
         # DEV-227: throttle для force REST (stale-guard). trade_id → ts последнего force-refresh.
         self._force_rest_ts: dict = {}
         # DS-322: throttle REPAIR-SL для старых SIM-сделок. trade_id → ts последней проверки.
@@ -2753,22 +2755,9 @@ class TradeSimulator:
 
 
                 if exit_status and exit_price_val is not None:
-                    if _exchange_managed_trade:
-                        _lg_key = f"{trade_id}_exit"
-                        _lg_last = self._live_guard_logged.get(_lg_key)
-                        if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
-                            logger.warning(
-                                "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected by simulator @ %.6f, "
-                                "but trade is exchange-managed — waiting for exchange confirmation",
-                                symbol, trade_id, exit_status, exit_price_val,
-                            )
-                            self._live_guard_logged[_lg_key] = now
-                        return (_ops05c, _ops05tsl)
-                    # SIM-режим: SL после движения TSL — это TSL-exit (SL был сдвинут выше entry).
-                    # Критерий: original_sl != stop_loss (SL реально двигался), не tsl_activated
-                    # (флаг ставится при +1R, но SL мог не двинуться если тренд неблагоприятен).
-                    # Без этой переклассификации strip-бот и SIM-сделки в main показывают TSL=0,
-                    # а прибыльные TSL-выходы (R>0) маскируются под SL.
+                    # Переклассификация SL→TSL ОБЩАЯ (до exchange-managed И SIM): SL после движения
+                    # TSL = TSL-exit (SL сдвинут выше entry). Критерий: original_sl != stop_loss.
+                    # Без неё прибыльные TSL-выходы (R>0) маскируются под SL — в т.ч. при force-close.
                     if exit_status == STATUS_SL:
                         _orig_sl_classify = trade.get("original_sl")
                         _curr_sl_classify = float(trade.get("stop_loss") or 0)
@@ -2784,6 +2773,41 @@ class TradeSimulator:
                                 trade_id, symbol, direction,
                                 float(_orig_sl_classify), _curr_sl_classify,
                             )
+                    if _exchange_managed_trade:
+                        _lg_key = f"{trade_id}_exit"
+                        # OPS-06: таймаут. Симулятор детектит exit, но биржа exchange-managed.
+                        # Ждём подтверждения биржи ОГРАНИЧЕННОЕ время. Если за N мин не закрыла
+                        # (109400/No position/ghost) → force-close БД с РЕАЛЬНЫМ R (не висим до
+                        # sync→EXPIRED R=0 = «бумажная иллюзия»). Биржевую позицию подхватит sync/repair.
+                        _first = self._live_guard_first_detect.get(_lg_key)
+                        if _first is None:
+                            self._live_guard_first_detect[_lg_key] = now
+                            _first = now
+                        _waited_s = (now - _first).total_seconds()
+                        from core.infra.config_loader import config as _cfg_lg
+                        _lg_timeout_s = float(_cfg_lg.get("trading.live_guard_timeout_min", 15)) * 60
+                        if _waited_s >= _lg_timeout_s:
+                            logger.warning(
+                                "[TradeSimulator][LIVE-GUARD][OPS-06] %s #%d: биржа не закрыла %s за "
+                                "%.0f мин → force-close БД @ %.6f (R реальный, не EXPIRED R=0)",
+                                symbol, trade_id, exit_status, _waited_s / 60, exit_price_val,
+                            )
+                            if self.close_trade(trade_id, exit_status, exit_price_val):
+                                _ops05c += 1
+                                self._live_guard_first_detect.pop(_lg_key, None)
+                                self._live_guard_logged.pop(_lg_key, None)
+                            return (_ops05c, _ops05tsl)
+                        # ещё в окне ожидания биржи — логируем раз в час
+                        _lg_last = self._live_guard_logged.get(_lg_key)
+                        if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
+                            logger.warning(
+                                "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected @ %.6f, exchange-managed "
+                                "— ждём биржу (%.0f/%.0f мин)",
+                                symbol, trade_id, exit_status, exit_price_val,
+                                _waited_s / 60, _lg_timeout_s / 60,
+                            )
+                            self._live_guard_logged[_lg_key] = now
+                        return (_ops05c, _ops05tsl)
                     if self.close_trade(trade_id, exit_status, exit_price_val):
                         _ops05c += 1
                         # DEV-15: LLM-разбор для SL-сделок
