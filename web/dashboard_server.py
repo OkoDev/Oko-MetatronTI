@@ -784,6 +784,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 "leverage":          int(p.get("leverage") or 1),
                 "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
                 "liquidation_price": float(p.get("liquidationPrice") or 0),
+                "account":           p.get("_account"),   # ARCH-96: acc1/acc2 (был потерян в выводе) — для DRIFT-диагностики
             })
         # JOIN с simulated_trades через live_orders → получаем SL/TP для отображения
         # Используем live_orders.sim_trade_id как мост, чтобы корректно находить
