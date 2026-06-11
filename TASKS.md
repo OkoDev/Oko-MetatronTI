@@ -29,6 +29,8 @@
 | **C-01** | CHoCH length=5 ре-майнинг 69 паттернов | 🟡 DS_L096 возвращён, 4 артефакта удалить, **6 pivot — DS ночью (45 симв)** | `arch104_patterns.yaml`, `PLAN_C01_choch_length_fix.md` |
 | **SIGNAL-AUDIT** | Аудит актуальности сигналов (confluence/wt_sideways отключены — shadow с полным trade_features, замерить) | 🟢 идея (юзер 11.06) | — |
 | **HIGH-VOL-VOLUME** | Объёмное обогащение HIGH_VOL (volume_z из features) | 🟢 отложено | — |
+| **DASHBOARD-VST-MODE** | Глобальный SIM/VST-фильтр: `summary(mode)` → весь дашборд (метрики/KPI/EV/Avg R) переключается SIM↔реальная торговля. Сейчас ВСЁ общее (балласт включён). Календарь уже сделан (`pnl_calendar(mode)`); распространить на summary + переключатель в топбаре. Эффект: VST 11.06 +2.012 vs SIM 0.26 — реальная картина прячется в общем | 🟢 идея (юзер 11.06) | `performance_engine.summary()`, `/api/stats`, топбар |
+| **TP-ANOMALY** | TP realized avgR=+4.56 > max_R_possible avg=1.38 (НЕВОЗМОЖНО: realized не может > MFE) + maxR=94.1 выброс. Признак искажения R-расчёта в TP («бумажность»). Копнуть: R_multiple завышается ИЛИ max_R_possible не обновляется. Связь OPS-06/ML-01c | 🟡 находка (юзер 11.06 «чую бумажные данные») | `trade_simulator` TP close, `R_multiple`/`max_R_possible` |
 
 > **snapshot (P2) — НЕ дыра:** `trade_features` 100% активных сигналов с 31.05 (`write_table`). Низкое общее покрытие = старые сделки + мёртвые сигналы. `features_json`=метаданные (не косяк).
 
