@@ -2788,8 +2788,9 @@ class TradeSimulator:
                         _lg_timeout_s = float(_cfg_lg.get("trading.live_guard_timeout_min", 15)) * 60
                         if _waited_s >= _lg_timeout_s:
                             logger.warning(
-                                "[TradeSimulator][LIVE-GUARD][OPS-06] %s #%d: биржа не закрыла %s за "
-                                "%.0f мин → force-close БД @ %.6f (R реальный, не EXPIRED R=0)",
+                                "[TradeSimulator][LIVE-GUARD][OPS-06] %s #%d: %s детектирован, БД не "
+                                "синхронизирована за %.0f мин (биржа закрыла но sync отстал ИЛИ ghost/109400) "
+                                "→ force-close БД @ %.6f (R реальный, не EXPIRED R=0)",
                                 symbol, trade_id, exit_status, _waited_s / 60, exit_price_val,
                             )
                             if self.close_trade(trade_id, exit_status, exit_price_val):
