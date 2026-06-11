@@ -10,6 +10,25 @@
 
 ---
 
+### [11.06.2026] Claude(Даат) → DS 🎯 ЗАДАЧА STRADDLE-FREEDOM — мой скрипт не тянет, отдаю + расширяю (3 режима)
+
+**Вопрос юзера: снять dedup, открывать ОБЕ стороны OTE (pull-short + cont-long) одновременно — лучше ли совокупный R?** Мой `scripts/straddle_freedom_test.py` падал 2× (Unicode — починил; **и медлительность: APE 7051s/пара** → 14 пар = десятки часов). collect_fires (generate на сетке истории) — узкое место. **Отдаю тебе** — оптимизируй (профиль generate, кэш zigzag) ИЛИ запусти на ночь на многих парах.
+
+**Метод (мой скрипт, reuse):** прогон `OTESignalGenerator` по сетке истории → собрать FIRE (pull/cont) → forward-симуляция R → портфели. **Расширь до 3 режимов** (это ключевое — ELLIOTT v2 изменил вопрос):
+1. **DEDUP** (текущее): на пару одна ote, первый по tier занимает.
+2. **FREEDOM**: открываем ВСЁ, включая встречные (pull-short + cont-long вместе).
+3. **PHASE-SELECT** (НОВЫЙ, из ELLIOTT v2): на co-FIRE выбираем сторону по фазе — pull если `n_в_сторону_4h≥1`, cont если `n≤2`. Reuse `_elliott_phase_shadow` (`ote_observer`) или `calculate_n_down/_up`.
+
+**Гипотеза:** PHASE-SELECT > FREEDOM > DEDUP. Слепая свобода (обе встречные) хуже фазового выбора, т.к. одна сторона всегда против фазы. Но FREEDOM может бить DEDUP (asymmetric payoff: компактные SL, cont→далёкая цель). **Замерь все 3: total R, n, by type, co-FIRE окон, delta.**
+
+**Критерий → действие:** если FREEDOM ≫ DEDUP → снять dedup для ote (DirectionalDedup не нужен). Если PHASE-SELECT ≫ FREEDOM → dedup заменить на **фазовый выбор стороны** (DEV-226 Ph2 hard-гейт = и есть selector). Это решает архитектуру выхода dedup↔ConfluenceField.
+
+Скрипт: `scripts/straddle_freedom_test.py` (env: STR_PAIRS/STR_STEP/STR_TAIL для масштаба). data-era post-15.04.
+
+— Claude (Даат), 11.06.2026
+
+---
+
 ### [11.06.2026] Claude(Даат) → ALL ✅ ДЕЙСТВИЯ: pivot_reversal ОТКЛЮЧЁН + DEV-226 Ph2 SHADOW катнул
 
 **По итогам PIVOT-GRAVITY (закрыт) + ELLIOTT v2 (принят) — два действия (юзер ОК):**

@@ -195,13 +195,16 @@ def main():
            stats("FREEDOM(встречные разрешены)", free_taken),
            by_type(free_taken),
            f"\n  co-FIRE окон (открыты ОБЕ стороны): {cofire}",
-           f"\n  Δ sumR (freedom − dedup): {sum(t['R'] for t in free_taken) - sum(t['R'] for t in dedup_taken):+.1f}R"]
+           f"\n  delta sumR (freedom - dedup): {sum(t['R'] for t in free_taken) - sum(t['R'] for t in dedup_taken):+.1f}R"]
     txt = "\n".join(out)
-    print("\n" + txt)
     od = Path("data/research/2026-06-11--straddle-freedom")
     od.mkdir(parents=True, exist_ok=True)
-    (od / "result.md").write_text(txt, encoding="utf-8")
-    print(f"\n→ {od/'result.md'}  ({time.time()-t0:.0f}s)")
+    (od / "result.md").write_text(txt, encoding="utf-8")    # запись ДО print (print может упасть на cp1251)
+    try:
+        print("\n" + txt)
+    except Exception:
+        pass
+    print(f"\n-> {od/'result.md'}  ({time.time()-t0:.0f}s)")
 
 
 if __name__ == "__main__":
