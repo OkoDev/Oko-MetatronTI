@@ -118,25 +118,41 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
 
-    if overshoot_pct < overshoot_threshold:
-        # Норма — очищаем state если был
+    # OPS-06 (12.06): ВТОРОЙ триггер emergency — симулятор детектил exit (SL/TSL hit) на этой
+    # сделке + прошёл live_guard_timeout, а биржа ВСЁ ЕЩЁ держит позицию (мы здесь = pos на бирже).
+    # Биржевой SL мог не сработать при касании (ghost/109400) при малом overshoot → dev185_2 молчит.
+    # Закрываем позицию по факту детекта (не ждём overshoot). Это правильное место для LIVE-GUARD:
+    # есть состояние биржи → закрываем РЕАЛЬНУЮ позицию + БД (а не только БД в симуляторе = orphan).
+    _lg_detect = getattr(bot.trade_simulator, "_live_guard_first_detect", {}).get(f"{trade_id}_exit")
+    _lg_timeout_s = float(cfg.get("trading.live_guard_timeout_min", 7)) * 60
+    _lg_trig = _lg_detect is not None and (now - _lg_detect).total_seconds() >= _lg_timeout_s
+
+    if overshoot_pct < overshoot_threshold and not _lg_trig:
+        # ни overshoot, ни LIVE-GUARD таймаут — норма
         if trade_id in dwell_state:
             del dwell_state[trade_id]
         return False
 
-    # Цена за SL > threshold
-    first_seen = dwell_state.get(trade_id)
-    if first_seen is None:
-        dwell_state[trade_id] = now
-        logger.info(
-            "[DEV-185.2] %s #%d: overshoot %.2f%% > %.2f%% — start dwell timer (%ds)",
-            sym, trade_id, overshoot_pct, overshoot_threshold, dwell_seconds,
+    # overshoot требует dwell-выдержки; LIVE-GUARD триггер уже «выждал» live_guard_timeout
+    if not _lg_trig:
+        first_seen = dwell_state.get(trade_id)
+        if first_seen is None:
+            dwell_state[trade_id] = now
+            logger.info(
+                "[DEV-185.2] %s #%d: overshoot %.2f%% > %.2f%% — start dwell timer (%ds)",
+                sym, trade_id, overshoot_pct, overshoot_threshold, dwell_seconds,
+            )
+            return False
+        elapsed = (now - first_seen).total_seconds()
+        if elapsed < dwell_seconds:
+            return False
+    else:
+        elapsed = (now - _lg_detect).total_seconds()
+        logger.warning(
+            "[OPS-06][LIVE-GUARD] %s #%d: симулятор детектил exit + %.0f мин, биржа держит "
+            "→ emergency close позиции (orphan-prevent)",
+            sym, trade_id, elapsed / 60,
         )
-        return False
-
-    elapsed = (now - first_seen).total_seconds()
-    if elapsed < dwell_seconds:
-        return False
 
     # Триггер emergency close
     qty = float(trade.get("qty") or 0)
@@ -199,6 +215,9 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
             if bot.trade_simulator.close_trade(trade_id, _st6, _px6):
                 logger.info("[OPS-06] %s #%d: БД закрыта %s @ %.6f после emergency (orphan-prevent)",
                             sym, trade_id, _st6, _px6 or 0)
+                # OPS-06: очистить LIVE-GUARD трекеры — сделка закрыта (и БД, и позиция)
+                getattr(bot.trade_simulator, "_live_guard_first_detect", {}).pop(f"{trade_id}_exit", None)
+                getattr(bot.trade_simulator, "_live_guard_logged", {}).pop(f"{trade_id}_exit", None)
         except Exception as _e6:
             logger.error("[OPS-06] %s #%d close_trade после emergency: %s", sym, trade_id, _e6)
         return True

@@ -2775,37 +2775,23 @@ class TradeSimulator:
                             )
                     if _exchange_managed_trade:
                         _lg_key = f"{trade_id}_exit"
-                        # OPS-06: таймаут. Симулятор детектит exit, но биржа exchange-managed.
-                        # Ждём подтверждения биржи ОГРАНИЧЕННОЕ время. Если за N мин не закрыла
-                        # (109400/No position/ghost) → force-close БД с РЕАЛЬНЫМ R (не висим до
-                        # sync→EXPIRED R=0 = «бумажная иллюзия»). Биржевую позицию подхватит sync/repair.
+                        # OPS-06: симулятор детектит exit, но сделка exchange-managed. НЕ закрываем БД
+                        # сами — force-close в симуляторе создаёт orphan, если биржа держит позицию
+                        # (симулятор не знает состояния биржи). Разбор orphan-зависания перенесён в
+                        # position_sync (есть open_on_exchange → различить «биржа закрыла» vs «держит»:
+                        # закрыла→close БД; держит→emergency close позиции + close БД). Здесь — только
+                        # трекинг времени детекта + лог для диагностики/position_sync.
                         _first = self._live_guard_first_detect.get(_lg_key)
                         if _first is None:
                             self._live_guard_first_detect[_lg_key] = now
                             _first = now
                         _waited_s = (now - _first).total_seconds()
-                        from core.infra.config_loader import config as _cfg_lg
-                        _lg_timeout_s = float(_cfg_lg.get("trading.live_guard_timeout_min", 15)) * 60
-                        if _waited_s >= _lg_timeout_s:
-                            logger.warning(
-                                "[TradeSimulator][LIVE-GUARD][OPS-06] %s #%d: %s детектирован, БД не "
-                                "синхронизирована за %.0f мин (биржа закрыла но sync отстал ИЛИ ghost/109400) "
-                                "→ force-close БД @ %.6f (R реальный, не EXPIRED R=0)",
-                                symbol, trade_id, exit_status, _waited_s / 60, exit_price_val,
-                            )
-                            if self.close_trade(trade_id, exit_status, exit_price_val):
-                                _ops05c += 1
-                                self._live_guard_first_detect.pop(_lg_key, None)
-                                self._live_guard_logged.pop(_lg_key, None)
-                            return (_ops05c, _ops05tsl)
-                        # ещё в окне ожидания биржи — логируем раз в час
                         _lg_last = self._live_guard_logged.get(_lg_key)
                         if _lg_last is None or (now - _lg_last).total_seconds() > 3600:
                             logger.warning(
                                 "[TradeSimulator][LIVE-GUARD] %s #%d: %s detected @ %.6f, exchange-managed "
-                                "— ждём биржу (%.0f/%.0f мин)",
-                                symbol, trade_id, exit_status, exit_price_val,
-                                _waited_s / 60, _lg_timeout_s / 60,
+                                "— ждём sync/биржу (%.0f мин), разбор в position_sync",
+                                symbol, trade_id, exit_status, exit_price_val, _waited_s / 60,
                             )
                             self._live_guard_logged[_lg_key] = now
                         return (_ops05c, _ops05tsl)
