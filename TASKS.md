@@ -43,6 +43,8 @@
 
 | **STRADDLE-FREEDOM** | ✅ **ЗАКРЫТ (DS, Claude валидировал).** FREEDOM>DEDUP лишь **+0.15%** (+7.65R), **co-FIRE редок 1%** (24/2316) → dedup почти не вредит → **ОСТАВИТЬ.** Юзер-гипотеза «свобода» подтверждена по знаку, рычаг мизерный. **PHASE-SELECT:** данные пошли (DEV-226 shadow, 18 сделок); предв. would_block=0 +4.62 vs =1 +1.08 (верный знак, но n мал + ракета ALLO раздувает) → замер на n≥30. **Вывод: dedup НЕ рычаг (1%), реальный рычаг = DEV-226 Ph2** | ✅ закрыто | `scripts/straddle_freedom_test.py`, DISCUSSION 12.06 |
 
+| **EXEC-WS** | 🟢→🔴 **Execution Sphere WS (ARCH-96 разморозка) — PATH ДОКАЗАН 12.06.** Корень рассинхрона (orphan/drift/zombie/exch_id=None/фантомные SIM-only): всё на REST-polling (sync 60с отстаёт). **Решение: VST private user-data WS.** Тест `scripts/test_vst_listenkey.py`: ✅ listenKey via `POST open-api-vst.bingx.com/openApi/user/auth/userDataStream` (X-BX-APIKEY, без подписи) HTTP200; ✅ WS `wss://open-api-ws.bingx.com/market?listenKey=<vst_key>` подключён. ccxt sandbox НЕ умеет (нет sandbox user URL) → кастомный WS. **Эффект:** `executionReport` push с `i`(orderId)→надёжный exch_id; `ACCOUNT_UPDATE`/position-close→мгновенный sync. **1 соединение/аккаунт (НЕ per-pair) → scan_loop НЕ затронут** (vs market WS плато 750s). Реализация: listenKey lifecycle (keepalive PUT ~30мин, reconnect) + интеграция в register(exch_id)/position_sync. gzip-декод сообщений | 🔴 ARCH (новая, path доказан) | `core/infra/ws_feed.py` (новый user-stream), `trade_router`, `position_sync`, `scripts/test_vst_listenkey.py` |
+
 ### 📥 ПЕРЕНОС ИЗ DISCUSSION 11.06 (задачи из аудит-марафона + sign-audit)
 
 | ID | Задача | Статус | Файлы |
