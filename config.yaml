@@ -137,10 +137,12 @@ sideways_mode:
 
 trading:
   execution_mode: vst
-  # OPS-06 (12.06.2026): таймаут LIVE-GUARD. Симулятор детектит SL/TSL/TP hit на exchange-managed
-  # сделке → ждёт биржу. Если за N мин биржа не закрыла (109400/No position/ghost) → force-close БД
-  # с РЕАЛЬНЫМ R (не висим до sync→EXPIRED R=0). Лечит orphan-зависание + искажение метрик.
-  live_guard_timeout_min: 15
+  # OPS-06 (12.06.2026): таймаут LIVE-GUARD = БД-страховка (НЕ защита денег!). Симулятор детектит
+  # SL/TSL/TP hit на exchange-managed сделке → закрывает БД-запись если биржа не подтвердила за N мин.
+  # ⚠️ Деньги (реальную позицию) при памп/дамп защищают БЫСТРЕЕ: биржевой STOP (сек) + sync (60с) +
+  # dev185_2 emergency market close (5 циклов=5мин, position_sync:65). LIVE-GUARD идёт ПОСЛЕ них как
+  # последняя страховка метрик (не висеть до sync→EXPIRED R=0). Цикл=60с → 7 мин = 7 циклов.
+  live_guard_timeout_min: 7
   sl_limit_buffer_pct: 1.0  # DEV-185 (26.04.2026): 0.0→1.0. Корень catastrophic slippage: STOP_MARKET без буфера. Расследование: 121 сделок overshoot ≥0.5% = -465R. Buffer 1% защитит ~51 сделку (-113R экономии). Risk: non-execution при overshoot >1% — позиция повисит до TP/EXPIRED/manual. Через 48ч мерить p90 overshoot, при ОК → 2.0 + watchdog. Откат: sl_limit_buffer_pct: 0.0
   # DEV-185.2 (27.04.2026): emergency watchdog для STOP-LIMIT non-execution.
   # Подтверждение из боя: #8010 APE 26.04 — overshoot 32.7% R=-11.83 за 3ч (limit-ордер не fill, позиция висла).
