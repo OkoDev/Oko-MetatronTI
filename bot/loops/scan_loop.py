@@ -229,9 +229,18 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         return
 
     # Gate 1: режим HIGH_VOL — не входим
+    # REGIME-V2 Этап 1 (D-10): единый источник режима = Bus (pair_context.regime),
+    # fallback на локальный classify_from_ohlcv если Bus ещё пуст (первый скан пары).
     try:
-        from core.indicators.market_regime import MarketRegimeClassifier
-        regime = MarketRegimeClassifier().classify_from_ohlcv(df_entry)
+        regime = None
+        _bus_rg = getattr(bot, "pair_context", None)
+        if _bus_rg is not None:
+            _st_rg = _bus_rg.get(symbol)
+            if _st_rg is not None:
+                regime = getattr(_st_rg, "regime", None)
+        if regime is None:  # Bus не публиковал режим (первый скан) → graceful fallback
+            from core.indicators.market_regime import MarketRegimeClassifier
+            regime = MarketRegimeClassifier().classify_from_ohlcv(df_entry)
         if regime == "HIGH_VOL":
             logger.info("[WL-BREACH] %s: пропуск — режим HIGH_VOL", symbol)
             return
@@ -841,8 +850,14 @@ async def _execute_atr_change_signal(
         # LONG: штраф к strength (не блок) — рынок цикличен, штраф снизит до min_strength в плохом контексте
         # SHORT: только в TREND_DOWN (avgR=+0.488, WR=78.8% vs RANGE avgR=+0.031)
         _atrc_cfg = bot.config.get("signal_quality.atr_change") or {}
+        # REGIME-V2 Этап 1 (D-10): режим из Bus (единый источник), fallback на локальный classify
         _atrc_regime = None
-        if df is not None and len(df) >= 30:
+        _bus_ar = getattr(bot, "pair_context", None)
+        if _bus_ar is not None:
+            _st_ar = _bus_ar.get(symbol)
+            if _st_ar is not None:
+                _atrc_regime = getattr(_st_ar, "regime", None)
+        if _atrc_regime is None and df is not None and len(df) >= 30:
             try:
                 from core.indicators.market_regime import MarketRegimeClassifier
                 _atrc_regime = MarketRegimeClassifier().classify_from_ohlcv(df)
@@ -1363,12 +1378,18 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                 # DEV-108: вычисляем market_regime один раз для всего скана пары
                 # Используется в WT/confluence детекторах для dynamic_os в RANGE
+                # REGIME-V2 Этап 2 (D-10): use_v2 переключает ИСТОЧНИК Bus-режима:
+                #   use_v2=true  → classify_v2 (HTF-доминанта, эталон; нужен 4h)
+                #   use_v2=false → classify_from_dataframes (v1, текущее поведение)
                 _pair_regime = ""
                 try:
                     from core.indicators.market_regime import MarketRegimeClassifier
-                    _pair_regime = MarketRegimeClassifier().classify_from_dataframes(
-                        df_entry, df_1h
-                    ) or ""
+                    _mrc_pub = MarketRegimeClassifier()
+                    if bool(bot.config.get("market_regime.use_v2", False)):
+                        # df_4h уже собран в этом скане (используется ниже для classify_mode)
+                        _pair_regime = _mrc_pub.classify_v2(df_entry, df_1h, df_4h) or ""
+                    else:
+                        _pair_regime = _mrc_pub.classify_from_dataframes(df_entry, df_1h) or ""
                 except Exception:
                     pass
 
