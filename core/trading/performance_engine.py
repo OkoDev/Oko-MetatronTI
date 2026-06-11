@@ -1047,10 +1047,20 @@ class PerformanceEngine:
                     break
         return {"buckets": labels, "counts": counts, "total": len(vals)}
 
-    def pnl_calendar(self) -> List[Dict[str, Any]]:
-        """P&L по дням: дата, n сделок, avg_R, total_R для heatmap."""
+    def pnl_calendar(self, mode: str = "all") -> List[Dict[str, Any]]:
+        """P&L по дням: дата, n сделок, avg_R, total_R для heatmap.
+
+        mode: 'all' (все) | 'sim' (не на бирже, exchange_order_id IS NULL)
+              | 'vst' (реально исполнены, exchange_order_id IS NOT NULL).
+        SIM и VST расходятся сильно (VST=отобранные через гейты, SIM-only=балласт).
+        """
+        _filt = ""
+        if mode == "sim":
+            _filt = " AND exchange_order_id IS NULL"
+        elif mode == "vst":
+            _filt = " AND exchange_order_id IS NOT NULL"
         with self._conn() as conn:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT
                     DATE(closed_at) as day,
                     COUNT(*) as n,
@@ -1058,7 +1068,7 @@ class PerformanceEngine:
                     ROUND(SUM(R_multiple), 2) as total_r,
                     ROUND(SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) as wr
                 FROM simulated_trades
-                WHERE status NOT IN ('OPEN') AND closed_at IS NOT NULL AND R_multiple IS NOT NULL
+                WHERE status NOT IN ('OPEN') AND closed_at IS NOT NULL AND R_multiple IS NOT NULL{_filt}
                 GROUP BY day
                 ORDER BY day DESC
                 LIMIT 90

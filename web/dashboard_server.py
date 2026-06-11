@@ -94,21 +94,27 @@ async def _handle_breakeven_stats(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
-def _analytics_compute_sync(engine) -> dict:
-    """4 sync вызова engine — выполняются в thread pool. DEV-231."""
+def _analytics_compute_sync(engine, cal_mode: str = "all") -> dict:
+    """4 sync вызова engine — выполняются в thread pool. DEV-231.
+
+    cal_mode прокидывается в pnl_calendar (all|sim|vst) для SIM/VST-переключателя.
+    """
     return {
         "by_session":    engine.by_session(),
         "r_distribution": engine.r_distribution(),
-        "pnl_calendar":  engine.pnl_calendar(),
+        "pnl_calendar":  engine.pnl_calendar(cal_mode),
         "mfe_scatter":   engine.mfe_scatter(),
     }
 
 
 async def _handle_analytics(request: web.Request) -> web.Response:
-    """GET /api/stats/analytics — данные для DEV-116 графиков."""
+    """GET /api/stats/analytics?cal_mode=all|sim|vst — данные для DEV-116 графиков."""
     engine: PerformanceEngine = request.app["engine"]
     try:
-        data = await _run_sync(_analytics_compute_sync, engine)
+        _cal_mode = request.query.get("cal_mode", "all")
+        if _cal_mode not in ("all", "sim", "vst"):
+            _cal_mode = "all"
+        data = await _run_sync(_analytics_compute_sync, engine, _cal_mode)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",
@@ -2128,6 +2134,80 @@ async def _handle_dropped(request: web.Request) -> web.Response:
         return web.json_response({"drops": data, "hours": hours, "limit": limit})
 
 
+async def _handle_pairs(request: web.Request) -> web.Response:
+    """GET /api/pairs?limit=60 — отслеживаемые пары с живым состоянием из PairContextBus.
+
+    Для дашборда (Pairs screen): regime, WaveTrend, последний сигнал, ближайший pivot.
+    Read-only из памяти pair_context (без SQL, без нагрузки на event loop).
+    Возвращает только пары с заполненным состоянием (есть regime/сигнал/WT).
+    """
+    bot = request.app.get("bot")
+    dc = request.app.get("data_collector")
+    try:
+        pair_ctx = getattr(bot, "pair_context", None)
+        if pair_ctx is None:
+            return web.json_response({"error": "PairContextBus not available"}, status=503)
+        try:
+            limit = int(request.rel_url.query.get("limit", 60))
+        except (ValueError, TypeError):
+            limit = 60
+
+        pairs = []
+        for sym in pair_ctx.all_symbols():
+            st = pair_ctx.get_full_state(sym)
+            if not (st.get("regime") or st.get("last_signal_type") or st.get("wt_verdict")):
+                continue
+            # OTE-данные живут в smc_snap (не в get_full_state) — для ote_nested сетапов
+            raw = pair_ctx.get(sym)
+            smc_snap = getattr(raw, "smc_snap", None) or {}
+            # реальная цена из OHLCV-кэша (без API-запроса), fallback на tick_price
+            price = (_current_price_from_cache(dc, sym) if dc else None) or st.get("tick_price")
+            pairs.append({
+                "symbol":          sym,
+                "price":           price,
+                "regime":          st.get("regime"),
+                "reversal_mode":   st.get("reversal_mode"),
+                "wt_verdict":      st.get("wt_verdict"),
+                "wt_confidence":   st.get("wt_confidence"),
+                "smc_verdict":     st.get("smc_verdict"),
+                "smc_confidence":  st.get("smc_confidence"),
+                "last_signal":     st.get("last_signal_type"),
+                "last_signal_dir": st.get("last_signal_direction"),
+                "last_strength":   st.get("last_signal_strength"),
+                "active_divergence": st.get("active_divergence"),
+                "anomaly_active":  st.get("anomaly_active"),
+                "near_pivot":      st.get("near_pivot"),
+                "tsl_active":      st.get("tsl_active"),
+                "cascade":         st.get("cascade_count"),
+                "has_trade":       st.get("open_trade_id") is not None,
+                # OTE (ote_nested) — из SMC snapshot (HTF зона)
+                "price_in_ote":    smc_snap.get("price_in_ote"),
+                "ote_direction":   smc_snap.get("ote_direction"),
+                "ote_tf":          smc_snap.get("ote_tf"),
+                "ote_retracement": smc_snap.get("current_retracement"),
+                # OTE LTF (5m триггер) — ARMED зреет / FIRE выстрел + вводные для ручного входа
+                "ote_ltf_status":    st.get("ote_ltf_status"),
+                "ote_ltf_score":     st.get("ote_ltf_score"),
+                "ote_ltf_min":       st.get("ote_ltf_min"),
+                "ote_ltf_direction": st.get("ote_ltf_direction"),
+                "ote_ltf_trigger":   st.get("ote_ltf_trigger"),
+                "ote_ltf_entry":     st.get("ote_ltf_entry"),
+                "ote_ltf_sl":        st.get("ote_ltf_sl"),
+                "ote_ltf_tp1":       st.get("ote_ltf_tp1"),
+                "ote_ltf_tp":        st.get("ote_ltf_tp"),
+                "ote_ltf_setup":     st.get("ote_ltf_setup"),
+            })
+        # сильнейшие сигналы — наверх
+        pairs.sort(key=lambda p: (p["last_strength"] or 0), reverse=True)
+        return web.Response(
+            text=json.dumps({"pairs": pairs[:limit], "count": len(pairs)}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        logger.exception("[api/pairs] %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ── DEV-207: ATR Change стратегия — агрегаты по trigger_source ──────────────
 
 def _atr_stats_compute_sync(db_path: str) -> dict:
@@ -2336,6 +2416,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_post("/api/cube/ml/train", _handle_cube_ml_train)
     # ── DEV-203: DecisionTrace — видимость отброшенных сигналов ──
     app.router.add_get("/api/dropped", _handle_dropped)
+    # ── Pairs screen (dashboard v2): живое состояние пар из PairContextBus ──
+    app.router.add_get("/api/pairs", _handle_pairs)
     # ── DEV-207: ATR Change стратегия ──
     app.router.add_get("/api/atr_stats", _handle_atr_stats)
 
