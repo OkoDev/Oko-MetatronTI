@@ -409,6 +409,10 @@ signal_quality:
     # allow_short_regimes снят (был [TREND_DOWN] HARD-блок). min_strength_atr_change тоже снят (→0, формальность).
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
+  # SIGNAL-CLEANUP (11.06.2026): pivot_reversal ОТКЛЮЧЁН полностью. Балласт −1272R (25% системы),
+  # доказан 2 независимыми осями: ELLIOTT-фаза (все бакеты <0) + MTF-gravity (g=250+ → −0.203, corr −0.089).
+  # Слеп к рыночной фазе (LONG на обвале WR2-7%). Вернуть только после WaveService/контекст-гейта (PIVOT-CONTEXT).
+  pivot_reversal_enabled: false
   ote_shadow_mode: false  # ARCH-87: активирован 18.04 — rejection 1W FVG [0.4235–0.4416]
   ote_zone_tfs:
   - 1h

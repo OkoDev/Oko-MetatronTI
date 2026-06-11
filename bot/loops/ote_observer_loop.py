@@ -126,8 +126,84 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
                         sig.entry, sig.sl, sig.tp1, sig.trigger_type,
                         sig.conf_score, sig.confirmations)
             if bool(bot.config.get("ote.vst_trading.enabled", False)):
+                try:    # DEV-226 Ph2 SHADOW: фаза импульса на входе (не блокирует)
+                    sig.meta["phase_shadow"] = _elliott_phase_shadow(dfs, sig.direction, sig.type)
+                except Exception:
+                    pass
                 await _register_ote_trade(bot, sig)
+
+    # ARCH-128: проявление в шину — лучший сигнал (FIRE > ARMED, max conf) в pair_context.
+    # Только observability для вотчлиста/ручной торговли — торговая логика выше не меняется.
+    _publish_ote_ltf_state(bot, symbol, signals)
     return armed, fired
+
+
+def _publish_ote_ltf_state(bot, symbol: str, signals: list) -> None:
+    """Пишет LTF-состояние OTE в pair_context — чтобы дашборд видел сигнал ЗАРАНЕЕ
+    (ARMED зреет) и при FIRE имел все вводные для ручного входа (entry/SL/TP)."""
+    pair_ctx = getattr(bot, "pair_context", None)
+    if pair_ctx is None:
+        return
+    try:
+        st = pair_ctx.get(symbol)
+        if not signals:
+            # сброс протухшего состояния, если сетап ушёл
+            if st.ote_ltf_status is not None:
+                st.ote_ltf_status = None
+                st.ote_ltf_score = 0
+            return
+        # лучший: FIRE приоритетнее ARMED, затем по conf_score
+        best = max(signals, key=lambda s: (1 if s.status == "FIRE" else 0, s.conf_score))
+        st.ote_ltf_status    = best.status
+        st.ote_ltf_score     = int(best.conf_score)
+        st.ote_ltf_min       = 3   # min_confirmations (порог выстрела, из ote config)
+        st.ote_ltf_direction = best.direction
+        st.ote_ltf_trigger   = best.trigger_type or None
+        st.ote_ltf_entry     = float(best.entry) if best.entry else None
+        st.ote_ltf_sl        = float(best.sl) if best.sl else None
+        st.ote_ltf_tp1       = float(best.tp1) if best.tp1 else None
+        st.ote_ltf_tp        = float(best.tp_runner) if getattr(best, "tp_runner", None) else None
+        st.ote_ltf_setup     = best.setup_id
+        from datetime import datetime, timezone
+        st.ote_ltf_time      = datetime.now(timezone.utc)
+    except Exception as e:
+        logger.debug("[OTE ltf-publish] %s: %s", symbol, e)
+
+
+def _elliott_phase_shadow(dfs, direction, otype) -> dict:
+    """DEV-226 Ph2 SHADOW: фаза импульса (n_down/n_up MTF на входе) + вердикт would_block.
+    НЕ блокирует — пишет в features_json для замера эффекта на реальных сделках перед hard-гейтом.
+
+    Правила (ELLIOTT v2, 11.06): cont → would_block если n_в_сторону_4h>=3 (конец импульса=ловушка);
+    pull → would_block если n_в_сторону_4h<1 (контр-тренд без HTF-импульса). Reuse calculate_n_down/_up.
+    """
+    from core.indicators.indicators import (
+        find_swing_highs, find_swing_lows, calculate_n_down, calculate_n_up,
+    )
+
+    def _nd_nu(df, period=5):
+        if df is None or len(df) < period * 2 + 2:
+            return 0, 0
+        return (calculate_n_down(find_swing_highs(df["high"], period=period)),
+                calculate_n_up(find_swing_lows(df["low"], period=period)))
+
+    nd_4h, nu_4h = _nd_nu(dfs.get("4h"))
+    nd_1h, nu_1h = _nd_nu(dfs.get("1h"))
+    is_short = direction == "short"
+    n_dir = nd_4h if is_short else nu_4h        # счётчик импульса В СТОРОНУ сделки (4h)
+    if otype == "cont":
+        would_block = n_dir >= 3                 # тренд в конце волны 5 = ловушка (avgR −0.19)
+        reason = "cont_phase_end" if would_block else ""
+    else:                                        # pull
+        would_block = n_dir < 1                  # контр-тренд без HTF-импульса = против всего (−0.21)
+        reason = "pull_no_htf_impulse" if would_block else ""
+    return {
+        "phase_nd_4h": nd_4h, "phase_nu_4h": nu_4h,
+        "phase_nd_1h": nd_1h, "phase_nu_1h": nu_1h,
+        "phase_n_dir_4h": n_dir,
+        "phase_gate_would_block": bool(would_block),
+        "phase_gate_reason": reason,
+    }
 
 
 async def _register_ote_trade(bot, sig):
@@ -197,6 +273,9 @@ async def _register_ote_trade(bot, sig):
         "ote_atr_trend_up": sig.atr_trend_up,
         "trade_mode": "ote_nested",   # dedup: свой режим
     }
+    _ps = sig.meta.get("phase_shadow")    # DEV-226 Ph2 SHADOW: фаза импульса → features_json
+    if isinstance(_ps, dict):
+        extra.update(_ps)
 
     trade_id = None
     exchange_id = None

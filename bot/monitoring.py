@@ -463,6 +463,10 @@ async def check_divergences(bot):
 
 
 async def check_pivot_reversals(bot):
+    # SIGNAL-CLEANUP (11.06.2026): pivot_reversal балласт −1272R (ELLIOTT+gravity = балласт равномерный).
+    # config-флаг полного отключения генерации. Вернуть после WaveService/контекст-гейта (PIVOT-CONTEXT).
+    if not bool(bot.config.get("signal_quality.pivot_reversal_enabled", True)):
+        return
     sem = asyncio.Semaphore(int(bot.config.get("performance.background_check_semaphore_size", 10)))
 
     async def _one(sym):
