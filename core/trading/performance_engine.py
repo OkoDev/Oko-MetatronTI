@@ -1059,6 +1059,9 @@ class PerformanceEngine:
             _filt = " AND exchange_order_id IS NULL"
         elif mode == "vst":
             _filt = " AND exchange_order_id IS NOT NULL"
+        # РЕАЛЬНЫЙ $ P&L из сделок: qty × (exit−entry) × направление (как биржа).
+        # qty заполнен у исполненных (VST/LIVE) сделок; где нет — в $ не учитывается (0).
+        # deposit_usdt из config — ЗАГЛУШКА, не используем; суммы только реальные.
         with self._conn() as conn:
             rows = conn.execute(f"""
                 SELECT
@@ -1066,6 +1069,9 @@ class PerformanceEngine:
                     COUNT(*) as n,
                     ROUND(AVG(R_multiple), 3) as avg_r,
                     ROUND(SUM(R_multiple), 2) as total_r,
+                    ROUND(SUM(CASE WHEN qty IS NOT NULL AND exit_price IS NOT NULL
+                        THEN qty * (exit_price - entry_price) * (CASE WHEN UPPER(direction)='LONG' THEN 1 ELSE -1 END)
+                        ELSE 0 END), 2) as total_usd,
                     ROUND(SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) as wr
                 FROM simulated_trades
                 WHERE status NOT IN ('OPEN') AND closed_at IS NOT NULL AND R_multiple IS NOT NULL{_filt}

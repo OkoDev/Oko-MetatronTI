@@ -283,15 +283,17 @@ class TradeRouter:
             )
 
             # ARCH-94: записать exchange_order_id в БД (ранее не делалось через router)
+            # OPS-06 ч.3 (11.06): + qty (размер позиции) — router заменил link_exchange_order,
+            # но qty не переносил → qty=NULL с конца мая → реальный $ P&L не считался. qty>0 (guard :257).
             try:
                 import sqlite3 as _sq
                 with _sq.connect(self.bot.trade_simulator.db_path) as _conn:
                     _conn.execute(
-                        "UPDATE simulated_trades SET exchange_order_id=? WHERE id=?",
-                        (order_id, trade_id),
+                        "UPDATE simulated_trades SET exchange_order_id=?, qty=? WHERE id=?",
+                        (order_id, qty, trade_id),
                     )
             except Exception as _upd_e:
-                logger.warning("[TradeRouter] exchange_order_id update failed for #%d: %s",
+                logger.warning("[TradeRouter] exchange_order_id/qty update failed for #%d: %s",
                                trade_id, _upd_e)
 
             if hasattr(self.bot, "position_manager"):
