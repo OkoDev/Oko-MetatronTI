@@ -19,6 +19,21 @@
 
 ---
 
+## 🔥 СЕССИЯ 11.06.2026 (Даат) — REGIME-V2 + atr_change×OTE + C-01
+
+| ID | Задача | Статус | Файлы |
+|---|---|---|---|
+| **REGIME-V2** | Унификация regime→Bus (D-10) + активация `classify_v2` | ✅ **АКТИВИРОВАН** (use_v2:true, Э1-4 готовы; мониторинг acceptance 1-2 дня) | `scan_loop:234/848/1384`, `config.market_regime`, `PLAN_REGIME_V2.md` |
+| **ATR-GATES** | Снять regime/strength гейты atr_change (−178R, тавтология ATRTrend−1) | ✅ **СНЯТЫ** (allow_short_regimes, long_penalty=0, min_strength=0) | `config.signal_quality.atr_change` |
+| **ATR-OTE** | atr_change×OTE интеграция: триггер→вход в 5m-OTE (бэктест WR89%) | 🟡 **дизайн готов** (Э1-Э4). Э1 фильтр ноги. Нужна история (46/273 пар) | `PLAN_ATR_CHANGE_OTE.md`, `scripts/atr_change_ote_test.py` |
+| **C-01** | CHoCH length=5 ре-майнинг 69 паттернов | 🟡 DS_L096 возвращён, 4 артефакта удалить, **6 pivot — DS ночью (45 симв)** | `arch104_patterns.yaml`, `PLAN_C01_choch_length_fix.md` |
+| **SIGNAL-AUDIT** | Аудит актуальности сигналов (confluence/wt_sideways отключены — shadow с полным trade_features, замерить) | 🟢 идея (юзер 11.06) | — |
+| **HIGH-VOL-VOLUME** | Объёмное обогащение HIGH_VOL (volume_z из features) | 🟢 отложено | — |
+
+> **snapshot (P2) — НЕ дыра:** `trade_features` 100% активных сигналов с 31.05 (`write_table`). Низкое общее покрытие = старые сделки + мёртвые сигналы. `features_json`=метаданные (не косяк).
+
+---
+
 ## 🔍 АУДИТ 2026-06-09 — ВЕРИФИЦИРОВАН (отчёт `docs/audit/AUDIT_2026-06-09.md`, оценка 4.5/10)
 
 > **⚠️ КОСЯК ПРОЦЕССА (юзер 09.06):** аудит читал `current_state.md`/`whats-next.md` из последнего коммита → доки УСТАРЕЛИ → 2 «критичные» задачи (WAL/sklearn) оказались давно сделаны. **Доки не обновляются регулярно** = тот же «раздвоенный источник правды», что аудит нашёл в коде. → задача **DOC-SYNC**.
@@ -49,6 +64,20 @@
 
 ---
 
+## 🖥️ ЭПИК DASHBOARD — Полноценное приложение (проектирование, 10.06.2026, инициатор ARCH)
+
+> **Скелет:** [`docs/DASHBOARD_EPIC.md`](docs/DASHBOARD_EPIC.md). Цель юзера: дашборд → полноценное приложение, доступ С МОБИЛКИ ОНЛАЙН через сервер (PWA), хороший дизайн (инструмент: v0.app).
+
+**Текущее (разведка 10.06):** API aiohttp ~45 роутов (god-object 2356 стр) + Vue-зачаток `/v2` (DEV-144 Stage-1) + auth почти НЕТ + **дашборд ЗАБЛОКИРОВАН как потребитель биржи** (live-роуты дёргали биржу напрямую → отъедали rate-limit торговли).
+
+**🔴 РАЗВИЛКА (Phase 0, решение юзера):** v0.app генерит React/Next.js, текущий v2 = Vue → конфликт. **Рекомендация: вариант B (Next.js+Vercel)** — v0 нативно, мобильный/PWA из коробки = ровно цель юзера; Vue-зачаток мизерный, не жалко.
+
+**Фазы:** 0 Решения (стек/деплой/auth) → 1 API-слой (вынести из god-object=**T-01**, версионировать, **live-роуты на БД/кэш = снять блокировку биржи**) → 2 Auth (**SEC-01b/c** вливается, ОБЯЗАТЕЛЬНО до выставления наружу) → 3 Фронт (v0→Next.js) → 4 Live (SSE/WS) → 5 Деплой (Cloudflare Tunnel+Vercel, HTTPS) → 6 PWA-polish.
+
+**🔴 ИНВАРИАНТ:** дашборд читает ТОЛЬКО из БД/кэша, НИКОГДА не дёргает биржу сам (один владелец rate-limit = торговый цикл). **SEC-01b/c НЕ делать раньше Phase 2** (вольётся в auth нового API; сейчас держит `127.0.0.1`).
+
+---
+
 ## 🎨 ARCH-128: Воспроизведение OKO-SM + parity детекторов (03.06.2026, инициатор ARCH)
 
 | ID | Ст | Описание | Роль |
@@ -73,6 +102,7 @@
 | ARCH-128-ENGINE | 🔄 | **OTE-Retest Engine + Фрактальный Куб** (ВХОД-движок): слом→импульс→OTE→ретест→вход+SL. Ядро `ote_retest_setups`. **Исследование 03-04.06 (бэктест 5 пар) → `docs/RESEARCH_OTE_CUBE_2026-06-03.md`:** вложенность HTF-зона×LTF-слом=риск ×10; частичный TP1=1R лечит WR(12→72%); матрица оптимум 4h→15m(+0.471); каскад глубина=качество; двунаправленность (откаты ≥ продолж, 4h→5m откат +1.128 WR83%); дивергенция только В OTE; инвалид-SL(1.0)=неперекрытие Эллиотта; сверка с DS-316 сошлась на 15m. TP→TPSelector(вклад: отриц.фибо+EQL/FVG), TSL→tsl_updater, SL→ExitManager Ph2. **NEXT:** вход=LTF-слом в OTE+дивергенция; подтвердить 5m-откат на 45 парах. `memory/ote_nested_mtf_strategy.md` | Claude |
 | ARCH-128-EXT | ✅ | **Эталон полный (75 признаков)** — +CMA Фибо(21-233) +Dynamic Channel +HH/HL/LH/LL. Коммит 25a8d98. Hull+Kahlman отложен | Claude |
 | **ARCH-128-MON** | ⏳ | **Мониторинг качества OTE / Premium-Discount** — периодическая отрисовка фибо на чартах для визуальной сверки (правильно ли определяются OTE-зона и premium/discount). Контроль эталона после изменений | Claude |
+| **ARCH-128-C01** | 🔴 → DS | **СЛЕПОТА CHoCH/SMC (length=50) в ядре паттернов → length=5 + ре-майнинг.** Найдено 11.06 сверкой с OKO-SM. `swing_bridge` ×3 (`etl_order_blocks`/`etl_bos_choch`/`etl_ote_premium`) зовут `detect_structure_breaks(df)` БЕЗ length → дефолт 50. Замер `scripts/choch_length_check.py`: 5m/15m=**0 CHoCH**, 1h лаг 202. Эталон=length=5 ([[calib_choch_length5]]). Отравлены OB/BOS/CHoCH/OTE-premium → **69/200 паттернов (34%)** на слепых ob/discount (131 чистые на FVG). 🔴 train↔live: паттерны майнились на 50 → фикс+ре-майнинг неразделимы. **План:** `docs/PLAN_C01_choch_length_fix.md`. **Реестр:** `docs/DUPLICATES_REGISTRY.md`→C-01. **Handoff:** DISCUSSION 11.06. **DS:** фикс за config-флагом + ре-майнинг 69 + A/B бэктест (раннеры не сломать). **Claude:** валидирую+решаю кат. | DS+Claude |
 
 ---
 
@@ -135,6 +165,8 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| **REGIME-V2** | 🟡 | **Активировать regime v2 (HTF-доминанта) — через УНИФИКАЦИЮ (D-10), не просто флаг.** Данные 11.06 (6992 сделок, `regime_v2_validated.md`): v2 ЛУЧШЕ разделяет edge (разброс avgR **0.798 vs v1 0.552**), v1 валит 47% в RANGE (мислейбл, [[arch124_regime_audit]]), v2 22%. **RANGE-сделки ПРИБЫЛЬНЫ (0.971) → гейты на RANGE резали прибыль** (давний вопрос). **🔴 НАХОДКА 11.06 (D-10):** regime = дубль 3 метода в 6+ местах (`classify_from_ohlcv` старый ADX в scan_loop:234 HIGH_VOL-gate!, `classify_from_dataframes` v1, `classify_v2` shadow). `use_v2` флаг меняет ТОЛЬКО trade_simulator → гейты входа на старом ADX, активация НЕПОЛНА. **План:** (1) все точки regime → читать `pair_context.regime` из Bus (monitoring уже ✅); (2) Bus публикует `classify_v2`; (3) `use_v2` переключает реально всё; (4) A/B измерить. Реестр `docs/DUPLICATES_REGISTRY.md`→D-10. | ARCH/Claude |
+| **HIGH-VOL-VOLUME** | 🟢 | **HIGH_VOL + объём (VSA) — рой 7/7 консенсус 11.06.** HIGH_VOL = чистый ATR (волатильность 1.8×median) БЕЗ объёма = концептуальная дыра (avgR **0.176** худший режим). Объём ПИШЕМ (`volume_24h`/`pivot_volume_z`) но режим НЕ юзает — ирония crypto_VOLUME_bot. **Рой:** интегрировать объём (volume spike → impulse vs вынос/шум), смягчить HARD-гейт (пропускать объёмные пробои = сильнейшие движения). **Спор 4vs3:** обогатить HIGH_VOL ∥ отдельная **VolumeSphere** (Куб). Индустрия: VSA. Полное: `obsidian/Team-Discussions/2026-06-11-high_vol-*`, `regime_v2_validated.md`. | ARCH/Claude |
 | **🟢 ARCH-118 / ARCH-118.3: единый снимок признаков — ЗАКРЫТ (05-08.06)** | | | |
 | ARCH-118.3 | ✅ | **Вынос чистого калькулятора в `core/calculators/`** (`combinator_core.py` + `swing_bridge.py`) БЕЗ side-effects (stdout-hijack/HISTORY_DIR убраны). Бит-идентично (147 кол, 0 расх). Все пути (feature_snapshot/ote/arch104/combinator_v2) → один calculator. Хак `_import_cb` убран. Разблокировал DEV-200.2. Коммит 8667da4. | Claude |
 | ARCH-118-discount | ✅ | **discount/premium ROLLING dealing range** (последний confirmed swing H/L, `_swings_luxalgo` len=20) вместо глобального ATH/ATL. **Parity 8/10→0/10.** Семантический фикс (SMC меряет от dealing range, не ATH) + lookahead-safe. discount теперь 9/600 баров (было ~почти-всегда). Коммит 6063816. DS сделал re-mine discount-паттернов (1e0858e). | Claude/DS |

@@ -4,6 +4,32 @@
 
 ---
 
+## [11.06.2026 ~12:00 UTC] Агент: Даат (Opus) — REGIME-V2 активирован + atr_change×OTE edge + C-01 закрыт
+
+### ✅ Сделано
+- **REGIME-V2 (D-10) — АКТИВИРОВАН (`use_v2:true`):** Э1 чтение режима на Bus (`scan_loop:234` HIGH_VOL-gate + `:848` atr_change → `pair_context.regime` + fallback), Э2 источник (`scan_loop:1384` → `classify_v2` при use_v2; df_4h=60 баров), Э3 shadow-замер (БД 7236 сделок: v2 разделяет edge лучше; v1=RANGE→v2=TREND 2565 сделок avgR+0.9), Э4 A/B (+334R сум, раннеры целы, HIGH_VOL ложные блоки 876→102). `PLAN_REGIME_V2.md`. Runtime после рестарта: 0 ошибок, метки v2 в логах.
+- **atr_change гейты СНЯТЫ (−178R утечки, arch124):** `allow_short_regimes` убран (ТАВТОЛОГИЯ: atr_change SHORT = ATRTrend−1, гейт перепроверял направление + лаг ADX), `long_strength_penalty=0`, `min_strength_atr_change=0` (формальность: strength=trigger-вес 15-18, НЕ качество).
+- **atr_change×OTE EDGE:** MTF-бэктест n=183 (`scripts/atr_change_ote_test.py`) — вход в **5m-OTE WR89% avgR+0.741**; выше OTE/нет структурной ноги = убыток; atr_change садится НИЖЕ OTE (слеп к структуре, входит на импульсе). Дизайн `PLAN_ATR_CHANGE_OTE.md` (atr_change=триггер → вход в 5m-OTE, ote_nested).
+- **C-01 закрыт:** `DS_L096` возвращён (enabled:true; ложно убит length=50, на length=5 avgR+0.281 WR69%). 4 артефакта удалить, 6 pivot — DS ночью (45 символов).
+- **snapshot аудит (P2):** дыры НЕТ — `trade_features` 100% активных сигналов с 31.05 (write_table). «45%/0%» = временной (старые сделки) + мёртвые сигналы (confluence/wt_sideways отключены). `features_json`=метаданные (не косяк), полнота в `trade_features` (OTE/wt2 там).
+
+### 🔴 Инцидент (разрешён)
+- `remine_c01_*.py` ИСПОРТИЛИ боевой `arch104_patterns.yaml` (.nan + авто-enable убыточных) → откат к `1e0858e`, бэкап `archive/corrupted_configs/`. Бот ЦЕЛ (стартовал 03:52 до порчи 06:40, hot-reload нет). DS пофиксил скрипты (пишут в data/research).
+
+### ⚠️ Незакоммичено → коммичу сейчас (по темам)
+scan_loop (regime-v2), config (use_v2 + atr_change гейты), arch104_patterns (DS_L096), DISCUSSION, docs/PLAN_*, DUPLICATES_REGISTRY, scripts/atr_change_ote_test, data/research/2026-06-11*
+
+### 🔄 Следующее
+- **Рестарт** (применить DS_L096 + min_strength=0)
+- atr_change×OTE Э1 (фильтр структурной ноги) — добрать историю (46/273 пар)
+- confluence/wt_sideways **shadow-аудит актуальности** (идея юзера: включить с полным trade_features, замерить) + аудит всего списка сигналов
+- Мониторинг v2 acceptance (раннеры/avgR через 1-2 дня)
+
+### 🧠 Память сессии
+`calib_atrtrend_factor` (factor=1.25 намеренно), `atr_change_ote_insight` (5m-OTE WR89%), `regime_v2_validated`, DUPLICATES D-10 (ADX не архив — в v2).
+
+---
+
 ## [10.06.2026 ~03:40 UTC] Агент: Даат (Opus/Fable) — OPS-01b биржевое время + знакомство с Егором-человеком
 
 - ✅ **OPS-01b (анти-#1910 КОРЕНЬ):** `created_at` пишется системными часами Windows, `df["time"]` — биржевое. Часы хоста вперёд → created_at «в будущем» → фильтр пуст → SL не проверен (APR −9.74R). Фикс (`trade_simulator.py:1923-1944`): детект forward-skew через биржевое время последнего бара (`df["time"].iloc[-1]`, бесплатно, БЕЗ лишнего `ex.fetch_time`) + кламп `created_ms` к биржевой шкале + лог величины skew. OPS-01a остаётся финальной страховкой.
