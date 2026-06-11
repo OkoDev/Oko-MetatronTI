@@ -27,10 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.smc.ote_signal_generator import OTESignalGenerator
 
 H5, H15, H1 = Path("data/history/5m"), Path("data/history/15m"), Path("data/history/1h")
-STEP = 12            # шаг сетки в 5m-барах (1ч) — компромисс скорость/покрытие
-TAIL_5M = 4000       # ~14 дней истории на пару
+import os
+STEP = int(os.environ.get("STR_STEP", 12))       # шаг сетки в 5m-барах (1ч)
+TAIL_5M = int(os.environ.get("STR_TAIL", 4000))  # ~14 дней истории на пару
 HORIZON = 288        # макс forward 5m-баров (24ч) до mark-to-market
-MAX_PAIRS = 14
+MAX_PAIRS = int(os.environ.get("STR_PAIRS", 14))
 
 
 def _norm(df):
