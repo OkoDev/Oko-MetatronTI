@@ -143,6 +143,13 @@ trading:
   # биржа ДЕРЖИТ позицию + прошло N мин → market close РЕАЛЬНОЙ позиции + БД (orphan-prevent). Доп.
   # триггер к dev185_2 overshoot: ловит «биржевой SL не сработал, overshoot мал». Цикл=60с → 7=7циклов.
   live_guard_timeout_min: 7
+  # EXEC-WS (12.06.2026): real-time user-data WS (order/account push) → лечит рассинхрон
+  # БД↔биржа в корне (надёжный exch_id, мгновенный sync). 1 соединение/аккаунт (не per-pair)
+  # → scan_loop НЕ затронут. Включать поэтапно после проверки логов [EXEC-WS].
+  exec_ws:
+    enabled: false        # запуск UserDataStream (Этап 1: события в лог)
+    write_exch_id: false  # Этап 2a: писать exchange_order_id из ORDER_TRADE_UPDATE (FILLED open)
+    sync_close: false     # Этап 2b (позже): sync БД при ACCOUNT_UPDATE pa=0
   sl_limit_buffer_pct: 1.0  # DEV-185 (26.04.2026): 0.0→1.0. Корень catastrophic slippage: STOP_MARKET без буфера. Расследование: 121 сделок overshoot ≥0.5% = -465R. Buffer 1% защитит ~51 сделку (-113R экономии). Risk: non-execution при overshoot >1% — позиция повисит до TP/EXPIRED/manual. Через 48ч мерить p90 overshoot, при ОК → 2.0 + watchdog. Откат: sl_limit_buffer_pct: 0.0
   # DEV-185.2 (27.04.2026): emergency watchdog для STOP-LIMIT non-execution.
   # Подтверждение из боя: #8010 APE 26.04 — overshoot 32.7% R=-11.83 за 3ч (limit-ордер не fill, позиция висла).

@@ -486,6 +486,11 @@ class TradingAlertBot:
             asyncio.create_task(run_trigger_loop(self))     # DEV-95: Куб Метатрона — OTE/Cascade триггеры
             asyncio.create_task(self.event_bus.consume_loop(self))  # ARCH-70: EventBus Full CALL шина
             asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket
+            try:                                              # EXEC-WS: user-data WS (order/account push), за config-флагом
+                from core.exchange.exec_ws_integration import start_exec_ws
+                start_exec_ws(self)
+            except Exception as _ews_e:
+                logger.warning("[EXEC-WS] start error: %s", _ews_e)
             asyncio.create_task(start_dashboard(
                 db_path=self.trade_simulator.db_path,
                 host=config.get("dashboard.host", "127.0.0.1"),  # SEC-01a: localhost по умолчанию
