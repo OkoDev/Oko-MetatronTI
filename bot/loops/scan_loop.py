@@ -206,6 +206,11 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     from types import SimpleNamespace
     from bot.monitoring import _is_in_sl_cooldown
 
+    # SIGNAL-CLEANUP (12.06.2026): watch_list_breach ОТКЛЮЧЁН. Балласт −169R (SIGNAL-AUDIT),
+    # длинные сделки (avg 701 мин). config-флаг полного отключения генерации.
+    if not bool(bot.config.get("signal_quality.watch_list_breach_enabled", True)):
+        return
+
     direction = wl_entry.direction  # "LONG" | "SHORT"
     pivot_level = wl_entry.pivot_level
     score = wl_entry.score
