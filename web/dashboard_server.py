@@ -225,7 +225,10 @@ def _current_price_from_cache(dc, symbol: str):
     return None
 
 
-_STATS_CACHE = {"payload": None, "ts": 0.0, "ttl": 5.0}
+# TTL=30s (12.06): пересчёт payload ≈7s на холодную > старый TTL 5s → кэш почти
+# всегда холодный при поллинге каждые 10s → 7s-ответ рвал фронт-таймаут → MOCK.
+# 30s держит кэш тёплым (0.01s HIT), тяжёлый пересчёт раз в 30s в thread-pool.
+_STATS_CACHE = {"payload": None, "ts": 0.0, "ttl": 30.0}
 _STATS_LOCK = None   # lazy init в _handle_stats (asyncio.Lock требует running loop)
 
 
@@ -679,7 +682,10 @@ async def _handle_live_orders(request: web.Request) -> web.Response:
 # при N клиентах × 30s polling. Cache даёт 1 BingX call/10с независимо от вкладок.
 # Stale fallback: если новый snapshot fail (timeout) → отдаём предыдущий + age в header.
 import asyncio as _asyncio_live
-_LIVE_CACHE = {"payload": None, "ts": 0.0, "ttl": 10.0}
+# TTL=20s (12.06): snapshot позиций multiacct (sync_time+get_positions на каждый
+# суб-акк) ≈10-13s на холодную > старый TTL 10s → кэш всегда холодный, lock-
+# contention при поллинге 10s. 20s держит HIT тёплым (фронт-поллинг каждые 10s).
+_LIVE_CACHE = {"payload": None, "ts": 0.0, "ttl": 20.0}
 _LIVE_LOCK = _asyncio_live.Lock()
 
 
