@@ -287,10 +287,15 @@ class TradeRouter:
             # но qty не переносил → qty=NULL с конца мая → реальный $ P&L не считался. qty>0 (guard :257).
             try:
                 import sqlite3 as _sq
+                # ARCH-DB-V2 Ф1: order_id записан = сделка РЕАЛЬНО на бирже → execution_mode по
+                # ФАКТУ исполнения = режим бота (VST/LIVE). Shadow (без order_id) остаётся SIM.
+                from core.infra.config_loader import config as _cfg_dbv2
+                _raw_em = str(_cfg_dbv2.get("trading.execution_mode", "vst")).upper()
+                _em = {"VST": "VST", "LIVE": "LIVE"}.get(_raw_em, "VST")
                 with _sq.connect(self.bot.trade_simulator.db_path) as _conn:
                     _conn.execute(
-                        "UPDATE simulated_trades SET exchange_order_id=?, qty=? WHERE id=?",
-                        (order_id, qty, trade_id),
+                        "UPDATE simulated_trades SET exchange_order_id=?, qty=?, execution_mode=? WHERE id=?",
+                        (order_id, qty, _em, trade_id),
                     )
             except Exception as _upd_e:
                 logger.warning("[TradeRouter] exchange_order_id/qty update failed for #%d: %s",

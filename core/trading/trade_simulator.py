@@ -881,17 +881,15 @@ class TradeSimulator:
 
             with self._db_connect() as conn:
                 cursor = conn.cursor()
-                # ARCH-DB-V2 Ф1: разметка сделки — account_id (routing по symbol), execution_mode (режим бота)
+                # ARCH-DB-V2 Ф1: разметка сделки — account_id (routing по symbol).
+                # execution_mode = ФАКТ исполнения (юзер 12.06): на момент register order_id ещё
+                # нет → 'SIM' (симуляция). UPDATE на VST/LIVE при записи exchange_order_id
+                # (trade_router/exec_ws). Shadow-сделки (order_id NULL) остаются SIM.
                 _acc_row = conn.execute(
                     "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1", (symbol,)
                 ).fetchone()
                 _account_id = _acc_row[0] if _acc_row else 1
-                try:
-                    from core.infra.config_loader import config as _cfg_dbv2
-                    _raw_mode = str(_cfg_dbv2.get("trading.execution_mode", "sim_only")).upper()
-                    _exec_mode = {"SIM_ONLY": "SIM", "VST": "VST", "LIVE": "LIVE"}.get(_raw_mode, "SIM")
-                except Exception:
-                    _exec_mode = "SIM"
+                _exec_mode = "SIM"
                 cursor.execute(
                     """
                     INSERT INTO simulated_trades

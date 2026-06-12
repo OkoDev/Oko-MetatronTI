@@ -79,10 +79,14 @@ def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, 
                 logger.info("[EXEC-WS][2a] would write exch_id=%s → #%d %s %s qty=%.4g (SHADOW)",
                             order_id, tid, symbol, direction, qty or 0)
                 return True
+            # ARCH-DB-V2 Ф1: order_id записан = реально на бирже → execution_mode по факту (VST/LIVE)
+            from core.infra.config_loader import config as _cfg_dbv2
+            _raw_em = str(_cfg_dbv2.get("trading.execution_mode", "vst")).upper()
+            _em = {"VST": "VST", "LIVE": "LIVE"}.get(_raw_em, "VST")
             conn.execute(
-                "UPDATE simulated_trades SET exchange_order_id=? WHERE id=? AND status='OPEN' "
+                "UPDATE simulated_trades SET exchange_order_id=?, execution_mode=? WHERE id=? AND status='OPEN' "
                 "AND (exchange_order_id IS NULL OR exchange_order_id='')",
-                (order_id, tid),
+                (order_id, _em, tid),
             )
             conn.commit()
             logger.info("[EXEC-WS][2a] exch_id=%s → #%d %s %s qty=%.4g (WS real-time)",
