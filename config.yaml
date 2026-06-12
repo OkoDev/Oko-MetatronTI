@@ -483,8 +483,10 @@ performance:
   background_check_semaphore_size: 5
   cascade_div_semaphore_size: 3
   # D-065 (24.05): rps 15→30 — официальный потолок BingX market data = 500 req/10s per IP = 50 RPS.
-  # 30 RPS = 60% потолка с buffer на bursts. Ожидаемый эффект: scan cycle 474s → ~250s (2× speedup).
-  api_rps: 30
+  # 12.06: 30→40 (80% потолка) — бесплатный шаг ускорения на прямом канале (latency 60ms ок,
+  # корень = RPS-очередь). A/B: следить за code=429/throttle в логе; откат на 30 если посыпется.
+  # Под DEGRADED BingX буфер до 50 тоньше — health_loop adaptive degradation остаётся защитой.
+  api_rps: 40
   api_semaphore_size: 10
   ohlcv_scan_limit: 161
   # D-055 откатан (пороги обратно). Реальный fix — sequential TF fetch в scan_loop.
