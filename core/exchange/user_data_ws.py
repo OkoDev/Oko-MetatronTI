@@ -78,7 +78,8 @@ class UserDataStream:
                 url, headers={"X-BX-APIKEY": self._key},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as r:
-                logger.debug("[EXEC-WS][%s] keepalive HTTP%s", self._tag, r.status)
+                txt = await r.text()
+                logger.info("[EXEC-WS][%s] keepalive HTTP%s %s", self._tag, r.status, txt[:80])
         except Exception as e:
             logger.warning("[EXEC-WS][%s] keepalive error: %s", self._tag, e)
 
@@ -86,6 +87,12 @@ class UserDataStream:
         while self._running:
             await asyncio.sleep(_KEEPALIVE_SEC)
             await self._keepalive()
+
+    async def _stats_loop(self) -> None:
+        """Диагностика: периодический лог счётчиков — видно, растут ли orders/account (поток жив)."""
+        while self._running:
+            await asyncio.sleep(60)
+            logger.info("[EXEC-WS][%s] STATS: %s", self._tag, self.stats)
 
     # ── декод + обработка ────────────────────────────────────────────────
     @staticmethod
@@ -137,6 +144,7 @@ class UserDataStream:
         self._running = True
         self._session = aiohttp.ClientSession()
         ka_task = asyncio.create_task(self._keepalive_loop())
+        st_task = asyncio.create_task(self._stats_loop())
         logger.info("[EXEC-WS][%s] started (rest=%s)", self._tag, self._rest)
         try:
             while self._running:
@@ -168,6 +176,7 @@ class UserDataStream:
                     await asyncio.sleep(_RECONNECT_SEC)
         finally:
             ka_task.cancel()
+            st_task.cancel()
             if self._session and not self._session.closed:
                 await self._session.close()
             logger.info("[EXEC-WS][%s] stopped (stats=%s)", self._tag, self.stats)
