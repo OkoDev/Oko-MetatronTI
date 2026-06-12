@@ -43,6 +43,10 @@ def _write_exch_id(bot, symbol: str, direction: str, order_id: str, dry: bool) -
                 (symbol, direction),
             ).fetchone()
             if not row:
+                # диагностика: handler ВЫЗВАН (открытие поймано WS), но OPEN-сделки без exch_id нет
+                # → exch_id уже записан trade_router'ом (норма) ИЛИ нет matching сделки (timing/др.аккаунт)
+                logger.info("[EXEC-WS][2a] %s %s order=%s — OPEN-сделки без exch_id НЕ найдено "
+                            "(уже записан trade_router'ом ИЛИ timing/др.аккаунт)", symbol, direction, order_id)
                 return False
             tid = row[0]
             if dry:
