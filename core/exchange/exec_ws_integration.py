@@ -72,10 +72,11 @@ def make_event_handler(bot):
     async def on_event(etype: str, msg: dict) -> None:
         et = (etype or "").upper()
         # ── ЭТАП 2a: запись exch_id при FILLED MARKET открытии ──
-        if "ORDER" in et and "TRADE" in et:
-            o = msg.get("o") or {}
-            if not isinstance(o, dict):
-                return
+        # ВАЖНО: открытие приходит как 'TRADE_UPDATE' (place_bracket type=MARKET), а статус-апдейт
+        # как 'ORDER_TRADE_UPDATE'. Не фильтруем по etype-строке — проверяем наличие order-данных 'o'.
+        o = msg.get("o")
+        if isinstance(o, dict) and o:
+            # MARKET FILLED без reduceOnly = ОТКРЫТИЕ позиции (ro=true → закрытие, пропускаем)
             if o.get("X") == "FILLED" and o.get("o") == "MARKET" and not o.get("ro", False):
                 order_id = str(o.get("i", "") or "")
                 symbol = _ws_to_db_symbol(str(o.get("s", "")))
