@@ -154,9 +154,20 @@ def start_exec_ws(bot) -> Optional[list]:
             if k:
                 accounts.append((tag, k, os.getenv(se) or ""))
     else:
-        k = os.getenv("BINGX_API_KEY")
+        # LIVE user-data WS: listenKey доступен ТОЛЬКО на ОСНОВНОМ (master) аккаунте.
+        # Суб-ключ BINGX_API_KEY (2zDHkp) → listenKey HTTP404 (проверено 12.06).
+        # Master listenKey обычно покрывает суб-аккаунты. Основной master-ключ
+        # (5G6nUxnT) лежит в BINGX_VST_API_KEY и работает И для VST, И для LIVE
+        # (open-api.bingx.com listenKey HTTP200). Приоритет: явный LIVE-master → VST-
+        # master (он же основной) → суб (последний шанс).
+        k = (os.getenv("BINGX_LIVE_MASTER_API_KEY")
+             or os.getenv("BINGX_VST_API_KEY")
+             or os.getenv("BINGX_API_KEY"))
+        s = (os.getenv("BINGX_LIVE_MASTER_SECRET_KEY")
+             or os.getenv("BINGX_VST_SECRET_KEY")
+             or os.getenv("BINGX_SECRET_KEY") or "")
         if k:
-            accounts.append(("live", k, os.getenv("BINGX_SECRET_KEY") or ""))
+            accounts.append(("live", k, s))
 
     if not accounts:
         logger.warning("[EXEC-WS] enabled, но нет ключей (is_vst=%s) — не запускаю", is_vst)
