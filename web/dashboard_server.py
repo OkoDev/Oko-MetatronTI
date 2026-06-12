@@ -140,6 +140,65 @@ async def _handle_equity(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_balance_history(request: web.Request) -> web.Response:
+    """ARCH-DB-V2 Ф2: $-equity история per-account из balance_snapshots (для графика терминала).
+    Query: account_id (default 1), since (ISO, опц)."""
+    from core.db import balance_repo
+    try:
+        acc = int(request.query.get("account_id", "1"))
+        since = request.query.get("since")
+        rows = await _run_sync(balance_repo.get_equity_series, acc, since, "bingx", 1000)
+        rows = list(reversed(rows))  # get_equity_series DESC → для графика ASC по времени
+        return web.Response(
+            text=json.dumps({"account_id": acc, "series": rows}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_account_balances(request: web.Request) -> web.Response:
+    """ARCH-DB-V2 Ф2: текущий баланс по КАЖДОМУ аккаунту (latest snapshot) — карточки терминала."""
+    from core.db import balance_repo
+    import sqlite3 as _sq
+
+    def _q() -> list:
+        c = _sq.connect("subscriptions.db"); c.row_factory = _sq.Row
+        accs = [r[0] for r in c.execute("SELECT DISTINCT account_id FROM balance_snapshots ORDER BY 1")]
+        c.close()
+        out = []
+        for a in accs:
+            latest = balance_repo.get_latest_snapshot(a)
+            if latest:
+                out.append(latest)
+        return out
+    try:
+        data = await _run_sync(_q)
+        return web.Response(
+            text=json.dumps({"accounts": data}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_trades_filtered(request: web.Request) -> web.Response:
+    """ARCH-DB-V2 Ф2: сделки с фильтрами account_id/execution_mode/status + сводка (вкладки терминала).
+    Query: account_id, execution_mode (SIM/VST/LIVE), status, limit."""
+    from core.db import trades_repo
+    try:
+        acc = request.query.get("account_id")
+        acc_i = int(acc) if acc and acc.isdigit() else None
+        mode = request.query.get("execution_mode")
+        status = request.query.get("status")
+        limit = int(request.query.get("limit", "200"))
+        trades = await _run_sync(trades_repo.get_trades, acc_i, mode, "bingx", None, status, None, limit)
+        summary = await _run_sync(trades_repo.get_summary, acc_i, mode)
+        return web.Response(
+            text=json.dumps({"trades": trades, "summary": summary}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 def _signal_weights_compute_sync(engine, days: int) -> dict:
     """DEV-231: SQL + pivot для signal_weights_history — выполняется в thread pool."""
     import sqlite3 as _sqlite3
@@ -2384,6 +2443,10 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/stats/breakeven", _handle_breakeven_stats)
     app.router.add_get("/api/stats/analytics", _handle_analytics)
     app.router.add_get("/api/equity", _handle_equity)
+    # ARCH-DB-V2 Ф2: терминал — per-account $-equity + балансы + trades-фильтры
+    app.router.add_get("/api/balance_history", _handle_balance_history)
+    app.router.add_get("/api/account_balances", _handle_account_balances)
+    app.router.add_get("/api/trades_filtered", _handle_trades_filtered)
     app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
