@@ -536,9 +536,13 @@ class BingXClient:
         })
 
     async def close_position_market(self, symbol: str, side: str, qty: float,
-                                    one_click_on_fail: bool = False) -> dict:
+                                    one_click_on_fail: bool = False,
+                                    position_id: str | None = None) -> dict:
         """Закрывает часть позиции (reduce-only MARKET).
 
+        position_id: точный positionId позиции (Separate Isolated / hedge). КОРЕНЬ
+        101205 (12.06): без positionId биржа не находит сторону в hedge → "No position
+        to close". С точным positionId (из снимка нужного аккаунта) close проходит code=0.
         one_click_on_fail: для ПОЛНОГО закрытия (SL/TP/TSL/emergency) — если market close
         падает (109400 hedge / 101205 / др.) → fallback на one-click (closeAllPositions).
         Корень orphan-семьи (OPS-06): market close 109400 → позиция висит. close_orphans
@@ -554,6 +558,8 @@ class BingXClient:
             "quantity":     str(qty),
             "reduceOnly":   "true",
         }
+        if position_id:
+            payload["positionId"] = str(position_id)
         resp = await self.post("/openApi/swap/v2/trade/order", payload)
         code = resp.get("code")
         msg = str(resp.get("msg", ""))

@@ -429,7 +429,9 @@ class OrderManager:
                                       close_qty=close_qty, close_price=current_price, order_id="SIM")
         try:
             side = "BUY" if direction == "LONG" else "SELL"
-            resp = await (await self._get_client_synced(symbol)).close_position_market(symbol, side, close_qty)
+            # multiacct-safe: client аккаунта позиции + точный positionId (КОРЕНЬ 101205)
+            cli, pid = await self._resolve_position_client(symbol, direction)
+            resp = await cli.close_position_market(symbol, side, close_qty, position_id=pid)
             if resp.get("code", -1) != 0:
                 return PartialCloseResult(success=False, symbol=symbol,
                                           close_qty=close_qty, close_price=current_price,
@@ -618,6 +620,38 @@ class OrderManager:
             logger.warning("[OrderManager] _get_position_id %s %s: %s", symbol, pos_side, e)
         return None
 
+    async def _resolve_position_client(self, symbol: str, pos_side: str):
+        """multiacct-safe: возвращает (client, positionId) для РЕАЛЬНОГО аккаунта позиции.
+
+        КОРЕНЬ 101205 (12.06): при multiacct позиция может жить на суб-аккаунте acc!=1,
+        а sticky-routing по symbol мог назначить другой client → close бьёт не тот
+        аккаунт → "No position to close". Здесь находим позицию среди агрегата ВСЕХ
+        суб-аккаунтов (_get_positions_cached помечает _account) и берём client именно
+        её аккаунта + positionId прямо из снимка. Fallback → sticky client по symbol.
+        """
+        sticky = lambda: self._get_client_synced(symbol)
+        if not self.is_live():
+            return await sticky(), None
+        try:
+            from core.exchange.bingx_client import to_bingx_symbol
+            bx = to_bingx_symbol(symbol)
+            for p in await self._get_positions_cached():
+                if (p.get("symbol") == bx
+                        and p.get("positionSide", "").upper() == pos_side.upper()
+                        and float(p.get("positionAmt", 0) or 0) != 0):
+                    acc = p.get("_account")
+                    pid = p.get("positionId")
+                    if self._multiacct and acc is not None:
+                        cli = self._get_router().client_for_account(acc)
+                        if cli is not None:
+                            try: await cli.sync_time()
+                            except Exception: pass
+                            return cli, (str(pid) if pid else None)
+                    return await sticky(), (str(pid) if pid else None)
+        except Exception as e:
+            logger.warning("[OrderManager] _resolve_position_client %s %s: %s", symbol, pos_side, e)
+        return await sticky(), None
+
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Отменяет ордер. False = ордер уже исполнен/не существует."""
         if not self.is_live():
@@ -714,8 +748,11 @@ class OrderManager:
                     logger.warning("[OrderManager] SL %s %s пробит ценой → close market (%s)",
                                    symbol, pos_side, msg)
                     try:
-                        cr = await client.close_position_market(symbol, side, qty_floor,
-                                                                one_click_on_fail=True)
+                        # multiacct-safe: client аккаунта позиции + точный positionId (КОРЕНЬ 101205)
+                        _cli, _pid = await self._resolve_position_client(symbol, pos_side)
+                        cr = await _cli.close_position_market(symbol, side, qty_floor,
+                                                              one_click_on_fail=True,
+                                                              position_id=_pid)
                         if cr.get("code", -1) == 0:
                             logger.info("[OrderManager] ✅ %s %s закрыта по рынку (SL был пробит)",
                                         symbol, pos_side)

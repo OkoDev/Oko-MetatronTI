@@ -41,6 +41,8 @@ async def main(args):
         print("нечего закрывать."); return 0
 
     client = await om._get_client_synced()
+    # 🔑 multiacct: позиция может жить на суб-аккаунте → закрывать через client ЕГО аккаунта
+    router = om._get_router() if om._multiacct else None
     closed = failed = 0; tot = 0.0
     for (sym, direction), p in sorted(targets.items(), key=lambda x: x[1].unrealized_pnl or 0):
         pnl = p.unrealized_pnl or 0; tot += pnl
@@ -49,17 +51,21 @@ async def main(args):
         print(f"--- {sym.split('/')[0]:12} {direction:5} qty={p.qty:.4g} pnl={fmt_money(pnl)} ---")
         if p.qty <= 0:
             print("  qty<=0 — пропуск"); continue
-        # positionId (Separate Isolated mode требует для точечного close)
+        # 🔑 positionId + аккаунт из raw (РЕШЕНИЕ 101205: позиция на суб-аккаунте acc!=1)
+        acc = p.raw.get("_account") if isinstance(p.raw, dict) else None
         pid = p.raw.get("positionId") if isinstance(p.raw, dict) else None
+        # выбрать client того аккаунта, где реально живёт позиция
+        if router is not None and acc is not None:
+            cli = router.client_for_account(acc)
+            try: await cli.sync_time()
+            except Exception: pass
+        else:
+            cli = client
         if not pid:
             pid = await om._get_position_id(sym, direction)
         if not args.commit:
-            print(f"  [DRY] закрыл бы точечно market {side} qty={p.qty:.4g} positionId={pid} (БЕЗ one-click)")
+            print(f"  [DRY] закрыл бы MARKET {side} qty={p.qty:.4g} acc={acc} positionId={pid}")
             continue
-        # есть ли РЕАЛЬНЫЙ биржевой брат (противоположная сторона с qty>0)? qty=0 = не позиция
-        opp = "LONG" if direction == "SHORT" else "SHORT"
-        _bro = ex.get((sym, opp))
-        brother_on_exchange = _bro is not None and (_bro.qty or 0) > 0
         try:
             from core.exchange.bingx_client import to_bingx_symbol
             close_side = "BUY" if direction == "SHORT" else "SELL"
@@ -67,19 +73,22 @@ async def main(args):
                        "positionSide": direction, "type": "MARKET", "quantity": str(p.qty)}
             if pid:
                 payload["positionId"] = str(pid)
-            r = await client.post("/openApi/swap/v2/trade/order", payload)
+            r = await cli.post("/openApi/swap/v2/trade/order", payload)
             code = r.get("code", -1) if isinstance(r, dict) else -1
             if code == 0:
-                print(f"  [✓] закрыта точечно (positionId={pid})"); closed += 1
-            elif not brother_on_exchange:
-                # биржевого брата НЕТ (БД-брат = SIM) → one-click безопасен
-                oc = await client.close_position_one_click(sym)
-                if oc.get("code") == 0:
-                    print(f"  [✓] закрыта one-click (брат SIM, не на бирже)"); closed += 1
-                else:
-                    print(f"  [✗] one-click code={oc.get('code')} msg={str(oc.get('msg',''))[:45]}"); failed += 1
+                print(f"  [✓] закрыта MARKET точечно (acc={acc} positionId={pid})"); closed += 1
             else:
-                print(f"  [✗] code={code} + биржевой брат ЕСТЬ → точечный не вышел, one-click опасен — пропуск"); failed += 1
+                # fallback one-click ТОЛЬКО если нет реального биржевого брата (qty>0)
+                opp = "LONG" if direction == "SHORT" else "SHORT"
+                _bro = ex.get((sym, opp))
+                if not (_bro is not None and (_bro.qty or 0) > 0):
+                    oc = await cli.close_position_one_click(sym)
+                    if oc.get("code") == 0:
+                        print(f"  [✓] one-click (брат SIM, acc={acc})"); closed += 1
+                    else:
+                        print(f"  [✗] one-click code={oc.get('code')}"); failed += 1
+                else:
+                    print(f"  [✗] code={code} msg={str(r.get('msg',''))[:45]} (реальный hedge, брат цел)"); failed += 1
         except Exception as e:
             print(f"  [✗] err {e}"); failed += 1
         print()

@@ -173,14 +173,15 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
         order_mgr = getattr(bot, "order_executor", None)
         if order_mgr is None or not order_mgr.is_live():
             return False
-        client = await order_mgr._get_client_synced()
+        # multiacct-safe: client аккаунта позиции + positionId (КОРЕНЬ 101205); не основной acc
+        client, _pid = await order_mgr._resolve_position_client(sym, direction)
         side_close = "SELL" if direction == "LONG" else "BUY"
         logger.warning(
             "[DEV-185.2][EMERGENCY][STOP_LIMIT_EMERGENCY_FILL] %s #%d %s: "
             "overshoot %.2f%% за %.0fс — market close qty=%s",
             sym, trade_id, direction, overshoot_pct, elapsed, qty,
         )
-        resp = await client.close_position_market(sym, side_close, qty)
+        resp = await client.close_position_market(sym, side_close, qty, position_id=_pid)
         code = resp.get("code", 0) if isinstance(resp, dict) else 0
         if code != 0:
             logger.warning(
@@ -273,9 +274,12 @@ async def sync_positions(bot) -> None:
                 )
                 try:
                     close_side = "SELL" if pp.side == "LONG" else "BUY"
-                    resp = await client.close_position_market(pp.symbol_our, close_side, pp.qty)
+                    # multiacct-safe: client аккаунта позиции + positionId (КОРЕНЬ 101205)
+                    _dcli, _dpid = await order_mgr._resolve_position_client(pp.symbol_our, pp.side)
+                    resp = await _dcli.close_position_market(pp.symbol_our, close_side, pp.qty,
+                                                             position_id=_dpid)
                     if resp.get("code", 0) != 0:
-                        resp2 = await client.close_position_one_click(pp.symbol_our)
+                        resp2 = await _dcli.close_position_one_click(pp.symbol_our)
                         logger.info("[POSITION-SYNC] %s dust one-click close: %s", pp.symbol_our, resp2.get("code"))
                     else:
                         logger.info("[POSITION-SYNC] %s dust closed on exchange OK", pp.symbol_our)
