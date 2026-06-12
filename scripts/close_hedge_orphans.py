@@ -56,9 +56,10 @@ async def main(args):
         if not args.commit:
             print(f"  [DRY] закрыл бы точечно market {side} qty={p.qty:.4g} positionId={pid} (БЕЗ one-click)")
             continue
-        # есть ли БИРЖЕВОЙ брат (противоположная сторона на бирже)? Если нет — one-click безопасен
+        # есть ли РЕАЛЬНЫЙ биржевой брат (противоположная сторона с qty>0)? qty=0 = не позиция
         opp = "LONG" if direction == "SHORT" else "SHORT"
-        brother_on_exchange = (sym, opp) in ex
+        _bro = ex.get((sym, opp))
+        brother_on_exchange = _bro is not None and (_bro.qty or 0) > 0
         try:
             from core.exchange.bingx_client import to_bingx_symbol
             close_side = "BUY" if direction == "SHORT" else "SELL"
