@@ -979,19 +979,24 @@ class PerformanceEngine:
     # ------------------------------------------------------------------
     # Всё одним вызовом (для /api/stats)
     # ------------------------------------------------------------------
-    def equity_data(self) -> List[Dict[str, Any]]:
-        """Возвращает закрытые сделки для equity curve в дашборде."""
+    def equity_data(self, account_id=None, execution_mode=None) -> List[Dict[str, Any]]:
+        """Возвращает закрытые сделки для equity curve в дашборде.
+        ARCH-DB-V2 Ф2: опц. фильтр account_id / execution_mode (переключение акк на графике)."""
+        sql = """
+            SELECT symbol, status, R_multiple, closed_at,
+                   entry_price, stop_loss, created_at, direction
+            FROM simulated_trades
+            WHERE status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL
+        """
+        params: list = []
+        if account_id is not None:
+            sql += " AND account_id=?"; params.append(account_id)
+        if execution_mode is not None:
+            sql += " AND execution_mode=?"; params.append(execution_mode)
+        sql += " ORDER BY closed_at ASC"
         with self._conn() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT symbol, status, R_multiple, closed_at,
-                       entry_price, stop_loss, created_at, direction
-                FROM simulated_trades
-                WHERE status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL
-                ORDER BY closed_at ASC
-                """
-            )
+            cursor.execute(sql, params)
             rows = cursor.fetchall()
         return [
             {

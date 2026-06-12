@@ -128,8 +128,12 @@ async def _handle_analytics(request: web.Request) -> web.Response:
 async def _handle_equity(request: web.Request) -> web.Response:
     engine: PerformanceEngine = request.app["engine"]
     try:
+        # ARCH-DB-V2 Ф2: опц. фильтр account_id / execution_mode (переключение акк на графике)
+        _acc = request.query.get("account_id")
+        _acc_i = int(_acc) if _acc and _acc.isdigit() else None
+        _mode = request.query.get("execution_mode")
         # DEV-231: тяжёлый payload (3.77 MB) — sync вычисление + JSON serialize в thread pool
-        data = await _run_sync(engine.equity_data)
+        data = await _run_sync(engine.equity_data, _acc_i, _mode)
         payload_str = await _run_sync(json.dumps, data, ensure_ascii=False, default=str)
         return web.Response(
             text=payload_str,
