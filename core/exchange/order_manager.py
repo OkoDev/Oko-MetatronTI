@@ -216,6 +216,35 @@ class OrderManager:
         self._positions_cache = None
         self._positions_ts = 0.0
 
+    async def snapshot_balances_per_account(self) -> list[dict]:
+        """ARCH-DB-V2 Ф1: баланс КАЖДОГО аккаунта для balance_snapshots (equity-график).
+        Возвращает [{account_id, equity, available, used_margin, unrealized_pnl}] или []."""
+        if not self.is_live():
+            return []
+        accounts = list(self._get_router().accounts) if self._multiacct else [1]
+        out: list[dict] = []
+        for acc in accounts:
+            try:
+                if self._multiacct:
+                    cli = self._get_router().client_for_account(acc)
+                    if cli is None:
+                        continue
+                    await cli.sync_time()
+                else:
+                    cli = await self._get_client_synced()
+                r = await cli.get("/openApi/swap/v2/user/balance")
+                bd = r.get("data", {}).get("balance", {}) if isinstance(r, dict) else {}
+                out.append({
+                    "account_id": int(acc) if isinstance(acc, (int, str)) and str(acc).isdigit() else 1,
+                    "equity": float(bd.get("equity", 0) or 0),
+                    "available": float(bd.get("availableMargin", 0) or 0),
+                    "used_margin": float(bd.get("usedMargin", 0) or 0),
+                    "unrealized_pnl": float(bd.get("unrealizedProfit", 0) or 0),
+                })
+            except Exception as e:
+                logger.warning("[OrderManager] snapshot_balance acc=%s: %s: %s", acc, type(e).__name__, e)
+        return out
+
     async def get_exchange_snapshot(self) -> dict:
         """Возвращает баланс + позиции с биржи (для /api/live дашборда).
         В SIM_ONLY режиме возвращает заглушку без API-запроса.

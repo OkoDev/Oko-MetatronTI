@@ -143,11 +143,45 @@ class SubscriptionManager:
                 ("magnet_tp_rr", "REAL"),     # ARCH-122 P2 shadow: RR магнита от entry
                 ("magnet_tp_src", "TEXT"),    # ARCH-122 P2 shadow: метка кластера
                 ("regime_v2", "TEXT"),        # ARCH-124 shadow: HTF-доминантная метка режима
+                # ARCH-DB-V2 Ф1 (12.06): явная разметка сделок (было косвенно через exchange_order_id)
+                ("account_id", "INTEGER DEFAULT 1"),       # суб-аккаунт (1/2/...); старые сделки=1
+                ("execution_mode", "TEXT DEFAULT 'SIM'"),  # SIM/VST/LIVE — явно, не через NULL
+                ("exchange", "TEXT DEFAULT 'bingx'"),      # биржа (Ф2 нормализует в exchange_id)
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")
                 except Exception:
                     pass  # колонка уже существует
+
+            # ARCH-DB-V2 Ф1: история equity по аккаунтам (решает «движение баланса»)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS balance_snapshots (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id     INTEGER NOT NULL,
+                    exchange       TEXT NOT NULL DEFAULT 'bingx',
+                    timestamp      TEXT NOT NULL,
+                    equity         REAL NOT NULL,
+                    available      REAL,
+                    used_margin    REAL,
+                    unrealized_pnl REAL,
+                    source         TEXT DEFAULT 'poll',
+                    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_balance_acc_ts "
+                "ON balance_snapshots(account_id, exchange, timestamp)"
+            )
+            # индексы под частые фильтры терминала (account/mode/exchange)
+            for _ix, _cols in [
+                ("idx_trades_account", "account_id, created_at"),
+                ("idx_trades_mode", "execution_mode, created_at"),
+                ("idx_trades_exchange", "exchange, created_at"),
+            ]:
+                try:
+                    cursor.execute(f"CREATE INDEX IF NOT EXISTS {_ix} ON simulated_trades({_cols})")
+                except Exception:
+                    pass
 
             # Персональные настройки капитала (Этап 5 ROADMAP)
             cursor.execute("""

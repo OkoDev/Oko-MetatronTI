@@ -881,6 +881,17 @@ class TradeSimulator:
 
             with self._db_connect() as conn:
                 cursor = conn.cursor()
+                # ARCH-DB-V2 Ф1: разметка сделки — account_id (routing по symbol), execution_mode (режим бота)
+                _acc_row = conn.execute(
+                    "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1", (symbol,)
+                ).fetchone()
+                _account_id = _acc_row[0] if _acc_row else 1
+                try:
+                    from core.infra.config_loader import config as _cfg_dbv2
+                    _raw_mode = str(_cfg_dbv2.get("trading.execution_mode", "sim_only")).upper()
+                    _exec_mode = {"SIM_ONLY": "SIM", "VST": "VST", "LIVE": "LIVE"}.get(_raw_mode, "SIM")
+                except Exception:
+                    _exec_mode = "SIM"
                 cursor.execute(
                     """
                     INSERT INTO simulated_trades
@@ -889,8 +900,9 @@ class TradeSimulator:
                      strength, confidence, regime, status, features_json, created_at,
                      sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json,
                      original_sl, source_router,
-                     magnet_tp_price, magnet_tp_rr, magnet_tp_src, regime_v2)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     magnet_tp_price, magnet_tp_rr, magnet_tp_src, regime_v2,
+                     account_id, execution_mode, exchange)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -921,6 +933,9 @@ class TradeSimulator:
                         _magnet_tp_rr,
                         _magnet_tp_src,
                         regime_v2,
+                        _account_id,    # ARCH-DB-V2 Ф1
+                        _exec_mode,     # SIM/VST/LIVE (режим бота на момент создания)
+                        "bingx",        # Ф2 нормализует в exchange_id
                     ),
                 )
                 trade_id = cursor.lastrowid

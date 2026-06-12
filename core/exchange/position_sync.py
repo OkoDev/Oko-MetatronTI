@@ -227,6 +227,9 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
         return False
 
 
+_LAST_BAL_SNAPSHOT_TS = 0.0  # ARCH-DB-V2 Ф1: throttle снапшота баланса (раз ~10 мин)
+
+
 async def sync_positions(bot) -> None:
     """
     Сравнивает открытые сделки в симуляторе с реальными позициями на бирже.
@@ -241,6 +244,26 @@ async def sync_positions(bot) -> None:
         order_mgr = getattr(bot, "order_executor", None)
         if order_mgr is None or not order_mgr.is_live():
             return
+
+        # ARCH-DB-V2 Ф1: периодический снапшот баланса per-account (раз ~10 мин) для equity-графика
+        import time as _t_snap
+        global _LAST_BAL_SNAPSHOT_TS
+        if _t_snap.time() - _LAST_BAL_SNAPSHOT_TS > 600:
+            _LAST_BAL_SNAPSHOT_TS = _t_snap.time()
+            try:
+                from core.db import balance_repo
+                _snaps = await order_mgr.snapshot_balances_per_account()
+                for _b in _snaps:
+                    balance_repo.save_snapshot(
+                        _b["account_id"], _b["equity"], available=_b["available"],
+                        used_margin=_b["used_margin"], unrealized_pnl=_b["unrealized_pnl"],
+                        source="poll")
+                if _snaps:
+                    logger.info("[POSITION-SYNC][DB-V2] balance snapshot: %d акк", len(_snaps))
+            except Exception as _bse:
+                logger.warning("[POSITION-SYNC][DB-V2] balance snapshot: %s: %s",
+                               type(_bse).__name__, _bse)
+
         client = await order_mgr._get_client_synced()
 
         # Получаем открытые позиции на бирже
