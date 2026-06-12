@@ -714,7 +714,8 @@ class OrderManager:
                     logger.warning("[OrderManager] SL %s %s пробит ценой → close market (%s)",
                                    symbol, pos_side, msg)
                     try:
-                        cr = await client.close_position_market(symbol, side, qty_floor)
+                        cr = await client.close_position_market(symbol, side, qty_floor,
+                                                                one_click_on_fail=True)
                         if cr.get("code", -1) == 0:
                             logger.info("[OrderManager] ✅ %s %s закрыта по рынку (SL был пробит)",
                                         symbol, pos_side)

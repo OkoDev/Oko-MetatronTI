@@ -535,8 +535,14 @@ class BingXClient:
             "symbol": bx_symbol, "orderId": order_id,
         })
 
-    async def close_position_market(self, symbol: str, side: str, qty: float) -> dict:
-        """Закрывает часть позиции (reduce-only MARKET)."""
+    async def close_position_market(self, symbol: str, side: str, qty: float,
+                                    one_click_on_fail: bool = False) -> dict:
+        """Закрывает часть позиции (reduce-only MARKET).
+
+        one_click_on_fail: для ПОЛНОГО закрытия (SL/TP/TSL/emergency) — если market close
+        падает (109400 hedge / 101205 / др.) → fallback на one-click (closeAllPositions).
+        Корень orphan-семьи (OPS-06): market close 109400 → позиция висит. close_orphans
+        доказал: one-click закрывает там, где market падает. НЕ для частичного TP1 (закроет всё)."""
         bx_symbol  = to_bingx_symbol(symbol)
         close_side = "SELL" if side == "BUY" else "BUY"
         pos_side   = "LONG" if side == "BUY" else "SHORT"
@@ -556,11 +562,23 @@ class BingXClient:
         #   101205 "No position to close" (reduceOnly не видит позицию противоположной стороны)
         if code == 109400 and "ReduceOnly" in msg and "Hedge mode" in msg:
             payload.pop("reduceOnly", None)
-            return await self.post("/openApi/swap/v2/trade/order", payload)
-        if code == 101205 and payload.get("reduceOnly") == "true":
+            resp = await self.post("/openApi/swap/v2/trade/order", payload)
+            code = resp.get("code")
+        elif code == 101205 and payload.get("reduceOnly") == "true":
             logger.info("[BingXClient] close_position_market %s: 101205 → retry без reduceOnly (hedge)", symbol)
             payload.pop("reduceOnly", None)
-            return await self.post("/openApi/swap/v2/trade/order", payload)
+            resp = await self.post("/openApi/swap/v2/trade/order", payload)
+            code = resp.get("code")
+        # OPS-06 (12.06): market close всё ещё fail → one-click fallback (закрывает всю позицию).
+        if code not in (0, None) and one_click_on_fail:
+            logger.warning("[BingXClient] close_position_market %s code=%s msg=%s → one-click fallback (OPS-06)",
+                           symbol, code, msg[:60])
+            oc = await self.close_position_one_click(symbol)
+            if oc.get("code") == 0:
+                logger.info("[BingXClient] ✅ %s закрыт one-click (market fail code=%s)", symbol, code)
+                return oc
+            logger.error("[BingXClient] %s one-click тоже fail code=%s — позиция может висеть",
+                         symbol, oc.get("code"))
         return resp
 
     async def close_position_one_click(self, symbol: str) -> dict:
