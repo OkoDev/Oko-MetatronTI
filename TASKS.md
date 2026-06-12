@@ -50,7 +50,7 @@
 
 | ID | Задача | Статус | Файлы |
 |---|---|---|---|
-| **SIGNAL-CLEANUP** | Балласт/мёртвые из SIGNAL-AUDIT: ✅ **`pivot_reversal` ОТКЛЮЧЁН 11.06** (`signal_quality.pivot_reversal_enabled:false` + гейт в `check_pivot_reversals` → return; балласт −1272R/25%, доказан 2 осями; рестарт применит). Остаётся: (1) `watch_list_breach` −169R → ОТКЛЮЧИТЬ; (2) CLEANUP мёртвых меток `wt_b_signal`/`mtf_bias`/`trend_signal`/`composite` | 🟡 pivot ✅; watch_list_breach + cleanup остаются | `config.yaml`, `bot/monitoring.py:465` |
+| **SIGNAL-CLEANUP** | Балласт/мёртвые из SIGNAL-AUDIT: ✅ **`pivot_reversal` ОТКЛЮЧЁН** (−1272R, 2 оси). ✅ **`watch_list_breach` ОТКЛЮЧЁН 12.06** (`signal_quality.watch_list_breach_enabled:false` + ранний return в `_handle_wl_breach_entry`; балласт −169R, длинные сделки avg 701мин). Остаётся: CLEANUP мёртвых меток БД `wt_b_signal`/`mtf_bias`/`trend_signal`/`composite` (давно не торгуют, фоном) | 🟢 pivot+wl_breach OFF; cleanup меток фоном | `config.yaml`, `bot/monitoring.py:465`, `scan_loop.py:200` |
 | **NULL-SIGNAL** | 17 сделок `signal_type=NULL` (+3.9R) — `source_router` есть, метка не записалась. Баг в `register_trade`? Потерянные edge-метки | 🟡 **DS** investigate | `register_trade`, `simulated_trades` |
 | **CONFLUENCE-RETURN** | `confluence` +610R sumR но отключён 30.05 (WR30% низкий, +avgR). Вернуть? Оценка неполна (regime=NULL). Решить ПОСЛЕ regime/pattern fix (B3/ML-01d) | 🟡 отложено (ждёт regime-fix) | config, `scripts/` |
 | **MFE-FIX (A3)** | `max_R_possible`/`max_price` не обновляются real-time → 43% сделок `max_price==entry`. Ломает `captured_R_pct` + ML-01c таргет. (= п.3 DATA-AUDIT-2) | 🔴 **DS** | `trade_simulator` MFE-трекинг |
