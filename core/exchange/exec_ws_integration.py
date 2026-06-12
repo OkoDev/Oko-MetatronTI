@@ -29,37 +29,64 @@ def _ws_to_db_symbol(sym_ws: str) -> str:
     return f"{base}/{quote}:{quote}"
 
 
-def _write_exch_id(bot, symbol: str, direction: str, order_id: str, dry: bool) -> bool:
-    """Записать exchange_order_id в свежую OPEN-сделку symbol+direction без exch_id."""
+_MATCH_WINDOW_MIN = 5     # сделка считается «свежей» (относится к открытию) если создана за N мин
+_QTY_TOL = 0.02           # допуск совпадения qty (2%)
+
+
+def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, dry: bool) -> bool:
+    """Записать exchange_order_id в СВЕЖУЮ OPEN-сделку, точно соответствующую открытию.
+
+    Маппинг (точный, не «случайная старая»):
+      1. ДЕДУП: orderId уже записан где-то → пропуск (дубль TRADE_UPDATE+ORDER_TRADE_UPDATE).
+      2. Кандидаты: symbol+direction+status=OPEN+без exch_id+созданы за последние N мин (свежие).
+      3. Выбор: по qty-match (WS qty ≈ БД qty ±2%); если qty нет — свежайшая в окне.
+    Старые висящие сделки (created давно) НЕ берутся → не портим чужие данные.
+    """
+    import datetime
     db_path = bot.trade_simulator.db_path
     try:
         with sqlite3.connect(db_path, timeout=10) as conn:
             conn.execute("PRAGMA busy_timeout=10000")
-            row = conn.execute(
-                """SELECT id FROM simulated_trades
+            # 1. дедуп по orderId
+            if conn.execute("SELECT 1 FROM simulated_trades WHERE exchange_order_id=? LIMIT 1",
+                            (order_id,)).fetchone():
+                return False
+            # 2. свежие кандидаты
+            cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                      - datetime.timedelta(minutes=_MATCH_WINDOW_MIN)).isoformat()
+            rows = conn.execute(
+                """SELECT id, qty FROM simulated_trades
                    WHERE symbol=? AND direction=? AND status='OPEN'
                      AND (exchange_order_id IS NULL OR exchange_order_id='')
-                   ORDER BY id DESC LIMIT 1""",
-                (symbol, direction),
-            ).fetchone()
-            if not row:
-                # диагностика: handler ВЫЗВАН (открытие поймано WS), но OPEN-сделки без exch_id нет
-                # → exch_id уже записан trade_router'ом (норма) ИЛИ нет matching сделки (timing/др.аккаунт)
-                logger.info("[EXEC-WS][2a] %s %s order=%s — OPEN-сделки без exch_id НЕ найдено "
-                            "(уже записан trade_router'ом ИЛИ timing/др.аккаунт)", symbol, direction, order_id)
+                     AND created_at >= ?
+                   ORDER BY id DESC LIMIT 5""",
+                (symbol, direction, cutoff),
+            ).fetchall()
+            if not rows:
+                logger.info("[EXEC-WS][2a] %s %s order=%s — нет СВЕЖЕЙ (<%dмин) OPEN без exch_id "
+                            "(уже записан/др.аккаунт/старая)", symbol, direction, order_id, _MATCH_WINDOW_MIN)
                 return False
-            tid = row[0]
+            # 3. выбор по qty-match
+            tid = None
+            if qty and qty > 0:
+                for rid, rqty in rows:
+                    if rqty and abs(float(rqty) - qty) / qty < _QTY_TOL:
+                        tid = rid
+                        break
+            if tid is None:
+                tid = rows[0][0]   # fallback: свежайшая в окне (без qty-match)
             if dry:
-                logger.info("[EXEC-WS][2a] would write exch_id=%s → #%d %s %s (SHADOW)",
-                            order_id, tid, symbol, direction)
+                logger.info("[EXEC-WS][2a] would write exch_id=%s → #%d %s %s qty=%.4g (SHADOW)",
+                            order_id, tid, symbol, direction, qty or 0)
                 return True
             conn.execute(
-                "UPDATE simulated_trades SET exchange_order_id=? WHERE id=? AND status='OPEN'",
+                "UPDATE simulated_trades SET exchange_order_id=? WHERE id=? AND status='OPEN' "
+                "AND (exchange_order_id IS NULL OR exchange_order_id='')",
                 (order_id, tid),
             )
             conn.commit()
-            logger.info("[EXEC-WS][2a] exch_id=%s → #%d %s %s (WS real-time)",
-                        order_id, tid, symbol, direction)
+            logger.info("[EXEC-WS][2a] exch_id=%s → #%d %s %s qty=%.4g (WS real-time)",
+                        order_id, tid, symbol, direction, qty or 0)
             return True
     except Exception as e:
         logger.warning("[EXEC-WS][2a] write_exch_id error %s %s: %s", symbol, direction, e)
@@ -81,9 +108,13 @@ def make_event_handler(bot):
                 order_id = str(o.get("i", "") or "")
                 symbol = _ws_to_db_symbol(str(o.get("s", "")))
                 direction = str(o.get("ps", "")).upper()   # LONG/SHORT
+                try:
+                    qty = abs(float(o.get("z") or o.get("q") or 0))   # z=filled qty, q=order qty
+                except Exception:
+                    qty = 0.0
                 if order_id and symbol and direction in ("LONG", "SHORT"):
                     dry = not bool(cfg.get("trading.exec_ws.write_exch_id", False))
-                    _write_exch_id(bot, symbol, direction, order_id, dry)
+                    _write_exch_id(bot, symbol, direction, order_id, qty, dry)
             return
         # ── ЭТАП 2b: позиция закрыта (pa=0) — пока лог (sync_close позже) ──
         if et == "ACCOUNT_UPDATE":
