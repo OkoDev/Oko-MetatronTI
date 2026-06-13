@@ -8,6 +8,16 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict
 
+# ── C-01 (11.06): CHoCH length из config ──────────────────────────
+def _get_choch_length() -> int:
+    """Читает arch104.choch_length из config.yaml. Дефолт 50 (текущее).
+    Менять на 5 после ре-майнинга 69 паттернов + A/B бэктеста."""
+    try:
+        from core.infra.config_loader import config as _cfg
+        return int(_cfg.get("arch104.choch_length", 50))
+    except Exception:
+        return 50
+
 # ── Канон направлений (DS-314) — ТРОИЧНЫЙ ──────────────────────────
 # dir ∈ {+1, 0, −1}   ·   dir_label ∈ {bull, range, bear}
 CANON = {
@@ -79,7 +89,7 @@ def etl_order_blocks(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     from core.smc.smc_engine import detect_structure_breaks, detect_order_blocks, active_order_blocks
 
     n = len(df)
-    breaks = detect_structure_breaks(df)
+    breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01: config-флаг choch_length
     obs = detect_order_blocks(df, breaks)       # List[OrderBlock]
     active = active_order_blocks(obs, n_bars=30, per_side=5)
 
@@ -118,7 +128,7 @@ def etl_bos_choch(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     from core.smc.smc_engine import detect_structure_breaks, zigzag_atr, find_setups_zz
 
     n = len(df)
-    breaks = detect_structure_breaks(df)
+    breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01
 
     # Из StructureBreak объектов
     bull_bos_idx = [b.idx for b in breaks if b.kind == "BOS" and b.direction == "bull"]
@@ -186,7 +196,7 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
             discount[i] = True
 
     # OTE от CHoCH
-    breaks = detect_structure_breaks(df)
+    breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01
     choch_ote = find_choch_ote(breaks, df)
     if choch_ote:
         zone = choch_ote.get("ote_zone", (0, 0))

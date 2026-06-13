@@ -4,6 +4,27 @@
 
 ---
 
+## [13.06.2026 ~11:00 UTC] Агент: Даат (Sonnet 4.6) — Dashboard account-фильтр: KPI + Trades + Analytics
+
+### ✅ Сделано (коммиты 1fc9fd4, 0742fd6)
+- **`/api/kpi?account_id=N`** — новый лёгкий endpoint (без кэша /api/stats): closed_count, open_count, win_rate, avg_r, sum_r, closed_per_day с фильтром account_id/execution_mode
+- **`/api/stats/analytics` расширен** — теперь принимает `?account_id=N`, возвращает by_signal_type + by_regime (раньше только pnl_calendar). engine.by_signal_type/by_regime/pnl_calendar — добавлен account_id параметр
+- **Frontend oko-dashboard** (без git, на диске):
+  - `lib/api.ts`: fetchKpiCards(template, accountId?), fetchTradesFiltered(), fetchSignalStats(accountId?), fetchRegimeStats(accountId?), fetchPnlCalendar(mode, accountId?)
+  - `screens/overview.tsx`: KPI следует глобальному account (useAccount)
+  - `screens/trades.tsx`: AccountSwitch + mode filter (SIM/VST/LIVE) + fetchTradesFiltered (server-side фильтр)
+  - `screens/analytics.tsx`: AccountSwitch, live KPI row (было мок), все fetchers передают account, refresh при смене account
+
+### 🔄 Следующее
+- Перезапустить бот — применить новые endpoints (/api/kpi, /api/stats/analytics расширен)
+- Незакоммичено в crypto_volume_bot: DISCUSSION.md, TASKS.md, swing_bridge, pair_context, smc_snapshot (ARCH-128 ветка)
+- oko-dashboard — без git, изменения только на диске
+
+### 🧠 Паттерн сессии
+AccountContext(global) + useEffectiveAccount(local) — установленный паттерн для всех виджетов. Analytics: один endpoint `/api/stats/analytics` отдаёт всё. KPI отдельный `/api/kpi` (не рушит кэш /api/stats).
+
+---
+
 ## [11.06.2026 ~12:00 UTC] Агент: Даат (Opus) — REGIME-V2 активирован + atr_change×OTE edge + C-01 закрыт
 
 ### ✅ Сделано

@@ -24,8 +24,28 @@ from core.smc.fvg import detect_fvg
 from core.smc.order_blocks import detect_order_blocks
 from core.smc.structure import detect_structure, BreakType
 from core.smc.liquidity import detect_equal_highs_lows
+from core.smc.smc_engine import ote_retest_setups
 
 logger = logging.getLogger(__name__)
+
+# Per-ТФ zigzag (depth, dev) из ТОГО ЖЕ config/ote_setups.yaml, что ote_signal_generator.
+# Единый OTE-калькулятор → snapshot и торговля не расходятся (см. bug_ote_impulse_period5).
+_ZZ_PARAMS: Optional[Dict[str, Any]] = None
+
+
+def _zz_params(tf: str) -> tuple:
+    global _ZZ_PARAMS
+    if _ZZ_PARAMS is None:
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config" / "ote_setups.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            _ZZ_PARAMS = cfg.get("zigzag_params", {}) or {}
+        except Exception:
+            _ZZ_PARAMS = {}
+    p = _ZZ_PARAMS.get(tf) or {}
+    return int(p.get("depth") or 11), float(p.get("dev") or 3.0)
 
 # Приоритет TF для выбора swing high/low и Fibonacci (старший → младший)
 _TF_PRIORITY = ["1w", "1d", "4h", "1h", "15m", "5m", "3m"]
@@ -202,50 +222,46 @@ def build_smc_snapshot(
     ote_direction: Optional[str] = None  # DEV-209: "LONG" | "SHORT" — направление импульса
     ote_tf: Optional[str] = None         # senior TF на котором посчитан OTE
 
-    if senior_tf is not None and senior_tf in structures_by_tf:
+    if senior_tf is not None and senior_tf in ohlcv_by_tf:
         df_sr = ohlcv_by_tf[senior_tf]
-        try:
-            struct_sr = structures_by_tf[senior_tf]
+        bars_sr = len(df_sr)
+        # swing_high/low (метки для отображения) — из structure (period=5 ок для меток)
+        struct_sr = structures_by_tf.get(senior_tf)
+        if struct_sr is not None:
             sa = struct_sr.swing_analysis
-            bars_sr = len(df_sr)
             if sa.last_high is not None:
-                swing_high = {
-                    "tf": senior_tf,
-                    "price": sa.last_high.value,
-                    "age_bars": max(0, bars_sr - 1 - int(sa.last_high.index)),
-                }
+                swing_high = {"tf": senior_tf, "price": sa.last_high.value,
+                              "age_bars": max(0, bars_sr - 1 - int(sa.last_high.index))}
             if sa.last_low is not None:
-                swing_low = {
-                    "tf": senior_tf,
-                    "price": sa.last_low.value,
-                    "age_bars": max(0, bars_sr - 1 - int(sa.last_low.index)),
-                }
-            # Направление импульса: что свежее — high или low
-            if sa.last_high is not None and sa.last_low is not None:
-                impulse_high = sa.last_high.value
-                impulse_low = sa.last_low.value
-                if impulse_high > impulse_low:
-                    direction = "LONG" if sa.last_high.index > sa.last_low.index else "SHORT"
-                    ote_direction = direction
-                    ote_tf = senior_tf
-                    fib_levels = _calc_fib_levels(impulse_high, impulse_low, direction)
+                swing_low = {"tf": senior_tf, "price": sa.last_low.value,
+                             "age_bars": max(0, bars_sr - 1 - int(sa.last_low.index))}
+        # OTE — ЕДИНЫЙ источник: zigzag (как ote_signal_generator торгует), НЕ period=5.
+        # Устраняет дрейф snapshot↔торговля (bug_ote_impulse_period5): импульс берётся
+        # от значимого CHoCH-слома (zigzag_atr), а не от последних мелких свингов.
+        try:
+            depth, dev = _zz_params(senior_tf)
+            ote_setups = ote_retest_setups(df_sr, depth=depth, dev_mult=dev,
+                                           only_choch=False, provisional=True)
+            if ote_setups:
+                h = ote_setups[-1]
+                lo_o, hi_o = h["ote"]
+                lo, hi = min(lo_o, hi_o), max(lo_o, hi_o)
+                ote_direction = "LONG" if str(h.get("direction")).lower() == "long" else "SHORT"
+                ote_tf = senior_tf
+                price_in_ote = lo <= current_price <= hi
+                frm, to = h.get("from"), h.get("to")   # импульс (idx, price)
+                if frm is not None and to is not None:
+                    impulse_low = float(min(frm[1], to[1]))
+                    impulse_high = float(max(frm[1], to[1]))
+                    fib_levels = _calc_fib_levels(impulse_high, impulse_low, ote_direction)
                     diff = impulse_high - impulse_low
                     if diff > 0:
-                        if direction == "LONG":
-                            current_retracement = round(
-                                (impulse_high - current_price) / diff * 100.0, 2
-                            )
+                        if ote_direction == "LONG":
+                            current_retracement = round((impulse_high - current_price) / diff * 100.0, 2)
                         else:
-                            current_retracement = round(
-                                (current_price - impulse_low) / diff * 100.0, 2
-                            )
-                        ote_top = fib_levels.get(f"{_OTE_TOP_RATIO:.3f}")
-                        ote_bot = fib_levels.get(f"{_OTE_BOT_RATIO:.3f}")
-                        if ote_top is not None and ote_bot is not None:
-                            lo, hi = min(ote_top, ote_bot), max(ote_top, ote_bot)
-                            price_in_ote = lo <= current_price <= hi
+                            current_retracement = round((current_price - impulse_low) / diff * 100.0, 2)
         except Exception as e:
-            logger.debug("[SMC_SNAP] %s senior_tf(%s) error: %s", symbol, senior_tf, e)
+            logger.debug("[SMC_SNAP] %s ote_retest_setups(%s) error: %s", symbol, senior_tf, e)
 
     # ARCH-120: EQH/EQL liquidity pools на senior TF (магниты для TPSelector/ARCH-122)
     eqh_level: Optional[float] = None

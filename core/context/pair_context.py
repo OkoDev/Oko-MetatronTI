@@ -124,6 +124,21 @@ class PairState:
     active_divergence: Optional[Dict] = None  # активная дивергенция (если есть)
     anomaly_active: bool = False
 
+    # ── OTE LTF (ote_nested) — 5m триггер для вотчлиста/ручной торговли ──
+    # ARCH-128: observability. ote_observer пишет ARMED (зреет) / FIRE (выстрел)
+    # с полными вводными — чтобы пользователь видел сигнал ЗАРАНЕЕ и мог войти руками.
+    ote_ltf_status: Optional[str] = None           # ARMED / FIRE / None
+    ote_ltf_score: int = 0                          # conf_score (набрано подтверждений)
+    ote_ltf_min: int = 3                            # min_confirmations (порог выстрела)
+    ote_ltf_direction: Optional[str] = None         # long / short
+    ote_ltf_trigger: Optional[str] = None           # FVG / OB / EQL / SC
+    ote_ltf_entry: Optional[float] = None           # цена входа
+    ote_ltf_sl: Optional[float] = None              # стоп-лосс
+    ote_ltf_tp1: Optional[float] = None             # частичный +1R
+    ote_ltf_tp: Optional[float] = None              # финальная цель (runner)
+    ote_ltf_setup: Optional[str] = None             # setup_id из шкафа
+    ote_ltf_time: Optional[datetime] = None
+
     # ── Сфера 8: Pivot Levels ───────────────────────────────────────────
     pivot_snap: Optional[Dict[str, Any]] = None   # {1W: {PP, S1, ...}, 1D: {...}}
     near_pivot: Optional[Dict] = None              # {level, source, distance_pct}
@@ -374,6 +389,17 @@ class PairContextBus:
             "last_signal_strength":  state.last_signal_strength,
             "active_divergence":     state.active_divergence,
             "anomaly_active":        state.anomaly_active,
+            # OTE LTF (ote_nested 5m trigger)
+            "ote_ltf_status":    state.ote_ltf_status,
+            "ote_ltf_score":     state.ote_ltf_score,
+            "ote_ltf_min":       state.ote_ltf_min,
+            "ote_ltf_direction": state.ote_ltf_direction,
+            "ote_ltf_trigger":   state.ote_ltf_trigger,
+            "ote_ltf_entry":     state.ote_ltf_entry,
+            "ote_ltf_sl":        state.ote_ltf_sl,
+            "ote_ltf_tp1":       state.ote_ltf_tp1,
+            "ote_ltf_tp":        state.ote_ltf_tp,
+            "ote_ltf_setup":     state.ote_ltf_setup,
             # Сфера 8
             "near_pivot":        state.near_pivot,
             # Сфера 9
