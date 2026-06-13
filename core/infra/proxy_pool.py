@@ -134,12 +134,18 @@ class ProxyPool:
 
 
 def build_proxy_pool(config) -> Optional[ProxyPool]:
-    """Фабрика из config. Возвращает None если выключено/пусто (→ работа без прокси, как сейчас)."""
+    """Фабрика из config. Возвращает None если выключено/пусто (→ работа без прокси, как сейчас).
+    Прокси: config.proxy_pool.proxies ИЛИ env PROXY_LIST (url1,url2,... — пароли НЕ в git)."""
     if not config.get("proxy_pool.enabled", False):
         return None
     proxies = config.get("proxy_pool.proxies", []) or []
     if not proxies:
-        logger.info("[ProxyPool] enabled, но список proxies пуст — работаем direct")
+        import os
+        env_list = os.getenv("PROXY_LIST", "")
+        if env_list:
+            proxies = [p.strip() for p in env_list.split(",") if p.strip()]
+    if not proxies:
+        logger.info("[ProxyPool] enabled, но список proxies пуст (config + PROXY_LIST) — работаем direct")
         return None
     return ProxyPool(
         proxies=proxies,

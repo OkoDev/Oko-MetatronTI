@@ -330,7 +330,7 @@ class ApiEngine:
     6. Запись в кеш при успехе
     """
 
-    def __init__(self, exchange, semaphore_size: int = 8, rps: float = 8.0):
+    def __init__(self, exchange, semaphore_size: int = 8, rps: float = 8.0, proxy_pool=None):
         self._exchange = exchange
         self._cache = OhlcvCache(maxsize=5000)
         self._cb = CircuitBreaker(threshold=10, timeout=60.0)
@@ -340,6 +340,10 @@ class ApiEngine:
         self._rate_limiter = get_global_rate_limiter(rps=rps)
         # In-flight dedup: (symbol, timeframe, limit) → asyncio.Future
         self._in_flight: dict[tuple, asyncio.Future] = {}
+        # PROXY-NODE: пул прокси для market-data (обход per-IP RPS). None = direct (как было).
+        self._proxy_pool = proxy_pool
+        if proxy_pool:
+            logger.info("[ApiEngine] ProxyPool активен: %d прокси для market-data", proxy_pool.size)
 
     async def fetch_ohlcv(
         self,
@@ -431,9 +435,35 @@ class ApiEngine:
                 # Rate limiter: ждём свою очередь (token bucket + глобальный бан)
                 await self._rate_limiter.acquire()
                 async with self._sem:
-                    candles = await self._exchange.fetch_ohlcv(
-                        symbol, timeframe=timeframe, limit=limit, since=since
-                    )
+                    if self._proxy_pool is not None:
+                        # PROXY-NODE: market-data через пул прокси (обход per-IP RPS).
+                        import time as _t
+                        _pxurl = await self._proxy_pool.acquire()  # None = direct fallback
+                        _t0 = _t.monotonic()
+                        try:
+                            # race на aiohttp_proxy НЕ портит данные (любой прокси = тот же BingX-OHLCV),
+                            # меняется лишь выходной IP → параллелизм сохранён (3× RPS), без lock.
+                            self._exchange.aiohttp_proxy = _pxurl
+                            candles = await self._exchange.fetch_ohlcv(
+                                symbol, timeframe=timeframe, limit=limit, since=since)
+                            self._proxy_pool.release(_pxurl, ok=True)
+                            # throttled INFO-лог (каждый 25-й) — видно латентность прокси без спама
+                            self._proxy_log_n = getattr(self, "_proxy_log_n", 0) + 1
+                            if self._proxy_log_n % 25 == 0:
+                                _ipshort = (_pxurl or "direct").split("@")[-1]
+                                logger.info("[PROXY] %s %s via %s: %.0fms | pool=%s",
+                                            symbol, timeframe, _ipshort,
+                                            (_t.monotonic() - _t0) * 1000, self._proxy_pool.stats()["alive"])
+                        except Exception as _pe:
+                            self._proxy_pool.release(_pxurl, ok=False)
+                            _ipshort = (_pxurl or "direct").split("@")[-1]
+                            logger.warning("[PROXY] %s %s via %s: FAIL %s: %s",
+                                            symbol, timeframe, _ipshort, type(_pe).__name__, str(_pe)[:50])
+                            raise
+                    else:
+                        candles = await self._exchange.fetch_ohlcv(
+                            symbol, timeframe=timeframe, limit=limit, since=since
+                        )
                 if not candles:
                     return None
                 df = pd.DataFrame(

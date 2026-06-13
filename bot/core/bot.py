@@ -48,10 +48,15 @@ class TradingAlertBot:
         self.dp = Dispatcher(storage=self.storage)
 
         self.subscription_manager = SubscriptionManager()
+        # PROXY-NODE: пул прокси для market-data (None если выключено/.env пуст → direct как было)
+        from core.infra.proxy_pool import build_proxy_pool
+        _proxy_pool = build_proxy_pool(config)
         self.data_collector = RealTimeData(
             exchange_id=config.get("exchanges.default", "bingx"),
-            api_semaphore_size=int(config.get("performance.api_semaphore_size", 5)),
-            api_rps=float(config.get("performance.api_rps", 8.0)),
+            # config.perf: при proxy on → proxy_pool.overrides (rps=100/sem=30), иначе performance.* база
+            api_semaphore_size=int(config.perf("api_semaphore_size", 5)),
+            api_rps=float(config.perf("api_rps", 8.0)),
+            proxy_pool=_proxy_pool,
         )
         self.divergence_detector = DivergenceDetector()
         self.pivot_calculator = PivotCalculatorFixed(

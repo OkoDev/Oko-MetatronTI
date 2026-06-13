@@ -1255,7 +1255,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     затем broadcast СНАРУЖИ семафора — analyze_symbol не блокирует OHLCV-слоты."""
     from bot.monitoring import _broadcast_intelligence_alert, _div_passes_filters
 
-    scan_sem_size = int(bot.config.get("performance.scan_semaphore_size", 20))
+    # config.perf: при proxy on → proxy_pool.overrides.scan_semaphore_size (15), иначе performance (5)
+    scan_sem_size = int(bot.config.perf("scan_semaphore_size", 20))
     sem = asyncio.Semaphore(scan_sem_size)
     cycle_start = _time.monotonic()
 

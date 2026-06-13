@@ -24,7 +24,8 @@ _DEFAULT_TTL = 60
 
 
 class RealTimeData:
-    def __init__(self, exchange_id="bingx", api_semaphore_size: int = 5, api_rps: float = 8.0):
+    def __init__(self, exchange_id="bingx", api_semaphore_size: int = 5, api_rps: float = 8.0,
+                 proxy_pool=None):
         self.exchange_id = exchange_id.lower()
         self.exchange = getattr(ccxt, exchange_id)({
             "enableRateLimit": False,   # ApiEngine управляет rate limiting сам
@@ -45,7 +46,8 @@ class RealTimeData:
         self.usdt_pairs = []
         self.is_running = False
         # ApiEngine: LRU cache + retry + circuit breaker + rate limiter + in-flight dedup
-        self._engine = ApiEngine(self.exchange, semaphore_size=api_semaphore_size, rps=api_rps)
+        self._engine = ApiEngine(self.exchange, semaphore_size=api_semaphore_size, rps=api_rps,
+                                 proxy_pool=proxy_pool)
         # Алиас для обратной совместимости (код, который напрямую обращается к _ohlcv_cache)
         self._ohlcv_cache = self._engine._cache._data
         # DEV-81: кеш funding rates {symbol: (rate, fetched_at)}

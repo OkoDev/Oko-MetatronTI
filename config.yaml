@@ -383,7 +383,7 @@ signal_quality:
   sl_cooldown_ignore_sources:
     anomaly: [wt_sideways]
   dedup_minutes: 30
-  min_volume_usd: 5000000  # 09.06 ВЕРНУЛИ 5M после каскадного перегруза: гейт снят (0) → 531 пара → 468 OPEN → последовательный check_open захлебнулся (~12мин/цикл) → 186 зомби-сделок >8ч не закрывались. ЭКСПЕРИМЕНТ ПРИОСТАНОВЛЕН до OPS-05 (параллелизация check_open). Вывод: инфра НЕ тянет 531 пару без параллельного цикла. Повторить эксперимент LIQ-GATE после OPS-05. [[liq_gate_experiment]]
+  min_volume_usd: 5000000  # 13.06 СНЯТ для PROXY-теста при 500+ пар (OPS-05 закрыт → check_open параллельный). МОНИТОРИТЬ зомби/check_open. Откат 5000000  # 09.06 ВЕРНУЛИ 5M после каскадного перегруза: гейт снят (0) → 531 пара → 468 OPEN → последовательный check_open захлебнулся (~12мин/цикл) → 186 зомби-сделок >8ч не закрывались. ЭКСПЕРИМЕНТ ПРИОСТАНОВЛЕН до OPS-05 (параллелизация check_open). Вывод: инфра НЕ тянет 531 пару без параллельного цикла. Повторить эксперимент LIQ-GATE после OPS-05. [[liq_gate_experiment]]
   min_strength: 50
   # ARCH-88: Per-pair Loss Memory — блок регистрации при серии SL подряд.
   # Защита от сценария API3 (8 SL без автоматической остановки).
@@ -477,7 +477,7 @@ detectors:
     strength_counter_multiplier: 8
 performance:
   check_open_semaphore: 15  # OPS-05: параллелизм check_open (старт 15 → тест → 20)
-  scan_semaphore_size: 5   # 26.05: 10→6 при BingX DEGRADED — освободить event loop для dashboard
+  scan_semaphore_size: 5   # базовый (proxy off → proxy_pool.overrides переключает)
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
@@ -486,8 +486,8 @@ performance:
   # 12.06 A/B: 30→40 дал лишь +5% (цикл 115→109с) НО поймал GlobalRateLimiter бан 5с (40 задел
   # потолок 50). Откат на 35 (компромисс): чуть быстрее 30, реже throttle чем 40. Вывод: один IP
   # near-optimal ~30-35, реальный кратный буст = PROXY-NODE (новые IP = новые RPS-бюджеты).
-  api_rps: 35
-  api_semaphore_size: 10
+  api_rps: 35   # базовый (proxy off). При proxy on → proxy_pool.overrides.api_rps=100
+  api_semaphore_size: 10   # базовый (proxy off → proxy_pool.overrides переключает)
   ohlcv_scan_limit: 161
   # D-055 откатан (пороги обратно). Реальный fix — sequential TF fetch в scan_loop.
   ohlcv_slow_threshold_sec: 8.0
@@ -510,6 +510,23 @@ performance:
   ws_batch_start_delay_sec: 5.0    # пауза между стартом батчей (был 2)
   ws_reconnect_base_delay_sec: 5.0 # × consecutive_errors, max 60
   ws_ohlcv_error_pause_sec: 1.0    # пауза после OHLCV error per-symbol
+
+# PROXY-NODE (13.06): пул прокси для market-data (обход per-IP RPS-лимита BingX).
+# 3 Singapore прокси через VPN → 3 разных выходных IP к BingX = +RPS-бюджет.
+# 🔴 ТОЛЬКО public OHLCV/tickers. Торговля — direct IP (ключ↔whitelist). Прокси в .env (PROXY_LIST).
+proxy_pool:
+  enabled: true             # PROXY-тест при 500+ пар (гейт объёма снят 13.06)
+  proxies: []               # пусто → PROXY_LIST из .env (пароли не в git)
+  rps_per_proxy: 35.0       # готово к 500+ пар (3×35=105 RPS)
+  health_cooldown_sec: 30.0 # карантин мёртвого прокси (3 fails подряд)
+  # ПРОФИЛЬ: эти значения применяются ВМЕСТО performance.* когда enabled=true (через config.perf()).
+  # Прокси-оптимизированные (3 IP → больше RPS/параллелизма). enabled=false → performance.* базовые.
+  # Один флаг enabled переключает весь профиль — не править параметры руками.
+  overrides:
+    api_rps: 100            # 3 IP × ~33 RPS (vs base 35 на 1 IP)
+    scan_semaphore_size: 15 # больше параллелизма (латентность прокси ~1с компенсируется)
+    api_semaphore_size: 30
+
 strategy:
   name: multi_signal
   multi_signal:

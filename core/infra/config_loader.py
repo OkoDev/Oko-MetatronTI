@@ -160,7 +160,17 @@ class ConfigLoader:
             return value
         except (KeyError, TypeError):
             return default
-    
+
+    def perf(self, key: str, default: Any = None) -> Any:
+        """PROXY-NODE профиль: если proxy_pool.enabled → берёт proxy_pool.overrides.<key>
+        (прокси-оптимизированные rps/semaphore), иначе performance.<key> (базовые).
+        Один флаг proxy_pool.enabled переключает весь профиль — не править параметры руками."""
+        if self.get("proxy_pool.enabled", False):
+            ov = self.get(f"proxy_pool.overrides.{key}")
+            if ov is not None:
+                return ov
+        return self.get(f"performance.{key}", default)
+
     def get_telegram_token(self) -> str:
         """Получает токен Telegram бота"""
         return self.get("telegram.token", "")
