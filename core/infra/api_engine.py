@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections import OrderedDict
 from typing import Optional
@@ -261,49 +262,52 @@ class GlobalRateLimiter:
     def __init__(self, rps: float = 8.0):
         self._rps = rps
         self._interval = 1.0 / rps  # мин. интервал между запросами
-        self._lock = asyncio.Lock()
+        # ⚡ B-эпик шаг 0 (13.06): threading.Lock вместо asyncio.Lock → loop-agnostic
+        # (работает из любого event loop; обязательно для изоляции торгового loop, PERF-LOOP-DRIFT).
+        # Лок держится ТОЛЬКО на арифметику резервации слота (мкс), asyncio.sleep — ВНЕ лока.
+        # Бан через _ban_until (monotonic deadline), проверяется в acquire — без asyncio.Event/
+        # ensure_future (они привязаны к loop → cross-loop crash). Прототип валидирован
+        # scripts/test_rate_limiter_crossloop.py (4/4: shared RPS, cross-loop ban, single-loop parity).
+        self._lock = threading.Lock()
         self._last_request = 0.0
-        # Глобальная пауза при бане
         self._ban_until = 0.0
-        self._ban_event = asyncio.Event()
-        self._ban_event.set()  # изначально не заблокирован
 
     async def acquire(self) -> None:
-        """Ждёт свою очередь с учётом rate limit и глобального бана."""
-        # Ждём окончания глобального бана
-        await self._ban_event.wait()
+        """Ждёт свою очередь с учётом rate limit и глобального бана. Loop-agnostic."""
+        # Ждём окончания глобального бана (вне лока — чтобы не держать его во время sleep)
+        while True:
+            with self._lock:
+                remaining = self._ban_until - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(remaining, 0.1))
 
-        async with self._lock:
+        # Резервируем слот (lock на микросекунды — только арифметика)
+        with self._lock:
             now = time.monotonic()
-            # Если бан ещё активен (другой корутин поставил)
-            wait_ban = self._ban_until - now
-            if wait_ban > 0:
-                await asyncio.sleep(wait_ban)
+            ban_wait = self._ban_until - now
+            if ban_wait > 0:
+                sleep_for = ban_wait
+                slot_time = now + ban_wait
+            else:
+                next_slot = max(self._last_request + self._interval, now)
+                sleep_for = next_slot - now
+                slot_time = next_slot
+            self._last_request = slot_time
 
-            # Token bucket: выдерживаем минимальный интервал
-            elapsed = time.monotonic() - self._last_request
-            if elapsed < self._interval:
-                await asyncio.sleep(self._interval - elapsed)
-            self._last_request = time.monotonic()
+        if sleep_for > 0:
+            await asyncio.sleep(sleep_for)
 
     def set_ban(self, duration_sec: float) -> None:
-        """Устанавливает глобальную паузу для ВСЕХ запросов."""
-        now = time.monotonic()
-        new_until = now + duration_sec
-        if new_until > self._ban_until:
-            self._ban_until = new_until
-            self._ban_event.clear()
-            logger.warning(
-                "🚫 GlobalRateLimiter: глобальный бан на %.0f сек (все запросы приостановлены)",
-                duration_sec,
-            )
-            # Запускаем фоновую задачу для снятия бана
-            asyncio.ensure_future(self._unban_after(duration_sec))
-
-    async def _unban_after(self, duration: float) -> None:
-        await asyncio.sleep(duration)
-        self._ban_event.set()
-        logger.info("✅ GlobalRateLimiter: бан снят, запросы возобновлены")
+        """Глобальная пауза для ВСЕХ запросов (thread-safe, без asyncio — cross-loop safe)."""
+        with self._lock:
+            new_until = time.monotonic() + duration_sec
+            if new_until > self._ban_until:
+                self._ban_until = new_until
+                logger.warning(
+                    "🚫 GlobalRateLimiter: глобальный бан на %.0f сек (все запросы приостановлены)",
+                    duration_sec,
+                )
 
 
 # Глобальный экземпляр rate limiter (один на весь процесс)

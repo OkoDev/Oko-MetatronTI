@@ -4,6 +4,32 @@
 
 ---
 
+## [13.06.2026 ~19:00 UTC] Агент: Даат (Opus 4.8) — PERF-LOOP-DRIFT B-эпик: шаг 0 готов
+
+### B-эпик спроектирован (bot-arch + рой 7/7 + DS)
+План: `docs/PLAN_PERF_LOOP_DRIFT_B.md`. Изоляция торгового loop в отдельный поток → торговый rtt не зависит от числа пар (критично при 500+). Блокер: GlobalRateLimiter shared cross-loop.
+- **Рой:** направление верно, но шаг 2 = deadlock-риск через sqlite3 + предложил janus.Queue single-worker вместо wrap_future 30 callsites. _ban_until process-wide.
+- **DS:** прототип CrossLoopRateLimiter + unit-тест 4/4. EXEC-WS listenKey вне IP-бюджета (шаг 4 fix).
+
+### ✅ Шаг 0 РЕАЛИЗОВАН (`core/infra/api_engine.py:254-300`)
+GlobalRateLimiter: `asyncio.Lock` → `threading.Lock` (loop-agnostic). Бан через `_ban_until` deadline (убраны `_ban_event`/`_unban_after`/`ensure_future`). Лок только на арифметику (мкс), `asyncio.sleep` вне лока. **Cross-loop тест на боевом коде 3/3:** 10.1 rps shared (единый IP-бюджет), ban cross-loop, single-loop parity (2.9s = идентично старому). +`import threading`.
+**Безопасность:** применится при рестарте; бот сейчас в одном loop → старый путь до рестарта, идентично ([c] parity). Обратно-совместим.
+
+### 🔴 Отдано DS (перед шагом 2)
+- **PERF-LOOP-B-DEADLOCK**: аудит БД-вызовов в торговом пути (sqlite3 cross-loop deadlock).
+
+### 🔄 Следующее (после DS-аудита)
+- Шаг 1: торговый loop за флагом `trading.dedicated_loop`. Шаг 2: janus.Queue (рой) vs wrap_future (bot-arch) — решить после deadlock-аудита. Шаги 3-5: tsl/EXEC-WS(+listenKey)/LIVE после 24ч VST.
+
+---
+
+## [13.06.2026 ~14:00 UTC] Агент: Даат (Opus 4.8) — Наведение порядка в TASKS.md
+
+- ✅ Сделано: TASKS.md 502→375 строк (−25%). Скрипт `scripts/tasks_tidy.py` (консервативная классификация ✅ по статус-колонке заголовка, перенос только «чистых» ✅): **106 закрытых карточек → TASKS-ARCHIVE.md** (секция «Перенесено 13.06», полные карточки). Убраны пустые строки внутри таблиц (рвали markdown-рендер), удалена опустевшая секция DS-MAINTENANCE. «Горячие ✅ с пояснением» (REGIME-V2/OPS-06-qty/C-01/PIVOT-GRAVITY — ждут рестарта/мониторятся) ОСТАВЛЕНЫ намеренно. Sanity: 0 утечки активных. Бэкап `TASKS.md.bak`.
+- ⚠️ Осталось (опц., не выбрано юзером): гигантские ячейки активных (OPS-06/ARCH-129-FLOW/DEV-144) нарушают `feedback_tasks_vs_discussion` — детали вынести в DISCUSSION; 2 схемы колонок не унифицированы.
+
+---
+
 ## [13.06.2026 ~13:15 UTC] Агент: Даат (Opus 4.8) — PERF-LOOP-DRIFT (event-loop конкуренция → DRIFT 118)
 
 ### Диагноз (ДОКАЗАН замером + корреляцией)
