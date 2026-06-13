@@ -450,12 +450,23 @@ class TradeSimulator:
             # DEV-157: guard аномально малого SL (ASR R=-450 при sl_dist=0.002%)
             if stop_loss is not None and entry is not None and entry > 0:
                 _sl_dist_raw = abs(float(entry) - float(stop_loss))
+                # OTE-RBUG (14.06): валидация СТОРОНЫ SL до проверки расстояния.
+                # Инвертный SL (LONG sl>=entry / SHORT sl<=entry) → R/position_size взрыв.
+                _dir_s = _direction_str(direction).upper()
+                _ef = float(entry); _slf = float(stop_loss)
+                if (_dir_s in ("LONG", "BUY") and _slf >= _ef) or (_dir_s in ("SHORT", "SELL") and _slf <= _ef):
+                    logger.warning(
+                        "TradeSimulator: [OTE-RBUG] пропуск %s %s — SL на неверной стороне (entry=%.6f SL=%.6f)",
+                        _dir_s, symbol, _ef, _slf,
+                    )
+                    if _reason_out is not None: _reason_out.append(f"OTE-RBUG:sl_wrong_side:entry={_ef:.6f},sl={_slf:.6f}")
+                    return None
                 if _sl_dist_raw > 0:
                     try:
                         from core.infra.config_loader import config as _cfg_sl
-                        MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
+                        MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.5))
                     except Exception:
-                        MIN_SL_DIST_PCT = 0.1
+                        MIN_SL_DIST_PCT = 0.5
                     _sl_dist_pct = _sl_dist_raw / float(entry) * 100
                     if _sl_dist_pct < MIN_SL_DIST_PCT:
                         logger.warning(

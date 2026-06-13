@@ -341,7 +341,7 @@ sl_tp_engine:
     - TREND_UP
     - TREND_DOWN
   max_positions_per_direction: 0  # 27.05.2026: DEV-14 hard guard отключён (актуальность утеряна — есть circuit_breaker, RI v1, TSL, ARCH-88 Loss Memory). Soft penalty correlation_guard.py остаётся.
-  min_sl_dist_pct: 0.3    # DEV-157: пропуск если SL < 0.1% от entry (защита от R=-450)
+  min_sl_dist_pct: 0.5    # OTE-RBUG (14.06): 0.3→0.5 (рой 7/7 + DS аудит). SL<0.5% → position_size взрыв (risk/0.001=1000×) → 1 убыток ест 10 прибыльных → баланс падает при +R в SIM. Защита от R-взрыва + size-взрыва. Откат: 0.3
   sl_tp:
     atr_multiplier: 1.0
     sl_min_pct: 0.5
