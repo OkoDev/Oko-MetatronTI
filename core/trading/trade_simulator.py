@@ -899,8 +899,8 @@ class TradeSimulator:
                      sl_source, tp_source, strategy_name, tsl_tf, decision_trace_json,
                      original_sl, source_router,
                      magnet_tp_price, magnet_tp_rr, magnet_tp_src, regime_v2,
-                     account_id, execution_mode, exchange)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     account_id, execution_mode, exchange, total_fee)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         symbol,
@@ -934,6 +934,7 @@ class TradeSimulator:
                         _account_id,    # ARCH-DB-V2 Ф1
                         _exec_mode,     # SIM/VST/LIVE (режим бота на момент создания)
                         "bingx",        # Ф2 нормализует в exchange_id
+                        0.0,            # total_fee: заполняется при close_trade (qty×entry×0.1%)
                     ),
                 )
                 trade_id = cursor.lastrowid
@@ -1496,13 +1497,13 @@ class TradeSimulator:
             with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type, original_sl FROM simulated_trades WHERE id = ? AND status = ?",
+                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type, original_sl, qty FROM simulated_trades WHERE id = ? AND status = ?",
                     (trade_id, STATUS_OPEN),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return False
-                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db, original_sl_db = row
+                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db, original_sl_db, qty_db = row
                 strategy_type_db = str(strategy_type_db or "SINGLE")
                 entry = float(entry)
                 sl = float(sl) if sl is not None else None
@@ -1588,16 +1589,20 @@ class TradeSimulator:
                 except Exception:
                     duration_minutes = None
 
+                # комиссия round-trip: qty × entry × 0.1% (только VST-сделки с реальным qty)
+                total_fee = round(float(qty_db) * entry * 0.001, 4) if qty_db else 0.0
+
                 cursor.execute(
                     """
                     UPDATE simulated_trades
                     SET status = ?, exit_price = ?, profit_pct = ?, R_multiple = ?,
-                        closed_at = ?, duration_minutes = ?, max_R_possible = ?, captured_R_pct = ?
+                        closed_at = ?, duration_minutes = ?, max_R_possible = ?, captured_R_pct = ?,
+                        total_fee = ?
                     WHERE id = ?
                     """,
                     (status, exit_price, profit_pct, r_multiple,
                      closed_at.isoformat(), duration_minutes,
-                     max_R_possible, captured_R_pct, trade_id),
+                     max_R_possible, captured_R_pct, total_fee, trade_id),
                 )
                 conn.commit()
             logger.info(f"TradeSimulator: закрыта сделка id={trade_id} {status} exit={exit_price:.4f} R={r_multiple}")

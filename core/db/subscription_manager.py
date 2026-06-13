@@ -147,6 +147,7 @@ class SubscriptionManager:
                 ("account_id", "INTEGER DEFAULT 1"),       # суб-аккаунт (1/2/...); старые сделки=1
                 ("execution_mode", "TEXT DEFAULT 'SIM'"),  # SIM/VST/LIVE — явно, не через NULL
                 ("exchange", "TEXT DEFAULT 'bingx'"),      # биржа (Ф2 нормализует в exchange_id)
+                ("total_fee", "REAL DEFAULT 0"),           # 13.06: комиссия round-trip (qty×entry×0.1%), заполняется при close_trade
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")
