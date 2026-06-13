@@ -488,7 +488,7 @@ performance:
   # near-optimal ~30-35, реальный кратный буст = PROXY-NODE (новые IP = новые RPS-бюджеты).
   api_rps: 35   # базовый (proxy off). При proxy on → proxy_pool.overrides.api_rps=100
   api_semaphore_size: 10   # базовый (proxy off → proxy_pool.overrides переключает)
-  ohlcv_scan_limit: 161
+  ohlcv_scan_limit: 250
   # D-055 откатан (пороги обратно). Реальный fix — sequential TF fetch в scan_loop.
   ohlcv_slow_threshold_sec: 8.0
   divergence_slow_threshold_sec: 3.0

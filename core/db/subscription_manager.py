@@ -154,6 +154,52 @@ class SubscriptionManager:
                 except Exception:
                     pass  # колонка уже существует
 
+            # ARCH-DB-V2 Ф2: справочники бирж и аккаунтов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS exchanges (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name       TEXT NOT NULL UNIQUE,
+                    is_active  INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("INSERT OR IGNORE INTO exchanges (id, name) VALUES (1, 'bingx')")
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id          INTEGER PRIMARY KEY,
+                    exchange_id INTEGER REFERENCES exchanges(id),
+                    name        TEXT,
+                    api_env     TEXT DEFAULT 'vst',
+                    is_active   INTEGER DEFAULT 1,
+                    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            for _aid, _aname in [(1, 'VST-Main'), (2, 'VST-Sub')]:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO accounts (id, exchange_id, name, api_env) VALUES (?, 1, ?, 'vst')",
+                    (_aid, _aname),
+                )
+
+            # ARCH-DB-V2 Ф2: current-state открытых позиций (PK account+symbol+side)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS positions (
+                    account_id     INTEGER NOT NULL,
+                    symbol         TEXT NOT NULL,
+                    side           TEXT NOT NULL,
+                    qty            REAL,
+                    entry_price    REAL,
+                    unrealized_pnl REAL,
+                    margin         REAL,
+                    updated_at     TEXT,
+                    PRIMARY KEY (account_id, symbol, side)
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_positions_account "
+                "ON positions(account_id, updated_at)"
+            )
+
             # ARCH-DB-V2 Ф1: история equity по аккаунтам (решает «движение баланса»)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS balance_snapshots (

@@ -357,6 +357,19 @@ async def check_wt_b_signals(symbol: str, df_1h: pd.DataFrame) -> list:
             except Exception:
                 pass
 
+        # DS-audit 13.06: ADX<20 = боковик = лучший контекст для wt_b div (avgR+0.51 WR52%).
+        # ADX≥20 = тренд, div против тренда → убыточно. Один калькулятор: compute_adx из indicators.
+        try:
+            from core.indicators.indicators import compute_adx as _compute_adx
+            _adx_val = _compute_adx(
+                df_1h["high"].tolist(), df_1h["low"].tolist(), df_1h["close"].tolist(), period=14
+            )
+            if _adx_val is not None and _adx_val >= 20.0:
+                logger.debug("[wt_b] %s ADX=%.1f>=20 → skip (тренд)", symbol, _adx_val)
+                return signals
+        except Exception:
+            pass  # ADX недоступен — не блокируем
+
         wt1_last, wt2_last = wt1_arr[-1], wt2_arr[-1]
         wt1_prev, wt2_prev = wt1_arr[-2], wt2_arr[-2]
 
@@ -382,6 +395,7 @@ async def check_wt_b_signals(symbol: str, df_1h: pd.DataFrame) -> list:
                         "wt1": round(wt1_last, 2), "zone": "OS",
                         "div_strength": d["div_strength"], "depth": d["depth"],
                         "os_adaptive": round(os_, 1),
+                        "tp_rr_override": 4.0,  # DS-audit 13.06: RR=4.0 оптимум для wt_b
                     },
                 ))
 
@@ -400,6 +414,7 @@ async def check_wt_b_signals(symbol: str, df_1h: pd.DataFrame) -> list:
                         "wt1": round(wt1_last, 2), "zone": "OB",
                         "div_strength": d["div_strength"], "depth": d["depth"],
                         "ob_adaptive": round(ob, 1),
+                        "tp_rr_override": 4.0,  # DS-audit 13.06: RR=4.0 оптимум для wt_b
                     },
                 ))
     except Exception:

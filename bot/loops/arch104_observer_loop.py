@@ -411,6 +411,14 @@ async def _try_register_vst_trade(
     if pattern is None:
         return
 
+    # DS-audit 13.06: arch104 LONG убыточен n=2422 → −56R, SHORT +1874R. Полный запрет LONG.
+    if direction == "LONG":
+        await record_drop(
+            symbol, "arch104_long_banned",
+            f"arch104 LONG заблокирован: data-audit 13.06 (n=2422 avgR<0)",
+        )
+        return
+
     sl_dist = abs(price - sl_price)
     if sl_dist <= 0:
         return
@@ -427,6 +435,15 @@ async def _try_register_vst_trade(
 
     # strength = производная от pattern.weight (10-19) → 60-95
     strength = max(60, min(95, 50 + int(getattr(pattern, "weight", 10)) * 2))
+
+    # DS-audit 13.06: strength<84 убыточен для arch104 SHORT. Порог 84.
+    if strength < 84:
+        await record_drop(
+            symbol, "arch104_low_strength",
+            f"arch104 strength={strength}<84 pattern={decision.pattern_id}",
+        )
+        return
+
     confidence = max(0.55, min(0.95, 0.55 + float(decision.risk_pct) * 0.1))
 
     # реальный 24h оборот (был хардкод 0.0 → ломал LIQ-GATE эксперимент: нечем split ликвид/неликвид)

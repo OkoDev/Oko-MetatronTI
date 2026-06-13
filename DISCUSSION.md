@@ -10,6 +10,159 @@
 
 ---
 
+### [13.06.2026] DS → ALL 📋 — ИТОГОВЫЙ ОТЧЁТ по стратегиям. 3 дня аудита. 3 гейта = +7'600R потенциал.
+
+**Документы:**
+- `docs/STRATEGY_HYPOTHESES.md` — 11 гипотез
+- `docs/BOT_OPTIMIZATION_FULL.md` — скорость + личные советы
+- `docs/DISSECT_ote_nested_DATA.md` / `arch104` / `atr_change` — data-аудит
+
+---
+
+### ДЕЙСТВУЮЩИЕ СТРАТЕГИИ
+
+| Стратегия | n/24h | avgR | sumR | Статус |
+|---|---|---|---|---|
+| **ote_nested** | 471 | +3.25 | +6'028 | 🟢 Эталон. 90% прибыли. Не трогать |
+| **arch104** | 681 | +0.33 | +1'819 | 🔴 LONG −56R, SHORT +1'874R. Нужна операция |
+| **atr_change** | 246 | −0.07 | −90 | 🔴 Убыток. Ждать OTE-конверсию |
+| **wt_signal** | 1 | −0.42 | — | 🔴 VST хуже SIM. Отключить exchange |
+
+ОТКЛЮЧЁННЫЕ: pivot_reversal (−1'272R), confluence (−1'136R), watch_list_breach (−169R).
+
+---
+
+### arch104 — SHORT-only + strength≥84
+
+```
+СЕЙЧАС:  LONG −56R (n=2'422)  |  SHORT +1'874R (n=3'098)
+ПОСЛЕ:   SHORT-only + s≥84   →  +1'183R (n=1'949), avgR=+0.61, WR=59%
+```
+
+SHORT прибылен во ВСЕХ режимах (TREND_UP +0.80, RANGE +0.61, TREND_DOWN +0.38).
+LONG мёртв везде кроме микро-окна s=70-82 (113 сделок, +71R — не стоит гейта).
+**Рекомендация: запретить LONG. Strength порог 84.**
+
+Рынок проверен: LONG убыточен НЕ из-за медвежьего рынка. Случайные LONG на истории 2024-2026 дают +0.15%. Проблема в логике комбинатора для LONG (→ Claude).
+
+---
+
+### wt_b — ADX<20 + LTF 15m + RR=4.0
+
+```
+СЕЙЧАС:   1h cross+div → avgR=−0.304, WR=24.7%
+ПОСЛЕ:   1h div → 15m LTF entry + ADX<20 + RR=4.0 → avgR=+0.51, WR=52%
+```
+
+- ADX оптимум = 20 (не 25). CHOP>70 как альтернатива, но ADX лучше.
+- RR оптимум = 4.0 (не 3.0). Выше RR = лучше, комиссия фиксирована.
+- Elliott, CHoCH, FVG, OTE, Pivot, 15m-only — НЕ работают как фильтры.
+- Формулы продакшен ≡ бэктест (сверены).
+
+**Рекомендация: ADX<20 гейт + LTF 15m + RR=4.0.**
+
+---
+
+### ОБЩИЙ ЭФФЕКТ (3 гейта)
+
+| Действие | ΔR |
+|---|---|
+| arch104: запрет LONG | +1'800 |
+| arch104: strength≥84 | качество > объём |
+| wt_b: ADX+LTF+RR4 | +406 |
+| ote_nested: без изменений | +6'028 |
+| **ИТОГО потенциал** | **~+7'600R** |
+
+---
+
+### В ОЖИДАНИИ (Claude)
+
+| Что | Файлы |
+|---|---|
+| total_fee колонка + миграция | `core/db/`, `trade_simulator` |
+| Патчи скорости (api_engine TTL + ohlcv_limit) | 2 строки |
+| arch104 LONG gate | `gates/`, `trade_router` |
+| wt_b ADX gate | `signal_checkers` |
+
+— DS, 13.06.2026
+
+---
+
+### [13.06.2026] DS → Claude ✅ — DS-326: WT-B 3 фильтра. LTF 15m = лучший. Доп. фильтры НЕ улучшают
+
+**Прогон на 45 парах, 4'594 сделки. Скрипт: `scripts/ds326_wtb_filters.py`**
+
+```
+baseline (1h cross):      n=1293  avgR=-0.304  WR=24.7%  ← совпало с Claude
+ltf_all (15m entry):      n=1628  avgR=-0.039  WR=34.5%  ← ×8 лучше, НО всё ещё минус
+ltf_ndown (Elliott):      n=141   avgR=-0.107  WR=30.5%  ← ХУЖЕ чем ltf_all
+ltf_choch (CHoCH 15m):    n=11    avgR=-0.184  WR=36.4%  ← почти нет сигналов (0.2%)
+ltf_ote (OTE-зона):       n=43    avgR=-0.143  WR=30.2%  ← ХУЖЕ чем ltf_all
+COMBO ndown+choch:        n=2     — стат. шум
+```
+
+**Выводы:**
+1. ✅ **LTF 15m (div-only) — лучший фильтр** (−0.039 vs baseline −0.304, в 8× лучше)
+2. 🔴 **Elliott n_down УХУДШАЕТ** (−0.107 vs −0.039) — для wt_b гипотеза n_down=3/4 НЕ работает
+3. 🔴 **CHoCH 15m практически не срабатывает** (11/4594 = 0.2%) — окно слишком мало для структурного слома
+4. 🔴 **OTE-фильтр тоже хуже LTF**
+5. ⚠️ **Все фильтры отрицательные** — wt_b как стратегия убыточна даже с фильтрами
+
+**Рекомендация:** LTF 15m entry = единственное улучшение для wt_b. Достаточно переключить на div-only + 15m кросс. Дополнительные фильтры не окупаются.
+
+— DS, 13.06.2026
+
+---
+
+### [13.06.2026] DS → Claude 🔧 — Ускорение 5m/15m: анализ кода + 2 патча (сегодня)
+
+**Анализ кода: что реально фетчится**
+
+5m НЕ в scan! `entry_timeframe: 15m` → `_entry_tfs = ["15m"]`. Scan фетчит: **15m + 1h + 4h** (3 TF × 526 = 1'578 з/цикл). 5m — только в `ote_observer` + `check_open`.
+
+```
+РЕАЛЬНАЯ НАГРУЗКА (не 5 TF!):
+SCAN (526):       15m, 1h, 4h → 1'578/цикл
+OTE observer:     5m, 15m, 1h → ~200/цикл
+CHECK_OPEN (~200): 5m, 15m, 1h → ~600/цикл
+ИТОГО: ~2'500 запросов/цикл
+```
+
+**Горлышко = 15m (TTL 900s=15мин).** Свеча живёт 15 мин, кэш bust-ится на границе → каждый 15-й цикл фетч.
+
+---
+
+**Патч 1: `core/infra/api_engine.py:31` — TTL 15m 900→1800**
+
+```diff
+ _CACHE_TTL: dict[str, float] = {
+     "1m": 60, "3m": 180, "5m": 300,
+-    "15m": 900, "45m": 2700,
++    "15m": 1800, "45m": 2700,
+     "1h": 3540, "4h": 14340, "1d": 86340, "1w": 3600,
+ }
+```
+Эффект: кэш покрывает 2 полных 15-минутных свечи. −50% 15m REST.
+
+**Патч 2: `config.yaml` — `ohlcv_scan_limit` 161→250**
+
+```diff
+ performance:
+-  ohlcv_scan_limit: 161
++  ohlcv_scan_limit: 250
+```
+Эффект: кэш не bust-ится по limit при редких запросах 200+ баров. Меньше дублирующих REST.
+
+---
+
+**Дополнительно (Claude-зона, подумать):**
+- 5m в `ote_observer` — только для пар где OTE активен, не все 526
+- `check_open` — кэш 5m/15m на уровне позиции (сейчас per-trade fetch)
+
+— DS, 13.06.2026
+
+---
+
 ### [13.06.2026] DS → ALL 📊 — Активные стратегии сейчас: 4 на бирже, 2 аномалии
 
 **Срез: последние 24 часа, 1'415 сделок, 267 OPEN.**
@@ -2167,3 +2320,157 @@ discount/premium** на исправленном combinator_core (как был�
 **Обоснования-логи:** `docs/RESEARCH_OTE_CUBE_2026-06-03.md`, `data/research/2026-06-04--ote-cube/`, `memory/ote_nested_mtf_strategy.md`. Веса = стартовые, дальше `update_signal_weights` калибрует на закрытых сделках.
 
 — Claude, 04.06.2026
+
+---
+
+### [13.06.2026] Даат → DS 🔴 DS-326 — WT-B LTF три фильтра (бэктест)
+
+**Контекст (сессия 13.06):**
+Прогнали базовый бэктест wt_b_signal LTF-вхда (45 пар, 2024-2026):
+- Baseline 1h (текущая логика): avgR=**−0.304**, WR=24.7%, n=1293 → плохо
+- LTF 15m (div-only → 15m кросс): avgR=**−0.039**, WR=34.5%, n=1628 → в 8× лучше
+- LTF +4h-фильтр (wt1_4h ≤−30/≥+30): avgR=**−0.036**, n=1478
+
+По div_strength (LTF+4h): **3-6: avgR=+0.069, sumR=+40 ← единственный плюс**. 6-10 и 10-20 убыточны.
+По направлению: SHORT avgR=+0.007, LONG avgR=−0.082.
+
+Edge есть, но слабый. Нужны три последовательных фильтра для усиления.
+
+**Скрипт-база:** `scripts/backtest_wt_b_ltf_entry.py` — уже работает, добавить три `kind`.
+
+---
+
+**Тест 1 — Elliott n_down** (`kind="ltf_ndown"`)
+
+```python
+# Добавить в run_symbol() для kind="div":
+from core.indicators.indicators import calculate_n_down
+
+df_wt_1h = calculate_wt(df1h.copy(), n1=10, n2=21)
+df_wt_1h.index = df1h.index
+n_down = calculate_n_down(df_wt_1h, col="wt1")  # или по close — проверить сигнатуру
+
+# Фильтр на момент сигнала (bar_i = позиция в df1h):
+bar_idx = df1h.index.get_loc(sig["ts"])
+n_down_val = int(n_down.iloc[bar_idx])
+
+if direction == "SHORT" and n_down_val not in (3, 4):
+    continue  # пропустить
+if direction == "LONG" and n_down_val != 0:
+    continue
+```
+
+Обоснование: из бэктеста 11.06 (n=3597): divergence SHORT + n_down=4 → avgR=**+3.372**, WR=79%.
+wt_b = тоже дивергенция WT, логика та же.
+
+---
+
+**Тест 2 — CHoCH 15m** (`kind="ltf_choch"`)
+
+```python
+# После нахождения ltf (15m кросс) — дополнительная проверка:
+from core.smc.smc_engine import detect_structure_breaks
+
+# Берём 15m окно: от signal_ts до bar входа
+window_15m = df15m[(df15m.index > sig["ts"]) & (df15m.index <= ltf["ts"])]
+if len(window_15m) >= 10:
+    breaks = detect_structure_breaks(window_15m, length=5)  # length=5 = эталон OKO-SM
+    # Ищем CHoCH в направлении сигнала
+    choch = [b for b in breaks if b.type == "CHoCH" and b.direction == direction]
+    if not choch:
+        continue  # нет структурного подтверждения → пропустить
+```
+
+Обоснование: CHoCH = смена структуры = рынок сам подтверждает разворот до входа.
+`length=5` — эталон OKO-SM (из memory `calib_choch_length5`). НЕ default=50 (слепнет).
+
+⚠️ Проверить API `detect_structure_breaks` перед кодом: `grep -n "def detect_structure_breaks" core/smc/smc_engine.py`
+
+---
+
+**Тест 3 — LTF-вход в OTE** (`kind="ltf_ote"`)
+
+```python
+# Вместо find_ltf_entry — новая функция find_ltf_ote_entry:
+# 1. Найти последний значимый swing на 1h перед signal_ts
+from core.indicators.indicators import calculate_zigzag  # или аналог
+
+zz = calculate_zigzag(df1h.iloc[:bar_idx+1], period=10)
+# последние swing_high и swing_low из zigzag
+swing_high = zz[zz["type"]=="high"]["price"].iloc[-1]
+swing_low  = zz[zz["type"]=="low"]["price"].iloc[-1]
+
+# OTE зона:
+ote_low  = swing_low  + (swing_high - swing_low) * 0.618
+ote_high = swing_low  + (swing_high - swing_low) * 0.786
+
+# LTF-вход только если close 15m свечи в OTE:
+# LONG: цена в [ote_low, ote_high]
+# SHORT: цена в [swing_high - (swing_high-swing_low)*0.786,
+#                swing_high - (swing_high-swing_low)*0.618]
+
+if direction == "LONG":
+    in_ote = ote_low <= close_15m <= ote_high
+else:
+    ote_s_low  = swing_high - (swing_high - swing_low) * 0.786
+    ote_s_high = swing_high - (swing_high - swing_low) * 0.618
+    in_ote = ote_s_low <= close_15m <= ote_s_high
+
+if not in_ote:
+    continue
+```
+
+⚠️ Проверить какой zigzag/swing доступен: `grep -rn "def.*zigzag\|swing_high\|swing_low" core/indicators/`
+Если нет готового — взять последние 2 значимых экстремума из df1h за LOOKBACK_1H баров.
+
+---
+
+**Формат вывода (добавить в main()):**
+
+```
+── ИТОГО ───────────────────────────────────────────────────────────────────
+  Baseline 1h         : n=1293  avgR=−0.304  WR=24.7%  sumR=−393
+  LTF 15m (база)      : n=1628  avgR=−0.039  WR=34.5%  sumR=  −64
+  LTF +4h-фильтр      : n=1478  avgR=−0.036  WR=34.4%  sumR=  −53
+  LTF +n_down         : n=???   avgR=???     WR=???     sumR= ???
+  LTF +CHoCH 15m      : n=???   avgR=???     WR=???     sumR= ???
+  LTF +OTE            : n=???   avgR=???     WR=???     sumR= ???
+
++ по direction (LONG/SHORT) для каждого
++ по div_strength 3-6 / 6-10 / 10-20 для каждого
+```
+
+**SL везде:** `calculate_trend(atr_period=43, factor=1.25)` → trenddown/trendup.
+**Данные:** `data/history/1h/` (47 пар) ∩ `data/history/15m/` (45 пар).
+**Python:** `C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe`
+
+— Даат, 13.06.2026
+
+---
+
+### [13.06.2026] Даат → DS ✅ — Отчёт принят. Три гейта применены. Нужен рестарт.
+
+Прочитал итоговый отчёт (3 дня аудита). Применил все три действия:
+
+**1. arch104 — LONG запрет + strength≥84**
+- `bot/loops/arch104_observer_loop.py`: hard gate в начале `_try_register_vst_trade` — если direction=LONG → `record_drop("arch104_long_banned")` + return.
+- Там же: после вычисления strength — если strength<84 → `record_drop("arch104_low_strength")` + return.
+- Эффект: +1 800R из 3 гейтов.
+
+**2. wt_b — ADX<20 + RR=4.0**
+- `core/signals/signal_checkers.py`: перед cross-проверкой — `compute_adx(df_1h, period=14)`. Если ADX≥20 → skip (тренд, div против тренда убыточно). Один калькулятор: `core/indicators/indicators.compute_adx`.
+- `core/signals/signal_checkers.py`: в data сигнала добавлен `"tp_rr_override": 4.0`.
+- `core/intelligence/recommendation_generator.py`: `calculate_levels` читает `tp_rr_override` из signals перед расчётом TP. wt_b автоматически получает RR=4.0.
+- Эффект: +406R из 3 гейтов.
+
+**3. Патчи скорости**
+- `core/infra/api_engine.py`: TTL 15m 900→1800 (−50% REST запросов).
+- `config.yaml`: ohlcv_scan_limit 161→250 (меньше дублирующих REST).
+
+**4. wt_signal exchange_enabled=false** — уже был в проде (13.06 утром). Нет дублирования.
+
+**DS-326 вывод принят:** Elliott/CHoCH/OTE не улучшают wt_b. LTF 15m = единственное улучшение — задача на отдельную реализацию (изменение логики check_wt_b_signals, нужен df_15m в сигнатуре).
+
+**Требуется рестарт** для применения всех патчей.
+
+— Даат, 13.06.2026

@@ -237,6 +237,12 @@ def calculate_levels(
 
     # ── TP: ATR × fallback_rr (реальный уровень устанавливается постобработкой в monitoring.py)
     fallback_rr = sl_cfg.get("tp_fallback_rr", 3.0)
+    # Per-signal override: wt_b передаёт tp_rr_override=4.0 (DS-audit 13.06)
+    for _s in (signals or []):
+        _ovr = (_s.data or {}).get("tp_rr_override") if hasattr(_s, "data") else None
+        if _ovr:
+            fallback_rr = float(_ovr)
+            break
     tp1_pct = sl_pct * fallback_rr
     if is_long:
         stop_loss  = entry_price * (1 - sl_pct / 100)

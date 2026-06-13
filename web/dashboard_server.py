@@ -189,6 +189,32 @@ async def _handle_account_balances(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_accounts(request: web.Request) -> web.Response:
+    """ARCH-DB-V2 Ф2: справочник аккаунтов с последним балансом."""
+    from core.db import balance_repo
+    try:
+        data = await _run_sync(balance_repo.get_accounts)
+        return web.Response(
+            text=json.dumps({"accounts": data}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_positions(request: web.Request) -> web.Response:
+    """ARCH-DB-V2 Ф2: текущие открытые позиции. Query: account_id (опц)."""
+    from core.db import balance_repo
+    try:
+        acc = request.query.get("account_id")
+        acc_i = int(acc) if acc and acc.isdigit() else None
+        data = await _run_sync(balance_repo.get_positions, acc_i)
+        return web.Response(
+            text=json.dumps({"positions": data}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 async def _handle_trades_filtered(request: web.Request) -> web.Response:
     """ARCH-DB-V2 Ф2: сделки с фильтрами account_id/execution_mode/status + сводка (вкладки терминала).
     Query: account_id, execution_mode (SIM/VST/LIVE), status, limit."""
@@ -2508,6 +2534,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     # ARCH-DB-V2 Ф2: терминал — per-account $-equity + балансы + trades-фильтры
     app.router.add_get("/api/balance_history", _handle_balance_history)
     app.router.add_get("/api/account_balances", _handle_account_balances)
+    app.router.add_get("/api/accounts",        _handle_accounts)
+    app.router.add_get("/api/positions",       _handle_positions)
     app.router.add_get("/api/trades_filtered", _handle_trades_filtered)
     app.router.add_get("/api/kpi",             _handle_kpi)
     app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)

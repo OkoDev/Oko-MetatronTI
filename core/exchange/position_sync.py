@@ -286,6 +286,14 @@ async def sync_positions(bot) -> None:
         # positionAmt тоже >0 (hedge) → BUY на SHORT, биржа отвергала.
         from core.exchange.position_parser import parse_positions, by_symbol_side
         parsed_all = parse_positions(positions)
+
+        # ARCH-DB-V2 Ф2: сохранить current-state позиций (account_id=1 = главный клиент)
+        try:
+            from core.db import balance_repo as _br
+            _br.upsert_positions(1, parsed_all)
+        except Exception as _upe:
+            logger.debug("[POSITION-SYNC][DB-V2] positions upsert: %s", _upe)
+
         open_pairs: dict[tuple[str, str], object] = {}  # (sym_our, side) → ParsedPosition
         for pp in parsed_all:
             if pp.margin >= 0.01:
