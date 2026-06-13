@@ -34,13 +34,15 @@ class ExchangeHealth:
 
 # ─── Ping ─────────────────────────────────────────────────────────────────────
 
-async def _ping_exchange(data_collector, bot=None) -> tuple[str, float]:
-    """Лёгкий ping BingX → (status, latency_ms).
+PING_SAMPLES         = 3      # median из N пингов — сглаживает выбросы
+PING_SAMPLE_GAP_SEC  = 0.4    # интервал между сэмплами (попасть в разные моменты загрузки)
 
-    ⚡ PERF-LOOP-DRIFT: при активном торговом loop (trading.dedicated_loop) пингуем
-    через него (server/time, изолированный) — мерит РЕАЛЬНУЮ доступность биржи, а не
-    загрузку main loop. Иначе ccxt fetch_ticker в main loop тонет в scan-starvation →
-    ложный DOWN при доступной бирже. Fallback на ccxt если торговый loop off/недоступен.
+
+async def _single_ping(data_collector, bot=None) -> float:
+    """Один ping BingX → latency_ms.
+
+    ⚡ PERF-LOOP-DRIFT: при активном торговом loop пингуем через него (server/time,
+    изолированный) — мерит РЕАЛЬНУЮ доступность биржи. Fallback на ccxt fetch_ticker.
     """
     t0 = time.monotonic()
     try:
@@ -59,15 +61,30 @@ async def _ping_exchange(data_collector, bot=None) -> tuple[str, float]:
                 data_collector._engine._exchange.fetch_ticker(PING_SYMBOL),
                 timeout=PING_TIMEOUT_SEC,
             )
-        latency_ms = (time.monotonic() - t0) * 1000
-        if latency_ms < LATENCY_DEGRADED_MS:
-            return ExchangeHealth.HEALTHY, latency_ms
-        if latency_ms < LATENCY_DOWN_MS:
-            return ExchangeHealth.DEGRADED, latency_ms
-        return ExchangeHealth.DOWN, latency_ms
+        return (time.monotonic() - t0) * 1000
     except Exception:
-        latency_ms = (time.monotonic() - t0) * 1000
-        return ExchangeHealth.DOWN, latency_ms
+        return (time.monotonic() - t0) * 1000  # timeout/сбой = высокая latency
+
+
+async def _ping_exchange(data_collector, bot=None) -> tuple[str, float]:
+    """⚡ PERF-LOOP-DRIFT (B): MEDIAN из N пингов → (status, latency_ms).
+
+    Сглаживает выбросы: торговый loop сериализует health-ping с repair/get_positions →
+    один пинг может попасть в занятый момент (2-3с) при доступной бирже. Median из 3
+    пингов берёт типичную latency, убирая разовые скачки DEGRADED↔HEALTHY.
+    """
+    samples = []
+    for i in range(PING_SAMPLES):
+        samples.append(await _single_ping(data_collector, bot))
+        if i < PING_SAMPLES - 1:
+            await asyncio.sleep(PING_SAMPLE_GAP_SEC)
+    samples.sort()
+    latency_ms = samples[len(samples) // 2]  # median
+    if latency_ms < LATENCY_DEGRADED_MS:
+        return ExchangeHealth.HEALTHY, latency_ms
+    if latency_ms < LATENCY_DOWN_MS:
+        return ExchangeHealth.DEGRADED, latency_ms
+    return ExchangeHealth.DOWN, latency_ms
 
 
 # ─── Алерты ───────────────────────────────────────────────────────────────────
