@@ -27,7 +27,22 @@ class ConfigLoader:
             
             # Заменяем переменные окружения
             config = self._replace_env_vars(config)
-            
+
+            # CONFIG-SLTP-BUG (14.06): merge sl_tp_engine → trading namespace.
+            # Историч. блок exit/risk-настроек (use_tsl, tsl_activation_r_per_strategy,
+            # breakeven, cascade, min_sl_dist_pct, max_positions...) в секции sl_tp_engine,
+            # но часть кода читает их как trading.X → None → defaults. Merge (setdefault,
+            # не перезатирая trading) даёт ОБОИМ путям работать (дублей trading∩sl_tp_engine нет).
+            # sl_tp_engine.X остаётся для tp_selector/tsl_hybrid (их читают оттуда).
+            if (isinstance(config, dict) and isinstance(config.get('trading'), dict)
+                    and isinstance(config.get('sl_tp_engine'), dict)):
+                _merged = 0
+                for _k, _v in config['sl_tp_engine'].items():
+                    if _k not in config['trading']:
+                        config['trading'][_k] = _v
+                        _merged += 1
+                logger.info("[CONFIG] sl_tp_engine → trading merge: %d ключей (CONFIG-SLTP-BUG fix)", _merged)
+
             logger.info("Конфигурация загружена успешно")
             return config
         except Exception as e:
