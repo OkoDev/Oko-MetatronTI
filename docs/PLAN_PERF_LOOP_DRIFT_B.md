@@ -54,6 +54,31 @@ OrderManager тесно связан с БД (raw sqlite3, `busy_timeout` в `su
 
 Полный разбор: `obsidian/Team-Discussions/2026-06-13-валидация-плана-реализации-не-выбор-стратегии-план.md`
 
+## 🔴 Deadlock-аудит DS (13.06) — РЕШЕНИЕ шага 2 (меняет дизайн)
+
+`docs/DEADLOCK_AUDIT.md`. **6 DB-WRITE точек в торговом пути** — при cross-loop конкуренция за sqlite3 write-lock → busy_timeout пауза на loop:
+| # | Где | Риск |
+|---|---|---|
+| 1 | `tsl_updater.set_exchange_{sl/tp}_order_id` (12 callsites) | 🔴 каждый SL/TP |
+| 2 | `position_sync` UPDATE exit_price/status | 🔴 emergency close |
+| 3 | `close_trade`→register_trade (order_manager) | 🔴 каждое закрытие |
+| 4 | `exec_ws_integration` UPDATE exchange_order_id | 🟠 каждый FILLED |
+| 5 | `save_snapshot` (balance_repo) | 🟡 ~10 мин |
+| 6 | `account_router` INSERT live_positions | 🟡 при sync |
+
+**READ безопасны** — БД в WAL mode (проверено `PRAGMA journal_mode=wal`): readers не блокируют writers.
+
+**НОВЫЙ дизайн шага 2 (вместо wrap_future на 30 callsites):**
+Торговый loop = **ТОЛЬКО REST** (place/cancel/get_positions/sync_time). После успешного REST кладёт событие в очередь. **Main loop = потребитель очереди → пишет БД.** Разделяет: REST (торговый loop, изолирован от scan) ∥ DB-write (main loop, fire-and-forget). Решает И scheduler starvation И deadlock одним махом.
+
+**⚠️ УТОЧНЕНИЕ механизма очереди (cross-loop safe — DS написал `asyncio.Queue`, недостаточно):**
+Голый `asyncio.Queue.put_nowait` из торгового потока в main-loop очередь НЕ thread-safe. Варианты:
+- **(предпочт.) `main_loop.call_soon_threadsafe(queue.put_nowait, item)`** — без новой зависимости, штатный cross-loop примитив.
+- `janus.Queue` (рой) — оба конца thread/async-safe, но новая зависимость.
+Для fire-and-forget DB-write после REST `call_soon_threadsafe` достаточно.
+
+**Следствие:** шаг 2 = рефактор 6 WRITE-точек (REST→очередь→main пишет), НЕ обёртка всех callsites. Сложнее, но безопаснее. Каждую WRITE-точку проверять отдельно (порядок: 5/6 🟡 первыми как низкий риск, потом 1-3 🔴 на VST).
+
 ## Заметки
 - AccountRouter уже `threading.Lock` (cross-thread-safe); клиенты создаются синхронно (loop-привязка только у session, ленивая) → перенос автоматический.
 - api_engine `_sem` + in-flight Futures — только market-data, ОСТАЮТСЯ в main loop (не переносить).

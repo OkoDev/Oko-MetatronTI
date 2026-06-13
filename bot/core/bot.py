@@ -444,6 +444,17 @@ class TradingAlertBot:
             # Сохраняем отчёт для /status команды
             self._selftest_report = selftest_report
 
+            # ⚡ PERF-LOOP-DRIFT шаг B (13.06): выделенный торговый event loop за флагом.
+            # Шаг 1 — только инфраструктура (loop крутится пустой, никто не использует).
+            # Подключение торговых вызовов — шаги 2+. При флаге off — не стартует.
+            try:
+                from core.infra.trading_loop import init_trading_loop
+                _ded = bool(self.config.get("trading.dedicated_loop", False))
+                if init_trading_loop(_ded) is not None:
+                    logger.info("[Bot] TradingLoop включён (trading.dedicated_loop=true)")
+            except Exception as _tle:
+                logger.warning("[Bot] TradingLoop init: %s", _tle)
+
             # DEV-145: синхронизация live_orders с реальными позициями при старте
             _exec_mode = self.config.get("trading.execution_mode", "sim_only")
             if _exec_mode in ("vst", "live"):
