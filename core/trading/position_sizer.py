@@ -71,6 +71,23 @@ class PositionSizer:
 
         risk_amount = deposit * risk_pct / 100.0
         notional    = risk_amount / sl_dist
+
+        # OTE-RBUG (14.06): hard cap notional — defense-in-depth от size-взрыва при малом
+        # sl_dist (SL≈entry → notional=risk/0.001=1000×). SL-guard 0.5% основная защита,
+        # cap — подстраховка. notional не превышает deposit × max_notional_mult (физпредел маржи).
+        try:
+            from core.infra.config_loader import config as _cfg_ns
+            _max_mult = float(_cfg_ns.get("trading.max_notional_mult", 20.0))
+        except Exception:
+            _max_mult = 20.0
+        _notional_cap = deposit * _max_mult
+        if notional > _notional_cap > 0:
+            logger.warning(
+                "[PositionSizer] OTE-RBUG notional cap: %.0f → %.0f (sl_dist=%.2f%% мал, deposit=%.0f×%.0f)",
+                notional, _notional_cap, sl_dist * 100, deposit, _max_mult,
+            )
+            notional = _notional_cap
+
         qty         = notional / entry_price
 
         margin_req = notional / max(leverage, 1)

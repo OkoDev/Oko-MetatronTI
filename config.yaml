@@ -173,6 +173,7 @@ trading:
   deposit_usdt: 100.0
   risk_pct: 1.0
   leverage: 5
+  max_notional_mult: 20.0   # OTE-RBUG (14.06): hard cap notional = deposit × 20 (defense-in-depth от size-взрыва при SL≈entry). SL-guard 0.5% основная защита, cap подстраховка. Откат: большое число (off)
   regime_direction_block:
     enabled: false  # 14.04: убран — режимный классификатор ненадёжен, блокирует прибыльные входы
     TREND_DOWN: LONG
@@ -322,7 +323,7 @@ sl_tp_engine:
     wt_sideways: 0.8
     atr_change: 1.5
     confluence: 1.0
-    ote_nested: 4.0   # ARCH-128 04.06: компактный SL → R-единицы малы в %, TSL рано выбивал runner. BE@0.5R защищает раньше, TSL поздно (+4R) → runner до HTF-target дышит
+    ote_nested: 999   # OTE-RBUG (14.06): TSL ОТКЛЮЧЁН (де-факто). DS аудит на ЧИСТЫХ SL≥0.5%: без TSL +1.66R vs с TSL +0.32R (×5!). Ранний вывод «TSL ×2.4 спасает» был эффектом tight-SL спасений — на нормальных SL (после SL-guard фикса) TSL выбивает runner раньше HTF-target. BE@0.5R остаётся защитой, runner дышит до target/time-exit (no_trail, [[tsl_no_trail_insight]]). Откат: 4.0
   cascade_tsl: true
   cascade_tsl_deescalation_r: 2.5
   cascade_tsl_opts:
