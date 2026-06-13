@@ -150,6 +150,12 @@ trading:
     enabled: true         # Шаг 1 (12.06): запуск UserDataStream — события в лог [EXEC-WS]
     write_exch_id: false  # ОТКАТ 12.06: маппинг symbol+dir+свежайшая НЕВЕРЕН (писал orderId в чужие старые сделки). Нужен точный маппинг по qty+время. Шаг 2 после фикса.
     sync_close: false     # Этап 2b (позже): sync БД при ACCOUNT_UPDATE pa=0
+  # ⚡ PERF (DS 12.06, внедрено 13.06): срез direct-REST → лечит бан 100410.
+  # Корень: repair_missing_sl/tp каждые 60с × 47 биржевых сделок = ~150 direct-вызовов/мин.
+  open_orders_global: true          # #1 глобальный get_open_orders (per-account, без symbol) → −90% вызовов. Откат: false
+  open_orders_cache_ttl_sec: 10     # без изменений (force=True путь точечный)
+  positions_cache_ttl_sec: 45       # #2 было 15. НЕ 60 — чтобы не совпасть с циклом 60с (детект закрытий). Откат: 15
+  balance_cache_ttl_sec: 120        # #3 было 30. Баланс не влияет на закрытия. Откат: 30
   sl_limit_buffer_pct: 1.0  # DEV-185 (26.04.2026): 0.0→1.0. Корень catastrophic slippage: STOP_MARKET без буфера. Расследование: 121 сделок overshoot ≥0.5% = -465R. Buffer 1% защитит ~51 сделку (-113R экономии). Risk: non-execution при overshoot >1% — позиция повисит до TP/EXPIRED/manual. Через 48ч мерить p90 overshoot, при ОК → 2.0 + watchdog. Откат: sl_limit_buffer_pct: 0.0
   # DEV-185.2 (27.04.2026): emergency watchdog для STOP-LIMIT non-execution.
   # Подтверждение из боя: #8010 APE 26.04 — overshoot 32.7% R=-11.83 за 3ч (limit-ордер не fill, позиция висла).

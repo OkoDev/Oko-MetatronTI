@@ -59,9 +59,14 @@ class OrderManager:
         # TSL trail на 70 OPEN позиций бьёт endpoint каждый цикл
         self._oo_cache: dict[str, tuple[float, list]] = {}  # {symbol: (ts, orders)}
         self._oo_ttl: float = float(config.get("trading.open_orders_cache_ttl_sec", 10.0))
+        # ⚡ PERF (DS #1, 13.06): глобальный open_orders refresh (per-account, без symbol).
+        # _oo_all_ts — таймстамп последнего полного снимка. Если снимок свежий, а символа
+        # нет в кэше → у него просто нет ордеров (вернём [] без per-symbol запроса).
+        self._oo_global: bool = bool(config.get("trading.open_orders_global", False))
+        self._oo_all_ts: float = 0.0
         logger.info(
-            "[OrderManager] mode=%s cache(balance=%.0fs positions=%.0fs orders=%.0fs)",
-            self._mode.value, self._balance_ttl, self._positions_ttl, self._oo_ttl,
+            "[OrderManager] mode=%s cache(balance=%.0fs positions=%.0fs orders=%.0fs global=%s)",
+            self._mode.value, self._balance_ttl, self._positions_ttl, self._oo_ttl, self._oo_global,
         )
 
     def _get_router(self):
@@ -193,6 +198,45 @@ class OrderManager:
         self._positions_ts = now
         return positions
 
+    async def _refresh_all_open_orders(self) -> None:
+        """⚡ PERF (DS #1): ОДИН (per-account) вызов get_open_orders() БЕЗ symbol →
+        раскладка всех ордеров по self._oo_cache[symbol]. Срезает per-symbol REST
+        (repair_missing_sl/tp × N сделок) до 1-2 вызовов за цикл → лечит бан 100410.
+
+        multiacct: проходим по всем аккаунтам (как _get_positions_cached). Коллизий
+        символ+side между аккаунтами нет (проверено) → раскладка по symbol безопасна.
+        """
+        import time as _t
+        from collections import defaultdict
+        from core.exchange.bingx_client import from_bingx_symbol
+        now = _t.monotonic()
+        grouped: dict[str, list] = defaultdict(list)
+        if self._multiacct:
+            router = self._get_router()
+            for acc in router.accounts:
+                cli = router.client_for_account(acc)
+                if cli is None:
+                    continue
+                try:
+                    await cli.sync_time()
+                    orders = await cli.get_open_orders()  # без symbol → все ордера аккаунта
+                    for o in orders:
+                        sym = from_bingx_symbol(o.get("symbol", ""))
+                        if sym:
+                            grouped[sym].append(o)
+                except Exception as e:
+                    logger.warning("[OrderManager] _refresh_all_open_orders acc=%s: %s", acc, e)
+        else:
+            client = await self._get_client_synced()
+            orders = await client.get_open_orders()
+            for o in orders:
+                sym = from_bingx_symbol(o.get("symbol", ""))
+                if sym:
+                    grouped[sym].append(o)
+        # Перезаписываем кэш ПОЛНОСТЬЮ: символы без ордеров просто отсутствуют в grouped.
+        self._oo_cache = {sym: (now, ords) for sym, ords in grouped.items()}
+        self._oo_all_ts = now
+
     async def _get_open_orders_cached(self, symbol: str, force: bool = False) -> list:
         """Возвращает open_orders по символу. Per-symbol кеш TTL=oo_ttl (10с).
         force=True — игнорировать кеш (после нашего place/cancel)."""
@@ -202,14 +246,25 @@ class OrderManager:
             cached = self._oo_cache.get(symbol)
             if cached is not None and (now - cached[0]) < self._oo_ttl:
                 return cached[1]
+            # ⚡ PERF (DS #1): глобальный режим — обновить ВСЕ ордера одним per-account
+            # вызовом, затем читать из кэша. Если снимок свежий, но символа нет → [].
+            if self._oo_global:
+                if (now - self._oo_all_ts) >= self._oo_ttl:
+                    await self._refresh_all_open_orders()
+                cached = self._oo_cache.get(symbol)
+                return cached[1] if cached is not None else []
+        # force=True ИЛИ глобальный режим выключен → точечный per-symbol запрос.
         client = await self._get_client_synced(symbol)
         orders = await client.get_open_orders(symbol)
         self._oo_cache[symbol] = (now, orders)
         return orders
 
     def _invalidate_open_orders(self, symbol: str) -> None:
-        """Сбрасывает кеш open_orders для символа (после place/cancel)."""
+        """Сбрасывает кеш open_orders для символа (после place/cancel).
+        ⚡ PERF: также сбрасываем _oo_all_ts — иначе глобальный снимок «помнит»
+        отменённый/новый ордер до следующего TTL (выдаст stale []/список)."""
         self._oo_cache.pop(symbol, None)
+        self._oo_all_ts = 0.0
 
     def _invalidate_positions(self) -> None:
         """Сбрасывает кеш positions (после открытия/закрытия позиции)."""

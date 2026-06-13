@@ -4,6 +4,52 @@
 
 ---
 
+## [13.06.2026 ~09:50 UTC] Агент: Даат (Opus 4.8) — PERF DS #1-3 (бан 100410)
+
+### ✅ Сделано (аудит → реализация, «очень осторожно»)
+- **Замер ДО:** 47 биржевых OPEN (acc1=20/acc2=26, multiacct ON). repair_sl+repair_tp ×47/60с = ~150 direct REST/мин → баны 100410 (4-26/час).
+- **#1 глобальный get_open_orders** (`order_manager.py`): новый `_refresh_all_open_orders()` — per-account вызов БЕЗ symbol → раскладка в `_oo_cache[symbol]` через `from_bingx_symbol`. Маркер `_oo_all_ts`: свежий снимок + нет символа → `[]` без запроса. `force=True` остаётся per-symbol. `_invalidate` сбрасывает `_oo_all_ts=0`. За флагом `trading.open_orders_global`. ~94→2 вызова/цикл.
+- **#2** `positions_cache_ttl_sec: 45` (было 15, НЕ 60 — цикл 60с).
+- **#3** `balance_cache_ttl_sec: 120` (было 30).
+- **Проверки:** AST+YAML OK, runtime import OK, раскладка символов (0G-USDT→0G/USDT:USDT) симметрична, 0 коллизий символ+side между акк, нет потребителей get_open_orders мимо кэша.
+
+### ⚠️ Нужен рестарт + наблюдение
+- Лог `[OrderManager] ... global=True` при старте
+- Падение банов 100410 (было 4-26/час)
+- НЕ должно расти `найдено N SL-ордеров` (признак задвоения SL)
+- **Откат:** `open_orders_global: false`, ttl→15/30 (всё в config.yaml секция trading)
+- **НЕ закоммичено** — ждёт рестарта+подтверждения
+
+### 🔄 Следующее
+- Рестарт → 1-2 цикла наблюдения → если баны ушли и SL не двоится → коммит
+- Если баны остались → DS #4 (rate-limiter direct IP)
+
+---
+
+## [13.06.2026 ~05:00 UTC] Агент: Даат (Sonnet 4.6) — ARCH-DB-V2 Ф2
+
+### ✅ Сделано
+- **БД migration applied (боевая):** `exchanges` (id=1 bingx), `accounts` (VST-Main/VST-Sub), `positions` (PK account+symbol+side)
+- **`balance_repo.py`:** +`upsert_positions`, `get_positions`, `get_accounts` (с JOIN latest balance_snapshot)
+- **`position_sync.py`:** upsert positions при каждом parse_all цикле (acc=1 MVP)
+- **`dashboard_server.py`:** `/api/accounts` + `/api/positions` зарегистрированы
+- **`lib/api.ts`:** `fetchAccounts`, `fetchPositions`, `AccountInfo`, `Position` типы
+- **`components/oko/positions-panel.tsx`:** новый компонент (список позиций с LONG/SHORT badge + uPnL + margin + account)
+- **`screens/overview.tsx`:** 2-колонная сетка AccountBalances | PositionsPanel
+- **TypeScript:** 0 ошибок
+
+### ⚠️ Нужен рестарт бота
+- Авто-миграция в subscription_manager.py (exchanges/accounts/positions) применится при рестарте
+- `/api/accounts` и `/api/positions` начнут отвечать
+- positions заполнятся при первом цикле position_sync (~12 мин после рестарта)
+
+### 🔄 Следующее
+- Рестарт бота → проверить positions в дашборде
+- Ф3: нормализация trades/signals/orders через ETL (отдельный эпик)
+- DS-326: три фильтра wt_b LTF (n_down / CHoCH / OTE)
+
+---
+
 ## [13.06.2026 ~11:00 UTC] Агент: Даат (Sonnet 4.6) — Dashboard account-фильтр: KPI + Trades + Analytics
 
 ### ✅ Сделано (коммиты 1fc9fd4, 0742fd6)
