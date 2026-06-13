@@ -4,6 +4,28 @@
 
 ---
 
+## [13.06.2026 ~20:50 UTC] Агент: Даат (Opus 4.8) — B-эпик АКТИВИРОВАН (dedicated_loop=true) + health-фикс
+
+### ✅ Флаг dedicated_loop=true АКТИВИРОВАН (рестарт 20:38:50)
+Замер под нагрузкой 20:39+:
+- **Торговый rtt: min=239 median=450 max=717ms** (было 9-16с!) — ПИКИ УШЛИ, изоляция работает ✅
+- **timestamp invalid = 0** ✅ (главная метрика вреда обнулилась)
+- **cross-loop ошибки = 0** ✅
+- Торговля жива (ARCH-104 VST, REPAIR-SL), `[TradingLoop] запущен tid=11284`, SelfTest 12/12
+
+### ⚠️ «BingX DOWN» на дашборде = ЛОЖНАЯ тревога → ПОФИКШЕНО
+health-ping `_ping_exchange` использовал `data_collector._engine._exchange.fetch_ticker` (ccxt MAIN loop) → тонул в scan-starvation → latency 7094ms → ложный DOWN при ДОСТУПНОЙ бирже (торговля 717ms!).
+**Фикс:** `BingXClient.ping()` (server/time через торговый loop, без _rl) + `health_loop._ping_exchange(bot)` пингует через торговый client при активном loop (мерит РЕАЛЬНУЮ доступность, не загрузку main). Fallback на ccxt если loop off. Runtime: ping 485ms OK.
+
+### Файлы (коммит вместе)
+`config.yaml` (dedicated_loop=true), `core/exchange/bingx_client.py` (ping/_ping_impl), `bot/loops/health_loop.py` (ping через торг.loop).
+
+### 🔄 Следующее
+- Наблюдение 24ч на VST (rtt, timestamp invalid, DRIFT-тренд, health корректен). Откат: `dedicated_loop: false`.
+- Шаг 4: EXEC-WS listenKey в IP-бюджет + запуск в торговом loop. Шаг 5: LIVE после 24ч.
+
+---
+
 ## [13.06.2026 ~19:00 UTC] Агент: Даат (Opus 4.8) — PERF-LOOP-DRIFT B-эпик: шаг 0 готов
 
 ### B-эпик спроектирован (bot-arch + рой 7/7 + DS)

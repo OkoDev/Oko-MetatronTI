@@ -155,6 +155,23 @@ class BingXClient:
             pass
         return tl
 
+    async def ping(self) -> None:
+        """⚡ PERF-LOOP-DRIFT: лёгкий публичный server/time через торговый loop (если активен).
+        Для health-check: мерит РЕАЛЬНУЮ доступность биржи (изолированный торговый rtt),
+        а не загрузку main loop (где ccxt fetch_ticker тонет в scan-starvation → ложный DOWN).
+        Без _rl.acquire (server/time публичный, не тратит IP-бюджет)."""
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._ping_impl())
+        return await self._ping_impl()
+
+    async def _ping_impl(self) -> None:
+        import aiohttp
+        url = f"{self._base}/openApi/swap/v2/server/time"
+        s = self._get_session()
+        async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+            await r.json()
+
     async def sync_time(self, force: bool = False) -> int:
         # ⚡ PERF-LOOP-DRIFT шаг 2: sync_time — главная жертва starvation (timestamp invalid).
         # Перебрасываем в торговый loop (если активен и не в нём). throttle/offset = память.

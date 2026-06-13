@@ -34,14 +34,31 @@ class ExchangeHealth:
 
 # ─── Ping ─────────────────────────────────────────────────────────────────────
 
-async def _ping_exchange(data_collector) -> tuple[str, float]:
-    """Лёгкий ping: fetch_ticker BTC без rate-limit cost."""
+async def _ping_exchange(data_collector, bot=None) -> tuple[str, float]:
+    """Лёгкий ping BingX → (status, latency_ms).
+
+    ⚡ PERF-LOOP-DRIFT: при активном торговом loop (trading.dedicated_loop) пингуем
+    через него (server/time, изолированный) — мерит РЕАЛЬНУЮ доступность биржи, а не
+    загрузку main loop. Иначе ccxt fetch_ticker в main loop тонет в scan-starvation →
+    ложный DOWN при доступной бирже. Fallback на ccxt если торговый loop off/недоступен.
+    """
     t0 = time.monotonic()
     try:
-        await asyncio.wait_for(
-            data_collector._engine._exchange.fetch_ticker(PING_SYMBOL),
-            timeout=PING_TIMEOUT_SEC,
-        )
+        _pinged = False
+        try:
+            from core.infra.trading_loop import get_trading_loop
+            _oe = getattr(bot, "order_executor", None) if bot is not None else None
+            if (get_trading_loop() is not None and _oe is not None
+                    and getattr(_oe, "is_live", lambda: False)()):
+                await asyncio.wait_for(_oe._get_client().ping(), timeout=PING_TIMEOUT_SEC)
+                _pinged = True
+        except Exception:
+            _pinged = False  # любой сбой торгового ping → fallback на ccxt
+        if not _pinged:
+            await asyncio.wait_for(
+                data_collector._engine._exchange.fetch_ticker(PING_SYMBOL),
+                timeout=PING_TIMEOUT_SEC,
+            )
         latency_ms = (time.monotonic() - t0) * 1000
         if latency_ms < LATENCY_DEGRADED_MS:
             return ExchangeHealth.HEALTHY, latency_ms
@@ -89,7 +106,7 @@ async def health_check_loop(bot) -> None:
 
     while True:
         try:
-            status, latency_ms = await _ping_exchange(bot.data_collector)
+            status, latency_ms = await _ping_exchange(bot.data_collector, bot)
         except Exception as e:
             logger.error("[health] Неожиданная ошибка ping: %s", e)
             status, latency_ms = ExchangeHealth.DOWN, 9999.0

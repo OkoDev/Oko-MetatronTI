@@ -159,7 +159,7 @@ trading:
   # ⚡ PERF-LOOP-DRIFT шаг B (13.06): выделенный торговый event loop (изоляция от scan-нагрузки).
   # Шаг 1 = только инфраструктура (loop пустой). Подключение торговых вызовов — шаги 2+.
   # Включать ТОЛЬКО после шага 2 (REST→торг.loop, DB-write→очередь в main). Откат: false.
-  dedicated_loop: false             # docs/PLAN_PERF_LOOP_DRIFT_B.md
+  dedicated_loop: true              # ⚡ АКТИВИРОВАН 13.06 — VST-наблюдение. Откат: false. docs/PLAN_PERF_LOOP_DRIFT_B.md
   sl_limit_buffer_pct: 1.0  # DEV-185 (26.04.2026): 0.0→1.0. Корень catastrophic slippage: STOP_MARKET без буфера. Расследование: 121 сделок overshoot ≥0.5% = -465R. Buffer 1% защитит ~51 сделку (-113R экономии). Risk: non-execution при overshoot >1% — позиция повисит до TP/EXPIRED/manual. Через 48ч мерить p90 overshoot, при ОК → 2.0 + watchdog. Откат: sl_limit_buffer_pct: 0.0
   # DEV-185.2 (27.04.2026): emergency watchdog для STOP-LIMIT non-execution.
   # Подтверждение из боя: #8010 APE 26.04 — overshoot 32.7% R=-11.83 за 3ч (limit-ордер не fill, позиция висла).
