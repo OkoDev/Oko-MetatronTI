@@ -94,27 +94,32 @@ async def _handle_breakeven_stats(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
-def _analytics_compute_sync(engine, cal_mode: str = "all") -> dict:
-    """4 sync вызова engine — выполняются в thread pool. DEV-231.
-
-    cal_mode прокидывается в pnl_calendar (all|sim|vst) для SIM/VST-переключателя.
+def _analytics_compute_sync(engine, cal_mode: str = "all", account_id=None) -> dict:
+    """Sync часть analytics — выполняется в thread pool. DEV-231.
+    ARCH-DB-V2: account_id фильтр для by_signal_type/by_regime/pnl_calendar.
     """
     return {
-        "by_session":    engine.by_session(),
+        "by_session":     engine.by_session(),
         "r_distribution": engine.r_distribution(),
-        "pnl_calendar":  engine.pnl_calendar(cal_mode),
-        "mfe_scatter":   engine.mfe_scatter(),
+        "pnl_calendar":   engine.pnl_calendar(cal_mode, account_id=account_id),
+        "mfe_scatter":    engine.mfe_scatter(),
+        "by_signal_type": engine.by_signal_type(account_id=account_id),
+        "by_regime":      engine.by_regime(account_id=account_id),
     }
 
 
 async def _handle_analytics(request: web.Request) -> web.Response:
-    """GET /api/stats/analytics?cal_mode=all|sim|vst — данные для DEV-116 графиков."""
+    """GET /api/stats/analytics?cal_mode=all|sim|vst&account_id=N — данные для DEV-116 графиков.
+    ARCH-DB-V2 Ф2: account_id фильтрует by_signal_type/by_regime/pnl_calendar.
+    """
     engine: PerformanceEngine = request.app["engine"]
     try:
         _cal_mode = request.query.get("cal_mode", "all")
         if _cal_mode not in ("all", "sim", "vst"):
             _cal_mode = "all"
-        data = await _run_sync(_analytics_compute_sync, engine, _cal_mode)
+        _acc = request.query.get("account_id")
+        _acc_i = int(_acc) if _acc and _acc.isdigit() else None
+        data = await _run_sync(_analytics_compute_sync, engine, _cal_mode, _acc_i)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json",

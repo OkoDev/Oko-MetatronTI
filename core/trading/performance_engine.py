@@ -106,8 +106,11 @@ class PerformanceEngine:
     # ------------------------------------------------------------------
     # По типу сигнала
     # ------------------------------------------------------------------
-    def by_signal_type(self) -> List[Dict[str, Any]]:
+    def by_signal_type(self, account_id=None) -> List[Dict[str, Any]]:
         # DEV-190: WR/wins/losses учитывают скрытые TSL exits (status='SL'+tsl_act=1+R>0.1)
+        # ARCH-DB-V2: account_id фильтр
+        _where = "WHERE account_id=?" if account_id is not None else "WHERE 1=1"
+        _params = (account_id,) if account_id is not None else ()
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
@@ -123,9 +126,10 @@ class PerformanceEngine:
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
                     FROM simulated_trades
+                    {_where}
                     GROUP BY signal_type
                     ORDER BY total DESC
-                """)
+                """, _params)
                 rows = cur.fetchall()
                 result = []
                 for r in rows:
@@ -478,11 +482,14 @@ class PerformanceEngine:
     # ------------------------------------------------------------------
     # По режиму рынка (если заполнен)
     # ------------------------------------------------------------------
-    def by_regime(self) -> List[Dict[str, Any]]:
+    def by_regime(self, account_id=None) -> List[Dict[str, Any]]:
+        # ARCH-DB-V2: account_id фильтр
+        _where = "WHERE account_id=?" if account_id is not None else "WHERE 1=1"
+        _params = (account_id,) if account_id is not None else ()
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         COALESCE(regime, 'unknown') AS regime,
                         COUNT(*) AS total,
@@ -492,9 +499,10 @@ class PerformanceEngine:
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
                     FROM simulated_trades
+                    {_where}
                     GROUP BY regime
                     ORDER BY total DESC
-                """)
+                """, _params)
                 rows = cur.fetchall()
                 result = []
                 for r in rows:
@@ -1052,18 +1060,21 @@ class PerformanceEngine:
                     break
         return {"buckets": labels, "counts": counts, "total": len(vals)}
 
-    def pnl_calendar(self, mode: str = "all") -> List[Dict[str, Any]]:
+    def pnl_calendar(self, mode: str = "all", account_id=None) -> List[Dict[str, Any]]:
         """P&L по дням: дата, n сделок, avg_R, total_R для heatmap.
 
         mode: 'all' (все) | 'sim' (не на бирже, exchange_order_id IS NULL)
               | 'vst' (реально исполнены, exchange_order_id IS NOT NULL).
         SIM и VST расходятся сильно (VST=отобранные через гейты, SIM-only=балласт).
+        account_id: ARCH-DB-V2 фильтр по аккаунту.
         """
         _filt = ""
         if mode == "sim":
             _filt = " AND exchange_order_id IS NULL"
         elif mode == "vst":
             _filt = " AND exchange_order_id IS NOT NULL"
+        if account_id is not None:
+            _filt += f" AND account_id={int(account_id)}"
         # РЕАЛЬНЫЙ $ P&L из сделок: qty × (exit−entry) × направление (как биржа).
         # qty заполнен у исполненных (VST/LIVE) сделок; где нет — в $ не учитывается (0).
         # deposit_usdt из config — ЗАГЛУШКА, не используем; суммы только реальные.
