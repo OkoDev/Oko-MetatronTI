@@ -4,6 +4,28 @@
 
 ---
 
+## [13.06.2026 ~13:15 UTC] Агент: Даат (Opus 4.8) — PERF-LOOP-DRIFT (event-loop конкуренция → DRIFT 118)
+
+### Диагноз (ДОКАЗАН замером + корреляцией)
+Рассинхрон БД↔биржа (DRIFT 118 = 37 zombie + 81 orphan). Корень НЕ сеть: замер direct=400ms здоров, прокси даже медленнее. rtt торговых запросов 9-16с ТОЧНО совпадают с пиками event loop (TaskSampler 200-386 задач). Цепочка: пики observer (OTE generate 2.6-35s СИНХРОННАЯ CPU-bound) → loop заморожен → торговые direct (sync_time/get_positions) в очереди → timestamp invalid → неполные позиции → position_sync вслепую → DRIFT. Семейство DEV-230.
+
+### Рой 7/7 + верификация: порядок C → executor → B (шаг A семафор отпал)
+- **C keep-alive** ✅ `core/exchange/bingx_client.py`: переиспользуемая `ClientSession` + `TCPConnector(keepalive_timeout=30)`. Было: новый ClientSession на КАЖДЫЙ запрос (8 мест) → TLS handshake каждый раз. Замер: rtt 484→235/250ms. +метод `close()`.
+- **executor** ✅ `bot/loops/ote_observer_loop.py:113`: `gen.generate` обёрнут в `run_in_executor` → CPU-расчёт в thread pool, loop свободен. generate stateless (self read-only, проверено) → thread-safe.
+- **arch104 combinator** — замер ~204ms (на 2 порядка легче OTE 35s) → ОТЛОЖЕН до замера эффекта OTE.
+- **B полный split** — резерв если executor мало.
+
+### Проверки
+AST OK (оба файла), keep-alive замер подтверждён, generate thread-safe (нет self-мутаций вне __init__), arch104 уже skip-no-flags.
+
+### ⚠️ НЕ закоммичено — ждёт рестарта + замера
+**После рестарта проверить:** rtt-пики ушли (sync_time rtt стабильно <1с)? DRIFT снижается? timestamp invalid реже? Торговый RTT не виснет при пиках OTE. Если пики остались → arch104 executor или B.
+
+### Файлы
+`core/exchange/bingx_client.py` (keep-alive), `bot/loops/ote_observer_loop.py` (executor), DISCUSSION.md (диагноз+вердикт сверху), TASKS.md (PERF-LOOP-DRIFT).
+
+---
+
 ## [13.06.2026 ~09:50 UTC] Агент: Даат (Opus 4.8) — PERF DS #1-3 (бан 100410)
 
 ### ✅ Сделано (аудит → реализация, «очень осторожно»)

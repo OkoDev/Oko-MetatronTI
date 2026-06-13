@@ -110,7 +110,13 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
         }).dropna()
     dfs = {k: v for k, v in dfs.items() if v is not None}
 
-    signals = gen.generate(symbol, dfs)
+    # ⚡ PERF (Шаг executor, 13.06): generate() — СИНХРОННАЯ CPU-bound (ZigZag+FVG+OB+OTE,
+    # 2.6-35s). В главном loop она замораживала его целиком → торговые direct-запросы
+    # (sync_time/get_positions) виснут → timestamp invalid → DRIFT. run_in_executor выносит
+    # расчёт в thread pool → loop свободен. generate stateless (self read-only) → thread-safe.
+    # PERF-LOOP-DRIFT.
+    _loop = asyncio.get_running_loop()
+    signals = await _loop.run_in_executor(None, gen.generate, symbol, dfs)
     armed = fired = 0
     for sig in signals:
         if sig.status == "ARMED":

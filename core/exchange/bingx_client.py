@@ -107,6 +107,35 @@ class BingXClient:
         # Загружается один раз через _load_contracts() при первом quantize_qty().
         self._contracts_cache: dict[str, dict] = {}
         self._contracts_loaded: bool = False
+        # ⚡ PERF (Шаг C, 13.06): переиспользуемая ClientSession (keep-alive). До этого
+        # каждый запрос открывал НОВУЮ session → TCP+TLS handshake каждый раз (~150ms overhead).
+        # Одна долгоживущая session с TCPConnector(keepalive) → RTT 400→250ms. PERF-LOOP-DRIFT.
+        self._session = None  # lazy aiohttp.ClientSession (создаётся в running loop)
+
+    def _get_session(self):
+        """⚡ PERF (Шаг C): одна переиспользуемая ClientSession с keep-alive.
+        Конструктор ClientSession синхронный (без await) → нет гонки при cache-miss.
+        TCPConnector держит пул соединений: исключает TCP+TLS handshake на каждый запрос.
+        """
+        import aiohttp
+        if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(
+                keepalive_timeout=30,   # держать соединение 30с
+                limit=20,               # пул на клиента (per-account)
+                ttl_dns_cache=300,      # кэш DNS 5 мин
+                enable_cleanup_closed=True,
+            )
+            self._session = aiohttp.ClientSession(connector=connector)
+        return self._session
+
+    async def close(self) -> None:
+        """Закрыть переиспользуемую session (graceful shutdown)."""
+        if self._session is not None and not self._session.closed:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+            self._session = None
 
     async def sync_time(self, force: bool = False) -> int:
         """
@@ -141,9 +170,9 @@ class BingXClient:
         try:
             url = f"{self._base}/openApi/swap/v2/server/time"
             t_before = int(time.time() * 1000)
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    data = await r.json()
+            s = self._get_session()
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
             t_after = int(time.time() * 1000)
             rtt = t_after - t_before
             server_ts = (
@@ -179,9 +208,9 @@ class BingXClient:
             return
         try:
             url = f"{self._base}/openApi/swap/v2/quote/contracts"
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
-                    data = await r.json()
+            s = self._get_session()
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
+                data = await r.json()
             items = data.get("data", []) or []
             for item in items:
                 bx_symbol = item.get("symbol", "")
@@ -257,10 +286,10 @@ class BingXClient:
         qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
         sig = self._sign(qs)
         url = f"{self._base}{path}?{qs}&signature={sig}"
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers={"X-BX-APIKEY": self._api_key},
-                             timeout=aiohttp.ClientTimeout(total=30)) as r:
-                resp = await r.json()
+        s = self._get_session()
+        async with s.get(url, headers={"X-BX-APIKEY": self._api_key},
+                         timeout=aiohttp.ClientTimeout(total=30)) as r:
+            resp = await r.json()
         # DEV-145 авто-ресинхронизация: при timestamp drift ресинхронизируем и ретраим
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
             logger.warning("[BingXClient] timestamp is invalid — ресинхронизация (force) и retry")
@@ -269,10 +298,9 @@ class BingXClient:
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
             sig2 = self._sign(qs2)
             url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url2, headers={"X-BX-APIKEY": self._api_key},
-                                 timeout=aiohttp.ClientTimeout(total=30)) as r:
-                    resp = await r.json()
+            async with s.get(url2, headers={"X-BX-APIKEY": self._api_key},
+                             timeout=aiohttp.ClientTimeout(total=30)) as r:
+                resp = await r.json()
         self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
@@ -284,10 +312,10 @@ class BingXClient:
         qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
         sig = self._sign(qs)
         url = f"{self._base}{path}?{qs}&signature={sig}"
-        async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
-                              timeout=aiohttp.ClientTimeout(total=30)) as r:
-                resp = await r.json()
+        s = self._get_session()
+        async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
+                          timeout=aiohttp.ClientTimeout(total=30)) as r:
+            resp = await r.json()
         # 27.05.2026: timestamp drift retry — асимметрия с GET (там был, в POST нет → 2 wl_breach в SIM)
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
             logger.warning("[BingXClient] POST timestamp is invalid — ресинхронизация (force) и retry")
@@ -296,10 +324,9 @@ class BingXClient:
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
             sig2 = self._sign(qs2)
             url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
-            async with aiohttp.ClientSession() as s:
-                async with s.post(url2, headers={"X-BX-APIKEY": self._api_key},
-                                  timeout=aiohttp.ClientTimeout(total=30)) as r:
-                    resp = await r.json()
+            async with s.post(url2, headers={"X-BX-APIKEY": self._api_key},
+                              timeout=aiohttp.ClientTimeout(total=30)) as r:
+                resp = await r.json()
         self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
@@ -310,10 +337,10 @@ class BingXClient:
         await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         sig = self._sign(raw_qs)
         url = f"{self._base}{path}?{url_qs}&signature={sig}"
-        async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
-                              timeout=aiohttp.ClientTimeout(total=30)) as r:
-                resp = await r.json()
+        s = self._get_session()
+        async with s.post(url, headers={"X-BX-APIKEY": self._api_key},
+                          timeout=aiohttp.ClientTimeout(total=30)) as r:
+            resp = await r.json()
         self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
@@ -325,10 +352,10 @@ class BingXClient:
         qs = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
         sig = self._sign(qs)
         url = f"{self._base}{path}?{qs}&signature={sig}"
-        async with aiohttp.ClientSession() as s:
-            async with s.delete(url, headers={"X-BX-APIKEY": self._api_key},
-                                timeout=aiohttp.ClientTimeout(total=30)) as r:
-                resp = await r.json()
+        s = self._get_session()
+        async with s.delete(url, headers={"X-BX-APIKEY": self._api_key},
+                            timeout=aiohttp.ClientTimeout(total=30)) as r:
+            resp = await r.json()
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
             logger.warning("[BingXClient] DELETE timestamp is invalid — ресинхронизация (force) и retry")
             await self.sync_time(force=True)
@@ -336,10 +363,9 @@ class BingXClient:
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
             sig2 = self._sign(qs2)
             url2 = f"{self._base}{path}?{qs2}&signature={sig2}"
-            async with aiohttp.ClientSession() as s:
-                async with s.delete(url2, headers={"X-BX-APIKEY": self._api_key},
-                                    timeout=aiohttp.ClientTimeout(total=30)) as r:
-                    resp = await r.json()
+            async with s.delete(url2, headers={"X-BX-APIKEY": self._api_key},
+                                timeout=aiohttp.ClientTimeout(total=30)) as r:
+                resp = await r.json()
         self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 

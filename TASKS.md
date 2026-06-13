@@ -19,6 +19,14 @@
 
 ---
 
+## 🔴 PERF-LOOP-DRIFT (13.06.2026) — event-loop конкуренция → DRIFT 118 (zombie/orphan)
+
+| ID | Задача | Статус | Детали |
+|---|---|---|---|
+| **PERF-LOOP-DRIFT** | **Direct-лаги от перегрузки event loop → корень рассинхрона БД↔биржа (DRIFT 118 = 37 zombie + 81 orphan).** Диагноз ДОКАЗАН: замер direct=400ms (сеть здорова); rtt 9-16с совпадают с пиками TaskSampler 200-386 задач; observer-всплески ote=183/arch104=187/mtf=203. Цепочка: пики loop → торговые direct (sync_time/get_positions) в очереди → timestamp invalid → position_sync классифицирует вслепую → DRIFT. Семейство DEV-230. **Рой 7/7 + верификация Даат (13.06): порядок C → executor → B.** Шаг A (семафор) ОТПАЛ — `OTE_OBSERVER_CONCURRENCY=3` уже низкий, arch104 skip-no-flags уже в коде. Корень: `OTESignalGenerator.generate` СИНХРОННАЯ CPU-bound 2.6-35s замораживает loop целиком. **C** keep-alive ClientSession (400→250ms); **executor** обернуть generate в `run_in_executor` (CPU в thread pool, loop свободен — «лёгкий B»); **B** полный split если мало. ARCH дал go: «реализуем по порядку». | 🔵 в работе: C → executor | `core/exchange/bingx_client.py`, `core/smc/ote_signal_generator.py`, `bot/loops/ote_observer_loop.py` | DISCUSSION.md [13.06 ~12:40]; `core/exchange/bingx_client.py` (новый ClientSession каждый запрос); observer loops |
+
+---
+
 ## 🔬 СПРИНТ: STRATEGY-DISSECTION (12.06.2026) — разбор 3 боевых стратегий на запчасти
 
 > **Контекст:** 3 стратегии держат 96% потока (3 дня, n=5595): **arch104 57% + ote_nested 32% + atr_change 7%**. Остальное (confluence/wt_signal/pivot_reversal/divergence) ≈0% (отключены/редки). Вскрытие RR-зоны 2-5R ([[research_zone_2_5r_dissection]], `docs/MEMORY_SNAPSHOT`): мёртвая середина 2-5R, но в VST (реально) +1163R; SHORT +0.413 vs LONG −0.106; confluence катастрофа −1.136 (уже не в бою); pivot_1D TP-source убыточны.
