@@ -203,6 +203,59 @@ async def _handle_trades_filtered(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_kpi(request: web.Request) -> web.Response:
+    """ARCH-DB-V2 Ф2: быстрые KPI-метрики с фильтром account_id/execution_mode.
+    Query: account_id (int|null=ALL), execution_mode (SIM/VST/LIVE|null=ALL).
+    Возвращает: {closed_count, open_count, win_rate, avg_r, sum_r, closed_per_day}."""
+    from core.db import trades_repo
+    import sqlite3 as _sqlite3
+    try:
+        acc = request.query.get("account_id")
+        acc_i = int(acc) if acc and acc.isdigit() else None
+        mode = request.query.get("execution_mode")
+        summary = await _run_sync(trades_repo.get_summary, acc_i, mode)
+        # open_count
+        db_path = "subscriptions.db"
+        def _open_count():
+            sql = "SELECT COUNT(*) FROM simulated_trades WHERE status='OPEN'"
+            params: list = []
+            if acc_i is not None:
+                sql += " AND account_id=?"; params.append(acc_i)
+            if mode is not None:
+                sql += " AND execution_mode=?"; params.append(mode)
+            with _sqlite3.connect(db_path, timeout=30) as conn:
+                return conn.execute(sql, params).fetchone()[0]
+        open_count = await _run_sync(_open_count)
+        # closed_per_day
+        n = summary.get("n") or 0
+        db_path2 = "subscriptions.db"
+        def _days():
+            sql = "SELECT MIN(created_at), MAX(created_at) FROM simulated_trades WHERE status IN ('TP','SL','TSL','EXPIRED')"
+            params: list = []
+            if acc_i is not None:
+                sql += " AND account_id=?"; params.append(acc_i)
+            with _sqlite3.connect(db_path2, timeout=30) as conn:
+                return conn.execute(sql, params).fetchone()
+        t0t1 = await _run_sync(_days)
+        closed_per_day = None
+        if t0t1 and t0t1[0] and t0t1[1] and n:
+            from datetime import datetime as _dt
+            days = max((_dt.fromisoformat(t0t1[1]) - _dt.fromisoformat(t0t1[0])).days, 1)
+            closed_per_day = round(n / days, 1)
+        return web.Response(
+            text=json.dumps({
+                "closed_count": n,
+                "open_count": open_count,
+                "win_rate": round(summary.get("WR") or 0, 1),
+                "avg_r": round(summary.get("avgR") or 0, 3),
+                "sum_r": round(summary.get("sumR") or 0, 1),
+                "closed_per_day": closed_per_day,
+            }, ensure_ascii=False),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 def _signal_weights_compute_sync(engine, days: int) -> dict:
     """DEV-231: SQL + pivot для signal_weights_history — выполняется в thread pool."""
     import sqlite3 as _sqlite3
@@ -2451,6 +2504,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/balance_history", _handle_balance_history)
     app.router.add_get("/api/account_balances", _handle_account_balances)
     app.router.add_get("/api/trades_filtered", _handle_trades_filtered)
+    app.router.add_get("/api/kpi",             _handle_kpi)
     app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
