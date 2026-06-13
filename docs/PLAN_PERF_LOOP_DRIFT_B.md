@@ -79,6 +79,21 @@ OrderManager тесно связан с БД (raw sqlite3, `busy_timeout` в `su
 
 **Следствие:** шаг 2 = рефактор 6 WRITE-точек (REST→очередь→main пишет), НЕ обёртка всех callsites. Сложнее, но безопаснее. Каждую WRITE-точку проверять отдельно (порядок: 5/6 🟡 первыми как низкий риск, потом 1-3 🔴 на VST).
 
+## ✅ Шаг 2 РЕАЛИЗОВАН (13.06) — УПРОЩЕНИЕ: HTTP-routing вместо очереди
+
+**Инсайт (проверено grep):** все 6 DB-WRITE точек — в ВЫЗЫВАЮЩЕМ коде (tsl_updater/position_sync/order_manager **после** `await client.*`), а HTTP-методы `BingXClient` (get/post/delete/post_raw/sync_time/_load_contracts) БД **не трогают** (чистый `_rl.acquire`+session+json). →
+
+**Решение проще плана:** роутим в торговый loop ТОЛЬКО HTTP-методы BingXClient (через `_route()` + `_*_impl`). Тогда:
+- REST уходит в торговый loop (изоляция от scan-starvation) ✅
+- DB-write **остаётся в main loop** (вызывающий код after await) → **deadlock исключён БЕЗ очереди** ✅
+- `call_soon_threadsafe`/`janus.Queue` НЕ нужны — DB-write естественно в main.
+
+**Реализация:** `core/exchange/bingx_client.py` — `_route()` (вернёт TradingLoop если флаг on и не в нём) + 6 HTTP-методов обёрнуты (`get`→`_get_impl` и т.д.). session lazy → всегда создаётся в торговом loop при флаге on. tsl_updater/position_sync/order_manager наследуют АВТОМАТИЧЕСКИ (вызывают client.* → роутится; их DB-write в main).
+
+**Проверено:** AST OK; флаг off → `get_trading_loop()=None` → прямой путь (старое поведение); флаг on → sync_time из main выполнен в торговом потоке (offset OK, session в торговом loop). Все 6 `_get_session` внутри роутируемых `_impl`.
+
+**Осталось для активации (отдельный заход):** `dedicated_loop=true` + рестарт + **VST-тест** (open/close/cancel SL, сверка с биржей, замер торгового rtt при scan-нагрузке) → если ОК ≥24ч → LIVE. EXEC-WS (шаг 4): listenKey добавить в IP-бюджет + запуск в торговом loop. Шаг A/janus/wrap_future из старого плана — НЕ нужны.
+
 ## Заметки
 - AccountRouter уже `threading.Lock` (cross-thread-safe); клиенты создаются синхронно (loop-привязка только у session, ленивая) → перенос автоматический.
 - api_engine `_sem` + in-flight Futures — только market-data, ОСТАЮТСЯ в main loop (не переносить).

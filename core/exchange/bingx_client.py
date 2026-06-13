@@ -6,6 +6,7 @@ BingX HTTP-клиент низкого уровня.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -137,7 +138,32 @@ class BingXClient:
                 pass
             self._session = None
 
+    def _route(self):
+        """⚡ PERF-LOOP-DRIFT шаг 2: вернуть TradingLoop если REST надо перебросить туда.
+        REST уходит в торговый loop (изоляция от scan-starvation main loop), DB-write
+        остаётся в вызывающем main loop (HTTP-методы БД НЕ трогают → cross-loop deadlock
+        исключён, очередь не нужна). None → прямой вызов (флаг off / уже в торговом loop).
+        За флагом trading.dedicated_loop. План: docs/PLAN_PERF_LOOP_DRIFT_B.md."""
+        from core.infra.trading_loop import get_trading_loop
+        tl = get_trading_loop()
+        if tl is None or not tl.running:
+            return None
+        try:
+            if asyncio.get_running_loop() is tl.loop:
+                return None  # уже в торговом loop — прямой вызов (анти-рекурсия)
+        except RuntimeError:
+            pass
+        return tl
+
     async def sync_time(self, force: bool = False) -> int:
+        # ⚡ PERF-LOOP-DRIFT шаг 2: sync_time — главная жертва starvation (timestamp invalid).
+        # Перебрасываем в торговый loop (если активен и не в нём). throttle/offset = память.
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._sync_time_impl(force))
+        return await self._sync_time_impl(force)
+
+    async def _sync_time_impl(self, force: bool = False) -> int:
         """
         DEV-145: Получает время BingX-сервера и вычисляет offset с учётом RTT.
         offset = local_mid - server, где local_mid = (t_before + t_after) / 2.
@@ -202,6 +228,16 @@ class BingXClient:
         return self._time_offset_ms
 
     async def _load_contracts(self) -> None:
+        # ⚡ PERF-LOOP-DRIFT шаг 2: роутинг в торговый loop (HTTP, не БД) — иначе session
+        # создастся в main loop при первом quantize_qty → cross-loop конфликт с _get_impl.
+        if self._contracts_loaded:
+            return
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._load_contracts_impl())
+        return await self._load_contracts_impl()
+
+    async def _load_contracts_impl(self) -> None:
         """Загружает precision для всех контрактов один раз. Публичный endpoint без подписи."""
         import aiohttp
         if self._contracts_loaded:
@@ -279,6 +315,12 @@ class BingXClient:
         self._rl.set_ban(ban_sec)
 
     async def get(self, path: str, params: dict | None = None) -> dict:
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._get_impl(path, params))
+        return await self._get_impl(path, params)
+
+    async def _get_impl(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
         await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         p = dict(params or {})
@@ -305,6 +347,12 @@ class BingXClient:
         return resp
 
     async def post(self, path: str, params: dict | None = None) -> dict:
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._post_impl(path, params))
+        return await self._post_impl(path, params)
+
+    async def _post_impl(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
         await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         p = dict(params or {})
@@ -333,6 +381,12 @@ class BingXClient:
     async def post_raw(self, path: str, raw_qs: str, url_qs: str) -> dict:
         """POST с разделением: raw_qs для подписи HMAC, url_qs для URL (JSON URL-encoded).
         ВНИМАНИЕ: timestamp внутри raw_qs/url_qs — caller должен сам ресинкать при 109400."""
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._post_raw_impl(path, raw_qs, url_qs))
+        return await self._post_raw_impl(path, raw_qs, url_qs)
+
+    async def _post_raw_impl(self, path: str, raw_qs: str, url_qs: str) -> dict:
         import aiohttp
         await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         sig = self._sign(raw_qs)
@@ -345,6 +399,12 @@ class BingXClient:
         return resp
 
     async def delete(self, path: str, params: dict | None = None) -> dict:
+        tl = self._route()
+        if tl is not None:
+            return await tl.call(self._delete_impl(path, params))
+        return await self._delete_impl(path, params)
+
+    async def _delete_impl(self, path: str, params: dict | None = None) -> dict:
         import aiohttp
         await self._rl.acquire()  # ARCH-96 Ф1: IP-троттлинг (общий бюджет)
         p = dict(params or {})

@@ -18,8 +18,15 @@ GlobalRateLimiter: `asyncio.Lock` → `threading.Lock` (loop-agnostic). Бан �
 ### 🔴 Отдано DS (перед шагом 2)
 - **PERF-LOOP-B-DEADLOCK**: аудит БД-вызовов в торговом пути (sqlite3 cross-loop deadlock).
 
-### 🔄 Следующее (после DS-аудита)
-- Шаг 1: торговый loop за флагом `trading.dedicated_loop`. Шаг 2: janus.Queue (рой) vs wrap_future (bot-arch) — решить после deadlock-аудита. Шаги 3-5: tsl/EXEC-WS(+listenKey)/LIVE после 24ч VST.
+### ✅ Шаги 1-2 РЕАЛИЗОВАНЫ (коммиты 4d403ef + шаг2)
+- **Шаг 1** (`core/infra/trading_loop.py`): TradingLoop daemon-поток+loop за флагом `trading.dedicated_loop`. call()=wrap_future(run_coroutine_threadsafe). Runtime: off→None, on→coro в торговом потоке.
+- **Шаг 2** (`core/exchange/bingx_client.py`): УПРОЩЕНИЕ vs план — НЕ очередь, а HTTP-routing. `_route()`+6 методов (get/post/delete/post_raw/sync_time/_load_contracts) обёрнуты в `_*_impl`, роутятся в торговый loop. **Инсайт:** HTTP БД не трогает → DB-write остаётся в main (вызывающий код) → deadlock исключён БЕЗ очереди (janus/call_soon_threadsafe не нужны). tsl/position_sync/order_manager наследуют авто. Проверено: off=старое поведение, on=REST в торговом loop, session в торговом loop.
+
+### ⚠️ Флаг dedicated_loop=FALSE (код готов, НЕ активен)
+Активация = отдельный заход: `dedicated_loop=true`+рестарт+**VST-тест** (open/close/cancel SL, сверка, замер торгового rtt при scan) → ОК 24ч → LIVE. EXEC-WS (шаг 4): listenKey в IP-бюджет + запуск в торговом loop.
+
+### 🔄 Следующее
+- Шаг 3-4: VST-активация флага + EXEC-WS. Шаг 5: LIVE после 24ч.
 
 ---
 
