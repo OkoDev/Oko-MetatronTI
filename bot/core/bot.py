@@ -298,7 +298,8 @@ class TradingAlertBot:
         while True:
             await asyncio.sleep(300)   # каждые 5 минут
             try:
-                saved = self.data_collector._engine._cache.save_to_disk(path)
+                # min_entries guard: не затирать хороший файл недогретым кэшем (≈3000 прогрет)
+                saved = self.data_collector._engine._cache.save_to_disk(path, min_entries=1000)
                 logger.debug("[D-069] periodic snapshot: %d entries", saved)
             except Exception as e:
                 logger.warning("[D-069] periodic snapshot error: %s", e)
@@ -630,7 +631,8 @@ class TradingAlertBot:
                 # D-069: graceful save OHLCV cache при остановке (Ctrl+C / SIGTERM)
                 try:
                     _cache_path = "cache/ohlcv_snapshot.pkl"
-                    _saved = self.data_collector._engine._cache.save_to_disk(_cache_path)
+                    # min_entries guard: при ранней/холодной остановке не затереть хороший файл
+                    _saved = self.data_collector._engine._cache.save_to_disk(_cache_path, min_entries=1000)
                     logger.info("[D-069] OHLCV cache saved: %d entries to %s", _saved, _cache_path)
                 except Exception as e:
                     logger.warning("[D-069] cache save error: %s", e)

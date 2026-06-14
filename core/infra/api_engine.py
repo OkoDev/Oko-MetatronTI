@@ -200,17 +200,34 @@ class OhlcvCache:
     def __len__(self) -> int:
         return len(self._data)
 
-    def save_to_disk(self, path: str) -> int:
+    def save_to_disk(self, path: str, min_entries: int = 0) -> int:
         """D-069 (25.05): сохраняет cache на диск через pickle.
 
         Сохраняем wall-clock timestamp (time.time()), а НЕ monotonic —
         после рестарта Python monotonic сбрасывается. При load восстанавливаем
         ts через виртуальный monotonic = now - age_wallclock.
 
-        Returns: количество сохранённых entries.
+        min_entries (D-069 guard): НЕ перезаписывать файл, если текущий кэш меньше
+        порога И на диске уже есть более полный снимок. Иначе периодический snapshot
+        при рестарте (холодный кэш) затирал хороший файл почти пустым → load≈0 →
+        холодный залп REST → IP-бан 100410. Защищаем лучший снимок.
+
+        Returns: количество сохранённых entries (или существующих, если skip).
         """
         import pickle
         import os
+        cur = len(self._data)
+        # Guard: кэш недогрет — не затирать потенциально хороший файл на диске
+        if min_entries > 0 and cur < min_entries and os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    existing = len(pickle.load(f))
+                if existing > cur:
+                    logger.info("[OhlcvCache] save SKIP: кэш недогрет (%d < %d на диске) — файл сохранён",
+                                cur, existing)
+                    return existing
+            except Exception:
+                pass  # файл битый/нечитаем — продолжаем перезапись
         snapshot = {}
         now_wall = time.time()
         for key, entry in self._data.items():

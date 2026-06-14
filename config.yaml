@@ -477,7 +477,7 @@ proxy_pool:
   rps_per_proxy: 35.0
   health_cooldown_sec: 30.0
   overrides:
-    api_rps: 100
+    api_rps: 40            # 100→40 (15.06): прокси Singapore медленные/в cooldown → REST идёт с одного VPN IP. 100 rps на один IP → 100410 бан. 40 безопасно для одного IP. Вернуть 100 когда прокси быстрые/распределяют
     scan_semaphore_size: 15
     api_semaphore_size: 30
 strategy:
