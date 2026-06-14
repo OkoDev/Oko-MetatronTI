@@ -4,6 +4,33 @@
 
 ---
 
+## 🎯 СЕССИЯ 14.06 (6) — gear1 + Config validator + Repair API + BUS-ACCOUNT-EPIC дизайн
+
+### ✅ Закоммичено (ff3b029 + e2adf7f)
+- **TSL gear1_be_atr=1.5** для ote_nested (`TSLProfile.gear1_be_atr`, BE при +1.5 ATR вместо +1.0). DS-рекомендация (меньше резать 1-3R).
+- **Config validator** (`core/infra/config_validator.py`): 15 правил тип+диапазон, вызов в load_config(), WARNING при аномалии. Бой = 0 проблем.
+- **Repair API**: `/api/repair/orphans` + `expire/{id}` + `expire_bulk` (older_than_hours) — архивация sim-only без скриптов.
+
+### 🏛️ BUS-ACCOUNT-EPIC спроектирован (рой 2 раунда + DS, НЕ кодили)
+- Расширить `PairContextBus` account/trader-измерениями (НЕ отдельный PortfolioBus). L1 PairState→L2 AccountState→L3 TraderState.
+- Producer EXEC-WS push + REST fallback; синглтон `get_bus()`; TraderState=async-подписчик.
+- **BUS-L2-BRICK** (первый кирпич, готов к старту): BalanceTracker → AccountState → убирает REST-poll баланса + живой deposit.
+- **Спор:** Correlation Shield РАНЬШЕ Capital Allocator (Sharpe на фейк-R, сначала DATA-AUDIT-2).
+- DISCUSSION [14.06 🏛️], TASKS → BUS-ACCOUNT-EPIC, `docs/BUS_SUBSCRIBER_ROADMAP.md` (DS дополнил L1-L3).
+
+### 🟢 СОСТОЯНИЕ БОТА (PID=9680, перезапущен 21:07 UTC)
+- sem=8, use_ws=true, sync_close=true, blacklist 4 пар
+- gear1=1.5 + Repair API + validator активны
+- NOTIF: fvg_detected+fvg_touch для XLM-USDT 3m LONG
+
+### 🔄 СЛЕДУЮЩЕЕ
+1. **BUS-L2-BRICK** — BalanceTracker (когда займёмся, дизайн готов)
+2. **NOTIF-TIER2** — CHoCH/OTE/OB/Pivot listener'ы (включать по одному, бэклог)
+3. **SSE realtime dashboard** — убрать polling-мигание в Next.js
+4. **EXEC-SIM-SPLIT** — main=биржа, strip=sim (большой эпик)
+
+---
+
 ## 🎯 СЕССИЯ 14.06 (4) — MARKET-WS v2 LIVE ВАЛИДИРОВАН ✅ + EXEC-WS 2b ON
 
 ### ✅ Закоммичено (48ef9c4)

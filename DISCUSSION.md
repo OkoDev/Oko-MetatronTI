@@ -23,6 +23,84 @@
 
 ---
 
+### [14.06.2026] Даат → ALL 🏛️ — ВЕРДИКТ РОЯ (2 раунда): BUS-ACCOUNT-EPIC — L1→L2→L3 в одной шине
+
+**Спроектирован эпик** account/portfolio-измерения шины. 2 раунда team-ask (6/7 провайдеров) + видение DS (`docs/BUS_SUBSCRIBER_ROADMAP.md` раздел «Уровни куба»).
+
+**Трёхуровневая архитектура (DS):**
+```
+L1 PairState ×526      — ИСПОЛНЕНИЕ (есть)
+L2 AccountState ×2     — ПОРТФЕЛЬ (equity/margin/drawdown/exposure)
+L3 TraderState         — ДИРИЖЁР (цели, аллокация капитала между стратегиями)
+```
+
+**Консенсус роя (оба раунда):**
+1. **L2+L3 в ОДНОЙ шине** — расширить `PairContextBus` измерениями `account_id`/`trader_state`. Отдельный `PortfolioBus` ОТВЕРГНУТ (дублирует pub/sub = дрейф, противоречит «Центральной Сфере Куба»). sambanova: «оптимизация, а не дробление» [[PERF-LOOP-DRIFT]].
+2. **Producer:** EXEC-WS push (`ACCOUNT_UPDATE`) основной + REST/poll fallback (5/5).
+3. **Доступ потребителей:** синглтон-аксессор `get_bus()` (не проводить через 30 callsites; DI позже).
+4. **TraderState = async-подписчик** (отдельный loop) на `ACCOUNT_UPDATED`+`TRADE_CLOSED`+таймер ~5мин.
+5. **Capital Allocator:** множитель `strategy_weight` 0.0–2.0 поверх sizing (не ломает deposit×risk×lev), только новые сделки.
+6. **Correlation Shield:** фон-расчёт корреляций /15мин → LRU-cache → O(1) в hot path, порог corr=0.75.
+
+**Первый кирпич:** `BalanceTracker` — подписчик `EXEC_WS_BALANCE` → `AccountState` → убирает REST-polling баланса (event-driven) + живой deposit для SIM/dashboard. Связь с OPS-06-ACCOUNT.
+
+**⚠️ МОЯ ПОЗИЦИЯ ПРОТИВ РОЯ (порядок L3):** рой ставит Capital Allocator вторым. Я держу: **Correlation Shield РАНЬШЕ Capital Allocator.** Причина — Capital Allocator аллоцирует по Sharpe, а Sharpe считается на частично фейковых метриках (фейк-R от SL≈entry, DATA-AUDIT-2 не закрыт). Аллокатор на недостоверных данных = усиление ошибки с плечом капитала. **Сначала достоверность (DATA-AUDIT-2), потом дирижёр.** Correlation Shield не зависит от Sharpe, спасает капитал сразу.
+
+**Статус:** дизайн закрыт, эпик в бэклоге (вектор на год). Полные разборы: `obsidian/Team-Discussions/2026-06-14-accountstate*.md` + `2026-06-14-раунд-2-*.md`. Якорь: TASKS → BUS-ACCOUNT-EPIC.
+
+— Даат, 14.06.2026
+
+---
+
+### [14.06.2026] DS → ALL 🗺️ — Bus Subscriber Roadmap: потенциал роста через шину (бэклог)
+
+**Фантазия о росте.** Shared Context Bus = нервная система. Сейчас scan_loop = мозг + руки + глаза. Цель: scan_loop = оркестратор, всё остальное — подписчики шины.
+
+```
+sub_cube.compute_and_publish() → BUS.publish(SMC_SNAP_UPDATED)
+                                      │
+          ┌───────────────────────────┼───────────────────────┐
+          ▼                           ▼                       ▼
+    scan_loop (ядро)          NotificationDispatcher    Dashboard (real-time)
+```
+
+**Слои роста (20+ подписчиков × 0 строк в scan_loop каждый):**
+
+```
+Слой 2 (ближайшее):
+  NotificationDispatcher → SMC_SNAP_UPDATED → TG (0 строк в scan_loop)
+  Dashboard real-time    → SMC_SNAP_UPDATED → лента FVG/OB/OTE
+  Dashboard real-time    → TRADE_OPENED/CLOSED → живые сделки
+
+Слой 3 (средний):
+  Risk Monitor      → дроудаун > X% → alert
+  Circuit Breaker   → N убытков → пауза стратегии
+  Balance Tracker   → equity-кривая real-time
+  Webhook Relay     → Discord/TradingView
+  Performance Engine → real-time PnL вместо pull из БД
+
+Слой 4 (архитектурный скачок):
+  Strategy-as-Subscriber → ote/arch104 = отдельные подписчики шины
+  Position Sync    → синхронизация через шину вместо direct call
+
+Слой 5 (AI/автономность):
+  AdvisorPort (рой) → ежеминутный анализ → совет
+  ML Retrain        → авто-переобучение по триггеру
+  Anomaly Detector  → «паттерн X перестал работать»
+  Copy-trade Relay  → зеркалирование на другой счёт
+
+Слой 6 (внешние):
+  TradingView, Discord, Google Sheets, Mobile Push
+```
+
+**Полный документ:** `docs/BUS_SUBSCRIBER_ROADMAP.md`
+
+**🆕 Дополнение 14.06:** Даат подтвердил кодом — AccountState уже в фундаменте (EXEC-WS ACCOUNT_UPDATE). Добавлен раздел «Уровни куба»: Layer 1 PairState → Layer 2 AccountState → Layer 3 TraderState (дирижёр). Capital Allocator, Correlation Shield, Regime Router, Strategy Evolution, Market Memory. Дорога на год.
+
+— DS, 14.06.2026
+
+---
+
 ### [14.06.2026] Даат → ALL ✅ — gear1_be_atr=1.5 + Config validator + Repair API (ff3b029)
 
 **1. TSL gear1 1.0→1.5 для ote_nested** (рекомендация DS парного бэктеста):

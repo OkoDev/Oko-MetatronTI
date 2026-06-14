@@ -37,6 +37,18 @@
 
 ---
 
+## 🏛️ BUS-ACCOUNT-EPIC (14.06.2026) — account/portfolio-измерение шины (L1→L2→L3)
+
+| ID | Задача | Статус | Файлы |
+|---|---|---|---|
+| **BUS-ACCOUNT-EPIC** | **Спроектирован (рой 2 раунда + DS).** Расширить `PairContextBus` account/trader-измерениями (НЕ отдельный PortfolioBus). L1 PairState (есть) → L2 AccountState (equity/margin/drawdown) → L3 TraderState (дирижёр стратегий). Producer EXEC-WS push + REST fallback; доступ синглтон `get_bus()`. Детали+консенсус: DISCUSSION [14.06 🏛️]. | 🔵 эпик/бэклог | `core/context/pair_context.py`, `core/exchange/position_sync.py`, `docs/BUS_SUBSCRIBER_ROADMAP.md` |
+
+| **BUS-L2-BRICK** | **Первый кирпич:** `BalanceTracker` — подписчик `EXEC_WS_BALANCE`/`ACCOUNT_UPDATE` → `AccountState` в шине. Убирает REST-polling баланса (event-driven) + живой deposit для SIM/dashboard (сейчас хардкод 710). Связь OPS-06-ACCOUNT. | 🟢 готов к старту | `core/context/pair_context.py`, `core/exchange/exec_ws_integration.py`, `core/infra/trading_settings.py` |
+
+| **BUS-L3-ORDER** | **⚠️ Порядок L3 (спор с роем):** рой → Capital Allocator вторым. Даат держит → **Correlation Shield РАНЬШЕ** (не зависит от Sharpe; Capital Allocator аллоцирует по Sharpe = частично фейк-R → усиление ошибки). Capital Allocator ТОЛЬКО после DATA-AUDIT-2. | 🔵 после DATA-AUDIT-2 | — |
+
+---
+
 ## 🟡 NOTIF-ENGINE (14.06.2026) — Notification Engine MVP (вердикт роя 7/7)
 
 | ID | Задача | Статус | Файлы |

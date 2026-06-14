@@ -4,6 +4,51 @@
 
 ---
 
+## [14.06.2026 ~21:30 UTC] Агент: Даат (Opus 4.8) — gear1 + Config validator + Repair API + BUS-ACCOUNT-EPIC спроектирован
+
+### ✅ Сделано (коммиты ff3b029 + e2adf7f)
+- **TSL gear1_be_atr=1.5** для ote_nested: `TSLProfile.gear1_be_atr` (default 1.0), BE активируется при +1.5 ATR. Хардкод `if mfe_atr>=1.0` убран → `>= profile.gear1_be_atr`. Рекомендация DS парного бэктеста (меньше резать 1-3R).
+- **Config validator** (`core/infra/config_validator.py`): 15 правил тип+диапазон, вызов в `load_config()`, WARNING при аномалии. Проверено на боевом config — 0 проблем.
+- **Repair API** (dashboard): `GET /api/repair/orphans`, `POST /api/repair/expire/{id}`, `POST /api/repair/expire_bulk` (older_than_hours) — архивация sim-only без скриптов.
+- **Бот перезапущен** (PID был 28072 → 9680), валидатор отработал чисто.
+
+### 🏛️ BUS-ACCOUNT-EPIC спроектирован (рой 2 раунда + DS)
+- Расширить `PairContextBus` account/trader-измерениями (НЕ отдельный PortfolioBus). L1 PairState→L2 AccountState→L3 TraderState.
+- Producer EXEC-WS push + REST fallback; доступ синглтон `get_bus()`; TraderState=async-подписчик.
+- **Первый кирпич BUS-L2-BRICK:** BalanceTracker → AccountState → убирает REST-poll баланса + живой deposit.
+- **Спор с роем:** Correlation Shield РАНЬШЕ Capital Allocator (Sharpe на фейк-R = усиление ошибки; сначала DATA-AUDIT-2).
+- Дизайн закрыт, эпик в бэклоге. DISCUSSION [14.06 🏛️], TASKS → BUS-ACCOUNT-EPIC.
+
+### 💡 Открытие про deposit_usdt
+- Для VST/LIVE deposit УЖЕ живой (`get_available_balance()` → REST). Хардкод 710 бьёт только SIM + fallback + dashboard KPI. Реальные балансы: acc1=395$, acc2=377$, SUM=772$.
+
+### 🔄 Следующее
+- BUS-L2-BRICK (BalanceTracker) — когда займёмся
+- NOTIF-TIER2, SSE realtime dashboard, EXEC-SIM-SPLIT
+
+---
+
+## [14.06.2026 ~20:40 UTC] Агент: Даат (Sonnet 4.6) — ARCH-130 + NOTIF-MVP
+
+### ✅ Сделано
+- **ARCH-130** (4d49074): `OhlcvCache.merge_dict` — replace-путь без `pd.DataFrame([r])`. Reader hot path чище, GIL-давление меньше.
+- **NOTIF-MVP** (fbda2c8): `NotificationDispatcher` + `FvgDetectedListener` + `FvgTouchListener`. scan_loop = 1 строка `dispatcher.on_smc_snap`. `_norm_symbol` (ccxt↔YAML). Open/Closed: новый listener = новый файл, loop не трогаем.
+- **CONFIG-SLTP-BUG** — закрыт ещё в 743cc64, верифицировано: merge работает при старте.
+- **sem=12 эксперимент** — нестабилен (363-646s разброс), вернули sem=8. Baseline sem=8+WS ≈ 367s (−57s от старта сессии).
+
+### 🟢 Бот работает (~20:40 UTC)
+- sem=8, use_ws=true, sync_close=true, blacklist 4 пар
+- ARCH-130 активен (merge_dict в reader)
+- NOTIF-MVP активен (FVG уведомления XLM-USDT 3m LONG)
+- EXEC-WS 2b: ok=True поток закрытий, ok=False = race condition (не критично)
+
+### 🔄 Следующее
+- NOTIF-TIER2: CHoCH/OTE/OB/Pivot listener'ы (бэклог, включать по одному)
+- SSE realtime dashboard (убрать polling-мигание)
+- EXEC-SIM-SPLIT (большой эпик, не сейчас)
+
+---
+
 ## [14.06.2026 ~17:29 UTC] Агент: Даат (Sonnet 4.6) — MARKET-WS v2 ВАЛИДИРОВАН ✅
 
 ### ✅ Сделано (коммиты a98a130 + df0e0b5)
