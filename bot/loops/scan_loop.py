@@ -11,6 +11,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from core.infra.entry_config import get_primary_entry_tf, get_entry_timeframes
+from bot.notifications.sender import notify as _notify
 from core.ui.message_builder import (
     anomaly_message, wt_message, wt_b_message as _wt_b_message,
     funding_extreme_message as _funding_message,
@@ -1777,6 +1778,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                                 tf=_fvg.get("tf", _etf), evidence=_fvg_data,
                                             )
                                             logger.debug("[KUB] %s fvg_touch: BULL FVG %.4f–%.4f", sym, _fvg.get("bottom"), _fvg.get("top"))
+                                            asyncio.create_task(_notify(
+                                                bot, "fvg_touch", sym,
+                                                direction="LONG",
+                                                tf=_fvg.get("tf", _etf),
+                                                bottom=_fvg.get("bottom", 0.0),
+                                                top=_fvg.get("top", 0.0),
+                                                price=_cur_price_fvg,
+                                            ))
                                     else:
                                         bot._prev_fvg_touch.pop((sym, "bull", round(_fvg.get("bottom", 0), 4)), None)
                                 for _fvg in _smc_snap_local.get("bear_fvg_active", []):
@@ -2258,6 +2267,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             )
 
     pairs = list(bot.monitored_pairs)
+    # Паузовые/нерабочие пары (код 109415 "pause currency") — блокируют scan на 76-82с
+    _scan_blacklist = set(bot.config.get("performance.scan_blacklist", []) or [])
+    if _scan_blacklist:
+        pairs = [p for p in pairs if p not in _scan_blacklist]
     random.shuffle(pairs)  # равный шанс для всех пар, убирает алфавитный bias у confluence лимита
     stats = bot.data_collector._engine.cache_stats()
     try:

@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 # ─── worker-процесс ────────────────────────────────────────────────────────────
 
+_LIVE_DEDUP_INTERVAL = 5.0  # сек: одну (sym,tf) не шлём чаще → поток 1200/s→~200/s
+
+
 def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = False) -> None:
     """Standalone-функция для multiprocessing.Process.
 
@@ -38,6 +41,7 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
     """
     import asyncio as _aio
     import threading as _thr
+    import time as _time
     from core.infra.market_ws import MarketWS
 
     class _QueueCache:
@@ -53,12 +57,20 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
             super().__init__(syms, tfs_, _QueueCache(), batch_pairs=batch_)
             self._q = q
             self._shadow = shadow_
+            self._last_sent: dict = {}  # (sym,tf) → monotonic ts
 
         def _on_candle(self, sym_ccxt: str, tf: str, df: pd.DataFrame) -> None:
             if self._shadow:
                 # Shadow: scan на REST — очередь не нужна, только считаем свечи для логов
                 self.stats["candles"] += 1
                 return
+            # Throttle: не слать одну (sym,tf) чаще _LIVE_DEDUP_INTERVAL сек
+            # → поток 1200/s→~200/s, reader справляется без overflow
+            key = (sym_ccxt, tf)
+            now = _time.monotonic()
+            if now - self._last_sent.get(key, 0.0) < _LIVE_DEDUP_INTERVAL:
+                return
+            self._last_sent[key] = now
             try:
                 r = df.iloc[0]
                 self._q.put_nowait((

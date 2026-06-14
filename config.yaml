@@ -132,7 +132,7 @@ trading:
   exec_ws:
     enabled: true
     write_exch_id: false
-    sync_close: false
+    sync_close: true
   open_orders_global: true
   open_orders_cache_ttl_sec: 10
   positions_cache_ttl_sec: 45
@@ -444,6 +444,12 @@ performance:
   ws_enabled: false
   event_loop_debug: false   # LOOP-РАЗГРУЗКА 14.06: debug-режим грузил каждую loop-операцию + спам 2867 warnings. Диагностику собрали. Вернуть true только для отладки drift
   slow_callback_threshold_sec: 1.0
+  # Паузовые пары BingX (код 109415 "pause currency") — блокируют scan_one на 76-82с
+  scan_blacklist:
+    - "UNITAS/USDT:USDT"
+    - "NVDAX/USDT:USDT"
+    - "PI/USDT:USDT"
+    - "XPIN/USDT:USDT"
   ws_ticker_batch_size: 75
   ws_ohlcv_batch_size: 80
   ws_batch_start_delay_sec: 5.0
@@ -456,7 +462,7 @@ performance:
 #        use_ws=true = ОСНОВНОЙ cache (scan читает WS) — ТОЛЬКО после shadow-валидации ≥99%.
 market_ws:
   enabled: true         # v2 ПРОЦЕСС (14.06): multiprocessing.Queue — GIL изолирован. Этап 1 SHADOW (use_ws=false).
-  use_ws: false         # false = SHADOW (теневой кэш, scan на REST). true = Этап 2 (scan читает WS) — после валидации ≥99%
+  use_ws: true          # Этап 2 LIVE (14.06): scan читает из WS-кэша, без REST-polling ohlcv
   timeframes: [5m, 15m]
   batch_pairs: 50       # пар на одно WS-соединение (526/50 ≈ 11 соединений)
 
