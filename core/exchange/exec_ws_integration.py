@@ -143,7 +143,7 @@ async def _sync_close_async(bot, sym: str, direction: str, account_tag: str) -> 
     status, exit_price = "EXPIRED", None
     try:
         acc_int = _ACC_TAG_TO_INT.get(account_tag, 1)
-        router = bot.order_manager._get_router()
+        router = bot.order_executor._get_router()
         client = router.client_for_account(acc_int)
         if client is not None:
             from core.exchange.position_sync import _resolve_exit
