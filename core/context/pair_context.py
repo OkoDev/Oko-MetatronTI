@@ -17,6 +17,7 @@ PairContextBus — для SYNC state sharing между сферами внут�
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -225,12 +226,45 @@ class PairContextBus:
 
     def subscribe(self, event_type: str, handler: Callable) -> None:
         """
-        Регистрирует обработчик события.
+        Регистрирует СИНХРОННЫЙ обработчик события.
         handler(symbol: str, data: dict) → None
         Одна сфера может подписаться на несколько типов событий.
+        Вызывается синхронно в стеке publish() — handler ОБЯЗАН быть лёгким.
         """
         self._subscribers.setdefault(event_type, []).append(handler)
         logger.debug("[Bus] subscribe: %s → %s", event_type, getattr(handler, "__qualname__", str(handler)))
+
+    def subscribe_async(self, event_type: str, async_handler: Callable) -> None:
+        """
+        Регистрирует ASYNC-обработчик (внешний потребитель: Notification, Dashboard, AI).
+
+        publish() синхронный → оборачиваем в sync-адаптер, который ставит
+        `asyncio.create_task(async_handler(symbol, data))`. Так тяжёлый потребитель
+        НЕ блокирует hot path scan_one — только постановка task в loop (дёшево).
+        Ошибки изолированы: упавший подписчик не валит publish/scan_one.
+
+        async_handler(symbol: str, data: dict) → awaitable
+        """
+        async def _safe_run(symbol: str, data: dict) -> None:
+            # Исключения подписчика глушим здесь, иначе "Task exception was never
+            # retrieved" в логах + потенциальная утечка. Подписчик НЕ валит ничего.
+            try:
+                await async_handler(symbol, data)
+            except Exception as e:
+                logger.debug("[Bus] async subscriber %s error: %s", event_type, e)
+
+        def _adapter(symbol: str, data: dict) -> None:
+            try:
+                asyncio.get_running_loop().create_task(_safe_run(symbol, data))
+            except RuntimeError:
+                # нет running loop (publish из не-async контекста) — пропускаем
+                logger.debug("[Bus] subscribe_async: no running loop for %s", event_type)
+            except Exception as e:
+                logger.debug("[Bus] subscribe_async adapter %s: %s", event_type, e)
+
+        _adapter.__qualname__ = f"async:{getattr(async_handler, '__qualname__', str(async_handler))}"
+        self._subscribers.setdefault(event_type, []).append(_adapter)
+        logger.debug("[Bus] subscribe_async: %s → %s", event_type, _adapter.__qualname__)
 
     def publish(self, symbol: str, event_type: str, data: dict = None) -> None:
         """

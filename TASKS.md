@@ -37,6 +37,20 @@
 
 ---
 
+## 🎧 LISTENER-CANON (14.06.2026) — канонизация механизма слушателей (Слой 2-5 роадмапа)
+
+> **Принцип (юзер):** scan_loop = оркестратор, ВСЁ остальное = подписчики ОДНОЙ шины (`PairContextBus.subscribe`). Рост = добавить слушателя, не трогая ядро. Не плодить запросы — слушать информативную шину. `docs/BUS_SUBSCRIBER_ROADMAP.md` Слой 2-5.
+
+| ID | Задача | Статус | Файлы |
+|---|---|---|---|
+| **LISTENER-CANON** | **Канонизировать единый listener-механизм через `PairContextBus.subscribe`.** Шаг 1: `subscribe_async` (sync→create_task адаптер, изоляция) + перевести `NotificationDispatcher` с прямого вызова в scan_loop на подписку `SMC_SNAP_UPDATED` → убрать строку из ядра. snap самодостаточен (current_price в publish). Хаб-реестр (`SubscriberHub`) — НЕ сейчас, вырастить на 2-м подписчике (Dashboard). | 🔄 в работе (Даат) | `core/context/pair_context.py`, `core/smc/sub_cube.py`, `bot/core/bot.py`, `bot/loops/scan_loop.py` |
+
+| **LISTENER-DASH** | **Слой 2:** Dashboard SSE-bridge — подписчик `SMC_SNAP_UPDATED`/`POSITION_OPENED`/`TRADE_CLOSED` → `_sse_broadcast` push. Убрать polling-пересчёт каждые 5с (метрики по `TRADE_CLOSED`, не по таймеру). | 🔵 после CANON | `web/dashboard_server.py` (`_handle_sse`) |
+
+| **LISTENER-STRAT** | **Слой 4:** Strategy-as-Subscriber — ote_nested/arch104/atr_change из scan_loop → отдельные подписчики шины. Большой рефактор, после стабилизации Слоя 2. | 🔵 бэклог | scan_loop, observer-loops |
+
+---
+
 ## 🏛️ BUS-ACCOUNT-EPIC (14.06.2026) — account/portfolio-измерение шины (L1→L2→L3)
 
 | ID | Задача | Статус | Файлы |
@@ -226,7 +240,7 @@
 | **DS-321** | 🚀 | **TSL гибридная коробка в проде:** `tsl_hybrid_enabled=true`, Gear 1/2/3, откат через config. Backtest +1.95R, 68% pos | DS |
 | **DS-326** | 🔴 | WT-B LTF-вход: три последовательных фильтра (бэктест). Базовый скрипт готов:… | DS |
 
-| **DS-325** | 🟠 ПОВЫШЕН | CONFIG-TYPED: типизировать `config_loader.py` через pydantic-settings. **🔴 ОБОСНОВАНИЕ 14.06 — CONFIG-SLTP-BUG доказал критичность:** секция sl_tp_engine (26 ключей exit/risk) молча не читалась (код trading.X → defaults), ote TSL был 1.0 вместо 4.0, вся TSL-сага на неверном config. **pydantic-settings ПРЕДОТВРАТИЛ БЫ:** типизированная схема = единое видное место + валидация + orphan-секции невозможны (юзер: «должно лежать на видном месте, все знают где»). **🟢 РОЙ 14.06 (7/7 ЗА, консенсус):** Ф1 — схема по доменам (вложенные `BaseModel`, `extra="forbid"` ловит orphan, `Dict[str,float]` для per-strategy). Ф2 — обёртка `ConfigProxy.get("a.b.c")` поверх Settings → старые сотни `config.get()` НЕ трогаем. Ф3 — постепенно на `settings.trading.X`. Миграция ПОСЕКЦИОННАЯ (начать с не-критичной: exchanges/proxy_pool, НЕ risk). CI: `model_json_schema()` + `jsonschema.validate(config.yaml)` → fail на additionalProperties. **🔴 КЛЮЧЕВОЕ (groq): критичные exit/risk поля = `Field(...)` REQUIRED без default — иначе pydantic ВОССОЗДАСТ тихий дефолт (CONFIG-SLTP-BUG №2).** Линтер парсит все `config.get()` → карта путей ↔ схема (обе стороны). Проверить `monitor_market` guard не рестартит молча на ValidationError. Разбор: obsidian/Team-Discussions/2026-06-14-...pydantic.md. Временный костыль: merge sl_tp_engine→trading (743cc64). Детали: memory vision_config_reorg + bug_sl_tp_engine_section_ignored. | 🟠 DS (приоритет ↑) | `core/infra/config_loader.py`, `config.yaml` |)
+| **DS-325** | 🟢 **Ф1+Ф2 ГОТОВО (DS 14.06).** Файл: `core/infra/pydantic_config.py`. OkoConfig: 6 domain-моделей + 30 Dict-секций, `extra="forbid"` (поймал 30 неучтённых полей → добавлены в схему). `ConfigProxy.get("a.b.c")` совместим с ConfigLoader. Поглощён `config_validator.py`. `strict=True`: config.yaml проходит чисто. `requirements.txt`: pydantic>=2.0.0 + pydantic-settings>=2.0.0. **НЕ сделано:** Ф3 (миграция callsites), перестройка config.yaml. | 🟢 done (Ф1+Ф2) | `core/infra/pydantic_config.py` |)
 
 | ARCH-128-ENGINE | 🔄 | **OTE-Retest Engine + Фрактальный Куб** (ВХОД-движок): слом→импульс→OTE→ретест→вход+SL. Ядро `ote_retest_setups`. **Исследование 03-04.06 (бэктест 5 пар) → `docs/RESEARCH_OTE_CUBE_2026-06-03.md`:** вложенность HTF-зона×LTF-слом=риск ×10; частичный TP1=1R лечит WR(12→72%); матрица оптимум 4h→15m(+0.471); каскад глубина=качество; двунаправленность (откаты ≥ продолж, 4h→5m откат +1.128 WR83%); дивергенция только В OTE; инвалид-SL(1.0)=неперекрытие Эллиотта; сверка с DS-316 сошлась на 15m. TP→TPSelector(вклад: отриц.фибо+EQL/FVG), TSL→tsl_updater, SL→ExitManager Ph2. **NEXT:** вход=LTF-слом в OTE+дивергенция; подтвердить 5m-откат на 45 парах. `memory/ote_nested_mtf_strategy.md` | Claude |
 | **ARCH-128-MON** | ⏳ | **Мониторинг качества OTE / Premium-Discount** — периодическая отрисовка фибо на чартах для визуальной сверки (правильно ли определяются OTE-зона и premium/discount). Контроль эталона после изменений | Claude |

@@ -509,10 +509,17 @@ class TradingAlertBot:
                 start_exec_ws(self)
             except Exception as _ews_e:
                 logger.warning("[EXEC-WS] start error: %s", _ews_e)
-            try:                                              # NOTIF-MVP: NotificationDispatcher (singleton per bot)
+            try:                                              # NOTIF: NotificationDispatcher = подписчик шины (LISTENER-CANON)
                 from core.notifications.dispatcher import NotificationDispatcher
+                from core.context.pair_context import SphereEvent
                 self.notif_dispatcher = NotificationDispatcher(self)
-                logger.info("[NOTIF] dispatcher инициализирован")
+                # Подписка на шину вместо прямого вызова из scan_loop:
+                # scan_loop публикует SMC_SNAP_UPDATED → subscribe_async → on_smc_snap.
+                # 0 строк notif в ядре; новый потребитель = +1 subscribe здесь.
+                self.pair_context.subscribe_async(
+                    SphereEvent.SMC_SNAP_UPDATED, self.notif_dispatcher.on_smc_snap
+                )
+                logger.info("[NOTIF] dispatcher подписан на шину (SMC_SNAP_UPDATED)")
             except Exception as _nd_e:
                 logger.warning("[NOTIF] dispatcher init error: %s", _nd_e)
             try:                                              # MARKET-WS v2: kline-push WS в ПРОЦЕССЕ (обходит GIL), за флагом

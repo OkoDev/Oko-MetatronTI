@@ -1488,8 +1488,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _smc_ohlcv["4h"] = df_4h
                         if df_1d is not None and not df_1d.empty:
                             _smc_ohlcv["1d"] = df_1d
+                        # current_price → snap самодостаточен в шине (LISTENER-CANON):
+                        # NotificationDispatcher подписан на SMC_SNAP_UPDATED через bus,
+                        # берёт цену из snap. scan_loop НЕ знает о потребителях.
+                        _cp_snap = float(df_entry.iloc[-1]["close"]) if (df_entry is not None and not df_entry.empty) else None
                         _smc_snap = get_smc_sub_cube().compute_and_publish(
                             sym, _smc_ohlcv, ctx_bus=_bus, df_1h=df_1h, df_4h=df_4h,
+                            current_price=_cp_snap,
                         )
                         if _smc_snap:
                             # Кешируем для SMC BOS/CHoCH EventBus (ниже по коду)
@@ -1511,13 +1516,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     except Exception as _smc_snap_e:
                         logger.debug("[ARCH-120] smc_sub_cube %s: %s", sym, _smc_snap_e)
 
-                    # NOTIF-MVP: dispatcher.on_smc_snap (1 строка — listener'ы сами разберутся)
-                    if _smc_snap:
-                        _nd = getattr(bot, "notif_dispatcher", None)
-                        if _nd is not None:
-                            _cp = float(df_entry.iloc[-1]["close"]) if (df_entry is not None and not df_entry.empty) else None
-                            _smc_snap["_current_price"] = _cp
-                            asyncio.create_task(_nd.on_smc_snap(sym, _smc_snap))
+                    # NOTIF: dispatcher подписан на SMC_SNAP_UPDATED через шину (LISTENER-CANON).
+                    # Прямой вызов убран — compute_and_publish выше уже опубликовал snap,
+                    # subscribe_async доставит его в NotificationDispatcher. 0 строк notif в ядре.
 
                     # ARCH-123: Сфера 8 = PivotSphere (формализован, + fibonacci_equiv).
                     # Заменил inline-публикацию. Снап: {1W/1D/1M: {PP,S1..R3}} + fib-карта.
