@@ -29,8 +29,13 @@ logger = logging.getLogger(__name__)
 
 VST_REST = "https://open-api-vst.bingx.com"
 LIVE_REST = "https://open-api.bingx.com"
-# SWAP (perpetual) user-data endpoint — НЕ /market (spot). Бот торгует swap.
-WS_BASE = "wss://open-api-swap.bingx.com/swap-market?listenKey="
+# 🎯 SWAP user-data WS — РАЗНЫЕ домены VST/PROD (docs-v3, эмпирич. подтв. 14.06):
+#   VST  → vst-open-api-ws.bingx.com (order/account events ИДУТ)
+#   PROD → open-api-swap.bingx.com   (LIVE)
+# Баг до 14.06: для VST слушали PROD-домен с VST-listenKey → только SNAPSHOT+ping,
+# 0 order events (executions идут на vst-домен). Корень orders=0 / "EXEC-WS тупик".
+VST_WS  = "wss://vst-open-api-ws.bingx.com/swap-market?listenKey="
+LIVE_WS = "wss://open-api-swap.bingx.com/swap-market?listenKey="
 
 _KEEPALIVE_SEC = 1800.0   # PUT listenKey каждые 30 мин (BingX TTL ~60 мин)
 _RECONNECT_SEC = 5.0
@@ -51,6 +56,7 @@ class UserDataStream:
         self._key = api_key
         self._secret = secret
         self._rest = VST_REST if is_vst else LIVE_REST
+        self._ws_base = VST_WS if is_vst else LIVE_WS
         self._on_event = on_event
         self._tag = account_tag
         self._listen_key: Optional[str] = None
@@ -155,7 +161,7 @@ class UserDataStream:
                         await asyncio.sleep(_LISTENKEY_RETRY_SEC)
                         continue
                     async with self._session.ws_connect(
-                        WS_BASE + self._listen_key,
+                        self._ws_base + self._listen_key,
                         timeout=aiohttp.ClientTimeout(total=20),
                         heartbeat=30,
                     ) as ws:
