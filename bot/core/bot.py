@@ -529,14 +529,32 @@ class TradingAlertBot:
                 logger.warning("[MarketWS-v2] start error: %s", _mws_e)
             # dashboard.enabled=false → не запускать (диагностика: изоляция нагрузки dashboard на loop)
             if config.get("dashboard.enabled", True):
-                asyncio.create_task(start_dashboard(
+                _dash_kwargs = dict(
                     db_path=self.trade_simulator.db_path,
                     host=config.get("dashboard.host", "127.0.0.1"),  # SEC-01a: localhost по умолчанию
                     config=config,
                     data_collector=self.data_collector,
                     trade_simulator=self.trade_simulator,
                     bot=self,
-                ))
+                )
+                if config.get("dashboard.threaded", False):
+                    # PERF-DASH-THREAD: dashboard в отдельном потоке+loop → HTTP не ждёт scan-очередь.
+                    # Безопасно: engine per-call connect (WAL), pair_context all_symbols()=снимок,
+                    # SSE через _broadcast_threadsafe (cross-loop мост). daemon → умрёт с процессом.
+                    import threading
+
+                    def _run_dashboard_thread():
+                        _loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(_loop)
+                        try:
+                            _loop.run_until_complete(start_dashboard(**_dash_kwargs))
+                        except Exception as _dte:
+                            logger.error("[Dashboard-thread] упал: %s", _dte)
+
+                    threading.Thread(target=_run_dashboard_thread, name="dashboard", daemon=True).start()
+                    logger.info("[Dashboard] запущен в ОТДЕЛЬНОМ потоке (threaded=true) — не ждёт scan-очередь")
+                else:
+                    asyncio.create_task(start_dashboard(**_dash_kwargs))
             else:
                 logger.warning("[Dashboard] ОТКЛЮЧЁН (dashboard.enabled=false) — диагностика нагрузки на loop")
             asyncio.create_task(ml_training_loop(self))

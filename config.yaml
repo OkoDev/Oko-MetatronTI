@@ -463,6 +463,7 @@ performance:
 dashboard:
   enabled: true         # false → не запускать aiohttp :8000 (диагностика нагрузки на loop). Замер 14.06: dashboard НЕ грузит цикл (OFF 282 ≈ ON 299, в шуме)
   host: 127.0.0.1       # SEC-01a: localhost по умолчанию
+  threaded: true        # PERF-DASH-THREAD: dashboard в отдельном потоке+loop → не ждёт scan-очередь (лечит латентность 11с). false=в главном loop (старое поведение)
 
 market_ws:
   enabled: true         # v2 ПРОЦЕСС (14.06): multiprocessing.Queue — GIL изолирован. Этап 1 SHADOW (use_ws=false).

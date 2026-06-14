@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 # Каждый элемент — asyncio.Queue, в которую кладём строки SSE-событий.
 _sse_dashboard_clients: list = []
 
+# ── PERF-DASH-THREAD: loop, в котором крутится dashboard (для cross-loop моста) ──
+# Когда dashboard в отдельном потоке (dashboard.threaded=true), очереди клиентов
+# принадлежат ЭТОМУ loop. SSE-события из главного loop (trade_simulator → _on_auto_close)
+# нельзя класть в очереди напрямую (asyncio.Queue не thread-safe) — только через
+# _dashboard_loop.call_soon_threadsafe. В одно-loop режиме _dashboard_loop == главный.
+_dashboard_loop = None  # type: ignore
+
 # ── LISTENER-DASH: метрики event-driven, не polling ────────────────────────
 # Тяжёлый dashboard-payload (summary/analytics/equity по 24K+ сделок) меняется
 # ТОЛЬКО при закрытии сделки. _metrics_version++ на каждое закрытие; SSE-цикл
@@ -53,8 +60,8 @@ def _bump_metrics_version() -> None:
     _metrics_version += 1
 
 
-async def _sse_broadcast(event_str: str) -> None:
-    """Отправить сырую SSE-строку всем подключённым dashboard-клиентам."""
+def _enqueue_to_clients(event_str: str) -> None:
+    """Положить SSE-строку в очереди всех клиентов. ДОЛЖНА вызываться в dashboard-loop."""
     dead = []
     for q in _sse_dashboard_clients:
         try:
@@ -66,6 +73,29 @@ async def _sse_broadcast(event_str: str) -> None:
             _sse_dashboard_clients.remove(q)
         except ValueError:
             pass
+
+
+async def _sse_broadcast(event_str: str) -> None:
+    """Отправить сырую SSE-строку всем клиентам (вызов ИЗ dashboard-loop, прямой)."""
+    _enqueue_to_clients(event_str)
+
+
+def _broadcast_threadsafe(event_str: str) -> None:
+    """Cross-loop SSE-мост: безопасно доставить событие из ЛЮБОГО потока/loop.
+
+    PERF-DASH-THREAD: trade_simulator (_on_auto_close) живёт в главном loop, а очереди
+    клиентов — в dashboard-loop. call_soon_threadsafe перекидывает put в нужный loop.
+    Если dashboard в том же loop (threaded=false) — _dashboard_loop == текущий, тоже корректно.
+    """
+    loop = _dashboard_loop
+    if loop is not None and loop.is_running():
+        try:
+            loop.call_soon_threadsafe(_enqueue_to_clients, event_str)
+            return
+        except Exception:
+            pass
+    # Fallback (loop не готов): прямой put — безопасно если вызвано в том же loop
+    _enqueue_to_clients(event_str)
 
 
 async def _handle_index(request: web.Request) -> web.Response:
@@ -2626,6 +2656,11 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
 
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
+    # PERF-DASH-THREAD: запомнить loop dashboard для cross-loop SSE-моста.
+    # В threaded-режиме это loop отдельного потока; иначе — главный loop.
+    global _dashboard_loop
+    _dashboard_loop = asyncio.get_running_loop()
+
     app = web.Application()
     app["engine"] = PerformanceEngine(db_path=db_path)
     app["config"] = config
@@ -2654,7 +2689,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
                         "event: trade_closed\n"
                         f"data: {json.dumps(dict(_row), ensure_ascii=False, default=str)}\n\n"
                     )
-                    await _sse_broadcast(_evt)
+                    # PERF-DASH-THREAD: вызов из главного loop → cross-loop мост в dashboard-loop
+                    _broadcast_threadsafe(_evt)
             except Exception as _e:
                 logger.debug("SSE auto-close broadcast error: %s", _e)
         trade_simulator.set_sse_trade_closed(_on_auto_close)
