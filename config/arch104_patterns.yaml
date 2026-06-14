@@ -7,7 +7,7 @@ note: 'Поток 2 ARCH-128: заменил старый реестр 2026-05-2
   топ-200 баланс.'
 patterns:
   DS_L001_pivotb_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - pivot_bounce_up_PP_1D
@@ -22,7 +22,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L002_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1h
@@ -54,7 +54,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L004_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -105,7 +105,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L007_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -122,7 +122,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L008_bullfv_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -139,7 +139,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L009_bullfv_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -156,7 +156,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L010_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_4h
@@ -171,7 +171,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L011_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1h
@@ -186,7 +186,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L012_bullfv_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -271,7 +271,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L017_abovee_abovee_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -289,7 +289,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L018_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -408,7 +408,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L025_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema200_4h
@@ -476,7 +476,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L029_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -559,7 +559,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L034_pivotb_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - pivot_bounce_up_S1_1D
@@ -609,7 +609,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L037_abovee_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - above_ema50_1d
@@ -679,7 +679,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L041_atrup1_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_up_1d
@@ -764,7 +764,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L046_bullfv_bullfv_rsidiv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1d
@@ -796,7 +796,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L048_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1h
@@ -811,7 +811,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L049_ema50a_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - ema50_above_ema200_4h
@@ -826,7 +826,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L050_bullfv_discou:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_1h
@@ -1642,7 +1642,7 @@ patterns:
     time_exit_hours: 24
     source: DS-315 walkforward_mht
   DS_L051_bullfv_rsios1:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1657,7 +1657,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L052_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -1672,7 +1672,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L053_atrup1_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_up_15m
@@ -1687,7 +1687,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L054_atrup1_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_up_15m
@@ -1702,7 +1702,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L055_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -1717,7 +1717,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L056_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -1732,7 +1732,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L057_bullfv_rsicro:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1747,7 +1747,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L058_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_in_15m
@@ -1762,7 +1762,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L059_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1777,7 +1777,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L060_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_in_15m
@@ -1822,7 +1822,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L063_bullfv_ema50a:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1837,7 +1837,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L064_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -1852,7 +1852,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L065_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -1867,7 +1867,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L066_bullfv_ema50a:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -1882,7 +1882,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L067_bullfv_ema50a:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -1897,7 +1897,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L068_bullfv_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1912,7 +1912,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L069_bullfv_wtos15:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1927,7 +1927,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L070_atrcro_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_cross_up_15m
@@ -1942,7 +1942,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L071_atrcro_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_cross_up_15m
@@ -1957,7 +1957,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L072_bullfv_ema50a_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1974,7 +1974,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L073_bullfv_ema50a_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -1991,7 +1991,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L074_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2006,7 +2006,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L075_bullfv_abovee:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2021,7 +2021,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L076_bullfv_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -2036,7 +2036,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L077_bullfv_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -2051,7 +2051,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L078_bullfv_rsidiv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2066,7 +2066,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L079_bullfv_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2081,7 +2081,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L080_bullfv_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -2096,7 +2096,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L081_bullfv_pivota:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -2111,7 +2111,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L082_atrcro_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_cross_up_15m
@@ -2128,7 +2128,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L083_atrcro_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - atr_cross_up_15m
@@ -2145,7 +2145,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L084_bullfv_atrcro_ema50a:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -2161,7 +2161,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L085_bullfv_atrcro_ema50a:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -2177,7 +2177,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L086_bullfv_rsidiv_ema50a:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2193,7 +2193,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L087_bullfv_atrup1:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2208,7 +2208,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L088_bullfv_bullmo:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -2223,7 +2223,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L089_bullfv_volspi:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -2238,7 +2238,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L090_bullfv_bullmo:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_15m
@@ -2253,7 +2253,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L091_bullfv_volspi:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
@@ -2268,7 +2268,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L092_bullfv_pivotb:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2283,7 +2283,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L093_bullfv_rsidiv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2298,7 +2298,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L094_bullfv_pivotn:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2313,7 +2313,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L095_bullfv_atrcro:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2344,7 +2344,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L097_bullfv_pivotb:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2359,7 +2359,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L098_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2374,7 +2374,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L099_bullfv_bullfv:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_15m
@@ -2389,7 +2389,7 @@ patterns:
     time_exit_hours: 24
     source: DS-316 LTF-15m nested
   DS_L100_bullfv_pivotb:
-    enabled: true
+    enabled: false
     direction: LONG
     anchor_factors:
     - bull_fvg_overlap_held_15m
