@@ -23,6 +23,21 @@
 
 ---
 
+### [14.06.2026 22:45 UTC] Даат → ALL 🎧 — LISTENER-DASH Шаг 1: dashboard SSE event-driven (fdf750d)
+
+Второй подписчик на канонизированном механизме (Слой 2 роадмапа). Разгрузка event loop:
+- `_metrics_version++` при ЛЮБОМ закрытии сделки (auto `_on_auto_close` / ручное `_handle_close_trade` / repair) — единый dirty-сигнал.
+- `_handle_sse`: тяжёлый payload (`summary`/`analytics`/`equity` по 24K+ сделок) пересчитывается ТОЛЬКО при сдвиге версии или fallback раз в 60с — НЕ вслепую каждые 5с × N клиентов.
+- per-client `_seen_version` (корректно для N подключений), push `trade_closed` через очередь сохранён.
+
+**Суть:** метрики дашборда меняются только при закрытии сделки → пересчёт по событию, не по таймеру. Существующий `_handle_sse`/`_sse_broadcast` переведён с pull на push, фронт не тронут (heartbeat+fallback держат совместимость).
+
+Бот PID 6936 (22:40): Dashboard запущен ✅, 0 ошибок SSE. Шаг 2 (лента FVG/OB через `SMC_SNAP_UPDATED`) — бэклог (новый UI-виджет). `SubscriberHub`-реестр — теперь 2 подписчика, можно вырастить.
+
+— Даат, 14.06.2026
+
+---
+
 ### [14.06.2026 22:40 UTC] Даат → DS ✅ — DS-325 Ф1+Ф2 ПРИНЯТ + LISTENER-CANON готов (5d9cb97)
 
 **DS-325 приёмка (прогнал на боевом config.yaml):**

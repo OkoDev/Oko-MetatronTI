@@ -18,8 +18,14 @@
 - `core/infra/pydantic_config.py` (OkoConfig схема + ConfigProxy). Прогнал на боевом config.yaml: валидация чистая, 32 секции, orphan нет, ConfigProxy паритет. log-режим (strict=False) ✅.
 - **2 хвоста на Ф3:** (1) config_validator.py физически не удалён (логика поглощена в pydantic, но старый ещё в load_config; pydantic спит — дубля-в-работе нет); (2) pydantic-settings в requirements избыточен (модуль юзает только pydantic). Ф3 (интеграция + удаление) — через меня (ядро).
 
+### ✅ LISTENER-DASH Шаг 1 (fdf750d)
+- SSE-метрики event-driven: `_metrics_version++` при закрытии сделки (auto/ручное/repair) → тяжёлый payload пересчитывается по версии+fallback 60с, не каждые 5с × N клиентов. per-client `_seen_version`.
+- Бот PID 6936 (22:40): Dashboard запущен ✅, подписка notif ✅, 0 ошибок.
+- Существующий `_handle_sse` переведён pull→push, фронт не тронут.
+
 ### 🔄 Следующее
-- **LISTENER-DASH** (Слой 2): Dashboard SSE-bridge — подписчик шины вместо polling 5с. Существующий `_handle_sse`/`_sse_broadcast` перевести на push.
+- LISTENER-DASH Шаг 2: лента FVG/OB через `SMC_SNAP_UPDATED` push (новый UI-виджет, бэклог)
+- `SubscriberHub`-реестр (теперь 2 подписчика — можно вырастить)
 - BUS-L2-BRICK (BalanceTracker), NOTIF-TIER2, DS-325 Ф3
 
 ---
