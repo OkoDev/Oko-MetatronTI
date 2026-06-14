@@ -1511,6 +1511,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     except Exception as _smc_snap_e:
                         logger.debug("[ARCH-120] smc_sub_cube %s: %s", sym, _smc_snap_e)
 
+                    # NOTIF-MVP: FVG уведомления (fvg_detected + fvg_touch)
+                    if _smc_snap:
+                        try:
+                            from core.notifications.fvg_notif import maybe_notify_fvg as _nfvg
+                            _np = float(df_entry.iloc[-1]["close"]) if (df_entry is not None and not df_entry.empty) else None
+                            asyncio.create_task(_nfvg(bot, sym, _smc_snap, _np))
+                        except Exception as _nfvg_e:
+                            logger.debug("[NOTIF] fvg_notif %s: %s", sym, _nfvg_e)
+
                     # ARCH-123: Сфера 8 = PivotSphere (формализован, + fibonacci_equiv).
                     # Заменил inline-публикацию. Снап: {1W/1D/1M: {PP,S1..R3}} + fib-карта.
                     _pc = getattr(bot, "pivot_calculator", None)
