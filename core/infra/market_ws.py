@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 WS_URL = "wss://open-api-swap.bingx.com/swap-market"  # public market (рынок единый VST/PROD)
 _RECONNECT_SEC = 5.0
+_STAGGER_SEC = 1.5  # задержка между первичными WS-подключениями (анти-залп 100410 при старте)
 _TF_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
           "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 
@@ -137,6 +138,11 @@ class MarketWS:
             self.stats[res] += 1
 
     async def _connection(self, batch: list[str], idx: int) -> None:
+        # Stagger: разносим ПЕРВИЧНЫЕ подключения во времени, чтобы 11 WS-handshake
+        # не били залпом одновременно со scan REST + EXEC-WS → BingX 100410 при старте.
+        # Только на первый connect (не на reconnect — иначе conn#10 ждал бы 15с при обрыве).
+        if idx > 0:
+            await asyncio.sleep(idx * _STAGGER_SEC)
         while self._running:
             try:
                 async with aiohttp.ClientSession() as s:
