@@ -174,6 +174,8 @@ trading:
   risk_pct: 1.0
   leverage: 5
   max_notional_mult: 20.0   # OTE-RBUG (14.06): hard cap notional = deposit × 20 (defense-in-depth от size-взрыва при SL≈entry). SL-guard 0.5% основная защита, cap подстраховка. Откат: большое число (off)
+  min_rr_per_strategy:      # SCALABILITY (14.06): per-source min RR (селекция качества вместо лимита позиций). Меньше входов → RISK контроль → sim≈биржа. Откат: убрать ключ
+    ote_nested: 3.0         # юзер: «не пропускать ote_nested <3R» — только качественные входы (RR>=3)
   regime_direction_block:
     enabled: false  # 14.04: убран — режимный классификатор ненадёжен, блокирует прибыльные входы
     TREND_DOWN: LONG
