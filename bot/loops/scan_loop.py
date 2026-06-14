@@ -2301,6 +2301,18 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     await asyncio.gather(*[scan_one(sym) for sym in pairs], return_exceptions=True)
     elapsed = _time.monotonic() - cycle_start
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
+    # Инструментация OHLCV: cache-hit vs REST per TF за цикл (диагностика market_ws/REST)
+    try:
+        from core.infra.api_engine import get_ohlcv_cache_stats, reset_ohlcv_cache_stats
+        _ohlcv_stats = get_ohlcv_cache_stats()
+        if _ohlcv_stats:
+            _total_rest = sum(v["rest"] for v in _ohlcv_stats.values())
+            logger.info("[OHLCV-CACHE] REST=%d/цикл | %s", _total_rest, {
+                tf: f"{v['hit']}h/{v['rest']}r ({v['hit_rate']:.0%})" for tf, v in sorted(_ohlcv_stats.items())
+            })
+        reset_ohlcv_cache_stats()
+    except Exception as _ocs_e:
+        logger.debug("[OHLCV-CACHE] stats error: %s", _ocs_e)
     if elapsed > _slow_cycle:
         logger.warning("⚠️ Цикл превысил %.0f сек — рассмотреть увеличение Semaphore или sleep", _slow_cycle)
     # D-056 (2026-05-24): tracking для дашборда — D-053 detection (когда scan_loop умирает)

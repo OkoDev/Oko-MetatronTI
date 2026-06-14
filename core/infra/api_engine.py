@@ -34,6 +34,27 @@ _CACHE_TTL: dict[str, float] = {
 }
 _DEFAULT_TTL: float = 60.0
 
+# ── Инструментация cache-hit vs REST per TF (диагностика market_ws/REST за цикл) ──
+from collections import Counter as _Counter
+_ohlcv_cache_hit: _Counter = _Counter()   # TF → сколько раз отдан из кэша (WS/TTL свежий)
+_ohlcv_cache_miss: _Counter = _Counter()  # TF → сколько раз пошёл в реальный REST
+
+
+def get_ohlcv_cache_stats() -> dict:
+    """Сводка cache-hit/REST per TF. hit_rate показывает покрытие WS+TTL."""
+    out = {}
+    for tf in set(_ohlcv_cache_hit) | set(_ohlcv_cache_miss):
+        h = _ohlcv_cache_hit.get(tf, 0)
+        m = _ohlcv_cache_miss.get(tf, 0)
+        tot = h + m
+        out[tf] = {"hit": h, "rest": m, "hit_rate": round(h / tot, 3) if tot else 0.0}
+    return out
+
+
+def reset_ohlcv_cache_stats() -> None:
+    _ohlcv_cache_hit.clear()
+    _ohlcv_cache_miss.clear()
+
 
 class OhlcvCache:
     """TTL-кеш с LRU eviction.
@@ -420,6 +441,7 @@ class ApiEngine:
             # 1. Кеш
             cached = self._cache.get(cache_key, _fetch_limit, ttl)
             if cached is not None:
+                _ohlcv_cache_hit[timeframe] += 1  # отдан из кэша (WS/TTL свежий)
                 # DS-322: отдаём только запрошенное количество баров
                 if len(cached) > limit:
                     return cached.iloc[-limit:]
@@ -443,6 +465,7 @@ class ApiEngine:
                 return None
 
         # 4. Создаём Future для этого запроса (другие корутины будут его ждать)
+        _ohlcv_cache_miss[timeframe] += 1  # реальный REST (кэш промахнулся / force_refresh)
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self._in_flight[dedup_key] = fut
