@@ -45,37 +45,43 @@ class OhlcvCache:
     def __init__(self, maxsize: int = 5000):
         self._data: OrderedDict = OrderedDict()
         self._maxsize = maxsize
+        # MARKET-WS Этап 2: cross-thread доступ (WS-поток пишет merge ↔ scan main-loop читает get).
+        # RLock — reentrant (merge() вызывает self.set() внутри, иначе deadlock).
+        self._lock = threading.RLock()
 
     def get(self, key: tuple, limit: int, ttl: float) -> Optional[pd.DataFrame]:
         """Возвращает копию DataFrame если кеш актуален и limit достаточен."""
-        entry = self._data.get(key)
-        if entry is None:
-            return None
-        if (time.monotonic() - entry["ts"]) >= ttl:
-            return None
-        if entry["limit"] < limit:
-            return None
-        # LRU: обновляем позицию при попадании
-        self._data.move_to_end(key)
-        return entry["df"].copy()
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return None
+            if (time.monotonic() - entry["ts"]) >= ttl:
+                return None
+            if entry["limit"] < limit:
+                return None
+            # LRU: обновляем позицию при попадании
+            self._data.move_to_end(key)
+            return entry["df"].copy()
 
     def get_stale(self, key: tuple, limit: int) -> Optional[pd.DataFrame]:
         """Возвращает кеш без проверки TTL (stale-on-error fallback при BingX DEGRADED)."""
-        entry = self._data.get(key)
-        if entry is None:
-            return None
-        if entry["limit"] < limit:
-            return None
-        return entry["df"].copy()
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return None
+            if entry["limit"] < limit:
+                return None
+            return entry["df"].copy()
 
     def set(self, key: tuple, df: pd.DataFrame, limit: int) -> None:
         """Записывает запись в кеш, вытесняя старейшую при переполнении."""
-        if key in self._data:
-            self._data.move_to_end(key)
-        self._data[key] = {"df": df, "ts": time.monotonic(), "limit": limit}
-        # Evict oldest entries
-        while len(self._data) > self._maxsize:
-            self._data.popitem(last=False)
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = {"df": df, "ts": time.monotonic(), "limit": limit}
+            # Evict oldest entries
+            while len(self._data) > self._maxsize:
+                self._data.popitem(last=False)
 
     def merge(self, key: tuple, new_df: pd.DataFrame) -> str:
         """D-066 Phase B: merge новой WS свечи с существующим кешем.
@@ -97,39 +103,40 @@ class OhlcvCache:
         """
         if new_df is None or new_df.empty or "time" not in new_df.columns:
             return "invalid"
-        entry = self._data.get(key)
-        if entry is None:
-            # D-066 fix: НЕ делаем init с малым limit (WS даёт 1 bar = limit=1).
-            # scan_loop запрашивает limit=200+ → cache.get(limit=200) вернёт None
-            # потому что entry["limit"]=1 < 200 → REST fetch → регрессия scan_loop.
-            # Ждём пока REST загрузит первые N баров, потом WS только replace/append.
-            return "skip_no_cache"
-        existing = entry["df"]
-        if "time" not in existing.columns:
-            # Несовместимый формат в кеше — overwrite
-            self.set(key, new_df.copy(), limit=len(new_df))
-            return "init"
-        try:
-            new_last_t = int(new_df["time"].iloc[-1])
-            cache_last_t = int(existing["time"].iloc[-1])
-        except (ValueError, TypeError, IndexError):
-            return "invalid"
-        if new_last_t < cache_last_t:
-            return "stale"
-        if new_last_t == cache_last_t:
-            # Тот же bar — обновляем последнюю строку in-place
-            for col in ("open", "high", "low", "close", "volume"):
-                if col in new_df.columns:
-                    existing.iloc[-1, existing.columns.get_loc(col)] = new_df[col].iloc[-1]
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                # D-066 fix: НЕ делаем init с малым limit (WS даёт 1 bar = limit=1).
+                # scan_loop запрашивает limit=200+ → cache.get(limit=200) вернёт None
+                # потому что entry["limit"]=1 < 200 → REST fetch → регрессия scan_loop.
+                # Ждём пока REST загрузит первые N баров, потом WS только replace/append.
+                return "skip_no_cache"
+            existing = entry["df"]
+            if "time" not in existing.columns:
+                # Несовместимый формат в кеше — overwrite
+                self.set(key, new_df.copy(), limit=len(new_df))
+                return "init"
+            try:
+                new_last_t = int(new_df["time"].iloc[-1])
+                cache_last_t = int(existing["time"].iloc[-1])
+            except (ValueError, TypeError, IndexError):
+                return "invalid"
+            if new_last_t < cache_last_t:
+                return "stale"
+            if new_last_t == cache_last_t:
+                # Тот же bar — обновляем последнюю строку in-place
+                for col in ("open", "high", "low", "close", "volume"):
+                    if col in new_df.columns:
+                        existing.iloc[-1, existing.columns.get_loc(col)] = new_df[col].iloc[-1]
+                entry["ts"] = time.monotonic()
+                return "replace"
+            # Новый bar (new_last_t > cache_last_t): append + drop oldest, держим длину неизменной
+            merged = pd.concat([existing, new_df.iloc[[-1]]], ignore_index=True)
+            if len(merged) > entry["limit"]:
+                merged = merged.iloc[len(merged) - entry["limit"]:].reset_index(drop=True)
+            entry["df"] = merged
             entry["ts"] = time.monotonic()
-            return "replace"
-        # Новый bar (new_last_t > cache_last_t): append + drop oldest, держим длину неизменной
-        merged = pd.concat([existing, new_df.iloc[[-1]]], ignore_index=True)
-        if len(merged) > entry["limit"]:
-            merged = merged.iloc[len(merged) - entry["limit"]:].reset_index(drop=True)
-        entry["df"] = merged
-        entry["ts"] = time.monotonic()
-        return "append"
+            return "append"
 
     def __len__(self) -> int:
         return len(self._data)

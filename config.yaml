@@ -454,8 +454,8 @@ performance:
 # ЭТАПЫ: enabled=true + use_ws=false = SHADOW (теневой кэш, scan на REST, сравнение).
 #        use_ws=true = ОСНОВНОЙ cache (scan читает WS) — ТОЛЬКО после shadow-валидации ≥99%.
 market_ws:
-  enabled: false        # вкл → запуск WS-потока (Этап 1 SHADOW)
-  use_ws: false         # Этап 2: merge в основной cache (scan читает WS-свечи)
+  enabled: false        # ОТКАТ 14.06 — поток жрёт GIL (70k свечей/мин CPU) → scan-cycle 300с→600с+. Нужен ОТДЕЛЬНЫЙ ПРОЦЕСС (D-072), не поток
+  use_ws: false         # откат вместе с enabled
   timeframes: [5m, 15m]
   batch_pairs: 50       # пар на одно WS-соединение (526/50 ≈ 11 соединений)
 

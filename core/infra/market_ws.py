@@ -140,8 +140,9 @@ class MarketWS:
         while self._running:
             try:
                 async with aiohttp.ClientSession() as s:
-                    async with s.ws_connect(WS_URL, timeout=aiohttp.ClientTimeout(total=20),
-                                            heartbeat=30) as ws:
+                    # БЕЗ aiohttp heartbeat — BingX шлёт свой "Ping"→"Pong" (ниже). Двойной ping
+                    # давал ConnectionResetError в WebSocketWriter.ping при reconnect (лог-шум).
+                    async with s.ws_connect(WS_URL, timeout=aiohttp.ClientTimeout(total=20)) as ws:
                         self.stats["conns"] += 1
                         for sym in batch:
                             for tf in self._tfs:
@@ -228,15 +229,14 @@ def start_market_ws(bot):
 
     from core.infra.api_engine import OhlcvCache
     if use_ws:
-        # Этап 2: основной cache + lock (cache живёт в data_collector._engine._cache)
+        # Этап 2: ОСНОВНОЙ cache (scan читает отсюда) — merge делает свечи свежими
         cache = bot.data_collector._engine._cache
-        lock = getattr(bot.data_collector._engine, "_cache_lock", None) or threading.Lock()
         shadow = False
     else:
-        # Этап 1 SHADOW: свой теневой кэш — основной не трогаем
+        # Этап 1 SHADOW: свой теневой кэш — основной/scan не трогаем
         cache = OhlcvCache(maxsize=5000)
-        lock = threading.Lock()
         shadow = True
+    lock = cache._lock   # OhlcvCache.RLock — единый thread-safe доступ get/set/merge (cross-thread)
 
     mws = MarketWS(symbols, tfs, cache, lock, batch_pairs=batch, shadow=shadow)
     bot._market_ws = mws
