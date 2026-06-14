@@ -460,6 +460,10 @@ performance:
 # Кастомный aiohttp WS в отдельном потоке (НЕ ccxt.pro). Доказан тестом 14.06.
 # ЭТАПЫ: enabled=true + use_ws=false = SHADOW (теневой кэш, scan на REST, сравнение).
 #        use_ws=true = ОСНОВНОЙ cache (scan читает WS) — ТОЛЬКО после shadow-валидации ≥99%.
+dashboard:
+  enabled: true         # false → не запускать dashboard (диагностика: изоляция нагрузки на event loop)
+  host: 127.0.0.1       # SEC-01a: localhost по умолчанию
+
 market_ws:
   enabled: true         # v2 ПРОЦЕСС (14.06): multiprocessing.Queue — GIL изолирован. Этап 1 SHADOW (use_ws=false).
   use_ws: true          # Этап 2 LIVE (14.06): scan читает из WS-кэша, без REST-polling ohlcv

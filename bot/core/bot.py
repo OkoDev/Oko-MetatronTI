@@ -527,14 +527,18 @@ class TradingAlertBot:
                 start_market_ws_v2(self)
             except Exception as _mws_e:
                 logger.warning("[MarketWS-v2] start error: %s", _mws_e)
-            asyncio.create_task(start_dashboard(
-                db_path=self.trade_simulator.db_path,
-                host=config.get("dashboard.host", "127.0.0.1"),  # SEC-01a: localhost по умолчанию
-                config=config,
-                data_collector=self.data_collector,
-                trade_simulator=self.trade_simulator,
-                bot=self,
-            ))
+            # dashboard.enabled=false → не запускать (диагностика: изоляция нагрузки dashboard на loop)
+            if config.get("dashboard.enabled", True):
+                asyncio.create_task(start_dashboard(
+                    db_path=self.trade_simulator.db_path,
+                    host=config.get("dashboard.host", "127.0.0.1"),  # SEC-01a: localhost по умолчанию
+                    config=config,
+                    data_collector=self.data_collector,
+                    trade_simulator=self.trade_simulator,
+                    bot=self,
+                ))
+            else:
+                logger.warning("[Dashboard] ОТКЛЮЧЁН (dashboard.enabled=false) — диагностика нагрузки на loop")
             asyncio.create_task(ml_training_loop(self))
             asyncio.create_task(weekly_report_loop(self))
             asyncio.create_task(wr_health_check_loop(self))    # DEV-27: rolling WR monitor
