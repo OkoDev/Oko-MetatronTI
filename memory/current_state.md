@@ -4,6 +4,30 @@
 
 ---
 
+## [15.06.2026 ~00:10 UTC] Агент: Даат (Opus 4.8) — PERF: расследование GIL → dashboard в поток (вариант A)
+
+### ✅ Сделано (33196ea + цепочка)
+- **PERF-DASH-THREAD (вариант A)**: dashboard в отдельном потоке+loop за флагом `dashboard.threaded=true`. **Латентность /api/stats 7.5→0.3с, /api/pairs 11.4→0.25с (~30×)** под scan-нагрузкой. scan-цикл не пострадал, 0 cross-loop ошибок. SSE через `_broadcast_threadsafe` (call_soon_threadsafe мост).
+- **LISTENER-CANON** (5d9cb97): NotificationDispatcher → подписчик шины. **LISTENER-DASH** (fdf750d): SSE метрики event-driven.
+- **DS-325 Ф1+Ф2** принят (66b13ab, pydantic-схема).
+
+### 🔬 Расследование perf (метод: замеры ДО кода)
+- Гипотеза compute-GIL (ProcessPool, вариант B) → **опровергнута** (DS Ф1: WT+trend=0.5% цикла, pool медленнее sync). B мёртв.
+- Гипотеза «dashboard грузит цикл» → **опровергнута** (эксперимент OFF: 282≈299с, в шуме).
+- Реальный корень латентности dashboard 11с = **event-loop starvation** (HTTP ждёт очередь 522 scan-корутин) → вылечено вариантом A.
+- Длина цикла ~290с = сам scan (REST-fetch 522×5TF) → market_ws/EXEC-WS (отдельная ось, в работе).
+- **Ценность:** не влили ProcessPool-рефактор в scan_one и лишнюю dashboard-оптимизацию — 3 гипотезы отсеяны замерами.
+
+### 🟢 Бот (PID 2172, рестарт 00:03)
+- dashboard.threaded=true, dashboard.enabled=true
+- LISTENER-CANON+DASH активны, market_ws v2 LIVE, EXEC-WS 2b
+
+### 🔄 Следующее
+- Ось «длина цикла»: market_ws (OHLCV→WS) — главный IO-рычаг
+- BUS-L2-BRICK (BalanceTracker), NOTIF-TIER2, DS-325 Ф3
+
+---
+
 ## [14.06.2026 ~22:40 UTC] Агент: Даат (Opus 4.8) — LISTENER-CANON Шаг 1 + DS-325 принят
 
 ### ✅ Сделано (5d9cb97)

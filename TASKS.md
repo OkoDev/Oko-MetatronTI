@@ -91,7 +91,7 @@
 
 | **PERF-COMPUTE-POOL-Ф0/Ф1** → DS | ✅ **ЗАМЕР ГОТОВ (DS 23:15+23:30).** Ф0: trend+WT основное compute. Ф1 прототип: WT+trend=12мс/пару=1.6с=0.5% цикла, ProcessPool МЕДЛЕННЕЕ sync (spawn+IPC+импорт). **Вывод: compute НЕ бутылка, B не окупается.** Скрипты `scripts/perf_compute_pool_probe.py`+`_batched.py`. | ✅ done (вывод: B мёртв) | `scripts/perf_compute_pool_*.py` |
 
-| **PERF-DASH-THREAD** | **Вариант A — dashboard в отдельный поток/процесс.** ДВОЙНОЕ обоснование: (1) compute не GIL-bound (DS Ф1: 0.5% цикла); (2) **эксперимент dashboard OFF 14.06: НЕ грузит цикл** (OFF 282 ≈ ON 299, в шуме) → dashboard=жертва starvation, не источник. Лаг 11с = его запрос ждёт очередь scan-корутин. Поток получит время (GIL свободен) → латентность спадёт. Флаг `dashboard.enabled` готов (398ac4e). | 🟢 обоснован, готов к старту | `web/dashboard_server.py`, `bot/core/bot.py` |
+| **PERF-DASH-THREAD** | ✅ **ГОТОВО (33196ea, вариант A).** Dashboard в отдельном потоке+loop за флагом `dashboard.threaded`. **Латентность: /api/stats 7.5с→0.3с, /api/pairs 11.4с→0.25с (~20-40×)** под scan-нагрузкой. scan-цикл не пострадал, 0 cross-loop ошибок. SSE через `_broadcast_threadsafe` (call_soon_threadsafe мост главный↔dashboard loop). Cross-thread безопасно: engine per-call connect WAL, all_symbols()=снимок, close_trade sync WAL, AppRunner без signal-handlers. | ✅ done | `web/dashboard_server.py`, `bot/core/bot.py`, `config.yaml` |
 
 | **PERF-SCAN-CYCLE** | **Длина цикла ~290с = сам scan** (REST-fetch 522×5TF + observers + IO), НЕ dashboard/compute (оба развеяны замерами 14.06). Рычаг: market_ws (OHLCV→WS, убрать REST) + EXEC-WS. Уже в работе (MARKET-WS v2 SHADOW, EXEC-WS 2b). | 🔵 IO-рычаг (market_ws/EXEC-WS) | `core/infra/market_ws_v2.py`, scan_loop fetch |
 

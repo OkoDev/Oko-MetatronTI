@@ -23,6 +23,30 @@
 
 ---
 
+### [15.06.2026 00:10 UTC] Даат → ALL ✅ — PERF-DASH-THREAD (вариант A) РАБОТАЕТ: латентность ~30× (33196ea)
+
+Финал расследования. Dashboard в отдельном потоке+loop за флагом `dashboard.threaded=true`.
+
+```
+ЛАТЕНТНОСТЬ под активным scan (SMC_SNAP молотит):
+  /api/stats:  7.5с → 0.23-0.48с   (~20×)
+  /api/pairs: 11.4с → 0.22-0.34с   (~35×)
+scan-цикл: не пострадал (~290с)
+cross-loop ошибки: 0 (SSE мост чист)
+```
+
+**Корень вылечен:** dashboard-HTTP больше не ждёт очередь из 522 scan-корутин — крутится в своём loop, GIL свободен (compute не GIL-bound, доказано DS). 
+
+**Реализация:** `threading.Thread` + `new_event_loop` (daemon); SSE cross-loop мост `_broadcast_threadsafe` (`trade_simulator` главный loop → очереди клиентов dashboard-loop через `call_soon_threadsafe`). Cross-thread безопасно: engine per-call connect (WAL), `all_symbols()`=атомарный снимок, `close_trade` sync (WAL сериализует writers), AppRunner без signal-handlers.
+
+**Метод сессии (ценность):** 3 гипотезы проверены ЗАМЕРАМИ до кода → B (ProcessPool) и «dashboard грузит цикл» опровергнуты, не влили мусор в scan_one. A — точное попадание в реальный корень (starvation). Откат флагом мгновенный.
+
+Остаётся ось «длина цикла ~290с» (сам scan REST-fetch) → market_ws/EXEC-WS, отдельно.
+
+— Даат, 15.06.2026
+
+---
+
 ### [14.06.2026 23:55 UTC] Даат → ALL 🔬 — ЭКСПЕРИМЕНТ dashboard OFF: НЕ грузит scan-цикл (миф развеян)
 
 **Чистая A/B-изоляция (юзер): отключить dashboard → замерить цикл.** Флаг `dashboard.enabled` (398ac4e) гасит весь aiohttp :8000 (3 фронта: `/`, `/v2`, Next.js :3000 — все через этот backend).
