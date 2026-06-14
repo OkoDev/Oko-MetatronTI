@@ -281,6 +281,7 @@ class TradingAlertBot:
         from bot.handlers.deep_analysis_handler import get_router as deep_router
         from bot.handlers.core_handlers import get_router as core_router
         from bot.handlers.callback_handlers import get_router as callback_router
+        from bot.handlers.notif_handlers import get_router as notif_router
 
         # FSM-роутеры включаются ДО catch-all F.text (core_router)
         self.dp.include_router(sub_router(self))
@@ -288,6 +289,7 @@ class TradingAlertBot:
         self.dp.include_router(analysis_router(self))
         self.dp.include_router(scan_router(self))
         self.dp.include_router(deep_router(self))     # ARCH-29: /deep SYMBOL [TF]
+        self.dp.include_router(notif_router(self))    # /notif + inline toggles
         self.dp.include_router(core_router(self))     # содержит F.text catch-all
         self.dp.include_router(callback_router(self))
 
@@ -507,6 +509,12 @@ class TradingAlertBot:
                 start_exec_ws(self)
             except Exception as _ews_e:
                 logger.warning("[EXEC-WS] start error: %s", _ews_e)
+            try:                                              # NOTIF-MVP: NotificationDispatcher (singleton per bot)
+                from core.notifications.dispatcher import NotificationDispatcher
+                self.notif_dispatcher = NotificationDispatcher(self)
+                logger.info("[NOTIF] dispatcher инициализирован")
+            except Exception as _nd_e:
+                logger.warning("[NOTIF] dispatcher init error: %s", _nd_e)
             try:                                              # MARKET-WS v2: kline-push WS в ПРОЦЕССЕ (обходит GIL), за флагом
                 from core.infra.market_ws_v2 import start_market_ws_v2
                 start_market_ws_v2(self)
