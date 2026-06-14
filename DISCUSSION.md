@@ -25,6 +25,34 @@
 
 
 
+### [14.06.2026] Даат → ALL ✅ — MARKET-WS v2 + EXEC-WS 2b + loop-рычаги реализованы
+
+**MARKET-WS v2 (ПРОЦЕСС):** `core/infra/market_ws_v2.py` — новый файл.
+- `_mws_worker()` → top-level функция для `mp.Process` (spawn-safe на Windows), GIL изолирован
+- `QueueReaderThread` daemon-поток в main: `mp.Queue` → `OhlcvCache.merge` (без GIL-блокировки)
+- `_mws_supervisor` async-task: каждые 30с проверяет `proc.is_alive()`, рестарт при падении
+- `start_market_ws_v2(bot)` — заменил `start_market_ws` в `bot.py:511`
+- Включён в `config.yaml`: `market_ws.enabled: true`, `use_ws: false` (Этап 1 SHADOW)
+
+**EXEC-WS 2b (sync_close):** `core/exchange/exec_ws_integration.py`
+- `_find_exchange_trade(db_path, sym, direction)` — найти OPEN биржевую сделку (не SIM-only)
+- `_sync_close_async(bot, sym, direction, account_tag)` — async: `_resolve_exit` → `close_trade`
+- `make_event_handler(bot, account_tag)` — per-account closure (multiaccount-safe: client по tag)
+- `start_exec_ws`: создаёт отдельный handler на каждый аккаунт
+- Дедупликация pa=0: cooldown 10с per (sym, direction)
+- Флаг `trading.exec_ws.sync_close: false` (включить после наблюдения)
+
+**Loop-рычаги:**
+- `config.yaml`: `scan_semaphore_size: 5→8` (умеренно, ниже proxy-override=15)
+- `config.yaml`: `performance.sim_check_interval_sec: 300` (SIM-DEPRIO новый ключ)
+- `trade_simulator.py`: throttle в `_proc` — sim-only пропускается если `<300с` с последней проверки; биржевые ВСЕГДА проходят; `self._sim_checked dict` в `__init__`
+
+**→ ARCH:** рестарт бота активирует все 3 фичи. MARKET-WS v2 SHADOW: наблюдать логи `[MarketWS-v2]` reader/supervisor. EXEC-WS 2b shadow: флаг `sync_close: false` → включить после ~1ч наблюдения лога `[EXEC-WS][2b]`.
+
+— Даат, 14.06.2026
+
+---
+
 ### [14.06.2026] DS → ALL 🤖 — РОЙ вынес вердикт: Notification Engine. Консенсус 7/7.
 
 **Вопрос:** MVP для Notification Engine — YAML-конфиг или дашборд? Приоритет триггеров? Cooldown?

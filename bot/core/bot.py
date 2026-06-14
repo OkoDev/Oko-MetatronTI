@@ -507,11 +507,11 @@ class TradingAlertBot:
                 start_exec_ws(self)
             except Exception as _ews_e:
                 logger.warning("[EXEC-WS] start error: %s", _ews_e)
-            try:                                              # MARKET-WS: kline-push WS (5m/15m → cache), отдельный поток, за флагом
-                from core.infra.market_ws import start_market_ws
-                start_market_ws(self)
+            try:                                              # MARKET-WS v2: kline-push WS в ПРОЦЕССЕ (обходит GIL), за флагом
+                from core.infra.market_ws_v2 import start_market_ws_v2
+                start_market_ws_v2(self)
             except Exception as _mws_e:
-                logger.warning("[MarketWS] start error: %s", _mws_e)
+                logger.warning("[MarketWS-v2] start error: %s", _mws_e)
             asyncio.create_task(start_dashboard(
                 db_path=self.trade_simulator.db_path,
                 host=config.get("dashboard.host", "127.0.0.1"),  # SEC-01a: localhost по умолчанию

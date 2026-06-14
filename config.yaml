@@ -428,7 +428,8 @@ detectors:
     strength_counter_multiplier: 8
 performance:
   check_open_semaphore: 15
-  scan_semaphore_size: 5
+  scan_semaphore_size: 8
+  sim_check_interval_sec: 300   # SIM-DEPRIO: throttle sim-only в check_open (300с вместо 60с). Биржевые — всегда. Откат: 60
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
@@ -454,8 +455,8 @@ performance:
 # ЭТАПЫ: enabled=true + use_ws=false = SHADOW (теневой кэш, scan на REST, сравнение).
 #        use_ws=true = ОСНОВНОЙ cache (scan читает WS) — ТОЛЬКО после shadow-валидации ≥99%.
 market_ws:
-  enabled: false        # ОТКАТ 14.06 — поток жрёт GIL (70k свечей/мин CPU) → scan-cycle 300с→600с+. Нужен ОТДЕЛЬНЫЙ ПРОЦЕСС (D-072), не поток
-  use_ws: false         # откат вместе с enabled
+  enabled: true         # v2 ПРОЦЕСС (14.06): multiprocessing.Queue — GIL изолирован. Этап 1 SHADOW (use_ws=false).
+  use_ws: false         # false = SHADOW (теневой кэш, scan на REST). true = Этап 2 (scan читает WS) — после валидации ≥99%
   timeframes: [5m, 15m]
   batch_pairs: 50       # пар на одно WS-соединение (526/50 ≈ 11 соединений)
 

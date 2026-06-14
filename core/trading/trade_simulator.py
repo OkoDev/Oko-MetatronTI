@@ -119,6 +119,8 @@ class TradeSimulator:
         self._force_rest_ts: dict = {}
         # DS-322: throttle REPAIR-SL для старых SIM-сделок. trade_id → ts последней проверки.
         self._repair_checked: dict = {}
+        # SIM-DEPRIO: throttle sim-only check (не биржевые) — освобождает semaphore-бюджет для реальных.
+        self._sim_checked: dict = {}  # trade_id → monotonic ts последней проверки
 
     def set_bot_ref(self, bot) -> None:
         """27.05: weakref на bot для shadow_signal_quality (нужен ConfirmationAggregator)."""
@@ -1812,10 +1814,23 @@ class TradeSimulator:
         _sem = asyncio.Semaphore(_sem_n)
         if getattr(self, '_ops05_piv_lock', None) is None:
             self._ops05_piv_lock = asyncio.Lock()
+        # SIM-DEPRIO: throttle интервал из config (default 60с = без изменений; 300с = экономия 80%)
+        _sim_iv = int(_ops05_cfg.get("performance.sim_check_interval_sec", 60)) if _ops05_cfg else 60
 
         async def _proc(trade):
             _ops05c = 0
             _ops05tsl = []
+            # SIM-DEPRIO: пропустить sim-only сделки если не истёк throttle-интервал.
+            # Биржевые (exchange_order_id реальный) — всегда проверять (деньги).
+            _exch_id_pre = trade.get("exchange_order_id")
+            _is_sim_only = not (bool(_exch_id_pre) and _exch_id_pre != "SIM")
+            if _is_sim_only:
+                import time as _t_sim
+                _now_sim = _t_sim.monotonic()
+                _tid_sim = trade["id"]
+                if _now_sim - self._sim_checked.get(_tid_sim, 0) < _sim_iv:
+                    return
+                self._sim_checked[_tid_sim] = _now_sim
             async with _sem:
                 trade_id = trade["id"]
                 symbol = trade["symbol"]

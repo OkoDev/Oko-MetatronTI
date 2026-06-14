@@ -6,9 +6,12 @@ on_event(WS) → действия БД:
      → найти свежую OPEN-сделку symbol+direction с exch_id=None → записать orderId.
      Лечит баг-семью exchange_order_id=None (orphan/фантомные SIM-only).
   ЭТАП 2b (sync_close): ACCOUNT_UPDATE P[].pa=0 (позиция закрыта на бирже)
-     → [позже] sync БД close. Пока только лог.
+     → найти OPEN биржевую сделку → _resolve_exit (REST filled orders) → close_trade.
+     Лечит orphan/zombie/drift: позиция закрылась на бирже, БД узнаёт сразу (не через polling).
 
 Всё за config-флагами trading.exec_ws.* (default false). SHADOW: если флаг off → лог «would …».
+Per-account closure: start_exec_ws создаёт отдельный handler на каждый аккаунт (account_tag),
+чтобы sync_close использовал правильный client (корень hedge_close_multiacct_root).
 """
 from __future__ import annotations
 
@@ -97,8 +100,73 @@ def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, 
         return False
 
 
-def make_event_handler(bot):
+_ACC_TAG_TO_INT = {"acc1": 1, "acc2": 2, "live": 1}
+_SYNC_CLOSE_COOLDOWN_SEC = 10   # дедупликация: повторный pa=0 по той же паре в N сек игнорируется
+
+
+def _find_exchange_trade(db_path: str, sym: str, direction: str):
+    """Найти OPEN биржевую сделку (не SIM-only) по символу+направлению.
+
+    Возвращает id или None. Биржевая = execution_mode != 'SIM' OR exchange_order_id реальный.
+    """
+    import sqlite3
+    try:
+        with sqlite3.connect(db_path, timeout=5) as conn:
+            row = conn.execute(
+                """SELECT id FROM simulated_trades
+                   WHERE symbol=? AND direction=? AND status='OPEN'
+                     AND (execution_mode != 'SIM' OR
+                          (exchange_order_id IS NOT NULL AND exchange_order_id != '' AND exchange_order_id != 'SIM'))
+                   ORDER BY id DESC LIMIT 1""",
+                (sym, direction),
+            ).fetchone()
+            return row[0] if row else None
+    except Exception:
+        return None
+
+
+async def _sync_close_async(bot, sym: str, direction: str, account_tag: str) -> None:
+    """EXEC-WS 2b: позиция закрыта на бирже (pa=0) → закрыть OPEN в БД.
+
+    Алгоритм:
+      1. Найти биржевую OPEN-сделку в БД (не SIM-only).
+      2. _resolve_exit через filled orders → реальный статус + exit_price.
+      3. close_trade в БД.
+    Если _resolve_exit не нашёл ордер → EXPIRED (fallback из position_sync).
+    Multiaccount-safe: client берётся для account_tag аккаунта (account_router).
+    """
+    trade_id = _find_exchange_trade(bot.trade_simulator.db_path, sym, direction)
+    if not trade_id:
+        logger.info("[EXEC-WS][2b] %s %s pa=0 — OPEN в БД не найдена (уже закрыта/SIM-only)", sym, direction)
+        return
+
+    status, exit_price = "EXPIRED", None
+    try:
+        acc_int = _ACC_TAG_TO_INT.get(account_tag, 1)
+        router = bot.order_manager._get_router()
+        client = router.client_for_account(acc_int)
+        if client is not None:
+            from core.exchange.position_sync import _resolve_exit
+            status, exit_price = await _resolve_exit(client, sym, direction, None)
+    except Exception as e:
+        logger.warning("[EXEC-WS][2b] _resolve_exit %s %s tag=%s: %s", sym, direction, account_tag, e)
+
+    try:
+        ok = bot.trade_simulator.close_trade(trade_id, status, exit_price)
+        logger.info("[EXEC-WS][2b] #%d %s %s → %s @ %s (WS pa=0 sync_close ok=%s)",
+                    trade_id, sym, direction, status, exit_price, ok)
+    except Exception as e:
+        logger.warning("[EXEC-WS][2b] close_trade #%d error: %s", trade_id, e)
+
+
+def make_event_handler(bot, account_tag: str = "acc1"):
+    """Создаёт on_event closure для одного аккаунта (account_tag).
+
+    start_exec_ws вызывает per-account чтобы sync_close использовал правильный client.
+    """
     cfg = bot.config
+    # дедупликация pa=0: {(sym, direction): last_close_ts}
+    _sync_close_seen: dict = {}
 
     async def on_event(etype: str, msg: dict) -> None:
         et = (etype or "").upper()
@@ -120,15 +188,37 @@ def make_event_handler(bot):
                     dry = not bool(cfg.get("trading.exec_ws.write_exch_id", False))
                     _write_exch_id(bot, symbol, direction, order_id, qty, dry)
             return
-        # ── ЭТАП 2b: позиция закрыта (pa=0) — пока лог (sync_close позже) ──
+        # ── ЭТАП 2b: позиция закрыта (pa=0) → sync_close БД ──
         if et == "ACCOUNT_UPDATE":
             a = msg.get("a") or {}
             for p in (a.get("P") or []):
-                if isinstance(p, dict) and str(p.get("pa", "")).strip("0.") == "":
-                    sym = _ws_to_db_symbol(str(p.get("s", "")))
-                    if bool(cfg.get("trading.exec_ws.sync_close", False)):
-                        logger.info("[EXEC-WS][2b] %s %s закрыта (pa=0) — sync_close TODO",
-                                    sym, p.get("ps"))
+                if not isinstance(p, dict):
+                    continue
+                # pa=0 = позиция закрыта (BingX шлёт "0" или "0.00000000")
+                pa_str = str(p.get("pa", "")).strip()
+                try:
+                    pa_zero = float(pa_str) == 0.0
+                except ValueError:
+                    pa_zero = False
+                if not pa_zero:
+                    continue
+                sym = _ws_to_db_symbol(str(p.get("s", "")))
+                direction = str(p.get("ps", "")).upper()
+                if not sym or direction not in ("LONG", "SHORT"):
+                    continue
+                sync_close_on = bool(cfg.get("trading.exec_ws.sync_close", False))
+                if not sync_close_on:
+                    logger.info("[EXEC-WS][2b] %s %s pa=0 (sync_close OFF — shadow лог)", sym, direction)
+                    continue
+                # дедупликация: не закрывать то же самое несколько раз за N сек
+                import time as _t
+                key = (sym, direction)
+                now_ = _t.monotonic()
+                if now_ - _sync_close_seen.get(key, 0) < _SYNC_CLOSE_COOLDOWN_SEC:
+                    continue
+                _sync_close_seen[key] = now_
+                import asyncio as _aio
+                _aio.create_task(_sync_close_async(bot, sym, direction, account_tag))
 
     return on_event
 
@@ -178,10 +268,11 @@ def start_exec_ws(bot) -> Optional[list]:
         return None
 
     from core.exchange.user_data_ws import UserDataStream
-    handler = make_event_handler(bot)
     bot._exec_ws_list = []
     tasks = []
     for tag, k, s in accounts:
+        # per-account closure: sync_close использует правильный client (multiaccount-safe)
+        handler = make_event_handler(bot, account_tag=tag)
         uds = UserDataStream(k, s, is_vst=is_vst, on_event=handler, account_tag=tag)
         bot._exec_ws_list.append(uds)
         tasks.append(asyncio.create_task(uds.run()))
