@@ -118,6 +118,9 @@ class QueueReaderThread(threading.Thread):
             "applied": 0, "errors": 0, "shadow": shadow,
             "last_rate": 0.0, "_last_count": 0, "_last_ts": time.monotonic(),
         }
+        # Диагностика merge-результатов per TF (почему 5m hit низкий: skip/replace/stale?)
+        from collections import Counter as _C
+        self._merge_res: _C = _C()  # ключ (tf, result) → count
 
     _BATCH_MAX = 1000  # дренируем до 1000 элементов за цикл
 
@@ -152,8 +155,9 @@ class QueueReaderThread(threading.Thread):
                 for (s, t), r in latest.items():
                     try:
                         # ARCH-130: merge_dict избегает pd.DataFrame([r]) в hot path
-                        self._cache.merge_dict((s, t), r)
+                        _res = self._cache.merge_dict((s, t), r)
                         self.stats["applied"] += 1
+                        self._merge_res[(t, _res)] += 1  # диагностика покрытия per TF
                     except Exception as e:
                         self.stats["errors"] += 1
                         logger.debug("[MarketWS-v2] reader merge error: %s", e)
@@ -166,6 +170,12 @@ class QueueReaderThread(threading.Thread):
                 logger.info("[MarketWS-v2] reader STATS (shadow=%s): rate=%.1f/s applied=%d q≈%d",
                             self._shadow, rate, self.stats["applied"],
                             self._q.qsize() if hasattr(self._q, "qsize") else -1)
+                # Разбивка merge-результатов per TF (диагностика WS-покрытия 5m/15m)
+                if self._merge_res:
+                    _by_tf: dict = {}
+                    for (tf, res), n in self._merge_res.items():
+                        _by_tf.setdefault(tf, {})[res] = n
+                    logger.info("[MarketWS-v2] merge per TF: %s", _by_tf)
                 self.stats["_last_count"] = self.stats["applied"]
                 self.stats["_last_ts"] = now
 
