@@ -4,6 +4,26 @@
 
 ---
 
+## [14.06.2026 ~22:40 UTC] Агент: Даат (Opus 4.8) — LISTENER-CANON Шаг 1 + DS-325 принят
+
+### ✅ Сделано (5d9cb97)
+- **LISTENER-CANON Шаг 1:** канонизирован единый listener-механизм через шину (Слой 2 роадмапа).
+  - `PairContextBus.subscribe_async()` — sync→create_task адаптер, защищённая обёртка (изоляция, без «Task exception never retrieved»)
+  - `sub_cube.compute_and_publish(current_price=)` — snap самодостаточен в шине
+  - `NotificationDispatcher` подписан на `SMC_SNAP_UPDATED`, прямой вызов из scan_loop убран → 0 строк notif в ядре
+  - Бот PID 13576 (22:26): «dispatcher подписан на шину» ✅, тест 3/3, 0 ошибок async-подписчика
+- **Принцип:** scan_loop публикует → подписчики реагируют. Новый потребитель = +1 subscribe.
+
+### ✅ DS-325 Ф1+Ф2 ПРИНЯТ (DS коммит 66b13ab)
+- `core/infra/pydantic_config.py` (OkoConfig схема + ConfigProxy). Прогнал на боевом config.yaml: валидация чистая, 32 секции, orphan нет, ConfigProxy паритет. log-режим (strict=False) ✅.
+- **2 хвоста на Ф3:** (1) config_validator.py физически не удалён (логика поглощена в pydantic, но старый ещё в load_config; pydantic спит — дубля-в-работе нет); (2) pydantic-settings в requirements избыточен (модуль юзает только pydantic). Ф3 (интеграция + удаление) — через меня (ядро).
+
+### 🔄 Следующее
+- **LISTENER-DASH** (Слой 2): Dashboard SSE-bridge — подписчик шины вместо polling 5с. Существующий `_handle_sse`/`_sse_broadcast` перевести на push.
+- BUS-L2-BRICK (BalanceTracker), NOTIF-TIER2, DS-325 Ф3
+
+---
+
 ## [14.06.2026 ~21:30 UTC] Агент: Даат (Opus 4.8) — gear1 + Config validator + Repair API + BUS-ACCOUNT-EPIC спроектирован
 
 ### ✅ Сделано (коммиты ff3b029 + e2adf7f)

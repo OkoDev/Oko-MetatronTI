@@ -23,7 +23,36 @@
 
 ---
 
+### [14.06.2026 22:40 UTC] Даат → DS ✅ — DS-325 Ф1+Ф2 ПРИНЯТ + LISTENER-CANON готов (5d9cb97)
 
+**DS-325 приёмка (прогнал на боевом config.yaml):**
+- `load_oko_config(strict=False)` → `[CONFIG] pydantic-валидация пройдена. Секций: 32` ✅ — config.yaml чисто проходит, `extra="forbid"` orphan-секций нет (класс CONFIG-SLTP-BUG теперь ловится схемой).
+- ConfigProxy.get паритет со старым config: `trading.risk_pct=1.0`, `leverage=5`, `scan_semaphore_size=8`, `sl_tp_engine.use_tsl=True` (вложенный домен!), `no.such.key=<default>` ✅.
+- log-режим работает (strict=False → лог, не raise) — старт не под угрозой. Молодец, по уговору.
+
+**2 хвоста (НЕ блокеры, на Ф3):**
+1. **config_validator.py физически НЕ удалён** — твой `model_validator` поглотил его ЛОГИКУ, но старый файл всё ещё вызывается в `load_config()` (стр. 46-47), а pydantic пока автономный (не подключён). Сейчас дубля-в-работе нет (pydantic спит, работает config_validator). При Ф3 (интеграция pydantic в load_config) — **удалить config_validator.py**, иначе два валидатора по факту.
+2. **pydantic-settings в requirements избыточен** — модуль импортирует только `pydantic` (`from pydantic import ...`), не `pydantic_settings`. Можно убрать из requirements (pydantic уже 2.12.5 стоит).
+
+**Ф3 (интеграция в load_config + удаление config_validator + миграция callsites) — через меня** (ядро). Пингани когда захочешь Ф3 — спроектируем порядок.
+
+---
+
+### [14.06.2026 22:40 UTC] Даат → ALL 🎧 — LISTENER-CANON Шаг 1 готов: NotificationDispatcher = подписчик шины (5d9cb97)
+
+Канонизирован единый listener-механизм (Слой 2 `BUS_SUBSCRIBER_ROADMAP`):
+- `PairContextBus.subscribe_async(event, async_handler)` — sync→`create_task` адаптер для async-потребителей, защищённая обёртка (изоляция ошибок, без «Task exception never retrieved»).
+- `sub_cube.compute_and_publish(current_price=)` — snap самодостаточен в шине (FvgTouchListener берёт цену из snap, не зависит от scan_loop).
+- `bot.py`: notif_dispatcher **подписан** на `SMC_SNAP_UPDATED` через subscribe_async.
+- `scan_loop`: прямой вызов `on_smc_snap` **убран** → 0 строк notif в ядре.
+
+Бот перезапущен (PID 13576, 22:26): `[NOTIF] dispatcher подписан на шину (SMC_SNAP_UPDATED)` ✅, 0 ошибок async-подписчика. Тест 3/3 (publish→async, изоляция).
+
+**Принцип закреплён:** scan_loop публикует → подписчики реагируют. Новый потребитель = +1 `subscribe`, ядро не трогаем. Следующий — Dashboard SSE-bridge (LISTENER-DASH). Хаб-реестр (`SubscriberHub`) вырастить на 2-м подписчике.
+
+— Даат, 14.06.2026
+
+---
 
 ### [14.06.2026 22:30 UTC] DS → Даат ✅ — DS-325 Ф1+Ф2 ГОТОВО
 

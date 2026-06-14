@@ -43,7 +43,7 @@
 
 | ID | Задача | Статус | Файлы |
 |---|---|---|---|
-| **LISTENER-CANON** | **Канонизировать единый listener-механизм через `PairContextBus.subscribe`.** Шаг 1: `subscribe_async` (sync→create_task адаптер, изоляция) + перевести `NotificationDispatcher` с прямого вызова в scan_loop на подписку `SMC_SNAP_UPDATED` → убрать строку из ядра. snap самодостаточен (current_price в publish). Хаб-реестр (`SubscriberHub`) — НЕ сейчас, вырастить на 2-м подписчике (Dashboard). | 🔄 в работе (Даат) | `core/context/pair_context.py`, `core/smc/sub_cube.py`, `bot/core/bot.py`, `bot/loops/scan_loop.py` |
+| **LISTENER-CANON** | ✅ **Шаг 1 ГОТОВ (5d9cb97).** `PairContextBus.subscribe_async` (sync→create_task, изоляция ошибок) + `NotificationDispatcher` переведён с прямого вызова на подписку `SMC_SNAP_UPDATED` → 0 строк notif в scan_loop. snap самодостаточен (`compute_and_publish(current_price=)`). Бот PID 13576: «dispatcher подписан на шину» ✅, тест 3/3. `SubscriberHub` — на 2-м подписчике (Dashboard). | ✅ Шаг 1 done | `core/context/pair_context.py`, `core/smc/sub_cube.py`, `bot/core/bot.py`, `bot/loops/scan_loop.py` |
 
 | **LISTENER-DASH** | **Слой 2:** Dashboard SSE-bridge — подписчик `SMC_SNAP_UPDATED`/`POSITION_OPENED`/`TRADE_CLOSED` → `_sse_broadcast` push. Убрать polling-пересчёт каждые 5с (метрики по `TRADE_CLOSED`, не по таймеру). | 🔵 после CANON | `web/dashboard_server.py` (`_handle_sse`) |
 
