@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 # Каждый элемент — asyncio.Queue, в которую кладём строки SSE-событий.
 _sse_dashboard_clients: list = []
 
+# ── LISTENER-DASH: метрики event-driven, не polling ────────────────────────
+# Тяжёлый dashboard-payload (summary/analytics/equity по 24K+ сделок) меняется
+# ТОЛЬКО при закрытии сделки. _metrics_version++ на каждое закрытие; SSE-цикл
+# пересчитывает payload лишь когда версия сдвинулась (или fallback раз в N сек),
+# а не вслепую каждые 5с × N клиентов. Разгружает event loop scan_loop.
+_metrics_version: int = 0
+
+
+def _bump_metrics_version() -> None:
+    """Пометить метрики устаревшими (вызывать при закрытии сделки)."""
+    global _metrics_version
+    _metrics_version += 1
+
 
 async def _sse_broadcast(event_str: str) -> None:
     """Отправить сырую SSE-строку всем подключённым dashboard-клиентам."""
@@ -616,6 +629,7 @@ async def _handle_close_trade(request: web.Request) -> web.Response:
                         (trade_id,)
                     ).fetchone()
                 if _closed_row:
+                    _bump_metrics_version()  # LISTENER-DASH: метрики устарели → SSE пересчитает
                     _trade_dict = dict(_closed_row)
                     _sse_str = (
                         "event: trade_closed\n"
@@ -2184,6 +2198,11 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
     if send_dashboard:
         _sse_dashboard_clients.append(_client_queue)
 
+    # LISTENER-DASH: тяжёлые блоки (stats/dashboard payload) шлём по версии метрик
+    # (++ при закрытии сделки) + fallback раз в _FALLBACK_SEC. Не каждые 5с вслепую.
+    _seen_version = -1
+    _last_heavy_ts = 0.0
+    _FALLBACK_SEC = 60.0
     try:
         while True:
             # ── Отправляем внеплановые события из очереди (trade_closed и др.) ──
@@ -2198,42 +2217,48 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
                     logger.debug("[SSE] queue drain error: %s", _qe)
                     break
 
-            try:
-                summary = engine.summary()
-                rolling = engine.rolling_win_rate(50)
-                payload = json.dumps({"summary": summary, "rolling": rolling}, default=str)
-                await resp.write(f"event: stats\ndata: {payload}\n\n".encode())
-            except Exception as _e:
-                logger.debug("[SSE] ошибка сборки данных: %s", _e)
-            if send_dashboard:
+            # Тяжёлый пересчёт ТОЛЬКО при изменении метрик (закрытие сделки) или fallback.
+            _now = _aio.get_running_loop().time()
+            _need_heavy = (_seen_version != _metrics_version) or (_now - _last_heavy_ts >= _FALLBACK_SEC)
+            if _need_heavy:
                 try:
-                    stats = _response_json(await _handle_stats(request))
-                    # FIX 26.05: добавляем status/btc_regime блок (из _handle_dashboard_api)
-                    # в stats — иначе topbar badges scan_health/BingX/BTC4h не получают
-                    # данные (SSE event:dashboard их раньше не слал). Это исправляет
-                    # давний баг "? Скан (мп 0)" в старом дашборде.
-                    try:
-                        dash_data = _response_json(await _handle_dashboard_api(request))
-                        if isinstance(dash_data, dict):
-                            stats["status"] = dash_data.get("status", {})
-                            stats["btc_regime"] = dash_data.get("btc_regime")
-                            stats["btc_4h_regime"] = dash_data.get("btc_4h_regime") or dash_data.get("btc_regime")
-                    except Exception as _de:
-                        logger.debug("[SSE] dashboard status enrich failed: %s", _de)
-
-                    dashboard_payload = {
-                        "stats": stats,
-                        "confluence": await _safe_json("confluence", _handle_confluence_breakdown),
-                        "breakeven": await _safe_json("breakeven", _handle_breakeven_stats),
-                        "equity": await _safe_json("equity", _handle_equity),
-                        "analytics": await _safe_json("analytics", _handle_analytics),
-                        "signal_weights": await _safe_json("signal_weights", _handle_signal_weights_history),
-                    }
-                    payload = json.dumps(dashboard_payload, ensure_ascii=False, default=str)
-                    await resp.write(f"event: dashboard\ndata: {payload}\n\n".encode("utf-8"))
-                    await resp.drain()
+                    summary = engine.summary()
+                    rolling = engine.rolling_win_rate(50)
+                    payload = json.dumps({"summary": summary, "rolling": rolling}, default=str)
+                    await resp.write(f"event: stats\ndata: {payload}\n\n".encode())
                 except Exception as _e:
-                    logger.debug("[SSE] dashboard payload error: %s", _e)
+                    logger.debug("[SSE] ошибка сборки данных: %s", _e)
+                if send_dashboard:
+                    try:
+                        stats = _response_json(await _handle_stats(request))
+                        # FIX 26.05: добавляем status/btc_regime блок (из _handle_dashboard_api)
+                        # в stats — иначе topbar badges scan_health/BingX/BTC4h не получают
+                        # данные (SSE event:dashboard их раньше не слал). Это исправляет
+                        # давний баг "? Скан (мп 0)" в старом дашборде.
+                        try:
+                            dash_data = _response_json(await _handle_dashboard_api(request))
+                            if isinstance(dash_data, dict):
+                                stats["status"] = dash_data.get("status", {})
+                                stats["btc_regime"] = dash_data.get("btc_regime")
+                                stats["btc_4h_regime"] = dash_data.get("btc_4h_regime") or dash_data.get("btc_regime")
+                        except Exception as _de:
+                            logger.debug("[SSE] dashboard status enrich failed: %s", _de)
+
+                        dashboard_payload = {
+                            "stats": stats,
+                            "confluence": await _safe_json("confluence", _handle_confluence_breakdown),
+                            "breakeven": await _safe_json("breakeven", _handle_breakeven_stats),
+                            "equity": await _safe_json("equity", _handle_equity),
+                            "analytics": await _safe_json("analytics", _handle_analytics),
+                            "signal_weights": await _safe_json("signal_weights", _handle_signal_weights_history),
+                        }
+                        payload = json.dumps(dashboard_payload, ensure_ascii=False, default=str)
+                        await resp.write(f"event: dashboard\ndata: {payload}\n\n".encode("utf-8"))
+                        await resp.drain()
+                    except Exception as _e:
+                        logger.debug("[SSE] dashboard payload error: %s", _e)
+                _seen_version = _metrics_version
+                _last_heavy_ts = _now
             await _aio.sleep(5)
     except (ConnectionResetError, _aio.CancelledError):
         pass
@@ -2528,6 +2553,7 @@ async def _handle_repair_expire(request: web.Request) -> web.Response:
             return web.json_response({"error": "trade not found"}, status=404)
         if msg != "ok":
             return web.json_response({"error": msg}, status=409)
+        _bump_metrics_version()  # LISTENER-DASH: метрики устарели
         logger.info("[Repair] Сделка #%d → EXPIRED (ручная)", trade_id)
         return web.json_response({"ok": True, "trade_id": result})
     except Exception as e:
@@ -2576,6 +2602,8 @@ async def _handle_repair_expire_bulk(request: web.Request) -> web.Response:
 
     try:
         n = await _run_sync(_sync)
+        if n:
+            _bump_metrics_version()  # LISTENER-DASH: метрики устарели
         logger.info("[Repair] Bulk expire: %d сделок → EXPIRED (older_than_hours=%d)", n, older_hours)
         return web.json_response({"ok": True, "expired": n, "older_than_hours": older_hours})
     except Exception as e:
@@ -2621,6 +2649,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
                         (trade_id,)
                     ).fetchone()
                 if _row:
+                    _bump_metrics_version()  # LISTENER-DASH: метрики устарели → SSE пересчитает
                     _evt = (
                         "event: trade_closed\n"
                         f"data: {json.dumps(dict(_row), ensure_ascii=False, default=str)}\n\n"
