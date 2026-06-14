@@ -4,6 +4,35 @@
 
 ---
 
+## 🎯 СЕССИЯ 14.06 (4) — MARKET-WS v2 LIVE ВАЛИДИРОВАН ✅ + EXEC-WS 2b ON
+
+### ✅ Закоммичено (48ef9c4)
+- **MARKET-WS v2 LIVE** (throttle+blacklist): `q≈0-1k` (было 200k), rate=180/s стабильно
+  - worker-side dedup `_LIVE_DEDUP_INTERVAL=5.0`: поток 1200/s → 180/s
+  - scan_blacklist: UNITAS/NVDAX/PI/XPIN (код 109415, 76-82с каждая) → 526→522 пары
+- **EXEC-WS 2b ACTIVE**: `sync_close=true` — десятки закрытий ok=True за сессию
+- **Baseline**: цикл 3 = **414.8с / 522 пары** (был 424.1с / 526 пар) ✅
+
+### 🟢 СОСТОЯНИЕ БОТА (18:27 UTC, PID=новый после рестарта)
+- market_ws v2 LIVE: ✅ pid=9120, use_ws=True, q≈0-1k, errors=0
+- EXEC-WS: ✅ acc1+acc2, sync_close=True (ok=True поток)
+- scan_loop: semaphore=8, 522 пары, цикл ~415с
+
+### ⚠️ ok=False паттерн (EXEC-WS 2b)
+- ok=False = race condition: check_open polling закрывает раньше чем _resolve_exit (REST) возвращает
+- НЕ критично: сделки закрываются корректно через polling
+- Потенциальный фикс: оптимистичное закрытие по pa=0 (без REST _resolve_exit) → позже
+
+### 🔄 СЛЕДУЮЩЕЕ (приоритеты)
+1. **Compute optimisation** — 15-35с/пара SMC/ind = главный bottleneck. Варианты:
+   - `scan_semaphore_size` 8→12/15 (больше параллельности)
+   - Throttle SMC на парах без активных сделок
+2. ~~**CONFIG-SLTP-BUG**~~ ✅ ЗАКРЫТ (743cc64): merge `sl_tp_engine→trading` в config_loader.py строки 31-44. 19 ключей merge'ятся при каждом старте. Лог не виден (config=module-init, до logging setup), но фикс работает.
+3. **EXEC-WS ok=False**: оптимистичное закрытие или log-only (не критично)
+4. **Backlog**: DS-325 CONFIG-TYPED, EXEC-SIM-SPLIT
+
+---
+
 ## 🎯 СЕССИЯ 14.06 — МАРАФОН: min_rr + arch104 + EXEC-WS + MARKET-WS (v1 откат / v2 дизайн)
 
 ### ✅ Закоммичено (ядро чисто)

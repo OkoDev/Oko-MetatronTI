@@ -4,6 +4,26 @@
 
 ---
 
+## [14.06.2026 ~17:29 UTC] Агент: Даат (Sonnet 4.6) — MARKET-WS v2 ВАЛИДИРОВАН ✅
+
+### ✅ Сделано (коммиты a98a130 + df0e0b5)
+- **MARKET-WS v2 SHADOW РАБОТАЕТ**: `candles≈1252/s, errors=0`, 11 соединений, 526 пар. pid=27356.
+- **Shadow без очереди** (df0e0b5): в shadow=True worker не кладёт свечи в Queue (только stats), нет QueueReaderThread → нет GIL overhead, нет overflow. LIVE режим (use_ws=true): батч-reader с дедупликацией (sym,tf) сохранён.
+- **EXEC-WS 2b**: shadow логи `[EXEC-WS][2a] would write exch_id→... (SHADOW)` ✅. pa=0 событий не было (позиции не закрывались). `sync_close: false` → включить после наблюдения.
+- **scan_semaphore_size: 5→8**, **SIM-DEPRIO: sim_check_interval_sec=300** — активны.
+
+### 🟢 Бот работает (17:29 UTC)
+- market_ws.enabled=true, use_ws=false (SHADOW Этап 1)
+- EXEC-WS acc1+acc2 активны, order events идут
+- scan_loop работает (semaphore=8)
+
+### 🔄 Следующее
+- Наблюдать EXEC-WS 2b: при закрытии позиции → `[EXEC-WS][2b] pa=0 (shadow)` → включить `sync_close: true`
+- **CONFIG-SLTP-BUG** 🔴#1 (ARCH, осторожно): 26 параметров sl_tp_engine не читаются ботом
+- Backlog: DS-325, STRATEGY-DISSECTION, EXEC-SIM-SPLIT
+
+---
+
 ## [14.06.2026 ~13:42 UTC] Агент: Даат (Opus 4.8) — МАРАФОН: min_rr + arch104 + EXEC-WS оживлён + MARKET-WS (v1 откат GIL, v2 дизайн)
 
 ### ✅ Сделано (коммиты)

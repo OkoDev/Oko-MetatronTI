@@ -138,6 +138,44 @@ class OhlcvCache:
             entry["ts"] = time.monotonic()
             return "append"
 
+    def merge_dict(self, key: tuple, row: dict) -> str:
+        """ARCH-130: быстрый merge одной WS-свечи (dict) без pd.DataFrame([row]).
+
+        replace-путь (90%+ случаев) = scalar df.at setter — без GIL-heavy NumPy allocation.
+        append-путь (новый bar, ~раз в TF) = pd.concat как раньше, но это редко.
+        """
+        if not row or "time" not in row:
+            return "invalid"
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return "skip_no_cache"
+            existing = entry["df"]
+            if "time" not in existing.columns:
+                return "invalid"
+            try:
+                new_last_t = int(row["time"])
+                cache_last_t = int(existing["time"].iloc[-1])
+            except (ValueError, TypeError, IndexError):
+                return "invalid"
+            if new_last_t < cache_last_t:
+                return "stale"
+            if new_last_t == cache_last_t:
+                last_idx = len(existing) - 1
+                for col in ("open", "high", "low", "close", "volume"):
+                    if col in row and col in existing.columns:
+                        existing.at[last_idx, col] = row[col]
+                entry["ts"] = time.monotonic()
+                return "replace"
+            # Новый bar (append) — редко, pd.concat допустим
+            new_df = pd.DataFrame([row])
+            merged = pd.concat([existing, new_df], ignore_index=True)
+            if len(merged) > entry["limit"]:
+                merged = merged.iloc[len(merged) - entry["limit"]:].reset_index(drop=True)
+            entry["df"] = merged
+            entry["ts"] = time.monotonic()
+            return "append"
+
     def __len__(self) -> int:
         return len(self._data)
 

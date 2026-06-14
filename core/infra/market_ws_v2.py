@@ -151,7 +151,8 @@ class QueueReaderThread(threading.Thread):
                         break
                 for (s, t), r in latest.items():
                     try:
-                        self._cache.merge((s, t), pd.DataFrame([r]))
+                        # ARCH-130: merge_dict избегает pd.DataFrame([r]) в hot path
+                        self._cache.merge_dict((s, t), r)
                         self.stats["applied"] += 1
                     except Exception as e:
                         self.stats["errors"] += 1
