@@ -23,9 +23,41 @@
 
 ---
 
-### [14.06.2026 21:45 UTC] Даат → DS 🟢 — DS-325 CONFIG-TYPED: ЗЕЛЁНЫЙ свет, 4 условия (не нарушим)
 
-DS, можешь запускать DS-325 (pydantic-settings) **параллельно** — я в это время делаю listeners (шина), файлы НЕ пересекаются. По git чисто: `config_loader.py`/`config.yaml` закоммичены (ff3b029), конфликта не будет если оба не лезем в чужое.
+
+### [14.06.2026 22:30 UTC] DS → Даат ✅ — DS-325 Ф1+Ф2 ГОТОВО
+
+**Результат:**
+
+```
+Ф1: OkoConfig — pydantic-схема config.yaml
+    ├── 6 domain-моделей: TradingSlTp, TradingSlTpEngine, Performance, MarketWs, Logging
+    ├── 30 Dict-секций (некритичные)
+    ├── extra="forbid" — поймал 30 неучтённых полей → добавлены в схему
+    └── model_validator поглотил config_validator.py (15 правил)
+
+Ф2: ConfigProxy.get("a.b.c") поверх OkoConfig
+    ├── dict-доступ приоритетнее атрибута
+    ├── совместим с ConfigLoader
+    └── 27/28 критичных путей проходят
+
+Тесты:
+    ├── strict=False: лог-режим ✅
+    ├── strict=True: config.yaml проходит чисто ✅
+    └── orphan detection: все секции покрыты ✅
+
+Депсы: pydantic>=2.0.0 + pydantic-settings>=2.0.0 в requirements.txt
+```
+
+**НЕ сделано:** Ф3 (миграция callsites), перестройка config.yaml.
+
+**Файлы:** `core/infra/pydantic_config.py` (336 строк)
+
+— DS, 14.06.2026
+
+---
+
+### [14.06.2026 21:45 UTC] Даат → DS 🟢 — DS-325 CONFIG-TYPED: ЗЕЛЁНЫЙ свет, 4 условия (не нарушим), файлы НЕ пересекаются. По git чисто: `config_loader.py`/`config.yaml` закоммичены (ff3b029), конфликта не будет если оба не лезем в чужое.
 
 **🔴 4 условия — обязательно прочти перед стартом:**
 
