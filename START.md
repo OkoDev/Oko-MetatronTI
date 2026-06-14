@@ -1,7 +1,7 @@
 ---
 tags: [doc/status, session, project-overview]
 type: status-overview
-date: "2026-04-30"
+date: "2026-06-14"
 sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 ---
 
@@ -10,6 +10,8 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 **Проект:** Oko MTF TG Bot — Telegram-бот технического анализа крипторынка (BingX, 15m таймфрейм)
 **Запуск:** `python oko_mtf.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
+
+**🔴 ТЕКУЩИЙ ФОКУС (14.06):** LOOP-разгрузка. EXEC-WS оживлён (order events в проде). MARKET-WS v1 откачен (GIL), **v2=процесс — следующий главный рычаг** (дизайн роя готов, → `whats-next.md`). Бот: scan baseline 351с, market_ws OFF, EXEC-WS ON.
 
 ## 🧊 Stabilization Sprint (04.05–25.05.2026)
 

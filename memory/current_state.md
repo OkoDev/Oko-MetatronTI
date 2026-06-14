@@ -4,6 +4,32 @@
 
 ---
 
+## [14.06.2026 ~13:42 UTC] Агент: Даат (Opus 4.8) — МАРАФОН: min_rr + arch104 + EXEC-WS оживлён + MARKET-WS (v1 откат GIL, v2 дизайн)
+
+### ✅ Сделано (коммиты)
+- **min_rr ote=3.0** (39d31bc): ПОДТВЕРЖДЁН работает (0 нарушителей RR<3 после фикса; 427 «нарушителей» были ДО-фиксовые → урок data-era split по моменту активации)
+- **CONFIG-SLTP-BUG** (743cc64): merge sl_tp_engine→trading
+- **arch104** (93097a5): 67 мёртвых LONG `enabled:false` → combinator разгружен. Разбор 7d: SHORT +1743R (ядро edge), LONG −140R балласт (уже забанен с 13.06). DS_L096 (C-01) сохранён
+- **EXEC-WS** (d649f01): КОРЕНЬ «0 order events» = неверный VST WS-домен (код слушал PROD `open-api-swap`, нужен `vst-open-api-ws`). Эмпирич. подтв. → order events в проде (GENIUS FILLED). Парсер был верный
+- **event_loop_debug=false**: 0 lag-warnings (было 2867), scan-cycle ~300с НЕ упал (узкое=REST, не debug)
+- **MARKET-WS v1** поток (fd3a925→откат c88fd94): merge работал, DS WS==REST≥99%, НО GIL (70k свечей/мин CPU) → scan 300→600с+ → ОТКАТ, scan вернулся 351с
+
+### 🎯 MARKET-WS v2 дизайн (рой готов, НЕ реализован)
+`multiprocessing.Queue` (НЕ Redis) + producer-ПРОЦЕСС spawn (CPU в своём GIL) + агрегация (закрытые бары + последнее состояние) + `QueueReaderThread` (Queue→merge) + супервайзер is_alive/рестарт. TTL-fallback. → memory `market_ws_kline_proven`. Реализация 1-2 дня СВЕЖЕЙ сессией (multiprocessing spawn деликатно).
+
+### Состояние
+- Бот ЖИВ, scan baseline 351с, **market_ws OFF** (enabled=false), **EXEC-WS ON** (order events идут)
+- Незакоммичено (doc): TASKS.md, DISCUSSION.md, DISCUSSION-TASKS-DETAILS.md. ⚠️ `arch104_observer/ote_observer .py` M — НЕ мои правки (DS/чужие), не трогал
+- 🔴 Урок дня (4× промах): время/эра — data-era split по моменту активации, SQLite `created_at` ISO `T` vs `datetime('now')` пробел → `feedback_verify_fix_dataera_first`, `feedback_sqlite_time_compare`
+
+### 🔄 Следующее
+- **MARKET-WS v2** реализация (процесс, свежей сессией) — дизайн готов
+- **EXEC-WS 2a** (write_exch_id, SHADOW наблюдать) / **2b** (sync_close: ACCOUNT_UPDATE pa=0 → close БД, лечит orphan/zombie/drift)
+- Loop-рычаги: scan_semaphore 5→8, SIM-DEPRIO
+- Backlog: DS-325 CONFIG-TYPED (рой план готов), EXEC-SIM-SPLIT (вектор), причесать TASKS-простыни
+
+---
+
 ## [13.06.2026 ~20:50 UTC] Агент: Даат (Opus 4.8) — B-эпик АКТИВИРОВАН (dedicated_loop=true) + health-фикс
 
 ### ✅ Флаг dedicated_loop=true АКТИВИРОВАН (рестарт 20:38:50)
