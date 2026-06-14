@@ -29,10 +29,11 @@ logger = logging.getLogger(__name__)
 
 # ─── worker-процесс ────────────────────────────────────────────────────────────
 
-def _mws_worker(out_queue, symbols: list, tfs: list, batch: int) -> None:
+def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = False) -> None:
     """Standalone-функция для multiprocessing.Process.
 
-    Запускает MarketWS в своём asyncio-loop, кладёт свечи в out_queue вместо кэша.
+    shadow=True  → очередь не используется, только stats-логирование (Этап 1)
+    shadow=False → кладёт свечи в out_queue для QueueReaderThread (Этап 2)
     Вызывается через spawn (Windows default) → top-level функция, не lambda/closure.
     """
     import asyncio as _aio
@@ -40,7 +41,7 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int) -> None:
     from core.infra.market_ws import MarketWS
 
     class _QueueCache:
-        """Заглушка OhlcvCache для MarketWSQueue: нет lock, нет данных — только stub."""
+        """Заглушка OhlcvCache: нет lock, нет данных."""
         _lock = _thr.RLock()
         _data: dict = {}
 
@@ -48,16 +49,18 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int) -> None:
             return "ws"
 
     class _MarketWSQueue(MarketWS):
-        """MarketWS, который кладёт свечи в Queue вместо cache.merge."""
-
-        def __init__(self, q, syms, tfs_, batch_):
+        def __init__(self, q, syms, tfs_, batch_, shadow_):
             super().__init__(syms, tfs_, _QueueCache(), batch_pairs=batch_)
             self._q = q
+            self._shadow = shadow_
 
         def _on_candle(self, sym_ccxt: str, tf: str, df: pd.DataFrame) -> None:
+            if self._shadow:
+                # Shadow: scan на REST — очередь не нужна, только считаем свечи для логов
+                self.stats["candles"] += 1
+                return
             try:
                 r = df.iloc[0]
-                # tuple (sym, tf, row_dict) — простая сериализация через pickle (spawn)
                 self._q.put_nowait((
                     sym_ccxt, tf,
                     {
@@ -73,7 +76,7 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int) -> None:
             except Exception:
                 self.stats["errors"] += 1
 
-    mws = _MarketWSQueue(out_queue, symbols, tfs, batch)
+    mws = _MarketWSQueue(out_queue, symbols, tfs, batch, shadow)
     loop = _aio.new_event_loop()
     _aio.set_event_loop(loop)
     try:
@@ -104,28 +107,54 @@ class QueueReaderThread(threading.Thread):
             "last_rate": 0.0, "_last_count": 0, "_last_ts": time.monotonic(),
         }
 
+    _BATCH_MAX = 1000  # дренируем до 1000 элементов за цикл
+
     def run(self) -> None:
         while self._running:
             try:
-                sym, tf, row = self._q.get(timeout=0.1)
-                df = pd.DataFrame([row])
-                self._cache.merge((sym, tf), df)
-                self.stats["applied"] += 1
-                # Раз в 60с — лог скорости
-                now = time.monotonic()
-                if now - self.stats["_last_ts"] >= 60:
-                    rate = (self.stats["applied"] - self.stats["_last_count"]) / (now - self.stats["_last_ts"])
-                    self.stats["last_rate"] = round(rate, 1)
-                    logger.info("[MarketWS-v2] reader STATS (shadow=%s): rate=%.1f/s applied=%d q≈%d",
-                                self._shadow, rate, self.stats["applied"],
-                                self._q.qsize() if hasattr(self._q, "qsize") else -1)
-                    self.stats["_last_count"] = self.stats["applied"]
-                    self.stats["_last_ts"] = now
+                first = self._q.get(timeout=0.1)
             except _stdlib_queue.Empty:
                 continue
-            except Exception as e:
-                self.stats["errors"] += 1
-                logger.debug("[MarketWS-v2] reader error: %s", e)
+
+            if self._shadow:
+                # Shadow: scan_loop на REST, cache не используется →
+                # просто дренируем очередь без pandas overhead (только счётчик)
+                count = 1
+                for _ in range(self._BATCH_MAX - 1):
+                    try:
+                        self._q.get_nowait()
+                        count += 1
+                    except _stdlib_queue.Empty:
+                        break
+                self.stats["applied"] += count
+            else:
+                # LIVE (use_ws=true): батч с merge в основной cache
+                sym, tf, row = first
+                latest: dict = {(sym, tf): row}
+                for _ in range(self._BATCH_MAX - 1):
+                    try:
+                        s, t, r = self._q.get_nowait()
+                        latest[(s, t)] = r  # последний выигрывает — финальная версия свечи
+                    except _stdlib_queue.Empty:
+                        break
+                for (s, t), r in latest.items():
+                    try:
+                        self._cache.merge((s, t), pd.DataFrame([r]))
+                        self.stats["applied"] += 1
+                    except Exception as e:
+                        self.stats["errors"] += 1
+                        logger.debug("[MarketWS-v2] reader merge error: %s", e)
+
+            # Лог раз в 60с
+            now = time.monotonic()
+            if now - self.stats["_last_ts"] >= 60:
+                rate = (self.stats["applied"] - self.stats["_last_count"]) / (now - self.stats["_last_ts"])
+                self.stats["last_rate"] = round(rate, 1)
+                logger.info("[MarketWS-v2] reader STATS (shadow=%s): rate=%.1f/s applied=%d q≈%d",
+                            self._shadow, rate, self.stats["applied"],
+                            self._q.qsize() if hasattr(self._q, "qsize") else -1)
+                self.stats["_last_count"] = self.stats["applied"]
+                self.stats["_last_ts"] = now
 
     def stop(self) -> None:
         self._running = False
@@ -147,7 +176,7 @@ async def _mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, b
                     pass
                 new_proc = mp.Process(
                     target=_mws_worker,
-                    args=(out_queue, symbols, tfs, batch),
+                    args=(out_queue, symbols, tfs, batch, shadow),
                     daemon=True, name="market-ws-v2",
                 )
                 new_proc.start()
@@ -191,18 +220,22 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
         cache  = OhlcvCache(maxsize=5000)
         shadow = True
 
-    # Буфер: 70k свечей/мин → ~1200/с. maxsize=200k ≈ 2.5 мин буфер (процесс не теряет если reader отстаёт)
-    out_queue = mp.Queue(maxsize=200_000)
+    if shadow:
+        # Этап 1 SHADOW: очередь не нужна — worker только логирует stats
+        out_queue = None
+        reader    = None
+    else:
+        # Этап 2 LIVE: буфер 70k свечей/мин → ~1200/с
+        out_queue = mp.Queue(maxsize=200_000)
+        reader    = QueueReaderThread(out_queue, cache, shadow=False)
+        reader.start()
 
     proc = mp.Process(
         target=_mws_worker,
-        args=(out_queue, symbols, tfs, batch),
+        args=(out_queue, symbols, tfs, batch, shadow),
         daemon=True, name="market-ws-v2",
     )
     proc.start()
-
-    reader = QueueReaderThread(out_queue, cache, shadow=shadow)
-    reader.start()
 
     bot._market_ws_proc   = proc
     bot._market_ws_reader = reader
