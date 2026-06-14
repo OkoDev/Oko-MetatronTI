@@ -2455,6 +2455,134 @@ async def _handle_atr_stats(request: web.Request) -> web.Response:
         logger.exception("dashboard /api/atr_stats error: %s", e)
         return web.json_response({"error": str(e)}, status=500)
 
+async def _handle_repair_orphans(request: web.Request) -> web.Response:
+    """GET /api/repair/orphans — OPEN сделки без биржевой привязки (sim-only orphans).
+
+    Query params:
+      limit — макс строк (default: 200)
+    """
+    import sqlite3 as _sq
+    engine: PerformanceEngine = request.app["engine"]
+    db_path = engine.db_path if hasattr(engine, "db_path") else "subscriptions.db"
+    limit = min(int(request.rel_url.query.get("limit", 200)), 1000)
+
+    def _sync():
+        with _sq.connect(db_path, timeout=15) as conn:
+            conn.row_factory = _sq.Row
+            rows = conn.execute(
+                """SELECT id, symbol, direction, signal_type, created_at, entry_price,
+                          stop_loss, R_multiple, exchange_order_id, account_id
+                   FROM simulated_trades
+                   WHERE status = 'OPEN'
+                     AND (exchange_order_id IS NULL OR exchange_order_id = '')
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            total = conn.execute(
+                """SELECT COUNT(*) FROM simulated_trades
+                   WHERE status = 'OPEN'
+                     AND (exchange_order_id IS NULL OR exchange_order_id = '')"""
+            ).fetchone()[0]
+        return [dict(r) for r in rows], total
+
+    try:
+        trades, total = await _run_sync(_sync)
+        return web.json_response({"total": total, "trades": trades})
+    except Exception as e:
+        logger.exception("/api/repair/orphans error: %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def _handle_repair_expire(request: web.Request) -> web.Response:
+    """POST /api/repair/expire/{trade_id} — перевести одну сделку в EXPIRED."""
+    import sqlite3 as _sq
+    ts = request.app.get("trade_simulator")
+    engine: PerformanceEngine = request.app["engine"]
+    db_path = (ts.db_path if ts else None) or (engine.db_path if hasattr(engine, "db_path") else "subscriptions.db")
+
+    try:
+        trade_id = int(request.match_info["trade_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "invalid trade_id"}, status=400)
+
+    def _sync():
+        with _sq.connect(db_path, timeout=15) as conn:
+            row = conn.execute(
+                "SELECT id, entry_price, status FROM simulated_trades WHERE id=?", (trade_id,)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            if row[2] != "OPEN":
+                return None, f"status={row[2]}"
+            conn.execute(
+                "UPDATE simulated_trades SET status='EXPIRED', closed_at=datetime('now') WHERE id=?",
+                (trade_id,),
+            )
+            conn.commit()
+            return trade_id, "ok"
+
+    try:
+        result, msg = await _run_sync(_sync)
+        if msg == "not_found":
+            return web.json_response({"error": "trade not found"}, status=404)
+        if msg != "ok":
+            return web.json_response({"error": msg}, status=409)
+        logger.info("[Repair] Сделка #%d → EXPIRED (ручная)", trade_id)
+        return web.json_response({"ok": True, "trade_id": result})
+    except Exception as e:
+        logger.exception("/api/repair/expire/%s error: %s", request.match_info.get("trade_id"), e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def _handle_repair_expire_bulk(request: web.Request) -> web.Response:
+    """POST /api/repair/expire_bulk — все sim-only OPEN orphans → EXPIRED.
+
+    Body (JSON, optional):
+      {"older_than_hours": 24}  — только старше N часов (default: 0 = все)
+    """
+    import sqlite3 as _sq
+    ts = request.app.get("trade_simulator")
+    engine: PerformanceEngine = request.app["engine"]
+    db_path = (ts.db_path if ts else None) or (engine.db_path if hasattr(engine, "db_path") else "subscriptions.db")
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    older_hours = int(body.get("older_than_hours", 0))
+
+    def _sync():
+        with _sq.connect(db_path, timeout=15) as conn:
+            if older_hours > 0:
+                cur = conn.execute(
+                    """UPDATE simulated_trades
+                       SET status='EXPIRED', closed_at=datetime('now')
+                       WHERE status='OPEN'
+                         AND (exchange_order_id IS NULL OR exchange_order_id = '')
+                         AND created_at < datetime('now', ? || ' hours')""",
+                    (f"-{older_hours}",),
+                )
+            else:
+                cur = conn.execute(
+                    """UPDATE simulated_trades
+                       SET status='EXPIRED', closed_at=datetime('now')
+                       WHERE status='OPEN'
+                         AND (exchange_order_id IS NULL OR exchange_order_id = '')"""
+                )
+            conn.commit()
+            return cur.rowcount
+
+    try:
+        n = await _run_sync(_sync)
+        logger.info("[Repair] Bulk expire: %d сделок → EXPIRED (older_than_hours=%d)", n, older_hours)
+        return web.json_response({"ok": True, "expired": n, "older_than_hours": older_hours})
+    except Exception as e:
+        logger.exception("/api/repair/expire_bulk error: %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.0.1", port: int = 8000,
                           config=None, data_collector=None, trade_simulator=None, bot=None) -> None:
     """Запускает aiohttp-сервер. Вызывать через asyncio.create_task().
@@ -2577,6 +2705,10 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_post("/api/cube/ml/train", _handle_cube_ml_train)
     # ── DEV-203: DecisionTrace — видимость отброшенных сигналов ──
     app.router.add_get("/api/dropped", _handle_dropped)
+    # ── Repair API: архивация orphan/sim-only сделок ──
+    app.router.add_get("/api/repair/orphans",          _handle_repair_orphans)
+    app.router.add_post("/api/repair/expire/{trade_id}", _handle_repair_expire)
+    app.router.add_post("/api/repair/expire_bulk",     _handle_repair_expire_bulk)
     # ── Pairs screen (dashboard v2): живое состояние пар из PairContextBus ──
     app.router.add_get("/api/pairs", _handle_pairs)
     # ── DEV-207: ATR Change стратегия ──

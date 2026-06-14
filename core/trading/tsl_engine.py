@@ -276,6 +276,7 @@ class TSLProfile:
 
     Дефолт = текущие значения (DS-321 backtest +1.95R).
     """
+    gear1_be_atr: float = 1.0  # MFE >= N ATR → активировать BE (breakeven)
     gear2_atr: float = 2.0     # MFE >= N ATR → Gear 2 (wide)
     gear3_atr: float = 4.0     # MFE >= N ATR → Gear 3 (tight lock)
     gear3_hours: float = 12.0  # или > N часов → Gear 3
@@ -285,7 +286,7 @@ TSL_PROFILES: dict = {
     # Дефолт (arch104, wt_signal, pivot_reversal, etc.)
     "default": TSLProfile(gear2_atr=2.0, gear3_atr=4.0, gear3_hours=12.0),
     # OTE long-runner: дышит дольше (target 8-22R)
-    "ote_nested": TSLProfile(gear2_atr=3.0, gear3_atr=8.0, gear3_hours=24.0),
+    "ote_nested": TSLProfile(gear1_be_atr=1.5, gear2_atr=3.0, gear3_atr=8.0, gear3_hours=24.0),
     # wt_sideways: средний горизонт
     "wt_sideways": TSLProfile(gear2_atr=2.5, gear3_atr=5.0, gear3_hours=16.0),
 }
@@ -350,7 +351,7 @@ def compute_hybrid_tsl(
     be_price = breakeven_sl(direction, entry)
     new_sl = original_sl
 
-    if mfe_atr >= 1.0:
+    if mfe_atr >= profile.gear1_be_atr:
         if d == "LONG":
             new_sl = max(new_sl, be_price)
         else:
