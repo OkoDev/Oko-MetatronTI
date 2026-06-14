@@ -461,7 +461,7 @@ performance:
 # ЭТАПЫ: enabled=true + use_ws=false = SHADOW (теневой кэш, scan на REST, сравнение).
 #        use_ws=true = ОСНОВНОЙ cache (scan читает WS) — ТОЛЬКО после shadow-валидации ≥99%.
 dashboard:
-  enabled: true         # false → не запускать dashboard (диагностика: изоляция нагрузки на event loop)
+  enabled: true         # false → не запускать aiohttp :8000 (диагностика нагрузки на loop). Замер 14.06: dashboard НЕ грузит цикл (OFF 282 ≈ ON 299, в шуме)
   host: 127.0.0.1       # SEC-01a: localhost по умолчанию
 
 market_ws:
