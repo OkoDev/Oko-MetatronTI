@@ -22,9 +22,14 @@
 - dashboard.threaded=true, dashboard.enabled=true
 - LISTENER-CANON+DASH активны, market_ws v2 LIVE, EXEC-WS 2b
 
+### ✅ Фронт: мигание dashboard MOCK↔LIVE убрано (oko-dashboard, НЕ под git)
+- Корень: `useLive` (lib/use-oko-data.ts) сбрасывал на MOCK при любом сбое poll; `/api/stats` 7-11с на грани таймаута 12с → изредка abort → MOCK → «скачет».
+- Фикс: после первого LIVE удерживаем данные (hasLiveRef), транзиентный сбой не мигает. + threaded dashboard 0.3с (запас до таймаута огромный). Next fast-refresh подхватит, обновить вкладку :3000.
+
 ### 🔄 Следующее
 - Ось «длина цикла»: market_ws (OHLCV→WS) — главный IO-рычаг
 - BUS-L2-BRICK (BalanceTracker), NOTIF-TIER2, DS-325 Ф3
+- (опц.) полный SSE-push для dashboard вместо polling 10с
 
 ---
 
