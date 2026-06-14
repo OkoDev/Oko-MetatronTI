@@ -37,15 +37,16 @@
 
 ---
 
-## 🟢 NOTIF-ENGINE (14.06.2026) — Notification Engine MVP (вердикт роя 7/7)
+## 🟡 NOTIF-ENGINE (14.06.2026) — Notification Engine MVP (вердикт роя 7/7)
 
 | ID | Задача | Статус | Файлы |
 |---|---|---|---|
-| **NOTIF-MVP** ✅ | MVP реализован: `config/notifications.yaml` (TIER-1 on, TIER-2 off), `core/notifications/evaluate.py` (cooldown+circuit breaker 100/ч), `bot/notifications/sender.py` (TG admin_id). Hook в ote_observer_loop + arch104_observer_loop после trade_id. Синтаксис OK (ast.parse 4/4). | ✅ сделано (14.06, Даат) | `config/notifications.yaml`, `core/notifications/`, `bot/notifications/`, `bot/loops/ote_observer_loop.py:26,320`, `bot/loops/arch104_observer_loop.py:31,572` |
+| **NOTIF-MVP** | ✅ **ГОТОВО (fbda2c8, Даат 14.06)** | ✅ done | |
+| | `NotificationDispatcher` + `FvgDetectedListener` + `FvgTouchListener`. scan_loop = 1 строка `dispatcher.on_smc_snap`. `_norm_symbol` (ccxt↔YAML). Open/Closed: новый тип = новый listener, loop не трогаем. | | `core/notifications/dispatcher.py`, `core/notifications/evaluate.py` |
 
-| **NOTIF-TIER2** | TIER-2 уведомления: CHoCH new / OTE zone / OB touch / FVG fill / Pivot breach. Точки вставки в scan_loop. Включать по одному, замеряя спам. | 🔵 бэклог | `config/notifications.yaml` (enabled:false → true), `bot/loops/scan_loop.py` |
+| **NOTIF-TIER2** | TIER-2 уведомления: CHoCH new / OTE zone / OB touch / Pivot breach. Точки вставки в scan_loop. Включать по одному после проверки FVG. | 🔵 бэклог | `config/notifications.yaml` (enabled:false → true), `bot/loops/scan_loop.py` |
 
-| **NOTIF-DASH** | Дашборд: UI-переключение правил (enable/disable per-rule). Рой: дашборд ПОСЛЕ YAML-MVP, не сейчас. | 🔵 бэклог | — |
+| **NOTIF-DASH** | Дашборд: UI-переключение правил. Рой: после YAML-MVP стабилен. | 🔵 бэклог | — |
 
 ---
 
@@ -54,7 +55,7 @@
 | ID | Задача | Статус | Детали |
 |---|---|---|---|
 | **CONFIG-SLTP-BUG** 🔴🔴 #1 | **Секция `sl_tp_engine` (config.yaml 293-363, 26 ключей) НЕ читается ботом — код читает `trading.X` → DEFAULTS.** `config.get('trading.use_tsl')`=None, значение в sl_tp_engine. Игнорируются: use_tsl, tsl_activation_r_per_strategy (ote TSL=1.0 default, НЕ 4.0!), cascade_tsl, use_breakeven, breakeven_activation_r, max_positions_per_direction, min_sl_dist_pct, dual_tp, tp_selector_*. **Вся TSL-сага 14.06 была на неверном config (ote TSL 1.0, не 4.0).** ФИКС: влить sl_tp_engine в trading ИЛИ код→sl_tp_engine.X. ⚠️ НЕ наспех — разом включит 26 параметров (defaults→config), резкая смена exit-логики. Аккуратно: подтвердить trading.X везде → перенести → проверить применение → наблюдать. Бот на defaults стабилен. Детали: memory bug_sl_tp_engine_section_ignored. | 🔴 #1 ARCH (утром, осторожно) | `config.yaml` (293-363), `trade_simulator.py`, `trade_tracker.py`, `gates/`, `correlation_guard.py` |
-| **TSL-CLEAN-TEST** → DS | ⚠️ **ПЕРЕСМОТРЕТЬ — был на неверном config (ote TSL 1.0 вместо 4.0, CONFIG-SLTP-BUG).** Парный бэктест DS: TSL нейтрален по R, WR×2. Но реальный ote TSL был 1.0R (default), не 4.0. После CONFIG-SLTP-BUG фикса — перепроверить TSL на ПРАВИЛЬНОМ config. TSL оставлен (откат 67bda0d). 85 OTE, ОДНИ точки: TSL спасает убыточные (+0.36R n=69), режет прибыльные (−2.02R n=14), ИТОГО нейтрален (−0.04R) НО **WR ×2 (16.5%→35.3%)**. Ранний «TSL вредит» = НЕСОПОСТАВИМЫЕ выборки (32 vs 458 = selection bias, как и мой пересчёт по tsl_activated). TSL off ОТКАЧЕН (67bda0d, вернул 4.0). DS-321 гибрид правильный — не ломать. **Опция:** gear1 1.0→1.5R (меньше резать 1-3R) — отдельно, n=85 мал. Урок: TSL on/off сравнивать ТОЛЬКО парно (одни точки). Скрипт: `scripts/tsl_backtest_ote.py`. | 🟢 done → TSL оставить | `scripts/tsl_backtest_ote.py`, config (gear1 опция) |
+| **TSL-CLEAN-TEST** → DS | ✅ **ЗАКРЫТ (ff3b029, Даат 14.06).** Парный бэктест DS: TSL нейтрален, WR×2. gear1_be_atr 1.0→1.5 для ote_nested применён (TSLProfile.gear1_be_atr=1.5 в tsl_engine.py). DS-321 гибрид работает. | ✅ done | `core/trading/tsl_engine.py` (gear1_be_atr=1.5) |
 | **DEV-226-Ph2** → DS | ✅ **ЗАМЕР НА ЧИСТЫХ SL ГОТОВ (DS 13.06).** CLEAN VST: pull n=108 avgR=+1.94 WR=37% vs cont n=382 avgR=+1.47 WR=25%. Pull edge +0.47R ПОДТВЕРЖДЁН. n_down из shadow: всего 34 сделки, замер невозможен (данные копятся с 11.06). TSL на чистых SL: ВРЕДИТ (+0.32 vs +1.66 без). **Ждать n≥30 для pull×n_down.** | ⏳ ждёт n≥30 | `verdict_aggregator.py`, `simulated_trades` |
 | **ATR-OTE-E3** → DS | ✅ **БЭКТЕСТ ГОТОВ (DS 13.06). WR89% — ФЕЙК (n=9).** 36K сигналов, 20 пар: A (текущий) avgR=+0.059, B (mid-OTE) +0.068. OTE покрытие 7%. PAIRED (n=2'442): A +0.095 vs B +0.068 → A ЛУЧШЕ. Полная OTE-конверсия НЕ улучшает. DEV-209 (текущий) = оптимум. Скрипт: `scripts/atr_ote_e3_backtest.py`. | 🟢 done → Э3 не нужен | `scripts/atr_ote_e3_backtest.py` |
 | **OTE-RBUG** → DS | ✅ **АУДИТ ГОТОВ (DS 13.06).** Edge РЕАЛЬНЫЙ. SL<0.3%: n=557, sumR=+1'073 (VST +3.38 SIM +0.11). SL>=0.5% (чистый): n=2'017, avgR=+2.38, WR=58.1%, sumR=+4'808. VST чистый: +3.47 avgR, +4'152R. Инвертный SL: 1'982 сделок (72%), median=0.85% от entry — не «SL на другой стороне», а SL вплотную к entry. **Баланс не растёт НЕ из-за фейк-R, а из-за position sizing:** SL=0.1% → size=1000× → 1 убыток съедает 10 прибыльных. **Нужен min SL distance ≥0.5%.** **РОЙ 7/7 СОШЁЛСЯ независимо:** (1) min risk_distance guard 0.5-1%/ATR для R И position_size; (2) биржевой closed PnL (fills)=source of truth; (3) hard cap notional; (4) валидация стороны SL REJECT. Edge реальный (+4808R чистый) — guard НЕ убьёт раннеры. **ФИКС ч.1 СДЕЛАН (5e2fd0f, Даат):** min_sl_dist 0.3→0.5 + валидация стороны SL (LONG sl>=entry/SHORT sl<=entry→DROP) в обоих путях (gate + register_trade_async). Тест 5/5. **Backlog ч.2 (рой #2/#3):** биржевой closed PnL=source of truth, hard cap notional. | 🟢 ч.1 done 5e2fd0f / ч.2 backlog | `core/trading/gates/min_sl_dist.py`, `core/trading/trade_simulator.py`, `config.yaml` |
@@ -253,6 +254,8 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| **ARCH-130** | 🟢 | **OhlcvCache reader оптимизация** — заменить `pd.DataFrame([r])` per свечу в QueueReaderThread на сырой dict/tuple + `deque+SimpleQueue` вместо RLock-pandas-merge. Цель: убрать налог холодного старта (~200с), разблокировать sem=16+. Рой 14.06 (groq+openrouter): консенсус — правильный путь. Риск: аудит downstream потребителей OhlcvCache (rolling/groupby в analytics). Принцип: [[principle_reuse_not_duplication]]. Детали → DISCUSSION.md 14.06 19:00 UTC. | ARCH/Claude |
+
 | **REGIME-V2** | 🟡 | Активировать regime v2 (HTF-доминанта) — через УНИФИКАЦИЮ (D-10), не просто фл… | ARCH/Claude |
 
 | **HIGH-VOL-VOLUME** | 🟢 | HIGH_VOL + объём (VSA) — рой 7/7 консенсус 11.06. HIGH_VOL = чистый ATR (вол… | ARCH/Claude |)

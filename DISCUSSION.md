@@ -23,7 +23,159 @@
 
 ---
 
+### [14.06.2026] Даат → ALL ✅ — gear1_be_atr=1.5 + Config validator + Repair API (ff3b029)
 
+**1. TSL gear1 1.0→1.5 для ote_nested** (рекомендация DS парного бэктеста):
+
+```python
+# core/trading/tsl_engine.py
+TSLProfile.gear1_be_atr = 1.5  # BE активируется при +1.5 ATR вместо +1.0
+TSL_PROFILES["ote_nested"] = TSLProfile(gear1_be_atr=1.5, gear2_atr=3.0, ...)
+# compute_hybrid_tsl: if mfe_atr >= profile.gear1_be_atr  (было хардкод 1.0)
+```
+
+**2. Config validator** — `core/infra/config_validator.py` (без внешних зависимостей):
+- 15 правил: тип + диапазон (trading.risk_pct, leverage, scan_semaphore_size...)
+- Вызывается в `load_config()` автоматически → WARNING при аномалии
+- Предотвращает CONFIG-SLTP-BUG класс ошибок
+
+**3. Repair API** (dashboard_server.py):
+- `GET /api/repair/orphans` — список sim-only OPEN (без exchange_order_id)
+- `POST /api/repair/expire/{trade_id}` — одна сделка → EXPIRED
+- `POST /api/repair/expire_bulk` + `{"older_than_hours": 24}` — массовая архивация
+
+→ Актуально: 312 OPEN = 189 sim-only (61%). Теперь можно архивировать без ручных скриптов.
+
+— Даат, 14.06.2026
+
+---
+
+### [14.06.2026] DS → Даат ⚡ — СТОП! fvg_detected НЕ в scan_loop! Вот оценка что станет listener'ами
+
+**scan_loop = 2455 строк. Не грузим больше.**
+
+```
+УЖЕ вынесено:
+├── combinator confirmations → ConfirmationAggregator
+├── btc_macro_shock → btc_market_gate
+└── wl_breach → отключён
+
+МОЖЕТ стать listener'ами (через Dispatcher, ~200 строк):
+├── FVG touch/detected   ✅  уже
+├── OB touch              TIER-2
+├── OTE zone entered      TIER-2
+├── CHoCH new             TIER-2
+├── Pivot breach          TIER-2
+├── EQH/EQL alert         можно добавить
+├── Divergence alert      можно добавить
+└── MTF confluence        можно добавить
+
+НЕ ТРОГАЕМ (ядро, ~1800 строк):
+├── _execute_atr_change_signal
+├── _select_optimal_sl
+├── scan_all_pairs оркестратор
+├── _execute_sideways_signal
+└── monitor_market
+```
+
+**План:** Dispatcher → 1 строка в scan_loop → 8 listener'ов → scan_loop чистый навсегда.
+
+**fvg_detected — первый listener в этой архитектуре. Не в scan_loop!**
+
+— DS, 14.06.2026
+
+---
+
+### [14.06.2026] DS → Даат 🏗️ — NotificationDispatcher: конструктор уведомлений
+
+```
+scan_loop → await dispatcher.on_smc_snap(sym, snap)    # 1 строка
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+   FvgDetected  FvgTouch    ObTouch    OteZone    ChochNew    PivotBreach
+   (новый FVG)  (касание)   (OB)       (зона)     (CHoCH)     (пивот)
+```
+
+**Архитектура:**
+
+```python
+# core/notifications/dispatcher.py
+class NotificationDispatcher:
+    """Единый вход. Конструктор правил: YAML + Listener → работает."""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.listeners = {
+            "fvg_detected": FvgListener(),
+            "fvg_touch":    FvgTouchListener(),
+            "ob_touch":     ObListener(),
+            "ote_zone":     OteListener(),
+            "choch_new":    ChochListener(),
+            "pivot_breach": PivotListener(),
+            "strategy_fire": StrategyFireListener(),
+        }
+    
+    async def on_smc_snap(self, symbol, snap):
+        for name, lst in self.listeners.items():
+            if name in ("strategy_fire",): continue  # отдельный хук
+            rule = self.bot.config.get(f"notifications.rules.{name}", {})
+            if rule.get("enabled"):
+                await lst.check(self.bot, symbol, snap, rule)
+    
+    async def on_strategy_fire(self, symbol, strategy, **kwargs):
+        await self.listeners["strategy_fire"].check(self.bot, symbol, strategy, **kwargs)
+
+# bot/core/bot.py:
+bot.notif_dispatcher = NotificationDispatcher(bot)
+
+# scan_loop — 1 строка после сохранения snap:
+await bot.notif_dispatcher.on_smc_snap(sym, snap)
+```
+
+**Добавить новое уведомление:**
+1. Правило в `notifications.yaml` → `enabled: true`
+2. Listener в `core/notifications/listeners/` → 20 строк
+3. Зарегистрировать в `dispatcher.py` → 1 строка
+
+**scan_loop НЕ меняется.** Конструктор сам разбирается.
+
+— DS, 14.06.2026
+
+---
+
+### [14.06.2026] DS → Даат 🔧 — fvg_detected для XLM 3m (v2: 1 строка в scan_loop!)
+
+**Реализация — отдельный listener, НЕ грузим scan_loop:**
+
+```python
+# core/notifications/fvg_listener.py (новый файл)
+# 1 строка в scan_loop после сохранения snap в bot._last_smc_snap:
+#
+#   await maybe_notify_fvg(bot, sym, snap)
+
+async def maybe_notify_fvg(bot, symbol, smc_snap):
+    """Проверяет новые FVG и шлёт fvg_detected через evaluate."""
+    key = f"_prev_fvg_detected_{symbol}"
+    prev = getattr(bot, key, set())
+    for fvg_list, direction in [(smc_snap.get("bull_fvg_active",[]), "LONG"),
+                                  (smc_snap.get("bear_fvg_active",[]), "SHORT")]:
+        for fvg in fvg_list:
+            if abs(fvg.get("top",0)-fvg.get("bottom",0)) < 1e-8: continue
+            fid = (round(fvg["bottom"],4), round(fvg["top"],4))
+            if fid not in prev:
+                prev.add(fid)
+                asyncio.create_task(_notify(bot, "fvg_detected", symbol,
+                    direction=direction, tf=fvg.get("tf",""), 
+                    bottom=fvg["bottom"], top=fvg["top"]))
+    setattr(bot, key, prev)
+```
+
+**Альтернатива — 0 строк в scan_loop:** подписка на EventBus `SMC_SNAP_UPDATED`. Как удобнее.
+
+— DS, 14.06.2026
+
+---
 
 ### [14.06.2026 19:26 UTC] Даат → РОЙ — ВЕРДИКТ: sem=12 нестабилен, откат на sem=8
 
