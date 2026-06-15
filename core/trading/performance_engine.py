@@ -109,7 +109,7 @@ class PerformanceEngine:
     def by_signal_type(self, account_id=None) -> List[Dict[str, Any]]:
         # DEV-190: WR/wins/losses учитывают скрытые TSL exits (status='SL'+tsl_act=1+R>0.1)
         # ARCH-DB-V2: account_id фильтр
-        _where = "WHERE account_id=?" if account_id is not None else "WHERE 1=1"
+        _where = "WHERE account_id=? AND execution_mode='VST'" if account_id is not None else "WHERE execution_mode='VST'"
         _params = (account_id,) if account_id is not None else ()
         try:
             with self._conn() as conn:
@@ -196,6 +196,7 @@ class PerformanceEngine:
             FROM simulated_trades
             WHERE status IN ('TP','SL','TSL','EXPIRED')
               AND R_multiple IS NOT NULL
+              AND execution_mode='VST'
               {era_clause}
             ORDER BY closed_at ASC
         """
