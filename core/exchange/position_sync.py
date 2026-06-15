@@ -228,6 +228,7 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
 
 
 _LAST_BAL_SNAPSHOT_TS = 0.0  # ARCH-DB-V2 Ф1: throttle снапшота баланса (раз ~10 мин)
+_LAST_SL_RECONCILE_TS = 0.0  # SL-RECONCILE (#1): throttle сверки SL-ордеров (раз ~5 мин)
 
 
 async def sync_positions(bot) -> None:
@@ -333,6 +334,42 @@ async def sync_positions(bot) -> None:
                         logger.info("[POSITION-SYNC] %s dust closed on exchange OK", pp.symbol_our)
                 except Exception as _dust_err:
                     logger.warning("[POSITION-SYNC] %s dust close failed: %s", pp.symbol_our, _dust_err)
+        # SL-RECONCILE (#1, BACKLOG): позиции без живого SL-ордера → выставить из БД stop_loss.
+        # Корень: SL ставится при открытии, но если исчез с биржи (исполнен/отменён/не выставлен) —
+        # никто не пере-выставляет → позиция без защиты (ликвидация-риск, было 211 в DATA-AUDIT-2).
+        # shadow: лог "выставил бы"; live: place_sl_order. Throttle ~5мин (REST per position).
+        import time as _t_slr
+        global _LAST_SL_RECONCILE_TS
+        _slr_cfg = getattr(bot, "config", None)
+        _slr_mode = str(_slr_cfg.get("trading.sl_reconcile", "off")).lower() if _slr_cfg else "off"
+        if _slr_mode in ("shadow", "live") and open_pairs and (_t_slr.time() - _LAST_SL_RECONCILE_TS > 300):
+            _LAST_SL_RECONCILE_TS = _t_slr.time()
+            _db_path_slr = bot.trade_simulator.db_path
+            for (_sym, _side), _pp in open_pairs.items():
+                try:
+                    _sl_oid = await order_mgr.get_sl_order_id(_sym, _side)
+                    if _sl_oid:
+                        continue  # SL на бирже есть — защищена
+                    import sqlite3 as _sq_slr
+                    with _sq_slr.connect(_db_path_slr, timeout=10) as _c_slr:
+                        _r = _c_slr.execute(
+                            "SELECT stop_loss FROM simulated_trades WHERE symbol=? AND direction=? "
+                            "AND status='OPEN' AND stop_loss NOT IN ('','OPEN','0') ORDER BY id DESC LIMIT 1",
+                            (_sym, _side),
+                        ).fetchone()
+                    _db_sl = float(_r[0]) if (_r and _r[0]) else None
+                    if not _db_sl:
+                        continue
+                    if _slr_mode == "shadow":
+                        logger.warning("[SL-RECONCILE][shadow] %s %s БЕЗ SL на бирже — выставил бы sl=%.6f (qty=%.6f)",
+                                       _sym, _side, _db_sl, abs(_pp.qty))
+                    else:
+                        _oid = await order_mgr.place_sl_order(_sym, _side, _db_sl, abs(_pp.qty))
+                        logger.warning("[SL-RECONCILE][live] %s %s SL выставлен sl=%.6f oid=%s",
+                                       _sym, _side, _db_sl, _oid)
+                except Exception as _slre:
+                    logger.debug("[SL-RECONCILE] %s %s: %s", _sym, _side, _slre)
+
         # Legacy совместимость для основного цикла + _detect_orphans (sym → raw position).
         # ВНИМАНИЕ: ключ без direction — для hedge пар одна перезаписывает другую.
         # Основной цикл ниже использует open_pairs (sym, dir) для hedge-aware lookup.

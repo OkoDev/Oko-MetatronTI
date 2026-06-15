@@ -129,6 +129,7 @@ sideways_mode:
 trading:
   execution_mode: vst
   live_guard_timeout_min: 7
+  sl_reconcile: shadow   # SL-RECONCILE (#1): позиции без живого SL-ордера → off/shadow(лог "выставил бы")/live(place). Анти-ликвидация. Старт shadow → наблюдать [SL-RECONCILE] → live
   exec_ws:
     enabled: true
     write_exch_id: false
