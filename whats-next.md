@@ -40,6 +40,7 @@
 3. **Backfill 217** искажённых VST R≤−10 (из биржевой fill-истории).
 4. **Через 2-3 дня:** `equity_curve.py` → сравнить эру ПОСЛЕ рестарта с baseline −20.4% (сузился ли разрыв R↔$).
 5. **Минор:** `.agent_role` → `.gitignore`; лог `liquidity_sweep не отправлен подписчику`.
+6. **LOGGING-фикс (применён, ждёт рестарт):** spawn-воркер market_ws держал `crypto_bot.log` fd → ротация (50MB) падала WinError 32 (спам `Logging error`, бот жив). Фикс в `market_ws_v2.py:_mws_worker` — сброс FileHandler в начале воркера. Синтаксис ✅. После рестарта проверить: спам `Logging error` исчез, `crypto_bot.log.1` ротируется.
 
 ## ⚠️ УРОКИ/ПРИНЦИПЫ СЕССИИ
 - **R врёт → доход по equity** (balance_snapshots, биржевой факт).

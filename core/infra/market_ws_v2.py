@@ -39,6 +39,20 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
     shadow=False → кладёт свечи в out_queue для QueueReaderThread (Этап 2)
     Вызывается через spawn (Windows default) → top-level функция, не lambda/closure.
     """
+    # Windows spawn: воркер НЕ должен держать crypto_bot.log fd. Иначе при ротации
+    # (RotatingFileHandler.doRollover → os.rename) в ГЛАВНОМ процессе → PermissionError
+    # WinError 32 (файл занят воркером). Сбрасываем унаследованные/переоткрытые FileHandler;
+    # stats воркера остаются в stdout (StreamHandler сохраняем).
+    import logging as _lg
+    _root = _lg.getLogger()
+    for _h in _root.handlers[:]:
+        if isinstance(_h, _lg.FileHandler):  # RotatingFileHandler — подкласс
+            _root.removeHandler(_h)
+            try:
+                _h.close()
+            except Exception:
+                pass
+
     import asyncio as _aio
     import threading as _thr
     import time as _time
