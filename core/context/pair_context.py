@@ -199,10 +199,36 @@ class PairContextBus:
     Центральная Сфера Куба Метатрона — Shared Context Bus.
 
     Mesh-связность: каждая сфера публикует → подписчики реагируют.
-    Per-pair состояние: PairState содержит снимки всех 13 сфер.
+    Per-pair состояние: PairState (L1, 13 сфер) · Per-account: AccountState (L2: equity/позиции).
 
-    Thread-safe в рамках asyncio event loop.
+    Thread-safe в рамках asyncio event loop (+ AccountState читается из dashboard-потока под GIL).
     Данные теряются при перезапуске — пересчитываются за первый цикл.
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    📜 КОНТРАКТ «КАК СЛУШАТЬ КУБ» (канон — для каждого нового слушателя, BACKLOG #10)
+    ═══════════════════════════════════════════════════════════════════════════════
+    Два паттерна доступа — НЕ плодить третий, НЕ дёргать REST из потребителя:
+
+    ── PUSH (реакция на СОБЫТИЕ) ──────────────────────────────────────────────
+      bus.subscribe_async(SphereEvent.SMC_SNAP_UPDATED, my_async_handler)
+      • handler(symbol, data) — async, ЛЁГКИЙ (внутри create_task / очередь, не блокировать)
+      • для: уведомления, real-time dashboard, реакции на trade_closed/regime/signal
+      • publish() синхронный → subscribe_async оборачивает в create_task (изоляция ошибок)
+
+    ── PULL (чтение СОСТОЯНИЯ) ────────────────────────────────────────────────
+      bus.get(symbol) / get_full_state(symbol)      — L1 пара (snap/regime/wt/pivot)
+      bus.get_account(id) / total_equity()          — L2 equity (живой, push от EXEC-WS)
+      bus.all_positions()                           — L2 позиции (push от EXEC-WS + position_sync)
+      • для: position_sizer, dashboard-рендер, аналитика, gate-проверки
+      • НИКОГДА не REST из потребителя в threaded-контексте (cross-loop вис) — только шина
+
+    ── PRODUCE (запись в шину) ────────────────────────────────────────────────
+      bus.publish(symbol, event, data) — сфера публикует событие (scan_loop, sub_cube)
+      bus.update(symbol, **fields)     — обновить PairState
+      bus.update_account / update_position / set_account_positions — L2 (EXEC-WS, position_sync)
+
+    Правило: данные ЖИВУТ в шине (push от источника) → потребители слушают/читают.
+    Источник истины — шина, не REST-дёрганье. Это «дыхание Куба».
     """
 
     def __init__(self) -> None:

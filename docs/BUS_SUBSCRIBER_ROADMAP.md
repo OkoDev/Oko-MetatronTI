@@ -65,6 +65,20 @@ sub_cube.compute_and_publish() → BUS.publish(SMC_SNAP_UPDATED)
 | Google Sheets | `DAILY_SUMMARY` | Авто-отчётность |
 | Mobile App | `NOTIF_FIRED` | Push-уведомления |
 
+## 📜 КОНТРАКТ «как слушать Куб» (канон, BACKLOG #10, 15.06)
+
+Два паттерна — каждый новый слушатель подключается так (не плодить третий, не REST из потребителя):
+
+```
+PUSH (событие):   bus.subscribe_async(SphereEvent.X, async_handler)  # handler лёгкий (create_task)
+PULL (состояние): bus.get(sym) / get_full_state / get_account / total_equity / all_positions
+PRODUCE:          bus.publish(sym, event, data) / update / update_account / update_position
+```
+
+**Правило:** данные ЖИВУТ в шине (push от источника: scan_loop, EXEC-WS, position_sync) →
+потребители слушают (push) или читают (pull). Источник истины — шина, НЕ REST-дёрганье
+(в threaded-контексте REST = cross-loop вис). Полный контракт — docstring `PairContextBus`.
+
 ## Принцип
 
 **Добавить подписчик = зарегистрировать в bus + 0 строк в scan_loop.**

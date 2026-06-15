@@ -32,7 +32,7 @@
 | # | Статус | Задача | Источник |
 |---|---|---|---|
 | 9 | ✅ | **НЕ НУЖЕН** — sizing уже от `availableMargin` (REST в главном loop, не cross-loop). available точнее total_equity из шины. Закрыто разбором #2 | BUS-L2, слив |
-| 10 | 🟢 | **Канонизировать push/pull контракт** «как слушать Куб» (стандарт для новых слушателей) | юзер 15.06 |
+| 10 | ✅ | **КОНТРАКТ ЗАФИКСИРОВАН (15.06).** push (subscribe_async) / pull (get/get_account/total_equity/all_positions) / produce (publish/update_*). В docstring `PairContextBus` + `BUS_SUBSCRIBER_ROADMAP`. Правило: данные живут в шине, не REST из потребителя | юзер 15.06 |
 | 11 | 🟢 | **Risk Monitor** (drawdown realtime) + **Circuit Breaker** на L2 → затем **SubscriberHub** | BUS-L3 роадмап |
 | 12 | 🔵 | **NOTIF-TIER2** (CHoCH/OTE/OB/Pivot) + Dashboard real-time лента (SMC_SNAP push) | роадмап Слой 2 |
 
