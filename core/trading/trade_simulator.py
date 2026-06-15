@@ -1583,7 +1583,11 @@ class TradeSimulator:
                         _mfe = compute_r(dir_up, entry, _peak, one_r)
                         max_R_possible = round(clamp_r_smart(_mfe, entry, one_r), 3) if _mfe is not None else None
                     if max_R_possible and max_R_possible > 0 and r_multiple is not None:
-                        captured_R_pct = round((r_multiple / max_R_possible) * 100.0, 1)
+                        # #6 BACKLOG (DATA-AUDIT-2: avg -14.3% сломан): captured = % захвата
+                        # ПОЛОЖИТЕЛЬНОГО потенциала, clamp [0,100]. realized<0 → 0 (упустили весь,
+                        # вышли в минус); realized>max_R (clamp_r_smart артефакт раннера) → 100.
+                        _cap_raw = (r_multiple / max_R_possible) * 100.0
+                        captured_R_pct = round(max(0.0, min(100.0, _cap_raw)), 1)
 
                 # duration_minutes (оба timestamp должны быть aware UTC)
                 try:

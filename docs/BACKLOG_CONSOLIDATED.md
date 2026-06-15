@@ -16,8 +16,8 @@
 | 1 | 🔄 | **Позиции со SL в БД, но БЕЗ биржевого SL-ордера** — ликвидация-риск. **ДИАГНОЗ 15.06:** `audit_missing_stops.py` → СЕЙЧАС 1 (INIT-USDT, было 211 на пике/суммарно). Корень: нет авто-reconcile SL (поле exchange_sl_order_id ≠ живой ордер). **NEXT:** (а) выставить SL для INIT, (б) SL-reconcile loop (периодич. audit→авто-place), (в) проверить acc2 multiacct | DATA-AUDIT-2 A2.4 |
 | 2 | ✅ | **РАЗОБРАНО 15.06.** Sizing УЖЕ от `availableMargin` (bingx get_balance) ✅. Корень был — `l3_checker.enabled: false` (shadow) → 134 поз/риск 150%. ФИКС: enabled=true, max 50/25/25 (юзер). Старые доживут, новые блок >50 | DS слив, аудит |
 | 3 | ✅ | **`pivot_reversal` ОТКЛЮЧЁН** — `pivot_reversal_enabled: false` (monitoring.py:468), 0 сделок/3 дня. Проверено 15.06 (сделано ранее) | SIGNAL-AUDIT |
-| 4 | 🔴 | **Sanity-guard форс-клоуз** если цена >X% за SL (защита от инцидента #1910 −9.74R), время биржевое | AUDIT #2 |
-| 5 | 🟠 | **Комиссии 104% прибыли** (arch104 8 сд/$1) + аллокация (60% капитала / 10% прибыли) → деаллокация в ote | DS слив |
+| 4 | ✅ | **РЕАЛИЗОВАНО (DEV-185.2).** emergency_close_check: overshoot >0.5% за SL → market close (enabled=true, срабатывал 15.06 05:40). + OPS-01b #1910 fix (created_at от биржевого времени). Проверено 15.06 | AUDIT #2 |
+| 5 | ⏸ | **АНАЛИЗ 15.06:** в R arch104 ПОЛОЖИТЕЛЕН (avgR 0.778, +2183R/7д), НЕ убыточен. Проблема DS — в $ (2808 сделок × комиссия съедает $-прибыль). Расхождение R vs $. Фикс через Capital Allocator (#19), но он по Sharpe → **блокируется #6** (captured_R сломан). Альт: поднять чек arch104. **ЖДЁТ #6** | DS слив |
 
 ## 🟠 ДАННЫЕ / МЕТРИКИ
 
