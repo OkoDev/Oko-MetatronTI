@@ -148,6 +148,10 @@ trading:
   risk_pct: 1.0
   leverage: 5
   max_notional_mult: 20.0
+  # CONFIG-SLTP-BUG fix (15.06): код читает trading.min_sl_dist_pct (gates/min_sl_dist.py:24,
+  # trade_simulator.py:469/677), а значение лежало ТОЛЬКО в sl_tp_engine:321 (не читается) →
+  # дефолт 0.1 → SL≈entry проходили → fake-R −15R + реальные −20%. Дублируем сюда до миграции sl_tp_engine.
+  min_sl_dist_pct: 0.5
   min_rr_per_strategy:
     ote_nested: 3.0
   regime_direction_block:

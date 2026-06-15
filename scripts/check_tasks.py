@@ -35,7 +35,16 @@ DISCUSSION_FILE = os.path.join(os.path.dirname(__file__), "..", "DISCUSSION.md")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "TASKS.md")
 BACKLOG_FILE = os.path.join(os.path.dirname(__file__), "..", "docs", "BACKLOG_CONSOLIDATED.md")
 def _resolve_role() -> str:
-    """Роль из env AGENT_ROLE, fallback — файл .agent_role в корне проекта, default DAAT."""
+    """Роль: CLI --role > env AGENT_ROLE > .agent_role файл > DAAT.
+
+    --role задаётся в settings.json КАЖДОГО агента явно и перебивает общий `.agent_role`
+    (который в git и иначе перетирает роль: DS закоммитил .agent_role=DS → hook Даата считал DS).
+    """
+    if "--role" in sys.argv:
+        try:
+            return sys.argv[sys.argv.index("--role") + 1].strip().upper()
+        except (IndexError, AttributeError):
+            pass
     env_role = os.environ.get("AGENT_ROLE", "").strip().upper()
     if env_role:
         return env_role

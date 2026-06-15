@@ -18,14 +18,15 @@
 | 3 | ✅ | **`pivot_reversal` ОТКЛЮЧЁН** — `pivot_reversal_enabled: false` (monitoring.py:468), 0 сделок/3 дня. Проверено 15.06 (сделано ранее) | SIGNAL-AUDIT |
 | 4 | ✅ | **РЕАЛИЗОВАНО (DEV-185.2).** emergency_close_check: overshoot >0.5% за SL → market close (enabled=true, срабатывал 15.06 05:40). + OPS-01b #1910 fix (created_at от биржевого времени). Проверено 15.06 | AUDIT #2 |
 | 5 | ⏸ | **АНАЛИЗ 15.06:** в R arch104 ПОЛОЖИТЕЛЕН (avgR 0.778, +2183R/7д), НЕ убыточен. Проблема DS — в $ (2808 сделок × комиссия съедает $-прибыль). Расхождение R vs $. Фикс через Capital Allocator (#19), но он по Sharpe → **блокируется #6** (captured_R сломан). Альт: поднять чек arch104. **ЖДЁТ #6** | DS слив |
+| 21 | 🔴 | **EXEC-SIM-SPLIT** (ТЗ юзера 15.06): SIM→research-слой, VST=истина. **Логика входа/выхода ИДЕНТИЧНА** (один калькулятор, [[principle_reuse_not_duplication]]) — различие ТОЛЬКО режим. 4 компонента: (1) ЕДИНАЯ exit-логика (свести wick/close `trade_simulator:2680` к 1 реалистичной; кирпич1 VST-exit из WS-fill = часть, готов); (2) режим-переключатель config `execution_mode: sim\|vst\|both` (сейчас НЕЛЬЗЯ выключить SIM); (3) БД sim.db↔live.db; (4) SIM=снятие лимитов (полный охват mining). Корень: APEX #29750 fake −15R. 217 VST R≤−10 искажены. [[exec_sim_split_epic]] | юзер 15.06 |
 
 ## 🟠 ДАННЫЕ / МЕТРИКИ
 
 | # | Статус | Задача | Источник |
 |---|---|---|---|
 | 6 | ✅ | **ПОЧИНЕНО (c6aa6e9).** clamp [0,100] в формуле (новые) + backfill 16252 строк. avg −13.3→34.3, <0/>100→0. Корень: realized/MFE без clamp (убыток<0, раннер>clamp_MFE). Метрики достоверны → разблокирует #5/#19 | DATA-AUDIT-2 A2.1 |
-| 7 | 🟠 | **ML-честность**: TimeSeriesSplit, selection bias в RPredictor (realized R не MFE), OOS gate | AUDIT, DATA-AUDIT-2 A2.3 |
-| 8 | 🟢 | **SIM убыточны (VST=весь edge)** — переосмыслить sim-генерацию / вес в обучении | DATA-AUDIT-2 A2.2 |
+| 7 | 🔄 | **ML-честность**: аудит DS ✅ — `r_predictor:66 random_state=42` (НЕ TimeSeriesSplit) = leak 85%→34%. Фикс TimeSeriesSplit + realized-R таргет + OOS gate — pending (согласовать, ML) | AUDIT, DS 15.06 |
+| 8 | ✅ | **SIM убыточны (VST=edge)**: фикс `AND execution_mode='VST'` ЗАКАТАН (4b22a0c) — веса учатся только на VST-выборке (SIM-шум убран). ⚠️ Сами VST-R ещё искажены смешением логик закрытия (217 R≤−10) → точность даст EXEC-SIM-SPLIT (#21) | DS 15.06 |
 
 ## 🟢 LISTENERS / BUS (фундамент L2 готов 15.06)
 

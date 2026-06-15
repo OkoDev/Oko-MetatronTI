@@ -1,4 +1,18 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash",
+      "PowerShell",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:bingx-api.github.io)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:docs.ollama.com)",
+      "Read(//c/Users/yogoru/.claude/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\yogoru\\.claude"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -10,47 +24,17 @@
           }
         ]
       }
-    ]
-  },
-  "permissions": {
-    "allow": [
-      "Bash(python -c \":*)",
-      "Bash(python backtesting_engine.py)",
-      "Bash(python -u backtesting_engine.py)",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:bingx-api.github.io)",
-      "WebFetch(domain:api.github.com)",
-      "Bash(python -m pytest tests/unit/ -q --tb=short -x --ignore=tests/unit/test_confluence_state_machine.py)",
-      "Bash(python scripts/analyze_tsl_params.py --symbols BTCUSDT ETHUSDT SOLUSDT --days 30)",
-      "Bash(python scripts/analyze_wt_thresholds.py --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT --days 45)",
-      "Bash(python scripts/analyze_wt_signals.py --days 15)",
-      "Bash(python scripts/analyze_wt_divergence.py --days 45)",
-      "Bash(python scripts/analyze_wt_divergence.py)",
-      "Bash(python scripts/analyze_wt_divergence.py --days 90)",
-      "Bash(python scripts/analyze_wt_typeB.py --days 180 --symbols BERAUSDT COTIUSDT CFXUSDT XRPUSDT AVAXUSDT API3USDT BTCUSDT ETHUSDT SOLUSDT BNBUSDT ADAUSDT DOGEUSDT LINKUSDT ETCUSDT NOTUSDT 1INCHUSDT ALGOUSDT SUIUSDT MOVEUSDT XLMUSDT)",
-      "Bash(python scripts/analyze_wt_typeB.py --tf 1h --days 180)",
-      "Bash(C:UsersyogoruAppDataLocalProgramsPythonPython312python.exe scripts/analyze_wt_typeB.py --tf 1h --days 180)",
-      "Bash(python scripts/analyze_wt_typeB.py --tf 1h --days 180 --div-max 20)",
-      "Bash(python scripts/analyze_wt_typeB.py --tf 1h --days 180 --div-max 20 --div-min 3)",
-      "Bash(ls -1 *.py *.md)",
-      "Bash(ls -1 *.md)",
-      "Bash(ls -d */)",
-      "Bash(ls -1 scripts/*.py)",
-      "Bash(C:UsersyogoruAppDataLocalProgramsPythonPython312python.exe -c \":*)",
-      "Bash(\"/c/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe\" -c \":*)",
-      "Bash(grep -a [wt_15m_rev] 'e:/MTF BOT/CURSOR/crypto_volume_bot/crypto_bot.log')",
-      "Read(//c/Users/yogoru/.claude/**)",
-      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -c \"import json; json.load\\(open\\(''C:/Users/yogoru/.claude/settings.json'', encoding=''utf-8''\\)\\); print\\(''JSON валидный''\\)\")",
-      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/integration/test_reversal_scanner_e2e.py -v --tb=short)",
-      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pip install pytest pytest-asyncio --quiet)",
-      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/integration/test_reversal_scanner_e2e.py::TestConfigParams -v --tb=short)",
-      "Bash(C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe -c \":*)",
-      "Bash('C:\\\\Users\\\\yogoru\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe' -c ':*)",
-      "Bash(\"C:\\\\Users\\\\yogoru\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"import py_compile; py_compile.compile\\('core/exchange/position_sync.py', doraise=True\\); print\\('OK'\\)\")",
-      "Bash(powershell -Command 'Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SelectVoice\\('\\\\''Microsoft Irina Desktop'\\\\''\\); $s.Speak\\('\\\\''Куб Метатрона реализован полностью. Двенадцать из двенадцати сфер подключены к шине. Двадцать два типа событий. Три новых детектора. Фикс позишн синк. Перезапускай бота.'\\\\''\\)')"
     ],
-    "additionalDirectories": [
-      "C:\\Users\\yogoru\\.claude"
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe \"e:/MTF BOT/CURSOR/crypto_volume_bot/scripts/check_tasks.py\" --role DAAT"
+          }
+        ]
+      }
     ]
   }
 }

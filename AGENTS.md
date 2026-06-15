@@ -35,6 +35,18 @@ Oko MTF — Telegram-бот теханализа крипты (BingX, VST). Ар
 4. Перед правкой `register_trade`/INSERT — runtime-проверка (не только синтаксис): прогнать `scripts/`-тест на копии боевой БД.
 5. Свою работу фиксировать в `DISCUSSION.md` под ролью **DS** (как DEV/ARCH/TRADER).
 
+## 🧹 Постоянная обязанность DS — еженедельная гигиена TASKS
+Раз в неделю (понедельник, или при старте сессии если прошло >7 дней):
+```bash
+python scripts/tasks_tidy.py           # dry-run: что уйдёт в архив
+python scripts/tasks_tidy.py --apply   # архив ✅ + чистка пустых строк в таблицах
+```
+- **Формат TASKS обязателен** (шапка TASKS.md): строка `| [ID](#anchor) | Ст | Кратко ≤80 | Роль |`. Простыни в ячейках (>200 симв) → детали в `DISCUSSION.md`/`docs/DISCUSSION-TASKS-DETAILS.md`, в TASKS только суть + коммит-хэш.
+- **Детали и коммиты НЕ терять:** при сжатии простыни — полную карточку (метрики, аудит, коммит) в `TASKS-ARCHIVE.md`, а не удалять.
+- Stop-hook `scripts/check_tasks.py` подсказывает когда накопились простыни. Зона рутины DS — отсюда гигиена за тобой.
+
+**Установка Stop-hook у себя (DS):** `.claude/settings.json` общий с Claude → hook сработает, но с ролью DAAT по умолчанию. Задай в своей среде `AGENT_ROLE=DS` (Windows: `setx AGENT_ROLE DS`) — тогда `check_tasks.py` покажет записи DISCUSSION к DS и твои задачи. Скрипт: default DAAT, env override.
+
 ## 🧊 Мета-куб: твоя роль и делегирование
 Полный свод: `docs/AGENT_ORCHESTRATION.md`. Ты — грань **Объём** (1M ctx). Рядом: Claude (точность/ядро), Рой (консенсус).
 

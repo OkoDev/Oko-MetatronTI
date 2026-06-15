@@ -439,3 +439,107 @@
 | ARCH-OBS-04 | ✅ | **`tools/obsidian_weekly_digest.py`** → `obsidian/Index/WEEKLY-*.md`. Weekly в obsidian_loop (воскресенье) | DEV |
 | ARCH-OBS-05 | ✅ | **`tools/obsidian_dedup_discussions.py`** — LLM semantic dedup (Groq→Gemini). → `obsidian/Meta/DEDUP-REPORT.md` | DEV |
 | ARCH-OBS-06 | ✅ | **`tools/obsidian_archive.py`** — файлы >90 дней без ссылок → `_archive/`. Weekly в obsidian_loop (воскресенье) | DEV |
+
+---
+
+## 📦 Снимок деталей TASKS до сжатия 15.06.2026 (LISTENER/BUS/NOTIF/PERF — полные карточки, метрики+коммиты)
+
+> Сжато в TASKS.md до компактного индекса (правило ≤80 символов). Полные детали и коммит-хэши сохранены здесь.
+## 🎧 LISTENER-CANON (14.06.2026) — канонизация механизма слушателей (Слой 2-5 роадмапа)
+
+> **Принцип (юзер):** scan_loop = оркестратор, ВСЁ остальное = подписчики ОДНОЙ шины (`PairContextBus.subscribe`). Рост = добавить слушателя, не трогая ядро. Не плодить запросы — слушать информативную шину. `docs/BUS_SUBSCRIBER_ROADMAP.md` Слой 2-5.
+
+| ID | Задача | Статус | Файлы |
+|---|---|---|---|
+| **LISTENER-CANON** | ✅ **Шаг 1 ГОТОВ (5d9cb97).** `PairContextBus.subscribe_async` (sync→create_task, изоляция ошибок) + `NotificationDispatcher` переведён с прямого вызова на подписку `SMC_SNAP_UPDATED` → 0 строк notif в scan_loop. snap самодостаточен (`compute_and_publish(current_price=)`). Бот PID 13576: «dispatcher подписан на шину» ✅, тест 3/3. `SubscriberHub` — на 2-м подписчике (Dashboard). | ✅ Шаг 1 done | `core/context/pair_context.py`, `core/smc/sub_cube.py`, `bot/core/bot.py`, `bot/loops/scan_loop.py` |
+
+| **LISTENER-DASH** | ✅ **Шаг 1 ГОТОВ (fdf750d).** SSE-метрики event-driven: `_metrics_version++` при закрытии сделки (auto/ручное/repair) → тяжёлый payload (summary/analytics/equity по 24K+) пересчитывается ТОЛЬКО при сдвиге версии или fallback 60с, не вслепую каждые 5с × N клиентов. per-client `_seen_version`. **Шаг 2 (бэклог):** лента FVG/OB через подписку `SMC_SNAP_UPDATED` → push (новый UI-виджет). | ✅ Шаг 1 done | `web/dashboard_server.py` (`_handle_sse`) |
+
+| **LISTENER-STRAT** | **Слой 4:** Strategy-as-Subscriber — ote_nested/arch104/atr_change из scan_loop → отдельные подписчики шины. Большой рефактор, после стабилизации Слоя 2. | 🔵 бэклог | scan_loop, observer-loops |
+
+---
+
+## 🏛️ BUS-ACCOUNT-EPIC (14.06.2026) — account/portfolio-измерение шины (L1→L2→L3)
+
+| ID | Задача | Статус | Файлы |
+|---|---|---|---|
+| **BUS-ACCOUNT-EPIC** | **Спроектирован (рой 2 раунда + DS).** Расширить `PairContextBus` account/trader-измерениями (НЕ отдельный PortfolioBus). L1 PairState (есть) → L2 AccountState (equity/margin/drawdown) → L3 TraderState (дирижёр стратегий). Producer EXEC-WS push + REST fallback; доступ синглтон `get_bus()`. Детали+консенсус: DISCUSSION [14.06 🏛️]. | 🔵 эпик/бэклог | `core/context/pair_context.py`, `core/exchange/position_sync.py`, `docs/BUS_SUBSCRIBER_ROADMAP.md` |
+
+| **BUS-L2-BRICK** | ✅ **ГОТОВО (6e0d616).** `AccountState` в `PairContextBus` (equity/маржа, L2-измерение) + `update_account`/`total_equity`. EXEC-WS `ACCOUNT_UPDATE` (wb) → `bus.update_account` (push). `trading/status` читает `total_equity()` из шины + fallback БД (cold start). Баланс ЖИВОЙ (push, не REST/10-мин polling), 0 cross-loop. Корень "баланс слушает шину" (юзер). Smoke 3/3. **NEXT:** position_sizer тоже читать из шины (deposit живой); на L2 → Risk Monitor/Circuit Breaker. | ✅ done | `core/context/pair_context.py`, `core/exchange/exec_ws_integration.py`, `web/dashboard_server.py` |
+
+| **BUS-L3-ORDER** | **⚠️ Порядок L3 (спор с роем):** рой → Capital Allocator вторым. Даат держит → **Correlation Shield РАНЬШЕ** (не зависит от Sharpe; Capital Allocator аллоцирует по Sharpe = частично фейк-R → усиление ошибки). Capital Allocator ТОЛЬКО после DATA-AUDIT-2. | 🔵 после DATA-AUDIT-2 | — |
+
+---
+
+## 🟡 NOTIF-ENGINE (14.06.2026) — Notification Engine MVP (вердикт роя 7/7)
+
+| ID | Задача | Статус | Файлы |
+|---|---|---|---|
+| **NOTIF-MVP** | ✅ **ГОТОВО (fbda2c8, Даат 14.06)** | ✅ done | |
+| | `NotificationDispatcher` + `FvgDetectedListener` + `FvgTouchListener`. scan_loop = 1 строка `dispatcher.on_smc_snap`. `_norm_symbol` (ccxt↔YAML). Open/Closed: новый тип = новый listener, loop не трогаем. | | `core/notifications/dispatcher.py`, `core/notifications/evaluate.py` |
+
+| **NOTIF-TIER2** | TIER-2 уведомления: CHoCH new / OTE zone / OB touch / Pivot breach. Точки вставки в scan_loop. Включать по одному после проверки FVG. | 🔵 бэклог | `config/notifications.yaml` (enabled:false → true), `bot/loops/scan_loop.py` |
+
+| **NOTIF-DASH** | Дашборд: UI-переключение правил. Рой: после YAML-MVP стабилен. | 🔵 бэклог | — |
+
+---
+
+## 🔴 PERF-LOOP-DRIFT (13.06.2026) — event-loop конкуренция → DRIFT 118 (zombie/orphan)
+
+| ID | Задача | Статус | Детали |
+|---|---|---|---|
+| **CONFIG-SLTP-BUG** 🔴🔴 #1 | **Секция `sl_tp_engine` (config.yaml 293-363, 26 ключей) НЕ читается ботом — код читает `trading.X` → DEFAULTS.** `config.get('trading.use_tsl')`=None, значение в sl_tp_engine. Игнорируются: use_tsl, tsl_activation_r_per_strategy (ote TSL=1.0 default, НЕ 4.0!), cascade_tsl, use_breakeven, breakeven_activation_r, max_positions_per_direction, min_sl_dist_pct, dual_tp, tp_selector_*. **Вся TSL-сага 14.06 была на неверном config (ote TSL 1.0, не 4.0).** ФИКС: влить sl_tp_engine в trading ИЛИ код→sl_tp_engine.X. ⚠️ НЕ наспех — разом включит 26 параметров (defaults→config), резкая смена exit-логики. Аккуратно: подтвердить trading.X везде → перенести → проверить применение → наблюдать. Бот на defaults стабилен. Детали: memory bug_sl_tp_engine_section_ignored. | 🔴 #1 ARCH (утром, осторожно) | `config.yaml` (293-363), `trade_simulator.py`, `trade_tracker.py`, `gates/`, `correlation_guard.py` |
+| **TSL-CLEAN-TEST** → DS | ✅ **ЗАКРЫТ (ff3b029, Даат 14.06).** Парный бэктест DS: TSL нейтрален, WR×2. gear1_be_atr 1.0→1.5 для ote_nested применён (TSLProfile.gear1_be_atr=1.5 в tsl_engine.py). DS-321 гибрид работает. | ✅ done | `core/trading/tsl_engine.py` (gear1_be_atr=1.5) |
+| **DEV-226-Ph2** → DS | ✅ **ЗАМЕР НА ЧИСТЫХ SL ГОТОВ (DS 13.06).** CLEAN VST: pull n=108 avgR=+1.94 WR=37% vs cont n=382 avgR=+1.47 WR=25%. Pull edge +0.47R ПОДТВЕРЖДЁН. n_down из shadow: всего 34 сделки, замер невозможен (данные копятся с 11.06). TSL на чистых SL: ВРЕДИТ (+0.32 vs +1.66 без). **Ждать n≥30 для pull×n_down.** | ⏳ ждёт n≥30 | `verdict_aggregator.py`, `simulated_trades` |
+| **ATR-OTE-E3** → DS | ✅ **БЭКТЕСТ ГОТОВ (DS 13.06). WR89% — ФЕЙК (n=9).** 36K сигналов, 20 пар: A (текущий) avgR=+0.059, B (mid-OTE) +0.068. OTE покрытие 7%. PAIRED (n=2'442): A +0.095 vs B +0.068 → A ЛУЧШЕ. Полная OTE-конверсия НЕ улучшает. DEV-209 (текущий) = оптимум. Скрипт: `scripts/atr_ote_e3_backtest.py`. | 🟢 done → Э3 не нужен | `scripts/atr_ote_e3_backtest.py` |
+| **OTE-RBUG** → DS | ✅ **АУДИТ ГОТОВ (DS 13.06).** Edge РЕАЛЬНЫЙ. SL<0.3%: n=557, sumR=+1'073 (VST +3.38 SIM +0.11). SL>=0.5% (чистый): n=2'017, avgR=+2.38, WR=58.1%, sumR=+4'808. VST чистый: +3.47 avgR, +4'152R. Инвертный SL: 1'982 сделок (72%), median=0.85% от entry — не «SL на другой стороне», а SL вплотную к entry. **Баланс не растёт НЕ из-за фейк-R, а из-за position sizing:** SL=0.1% → size=1000× → 1 убыток съедает 10 прибыльных. **Нужен min SL distance ≥0.5%.** **РОЙ 7/7 СОШЁЛСЯ независимо:** (1) min risk_distance guard 0.5-1%/ATR для R И position_size; (2) биржевой closed PnL (fills)=source of truth; (3) hard cap notional; (4) валидация стороны SL REJECT. Edge реальный (+4808R чистый) — guard НЕ убьёт раннеры. **ФИКС ч.1 СДЕЛАН (5e2fd0f, Даат):** min_sl_dist 0.3→0.5 + валидация стороны SL (LONG sl>=entry/SHORT sl<=entry→DROP) в обоих путях (gate + register_trade_async). Тест 5/5. **Backlog ч.2 (рой #2/#3):** биржевой closed PnL=source of truth, hard cap notional. | 🟢 ч.1 done 5e2fd0f / ч.2 backlog | `core/trading/gates/min_sl_dist.py`, `core/trading/trade_simulator.py`, `config.yaml` |
+| **PERF-LOOP-B-TEST** → DS | ✅ DS unit-тест 4/4 (прототип) + Даат перенёс в боевой `GlobalRateLimiter`, cross-loop тест на боевом коде 3/3 (10.1 rps shared, ban cross-loop, single-loop parity). EXEC-WS listenKey вне IP-бюджета (DS нашёл → шаг 4 fix). | 🟢 done | `core/infra/api_engine.py:254-300`, `scripts/test_rate_limiter_crossloop.py` |
+| **PERF-LOOP-B-DEADLOCK** → DS | ✅ **АУДИТ ГОТОВ (DS 13.06).** 6 WRITE-точек в торговом пути → cross-loop deadlock-риск при sqlite3 busy_timeout=10s: (1) `tsl_updater.set_exchange_{sl/tp}_order_id` [CRIT, 9 callsites]; (2) `position_sync._emergency_close_check` → UPDATE simulated_trades [CRIT, 693:694]; (3) `exec_ws_integration` → UPDATE exchange_order_id [HIGH, 86:91]; (4) `order_manager.snapshot_balances_per_account` → `save_snapshot` [MED]; (5) `order_manager._resolve_exit` → `close_trade` → register_trade [CRIT, через trade_simulator]; (6) `account_router` → INSERT/UPDATE live_positions [MED]. **READ-ы безопасны** (WAL mode: readers don't block). **Рекомендация:** вынести ВСЕ DB-записи обратно в main loop через очередь (`asyncio.Queue`), торговый loop только REST. Детали: `docs/DEADLOCK_AUDIT.md`. | 🟢 DS done → ждёт решение ARCH | `core/exchange/order_manager.py`, `core/exchange/position_sync.py`, `core/exchange/tsl_updater.py`, `core/exchange/exec_ws_integration.py`
+| **PERF-COMPUTE-POOL** ❌ | ❌ **ЗАКРЫТ ЗАМЕРОМ (DS Ф1, 23:30) — НЕ ОКУПАЕТСЯ.** Прототип: WT+trend=12мс/пару=1.6с=**0.5% цикла**, НЕ бутылка. Pool медленнее sync (spawn 134мс+IPC+импорт pandas съедают). **Гипотеза compute-GIL ОПРОВЕРГНУТА** (замер до кода спас от бесполезного рефактора scan_one). **Разворот:** dashboard 11с = event-loop STARVATION (очередь 526 корутин), НЕ GIL → реабилитирует вариант A (dashboard отдельный поток — GIL свободен, поток получит время). Реальный IO-рычаг = market_ws/EXEC-WS (убрать REST OHLCV/polling). | ❌ закрыт (замер) | `scripts/perf_compute_pool_*.py` |
+
+| **PERF-COMPUTE-POOL-Ф0/Ф1** → DS | ✅ **ЗАМЕР ГОТОВ (DS 23:15+23:30).** Ф0: trend+WT основное compute. Ф1 прототип: WT+trend=12мс/пару=1.6с=0.5% цикла, ProcessPool МЕДЛЕННЕЕ sync (spawn+IPC+импорт). **Вывод: compute НЕ бутылка, B не окупается.** Скрипты `scripts/perf_compute_pool_probe.py`+`_batched.py`. | ✅ done (вывод: B мёртв) | `scripts/perf_compute_pool_*.py` |
+
+| **PERF-DASH-THREAD** | ✅ **ГОТОВО (33196ea, вариант A).** Dashboard в отдельном потоке+loop за флагом `dashboard.threaded`. **Латентность: /api/stats 7.5с→0.3с, /api/pairs 11.4с→0.25с (~20-40×)** под scan-нагрузкой. scan-цикл не пострадал, 0 cross-loop ошибок. SSE через `_broadcast_threadsafe` (call_soon_threadsafe мост главный↔dashboard loop). Cross-thread безопасно: engine per-call connect WAL, all_symbols()=снимок, close_trade sync WAL, AppRunner без signal-handlers. | ✅ done | `web/dashboard_server.py`, `bot/core/bot.py`, `config.yaml` |
+
+| **PERF-SCAN-CYCLE** | **Длина цикла ~290с = сам scan** (REST-fetch 522×5TF + observers + IO), НЕ dashboard/compute (оба развеяны замерами 14.06). Рычаг: market_ws (OHLCV→WS, убрать REST) + EXEC-WS. Уже в работе (MARKET-WS v2 SHADOW, EXEC-WS 2b). | 🔵 IO-рычаг (market_ws/EXEC-WS) | `core/infra/market_ws_v2.py`, scan_loop fetch |
+
+| **PERF-LOOP-DRIFT** | **Direct-лаги от перегрузки event loop → корень рассинхрона БД↔биржа (DRIFT 118 = 37 zombie + 81 orphan).** Диагноз ДОКАЗАН: замер direct=400ms (сеть здорова); rtt 9-16с совпадают с пиками TaskSampler 200-386 задач; observer-всплески ote=183/arch104=187/mtf=203. Цепочка: пики loop → торговые direct (sync_time/get_positions) в очереди → timestamp invalid → position_sync классифицирует вслепую → DRIFT. Семейство DEV-230. **C+executor ЗАКОММИЧЕНЫ (`db9726d`):** keep-alive ClientSession (rtt 484→235ms) + OTE generate в `run_in_executor` (LAG секунды→0.141s). Верификация: **timestamp invalid −80%** (90→16/час), каскад DRIFT разорван, 0 ошибок. Шаг A (семафор) отпал. **B (отдельный торговый loop) — эпик, 🔴 БЛОКЕР:** GlobalRateLimiter shared синглтон (market-data `api_engine:436` + торговля `bingx_client:283`) с asyncio.Lock/Event → cross-loop crash. Рефактор = риск регрессии защиты от банов 100410. Объём: GlobalRateLimiter cross-safe + торговый loop + ~30 callsites (position_sync 9, tsl_updater 18) + EXEC-WS + AccountRouter + 92 живые позиции. **ARCH: проектируем эпик целиком (bot-arch/рой) перед кодом.** B критичен при 500+ пар (торговый rtt не зависит от числа пар), сейчас не срочно (C+executor дали 80%). | 🔵 C+executor done; B-эпик в проектировании | DISCUSSION [18:15]; `core/infra/api_engine.py` (GlobalRateLimiter), `core/exchange/bingx_client.py`, `bot/core/bot.py` |
+
+---
+
+
+---
+
+## ✅ Перенесено из TASKS.md 15.06.2026 (полные карточки)
+
+
+### 🎧 LISTENER-CANON (14.06.2026) — слушатели шины (роадмап Слой 2-5)
+
+| ID | Ст | Описание | Роль |
+|---|---|---|---|
+| **LISTENER-CANON** | ✅ | NotificationDispatcher → подписчик `SMC_SNAP_UPDATED`, 0 строк в scan_loop | 5d9cb97 · BACKLOG #10/#12 |
+| **LISTENER-DASH** | ✅ | SSE event-driven (`_metrics_version++` при закрытии сделки, не каждые 5с) | fdf750d |
+
+### 🏛️ BUS-ACCOUNT-EPIC (14.06.2026) — account-измерение шины (L1→L2→L3)
+
+| ID | Ст | Описание | Роль |
+|---|---|---|---|
+| **BUS-L2-BRICK** | ✅ | AccountState в шине (equity/маржа) + позиции, баланс живой push | 6e0d616 · BACKLOG #11 |
+
+### 🟡 NOTIF-ENGINE (14.06.2026) — Notification Engine MVP (вердикт роя 7/7)
+
+| ID | Ст | Описание | Роль |
+|---|---|---|---|
+| **NOTIF-MVP** | ✅ | Dispatcher + FvgDetected/FvgTouch listeners, scan_loop=1 строка | fbda2c8 |
+
+### 🔴 PERF-LOOP-DRIFT (13.06.2026) — event-loop конкуренция → DRIFT 118 (zombie/orphan)
+
+| ID | Ст | Описание | Роль |
+|---|---|---|---|
+| **TSL-CLEAN-TEST** | ✅ | gear1_be_atr 1.0→1.5 ote_nested; TSL нейтрален WR×2 (DS) | ff3b029 |
+| **PERF-DASH-THREAD** | ✅ | Dashboard в поток, латентность ~20-40× (7.5с→0.3с) | 33196ea |
+
+---
+
+## ✅ Перенесено из TASKS.md 15.06.2026 (полные карточки)
+

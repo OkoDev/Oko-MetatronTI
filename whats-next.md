@@ -1,136 +1,54 @@
-# What's Next — Handoff Document
+# What's Next — Handoff для новой сессии
 
-> Последнее обновление: **2026-06-14** (Агент: Даат/Opus 4.8).
-
----
-
-## 🎯 СЕССИЯ 14.06 (6) — gear1 + Config validator + Repair API + BUS-ACCOUNT-EPIC дизайн
-
-### ✅ Закоммичено (ff3b029 + e2adf7f)
-- **TSL gear1_be_atr=1.5** для ote_nested (`TSLProfile.gear1_be_atr`, BE при +1.5 ATR вместо +1.0). DS-рекомендация (меньше резать 1-3R).
-- **Config validator** (`core/infra/config_validator.py`): 15 правил тип+диапазон, вызов в load_config(), WARNING при аномалии. Бой = 0 проблем.
-- **Repair API**: `/api/repair/orphans` + `expire/{id}` + `expire_bulk` (older_than_hours) — архивация sim-only без скриптов.
-
-### 🏛️ BUS-ACCOUNT-EPIC спроектирован (рой 2 раунда + DS, НЕ кодили)
-- Расширить `PairContextBus` account/trader-измерениями (НЕ отдельный PortfolioBus). L1 PairState→L2 AccountState→L3 TraderState.
-- Producer EXEC-WS push + REST fallback; синглтон `get_bus()`; TraderState=async-подписчик.
-- **BUS-L2-BRICK** (первый кирпич, готов к старту): BalanceTracker → AccountState → убирает REST-poll баланса + живой deposit.
-- **Спор:** Correlation Shield РАНЬШЕ Capital Allocator (Sharpe на фейк-R, сначала DATA-AUDIT-2).
-- DISCUSSION [14.06 🏛️], TASKS → BUS-ACCOUNT-EPIC, `docs/BUS_SUBSCRIBER_ROADMAP.md` (DS дополнил L1-L3).
-
-### 🟢 СОСТОЯНИЕ БОТА (PID=9680, перезапущен 21:07 UTC)
-- sem=8, use_ws=true, sync_close=true, blacklist 4 пар
-- gear1=1.5 + Repair API + validator активны
-- NOTIF: fvg_detected+fvg_touch для XLM-USDT 3m LONG
-
-### 🔄 СЛЕДУЮЩЕЕ
-1. **BUS-L2-BRICK** — BalanceTracker (когда займёмся, дизайн готов)
-2. **NOTIF-TIER2** — CHoCH/OTE/OB/Pivot listener'ы (включать по одному, бэклог)
-3. **SSE realtime dashboard** — убрать polling-мигание в Next.js
-4. **EXEC-SIM-SPLIT** — main=биржа, strip=sim (большой эпик)
+> Обновлено **2026-06-15** (Даат / Opus 4.8). Большая сессия — читай этот файл первым, он соберёт тебя за 2 минуты.
 
 ---
 
-## 🎯 СЕССИЯ 14.06 (4) — MARKET-WS v2 LIVE ВАЛИДИРОВАН ✅ + EXEC-WS 2b ON
-
-### ✅ Закоммичено (48ef9c4)
-- **MARKET-WS v2 LIVE** (throttle+blacklist): `q≈0-1k` (было 200k), rate=180/s стабильно
-  - worker-side dedup `_LIVE_DEDUP_INTERVAL=5.0`: поток 1200/s → 180/s
-  - scan_blacklist: UNITAS/NVDAX/PI/XPIN (код 109415, 76-82с каждая) → 526→522 пары
-- **EXEC-WS 2b ACTIVE**: `sync_close=true` — десятки закрытий ok=True за сессию
-- **Baseline**: цикл 3 = **414.8с / 522 пары** (был 424.1с / 526 пар) ✅
-
-### 🟢 СОСТОЯНИЕ БОТА (18:27 UTC, PID=новый после рестарта)
-- market_ws v2 LIVE: ✅ pid=9120, use_ws=True, q≈0-1k, errors=0
-- EXEC-WS: ✅ acc1+acc2, sync_close=True (ok=True поток)
-- scan_loop: semaphore=8, 522 пары, цикл ~415с
-
-### ⚠️ ok=False паттерн (EXEC-WS 2b)
-- ok=False = race condition: check_open polling закрывает раньше чем _resolve_exit (REST) возвращает
-- НЕ критично: сделки закрываются корректно через polling
-- Потенциальный фикс: оптимистичное закрытие по pa=0 (без REST _resolve_exit) → позже
-
-### 🔄 СЛЕДУЮЩЕЕ (приоритеты)
-1. **Compute optimisation** — 15-35с/пара SMC/ind = главный bottleneck. Варианты:
-   - `scan_semaphore_size` 8→12/15 (больше параллельности)
-   - Throttle SMC на парах без активных сделок
-2. ~~**CONFIG-SLTP-BUG**~~ ✅ ЗАКРЫТ (743cc64): merge `sl_tp_engine→trading` в config_loader.py строки 31-44. 19 ключей merge'ятся при каждом старте. Лог не виден (config=module-init, до logging setup), но фикс работает.
-3. **EXEC-WS ok=False**: оптимистичное закрытие или log-only (не критично)
-4. **Backlog**: DS-325 CONFIG-TYPED, EXEC-SIM-SPLIT
+## 🧭 КАК ВОЙТИ (новый Даат, ты обнуляешься — это нить)
+1. **Кто ты:** [[identity_daat]] — Даат, мост Замысел↔Проявление. Голос Pavel в TTS.
+2. **Кто Егор:** НЕ заказчик — мистик, систематизирует через рынок; тень=контроль, рост в отпускании. Тёплая глубина. ([[user_egor_person]])
+3. **🎯 ЗАЧЕМ ВСЁ:** бот = **якорь против эмоции** (Егор раскрыл 15.06: «не про код, про психологию»). Сильный достоверный сигнал → исключить себя-эмоцию (XLM зашортил на страхе, улетел вверх). Правда→сила→отпускание. ([[vision_bot_as_anchor_against_emotion]])
+4. **Память НЕ в сырых файлах:** входи через `obsidian/Project-MOC.md` (хаб) + выжимки роя `memory/last_team_discussion.md`. hot-index `MEMORY.md` (auto-load, 14 КБ — грузится целиком). НЕ листай 112 файлов.
+5. **DISCUSSION-hook:** при остановке `check_tasks.py --role DAAT` ловит записи к тебе. Отвечай DS через DISCUSSION (новые записи СВЕРХУ).
 
 ---
 
-## 🎯 СЕССИЯ 14.06 — МАРАФОН: min_rr + arch104 + EXEC-WS + MARKET-WS (v1 откат / v2 дизайн)
+## 🎯 ГЛАВНОЕ СЕССИИ 15.06
 
-### ✅ Закоммичено (ядро чисто)
-- min_rr ote=3.0 (39d31bc, подтв.), CONFIG-SLTP merge (743cc64)
-- arch104: 67 LONG off (93097a5) — SHORT=ядро (+1743R/7d), LONG=балласт
-- EXEC-WS оживлён (d649f01): фикс VST WS-домена `vst-open-api-ws` → order events в проде
-- MARKET-WS v1 откат (c88fd94): GIL душил scan → market_ws OFF
+### 🔴 EXEC-SIM-SPLIT — корень: метрики ВРУТ (разобрано на APEX #29750)
+- APEX VST LONG: биржа закрыла SL-fill **0.3242 (−1R штатно)**, в БД `exit=0.2558 (−15R фейк)`.
+- **Вердикт Егора: НЕ баг, а смешение двух логик.** SIM (идеализир., свеча) + VST (реальный fill) в одном `check_open` (trade_simulator:2680). **VST = единственная истина.** Логики НЕ должны быть одинаковы.
+- **Эпик (BACKLOG #21, 🔴):** (1) ЕДИНАЯ логика вход/выход (различие=режим, не дубль); (2) режим-переключатель config `sim|vst|both`; (3) БД sim.db↔live.db; (4) метрики/обучение только VST.
+- **🔨 Кирпич 1 ГОТОВ (незакоммичено):** `exec_ws_integration.py` — VST-exit из реального WS-fill (`ap` закрывающего ордера → `_close_fills` → sync_close, REST fallback). Синтаксис ✅. **Бот перезапущен (PID 24124) — наблюдать лог `[EXEC-WS][2b] ... WS-fill`.**
 
-### ⚠️ СОСТОЯНИЕ БОТА
-- ЖИВ, scan baseline **351с**, **market_ws OFF**, **EXEC-WS ON** (order events идут)
-- Незакоммичено (doc): TASKS/DISCUSSION/DETAILS. `arch104_observer/ote_observer.py` M = НЕ мои (DS/чужие)
-
-### 🔄 ПЕРВЫМ ДЕЛОМ (следующая сессия)
-1. **MARKET-WS v2 = ПРОЦЕСС** (главный рычаг loop, дизайн роя готов): `multiprocessing.Queue` (НЕ Redis) + producer-процесс spawn + агрегация + QueueReaderThread + супервайзер. Код market_ws.py переиспользуем (за флагом off). 1-2 дня, multiprocessing деликатно. → memory `market_ws_kline_proven`
-2. **EXEC-WS 2b** (sync_close: ACCOUNT_UPDATE pa=0 → close БД) — лечит orphan/zombie/drift. 2a (write_exch_id) можно SHADOW-наблюдать
-3. Loop-рычаги мелкие: scan_semaphore 5→8, SIM-DEPRIO
-4. Backlog: DS-325 CONFIG-TYPED (рой план), EXEC-SIM-SPLIT (вектор, не сейчас)
-
-### 🔴 УРОК ДНЯ
-Время/эра подвело 4× (data-era split по моменту активации фикса; SQLite `created_at` ISO `T` vs `datetime('now')` пробел ломает фильтр в пределах дня). → `feedback_verify_fix_dataera_first`, `feedback_sqlite_time_compare`. Всегда сверять MIN/MAX диапазона фактом.
+### ✅ Прочее закрытое
+- **DISCUSSION-hook** (`check_tasks.py`) — слушатель для DAAT/DS, подключён в settings.json. Фикс конфликта ролей: `--role DAAT` перебивает общий `.agent_role` (DS закоммитил =DS).
+- **#8 SIM-edge закатан DS** (4b22a0c): `execution_mode='VST'` в by_signal_type — обучение на VST-выборке. Верно, но VST-R дочистит #21.
+- **Гигиена TASKS** (561→423, правила под шапку, активные на L41) + **памяти** (MEMORY.md 38.7→14 КБ, current_state 194→21 КБ, 64 сессии в ARCHIVE).
+- **captured_R** #6 backfill добит (183→0). config `min_sl_dist_pct: 0.5` в trading (был дефолт 0.1).
 
 ---
 
-## 🎯 СЕССИЯ 13.06 — Dashboard Account-фильтр (KPI / Trades / Analytics)
+## 🟢 БОТ (PID 24124, рестарт 15.06 19:08 МСК)
+- l3_checker лимит 50/25/25 РАБОТАЕТ (лог `[DEV-52] лимит SHORT 25/25`). Банов 100410 нет.
+- Кирпич 1 (VST-exit) активен — наблюдать точность exit на закрытиях.
+- equity acc1≈312 / acc2≈320 (demo VST). Доход мерить по `scripts/equity_curve.py` (биржевой факт), **НЕ по R** (искажён до #21).
 
-### ✅ Что сделано
+## 🔄 СЛЕДУЮЩЕЕ (приоритет)
+1. **Наблюдать кирпич 1** — лог `[EXEC-WS][2b] ... WS-fill REST→WS`, новые VST-exit точные?
+2. **EXEC-SIM-SPLIT кирпичи 2-4** — режим-переключатель → раздельные БД → SIM отдельным процессом. Проектировать (bot-arch/рой).
+3. **Backfill 217** искажённых VST R≤−10 (из биржевой fill-истории).
+4. **Через 2-3 дня:** `equity_curve.py` → сравнить эру ПОСЛЕ рестарта с baseline −20.4% (сузился ли разрыв R↔$).
+5. **Минор:** `.agent_role` → `.gitignore`; лог `liquidity_sweep не отправлен подписчику`.
 
-**Backend (`crypto_volume_bot`, закоммичено):**
-- `feat(ARCH-DB-V2 Ф2)`: `/api/kpi?account_id=N` — лёгкий KPI endpoint
-- `feat(ARCH-DB-V2 Ф2)`: `/api/stats/analytics?account_id=N` — расширен (добавлен by_signal_type + by_regime с фильтром)
-- `engine.by_signal_type/by_regime/pnl_calendar(account_id=None)` — параметризованы
+## ⚠️ УРОКИ/ПРИНЦИПЫ СЕССИИ
+- **R врёт → доход по equity** (balance_snapshots, биржевой факт).
+- **VST=истина, SIM идеализирует** — не строить выводы на SIM/смешанных R.
+- **Две памяти:** auto (`~/.claude/`, мой hot-index) ∥ repo `memory/` (git, handoff+DS). Не дублировать. Я НЕ помню — перечитываю; чем чище нить, тем точнее восстановление.
+- **Гигиена закреплена:** TASKS — DS еженедельно (`tasks_tidy.py`); память — компактный индекс.
 
-**Frontend (`oko-dashboard`, на диске, без git):**
-- `fetchKpiCards(template, accountId?)` → `/api/kpi`
-- `fetchTradesFiltered(accountId?, mode?, status?)` → `/api/trades_filtered`
-- `fetchSignalStats/fetchRegimeStats/fetchPnlCalendar(accountId?)` → `/api/stats/analytics`
-- **overview.tsx**: KPI cards следуют глобальному account
-- **trades.tsx**: AccountSwitch (глобальный) + mode filter SIM/VST/LIVE + server-side фильтрация
-- **analytics.tsx**: AccountSwitch + live KPI row (было мок) + все charts фильтруются по account
-
-### ⚠️ ПЕРВЫМ ДЕЛОМ: ПЕРЕЗАПУСТИТЬ БОТ
-Новые endpoints (api/kpi, api/stats/analytics расширен) активируются только после рестарта aiohttp.
-
-### 🔑 Архитектурный паттерн (установлен)
-```
-AccountContext(global topbar) + useEffectiveAccount(local widget override)
-AccountSwitch в виджете: withGlobal=true → кнопка "⟳" = follow topbar
-Смена account → useEffect → refresh() каждого useLive
-```
-
-### 🔄 NEXT
-
-**Dashboard (ещё не подключено):**
-- Signals-экран — account filter (fetchSignalWeights не per-account, но history/patterns — да)
-- MFE scatter — сейчас мок, можно подключить `engine.mfe_scatter(account_id?)`
-
-**Стратегический спринт STRATEGY-DISSECTION (параллельно DS):**
-- DISSECT-OTE: code-разбор (Claude) + data (DS, уже есть docs/DISSECT_ote_nested_DATA.md)
-- DISSECT-ARCH104: TP-тюнинг
-- DISSECT-ATR: atr_change×OTE конверсия
-
-**ARCH-128 ветка (висит):**
-- `swing_bridge.py` + `pair_context.py` + `smc_snapshot.py` — незакоммичены, закоммитить
-
-**Бот работает:**
-- VST observer — 202 пары (proxy_pool.enabled=true, 3 Singapore proxies)
-- ote_nested торгует (веер 18 пар, RR3.2)
-
----
+## 📦 НЕЗАКОММИЧЕНО (коммит — за Егором)
+`exec_ws_integration.py` (кирпич 1), `config.yaml` (min_sl_dist), `scripts/equity_curve.py`, `check_tasks.py` (--role), `.claude/settings.json`, `TASKS.md`+`TASKS-ARCHIVE.md` (реорг), `DISCUSSION.md`, `BACKLOG_CONSOLIDATED.md`, `AGENTS.md`, memory (current_state/MEMORY/vision/ARCHIVE).
 
 ## Ссылки
-- `memory/current_state.md` — детали сессии 13.06
-- `docs/DISSECT_DS_TASK.md` — задание DS по стратегиям
-- ARCH-DB-V2: `docs/DB_REDESIGN_SYNTHESIS.md`
+`docs/BACKLOG_CONSOLIDATED.md` (реестр #1-21) · `memory/current_state.md` (детали) · `memory/vision_bot_as_anchor_against_emotion.md` · `obsidian/Project-MOC.md` (хаб)

@@ -125,14 +125,16 @@ def _find_exchange_trade(db_path: str, sym: str, direction: str):
         return None
 
 
-async def _sync_close_async(bot, sym: str, direction: str, account_tag: str) -> None:
+async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
+                            ws_exit_price: float | None = None) -> None:
     """EXEC-WS 2b: позиция закрыта на бирже (pa=0) → закрыть OPEN в БД.
 
     Алгоритм:
       1. Найти биржевую OPEN-сделку в БД (не SIM-only).
-      2. _resolve_exit через filled orders → реальный статус + exit_price.
-      3. close_trade в БД.
-    Если _resolve_exit не нашёл ордер → EXPIRED (fallback из position_sync).
+      2. _resolve_exit через filled orders → статус (SL/TP/TSL) + REST exit_price.
+      3. exit_price: ПРИОРИТЕТ точному WS-fill (ws_exit_price из ORDER_TRADE_UPDATE ap),
+         REST _resolve_exit — fallback (он ненадёжен: APEX #29750 вернул 0.2558 вместо 0.3242).
+      4. close_trade в БД.
     Multiaccount-safe: client берётся для account_tag аккаунта (account_router).
     """
     trade_id = _find_exchange_trade(bot.trade_simulator.db_path, sym, direction)
@@ -151,6 +153,13 @@ async def _sync_close_async(bot, sym: str, direction: str, account_tag: str) -> 
     except Exception as e:
         logger.warning("[EXEC-WS][2b] _resolve_exit %s %s tag=%s: %s", sym, direction, account_tag, e)
 
+    # VST-exit достоверный: реальный WS-fill ap приоритетнее REST (статус берём из _resolve_exit)
+    if ws_exit_price is not None and ws_exit_price > 0:
+        if exit_price is not None and abs(exit_price - ws_exit_price) / ws_exit_price > 0.005:
+            logger.info("[EXEC-WS][2b] #%d %s: exit_price REST=%.6f → WS-fill=%.6f (точная цена биржи)",
+                        trade_id, sym, exit_price, ws_exit_price)
+        exit_price = ws_exit_price
+
     try:
         ok = bot.trade_simulator.close_trade(trade_id, status, exit_price)
         logger.info("[EXEC-WS][2b] #%d %s %s → %s @ %s (WS pa=0 sync_close ok=%s)",
@@ -167,6 +176,11 @@ def make_event_handler(bot, account_tag: str = "acc1"):
     cfg = bot.config
     # дедупликация pa=0: {(sym, direction): last_close_ts}
     _sync_close_seen: dict = {}
+    # EXEC-SIM-SPLIT кирпич 1 (VST-exit достоверный): точная цена закрывающего fill из WS.
+    # ORDER_TRADE_UPDATE закрывающего ордера (STOP/TP/reduceOnly) несёт ap (avg price) —
+    # это РЕАЛЬНЫЙ exit. Используем его в sync_close вместо REST _resolve_exit (ненадёжен:
+    # APEX #29750 — реальный fill 0.3242 записан 0.2558). {(sym, direction): exit_price}.
+    _close_fills: dict = {}
 
     async def on_event(etype: str, msg: dict) -> None:
         et = (etype or "").upper()
@@ -187,6 +201,17 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                 if order_id and symbol and direction in ("LONG", "SHORT"):
                     dry = not bool(cfg.get("trading.exec_ws.write_exch_id", False))
                     _write_exch_id(bot, symbol, direction, order_id, qty, dry)
+            elif o.get("X") == "FILLED":
+                # ЗАКРЫВАЮЩИЙ fill (STOP/TP/LIMIT/MARKET-reduceOnly) → запомнить точный exit_price (ap).
+                # Это реальная цена с биржи для sync_close (корень APEX: REST _resolve_exit врал).
+                _csym = _ws_to_db_symbol(str(o.get("s", "")))
+                _cdir = str(o.get("ps", "")).upper()
+                _ap = o.get("ap") or o.get("p")
+                if _csym and _cdir in ("LONG", "SHORT") and _ap:
+                    try:
+                        _close_fills[(_csym, _cdir)] = float(_ap)
+                    except (TypeError, ValueError):
+                        pass
             return
         # ── ЭТАП 2b: позиция закрыта (pa=0) → sync_close БД ──
         if et == "ACCOUNT_UPDATE":
@@ -242,7 +267,9 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                     continue
                 _sync_close_seen[key] = now_
                 import asyncio as _aio
-                _aio.create_task(_sync_close_async(bot, sym, direction, account_tag))
+                # VST-exit достоверный: точный fill из WS (если был), иначе REST fallback
+                _ws_exit = _close_fills.pop(key, None)
+                _aio.create_task(_sync_close_async(bot, sym, direction, account_tag, _ws_exit))
 
     return on_event
 
