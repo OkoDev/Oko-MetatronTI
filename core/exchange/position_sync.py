@@ -294,6 +294,23 @@ async def sync_positions(bot) -> None:
         except Exception as _upe:
             logger.debug("[POSITION-SYNC][DB-V2] positions upsert: %s", _upe)
 
+        # BUS-L2: позиции acc1 в шину (init + backup-maintain). EXEC-WS ACCOUNT_UPDATE P[]
+        # держит шину живой между snapshot'ами; здесь — полный снимок (set, удаляет закрытые).
+        try:
+            _pc = getattr(bot, "pair_context", None)
+            if _pc is not None and hasattr(_pc, "set_account_positions"):
+                _snap = {
+                    pp.symbol_our: {
+                        "qty": abs(getattr(pp, "qty", 0) or 0), "side": pp.side,
+                        "entry": getattr(pp, "entry", None),
+                        "upnl": getattr(pp, "unrealized_pnl", None),
+                    }
+                    for pp in parsed_all if pp.margin >= 0.01
+                }
+                _pc.set_account_positions(1, _snap)
+        except Exception as _pbe:
+            logger.debug("[POSITION-SYNC] positions→bus: %s", _pbe)
+
         open_pairs: dict[tuple[str, str], object] = {}  # (sym_our, side) → ParsedPosition
         for pp in parsed_all:
             if pp.margin >= 0.01:

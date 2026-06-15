@@ -189,6 +189,8 @@ class AccountState:
     equity: float = 0.0
     available: Optional[float] = None
     used_margin: Optional[float] = None
+    # symbol → {qty, side, entry, upnl, ts} — позиции аккаунта (push от EXEC-WS ACCOUNT_UPDATE P[])
+    positions: Dict[str, dict] = field(default_factory=dict)
     updated_at: Optional[datetime] = None
 
 
@@ -265,6 +267,40 @@ class PairContextBus:
         """Сумма equity всех аккаунтов из шины (живой deposit). None если шина пуста (cold start)."""
         vals = [s.equity for s in self._accounts.values() if s.equity and s.equity > 0]
         return round(sum(vals), 2) if vals else None
+
+    def update_position(self, account_id: int, symbol: str, qty: float, side: str = "",
+                        entry: Optional[float] = None, upnl: Optional[float] = None) -> None:
+        """Обновить позицию аккаунта (push от EXEC-WS ACCOUNT_UPDATE P[]). qty=0 → удалить (закрыта)."""
+        st = self._accounts.get(account_id)
+        if st is None:
+            st = AccountState(account_id=account_id)
+            self._accounts[account_id] = st
+        if not qty:
+            st.positions.pop(symbol, None)
+        else:
+            st.positions[symbol] = {
+                "qty": qty, "side": side, "entry": entry, "upnl": upnl,
+                "ts": datetime.now(timezone.utc),
+            }
+        st.updated_at = datetime.now(timezone.utc)
+
+    def set_account_positions(self, account_id: int, positions: Dict[str, dict]) -> None:
+        """Полная замена позиций аккаунта (snapshot от position_sync — удаляет закрытые).
+        EXEC-WS update_position — инкремент между snapshot'ами."""
+        st = self._accounts.get(account_id)
+        if st is None:
+            st = AccountState(account_id=account_id)
+            self._accounts[account_id] = st
+        st.positions = dict(positions)
+        st.updated_at = datetime.now(timezone.utc)
+
+    def all_positions(self) -> list[dict]:
+        """Все позиции всех аккаунтов из шины (для dashboard sync-panel — без REST)."""
+        out: list[dict] = []
+        for acc_id, st in self._accounts.items():
+            for sym, p in st.positions.items():
+                out.append({"account_id": acc_id, "symbol": sym, **p})
+        return out
 
     # ── pub/sub шина ─────────────────────────────────────────────────────
 

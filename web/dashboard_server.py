@@ -961,35 +961,62 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
     """
     import time as _time
     try:
-        snapshot = await bot.order_executor.get_exchange_snapshot()
-        result["balance"] = snapshot.get("balance")
-        # Нормализуем поля позиций BingX → удобный формат
-        raw_positions = snapshot.get("positions", [])
-        for p in raw_positions:
-            amt = float(p.get("positionAmt") or p.get("availableAmt") or 0)
-            if amt == 0:
-                continue
-            # BingX Hedge Mode: positionSide = "LONG"/"SHORT" (positionAmt всегда ≥ 0)
-            pos_side = p.get("positionSide") or ("LONG" if amt > 0 else "SHORT")
-            result["positions"].append({
-                "symbol":            p.get("symbol", ""),
-                "side":              pos_side,
-                "size":              abs(amt),
-                "entry_price":       float(p.get("avgPrice") or p.get("entryPrice") or 0),
-                "mark_price":        float(p.get("markPrice") or 0),
-                "unrealized_pnl":    float(p.get("unrealizedProfit") or 0),
-                "leverage":          int(p.get("leverage") or 1),
-                "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
-                "liquidation_price": float(p.get("liquidationPrice") or 0),
-                "account":           p.get("_account"),   # ARCH-96: acc1/acc2 (был потерян в выводе) — для DRIFT-диагностики
-            })
+        # BUS-L2: позиции из ШИНЫ (push от EXEC-WS ACCOUNT_UPDATE P[] + position_sync snapshot).
+        # "Слушаем шину" — НЕ get_exchange_snapshot REST (в threaded dashboard = cross-loop вис →
+        # мигание sync-panel). Шина в памяти, мгновенно. symbol = db-формат "X/USDT:USDT".
+        _err = None
+        _pc = getattr(bot, "pair_context", None)
+        _bus_pos = _pc.all_positions() if _pc is not None else []
+        if _bus_pos:
+            result["balance"] = _pc.total_equity()
+            for bp in _bus_pos:
+                _qty = abs(bp.get("qty") or 0)
+                if not _qty:
+                    continue
+                result["positions"].append({
+                    "symbol":            bp.get("symbol", ""),   # db-формат, normPair на фронте
+                    "side":              bp.get("side") or "",
+                    "size":              _qty,
+                    "entry_price":       float(bp.get("entry") or 0),
+                    "mark_price":        0.0,   # нет в ACCOUNT_UPDATE (деталь отображения)
+                    "unrealized_pnl":    float(bp.get("upnl") or 0),
+                    "leverage":          1,
+                    "margin":            0.0,
+                    "liquidation_price": 0.0,
+                    "account":           f"acc{bp.get('account_id', 1)}",
+                })
+        else:
+            # Fallback: шина пуста (cold start до первого ACCOUNT_UPDATE/position_sync) → REST.
+            # Редкий путь; в threaded может быть медленным, но wait_for(5s) в _handle_live защищает.
+            snapshot = await bot.order_executor.get_exchange_snapshot()
+            _err = snapshot.get("error")
+            result["balance"] = snapshot.get("balance")
+            for p in snapshot.get("positions", []):
+                amt = float(p.get("positionAmt") or p.get("availableAmt") or 0)
+                if amt == 0:
+                    continue
+                pos_side = p.get("positionSide") or ("LONG" if amt > 0 else "SHORT")
+                result["positions"].append({
+                    "symbol":            p.get("symbol", ""),
+                    "side":              pos_side,
+                    "size":              abs(amt),
+                    "entry_price":       float(p.get("avgPrice") or p.get("entryPrice") or 0),
+                    "mark_price":        float(p.get("markPrice") or 0),
+                    "unrealized_pnl":    float(p.get("unrealizedProfit") or 0),
+                    "leverage":          int(p.get("leverage") or 1),
+                    "margin":            float(p.get("initialMargin") or p.get("positionInitialMargin") or 0),
+                    "liquidation_price": float(p.get("liquidationPrice") or 0),
+                    "account":           p.get("_account"),
+                })
         # JOIN с simulated_trades через live_orders → получаем SL/TP для отображения
         # Используем live_orders.sim_trade_id как мост, чтобы корректно находить
         # "зомби" позиции (live_orders=OPEN, но simulated_trades=TSL/SL/EXPIRED).
         # BingX symbol "ATOM-USDT" → БД "ATOM/USDT:USDT"
         if result["positions"]:
             from core.exchange.bingx_client import from_bingx_symbol
-            syms = list({from_bingx_symbol(p["symbol"]) for p in result["positions"]})
+            # symbol из шины уже db-формат; из REST-fallback — BingX → конвертим
+            syms = list({(p["symbol"] if "/" in p["symbol"] else from_bingx_symbol(p["symbol"]))
+                         for p in result["positions"]})
             engine = request.app.get("engine")
             db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
             sl_tp_map: dict = {}
@@ -1030,14 +1057,15 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
             for pos in result["positions"]:
-                db_sym = from_bingx_symbol(pos["symbol"])
+                # symbol из шины уже db-формат ("X/USDT:USDT"); из REST-fallback — BingX ("X-USDT")
+                db_sym = pos["symbol"] if "/" in pos["symbol"] else from_bingx_symbol(pos["symbol"])
                 st = sl_tp_map.get(db_sym) or {}
                 pos["stop_loss"]  = st.get("stop_loss")
                 pos["take_profit"] = st.get("take_profit")
                 pos["tsl_activated"] = st.get("tsl_activated", False)
                 pos["tsl_tf"] = st.get("tsl_tf")
 
-        result["error"] = snapshot.get("error")
+        result["error"] = _err
 
         # ── Сохраняем в cache (успех) ──
         _LIVE_CACHE["payload"] = result

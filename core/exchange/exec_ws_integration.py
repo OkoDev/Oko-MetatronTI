@@ -207,16 +207,27 @@ def make_event_handler(bot, account_tag: str = "acc1"):
             for p in (a.get("P") or []):
                 if not isinstance(p, dict):
                     continue
-                # pa=0 = позиция закрыта (BingX шлёт "0" или "0.00000000")
+                # pa = position amount (qty). "0"/"0.00000000" = позиция закрыта.
                 pa_str = str(p.get("pa", "")).strip()
                 try:
-                    pa_zero = float(pa_str) == 0.0
+                    pa_val = float(pa_str)
                 except ValueError:
-                    pa_zero = False
-                if not pa_zero:
-                    continue
+                    pa_val = 0.0
                 sym = _ws_to_db_symbol(str(p.get("s", "")))
                 direction = str(p.get("ps", "")).upper()
+                # BUS-L2: позиция в шину (push, "слушаем шину") — pa=0 удалить, иначе обновить.
+                # dashboard sync-panel читает позиции из шины, БЕЗ REST get_exchange_snapshot.
+                if _pc is not None and sym:
+                    try:
+                        _ep = float(p.get("ep") or 0) or None
+                        _up = float(p.get("up") or 0)
+                        _pc.update_position(_ACC_TAG_TO_INT.get(account_tag, 1), sym,
+                                            qty=abs(pa_val), side=direction, entry=_ep, upnl=_up)
+                    except Exception as _pe:
+                        logger.debug("[EXEC-WS] position→bus: %s", _pe)
+                # ── ЭТАП 2b sync_close: только pa=0 ──
+                if pa_val != 0.0:
+                    continue
                 if not sym or direction not in ("LONG", "SHORT"):
                     continue
                 sync_close_on = bool(cfg.get("trading.exec_ws.sync_close", False))
