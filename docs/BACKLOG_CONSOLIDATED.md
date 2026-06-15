@@ -23,7 +23,7 @@
 
 | # | Статус | Задача | Источник |
 |---|---|---|---|
-| 6 | 🔴 | **`captured_R_pct` формула сломана** (avg −14.3%, физически невозможно) — ломает ML/аналитику. max_price/min_price OK (97%) | DATA-AUDIT-2 A2.1 |
+| 6 | ✅ | **ПОЧИНЕНО (c6aa6e9).** clamp [0,100] в формуле (новые) + backfill 16252 строк. avg −13.3→34.3, <0/>100→0. Корень: realized/MFE без clamp (убыток<0, раннер>clamp_MFE). Метрики достоверны → разблокирует #5/#19 | DATA-AUDIT-2 A2.1 |
 | 7 | 🟠 | **ML-честность**: TimeSeriesSplit, selection bias в RPredictor (realized R не MFE), OOS gate | AUDIT, DATA-AUDIT-2 A2.3 |
 | 8 | 🟢 | **SIM убыточны (VST=весь edge)** — переосмыслить sim-генерацию / вес в обучении | DATA-AUDIT-2 A2.2 |
 
