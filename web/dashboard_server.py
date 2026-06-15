@@ -2220,6 +2220,9 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
     resp.headers["Content-Type"]  = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
+    # CORS: EventSource идёт НАПРЯМУЮ с фронта (:3000) на :8000 — Next-прокси буферизит SSE
+    # (не стримит), поэтому фронт подключается напрямую. Разрешаем cross-origin для SSE.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
     await resp.prepare(request)
 
     # ── Регистрируем клиента в broadcast-списке ────────────────────────────
