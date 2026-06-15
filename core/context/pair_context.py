@@ -177,6 +177,21 @@ class PairState:
     last_diagnostic_time: Optional[datetime] = None
 
 
+@dataclass
+class AccountState:
+    """L2 ПОРТФЕЛЬ-измерение шины (BUS-ACCOUNT-EPIC).
+
+    Equity/маржа аккаунта живут в шине — push от EXEC-WS ACCOUNT_UPDATE (wb=wallet balance),
+    НЕ REST-polling. Потребители (trading/status, position_sizer, Risk Monitor) читают отсюда.
+    Параллельно PairState (L1 исполнение) — это L2 (портфель). Фундамент L3 TraderState.
+    """
+    account_id: int
+    equity: float = 0.0
+    available: Optional[float] = None
+    used_margin: Optional[float] = None
+    updated_at: Optional[datetime] = None
+
+
 class PairContextBus:
     """
     Центральная Сфера Куба Метатрона — Shared Context Bus.
@@ -190,6 +205,7 @@ class PairContextBus:
 
     def __init__(self) -> None:
         self._states: dict[str, PairState] = {}
+        self._accounts: dict[int, AccountState] = {}   # L2: account_id → equity/маржа
         self._subscribers: Dict[str, List[Callable]] = {}
         self._event_log: List[Dict] = []   # последние N событий для диагностики
         self._max_log = 200
@@ -221,6 +237,34 @@ class PairContextBus:
         """Сбросить состояние по символу."""
         if symbol in self._states:
             del self._states[symbol]
+
+    # ── L2: account-измерение (BUS-ACCOUNT-EPIC) ─────────────────────────
+    def update_account(self, account_id: int, equity: Optional[float] = None,
+                       available: Optional[float] = None,
+                       used_margin: Optional[float] = None) -> None:
+        """Обновить AccountState (push от EXEC-WS ACCOUNT_UPDATE). Создаёт если нет."""
+        st = self._accounts.get(account_id)
+        if st is None:
+            st = AccountState(account_id=account_id)
+            self._accounts[account_id] = st
+        if equity is not None:
+            st.equity = equity
+        if available is not None:
+            st.available = available
+        if used_margin is not None:
+            st.used_margin = used_margin
+        st.updated_at = datetime.now(timezone.utc)
+
+    def get_account(self, account_id: int) -> Optional[AccountState]:
+        return self._accounts.get(account_id)
+
+    def all_accounts(self) -> list[AccountState]:
+        return list(self._accounts.values())
+
+    def total_equity(self) -> Optional[float]:
+        """Сумма equity всех аккаунтов из шины (живой deposit). None если шина пуста (cold start)."""
+        vals = [s.equity for s in self._accounts.values() if s.equity and s.equity > 0]
+        return round(sum(vals), 2) if vals else None
 
     # ── pub/sub шина ─────────────────────────────────────────────────────
 

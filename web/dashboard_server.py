@@ -1197,13 +1197,26 @@ async def _handle_trading_status(request: web.Request) -> web.Response:
     # (REST, привязан к ГЛАВНОМУ loop) = cross-loop → виснет → pingBot timeout → "BOT: OFFLINE"
     # мигание. БД-чтение (per-call connect, WAL) в потоке безопасно и мгновенно.
     if mode_label in ("VST", "LIVE"):
-        try:
-            from core.db import balance_repo
-            _accs = balance_repo.get_accounts()
-            _eq = sum((a.get("equity") or 0) for a in _accs)
-            result["vst_balance"] = round(_eq, 2) if _eq else None
-        except Exception as _bse:
-            logger.debug("[/api/trading/status] balance from DB error: %s", _bse)
+        # BUS-L2-BRICK: баланс из ШИНЫ (AccountState, push от EXEC-WS ACCOUNT_UPDATE) —
+        # живой, 0 REST, 0 cross-loop. Fallback БД balance_snapshots при cold start
+        # (до первого ACCOUNT_UPDATE шина пуста). Это "слушать шину", а не дёргать REST.
+        _eq = None
+        _bot = request.app.get("bot")
+        _pc = getattr(_bot, "pair_context", None) if _bot else None
+        if _pc is not None:
+            try:
+                _eq = _pc.total_equity()
+            except Exception:
+                _eq = None
+        if _eq is None:
+            try:
+                from core.db import balance_repo
+                _accs = balance_repo.get_accounts()
+                _s = sum((a.get("equity") or 0) for a in _accs)
+                _eq = round(_s, 2) if _s else None
+            except Exception as _bse:
+                logger.debug("[/api/trading/status] balance fallback DB error: %s", _bse)
+        result["vst_balance"] = _eq
 
     return web.Response(
         text=json.dumps(result, ensure_ascii=False),

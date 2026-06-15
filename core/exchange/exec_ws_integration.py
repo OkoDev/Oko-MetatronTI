@@ -191,6 +191,19 @@ def make_event_handler(bot, account_tag: str = "acc1"):
         # ── ЭТАП 2b: позиция закрыта (pa=0) → sync_close БД ──
         if et == "ACCOUNT_UPDATE":
             a = msg.get("a") or {}
+            # BUS-L2-BRICK: equity (wb=wallet balance) → AccountState шины (push, не REST).
+            # Потребители (trading/status, sizing) читают из шины. Корень: баланс слушает шину.
+            try:
+                _pc = getattr(bot, "pair_context", None)
+                if _pc is not None:
+                    for _b in (a.get("B") or []):
+                        if isinstance(_b, dict) and _b.get("a") == "USDT":
+                            _wb = float(_b.get("wb") or 0)
+                            if _wb > 0:
+                                _pc.update_account(_ACC_TAG_TO_INT.get(account_tag, 1), equity=_wb)
+                            break
+            except Exception as _eqe:
+                logger.debug("[EXEC-WS] equity→bus: %s", _eqe)
             for p in (a.get("P") or []):
                 if not isinstance(p, dict):
                     continue
