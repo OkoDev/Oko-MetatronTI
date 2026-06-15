@@ -194,11 +194,11 @@ trading:
     against_bias_penalty: 20
     near_level_pct: 1.5
   l3_checker:
-    enabled: false
+    enabled: true          # #2 BACKLOG (15.06): портфельный стоп-кран ВКЛ. Было 134 поз/риск 150% (l3 был shadow). 50/25/25 мягко: риск→~55%, edge раннеров цел. Старые доживут по TSL/SL, новые блок >лимита
     min_score: 85
-    max_open_long: 2
-    max_open_short: 2
-    max_open_total: 4
+    max_open_long: 25
+    max_open_short: 25
+    max_open_total: 50
   correlation_groups:
   - - PAXG
     - XAUT

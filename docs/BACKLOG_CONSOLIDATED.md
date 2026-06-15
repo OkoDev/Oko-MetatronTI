@@ -14,8 +14,8 @@
 | # | Статус | Задача | Источник |
 |---|---|---|---|
 | 1 | 🔄 | **Позиции со SL в БД, но БЕЗ биржевого SL-ордера** — ликвидация-риск. **ДИАГНОЗ 15.06:** `audit_missing_stops.py` → СЕЙЧАС 1 (INIT-USDT, было 211 на пике/суммарно). Корень: нет авто-reconcile SL (поле exchange_sl_order_id ≠ живой ордер). **NEXT:** (а) выставить SL для INIT, (б) SL-reconcile loop (периодич. audit→авто-place), (в) проверить acc2 multiacct | DATA-AUDIT-2 A2.4 |
-| 2 | 🔴 | **Sizing от `deposit`, не `available_balance`** + `max_positions` не стоп-кран — позиции не ужимаются | DS слив, аудит |
-| 3 | 🔴 | **`pivot_reversal` −1272R (−25%) → ОТКЛЮЧИТЬ** (подтверждён убыточным 2×, мгновенный +25%) | SIGNAL-AUDIT |
+| 2 | ✅ | **РАЗОБРАНО 15.06.** Sizing УЖЕ от `availableMargin` (bingx get_balance) ✅. Корень был — `l3_checker.enabled: false` (shadow) → 134 поз/риск 150%. ФИКС: enabled=true, max 50/25/25 (юзер). Старые доживут, новые блок >50 | DS слив, аудит |
+| 3 | ✅ | **`pivot_reversal` ОТКЛЮЧЁН** — `pivot_reversal_enabled: false` (monitoring.py:468), 0 сделок/3 дня. Проверено 15.06 (сделано ранее) | SIGNAL-AUDIT |
 | 4 | 🔴 | **Sanity-guard форс-клоуз** если цена >X% за SL (защита от инцидента #1910 −9.74R), время биржевое | AUDIT #2 |
 | 5 | 🟠 | **Комиссии 104% прибыли** (arch104 8 сд/$1) + аллокация (60% капитала / 10% прибыли) → деаллокация в ote | DS слив |
 
@@ -31,7 +31,7 @@
 
 | # | Статус | Задача | Источник |
 |---|---|---|---|
-| 9 | 🟢 | **position_sizer из шины** — живой deposit (`total_equity`), закрывает #2 | BUS-L2, слив |
+| 9 | ✅ | **НЕ НУЖЕН** — sizing уже от `availableMargin` (REST в главном loop, не cross-loop). available точнее total_equity из шины. Закрыто разбором #2 | BUS-L2, слив |
 | 10 | 🟢 | **Канонизировать push/pull контракт** «как слушать Куб» (стандарт для новых слушателей) | юзер 15.06 |
 | 11 | 🟢 | **Risk Monitor** (drawdown realtime) + **Circuit Breaker** на L2 → затем **SubscriberHub** | BUS-L3 роадмап |
 | 12 | 🔵 | **NOTIF-TIER2** (CHoCH/OTE/OB/Pivot) + Dashboard real-time лента (SMC_SNAP push) | роадмап Слой 2 |
