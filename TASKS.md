@@ -1,5 +1,6 @@
 ﻿# 📋 TASKS — Координация агентов
 
+> 🎯 **ЕДИНЫЙ РЕЕСТР НЕЗАКРЫТОГО (источник правды):** [docs/BACKLOG_CONSOLIDATED.md](docs/BACKLOG_CONSOLIDATED.md) — против бардака, приоритеты #1-20, статус. Брать по приоритету.
 > **Архив завершённых задач:** [TASKS-ARCHIVE.md](TASKS-ARCHIVE.md)
 > **Живой диалог агентов:** [DISCUSSION.md](DISCUSSION.md)
 > **Полные описания задач:** [docs/DISCUSSION-TASKS-DETAILS.md](docs/DISCUSSION-TASKS-DETAILS.md)
