@@ -430,6 +430,7 @@ performance:
   check_open_semaphore: 15
   scan_semaphore_size: 8
   sim_check_interval_sec: 300   # SIM-DEPRIO: throttle sim-only в check_open (300с вместо 60с). Биржевые — всегда. Откат: 60
+  sim_time_exit_hours: 48       # SIM-TIME-EXIT (анти-орфан): закрыть sim-only EXPIRED если висит >48ч и не TP/SL. Корень копления орфанов. 0=выкл
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5

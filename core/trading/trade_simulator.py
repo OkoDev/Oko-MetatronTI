@@ -1816,6 +1816,9 @@ class TradeSimulator:
             self._ops05_piv_lock = asyncio.Lock()
         # SIM-DEPRIO: throttle интервал из config (default 60с = без изменений; 300с = экономия 80%)
         _sim_iv = int(_ops05_cfg.get("performance.sim_check_interval_sec", 60)) if _ops05_cfg else 60
+        # SIM-TIME-EXIT (анти-орфан): закрыть sim-only EXPIRED если висит > N часов и не TP/SL.
+        # Корень копления орфанов: sim-сделки закрывались ТОЛЬКО по TP/SL → при боковике висели вечно.
+        _sim_te_h = float(_ops05_cfg.get("performance.sim_time_exit_hours", 48)) if _ops05_cfg else 48.0
 
         async def _proc(trade):
             _ops05c = 0
@@ -1825,6 +1828,25 @@ class TradeSimulator:
             _exch_id_pre = trade.get("exchange_order_id")
             _is_sim_only = not (bool(_exch_id_pre) and _exch_id_pre != "SIM")
             if _is_sim_only:
+                # SIM-TIME-EXIT (анти-орфан): закрыть EXPIRED если висит > N часов и не TP/SL.
+                # Биржевые НЕ трогаем (закрываются биржей). Устраняет КОРЕНЬ копления sim-орфанов.
+                if _sim_te_h > 0:
+                    _created = trade.get("created_at")
+                    if _created:
+                        try:
+                            _ct = datetime.fromisoformat(str(_created).replace("Z", "+00:00"))
+                            if _ct.tzinfo is None:
+                                _ct = _ct.replace(tzinfo=timezone.utc)
+                            _age_h = (datetime.now(timezone.utc) - _ct).total_seconds() / 3600.0
+                            if _age_h > _sim_te_h:
+                                _px = await data_collector.get_current_price(trade["symbol"])
+                                _px = float(_px) if _px else float(trade["entry_price"])
+                                self.close_trade(trade["id"], STATUS_EXPIRED, _px)
+                                logger.info("[SIM-TIME-EXIT] #%d %s EXPIRED (age %.0fh > %.0fh)",
+                                            trade["id"], trade["symbol"], _age_h, _sim_te_h)
+                                return
+                        except Exception as _tee:
+                            logger.debug("[SIM-TIME-EXIT] %s: %s", trade.get("symbol"), _tee)
                 import time as _t_sim
                 _now_sim = _t_sim.monotonic()
                 _tid_sim = trade["id"]
