@@ -1192,21 +1192,18 @@ async def _handle_trading_status(request: web.Request) -> web.Response:
         "vst_balance": None,
     }
 
-    # Для VST/LIVE — получаем реальный баланс (DEV-231: wait_for 2s — защита от висящего BingX).
-    # При DEGRADED биже get_available_balance может зависнуть >10s и заблокировать event loop.
-    # На timeout отдаём vst_balance=None — UI не блокируется, бот работает.
+    # Для VST/LIVE — баланс из БД balance_snapshots (НЕ get_available_balance!).
+    # PERF-DASH-THREAD: dashboard в отдельном потоке → вызов order_manager.get_available_balance
+    # (REST, привязан к ГЛАВНОМУ loop) = cross-loop → виснет → pingBot timeout → "BOT: OFFLINE"
+    # мигание. БД-чтение (per-call connect, WAL) в потоке безопасно и мгновенно.
     if mode_label in ("VST", "LIVE"):
         try:
-            bot = request.app.get("bot")
-            if bot and hasattr(bot, "order_executor"):
-                result["vst_balance"] = round(
-                    await asyncio.wait_for(bot.order_executor.get_available_balance(), timeout=2.0),
-                    2,
-                )
-        except asyncio.TimeoutError:
-            logger.debug("[/api/trading/status] BingX balance timeout 2s — vst_balance=None")
-        except Exception:
-            pass
+            from core.db import balance_repo
+            _accs = balance_repo.get_accounts()
+            _eq = sum((a.get("equity") or 0) for a in _accs)
+            result["vst_balance"] = round(_eq, 2) if _eq else None
+        except Exception as _bse:
+            logger.debug("[/api/trading/status] balance from DB error: %s", _bse)
 
     return web.Response(
         text=json.dumps(result, ensure_ascii=False),
