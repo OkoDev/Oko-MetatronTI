@@ -237,6 +237,8 @@ class PairContextBus:
         self._subscribers: Dict[str, List[Callable]] = {}
         self._event_log: List[Dict] = []   # последние N событий для диагностики
         self._max_log = 200
+        self._open_trades: list[dict] = []               # L2: снапшот открытых сделок (push от trade_tracker)
+        self._open_trades_ts: Optional[datetime] = None  # ts последней публикации (None = цикл ещё не публиковал)
 
     def get(self, symbol: str) -> PairState:
         """Возвращает PairState для символа, создаёт если нет."""
@@ -334,6 +336,26 @@ class PairContextBus:
             for sym, p in st.positions.items():
                 out.append({"account_id": acc_id, "symbol": sym, **p})
         return out
+
+    # ── Оперативный снапшот открытых сделок (источник для dashboard /api/open) ──
+    # Лёгкий операционный набор полей (без features_json и пр.) — ровно то, что нужно дашборду.
+    _OPEN_TRADE_FIELDS = (
+        "id", "symbol", "direction", "signal_type", "entry_price", "stop_loss",
+        "take_profit", "created_at", "execution_mode", "account_id", "tsl_activated", "qty",
+    )
+
+    def set_open_trades(self, rows: list[dict]) -> None:
+        """PRODUCE: снапшот открытых сделок (push от trade_tracker — он и так грузит их
+        каждый цикл get_open_trades). Проектируем на лёгкий набор → источник /api/open БЕЗ
+        синхронного SQL по simulated_trades (29K, лок с пишущим горячим циклом → ~20с-таймаут).
+        Пустой список — валидная публикация (все закрылись → дашборд очищается)."""
+        self._open_trades = [{k: r.get(k) for k in self._OPEN_TRADE_FIELDS} for r in rows]
+        self._open_trades_ts = datetime.now(timezone.utc)
+
+    def open_trades_snapshot(self) -> tuple[list[dict], Optional[datetime]]:
+        """PULL: оперативные открытые сделки из шины (dashboard /api/open, без тяжёлого SQL).
+        Возвращает (копия списка, ts последней публикации). ts=None → цикл ещё не публиковал."""
+        return [dict(t) for t in self._open_trades], self._open_trades_ts
 
     # ── BUS-CATALOG: «меню» данных шины (точка входа) ────────────────────
     def catalog(self) -> dict:

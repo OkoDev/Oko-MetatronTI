@@ -20,8 +20,45 @@
 - **/api/open +leverage+notional** (07d7065): плечо+размер для оперативных сделок.
 - equity проверено: /api/live.kpi полный (equity=273.96 risk=1.2), /api/open 0.3с, exchange_history 500 закрытых (tp82/sl365/tsl4).
 
-### 🔴 НЕЗАВЕРШЕНО — каша trades.tsx (СЛЕДУЮЩАЯ СЕССИЯ, свежая голова)
-Фронт oko-dashboard (НЕ git, на диске :3001 — старый :3000 убит). 3 бага + ТЗ в `whats-next.md` («КАША trades.tsx»): (1) Sim OPEN R-колонка показывает $; (2) Exchange OPEN 67 счётчик но пусто; (3) Exchange TP 0 но строка висит. Причина: быстрые правки рассинхронили Sim/Exchange×OPEN/закрытые. Метод: прочитать trades.tsx ЦЕЛИКОМ → один системный проход (stats 167/filtered 157/render-body/ALL_COLS 39).
+### ✅ РАЗОБРАНО — каша trades.tsx (системный проход, tsc exit=0)
+Фронт oko-dashboard (НЕ git, :3000). Прочитал trades.tsx+api.ts+use-oko-data.ts целиком. Диагноз ≠ описания скринов:
+- **Баг 1 (Sim OPEN R=$):** `r_live` с бэка — корректный R (`d*(cur-e)/|e-sl|`, dashboard_server:402), НЕ $. Корень: в SIM не было отдельной $-колонки. Фикс: `fetchOpenTrades` теперь даёт `unrealizedPnl` ($ = qty×Δ), в `SIM_DEFAULT` добавлен `upnl` рядом с `r` (R=множитель, upnl=$ — разные колонки).
+- **Баг 2 (Exchange 67 но пусто):** `fetchLivePositions` ставил `id=symbol` → в hedge-режиме LONG+SHORT на 1 символ = коллизия React-`key` → строки схлопывались. Фикс: `id=`${symbol}-${dir}``.
+- **Баг 3 (стале-строка под TP):** `useLive` без секвенирования — медленный ответ прошлого фильтра приходил позже и перезатирал вид. Фикс: `genRef` (поколение запроса, out-of-order отбрасывается) + `resetKey/resetValue` (сброс строк прошлого фильтра при смене account/mode/filter, очистка in-flight). Убраны 2 ручных `useEffect(refresh)` — один механизм.
+- EXCH_DEFAULT: убрана дублирующая колонка «#» (=pair), добавлены r/size.
+
+### ✅/🔴 ПОСЛЕ РЕСТАРТА (16.06): что ожило, что осталось
+Рестарт убрал ECONNRESET. Проверка эндпоинтов:
+- **`/api/live` ✅** 0.5с — `kpi` полный (open=54 long30/short24 unreal+15.93 used356 equity519.36 risk68.5%), 54 позиции с полным набором (size/mark/upnl/leverage/sl). **Exchange OPEN теперь живой и верифицируем** — мои фронт-фиксы (составной id + секвенирование + сброс) применимы. Hedge-дублей сейчас 0 (составной id = защита на будущее, активный фикс — секвенирование).
+- **`/api/open` 🔴** ~20с (count=49) — НЕ лёгкий, как заявлено в handoff. Корень: SQL `WHERE status='OPEN'` по `simulated_trades` (29K) ждёт лок (бот пишет в горячем цикле). Фронт таймаутит на 12с → **Sim OPEN не дождётся**. Плюс `current_price`/`r_live` = null (у VST-символов acc2 в шине нет tick_price → R не считается даже когда ответ придёт).
+- **`/api/exchange_history` 🔴** таймаут (тяжёлый 30д) → **Exchange закрытые (TP/SL/...) не грузятся**.
+- **🟡 находка:** `/api/live.balance` теперь СКАЛЯР (519.36), а `fetchSyncOverview` ждёт объект (`bal.equity`) → SyncPanel exch equity/used/risk = 0. Реальные значения есть в `result["kpi"]`. + сам `fetchSyncOverview` зовёт тяжёлый `/api/stats` (sim-сторона) → тоже рискует таймаутом.
+
+**ВЫВОД:** фронт-каша устранена и устойчива к флапу. Остаток — НЕ фронт, а backend: `/api/open` и `/api/exchange_history` оперативку надо отдавать из ШИНЫ/кэша, не синхронным SQL (это эпик [[dashboard_oper_from_bus_analytics_sql]]). Заплатку «поднять TIMEOUT_MS» НЕ делать — юзер прямо против.
+
+### ✅ КИРПИЧ: /api/open ИЗ ШИНЫ (готов, ждёт рестарт для активации)
+Юзер выбрал направление «/api/open из шины». Реализовано (3 файла, py_compile OK, bus-unit-test OK, tsl-тесты зелёные):
+- **`pair_context.py`:** `set_open_trades(rows)` (PRODUCE, проекция на 12 лёгких полей — без features_json) + `open_trades_snapshot()` (PULL, копии + ts). Хранение `_open_trades`/`_open_trades_ts` в `__init__`.
+- **`trade_simulator.py` `check_open_trades_with_tsl`:** после `get_open_trades()` (цикл и так грузит) → `_pcb.set_open_trades(open_trades)`. Публикуем и пустой список (все закрылись → дашборд чистится). Guard getattr+try.
+- **`web/dashboard_server.py` `_handle_open_trades`:** читает `_pc.open_trades_snapshot()` (мгновенно), фильтр acc/mode в памяти, обогащение цена/R/leverage из шины (как было). Cold-start (ts=None, ≤60с после рестарта до первого тика трекера) → SQL-фолбэк с бюджетом `asyncio.wait_for(timeout=6)`; БД занята → `source="warming"` пусто. Ответ +`source`/`age_s`.
+- **Свежесть:** список открытых ≤60с (цикл trade_tracker = sleep 60), НО цена/R/leverage — live на каждый запрос из шины. Корень 20с-таймаута (синхронный SQL по 29K под локом) убран.
+- **Проверка после рестарта:** `/api/open` <0.5с, `source="bus"`, count совпадает с реальными открытыми.
+- **NEXT (опц):** publish и в `register_trade_async` → новые сделки появляются мгновенно (не ждать 60с).
+- **✅ ПОДТВЕРЖДЁН ВЖИВУЮ (рестарт 16.06 ~07:19):** `/api/open` cold-start 3с (было 20с), после 1-го тика трекера → `source=bus` count=50 age 13.6с. **Выжил под флудом** (0.3–0.9с, пока stats/trades_filtered рвали ECONNRESET).
+
+### 🔴 ФЛУД executor: тяжёлая аналитика рвёт весь дашборд
+Симптом: `socket hang up`/ECONNRESET на `/api/stats`, `/api/trades_filtered?limit=300`, `/api/exchange_history`, периодически даже `/api/live`+`/api/trading/status`. Корень: executor дашборда = **4 воркера** (`_get_dash_executor` max_workers=4), фронт каждые 10с долбит тяжёлые агрегаты по 29K → пул забит → очередь → рвутся даже лёгкие. /api/stats кэш TTL=30s, /api/live TTL=20s, но `trades_filtered`/`exchange_history` БЕЗ кэша + single-flight → пайл-ап.
+- **✅ Сделано без рестарта (фронт):** `fetchSyncOverview` (SyncPanel вверху экрана сделок) переведён с тяжёлого `/api/stats` на шину (`/api/open` sim + `/api/live` exch). Заодно фикс баг equity/risk=0 (`live.balance` стал скаляром → берём `live.kpi`). tsc OK. Убрал постоянный stats-поллинг с экрана сделок.
+- **✅ КИРПИЧ B готов (ждёт рестарт):** кэш TTL + single-flight + stale-while-revalidate на `/api/trades_filtered` (TTL 15с) + `/api/exchange_history` (TTL 30с). Класс `_KeyedJSONCache` в `dashboard_server.py` (после `_run_sync`):
+  - HIT (age<ttl) — готовый JSON, 0 SQL · STALE (age≥ttl) — прошлый сразу + фоновый refresh · COLD — refresh + ждём cold_timeout=25с, не успел → warming-пусто.
+  - **Detached refresh-таск** (`create_task`): client-abort (фронт-таймаут 12с) НЕ убивает вычисление → кэш гарантированно прогреется (лечит «вечный ECONNRESET, кэш не греется»). **Single-flight**: один таск на ключ → повторные поллы не плодят SQL в 4-воркерном пуле.
+  - Проверка: py_compile OK, async-юнит-тест OK (HIT/MISS/STALE/single-flight 5→1/detached-прогрев).
+  - **После рестарта:** `trades_filtered`/`exchange_history` отвечают мгновенно (HIT), флуд ECONNRESET исчезает (пул свободен → лёгкие не голодают). Первый COLD-запрос на ключ может быть warming-пусто, второй (≤10с) = HIT.
+- **✅ ПОДТВЕРЖДЁН ВЖИВУЮ (рестарт 16.06):** через X-Cache: `trades_filtered?limit=300` MISS→STALE→HIT (~1.3с, payload 1MB), `exchange_history?days=30` HIT (~400мс). Лёгкие (`trading/status`, `live`) отвечают, без ECONNRESET. `/api/live` здоров (55 поз, kpi: equity 519.4/risk 72.6%) → SyncPanel из шины показывает реальное. Флуд снят (single-flight кэп: 1 SQL на ключ → пул свободен).
+- **✅ trades_filtered payload урезан (ждёт рестарт):** `get_trades`=`SELECT *` (54 кол., `features_json`≈80% веса) → проекция на allow-list `_TRADES_FILTERED_COLS` (22 поля = что читает фронт-маппер + метадата). Замер на 300 реальных строках: **1027KB→177KB (−83%)**. Список менять ТОЛЬКО синхронно с `lib/api.ts fetchTradesFiltered`. py_compile OK.
+- **✅ Вёрстка Overview (фронт, хот-релоад):** «огромный скролл» — последствие кирпичей: в шину потекли РЕАЛЬНЫЕ 56 позиций (был mock из пары). `PositionsPanel` рендерил все без max-h → растягивал страницу. Фикс: `max-h-[420px] overflow-y-auto` (внутренний скролл). + Signals-список `max-h-[260px]` (был выше графика equity → пустой провал в строке). tsc OK.
+- **✅ Overview панели Баланс/Позиции (ПОДТВЕРЖДЕНО вживую):** после починки вёрстки всплыло — `/api/positions`, `/api/account_balances`, `/api/accounts` висели **>35с** → пустой фолбэк. Корень: НЕ лок (busy-timeout 5с), а **насыщение 4-воркерного пула** (Overview параллельно долбит kpi/equity/stats/balances/positions/accounts медленными SQL → портфельные в очереди). Фикс: (1) обернул 3 портфельных хендлера в `_PORTFOLIO_CACHE` (тот же `_KeyedJSONCache`, TTL 20с, single-flight+detached), (2) пул 4→8 воркеров (запас под холодные refresh нескольких кэшей сразу). Фронт НЕ трогал. py_compile OK. **Вживую:** balances 510b (acc1 eq242.9/acc2 eq273.8), positions 10.6KB (54 шт.), accounts — все X-Cache HIT, не таймаут. Транзиентные 2–8с на HIT сразу после рестарта (конгестия прогрева кэшей) — оседает.
+- **NEXT (опц):** (б) интервал поллинга аналитики 10с→30-60с; (в) кэш на `/api/kpi` (get_summary) — пул 8 даёт запас, но если Overview всё ещё тупит → обернуть; (г) идеал «oper из шины»: balances/positions из bus _accounts (нужны margin/available в шине).
 
 ### Урок
 Огромная сессия → контекст забит → потеря консистентности фронта (каша). Юзер прав: остановиться, причесать со свежей головой, не лепить заплатки.

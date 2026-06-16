@@ -1796,6 +1796,16 @@ class TradeSimulator:
                exchange_sl_order_id, exchange_order_id}
         """
         open_trades = self.get_open_trades()
+        # Оперативка из ШИНЫ (dashboard /api/open): цикл и так грузит открытые сделки —
+        # публикуем лёгкий снапшот в шину, чтобы /api/open читал из неё, а не бил синхронный
+        # SQL (29K, лок с этим же горячим циклом → ~20с-таймаут). Пусто тоже публикуем
+        # (все закрылись → дашборд очищается). Цена/R обогащаются из шины на каждый запрос.
+        _pcb = getattr(self, "_pair_context_bus", None)
+        if _pcb is not None:
+            try:
+                _pcb.set_open_trades(open_trades)
+            except Exception:
+                pass
         if not open_trades:
             return 0, []
 

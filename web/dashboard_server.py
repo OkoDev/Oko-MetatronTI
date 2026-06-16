@@ -39,7 +39,10 @@ _DASH_EXECUTOR: "_cf.ThreadPoolExecutor | None" = None
 def _get_dash_executor() -> "_cf.ThreadPoolExecutor":
     global _DASH_EXECUTOR
     if _DASH_EXECUTOR is None or getattr(_DASH_EXECUTOR, "_shutdown", False):
-        _DASH_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dash")
+        # 8 (было 4): запас под холодные refresh нескольких кэшей (kpi/stats/equity/balances/
+        # positions/accounts/trades_filtered/exchange_history) одновременно — иначе пул насыщался
+        # и портфельные запросы стояли в очереди >35с (пустые панели Overview).
+        _DASH_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=8, thread_name_prefix="dash")
     return _DASH_EXECUTOR
 
 # _HTML moved to web/static/
@@ -125,6 +128,82 @@ async def _run_sync(fn, *args, **kwargs):
     RuntimeError. Свой переживает (авто-пересоздание)."""
     _loop = asyncio.get_running_loop()
     return await _loop.run_in_executor(_get_dash_executor(), lambda: fn(*args, **kwargs))
+
+
+class _KeyedJSONCache:
+    """TTL-кэш JSON-ответов по ключу-параметрам + single-flight + stale-while-revalidate.
+
+    Зачем (корень ECONNRESET-флуда): тяжёлые аналитические SQL (trades_filtered/
+    exchange_history) фронт поллит каждые 10с. Без кэша N параллельных промахов плодят
+    дубль-SQL в 4-воркерном пуле → очередь → рвутся даже лёгкие эндпоинты. Здесь:
+      • HIT  (age<ttl) — отдаём готовый JSON, 0 SQL.
+      • STALE(age≥ttl) — отдаём прошлый СРАЗУ + фоновый refresh (клиента НЕ блокируем).
+      • COLD (кэша нет) — запускаем refresh, ждём до cold_timeout; не успел → None (warming).
+    Refresh-таск ДЕТАЧНУТ (create_task) — client-abort (фронт-таймаут 12с) НЕ убивает
+    вычисление → кэш гарантированно прогреется, следующий поллинг = HIT. Single-flight:
+    один refresh-таск на ключ → повторные промахи НЕ плодят SQL."""
+
+    def __init__(self, ttl: float) -> None:
+        self.ttl = ttl
+        self._store: "dict[str, tuple[str, float]]" = {}   # key → (json_str, ts)
+        self._tasks: "dict[str, asyncio.Task]" = {}        # key → in-flight refresh
+
+    def _refresh(self, key: str, compute) -> None:
+        t = self._tasks.get(key)
+        if t is not None and not t.done():
+            return                                          # уже считается (single-flight)
+
+        async def _run():
+            import time as _t
+            try:
+                payload = await compute()
+                self._store[key] = (payload, _t.time())
+            except Exception as e:
+                logger.debug("[cache] refresh %s failed: %s", key, e)
+            finally:
+                self._tasks.pop(key, None)
+
+        self._tasks[key] = asyncio.create_task(_run())
+
+    async def get(self, key: str, compute, *, cold_timeout: float):
+        """compute: () -> coroutine, возвращающая JSON-строку. → (payload_str|None, X-Cache)."""
+        import time as _t
+        v = self._store.get(key)
+        if v is not None:
+            age = _t.time() - v[1]
+            if age >= self.ttl:
+                self._refresh(key, compute)                 # stale → отдаём + фоновый refresh
+                return v[0], "STALE"
+            return v[0], "HIT"
+        # COLD: ни одного значения. Запускаем (detached) и ждём до бюджета.
+        self._refresh(key, compute)
+        t = self._tasks.get(key)
+        if t is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(t), timeout=cold_timeout)
+            except Exception:
+                pass                                        # таск живёт дальше (detached) → прогреет
+        v = self._store.get(key)
+        return (v[0], "MISS") if v is not None else (None, "WARMING")
+
+
+# Тяжёлая аналитика: история меняется медленно → TTL держит фронт-поллинг (10с) на HIT.
+_TRADES_FILTERED_CACHE = _KeyedJSONCache(ttl=15.0)
+_EXCH_HISTORY_CACHE = _KeyedJSONCache(ttl=30.0)
+# Портфель (balances/positions/accounts): запросы по той же 29K-БД под локом висели >35с
+# (насыщение пула) → пустые панели Overview. Кэш+single-flight+detached лечит. Ключи
+# namespace'нуты: "balances" / "accounts" / "positions|<acc>".
+_PORTFOLIO_CACHE = _KeyedJSONCache(ttl=20.0)
+
+# Поля /api/trades_filtered: ровно то, что читает фронт-маппер lib/api.ts fetchTradesFiltered
+# + мелкая метадата (created_at/closed_at/account_id/execution_mode). get_trades = SELECT *
+# (54 кол., features_json ~80% веса). Проекция режет 1MB→~177KB на 300 строк. СИНХРОН с маппером.
+_TRADES_FILTERED_COLS = (
+    "id", "symbol", "timeframe", "direction", "signal_type", "regime",
+    "entry_price", "exit_price", "profit_pct", "R_multiple", "max_R_possible",
+    "status", "stop_loss", "take_profit", "tsl_activated", "sl_source", "tp_source",
+    "duration_minutes", "created_at", "closed_at", "account_id", "execution_mode",
+)
 
 
 async def _handle_confluence_breakdown(request: web.Request) -> web.Response:
@@ -225,51 +304,73 @@ async def _handle_balance_history(request: web.Request) -> web.Response:
 
 
 async def _handle_account_balances(request: web.Request) -> web.Response:
-    """ARCH-DB-V2 Ф2: текущий баланс по КАЖДОМУ аккаунту (latest snapshot) — карточки терминала."""
+    """ARCH-DB-V2 Ф2: текущий баланс по КАЖДОМУ аккаунту (latest snapshot) — карточки терминала.
+    Кэш+single-flight+detached: запросы по balance_snapshots в общей 29K-БД стояли в очереди
+    насыщённого пула >35с → пустые панели. Кэш отдаёт сразу, refresh переживает client-abort."""
     from core.db import balance_repo
     import sqlite3 as _sq
 
     def _q() -> list:
-        c = _sq.connect("subscriptions.db"); c.row_factory = _sq.Row
-        accs = [r[0] for r in c.execute("SELECT DISTINCT account_id FROM balance_snapshots ORDER BY 1")]
-        c.close()
+        c = _sq.connect("subscriptions.db", timeout=5); c.row_factory = _sq.Row
+        try:
+            accs = [r[0] for r in c.execute("SELECT DISTINCT account_id FROM balance_snapshots ORDER BY 1")]
+        finally:
+            c.close()
         out = []
         for a in accs:
             latest = balance_repo.get_latest_snapshot(a)
             if latest:
                 out.append(latest)
         return out
-    try:
+
+    async def _compute() -> str:
         data = await _run_sync(_q)
-        return web.Response(
-            text=json.dumps({"accounts": data}, ensure_ascii=False, default=str),
-            content_type="application/json", charset="utf-8")
+        return json.dumps({"accounts": data}, ensure_ascii=False, default=str)
+
+    try:
+        payload, xcache = await _PORTFOLIO_CACHE.get("balances", _compute, cold_timeout=20.0)
+        if payload is None:
+            payload = json.dumps({"accounts": []})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
 async def _handle_accounts(request: web.Request) -> web.Response:
-    """ARCH-DB-V2 Ф2: справочник аккаунтов с последним балансом."""
+    """ARCH-DB-V2 Ф2: справочник аккаунтов с последним балансом. Кэш+single-flight (см. balances)."""
     from core.db import balance_repo
-    try:
+
+    async def _compute() -> str:
         data = await _run_sync(balance_repo.get_accounts)
-        return web.Response(
-            text=json.dumps({"accounts": data}, ensure_ascii=False, default=str),
-            content_type="application/json", charset="utf-8")
+        return json.dumps({"accounts": data}, ensure_ascii=False, default=str)
+
+    try:
+        payload, xcache = await _PORTFOLIO_CACHE.get("accounts", _compute, cold_timeout=20.0)
+        if payload is None:
+            payload = json.dumps({"accounts": []})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
 async def _handle_positions(request: web.Request) -> web.Response:
-    """ARCH-DB-V2 Ф2: текущие открытые позиции. Query: account_id (опц)."""
+    """ARCH-DB-V2 Ф2: текущие открытые позиции. Query: account_id (опц). Кэш+single-flight (см. balances)."""
     from core.db import balance_repo
     try:
         acc = request.query.get("account_id")
         acc_i = int(acc) if acc and acc.isdigit() else None
-        data = await _run_sync(balance_repo.get_positions, acc_i)
-        return web.Response(
-            text=json.dumps({"positions": data}, ensure_ascii=False, default=str),
-            content_type="application/json", charset="utf-8")
+
+        async def _compute() -> str:
+            data = await _run_sync(balance_repo.get_positions, acc_i)
+            return json.dumps({"positions": data}, ensure_ascii=False, default=str)
+
+        payload, xcache = await _PORTFOLIO_CACHE.get(f"positions|{acc_i}", _compute, cold_timeout=20.0)
+        if payload is None:
+            payload = json.dumps({"positions": []})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
@@ -284,11 +385,23 @@ async def _handle_trades_filtered(request: web.Request) -> web.Response:
         mode = request.query.get("execution_mode")
         status = request.query.get("status")
         limit = int(request.query.get("limit", "200"))
-        trades = await _run_sync(trades_repo.get_trades, acc_i, mode, "bingx", None, status, None, limit)
-        summary = await _run_sync(trades_repo.get_summary, acc_i, mode)
-        return web.Response(
-            text=json.dumps({"trades": trades, "summary": summary}, ensure_ascii=False, default=str),
-            content_type="application/json", charset="utf-8")
+        key = f"{acc_i}|{mode}|{status}|{limit}"
+
+        async def _compute() -> str:
+            trades = await _run_sync(trades_repo.get_trades, acc_i, mode, "bingx", None, status, None, limit)
+            # Проекция на поля, что реально читает фронт-маппер (fetchTradesFiltered) + мелкая
+            # метадата. get_trades = SELECT * (54 кол., features_json ~80%) → 1MB на 300 строк
+            # каждые 10с. Allow-list режет до ~177KB (−83%). Decision Trace = trace[] (features_json
+            # фронту не нужен). Менять список ТОЛЬКО синхронно с маппером в lib/api.ts.
+            trades = [{k: t.get(k) for k in _TRADES_FILTERED_COLS} for t in trades]
+            summary = await _run_sync(trades_repo.get_summary, acc_i, mode)
+            return json.dumps({"trades": trades, "summary": summary}, ensure_ascii=False, default=str)
+
+        payload, xcache = await _TRADES_FILTERED_CACHE.get(key, _compute, cold_timeout=25.0)
+        if payload is None:   # COLD ещё считается → warming-пусто (следующий поллинг = HIT)
+            payload = json.dumps({"trades": [], "summary": {"n": 0, "sumR": 0, "avgR": 0, "WR": 0}})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
@@ -347,10 +460,13 @@ async def _handle_kpi(request: web.Request) -> web.Response:
 
 
 async def _handle_open_trades(request: web.Request) -> web.Response:
-    """ОПЕРАТИВНЫЙ эндпоинт открытых сделок (дашборд-мониторинг через шину).
+    """ОПЕРАТИВНЫЙ эндпоинт открытых сделок — ИЗ ШИНЫ (dashboard-from-bus).
 
-    Лёгкий `WHERE status='OPEN'` (~десятки строк) + текущая цена из ШИНЫ (tick_price)
-    + R live. БЕЗ тяжёлого get_summary (агрегат 29K) — тот только для аналитики.
+    Источник: снапшот открытых сделок в PairContextBus (push от trade_tracker-цикла,
+    он и так грузит их каждый тик). БЕЗ синхронного SQL по simulated_trades (29K, лок с
+    пишущим горячим циклом → ~20с-таймаут). Цена/leverage/R — из шины на каждый запрос
+    (live). Аналитика/история остаётся за тяжёлым SQL (/api/trades_filtered).
+    Cold-start (цикл ещё не публиковал, ≤60с после рестарта) → ограниченный SQL-фолбэк.
     Query: account_id, execution_mode (опц)."""
     bot = request.app.get("bot")
     engine = request.app.get("engine")
@@ -358,27 +474,37 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
     acc = request.query.get("account_id")
     acc_i = int(acc) if acc and acc.isdigit() else None
     mode = request.query.get("execution_mode")
-
-    def _q():
-        import sqlite3 as _sq
-        sql = ("SELECT id,symbol,direction,signal_type,entry_price,stop_loss,take_profit,"
-               "created_at,execution_mode,account_id,tsl_activated,qty FROM simulated_trades "
-               "WHERE status='OPEN'")
-        params: list = []
-        if acc_i is not None:
-            sql += " AND account_id=?"; params.append(acc_i)
-        if mode:
-            sql += " AND execution_mode=?"; params.append(mode)
-        sql += " ORDER BY created_at DESC LIMIT 300"
-        with _sq.connect(db_path, timeout=10) as c:
-            c.row_factory = _sq.Row
-            return [dict(r) for r in c.execute(sql, params).fetchall()]
+    _pc = getattr(bot, "pair_context", None)
 
     try:
-        rows = await _run_sync(_q)
-        # Обогащение из ШИНЫ: текущая цена (tick_price) + R live + leverage. Без REST/тяжёлого SQL.
-        _pc = getattr(bot, "pair_context", None)
-        # leverage по символу из позиций шины (РЕАЛЬНОЕ с биржи, кирпич 1); fallback config
+        # 1) ОСНОВНОЙ путь — снапшот из ШИНЫ (мгновенно, без SQL).
+        snap, snap_ts = (_pc.open_trades_snapshot() if _pc is not None else ([], None))
+        source = "bus"
+        if snap_ts is None:
+            # Cold start: цикл ещё не публиковал. Разовый SQL с жёстким бюджетом, чтобы
+            # не висеть 20с (после первого тика трекера путь становится «из шины»).
+            def _q():
+                import sqlite3 as _sq
+                with _sq.connect(db_path, timeout=5) as c:
+                    c.row_factory = _sq.Row
+                    return [dict(r) for r in c.execute(
+                        "SELECT id,symbol,direction,signal_type,entry_price,stop_loss,take_profit,"
+                        "created_at,execution_mode,account_id,tsl_activated,qty FROM simulated_trades "
+                        "WHERE status='OPEN' ORDER BY created_at DESC LIMIT 300").fetchall()]
+            try:
+                snap = await asyncio.wait_for(_run_sync(_q), timeout=6)
+                source = "sql_cold"
+            except Exception:
+                snap, source = [], "warming"   # БД занята → отдаём пусто, шина наполнится за цикл
+
+        # фильтры в памяти (без SQL)
+        rows = [dict(t) for t in snap]
+        if acc_i is not None:
+            rows = [t for t in rows if t.get("account_id") == acc_i]
+        if mode:
+            rows = [t for t in rows if t.get("execution_mode") == mode]
+
+        # Обогащение из ШИНЫ: текущая цена (tick_price) + R live + leverage. Без REST/SQL.
         _lev_map = {}
         if _pc is not None:
             for _p in _pc.all_positions():
@@ -402,8 +528,12 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
                 t["r_live"] = round(d * (cur - e) / abs(e - sl), 2)
             else:
                 t["r_live"] = None
+        # newest-first (снапшот из get_open_trades идёт created_at ASC)
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        age_s = round((datetime.now(timezone.utc) - snap_ts).total_seconds(), 1) if snap_ts else None
         return web.Response(
-            text=json.dumps({"open": rows, "count": len(rows)}, ensure_ascii=False, default=str),
+            text=json.dumps({"open": rows, "count": len(rows), "source": source, "age_s": age_s},
+                            ensure_ascii=False, default=str),
             content_type="application/json", charset="utf-8")
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
@@ -1223,12 +1353,17 @@ async def _handle_exchange_history(request: web.Request) -> web.Response:
         days = max(1, min(days, 90))
         engine = request.app.get("engine")
         db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
-        # DEV-231: SQL LIMIT 500 + 500x effective_status + JSON serialize (255KB) — в thread pool
-        payload_str = await _run_sync(_exchange_history_compute_sync, db_path, days)
-        return web.Response(
-            text=payload_str,
-            content_type="application/json", charset="utf-8",
-        )
+        key = f"days={days}"
+
+        async def _compute() -> str:
+            # DEV-231: SQL LIMIT 500 + 500x effective_status + JSON serialize (255KB) — в thread pool
+            return await _run_sync(_exchange_history_compute_sync, db_path, days)
+
+        payload, xcache = await _EXCH_HISTORY_CACHE.get(key, _compute, cold_timeout=25.0)
+        if payload is None:   # COLD ещё считается → warming-пусто (следующий поллинг = HIT)
+            payload = json.dumps({"trades": []})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         logger.exception("_handle_exchange_history: %s", e)
         return web.Response(status=500, text=json.dumps({"error": str(e)}),
