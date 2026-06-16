@@ -29,6 +29,19 @@ from core.trading.performance_engine import PerformanceEngine
 
 logger = logging.getLogger(__name__)
 
+# Threaded-dashboard: СВОЙ executor (не default None — он закрывается → RuntimeError
+# 'cannot schedule new futures after shutdown' на /analytics, /signal_weights, /api/live).
+# Авто-пересоздание если закрыт. Фикс 16.06.
+import concurrent.futures as _cf
+_DASH_EXECUTOR: "_cf.ThreadPoolExecutor | None" = None
+
+
+def _get_dash_executor() -> "_cf.ThreadPoolExecutor":
+    global _DASH_EXECUTOR
+    if _DASH_EXECUTOR is None or getattr(_DASH_EXECUTOR, "_shutdown", False):
+        _DASH_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dash")
+    return _DASH_EXECUTOR
+
 # _HTML moved to web/static/
 
 
@@ -106,9 +119,12 @@ async def _handle_index(request: web.Request) -> web.Response:
 # Корень: 823 RequestHandler slow callbacks / 5 мин, total 968s блокировок event loop.
 # sync_time HTTP стояли в очереди → timestamp invalid (recvWindow=5000ms expired).
 async def _run_sync(fn, *args, **kwargs):
-    """Helper: запустить sync функцию в thread pool, не блокируя event loop."""
+    """Helper: запустить sync функцию в thread pool, не блокируя event loop.
+
+    Свой executor (_get_dash_executor) — default None закрывается при shutdown →
+    RuntimeError. Свой переживает (авто-пересоздание)."""
     _loop = asyncio.get_running_loop()
-    return await _loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+    return await _loop.run_in_executor(_get_dash_executor(), lambda: fn(*args, **kwargs))
 
 
 async def _handle_confluence_breakdown(request: web.Request) -> web.Response:
@@ -969,19 +985,36 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
         _bus_pos = _pc.all_positions() if _pc is not None else []
         if _bus_pos:
             result["balance"] = _pc.total_equity()
+            # ВСЁ ИЗ ШИНЫ (единый источник, не кэш/REST): текущую цену берём из
+            # PairState.tick_price (наполняет WsFeed через TICK_PRICE event). leverage —
+            # config-настройка (не рыночные данные, ACCOUNT_UPDATE его не несёт). Баг 16.06:
+            # был хардкод mark_price=0.0/leverage=1 (даже не смотрел в шину).
+            try:
+                _lev = int(bot.config.get("trading.leverage", 5) or 5)
+            except Exception:
+                _lev = 5
             for bp in _bus_pos:
                 _qty = abs(bp.get("qty") or 0)
                 if not _qty:
                     continue
+                _sym = bp.get("symbol", "")
+                _st = _pc.get(_sym)
+                # РЕАЛЬНЫЕ с биржи (position_sync) приоритетнее: mark > tick_price(шина),
+                # leverage(биржа) > config. Так дашборд = подтверждение реального плеча/цены.
+                _real_mark = bp.get("mark")
+                _cur = float(_real_mark if _real_mark else ((_st.tick_price if _st else None) or 0.0))
+                _real_lev = bp.get("leverage")
+                _pos_lev = int(_real_lev) if _real_lev else _lev
+                _entry = float(bp.get("entry") or 0)
                 result["positions"].append({
-                    "symbol":            bp.get("symbol", ""),   # db-формат, normPair на фронте
+                    "symbol":            _sym,   # db-формат, normPair на фронте
                     "side":              bp.get("side") or "",
                     "size":              _qty,
-                    "entry_price":       float(bp.get("entry") or 0),
-                    "mark_price":        0.0,   # нет в ACCOUNT_UPDATE (деталь отображения)
+                    "entry_price":       _entry,
+                    "mark_price":        _cur,
                     "unrealized_pnl":    float(bp.get("upnl") or 0),
-                    "leverage":          1,
-                    "margin":            0.0,
+                    "leverage":          _pos_lev,
+                    "margin":            round(_entry * _qty / _pos_lev, 2) if (_entry and _pos_lev) else 0.0,
                     "liquidation_price": 0.0,
                     "account":           f"acc{bp.get('account_id', 1)}",
                 })

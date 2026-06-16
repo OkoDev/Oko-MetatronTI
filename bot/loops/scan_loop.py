@@ -1405,9 +1405,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 if _bus is not None:
                     from core.context.pair_context import SphereEvent
 
-                    # CUBE-08 Шаг 2: Сфера 1 — OHLCV_UPDATED для всех пар (каждый цикл)
+                    # CUBE-08 Шаг 2: Сфера 1 — OHLCV_UPDATED для всех пар (каждый цикл).
+                    # close = текущая цена в шину (tick_price). Источник цены, когда WsFeed
+                    # отключён (performance.ws_enabled=false): иначе tick_price в шине пустой
+                    # → дашборд/потребители без цены. WsFeed (если on) даёт живее между циклами.
+                    _last_close = (
+                        float(df_entry["close"].iloc[-1])
+                        if (df_entry is not None and not df_entry.empty) else None
+                    )
                     _bus.publish(sym, SphereEvent.OHLCV_UPDATED, {
-                        "tf": _etf, "rows": len(df_entry),
+                        "tf": _etf, "rows": len(df_entry), "close": _last_close,
                     })
 
                     # Сфера 6: Market Regime → bus

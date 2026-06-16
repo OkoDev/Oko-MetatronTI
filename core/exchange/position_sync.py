@@ -305,6 +305,10 @@ async def sync_positions(bot) -> None:
                         "qty": abs(getattr(pp, "qty", 0) or 0), "side": pp.side,
                         "entry": getattr(pp, "entry", None),
                         "upnl": getattr(pp, "unrealized_pnl", None),
+                        # РЕАЛЬНЫЕ с биржи (REST get_positions) — leverage=подтверждение
+                        # выставленного плеча, mark=реальная текущая цена позиции.
+                        "leverage": getattr(pp, "leverage", None),
+                        "mark": getattr(pp, "mark", None),
                     }
                     for pp in parsed_all if pp.margin >= 0.01
                 }

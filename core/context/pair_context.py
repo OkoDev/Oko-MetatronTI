@@ -295,8 +295,12 @@ class PairContextBus:
         return round(sum(vals), 2) if vals else None
 
     def update_position(self, account_id: int, symbol: str, qty: float, side: str = "",
-                        entry: Optional[float] = None, upnl: Optional[float] = None) -> None:
-        """Обновить позицию аккаунта (push от EXEC-WS ACCOUNT_UPDATE P[]). qty=0 → удалить (закрыта)."""
+                        entry: Optional[float] = None, upnl: Optional[float] = None,
+                        leverage: Optional[int] = None, mark: Optional[float] = None) -> None:
+        """Обновить позицию аккаунта (push от EXEC-WS ACCOUNT_UPDATE P[]). qty=0 → удалить (закрыта).
+
+        leverage/mark ACCOUNT_UPDATE НЕ несёт (приходят от position_sync REST) → если не
+        переданы, СОХРАНЯЕМ из предыдущего снапшота (EXEC-WS не затирает реальные с биржи)."""
         st = self._accounts.get(account_id)
         if st is None:
             st = AccountState(account_id=account_id)
@@ -304,8 +308,11 @@ class PairContextBus:
         if not qty:
             st.positions.pop(symbol, None)
         else:
+            _old = st.positions.get(symbol, {})
             st.positions[symbol] = {
                 "qty": qty, "side": side, "entry": entry, "upnl": upnl,
+                "leverage": leverage if leverage is not None else _old.get("leverage"),
+                "mark": mark if mark is not None else _old.get("mark"),
                 "ts": datetime.now(timezone.utc),
             }
         st.updated_at = datetime.now(timezone.utc)
@@ -410,6 +417,13 @@ class PairContextBus:
             tf = data.get("tf")
             if tf and tf not in state.ohlcv_tfs_loaded:
                 state.ohlcv_tfs_loaded.append(tf)
+            # Наполнение tick_price из OHLCV close — базовый источник цены в шине,
+            # работает даже когда WsFeed off (TICK_PRICE не приходит). WsFeed (если on)
+            # перезапишет живее между циклами. Единый источник цены = шина.
+            _c = data.get("close")
+            if _c:
+                state.tick_price = float(_c)
+                state.tick_time = now
 
         elif event_type == SphereEvent.TICK_PRICE:
             state.tick_price = data.get("price")
