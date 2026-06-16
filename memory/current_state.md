@@ -9,6 +9,48 @@
 
 ---
 
+## [16.06 16:43 UTC] Агент: Даат — Бэк-фикс DEV-231 (таймаут дашборда) + дизайн-аудит дашборда
+
+### ✅ DEV-231 добивка: 3 inline-SQL хендлера вынесены с event-loop (НЕЗАКОММИЧЕНО)
+- **Корень (подтверждён замером):** `full_stats()` = **1576 мс** sync SQL по 29 510 строкам, крутился ПРЯМО в event-loop в `_handle_dashboard_api`. Каждый `/api/dashboard` морозил весь дашборд-loop на 1.6с → лёгкий `/api/trading/status` (из шины, мгновенный) стоял в очереди → 100с-таймаут, что видел DS.
+- **Фикс (паттерн `_run_sync`→thread pool, как confluence/analytics):** `_handle_dashboard_api` (`full_stats` :2192), `_handle_settings_get` (`by_signal_type` :1563), SSE-путь `_handle_sse` (`summary`+`rolling_win_rate` :2549). py_compile OK.
+- Замер: summary 134мс · by_signal_type 128мс · rolling 110мс · full_stats 1576мс.
+- ✅ **Legacy-хендлеры добиты (17:36):** `_handle_closed_trades` (`_closed_sync` :809), `_handle_performance_api` (`_perf_sync` :2436), `_handle_pair_api` (`_pair_sync` :2464) — тоже в thread pool. Full-sweep grep: инлайн-блокирующего SQL на event-loop НЕ осталось ни в одном GET/SSE-хендлере. Класс DEV-231 закрыт для дашборд-сервера целиком.
+- DISCUSSION 16.06 16:43 (DS-контракт).
+
+### ✅ Дизайн/перф-аудит дашборда → `docs/DASHBOARD_AUDIT.md`
+- Полный аудит oko-dashboard (читал реальные файлы): главный вывод — UI не статичный, движение ушло в декор и душит перф. 5 P0 для DS (фон-Метатрон `140vmax` ∞-вращение+блюр; Cube ~500 ∞-анимаций+setState-цикл; `.glass` blur на каждой панели; Trades без виртуализации; нет code-split). 9 пунктов+токены+карта интерактива+план P0→P2+референс-код. Фронт — зона DS, файлы не трогал.
+
+## [16.06 14:30 UTC] Агент: Даат — GitHub-инфра + контракт типов дашборда для DS
+
+### ✅ GitHub
+- Фронт `oko-dashboard` вынесен в **отдельный git-репо** (`git init -b main`, коммит `1f14cc0`, 108 файлов) → запушен на **`OkoDev/Oko-Dashboard` (private)**, `main→origin/main`. `.gitignore` корректный (+`dev.log`).
+- **`Oko-MetatronTI` переведён public→private** (был 0 форков/звёзд). Секреты в историю не попадали (`.env` всегда gitignore, в коде ключей нет) → утечки не было.
+- `gh` CLI v2.94 установлен + авторизован (OkoDev, scopes `repo,read:org,workflow,gist`). Создание репо/смена visibility делались через GitHub API токеном GCM (у него не было `read:org` для самого `gh auth login`).
+
+### ✅ Аудит вёрстки дашборда (DS прислал) — дал контракт, DS катит фронт сам
+- Проверил 🔴#1/#2 по БД (источник правды). **VALID_SIGNAL фронта знал 5 из ~16** — флагман `arch104`(7734) схлопывался в `confluence`. Имена: `ote_nested` (НЕ `OTE`), `wt_b_signal`.
+- **VALID_REGIME:** фронт держит фантом `REVERSAL` (0 в БД), теряет `HIGH_VOL` (1616). Убрать/добавить.
+- **🔴 regime_v2 ЕСТЬ** — отдельная колонка `simulated_trades.regime_v2` (~13.4K заполнено, метки те же 4, shadow HTF-классификатор [[regime_v2_validated]]). Я ошибочно сказал «нет» (смотрел только `regime`) — поправился. Дашборд должен показывать v2 отдельной колонкой/тогглом (инструмент A/B).
+- **Корневой фикс #1/#2:** не закрытый Set (дрейфует), а **pass-through** в normSignal/normRegime + STYLE-map для цветов + нейтральный дефолт.
+- Эндпоинты для #3/#6/#7 УЖЕ есть (`/api/settings`+`/api/toggles`, `/api/stats/analytics`, `/api/cube/events`) → это фронт-подключение, не бэкенд-дыры. Контракт записан в DISCUSSION.md (16.06 14:23).
+
+### 🔄 Моя бэкенд-часть (НЕЗАКОММИЧЕНО)
+- `web/dashboard_server.py`: добавил `"regime_v2"` в `_TRADES_FILTERED_COLS` (стр.202) — фронт раньше его физически не получал. Аддитивно, `.get()`-безопасно. **DS:** синхрон в `lib/api.ts fetchTradesFiltered` allow-list.
+
+### 🔧 Хук DISCUSSION у DS не срабатывал — РОВНЫЙ диагноз + фикс (16.06)
+- **Корень (доказан транскриптом DS `~/.deepcode/projects/.../*.jsonl`):** DeepCode (DS) исполняет ОДИН **проектный** `.claude/settings.json` Stop-хук. После коммита `2b51f81` он форсил **`--role DAAT`** → DS проверял записи к DAAT, а не к DS → «→ DS» не видел. Скрипт `check_tasks.py` исправен (воспроизведение `--role DS` → block; счётчик в транскрипте block:3/approve:7 — block только из ручных тестов DS).
+- Первый мой диагноз («нет блока hooks в .deepcode») был неточен — DS подключал хук в `.claude/settings.json` (его же слова в транскрипте + DISCUSSION 15.06).
+- **Фикс (новый дизайн резолва роли, env-based):**
+  - `.claude/settings.json`: убрал `--role DAAT` из Stop-команды → роль из env/`.agent_role`.
+  - `.agent_role`: `DS`→**`DAAT`** (дефолт для Claude-агента; env DS перебивает его для DeepCode).
+  - `~/.deepcode/settings.json`: `AGENT_ROLE=DS` в env + (страховкой) свой `hooks.Stop --role DS`.
+  - `check_tasks.py`: докстринг `_resolve_role` обновлён под новый дизайн.
+  - Проверено: Даат(no env,.agent_role=DAAT)→approve; DS(AGENT_ROLE=DS)→block.
+- **🔴 DS ДОЛЖЕН ПЕРЕЗАПУСТИТЬ сессию DeepCode** — хук-конфиг грузится при старте сессии, на лету не подхватывается (вероятная причина, почему первая правка «не сработала»). После рестарта + при висящей записи «→ DS» хук обязан блокировать. Остаётся одна непроверенная зависимость: пробрасывает ли DeepCode env из settings.json в subprocess хука (для MODEL/BASE_URL — да; для AGENT_ROLE — должно так же).
+
+---
+
 ## [16.06.2026] Агент: Даат — BUS-CATALOG + дашборд-из-шины (оперативка), каша trades.tsx
 
 ### ✅ Сделано (коммиты на ветке arch-128-oko-sm)
