@@ -254,11 +254,17 @@ async def sync_positions(bot) -> None:
             try:
                 from core.db import balance_repo
                 _snaps = await order_mgr.snapshot_balances_per_account()
+                _pc_bal = getattr(bot, "pair_context", None)
                 for _b in _snaps:
                     balance_repo.save_snapshot(
                         _b["account_id"], _b["equity"], available=_b["available"],
                         used_margin=_b["used_margin"], unrealized_pnl=_b["unrealized_pnl"],
                         source="poll")
+                    # BUS-L2: equity → ШИНА (REST fallback к EXEC-WS push). Без этого equity
+                    # null до первого ACCOUNT_UPDATE → risk_pct/equity на дашборде пустые.
+                    if _pc_bal is not None:
+                        _pc_bal.update_account(_b["account_id"], equity=_b["equity"],
+                                               available=_b["available"], used_margin=_b["used_margin"])
                 if _snaps:
                     logger.info("[POSITION-SYNC][DB-V2] balance snapshot: %d акк", len(_snaps))
             except Exception as _bse:

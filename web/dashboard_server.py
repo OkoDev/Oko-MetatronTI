@@ -346,6 +346,55 @@ async def _handle_kpi(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_open_trades(request: web.Request) -> web.Response:
+    """ОПЕРАТИВНЫЙ эндпоинт открытых сделок (дашборд-мониторинг через шину).
+
+    Лёгкий `WHERE status='OPEN'` (~десятки строк) + текущая цена из ШИНЫ (tick_price)
+    + R live. БЕЗ тяжёлого get_summary (агрегат 29K) — тот только для аналитики.
+    Query: account_id, execution_mode (опц)."""
+    bot = request.app.get("bot")
+    engine = request.app.get("engine")
+    db_path = engine.db_path if (engine and hasattr(engine, "db_path")) else "subscriptions.db"
+    acc = request.query.get("account_id")
+    acc_i = int(acc) if acc and acc.isdigit() else None
+    mode = request.query.get("execution_mode")
+
+    def _q():
+        import sqlite3 as _sq
+        sql = ("SELECT id,symbol,direction,signal_type,entry_price,stop_loss,take_profit,"
+               "created_at,execution_mode,account_id,tsl_activated FROM simulated_trades "
+               "WHERE status='OPEN'")
+        params: list = []
+        if acc_i is not None:
+            sql += " AND account_id=?"; params.append(acc_i)
+        if mode:
+            sql += " AND execution_mode=?"; params.append(mode)
+        sql += " ORDER BY created_at DESC LIMIT 300"
+        with _sq.connect(db_path, timeout=10) as c:
+            c.row_factory = _sq.Row
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    try:
+        rows = await _run_sync(_q)
+        # Обогащение из ШИНЫ: текущая цена (tick_price) + R live. Никакого REST/тяжёлого SQL.
+        _pc = getattr(bot, "pair_context", None)
+        for t in rows:
+            st = _pc.get(t["symbol"]) if _pc else None
+            cur = (st.tick_price if st else None)
+            t["current_price"] = cur
+            e = t.get("entry_price"); sl = t.get("stop_loss")
+            if cur and e and sl and abs(e - sl) > 1e-12:
+                d = 1.0 if (t.get("direction") == "LONG") else -1.0
+                t["r_live"] = round(d * (cur - e) / abs(e - sl), 2)
+            else:
+                t["r_live"] = None
+        return web.Response(
+            text=json.dumps({"open": rows, "count": len(rows)}, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 def _signal_weights_compute_sync(engine, days: int) -> dict:
     """DEV-231: SQL + pivot для signal_weights_history — выполняется в thread pool."""
     import sqlite3 as _sqlite3
@@ -1041,6 +1090,23 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                     "liquidation_price": float(p.get("liquidationPrice") or 0),
                     "account":           p.get("_account"),
                 })
+
+        # Оперативный KPI из ШИНЫ (open/unreal/risk) — БЕЗ тяжёлого get_summary (агрегат 29K).
+        # Дашборд-оперативка читает result["kpi"], не /api/kpi. Каталог: all_positions + equity.
+        _op = result["positions"]
+        _unreal = round(sum(float(p.get("unrealized_pnl") or 0) for p in _op), 2)
+        _used = round(sum(float(p.get("margin") or 0) for p in _op), 2)
+        _eq = float(result["balance"] or 0)
+        result["kpi"] = {
+            "open_count":  len(_op),
+            "long":        sum(1 for p in _op if p.get("side") == "LONG"),
+            "short":       sum(1 for p in _op if p.get("side") == "SHORT"),
+            "unreal_pnl":  _unreal,
+            "used_margin": _used,
+            "equity":      round(_eq, 2) if _eq else None,
+            "risk_pct":    round(_used / _eq * 100, 1) if _eq else None,
+        }
+
         # JOIN с simulated_trades через live_orders → получаем SL/TP для отображения
         # Используем live_orders.sim_trade_id как мост, чтобы корректно находить
         # "зомби" позиции (live_orders=OPEN, но simulated_trades=TSL/SL/EXPIRED).
@@ -2805,6 +2871,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/positions",       _handle_positions)
     app.router.add_get("/api/trades_filtered", _handle_trades_filtered)
     app.router.add_get("/api/kpi",             _handle_kpi)
+    app.router.add_get("/api/open",            _handle_open_trades)  # оперативка из шины (лёгкий)
     app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)

@@ -34,6 +34,17 @@
 - Кирпич 1 (VST-exit) активен — наблюдать точность exit на закрытиях.
 - equity acc1≈312 / acc2≈320 (demo VST). Доход мерить по `scripts/equity_curve.py` (биржевой факт), **НЕ по R** (искажён до #21).
 
+## 🖥️ НАПРАВЛЕНИЕ 16.06 — ДАШБОРД: оперативка из ШИНЫ, SQL только аналитика
+Юзер остановил заплатки на медленный SQL. **Инверсия:** oko-dashboard :3000 (оперативные экраны — откр.сделки/позиции/KPI) ходит в тяжёлый SQL (`/api/trades_filtered`, `/api/kpi` — 29K сделок + sim-завязка) → таймаут → MOCK «скачет». `/api/live` из шины = мгновенно, без проблем.
+**Вектор (НЕ патч):** оперативка → ШИНА (push/pull, live); аналитика (история 30д/WR/паттерны) → SQL (async+кэш, ждать ОК). Дашборд мониторинга = слушатель шины (LISTENER Слой 2). Детали: memory `dashboard_oper_from_bus_analytics_sql`. **Спроектировать:** что из оперативки уже в шине, чего нет (открытые сделки live? — донести в шину) → фронт читает шину. Два фронта (:8000 aiohttp ∥ :3000 Next.js) = один бэкенд, унифицировать на шину.
+
+## 🖥️ ДАШБОРД-ИЗ-ШИНЫ — бэкенд готов (ждёт рестарт + фронт)
+Корень тяжести/мигания: `/api/trades_filtered` + `/api/kpi` зовут `get_summary` (агрегат 29K) → таймаут → MOCK. Сделаны ЛЁГКИЕ оперативные эндпоинты из шины (`dashboard_server.py`):
+- **`/api/live` → `result["kpi"]`**: open_count/long/short/unreal_pnl/used_margin/equity/risk_pct из шины (all_positions+total_equity), без get_summary.
+- **`/api/open`**: открытые сделки (лёгкий `WHERE OPEN` ~десятки) + current_price из шины (tick_price) + r_live. `_handle_open_trades`, route `/api/open`.
+- BUS-CATALOG (`bus.catalog()`/`docs/BUS_CATALOG.md`) — меню подключения.
+**NEXT:** рестарт → проверить /api/open и /api/live.kpi мгновенные. Потом ФРОНТ oko-dashboard (не git): KPI-cards→/api/live.kpi, TRADES-открытые→/api/open. Тяжёлые trades_filtered/kpi → только вкладка Аналитика (async+кэш).
+
 ## 🔄 СЛЕДУЮЩЕЕ (приоритет)
 1. **Наблюдать кирпич 1** — лог `[EXEC-WS][2b] ... WS-fill REST→WS`, новые VST-exit точные?
 2. **EXEC-SIM-SPLIT кирпичи 2-4** — режим-переключатель → раздельные БД → SIM отдельным процессом. Проектировать (bot-arch/рой).
