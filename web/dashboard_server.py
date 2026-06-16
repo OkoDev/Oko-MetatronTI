@@ -199,7 +199,7 @@ _PORTFOLIO_CACHE = _KeyedJSONCache(ttl=20.0)
 # + мелкая метадата (created_at/closed_at/account_id/execution_mode). get_trades = SELECT *
 # (54 кол., features_json ~80% веса). Проекция режет 1MB→~177KB на 300 строк. СИНХРОН с маппером.
 _TRADES_FILTERED_COLS = (
-    "id", "symbol", "timeframe", "direction", "signal_type", "regime",
+    "id", "symbol", "timeframe", "direction", "signal_type", "regime", "regime_v2",
     "entry_price", "exit_price", "profit_pct", "R_multiple", "max_R_possible",
     "status", "stop_loss", "take_profit", "tsl_activated", "sl_source", "tp_source",
     "duration_minutes", "created_at", "closed_at", "account_id", "execution_mode",
@@ -805,8 +805,10 @@ async def _handle_closed_trades(request: web.Request) -> web.Response:
         page = max(1, int(request.rel_url.query.get("page", 1)))
         per_page = min(200, max(10, int(request.rel_url.query.get("per_page", 50))))
         offset = (page - 1) * per_page
-        total = engine.closed_trades_count()
-        rows = engine.recent_closed(limit=per_page, offset=offset)
+        # DEV-231 (16.06): count+recent_closed = sync SQL → один thread-hop, не на event loop.
+        def _closed_sync():
+            return engine.closed_trades_count(), engine.recent_closed(limit=per_page, offset=offset)
+        total, rows = await _run_sync(_closed_sync)
         data = {
             "rows": rows,
             "page": page,
@@ -1560,7 +1562,9 @@ async def _handle_settings_get(request: web.Request) -> web.Response:
         "pivot_reversal": 0.20,
     }
     try:
-        for row in engine.by_signal_type():
+        # DEV-231 (16.06): by_signal_type() = sync SQL → в thread pool, не на event loop.
+        _sig_rows = await _run_sync(engine.by_signal_type)
+        for row in _sig_rows:
             sig = row.get("signal_type") or ""
             avg_r = float(row.get("avg_r") or 0.0)
             total = row.get("total", 0)
@@ -2188,8 +2192,11 @@ async def _handle_dashboard_api(request: web.Request) -> web.Response:
                 ml_trained_at = ml_trained_at.isoformat() if hasattr(ml_trained_at, "isoformat") else str(ml_trained_at)
 
     # Trade stats
+    # DEV-231 (16.06): full_stats() = 8 sync SQL по ~29K строк. Inline в async-хендлере
+    # блокировал event loop дашборда → лёгкий /api/trading/status стоял в очереди до 100с.
+    # Вынос в thread pool (тот же паттерн, что confluence/breakeven/analytics) — loop свободен.
     try:
-        stats = engine.full_stats()
+        stats = await _run_sync(engine.full_stats)
         trade_stats = {
             "open_count": stats.get("open_count", 0),
             "closed_count": stats.get("closed_count", 0),
@@ -2425,16 +2432,19 @@ async def _handle_performance_api(request: web.Request) -> web.Response:
     """GET /api/performance — агрегированная аналитика (DEV-117)."""
     engine: PerformanceEngine = request.app["engine"]
     try:
-        data = {
-            "summary":       engine.summary(),
-            "by_signal":     engine.by_signal_type(),
-            "by_direction":  engine.by_direction(),
-            "by_regime":     engine.by_regime(),
-            "by_strategy":   engine.by_strategy(),
-            "top_pairs":     engine.top_pairs(20),
-            "weekly":        engine.weekly_summary(7),
-            "rolling_wr":    engine.rolling_win_rate(50),
-        }
+        # DEV-231 (16.06): 8 sync SQL → один sync-хелпер в thread pool, не на event loop.
+        def _perf_sync():
+            return {
+                "summary":       engine.summary(),
+                "by_signal":     engine.by_signal_type(),
+                "by_direction":  engine.by_direction(),
+                "by_regime":     engine.by_regime(),
+                "by_strategy":   engine.by_strategy(),
+                "top_pairs":     engine.top_pairs(20),
+                "weekly":        engine.weekly_summary(7),
+                "rolling_wr":    engine.rolling_win_rate(50),
+            }
+        data = await _run_sync(_perf_sync)
         return web.Response(
             text=json.dumps(data, ensure_ascii=False, default=str),
             content_type="application/json", charset="utf-8",
@@ -2450,10 +2460,11 @@ async def _handle_pair_api(request: web.Request) -> web.Response:
     dc = request.app.get("data_collector")
     symbol = request.match_info.get("symbol", "").replace("_", "/")
     try:
-        stats   = engine.pair_stats(symbol)
-        history = engine.pair_history(symbol, limit=50)
+        # DEV-231 (16.06): pair_stats/pair_history/open_trades = sync SQL → thread pool.
+        def _pair_sync():
+            return engine.pair_stats(symbol), engine.pair_history(symbol, limit=50), engine.open_trades()
+        stats, history, open_all = await _run_sync(_pair_sync)
         # Открытые сделки по паре
-        open_all = engine.open_trades()
         open_pair = [t for t in open_all if t.get("symbol") == symbol]
         # Обогащаем unrealized R
         for t in open_pair:
@@ -2541,8 +2552,10 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
             _need_heavy = (_seen_version != _metrics_version) or (_now - _last_heavy_ts >= _FALLBACK_SEC)
             if _need_heavy:
                 try:
-                    summary = engine.summary()
-                    rolling = engine.rolling_win_rate(50)
+                    # DEV-231 (16.06): summary/rolling = sync SQL на realtime SSE-пути.
+                    # В thread pool, чтобы пересчёт метрик не морозил event loop при N клиентах.
+                    summary = await _run_sync(engine.summary)
+                    rolling = await _run_sync(engine.rolling_win_rate, 50)
                     payload = json.dumps({"summary": summary, "rolling": rolling}, default=str)
                     await resp.write(f"event: stats\ndata: {payload}\n\n".encode())
                 except Exception as _e:
