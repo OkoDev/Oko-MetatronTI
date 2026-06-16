@@ -45,6 +45,17 @@
 - BUS-CATALOG (`bus.catalog()`/`docs/BUS_CATALOG.md`) — меню подключения.
 **NEXT:** рестарт → проверить /api/open и /api/live.kpi мгновенные. Потом ФРОНТ oko-dashboard (не git): KPI-cards→/api/live.kpi, TRADES-открытые→/api/open. Тяжёлые trades_filtered/kpi → только вкладка Аналитика (async+кэш).
 
+## 🧹 КАША trades.tsx — РАЗОБРАТЬ СИСТЕМНО (свежая голова, 16.06)
+Бэкенд оперативки ГОТОВ+коммит (live/open/exchange_history/kpi — данные есть). Каша во ФРОНТЕ `oko-dashboard/components/oko/screens/trades.tsx` — быстрые правки рассинхронили views. **3 бага (скрины 16.06):**
+1. **Sim OPEN:** колонка «R» показывает `-$0.46` (доллары, не R). Проверить рендер ALL_COLS «r» (49) vs маппинг fetchOpenTrades r=r_live + порядок колонок после добавления leverage/size в SIM_DEFAULT.
+2. **Exchange OPEN:** счётчик «67 trades» но таблица ПУСТАЯ. stats.total=filtered.length=67, но строки не рендерятся → рассинхрон filtered vs render-body (прочитать render таблицы ~230+, какой массив мапится).
+3. **Exchange TP:** «0 trades» но висит старая OPEN-строка (refreshExch не очистил при смене фильтра, или stale rows).
+**Спецификация (что должно быть):**
+- **Sim** (БД): OPEN→fetchOpenTrades (R live, leverage/size из шины); ALL/TP/SL/TSL/Expired→fetchTradesFiltered (история). R-колонка = R (не $), unrealizedPnl-колонка отдельно = $.
+- **Exchange**: OPEN→fetchLivePositions (позиции, leverage/size/upnl); TP/SL/TSL/Expired→fetchExchangeHistory(filter); ALL→позиции+история. Счётчик = реальные строки.
+- Колонки SIM_DEFAULT vs EXCH_DEFAULT — проверить порядок/рендер каждой (R/upnl/size/lev не путать).
+**Метод:** прочитать trades.tsx ЦЕЛИКОМ (stats 167 / filtered 157 / render-body / ALL_COLS 39) → один чистый проход, не заплатки. Порт: dev на :3001 (старый :3000 убит, перезапустить npm для :3000).
+
 ## 🔄 СЛЕДУЮЩЕЕ (приоритет)
 1. **Наблюдать кирпич 1** — лог `[EXEC-WS][2b] ... WS-fill REST→WS`, новые VST-exit точные?
 2. **EXEC-SIM-SPLIT кирпичи 2-4** — режим-переключатель → раздельные БД → SIM отдельным процессом. Проектировать (bot-arch/рой).

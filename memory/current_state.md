@@ -9,6 +9,25 @@
 
 ---
 
+## [16.06.2026] Агент: Даат — BUS-CATALOG + дашборд-из-шины (оперативка), каша trades.tsx
+
+### ✅ Сделано (коммиты на ветке arch-128-oko-sm)
+- **EXEC-SIM-SPLIT кирпич 1** (2b51f81): VST-exit из реального WS-fill (exec_ws). Доказан в бою (FIGHTID REST 0.003603→WS 0.004085).
+- **logging-фикс** (279f46d): market_ws воркер не держит crypto_bot.log (ротация WinError 32).
+- **leverage+mark с биржи в шину** (3a7a081): position_sync→update_position (реальное плечо/цена). dashboard свой executor (фикс 'schedule after shutdown'). + tick_price из OHLCV (WsFeed off).
+- **BUS-CATALOG** (61b7191): `core/context/bus_catalog.py` — меню данных шины (24 события+56 L1+6 L2), `bus.catalog()`/`docs/BUS_CATALOG.md`, самодокументируемый (validate синхрон). [[bus_catalog_data_menu]]
+- **dashboard-from-bus** (03f5d13): `/api/open` (открытые лёгкий+цена/R/плечо/размер из шины), `/api/live.kpi` (open/unreal/risk/equity), equity→шина (position_sync). [[dashboard_oper_from_bus_analytics_sql]]
+- **/api/open +leverage+notional** (07d7065): плечо+размер для оперативных сделок.
+- equity проверено: /api/live.kpi полный (equity=273.96 risk=1.2), /api/open 0.3с, exchange_history 500 закрытых (tp82/sl365/tsl4).
+
+### 🔴 НЕЗАВЕРШЕНО — каша trades.tsx (СЛЕДУЮЩАЯ СЕССИЯ, свежая голова)
+Фронт oko-dashboard (НЕ git, на диске :3001 — старый :3000 убит). 3 бага + ТЗ в `whats-next.md` («КАША trades.tsx»): (1) Sim OPEN R-колонка показывает $; (2) Exchange OPEN 67 счётчик но пусто; (3) Exchange TP 0 но строка висит. Причина: быстрые правки рассинхронили Sim/Exchange×OPEN/закрытые. Метод: прочитать trades.tsx ЦЕЛИКОМ → один системный проход (stats 167/filtered 157/render-body/ALL_COLS 39).
+
+### Урок
+Огромная сессия → контекст забит → потеря консистентности фронта (каша). Юзер прав: остановиться, причесать со свежей головой, не лепить заплатки.
+
+---
+
 ## [15.06.2026] Агент: Даат — 🔴 EXEC-SIM-SPLIT: метрики врут от смешения SIM/VST логик
 
 ### Корень (разобран на APEX #29750, ote_nested VST LONG)
