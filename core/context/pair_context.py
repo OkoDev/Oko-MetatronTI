@@ -335,6 +335,18 @@ class PairContextBus:
                 out.append({"account_id": acc_id, "symbol": sym, **p})
         return out
 
+    # ── BUS-CATALOG: «меню» данных шины (точка входа) ────────────────────
+    def catalog(self) -> dict:
+        """Программный каталог шины (события + L1 + L2): что есть, тип, источник, как подключить.
+        Пришёл к шине → catalog() → выбрал «провод». Логика в core/context/bus_catalog.py."""
+        from core.context.bus_catalog import catalog as _cat
+        return _cat()
+
+    def catalog_markdown(self) -> str:
+        """Меню шины в markdown (для человека/дашборда)."""
+        from core.context.bus_catalog import to_markdown as _md
+        return _md()
+
     # ── pub/sub шина ─────────────────────────────────────────────────────
 
     def subscribe(self, event_type: str, handler: Callable) -> None:
