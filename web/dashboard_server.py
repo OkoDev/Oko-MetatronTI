@@ -362,7 +362,7 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
     def _q():
         import sqlite3 as _sq
         sql = ("SELECT id,symbol,direction,signal_type,entry_price,stop_loss,take_profit,"
-               "created_at,execution_mode,account_id,tsl_activated FROM simulated_trades "
+               "created_at,execution_mode,account_id,tsl_activated,qty FROM simulated_trades "
                "WHERE status='OPEN'")
         params: list = []
         if acc_i is not None:
@@ -376,12 +376,26 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
 
     try:
         rows = await _run_sync(_q)
-        # Обогащение из ШИНЫ: текущая цена (tick_price) + R live. Никакого REST/тяжёлого SQL.
+        # Обогащение из ШИНЫ: текущая цена (tick_price) + R live + leverage. Без REST/тяжёлого SQL.
         _pc = getattr(bot, "pair_context", None)
+        # leverage по символу из позиций шины (РЕАЛЬНОЕ с биржи, кирпич 1); fallback config
+        _lev_map = {}
+        if _pc is not None:
+            for _p in _pc.all_positions():
+                if _p.get("leverage"):
+                    _lev_map[_p.get("symbol")] = _p.get("leverage")
+        try:
+            _cfg_lev = int(bot.config.get("trading.leverage", 5) or 5)
+        except Exception:
+            _cfg_lev = 5
         for t in rows:
             st = _pc.get(t["symbol"]) if _pc else None
             cur = (st.tick_price if st else None)
             t["current_price"] = cur
+            t["leverage"] = _lev_map.get(t["symbol"]) or _cfg_lev
+            # размер ордера (notional $) = qty × текущая цена (или entry если цены нет)
+            _qty = float(t.get("qty") or 0)
+            t["notional"] = round(_qty * (cur or t.get("entry_price") or 0), 2)
             e = t.get("entry_price"); sl = t.get("stop_loss")
             if cur and e and sl and abs(e - sl) > 1e-12:
                 d = 1.0 if (t.get("direction") == "LONG") else -1.0
