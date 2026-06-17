@@ -83,7 +83,8 @@ def upsert_positions(account_id: int, parsed_positions: list) -> None:
     now = datetime.now(timezone.utc).isoformat()
     rows = [
         (account_id, pp.symbol_our, pp.side,
-         pp.qty, getattr(pp, 'entry', None), pp.unrealized_pnl, pp.margin, now)
+         pp.qty, getattr(pp, 'entry', None), pp.unrealized_pnl, pp.margin, now,
+         getattr(pp, 'mark', None))   # mark_price — текущая mark с биржи (для drawer)
         for pp in parsed_positions
         if pp.margin >= 0.01
     ]
@@ -103,12 +104,12 @@ def upsert_positions(account_id: int, parsed_positions: list) -> None:
         for row in rows:
             db.execute(
                 """INSERT INTO positions (account_id, symbol, side, qty, entry_price,
-                   unrealized_pnl, margin, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?)
+                   unrealized_pnl, margin, updated_at, mark_price)
+                   VALUES (?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(account_id, symbol, side) DO UPDATE SET
                        qty=excluded.qty, entry_price=excluded.entry_price,
                        unrealized_pnl=excluded.unrealized_pnl, margin=excluded.margin,
-                       updated_at=excluded.updated_at""",
+                       updated_at=excluded.updated_at, mark_price=excluded.mark_price""",
                 row,
             )
         db.commit()

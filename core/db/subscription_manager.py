@@ -192,6 +192,7 @@ class SubscriptionManager:
                     unrealized_pnl REAL,
                     margin         REAL,
                     updated_at     TEXT,
+                    mark_price     REAL,
                     PRIMARY KEY (account_id, symbol, side)
                 )
             """)
@@ -199,6 +200,12 @@ class SubscriptionManager:
                 "CREATE INDEX IF NOT EXISTS idx_positions_account "
                 "ON positions(account_id, updated_at)"
             )
+            # mark_price (17.06, DS-запрос): текущая mark с биржи для drawer открытых позиций
+            # (Mark + uPnL% без REST). Идемпотентная миграция для существующих БД.
+            try:
+                cursor.execute("ALTER TABLE positions ADD COLUMN mark_price REAL")
+            except Exception:
+                pass
 
             # ARCH-DB-V2 Ф1: история equity по аккаунтам (решает «движение баланса»)
             cursor.execute("""
