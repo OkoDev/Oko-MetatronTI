@@ -1289,12 +1289,17 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                     _conn.row_factory = _sq.Row
                     ph = ",".join("?" * len(syms))
                     # Через live_orders чтобы найти sim_trade_id независимо от статуса
+                    # FIX (18.06): матч по (symbol, DIRECTION) — раньше только по symbol →
+                    # SHORT-позиция хватала SL/TP закрытой LONG-сделки того же символа
+                    # (инвертированный стоп → R-мусор, напр. UB −3.28R). ORDER BY OPEN-первой
+                    # +свежесть → приоритет живой sim над zombie (live_orders.sim_trade_id мост сохранён).
                     rows = _conn.execute(
-                        f"SELECT lo.symbol, st.stop_loss, st.take_profit, "
+                        f"SELECT lo.symbol, st.direction, st.stop_loss, st.take_profit, "
                         f"st.tsl_activated, st.tsl_tf "
                         f"FROM live_orders lo "
                         f"JOIN simulated_trades st ON lo.sim_trade_id = st.id "
-                        f"WHERE lo.status='OPEN' AND lo.symbol IN ({ph})",
+                        f"WHERE lo.status='OPEN' AND lo.symbol IN ({ph}) "
+                        f"ORDER BY (st.status='OPEN') DESC, st.created_at DESC",
                         syms,
                     ).fetchall()
                     for row in rows:
@@ -1309,9 +1314,10 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                             tp = float(tp) if tp else None
                         except (TypeError, ValueError):
                             tp = None
-                        # Не перезаписываем если уже есть данные (первая запись = приоритет)
-                        if row["symbol"] not in sl_tp_map:
-                            sl_tp_map[row["symbol"]] = {
+                        # Ключ (symbol, direction) — не перезаписываем (первая по ORDER BY = приоритет)
+                        _key = (row["symbol"], str(row["direction"] or "").upper())
+                        if _key not in sl_tp_map:
+                            sl_tp_map[_key] = {
                                 "stop_loss": sl,
                                 "take_profit": tp,
                                 "tsl_activated": bool(row["tsl_activated"]),
@@ -1322,7 +1328,9 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
             for pos in result["positions"]:
                 # symbol из шины уже db-формат ("X/USDT:USDT"); из REST-fallback — BingX ("X-USDT")
                 db_sym = pos["symbol"] if "/" in pos["symbol"] else from_bingx_symbol(pos["symbol"])
-                st = sl_tp_map.get(db_sym) or {}
+                # FIX (18.06): матч по (symbol, side) — SL/TP только от сделки ТОГО ЖЕ направления
+                _pside = str(pos.get("side") or "").upper()
+                st = sl_tp_map.get((db_sym, _pside)) or {}
                 pos["stop_loss"]  = st.get("stop_loss")
                 pos["take_profit"] = st.get("take_profit")
                 pos["tsl_activated"] = st.get("tsl_activated", False)
