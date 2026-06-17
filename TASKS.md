@@ -44,6 +44,8 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| **ARCH-131** | 🟢 | Сфера 5 Cross-Market: +USDT.D/BTC.D (shadow, soft) + макро-календарь (DS). A=код DEV/Claude, B=DS. Risk Monitor #11 раньше Capital Allocator #19; gated EXEC-SIM-SPLIT #21. Детали→DISCUSSION 16.06 20:05. | ARCH→DEV/DS |
+
 | **ARCH-130** | 🟢 | **OhlcvCache reader оптимизация** — заменить `pd.DataFrame([r])` per свечу в QueueReaderThread на сырой dict/tuple + `deque+SimpleQueue` вместо RLock-pandas-merge. Цель: убрать налог холодного старта (~200с), разблокировать sem=16+. Рой 14.06 (groq+openrouter): консенсус — правильный путь. Риск: аудит downstream потребителей OhlcvCache (rolling/groupby в analytics). Принцип: [[principle_reuse_not_duplication]]. Детали → DISCUSSION.md 14.06 19:00 UTC. | ARCH/Claude |
 | **REGIME-V2** | 🟡 | Активировать regime v2 (HTF-доминанта) — через УНИФИКАЦИЮ (D-10), не просто фл… | ARCH/Claude |
 | **HIGH-VOL-VOLUME** | 🟢 | HIGH_VOL + объём (VSA) — рой 7/7 консенсус 11.06. HIGH_VOL = чистый ATR (вол… | ARCH/Claude |)
