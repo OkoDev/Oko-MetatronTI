@@ -9,6 +9,22 @@
 
 ---
 
+## [17.06 19:00 UTC] Агент: Даат — ДАШБОРД ЗАКРЫТ (интерактив/перф/EN + mark_price), всё запушено
+
+### ✅ Фронт oko-dashboard (main, запушено `a0d6679`)
+- **P0-перф:** статичный фон-Метатрон (убрано вращение+блюр), `.panel` без backdrop-blur, Cube де-анимирован (убран setState-цикл + статичные решётка/звёзды), lazy-load экранов, sticky без блюра.
+- **Интерактив:** Cube кросс-hover список↔ноды + лучи решётки на select; Signals donut↔legend↔веса; синхронный курсор equity; Pairs side-sheet; drawer позиций; Patterns кольцо/бар scroll-in + пагинация; Watchlist FIRE-пульс; KPI-герой Total R; histogram-клик→toast; toast(sonner)→Settings; Calm-mode тоггл (топбар, localStorage).
+- **Фиксы:** колонки Trades разъезжались = дублирующиеся React-ключи (id=symbol) → ключ с индексом; HUD-уголки 2-gold; тонкий скролл; **вся кириллица из UI убрана** (вкл. 13 описаний сфер + AI Oracle→EN).
+- Новые файлы: `equity-cursor.tsx`, `oko-sheet.tsx`.
+
+### ✅ mark_price (бэк, запушено `590fb15` arch-128-oko-sm)
+- `positions` table: `mark_price REAL` (CREATE + идемпотентная ALTER, **миграция применена к боевой БД**). `upsert_positions` пишет `pp.mark`. Drawer → Mark + uPnL%. ⚠️ **NULL до РЕСТАРТА бота** (writer в `balance_repo.py`; процесс :8000 на старом коде).
+- **R отложен** — `ParsedPosition` без SL (биржевые позиции стоп не несут) → ждёт EXEC-SIM-SPLIT.
+
+### 📋 ДАШБОРД ЗАКРЫТ. Бэклог (опц, не блокеры): R-позиций, скелетоны/error, sort-a11y, дисциплина токенов, Trades inline-expand. Детали → `whats-next.md` + `docs/DASHBOARD_AUDIT.md`. Эталоны: `e:/tmp/oko_overview_mockup.html` + `~/Downloads/oko_prototype.html`.
+
+### 🎯 Next (вектор юзера 17.06 «проблемы поинтереснее»): EXEC-SIM-SPLIT (#21) / ARCH-131 Сфера 5 / regime-v2.
+
 ## [16.06 16:43 UTC] Агент: Даат — Бэк-фикс DEV-231 (таймаут дашборда) + дизайн-аудит дашборда
 
 ### ✅ DEV-231 добивка: 3 inline-SQL хендлера вынесены с event-loop (НЕЗАКОММИЧЕНО)

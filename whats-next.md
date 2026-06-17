@@ -1,6 +1,6 @@
 # What's Next — Handoff для новой сессии
 
-> Обновлено **2026-06-16** (Даат / Opus 4.8). Сессия: **дашборд-из-шины** (5 кирпичей). Читай первым.
+> Обновлено **2026-06-17** (Даат / Opus 4.8). Сессия: **дашборд закрыт** (интерактив+перф+EN+mark_price). Читай первым.
 
 ---
 
@@ -13,7 +13,44 @@
 
 ---
 
-## 🎯 ГЛАВНОЕ СЕССИИ 16.06 — ДАШБОРД ИЗ ШИНЫ (5 кирпичей + 2 фикса, ПРОВЕРЕНЫ ВЖИВУЮ)
+## 🎯 СЕССИЯ 17.06 — ДАШБОРД ЗАКРЫТ (интерактив + перф + EN-only + mark_price)
+
+Большой проход по фронту `oko-dashboard` (`OkoDev/Oko-Dashboard`, main). **Всё запушено.** Дашборд готов — дальше только опц-полировка (бэклог ниже). Корень «тяжести» = декоративные анимации (вращающийся блюр-фон 140vmax + ~500 ∞-анимаций Cube), НЕ данные.
+
+**Перф (P0):** статичный фон-Метатрон (убрано вращение+feGaussianBlur), `.panel` без backdrop-blur (полупрозрачный, дёшево), Cube де-анимирован (убран setState-цикл + статичные решётка/звёзды), lazy-load экранов (`next/dynamic`), sticky-ячейки Trades без блюра.
+
+**Интерактив:** Cube кросс-hover список↔ноды + лучи решётки от выбранной сферы; Signals donut↔legend↔веса кросс-хайлайт; синхронный курсор equity (`equity-cursor.tsx`); Pairs side-sheet (`oko-sheet.tsx`); drawer открытых позиций; Patterns кольцо/бар анимация при scroll-in + пагинация; Watchlist FIRE-пульс; KPI-герой Total R; Analytics клик-по-бину→toast; toast (sonner)→Settings; **Calm-mode** тоггл в топбаре (гасит атмосферу, localStorage, `html.calm`).
+
+**Фиксы:** колонки Trades разъезжались = дублирующиеся React-ключи (id=symbol при дублях пар) → ключ с индексом; HUD-уголки 2-gold; тонкий глобальный скролл; **вся кириллица убрана из UI** (Orbitron/Rajdhani без кириллицы → фолбэк) вкл. 13 описаний сфер `oko-data.ts` + AI Oracle→EN.
+
+**mark_price (бэк, мой репо):** `positions` + `mark_price REAL` (CREATE + идемпотентная ALTER, **миграция применена к боевой `subscriptions.db`**); `upsert_positions` пишет `pp.mark`; drawer показывает Mark + uPnL%. ⚠️ **NULL до РЕСТАРТА бота** (writer-правка в `balance_repo.py`; текущий процесс :8000 на старом коде → пишет позиции без mark_price). **R отложен** — `ParsedPosition` (`core/exchange/position_parser.py`) без SL (позиции с биржи стоп не несут), нужен EXEC-SIM-SPLIT.
+
+**Эталоны дизайна:** `e:/tmp/oko_overview_mockup.html` + `~/Downloads/oko_prototype.html` (мокап + кликабельный прототип со всеми hover/click). Полный аудит: `docs/DASHBOARD_AUDIT.md`. Токены: `--radius:0.5rem`, surface-0/1/2, dur-*/ease-out.
+
+**Git:** фронт `OkoDev/Oko-Dashboard` main (`a0d6679`); бэк `OkoDev/Oko-MetatronTI` arch-128-oko-sm (`590fb15`). Запушено.
+
+---
+
+## 📋 БЭКЛОГ ДАШБОРДА (отложено — НЕ блокеры, можно потом / отдать DS)
+- **R в drawer позиций** — ждёт EXEC-SIM-SPLIT (нет чистого источника SL; sim-матч фрагилен, REST против DEV-231).
+- **Скелетоны загрузки + error-состояния** — сейчас при loading mock/«···», сбой тихо держит старые данные.
+- **Сорт-заголовки Trades → `<button aria-sort>`** (сейчас `<th onClick>`, без клавиатуры).
+- **Дисциплина токенов** (аудит): green-hue 175→155 (подальше от cyan), 8px-лейблы ≥11px, радиус 1rem→0.5rem под «терминал» — сквозной проход.
+- **Trades inline-раскрытие строки** + мини-график (сейчас боковой drawer «Decision Trace»).
+- **Watchlist side-sheet** — пропущен намеренно (inline entry/SL/TP удобнее).
+
+---
+
+## 🎯 СЛЕДУЮЩАЯ СЕССИЯ — «проблемы поинтереснее» (вектор юзера 17.06)
+Юзер хочет уйти от дашборда к торговой логике. Кандидаты (приоритет памяти):
+1. **EXEC-SIM-SPLIT (#21)** — корень искажённых метрик (SIM/VST смешение, fake-R, APEX −15R). Разблокирует Risk Monitor + Capital Allocator + R-в-позициях. ТЗ: [[exec_sim_split_epic]].
+2. **ARCH-131 Сфера 5** — USDT.D/BTC.D в cross_market (shadow) + макро-календарь (DS берёт B). Согласовано. Risk Monitor #11 РАНЬШЕ Capital Allocator #19.
+3. **regime v2 активация** через A/B ([[regime_v2_validated]]).
+→ Спросить юзера, что горит. Контекст архитектуры/данных свежий.
+
+---
+
+## 🗄️ СЕССИЯ 16.06 — ДАШБОРД ИЗ ШИНЫ (5 кирпичей + 2 фикса, ПРОВЕРЕНЫ ВЖИВУЮ)
 
 **Корень боли:** оперативка дашборда давилась на медленном SQL (29K сделок под локом) в насыщенном **4-воркерном пуле** → таймауты/ECONNRESET → mock «скакал» / пустые панели / сломанная вёрстка. Привёл к принципу [[dashboard_oper_from_bus_analytics_sql]]: **оперативка из шины/кэша, аналитика подождёт**.
 
@@ -25,9 +62,9 @@
 - **+ SyncPanel → шина** (`/api/open`+`/api/live`, не тяжёлый `/api/stats`). Бонус: фикс equity/risk=0 (`live.balance` стал скаляром → беру `live.kpi`).
 - **+ Вёрстка Overview**: скролл-контейнеры под живые объёмы (`positions` max-h-420, `signals` max-h-260) — «огромный скролл» был от 56 РЕАЛЬНЫХ позиций (раньше mock из пары).
 
-### ⚠️ КРИТИЧНО: ФРОНТ oko-dashboard — НЕ git!
-`e:/MTF BOT/CURSOR/oko-dashboard` на диске (Next :3000, хот-релоад), **не под версионным контролем**. Бэкенд закоммичен, фронт — НЕТ. Файлы фронт-правок этой сессии:
-`lib/api.ts`, `lib/use-oko-data.ts`, `components/oko/screens/trades.tsx`, `components/oko/screens/overview.tsx`, `components/oko/positions-panel.tsx`. При потере диска — НЕ восстановятся из git.
+### ✅ ФРОНТ oko-dashboard — отдельный репо + GitHub (16.06)
+`e:/MTF BOT/CURSOR/oko-dashboard` вынесен в **отдельный git-репозиторий** (`git init -b main`, первый коммит `1f14cc0`, 108 файлов) и запушен на **GitHub: `OkoDev/Oko-Dashboard` (private)**, `main → origin/main`. `.gitignore` корректный (`node_modules`/`.next`/`*.tsbuildinfo`/`.env*`/`dev.log` исключены). Фронт-правки сессии (`lib/api.ts`, `lib/use-oko-data.ts`, `screens/trades.tsx`, `screens/overview.tsx`, `positions-panel.tsx`) в истории и в облаке.
+**Инфра:** `gh` CLI v2.94 установлен (`C:\Program Files\GitHub CLI\gh.exe`), но НЕ авторизован — кэш-токен GCM аккаунта OkoDev не имеет scope `read:org` (его требует `gh auth login`). Репо создан через GitHub API этим же токеном (scope `repo` достаточно). Для полноценного `gh` — разовый `gh auth login` (браузер).
 
 ---
 
@@ -43,7 +80,7 @@
 5. **EXEC-SIM-SPLIT** (BACKLOG #21, 🔴) — метрики врут от смешения sim/vst. Кирпич 1 (VST-exit) сделан ранее. [[exec_sim_split_epic]]
 
 ## 📦 КОММИТ
-Бэкенд закоммичен (`web/dashboard_server.py`, `core/context/pair_context.py`, `core/trading/trade_simulator.py`, `memory/current_state.md`, `whats-next.md`). **Фронт oko-dashboard — не git (см. выше).**
+Бэкенд закоммичен (`web/dashboard_server.py`, `core/context/pair_context.py`, `core/trading/trade_simulator.py`, `memory/current_state.md`, `whats-next.md`). **Фронт oko-dashboard — отдельный git-репо (`1f14cc0`), remote не настроен (см. выше).**
 
 ## Ссылки
 `memory/current_state.md` (полные детали 16.06) · `docs/BUS_CATALOG.md` · `obsidian/Project-MOC.md` (хаб)
