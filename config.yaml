@@ -144,6 +144,9 @@ trading:
   dev185_2_overshoot_threshold_pct: 0.5
   dev185_2_dwell_seconds: 300
   tp1_close_pct: 0.2
+  # EXEC-SIM-SPLIT (17.06): SIM-номинал + fallback для sizing при сбое REST. НЕ источник истины
+  # для VST: реальный риск/дашборд берут equity per-account из balance_snapshots (ARCH-DB-V2),
+  # VST sizing — live availableMargin. ⚠️ реальный equity ~316 (acc1 ~150 + acc2 ~167) ≠ 710.
   deposit_usdt: 710.0
   risk_pct: 1.0
   leverage: 5
@@ -203,6 +206,17 @@ trading:
     max_open_long: 25
     max_open_short: 25
     max_open_total: 50
+    # EXEC-SIM-SPLIT кирпич №1 (17.06): риск-экспозиция % депозита (VST). Мерка = Σ(qty×|entry−sl|)/deposit,
+    # НЕ количество (узкий стоп взрывает notional при том же risk%). Старт SHADOW: лог [DEV-52][RISK]
+    # exposure/would_block без блокировки → собрать распределение → выбрать потолок по данным.
+    # Рой 17.06: cerebras 5-10% (система нестабильна, 60% фантомов), DS 20% cap-цель. Старт активации 10%.
+    max_total_risk_pct: 10.0     # потолок суммарного риска открытых VST. null/0 → проверка выключена
+    risk_gate_shadow: true        # true → только лог would_block (не блокирует), даже при enabled=true
+    # Кирпич №2 margin pre-check (17.06): блок нового входа если available маржа per-account < порога
+    # (из balance_snapshots). Корень фантомов: register пишет SIM ДО placement → margin-reject оставляет
+    # SIM=фантом. Shadow 17.06: available ~22/acc, used 87%. Старт 5 USDT (margin сделки ~2-5), уточнить.
+    min_available_usdt: 5.0      # порог доступной маржи. null/0 → проверка выключена
+    margin_gate_shadow: true      # true → только лог [DEV-52][MARGIN] would_block (не блокирует)
   correlation_groups:
   - - PAXG
     - XAUT

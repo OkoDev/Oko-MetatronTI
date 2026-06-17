@@ -751,8 +751,26 @@ def _compute_stats_payload_sync(engine, dc, bot) -> str:
     n_shadow = n_open - n_vst
     for t in open_trades:
         t["is_shadow"] = not bool(t.get("exchange_order_id"))
-    total_risk_usdt = n_vst * deposit_usdt * risk_pct / 100.0
-    total_risk_pct  = total_risk_usdt / deposit_usdt * 100.0 if deposit_usdt else 0.0
+    # EXEC-SIM-SPLIT (17.06): реальный риск по стопам Σ(qty×|entry−sl|) по VST + equity из
+    # balance_snapshots (единый источник истины). Было n_vst×deposit×risk_pct — врало: депозит
+    # фантомный (user_settings пуст→1000, config 710), не учитывал реальные qty/sl.
+    total_risk_usdt = 0.0
+    for t in open_trades:
+        if not t.get("exchange_order_id"):
+            continue
+        _q = t.get("qty"); _e = t.get("entry_price"); _sl = t.get("stop_loss")
+        if _q and _e and _sl:
+            total_risk_usdt += float(_q) * abs(float(_e) - float(_sl))
+    _total_equity = 0.0
+    try:
+        from core.db import balance_repo as _brepo
+        for _a in _brepo.get_accounts():
+            if _a.get("equity"):
+                _total_equity += float(_a["equity"])
+    except Exception:
+        _total_equity = 0.0
+    _risk_base = _total_equity if _total_equity > 0 else deposit_usdt
+    total_risk_pct = total_risk_usdt / _risk_base * 100.0 if _risk_base else 0.0
     open_pnl_r = sum(t["unrealized_r"] for t in open_trades if t.get("unrealized_r") is not None)
     data["btc_4h_regime"]      = btc_4h_regime
     data["open_count"]         = n_open
@@ -760,7 +778,7 @@ def _compute_stats_payload_sync(engine, dc, bot) -> str:
     data["open_shadow_count"]  = n_shadow
     data["risk_exposure_pct"]  = round(total_risk_pct, 2)
     data["risk_exposure_usdt"] = round(total_risk_usdt, 2)
-    data["deposit_usdt"]       = deposit_usdt
+    data["deposit_usdt"]       = round(_risk_base, 2)  # реальный equity (balance_snapshots), не номинал
     data["open_pnl_r"]         = round(open_pnl_r, 2)
     data["exchange_health"]      = getattr(bot, "exchange_health", "HEALTHY") if bot else "HEALTHY"
     data["exchange_latency_ms"]  = round(getattr(bot, "exchange_latency_ms", 0.0), 0) if bot else 0

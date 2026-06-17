@@ -1247,6 +1247,96 @@ class TradeSimulator:
                     else:
                         logger.info("[DEV-52] shadow %s: портфельный лимит %s (gate disabled)",
                                     _sym_52, _blocked_52)
+
+                # EXEC-SIM-SPLIT кирпич №1 (17.06): риск-экспозиция % депозита PER-ACCOUNT (VST).
+                # Мерка = Σ(qty×|entry−sl|) открытых VST ЭТОГО аккаунта / equity_account — НЕ количество
+                # (узкий стоп взрывает notional при том же risk%) и НЕ суммарно (acc размывает acc:
+                # shadow 17.06 показал acc1 2.2% vs acc2 8.0% при суммарных 5.3%).
+                # База = реальный equity per-account из balance_snapshots (единый источник истины,
+                # ARCH-DB-V2; config.deposit_usdt — лишь SIM-номинал, не отражает реальность/мульти-акк).
+                # Вклад новой = risk_pct% (qty ещё не посчитан здесь; risk-based sizing → +risk_pct%).
+                # Старт SHADOW (risk_gate_shadow=true): лог без блокировки → распределение → потолок по
+                # данным. Circuit Breaker by design: только новые входы, открытые ведутся по TSL/SL.
+                # Общий lookup для обоих кирпичей: account_id новой сделки (routing по symbol, как
+                # register_trade ниже) + последний balance_snapshots (equity + available) per-account.
+                # balance_snapshots = единый источник истины (ARCH-DB-V2); та же БД (self._db_connect)
+                # → тестируемо на копии.
+                _max_risk_pct = _l3.get("max_total_risk_pct")
+                _min_avail    = _l3.get("min_available_usdt")
+                if _max_risk_pct or _min_avail:
+                    _trd_52 = _cfg_52.get("trading", {}) or {}
+                    _risk_pct_52 = float(_trd_52.get("risk_pct", 1.0))
+                    _acc_52 = 1
+                    _snap52 = None
+                    try:
+                        with self._db_connect() as _cacc52:
+                            _rr52 = _cacc52.execute(
+                                "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1",
+                                (_sym_52,),
+                            ).fetchone()
+                            if _rr52 and _rr52[0]:
+                                _acc_52 = int(_rr52[0])
+                            _snap52 = _cacc52.execute(
+                                "SELECT equity, available FROM balance_snapshots WHERE account_id=? "
+                                "ORDER BY timestamp DESC LIMIT 1", (_acc_52,),
+                            ).fetchone()
+                    except Exception as _eacc52:
+                        logger.debug("[DEV-52] acc/balance lookup err: %s", _eacc52)
+                    _equity_52 = float(_snap52[0]) if (_snap52 and _snap52[0]) else 0.0
+                    if _equity_52 <= 0:  # нет снапшота → config-номинал (fallback)
+                        _equity_52 = float(_trd_52.get("deposit_usdt", 1000.0)) or 1000.0
+                    _avail_52 = float(_snap52[1]) if (_snap52 and _snap52[1] is not None) else None
+
+                    # ── Кирпич №1: риск-экспозиция по стопам (% equity per-account) ──
+                    # Мерка Σ(qty×|entry−sl|) VST этого acc / equity_account — НЕ количество (узкий
+                    # стоп взрывает notional) и НЕ суммарно (acc размывает acc). Вклад новой = risk_pct%
+                    # (qty ещё не посчитан здесь). Старт SHADOW → распределение → потолок по данным.
+                    if _max_risk_pct:
+                        _cur_risk_usdt = 0.0
+                        for _t52 in _open_52:
+                            if _t52.get("execution_mode") != "VST":
+                                continue  # только реальный капитал; sim депозит не трогает
+                            if int(_t52.get("account_id") or 1) != _acc_52:
+                                continue  # риск считаем В РАМКАХ аккаунта новой сделки
+                            _q52 = _t52.get("qty"); _e52e = _t52.get("entry_price"); _sl52 = _t52.get("stop_loss")
+                            if _q52 and _e52e and _sl52:
+                                _cur_risk_usdt += float(_q52) * abs(float(_e52e) - float(_sl52))
+                        _cur_risk_pct = _cur_risk_usdt / _equity_52 * 100.0
+                        _proj_risk_pct = _cur_risk_pct + _risk_pct_52
+                        _risk_shadow = _l3.get("risk_gate_shadow", True)
+                        if _proj_risk_pct > float(_max_risk_pct):
+                            _rb52 = (f"acc{_acc_52} {_cur_risk_pct:.1f}%+{_risk_pct_52:.1f}%="
+                                     f"{_proj_risk_pct:.1f}% > {_max_risk_pct}% (eq={_equity_52:.0f})")
+                            if _l3.get("enabled") and not _risk_shadow:
+                                logger.info("[DEV-52][RISK] %s БЛОК риск-экспозиция %s", _sym_52, _rb52)
+                                if _reason_out is not None:
+                                    _reason_out.append(f"DEV-52:risk_exposure:{_rb52}")
+                                return None
+                            else:
+                                logger.info("[DEV-52][RISK] shadow %s would_block %s", _sym_52, _rb52)
+                        else:
+                            logger.info("[DEV-52][RISK] %s acc%d exposure=%.1f%% (+new %.1f%% → %.1f%%, cap %s%%, eq=%.0f)",
+                                        _sym_52, _acc_52, _cur_risk_pct, _risk_pct_52, _proj_risk_pct, _max_risk_pct, _equity_52)
+
+                    # ── Кирпич №2: margin pre-check (доступная маржа per-account) ──
+                    # Корень фантомов (17.06): register создаёт SIM-запись ДО placement; если open_bracket
+                    # падает по марже (available исчерпан, used 87%) → запись остаётся SIM = фантом. Ловим
+                    # ДО register: available_per_account < порог → не плодить + защита от наращивания при
+                    # занятой марже (риск ликвидации). Shadow-first: лог available → порог по данным.
+                    if _min_avail and _avail_52 is not None:
+                        _margin_shadow = _l3.get("margin_gate_shadow", True)
+                        if _avail_52 < float(_min_avail):
+                            _mb52 = f"acc{_acc_52} avail={_avail_52:.1f} < {_min_avail} USDT (eq={_equity_52:.0f})"
+                            if _l3.get("enabled") and not _margin_shadow:
+                                logger.info("[DEV-52][MARGIN] %s БЛОК низкая маржа %s", _sym_52, _mb52)
+                                if _reason_out is not None:
+                                    _reason_out.append(f"DEV-52:low_margin:{_mb52}")
+                                return None
+                            else:
+                                logger.info("[DEV-52][MARGIN] shadow %s would_block %s", _sym_52, _mb52)
+                        else:
+                            logger.info("[DEV-52][MARGIN] %s acc%d available=%.1f USDT (min %s, eq=%.0f)",
+                                        _sym_52, _acc_52, _avail_52, _min_avail, _equity_52)
         except Exception as _e52:
             logger.debug("[DEV-52] portfolio gate error: %s", _e52)
 
