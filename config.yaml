@@ -130,6 +130,7 @@ trading:
   execution_mode: vst
   live_guard_timeout_min: 7
   sl_reconcile: live   # SL-RECONCILE (#1): позиции без живого SL-ордера → off/shadow(лог "выставил бы")/live(place). Анти-ликвидация. Активирован live 18.06: shadow доказал риск (REAL/KAT SHORT без SL ~час); place_sl_order account-aware (multiacct), анти-дубликат, throttle 5мин
+  orphan_autoclose: shadow   # D-070 PREVENTION (19.06): orphan (биржа без OPEN в БД) → off(только alert)/shadow(лог "закрыл бы")/live(account-aware close, one_click_on_fail). Корень рассинхрона БД↔биржа [[orphan_root_dbexch_desync]]. Hedge-safe: skip символов с DB-OPEN (one-click задел бы брата). Дефолт shadow → валидировать перед live (как sl_reconcile)
   exec_ws:
     enabled: true
     write_exch_id: false

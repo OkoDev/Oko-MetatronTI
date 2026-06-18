@@ -668,6 +668,18 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
     now = _t.time()
     THROTTLE_SEC = 1800   # 30 минут на (symbol, side)
 
+    # D-070 PREVENTION (19.06): orphan auto-close (config-gated, паттерн sl_reconcile).
+    # off=только alert · shadow=лог "закрыл бы" · live=account-aware close (one_click_on_fail).
+    # Корень рассинхрона БД↔биржа: emergency-close не до-флэтнул / SIM-утечка → orphan висит.
+    _ac_cfg = getattr(bot, "config", None)
+    _autoclose_mode = str(_ac_cfg.get("trading.orphan_autoclose", "off")).lower() if _ac_cfg else "off"
+    _ac_om = getattr(bot, "order_executor", None)
+    if _ac_om is None or not _ac_om.is_live():
+        _autoclose_mode = "off"   # без live-клиента close невозможен
+    # ХЕДЖ-SAFETY: символы где БД держит ЛЮБОЙ OPEN — one-click задел бы управляемого брата
+    # → skip auto-close (точечный close_hedge_orphans вручную). Pure-orphan символы безопасны.
+    _ac_open_syms = {t.get("symbol") for t in open_sim if t.get("symbol")}
+
     for sym, pos in open_on_exchange.items():
         pp = parse_position(pos)
         if pp is None:
@@ -697,6 +709,32 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
             await broadcast_with_subscription_check(bot, text, "orphan_position")
         except Exception as _alert_err:
             logger.warning("[D-070] TG alert error: %s", _alert_err)
+
+        # D-070 PREVENTION (19.06): авто-закрытие orphan'а (config-gated, hedge-safe).
+        if _autoclose_mode in ("shadow", "live"):
+            if pp.symbol_our in _ac_open_syms:
+                logger.warning(
+                    "[D-070][autoclose] %s %s — символ с DB-OPEN (hedge) → skip (ручной close_hedge_orphans)",
+                    pp.symbol_our, pp.side)
+            elif _autoclose_mode == "shadow":
+                logger.warning("[D-070][autoclose][shadow] %s %s закрыл бы market qty=%.6f",
+                               pp.symbol_our, pp.side, abs(pp.qty))
+            else:
+                try:
+                    # account-aware (КОРЕНЬ 101205) + one_click_on_fail (символ без DB-OPEN → брата нет)
+                    _ac_side = "SELL" if pp.side == "LONG" else "BUY"
+                    _ac_cli, _ac_pid = await _ac_om._resolve_position_client(pp.symbol_our, pp.side)
+                    _ac_resp = await _ac_cli.close_position_market(
+                        pp.symbol_our, _ac_side, abs(pp.qty), one_click_on_fail=True, position_id=_ac_pid)
+                    _ac_code = _ac_resp.get("code", 0) if isinstance(_ac_resp, dict) else 0
+                    if _ac_code == 0:
+                        logger.warning("[D-070][autoclose][live] %s %s ЗАКРЫТ market (positionId=%s)",
+                                       pp.symbol_our, pp.side, _ac_pid)
+                    else:
+                        logger.error("[D-070][autoclose][live] %s %s close FAILED code=%s msg=%s",
+                                     pp.symbol_our, pp.side, _ac_code, str(_ac_resp.get('msg', ''))[:50])
+                except Exception as _ace:
+                    logger.error("[D-070][autoclose][live] %s %s err: %s", pp.symbol_our, pp.side, _ace)
 
 
 async def fix_zero_r_trades(bot, dry_run: bool = True) -> int:

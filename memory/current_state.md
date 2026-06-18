@@ -9,6 +9,23 @@
 
 ---
 
+## [18.06 22:25 UTC] Агент: Даат — fake-R ЖИВ (сверен с биржей) + handoff на пару Даат+DS
+
+- 🔴🔴 **fake-R НЕ починен** (миграция почистила прошлое, live пишет заново). Сверка с биржей (`get_filled_orders` по orderId): «win R=+26..+323» = РЕАЛЬНЫЕ убытки. STG #31400 БД R=+323, биржа вход 0.2350→SL 0.2334 pnl −0.97; БД взяла exit из ордера от **12.06**. Корень: `exchange_sl_order_id` None/устарел после cancel+replace → orderId-матч ломается → старый ордер. **🔑 Фикс = positionID** (вход+SL+перевыставленные = ОДИН positionID; устойчив к cancel+replace; граница SIM↔VST) → колонка `position_id` + матч в `_resolve_exit` + миграция. Детали → [[bug_phantom_exit_resolve]], стенды `e:/tmp/`.
+- 🔴 **OTE-ONLY (DS) на песке:** avgR=0.913 отравлен (медиана +0.42, clamp→MFE +0.74, net ~+0.2-0.3R, top-10 по R = фантомы). Любой режим/compounding — ПОСЛЕ fake-R фикса+перемиграции. РОЙ 6/6 Режим А+cap. arch104=балласт.
+- ✅ **Orphan cleanup:** 17 закрыто (`close_orphans` account-aware), биржа 50→33, orphans=0. **Кирпич 1** D-070 auto-close shadow (`config orphan_autoclose` + `position_sync`). → [[orphan_root_dbexch_desync]].
+- 🔄 **Следующая сессия = Даат+DS пара** (DEV/ARCH отдыхают): fake-R positionID-фикс + OTE-ONLY пересчёт. `whats-next.md` обновлён.
+- ⚠️ Незакоммичено (tracked): моё (`DISCUSSION`/`config.yaml`/`position_sync`/`close_orphans`/`current_state`) + DS (`bingx_client`/`config_loader`/`config_validator`/`pydantic_config`). Бот **PID 33956 жив**.
+
+## [18.06 19:55 UTC] Агент: Даат — расследован КОРЕНЬ orphan'ов (рассинхрон БД↔биржа)
+
+- ✅ **Проверка SL-reconcile live (первый шаг handoff):** конфиг `live` подтверждён, код-путь корректен, **ошибок place нет → откат НЕ нужен**. Но `[live]` за ~10 мин не сработал — не сбой: отслеживаемые VST уже с SL (здорово) + единственные кандидаты REAL/KAT стали orphan'ами (нет OPEN-строки → `_db_sl=None → continue`). Валидация на REAL/KAT **невозможна** — закрылись в БД (REAL 16:17 UTC) за ~3.5ч ДО рестарта (22:45 МСК).
+- ✅ **Корень orphan'ов расследован** (юзер выбрал «расследовать корень»). При рестарте PID 31536 D-070 нашёл **14 orphan'ов VST** (статич. бэклог, новых нет). Все VST/paper, реальные деньги не затронуты, плавающий PnL ≈ +5 USDT. **2 механизма (БД+код):** (A) **SIM-утечка** (6: JASMY/PEOPLE/REAL/SIREN/SOMI/XNY) — `execution_mode=SIM`, `exchange_order_id=None`; код считает SIM без биржевой позиции (`trade_simulator.py:1938` SIM-TIME-EXIT, «биржевые не трогаем»), но позиции есть; REAL=вся история SHORT с 13.06 SIM, ни одной VST → позицию qty 53.2 не создавала ни одна DB-сделка; БД закрывает строку → биржа висит → orphan. (B) **VST close-confirmation gap** (8: AKT/AUCTION/CLO/ORDI/PIEVERSE/POLYX/STX/TAO) — реальные VST, БД закрыла TP/SL по цене, позиция на бирже выжила (нет реального reduceOnly-флэта). Детали → [[orphan_root_dbexch_desync]].
+- ✅ **Вывод:** reconcile **бессилен против orphan'ов by design** (лечит только VST с живой OPEN-строкой). Настоящее лечение — на слое исполнения: подтверждать флэт через WS executionReport ([[exec_ws_vst_userdata_proven]]), гарантировать что SIM не оставляет позиций; D-070 расширить alert→adopt/close.
+- ✅ **Cleanup СДЕЛАН:** `scripts/close_orphans.py --commit` → закрыто **17** (биржа 50→33, orphans=0). Патч скрипта: close-цикл account-aware (`_resolve_position_client`+positionId+`one_click_on_fail`) — был sticky-client (КОРЕНЬ 101205). ⚠️ НЕ закоммичен.
+- ✅ **Профилактика кирпич 1 СДЕЛАН (ждёт рестарта):** D-070 alert→auto-close, config `trading.orphan_autoclose: shadow` (off/shadow/live, паттерн sl_reconcile), **hedge-safe** (skip символов с DB-OPEN — one-click задел бы брата). Правки: `config.yaml` + `position_sync._detect_orphans`. py_compile+config-read OK, pydantic чисто (флаг толерируется как sl_reconcile). Shadow=zero-risk → после рестарта мониторить `[D-070][autoclose][shadow] … закрыл бы` → флип `live`. ⚠️ НЕ закоммичено.
+- 🔄 **Осталось (#21 EXEC-SIM-SPLIT, свежей сессией):** кирпич 2 = verify-flat в `_emergency_close_check` (закрывает БД при code=0 без проверки флэта — точный пробел root B, position_sync.py:222→255); root A = источник SIM-утечки. Детали → [[orphan_root_dbexch_desync]].
+
 ## [18.06 18:45 UTC] Агент: Даат — «кривой SL» закрыт (=безубыток) + классификатор BE реализован (ждёт рестарта)
 
 - ✅ **`stop_loss>entry` — НЕ баг**, штатный DEV-40 Breakeven (SL→entry±0.1% после +0.5R, ставит `be_activated`, не `tsl_activated`). Прошлая сессия искала по tsl → ложная тревога. 1336/1374 = be=1; все примеры +0.100% ровно; be=1 status=SL avgR +0.31 (защита) vs чистый стоп −0.90; свежих необъяснённых=0. → [[bug_stop_loss_inverted]].

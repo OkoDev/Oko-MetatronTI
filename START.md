@@ -11,7 +11,7 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 **Запуск:** `python oko_mtf.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
 
-**🔴 ТЕКУЩИЙ ФОКУС (14.06):** LOOP-разгрузка. EXEC-WS оживлён (order events в проде). MARKET-WS v1 откачен (GIL), **v2=процесс — следующий главный рычаг** (дизайн роя готов, → `whats-next.md`). Бот: scan baseline 351с, market_ws OFF, EXEC-WS ON.
+**🔴 ТЕКУЩИЙ ФОКУС (19.06, пара Даат+DS):** 🔴🔴 **fake-R ЖИВ** — `_resolve_exit` берёт чужой старый ордер (сверено с биржей: «R=+323» = реальный убыток −0.97). **Фикс = positionID** (колонка `position_id` + матч + миграция). Следствие: **OTE-ONLY avgR=0.913 отравлен** → compounding-режимы ПОСЛЕ фикса. Orphan'ы: корень найден, 17 закрыто, кирпич 1 (D-070 auto-close shadow). Детали → `whats-next.md`, [[bug_phantom_exit_resolve]]. Бот PID 33956 жив.
 
 ## 🧊 Stabilization Sprint (04.05–25.05.2026)
 

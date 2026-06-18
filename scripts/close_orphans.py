@@ -90,7 +90,6 @@ async def close_orphans(args: argparse.Namespace) -> int:
         print("Orphan'ов нет — нечего закрывать.")
         return 0
 
-    client = await om._get_client_synced()
     closed = 0
     failed = 0
     total_pnl = 0.0
@@ -108,19 +107,19 @@ async def close_orphans(args: argparse.Namespace) -> int:
             print(f"  [DRY-RUN] закрыл бы market {side_close} qty={qty:.4f}")
             continue
         try:
-            resp = await client.close_position_market(sym_our, side_close, qty)
+            # multiacct-safe (КОРЕНЬ 101205): client+positionId РЕАЛЬНОГО аккаунта позиции,
+            # как dust-close/SL-reconcile в position_sync. one_click_on_fail для pure-orphan
+            # безопасен (символ без DB OPEN → нет бот-брата). _resolve_position_client сам
+            # фолбэчит на sticky-client если router недоступен.
+            cli, pid = await om._resolve_position_client(sym_our, direction)
+            resp = await cli.close_position_market(sym_our, side_close, qty,
+                                                   one_click_on_fail=True, position_id=pid)
             code = resp.get("code", 0) if isinstance(resp, dict) else 0
             if code != 0:
-                print(f"  [!] market close failed code={code} — one-click fallback")
-                resp2 = await client.close_position_one_click(sym_our)
-                code2 = resp2.get("code", 0) if isinstance(resp2, dict) else 0
-                if code2 != 0:
-                    print(f"  [✗] one-click тоже failed code={code2}")
-                    failed += 1
-                    continue
-                print(f"  [✓] закрыт one-click")
-            else:
-                print(f"  [✓] закрыт market")
+                print(f"  [✗] close failed code={code} msg={str(resp.get('msg',''))[:50]} (acc-aware, pid={pid})")
+                failed += 1
+                continue
+            print(f"  [✓] закрыт (acc-aware, positionId={pid})")
             closed += 1
         except Exception as e:
             print(f"  [✗] ошибка close: {e}")

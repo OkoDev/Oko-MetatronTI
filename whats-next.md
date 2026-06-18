@@ -1,6 +1,37 @@
 # What's Next — Handoff
 
-## 🆕🔴 Новая сессия (Даат) — #21 EXEC-SIM-SPLIT (+ ПЕРВЫМ проверить SL-reconcile live)
+## 🆕🔴 Новая сессия (Даат + DS пара) — fake-R positionID-фикс + OTE-ONLY пересчёт
+
+> Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina после задач.
+> Ветка `arch-128-oko-sm`. Бот **PID 33956 жив** (рестарт ~00:57 local 19.06). **DEV/ARCH отдыхают — работаем парой с DS.**
+
+### 🔴🔴 ГЛАВНОЕ: fake-R ЖИВ — exit-резолв берёт ЧУЖОЙ ордер. Настоящий фикс = `positionID`
+Сверка с биржей (`get_filled_orders` по orderId, стенды в `e:/tmp/`): «win R=+26..+323» = РЕАЛЬНЫЕ мелкие УБЫТКИ. **STG #31400:** БД R=+323/exit 0.6071, биржа — вход 0.2350→SL 0.2334 **pnl −0.97 R≈−1**; БД взяла exit из ордера от **12.06** (6 дней!). HMSTR/AIN/HANA/MAGMA так же (MAGMA «TP» = на деле SL −0.16).
+**Корень:** `exchange_sl_order_id` None(STG)/устарел после cancel+replace(HMSTR) → orderId-матч в `_resolve_exit` ломается → fallback symbol+side хватает старый ордер; mark-sanity слепа при mark=None.
+**🔑 ФИКС = positionID** (доказано: каждый ордер BingX несёт `positionID`; вход+SL+TP+перевыставленные = ОДИН positionID; STG вход+реал-выход=`…677023234`, фантом=`…379710466`):
+1. Колонка `position_id` в `simulated_trades` + захват при открытии (`register_trade`; бот уже берёт его в `_resolve_position_client`/`_get_position_id`; ⚠️ casing: позиция `positionId`, ордер `positionID`).
+2. `_resolve_exit` (`position_sync.py:36`) матчит выход по `positionID==trade.position_id`. Устойчив к cancel+replace SL, повторным входам, старым ордерам. time/sl_order_id → лишь fallback.
+3. **Миграция боевой БД** — пересчёт R по реальным выходам (positionID из `allOrders`). Бэкап ПЕРЕД. 34 VST+6 SIM фантомов R>10 только в ote_nested (по всем сигналам больше).
+**🔗 positionID = граница SIM↔VST** (SIM нет positionID → не резолвится с биржи) → кирпич [[exec_sim_split_epic]] #21. Память: [[bug_phantom_exit_resolve]].
+Стенды: `e:/tmp/verify_fakeR_exchange.py` · `probe_order_position_link.py` · `probe_stg_positionid.py`.
+
+### 🔴 OTE-ONLY (DS, DISCUSSION 21:50) — avgR=0.913 ОТРАВЛЕН, пересчитать на честном net
+DS построил compounding (+387%..**+13.8М%**) на avgR=0.913. Проверено (n=2717): медиана +0.42, clamp→MFE +0.739, **top-10 по R ВСЕ фантомы**. Честный gross ~+0.5-0.6, **net ≈ +0.2-0.3R** (и ниже — часть wins=losses). РОЙ 6/6 за Режим А + жёсткий cap. **Любой OTE-ONLY режим/compounding — ТОЛЬКО после fake-R фикса + перемиграции.** arch104=балласт (отключить, +0.06). per-pair max_leverage блокер (50x на альтах 20-25x→reject, DS 22:00). → DS: перезапустить рассчёт на честном net.
+
+### ✅ Сделано эту сессию (Даат, ночь 18-19.06)
+- **SL-reconcile live** проверен: безопасен (place-ошибок 0, откат не нужен), против orphan'ов бессилен by design. REAL/KAT валидация невозможна (стали orphan ДО рестарта). #1 по сути закрыт.
+- **Корень orphan'ов** (рассинхрон БД↔биржа, 2 механизма) → [[orphan_root_dbexch_desync]]. **Чистка: 17 orphan'ов закрыто** (`close_orphans.py --commit`, патч account-aware `_resolve_position_client`). Биржа 50→33, **orphans=0**.
+- **Профилактика кирпич 1**: D-070 alert→auto-close, `config.yaml trading.orphan_autoclose: shadow` + `position_sync._detect_orphans` (hedge-safe). Shadow=zero-risk. ⏳ проверить активен ли в PID 33956 (`[D-070][autoclose][shadow]`; orphans=0 сейчас → лог появится при новом рассинхроне).
+
+### ⏳ Бэклог профилактики (#21, после fake-R)
+- Orphan кирпич 2: **verify-flat** в `_emergency_close_check` (ре-фетч qty≈0 ПЕРЕД close БД; `position_sync.py:222→255` — точный пробел root B).
+- Root A: источник SIM-утечки (SIM-сделка с биржевой позицией — REAL вся история SIM, но позиция на бирже).
+
+### ⚠️ Незакоммичено (tracked) — РАЗДЕЛИТЬ при коммите
+- **Моё (Даат):** `DISCUSSION.md` · `config.yaml` (orphan_autoclose) · `core/exchange/position_sync.py` (D-070 auto-close) · `scripts/close_orphans.py` (account-aware) · `memory/current_state.md`.
+- **DS (НЕ трогать — его контекст):** `core/exchange/bingx_client.py` (get_contract_info per-pair, 22:00) · `core/infra/config_loader.py`+`config_validator.py`+`pydantic_config.py` (DS-325 Ф3 pydantic).
+
+## 📦 АРХИВ прошлого handoff (SL-reconcile ✅ проверен выше) — #21 EXEC-SIM-SPLIT
 
 > Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina после задач.
 > Ветка `arch-128-oko-sm` (запушена, ahead 0). Бот рестартнут 18.06 ~22:30 UTC (PID 31536, sl_reconcile=live).
