@@ -1707,7 +1707,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _allow_entry = False
                             if _atr_tf in ('1h', '4h'):
                                 _allow_entry = True
-                            elif _atr_tf == '15m' and _price_in_ote and _ote_dir == _side:
+                            elif (_atr_tf == '15m' and _price_in_ote and _ote_dir == _side
+                                  and bot.config.get("signal_quality.atr_change_15m_enabled", True)):
+                                # 18.06: 15m atr_change под флагом (edge<комиссий). 1h/4h не затронуты.
                                 _allow_entry = True
                                 logger.info(
                                     "[ATRChange] %s 15m %s в OTE %s — разрешён прямой вход",

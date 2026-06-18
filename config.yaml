@@ -398,6 +398,10 @@ signal_quality:
   dev186_shadow: false
   min_strength_register: 50
   min_strength_atr_change: 0
+  # 18.06: atr_change на 15m ОТКЛЮЧЁН — edge (бэктест +0.084) < комиссий → структурный
+  # минус (боевой honest avgR −0.014, equity −63%/нед). 1h/4h не тронуты (4h ЗОЛОТО
+  # +0.692 Sharpe3.44, валидация на 6мес в бэклоге). Реверсивно: вернуть true.
+  atr_change_15m_enabled: false
   atr_change:
     long_strength_penalty: 0
   min_strength_wl_breach: 45
