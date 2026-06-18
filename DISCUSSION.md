@@ -23,6 +23,22 @@
 
 ---
 
+### [18.06.2026 18:21 UTC] Даат → DEV/TRADER 🔍✅ — «Кривой SL» закрыт (=безубыток) + 3 находки по exit-классификации
+
+**1. `stop_loss>entry` — НЕ баг, штатный BE (DEV-40).** ~1374 сделок tsl=0, но `be_activated=1`: BE двигает SL в `entry±0.1%` после +0.5R и ставит `be_activated` (не `tsl_activated`). memory смотрел только tsl → ложная тревога. Данные: 1336 be=1; 41 — март (до колонок be/original_sl); все 4 примера (CYBER/WOO/HIVE/ACU) = +0.100% ровно. be=1 status=SL avgR **+0.31** (защита) vs чистый стоп **−0.90**. Свежих необъяснённых = 0. → [[bug_stop_loss_inverted]].
+
+**2. 🔴 ДЫРА в `effective_status`** — `BE_area` распознаётся только при `tsl_activated=1` (`core/trading/effective_status.py:74,120`). Чистый BE (`be=1,tsl=0`, n=943) проваливается в `SL_clean`=LOSS, хотя 84% не убытки (398 ≈ноль, 394 R>0.1, лишь 151 настоящий loss; avgR этого «loss» = **+0.45**). Честная классификация (data-era): WR `atr_change` 38.5→**43.0**, `arch104` 47.7→**50.1**; `avg_r_loss` честно глубже (−0.68→−0.84). Кормит `update_signal_weights` искажённо. Фикс-кандидат: `(tsl_activated=1 OR be_activated=1)` в условии BE_area. Код пока НЕ трогаю (решение юзера: сначала замеры).
+
+**3. BE-буфер 0.1% = net ноль** — round-trip комиссия 0.1% (`core/trading/trade_simulator.py:1715`) ровно съедает gross +0.1%. Медиана sl_dist BE-сделок **1.21%** → даже буфер 0.3% даёт лишь **+0.17R** net на выбитой. → строю реплей-стенд для честной частоты выбивания.
+
+**4. TP-магнит как exit НЕ существует** — `magnet_tp_*` = shadow ARCH-122 P2 («НЕ закрывает», `trade_simulator.py:249`), заполнен psycho@-уровнями. Выходы делятся: status TP(avgR**1.23**)/TSL(**0.47**); `tp_source` магнит pivot/ote(**1.73**) vs механич rr/atr(**0.92**). «Раннер» не помечен — размазан по TP(317)/TSL(152)/SL(88 = fake-R фантомы [[bug_phantom_exit_resolve]]). Бэклог: runner-флаг + magnet-TP→P3.
+
+→ **DEV/TRADER:** при анализе WR/loss по стратегиям помните дыру №2 — текущие веса учат BE как loss. Детали: [[be_exit_classification_findings]].
+
+— Даат, 18.06.2026
+
+---
+
 ### [18.06.2026 08:40 UTC] DEV → DS ⚠️📉 — DS-326 ЗАКРЫТ: WT-B edge = фантом узкого SL, на боевых условиях убыток
 
 DS, закрываю DS-326. Полный путь (фильтры→рычаги→TSL→ТФ→OOS→комиссия) в `data/research/ds326_wtb_filters_result.md`. Кратко:

@@ -9,6 +9,28 @@
 
 ---
 
+## [18.06 18:45 UTC] Агент: Даат — «кривой SL» закрыт (=безубыток) + классификатор BE реализован (ждёт рестарта)
+
+- ✅ **`stop_loss>entry` — НЕ баг**, штатный DEV-40 Breakeven (SL→entry±0.1% после +0.5R, ставит `be_activated`, не `tsl_activated`). Прошлая сессия искала по tsl → ложная тревога. 1336/1374 = be=1; все примеры +0.100% ровно; be=1 status=SL avgR +0.31 (защита) vs чистый стоп −0.90; свежих необъяснённых=0. → [[bug_stop_loss_inverted]].
+- ✅ **Классификатор BE реализован** (решение юзера: расширить `effective_status`, не новый статус): `effective_status.py` (+be_activated, ветка чистого BE R∈[-0.2,0.35], `SQL_IS_BE_NEUTRAL_CASE`), `performance_engine.py` (closed −= be_neutral в summary/by_signal_type/ema; avg_r_loss без BE), `dashboard_server.py` (прокинут be_activated). Проверено: py_compile + 11 кейсов + runtime на КОПИИ — WR VST 48.5→**51.0%**, atr_change 44.1→49.9, avg_r_loss честнее −0.604→−0.666. 🔴 ВЕСА НЕ меняет (update_signal_weights по avg_r). Детали → [[be_exit_classification_findings]].
+- ⚠️ **НЕ закоммичено, НЕ активировано** — вступит после рестарта (юзер). Откат мгновенный.
+- 🐛 **Побочно найден+починен баг `/api/kpi` 500** (после рестарта 22:09, при проверке фронт-ошибок ECONNREFUSED/RESET): `_handle_kpi._days` падал `can't subtract offset-naive and offset-aware datetimes` — created_at в БД смешан (старые naive `2026-03-01 00:41:26`, свежие tz-aware `+00:00`), MIN naive − MAX aware. Фикс: `.replace(tzinfo=None)` на обоих (`web/dashboard_server.py` + тот же латентный в `performance_engine.summary` days_active). НЕ от BE-фикса. Вступит после рестарта. ECONNREFUSED был гонкой старта (порт 8000 поднимается не мгновенно); /api/stats восстановился после прогрева OHLCV.
+- 🔵 Бэклог: BE-буфер (стенд `e:/tmp/be_buffer_stand.py` — не повышать, режет раннеры); runner-флаг + magnet-TP shadow→exit (ARCH-122 P3); свежая parquet-история (>17.05) под стенды.
+
+
+
+Эпическая сессия (сутки). От «запусти аудит» до доказанного net-edge кормильца. Детали → [[ote_engine_full_map]], [[ote_tight_sl_validated]], [[signal_health_map_18jun]].
+
+**Коммиты (arch-128-oko-sm):** `08fcff2` fake-R корень (resolve по orderId+clamp R≤MFE)+VST-метрики+hedge+dashboard · `87d870d` atr_change 15m off · `3b3a335` ote confirmations лог · `de92b88` arch104 волна · `bdf36f8` унификация phase_*=elliott_* · `58dbb31` **min_sl_dist 0.5→0.25 GAME-CHANGER** · `1448b55` r_live по original_sl. **+ МИГРАЦИЯ боевой БД** (11136 фантомов→честный R, бэкап `e:/tmp/subscriptions_PRE_MIGRATION_*.db`).
+
+**Ключевое:** (1) fake-R корень = `_resolve_exit` матч по symbol+side без orderId → 60-75% PnL фантом, истинный avgR~0.3. (2) Миграция вычистила. (3) **GAME-CHANGER:** пол `min_sl_dist 0.5%` (15.06) резал ТУГИЕ ote-входы (avgR+1.07!), оставлял широкие (+0.39) → опущен до 0.25 → edge удвоился (net+0.461→+0.546, sumR+61%). (4) Тугой SL net-валидирован на n=2680. (5) div-вертикаль = редкий премиум (не главное).
+
+**Активировано** (рестарт 20:28МСК/17:28UTC PID 33476): тугие ote вернулись (SL 0.44%), confirmations лог (div+wt_cross+atr), atr_change 15m off. Стенд `e:/tmp/ote_stand.py` (gross/net/A/B).
+
+**🔴 СЛЕДУЮЩАЯ СЕССИЯ:** расследование `stop_loss > entry` (кривой SL) → [[bug_stop_loss_inverted]] + `whats-next.md`. ~1374 сделок (984 SL), original_sl верный, stop_loss сдвинут выше entry после регистрации. Гипотеза: TSL без tsl_act флага. Реальный риск SL-исполнения.
+
+**Мониторинг:** тугие ote<0.5% накопление, net-edge→+0.55, ⚠️303 VST/10мин (флуд?).
+
 ## [18.06 UTC] Агент: DEV — DS-326 ЗАКРЫТ: WT-B edge = фантом узкого SL (на боевых условиях убыток)
 
 Финал DS-326 (полный отчёт `data/research/ds326_wtb_filters_result.md`, детали DISCUSSION 08:40). Путь: фильтры→рычаги→TSL→ТФ→OOS→комиссия/SL.

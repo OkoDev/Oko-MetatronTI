@@ -1,5 +1,28 @@
 # What's Next — Handoff
 
+## 🆕🔴 Сессия 18-19.06 (Даат) — СЛЕДУЮЩЕЕ: расследование `stop_loss > entry` (кривой SL)
+
+### ЗАДАЧА новой сессии (реальный риск, важно)
+**Аномалия:** LONG имеет `stop_loss` ВЫШЕ entry (SHORT — ниже), при `tsl_activated=0`.
+- **Масштаб ~1374** (tsl=0): **984 в SL**, 237 EXPIRED, 80 TP, 70 TSL, 3 OPEN.
+- **Паттерн:** `original_sl` ВСЕГДА верный (ниже entry LONG), а `stop_loss` сдвинут ВЫШЕ entry на ~0.05-0.1%. Примеры: CYBER #31300 (entry 0.3462, orig_sl 0.3447✓, stop_loss 0.34655✗), WOO #31308, HIVE #31304, ACU #31259.
+- **Зачем важно:** биржевой SL-ордер может стоять не там → неверное срабатывание/преждевременный выход. Кормит R-взрыв на дашборде (отображение починено `1448b55`, но реальный SL кривой).
+
+**Где копать (точки UPDATE stop_loss):**
+1. TSL: `core/exchange/tsl_updater.py`, `core/trading/tsl_engine.py`, событие `TSL_MOVED {trade_id,old_sl,new_sl}` (Сфера 10). ГИПОТЕЗА №1: TSL двигает stop_loss выше entry (безубыток+), но НЕ ставит `tsl_activated=1` → рассинхрон.
+2. SL-reconcile: `position_sync.py:355-381` — пишет биржевой SL в БД, может неверно.
+3. `grep -rn "UPDATE simulated_trades" core/ bot/ | grep stop_loss` — все точки записи.
+
+**Первый шаг:** при INSERT stop_loss==original_sl (верно) → сдвиг ПОСЛЕ. Найти кто. Тест: grep CYBER в логах за жизнь #31300 → что двигало SL. НЕ фиксить вслепую (ote=ВСЁ).
+
+### ✅ Сделано сессию 18.06 (марафон, ветка arch-128-oko-sm, всё закоммичено)
+`08fcff2` fake-R корень+метрики+hedge+dashboard · `87d870d` atr_change 15m off · `3b3a335` ote confirmations · `de92b88` arch104 волна · `bdf36f8` унификация волны · `58dbb31` **min_sl_dist 0.5→0.25 (GAME-CHANGER, вернул тугие +1.07R)** · `1448b55` r_live по original_sl. **+ МИГРАЦИЯ боевой БД** (11136 фантомов, бэкап `e:/tmp/subscriptions_PRE_MIGRATION_*.db`).
+
+**Активировано на бою** (рестарт 20:28МСК/17:28UTC PID 33476): тугие ote вернулись (SL 0.44%), confirmations логируются, atr_change 15m off. Память: [[ote_engine_full_map]], [[ote_tight_sl_validated]], [[signal_health_map_18jun]], [[bug_phantom_exit_resolve]]. Стенд `e:/tmp/ote_stand.py`.
+**Мониторинг:** накопление тугих ote<0.5%, рост net-edge к +0.55, ⚠️303 VST/10мин (не флуд ли). **Бэклог:** atr_change→4h, ARCH-104 перемайн, div-вертикаль (редка).
+
+───────────── ниже: handoff DS-326 (DEV, другой вектор) ─────────────
+
 ## 🆕 Сессия 18.06.2026 (DEV / Opus 4.8) — DS-326 ЗАКРЫТА (research)
 > Коммиты: `6b2cda1` → `1108201` → `60c06d6` (ветка `arch-128-oko-sm`, НЕ запушено). Боевой код НЕ тронут (чистое исследование, бот не запускался).
 
