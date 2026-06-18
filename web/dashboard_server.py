@@ -488,7 +488,7 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
                 with _sq.connect(db_path, timeout=5) as c:
                     c.row_factory = _sq.Row
                     return [dict(r) for r in c.execute(
-                        "SELECT id,symbol,direction,signal_type,entry_price,stop_loss,take_profit,"
+                        "SELECT id,symbol,direction,signal_type,entry_price,stop_loss,original_sl,take_profit,"
                         "created_at,execution_mode,account_id,tsl_activated,qty,timeframe,regime "
                         "FROM simulated_trades "
                         "WHERE status='OPEN' ORDER BY created_at DESC LIMIT 300").fetchall()]
@@ -523,10 +523,15 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
             # размер ордера (notional $) = qty × текущая цена (или entry если цены нет)
             _qty = float(t.get("qty") or 0)
             t["notional"] = round(_qty * (cur or t.get("entry_price") or 0), 2)
-            e = t.get("entry_price"); sl = t.get("stop_loss")
-            if cur and e and sl and abs(e - sl) > 1e-12:
-                d = 1.0 if (t.get("direction") == "LONG") else -1.0
-                t["r_live"] = round(d * (cur - e) / abs(e - sl), 2)
+            # 18.06: r_live по ORIGINAL_SL (исходный 1R), НЕ текущий stop_loss — он двигается
+            # TSL/reconcile к entry → one_r≈0 → R-взрыв (CYBER −5.78R, ZEC +7.31R на дашборде).
+            # Инвариант r_math: 1R=|entry-original_sl| + clamp_r_smart от sl_dist≈0 артефактов.
+            e = t.get("entry_price"); _osl = t.get("original_sl") or t.get("stop_loss")
+            if cur and e and _osl and abs(float(e) - float(_osl)) > 1e-12:
+                from core.trading.r_math import compute_r, clamp_r_smart
+                _one_r = abs(float(e) - float(_osl))
+                _rl = compute_r(str(t.get("direction") or "LONG"), float(e), float(cur), _one_r)
+                t["r_live"] = round(clamp_r_smart(_rl, float(e), _one_r), 2) if _rl is not None else None
             else:
                 t["r_live"] = None
         # newest-first (снапшот из get_open_trades идёт created_at ASC)

@@ -340,7 +340,7 @@ class PairContextBus:
     # ── Оперативный снапшот открытых сделок (источник для dashboard /api/open) ──
     # Лёгкий операционный набор полей (без features_json и пр.) — ровно то, что нужно дашборду.
     _OPEN_TRADE_FIELDS = (
-        "id", "symbol", "direction", "signal_type", "entry_price", "stop_loss",
+        "id", "symbol", "direction", "signal_type", "entry_price", "stop_loss", "original_sl",
         "take_profit", "created_at", "execution_mode", "account_id", "tsl_activated", "qty",
     )
 
