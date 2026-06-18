@@ -12,7 +12,7 @@ import sqlite3
 import logging
 from typing import Any, Dict, List, Optional
 
-from core.trading.effective_status import SQL_IS_WIN_CASE
+from core.trading.effective_status import SQL_IS_WIN_CASE, SQL_IS_BE_NEUTRAL_CASE
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +62,12 @@ class PerformanceEngine:
                         SUM(CASE WHEN status='TSL'     THEN 1 ELSE 0 END) AS tsl_count,
                         SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired_count,
                         SUM(CASE WHEN status='SL' AND tsl_activated=1 AND R_multiple > 0.10 THEN 1 ELSE 0 END) AS tsl_hidden_count,
+                        SUM({SQL_IS_BE_NEUTRAL_CASE}) AS be_neutral_count,
                         SUM({SQL_IS_WIN_CASE}) AS eff_wins,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r,
                         AVG(CASE WHEN {SQL_IS_WIN_CASE} = 1 THEN R_multiple END) AS avg_r_win,
-                        AVG(CASE WHEN status='SL' AND NOT (tsl_activated=1 AND R_multiple > 0.10) THEN R_multiple END) AS avg_r_loss,
+                        AVG(CASE WHEN status='SL' AND NOT (tsl_activated=1 AND R_multiple > 0.10) AND {SQL_IS_BE_NEUTRAL_CASE} = 0 THEN R_multiple END) AS avg_r_loss,
                         AVG(CASE WHEN status='TSL' OR (status='SL' AND tsl_activated=1 AND R_multiple > 0.10) THEN R_multiple END) AS avg_r_tsl,
                         MIN(created_at) AS first_trade_at,
                         MAX(created_at) AS last_trade_at
@@ -78,8 +79,10 @@ class PerformanceEngine:
                 sl = row["sl_count"] or 0
                 tsl = row["tsl_count"] or 0
                 hidden = row["tsl_hidden_count"] or 0
+                be_neutral = row["be_neutral_count"] or 0
                 eff_wins = row["eff_wins"] or 0
-                closed = tp + sl + tsl
+                # BE_area (нейтрал, net≈0) исключаем из знаменателя — как EXPIRED (DEV-40 безубыток)
+                closed = tp + sl + tsl - be_neutral
                 # DEV-190: WR с учётом скрытых TSL exits (главная метрика)
                 row["win_rate"] = round(eff_wins / closed * 100, 1) if closed else None
                 row["win_rate_raw"] = round((tp + tsl) / closed * 100, 1) if closed else None  # старый расчёт для контроля
@@ -96,8 +99,10 @@ class PerformanceEngine:
                 try:
                     from datetime import datetime as _dt
                     if row.get("first_trade_at") and row.get("last_trade_at"):
-                        t0 = _dt.fromisoformat(row["first_trade_at"])
-                        t1 = _dt.fromisoformat(row["last_trade_at"])
+                        # created_at смешанных форматов (naive + tz-aware) → normalize к naive,
+                        # иначе вычитание падает (тихо в except → days_active=None)
+                        t0 = _dt.fromisoformat(row["first_trade_at"]).replace(tzinfo=None)
+                        t1 = _dt.fromisoformat(row["last_trade_at"]).replace(tzinfo=None)
                         days = max((t1 - t0).days, 1)
                         row["days_active"] = days
                         row["closed_per_day"] = round(closed / days, 1) if closed else 0
@@ -131,6 +136,7 @@ class PerformanceEngine:
                         SUM(CASE WHEN status='TSL' THEN 1 ELSE 0 END) AS tsl_count,
                         SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) AS sl_count,
                         SUM(CASE WHEN status='SL' AND tsl_activated=1 AND R_multiple > 0.10 THEN 1 ELSE 0 END) AS tsl_hidden_count,
+                        SUM({SQL_IS_BE_NEUTRAL_CASE}) AS be_neutral_count,
                         SUM({SQL_IS_WIN_CASE}) AS eff_wins,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN profit_pct END) AS avg_profit_pct,
                         AVG(CASE WHEN status IN ('TP','SL','TSL','EXPIRED') THEN R_multiple END) AS avg_r
@@ -147,11 +153,13 @@ class PerformanceEngine:
                     tsl = d["tsl_count"] or 0
                     sl = d["sl_count"] or 0
                     hidden = d["tsl_hidden_count"] or 0
+                    be_neutral = d["be_neutral_count"] or 0
                     eff_wins = d["eff_wins"] or 0
-                    closed = tp + tsl + sl
-                    # DEV-190: wins / win_rate с учётом скрытых TSL
+                    # BE_area (нейтрал, net≈0) вне знаменателя — как EXPIRED
+                    closed = tp + tsl + sl - be_neutral
+                    # DEV-190: wins / win_rate с учётом скрытых TSL; BE_area исключён из losses
                     d["wins"] = eff_wins
-                    d["losses"] = closed - eff_wins  # SL_clean + SL_slipped + BE_area (без exit_OK)
+                    d["losses"] = closed - eff_wins  # SL_clean + SL_slipped (BE_area вынесен в нейтрал)
                     d["win_rate"] = round(eff_wins / closed * 100, 1) if closed else None
                     d["win_rate_raw"] = round((tp + tsl) / closed * 100, 1) if closed else None
                     d["tsl_hidden_count"] = hidden
@@ -199,9 +207,9 @@ class PerformanceEngine:
             era_clause = "AND json_extract(features_json, '$.data_era') = ?"
             era_params = (data_era,)
 
-        # DEV-190: добавлен tsl_activated для классификации скрытых TSL exits
+        # DEV-190: tsl_activated для скрытых TSL; be_activated для нейтрала безубытка
         sql = f"""
-            SELECT signal_type, status, R_multiple, profit_pct, tsl_activated
+            SELECT signal_type, status, R_multiple, profit_pct, tsl_activated, be_activated
             FROM simulated_trades
             WHERE status IN ('TP','SL','TSL','EXPIRED')
               AND R_multiple IS NOT NULL
@@ -226,10 +234,11 @@ class PerformanceEngine:
             rmult = float(r["R_multiple"]) if r["R_multiple"] is not None else 0.0
             pnl = float(r["profit_pct"]) if r["profit_pct"] is not None else 0.0
             tsl_act = r["tsl_activated"]
+            be_act = r["be_activated"]
             a = agg.setdefault(st, {
                 "signal_type": st,
                 "total": 0, "tp_count": 0, "tsl_count": 0, "sl_count": 0,
-                "tsl_hidden_count": 0,
+                "tsl_hidden_count": 0, "be_neutral_count": 0,
                 "ema_r": None, "ema_pnl": None,
             })
             a["total"] += 1
@@ -242,6 +251,11 @@ class PerformanceEngine:
                 # DEV-190: скрытый TSL exit (status='SL' но R>0.1 при активном TSL)
                 if tsl_act and rmult > 0.10:
                     a["tsl_hidden_count"] += 1
+                # BE_area нейтрал (net≈0): TSL выбит на BE, либо чистый безубыток без TSL
+                elif tsl_act and -0.20 <= rmult <= 0.10:
+                    a["be_neutral_count"] += 1
+                elif (not tsl_act) and be_act and -0.20 <= rmult <= 0.35:
+                    a["be_neutral_count"] += 1
             # EMA init на первой сделке, иначе инкрементально
             if a["ema_r"] is None:
                 a["ema_r"] = rmult
@@ -258,7 +272,9 @@ class PerformanceEngine:
             tsl = a["tsl_count"]
             sl = a["sl_count"]
             hidden = a["tsl_hidden_count"]
-            closed = tp + tsl + sl
+            be_neutral = a["be_neutral_count"]
+            # BE_area (нейтрал, net≈0) вне знаменателя — как EXPIRED
+            closed = tp + tsl + sl - be_neutral
             # DEV-190: wins = TP + TSL_native + TSL_hidden_win
             eff_wins = tp + tsl + hidden
             result.append({
@@ -268,6 +284,7 @@ class PerformanceEngine:
                 "tsl_count":     tsl,
                 "sl_count":      sl,
                 "tsl_hidden_count": hidden,
+                "be_neutral_count": be_neutral,
                 "wins":          eff_wins,
                 "losses":        closed - eff_wins,
                 "win_rate":      round(eff_wins / closed * 100, 1) if closed else None,

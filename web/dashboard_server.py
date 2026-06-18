@@ -443,7 +443,12 @@ async def _handle_kpi(request: web.Request) -> web.Response:
         closed_per_day = None
         if t0t1 and t0t1[0] and t0t1[1] and n:
             from datetime import datetime as _dt
-            days = max((_dt.fromisoformat(t0t1[1]) - _dt.fromisoformat(t0t1[0])).days, 1)
+            # created_at смешанных форматов в БД (старые naive '2026-03-01 00:41:26',
+            # свежие tz-aware '...+00:00') → нормализуем к naive, иначе вычитание падает
+            # ("can't subtract offset-naive and offset-aware datetimes") → 500 на /api/kpi.
+            _t1 = _dt.fromisoformat(t0t1[1]).replace(tzinfo=None)
+            _t0 = _dt.fromisoformat(t0t1[0]).replace(tzinfo=None)
+            days = max((_t1 - _t0).days, 1)
             closed_per_day = round(n / days, 1)
         return web.Response(
             text=json.dumps({
@@ -1431,7 +1436,7 @@ def _exchange_history_compute_sync(db_path: str, days: int) -> str:
                    status, profit_pct, R_multiple,
                    strength, confidence, regime,
                    created_at, closed_at, duration_minutes,
-                   exchange_order_id, tsl_activated
+                   exchange_order_id, tsl_activated, be_activated
             FROM simulated_trades
             WHERE exchange_order_id IS NOT NULL
               AND status IN ('TP','SL','TSL','EXPIRED')
@@ -1445,7 +1450,7 @@ def _exchange_history_compute_sync(db_path: str, days: int) -> str:
     trades = []
     for r in rows:
         ep = r["actual_entry_price"] or r["entry_price"]
-        eff = _eff(r["status"], r["R_multiple"], r["tsl_activated"])
+        eff = _eff(r["status"], r["R_multiple"], r["tsl_activated"], r["be_activated"])
         trades.append({
             "id":              r["id"],
             "symbol":          r["symbol"],
