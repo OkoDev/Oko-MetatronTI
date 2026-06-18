@@ -13,8 +13,9 @@ import pandas as pd, numpy as np
 from ds326_all_filters import adx_value
 from backtest_wt_b_ltf_entry import (
     build_4h_wt, scan_1h_signals, find_ltf_entry, simulate_trade,
-    HIST_1H, HIST_15M, MAX_BARS_SIM,
+    HIST_1H, HIST_15M, MAX_BARS_SIM, ATR_PERIOD, ATR_FACTOR,
 )
+from core.indicators.indicators import calculate_trend
 from core.trading.tsl_engine import compute_hybrid_tsl, breakeven_sl, is_tighter, TSL_PROFILES, TSLProfile
 
 RRS = [2.0, 2.5, 3.0, 4.0]
@@ -61,6 +62,40 @@ def sim_hybrid(df15m, entry_ts, entry, sl, direction, rr,
             dec = compute_hybrid_tsl(direction, entry, c, sl, dur_min, profile=prof)
             if dec.new_sl and is_tighter(direction, dec.new_sl, cur_sl):
                 cur_sl = dec.new_sl
+    last = future["close"].iloc[-1] if len(future) > 0 else entry
+    return round(((last - entry) if LONG else (entry - last)) / one_r, 3)
+
+
+def sim_trend_tsl(df15m, entry_ts, entry, sl, direction, rr, trend_df, tsl_act_r=0.8):
+    """Trend-based TSL: после +tsl_act_r трейлим SL по Supertrend-линии
+    (LONG=trenddown, SHORT=trendup — конвенция _sl_from_trend). is_tighter + side-check.
+    trend_df предрассчитан на всём df15m (Supertrend каузален → без lookahead)."""
+    one_r = abs(entry - sl)
+    if one_r < 1e-9:
+        return 0.0
+    LONG = direction == "LONG"
+    col = "trenddown" if LONG else "trendup"
+    tp = entry + one_r * rr if LONG else entry - one_r * rr
+    future = df15m[df15m.index > entry_ts].iloc[:MAX_BARS_SIM]
+    cur_sl = sl
+    for ts, bar in future.iterrows():
+        h, l, c = bar["high"], bar["low"], bar["close"]
+        if LONG:
+            if l <= cur_sl:
+                return round((cur_sl - entry) / one_r, 3)
+            if h >= tp:
+                return rr
+        else:
+            if h >= cur_sl:
+                return round((entry - cur_sl) / one_r, 3)
+            if l <= tp:
+                return rr
+        cur_r = (c - entry) / one_r if LONG else (entry - c) / one_r
+        if cur_r >= tsl_act_r and ts in trend_df.index:
+            line = trend_df.at[ts, col]
+            if line and line > 0 and is_tighter(direction, line, cur_sl):
+                if (LONG and line < c) or (not LONG and line > c):   # side-check
+                    cur_sl = line
     last = future["close"].iloc[-1] if len(future) > 0 else entry
     return round(((last - entry) if LONG else (entry - last)) / one_r, 3)
 
@@ -207,6 +242,27 @@ def main():
                 arr = [sim_hybrid(e["df15m"], e["entry_ts"], e["entry"], e["sl"],
                                   e["direction"], rr, be_act_r=be, profile=prof) for e in ents]
                 row(f"RR3 {scope} {pname}/{be_lbl}", arr)
+        print()
+
+    print("=== H) Trend-based TSL (Supertrend) vs crude vs off (RR=3) ===")
+    print(HDR)
+    trend_cache = {}
+    for e in entries:
+        s = e["symbol"]
+        if s not in trend_cache:
+            td = calculate_trend(e["df15m"].copy(), atr_period=ATR_PERIOD, factor=ATR_FACTOR)
+            td.index = e["df15m"].index
+            trend_cache[s] = td
+    for scope, ents in (("ALL", entries),
+                        ("SHORT", [e for e in entries if e["direction"] == "SHORT"])):
+        row(f"RR3 {scope} crude",
+            [simulate_trade(e["df15m"], e["entry_ts"], e["entry"], e["sl"], e["direction"], 3.0, use_tsl=True) for e in ents])
+        row(f"RR3 {scope} off",
+            [simulate_trade(e["df15m"], e["entry_ts"], e["entry"], e["sl"], e["direction"], 3.0, use_tsl=False) for e in ents])
+        for act in (0.8, 1.0):
+            arr = [sim_trend_tsl(e["df15m"], e["entry_ts"], e["entry"], e["sl"], e["direction"],
+                                 3.0, trend_cache[e["symbol"]], tsl_act_r=act) for e in ents]
+            row(f"RR3 {scope} trend@{act}", arr)
         print()
 
 
