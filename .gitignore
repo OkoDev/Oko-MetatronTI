@@ -103,6 +103,8 @@ datasets/
 *.tmp
 *.temp
 *.bak
+*.bak*
+*_backup
 *.swp
 *.swo
 *~
