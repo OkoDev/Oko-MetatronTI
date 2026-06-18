@@ -1260,7 +1260,13 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
         _op = result["positions"]
         _unreal = round(sum(float(p.get("unrealized_pnl") or 0) for p in _op), 2)
         _used = round(sum(float(p.get("margin") or 0) for p in _op), 2)
-        _eq = float(result["balance"] or 0)
+        # FIX (18.06): balance может прийти dict ({equity, available, ...}) → float(dict) падал
+        # ("_handle_live error: float() ... not 'dict'", KPI equity/risk не считались). Достаём число.
+        _bal = result["balance"]
+        if isinstance(_bal, dict):
+            _eq = float(_bal.get("equity") or _bal.get("available") or _bal.get("balance") or 0)
+        else:
+            _eq = float(_bal or 0)
         result["kpi"] = {
             "open_count":  len(_op),
             "long":        sum(1 for p in _op if p.get("side") == "LONG"),
