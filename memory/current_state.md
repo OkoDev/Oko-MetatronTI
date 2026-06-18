@@ -17,6 +17,12 @@
 - 🐛 **Побочно найден+починен баг `/api/kpi` 500** (после рестарта 22:09, при проверке фронт-ошибок ECONNREFUSED/RESET): `_handle_kpi._days` падал `can't subtract offset-naive and offset-aware datetimes` — created_at в БД смешан (старые naive `2026-03-01 00:41:26`, свежие tz-aware `+00:00`), MIN naive − MAX aware. Фикс: `.replace(tzinfo=None)` на обоих (`web/dashboard_server.py` + тот же латентный в `performance_engine.summary` days_active). НЕ от BE-фикса. Вступит после рестарта. ECONNREFUSED был гонкой старта (порт 8000 поднимается не мгновенно); /api/stats восстановился после прогрева OHLCV.
 - 🔵 Бэклог: BE-буфер (стенд `e:/tmp/be_buffer_stand.py` — не повышать, режет раннеры); runner-флаг + magnet-TP shadow→exit (ARCH-122 P3); свежая parquet-история (>17.05) под стенды.
 
+### [18.06 ~22:30 UTC] Агент: Даат — #1 SL-reconcile активирован live + git-гигиена + push
+- ✅ **#1 SL-reconcile → LIVE** (commit `0e96325`). Loop УЖЕ был реализован (`position_sync.sync_positions:386-420`, throttle 5мин, reuse не новый loop), стоял `shadow`. Shadow доказал РЕАЛЬНЫЙ риск: REAL/KAT SHORT висели без биржевого SL ~час (18:28→19:17). БД-прокси врал «0 без SL» (`exchange_sl_order_id` от мёртвого ордера). Проверено account-aware: `place_sl_order`/`get_sl_order_id` прокидывают symbol→роутер (`arch96.multiaccount.enabled=true`)→правильный суб (acc2 покрыт); анти-дубликат; зрелый place. Вступит после рестарта → мониторить `[SL-RECONCILE][live]`. Корень #1(б) закрыт; (а)/(в) покрыты loop'ом.
+- ✅ **Git-гигиена**: разобран незакоммиченный слой (12 M + 102 untracked). 5 коммитов: BE-классификатор+kpi-datetime (`bce5d47`), gitignore `*.bak*` (`a6eb622`), NOTIF-TIER2 уведомления (`ceb1380`), роль-инфра+adopt (`1edd2cf`), доки (`ef186d1`). Research-зона DS (93 untracked: scripts/tools/docs) НЕ трогал. **Запушено** на origin/arch-128-oko-sm (ahead 0).
+- ✅ `/api/kpi` datetime-фикс активен (после рестарта closed=30454 WR=40.7% closed_per_day=279.4).
+- 🔜 **#21 EXEC-SIM-SPLIT** — следующий (сводка DEV-52 shadow-логов risk/margin → калибровка → активация). Контекст тяжёлый → лучше свежая сессия.
+
 
 
 Эпическая сессия (сутки). От «запусти аудит» до доказанного net-edge кормильца. Детали → [[ote_engine_full_map]], [[ote_tight_sl_validated]], [[signal_health_map_18jun]].

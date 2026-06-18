@@ -1,25 +1,27 @@
 # What's Next — Handoff
 
-## 🆕🔴 Сессия 18-19.06 (Даат) — СЛЕДУЮЩЕЕ: расследование `stop_loss > entry` (кривой SL)
+## 🆕🔴 Новая сессия (Даат) — #21 EXEC-SIM-SPLIT (+ ПЕРВЫМ проверить SL-reconcile live)
 
-### ЗАДАЧА новой сессии (реальный риск, важно)
-**Аномалия:** LONG имеет `stop_loss` ВЫШЕ entry (SHORT — ниже), при `tsl_activated=0`.
-- **Масштаб ~1374** (tsl=0): **984 в SL**, 237 EXPIRED, 80 TP, 70 TSL, 3 OPEN.
-- **Паттерн:** `original_sl` ВСЕГДА верный (ниже entry LONG), а `stop_loss` сдвинут ВЫШЕ entry на ~0.05-0.1%. Примеры: CYBER #31300 (entry 0.3462, orig_sl 0.3447✓, stop_loss 0.34655✗), WOO #31308, HIVE #31304, ACU #31259.
-- **Зачем важно:** биржевой SL-ордер может стоять не там → неверное срабатывание/преждевременный выход. Кормит R-взрыв на дашборде (отображение починено `1448b55`, но реальный SL кривой).
+> Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina после задач.
+> Ветка `arch-128-oko-sm` (запушена, ahead 0). Бот рестартнут 18.06 ~22:30 UTC (PID 31536, sl_reconcile=live).
 
-**Где копать (точки UPDATE stop_loss):**
-1. TSL: `core/exchange/tsl_updater.py`, `core/trading/tsl_engine.py`, событие `TSL_MOVED {trade_id,old_sl,new_sl}` (Сфера 10). ГИПОТЕЗА №1: TSL двигает stop_loss выше entry (безубыток+), но НЕ ставит `tsl_activated=1` → рассинхрон.
-2. SL-reconcile: `position_sync.py:355-381` — пишет биржевой SL в БД, может неверно.
-3. `grep -rn "UPDATE simulated_trades" core/ bot/ | grep stop_loss` — все точки записи.
+### 🔴 ПЕРВЫЙ ШАГ (validation pending — активировано биржевое действие `0e96325`)
+**Проверить `[SL-RECONCILE][live]`:** `grep -a "SL-RECONCILE\]\[live\]" logs/crypto_bot.log | tail`
+- Ожидание: REAL/USDT SHORT (sl≈0.061912) + KAT/USDT SHORT (sl≈0.005315) получают SL (oid=…) в 1-м цикле reconcile (~5мин после старта).
+- ⚠️ Если ошибки place (account / qty / precision / «No position») → ОТКАТ: `config.yaml trading.sl_reconcile: live → shadow` + рестарт. Loop account-aware (`arch96.multiaccount=true`, роутер по symbol), но live на бою ВПЕРВЫЕ — подтвердить.
+- Чисто выставлены → #1 закрыт окончательно. Loop: `position_sync.sync_positions:386-420` (throttle 5мин).
 
-**Первый шаг:** при INSERT stop_loss==original_sl (верно) → сдвиг ПОСЛЕ. Найти кто. Тест: grep CYBER в логах за жизнь #31300 → что двигало SL. НЕ фиксить вслепую (ote=ВСЁ).
+### ЗАДАЧА: #21 EXEC-SIM-SPLIT (🔴 `docs/BACKLOG_CONSOLIDATED.md` #21)
+**Первый шаг — сводка DEV-52 shadow-логов** (копятся с 18.06):
+`grep -aE "\[DEV-52\]\[(RISK|MARGIN)\]" logs/crypto_bot.log` → частота would_block + распределение risk%/available per-account (acc1/acc2).
+Далее: калибровка порогов (`trading.l3_checker.max_total_risk_pct=10`, `min_available_usdt=5`) → активация (`risk_gate_shadow:false`/`margin_gate_shadow:false` + рестарт, откат мгновенный). Память [[exec_sim_split_epic]]. Полный контекст эпика — в handoff EXEC-SIM-SPLIT ниже.
 
-### ✅ Сделано сессию 18.06 (марафон, ветка arch-128-oko-sm, всё закоммичено)
-`08fcff2` fake-R корень+метрики+hedge+dashboard · `87d870d` atr_change 15m off · `3b3a335` ote confirmations · `de92b88` arch104 волна · `bdf36f8` унификация волны · `58dbb31` **min_sl_dist 0.5→0.25 (GAME-CHANGER, вернул тугие +1.07R)** · `1448b55` r_live по original_sl. **+ МИГРАЦИЯ боевой БД** (11136 фантомов, бэкап `e:/tmp/subscriptions_PRE_MIGRATION_*.db`).
-
-**Активировано на бою** (рестарт 20:28МСК/17:28UTC PID 33476): тугие ote вернулись (SL 0.44%), confirmations логируются, atr_change 15m off. Память: [[ote_engine_full_map]], [[ote_tight_sl_validated]], [[signal_health_map_18jun]], [[bug_phantom_exit_resolve]]. Стенд `e:/tmp/ote_stand.py`.
-**Мониторинг:** накопление тугих ote<0.5%, рост net-edge к +0.55, ⚠️303 VST/10мин (не флуд ли). **Бэклог:** atr_change→4h, ARCH-104 перемайн, div-вертикаль (редка).
+### ✅ Сделано сессию 18.06 вечер (Даат) — 6 коммитов, ЗАПУШЕНО (arch-128-oko-sm)
+- `bce5d47` **классификатор BE** — безубыток вне win_rate (`effective_status` +be_activated → BE_area нейтрал; `performance_engine` closed−=be_neutral) + фикс `/api/kpi` 500 (datetime naive/aware смешан). WR VST 48.5→51.0 (копия). ВЕСА НЕ затронуты (update_signal_weights по avg_r). [[be_exit_classification_findings]].
+- `0e96325` **#1 SL-reconcile LIVE** (loop был shadow, account-aware) — ↑проверить первым шагом.
+- `ceb1380` NOTIF-TIER2 уведомления, `1edd2cf` роль-инфра, `a6eb622` gitignore `*.bak*`, `ef186d1` доки.
+- Расследование «кривого SL» ЗАКРЫТО = штатный безубыток (НЕ баг) [[bug_stop_loss_inverted]]. BE-буфер 0.1% НЕ трогать (стенд `e:/tmp/be_buffer_stand.py`: режет раннеры). Git чист (research-зона DS 93 untracked не трогал).
+**Бэклог:** runner-флаг + magnet-TP shadow→exit (ARCH-122 P3); ARCH-104 перемайн на честном R; свежая parquet-история (>17.05) под стенды; atr_change→4h.
 
 ───────────── ниже: handoff DS-326 (DEV, другой вектор) ─────────────
 
