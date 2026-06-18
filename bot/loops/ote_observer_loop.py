@@ -277,6 +277,12 @@ async def _register_ote_trade(bot, sig):
         "ote_zone_hi": sig.ote_zone[1],
         "ote_unconfirmed": bool(sig.meta.get("unconfirmed")),
         "ote_atr_trend_up": sig.atr_trend_up,
+        # confirmations-лог (18.06): какие подтверждения РЕАЛЬНО сработали (div/fvg_held/vol/
+        # liq_sweep/wt_cross/atr). Превращает слепое пятно в обучающий контур — через дни данных
+        # видно, какое подтверждение несёт edge (особенно div). ПРИНЦИП для ВСЕХ составных
+        # стратегий: логировать сработавшие компоненты (arch104 уже пишет matched_patterns).
+        "ote_confirmations": "+".join(sig.confirmations) if sig.confirmations else "",
+        "ote_conf_score": sig.conf_score,
         "trade_mode": "ote_nested",   # dedup: свой режим
     }
     _ps = sig.meta.get("phase_shadow")    # DEV-226 Ph2 SHADOW: фаза импульса → features_json
