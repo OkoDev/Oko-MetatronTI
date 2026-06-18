@@ -37,8 +37,12 @@ BACKLOG_FILE = os.path.join(os.path.dirname(__file__), "..", "docs", "BACKLOG_CO
 def _resolve_role() -> str:
     """Роль: CLI --role > env AGENT_ROLE > .agent_role файл > DAAT.
 
-    --role задаётся в settings.json КАЖДОГО агента явно и перебивает общий `.agent_role`
-    (который в git и иначе перетирает роль: DS закоммитил .agent_role=DS → hook Даата считал DS).
+    Дизайн (16.06.2026): оба агента (Даат=Claude Code, DS=DeepCode) исполняют ОДИН
+    проектный хук `.claude/settings.json` БЕЗ `--role`. Различие роли — через env:
+      • DS (DeepCode): `AGENT_ROLE=DS` в `~/.deepcode/settings.json` (секция env) — перебивает .agent_role.
+      • Даат (Claude Code): env не задан → берётся `.agent_role` (=DAAT, дефолт) → DAAT.
+    `.agent_role` в git держит ДЕФОЛТ (DAAT), НЕ DS (иначе перетирал бы роль Даата).
+    `--role` оставлен для ручного запуска/отладки (python check_tasks.py --role DS).
     """
     if "--role" in sys.argv:
         try:

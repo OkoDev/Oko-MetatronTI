@@ -104,13 +104,15 @@ def insert_orphan(
                        take_profit, qty, status, strategy_name, strategy_type,
                        sl_source, tp_source, tsl_tf, tsl_activated,
                        exchange_order_id, exchange_sl_order_id, actual_entry_price,
-                       original_sl, created_at)
+                       original_sl, created_at,
+                       signal_type, source_router)
                     VALUES
                       (?, ?, ?, ?, ?,
                        NULL, ?, 'OPEN', 'adopted_orphan', 'SINGLE',
                        'adopted_orphan_fallback', NULL, ?, 0,
                        ?, ?, ?,
-                       ?, ?)
+                       ?, ?,
+                       'adopted_external', 'adopt_orphans')
                     """,
                     (
                         symbol, timeframe, direction, float(entry), float(stop_loss),

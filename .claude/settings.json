@@ -10,7 +10,8 @@
       "Read(//c/Users/yogoru/.claude/**)"
     ],
     "additionalDirectories": [
-      "C:\\Users\\yogoru\\.claude"
+      "C:\\Users\\yogoru\\.claude",
+      "e:\\MTF BOT\\CURSOR\\oko-dashboard"
     ]
   },
   "hooks": {
@@ -31,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe \"e:/MTF BOT/CURSOR/crypto_volume_bot/scripts/check_tasks.py\" --role DAAT"
+            "command": "C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe \"e:/MTF BOT/CURSOR/crypto_volume_bot/scripts/check_tasks.py\""
           }
         ]
       }
