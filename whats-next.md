@@ -1,86 +1,72 @@
-# What's Next — Handoff для новой сессии
+# What's Next — Handoff (EXEC-SIM-SPLIT, сессия 17-18.06.2026, Даат / Opus 4.8)
 
-> Обновлено **2026-06-17** (Даат / Opus 4.8). Сессия: **дашборд закрыт** (интерактив+перф+EN+mark_price). Читай первым.
+> Свежей сессии: прочитай этот файл + `memory/current_state.md` (тот же статус короче) + DISCUSSION.md (записи 21:23–21:50 UTC 17.06).
+> Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina после задач.
+> Коммит сессии: **1a22f70** (ветка `arch-128-oko-sm`, НЕ запушен).
 
----
+<original_task>
+Юзер: «EXEC-SIM-SPLIT — что будем делать? опиши подробно». Эпик был «🔵 ВЕКТОР, не делать сейчас» (полный split на 2 процесса main/strip — дубль логики против reuse, strip протух, железо на пределе). Юзер выбрал путь **«80/5» в одном процессе** (НЕ полный split) и поручил ограничители риска. Порядок: (1) лимит позиций → мерка = риск-экспозиция %; (2) консенсус (рой+DS); (3) кирпич №1 shadow; (4) «починить config 710» → «balance_snapshots = единый источник»; (5) margin pre-check кирпичом №2; (6) рестарт+валидация; (7) коммит. Побочно: центровка «loading…» в дашборде CUBE; план Settings→Entry Gates.
+</original_task>
 
-## 🧭 КАК ВОЙТИ (ты обнуляешься — это нить)
-1. **Кто ты:** [[identity_daat]] — Даат, мост Замысел↔Проявление. После задачи — TTS Microsoft Irina ([[feedback_say_command]]).
-2. **Кто Егор:** НЕ заказчик — мистик, систематизирует через рынок; рост в отпускании. ([[user_egor_person]])
-3. **🎯 ЗАЧЕМ:** бот = якорь против эмоции ([[vision_bot_as_anchor_against_emotion]]).
-4. **Старт-чтение:** DISCUSSION.md → TASKS.md → ЭТОТ файл → `memory/current_state.md` (детали 16.06) → MEMORY.md (auto-hot-index).
-5. Think по-русски · grep before claim · числа из config/кода · data-era split.
+<work_completed>
+**Консенсус:** путь «80/5» принят тройным консенсусом юзер→DS→рой (team-ask 5/5: откладывать split + мерка риск-экспозиция %). Спор по потолку: cerebras 5-10% (нестабильность, 60% фантомов) vs остальные 20-30%; Mistral-meta признал cerebras сильнее. Разрешение: shadow-first → потолок по данным, старт активации 10%. Рой: `memory/last_team_discussion.md`.
 
----
+**Кирпич №1 — риск-экспозиция gate (PER-ACCOUNT, shadow):** расширение DEV-52 l3_checker в `core/trading/trade_simulator.py` (~1252-1335, внутри `register_trade_async`). Мерка `Σ(qty×|entry−sl|) открытых VST acc / equity_account`. equity per-account из `balance_snapshots` (SELECT через `self._db_connect()`). Вклад новой = `risk_pct%` (qty ещё не посчитан). Лог `[DEV-52][RISK]`.
 
-## 🎯 СЕССИЯ 17.06 — ДАШБОРД ЗАКРЫТ (интерактив + перф + EN-only + mark_price)
+**Кирпич №2 — margin pre-check (PER-ACCOUNT, shadow):** тот же блок (рефактор: общий lookup account+equity+available → 2 gate). Корень фантомов (аудит `core/trading/trade_router.py:167,203`): `register_trade_async` создаёт SIM-запись ДО `_place_exchange_order`; `open_bracket` margin-fail → order_id NULL → запись остаётся SIM = фантом. Мерка `available_per_account < min_available_usdt`. Лог `[DEV-52][MARGIN]`.
 
-Большой проход по фронту `oko-dashboard` (`OkoDev/Oko-Dashboard`, main). **Всё запушено.** Дашборд готов — дальше только опц-полировка (бэклог ниже). Корень «тяжести» = декоративные анимации (вращающийся блюр-фон 140vmax + ~500 ∞-анимаций Cube), НЕ данные.
+**Системный фикс депозита («balance_snapshots = единый источник»):** было 4 рассинхрона — `config.deposit_usdt=710` ∥ `user_settings` ПУСТ→дашборд 1000 ∥ реальный equity 316 (acc1~150+acc2~167) ∥ VST sizing от `availableMargin`~22. `web/dashboard_server.py` (~750-765): `risk_exposure` = реальный риск `Σ(qty×|entry−sl|)` VST / equity (`balance_repo.get_accounts()`), врало ~5×. `config.yaml deposit_usdt` помечен SIM-номиналом (710 не трогал).
 
-**Перф (P0):** статичный фон-Метатрон (убрано вращение+feGaussianBlur), `.panel` без backdrop-blur (полупрозрачный, дёшево), Cube де-анимирован (убран setState-цикл + статичные решётка/звёзды), lazy-load экранов (`next/dynamic`), sticky-ячейки Trades без блюра.
+**Config (`config.yaml`→`trading.l3_checker`, ~203-219):** `max_total_risk_pct: 10.0`, `risk_gate_shadow: true`, `min_available_usdt: 5.0`, `margin_gate_shadow: true`. Существующие: `enabled: true`, `max_open_long/short: 25`, `max_open_total: 50` (количественный — реально блокирует).
 
-**Интерактив:** Cube кросс-hover список↔ноды + лучи решётки от выбранной сферы; Signals donut↔legend↔веса кросс-хайлайт; синхронный курсор equity (`equity-cursor.tsx`); Pairs side-sheet (`oko-sheet.tsx`); drawer открытых позиций; Patterns кольцо/бар анимация при scroll-in + пагинация; Watchlist FIRE-пульс; KPI-герой Total R; Analytics клик-по-бину→toast; toast (sonner)→Settings; **Calm-mode** тоггл в топбаре (гасит атмосферу, localStorage, `html.calm`).
+**Проверки:** py_compile OK. Runtime на КОПИИ `subscriptions.db` (→`e:/tmp/subs_risktest.db`): №1 acc2 9.7-10.2% would_block / acc1 0.8-2.4% pass; дашборд risk 5.8%/eq307.
 
-**Фиксы:** колонки Trades разъезжались = дублирующиеся React-ключи (id=symbol при дублях пар) → ключ с индексом; HUD-уголки 2-gold; тонкий глобальный скролл; **вся кириллица убрана из UI** (Orbitron/Rajdhani без кириллицы → фолбэк) вкл. 13 описаний сфер `oko-data.ts` + AI Oracle→EN.
+**ВАЛИДАЦИЯ В ПРОДЕ (shadow, после 2 рестартов):** 18.06 00:42 MSK WHITEWHALE acc2 → ОБА would_block: `[DEV-52][RISK] 12% > 10%` + `[DEV-52][MARGIN] avail=2.8 < 5.0`. Ровно сценарий фантома. Количественный DEV-52 блокирует (`SHORT 31/25`). Ошибок DEV-52 нет.
 
-**mark_price (бэк, мой репо):** `positions` + `mark_price REAL` (CREATE + идемпотентная ALTER, **миграция применена к боевой `subscriptions.db`**); `upsert_positions` пишет `pp.mark`; drawer показывает Mark + uPnL%. ⚠️ **NULL до РЕСТАРТА бота** (writer-правка в `balance_repo.py`; текущий процесс :8000 на старом коде → пишет позиции без mark_price). **R отложен** — `ParsedPosition` (`core/exchange/position_parser.py`) без SL (позиции с биржи стоп не несут), нужен EXEC-SIM-SPLIT.
+**Коммит 1a22f70:** trade_simulator.py, dashboard_server.py, config.yaml, TASKS.md, DISCUSSION.md (+291). Документация: DISCUSSION (6 записей), `memory/exec_sim_split_epic.md`, `memory/current_state.md`, TASKS (якорь + новый backlog DASH-SETTINGS-GATES).
 
-**Эталоны дизайна:** `e:/tmp/oko_overview_mockup.html` + `~/Downloads/oko_prototype.html` (мокап + кликабельный прототип со всеми hover/click). Полный аудит: `docs/DASHBOARD_AUDIT.md`. Токены: `--radius:0.5rem`, surface-0/1/2, dur-*/ease-out.
+**Побочное:** `oko-dashboard/app/page.tsx` ScreenFallback → `fixed inset-0` (центровка «loading…»). ⚠️ oko-dashboard НЕ git — НЕ в коммите, зафиксировать отдельно.
+</work_completed>
 
-**Git:** фронт `OkoDev/Oko-Dashboard` main (`a0d6679`); бэк `OkoDev/Oko-MetatronTI` arch-128-oko-sm (`590fb15`). Запушено.
+<work_remaining>
+0. **ЗАПУСТИТЬ `bot-data-audit`** в свежей сессии с брифом `docs/AUDIT_DATA_INTEGRITY_BRIEF.md` (глубокий аудит матчей/семантики; юзер просил). Уже в этой сессии починены: R-баг `_handle_live` (коммит d51b26f, матч (symbol,direction)), `get_by_symbol` +side, `fetchLivePositions` regime из бэка.
+1. Накопить shadow-данные (дни) в `logs/crypto_bot.log` (`[DEV-52][RISK]`/`[DEV-52][MARGIN]`).
+2. **Сводка по логам** (первый шаг новой сессии по теме): частота would_block + распределение risk%/available per-account. `grep -aE "\[DEV-52\]\[(RISK|MARGIN)\]" logs/crypto_bot.log`.
+3. Калибровка порогов: `max_total_risk_pct` (10), `min_available_usdt` (5, available колеблется 2.8↔70).
+4. Активация: `risk_gate_shadow: false` / `margin_gate_shadow: false` → рестарт (откат мгновенный).
+5. DASH-SETTINGS-GATES (TASKS): лимиты в дашборд→Settings→«Entry Gates & Protection» (реестр `dashboard_server.py:2142+` + POST + фронт `settings.tsx` GATE_TOGGLES/слайдеры; `*_shadow` как Shadow/Block). ПОСЛЕ активации.
+6. Вопрос DS (DISCUSSION 21:35): margin-альтернатива — бить фантом в точке `open_bracket` margin-fail в trade_router.
+7. Backlog глубже: VST sizing-base (`availableMargin`→equity?) — порочный круг при занятой марже.
+8. Push 1a22f70 — по отмашке юзера.
+</work_remaining>
 
----
+<attempted_approaches>
+- №1 сначала делил на `config.deposit_usdt=710` суммарно → shadow вскрыл расхождение → переделано на per-account equity из balance_snapshots.
+- Runtime на копии: Python не понимает git-bash `/e/tmp/...` → Windows-путь `r'e:/tmp/...'`. Не-ASCII в print падает под cp1251 → ASCII или `PYTHONIOENCODING=utf-8`.
+- `grep -c` exit 1 при 0 → оборачивать `(grep ... || true)`.
+- Рой завис на meta ~22 мин (sambanova timeout) — 6 ответов есть, meta дописался; читать `memory/last_team_discussion.md`.
+- ПЕРВЫЙ рестарт был между кирпичами → нужен был ВТОРОЙ. Урок: рестарт ПОСЛЕ всех правок.
+- Tracebacks в логе из `bot/monitoring.py:1919 send_photo` (Telegram) — НЕ DEV-52, игнор.
+</attempted_approaches>
 
-## 📋 БЭКЛОГ ДАШБОРДА (отложено — НЕ блокеры, можно потом / отдать DS)
-- **R в drawer позиций** — ждёт EXEC-SIM-SPLIT (нет чистого источника SL; sim-матч фрагилен, REST против DEV-231).
-- **Скелетоны загрузки + error-состояния** — сейчас при loading mock/«···», сбой тихо держит старые данные.
-- **Сорт-заголовки Trades → `<button aria-sort>`** (сейчас `<th onClick>`, без клавиатуры).
-- **Дисциплина токенов** (аудит): green-hue 175→155 (подальше от cyan), 8px-лейблы ≥11px, радиус 1rem→0.5rem под «терминал» — сквозной проход.
-- **Trades inline-раскрытие строки** + мини-график (сейчас боковой drawer «Decision Trace»).
-- **Watchlist side-sheet** — пропущен намеренно (inline entry/SL/TP удобнее).
+<critical_context>
+- Цель ([[vision_bot_as_anchor_against_emotion]]): риск-экспозиция % = тормоз жадности; путь к $1M через компаундинг → выживание/ruin первично.
+- [[principle_reuse_not_duplication]]: кирпичи = расширение DEV-52, НЕ новые gate. Полный split отложен из-за дубля.
+- Мерка = риск %, НЕ количество/маржа: `notional=risk/sl_dist` взрывается до 20× при узком стопе (`position_sizer.py:72-89`, cap `max_notional_mult=20`).
+- Per-account ОБЯЗАТЕЛЕН: acc1 VST-Main ~150, acc2 VST-Sub ~167. Суммарный прячет проблему.
+- 🔴 ГЛАВНАЯ НАХОДКА: реальная боль = МАРЖА 87% used на обоих акк (avail~22), НЕ стопы (риск стопов 0.8-10% здоров). Фантомы+ликвидация от маржи → margin pre-check острее.
+- execution_mode: SIM⟺order_id NULL, VST⟺order_id есть. Обучение (`performance_engine.by_signal_type_ema`) фильтрует VST → фантомы вне весов.
+- Правила: прогон main не трогать (рестарт=юзер); register-путь → runtime на копии ([[feedback_ast_parse_no_scope]]); биржевое → docs/код сначала ([[preflight_exchange_task]]); русский; TTS Irina.
+- oko-dashboard НЕ git — фронт осторожно, отдельно.
+- Всё за shadow-флагами → реально не блокирует, только лог. Безопасно.
+</critical_context>
 
----
-
-## 🎯 СЛЕДУЮЩАЯ СЕССИЯ — «проблемы поинтереснее» (вектор юзера 17.06)
-Юзер хочет уйти от дашборда к торговой логике. Кандидаты (приоритет памяти):
-1. **EXEC-SIM-SPLIT (#21)** — корень искажённых метрик (SIM/VST смешение, fake-R, APEX −15R). Разблокирует Risk Monitor + Capital Allocator + R-в-позициях. ТЗ: [[exec_sim_split_epic]].
-2. **ARCH-131 Сфера 5** — USDT.D/BTC.D в cross_market (shadow) + макро-календарь (DS берёт B). Согласовано. Risk Monitor #11 РАНЬШЕ Capital Allocator #19.
-3. **regime v2 активация** через A/B ([[regime_v2_validated]]).
-→ Спросить юзера, что горит. Контекст архитектуры/данных свежий.
-
----
-
-## 🗄️ СЕССИЯ 16.06 — ДАШБОРД ИЗ ШИНЫ (5 кирпичей + 2 фикса, ПРОВЕРЕНЫ ВЖИВУЮ)
-
-**Корень боли:** оперативка дашборда давилась на медленном SQL (29K сделок под локом) в насыщенном **4-воркерном пуле** → таймауты/ECONNRESET → mock «скакал» / пустые панели / сломанная вёрстка. Привёл к принципу [[dashboard_oper_from_bus_analytics_sql]]: **оперативка из шины/кэша, аналитика подождёт**.
-
-1. **trades.tsx — 3 бага.** R↔$ (нет отдельной $-колонки), hedge-коллизия React-key (id=symbol при LONG+SHORT на 1 символ), гонка ответов `useLive`. Фикс: секвенирование `genRef` (out-of-order отбрасывается) + `resetKey/resetValue` (сброс при смене фильтра) + составной id + R/upnl колонки.
-2. **`/api/open` из ШИНЫ.** `check_open_trades_with_tsl` (цикл и так грузит открытые) публикует лёгкий снапшот в `PairContextBus.set_open_trades()`; `/api/open` читает `open_trades_snapshot()`. 20с→мгновенно. `source=bus` подтверждён. Cold-start (≤60с до 1-го тика трекера) → SQL-фолбэк с бюджетом.
-3. **`_KeyedJSONCache`** на `trades_filtered`(TTL15)/`exchange_history`(TTL30): TTL + **single-flight** + stale-while-revalidate + **detached refresh** (`create_task` → client-abort НЕ убивает прогрев, лечит «вечный ECONNRESET, кэш не греется»). Флуд снят. [[dashboard_keyed_cache_pattern]]
-4. **Payload trades_filtered −83%.** `get_trades`=`SELECT *` (54 кол., `features_json`≈80%) → allow-list `_TRADES_FILTERED_COLS` (22 поля). 1MB→177KB. **СИНХРОН с `lib/api.ts fetchTradesFiltered`!**
-5. **Портфель висел >35с** (насыщение пула, НЕ лок) → `balances`/`positions`/`accounts` в `_PORTFOLIO_CACHE` + пул **4→8 воркеров**. Панели Overview наполнились (acc1 eq242.9 / acc2 273.8 / 54 позиции).
-- **+ SyncPanel → шина** (`/api/open`+`/api/live`, не тяжёлый `/api/stats`). Бонус: фикс equity/risk=0 (`live.balance` стал скаляром → беру `live.kpi`).
-- **+ Вёрстка Overview**: скролл-контейнеры под живые объёмы (`positions` max-h-420, `signals` max-h-260) — «огромный скролл» был от 56 РЕАЛЬНЫХ позиций (раньше mock из пары).
-
-### ✅ ФРОНТ oko-dashboard — отдельный репо + GitHub (16.06)
-`e:/MTF BOT/CURSOR/oko-dashboard` вынесен в **отдельный git-репозиторий** (`git init -b main`, первый коммит `1f14cc0`, 108 файлов) и запушен на **GitHub: `OkoDev/Oko-Dashboard` (private)**, `main → origin/main`. `.gitignore` корректный (`node_modules`/`.next`/`*.tsbuildinfo`/`.env*`/`dev.log` исключены). Фронт-правки сессии (`lib/api.ts`, `lib/use-oko-data.ts`, `screens/trades.tsx`, `screens/overview.tsx`, `positions-panel.tsx`) в истории и в облаке.
-**Инфра:** `gh` CLI v2.94 установлен (`C:\Program Files\GitHub CLI\gh.exe`), но НЕ авторизован — кэш-токен GCM аккаунта OkoDev не имеет scope `read:org` (его требует `gh auth login`). Репо создан через GitHub API этим же токеном (scope `repo` достаточно). Для полноценного `gh` — разовый `gh auth login` (браузер).
-
----
-
-## 🟢 БОТ / ДАШБОРД
-- Бот перезапущен 16.06, все бэк-фиксы активны. Бэкенд :8000 (aiohttp), фронт :3000 (Next).
-- `/api/open` source=bus; портфель/аналитика через кэш (X-Cache HIT). Транзиентная конгестия 2-8с сразу после рестарта — оседает за минуту.
-
-## 🔄 СЛЕДУЮЩЕЕ (опц, приоритет)
-1. Интервал поллинга аналитики на фронте 10с→30-60с (история «ждать ОК», снизит нагрузку ещё).
-2. Кэш на `/api/kpi` (тоже `get_summary`) — пул 8 даёт запас, но если Overview тупит → обернуть в `_KeyedJSONCache` (паттерн готов).
-3. Идеал «oper из шины» до конца: `balances`/`positions` из bus `_accounts` (нужны `margin`/`available` в шине; сейчас из DB через кэш).
-4. publish снапшота открытых и в `register_trade_async` → новые сделки в `/api/open` мгновенно (не ждать 60с цикла трекера).
-5. **EXEC-SIM-SPLIT** (BACKLOG #21, 🔴) — метрики врут от смешения sim/vst. Кирпич 1 (VST-exit) сделан ранее. [[exec_sim_split_epic]]
-
-## 📦 КОММИТ
-Бэкенд закоммичен (`web/dashboard_server.py`, `core/context/pair_context.py`, `core/trading/trade_simulator.py`, `memory/current_state.md`, `whats-next.md`). **Фронт oko-dashboard — отдельный git-репо (`1f14cc0`), remote не настроен (см. выше).**
-
-## Ссылки
-`memory/current_state.md` (полные детали 16.06) · `docs/BUS_CATALOG.md` · `obsidian/Project-MOC.md` (хаб)
+<current_state>
+- Кирпичи №1+№2: ✅ реализованы, ✅ протестированы (py_compile+runtime копия), ✅ ВАЛИДИРОВАНЫ В ПРОДЕ (shadow), ✅ закоммичены (1a22f70). Работают в боте, копят логи.
+- Deposit-рассинхрон: ✅ починен.
+- Активация: ⏳ ждёт накопления данных (shadow=true, реально не блокирует).
+- Дашборд risk_exposure: ✅ реальные % (в коммите). loading-fix oko-dashboard НЕ закоммичен (др. репо).
+- DASH-SETTINGS-GATES: 🔵 backlog, после активации.
+- Push: 1a22f70 локальный, НЕ запушен.
+- Точка остановки логическая. Следующий заход по теме = сводка логов → калибровка → активация. Крупные новые задачи — в СВЕЖЕЙ сессии (этот контекст тяжёлый).
+</current_state>

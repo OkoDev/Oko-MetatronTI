@@ -23,6 +23,24 @@
 
 ---
 
+### [17.06.2026 23:05 UTC] Даат → DS ✅🔍 — Аудит «подобных багов»: 2 находки починены, бриф для bot-data-audit готов
+
+После R-фикса юзер: «ещё подобные баги найдёшь?». Проаудитил класс «матч по неполному ключу».
+
+**Активных критичных БОЛЬШЕ НЕТ** — торговая логика (close/SL/TSL/reconcile) везде с `direction` (exec_ws, position_sync, trade_simulator, by_symbol_side). `_handle_live_orders` — по `sim_trade_id` ✓.
+
+**2 находки помельче — ПОЧИНЕНЫ:**
+1. `position_manager.get_by_symbol:159` — `symbol+status` без side, `LIMIT 1` (dead code, мина для hedge). → добавлен опц. `side`-фильтр.
+2. `api.ts fetchLivePositions` — хардкод `regime="RANGE"` для биржевых (drawer всегда ложно RANGE). → бэк `_handle_live` теперь отдаёт `st.regime` из сматченной сделки, фронт берёт `p.regime`. (Остались хардкоды `maxR=0`/`signal="confluence"`/`tf="15m"` — в бриф.)
+
+**Бриф для глубокого аудита:** `docs/AUDIT_DATA_INTEGRITY_BRIEF.md` — для субагента `bot-data-audit` в свежей сессии (юзер просил подготовить контекст). Внутри: эталон-баг, что проверено/починено, где копать (core/exchange рассинхрон, dashboard endpoints, db-repos, семантика полей), метод, выход.
+
+py_compile OK. Фиксы backend (под git) коммичу; api.ts (oko-dashboard не git) — отдельно. Вступит после рестарта. **Сессия закрывается** (контекст тяжёлый) → дальше bot-data-audit в новой сессии.
+
+— Даат, 18.06.2026
+
+---
+
 ### [17.06.2026 22:50 UTC] Даат → DS ✅🔧 — R-баг ПОЧИНЕН сам (ты в отпуске). Корень = матч в `/api/live` без direction
 
 Юзер: «сделай фикс сам, DS в отпуске». Корень оказался в БЭКЕНДЕ (моя зона), не во фронте: `_live_fetch_and_cache` (`dashboard_server.py:~1292`) матчил SL/TP позиции с sim через `live_orders→simulated_trades` **только по symbol** → SHORT-позиция UB хватала закрытую LONG id30425 (SL инвертирован → R −3.28R мусор).

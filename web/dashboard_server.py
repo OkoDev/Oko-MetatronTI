@@ -1295,7 +1295,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                     # +свежесть → приоритет живой sim над zombie (live_orders.sim_trade_id мост сохранён).
                     rows = _conn.execute(
                         f"SELECT lo.symbol, st.direction, st.stop_loss, st.take_profit, "
-                        f"st.tsl_activated, st.tsl_tf "
+                        f"st.tsl_activated, st.tsl_tf, st.regime "
                         f"FROM live_orders lo "
                         f"JOIN simulated_trades st ON lo.sim_trade_id = st.id "
                         f"WHERE lo.status='OPEN' AND lo.symbol IN ({ph}) "
@@ -1322,6 +1322,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                                 "take_profit": tp,
                                 "tsl_activated": bool(row["tsl_activated"]),
                                 "tsl_tf": row["tsl_tf"],
+                                "regime": row["regime"],   # FIX (18.06): реальный regime сделки, не хардкод RANGE на фронте
                             }
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
@@ -1335,6 +1336,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 pos["take_profit"] = st.get("take_profit")
                 pos["tsl_activated"] = st.get("tsl_activated", False)
                 pos["tsl_tf"] = st.get("tsl_tf")
+                pos["regime"] = st.get("regime")   # реальный regime сматченной сделки (None если нет)
 
         result["error"] = _err
 

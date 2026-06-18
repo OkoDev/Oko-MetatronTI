@@ -156,13 +156,27 @@ class PositionManager:
             ).fetchall()
             return [LiveOrder(tuple(r)) for r in rows]
 
-    def get_by_symbol(self, symbol: str, status: str = STATUS_OPEN) -> Optional[LiveOrder]:
-        """Первая позиция по символу с данным статусом."""
+    def get_by_symbol(self, symbol: str, status: str = STATUS_OPEN,
+                      side: Optional[str] = None) -> Optional[LiveOrder]:
+        """Первая позиция по символу с данным статусом.
+
+        side (LONG/SHORT) — фильтр стороны для hedge-символов. БЕЗ него при двух
+        позициях на символе (LONG+SHORT) вернётся случайная (свежайшая) — мина для
+        hedge (можно закрыть/изменить не ту сторону). Передавай side в торговых путях.
+        """
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM live_orders WHERE symbol=? AND status=? ORDER BY created_at DESC LIMIT 1",
-                (symbol, status),
-            ).fetchone()
+            if side:
+                row = conn.execute(
+                    "SELECT * FROM live_orders WHERE symbol=? AND status=? AND side=? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (symbol, status, side),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM live_orders WHERE symbol=? AND status=? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (symbol, status),
+                ).fetchone()
             return LiveOrder(tuple(row)) if row else None
 
     def get_orphans(self) -> List[LiveOrder]:
