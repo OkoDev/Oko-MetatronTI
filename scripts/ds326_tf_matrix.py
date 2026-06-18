@@ -19,8 +19,12 @@ NATIVE = {"5m": "data/history/5m", "15m": "data/history/15m", "1h": "data/histor
 RESAMPLE_RULE = {"4h": "4h", "1d": "1D"}
 CONTEXT_OF = {"1h": "4h", "4h": "1d"}
 RANK = {"5m": 0, "15m": 1, "1h": 2, "4h": 3}
+TF_MIN = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}   # минут в баре
 ADX_MAX = 25.0
 RR = 3.0
+# Нормировка окон по ВРЕМЕНИ (а не фикс-барам): базис = 20 баров×15m / 300 баров×15m
+WINDOW_HOURS = 5.0     # окно поиска LTF-входа после сигнала
+SIM_HOURS = 75.0       # горизонт симуляции сделки
 
 
 def load_tf(symbol: str, tf: str, cache: dict):
@@ -58,16 +62,20 @@ def run_cell(symbol: str, sig_tf: str, entry_tf: str, cache: dict) -> list:
     if df_sig is None or df_entry is None or len(df_sig) < 80:
         return []
     wt_ctx = htf_wt(load_tf(symbol, CONTEXT_OF[sig_tf], cache))
+    em = TF_MIN[entry_tf]
+    win_bars = max(3, round(WINDOW_HOURS * 60 / em))     # окно входа в барах вход-ТФ
+    sim_bars = round(SIM_HOURS * 60 / em)                # горизонт симуляции в барах вход-ТФ
     rows = []
     for sig in scan_1h_signals(df_sig, wt_ctx):
         if sig["kind"] == "cross":
             continue
         if adx_value(df_sig, sig["ts"]) >= ADX_MAX:
             continue
-        ltf = find_ltf_entry(df_entry, sig["ts"], sig["direction"], sig["os_"], sig["ob"], LTF_WINDOW)
+        ltf = find_ltf_entry(df_entry, sig["ts"], sig["direction"], sig["os_"], sig["ob"], win_bars)
         if not ltf:
             continue
-        R = simulate_trade(df_entry, ltf["ts"], ltf["entry"], ltf["sl"], sig["direction"], RR, use_tsl=True)
+        R = simulate_trade(df_entry, ltf["ts"], ltf["entry"], ltf["sl"], sig["direction"],
+                           RR, use_tsl=True, max_bars=sim_bars)
         rows.append({"dir": sig["direction"], "R": R})
     return rows
 
@@ -85,7 +93,8 @@ def main():
     syms = sorted(set(p.stem for p in Path(NATIVE["1h"]).glob("*.parquet")) &
                   set(p.stem for p in Path(NATIVE["15m"]).glob("*.parquet")) &
                   set(p.stem for p in Path(NATIVE["5m"]).glob("*.parquet")))[:45]
-    print(f"ТФ-матрица wt_b ADX<25, RR={RR}, TSL=crude | пар={len(syms)}\n")
+    print(f"ТФ-матрица wt_b ADX<25, RR={RR}, TSL=crude | пар={len(syms)}")
+    print(f"Окна НОРМИРОВАНЫ по времени: вход={WINDOW_HOURS}ч, симуляция={SIM_HOURS}ч\n")
 
     cells = [(s, e) for s in ("1h", "4h") for e in ("5m", "15m", "1h") if RANK[e] < RANK[s]]
     hdr = f"{'сигнал→вход':<16s} {'scope':<6s} {'n':>4s} {'avgR':>7s} {'WR':>6s} {'Sh':>6s} {'sumR':>7s}"

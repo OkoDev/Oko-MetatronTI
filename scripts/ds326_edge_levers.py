@@ -15,7 +15,7 @@ from backtest_wt_b_ltf_entry import (
     build_4h_wt, scan_1h_signals, find_ltf_entry, simulate_trade,
     HIST_1H, HIST_15M, MAX_BARS_SIM,
 )
-from core.trading.tsl_engine import compute_hybrid_tsl, breakeven_sl, is_tighter, TSL_PROFILES
+from core.trading.tsl_engine import compute_hybrid_tsl, breakeven_sl, is_tighter, TSL_PROFILES, TSLProfile
 
 RRS = [2.0, 2.5, 3.0, 4.0]
 ADX_MAX = 25.0
@@ -26,10 +26,11 @@ WTB_PROFILE = TSL_PROFILES.get("wt_b", TSL_PROFILES["default"])
 
 
 def sim_hybrid(df15m, entry_ts, entry, sl, direction, rr,
-               be_act_r=0.5, tsl_act_r=0.8):
-    """Воспроизводит боевой TSL wt_b: BE@+0.5R, hybrid TSL@+0.8R, default-профиль.
+               be_act_r=0.5, tsl_act_r=0.8, profile=None):
+    """Воспроизводит боевой TSL wt_b: BE@be_act_r, hybrid TSL@tsl_act_r, заданный профиль.
     mfe_atr НЕ передаётся (как в бою) → gear из current_price. Порядок intrabar SL→TP→TSL
-    как в crude simulate_trade (честное сравнение)."""
+    как в crude simulate_trade (честное сравнение). be_act_r=99 → BE выключен."""
+    prof = profile if profile is not None else WTB_PROFILE
     one_r = abs(entry - sl)
     if one_r < 1e-9:
         return 0.0
@@ -57,11 +58,21 @@ def sim_hybrid(df15m, entry_ts, entry, sl, direction, rr,
             be_done = True
         if cur_r >= tsl_act_r:
             dur_min = (ts - entry_ts).total_seconds() / 60.0
-            dec = compute_hybrid_tsl(direction, entry, c, sl, dur_min, profile=WTB_PROFILE)
+            dec = compute_hybrid_tsl(direction, entry, c, sl, dur_min, profile=prof)
             if dec.new_sl and is_tighter(direction, dec.new_sl, cur_sl):
                 cur_sl = dec.new_sl
     last = future["close"].iloc[-1] if len(future) > 0 else entry
     return round(((last - entry) if LONG else (entry - last)) / one_r, 3)
+
+
+# Профили-кандидаты для wt_b (контртренд → тянуть туго, не «дышать»):
+# gear2_atr=99 → НЕ входит в gear2 (wide); gear3_atr низкий → ранний tight-lock.
+PROFILES_TEST = {
+    "default":  TSLProfile(),                                  # боевой (тренд-ориент.)
+    "lock1.5":  TSLProfile(gear2_atr=99.0, gear3_atr=1.5),
+    "lock1.0":  TSLProfile(gear2_atr=99.0, gear3_atr=1.0),
+    "lock0.5":  TSLProfile(gear2_atr=99.0, gear3_atr=0.5),
+}
 
 
 def collect_entries(symbol: str) -> list:
@@ -180,6 +191,23 @@ def main():
             g = h[mask]
             for mode in ("off", "crude", "hybrid"):
                 row(f"RR{rr} {scope} {mode}", g[mode])
+
+    print("\n=== G) ПОДБОР tight-профиля TSL для wt_b (RR=3, vs crude) ===")
+    print(HDR)
+    rr = 3.0
+    for scope, ents in (("ALL", entries),
+                        ("SHORT", [e for e in entries if e["direction"] == "SHORT"])):
+        def _R(e, **kw):
+            return simulate_trade(e["df15m"], e["entry_ts"], e["entry"], e["sl"],
+                                  e["direction"], rr, **kw)
+        row(f"RR3 {scope} crude", [_R(e, use_tsl=True) for e in ents])
+        row(f"RR3 {scope} off", [_R(e, use_tsl=False) for e in ents])
+        for pname, prof in PROFILES_TEST.items():
+            for be_lbl, be in (("BE0.5", 0.5), ("noBE", 99.0)):
+                arr = [sim_hybrid(e["df15m"], e["entry_ts"], e["entry"], e["sl"],
+                                  e["direction"], rr, be_act_r=be, profile=prof) for e in ents]
+                row(f"RR3 {scope} {pname}/{be_lbl}", arr)
+        print()
 
 
 if __name__ == "__main__":

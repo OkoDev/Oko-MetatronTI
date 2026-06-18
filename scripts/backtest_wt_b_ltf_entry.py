@@ -267,15 +267,17 @@ def find_ltf_entry(df15m: pd.DataFrame, signal_ts, direction: str,
 
 def simulate_trade(df15m: pd.DataFrame, entry_ts, entry: float, sl: float,
                    direction: str, rr: float = RR_TARGET,
-                   use_tsl: bool = True, tsl_trail: float = 0.5) -> float:
+                   use_tsl: bool = True, tsl_trail: float = 0.5,
+                   max_bars: int = None) -> float:
     """use_tsl=False → чистый SL/TP без трейлинга (для исследования влияния TSL).
-    tsl_trail — дистанция трейла в R от close (бэктест-упрощение, НЕ боевой hybrid TSL)."""
+    tsl_trail — дистанция трейла в R от close (бэктест-упрощение, НЕ боевой hybrid TSL).
+    max_bars — лимит баров симуляции (None → MAX_BARS_SIM); для нормализации окна по ТФ."""
     one_r = abs(entry - sl)
     if one_r < 1e-9:
         return 0.0
 
     tp = entry + one_r * rr if direction == "LONG" else entry - one_r * rr
-    future = df15m[df15m.index > entry_ts].iloc[:MAX_BARS_SIM]
+    future = df15m[df15m.index > entry_ts].iloc[:(max_bars or MAX_BARS_SIM)]
 
     tsl_active  = False
     trailing_sl = sl
