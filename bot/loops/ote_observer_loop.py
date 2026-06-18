@@ -203,10 +203,14 @@ def _elliott_phase_shadow(dfs, direction, otype) -> dict:
     else:                                        # pull
         would_block = n_dir < 1                  # контр-тренд без HTF-импульса = против всего (−0.21)
         reason = "pull_no_htf_impulse" if would_block else ""
+    # 18.06: УНИФИКАЦИЯ имён волны → elliott_n_down/up (как scan_loop/atr_change/arch104).
+    # Был дрейф: одна волна (calculate_n_down/up) под двумя именами (phase_* у ote, elliott_*
+    # у остальных) → промахи при анализе. phase_gate_* остаются (ote-специфичный ГЕЙТ, не сырая
+    # волна). ⚠️ старые БД-сделки несут phase_* → в анализах COALESCE(elliott_n_down, phase_nd_4h).
     return {
-        "phase_nd_4h": nd_4h, "phase_nu_4h": nu_4h,
-        "phase_nd_1h": nd_1h, "phase_nu_1h": nu_1h,
-        "phase_n_dir_4h": n_dir,
+        "elliott_n_down": nd_4h, "elliott_n_up": nu_4h,
+        "elliott_n_down_1h": nd_1h, "elliott_n_up_1h": nu_1h,
+        "elliott_n_dir_4h": n_dir,
         "phase_gate_would_block": bool(would_block),
         "phase_gate_reason": reason,
     }
