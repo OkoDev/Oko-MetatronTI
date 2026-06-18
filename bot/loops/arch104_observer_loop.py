@@ -524,6 +524,12 @@ async def _try_register_vst_trade(
         "trade_mode": "arch104",   # dedup: разные режимы не блокируют
         "arch104_wt_cross_flag": wt_cross_flag,  # D-051: подтверждённый gate flag
     }
+    # 18.06: ДАТЬ arch104 ВОЛНУ — единый источник bot._elliott_snap (тот же calculate_n_down/up,
+    # что scan_loop/atr_change → НЕ третий калькулятор). arch104 был слеп к волне; данные показали
+    # SHORT в зрелом 4h-импульсе (elliott_n_down≥4) = +0.279R. Через дни — волновой фильтр на честной БД.
+    _ell = getattr(bot, "_elliott_snap", {}).get(symbol, {})
+    if _ell:
+        extra.update({k: v for k, v in _ell.items() if k.startswith("elliott_")})
 
     # D-044 (2026-05-23): идём через trade_router (как atr_change/confluence/etc.)
     # для exchange execution на VST. Без router register_trade_async создаёт
