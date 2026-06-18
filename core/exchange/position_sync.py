@@ -33,23 +33,61 @@ _ORDER_TYPE_TO_STATUS = {
 }
 
 
-async def _resolve_exit(client, symbol: str, direction: str, mark_price: float | None) -> tuple[str, float | None]:
+async def _resolve_exit(
+    client, symbol: str, direction: str, mark_price: float | None,
+    sl_order_id: str | None = None, tp_order_id: str | None = None,
+) -> tuple[str, float | None]:
     """
     Определяет статус (SL/TP/TSL/EXPIRED) и exit_price через filled orders на бирже.
+
+    ПРИОРИТЕТ — точный матч по orderId ЭТОЙ сделки (sl_order_id/tp_order_id). Без него
+    матч по symbol+side хватал avgPrice ЧУЖОЙ сделки по символу (повторные входы/hedge)
+    → фантомный exit вне диапазона жизни (STG R=264 при max_R_possible=1.3). Если order id
+    нет / ордер ещё не в истории — fallback на эвристику symbol+side с sanity по mark.
 
     Returns:
         (status, exit_price)  — exit_price может быть None если данных нет.
     """
     try:
         filled = await client.get_filled_orders(symbol, limit=50)  # DEV-148: 20→50 (TP с R<0 баг)
-        # Ищем последний STOP/TP ордер в нужном направлении
         # LONG закрывается SELL-ордером, SHORT — BUY-ордером
         close_side = "SELL" if direction == "LONG" else "BUY"
+
+        # 1) ТОЧНЫЙ матч по orderId сделки — нет путаницы между сделками одного символа.
+        _id_map: dict[str, str] = {}
+        if sl_order_id:
+            _id_map[str(sl_order_id)] = "SL"
+        if tp_order_id:
+            _id_map[str(tp_order_id)] = "TP"
+        if _id_map:
+            for o in filled:
+                _oid = str(o.get("orderId") or "")
+                if _oid and _oid in _id_map:
+                    _avg = o.get("avgPrice") or o.get("stopPrice") or o.get("price")
+                    _status = _id_map[_oid]
+                    _exit = float(_avg) if _avg else mark_price
+                    logger.debug("[POSITION-SYNC] %s %s: exit по orderId=%s → %s @ %.8g",
+                                 symbol, direction, _oid, _status, _exit or 0)
+                    return _status, _exit
+
+        # 2) FALLBACK: order id нет / ордер ещё не в истории — эвристика symbol+side.
         for o in filled:
             order_type = o.get("type", "")
             order_side = o.get("side", "")
             avg_price  = o.get("avgPrice") or o.get("stopPrice") or o.get("price")
             if order_side.upper() == close_side and order_type in _ORDER_TYPE_TO_STATUS:
+                # SANITY (18.06): filled-история по символу НЕ привязана к нашей позиции
+                # (нет orderId/времени). Close-ордер исполнен недавно → его цена близка к
+                # mark. Если avgPrice отличается от mark в разы — это ордер ДРУГОЙ сделки
+                # по тому же символу (повторные входы/hedge) → пропускаем, ищем дальше.
+                # Иначе фантомный exit → R>>MFE (STG R=264 при max_R_possible=1.3). Корень
+                # = матч по symbol+side без дискриминатора (класс багов data-integrity аудита).
+                if avg_price and mark_price and mark_price > 0:
+                    _ratio = float(avg_price) / float(mark_price)
+                    if _ratio > 1.5 or _ratio < 0.67:
+                        logger.debug("[POSITION-SYNC] %s %s: skip filled @ %.8g (mark=%.8g, ratio=%.2f) — чужая сделка",
+                                     symbol, direction, float(avg_price), float(mark_price), _ratio)
+                        continue
                 status     = _ORDER_TYPE_TO_STATUS[order_type]
                 exit_price = float(avg_price) if avg_price else mark_price
                 logger.debug("[POSITION-SYNC] %s %s: filled %s @ %.6f → %s",
@@ -212,7 +250,8 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
         # видит позицию (закрыта) → orphan висит OPEN навсегда → потеря реального SL (−1R),
         # искажение метрик (avgR/WR завышены = «бумажная иллюзия»). Корень USELESS #21703.
         try:
-            _st6, _px6 = await _resolve_exit(client, sym, direction, cur_price)
+            _st6, _px6 = await _resolve_exit(client, sym, direction, cur_price,
+                                             trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"))
             if bot.trade_simulator.close_trade(trade_id, _st6, _px6):
                 logger.info("[OPS-06] %s #%d: БД закрыта %s @ %.6f после emergency (orphan-prevent)",
                             sym, trade_id, _st6, _px6 or 0)
@@ -411,11 +450,15 @@ async def sync_positions(bot) -> None:
             if not trade.get("exchange_order_id"):
                 continue
             sym_w = trade.get("symbol", "")
-            pos_w = open_on_exchange.get(sym_w)
-            if pos_w is None:
-                continue  # позиции на бирже нет — обработается основным циклом
+            # hedge-aware: точная сторона. open_on_exchange (sym→raw) при LONG+SHORT
+            # по паре перезаписывает одну сторону другой → emergency мог взять qty/markPrice
+            # ЧУЖОЙ позиции и закрыть неверным размером. open_pairs ключ (sym, side).
+            dir_w = (trade.get("direction") or "LONG").upper()
+            pp_w = open_pairs.get((sym_w, dir_w))
+            if pp_w is None:
+                continue  # позиции этой стороны на бирже нет — обработается основным циклом
             try:
-                await _emergency_close_check(bot, sym_w, trade, pos_w)
+                await _emergency_close_check(bot, sym_w, trade, pp_w.raw)
             except Exception as _ew:
                 logger.debug("[DEV-185.2] watchdog error %s: %s", sym_w, _ew)
 
@@ -441,7 +484,8 @@ async def sync_positions(bot) -> None:
             except Exception:
                 pass
 
-            status, exit_price = await _resolve_exit(client, sym, direction, mark_price)
+            status, exit_price = await _resolve_exit(client, sym, direction, mark_price,
+                                                     trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"))
 
             # TSL реализован через STOP ордер (cancel+replace), поэтому на бирже он
             # срабатывает как STOP_MARKET → _resolve_exit возвращает "SL".

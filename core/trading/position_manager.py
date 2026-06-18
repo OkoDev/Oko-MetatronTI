@@ -213,22 +213,25 @@ class PositionManager:
             # DEV-154: _get_client_synced() внутри _get_positions_cached
             exchange_positions = await order_manager._get_positions_cached()
             # 27.05.2026: парсинг через position_parser (hedge-aware, single source).
+            # hedge-aware матч по (symbol, side): symbol-only оставлял зомби-OPEN — если
+            # LONG закрылась, а SHORT по той же паре жива, символ оставался в наборе и
+            # закрытая LONG-запись не помечалась CLOSED (REAL/USDT: 6×LONG OPEN зомби).
             from core.exchange.position_parser import parse_positions
-            open_syms: set = {pp.symbol_our for pp in parse_positions(exchange_positions)}
+            open_pairs: set = {(pp.symbol_our, pp.side) for pp in parse_positions(exchange_positions)}
         except Exception as e:
             logger.warning("[PositionManager] sync: не удалось получить позиции с биржи: %s", e)
             return stats
 
         for pos in open_positions:
-            if pos.symbol in open_syms:
+            if (pos.symbol, pos.side) in open_pairs:
                 stats["ok"] += 1
-                logger.debug("[PositionManager] sync OK %s", pos.symbol)
+                logger.debug("[PositionManager] sync OK %s %s", pos.symbol, pos.side)
             else:
                 # Позиция закрылась пока бот не работал — закрываем запись
                 self.close(pos.id)
                 stats["closed"] += 1
-                logger.info("[PositionManager] sync CLOSED %s id=%d — нет на бирже",
-                            pos.symbol, pos.id)
+                logger.info("[PositionManager] sync CLOSED %s %s id=%d — нет на бирже",
+                            pos.symbol, pos.side, pos.id)
 
         logger.info("[PositionManager] sync завершён: ok=%d closed=%d", stats["ok"], stats["closed"])
         return stats

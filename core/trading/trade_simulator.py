@@ -1616,6 +1616,21 @@ class TradeSimulator:
                 min_price_db = float(min_price_db) if min_price_db is not None else None
                 dir_up = str(direction).upper()
 
+                # SANITY exit_price (18.06): инвариант — цена закрытия не могла быть вне реального
+                # ценового диапазона [min_price, max_price], который сделка прошла по тикам. Фантомный
+                # exit (чужой filled-ордер из _resolve_exit) даёт R >> MFE (STG R=264 при MFE=1.3).
+                # Clamp в точный наблюдённый диапазон → гарантирует R_multiple <= max_R_possible
+                # (без допуска: при узких стопах ote one_r≈0.5%, любой % допуска раздувает R на >0.3R).
+                if (exit_price and max_price_db and min_price_db
+                        and max_price_db >= min_price_db):
+                    if exit_price > max_price_db or exit_price < min_price_db:
+                        _exit_bad = exit_price
+                        exit_price = min(max(float(exit_price), min_price_db), max_price_db)
+                        logger.warning(
+                            "[close_trade] #%s %s: phantom exit %.8g вне [%.8g, %.8g] → clamp %.8g",
+                            trade_id, symbol, _exit_bad, min_price_db, max_price_db, exit_price,
+                        )
+
                 # R-multiple: вся математика через core.trading.r_math (27.05.2026).
                 # 1R = |entry - original_sl| (исходный риск), fallback на текущий sl.
                 from core.trading.r_math import compute_one_r, compute_r, clamp_r, clamp_r_smart

@@ -27,7 +27,8 @@ CREATE TABLE simulated_trades (
     strategy_name TEXT, tsl_tf TEXT DEFAULT '15m',
     tp1_price REAL, tp2_price REAL, tp3_price REAL,
     tp1_hit_at TEXT, strategy_type TEXT,
-    decision_trace_json TEXT, original_sl REAL
+    decision_trace_json TEXT, original_sl REAL,
+    execution_mode TEXT DEFAULT 'VST'
 )
 """
 

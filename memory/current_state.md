@@ -9,6 +9,51 @@
 
 ---
 
+## [18.06 UTC] Агент: Даат — 🗺️ КАРТА ЗДОРОВЬЯ СИГНАЛОВ (честный R) + почему equity −63%
+
+Юзер: «какие ТФ убивают?» → глубокий разбор на честном clamp R. Детали → [[signal_health_map_18jun]].
+- **Развеян миф «всё на 15m»:** колонка `timeframe`=ТФ ИСПОЛНЕНИЯ входа. Реальный MTF в `features`: ote_nested имеет `ote_htf`(1h/4h)+`ote_ltf`(5m)+`ote_setup_id`. MTF РАБОТАЕТ.
+- **ote_nested = доказанная MTF-машина:** все сетапы +. pull(+0.895)>cont(+0.685), tier1(+1.027)>tier2(+0.684). Чемпион `4h_1h_pull` +1.230 WR78%. Кормилец +$289.
+- **arch104 LONG мёртв ВЕЗДЕ:** UP −0.194/DOWN −0.144 (WR41%), паттерны DS_L052 −0.139/DS_L082 −0.278. → ОТКЛЮЧИТЬ. arch104 SHORT жив (UP +0.212).
+- **atr_change:** 15m edge<комиссий (мёртв); 4h ЗОЛОТО +0.692 Sharpe3.44 (бэктест n=94) → [[atr_change_tf_4h_backlog]].
+- **ВЫВОД:** equity −63%/нед НЕ «всё сломано». 2 канала несут (ote_nested, arch104 SHORT), 2 жгут (arch104 LONG, atr_change 15m). ПЛАН оздоровления: отключить 2 минусовых, усилить ote_nested pull/tier1. ⚠️ adaptive weights учились на fake-R → переучить после миграции.
+- Анализ read-only (боевую БД не трогал). Конфиг-правки ещё НЕ сделаны (ждут решения).
+
+## [18.06 UTC] Агент: DEV — DS-326 WT-B фильтры: ADX<25 единственный edge (бэктест завершён)
+
+Запустил полный бэктест `scripts/ds326_all_filters.py` на 45 парах (RR=3, история до 19.05), проанализировал все 5 фильтров + 2 комбо. Добавил в скрипт medR+Sharpe в таблицу и скан порога ADX.
+
+- **✅ Вывод:** прирост даёт ТОЛЬКО `ADX < 25`. ltf_all (без фильтра) avgR −0.039 / WR 34.5% → ltf_adx avgR **+0.204** / WR **47.1%** / Sharpe +0.142 (n=68). Единственный фильтр в плюсе.
+- **Порог 25 — не подгон:** скан 20/25/30/35/40 → edge только <25; зона ADX 25–30 убыточна (<30 = −0.068). Совпало с классической границей ADX тренд/флэт. WT-B mean-reversion работает в слабом тренде.
+- **❌ Отбросить:** EMA-trend ВРЕДИТ (−0.180), CHoCH 4h вредит (−0.087), n_down 0-2 не фильтрует (80% проходят). Комбо ничего не дают поверх ADX (ADX+TREND n=6 пусто; ADX+ND02 ≈ чистый ADX).
+- **Гигиена:** medR=−1.0 у ВСЕХ (RR=3, прибыль на хвосте) → сравнение по avgR+WR+Sharpe. Lookahead исключён (фильтры читают только прошлое).
+- **⚠️ Оговорки:** n=68 умеренный (нужен out-of-sample); edge чувствителен к комиссии/проскальзыванию (`simulate_trade` не учитывает).
+- Результат: `data/research/ds326_wtb_filters_result.md`. Память: [[ds326-wtb-adx-filter]]. Правки в `scripts/ds326_all_filters.py` (medR/Sharpe/ADX-скан) — НЕ закоммичено.
+
+## [18.06 UTC] Агент: Даат — DATA-INTEGRITY AUDIT: 3 фикса (метрики+hedge), не закоммичено
+
+Запуск субагента `bot-data-audit` по `docs/AUDIT_DATA_INTEGRITY_BRIEF.md` → 4 находки, 3 кодовых починены (4-я = api.ts фронт, отложена).
+
+- **✅ Фикс 1 (метрики, КРИТ):** `performance_engine.summary()` не имел VST-фильтра → KPI дашборда/меню/обучения смешивал SIM+VST. SIM-фантомы (avg_R=**0.013**, n=16859) тянули вниз. Добавлен параметр `execution_mode='VST'` (дефолт, консистентно с уже-VST `by_signal_type`). KPI: 0.287→**0.633 avg_R**, WR 42.8→48.5%. Завершает недокрученный коммит #8 (`4b22a0c`).
+- **✅ Фикс тест-фикстуры:** `test_performance_engine.py` CREATE_TABLE без `execution_mode` → 3 теста были КРАСНЫЕ после #8. Добавлена колонка `execution_mode TEXT DEFAULT 'VST'`. Теперь `20 passed`.
+- **✅ Фикс 2 (hedge-мина, деньги):** `position_sync.py` emergency watchdog брал raw позиции из `open_on_exchange` (sym→raw, без side) → при LONG+SHORT по паре мог закрыть market неверным qty/markPrice ЧУЖОЙ стороны. Переведён на `open_pairs.get((sym, dir))`.
+- **✅ Фикс 3 (зомби-OPEN):** `position_manager.sync_with_exchange` матчил `pos.symbol in open_syms` (без side) → при рестарте закрытая сторона hedge не помечалась CLOSED (REAL/USDT: 6×LONG OPEN зомби в live_orders). → матч `(symbol, side)`.
+- **✅ Находка 4 (выбор юзера «реальные с бэка»):** `oko-dashboard/lib/api.ts` хардкоды убраны. `/api/live` (биржевые позиции): JOIN тянет `st.signal_type, st.max_R_possible` → фронт `maxR:0→p.max_r`, `signal:"confluence"→normSignal(p.signal_type)` (unknown для ручной). `/api/open`: cold-SQL+шина дают `timeframe,regime` → `tf:"15m"→r.timeframe`, `regime:"RANGE"→normRegime(r.regime)`. tsc exit 0.
+- **✅ DIR-баг (UI, скриншот юзера):** `trades.tsx` колонка DIR пропадала в Exchange-view пока не включишь «#». Корень: sticky `pair` имел жёсткий `left:56` (ширина колонки id) → без id pair прилипала на 56px и непрозрачный bg-card перекрывал DIR. Фикс: `pairLeft = visibleIds.has("id") ? 56 : 0`.
+- Файлы (НЕ закоммичено): `performance_engine.py`, `position_sync.py`, `position_manager.py`, `tests/unit/test_performance_engine.py`, `web/dashboard_server.py` + фронт `oko-dashboard/{lib/api.ts, components/oko/screens/trades.tsx}` (⚠️ фронт НЕ git). Верификация: 20 passed + py_compile + tsc exit 0 + runtime на копии БД.
+
+## [18.06 UTC] Агент: Даат — 🔴🔴 FAKE-R КОРЕНЬ найден и починен (PnL врал в 3-4×)
+
+Юзер спросил «что с PnL» → раскопал что VST avgR (+1.2) — иллюзия. Детали → [[bug_phantom_exit_resolve]].
+- **Симптом:** медиана R=0, весь плюс на ~11 раннерах R до 264. STG R=264 при max_R_possible(MFE)=1.3 (невозможно: realized>MFE).
+- **Корень:** `position_sync._resolve_exit` матчил filled-ордер по `symbol`+`side` без orderId/времени → при повторных входах/hedge хватал avgPrice ЧУЖОЙ сделки → exit_price вне [min_price,max_price]. Класс = «матч по неполному ключу» (тема всего аудита).
+- **Масштаб:** 983/5006 VST-сделок (20%) с крупным фантомом = 3623R = **60% PnL**. С средними — 75%. Истинный avgR≈**0.3-0.48**, не 1.205.
+- **Фикс (НЕ закоммичено):** (1) `_resolve_exit` — точный матч по `exchange_sl_order_id`/`exchange_tp_order_id` (заполнены 86%/79%), прокинуты из 2 вызовов; (2) fallback sanity ratio по mark; (3) `close_trade` — clamp exit в `[min,max]` (инвариант R≤MFE). Runtime: STG 264.5R→1.251R, инвариант OK. Базлайн тестов 23F/8P не изменён (предсущ. account_routing).
+- **⏳ TODO (ждёт ОК юзера):** МИГРАЦИЯ 5006 закрытых VST — пересчёт R/profit_pct/max_R с clamp на боевой БД. Без неё adaptive weights учатся на фантомах.
+- Файлы +: `core/exchange/position_sync.py`, `core/trading/trade_simulator.py`.
+
+---
+
 ## [17.06 19:00 UTC] Агент: Даат — ДАШБОРД ЗАКРЫТ (интерактив/перф/EN + mark_price), всё запушено
 
 ### ✅ Фронт oko-dashboard (main, запушено `a0d6679`)

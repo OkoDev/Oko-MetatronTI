@@ -35,15 +35,23 @@ class PerformanceEngine:
     # ------------------------------------------------------------------
     # Сводная статистика
     # ------------------------------------------------------------------
-    def summary(self) -> Dict[str, Any]:
+    def summary(self, execution_mode: Optional[str] = "VST") -> Dict[str, Any]:
         """Общая сводка: всего сделок, win-rate, avg R, avg profit_pct.
 
         Win Rate: TP + TSL считаются победами (TSL активируется после +1R, R всегда > 0).
         avg_r_loss: только SL (TSL — не потеря).
+
+        execution_mode: фильтр режима. Дефолт 'VST' — боевая истина (консистентно с
+            by_signal_type/by_signal_type_ema, которые уже VST-only). SIM-фантомы
+            занижают avg_R в ~48 раз (0.013 vs 0.633 на n=30k) → в KPI не текут.
+            None='все режимы', 'SIM'=research-слой.
         """
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
+                # fix(#8): дефолтный VST-фильтр — SIM-фантомы не искажают KPI/меню/обучение
+                _where = "WHERE execution_mode=?" if execution_mode is not None else ""
+                _params: tuple = (execution_mode,) if execution_mode is not None else ()
                 # DEV-190: effective_status — скрытые TSL exits VST учитываются как wins
                 cur.execute(f"""
                     SELECT
@@ -63,7 +71,8 @@ class PerformanceEngine:
                         MIN(created_at) AS first_trade_at,
                         MAX(created_at) AS last_trade_at
                     FROM simulated_trades
-                """)
+                    {_where}
+                """, _params)
                 row = dict(cur.fetchone())
                 tp = row["tp_count"] or 0
                 sl = row["sl_count"] or 0

@@ -489,7 +489,8 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
                     c.row_factory = _sq.Row
                     return [dict(r) for r in c.execute(
                         "SELECT id,symbol,direction,signal_type,entry_price,stop_loss,take_profit,"
-                        "created_at,execution_mode,account_id,tsl_activated,qty FROM simulated_trades "
+                        "created_at,execution_mode,account_id,tsl_activated,qty,timeframe,regime "
+                        "FROM simulated_trades "
                         "WHERE status='OPEN' ORDER BY created_at DESC LIMIT 300").fetchall()]
             try:
                 snap = await asyncio.wait_for(_run_sync(_q), timeout=6)
@@ -1301,7 +1302,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                     # +свежесть → приоритет живой sim над zombie (live_orders.sim_trade_id мост сохранён).
                     rows = _conn.execute(
                         f"SELECT lo.symbol, st.direction, st.stop_loss, st.take_profit, "
-                        f"st.tsl_activated, st.tsl_tf, st.regime "
+                        f"st.tsl_activated, st.tsl_tf, st.regime, st.signal_type, st.max_R_possible "
                         f"FROM live_orders lo "
                         f"JOIN simulated_trades st ON lo.sim_trade_id = st.id "
                         f"WHERE lo.status='OPEN' AND lo.symbol IN ({ph}) "
@@ -1329,6 +1330,8 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                                 "tsl_activated": bool(row["tsl_activated"]),
                                 "tsl_tf": row["tsl_tf"],
                                 "regime": row["regime"],   # FIX (18.06): реальный regime сделки, не хардкод RANGE на фронте
+                                "signal_type": row["signal_type"],   # FIX (18.06): реальный сигнал, не хардкод "confluence"
+                                "max_r": row["max_R_possible"],       # FIX (18.06): реальный max R, не хардкод 0
                             }
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
@@ -1343,6 +1346,8 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 pos["tsl_activated"] = st.get("tsl_activated", False)
                 pos["tsl_tf"] = st.get("tsl_tf")
                 pos["regime"] = st.get("regime")   # реальный regime сматченной сделки (None если нет)
+                pos["signal_type"] = st.get("signal_type")   # None если нет sim-матча (ручная позиция)
+                pos["max_r"] = st.get("max_r")
 
         result["error"] = _err
 
