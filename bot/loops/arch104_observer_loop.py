@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from core.observability.decision_trace import record_drop
+from bot.notifications.sender import notify as _notify
 
 logger = logging.getLogger(__name__)
 
@@ -569,6 +570,12 @@ async def _try_register_vst_trade(
             symbol, det_tf, direction, decision.pattern_id,
             trade_id, strength, sl_price, tp_price, float(decision.risk_pct),
             exchange_id or "none",
+        )
+        await _notify(
+            bot, "strategy_fire_arch104", symbol,
+            dir_emoji="🟢" if direction == "LONG" else "🔴",
+            entry=rec.entry_price, sl=sl_price, tp=tp_price,
+            strength=strength, trade_id=trade_id,
         )
     else:
         logger.info(

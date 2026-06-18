@@ -241,7 +241,7 @@ def subscriptions_menu() -> ReplyKeyboardMarkup:
 
 
 def settings_menu() -> ReplyKeyboardMarkup:
-    """Меню настроек. Заглушки (Уведомления, Сигналы, Интерфейс, Доп.) убраны."""
+    """Меню настроек."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -251,6 +251,9 @@ def settings_menu() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(text="🤖 AI настройки"),
                 KeyboardButton(text="🛡️ Настройки рисков")
+            ],
+            [
+                KeyboardButton(text="🔔 Уведомления")
             ],
             [
                 KeyboardButton(text="⬅️ Назад в главное меню")

@@ -1,0 +1,92 @@
+## Notification Engine — правила уведомлений (MVP v2, 14.06.2026)
+## Вердикт роя 7/7: YAML-конфиг, TIER-1 strategy fire, cooldown per-rule-per-symbol
+##
+## Фильтры (все опциональны):
+##   symbols: []           # [] = все пары; [XLM-USDT, BTC-USDT] = только эти
+##   directions: []        # [] = оба; [LONG] или [SHORT]
+##   tf: []                # [] = все TF; [3m, 5m] = только эти
+##   cooldown_sec: N       # 0 = без ограничений per-symbol
+
+notifications:
+  enabled: true
+
+  global_circuit_breaker:
+    max_per_hour: 100
+
+  rules:
+
+    # ─── TIER-1: Strategy fire ───────────────────────────────────────────────
+
+    strategy_fire_ote:
+      enabled: true
+      tier: 1
+      symbols: [XLM-USDT]      # только XLM; [] чтобы все пары
+      directions: [LONG]        # только лонги; [] чтобы оба направления
+      cooldown_sec: 0
+      template: |
+        🔥 <b>OTE {setup_id}</b> {dir_emoji} <b>{symbol}</b>
+        Entry: <code>{entry:.4f}</code>  SL: <code>{sl:.4f}</code>  TP: <code>{tp:.4f}</code>
+        Str: {strength} | #{trade_id}
+
+    strategy_fire_arch104:
+      enabled: false
+      tier: 1
+      symbols: []               # все пары
+      directions: []            # оба направления
+      cooldown_sec: 0
+      template: |
+        🤖 <b>arch104</b> {dir_emoji} <b>{symbol}</b>
+        Entry: <code>{entry:.4f}</code>  SL: <code>{sl:.4f}</code>  TP: <code>{tp:.4f}</code>
+        Str: {strength} | #{trade_id}
+
+    # ─── TIER-2: SMC события ─────────────────────────────────────────────────
+
+    fvg_detected:
+      enabled: true
+      tier: 2
+      symbols: [XLM-USDT]
+      directions: [LONG]
+      tf: [3m]
+      cooldown_sec: 120
+      template: "🆕 <b>FVG {direction}</b> {symbol} {tf} [{bottom:.4f}–{top:.4f}]"
+
+    fvg_touch:
+      enabled: true
+      tier: 2
+      symbols: [XLM-USDT]      # только XLM
+      directions: [LONG]        # только bull FVG
+      tf: [3m]                  # только 3m таймфрейм
+      cooldown_sec: 300         # не спамить по одной зоне чаще раза в 5 мин
+      template: "🧲 <b>FVG touch</b> {symbol} {tf} [{bottom:.4f}–{top:.4f}] @ <code>{price:.4f}</code>"
+
+    choch_new:
+      enabled: false
+      tier: 2
+      symbols: []
+      directions: []
+      cooldown_sec: 3600
+      template: "📍 <b>CHoCH</b> {symbol} {tf} → {direction}"
+
+    ote_zone_entered:
+      enabled: false
+      tier: 2
+      symbols: []
+      directions: []
+      cooldown_sec: 1800
+      template: "🎯 <b>OTE zone</b> {symbol} [{low:.4f}–{high:.4f}]"
+
+    ob_touch:
+      enabled: false
+      tier: 2
+      symbols: []
+      directions: []
+      cooldown_sec: 900
+      template: "🧱 <b>OB touch</b> {symbol} {tf} @ {price:.4f}"
+
+    pivot_breach:
+      enabled: false
+      tier: 2
+      symbols: []
+      directions: []
+      cooldown_sec: 3600
+      template: "📊 <b>Pivot breach</b> {symbol} {level} @ {price:.4f}"

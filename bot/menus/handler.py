@@ -279,6 +279,10 @@ class MenuHandler:
             await show_ai_settings(self.bot, message)
         elif text == "🛡️ Настройки рисков":
             await show_risk_settings(self.bot, message)
+        elif text == "🔔 Уведомления":
+            from core.notifications.notif_config import notif_config
+            from bot.handlers.notif_handlers import _main_text, _main_keyboard
+            await message.answer(_main_text(), reply_markup=_main_keyboard(), parse_mode="HTML")
         elif text == "⬅️ Назад в главное меню":
             await self._show_main_menu(message)
         else:
@@ -486,6 +490,7 @@ class MenuHandler:
         if text in {
             "⚙️ Общие настройки", "📊 Параметры анализа",
             "🤖 AI настройки", "🛡️ Настройки рисков",
+            "🔔 Уведомления",
             "⬅️ Назад в главное меню",
             "Общие настройки", "Параметры анализа",
             "AI настройки", "Настройки рисков",

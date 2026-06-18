@@ -24,6 +24,7 @@ import pandas as pd
 
 # Переиспользуем инфраструктуру брата (тот же кэш, тот же список пар)
 from bot.loops.arch104_observer_loop import _get_active_pairs, _fetch_df
+from bot.notifications.sender import notify as _notify
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,14 @@ async def _register_ote_trade(bot, sig):
         logger.info("[OTE VST] %s [%s T%d] %s → trade #%s str=%d entry=%.6f SL=%.6f TP=%.6f exch=%s",
                     sig.symbol, sig.setup_id, sig.tier, sig.direction, trade_id,
                     strength, sig.entry, sig.sl, sig.tp_runner, exchange_id or "none")
+        await _notify(
+            bot, "strategy_fire_ote", sig.symbol,
+            setup_id=sig.setup_id,
+            direction="LONG" if sig.direction == "long" else "SHORT",
+            dir_emoji="🟢" if sig.direction == "long" else "🔴",
+            entry=sig.entry, sl=sig.sl, tp=sig.tp_runner,
+            strength=strength, trade_id=trade_id,
+        )
 
 
 if __name__ == "__main__":
