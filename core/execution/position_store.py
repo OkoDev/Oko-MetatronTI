@@ -137,6 +137,10 @@ class PositionStore:
     def is_open(self, account: int, symbol: str, side: str) -> bool:
         return (account, symbol, side) in self._pos
 
+    def drop(self, account: int, symbol: str, side: str) -> Optional[Position]:
+        """Снять позицию из состояния (watchdog: биржа-флэт подтверждена N циклов)."""
+        return self._pos.pop((account, symbol, side), None)
+
     # ── staleness watchdog (§6, страховка от потерянного WS-события) ─────────
     def _touch(self, account: int) -> None:
         self._last_ws_ts[account] = time.monotonic()

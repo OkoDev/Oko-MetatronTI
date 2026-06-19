@@ -64,6 +64,7 @@ class ExecutionSphere:
         self._ledger = ledger
         self._on_close = on_close          # None → SHADOW (close-path выключен)
         self._equity: dict[int, float] = {}
+        self._reconcile_streak: dict = {}  # (acc,sym,side)→циклов подряд флэт-на-бирже (watchdog §6)
 
     # ── OPEN ───────────────────────────────────────────────────────────────
     async def open(self, req: OrderRequest) -> OrderResult:
@@ -191,6 +192,33 @@ class ExecutionSphere:
 
     def staleness(self, account: int) -> Optional[float]:
         return self._store.staleness(account)
+
+    async def reconcile_watchdog(self, account: int, min_cycles: int = 2) -> list[CloseIntent]:
+        """§6 bounded-staleness: позиции store-open, но биржа-флэт min_cycles ЦИКЛОВ ПОДРЯД →
+        escalate (страховка для пропущенного WS-закрытия / «?»-exit).
+
+        НЕ закрывает биржу (она уже флэт) — это ДО-закрытие БД-строки: резолвит exit из REST
+        (закрытие уже произошло, ищем его fill по positionId) и снимает позицию из store.
+        Возвращает escalated CloseIntent (с дотянутым exit) — вызывающий логирует/закрывает БД.
+        Транзиентный флэт (<min_cycles, WS-лаг) НЕ эскалирует. Возврат позиции в строй → сброс.
+        """
+        candidates = await self.reconcile_account(account)
+        cur = {(account, c.symbol, c.side) for c in candidates}
+        # сброс счётчиков для позиций, переставших быть кандидатами (вернулись/уже сняты)
+        for k in [k for k in list(self._reconcile_streak) if k[0] == account and k not in cur]:
+            del self._reconcile_streak[k]
+        escalated: list[CloseIntent] = []
+        for c in candidates:
+            k = (account, c.symbol, c.side)
+            self._reconcile_streak[k] = self._reconcile_streak.get(k, 0) + 1
+            if self._reconcile_streak[k] < min_cycles:
+                continue   # транзиент — ждём подтверждения
+            pos = self._store.get(account, c.symbol, c.side)
+            exit_info = await self._resolve_exit_via_rest(account, pos) if pos is not None else None
+            self._store.drop(account, c.symbol, c.side)   # биржа-флэт подтверждена → снять из истины
+            self._reconcile_streak.pop(k, None)
+            escalated.append(replace(c, exit=exit_info))
+        return escalated
 
     # ── helpers ────────────────────────────────────────────────────────────
     async def _fire_close(self, intent: CloseIntent) -> None:

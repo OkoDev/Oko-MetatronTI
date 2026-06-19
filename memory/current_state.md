@@ -9,6 +9,15 @@
 
 ---
 
+## [20.06 ~01:00 UTC] Агент: Даат — ✅ reconcile-watchdog (CUTOVER-страховка для «?»-exit/WS-drop)
+
+- ✅ **Форвард exit-фикс подтверждён:** `00:36 WOULD CLOSE ZEREBRO → SL @ 0.04414 rp=4.256` (РЕАЛЬНЫЙ exit из stash, is_open_fill-фикс работает). НО `00:40 UMA → ?` остался → exit не 100%. Вывод: «?» при CUTOVER → db_writer не закроет → строка OPEN при флэте = нужна страховка.
+- ✅ **reconcile-watchdog ПОСТРОЕН** (`Sphere.reconcile_watchdog` + `PositionStore.drop`): §6 bounded-staleness — store-open vs биржа-флэт **N циклов подряд** (min_cycles=2, транзиент/WS-лаг не эскалирует) → дотянуть exit из REST (`_resolve_exit_via_rest` по positionId) + снять из store. Возвращает escalated CloseIntent (с exit). Это ДО-закрытие БД-строки пропущенного WS-закрытия (биржа уже флэт, close не нужен). Streak сбрасывается при возврате позиции.
+- ✅ **Врезан shadow** в `position_sync.sync_positions` (throttle 2мин, per-account из router, лог `[SPHERE-SHADOW] RECONCILE would-close …`, ТОЛЬКО при построенном sphere). Активируется след. рестартом. Log-only (on_close=None).
+- ✅ Тесты +4 (транзиент не эскалирует / 2 цикла→escalate+REST-exit+drop / streak-reset / no-fill→exit None). **Всего по эпику 92.** py_compile sphere/store/position_sync OK.
+- 🟢 **CUTOVER-картина полная:** детект close ✅(3/3) + exit (stash+REST-fallback) ✅частично + watchdog ловит «?»/дроп остаток ✅. При флипе: on_close→db_writer applier + watchdog→sphere.close для остатка. Осталось эмпирически: рестарт → DS считает % exit + watchdog ловит ли остаток.
+- ⚠️ Коммиты не запушены (этот). Деплой watchdog = след. рестарт.
+
 ## [20.06 ~00:30 UTC] Агент: Даат — ✅ #7 ML-честность: OOS-gate (r_predictor = шум, честно отключён)
 
 - ✅ **#7 BACKLOG (ML data-leak) ЗАКРЫТ.** Аудит `scripts/r_predictor_leak_audit.py` (read-only, реальные данные) вскрыл БОЛЬШЕ чем leak: на честном **TimeSeriesSplit R²=−1.05** (max_R_possible) / −0.40 (r_multiple), RMSE ХУЖЕ naive baseline (predict-mean) для ОБОИХ target. **Модель не обобщает — она шум**, а активировалась ВСЕГДА при n≥75 (старый `cross_val_score cv=5` KFold по неупорядоченным данным маскировал). «85%→34%» из реестра = другая эпоха/метрика; на регрессии R²≈+0.02 даже у leaky.

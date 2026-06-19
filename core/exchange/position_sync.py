@@ -293,6 +293,7 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
 
 _LAST_BAL_SNAPSHOT_TS = 0.0  # ARCH-DB-V2 Ф1: throttle снапшота баланса (раз ~10 мин)
 _LAST_SL_RECONCILE_TS = 0.0  # SL-RECONCILE (#1): throttle сверки SL-ордеров (раз ~5 мин)
+_LAST_RECONCILE_WD_TS = 0.0  # SPHERE-SHADOW reconcile-watchdog (§6): throttle (раз ~2 мин)
 
 
 async def sync_positions(bot) -> None:
@@ -665,6 +666,32 @@ async def sync_positions(bot) -> None:
             await _detect_orphans(bot, open_on_exchange, open_sim)
         except Exception as _orphan_err:
             logger.warning("[D-070] orphan detector error: %s", _orphan_err)
+
+        # SPHERE-SHADOW reconcile-watchdog (§6, CUTOVER-страховка): store-open vs биржа-флэт
+        # N циклов подряд → пропущенное WS-закрытие / «?»-exit. Shadow: лог «would-close»
+        # (реально НЕ закрывает; on_close=None). Только если sphere построен (sphere_shadow).
+        import time as _t_wd
+        global _LAST_RECONCILE_WD_TS
+        _sphere = getattr(bot, "_exec_sphere", None)
+        if _sphere is not None and (_t_wd.time() - _LAST_RECONCILE_WD_TS > 120):
+            _LAST_RECONCILE_WD_TS = _t_wd.time()
+            try:
+                _accs = list(getattr(_sphere._adapter._router, "accounts", [1]))
+            except Exception:
+                _accs = [1]
+            for _acc_wd in _accs:
+                try:
+                    _esc = await _sphere.reconcile_watchdog(_acc_wd, min_cycles=2)
+                    for _it in _esc:
+                        _ex = _it.exit
+                        logger.warning(
+                            "[SPHERE-SHADOW] RECONCILE would-close %s %s acc=%s → %s @ %s "
+                            "(store-open, биржа-флэт ≥2 цикла; WS-close пропущен/«?»-exit)",
+                            _it.symbol, _it.side, _acc_wd,
+                            (_ex.status if _ex else "?"),
+                            (f"{_ex.exit_price:.8g}" if _ex else "?"))
+                except Exception as _wde:
+                    logger.debug("[SPHERE-SHADOW] reconcile_watchdog acc=%s: %s", _acc_wd, _wde)
 
     except Exception as e:
         logger.warning("[POSITION-SYNC] ошибка: %s", e)

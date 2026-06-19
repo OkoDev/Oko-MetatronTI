@@ -263,3 +263,51 @@ class TestColdStartReconcile:
         sphere._adapter.positions_by_account[1] = [
             Position(symbol=SYM, side="LONG", qty=100, account=1)]   # биржа подтверждает
         assert await sphere.reconcile_account(1) == []
+
+
+class TestReconcileWatchdog:
+    @pytest.mark.asyncio
+    async def test_transient_flat_no_escalate(self, sphere):
+        # 1 цикл флэта (<min_cycles=2) → НЕ эскалируем (транзиент/WS-лаг)
+        await sphere.on_event(1, _open_fill())
+        sphere._adapter.positions_by_account[1] = []          # биржа флэт
+        esc = await sphere.reconcile_watchdog(1, min_cycles=2)
+        assert esc == []
+        assert sphere._store.is_open(1, SYM, "LONG")          # ещё в store (ждём подтверждения)
+
+    @pytest.mark.asyncio
+    async def test_escalates_after_n_cycles_with_rest_exit(self, sphere):
+        # 2 цикла флэта подряд → escalate + дотянуть exit из REST + снять из store
+        await sphere.on_event(1, _open_fill())
+        sphere._adapter.positions_by_account[1] = []
+        sphere._adapter.filled_orders = [
+            {"orderId": "x", "positionID": "pid-1", "side": "SELL", "type": "STOP_MARKET",
+             "avgPrice": "0.49", "updateTime": 100}]
+        assert await sphere.reconcile_watchdog(1, min_cycles=2) == []   # 1-й цикл
+        esc = await sphere.reconcile_watchdog(1, min_cycles=2)          # 2-й → escalate
+        assert len(esc) == 1
+        assert esc[0].exit is not None and esc[0].exit.exit_price == 0.49 and esc[0].exit.status == "SL"
+        assert not sphere._store.is_open(1, SYM, "LONG")               # снят из store
+
+    @pytest.mark.asyncio
+    async def test_streak_resets_when_back_on_exchange(self, sphere):
+        # флэт 1 цикл → потом биржа снова показывает позицию → счётчик сброшен (не эскалирует)
+        await sphere.on_event(1, _open_fill())
+        sphere._adapter.positions_by_account[1] = []
+        await sphere.reconcile_watchdog(1, min_cycles=2)               # streak=1
+        sphere._adapter.positions_by_account[1] = [
+            Position(symbol=SYM, side="LONG", qty=100, account=1)]     # вернулась
+        await sphere.reconcile_watchdog(1, min_cycles=2)              # сброс
+        sphere._adapter.positions_by_account[1] = []                  # снова флэт
+        esc = await sphere.reconcile_watchdog(1, min_cycles=2)        # streak=1 опять
+        assert esc == []                                              # не эскалирует (сброшен)
+
+    @pytest.mark.asyncio
+    async def test_escalate_no_fill_exit_none(self, sphere):
+        # биржа-флэт N циклов, но REST не нашёл fill → escalate с exit=None (db_writer не закроет)
+        await sphere.on_event(1, _open_fill())
+        sphere._adapter.positions_by_account[1] = []
+        sphere._adapter.filled_orders = []
+        await sphere.reconcile_watchdog(1, min_cycles=2)
+        esc = await sphere.reconcile_watchdog(1, min_cycles=2)
+        assert len(esc) == 1 and esc[0].exit is None
