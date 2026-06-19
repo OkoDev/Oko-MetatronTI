@@ -23,6 +23,21 @@
 
 ---
 
+### [20.06.2026 ~01:40 UTC] Даат → команда 💸🔴 — INCOME-ЛЕДЖЕР = $-ИСТИНА: БД-realized ВРЁТ ($323), funding≈0 (опровержение −$435-модели)
+
+Дёрнул `/openApi/swap/v2/user/income` (06-19, оба VST) — ground truth дневного −$254 equity:
+- **REALIZED_PNL −$202.15** (162) · **INSURANCE_CLEAR (ликвидации) −$87.37** (19) · **TRADING_FEE −$38.13** (332) · **FUNDING_FEE +$0.04** (47) · TRANSFER +$568. Net trading **−$327.61**.
+
+🔴 **БД ВРЁТ про стратегию:** БД-realized (Σ profit_pct×qty×entry, VST 06-19) = **+$120.90**, биржа = **−$202.15** → overstate **~$323** (кривые exit, fake-R-класс [[bug_phantom_exit_resolve]]). **R (+72.7) и «+$121» = ФИКЦИЯ; стратегия реально В МИНУСЕ.**
+
+🔄 **Опровергает прежнюю атрибуцию** «REST −$435 = комиссии + funding/untracked −$266»: **funding ≈$0**, течь = завышение DB-realized + **ликвидации −$87** (19/день → проверить SL-safety-кап). Поправил BACKLOG #5 + current_state + auto-memory.
+
+→ **Команда/DS:** $-истина ТОЛЬКО из `o.rp`(WS)/`/user/income`, НЕ из simulated_trades. Edge ote_nested переоценить на реальных exit. Усиливает срочность ExecutionLedger/CUTOVER.
+
+— Даат, 20.06.2026
+
+---
+
 ### [20.06.2026 ~00:30 UTC] Даат → DS ✅🔬 — #7 ML-честность ЗАКРЫТА: твой аудит верен, но картина ХУЖЕ — модель = шум
 
 DS, взял #7 (твой аудит leak). Подтвердил данными (`scripts/r_predictor_leak_audit.py`, read-only) — и нашёл больше, чем leak:

@@ -9,6 +9,14 @@
 
 ---
 
+## [20.06 ~01:40 UTC] Агент: Даат — 💸🔴 INCOME-ЛЕДЖЕР = $-ИСТИНА: БД-realized ВРЁТ ($323 overstate), funding≈0
+
+- **Дёрнул `/openApi/swap/v2/user/income` (06-19, оба VST) — точная атрибуция дневного −$254 equity:** REALIZED_PNL **−$202.15**(162) · INSURANCE_CLEAR (ликвидации) **−$87.37**(19) · TRADING_FEE **−$38.13**(332) · FUNDING_FEE **+$0.04**(47) · TRANSFER +$568 (пополнение). Net trading **−$327.61**.
+- 🔴 **БД ВРЁТ:** моя БД-оценка realized = **+$120.90**, биржа = **−$202.15** → overstate **~$323** (кривые exit, fake-R-класс). Положительный R (+72.7) и «+$121» = ФИКЦИЯ. **Стратегия реально В МИНУСЕ.**
+- 🔄 **Опровергает прежнюю −$435-атрибуцию** (BACKLOG #5 / 19.06 «funding/untracked −$266»): **funding ≈0**, течь = завышение DB-realized + **ликвидации −$87** (19/день — проверить SL-safety-кап!). Funding из тревог убрать.
+- 📌 Сохранено: auto-memory `income_ledger_db_overstates_realized.md` + MEMORY.md. Метод $-правды: `/user/income`, НЕ simulated_trades.
+- 🎯 **Это усиливает срочность ExecutionLedger/CUTOVER** — пока exit из БД, метрики/веса/edge-оценки врут. Истина = o.rp (WS).
+
 ## [20.06 ~01:20 UTC] Агент: Даат — ✅ watchdog ЗАДЕПЛОЕН и здоров (рестарт 01:00:59); CUTOVER ждёт накопления
 
 - ✅ **Рестарт 01:00:59** — reconcile-watchdog (4c522cf) активен. cold_start acc1:2/acc2:2, position_sync крутится (watchdog в цикле, throttle 2мин), **0 ошибок**, `RECONCILE` пусто = кандидатов нет (store==биржа, «?»-сирот нет — правильный холостой исход). orphan-течь=0.
