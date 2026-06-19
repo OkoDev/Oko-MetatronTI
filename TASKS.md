@@ -44,7 +44,7 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
-| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2→Ф4.1✅ offline (Adapter/Store/Ledger/Calc/Sphere/close-applier, 79/79 тест, copy-DB close-path ЗЕЛЁНЫЙ). 🔴 СТОП: Ф4.1-LIVE (on_close в WS + убрать position_sync close-by-price) = решение+рестарт юзера. → DISCUSSION 19.06 19:15 | Даат/ARCH |
+| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2→Ф4.1✅ + SHADOW-врезка в живой WS (default OFF, 81/81 тест). АКТИВАЦИЯ СВЕРКИ: `exec_ws.sphere_shadow:true`+рестарт юзера → грепать `[SPHERE-SHADOW]`. Потом CUTOVER. → DISCUSSION 19.06 19:45 | Даат/DS |
 
 | **OTE-CLONE** | ⚫ | **ЗАКРЫТО.** 1D-сетапы мёртвы: 0 fires на 10 парах × 8 дней. Хороним вместе с arch104. → DISCUSSION 19.06 09:20 | — |
 | **OTE-CASCADE** | 🟡 | 1D-тренд-фильтр SHADOW на каждом ote_nested FIRE (НЕ сетап, НЕ generate). calculate_trend на ~60 1D-барах — дёшево. Claude строит SHADOW, DS валидирует дельту. → DISCUSSION 19.06 09:20 | Claude → DS |

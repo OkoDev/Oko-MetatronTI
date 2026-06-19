@@ -9,6 +9,15 @@
 
 ---
 
+## [19.06 ~19:45 UTC] Агент: Даат — ✅ Ф4.1 SHADOW-ВРЕЗКА в живой WS-путь (default OFF, ждёт рестарта юзера)
+
+- ✅ **SHADOW-врезка** (`core/exchange/exec_ws_integration.py`, ПЕРВОЕ касание живого кода, аддитивно): (1) `start_exec_ws` строит NEW pipeline (BingXAdapter+PositionStore+ExecutionLedger+ExecutionSphere, `on_close=None`) за флагом `trading.exec_ws.sphere_shadow` → `bot._exec_sphere/_exec_adapter`. (2) `make_event_handler.on_event` прогоняет ТОТ ЖЕ WS-msg через `adapter.normalize_event → sphere.on_event` ПАРАЛЛЕЛЬНО авторитетному 2a/2b, в try/except.
+- 🔴 **Default OFF (ключ `sphere_shadow` отсутствует → False) → поведение бота ИДЕНТИЧНО.** on_close=None → только лог «[SPHERE-SHADOW] would close». position_sync close-by-price НЕ тронут. Ошибки врезки ловятся, не влияют на старый путь.
+- ✅ **Тест `tests/unit/test_shadow_pipeline.py` 2/2** — повторяет врезку на СЫРЫХ WS-dict (raw open-fill → store; raw close-fill → stash; raw pa=0 → would-close SL@0.49). **Всего по эпику 81/81.** py_compile exec_ws OK.
+- 🟢 **Активация юзером:** добавить `trading.exec_ws.sphere_shadow: true` в config.yaml + рестарт → на живом потоке копятся `[SPHERE-SHADOW] would close` → сверить с реальными закрытиями (старый путь). Совпало N дней → Ф4.1-CUTOVER (флипнуть on_close на db_writer.build_close_applier + убрать position_sync close-by-price за флагом). Откат = убрать ключ.
+- 🔵 ПОТОМ: cold_start при старте (сейчас store пустой → видит только позиции, открытые ПОСЛЕ рестарта = чистый набор для сверки), reconcile-loop, Ф5 дашборд.
+- ⚠️ 6 коммитов эпика (e88f95f→df46a2e + текущий) НЕ запушены. DS-леджер закоммичен (2d6c4b6).
+
 ## [19.06 ~19:15 UTC] Агент: Даат — ✅ Ф4.1 close-applier + COPY-DB ТЕСТ ЗЕЛЁНЫЙ (close-path доказан, НЕ активирован)
 
 - ✅ **close-applier** (`core/execution/db_writer.py`) — мост `CloseIntent → trade_simulator.close_trade`. Реальные цена/статус из ExitInfo (WS o.ap/o.rp), БЕЗ REST _resolve_exit (fake-R корень убран). `intent_to_close_args` (маппинг: SL/TP/TSL as-is, **LIQUIDATION→SL** т.к. close_trade не знает такой статус, MANUAL по знаку pnl, **нет exit/цены<=0 → НЕ закрываем** — не угадываем, не плодим fake-R). `find_open_exchange_trade` (lookup OPEN биржевой по symbol+side, зеркало exec_ws_integration). `build_close_applier` → async on_close для `Sphere(on_close=...)`, идемпотентен.

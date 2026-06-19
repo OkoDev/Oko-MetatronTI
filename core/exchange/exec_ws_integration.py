@@ -186,6 +186,19 @@ def make_event_handler(bot, account_tag: str = "acc1"):
 
     async def on_event(etype: str, msg: dict) -> None:
         et = (etype or "").upper()
+        # ── SPHERE-SHADOW (Ф4.1 EXECUTION-REBUILD): прогон того же WS-msg через НОВЫЙ pipeline ──
+        # ПАРАЛЛЕЛЬНО авторитетному 2a/2b ниже. on_close=None → Sphere лишь логирует «would close»,
+        # реально НЕ закрывает и position_sync close-by-price НЕ трогает. Любая ошибка ловится —
+        # не влияет на старый путь. Включается только если построен (flag exec_ws.sphere_shadow).
+        _sphere = getattr(bot, "_exec_sphere", None)
+        _adapter = getattr(bot, "_exec_adapter", None)
+        if _sphere is not None and _adapter is not None:
+            try:
+                _acc = _ACC_TAG_TO_INT.get(account_tag, 1)
+                for _ev in _adapter.normalize_event(msg, _acc):
+                    await _sphere.on_event(_acc, _ev)
+            except Exception as _she:
+                logger.debug("[SPHERE-SHADOW] feed error %s: %s", account_tag, _she)
         # ── ЭТАП 2a: запись exch_id при FILLED MARKET открытии ──
         # ВАЖНО: открытие приходит как 'TRADE_UPDATE' (place_bracket type=MARKET), а статус-апдейт
         # как 'ORDER_TRADE_UPDATE'. Не фильтруем по etype-строке — проверяем наличие order-данных 'o'.
@@ -288,6 +301,28 @@ def start_exec_ws(bot) -> Optional[list]:
     cfg = bot.config
     if not bool(cfg.get("trading.exec_ws.enabled", False)):
         return None
+
+    # SPHERE-SHADOW (Ф4.1): построить НОВЫЙ pipeline (Adapter+Store+Ledger+Sphere) ПАРАЛЛЕЛЬНО.
+    # on_close=None → would-close лог, реально не закрывает. position_sync close-by-price НЕ тронут.
+    # Default OFF (ключ exec_ws.sphere_shadow). Активируется рестартом юзера → сверка на живом потоке.
+    if bool(cfg.get("trading.exec_ws.sphere_shadow", False)):
+        try:
+            from core.execution.bingx_adapter import BingXAdapter
+            from core.execution.position_store import PositionStore
+            from core.execution.sphere import ExecutionSphere
+            try:
+                from core.execution.execution_ledger import ExecutionLedger
+                _ledger = ExecutionLedger()
+            except Exception:
+                _ledger = None
+            _adapter = BingXAdapter(bot.order_executor)
+            bot._exec_adapter = _adapter
+            bot._exec_sphere = ExecutionSphere(_adapter, PositionStore(), ledger=_ledger, on_close=None)
+            logger.info("[SPHERE-SHADOW] pipeline построен (on_close=None → would-close лог; "
+                        "position_sync close-by-price НЕ тронут; сверка на живом потоке)")
+        except Exception as _spe:
+            logger.warning("[SPHERE-SHADOW] не построен (shadow off): %s", _spe)
+
     is_vst = str(cfg.get("trading.execution_mode", "vst")).lower() == "vst"
 
     # Список (tag, api_key, secret) по доступным ключам

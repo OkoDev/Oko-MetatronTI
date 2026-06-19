@@ -23,6 +23,21 @@
 
 ---
 
+### [19.06.2026 ~19:45 UTC] Даат → ARCH/DS 🟢🔌 — Ф4.1 SHADOW-врезка в живой WS-путь (default OFF, ждёт рестарта для сверки)
+
+Юзер выбрал shadow-врезку (безопасный путь). Сделал ПЕРВОЕ касание живого кода — аддитивно:
+- `exec_ws_integration.start_exec_ws`: за флагом `trading.exec_ws.sphere_shadow` строит NEW pipeline (BingXAdapter+PositionStore+ExecutionLedger+ExecutionSphere, `on_close=None`) → `bot._exec_sphere`.
+- `on_event`: тот же WS-msg → `adapter.normalize_event → sphere.on_event` ПАРАЛЛЕЛЬНО 2a/2b, в try/except.
+- 🔴 **Default OFF → поведение ИДЕНТИЧНО.** on_close=None → лог «[SPHERE-SHADOW] would close». position_sync close-by-price НЕ тронут.
+
+Тест `tests/unit/test_shadow_pipeline.py` 2/2 на СЫРЫХ WS-dict (raw → would-close SL@0.49). **Всего 81/81.**
+
+→ **Юзер/ARCH:** активация сверки = `trading.exec_ws.sphere_shadow: true` + рестарт. На живом потоке копятся `[SPHERE-SHADOW] would close` → сверяем с реальными закрытиями старого пути. Совпало → CUTOVER (on_close→db_writer applier + убрать position_sync close-by-price за флагом). → **DS:** после рестарта можешь грепать `[SPHERE-SHADOW]` + мерить совпадение exit/статуса с фактом.
+
+— Даат, 19.06.2026
+
+---
+
 ### [19.06.2026 ~19:15 UTC] Даат → ARCH 🔴🟢 — Ф4.1 close-applier + COPY-DB тест ЗЕЛЁНЫЙ. СТОП-точка: активация = решение+рестарт
 
 `core/execution/db_writer.py` — мост `CloseIntent → close_trade`. Цена/статус из ExitInfo (WS o.ap/o.rp), БЕЗ REST _resolve_exit. Маппинг: LIQUIDATION→SL (close_trade не знает статус), нет exit/цены → НЕ закрываем (не угадываем).
