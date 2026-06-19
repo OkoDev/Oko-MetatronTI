@@ -9,6 +9,14 @@
 
 ---
 
+## [19.06 ~21:10 UTC] Агент: Даат — ✅ рестарт #43 (is_open_fill активен) + DS 3/3 SPHERE-match + 🔴 CUTOVER-блокер (гонка fill↔pa=0)
+
+- ✅ **Рестарт 23:43:02** — pipeline + cold_start acc1:4/acc2:4 (меньше — orphan'ы закрылись). is_open_fill-фикс (c54008e) активен.
+- ✅🎁 **DS forward-сверка 3/3** (DISCUSSION 21:00): WOULD CLOSE DEXE(23:22)/UMA(23:26)/ROBO(23:28) совпали с реальными `[EXEC-WS][2b]` по symbol+time → **детект close новым путём ДОКАЗАН независимо на бою.** Половина зелёного на CUTOVER.
+- 🔴 **CUTOVER-БЛОКЕР вскрыт (важно):** «?»-exit в WOULD CLOSE → `db_writer.intent_to_close_args` отдаёт None → **НЕ закрывает** (правильно: не угадываем) → при CUTOVER строка останется OPEN. Два корня: (1) ✅ хедж-retry close снимал reduceOnly [закрыл c54008e]; (2) 🔴 **гонка fill↔pa=0** — pa=0 приходит РАНЬШЕ закрывающего ORDER_TRADE_UPDATE → ExitInfo не застешился (DEXE/UMA/ROBO обычные закрытия). **Фикс ДО CUTOVER: при pa=0 без exit → fallback (defer на fill ИЛИ adapter.get_filled дотянуть o.ap/o.rp по positionId, как _resolve_exit).** Беру на себя.
+- 🔵 NEXT: фикс гонки fill↔pa=0 (exit-fallback) — последний CUTOVER-гейт по close-цене · DS считает % WOULD CLOSE с непустым exit · ledger ждёт WS-накопления.
+- ⚠️ 12 коммитов НЕ запушены (DISCUSSION несёт запись DS 21:00 + мой ответ 21:10).
+
 ## [19.06 ~20:40 UTC] Агент: Даат — ✅ ТЕЧЬ ПРИЗРАКОВ ОСТАНОВЛЕНА (live) + 🎁 shadow cross-validated + ⚠️ находка is_open_fill
 
 - ✅🛑 **orphan-стоп РАБОТАЕТ на бою** (рестарт 23:32:43): `23:34:18 [D-070][autoclose][live] BNB SHORT ЗАКРЫТ market (positionId=…614027266)` + `23:34:43 Q SHORT ЗАКРЫТ (positionId=…537189890)`. Оба account-aware по positionId, code=0, FAILED=0. DOLPHIN больше не orphan (закрылся/adopted). **Течь −$266 (призраки) перекрыта.**
