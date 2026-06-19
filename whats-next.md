@@ -14,7 +14,15 @@
 
 **✅ Ф2 (дизайн) ЗАКРЫТА 19.06 ~16:25 → [docs/EXECUTION_SPHERE_DESIGN.md](docs/EXECUTION_SPHERE_DESIGN.md):** контракт ExecutionSphere (open/close/on_event/adjust_sl/state) + ExchangeAdapter ABC + PositionStore + ExecutionLedger; доменная модель биржа-агностик; правило-истина закрытия (§6: только WS pa=0, close-by-price `position_sync:501-654` УДАЛИТЬ); карта поглощения 8 узлов (§8); порядок миграции Ф3.1→Ф5 (§9). **4 развилки (§10) на ревью ARCH/рой.**
 
-**🔵 СТАРТ следующей сессии = ревью контракта (ARCH/рой §6+§10) → Ф3.1 каркас:** `core/execution/` доменка + `ExchangeAdapter` ABC + `ExecutionCalc` (перенос чистых функций sizing/R/guards БЕЗ дрейфа, parity-тест против старых). Аддитивно, за флагами. 🔴 close-path (Ф4.1) — только после теста на копии БД (инцидент 2026-04-07).
+**✅ Ф3-Ф4.1 ПОСТРОЕНЫ И ЗАПУШЕНЫ (19.06 вечер, 14 коммитов, origin/arch-128-oko-sm):** весь слой `core/execution/` (domain · adapter ABC · BingXAdapter · ExecutionCalc · PositionStore · ExecutionLedger[DS] · ExecutionSphere · db_writer), **88 тестов**, copy-DB close-path зелёный. Аудит BingXClient (`docs/BINGX_CLIENT_AUDIT.md`). SHADOW-врезка в живой WS (`exec_ws.sphere_shadow:true`) активна — Sphere прогоняет WS параллельно старому 2a/2b, `on_close=None` (только лог `[SPHERE-SHADOW]`, position_sync close-by-price НЕ тронут).
+
+**✅ ПОБОЧНО: течь призраков ОСТАНОВЛЕНА** — `orphan_autoclose: live` (BNB+Q закрыты по positionId, проверено). **DS forward-сверка 3/3** (WOULD CLOSE = реальный [EXEC-WS][2b]). 2 shadow-находки закрыты: is_open_fill (hedge-retry close) + гонка fill↔pa=0 (REST exit-fallback).
+
+**🔵 СТАРТ следующей сессии = CUTOVER (последний шаг EXEC-REBUILD), но СНАЧАЛА валидация в shadow:**
+1. **Рестарт** активирует exit-fallback в shadow → грепать `[SPHERE-SHADOW] WOULD CLOSE` → у них теперь должен быть РЕАЛЬНЫЙ exit (не «?»), в т.ч. на racy-закрытиях (REST дотягивает).
+2. **DS считает % WOULD CLOSE с непустым exit** + совпадение (status,price) с фактом. ~100% → зелёный.
+3. **CUTOVER (deliberate, discuss-before-act):** флип `Sphere(on_close=build_close_applier(trade_simulator))` в `exec_ws_integration` за НОВЫМ флагом (напр. `exec_ws.sphere_cutover`) + гейт `position_sync:501-654` close-by-price за флагом OFF. 🔴 ТЕСТ на копии БД повторно перед флипом. Откат = флаг.
+4. ПОТОМ Ф5 дашборд-split (биржа/БД/SIM).
 
 **⏳ ПЕРЕД перестройкой (висит):** PUSH накопленного (≈8 файлов заплаток + доки, см. current_state). Симптом призраков НЕ закрыт (`orphan_autoclose: shadow`). Бот жив PID 31496 (рестарт #3, 19:04).
 
