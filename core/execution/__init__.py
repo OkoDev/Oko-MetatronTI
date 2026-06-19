@@ -38,6 +38,7 @@ from core.execution.domain import (
 from core.execution.adapter import ExchangeAdapter
 from core.execution import calc
 from core.execution.position_store import PositionStore, ExitInfo, classify_exit
+from core.execution.sphere import ExecutionSphere, CloseIntent
 # NB: ExecutionLedger (DS) и BingXAdapter импортируются напрямую из своих модулей —
 # не тянем их в пакет-инит (агностичное ядро + раздельное владение файлами).
 
@@ -62,4 +63,6 @@ __all__ = [
     "PositionStore",
     "ExitInfo",
     "classify_exit",
+    "ExecutionSphere",
+    "CloseIntent",
 ]

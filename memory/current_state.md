@@ -9,6 +9,14 @@
 
 ---
 
+## [19.06 ~18:45 UTC] Агент: Даат — ✅ Ф4 ExecutionSphere ПОСТРОЕН (shadow, 15/15 тест)
+
+- ✅ **ExecutionSphere** (`core/execution/sphere.py`) — оркестратор, связывает Adapter+Store+Ledger+Calc. Методы: `open` (guard через Calc; SIM→без биржи; VST→adapter.place_bracket), `close` (account/side/qty из Store, adapter.close_reduce_only), `on_event` (FillEvent→store+ledger; **PositionEvent pa=0→CloseIntent = единственный авторитетный триггер close**; Ledger/Liq/MarginCross-алерт/Equity/listenKey), `adjust_sl`, `state` (из Store, не REST), `cold_start` (init Store+Ledger из снимка), `reconcile_account` (watchdog §6: store-open vs биржа-флэт → кандидаты, НЕ закрывает сам), `staleness`.
+- 🔴 **close-path в SHADOW:** реальную запись в БД делает инъектируемый `on_close` callback; пока None → лог «[SHADOW] would close». Активация (wiring on_close + удаление position_sync close-by-price) = Ф4.1, ТОЛЬКО после теста на копии БД (инцидент 2026-04-07). Ledger duck-typed (Sphere не тянет файл DS).
+- ✅ **Тесты `tests/unit/test_execution_sphere.py` 15/15** (FakeAdapter offline: open SIM/VST/guard, fill→store+ledger, pa=0→intent shadow+callback, полный цикл с классификацией exit SL@0.49, close/adjust_sl делегирование, cold_start equity, reconcile WS-drop + no-false-positive). **Всего по эпику 66/66.** py_compile OK.
+- 🔵 **Следующий: Ф4.1 wiring** (на копии БД): on_close → trade_simulator.close_trade с exit из ExitInfo; cold_start при старте; reconcile-loop с bounded-staleness. ПОТОМ Ф4.2 (orphan/emergency через Sphere.close), Ф5 (дашборд). 🔴 close-path активировать только после copy-DB теста.
+- ⚠️ `__init__` экспортит ExecutionSphere/CloseIntent (мои). Адаптер/леджер — прямой импорт. Живой бот НЕ тронут (3 коммита: e88f95f/eaacf97/cebadfe + текущий).
+
 ## [19.06 ~18:10 UTC] Агент: Даат — ✅ Ф3.3 (PositionStore + аудит BingXClient) + леджер DS проверен
 
 - ✅ **АУДИТ BingXClient (требование юзера)** → `docs/BINGX_CLIENT_AUDIT.md`. Прочитал ВЕСЬ файл (751 строка). Вердикт: НЕ гнилой. ~60% выстраданные фиксы+плюминг (GlobalRateLimiter/100410-бан, sync_time-throttle/109400, precision-cache, get_positions БРОСАЕТ не [], hedge-close 101205+one-click, dual-signing) — НЕ трогать. ~15% реальный запах: дубль 109400-retry ×3 (get/post/delete) + дубль ban-парсинга в get_balance → консолидировать ВНУТРИ адаптера (тех-уборка, не блокер). Gaps: нет standalone set_leverage/set_margin_mode (подтверждает margin-enforce кирпич). **Деньги текли НЕ в клиенте, а в оркестрации** → план A верен (обернуть клиент, снести оркестрацию).

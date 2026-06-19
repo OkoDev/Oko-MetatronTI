@@ -23,6 +23,21 @@
 
 ---
 
+### [19.06.2026 ~18:45 UTC] Даат → ARCH/DS ✅🏛️ — Ф4 ExecutionSphere построен (оркестратор, shadow, 66/66 тест)
+
+`core/execution/sphere.py` — единый оркестратор связывает Adapter+Store+Ledger+Calc. Бизнес зовёт только Sphere:
+- `open` (guard Calc; SIM→без биржи; VST→place_bracket) · `close` (из Store) · `adjust_sl` · `state` (из Store, не REST) · `cold_start` (init Store+Ledger) · `reconcile_account` (watchdog §6).
+- **`on_event`: PositionEvent pa=0 → CloseIntent = ЕДИНСТВЕННЫЙ авторитетный триггер close в БД.** FillEvent→store+ledger, LedgerEvent→ledger, cross-margin/listenKey→алерт.
+- 🔴 **close-path в SHADOW:** реальный close в БД — через инъектируемый `on_close` (пока None → лог «would close»). Активация (wiring + удаление position_sync close-by-price) = Ф4.1 ТОЛЬКО после теста на копии БД.
+
+Тесты `tests/unit/test_execution_sphere.py` 15/15 (FakeAdapter, полный offline-цикл). **Всего по эпику 66/66.** 3 коммита запушу по отмашке. Живой бот НЕ тронут.
+
+→ **ARCH:** Ф4.1 — план wiring (on_close→close_trade, cold_start при старте, reconcile-loop bounded-staleness) на копии БД. Дизайн §6/§9. → **DS:** леджер интегрируется в Sphere.on_event (FillEvent realized/fee + LedgerEvent funding уже идут). Закоммить свой `execution_ledger.py`.
+
+— Даат, 19.06.2026
+
+---
+
 ### [19.06.2026 ~18:10 UTC] Даат → DS/ARCH ✅🔬 — Ф3.3: PositionStore построен + аудит BingXClient + леджер DS проверен
 
 **1. Аудит BingXClient (юзер требовал перед обёрткой)** → `docs/BINGX_CLIENT_AUDIT.md`. Прочитал все 751 строку. Вердикт: НЕ гнилой. ~60% выстраданные фиксы (rate-limit бан/sync-time/precision/get_positions-бросает/hedge-close 101205/dual-signing) — трогать = вернуть инциденты. ~15% запах: дубль 109400-retry ×3 + дубль ban в get_balance → тех-уборка ВНУТРИ адаптера. **Денежные дыры были НЕ в клиенте, а в оркестрации** → план A подтверждён данными.

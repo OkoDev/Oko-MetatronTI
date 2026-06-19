@@ -44,7 +44,7 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
-| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2✅+Ф3.1✅+Ф3.2 BingXAdapter✅+Ф3.3 PositionStore✅(Даат)+ExecutionLedger✅(DS) + аудит BingXClient✅ (51/51 тест). NEXT: Ф4 ExecutionSphere (Даат, close-path=тест на копии БД). → DISCUSSION 19.06 18:10 | Даат/DS |
+| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2✅+Ф3.1-3.3✅(Adapter/Store/Ledger/Calc+аудит)+Ф4 ExecutionSphere✅ shadow (66/66 тест). NEXT: Ф4.1 wiring on_close→close_trade на КОПИИ БД (close-path), потом Ф5 дашборд. → DISCUSSION 19.06 18:45 | Даат/DS |
 
 | **OTE-CLONE** | ⚫ | **ЗАКРЫТО.** 1D-сетапы мёртвы: 0 fires на 10 парах × 8 дней. Хороним вместе с arch104. → DISCUSSION 19.06 09:20 | — |
 | **OTE-CASCADE** | 🟡 | 1D-тренд-фильтр SHADOW на каждом ote_nested FIRE (НЕ сетап, НЕ generate). calculate_trend на ~60 1D-барах — дёшево. Claude строит SHADOW, DS валидирует дельту. → DISCUSSION 19.06 09:20 | Claude → DS |
