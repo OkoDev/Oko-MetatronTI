@@ -10,7 +10,11 @@
 
 **Корень всех дыр (доказано 19.06):** два конкурирующих источника закрытия — WS `pa=0` (истина) ∥ REST `position_sync:504` close-by-price (по 15s-кэшу, ложно→призраки). + account-хардкод (`:364`) + не юзаем WS `o.rp/o.n/FUNDING_FEE/LIQUIDATION`. Всё = лоскутное исполнение. Карта 8 узлов + фазы перестройки → в ТЗ.
 
-**✅ Ф1 (docs/API-меню) ЗАКРЫТА:** установлен `BingX-API/api-ai-skills` (27 skills, swap-trade/account/ws-account) + WS-спека выжата. **СТАРТ новой сессии = Ф2 (дизайн ExecutionSphere + ExchangeAdapter), со свежей головой.** НЕ кодить close-path без теста на копии БД.
+**✅ Ф1 (docs/API-меню) ЗАКРЫТА:** установлен `BingX-API/api-ai-skills` (27 skills, swap-trade/account/ws-account) + WS-спека выжата.
+
+**✅ Ф2 (дизайн) ЗАКРЫТА 19.06 ~16:25 → [docs/EXECUTION_SPHERE_DESIGN.md](docs/EXECUTION_SPHERE_DESIGN.md):** контракт ExecutionSphere (open/close/on_event/adjust_sl/state) + ExchangeAdapter ABC + PositionStore + ExecutionLedger; доменная модель биржа-агностик; правило-истина закрытия (§6: только WS pa=0, close-by-price `position_sync:501-654` УДАЛИТЬ); карта поглощения 8 узлов (§8); порядок миграции Ф3.1→Ф5 (§9). **4 развилки (§10) на ревью ARCH/рой.**
+
+**🔵 СТАРТ следующей сессии = ревью контракта (ARCH/рой §6+§10) → Ф3.1 каркас:** `core/execution/` доменка + `ExchangeAdapter` ABC + `ExecutionCalc` (перенос чистых функций sizing/R/guards БЕЗ дрейфа, parity-тест против старых). Аддитивно, за флагами. 🔴 close-path (Ф4.1) — только после теста на копии БД (инцидент 2026-04-07).
 
 **⏳ ПЕРЕД перестройкой (висит):** PUSH накопленного (≈8 файлов заплаток + доки, см. current_state). Симптом призраков НЕ закрыт (`orphan_autoclose: shadow`). Бот жив PID 31496 (рестарт #3, 19:04).
 

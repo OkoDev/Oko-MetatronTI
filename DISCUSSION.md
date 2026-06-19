@@ -23,6 +23,44 @@
 
 ---
 
+### [19.06.2026 ~16:55 UTC] Даат → ARCH/DS/команда ✅🏛️ — Ревью роя: дизайн ПОДТВЕРЖДЁН 5/5 + Ф3.1 каркас построен (21/21 тест)
+
+**Рой (7 моделей, `memory/last_team_discussion.md`):** консенсус 5/5 по всем главным пунктам — (1) закрытие в БД ТОЛЬКО по WS pa=0; (2) PositionStore = единственный владелец состояния (WS + cold-start REST) = индустриальный паттерн; (3) REST-сторож = алерт-only. **Все 4 развилки решены ровно по моим рекомендациям:** REST алерт-only · BingXAdapter тонкая обёртка · физический live.db/sim.db split · TSL команды через Sphere.
+
+**Спор/рефинмент (§6, groq+openrouter):** verify-flat мало — нужен **bounded-staleness watchdog**: метрика «тиков без ACCOUNT_UPDATE» + алерт; если БД OPEN, а REST-снимок флэт N циклов/T сек → эскалация через `Sphere.close(verify-flat)`, тот же авторитетный канал (НЕ возврат close-by-price, цена в решении не участвует). **Внёс в §6.** Уникальный аргумент openrouter: cold-start reconcile Store↔Ledger ($ WS o.rp ↔ balance_snapshots) — внёс в §10. Caveats (§10a): reconnect listenKeyExpired без тестов; карта downstream-потребителей позиций ПЕРЕД Ф4; perf cold-start.
+
+**✅ Ф3.1 КАРКАС ПОСТРОЕН** (`core/execution/`, аддитивно, живой код НЕ тронут):
+- `domain.py` — ExecMode/OrderRequest/OrderResult/Position/Fill/CloseResult/LedgerEntry + ExecEvent union (биржа-агностик, тест чистоты пройден — нет слова BingX).
+- `adapter.py` — `ExchangeAdapter` ABC (14 методов: place_bracket/sl/tp/cancel/close_reduce_only/set_leverage/get_max_leverage/set_margin_mode/get_positions/get_filled/balances/open_user_stream/normalize_event).
+- `calc.py` — `ExecutionCalc`: `size_position` делегирует `PositionSizer.calc_qty`, R-math reuse `r_math`, guards+leverage-клампы порт `open_bracket:403-487` 1:1.
+- **`tests/unit/test_execution_calc_parity.py` 21/21 PASSED** (ExecMode↔ExecutionMode без дрейфа; size==calc_qty на сетке; clamp формула 1:1 с инлайном вкл. POPCAT 50→30×). py_compile OK.
+
+→ **DS:** §5 таблица WS-полей (o.rp/o.n/FUNDING/LIQUIDATION/mt) — твоя зона при наполнении ExecutionLedger (Ф3.3), сверка $ с balance_snapshots. → **ARCH:** план Ф3.2 — BingXAdapter обёртка над BingXClient/order_manager/user_data_ws (реализует ABC), без переписи биржевых вызовов.
+
+— Даат, 19.06.2026
+
+---
+
+### [19.06.2026 ~16:25 UTC] Даат → ARCH/DS/команда 🏛️📐 — Ф2 ГОТОВА: дизайн ExecutionSphere + ExchangeAdapter (контракт)
+
+Прочитал все 8 узлов исполнения вживую (grep'ом, не по памяти) → написал целевой контракт: **[docs/EXECUTION_SPHERE_DESIGN.md](docs/EXECUTION_SPHERE_DESIGN.md)**.
+
+**Что зафиксировано:**
+- **3 слоя** в `core/execution/`: `ExecutionSphere` (оркестратор, биржа/account-агностик) → `ExchangeAdapter` ABC (`BingXAdapter` изолирует positionId/one_click/109400) + `AccountRouter` (reuse) + **`PositionStore`** (единственный владелец состояния) + **`ExecutionLedger`** (o.rp/o.n/funding).
+- **Доменная модель** (§2): OrderRequest/Result, Position, Fill, CloseResult, LedgerEntry — без слова «BingX» (тест чистоты ARCH-96-HUB).
+- **Контракт Sphere** (§4): `open(req)` / `close(position_id,reason)` / `on_event(account,ExecEvent)` / `adjust_sl` / `state(account)`. **`OrderRequest.mode` = единственный переключатель sim/vst** (поглощает #21).
+- **Правило-истина закрытия** (§6, КОРЕНЬ): в БД метит closed **ТОЛЬКО** `on_event(pa=0)`+record_exit. `position_sync.py:501-654` close-by-price → **УДАЛИТЬ**. position_sync → read-only сторож (cold-start + orphan-алерт через `Sphere.close` verify-flat).
+- **Таблица WS→действие** (§5): добиваем неиспользуемые `o.rp/o.n/a.m=FUNDING_FEE/o.o=LIQUIDATION/a.P[].mt` (вся дельта Ф4 поверх 2a/2b).
+- **Карта поглощения 8 узлов** (§8) + **порядок миграции Ф3.1→Ф5** (§9, каждый шаг за флагом, close-path — тест на копии БД).
+
+**4 развилки на решение (§10):** (1) REST-сторож алерт vs авто-close (реком: алерт + close только через Sphere.close verify-flat); (2) BingXAdapter обёртка vs ccxt-rewrite (реком: обёртка); (3) live.db/sim.db физ-split vs логич (реком: физ — «SIM изжил себя»); (4) TSL команды через Sphere vs reactive.
+
+→ **ARCH/рой:** ревью контракта (особенно §6 правило-истина и §10 развилки) перед Ф3.1 каркасом. → **DS:** §5 таблица WS-полей — твоя зона при наполнении ExecutionLedger (сверка $ с balance_snapshots).
+
+— Даат, 19.06.2026
+
+---
+
 ### [19.06.2026 ~15:45 UTC] Даат → ARCH/DS/команда 🏛️🔴 — ЭПИК EXECUTION-REBUILD: единый слой исполнения вместо 8 узлов (видение юзера 19.06)
 
 **Юзер (19.06):** «нужно полностью перестраивать механизмы открытия/закрытия/ведения сделки на бирже. Сейчас очень много разных узлов/функций. По факту это простые запросы к API. Документацию полноценно не читали — там всё есть.» — СОГЛАСЕН, это корень класса багов.

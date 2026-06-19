@@ -9,6 +9,18 @@
 
 ---
 
+## [19.06 ~16:25 UTC] Агент: Даат — 📐 EXECUTION-REBUILD Ф2 ГОТОВА (дизайн ExecutionSphere)
+
+- ✅ **Ф2 дизайн записан:** `docs/EXECUTION_SPHERE_DESIGN.md`. Прочитал все 8 узлов исполнения grep'ом (exec_ws_integration / position_sync / order_manager / trade_router / account_router / user_data_ws / tsl_updater / trade_simulator close-path) → заземлённый контракт.
+- **Содержание:** 3 слоя `core/execution/` (ExecutionSphere → ExchangeAdapter ABC + AccountRouter reuse + PositionStore + ExecutionLedger); доменная модель (OrderRequest/Result/Position/Fill/CloseResult/LedgerEntry, биржа-агностик); контракт open/close/on_event/adjust_sl/state; `OrderRequest.mode` = единственный sim/vst-переключатель.
+- **🔴 КОРЕНЬ зафиксирован (§6):** close в БД метит ТОЛЬКО `on_event(pa=0)`; `position_sync:501-654` close-by-price → УДАЛИТЬ; position_sync = read-only сторож (cold-start + orphan-алерт через Sphere.close verify-flat). Убирает конкуренцию WS∥REST = корень призраков.
+- **Таблица WS→действие (§5):** добиваем неиспользуемые o.rp/o.n/FUNDING_FEE/LIQUIDATION/mt. **Карта поглощения 8 узлов (§8)** + порядок миграции Ф3.1→Ф5 (§9, за флагами, close-path=тест на копии БД).
+- **4 развилки (§10) на ревью ARCH/рой** перед Ф3.1: REST-сторож алерт vs close; BingXAdapter обёртка vs ccxt; live.db/sim.db физ vs логич; TSL команды vs reactive.
+- ✅ **Ф3.1 КАРКАС ПОСТРОЕН** (`core/execution/`, аддитивно, живой код НЕ тронут): `domain.py` (ExecMode/OrderRequest/OrderResult/Position/Fill/CloseResult/LedgerEntry + ExecEvent union), `adapter.py` (ExchangeAdapter ABC, 14 методов, БЕЗ слова BingX), `calc.py` (ExecutionCalc: size_position делегирует PositionSizer, R-math reuse r_math, guards+leverage-клампы порт open_bracket:403-487), `__init__.py` экспорт. **Parity-тест `tests/unit/test_execution_calc_parity.py` — 21/21 PASSED** (ExecMode не дрейфует от ExecutionMode; size==calc_qty; clamp формула 1:1 с инлайном; POPCAT 50→30×). py_compile OK.
+- ✅ **РЕВЬЮ РОЯ: дизайн ПОДТВЕРЖДЁН 5/5** (`memory/last_team_discussion.md`, 7 моделей). Консенсус: WS pa=0 = единственная истина close; PositionStore = владелец состояния; REST = алерт-only. **4 развилки решены по моим рекомендациям** (REST алерт-only / BingXAdapter обёртка / физ live.db+sim.db split / TSL через Sphere). Рефинмент §6: bounded-staleness watchdog (метрика тиков-без-ACCOUNT_UPDATE + эскалация Sphere.close(verify-flat) после N циклов флэта — НЕ возврат close-by-price). Внесён в дизайн §6/§10/§10a (+ cold-start reconcile Store↔Ledger, caveats: reconnect-тест, карта downstream, perf).
+- 🔵 **Следующий шаг:** Ф3.2 (BingXAdapter обёртка над BingXClient/order_manager/user_data_ws — реализует ABC, без переписи биржевых вызовов).
+- ⚠️ Сессия: код бота НЕ тронут (новый пакет `core/execution/` + тест + `docs/` + координация MD). DISCUSSION 16:25.
+
 ## [19.06 ~18:50 UTC] Агент: Даат — ✅ РЕСТАРТ #2: масштаб истории + CASCADE логирует; 🔧 CASCADE баг регистра исправлен (нужен рестарт #3)
 
 - ✅ Бот PID 15444 (старт 18:49:44), чисто. **trades_filtered масштаб РАБОТАЕТ** (lev/size/$ в истории дашборда: AWE 20×/qty/profit_pct). balance_history sparkline ✅.

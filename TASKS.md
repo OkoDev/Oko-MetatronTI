@@ -44,6 +44,11 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф0/Ф1/Ф2✅+ревью роя 5/5✅+Ф3.1 каркас✅ (`core/execution/`, 21/21 тест). NEXT: Ф3.2 BingXAdapter обёртка. Поглощает ARCH-96-HUB/EXEC, #21. → DISCUSSION 19.06 16:55 | Даат/ARCH |
+
+| **OTE-CLONE** | ⚫ | **ЗАКРЫТО.** 1D-сетапы мёртвы: 0 fires на 10 парах × 8 дней. Хороним вместе с arch104. → DISCUSSION 19.06 09:20 | — |
+| **OTE-CASCADE** | 🟡 | 1D-тренд-фильтр SHADOW на каждом ote_nested FIRE (НЕ сетап, НЕ generate). calculate_trend на ~60 1D-барах — дёшево. Claude строит SHADOW, DS валидирует дельту. → DISCUSSION 19.06 09:20 | Claude → DS |
+| **WT-PCT** | 🟢 | WT-процентили vs фикс. OB/OS: P5/200b чемпион (80% пар+, +10R avg). SHADOW-first (Даат 06:00). Скрипт: `scripts/wt_percentile_test.py`. → DISCUSSION 19.06 | DS |
 | **DASH-SETTINGS-GATES** | 🔵 | **BACKLOG (юзер 18.06): вывести лимиты EXEC-SIM-SPLIT в дашборд → Settings → «Entry Gates & Protection»** (секция уже есть, 0/7). Добавить в реестр toggles/sliders (`dashboard_server.py:2142+`) + POST-save + фронт `GATE_TOGGLES`/слайдеры (`settings.tsx`): `l3_checker.enabled` (toggle), `max_total_risk_pct` (slider 0-30), `risk_gate_shadow` (Shadow/Block как BTC FILTER), `min_available_usdt` (slider 0-50), `margin_gate_shadow`, `max_open_long/short/total`. Объём малый (паттерн есть). ⚠️ oko-dashboard НЕ git. Делать ПОСЛЕ обкатки shadow+активации лимитов. | DEV/Claude |
 | **ARCH-131** | 🟢 | Сфера 5 Cross-Market: +USDT.D/BTC.D (shadow, soft) + макро-календарь (DS). A=код DEV/Claude, B=DS. Risk Monitor #11 раньше Capital Allocator #19; gated EXEC-SIM-SPLIT #21. Детали→DISCUSSION 16.06 20:05. | ARCH→DEV/DS |
 | **ARCH-130** | 🟢 | **OhlcvCache reader оптимизация** — заменить `pd.DataFrame([r])` per свечу в QueueReaderThread на сырой dict/tuple + `deque+SimpleQueue` вместо RLock-pandas-merge. Цель: убрать налог холодного старта (~200с), разблокировать sem=16+. Рой 14.06 (groq+openrouter): консенсус — правильный путь. Риск: аудит downstream потребителей OhlcvCache (rolling/groupby в analytics). Принцип: [[principle_reuse_not_duplication]]. Детали → DISCUSSION.md 14.06 19:00 UTC. | ARCH/Claude |
