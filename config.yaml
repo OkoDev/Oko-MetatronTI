@@ -148,7 +148,10 @@ trading:
   # EXEC-SIM-SPLIT (17.06): SIM-номинал + fallback для sizing при сбое REST. НЕ источник истины
   # для VST: реальный риск/дашборд берут equity per-account из balance_snapshots (ARCH-DB-V2),
   # VST sizing — live availableMargin. ⚠️ реальный equity ~316 (acc1 ~150 + acc2 ~167) ≠ 710.
-  deposit_usdt: 710.0
+  deposit_usdt: 598.0   # 19.06 OTE-ONLY Режим В (DS): SIM-номинал ≈ реальный equity
+  # 19.06: risk_pct/leverage — ГЛОБАЛЬНЫЙ FALLBACK (для источников без per-source override).
+  # Режим В живёт в source_policies.ote_nested (leverage:50/risk_pct:0.5). Глобал вернул к
+  # безопасному дефолту, чтобы новые стратегии НЕ наследовали 50x ote_nested.
   risk_pct: 1.0
   leverage: 5
   max_notional_mult: 20.0
@@ -216,13 +219,13 @@ trading:
     # НЕ количество (узкий стоп взрывает notional при том же risk%). Старт SHADOW: лог [DEV-52][RISK]
     # exposure/would_block без блокировки → собрать распределение → выбрать потолок по данным.
     # Рой 17.06: cerebras 5-10% (система нестабильна, 60% фантомов), DS 20% cap-цель. Старт активации 10%.
-    max_total_risk_pct: 10.0     # потолок суммарного риска открытых VST. null/0 → проверка выключена
-    risk_gate_shadow: true        # true → только лог would_block (не блокирует), даже при enabled=true
+    max_total_risk_pct: 25.0     # 19.06 Режим В: 10→25 (диверсификация ~37 поз). потолок суммарного риска открытых VST
+    risk_gate_shadow: false       # 19.06 Режим В: АКТИВИРОВАН (было shadow). Блокирует вход при суммарном риске >25%
     # Кирпич №2 margin pre-check (17.06): блок нового входа если available маржа per-account < порога
     # (из balance_snapshots). Корень фантомов: register пишет SIM ДО placement → margin-reject оставляет
     # SIM=фантом. Shadow 17.06: available ~22/acc, used 87%. Старт 5 USDT (margin сделки ~2-5), уточнить.
     min_available_usdt: 5.0      # порог доступной маржи. null/0 → проверка выключена
-    margin_gate_shadow: true      # true → только лог [DEV-52][MARGIN] would_block (не блокирует)
+    margin_gate_shadow: false     # 19.06 Режим В: АКТИВИРОВАН (было shadow). Блокирует вход при available < min_available_usdt
   correlation_groups:
   - - PAXG
     - XAUT
@@ -574,7 +577,7 @@ signal_router:
     log_path: logs/router_shadow.log
   default_policy:
     min_strength: 50
-    exchange_enabled: true
+    exchange_enabled: false   # 19.06 OTE-ONLY: catch-all off (через него шёл liquidity_sweep и пр.). Только ote_nested торгует.
     trade_mode: ''
     soft_gates_enabled:
     - strength_threshold
@@ -587,23 +590,23 @@ signal_router:
   source_policies:
     atr_change:
       min_strength: 15
-      exchange_enabled: true
+      exchange_enabled: false   # 19.06 ОТКЛЮЧЁН: честный R после fake-R фикса LONG −0.083/SHORT −0.183, net −$74 (комиссии). [[bug_phantom_exit_resolve]]
       trade_mode: atr_change
     wt_sideways:
       min_strength: 60
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: sideways
     wl_breach:
       min_strength: 45
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: wl_breach
     mtf_alert:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     mtf_bias:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     pivot_reversal:
       min_strength: 70
@@ -615,7 +618,7 @@ signal_router:
       trade_mode: ''
     wt_b_signal:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     confluence:
       min_strength: 70
@@ -623,45 +626,47 @@ signal_router:
       trade_mode: ''
     divergence:
       min_strength: 40
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     anomaly:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     trend_signal:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     composite:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     monitoring:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     monitoring_escal:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     arch104:
       min_strength: 40
-      exchange_enabled: true
+      exchange_enabled: false   # 19.06 ОТКЛЮЧЁН: честный R после fake-R фикса LONG −0.182/SHORT −0.050 (SHORT БОЛЬШЕ НЕ несёт — иллюзию держал fake-R), net −$208. [[bug_phantom_exit_resolve]]
       trade_mode: arch104
       soft_gates_enabled: []
     ote_nested:
       min_strength: 40
-      exchange_enabled: true
+      exchange_enabled: true   # 19.06 OTE-ONLY Режим В: ЕДИНСТВЕННЫЙ торгующий источник
       trade_mode: ote_nested
       soft_gates_enabled: []
+      leverage: 50             # 19.06 Режим В: ЛОКАЛЬНОЕ плечо ote_nested (не глобальное!)
+      risk_pct: 0.5            # 19.06 Режим В: ЛОКАЛЬНЫЙ риск ote_nested
     trigger_loop:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     event_bus:
       min_strength: 50
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ''
     intelligence_cmd:
       min_strength: 0
@@ -691,7 +696,7 @@ arch96:
     enabled: true
 arch104:
   vst_trading:
-    enabled: true
+    enabled: false   # 19.06 ОТКЛЮЧЁН (observer-loop гейт): балласт на честном R, net −$208. Реверс: true. [[bug_phantom_exit_resolve]]
     signal_type: arch104
   choch_length: 50
   d051_wt_cross_gate: false

@@ -1527,6 +1527,24 @@ class TradeSimulator:
         except Exception as e:
             logger.warning("TradeSimulator: set_exchange_tp_order_id #%d: %s", trade_id, e)
 
+    def set_position_id(self, trade_id: int, position_id: str) -> None:
+        """Сохраняет positionID позиции на бирже (fake-R фикс, 19.06).
+
+        positionID неизменен через всю жизнь позиции (вход + SL + TP + перевыставленные SL),
+        поэтому в _resolve_exit он — надёжный якорь exit'а: устойчив к cancel+replace SL
+        (лечит протухший exchange_sl_order_id), повторным входам и старым ордерам по символу.
+        [[bug_phantom_exit_resolve]]
+        """
+        try:
+            with self._db_connect() as conn:
+                conn.execute(
+                    "UPDATE simulated_trades SET position_id = ? WHERE id = ?",
+                    (str(position_id), trade_id),
+                )
+            logger.debug("TradeSimulator: trade #%d → position_id=%s", trade_id, position_id)
+        except Exception as e:
+            logger.warning("TradeSimulator: set_position_id #%d: %s", trade_id, e)
+
     def set_exchange_order_id(
         self, trade_id: int, order_id: str, qty: float = 0.0,
         actual_entry_price: float = 0.0,

@@ -107,6 +107,7 @@ class SubscriptionManager:
                     tsl_tf TEXT DEFAULT '15m',
                     exchange_order_id TEXT,
                     exchange_sl_order_id TEXT,
+                    position_id TEXT,
                     tp1_price REAL,
                     tp2_price REAL,
                     tp3_price REAL,
@@ -131,6 +132,14 @@ class SubscriptionManager:
                 ("tsl_tf", "TEXT DEFAULT '15m'"),
                 ("exchange_order_id", "TEXT"),
                 ("exchange_sl_order_id", "TEXT"),
+                # fake-R фикс (19.06): positionID жизни позиции (вход+SL+TP+перевыставленные =
+                # ОДИН positionID) — надёжный якорь exit'а в _resolve_exit вместо протухающего
+                # orderId / эвристики symbol+side, что хватала чужой старый close. [[bug_phantom_exit_resolve]]
+                ("position_id", "TEXT"),
+                # fake-R карантин (19.06): миграция помечает фантом-монстров R>10 с MFE=None,
+                # которые НЕЛЬЗЯ восстановить (нет [min,max] и нет ордера в окне allOrders) →
+                # R_multiple/profit_pct=NULL (исключены из метрик/весов), пометка для аудита.
+                ("fakeR_quarantine", "INTEGER DEFAULT 0"),
                 ("tp1_price", "REAL"),
                 ("tp2_price", "REAL"),
                 ("tp3_price", "REAL"),
@@ -148,6 +157,10 @@ class SubscriptionManager:
                 ("execution_mode", "TEXT DEFAULT 'SIM'"),  # SIM/VST/LIVE — явно, не через NULL
                 ("exchange", "TEXT DEFAULT 'bingx'"),      # биржа (Ф2 нормализует в exchange_id)
                 ("total_fee", "REAL DEFAULT 0"),           # 13.06: комиссия round-trip (qty×entry×0.1%), заполняется при close_trade
+                # 19.06: фактическое плечо сделки (записывается при открытии в trade_router).
+                # Корень: дашборд брал leverage из ЖИВОГО config → старые сделки «перекрашивались»
+                # задним числом при смене конфига. Теперь = свойство сделки (per-source, не глобал).
+                ("leverage", "REAL"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")

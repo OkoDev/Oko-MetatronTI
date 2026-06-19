@@ -69,6 +69,7 @@ class BracketResult:
     tp_order_id:   Optional[str]  = None
     error:         Optional[str]  = None
     notional_usdt: float          = 0.0
+    leverage:      Optional[int]  = None   # 19.06: ФАКТ. плечо (после клампа к max пары)
     metadata:      dict           = field(default_factory=dict)
 
 
@@ -273,6 +274,8 @@ class BingXClient:
                     "qty":     int(item.get("quantityPrecision") or 2),
                     "price":   int(item.get("pricePrecision") or 4),
                     "min_qty": float(item.get("tradeMinQuantity") or 0),
+                    "min_notional": float(item.get("tradeMinUSDT") or 0),
+                    # max_leverage — НЕТ в /quote/contracts. Получать из /trade/leverage per-position.
                 }
             self._contracts_loaded = True
             logger.info("[BingXClient] contracts precision loaded: %d symbols", len(self._contracts_cache))
@@ -301,6 +304,30 @@ class BingXClient:
         prec = int(info["price"]) if info else 6
         factor = 10 ** prec
         return round(price * factor) / factor
+
+    async def get_contract_info(self, symbol: str) -> dict:
+        """Возвращает {qty, price, min_qty, min_notional} для пары (из /quote/contracts)."""
+        await self._load_contracts()
+        bx_symbol = to_bingx_symbol(symbol)
+        return self._contracts_cache.get(bx_symbol, {})
+
+    async def get_leverage_info(self, symbol: str) -> dict:
+        """GET /trade/leverage?symbol=X — макс плечо и позиции для пары (приватный, с подписью).
+        Ответ: {symbol, maxLongLeverage, maxShortLeverage, maxPositionLongVal, maxPositionShortVal, ...}"""
+        bx_symbol = to_bingx_symbol(symbol)
+        try:
+            resp = await self.get("/openApi/swap/v2/trade/leverage", {"symbol": bx_symbol})
+            if isinstance(resp, dict) and "data" in resp:
+                data = resp["data"]
+                # Кэшируем max_leverage в contracts_cache
+                if bx_symbol in self._contracts_cache:
+                    self._contracts_cache[bx_symbol]["max_long_lev"] = int(data.get("maxLongLeverage") or 125)
+                    self._contracts_cache[bx_symbol]["max_short_lev"] = int(data.get("maxShortLeverage") or 125)
+                return data
+            return resp
+        except Exception as e:
+            logger.warning("[BingXClient] get_leverage_info %s: %s", symbol, e)
+            return {}
 
     def _sign(self, params_str: str) -> str:
         return hmac.new(self._secret.encode(), params_str.encode(), hashlib.sha256).hexdigest()

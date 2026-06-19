@@ -36,14 +36,19 @@ _ORDER_TYPE_TO_STATUS = {
 async def _resolve_exit(
     client, symbol: str, direction: str, mark_price: float | None,
     sl_order_id: str | None = None, tp_order_id: str | None = None,
+    position_id: str | None = None,
 ) -> tuple[str, float | None]:
     """
     Определяет статус (SL/TP/TSL/EXPIRED) и exit_price через filled orders на бирже.
 
-    ПРИОРИТЕТ — точный матч по orderId ЭТОЙ сделки (sl_order_id/tp_order_id). Без него
-    матч по symbol+side хватал avgPrice ЧУЖОЙ сделки по символу (повторные входы/hedge)
-    → фантомный exit вне диапазона жизни (STG R=264 при max_R_possible=1.3). Если order id
-    нет / ордер ещё не в истории — fallback на эвристику symbol+side с sanity по mark.
+    ПРИОРИТЕТ матчей (от надёжного к эвристике):
+      0) positionID сделки — якорь жизни позиции (вход+SL+TP+перевыставленные SL = ОДИН
+         positionID). Устойчив к cancel+replace SL (лечит протухший exchange_sl_order_id),
+         повторным входам, старым ордерам. fake-R фикс 19.06 [[bug_phantom_exit_resolve]].
+      1) orderId сделки (sl_order_id/tp_order_id) — точный, но None при незахвате /
+         протухает после cancel+replace SL.
+      2) эвристика symbol+side с sanity по mark — последний рубеж (хватала ЧУЖОЙ avgPrice
+         по символу → фантомный exit, STG R=264 при max_R_possible=1.3).
 
     Returns:
         (status, exit_price)  — exit_price может быть None если данных нет.
@@ -52,6 +57,25 @@ async def _resolve_exit(
         filled = await client.get_filled_orders(symbol, limit=50)  # DEV-148: 20→50 (TP с R<0 баг)
         # LONG закрывается SELL-ордером, SHORT — BUY-ордером
         close_side = "SELL" if direction == "LONG" else "BUY"
+
+        # 0) ЯКОРЬ positionID — самый надёжный матч. Берём close-side FILLED ордер ЭТОЙ позиции
+        # (casing разный: ордер несёт `positionID`, снимок позиции — `positionId`). При нескольких
+        # (частичные/перевыставленные) — последний по updateTime = реальный финальный выход.
+        if position_id:
+            _pid = str(position_id)
+            _cands = [
+                o for o in filled
+                if str(o.get("positionID") or o.get("positionId") or "") == _pid
+                and str(o.get("side", "")).upper() == close_side
+            ]
+            if _cands:
+                o = max(_cands, key=lambda x: int(x.get("updateTime") or x.get("time") or 0))
+                _avg = o.get("avgPrice") or o.get("stopPrice") or o.get("price")
+                _status = _ORDER_TYPE_TO_STATUS.get(o.get("type", ""), "EXPIRED")
+                _exit = float(_avg) if _avg else mark_price
+                logger.debug("[POSITION-SYNC] %s %s: exit по positionID=%s → %s @ %.8g",
+                             symbol, direction, _pid, _status, _exit or 0)
+                return _status, _exit
 
         # 1) ТОЧНЫЙ матч по orderId сделки — нет путаницы между сделками одного символа.
         _id_map: dict[str, str] = {}
@@ -251,7 +275,8 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
         # искажение метрик (avgR/WR завышены = «бумажная иллюзия»). Корень USELESS #21703.
         try:
             _st6, _px6 = await _resolve_exit(client, sym, direction, cur_price,
-                                             trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"))
+                                             trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"),
+                                             trade.get("position_id"))
             if bot.trade_simulator.close_trade(trade_id, _st6, _px6):
                 logger.info("[OPS-06] %s #%d: БД закрыта %s @ %.6f после emergency (orphan-prevent)",
                             sym, trade_id, _st6, _px6 or 0)
@@ -485,7 +510,8 @@ async def sync_positions(bot) -> None:
                 pass
 
             status, exit_price = await _resolve_exit(client, sym, direction, mark_price,
-                                                     trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"))
+                                                     trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"),
+                                                     trade.get("position_id"))
 
             # TSL реализован через STOP ордер (cancel+replace), поэтому на бирже он
             # срабатывает как STOP_MARKET → _resolve_exit возвращает "SL".

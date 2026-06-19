@@ -494,7 +494,7 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
                     c.row_factory = _sq.Row
                     return [dict(r) for r in c.execute(
                         "SELECT id,symbol,direction,signal_type,entry_price,stop_loss,original_sl,take_profit,"
-                        "created_at,execution_mode,account_id,tsl_activated,qty,timeframe,regime "
+                        "created_at,execution_mode,account_id,tsl_activated,qty,timeframe,regime,leverage "
                         "FROM simulated_trades "
                         "WHERE status='OPEN' ORDER BY created_at DESC LIMIT 300").fetchall()]
             try:
@@ -524,7 +524,9 @@ async def _handle_open_trades(request: web.Request) -> web.Response:
             st = _pc.get(t["symbol"]) if _pc else None
             cur = (st.tick_price if st else None)
             t["current_price"] = cur
-            t["leverage"] = _lev_map.get(t["symbol"]) or _cfg_lev
+            # leverage из ФАКТА (19.06): real bus (открытая биржевая позиция) → записанное в БД
+            # на сделке → глобальный config (последний резерв). НЕ «перекрашиваем» задним числом.
+            t["leverage"] = _lev_map.get(t["symbol"]) or t.get("leverage") or _cfg_lev
             # размер ордера (notional $) = qty × текущая цена (или entry если цены нет)
             _qty = float(t.get("qty") or 0)
             t["notional"] = round(_qty * (cur or t.get("entry_price") or 0), 2)

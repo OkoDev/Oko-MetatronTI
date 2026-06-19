@@ -352,6 +352,34 @@ class OrderManager:
             logger.warning("[OrderManager] has_open_position %s: %s", symbol, e)
             return False  # при ошибке не блокируем
 
+    _MAX_LEV_TTL = 3600.0   # 19.06: перепроверять max-плечо пары раз в час (биржа меняет лимиты)
+
+    async def _get_pair_max_leverage(self, client, symbol: str, pos_side: str) -> Optional[int]:
+        """Max допустимое плечо пары (maxLong/maxShort) с кэшем+TTL.
+
+        Корень (19.06): place /trade/leverage отвергает leverage > max → бот глотал ошибку и
+        позиция открывалась на СТАРОМ (стейл) плече (SSV: просил 50, max 20, было 5 → открылось 5×).
+        Клампим к max ПЕРЕД установкой. TTL — биржа меняет лимиты (юзер: «перепроверять иногда»).
+        """
+        import time as _t
+        cache = getattr(self, "_max_lev_cache", None)
+        if cache is None:
+            cache = {}
+            self._max_lev_cache = cache
+        ent = cache.get(symbol)
+        now = _t.time()
+        if ent is None or (now - ent[0]) > self._MAX_LEV_TTL:
+            try:
+                info = await client.get_leverage_info(symbol)
+                ml = int(float(info.get("maxLongLeverage") or 0))
+                ms = int(float(info.get("maxShortLeverage") or 0))
+                cache[symbol] = (now, ml, ms)
+                ent = cache[symbol]
+            except Exception as e:
+                logger.debug("[OrderManager] get_leverage_info %s: %s", symbol, e)
+                return None
+        return ent[1] if str(pos_side).upper() == "LONG" else ent[2]
+
     async def open_bracket(
         self,
         symbol:      str,
@@ -361,6 +389,7 @@ class OrderManager:
         tp1:         float,
         tp2:         Optional[float] = None,
         qty:         float = 0.0,
+        leverage:    Optional[int] = None,
     ) -> BracketResult:
         notional = qty * entry_price
 
@@ -435,7 +464,13 @@ class OrderManager:
         try:
             client   = await self._get_client_synced(symbol)
             side     = "BUY" if direction == "LONG" else "SELL"
-            leverage = int(self._cfg.get("trading.leverage", 5))
+            # per-source плечо (trade_router) или глобал fallback
+            leverage = int(leverage if leverage is not None else self._cfg.get("trading.leverage", 5))
+            # КЛАМП к max пары (биржа отвергает выше → откат на стейл). Re-verify по TTL.
+            _max_lev = await self._get_pair_max_leverage(client, symbol, direction)
+            if _max_lev and _max_lev > 0 and leverage > _max_lev:
+                logger.info("[OrderManager] %s %s leverage %d→%d (cap пары)", symbol, direction, leverage, _max_lev)
+                leverage = _max_lev
             sl_buf   = float(self._cfg.get("trading.sl_limit_buffer_pct", 0) or 0)
             resp     = await client.place_bracket_order(symbol=symbol, side=side, qty=qty,
                                                         sl=sl, tp=tp1, leverage=leverage,
@@ -488,7 +523,7 @@ class OrderManager:
                 direction=direction, qty=qty, entry_price=filled_price,
                 sl=sl, tp1=tp1, tp2=tp2, order_id=order_id,
                 tp_order_id=tp_oid, sl_order_id=sl_oid,
-                notional_usdt=notional, metadata={"raw": resp},
+                notional_usdt=notional, leverage=leverage, metadata={"raw": resp},
             )
         except Exception as e:
             logger.error(

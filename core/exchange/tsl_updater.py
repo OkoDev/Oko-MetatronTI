@@ -14,6 +14,28 @@ from core.trading.tsl_engine import is_side_valid
 logger = logging.getLogger(__name__)
 
 
+async def fetch_and_save_position_id(bot, trade_id: int, symbol: str, pos_side: str) -> None:
+    """fake-R фикс (19.06): после открытия позиции — захватываем positionID и пишем в БД.
+
+    positionID — якорь выхода в _resolve_exit (устойчив к cancel+replace SL, повторным
+    входам, старым ордерам по символу). Берётся из снимка позиций (`positionId`, camelCase).
+    Retry 3×2с: позиция появляется в снимке через 1-4с после market-fill. [[bug_phantom_exit_resolve]]
+    """
+    for attempt in (1, 2, 3):
+        await asyncio.sleep(2)
+        try:
+            pid = await bot.order_executor._get_position_id(symbol, pos_side)
+            if pid:
+                bot.trade_simulator.set_position_id(trade_id, pid)
+                logger.info("[TSL-UPDATER] trade #%d %s %s → position_id=%s (attempt %d)",
+                            trade_id, symbol, pos_side, pid, attempt)
+                return
+        except Exception as e:
+            logger.debug("[TSL-UPDATER] fetch_and_save_position_id #%d attempt %d: %s", trade_id, attempt, e)
+    logger.warning("[TSL-UPDATER] trade #%d %s %s: positionId не найден за 3 попытки "
+                   "(exit-резолв упадёт на orderId/эвристику fallback)", trade_id, symbol, pos_side)
+
+
 async def fetch_and_save_sl_order_id(bot, trade_id: int, symbol: str, pos_side: str) -> None:
     """
     После открытия bracket-ордера — получаем SL orderId с биржи и сохраняем в БД.

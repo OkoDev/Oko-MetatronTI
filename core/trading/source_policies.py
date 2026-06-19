@@ -33,6 +33,11 @@ class SourcePolicy:
     exchange_enabled: bool = True
     trade_mode: str = ""
     soft_gates_enabled: list[str] = field(default_factory=lambda: list(DEFAULT_SOFT_GATES))
+    # Per-source sizing (19.06): None → fallback на глобальный trading.leverage/risk_pct.
+    # Корень: плечо/риск были ГЛОБАЛЬНЫМИ → подключение 2-й стратегии унаследовало бы чужой
+    # режим (напр. ote_nested 50x потёк бы на новую стратегию). Локализуем под источник.
+    leverage: int | None = None
+    risk_pct: float | None = None
 
     @classmethod
     def from_config(cls, config: Any, source: str) -> "SourcePolicy":
@@ -52,10 +57,14 @@ class SourcePolicy:
                 return default[key]
             return fallback
 
+        _lev = _pick("leverage", None)
+        _risk = _pick("risk_pct", None)
         return cls(
             source=source,
             min_strength=int(_pick("min_strength", 50)),
             exchange_enabled=bool(_pick("exchange_enabled", True)),
             trade_mode=str(_pick("trade_mode", "")),
             soft_gates_enabled=list(_pick("soft_gates_enabled", DEFAULT_SOFT_GATES)),
+            leverage=int(_lev) if _lev is not None else None,
+            risk_pct=float(_risk) if _risk is not None else None,
         )

@@ -107,22 +107,23 @@ _SYNC_CLOSE_COOLDOWN_SEC = 10   # дедупликация: повторный p
 def _find_exchange_trade(db_path: str, sym: str, direction: str):
     """Найти OPEN биржевую сделку (не SIM-only) по символу+направлению.
 
-    Возвращает id или None. Биржевая = execution_mode != 'SIM' OR exchange_order_id реальный.
+    Возвращает (id, position_id) или (None, None). Биржевая = execution_mode != 'SIM'
+    OR exchange_order_id реальный. position_id — якорь exit'а для _resolve_exit (fake-R фикс).
     """
     import sqlite3
     try:
         with sqlite3.connect(db_path, timeout=5) as conn:
             row = conn.execute(
-                """SELECT id FROM simulated_trades
+                """SELECT id, position_id FROM simulated_trades
                    WHERE symbol=? AND direction=? AND status='OPEN'
                      AND (execution_mode != 'SIM' OR
                           (exchange_order_id IS NOT NULL AND exchange_order_id != '' AND exchange_order_id != 'SIM'))
                    ORDER BY id DESC LIMIT 1""",
                 (sym, direction),
             ).fetchone()
-            return row[0] if row else None
+            return (row[0], row[1]) if row else (None, None)
     except Exception:
-        return None
+        return (None, None)
 
 
 async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
@@ -137,7 +138,7 @@ async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
       4. close_trade в БД.
     Multiaccount-safe: client берётся для account_tag аккаунта (account_router).
     """
-    trade_id = _find_exchange_trade(bot.trade_simulator.db_path, sym, direction)
+    trade_id, _pos_id = _find_exchange_trade(bot.trade_simulator.db_path, sym, direction)
     if not trade_id:
         logger.info("[EXEC-WS][2b] %s %s pa=0 — OPEN в БД не найдена (уже закрыта/SIM-only)", sym, direction)
         return
@@ -149,7 +150,8 @@ async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
         client = router.client_for_account(acc_int)
         if client is not None:
             from core.exchange.position_sync import _resolve_exit
-            status, exit_price = await _resolve_exit(client, sym, direction, None)
+            # fake-R фикс: position_id — якорь REST-резолва (ws_exit_price ниже всё равно приоритетнее)
+            status, exit_price = await _resolve_exit(client, sym, direction, None, position_id=_pos_id)
     except Exception as e:
         logger.warning("[EXEC-WS][2b] _resolve_exit %s %s tag=%s: %s", sym, direction, account_tag, e)
 

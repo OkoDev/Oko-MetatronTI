@@ -248,8 +248,11 @@ class TradeRouter:
         try:
             oe = self.bot.order_executor
             deposit  = await oe.get_available_balance()
-            risk_pct = get_risk_pct(self.config)
-            leverage = get_leverage(self.config)
+            # per-source sizing (19.06): плечо/риск из policy источника, иначе глобальный
+            # fallback. Корень: глобальный leverage тёк бы на любую новую стратегию.
+            _pol = ctx.policy
+            risk_pct = _pol.risk_pct if getattr(_pol, "risk_pct", None) is not None else get_risk_pct(self.config)
+            leverage = _pol.leverage if getattr(_pol, "leverage", None) is not None else get_leverage(self.config)
             qty = self.bot.position_sizer.calc_qty(
                 entry_price=entry, sl_price=sl,
                 deposit=deposit, risk_pct=risk_pct, leverage=leverage,
@@ -262,6 +265,7 @@ class TradeRouter:
             br = await oe.open_bracket(
                 symbol=ctx.symbol, direction=ctx.direction,
                 entry_price=entry, sl=sl, tp1=tp, tp2=None, qty=qty,
+                leverage=leverage,   # per-source плечо → биржа (кламп к max пары внутри)
             )
             if not br.success:
                 if br.error != "position_already_open":
@@ -293,9 +297,12 @@ class TradeRouter:
                 _raw_em = str(_cfg_dbv2.get("trading.execution_mode", "vst")).upper()
                 _em = {"VST": "VST", "LIVE": "LIVE"}.get(_raw_em, "VST")
                 with _sq.connect(self.bot.trade_simulator.db_path) as _conn:
+                    # leverage в БД (19.06): ФАКТИЧЕСКОЕ плечо после клампа к max пары (br.leverage),
+                    # не запрошенное и не глобальный конфиг. Дашборд берёт из факта (bus→БД→config).
+                    _act_lev = br.leverage if getattr(br, "leverage", None) is not None else leverage
                     _conn.execute(
-                        "UPDATE simulated_trades SET exchange_order_id=?, qty=?, execution_mode=? WHERE id=?",
-                        (order_id, qty, _em, trade_id),
+                        "UPDATE simulated_trades SET exchange_order_id=?, qty=?, execution_mode=?, leverage=? WHERE id=?",
+                        (order_id, qty, _em, _act_lev, trade_id),
                     )
             except Exception as _upd_e:
                 logger.warning("[TradeRouter] exchange_order_id/qty update failed for #%d: %s",
@@ -314,10 +321,16 @@ class TradeRouter:
             # TSL tracker — только для live (vst тоже подходит)
             if _is_live_fn(self.config):
                 try:
-                    from core.exchange.tsl_updater import fetch_and_save_sl_order_id, fetch_and_save_tp_order_id
+                    from core.exchange.tsl_updater import (
+                        fetch_and_save_sl_order_id, fetch_and_save_tp_order_id,
+                        fetch_and_save_position_id,
+                    )
                     asyncio.create_task(fetch_and_save_sl_order_id(
                         self.bot, trade_id, ctx.symbol, ctx.direction))
                     asyncio.create_task(fetch_and_save_tp_order_id(
+                        self.bot, trade_id, ctx.symbol, ctx.direction))
+                    # fake-R фикс (19.06): захват positionID — якорь exit'а в _resolve_exit
+                    asyncio.create_task(fetch_and_save_position_id(
                         self.bot, trade_id, ctx.symbol, ctx.direction))
                 except Exception as _tsl_e:
                     logger.debug("[TradeRouter] tsl_updater: %s", _tsl_e)
