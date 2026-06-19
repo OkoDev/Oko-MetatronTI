@@ -39,6 +39,7 @@ from core.execution.adapter import ExchangeAdapter
 from core.execution import calc
 from core.execution.position_store import PositionStore, ExitInfo, classify_exit
 from core.execution.sphere import ExecutionSphere, CloseIntent
+from core.execution.db_writer import build_close_applier, intent_to_close_args
 # NB: ExecutionLedger (DS) и BingXAdapter импортируются напрямую из своих модулей —
 # не тянем их в пакет-инит (агностичное ядро + раздельное владение файлами).
 
@@ -65,4 +66,6 @@ __all__ = [
     "classify_exit",
     "ExecutionSphere",
     "CloseIntent",
+    "build_close_applier",
+    "intent_to_close_args",
 ]

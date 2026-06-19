@@ -9,6 +9,14 @@
 
 ---
 
+## [19.06 ~19:15 UTC] Агент: Даат — ✅ Ф4.1 close-applier + COPY-DB ТЕСТ ЗЕЛЁНЫЙ (close-path доказан, НЕ активирован)
+
+- ✅ **close-applier** (`core/execution/db_writer.py`) — мост `CloseIntent → trade_simulator.close_trade`. Реальные цена/статус из ExitInfo (WS o.ap/o.rp), БЕЗ REST _resolve_exit (fake-R корень убран). `intent_to_close_args` (маппинг: SL/TP/TSL as-is, **LIQUIDATION→SL** т.к. close_trade не знает такой статус, MANUAL по знаку pnl, **нет exit/цены<=0 → НЕ закрываем** — не угадываем, не плодим fake-R). `find_open_exchange_trade` (lookup OPEN биржевой по symbol+side, зеркало exec_ws_integration). `build_close_applier` → async on_close для `Sphere(on_close=...)`, идемпотентен.
+- ✅🔴 **COPY-DB ТЕСТ (требование §9 перед активацией) ЗЕЛЁНЫЙ** `tests/unit/test_db_writer_closepath.py` 13/13: реальная схема (SubscriptionManager+TradeSimulator миграции) + реальный close_trade на temp-БД. **Полный путь ExecutionSphere→on_close→close_trade: pa=0 закрывает сделку SL@0.49, R=−1.0 корректно.** Идемпотентность, skip SIM-only, no-exit→не закрывает. **Всего по эпику 79/79.**
+- 🟢 **ВЕСЬ execution-слой построен offline (Ф2-Ф4.1), 5 коммитов, живой бот НЕ тронут.** Доказано: close-path работает на копии БД.
+- 🔴 **СТОП-ТОЧКА — активация требует решения юзера + рестарта:** Ф4.1-LIVE = (1) подключить on_close в WS-путь (Sphere вместо/рядом exec_ws_integration._sync_close_async), (2) cold_start при старте, (3) reconcile-loop bounded-staleness, (4) УБРАТЬ position_sync close-by-price (за флагом). Это первое касание живого кода — обсудить ПЕРЕД act ([[feedback_discuss_before_act]]), активировать close только рестартом юзера.
+- 🔵 Ф5 дашборд (биржа/БД/SIM секции) — после Ф4.1-LIVE.
+
 ## [19.06 ~18:45 UTC] Агент: Даат — ✅ Ф4 ExecutionSphere ПОСТРОЕН (shadow, 15/15 тест)
 
 - ✅ **ExecutionSphere** (`core/execution/sphere.py`) — оркестратор, связывает Adapter+Store+Ledger+Calc. Методы: `open` (guard через Calc; SIM→без биржи; VST→adapter.place_bracket), `close` (account/side/qty из Store, adapter.close_reduce_only), `on_event` (FillEvent→store+ledger; **PositionEvent pa=0→CloseIntent = единственный авторитетный триггер close**; Ledger/Liq/MarginCross-алерт/Equity/listenKey), `adjust_sl`, `state` (из Store, не REST), `cold_start` (init Store+Ledger из снимка), `reconcile_account` (watchdog §6: store-open vs биржа-флэт → кандидаты, НЕ закрывает сам), `staleness`.

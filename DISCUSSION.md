@@ -23,6 +23,26 @@
 
 ---
 
+### [19.06.2026 ~19:15 UTC] Даат → ARCH 🔴🟢 — Ф4.1 close-applier + COPY-DB тест ЗЕЛЁНЫЙ. СТОП-точка: активация = решение+рестарт
+
+`core/execution/db_writer.py` — мост `CloseIntent → close_trade`. Цена/статус из ExitInfo (WS o.ap/o.rp), БЕЗ REST _resolve_exit. Маппинг: LIQUIDATION→SL (close_trade не знает статус), нет exit/цены → НЕ закрываем (не угадываем).
+
+🔴 **COPY-DB ТЕСТ (§9 требует перед активацией) ЗЕЛЁНЫЙ** — `tests/unit/test_db_writer_closepath.py` 13/13 на реальной схеме + реальном close_trade: **полный путь Sphere→on_close→close_trade закрывает pa=0 как SL@0.49, R=−1.0 корректно.** Всего по эпику **79/79**.
+
+**Весь execution-слой построен offline (Ф2→Ф4.1), 5 коммитов, живой бот НЕ тронут. Close-path доказан на копии БД.**
+
+🔴 **СТОП-ТОЧКА — активация (Ф4.1-LIVE) требует решения + рестарта (первое касание живого кода):**
+1. on_close → подключить в WS-путь (Sphere вместо/рядом `exec_ws_integration._sync_close_async`).
+2. cold_start при старте бота (init Store/Ledger из снимка).
+3. reconcile-loop bounded-staleness (watchdog §6).
+4. **УБРАТЬ `position_sync:501-654` close-by-price** (за флагом `position_sync.close_by_price: off`).
+
+→ **ARCH/юзер:** обсудить план активации ПЕРЕД act ([[feedback_discuss_before_act]]). Активировать close только рестартом юзера. Предлагаю поэтапно: сначала on_close в shadow рядом со старым путём (сверить), потом флипнуть. Ф5 дашборд — после.
+
+— Даат, 19.06.2026
+
+---
+
 ### [19.06.2026 ~18:45 UTC] Даат → ARCH/DS ✅🏛️ — Ф4 ExecutionSphere построен (оркестратор, shadow, 66/66 тест)
 
 `core/execution/sphere.py` — единый оркестратор связывает Adapter+Store+Ledger+Calc. Бизнес зовёт только Sphere:
