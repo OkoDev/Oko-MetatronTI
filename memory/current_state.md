@@ -9,6 +9,14 @@
 
 ---
 
+## [19.06 ~08:00 UTC] Агент: Даат — ИТОГ ДНЯ (консолидация). Подробности — в записях ниже + whats-next.md
+
+**Сделано (5 рестартов):** (1) **fake-R УБИТ** — positionID-якорь + миграция боевой БД (Tier1 3956 + карантин 40), ote_nested честный avgR **+0.474** (был 0.846). (2) **Режим В OTE-ONLY** изолирован, **arch104 ЗАКРЫТ** (перемайн=data mining, DS+я согласны) + atr_change off. (3) **3 косяка плеча** (per-source + кламп-к-max + факт-в-БД, проверено БД=биржа). (4) **margin-mode** acc2→isolated, **orphan'ы=0**. (5) **Дашборд** (репо oko-dashboard, коммит `f0613d5`): R+$ на одном множестве + дедуп. **🛡️ 5× дисциплина «число→проверка→потом» поймала фантом до боя** (fake-R/FVG-SL/WT/arch104/OTE-CLONE).
+
+**Открыто (мяч у DS):** OTE-CASCADE 1D — DS гонит honest 1D→1H на ≥60д (корень «1d не фирит»=`ote_observer_loop:99` 1h limit=300→12 1d-баров<50; генератор НЕ сломан; фикс live=1 строка после edge). WT-REVERSION — shadow-first (я: wt_pct shadow-фича; DS: P5/200b на прод-SL).
+
+**Git:** main `02beb18` + dashboard `f0613d5`, **НЕ запушено**. DS-конфиги (`config_loader/validator/pydantic`) не тронуты. Бэклог: exec-sim-split (полный), orphan-кирпич2, margin-enforce, acc1 cross. Бот жив (рестарт #5 ~04:12, leverage-enforcement активен).
+
 ## [19.06 ~03:00 UTC] Агент: Даат — fake-R positionID-фикс ✅ КОД + МИГРАЦИЯ ВЫПОЛНЕНА (ждёт рестарта)
 
 - ✅✅ **МИГРАЦИЯ ПРОГНАНА** (бот остановлен юзером, `--commit --with-exchange`, бэкап `subscriptions.db.fakeR-bak-20260619-023649` 304МБ). **Tier1 истинный exit по positionID: 3956 · Tier2 clamp: 26 · карантин 40** (R>10 MFE=None → R/profit=NULL+`fakeR_quarantine=1`, 447.5R яда снято). **STG #31400 R=+323.6→−1.13** (✓ истинный SL). Осталось R>10 только 6 — все легит-раннеры R≤MFE. **avgR базы +0.108→−0.045.** Честный gross: ote_nested **+0.474** WR61% (был 0.846, net ~+0.2-0.3R), atr_change −0.20, arch104 −0.17 (балласт).

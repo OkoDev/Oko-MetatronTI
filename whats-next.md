@@ -1,35 +1,38 @@
 # What's Next — Handoff
 
-## 🆕🔴 Новая сессия (Даат + DS пара) — fake-R positionID-фикс + OTE-ONLY пересчёт
+## 🆕✅ Сессия 19.06 (Даат + DS пара) — fake-R УБИТ + Режим В + 3 косяка плеча + дашборд. ИТОГ ДНЯ
 
 > Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina после задач.
-> Ветка `arch-128-oko-sm`. Бот **PID 33956 жив** (рестарт ~00:57 local 19.06). **DEV/ARCH отдыхают — работаем парой с DS.**
+> Ветка `arch-128-oko-sm`. Бот **жив** (рестарт #5 ~04:12 local 19.06, leverage-enforcement активен). DEV/ARCH отдыхают — пара с DS.
 
-### 🔴🔴 ГЛАВНОЕ: fake-R ЖИВ — exit-резолв берёт ЧУЖОЙ ордер. Настоящий фикс = `positionID`
-Сверка с биржей (`get_filled_orders` по orderId, стенды в `e:/tmp/`): «win R=+26..+323» = РЕАЛЬНЫЕ мелкие УБЫТКИ. **STG #31400:** БД R=+323/exit 0.6071, биржа — вход 0.2350→SL 0.2334 **pnl −0.97 R≈−1**; БД взяла exit из ордера от **12.06** (6 дней!). HMSTR/AIN/HANA/MAGMA так же (MAGMA «TP» = на деле SL −0.16).
-**Корень:** `exchange_sl_order_id` None(STG)/устарел после cancel+replace(HMSTR) → orderId-матч в `_resolve_exit` ломается → fallback symbol+side хватает старый ордер; mark-sanity слепа при mark=None.
-**🔑 ФИКС = positionID** (доказано: каждый ордер BingX несёт `positionID`; вход+SL+TP+перевыставленные = ОДИН positionID; STG вход+реал-выход=`…677023234`, фантом=`…379710466`):
-1. Колонка `position_id` в `simulated_trades` + захват при открытии (`register_trade`; бот уже берёт его в `_resolve_position_client`/`_get_position_id`; ⚠️ casing: позиция `positionId`, ордер `positionID`).
-2. `_resolve_exit` (`position_sync.py:36`) матчит выход по `positionID==trade.position_id`. Устойчив к cancel+replace SL, повторным входам, старым ордерам. time/sl_order_id → лишь fallback.
-3. **Миграция боевой БД** — пересчёт R по реальным выходам (positionID из `allOrders`). Бэкап ПЕРЕД. 34 VST+6 SIM фантомов R>10 только в ote_nested (по всем сигналам больше).
-**🔗 positionID = граница SIM↔VST** (SIM нет positionID → не резолвится с биржи) → кирпич [[exec_sim_split_epic]] #21. Память: [[bug_phantom_exit_resolve]].
-Стенды: `e:/tmp/verify_fakeR_exchange.py` · `probe_order_position_link.py` · `probe_stg_positionid.py`.
+### ✅ СДЕЛАНО (5 рестартов по ходу)
+1. **fake-R УБИТ** ([[bug_phantom_exit_resolve]]): колонка `position_id` + захват при открытии (`tsl_updater.fetch_and_save_position_id`) + **positionID-якорь в `position_sync._resolve_exit`** (выше orderId/эвристики, прокинут в 3 пути + WS). Миграция боевой БД (`scripts/migrate_fakeR_positionid.py --commit --with-exchange`, бэкап `subscriptions.db.fakeR-bak-20260619-023649`): **Tier1 3956 истинных exit + карантин 40** (R>10 MFE=None→R/profit=NULL+`fakeR_quarantine`). STG #31400 +323.6→−1.13. **ote_nested честный avgR +0.474** (был 0.846).
+2. **Режим В OTE-ONLY** (config.yaml): risk 0.5%, изоляция до ote_nested (source_policies все false кроме ote_nested + default_policy off), l3-гейты активны. **arch104 + atr_change ОТКЛЮЧЕНЫ** (честный R оба минус). **arch104 ЗАКРЫТ** (перемайн = data mining на −0.05R, DS+Даат согласны).
+3. **3 косяка плеча** (юзер нашёл): per-source (`SourcePolicy.leverage/risk_pct`) + кламп к max пары (`order_manager._get_pair_max_leverage`, TTL 1ч) + **факт-в-БД** (колонка `leverage`, trade_router) + дашборд из факта (bus→БД→config). Проверено: новые позиции БД-плечо=биржа.
+4. **margin-mode**: acc2 был массово CROSS (бот ждёт isolated) → юзер переключил + я закрыл cross-балласт. **orphan'ы=0** (закрыл account-aware по ходу).
+5. **Дашборд** (репо `oko-dashboard`, коммит `f0613d5`): шапка R+$ на ОДНОМ множестве (VST-приоритет, SIM-тень вторична, дрейф по VST без 30 теней), дедуп дублей позиций (`fetchLivePositions` по symbol+direction).
+6. **🛡️ Дисциплина дня: 5 раз «красивое число → проверка → потом» поймала фантом ДО боя:** fake-R · SL-за-FVG (бэктест опроверг, тугой SL net-оптимален) · WT-сюрприз DS (узкий-SL+n=3) · arch104 (data mining) · OTE-CLONE +0.710 (=fake-R от 08.06, DS подтвердил).
 
-### 🔴 OTE-ONLY (DS, DISCUSSION 21:50) — avgR=0.913 ОТРАВЛЕН, пересчитать на честном net
-DS построил compounding (+387%..**+13.8М%**) на avgR=0.913. Проверено (n=2717): медиана +0.42, clamp→MFE +0.739, **top-10 по R ВСЕ фантомы**. Честный gross ~+0.5-0.6, **net ≈ +0.2-0.3R** (и ниже — часть wins=losses). РОЙ 6/6 за Режим А + жёсткий cap. **Любой OTE-ONLY режим/compounding — ТОЛЬКО после fake-R фикса + перемиграции.** arch104=балласт (отключить, +0.06). per-pair max_leverage блокер (50x на альтах 20-25x→reject, DS 22:00). → DS: перезапустить рассчёт на честном net.
+### 🔴 ПЕРВЫЙ ШАГ НОВОЙ СЕССИИ: дождаться honest-net 1D от DS
+DS разблокирован (направлен 08:25): его «данных нет, 3 VST-пары» = ЛОЖНЫЙ блокер — `data/history/1h/` = **46 пар × 868 1d-баров** (порог 50 пройден ×17). Гонит honest 1D→1H на них (прод-SL+fee). Жду его число. Edge реален → я строю SHADOW 1D-фильтр + 1d-провижн (`get_ohlcv(sym,'1d',60)`, НЕ ресэмпл 1h — тот упирается в API-1000). Edge нет → закрываем OTE-CLONE/CASCADE как остальные фантомы. **Backtest ПЕРВЫЙ, observer не трогаю до edge.**
 
-### ✅ Сделано эту сессию (Даат, ночь 18-19.06)
-- **SL-reconcile live** проверен: безопасен (place-ошибок 0, откат не нужен), против orphan'ов бессилен by design. REAL/KAT валидация невозможна (стали orphan ДО рестарта). #1 по сути закрыт.
-- **Корень orphan'ов** (рассинхрон БД↔биржа, 2 механизма) → [[orphan_root_dbexch_desync]]. **Чистка: 17 orphan'ов закрыто** (`close_orphans.py --commit`, патч account-aware `_resolve_position_client`). Биржа 50→33, **orphans=0**.
-- **Профилактика кирпич 1**: D-070 alert→auto-close, `config.yaml trading.orphan_autoclose: shadow` + `position_sync._detect_orphans` (hedge-safe). Shadow=zero-risk. ⏳ проверить активен ли в PID 33956 (`[D-070][autoclose][shadow]`; orphans=0 сейчас → лог появится при новом рассинхроне).
+### 🔬 ОТКРЫТЫЕ ВЕТКИ (мяч у DS, я строю после edge-подтверждения)
+- **OTE-CASCADE / 1D-фильтр:** ↑ см. ПЕРВЫЙ ШАГ. Корень «1d не фирит» (live+backtest) = мало 1d-баров (`ote_observer_loop:99` 1h limit=300→12 баров <50; генератор НЕ сломан).
+- **WT-REVERSION (DS):** P5/200b +10R = узкий-SL (0.05%), +2.5R фильтр = n=3. SHADOW-first: я добавляю `wt_pct` shadow-фичу в ote-пайплайн, копим на чистом потоке n≥30-50; DS перепрогоняет P5/200b на прод-SL 0.5%.
 
-### ⏳ Бэклог профилактики (#21, после fake-R)
-- Orphan кирпич 2: **verify-flat** в `_emergency_close_check` (ре-фетч qty≈0 ПЕРЕД close БД; `position_sync.py:222→255` — точный пробел root B).
-- Root A: источник SIM-утечки (SIM-сделка с биржевой позицией — REAL вся история SIM, но позиция на бирже).
+### ⏳ Бэклог
+- exec-sim-split (полный, эпик [[exec_sim_split_epic]]) — дашборд-каша = его симптом, дальше боевой слой.
+- Orphan кирпич 2 (verify-flat в `_emergency_close_check`) · margin-enforce кирпич (бот ставит isolated перед открытием — 136 пустых cross-символов acc2) · acc1 cross (114 конфиг).
+- Дашборд: `trades.tsx`/`app/page.tsx` — пред-существующие незакоммиченные правки (не мои сегодня).
 
-### ⚠️ Незакоммичено (tracked) — РАЗДЕЛИТЬ при коммите
-- **Моё (Даат):** `DISCUSSION.md` · `config.yaml` (orphan_autoclose) · `core/exchange/position_sync.py` (D-070 auto-close) · `scripts/close_orphans.py` (account-aware) · `memory/current_state.md`.
-- **DS (НЕ трогать — его контекст):** `core/exchange/bingx_client.py` (get_contract_info per-pair, 22:00) · `core/infra/config_loader.py`+`config_validator.py`+`pydantic_config.py` (DS-325 Ф3 pydantic).
+### 🖥️ Дашборд оживлён (конец сессии)
+- **Корень «полумёртвости» = `/api/stats/analytics` таймаутил** (6 агрегаций/29K без кэша под локом с write-циклом) → весь analytics-экран на mock ($undefined, MFE 0/0). **Фикс: `_ANALYTICS_CACHE` (TTL 60с + detached)** + `signal_weights/history` туда же + фронт-гард `{!!d.usd}`. Аудит: остальные поллимые endpoint'ы кэшированы/лёгкие. Активно после рестарта (юзер сделал). ⏳ визуально подтвердить, что календарь/MFE ожили.
+- **ote_nested темп ЗДОРОВ** (проверено): 72/час, 257/6ч. «Мало» = снимок открытых (~11, быстрый churn). Гейты Режима В активны, но с запасом (risk 1.2%/25%, margin $223/$5). Не душат.
+
+### ⚠️ Git — закоммичено, НЕ запушено
+- **main `02beb18`** (fake-R + Режим В + leverage) + **analytics-кэш коммит** (dashboard_server). **dashboard `f0613d5`** (sync-panel + api.ts) + **analytics.tsx коммит** (usd-гард).
+- **DS-контекст НЕ тронут:** `config_loader/validator/pydantic` оставлены uncommitted. `TASKS.md` + dashboard `trades.tsx`/`app/page.tsx` — пред-существующие, не мои.
+- Push — по отмашке юзера.
 
 ## 📦 АРХИВ прошлого handoff (SL-reconcile ✅ проверен выше) — #21 EXEC-SIM-SPLIT
 

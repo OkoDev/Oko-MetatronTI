@@ -190,6 +190,10 @@ class _KeyedJSONCache:
 # Тяжёлая аналитика: история меняется медленно → TTL держит фронт-поллинг (10с) на HIT.
 _TRADES_FILTERED_CACHE = _KeyedJSONCache(ttl=15.0)
 _EXCH_HISTORY_CACHE = _KeyedJSONCache(ttl=30.0)
+# Аналитика (календарь/MFE/распределения): 6 тяжёлых агрегаций на 29K сделок → под локом с
+# горячим write-циклом таймаутила → фронт падал на mock ($undefined, MFE 0/0). TTL 60с +
+# single-flight + detached-refresh: считаем раз, фронт-поллинг = HIT. Аналитика=SQL, но КЭШ.
+_ANALYTICS_CACHE = _KeyedJSONCache(ttl=60.0)
 # Портфель (balances/positions/accounts): запросы по той же 29K-БД под локом висели >35с
 # (насыщение пула) → пустые панели Overview. Кэш+single-flight+detached лечит. Ключи
 # namespace'нуты: "balances" / "accounts" / "positions|<acc>".
@@ -257,12 +261,20 @@ async def _handle_analytics(request: web.Request) -> web.Response:
             _cal_mode = "all"
         _acc = request.query.get("account_id")
         _acc_i = int(_acc) if _acc and _acc.isdigit() else None
-        data = await _run_sync(_analytics_compute_sync, engine, _cal_mode, _acc_i)
-        return web.Response(
-            text=json.dumps(data, ensure_ascii=False, default=str),
-            content_type="application/json",
-            charset="utf-8",
-        )
+
+        async def _compute():
+            d = await _run_sync(_analytics_compute_sync, engine, _cal_mode, _acc_i)
+            return json.dumps(d, ensure_ascii=False, default=str)
+
+        # кэш по (cal_mode, account) — detached refresh не убивается фронт-таймаутом 12с
+        payload, xcache = await _ANALYTICS_CACHE.get(
+            f"{_cal_mode}:{_acc_i}", _compute, cold_timeout=25.0)
+        if payload is None:   # COLD ещё считается → пустой каркас (следующий поллинг = HIT)
+            payload = json.dumps({"by_session": [], "r_distribution": [], "pnl_calendar": [],
+                                  "mfe_scatter": [], "by_signal_type": [], "by_regime": []})
+            xcache = "WARMING"
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         logger.exception("analytics error: %s", e)
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
@@ -608,13 +620,16 @@ async def _handle_signal_weights_history(request: web.Request) -> web.Response:
     days = max(1, min(days, 90))
 
     try:
-        # DEV-231: SQL + pivot в thread pool
-        data = await _run_sync(_signal_weights_compute_sync, engine, days)
-        return web.Response(
-            text=json.dumps(data, ensure_ascii=False, default=str),
-            content_type="application/json",
-            charset="utf-8",
-        )
+        # DEV-231: SQL + pivot в thread pool. 19.06: кэш (переиспользуем _ANALYTICS_CACHE,
+        # TTL 60с + detached) — analytics-экран поллит, под локом с write-циклом не вешаем.
+        async def _compute():
+            d = await _run_sync(_signal_weights_compute_sync, engine, days)
+            return json.dumps(d, ensure_ascii=False, default=str)
+        payload, xcache = await _ANALYTICS_CACHE.get(f"sigw:{days}", _compute, cold_timeout=20.0)
+        if payload is None:
+            payload, xcache = json.dumps({"series": [], "types": []}), "WARMING"
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         logger.exception("signal_weights_history error: %s", e)
         return web.Response(
