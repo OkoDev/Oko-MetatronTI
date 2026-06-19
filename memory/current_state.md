@@ -9,6 +9,13 @@
 
 ---
 
+## [20.06 ~01:15 UTC] Агент: Даат — 🎯 EXIT-ФИКС ВАЛИДИРОВАН на живом закрытии (ZEREBRO match)
+
+- 🎯 **ZEREBRO (00:36) — Sphere-путь == авторитетный путь:** `[SPHERE-SHADOW] WOULD CLOSE ZEREBRO LONG → SL @ 0.04414181 rp=4.256` СОВПАЛ с `[EXEC-WS][2b] #31790 → SL @ 0.044142` (статус SL=SL, цена ≈). Новый путь даёт корректный exit на реальном закрытии. is_open_fill+stash работают end-to-end на бою. (rp=+4.256 при SL = TSL-в-профите, исполнен как STOP → оба пути зовут SL, согласованно.)
+- 📊 **Покрытие exit пока частичное:** ZEREBRO ✅ real, но UMA/ACU/ZKP остались «?» (close-fill не застешился, REST-fallback не дотянул — нет «exit дотянут REST» логов). Это «?»-остаток → ловит **reconcile-watchdog** (4c522cf, НЕ деплоен — ждёт рестарта).
+- 🔍 **Находка про старый путь:** `[EXEC-WS][2b]` массово `sync_close ok=False` (DEXE/UMA/ROBO/ACU/ZKP) — close_trade вернул False т.к. сделка УЖЕ закрыта конкурентом (position_sync close-by-price). ZEREBRO ok=True (WS выиграл гонку). **Это ровно дуэль путей, которую сносит CUTOVER** — наглядное подтверждение ценности единого канала.
+- 🔵 NEXT: рестарт → деплой watchdog → проверить ловит ли «?»-остаток + DS считает % покрытия (stash+REST+watchdog). ~100% → CUTOVER.
+
 ## [20.06 ~01:00 UTC] Агент: Даат — ✅ reconcile-watchdog (CUTOVER-страховка для «?»-exit/WS-drop)
 
 - ✅ **Форвард exit-фикс подтверждён:** `00:36 WOULD CLOSE ZEREBRO → SL @ 0.04414 rp=4.256` (РЕАЛЬНЫЙ exit из stash, is_open_fill-фикс работает). НО `00:40 UMA → ?` остался → exit не 100%. Вывод: «?» при CUTOVER → db_writer не закроет → строка OPEN при флэте = нужна страховка.

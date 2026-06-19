@@ -18,10 +18,12 @@
 
 **✅ ПОБОЧНО: течь призраков ОСТАНОВЛЕНА** — `orphan_autoclose: live` (BNB+Q закрыты по positionId, проверено). **DS forward-сверка 3/3** (WOULD CLOSE = реальный [EXEC-WS][2b]). 2 shadow-находки закрыты: is_open_fill (hedge-retry close) + гонка fill↔pa=0 (REST exit-fallback).
 
-**🔵 СТАРТ следующей сессии = CUTOVER (последний шаг EXEC-REBUILD), но СНАЧАЛА валидация в shadow:**
-1. **Рестарт** активирует exit-fallback в shadow → грепать `[SPHERE-SHADOW] WOULD CLOSE` → у них теперь должен быть РЕАЛЬНЫЙ exit (не «?»), в т.ч. на racy-закрытиях (REST дотягивает).
-2. **DS считает % WOULD CLOSE с непустым exit** + совпадение (status,price) с фактом. ~100% → зелёный.
-3. **CUTOVER (deliberate, discuss-before-act):** флип `Sphere(on_close=build_close_applier(trade_simulator))` в `exec_ws_integration` за НОВЫМ флагом (напр. `exec_ws.sphere_cutover`) + гейт `position_sync:501-654` close-by-price за флагом OFF. 🔴 ТЕСТ на копии БД повторно перед флипом. Откат = флаг.
+**✅ CUTOVER-готовность ДОСТРОЕНА (19-20.06, 19 коммитов запушены):** детект close (DS 3/3✅) + exit-резолв (stash o.ap ✅ + REST-fallback по positionId на гонке ✅, валидирован ZEREBRO real exit) + **reconcile-watchdog** (`Sphere.reconcile_watchdog`+`PositionStore.drop`, §6 bounded-staleness, врезан shadow в `position_sync` throttle 2мин) — страховка для «?»-exit/WS-drop остатка. 2 shadow-находки закрыты (is_open_fill hedge-retry + гонка fill↔pa=0). Побочно: **течь призраков остановлена** (orphan_autoclose:live) + **#7 ML-честность** закрыт (r_predictor OOS-gate).
+
+**🔵 СТАРТ следующей сессии = эмпирическая валидация → CUTOVER:**
+1. **Рестарт** (активирует exit-fallback + reconcile-watchdog в shadow). Грепать `[SPHERE-SHADOW] WOULD CLOSE` (real exit?) + `[SPHERE-SHADOW] RECONCILE` (ловит ли «?»-остаток).
+2. **DS: % WOULD CLOSE с непустым exit** + watchdog ловит ли остаток. ~100% покрытие (stash+REST+watchdog) → зелёный.
+3. **CUTOVER (deliberate, discuss-before-act):** в `exec_ws_integration` за флагом `exec_ws.sphere_cutover`: `Sphere(on_close=build_close_applier(trade_simulator))` + reconcile-watchdog escalated→sphere.close/db_writer + гейт `position_sync:501-654` close-by-price OFF. 🔴 повторный copy-DB тест перед флипом. Откат = флаг.
 4. ПОТОМ Ф5 дашборд-split (биржа/БД/SIM).
 
 **⏳ ПЕРЕД перестройкой (висит):** PUSH накопленного (≈8 файлов заплаток + доки, см. current_state). Симптом призраков НЕ закрыт (`orphan_autoclose: shadow`). Бот жив PID 31496 (рестарт #3, 19:04).
