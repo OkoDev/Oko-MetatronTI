@@ -77,6 +77,29 @@ class TestOrderFills:
                      "o": "LIMIT", "X": "NEW"}}
         assert adapter.normalize_event(raw, account=1) == []
 
+    def test_hedge_retry_close_not_open(self, adapter):
+        # Находка shadow: orphan-close снял reduceOnly → MARKET FILLED ro=false BUY на SHORT.
+        # Выглядит как открытие, но это CLOSE → is_open_fill ДОЛЖЕН быть False.
+        raw = {"o": {"s": "BNB-USDT", "i": "9", "S": "BUY", "ps": "SHORT", "o": "MARKET",
+                     "X": "FILLED", "z": "1.19", "ap": "580", "ro": False}}
+        evs = adapter.normalize_event(raw, account=1)
+        assert _types(evs) == ["FillEvent"]
+        assert evs[0].fill.is_open_fill is False   # BUY+SHORT = close, не open
+
+    def test_sell_long_no_reduceonly_is_close(self, adapter):
+        # Симметрично: SELL на LONG без reduceOnly = close
+        raw = {"o": {"s": "X-USDT", "i": "1", "S": "SELL", "ps": "LONG", "o": "MARKET",
+                     "X": "FILLED", "z": "100", "ap": "0.5", "ro": False}}
+        evs = adapter.normalize_event(raw, account=1)
+        assert evs[0].fill.is_open_fill is False
+
+    def test_open_short_sell(self, adapter):
+        # Открытие SHORT = SELL+SHORT → is_open_fill True
+        raw = {"o": {"s": "X-USDT", "i": "1", "S": "SELL", "ps": "SHORT", "o": "MARKET",
+                     "X": "FILLED", "z": "100", "ap": "0.5", "ro": False}}
+        evs = adapter.normalize_event(raw, account=1)
+        assert evs[0].fill.is_open_fill is True
+
     def test_partially_filled_is_fill(self, adapter):
         raw = {"o": {"s": "X-USDT", "i": "1", "S": "BUY", "ps": "LONG", "o": "MARKET",
                      "X": "PARTIALLY_FILLED", "z": "50", "ap": "1.0", "ro": False}}

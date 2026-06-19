@@ -60,8 +60,9 @@ async def test_raw_ws_lifecycle_to_would_close():
 async def test_raw_ws_open_only_no_close():
     adapter = BingXAdapter(_StubOM())
     sphere = ExecutionSphere(adapter, PositionStore())   # on_close=None → shadow
+    # открытие SHORT = SELL+SHORT (НЕ BUY+SHORT — то было бы close, находка is_open_fill)
     intents = await _feed(adapter, sphere, {"o": {
-        "s": "Q-USDT", "i": "9", "S": "BUY", "ps": "SHORT", "o": "MARKET",
+        "s": "Q-USDT", "i": "9", "S": "SELL", "ps": "SHORT", "o": "MARKET",
         "X": "FILLED", "z": "50", "ap": "1.0", "ro": False}})
     assert intents == []                                  # открытие не порождает close
     assert sphere.state(1)                                # но состояние ведётся

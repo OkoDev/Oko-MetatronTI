@@ -9,6 +9,30 @@
 
 ---
 
+## [19.06 ~20:40 UTC] Агент: Даат — ✅ ТЕЧЬ ПРИЗРАКОВ ОСТАНОВЛЕНА (live) + 🎁 shadow cross-validated + ⚠️ находка is_open_fill
+
+- ✅🛑 **orphan-стоп РАБОТАЕТ на бою** (рестарт 23:32:43): `23:34:18 [D-070][autoclose][live] BNB SHORT ЗАКРЫТ market (positionId=…614027266)` + `23:34:43 Q SHORT ЗАКРЫТ (positionId=…537189890)`. Оба account-aware по positionId, code=0, FAILED=0. DOLPHIN больше не orphan (закрылся/adopted). **Течь −$266 (призраки) перекрыта.**
+- 🎁 **ПЕРВАЯ live-сверка SPHERE-SHADOW:** на те же pa=0 новый Sphere выдал `WOULD CLOSE BNB`(23:34:19) + `WOULD CLOSE Q`(23:34:44) в lockstep со старым закрытием → детект закрытия новым путём РАБОТАЕТ на живом потоке (ключ к CUTOVER).
+- ⚠️🔴 **НАХОДКА shadow (до CUTOVER фиксить):** WOULD CLOSE показал `→ ? @ ? rp=?` (exit=None) + `OPEN seen BNB @ 580.01` ПОСЛЕ закрытия. Корень: orphan-close через `close_position_market` на хедж-ошибке СНИМАЕТ reduceOnly (retry bingx_client:699-707) → плоский MARKET FILLED ro=false → `normalize_event.is_open_fill` принимает за ОТКРЫТИЕ; + ExitInfo закрывающего fill не застешился до pa=0 (гонка fill↔pa=0). Для orphan'ов БЕЗВРЕДНО (нет DB-строки → db_writer applier no-op). Но для tracked до CUTOVER нужно: (1) `is_open_fill` различать reduceOnly-stripped хедж-close (напр. по o.S vs o.ps: BUY на SHORT = close), (2) порядок/буфер fill→pa=0 для ExitInfo. Это DS-форвард-зона + мой фикс.
+- ✅ **ФИКС is_open_fill СДЕЛАН** (domain.py): различение open/close по side×pos_side (open=BUY+LONG|SELL+SHORT), НЕ по reduceOnly. Чинит ложный «OPEN seen» хедж-retry close + застешивает ExitInfo (WOULD CLOSE больше не «? @ ?»). Тесты +4 (hedge-retry close не open, sell+long close, open short sell, store stash). Активируется след. рестартом (для shadow — не срочно). **Всего по эпику 85/85.**
+- 🔵 NEXT: DS квантифицирует ledger · копить WOULD CLOSE-сверку (теперь с реальным exit) · остаток гонки fill↔pa=0 (вторичный, наблюдать).
+- ⚠️ 11 коммитов НЕ запушены.
+
+## [19.06 ~20:30 UTC] Агент: Даат — 🛑 orphan_autoclose shadow→LIVE (стоп течи призраков) + DS параллель
+
+- ✅ **orphan_autoclose: shadow→LIVE** (config:133, коммит d7d076c). Валидация по shadow-логам ПРОЙДЕНА: 59 orphan-событий = **3 реальных recurring orphan'а** (DOLPHIN/USDT LONG qty114 pnl+5.6 · Q/USDT SHORT qty31570 pnl+4.8 · BNB/USDT SHORT qty1.19 **дрейф −0.93→−2.98 = живая течь**). Стабильны часами, hedge-safe (0 skip в логах = чистые orphan'ы, не tracked). Механизм: account-aware (_resolve_position_client+positionId 101205) + one_click_on_fail. 🔴 **Активируется СЛЕДУЮЩИМ рестартом юзера** → закроет 3 orphan'а. Откат = shadow.
+- 📋 **DS параллельные задачи** (DISCUSSION 20:30): (1) ledger-forward reconcile — квантифицировать −$435 (funding/fee/realized из WS, его ExecutionLedger подключён в Sphere.on_event); (2) SPHERE-SHADOW forward-сверка WOULD CLOSE vs реальный [EXEC-WS][2b] → N совпадений = зелёный на CUTOVER.
+- ⚠️ Это симптом-стоп (epic §8 «заплатка»), НО rebuild-фикс (Sphere reconcile-watchdog) на CUTOVER через дни, а призраки текут СЕЙЧАС → юзер выбрал стоп течи. CUTOVER заменит orphan_autoclose на единый Sphere.close-канал.
+- ⚠️ 10 коммитов (e88f95f→d7d076c) НЕ запушены.
+
+## [19.06 ~20:15 UTC] Агент: Даат — ✅ SHADOW-СВЕРКА АКТИВНА НА БОЮ (рестарт юзера, pipeline здоров)
+
+- ✅ **Флаг `sphere_shadow: true` включён** (коммит b5b9ba8), юзер рестартнул (бот 23:12 local).
+- ✅🟢 **Pipeline ЗДОРОВ на живом боте:** `23:12:04 [SPHERE-SHADOW] pipeline построен + cold_start [1,2]`. **cold_start засеял 11 живых позиций** (acc1: 6, acc2: 5) — read-only get_positions сработал на ОБОИХ аккаунтах. **Ноль feed-ошибок, ноль exception'ов execution/sphere/adapter/normalize.** Tracebacks в логе = известный Telegram-шум `bot/monitoring.py:1919 _send_one` (НЕ мой путь).
+- ⏳ **`OPEN seen`/`WOULD CLOSE` ещё нет** — нужны новые открытия/закрытия ПОСЛЕ 23:12 (Режим В OTE-only = низкая частота). Store держит 11 seeded позиций → при их pa=0 сработает `WOULD CLOSE` (покрытие вооружено). Грепать копящееся: `grep -a "\[SPHERE-SHADOW\]" logs/crypto_bot.log`.
+- 🔵 **NEXT:** копить `WOULD CLOSE` → сверять exit/статус с реальным `[EXEC-WS][2b]` (зона DS forward). Совпало N закрытий → Ф4.1-CUTOVER (on_close→db_writer applier + убрать position_sync close-by-price за флагом, тест на копии БД зелёный). Откат сверки = `sphere_shadow:false`.
+- ⚠️ 9 коммитов эпика (e88f95f→b5b9ba8) НЕ запушены.
+
 ## [19.06 ~19:45 UTC] Агент: Даат — ✅ Ф4.1 SHADOW-ВРЕЗКА в живой WS-путь (default OFF, ждёт рестарта юзера)
 
 - ✅ **SHADOW-врезка** (`core/exchange/exec_ws_integration.py`, ПЕРВОЕ касание живого кода, аддитивно): (1) `start_exec_ws` строит NEW pipeline (BingXAdapter+PositionStore+ExecutionLedger+ExecutionSphere, `on_close=None`) за флагом `trading.exec_ws.sphere_shadow` → `bot._exec_sphere/_exec_adapter`. (2) `make_event_handler.on_event` прогоняет ТОТ ЖЕ WS-msg через `adapter.normalize_event → sphere.on_event` ПАРАЛЛЕЛЬНО авторитетному 2a/2b, в try/except.

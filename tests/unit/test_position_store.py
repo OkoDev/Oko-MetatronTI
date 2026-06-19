@@ -109,6 +109,20 @@ class TestFillEnrichment:
         # take извлекает (повторно None)
         assert st.take_exit(1, SYM, "LONG") is None
 
+    def test_hedge_retry_close_stashes_exit_not_open(self):
+        # Находка shadow: close со снятым reduceOnly (BUY+SHORT MARKET ro=false) НЕ должен
+        # трактоваться как открытие — должен застешить ExitInfo (иначе WOULD CLOSE = "? @ ?").
+        st = PositionStore()
+        st.apply_position(_pos_event(1, SYM, "SHORT", 100))
+        f = FillEvent(1, Fill(symbol=SYM, side="BUY", pos_side="SHORT", order_id="o1",
+                              order_type="MARKET", status="FILLED", is_reduce_only=False,
+                              avg_price=0.49, last_qty=100, total_qty=100, realized_pnl=2.0,
+                              position_id="pid-1"))
+        st.apply_fill(f)
+        ex = st.take_exit(1, SYM, "SHORT")
+        assert ex is not None and ex.exit_price == 0.49      # застешен как close
+        assert ex.status == "TP"                              # MARKET + rp>=0 → TP
+
     def test_by_position_id(self):
         st = PositionStore()
         st.apply_fill(_fill(1, SYM, "LONG", ro=False, otype="MARKET", ap=0.5, pid="pid-9"))

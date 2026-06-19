@@ -112,9 +112,17 @@ class Fill:
 
     @property
     def is_open_fill(self) -> bool:
-        """MARKET FILLED не-reduceOnly = открытие позиции (эпик §5)."""
-        return (self.status == "FILLED" and self.order_type == "MARKET"
-                and not self.is_reduce_only)
+        """MARKET FILLED = открытие позиции — различаем по side×pos_side, НЕ по reduceOnly.
+
+        Находка shadow 19.06: хедж-retry close (bingx_client:699-707) СНИМАЕТ reduceOnly при
+        109400/101205 → плоский MARKET FILLED ro=false, который ВЫГЛЯДИТ как открытие, но это
+        CLOSE. Надёжный различитель в hedge-mode: открытие = BUY+LONG | SELL+SHORT; обратное
+        (SELL+LONG | BUY+SHORT) = закрытие, даже если reduceOnly снят.
+        """
+        if self.status != "FILLED" or self.order_type != "MARKET" or self.is_reduce_only:
+            return False
+        s, ps = self.side.upper(), self.pos_side.upper()
+        return (s == "BUY" and ps == "LONG") or (s == "SELL" and ps == "SHORT")
 
 
 @dataclass(frozen=True)
