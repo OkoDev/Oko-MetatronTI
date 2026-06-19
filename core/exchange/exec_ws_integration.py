@@ -194,11 +194,27 @@ def make_event_handler(bot, account_tag: str = "acc1"):
         _adapter = getattr(bot, "_exec_adapter", None)
         if _sphere is not None and _adapter is not None:
             try:
+                from core.execution.domain import FillEvent as _FE
                 _acc = _ACC_TAG_TO_INT.get(account_tag, 1)
                 for _ev in _adapter.normalize_event(msg, _acc):
-                    await _sphere.on_event(_acc, _ev)
+                    _intent = await _sphere.on_event(_acc, _ev)
+                    # наблюдаемость: видно, что pipeline подхватил ОТКРЫТИЕ
+                    if isinstance(_ev, _FE) and _ev.fill.is_open_fill:
+                        logger.info("[SPHERE-SHADOW] OPEN seen %s %s acc=%d @ %.8g pid=%s",
+                                    _ev.fill.symbol, _ev.fill.pos_side, _acc,
+                                    _ev.fill.avg_price or 0, _ev.fill.position_id)
+                    # КЛЮЧЕВАЯ строка для сверки с фактом (старый путь [EXEC-WS][2b] close_trade)
+                    if _intent is not None:
+                        _ex = _intent.exit
+                        logger.info("[SPHERE-SHADOW] WOULD CLOSE %s %s acc=%d → %s @ %s rp=%s (reason=%s) "
+                                    "← сверь с реальным закрытием",
+                                    _intent.symbol, _intent.side, _acc,
+                                    (_ex.status if _ex else "?"),
+                                    (f"{_ex.exit_price:.8g}" if _ex else "?"),
+                                    (f"{_ex.realized_pnl:.4g}" if _ex else "?"),
+                                    _intent.reason)
             except Exception as _she:
-                logger.debug("[SPHERE-SHADOW] feed error %s: %s", account_tag, _she)
+                logger.warning("[SPHERE-SHADOW] feed error %s: %s", account_tag, _she)
         # ── ЭТАП 2a: запись exch_id при FILLED MARKET открытии ──
         # ВАЖНО: открытие приходит как 'TRADE_UPDATE' (place_bracket type=MARKET), а статус-апдейт
         # как 'ORDER_TRADE_UPDATE'. Не фильтруем по etype-строке — проверяем наличие order-данных 'o'.
@@ -318,8 +334,13 @@ def start_exec_ws(bot) -> Optional[list]:
             _adapter = BingXAdapter(bot.order_executor)
             bot._exec_adapter = _adapter
             bot._exec_sphere = ExecutionSphere(_adapter, PositionStore(), ledger=_ledger, on_close=None)
-            logger.info("[SPHERE-SHADOW] pipeline построен (on_close=None → would-close лог; "
-                        "position_sync close-by-price НЕ тронут; сверка на живом потоке)")
+            # cold_start: засеять Store снимком (read-only get_positions) → would-close покрывает
+            # и позиции, открытые ДО рестарта (иначе их pa=0 = untracked, не логируется).
+            for _acc_cs in _adapter._router.accounts:
+                asyncio.create_task(bot._exec_sphere.cold_start(_acc_cs))
+            logger.info("[SPHERE-SHADOW] pipeline построен + cold_start %s (on_close=None → would-close лог; "
+                        "position_sync close-by-price НЕ тронут; сверка на живом потоке)",
+                        list(_adapter._router.accounts))
         except Exception as _spe:
             logger.warning("[SPHERE-SHADOW] не построен (shadow off): %s", _spe)
 

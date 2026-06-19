@@ -189,9 +189,11 @@ class ExecutionSphere:
     # ── helpers ────────────────────────────────────────────────────────────
     async def _fire_close(self, intent: CloseIntent) -> None:
         if self._on_close is None:
-            logger.info("[Sphere][SHADOW] would close %s %s acc=%s (%s) exit=%s — close-path выкл (on_close=None)",
-                        intent.symbol, intent.side, intent.account, intent.reason,
-                        (intent.exit.status if intent.exit else "?"))
+            # SHADOW: close-path выкл. Наблюдаемость в WS-врезке (тег [SPHERE-SHADOW]) — здесь debug,
+            # чтобы не дублировать при прогоне через exec_ws_integration.
+            logger.debug("[Sphere][SHADOW] would close %s %s acc=%s (%s) exit=%s — on_close=None",
+                         intent.symbol, intent.side, intent.account, intent.reason,
+                         (intent.exit.status if intent.exit else "?"))
             return
         await self._on_close(intent)
 
