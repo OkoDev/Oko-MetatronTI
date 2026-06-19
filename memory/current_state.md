@@ -9,6 +9,15 @@
 
 ---
 
+## [19.06 ~18:10 UTC] Агент: Даат — ✅ Ф3.3 (PositionStore + аудит BingXClient) + леджер DS проверен
+
+- ✅ **АУДИТ BingXClient (требование юзера)** → `docs/BINGX_CLIENT_AUDIT.md`. Прочитал ВЕСЬ файл (751 строка). Вердикт: НЕ гнилой. ~60% выстраданные фиксы+плюминг (GlobalRateLimiter/100410-бан, sync_time-throttle/109400, precision-cache, get_positions БРОСАЕТ не [], hedge-close 101205+one-click, dual-signing) — НЕ трогать. ~15% реальный запах: дубль 109400-retry ×3 (get/post/delete) + дубль ban-парсинга в get_balance → консолидировать ВНУТРИ адаптера (тех-уборка, не блокер). Gaps: нет standalone set_leverage/set_margin_mode (подтверждает margin-enforce кирпич). **Деньги текли НЕ в клиенте, а в оркестрации** → план A верен (обернуть клиент, снести оркестрацию).
+- ✅ **PositionStore ПОСТРОЕН** (`core/execution/position_store.py`, моя половина Ф3.3): единственный владелец состояния из WS. `apply_position(pa=0)→ставшая флэт Position` (триггер close для Sphere, idempotent если не отслеживалась), `apply_fill` (open→entry/pid обогащение, close→stash ExitInfo), `take_exit` (классификация SL/TP/TSL/LIQ из o.o/o.ap/o.rp), `positions/get/by_position_id`, `staleness()` (watchdog §6). Hedge-aware ключ (account,symbol,side). `classify_exit` = единый смысл с position_sync._ORDER_TYPE_TO_STATUS. Чистый in-memory, БД не трогает.
+- ✅ **Тесты `tests/unit/test_position_store.py` 18/18** (open/upsert/flat-триггер/idempotent, hedge-независимость, account-изоляция, fill-обогащение, exit-stash, cold-start reset, staleness). **Всего по эпику 51/51.** py_compile OK.
+- ✅ **Леджер DS (`execution_ledger.py`) ПРОВЕРЕН вживую:** running_sum −1.52, gap −0.48 — математика верна, интегрируется с моим domain/normalize_event (FillEvent realized/fee + LedgerEvent funding). Solid. ⚠️ Файл DS (untracked) — НЕ в моём коммите (его коммит). Минор: bucket "LIQUIDATION" в apply() не наполняется (realized ликвидации идёт через FillEvent.realized_pnl) — by-design, не баг.
+- 🔵 **Следующий: Ф4** — ExecutionSphere (оркестратор: open/close/on_event/adjust_sl/state, связывает PositionStore+Ledger+Adapter+Calc). + cold-start reconcile (§10). 🔴 close-path — тест на копии БД перед боем.
+- ⚠️ `__init__` экспортит PositionStore (мой); ExecutionLedger/BingXAdapter — прямой импорт из модулей (агностичное ядро + раздельное владение).
+
 ## [19.06 ~17:30 UTC] Агент: Даат — ✅ EXECUTION-REBUILD Ф3.2 ГОТОВА (BingXAdapter обёртка)
 
 - ✅ **Ф3.1 закоммичена** `e88f95f` (каркас core/execution/ + дизайн + координация, 10 файлов, +947). Только работа сессии, DS-конфиги/патч-пул не тронуты.
