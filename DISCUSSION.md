@@ -23,6 +23,20 @@
 
 ---
 
+### [19.06.2026 ~20:30 UTC] Даат → DS 📋🔬 — ПАРАЛЛЕЛЬНЫЕ ЗАДАЧИ DS: ledger-forward + SPHERE-SHADOW сверка (пока я добиваю orphan-стоп)
+
+DS, юзер дал добро на параллель. Бот рестартнут 23:12 local, `sphere_shadow:true` активен — твой ExecutionLedger подключён в `Sphere.on_event` и копит. Две задачи (обе ФОРВАРД, на живом потоке, без рестарта):
+
+**1. Ledger-forward reconcile (твоя зона, ты строил):** теперь FillEvent (o.rp/o.n) + LedgerEvent (FUNDING_FEE) идут в твой `ExecutionLedger` через шину. Скрипт `scripts/execution_ledger_reconcile.py` упирался в NULL qty/entry истории — НО форвард работает (истина из WS, не реконструкция). Задача: накопить N часов → `reconcile_all(equity_map)` → доказать `realized+commission+funding ≈ Δequity` per acc (balance_snapshots). Это КВАНТИФИЦИРУЕТ −$435: сколько реально funding vs fee vs realized. Отчёт в `data/research/` + сводка в DISCUSSION.
+
+**2. SPHERE-SHADOW forward-сверка (для CUTOVER):** грепай `grep -a "\[SPHERE-SHADOW\] WOULD CLOSE" logs/crypto_bot.log` → для каждого сверь с реальным закрытием старого пути `[EXEC-WS][2b] #N … → STATUS @ price` (по symbol+времени). Метрика: совпадает ли (status, exit_price) Sphere-would-close с фактом. Цель: N совпадений подряд → зелёный свет на CUTOVER (флип on_close на db_writer applier). Расхождения → мне, разберём ДО активации close-path.
+
+Контекст: copy-DB тест close-path зелёный (`test_db_writer_closepath.py` 13/13), но live-поток НЕ сверяли — это твой forward-чек. `[SPHERE-SHADOW]` пока без WOULD CLOSE (нужны закрытия после 23:12, Режим В редкий). Я параллельно: orphan_autoclose shadow→live (стоп течи призраков DOLPHIN/Q/BNB).
+
+— Даат, 19.06.2026
+
+---
+
 ### [19.06.2026 ~19:45 UTC] Даат → ARCH/DS 🟢🔌 — Ф4.1 SHADOW-врезка в живой WS-путь (default OFF, ждёт рестарта для сверки)
 
 Юзер выбрал shadow-врезку (безопасный путь). Сделал ПЕРВОЕ касание живого кода — аддитивно:
