@@ -126,6 +126,7 @@ class PerformanceSection(BaseModel):
     ws_batch_start_delay_sec: float = Field(default=5.0, ge=0.0, le=60.0)
     ws_reconnect_base_delay_sec: float = Field(default=5.0, ge=0.1, le=60.0)
     ws_ohlcv_error_pause_sec: float = Field(default=1.0, ge=0.0, le=300.0)
+    sim_time_exit_hours: int = Field(default=48, ge=0, le=10000)  # анти-орфан SIM
 
 
 class SignalQualitySection(BaseModel):
@@ -184,6 +185,8 @@ class OkoConfig(BaseModel):
     signals: Dict[str, Any] = Field(default_factory=dict)
     subscriptions: Dict[str, Any] = Field(default_factory=dict)
     notifications: Dict[str, Any] = Field(default_factory=dict)
+    dashboard: Dict[str, Any] = Field(default_factory=dict)
+    arch104: Dict[str, Any] = Field(default_factory=dict)
     ml: Dict[str, Any] = Field(default_factory=dict)
     advisor: Dict[str, Any] = Field(default_factory=dict)
     detectors: Dict[str, Any] = Field(default_factory=dict)
@@ -291,6 +294,23 @@ class ConfigProxy:
             else:
                 return default
         return node
+
+    def set(self, key: str, value: Any) -> None:
+        """Устанавливает значение по dot-path (in-memory, для обратной совместимости)."""
+        keys = key.split(".")
+        node: Any = self._model
+        for k in keys[:-1]:
+            if isinstance(node, dict):
+                node = node.setdefault(k, {})
+            elif hasattr(node, k):
+                node = getattr(node, k)
+            else:
+                return
+        last = keys[-1]
+        if isinstance(node, dict):
+            node[last] = value
+        elif hasattr(node, last):
+            setattr(node, last, value)
 
     def __repr__(self) -> str:
         return f"ConfigProxy(trading={len(self._model.trading)}k, sl_tp_engine={len(self._model.sl_tp_engine.model_dump())}k)"

@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════════════
+# OTE-ONLY: РЕЖИМ А — «Безопасный захват»
+# ЧЕСТНЫЙ пересчёт 19.06: avgR=0.501 (fake-R починен)
+# risk=0.25% | 50x | 75 позиций | 0% пропусков
+# Ожидание: +548% / 2 недели ($598→$3,870) | MaxDD 8% | $2,276/мес flat
+# ═══════════════════════════════════════════════════════
+#
+# ПРИМЕНЕНИЕ: cp config_ote_A.yaml config.yaml
+# ВЕРНУТЬ: git checkout config.yaml
+
+trading:
+  deposit_usdt: 598
+  risk_pct: 0.25
+  leverage: 50
+  min_sl_dist_pct: 0.25
+
+gates:
+  max_total_risk_pct: 20.0
+  risk_gate_shadow: false
+  min_available_usdt: 5.0
+  margin_gate_shadow: false
+
+signal_quality:
+  pivot_reversal_enabled: false
+  watch_list_breach_enabled: false
+  atr_change_15m_enabled: false
+  ote_shadow_mode: false

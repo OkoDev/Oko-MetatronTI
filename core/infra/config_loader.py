@@ -43,8 +43,11 @@ class ConfigLoader:
                         _merged += 1
                 logger.info("[CONFIG] sl_tp_engine → trading merge: %d ключей (CONFIG-SLTP-BUG fix)", _merged)
 
-            from core.infra.config_validator import validate_and_log
-            validate_and_log(config)
+            from core.infra.pydantic_config import load_oko_config
+            try:
+                load_oko_config(self.config_path, strict=False)  # pydantic-валидация (поглощает config_validator)
+            except Exception as _e:
+                logger.warning("[CONFIG] pydantic-валидация: %s", _e)
             logger.info("Конфигурация загружена успешно")
             return config
         except Exception as e:

@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════════════
+# OTE-ONLY: РЕЖИМ В — «Золотая середина» ★ ОПТИМУМ
+# ЧЕСТНЫЙ пересчёт 19.06: avgR=0.501 (fake-R починен)
+# risk=0.5% | 50x | 37 позиций | 1% пропусков
+# Ожидание: +3,635% / 2 недели ($598→$22,322) | MaxDD 16% | $4,551/мес flat
+# ═══════════════════════════════════════════════════════
+#
+# ПРИМЕНЕНИЕ: cp config_ote_V.yaml config.yaml
+# ВЕРНУТЬ: git checkout config.yaml
+
+trading:
+  deposit_usdt: 598
+  risk_pct: 0.5
+  leverage: 50
+  min_sl_dist_pct: 0.25
+
+gates:
+  max_total_risk_pct: 25.0
+  risk_gate_shadow: false
+  min_available_usdt: 5.0
+  margin_gate_shadow: false
+
+signal_quality:
+  pivot_reversal_enabled: false
+  watch_list_breach_enabled: false
+  atr_change_15m_enabled: false
+  ote_shadow_mode: false

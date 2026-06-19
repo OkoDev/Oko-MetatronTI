@@ -1,4 +1,8 @@
 """
+⚠️ DEPRECATED (DS-325, 18.06.2026): функциональность поглощена pydantic_config.py.
+OkoConfig.model_validate() + extra="forbid" заменяет 15 ручных правил validate_and_log.
+Больше не вызывается из config_loader.py.
+
 Валидатор критичных полей config.yaml — без внешних зависимостей.
 Вызывается при старте из config_loader.load_config().
 Логирует WARNING на каждую аномалию; не останавливает бот.

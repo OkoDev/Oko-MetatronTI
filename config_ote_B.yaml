@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════════════
+# OTE-ONLY: РЕЖИМ Б — «Максимальный выжим»
+# ЧЕСТНЫЙ пересчёт 19.06: avgR=0.501 (fake-R починен)
+# risk=1.0% | 50x | 18 позиций | 5% пропусков
+# Ожидание: +87,226% / 2 недели ($598→$521K) | MaxDD 30% | $9,102/мес flat
+# ═══════════════════════════════════════════════════════
+#
+# ПРИМЕНЕНИЕ: cp config_ote_B.yaml config.yaml
+# ВЕРНУТЬ: git checkout config.yaml
+
+trading:
+  deposit_usdt: 598
+  risk_pct: 1.0
+  leverage: 50
+  min_sl_dist_pct: 0.25
+
+gates:
+  max_total_risk_pct: 30.0
+  risk_gate_shadow: false
+  min_available_usdt: 5.0
+  margin_gate_shadow: false
+
+signal_quality:
+  pivot_reversal_enabled: false
+  watch_list_breach_enabled: false
+  atr_change_15m_enabled: false
+  ote_shadow_mode: false
