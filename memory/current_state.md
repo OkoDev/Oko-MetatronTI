@@ -9,6 +9,14 @@
 
 ---
 
+## [20.06 ~00:30 UTC] Агент: Даат — ✅ #7 ML-честность: OOS-gate (r_predictor = шум, честно отключён)
+
+- ✅ **#7 BACKLOG (ML data-leak) ЗАКРЫТ.** Аудит `scripts/r_predictor_leak_audit.py` (read-only, реальные данные) вскрыл БОЛЬШЕ чем leak: на честном **TimeSeriesSplit R²=−1.05** (max_R_possible) / −0.40 (r_multiple), RMSE ХУЖЕ naive baseline (predict-mean) для ОБОИХ target. **Модель не обобщает — она шум**, а активировалась ВСЕГДА при n≥75 (старый `cross_val_score cv=5` KFold по неупорядоченным данным маскировал). «85%→34%» из реестра = другая эпоха/метрика; на регрессии R²≈+0.02 даже у leaky.
+- ✅ **Фикс `core/ml/r_predictor.py`:** (1) `_load_dataset` ORDER BY id (хронология); (2) `_evaluate_oos` = TimeSeriesSplit RMSE+R² + naive baseline; (3) **OOS-gate** — `is_trained=True` ТОЛЬКО если модель бьёт baseline на forward-CV, иначе НЕ деплоим (predict_expected_r→None). End-to-end на subscriptions.db: **fit→False, is_trained=False** (TS RMSE 1.909≥baseline 1.772). info() += cv_r2/baseline_rmse/oos_passed.
+- ✅ **БЕЗОПАСНО:** predict_expected_r НЕ в decision-path (только Kelly-текст monitoring держит is_trained=False→пустая строка; ml_loop только fit+лог). Отключение шум-модели = чистая честность, 0 риска решений. Деплой на след. рестарте (ml_loop переобучит→гейт не пустит).
+- ✅ Тесты `tests/unit/test_r_predictor_oos_gate.py` 3/3 (шум→fail, сигнал→pass) + старые r_predictor 10/10. realized-R target проверен — тоже не спасает (R²<0).
+- 🔵 EXEC-REBUILD форвард копится (DS), CUTOVER ждёт exit-валидации.
+
 ## [19.06 ~21:10 UTC] Агент: Даат — ✅ рестарт #43 (is_open_fill активен) + DS 3/3 SPHERE-match + 🔴 CUTOVER-блокер (гонка fill↔pa=0)
 
 - ✅ **Рестарт 23:43:02** — pipeline + cold_start acc1:4/acc2:4 (меньше — orphan'ы закрылись). is_open_fill-фикс (c54008e) активен.

@@ -20,13 +20,32 @@ MIN_SAMPLES = 75  # минимум сделок для обучения (84 ес
 
 try:
     from sklearn.ensemble import GradientBoostingRegressor
-    from sklearn.model_selection import cross_val_score
+    from sklearn.model_selection import cross_val_score, TimeSeriesSplit
     import numpy as np
     _SKLEARN_OK = True
 except ImportError:
     _SKLEARN_OK = False
     GradientBoostingRegressor = None
+    TimeSeriesSplit = None
     np = None
+
+
+def _evaluate_oos(model, X, y, n_splits: int = 5):
+    """Честная forward-оценка + OOS-gate (#7 BACKLOG, фикс data-leak).
+
+    TimeSeriesSplit (train=прошлое, test=будущее) вместо KFold (мешал прошлое/будущее = leak).
+    Возвращает (ts_rmse, ts_r2, baseline_rmse, passed). passed=True ТОЛЬКО если модель бьёт
+    наивный baseline (predict train-mean) на forward-фолдах — иначе модель = шум, не активируем.
+    Данные ДОЛЖНЫ быть упорядочены по времени (ORDER BY id в _load_dataset).
+    """
+    tss = TimeSeriesSplit(n_splits=n_splits)
+    rmse = float((-cross_val_score(model, X, y, cv=tss,
+                                   scoring="neg_root_mean_squared_error")).mean())
+    r2 = float(cross_val_score(model, X, y, cv=tss, scoring="r2").mean())
+    base_errs = [float(np.sqrt(np.mean((y[te] - y[tr].mean()) ** 2)))
+                 for tr, te in tss.split(y)]
+    baseline_rmse = float(np.mean(base_errs))
+    return rmse, r2, baseline_rmse, (rmse < baseline_rmse)
 
 
 class RPredictor:
@@ -38,7 +57,10 @@ class RPredictor:
         self.model: Optional[Any] = None
         self.is_trained = False
         self._n_samples = 0
-        self._cv_rmse: Optional[float] = None
+        self._cv_rmse: Optional[float] = None        # честный TimeSeriesSplit RMSE
+        self._cv_r2: Optional[float] = None
+        self._baseline_rmse: Optional[float] = None  # naive predict-mean (порог OOS-gate)
+        self._oos_passed: Optional[bool] = None
 
     # ------------------------------------------------------------------
     # Обучение
@@ -65,15 +87,31 @@ class RPredictor:
                 subsample=0.8,
                 random_state=42,
             )
-            scores = cross_val_score(model, X, y, cv=5, scoring="neg_root_mean_squared_error")
-            self._cv_rmse = float(-scores.mean())
+            # #7: честная forward-оценка (TimeSeriesSplit) + OOS-gate. Старый cv=5 (KFold)
+            # мешал прошлое/будущее → оптимистичный leak. Аудит: на TS R²<0, модель проигрывала
+            # naive baseline → активировать НЕЛЬЗЯ (predict_expected_r был бы шумом).
+            ts_rmse, ts_r2, baseline_rmse, passed = _evaluate_oos(model, X, y)
+            self._cv_rmse = ts_rmse
+            self._cv_r2 = ts_r2
+            self._baseline_rmse = baseline_rmse
+            self._oos_passed = passed
+            self._n_samples = len(y)
+            if not passed:
+                # OOS-GATE: модель не бьёт baseline на forward-CV → НЕ деплоим (честность > видимость)
+                self.model = None
+                self.is_trained = False
+                logger.warning(
+                    "RPredictor: НЕ активирован — не обобщает (TimeSeriesSplit RMSE=%.3f >= "
+                    "baseline=%.3f, R²=%.3f, n=%d). predict_expected_r вернёт None.",
+                    ts_rmse, baseline_rmse, ts_r2, self._n_samples,
+                )
+                return False
             model.fit(X, y)
             self.model = model
             self.is_trained = True
-            self._n_samples = len(y)
             logger.info(
-                "RPredictor: обучен на %d сделках, CV RMSE=%.3f",
-                self._n_samples, self._cv_rmse
+                "RPredictor: активирован (бьёт baseline) n=%d TS RMSE=%.3f baseline=%.3f R²=%.3f",
+                self._n_samples, ts_rmse, baseline_rmse, ts_r2,
             )
             return True
         except Exception:
@@ -94,6 +132,7 @@ class RPredictor:
                     WHERE status != 'OPEN'
                       AND max_R_possible IS NOT NULL
                       AND max_R_possible > 0
+                    ORDER BY id ASC
                 """).fetchall()
 
             if not rows:
@@ -206,7 +245,10 @@ class RPredictor:
         return {
             "is_trained": self.is_trained,
             "n_samples": self._n_samples,
-            "cv_rmse": self._cv_rmse,
+            "cv_rmse": self._cv_rmse,            # честный TimeSeriesSplit
+            "cv_r2": self._cv_r2,
+            "baseline_rmse": self._baseline_rmse,
+            "oos_passed": self._oos_passed,      # прошёл ли OOS-gate (бьёт baseline)
             "min_samples_needed": MIN_SAMPLES,
             "sklearn_available": _SKLEARN_OK,
         }

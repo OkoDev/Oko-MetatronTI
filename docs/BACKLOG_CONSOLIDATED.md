@@ -25,7 +25,7 @@
 | # | Статус | Задача | Источник |
 |---|---|---|---|
 | 6 | ✅ | **ПОЧИНЕНО (c6aa6e9).** clamp [0,100] в формуле (новые) + backfill 16252 строк. avg −13.3→34.3, <0/>100→0. Корень: realized/MFE без clamp (убыток<0, раннер>clamp_MFE). Метрики достоверны → разблокирует #5/#19 | DATA-AUDIT-2 A2.1 |
-| 7 | 🔄 | **ML-честность**: аудит DS ✅ — `r_predictor:66 random_state=42` (НЕ TimeSeriesSplit) = leak 85%→34%. Фикс TimeSeriesSplit + realized-R таргет + OOS gate — pending (согласовать, ML) | AUDIT, DS 15.06 |
+| 7 | ✅ | **ML-честность ЗАКРЫТА (20.06, Даат).** Аудит на реальных данных (`scripts/r_predictor_leak_audit.py`): TimeSeriesSplit R²=−1.05/−0.40, RMSE хуже naive baseline для ОБОИХ target → модель НЕ обобщает (шум), а активировалась всегда (KFold-leak маскировал). Фикс `r_predictor`: ORDER BY id + TimeSeriesSplit + **OOS-gate** (is_trained только если бьёт baseline). End-to-end: fit→False. БЕЗОПАСНО (predict_expected_r не в decision-path). Тесты 3/3. realized-R target тоже R²<0 (не спасает). | AUDIT, DS 15.06 |
 | 8 | ✅ | **SIM убыточны (VST=edge)**: фикс `AND execution_mode='VST'` ЗАКАТАН (4b22a0c) — веса учатся только на VST-выборке (SIM-шум убран). ⚠️ Сами VST-R ещё искажены смешением логик закрытия (217 R≤−10) → точность даст EXEC-SIM-SPLIT (#21) | DS 15.06 |
 
 ## 🟢 LISTENERS / BUS (фундамент L2 готов 15.06)
