@@ -132,6 +132,12 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
                         symbol, sig.setup_id, sig.tier, sig.direction,
                         sig.entry, sig.sl, sig.tp1, sig.trigger_type,
                         sig.conf_score, sig.confirmations)
+            # OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр SHADOW на каждый FIRE (НЕ блокирует).
+            if bool(bot.config.get("ote.cascade_shadow", True)):
+                try:
+                    await _cascade_1d_shadow(data_collector, symbol, sig)
+                except Exception as _e:
+                    logger.debug("[CASCADE][shadow] %s error: %s", symbol, _e)
             if bool(bot.config.get("ote.vst_trading.enabled", False)):
                 try:    # DEV-226 Ph2 SHADOW: фаза импульса на входе (не блокирует)
                     sig.meta["phase_shadow"] = _elliott_phase_shadow(dfs, sig.direction, sig.type)
@@ -143,6 +149,29 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
     # Только observability для вотчлиста/ручной торговли — торговая логика выше не меняется.
     _publish_ote_ltf_state(bot, symbol, signals)
     return armed, fired
+
+
+async def _cascade_1d_shadow(data_collector, symbol: str, sig) -> None:
+    """OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр на каждый ote_nested FIRE.
+    SHADOW — только лог would_block, НЕ блокирует регистрацию. DS меряет дельту forward
+    («с фильтром vs без» на живом потоке ote_nested). Контракт: DISCUSSION 19.06 ~09:30.
+    🔴 Фетчим 60 НАСТОЯЩИХ 1D-баров (НЕ dfs['1d'] из resample 1h×300 = ~12 баров < 43 для ATR)."""
+    df_1d = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=60)
+    n = 0 if df_1d is None else len(df_1d)
+    if n < 43:  # calculate_trend atr_period=43 → меньше баров = NaN тренд
+        logger.info("[CASCADE][shadow] %s dir=%s 1d_trend=NA bars=%d would_block=unknown",
+                    symbol, sig.direction, n)
+        return
+    from core.indicators.indicators import calculate_trend
+    last = calculate_trend(df_1d)["trend"].iloc[-1]
+    if pd.isna(last):
+        logger.info("[CASCADE][shadow] %s dir=%s 1d_trend=NaN would_block=unknown", symbol, sig.direction)
+        return
+    d1 = "LONG" if last > 0 else "SHORT"
+    _sdir = str(sig.direction).upper()  # sig.direction = 'long'/'short' (lowercase) → нормализуем
+    would_block = _sdir != d1  # вход ПРОТИВ 1D-тренда
+    logger.info("[CASCADE][shadow] %s dir=%s 1d_trend=%s would_block=%s entry=%s conf=%d",
+                symbol, _sdir, d1, would_block, sig.entry, sig.conf_score)
 
 
 def _publish_ote_ltf_state(bot, symbol: str, signals: list) -> None:

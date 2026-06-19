@@ -471,6 +471,20 @@ class OrderManager:
             if _max_lev and _max_lev > 0 and leverage > _max_lev:
                 logger.info("[OrderManager] %s %s leverage %d→%d (cap пары)", symbol, direction, leverage, _max_lev)
                 leverage = _max_lev
+            # 🔴 SL-SAFETY КАП ПЛЕЧА (19.06): ликвидация (~1/leverage) ДОЛЖНА быть дальше SL.
+            # При тугом SL × высоком плече стоп оказывается ЗА ликвидацией → слив маржи вместо −1R
+            # (пример: POPCAT 50× SL 2.75% → liq ~1.9% < SL). leverage ≤ 1/(sl_dist + буфер).
+            # Только СНИЖАЕТ плечо. qty уже посчитан запрошенным плечом → риск корректен, маржа выше (безопаснее).
+            if bool(self._cfg.get("trading.liq_safety_enabled", True)) and entry_price > 0 and sl > 0:
+                _sl_frac = abs(entry_price - sl) / entry_price
+                _liq_buf = float(self._cfg.get("trading.liq_safety_buffer_pct", 0.5) or 0) / 100.0
+                _denom = _sl_frac + _liq_buf
+                if _denom > 0:
+                    _safe_lev = max(1, int(1.0 / _denom))
+                    if _safe_lev < leverage:
+                        logger.info("[OrderManager] %s %s leverage %d→%d (SL-safety: sl_dist=%.2f%% buf=%.2f%% liq>SL)",
+                                    symbol, direction, leverage, _safe_lev, _sl_frac * 100, _liq_buf * 100)
+                        leverage = _safe_lev
             sl_buf   = float(self._cfg.get("trading.sl_limit_buffer_pct", 0) or 0)
             resp     = await client.place_bracket_order(symbol=symbol, side=side, qty=qty,
                                                         sl=sl, tp=tp1, leverage=leverage,

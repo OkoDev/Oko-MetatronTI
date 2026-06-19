@@ -155,6 +155,12 @@ trading:
   risk_pct: 1.0
   leverage: 5
   max_notional_mult: 20.0
+  # 🔴 SL-SAFETY КАП ПЛЕЧА (19.06): ликвидация (~1/leverage) должна быть ДАЛЬШЕ SL+буфер.
+  # leverage ≤ 1/(sl_dist + liq_safety_buffer). Иначе при тугом SL × высоком плече стоп
+  # оказывается ЗА ликвидацией → слив маржи вместо −1R. Пример: POPCAT 50× SL 2.75% → liq 1.9% < SL.
+  # Кап ТОЛЬКО снижает плечо (никогда не повышает). Буфер кроет maintenance-margin + slippage.
+  liq_safety_enabled: true
+  liq_safety_buffer_pct: 0.5
   # CONFIG-SLTP-BUG fix (15.06): код читает trading.min_sl_dist_pct (gates/min_sl_dist.py:24,
   # trade_simulator.py:469/677), а значение лежало ТОЛЬКО в sl_tp_engine:321 (не читается) →
   # дефолт 0.1 → SL≈entry проходили → fake-R −15R + реальные −20%. Дублируем сюда до миграции sl_tp_engine.
@@ -706,6 +712,10 @@ ote:
   vst_trading:
     enabled: true
     signal_type: ote_nested
+  # OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр SHADOW на каждый ote_nested FIRE —
+  # лог [CASCADE][shadow] would_block (вход против 1D-тренда), НЕ блокирует. DS меряет
+  # дельту forward → edge есть → гейтим (live), нет → закрываем. False=отключить shadow.
+  cascade_shadow: true
 arch118:
   shadow_enabled: true
   write_table: true

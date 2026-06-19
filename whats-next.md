@@ -1,41 +1,96 @@
 # What's Next — Handoff
 
-## 🆕✅ Сессия 19.06 (Даат + DS пара) — fake-R УБИТ + Режим В + 3 косяка плеча + дашборд. ИТОГ ДНЯ
+## 🏛️🔴 НОВАЯ СЕССИЯ = EXECUTION-REBUILD (манифест юзера 19.06 вечер: «хватит латать, перестраиваем»)
 
+> **ГЛАВНОЕ ТЗ:** [docs/EXECUTION_REBUILD_EPIC.md](docs/EXECUTION_REBUILD_EPIC.md) — читать ПЕРВЫМ.
+> Pre-flight: + `docs/BINGX_WS_ACCOUNT_SPEC.md` + skills `.agents/skills/bingx-swap-ws-account/api-reference.md` + `current_state.md` (19:04 запись).
+> Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina. Ветка `arch-128-oko-sm`.
+
+**Юзер сформулировал (19.06 вечер):** хватит заплаток — деньги утекают всё равно (VST −48%/нед = REST −$435 мимо стратегии). Нужна ПЕРЕСТРОЙКА: (1) отделить SIM от VST (SIM изжил себя, VST=боевая песочница=истина, разные БД); (2) единые узлы входа/выхода/мониторинга вместо 8 лоскутов (WS=истина, REST close-by-price убрать); (3) дашборд-редизайн (чёткое разделение биржа/БД, время open/close, нормальные ID — сейчас «табличка со смешанными режимами»).
+
+**Корень всех дыр (доказано 19.06):** два конкурирующих источника закрытия — WS `pa=0` (истина) ∥ REST `position_sync:504` close-by-price (по 15s-кэшу, ложно→призраки). + account-хардкод (`:364`) + не юзаем WS `o.rp/o.n/FUNDING_FEE/LIQUIDATION`. Всё = лоскутное исполнение. Карта 8 узлов + фазы перестройки → в ТЗ.
+
+**✅ Ф1 (docs/API-меню) ЗАКРЫТА:** установлен `BingX-API/api-ai-skills` (27 skills, swap-trade/account/ws-account) + WS-спека выжата. **СТАРТ новой сессии = Ф2 (дизайн ExecutionSphere + ExchangeAdapter), со свежей головой.** НЕ кодить close-path без теста на копии БД.
+
+**⏳ ПЕРЕД перестройкой (висит):** PUSH накопленного (≈8 файлов заплаток + доки, см. current_state). Симптом призраков НЕ закрыт (`orphan_autoclose: shadow`). Бот жив PID 31496 (рестарт #3, 19:04).
+
+**Заплатки сегодня (НЕ путать с корнем, в ТЗ §8):** SL-кап, OTE-CASCADE shadow(+fix регистра), balance_history кэш, exchange_history/trades_filtered масштаб(lev/size/$), fake-R/leverage/margin-mode.
+
+---
+
+## 📦 АРХИВ — handoff начала сессии 19.06 (CASCADE/OTE — поглощён эпиком выше)
+
+> ⚠️ Этот блок сгенерирован `/whats-next` в СВЕЖЕЙ сессии (19.06, после 09:20 UTC), в которой ещё НЕ было своей работы — он СИНТЕЗ актуального состояния из `whats-next.md` (предыдущий топ), `memory/current_state.md` и `DISCUSSION.md` (запись DS 09:20). In-session работы для захвата нет. Старый топ переоформлен в структуру `/whats-next`, детальные архивы ниже — без изменений.
 > Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina после задач.
-> Ветка `arch-128-oko-sm`. Бот **жив** (рестарт #5 ~04:12 local 19.06, leverage-enforcement активен). DEV/ARCH отдыхают — пара с DS.
+> Ветка `arch-128-oko-sm`. Бот **жив** (рестарт #5 ~04:12 local 19.06, leverage-enforcement активен). DEV/ARCH отдыхают — пара Даат + DS.
 
-### ✅ СДЕЛАНО (5 рестартов по ходу)
-1. **fake-R УБИТ** ([[bug_phantom_exit_resolve]]): колонка `position_id` + захват при открытии (`tsl_updater.fetch_and_save_position_id`) + **positionID-якорь в `position_sync._resolve_exit`** (выше orderId/эвристики, прокинут в 3 пути + WS). Миграция боевой БД (`scripts/migrate_fakeR_positionid.py --commit --with-exchange`, бэкап `subscriptions.db.fakeR-bak-20260619-023649`): **Tier1 3956 истинных exit + карантин 40** (R>10 MFE=None→R/profit=NULL+`fakeR_quarantine`). STG #31400 +323.6→−1.13. **ote_nested честный avgR +0.474** (был 0.846).
-2. **Режим В OTE-ONLY** (config.yaml): risk 0.5%, изоляция до ote_nested (source_policies все false кроме ote_nested + default_policy off), l3-гейты активны. **arch104 + atr_change ОТКЛЮЧЕНЫ** (честный R оба минус). **arch104 ЗАКРЫТ** (перемайн = data mining на −0.05R, DS+Даат согласны).
-3. **3 косяка плеча** (юзер нашёл): per-source (`SourcePolicy.leverage/risk_pct`) + кламп к max пары (`order_manager._get_pair_max_leverage`, TTL 1ч) + **факт-в-БД** (колонка `leverage`, trade_router) + дашборд из факта (bus→БД→config). Проверено: новые позиции БД-плечо=биржа.
-4. **margin-mode**: acc2 был массово CROSS (бот ждёт isolated) → юзер переключил + я закрыл cross-балласт. **orphan'ы=0** (закрыл account-aware по ходу).
-5. **Дашборд** (репо `oko-dashboard`, коммит `f0613d5`): шапка R+$ на ОДНОМ множестве (VST-приоритет, SIM-тень вторична, дрейф по VST без 30 теней), дедуп дублей позиций (`fetchLivePositions` по symbol+direction).
-6. **🛡️ Дисциплина дня: 5 раз «красивое число → проверка → потом» поймала фантом ДО боя:** fake-R · SL-за-FVG (бэктест опроверг, тугой SL net-оптимален) · WT-сюрприз DS (узкий-SL+n=3) · arch104 (data mining) · OTE-CLONE +0.710 (=fake-R от 08.06, DS подтвердил).
+<original_task>
+Парная сессия Даат + DS (19.06). По ходу дня закрыты: убийство fake-R (фантомные exit), активация Режима В (OTE-ONLY), 3 косяка плеча, оживление дашборда. К концу дня сформирован **главный открытый вектор**: DS-прогон на паркетах показал, что 1D-сетапы как самостоятельный сигнал (CLONE) экстремально редки → CLONE хороним. Даат разделил CLONE (самостоятельный сигнал) и CASCADE (1D-тренд как ФИЛЬТР на каждый ote_nested-вход) — CASCADE НЕ редок (частота = ote_nested). DS подтвердил разделение (DISCUSSION 09:20 UTC). **ПЕРВЫЙ ШАГ НОВОЙ СЕССИИ: Даат строит SHADOW 1D-трендфильтр на каждый ote_nested FIRE.**
+</original_task>
 
-### 🔴🔴 SL-SAFETY КАП ПЛЕЧА (юзер нашёл на SEI, конец сессии) — критично перед LIVE
-При **50× ликвидация (~1.5%) РЯДОМ с SL** ote_nested (~1.5-2%) → SL может оказаться ЗА ликвидацией → полный слив маржи вместо −1R. Снимок: POPCAT 50× SL_d 1.49% vs liq_d 1.56% = **7 б.п. от катастрофы**; SEI на скрине BingX SL=0.05488 ВЫШЕ liq=0.05481. ⚠️ Биржевой SL расходится с БД `stop_loss` (TSL/BE двигает) → DB-проверка маскирует, смотреть `raw.liquidationPrice` vs реальный SL-ордер.
-**ФИКС:** третий слой leverage-логики (после per-source + pair-max): `leverage = min(50, pair_max, floor(1/(sl_dist% + буфер~0.5-1%)))` — дистанция SL ДИКТУЕТ макс плечо, ликвидация всегда ЗА стопом. Для SL 1.5-2% → безопасно 20-30×, НЕ 50×. Место: `order_manager.open_bracket` (рядом с `_get_pair_max_leverage`, sl/entry уже там). VST=бумага (не горит), но перед LIVE ОБЯЗАТЕЛЬНО. Память: [[ote_tight_sl_validated]] (тугой SL) × leverage.
+<work_completed>
+**1. fake-R УБИТ** ([[bug_phantom_exit_resolve]]): колонка `position_id` (`core/db/subscription_manager.py` CREATE TABLE + миграция-loop) + захват при открытии (`core/exchange/tsl_updater.fetch_and_save_position_id`, retry 3×2с) + спавн задачи захвата (`trade_router._place_exchange_order`) + **positionID-якорь в `position_sync._resolve_exit`** (PRIMARY-матч close-side FILLED той же позиции, ВЫШЕ orderId/эвристики symbol+side, прокинут в 3 пути + WS). Миграция боевой БД: `scripts/migrate_fakeR_positionid.py --commit --with-exchange`, бэкап `subscriptions.db.fakeR-bak-20260619-023649` (304МБ). Итог: **Tier1 3956 истинных exit + Tier2 clamp 26 + карантин 40** (R>10 MFE=None → R/profit=NULL + `fakeR_quarantine=1`, 447.5R яда снято). STG #31400 R **+323.6→−1.13**. avgR базы +0.108→−0.045. **ote_nested честный avgR +0.474** WR61% (был 0.846, net ~+0.2-0.3R). positionID-захват подтверждён вживую (#31453-31457 несут колонку).
+**2. Режим В OTE-ONLY** (config.yaml): risk 0.5%, leverage 50×, l3-гейты активны (max_total_risk 25%, shadow→false). Изоляция: `signal_router.source_policies` все false кроме ote_nested + `default_policy` off (убил liquidity_sweep catch-all). **arch104 + atr_change ОТКЛЮЧЕНЫ** (честный R оба минус: arch104 LONG −0.182/SHORT −0.050, atr_change LONG −0.083/SHORT −0.183). **arch104 ЗАКРЫТ окончательно** (перемайн = data mining на −0.05R, DS+Даат согласны).
+**3. 3 косяка плеча** (юзер нашёл): (a) per-source (`SourcePolicy.leverage/risk_pct`, None→глобал fallback; `trade_router._place_exchange_order` читает из `ctx.policy`); (b) кламп к max пары (`order_manager._get_pair_max_leverage`, кэш+TTL 1ч); (c) факт-в-БД (колонка `leverage`, `BracketResult.leverage`=ФАКТ, trade_router UPDATE) + дашборд из факта (bus→БД→config, не «перекрашивает» старые живым конфигом). Файлы: `source_policies.py`, `trade_router.py`, `order_manager.py`, `bingx_client.py`, `subscription_manager.py`, `config.yaml`, `dashboard_server.py`. Проверено: новые позиции БД-плечо = биржа.
+**4. margin-mode**: acc2 был массово CROSS (бот архитектурно ждёт separate_isolated для positionId) → юзер переключил дефолт + я закрыл 15 cross-балластных позиций account-aware (`close_orphans`/`one_click_on_fail`). **orphan'ы = 0.**
+**5. Дашборд** (репо `oko-dashboard`, коммит `f0613d5`): шапка R+$ на ОДНОМ множестве (VST-приоритет, SIM-тень вторична), дедуп дублей позиций (`fetchLivePositions` по symbol+direction). + оживление analytics-экрана (см. ниже).
+**6. Дашборд analytics оживлён:** корень «полумёртвости» = `/api/stats/analytics` таймаутил (6 агрегаций/29K без кэша под локом с write-циклом) → весь экран на mock ($undefined, MFE 0/0). Фикс: `_ANALYTICS_CACHE` (TTL 60с + detached) + `signal_weights/history` туда же + фронт-гард `{!!d.usd}`. Активно после рестарта.
+**🛡️ Дисциплина дня:** 5 раз «красивое число → проверка → потом» поймала фантом ДО боя: fake-R · SL-за-FVG (бэктест опроверг, тугой SL net-оптимален) · WT-сюрприз DS (узкий-SL+n=3) · arch104 (data mining) · OTE-CLONE +0.710 (=fake-R от 08.06, DS подтвердил).
+**DS подтвердил CLONE≠CASCADE** (DISCUSSION 19.06 ~09:20 UTC): CLONE → в архив с arch104; CASCADE → Claude строит SHADOW, DS валидирует дельту на live; batch-оптимизация generate() НЕ нужна.
+</work_completed>
 
-### 🔪 OTE-CLONE ПОХОРОНЕН (DS-backtest 09:00) · CASCADE-фильтр = живой вектор (SHADOW)
-DS-прогон на паркетах: **1D-сетапы экстремально редки** — единицы fires за 2.4 года/пару → 1D-CLONE (1D как самостоятельный сигнал) НЕ может вести стратегию даже при honest +0.39R. **CLONE хороним** (как arch104 — редкое не стоит инженерии). generate() под batch НЕ оптимизируем (решение не той задачи).
-**🔑 НО CASCADE ≠ CLONE (я разделил, жду подтверждения DS):** каскад = **1D-ТРЕНД-ФИЛЬТР на КАЖДОМ существующем 1h/4h ote_nested-входе** (частота = ote_nested 72/час, НЕ редкость). Дёшево: `calculate_trend` на ~60 1D-барах, НЕ полный generate/price-in-zone.
-**ПЕРВЫЙ ШАГ НОВОЙ СЕССИИ:** (1) DS подтверждает CLONE≠CASCADE; (2) **я строю SHADOW 1D-трендфильтр** — на каждый ote_nested FIRE считаю 1D-тренд (fetch `get_ohlcv(sym,'1d',60)` напрямую), логирую would_block если контр-тренд + дельту; (3) DS меряет на live-потоке (режет ли убыточные контр-трендовые); (4) edge → гейтим, нет → закрываем CASCADE. Валидация ФОРВАРДОМ (shadow), НЕ batch-backtest.
-- **WT-REVERSION (DS):** P5/200b +10R = узкий-SL (0.05%), +2.5R фильтр = n=3. SHADOW-first: я добавляю `wt_pct` shadow-фичу в ote-пайплайн, копим на чистом потоке n≥30-50; DS перепрогоняет P5/200b на прод-SL 0.5%.
+<work_remaining>
+**🔪 ПЕРВЫЙ ШАГ — SHADOW 1D-CASCADE трендфильтр (Даат строит, DS меряет):**
+1. На каждый ote_nested FIRE считать 1D-тренд: fetch `get_ohlcv(sym,'1d',60)` напрямую → `calculate_trend` на ~60 1D-барах (НЕ полный generate/price-in-zone). Корень «1d не фирит» = `ote_observer_loop:99` 1h limit=300 → всего 12 1d-баров < 50 нужных; генератор НЕ сломан, live-фикс = 1 строка после подтверждения edge.
+2. Логировать `would_block` если вход контр-тренду 1D + дельту R.
+3. DS меряет на live-потоке: режет ли фильтр убыточные контр-трендовые. Валидация ФОРВАРДОМ (shadow), НЕ batch-backtest.
+4. Edge есть → гейтим (live); нет → закрываем CASCADE.
 
-### ⏳ Бэклог
-- exec-sim-split (полный, эпик [[exec_sim_split_epic]]) — дашборд-каша = его симптом, дальше боевой слой.
-- Orphan кирпич 2 (verify-flat в `_emergency_close_check`) · margin-enforce кирпич (бот ставит isolated перед открытием — 136 пустых cross-символов acc2) · acc1 cross (114 конфиг).
-- Дашборд: `trades.tsx`/`app/page.tsx` — пред-существующие незакоммиченные правки (не мои сегодня).
+**✅ SL-SAFETY КАП ПЛЕЧА — РЕАЛИЗОВАН 19.06 (~09:35 UTC), ждёт рестарта.** Третий слой leverage в `order_manager.open_bracket` (после кап-пары, ~473): `leverage = min(req, pair_max, floor(1/(sl_dist + buf)))`. Config `trading.liq_safety_enabled:true` + `liq_safety_buffer_pct:0.5`. Только СНИЖАЕТ плечо (qty уже посчитан запрошенным → риск корректен, маржа выше=безопаснее). py_compile+config-load OK. Симуляция на 5 живых VST: ловит ТОЛЬКО POPCAT (50×, SL 2.75% → liq 1.9% < SL) → **50→30×** (liq 3.33% > SL); остальные 4 не тронуты. **🔴 РЕСТАРТ нужен** для активации; откат = `liq_safety_enabled:false`. Незакоммичено: `order_manager.py`, `config.yaml`. Контекст: юзер нашёл на SEI; ⚠️ биржевой SL расходится с БД `stop_loss` (TSL/BE двигает) — но кап работает в момент открытия (sl=исходный), это верно. [[ote_tight_sl_validated]] × leverage.
 
-### 🖥️ Дашборд оживлён (конец сессии)
-- **Корень «полумёртвости» = `/api/stats/analytics` таймаутил** (6 агрегаций/29K без кэша под локом с write-циклом) → весь analytics-экран на mock ($undefined, MFE 0/0). **Фикс: `_ANALYTICS_CACHE` (TTL 60с + detached)** + `signal_weights/history` туда же + фронт-гард `{!!d.usd}`. Аудит: остальные поллимые endpoint'ы кэшированы/лёгкие. Активно после рестарта (юзер сделал). ⏳ визуально подтвердить, что календарь/MFE ожили.
-- **ote_nested темп ЗДОРОВ** (проверено): 72/час, 257/6ч. «Мало» = снимок открытых (~11, быстрый churn). Гейты Режима В активны, но с запасом (risk 1.2%/25%, margin $223/$5). Не душат.
+**WT-REVERSION (параллельно, SHADOW-first):** P5/200b +10R = артефакт узкого SL (0.05%), +2.5R фильтр = n=3. Даат добавляет `wt_pct` shadow-фичу в ote-пайплайн, копим на чистом потоке n≥30-50; DS перепрогоняет P5/200b на прод-SL 0.5%.
 
-### ⚠️ Git — закоммичено, НЕ запушено
-- **main `02beb18`** (fake-R + Режим В + leverage) + **analytics-кэш коммит** (dashboard_server). **dashboard `f0613d5`** (sync-panel + api.ts) + **analytics.tsx коммит** (usd-гард).
-- **DS-контекст НЕ тронут:** `config_loader/validator/pydantic` оставлены uncommitted. `TASKS.md` + dashboard `trades.tsx`/`app/page.tsx` — пред-существующие, не мои.
-- Push — по отмашке юзера.
+**⏳ Бэклог:**
+- exec-sim-split (полный, эпик [[exec_sim_split_epic]]) — дашборд-каша = его симптом.
+- Orphan кирпич 2 (verify-flat в `_emergency_close_check`) · margin-enforce кирпич (бот ставит isolated перед открытием — 136 пустых cross-символов acc2; `grep marginType/set_margin`=пусто, бот НЕ управляет margin-mode) · acc1 cross (114 конфиг).
+- Push: main `02beb18` + analytics-кэш + dashboard `f0613d5` + analytics.tsx — НЕ запушено, по отмашке юзера.
+- ⏳ визуально подтвердить, что календарь/MFE на дашборде ожили после рестарта.
+</work_remaining>
+
+<attempted_approaches>
+- **OTE-CLONE (1D как самостоятельный сигнал)** — DS-прогон на паркетах: единицы fires за 2.4 года/пару (0 fires на 10 парах × 8 дней). Даже honest +0.39R не спасает — частота убивает. ХОРОНИМ (как arch104). НЕ оптимизировать generate() под batch — решение не той задачи.
+- **arch104 перемайн** — DS+Даат: data mining на −0.05R, редкое-отрицательное не стоит инженерии. ЗАКРЫТ.
+- **config_ote_V.yaml (DS-черновик Режима В)** — НЕ применял: был неполный/опасный (cp снёс бы конфиг, ключи мимо, не изолировал source_policies). Применил Режим В вручную через правки config.yaml.
+- **SL-за-FVG** — бэктест опроверг, тугой SL net-оптимален ([[ote_tight_sl_validated]]).
+- **fake-R через orderId-матч** (прошлая сессия) — ломался после cancel+replace (exchange_sl_order_id устаревал → матч брал старый ордер от 12.06). Решение = positionID-якорь (устойчив к cancel+replace).
+- Tier3 MFE=None монстры (R>10) — clamp бессилен (max/min=NULL) → карантин (R/profit=NULL).
+</attempted_approaches>
+
+<critical_context>
+- **Цель** ([[vision_bot_as_anchor_against_emotion]]): бот = якорь против эмоции; путь к $1M через компаундинг → выживание/ruin первично. SL-safety кап = прямой инструмент против ruin.
+- **CASCADE ≠ CLONE** — ключевое разделение дня: CLONE = 1D-сетап как сигнал (редок, мёртв); CASCADE = 1D-тренд как фильтр на КАЖДЫЙ ote_nested-вход (частота ote_nested, дёшев). Не путать.
+- **fake-R теперь честный** — ote_nested avgR +0.474 (не 0.846). Любые выводы о compounding/режимах — только на этом честном R. Старые «+0.7..+0.8R» = фантом.
+- **Биржевой SL ≠ БД `stop_loss`** — TSL/BE двигают биржевой ордер; DB-проверка маскирует SL-safety проблему. Смотреть `raw.liquidationPrice` vs реальный SL-ордер.
+- **margin-mode дрейф молчит** — бот НЕ ставит isolated (`grep marginType`=пусто); 136 пустых cross-символов acc2 откроются cross при новой сделке. Нужен кирпич ENFORCE.
+- **execution_mode:** SIM⟺order_id NULL, VST⟺order_id есть. Обучение (`performance_engine`) фильтрует VST → SIM-фантомы вне весов.
+- **Правила:** прогон main не трогать (рестарт = юзер); register/INSERT-путь → runtime-тест на КОПИИ БД ([[feedback_ast_parse_no_scope]]); биржевое → BingX docs/код сначала ([[preflight_exchange_task]]); русский; TTS Irina; data-era split post-15.04.
+- **oko-dashboard НЕ git** — фронт осторожно, отдельный коммит.
+- VST = бумага (не горит реальными деньгами) → SL-safety кап безопасно отлаживать в VST, но обязателен перед LIVE.
+</critical_context>
+
+<current_state>
+- **fake-R:** ✅ убит (код + миграция боевой БД + карантин), ✅ подтверждён вживую, активен с рестарта #5.
+- **Режим В OTE-ONLY:** ✅ применён (config.yaml), активен. arch104 + atr_change off, arch104 закрыт.
+- **3 косяка плеча:** ✅ исправлены, проверено БД=биржа, активны с рестарта #5.
+- **margin-mode:** ✅ acc2→isolated, ✅ orphan'ы=0. ⏳ enforce-кирпич в бэклоге (дрейф повторится).
+- **Дашборд:** ✅ R+$ одно множество + дедуп (f0613d5), ✅ analytics-кэш. ⏳ визуально подтвердить календарь/MFE.
+- **ote_nested темп:** ✅ здоров (72/час, 257/6ч; «мало открытых» ~11 = быстрый churn). Гейты Режима В с запасом.
+- **SHADOW 1D-CASCADE:** 🔵 НЕ начат — ПЕРВЫЙ ШАГ новой сессии (Даат строит, DS меряет дельту на live).
+- **SL-safety кап плеча:** 🔵 НЕ начат — критично перед LIVE, место известно (`order_manager.open_bracket`).
+- **WT-REVERSION:** 🔵 shadow-first, не начат.
+- **Git:** main `02beb18` (+ analytics-кэш) + dashboard `f0613d5` (+ analytics.tsx) — ⏳ НЕ запушено. DS-конфиги (`config_loader/validator/pydantic`) uncommitted, НЕ трогать. Бот жив (рестарт #5 ~04:12 local).
+- Точка остановки логическая. Эта сессия (`/whats-next`) своей работы не вела — handoff = синтез состояния.
+</current_state>
 
 ## 📦 АРХИВ прошлого handoff (SL-reconcile ✅ проверен выше) — #21 EXEC-SIM-SPLIT
 

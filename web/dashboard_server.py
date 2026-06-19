@@ -207,6 +207,9 @@ _TRADES_FILTERED_COLS = (
     "entry_price", "exit_price", "profit_pct", "R_multiple", "max_R_possible",
     "status", "stop_loss", "take_profit", "tsl_activated", "sl_source", "tp_source",
     "duration_minutes", "created_at", "closed_at", "account_id", "execution_mode",
+    # 19.06 (юзер «хочу видеть масштаб по истории»): плечо + размер для истории.
+    # size$ = qty×entry, realized$ = profit_pct%×size — фронт-маппер считает.
+    "leverage", "qty",
 )
 
 
@@ -301,16 +304,25 @@ async def _handle_equity(request: web.Request) -> web.Response:
 
 async def _handle_balance_history(request: web.Request) -> web.Response:
     """ARCH-DB-V2 Ф2: $-equity история per-account из balance_snapshots (для графика терминала).
-    Query: account_id (default 1), since (ISO, опц)."""
+    Query: account_id (default 1), since (ISO, опц).
+    19.06: кэш+single-flight+detached (как account_balances) — был ЕДИНСТВЕННЫЙ некэш-portfolio
+    эндпоинт, 2-8с на 29K-БД × N аккаунтов каждые 30с → per-account sparkline'ы гонялись/абортились
+    → пустые мини-кривые (особенно acc1, fetch'ится первым/холодным)."""
     from core.db import balance_repo
-    try:
-        acc = int(request.query.get("account_id", "1"))
-        since = request.query.get("since")
+    acc = int(request.query.get("account_id", "1"))
+    since = request.query.get("since")
+
+    async def _compute() -> str:
         rows = await _run_sync(balance_repo.get_equity_series, acc, since, "bingx", 1000)
         rows = list(reversed(rows))  # get_equity_series DESC → для графика ASC по времени
-        return web.Response(
-            text=json.dumps({"account_id": acc, "series": rows}, ensure_ascii=False, default=str),
-            content_type="application/json", charset="utf-8")
+        return json.dumps({"account_id": acc, "series": rows}, ensure_ascii=False, default=str)
+
+    try:
+        payload, xcache = await _PORTFOLIO_CACHE.get(f"balhist:{acc}:{since or ''}", _compute, cold_timeout=20.0)
+        if payload is None:
+            payload = json.dumps({"account_id": acc, "series": []})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
@@ -1453,7 +1465,7 @@ def _exchange_history_compute_sync(db_path: str, days: int) -> str:
                    status, profit_pct, R_multiple,
                    strength, confidence, regime,
                    created_at, closed_at, duration_minutes,
-                   exchange_order_id, tsl_activated, be_activated
+                   exchange_order_id, tsl_activated, be_activated, leverage, qty
             FROM simulated_trades
             WHERE exchange_order_id IS NOT NULL
               AND status IN ('TP','SL','TSL','EXPIRED')
@@ -1487,6 +1499,8 @@ def _exchange_history_compute_sync(db_path: str, days: int) -> str:
             "created_at":      r["created_at"],
             "closed_at":       r["closed_at"],
             "duration_minutes": r["duration_minutes"],
+            "leverage":        r["leverage"],   # 19.06 масштаб истории (Exchange-вид)
+            "qty":             r["qty"],
         })
     tp_cnt        = sum(1 for t in trades if t["status"] == "TP")
     sl_cnt        = sum(1 for t in trades if t["status"] == "SL")
