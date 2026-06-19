@@ -24,6 +24,7 @@ class FakeAdapter(ExchangeAdapter):
     def __init__(self):
         self.calls = []
         self.positions_by_account = {}      # account → list[Position]
+        self.filled_orders = []             # для _resolve_exit_via_rest (гонка fill↔pa=0)
 
     async def place_bracket(self, req):
         self.calls.append(("place_bracket", req.symbol, req.direction, req.account))
@@ -62,7 +63,8 @@ class FakeAdapter(ExchangeAdapter):
         return list(self.positions_by_account.get(account, []))
 
     async def get_filled(self, symbol, account, limit=50):
-        return []
+        self.calls.append(("get_filled", symbol, account))
+        return list(self.filled_orders)
 
     async def balances(self, account):
         return {"equity": 500.0, "available": 480.0, "used_margin": 20.0, "unrealized_pnl": 0.0}
@@ -181,6 +183,38 @@ class TestOnEvent:
     async def test_flat_untracked_no_intent(self, sphere):
         # pa=0 без открытия → нет ложного close
         assert await sphere.on_event(1, _pos_ev(1, 0)) is None
+
+    @pytest.mark.asyncio
+    async def test_race_fill_after_pa0_rest_fallback(self, sphere):
+        # ГОНКА: pa=0 приходит БЕЗ застешенного close-fill → дотянуть exit из REST по positionId
+        await sphere.on_event(1, _open_fill())   # store знает pid-1
+        sphere._adapter.filled_orders = [
+            {"orderId": "c1", "positionID": "pid-1", "side": "SELL", "type": "TAKE_PROFIT_MARKET",
+             "avgPrice": "0.62", "updateTime": 200, "profit": "2.5"}]
+        intent = await sphere.on_event(1, _pos_ev(1, 0))   # pa=0 без stash
+        assert intent is not None and intent.exit is not None
+        assert intent.exit.exit_price == 0.62 and intent.exit.status == "TP"
+        assert ("get_filled", SYM, 1) in sphere._adapter.calls
+
+    @pytest.mark.asyncio
+    async def test_race_no_match_exit_stays_none(self, sphere):
+        # REST не нашёл закрывающий fill (чужой positionId) → exit None (db_writer НЕ закроет)
+        await sphere.on_event(1, _open_fill())
+        sphere._adapter.filled_orders = [
+            {"orderId": "c2", "positionID": "OTHER", "side": "SELL", "type": "STOP_MARKET",
+             "avgPrice": "0.49", "updateTime": 200}]
+        intent = await sphere.on_event(1, _pos_ev(1, 0))
+        assert intent is not None and intent.exit is None
+
+    @pytest.mark.asyncio
+    async def test_stash_takes_priority_over_rest(self, sphere):
+        # Если close-fill УСПЕЛ застешиться (нет гонки) — REST не зовём
+        await sphere.on_event(1, _open_fill())
+        await sphere.on_event(1, _close_fill(otype="STOP_MARKET", ap=0.49, rp=-1.0))
+        sphere._adapter.calls.clear()
+        intent = await sphere.on_event(1, _pos_ev(1, 0))
+        assert intent.exit.exit_price == 0.49        # из stash
+        assert not any(c[0] == "get_filled" for c in sphere._adapter.calls)   # REST не звали
 
 
 # ── close / adjust_sl ─────────────────────────────────────────────────────────

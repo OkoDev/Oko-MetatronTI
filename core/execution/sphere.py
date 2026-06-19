@@ -14,6 +14,7 @@ Ledger duck-typed (on_fill_event/on_ledger_event/set_initial_equity) — Sphere 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Optional
 
@@ -34,7 +35,7 @@ from core.execution.domain import (
     Position,
     PositionEvent,
 )
-from core.execution.position_store import ExitInfo, PositionStore
+from core.execution.position_store import ExitInfo, PositionStore, classify_exit
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,11 @@ class ExecutionSphere:
                 return None
             # pa=0 по отслеживаемой позиции = ЕДИНСТВЕННЫЙ авторитетный триггер close
             exit_info = self._store.take_exit(account, flat.symbol, flat.side)
+            if exit_info is None:
+                # ГОНКА fill↔pa=0: pa=0 пришёл раньше закрывающего ORDER_TRADE_UPDATE →
+                # ExitInfo не застешился. Дотянуть закрывающий fill по positionId (REST,
+                # детерминированно — как _resolve_exit positionID-якорь). Только на гонке.
+                exit_info = await self._resolve_exit_via_rest(account, flat)
             intent = CloseIntent(account=account, symbol=flat.symbol, side=flat.side,
                                  position_id=flat.position_id, exit=exit_info, reason="ws_pa0")
             await self._fire_close(intent)
@@ -196,6 +202,49 @@ class ExecutionSphere:
                          (intent.exit.status if intent.exit else "?"))
             return
         await self._on_close(intent)
+
+    async def _resolve_exit_via_rest(self, account: int, pos: Position) -> Optional[ExitInfo]:
+        """Гонка fill↔pa=0: pa=0 без застешенного fill → дотянуть закрывающий fill из REST.
+
+        Матч по positionId (casing positionID/positionId) + close-side, последний по updateTime —
+        доказанный positionID-якорь (_resolve_exit, fake-R фикс). Возврат None если не нашли
+        (db_writer тогда НЕ закроет — не угадываем; эскалация verify-flat). REST только на гонке.
+        """
+        try:
+            filled = await self._adapter.get_filled(pos.symbol, account, limit=20)
+        except Exception as e:
+            logger.debug("[Sphere] _resolve_exit_via_rest get_filled %s: %s", pos.symbol, e)
+            return None
+        if not filled:
+            return None
+        pid = str(pos.position_id) if pos.position_id else None
+        close_side = "SELL" if pos.side == "LONG" else "BUY"
+        cands = [
+            o for o in filled
+            if str(o.get("side", "")).upper() == close_side
+            and (pid is None or str(o.get("positionID") or o.get("positionId") or "") == pid)
+        ]
+        if not cands:
+            return None
+        o = max(cands, key=lambda x: int(x.get("updateTime") or x.get("time") or 0))
+        avg = o.get("avgPrice") or o.get("stopPrice") or o.get("price")
+        if not avg:
+            return None
+        try:
+            exit_price = float(avg)
+        except (TypeError, ValueError):
+            return None
+        otype = str(o.get("type", "")).upper()
+        try:
+            rp = float(o.get("profit") or o.get("realizedPnl") or 0)
+        except (TypeError, ValueError):
+            rp = 0.0
+        logger.info("[Sphere] exit дотянут REST (гонка fill↔pa=0): %s %s %s @ %.8g pid=%s",
+                    pos.symbol, pos.side, otype or "?", exit_price, pid)
+        return ExitInfo(symbol=pos.symbol, side=pos.side, account=account,
+                        exit_price=exit_price, realized_pnl=rp,
+                        status=classify_exit(otype, rp), order_type=otype,
+                        position_id=pos.position_id, ts=time.time())
 
     def _route(self, symbol: str) -> int:
         if self._router is not None:
