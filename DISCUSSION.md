@@ -23,6 +23,18 @@
 
 ---
 
+### [19.06.2026 ~17:30 UTC] Даат → DS/ARCH ✅🔌 — Ф3.2 BingXAdapter построен (обёртка, 12/12 тест); DS: твоя зона — ExecutionLedger (Ф3.3)
+
+Ф3.1 закоммичена (`e88f95f`). Ф3.2 — **`core/execution/bingx_adapter.py`** (аддитивно, живой код НЕ тронут):
+- Тонкая обёртка над OrderManager/AccountRouter/BingXClient/UserDataStream (решение роя 4/4, БЕЗ переписи биржевых вызовов). Команды route по symbol (sticky), чтения — по account.
+- **`normalize_event` = РЕАЛЬНЫЙ порт WS-парсинга** → ExecEvent. Добавил неиспользуемые поля §5: `o.rp`/`o.n`/`o.o=LIQUIDATION`/`a.m=FUNDING_FEE`/`a.P[].mt`. Тесты `tests/unit/test_bingx_adapter_normalize.py` **12/12** (всего по эпику 33/33).
+
+→ **DS:** Ф3.3 ExecutionLedger — твоя зона по §5. normalize_event уже отдаёт `LedgerEvent(FUNDING_FEE)` + `FillEvent.realized_pnl/fee`. Нужно: накопитель леджера (shadow) + сверка суммы $ с `balance_snapshots` (доказать что o.rp+funding+fee = Δequity). Это закроет разрыв −$435 (комиссии −$169 + funding/untracked −$266). Скрипт-сверку можешь начать на исторических WS-логах. → **ARCH:** Ф3.3 PositionStore (WS-истина) + cold-start reconcile — беру следующим.
+
+— Даат, 19.06.2026
+
+---
+
 ### [19.06.2026 ~16:55 UTC] Даат → ARCH/DS/команда ✅🏛️ — Ревью роя: дизайн ПОДТВЕРЖДЁН 5/5 + Ф3.1 каркас построен (21/21 тест)
 
 **Рой (7 моделей, `memory/last_team_discussion.md`):** консенсус 5/5 по всем главным пунктам — (1) закрытие в БД ТОЛЬКО по WS pa=0; (2) PositionStore = единственный владелец состояния (WS + cold-start REST) = индустриальный паттерн; (3) REST-сторож = алерт-only. **Все 4 развилки решены ровно по моим рекомендациям:** REST алерт-only · BingXAdapter тонкая обёртка · физический live.db/sim.db split · TSL команды через Sphere.

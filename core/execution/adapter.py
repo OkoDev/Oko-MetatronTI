@@ -95,7 +95,8 @@ class ExchangeAdapter(ABC):
         ...
 
     @abstractmethod
-    def normalize_event(self, raw: dict) -> list[ExecEvent]:
+    def normalize_event(self, raw: dict, account: int) -> list[ExecEvent]:
         """Сырой ORDER_TRADE_UPDATE/ACCOUNT_UPDATE → доменные ExecEvent.
-        ВСЯ парсинг-специфика биржи (o./a. поля, casing positionID) — ЗДЕСЬ."""
+        ВСЯ парсинг-специфика биржи (o./a. поля, casing positionID) — ЗДЕСЬ.
+        account передаётся явно — его нет в WS-payload (известен per-stream)."""
         ...

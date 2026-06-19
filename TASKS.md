@@ -44,7 +44,7 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
-| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф0/Ф1/Ф2✅+ревью роя 5/5✅+Ф3.1 каркас✅ (`core/execution/`, 21/21 тест). NEXT: Ф3.2 BingXAdapter обёртка. Поглощает ARCH-96-HUB/EXEC, #21. → DISCUSSION 19.06 16:55 | Даат/ARCH |
+| **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2✅(ревью 5/5)+Ф3.1 каркас✅+Ф3.2 BingXAdapter✅ (`core/execution/`, 33/33 тест). NEXT: Ф3.3 PositionStore (Даат) + ExecutionLedger (DS). Поглощает ARCH-96-HUB/EXEC, #21. → DISCUSSION 19.06 17:30 | Даат/DS |
 
 | **OTE-CLONE** | ⚫ | **ЗАКРЫТО.** 1D-сетапы мёртвы: 0 fires на 10 парах × 8 дней. Хороним вместе с arch104. → DISCUSSION 19.06 09:20 | — |
 | **OTE-CASCADE** | 🟡 | 1D-тренд-фильтр SHADOW на каждом ote_nested FIRE (НЕ сетап, НЕ generate). calculate_trend на ~60 1D-барах — дёшево. Claude строит SHADOW, DS валидирует дельту. → DISCUSSION 19.06 09:20 | Claude → DS |

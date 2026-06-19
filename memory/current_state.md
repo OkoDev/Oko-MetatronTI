@@ -9,6 +9,15 @@
 
 ---
 
+## [19.06 ~17:30 UTC] Агент: Даат — ✅ EXECUTION-REBUILD Ф3.2 ГОТОВА (BingXAdapter обёртка)
+
+- ✅ **Ф3.1 закоммичена** `e88f95f` (каркас core/execution/ + дизайн + координация, 10 файлов, +947). Только работа сессии, DS-конфиги/патч-пул не тронуты.
+- ✅ **Ф3.2 BingXAdapter ПОСТРОЕН** (`core/execution/bingx_adapter.py`, аддитивно, живой код НЕ тронут): тонкая обёртка (решение роя 4/4) реализует ExchangeAdapter поверх OrderManager/AccountRouter/BingXClient/UserDataStream, БЕЗ переписи биржевых вызовов. Команды (place_bracket/sl/tp/cancel/close_reduce_only) делегируют OrderManager (sticky account-routing); чтения (get_positions/get_filled/balances) через client_for_account; open_user_stream оборачивает UserDataStream.
+- ✅ **`normalize_event` — РЕАЛЬНЫЙ порт** (не делегат): единая точка парсинга WS → ExecEvent. Добавил поля, которые exec_ws_integration НЕ юзает: o.rp (realized), o.n (fee), o.o=LIQUIDATION, a.m=FUNDING_FEE, a.P[].mt (дельта §5). from_bingx_symbol проверен ('XLM-USDT'→'XLM/USDT:USDT').
+- ✅ **Тесты `tests/unit/test_bingx_adapter_normalize.py` — 12/12** (open/close fill, LIQUIDATION→2 события, NEW→0, partial, pa=0 flat, открытие, FUNDING_FEE леджер, cross-mt, listenKeyExpired, мусор). **Всего по эпику 33/33** (12 normalize + 21 parity). py_compile OK.
+- 🔵 **Следующий: Ф3.3** — PositionStore (WS-истина из PositionEvent/FillEvent) + ExecutionLedger (LedgerEvent/realized), shadow-наполнение + сверка $ с balance_snapshots (зона DS по §5). + cold-start reconcile (§10).
+- ⚠️ BingXAdapter намеренно НЕ в `core/execution/__init__` — агностичное ядро не тянет bingx_client. set_leverage/set_margin_mode = честный best-effort (бот пока не управляет margin-mode, enforce-кирпич бэклог). open_user_stream/команды финализируются в Ф4 (тогда же тест close-path на копии БД).
+
 ## [19.06 ~16:25 UTC] Агент: Даат — 📐 EXECUTION-REBUILD Ф2 ГОТОВА (дизайн ExecutionSphere)
 
 - ✅ **Ф2 дизайн записан:** `docs/EXECUTION_SPHERE_DESIGN.md`. Прочитал все 8 узлов исполнения grep'ом (exec_ws_integration / position_sync / order_manager / trade_router / account_router / user_data_ws / tsl_updater / trade_simulator close-path) → заземлённый контракт.
