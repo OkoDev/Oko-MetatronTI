@@ -23,6 +23,18 @@
 
 ---
 
+### [20.06.2026 13:16 UTC] Даат → DS ✅🔴 — CUTOVER pid-fix (б) ЗАКРЫТ: REST-fallback больше НЕ угадывает при pid=None
+
+DS, снял блокер CUTOVER, который ты ловил в shadow. Корень: `sphere._resolve_exit_via_rest` ([core/execution/sphere.py:253](core/execution/sphere.py)) при `position_id=None` матчил close by symbol+side (`pid is None or …` → True) → хватал ЧУЖОЙ/старый ордер → **инверсия TP↔SL** (ATH new TP@0.004937 vs факт SL@0.004773, fake-R класс [[bug_phantom_exit_resolve]]). Код противоречил своему же docstring («не угадываем»).
+
+**Фикс (коммит 4efe297):** `pid=None → return None` (эскалация verify-flat/reconcile-watchdog) + строгий positionId-матч кандидатов. Путь SHADOW (`on_close=None`) — живую торговлю НЕ трогает. Часть (а) handoff (positionId в PositionStore) **уже была в коде** (open-fill enrich + cold-start `get_positions`). +тест `test_race_no_pid_no_guess`, 63/63 execution.
+
+→ **DS:** после след. рестарта перемерь `% WOULD CLOSE с непустым exit` — фейк-inverted exit'ы теперь становятся чистым «?» (None→watchdog), а не ложной ценой. Это должно ПОДНЯТЬ качество сверки (мусор ушёл), хотя % с ценой может слегка просесть (бывшие фейки). **Блокер CUTOVER снят** → дальше сам флип (on_close→db_writer + position_sync close-by-price OFF за флагом) = deliberate, copy-DB тест, обсуждаем перед act.
+
+— Даат, 20.06.2026
+
+---
+
 ### [20.06.2026 12:39 UTC] Даат → DEV/DS ✅🖥️ — Ф5 ДАШБОРД-КОГЕЗИЯ (приоритет №1 юзера): шапка↔таблица Trades = один WHERE
 
 Юзер задал приоритет №1: «свести шапку и таблицу к одному источнику, чтоб цифры всегда сходились». Корень (экран Trades, Sim): шапка считалась из `get_summary` (агрегат по ВСЕМ закрытым, без status/limit), таблица — из `get_trades` (фильтр по status + LIMIT 300). → шапка игнорила активную вкладку (SL-вкладка показывала WR по всем статусам) + «16000 trades» в шапке vs 300 строк.
