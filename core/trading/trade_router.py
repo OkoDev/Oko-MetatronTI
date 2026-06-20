@@ -300,10 +300,20 @@ class TradeRouter:
                     # leverage в БД (19.06): ФАКТИЧЕСКОЕ плечо после клампа к max пары (br.leverage),
                     # не запрошенное и не глобальный конфиг. Дашборд берёт из факта (bus→БД→config).
                     _act_lev = br.leverage if getattr(br, "leverage", None) is not None else leverage
-                    _conn.execute(
-                        "UPDATE simulated_trades SET exchange_order_id=?, qty=?, execution_mode=?, leverage=? WHERE id=?",
-                        (order_id, qty, _em, _act_lev, trade_id),
-                    )
+                    # actual_entry_price = ФАКТ. цена филла (br.entry_price=avgPrice). Без неё R
+                    # считался от СИГНАЛЬНОЙ entry → фантом ×50 (2-й фронт лжи метрик 20.06). OTE-путь
+                    # её не писал. WS 2a уточнит из o.ap. Пишем если >0 (иначе оставляем NULL→fallback).
+                    _aep = float(getattr(br, "entry_price", 0) or 0)
+                    if _aep > 0:
+                        _conn.execute(
+                            "UPDATE simulated_trades SET exchange_order_id=?, qty=?, execution_mode=?, leverage=?, actual_entry_price=? WHERE id=?",
+                            (order_id, qty, _em, _act_lev, _aep, trade_id),
+                        )
+                    else:
+                        _conn.execute(
+                            "UPDATE simulated_trades SET exchange_order_id=?, qty=?, execution_mode=?, leverage=? WHERE id=?",
+                            (order_id, qty, _em, _act_lev, trade_id),
+                        )
             except Exception as _upd_e:
                 logger.warning("[TradeRouter] exchange_order_id/qty update failed for #%d: %s",
                                trade_id, _upd_e)

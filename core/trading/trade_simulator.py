@@ -1622,15 +1622,19 @@ class TradeSimulator:
             with self._db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type, original_sl, qty FROM simulated_trades WHERE id = ? AND status = ?",
+                    "SELECT entry_price, actual_entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at, direction, created_at, max_price, min_price, symbol, tsl_tf, strategy_type, original_sl, qty FROM simulated_trades WHERE id = ? AND status = ?",
                     (trade_id, STATUS_OPEN),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return False
-                entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db, original_sl_db, qty_db = row
+                entry_signal, actual_entry, sl, tp, tp1_price_db, tp1_hit_at_db, direction, created_at, max_price_db, min_price_db, symbol, entry_tf_db, strategy_type_db, original_sl_db, qty_db = row
                 strategy_type_db = str(strategy_type_db or "SINGLE")
-                entry = float(entry)
+                # 🔴 R/profit от РЕАЛЬНОГО филла (actual_entry_price), НЕ сигнальной entry_price.
+                # 2-й фронт лжи метрик (20.06 свод): actual=NULL → R от сигнала → фантом ×50 при
+                # слиппедже входа (JOTCHUA +3.3%→+7.39R фантом vs реал −$8). Fallback на сигнальную
+                # entry если actual NULL (исторические/не-биржевые/SIM).
+                entry = float(actual_entry) if (actual_entry is not None and float(actual_entry) > 0) else float(entry_signal)
                 sl = float(sl) if sl is not None else None
                 tp = float(tp) if tp is not None else None
                 tp1_price_db = float(tp1_price_db) if tp1_price_db is not None else None
