@@ -18,6 +18,16 @@
 - ⚠️ Остаток: позиции, открытые И закрытые <2мин с гонкой → всё ещё «?» (backfill не успел). Меньшинство; перемерить % после рестарта.
 - 🟢 **Можем продолжить:** CUTOVER-флип готов, гейт = зелёная сверка. После рестарта+backfill «?» должен резко упасть → если ~0 → флип (`sphere_cutover:true`, процедура в whats-next).
 
+## [20.06 ~17:40 UTC] Агент: Даат — ✅ ENTRY-CAPTURE (2-й фронт лжи закрыт): R от actual_entry_price
+
+- ✅ **Фикс entry-disconnect (a9fdfc0):** R/profit теперь от **РЕАЛЬНОГО филла** (actual_entry_price), не сигнальной entry. Был корень фантома ×50 (R от сигнала при слиппедже входа).
+  - **Part A** (`trade_router._place_exchange_order`): OTE-путь теперь пишет `actual_entry_price=br.entry_price` (avgPrice филла). Раньше NULL у всех OTE (monitoring/scan_loop писали, OTE — нет).
+  - **Part B** (`close_trade`): SELECT+R/profit от `actual_entry_price` (fallback на сигнал если NULL — исторические/SIM).
+  - **Copy-DB тест 3/3** (`test_actual_entry_price_r`): R от actual 98=+5.0 vs сигнал 100=+1.0. Execution-набор 80/80. (23 падения trade_simulator = предсущ. account_routing-пробел фикстуры, не моё.)
+- ⚠️ **Going-forward only:** исторические actual=NULL → fallback на сигнал (их R остаётся фантомным; восстановить нельзя). Новые OTE → честный R. **Нужен рестарт.**
+- ⚠️ A2 (WS o.ap backstop) опц — trade_router пишет первым, 2a WHERE-guard = no-op.
+- 🔵 **Остаток honest-метрик:** EXIT-сторона = CUTOVER (backfill «?» 62% — coverage-gap, флип не готов). Порядок: рестарт (entry honest) → добить backfill-покрытие → CUTOVER → exit-fix.
+
 ## [20.06 ~17:20 UTC] Агент: Даат — ✅ pid-match 18/18 + backfill РАБОТАЕТ, но «?» 62% → CUTOVER НЕ готов. +2-й фронт (entry)
 
 - ✅ **pid-match ДОКАЗАН (вопрос юзера):** DB position_id == биржевой positionId **18/18, MISMATCH=0** (sticky symbol+side). Backfill кладёт ПРАВИЛЬНЫЙ pid — инверсии нет.
