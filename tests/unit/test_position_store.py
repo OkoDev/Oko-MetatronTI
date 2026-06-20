@@ -141,6 +141,14 @@ class TestFillEnrichment:
         # нет позиции → False
         assert st.set_position_id(1, "Q/USDT:USDT", "LONG", "p") is False
 
+    def test_set_position_id_match_by_symbol_side(self):
+        # backfill из БД: account неизвестен, матч по symbol+side (sticky=1 акк/символ)
+        st = PositionStore()
+        st.apply_position(_pos_event(2, SYM, "SHORT", 50))   # на acc2, pid=None
+        assert st.set_position_id_match(SYM, "SHORT", "pid-db") is True
+        assert st.get(2, SYM, "SHORT").position_id == "pid-db"
+        assert st.set_position_id_match("NOPE/USDT:USDT", "LONG", "p") is False
+
 
 class TestColdStartAndStaleness:
     def test_init_account_seeds_open(self):

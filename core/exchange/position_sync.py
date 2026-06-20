@@ -679,6 +679,16 @@ async def sync_positions(bot) -> None:
         import time as _t_wd
         global _LAST_RECONCILE_WD_TS
         _sphere = getattr(bot, "_exec_sphere", None)
+        if _sphere is not None:
+            # BACKFILL positionId в store ИЗ БД (simulated_trades.position_id = 100% via tsl_updater;
+            # WS pid НЕ даёт — корень «?»-exit). Каждый цикл (~60s), локально, без REST. Закрывает
+            # CUTOVER-гейт: с pid close резолвится даже при гонке fill↔pa=0.
+            try:
+                _nbf = _sphere.backfill_position_ids(open_sim)
+                if _nbf:
+                    logger.info("[SPHERE-SHADOW] backfill pid из БД: %d позиций", _nbf)
+            except Exception as _bfe:
+                logger.debug("[SPHERE-SHADOW] backfill pid err: %s", _bfe)
         if _sphere is not None and (_t_wd.time() - _LAST_RECONCILE_WD_TS > 120):
             _LAST_RECONCILE_WD_TS = _t_wd.time()
             try:

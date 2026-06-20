@@ -157,6 +157,22 @@ class ExecutionSphere:
     def equity(self, account: int) -> Optional[float]:
         return self._equity.get(account)
 
+    def backfill_position_ids(self, db_trades) -> int:
+        """Backfill positionId в store из БД-сделок (simulated_trades.position_id = 100% покрытие
+        via tsl_updater; WS pid НЕ даёт — ни open-fill, ни ACCOUNT_UPDATE, проверено 20.06).
+        db_trades: iterable dict с symbol/direction/position_id. Без pid close при гонке = «?»."""
+        n = 0
+        for t in db_trades:
+            try:
+                pid = t.get("position_id")
+                sym = t.get("symbol")
+                side = (t.get("direction") or "").upper()
+            except AttributeError:
+                continue
+            if pid and sym and self._store.set_position_id_match(sym, side, pid):
+                n += 1
+        return n
+
     # ── COLD-START (init Store + Ledger из REST-снимка, §10) ───────────────
     async def cold_start(self, account: int) -> list[Position]:
         positions = await self._adapter.get_positions(account)

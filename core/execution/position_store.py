@@ -138,6 +138,13 @@ class PositionStore:
             return True
         return False
 
+    def set_position_id_match(self, symbol: str, side: str, pid) -> bool:
+        """Backfill pid по symbol+side (account из БД неизвестен; sticky = 1 акк/символ)."""
+        for (acc, s, sd) in list(self._pos):
+            if s == symbol and sd == side:
+                return self.set_position_id(acc, symbol, side, pid)
+        return False
+
     def by_position_id(self, position_id: str) -> Optional[Position]:
         for p in self._pos.values():
             if p.position_id and str(p.position_id) == str(position_id):
