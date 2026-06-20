@@ -15,8 +15,11 @@
 - **DB↔биржа синхронны** (10/10, 0 призраков/orphan на момент закрытия).
 
 **🔴 СТАРТ СЛЕДУЮЩЕЙ СЕССИИ (finish-line этого Куба, BingX-direct standalone):**
-1. 🎯 **Ф5 дашборд-когезия (ПЕРВОЕ — юзер просил):** шапка `POSITIONS` vs таблица читают РАЗНЫЕ источники → 17 vs 11 (реально 10/10). Свести оба на ОДИН источник из шины (`dashboard_server.py` — найти эндпоинт шапки vs таблицы). + RISK base $1189 vs equity $750 (deposit_usdt vs balance_snapshots).
-2. 🔴 **CUTOVER pid-fix (блокер пойман shadow):** REST-fallback при `pid=None` ИНВЕРТИРУЕТ TP↔SL (ATH: new TP@0.004937 vs факт SL@0.004773 = fake-R класс). Фикс: (а) донести positionId в `PositionStore` (из open-fill `o.positionID`/cold_start raw); (б) `sphere._resolve_exit_via_rest` при pid=None → вернуть None (не гадать). Потом CUTOVER (флип on_close→db_writer + убрать position_sync close-by-price за флагом, **copy-DB тест**).
+1. ✅ **Ф5 дашборд-когезия (СДЕЛАНО 20.06, коммит f91e379):** шапка↔таблица Trades = один WHERE (get_summary status-aware + «showing X of N»). Деплой+проверка: SL/VST 14135→8154. ⏳ Остаток (TASKS 🔵): шапка `POSITIONS` vs таблица 17 vs 11 (DASH-COH-SWEEP), RISK base $1189 vs equity $750, OPEN-вкладка live-R (DASH-OPEN-SUM).
+2. ✅ **CUTOVER pid-fix + флип ЗА ФЛАГОМ ГОТОВЫ (СДЕЛАНО 20.06):**
+   - pid-fix (б) ✅ коммит 4efe297: `sphere._resolve_exit_via_rest` при pid=None → None (не угадывает, инверсия TP↔SL убрана). Часть (а) — positionId в store — УЖЕ была. +тест. Активен с рестарта (PID 22124).
+   - CUTOVER-флип ✅ коммит 37f1f7f: флаг `trading.exec_ws.sphere_cutover` (default **false**). true → Sphere авторитетен (on_close=build_close_applier) + ВЫКЛ старые пути (exec_ws 2b sync_close + position_sync close-by-price). copy-DB смоук 6/6 MATCH.
+   - **🔴 ПРОЦЕДУРА ФЛИПА (deliberate, после зелёной сверки):** (1) DS/грепнуть `[SPHERE-SHADOW] WOULD CLOSE` — % с чистым exit (фейк-inverted теперь «?»); (2) зелено → `config.yaml sphere_cutover: true` + рестарт; (3) грепать `[SPHERE-CUTOVER]` + `[db_writer] #id … → status` (реально закрывает) + `[EXEC-WS][2b] … cutover SKIP` + `[POSITION-SYNC] close-by-price OFF`; (4) сверить БД↔биржа 10/10; откат = `false`+рестарт.
 3. 💰 **EXIT-FIX (рычаг ПРИБЫЛИ):** вход живой → выход отдаёт +1R. BE уже фирит на +0.5R (`[DEV-40]`), но +1R всё равно отдаётся → анализ НА o.rp: BE/TSL медленные vs интрабар? трейл? частичный TP? Цель: из −$510/6д в плюс. Перемерить edge на income/o.rp многодневно.
 
 **🔒 РЕШЕНИЕ (юзер 20.06, твёрдо):** этот Куб доделываем **сами, standalone, BingX-direct**. **Condor = отдельный Cube2** (НЕ интегрировать сюда). Проект «наш с тобой» (Егор+Даат). [[condor_integration_strategy]].
