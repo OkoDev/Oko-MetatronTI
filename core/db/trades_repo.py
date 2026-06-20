@@ -56,13 +56,24 @@ def get_trades(
 def get_summary(
     account_id: Optional[int] = None,
     execution_mode: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> dict:
-    """Агрегаты: n, sumR, avgR, WR по фильтру."""
-    sql = """SELECT COUNT(*) n, SUM(R_multiple) sumR, AVG(R_multiple) avgR,
+    """Агрегаты: n, sumR, avgR, WR по фильтру.
+
+    status: конкретный закрытый статус (TP/SL/TSL/EXPIRED) → агрегат ТОЛЬКО по нему,
+            чтобы шапка терминала совпадала с активной вкладкой таблицы (дашборд-когезия:
+            шапка и таблица = один WHERE). None → по всем закрытым (как было)."""
+    _CLOSED = ("TP", "SL", "TSL", "EXPIRED")
+    params: list = []
+    if status in _CLOSED:
+        where = "status=? AND R_multiple IS NOT NULL"
+        params.append(status)
+    else:
+        where = "status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL"
+    sql = f"""SELECT COUNT(*) n, SUM(R_multiple) sumR, AVG(R_multiple) avgR,
              100.0 * SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) / COUNT(*) WR
              FROM simulated_trades
-             WHERE status IN ('TP','SL','TSL','EXPIRED') AND R_multiple IS NOT NULL"""
-    params: list = []
+             WHERE {where}"""
     if account_id is not None:
         sql += " AND account_id=?"
         params.append(account_id)

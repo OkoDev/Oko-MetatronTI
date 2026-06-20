@@ -44,6 +44,14 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| **DASH-COHESION** | ✅ | **Приоритет №1 (юзер 20.06): шапка↔таблица Trades = один источник.** get_summary status-aware + «showing X of N». ДЕПЛОЙ+ПРОВЕРКА: build+рестарт бота+pm2 oko-dash. Сквозь прокси SL/VST=8154 (было 14135). Orphan-аудит чист (4 поз, все с SL). → DISCUSSION 20.06 12:39 | Даат |
+
+| **DASH-OPEN-SUM** | 🔵 | Остаток когезии: OPEN-вкладка Sim шапка показывает фейк wr=0/sumR=0 → сумма live-R из шины. → DISCUSSION 20.06 12:39 | DEV/Claude |
+
+| **DASH-COH-SWEEP** | 🔵 | Остаток когезии: свип Overview/Analytics/Patterns на рассинхрон шапка↔таблица (фиксил только Trades). | DEV/Claude |
+
+| **BOT-LOCK-PID** | 🔵 | Робастность рестарта: single-instance lock не детектит мёртвый PID → force-kill оставляет stale bot_instance.lock, новый старт выходит «уже запущен». Фикс: перезаписать лок если PID мёртв (oko_mtf.py:56). | DEV/Claude |
+
 | **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2→Ф4.1✅ + SHADOW-врезка в живой WS (default OFF, 81/81 тест). АКТИВАЦИЯ СВЕРКИ: `exec_ws.sphere_shadow:true`+рестарт юзера → грепать `[SPHERE-SHADOW]`. Потом CUTOVER. → DISCUSSION 19.06 19:45 | Даат/DS |
 
 | **OTE-CLONE** | ⚫ | **ЗАКРЫТО.** 1D-сетапы мёртвы: 0 fires на 10 парах × 8 дней. Хороним вместе с arch104. → DISCUSSION 19.06 09:20 | — |

@@ -418,7 +418,8 @@ async def _handle_trades_filtered(request: web.Request) -> web.Response:
             # каждые 10с. Allow-list режет до ~177KB (−83%). Decision Trace = trace[] (features_json
             # фронту не нужен). Менять список ТОЛЬКО синхронно с маппером в lib/api.ts.
             trades = [{k: t.get(k) for k in _TRADES_FILTERED_COLS} for t in trades]
-            summary = await _run_sync(trades_repo.get_summary, acc_i, mode)
+            # Когезия шапка↔таблица: агрегат по тому же status, что и строки (не по всем закрытым).
+            summary = await _run_sync(trades_repo.get_summary, acc_i, mode, status)
             return json.dumps({"trades": trades, "summary": summary}, ensure_ascii=False, default=str)
 
         payload, xcache = await _TRADES_FILTERED_CACHE.get(key, _compute, cold_timeout=25.0)
