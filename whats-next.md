@@ -1,5 +1,30 @@
 # What's Next — Handoff
 
+## 🌅 СЕССИЯ 21.06 = EXIT-FIX ДОБИТ (BE на биржу) + ИСТИННЫЙ BE + CUTOVER пауза (читать ПЕРВЫМ)
+
+> Русский · grep before claim · числа из config/кода · TTS Irina · ветка `arch-128-oko-sm`. Метрика-истина = income-ledger/`o.rp`.
+> Глубокий контекст: `current_state.md` (записи 21.06 сверху) + auto-memory [[bug_be_not_synced_to_exchange]], [[ote_all_setups_honest_map]], [[cutover_blocker_ws_closefill]].
+
+**ГЛАВНАЯ ПОБЕДА: найден+починен КОРЕНЬ exit-утечки (реальные деньги).** DEV-40 Breakeven двигал SL **только в БД**, на биржу НЕ доезжал → биржа держала исходный SL (−1R). Live-доказано `e:/tmp/sl_sync_check.py`: 18 OPEN VST → 11 GAP, NAORIS закрылся −0.8R при «безубытке». Это и был give-back (закрытая когорта be=1 но 39% R<0).
+
+**✅ ПОЧИНЕНО+ЗАПУШЕНО+ПОДТВЕРЖДЕНО вживую (5 коммитов):**
+- `e762449` **BE синкается на биржу** (append в `_ops05tsl` → om.update_sl cancel+replace). Подтверждён: BUTTCOIN/COLLECT, GAP=0 на 23 поз. Флаг `trading.be_exchange_sync`.
+- **Реконсайл 14 GAP** (`e:/tmp/reconcile_be_sl.py`) — GAP 14→0.
+- `05d644b` **BE от `actual_entry_price`** (не сигнальной).
+- `77fd649` **BE = тугой STOP-LIMIT 0.15%** (per-order `be_limit_buffer_pct`). Подтверждён: AVA buf=0.15%. TSL держит 1%. = «истинный BE» (actual_entry+комиссия+тугой лимит).
+- `e86a3e8` **entry-capture: дотянуть avgPrice по orderId** когда синхр.ответ дал 0 (~2%) +WARNING. Дыра была таймлайн-деплоя, не баг; post-fix 94% реальный филл.
+- ✅ TSL подтверждён (`[TSL-UPDATER] ✅`).
+
+**📊 ПЕРЕМЕР 7 OTE-сетапов (честный R)** → `ote_all_setups_honest_map.md`: **ЗАКОН SHORT=pull (0.47→1.585), LONG=cont_1h_5m (0.694)**, крест мёртв. ⚠️ avgR был от сломанного выхода → **перемерить через 3-5 дней на post-fix** перед обрезкой. cont SHORT держим (юзер).
+
+**🔴 CUTOVER — НЕ флипать (юзер: ПАУЗА, путь A):** «?» застрял **75%**, корень = WS close-fill `o.rp` ловится лишь **25%** (гонка fill↔pa=0 + one-click 101205). Флип без fallback = 75% орфанов. B (P&L-fallback) отклонён. **Эпик A** = починить WS close-fill capture. [[cutover_blocker_ws_closefill]].
+
+**СЛЕДУЮЩЕЕ:** (1) через 3-5дн перемерить cont/pull на post-fix → отрезать мёртвый крест; (2) Эпик A (WS close-fill capture); (3) trade_simulator split (EXEC-SIM-SPLIT, имя врёт — делает реальное исполнение); (4) опц. backfill stragglers actual=NULL.
+
+**Инструменты (read-only, e:/tmp):** `sl_sync_check.py`, `reconcile_be_sl.py`, `check_goblin.py`. **Бот:** жив (рестарт 21.06 21:46 UTC, все фиксы активны).
+
+---
+
 ## 🌅 СЕССИЯ 19-20.06 = EXEC-REBUILD + ДЕНЬ ПРАВДЫ (свежий handoff, читать ПЕРВЫМ)
 
 > Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina · ветка `arch-128-oko-sm`.

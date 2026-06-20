@@ -9,6 +9,49 @@
 
 ---
 
+## [20.06 ~19:00 UTC] Агент: Даат — 🎯 cont_1h_5m ЧЕСТНЫЙ разбор (отсечка fake-R) → выход течёт от SYNC-GAP
+
+Юзер: «по входам вопрос к cont_1h_5m_cont» → «не трогать вход — чинить выход» → «нужна отсечка по fake-R».
+- ✅ **Отсечка fake-R (closed_at≥2026-06-19T06:00 UTC, после 02beb18+рестарт) ПЕРЕВЕРНУЛА вывод:** cont LONG ХОРОШ (avgR 0.78 WR63% %≥1R 54%), cont SHORT МЁРТВ (avgR 0.076 medR0 MFE0.85). pull SHORT чемпион (1.2-1.36). **Закон: LONG=cont, SHORT=pull.** Грязный (до отсечки) avgR врал: LONG 0.375/SHORT 0.116.
+- 🔴 **Выход cont LONG течёт (реальные деньги):** 84 VST-ордера (acc1+2, real orderId, 0 paper) → статус EXPIRED при MFE до 4.6R. Путь: `exec_ws_integration.py:146` default EXPIRED + REST `_resolve_exit` не классиф. R от ws_exit_price (честный, give-back реален).
+- 🔴 **Корень = SYNC-GAP БД↔биржа SL:** be_activated=1 у 71/84, но TSL у 6/84 И 39% закрылись R<0. BE двигает SL в БД → на биржу не доезжает → биржа держит исходный SL, раннеры схлопываются. = CUTOVER territory (Execution Sphere close по o.rp + единый adjust_sl).
+- 📝 Память: `cont_setups_honest_exit_diagnosis.md` + MEMORY.md хук.
+- 🔴🔴🔴 **КОРЕНЬ ПОДТВЕРЖДЁН на ЖИВЫХ деньгах** (`bug_be_not_synced_to_exchange.md`): DEV-40 Breakeven (`trade_simulator:2230-2242`) двигает SL **ТОЛЬКО в БД**, НЕ пишет в `tsl_moved` → биржевой синк не вызывается. Read-only чекер `e:/tmp/sl_sync_check.py`: 18 OPEN VST → **11 GAP** (be=1, биржа на исходном SL −1R), **1 БЕЗ SL** (NAORIS stale-id), 6 OK (все be=0).
+- ⚠️ **НЕМЕДЛЕННО:** NAORIS LONG без живого стопа — решение юзера (поставить защитный SL / закрыть).
+- ✅ **ФИКС РЕАЛИЗОВАН (e762449):** BE-перенос → append в `_ops05tsl` (та же очередь что TSL) → `om.update_sl` cancel+replace. Флаг `trading.be_exchange_sync`. Выбран проверенный единый путь, НЕ Sphere.adjust_sl (не готов, дал бы 2-й путь синка). Бот рестартнут 23:14 с новым кодом.
+- ✅ **РЕКОНСАЙЛ 11→14 существующих GAP (`e:/tmp/reconcile_be_sl.py`):** все 14 cancel+replace SL→BE (place code=0 + cancel code=0), DB обновлён. После: **sl_sync_check GAP=0** (19/19 синканы). Кровотечение остановлено.
+- ✅✅ **GOING-FORWARD ВАЛИДИРОВАН ЖИВЬЁМ (23:23 UTC):** BUTTCOIN/COLLECT новые BE → `[DEV-40][BE-SYNC]` → биржа=DB BE. SIM пропущены корректно. **Корневой exit-баг ЗАКРЫТ полностью** (прошлое реконсайлено + будущее авто-синкается, GAP=0 на 23).
+- 🔵 **NEXT:** перемерить все OTE через 3-5дн на post-фикс данных (`ote_all_setups_honest_map.md`).
+
+## [21.06 ~01:00 UTC] Агент: Даат — CUTOVER «?» ЗАСТРЯЛ 75% (BE-фикс НЕ помог, корень=WS close-fill 25%)
+
+- 🔴 **Перемер «?»-rate: НЕ падает, ~75% стабильно** (20:00→76%, 00:00→76% МСК). Гипотеза «BE-фикс→чистые SL-fill→«?» вниз» ОПРОВЕРГНУТА.
+- **Корень «?»:** rp приходит из WS closing-fill (o.rp ExitInfo), застешивается лишь **~25%**. Резолв = fill пойман (SOPH/INX/THETA/MANA SL с rp); «?» = не пойман (гонка fill↔pa=0 + one-click 101205 чей fill не мапится). REST-fallback 75% не тянет.
+- 🔴 **СТРАТЕГИЧЕСКИ:** ценность CUTOVER (WS o.rp истина) только на 25% closes; 75% всё равно нужен REST/P&L-fallback как у старого position_sync (реклассиф. EXPIRED→P&L стр.636). CUTOVER НЕ лучше старого пути пока WS close-fill не починен. **Флипать бессмысленно.**
+- ✅ **РЕШЕНИЕ юзера 21.06: ПАУЗА, путь A на будущее.** B (флип с P&L-fallback) ОТКЛОНЁН — флип без fallback=75% орфанов (db_writer:35 None на «?»); с fallback приз только 25% o.rp за цену живого close-path флипа. CUTOVER остаётся shadow. Эпик A (починить WS close-fill capture: гонка fill↔pa=0 + one-click 101205) = истинный unlock на потом. Детали → `cutover_blocker_ws_closefill.md`.
+
+## [21.06 ~00:35 UTC] Агент: Даат — «ИСТИННЫЙ BE» завершён (тугой STOP-LIMIT 77fd649)
+
+- ✅ **BE-тугой лимит (77fd649):** per-order `limit_buffer_pct` протянут `place_sl_order`→`update_sl`→`update_tsl_on_exchange`. BE-append передаёт `trading.be_limit_buffer_pct=0.15%` → BE закрывается на ≈BE без слиппеджа; TSL/обычный SL держат глобальный 1% (гэп-защита). py_compile+YAML OK. Нужен рестарт.
+- 🎯 **«Истинный математический BE» собран из 3 частей:** (1) actual_entry_price [05d644b], (2) +0.1% комиссия-буфер [= round-trip fee модель trade_simulator:1741], (3) тугой лимит 0.15% на закрытии [77fd649]. = закрытие на entry+комиссия net-ноль, без слиппеджа.
+- ✅✅ **BE-тугой лимит ПОДТВЕРЖДЁН вживую (00:34:45):** AVA BE-SYNC → `STOP-LIMIT sl=0.200200 limit=0.199900 buf=0.15%` (единственный 0.15% в логе = он). TSL держит 1%. Gap-through предохранитель сработал: AVA пробил BE мгновенно → лимит отвергнут (цена ниже) → market-fallback (позиция не без защиты). Протяжка `_ops05tsl→update_sl→place_sl_order(limit_buffer_pct)` работает.
+- 🔬✅ **ДЫРА entry-capture ДОКОПАНА + ЗАКРЫТА (e86a3e8):** корень = ТАЙМЛАЙН ДЕПЛОЯ (запись actual задеплоена a9fdfc0 в 14:25 UTC + рестарт ~16:00; до этого NULL — 32376 @ 13:34 straggler), НЕ баг. `open_bracket:519` берёт avgPrice из синхр.ответа place_bracket; замер post-16:00 (n=121): **94% реальный филл** (avg слиппедж 0.685%), 2% тихий fallback на сигнал (avgPrice=0 асинхр.), 4% ≈сигнал. ФИКС: при avgPrice<=0 дотянуть по orderId из get_filled_orders (запрос только в ~2%), при неудаче fallback+WARNING (видимо). Убил невидимую ложь actual=сигнал. **Нужен рестарт.**
+- ℹ️ Stragglers (открытые NULL до деплоя, напр. 32376) НЕ чинятся going-forward фиксом — close_trade у них fallback на сигнал (терпимо, историч.). Backfill из position avg НЕ делали (юзер выбрал дотяжку в open_bracket).
+- 📌 ОТЛОЖЕНО (юзер): **trade_simulator split** — имя врёт (делает реальное VST-исполнение, не симуляцию) = EXEC-SIM-SPLIT эпик. Планировать отдельно.
+
+## [21.06 ~00:15 UTC] Агент: Даат — BE от actual_entry_price (05d644b)
+
+- ✅ **BE-ENTRY фикс:** `breakeven_sl(direction, actual_entry_price)` вместо сигнальной entry. При слиппедже входа сигнальный BE = минус от факта (GOBLIN: signal 0.005886→BE 0.005892, но факт-филл 0.005915 → «безубыток» = −0.39% убыток). Fallback на signal если actual нет. Хирургично (только уровень BE; R-гейт на сигнальной). py_compile OK. **Нужен рестарт.** Going-forward (существующие be=1 не перетриггерятся).
+- ℹ️ Режим подтверждён: **В (OTE-ONLY)**, не Б (config_ote_B НЕЛЬЗЯ). OTE per-source 50x/0.5%/RR3, min_sl 0.25, liq-safety, торгует живьём. be/tsl ОБА ON (BE+0.5R, TSL+1.0R, be_exchange_sync ON).
+
+## [20.06 ~23:55 UTC] Агент: Даат — CUTOVER НЕ готов («?» 74%, корень=exit-fill resolution НЕ pid) + TSL✅
+
+- ✅ **TSL РАБОТАЕТ** (live): `[TSL-UPDATER] ✅` двигает биржевой SL (GOBLIN/FIDA/THETA). Edge: update_sl→None → DB очищен, repair восстановит (само-лечится).
+- 🔴 **CUTOVER НЕ ГОТОВ — флипать НЕЛЬЗЯ.** WOULD CLOSE «?» = **74%** (78/106), recent 71%. Гейт «?»→~0 НЕ выполнен.
+  - **pid_resolver МООТ** (0 срабатываний — backfill ставит pid 56×; pid не бутылочное горло). Корень ниже: `take_exit` (close-fill ExitInfo) None у большинства + REST `_resolve_exit` не находит close-fill, ОСОБЕННО у **one-click закрытий** (hedge-mode 101205 «ReduceOnly can't be filled → one-click fallback»: AWE/AIXBT/NAORIS/TAG/NIL/NFP/TA). REST-fallback `[Sphere] exit дотянут REST` работает для ЧАСТИ (PLUME/GRASS/EGLD/PROMPT).
+  - Флип = 74% closes → «?» → default EXPIRED = тот же баг что чиним на BE.
+- 🔵 **ГИПОТЕЗА:** BE-sync фикс (e762449) → SL теперь на бирже → больше closes через ЧИСТЫЙ SL-fill (не one-click) → «?» должен ПАДАТЬ сам. **Перемерить «?»-rate через 1-2ч post-BE-fix.** Если →~0 → флип; иначе фиксить exit-resolution для market/one-click (REST по positionId не мапит one-click fill).
+
 ## [20.06 ~16:45 UTC] Агент: Даат — 🔬 CUTOVER-гейт: WS НЕ даёт positionId открытым → «?» 35%. ФИКС backfill из снимка
 
 **Проверка готовности к CUTOVER-флипу** (флаг `sphere_cutover` готов, default false; pid-fix 4efe297 активен с рестарта 16:20:27):
@@ -17,6 +60,13 @@
 - ✅ **ФИКС: backfill positionId в store** (`PositionStore.set_position_id` + `Sphere.reconcile_account` тянет pid из УЖЕ-фетченного get_positions, 0 лишних REST, каждые ~2мин). Тесты 43/43. 🔴 нужен рестарт + перемерить «?».
 - ⚠️ Остаток: позиции, открытые И закрытые <2мин с гонкой → всё ещё «?» (backfill не успел). Меньшинство; перемерить % после рестарта.
 - 🟢 **Можем продолжить:** CUTOVER-флип готов, гейт = зелёная сверка. После рестарта+backfill «?» должен резко упасть → если ~0 → флип (`sphere_cutover:true`, процедура в whats-next).
+
+## [20.06 ~18:20 UTC] Агент: Даат — ✅ pid_resolver (закрыть «?»-coverage) + сверка с profit-bottleneck ANALYSIS
+
+- ✅ **pid_resolver (189b88e):** при close с store-pid=None → дотянуть positionId из БД (100% via tsl_updater) → fallback резолвит → «?»→~0. `Sphere(pid_resolver)` инъектится в exec_ws (читает simulated_trades). resolver=None → не гадаем (инверсия не вернётся). Тесты 25/25. **Нужен рестарт + перемерить «?» → если ~0 → флип CUTOVER.**
+- 📄 **`data/research/2026-06-20--profit-bottleneck/ANALYSIS.md`** (DS/рой): подтверждает диагноз. План **0→A→B→C**: 0=CUTOVER (honest R), A=ВЫХОД (BE+0.5R/TSL+1R/TP+0.75R, +$100-150/д), B=плечо 50→20 (−ликвид, +$50/д), C=maker-entry (слиппедж, +$10-20/д).
+- ⚠️ **СВЕРИТЬ перед Step A:** анализ пишет «BE не фирит» — НО в логах BE ФИРИТ (`[DEV-40] Breakeven R=0.50`). Give-back +1R, вероятно, от entry/exit-disconnect (BE двигал SL к СИГНАЛЬНОЙ entry, не реальной) → entry-capture (a9fdfc0) уже помогает. Config-ключи анализа (sl_break_even.activate_at_mfe…) — ПРОВЕРИТЬ что существуют (grep before claim), иначе Step A на выдуманном конфиге.
+- 🔵 ПОРЯДОК: рестарт → «?»→0 → флип CUTOVER (Step 0) → Step A (выход, на РЕАЛЬНОМ exit-коде) → Step B (плечо).
 
 ## [20.06 ~18:00 UTC] Агент: Даат — ✅ ENTRY-CAPTURE ПОДТВЕРЖДЁН НА БОЮ (3/3, слиппедж виден)
 
