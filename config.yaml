@@ -349,6 +349,10 @@ sl_tp_engine:
   # (та же что TSL). До фикса BE двигал SL ТОЛЬКО в БД → биржа держала исходный SL
   # (live: 11/18 OPEN GAP, NAORIS −0.8R при be=1). false = откат к старому поведению.
   be_exchange_sync: true
+  # BE-LIMIT (21.06): BE-ордер = тугой STOP-LIMIT (% ниже/выше стопа) чтобы закрыться на ≈BE
+  # без market-слиппеджа (иначе слиппедж съедает безубыток). Уже sl_limit_buffer_pct=1% для
+  # TSL/обычного SL (гэп-защита), но для BE 1% = до −1% убытка. 0.15% ≈ tick-уровень.
+  be_limit_buffer_pct: 0.15
   expired_extend_min_r: 5.0
   expired_extend_hours: 120
   expired_management:

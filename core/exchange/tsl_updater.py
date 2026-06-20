@@ -186,6 +186,7 @@ async def update_tsl_on_exchange(bot, tsl_moved: list) -> None:
                 symbol=symbol, pos_side=pos_side,
                 old_sl_order_id=sl_oid, new_sl_price=new_sl, qty=qty,
                 old_sl_price=old_sl, min_move_pct=min_move_pct,
+                limit_buffer_pct=item.get("limit_buffer_pct"),  # BE → тугой; TSL → None (глобальный)
             )
             if new_id:
                 ts.set_exchange_sl_order_id(trade_id, new_id)

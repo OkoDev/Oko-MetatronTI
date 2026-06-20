@@ -2255,8 +2255,13 @@ class TradeSimulator:
                             try:
                                 from core.infra.config_loader import config as _cfg_be
                                 _be_sync = bool(_cfg_be.get("trading.be_exchange_sync", True))
+                                # BE-LIMIT FIX (21.06): BE-ордер = ТУГОЙ STOP-LIMIT (~0.15%) чтобы
+                                # закрыться на ≈BE без market-слиппеджа (иначе слиппедж съедает
+                                # безубыток). TSL/обычный SL держат широкий sl_limit_buffer_pct
+                                # (гэп-защита). _proc ловит хит по цене если лимит не исполнился.
+                                _be_lim = float(_cfg_be.get("trading.be_limit_buffer_pct", 0.15))
                             except Exception:
-                                _be_sync = True
+                                _be_sync = True; _be_lim = 0.15
                             _be_exch_oid = trade.get("exchange_order_id")
                             if _be_sync and _be_exch_oid and str(_be_exch_oid) not in ("", "SIM", "None"):
                                 _ops05tsl.append({
@@ -2268,6 +2273,7 @@ class TradeSimulator:
                                     "old_sl_price":         _old_sl_be,
                                     "exchange_sl_order_id": trade.get("exchange_sl_order_id"),
                                     "exchange_order_id":    _be_exch_oid,
+                                    "limit_buffer_pct":     _be_lim,  # тугой BE-лимит (не глобальный 1%)
                                 })
                                 logger.info("[DEV-40][BE-SYNC] %s id=%d → биржевой cancel+replace SL→%.6f поставлен в очередь",
                                             symbol, trade_id, be_sl)

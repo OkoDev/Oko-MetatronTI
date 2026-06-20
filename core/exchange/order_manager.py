@@ -807,9 +807,14 @@ class OrderManager:
             return True
 
     async def place_sl_order(
-        self, symbol: str, pos_side: str, sl_price: float, qty: float
+        self, symbol: str, pos_side: str, sl_price: float, qty: float,
+        limit_buffer_pct: float | None = None,
     ) -> Optional[str]:
         """Ставит STOP_MARKET или STOP (Limit) ордер (SL) для существующей позиции.
+
+        limit_buffer_pct — per-order override буфера STOP-LIMIT (None → глобальный
+        trading.sl_limit_buffer_pct). BE-ордер передаёт тугой (~0.15%) чтобы закрыться
+        на ≈BE без слиппеджа; TSL/обычный SL держат широкий (гэп-защита).
 
         DEV-175: если sl_limit_buffer_pct > 0 в config → STOP (Limit) с буфером.
         Для LONG SL: limit_price = sl_price * (1 - buffer).
@@ -855,7 +860,8 @@ class OrderManager:
             limit_price: float | None = None
             try:
                 from core.infra.config_loader import config as _cfg_sl
-                _buf = float(_cfg_sl.get("trading.sl_limit_buffer_pct", 0) or 0)
+                _buf = (limit_buffer_pct if limit_buffer_pct is not None
+                        else float(_cfg_sl.get("trading.sl_limit_buffer_pct", 0) or 0))
                 if _buf > 0:
                     if pos_side.upper() == "LONG":
                         limit_price = sl_price * (1.0 - _buf / 100.0)
@@ -951,6 +957,7 @@ class OrderManager:
         self, symbol: str, pos_side: str, old_sl_order_id: str,
         new_sl_price: float, qty: float,
         old_sl_price: float = 0.0, min_move_pct: float = 0.1,
+        limit_buffer_pct: float | None = None,
     ) -> Optional[str]:
         """Cancel ALL open STOP_MARKET по символу + place one new SL при движении TSL.
         DEV-147: вместо cancel-by-ID — отменяем все STOP_MARKET по pos_side,
@@ -1002,7 +1009,8 @@ class OrderManager:
             logger.warning("[OrderManager] update_sl %s: ошибка get_open_orders: %s — fallback cancel by ID", symbol, e)
             await self.cancel_order(symbol, old_sl_order_id)
 
-        new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty)
+        new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty,
+                                           limit_buffer_pct=limit_buffer_pct)
         logger.info("[OrderManager] TSL update %s %s: SL %.6f → %.6f order_id=%s",
                     symbol, pos_side, old_sl_price, new_sl_price, new_id)
         return new_id
