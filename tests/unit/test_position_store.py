@@ -128,6 +128,19 @@ class TestFillEnrichment:
         st.apply_fill(_fill(1, SYM, "LONG", ro=False, otype="MARKET", ap=0.5, pid="pid-9"))
         assert st.by_position_id("pid-9") is not None
 
+    def test_set_position_id_backfill(self):
+        # WS open-fill не несёт positionId → backfill из REST-снимка
+        st = PositionStore()
+        st.apply_position(_pos_event(1, SYM, "LONG", 100))   # pid=None
+        assert st.get(1, SYM, "LONG").position_id is None
+        assert st.set_position_id(1, SYM, "LONG", "pid-x") is True
+        assert st.get(1, SYM, "LONG").position_id == "pid-x"
+        # не перезаписывает уже заданный
+        assert st.set_position_id(1, SYM, "LONG", "pid-y") is False
+        assert st.get(1, SYM, "LONG").position_id == "pid-x"
+        # нет позиции → False
+        assert st.set_position_id(1, "Q/USDT:USDT", "LONG", "p") is False
+
 
 class TestColdStartAndStaleness:
     def test_init_account_seeds_open(self):

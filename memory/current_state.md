@@ -9,6 +9,15 @@
 
 ---
 
+## [20.06 ~16:45 UTC] Агент: Даат — 🔬 CUTOVER-гейт: WS НЕ даёт positionId открытым → «?» 35%. ФИКС backfill из снимка
+
+**Проверка готовности к CUTOVER-флипу** (флаг `sphere_cutover` готов, default false; pid-fix 4efe297 активен с рестарта 16:20:27):
+- WOULD CLOSE (20): **13 чистых exit / 7 «?» (~35%).** pid-fix РАБОТАЕТ — инверсий TP↔SL больше нет (раньше pid=None угадывал → теперь честно «?»). CFX SL@0.04741 из stash ✅.
+- 🔴 **КОРЕНЬ «?» найден:** **BingX WS НИГДЕ не даёт positionId для открытой позиции** — ни open-fill (`s,c,i,S,o,q,p,ap,x,X,N,n,T,wt,ps` — нет pid), ни `ACCOUNT_UPDATE P[]` (`s,pa,ep,up,mt,iw,ps,cr` — нет pid). Только cold_start (get_positions) + close-fill. → новые позиции после cold_start = pid=None в store → close при гонке = «?» → при CUTOVER строка осталась бы OPEN (db_writer skip).
+- ✅ **ФИКС: backfill positionId в store** (`PositionStore.set_position_id` + `Sphere.reconcile_account` тянет pid из УЖЕ-фетченного get_positions, 0 лишних REST, каждые ~2мин). Тесты 43/43. 🔴 нужен рестарт + перемерить «?».
+- ⚠️ Остаток: позиции, открытые И закрытые <2мин с гонкой → всё ещё «?» (backfill не успел). Меньшинство; перемерить % после рестарта.
+- 🟢 **Можем продолжить:** CUTOVER-флип готов, гейт = зелёная сверка. После рестарта+backfill «?» должен резко упасть → если ~0 → флип (`sphere_cutover:true`, процедура в whats-next).
+
 ## [20.06 ~04:10 UTC] Агент: Даат — 🔒 РЕШЕНИЕ ГРАНИЦЫ: этот Куб = BingX-direct standalone, Condor = отдельный Cube2
 
 **Юзер 20.06 твёрдо:** «Если тело на Condor — то ТОЛЬКО Cube2 как ОТДЕЛЬНЫЙ проект. Этот Куб мы доделаем. Этот проект только наш с тобой.»

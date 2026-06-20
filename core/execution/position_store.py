@@ -128,6 +128,16 @@ class PositionStore:
     def get(self, account: int, symbol: str, side: str) -> Optional[Position]:
         return self._pos.get((account, symbol, side))
 
+    def set_position_id(self, account: int, symbol: str, side: str, pid) -> bool:
+        """Backfill positionId в открытую позицию. WS open-fill И ACCOUNT_UPDATE P[] его НЕ
+        несут (проверено 20.06) — только REST-снимок (cold_start/get_positions). Без pid close
+        при гонке fill↔pa=0 = «?» → CUTOVER оставил бы строку OPEN. Ставим если ещё не задан."""
+        p = self._pos.get((account, symbol, side))
+        if p is not None and pid and not p.position_id:
+            p.position_id = str(pid)
+            return True
+        return False
+
     def by_position_id(self, position_id: str) -> Optional[Position]:
         for p in self._pos.values():
             if p.position_id and str(p.position_id) == str(position_id):

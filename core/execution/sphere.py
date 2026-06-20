@@ -181,6 +181,12 @@ class ExecutionSphere:
         close-by-price НЕТ — цена в решении не участвует, только факт флэта на бирже.
         """
         exch = await self._adapter.get_positions(account)
+        # BACKFILL positionId в store: WS open-fill/ACCOUNT_UPDATE его НЕ несут (20.06), только
+        # REST-снимок. Без pid close при гонке fill↔pa=0 = «?» → CUTOVER оставил бы строку OPEN.
+        # Тянем из уже-фетченного снимка (0 лишних REST), каждый watchdog-цикл (~2мин).
+        for _p in exch:
+            if _p.position_id and not _p.is_flat:
+                self._store.set_position_id(account, _p.symbol, _p.side, _p.position_id)
         exch_keys = {(p.symbol, p.side) for p in exch if not p.is_flat}
         intents: list[CloseIntent] = []
         for p in self._store.positions(account):
