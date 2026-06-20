@@ -488,7 +488,13 @@ async def sync_positions(bot) -> None:
             except Exception as _ew:
                 logger.debug("[DEV-185.2] watchdog error %s: %s", sym_w, _ew)
 
-        for trade in open_sim:
+        # 🔴 CUTOVER (Ф5): close-by-price ВЫКЛ — ExecutionSphere (on_close из WS-exit) +
+        # reconcile-watchdog авторитетны. Этот REST close-by-price = старый buggy путь (корень
+        # fake-R: _resolve_exit по 15s-mark врал). Орфан-детект ниже (нет OPEN-строки) НЕ тронут.
+        _cutover = bool(getattr(bot, "config", None) and bot.config.get("trading.exec_ws.sphere_cutover", False))
+        if _cutover and open_sim:
+            logger.debug("[POSITION-SYNC] close-by-price OFF (sphere_cutover — Sphere авторитетен), %d OPEN пропущено", len(open_sim))
+        for trade in (() if _cutover else open_sim):
             if not trade.get("exchange_order_id"):
                 continue  # SIM-сделка — не трогаем
 

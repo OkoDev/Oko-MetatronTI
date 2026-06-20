@@ -136,6 +136,7 @@ trading:
     write_exch_id: false
     sync_close: true
     sphere_shadow: true    # Ф4.1 EXECUTION-REBUILD: true → строит NEW pipeline (ExecutionSphere, on_close=None) ПАРАЛЛЕЛЬНО старому 2a/2b. Лог "[SPHERE-SHADOW] would close", реально НЕ закрывает, position_sync не тронут. Сверка would-close с фактом на живом потоке → потом CUTOVER. Откат = false. Требует рестарта.
+    sphere_cutover: false  # 🔴 CUTOVER (Ф5): false=shadow (выше). true → ExecutionSphere АВТОРИТЕТЕН: on_close=build_close_applier (закрывает БД из WS-exit) + ВЫКЛ старые пути (position_sync close-by-price + exec_ws 2b sync_close), иначе двойное закрытие. Требует sphere_shadow:true (на нём строится pipeline). 🔴 DELIBERATE: только после зелёной shadow-сверки + copy-DB теста. Откат = false + рестарт.
   open_orders_global: true
   open_orders_cache_ttl_sec: 10
   positions_cache_ttl_sec: 45

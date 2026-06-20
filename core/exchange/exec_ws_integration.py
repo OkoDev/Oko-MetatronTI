@@ -176,6 +176,9 @@ def make_event_handler(bot, account_tag: str = "acc1"):
     start_exec_ws вызывает per-account чтобы sync_close использовал правильный client.
     """
     cfg = bot.config
+    # 🔴 CUTOVER: при true старый путь 2b sync_close ВЫКЛЮЧЕН — закрывает ExecutionSphere.on_close
+    # (db_writer), вызванный в SPHERE-блоке выше. Иначе двойное закрытие той же позиции.
+    _cutover = bool(cfg.get("trading.exec_ws.sphere_cutover", False))
     # дедупликация pa=0: {(sym, direction): last_close_ts}
     _sync_close_seen: dict = {}
     # EXEC-SIM-SPLIT кирпич 1 (VST-exit достоверный): точная цена закрывающего fill из WS.
@@ -286,6 +289,10 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                     continue
                 if not sym or direction not in ("LONG", "SHORT"):
                     continue
+                if _cutover:
+                    # Закрытие сделала ExecutionSphere.on_close (db_writer) в SPHERE-блоке выше.
+                    logger.info("[EXEC-WS][2b] %s %s pa=0 — close через ExecutionSphere (cutover); старый 2b SKIP", sym, direction)
+                    continue
                 sync_close_on = bool(cfg.get("trading.exec_ws.sync_close", False))
                 if not sync_close_on:
                     logger.info("[EXEC-WS][2b] %s %s pa=0 (sync_close OFF — shadow лог)", sym, direction)
@@ -333,14 +340,24 @@ def start_exec_ws(bot) -> Optional[list]:
                 _ledger = None
             _adapter = BingXAdapter(bot.order_executor)
             bot._exec_adapter = _adapter
-            bot._exec_sphere = ExecutionSphere(_adapter, PositionStore(), ledger=_ledger, on_close=None)
+            # 🔴 CUTOVER (Ф5): sphere_cutover:true → Sphere АВТОРИТЕТЕН (on_close закрывает БД из
+            # WS-exit). Старые пути (position_sync close-by-price + exec_ws 2b) выключаются по этому же
+            # флагу (иначе двойное закрытие). false → on_close=None (shadow, только would-close лог).
+            _cutover = bool(cfg.get("trading.exec_ws.sphere_cutover", False))
+            _on_close = None
+            if _cutover:
+                from core.execution.db_writer import build_close_applier
+                _on_close = build_close_applier(bot.trade_simulator)
+            bot._exec_sphere = ExecutionSphere(_adapter, PositionStore(), ledger=_ledger, on_close=_on_close)
             # cold_start: засеять Store снимком (read-only get_positions) → would-close покрывает
             # и позиции, открытые ДО рестарта (иначе их pa=0 = untracked, не логируется).
             for _acc_cs in _adapter._router.accounts:
                 asyncio.create_task(bot._exec_sphere.cold_start(_acc_cs))
-            logger.info("[SPHERE-SHADOW] pipeline построен + cold_start %s (on_close=None → would-close лог; "
-                        "position_sync close-by-price НЕ тронут; сверка на живом потоке)",
-                        list(_adapter._router.accounts))
+            logger.info("[SPHERE-%s] pipeline построен + cold_start %s (on_close=%s; "
+                        "старые close-пути %s)",
+                        "CUTOVER" if _cutover else "SHADOW", list(_adapter._router.accounts),
+                        "db_writer (АВТОРИТЕТЕН)" if _cutover else "None (would-close лог)",
+                        "ВЫКЛ" if _cutover else "активны (position_sync+2b)")
         except Exception as _spe:
             logger.warning("[SPHERE-SHADOW] не построен (shadow off): %s", _spe)
 
