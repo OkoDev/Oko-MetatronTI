@@ -1,5 +1,32 @@
 # What's Next — Handoff
 
+## 🌅 СЕССИЯ 19-20.06 = EXEC-REBUILD + ДЕНЬ ПРАВДЫ (свежий handoff, читать ПЕРВЫМ)
+
+> Думать/писать по-русски · grep before claim · числа из config/кода · TTS Microsoft Irina · ветка `arch-128-oko-sm`.
+> **🔑 МЕТРИКА-ИСТИНА: `/openApi/swap/v2/user/income` + WS `o.rp`, НЕ БД-realized (врёт ~$323/день, инвертирует знак!).**
+> Глубокий контекст: `memory/current_state.md` (записи 20.06, сверху), auto-memory [[income_ledger_db_overstates_realized]], [[condor_integration_strategy]].
+
+**ЧТО ПРОИЗОШЛО (одним абзацем):** Построен весь **EXEC-REBUILD Ф2→Ф4.1** (`core/execution/`: domain/ExchangeAdapter/BingXAdapter/ExecutionCalc/PositionStore/ExecutionLedger[DS]/ExecutionSphere/db_writer/reconcile-watchdog), **92 теста**, ~26 коммитов запушено. SHADOW-врезка живёт (on_close=None). Дёрнули **income-леджер → ВСКРЫЛАСЬ ЛОЖЬ МЕТРИК:** БД-realized +$121 vs биржа −$202 (06-19); **ote_nested за 6д реально NET −$510**, а БД показывала +$230 (инверсия знака $654). funding≈0 (прежняя −$266 атрибуция неверна). Диагноз: **вход ЖИВОЙ (48% до +1R, среднее MFE 1.31R), выход УБИВАЕТ (46% SL дошли +1R→отдали), плечо 50×→ликвидации.** Стратегия НЕ мёртвая — фиксимо. Всё на бумаге (VST), реальных потерь 0.
+
+**✅ ПОЧИНЕНО за сессию (активно/запушено):**
+- **l3 VST-only** (`trade_simulator.py:1231`) — FIRE снова регистрируются (47 SIM-теней забивали лимит 50/50 → блок). АКТИВНО.
+- **orphan SIM-masking** (`position_sync` tracked_pairs только биржевые) — SIM не прячет призраков.
+- **orphan_autoclose:live** (стоп течи), **fake-R** positionID, **r_predictor OOS-gate** (был шум → честно off), **SL-safety кап**.
+- **DB↔биржа синхронны** (10/10, 0 призраков/orphan на момент закрытия).
+
+**🔴 СТАРТ СЛЕДУЮЩЕЙ СЕССИИ (finish-line этого Куба, BingX-direct standalone):**
+1. 🎯 **Ф5 дашборд-когезия (ПЕРВОЕ — юзер просил):** шапка `POSITIONS` vs таблица читают РАЗНЫЕ источники → 17 vs 11 (реально 10/10). Свести оба на ОДИН источник из шины (`dashboard_server.py` — найти эндпоинт шапки vs таблицы). + RISK base $1189 vs equity $750 (deposit_usdt vs balance_snapshots).
+2. 🔴 **CUTOVER pid-fix (блокер пойман shadow):** REST-fallback при `pid=None` ИНВЕРТИРУЕТ TP↔SL (ATH: new TP@0.004937 vs факт SL@0.004773 = fake-R класс). Фикс: (а) донести positionId в `PositionStore` (из open-fill `o.positionID`/cold_start raw); (б) `sphere._resolve_exit_via_rest` при pid=None → вернуть None (не гадать). Потом CUTOVER (флип on_close→db_writer + убрать position_sync close-by-price за флагом, **copy-DB тест**).
+3. 💰 **EXIT-FIX (рычаг ПРИБЫЛИ):** вход живой → выход отдаёт +1R. BE уже фирит на +0.5R (`[DEV-40]`), но +1R всё равно отдаётся → анализ НА o.rp: BE/TSL медленные vs интрабар? трейл? частичный TP? Цель: из −$510/6д в плюс. Перемерить edge на income/o.rp многодневно.
+
+**🔒 РЕШЕНИЕ (юзер 20.06, твёрдо):** этот Куб доделываем **сами, standalone, BingX-direct**. **Condor = отдельный Cube2** (НЕ интегрировать сюда). Проект «наш с тобой» (Егор+Даат). [[condor_integration_strategy]].
+
+**Бот:** жив (рестарты ~03:40:52 + SIM-masking). Поток ote_nested→биржа течёт. SPHERE-SHADOW копит сверку.
+
+---
+
+## 🏛️🔴 АРХИВ — старт сессии 19.06 (EXECUTION-REBUILD манифест, ниже — что ставили в начало)
+
 ## 🏛️🔴 НОВАЯ СЕССИЯ = EXECUTION-REBUILD (манифест юзера 19.06 вечер: «хватит латать, перестраиваем»)
 
 > **ГЛАВНОЕ ТЗ:** [docs/EXECUTION_REBUILD_EPIC.md](docs/EXECUTION_REBUILD_EPIC.md) — читать ПЕРВЫМ.

@@ -1,7 +1,7 @@
 ---
 tags: [doc/status, session, project-overview]
 type: status-overview
-date: "2026-06-14"
+date: "2026-06-20"
 sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 ---
 
@@ -11,7 +11,7 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 **Запуск:** `python oko_mtf.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
 
-**🔴 ТЕКУЩИЙ ФОКУС (19.06, пара Даат+DS):** 🔴🔴 **fake-R ЖИВ** — `_resolve_exit` берёт чужой старый ордер (сверено с биржей: «R=+323» = реальный убыток −0.97). **Фикс = positionID** (колонка `position_id` + матч + миграция). Следствие: **OTE-ONLY avgR=0.913 отравлен** → compounding-режимы ПОСЛЕ фикса. Orphan'ы: корень найден, 17 закрыто, кирпич 1 (D-070 auto-close shadow). Детали → `whats-next.md`, [[bug_phantom_exit_resolve]]. Бот PID 33956 жив.
+**🌅 ТЕКУЩИЙ ФОКУС (20.06, Даат соло) — ДЕНЬ ПРАВДЫ:** построен **EXEC-REBUILD Ф2→Ф4.1** (`core/execution/`, 92 теста, shadow). Дёрнут income-леджер → **МЕТРИКИ ВРАЛИ:** БД-realized +$121 vs биржа −$202; **ote_nested 6д реально NET −$510** (БД +$230). Диагноз: **вход живой (48% до +1R), выход убивает** — фиксимо. Починено: l3 VST-only (FIRE регистрируются), orphan SIM-masking, r_predictor OOS-gate. **Метрика-истина = `/user/income`/o.rp, НЕ БД-realized.** 🔒 Решение: этот Куб standalone BingX-direct, Condor=Cube2. **NEXT:** Ф5 дашборд-когезия (юзер просил) → CUTOVER pid-fix → EXIT-FIX (рычаг прибыли). Детали → `whats-next.md` (топ), `current_state.md` (20.06), [[income_ledger_db_overstates_realized]], [[ote_nested_edge_diagnosis]]. Бот жив (рестарт ~03:40).
 
 ## 🧊 Stabilization Sprint (04.05–25.05.2026)
 
