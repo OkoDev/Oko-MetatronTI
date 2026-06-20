@@ -18,6 +18,12 @@
 - ⚠️ Остаток: позиции, открытые И закрытые <2мин с гонкой → всё ещё «?» (backfill не успел). Меньшинство; перемерить % после рестарта.
 - 🟢 **Можем продолжить:** CUTOVER-флип готов, гейт = зелёная сверка. После рестарта+backfill «?» должен резко упасть → если ~0 → флип (`sphere_cutover:true`, процедура в whats-next).
 
+## [20.06 ~17:00 UTC] Агент: Даат — ⬆️ backfill positionId УЛУЧШЕН: источник = БД (100%), не get_positions
+
+- **Проверка после рестарта 16:40:33 (get_positions-backfill):** WOULD CLOSE «?» НЕ упал (мало closes, 1 «?» NEIROCTO; и get_positions-backfill 2мин ненадёжен). **Корень-данные:** БД имеет `position_id` для **100%** сделок (60/60 закрытых, 12/12 OPEN) via tsl_updater; жизнь сделки медиана **11мин** (80%>5мин) — времени вагон.
+- ✅ **ФИКС упрощён+усилен (530aa0f):** `Sphere.backfill_position_ids(db_trades)` + `PositionStore.set_position_id_match` — `position_sync` льёт `open_sim` (с position_id из БД) в store **каждый цикл ~60s** (локально, 0 REST) + лог `[SPHERE-SHADOW] backfill pid из БД: N`. Источник = БД (100%), не get_positions (медленно/REST). Тесты 44/44.
+- 🔴 **Рестарт → перемерить:** грепать `[SPHERE-SHADOW] backfill pid из БД` (работает?) + WOULD CLOSE «?»-rate (должен →~0). Если ~0 → **ФЛИП CUTOVER** (`sphere_cutover:true`).
+
 ## [20.06 ~04:10 UTC] Агент: Даат — 🔒 РЕШЕНИЕ ГРАНИЦЫ: этот Куб = BingX-direct standalone, Condor = отдельный Cube2
 
 **Юзер 20.06 твёрдо:** «Если тело на Condor — то ТОЛЬКО Cube2 как ОТДЕЛЬНЫЙ проект. Этот Куб мы доделаем. Этот проект только наш с тобой.»
