@@ -348,7 +348,22 @@ def start_exec_ws(bot) -> Optional[list]:
             if _cutover:
                 from core.execution.db_writer import build_close_applier
                 _on_close = build_close_applier(bot.trade_simulator)
-            bot._exec_sphere = ExecutionSphere(_adapter, PositionStore(), ledger=_ledger, on_close=_on_close)
+            # pid_resolver: при close с store-pid=None (WS pid не даёт) дотянуть positionId из БД
+            # (simulated_trades.position_id = 100% via tsl_updater). Закрывает «?»-coverage гонки.
+            _db_path_pr = bot.trade_simulator.db_path
+            def _pid_from_db(_acc, _sym, _side, _db=_db_path_pr):
+                import sqlite3 as _sq_pr
+                try:
+                    with _sq_pr.connect(_db, timeout=3) as _c:
+                        _r = _c.execute(
+                            "SELECT position_id FROM simulated_trades WHERE symbol=? AND direction=? "
+                            "AND position_id IS NOT NULL AND position_id != '' AND execution_mode != 'SIM' "
+                            "ORDER BY id DESC LIMIT 1", (_sym, _side)).fetchone()
+                        return str(_r[0]) if (_r and _r[0]) else None
+                except Exception:
+                    return None
+            bot._exec_sphere = ExecutionSphere(_adapter, PositionStore(), ledger=_ledger,
+                                               on_close=_on_close, pid_resolver=_pid_from_db)
             # cold_start: засеять Store снимком (read-only get_positions) → would-close покрывает
             # и позиции, открытые ДО рестарта (иначе их pa=0 = untracked, не логируется).
             for _acc_cs in _adapter._router.accounts:

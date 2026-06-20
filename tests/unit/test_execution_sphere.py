@@ -218,6 +218,30 @@ class TestOnEvent:
         assert intent is not None and intent.exit is None
 
     @pytest.mark.asyncio
+    async def test_pid_resolver_fallback_when_store_pid_none(self):
+        # store без pid (WS его не даёт) → pid_resolver тянет из БД → fallback РЕЗОЛВИТ
+        fa = FakeAdapter()
+        sp = ExecutionSphere(fa, PositionStore(), pid_resolver=lambda a, s, sd: "pid-db")
+        await sp.on_event(1, PositionEvent(1, Position(symbol=SYM, side="LONG", qty=100, account=1)))
+        assert sp._store.get(1, SYM, "LONG").position_id is None
+        fa.filled_orders = [{"orderId": "c", "positionID": "pid-db", "side": "SELL",
+                             "type": "STOP_MARKET", "avgPrice": "0.49", "updateTime": 100}]
+        intent = await sp.on_event(1, _pos_ev(1, 0))
+        assert intent is not None and intent.exit is not None
+        assert intent.exit.exit_price == 0.49 and intent.exit.status == "SL"
+
+    @pytest.mark.asyncio
+    async def test_pid_resolver_none_still_no_guess(self):
+        # resolver вернул None → НЕ угадываем (инверсия не вернётся)
+        fa = FakeAdapter()
+        sp = ExecutionSphere(fa, PositionStore(), pid_resolver=lambda a, s, sd: None)
+        await sp.on_event(1, PositionEvent(1, Position(symbol=SYM, side="LONG", qty=100, account=1)))
+        fa.filled_orders = [{"orderId": "c", "positionID": "X", "side": "SELL",
+                             "type": "STOP_MARKET", "avgPrice": "0.49", "updateTime": 100}]
+        intent = await sp.on_event(1, _pos_ev(1, 0))
+        assert intent is not None and intent.exit is None
+
+    @pytest.mark.asyncio
     async def test_stash_takes_priority_over_rest(self, sphere):
         # Если close-fill УСПЕЛ застешиться (нет гонки) — REST не зовём
         await sphere.on_event(1, _open_fill())

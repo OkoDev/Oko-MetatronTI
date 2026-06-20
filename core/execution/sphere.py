@@ -57,12 +57,14 @@ class ExecutionSphere:
     """Единый оркестратор: open / close / on_event / adjust_sl / state / cold_start / reconcile."""
 
     def __init__(self, adapter: ExchangeAdapter, store: PositionStore, *,
-                 router=None, ledger=None, on_close: Optional[CloseCallback] = None):
+                 router=None, ledger=None, on_close: Optional[CloseCallback] = None,
+                 pid_resolver=None):
         self._adapter = adapter
         self._store = store
         self._router = router
         self._ledger = ledger
         self._on_close = on_close          # None → SHADOW (close-path выключен)
+        self._pid_resolver = pid_resolver  # (acc,sym,side)→positionId из БД (WS pid не даёт; БД 100%)
         self._equity: dict[int, float] = {}
         self._reconcile_streak: dict = {}  # (acc,sym,side)→циклов подряд флэт-на-бирже (watchdog §6)
 
@@ -268,6 +270,16 @@ class ExecutionSphere:
         if not filled:
             return None
         pid = str(pos.position_id) if pos.position_id else None
+        if pid is None and self._pid_resolver is not None:
+            # store не имеет pid (WS его НЕ даёт — ни open-fill, ни ACCOUNT_UPDATE) → дотянуть из БД
+            # (simulated_trades.position_id = 100% via tsl_updater). Закрывает «?»-coverage гонки.
+            try:
+                _rpid = self._pid_resolver(account, pos.symbol, pos.side)
+                if _rpid:
+                    pid = str(_rpid)
+                    logger.info("[Sphere] pid дотянут из БД: %s %s pid=%s", pos.symbol, pos.side, pid)
+            except Exception as _pre:
+                logger.debug("[Sphere] pid_resolver %s: %s", pos.symbol, _pre)
         if pid is None:
             # CUTOVER pid-fix (б): без positionId матч by symbol+side хватает ЧУЖОЙ/старый
             # close-ордер → инверсия TP↔SL (fake-R класс: ATH new TP@0.004937 vs факт SL@0.004773).
