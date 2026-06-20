@@ -18,6 +18,14 @@
 - ⚠️ Остаток: позиции, открытые И закрытые <2мин с гонкой → всё ещё «?» (backfill не успел). Меньшинство; перемерить % после рестарта.
 - 🟢 **Можем продолжить:** CUTOVER-флип готов, гейт = зелёная сверка. После рестарта+backfill «?» должен резко упасть → если ~0 → флип (`sphere_cutover:true`, процедура в whats-next).
 
+## [20.06 ~17:20 UTC] Агент: Даат — ✅ pid-match 18/18 + backfill РАБОТАЕТ, но «?» 62% → CUTOVER НЕ готов. +2-й фронт (entry)
+
+- ✅ **pid-match ДОКАЗАН (вопрос юзера):** DB position_id == биржевой positionId **18/18, MISMATCH=0** (sticky symbol+side). Backfill кладёт ПРАВИЛЬНЫЙ pid — инверсии нет.
+- ✅ **DB-backfill РАБОТАЕТ вживую** (рестарт 16:59:12): `[SPHERE-SHADOW] backfill pid из БД: N` фирит; `[Sphere] exit дотянут REST … pid=<РЕАЛЬНЫЙ>` — WAVES/AIO/G/KAVA закрылись ЧИСТО через positionID-якорь (раньше было pid=None).
+- 🔴 **НО CUTOVER НЕ готов: WOULD CLOSE 5 чистых / 8 «?» (62%).** Часть позиций имеют pid в БД (18/18), но в store на момент закрытия pid=None → fallback не сработал → «?». Корень: **гонка backfill(~60s цикл)↔close** — позиция открылась+закрылась/закрылась до backfill-цикла. При флипе 62% «?» → db_writer skip → строки OPEN при флэте → призраки (позиция снята из store → watchdog не ловит). **ФЛИПАТЬ НЕЛЬЗЯ.**
+- 🔴 **2-Й ФРОНТ ЛЖИ МЕТРИК (20-дн свод, `data/research/2026-06-20--ote-exchange-reconcile/REPORT.md`):** биржа net **−$1894** vs БД claim **+$492** (разрыв −$2386; OTE=59% убытка аккаунта −$3208). `actual_entry_price`=NULL у всех 3285 OTE-VST → R от СИГНАЛЬНОЙ entry, не факт-филла → слиппедж входа ×50 = фантомный R (JOTCHUA +3.3%→+7.39R фантом vs реал −$8). Комиссии сходятся (−261 vs −280) → расходится PnL. **config_ote_B НЕЛЬЗЯ** (реальный avgR<0). Метрики врут от ENTRY И EXIT disconnect.
+- 🔵 **NEXT (свежая голова):** (1) backfill-покрытие: тянуть pid из БД ПРИ open-fill (не ждать 60s-цикл) → «?»→~0; (2) **entry-fill capture** `actual_entry_price` (2-й фронт); (3) потом флип CUTOVER + exit-fix. Метрика-истина = income/o.rp, НЕ БД.
+
 ## [20.06 ~17:00 UTC] Агент: Даат — ⬆️ backfill positionId УЛУЧШЕН: источник = БД (100%), не get_positions
 
 - **Проверка после рестарта 16:40:33 (get_positions-backfill):** WOULD CLOSE «?» НЕ упал (мало closes, 1 «?» NEIROCTO; и get_positions-backfill 2мин ненадёжен). **Корень-данные:** БД имеет `position_id` для **100%** сделок (60/60 закрытых, 12/12 OPEN) via tsl_updater; жизнь сделки медиана **11мин** (80%>5мин) — времени вагон.
