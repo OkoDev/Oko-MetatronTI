@@ -9,6 +9,16 @@
 
 ---
 
+## [20.06 ~03:55 UTC] Агент: Даат — 🔴 CUTOVER-БЛОКЕР пойман shadow: REST-fallback при pid=None ИНВЕРТИРУЕТ TP↔SL
+
+**Юзер: «что говорит CUTOVER?» — shadow поймал реальный баг (его работа):**
+- ✅ Механика жива: `WOULD CLOSE ATH → TP @ 0.004937` + `[Sphere] exit дотянут REST (гонка fill↔pa=0)` — race-fallback сработал на бою.
+- 🔴 **НО расхождение с фактом:** та же #31853 ATH — новый путь = **TP @ 0.004937**, старый EXEC-WS 2b (факт) = **SL @ 0.004773**. ИНВЕРСИЯ статуса+цены.
+- **Корень:** `_resolve_exit_via_rest` лог `pid=None` → матчил close-fill по close_side БЕЗ positionId → схватил ЧУЖОЙ fill = **fake-R класс** ([[bug_phantom_exit_resolve]]). PositionStore у ATH не имел position_id (open-fill/cold_start не донёс pid).
+- 🔴 **CUTOVER НЕ готов:** при флипе db_writer записал бы TP@0.004937 (профит) вместо SL@0.004773 (убыток) → та же ложь метрик, что чиним. **Shadow спас от этого ДО флипа.**
+- **Фикс до CUTOVER (свежая голова):** (1) донести positionId в PositionStore (из open-fill o.positionID / cold_start raw); (2) `_resolve_exit_via_rest` при pid=None → вернуть None (НЕ гадать по close_side — инвертирует), отдать watchdog/verify-flat. Тест на копии.
+- Покрытие: 1 WOULD CLOSE в окне (мало — большинство ote_nested ещё открыты).
+
 ## [20.06 ~03:15 UTC] Агент: Даат — ✅ ИТОГ НОЧИ: 2 безопасных фикса (l3 + orphan SIM-masking). CUTOVER/exit-fix — свежей головой
 
 **Сделано+запушено за ночь (ветка arch-128-oko-sm):**
