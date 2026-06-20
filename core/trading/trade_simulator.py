@@ -2228,6 +2228,7 @@ class TradeSimulator:
                         (direction == "SHORT" and sl > be_sl)
                     )
                     if should_move:
+                        _old_sl_be = sl  # pre-BE SL — для биржевого cancel+replace
                         try:
                             with self._db_connect() as _c:
                                 _c.execute(
@@ -2238,6 +2239,30 @@ class TradeSimulator:
                             sl = be_sl
                             be_activated = True
                             logger.info("[DEV-40] Breakeven %s id=%d sl→%.6f (R=%.2f)", symbol, trade_id, be_sl, current_r)
+                            # BE-SYNC FIX (20.06.2026): раньше BE двигал SL ТОЛЬКО в БД, на биржу
+                            # НЕ доезжал → биржа держала исходный SL (live-доказано: 11/18 OPEN GAP,
+                            # NAORIS закрылся −0.8R при be_activated=1). Теперь BE кладётся в ТУ ЖЕ
+                            # очередь exchange-sync что и TSL (update_tsl_on_exchange → om.update_sl
+                            # cancel+replace, все guard'ы). Единый путь, без дубля. bug_be_not_synced_to_exchange.
+                            try:
+                                from core.infra.config_loader import config as _cfg_be
+                                _be_sync = bool(_cfg_be.get("trading.be_exchange_sync", True))
+                            except Exception:
+                                _be_sync = True
+                            _be_exch_oid = trade.get("exchange_order_id")
+                            if _be_sync and _be_exch_oid and str(_be_exch_oid) not in ("", "SIM", "None"):
+                                _ops05tsl.append({
+                                    "trade_id":             trade_id,
+                                    "symbol":               symbol,
+                                    "direction":            direction,
+                                    "qty":                  float(trade.get("qty") or 0),
+                                    "new_sl_price":         be_sl,
+                                    "old_sl_price":         _old_sl_be,
+                                    "exchange_sl_order_id": trade.get("exchange_sl_order_id"),
+                                    "exchange_order_id":    _be_exch_oid,
+                                })
+                                logger.info("[DEV-40][BE-SYNC] %s id=%d → биржевой cancel+replace SL→%.6f поставлен в очередь",
+                                            symbol, trade_id, be_sl)
                         except Exception as _be_e:
                             logger.debug("[DEV-40] breakeven update error: %s", _be_e)
 

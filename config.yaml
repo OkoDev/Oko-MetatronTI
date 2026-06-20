@@ -345,6 +345,10 @@ sl_tp_engine:
   use_breakeven: true
   breakeven_activation_r: 0.5
   use_be_after_tp1: true
+  # BE-SYNC FIX (20.06.2026): BE-перенос SL кладётся в очередь биржевого cancel+replace
+  # (та же что TSL). До фикса BE двигал SL ТОЛЬКО в БД → биржа держала исходный SL
+  # (live: 11/18 OPEN GAP, NAORIS −0.8R при be=1). false = откат к старому поведению.
+  be_exchange_sync: true
   expired_extend_min_r: 5.0
   expired_extend_hours: 120
   expired_management:
