@@ -2222,7 +2222,15 @@ class TradeSimulator:
                 _be_trigger_tp1 = (use_be_after_tp1 and not be_activated and tp1_hit_at is not None)
                 if (_be_trigger_r or _be_trigger_tp1) and sl is not None:
                     from core.trading.tsl_engine import breakeven_sl as _be_calc
-                    be_sl = _be_calc(direction, entry)
+                    # BE-ENTRY FIX (21.06): безубыток от РЕАЛЬНОГО филла (actual_entry_price),
+                    # не от сигнальной entry. При слиппедже входа сигнальный BE оказывается в
+                    # минусе от факт. цены (GOBLIN: signal 0.005886 vs факт 0.005915 → BE 0.005892
+                    # = −0.39% от факта = не безубыток, а убыток). actual нет → fallback на signal.
+                    _be_entry = entry
+                    _aep_be = trade.get("actual_entry_price")
+                    if _aep_be is not None and float(_aep_be) > 0:
+                        _be_entry = float(_aep_be)
+                    be_sl = _be_calc(direction, _be_entry)
                     should_move = (
                         (direction == "LONG" and sl < be_sl) or
                         (direction == "SHORT" and sl > be_sl)
