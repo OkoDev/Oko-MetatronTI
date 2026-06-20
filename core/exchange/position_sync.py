@@ -708,9 +708,16 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
     from core.exchange.position_parser import parse_position
     if not open_on_exchange:
         return
+    # tracked_pairs/hedge-skip — ТОЛЬКО биржевые сделки (VST/LIVE или с реальным
+    # exchange_order_id). Чистые SIM-тени НЕ маскируют биржевых орфанов (баг 20.06:
+    # SIM-строка #31821 DOLPHIN LONG скрыла живого призрака от детектора).
+    def _is_exch_trade(t):
+        return (str(t.get("execution_mode") or "").upper() != "SIM"
+                or str(t.get("exchange_order_id") or "") not in ("", "SIM"))
+    _exch_open = [t for t in open_sim if t.get("symbol") and _is_exch_trade(t)]
     tracked_pairs = {
         (t.get("symbol"), (t.get("direction") or "").upper())
-        for t in open_sim if t.get("symbol")
+        for t in _exch_open
     }
 
     import time as _t
@@ -731,7 +738,7 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
         _autoclose_mode = "off"   # без live-клиента close невозможен
     # ХЕДЖ-SAFETY: символы где БД держит ЛЮБОЙ OPEN — one-click задел бы управляемого брата
     # → skip auto-close (точечный close_hedge_orphans вручную). Pure-orphan символы безопасны.
-    _ac_open_syms = {t.get("symbol") for t in open_sim if t.get("symbol")}
+    _ac_open_syms = {t.get("symbol") for t in _exch_open}
 
     for sym, pos in open_on_exchange.items():
         pp = parse_position(pos)
