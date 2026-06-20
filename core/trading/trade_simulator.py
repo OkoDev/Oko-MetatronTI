@@ -1228,7 +1228,11 @@ class TradeSimulator:
                 _max_total = _l3.get("max_open_total", 4)
                 _dir_52    = _direction_str(_get_recommendation_value(recommendation, "direction"))
                 _sym_52    = _get_recommendation_value(recommendation, "symbol") or symbol
-                _open_52   = self.get_open_trades()
+                # l3-лимит считает ТОЛЬКО боевые (VST/LIVE). SIM-тени (research) НЕ занимают
+                # слоты лимита (EXEC-SIM-SPLIT: «SIM=снятие лимитов»). Корень бага 20.06:
+                # 47 atr_change SIM забили 50/50 → блокировали ote_nested FIRE на регистрацию.
+                _open_52   = [t for t in self.get_open_trades()
+                              if str(t.get("execution_mode") or "").upper() != "SIM"]
                 _n_long    = sum(1 for t in _open_52 if t.get("direction") == "LONG")
                 _n_short   = sum(1 for t in _open_52 if t.get("direction") == "SHORT")
                 _n_total   = len(_open_52)
