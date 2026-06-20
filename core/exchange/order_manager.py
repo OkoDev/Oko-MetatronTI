@@ -516,7 +516,28 @@ class OrderManager:
                 logger.error("[OrderManager] %s bracket resp malformed: %s", symbol, resp)
                 order_data = {}
             order_id     = str(order_data.get("orderId", ""))
-            filled_price = float(order_data.get("avgPrice") or entry_price)
+            # ENTRY-FILL FIX (21.06): avgPrice ИНОГДА не приходит в синхронном ответе (market-филл
+            # асинхронный, ~2% случаев) → раньше ТИХО fallback на сигнал → actual_entry=сигнал
+            # (невидимая ложь, не реальный филл). Дотягиваем реальный avgPrice по orderId из allOrders;
+            # при неудаче — fallback на сигнал, но УЖЕ с warning (видимо, не молча).
+            _avg = float(order_data.get("avgPrice") or 0)
+            if _avg <= 0 and order_id:
+                try:
+                    for _o in await client.get_filled_orders(symbol, limit=10):
+                        if str(_o.get("orderId")) == order_id:
+                            _avg = float(_o.get("avgPrice") or _o.get("price") or 0)
+                            break
+                    if _avg > 0:
+                        logger.info("[OrderManager] %s: avgPrice дотянут по orderId=%s → %.6g (синхр.ответ дал 0)",
+                                    symbol, order_id, _avg)
+                except Exception as _fe:
+                    logger.debug("[OrderManager] fill-retry %s: %s", symbol, _fe)
+            if _avg > 0:
+                filled_price = _avg
+            else:
+                filled_price = entry_price
+                logger.warning("[OrderManager] %s: avgPrice НЕ дотянут (orderId=%s) → fallback на сигнал %.6g (actual=сигнал!)",
+                                symbol, order_id, entry_price)
             tp_field = order_data.get("takeProfit") or {}
             if isinstance(tp_field, str):
                 try: tp_field = json.loads(tp_field)
