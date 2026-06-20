@@ -207,6 +207,17 @@ class TestOnEvent:
         assert intent is not None and intent.exit is None
 
     @pytest.mark.asyncio
+    async def test_race_no_pid_no_guess(self, sphere):
+        # CUTOVER pid-fix (б): позиция БЕЗ positionId → REST НЕ угадывает по symbol+side
+        # (иначе хватает ЧУЖОЙ close-ордер → инверсия TP↔SL, fake-R класс). exit остаётся None.
+        await sphere.on_event(1, _pos_ev(1, 100))   # позиция без position_id (seed через pa>0)
+        sphere._adapter.filled_orders = [
+            {"orderId": "x1", "positionID": "SOMEONE_ELSE", "side": "SELL", "type": "STOP_MARKET",
+             "avgPrice": "0.49", "updateTime": 200}]
+        intent = await sphere.on_event(1, _pos_ev(1, 0))
+        assert intent is not None and intent.exit is None
+
+    @pytest.mark.asyncio
     async def test_stash_takes_priority_over_rest(self, sphere):
         # Если close-fill УСПЕЛ застешиться (нет гонки) — REST не зовём
         await sphere.on_event(1, _open_fill())

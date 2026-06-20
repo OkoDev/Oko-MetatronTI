@@ -246,11 +246,18 @@ class ExecutionSphere:
         if not filled:
             return None
         pid = str(pos.position_id) if pos.position_id else None
+        if pid is None:
+            # CUTOVER pid-fix (б): без positionId матч by symbol+side хватает ЧУЖОЙ/старый
+            # close-ордер → инверсия TP↔SL (fake-R класс: ATH new TP@0.004937 vs факт SL@0.004773).
+            # НЕ угадываем цену — возврат None → эскалация verify-flat/reconcile-watchdog.
+            logger.info("[Sphere] exit НЕ резолвим без positionId: %s %s — эскалация (не гадаем)",
+                        pos.symbol, pos.side)
+            return None
         close_side = "SELL" if pos.side == "LONG" else "BUY"
         cands = [
             o for o in filled
             if str(o.get("side", "")).upper() == close_side
-            and (pid is None or str(o.get("positionID") or o.get("positionId") or "") == pid)
+            and str(o.get("positionID") or o.get("positionId") or "") == pid
         ]
         if not cands:
             return None
