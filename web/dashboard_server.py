@@ -622,28 +622,38 @@ async def _handle_oracle(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": f"swarm unavailable: {e}"}, ensure_ascii=False),
                             content_type="application/json", status=503)
     load_env()
-    provider = next((p for p in ["openrouter", "gemini", "cerebras", "groq", "mistral"] if has_key(p)), None)
-    if not provider:
+    # Быстрые провайдеры первыми (gemini/groq), медленный nemotron-120b — последним.
+    # ФОЛБЭК: пробуем по очереди → один rate-limited/таймаут не валит Oracle (был HTTP 500).
+    candidates = [p for p in ["groq", "gemini", "cerebras", "openrouter", "mistral"] if has_key(p)]
+    if not candidates:
         return web.Response(text=json.dumps({"error": "no swarm provider keys"}, ensure_ascii=False),
                             content_type="application/json", status=503)
 
     ctx = await _oracle_context(bot)
     prompt = (f"{ORACLE_SYSTEM}\n\n=== ЖИВЫЕ ДАННЫЕ БОТА ===\n{ctx}\n\n"
               f"=== ВОПРОС ===\n{q}\n\nОтвет (кратко, строго по данным выше):")
-    try:
-        answer = await asyncio.wait_for(
-            _run_sync(call_provider, provider, prompt, None, max_tokens=1200, image_path=None),
-            timeout=35.0,
-        )
-    except asyncio.TimeoutError:
-        return web.Response(text=json.dumps({"error": "oracle timeout (рой не ответил за 35с)"}, ensure_ascii=False),
-                            content_type="application/json", status=504)
-    except Exception as e:
-        return web.Response(text=json.dumps({"error": f"oracle failed: {e}"}, ensure_ascii=False),
-                            content_type="application/json", status=502)
+    answer, used, errs = None, None, []
+    for prov in candidates[:4]:
+        try:
+            a = await asyncio.wait_for(
+                _run_sync(call_provider, prov, prompt, None, max_tokens=1200, image_path=None),
+                timeout=25.0,
+            )
+            if a and a.strip():
+                answer, used = a, prov
+                break
+            errs.append(f"{prov}: пустой ответ")
+        except asyncio.TimeoutError:
+            errs.append(f"{prov}: timeout 25с")
+        except Exception as e:
+            errs.append(f"{prov}: {str(e)[:80]}")
+    if not answer:
+        return web.Response(text=json.dumps({"error": "все провайдеры роя недоступны (rate-limit?)",
+                                             "details": errs}, ensure_ascii=False),
+                            content_type="application/json", status=503)
     return web.Response(
-        text=json.dumps({"answer": answer, "provider": provider,
-                         "model": DEFAULT_MODELS.get(provider, ""), "grounded": True},
+        text=json.dumps({"answer": answer, "provider": used,
+                         "model": DEFAULT_MODELS.get(used, ""), "grounded": True},
                         ensure_ascii=False, default=str),
         content_type="application/json", charset="utf-8")
 

@@ -456,11 +456,12 @@ def main() -> int:
             meta_prompt = META_ASK_PROMPT.format(
                 question=args.question, answers_block=answers_block,
             )
-        meta_provider = next(
-            (p for p in ["mistral", "openrouter", "cerebras", "gemini"]
-             if p in [r[0] for r in good]), None
-        )
-        if meta_provider:
+        # ФОЛБЭК: ранг съедает free-tier бюджет (×2 вызовов) → meta часто ловит 429.
+        # Пробуем мета-провайдеров по очереди, пока один не ответит.
+        meta_candidates = [p for p in ["mistral", "openrouter", "cerebras", "gemini", "groq"]
+                           if p in [r[0] for r in good]]
+        meta_done = False
+        for meta_provider in meta_candidates:
             print(f"[team-ask] meta-синтез через {meta_provider}...", file=sys.stderr)
             try:
                 meta_text = call_provider(
@@ -470,8 +471,14 @@ def main() -> int:
                     legend = " · ".join(f"Model {lab}={p}" for lab, (p, _m, _t) in label_map.items())
                     meta_text += f"\n\n---\n*Расшифровка меток: {legend}*"
                 sections.append(f"\n# 🧠 META-СИНТЕЗ (через {meta_provider})\n\n{meta_text}\n")
+                meta_done = True
+                break
             except Exception as e:
-                sections.append(f"\n# 🧠 META-СИНТЕЗ\n\n❌ Не удалось: {e}\n")
+                print(f"[team-ask] meta {meta_provider} failed: {str(e)[:80]} → fallback",
+                      file=sys.stderr)
+        if not meta_done:
+            sections.append("\n# 🧠 META-СИНТЕЗ\n\n❌ Все meta-провайдеры недоступны (rate-limit?). "
+                            "Ответы моделей + ранг выше валидны.\n")
 
     out_obsidian.write_text("".join(sections), encoding="utf-8")
     OUTPUT_MEMORY.parent.mkdir(parents=True, exist_ok=True)
