@@ -46,6 +46,8 @@
 |---|---|---|---|
 | **DASH-COHESION** | ✅ | **Приоритет №1 (юзер 20.06): шапка↔таблица Trades = один источник.** get_summary status-aware + «showing X of N». ДЕПЛОЙ+ПРОВЕРКА: build+рестарт бота+pm2 oko-dash. Сквозь прокси SL/VST=8154 (было 14135). Orphan-аудит чист (4 поз, все с SL). → DISCUSSION 20.06 12:39 | Даат |
 
+| **DASH-INCOME-TRUTH** | ✅ | Честные метрики юзера: новый `/api/income` ($-истина из биржевого income-ledger, не БД-R). Панель «Exchange Truth» на Overview. Живо: −1823 USDT/7д VST. Коммит e82ea4c. → DISCUSSION 22.06 00:53 | Даат |
+
 | **DASH-OPEN-SUM** | 🔵 | Остаток когезии: OPEN-вкладка Sim шапка показывает фейк wr=0/sumR=0 → сумма live-R из шины. → DISCUSSION 20.06 12:39 | DEV/Claude |
 
 | **DASH-COH-SWEEP** | 🔵 | Остаток когезии: свип Overview/Analytics/Patterns на рассинхрон шапка↔таблица (фиксил только Trades). | DEV/Claude |
