@@ -674,7 +674,7 @@ signal_router:
       exchange_enabled: true   # 19.06 OTE-ONLY Режим В: ЕДИНСТВЕННЫЙ торгующий источник
       trade_mode: ote_nested
       soft_gates_enabled: []
-      leverage: 50             # 19.06 Режим В: ЛОКАЛЬНОЕ плечо ote_nested (не глобальное!)
+      leverage: 30             # 21.06 50→30 (рой+диагноз: 50x усиливал течь, прибыли нет = резать нечего; liq ~2%→~3.3%). 19.06 Режим В: ЛОКАЛЬНОЕ плечо ote_nested (не глобальное!)
       risk_pct: 0.5            # 19.06 Режим В: ЛОКАЛЬНЫЙ риск ote_nested
     trigger_loop:
       min_strength: 50
