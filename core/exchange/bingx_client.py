@@ -530,6 +530,47 @@ class BingXClient:
         logger.warning("[BingXClient] get_balance parse error: %s", resp)
         return None
 
+    async def get_income(self, start_ms: int, end_ms: int, limit: int = 1000,
+                         income_type: Optional[str] = None) -> list:
+        """Денежные потоки /openApi/swap/v2/user/income в окне [start_ms, end_ms] — $-ИСТИНА
+        (REALIZED_PNL / TRADING_FEE / FUNDING_FEE / INSURANCE_CLEAR=ликвидация / TRANSFER),
+        в отличие от БД-realized (врёт ~$323/день, инвертирует знак). Пагинация по time назад
+        (endTime=mn-1), дедуп по tranId. ≤20 страниц (бережём rate-limit). Сырые записи."""
+        out: list = []
+        seen: set = set()
+        cur_en = int(end_ms)
+        for _ in range(20):
+            params = {"startTime": int(start_ms), "endTime": cur_en, "limit": str(min(limit, 1000))}
+            if income_type:
+                params["incomeType"] = income_type
+            resp = await self.get("/openApi/swap/v2/user/income", params)
+            if resp.get("code") != 0:
+                if "timestamp" in str(resp.get("msg", "")).lower():
+                    await self.sync_time(force=True)
+                    resp = await self.get("/openApi/swap/v2/user/income", params)
+                if resp.get("code") != 0:
+                    logger.warning("[BingXClient] get_income code=%s: %s", resp.get("code"), resp.get("msg"))
+                    break
+            data = resp.get("data", []) or []
+            if not data:
+                break
+            new = 0
+            for d in data:
+                k = d.get("tranId")
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(d)
+                new += 1
+            try:
+                mn = min(int(d["time"]) for d in data)
+            except (KeyError, ValueError, TypeError):
+                break
+            if new == 0 or len(data) < 1000 or mn <= int(start_ms):
+                break
+            cur_en = mn - 1
+        return out
+
     async def get_positions(self) -> list:
         """Возвращает список открытых позиций.
         ВАЖНО: при ошибке API бросает RuntimeError — вызывающий код обязан её поймать.

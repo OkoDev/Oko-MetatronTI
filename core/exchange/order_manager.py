@@ -300,6 +300,48 @@ class OrderManager:
                 logger.warning("[OrderManager] snapshot_balance acc=%s: %s: %s", acc, type(e).__name__, e)
         return out
 
+    async def get_income_per_account(self, start_ms: int, end_ms: int) -> list[dict]:
+        """$-ИСТИНА per account из income-ledger (/user/income): realized/fee/funding/liquidation/
+        net_trading. В отличие от БД-realized R (врёт ~$323/день). Для честных метрик дашборда."""
+        if not self.is_live():
+            return []
+        accounts = list(self._get_router().accounts) if self._multiacct else [1]
+        out: list[dict] = []
+        for acc in accounts:
+            try:
+                if self._multiacct:
+                    cli = self._get_router().client_for_account(acc)
+                    if cli is None:
+                        continue
+                    await cli.sync_time()
+                else:
+                    cli = await self._get_client_synced()
+                recs = await cli.get_income(start_ms, end_ms)
+                agg = {"REALIZED_PNL": 0.0, "TRADING_FEE": 0.0, "FUNDING_FEE": 0.0,
+                       "INSURANCE_CLEAR": 0.0, "TRANSFER": 0.0, "OTHER": 0.0}
+                for d in recs:
+                    t = str(d.get("incomeType", "")).upper()
+                    try:
+                        amt = float(d.get("income") or 0)
+                    except (TypeError, ValueError):
+                        amt = 0.0
+                    agg[t if t in agg else "OTHER"] += amt
+                # net_trading = реализ + комиссии + funding + ликвидации (БЕЗ transfer = депозиты/выводы)
+                net_trading = agg["REALIZED_PNL"] + agg["TRADING_FEE"] + agg["FUNDING_FEE"] + agg["INSURANCE_CLEAR"]
+                out.append({
+                    "account_id": int(acc) if str(acc).isdigit() else 1,
+                    "realized_pnl": round(agg["REALIZED_PNL"], 4),
+                    "trading_fee": round(agg["TRADING_FEE"], 4),
+                    "funding_fee": round(agg["FUNDING_FEE"], 4),
+                    "liquidation": round(agg["INSURANCE_CLEAR"], 4),
+                    "transfer": round(agg["TRANSFER"], 4),
+                    "net_trading": round(net_trading, 4),
+                    "n": len(recs),
+                })
+            except Exception as e:
+                logger.warning("[OrderManager] get_income acc=%s: %s: %s", acc, type(e).__name__, e)
+        return out
+
     async def get_exchange_snapshot(self) -> dict:
         """Возвращает баланс + позиции с биржи (для /api/live дашборда).
         В SIM_ONLY режиме возвращает заглушку без API-запроса.

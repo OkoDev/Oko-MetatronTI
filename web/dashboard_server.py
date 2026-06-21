@@ -198,6 +198,9 @@ _ANALYTICS_CACHE = _KeyedJSONCache(ttl=60.0)
 # (насыщение пула) → пустые панели Overview. Кэш+single-flight+detached лечит. Ключи
 # namespace'нуты: "balances" / "accounts" / "positions|<acc>".
 _PORTFOLIO_CACHE = _KeyedJSONCache(ttl=20.0)
+# $-ИСТИНА из income-ledger (/user/income): тяжёлый + rate-limit-чувствительный REST (пагинация
+# ×2 акка). TTL 90с + single-flight + detached → фронт-поллинг = HIT, биржу дёргаем редко.
+_INCOME_CACHE = _KeyedJSONCache(ttl=90.0)
 
 # Поля /api/trades_filtered: ровно то, что читает фронт-маппер lib/api.ts fetchTradesFiltered
 # + мелкая метадата (created_at/closed_at/account_id/execution_mode). get_trades = SELECT *
@@ -485,6 +488,44 @@ async def _handle_kpi(request: web.Request) -> web.Response:
                 "closed_per_day": closed_per_day,
             }, ensure_ascii=False),
             content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
+async def _handle_income(request: web.Request) -> web.Response:
+    """$-ИСТИНА из income-ledger (/user/income): realized/fee/funding/liquidation/net per account.
+    В отличие от БД-realized R (врёт ~$323/день, инвертирует знак) — это РЕАЛЬНЫЕ деньги с биржи.
+    Query: days (default 7, max 90)."""
+    bot = request.app.get("bot")
+    if not bot or not hasattr(bot, "order_executor") or not bot.order_executor.is_live():
+        return web.Response(text=json.dumps({"error": "exchange unavailable (SIM_ONLY?)",
+                                             "accounts": [], "total": {}}),
+                            content_type="application/json", status=503)
+    try:
+        days = max(1, min(int(request.query.get("days", "7")), 90))
+    except ValueError:
+        days = 7
+    import time as _t
+    end_ms = int(_t.time() * 1000)
+    start_ms = end_ms - days * 86400 * 1000
+
+    async def _compute() -> str:
+        rows = await bot.order_executor.get_income_per_account(start_ms, end_ms)
+        tot = {"realized_pnl": 0.0, "trading_fee": 0.0, "funding_fee": 0.0,
+               "liquidation": 0.0, "transfer": 0.0, "net_trading": 0.0, "n": 0}
+        for r in rows:
+            for k in tot:
+                tot[k] += r.get(k, 0) or 0
+        tot = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in tot.items()}
+        return json.dumps({"days": days, "accounts": rows, "total": tot,
+                           "source": "exchange_income_ledger"}, ensure_ascii=False, default=str)
+
+    try:
+        payload, xcache = await _INCOME_CACHE.get(f"income|{days}", _compute, cold_timeout=45.0)
+        if payload is None:   # COLD ещё считается → warming-пусто (следующий поллинг = HIT)
+            payload = json.dumps({"days": days, "accounts": [], "total": {}, "warming": True})
+        return web.Response(text=payload, content_type="application/json", charset="utf-8",
+                            headers={"X-Cache": xcache})
     except Exception as e:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
@@ -3114,6 +3155,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/positions",       _handle_positions)
     app.router.add_get("/api/trades_filtered", _handle_trades_filtered)
     app.router.add_get("/api/kpi",             _handle_kpi)
+    app.router.add_get("/api/income",          _handle_income)  # $-ИСТИНА из income-ledger биржи
     app.router.add_get("/api/open",            _handle_open_trades)  # оперативка из шины (лёгкий)
     app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
