@@ -1342,6 +1342,23 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                 extra["wt_zone"] = "OS" if _w1 <= -60 else "OB" if _w1 >= 60 else "N"
                         except Exception:
                             pass
+            # ARCH-128 AUGMENT (condition-mining): adx/rsi/n_up/n_down/elliott(фрактал)/fib per 15m/1h/4h.
+            # Единый калькулятор (core.indicators.augment_snap) — ТОТ ЖЕ в backtest (инвариант ARCH-118).
+            # Считается на регистрации (раз на сделку) → детект Эллиотта не грузит горячий scan-loop.
+            if pre_fetched_dfs:
+                try:
+                    from core.indicators.augment_snap import compute_augment_snap
+                    _aug = {}
+                    for _atf in ("5m", "15m", "1h", "4h"):
+                        _adf = pre_fetched_dfs.get(_atf)
+                        if _adf is not None and len(_adf) >= 30:
+                            _a = compute_augment_snap(_adf)
+                            if _a:
+                                _aug[_atf] = _a
+                    if _aug:
+                        extra["augment"] = _aug
+                except Exception:
+                    pass
             # NEAR_PIVOT shadow flag — записываем для всех сигналов независимо от confluence.enabled
             _pivot_calc_np = getattr(bot, "pivot_calculator", None)
             if _pivot_calc_np is not None:
