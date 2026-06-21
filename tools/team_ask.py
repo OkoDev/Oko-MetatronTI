@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import os
+import random
 import re
 import sys
 from datetime import datetime, timezone
@@ -155,6 +156,64 @@ META_ASK_PROMPT = """Ты meta-эксперт. Тебе даны ответы 5 
 """
 
 
+# Stage 2 (по llm-council, karpathy): каждый голос ранжирует АНОНИМНЫЕ ответы остальных.
+# Анонимизация (Model A/B/C вместо имён провайдеров) убирает брендовый фаворитизм —
+# судья не знает, чей ответ, и не может «играть в любимчиков» (в т.ч. свой собственный).
+RANK_PROMPT = """Ты — беспристрастный судья в совете LLM. Ниже {n} АНОНИМНЫХ ответов
+(Model A, B, ...) на один вопрос. Кто какой написал — НЕ известно (намеренно, против фаворитизма).
+Суди ТОЛЬКО по содержанию.
+
+КРИТЕРИИ: точность (опора на данные/числа/ID, нет выдумок), глубина (неочевидные инсайты),
+честность (признаёт неуверенность), польза (конкретные действия).
+
+ВОПРОС:
+{question}
+
+АНОНИМНЫЕ ОТВЕТЫ:
+{anon_block}
+
+ФОРМАТ (русский, кратко):
+## Разбор
+2-5 предложений: чьи ответы (по буквам Model X) сильнее/слабее и почему.
+## Ранжирование
+ПОСЛЕДНЕЙ СТРОКОЙ строго машинно-читаемо, от ЛУЧШЕГО к худшему, через ' > ':
+RANKING: A > B > C
+"""
+
+
+# Stage 3 chairman на АНОНИМНЫХ ответах + итог ранга совета (тоже без имён → синтез без перекоса).
+META_RANKED_PROMPT = """Ты — председатель (chairman) совета LLM. Даны АНОНИМНЫЕ ответы {n} моделей
+на вопрос + итог анонимного перекрёстного ранжирования совета.
+
+ВОПРОС:
+{question}
+
+АНОНИМНЫЕ ОТВЕТЫ:
+{anon_block}
+
+РАНЖИРОВАНИЕ СОВЕТА (Borda — больше очков = выше оценён коллегами, анонимно):
+{ranking_summary}
+
+Синтезируй ФИНАЛ. ФОРМАТ (markdown, русский, 150-300 строк):
+
+# Meta-Ответ (совет {n} моделей + анонимный ранг)
+
+## 🤝 Консенсус
+Тезисы, поддержанные ≥половиной. Формат: тезис → сколько моделей.
+
+## ⚔️ Споры
+Разные позиции (по буквам Model X): аргументы сторон + кто ближе к истине.
+
+## 🎯 Синтез-ответ
+Взвешенный финал. ВЕС выше у ответов с высоким рангом совета. Не среднее — синтез.
+
+## 🌟 Лучший уникальный аргумент
+Сильное замечание, которое есть только у одной модели.
+
+ПРАВИЛА: цитируй числа/ID, только русский, ссылайся на ответы по буквам (Model A/B…).
+"""
+
+
 def collect_context() -> str:
     parts = []
     for f in SRC_FILES:
@@ -213,6 +272,55 @@ def get_answer(provider: str, question: str, context: str) -> tuple[str, str, st
     return (provider, model, f"❌ ERROR: не уложился в лимит контекста. {last_err[:300]}")
 
 
+def anonymize(good: list, rng) -> tuple[dict, str]:
+    """good: list[(provider, model, text)] без ошибок → (label_map, anon_block).
+    label_map: {'A': (provider, model, text), ...} в ПЕРЕМЕШАННОМ порядке (буква не выдаёт провайдера)."""
+    shuffled = list(good)
+    rng.shuffle(shuffled)
+    label_map = {chr(ord("A") + i): trip for i, trip in enumerate(shuffled)}
+    anon_block = "\n\n".join(
+        f"### Model {lab}\n{t[:3500]}" for lab, (_p, _m, t) in label_map.items()
+    )
+    return label_map, anon_block
+
+
+def parse_ranking(text: str, valid_labels: set) -> list:
+    """Из ответа судьи достаёт 'RANKING: A > B > C' → ['A','B','C']. Фоллбэк: буквы по всему тексту."""
+    m = re.search(r"RANKING:\s*([A-Z][A-Z\s,>\.\-]*)", text)
+    seq = m.group(1) if m else text
+    order: list[str] = []
+    for ch in re.findall(r"[A-Z]", seq):
+        if ch in valid_labels and ch not in order:
+            order.append(ch)
+    return order
+
+
+def get_ranking(provider: str, question: str, anon_block: str, n: int, valid_labels: set) -> tuple:
+    """Судья ранжирует анонимные ответы. → (provider, text, order). Не падает."""
+    prompt = RANK_PROMPT.format(n=n, question=question, anon_block=anon_block)
+    try:
+        text = call_provider(provider, prompt, None, max_tokens=1500, image_path=None)
+    except Exception as e:
+        return (provider, f"❌ ERROR: {str(e)[:300]}", [])
+    return (provider, text, parse_ranking(text, valid_labels))
+
+
+def aggregate_rankings(rankings: list, label_map: dict) -> list:
+    """Borda: позиция i (0=лучший) в ранге судьи → (N-1-i) очков, сумма по судьям.
+    → leaderboard list[(label, provider, model, score, n_votes)] по убыванию очков."""
+    n = len(label_map)
+    score = {lab: 0 for lab in label_map}
+    votes = {lab: 0 for lab in label_map}
+    for _p, _t, order in rankings:
+        for i, lab in enumerate(order):
+            if lab in score:
+                score[lab] += (n - 1 - i)
+                votes[lab] += 1
+    board = [(lab, p, m, score[lab], votes[lab]) for lab, (p, m, _t) in label_map.items()]
+    board.sort(key=lambda x: x[3], reverse=True)
+    return board
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Командное обсуждение свободного вопроса")
     parser.add_argument("question", help="Твой вопрос команде")
@@ -220,6 +328,7 @@ def main() -> int:
     parser.add_argument("--providers", help="Список через запятую (по умолчанию все доступные)")
     parser.add_argument("--no-context", action="store_true", help="Без bundle проекта (только вопрос)")
     parser.add_argument("--skip-meta", action="store_true", help="Без финального meta-синтеза")
+    parser.add_argument("--skip-rank", action="store_true", help="Без анонимного peer-ranking (Stage 2)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -295,31 +404,74 @@ def main() -> int:
     for provider, model, text in sorted(results):
         sections.append(f"\n# 🤖 {provider.upper()} — `{model}`\n\n{text}\n\n---\n")
 
-    # Meta-синтез
-    if not args.skip_meta and len(results) >= 2:
-        good = [r for r in results if not r[2].startswith("❌")]
-        if len(good) >= 2:
+    # ─── Stage 2: анонимный peer-ranking (llm-council) + Stage 3: meta-синтез ───
+    good = [r for r in results if not r[2].startswith("❌")]
+    label_map: dict = {}
+    leaderboard: list = []
+    anon_block = ""
+
+    # Stage 2 — каждый голос ранжирует АНОНИМНЫЕ ответы (нужно ≥3, иначе ранг тривиален)
+    if not args.skip_rank and len(good) >= 3:
+        rng = random.Random(42)  # детерминированная анонимизация → воспроизводимый отчёт
+        label_map, anon_block = anonymize(good, rng)
+        valid_labels = set(label_map)
+        n = len(label_map)
+        rankers = [p for p, _m, _t in good]  # судят все, кто ответил (на анон-наборе, включая свой)
+        print(f"[team-ask] анонимный peer-ranking ({len(rankers)} судей)...", file=sys.stderr)
+        rankings: list = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(rankers)) as ex:
+            rfuts = {ex.submit(get_ranking, p, args.question, anon_block, n, valid_labels): p
+                     for p in rankers}
+            for fut in concurrent.futures.as_completed(rfuts):
+                rankings.append(fut.result())
+        leaderboard = aggregate_rankings(rankings, label_map)
+
+        # Отчёт: leaderboard (раскрываем имена) + вердикты судей (ответы по буквам)
+        lb = ["\n# 🏆 PEER-RANKING (анонимный, Borda)\n",
+              "| # | Ответ | Провайдер | Очки | Голосов |",
+              "|---|---|---|---|---|"]
+        for rank, (lab, p, m, sc, vt) in enumerate(leaderboard, 1):
+            lb.append(f"| {rank} | Model {lab} | {p} (`{m}`) | {sc} | {vt} |")
+        lb.append("\n> Судьи видели ответы как Model A/B/C без имён (анти-фаворитизм).\n")
+        sections.append("\n".join(lb))
+        for p, t, order in sorted(rankings, key=lambda x: x[0]):
+            seq = " > ".join(order) if order else "—"
+            sections.append(f"\n## ⚖️ Судья {p}: `{seq}`\n\n{t}\n")
+
+    # Stage 3 — chairman/meta-синтез
+    if not args.skip_meta and len(good) >= 2:
+        if leaderboard:  # есть ранг → анонимный взвешенный синтез (без брендового перекоса)
+            ranking_summary = "\n".join(
+                f"Model {lab}: {sc} очк. ({vt} голосов судей)"
+                for lab, _p, _m, sc, vt in leaderboard
+            )
+            meta_prompt = META_RANKED_PROMPT.format(
+                n=len(label_map), question=args.question,
+                anon_block=anon_block, ranking_summary=ranking_summary,
+            )
+        else:  # фоллбэк: старый именованный синтез (--skip-rank или <3 голосов)
             answers_block = "\n\n".join(
-                f"### {p} ({m})\n{t[:6000]}"
-                for p, m, t in sorted(good)
+                f"### {p} ({m})\n{t[:6000]}" for p, m, t in sorted(good)
             )
             meta_prompt = META_ASK_PROMPT.format(
-                question=args.question,
-                answers_block=answers_block,
+                question=args.question, answers_block=answers_block,
             )
-            meta_provider = next(
-                (p for p in ["mistral", "openrouter", "cerebras", "gemini"]
-                 if p in [r[0] for r in good]), None
-            )
-            if meta_provider:
-                print(f"[team-ask] meta-синтез через {meta_provider}...", file=sys.stderr)
-                try:
-                    meta_text = call_provider(
-                        meta_provider, meta_prompt, None, max_tokens=6000, image_path=None,
-                    )
-                    sections.append(f"\n# 🧠 META-СИНТЕЗ (через {meta_provider})\n\n{meta_text}\n")
-                except Exception as e:
-                    sections.append(f"\n# 🧠 META-СИНТЕЗ\n\n❌ Не удалось: {e}\n")
+        meta_provider = next(
+            (p for p in ["mistral", "openrouter", "cerebras", "gemini"]
+             if p in [r[0] for r in good]), None
+        )
+        if meta_provider:
+            print(f"[team-ask] meta-синтез через {meta_provider}...", file=sys.stderr)
+            try:
+                meta_text = call_provider(
+                    meta_provider, meta_prompt, None, max_tokens=6000, image_path=None,
+                )
+                if label_map:  # раскрываем буквы → провайдеры в подвале синтеза
+                    legend = " · ".join(f"Model {lab}={p}" for lab, (p, _m, _t) in label_map.items())
+                    meta_text += f"\n\n---\n*Расшифровка меток: {legend}*"
+                sections.append(f"\n# 🧠 META-СИНТЕЗ (через {meta_provider})\n\n{meta_text}\n")
+            except Exception as e:
+                sections.append(f"\n# 🧠 META-СИНТЕЗ\n\n❌ Не удалось: {e}\n")
 
     out_obsidian.write_text("".join(sections), encoding="utf-8")
     OUTPUT_MEMORY.parent.mkdir(parents=True, exist_ok=True)

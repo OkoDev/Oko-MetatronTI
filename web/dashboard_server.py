@@ -544,6 +544,110 @@ async def _handle_income(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+ORACLE_SYSTEM = (
+    "Ты — Oko, аналитик торгового бота Oko MTF (BingX, режим VST). "
+    "Отвечай кратко, по делу, на русском. Опирайся ТОЛЬКО на ЖИВЫЕ ДАННЫЕ ниже. "
+    "Если данных для ответа нет — прямо скажи «нет данных», НЕ выдумывай числа, монеты, биржи или сигналы."
+)
+
+
+async def _oracle_context(bot) -> str:
+    """Компактный live-снимок бота для grounding Oracle: equity + открытые позиции + income 7д ($-истина)."""
+    parts: list[str] = []
+    _pc = getattr(bot, "pair_context", None)
+    try:
+        if _pc is not None:
+            eq = _pc.total_equity()
+            if eq is not None:
+                parts.append(f"Equity (биржа): ${float(eq):.2f}")
+            snap, _ts = _pc.open_trades_snapshot()
+            snap = list(snap or [])
+            parts.append(f"Открытых позиций: {len(snap)}")
+            lines = []
+            for t in snap[:40]:
+                d = dict(t)
+                lines.append(
+                    f"- {d.get('symbol')} {d.get('direction')} "
+                    f"{d.get('signal_type', '')} {d.get('timeframe', '')} "
+                    f"lev={d.get('leverage', '?')} {d.get('execution_mode', '')}"
+                )
+            if lines:
+                parts.append("Позиции:\n" + "\n".join(lines))
+    except Exception as e:
+        parts.append(f"[позиции недоступны: {e}]")
+    try:
+        oe = getattr(bot, "order_executor", None)
+        if oe is not None and oe.is_live():
+            import time as _t
+            now_ms = int(_t.time() * 1000)
+            rows = await oe.get_income_per_account(now_ms - 7 * 86400 * 1000, now_ms)
+            net = sum((r.get("net_trading") or 0) for r in rows)
+            rp = sum((r.get("realized_pnl") or 0) for r in rows)
+            fee = sum((r.get("trading_fee") or 0) for r in rows)
+            fund = sum((r.get("funding_fee") or 0) for r in rows)
+            liq = sum((r.get("liquidation") or 0) for r in rows)
+            parts.append(
+                f"Income 7д ($-истина биржи): net={net:.2f} "
+                f"(realized={rp:.2f}, fee={fee:.2f}, funding={fund:.2f}, liq={liq:.2f})"
+            )
+    except Exception as e:
+        parts.append(f"[income недоступен: {e}]")
+    return "\n".join(parts) or "[нет живых данных]"
+
+
+async def _handle_oracle(request: web.Request) -> web.Response:
+    """GET/POST /api/oracle?q=... — grounded Oracle через рой (1 сильный бесплатный голос + live-данные бота).
+    Временная замена локального Ollama на дашборде (DASH): отвечает по РЕАЛЬНЫМ данным, не выдумывает."""
+    import sys as _sys
+    bot = request.app.get("bot")
+    q = (request.query.get("q") or "").strip()
+    if not q and request.method == "POST":
+        try:
+            body = await request.json()
+            q = (body.get("q") or body.get("question") or "").strip()
+        except Exception:
+            q = ""
+    if not q:
+        return web.Response(text=json.dumps({"error": "empty question"}),
+                            content_type="application/json", status=400)
+    q = q[:2000]
+
+    # рой: один сильный бесплатный голос (tools/llm_ask), без полного совета (быстро для чата)
+    _tools = str(Path(__file__).resolve().parent.parent / "tools")
+    if _tools not in _sys.path:
+        _sys.path.insert(0, _tools)
+    try:
+        from llm_ask import load_env, has_key, call_provider, DEFAULT_MODELS  # type: ignore
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": f"swarm unavailable: {e}"}, ensure_ascii=False),
+                            content_type="application/json", status=503)
+    load_env()
+    provider = next((p for p in ["openrouter", "gemini", "cerebras", "groq", "mistral"] if has_key(p)), None)
+    if not provider:
+        return web.Response(text=json.dumps({"error": "no swarm provider keys"}, ensure_ascii=False),
+                            content_type="application/json", status=503)
+
+    ctx = await _oracle_context(bot)
+    prompt = (f"{ORACLE_SYSTEM}\n\n=== ЖИВЫЕ ДАННЫЕ БОТА ===\n{ctx}\n\n"
+              f"=== ВОПРОС ===\n{q}\n\nОтвет (кратко, строго по данным выше):")
+    try:
+        answer = await asyncio.wait_for(
+            _run_sync(call_provider, provider, prompt, None, max_tokens=1200, image_path=None),
+            timeout=35.0,
+        )
+    except asyncio.TimeoutError:
+        return web.Response(text=json.dumps({"error": "oracle timeout (рой не ответил за 35с)"}, ensure_ascii=False),
+                            content_type="application/json", status=504)
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": f"oracle failed: {e}"}, ensure_ascii=False),
+                            content_type="application/json", status=502)
+    return web.Response(
+        text=json.dumps({"answer": answer, "provider": provider,
+                         "model": DEFAULT_MODELS.get(provider, ""), "grounded": True},
+                        ensure_ascii=False, default=str),
+        content_type="application/json", charset="utf-8")
+
+
 async def _handle_open_trades(request: web.Request) -> web.Response:
     """ОПЕРАТИВНЫЙ эндпоинт открытых сделок — ИЗ ШИНЫ (dashboard-from-bus).
 
@@ -3171,6 +3275,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/kpi",             _handle_kpi)
     app.router.add_get("/api/income",          _handle_income)  # $-ИСТИНА из income-ledger биржи
     app.router.add_get("/api/open",            _handle_open_trades)  # оперативка из шины (лёгкий)
+    app.router.add_get("/api/oracle",          _handle_oracle)  # grounded Oracle через рой (DASH temp)
+    app.router.add_post("/api/oracle",         _handle_oracle)
     app.router.add_get("/api/signal_weights/history", _handle_signal_weights_history)
     app.router.add_get("/api/closed_trades", _handle_closed_trades)
     app.router.add_post("/api/trades/{trade_id}/close", _handle_close_trade)
