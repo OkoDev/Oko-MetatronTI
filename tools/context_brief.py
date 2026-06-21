@@ -40,6 +40,8 @@ DISCUSSION_FILE = PROJECT_ROOT / "DISCUSSION.md"
 TASKS_FILE = PROJECT_ROOT / "TASKS.md"
 CURRENT_STATE_FILE = PROJECT_ROOT / "memory" / "current_state.md"
 MEMORY_INDEX = PROJECT_ROOT / "memory" / "MEMORY.md"
+# Срез ЗНАНИЙ (что доказано/опровергнуто) — узел Obsidian, источник чистого знания для освежения памяти.
+TRUTH_FILE = PROJECT_ROOT / "obsidian" / "Strategies" / "_TRUTH.md"
 
 OUTPUT_MEMORY = PROJECT_ROOT / "memory" / "session_brief.md"
 OUTPUT_OBSIDIAN_DIR = PROJECT_ROOT / "obsidian" / "Sessions"
@@ -176,6 +178,15 @@ BRIEF_PROMPT = """Ты делаешь brief для Claude который нач�
 
 # Session Brief — {date}
 
+## 🎯 СРЕЗ ЗНАНИЙ — что ДОКАЗАНО / ОПРОВЕРГНУТО (edge)
+Источник = `=== TRUTH ===` ниже (узел Obsidian [[Strategies/_TRUTH]], чистое знание).
+ЭТО ПЕРВОЕ что читает Claude — освежает память по стратегиям, чтобы НЕ начинать с нуля.
+Перенеси СУТЬ дословно, СОХРАНЯЯ wikilinks [[...]] и пути `scripts/...` (ветвление на источники):
+- ⚖️ закон методологии (чему верить / не верить) — 1-2 строки.
+- 🔴 доказано отрицательное (что НЕ работает, не перетестировать) — список.
+- 🟡 кандидат-edge (что в работе, с числом) — 1-2 строки.
+Если `=== TRUTH ===` пуст — пропусти раздел.
+
 ## 🧭 Контекст фазы проекта
 3-5 строк: фаза (стабилизация/новый модуль/рефакторинг), главный конфликт, куда движется.
 Это САМОЕ ВАЖНОЕ — для быстрого включения.
@@ -245,6 +256,9 @@ avgR, WR, n сделок, gates — за 7 дней. Старые — не на�
 
 ИСТОЧНИКИ:
 
+=== TRUTH (срез знаний: доказано/опровергнуто/кандидат — узел Obsidian Strategies/_TRUTH) ===
+{truth}
+
 === DISCUSSION.md (живой диалог агентов, последние 60 записей) ===
 {discussion}
 
@@ -274,6 +288,7 @@ def generate_brief(days: int) -> tuple[str, dict]:
         "git_log": collect_git_log(days),
         "git_diff": collect_git_diff_stat(),
         "memory_index": read_truncated(MEMORY_INDEX, max_chars=15_000),
+        "truth": read_truncated(TRUTH_FILE, max_chars=8_000),
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "days": days,
     }
