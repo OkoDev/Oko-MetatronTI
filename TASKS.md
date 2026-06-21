@@ -48,9 +48,9 @@
 
 | **DASH-INCOME-TRUTH** | ✅ | Честные метрики юзера: новый `/api/income` ($-истина из биржевого income-ledger, не БД-R). Панель «Exchange Truth» на Overview. Живо: −1823 USDT/7д VST. Коммит e82ea4c. → DISCUSSION 22.06 00:53 | Даат |
 
-| **DASH-OPEN-SUM** | 🔵 | Остаток когезии: OPEN-вкладка Sim шапка показывает фейк wr=0/sumR=0 → сумма live-R из шины. → DISCUSSION 20.06 12:39 | DEV/Claude |
+| **DASH-OPEN-SUM** | ✅ | OPEN-Sim шапка из live-R шины (Σ r_live + %в-плюсе) вместо фейка. Коммит 7b4e839. | Даат |
 
-| **DASH-COH-SWEEP** | 🔵 | Остаток когезии: свип Overview/Analytics/Patterns на рассинхрон шапка↔таблица (фиксил только Trades). | DEV/Claude |
+| **DASH-COH-SWEEP** | ✅ | Свип Overview/Analytics/Patterns — рассинхрона шапка↔таблица нет (7b4e839). | Даат |
 
 | **BOT-LOCK-PID** | 🔵 | Робастность рестарта: single-instance lock не детектит мёртвый PID → force-kill оставляет stale bot_instance.lock, новый старт выходит «уже запущен». Фикс: перезаписать лок если PID мёртв (oko_mtf.py:56). | DEV/Claude |
 

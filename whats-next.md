@@ -1,5 +1,30 @@
 # What's Next — Handoff
 
+## 🔧 СЕССИЯ 22.06 (ИНФРА, НЕ бот-логика) = Continue/Ollama + почин зацикленного Stop-хука
+
+> ⚠️ Сессия = личная инфра (редактор Continue) + диагностика/фикс зацикленного Stop-хука. **Кода бота НЕ трогали.** Если работаешь над ботом — мотай ниже к «СЕССИЯ 21.06 (читать ПЕРВЫМ)».
+
+**<original_task>** Подключить новую локальную модель `LONGTIMEDEVELOPERS/deepseek-v4-pro-qwen_russian` в Continue вместо DeepSeek R1 14B. По ходу: добавить qwen, убрать лишние конфиги, удалить r1:14b с диска, разобрать настройки контекста, обсудить роль DS без платного DeepSeek, починить зациклившийся хук.
+
+**<work_completed>**
+- **Continue `c:\Users\yogoru\.continue\config.yaml`:** модель `deepseek-r1:14b` → `LONGTIMEDEVELOPERS/deepseek-v4-pro-qwen_russian:latest` (точный тег из `ollama list`/манифеста `registry.ollama.ai/LONGTIMEDEVELOPERS/...`; короткий `deepseek-v4-pro-qwen_russian` НЕ резолвится). Добавлена 2-я модель `qwen3:8b`. Обе: roles chat/edit/apply, `contextLength: 16384`, temp 0.3. Правило «только русский» сохранено.
+- **`contextLength` оставлен 16384 осознанно:** железо 2×8 GB (GTX 1070 + GTX 1080). Модель 4.5 GB + KV-кэш ~2.3 GB (≈150 КБ/токен fp16) влезают на одну карту. 32768 ≈ 4.6 GB кэш — впритык/спил. 256K (потолок модели) ≈ 36 GB KV = невозможно. qwen3:8b = 5.2 GB, 5.2+2.3≈7.5 GB, впритык в 8 GB.
+- **Удалено:** `e:/MTF BOT/CURSOR/crypto_volume_bot/.continue/agents/new-config.yaml` (дефолт-пример «Example Config») + `new-config-1.yaml` («DSv4 Config» — юзер сам сделал, но тег `deepseek-v4-pro-qwen_russian` БЕЗ префикса/тега + `contextLength: 256000`). Папка `.continue/agents/` теперь пуста. Модель `deepseek-r1:14b` снесена с диска (`ollama rm`, ~9 GB). В Ollama осталось: deepseek-v4-pro-qwen_russian:latest (4.5 GB) + qwen3:8b (5.2 GB).
+- **DISCUSSION.md — 3 добавленных записи (это бот-репо!):** `[21.06 00:55] DS → РОЙ/Даат` (консенсус на тред 0→A→B→C: A добит коммитами, CUTOVER пауза, ревиз. порядок A-перемер→B→0→C); `[22.06 01:20] DS → Даат` (ДА, нужен start/end на `/api/income` для post-fix split; acceptance перемера в net $, per-account, min 10); `[22.06 01:30] Даат → команда ✅` (закрытие треда). Опора: git log (`e762449`/`05d644b`/`77fd649`/`e86a3e8`) + сами записи, без выдуманных чисел.
+- **Хук-петля диагностирована и пофикшена (проверено эмпирически):** корень — `scripts/check_tasks.py` (роль из env `AGENT_ROLE=DAAT`, `.agent_role`=DAAT) блокирует stop, если верхняя запись адресована роли и выше нет записи этой роли (строки 113-117). Каждая запись одной роли создаёт «долг» другой → пинг-понг DAAT↔DS. Фикс: закрывающая запись `Даат → команда` (адресат «команда» вне `ROLE_ALIASES`+`BROADCAST`) гасит долг DAAT без нового долга DS. Проверено: `AGENT_ROLE=DAAT` и `AGENT_ROLE=DS python scripts/check_tasks.py` → оба `{"decision":"approve"}`.
+- **Роль DS (решение юзера):** DeepSeek кончился по балансу (−¥0.53, июнь ¥114.52 / 1.4 млрд токенов). НЕ переключать конфиг — при пополнении DeepCode подключится обратно. Пока DS = Opus (канон по [[team-topology]]: DS=Opus 4.8, DeepSeek=подключаемый сверху). DeepCode/`AGENTS.md` НЕ трогали.
+
+**<work_remaining>** Нет — сессия закрыта, всё подтверждено. Опц. гигиена (не срочно): хук видит **50 «простыней» >200 симв в TASKS.md** → `python scripts/tasks_tidy.py --apply`.
+
+**<critical_context>**
+- `whats-next.md` = боевой handoff бот-проекта; НЕ перезаписывать целиком (потому добавил раздел сверху, а не overwrite).
+- Тег Ollama-модели брать ТОЛЬКО из `ollama list`/манифеста — имя на странице модели («deepseek-v4-pro») вводит в заблуждение: локальная 4.5 GB = ~8B qwen-файнтюн, НЕ настоящий облачный DeepSeek V4 Pro.
+- `contextLength` в Continue Ollama-провайдере транслируется в `num_ctx` → завышение = OOM/спил.
+
+**<current_state>** ✅ Continue настроен (2 модели, 16384). ✅ Лишние конфиги + r1:14b удалены. ✅ Хук-петля разорвана (approve для DAAT и DS). ✅ DS на Opus до пополнения. Бот-логику НЕ затрагивали (жив, рестарт 21.06 21:46 UTC — см. раздел ниже).
+
+---
+
 ## 🌅 СЕССИЯ 21.06 = EXIT-FIX ДОБИТ (BE на биржу) + ИСТИННЫЙ BE + CUTOVER пауза (читать ПЕРВЫМ)
 
 > Русский · grep before claim · числа из config/кода · TTS Irina · ветка `arch-128-oko-sm`. Метрика-истина = income-ledger/`o.rp`.
