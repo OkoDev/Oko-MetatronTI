@@ -495,19 +495,31 @@ async def _handle_kpi(request: web.Request) -> web.Response:
 async def _handle_income(request: web.Request) -> web.Response:
     """$-ИСТИНА из income-ledger (/user/income): realized/fee/funding/liquidation/net per account.
     В отличие от БД-realized R (врёт ~$323/день, инвертирует знак) — это РЕАЛЬНЫЕ деньги с биржи.
-    Query: days (default 7, max 90)."""
+    Query: days (default 7, max 90) ЛИБО start/end (epoch ms) для произвольного окна —
+    нужно DS для чистого post-fix data-era split (income строго от момента фикса, без span pre-fix)."""
     bot = request.app.get("bot")
     if not bot or not hasattr(bot, "order_executor") or not bot.order_executor.is_live():
         return web.Response(text=json.dumps({"error": "exchange unavailable (SIM_ONLY?)",
                                              "accounts": [], "total": {}}),
                             content_type="application/json", status=503)
-    try:
-        days = max(1, min(int(request.query.get("days", "7")), 90))
-    except ValueError:
-        days = 7
     import time as _t
-    end_ms = int(_t.time() * 1000)
-    start_ms = end_ms - days * 86400 * 1000
+    now_ms = int(_t.time() * 1000)
+    q_start = request.query.get("start")
+    q_end = request.query.get("end")
+    if q_start and q_start.isdigit():
+        # Произвольное окно [start, end] в epoch ms (приоритет над days).
+        start_ms = int(q_start)
+        end_ms = int(q_end) if (q_end and q_end.isdigit()) else now_ms
+        days = None
+        cache_key = f"income|{start_ms}|{end_ms}"
+    else:
+        try:
+            days = max(1, min(int(request.query.get("days", "7")), 90))
+        except ValueError:
+            days = 7
+        end_ms = now_ms
+        start_ms = end_ms - days * 86400 * 1000
+        cache_key = f"income|{days}"
 
     async def _compute() -> str:
         rows = await bot.order_executor.get_income_per_account(start_ms, end_ms)
@@ -517,13 +529,15 @@ async def _handle_income(request: web.Request) -> web.Response:
             for k in tot:
                 tot[k] += r.get(k, 0) or 0
         tot = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in tot.items()}
-        return json.dumps({"days": days, "accounts": rows, "total": tot,
+        return json.dumps({"days": days, "start_ms": start_ms, "end_ms": end_ms,
+                           "accounts": rows, "total": tot,
                            "source": "exchange_income_ledger"}, ensure_ascii=False, default=str)
 
     try:
-        payload, xcache = await _INCOME_CACHE.get(f"income|{days}", _compute, cold_timeout=45.0)
+        payload, xcache = await _INCOME_CACHE.get(cache_key, _compute, cold_timeout=45.0)
         if payload is None:   # COLD ещё считается → warming-пусто (следующий поллинг = HIT)
-            payload = json.dumps({"days": days, "accounts": [], "total": {}, "warming": True})
+            payload = json.dumps({"days": days, "start_ms": start_ms, "end_ms": end_ms,
+                                  "accounts": [], "total": {}, "warming": True})
         return web.Response(text=payload, content_type="application/json", charset="utf-8",
                             headers={"X-Cache": xcache})
     except Exception as e:
