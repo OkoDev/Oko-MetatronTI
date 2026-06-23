@@ -283,8 +283,10 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     Возвращает {'levels': {fib: price}, 'ote': (low, high), 'direction': 'long'/'short'}.
     """
     rng = swing_b - swing_a
-    # Набор уровней пользователя (TradingView OTE): 0.5/0.62/0.705/0.79
-    fibs = [0.0, 0.5, 0.62, 0.705, 0.79, 1.0]
+    # Набор уровней пользователя (TradingView OTE): 0.5/0.62/0.705/0.79.
+    # Отрицательные = фибо-РАСШИРЕНИЕ за конец импульса (measured move = цели волны 3/5):
+    # -0.62/-1.0(100%)/-1.618(вола3 гайд)/-2.618 — лестница целей метода Егора (тот же расчёт).
+    fibs = [-2.618, -1.618, -1.0, -0.62, 0.0, 0.5, 0.62, 0.705, 0.79, 1.0]
     levels = {f: swing_a + f * rng for f in fibs}
     # Зона входа = 0.5-0.79 (уточнение пользователя 02.06: вход в диапазоне discount/premium,
     # не только глубокий 0.705-0.79; 0.705/0.79 — наиболее вероятные точки отскока внутри).
@@ -760,6 +762,80 @@ def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
                 prot_low = (ts, p)
             cand_low = (ts, p)
     return setups
+
+
+def select_significant_impulse(df: "pd.DataFrame", zz: List[tuple],
+                              current_price: Optional[float] = None) -> Optional[dict]:
+    """ЗНАЧИМЫЙ ЖИВОЙ импульс для OTE-контекста (ARCH-128, Егор 23.06) — заменяет наивный htf[-1].
+
+    Метод (валидирован на стенде oko_context_locator, 6 пар + ТФ 1d→5m):
+      1. EXTREME-нога: от значимого LOW к значимому HIGH (и наоборот) в ОКНЕ актуального
+         тренда = от последнего ПРОТИВОПОЛОЖНОГО CHoCH-разворота. Берёт ПОЛНУЮ ногу тренда,
+         а не дроблёный последний слом (find_setups_zz[-1] = корень провала OKO-OTE).
+      2. ИНВАЛИДАЦИЯ: импульс МЁРТВ, если откат пробил 0.79 (= нарратив сменился).
+      3. ВЫБОР: цена в OTE (готов) → цена в ноге отката (ждём) → крупнейший span.
+    Возвращает setup dict (build_ote + from/to/direction/levels/kind) или None.
+    """
+    if df is None or len(df) < 10:
+        return None
+    setups = find_setups_zz(zz, df) or []
+    pos = {ts: i for i, ts in enumerate(df.index)}
+    cur = float(current_price if current_price is not None else df["close"].iloc[-1])
+    hi = df["high"].values; lo = df["low"].values; n = len(df)
+    # окно актуального тренда = от последнего ПРОТИВОПОЛОЖНОГО CHoCH-разворота (не фикс)
+    chs = [(pos.get(s.get("choch_ts")), s["direction"]) for s in setups
+           if s.get("kind") == "CHoCH" and pos.get(s.get("choch_ts")) is not None]
+    if chs:
+        li, ld = chs[-1]
+        opp = [i for i, dd in chs if dd != ld and i < li]
+        wmin = opp[-1] if opp else max(0, li - 400)
+    else:
+        wmin = max(0, n - 400)
+    typed = _zz_typed(zz)
+    P = [(pos.get(ts), p, k) for ts, p, k in typed
+         if pos.get(ts) is not None and pos.get(ts) >= wmin]
+    L = [(i, p) for i, p, k in P if k == "L"]; H = [(i, p) for i, p, k in P if k == "H"]
+
+    def _mk(ai, ap, bi, bp):           # a=начало, b=конец ноги
+        o = build_ote(bp, ap)          # 0=конец, 1=начало → long(bull)/short(bear) по знаку
+        o["from"] = (df.index[ai], ap); o["to"] = (df.index[bi], bp)
+        o["choch_ts"] = df.index[bi]; o["kind"] = "IMP"
+        o["struct"] = "bull" if bp > ap else "bear"
+        o["broken_level"] = None; o["broken_ts"] = None
+        return o
+
+    extras = []
+    if L and H:
+        ml = min(L, key=lambda x: x[1]); ha = [h for h in H if h[0] > ml[0]]
+        if ha:
+            mh = max(ha, key=lambda x: x[1]); extras.append(_mk(ml[0], ml[1], mh[0], mh[1]))
+        mh2 = max(H, key=lambda x: x[1]); la = [l for l in L if l[0] > mh2[0]]
+        if la:
+            ml2 = min(la, key=lambda x: x[1]); extras.append(_mk(mh2[0], mh2[1], ml2[0], ml2[1]))
+
+    now, leg = [], []
+    for s in (extras + setups):
+        lv = s["levels"]; olo, ohi = s["ote"]
+        l079 = lv.get(0.79); ci = pos.get(s.get("choch_ts"))
+        inv = False
+        if l079 is not None and ci is not None:
+            if s["direction"] == "short":
+                seg = hi[ci + 1:]; inv = bool(len(seg)) and float(seg.max()) > l079
+            else:
+                seg = lo[ci + 1:]; inv = bool(len(seg)) and float(seg.min()) < l079
+        if inv:
+            continue
+        l0 = lv.get(0.0); l1 = lv.get(1.0)
+        span = abs(s["to"][1] - s["from"][1]) / s["from"][1] if s["from"][1] else 0.0
+        if olo <= cur <= ohi:
+            now.append((span, s))
+        elif l0 is not None and l1 is not None and min(l0, l1) <= cur <= max(l0, l1):
+            leg.append((span, s))
+    if now:
+        return max(now, key=lambda x: x[0])[1]
+    if leg:
+        return max(leg, key=lambda x: x[0])[1]
+    return None
 
 
 def append_provisional_leg(zz: List[tuple], df: "pd.DataFrame") -> tuple:
