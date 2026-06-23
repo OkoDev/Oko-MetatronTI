@@ -100,7 +100,7 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
     """
     _min_confs = MIN_CONFIRMATIONS if min_confs is None else int(min_confs)
     from core.smc.smc_engine import (zigzag_atr, find_setups_zz,
-                                     select_significant_impulse)
+                                     select_significant_impulse, adaptive_dev)
     from core.indicators.indicators import calculate_wt
     from core.indicators.divergence_detector import DivergenceDetector
 
@@ -110,7 +110,13 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
     # 1) КОНТЕКСТ СТАРШЕГО ТФ — ЗНАЧИМЫЙ ЖИВОЙ импульс (extreme LOW→HIGH от CHoCH-окна +
     #    инвалидация 0.79 + цена в OTE/ноге), а НЕ наивный htf[-1] (корень провала OKO-OTE,
     #    Егор 23.06). Fallback на htf[-1] для совместимости. См. [[oko_ote_torn_from_context]].
-    _zz_zone = zigzag_atr(df_zone)
+    # АДАПТИВНЫЙ dev (масштаб как ручная разметка): depth из config, dev под ~12 свингов.
+    try:
+        from core.smc.smc_snapshot import _zz_params
+        _dp, _ = _zz_params(zone_tf)
+    except Exception:
+        _dp = 11
+    _zz_zone = zigzag_atr(df_zone, depth=_dp, dev_mult=adaptive_dev(df_zone, _dp))
     h = select_significant_impulse(df_zone, _zz_zone)
     if h is None:
         htf = find_setups_zz(_zz_zone, df_zone)

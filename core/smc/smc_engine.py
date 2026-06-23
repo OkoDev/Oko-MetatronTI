@@ -764,6 +764,20 @@ def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
     return setups
 
 
+def adaptive_dev(df: "pd.DataFrame", depth: int = 11, target: int = 12) -> float:
+    """Подбор dev_mult под ~target zz-точек (масштаб как ручная разметка Егора).
+    Статичный dev не универсален (XLM=2, W=4) — адаптив даёт верный масштаб per-пара."""
+    best_dev, best = 3.0, 10 ** 9
+    for dv in (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0):
+        try:
+            nn = len(zigzag_atr(df, depth, dv))
+        except Exception:
+            continue
+        if abs(nn - target) < best:
+            best, best_dev = abs(nn - target), dv
+    return best_dev
+
+
 def select_significant_impulse(df: "pd.DataFrame", zz: List[tuple],
                               current_price: Optional[float] = None) -> Optional[dict]:
     """ЗНАЧИМЫЙ ЖИВОЙ импульс для OTE-контекста (ARCH-128, Егор 23.06) — заменяет наивный htf[-1].
