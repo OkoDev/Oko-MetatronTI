@@ -52,6 +52,10 @@
 
 | **DASH-COH-SWEEP** | ✅ | Свип Overview/Analytics/Patterns — рассинхрона шапка↔таблица нет (7b4e839). | Даат |
 
+| **WATCHLIST-UNI** | 🔄 | Универсальный Watchlist: pair_state.watchlist[strategy]+WatchlistEntry, % не R, подключить oko_ote (добро 22.06) | Даат |
+
+| **OKO-OTE-REBUILD** | 🔄 | Единый универсальный детектор (метод Егора): слом обе стороны+вложенность HTF-OTE+подтв≥3+цели-лестница −1/−1.618/TPSelector. ЖИВОЙ VST. Раннер до CHoCH (exit) + бэктест $ | Даат |
+
 | **BOT-LOCK-PID** | 🔵 | Робастность рестарта: single-instance lock не детектит мёртвый PID → force-kill оставляет stale bot_instance.lock, новый старт выходит «уже запущен». Фикс: перезаписать лок если PID мёртв (oko_mtf.py:56). | DEV/Claude |
 
 | **EXEC-REBUILD** | 🔄 | Единый Execution Sphere вместо 8 узлов. Ф2→Ф4.1✅ + SHADOW-врезка в живой WS (default OFF, 81/81 тест). АКТИВАЦИЯ СВЕРКИ: `exec_ws.sphere_shadow:true`+рестарт юзера → грепать `[SPHERE-SHADOW]`. Потом CUTOVER. → DISCUSSION 19.06 19:45 | Даат/DS |
@@ -290,6 +294,7 @@
 | **SIGNAL-AUDIT** | Аудит актуальности сигналов (confluence/wt_sideways отключены — shadow с полным trade_features, замерить) | 🟢 идея (юзер 11.06) | — |
 | **HIGH-VOL-VOLUME** | Объёмное обогащение HIGH_VOL (volume_z из features) | 🟢 отложено | — |
 | **DASHBOARD-VST-MODE** | Глобальный SIM/VST-фильтр: `summary(mode)` → весь дашборд (метрики/KPI/EV/Avg R) переключается SIM↔реальная торговля. Сейчас ВСЁ общее (балласт включён). Календарь уже сделан (`pnl_calendar(mode)`); распространить на summary + переключатель в топбаре. Эффект: VST 11.06 +2.012 vs SIM 0.26 — реальная картина прячется в общем | 🟢 идея (юзер 11.06) | `performance_engine.summary()`, `/api/stats`, топбар |
+| **EXIT-TYPE-FIX** | `_resolve_exit` не знал тип закрывающего ордера `MARKET`/`LIMIT` (реальный тип большинства закрытий на VST) → падал в EXPIRED вместо SL/TSL, хотя биржа отдаёт `profit` в том же ордере | ✅ **ПОЧИНЕНО+ЗАКОММИЧЕНО 25.06 (Даат).** Аудит 2×25 сделок: oko_ote 25/25, ote_nested 24/25 фиксится. 1912 историчных VST EXPIRED строк потенциально неверны (status+R) — backfill НЕ делал, отдельная задача. → DISCUSSION [25.06 01:30] | `core/exchange/position_sync.py::_resolve_exit` |
 | **DB-ILLUSIONS-AUDIT** | ✅ **DS ЗАКРЫЛ:** R_multiple ДОСТОВЕРЕН (89.5% совпадение с формулой). Система маржинально прибыльна **avgR+0.20** (бумажный +0.216, реальный +0.204, завышение лишь 5% от EXPIRED R=0→−1). Гипотеза «бумажные/убыточна» ОПРОВЕРГНУТА (Claude ошибочно clip к сломанному MFE). clamp_r_smart раннеры НЕ режет (131 сд R>15, max 112R; зажатые=артефакты sl_dist≈0). | ✅ закрыто (Claude валидировал) | `scripts/db_illusions_audit.py` |
 | **DATA-AUDIT-2** | 🟢 **ГОТОВО (DS 15.06). 4 аудита:** (1) EDGE: VST-селектор = весь edge, SIM убыточен; (2) ML: train_test_split → временной leak + selection bias; (3) MFE: 5% битых (НЕ 43%), captured_R_pct сломан; (4) Zombie: 211 SL без биржевого ордера. **Вытекло в #7+#8.** | 🟢 done → #7+#8 | DISCUSSION [15.06 04:45], `scripts/` |
 | **MFE-FIX (A3)** | 🟢 **ЗАКРЫТ.** MFE-трекинг НЕ сломан (5%, не 43%). captured_R_pct починен Даатом (#6, clamp[0,100]). | 🟢 done | `trade_simulator` MFE |

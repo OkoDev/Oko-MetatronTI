@@ -16,6 +16,7 @@ position_sync.py — синхронизация биржевых позиций 
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -71,7 +72,30 @@ async def _resolve_exit(
             if _cands:
                 o = max(_cands, key=lambda x: int(x.get("updateTime") or x.get("time") or 0))
                 _avg = o.get("avgPrice") or o.get("stopPrice") or o.get("price")
-                _status = _ORDER_TYPE_TO_STATUS.get(o.get("type", ""), "EXPIRED")
+                _otype = o.get("type", "")
+                if _otype in _ORDER_TYPE_TO_STATUS:
+                    _status = _ORDER_TYPE_TO_STATUS[_otype]
+                else:
+                    # 24.06 ENA #35915: positionID-якорь УЖЕ нашёл правильный закрывающий
+                    # ордер (100% наш, не угадываем), но type="MARKET" (reduce-only —
+                    # DEV-185.2 emergency-close при gap STOP-LIMIT, или ручное закрытие)
+                    # не входит в карту → раньше падало в EXPIRED, ХОТЯ биржа сама отдаёт
+                    # "profit" прямо в этом же ордере. Используем его вместо угадывания
+                    # знаком mark_price/income (тот ненадёжен на VST — RPC timeout
+                    # на allFillOrders/income, проверено живым запросом 24.06).
+                    _profit_raw = o.get("profit")
+                    if _profit_raw not in (None, ""):
+                        try:
+                            _profit = float(_profit_raw)
+                            _status = "SL"  # знак не определяет TP — TAKE_PROFIT_* уже отловлен выше;
+                            # downstream-проверка original_sl!=stop_loss поднимет до TSL при движении SL.
+                            logger.info("[POSITION-SYNC] %s %s: positionID-матч type=%s (не в карте), "
+                                        "profit=%.4g с биржи → %s (не EXPIRED)",
+                                        symbol, direction, _otype, _profit, _status)
+                        except (TypeError, ValueError):
+                            _status = "EXPIRED"
+                    else:
+                        _status = "EXPIRED"
                 _exit = float(_avg) if _avg else mark_price
                 logger.debug("[POSITION-SYNC] %s %s: exit по positionID=%s → %s @ %.8g",
                              symbol, direction, _pid, _status, _exit or 0)
@@ -119,6 +143,33 @@ async def _resolve_exit(
                 return status, exit_price
     except Exception as e:
         logger.debug("[POSITION-SYNC] get_filled_orders %s: %s", symbol, e)
+
+    # 3) INCOME-LEDGER fallback (24.06, Егор: «EXPIRED хотя реально стопанулась по
+    # своему TSL» — ENA #35915, exit_price≈подвинутый SL, но тип ордера/fill не
+    # сматчился ни по positionID, ни по orderId, ни эвристикой). income-ledger —
+    # $-истина биржи (REALIZED_PNL+ликвидация), всегда доступна, в отличие от
+    # filled-orders. Статус "SL" (не угадываем TP/TSL знаком P&L) — дальше его
+    # корректирует на "TSL" та же проверка original_sl!=stop_loss, что и для
+    # обычного filled-match (см. вызывающий код, sync_positions). Похожий приём
+    # есть в core/execution/sphere.py::_resolve_exit_via_income (другой, SHADOW
+    # пайплайн) — формула нормализации общая (normalize_symbol_for_income).
+    try:
+        from core.exchange.bingx_client import normalize_symbol_for_income
+        now_ms = int(time.time() * 1000)
+        want = normalize_symbol_for_income(symbol)
+        realized = 0.0
+        found = False
+        for it in ("REALIZED_PNL", "INSURANCE_CLEAR"):
+            for d in await client.get_income(now_ms - 10 * 60 * 1000, now_ms, income_type=it):
+                if normalize_symbol_for_income(d.get("symbol", "")) == want:
+                    realized += float(d.get("income") or 0)
+                    found = True
+        if found and realized != 0.0:
+            logger.info("[POSITION-SYNC] %s %s: EXPIRED-fallback избежан через income-ledger "
+                        "realized=%.4g → SL/TSL @ mark=%.8g", symbol, direction, realized, mark_price or 0)
+            return "SL", mark_price
+    except Exception as e:
+        logger.debug("[POSITION-SYNC] income-fallback %s: %s", symbol, e)
 
     # Fallback: позиция закрыта вручную или данных нет — ставим EXPIRED с mark_price
     return "EXPIRED", mark_price

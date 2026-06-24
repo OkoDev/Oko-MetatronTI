@@ -18,7 +18,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Optional
 
-from core.exchange.bingx_client import from_bingx_symbol
+from core.exchange.bingx_client import from_bingx_symbol, normalize_symbol_for_income
 from core.exchange.position_parser import parse_positions
 from core.execution.adapter import ExchangeAdapter
 from core.execution.domain import (
@@ -163,6 +163,22 @@ class BingXAdapter(ExchangeAdapter):
         if cli is None:
             return []
         return await cli.get_filled_orders(symbol, limit=limit)
+
+    async def get_income(self, symbol, account, start_ms: int, end_ms: int) -> float:
+        """CUTOVER-fallback: realized $ по symbol из income-ledger (REALIZED_PNL + ликвидация)."""
+        cli = self._router.client_for_account(account)
+        if cli is None:
+            return 0.0
+        want = normalize_symbol_for_income(symbol)
+        total = 0.0
+        try:
+            for it in ("REALIZED_PNL", "INSURANCE_CLEAR"):  # realized + ликвидация
+                for d in await cli.get_income(start_ms, end_ms, income_type=it):
+                    if normalize_symbol_for_income(d.get("symbol", "")) == want:
+                        total += _f(d.get("income"))
+        except Exception as e:
+            logger.debug("[BingXAdapter] get_income %s acc=%s: %s", symbol, account, e)
+        return total
 
     async def balances(self, account) -> dict:
         cli = self._router.client_for_account(account)

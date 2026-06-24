@@ -107,23 +107,26 @@ _SYNC_CLOSE_COOLDOWN_SEC = 10   # дедупликация: повторный p
 def _find_exchange_trade(db_path: str, sym: str, direction: str):
     """Найти OPEN биржевую сделку (не SIM-only) по символу+направлению.
 
-    Возвращает (id, position_id) или (None, None). Биржевая = execution_mode != 'SIM'
-    OR exchange_order_id реальный. position_id — якорь exit'а для _resolve_exit (fake-R фикс).
+    Возвращает (id, position_id, original_sl, stop_loss) или (None,None,None,None).
+    Биржевая = execution_mode != 'SIM' OR exchange_order_id реальный. position_id —
+    якорь exit'а для _resolve_exit (fake-R фикс). original_sl/stop_loss — для
+    SL→TSL коррекции (24.06, см. _sync_close_async), та же проверка что в
+    position_sync.py sync_positions (original_sl != stop_loss → TSL реально двигался).
     """
     import sqlite3
     try:
         with sqlite3.connect(db_path, timeout=5) as conn:
             row = conn.execute(
-                """SELECT id, position_id FROM simulated_trades
+                """SELECT id, position_id, original_sl, stop_loss FROM simulated_trades
                    WHERE symbol=? AND direction=? AND status='OPEN'
                      AND (execution_mode != 'SIM' OR
                           (exchange_order_id IS NOT NULL AND exchange_order_id != '' AND exchange_order_id != 'SIM'))
                    ORDER BY id DESC LIMIT 1""",
                 (sym, direction),
             ).fetchone()
-            return (row[0], row[1]) if row else (None, None)
+            return (row[0], row[1], row[2], row[3]) if row else (None, None, None, None)
     except Exception:
-        return (None, None)
+        return (None, None, None, None)
 
 
 async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
@@ -138,7 +141,7 @@ async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
       4. close_trade в БД.
     Multiaccount-safe: client берётся для account_tag аккаунта (account_router).
     """
-    trade_id, _pos_id = _find_exchange_trade(bot.trade_simulator.db_path, sym, direction)
+    trade_id, _pos_id, _orig_sl, _curr_sl = _find_exchange_trade(bot.trade_simulator.db_path, sym, direction)
     if not trade_id:
         logger.info("[EXEC-WS][2b] %s %s pa=0 — OPEN в БД не найдена (уже закрыта/SIM-only)", sym, direction)
         return
@@ -154,6 +157,17 @@ async def _sync_close_async(bot, sym: str, direction: str, account_tag: str,
             status, exit_price = await _resolve_exit(client, sym, direction, None, position_id=_pos_id)
     except Exception as e:
         logger.warning("[EXEC-WS][2b] _resolve_exit %s %s tag=%s: %s", sym, direction, account_tag, e)
+
+    # SL→TSL коррекция (24.06, та же проверка что в position_sync.py sync_positions):
+    # наш TSL двигает обычный STOP ордер (cancel+replace) → срабатывает как "SL".
+    # original_sl != stop_loss значит SL реально двигался TSL'ом — надёжнее tsl_activated
+    # (флаг ставится при +1R, но SL мог не двинуться). Без этой коррекции WS-immediate
+    # путь (этот) расходился с медленным sync_positions — там она уже была, здесь нет.
+    if status == "SL" and _orig_sl is not None and _curr_sl and float(_orig_sl) > 0:
+        if abs(float(_curr_sl) - float(_orig_sl)) / float(_orig_sl) > 0.0001:
+            logger.info("[EXEC-WS][2b] #%d %s: SL→TSL (orig_sl=%.6f → curr_sl=%.6f)",
+                        trade_id, sym, float(_orig_sl), float(_curr_sl))
+            status = "TSL"
 
     # VST-exit достоверный: реальный WS-fill ap приоритетнее REST (статус берём из _resolve_exit)
     if ws_exit_price is not None and ws_exit_price > 0:

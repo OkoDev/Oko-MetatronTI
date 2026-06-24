@@ -44,6 +44,13 @@ def from_bingx_symbol(symbol_bx: str) -> str:
     return s.replace("-", "/") + ":USDT"
 
 
+def normalize_symbol_for_income(symbol: str) -> str:
+    """Грубая нормализация для матча с /user/income (формат symbol там не гарантирован
+    1:1 с to_bingx_symbol). Используется и в BingxAdapter.get_income, и в position_sync
+    income-fallback — один калькулятор, не дублировать."""
+    return str(symbol or "").replace("/", "").replace(":", "").replace("-", "").upper().replace("USDT", "")
+
+
 # ── Режим исполнения ────────────────────────────────────────────────────────
 class ExecutionMode(str, Enum):
     SIM_ONLY = "sim_only"
