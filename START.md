@@ -1,7 +1,7 @@
 ---
 tags: [doc/status, session, project-overview]
 type: status-overview
-date: "2026-06-20"
+date: "2026-06-25"
 sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 ---
 
@@ -11,7 +11,7 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 **Запуск:** `python oko_mtf.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
 
-**🌅 ТЕКУЩИЙ ФОКУС (20.06, Даат соло) — ДЕНЬ ПРАВДЫ:** построен **EXEC-REBUILD Ф2→Ф4.1** (`core/execution/`, 92 теста, shadow). Дёрнут income-леджер → **МЕТРИКИ ВРАЛИ:** БД-realized +$121 vs биржа −$202; **ote_nested 6д реально NET −$510** (БД +$230). Диагноз: **вход живой (48% до +1R), выход убивает** — фиксимо. Починено: l3 VST-only (FIRE регистрируются), orphan SIM-masking, r_predictor OOS-gate. **Метрика-истина = `/user/income`/o.rp, НЕ БД-realized.** 🔒 Решение: этот Куб standalone BingX-direct, Condor=Cube2. **NEXT:** Ф5 дашборд-когезия (юзер просил) → CUTOVER pid-fix → EXIT-FIX (рычаг прибыли). Детали → `whats-next.md` (топ), `current_state.md` (20.06), [[income_ledger_db_overstates_realized]], [[ote_nested_edge_diagnosis]]. Бот жив (рестарт ~03:40).
+**🌅 ТЕКУЩИЙ ФОКУС (25.06) — OKO-OTE multi-TF валидация → НАЙДЕН lookahead в выборе HTF-зоны, результаты под вопросом:** 24-25.06 прогнана большая серия бэктестов confs≥3 (7 TF-комбо + sweep entry-fib + тройная вложенность zone⊃mid⊃break, новый параметр `mid_tf` в `detect_oko_ote`, backward-compatible). 🔴🔴🔴 **НО:** найден lookahead в `select_significant_impulse` (зона старшего ТФ выбирается с хиндсайтом по концу ВСЕГО датасета + отдельно — тай-брейк предпочитает крупный размах свежести даже без хиндсайта) — ВСЯ серия результатов под подозрением, **НЕ переносить в бой**. Егор предложил архитектурную переинтерпретацию (триггер=свежий слом, магнит=цель из существующей структуры через `TPSelector`) — решение по редизайну ЕЩЁ НЕ принято. Детали → `whats-next.md` (топ), `current_state.md` (24-25.06), [[strategy_truth_state]] (🔴🔴🔴 в начале), [[bug_select_significant_impulse_full_dataset_lookahead]]. Живой код НЕ затронут багом.
 
 ## 🧊 Stabilization Sprint (04.05–25.05.2026)
 

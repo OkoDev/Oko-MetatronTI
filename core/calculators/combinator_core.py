@@ -353,17 +353,17 @@ def _calc_divergence(close: np.ndarray, osc: np.ndarray, prd: int,
     # с последним подтверждённым пивотом (правый конец = живой бар, не ждём пока он
     # станет пивотом). Так маркер появляется в тот же момент, что на TradingView.
     # Левый конец остаётся подтверждённым пивотом. Фильтр входа: osc/price разворот.
-    def _last_confirmed_pivot(pivs, i):
-        """Последний пивот, чей правый край подтверждён к бару i (idx+prd <= i)."""
-        best = None
-        for (pidx, pval) in pivs:
-            if pidx + prd <= i:
-                best = (pidx, pval)
-            else:
-                break
-        return best
+    # Курсор вместо пересканирования pl/ph с начала на каждом баре: i растёт монотонно →
+    # каждый пивот проходится 1 раз суммарно (O(n)), не на каждом i заново (был O(n²) —
+    # корень тормозов compute_flags на 5m/большой истории). Результат идентичен.
+    pl_cur, ph_cur = 0, 0
+    pl_best, ph_best = None, None
 
     for i in range(prd + 6, n):
+        while pl_cur < len(pl) and pl[pl_cur][0] + prd <= i:
+            pl_best = pl[pl_cur]; pl_cur += 1
+        while ph_cur < len(ph) and ph[ph_cur][0] + prd <= i:
+            ph_best = ph[ph_cur]; ph_cur += 1
         if np.isnan(osc[i]) or np.isnan(osc[i-1]):
             continue
         # Bull: вход если осц растёт ИЛИ цена растёт (начало отскока вверх).
@@ -371,7 +371,7 @@ def _calc_divergence(close: np.ndarray, osc: np.ndarray, prd: int,
         # а не текущий бар — Pine рисует линию к фактическому экстремуму. Текущий бар лишь
         # триггер «отскок начался».
         if osc[i] > osc[i-1] or close[i] > close[i-1]:
-            piv = _last_confirmed_pivot(pl, i)
+            piv = pl_best
             if piv is not None:
                 i1, c1 = piv
                 if 5 < (i - i1) <= maxbars and not np.isnan(osc[i1]):
@@ -390,7 +390,7 @@ def _calc_divergence(close: np.ndarray, osc: np.ndarray, prd: int,
         # Bear: вход если осц падает ИЛИ цена падает (начало отката вниз).
         # Правый конец = самый высокий close после левого пивота (running-max).
         if osc[i] < osc[i-1] or close[i] < close[i-1]:
-            piv = _last_confirmed_pivot(ph, i)
+            piv = ph_best
             if piv is not None:
                 i1, c1 = piv
                 if 5 < (i - i1) <= maxbars and not np.isnan(osc[i1]):
