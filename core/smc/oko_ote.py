@@ -14,7 +14,7 @@
      ИЛИ идеальная точка разворота. Слом вне зоны старшего = рябь внутри ноги → пропуск.
   4. ПОДТВЕРЖДЕНИЯ ≥3 из 6 (div/wt_cross/vol/liq_sweep/fvg_held/atr) — эталон combinator
      (ote_signal_generator._confirmations). Конфлюенция +1.23 vs solo +0.13 (ote_engine_full_map).
-  5. ФИЛЬТР ГЛУБИНЫ 0.55-0.68 + WT-подтверждение (calculate_wt) + дивергенция (DivergenceDetector).
+  5. ФИЛЬТР ГЛУБИНЫ 0.5-0.705 + WT-подтверждение (calculate_wt) + дивергенция (DivergenceDetector).
   6. SL = Strong Low (levels[1.0]) ± буфер. ЦЕЛЬ = лестница фибо-РАСШИРЕНИЙ
      −1/−1.618/−2.618 (build_ote, measured move волн 3/5) → дальше магнит TPSelector (ARCH-113).
 
@@ -28,7 +28,9 @@ from typing import Optional, List, Tuple
 OB, OS = 60.0, 60.0       # |WT| порог (calculate_wt); OS = −60
 BUF = 0.0015              # буфер SL
 ENTRY_FIB = 0.62          # OTE 0.618 — вход (эталонный уровень build_ote)
-DEPTH_MIN, DEPTH_MAX = 0.55, 0.68   # фильтр средней глубины коррекции (инсайт Егора)
+DEPTH_MIN, DEPTH_MAX = 0.5, 0.705   # фильтр глубины коррекции (Егор 25.06: реальная OTE-зона
+                                     # 0.5-0.705, не 0.55-0.68 — ширина зоны = ширина входа,
+                                     # эти же границы переиспользует zone_lo/zone_hi сигнала)
 RETEST_BARS = 60          # окно касания OTE после слома
 MIN_CONFIRMATIONS = 3     # ≥3 из 6 (эталон ote_nested — весомы, конфлюенция +1.23)
 EXT_FIBS = [-1.0, -1.618, -2.618]   # лестница целей-расширений (measured move, гайды IKIGAI)
@@ -57,12 +59,17 @@ class OkoOteSignal:
     sl: float               # Strong Low (levels[1.0]) ± буфер
     tp: float               # первая цель лестницы (расширение −1)
     tp_source: str          # 'fib_ext_-1.0' | 'TPSelector:<label>'
-    depth: float            # глубина коррекции (0.55-0.68 = валид)
+    depth: float            # глубина коррекции (0.5-0.705 = валид)
     rr: float               # |tp-entry|/|entry-sl|
     zone_ts: str            # контекст: htf-нарратив + confs + div
     choch_ts: str           # время слома младшего
     targets: Optional[List[Tuple[float, str]]] = None   # лестница −1/−1.618/−2.618/магниты
     entry_ts: str = ""      # время бара входа (касание OTE) — для бэктеста/раннера
+    # 25.06 (Вариант А, гейт свежести): границы OTE-зоны (levels[DEPTH_MIN]/levels[DEPTH_MAX])
+    # — наблюдателю нужны ОБЕ границы, не только entry, чтобы не резать сетап если цена ушла
+    # от точного entry_fib, но осталась внутри зоны (метод OTE = вся зона валидна для входа).
+    zone_lo: float = 0.0
+    zone_hi: float = 0.0
 
 
 class _Ctx:
@@ -160,9 +167,39 @@ def _far_magnet(symbol, snap, entry, is_long, beyond):
     return None
 
 
+def _zone_asof(df_zone, dp, dev, as_of_ts, cache, prefer_recency=False):
+    """PIT-зона старшего ТФ на МОМЕНТ as_of_ts (срез df_zone до этого времени) — честный
+    point-in-time выбор (как видел бы живой бот), БЕЗ хиндсайта конца датасета.
+    Кэш по индексу последнего бара среза: LTF-сломы внутри одного HTF-бара дают один ключ
+    → пересчёт раз на HTF-бар, не на каждый слом (иначе O(сломы × zigzag) = неподъёмно).
+    dev переиспользуется с полного df (масштаб-параметр пары стабилен во времени — аппроксимация
+    ради скорости; точный adaptive_dev на каждом срезе удвоил бы и без того дорогой пересчёт).
+    Возвращает (ote_lo, ote_hi, direction) или None. Эталоны: zigzag_atr/select_significant_impulse."""
+    from core.smc.smc_engine import zigzag_atr, select_significant_impulse, find_setups_zz
+    pos = int(df_zone.index.searchsorted(as_of_ts, side="right"))  # баров с временем <= as_of_ts
+    if pos < 50:
+        return None
+    cached = cache.get(pos, "MISS")
+    if cached != "MISS":
+        return cached
+    d_cut = df_zone.iloc[:pos]
+    try:
+        zz = zigzag_atr(d_cut, depth=dp, dev_mult=dev)
+        h = select_significant_impulse(d_cut, zz, prefer_recency=prefer_recency)
+        if h is None:
+            hs = find_setups_zz(zz, d_cut)
+            h = hs[-1] if hs else None
+    except Exception:
+        h = None
+    res = (h["ote"][0], h["ote"][1], h["direction"]) if h else None
+    cache[pos] = res
+    return res
+
+
 def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
                    only_latest: bool = True, min_confs: Optional[int] = None, dfs_all=None,
-                   mid_tf: Optional[str] = None, df_mid=None, entry_fib: float = ENTRY_FIB):
+                   mid_tf: Optional[str] = None, df_mid=None, entry_fib: float = ENTRY_FIB,
+                   pit_zone: bool = False, recency: bool = False):
     """OKO-OTE: КОНТЕКСТ старшего ТФ → вложенный вход младшего В OTE-зоне старшего (обе стороны)
     → подтверждения ≥3 → цель-лестница расширений. df_zone=старший, df_break=младший (вход).
 
@@ -174,6 +211,9 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
       OTE-зона mid_tf ВНУТРИ zone_tf-зоны → финальный слом break_tf ВНУТРИ mid_tf-зоны.
       None (default) = текущее 2-уровневое поведение, БЕЗ изменений (живой путь не трогает).
     entry_fib — фибо-уровень входа (default ENTRY_FIB=0.62); для sweep 0.5/0.62/0.705.
+    pit_zone — БЭКТЕСТ-ОНЛИ (only_latest=False, mid_tf=None): зона старшего выбирается
+      point-in-time на момент каждого слома (честно), а не один раз на полном df_zone
+      (хиндсайт конца датасета = 67% сделок-артефактов, PIT-CHECK 25.06). Live игнорирует.
     """
     _min_confs = MIN_CONFIRMATIONS if min_confs is None else int(min_confs)
     from core.smc.smc_engine import (zigzag_atr, find_setups_zz,
@@ -195,8 +235,9 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
         _dp, _ = _zz_params(zone_tf)
     except Exception:
         _dp = 11
-    _zz_zone = zigzag_atr(df_zone, depth=_dp, dev_mult=adaptive_dev(df_zone, _dp))
-    h = select_significant_impulse(df_zone, _zz_zone)
+    _dev_zone = adaptive_dev(df_zone, _dp)
+    _zz_zone = zigzag_atr(df_zone, depth=_dp, dev_mult=_dev_zone)
+    h = select_significant_impulse(df_zone, _zz_zone, prefer_recency=recency)
     if h is None:
         htf = find_setups_zz(_zz_zone, df_zone)
         if not htf:
@@ -280,6 +321,12 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
 
     posL = {ts: i for i, ts in enumerate(df_break.index)}
     lo = df_break["low"].values; hi = df_break["high"].values; cl = df_break["close"].values; n = len(df_break)
+    # PIT-зона (приоритет 1, 25.06): в бэктесте зона старшего пересчитывается point-in-time
+    # на момент КАЖДОГО слома (честно), не один раз на полном df (хиндсайт = 67% сделок-артефактов,
+    # PIT-CHECK). Только 2-уровневый (mid_tf=None); тройную с PIT перепроверять отдельно. Кэш по HTF-бару.
+    _pit = bool(pit_zone) and not only_latest and mid_tf is None
+    _zone_cache: dict = {}
+    import pandas as _pd
 
     out_all: List[OkoOteSignal] = []        # only_latest=False → ВСЕ сетапы (для бэктеста)
     order = list(reversed(ltf)) if only_latest else ltf
@@ -292,6 +339,12 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
         D = s["direction"]                      # НАПРАВЛЕНИЕ = слом младшего (обе стороны)
         is_long = D == "long"
         entry = s["levels"][entry_fib]
+        # PIT: зону старшего пересчитываем на МОМЕНТ слома (честно, без хиндсайта конца датасета)
+        if _pit:
+            _z = _zone_asof(df_zone, _dp, _dev_zone, _pd.Timestamp(s["choch_ts"]), _zone_cache, recency)
+            if _z is None:
+                continue
+            container_lo, container_hi, htf_dir = _z[0], _z[1], _z[2]
         # 🔑 ВЛОЖЕННОСТЬ: вход ТОЛЬКО ВНУТРИ OTE-зоны контейнера (старшего, либо среднего при
         # тройной вложенности). Слом вне зоны = рябь внутри ноги (корень шума) → пропуск.
         if not (container_lo <= entry <= container_hi):
@@ -379,12 +432,15 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
             targets.append((round(far[0], 8), far[1]))
         tp, tp_source = targets[0]              # первая цель = −1 (консервативно, RR ~4.2)
         rr = abs(tp - entry) / risk
+        _zlv1, _zlv2 = s["levels"][DEPTH_MIN], s["levels"][DEPTH_MAX]
+        zone_lo, zone_hi = min(_zlv1, _zlv2), max(_zlv1, _zlv2)
         sig = OkoOteSignal(
             symbol=symbol, direction=D, zone_tf=zone_tf, break_tf=break_tf,
             entry=round(entry, 8), sl=round(slv, 8), tp=round(tp, 8),
             tp_source=tp_source, depth=round(depth, 3), rr=round(rr, 2),
             zone_ts=f"htf={htf_dir} in_ote=1 confs={'+'.join(confs)} div={int(div_rev)}",
             choch_ts=str(s["choch_ts"]), targets=targets, entry_ts=str(df_break.index[ei]),
+            zone_lo=round(zone_lo, 8), zone_hi=round(zone_hi, 8),
         )
         if only_latest:
             return sig                          # live: первый свежий сетап

@@ -29,6 +29,28 @@ OKO_OTE_CONCURRENCY = 3
 MIN_BARS = 50
 DEFAULT_LINKS = [("4h", "1h"), ("4h", "15m"), ("1h", "15m")]
 
+# ARMED-watcher (25.06, Егор): окно слепоты между сканами скан-цикла (600с) — если гейт
+# свежести не пустил (цена ушла от зоны), сетап раньше просто забывался до следующего скана
+# (10 мин слепоты). Теперь храним его здесь и проверяем ЧАСТО (get_current_price — WS,
+# 0 latency, без REST) — окно падает с 600с до ARMED_CHECK_INTERVAL_SECONDS. Детектор
+# (дорогой: zigzag+WT+confirmations) НЕ перезапускается чаще — только дешёвая цена.
+ARMED_CHECK_INTERVAL_SECONDS = 12
+# TTL зависит от break_tf сделки (Егор 25.06: 8 баров 15m ≠ 8 баров 1h по факт. времени) —
+# не флэт-минуты, а N баров ТОГО ТФ, на котором нашли слом (confirmations считаются по его
+# барам, естественный масштаб дрифта). 8 баров ≈ тот же порядок, что обычно занимает набор
+# confs≥3 (эталон оценки, не измерено отдельно) — НЕ магическое число навечно, see TASKS если
+# нужно калибровать по факту armed_at→fire задержкам.
+ARMED_TTL_BARS = 8
+_TF_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+_ARMED_SETUPS: dict = {}   # symbol -> {"sig":..., "cfg":..., "armed_at": float, "expiry": float}
+
+
+def _armed_ttl_minutes(sig, cfg) -> float:
+    """TTL = N баров break_tf (N из cfg.armed_ttl_bars, default ARMED_TTL_BARS)."""
+    bars = float(cfg.get("armed_ttl_bars", ARMED_TTL_BARS) or ARMED_TTL_BARS)
+    tf_min = _TF_MINUTES.get(getattr(sig, "break_tf", None), 15)
+    return bars * tf_min
+
 
 def _cfg(bot) -> dict:
     try:
@@ -51,6 +73,7 @@ async def oko_ote_observer_loop(bot, interval_seconds: int = OKO_OTE_INTERVAL_SE
     links = [(l["zone"], l["break"]) for l in cfg.get("links", [])] or DEFAULT_LINKS
     logger.info("[OKO-OTE] started. links=%s interval=%ds risk=%.2f%% max_conc=%d",
                 links, interval_seconds, cfg.get("risk_pct", 0.5), cfg.get("max_concurrent", 10))
+    asyncio.create_task(_armed_watcher_loop(bot, cfg))
 
     first = True
     while True:
@@ -84,6 +107,55 @@ async def oko_ote_observer_loop(bot, interval_seconds: int = OKO_OTE_INTERVAL_SE
         except Exception as e:
             logger.exception("[OKO-OTE] loop error: %s", e)
             await asyncio.sleep(interval_seconds)
+
+
+def _arm_setup(sig, cfg) -> None:
+    """Кладёт сетап в ARMED — частый WS-поллинг (_armed_watcher_loop) подхватит, когда
+    цена дойдёт до зоны. Один ARMED на символ — новый сигнал замещает старый (не копится).
+    TTL зависит от sig.break_tf (_armed_ttl_minutes) — 8 баров 15m ≠ 8 баров 1h."""
+    now = time.time()
+    ttl_min = _armed_ttl_minutes(sig, cfg)
+    _ARMED_SETUPS[sig.symbol] = {"sig": sig, "cfg": cfg, "armed_at": now, "expiry": now + ttl_min * 60}
+
+
+async def _armed_watcher_loop(bot, cfg) -> None:
+    """Частый (ARMED_CHECK_INTERVAL_SECONDS) дешёвый поллинг цены для ARMED-сетапов — закрывает
+    окно слепоты 10-минутного скан-цикла без пересчёта детектора и без лимит-ордера на бирже
+    (Вариант Б, полноценный лимит-вход, — отдельная задача). get_current_price = WS, 0 REST.
+    """
+    interval = float(cfg.get("armed_check_interval_sec", ARMED_CHECK_INTERVAL_SECONDS) or ARMED_CHECK_INTERVAL_SECONDS)
+    dc = getattr(bot, "data_collector", None)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            if not _ARMED_SETUPS or dc is None:
+                continue
+            now = time.time()
+            for symbol, item in list(_ARMED_SETUPS.items()):
+                if now >= item["expiry"]:
+                    logger.info("[OKO-OTE ARMED-EXPIRE] %s истёк (%.0f мин)", symbol,
+                                (now - item["armed_at"]) / 60.0)
+                    _ARMED_SETUPS.pop(symbol, None)
+                    continue
+                sig, sig_cfg = item["sig"], item["cfg"]
+                try:
+                    px = await dc.get_current_price(symbol)
+                except Exception:
+                    px = None
+                if not px or not sig.entry:
+                    continue
+                max_slip = float(sig_cfg.get("max_entry_slippage_pct", 0.5) or 0)
+                slip = abs(float(px) - sig.entry) / sig.entry * 100.0
+                if slip <= max_slip:
+                    _ARMED_SETUPS.pop(symbol, None)   # снять ДО await — не словить дублирующий fire
+                    logger.info("[OKO-OTE ARMED-FIRE] %s цена догнала зону (px=%.6g vs OTE=%.6g, slip=%.2f%%, ждали %.0fс)",
+                                symbol, px, sig.entry, slip, now - item["armed_at"])
+                    await _register_oko_trade(bot, sig, sig_cfg)
+        except asyncio.CancelledError:
+            logger.info("[OKO-OTE ARMED] watcher cancelled")
+            raise
+        except Exception as e:
+            logger.debug("[OKO-OTE ARMED] watcher error: %s", e)
 
 
 async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
@@ -132,7 +204,11 @@ async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
             # считаются от sig.entry (OTE-уровень X). Если цена ушла от X (медиана разрыва была
             # 3.57%, 55% сделок >3%) — market войдёт по уехавшей Y, R:R сломан, даже TP в минус.
             # Skip если |цена−OTE|/OTE > порога → поймаем на следующем 10-мин цикле когда цена у зоны
-            # (метод OTE = ждать откат В зону, не гнаться маркетом). Полный лимит-вход = Фаза 1.
+            # (метод OTE = ждать откат В зону, не гнаться маркетом). Полный лимит-вход = Фаза Б.
+            # 25.06 ОТКАТ Варианта А (zone_lo/zone_hi): валидация на 336 закрытых VST показала
+            # тугой 0.5%-гейт отсекает сделки в 6× хуже среднего (−1.203% vs −0.206%) — расширение
+            # до зоны 0.5-0.705 впустило бы обратно именно эти убыточные. Тугой гейт ВЕРНЫЙ, не
+            # бракует находки — отсекает версии сетапа, где рынок уже ушёл пока копились подтв.
             max_slip = float(cfg.get("max_entry_slippage_pct", 0.5) or 0)
             if max_slip > 0 and sig.entry:
                 px = 0.0
@@ -144,8 +220,11 @@ async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
                 if px > 0:
                     slip = abs(px - sig.entry) / sig.entry * 100.0
                     if slip > max_slip:
-                        logger.info("[OKO-OTE SKIP] %s slippage %.2f%% > %.2f%% (px=%.6g vs OTE=%.6g) — ждём отката к зоне",
-                                    sig.symbol, slip, max_slip, px, sig.entry)
+                        # ARMED-watcher (25.06): не забываем сетап до след. скана (10 мин слепоты) —
+                        # кладём на частый WS-поллинг (ARMED_CHECK_INTERVAL_SECONDS), см. _armed_watcher_loop.
+                        _arm_setup(sig, cfg)
+                        logger.info("[OKO-OTE ARMED] %s slippage %.2f%% > %.2f%% (px=%.6g vs OTE=%.6g) — ждём отката (watcher %ds)",
+                                    sig.symbol, slip, max_slip, px, sig.entry, ARMED_CHECK_INTERVAL_SECONDS)
                         break
             await _register_oko_trade(bot, sig, cfg)
             fired += 1
