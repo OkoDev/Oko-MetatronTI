@@ -28,9 +28,11 @@ from typing import Optional, List, Tuple
 OB, OS = 60.0, 60.0       # |WT| порог (calculate_wt); OS = −60
 BUF = 0.0015              # буфер SL
 ENTRY_FIB = 0.62          # OTE 0.618 — вход (эталонный уровень build_ote)
-DEPTH_MIN, DEPTH_MAX = 0.5, 0.705   # фильтр глубины коррекции (Егор 25.06: реальная OTE-зона
-                                     # 0.5-0.705, не 0.55-0.68 — ширина зоны = ширина входа,
-                                     # эти же границы переиспользует zone_lo/zone_hi сигнала)
+DEPTH_MIN, DEPTH_MAX = 0.382, 0.79   # фильтр глубины коррекции = OTE-зона входа (эталон IKIGAI:
+                                     # зона коррекции 0.382-0.786, волна4=0.382, волна2/глубокая
+                                     # =0.618/0.786, доминанта 0.618). 0.786≈0.79 (Егор, используем
+                                     # существующий уровень build_ote 0.79). Узкая 0.5-0.705 резала
+                                     # валидные касания (BTC окт). zone_lo/hi = levels[0.382/0.79].
 RETEST_BARS = 60          # окно касания OTE после слома
 MIN_CONFIRMATIONS = 3     # ≥3 из 6 (эталон ote_nested — весомы, конфлюенция +1.23)
 EXT_FIBS = [-1.0, -1.618, -2.618]   # лестница целей-расширений (measured move, гайды IKIGAI)
@@ -199,7 +201,7 @@ def _zone_asof(df_zone, dp, dev, as_of_ts, cache, prefer_recency=False):
 def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
                    only_latest: bool = True, min_confs: Optional[int] = None, dfs_all=None,
                    mid_tf: Optional[str] = None, df_mid=None, entry_fib: float = ENTRY_FIB,
-                   pit_zone: bool = False, recency: bool = False):
+                   pit_zone: bool = False, recency: bool = False, confs_tf: Optional[str] = None):
     """OKO-OTE: КОНТЕКСТ старшего ТФ → вложенный вход младшего В OTE-зоне старшего (обе стороны)
     → подтверждения ≥3 → цель-лестница расширений. df_zone=старший, df_break=младший (вход).
 
@@ -283,23 +285,31 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
     dfs.setdefault(zone_tf, df_zone); dfs.setdefault(break_tf, df_break)
     if mid_tf is not None:
         dfs.setdefault(mid_tf, df_mid)
+    # confs_tf (Егор 25.06): подтверждения на МАКСИМАЛЬНО МЛАДШЕМ ТФ (5m), а слом/вход на break_tf
+    # (15m/1h). «Сетап на старшем, заходим+подтверждаемся на младшем». BTC окт: слом виден на 15m
+    # (на 5m дробится), но confs≥3 на 15m не набрать (мало сигналов) → нужен слом 15m + confs 5m.
+    # None → confs на break_tf (старое поведение). df_confs из dfs (5m). Бар входа ei(break_tf)
+    # мапится по времени на confs_df бар (_confirmations_bt на нём).
+    _confs_name = confs_tf if (confs_tf and confs_tf in dfs) else break_tf
+    df_confs = dfs.get(_confs_name, df_break)
+    _confs_idx = df_confs.index
     flast = None; flags_df = None
     if only_latest:
         try:
-            flast = gen._ltf_flags(df_break, break_tf)
+            flast = gen._ltf_flags(df_confs, _confs_name)
         except Exception:
             flast = None
     else:
         try:
             from core.smc.ote_signal_generator import _combinator
-            flags_df = _combinator().compute_flags(df_break, break_tf)
+            flags_df = _combinator().compute_flags(df_confs, _confs_name)
         except Exception:
             flags_df = None
-    # бэктест: wt/atr ПРЕДВЫЧИСЛЕНЫ 1 раз/пара (не на каждый бар окна, см. _confirmations_bt)
+    # бэктест: wt/atr ПРЕДВЫЧИСЛЕНЫ 1 раз/пара (не на каждый бар окна, см. _confirmations_bt) — на confs-ТФ
     _bt_wt1, _bt_wt2, _bt_atr_dirs = None, None, {}
     if not only_latest:
-        _bt_wt1, _bt_wt2 = _precompute_wt(df_break)
-        _bt_atr_dirs = _precompute_atr_dir(dfs, df_break)
+        _bt_wt1, _bt_wt2 = _precompute_wt(df_confs)
+        _bt_atr_dirs = _precompute_atr_dir(dfs, df_confs)
     # snapshot для far-магнитов TPSelector — ЛЕНИВО (1 раз, только если дойдёт ХОТЯ БЫ один
     # сетап до far_magnet). build_smc_snapshot (structure/fvg/order_blocks mitigation) — O(n)
     # с тяжёлыми .iloc-сканами; на 15m (24k+ баров) это ~7 минут ВСЕГДА, даже если confs≥3
@@ -384,7 +394,7 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
         confs = []
         if only_latest:
             try:
-                cf = gen._confirmations(D, dfs, break_tf, flast)
+                cf = gen._confirmations(D, dfs, _confs_name, flast)
             except Exception:
                 cf = []
             if len(cf) >= _min_confs:
@@ -392,12 +402,20 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
         else:
             _zlo = min(s["levels"][0.5], s["levels"][0.79])
             _zhi = max(s["levels"][0.5], s["levels"][0.79])
+            _same_confs = (_confs_name == break_tf)   # confs на том же ТФ → j5==j (без маппинга)
             for j in range(ei, min(ei + RETEST_BARS, n)):
                 if not (_zlo <= cl[j] <= _zhi):     # цена вышла из OTE-зоны → ARMED истёк
                     break
-                _fj = flags_df.iloc[j] if (flags_df is not None and j < len(flags_df)) else None
+                # confs на confs_df (5m): мапим время бара j(break_tf) → бар confs_df
+                if _same_confs:
+                    j5 = j
+                else:
+                    j5 = int(_confs_idx.searchsorted(df_break.index[j], side="right")) - 1
+                    if j5 < 0:
+                        continue
+                _fj = flags_df.iloc[j5] if (flags_df is not None and 0 <= j5 < len(flags_df)) else None
                 try:
-                    cf = _confirmations_bt(is_long, _fj, break_tf, _bt_wt1, _bt_wt2, j, _bt_atr_dirs)
+                    cf = _confirmations_bt(is_long, _fj, _confs_name, _bt_wt1, _bt_wt2, j5, _bt_atr_dirs)
                 except Exception:
                     cf = []
                 if len(cf) >= _min_confs:

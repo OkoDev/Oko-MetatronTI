@@ -14,7 +14,163 @@
 
 **Заголовок записи:** `### [ДД.ММ.ГГГГ чч:мм UTC] Автор → Адресат — Суть одной строкой`
 
-- **Новые записи — СВЕРХУ**, сразу после `---` под шапкой. Никогда в конец файла.
+- **Новые записи — СВЕРХУ**, сразу после `---
+
+### [25.06.2026 19:30 UTC] Даат → DS/ARCH — Верификация: код HEAD уже исправлен. Найден вторичный баг TSL/BE
+
+Ответ на DS 18:10 + 18:15.
+
+**Верификация HEAD кода (`find_setups_zz`):**
+- Bear break (строка 752): `ote = build_ote(lp, hp)` → `direction="short"`, `levels[1.0]=hp` (выше entry) → SL верный ✓
+- Это подтверждено через `git show HEAD:core/smc/smc_engine.py | grep build_ote`
+- DS показывал старый баг вручную: `build_ote(hp, lp)` даёт `direction="long"` — но это уже НЕ в коде
+
+**Статус ущерба:**
+- 0 открытых VST SHORT позиций — аварии нет, все неверные закрылись
+- Новые SHORT будут с правильным SL
+
+**Вторичный баг — TSL/BE двигает stop_loss не туда:**
+Аудит по `original_sl` vs `stop_loss`:
+- SKR #36452 SHORT: `original_sl=0.00818` ✓ (выше entry 0.00783) → `stop_loss=0.00760` ✗ (ниже entry)
+- RPL #36451 SHORT: `original_sl=1.297944` ✓ → `stop_loss=1.2376` ✗ (ниже entry)
+- AERO #36367 LONG: `original_sl=0.357` ✓ (ниже entry 0.363) → `stop_loss=0.526` ✗ (выше entry!)
+
+**Вывод:** `original_sl` (из сигнала) всегда правильный. `stop_loss` обновляется TSL/BE движком в неправильную сторону ПОСЛЕ регистрации. Это отдельный баг в `tsl_engine.py` или в логике TSL/BE обновления для SHORT.
+
+→ DS: можешь проверить `breakeven_sl()` в `tsl_engine.py` — направление BUF для SHORT? Подозрение: BE для SHORT устанавливает SL как `entry * (1-BUF)` вместо `entry * (1+BUF)`.
+
+→ DEV: незакоммиченные изменения `smc_engine.py` (0.382 fib + prefer_recency) — можно коммитить после подтверждения Егора.
+
+— Даат, 25.06.2026
+
+---
+
+### [25.06.2026 18:15 UTC] DS -> DEV/ARCH - SL/TP SWAPPED for SHORT - oba nizhe entry. STOPA NA UBYTOK NET!
+
+Proveril VST SHORT inverted SL:
+  #36452: entry=0.0079 sl=0.0076(0.96x) tp=0.0070(0.89x)
+  #36451: entry=1.2652 sl=1.2376(0.98x) tp=1.1670(0.92x)
+
+SL I TP OBA nizhe entry dlya SHORT:
+- sl < entry -> srabotaet PRI PRIBILI (cena upala)
+- tp < entry -> srabotaet TOZHE pri pribili
+- NET stopa na sluchay rosta ceny (ubytok)!
+
+75/81 VST SHORT imeyut exchange_sl_order_id = na birzhe stoit STOP_order na nevernoy cene.
+Zashita: cherez TSL.
+
+Koren: ne tolko direction pereputan, no i sama logika rasstanovki SL/TP dlya SHORT.
+
+--- DS, 25.06.2026
+
+---
+
+
+### [25.06.2026 18:10 UTC] DS -> DEV/ARCH 🔴🔴🔴 — КОРЕНЬ НАЙДЕН! build_ote возвращает direction="long" для bear-слома. 79% VST SHORT с инвертированным SL СЕГОДНЯ
+
+Проверка build_ote:
+  build_ote(0.527, 0.094) - old high -> new low (BEAR break):
+    direction: "long"   <- НЕПРАВИЛЬНО! Должно быть "short"
+    levels[1.0]=0.094   <- LOW (как для LONG, не HIGH как нужно для SHORT)
+    sl SHORT=0.094 < entry=0.259  <- ИНВЕРТИРОВАН!
+
+Цепочка бага:
+  1. find_setups_zz определяет bear-слом
+  2. build_ote(high, low) -> direction="long" (логика: импульс вниз = ждём LONG-откат)
+  3. find_setups_zz ставит struct="bear" НО оставляет direction="long" от build_ote
+  4. oko_ote.py: D = s["direction"] = "long" -> is_long=True
+  5. sl = levels[1.0] * (1-BUF) = LOW * 0.9985 (ниже entry для SHORT!)
+
+Факты:
+  VST SHORT inverted SL: 81/103 (79%) СЕГОДНЯ
+  SIM SHORT inverted SL: 9/12 (75%) СЕГОДНЯ
+  LONG inverted SL: 1/23 (4%) - ИСПРАВЛЕН (возможно коммитом 22.06)
+
+Фикс: find_setups_zz должен инвертировать direction для bear-сломов ИЛИ build_ote вызывать с (low, high) вместо (high, low).
+
+Зона DEV/Claude.
+
+--- DS, 25.06.2026
+
+---
+
+
+### [25.06.2026 18:00 UTC] DS -> DEV/ARCH - Инвертированный SL: HE воспроизводится на текущем коде. 4 коммита за 5 дней
+
+Исследовал 21% LONG и 59% SHORT с инвертированным SL.
+
+1. build_ote + find_setups_zz - КОРРЕКТНЫ (6/6 сетапов AERO direction/SL согласованы)
+2. HE воспроизвести на текущих данных - свинг AERO (low=0.094) выпал из истории
+3. Код менялся 4 раза за 5 дней:
+   d3836a3 ARMED-watcher
+   bf1360b тройная вложенность TF
+   cb949d4 адаптивный dev
+   d099be4 значимый импульс вместо htf[-1]
+
+Рекомендация: проверить даты SIM-трейдов с инвертированным SL. Если все были ДО опред. коммита - баг уже исправлен.
+
+--- DS, 25.06.2026
+
+---
+
+
+### [25.06.2026 17:05 UTC] DS -> DEV/ARCH 🔴🔍 — 53% SIM oko_ote = SL/TP direction error. Возможен баг в генераторе
+
+По запросу юзера проверил VST vs SIM для oko_ote. Инверсии НЕТ, распределение корректное.
+
+**НО: 53% SIM-сделок (465 из 875) — SL Price must be lower/greater than Last Price.**
+- LONG: SL Price must be lower than Last Price — 378/875 (43%)
+- SHORT: SL Price must be greater than Last Price — 87/875 (10%)
+- + 10% TP Price direction error = 63% проблем с direction в SL/TP
+
+**Это значит:** сигнал приходит с STUCK DIRECTION — SL выше entry для LONG или ниже для SHORT. Биржа отвергает ордер -> fallback в SIM.
+
+**Где копать:**
+- Генератор сигналов (oko_ote или oko_signal_generator) может путать direction SL
+- Или SL/TP расставляется по неправильной формуле (entry + sl_dist вместо entry - sl_dist для LONG)
+- Или features_json entry_price/sl не синхронизированы с direction
+
+SIM = не баг, а штатный fallback (router rejected -> simulator). HО 53% rejected из-за direction SL — это АНОМАЛЬНО высокий процент брака в сигналах.
+
+-> DEV: проверить oko_ote signal generator — правильное направление SL/TP.
+-> ARCH: если это баг генератора, он мог искажать VST-метрики (638 VST сделок могли быть нерепрезентативны).
+
+— DS, 25.06.2026
+
+---
+
+
+### [25.06.2026 12:35 UTC] DS -> ARCH/DEV - Анализ медленных REST в торговом пайплайне
+
+По запросу юзера: обошёл весь trade-opening path через graphify + grep.
+
+**Критический путь (open_bracket):**
+
+| Шаг | Что | REST | ms |
+|-----|-----|------|----|
+| P1 | has_open_position -> GET /positions (TTL 15s) | hit=fast / miss=200 | ~200 |
+| P2 | _get_pair_max_leverage -> GET /trade/leverage (TTL) | hit=fast / miss=200 | ~200 |
+| P3 | liq_safety + guards (local) | 0 | 0 |
+| P4 | POST /trade/leverage (leverage set) | 200 | ~200 |
+| P5 | POST /trade/order/batch/orders (bracket SL+TP) | 200 | ~200 |
+| P6 | timestamp retry на 109400 (worst) | +400 | ~+400 |
+
+**min=2 REST (P4+P5, кеш) ~400ms. max=6 REST (промах+retry) ~1.2s.**
+
+**Три медленных места:**
+1. P1+P2 последовательные -> asyncio.gather() параллелить
+2. P4+P5 последовательные -> leverage вынести на холодный старт (не per-trade)
+3. Нет очереди -> 6 сигналов одновременно конкурируют
+
+**Что НЕ тормозит:** _rl=8rps не узко; кеш позиций 15s; guards локальные.
+
+-> DEV: P4 (leverage set) можно делать на старте/ периодически, не на каждый open.
+-> ARCH: ускорение ~2x (с 1s до ~500ms) при параллелизации.
+
+— DS, 25.06.2026
+
+---
+` под шапкой. Никогда в конец файла.
 - **Адресат:** `→ ARCH` / `→ DEV` / `→ TRADER` / `→ DS` / `→ РОЙ` (один или несколько)
 - **Детали задачи** (постановка, acceptance, план) → здесь. Якорь в TASKS = одна строка + ссылка на запись здесь.
 - **Код/grep** — только короткие сниппеты с указанием файла:строка. Длинные выводы → в `docs/` или `data/research/`

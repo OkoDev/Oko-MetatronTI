@@ -707,6 +707,11 @@ signal_router:
       soft_gates_enabled: []
       leverage: 20             # умеренно для песочницы (метод не нуждается в 50x — edge во входе/выходе)
       risk_pct: 0.5
+      entry_order_type: MARKET # 25.06 ОТКАТ LIMIT→MARKET: гейт свежести (ARMED, skip если цена вне
+                               # OTE-зоны) перехватывает ДО постановки лимита → LIMIT на биржу не уходил.
+                               # Гейт+MARKET уже даёт вход близко к OTE (gap старых сделок 0.2-0.8%) — то
+                               # ради чего был LIMIT, но без pending-lifecycle/orphan-рисков. LIMIT-код
+                               # (place_bracket_order/order_manager/source_policy) сохранён для будущего.
     trigger_loop:
       min_strength: 50
       exchange_enabled: false

@@ -286,7 +286,7 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     # Набор уровней пользователя (TradingView OTE): 0.5/0.62/0.705/0.79.
     # Отрицательные = фибо-РАСШИРЕНИЕ за конец импульса (measured move = цели волны 3/5):
     # -0.62/-1.0(100%)/-1.618(вола3 гайд)/-2.618 — лестница целей метода Егора (тот же расчёт).
-    fibs = [-2.618, -1.618, -1.0, -0.62, 0.0, 0.5, 0.62, 0.705, 0.79, 1.0]
+    fibs = [-2.618, -1.618, -1.0, -0.62, 0.0, 0.382, 0.5, 0.62, 0.705, 0.79, 1.0]
     levels = {f: swing_a + f * rng for f in fibs}
     # Зона входа = 0.5-0.79 (уточнение пользователя 02.06: вход в диапазоне discount/premium,
     # не только глубокий 0.705-0.79; 0.705/0.79 — наиболее вероятные точки отскока внутри).
@@ -779,7 +779,8 @@ def adaptive_dev(df: "pd.DataFrame", depth: int = 11, target: int = 12) -> float
 
 
 def select_significant_impulse(df: "pd.DataFrame", zz: List[tuple],
-                              current_price: Optional[float] = None) -> Optional[dict]:
+                              current_price: Optional[float] = None,
+                              prefer_recency: bool = False) -> Optional[dict]:
     """ЗНАЧИМЫЙ ЖИВОЙ импульс для OTE-контекста (ARCH-128, Егор 23.06) — заменяет наивный htf[-1].
 
     Метод (валидирован на стенде oko_context_locator, 6 пар + ТФ 1d→5m):
@@ -789,7 +790,11 @@ def select_significant_impulse(df: "pd.DataFrame", zz: List[tuple],
       2. ИНВАЛИДАЦИЯ: импульс МЁРТВ, если откат пробил 0.79 (= нарратив сменился).
       3. ВЫБОР: цена в OTE (готов) → цена в ноге отката (ждём) → крупнейший span.
     Возвращает setup dict (build_ote + from/to/direction/levels/kind) или None.
-    """
+
+    prefer_recency (Егор 25.06): среди кандидатов выбирать САМЫЙ СВЕЖИЙ слом, не крупнейший
+    span. Корень «мерцания зоны» (BTC 10.2025: span-приоритет брал старую апрель-майскую ногу
+    вместо свежего октябрьского слома, когда цена выходила из OTE свежего). Свежий слом =
+    триггер начала движения к магниту (инсайт Егора). default False = старое поведение (span)."""
     if df is None or len(df) < 10:
         return None
     setups = find_setups_zz(zz, df) or []
@@ -841,10 +846,13 @@ def select_significant_impulse(df: "pd.DataFrame", zz: List[tuple],
             continue
         l0 = lv.get(0.0); l1 = lv.get(1.0)
         span = abs(s["to"][1] - s["from"][1]) / s["from"][1] if s["from"][1] else 0.0
+        # ключ выбора: prefer_recency → свежесть слома (pos choch) первична, span tie-break;
+        # иначе старое поведение (span). ci уже = pos.get(choch_ts) выше.
+        key = (ci if ci is not None else -1, span) if prefer_recency else (span,)
         if olo <= cur <= ohi:
-            now.append((span, s))
+            now.append((key, s))
         elif l0 is not None and l1 is not None and min(l0, l1) <= cur <= max(l0, l1):
-            leg.append((span, s))
+            leg.append((key, s))
     if now:
         return max(now, key=lambda x: x[0])[1]
     if leg:

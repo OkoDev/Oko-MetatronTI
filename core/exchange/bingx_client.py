@@ -625,9 +625,13 @@ class BingXClient:
         self, symbol: str, side: str, qty: float,
         sl: float, tp: float, leverage: int = 5,
         sl_limit_buffer_pct: float = 0.0,
+        order_type: str = "MARKET", entry_price: float = 0.0,
     ) -> dict:
-        """MARKET позиция с SL и TP (JSON-объекты, dual-signing).
+        """MARKET/LIMIT позиция с SL и TP (JSON-объекты, dual-signing).
 
+        order_type="LIMIT" + entry_price>0 → лимитный вход по entry_price (OTE 0.618):
+          ордер встаёт на уровень, исполняется при касании, SL/TP привязаны (срабатывают
+          после fill). Убирает slippage MARKET-входа (вход ровно на сигнальной цене).
         sl_limit_buffer_pct > 0 → SL как STOP (Stop-Limit) вместо STOP_MARKET.
         Для LONG: limit_price = sl * (1 - buf/100). Для SHORT: sl * (1 + buf/100).
         """
@@ -658,12 +662,16 @@ class BingXClient:
         tp_obj = json.dumps({"type": "TAKE_PROFIT_MARKET", "stopPrice": tp, "price": 0, "workingType": "MARK_PRICE"}, separators=(",", ":"))
 
         ts = self._ts()
+        _ptype = (order_type or "MARKET").upper()
+        # LIMIT → добавляем &price (вход по entry_price). MARKET → без price (по рынку).
+        # price в КОНЦЕ, одинаково в raw_qs (подпись as-is) и url_qs (отправка) — пары совпадают.
+        _pp = f"&price={entry_price}" if (_ptype == "LIMIT" and entry_price > 0) else ""
         raw_qs = (f"positionSide={pos_side}&quantity={qty}&side={side}"
                   f"&stopLoss={sl_obj}&symbol={bx_symbol}"
-                  f"&takeProfit={tp_obj}&timestamp={ts}&type=MARKET")
+                  f"&takeProfit={tp_obj}&timestamp={ts}&type={_ptype}{_pp}")
         url_qs = (f"positionSide={pos_side}&quantity={qty}&side={side}"
                   f"&stopLoss={urllib.parse.quote(sl_obj)}&symbol={bx_symbol}"
-                  f"&takeProfit={urllib.parse.quote(tp_obj)}&timestamp={ts}&type=MARKET")
+                  f"&takeProfit={urllib.parse.quote(tp_obj)}&timestamp={ts}&type={_ptype}{_pp}")
         return await self.post_raw("/openApi/swap/v2/trade/order", raw_qs, url_qs)
 
     async def place_stop_order(

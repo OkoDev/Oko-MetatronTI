@@ -38,6 +38,9 @@ class SourcePolicy:
     # режим (напр. ote_nested 50x потёк бы на новую стратегию). Локализуем под источник.
     leverage: int | None = None
     risk_pct: float | None = None
+    # Тип входного ордера (Фаза 1, 25.06): "MARKET" (по рынку, slippage) или "LIMIT" (по
+    # entry_price = OTE 0.618, без slippage). oko_ote → LIMIT (вход ровно в зону, метод Егора).
+    entry_order_type: str = "MARKET"
 
     @classmethod
     def from_config(cls, config: Any, source: str) -> "SourcePolicy":
@@ -67,4 +70,5 @@ class SourcePolicy:
             soft_gates_enabled=list(_pick("soft_gates_enabled", DEFAULT_SOFT_GATES)),
             leverage=int(_lev) if _lev is not None else None,
             risk_pct=float(_risk) if _risk is not None else None,
+            entry_order_type=str(_pick("entry_order_type", "MARKET")).upper(),
         )

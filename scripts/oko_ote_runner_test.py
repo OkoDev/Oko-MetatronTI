@@ -40,7 +40,7 @@ def _pnl(entry, exit_px, sl, direction):
     return raw - fee
 
 
-def test_pair(conn, sym, zone_tf, break_tf, min_confs=3, mid_tf=None, entry_fib=0.62):
+def test_pair(conn, sym, zone_tf, break_tf, min_confs=3, mid_tf=None, entry_fib=0.62, pit_zone=False, recency=False, confs_tf=None):
     from core.smc.oko_ote import detect_oko_ote
     from core.smc.smc_engine import zigzag_atr, find_setups_zz
     d_zone = _load(conn, sym, zone_tf); d_break = _load(conn, sym, break_tf)
@@ -61,7 +61,7 @@ def test_pair(conn, sym, zone_tf, break_tf, min_confs=3, mid_tf=None, entry_fib=
     try:
         sigs = detect_oko_ote(sym, d_zone, d_break, zone_tf, break_tf,
                               only_latest=False, min_confs=min_confs, dfs_all=dfs_all,
-                              mid_tf=mid_tf, df_mid=d_mid, entry_fib=entry_fib)
+                              mid_tf=mid_tf, df_mid=d_mid, entry_fib=entry_fib, pit_zone=pit_zone, recency=recency, confs_tf=confs_tf)
     except Exception:
         return []
     if not sigs:
@@ -176,11 +176,11 @@ def test_pair(conn, sym, zone_tf, break_tf, min_confs=3, mid_tf=None, entry_fib=
 def _worker(args):
     """Изолированный процесс: своё sqlite-подключение (conn не пиклится между процессами)."""
     import time
-    sym, zone_tf, break_tf, min_confs, mid_tf, entry_fib = args
+    sym, zone_tf, break_tf, min_confs, mid_tf, entry_fib, pit_zone, recency, confs_tf = args
     conn = sqlite3.connect(CACHE, timeout=60)
     t0 = time.time()
     try:
-        trades = test_pair(conn, sym, zone_tf, break_tf, min_confs, mid_tf, entry_fib)
+        trades = test_pair(conn, sym, zone_tf, break_tf, min_confs, mid_tf, entry_fib, pit_zone, recency, confs_tf)
     except Exception:
         trades = []
     finally:
@@ -194,6 +194,9 @@ def main():
     ap.add_argument("--zone-tf", default="4h"); ap.add_argument("--break-tf", default="1h")
     ap.add_argument("--mid-tf", default=None)  # опц. средний ТФ — тройная вложенность (4h⊃mid⊃break)
     ap.add_argument("--entry-fib", type=float, default=0.62)  # sweep 0.5/0.62/0.705
+    ap.add_argument("--pit-zone", action="store_true")  # PIT-зона (честно, без хиндсайта); 2-уровневый
+    ap.add_argument("--recency", action="store_true")  # свежий слом > крупный span (фикс мерцания зоны)
+    ap.add_argument("--confs-tf", default=None)  # ТФ подтверждений (5m=LTF); None=break_tf. Слом на break, confs на 5m
     ap.add_argument("--min-confs", type=int, default=3)   # ПОЛНЫЙ тест: подтверждения ≥3 (live-фильтр)
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 4))  # пары независимы → параллельно по CPU
     ap.add_argument("--csv", default=None)  # дамп per-trade (sym/dir/entry_ts/entry_px) для overlap-анализа между комбо
@@ -205,7 +208,7 @@ def main():
     allr = []
     import time
     t0 = time.time()
-    tasks = [(s, a.zone_tf, a.break_tf, a.min_confs, a.mid_tf, a.entry_fib) for s in syms]
+    tasks = [(s, a.zone_tf, a.break_tf, a.min_confs, a.mid_tf, a.entry_fib, a.pit_zone, a.recency, a.confs_tf) for s in syms]
     done = 0
     with Pool(processes=a.workers) as pool:
         for sym, dt, trades in pool.imap_unordered(_worker, tasks):
@@ -226,7 +229,8 @@ def main():
                 w.writerow({k: t.get(k) for k in w.fieldnames})
         print(f"[csv] {len(allr)} сделок -> {a.csv}")
     _chain = f"{a.zone_tf}->{a.mid_tf}->{a.break_tf}" if a.mid_tf else f"{a.zone_tf}->{a.break_tf}"
-    print(f"\n# OKO-OTE ВЫХОД-ТЕСТ ($) — {_chain}, confs>={a.min_confs}, entry_fib={a.entry_fib}, {len(allr)} сделок, риск ${RISK_USD}/сделку\n")
+    _pit_tag = (" PIT-ЗОНА(честно)" if a.pit_zone else " хиндсайт-зона") + (" +recency" if a.recency else "") + (f" confs_tf={a.confs_tf}" if a.confs_tf else "")
+    print(f"\n# OKO-OTE ВЫХОД-ТЕСТ ($) — {_chain}, confs>={a.min_confs}, entry_fib={a.entry_fib},{_pit_tag}, {len(allr)} сделок, риск ${RISK_USD}/сделку\n")
     print("| выход | сумма $ | средн $/сделку | WR% | макс $ | мин $ |")
     print("|---|---|---|---|---|---|")
     for k in ("target_-1", "target_-1.618", "tp_2R", "tp_3R", "runner_choch", "ladder", "ladder_run"):

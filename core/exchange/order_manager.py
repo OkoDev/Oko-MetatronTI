@@ -445,6 +445,7 @@ class OrderManager:
         tp2:         Optional[float] = None,
         qty:         float = 0.0,
         leverage:    Optional[int] = None,
+        entry_order_type: str = "MARKET",   # "LIMIT" → вход лимиткой по entry_price (Фаза 1, oko_ote 0.618)
     ) -> BracketResult:
         notional = qty * entry_price
 
@@ -541,9 +542,12 @@ class OrderManager:
                                     symbol, direction, leverage, _safe_lev, _sl_frac * 100, _liq_buf * 100)
                         leverage = _safe_lev
             sl_buf   = float(self._cfg.get("trading.sl_limit_buffer_pct", 0) or 0)
+            _otype   = (entry_order_type or "MARKET").upper()
             resp     = await client.place_bracket_order(symbol=symbol, side=side, qty=qty,
                                                         sl=sl, tp=tp1, leverage=leverage,
-                                                        sl_limit_buffer_pct=sl_buf)
+                                                        sl_limit_buffer_pct=sl_buf,
+                                                        order_type=_otype,
+                                                        entry_price=(entry_price if _otype == "LIMIT" else 0.0))
             code = resp.get("code", -1)
             if code != 0:
                 msg = resp.get("msg", str(resp))
