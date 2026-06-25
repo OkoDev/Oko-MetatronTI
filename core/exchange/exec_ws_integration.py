@@ -36,13 +36,15 @@ _MATCH_WINDOW_MIN = 5     # сделка считается «свежей» (о
 _QTY_TOL = 0.02           # допуск совпадения qty (2%)
 
 
-def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, dry: bool) -> bool:
-    """Записать exchange_order_id в СВЕЖУЮ OPEN-сделку, точно соответствующую открытию.
+def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, dry: bool,
+                   avg_price: float = 0.0) -> bool:
+    """Записать exchange_order_id (и actual_entry_price если avg_price>0) в СВЕЖУЮ OPEN-сделку.
 
     Маппинг (точный, не «случайная старая»):
       1. ДЕДУП: orderId уже записан где-то → пропуск (дубль TRADE_UPDATE+ORDER_TRADE_UPDATE).
       2. Кандидаты: symbol+direction+status=OPEN+без exch_id+созданы за последние N мин (свежие).
       3. Выбор: по qty-match (WS qty ≈ БД qty ±2%); если qty нет — свежайшая в окне.
+    avg_price (WS ap): если >0 — пишем actual_entry_price (WS-fill точнее sync-ответа в 2% случаев).
     Старые висящие сделки (created давно) НЕ берутся → не портим чужие данные.
     """
     import datetime
@@ -79,21 +81,28 @@ def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, 
             if tid is None:
                 tid = rows[0][0]   # fallback: свежайшая в окне (без qty-match)
             if dry:
-                logger.info("[EXEC-WS][2a] would write exch_id=%s → #%d %s %s qty=%.4g (SHADOW)",
-                            order_id, tid, symbol, direction, qty or 0)
+                logger.info("[EXEC-WS][2a] would write exch_id=%s → #%d %s %s qty=%.4g avg=%.6g (SHADOW)",
+                            order_id, tid, symbol, direction, qty or 0, avg_price or 0)
                 return True
             # ARCH-DB-V2 Ф1: order_id записан = реально на бирже → execution_mode по факту (VST/LIVE)
             from core.infra.config_loader import config as _cfg_dbv2
             _raw_em = str(_cfg_dbv2.get("trading.execution_mode", "vst")).upper()
             _em = {"VST": "VST", "LIVE": "LIVE"}.get(_raw_em, "VST")
-            conn.execute(
-                "UPDATE simulated_trades SET exchange_order_id=?, execution_mode=? WHERE id=? AND status='OPEN' "
-                "AND (exchange_order_id IS NULL OR exchange_order_id='')",
-                (order_id, _em, tid),
-            )
+            if avg_price > 0:
+                conn.execute(
+                    "UPDATE simulated_trades SET exchange_order_id=?, execution_mode=?, actual_entry_price=? "
+                    "WHERE id=? AND status='OPEN' AND (exchange_order_id IS NULL OR exchange_order_id='')",
+                    (order_id, _em, avg_price, tid),
+                )
+            else:
+                conn.execute(
+                    "UPDATE simulated_trades SET exchange_order_id=?, execution_mode=? "
+                    "WHERE id=? AND status='OPEN' AND (exchange_order_id IS NULL OR exchange_order_id='')",
+                    (order_id, _em, tid),
+                )
             conn.commit()
-            logger.info("[EXEC-WS][2a] exch_id=%s → #%d %s %s qty=%.4g (WS real-time)",
-                        order_id, tid, symbol, direction, qty or 0)
+            logger.info("[EXEC-WS][2a] exch_id=%s → #%d %s %s qty=%.4g avg=%.6g (WS real-time)",
+                        order_id, tid, symbol, direction, qty or 0, avg_price or 0)
             return True
     except Exception as e:
         logger.warning("[EXEC-WS][2a] write_exch_id error %s %s: %s", symbol, direction, e)
@@ -246,9 +255,13 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                     qty = abs(float(o.get("z") or o.get("q") or 0))   # z=filled qty, q=order qty
                 except Exception:
                     qty = 0.0
+                try:
+                    avg_price = float(o.get("ap") or o.get("p") or 0)
+                except Exception:
+                    avg_price = 0.0
                 if order_id and symbol and direction in ("LONG", "SHORT"):
                     dry = not bool(cfg.get("trading.exec_ws.write_exch_id", False))
-                    _write_exch_id(bot, symbol, direction, order_id, qty, dry)
+                    _write_exch_id(bot, symbol, direction, order_id, qty, dry, avg_price)
             elif o.get("X") == "FILLED":
                 # ЗАКРЫВАЮЩИЙ fill (STOP/TP/LIMIT/MARKET-reduceOnly) → запомнить точный exit_price (ap).
                 # Это реальная цена с биржи для sync_close (корень APEX: REST _resolve_exit врал).
@@ -260,6 +273,33 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                         _close_fills[(_csym, _cdir)] = float(_ap)
                     except (TypeError, ValueError):
                         pass
+            # ── Fix 1b: WS pre-warm OrderManager._oo_cache ──
+            # Обновляем per-symbol кеш ордеров из WS события: remove→re-add если NEW/PARTIAL.
+            # Только если кеш уже прогрет (не None): не создаём холодный кеш из одного события.
+            _om_oo = getattr(bot, "order_executor", None)
+            if _om_oo is not None:
+                _o_sbx = str(o.get("s", ""))
+                _o_sym = _ws_to_db_symbol(_o_sbx)
+                _oo_hit = _om_oo._oo_cache.get(_o_sym)
+                if _oo_hit is not None:
+                    import time as _tow
+                    _oo_list = list(_oo_hit[1])
+                    _oid_ws = str(o.get("i", "") or "")
+                    _ox = o.get("X", "")
+                    _oo_list = [x for x in _oo_list if str(x.get("orderId", "")) != _oid_ws]
+                    if _ox in ("NEW", "PARTIALLY_FILLED") and _oid_ws:
+                        _oo_list.append({
+                            "orderId": _oid_ws,
+                            "symbol": _o_sbx,
+                            "type": str(o.get("o", "")),
+                            "positionSide": str(o.get("ps", "")).upper(),
+                            "side": str(o.get("S", "")).upper(),
+                            "origQty": str(o.get("q", "")),
+                            "stopPrice": str(o.get("sp", "")),
+                            "time": str(o.get("T", "")),
+                            "updateTime": str(o.get("T", "")),
+                        })
+                    _om_oo._oo_cache[_o_sym] = (_tow.monotonic(), _oo_list)
             return
         # ── ЭТАП 2b: позиция закрыта (pa=0) → sync_close БД ──
         if et == "ACCOUNT_UPDATE":
@@ -322,6 +362,38 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                 # VST-exit достоверный: точный fill из WS (если был), иначе REST fallback
                 _ws_exit = _close_fills.pop(key, None)
                 _aio.create_task(_sync_close_async(bot, sym, direction, account_tag, _ws_exit))
+            # ── Fix 1a: WS pre-warm OrderManager._positions_cache ──
+            # Мержим WS-позиции в кеш (ACCOUNT_UPDATE = частичный снимок, не полный).
+            # Только если кеш уже прогрет: не создаём холодный кеш из одного события.
+            _om_pos = getattr(bot, "order_executor", None)
+            _ws_p_list = a.get("P") or []
+            if _om_pos is not None and _om_pos._positions_cache is not None and _ws_p_list:
+                import time as _tws
+                _pos_cache = list(_om_pos._positions_cache)
+                for _pw in _ws_p_list:
+                    if not isinstance(_pw, dict):
+                        continue
+                    _sbx = str(_pw.get("s", ""))
+                    _pside = str(_pw.get("ps", "")).upper()
+                    try:
+                        _pa = float(_pw.get("pa") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    # Удалить старую запись (symbol+side) и заменить WS-данными
+                    _pos_cache = [x for x in _pos_cache
+                                  if not (str(x.get("symbol", "")) == _sbx and
+                                          str(x.get("positionSide", "")).upper() == _pside)]
+                    if _pa != 0.0:
+                        _pos_cache.append({
+                            "symbol": _sbx,
+                            "positionSide": _pside,
+                            "positionAmt": str(abs(_pa)),
+                            "avgPrice": str(_pw.get("ep") or "0"),
+                            "unrealizedProfit": str(_pw.get("up") or "0"),
+                        })
+                _om_pos._positions_cache = _pos_cache
+                _om_pos._positions_ts = _tws.monotonic()
+                logger.debug("[EXEC-WS] positions_cache WS-merge: %d positions", len(_pos_cache))
 
     return on_event
 
