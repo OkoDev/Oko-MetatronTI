@@ -394,33 +394,46 @@ class OrderManager:
             logger.warning("[OrderManager] has_open_position %s: %s", symbol, e)
             return False  # при ошибке не блокируем
 
-    _MAX_LEV_TTL = 3600.0   # 19.06: перепроверять max-плечо пары раз в час (биржа меняет лимиты)
+    _MAX_LEV_TTL = 86400.0  # 25.06: 1ч→24ч (BingX меняет лимиты редко); горячий путь читает из contracts_cache
 
     async def _get_pair_max_leverage(self, client, symbol: str, pos_side: str) -> Optional[int]:
-        """Max допустимое плечо пары (maxLong/maxShort) с кэшем+TTL.
+        """Max допустимое плечо пары (maxLong/maxShort).
 
-        Корень (19.06): place /trade/leverage отвергает leverage > max → бот глотал ошибку и
-        позиция открывалась на СТАРОМ (стейл) плече (SSV: просил 50, max 20, было 5 → открылось 5×).
-        Клампим к max ПЕРЕД установкой. TTL — биржа меняет лимиты (юзер: «перепроверять иногда»).
+        Порядок (25.06):
+        1. contracts_cache — заполняется при старте из /quote/contracts (maxLongLeverage там есть).
+           0 REST-запросов в горячем пути для известных пар.
+        2. _max_lev_cache (TTL 24ч) — для пар не попавших в contracts при старте.
+        3. REST get_leverage_info — только если оба кэша пусты.
         """
         import time as _t
+        is_long = str(pos_side).upper() == "LONG"
+
+        # 1. contracts_cache (0 latency — загружен при старте)
+        cc = await client.get_contract_info(symbol)
+        lev_key = "max_long_lev" if is_long else "max_short_lev"
+        if cc.get(lev_key):
+            return int(cc[lev_key])
+
+        # 2. _max_lev_cache (TTL 24ч)
         cache = getattr(self, "_max_lev_cache", None)
         if cache is None:
             cache = {}
             self._max_lev_cache = cache
         ent = cache.get(symbol)
         now = _t.time()
-        if ent is None or (now - ent[0]) > self._MAX_LEV_TTL:
-            try:
-                info = await client.get_leverage_info(symbol)
-                ml = int(float(info.get("maxLongLeverage") or 0))
-                ms = int(float(info.get("maxShortLeverage") or 0))
-                cache[symbol] = (now, ml, ms)
-                ent = cache[symbol]
-            except Exception as e:
-                logger.debug("[OrderManager] get_leverage_info %s: %s", symbol, e)
-                return None
-        return ent[1] if str(pos_side).upper() == "LONG" else ent[2]
+        if ent is not None and (now - ent[0]) <= self._MAX_LEV_TTL:
+            return ent[1] if is_long else ent[2]
+
+        # 3. REST — только для новых/неизвестных пар
+        try:
+            info = await client.get_leverage_info(symbol)
+            ml = int(float(info.get("maxLongLeverage") or 0))
+            ms = int(float(info.get("maxShortLeverage") or 0))
+            cache[symbol] = (now, ml, ms)
+            return ml if is_long else ms
+        except Exception as e:
+            logger.debug("[OrderManager] get_leverage_info %s: %s", symbol, e)
+            return None
 
     async def open_bracket(
         self,

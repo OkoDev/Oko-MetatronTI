@@ -116,6 +116,9 @@ class BingXClient:
         # Загружается один раз через _load_contracts() при первом quantize_qty().
         self._contracts_cache: dict[str, dict] = {}
         self._contracts_loaded: bool = False
+        # 25.06: кэш выставленного плеча (symbol+side → leverage).
+        # Пропускаем POST /trade/leverage если плечо уже выставлено правильно.
+        self._lev_set_cache: dict[str, int] = {}  # key = "BTCUSDT:LONG"
         # ⚡ PERF (Шаг C, 13.06): переиспользуемая ClientSession (keep-alive). До этого
         # каждый запрос открывал НОВУЮ session → TCP+TLS handshake каждый раз (~150ms overhead).
         # Одна долгоживущая session с TCPConnector(keepalive) → RTT 400→250ms. PERF-LOOP-DRIFT.
@@ -278,11 +281,12 @@ class BingXClient:
                 if not bx_symbol:
                     continue
                 self._contracts_cache[bx_symbol] = {
-                    "qty":     int(item.get("quantityPrecision") or 2),
-                    "price":   int(item.get("pricePrecision") or 4),
-                    "min_qty": float(item.get("tradeMinQuantity") or 0),
+                    "qty":          int(item.get("quantityPrecision") or 2),
+                    "price":        int(item.get("pricePrecision") or 4),
+                    "min_qty":      float(item.get("tradeMinQuantity") or 0),
                     "min_notional": float(item.get("tradeMinUSDT") or 0),
-                    # max_leverage — НЕТ в /quote/contracts. Получать из /trade/leverage per-position.
+                    "max_long_lev": int(float(item.get("maxLongLeverage") or 125)),
+                    "max_short_lev":int(float(item.get("maxShortLeverage") or 125)),
                 }
             self._contracts_loaded = True
             logger.info("[BingXClient] contracts precision loaded: %d symbols", len(self._contracts_cache))
@@ -630,13 +634,18 @@ class BingXClient:
         bx_symbol = to_bingx_symbol(symbol)
         pos_side  = "LONG" if side == "BUY" else "SHORT"
 
-        try:
-            lev_resp = await self.post("/openApi/swap/v2/trade/leverage", {
-                "symbol": bx_symbol, "side": pos_side, "leverage": str(leverage),
-            })
-            logger.debug("[BingXClient] leverage %s x%d: %s", bx_symbol, leverage, lev_resp)
-        except Exception as e:
-            logger.warning("[BingXClient] leverage error (продолжаем): %s", e)
+        _lev_key = f"{bx_symbol}:{pos_side}"
+        if self._lev_set_cache.get(_lev_key) != leverage:
+            try:
+                lev_resp = await self.post("/openApi/swap/v2/trade/leverage", {
+                    "symbol": bx_symbol, "side": pos_side, "leverage": str(leverage),
+                })
+                self._lev_set_cache[_lev_key] = leverage
+                logger.debug("[BingXClient] leverage %s x%d: %s", bx_symbol, leverage, lev_resp)
+            except Exception as e:
+                logger.warning("[BingXClient] leverage error (продолжаем): %s", e)
+        else:
+            logger.debug("[BingXClient] leverage %s x%d — уже выставлено, пропускаем REST", bx_symbol, leverage)
 
         if sl_limit_buffer_pct > 0:
             sl_limit = sl * (1.0 - sl_limit_buffer_pct / 100.0) if pos_side == "LONG" \
