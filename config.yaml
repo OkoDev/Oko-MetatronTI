@@ -174,6 +174,7 @@ trading:
   min_sl_dist_pct: 0.25
   min_rr_per_strategy:
     ote_nested: 3.0
+    oko_ote: 0.1   # 22.06 СНЯТО RR-ограничение для OKO-OTE — ближний магнит даёт RR<1, нужны данные на VST
   regime_direction_block:
     enabled: false
     TREND_DOWN: LONG
@@ -257,6 +258,28 @@ trading:
   - multi_signal
   - mtf_bias
   strategies:
+    oko_ote:                     # OKO-OTE (метод Егора, валидирован 22.06 — docs/METHOD_MAP.md)
+      enabled: true              # ✅ ВКЛ 22.06 (проводка + preflight пройдены). VST-песочница.
+      execution_mode: vst        # песочница
+      links:                     # ядро связок зона→слом (старше зона = выше WR + ниже DD)
+        - {zone: "4h", break: "1h"}    # WR90% DD4% (чемпион, редкий)
+        - {zone: "4h", break: "15m"}   # WR82%
+        - {zone: "1h", break: "15m"}   # WR81%
+      wt_ob: 60                  # WT OB порог (зона→SHORT)
+      wt_os: -60                 # WT OS порог (зона→LONG)
+      entry_fib: 0.618           # вход на касании 0.618 (основной уровень коррекции)
+      depth_min: 0.55            # фильтр СРЕДНЕЙ глубины (мелкая=сильный импульс)
+      depth_max: 0.68            # глубже = слабый импульс → режем
+      zone_window_h: 48          # окно (ч) после WT-зоны на поиск слома
+      sl_source: strong_low      # SL = Strong Low (levels[1.0]) + буфер
+      sl_buffer_pct: 0.15
+      tp_source: magnet          # TP = ближайший магнит (reuse TPSelector)
+      risk_pct: 0.5              # риск/сделку (консервативно для песочницы)
+      max_concurrent: 10         # макс параллельных позиций (не 50)
+      max_entry_slippage_pct: 0.5  # 25.06 ГЕЙТ СВЕЖЕСТИ: skip входа если текущая цена ушла от OTE
+                                   # >этого % (market-вход по уехавшей цене ломал R:R: SL/TP от sig.entry,
+                                   # а fill по текущей; разрыв был медиана 3.57%, 55% сделок >3%, equity −20/−35%/48ч).
+                                   # Поймаем на след. 10-мин цикле когда цена у зоны. 0 = выкл. Полный лимит = Фаза 1.
     wt_entry:
       min_strength: 60
       tp_rr: 3.0
@@ -676,6 +699,13 @@ signal_router:
       soft_gates_enabled: []
       leverage: 30             # 21.06 50→30 (рой+диагноз: 50x усиливал течь, прибыли нет = резать нечего; liq ~2%→~3.3%). 19.06 Режим В: ЛОКАЛЬНОЕ плечо ote_nested (не глобальное!)
       risk_pct: 0.5            # 19.06 Режим В: ЛОКАЛЬНЫЙ риск ote_nested
+    oko_ote:                   # 22.06 НОВАЯ стратегия (метод Егора) — отдельный trade_mode для dedup
+      min_strength: 40
+      exchange_enabled: true   # VST-песочница
+      trade_mode: oko_ote      # 🔴 КРИТИЧНО: иначе dedup_open режет на любой открытой (was "без trade_mode")
+      soft_gates_enabled: []
+      leverage: 20             # умеренно для песочницы (метод не нуждается в 50x — edge во входе/выходе)
+      risk_pct: 0.5
     trigger_loop:
       min_strength: 50
       exchange_enabled: false
@@ -720,7 +750,7 @@ arch104:
     enabled: false
 ote:
   vst_trading:
-    enabled: true
+    enabled: false   # ⛔ 22.06 ОТКЛЮЧЕНА торговля ote_nested (в минусе, net−1.057) — освободить VST под OKO-OTE. Наблюдение/лог остаётся
     signal_type: ote_nested
   # OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр SHADOW на каждый ote_nested FIRE —
   # лог [CASCADE][shadow] would_block (вход против 1D-тренда), НЕ блокирует. DS меряет
