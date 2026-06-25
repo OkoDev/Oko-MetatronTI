@@ -146,7 +146,12 @@ async def _armed_watcher_loop(bot, cfg) -> None:
                     continue
                 max_slip = float(sig_cfg.get("max_entry_slippage_pct", 0.5) or 0)
                 slip = abs(float(px) - sig.entry) / sig.entry * 100.0
-                if slip <= max_slip:
+                # Направленный гейт: для SHORT ждём цену СВЕРХУ (px >= entry), для LONG — СНИЗУ (px <= entry)
+                # abs() без направления пускает вход когда цена пробила OTE насквозь и отскочила — TP инвертирован
+                _is_long_armed = sig.direction == "long"
+                direction_ok = (px <= sig.entry * (1 + max_slip / 100)) if _is_long_armed \
+                               else (px >= sig.entry * (1 - max_slip / 100))
+                if slip <= max_slip and direction_ok:
                     _ARMED_SETUPS.pop(symbol, None)   # снять ДО await — не словить дублирующий fire
                     logger.info("[OKO-OTE ARMED-FIRE] %s цена догнала зону (px=%.6g vs OTE=%.6g, slip=%.2f%%, ждали %.0fс)",
                                 symbol, px, sig.entry, slip, now - item["armed_at"])
@@ -241,12 +246,21 @@ async def _register_oko_trade(bot, sig, cfg) -> None:
         return
     is_long = sig.direction == "long"
     vol24 = 0.0
+    px_now = 0.0
     try:
         tk = await bot.data_collector.get_ticker(sig.symbol)
         if tk:
             vol24 = float(tk.get("quoteVolume") or 0.0)
+            px_now = float(tk.get("last") or tk.get("close") or 0.0)
     except Exception:
         pass
+    # TP-inversion gate: если текущая цена уже за TP — вход инвертирует R:R (MARKET fill хуже sig.entry)
+    if px_now > 0 and sig.tp:
+        tp_inv = (sig.tp <= px_now) if is_long else (sig.tp >= px_now)
+        if tp_inv:
+            logger.warning("[OKO-OTE SKIP] %s %s TP-inversion: tp=%.6g vs px=%.6g — R:R broken, skip",
+                           sig.symbol, sig.direction, sig.tp, px_now)
+            return
     rec = TradingRecommendation(
         symbol=sig.symbol,
         action="BUY" if is_long else "SELL",
