@@ -273,8 +273,11 @@ async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
             # тугой 0.5%-гейт отсекает сделки в 6× хуже среднего (−1.203% vs −0.206%) — расширение
             # до зоны 0.5-0.705 впустило бы обратно именно эти убыточные. Тугой гейт ВЕРНЫЙ, не
             # бракует находки — отсекает версии сетапа, где рынок уже ушёл пока копились подтв.
-            max_slip = float(cfg.get("max_entry_slippage_pct", 0.5) or 0)
-            if max_slip > 0 and sig.entry:
+            # 26.06 РЕДИЗАЙН gate: detect_oko_ote уже проверил cl[-1] ∈ [zone_lo, zone_hi].
+            # Re-check по ЗОНЕ (не по точечному entry_fib): за время ticker-запроса цена могла
+            # выйти из зоны — тогда ARMED. Прежний |px−entry|/entry>0.5% блокировал даже когда
+            # цена в зоне (RPL 2.56% от entry=0.618, но внутри [zone_lo, zone_hi] = валидный вход).
+            if sig.entry:
                 px = 0.0
                 try:
                     tk = await bot.data_collector.get_ticker(sig.symbol)
@@ -282,13 +285,18 @@ async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
                 except Exception:
                     px = 0.0
                 if px > 0:
-                    slip = abs(px - sig.entry) / sig.entry * 100.0
-                    if slip > max_slip:
-                        # ARMED-watcher (25.06): не забываем сетап до след. скана (10 мин слепоты) —
-                        # кладём на частый WS-поллинг (ARMED_CHECK_INTERVAL_SECONDS), см. _armed_watcher_loop.
+                    # Проверяем ЗОНУ а не точку entry_fib
+                    if sig.zone_lo > 0 and sig.zone_hi > 0:
+                        in_zone = sig.zone_lo <= px <= sig.zone_hi
+                        slip = abs(px - sig.entry) / sig.entry * 100.0
+                    else:
+                        max_slip = float(cfg.get("max_entry_slippage_pct", 0.5) or 0)
+                        slip = abs(px - sig.entry) / sig.entry * 100.0
+                        in_zone = slip <= max_slip
+                    if not in_zone:
                         _arm_setup(sig, cfg)
-                        logger.info("[OKO-OTE ARMED] %s slippage %.2f%% > %.2f%% (px=%.6g vs OTE=%.6g) — ждём отката (watcher %ds)",
-                                    sig.symbol, slip, max_slip, px, sig.entry, ARMED_CHECK_INTERVAL_SECONDS)
+                        logger.info("[OKO-OTE ARMED] %s вышел из зоны: px=%.6g zone=[%.6g, %.6g] slip=%.2f%% — watcher %ds",
+                                    sig.symbol, px, sig.zone_lo, sig.zone_hi, slip, ARMED_CHECK_INTERVAL_SECONDS)
                         break
             await _register_oko_trade(bot, sig, cfg)
             fired += 1
