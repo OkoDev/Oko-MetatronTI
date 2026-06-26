@@ -69,6 +69,9 @@ class TradingSlTpEngine(BaseModel):
     min_sl_dist_pct: float = Field(default=0.5, ge=0.1, le=5.0)
     sl_limit_buffer_pct: float = Field(default=0.1, ge=0.0, le=2.0)
     max_positions: int = Field(default=50, ge=1, le=500)
+    # BE-sync на биржу (DEV-40 Breakeven доезжает на биржу, bug_be_not_synced)
+    be_exchange_sync: bool = True
+    be_limit_buffer_pct: float = Field(default=0.15, ge=0.0, le=2.0)
 
     # Дополнено после валидации config.yaml (14.06)
     cascade_tsl: bool = True

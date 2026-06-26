@@ -261,8 +261,10 @@ def render_context_chart(df_base, all_setups, price, sym, tf_base, path, zoom=0)
     # СЛОЙ ВХОДА: последний reversal-CHoCH базового ТФ → слом/вход/SL/цель/R:R
     base_setups = all_setups.get(tf_base, [])
     chochs = [s for s in base_setups if s["kind"] == "CHoCH" and s.get("to_i") is not None]
-    near = [s for s in chochs
-            if s["to_i"] >= n_full - 150 and abs(s["ote705"] - price) / price <= 0.25]
+    # слом В НАПРАВЛЕНИИ контекста старшего (htf dir) у цены — продолжение тренда
+    # (не broken_level в OTE: тот брал противоположный long-разворот). Слом «от LL» для short-4h.
+    near = [s for s in chochs if s["to_i"] >= n_full - 150
+            and s["dir"] == htf["dir"] and abs(s["ote705"] - price) / price <= 0.3]
     es = near[-1] if near else None
     if es is not None:
         is_short = es["dir"] == "short"
@@ -438,10 +440,33 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
     import matplotlib.pyplot as plt
     d = db.copy(); d.columns = [c.lower() for c in d.columns]
     d = d[["open", "high", "low", "close", "volume"]]
-    nf = len(d); off = 0
-    if zoom and nf > zoom:
-        off = nf - zoom; d = d.iloc[-zoom:]
+    nf = len(d)
+    import numpy as _np
     pos = {ts: i for i, ts in enumerate(db.index)}
+    from core.smc.smc_engine import zigzag_atr as _zza, find_setups_zz as _fsz, _zz_typed as _zzt
+    _zz = _zza(db.copy())
+    _typed = _zzt(_zz)
+    _struct_setups = _fsz(_zz, db)   # КАНОНИЧЕСКИЙ детектор (тот же, что красит BOS/CHoCH ниже)
+    # КОНЕЦ значимого импульса на break_tf (нужно и для фибо-диагонали, и для слома):
+    # позиция экстремума-старта/конца импульса по СОВПАДЕНИЮ цены на break_tf-серии
+    _imp_sp = htf.get("from_p"); _imp_ep = htf.get("to_p")
+    _arr_s = db["high"].values if htf["dir"] == "short" else db["low"].values
+    _arr_e = db["low"].values if htf["dir"] == "short" else db["high"].values
+    _ist = int(_np.argmin(_np.abs(_arr_s - _imp_sp))) if _imp_sp else 0
+    _iend = int(_np.argmin(_np.abs(_arr_e - _imp_ep))) if _imp_ep else nf - 1
+    # СЛОМ структуры (метод Егора, 24.06: «импульс вверх → слом структуры вниз, импульс вниз →
+    # слом структуры вверх») — НЕ отдельный алгоритм (был баг: бил по «глобальному экстремуму
+    # ретрейсмента», находил слом не там, см. фидбэк по AIO), а первый bull/bear-слом из
+    # КАНОНИЧЕСКОГО find_setups_zz ПОСЛЕ конца импульса (_iend), направление противоположно
+    # импульсу: bull (пробой high вверх) после нисходящего импульса, bear после восходящего.
+    _want_struct = "bear" if htf["dir"] == "long" else "bull"
+    _slom = next((s for s in _struct_setups if s["struct"] == _want_struct
+                  and (pos.get(s["choch_ts"]) or 0) >= _iend), None)
+    # АДАПТИВНОЕ окно: расширить влево чтобы влез КОНЕЦ импульса (откуда считается слом),
+    # иначе линия слома и контекст за кадром (метод Егора — широкий обзор)
+    _start = nf - zoom if (zoom and nf > zoom) else 0
+    _start = min(_start, max(0, _iend - 10))   # окно включает конец импульса (старт откатa)
+    off = _start; d = d.iloc[off:]
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
     style = mpf.make_mpf_style(marketcolors=mc, facecolor="#131722", figcolor="#131722",
@@ -449,18 +474,28 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
                                rc={"text.color": "#d1d4dc", "ytick.color": "#787b86",
                                    "xtick.color": "#787b86"})
     fig, axes = mpf.plot(d, type="candle", style=style, volume=True, returnfig=True,
-                         figsize=(16, 9), tight_layout=True,
+                         figsize=(16, 9), tight_layout=True, panel_ratios=(7, 1.2),
                          title=f"{sym}  {break_tf}←{zone_tf}  СИНТЕЗ (значимый untested + слом)  (цена={price:.5g})")
     ax = axes[0]; n = len(d)
+    for _ax in fig.axes:                       # даты ГОРИЗОНТАЛЬНО (не повёрнуты)
+        for _lbl in _ax.get_xticklabels():
+            _lbl.set_rotation(0); _lbl.set_ha("center")
     pmin, pmax = float(d["low"].min()), float(d["high"].max())
 
     def _x(i):
         return max(0, min((i or 0) - off, n - 1))
 
+    def _cy(v):
+        # ax.text() НЕ обрезается осями (clip_on=False по умолчанию) — если зона старшего
+        # ТФ (OTE/уровень) далеко за пределами окна break_tf (напр. 1d-импульс GRT с HH=0.255,
+        # а 4h-окно живёт в 0.018-0.045), подпись на реальной цене раздувает bbox_inches="tight"
+        # до тысяч пикселей (24.06: GRT 1674×9830 вместо ~1674×900). Подпись прижимаем к краю окна.
+        return min(max(v, pmin), pmax)
+
     olo, ohi = htf["ote_lo"], htf["ote_hi"]
     hcol = "#26a69a" if htf["dir"] == "long" else "#ef5350"
     ax.axhspan(olo, ohi, color=hcol, alpha=0.18, zorder=0)
-    ax.text(n * 0.01, ohi, f" OTE {zone_tf} {htf['dir']} ЗНАЧИМЫЙ untested "
+    ax.text(n * 0.01, _cy(ohi), f" OTE {zone_tf} {htf['dir']} ЗНАЧИМЫЙ untested "
             f"(импульс {htf['span_pct']:.0f}%, заходов={htf['n_visits']})",
             color=hcol, fontsize=10, va="bottom", ha="left", zorder=6,
             bbox=dict(facecolor="#131722", edgecolor=hcol, boxstyle="round,pad=0.2"))
@@ -472,12 +507,23 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
                0.79: ("#ef5350", ":", "0.79"), 1.0: ("#2196f3", "-", "1.0"),
                -0.62: ("#26a69a", "--", "-0.62 цель"), -1.0: ("#26a69a", "--", "-1.0 цель"),
                -1.618: ("#26a69a", "--", "-1.618 цель")}
+    # _ist/_iend (экстремумы старта/конца импульса на break_tf) уже посчитаны выше для окна
+    _fx0 = _x(_ist)
+    # импульс HH→LL диагональю (как dashed в эталоне OKO-SM)
+    # диагональ рисуем ТОЛЬКО если вершина импульса в кадре (иначе HH далеко вверху
+    # ломает вертикальный масштаб — напр. 1d-импульс GRT с HH=0.255)
+    if _imp_sp and pmin * 0.85 <= _imp_sp <= pmax * 1.15:
+        ax.plot([_x(_ist), _x(_iend)], [_imp_sp, _imp_ep], color="#ffd700", linewidth=1.6,
+                linestyle="--", alpha=0.85, zorder=5)
     for _ff, (_fc, _fls, _flb) in _fstyle.items():
         _lv = _fib.get(_ff)
         if _lv is None or not (pmin * 0.92 <= _lv <= pmax * 1.08):
             continue
-        ax.plot([0, n - 1], [_lv, _lv], color=_fc, linestyle=_fls, linewidth=1.3, alpha=0.9, zorder=4)
-        ax.text(n - 1 + n * 0.005, _lv, f"{_flb} ({_lv:.5g})", color="#fff", fontsize=9,
+        ax.plot([_fx0, n - 1], [_lv, _lv], color=_fc, linestyle=_fls, linewidth=1.3, alpha=0.9, zorder=4)
+        # _cy: уровень допущен с запасом 8% за pmin/pmax (видно ЛИНИЮ чуть выше/ниже кадра),
+        # но подпись без зажима повисает в воздухе ОТДЕЛЬНО от рамки графика (24.06, AIO
+        # 5m←1h: «фиба разная» — 0.705/0.62 плавали над канвой) — тот же класс бага что и canvas-раздув.
+        ax.text(n - 1 + n * 0.005, _cy(_lv), f"{_flb} ({_lv:.5g})", color="#fff", fontsize=9,
                 fontweight="bold", ha="left", va="center", zorder=8,
                 bbox=dict(facecolor=_fc, edgecolor="none", alpha=0.9, boxstyle="round,pad=0.15"))
 
@@ -496,10 +542,8 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
                         color=_c, fontsize=7, va="center", ha="right", zorder=6, alpha=0.85)
 
     # ── СТРУКТУРА break_tf: зигзаг HH/HL/LH/LL + сломы BOS/CHoCH (как эталон Егора) ──
+    # _zz/_typed/_struct_setups уже посчитаны в начале функции (один калькулятор, не дублируем)
     try:
-        from core.smc.smc_engine import zigzag_atr as _zza, find_setups_zz as _fsz, _zz_typed as _zzt
-        _zz = _zza(db.copy())
-        _typed = _zzt(_zz)
         _seq = [(pos.get(ts), p, t) for ts, p, t in _typed if pos.get(ts) is not None]
         _vis = [(i, p, t) for i, p, t in _seq if i >= off]
         if len(_vis) >= 2:
@@ -515,7 +559,7 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
                 ax.text(_x(i), p, lab, color=pc, fontsize=7, fontweight="bold",
                         ha="center", va="bottom" if t == "H" else "top", zorder=7)
         # сломы: горизонт. отрезок от пробитой вершины (broken_ts) до точки слома (choch_ts)
-        for s in _fsz(_zz, db):
+        for s in _struct_setups:
             bl = s.get("broken_level"); ci = pos.get(s["choch_ts"]); bi = pos.get(s.get("broken_ts"))
             if bl is None or ci is None or ci < off:
                 continue
@@ -525,7 +569,7 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
             ls = "--" if s["kind"] == "CHoCH" else (0, (2, 3))
             x1 = _x(bi) if bi is not None else _x(ci)
             ax.plot([x1, _x(ci)], [bl, bl], color=bc, linestyle=ls, linewidth=1.0, alpha=0.75, zorder=5)
-            ax.text((x1 + _x(ci)) / 2, bl, f"{s['kind']}{arrow}", color=bc, fontsize=7,
+            ax.text((x1 + _x(ci)) / 2, _cy(bl), f"{s['kind']}{arrow}", color=bc, fontsize=7,
                     fontweight="bold", ha="center", va="bottom", zorder=7)
     except Exception as _e:
         import traceback; print("[структура]", _e); traceback.print_exc()
@@ -570,29 +614,62 @@ def render_synth(db, htf, es, sym, zone_tf, break_tf, price, path, zoom=220, all
     except Exception as _e:
         import traceback; print("[SMC]", _e); traceback.print_exc()
 
+    # ЛИНИЯ СЛОМА (метод Егора) — _slom уже найден в начале функции: ПЕРВЫЙ структурный
+    # слом КАНОНИЧЕСКОГО find_setups_zz после конца импульса (_iend), направление
+    # противоположно импульсу (24.06 фидбэк по AIO: «ты слом не там ищешь» — старый код
+    # искал «глобальный экстремум ретрейсмента» отдельным алгоритмом и ловил произвольную,
+    # часто позднюю точку вместо ПЕРВОГО реального структурного слома; теперь переиспользуем
+    # тот же детектор, что красит BOS/CHoCH ниже — один калькулятор, не два).
+    if _slom is not None:
+        _bl = _slom.get("broken_level"); _ci = pos.get(_slom["choch_ts"]); _bi = pos.get(_slom.get("broken_ts"))
+        if _bl is not None and _ci is not None:
+            x1 = _x(_bi) if _bi is not None else _x(_ci)
+            ax.plot([x1, _x(_ci)], [_bl, _bl], color="#ff9800", linewidth=2.4, zorder=6)
+            ax.scatter([_x(_ci)], [_bl], color="#ff9800", s=130, marker="X",
+                       edgecolors="#fff", linewidths=0.7, zorder=8)
+            _plbl = "HH" if _slom["struct"] == "bull" else "LL"
+            ax.text(_x(_ci), _cy(_bl), f" ★СЛОМ {break_tf} ({_plbl} {_bl:.5g})", color="#ff9800",
+                    fontsize=10, va="bottom", ha="left", zorder=8)
+
     if es is not None:
         is_short = es["dir"] == "short"
         ecol = "#ef5350" if is_short else "#26a69a"
         entry = es["ote705"]; sl = es["from_p"] * (1.002 if is_short else 0.998)
-        bl = es.get("broken_level"); ci = es.get("choch_i"); bi = es.get("broken_i")
-        if bl is not None and ci is not None and ci >= off:
-            ax.plot([_x(bi), n - 1], [bl, bl], color="#ff9800", linewidth=1.7, zorder=5)
-            ax.scatter([_x(ci)], [bl], color="#ff9800", s=140, marker="X",
-                       edgecolors="#fff", linewidths=0.6, zorder=8)
-            ax.text(_x(ci), bl, f"  ★СЛОМ {break_tf}", color="#ff9800", fontsize=10,
-                    va="top", ha="left", zorder=8)
-        x0 = n * 0.40
-        ax.plot([x0, n - 1], [entry, entry], color=ecol, linewidth=1.9, zorder=6)
-        ax.text(x0, entry, f" ВХОД {'SHORT' if is_short else 'LONG'} {entry:.5g}",
-                color="#fff", fontsize=11, va="bottom", ha="left", zorder=7,
-                bbox=dict(facecolor=ecol, edgecolor="none", boxstyle="round,pad=0.25"))
-        ax.plot([x0, n - 1], [sl, sl], color="#ff1744", linewidth=1.3, linestyle="--", zorder=6)
-        ax.text(x0, sl, f" SL {sl:.5g}", color="#ff1744", fontsize=10, va="top", zorder=7)
+        x0 = _x(ci) if ci is not None else int(n * 0.62)   # боксы/линии от МОМЕНТА входа (слома)
+        # ЦЕЛЬ = фибо-расширение htf (-0.62/-1.0/-1.618) в сторону входа
+        _fb = htf.get("fib", {}); tgt = None
+        for _ext in (-0.62, -1.0, -1.618):
+            _lv = _fb.get(_ext)
+            if _lv is not None and ((_lv > entry) if not is_short else (_lv < entry)):
+                tgt = _lv; break
+        if tgt is None:
+            tgt = entry * (1.05 if not is_short else 0.95)
+        rr = abs(tgt - entry) / abs(entry - sl) if entry != sl else 0.0
+        # PROFIT-бокс (вход→TP, зелёный) + RISK-бокс (вход→SL, красный) = TradingView Position
+        ax.add_patch(plt.Rectangle((x0, min(entry, tgt)), (n - 1) - x0, abs(tgt - entry),
+                     facecolor="#26a69a", alpha=0.16, edgecolor="#26a69a", linewidth=1.0, zorder=2))
+        ax.add_patch(plt.Rectangle((x0, min(entry, sl)), (n - 1) - x0, abs(entry - sl),
+                     facecolor="#ef5350", alpha=0.16, edgecolor="#ef5350", linewidth=1.0, zorder=2))
+        # линии + ЦЕНЫ у правого края (вход/TP/SL)
+        ax.plot([x0, n - 1], [entry, entry], color="#ffffff", linewidth=1.6, zorder=6)
+        ax.text(n - 1, _cy(entry), f" ВХОД {'SHORT' if is_short else 'LONG'} {entry:.6g}",
+                color="#fff", fontsize=10, va="center", ha="left", zorder=8,
+                bbox=dict(facecolor=ecol, edgecolor="none", boxstyle="round,pad=0.2"))
+        ax.plot([x0, n - 1], [tgt, tgt], color="#26a69a", linewidth=1.5, zorder=6)
+        ax.text(n - 1, _cy(tgt), f" TP {tgt:.6g}  R:R={rr:.1f}", color="#fff", fontsize=10,
+                va="center", ha="left", zorder=8,
+                bbox=dict(facecolor="#00897b", edgecolor="none", boxstyle="round,pad=0.2"))
+        ax.plot([x0, n - 1], [sl, sl], color="#ff1744", linewidth=1.5, linestyle="--", zorder=6)
+        ax.text(n - 1, _cy(sl), f" SL {sl:.6g}", color="#fff", fontsize=10, va="center", ha="left",
+                zorder=8, bbox=dict(facecolor="#c62828", edgecolor="none", boxstyle="round,pad=0.2"))
     else:
         ax.text(n * 0.5, price, f"ждём слом {break_tf} в OTE старшего",
                 color="#ffd700", fontsize=12, va="bottom", ha="center", zorder=7,
                 bbox=dict(facecolor="#131722", edgecolor="#ffd700", boxstyle="round,pad=0.3"))
     ax.axhline(price, color="#ffffff", linestyle=":", linewidth=1.2, zorder=5)
+    # вертикальный отступ от краёв (график не прижат, линия на LL видна)
+    _rng = (pmax - pmin) or 1.0
+    ax.set_ylim(pmin - _rng * 0.13, pmax + _rng * 0.07)
     # правое поле 20% — свечи влево, справа место (как TradingView)
     for _ax in fig.axes:
         _ax.set_xlim(-1, (n - 1) + n * 0.20)
