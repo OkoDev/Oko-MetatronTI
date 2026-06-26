@@ -254,12 +254,15 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
     # вложенных под-импульсов внутри тренда старшего, а не только лучший.
     if mid_tf is not None:
         mid_setups = find_setups_zz(zigzag_atr(df_mid), df_mid)
-        containers = [m["ote"] for m in mid_setups
+        # (clo, chi, dir) — direction контейнера сохраняем, иначе SHORT 15m сетап
+        # спаривается с LONG 1h контейнером (Картезианское произведение без dir-фильтра).
+        containers = [(m["ote"][0], m["ote"][1], m["direction"]) for m in mid_setups
                       if htf_ote_lo <= m["levels"].get(entry_fib, float("nan")) <= htf_ote_hi]
         if not containers:
             return [] if not only_latest else None
     else:
-        containers = [(htf_ote_lo, htf_ote_hi)]
+        # None = нет фильтра по dir (без mid_tf поведение прежнее — LTF обе стороны)
+        containers = [(htf_ote_lo, htf_ote_hi, None)]
 
     # 2) СЛОМЫ МЛАДШЕГО ТФ — обе стороны (тот же эталон)
     ltf = find_setups_zz(zigzag_atr(df_break), df_break)
@@ -340,10 +343,10 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
 
     out_all: List[OkoOteSignal] = []        # only_latest=False → ВСЕ сетапы (для бэктеста)
     order = list(reversed(ltf)) if only_latest else ltf
-    # containers=[(lo,hi)] — 1 элемент без mid_tf (== прежнее поведение 1:1), N при тройной
-    # вложенности. Плоский список пар (container,s) вместо вложенных for — НЕ меняет отступы
-    # остального тела цикла ниже (риск регрессии при правке живого детектора).
-    _pairs = [(clo, chi, s) for (clo, chi) in containers for s in order]
+    # containers=[(lo,hi,dir)] — 1 элемент без mid_tf (dir=None → нет фильтра, прежнее поведение),
+    # N при тройной вложенности. dir-фильтр: LONG mid_tf контейнер → только LONG LTF сетапы.
+    _pairs = [(clo, chi, s) for (clo, chi, c_dir) in containers for s in order
+              if c_dir is None or s["direction"] == c_dir]
     seen_choch: set = set()                 # дедуп: один и тот же слом не считать 2x по containers
     for container_lo, container_hi, s in _pairs:
         D = s["direction"]                      # НАПРАВЛЕНИЕ = слом младшего (обе стороны)
