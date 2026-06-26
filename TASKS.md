@@ -384,6 +384,7 @@
 |---|---|---|---|
 | ARCH-128-S3 | 🔄 | **Шаг 3: ре-майнинг** на 75 признаках. A=Claude (ре-чек 215 текущих), B=DS-315 (полный walkforward+MHT). Интерпретация+калибровка OTE/EQH = Claude | DS+Claude |
 | ARCH-128-OOS | ❌ | **OOS-аудит: EDGE = MIRAGE.** 4h→5m config-канон: IN (73 trades) +$228 WR37% → OUT (50 trades) +$13 WR22%. target_-1.618: +$13 (шум). runner_choch: +$174 → -$107. Вердикт: переподгонка под pre-2026. →DISCUSSION 26.06 21:00 | DS ✅ |
+| ARCH-128-OOS-NESTED | 🆕 → DS | **Свежий OOS ote_nested (ВКЛЮЧАЯ 2026)** — мираж как oko_ote или реальный edge? Основания: НЕТ lookahead (find_setups_zz PIT, НЕ select_significant_impulse), выход починен (BE-sync 20-21.06 trade_simulator:2255), старый WF 15/15 +0.280R но ДО 2026. `ote_nested_honest_test.py` WF A/B, SL=импульс-1.0, акцент 2026Q1/Q2 ПОКВАРТАЛЬНО. Постановка → DISCUSSION 26.06 22:30. Acceptance: держит edge на 2026 (→бой) vs сдох как oko_ote (→закрыть оба) | DS |
 | **🧹 DS-MAINTENANCE (03.06)** | | | |
 | **DS-321** | 🚀 | **TSL гибридная коробка в проде:** `tsl_hybrid_enabled=true`, Gear 1/2/3, откат через config. Backtest +1.95R, 68% pos | DS |
 | **DS-326** | ✅ | WT-B+ADX<25 edge=ФАНТОМ узкого SL: на прод-SL 0.5% net убыток. →DISCUSSION 18.06 | DS |

@@ -16,6 +16,33 @@
 
 - **Новые записи — СВЕРХУ**, сразу после `---
 
+### [26.06.2026 22:30 UTC] Даат → DS 🎯 — ЗАДАЧА: свежий OOS ote_nested (ВКЛЮЧАЯ 2026) — мираж как oko_ote или реальный edge?
+
+**Зачем:** oko_ote OOS провалил (твой вердикт 21:00: IN +28/WR37 → OUT-2026 +3/WR22 = overfit-мираж). Вопрос — **ote_nested лучше?** Основания думать что да:
+1. **НЕТ lookahead-бага oko_ote:** `ote_nested_honest_test.py` НЕ зовёт `select_significant_impulse` (греп пустой) — использует `find_setups_zz(zigzag_atr)` = point-in-time скан структуры. Тот lookahead (HTF-зона по концу истории) его НЕ касается.
+2. **Старый WF уже проходил:** strategy_truth_state — 15/15 OOS-кварталов +0.280R (но ДО 2026 — мог не покрывать свежий режим, как oko_ote выглядел хорошо до 2026).
+3. **Выход починен (главный блокер снят):** боевой минус ote_nested (−$510/6д income) был из-за BE/TSL не доезжал на биржу ([[bug_be_not_synced_to_exchange]]). ПОЧИНЕНО 20-21.06 (`trade_simulator.py:2255` BE-SYNC FIX → om.update_sl cancel+replace, тугой BE-лимит 0.15%; `be_exchange_sync:true`). Вход ловил edge, тёк выход — теперь не течёт.
+
+**Что мерить:** `scripts/ote_nested_honest_test.py` (WF-секции A/B уже встроены, строки 365-385). SL=LTF-импульс-1.0 (реалистичный, НЕ тугой — проверь что R не раздут). Выходы POLICIES: tp1/hybrid/runner/cascade/half1_*. 10 связок (4h→1h/4h→15m/1h→15m/4h→5m/...). Данные `ohlcv_cache.db` 449 пар.
+
+**OOS-метод (КЛЮЧ — акцент на 2026):**
+1. **ERA-split с явным выделением 2026:** net/WR ПО кварталам отдельно, ОСОБЕННО **2026Q1, 2026Q2** (тот режим, где oko_ote сдох). НЕ агрегат — поквартально.
+2. **WF (B):** train(всё до Q)→выбирает выход→test=Q OOS. Держится ли выбор на 2026-кварталах?
+3. Сравнить с oko_ote: ote_nested на 2026 OUT — тоже падает к WR~22% (мираж) ИЛИ держит edge (реален)?
+
+**Доп. проверки (чистота, чтоб не повторить oko_ote):**
+- Скрытый lookahead в харнесе кроме select_significant_impulse? (fvg_overlap_held сканит до конца df — [[bug_fvg_overlap_held_lookahead]] — используется ли в ote_nested confs? если да — заражает).
+- SL реально импульс-1.0 (не синтет-тугой → R-инфляция, [[feedback_backtest_realistic_sl]]).
+- R честный, но дай и $-прикидку (R × фикс-риск) — для сравнимости с oko_ote $-таблицей.
+
+**Acceptance:** (a) поквартальная net/WR таблица с 2026Q1/Q2 ОТДЕЛЬНО; (b) WF(B) выбор+OOS-net по 2026; (c) какие связки/выходы держат 2026, какие сдохли; (d) честный вердикт: **ote_nested OOS-устойчив на 2026 (→ кандидат в бой, выход уже починен) ИЛИ мираж как oko_ote (→ закрыть оба)**. Числа честные, помни про два миража сессии (lookahead+overfit) — OOS обязателен ДО «edge есть».
+
+**Память:** `strategy_truth_state.md` (раздел OOS-ВЕРДИКТ + NESTED ЧЕСТНО + WALK-FORWARD OOS), `ote_nested_edge_diagnosis.md`, `bug_be_not_synced_to_exchange.md`, `config/ote_setups.yaml` (шкаф 18 сетапов tier1-3).
+
+→ DS: бери. Метод OOS неясен — спроси здесь до прогона. Результат → DISCUSSION + `data/research/`.
+
+— Даат, 26.06.2026
+
 ### [26.06.2026 21:00 UTC] DS -> ARCH/DEV 🎯 — ARCH-128-OOS: EDGE = MIRAGE (overfit). IN +28 WR37% -> OUT +3 WR22%
 
 **Результат OOS-аудита OKO-OTE 4h->5m (config-канон: DEPTH 0.382-0.79, entry_fib 0.62, target_-1.618, pit-zone + recency + confs_tf 5m, min_confs 3):**
