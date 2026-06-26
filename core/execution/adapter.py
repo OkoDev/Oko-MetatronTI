@@ -81,6 +81,13 @@ class ExchangeAdapter(ABC):
         ...
 
     @abstractmethod
+    async def get_income(self, symbol: str, account: int, start_ms: int, end_ms: int) -> float:
+        """CUTOVER-fallback: realized $ по symbol в окне [start_ms,end_ms] из income-ledger
+        ($-истина биржи). Когда WS closing-fill o.rp не пойман (pa=0 без fill) — последний
+        авторитетный источник realized. 0.0 если записей нет."""
+        ...
+
+    @abstractmethod
     async def balances(self, account: int) -> dict:
         """equity/available/used_margin/unrealized_pnl одного аккаунта."""
         ...

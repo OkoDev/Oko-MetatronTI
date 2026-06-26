@@ -113,6 +113,11 @@ class ExecutionSphere:
                 # ExitInfo не застешился. Дотянуть закрывающий fill по positionId (REST,
                 # детерминированно — как _resolve_exit positionID-якорь). Только на гонке.
                 exit_info = await self._resolve_exit_via_rest(account, flat)
+            if exit_info is None:
+                # CUTOVER-fallback (22.06): fill не пойман И REST-резолв пуст (one-click 101205/
+                # ликвидация без positionId) → realized из income-ledger ($-истина биржи, всегда
+                # есть). Поднимает o.rp-захват с ~65% к ~100% → CUTOVER флип безопасен.
+                exit_info = await self._resolve_exit_via_income(account, flat)
             intent = CloseIntent(account=account, symbol=flat.symbol, side=flat.side,
                                  position_id=flat.position_id, exit=exit_info, reason="ws_pa0")
             await self._fire_close(intent)
@@ -313,6 +318,35 @@ class ExecutionSphere:
         return ExitInfo(symbol=pos.symbol, side=pos.side, account=account,
                         exit_price=exit_price, realized_pnl=rp,
                         status=classify_exit(otype, rp), order_type=otype,
+                        position_id=pos.position_id, ts=time.time())
+
+    async def _resolve_exit_via_income(self, account: int, pos: Position) -> Optional[ExitInfo]:
+        """CUTOVER-fallback #2 (22.06): fill не пойман И REST order-резолв пуст (one-click 101205/
+        ликвидация без positionId) → realized из income-ledger (REALIZED_PNL+ликвидация, $-истина).
+        exit_price восстановлен из realized+entry+qty (income цену не даёт, но realized=факт биржи).
+        Поднимает o.rp-захват ~65%→~100% без угадывания (income авторитетен). Окно — последние 5 мин.
+        """
+        now_ms = int(time.time() * 1000)
+        try:
+            realized = await self._adapter.get_income(pos.symbol, account, now_ms - 5 * 60 * 1000, now_ms)
+        except Exception as e:
+            logger.debug("[Sphere] income-fallback %s: %s", pos.symbol, e)
+            return None
+        if not realized:   # 0.0 или None → записей нет, не резолвим (эскалация verify-flat)
+            logger.info("[Sphere] income-fallback %s %s: realized=0 (нет записей) — не резолвим",
+                        pos.symbol, pos.side)
+            return None
+        # exit_price из realized: long realized=(exit-entry)*qty → exit=entry+realized/qty; short зеркально
+        exit_price = pos.entry or pos.mark or 0.0
+        if pos.entry and pos.qty:
+            d = 1.0 if pos.side == "LONG" else -1.0
+            exit_price = pos.entry + d * realized / pos.qty
+        status = "LIQUIDATION" if realized < 0 and abs(realized) > 0 and not pos.entry else ("TP" if realized >= 0 else "SL")
+        logger.info("[Sphere] exit via INCOME-ledger (fill+REST пусто): %s %s acc=%d realized=%.4g exit~%.8g",
+                    pos.symbol, pos.side, account, realized, exit_price)
+        return ExitInfo(symbol=pos.symbol, side=pos.side, account=account,
+                        exit_price=float(exit_price), realized_pnl=float(realized),
+                        status=status, order_type="INCOME_FALLBACK",
                         position_id=pos.position_id, ts=time.time())
 
     def _route(self, symbol: str) -> int:

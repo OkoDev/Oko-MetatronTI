@@ -66,6 +66,10 @@ class FakeAdapter(ExchangeAdapter):
         self.calls.append(("get_filled", symbol, account))
         return list(self.filled_orders)
 
+    async def get_income(self, symbol, account, start_ms, end_ms):
+        self.calls.append(("get_income", symbol, account))
+        return float(getattr(self, "income_realized", 0.0))
+
     async def balances(self, account):
         return {"equity": 500.0, "available": 480.0, "used_margin": 20.0, "unrealized_pnl": 0.0}
 
@@ -250,6 +254,18 @@ class TestOnEvent:
         intent = await sphere.on_event(1, _pos_ev(1, 0))
         assert intent.exit.exit_price == 0.49        # из stash
         assert not any(c[0] == "get_filled" for c in sphere._adapter.calls)   # REST не звали
+
+    @pytest.mark.asyncio
+    async def test_income_fallback_when_fill_and_rest_empty(self, sphere):
+        # CUTOVER-fallback (22.06): pa=0 без stash + REST пусто → realized из income-ledger
+        await sphere.on_event(1, _open_fill())
+        sphere._adapter.filled_orders = []          # REST order-резолв не найдёт
+        sphere._adapter.income_realized = -1.5      # income-ledger даёт realized $
+        intent = await sphere.on_event(1, _pos_ev(1, 0))
+        assert intent.exit is not None
+        assert intent.exit.realized_pnl == -1.5
+        assert intent.exit.order_type == "INCOME_FALLBACK"
+        assert any(c[0] == "get_income" for c in sphere._adapter.calls)
 
 
 # ── close / adjust_sl ─────────────────────────────────────────────────────────
