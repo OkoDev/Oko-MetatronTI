@@ -72,6 +72,8 @@ class OkoOteSignal:
     # от точного entry_fib, но осталась внутри зоны (метод OTE = вся зона валидна для входа).
     zone_lo: float = 0.0
     zone_hi: float = 0.0
+    conf_score: int = 0       # набрано конфирмаций (< min_confs → ARMED, >= → FIRE)
+    conf_min: int = 3         # порог для FIRE (копия _min_confs на момент детекта)
 
 
 class _Ctx:
@@ -201,7 +203,8 @@ def _zone_asof(df_zone, dp, dev, as_of_ts, cache, prefer_recency=False):
 def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
                    only_latest: bool = True, min_confs: Optional[int] = None, dfs_all=None,
                    mid_tf: Optional[str] = None, df_mid=None, entry_fib: float = ENTRY_FIB,
-                   pit_zone: bool = False, recency: bool = False, confs_tf: Optional[str] = None):
+                   pit_zone: bool = False, recency: bool = False, confs_tf: Optional[str] = None,
+                   partial: bool = False):
     """OKO-OTE: КОНТЕКСТ старшего ТФ → вложенный вход младшего В OTE-зоне старшего (обе стороны)
     → подтверждения ≥3 → цель-лестница расширений. df_zone=старший, df_break=младший (вход).
 
@@ -402,6 +405,31 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
                 cf = []
             if len(cf) >= _min_confs:
                 confs = cf
+            elif partial and len(cf) >= 1:
+                # ARMED-state: структура найдена, конфирмации частичные — возвращаем
+                # с conf_score < conf_min чтобы вызывающий мог поставить в near-fire очередь.
+                slv = s["levels"][1.0] * (1 - BUF) if is_long else s["levels"][1.0] * (1 + BUF)
+                risk = abs(entry - slv)
+                if risk > 0:
+                    targets_p: List[Tuple[float, str]] = []
+                    for f in EXT_FIBS:
+                        lv = s["levels"].get(f)
+                        if lv and ((lv > entry) if is_long else (lv < entry)):
+                            targets_p.append((round(float(lv), 8), f"fib_ext_{f}"))
+                    if targets_p:
+                        tp_p, tps_p = targets_p[0]
+                        _zlv1_p, _zlv2_p = s["levels"][DEPTH_MIN], s["levels"][DEPTH_MAX]
+                        return OkoOteSignal(
+                            symbol=symbol, direction=D, zone_tf=zone_tf, break_tf=break_tf,
+                            entry=round(entry, 8), sl=round(slv, 8), tp=round(tp_p, 8),
+                            tp_source=tps_p, depth=round(depth, 3),
+                            rr=round(abs(tp_p - entry) / risk, 2),
+                            zone_ts=f"htf={htf_dir} in_ote=1 confs={'+'.join(cf)} div=0",
+                            choch_ts=str(s["choch_ts"]), targets=targets_p, entry_ts=str(df_break.index[ei]),
+                            zone_lo=round(min(_zlv1_p, _zlv2_p), 8),
+                            zone_hi=round(max(_zlv1_p, _zlv2_p), 8),
+                            conf_score=len(cf), conf_min=_min_confs,
+                        )
         else:
             _zlo = min(s["levels"][0.5], s["levels"][0.79])
             _zhi = max(s["levels"][0.5], s["levels"][0.79])
@@ -462,6 +490,7 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
             zone_ts=f"htf={htf_dir} in_ote=1 confs={'+'.join(confs)} div={int(div_rev)}",
             choch_ts=str(s["choch_ts"]), targets=targets, entry_ts=str(df_break.index[ei]),
             zone_lo=round(zone_lo, 8), zone_hi=round(zone_hi, 8),
+            conf_score=len(confs), conf_min=_min_confs,
         )
         if only_latest:
             return sig                          # live: первый свежий сетап

@@ -41,8 +41,12 @@ ARMED_CHECK_INTERVAL_SECONDS = 12
 # confs≥3 (эталон оценки, не измерено отдельно) — НЕ магическое число навечно, see TASKS если
 # нужно калибровать по факту armed_at→fire задержкам.
 ARMED_TTL_BARS = 8
+NEAR_FIRE_SCAN_INTERVAL = 60   # секунды между пересканами near-fire кандидатов
 _TF_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
-_ARMED_SETUPS: dict = {}   # symbol -> {"sig":..., "cfg":..., "armed_at": float, "expiry": float}
+_ARMED_SETUPS: dict = {}      # symbol -> {"sig":..., "cfg":..., "armed_at": float, "expiry": float}
+_NEAR_FIRE_SETUPS: dict = {}  # symbol -> {"sig": partial_sig, "links": links, "cfg":..., "expiry": float}
+                               # ARMED-кандидаты с score < min: детектор нашёл структуру,
+                               # конфирмации неполные. Пересканируем раз в NEAR_FIRE_SCAN_INTERVAL.
 
 
 def _armed_ttl_minutes(sig, cfg) -> float:
@@ -66,7 +70,7 @@ async def oko_ote_observer_loop(bot, interval_seconds: int = OKO_OTE_INTERVAL_SE
         logger.info("[OKO-OTE] disabled (config strategies.oko_ote.enabled=false) — loop не стартует")
         return
     try:
-        from core.smc.oko_ote import detect_oko_ote, SHADOW_LINKS  # noqa
+        from core.smc.oko_ote import detect_oko_ote, SHADOW_LINKS, ENTRY_FIB  # noqa
     except ImportError as e:
         logger.error("[OKO-OTE] detector import failed: %s", e)
         return
@@ -74,6 +78,7 @@ async def oko_ote_observer_loop(bot, interval_seconds: int = OKO_OTE_INTERVAL_SE
     logger.info("[OKO-OTE] started. links=%s interval=%ds risk=%.2f%% max_conc=%d",
                 links, interval_seconds, cfg.get("risk_pct", 0.5), cfg.get("max_concurrent", 10))
     asyncio.create_task(_armed_watcher_loop(bot, cfg))
+    asyncio.create_task(_near_fire_scan_loop(bot, links, cfg))
 
     first = True
     while True:
@@ -163,6 +168,45 @@ async def _armed_watcher_loop(bot, cfg) -> None:
             logger.debug("[OKO-OTE ARMED] watcher error: %s", e)
 
 
+async def _near_fire_scan_loop(bot, links, cfg) -> None:
+    """Раз в NEAR_FIRE_SCAN_INTERVAL (60с) пересканирует near-fire кандидатов — пары у которых
+    на последнем главном скане (600с) был score >= 1, но < min. Детектор запускается только для
+    них (не 300 пар), без REST: данные из кэша scan_loop. Это устраняет 10-минутное окно слепоты:
+    набрал последнюю конфирмацию → FIRE через ≤60с, не через ≤600с."""
+    dc = getattr(bot, "data_collector", None)
+    while True:
+        try:
+            await asyncio.sleep(NEAR_FIRE_SCAN_INTERVAL)
+            if not _NEAR_FIRE_SETUPS or dc is None:
+                continue
+            now = time.time()
+            candidates = list(_NEAR_FIRE_SETUPS.items())
+            if not candidates:
+                continue
+            logger.debug("[OKO-OTE NEAR-FIRE] пересканирую %d кандидатов", len(candidates))
+            for symbol, item in candidates:
+                if now >= item["expiry"]:
+                    logger.info("[OKO-OTE NEAR-FIRE EXPIRE] %s истёк", symbol)
+                    _NEAR_FIRE_SETUPS.pop(symbol, None)
+                    continue
+                item_links = item["links"]
+                item_cfg = item["cfg"]
+                # Полный скан только этой пары — данные уже в кэше scan_loop
+                try:
+                    fired = await _scan_one_oko(bot, symbol, item_links, item_cfg)
+                    if fired:
+                        _NEAR_FIRE_SETUPS.pop(symbol, None)
+                        logger.info("[OKO-OTE NEAR-FIRE FIRED] %s → FIRE (был score<min, добрал конфирмации)",
+                                    symbol)
+                except Exception as e:
+                    logger.debug("[OKO-OTE NEAR-FIRE] %s: %s", symbol, e)
+        except asyncio.CancelledError:
+            logger.info("[OKO-OTE NEAR-FIRE] loop cancelled")
+            raise
+        except Exception as e:
+            logger.debug("[OKO-OTE NEAR-FIRE] loop error: %s", e)
+
+
 async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
     dc = getattr(bot, "data_collector", None)
     if dc is None:
@@ -183,9 +227,24 @@ async def _scan_one_oko(bot, symbol: str, links, cfg) -> int:
             continue
         # детектор CPU-bound (zigzag+wt+detect_*) → в executor, не морозить loop (PERF-LOOP-DRIFT)
         # dfs (полный: 4h/1h/15m) → подтверждения как ote_nested (atr 3m/15m + div/wt/vol/liq)
-        sig = await _loop.run_in_executor(None, detect_oko_ote, symbol, dz, db, zone_tf, break_tf,
-                                          True, None, dfs)
+        from functools import partial as _partial
+        _call = _partial(detect_oko_ote, symbol, dz, db, zone_tf, break_tf,
+                         True, None, dfs)
+        sig = await _loop.run_in_executor(None, _call)
         if sig is None:
+            # partial=True: ищем кандидатов с неполными конфирмациями (score >= 1)
+            _call_p = _partial(detect_oko_ote, symbol, dz, db, zone_tf, break_tf,
+                               True, None, dfs, None, None, ENTRY_FIB, False, False, None, True)
+            partial_sig = await _loop.run_in_executor(None, _call_p)
+            if partial_sig is not None and partial_sig.conf_score >= 1:
+                now_nf = time.time()
+                ttl_min = _armed_ttl_minutes(partial_sig, cfg)
+                _NEAR_FIRE_SETUPS[symbol] = {
+                    "sig": partial_sig, "links": [(zone_tf, break_tf)],
+                    "cfg": cfg, "expiry": now_nf + ttl_min * 60,
+                }
+                logger.debug("[OKO-OTE NEAR-FIRE] %s score=%d/%d → в очередь пересканирования",
+                             symbol, partial_sig.conf_score, partial_sig.conf_min)
             continue
         logger.info("[OKO-OTE FIRE] %s %s %s->%s entry=%s SL=%s TP=%s RR=%s depth=%s [%s]",
                     sig.symbol, sig.direction, sig.zone_tf, sig.break_tf,
