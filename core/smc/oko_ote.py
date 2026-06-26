@@ -371,21 +371,39 @@ def detect_oko_ote(symbol: str, df_zone, df_break, zone_tf: str, break_tf: str,
         ci = posL.get(s["choch_ts"])
         if ci is None:
             continue
-        ei = None
-        for j in range(ci + 1, min(ci + 1 + RETEST_BARS, n)):
-            if (lo[j] <= entry) if is_long else (hi[j] >= entry):
-                ei = j
-                break
-        if ei is None:
-            continue
+        if only_latest:
+            # ── РЕДИЗАЙН (26.06): триггер = текущая цена в OTE зоне ──────────────────────
+            # Прежде: ei = "касание entry в RETEST_BARS после CHoCH" — CHoCH мог быть 2+ недели
+            # назад, OTE давно пройдена, цена улетела на 6-21% → freshness gate резал все входы.
+            # Теперь: ei = n-1 (текущий бар), только если close[-1] сейчас внутри [zone_lo, zone_hi].
+            # CHoCH остаётся для direction / entry-fib / SL / targets (не меняем структуру).
+            # Эффект = лимитный ордер: вход при касании зоны, слиппедж ~0%.
+            _zone_lo_now = min(s["levels"].get(DEPTH_MIN, 0), s["levels"].get(DEPTH_MAX, 0))
+            _zone_hi_now = max(s["levels"].get(DEPTH_MIN, 0), s["levels"].get(DEPTH_MAX, 0))
+            _cur = float(cl[-1])
+            if not (_zone_lo_now <= _cur <= _zone_hi_now):
+                continue
+            ei = n - 1
+        else:
+            ei = None
+            for j in range(ci + 1, min(ci + 1 + RETEST_BARS, n)):
+                if (lo[j] <= entry) if is_long else (hi[j] >= entry):
+                    ei = j
+                    break
+            if ei is None:
+                continue
         imp_from = s["from"][1]; imp_to = s["to"][1]; rng = abs(imp_to - imp_from)
         if rng <= 0:
             continue
-        # глубина коррекции (фильтр средней 0.55-0.68)
-        if is_long:
-            mn = lo[ci:ei + 1].min() if ei > ci else lo[ei]; depth = (imp_to - mn) / rng
+        # глубина коррекции
+        if only_latest:
+            _cur_d = float(cl[-1])
+            depth = (imp_to - _cur_d) / rng if is_long else (_cur_d - imp_to) / rng
         else:
-            mx = hi[ci:ei + 1].max() if ei > ci else hi[ei]; depth = (mx - imp_to) / rng
+            if is_long:
+                mn = lo[ci:ei + 1].min() if ei > ci else lo[ei]; depth = (imp_to - mn) / rng
+            else:
+                mx = hi[ci:ei + 1].max() if ei > ci else hi[ei]; depth = (mx - imp_to) / rng
         if not (DEPTH_MIN <= depth < DEPTH_MAX):
             continue
         # WT-ПОДТВЕРЖДЕНИЕ: не входить против WT-экстремума
