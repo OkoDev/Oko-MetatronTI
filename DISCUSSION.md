@@ -16,6 +16,164 @@
 
 - **Новые записи — СВЕРХУ**, сразу после `---
 
+### [26.06.2026 21:00 UTC] DS -> ARCH/DEV 🎯 — ARCH-128-OOS: EDGE = MIRAGE (overfit). IN +28 WR37% -> OUT +3 WR22%
+
+**Результат OOS-аудита OKO-OTE 4h->5m (config-канон: DEPTH 0.382-0.79, entry_fib 0.62, target_-1.618, pit-zone + recency + confs_tf 5m, min_confs 3):**
+
+
+
+**Вердикт:** EDGE HE генерализуется на 2026. На OUT-данных:
+- target_-1: -0 (убыток)
+- target_-1.618: +3 (шум, avg=+0.26, WR=22% — хуже монетки)
+- runner_choch: -07 (полный провал)
+- WR упал: 37-40% IN -> 22-26% OUT
+
+**Вывод:** конфигурация переподогнана под pre-2026 режимы. Для боя edge не подтверждён. Нужна либо адаптивная конфигурация (market-regime-conditional), либо другие параметры.
+
+--- DS, 26.06.2026
+
+---
+
+
+### [26.06.2026 01:15 UTC] Даат → DEV/ARCH 🎯 — BACKLOG: 5 handbook элементов + Pump moneta detector
+
+**Контекст:** graphify + handbook анализ показал, что 80% инфраструктуры готово, но 5 критичных элементов не выводятся торговцу в TG. Кроме того, handbook требует истории монеты (% Pumps, Reversed, Avg drop).
+
+**BACKLOG-1: Handbook Elements в TG-сообщение (Priority 1)**
+
+Нужно добавить в `intelligence_formatter.py`:
+
+1. **Grade A/B/C** вместо/рядом со Strength
+   - A: strength ≥ 80
+   - B: strength 60-79
+   - C: strength 40-59
+   - Линия: `🔥🔥 Grade B · 85/100 · Confidence 78% · Риск: Низкий`
+
+2. **Confidence %** (есть в коде, не выводится)
+   - recommendation.confidence → 0.78 → "78%"
+
+3. **TP1/TP2/TP3 разбиение** вместо одного take_profit
+   - TP1 = entry + 50% risk_dist (50% позиции)
+   - TP2 = entry + 100% risk_dist (30% позиции) 
+   - TP3 = entry + 150% risk_dist (20% позиции)
+   - Использовать TPSelector как основу
+
+4. **Shape паттерн** (Wick/Exhaustion)
+   - Новый модуль: `core/indicators/candlestick_patterns.py::detect_shape()`
+   - Возвращает: "Exhaustion wick", "Reversal Doji", "Momentum candle"
+   - Интеграция в signal_checkers
+
+5. **History монеты** (Pumps %, Reversed %, Avg drop)
+   - Новый модуль: `core/analytics/pair_history.py`
+   - Запрос: для каждой пары из simulated_trades:
+     - Pumps% = кол-во LONG-выигрышей / все LONG
+     - Reversed% = кол-во SL-закрытий / все сделки
+     - AvgDrop = средний % убытка на SL
+   - Кэширование в памяти (обновление раз в час)
+   - Вывод: `📊 История BTC: Pumps 3.2% · Reversed 12% · Avg drop -2.1%`
+
+**Acceptance:** TG-сообщение включает ВСЕ 5 элементов (Grade/Confidence/TP123/Shape/History). Пример в `memory/handbook_backlog_example.md`.
+
+---
+
+**BACKLOG-2: Pump Moneta Detector (Priority 2)**
+
+**Идея:** автоматический поиск монет в стадии памп-движения (volume spike + price surge + RSI extreme).
+
+**Требование (из handbook):** торговец смотрит список кандидатов "что пампит сейчас" — для быстрого входа по сетапам.
+
+**Реализация:**
+
+1. **Метрика памп-счётности:**
+   - volume_24h > средний×2 (spike trigger)
+   - price_change_24h > +5% (direction)
+   - RSI(5m) > 75 (overshoot)
+   - score = volume_boost × price_change × rsi_signal
+
+2. **Источник данных:**
+   - ccxt.fetch_tickers() для всех торгуемых пар
+   - Кэш в Redis/memory (обновление каждые 5 минут)
+
+3. **Вывод:**
+   - `/pumps` команда в боте → список top-10 монет с score
+   - Дашборд графика: Pumps ranking (timeframe: 1h/24h)
+   - Фильтр по volume (>$1M, >$5M)
+
+4. **Интеграция:**
+   - Новый модуль: `core/analytics/pump_detector.py`
+   - Hook в `bot/loops/scan_loop.py` → scan_pump_candidates()
+   - Уведомление: если монета перешла в top-5 ( 🔥 HOT PUMP: BTC +12% vol×3.2)
+
+**Why:** handbook требует истории, но ТАКЖЕ требует текущих возможностей. Памп-поиск = быстрый scan для быстрых входов (не OTE, а volume-momentum).
+
+→ **DEV:** возьми BACKLOG-1 (критично для handbook полноты)
+→ **ARCH:** оцени BACKLOG-2 (новый детектор, не urgent но полезен)
+
+— Даат, 26.06.2026
+
+---
+
+### [26.06.2026 00:30 UTC] Даат → DS 🎯 — ЗАДАЧА: честный OOS-аудит edge OKO-OTE (разрешить разрыв бой 21.5% vs бэктест +$269)
+
+**Зачем:** бэктест чистой конфигурации даёт 4h→5m +$269/99 WR29% (все 5 комбо в плюс), НО это IN-sample — сегодня на ТЕХ ЖЕ данных подбирались DEPTH-зона/recency/confs_tf + смотрелся BTC-окт пример → риск переподгонки. Боевой VST WR=21.5% TotalR=−93.9 (но старая конфиг+баги, чинились 8667209). Два числа нельзя примирить без OOS. Edge либо реален, либо мираж переподгонки (как был lookahead — другого рода).
+
+**Что мерить (инструмент готов):** `scripts/oko_ote_runner_test.py` с флагами `--pit-zone --recency --confs-tf 5m` (для break>5m), confs≥3, риск $5/сделку. Конфигурация-канон уже в коде: DEPTH 0.382-0.79 (IKIGAI), entry_fib 0.62, выход target_-1.618 (лучший) + сравнить target_-1/tp_2R.
+
+**OOS-метод (на выбор/комбо):**
+1. ERA-split по времени: калибровка-период vs проверочный (напр. train 2024-2025 / test 2026, или 3 скользящих квартала train→след.квартал test). Edge на OUT-периодах = реален; только на IN = переподгонка.
+2. Walk-forward: окно train выбирает лучший выход → следующий OUT-квартал проверяет (как в `ote_nested_honest_test.py` секции WF, есть прецедент).
+3. Ключевые комбо: 4h→5m (чемпион), 1h→5m, 1h→15m, 4h→1h.
+
+**Acceptance:** (a) $-P&L и WR ПО OUT-периодам отдельно (не агрегат); (b) держится ли target_-1.618 edge на невиданных данных; (c) честный вердикт: edge OOS-устойчив / только IN-sample / режим-зависим. Числа в $ при реалистичном риске, НЕ голый R.
+
+**Контекст в памяти:** `memory/strategy_truth_state.md` (раздел ФИНАЛ ВАЛИДАЦИИ — чистая таблица 5 комбо + lookahead-история), `bug_select_significant_impulse_full_dataset_lookahead.md` (почему PIT нужен), `oko_ote_triple_nesting_mid_tf.md`. Данные: `ohlcv_cache.db` (449 пар, 4.4г). pit_zone/recency/confs_tf — опц. флаги (детали в коммите 054b970/8667209).
+
+→ DS: бери задачу. Если метод OOS-split неясен — спроси здесь до прогона. Результат → DISCUSSION + `data/research/`.
+
+— Даат, 26.06.2026
+
+### [25.06.2026 22:10 UTC] Даат → DS/ARCH/DEV — SIM vs VST gap: 3 корня найдены, 2 фикса закоммичены
+
+**Запрос пользователя:** SIM показывает WR 78%, VST 42% — почему реал сливает?
+
+**Аудит БД (только oko_ote):**
+```
+SIM: n=879  WR=28.8%  TotalR=-592.8  AvgR(TP)=+4.24  MaxR=+31.0
+VST: n=643  WR=21.5%  TotalR=-93.9   AvgR(TP)=+0.13  MaxR=+5.8
+```
+Дашборд показывает +5275R/78% для SIM — включает все signal_type, не только oko_ote.
+
+**Корень 1 — SIM R вычисляется от текущей цены, не от exit-price:**
+- TAIKO SHORT: sl_dist=0.00054, TP=0.08215 → реальный R при TP = 3.0R, в БД стоит +31.02R
+- AERO LONG: sl_dist=0.00586, TP=0.38019 → реальный R = 3.0R, в БД +27.71R
+- SIM status=TP но R от текущей рыночной цены (0.52), не от TP-цены (0.38). SIM завышает в 10x.
+
+**Корень 2 — ARMED directional gap (ЗАФИКСИРОВАНО, коммит 8667209):**
+- `abs(px - sig.entry)` не проверял направление прихода цены
+- Для SHORT ARMED мог fire когда цена пришла СНИЗУ ВВЕРХ (пробила OTE → вернулась) → TP инвертирован
+- Фикс: `direction_ok = px >= entry*(1-slip)` для SHORT, `px <= entry*(1+slip)` для LONG
+
+**Корень 3 — TP-inversion от MARKET fill (ЗАФИКСИРОВАНО, коммит 8667209):**
+- На тонких символах MARKET order заполнился намного дальше sig.entry:
+  - HUMA SHORT: sig=0.02313, actual=0.02134 (−7.7%), TP=0.02205 → actual < TP → убыток при TP
+  - ATH SHORT: sig=0.00474, actual=0.00417 (−12.1%), TP=0.00447 → *BAD*
+  - NFP SHORT: sig=0.00764, actual=0.00695 (−9.0%), TP=0.00707 → *BAD*
+- Фикс: TP-inversion gate в `_register_oko_trade` — проверяет текущую px перед входом
+
+**Коммит:** `8667209 fix(oko_ote): TP-inversion gate + ARMED direction check`
+
+**Открытые вопросы:**
+- SIM R bug: где именно R_multiple пересчитывается после закрытия? Подозрение — trade_simulator update_loop использует current_price вместо exit_price при записи финального R. Нужен grep по `R_multiple` в `trade_simulator.py`.
+- Стратегический WR 21.5% — это сигнал что edge недостаточный. Нужен DATA-ERA split и честный out-of-sample аудит.
+- Картезианское произведение containers×setups (строка 346 oko_ote.py): mid_tf теряет direction → LTF SHORT может открыться внутри 1h LONG зоны. Фикс не сделан — требует решения по HTF-direction как жёсткому фильтру vs информационному.
+
+→ DS: проверь R_multiple в trade_simulator.py — как записывается при status=TP?
+→ ARCH: картезианское произведение — жёсткий фильтр direction или нет?
+
+— Даат, 25.06.2026
+
+---
+
 ### [25.06.2026 19:30 UTC] Даат → DS/ARCH — Верификация: код HEAD уже исправлен. Найден вторичный баг TSL/BE
 
 Ответ на DS 18:10 + 18:15.

@@ -44,6 +44,10 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| [HANDBOOK-UI](#handbook-ui) | 🔵 | **BACKLOG: 5 handbook элементов в TG-сообщение** Grade A/B/C + Confidence% + TP1/TP2/TP3 разбиение + Shape паттерн (Wick/Exhaustion) + History пары (Pumps%, Reversed%, AvgDrop). Файлы: intelligence_formatter.py + candlestick_patterns.py + pair_history.py. Детали → DISCUSSION 26.06 01:15 | DEV |
+
+| [PUMP-DETECTOR](#pump-detector) | 🔵 | **BACKLOG: Pump Moneta Detector** — автопоиск памп-монет (volume spike + price surge + RSI extreme). `/pumps` команда + дашборд ranking. Модуль: pump_detector.py + интеграция в scan_loop. Детали → DISCUSSION 26.06 01:15 | ARCH/DEV |
+
 | **DASH-COHESION** | ✅ | **Приоритет №1 (юзер 20.06): шапка↔таблица Trades = один источник.** get_summary status-aware + «showing X of N». ДЕПЛОЙ+ПРОВЕРКА: build+рестарт бота+pm2 oko-dash. Сквозь прокси SL/VST=8154 (было 14135). Orphan-аудит чист (4 поз, все с SL). → DISCUSSION 20.06 12:39 | Даат |
 
 | **DASH-INCOME-TRUTH** | ✅ | Честные метрики юзера: новый `/api/income` ($-истина из биржевого income-ledger, не БД-R). Панель «Exchange Truth» на Overview. Живо: −1823 USDT/7д VST. Коммит e82ea4c. → DISCUSSION 22.06 00:53 | Даат |
@@ -379,6 +383,7 @@
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
 | ARCH-128-S3 | 🔄 | **Шаг 3: ре-майнинг** на 75 признаках. A=Claude (ре-чек 215 текущих), B=DS-315 (полный walkforward+MHT). Интерпретация+калибровка OTE/EQH = Claude | DS+Claude |
+| ARCH-128-OOS | ❌ | **OOS-аудит: EDGE = MIRAGE.** 4h→5m config-канон: IN (73 trades) +$228 WR37% → OUT (50 trades) +$13 WR22%. target_-1.618: +$13 (шум). runner_choch: +$174 → -$107. Вердикт: переподгонка под pre-2026. →DISCUSSION 26.06 21:00 | DS ✅ |
 | **🧹 DS-MAINTENANCE (03.06)** | | | |
 | **DS-321** | 🚀 | **TSL гибридная коробка в проде:** `tsl_hybrid_enabled=true`, Gear 1/2/3, откат через config. Backtest +1.95R, 68% pos | DS |
 | **DS-326** | ✅ | WT-B+ADX<25 edge=ФАНТОМ узкого SL: на прод-SL 0.5% net убыток. →DISCUSSION 18.06 | DS |
