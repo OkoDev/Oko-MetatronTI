@@ -446,6 +446,11 @@ class TradeSimulator:
             try:
                 from core.infra.config_loader import config as _cfg
                 MIN_RR = float(_cfg.get("trading.min_rr_ratio", 2.0))
+                # per-strategy override (симметрично router gate rr_filter): trade_mode → свой порог.
+                # OKO-OTE (ближний магнит RR<1) использует min_rr_per_strategy.oko_ote.
+                _per_rr = _cfg.get("trading.min_rr_per_strategy", {})
+                if isinstance(_per_rr, dict) and trade_mode and trade_mode in _per_rr:
+                    MIN_RR = float(_per_rr[trade_mode])
             except Exception:
                 MIN_RR = 2.0
             # DEV-164: guard вынесен ДО проверки take_profit — не зависит от наличия TP

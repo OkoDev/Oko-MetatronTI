@@ -2957,6 +2957,8 @@ async def _handle_pairs(request: web.Request) -> web.Response:
                 "ote_ltf_tp1":       st.get("ote_ltf_tp1"),
                 "ote_ltf_tp":        st.get("ote_ltf_tp"),
                 "ote_ltf_setup":     st.get("ote_ltf_setup"),
+                # WATCHLIST-UNI: универсальный реестр всех стратегий (oko_ote и др.), % не R
+                "watchlist":         st.get("watchlist", {}),
             })
         # сильнейшие сигналы — наверх
         pairs.sort(key=lambda p: (p["last_strength"] or 0), reverse=True)

@@ -140,6 +140,12 @@ class PairState:
     ote_ltf_setup: Optional[str] = None             # setup_id из шкафа
     ote_ltf_time: Optional[datetime] = None
 
+    # ── УНИВЕРСАЛЬНЫЙ WATCHLIST (WATCHLIST-UNI 22.06): реестр сигналов-кандидатов
+    # ОТ ЛЮБОЙ стратегии. Ключ = имя стратегии ('oko_ote'/'ote_nested'/...), значение =
+    # WatchlistEntry-dict {strategy,direction,status,entry,sl,targets,setup,confs,potential_pct,tf,ts}.
+    # Новая стратегия = просто bus.set_watchlist(strategy, entry). potential в % (НЕ фейк-R).
+    watchlist: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
     # ── Сфера 8: Pivot Levels ───────────────────────────────────────────
     pivot_snap: Optional[Dict[str, Any]] = None   # {1W: {PP, S1, ...}, 1D: {...}}
     near_pivot: Optional[Dict] = None              # {level, source, distance_pct}
@@ -254,6 +260,24 @@ class PairContextBus:
                 setattr(state, key, val)
             else:
                 logger.debug("[Bus] неизвестное поле PairState: %s", key)
+
+    def set_watchlist(self, symbol: str, strategy: str, entry: Optional[Dict[str, Any]]) -> None:
+        """WATCHLIST-UNI: публикует/обновляет watchlist-запись стратегии (или удаляет если None).
+
+        entry — dict единого формата: {direction,status,entry,sl,targets,setup,confs,potential_pct,tf}.
+        Любая стратегия зовёт это; dashboard читает state.watchlist (все стратегии). % НЕ R.
+        """
+        state = self.get(symbol)
+        if entry is None:
+            state.watchlist.pop(strategy, None)
+        else:
+            e = dict(entry); e["strategy"] = strategy
+            e.setdefault("ts", datetime.now(timezone.utc).isoformat())
+            state.watchlist[strategy] = e
+
+    def clear_watchlist(self, symbol: str, strategy: str) -> None:
+        """Снять watchlist-запись стратегии (сетап исчез/инвалидирован)."""
+        self.get(symbol).watchlist.pop(strategy, None)
 
     def all_symbols(self) -> list[str]:
         """Все символы с ненулевым состоянием."""
@@ -588,6 +612,8 @@ class PairContextBus:
             "ote_ltf_tp1":       state.ote_ltf_tp1,
             "ote_ltf_tp":        state.ote_ltf_tp,
             "ote_ltf_setup":     state.ote_ltf_setup,
+            # WATCHLIST-UNI: универсальный реестр сигналов всех стратегий (% не R)
+            "watchlist":         state.watchlist,
             # Сфера 8
             "near_pivot":        state.near_pivot,
             # Сфера 9
