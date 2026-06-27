@@ -162,7 +162,15 @@ def test_pair(conn, sym, zone_tf, break_tf, min_confs=3, mid_tf=None, entry_fib=
         # выход 6: ЛЕСТНИЦА-RUNNER (50% на +2R фикс, 50% раннером до CHoCH — ловит и edge, и ракету)
         ladder_run = 0.5 * rmap["tp_2R"] + 0.5 * r2
 
-        row = {"sym": sym, "dir": D, "target_-1": r1, "runner_choch": r2,
+        # htf_dir из zone_ts ("htf=long ..." → "long") + aligned-флаг (слом LTF в сторону
+        # импульса HTF = trend-continuation). Вариант A(все)/B(aligned)/counter — без 2-го прогона.
+        _htf_dir = ""
+        try:
+            _htf_dir = sig.zone_ts.split()[0].split("=")[1]
+        except Exception:
+            pass
+        row = {"sym": sym, "dir": D, "htf_dir": _htf_dir, "aligned": (_htf_dir == D),
+               "target_-1": r1, "runner_choch": r2,
                "ladder": r3, "tp_2R": rmap["tp_2R"], "tp_3R": rmap["tp_3R"],
                "ladder_run": ladder_run, "mfe_pct": mfe_pct, "depth": sig.depth,
                "entry_ts": sig.entry_ts, "choch_ts": sig.choch_ts, "entry_px": sig.entry}
@@ -223,7 +231,8 @@ def main():
     if a.csv:
         import csv as _csv
         with open(a.csv, "w", newline="", encoding="utf-8") as f:
-            w = _csv.DictWriter(f, fieldnames=["sym", "dir", "entry_ts", "choch_ts", "entry_px"])
+            w = _csv.DictWriter(f, fieldnames=["sym", "dir", "entry_ts", "choch_ts", "entry_px",
+                "target_-1", "target_-1.618", "runner_choch", "ladder", "tp_2R", "tp_3R", "ladder_run", "mfe_pct"])
             w.writeheader()
             for t in allr:
                 w.writerow({k: t.get(k) for k in w.fieldnames})
@@ -252,6 +261,49 @@ def main():
         if len(sub) < 5: continue
         rc = np.array([t["runner_choch"] for t in sub])
         print(f"  {nm}: runner_choch сумма {rc.sum():+.0f}$ средн {rc.mean():+.2f}$ WR{round(100*(rc>0).mean())}%")
+
+    # ── РЕШАЮЩЕЕ СРАВНЕНИЕ: A=текущий(все) vs B=HTF-bias(aligned) vs counter(против HTF) ──
+    # aligned = слом LTF в сторону импульса HTF (trend-continuation, как видит OKO-SM на чарте).
+    # counter = слом против HTF (текущий детектор их пропускает — против шерсти, RPL-кейс).
+    def _st(sub, key):
+        v = np.array([t[key] for t in sub if key in t])
+        if not len(v):
+            return 0.0, 0.0, 0
+        return float(v.sum()), float(v.mean()), round(100 * (v > 0).mean())
+    aligned = [t for t in allr if t.get("aligned")]
+    counter = [t for t in allr if not t.get("aligned")]
+    print("\n# A=текущий(все) · B=HTF-bias(aligned) · counter(против HTF) — выходы runner_choch / target_-1 / ladder_run")
+    print("| вариант | n | runner $ | ср.$ | WR | target_-1 $ | ср.$ | WR | ladder_run $ | ср.$ | WR |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    for nm, sub in (("A: все(текущий)", allr), ("B: aligned(HTF-bias)", aligned), ("counter(против HTF)", counter)):
+        rs, rm, rw = _st(sub, "runner_choch")
+        t1s, t1m, t1w = _st(sub, "target_-1")
+        ls, lm, lw = _st(sub, "ladder_run")
+        print(f"| {nm} | {len(sub)} | **{rs:+.0f}** | {rm:+.2f} | {rw}% | **{t1s:+.0f}** | {t1m:+.2f} | {t1w}% | **{ls:+.0f}** | {lm:+.2f} | {lw}% |")
+    # aligned по сторонам (видеть, LONG-cont или SHORT-cont несёт)
+    print("\naligned по сторонам (trend-continuation):")
+    for nm in ("long", "short"):
+        sub = [t for t in aligned if t["dir"] == nm]
+        if len(sub) < 5:
+            continue
+        rs, rm, rw = _st(sub, "runner_choch")
+        print(f"  {nm}-cont: n={len(sub)} runner {rs:+.0f}$ ср {rm:+.2f}$ WR{rw}%")
+
+    # ── ЧАСТОТА (вопрос Егора «почему мало сигналов / прибыль каждый день») ──
+    # aligned confs≥N сетапов/день по всему юниверсу пар (live сканит все пары одновременно).
+    al_ts = []
+    for t in aligned:
+        try:
+            al_ts.append(pd.Timestamp(t["entry_ts"]))
+        except Exception:
+            pass
+    if al_ts:
+        al_ts.sort()
+        span_days = max(1, (al_ts[-1] - al_ts[0]).days)
+        per_day = len(aligned) / span_days
+        print(f"\nЧАСТОТА aligned confs>={a.min_confs}: {len(aligned)} сетапов / {span_days}д / {len(syms)} пар "
+              f"= {per_day:.2f}/день. На 467 пар ≈ {per_day * 467 / len(syms):.2f}/день. "
+              f"long-cont (чистый edge) ≈ {sum(1 for t in aligned if t['dir']=='long') / span_days * 467 / len(syms):.2f}/день")
 
 
 if __name__ == "__main__":
