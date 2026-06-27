@@ -21,8 +21,10 @@ execution:
   entry: "LTF-слом структуры внутри OTE-зоны HTF (ote_retest_setups)"
   ote_zone: [0.5, 0.79]          # зона входа (эталон smc_engine)
   sl: "LTF-структура (компактный, риск ×10) — НЕ инвалидационный для слома"
-  tp1: { level_R: 1.0, close_pct: 50 }    # частичный: 50% на +1R
-  runner: "остаток до target (pull→OTE-зона, cont→HTF-target), SL→BE после TP1"
+  tp1: { level_R: 1.0, close_pct: 100 }   # 27.06 ОЖИВЛЕНИЕ: ПОЛНЫЙ выход на +1R (было 50%).
+                                          # OTE = mean-reversion: 1R = длина отскока, runner=шум
+                                          # (продолжения нет). [[ote_is_meanreversion_not_continuation]]
+  runner: "ОТКЛЮЧЁН (close_pct 100 = весь объём на tp1). Раньше остаток до target — но OOS показал runner худший везде"
   trail: "ATRTrend + TSL (ExitManager / tsl_updater — другой движок)"
   # 🔴 ВЫСТРЕЛ 04.06: касание+реакция (база) + СТЕК ПОДТВЕРЖДЕНИЙ ≥ min_confirmations.
   # Подтверждения (один калькулятор combinator + сырой WT): div · fvg_held · vol ·
@@ -33,7 +35,7 @@ execution:
   # БОКОВОМ рынке (runner<3R → FIRE→ARMED → флагман молчал 5ч, arch104 захватил). Историческая
   # выгода rr≥3 (real+0.50 vs +0.41) была на ТРЕНДОВОМ периоде — на боковике 3.0=смерть потока.
   # TODO: адаптивный порог (тренд→3.0, боковик→2.0) вместо статики. = НЕ ниже trading.min_rr_ratio.
-  min_runner_rr: 2.0
+  min_runner_rr: 0.0   # 27.06 СНЯТО (выход = tp1, не runner — runner-RR нерелевантен)
   # 🔴 КАЛИБРОВКА 04.06 (сверка с OKO-SM на XLM 5m): detect_structure_breaks length
   # default=50 СЛЕПНЕТ на свежих разворотах (лаг). length=5 = эталон Pine: CHoCH верный.
   choch_length_ltf: 5            # для LTF-структуры/разворота (под OKO-SM pivot)
@@ -61,22 +63,26 @@ tier_weights:
 # 🥇 TIER 1 — ПЕНКА (avgR≥0.6, POST>0) · все откаты · enabled
 # ───────────────────────────────────────────────────────────────
 tier1:
-  - { id: 4h_5m_pull,  htf: 4h, ltf: 5m,  type: pull, direction: both, avgR: 0.960, wr: 79, n: 786,  post_avgR: 0.75, post_n: 46,  enabled: true }
-  - { id: 1h_5m_pull,  htf: 1h, ltf: 5m,  type: pull, direction: both, avgR: 0.822, wr: 81, n: 2183, post_avgR: 0.55, post_n: 168, enabled: true }
-  - { id: 1d_1h_pull,  htf: 1d, ltf: 1h,  type: pull, direction: both, avgR: 0.710, wr: 78, n: 297,  post_avgR: 2.60, post_n: 2,   enabled: true }
-  - { id: 1d_15m_pull, htf: 1d, ltf: 15m, type: pull, direction: both, avgR: 0.701, wr: 72, n: 339,  post_avgR: 0.08, post_n: 5,   enabled: true }
-  - { id: 1d_4h_pull,  htf: 1d, ltf: 4h,  type: pull, direction: both, avgR: 0.651, wr: 75, n: 175,  post_avgR: 0.82, post_n: 2,   enabled: true }
+  # 27.06 ОЖИВЛЕНИЕ: весь tier1 OFF — OOS-портфель = только 4h_1h/4h_15m/1h_15m (в tier2).
+  # 5m-LTF = шум (DS OOS), 1D = нет OOS-данных (по 1-6 сделок). Оставлены для истории/research.
+  - { id: 4h_5m_pull,  htf: 4h, ltf: 5m,  type: pull, direction: both, avgR: 0.960, wr: 79, n: 786,  post_avgR: 0.75, post_n: 46,  enabled: false }
+  - { id: 1h_5m_pull,  htf: 1h, ltf: 5m,  type: pull, direction: both, avgR: 0.822, wr: 81, n: 2183, post_avgR: 0.55, post_n: 168, enabled: false }
+  - { id: 1d_1h_pull,  htf: 1d, ltf: 1h,  type: pull, direction: both, avgR: 0.710, wr: 78, n: 297,  post_avgR: 2.60, post_n: 2,   enabled: false }
+  - { id: 1d_15m_pull, htf: 1d, ltf: 15m, type: pull, direction: both, avgR: 0.701, wr: 72, n: 339,  post_avgR: 0.08, post_n: 5,   enabled: false }
+  - { id: 1d_4h_pull,  htf: 1d, ltf: 4h,  type: pull, direction: both, avgR: 0.651, wr: 75, n: 175,  post_avgR: 0.82, post_n: 2,   enabled: false }
 
 # ───────────────────────────────────────────────────────────────
 # ☕ TIER 2 — ТЕЛО (avgR 0.3-0.6, POST>0) · 4 откат + 2 тренд · enabled
 # ───────────────────────────────────────────────────────────────
 tier2:
-  - { id: 4h_15m_pull, htf: 4h, ltf: 15m, type: pull, direction: both, avgR: 0.585, wr: 75, n: 1427, post_avgR: 0.58, post_n: 43,  enabled: true }
-  - { id: 1d_5m_pull,  htf: 1d, ltf: 5m,  type: pull, direction: both, avgR: 0.549, wr: 66, n: 159,  post_avgR: 3.00, post_n: 6,   enabled: true }
-  - { id: 1h_15m_pull, htf: 1h, ltf: 15m, type: pull, direction: both, avgR: 0.501, wr: 74, n: 3445, post_avgR: 0.21, post_n: 101, enabled: true }
-  - { id: 4h_1h_pull,  htf: 4h, ltf: 1h,  type: pull, direction: both, avgR: 0.459, wr: 71, n: 844,  post_avgR: 0.86, post_n: 20,  enabled: true }
-  - { id: 1h_5m_cont,  htf: 1h, ltf: 5m,  type: cont, direction: both, avgR: 0.368, wr: 68, n: 1376, post_avgR: 0.36, post_n: 113, enabled: true }
-  - { id: 4h_5m_cont,  htf: 4h, ltf: 5m,  type: cont, direction: both, avgR: 0.315, wr: 71, n: 628,  post_avgR: 0.14, post_n: 36,  enabled: true }
+  # 27.06 ОЖИВЛЕНИЕ: enabled ТОЛЬКО OOS-портфель (4h_1h/4h_15m/1h_15m pull). cont = против
+  # mean-reversion (продолжения нет), 1d_5m = нет OOS-данных + 5m-шум → OFF.
+  - { id: 4h_15m_pull, htf: 4h, ltf: 15m, type: pull, direction: both, avgR: 0.585, wr: 75, n: 1427, post_avgR: 0.58, post_n: 43,  enabled: true }    # ✅ OOS-портфель
+  - { id: 1d_5m_pull,  htf: 1d, ltf: 5m,  type: pull, direction: both, avgR: 0.549, wr: 66, n: 159,  post_avgR: 3.00, post_n: 6,   enabled: false }   # 1D+5m нет OOS
+  - { id: 1h_15m_pull, htf: 1h, ltf: 15m, type: pull, direction: both, avgR: 0.501, wr: 74, n: 3445, post_avgR: 0.21, post_n: 101, enabled: true }    # ✅ OOS-портфель
+  - { id: 4h_1h_pull,  htf: 4h, ltf: 1h,  type: pull, direction: both, avgR: 0.459, wr: 71, n: 844,  post_avgR: 0.86, post_n: 20,  enabled: true }    # ✅ OOS-портфель (чемпион)
+  - { id: 1h_5m_cont,  htf: 1h, ltf: 5m,  type: cont, direction: both, avgR: 0.368, wr: 68, n: 1376, post_avgR: 0.36, post_n: 113, enabled: false }   # cont = против mean-rev
+  - { id: 4h_5m_cont,  htf: 4h, ltf: 5m,  type: cont, direction: both, avgR: 0.315, wr: 71, n: 628,  post_avgR: 0.14, post_n: 36,  enabled: false }   # cont = против mean-rev
 
 # ───────────────────────────────────────────────────────────────
 # 🫘 TIER 3 — ЗЕРНО (avgR>0, POST слаб/мал) · все continuation

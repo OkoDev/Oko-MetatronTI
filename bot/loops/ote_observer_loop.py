@@ -32,6 +32,62 @@ OTE_OBSERVER_INTERVAL_SECONDS = 600   # 5 мин — выстрел нужен t
 OTE_OBSERVER_CONCURRENCY = 3          # детекторы тяжелее compute_flags → мягче к API
 MIN_BARS = 50
 
+# ARMED-watcher (27.06, порт oko_ote): generate() тяжёлая (2.6-35s/пара) → главный цикл редкий
+# (600s). ARMED-сигнал (зона найдена, цена ещё не вернулась в неё) кладём сюда; дешёвый поллинг
+# цены (12s, WS get_current_price — 0 REST) ловит момент возврата в OTE-зону → FIRE. Окно слепоты
+# 600s→12s БЕЗ перезапуска детектора. Один ARMED на символ (новый замещает) + pop ДО await register
+# = «ОДИН СИГНАЛ — ОДНА СДЕЛКА» (idempotent, не словить дубль-fire между сканами).
+ARMED_CHECK_INTERVAL_SECONDS = 12
+ARMED_TTL_BARS = 8       # TTL = 8 баров ltf (масштаб дрифта зоны: 8×5m ≠ 8×1h)
+_TF_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+_ARMED_SETUPS: dict = {}   # symbol -> {"sig":..., "armed_at": float, "expiry": float}
+
+
+def _arm_ote_setup(sig) -> None:
+    """Кладёт ARMED-сетап в watcher. Один на символ — новый замещает старый (не копится)."""
+    now = time.time()
+    tf_min = _TF_MINUTES.get(getattr(sig, "ltf", None), 15)
+    _ARMED_SETUPS[sig.symbol] = {"sig": sig, "armed_at": now, "expiry": now + ARMED_TTL_BARS * tf_min * 60}
+
+
+async def _armed_watcher_ote_loop(bot) -> None:
+    """Дешёвый поллинг цены (12s) ARMED-сетапов → FIRE когда цена вернулась в OTE-зону.
+    Закрывает окно слепоты 600s-цикла без пересчёта generate(). pop ДО register = idempotent
+    («один сигнал-одна сделка»). Регистрирует только при ote.vst_trading.enabled."""
+    dc = getattr(bot, "data_collector", None)
+    while True:
+        try:
+            await asyncio.sleep(ARMED_CHECK_INTERVAL_SECONDS)
+            if not _ARMED_SETUPS or dc is None:
+                continue
+            if not bool(bot.config.get("ote.vst_trading.enabled", False)):
+                continue
+            now = time.time()
+            for symbol, item in list(_ARMED_SETUPS.items()):
+                if now >= item["expiry"]:
+                    logger.info("[OTE ARMED-EXPIRE] %s истёк (%.0f мин)", symbol,
+                                (now - item["armed_at"]) / 60.0)
+                    _ARMED_SETUPS.pop(symbol, None)
+                    continue
+                sig = item["sig"]
+                try:
+                    px = await dc.get_current_price(symbol)
+                except Exception:
+                    px = None
+                if not px or not getattr(sig, "ote_zone", None):
+                    continue
+                zlo, zhi = sig.ote_zone
+                if zlo <= float(px) <= zhi:                 # цена вернулась в OTE-зону → курок
+                    _ARMED_SETUPS.pop(symbol, None)         # снять ДО await: один сигнал-одна сделка
+                    logger.info("[OTE ARMED-FIRE] %s цена в зоне (px=%.6g zone=[%.6g,%.6g], ждали %.0fс)",
+                                symbol, px, zlo, zhi, now - item["armed_at"])
+                    await _register_ote_trade(bot, sig)
+        except asyncio.CancelledError:
+            logger.info("[OTE ARMED] watcher cancelled")
+            raise
+        except Exception as e:
+            logger.debug("[OTE ARMED] watcher error: %s", e)
+
 
 async def ote_observer_loop(bot, interval_seconds: int = OTE_OBSERVER_INTERVAL_SECONDS):
     """Главный loop — раз в interval генерит OTE-сигналы для всех пар, регистрирует FIRE."""
@@ -42,8 +98,9 @@ async def ote_observer_loop(bot, interval_seconds: int = OTE_OBSERVER_INTERVAL_S
         return
 
     gen = OTESignalGenerator()
-    logger.info("[OTE observer] started. %d enabled-сетапов. Interval=%ds",
-                len(gen.setups), interval_seconds)
+    logger.info("[OTE observer] started. %d enabled-сетапов. Interval=%ds + ARMED-watcher %ds",
+                len(gen.setups), interval_seconds, ARMED_CHECK_INTERVAL_SECONDS)
+    asyncio.create_task(_armed_watcher_ote_loop(bot))   # 27.06: окно слепоты 600s→12s
 
     first_cycle = True
     while True:
@@ -126,6 +183,10 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
                         symbol, sig.setup_id, sig.tier, sig.direction,
                         sig.ote_zone, sig.meta.get("triggers_n"), sig.conf_score,
                         sig.confirmations, sig.meta.get("unconfirmed"))
+            # 27.06: в ARMED-watcher — поймает возврат цены в OTE-зону через ≤12с (не ≤600с).
+            # Один на символ (замещает) → «один сигнал-одна сделка».
+            if bool(bot.config.get("ote.vst_trading.enabled", False)):
+                _arm_ote_setup(sig)
         elif sig.status == "FIRE":
             fired += 1
             logger.info("[OTE FIRE] %s [%s T%d] %s entry=%s SL=%s TP1=%s trg=%s conf=%d%s",
@@ -139,11 +200,7 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
                 except Exception as _e:
                     logger.debug("[CASCADE][shadow] %s error: %s", symbol, _e)
             if bool(bot.config.get("ote.vst_trading.enabled", False)):
-                try:    # DEV-226 Ph2 SHADOW: фаза импульса на входе (не блокирует)
-                    sig.meta["phase_shadow"] = _elliott_phase_shadow(dfs, sig.direction, sig.type)
-                except Exception:
-                    pass
-                await _register_ote_trade(bot, sig)
+                await _register_ote_trade(bot, sig)   # 27.06: phase_gate shadow снят
 
     # ARCH-128: проявление в шину — лучший сигнал (FIRE > ARMED, max conf) в pair_context.
     # Только observability для вотчлиста/ручной торговли — торговая логика выше не меняется.
@@ -206,51 +263,11 @@ def _publish_ote_ltf_state(bot, symbol: str, signals: list) -> None:
         logger.debug("[OTE ltf-publish] %s: %s", symbol, e)
 
 
-def _elliott_phase_shadow(dfs, direction, otype) -> dict:
-    """DEV-226 Ph2 SHADOW: фаза импульса (n_down/n_up MTF на входе) + вердикт would_block.
-    НЕ блокирует — пишет в features_json для замера эффекта на реальных сделках перед hard-гейтом.
-
-    Правила (ELLIOTT v2, 11.06): cont → would_block если n_в_сторону_4h>=3 (конец импульса=ловушка);
-    pull → would_block если n_в_сторону_4h<1 (контр-тренд без HTF-импульса). Reuse calculate_n_down/_up.
-    """
-    from core.indicators.indicators import (
-        find_swing_highs, find_swing_lows, calculate_n_down, calculate_n_up,
-    )
-
-    def _nd_nu(df, period=5):
-        if df is None or len(df) < period * 2 + 2:
-            return 0, 0
-        return (calculate_n_down(find_swing_highs(df["high"], period=period)),
-                calculate_n_up(find_swing_lows(df["low"], period=period)))
-
-    nd_4h, nu_4h = _nd_nu(dfs.get("4h"))
-    nd_1h, nu_1h = _nd_nu(dfs.get("1h"))
-    is_short = direction == "short"
-    n_dir = nd_4h if is_short else nu_4h        # счётчик импульса В СТОРОНУ сделки (4h)
-    if otype == "cont":
-        would_block = n_dir >= 3                 # тренд в конце волны 5 = ловушка (avgR −0.19)
-        reason = "cont_phase_end" if would_block else ""
-    else:                                        # pull
-        would_block = n_dir < 1                  # контр-тренд без HTF-импульса = против всего (−0.21)
-        reason = "pull_no_htf_impulse" if would_block else ""
-    # 18.06: УНИФИКАЦИЯ имён волны → elliott_n_down/up (как scan_loop/atr_change/arch104).
-    # Был дрейф: одна волна (calculate_n_down/up) под двумя именами (phase_* у ote, elliott_*
-    # у остальных) → промахи при анализе. phase_gate_* остаются (ote-специфичный ГЕЙТ, не сырая
-    # волна). ⚠️ старые БД-сделки несут phase_* → в анализах COALESCE(elliott_n_down, phase_nd_4h).
-    return {
-        "elliott_n_down": nd_4h, "elliott_n_up": nu_4h,
-        "elliott_n_down_1h": nd_1h, "elliott_n_up_1h": nu_1h,
-        "elliott_n_dir_4h": n_dir,
-        "phase_gate_would_block": bool(would_block),
-        "phase_gate_reason": reason,
-    }
-
-
 async def _register_ote_trade(bot, sig):
     """Регистрирует OTE-сигнал (FIRE) через trade_router/simulator. signal_type='ote_nested'.
 
-    Образец: _try_register_vst_trade (arch104). TP = tp_runner (финальная цель шкафа),
-    tp1 (+1R, частичный) в extra. SL = sig.sl (за свип/импульс).
+    Образец: _try_register_vst_trade (arch104). TP = tp1 (+1R, ПОЛНЫЙ выход, mean-reversion;
+    27.06 — было tp_runner). SL = sig.sl (за свип/импульс).
     """
     try:
         from core.signals.signal_models import (
@@ -292,9 +309,9 @@ async def _register_ote_trade(bot, sig):
         ),
         entry_price=sig.entry,
         stop_loss=sig.sl,
-        take_profit=sig.tp_runner,
+        take_profit=sig.tp1,          # 27.06: выход = tp1 (1R, mean-reversion), не runner
         sl_source=f"ote:{sig.htf}_impulse",
-        tp_source=f"ote:{sig.type}_{sig.setup_id}",
+        tp_source=f"ote:tp1_{sig.setup_id}",
     )
 
     extra = {
@@ -319,10 +336,6 @@ async def _register_ote_trade(bot, sig):
         "ote_conf_score": sig.conf_score,
         "trade_mode": "ote_nested",   # dedup: свой режим
     }
-    _ps = sig.meta.get("phase_shadow")    # DEV-226 Ph2 SHADOW: фаза импульса → features_json
-    if isinstance(_ps, dict):
-        extra.update(_ps)
-
     trade_id = None
     exchange_id = None
     if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
@@ -349,13 +362,13 @@ async def _register_ote_trade(bot, sig):
     if trade_id:
         logger.info("[OTE VST] %s [%s T%d] %s → trade #%s str=%d entry=%.6f SL=%.6f TP=%.6f exch=%s",
                     sig.symbol, sig.setup_id, sig.tier, sig.direction, trade_id,
-                    strength, sig.entry, sig.sl, sig.tp_runner, exchange_id or "none")
+                    strength, sig.entry, sig.sl, sig.tp1, exchange_id or "none")
         await _notify(
             bot, "strategy_fire_ote", sig.symbol,
             setup_id=sig.setup_id,
             direction="LONG" if sig.direction == "long" else "SHORT",
             dir_emoji="🟢" if sig.direction == "long" else "🔴",
-            entry=sig.entry, sl=sig.sl, tp=sig.tp_runner,
+            entry=sig.entry, sl=sig.sl, tp=sig.tp1,
             strength=strength, trade_id=trade_id,
         )
 

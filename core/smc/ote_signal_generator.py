@@ -318,8 +318,9 @@ class OTESignalGenerator:
         runner_ok = ((direction == "long" and tp_runner > entry) or
                      (direction == "short" and tp_runner < entry))
         rr_runner = abs(tp_runner - entry) / risk if runner_ok else 0.0
-        if status == "FIRE" and rr_runner < self.min_runner_rr:
-            status, trg_type, trg_zone = "ARMED", "", (0.0, 0.0)   # цель < min RR → не стреляем
+        # 27.06 ОЖИВЛЕНИЕ: снят min_runner_rr-гейт (FIRE→ARMED по runner-RR). Выход = tp1 (1R),
+        # runner отключён → его RR нерелевантен. Раньше резал FIRE если runner<2R. rr_runner
+        # ниже оставлен только для ARMED-отчётности tp_runner.
         if not runner_ok:
             tp_runner = tp1                                        # для ARMED-отчётности
         return OTESignal(

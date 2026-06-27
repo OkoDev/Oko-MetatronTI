@@ -176,7 +176,8 @@ trading:
   # тугое золото (ote естеств. минимум SL ~0.15%). Откат: вернуть 0.5.
   min_sl_dist_pct: 0.25
   min_rr_per_strategy:
-    ote_nested: 3.0
+    ote_nested: 0.9   # 27.06 ОЖИВЛЕНИЕ: выход = tp1 (1R, mean-reversion) → RR≈1.0. Было 3.0 (под runner) —
+                      # резало бы ВСЕ сигналы. 0.9 = запас на округление tp1. См. ote_is_meanreversion_not_continuation
     oko_ote: 0.1   # 22.06 СНЯТО RR-ограничение для OKO-OTE — ближний магнит даёт RR<1, нужны данные на VST
   regime_direction_block:
     enabled: false
@@ -262,7 +263,8 @@ trading:
   - mtf_bias
   strategies:
     oko_ote:                     # OKO-OTE (метод Егора, валидирован 22.06 — docs/METHOD_MAP.md)
-      enabled: true              # ✅ ВКЛ 22.06 (проводка + preflight пройдены). VST-песочница.
+      enabled: false             # ⛔ 27.06 ОТКЛЮЧЁН: OOS=мираж (overfit, IN+28→OUT+3). VST освобождён под
+                                 # ote_nested (реальный OOS-edge). Код/HTF-фильтр остаётся — реверс: true.
       execution_mode: vst        # песочница
       links:                     # ядро связок зона→слом (старше зона = выше WR + ниже DD)
         - {zone: "4h", break: "1h"}    # WR90% DD4% (чемпион, редкий)
@@ -759,7 +761,9 @@ arch104:
     enabled: false
 ote:
   vst_trading:
-    enabled: false   # ⛔ 22.06 ОТКЛЮЧЕНА торговля ote_nested (в минусе, net−1.057) — освободить VST под OKO-OTE. Наблюдение/лог остаётся
+    enabled: true    # ✅ 27.06 ОЖИВЛЕНА: net−1.057 был от сломанного выхода (runner+BE-не-синк), не отсутствия edge.
+                     # OOS подтвердил edge (WF 7/9). Портфель 4h_1h/4h_15m/1h_15m, выход tp1, фильтры сняты,
+                     # ARMED-watcher. oko_ote (мираж) отключён. [[ote_is_meanreversion_not_continuation]] [[strategy_truth_state]]
     signal_type: ote_nested
   # OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр SHADOW на каждый ote_nested FIRE —
   # лог [CASCADE][shadow] would_block (вход против 1D-тренда), НЕ блокирует. DS меряет
