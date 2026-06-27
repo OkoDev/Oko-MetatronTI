@@ -278,6 +278,24 @@ async def _register_ote_trade(bot, sig):
         return
 
     is_long = sig.direction == "long"
+    # 🔴 ГЕЙТ СВЕЖЕСТИ ВХОДА (27.06): generate() даёт FIRE по КЭШУ (до ~10 мин) → MARKET-вход
+    # по уехавшей цене ломает R:R (TP/SL считаны от сигнальной entry, факт-вход иной). MMT #37454
+    # LONG: факт-вход +1.6% выше сигнала → собственный TP оказался НИЖЕ входа → «TP» в −0.42%.
+    # Регистрируем ТОЛЬКО если цена ещё у sig.entry и на правильной стороне (LONG не выше зоны /
+    # SHORT не ниже). Та же защита, что у oko_ote (aa3ad63). Порог ote.max_entry_slippage_pct.
+    try:
+        _px = await bot.data_collector.get_current_price(sig.symbol)
+    except Exception:
+        _px = None
+    if _px and sig.entry:
+        _max_slip = float(bot.config.get("ote.max_entry_slippage_pct", 0.5) or 0)
+        _slip = abs(float(_px) - sig.entry) / sig.entry * 100.0
+        _dir_ok = (float(_px) <= sig.entry * (1 + _max_slip / 100)) if is_long \
+                  else (float(_px) >= sig.entry * (1 - _max_slip / 100))
+        if _slip > _max_slip or not _dir_ok:
+            logger.info("[OTE VST] %s %s SKIP слиппедж: px=%.6g vs entry=%.6g (slip=%.2f%%>%.2f%% / dir_ok=%s)",
+                        sig.symbol, sig.direction, _px, sig.entry, _slip, _max_slip, _dir_ok)
+            return
     side_enum = SignalDirection.LONG if is_long else SignalDirection.SHORT
     action = "BUY" if is_long else "SELL"
     # strength из tier: T1→~85, T2→~73, T3→~61
