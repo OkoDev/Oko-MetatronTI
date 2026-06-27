@@ -23,6 +23,7 @@ from core.exchange.bingx_client import (
     ExecutionMode, MIN_NOTIONAL, make_client,
 )
 from core.infra.trading_settings import get_deposit
+from core.execution.calc import clamp_leverage  # единый калькулятор плеча (reuse, не дублировать)
 
 if TYPE_CHECKING:
     pass
@@ -522,25 +523,20 @@ class OrderManager:
             side     = "BUY" if direction == "LONG" else "SELL"
             # per-source плечо (trade_router) или глобал fallback
             leverage = int(leverage if leverage is not None else self._cfg.get("trading.leverage", 5))
-            # КЛАМП к max пары (биржа отвергает выше → откат на стейл). Re-verify по TTL.
+            # max пары (биржа отвергает выше → откат на стейл). Re-verify по TTL.
             _max_lev = await self._get_pair_max_leverage(client, symbol, direction)
-            if _max_lev and _max_lev > 0 and leverage > _max_lev:
-                logger.info("[OrderManager] %s %s leverage %d→%d (cap пары)", symbol, direction, leverage, _max_lev)
-                leverage = _max_lev
-            # 🔴 SL-SAFETY КАП ПЛЕЧА (19.06): ликвидация (~1/leverage) ДОЛЖНА быть дальше SL.
-            # При тугом SL × высоком плече стоп оказывается ЗА ликвидацией → слив маржи вместо −1R
-            # (пример: POPCAT 50× SL 2.75% → liq ~1.9% < SL). leverage ≤ 1/(sl_dist + буфер).
-            # Только СНИЖАЕТ плечо. qty уже посчитан запрошенным плечом → риск корректен, маржа выше (безопаснее).
-            if bool(self._cfg.get("trading.liq_safety_enabled", True)) and entry_price > 0 and sl > 0:
-                _sl_frac = abs(entry_price - sl) / entry_price
-                _liq_buf = float(self._cfg.get("trading.liq_safety_buffer_pct", 0.5) or 0) / 100.0
-                _denom = _sl_frac + _liq_buf
-                if _denom > 0:
-                    _safe_lev = max(1, int(1.0 / _denom))
-                    if _safe_lev < leverage:
-                        logger.info("[OrderManager] %s %s leverage %d→%d (SL-safety: sl_dist=%.2f%% buf=%.2f%% liq>SL)",
-                                    symbol, direction, leverage, _safe_lev, _sl_frac * 100, _liq_buf * 100)
-                        leverage = _safe_lev
+            # 🔴 Плечо — ЕДИНЫЙ калькулятор calc.clamp_leverage (reuse, не инлайн). set_to_max=True
+            # (27.06): плечо НЕ влияет на риск (qty=f(risk_pct,SL)) — только на маржу. Берём макс
+            # безопасное плечо min(1/(sl+buf), pair_max) → меньше маржи/сделку → 2-4× параллельных
+            # позиций при ИДЕНТИЧНОМ per-trade риске. Буфер держит ликвидацию дальше SL.
+            leverage, _lev_reason = clamp_leverage(
+                requested=leverage, entry_price=entry_price, sl=sl, pair_max=_max_lev,
+                liq_safety_enabled=bool(self._cfg.get("trading.liq_safety_enabled", True)),
+                liq_buffer_pct=float(self._cfg.get("trading.liq_safety_buffer_pct", 1.5) or 0),
+                set_to_max=True,
+            )
+            if _lev_reason:
+                logger.info("[OrderManager] %s %s leverage: %s", symbol, direction, _lev_reason)
             sl_buf   = float(self._cfg.get("trading.sl_limit_buffer_pct", 0) or 0)
             _otype   = (entry_order_type or "MARKET").upper()
             resp     = await client.place_bracket_order(symbol=symbol, side=side, qty=qty,

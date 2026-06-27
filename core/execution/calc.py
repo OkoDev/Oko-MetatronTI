@@ -24,7 +24,7 @@ from core.trading.r_math import compute_one_r, compute_r, clamp_r_smart  # noqa:
 # Значения по умолчанию = текущие конфиг-дефолты order_manager.open_bracket / PositionSizer.
 DEFAULT_MIN_SL_DIST_PCT = 0.1      # trading.min_sl_dist_pct (open_bracket:409)
 DEFAULT_MIN_NOTIONAL = MIN_NOTIONAL_USDT
-DEFAULT_LIQ_BUFFER_PCT = 0.5       # trading.liq_safety_buffer_pct (open_bracket:480)
+DEFAULT_LIQ_BUFFER_PCT = 1.5       # trading.liq_safety_buffer_pct (set-to-max 27.06: запас под maint+slip+funding)
 
 
 # ── Сайзинг (делегирует в единый PositionSizer) ───────────────────────────────
@@ -77,21 +77,23 @@ def validate_entry(direction: str, entry_price: float, sl: float, qty: float,
 def clamp_leverage(requested: int, entry_price: float, sl: float,
                    pair_max: Optional[int] = None,
                    liq_safety_enabled: bool = True,
-                   liq_buffer_pct: float = DEFAULT_LIQ_BUFFER_PCT) -> tuple[int, Optional[str]]:
-    """Финальное плечо = min(requested, pair_max, SL-safety). Возвращает (leverage, reason|None).
+                   liq_buffer_pct: float = DEFAULT_LIQ_BUFFER_PCT,
+                   set_to_max: bool = False) -> tuple[int, Optional[str]]:
+    """Финальное плечо от SL. Возвращает (leverage, reason|None). ЕДИНЫЙ калькулятор плеча —
+    зовут order_manager (боевой), ExecutionSphere (cutover), RiskIntelligence Сфера 3 (shadow).
 
-    ТОЛЬКО снижает плечо (qty уже посчитан запрошенным → риск корректен, маржа выше=безопаснее).
-    Два слоя (order_manager.open_bracket):
-      1. кламп к max пары (биржа отвергает выше → откат на стейл).
-      2. SL-safety кап: ликвидация (~1/leverage) ДОЛЖНА быть дальше SL.
-         leverage <= 1/(sl_dist_frac + buffer). Лечит POPCAT 50× SL 2.75% > liq 1.9%.
+    Плечо НЕ влияет на риск (qty=f(risk_pct,SL) в PositionSizer.calc_qty) — только на маржу.
+    SL-safety: ликвидация (~1/leverage) ДОЛЖНА быть дальше SL → leverage ≤ 1/(sl_frac + buffer).
+
+    Два режима:
+      - set_to_max=False (cap-down, дефолт): ТОЛЬКО снижает (requested>safe → safe). Лечит
+        POPCAT 50× SL 2.75% > liq 1.9%. requested сидит как есть если он уже безопасен.
+      - set_to_max=True (27.06): целимся в МАКС безопасное плечо = min(1/(sl+buf), pair_max),
+        игнорируя requested. Меньше маржи/сделку → 2-4× параллельных позиций при том же риске.
+    Кламп к max пары применяется в обоих режимах (биржа отвергает выше → откат на стейл).
     """
     leverage = int(requested)
     reasons: list[str] = []
-
-    if pair_max and pair_max > 0 and leverage > pair_max:
-        reasons.append(f"cap пары {leverage}→{pair_max}")
-        leverage = pair_max
 
     if liq_safety_enabled and entry_price > 0 and sl > 0:
         sl_frac = abs(entry_price - sl) / entry_price
@@ -99,9 +101,26 @@ def clamp_leverage(requested: int, entry_price: float, sl: float,
         denom = sl_frac + buf
         if denom > 0:
             safe_lev = max(1, int(1.0 / denom))
+            if set_to_max:
+                target = min(safe_lev, pair_max) if (pair_max and pair_max > 0) else safe_lev
+                if target != leverage:
+                    reasons.append(f"set-to-max {leverage}→{target} "
+                                   f"(sl_dist={sl_frac * 100:.2f}% buf={buf * 100:.2f}% pair_max={pair_max})")
+                    leverage = target
+                return leverage, ("; ".join(reasons) if reasons else None)
+            # cap-down: сперва max пары, затем SL-safety (только вниз)
+            if pair_max and pair_max > 0 and leverage > pair_max:
+                reasons.append(f"cap пары {leverage}→{pair_max}")
+                leverage = pair_max
             if safe_lev < leverage:
                 reasons.append(f"SL-safety {leverage}→{safe_lev} "
                                f"(sl_dist={sl_frac * 100:.2f}% buf={buf * 100:.2f}%)")
                 leverage = safe_lev
+            return leverage, ("; ".join(reasons) if reasons else None)
+
+    # liq_safety выкл / нет цены → хотя бы кап к max пары
+    if pair_max and pair_max > 0 and leverage > pair_max:
+        reasons.append(f"cap пары {leverage}→{pair_max}")
+        leverage = pair_max
 
     return leverage, ("; ".join(reasons) if reasons else None)

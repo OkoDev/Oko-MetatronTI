@@ -157,12 +157,15 @@ trading:
   risk_pct: 1.0
   leverage: 5
   max_notional_mult: 20.0
-  # 🔴 SL-SAFETY КАП ПЛЕЧА (19.06): ликвидация (~1/leverage) должна быть ДАЛЬШЕ SL+буфер.
-  # leverage ≤ 1/(sl_dist + liq_safety_buffer). Иначе при тугом SL × высоком плече стоп
-  # оказывается ЗА ликвидацией → слив маржи вместо −1R. Пример: POPCAT 50× SL 2.75% → liq 1.9% < SL.
-  # Кап ТОЛЬКО снижает плечо (никогда не повышает). Буфер кроет maintenance-margin + slippage.
+  # 🔴 SL-SAFETY SET-TO-MAX ПЛЕЧА (27.06, было кап-вниз 19.06): плечо НЕ влияет на риск
+  # (qty=f(risk_pct,SL), position_sizer.calc_qty) — только на маржу. Берём МАКС безопасное
+  # плечо = 1/(sl_dist + liq_safety_buffer), ограниченное max пары. Меньше маржи/сделку →
+  # 2-4× параллельных позиций при идентичном per-trade риске. Ликвидация (~1/leverage)
+  # держится дальше SL за счёт буфера. Раньше cap-down (только понижал config>safe) → при
+  # config 5x и SL 9% сидели в 2× недозагрузе маржи. Буфер 1.5% кроет maintenance + slippage
+  # + funding (при set-to-max упираемся в предел, запас нужен больше прежних 0.5%).
   liq_safety_enabled: true
-  liq_safety_buffer_pct: 0.5
+  liq_safety_buffer_pct: 1.5
   # CONFIG-SLTP-BUG fix (15.06): код читает trading.min_sl_dist_pct (gates/min_sl_dist.py:24,
   # trade_simulator.py:469/677), а значение лежало ТОЛЬКО в sl_tp_engine:321 (не читается) →
   # дефолт 0.1 → SL≈entry проходили → fake-R −15R + реальные −20%. Дублируем сюда до миграции sl_tp_engine.
@@ -275,7 +278,7 @@ trading:
       sl_buffer_pct: 0.15
       tp_source: magnet          # TP = ближайший магнит (reuse TPSelector)
       risk_pct: 0.5              # риск/сделку (консервативно для песочницы)
-      max_concurrent: 10         # макс параллельных позиций (не 50)
+      max_concurrent: 200        # макс параллельных позиций (песочница, данные нужны быстро)
       max_entry_slippage_pct: 0.5  # 25.06 ГЕЙТ СВЕЖЕСТИ: skip входа если текущая цена ушла от OTE
                                    # >этого % (market-вход по уехавшей цене ломал R:R: SL/TP от sig.entry,
                                    # а fill по текущей; разрыв был медиана 3.57%, 55% сделок >3%, equity −20/−35%/48ч).

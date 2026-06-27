@@ -14,10 +14,11 @@ Risk Intelligence v1 (Сфера 3 Куба Метатрона).
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+from core.execution.calc import clamp_leverage  # единый калькулятор плеча (reuse, не дублировать)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ DEFAULTS = {
     "max_correlation": 0.7,         # с уже открытыми в том же направлении
     "exchange_min_leverage": 1,
     "exchange_max_leverage": 20,
-    "leverage_safety_buffer": 2.0,  # liquidation должен быть ≥2× за SL
+    "liq_buffer_pct": 1.5,          # аддитивный буфер ликвидации (наша модель, calc.clamp_leverage)
 }
 
 
@@ -165,13 +166,17 @@ class RiskIntelligenceV1:
         risk_pct = cfg["base_risk_pct"] * multiplier
 
         # ─── Leverage from SL distance ───
-        # position_notional = deposit × risk_pct / sl_distance_pct
-        # leverage_min_safe = notional / deposit × safety_buffer
-        # Упрощённо: leverage = clamp(risk_pct / sl_distance_pct × safety_buffer, min, max)
+        # ЕДИНЫЙ калькулятор calc.clamp_leverage (reuse, не своя формула). Плечо НЕ влияет на
+        # риск (qty=f(risk_pct,SL)) — только на маржу. set_to_max → макс безопасное плечо
+        # min(1/(sl+buf), exchange_max). entry/sl нормализуем: entry=1.0, sl=1.0−sl_dist (abs).
         if inputs.sl_distance_pct > 0:
-            target_notional_pct = risk_pct / (inputs.sl_distance_pct / 100.0)
-            leverage_raw = target_notional_pct * cfg["leverage_safety_buffer"] / 100.0
-            leverage = max(cfg["exchange_min_leverage"], min(cfg["exchange_max_leverage"], math.ceil(leverage_raw)))
+            leverage, _ = clamp_leverage(
+                requested=cfg["exchange_max_leverage"],
+                entry_price=1.0, sl=1.0 - inputs.sl_distance_pct / 100.0,
+                pair_max=cfg["exchange_max_leverage"],
+                liq_buffer_pct=cfg["liq_buffer_pct"], set_to_max=True,
+            )
+            leverage = max(cfg["exchange_min_leverage"], leverage)
         else:
             leverage = cfg["exchange_min_leverage"]
             abort_reasons.append("invalid_sl_distance")
