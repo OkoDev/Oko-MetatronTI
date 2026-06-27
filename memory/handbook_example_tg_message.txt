@@ -1,0 +1,212 @@
+╔════════════════════════════════════════════════════════════════════╗
+║                    HANDBOOK TG MESSAGE EXAMPLE                      ║
+║                 (with all 5 new elements implemented)               ║
+╚════════════════════════════════════════════════════════════════════╝
+
+ТЕКУЩЕЕ СООБЩЕНИЕ (без handbook элементов):
+───────────────────────────────────────────────────────────────────
+
+🟢 BUY · BTC/USDT · LONG ↑
+🔥🔥 85/100 Высокая · Риск: Низкий
+
+💰 Сделка
+  Вход:  25100.00
+  Стоп:  24950.00  (-0.60% Свинг)
+  Цель:  25450.00  (+1.40% FVG)
+  R:R    🟢 1:2.3
+
+📋 Сигналы
+  ✅ WaveTrend
+  ✅ OB+FVG
+  ❌ ADX low
+
+💡 Что произошло
+  WaveTrend вышел из перепроданности с дивергенцией.
+  OB и FVG совпали в зоне поддержки.
+
+📡 MTF: 🟢 БЫЧИЙ · 85% ТФ · тренд
+
+─────────────────────────────────────────────────────────────────────
+
+УЛУЧШЕННОЕ СООБЩЕНИЕ (с 5 handbook элементами):
+───────────────────────────────────────────────────────────────────
+
+🟢 BUY · BTC/USDT · LONG ↑
+🔥🔥 Grade B · 85/100 · Confidence 78% · Риск: Низкий
+
+💰 Сделка (Handbook-compliant)
+  Вход:  25100.00 (в OTE зоне)
+  Стоп:  24950.00  (-0.60%, Swing Low)
+  ────────────────────────────────
+  TP1:   25250.00  (+0.60%, 50% позиции) 🎯
+  TP2:   25350.00  (+1.00%, 30% позиции) 🎯
+  TP3:   25450.00  (+1.40%, 20% позиции) 🎯
+  ────────────────────────────────
+  R:R    🟢 1:2.3
+
+📋 Сигналы (с Shape паттерном)
+  ✅ WaveTrend (oversold, divergence detected)
+  ✅ OB+FVG (confluence confirmed)
+  ✅ Shape: Exhaustion wick (⬆ reversal pattern)
+  ❌ ADX low (but not conflicting)
+
+📊 История BTC (Pair Metrics)
+  Pumps: 3.2% (норма) · Reversed: 12% (ниже 20% —хорошо) · Avg drop: -2.1%
+
+💡 Что произошло
+  WaveTrend вышел из перепроданности с дивергенцией.
+  OB и FVG совпали в зоне поддержки. Exhaustion wick на М5.
+
+📡 MTF: 🟢 БЫЧИЙ · 85% ТФ · тренд
+🧭 Фаза: 🚀 impulse_up · Elliott Wave 3 (projected)
+
+📐 SMC: 🟢 BULLISH | OB+FVG ✅ | OTE ✅ | CHoCH ✅
+
+📌 ENTRY ADVICE
+  Стандартный объём · дождаться закрытия свечи
+
+🌐 Текущая цена: 25089.35 · 📈 +1.2% за 24ч
+⏰ 26.06 01:15 UTC
+
+─────────────────────────────────────────────────────────────────────
+
+ЭЛЕМЕНТЫ КОТОРЫЕ ДОБАВЛЕНЫ:
+═════════════════════════════
+
+1. ✅ GRADE A/B/C
+   Было: только "85/100"
+   Стало: "Grade B · 85/100"
+   Значение: Торговец видит сразу — это B-сигнал (средний)
+
+2. ✅ CONFIDENCE %
+   Было: не выводилось
+   Стало: "Confidence 78%"
+   Значение: Четкая уверенность 0-100%, не абстрактная
+
+3. ✅ TP1/TP2/TP3 РАЗБИЕНИЕ
+   Было: одна строка "Цель: 25450"
+   Стало: 3 линии с % разбиением (50%/30%/20%)
+   Значение: Торговец видит план выхода по частям (не all-or-nothing)
+
+4. ✅ SHAPE ПАТТЕРН
+   Было: только сигналы типов (WaveTrend, OB+FVG)
+   Стало: "Shape: Exhaustion wick (⬆ reversal pattern)"
+   Значение: Handbook говорит про Wick/Exhaustion — теперь видно
+
+5. ✅ HISTORY ПАРЫ (Pumps%, Reversed%, AvgDrop)
+   Было: не было вообще
+   Стало: "📊 История BTC: Pumps 3.2% · Reversed 12% · Avg drop -2.1%"
+   Значение: Контекст — как часто BTC памп'ит, риск-профиль пары
+
+─────────────────────────────────────────────────────────────────────
+
+ОПИСАНИЕ МЕТРИК ИСТОРИИ ПАРЫ:
+──────────────────────────────
+
+Pumps%
+  Определение: % выигрышных LONG сделок по этой паре
+  Вычисление: count(signal_type=OTE, direction=LONG, status=TP) /
+              count(signal_type=OTE, direction=LONG, all_statuses)
+  Интерпретация:
+    > 50% = пара хорошо идёт вверх (бычья)
+    30-50% = нормально
+    < 30% = пара склонна к откатам (медвежья)
+  Пример: "Pumps: 3.2%" = только 3.2% LONG сделок в прибыль (очень плохо!)
+
+Reversed%
+  Определение: % сделок закрытых по SL (переворот против входа)
+  Вычисление: count(status=SL) / count(all_statuses) * 100%
+  Интерпретация:
+    < 20% = хороший SL (редко срабатывает)
+    20-40% = нормально
+    > 40% = SL слишком близко или пара волатильная
+  Пример: "Reversed: 12%" = 12% сделок закрыты по SL (хорошо)
+
+AvgDrop%
+  Определение: средний % убытка на SL-закрытиях
+  Вычисление: mean(|entry_price - stop_loss| / entry_price)
+              для всех status=SL сделок
+  Интерпретация:
+    < 1% = очень тесный SL (хороший контроль)
+    1-3% = нормальный SL
+    > 3% = широкий SL (высокий риск на сделку)
+  Пример: "Avg drop: -2.1%" = в среднем теряем 2.1% на SL
+
+КОМБИНИРОВАННОЕ ПРОЧТЕНИЕ:
+  "Pumps: 3.2% · Reversed: 12% · Avg drop: -2.1%"
+  = BTC памп'ит редко (3.2%), но когда входим SHORT,
+    редко срабатывает SL (12%), теряя в среднем 2.1% на убыток.
+  = Пара требует твёрдой hand и хороших фильтров (не много памп'ов)
+
+─────────────────────────────────────────────────────────────────────
+
+СТРУКТУРА HANDBOOK-COMPLIANT СООБЩЕНИЯ:
+════════════════════════════════════════
+
+1. HEADER
+   ACTION · PAIR · DIRECTION
+   + GRADE · STRENGTH · CONFIDENCE · RISK_LEVEL
+
+2. TRADE LEVELS (новый формат — 3 TP)
+   Entry · Stop Loss
+   TP1 (50%) · TP2 (30%) · TP3 (20%)
+   R:R ratio
+
+3. SIGNALS
+   Supporting signals (с Shape паттерном)
+   Conflicting signals
+
+4. PAIR HISTORY (NEW)
+   📊 История пары: Pumps% · Reversed% · Avg drop%
+
+5. INTERPRETATION
+   Что произошло (от детектора)
+
+6. MTF CONTEXT
+   Bias · aligned% · regime
+
+7. SMC CONTEXT
+   OB+FVG · OTE · CHoCH/BOS
+
+8. ENTRY ADVICE
+   Рекомендуемый объём и действие
+
+9. MARKET SNAPSHOT
+   Текущая цена · change 24h · timestamp
+
+─────────────────────────────────────────────────────────────────────
+
+КОДОВЫЕ ТОЧКИ ДЛЯ РЕАЛИЗАЦИИ:
+═════════════════════════════
+
+File: core/ui/intelligence_formatter.py
+Line: ~116-130 (header section)
+  Add: grade = strength_to_grade(recommendation.overall_strength)
+  Add: f"... Grade {grade} · {strength}/100 · Confidence {conf:.0f}%"
+
+Line: ~161-188 (trade levels section)
+  Replace: single "take_profit"
+  Add: TP1, TP2, TP3 from TPSelector or recalculated
+  Format: "TP1: X (+Y%, 50%)" etc.
+
+Line: ~191-210 (signals section)
+  Add to signal label: shape patten if available
+
+Line: ~NEW SECTION after signals
+  Add: pair history (Pumps, Reversed, AvgDrop)
+  Query: db.query("SELECT ... FROM simulated_trades
+                   WHERE symbol = ? AND ...")
+
+File: core/indicators/candlestick_patterns.py (NEW)
+  Function: detect_shape(df, lookback=5)
+  Return: "Exhaustion wick" | "Reversal Doji" | etc.
+
+File: core/analytics/pair_history.py (NEW)
+  Class: PairHistory
+  Methods: calc_metrics(symbol) → {pumps_pct, reversed_pct, avg_drop}
+
+─────────────────────────────────────────────────────────────────────
+
+ТЕКУЩАЯ ДАТА: 26.06.2026 01:30 UTC
+ГОТОВНОСТЬ: 🔵 BACKLOG (не реализовано, в плане)
+ЗАДАЧИ: [HANDBOOK-UI](#handbook-ui) · [PUMP-DETECTOR](#pump-detector)

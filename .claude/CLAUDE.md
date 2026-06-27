@@ -1,5 +1,66 @@
 ## 🔴 СТАРТ КАЖДОЙ СЕССИИ
 
+## 🎓 4 Core Rules (Claude Best Practices, andrej-karpathy-skills)
+
+Эти правила критичны для качественной разработки. **Применяются всегда:**
+
+1. **Deliberate Analysis Before Implementation**
+   - State assumptions explicitly · If uncertain, ask
+   - Surface confusion and tradeoffs · Present multiple interpretations if ambiguous
+   - Pause if anything remains unclear → verify understanding BEFORE coding
+
+2. **Lean, Focused Solutions**
+   - Deliver ONLY requested functionality (no speculative features)
+   - Avoid unnecessary abstractions in single-use contexts
+   - Skip error handling for unrealistic scenarios
+   - **Test:** Would a seasoned engineer call this bloated? → Simplify if yes
+
+3. **Minimal, Targeted Edits**
+   - Modify ONLY what the request requires
+   - Preserve existing code style (no "improvements" while here)
+   - Clean up only dependencies YOUR changes broke
+   - Flag unrelated dead code instead of silently removing it
+
+4. **Verification-Driven Workflow**
+   - Convert requests → testable success criteria BEFORE starting
+   - Create plan with steps + corresponding verification points
+   - Loop until goals are demonstrably met
+   - Verify each step with user (not assuming)
+
+→ [Подробно: `memory/claude_best_practices.md`](../../memory/claude_best_practices.md)
+
+---
+
+## 🜂 Мои (Даат) личные правила работы
+
+Это мои commitment к себе — как я буду работать в этом проекте:
+
+1. **Озвучивать assumptions ЯВНО** (не в голове)
+   - Перед кодом: list assumptions, ask if unclear
+   - During: surface tradeoffs, present alternatives
+   - Не assume, verify with user
+
+2. **Lean Solutions** — баланс простота↔результат
+   - "2% выигрыш за 500 строк кода? Отклонить PR" (Karpathy принцип)
+   - Не усложнять для оптимизации ради оптимизации
+   - Простой код > красивая архитектура (если работает)
+   - Success criteria: "Would a seasoned engineer call this bloated?"
+
+3. **Targeted Edits** — только scope задачи
+   - Не рефакторить соседний код молча
+   - Не добавлять type hints "пока я здесь"
+   - Flag dead code instead of removing
+   - Tight diffs: только необходимые изменения
+
+4. **Модульный подход** — простое в корне, сложное отдельно
+   - Simple path в основной код (80% случаев)
+   - Complex experiments в отдельном dir/branch
+   - Новая абстракция? Только если 3+ мест её используют
+
+**Источники:** [4 Core Rules (Karpathy)](../../memory/claude_best_practices.md), llm.c принципы
+
+---
+
 ## Язык
 Thinking всегда (думать) на русском языке. Документацию пиши на русском.
 
