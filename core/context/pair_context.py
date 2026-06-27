@@ -354,10 +354,26 @@ class PairContextBus:
         st.updated_at = datetime.now(timezone.utc)
 
     def all_positions(self) -> list[dict]:
-        """Все позиции всех аккаунтов из шины (для dashboard sync-panel — без REST)."""
+        """Все позиции всех аккаунтов из шины (для dashboard sync-panel — без REST).
+
+        ДЕДУП master↔sub (27.06): мастер-ключ (acc1) тянет позиции И суб-аккаунтов →
+        одна позиция попадает дважды (acc1-фантом + acc2-реал; у Егора 21=11+10). Суб
+        авторитетен для СВОИХ позиций (свой ключ), поэтому (symbol, side) из суба
+        ВЫТЕСНЯЕТ копию мастера (acc1) — реальный account_id = суб, где он её держит.
+        Дедуп на чтении: ACCOUNT_UPDATE суб-id не несёт → владельца на событии мастера
+        знать нельзя; устойчиво к порядку стримов. Корень [[hedge_close_multiacct_root]]."""
+        # суб-владельцы (account_id > 1 = не master) по (symbol, side)
+        sub_owned: set[tuple[str, str]] = {
+            (sym, str(p.get("side", "")).upper())
+            for acc_id, st in self._accounts.items() if acc_id > 1
+            for sym, p in st.positions.items()
+        }
         out: list[dict] = []
         for acc_id, st in self._accounts.items():
             for sym, p in st.positions.items():
+                # master-фантом: эту (symbol, side) уже держит суб → пропустить копию acc1
+                if acc_id <= 1 and (sym, str(p.get("side", "")).upper()) in sub_owned:
+                    continue
                 out.append({"account_id": acc_id, "symbol": sym, **p})
         return out
 
