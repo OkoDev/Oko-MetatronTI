@@ -65,7 +65,7 @@ async def trade_tracker_loop(bot) -> None:
                 if choch_moved:
                     tsl_moved = (tsl_moved or []) + choch_moved
             except Exception as _e:
-                logger.debug("[CHoCH-SL] apply: %s", _e)
+                logger.warning("[CHoCH-SL] apply error: %s", _e)
 
             # ── Шаг 3: обновить SL на бирже (VST/LIVE only) ───────────────
             if _is_live and tsl_moved and hasattr(bot, "order_executor"):

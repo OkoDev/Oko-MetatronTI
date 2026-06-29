@@ -74,9 +74,11 @@ async def apply_choch_transfer(bot) -> list:
                    AND COALESCE(choch_sl_moved, 0) = 0 AND stop_loss > 0"""
             ).fetchall()
     except Exception as e:
-        logger.debug("[CHoCH-SL] read: %s", e)
+        logger.warning("[CHoCH-SL] read err: %s", e)
         return []
 
+    if rows:
+        logger.info("[CHoCH-SL] кандидатов ote_nested OPEN без переноса: %d", len(rows))
     for tid, symbol, direction, cur_sl, created, fj, sl_oid in rows:
         try:
             import json
@@ -84,6 +86,8 @@ async def apply_choch_transfer(bot) -> list:
             ltf = f.get("ote_ltf") or "15m"
             df = await dc.get_ohlcv(symbol, timeframe=ltf, limit=300)
             if df is None or len(df) < 12:
+                logger.info("[CHoCH-SL] #%s %s: df мало/None (len=%s) — skip",
+                            tid, symbol, (len(df) if df is not None else None))
                 continue
             # get_ohlcv отдаёт RangeIndex + колонка 'time' (ms) → нормализуем к DatetimeIndex,
             # иначе df.index > entry_ts (Timestamp) падает. detect_structure_breaks тоже ждёт ts-index.
@@ -109,5 +113,5 @@ async def apply_choch_transfer(bot) -> list:
                           "new_sl_price": new_sl, "old_sl_price": cur_sl,
                           "exchange_sl_order_id": sl_oid})
         except Exception as e:
-            logger.debug("[CHoCH-SL] #%s: %s", tid, e)
+            logger.warning("[CHoCH-SL] #%s err: %s", tid, e)
     return moved
