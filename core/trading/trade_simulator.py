@@ -208,6 +208,7 @@ class TradeSimulator:
                     captured_R_pct REAL,
                     tsl_activated INTEGER DEFAULT 0,
                     be_activated INTEGER DEFAULT 0,
+                    choch_sl_moved INTEGER DEFAULT 0,
                     sl_source TEXT,
                     tp_source TEXT,
                     strategy_name TEXT,
@@ -232,6 +233,7 @@ class TradeSimulator:
                 ("tp1_price", "REAL"), ("tp1_hit_at", "TIMESTAMP"),
                 ("tsl_activated", "INTEGER DEFAULT 0"),
                 ("be_activated", "INTEGER DEFAULT 0"),
+                ("choch_sl_moved", "INTEGER DEFAULT 0"),  # CHoCH-перенос SL (один раз, ote_nested)
                 ("sl_source", "TEXT"), ("tp_source", "TEXT"),
                 ("strategy_name", "TEXT"), ("tsl_tf", "TEXT DEFAULT '15m'"),
                 ("tp2_price", "REAL"), ("tp2_hit_at", "TIMESTAMP"),

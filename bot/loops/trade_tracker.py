@@ -57,6 +57,16 @@ async def trade_tracker_loop(bot) -> None:
             if closed > 0:
                 logger.info("TradeSimulator: закрыто сделок за цикл: %d", closed)
 
+            # ── Шаг 2.5: CHoCH-перенос SL для ote_nested (validated struct_choch_tp1
+            #    +0.315R). После первого LTF-CHoCH → SL за структуру (один раз, сужение).
+            try:
+                from core.trading.choch_sl_transfer import apply_choch_transfer
+                choch_moved = await apply_choch_transfer(bot)
+                if choch_moved:
+                    tsl_moved = (tsl_moved or []) + choch_moved
+            except Exception as _e:
+                logger.debug("[CHoCH-SL] apply: %s", _e)
+
             # ── Шаг 3: обновить SL на бирже (VST/LIVE only) ───────────────
             if _is_live and tsl_moved and hasattr(bot, "order_executor"):
                 await update_tsl_on_exchange(bot, tsl_moved)
