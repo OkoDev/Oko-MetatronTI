@@ -160,6 +160,20 @@ def _walk_exits(D, entry, slv, ei, x_end, lo, hi, cl, tf_min, imp_from=None, imp
     res["hybrid_wide"] = (r if r is not None else close_R()) - fee
     # half1_wide: ½ фикс на 1R + ½ hybrid_wide (WR от фикса + хвост от широкого трейла)
     res["half1_wide"] = 0.5 * res["tp1"] + 0.5 * res["hybrid_wide"]
+    # struct_trail (Егор 29.06): широкий SL вход → ПОСЛЕ +0.5R переносим SL за LTF-структуру
+    # (min/max последних K баров = свежий swing после разворота = имитация «перенос за LTF-
+    # структурный после слома»). Широкий вход выживает прокол, затем риск сокращается.
+    K = 5; cur = slv; act = False; r = None
+    for j in range(ei, x_end + 1):
+        if slhit(j, cur):
+            r = ((entry - cur) if D == "short" else (cur - entry)) / risk; break
+        cr = ((entry - cl[j]) if D == "short" else (cl[j] - entry)) / risk
+        if not act and cr >= 0.5: act = True
+        if act and j > ei:
+            w0 = max(ei, j - K)
+            if D == "long": cur = max(cur, float(min(lo[w0:j + 1])))
+            else:           cur = min(cur, float(max(hi[w0:j + 1])))
+    res["struct_trail"] = (r if r is not None else close_R()) - fee
     res["mfe"] = mfe
     return res, risk
 
@@ -277,7 +291,7 @@ def test_pair(conn, sym, wt_mode="off", fib_mode=False, smc_filter=None):
     return out
 
 
-POLICIES = ["tp1", "tp_2R", "tp_3R", "fib1.0", "fib1.618", "fib2.618", "fib3.0", "fib3.618", "fib4.168", "cascade", "hybrid", "runner"]
+POLICIES = ["tp1", "tp_2R", "tp_3R", "struct_trail", "fib1.0", "fib1.618", "fib2.618", "fib3.0", "fib3.618", "fib4.168", "cascade", "hybrid", "runner"]
 
 
 def net_of(rows, key):
