@@ -85,6 +85,16 @@ async def apply_choch_transfer(bot) -> list:
             df = await dc.get_ohlcv(symbol, timeframe=ltf, limit=300)
             if df is None or len(df) < 12:
                 continue
+            # get_ohlcv отдаёт RangeIndex + колонка 'time' (ms) → нормализуем к DatetimeIndex,
+            # иначе df.index > entry_ts (Timestamp) падает. detect_structure_breaks тоже ждёт ts-index.
+            if not isinstance(df.index, pd.DatetimeIndex):
+                if "time" in df.columns:
+                    t = df["time"]
+                    df = df.copy()
+                    df.index = (pd.to_datetime(t, unit="ms", utc=True)
+                                if pd.api.types.is_numeric_dtype(t) else pd.to_datetime(t, utc=True))
+                else:
+                    continue
             entry_ts = pd.to_datetime(created, utc=True)
             new_sl = compute_choch_sl(df, entry_ts, direction, cur_sl)
             if not new_sl:
