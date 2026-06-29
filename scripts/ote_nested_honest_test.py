@@ -160,20 +160,63 @@ def _walk_exits(D, entry, slv, ei, x_end, lo, hi, cl, tf_min, imp_from=None, imp
     res["hybrid_wide"] = (r if r is not None else close_R()) - fee
     # half1_wide: ½ фикс на 1R + ½ hybrid_wide (WR от фикса + хвост от широкого трейла)
     res["half1_wide"] = 0.5 * res["tp1"] + 0.5 * res["hybrid_wide"]
-    # struct_trail (Егор 29.06): широкий SL вход → ПОСЛЕ +0.5R переносим SL за LTF-структуру
-    # (min/max последних K баров = свежий swing после разворота = имитация «перенос за LTF-
-    # структурный после слома»). Широкий вход выживает прокол, затем риск сокращается.
-    K = 5; cur = slv; act = False; r = None
+    # struct_choch (Егор 29.06): широкий SL → ОДИН перенос после ПЕРВОГО CHoCH на LTF
+    # (слом-разворот в сторону сделки), SL за СТРУКТУРНЫЙ экстремум, дальше ДЕРЖИМ (не трейл).
+    # CHoCH long = первый пробой последнего swing-high (lower-high нисход.структуры) → SL за
+    # последний swing-low (формируется higher-low). Swing = окно W=2 без lookahead.
+    W = 2; cur = slv; r = None; sw_lo = sw_hi = None; moved = False
     for j in range(ei, x_end + 1):
         if slhit(j, cur):
             r = ((entry - cur) if D == "short" else (cur - entry)) / risk; break
-        cr = ((entry - cl[j]) if D == "short" else (cl[j] - entry)) / risk
-        if not act and cr >= 0.5: act = True
-        if act and j > ei:
-            w0 = max(ei, j - K)
-            if D == "long": cur = max(cur, float(min(lo[w0:j + 1])))
-            else:           cur = min(cur, float(max(hi[w0:j + 1])))
-    res["struct_trail"] = (r if r is not None else close_R()) - fee
+        k = j - W
+        if k - W >= ei:
+            seg_lo = lo[k - W:k + W + 1]; seg_hi = hi[k - W:k + W + 1]
+            if lo[k] == seg_lo.min(): sw_lo = float(lo[k])
+            if hi[k] == seg_hi.max(): sw_hi = float(hi[k])
+        if not moved:                                        # только ПЕРВЫЙ CHoCH
+            if D == "long" and sw_hi and cl[j] > sw_hi and sw_lo and sw_lo * (1 - 0.0005) > cur:
+                cur = sw_lo * (1 - 0.0005); moved = True
+            elif D == "short" and sw_lo and cl[j] < sw_lo and sw_hi and sw_hi * (1 + 0.0005) < cur:
+                cur = sw_hi * (1 + 0.0005); moved = True
+    res["struct_choch"] = (r if r is not None else close_R()) - fee
+    # struct_choch_tp1: тот же CHoCH-перенос НО цель tp1 (1R) — гибрид (защита + фикс profit)
+    cur = slv; r = None; sw_lo = sw_hi = None; moved = False
+    for j in range(ei, x_end + 1):
+        if slhit(j, cur):
+            r = ((entry - cur) if D == "short" else (cur - entry)) / risk; break
+        if adv(j, 1.0): r = 1.0; break                       # tp1 достигнут
+        k = j - W
+        if k - W >= ei:
+            if lo[k] == lo[k - W:k + W + 1].min(): sw_lo = float(lo[k])
+            if hi[k] == hi[k - W:k + W + 1].max(): sw_hi = float(hi[k])
+        if not moved:
+            if D == "long" and sw_hi and cl[j] > sw_hi and sw_lo and sw_lo * (1 - 0.0005) > cur:
+                cur = sw_lo * (1 - 0.0005); moved = True
+            elif D == "short" and sw_lo and cl[j] < sw_lo and sw_hi and sw_hi * (1 + 0.0005) < cur:
+                cur = sw_hi * (1 + 0.0005); moved = True
+    res["struct_choch_tp1"] = (r if r is not None else close_R()) - fee
+    # choch_fib (Егор 29.06): CHoCH-перенос SL (риск защищён) → ДАЛЬНЯЯ цель fib-расширения
+    # (measured move imp_from+k·imp_len). Защищённый стоп позволяет целить дальше tp1 без −1R.
+    if imp_from is not None and imp_to is not None:
+        imp_len = imp_to - imp_from
+        for k in (1.618, 2.0, 2.618, 3.618):
+            tgt = imp_from + k * imp_len
+            cur = slv; r = None; sw_lo = sw_hi = None; moved = False
+            for j in range(ei, x_end + 1):
+                if slhit(j, cur):
+                    r = ((entry - cur) if D == "short" else (cur - entry)) / risk; break
+                if (lo[j] <= tgt) if D == "short" else (hi[j] >= tgt):
+                    r = ((entry - tgt) if D == "short" else (tgt - entry)) / risk; break
+                kk = j - W
+                if kk - W >= ei:
+                    if lo[kk] == lo[kk - W:kk + W + 1].min(): sw_lo = float(lo[kk])
+                    if hi[kk] == hi[kk - W:kk + W + 1].max(): sw_hi = float(hi[kk])
+                if not moved:
+                    if D == "long" and sw_hi and cl[j] > sw_hi and sw_lo and sw_lo * (1 - 0.0005) > cur:
+                        cur = sw_lo * (1 - 0.0005); moved = True
+                    elif D == "short" and sw_lo and cl[j] < sw_lo and sw_hi and sw_hi * (1 + 0.0005) < cur:
+                        cur = sw_hi * (1 + 0.0005); moved = True
+            res[f"choch_fib{k}"] = (r if r is not None else close_R()) - fee
     res["mfe"] = mfe
     return res, risk
 
@@ -291,7 +334,7 @@ def test_pair(conn, sym, wt_mode="off", fib_mode=False, smc_filter=None):
     return out
 
 
-POLICIES = ["tp1", "tp_2R", "tp_3R", "struct_trail", "fib1.0", "fib1.618", "fib2.618", "fib3.0", "fib3.618", "fib4.168", "cascade", "hybrid", "runner"]
+POLICIES = ["tp1", "struct_choch_tp1", "choch_fib1.618", "choch_fib2.0", "choch_fib2.618", "choch_fib3.618", "fib1.618", "fib2.618", "fib3.618", "hybrid", "runner"]
 
 
 def net_of(rows, key):
