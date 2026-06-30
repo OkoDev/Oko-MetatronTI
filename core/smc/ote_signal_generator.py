@@ -299,15 +299,19 @@ class OTESignalGenerator:
                 status, entry, bar_hi, bar_lo = "FIRE", e, bh, bl
                 trg_type, trg_zone = tg[0], (tg[2], tg[3])
         atr_up = "atr" in confs
-        # 🔴 PRODUCTION-DRIFT ФИКС (29.06): SL = ИМПУЛЬС-1.0 (начало импульса = h["sl"] из
-        # ote_retest_setups, = levels[1.0]). Как в validated honest-backtest: tp1 +0.296R WR67%
-        # на 38k сделок, 13/15 OOS+, 4 года, SL%мед 3-8%. РАНЬШЕ ставили за СВЕЧУ реакции (тугой
-        # ~0.94%) → выбивало проколом 84% сделок (MAE 1.93% > тугой SL) → бой WR16% −74R вопреки
-        # OOS. Широкий импульс-SL переживает прокол раннего входа → edge воспроизводится.
-        # [[ote_production_drift_root]]. bar_hi/bar_lo (свеча) больше НЕ источник SL.
+        # SL за СВЕЧУ реакции (бар выстрела). ⚠️ 30.06 ОТКАТ фикса h["sl"]: он = HTF levels[1.0]
+        # (начало HTF-импульса) → для PULL-сетапа (вход против импульса) SL инвертирован
+        # (long: начало=high→SL выше входа) → router dropped min_sl_dist → прод не торговал.
+        # honest-SL был от LTF-СЛОМА (direction-correct), не HTF. Правильный широкий SL = отдельная
+        # задача (геометрия pull/cont). Пока возврат к рабочей свече.
         imp_lo, imp_hi = h["from"][1], h["to"][1]
         buf = 0.0015
-        sl = float(h["sl"]) * (1 + buf) if direction == "short" else float(h["sl"]) * (1 - buf)
+        if status == "FIRE" and (bar_hi or bar_lo):
+            sl = bar_hi * (1 + buf) if direction == "short" else bar_lo * (1 - buf)
+        else:
+            lb = min(10, len(df_ltf) - 1)
+            sl = (float(df_ltf["high"].values[-lb:].max()) if direction == "short"
+                  else float(df_ltf["low"].values[-lb:].min()))
         risk = abs(entry - sl)
         if risk <= 0:
             return None
