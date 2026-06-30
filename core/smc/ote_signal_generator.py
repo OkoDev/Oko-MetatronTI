@@ -309,12 +309,20 @@ class OTESignalGenerator:
         sl = None
         try:
             from core.smc.smc_engine import find_setups_zz as _fsz, zigzag_atr as _zz
-            _match = [s for s in _fsz(_zz(df_ltf), df_ltf) if s.get("direction") == direction]
-            if _match:
-                _cand = float(_match[-1]["levels"][1.0])
-                _cand = _cand * (1 - buf) if direction == "long" else _cand * (1 + buf)
-                if (direction == "long" and _cand < entry) or (direction == "short" and _cand > entry):
-                    sl = _cand                              # direction-correct → принять широкий LTF-SL
+            _cands = []
+            for _s in _fsz(_zz(df_ltf), df_ltf):
+                if _s.get("direction") != direction:
+                    continue
+                lv = float(_s["levels"][1.0])
+                lv = lv * (1 - buf) if direction == "long" else lv * (1 + buf)
+                # direction-correct: long SL ниже входа, short выше
+                if (direction == "long" and lv < entry) or (direction == "short" and lv > entry):
+                    _cands.append(lv)
+            if _cands:
+                # БЛИЖАЙШИЙ к entry (компактный, не гигантский последний слом) + cap 15%
+                _best = max(_cands) if direction == "long" else min(_cands)
+                if abs(entry - _best) / entry <= 0.15:
+                    sl = _best
         except Exception:
             sl = None
         if sl is None:                                      # fallback: свеча реакции / последние бары
