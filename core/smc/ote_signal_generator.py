@@ -299,19 +299,31 @@ class OTESignalGenerator:
                 status, entry, bar_hi, bar_lo = "FIRE", e, bh, bl
                 trg_type, trg_zone = tg[0], (tg[2], tg[3])
         atr_up = "atr" in confs
-        # SL за СВЕЧУ реакции (бар выстрела). ⚠️ 30.06 ОТКАТ фикса h["sl"]: он = HTF levels[1.0]
-        # (начало HTF-импульса) → для PULL-сетапа (вход против импульса) SL инвертирован
-        # (long: начало=high→SL выше входа) → router dropped min_sl_dist → прод не торговал.
-        # honest-SL был от LTF-СЛОМА (direction-correct), не HTF. Правильный широкий SL = отдельная
-        # задача (геометрия pull/cont). Пока возврат к рабочей свече.
+        # 🔴 ШИРОКИЙ direction-correct SL (30.06) = за начало LTF-СЛОМА-импульса в сторону сделки
+        # (как honest-backtest +0.296R). НЕ HTF h["sl"] (он = начало HTF-импульса → для pull
+        # инвертирован). Берём последний LTF-слом direction==сделки → levels[1.0]. ОБЯЗАТЕЛЬНАЯ
+        # проверка инверсии (long: sl<entry, short: sl>entry) + fallback свеча — защита от повтора
+        # бага инверсии. [[ote_production_drift_root]].
         imp_lo, imp_hi = h["from"][1], h["to"][1]
         buf = 0.0015
-        if status == "FIRE" and (bar_hi or bar_lo):
-            sl = bar_hi * (1 + buf) if direction == "short" else bar_lo * (1 - buf)
-        else:
-            lb = min(10, len(df_ltf) - 1)
-            sl = (float(df_ltf["high"].values[-lb:].max()) if direction == "short"
-                  else float(df_ltf["low"].values[-lb:].min()))
+        sl = None
+        try:
+            from core.smc.smc_engine import find_setups_zz as _fsz, zigzag_atr as _zz
+            _match = [s for s in _fsz(_zz(df_ltf), df_ltf) if s.get("direction") == direction]
+            if _match:
+                _cand = float(_match[-1]["levels"][1.0])
+                _cand = _cand * (1 - buf) if direction == "long" else _cand * (1 + buf)
+                if (direction == "long" and _cand < entry) or (direction == "short" and _cand > entry):
+                    sl = _cand                              # direction-correct → принять широкий LTF-SL
+        except Exception:
+            sl = None
+        if sl is None:                                      # fallback: свеча реакции / последние бары
+            if status == "FIRE" and (bar_hi or bar_lo):
+                sl = bar_hi * (1 + buf) if direction == "short" else bar_lo * (1 - buf)
+            else:
+                lb = min(10, len(df_ltf) - 1)
+                sl = (float(df_ltf["high"].values[-lb:].max()) if direction == "short"
+                      else float(df_ltf["low"].values[-lb:].min()))
         risk = abs(entry - sl)
         if risk <= 0:
             return None
