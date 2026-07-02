@@ -894,6 +894,18 @@ async def _execute_atr_change_signal(
                 _s2_setup = check_atr_s2_setup(symbol, df, entry) if df is not None else None
             except Exception:
                 _s2_setup = None
+            # FUNDING-гейт (03.07, 1.56M rates 2022-26): fund<0 = mean −0.056 (минус 4/5 лет) → skip;
+            # fund>=0 = +0.608 (+29% к эджу, 2026 +0.58). Монотонность: >+0.01% = +0.79, >+0.03% = +1.4.
+            if _s2_setup is not None:
+                try:
+                    _fund = await bot.data_collector.get_funding_rate(symbol)
+                    _s2_setup["funding"] = _fund
+                    if _fund is not None and _fund < 0:
+                        logger.info("[ATR-S2] %s SKIP: funding %.5f%% < 0 (фильтр валидирован)",
+                                    symbol, _fund * 100)
+                        _s2_setup = None
+                except Exception:
+                    pass                              # funding недоступен → торгуем без гейта
 
         if side == "LONG":
             sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
@@ -1061,6 +1073,7 @@ async def _execute_atr_change_signal(
             "atr_s2_setup": bool(_s2_setup is not None),
             "atr_s2_wpp": (_s2_setup or {}).get("wpp"),
             "atr_s2_tp_pct": (_s2_setup or {}).get("tp_pct"),
+            "atr_s2_funding": (_s2_setup or {}).get("funding"),
             "elliott_n_down":     _ell_snap.get("elliott_n_down", 0),      # HTF 4h
             "elliott_n_up":       _ell_snap.get("elliott_n_up", 0),
             "elliott_n_down_1h":  _ell_snap.get("elliott_n_down_1h", 0),   # MTF 1h

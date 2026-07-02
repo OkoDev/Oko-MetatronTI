@@ -44,9 +44,17 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| [ATR-S2-PROD](#atr-s2-prod) | 🔄 | **atr_S2 В ПРОДЕ (VST)** — единственный эдж переживший честный walk-forward (+0.471%/сд n=5290 2022-26, 4/5 лет). Врезка scan_loop: 4h SHORT-флип+cl<WPP → SL=swing12/TP=weekly S2, trade_mode=atr_s2. Мониторинг [ATR-S2]+drops → 30-50 сделок → сверка. memory/atr_s2_survived_honest.md, ba1fb98 | Даат |
+
+| [DS-MINING-FEATURES](#ds-mining-features) | 🔴 | **Mining ЖИВЫХ сделок (features_json)** — какие фичи отделяют + от − на СОБСТВЕННЫХ закрытых сделках (look-ahead невозможен по определению). Мера % net (LAW №1), split по signal_type/direction/data-era. Контракт: DISCUSSION 03.07 | DS |
+
+| [FUNDING-DATA](#funding-data) | 🟡 | **Funding rates загрузчик** — data.binance.vision fundingRate → таблица в ohlcv_cache.db. Ортогональный фактор для всех бэктестов (funding-перекос = систематическое давление). По образцу fetch_binance_vision.py | Даат |
+
+| [WAVE-TREND-LONG](#wave-trend-long) | 🟡 | **wave_smc TREND-режим в % net** — BOS ПО тренду (класс ПРОДОЛЖЕНИЕ = победитель 03.07) на Binance-кэше, честная методология (intrabar-стандарт). LONG-кандидат (atr_S2 SHORT-only) | Даат/DS |
+
 | [DS-GRAVITY-TRI](#ds-gravity-tri) | ✅ | **GRAVITY-триангуляция SHORT-рецепта** — ❌ ракета не подтверждена. 465 SHORT-тр, mean%=−0.73%, WR=5%, corr gravity vs net=0.06. Порог ≥0%/сделку не найден — все бакеты в минусе. Скрипты: `scripts/gravity_tri_v3.py`, результат `e:/tmp/grav_v3_out.txt`. DISCUSSION 03.07 | DS |
 
-| [MATRIX-INTEGRATION](#matrix-integration) | 🟡 | **Интеграция SHORT-рецепта+режим-гейт в ote_signal_generator** — зона=1h structure_trend, гейт 4h==short, SL=15m-слом, TP=fib−1.0, LIMIT-вход, SHORT-only при медвежьем режиме. Рецепт валидирован OOS (+0.81%/сделку). memory/mtf_confluence_matrix_vision.md | Даат/DEV |
+| [MATRIX-INTEGRATION](#matrix-integration) | ⏸ | **ОТЛОЖЕН (03.07): структурный рецепт оказался режим-локальным** (+0.81 только в коррекциях, на истории минус даже с гейтом — memory/mtf_confluence_matrix_vision.md). Матрица-скелет остаётся (ote_matrix.py) как decision-support/playbook | Даат |
 
 | [GAMMA-SCALP](#gamma-scalp) | 🧊 | **ЗАМОРОЖЕН до завершения СБОРКИ (Егор 03.07)** — не плодить новые поиски пока валидированное не в проде. Gamma Scalping: vol_ratio>1.5x+anomaly>50. Контракт: DISCUSSION 30.06 16:00 + memory/new_edge_strategies_team_verdict.md | DEV/TRADER |
 
@@ -54,7 +62,7 @@
 
 | [PAIRS-ARB](#pairs-arb) | 🧊 | **ЗАМОРОЖЕН до завершения СБОРКИ (Егор 03.07).** Stat-arb BTC↔ETH хеджированные пары. [[new_edge_strategies_team_verdict]] | ARCH/DEV |
 
-| [THE-GRAPH-MCP](#the-graph-mcp) | 🟡 | **НОВАЯ EDGE (Сфера 6.5): The Graph On-Chain Intelligence** — whale tracking, DEX liquidity surge, contract stress, new pool detection. WR 55-70%. БЕСПЛАТНЫЙ источник вместо Glassnode/$500-5000. Фазы: (P1) MCP setup+GraphQL (1-2 дня), (P2) whale_tracking (2-3 дня), (P3) DEX liquidity (2-3 дня), (P4) интеграция в Сферы (2-3 дня), (P5) SHADOW валидация (3-5 дней). Итог: 12-16 дней. Блокеры: нет. Приоритет: неделя 2 (параллельно Pairs+Liquidation). [[the-graph-mcp-plan]] | ARCH/DEV |
+| [THE-GRAPH-MCP](#the-graph-mcp) | 🟡 | **The Graph On-Chain (Сфера 6.5), нужен Егору** — ⚠️ WR 55-70% роя = НЕвалидированные оценки (урок 03.07). Порядок: (P1) MCP setup+GraphQL → (P2) СРАЗУ SHADOW-ЛОГГЕР событий (whale/DEX-mint → jsonl/БД, копим СВОЮ историю с 1-го дня — исторических on-chain данных для walk-forward нет!) → через 4-6 нед свой датасет → честная валидация → только потом сигналы. Ценность сразу: decision-support/дашборд-контекст. [[the-graph-mcp-plan]] | ARCH/DEV |
 
 | [HANDBOOK-UI](#handbook-ui) | 🔵 | **BACKLOG: 5 handbook элементов в TG-сообщение** Grade A/B/C + Confidence% + TP1/TP2/TP3 разбиение + Shape паттерн (Wick/Exhaustion) + History пары (Pumps%, Reversed%, AvgDrop). Файлы: intelligence_formatter.py + candlestick_patterns.py + pair_history.py. Детали → DISCUSSION 26.06 01:15 | DEV |
 
