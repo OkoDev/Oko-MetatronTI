@@ -44,9 +44,21 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| [DS-GRAVITY-TRI](#ds-gravity-tri) | ✅ | **GRAVITY-триангуляция SHORT-рецепта** — ❌ ракета не подтверждена. 465 SHORT-тр, mean%=−0.73%, WR=5%, corr gravity vs net=0.06. Порог ≥0%/сделку не найден — все бакеты в минусе. Скрипты: `scripts/gravity_tri_v3.py`, результат `e:/tmp/grav_v3_out.txt`. DISCUSSION 03.07 | DS |
+
+| [MATRIX-INTEGRATION](#matrix-integration) | 🟡 | **Интеграция SHORT-рецепта+режим-гейт в ote_signal_generator** — зона=1h structure_trend, гейт 4h==short, SL=15m-слом, TP=fib−1.0, LIMIT-вход, SHORT-only при медвежьем режиме. Рецепт валидирован OOS (+0.81%/сделку). memory/mtf_confluence_matrix_vision.md | Даат/DEV |
+
+| [GAMMA-SCALP](#gamma-scalp) | 🧊 | **ЗАМОРОЖЕН до завершения СБОРКИ (Егор 03.07)** — не плодить новые поиски пока валидированное не в проде. Gamma Scalping: vol_ratio>1.5x+anomaly>50. Контракт: DISCUSSION 30.06 16:00 + memory/new_edge_strategies_team_verdict.md | DEV/TRADER |
+
+| [LIQUIDATION-CASC](#liquidation-casc) | 🧊 | **ЗАМОРОЖЕН до завершения СБОРКИ (Егор 03.07).** Liquidation Cascades: OI уровни, лимиты за стопами. [[new_edge_strategies_team_verdict]] | ARCH/DEV |
+
+| [PAIRS-ARB](#pairs-arb) | 🧊 | **ЗАМОРОЖЕН до завершения СБОРКИ (Егор 03.07).** Stat-arb BTC↔ETH хеджированные пары. [[new_edge_strategies_team_verdict]] | ARCH/DEV |
+
+| [THE-GRAPH-MCP](#the-graph-mcp) | 🟡 | **НОВАЯ EDGE (Сфера 6.5): The Graph On-Chain Intelligence** — whale tracking, DEX liquidity surge, contract stress, new pool detection. WR 55-70%. БЕСПЛАТНЫЙ источник вместо Glassnode/$500-5000. Фазы: (P1) MCP setup+GraphQL (1-2 дня), (P2) whale_tracking (2-3 дня), (P3) DEX liquidity (2-3 дня), (P4) интеграция в Сферы (2-3 дня), (P5) SHADOW валидация (3-5 дней). Итог: 12-16 дней. Блокеры: нет. Приоритет: неделя 2 (параллельно Pairs+Liquidation). [[the-graph-mcp-plan]] | ARCH/DEV |
+
 | [HANDBOOK-UI](#handbook-ui) | 🔵 | **BACKLOG: 5 handbook элементов в TG-сообщение** Grade A/B/C + Confidence% + TP1/TP2/TP3 разбиение + Shape паттерн (Wick/Exhaustion) + History пары (Pumps%, Reversed%, AvgDrop). Файлы: intelligence_formatter.py + candlestick_patterns.py + pair_history.py. Детали → DISCUSSION 26.06 01:15 | DEV |
 
-| [PUMP-DETECTOR](#pump-detector) | 🔵 | **BACKLOG: Pump Moneta Detector** — автопоиск памп-монет (volume spike + price surge + RSI extreme). `/pumps` команда + дашборд ranking. Модуль: pump_detector.py + интеграция в scan_loop. Детали → DISCUSSION 26.06 01:15 | ARCH/DEV |
+| [PUMP-DETECTOR](#pump-detector) | 🔄 | **SFERA-14 PUMP-BOT: Volume Anomaly Reversal Detector** — памп (+6% vol) → разворот к цене ДО пампа. Entry/SL/TP по уровням (swing points). Real-time WS. SHADOW→ARMED. Цель WR≥55%. Полная спека: docs/PUMP-BOT-FULL-SPEC.md. Контракт: DISCUSSION 27.06 11:50. | DEV/TRADER |
 
 | **DASH-COHESION** | ✅ | **Приоритет №1 (юзер 20.06): шапка↔таблица Trades = один источник.** get_summary status-aware + «showing X of N». ДЕПЛОЙ+ПРОВЕРКА: build+рестарт бота+pm2 oko-dash. Сквозь прокси SL/VST=8154 (было 14135). Orphan-аудит чист (4 поз, все с SL). → DISCUSSION 20.06 12:39 | Даат |
 

@@ -581,6 +581,13 @@ class TradingAlertBot:
                 logger.info("[OTE observer] task spawned")
             except Exception as e:
                 logger.warning("[OTE observer] failed to start: %s", e)
+            # ═══ OKO-OTE observer — НОВАЯ стратегия (метод Егора, gated config.strategies.oko_ote) ═══
+            try:
+                from bot.loops.oko_ote_observer_loop import oko_ote_observer_loop
+                asyncio.create_task(oko_ote_observer_loop(self))   # gated: enabled=false → не стартует
+                logger.info("[OKO-OTE observer] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[OKO-OTE observer] failed to start: %s", e)
             # Автостарт мониторинга ВСЕГДА (не ждём кнопку ТГ — scan стартует сам при
             # запуске бота, независимо от доступности Telegram). Раньше стартовал только
             # headless при падении polling → при доступном TG бот ждал ручной /start.

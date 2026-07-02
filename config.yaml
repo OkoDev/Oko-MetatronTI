@@ -281,10 +281,13 @@ trading:
       tp_source: magnet          # TP = ближайший магнит (reuse TPSelector)
       risk_pct: 0.5              # риск/сделку (консервативно для песочницы)
       max_concurrent: 200        # макс параллельных позиций (песочница, данные нужны быстро)
-      max_entry_slippage_pct: 0.5  # 25.06 ГЕЙТ СВЕЖЕСТИ: skip входа если текущая цена ушла от OTE
-                                   # >этого % (market-вход по уехавшей цене ломал R:R: SL/TP от sig.entry,
-                                   # а fill по текущей; разрыв был медиана 3.57%, 55% сделок >3%, equity −20/−35%/48ч).
-                                   # Валидация на 336 закр. VST: отсечённые в 6× хуже (−1.203% vs −0.206%) — НЕ откатывать
+      max_entry_slippage_pct: 0.3  # 01.07 УЖЕСТОЧЕНО 0.5→0.3: живой аудит VST показал 54% сделок
+                                   # обошли гейт 0.5% (fill уходит ПОСЛЕ проверки), WR по slip: <0.3%=30%,
+                                   # 0.3-0.5%=20%, 0.5-1%=11%, >1%=12%. Режем всё >0.3% (worst половину).
+                                   # 25.06 ГЕЙТ СВЕЖЕСТИ: skip входа если текущая цена ушла от OTE >этого %
+                                   # (market-вход по уехавшей цене ломал R:R: SL/TP от sig.entry, а fill по текущей).
+                                   # ⚠️ НЕДОСТАТОЧНО: даже slip<0.3% даёт WR30% avg−0.37% (killer#2=production drift,
+                                   # прод-курок/SL ≠ honest-бэктест WR70%). См. memory/ote_nested_live_vst_bleeding.md
                                    # без новой валидации. Поймаем на след. 10-мин цикле. Полный лимит = Фаза Б.
     wt_entry:
       min_strength: 60
@@ -371,9 +374,13 @@ sl_tp_engine:
     no_degrade_above_r: 8.0
     r_gradient_peak_min_r: 2.5
     r_gradient_rollback_pct: 0.4
-  use_breakeven: true
+  use_breakeven: false   # 01.07 ОТКЛЮЧЁН: counterfactual на реальных барах (ote_nested n=122):
+                         # BE душит прибыль — 69% BE-закрытых дошли бы до TP, 21% выбило original_SL.
+                         # факт BE avg −0.121%/sum −14.8% → БЕЗ BE avg +0.345%/sum +42.1% (+0.466%/сделка).
+                         # Защита остаётся: original_SL (широкий) + CHoCH-перенос за структуру (choch_sl_moved).
+                         # oko_ote counterfactual n=9 (ничтожно) намекал обратное — под наблюдением. Обратимо.
   breakeven_activation_r: 0.5
-  use_be_after_tp1: true
+  use_be_after_tp1: false  # 01.07 ОТКЛЮЧЁН вместе с BE (тот же механизм преждевременного обрезания)
   # BE-SYNC FIX (20.06.2026): BE-перенос SL кладётся в очередь биржевого cancel+replace
   # (та же что TSL). До фикса BE двигал SL ТОЛЬКО в БД → биржа держала исходный SL
   # (live: 11/18 OPEN GAP, NAORIS −0.8R при be=1). false = откат к старому поведению.

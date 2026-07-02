@@ -884,10 +884,25 @@ async def _execute_atr_change_signal(
         _exec_mode = bot.config.get("trading.execution_mode", "simulation")
         _live_mode = _exec_mode in ("vst", "live")
 
+        # ATR-S2 ПРОД (03.07, Егор «VST=песочница»): единственный эдж, переживший честную валидацию
+        # (+0.471%/сд n=5290 2022-26, memory atr_s2_survived_honest). 4h SHORT + close<WPP →
+        # SL=swing-high12, TP=недельная S2 (полная позиция, лестница ХУЖЕ). SHORT-only (LONG-зеркало −0.14).
+        _s2_setup = None
+        if tf == "4h" and side == "SHORT":
+            try:
+                from core.signals.atr_s2_shadow import check_atr_s2_setup
+                _s2_setup = check_atr_s2_setup(symbol, df, entry) if df is not None else None
+            except Exception:
+                _s2_setup = None
+
         if side == "LONG":
             sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
             sl_dist = entry - sl
             valid_sl = sl > 0 and sl < entry
+        elif _s2_setup is not None:
+            sl, sl_source = float(_s2_setup["sl"]), "atr_s2_swing12"
+            sl_dist = sl - entry
+            valid_sl = sl > entry
         else:
             sl, sl_source = _select_optimal_sl_short(entry, df, ev.trendline, live_mode=_live_mode)
             sl_dist = sl - entry
@@ -946,6 +961,10 @@ async def _execute_atr_change_signal(
         # A1 (14.05): отдельный порог для atr_change (бэктест: 1h_LONG+0.12 при min=15).
         min_str = int(bot.config.get("signal_quality.min_strength_atr_change",
                       bot.config.get("signal_quality.min_strength_register", 40)))
+        # ATR-S2: бэктест-эталон БЕЗ strength-гейта → форсим проход (иначе прод≠бэктест = drift)
+        if _s2_setup is not None and strength < min_str:
+            logger.info("[ATR-S2] %s strength %d→%d (форс: бэктест без гейта)", symbol, strength, min_str)
+            strength = min_str
         if strength < min_str:
             # A2 (14.05): запись в signal_drops для observability.
             logger.debug("[ATRChange] %s %s %s: strength=%d < %d (drop)",
@@ -988,6 +1007,8 @@ async def _execute_atr_change_signal(
             action = "SELL"
             direction_enum = SignalDirection.SHORT
             confidence = 0.85 if ev.zone == "OB" else 0.65
+            if _s2_setup is not None:
+                tp = float(_s2_setup["s2"])       # ATR-S2: цель = недельная S2 (не 3R)
 
         # Confidence boost от количества confirmations
         if agg_res and agg_res.get("confirmations"):
@@ -1020,7 +1041,7 @@ async def _execute_atr_change_signal(
             stop_loss=sl,
             take_profit=tp,
             sl_source=sl_source,
-            tp_source="atr_rr_3.0",
+            tp_source=("atr_s2_weekly_s2" if _s2_setup is not None else "atr_rr_3.0"),
         )
 
         # DEV-226: Elliott context из кэша scan_loop
@@ -1036,7 +1057,10 @@ async def _execute_atr_change_signal(
             "confirmations": (agg_res or {}).get("confirmations", []),
             "confirmations_no_trigger": not (agg_res or {}).get("has_trigger", False),  # DEV-200
             "strength_breakdown": (agg_res or {}).get("strength_breakdown", {}),
-            "trade_mode": "atr_change",  # dedup: разные режимы с wt_sideways не блокируют друг друга
+            "trade_mode": ("atr_s2" if _s2_setup is not None else "atr_change"),  # dedup + отличаем atr_s2 в БД
+            "atr_s2_setup": bool(_s2_setup is not None),
+            "atr_s2_wpp": (_s2_setup or {}).get("wpp"),
+            "atr_s2_tp_pct": (_s2_setup or {}).get("tp_pct"),
             "elliott_n_down":     _ell_snap.get("elliott_n_down", 0),      # HTF 4h
             "elliott_n_up":       _ell_snap.get("elliott_n_up", 0),
             "elliott_n_down_1h":  _ell_snap.get("elliott_n_down_1h", 0),   # MTF 1h
@@ -1644,6 +1668,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             if _atr_ev is None:
                                 continue
                             _side = 'LONG' if _atr_ev.side == 'UP' else 'SHORT'
+
+                            # ATR-S2 SHADOW (03.07): единственный выживший эдж (+0.471%/сд бэктест
+                            # 2022-26) — только ЛОГ сетапов 4h SHORT + close<WPP → S2, без торговли.
+                            if _atr_tf == '4h' and _side == 'SHORT':
+                                try:
+                                    from core.signals.atr_s2_shadow import log_atr_s2_setup
+                                    log_atr_s2_setup(sym, _atr_df, float(_atr_ev.price))
+                                except Exception:
+                                    pass
 
                             # Публикация в EventBus (для наблюдения и совместимости)
                             _prio = 2 if _atr_tf == "15m" else 1

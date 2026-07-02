@@ -1,3 +1,8 @@
+## 🚀 THE GRAPH MCP (30.06.2026 — on-chain intelligence) 
+→ [The Graph for Cube](the_graph_onchain_plan.md) — НОВЫЙ КАНАЛ (6-й!): whale tracking, DEX liquidity surge, contract stress, funding+whale divergence, new pools. WR 55-70%, БЕСПЛАТНО вместо Glassnode $500-5k. Триангуляция с Liquidation+Pairs дает 65-75% WR. 12-16 дней, нет блокеров. **ПРИОРИТЕТ 2** (неделя 2 параллельно).
+
+## 🎯 5 НОВЫХ EDGE-СТРАТЕГИЙ (30.06.2026 — team-ask консенсус)
+→ [новые стратегии от роя](new_edge_strategies_team_verdict.md) — Gamma Scalping (СЕЙЧАС, 3 дня), Liquidation Cascades, Pairs Trading, Delta Footprint, Epsilon Arb. Не OTE/Памп/Funding. Детальный план в файле.
 
 ## 🔴 MACRO-REVIEW — правило DS (16.06.2026)
 

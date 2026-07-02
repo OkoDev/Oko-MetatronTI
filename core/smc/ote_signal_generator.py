@@ -102,6 +102,8 @@ class OTESignalGenerator:
         self.execution = cfg.get("execution", {})
         # выстрел = касание+реакция + score подтверждений ≥ min_confirmations (config)
         self.min_confirmations = int(self.execution.get("min_confirmations", 3))
+        # 02.07 инвалидация устаревшей зоны: макс возраст зоны в HTF-барах от choch (GRT-фикс)
+        self.zone_max_age = int(self.execution.get("zone_max_age_bars", 60))
         # runner должен давать ≥ этого RR (иначе rr_filter роутера зарежет → скип FIRE заранее).
         # ДОЛЖНО совпадать с config.yaml → trading.min_rr_ratio (2.0).
         self.min_runner_rr = float(self.execution.get("min_runner_rr", 2.0))
@@ -268,10 +270,27 @@ class OTESignalGenerator:
         return out
 
     def _emit(self, symbol, st, setups, dfs, flags_cache) -> Optional[OTESignal]:
-        h = setups[-1]
-        ote_lo, ote_hi = h["ote"]; htf_dir = h["direction"]; stype = st["type"]
         ltf = st["ltf"]; df_ltf = dfs[ltf]
         price = float(df_ltf["close"].values[-1])
+        # 02.07 МАТРИЦА OTE шаг1: выбрать ногу ГДЕ ЦЕНА В ЗОНЕ (детектор видит «где мы»), НЕ setups[-1]
+        # вслепую (берёт древнюю/мелкую — визуал GRT майская нога, XLM 1h мелкая). Свежайший из тех,
+        # чья OTE-зона содержит текущую цену. Fallback setups[-1]. [[ote_matrix_concept]].
+        _inzone = [x for x in setups if x["ote"][0] <= price <= x["ote"][1]]
+        h = _inzone[-1] if _inzone else setups[-1]
+        ote_lo, ote_hi = h["ote"]; htf_dir = h["direction"]; stype = st["type"]
+        # 02.07 ИНВАЛИДАЦИЯ УСТАРЕВШЕЙ ЗОНЫ (GRT: детектор держал мёртвую зону — цена ушла за импульс,
+        # setups[-1] = старая нога). Зона мертва если: (1) старше max_age HTF-баров от choch;
+        # (2) цена ПРОБИЛА SL-уровень зоны ДО входа (импульс/нарратив отменён). Визуал-аудит GRT.
+        df_htf = dfs.get(st["htf"]); _ct = h.get("choch_ts")
+        if df_htf is not None and _ct is not None:
+            _after = df_htf[df_htf.index > _ct]
+            if len(_after) > self.zone_max_age:
+                return None                                 # зона слишком старая → мертва
+            _slv = h.get("sl")
+            if _slv and len(_after):
+                if (htf_dir == "long" and float(_after["low"].min()) < _slv) or \
+                   (htf_dir == "short" and float(_after["high"].max()) > _slv):
+                    return None                             # цена пробила SL зоны до входа → импульс отменён
         if not (ote_lo <= price <= ote_hi):
             return None                                     # цена не в зоне → даже не ARMED
         direction = htf_dir if stype == "cont" else ("short" if htf_dir == "long" else "long")
@@ -307,6 +326,7 @@ class OTESignalGenerator:
         imp_lo, imp_hi = h["from"][1], h["to"][1]
         buf = 0.0015
         sl = None
+        _tp_fib = None                        # fib -0.62 EXTENSION (цель Егора) = levels[-0.62] прямое соответствие
         try:
             from core.smc.smc_engine import find_setups_zz as _fsz, zigzag_atr as _zz
             _cands = []
@@ -317,12 +337,14 @@ class OTESignalGenerator:
                 lv = lv * (1 - buf) if direction == "long" else lv * (1 + buf)
                 # direction-correct: long SL ниже входа, short выше
                 if (direction == "long" and lv < entry) or (direction == "short" and lv > entry):
-                    _cands.append(lv)
+                    _cands.append((lv, _s))
             if _cands:
                 # БЛИЖАЙШИЙ к entry (компактный, не гигантский последний слом) + cap 15%
-                _best = max(_cands) if direction == "long" else min(_cands)
+                _best, _best_s = (max(_cands, key=lambda x: x[0]) if direction == "long"
+                                  else min(_cands, key=lambda x: x[0]))
                 if abs(entry - _best) / entry <= 0.15:
                     sl = _best
+                    _tp_fib = float(_best_s["levels"].get(-0.62)) if _best_s.get("levels") else None
         except Exception:
             sl = None
         if sl is None:                                      # fallback: свеча реакции / последние бары
@@ -335,7 +357,16 @@ class OTESignalGenerator:
         risk = abs(entry - sl)
         if risk <= 0:
             return None
+        # 02.07 (Егор, визуал-сверка GRT): TP = fib −0.62 EXTENSION (levels[-0.62], ПРЯМОЕ соответствие
+        # раскладке OKO-SM: 1.0=начало импульса/high, 0=конец/low, отриц.=extension за конец = продолжение).
+        # Проверено расчётом GRT: Егор −0.62=0.01671 = build_ote(0.01853,0.02147)[-0.62]=0.01671. ✅
+        # ⚠️ walk-forward на импульсах ДЕТЕКТОРА дал levels[-0.62] WR38% — расхождение т.к. детектор
+        # берёт НЕ ТУ ногу (мельче, чем размечает Егор). Проблема выбора значимого импульса — отдельно.
+        # Fallback на 1R, если −0.62 недоступен/не в сторону сделки.
         tp1 = entry + risk if direction == "long" else entry - risk
+        if _tp_fib is not None and (
+                (direction == "long" and _tp_fib > entry) or (direction == "short" and _tp_fib < entry)):
+            tp1 = _tp_fib
         # RR-фильтр ЗАРАНЕЕ: rr_filter роутера/register режут RR<2.0 (строго). Не плодим
         # мёртвый FIRE — если runner не даёт >= min_runner_rr, остаёмся ARMED (ждём цель/вход).
         runner_ok = ((direction == "long" and tp_runner > entry) or
