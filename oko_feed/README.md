@@ -33,5 +33,6 @@ store.onchain_events(hours=24)      # крупные on-chain события
 | `news_digest` | market_news_digest.py (уже живёт в tools) | мигрировать |
 | `oi_liquidations` | Coinglass/Hyblock (Open Interest, ликвидации) | LIQUIDATION-CASC (TASKS 🧊) |
 | `btcd_history` | TW-MCP CRYPTOCAP:BTC.D скролл | по образцу usdtd |
+| `fundamentals` | CoinGecko (mcap/FDV) + DefiLlama (TVL/fees) | **метод Егора (как нашёл GRT) автоматом**: MCap/Fees, MCap/TVL, динамика 3м → ранжирование недооценёнок по 500 монетам. Эндпоинты проверены 03.07 |
 
 **Инфраструктура:** BTC.D-режим · funding-миграция · HTTP-порт (ADR-001) · отдельный репо.
