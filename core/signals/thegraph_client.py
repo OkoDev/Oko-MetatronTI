@@ -31,13 +31,23 @@ STABLES = {"USDT", "USDC", "DAI", "TUSD", "FDUSD"}
 
 
 def _api_key() -> str | None:
-    key = os.environ.get("THEGRAPH_API_KEY")
-    if key:
-        return key.strip()
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()                                # poller/скрипты вне бота тоже видят .env
+    except Exception:
+        pass
+    for name in ("THE_GRAPH_API_KEY", "THEGRAPH_API_KEY"):
+        key = os.environ.get(name)
+        if key and key.strip():
+            return key.strip()
     try:
         import yaml
         cfg = yaml.safe_load(open("config.yaml", encoding="utf-8"))
-        return ((cfg.get("the_graph") or {}).get("api_key") or "").strip() or None
+        val = ((cfg.get("the_graph") or {}).get("api_key") or "").strip()
+        # значение-ссылка на env-переменную (схема Егора: ключ в .env, config хранит ИМЯ)
+        if val and val.upper() == val and "_" in val:
+            return (os.environ.get(val) or "").strip() or None
+        return val or None
     except Exception:
         return None
 
@@ -50,7 +60,11 @@ def _gql(subgraph_id: str, query: str) -> dict | None:
     url = f"https://gateway.thegraph.com/api/{key}/subgraphs/id/{subgraph_id}"
     try:
         req = urllib.request.Request(url, json.dumps({"query": query}).encode(),
-                                     {"Content-Type": "application/json"})
+                                     {"Content-Type": "application/json",
+                                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+                                      "Accept": "application/json",
+                                      "Origin": "https://thegraph.com"})
         r = json.load(urllib.request.urlopen(req, timeout=25))
         if "errors" in r:
             logger.debug("[GRAPH] errors: %s", str(r["errors"])[:200])

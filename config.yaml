@@ -779,3 +779,10 @@ ote:
 arch118:
   shadow_enabled: true
   write_table: true
+
+# ═══ THE GRAPH — on-chain данные (Сфера 6.5 / oko_feed, 03.07.2026) ═══
+# Бесплатный ключ: thegraph.com → Subgraph Studio → API Keys (free 100k запросов/мес).
+# Использует: core/signals/thegraph_client.py + scripts/thegraph_shadow_poller.py
+# (shadow-логгер Uniswap V3: whale-свопы >$250k, ликвидность >$500k → onchain_events).
+the_graph:
+  api_key: "THE_GRAPH_API_KEY"          # ← ВСТАВЬ КЛЮЧ СЮДА (в кавычках)
