@@ -906,6 +906,21 @@ async def _execute_atr_change_signal(
                         _s2_setup = None
                 except Exception:
                     pass                              # funding недоступен → торгуем без гейта
+            # ЛИКВИДНОСТЬ-гейт (03.07): бэктест-эдж на 37 ЛИКВИДНЫХ симв, бот сканит ~520 —
+            # на неликвиде спред>costs съедает эдж (класс production-drift ote_nested). vol24<порога → skip.
+            if _s2_setup is not None:
+                try:
+                    _min_vol = float(bot.config.get("signal_quality.atr_s2_min_vol24_usd", 2_000_000))
+                    if _min_vol > 0:
+                        _tkr = await bot.data_collector.get_ticker(symbol)
+                        _vol24 = float((_tkr or {}).get("quoteVolume") or 0)
+                        _s2_setup["vol24_usd"] = _vol24
+                        if 0 < _vol24 < _min_vol:
+                            logger.info("[ATR-S2] %s SKIP: vol24 $%.0f < $%.0f (неликвид)",
+                                        symbol, _vol24, _min_vol)
+                            _s2_setup = None
+                except Exception:
+                    pass                              # тикер недоступен → торгуем без гейта
 
         if side == "LONG":
             sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
