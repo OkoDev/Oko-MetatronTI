@@ -248,6 +248,18 @@ class RealTimeData:
                 return float(rate)
         except Exception as e:
             logger.debug("[FUNDING] %s fetch_funding_rate error: %s", normalized, e)
+        # Fallback (03.07): ccxt bingx fetch_funding_rate возвращает fundingRate=None →
+        # прямой premiumIndex endpoint (lastFundingRate) — проверено, отдаёт живой rate.
+        try:
+            base = normalized.split("/")[0]
+            r = await self.exchange.swapV2PublicGetQuotePremiumIndex({"symbol": f"{base}-USDT"})
+            d = r.get("data") if isinstance(r, dict) else None
+            lfr = (d or {}).get("lastFundingRate")
+            if lfr is not None:
+                self._funding_cache[normalized] = (float(lfr), _time.monotonic())
+                return float(lfr)
+        except Exception as e:
+            logger.debug("[FUNDING] %s premiumIndex fallback error: %s", normalized, e)
         return None
 
     async def stop(self):
