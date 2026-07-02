@@ -25,4 +25,13 @@ store.dominance_series("usdt")      # [(date, value)]
 store.onchain_events(hours=24)      # крупные on-chain события
 ```
 
-**Роадмап:** BTC.D история · funding-мигрция · HTTP-порт (ADR-001) · выделение в отдельный репо.
+**Роадмап коллекторов (полная карта, 03.07):**
+| Будущий коллектор | Источник | Наработки уже есть |
+|---|---|---|
+| `orderbook` | сводный стакан BingX/Binance (walls, imbalance, depth) | memory/order_book_backlog.md + OB-DATA (TASKS 🔵) |
+| `social` | CryptoPanic + Telegram + новостные ленты | SOCIAL-SIGNALS (TASKS 🔵), docs/SOCIAL_SIGNALS_INTEGRATION.py |
+| `news_digest` | market_news_digest.py (уже живёт в tools) | мигрировать |
+| `oi_liquidations` | Coinglass/Hyblock (Open Interest, ликвидации) | LIQUIDATION-CASC (TASKS 🧊) |
+| `btcd_history` | TW-MCP CRYPTOCAP:BTC.D скролл | по образцу usdtd |
+
+**Инфраструктура:** BTC.D-режим · funding-миграция · HTTP-порт (ADR-001) · отдельный репо.
