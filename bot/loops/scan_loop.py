@@ -906,6 +906,18 @@ async def _execute_atr_change_signal(
                         _s2_setup = None
                 except Exception:
                     pass                              # funding недоступен → торгуем без гейта
+            # USDT.D РЕЖИМ-гейт (03.07, сильнейший): risk-off(>MA20)=+0.735%/сд vs risk-on=−0.569 —
+            # разделение 1.3%. USDT.D − барометр альт-risk-off (same-day corr −0.8..−0.95, лага нет).
+            if _s2_setup is not None:
+                try:
+                    from core.signals.usdtd_regime import get_usdtd_risk_off
+                    _ro = await asyncio.to_thread(get_usdtd_risk_off)
+                    _s2_setup["usdtd_risk_off"] = _ro
+                    if _ro is False:
+                        logger.info("[ATR-S2] %s SKIP: USDT.D risk-on (<MA20) — среда против шорта", symbol)
+                        _s2_setup = None
+                except Exception:
+                    pass                              # режим недоступен → торгуем без гейта
             # ЛИКВИДНОСТЬ-гейт (03.07): бэктест-эдж на 37 ЛИКВИДНЫХ симв, бот сканит ~520 —
             # на неликвиде спред>costs съедает эдж (класс production-drift ote_nested). vol24<порога → skip.
             if _s2_setup is not None:
