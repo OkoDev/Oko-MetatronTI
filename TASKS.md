@@ -48,6 +48,8 @@
 
 | [DS-MINING-FEATURES](#ds-mining-features) | 🔴 | **Mining ЖИВЫХ сделок (features_json)** — какие фичи отделяют + от − на СОБСТВЕННЫХ закрытых сделках (look-ahead невозможен по определению). Мера % net (LAW №1), split по signal_type/direction/data-era. Контракт: DISCUSSION 03.07 | DS |
 
+| [FEED-SPHERE](#feed-sphere) | 🟡 | **oko_feed — подключаемая сфера внешних данных (идея Егора 03.07)** — standalone-пакет `oko_feed/` (zero-deps от бота, своя external_data.db): dominance (CoinGecko USDT.D/BTC.D/ETH.D ✅ живёт), thegraph (Uniswap whale/liq ✅ ждёт ключ), funding (мигрировать). Далее: миграция usdtd_regime на store, BTC.D-режим, HTTP-порт (ADR-001), выделение в репо. Переиспользуемо в других проектах | Даат/ARCH |
+
 | [FUNDING-DATA](#funding-data) | 🟡 | **Funding rates загрузчик** — data.binance.vision fundingRate → таблица в ohlcv_cache.db. Ортогональный фактор для всех бэктестов (funding-перекос = систематическое давление). По образцу fetch_binance_vision.py | Даат |
 
 | [WAVE-TREND-LONG](#wave-trend-long) | 🟡 | **wave_smc TREND-режим в % net** — BOS ПО тренду (класс ПРОДОЛЖЕНИЕ = победитель 03.07) на Binance-кэше, честная методология (intrabar-стандарт). LONG-кандидат (atr_S2 SHORT-only) | Даат/DS |
