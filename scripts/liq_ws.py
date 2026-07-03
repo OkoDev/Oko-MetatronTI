@@ -14,6 +14,11 @@
      (предсказание) — доказательство/опровержение формулы магнитов.
 
 pm2: pm2 start scripts/liq_ws.py --name liq-ws --interpreter <python>
+
+⚠️ 03.07: с этой машины fstream.binance.com WS МОЛЧИТ (коннект ок, данных 0 — и forceOrder,
+и aggTrade; SPOT stream.binance.com при этом работает, REST fapi работает). Похоже на
+фильтрацию фьючерсного стрима. Процесс оставлен (вдруг оживёт/появится VPN); копилку
+фактов пока наполняет СИНТЕТИКА из OI (oi_fast_poller._log_liq_synth, source='oi_synth').
 """
 import asyncio
 import collections
@@ -53,8 +58,12 @@ def _flush_events():
     c = conn()
     try:
         c.execute("""CREATE TABLE IF NOT EXISTS liq_events (
-            ts INTEGER, symbol TEXT, side TEXT, usd REAL, px REAL)""")
-        c.executemany("INSERT INTO liq_events VALUES (?,?,?,?,?)", _BUF)
+            ts INTEGER, symbol TEXT, side TEXT, usd REAL, px REAL, source TEXT)""")
+        try:
+            c.execute("ALTER TABLE liq_events ADD COLUMN source TEXT")
+        except Exception:
+            pass
+        c.executemany("INSERT INTO liq_events VALUES (?,?,?,?,?,'ws')", _BUF)
         c.commit()
         _BUF.clear()
     finally:

@@ -361,6 +361,28 @@ def _cooldown_ok(key: str, sec: int = 1800) -> bool:
         c.close()
 
 
+def _log_liq_synth(sym: str, side: str, usd: float, px: float) -> None:
+    """Синтетические ликвидации из OI-унвинда → liq_events (source='oi_synth').
+
+    fstream WS с этой машины молчит (03.07, см. liq_ws.py) — оцениваем сгоревшее по
+    падению OI на сквизе: usd = |ΔOI монет| × цена. Для сверки с magnet_snapshots
+    (зона+время+масштаб) точности достаточно.
+    """
+    c = conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS liq_events (
+            ts INTEGER, symbol TEXT, side TEXT, usd REAL, px REAL, source TEXT)""")
+        try:
+            c.execute("ALTER TABLE liq_events ADD COLUMN source TEXT")
+        except Exception:
+            pass
+        c.execute("INSERT INTO liq_events VALUES (?,?,?,?,?,'oi_synth')",
+                  (int(time.time()), sym, side, round(usd, 2), px))
+        c.commit()
+    finally:
+        c.close()
+
+
 def _flush_radar_state(rows: list[tuple]) -> None:
     """Live-контекст радара → radar_state (порт для Куба: features_json-мост, Егор 03.07).
 
@@ -398,6 +420,12 @@ def tick():
             t3, oi3, px3 = w[-4]                       # ~3 минуты назад
             d_oi3 = (oi / oi3 - 1) * 100 if oi3 else 0
             d_px3 = (px / px3 - 1) * 100 if px3 else 0
+            if abs(d_px3) >= 0.6 and d_oi3 <= -0.15:
+                # факт для копилки (сверка с магнитами) — каждый тик сквиза, без cooldown
+                try:
+                    _log_liq_synth(sym, "BUY" if d_px3 > 0 else "SELL", (oi3 - oi) * px, px)
+                except Exception:
+                    pass
             if abs(d_px3) >= 0.6 and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
                 side = "вверх (шорты горят)" if d_px3 > 0 else "вниз (лонги горят)"
                 _dot = "🟢" if d_px3 > 0 else "🔴"
