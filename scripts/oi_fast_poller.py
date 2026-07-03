@@ -58,9 +58,9 @@ def _fmt(v: float) -> str:
 
 
 def _tv(sym: str) -> str:
-    """Тикер-ссылка на график TW — биржа BINGX (торгуем на ней, не на Binance; Егор 03.07)."""
-    return (f'<a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
-            f'&interval=5">{sym}</a>')
+    """Тикер + ссылка на график TW, спрятанная под название биржи (Егор 03.07: «KAVA - BINGX»)."""
+    return (f'{sym} - <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
+            f'&interval=5">BINGX</a>')
 
 
 def _log_pump(row: dict) -> None:
