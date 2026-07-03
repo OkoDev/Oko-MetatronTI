@@ -224,6 +224,67 @@ def _log_spring(row: dict) -> None:
         c.close()
 
 
+def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tuple[str, dict | None]:
+    """📈 BUILD → полный сетап в сообщении (Егор 03.07: «нужно быстро реагировать» —
+    вход-стоп-тейк сразу, без переспрашивания).
+
+    Направление по funding (пороги = check_spring): fund<0 → грузятся шорты → сетап LONG
+    (сквиз вверх); fund>=+0.02% → лонги → SHORT. Нейтрален → голый BUILD без сетапа.
+    SL — за структуру последнего часа (экстремум 5m×12), цели — карта целей 2.0.
+    """
+    head = f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м — грузятся. цена {_fmt(px)}"
+    side = dir_txt = None
+    if fund is not None and fund < 0:
+        side = "LONG"
+        dir_txt = f"🔺 funding {fund * 100:.3f}% → грузятся ШОРТЫ → сетап <b>LONG</b> (сквиз вверх)"
+    elif fund is not None and fund >= 0.0002:
+        side = "SHORT"
+        dir_txt = f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ → сетап <b>SHORT</b> (слив вниз)"
+    if side is None:                                     # funding нейтрален — сетап не строим
+        return f"{head}\n#{sym} #OI_BUILD", None
+    sl = None
+    try:                                                 # SL за структуру часа
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=13")
+        sl = (min(float(x[3]) for x in k) * 0.998 if side == "LONG"
+              else max(float(x[2]) for x in k) * 1.002)
+    except Exception:
+        pass
+    try:
+        targets = build_targets(sym, side, px)
+    except Exception:
+        targets = []
+    lines = [head, dir_txt]
+    risk_pct = None
+    if sl:
+        risk_pct = abs(px - sl) / px * 100
+        lines.append(f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за структуру часа, риск {risk_pct:.1f}%)")
+    if targets:
+        far = max(targets, key=lambda t: abs(t["px"] - px))
+        if risk_pct:
+            rr = abs(far["px"] - px) / px * 100 / risk_pct
+            lines.append(f"R:R ~{rr:.1f} к дальней цели · у магнита ФИКСИРУЮТ, не входят")
+        lines.append(format_targets_block(targets, px))
+    lines.append(f"#{sym} #OI_BUILD")
+    row = {"ts": int(time.time()), "symbol": sym, "d_oi5": round(d_oi5, 3),
+           "funding": fund, "side": side, "px": px, "sl": sl,
+           "targets_json": json.dumps(targets) if targets else None}
+    return "\n".join(lines), row
+
+
+def _log_build(row: dict) -> None:
+    """Лог BUILD-сетапов → build_signals (Егор рисует сетап → смотрим отработку форвардом)."""
+    c = conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS build_signals (
+            ts INTEGER, symbol TEXT, d_oi5 REAL, funding REAL, side TEXT,
+            px REAL, sl REAL, targets_json TEXT, PRIMARY KEY (symbol, ts))""")
+        c.execute("INSERT OR REPLACE INTO build_signals VALUES "
+                  "(:ts,:symbol,:d_oi5,:funding,:side,:px,:sl,:targets_json)", row)
+        c.commit()
+    finally:
+        c.close()
+
+
 def _refresh_prices():
     """ВСЕ цены одним batch-запросом (weight=2) — вместо 50 отдельных."""
     global _PRICES
@@ -291,9 +352,11 @@ def tick():
             t5, oi5, px5 = w[-6]
             d_oi5 = (oi / oi5 - 1) * 100 if oi5 else 0
             if d_oi5 >= 0.5 and _cooldown_ok(f"fast_build:{sym}"):
-                send_tg(f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м — грузятся. цена {px}\n"
-                        f"#{sym} #OI_BUILD")
-                alerts.append(f"build {sym}")
+                b_msg, b_row = analyze_build(sym, px, d_oi5, _FUND.get(f"{sym}USDT"))
+                if send_tg(b_msg):
+                    if b_row:
+                        _log_build(b_row)
+                    alerts.append(f"build {sym}")
             # ⏳ ПРУЖИНА: скрытая загрузка ДО движения (окно 16 точек = 15 мин)
             res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"))
             if res_sp and _cooldown_ok(f"spring:{sym}", 3600):
