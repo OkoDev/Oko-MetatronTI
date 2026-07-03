@@ -891,7 +891,13 @@ async def _execute_atr_change_signal(
         if tf == "4h" and side == "SHORT":
             try:
                 from core.signals.atr_s2_shadow import check_atr_s2_setup
-                _s2_setup = check_atr_s2_setup(symbol, df, entry) if df is not None else None
+                # 🔴 ФИКС 03.07: df_4h скана = 60 баров (10 дней) → weekly-пивоты НЕ считались
+                # (len(wk)<3 → None у ВСЕХ — упущена ночь 02-03.07). Точечный глубокий фетч
+                # (180×4h=30 дней) только на 4h SHORT флипе — редко, дёшево.
+                _df_s2 = await bot.data_collector.get_ohlcv(symbol, "4h", limit=180)
+                if _df_s2 is None or len(_df_s2) < 130:
+                    _df_s2 = df                       # fallback: хоть что-то (скорее даст None)
+                _s2_setup = check_atr_s2_setup(symbol, _df_s2, entry) if _df_s2 is not None else None
             except Exception:
                 _s2_setup = None
             # FUNDING-гейт (03.07, 1.56M rates 2022-26): fund<0 = mean −0.056 (минус 4/5 лет) → skip;
@@ -1711,10 +1717,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                             # ATR-S2 SHADOW (03.07): единственный выживший эдж (+0.471%/сд бэктест
                             # 2022-26) — только ЛОГ сетапов 4h SHORT + close<WPP → S2, без торговли.
+                            # ФИКС 03.07: глубокий 4h (180 бар) — скановый df 60 бар ломал weekly-пивоты.
                             if _atr_tf == '4h' and _side == 'SHORT':
                                 try:
                                     from core.signals.atr_s2_shadow import log_atr_s2_setup
-                                    log_atr_s2_setup(sym, _atr_df, float(_atr_ev.price))
+                                    _df_s2sh = await bot.data_collector.get_ohlcv(sym, '4h', limit=180)
+                                    log_atr_s2_setup(sym, _df_s2sh if _df_s2sh is not None else _atr_df,
+                                                     float(_atr_ev.price))
                                 except Exception:
                                     pass
 

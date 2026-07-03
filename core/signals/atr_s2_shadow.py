@@ -40,11 +40,12 @@ def check_atr_s2_setup(symbol: str, df_4h: pd.DataFrame, price: float) -> dict |
     """Проверяет сетап atr_S2 на 4h DOWN-флипе. Возвращает dict сетапа или None (без записи)."""
     try:
         d = _to_dt(df_4h)
-        if d is None or len(d) < 60:
+        # 130×4h = ~22 дня: гарантия ПОЛНОЙ прошлой недели (60-баровый df скана ломал пивоты — 03.07)
+        if d is None or len(d) < 130:
             return None
         # недельные пивоты ПРОШЛОЙ завершённой недели (текущую неполную неделю выбрасываем)
         wk = d.resample("W").agg({"high": "max", "low": "min", "close": "last"}).dropna()
-        if len(wk) < 3:
+        if len(wk) < 4:
             return None
         prev = wk.iloc[-2]                          # последняя ЗАВЕРШЁННАЯ неделя
         pp = float((prev["high"] + prev["low"] + prev["close"]) / 3)
