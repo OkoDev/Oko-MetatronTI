@@ -1,5 +1,52 @@
 # What's Next — Handoff
 
+## 🚀 СЕССИЯ 03.07 (день) = РАДАР → ПРОДУКТ №2: пружина+цели+сетапы+каскады+мост в Куб — АКТУАЛЬНЫЙ HANDOFF
+
+> Русский · TTS Irina · ветка `arch-128-oko-sm`. Детали: `memory/current_state.md` (записи 03.07 10:30+) + auto-memory [[liq-magnets-pump-radar-tools]] (раздел ПРОДУКТ №2).
+
+**<original_task>** Егор: «чем усилить и ускорить сигналы, чтобы памп детектить заранее» → серия добро на: пружину+funding, карту целей 2.0, копилку магнитов, ликвидации-WS, мост в Куб. По ходу — фиксы UX-алертов по горячему фидбеку.
+
+**<work_completed> (10 коммитов, всё в бою под pm2):**
+- **⏳ ПРУЖИНА** (3256d61): `check_spring` — ΔOI15м≥+1% + range цены 15м<0.7% = скрытая загрузка ДО движения; направление по funding (batch premiumIndex). Окно RAM 12→30 мин. Лог → `spring_signals`.
+- **🧲 Карта целей 2.0** (c7a0715): `oko_feed/targets.py` — магниты (reuse liq_magnets) + D/W floor-пивоты + незакрытые FVG 15m→midline; кластер ±0.3% = «★ усилена». В PUMP/ПРУЖИНА/BUILD/КАСКАД алертах, лог targets_json.
+- **📈 BUILD → полный сетап** (30078b1, 5eea712): funding→направление, Вход/Стоп за структуру часа, риск%, R:R, цели, «у магнита ФИКСИРУЮТ»; нейтральный funding → «сетапа нет 🔄» + баланс топлива. Лог → `build_signals`.
+- **🧲 Копилка магнитов** (a6a99e5): `magnet_snapshot.py` → pm2 **magnet-snap** (cron 08:15 UTC) → `magnet_snapshots`. Первый снапшот 50/50. OI-окно 20 дней — теперь копим форвардом.
+- **⚡ Ликвидации realtime** (a6a99e5): `liq_ws.py` → pm2 **liq-ws** — WS `!forceOrder@arr` (~1с), каскад-алерт (90с ≥$1M мейджоры/$100k альты) + ФАКТЫ→`liq_events` (сверка предсказание-vs-факт = самокалибровка LEV_DIST).
+- **🌉 Мост радар→Куб** (6850efa, SHADOW): `radar_state` (тик радара) + `oko_feed/bridge.py::get_radar_context` + врезка в `trade_simulator.register_trade` → features_json получает radar_oi_d5/d15/funding/magnet_above_pct/below_pct (живые магниты СО СВОЕЙ стороны). **⏳ АКТИВАЦИЯ = РЕСТАРТ БОТА (Егор!)** — до рестарта бот мост не видит.
+- **📊 WR-скрипт** (c9873e7): `scripts/radar_wr.py [--days N]` — first-hit (SL vs TP) по свечам после алерта, разбивка тип/Grade/★. Первый прогон: PUMP 1/1 TP-first (+4.28% MFE), BUILD 3 сетапа.
+- **UX по фидбеку**: ссылка под BINGX (8fd4dce), построчный формат + ВСЕ цены копируемые `<code>` (767368f).
+- **🔴 ПРОДУКТ №2** (b85642c, решение Егора): радар автономен (публичный Binance без ключей, порты TG+external_data.db) — «когда достроим → E:\PROJECTS\ рядом с роем + отдельный git». Критерии в TASKS `RADAR-PRODUCT`.
+- **Разборы дня**: atr_s2 = 0 сделок (2 сетапа, оба срезаны USDT.D-гейтом risk-on — врезка исправна, ждём risk-off; «51 сделка» была моим ложным LIKE-подсчётом); MANA-сетап LONG на магнит $184k=0.0712; GRT-шорт жив под сломом 0.01872; ORDI = тренд без топлива (не наш класс).
+
+**<work_remaining>:**
+1. **РЕСТАРТ БОТА** (Егор) — активирует мост радар→features_json. Проверка: новые сделки несут `radar_*` ключи в features_json.
+2. Через ~неделю: `python scripts/radar_wr.py` при 20-30+ сигналов/тип → пороги/Grade-калибровка → решение ARMED (с TSL, fixed-TP И с-TSL исходы).
+3. Сверка магнитов: `liq_events` (факты) vs `magnet_snapshots` (предсказания) — скрипт не написан, данные копятся с 03.07.
+4. DS-MINING-FEATURES (DS, контракт в DISCUSSION 03.07) — после рестарта бота получит radar_* фичи.
+5. Крупное в свежую сессию: BOT-LOOP-OFFLOAD 🔴 (TASKS), TG-FORMAT-STANDARD ядра, ARMED-фаза.
+6. atr_s2: мониторить [ATR-S2] в логах при переходе USDT.D в risk-off.
+
+**<critical_context>:**
+- pm2 стек (7, все online, `pm2 save` сделан): oko-dash:3000, oko-api:8001, **oi-fast, liq-ws, magnet-snap** (радар), btc-flows, graph-shadow. Бот :8000 отдельно. НЕ убивать oko-dash.
+- Радар = автономный стек: `oko_feed/` (store/alerts/targets/bridge) + `scripts/{oi_fast_poller,liq_ws,liq_magnets,magnet_snapshot,radar_wr}.py`. БД `oko_feed/external_data.db`: pump/spring/build_signals, magnet_snapshots, liq_events, radar_state. Куб подключается через порт (bridge) — радар о Кубе не знает; НЕ добавлять радару зависимостей от core/.
+- Формат алертов = утверждённый Егором: построчно, цены в `<code>` (копируемые), «Вход:/Стоп:», у магнита ФИКСИРУЮТ. Не менять без слова.
+- 💡 Егор: «тут живёт мой эдж на 3% сделку» — редкая неэффективность + конфлюэнтная цель. Это главный вектор радара.
+
+---
+
+## ✅ ВЕРИФИКАЦИЯ 03.07 (повторный /whats-next, свежая сессия БЕЗ работы)
+
+> `/whats-next` вызван в новой сессии до какой-либо работы — захватывать нечего. Вместо перезаписи (запрещено правилом «НЕ перезаписывать целиком») — сверка handoff'а ниже с фактическим состоянием репо:
+>
+> - **HEAD = `744133c`** (сам handoff-коммит 01-03.07) — после него коммитов НЕ было, раздел ниже = актуальная точка правды.
+> - **Working tree: 0 modified tracked-файлов.** Untracked — давние research-артефакты (`_tmp_*.py`, `_risk_matrix.json`, `scripts/_oko_ab_*.txt`, `docs/*` черновики, `bot_with_subscriptions.py`, `.agents/.claude` bingx-skills ×27, `graphify-out/`, `nul`) — НЕ продукт этой сессии, не коммитить без слова Егора.
+> - `memory/current_state.md` верхняя запись `[03.07 06:45 UTC] ФИНАЛ сессии` — согласована с handoff'ом ниже.
+> - **⚠️ `scripts/oko_ote_runner_test.py` УЖЕ ЗАКОММИЧЕН** (bf1360b → 054b970 → 1ee9edf, проверено `git log`) — утверждение в разделе 24-25.06 «НОВЫЙ файл, НЕ в git» УСТАРЕЛО. Там же закоммичены PIT-фикс/recency/confs_tf=5m (054b970) — модификации `core/smc/oko_ote.py` тоже в git.
+>
+> **Следующей сессии: читать раздел «СЕССИЯ 01-03.07» сразу ниже — он и есть действующий handoff.**
+
+---
+
 ## 🜂 СЕССИЯ 01-03.07 = PUMP-радар v0.5 + магниты ликвидаций + первый оборот машины (+58% лонг Егора) — АКТУАЛЬНЫЙ HANDOFF
 
 > Русский · TTS Irina · ветка `arch-128-oko-sm`. Детальный контекст: `memory/current_state.md` (запись 03.07 сверху) + auto-memory [[liq-magnets-pump-radar-tools]] (инструменты+инсайты), [[atr_s2_survived_honest]].
