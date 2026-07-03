@@ -70,12 +70,6 @@ def _c(v: float) -> str:
     return f"<code>{_fmt(v)}</code>"
 
 
-def _tv(sym: str) -> str:
-    """Тикер + ссылка на график TW, спрятанная под название биржи (Егор 03.07: «KAVA - BINGX»)."""
-    return (f'{sym} - <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
-            f'&interval=5">BINGX</a>')
-
-
 def _links(sym: str) -> str:
     """Подвал ссылок (макет Егора 03.07): график TW + страница биржи BingX."""
     return (f'- <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
@@ -112,8 +106,13 @@ def _with_targets(msg: str, row: dict, sym: str, side: str, px: float) -> tuple[
     row["targets_json"] = json.dumps(targets) if targets else None
     block = format_targets_block(targets, px)
     if block:
-        body, tags_line = msg.rsplit("\n", 1)
-        msg = f"{body}\n{block}\n{tags_line}"
+        marker = "\n\n- <a href"                         # перед подвалом ссылок (макет)
+        i = msg.find(marker)
+        if i != -1:
+            msg = f"{msg[:i]}\n\n{block}{msg[i:]}"
+        else:
+            body, tags_line = msg.rsplit("\n", 1)
+            msg = f"{body}\n{block}\n{tags_line}"
     return msg, row
 
 
@@ -167,14 +166,16 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка → возврат вероятен' if oi_fuel else 'НАСТОЯЩАЯ загрузка → не спешить, ждать выдоха!'}"
               if d_oi5 is not None else "OI: нет данных")
     grade_txt = {"A": "A (вход надёжнее)", "B": "B", "C": "C (⚠️ против свежего потока)"}[grade]
-    msg = (f"🚀 <b>PUMP: {_tv(sym)} {d_px:+.1f}%</b>\n"
+    dot = "🔴" if up else "🟢"                            # сетап-разворот: памп → SHORT
+    msg = (f"🚀 <b>PUMP:</b>\n\n"
+           f"{dot} <code>{sym}</code> {d_px:+.1f}%\n"
            f"{head}\n"
            f"Grade {grade_txt} · объём ×{vol_ratio:.1f} · RSI {rsi:.0f}\n"
-           f"{oi_txt}\n"
-           f"━ уровни (SHADOW, ориентир):\n"
+           f"{oi_txt}\n\n"
            f"Вход: ~{_c(px)}\n"
            f"Стоп: {_c(sl)} (за экстремум +1%)\n"
-           f"TP1 {_c(tp1)} (50%) · TP2 {_c(tp2)} (75%) · TP3 {_c(tp3)} (до пампа)\n"
+           f"TP1 {_c(tp1)} (50%) · TP2 {_c(tp2)} (75%) · TP3 {_c(tp3)} (до пампа)\n\n"
+           f"{_links(sym)}\n\n"
            f"#{sym} #PUMP")
     row = {"ts": int(time.time()), "symbol": sym, "side": "SHORT" if up else "LONG",
            "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
@@ -209,10 +210,12 @@ def check_spring(w, sym: str, px: float, fund: float | None) -> tuple[str, dict]
         dir_txt = f"🔻 funding {fund * 100:.4f}% → грузятся ЛОНГИ → топливо ВНИЗ (вероятно)"
     else:
         dir_side, dir_txt = "?", f"funding {fund * 100:.4f}% нейтрален — направление неясно"
-    msg = (f"⏳ <b>ПРУЖИНА: {_tv(sym)}</b>\n"
-           f"OI {d_oi15:+.2f}%/15м, цена флэт (range {rng_pct:.2f}%) — скрытая загрузка\n"
+    dot = {"UP": "🟢", "DOWN": "🔴"}.get(dir_side, "⚪")
+    msg = (f"⏳ <b>ПРУЖИНА:</b>\n\n"
+           f"{dot} <code>{sym}</code> OI {d_oi15:+.2f}%/15м · цена флэт (range {rng_pct:.2f}%)\n"
            f"{dir_txt}\n"
-           f"цена {_c(px)}\n"
+           f"цена {_c(px)}\n\n"
+           f"{_links(sym)}\n\n"
            f"#{sym} #SPRING")
     row = {"ts": int(time.time()), "symbol": sym, "d_oi15": round(d_oi15, 3),
            "range_pct": round(rng_pct, 3), "funding": fund, "dir": dir_side, "px": px}
@@ -397,8 +400,11 @@ def tick():
             d_px3 = (px / px3 - 1) * 100 if px3 else 0
             if abs(d_px3) >= 0.6 and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
                 side = "вверх (шорты горят)" if d_px3 > 0 else "вниз (лонги горят)"
-                send_tg(f"🌀 <b>СКВИЗ LIVE: {_tv(sym)}</b>\nΔцена {d_px3:+.2f}%/3м {side}\n"
-                        f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {_c(px)}\n"
+                _dot = "🟢" if d_px3 > 0 else "🔴"
+                send_tg(f"🌀 <b>СКВИЗ LIVE:</b>\n\n"
+                        f"{_dot} <code>{sym}</code> Δцена {d_px3:+.2f}%/3м {side}\n"
+                        f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {_c(px)}\n\n"
+                        f"{_links(sym)}\n\n"
                         f"#{sym} #SQUEEZE")
                 alerts.append(f"squeeze {sym}")
         if len(w) >= 6:
