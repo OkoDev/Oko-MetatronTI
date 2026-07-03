@@ -108,25 +108,28 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
         pre = min(lows[-10:-3])               # цена ДО пампа
         rng = ext - pre
         sl, tp1, tp2, tp3 = ext * 1.01, ext - rng * 0.5, ext - rng * 0.75, pre
-        side = "SHORT-разворот"
+        head = "🔻 сетап: <b>SHORT</b> (разворот пампа ВНИЗ)"
     else:                                     # дамп → зеркально LONG-разворот
         ext = min(lows[-3:])
         pre = max(highs[-10:-3])
         rng = pre - ext
         sl, tp1, tp2, tp3 = ext * 0.99, ext + rng * 0.5, ext + rng * 0.75, pre
-        side = "LONG-разворот"
+        head = "🔺 сетап: <b>LONG</b> (разворот дампа ВВЕРХ)"
     if rng <= 0:
         return None
     oi_fuel = d_oi5 is not None and d_oi5 <= 0.1
     grade = "A" if (oi_fuel and vol_ratio >= 5) else ("B" if oi_fuel else "C")
-    oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка (возврат вероятен)' if oi_fuel else 'настоящая загрузка (разворот опасен!)'}"
+    oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка → возврат вероятен' if oi_fuel else 'НАСТОЯЩАЯ загрузка → не спешить, ждать выдоха!'}"
               if d_oi5 is not None else "OI: нет данных")
-    msg = (f"🚀 <b>PUMP: {sym} {d_px:+.1f}%</b> · Grade {grade}\n"
-           f"объём ×{vol_ratio:.1f} · RSI {rsi:.0f} · {oi_txt}\n"
-           f"━ {side} (SHADOW, уровни-ориентир):\n"
+    grade_txt = {"A": "A (вход надёжнее)", "B": "B", "C": "C (⚠️ против свежего потока)"}[grade]
+    msg = (f"🚀 <b>PUMP: {sym} {d_px:+.1f}%</b>\n"
+           f"{head}\n"
+           f"Grade {grade_txt} · объём ×{vol_ratio:.1f} · RSI {rsi:.0f}\n"
+           f"{oi_txt}\n"
+           f"━ уровни (SHADOW, ориентир):\n"
            f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за экстремум +1%)\n"
            f"TP1 {_fmt(tp1)} (50%) · TP2 {_fmt(tp2)} (75%) · TP3 {_fmt(tp3)} (до пампа)")
-    row = {"ts": int(time.time()), "symbol": sym, "side": side.split("-")[0],
+    row = {"ts": int(time.time()), "symbol": sym, "side": "SHORT" if up else "LONG",
            "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
            "d_oi": d_oi5 if d_oi5 is None else round(d_oi5, 3), "grade": grade,
            "entry": px, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}
