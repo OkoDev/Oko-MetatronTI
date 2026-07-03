@@ -25,6 +25,11 @@ if __name__ == "__main__":
             ev = live_radar()
             if ev:
                 print(f"[OI-RADAR] {time.strftime('%H:%M')} {ev}")
+            # FEED-ALERTS → TG (сквизы/киты/флоу/режим, cooldown внутри)
+            from oko_feed.alerts import check_and_alert
+            al = check_and_alert()
+            if al:
+                print(f"[ALERTS] {time.strftime('%H:%M')} отправлено: {al}")
             r = collect(window_sec=INTERVAL + 120)
             net = r["outflow_btc"] - r["inflow_btc"]
             print(f"[BTC-FLOWS] {time.strftime('%H:%M:%S')} in={r['inflow_btc']} out={r['outflow_btc']} "
