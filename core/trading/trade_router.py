@@ -338,8 +338,11 @@ class TradeRouter:
                     )
                     asyncio.create_task(fetch_and_save_sl_order_id(
                         self.bot, trade_id, ctx.symbol, ctx.direction))
-                    asyncio.create_task(fetch_and_save_tp_order_id(
-                        self.bot, trade_id, ctx.symbol, ctx.direction))
+                    # radar (multi-TP): om.get_tp_order_id считает >1 TP дубликатами и ОТМЕНЯЕТ
+                    # «лишние» → при мгновенном LIMIT-fill порезал бы частичные TP1/TP2 (04.07)
+                    if getattr(ctx.policy, "trade_mode", "") != "radar":
+                        asyncio.create_task(fetch_and_save_tp_order_id(
+                            self.bot, trade_id, ctx.symbol, ctx.direction))
                     # fake-R фикс (19.06): захват positionID — якорь exit'а в _resolve_exit
                     asyncio.create_task(fetch_and_save_position_id(
                         self.bot, trade_id, ctx.symbol, ctx.direction))

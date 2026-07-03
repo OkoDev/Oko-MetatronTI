@@ -234,6 +234,22 @@ async def _on_entry_filled(bot, trade_id: int, symbol: str, direction: str, fill
             return
         client = await om._get_client_synced(symbol)
         side_close = "SELL" if direction == "LONG" else "BUY"
+        # Separate Isolated: TP = close-ордер → positionId ОБЯЗАТЕЛЕН (109400, HBAR #41530).
+        # К моменту fill pid уже в БД (fetch_and_save_position_id при постановке LIMIT);
+        # fallback — с биржи через om.
+        pid = None
+        try:
+            with sqlite3.connect(bot.trade_simulator.db_path, timeout=5) as c:
+                r = c.execute("SELECT position_id FROM simulated_trades WHERE id=?", (trade_id,)).fetchone()
+            pid = str(r[0]) if (r and r[0]) else None
+        except Exception:
+            pass
+        if not pid:
+            pid = await om._get_position_id(symbol, direction)
+        if not pid:
+            logger.warning("[RADAR-ARMED] #%d %s: positionId не найден — частичные TP отложены "
+                           "(позиция защищена attached SL/TP)", trade_id, symbol)
+            return
         tp_oids = []                                     # [[oid, price, qty], ...] для BE-чекера
         for i, tp in enumerate(tps[:-1]):                # все цели кроме финальной (она attached)
             share = shares[i] / 100.0 if i < len(shares) else 0.0
@@ -242,7 +258,8 @@ async def _on_entry_filled(bot, trade_id: int, symbol: str, direction: str, fill
                 tp_oids.append(None)
                 continue
             resp = await client.place_tp_order(symbol=symbol, side=side_close,
-                                               pos_side=direction, stop_price=tp, qty=q)
+                                               pos_side=direction, stop_price=tp, qty=q,
+                                               position_id=pid)
             code = resp.get("code", -1) if isinstance(resp, dict) else -1
             if code == 0:
                 oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))

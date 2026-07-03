@@ -768,9 +768,11 @@ class OrderManager:
             except Exception as _e_clean:
                 logger.debug("[OrderManager] place_tp_order precheck %s: %s", symbol, _e_clean)
 
+            # Separate Isolated: TP = close-ордер → нужен positionId (109400, HBAR #41530 04.07)
+            _tp_pid = await self._get_position_id(symbol, pos_side)
             resp = await client.place_tp_order(
                 symbol=symbol, side=side, pos_side=pos_side.upper(),
-                stop_price=tp_price, qty=qty_floor,
+                stop_price=tp_price, qty=qty_floor, position_id=_tp_pid,
             )
             if resp.get("code", -1) != 0:
                 msg = resp.get("msg", "")
@@ -780,7 +782,7 @@ class OrderManager:
                         qty_retry = await client.quantize_qty(symbol, real_qty)
                         resp = await client.place_tp_order(
                             symbol=symbol, side=side, pos_side=pos_side.upper(),
-                            stop_price=tp_price, qty=qty_retry,
+                            stop_price=tp_price, qty=qty_retry, position_id=_tp_pid,
                         )
                         if resp.get("code", -1) == 0:
                             oid = str(resp.get("data", {}).get("order", {}).get("orderId", ""))

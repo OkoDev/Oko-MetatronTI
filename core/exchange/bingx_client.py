@@ -709,8 +709,12 @@ class BingXClient:
     async def place_tp_order(
         self, symbol: str, side: str, pos_side: str,
         stop_price: float, qty: float,
+        position_id: str | None = None,
     ) -> dict:
-        """Ставит TAKE_PROFIT_MARKET ордер (для восстановления TP при потере)."""
+        """Ставит TAKE_PROFIT_MARKET ордер (восстановление TP / частичные TP radar).
+
+        position_id ОБЯЗАТЕЛЕН в Separate Isolated mode (TP = close-ордер, 109400
+        «positionId must be provided when close position» — пойман 04.07 HBAR #41530)."""
         bx_symbol = to_bingx_symbol(symbol)
         params = {
             "symbol":       bx_symbol,
@@ -721,6 +725,8 @@ class BingXClient:
             "stopPrice":    str(stop_price),
             "workingType":  "MARK_PRICE",
         }
+        if position_id:
+            params["positionId"] = str(position_id)
         return await self.post("/openApi/swap/v2/trade/order", params)
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
