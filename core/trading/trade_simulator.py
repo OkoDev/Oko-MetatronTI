@@ -719,6 +719,15 @@ class TradeSimulator:
             except Exception:
                 pass
 
+            # 03.07 SFERA-14 мост (SHADOW): orderflow-контекст радара (oi_d5/oi_d15/funding/
+            # дистанции до магнитов) → features_json. Кормит DS-MINING-FEATURES фичами,
+            # которых нет в датасете. Радар лежит / символ вне CORE-50 → пусто, не мешаем.
+            try:
+                from oko_feed.bridge import get_radar_context
+                features.update(get_radar_context(symbol))
+            except Exception:
+                pass
+
             features_json = json.dumps(features) if features else None
 
             # DEV-12: Decision Trace

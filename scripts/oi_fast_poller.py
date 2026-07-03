@@ -346,8 +346,27 @@ def _cooldown_ok(key: str, sec: int = 1800) -> bool:
         c.close()
 
 
+def _flush_radar_state(rows: list[tuple]) -> None:
+    """Live-контекст радара → radar_state (порт для Куба: features_json-мост, Егор 03.07).
+
+    Бот при регистрации сделки читает отсюда oi_delta/funding — RAM радара ему недоступен.
+    """
+    if not rows:
+        return
+    c = conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS radar_state (
+            symbol TEXT PRIMARY KEY, ts INTEGER, px REAL,
+            oi_d5 REAL, oi_d15 REAL, funding REAL)""")
+        c.executemany("INSERT OR REPLACE INTO radar_state VALUES (?,?,?,?,?,?)", rows)
+        c.commit()
+    finally:
+        c.close()
+
+
 def tick():
     alerts = []
+    state_rows = []
     _refresh_prices()
     _refresh_funding()
     for sym in CORE:
@@ -404,7 +423,12 @@ def tick():
                     if send_tg(msg):
                         _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
                         alerts.append(f"PUMP {sym}")
+        # live-контекст → radar_state (мост в Куб)
+        d5 = (oi / w[-6][1] - 1) * 100 if (len(w) >= 6 and w[-6][1]) else None
+        d15 = (oi / w[-16][1] - 1) * 100 if (len(w) >= 16 and w[-16][1]) else None
+        state_rows.append((sym, int(time.time()), px, d5, d15, _FUND.get(f"{sym}USDT")))
         time.sleep(0.15)
+    _flush_radar_state(state_rows)
     return alerts
 
 
