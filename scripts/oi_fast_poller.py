@@ -58,8 +58,8 @@ def _fmt(v: float) -> str:
 
 
 def _tv(sym: str) -> str:
-    """Тикер-ссылка на график TW (фидбек Егора 03.07: ссылки в тикере удобны)."""
-    return (f'<a href="https://ru.tradingview.com/chart/?symbol=BINANCE%3A{sym}USDT.P'
+    """Тикер-ссылка на график TW — биржа BINGX (торгуем на ней, не на Binance; Егор 03.07)."""
+    return (f'<a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
             f'&interval=5">{sym}</a>')
 
 
