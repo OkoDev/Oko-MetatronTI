@@ -81,7 +81,9 @@ async def _armed_watcher_ote_loop(bot) -> None:
                     _ARMED_SETUPS.pop(symbol, None)         # снять ДО await: один сигнал-одна сделка
                     logger.info("[OTE ARMED-FIRE] %s цена в зоне (px=%.6g zone=[%.6g,%.6g], ждали %.0fс)",
                                 symbol, px, zlo, zhi, now - item["armed_at"])
-                    await _register_ote_trade(bot, sig)
+                    # CASCADE-гейт и на ARMED-пути (раньше shadow здесь вообще не считался)
+                    if not await _cascade_gate_blocks(bot, dc, symbol, sig):
+                        await _register_ote_trade(bot, sig)
         except asyncio.CancelledError:
             logger.info("[OTE ARMED] watcher cancelled")
             raise
@@ -193,13 +195,10 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
                         symbol, sig.setup_id, sig.tier, sig.direction,
                         sig.entry, sig.sl, sig.tp1, sig.trigger_type,
                         sig.conf_score, sig.confirmations)
-            # OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр SHADOW на каждый FIRE (НЕ блокирует).
-            if bool(bot.config.get("ote.cascade_shadow", True)):
-                try:
-                    await _cascade_1d_shadow(data_collector, symbol, sig)
-                except Exception as _e:
-                    logger.debug("[CASCADE][shadow] %s error: %s", symbol, _e)
-            if bool(bot.config.get("ote.vst_trading.enabled", False)):
+            # OTE-CASCADE: shadow-лог всегда (сверка DS); при ote.cascade_gate=true —
+            # вход против 1D-тренда БЛОКИРУЕТСЯ (03.07, диагноз Егора «слеп к матрице HTF»).
+            _casc_blocked = await _cascade_gate_blocks(bot, data_collector, symbol, sig)
+            if bool(bot.config.get("ote.vst_trading.enabled", False)) and not _casc_blocked:
                 await _register_ote_trade(bot, sig)   # 27.06: phase_gate shadow снят
 
     # ARCH-128: проявление в шину — лучший сигнал (FIRE > ARMED, max conf) в pair_context.
@@ -208,27 +207,58 @@ async def _scan_one_pair_ote(bot, symbol: str, gen) -> tuple[int, int]:
     return armed, fired
 
 
-async def _cascade_1d_shadow(data_collector, symbol: str, sig) -> None:
+async def _cascade_1d_shadow(data_collector, symbol: str, sig):
     """OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр на каждый ote_nested FIRE.
-    SHADOW — только лог would_block, НЕ блокирует регистрацию. DS меряет дельту forward
-    («с фильтром vs без» на живом потоке ote_nested). Контракт: DISCUSSION 19.06 ~09:30.
+    Лог would_block (сверка DS) + ВОЗВРАТ вердикта: True=против 1D-тренда, False=по тренду,
+    None=unknown (мало баров/NaN — fail-open, не гадаем). Блокирует ли регистрацию —
+    решает вызывающий по флагу ote.cascade_gate (03.07). Контракт: DISCUSSION 19.06 ~09:30.
     🔴 Фетчим 60 НАСТОЯЩИХ 1D-баров (НЕ dfs['1d'] из resample 1h×300 = ~12 баров < 43 для ATR)."""
     df_1d = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=60)
     n = 0 if df_1d is None else len(df_1d)
     if n < 43:  # calculate_trend atr_period=43 → меньше баров = NaN тренд
         logger.info("[CASCADE][shadow] %s dir=%s 1d_trend=NA bars=%d would_block=unknown",
                     symbol, sig.direction, n)
-        return
+        return None
     from core.indicators.indicators import calculate_trend
     last = calculate_trend(df_1d)["trend"].iloc[-1]
     if pd.isna(last):
         logger.info("[CASCADE][shadow] %s dir=%s 1d_trend=NaN would_block=unknown", symbol, sig.direction)
-        return
+        return None
     d1 = "LONG" if last > 0 else "SHORT"
     _sdir = str(sig.direction).upper()  # sig.direction = 'long'/'short' (lowercase) → нормализуем
     would_block = _sdir != d1  # вход ПРОТИВ 1D-тренда
     logger.info("[CASCADE][shadow] %s dir=%s 1d_trend=%s would_block=%s entry=%s conf=%d",
                 symbol, _sdir, d1, would_block, sig.entry, sig.conf_score)
+    return would_block
+
+
+async def _cascade_gate_blocks(bot, data_collector, symbol: str, sig) -> bool:
+    """OTE-CASCADE GATE (03.07, Егор: «ote_nested не знает где находится относительно матрицы
+    HTF»). shadow-данные n=37: против-1D = −0.72%/сд win17%, по-1D = +1.07%/сд win44%.
+    True = вход блокируется (против 1D-тренда при ote.cascade_gate=true). unknown → fail-open."""
+    _shadow_on = bool(bot.config.get("ote.cascade_shadow", True))
+    _gate_on = bool(bot.config.get("ote.cascade_gate", False))
+    if not (_shadow_on or _gate_on):
+        return False
+    try:
+        wb = await _cascade_1d_shadow(data_collector, symbol, sig)
+    except Exception as _e:
+        logger.debug("[CASCADE] %s error (fail-open): %s", symbol, _e)
+        return False
+    if _gate_on and wb is True:
+        logger.info("[CASCADE][GATE] %s %s BLOCKED — вход против 1D-тренда", symbol,
+                    str(sig.direction).upper())
+        try:
+            from core.observability.decision_trace import record_drop
+            asyncio.create_task(record_drop(
+                symbol=symbol, gate_name="cascade_1d_gate",
+                drop_reason=f"ote_nested/{str(sig.direction).upper()}: против 1D-тренда",
+                signal_type="ote_nested", direction=str(sig.direction).upper(),
+                strength=int(getattr(sig, "conf_score", 0) or 0), features={}))
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def _publish_ote_ltf_state(bot, symbol: str, signals: list) -> None:

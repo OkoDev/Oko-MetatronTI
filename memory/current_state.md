@@ -9,6 +9,13 @@
 
 ---
 
+## [04.07 ~00:40 UTC] Агент: Даат — вечер решений Егора: ARMED live + oko_ote добит + ote_nested на старший ТФ
+
+- ✅ **RADAR-ARMED ЖИВ** (2-й рестарт 19:06 UTC+ лог started). Первые 3 сетапа (BUILD MANA/ATOM★, SPRING MANA) пойманы лупом за ≤60с, но SKIPPED: DEV-52 portfolio_limit LONG 25/25 — слоты держал ote_nested (24)+oko_ote (1).
+- ✅ **oko_ote добит** (Егор «закрыть, ботом не ведётся»): зомби CARV #37380 (27.06, uPnL −$0.77, БД OPEN 6 дней) закрыт one-click acc2 → БД дозакрылась ботом (SL −5.2%, R=−0.3). policy exchange_enabled: false. ⚠️ Ловушка: скрипты вне корня — load_dotenv() БЕЗ пути не находит .env бота → «позиции нет» ложное; всегда load_dotenv(явный путь).
+- 🔴 **ote_nested диагноз Егора «не знает где находится относительно матрицы HTF» — подтверждён данными:** июль n=289 net −1.31%/сд WR19% (SHORT −2.03%); все 3 связки в минусе (1h_15m −1.20% n=145, 4h_15m −1.80%, 4h_1h −0.94%); CASCADE-shadow n=37: против-1D −0.72% vs по-1D +1.07%.
+- ✅ **Решение Егора (вместо выкл): CASCADE-гейт боевой + старший ТФ:** (1) `ote.cascade_gate: true` — FIRE против 1D-тренда блокируется (`_cascade_gate_blocks`, оба пути регистрации, unknown=fail-open, лог [CASCADE][GATE]+signal_drops); (2) `1h_15m_pull` OFF в ote_setups.yaml — остались только 4h-зоны. ⏳ ТРЕБУЕТ РЕСТАРТА (Егор в теме).
+
 ## [03.07 ~19:30 UTC] Агент: Даат — RADAR-ARMED-VST ПОСТРОЕН (шаги 1-6, флаг OFF)
 
 - ✅ **Весь эпик закодирован за сессию** (план+ответы Егора «+»): порт `radar_orders` (oi_fast_poller пишет полные сетапы BUILD/PUMP/SPRING со starred/grade/лестницей TP) → `bot/loops/radar_armed_loop.py` (poll 15с → фильтры → trade_router source='radar' LIMIT 0.5%/20x → PENDING_ENTRY → чекер fill→OPEN/TTL→CANCELLED → multi-TP 40/30/30 → авто-БУ по fill TP1 → TSL на остатке).

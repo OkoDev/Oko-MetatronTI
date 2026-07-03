@@ -725,7 +725,7 @@ signal_router:
       risk_pct: 0.5            # 19.06 Режим В: ЛОКАЛЬНЫЙ риск ote_nested
     oko_ote:                   # 22.06 НОВАЯ стратегия (метод Егора) — отдельный trade_mode для dedup
       min_strength: 40
-      exchange_enabled: true   # VST-песочница
+      exchange_enabled: false  # ⛔ 03.07 Егор «oko_ote закрыть»: стратегия off с 27.06, зомби CARV #37380 закрыт вручную (one-click acc2), политика добита в false
       trade_mode: oko_ote      # 🔴 КРИТИЧНО: иначе dedup_open режет на любой открытой (was "без trade_mode")
       soft_gates_enabled: []
       leverage: 20             # умеренно для песочницы (метод не нуждается в 50x — edge во входе/выходе)
@@ -795,6 +795,13 @@ ote:
   # лог [CASCADE][shadow] would_block (вход против 1D-тренда), НЕ блокирует. DS меряет
   # дельту forward → edge есть → гейтим (live), нет → закрываем. False=отключить shadow.
   cascade_shadow: true
+  # 🔴 CASCADE-ГЕЙТ (04.07, решение Егора «ote_nested не знает где находится относительно
+  # матрицы HTF» — врезаем сейчас): true → FIRE против 1D-тренда БЛОКИРУЕТСЯ (оба пути:
+  # FIRE-ветка + ARMED-watcher). Данные shadow n=37: против-1D −0.72%/сд win17% vs
+  # по-1D +1.07%/сд win44% (июль: SHORT −2.03%/сд = контр-HTF течь). unknown → fail-open.
+  # Заблокированные видны: [CASCADE][GATE] BLOCKED + signal_drops (cascade_1d_gate).
+  # ⚠️ Форвард-сравнение block-vs-pass для DS ПРЕКРАЩАЕТСЯ (blocked не торгуются).
+  cascade_gate: true
 arch118:
   shadow_enabled: true
   write_table: true

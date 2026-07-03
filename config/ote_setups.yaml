@@ -79,7 +79,7 @@ tier2:
   # mean-reversion (продолжения нет), 1d_5m = нет OOS-данных + 5m-шум → OFF.
   - { id: 4h_15m_pull, htf: 4h, ltf: 15m, type: pull, direction: both, avgR: 0.585, wr: 75, n: 1427, post_avgR: 0.58, post_n: 43,  enabled: true }    # ✅ OOS-портфель
   - { id: 1d_5m_pull,  htf: 1d, ltf: 5m,  type: pull, direction: both, avgR: 0.549, wr: 66, n: 159,  post_avgR: 3.00, post_n: 6,   enabled: false }   # 1D+5m нет OOS
-  - { id: 1h_15m_pull, htf: 1h, ltf: 15m, type: pull, direction: both, avgR: 0.501, wr: 74, n: 3445, post_avgR: 0.21, post_n: 101, enabled: true }    # ✅ OOS-портфель
+  - { id: 1h_15m_pull, htf: 1h, ltf: 15m, type: pull, direction: both, avgR: 0.501, wr: 74, n: 3445, post_avgR: 0.21, post_n: 101, enabled: false }   # ⛔ 04.07 Егор «переключить на старший ТФ»: зона 1h = младшая, 50% потока июля, net −1.20%/сд (n=145). Остаются только 4h-зоны + 1D-cascade_gate
   - { id: 4h_1h_pull,  htf: 4h, ltf: 1h,  type: pull, direction: both, avgR: 0.459, wr: 71, n: 844,  post_avgR: 0.86, post_n: 20,  enabled: true }    # ✅ OOS-портфель (чемпион)
   - { id: 1h_5m_cont,  htf: 1h, ltf: 5m,  type: cont, direction: both, avgR: 0.368, wr: 68, n: 1376, post_avgR: 0.36, post_n: 113, enabled: false }   # cont = против mean-rev
   - { id: 4h_5m_cont,  htf: 4h, ltf: 5m,  type: cont, direction: both, avgR: 0.315, wr: 71, n: 628,  post_avgR: 0.14, post_n: 36,  enabled: false }   # cont = против mean-rev
