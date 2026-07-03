@@ -52,6 +52,8 @@
 
 | [FEED-ALERTS](#feed-alerts) | 🔵 | **Алерты oko_feed (Егор 03.07)** — пороговые события → TG: BTC-инфлоу > N BTC/час, кит-своп >$1M, смена USDT.D-режима, LIQ-снятие >$5M. Данные уже копятся (onchain_events/dominance); алерт-луп = отдельный поллер или в бота. Вкладка Feed уже подсвечивает $1M+ | Даат/DEV |
 
+| [RADAR-PRODUCT](#radar-product) | 🔵 | **РАДАР = ПРОДУКТ №2 (решение Егора 03.07, после роя).** Автономный стек: oko_feed/(store/alerts/targets)+4 скрипта (oi_fast/liq_ws/liq_magnets/magnet_snapshot), pm2 oi-fast/liq-ws/magnet-snap. Публичный Binance без ключей, порты: TG+external_data.db. «Когда достроим → E:\PROJECTS\ рядом с роем + отдельный git». Критерии: WR подтверждён (20-30+/тип), ARMED+TSL, пороги калиброваны, CORE→config. memory: liq_magnets_pump_radar_tools | Даат |
+
 | [FEED-SPHERE](#feed-sphere) | 🟡 | **oko_feed — подключаемая сфера внешних данных (идея Егора 03.07)** — standalone-пакет `oko_feed/` (zero-deps от бота, своя external_data.db): dominance (CoinGecko USDT.D/BTC.D/ETH.D ✅ живёт), thegraph (Uniswap whale/liq ✅ ждёт ключ), funding (мигрировать). Далее: миграция usdtd_regime на store, BTC.D-режим, HTTP-порт (ADR-001), выделение в репо. Переиспользуемо в других проектах | Даат/ARCH |
 
 | [FUNDING-DATA](#funding-data) | 🟡 | **Funding rates загрузчик** — data.binance.vision fundingRate → таблица в ohlcv_cache.db. Ортогональный фактор для всех бэктестов (funding-перекос = систематическое давление). По образцу fetch_binance_vision.py | Даат |
