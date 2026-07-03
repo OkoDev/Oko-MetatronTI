@@ -15,7 +15,7 @@
 - 🔑 **Ключевые решения:** SL+финальный TP attached к самому LIMIT-ордеру (batchOrders не нужен, позиция защищена с fill); детекты fill/TP1 = REST-поллинг лупа (exec_ws не тронут); take_profit БД=финальная цель (live-guard не стреляет рано); om.place_tp_order/get_tp_order_id НЕ для multi-TP (анти-дубль каннибализирует) → client напрямую + repair_missing_tp загейчен.
 - 🛡️ **Гейты ядра (минимальные):** _detect_orphans видит PENDING_ENTRY · close-by-price grace 120с · open_bracket LIMIT не пишет сигнальную цену в actual · tsl_updater skip radar.
 - ✅ **Тесты:** smoke_radar_port + smoke_radar_lifecycle (scratchpad) — ALL GREEN ×2. py_compile всех правленых файлов OK.
-- ⏭️ **Осталось (шаг 8б):** ручной VST-прогон на дешёвой монете (INSERT тест-строки в radar_orders → LIMIT→fill→TP1→BE→трейл, греп [RADAR-ARMED]) → `radar_armed.enabled: true` + рестарт бота (Егор). Радар oi-fast перезапущен с портом.
+- ✅ **ВКЛЮЧЁН 03.07 19:06** (Егор: «дампы радар ловит, сейчас возможны» → enabled:true 1b10241 + 2-й рестарт): `[RADAR-ARMED] started poll=15s ttl=45мин types=[build,pump,spring] grades=[A,B] max_pos=5`. Радар oi-fast с портом тоже жив. Прогон = первый живой сетап под грепом [RADAR-ARMED]; дампы армятся зеркально (LONG, grade A/B).
 
 ## [03.07 ~17:30 UTC] Агент: Даат — RADAR-ARMED-VST шаг 1: разведка PARTIAL-семантики ВЫПОЛНЕНА
 

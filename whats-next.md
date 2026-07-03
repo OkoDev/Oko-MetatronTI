@@ -27,9 +27,10 @@
   PENDING/fill/TTL/BE-выборка/grace на боевом формате created_at).
 
 **<work_remaining>:**
-1. **Шаг 8б = ручной VST-прогон** (нужен Егор для рестарта): `radar_armed.enabled: true` + рестарт
-   бота → INSERT тест-строки в radar_orders (дешёвая монета) → греп `[RADAR-ARMED]`:
-   LIMIT→PENDING→fill→OPEN→TP1/TP2 поставлены→BE после TP1→TSL. Откат = enabled:false.
+1. ✅ **ВКЛЮЧЁН И ЖИВ 03.07 19:06** (Егор: «дампы возможны» + 2 рестарта): лог
+   `[RADAR-ARMED] started: poll=15s ttl=45мин types=[build,pump,spring] grades=[A,B] max_pos=5`.
+   Прогон = ПЕРВЫЙ ЖИВОЙ сетап: греп `[RADAR-ARMED]` по цепочке
+   LIMIT→PENDING→fill→OPEN→TP1/TP2→BE→TSL + сверка radar_orders (TAKEN/SKIPPED). Откат = enabled:false+рестарт.
 2. v1.1 (после прогона): честный weighted-профит по partial_fills (сейчас profit от цены
    последнего куска на весь объём; кирпич close_trade tp1_fix готов).
 3. Форвард: radar_wr.py + сверка порт (TAKEN/SKIPPED) ↔ исходы.
