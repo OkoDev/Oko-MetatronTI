@@ -2,9 +2,11 @@
 """БЫСТРЫЙ OI-радар (60с цикл) — сквиз-алерт за 1-2 минуты, не 10 (Егор 03.07).
 
 Источник: Binance /fapi/v1/openInterest (realtime, weight=1) + тикер цены.
-Дельты в RAM-окне (12 точек = 12 мин). Условия:
+Дельты в RAM-окне (30 точек = 30 мин). Условия:
   🌀 СКВИЗ:  |Δцена 3м| >= 0.6%  И  ΔOI 3м <= -0.15%   (движение закрытиями — GRT-механизм)
   📈 BUILD:  ΔOI 5м >= +0.5%                             (резкая загрузка)
+  ⏳ ПРУЖИНА: ΔOI 15м >= +1% И range цены 15м < 0.7%    (скрытая загрузка ДО движения —
+             MANA-читка 03.07 формулой; funding подсказывает направление выстрела)
   🚀 PUMP:   |Δцена 5м| >= 2.5% → подтверждение klines: объём ×3 + RSI-экстремум
              → алерт с уровнями Entry/SL/TP1-3 (спека docs/PUMP-BOT-FULL-SPEC.md, SHADOW —
              только алерт, НЕ торгуем). Grade по GRT-уроку: памп БЕЗ роста OI = стопы-топливо.
@@ -28,14 +30,19 @@ CORE = ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "LINK", "AVAX", "DOT",
         "1000PEPE", "1000SHIB", "ORDI", "HBAR", "FET", "RENDER", "JUP", "PYTH",
         "STRK", "WIF", "1000BONK"]   # мемы = 1000-префикс на futures; TON делистнут → HBAR
 INTERVAL = 60
-WIN = collections.defaultdict(lambda: collections.deque(maxlen=12))   # sym -> [(ts, oi, price)]
+WIN = collections.defaultdict(lambda: collections.deque(maxlen=30))   # sym -> [(ts, oi, price)]
 _PRICES: dict[str, float] = {}
+_FUND: dict[str, float] = {}   # sym -> lastFundingRate (batch premiumIndex раз в цикл)
 
 # ── PUMP-DETECTOR v0.5 (SFERA-14, спека docs/PUMP-BOT-FULL-SPEC.md) ──
 PUMP_PCT_5M = 2.5      # ценовой кандидат: |Δцена 5м| >= порога → тянем klines на подтверждение
-PUMP_PCT_12M = 4.0     # или медленный памп за всё окно радара
+PUMP_PCT_12M = 4.0     # или медленный памп за 12 мин
 PUMP_VOL_RATIO = 3.0   # спека: объём последних баров ×3 к базе
 PUMP_RSI_HI, PUMP_RSI_LO = 75, 25
+
+# ── ПРУЖИНА (03.07, добро Егора): детект ЗА 30-60 мин ДО пампа, а не на вершине ──
+SPRING_OI_15M = 1.0    # ΔOI 15м >= +1.0% — существенная скрытая загрузка
+SPRING_RANGE_PCT = 0.7  # ВЕСЬ ценовой диапазон 15м < 0.7% — настоящий флэт (не болтанка)
 
 
 def _rsi(closes: list[float], period: int = 14) -> float | None:
@@ -143,12 +150,72 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     return msg, row
 
 
+def check_spring(w, sym: str, px: float, fund: float | None) -> tuple[str, dict] | None:
+    """⏳ ПРУЖИНА: OI грузится 15 мин, цена стоит в узком рейндже = скрытая загрузка ДО движения.
+
+    Направление выстрела — эвристика по funding: платящая сторона = кто грузится
+    (fund<0 → шорты платят → топливо для сквиза ВВЕРХ; заметно >базовой 0.01% → лонги → ВНИЗ).
+    """
+    if len(w) < 16 or not px:
+        return None
+    oi15 = w[-16][1]
+    d_oi15 = (w[-1][1] / oi15 - 1) * 100 if oi15 else 0
+    if d_oi15 < SPRING_OI_15M:
+        return None
+    prices = [p for _, _, p in list(w)[-16:]]
+    rng_pct = (max(prices) - min(prices)) / px * 100
+    if rng_pct >= SPRING_RANGE_PCT:
+        return None
+    if fund is None:
+        dir_side, dir_txt = "?", "funding: нет данных — направление неясно"
+    elif fund < 0:
+        dir_side = "UP"
+        dir_txt = f"🔺 funding {fund * 100:.4f}% → грузятся ШОРТЫ → топливо ВВЕРХ (вероятно)"
+    elif fund >= 0.0002:                       # заметно выше базовой ставки 0.01%
+        dir_side = "DOWN"
+        dir_txt = f"🔻 funding {fund * 100:.4f}% → грузятся ЛОНГИ → топливо ВНИЗ (вероятно)"
+    else:
+        dir_side, dir_txt = "?", f"funding {fund * 100:.4f}% нейтрален — направление неясно"
+    msg = (f"⏳ <b>ПРУЖИНА: {_tv(sym)}</b>\n"
+           f"OI {d_oi15:+.2f}%/15м, цена флэт (range {rng_pct:.2f}%) — скрытая загрузка\n"
+           f"{dir_txt}\n"
+           f"цена {_fmt(px)}\n"
+           f"#{sym} #SPRING")
+    row = {"ts": int(time.time()), "symbol": sym, "d_oi15": round(d_oi15, 3),
+           "range_pct": round(rng_pct, 3), "funding": fund, "dir": dir_side, "px": px}
+    return msg, row
+
+
+def _log_spring(row: dict) -> None:
+    """Лог пружин → spring_signals (оценить «заранее» количественно: пружина → был ли памп?)."""
+    c = conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS spring_signals (
+            ts INTEGER, symbol TEXT, d_oi15 REAL, range_pct REAL, funding REAL,
+            dir TEXT, px REAL, PRIMARY KEY (symbol, ts))""")
+        c.execute("INSERT OR REPLACE INTO spring_signals VALUES "
+                  "(:ts,:symbol,:d_oi15,:range_pct,:funding,:dir,:px)", row)
+        c.commit()
+    finally:
+        c.close()
+
+
 def _refresh_prices():
     """ВСЕ цены одним batch-запросом (weight=2) — вместо 50 отдельных."""
     global _PRICES
     try:
         arr = _get("https://fapi.binance.com/fapi/v1/ticker/price")
         _PRICES = {x["symbol"]: float(x["price"]) for x in arr}
+    except Exception:
+        pass
+
+
+def _refresh_funding():
+    """ВСЕ funding-ставки одним batch premiumIndex (weight=10, раз в 60с цикл — дёшево)."""
+    global _FUND
+    try:
+        arr = _get("https://fapi.binance.com/fapi/v1/premiumIndex")
+        _FUND = {x["symbol"]: float(x["lastFundingRate"]) for x in arr if "lastFundingRate" in x}
     except Exception:
         pass
 
@@ -175,6 +242,7 @@ def _cooldown_ok(key: str, sec: int = 1800) -> bool:
 def tick():
     alerts = []
     _refresh_prices()
+    _refresh_funding()
     for sym in CORE:
         try:
             oi = float(_get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={sym}USDT")["openInterest"])
@@ -202,9 +270,16 @@ def tick():
                 send_tg(f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м — грузятся. цена {px}\n"
                         f"#{sym} #OI_BUILD")
                 alerts.append(f"build {sym}")
+            # ⏳ ПРУЖИНА: скрытая загрузка ДО движения (окно 16 точек = 15 мин)
+            res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"))
+            if res_sp and _cooldown_ok(f"spring:{sym}", 3600):
+                sp_msg, sp_row = res_sp
+                if send_tg(sp_msg):
+                    _log_spring(sp_row)
+                    alerts.append(f"SPRING {sym}")
             # 🚀 PUMP-кандидат по цене → подтверждение объёмом/RSI (klines только для кандидатов)
             d_px5 = (px / px5 - 1) * 100 if px5 else 0
-            d_px12 = (px / w[0][2] - 1) * 100 if (len(w) == 12 and w[0][2]) else 0
+            d_px12 = (px / w[-12][2] - 1) * 100 if (len(w) >= 12 and w[-12][2]) else 0
             d_px = d_px5 if abs(d_px5) >= PUMP_PCT_5M else (d_px12 if abs(d_px12) >= PUMP_PCT_12M else 0)
             if d_px:
                 res = analyze_pump(sym, px, d_px, d_oi5)
@@ -227,7 +302,8 @@ if __name__ == "__main__":
         print(res[0] if res else "[PUMP-TEST] условия НЕ выполнены (объём/RSI/range) — алерта не было бы")
         sys.exit(0)
     print(f"[OI-FAST] радар: {len(CORE)} монет, цикл {INTERVAL}с, "
-          f"сквиз=|Δp3м|≥0.6%+ΔOI≤−0.15% · PUMP=|Δp5м|≥{PUMP_PCT_5M}%+vol×{PUMP_VOL_RATIO}+RSI")
+          f"сквиз=|Δp3м|≥0.6%+ΔOI≤−0.15% · PUMP=|Δp5м|≥{PUMP_PCT_5M}%+vol×{PUMP_VOL_RATIO}+RSI · "
+          f"ПРУЖИНА=ΔOI15м≥{SPRING_OI_15M}%+range<{SPRING_RANGE_PCT}%+funding-направление")
     while True:
         try:
             a = tick()
