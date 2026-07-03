@@ -132,7 +132,7 @@ trading:
   # RADAR-ARMED-VST (03.07, docs/RADAR_ARMED_PLAN.md): бот исполняет сетапы радара
   # (oko_feed/external_data.db → radar_orders) через trade_router + source_policy 'radar'.
   radar_armed:
-    enabled: false             # 🔴 default OFF: включать после теста на копии БД + ручного VST-прогона
+    enabled: true              # ✅ ВКЛЮЧЁН 03.07 ~19:45 (Егор: «дампы возможны, лови» + рестарт). Первый живой сетап = прогон под грепом [RADAR-ARMED]. Откат = false + рестарт
     poll_sec: 15               # период чтения radar_orders из external_data.db
     entry_ttl_min: 45          # TTL сетапа и лимитки входа: не зафиллилась — отменить
     max_positions: 5           # лимит одновременных radar-позиций (Егор 03.07)
