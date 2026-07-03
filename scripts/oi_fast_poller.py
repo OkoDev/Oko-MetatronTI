@@ -87,9 +87,72 @@ def _sl_structure(sym: str, side: str) -> float | None:
         return None
 
 
+def _recent_signals(sym: str, hours: float = 6.0) -> list[dict]:
+    """⛓ ЦЕПОЧКИ (04.07, Егор «радар должен знать, что был сигнал ДО»): последние сигналы
+    символа из копилок БД. Детекторы stateless — память подключаем ЧТЕНИЕМ уже пишущихся
+    логов. Читается лениво (только при сформированном алерте). Свежие первыми."""
+    since = int(time.time()) - int(hours * 3600)
+    out = []
+    c = conn()
+    try:
+        for tbl, typ, side_col in (("build_signals", "BUILD", "side"),
+                                   ("spring_signals", "ПРУЖИНА", "dir"),
+                                   ("pump_signals", "PUMP", "side")):
+            try:
+                for ts, sd in c.execute(
+                        f"SELECT ts, {side_col} FROM {tbl} WHERE symbol=? AND ts>?",
+                        (sym, since)).fetchall():
+                    out.append({"ts": ts, "type": typ, "side": sd})
+            except Exception:
+                pass                                     # таблицы может ещё не быть
+    finally:
+        c.close()
+    out.sort(key=lambda x: -x["ts"])
+    return out[:5]
+
+
+def _fmt_chain(chain: list[dict]) -> str:
+    """Строка «⛓ до этого: …» для алерта. Пусто если истории нет."""
+    if not chain:
+        return ""
+    now = time.time()
+    parts = []
+    for s in chain:
+        age_m = (now - s["ts"]) / 60
+        age = f"{age_m:.0f}м" if age_m < 100 else f"{age_m / 60:.1f}ч"
+        sd = {"UP": "↑", "DOWN": "↓", "LONG": "↑", "SHORT": "↓"}.get(str(s["side"] or "?"), "?")
+        parts.append(f"{s['type']}{sd} {age} назад")
+    return "⛓ до этого: " + " · ".join(parts)
+
+
+def _with_chain(msg: str, chain: list[dict]) -> str:
+    """Вставить блок цепочки перед подвалом ссылок (тот же маркер, что _with_targets)."""
+    block = _fmt_chain(chain)
+    if not block:
+        return msg
+    marker = "\n\n- <a href"
+    i = msg.find(marker)
+    if i != -1:
+        return f"{msg[:i]}\n\n{block}{msg[i:]}"
+    return f"{msg}\n{block}"
+
+
+def _chain_same_dir(chain: list[dict], pump_up: bool, hours: float = 3.0) -> dict | None:
+    """Цикл «загрузка→выстрел»: ПРУЖИНА/BUILD за N часов В СТОРОНУ пампа.
+    GRT-урок 04.07 02:08→02:30: пружина за 22м до пампа = загрузка началась ЗАРАНЕЕ,
+    5м-окно ΔOI её не видит → разворот шортить РАНО (грейд разворота честно ↓C)."""
+    want = ("UP", "LONG") if pump_up else ("DOWN", "SHORT")
+    since = time.time() - hours * 3600
+    for s in chain:
+        if s["ts"] >= since and s["type"] in ("ПРУЖИНА", "BUILD") and str(s["side"]) in want:
+            return s
+    return None
+
+
 def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
                      sl: float | None, targets_json: str | None,
-                     grade: str | None = None, tps: tuple | None = None) -> None:
+                     grade: str | None = None, tps: tuple | None = None,
+                     chain: list[dict] | None = None) -> None:
     """Порт ARMED-фазы (docs/RADAR_ARMED_PLAN.md): полный сетап → radar_orders.
 
     Радар о боте НЕ знает: пишет status='NEW' и забывает. Бот (radar_armed_loop)
@@ -123,11 +186,16 @@ def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
                 grade TEXT, starred INTEGER, targets_json TEXT,
                 status TEXT DEFAULT 'NEW', taken_ts INTEGER, note TEXT,
                 PRIMARY KEY (symbol, ts))""")
+            try:                                          # ⛓ миграция ранних строк
+                c.execute("ALTER TABLE radar_orders ADD COLUMN chain TEXT")
+            except Exception:
+                pass
             c.execute("INSERT OR REPLACE INTO radar_orders "
                       "(ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, "
-                      "grade, starred, targets_json, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW')",
+                      "grade, starred, targets_json, status, chain) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW',?)",
                       (int(time.time()), sym, sig_type, side, entry, sl, tp1, tp2, tp3,
-                       grade, starred, targets_json))
+                       grade, starred, targets_json,
+                       json.dumps(chain, ensure_ascii=False) if chain else None))
             c.commit()
         finally:
             c.close()
@@ -175,7 +243,7 @@ def _with_targets(msg: str, row: dict, sym: str, side: str, px: float) -> tuple[
 
 
 def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
-                 debug: bool = False) -> tuple[str, dict] | None:
+                 debug: bool = False, chain: list[dict] | None = None) -> tuple[str, dict] | None:
     """Подтверждение ценового кандидата по 5m-свечам → (текст алерта, строка лога) или None.
 
     Спека: volume_ratio>3 + RSI-экстремум; уровни = откат 50/75/100% к цене ДО пампа,
@@ -223,6 +291,17 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     grade = "A" if (oi_fuel and vol_ratio >= 5) else ("B" if oi_fuel else "C")
     oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка → возврат вероятен' if oi_fuel else 'НАСТОЯЩАЯ загрузка → не спешить, ждать выдоха!'}"
               if d_oi5 is not None else "OI: нет данных")
+    # ⛓ цикл «загрузка→выстрел» (04.07, GRT 02:08→02:30): пружина/BUILD в сторону пампа
+    # за 3ч = набор начался ЗАРАНЕЕ (5м-окно ΔOI слепо к нему) → разворот преждевременен →
+    # грейд разворотного сетапа честно ↓C (бот армит только A/B → против цикла не войдёт).
+    cyc = _chain_same_dir(chain or [], up)
+    if cyc is not None:
+        _cyc_age = (time.time() - cyc["ts"]) / 60
+        oi_txt += (f"\n⛓ цикл {cyc['type']}→ВЫСТРЕЛ ({_cyc_age:.0f}м) — загрузка началась "
+                   f"раньше, разворот НЕ спешить")
+        if grade != "C":
+            oi_txt += f" (Grade {grade}→C)"
+            grade = "C"
     grade_txt = {"A": "A (вход надёжнее)", "B": "B", "C": "C (⚠️ против свежего потока)"}[grade]
     dot = "🔴" if up else "🟢"                            # сетап-разворот: памп → SHORT
     msg = (f"🚀 <b>PUMP:</b>\n\n"
@@ -492,12 +571,13 @@ def tick():
             d_oi5 = (oi / oi5 - 1) * 100 if oi5 else 0
             if d_oi5 >= 0.5 and _cooldown_ok(f"fast_build:{sym}"):
                 b_msg, b_row = analyze_build(sym, px, d_oi5, _FUND.get(f"{sym}USDT"))
-                if send_tg(b_msg):
+                b_chain = _recent_signals(sym)           # ⛓ лениво: только при алерте
+                if send_tg(_with_chain(b_msg, b_chain)):
                     if b_row:
                         _log_build(b_row)
                         # ARMED-порт: BUILD-с-сетапом → radar_orders (цели из карты 2.0)
                         _log_radar_order("build", sym, b_row["side"], px,
-                                         b_row["sl"], b_row["targets_json"])
+                                         b_row["sl"], b_row["targets_json"], chain=b_chain)
                     alerts.append(f"build {sym}")
             # ⏳ ПРУЖИНА: скрытая загрузка ДО движения (окно 16 точек = 15 мин)
             res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"))
@@ -509,28 +589,31 @@ def tick():
                     sp_msg, sp_row = _with_targets(sp_msg, sp_row, sym, sp_side, px)
                 else:
                     sp_row["targets_json"] = None
-                if send_tg(sp_msg):
+                sp_chain = _recent_signals(sym)          # ⛓ лениво: только при алерте
+                if send_tg(_with_chain(sp_msg, sp_chain)):
                     _log_spring(sp_row)
                     if sp_side:
                         # ARMED-порт: ПРУЖИНА с направлением → сетап (SL за структуру, цели 2.0)
                         _log_radar_order("spring", sym, sp_side, px,
-                                         _sl_structure(sym, sp_side), sp_row["targets_json"])
+                                         _sl_structure(sym, sp_side), sp_row["targets_json"],
+                                         chain=sp_chain)
                     alerts.append(f"SPRING {sym}")
             # 🚀 PUMP-кандидат по цене → подтверждение объёмом/RSI (klines только для кандидатов)
             d_px5 = (px / px5 - 1) * 100 if px5 else 0
             d_px12 = (px / w[-12][2] - 1) * 100 if (len(w) >= 12 and w[-12][2]) else 0
             d_px = d_px5 if abs(d_px5) >= PUMP_PCT_5M else (d_px12 if abs(d_px12) >= PUMP_PCT_12M else 0)
             if d_px:
-                res = analyze_pump(sym, px, d_px, d_oi5)
+                p_chain = _recent_signals(sym)           # ⛓ до analyze: grade-коррекция цикла
+                res = analyze_pump(sym, px, d_px, d_oi5, chain=p_chain)
                 if res and _cooldown_ok(f"pump:{sym}", 3600):
                     msg, row = res
                     msg, row = _with_targets(msg, row, sym, row["side"], px)
-                    if send_tg(msg):
+                    if send_tg(_with_chain(msg, p_chain)):
                         _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
                         # ARMED-порт: PUMP-разворот → radar_orders (tp1-3 по откатам, grade)
                         _log_radar_order("pump", sym, row["side"], px, row["sl"],
                                          row.get("targets_json"), grade=row["grade"],
-                                         tps=(row["tp1"], row["tp2"], row["tp3"]))
+                                         tps=(row["tp1"], row["tp2"], row["tp3"]), chain=p_chain)
                         alerts.append(f"PUMP {sym}")
         # live-контекст → radar_state (мост в Куб)
         d5 = (oi / w[-6][1] - 1) * 100 if (len(w) >= 6 and w[-6][1]) else None
@@ -547,7 +630,8 @@ if __name__ == "__main__":
         k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=2")
         px = float(k[-1][4])
         d_px = (px / float(k[0][1]) - 1) * 100
-        res = analyze_pump(sym, px, d_px if d_px else 0.01, None, debug=True)
+        res = analyze_pump(sym, px, d_px if d_px else 0.01, None, debug=True,
+                           chain=_recent_signals(sym))
         if res:
             msg, row = _with_targets(res[0], res[1], sym, res[1]["side"], px)
             print(msg)
