@@ -72,7 +72,7 @@
 
 | [HANDBOOK-UI](#handbook-ui) | 🔵 | **BACKLOG: 5 handbook элементов в TG-сообщение** Grade A/B/C + Confidence% + TP1/TP2/TP3 разбиение + Shape паттерн (Wick/Exhaustion) + History пары (Pumps%, Reversed%, AvgDrop). Файлы: intelligence_formatter.py + candlestick_patterns.py + pair_history.py. Детали → DISCUSSION 26.06 01:15 | DEV |
 
-| [PUMP-DETECTOR](#pump-detector) | 🔄 | **SFERA-14 PUMP-BOT: Volume Anomaly Reversal Detector** — памп (+6% vol) → разворот к цене ДО пампа. Entry/SL/TP по уровням (swing points). Real-time WS. SHADOW→ARMED. Цель WR≥55%. Полная спека: docs/PUMP-BOT-FULL-SPEC.md. Контракт: DISCUSSION 27.06 11:50. | DEV/TRADER |
+| [PUMP-DETECTOR](#pump-detector) | 🔄 | **SFERA-14 PUMP-BOT: Volume Anomaly Reversal Detector** — памп (+6% vol) → разворот к цене ДО пампа. Entry/SL/TP по уровням (swing points). Real-time WS. SHADOW→ARMED. Цель WR≥55%. Полная спека: docs/PUMP-BOT-FULL-SPEC.md. Контракт: DISCUSSION 27.06 11:50. **v0.5 ЖИВОЙ (03.07):** `scripts/oi_fast_poller.py` (pm2 oi-fast) — 50 монет/60с, кандидат \|Δp5м\|≥2.5% → klines-подтверждение vol×3+RSI 75/25 → TG-алерт с Entry/SL/TP1-3 + Grade по OI (GRT-урок: OI-флэт=стопы=возврат вероятен). SHADOW: только алерт. Осталось до спеки: trend-фильтр 1D/BTC, Confidence%, WR-статистика алертов → ARMED-решение. Фикс: мемы 1000PEPE/1000SHIB/1000BONK, TON делистнут→HBAR. | DEV/TRADER |
 
 | **DASH-COHESION** | ✅ | **Приоритет №1 (юзер 20.06): шапка↔таблица Trades = один источник.** get_summary status-aware + «showing X of N». ДЕПЛОЙ+ПРОВЕРКА: build+рестарт бота+pm2 oko-dash. Сквозь прокси SL/VST=8154 (было 14135). Orphan-аудит чист (4 поз, все с SL). → DISCUSSION 20.06 12:39 | Даат |
 
