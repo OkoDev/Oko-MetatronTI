@@ -77,6 +77,64 @@ def _links(sym: str) -> str:
             f'- <a href="https://bingx.com/ru/perpetual/{sym}-USDT">BINGX</a>')
 
 
+def _sl_structure(sym: str, side: str) -> float | None:
+    """SL за структуру последнего часа: экстремум 5m×12 + буфер 0.2% (reuse: BUILD и ПРУЖИНА)."""
+    try:
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=13")
+        return (min(float(x[3]) for x in k) * 0.998 if side == "LONG"
+                else max(float(x[2]) for x in k) * 1.002)
+    except Exception:
+        return None
+
+
+def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
+                     sl: float | None, targets_json: str | None,
+                     grade: str | None = None, tps: tuple | None = None) -> None:
+    """Порт ARMED-фазы (docs/RADAR_ARMED_PLAN.md): полный сетап → radar_orders.
+
+    Радар о боте НЕ знает: пишет status='NEW' и забывает. Бот (radar_armed_loop)
+    подхватывает и меняет status: TAKEN / SKIPPED / STALE. Пишем только ПОЛНЫЕ
+    сетапы: side+entry+sl согласованы и есть хотя бы одна цель в сторону сделки.
+    tps: явные цели (PUMP tp1-3 по откатам); None → из targets_json (карта целей 2.0).
+    """
+    try:
+        if side not in ("LONG", "SHORT") or not entry or not sl:
+            return
+        if (sl < entry) != (side == "LONG"):             # SL не с той стороны — сетап битый
+            return
+        try:
+            t = json.loads(targets_json) if targets_json else []
+        except Exception:
+            t = []
+        starred = 1 if any(c.get("star") for c in t) else 0
+        if tps is None:
+            # лестница TP1→TP3 = от entry в сторону движения (не полагаемся на порядок json)
+            px_list = [c["px"] for c in t if c.get("px") and ((c["px"] > entry) == (side == "LONG"))]
+            px_list.sort(reverse=(side == "SHORT"))
+            tps = tuple((px_list + [None, None, None])[:3])
+        tp1, tp2, tp3 = tps
+        if not tp1 or (tp1 > entry) != (side == "LONG"):  # без цели в сторону сделки не армим
+            return
+        c = conn()
+        try:
+            c.execute("""CREATE TABLE IF NOT EXISTS radar_orders (
+                ts INTEGER, symbol TEXT, sig_type TEXT, side TEXT,
+                entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp3 REAL,
+                grade TEXT, starred INTEGER, targets_json TEXT,
+                status TEXT DEFAULT 'NEW', taken_ts INTEGER, note TEXT,
+                PRIMARY KEY (symbol, ts))""")
+            c.execute("INSERT OR REPLACE INTO radar_orders "
+                      "(ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, "
+                      "grade, starred, targets_json, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW')",
+                      (int(time.time()), sym, sig_type, side, entry, sl, tp1, tp2, tp3,
+                       grade, starred, targets_json))
+            c.commit()
+        finally:
+            c.close()
+    except Exception as e:  # noqa: BLE001 — порт не должен ронять алерты
+        print(f"[OI-FAST] radar_order err {sym}: {e}")
+
+
 def _log_pump(row: dict) -> None:
     """Лог подтверждённого алерта → pump_signals (для WR-статистики SHADOW→ARMED)."""
     c = conn()
@@ -274,13 +332,7 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
             pass
         return (f"{head}\nцена {_c(px)}\n{fund_txt}{bias_txt}\n\n{_links(sym)}\n\n"
                 f"#{sym} #OI_BUILD"), None
-    sl = None
-    try:                                                 # SL за структуру часа
-        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=13")
-        sl = (min(float(x[3]) for x in k) * 0.998 if side == "LONG"
-              else max(float(x[2]) for x in k) * 1.002)
-    except Exception:
-        pass
+    sl = _sl_structure(sym, side)                        # SL за структуру часа
     try:
         targets = build_targets(sym, side, px)
     except Exception:
@@ -443,6 +495,9 @@ def tick():
                 if send_tg(b_msg):
                     if b_row:
                         _log_build(b_row)
+                        # ARMED-порт: BUILD-с-сетапом → radar_orders (цели из карты 2.0)
+                        _log_radar_order("build", sym, b_row["side"], px,
+                                         b_row["sl"], b_row["targets_json"])
                     alerts.append(f"build {sym}")
             # ⏳ ПРУЖИНА: скрытая загрузка ДО движения (окно 16 точек = 15 мин)
             res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"))
@@ -456,6 +511,10 @@ def tick():
                     sp_row["targets_json"] = None
                 if send_tg(sp_msg):
                     _log_spring(sp_row)
+                    if sp_side:
+                        # ARMED-порт: ПРУЖИНА с направлением → сетап (SL за структуру, цели 2.0)
+                        _log_radar_order("spring", sym, sp_side, px,
+                                         _sl_structure(sym, sp_side), sp_row["targets_json"])
                     alerts.append(f"SPRING {sym}")
             # 🚀 PUMP-кандидат по цене → подтверждение объёмом/RSI (klines только для кандидатов)
             d_px5 = (px / px5 - 1) * 100 if px5 else 0
@@ -468,6 +527,10 @@ def tick():
                     msg, row = _with_targets(msg, row, sym, row["side"], px)
                     if send_tg(msg):
                         _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
+                        # ARMED-порт: PUMP-разворот → radar_orders (tp1-3 по откатам, grade)
+                        _log_radar_order("pump", sym, row["side"], px, row["sl"],
+                                         row.get("targets_json"), grade=row["grade"],
+                                         tps=(row["tp1"], row["tp2"], row["tp3"]))
                         alerts.append(f"PUMP {sym}")
         # live-контекст → radar_state (мост в Куб)
         d5 = (oi / w[-6][1] - 1) * 100 if (len(w) >= 6 and w[-6][1]) else None

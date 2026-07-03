@@ -559,6 +559,21 @@ async def sync_positions(bot) -> None:
             if (sym, direction) in open_pairs:
                 continue  # позиция ещё открыта — всё нормально
 
+            # GRACE 120с (03.07 RADAR-ARMED шаг 4): свежая сделка могла ещё не попасть в
+            # positions-снапшот (кэш 15-45с) или вот-вот станет PENDING_ENTRY (LIMIT-вход,
+            # окно между register OPEN и UPDATE лупа). Закрытие в первые 2 мин ловит WS 2b.
+            try:
+                _ca_raw = trade.get("created_at")
+                if _ca_raw:
+                    from datetime import datetime as _dt_g, timezone as _tz_g
+                    _ca = _dt_g.fromisoformat(str(_ca_raw).replace("Z", "+00:00"))
+                    if _ca.tzinfo is None:
+                        _ca = _ca.replace(tzinfo=_tz_g.utc)
+                    if (_dt_g.now(_tz_g.utc) - _ca).total_seconds() < 120:
+                        continue
+            except Exception:
+                pass
+
             # Позиции нет на бирже → закрылась (SL/TP/TSL/вручную)
             # Читаем mark_price из данных позиции (если была) или из тикера
             mark_price: float | None = None
@@ -786,6 +801,16 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
         (t.get("symbol"), (t.get("direction") or "").upper())
         for t in _exch_open
     }
+    # RADAR-ARMED шаг 4 (03.07): PENDING_ENTRY (LIMIT ждёт fill) тоже tracked — иначе
+    # зафиллившийся вход до перевода PENDING→OPEN (чекер ≤15с) закроется как орфан.
+    try:
+        import sqlite3 as _sq_pd
+        with _sq_pd.connect(bot.trade_simulator.db_path, timeout=5) as _c_pd:
+            for _sym_pd, _dir_pd in _c_pd.execute(
+                    "SELECT symbol, direction FROM simulated_trades WHERE status='PENDING_ENTRY'"):
+                tracked_pairs.add((_sym_pd, (_dir_pd or "").upper()))
+    except Exception as _pde:
+        logger.debug("[D-070] pending-entry fetch: %s", _pde)
 
     import time as _t
     state = getattr(bot, "_orphan_alert_last", None)

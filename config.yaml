@@ -129,6 +129,17 @@ sideways_mode:
 trading:
   execution_mode: vst
   live_guard_timeout_min: 7
+  # RADAR-ARMED-VST (03.07, docs/RADAR_ARMED_PLAN.md): бот исполняет сетапы радара
+  # (oko_feed/external_data.db → radar_orders) через trade_router + source_policy 'radar'.
+  radar_armed:
+    enabled: false             # 🔴 default OFF: включать после теста на копии БД + ручного VST-прогона
+    poll_sec: 15               # период чтения radar_orders из external_data.db
+    entry_ttl_min: 45          # TTL сетапа и лимитки входа: не зафиллилась — отменить
+    max_positions: 5           # лимит одновременных radar-позиций (Егор 03.07)
+    tp_shares: [40, 30, 30]    # доли TP1/TP2/TP3 % (Егор 03.07: дефолт 40/30/30 принят)
+    signal_types: [build, pump, spring]  # какие типы армить (Егор 03.07: все три)
+    pump_grades: [A, B]        # PUMP только Grade A/B (C = загрузка, ждать выдоха)
+    be_after_tp1: true         # авто-БУ по WS-fill TP1 (reuse e762449; НЕ глобальный use_breakeven)
   sl_reconcile: live   # SL-RECONCILE (#1): позиции без живого SL-ордера → off/shadow(лог "выставил бы")/live(place). Анти-ликвидация. Активирован live 18.06: shadow доказал риск (REAL/KAT SHORT без SL ~час); place_sl_order account-aware (multiacct), анти-дубликат, throttle 5мин
   orphan_autoclose: live     # D-070 PREVENTION (19.06): orphan (биржа без OPEN в БД) → off(только alert)/shadow(лог "закрыл бы")/live(account-aware close, one_click_on_fail). Корень рассинхрона БД↔биржа [[orphan_root_dbexch_desync]]. Hedge-safe: skip символов с DB-OPEN (one-click задел бы брата). Дефолт shadow → валидировать перед live (как sl_reconcile)
   exec_ws:
@@ -724,6 +735,14 @@ signal_router:
                                # Гейт+MARKET уже даёт вход близко к OTE (gap старых сделок 0.2-0.8%) — то
                                # ради чего был LIMIT, но без pending-lifecycle/orphan-рисков. LIMIT-код
                                # (place_bracket_order/order_manager/source_policy) сохранён для будущего.
+    radar:                     # 03.07 RADAR-ARMED-VST (docs/RADAR_ARMED_PLAN.md): сетапы радара
+      min_strength: 0          # качество фильтрует радар (Grade/★/signal_types) — strength не считается
+      exchange_enabled: true   # VST (добро Егора 03.07)
+      trade_mode: radar        # dedup + изоляция от других стратегий
+      soft_gates_enabled: []
+      leverage: 20             # Егор 03.07
+      risk_pct: 0.5            # Егор 03.07
+      entry_order_type: LIMIT  # вход лимиткой по цене сетапа (pending-lifecycle в radar_armed_loop)
     trigger_loop:
       min_strength: 50
       exchange_enabled: false

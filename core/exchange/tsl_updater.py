@@ -229,6 +229,11 @@ async def repair_missing_tp(bot) -> None:
     for trade in ts.get_open_trades():
         if not trade.get("exchange_order_id"):
             continue  # SIM-only
+        # RADAR-ARMED (03.07): multi-TP сделки НЕ трогаем — repair видит «нет одиночного TP» /
+        # get_tp_order_id считает >1 TP дубликатами и отменяет частичные TP1/TP2 (каннибализация).
+        # Финальная цель у radar-сделки уже attached к LIMIT-ордеру (полный объём).
+        if '"trade_mode": "radar"' in (trade.get("features_json") or ""):
+            continue
 
         trade_id = trade["id"]
         symbol = trade.get("symbol", "")

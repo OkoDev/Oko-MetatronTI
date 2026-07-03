@@ -9,6 +9,21 @@
 
 ---
 
+## [03.07 ~19:30 UTC] Агент: Даат — RADAR-ARMED-VST ПОСТРОЕН (шаги 1-6, флаг OFF)
+
+- ✅ **Весь эпик закодирован за сессию** (план+ответы Егора «+»): порт `radar_orders` (oi_fast_poller пишет полные сетапы BUILD/PUMP/SPRING со starred/grade/лестницей TP) → `bot/loops/radar_armed_loop.py` (poll 15с → фильтры → trade_router source='radar' LIMIT 0.5%/20x → PENDING_ENTRY → чекер fill→OPEN/TTL→CANCELLED → multi-TP 40/30/30 → авто-БУ по fill TP1 → TSL на остатке).
+- 🔑 **Ключевые решения:** SL+финальный TP attached к самому LIMIT-ордеру (batchOrders не нужен, позиция защищена с fill); детекты fill/TP1 = REST-поллинг лупа (exec_ws не тронут); take_profit БД=финальная цель (live-guard не стреляет рано); om.place_tp_order/get_tp_order_id НЕ для multi-TP (анти-дубль каннибализирует) → client напрямую + repair_missing_tp загейчен.
+- 🛡️ **Гейты ядра (минимальные):** _detect_orphans видит PENDING_ENTRY · close-by-price grace 120с · open_bracket LIMIT не пишет сигнальную цену в actual · tsl_updater skip radar.
+- ✅ **Тесты:** smoke_radar_port + smoke_radar_lifecycle (scratchpad) — ALL GREEN ×2. py_compile всех правленых файлов OK.
+- ⏭️ **Осталось (шаг 8б):** ручной VST-прогон на дешёвой монете (INSERT тест-строки в radar_orders → LIMIT→fill→TP1→BE→трейл, греп [RADAR-ARMED]) → `radar_armed.enabled: true` + рестарт бота (Егор). Радар oi-fast перезапущен с портом.
+
+## [03.07 ~17:30 UTC] Агент: Даат — RADAR-ARMED-VST шаг 1: разведка PARTIAL-семантики ВЫПОЛНЕНА
+
+- ✅ **Шаг 1 плана (разведка PARTIAL ДО кода) закрыт** → выводы в docs/RADAR_ARMED_PLAN.md (раздел «Результаты разведки»). Главное: v1-схема жизнеспособна — ВСЕ авторитетные close-пути (exec_ws 2b, Sphere, close-by-price) триггерятся только на pa=0/флэт, частичный fill закрытие не вызывает.
+- 🔴 **4 обязательных гейта до multi-TP:** (1) LIVE-GUARD+emergency закроет весь остаток при симуляторном TP-детекте (tp2 = exit_status) через 7 мин; (2) repair_missing_tp пере-поставит одиночный TP на весь остаток; (3) orphan_autoclose:live убьёт зафилленный LIMIT при PENDING-строке (tracked_pairs только OPEN, grace нет); (4) BE/TSL cancel+replace qty из БД = полный, не остаток.
+- 💡 Готовые кирпичи: close_trade уже умеет weighted-TP1 (tp1_fix_pct); _resolve_exit positionID-якорь берёт последний fill (статус финального куска); LIMIT-код сохранён с 25.06.
+- 🔄 Далее: 5 вопросов Егору (доли TP, сигналы v1, risk/leverage, лимит позиций, авто-БУ) → шаги 2-3 (source_policy radar + порт radar_orders).
+
 ## [03.07 ~14:30 UTC] Агент: Даат — ФИНАЛ сессии: радар=продукт №2 полной сборки + ARMED-план утверждён
 
 - 🏆 **День-доказательство MANA:** лонг +58% (утро) + шорт **+102.49%** (закрыт тик-в-тик на нашей W-R1 0.0722) = +160%/день, оба по конвейеру радара. Сценарий дня (сквиз на магнит $184k=0.0712) перевыполнен — хай 0.0791.

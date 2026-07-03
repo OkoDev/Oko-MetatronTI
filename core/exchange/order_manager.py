@@ -589,6 +589,12 @@ class OrderManager:
                     logger.debug("[OrderManager] fill-retry %s: %s", symbol, _fe)
             if _avg > 0:
                 filled_price = _avg
+            elif _otype == "LIMIT":
+                # LIMIT ещё НЕ зафиллен — это норма (pending). actual_entry узнаем по факту fill
+                # (pending-чекер radar_armed_loop / WS). 0 → вызывающий НЕ пишет actual_entry_price.
+                filled_price = 0.0
+                logger.info("[OrderManager] %s: LIMIT поставлен (orderId=%s), fill ожидается — actual_entry позже",
+                            symbol, order_id)
             else:
                 filled_price = entry_price
                 logger.warning("[OrderManager] %s: avgPrice НЕ дотянут (orderId=%s) → fallback на сигнал %.6g (actual=сигнал!)",

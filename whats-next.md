@@ -1,6 +1,51 @@
 # What's Next — Handoff
 
-## 🚀 СЕССИЯ 03.07 (день) = РАДАР → ПРОДУКТ №2: пружина+цели+сетапы+каскады+мост в Куб — АКТУАЛЬНЫЙ HANDOFF
+## 🎯 СЕССИЯ 03.07 (вечер) = RADAR-ARMED-VST ПОСТРОЕН (шаги 1-6, флаг OFF) — АКТУАЛЬНЫЙ HANDOFF
+
+> Русский · TTS Irina · ветка `arch-128-oko-sm`. План+статус: [docs/RADAR_ARMED_PLAN.md](docs/RADAR_ARMED_PLAN.md)
+> (разделы «Результаты разведки PARTIAL» + «СТАТУС РЕАЛИЗАЦИИ»). Детали: `memory/current_state.md` (19:30).
+
+**<original_task>** Пункт 0 прошлого handoff: RADAR-ARMED-VST по утверждённому плану. Шаг 1 =
+разведка PARTIAL-семантики ДО кода; 5 вопросов Егору. Егор ответил в сессии: армить ВСЕ ТРИ типа
+(BUILD/PUMP A-B/ПРУЖИНА), risk 0.5%/20x, лимит 5 позиций, БУ после TP1 + НАШ TSL, доли 40/30/30.
+
+**<work_completed>:**
+- **Разведка PARTIAL ✅** (все close-пути только pa=0 → v1-схема жива) + 4 опасных узла: live-guard
+  emergency (симуляторный tp2-детект), repair_missing_tp (пере-постановка на весь остаток),
+  orphan_autoclose×PENDING (закрыл бы зафилленный LIMIT), BE/TSL qty из БД (сам ретраится биржей).
+- **Порт** `radar_orders` в external_data.db: oi_fast_poller пишет ПОЛНЫЕ сетапы (side/entry/sl/
+  tp1-3-лестница/grade/starred) при BUILD-с-сетапом, PUMP, ПРУЖИНА-с-направлением. NEW→TAKEN/SKIPPED/STALE.
+- **`bot/loops/radar_armed_loop.py`** (регистрация в bot/core/bot.py, gated `trading.radar_armed.enabled`):
+  poll 15с → фильтры (типы/grade A-B/лимит 5/symbol-busy/TTL 45мин/цена-протухла) →
+  trade_router.submit(source='radar') → LIMIT (SL+финальный TP attached!) → PENDING_ENTRY →
+  чекер: fill→OPEN+actual+захваты+частичные TP1(40%)/TP2(30%) → BE по fill TP1 (STOP-LIMIT 0.15%)
+  → остаток 30% = attached TP3 или штатный TSL.
+- **Гейты ядра:** _detect_orphans+PENDING · close-by-price grace 120с · open_bracket LIMIT actual=0
+  до fill · tsl_updater repair_missing_tp skip radar.
+- **Конфиг:** `trading.radar_armed` (OFF) + `signal_router.source_policies.radar` (LIMIT/0.5%/20x).
+- **Тесты:** 2 smoke на тест-БД ALL GREEN (порт: валидные/битые сетапы, лестница TP; лайфцикл:
+  PENDING/fill/TTL/BE-выборка/grace на боевом формате created_at).
+
+**<work_remaining>:**
+1. **Шаг 8б = ручной VST-прогон** (нужен Егор для рестарта): `radar_armed.enabled: true` + рестарт
+   бота → INSERT тест-строки в radar_orders (дешёвая монета) → греп `[RADAR-ARMED]`:
+   LIMIT→PENDING→fill→OPEN→TP1/TP2 поставлены→BE после TP1→TSL. Откат = enabled:false.
+2. v1.1 (после прогона): честный weighted-профит по partial_fills (сейчас profit от цены
+   последнего куска на весь объём; кирпич close_trade tp1_fix готов).
+3. Форвард: radar_wr.py + сверка порт (TAKEN/SKIPPED) ↔ исходы.
+4. Фоново из прошлого handoff: DS-MINING-FEATURES (DS), OTE-CASCADE копить до n=100, atr_s2 ждёт risk-off.
+
+**<critical_context>:**
+- 🔴 `radar_armed.enabled: false` — НЕ включать без ручного прогона. Рестарт бота = ТОЛЬКО Егор.
+- pm2 oi-fast перезапущен с портом (сетапы уже копятся в radar_orders для статистики SKIPPED/статусов).
+- Multi-TP через client.place_tp_order НАПРЯМУЮ — om-обёртки (place_tp_order/get_tp_order_id)
+  отменяют «дубли» TP; fetch_and_save_tp_order_id для radar НЕ спавнить.
+- Известный хвост: другая стратегия на same-symbol+side может каннибализировать radar-TP
+  через свой repair_missing_tp (редко, наблюдать).
+
+---
+
+## 🚀 СЕССИЯ 03.07 (день) = РАДАР → ПРОДУКТ №2: пружина+цели+сетапы+каскады+мост в Куб
 
 > Русский · TTS Irina · ветка `arch-128-oko-sm`. Детали: `memory/current_state.md` (записи 03.07 10:30+) + auto-memory [[liq-magnets-pump-radar-tools]] (раздел ПРОДУКТ №2).
 

@@ -10,6 +10,32 @@
 
 ---
 
+### [03.07.2026 ~19:30 UTC] Даат → команда ✅ — RADAR-ARMED-VST построен (шаги 1-6), флаг OFF до прогона
+
+Эпик закодирован за одну сессию по утверждённому плану (+ ответы Егора: все 3 типа сигналов,
+0.5%/20x, лимит 5, БУ после TP1 + наш TSL, доли 40/30/30). Кратко:
+
+- **Разведка PARTIAL (шаг 1):** все авторитетные close-пути (exec_ws 2b / Sphere / close-by-price)
+  триггерятся ТОЛЬКО на pa=0 — частичный reduce-only fill закрытия не вызывает. Найдены и
+  загейчены 4 опасных узла: live-guard emergency (детект tp2), repair_missing_tp
+  (пере-постановка + каннибализация >1 TP в om.get_tp_order_id), orphan_autoclose×PENDING,
+  BE/TSL qty (само-ретраится биржей). Полный разбор: docs/RADAR_ARMED_PLAN.md.
+- **Порт `radar_orders`** (external_data.db): oi_fast_poller пишет полные сетапы
+  (BUILD/PUMP/SPRING, лестница TP от entry, grade/starred), NEW→TAKEN/SKIPPED/STALE.
+- **`bot/loops/radar_armed_loop.py`**: LIMIT-вход (SL+финальный TP attached к ордеру!),
+  PENDING_ENTRY-лайфцикл (fill→OPEN / TTL 45мин→CANCELLED), частичные TP1 40%/TP2 30%,
+  авто-БУ по fill TP1 (STOP-LIMIT 0.15%), остаток — штатный TSL. exec_ws НЕ тронут.
+- **Тесты:** 2 smoke на тест-БД ALL GREEN. НОВЫЕ статусы в simulated_trades:
+  `PENDING_ENTRY` (лимитка ждёт fill; невидима для get_open_trades) и `CANCELLED`
+  (TTL-отмена входа; НЕ exit) — учитывать в SQL-аналитике.
+
+**Дальше:** ручной VST-прогон (нужен рестарт бота — Егор) → включение `radar_armed.enabled`.
+DS: при mining-выборках новые статусы фильтровать (они не сделки).
+
+— Даат, 03.07.2026
+
+---
+
 ### [03.07.2026] Claude(Даат) → DS 🔴 — ЗАДАЧА DS-MINING-FEATURES: mining ЖИВЫХ сделок
 
 **Почему это лучшая DS-задача сейчас:** после зачистки 03.07 (gravity ×2, WT-механики, pivot-bias —

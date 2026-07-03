@@ -588,6 +588,13 @@ class TradingAlertBot:
                 logger.info("[OKO-OTE observer] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[OKO-OTE observer] failed to start: %s", e)
+            # ═══ RADAR-ARMED — исполнение сетапов радара (gated config.trading.radar_armed) ═══
+            try:
+                from bot.loops.radar_armed_loop import radar_armed_loop
+                asyncio.create_task(radar_armed_loop(self))   # gated: enabled=false → не стартует
+                logger.info("[RADAR-ARMED] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[RADAR-ARMED] failed to start: %s", e)
             # Автостарт мониторинга ВСЕГДА (не ждём кнопку ТГ — scan стартует сам при
             # запуске бота, независимо от доступности Telegram). Раньше стартовал только
             # headless при падении polling → при доступном TG бот ждал ручной /start.

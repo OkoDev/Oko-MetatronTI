@@ -48,13 +48,105 @@
    (LIMIT→fill→3TP→частичный→BE→трейл) с грепом логов ДО включения авто; (в) флаг
    `radar_armed.enabled`, старт с 1-2 сигналов/день.
 
-## Открытые вопросы Егору (спросить в начале сессии)
+## 🔬 Результаты разведки PARTIAL (шаг 1 ВЫПОЛНЕН, 03.07)
 
-1. Доли TP1/TP2/TP3 — 40/30/30? (дефолт скилла dynamic-sl-tp)
-2. Какие сигналы армить в v1: только BUILD-с-сетапом? + PUMP Grade A/B? ПРУЖИНА?
-3. risk % и плечо для radar-политики (0.5% / 20x?)
-4. Лимит одновременных radar-позиций (3-5?)
-5. Авто-БУ после TP1 или после TP2? Нативный трейл vs наш TSL-движок на остатке?
+**Вывод: v1-схема (позиция OPEN до pa=0, частичные фиксации → partial_fills, финальный exit
+средневзвешенный) ЖИЗНЕСПОСОБНА.** Все авторитетные close-пути триггерятся только на pa=0/флэт —
+частичный reduce-only fill сам по себе закрытие НЕ вызывает. Но найдены 4 узла, которые убьют
+или испортят multi-TP позицию — гейтить ДО включения:
+
+✅ **Безопасные узлы** (проверено чтением кода):
+- exec_ws 2b `sync_close` (авторитет, в конфиге on): триггер строго `pa=0`
+  (`exec_ws_integration.py:342` — `if pa_val != 0.0: continue`).
+- ExecutionSphere/PositionStore (shadow): flat-триггер только `p.is_flat`
+  (`position_store.py:81`); pa>0 → upsert.
+- position_sync close-by-price: закрывает БД только если (sym,dir) НЕТ на бирже
+  (`position_sync.py:559`); частичная позиция жива → не тронет.
+- SL-RECONCILE live: ставит SL по qty С БИРЖИ (`abs(pp.qty)`) — остаток корректен.
+
+🔴 **4 обязательных фикса ДО multi-TP:**
+1. **LIVE-GUARD → emergency close всего остатка.** Симулятор детектит exit по свечам; для
+   DUAL_TP `exit_status` ставится уже на tp2 (`trade_simulator.py:2918-2930`) → live-guard
+   трекает (`trade_simulator.py:3050`) → через 7 мин `_emergency_close_check` закроет ВЕСЬ
+   остаток market (`position_sync.py:239-241,297`). Для radar-сделок: симуляторный TP-детект
+   отключить или детектить только ФИНАЛЬНУЮ цель (SL-детект оставить). Плюс: emergency qty
+   берёт `trade.qty` из БД = полный, не остаток (`position_sync.py:271`).
+2. **repair_missing_tp** (`tsl_updater.py:216`, каждые 60с): если на бирже нет живого
+   TAKE_PROFIT-ордера (все TP исполнены, остаток на трейле), а БД take_profit>0 → поставит
+   НОВЫЙ одиночный TP на ВЕСЬ остаток. Для radar: take_profit в БД = NULL/0 (цели живут в
+   partial-плане) или гейт по trade_mode.
+3. **orphan_autoclose: live × PENDING-lifecycle** (`position_sync.py:785-788`): tracked_pairs
+   строится ТОЛЬКО из OPEN-строк, grace-периода нет → LIMIT зафиллился, строка ещё
+   PENDING_ENTRY → в ближайший цикл (≤60с) позицию закроют как орфан. Зеркально: OPEN-строку
+   ДО fill нельзя — close-by-price закроет её как «позиция исчезла». Итог: статус
+   PENDING_ENTRY обязателен + расширить orphan-выборку на PENDING + перевод PENDING→OPEN по
+   WS-fill (ORDER_TRADE_UPDATE).
+4. **BE/TSL cancel+replace qty из БД** (`trade_simulator.py:2847`): после частичных TP SL
+   перевыставляется на ПОЛНЫЙ qty. Closing-ордер биржа скорее всего clip'ает, но чисто —
+   qty = get_position_qty (остаток) в момент replace.
+
+**Прочие находки:**
+- `_close_fills` (2b) и `_exit`-stash (Store) перезаписываются каждым закрывающим fill →
+  при финальном pa=0 exit_price/realized = ПОСЛЕДНЕГО куска (`exec_ws_integration.py:265-275`,
+  `position_store.py:110-116`). Честный результат = свой накопитель partial_fills на каждый
+  закрывающий fill → weighted exit при close_trade.
+- `close_trade` УЖЕ умеет weighted по частичному TP1: `tp1_hit_at`+`tp1_price` →
+  R = fix×r_tp1 + (1−fix)×r_exit (`trade_simulator.py:1683-1702`, config
+  `dual_tp.tp1_fix_pct`, сейчас 10). Паттерн расширяем на 3 TP.
+- `_resolve_exit` positionID-якорь берёт последний close-fill по updateTime → финальный
+  статус = тип последнего куска (TP3→TP; трейл/двинутый SL→TSL-коррекция). Для v1 ок.
+- 2a `write_exch_id: false` (shadow) — actual_entry_price для LIMIT будет NULL до fill →
+  захват entry на WS-fill обязателен (иначе fake-R класс).
+- batchOrders в боте НЕ существует (grep пуст) — строить с нуля (bingx_client).
+- `entry_order_type: LIMIT` откачен 25.06 именно из-за отсутствия pending-lifecycle
+  (`config.yaml:722`) — LIMIT-код сохранён, переиспользуем.
+
+## ✅ Ответы Егора (03.07, вопросы закрыты)
+
+1. Доли TP1/TP2/TP3 = **40/30/30** (дефолт принят).
+2. Армить в v1: **ВСЕ ТРИ** — BUILD-с-сетапом + PUMP Grade A/B + ПРУЖИНА.
+3. Radar-политика: **risk 0.5% / плечо 20x**.
+4. Лимит одновременных radar-позиций: **5**.
+5. **Авто-БУ после fill TP1 + НАШ TSL-движок на остатке** (нативный TRAILING_STOP_MARKET — не в v1).
+
+## 🏗️ СТАТУС РЕАЛИЗАЦИИ (03.07, вечерняя сессия — шаги 1-6 ПОСТРОЕНЫ, флаг OFF)
+
+**Код готов и протестирован (2 smoke ALL GREEN), `radar_armed.enabled: false` — включение
+только после ручного VST-прогона (шаг 8б).**
+
+| Шаг | Что построено | Где |
+|---|---|---|
+| 1 ✅ | Разведка PARTIAL (раздел выше) — 4 опасных узла найдены и загейчены | — |
+| 2 ✅ | `source_policies.radar` (LIMIT, 0.5%/20x) + `trading.radar_armed` | config.yaml |
+| 3 ✅ | Порт `radar_orders` (NEW→TAKEN/SKIPPED/STALE) + запись сетапов BUILD/PUMP/SPRING | `oi_fast_poller.py::_log_radar_order` |
+| 3б ✅ | `radar_armed_loop`: poll 15с → фильтры (типы/grade/лимит 5/symbol-busy/TTL/цена-протухла) → `trade_router.submit(source='radar')` | `bot/loops/radar_armed_loop.py` (регистрация в `bot/core/bot.py`) |
+| 4 ✅ | Pending-lifecycle: TAKEN→`PENDING_ENTRY` (строка невидима для TSL/close-by-price/live-guard) → REST-чекер fill→OPEN+actual / TTL→cancel→`CANCELLED`. SL+финальный TP **attached к самому LIMIT-ордеру** — позиция защищена с первой секунды, exec_ws не тронут | `radar_armed_loop::_check_pending` |
+| 4-гейты ✅ | orphan-детект видит PENDING (`position_sync._detect_orphans`) · grace 120с в close-by-price (`position_sync`) · LIMIT без fill НЕ пишет сигнальную цену в actual (`order_manager.open_bracket`) | position_sync.py, order_manager.py |
+| 5 ✅ | Multi-TP: частичные reduce-only TP по `tp_shares` на цели кроме финальной (финальная = attached full — биржа clip'нет остаток). Напрямую `client.place_tp_order` — обёртки om каннибализируют >1 TP. `repair_missing_tp` загейчен для radar | `radar_armed_loop::_on_entry_filled`, tsl_updater.py |
+| 6 ✅ | Авто-БУ: REST-детект fill TP1 (orderId в filled) → `om.update_sl(BE=actual±0.1%, buffer 0.15%)` → `be_activated=1`. Остаток ведёт штатный TSL | `radar_armed_loop::_check_be_after_tp1` |
+
+**Решения по ходу (отклонения от плана, все в сторону lean):**
+- batchOrders НЕ понадобился: SL+TP-final привязаны к LIMIT-ордеру атомарно (place_bracket_order),
+  частичных TP остаётся максимум 2 — два обычных POST.
+- Авто-БУ и fill-detection = REST-поллинг в самом лупе (15с), НЕ врезка в exec_ws —
+  ноль правок WS-ядра, задержка приемлема для сетапов масштаба часов.
+- Нативный TRAILING_STOP_MARKET не в v1 (ответ Егора: наш TSL).
+- `take_profit` в БД = ФИНАЛЬНАЯ цель → симуляторный TP-детект/live-guard не закроют рано.
+- BE/TSL qty после частичного TP: `place_sl_order` уже сам ретраит с реальным остатком
+  («must be less than the available amount» → get_position_qty) — фикс не понадобился.
+
+**Известные некритичные хвосты (v1 принимает):**
+- Частичный fill лимитки при TTL-cancel → возможен кусок позиции: закроет orphan_autoclose (live).
+- Если ДРУГАЯ стратегия откроет same-symbol+side поверх radar-сделки, её repair_missing_tp
+  может отменить наши частичные TP (редко: CORE-50 пересечение; наблюдать в прогоне).
+- `_close_fills`/Sphere stash при финальном pa=0 отдают цену последнего куска — profit_pct
+  считается от неё на весь объём; честный weighted-расчёт по partial_fills = шаг v1.1
+  (после первого прогона; кирпич `close_trade` tp1_fix уже есть).
+
+**Шаг 8 (осталось):** (а) ✅ smoke×2 на тест-БД (порт+лайфцикл); (б) ОДИН ручной VST-прогон
+на дешёвой монете с грепом `[RADAR-ARMED]` ДО включения: `radar_armed.enabled: true` +
+рестарт бота (Егор) → INSERT тестовой строки в radar_orders → LIMIT→fill→TP1→BE→TSL;
+(в) включение на поток: старт с 1-2 сигналов/день (лимит 5 уже в конфиге).
 
 ## Критический контекст
 
