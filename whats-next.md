@@ -30,8 +30,16 @@
 5. Крупное в свежую сессию: BOT-LOOP-OFFLOAD 🔴 (TASKS), TG-FORMAT-STANDARD ядра, ARMED-фаза.
 6. atr_s2: мониторить [ATR-S2] в логах при переходе USDT.D в risk-off.
 
+**<дополнение вечера 03.07 (сессия закрыта ~14:30 UTC):>**
+- 🏆 MANA день: лонг +58% + шорт **+102%** (закрыт тик-в-тик на нашей W-R1) — оба оборота по конвейеру.
+- ✅ TG-стандарт утверждён макетом Егора → docs/TG_MESSAGE_STANDARD.md; ВСЕ типы радара на нём; ядро — потом, независимой копией.
+- 🔴 fstream WS Binance гео-зарезан (NL VPN + SG-прокси) → **ликвидации с Bybit v5** (живые, ADA $24k пойман) + oi_synth. memory: env_binance_fstream_ws_blocked.
+- ✅ Мост радар→Куб АКТИВЕН (бот рестартован); WR день-1: BUILD 7/11 в цель / 0 SL / +6.4% MFE.
+- ✅ TASKS-аудит: FEED-ALERTS+FUNDING-DATA+WT-PCT закрыты; OTE-CASCADE первая дельта +1.79%/сд ЗА фильтр (n=37→копить до 100).
+- 🔴 **ARMED-план утверждён** → docs/RADAR_ARMED_PLAN.md (см. пункт 0 выше).
+
 **<critical_context>:**
-- pm2 стек (7, все online, `pm2 save` сделан): oko-dash:3000, oko-api:8001, **oi-fast, liq-ws, magnet-snap** (радар), btc-flows, graph-shadow. Бот :8000 отдельно. НЕ убивать oko-dash.
+- pm2 стек (7, все online, `pm2 save` сделан): oko-dash:3000, oko-api:8001, **oi-fast, liq-ws (Bybit!), magnet-snap** (радар), btc-flows, graph-shadow. Бот :8000 отдельно. НЕ убивать oko-dash.
 - Радар = автономный стек: `oko_feed/` (store/alerts/targets/bridge) + `scripts/{oi_fast_poller,liq_ws,liq_magnets,magnet_snapshot,radar_wr}.py`. БД `oko_feed/external_data.db`: pump/spring/build_signals, magnet_snapshots, liq_events, radar_state. Куб подключается через порт (bridge) — радар о Кубе не знает; НЕ добавлять радару зависимостей от core/.
 - Формат алертов = утверждённый Егором: построчно, цены в `<code>` (копируемые), «Вход:/Стоп:», у магнита ФИКСИРУЮТ. Не менять без слова.
 - 💡 Егор: «тут живёт мой эдж на 3% сделку» — редкая неэффективность + конфлюэнтная цель. Это главный вектор радара.

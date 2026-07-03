@@ -1,7 +1,7 @@
 ---
 tags: [doc/status, session, project-overview]
 type: status-overview
-date: "2026-06-25"
+date: "2026-07-03"
 sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 ---
 
@@ -11,7 +11,9 @@ sources: [TASKS.md, DISCUSSION.md, PROJECT-LOG.md]
 **Запуск:** `python oko_mtf.py` | **Дашборд:** `http://localhost:8000`
 **Архитектура:** `CLAUDE.md` → раздел "Структура проекта" | **Полная история:** `PROJECT-LOG.md`
 
-**🌅 ТЕКУЩИЙ ФОКУС (25.06) — OKO-OTE multi-TF валидация → НАЙДЕН lookahead в выборе HTF-зоны, результаты под вопросом:** 24-25.06 прогнана большая серия бэктестов confs≥3 (7 TF-комбо + sweep entry-fib + тройная вложенность zone⊃mid⊃break, новый параметр `mid_tf` в `detect_oko_ote`, backward-compatible). 🔴🔴🔴 **НО:** найден lookahead в `select_significant_impulse` (зона старшего ТФ выбирается с хиндсайтом по концу ВСЕГО датасета + отдельно — тай-брейк предпочитает крупный размах свежести даже без хиндсайта) — ВСЯ серия результатов под подозрением, **НЕ переносить в бой**. Егор предложил архитектурную переинтерпретацию (триггер=свежий слом, магнит=цель из существующей структуры через `TPSelector`) — решение по редизайну ЕЩЁ НЕ принято. Детали → `whats-next.md` (топ), `current_state.md` (24-25.06), [[strategy_truth_state]] (🔴🔴🔴 в начале), [[bug_select_significant_impulse_full_dataset_lookahead]]. Живой код НЕ затронут багом.
+**🚀 ТЕКУЩИЙ ФОКУС (03.07) — РАДАР = ПРОДУКТ №2, следующий шаг = RADAR-ARMED-VST:** радар полной сборки в бою (pm2 oi-fast/liq-ws/magnet-snap): ПРУЖИНА (детект ДО движения) · BUILD с готовым сетапом (funding→направление, Вход/Стоп/R:R) · карта целей 2.0 (магниты+пивоты+FVG, ★) · каскады ликвидаций Bybit ~1с (fstream гео-зарезан NL/SG) · копилки предсказаний/фактов · WR-скрипт (день-1: BUILD 7/11 в цель, 0 SL, +6.4% MFE). TG-стандарт утверждён → `docs/TG_MESSAGE_STANDARD.md`. Мост радар→Куб активен (radar_* → features_json). 🏆 День-доказательство: MANA лонг +58% + шорт **+102%** (закрыт на нашей W-R1). **Новая сессия = [docs/RADAR_ARMED_PLAN.md](docs/RADAR_ARMED_PLAN.md)** (LIMIT+multi-TP 40/30/30+авто-БУ по fill TP1; ПЕРВЫЙ ШАГ — разведка PARTIAL-семантики ДО кода + 5 вопросов Егору). Детали → `whats-next.md` (топ) + `current_state.md` (03.07).
+
+**🌅 Прошлый фокус (25.06) — OKO-OTE multi-TF валидация → НАЙДЕН lookahead в выборе HTF-зоны, результаты под вопросом:** 24-25.06 прогнана большая серия бэктестов confs≥3 (7 TF-комбо + sweep entry-fib + тройная вложенность zone⊃mid⊃break, новый параметр `mid_tf` в `detect_oko_ote`, backward-compatible). 🔴🔴🔴 **НО:** найден lookahead в `select_significant_impulse` (зона старшего ТФ выбирается с хиндсайтом по концу ВСЕГО датасета + отдельно — тай-брейк предпочитает крупный размах свежести даже без хиндсайта) — ВСЯ серия результатов под подозрением, **НЕ переносить в бой**. Егор предложил архитектурную переинтерпретацию (триггер=свежий слом, магнит=цель из существующей структуры через `TPSelector`) — решение по редизайну ЕЩЁ НЕ принято. Детали → `whats-next.md` (топ), `current_state.md` (24-25.06), [[strategy_truth_state]] (🔴🔴🔴 в начале), [[bug_select_significant_impulse_full_dataset_lookahead]]. Живой код НЕ затронут багом.
 
 ## 🧊 Stabilization Sprint (04.05–25.05.2026)
 
