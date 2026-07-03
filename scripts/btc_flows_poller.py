@@ -16,10 +16,15 @@ if __name__ == "__main__":
     while True:
         try:
             _tick += 1
-            if _tick % 6 == 1:                      # раз в час — OI-снимок ядра
+            if _tick % 6 == 1:                      # раз в час — OI-снимок ядра (24ч-дельты)
                 oi = collect_oi()
                 hot = {k: v for k, v in oi.items() if isinstance(v, float) and abs(v) >= 3}
                 print(f"[OI] {time.strftime('%H:%M')} Δ24ч≥3%: {hot}")
+            # ОПЕРАТИВНЫЙ OI-радар (каждые 10 мин): |Δ10м|≥0.5% → oi_spike в Feed
+            from oko_feed.collectors.oi import live_radar
+            ev = live_radar()
+            if ev:
+                print(f"[OI-RADAR] {time.strftime('%H:%M')} {ev}")
             r = collect(window_sec=INTERVAL + 120)
             net = r["outflow_btc"] - r["inflow_btc"]
             print(f"[BTC-FLOWS] {time.strftime('%H:%M:%S')} in={r['inflow_btc']} out={r['outflow_btc']} "

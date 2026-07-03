@@ -63,6 +63,41 @@ def oi_change_pct(symbol: str, hours: int = 24) -> float | None:
     return round((rows[-1][1] / rows[0][1] - 1) * 100, 2)
 
 
+LIVE_CORE = ["BTC", "ETH", "SOL", "GRT", "DOGE", "XRP", "LINK", "AVAX"]
+
+
+def live_radar(threshold_pct: float = 0.5) -> list[dict]:
+    """ОПЕРАТИВНЫЙ радар (5m-гранулярность, ядро монет): |ΔOI 10мин| >= порога → событие.
+    Классификация: OI↑ = build (грузятся, настоящий интерес) · OI↓ = unwind/СКВИЗ (закрытия).
+    События пишутся в onchain_events (kind='oi_spike') → видны во вкладке Feed."""
+    from ..store import add_onchain_event
+    events = []
+    c = conn(); _ensure(c)
+    for sym in LIVE_CORE:
+        try:
+            h = _get(f"https://fapi.binance.com/futures/data/openInterestHist"
+                     f"?symbol={sym}USDT&period=5m&limit=4")
+            if len(h) < 3:
+                continue
+            rows = [(sym, int(x["timestamp"]) // 1000, float(x["sumOpenInterest"]),
+                     float(x["sumOpenInterestValue"])) for x in h]
+            c.executemany("INSERT OR REPLACE INTO oi_snapshots VALUES (?,?,?,?)", rows)
+            c.commit()
+            prev, cur = rows[-3][2], rows[-1][2]     # ~10 минут
+            d_pct = (cur / prev - 1) * 100 if prev else 0
+            if abs(d_pct) >= threshold_pct:
+                kind_dir = "build" if d_pct > 0 else "unwind_squeeze"
+                add_onchain_event(rows[-1][1], "oi_spike", "binance_oi", f"{sym} {d_pct:+.2f}%/10m",
+                                  rows[-1][3], kind_dir, "")
+                events.append({"sym": sym, "d10m_pct": round(d_pct, 2), "dir": kind_dir})
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.2)
+    c.close()
+    return events
+
+
 if __name__ == "__main__":
     r = collect()
     print("[oi] Δ24ч %:", r)
+    print("[oi] live radar:", live_radar())
