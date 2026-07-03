@@ -133,9 +133,14 @@ async def h_feed(request: web.Request) -> web.Response:
     data = _cached("feed", 60)
     if data is None:
         def _collect():
-            out = {"dominance": {}, "onchain_recent": [], "btc_flows_1h": {}}
+            out = {"dominance": {}, "onchain_recent": [], "btc_flows_1h": {}, "usdtd_risk_off": None}
             try:
                 from oko_feed import store
+                try:
+                    from core.signals.usdtd_regime import get_usdtd_risk_off
+                    out["usdtd_risk_off"] = get_usdtd_risk_off()   # кэш 4ч внутри
+                except Exception:
+                    pass
                 for asset in ("usdt", "btc", "eth"):
                     ser = store.dominance_series(asset)
                     if ser:
