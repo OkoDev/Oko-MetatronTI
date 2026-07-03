@@ -240,8 +240,21 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
     elif fund is not None and fund >= 0.0002:
         side = "SHORT"
         dir_txt = f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ → сетап <b>SHORT</b> (слив вниз)"
-    if side is None:                                     # funding нейтрален — сетап не строим
-        return f"{head}\n#{sym} #OI_BUILD", None
+    if side is None:                                     # funding нейтрален — сетап не строим,
+        fund_txt = (f"funding {fund * 100:.4f}% нейтрален — кто грузится, не читается; сетапа нет"
+                    if fund is not None else "funding: нет данных — сетапа нет")
+        bias_txt = ""                                    # но перекос топлива показать можем
+        try:
+            from scripts.liq_magnets import build_magnets, fmt_usd
+            m = build_magnets(sym)
+            if m:
+                bias = ("⬆ ВВЕРХ" if m["tot_above"] > m["tot_below"] * 1.3 else
+                        "⬇ ВНИЗ" if m["tot_below"] > m["tot_above"] * 1.3 else "≈ баланс")
+                bias_txt = (f"\nтопливо: сверху {fmt_usd(m['tot_above'])} / "
+                            f"снизу {fmt_usd(m['tot_below'])} → магнит {bias}")
+        except Exception:
+            pass
+        return f"{head}\n{fund_txt}{bias_txt}\n#{sym} #OI_BUILD", None
     sl = None
     try:                                                 # SL за структуру часа
         k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=13")
