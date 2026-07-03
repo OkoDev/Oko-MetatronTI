@@ -76,6 +76,13 @@ def _tv(sym: str) -> str:
             f'&interval=5">BINGX</a>')
 
 
+def _links(sym: str) -> str:
+    """Подвал ссылок (макет Егора 03.07): график TW + страница биржи BingX."""
+    return (f'- <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
+            f'&interval=5">TW</a>\n'
+            f'- <a href="https://bingx.com/ru/perpetual/{sym}-USDT">BINGX</a>')
+
+
 def _log_pump(row: dict) -> None:
     """Лог подтверждённого алерта → pump_signals (для WR-статистики SHADOW→ARMED)."""
     c = conn()
@@ -238,16 +245,16 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
     (сквиз вверх); fund>=+0.02% → лонги → SHORT. Нейтрален → голый BUILD без сетапа.
     SL — за структуру последнего часа (экстремум 5m×12), цели — карта целей 2.0.
     """
-    head = f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м\nцена {_c(px)}"
     side = dir_txt = None
     if fund is not None and fund < 0:
         side = "LONG"
-        dir_txt = (f"🔺 funding {fund * 100:.3f}% → грузятся ШОРТЫ\n"
-                   f"сетап <b>LONG</b> (сквиз вверх)")
+        dir_txt = f"🔺 funding {fund * 100:.3f}% → грузятся ШОРТЫ"
     elif fund is not None and fund >= 0.0002:
         side = "SHORT"
-        dir_txt = (f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ\n"
-                   f"сетап <b>SHORT</b> (слив вниз)")
+        dir_txt = f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ"
+    # шапка (макет Егора 03.07): тип отдельно, тикер копируемый + цвет направления
+    dot = {"LONG": "🟢", "SHORT": "🔴"}.get(side, "⚪")
+    head = f"📈 <b>OI BUILD LIVE:</b>\n\n{dot} <code>{sym}</code> +{d_oi5:.2f}%/5м"
     if side is None:                                     # funding нейтрален — сетап не строим,
         fund_txt = (f"funding {fund * 100:.4f}% — нейтрален\nсетапа нет 🔄"
                     if fund is not None else "funding: нет данных\nсетапа нет 🔄")
@@ -262,7 +269,8 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
                             f"снизу {fmt_usd(m['tot_below'])} → магнит {bias}")
         except Exception:
             pass
-        return f"{head}\n{fund_txt}{bias_txt}\n#{sym} #OI_BUILD", None
+        return (f"{head}\nцена {_c(px)}\n{fund_txt}{bias_txt}\n\n{_links(sym)}\n\n"
+                f"#{sym} #OI_BUILD"), None
     sl = None
     try:                                                 # SL за структуру часа
         k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=13")
@@ -274,7 +282,7 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
         targets = build_targets(sym, side, px)
     except Exception:
         targets = []
-    lines = [head, dir_txt]
+    lines = [head, dir_txt, ""]
     risk_pct = None
     if sl:
         risk_pct = abs(px - sl) / px * 100
@@ -285,7 +293,11 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
         if risk_pct:
             rr = abs(far["px"] - px) / px * 100 / risk_pct
             lines.append(f"R:R ~{rr:.1f} · у магнита ФИКСИРУЮТ, не входят")
+        lines.append("")
         lines.append(format_targets_block(targets, px))
+    lines.append("")
+    lines.append(_links(sym))
+    lines.append("")
     lines.append(f"#{sym} #OI_BUILD")
     row = {"ts": int(time.time()), "symbol": sym, "d_oi5": round(d_oi5, 3),
            "funding": fund, "side": side, "px": px, "sl": sl,

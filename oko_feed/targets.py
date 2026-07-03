@@ -127,9 +127,9 @@ def format_targets_block(targets: list[dict], px: float) -> str:
     """Блок для TG-алерта (HTML). Пусто если целей нет."""
     if not targets:
         return ""
-    lines = ["🧲 цели (магниты+пивоты+FVG):"]
+    lines = ["🧲 TP"]
     for t in sorted(targets, key=lambda c: abs(c["px"] - px)):
         star = " ★" if t["star"] else ""
-        lines.append(f"<code>{_fmt(t['px'])}</code> ({(t['px']/px-1)*100:+.1f}%){star} "
+        lines.append(f"✅ <code>{_fmt(t['px'])}</code> ({(t['px']/px-1)*100:+.1f}%){star} "
                      f"· {' + '.join(t['tags'])}")
     return "\n".join(lines)
