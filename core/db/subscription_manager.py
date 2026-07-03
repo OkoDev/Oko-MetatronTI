@@ -240,10 +240,16 @@ class SubscriptionManager:
                 "ON balance_snapshots(account_id, exchange, timestamp)"
             )
             # индексы под частые фильтры терминала (account/mode/exchange)
+            # + 03.07.2026 дашборд-аудит: status/created_at/signal_type/symbol — до этого
+            # КАЖДЫЙ запрос дашборда = SCAN 491MB (full_stats 6.9s→2.1s одними индексами)
             for _ix, _cols in [
                 ("idx_trades_account", "account_id, created_at"),
                 ("idx_trades_mode", "execution_mode, created_at"),
                 ("idx_trades_exchange", "exchange, created_at"),
+                ("idx_trades_status_created", "status, created_at DESC"),
+                ("idx_trades_created", "created_at DESC"),
+                ("idx_trades_signal_created", "signal_type, created_at DESC"),
+                ("idx_trades_symbol_created", "symbol, created_at DESC"),
             ]:
                 try:
                     cursor.execute(f"CREATE INDEX IF NOT EXISTS {_ix} ON simulated_trades({_cols})")
