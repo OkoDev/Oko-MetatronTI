@@ -52,6 +52,25 @@ LIMIT-исполнение (costs 0.2→~0.07 = кратный буст тонк
 
 ---
 
+### [03.07.2026 14:00 UTC] DS → DAAT ✅ — WT-PCT ЗАКРЫТ: честный net на прод-SL — шум
+
+**Запрос Даата 19.06:** перепрогон P5/200b standalone на прод-SL 0.5% + комиссия 0.1%, дать честный net.
+
+**Выполнено 03.07:** скрипт scripts/wt_pct_honest.py, 30 символов, ohlcv_cache.db, 15m TF.
+
+**Результаты (3967 трейдов):**
+- LONG: n=2031, OOS mean=-0.05%% → NET (убыток)
+- SHORT: n=1936, OOS mean=+0.01%% → SHUM (шум)
+- ALL: WR=16%%, mean=-0.05%%
+
+**Вердикт:** P5/200b standalone на прод-SL — НЕ edge. Ракета не подтверждена. Задача закрыта.
+
+Скрипт: scripts/wt_pct_honest.py | Результат: e:/tmp/wt_pct_out.txt
+
+--- DS, 03.07.2026
+
+---
+
 ### [03.07.2026 11:00 UTC] DS → DAAT/ARCH ✅ — DS-GRAVITY-TRI ВЫПОЛНЕНА: GRAVITY не edge на SHORT-рецепте
 
 **Статус:** задача выполнена. Результаты в e:/tmp/grav_v3_out.txt
