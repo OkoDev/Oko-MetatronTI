@@ -4,11 +4,14 @@
 Антиспам: cooldown per (тип, символ) в таблице alert_log (external_data.db).
 
 Алерты v1:
-  🌀 oi_spike unwind_squeeze — СКВИЗ на монете ядра (тот механизм, что выбил GRT 03.07)
-  📈 oi_spike build ≥1%/10м — резкая загрузка
   🐋 whale_swap ≥ $1M (Uniswap)
   ₿ BTC-флоу 3ч |net| ≥ 150 BTC — товар подвозят/увозят
   🔄 смена USDT.D-режима (risk_on ↔ risk_off)
+
+03.07 (Егор «не понимаю что это значит» → «+»): OI-ветки (СКВИЗ-сигнал/OI BUILD 10-мин)
+ВЫРЕЗАНЫ — дублировали быстрый oi-fast радар (60с, СКВИЗ LIVE/BUILD с ценой, направлением,
+сетапом и целями), но в старом формате без цены/направления. Сквизы/билды теперь ТОЛЬКО
+из scripts/oi_fast_poller.py.
 
 Ключи: .env TELEGRAM_TOKEN + ADMIN_CHAT_ID.
 """
@@ -75,18 +78,7 @@ def check_and_alert() -> list[str]:
     c = conn()
     now = int(time.time())
     try:
-        # 1-2) OI-спайки за последние 12 мин (радар их уже записал)
-        for ts, sym, usd, d in c.execute(
-                "SELECT ts,symbol,amount_usd,direction FROM onchain_events "
-                "WHERE kind='oi_spike' AND ts>?", (now - 720,)).fetchall():
-            coin = sym.split(" ")[0]
-            if d == "unwind_squeeze" and _cooldown_ok(c, f"oi_squeeze:{coin}"):
-                msg = (f"🌀 <b>СКВИЗ-сигнал: {coin}</b>\nOI {sym.split(' ',1)[1]} — закрытия позиций "
-                       f"двигают цену (стопы = топливо).\nOI ${usd/1e6:.0f}M · механизм GRT-03.07")
-                if send_tg(msg): sent.append(f"squeeze {coin}")
-            elif d == "build" and _cooldown_ok(c, f"oi_build:{coin}"):
-                msg = f"📈 <b>OI BUILD: {coin}</b>\n{sym.split(' ',1)[1]} за 10м — грузятся. OI ${usd/1e6:.0f}M"
-                if send_tg(msg): sent.append(f"build {coin}")
+        # OI-ветки (СКВИЗ-сигнал/OI BUILD) вырезаны 03.07 — дубль oi-fast (см. докстринг)
         # 3) киты Uniswap ≥$1M за 12 мин
         for ts, sym, usd, d in c.execute(
                 "SELECT ts,symbol,amount_usd,direction FROM onchain_events "
