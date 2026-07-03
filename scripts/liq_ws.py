@@ -32,7 +32,7 @@ import aiohttp
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
 from oko_feed.targets import build_targets, format_targets_block
-from scripts.oi_fast_poller import CORE, _tv, _fmt
+from scripts.oi_fast_poller import CORE, _tv, _c
 
 WS_URL = "wss://fstream.binance.com/ws/!forceOrder@arr"
 MAJORS = {"BTC", "ETH", "SOL", "XRP", "BNB", "DOGE"}
@@ -92,7 +92,7 @@ def _on_liq(o: dict):
         targets = []
     block = format_targets_block(targets, px)
     msg = (f"⚡ <b>ЛИКВИДАЦИИ: {_tv(sym)}</b> ${tot/1e3:.0f}k за {CASCADE_WIN_SEC}с\n"
-           f"{head} · цена {_fmt(px)}\n"
+           f"{head} · цена {_c(px)}\n"
            + (block + "\n" if block else "")
            + f"#{sym} #LIQ_CASCADE")
     if send_tg(msg):

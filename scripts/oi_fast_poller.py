@@ -65,6 +65,11 @@ def _fmt(v: float) -> str:
     return f"{v:.6g}"
 
 
+def _c(v: float) -> str:
+    """Цена копируемая одним тапом (моноширинный <code> в TG) — Егор 03.07."""
+    return f"<code>{_fmt(v)}</code>"
+
+
 def _tv(sym: str) -> str:
     """Тикер + ссылка на график TW, спрятанная под название биржи (Егор 03.07: «KAVA - BINGX»)."""
     return (f'{sym} - <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{sym}USDT.P'
@@ -160,8 +165,9 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
            f"Grade {grade_txt} · объём ×{vol_ratio:.1f} · RSI {rsi:.0f}\n"
            f"{oi_txt}\n"
            f"━ уровни (SHADOW, ориентир):\n"
-           f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за экстремум +1%)\n"
-           f"TP1 {_fmt(tp1)} (50%) · TP2 {_fmt(tp2)} (75%) · TP3 {_fmt(tp3)} (до пампа)\n"
+           f"Вход: ~{_c(px)}\n"
+           f"Стоп: {_c(sl)} (за экстремум +1%)\n"
+           f"TP1 {_c(tp1)} (50%) · TP2 {_c(tp2)} (75%) · TP3 {_c(tp3)} (до пампа)\n"
            f"#{sym} #PUMP")
     row = {"ts": int(time.time()), "symbol": sym, "side": "SHORT" if up else "LONG",
            "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
@@ -199,7 +205,7 @@ def check_spring(w, sym: str, px: float, fund: float | None) -> tuple[str, dict]
     msg = (f"⏳ <b>ПРУЖИНА: {_tv(sym)}</b>\n"
            f"OI {d_oi15:+.2f}%/15м, цена флэт (range {rng_pct:.2f}%) — скрытая загрузка\n"
            f"{dir_txt}\n"
-           f"цена {_fmt(px)}\n"
+           f"цена {_c(px)}\n"
            f"#{sym} #SPRING")
     row = {"ts": int(time.time()), "symbol": sym, "d_oi15": round(d_oi15, 3),
            "range_pct": round(rng_pct, 3), "funding": fund, "dir": dir_side, "px": px}
@@ -232,17 +238,19 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
     (сквиз вверх); fund>=+0.02% → лонги → SHORT. Нейтрален → голый BUILD без сетапа.
     SL — за структуру последнего часа (экстремум 5m×12), цели — карта целей 2.0.
     """
-    head = f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м — грузятся. цена {_fmt(px)}"
+    head = f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м\nцена {_c(px)}"
     side = dir_txt = None
     if fund is not None and fund < 0:
         side = "LONG"
-        dir_txt = f"🔺 funding {fund * 100:.3f}% → грузятся ШОРТЫ → сетап <b>LONG</b> (сквиз вверх)"
+        dir_txt = (f"🔺 funding {fund * 100:.3f}% → грузятся ШОРТЫ\n"
+                   f"сетап <b>LONG</b> (сквиз вверх)")
     elif fund is not None and fund >= 0.0002:
         side = "SHORT"
-        dir_txt = f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ → сетап <b>SHORT</b> (слив вниз)"
+        dir_txt = (f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ\n"
+                   f"сетап <b>SHORT</b> (слив вниз)")
     if side is None:                                     # funding нейтрален — сетап не строим,
-        fund_txt = (f"funding {fund * 100:.4f}% нейтрален — кто грузится, не читается; сетапа нет"
-                    if fund is not None else "funding: нет данных — сетапа нет")
+        fund_txt = (f"funding {fund * 100:.4f}% — нейтрален\nсетапа нет 🔄"
+                    if fund is not None else "funding: нет данных\nсетапа нет 🔄")
         bias_txt = ""                                    # но перекос топлива показать можем
         try:
             from scripts.liq_magnets import build_magnets, fmt_usd
@@ -270,12 +278,13 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tupl
     risk_pct = None
     if sl:
         risk_pct = abs(px - sl) / px * 100
-        lines.append(f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за структуру часа, риск {risk_pct:.1f}%)")
+        lines.append(f"Вход: ~{_c(px)}")
+        lines.append(f"Стоп: {_c(sl)} (за структуру часа, риск {risk_pct:.1f}%)")
     if targets:
         far = max(targets, key=lambda t: abs(t["px"] - px))
         if risk_pct:
             rr = abs(far["px"] - px) / px * 100 / risk_pct
-            lines.append(f"R:R ~{rr:.1f} к дальней цели · у магнита ФИКСИРУЮТ, не входят")
+            lines.append(f"R:R ~{rr:.1f} · у магнита ФИКСИРУЮТ, не входят")
         lines.append(format_targets_block(targets, px))
     lines.append(f"#{sym} #OI_BUILD")
     row = {"ts": int(time.time()), "symbol": sym, "d_oi5": round(d_oi5, 3),
@@ -357,8 +366,8 @@ def tick():
             d_px3 = (px / px3 - 1) * 100 if px3 else 0
             if abs(d_px3) >= 0.6 and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
                 side = "вверх (шорты горят)" if d_px3 > 0 else "вниз (лонги горят)"
-                send_tg(f"🌀 <b>СКВИЗ LIVE: {_tv(sym)}</b>\nцена {d_px3:+.2f}%/3м {side}\n"
-                        f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {px}\n"
+                send_tg(f"🌀 <b>СКВИЗ LIVE: {_tv(sym)}</b>\nΔцена {d_px3:+.2f}%/3м {side}\n"
+                        f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {_c(px)}\n"
                         f"#{sym} #SQUEEZE")
                 alerts.append(f"squeeze {sym}")
         if len(w) >= 6:

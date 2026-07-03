@@ -130,5 +130,6 @@ def format_targets_block(targets: list[dict], px: float) -> str:
     lines = ["🧲 цели (магниты+пивоты+FVG):"]
     for t in sorted(targets, key=lambda c: abs(c["px"] - px)):
         star = " ★" if t["star"] else ""
-        lines.append(f"{_fmt(t['px'])} ({(t['px']/px-1)*100:+.1f}%){star} · {' + '.join(t['tags'])}")
+        lines.append(f"<code>{_fmt(t['px'])}</code> ({(t['px']/px-1)*100:+.1f}%){star} "
+                     f"· {' + '.join(t['tags'])}")
     return "\n".join(lines)
