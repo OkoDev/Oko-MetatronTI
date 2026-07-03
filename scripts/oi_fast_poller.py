@@ -57,6 +57,12 @@ def _fmt(v: float) -> str:
     return f"{v:.6g}"
 
 
+def _tv(sym: str) -> str:
+    """Тикер-ссылка на график TW (фидбек Егора 03.07: ссылки в тикере удобны)."""
+    return (f'<a href="https://ru.tradingview.com/chart/?symbol=BINANCE%3A{sym}USDT.P'
+            f'&interval=5">{sym}</a>')
+
+
 def _log_pump(row: dict) -> None:
     """Лог подтверждённого алерта → pump_signals (для WR-статистики SHADOW→ARMED)."""
     c = conn()
@@ -122,13 +128,14 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка → возврат вероятен' if oi_fuel else 'НАСТОЯЩАЯ загрузка → не спешить, ждать выдоха!'}"
               if d_oi5 is not None else "OI: нет данных")
     grade_txt = {"A": "A (вход надёжнее)", "B": "B", "C": "C (⚠️ против свежего потока)"}[grade]
-    msg = (f"🚀 <b>PUMP: {sym} {d_px:+.1f}%</b>\n"
+    msg = (f"🚀 <b>PUMP: {_tv(sym)} {d_px:+.1f}%</b>\n"
            f"{head}\n"
            f"Grade {grade_txt} · объём ×{vol_ratio:.1f} · RSI {rsi:.0f}\n"
            f"{oi_txt}\n"
            f"━ уровни (SHADOW, ориентир):\n"
            f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за экстремум +1%)\n"
-           f"TP1 {_fmt(tp1)} (50%) · TP2 {_fmt(tp2)} (75%) · TP3 {_fmt(tp3)} (до пампа)")
+           f"TP1 {_fmt(tp1)} (50%) · TP2 {_fmt(tp2)} (75%) · TP3 {_fmt(tp3)} (до пампа)\n"
+           f"#{sym} #PUMP")
     row = {"ts": int(time.time()), "symbol": sym, "side": "SHORT" if up else "LONG",
            "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
            "d_oi": d_oi5 if d_oi5 is None else round(d_oi5, 3), "grade": grade,
@@ -184,14 +191,16 @@ def tick():
             d_px3 = (px / px3 - 1) * 100 if px3 else 0
             if abs(d_px3) >= 0.6 and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
                 side = "вверх (шорты горят)" if d_px3 > 0 else "вниз (лонги горят)"
-                send_tg(f"🌀 <b>СКВИЗ LIVE: {sym}</b>\nцена {d_px3:+.2f}%/3м {side}\n"
-                        f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {px}")
+                send_tg(f"🌀 <b>СКВИЗ LIVE: {_tv(sym)}</b>\nцена {d_px3:+.2f}%/3м {side}\n"
+                        f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {px}\n"
+                        f"#{sym} #SQUEEZE")
                 alerts.append(f"squeeze {sym}")
         if len(w) >= 6:
             t5, oi5, px5 = w[-6]
             d_oi5 = (oi / oi5 - 1) * 100 if oi5 else 0
             if d_oi5 >= 0.5 and _cooldown_ok(f"fast_build:{sym}"):
-                send_tg(f"📈 <b>OI BUILD LIVE: {sym}</b> +{d_oi5:.2f}%/5м — грузятся. цена {px}")
+                send_tg(f"📈 <b>OI BUILD LIVE: {_tv(sym)}</b> +{d_oi5:.2f}%/5м — грузятся. цена {px}\n"
+                        f"#{sym} #OI_BUILD")
                 alerts.append(f"build {sym}")
             # 🚀 PUMP-кандидат по цене → подтверждение объёмом/RSI (klines только для кандидатов)
             d_px5 = (px / px5 - 1) * 100 if px5 else 0
