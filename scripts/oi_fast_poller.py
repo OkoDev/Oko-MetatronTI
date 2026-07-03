@@ -21,6 +21,7 @@ except Exception:
 sys.path.insert(0, ".")
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
+from oko_feed.targets import build_targets, format_targets_block
 
 # ~50 ликвидных: мейджоры + бэктест-вселенная atr_S2 + активные альты
 CORE = ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "LINK", "AVAX", "DOT",
@@ -77,12 +78,31 @@ def _log_pump(row: dict) -> None:
         c.execute("""CREATE TABLE IF NOT EXISTS pump_signals (
             ts INTEGER, symbol TEXT, side TEXT, d_px REAL, vol_ratio REAL, rsi REAL,
             d_oi REAL, grade TEXT, entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp3 REAL,
-            PRIMARY KEY (symbol, ts))""")
+            targets_json TEXT, PRIMARY KEY (symbol, ts))""")
+        try:                                             # миграция ранних строк без колонки
+            c.execute("ALTER TABLE pump_signals ADD COLUMN targets_json TEXT")
+        except Exception:
+            pass
         c.execute("INSERT OR REPLACE INTO pump_signals VALUES "
-                  "(:ts,:symbol,:side,:d_px,:vol_ratio,:rsi,:d_oi,:grade,:entry,:sl,:tp1,:tp2,:tp3)", row)
+                  "(:ts,:symbol,:side,:d_px,:vol_ratio,:rsi,:d_oi,:grade,"
+                  ":entry,:sl,:tp1,:tp2,:tp3,:targets_json)", row)
         c.commit()
     finally:
         c.close()
+
+
+def _with_targets(msg: str, row: dict, sym: str, side: str, px: float) -> tuple[str, dict]:
+    """Карта целей 2.0: блок «🧲 цели» перед хештег-строкой + targets_json в лог."""
+    try:
+        targets = build_targets(sym, side, px)
+    except Exception:
+        targets = []
+    row["targets_json"] = json.dumps(targets) if targets else None
+    block = format_targets_block(targets, px)
+    if block:
+        body, tags_line = msg.rsplit("\n", 1)
+        msg = f"{body}\n{block}\n{tags_line}"
+    return msg, row
 
 
 def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
@@ -192,9 +212,13 @@ def _log_spring(row: dict) -> None:
     try:
         c.execute("""CREATE TABLE IF NOT EXISTS spring_signals (
             ts INTEGER, symbol TEXT, d_oi15 REAL, range_pct REAL, funding REAL,
-            dir TEXT, px REAL, PRIMARY KEY (symbol, ts))""")
+            dir TEXT, px REAL, targets_json TEXT, PRIMARY KEY (symbol, ts))""")
+        try:
+            c.execute("ALTER TABLE spring_signals ADD COLUMN targets_json TEXT")
+        except Exception:
+            pass
         c.execute("INSERT OR REPLACE INTO spring_signals VALUES "
-                  "(:ts,:symbol,:d_oi15,:range_pct,:funding,:dir,:px)", row)
+                  "(:ts,:symbol,:d_oi15,:range_pct,:funding,:dir,:px,:targets_json)", row)
         c.commit()
     finally:
         c.close()
@@ -274,6 +298,12 @@ def tick():
             res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"))
             if res_sp and _cooldown_ok(f"spring:{sym}", 3600):
                 sp_msg, sp_row = res_sp
+                # цели в сторону выстрела (dir UP → цели СВЕРХУ = LONG-сторона)
+                sp_side = {"UP": "LONG", "DOWN": "SHORT"}.get(sp_row["dir"])
+                if sp_side:
+                    sp_msg, sp_row = _with_targets(sp_msg, sp_row, sym, sp_side, px)
+                else:
+                    sp_row["targets_json"] = None
                 if send_tg(sp_msg):
                     _log_spring(sp_row)
                     alerts.append(f"SPRING {sym}")
@@ -285,6 +315,7 @@ def tick():
                 res = analyze_pump(sym, px, d_px, d_oi5)
                 if res and _cooldown_ok(f"pump:{sym}", 3600):
                     msg, row = res
+                    msg, row = _with_targets(msg, row, sym, row["side"], px)
                     if send_tg(msg):
                         _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
                         alerts.append(f"PUMP {sym}")
@@ -299,7 +330,13 @@ if __name__ == "__main__":
         px = float(k[-1][4])
         d_px = (px / float(k[0][1]) - 1) * 100
         res = analyze_pump(sym, px, d_px if d_px else 0.01, None, debug=True)
-        print(res[0] if res else "[PUMP-TEST] условия НЕ выполнены (объём/RSI/range) — алерта не было бы")
+        if res:
+            msg, row = _with_targets(res[0], res[1], sym, res[1]["side"], px)
+            print(msg)
+        else:
+            print("[PUMP-TEST] условия НЕ выполнены (объём/RSI/range) — алерта не было бы")
+            print("[PUMP-TEST] карта целей (как для SHORT):")
+            print(format_targets_block(build_targets(sym, "SHORT", px), px) or "  целей не найдено")
         sys.exit(0)
     print(f"[OI-FAST] радар: {len(CORE)} монет, цикл {INTERVAL}с, "
           f"сквиз=|Δp3м|≥0.6%+ΔOI≤−0.15% · PUMP=|Δp5м|≥{PUMP_PCT_5M}%+vol×{PUMP_VOL_RATIO}+RSI · "
