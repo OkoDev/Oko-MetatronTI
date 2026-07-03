@@ -57,9 +57,24 @@ def _fmt(v: float) -> str:
     return f"{v:.6g}"
 
 
+def _log_pump(row: dict) -> None:
+    """Лог подтверждённого алерта → pump_signals (для WR-статистики SHADOW→ARMED)."""
+    c = conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS pump_signals (
+            ts INTEGER, symbol TEXT, side TEXT, d_px REAL, vol_ratio REAL, rsi REAL,
+            d_oi REAL, grade TEXT, entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp3 REAL,
+            PRIMARY KEY (symbol, ts))""")
+        c.execute("INSERT OR REPLACE INTO pump_signals VALUES "
+                  "(:ts,:symbol,:side,:d_px,:vol_ratio,:rsi,:d_oi,:grade,:entry,:sl,:tp1,:tp2,:tp3)", row)
+        c.commit()
+    finally:
+        c.close()
+
+
 def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
-                 debug: bool = False) -> str | None:
-    """Подтверждение ценового кандидата по 5m-свечам → текст PUMP-алерта или None.
+                 debug: bool = False) -> tuple[str, dict] | None:
+    """Подтверждение ценового кандидата по 5m-свечам → (текст алерта, строка лога) или None.
 
     Спека: volume_ratio>3 + RSI-экстремум; уровни = откат 50/75/100% к цене ДО пампа,
     SL за хай пампа +1%. Grade — наш GRT-урок: OI не вырос = двигали СТОПЫ (сквиз),
@@ -106,11 +121,16 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     grade = "A" if (oi_fuel and vol_ratio >= 5) else ("B" if oi_fuel else "C")
     oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка (возврат вероятен)' if oi_fuel else 'настоящая загрузка (разворот опасен!)'}"
               if d_oi5 is not None else "OI: нет данных")
-    return (f"🚀 <b>PUMP: {sym} {d_px:+.1f}%</b> · Grade {grade}\n"
-            f"объём ×{vol_ratio:.1f} · RSI {rsi:.0f} · {oi_txt}\n"
-            f"━ {side} (SHADOW, уровни-ориентир):\n"
-            f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за экстремум +1%)\n"
-            f"TP1 {_fmt(tp1)} (50%) · TP2 {_fmt(tp2)} (75%) · TP3 {_fmt(tp3)} (до пампа)")
+    msg = (f"🚀 <b>PUMP: {sym} {d_px:+.1f}%</b> · Grade {grade}\n"
+           f"объём ×{vol_ratio:.1f} · RSI {rsi:.0f} · {oi_txt}\n"
+           f"━ {side} (SHADOW, уровни-ориентир):\n"
+           f"Entry ~{_fmt(px)} · SL {_fmt(sl)} (за экстремум +1%)\n"
+           f"TP1 {_fmt(tp1)} (50%) · TP2 {_fmt(tp2)} (75%) · TP3 {_fmt(tp3)} (до пампа)")
+    row = {"ts": int(time.time()), "symbol": sym, "side": side.split("-")[0],
+           "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
+           "d_oi": d_oi5 if d_oi5 is None else round(d_oi5, 3), "grade": grade,
+           "entry": px, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}
+    return msg, row
 
 
 def _refresh_prices():
@@ -175,9 +195,12 @@ def tick():
             d_px12 = (px / w[0][2] - 1) * 100 if (len(w) == 12 and w[0][2]) else 0
             d_px = d_px5 if abs(d_px5) >= PUMP_PCT_5M else (d_px12 if abs(d_px12) >= PUMP_PCT_12M else 0)
             if d_px:
-                msg = analyze_pump(sym, px, d_px, d_oi5)
-                if msg and _cooldown_ok(f"pump:{sym}", 3600) and send_tg(msg):
-                    alerts.append(f"PUMP {sym}")
+                res = analyze_pump(sym, px, d_px, d_oi5)
+                if res and _cooldown_ok(f"pump:{sym}", 3600):
+                    msg, row = res
+                    if send_tg(msg):
+                        _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
+                        alerts.append(f"PUMP {sym}")
         time.sleep(0.15)
     return alerts
 
@@ -188,8 +211,8 @@ if __name__ == "__main__":
         k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=5m&limit=2")
         px = float(k[-1][4])
         d_px = (px / float(k[0][1]) - 1) * 100
-        msg = analyze_pump(sym, px, d_px if d_px else 0.01, None, debug=True)
-        print(msg or "[PUMP-TEST] условия НЕ выполнены (объём/RSI/range) — алерта не было бы")
+        res = analyze_pump(sym, px, d_px if d_px else 0.01, None, debug=True)
+        print(res[0] if res else "[PUMP-TEST] условия НЕ выполнены (объём/RSI/range) — алерта не было бы")
         sys.exit(0)
     print(f"[OI-FAST] радар: {len(CORE)} монет, цикл {INTERVAL}с, "
           f"сквиз=|Δp3м|≥0.6%+ΔOI≤−0.15% · PUMP=|Δp5м|≥{PUMP_PCT_5M}%+vol×{PUMP_VOL_RATIO}+RSI")
