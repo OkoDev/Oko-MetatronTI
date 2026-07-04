@@ -149,10 +149,84 @@ def _chain_same_dir(chain: list[dict], pump_up: bool, hours: float = 3.0) -> dic
     return None
 
 
+def _zigzag(highs: list[float], lows: list[float], dev_pct: float):
+    """%-zigzag на чистом питоне (радар без pandas). Возврат: (пивоты [(i, px, 'H'|'L')], trend)."""
+    piv = []
+    trend = 0
+    hi, hi_i = highs[0], 0
+    lo, lo_i = lows[0], 0
+    for i in range(1, len(highs)):
+        h, l = highs[i], lows[i]
+        if trend == 0:
+            if h > hi:
+                hi, hi_i = h, i
+            if l < lo:
+                lo, lo_i = l, i
+            if h >= lo * (1 + dev_pct / 100):
+                piv.append((lo_i, lo, "L")); trend = 1; hi, hi_i = h, i
+            elif l <= hi * (1 - dev_pct / 100):
+                piv.append((hi_i, hi, "H")); trend = -1; lo, lo_i = l, i
+        elif trend == 1:
+            if h > hi:
+                hi, hi_i = h, i
+            if l <= hi * (1 - dev_pct / 100):
+                piv.append((hi_i, hi, "H")); trend = -1; lo, lo_i = l, i
+        else:
+            if l < lo:
+                lo, lo_i = l, i
+            if h >= lo * (1 + dev_pct / 100):
+                piv.append((lo_i, lo, "L")); trend = 1; hi, hi_i = h, i
+    return piv, trend
+
+
+def _wave_leg(sym: str, up: bool) -> dict | None:
+    """〰 SHADOW волновой счёт (04.07, рамка Егора «5 волн в импульс, 3 в коррекцию»):
+    какая по счёту импульсная нога в направлении пампа идёт от базы (15m, 24ч).
+
+    n направленных свингов от базы → волна ≈ 2n−1 (1-я/3-я/5-я). База = конец цепочки
+    higher lows (для пампа) / lower highs (для дампа). dev адаптивный (2.5× средний |ret|
+    бара, кламп 1-3%). Grade НЕ трогаем — копим форвард (WR разворота по ногам решит,
+    станет ли правилом: разворот после 5-й зрел, после 1/3-й ранний). Радар = real-time,
+    look-ahead невозможен by design (урок wave_phase_filter: бэктест-счёт волн врёт)."""
+    try:
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=15m&limit=96")
+    except Exception:
+        return None
+    if len(k) < 30:
+        return None
+    highs = [float(x[2]) for x in k]
+    lows = [float(x[3]) for x in k]
+    closes = [float(x[4]) for x in k]
+    rets = [abs(closes[i] / closes[i - 1] - 1) * 100 for i in range(1, len(closes)) if closes[i - 1]]
+    dev = min(3.0, max(1.0, 2.5 * sum(rets) / len(rets))) if rets else 1.5
+    piv, trend = _zigzag(highs, lows, dev)
+    if not piv:
+        return None
+    base_kind, leg_kind = ("L", "H") if up else ("H", "L")
+    base_i = base_px = None
+    last_px = None
+    for idx, px, kind in reversed(piv):                  # назад, пока цепочка HL (up) / LH (down)
+        if kind != base_kind:
+            continue
+        if last_px is None or ((px < last_px) if up else (px > last_px)):
+            base_i, base_px, last_px = idx, px, px
+        else:
+            break
+    if base_i is None:
+        return None
+    n_dir = sum(1 for idx, _px, kind in piv if kind == leg_kind and idx > base_i)
+    if (trend == 1) == up:
+        n_dir += 1                                       # текущая незавершённая нога — наша
+    if n_dir <= 0:
+        return None
+    return {"leg": 2 * n_dir - 1, "n_swings": n_dir, "dev": round(dev, 2), "base": base_px}
+
+
 def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
                      sl: float | None, targets_json: str | None,
                      grade: str | None = None, tps: tuple | None = None,
-                     chain: list[dict] | None = None) -> None:
+                     chain: list[dict] | None = None,
+                     wave_leg: int | None = None) -> None:
     """Порт ARMED-фазы (docs/RADAR_ARMED_PLAN.md): полный сетап → radar_orders.
 
     Радар о боте НЕ знает: пишет status='NEW' и забывает. Бот (radar_armed_loop)
@@ -186,16 +260,19 @@ def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
                 grade TEXT, starred INTEGER, targets_json TEXT,
                 status TEXT DEFAULT 'NEW', taken_ts INTEGER, note TEXT,
                 PRIMARY KEY (symbol, ts))""")
-            try:                                          # ⛓ миграция ранних строк
-                c.execute("ALTER TABLE radar_orders ADD COLUMN chain TEXT")
-            except Exception:
-                pass
+            for _mig in ("ALTER TABLE radar_orders ADD COLUMN chain TEXT",
+                         "ALTER TABLE radar_orders ADD COLUMN wave_leg INTEGER"):
+                try:                                      # ⛓/〰 миграция ранних строк
+                    c.execute(_mig)
+                except Exception:
+                    pass
             c.execute("INSERT OR REPLACE INTO radar_orders "
                       "(ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, "
-                      "grade, starred, targets_json, status, chain) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW',?)",
+                      "grade, starred, targets_json, status, chain, wave_leg) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW',?,?)",
                       (int(time.time()), sym, sig_type, side, entry, sl, tp1, tp2, tp3,
                        grade, starred, targets_json,
-                       json.dumps(chain, ensure_ascii=False) if chain else None))
+                       json.dumps(chain, ensure_ascii=False) if chain else None, wave_leg))
             c.commit()
         finally:
             c.close()
@@ -210,14 +287,16 @@ def _log_pump(row: dict) -> None:
         c.execute("""CREATE TABLE IF NOT EXISTS pump_signals (
             ts INTEGER, symbol TEXT, side TEXT, d_px REAL, vol_ratio REAL, rsi REAL,
             d_oi REAL, grade TEXT, entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp3 REAL,
-            targets_json TEXT, PRIMARY KEY (symbol, ts))""")
-        try:                                             # миграция ранних строк без колонки
-            c.execute("ALTER TABLE pump_signals ADD COLUMN targets_json TEXT")
-        except Exception:
-            pass
+            targets_json TEXT, wave_leg INTEGER, PRIMARY KEY (symbol, ts))""")
+        for _mig in ("ALTER TABLE pump_signals ADD COLUMN targets_json TEXT",
+                     "ALTER TABLE pump_signals ADD COLUMN wave_leg INTEGER"):
+            try:                                         # миграция ранних строк без колонок
+                c.execute(_mig)
+            except Exception:
+                pass
         c.execute("INSERT OR REPLACE INTO pump_signals VALUES "
                   "(:ts,:symbol,:side,:d_px,:vol_ratio,:rsi,:d_oi,:grade,"
-                  ":entry,:sl,:tp1,:tp2,:tp3,:targets_json)", row)
+                  ":entry,:sl,:tp1,:tp2,:tp3,:targets_json,:wave_leg)", row)
         c.commit()
     finally:
         c.close()
@@ -302,6 +381,12 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
         if grade != "C":
             oi_txt += f" (Grade {grade}→C)"
             grade = "C"
+    # 〰 волновой счёт SHADOW (рамка 5-3): нога импульса от базы. Grade НЕ меняет — копим WR по ногам.
+    wave = _wave_leg(sym, up)
+    if wave is not None:
+        _dirw = "подъёма" if up else "спуска"
+        oi_txt += (f"\n〰 нога импульса: ~{wave['leg']}-я ({wave['n_swings']} {_dirw} "
+                   f"от базы {_fmt(wave['base'])}, dev {wave['dev']}%)")
     grade_txt = {"A": "A (вход надёжнее)", "B": "B", "C": "C (⚠️ против свежего потока)"}[grade]
     dot = "🔴" if up else "🟢"                            # сетап-разворот: памп → SHORT
     msg = (f"🚀 <b>PUMP:</b>\n\n"
@@ -317,7 +402,8 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     row = {"ts": int(time.time()), "symbol": sym, "side": "SHORT" if up else "LONG",
            "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
            "d_oi": d_oi5 if d_oi5 is None else round(d_oi5, 3), "grade": grade,
-           "entry": px, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}
+           "entry": px, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
+           "wave_leg": wave["leg"] if wave else None}
     return msg, row
 
 
@@ -613,7 +699,8 @@ def tick():
                         # ARMED-порт: PUMP-разворот → radar_orders (tp1-3 по откатам, grade)
                         _log_radar_order("pump", sym, row["side"], px, row["sl"],
                                          row.get("targets_json"), grade=row["grade"],
-                                         tps=(row["tp1"], row["tp2"], row["tp3"]), chain=p_chain)
+                                         tps=(row["tp1"], row["tp2"], row["tp3"]), chain=p_chain,
+                                         wave_leg=row.get("wave_leg"))
                         alerts.append(f"PUMP {sym}")
         # live-контекст → radar_state (мост в Куб)
         d5 = (oi / w[-6][1] - 1) * 100 if (len(w) >= 6 and w[-6][1]) else None
