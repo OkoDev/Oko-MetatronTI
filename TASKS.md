@@ -44,6 +44,8 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| [OTE-METHOD-V2](#ote-method-v2) | 🔴 | **ВХОД ПО МЕТОДУ ЕГОРА (04.07, живой разбор ZEC на TW)** — двухмасштабный цикл: СТОРОНА (позиция в большой структуре+толпа) → len5 CHoCH триггер → вход на откате (стоп ~3%) → len50 CHoCH = БУ+ДОБОР → цели=OTE сломанного импульса. ТЗ: [docs/OTE_METHOD_ENTRY_V2.md](docs/OTE_METHOD_ENTRY_V2.md) + memory method_egor_two_scale_entry. Порядок: детектор→бэктест ПРАВИЛЬНЫХ входов→SHADOW→бой. Старый ote_nested не трогать (копит статистику с гейтом). СВЕЖАЯ СЕССИЯ | Даат |
+
 | [ATR-S2-PROD](#atr-s2-prod) | 🔄 | **atr_S2 В ПРОДЕ (VST)** — единственный эдж переживший честный walk-forward (+0.471%/сд n=5290 2022-26, 4/5 лет). Врезка scan_loop: 4h SHORT-флип+cl<WPP → SL=swing12/TP=weekly S2, trade_mode=atr_s2. Мониторинг [ATR-S2]+drops → 30-50 сделок → сверка. memory/atr_s2_survived_honest.md, ba1fb98 | Даат |
 
 | [DS-MINING-FEATURES](#ds-mining-features) | 🔴 | **Mining ЖИВЫХ сделок (features_json)** — какие фичи отделяют + от − на СОБСТВЕННЫХ закрытых сделках (look-ahead невозможен по определению). Мера % net (LAW №1), split по signal_type/direction/data-era. Контракт: DISCUSSION 03.07 | DS |
