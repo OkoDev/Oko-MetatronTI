@@ -34,6 +34,8 @@ class MtfSetup:
     htf_lo: float
     htf_hi: float
     w1_len: int          # баров младшего в волне 1 (для наблюдения)
+    conf: bool = False   # КОНФЛЮЭНЦИЯ: вход совпал с уровнем единой сетки ПРЕДЫДУЩЕГО 4h-импульса
+                         # (±0.3%) — «вход в пересечении сеток» (на одномасштабном давало +0.6..+3.5%)
 
 
 def detect_v2_mtf(
@@ -62,11 +64,33 @@ def detect_v2_mtf(
     Lhigh, Llow, Lclose = L["high"].values, L["low"].values, L["close"].values
     Hhigh, Hlow = H["high"].values, H["low"].values
 
+    # единая шкала конфлюэнции (уровни предыдущего 4h-импульса, «−1/−2 = вход» Егора)
+    conf_fibs = (-2.0, -1.618, -1.0, -0.62, -0.27, 0.0, 0.27, 0.5, 0.62, 0.705, 0.79, 1.0)
+
+    def _conf(entry_px, plo, phi, prev_bull):
+        if phi <= plo or entry_px <= 0:
+            return False
+        start, end = (plo, phi) if prev_bull else (phi, plo)
+        for f in conf_fibs:
+            lvl = end - f * (end - start)
+            if lvl > 0 and abs(entry_px - lvl) / entry_px * 100 <= 0.3:
+                return True
+        return False
+
     out: List[MtfSetup] = []
-    for hb in br_htf:
+    for hbk, hb in enumerate(br_htf):
         # старт волны 1 старшего = слом структуры 4h (смена характера / начало импульса)
         htf_dir = "LONG" if hb.direction == "bull" else "SHORT"
         h_i = hb.idx
+        # предыдущий 4h-импульс (противоположного направления) для конфлюэнции сеток
+        prev_lo = prev_hi = 0.0
+        prev_bull = hb.direction == "bear"
+        for pk in range(hbk - 1, -1, -1):
+            if br_htf[pk].direction != hb.direction:
+                pa = br_htf[pk].from_idx if br_htf[pk].from_idx >= 0 else br_htf[pk].idx
+                prev_lo = float(Hlow[pa:h_i + 1].min())
+                prev_hi = float(Hhigh[pa:h_i + 1].max())
+                break
         # окно поиска волны 1 старшего = TTL сетапа: [слом .. +N баров 4h]. Это ЛИМИТ времени
         # входа (в реале: волна 3 должна прийти в течение N баров, иначе сетап протух),
         # не look-ahead — вход w3 определит реальное «сейчас», цели считаются от баров ≤ w3.ts.
@@ -129,5 +153,6 @@ def detect_v2_mtf(
             tg = [seg_lo, seg_lo - 0.62 * rng, seg_lo - 1.0 * rng]
             if not (tg[0] < entry < sl):
                 continue
-        out.append(MtfSetup(htf_dir, t0, w3.ts, entry, sl, tg, seg_lo, seg_hi, e_i - w1.idx))
+        cf = _conf(entry, prev_lo, prev_hi, prev_bull)
+        out.append(MtfSetup(htf_dir, t0, w3.ts, entry, sl, tg, seg_lo, seg_hi, e_i - w1.idx, cf))
     return out

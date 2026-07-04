@@ -44,6 +44,8 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| [DS-METHOD-V2-DEEP](#ds-method-v2-deep) | 🔴 | **Глубокая валидация фрактального входа method_v2_mtf (DS).** Walk-forward OOS (train 2024→test 25-26) · все ликвидные top-100+ · параметр-sweep (плато не пик) · ТФ-пары (4h+15m/4h+1h/1d+1h) · конфлюэнция на MTF · look-ahead аудит. Мера % net. Контракт: DISCUSSION 04.07 17:30. Даат проверит + параллельно строит конфлюэнцию MTF | DS |
+
 | [OTE-METHOD-V2](#ote-method-v2) | 🔴 | **ВХОД ПО МЕТОДУ ЕГОРА (04.07, живой разбор ZEC на TW)** — двухмасштабный цикл: СТОРОНА (позиция в большой структуре+толпа) → len5 CHoCH триггер → вход на откате (стоп ~3%) → len50 CHoCH = БУ+ДОБОР → цели=OTE сломанного импульса. ТЗ: [docs/OTE_METHOD_ENTRY_V2.md](docs/OTE_METHOD_ENTRY_V2.md) + memory method_egor_two_scale_entry. Порядок: детектор→бэктест ПРАВИЛЬНЫХ входов→SHADOW→бой. Старый ote_nested не трогать (копит статистику с гейтом). СВЕЖАЯ СЕССИЯ | Даат |
 
 | [ATR-S2-PROD](#atr-s2-prod) | 🔄 | **atr_S2 В ПРОДЕ (VST)** — единственный эдж переживший честный walk-forward (+0.471%/сд n=5290 2022-26, 4/5 лет). Врезка scan_loop: 4h SHORT-флип+cl<WPP → SL=swing12/TP=weekly S2, trade_mode=atr_s2. Мониторинг [ATR-S2]+drops → 30-50 сделок → сверка. memory/atr_s2_survived_honest.md, ba1fb98 | Даат |

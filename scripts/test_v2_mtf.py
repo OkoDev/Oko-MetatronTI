@@ -72,7 +72,7 @@ def simulate(dfl, s):
         move = (close[jl] - entry) / entry * 100 if lng else (entry - close[jl]) / entry * 100
         pnl += rem * move
     return {"net": pnl - COSTS, "dir": s.direction, "year": str(s.entry_ts)[:4],
-            "t1": hit[0], "t3": hit[2]}
+            "t1": hit[0], "t3": hit[2], "conf": bool(getattr(s, "conf", False))}
 
 
 def main():
@@ -111,6 +111,15 @@ def main():
         print(f"  {d}:", stat(sub))
         ys = sorted(set(x["year"] for x in sub))
         print("       годы:", " · ".join(f"{y}:{sum(x['net'] for x in sub if x['year']==y)/max(1,len([x for x in sub if x['year']==y])):+.2f}(n{len([x for x in sub if x['year']==y])})" for y in ys))
+    print("\n  ═══ КОНФЛЮЭНЦИЯ на MTF (вход совпал с сеткой предыдущего 4h-импульса) ═══")
+    for cf in (True, False):
+        sub = [x for x in res if x["conf"] == cf]
+        if sub:
+            print(f"  conf={'ДА ' if cf else 'нет'}:", stat(sub))
+    for d in ("LONG", "SHORT"):
+        cfy = [x for x in res if x["dir"] == d and x["conf"]]
+        if len(cfy) >= 15:
+            print(f"  {d} conf=ДА:", stat(cfy))
 
 
 if __name__ == "__main__":
