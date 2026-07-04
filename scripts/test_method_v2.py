@@ -105,10 +105,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tf", default="1h")
     ap.add_argument("--symbols", type=int, default=0, help="лимит символов (0=все)")
+    ap.add_argument("--liquid", type=int, default=0, help="top-N по среднему $-объёму (0=все)")
+    ap.add_argument("--lenbig", type=int, default=50, help="len_big структуры (100≈4h на 1h)")
+    ap.add_argument("--conf-only", action="store_true", help="только conf=ДА сетапы")
     args = ap.parse_args()
 
     syms = load_symbols(args.tf)
-    if args.symbols:
+    if args.liquid:
+        # ранжируем по медианному $-обороту бара (close×volume), берём top-N
+        vol_rank = []
+        for sym in syms:
+            try:
+                df = load_df(sym, args.tf)
+                if len(df) < 300:
+                    continue
+                dv = (df["close"] * df["volume"]).median()
+                vol_rank.append((dv, sym))
+            except Exception:
+                continue
+        vol_rank.sort(reverse=True)
+        syms = [s for _, s in vol_rank[:args.liquid]]
+        print(f"ликвидные top-{args.liquid}: {', '.join(syms[:15])}...")
+    elif args.symbols:
         syms = syms[:args.symbols]
     print(f"символов: {len(syms)} · tf={args.tf}")
 
@@ -118,7 +136,9 @@ def main():
             df = load_df(sym, args.tf)
             if len(df) < 300:
                 continue
-            for s in detect_method_v2(df):
+            for s in detect_method_v2(df, len_big=args.lenbig):
+                if args.conf_only and not getattr(s, "conf", False):
+                    continue
                 r = simulate(df, s)
                 if r:
                     r["sym"] = sym

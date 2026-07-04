@@ -151,21 +151,26 @@ def detect_method_v2(
             continue
 
         # ── СЕРИЯ: входы на откатах по направлению активной серии ──
-        # kind='series' пока big против/не подтвердил; 'continuation' после len50-флипа
+        # kind='series' пока big против/не подтвердил; 'continuation' после len50-флипа.
+        # ЦЕЛИ = ПРОДОЛЖЕНИЕ актуального импульса (extension за экстремум по единой шкале Егора),
+        # НЕ старая сетка разворота — иначе поздние входы целятся в пройденные уровни (дефект v2.0).
+        # Вход валиден только если entry НЕ за t1 (иначе цель уже взята — пропуск).
         if series_dir == "LONG" and s.direction == "bull" and series_n < max_series:
             confirmed = big_dir == "bull"
-            out.append(V2Setup("continuation" if confirmed else "series", "LONG", i, s.ts,
-                               float(s.price), base_lo * (1 - sl_buf_pct / 100),
-                               series_grid, series_big[0], series_big[1],
-                               (base_lo - series_big[0]) / (series_big[1] - series_big[0] + 1e-12),
-                               big_dir, cf))
-            series_n += 1
+            tg = [hi_imp + 0.27 * rng, hi_imp + 0.62 * rng, hi_imp + 1.0 * rng]
+            entry = float(s.price)
+            if entry < tg[0]:                             # есть ход до первой цели
+                out.append(V2Setup("continuation" if confirmed else "series", "LONG", i, s.ts,
+                                   entry, base_lo * (1 - sl_buf_pct / 100),
+                                   tg, lo_imp, hi_imp, (base_lo - lo_imp) / rng, big_dir, cf))
+                series_n += 1
         elif series_dir == "SHORT" and s.direction == "bear" and series_n < max_series:
             confirmed = big_dir == "bear"
-            out.append(V2Setup("continuation" if confirmed else "series", "SHORT", i, s.ts,
-                               float(s.price), base_hi * (1 + sl_buf_pct / 100),
-                               series_grid, series_big[0], series_big[1],
-                               (base_hi - series_big[0]) / (series_big[1] - series_big[0] + 1e-12),
-                               big_dir, cf))
-            series_n += 1
+            tg = [lo_imp - 0.27 * rng, lo_imp - 0.62 * rng, lo_imp - 1.0 * rng]
+            entry = float(s.price)
+            if entry > tg[0] > 0:
+                out.append(V2Setup("continuation" if confirmed else "series", "SHORT", i, s.ts,
+                                   entry, base_hi * (1 + sl_buf_pct / 100),
+                                   tg, lo_imp, hi_imp, (base_hi - lo_imp) / rng, big_dir, cf))
+                series_n += 1
     return out
