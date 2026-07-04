@@ -106,6 +106,12 @@ def main():
 
     print(f"\n═══ V2-MTF (волна 3 младшего в волне 1 старшего, 15m слом у дна/вершины) ═══")
     print("  ALL:", stat(res))
+    # WALK-FORWARD split (контроль DS): TRAIN 2024 / TEST 2025-26
+    tr = [x for x in res if x["year"] == "2024"]
+    te = [x for x in res if x["year"] in ("2025", "2026")]
+    print("  ── WALK-FORWARD ──")
+    print("  TRAIN (2024):    ", stat(tr))
+    print("  TEST  (2025-26): ", stat(te))
     for d in ("LONG", "SHORT"):
         sub = [x for x in res if x["dir"] == d]
         print(f"  {d}:", stat(sub))
