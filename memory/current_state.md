@@ -9,6 +9,14 @@
 
 ---
 
+## [05.07 ~01:30 UTC] Агент: Даат — METHOD-V2 БОЕВОЙ ЛУП на VST (Егор «сразу в прод»)
+
+- ✅ **Боевой луп** `bot/loops/method_v2_loop.py` (регистрация в bot/core/bot.py): скан ликвидных top-60 (4h+15m кэш) каждые 15мин → detect_v2_mtf → свежий сетап (entry_ts в последних 3 барах 15m) → register через trade_router source='method_v2'. Дедуп по symbol + лимит 5 позиций.
+- ⚙️ **Конфиг:** `trading.method_v2` (enabled:TRUE — Егор «сразу в прод, VST песочница») + `source_policies.method_v2` (MARKET-вход волна3, 20x/0.5%, lev_set_to_max=false, tp_source=htf_t1).
+- 📊 **v1 упрощение:** один TP = t1 (пробой волны1, берётся 78% в бэктесте, высокий WR) через стандартный open_bracket. Лестница 40/30/30 (radar_tps в extra) = v1.1 (нужен post-fill хук для method_v2, аналог radar_armed_loop._on_entry_filled — сейчас лестница только у radar).
+- ✅ **Smoke на копии БД GREEN:** детект на bot-формате df (16 сетапов BTC, свежесть-фильтр), SQL-функции (_open_count/_symbol_busy), SourcePolicy method_v2.
+- ⏳ **ТРЕБУЕТ РЕСТАРТА** (Егор) → активация. Первый сетап = греп [METHOD-V2] started + FIRE. Откат = enabled:false+рестарт. Коммит 686c039.
+
 ## [05.07 ~00:30 UTC] Агент: Даат — ✅ МЕТОД ПРОШЁЛ WALK-FORWARD OOS (DS + сверка) → SHADOW
 
 - ✅✅ **DS-METHOD-V2-DEEP закрыта: ЭДЖ ВЫЖИЛ OOS.** DS (субагент bot-data-audit) + моя контрольная сверка (ИДЕНТИЧНО до знака): TRAIN 2024 +1.256% WR77% → TEST 2025-26 +0.966% WR75% (слепо +1.016%). Все 3 года плюс, обе стороны. Плато 27/27 комбинаций net>0 (робастно). Look-ahead ЧИСТ (DS независимо построчно — мой фикс подтверждён, других нет).
