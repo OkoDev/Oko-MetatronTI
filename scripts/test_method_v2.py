@@ -97,7 +97,8 @@ def simulate(df: pd.DataFrame, s) -> dict | None:
         move = (close[j_last] - entry) / entry * 100 if lng else (entry - close[j_last]) / entry * 100
         pnl += rem * move
     return {"net": pnl - COSTS, "kind": s.kind, "dir": s.direction,
-            "year": str(df.index[s.trigger_idx])[:4], "t1": hit[0], "t2": hit[1], "t3": hit[2]}
+            "year": str(df.index[s.trigger_idx])[:4], "t1": hit[0], "t2": hit[1], "t3": hit[2],
+            "conf": bool(getattr(s, "conf", False))}
 
 
 def main():
@@ -160,6 +161,18 @@ def main():
     rs = [x for x in res if x["kind"] == "reversal" and x["dir"] == "SHORT"]
     for y in sorted(set(x["year"] for x in rs)):
         print(f"  {y}:", stat([x for x in rs if x["year"] == y]))
+
+    print("\n  ═══ КОНФЛЮЭНЦИЯ СЕТОК (урок Егора: вход только в пересечении) ═══")
+    for kd in ("reversal", "series", "continuation"):
+        for d in ("LONG", "SHORT"):
+            for cf in (True, False):
+                sub = [x for x in res if x["kind"] == kd and x["dir"] == d and x["conf"] == cf]
+                if len(sub) >= 30:
+                    print(f"  {kd:12s} {d:5s} conf={'ДА ' if cf else 'нет'}:", stat(sub))
+    print("\n  conf=ДА reversal SHORT по годам:")
+    rsc = [x for x in rs if x["conf"]]
+    for y in sorted(set(x["year"] for x in rsc)):
+        print(f"  {y}:", stat([x for x in rsc if x["year"] == y]))
 
 
 if __name__ == "__main__":

@@ -44,6 +44,8 @@ class V2Setup:
     big_hi: float
     pos: float           # позиция ОСНОВАНИЯ слома в большом импульсе (0=lo, 1=hi)
     big_dir: str         # 'bull' | 'bear' на момент триггера
+    conf: bool = False   # КОНФЛЮЭНЦИЯ: entry совпал с уровнем сетки ПРЕДЫДУЩЕГО большого
+                         # импульса (урок Егора: «вход там, где сетки пересеклись»)
 
 
 def detect_method_v2(
@@ -79,6 +81,21 @@ def detect_method_v2(
     series_grid: list = []            # цели серии (большая сетка на момент reversal)
     series_big: tuple = (0.0, 0.0)
 
+    # полная шкала для конфлюэнции сеток (единая, с минус-уровнями — «−2 предыдущего = вход»)
+    conf_fibs = (-2.0, -1.618, -1.0, -0.62, -0.27, 0.0, 0.27, 0.5, 0.62, 0.705, 0.79, 1.0)
+    conf_tol_pct = 0.3
+
+    def _conf(entry_px: float, prev_lo: float, prev_hi: float, prev_dir_bull: bool) -> bool:
+        """entry совпал (±0.3%) с уровнем единой сетки ПРЕДЫДУЩЕГО импульса."""
+        if prev_hi <= prev_lo or entry_px <= 0:
+            return False
+        start, end = (prev_lo, prev_hi) if prev_dir_bull else (prev_hi, prev_lo)
+        for f in conf_fibs:
+            lvl = end - f * (end - start)
+            if lvl > 0 and abs(entry_px - lvl) / entry_px * 100 <= conf_tol_pct:
+                return True
+        return False
+
     for s in br_small:
         i = s.idx
         while bi < len(br_big) and br_big[bi].idx <= i:
@@ -87,12 +104,20 @@ def detect_method_v2(
             continue
         big_dir = big_state[-1].direction
         j_start = 0
+        j_prev = 0                    # начало ПРЕДЫДУЩЕГО импульса (для конфлюэнции сеток)
+        _seen_opp = False
         for b in reversed(big_state):
-            if b.direction != big_dir:
+            if not _seen_opp and b.direction != big_dir:
                 j_start = b.idx
+                _seen_opp = True
+            elif _seen_opp and b.direction == big_dir:
+                j_prev = b.idx
                 break
         lo_imp = float(low[j_start:i + 1].min())
         hi_imp = float(high[j_start:i + 1].max())
+        # предыдущий импульс (противоположный текущему): [j_prev .. j_start]
+        prev_lo = float(low[j_prev:j_start + 1].min()) if j_start > j_prev else 0.0
+        prev_hi = float(high[j_prev:j_start + 1].max()) if j_start > j_prev else 0.0
         if lo_imp <= 0 or (hi_imp - lo_imp) / lo_imp * 100 < min_range_pct:
             continue
         rng = hi_imp - lo_imp
@@ -107,12 +132,13 @@ def detect_method_v2(
             series_dir = None
 
         # ── РАЗВОРОТ у края (старт серии): CHoCH против big, основание в крайней зоне ──
+        cf = _conf(float(s.price), prev_lo, prev_hi, big_dir == "bear")
         if series_dir is None and big_dir == "bull" and s.kind == "CHoCH" and s.direction == "bear" \
                 and (base_hi - lo_imp) / rng >= 1 - edge:
             grid = fib_grid(lo_imp, hi_imp)
             out.append(V2Setup("reversal", "SHORT", i, s.ts, float(s.price),
                                base_hi * (1 + sl_buf_pct / 100), grid, lo_imp, hi_imp,
-                               (base_hi - lo_imp) / rng, big_dir))
+                               (base_hi - lo_imp) / rng, big_dir, cf))
             series_dir, series_n, series_grid, series_big = "SHORT", 1, grid, (lo_imp, hi_imp)
             continue
         if series_dir is None and big_dir == "bear" and s.kind == "CHoCH" and s.direction == "bull" \
@@ -120,7 +146,7 @@ def detect_method_v2(
             grid = fib_grid(hi_imp, lo_imp)
             out.append(V2Setup("reversal", "LONG", i, s.ts, float(s.price),
                                base_lo * (1 - sl_buf_pct / 100), grid, lo_imp, hi_imp,
-                               (base_lo - lo_imp) / rng, big_dir))
+                               (base_lo - lo_imp) / rng, big_dir, cf))
             series_dir, series_n, series_grid, series_big = "LONG", 1, grid, (lo_imp, hi_imp)
             continue
 
@@ -132,7 +158,7 @@ def detect_method_v2(
                                float(s.price), base_lo * (1 - sl_buf_pct / 100),
                                series_grid, series_big[0], series_big[1],
                                (base_lo - series_big[0]) / (series_big[1] - series_big[0] + 1e-12),
-                               big_dir))
+                               big_dir, cf))
             series_n += 1
         elif series_dir == "SHORT" and s.direction == "bear" and series_n < max_series:
             confirmed = big_dir == "bear"
@@ -140,6 +166,6 @@ def detect_method_v2(
                                float(s.price), base_hi * (1 + sl_buf_pct / 100),
                                series_grid, series_big[0], series_big[1],
                                (base_hi - series_big[0]) / (series_big[1] - series_big[0] + 1e-12),
-                               big_dir))
+                               big_dir, cf))
             series_n += 1
     return out

@@ -1,6 +1,41 @@
 # What's Next — Handoff
 
-## 🎯 СЕССИЯ 03.07 (вечер) = RADAR-ARMED-VST ПОСТРОЕН (шаги 1-6, флаг OFF) — АКТУАЛЬНЫЙ HANDOFF
+## 🜂 СЕССИЯ 03-04.07 (марафон) = ARMED в бою + МЕТОД ЕГОРА оцифрован — АКТУАЛЬНЫЙ HANDOFF
+
+> Русский · TTS Irina · ветка `arch-128-oko-sm`. Детали: `memory/current_state.md` (записи 04.07)
+> + auto-memory [[method-egor-two-scale-entry]] (МЕТОД ЦЕЛИКОМ — читать ПЕРВЫМ при работе над входом).
+
+**<работа сессии, всё в git/бою>:**
+1. **RADAR-ARMED живой в бою**: полный конвейер (порт radar_orders → luп → LIMIT+attached SL/TP →
+   PENDING → multi-TP 40/30/30 → BE после TP1 → TSL). Первая сделка HBAR #41530 BE+.
+   Ночные фиксы: 109400 (positionId на частичных TP), multiaccount pending-чекер (JUP +$3.26
+   спасена), Binance→BingX переякоривание уровней, плечо radar 20× (lev_set_to_max=false).
+   ⛓ Цепочки сигналов + 〰 wave_leg shadow в радаре. GRT Grade C скип — верный.
+2. **ote_nested**: 40 биржевых закрыто (приказ), cascade_gate (1D) боевой, 1h_15m_pull OFF.
+   Чистый лист под гейтом копится.
+3. **🜂 ГЛАВНОЕ — МЕТОД ЕГОРА оцифрован** (живой урок на ZEC через TW MCP):
+   [[method-egor-two-scale-entry]] + ТЗ docs/OTE_METHOD_ENTRY_V2.md. Формула: СТОРОНА (позиция
+   в большой структуре+толпа) → len5 CHoCH триггер → вход на откате (стоп ~3%) → len50 = БУ+ДОБОР
+   → цели=OTE сломанного импульса → СЕРИЯ входов на откатах вдоль. Сетка единая с минус-уровнями.
+4. **METHOD-V2 построен и прогнан**: `core/smc/method_v2.py` + `scripts/test_method_v2.py`.
+   Smoke ZEC = урок 1:1 (вся лестница входов). Бэктест 139k сделок:
+   **reversal SHORT жив (+0.067% все / +0.248% ликвидные, 3/5 лет)**, остальное — итерации
+   (continuation-цели кривые мои, конфлюэнция v1 в лоб не дала — см. ТЗ §Результаты).
+
+**<next (порядок)>:**
+1. METHOD-V2 итерации (ТЗ §Результаты): continuation-цели от актуального импульса → ликвидная
+   вселенная → 4h-структура+1h-вход → конфлюэнция-СКОРИНГ полным стеком targets-2.0 → walk-forward.
+2. Радар-форвард: первая сделка с полной лестницей TP (после фикса 109400 ещё не было) + wave_leg
+   копится + сверка radar_orders статусов.
+3. ote_nested под гейтом: net до/после 04.07 (чистое сравнение с июльскими −1.31%).
+4. ZEC вживую: ожидание len5 CHoCH↓452 → SHORT по методу (Егор ведёт глазом, бот учится).
+
+**<critical>:** radar_armed live (VST) · cascade_gate live · рестарты бота = Егор ·
+[[method-egor-two-scale-entry]] = канон входа, старые ote_nested сделки = АНТИ-эталон (не mining).
+
+---
+
+## 🎯 СЕССИЯ 03.07 (вечер) = RADAR-ARMED-VST ПОСТРОЕН (шаги 1-6, флаг OFF) — АРХИВ
 
 > Русский · TTS Irina · ветка `arch-128-oko-sm`. План+статус: [docs/RADAR_ARMED_PLAN.md](docs/RADAR_ARMED_PLAN.md)
 > (разделы «Результаты разведки PARTIAL» + «СТАТУС РЕАЛИЗАЦИИ»). Детали: `memory/current_state.md` (19:30).
