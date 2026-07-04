@@ -131,6 +131,17 @@ trading:
   live_guard_timeout_min: 7
   # RADAR-ARMED-VST (03.07, docs/RADAR_ARMED_PLAN.md): бот исполняет сетапы радара
   # (oko_feed/external_data.db → radar_orders) через trade_router + source_policy 'radar'.
+  # METHOD-V2 фрактальный вход (05.07, ТЗ docs/OTE_METHOD_ENTRY_V2.md, прошёл walk-forward OOS
+  # +0.97% WR75%). 4h=волна1 старшего, 15m=волна3 младшего, стоп за волну2, лестница целей по
+  # старшему. Егор: «сразу в прод — VST песочница». Reuse обвязки radar (LIMIT/multi-TP/BE/TSL).
+  method_v2:
+    enabled: true              # ✅ ВКЛЮЧЁН 05.07 (Егор «сразу в прод — VST песочница»). Прошёл walk-forward OOS. Первый сетап = греп [METHOD-V2]. Откат = false + рестарт
+    scan_sec: 900              # период скана (метод на 4h — редкие сетапы, 15 мин достаточно)
+    max_positions: 5           # лимит одновременных method_v2-позиций
+    fresh_bars_15m: 3          # сетап «свежий» если entry_ts в последних N барах 15m (иначе старый)
+    tp_shares: [40, 30, 30]    # доли целей (t1=пробой волны1, t2/t3=продолжение)
+    conf_only: false           # true → только сетапы в конфлюэнции сеток (conf=ДА, +1.3% WR82%, реже)
+    max_symbols: 60            # ликвидные top-N (метод на неликвиде тонет в спреде)
   radar_armed:
     enabled: true              # ✅ ВКЛЮЧЁН 03.07 ~19:45 (Егор: «дампы возможны, лови» + рестарт). Первый живой сетап = прогон под грепом [RADAR-ARMED]. Откат = false + рестарт
     poll_sec: 15               # период чтения radar_orders из external_data.db
@@ -745,6 +756,15 @@ signal_router:
       entry_order_type: LIMIT  # вход лимиткой по цене сетапа (pending-lifecycle в radar_armed_loop)
       lev_set_to_max: false    # 04.07: уважать 20× (не поднимать до 50 set-to-max). Радар=импульс,
                                # гэп мимо SL достаёт близкую ликвидацию — низкое плечо = запас (JUP #41708 liq −1%)
+    method_v2:                 # 05.07 METHOD-V2 фрактальный вход (прошёл walk-forward OOS)
+      min_strength: 0          # качество = сама структура сетапа (волновой счёт), strength не считается
+      exchange_enabled: true   # VST-песочница (добро Егора «сразу в прод»)
+      trade_mode: method_v2    # dedup + изоляция
+      soft_gates_enabled: []
+      leverage: 20
+      risk_pct: 0.5
+      entry_order_type: MARKET # вход по рынку на волне 3 (BOS = импульс уже пошёл, не ждать откат)
+      lev_set_to_max: false    # тугой стоп за волну 2 (~1%) → уважать 20× (не 50, гэп-риск)
     trigger_loop:
       min_strength: 50
       exchange_enabled: false
