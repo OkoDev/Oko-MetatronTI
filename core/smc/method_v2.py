@@ -155,18 +155,23 @@ def detect_method_v2(
         # ЦЕЛИ = ПРОДОЛЖЕНИЕ актуального импульса (extension за экстремум по единой шкале Егора),
         # НЕ старая сетка разворота — иначе поздние входы целятся в пройденные уровни (дефект v2.0).
         # Вход валиден только если entry НЕ за t1 (иначе цель уже взята — пропуск).
+        # ЦЕЛИ по фазе: series (до len50-подтверждения) = БЛИЖНЯЯ лестница (t1=экстремум,
+        # движение не подтверждено → фиксируем раньше); continuation (после флипа) = extension
+        # (тренд подтверждён → целимся далеко). Дефект v2.0: series с extension → t1-reach 5%.
         if series_dir == "LONG" and s.direction == "bull" and series_n < max_series:
             confirmed = big_dir == "bull"
-            tg = [hi_imp + 0.27 * rng, hi_imp + 0.62 * rng, hi_imp + 1.0 * rng]
+            tg = ([hi_imp + 0.27 * rng, hi_imp + 0.62 * rng, hi_imp + 1.0 * rng] if confirmed
+                  else [hi_imp, hi_imp + 0.38 * rng, hi_imp + 0.786 * rng])
             entry = float(s.price)
-            if entry < tg[0]:                             # есть ход до первой цели
+            if entry < tg[0]:
                 out.append(V2Setup("continuation" if confirmed else "series", "LONG", i, s.ts,
                                    entry, base_lo * (1 - sl_buf_pct / 100),
                                    tg, lo_imp, hi_imp, (base_lo - lo_imp) / rng, big_dir, cf))
                 series_n += 1
         elif series_dir == "SHORT" and s.direction == "bear" and series_n < max_series:
             confirmed = big_dir == "bear"
-            tg = [lo_imp - 0.27 * rng, lo_imp - 0.62 * rng, lo_imp - 1.0 * rng]
+            tg = ([lo_imp - 0.27 * rng, lo_imp - 0.62 * rng, lo_imp - 1.0 * rng] if confirmed
+                  else [lo_imp, lo_imp - 0.38 * rng, lo_imp - 0.786 * rng])
             entry = float(s.price)
             if entry > tg[0] > 0:
                 out.append(V2Setup("continuation" if confirmed else "series", "SHORT", i, s.ts,
