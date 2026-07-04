@@ -743,6 +743,8 @@ signal_router:
       leverage: 20             # Егор 03.07
       risk_pct: 0.5            # Егор 03.07
       entry_order_type: LIMIT  # вход лимиткой по цене сетапа (pending-lifecycle в radar_armed_loop)
+      lev_set_to_max: false    # 04.07: уважать 20× (не поднимать до 50 set-to-max). Радар=импульс,
+                               # гэп мимо SL достаёт близкую ликвидацию — низкое плечо = запас (JUP #41708 liq −1%)
     trigger_loop:
       min_strength: 50
       exchange_enabled: false

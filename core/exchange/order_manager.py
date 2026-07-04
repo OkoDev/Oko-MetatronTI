@@ -447,6 +447,9 @@ class OrderManager:
         qty:         float = 0.0,
         leverage:    Optional[int] = None,
         entry_order_type: str = "MARKET",   # "LIMIT" → вход лимиткой по entry_price (Фаза 1, oko_ote 0.618)
+        lev_set_to_max: bool = True,        # False → уважать запрошенное плечо (cap-down only). radar:
+                                            # 20× вместо set-to-max 50× — импульсная торговля, гэп мимо
+                                            # SL достаёт близкую ликвидацию 50× (JUP #41708 liq −1%).
     ) -> BracketResult:
         notional = qty * entry_price
 
@@ -533,7 +536,7 @@ class OrderManager:
                 requested=leverage, entry_price=entry_price, sl=sl, pair_max=_max_lev,
                 liq_safety_enabled=bool(self._cfg.get("trading.liq_safety_enabled", True)),
                 liq_buffer_pct=float(self._cfg.get("trading.liq_safety_buffer_pct", 1.5) or 0),
-                set_to_max=True,
+                set_to_max=lev_set_to_max,
             )
             if _lev_reason:
                 logger.info("[OrderManager] %s %s leverage: %s", symbol, direction, _lev_reason)

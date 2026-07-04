@@ -41,6 +41,10 @@ class SourcePolicy:
     # Тип входного ордера (Фаза 1, 25.06): "MARKET" (по рынку, slippage) или "LIMIT" (по
     # entry_price = OTE 0.618, без slippage). oko_ote → LIMIT (вход ровно в зону, метод Егора).
     entry_order_type: str = "MARKET"
+    # Плечо set-to-max (04.07): True (дефолт, ote_nested) → order_manager поднимает плечо до
+    # макс безопасного (экономия маржи). False (radar) → уважать запрошенное (cap-down only):
+    # импульсная торговля + гэп мимо SL достаёт близкую ликвидацию высокого плеча.
+    lev_set_to_max: bool = True
 
     @classmethod
     def from_config(cls, config: Any, source: str) -> "SourcePolicy":
@@ -71,4 +75,5 @@ class SourcePolicy:
             leverage=int(_lev) if _lev is not None else None,
             risk_pct=float(_risk) if _risk is not None else None,
             entry_order_type=str(_pick("entry_order_type", "MARKET")).upper(),
+            lev_set_to_max=bool(_pick("lev_set_to_max", True)),
         )

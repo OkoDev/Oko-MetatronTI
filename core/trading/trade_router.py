@@ -267,6 +267,7 @@ class TradeRouter:
                 entry_price=entry, sl=sl, tp1=tp, tp2=None, qty=qty,
                 leverage=leverage,   # per-source плечо → биржа (кламп к max пары внутри)
                 entry_order_type=getattr(_pol, "entry_order_type", "MARKET"),  # oko_ote → LIMIT (Фаза 1)
+                lev_set_to_max=getattr(_pol, "lev_set_to_max", True),  # radar → False (уважать 20×)
             )
             if not br.success:
                 if br.error != "position_already_open":
