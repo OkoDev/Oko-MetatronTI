@@ -410,16 +410,40 @@ async def _try_register(bot, o: dict, radar_db) -> None:
     if not tps:
         _set_status(radar_db, sym_feed, ts, "SKIPPED", "no targets")
         return
-    # take_profit = ДАЛЬНЯЯ цель: ближние TP1/TP2 — частичные (multi-TP, шаг 5); финальная в БД,
-    # чтобы симуляторный TP-детект/repair_missing_tp не закрыли позицию на первой цели (разведка §1-2).
-    tp_final = tps[-1]
 
-    # TP-inversion / протух по цене: цена уже за первой целью → сетап отработал без нас
     px_now = 0.0
     try:
         px_now = float(await bot.data_collector.get_current_price(symbol) or 0)
     except Exception:
         pass
+
+    # ПЕРЕЯКОРИВАНИЕ Binance→BingX (04.07, Егор заметил расхождение цен; замер: avg 0.055%,
+    # max 0.14%): уровни сетапа посчитаны на Binance-данных радара, торгуем на BingX.
+    # Для SL-дистанций 0.2-0.5% сдвиг = до трети дистанции. Масштабируем мультипликативно
+    # k = BingX_now / Binance_now (одновременные цены). Не вышло — уровни как есть (≤0.14%).
+    if px_now > 0:
+        def _bn_px_fetch():
+            import urllib.request
+            import json as _j
+            url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={sym_feed}USDT"
+            with urllib.request.urlopen(url, timeout=5) as r:
+                return float(_j.load(r)["price"])
+        try:
+            _bn = await asyncio.get_running_loop().run_in_executor(None, _bn_px_fetch)
+            _k = px_now / _bn if _bn else 1.0
+            if 0.97 <= _k <= 1.03 and abs(_k - 1) > 0.0002:
+                entry, sl = entry * _k, sl * _k
+                tps = [t * _k for t in tps]
+                logger.info("[RADAR-ARMED] %s уровни переякорены Binance→BingX k=%.5f (%+.3f%%)",
+                            sym_feed, _k, (_k - 1) * 100)
+        except Exception as _bne:
+            logger.debug("[RADAR-ARMED] %s binance px недоступна (%s) — уровни как есть", sym_feed, _bne)
+
+    # take_profit = ДАЛЬНЯЯ цель: ближние TP1/TP2 — частичные (multi-TP, шаг 5); финальная в БД,
+    # чтобы симуляторный TP-детект/repair_missing_tp не закрыли позицию на первой цели (разведка §1-2).
+    tp_final = tps[-1]
+
+    # TP-inversion / протух по цене: цена уже за первой целью → сетап отработал без нас
     if px_now > 0:
         if (tps[0] <= px_now) if is_long else (tps[0] >= px_now):
             _set_status(radar_db, sym_feed, ts, "SKIPPED", f"tp1 passed px={px_now:.6g}")
