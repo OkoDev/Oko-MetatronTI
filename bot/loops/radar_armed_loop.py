@@ -121,26 +121,37 @@ async def _check_pending(bot, ttl_sec: float) -> None:
     if om is None or not om.is_live():
         return
     now = _dt.datetime.now(_dt.timezone.utc)
+    # fill-детект ACCOUNT-AGNOSTIC (04.07 фикс): ордер мог зафиллиться на ЛЮБОМ субакке
+    # (роутер балансирует), а sticky-client по symbol смотрел не тот акк → fill невидим,
+    # позиция висла PENDING + cancel_order бил чужой акк = 109400 вечным циклом (JUP #41708
+    # зафиллилась +$3.26, но БД держала PENDING 4ч). Позиция в агрегате всех субакков =
+    # зафиллено. entry = avgPrice позиции.
+    from core.exchange.position_parser import parse_positions
+    try:
+        om._invalidate_positions()
+        agg = parse_positions(await om._get_positions_cached())
+    except Exception as _pe:
+        logger.debug("[RADAR-ARMED] pending: positions err %s", _pe)
+        return
+    live = {(pp.symbol_our, pp.side): pp for pp in agg if pp.qty > 0}
     for t in rows:
         tid, symbol = t["id"], t["symbol"]
         direction = (t["direction"] or "").upper()
         oid = str(t["exchange_order_id"] or "")
         try:
-            client = await om._get_client_synced(symbol)
-            fill_price = 0.0
-            for o in await client.get_filled_orders(symbol, limit=10):
-                if str(o.get("orderId")) == oid:
-                    fill_price = float(o.get("avgPrice") or o.get("price") or 0)
-                    break
-            if fill_price > 0:
+            pp = live.get((symbol, direction))
+            if pp is not None:                            # зафиллено (позиция в агрегате)
+                fill_price = float(getattr(pp, "entry", 0) or 0)
                 with sqlite3.connect(db_path, timeout=5) as c:
-                    c.execute("UPDATE simulated_trades SET status='OPEN', actual_entry_price=? "
-                              "WHERE id=? AND status='PENDING_ENTRY'", (fill_price, tid))
+                    upd = {"status": "OPEN"}
+                    if fill_price > 0:
+                        c.execute("UPDATE simulated_trades SET status='OPEN', actual_entry_price=? "
+                                  "WHERE id=? AND status='PENDING_ENTRY'", (fill_price, tid))
+                    else:
+                        c.execute("UPDATE simulated_trades SET status='OPEN' "
+                                  "WHERE id=? AND status='PENDING_ENTRY'", (tid,))
                     c.commit()
                 logger.info("[RADAR-ARMED] #%d %s %s LIMIT FILLED @ %.6g → OPEN", tid, symbol, direction, fill_price)
-                # Захваты как в trade_router после open_bracket (positionId = якорь exit'а).
-                # ⚠️ fetch_and_save_tp_order_id НЕ спавним: om.get_tp_order_id при нескольких TP
-                # «оставляет один, остальные отменяет» — каннибализирует наши частичные TP1/TP2.
                 try:
                     from core.exchange.tsl_updater import (
                         fetch_and_save_sl_order_id, fetch_and_save_position_id,
@@ -161,19 +172,56 @@ async def _check_pending(bot, ttl_sec: float) -> None:
             except Exception:
                 pass
             if age_s is not None and age_s > ttl_sec:
-                resp = await client.cancel_order(symbol, oid)
-                code = resp.get("code", -1) if isinstance(resp, dict) else -1
-                if code == 0:
+                # ГОНКА fill→быстрый-exit (ARB #41633): LIMIT зафиллился и закрылся по SL
+                # МЕЖДУ циклами → позиции уже нет, но это НЕ «не сработал». Проверяем filled
+                # по orderId на всех субакках: нашли → OPEN (exit резолвит position_sync/exec_ws,
+                # честный SL/TP), НЕ CANCELLED (иначе теряем реальный убыток из метрик).
+                try:
+                    router = om._get_router()
+                    accs = list(getattr(router, "accounts", [1]))
+                except Exception:
+                    router, accs = None, [1]
+                was_filled = False
+                for acc in accs:
+                    cli = router.client_for_account(acc) if router else await om._get_client_synced(symbol)
+                    if cli is None:
+                        continue
+                    try:
+                        for o in await cli.get_filled_orders(symbol, limit=20):
+                            if str(o.get("orderId")) == oid:
+                                was_filled = True
+                                break
+                    except Exception:
+                        continue
+                    if was_filled:
+                        break
+                if was_filled:
                     with sqlite3.connect(db_path, timeout=5) as c:
-                        c.execute("UPDATE simulated_trades SET status='CANCELLED', closed_at=? "
-                                  "WHERE id=? AND status='PENDING_ENTRY'", (now.isoformat(), tid))
+                        c.execute("UPDATE simulated_trades SET status='OPEN' "
+                                  "WHERE id=? AND status='PENDING_ENTRY'", (tid,))
                         c.commit()
-                    logger.info("[RADAR-ARMED] #%d %s LIMIT TTL %.0fмин — отменён → CANCELLED",
-                                tid, symbol, age_s / 60)
-                else:
-                    # cancel не прошёл (возможно гонка с fill) — НЕ помечаем, перепроверим циклом
-                    logger.warning("[RADAR-ARMED] #%d %s cancel code=%s — перепроверка след. циклом",
-                                   tid, symbol, code)
+                    logger.info("[RADAR-ARMED] #%d %s LIMIT зафиллился (позиция уже закрыта?) "
+                                "→ OPEN, exit резолвит position_sync", tid, symbol)
+                    continue
+                # реально не сработал: cancel account-aware → CANCELLED
+                cancelled = False
+                for acc in accs:
+                    cli = router.client_for_account(acc) if router else await om._get_client_synced(symbol)
+                    if cli is None:
+                        continue
+                    try:
+                        resp = await cli.cancel_order(symbol, oid)
+                        if (resp.get("code", -1) if isinstance(resp, dict) else -1) == 0:
+                            cancelled = True
+                            break
+                    except Exception:
+                        continue
+                with sqlite3.connect(db_path, timeout=5) as c:
+                    c.execute("UPDATE simulated_trades SET status='CANCELLED', closed_at=? "
+                              "WHERE id=? AND status='PENDING_ENTRY'", (now.isoformat(), tid))
+                    c.commit()
+                logger.info("[RADAR-ARMED] #%d %s LIMIT TTL %.0fмин → CANCELLED (cancel_ok=%s)",
+                            tid, symbol, age_s / 60, cancelled)
         except Exception as e:
             logger.debug("[RADAR-ARMED] pending #%d %s: %s", tid, symbol, e)
 
@@ -232,20 +280,18 @@ async def _on_entry_filled(bot, trade_id: int, symbol: str, direction: str, fill
         if qty_pos <= 0:
             logger.warning("[RADAR-ARMED] #%d %s: qty неизвестен — частичные TP не ставлю", trade_id, symbol)
             return
-        client = await om._get_client_synced(symbol)
+        # ACCOUNT-AWARE: TP ставим на КЛИЕНТ аккаунта позиции (роутер балансирует по субаккам;
+        # sticky-client по symbol мог бы дать чужой акк → TP мимо позиции). pid из того же снимка.
+        client, pid = await om._resolve_position_client(symbol, direction)
         side_close = "SELL" if direction == "LONG" else "BUY"
         # Separate Isolated: TP = close-ордер → positionId ОБЯЗАТЕЛЕН (109400, HBAR #41530).
-        # К моменту fill pid уже в БД (fetch_and_save_position_id при постановке LIMIT);
-        # fallback — с биржи через om.
-        pid = None
-        try:
-            with sqlite3.connect(bot.trade_simulator.db_path, timeout=5) as c:
-                r = c.execute("SELECT position_id FROM simulated_trades WHERE id=?", (trade_id,)).fetchone()
-            pid = str(r[0]) if (r and r[0]) else None
-        except Exception:
-            pass
         if not pid:
-            pid = await om._get_position_id(symbol, direction)
+            try:
+                with sqlite3.connect(bot.trade_simulator.db_path, timeout=5) as c:
+                    r = c.execute("SELECT position_id FROM simulated_trades WHERE id=?", (trade_id,)).fetchone()
+                pid = str(r[0]) if (r and r[0]) else None
+            except Exception:
+                pass
         if not pid:
             logger.warning("[RADAR-ARMED] #%d %s: positionId не найден — частичные TP отложены "
                            "(позиция защищена attached SL/TP)", trade_id, symbol)
