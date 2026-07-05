@@ -35,8 +35,8 @@ def _fmt_usd(u: float) -> str:
     return f"${u/1e6:.1f}M" if u >= 1e6 else f"${u/1e3:.0f}k"
 
 
-def _magnet_levels(sym: str, side: str) -> list[tuple[float, str]]:
-    """Слой 1: топ-3 магнита ликвидаций в сторону цели (reuse liq_magnets, не дублируем)."""
+def _magnet_levels(sym: str, side: str, px: float) -> list[tuple[float, str]]:
+    """Слой 1: топ-3 магнита ликвидаций СТРОГО в сторону цели (reuse liq_magnets, не дублируем)."""
     try:
         from scripts.liq_magnets import build_magnets
         m = build_magnets(sym)
@@ -45,6 +45,10 @@ def _magnet_levels(sym: str, side: str) -> list[tuple[float, str]]:
     if not m:
         return []
     arr = m["below"] if side == "SHORT" else m["above"]
+    # 🔴 05.07 фикс (Егор поймал LTC TP1 −0.2% при каскаде ВВЕРХ): above/below магнитов —
+    # относительно ОПОРНОЙ цены build_magnets, не текущей px → магнит мог оказаться ЗА спиной.
+    # Фильтруем по ТЕКУЩЕЙ px, как пивоты/FVG: LONG-цель строго выше, SHORT строго ниже.
+    arr = [(lvl, usd) for lvl, usd in arr if ((lvl < px) if side == "SHORT" else (lvl > px))]
     return [(lvl, f"магнит {_fmt_usd(usd)}") for lvl, usd in
             sorted(arr, key=lambda x: -x[1])[:3]]
 
@@ -104,7 +108,7 @@ def build_targets(sym: str, side: str, px: float) -> list[dict]:
 
     side: 'SHORT' → цели НИЖЕ px, 'LONG' → ВЫШЕ. Возврат: [{px, tags, star}].
     """
-    levels = (_magnet_levels(sym, side) + _pivot_levels(sym, side, px)
+    levels = (_magnet_levels(sym, side, px) + _pivot_levels(sym, side, px)
               + _fvg_levels(sym, side, px))
     if not levels:
         return []
