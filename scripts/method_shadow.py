@@ -32,9 +32,11 @@ from core.smc.ote_matrix import structure_trend
 # те же ликвидные, что радар (крауд-контекст в radar_state есть только для них)
 from oi_fast_poller import CORE  # noqa: E402
 
-SCAN_SEC = 900            # ~15 мин: 1h-структура меняется медленно
-LTF, HTF = "1h", "4h"
-LTF_LIMIT, HTF_LIMIT = 1000, 400
+SCAN_SEC = 900            # ~15 мин = 1 бар 15m: скан на закрытии свежего бара
+# 15m-сигнал + 4h-сторона: пониженный ТФ дал OOS-плюс и устойчивый SHORT (Егор 05.07,
+# «25-26 медвежьи, прогони на пониженных ТФ» → n=559 WR47 OOS+0.052%, SHORT все годы+).
+LTF, HTF = "15m", "4h"
+LTF_LIMIT, HTF_LIMIT = 1500, 400
 EDGE = 0.5
 COOLDOWN_SEC = 6 * 3600   # один алерт по символу раз в 6ч
 

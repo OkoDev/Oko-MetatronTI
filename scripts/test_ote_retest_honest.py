@@ -97,9 +97,10 @@ def main():
     ap.add_argument("--side", type=int, default=0,
                     help="0=нет · 1=trend-follow gate · 2=REVERSAL у экстремума большого 4h + OTE-цели")
     ap.add_argument("--edge", type=float, default=0.65, help="порог близости к экстремуму (side=2)")
+    ap.add_argument("--side-tf", default="4h", dest="side_tf", help="ТФ стороны (structure_trend)")
     args = ap.parse_args()
     syms = liquid(args.tf, args.liquid)
-    side_tf = "4h"
+    side_tf = args.side_tf
     tag = {0: "БЕЗ стороны", 1: "+trend-follow gate",
            2: "+РАЗВОРОТ у экстремума 4h + OTE-цели"}[args.side]
     print(f"символов: {len(syms)} · tf={args.tf} · окно={args.win} · step={args.step} · {tag} (point-in-time, provisional)")
@@ -197,14 +198,19 @@ def main():
     print("  conf (вход в конфлюэнции OB/FVG):")
     print("    conf≥1:", stat([x for x in res if x["conf"] >= 1]))
     print("    conf=0:", stat([x for x in res if x["conf"] == 0]))
-    print("  по годам:")
+    print("  по годам (ALL · LONG · SHORT) — медвежий контекст 2025-26:")
     for y in sorted(set(x["year"] for x in res)):
-        print(f"    {y}:", stat([x for x in res if x["year"] == y]))
+        yr = [x for x in res if x["year"] == y]
+        print(f"    {y}: ALL {stat(yr)}")
+        print(f"          LONG  {stat([x for x in yr if x['dir']=='LONG'])}")
+        print(f"          SHORT {stat([x for x in yr if x['dir']=='SHORT'])}")
     train = [x for x in res if x["year"] <= "2024"]
     test = [x for x in res if x["year"] >= "2025"]
     print("  WALK-FORWARD:")
     print("    TRAIN(≤2024):", stat(train))
     print("    TEST (≥2025):", stat(test))
+    print("    TEST LONG :", stat([x for x in test if x["dir"] == "LONG"]))
+    print("    TEST SHORT:", stat([x for x in test if x["dir"] == "SHORT"]))
 
 
 if __name__ == "__main__":
