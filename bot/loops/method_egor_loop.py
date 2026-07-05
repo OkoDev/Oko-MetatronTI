@@ -3,8 +3,9 @@ METHOD-EGOR loop — боевой вход по методу Егора на VST
 
 Геометрия (ядро core.smc.method_egor, честный бэктест WR55%, 15m/4h OOS+): вход на ОТКАТЕ
 (ote_retest provisional) на РАЗВОРОТЕ у экстремума большого 4h импульса + OTE-цели + тугой
-локальный стоп. Вход LIMIT в OTE-зону (source_policy entry_order_type=LIMIT) → реальный филл
-≈ сигнал (в отличие от ote_nested, что льёт входом «в воздухе»).
+локальный стоп. Вход MARKET + гейт свежести (детект=свежий ретест → цена в OTE-зоне сейчас →
+вход близко к зоне, без LIMIT pending-orphan рисков; урок oko_ote). Реальный филл ≈ сигнал —
+в отличие от ote_nested, что льёт входом «в воздухе» (не на откате).
 
 🧲 ТОЛПА-ГЕЙТ (недостающий кусок метода, только live): funding из radar_state.
   SHORT у вершины разрешён только если funding>0 (лонги перегреты = топливо вниз);
@@ -200,14 +201,26 @@ async def _register(bot, symbol, s, funding) -> None:
     tps = [float(t) for t in s["targets"] if t]
     if not tps:
         return
-    entry_px = float(s["entry"])              # LIMIT-вход в OTE-зону (policy entry_order_type=LIMIT)
+    # MARKET + гейт свежести (урок oko_ote config:751 — LIMIT pending-lifecycle без чекера =
+    # orphan-риск). Детект = свежий ретест → цена СЕЙЧАС в OTE-зоне, MARKET входит близко к зоне.
+    px_now = 0.0
     vol24 = 0.0
     try:
         tk = await bot.data_collector.get_ticker(symbol)
         if tk:
+            px_now = float(tk.get("last") or tk.get("close") or 0)
             vol24 = float(tk.get("quoteVolume") or 0)
     except Exception:
         pass
+    # гейт свежести: цена уже за целью или за стопом → сетап протух, skip
+    if px_now > 0:
+        if (tps[0] <= px_now) if is_long else (tps[0] >= px_now):
+            logger.info("[METHOD-EGOR] %s %s: t1 уже пройдена (px=%.6g) — skip", symbol, s["direction"], px_now)
+            return
+        if (px_now <= float(s["sl"])) if is_long else (px_now >= float(s["sl"])):
+            logger.info("[METHOD-EGOR] %s %s: цена за стопом (px=%.6g) — skip", symbol, s["direction"], px_now)
+            return
+    entry_px = px_now if px_now > 0 else float(s["entry"])
     rec = TradingRecommendation(
         symbol=symbol, action="BUY" if is_long else "SELL",
         direction=SignalDirection.LONG if is_long else SignalDirection.SHORT,
