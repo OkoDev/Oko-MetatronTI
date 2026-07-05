@@ -9,6 +9,14 @@
 
 ---
 
+## [05.07 ~12:00 UTC] Агент: Даат — ⚔️ method_egor В БОЙ на VST + ote_nested ОТКЛЮЧЁН (льёт)
+
+- 🔴 **ote_nested РЕАЛЬНО ЛЬЁТ (данные, ЗАКОН №1 + fake-entry):** VST 30д реальный филл **−0.57%/сд**, а R (+0.199) и сигнальный % (+0.142) ВРАЛИ плюс — маска fake-entry (66% `actual_entry_price=NULL`, метрика от сигнальной цены). Вход «в воздухе» исполняется хуже сигнала. → `source_policies.ote_nested.exchange_enabled: false` (VST off, SIM research остаётся). arch104 тоже льёт (−0.14% сигнальный). Урок: VST-стратегию мерить ТОЛЬКО от actual_entry_price. [[ote_nested_live_vst_bleeding]].
+- ⚔️ **method_egor В БОЙ на VST** (Егор «в бой, песочница, смотрю глазами», lev20/risk1%): `bot/loops/method_egor_loop.py` — детект (ядро detect_method_egor на 15m/4h) → **толпа-гейт** (funding из radar_state: SHORT+f>0/LONG+f<0) → MARKET+гейт свежести (урок oko_ote: LIMIT без pending=orphan) → trade_router.submit source='method_egor'. source_policy (lev20/risk1/MARKET) + trading.method_egor.enabled=**true** + регистрация в bot.py:606. Smoke OK (config/луп/ядро/гейт).
+- ✅ **method-shadow (id7 pm2)** параллельно шлёт decision-support подсветку (15m).
+- ⏳ **НУЖЕН РЕСТАРТ БОТА** → method_egor_loop стартует, method_v2_loop не стартует (enabled:false), ote_nested перестанет открывать VST. Мониторинг: греп `[METHOD-EGOR]` (первые циклы — детект/гейт без сделок, метод редкий; при сетапе → #id + funding). Коммиты d2504a9/2b11881/1f7d9c2/700d9dc.
+- ⏭️ NEXT: после рестарта следить [METHOD-EGOR] логи на ошибки (первый живой запуск: get_ticker/trade_router API); форвард-резолв method_shadow; опц. волновой-вариант method_v2.
+
 ## [05.07 ~10:30 UTC] Агент: Даат — 🎯 МЕТОД ЕГОРА ОЦИФРОВАН ПРАВИЛЬНО (WR55%) → SHADOW-врезка
 
 - 🔑 **Егор навёл:** `_swings` модифицировали (provisional) для чарт-билдера, метод входит на ОТКАТЕ не на BOS. Нашёл: **method_v2 был ДУБЛЕМ** (голый detect_structure_breaks + BOS) вместо готового `ote_retest_setups(provisional=True)` (слом→OTE→РЕТЕСТ=вход, `append_provisional_leg` дорисовывает ногу live). method_v2 → на выброс.
