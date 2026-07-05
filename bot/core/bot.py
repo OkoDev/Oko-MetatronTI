@@ -595,13 +595,21 @@ class TradingAlertBot:
                 logger.info("[RADAR-ARMED] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[RADAR-ARMED] failed to start: %s", e)
-            # ═══ METHOD-V2 — фрактальный вход (прошёл walk-forward OOS, gated trading.method_v2) ═══
+            # ═══ METHOD-V2 — фрактальный вход (ОТКЛЮЧЁН 05.07 look-ahead, gated trading.method_v2) ═══
             try:
                 from bot.loops.method_v2_loop import method_v2_loop
                 asyncio.create_task(method_v2_loop(self))   # gated: enabled=false → не стартует
                 logger.info("[METHOD-V2] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[METHOD-V2] failed to start: %s", e)
+            # ═══ METHOD-EGOR — боевой вход по методу Егора (разворот у экстремума + откат + толпа,
+            #     замена ote_nested; gated trading.method_egor) ═══
+            try:
+                from bot.loops.method_egor_loop import method_egor_loop
+                asyncio.create_task(method_egor_loop(self))   # gated: enabled=false → не стартует
+                logger.info("[METHOD-EGOR] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[METHOD-EGOR] failed to start: %s", e)
             # Автостарт мониторинга ВСЕГДА (не ждём кнопку ТГ — scan стартует сам при
             # запуске бота, независимо от доступности Telegram). Раньше стартовал только
             # headless при падении polling → при доступном TG бот ждал ручной /start.
