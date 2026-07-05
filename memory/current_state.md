@@ -9,6 +9,27 @@
 
 ---
 
+## [05.07 ~10:30 UTC] Агент: Даат — 🎯 МЕТОД ЕГОРА ОЦИФРОВАН ПРАВИЛЬНО (WR55%) → SHADOW-врезка
+
+- 🔑 **Егор навёл:** `_swings` модифицировали (provisional) для чарт-билдера, метод входит на ОТКАТЕ не на BOS. Нашёл: **method_v2 был ДУБЛЕМ** (голый detect_structure_breaks + BOS) вместо готового `ote_retest_setups(provisional=True)` (слом→OTE→РЕТЕСТ=вход, `append_provisional_leg` дорисовывает ногу live). method_v2 → на выброс.
+- 🎯 **Честный point-in-time бэктест (`test_ote_retest_honest.py`, скользящее окно=живой край):** baseline без стороны −0.76% WR34% (шум) → trend-follow −0.78% (инверсия метода) → **РАЗВОРОТ у экстремума 4h + OTE-цели + тугой стоп (метод Егора): 30 симв n=234 WR55%, ALL −0.085% (грань безубытка), LIMIT +0.045%, LONG +0.11%.** WR 34→55% = геометрия ПОДТВЕРЖДЕНА. OOS ~0 (робастного эджа на историчке нет — последний кусок ТОЛПА/funding у экстремума в OHLCV отсутствует).
+- ✅ **Ядро вынесено `core/smc/method_egor.py`** (reuse бэктест+SHADOW). Бэктест переключён на него (side=2), ⏳ верификация цифр (b02dv3fsi).
+- ✅ **`scripts/method_shadow.py`** — SHADOW-forward (решение Егора): редкий скан 15м → detect_method_egor на 1h+4h → свежий сетап у экстремума → крауд из `radar_state` (funding/oi) → лог `method_shadow` + алерт (decision-support: сторона+вход+SL+OTE-цели+толпа-фильтр). Толпа-гейт: SHORT у вершины+funding>0=топливо вниз / LONG у дна+funding<0=топливо вверх. Smoke ok (метод редкий, сейчас 0 сетапов — норма). НЕ автоторговля.
+- ⏭️ **NEXT:** дождаться верификацию → коммит; форвард-резолв method_shadow (TP/SL→WR); pm2 method-shadow; если толпа лифтит forward-WR → ARMED VST. Удалить мёртвый method_v2 (method_v2_mtf.py, method_v2_loop.py, test_v2_*).
+
+## [05.07 ~06:30 UTC] Агент: Даат — 🔴→✅ radar_build ЛОНГ В ПАДАЮЩЕМ ТРЕНДЕ (Егор поймал CHZ/ORDI)
+
+- 🔴 **Баг подтверждён на данных.** `analyze_build` (oi_fast_poller.py) брал НАПРАВЛЕНИЕ только из знака funding: `fund<0 → LONG` (любой!), `fund>=+0.02% → SHORT`. Асимметрия: LONG без порога величины. CHZ #42226 / ORDI #42212 обе: funding **−0.004%** (глубокий нейтрал, НЕ «толпа шортов»), atr_trend_1h_bias=**DOWN** → лонг в падении. У radar все гейты сняты (source_policies.radar min_strength:0, soft_gates:[]; radar_armed_loop проверяет grade только для pump; build grade=None, ★ не требуется).
+- ✅ **ФИКС A+B (решение Егора «build оставить»):** (A) симметричный порог `fund<=-0.0002` (было `<0`); (B) новый `_htf_trend(sym)` — EMA21/1h прокси atr_trend_1h — гейт: LONG@DOWN / SHORT@UP → сетап не строим, остаётся ГОЛЫЙ алерт (b_row=None → нет radar_order → нет сделки). HTTP на тренд только когда |funding|>=0.02% (не на каждом нейтральном BUILD).
+- ✅ **Верифицировано:** compile OK + 7 кейсов. Оба реальных провала → None/0 HTTP; crowded-shorts −0.03%+UP → LONG; +DOWN → veto; зеркально для SHORT.
+- 🎓 **DUMP-путь (down-ветка analyze_pump) — фейд был правильный, но была ДЫРКА:** обвал+OI ВЫРОС давал отброшенный Grade-C LONG-разворот (шорт-продолжение не строился вообще).
+- ✅ **ДОБАВЛЕН DUMP→SHORT продолжение (решение Егора «добавить SHORT на OI-грев дамп»):** analyze_pump теперь ветвит дамп по OI (зеркало GRT):
+  - обвал + `d_oi5 <= 0.1` (OI не вырос = ликвидация лонгов) → **LONG-отскок** (фейд, RSI<25) — как было;
+  - обвал + `d_oi5 > 0.1` (свежие шорты) → **SHORT-ПРОДОЛЖЕНИЕ** (новое): вход у лоу, SL=середина плеча дампа (`ext+rng*0.5`), TP=measured-move вниз (`ext−rng*0.5/1.0/1.5`), grade A(`d_oi5>=0.5 & vol>=5`)/B. RSI-гейт для продолжения снят (floor 15 против шорта дна). chain-гейт для продолжения = ПОДТВЕРЖДЕНИЕ (не ↓C).
+  - Заголовок алерта теперь по движению: `🚀 PUMP` (рост) / `💥 DUMP` (обвал), хэштег #PUMP/#DUMP. sig_type в БД остаётся "pump" → армится штатным pump-путём (pump_grades A/B) БЕЗ правок config/armed_loop.
+- ✅ **Верифицировано:** compile OK + матрица (dump+OI↑→SHORT sl>entry/tp<entry/💥DUMP; dump+OI↓→LONG фейд; pump→SHORT фейд). Тюнить форвардом: RSI-floor 15, OI-порог 0.1, SL=mid-leg, TP=measured-move.
+- ⏳ **НУЖЕН РЕСТАРТ pm2 oi-fast** (радар на старом коде — оба фикса BUILD и новый DUMP-SHORT вступят после рестарта). Две OPEN VST-сделки (CHZ/ORDI) — решение по закрытию за Егором (paper).
+
 ## [05.07 ~05:40 UTC] Агент: Даат — 🧮 ЧЕСТНЫЙ ПЕРЕСЧЁТ method_v2 ГОТОВ: эдж = фантом look-ahead
 
 - ✅ **`scripts/test_v2_mtf_honest.py`** — per-setup передетект: каждый кандидат из full-detect обрезаю до `e_ts+lag`, ПЕРЕДЕТЕКТ на срезе; выживает только реально видимый live, вход по цене момента подтверждения. 30 ликвидных, интрабар, costs 0.2%, WF split.

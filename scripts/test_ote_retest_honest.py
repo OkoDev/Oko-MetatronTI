@@ -24,6 +24,7 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.smc.smc_engine import ote_retest_setups
 from core.smc.ote_matrix import structure_trend
+from core.smc.method_egor import detect_method_egor
 from scripts.test_method_v2 import load_df
 
 CACHE = "ohlcv_cache.db"
@@ -48,14 +49,20 @@ def liquid(tf, topn):
     return [s for _, s in rk[:topn]]
 
 
-def simulate(df, ei, direction, entry, sl):
+def simulate(df, ei, direction, entry, sl, tps=None):
     high, low, close = df["high"].values, df["low"].values, df["close"].values
     n = len(df)
     lng = direction in ("LONG", "long")
     risk = abs(entry - sl)
     if risk <= 0:
         return None
-    tg = [entry + m * risk if lng else entry - m * risk for m in RMULTS]
+    # tps=None → R-лестница (изолирует вход); иначе явные цели (OTE большого импульса)
+    tg = list(tps) if tps is not None else [entry + m * risk if lng else entry - m * risk for m in RMULTS]
+    # цели должны быть по правильную сторону входа
+    if lng and not all(t > entry for t in tg):
+        return None
+    if not lng and not all(t < entry for t in tg):
+        return None
     rem, pnl = 1.0, 0.0
     hit = [False, False, False]
     cur_sl = sl
@@ -87,11 +94,14 @@ def main():
     ap.add_argument("--step", type=int, default=2, help="шаг детекции в барах (реалистичный live-скан)")
     ap.add_argument("--win", type=int, default=1500, help="скользящее окно детекции (баров)")
     ap.add_argument("--depth", type=int, default=11)
-    ap.add_argument("--side", type=int, default=0, help="1 = HTF-gate СТОРОНЫ (4h structure_trend==dir)")
+    ap.add_argument("--side", type=int, default=0,
+                    help="0=нет · 1=trend-follow gate · 2=REVERSAL у экстремума большого 4h + OTE-цели")
+    ap.add_argument("--edge", type=float, default=0.65, help="порог близости к экстремуму (side=2)")
     args = ap.parse_args()
     syms = liquid(args.tf, args.liquid)
     side_tf = "4h"
-    tag = "+СТОРОНА (4h structure_trend)" if args.side else "БЕЗ стороны"
+    tag = {0: "БЕЗ стороны", 1: "+trend-follow gate",
+           2: "+РАЗВОРОТ у экстремума 4h + OTE-цели"}[args.side]
     print(f"символов: {len(syms)} · tf={args.tf} · окно={args.win} · step={args.step} · {tag} (point-in-time, provisional)")
 
     res = []
@@ -106,41 +116,56 @@ def main():
             close = df["close"].values
             # СТОРОНА: предпосчёт 4h structure_trend по каждому 4h-бару (point-in-time срезы),
             # потом lookup последнего 4h ≤ момента T. O(n4h) вместо O(n1h/step) — быстрее.
-            side_ts = side_tr = None
+            side_ts = side_ctx = None
             if args.side:
+                import numpy as np
                 df4 = load_df(sym, side_tf)
-                s_ts, s_tr = [], []
+                s_ts, s_ctx = [], []
                 for j in range(60, len(df4)):
                     st = structure_trend(df4.iloc[:j + 1].tail(400))
-                    s_ts.append(df4.index[j]); s_tr.append(st.get("trend"))
-                import numpy as np
-                side_ts = np.array(s_ts); side_tr = s_tr
+                    s_ts.append(df4.index[j])
+                    s_ctx.append((st.get("trend"), st.get("break_level"), st.get("extreme")))
+                side_ts = np.array(s_ts); side_ctx = s_ctx
             busy_until = -1
+            import numpy as np
             for T in range(args.win, n, args.step):
                 if T <= busy_until:
                     continue
                 win = df.iloc[T - args.win:T + 1]
+                entry_now = float(close[T])
+                if args.side == 2:
+                    # МЕТОД ЕГОРА через единое ядро core.smc.method_egor (reuse с SHADOW)
+                    k = int(np.searchsorted(side_ts, idx[T], side="right")) - 1
+                    trend, brk, ext = side_ctx[k] if k >= 0 else (None, None, None)
+                    ms = detect_method_egor(win, htf_trend=trend, htf_break=brk, htf_extreme=ext,
+                                            entry_price=entry_now, edge=args.edge, depth=args.depth,
+                                            fresh_bars=args.step)
+                    if not ms:
+                        n_side_block += 1; continue
+                    m = ms[0]
+                    net = simulate(df, T, m["direction"], m["entry"], m["sl"], m["targets"])
+                    if net is None:
+                        continue
+                    res.append({"net": net, "dir": m["direction"], "sym": sym,
+                                "year": str(idx[T])[:4], "conf": m["confluence"]})
+                    busy_until = T + TIMEOUT_BARS
+                    continue
+                # side 0/1: baseline / trend-follow (R-цели) — для сравнения
                 setups = ote_retest_setups(win, provisional=True, only_choch=True, depth=args.depth)
                 if not setups:
                     continue
-                # свежий ретест = entry_ts в последних step баров окна (только что виден live)
                 cutoff = win.index[-args.step]
                 fresh = [s for s in setups if s["entry_ts"] >= cutoff]
                 if not fresh:
                     continue
                 s = fresh[-1]
                 lng = s["direction"] == "long"
-                # СТОРОНА: старший ТФ (4h) должен смотреть в ту же сторону (пик→short/дно→long)
-                if args.side:
-                    import numpy as np
-                    k = int(np.searchsorted(side_ts, idx[T], side="right")) - 1
-                    cur = side_tr[k] if k >= 0 else None
-                    if cur != s["direction"]:
-                        n_side_block += 1
-                        continue
-                entry_now = float(close[T])       # цена момента ретеста
                 sl = s["sl"]
-                # sanity: цена ещё по эту сторону стопа
+                if args.side == 1:
+                    k = int(np.searchsorted(side_ts, idx[T], side="right")) - 1
+                    trend = side_ctx[k][0] if k >= 0 else None
+                    if trend != s["direction"]:
+                        n_side_block += 1; continue
                 if (entry_now <= sl) if lng else (entry_now >= sl):
                     continue
                 net = simulate(df, T, s["direction"], entry_now, sl)
