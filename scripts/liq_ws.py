@@ -11,7 +11,8 @@ SPOT при этом работает). Bybit v5 public linear — живой (�
 Два продукта:
   1. ⚡ КАСКАД-алерт → TG: сумма ликвидаций по монете за 90с превысила порог
      (мейджоры $500k, остальные $50k — Bybit-масштаб) — каскад ИДЁТ, узнаём за ~1с.
-     Направление: Sell-ликвидации = лонги горят (ход ВНИЗ), Buy = шорты горят (ВВЕРХ).
+     Направление (Bybit V5 S=POSITION side): Buy-ликвидации = лонги горят (ход ВНИЗ),
+     Sell = шорты горят (ВВЕРХ). Было инвертировано — фикс 05.07 (Егор поймал NEAR).
      + карта целей 2.0 по направлению хода.
   2. Копилка ФАКТОВ → liq_events (source='bybit_ws'): сверка с magnet_snapshots
      (предсказание) — доказательство/опровержение формулы магнитов.
@@ -68,7 +69,8 @@ def _flush_events():
 
 
 def _on_liq(sym_full: str, rows: list[dict]):
-    """topic allLiquidation.{SYM}USDT → data=[{T,s,S,v,p}]. S: Sell = лонг ликвидирован."""
+    """topic allLiquidation.{SYM}USDT → data=[{T,s,S,v,p}]. Bybit V5: S = POSITION side —
+    S=Buy = лонг-позиция ликвидирована (цена ВНИЗ), S=Sell = шорт ликвидирован (ВВЕРХ)."""
     sym = sym_full[:-4] if sym_full.endswith("USDT") else sym_full
     now = time.time()
     w = _EVENTS[sym]
@@ -88,8 +90,12 @@ def _on_liq(sym_full: str, rows: list[dict]):
         return
     _LAST_ALERT[sym] = now
     px = float(rows[-1].get("p") or 0)
-    sell_usd = sum(u for _, u, s in w if s == "SELL")
-    longs_burn = sell_usd > tot / 2
+    # 🔴 ФИКС 05.07 (Егор поймал NEAR: алерт «вверх», цена вниз): Bybit V5 allLiquidation
+    # «S» = POSITION side (не сторона ордера!). S=Buy → ликвидирована ЛОНГ-позиция → цена ВНИЗ;
+    # S=Sell → ликвидирован ШОРТ → ВВЕРХ. Было инвертировано (longs_burn от SELL). Проверено
+    # фактом: NEAR BUY-каскад $72k → цена −1.25% (лонги горят). buy_usd преобладает = лонги горят.
+    buy_usd = sum(u for _, u, s in w if s == "BUY")
+    longs_burn = buy_usd > tot / 2
     move_side = "SHORT" if longs_burn else "LONG"        # лонги горят → ход вниз
     head = ("🔥 лонги горят → каскад ВНИЗ" if longs_burn else "🔥 шорты горят → каскад ВВЕРХ")
     try:
