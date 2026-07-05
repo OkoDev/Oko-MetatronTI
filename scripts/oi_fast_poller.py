@@ -638,9 +638,13 @@ def tick():
             d_oi3 = (oi / oi3 - 1) * 100 if oi3 else 0
             d_px3 = (px / px3 - 1) * 100 if px3 else 0
             if abs(d_px3) >= 0.6 and d_oi3 <= -0.15:
-                # факт для копилки (сверка с магнитами) — каждый тик сквиза, без cooldown
+                # факт для копилки (сверка с магнитами) — каждый тик сквиза, без cooldown.
+                # 🔴 05.07 согласование с Bybit (fix инверсии): side = POSITION ликвидированного.
+                # рост цены (d_px>0) = шорты горят = ликвидируется ШОРТ → SELL (шорт position);
+                # падение = лонги горят → BUY (лонг position). Было BUY при росте — инверсия
+                # относительно bybit-ветки в той же таблице liq_events (единая семантика теперь).
                 try:
-                    _log_liq_synth(sym, "BUY" if d_px3 > 0 else "SELL", (oi3 - oi) * px, px)
+                    _log_liq_synth(sym, "SELL" if d_px3 > 0 else "BUY", (oi3 - oi) * px, px)
                 except Exception:
                     pass
             if abs(d_px3) >= 0.6 and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
