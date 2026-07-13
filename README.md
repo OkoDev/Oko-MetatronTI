@@ -1,277 +1,144 @@
 ---
 tags: [doc/readme, project-intro, getting-started]
 type: reference
-date: "2026-04-30"
+date: "2026-07-13"
 parent: "[[Project-MOC]]"
 ---
 
-# Oko MTF Bot — Telegram-бот для технического анализа крипторынка
+# Oko MTF — самообучающаяся торгово-аналитическая система
 
-Самообучающийся бот для BingX: сигналы по 8 стратегиям, симуляция сделок, ML на реальных исходах, каскадный TSL.
+Крипторынок, BingX, ~500 перпетуалов. Не «бот с сигналами», а **исследовательская машина**,
+которая строит понимание рынка, честно меряет каждую свою идею живым форвардом в чистых
+процентах — и только доказанное допускает к деньгам.
+
+> **Три документа, чтобы понять проект:**
+> 1. [docs/SYSTEM_MAP.md](docs/SYSTEM_MAP.md) — карта всей системы по слоям (начать здесь)
+> 2. [docs/GLOSSARY.md](docs/GLOSSARY.md) — все термины человеческим языком
+> 3. [docs/ENCYCLOPEDIA.md](docs/ENCYCLOPEDIA.md) — философия и «Куб Метатрона»
+
+---
+
+## Философия
+
+- **Decision-support прежде автоторговли.** Система — якорь против эмоции: она видит 500 пар
+  24/7, человек принимает решения. Автоторговля — только для доказанных ниш.
+- **Честные данные — священны.** Симуляция засчитывает стопы по касанию (как биржа), каждая
+  сделка несёт издержки, результат меряется от реального филла в net%. Ни одна метрика,
+  пойманная на лжи (fake-R, look-ahead, phantom-exit), не переживает аудита.
+- **Отрицательный результат — тоже результат.** Опровергнутые стратегии документируются
+  и не воскресают без новых данных.
+- **Куб Метатрона.** 12 специализированных сфер вокруг общей шины контекста; каждая новая
+  задача обязана строить сферу, ребро или feedback loop — иначе она не нужна.
+
+## Что умеет система сегодня (13.07.2026)
+
+- **SIM-полигон** — все сигналы всех стратегий (SMC/OTE, WaveTrend, пивоты, дивергенции,
+  187 паттернов ARCH-104…) регистрируются и честно доигрываются: сотни параллельных сделок,
+  ~287 признаков рынка на каждую — сырьё для обучения.
+- **Радар** — минутный пульс Open Interest по ~500 парам: наборы позиций (BUILD), пружины,
+  пампы, сквизы, магниты ликвидаций. Импульсные входы ARMED→FIRE с частичными тейками и
+  структурным хвост-раннером. Гейт: не входить против 15-минутного потока OI×цена.
+- **ExecutionSphere** — реальное исполнение (демо-счёт VST, мультиаккаунт, hedge) с
+  WebSocket-истиной: закрытие сделки фиксируется в БД за ~26 мс из денежных данных биржи
+  (CR-DELTA), а не из опросов и догадок. Симуляция и биржа полностью разделены (13.07).
+- **Проактивный слой** — в понедельник 00:00 система строит план недели по каждой паре от
+  свежих недельных пивотов (гипотеза: цель/инвалидация/вероятность из измеренной карты
+  поведения) и в конце недели скорит свои прогнозы.
+- **Форвард-машина** — еженедельный суд: net%-вердикт каждому источнику сигналов на живом
+  форварде. Путь к реальным деньгам лежит только через серию положительных вердиктов.
+- **Паспорт монеты** — тикер в Telegram → мгновенная карта всего, что Куб знает о монете
+  + SMC-чарт (структура, зоны, уровни).
+- **Самообучение** — адаптивные веса источников от реальных исходов, ML-скоринг,
+  еженедельные аудиты мёртвых фич и целостности данных.
+
+## Честный статус
+
+| Что | Состояние |
+|---|---|
+| Режим | **VST (демо-счёт BingX)** — реальное исполнение, бумажные деньги |
+| Доказанный live-эдж | radar_pump (+3-4% на сделку, редкие события); atr_change S2 (+0.47%/сд, 4/5 лет бэктест) |
+| В полигоне с плюсом | ote_nested +0.52%/сд честными (вход требует LIMIT-починки — в работе) |
+| Опровергнуто и закрыто | gravity, blind-build, cont-сетапы, direction-pivot в лоб (задокументировано) |
+| Реальные деньги | не подключены — ждут вердиктов форвард-машины |
 
 ## Быстрый старт
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # заполнить TELEGRAM_TOKEN, ADMIN_ID, BINGX_API_KEY, BINGX_SECRET_KEY
-python oko_mtf.py
+cp .env.example .env   # TELEGRAM_TOKEN, ADMIN_ID, BINGX_API_KEY, BINGX_SECRET_KEY
+python oko_mtf.py      # Python 3.12
 ```
 
-> **Важно:** Использовать Python 3.12. `.venv` (Python 3.13) и системный `python` не имеют aiogram.
+- Дашборд: `http://localhost:8000` (настройки live: `/settings`, hot-reload)
+- OKO Dashboard v2 (Next.js): `:3000`
+- Полный парк процессов (радар, вотчеры, кроны): [docs/SYSTEM_MAP.md → Процессы](docs/SYSTEM_MAP.md)
 
-Дашборд: `http://localhost:8000`
-Настройки live: `http://localhost:8000/settings` (hot-reload без перезапуска бота)
-
----
-
-## Сигналы
-
-| Тип | Специализация | Описание |
-|-----|---------------|----------|
-| `mtf_bias` | Тренд | MTF Bias — 6 TF alignment (WT momentum) + senior gate + entry TF selection |
-| `trend_signal` | Тренд | EMA-тренд + откат + подтверждение |
-| `confluence` | Откат в тренде | Мульти-фактор: WT zone + TSL cross + pivot + divergence |
-| `wt_signal` | Откат в тренде | WaveTrend CrossUp/CrossDown в OS/OB; апгрейд +20 если цена в ±1% от пивота |
-| `wt_b_signal` | Разворот | WT Type B — крест в OS/OB + дивергенция |
-| `divergence` | Разворот | Regular/Hidden дивергенции WT |
-| `pivot_reversal` | Разворот | Разворот от уровней пивота (1M/1W/1D) |
-| `watch_list_breach` | Пробой | Автовход при пробое пивотного уровня наблюдаемой парой |
-| `anomaly` | Событийный | Всплески объёма + движение цены |
-
----
-
-## Команды бота
+## Команды бота (ядро)
 
 ```
 /start                 — главное меню
+<ТИКЕР>                — паспорт монеты: карта Куба + SMC-чарт
+радар                  — живой стакан радара (OI-контекст)
 /intelligence BTCUSDT  — полный анализ символа
 /scan                  — топ-10 пар по силе сигнала
-/watch add ETHUSDT     — добавить в watchlist
-/watchlist             — мой список пар
-/wl                    — Watch List (пары в ожидании эскалации)
-/wlr SYMBOL            — быстрый отчёт по паре: режим, WT, пивоты, открытая сделка
 /pivots                — MTF пивоты (1M/1W/1D) + конфлюэнции
-/settings              — персональный депозит/плечо/риск%
-/stats                 — статистика бота
-/subscribe             — управление подпиской
-/monitor               — запуск/остановка мониторинга
+/wlr SYMBOL            — быстрый отчёт: режим, WT, пивоты, открытая сделка
+/settings              — депозит/плечо/риск%
 ```
 
----
-
-## Архитектура
+## Архитектура (кратко)
 
 ```
-oko_mtf.py                  -- точка входа (aiogram 3.4.1)
-config.yaml                 -- параметры (редактируются через браузер)
-subscriptions.db            -- SQLite
+oko_mtf.py             — точка входа (aiogram 3.4.1)
+config.yaml            — вся конфигурация (hot-reload через браузер)
+subscriptions.db       — SQLite: сделки, состояние радара, пивоты, гипотезы
 
-core/                       -- бизнес-логика (без aiogram)
-  trading_intelligence.py   -- агрегация сигналов → TradingRecommendation
-  intelligence/             -- signal_aggregator, confidence, ML, recommendation
-  signal_checkers.py        -- детекторы: WT, WT_B, anomaly, confluence, divergence, pivot
-  trade_simulator.py        -- регистрация/закрытие сделок, Cascade TSL, MFE, частичные TP
-  api_engine.py             -- LRU cache, CircuitBreaker, retry, in-flight dedup
-  data_collector.py         -- OHLCV + ticker (делегирует в ApiEngine)
-  mtf_interpreter.py        -- MTF Phase Detector + Zone Cascade (IMPULSE/CORRECTION/CASCADE_OS)
-  mtf_checker.py            -- collect_mtf_data: snapshot по ТФ (WT momentum)
-  wt_15m_reversal_scanner.py -- WT Type B reversal с 1h/4h контекстом
-  signal_watch_list.py      -- Watch List: автонаблюдение и пробойные входы
-  market_regime.py          -- ADX+ATR+EMA → TREND_UP/DOWN/RANGE/HIGH_VOL
-  pivot_calculator_fixed.py -- пивоты UTC (1M/1W/1D) singleton + find_near_pivot()
-  outcome_predictor.py      -- RandomForest P(win) на реальных исходах
-  performance_engine.py     -- аналитика из simulated_trades (read-only)
-  smc/                      -- Smart Money Concepts (swing, BOS/CHoCH, FVG, OB, OTE)
-
-bot/                        -- UI-слой (aiogram)
-  core/bot.py               -- TradingAlertBot: инициализация зависимостей
-  loops/scan_loop.py        -- цикл скана + WL breach входы
-  loops/trade_tracker.py    -- трекинг сделок: Cascade TSL, MFE, BE, частичные TP
-  loops/ml_loop.py          -- ML переобучение, еженедельные отчёты
-  handlers/                 -- /start, /intelligence, /scan, /pivots, /settings, /wlr
-  menus/                    -- диспетчер меню + доменные модули
-
-web/                        -- aiohttp дашборд (порт 8000)
-scripts/                    -- backtesting_engine.py, universe_builder.py, анализ
-tests/                      -- unit + integration тесты
+core/                  — бизнес-логика
+  execution/           — ExecutionSphere: WS-истина исполнения (CR-DELTA, db_writer)
+  exchange/            — BingX-клиент, мультиаккаунт, position_sync (reconciler)
+  trading/             — TradeRouter (гейты), симулятор, политики источников
+  smc/                 — структура рынка: OTE-матрица, method_egor, CHoCH/BOS/FVG
+  intelligence/, ml/   — агрегация сигналов, веса, ML
+bot/                   — Telegram-слой: лупы (скан, радар-ARMED, OTE-observer), меню, паспорт
+scripts/               — радар (oi_fast_poller), вотчеры, форвард-машина, research-скрипты
+web/                   — aiohttp-дашборд
 ```
 
----
+Полная карта с диаграммами потоков: **[docs/SYSTEM_MAP.md](docs/SYSTEM_MAP.md)**.
 
-## База данных
+## Законы измерения (выстраданы)
 
-**`simulated_trades`** — все сделки:
-```
-symbol, timeframe, signal_type, direction,
-entry_price, stop_loss, take_profit, tp1_price, tp1_hit_at,
-strength, confidence, regime, created_at,
-status (OPEN/TP/SL/TSL/EXPIRED), exit_price, profit_pct, R_multiple, closed_at,
-duration_minutes, features_json,
-max_price, min_price,           ← MFE: экстремумы за жизнь сделки
-max_R_possible, captured_R_pct, ← MFE: лучший R и % захваченного потенциала
-sl_source, tp_source,           ← источники SL/TP (atr_14, pivot_1W_R1, swing_low...)
-tsl_activated, be_activated,    ← 0/1: достигала ли порогов TSL/BE
-tsl_tf                          ← таймфрейм последнего Cascade TSL
-```
-
-**`user_settings`** — персональный риск-менеджмент:
-```
-user_id, deposit_usdt, leverage, risk_pct, sl_pct, tp_pct, auto_sizing
-```
-Формула: `Position (USDT) = (Deposit × Risk%) / SL% × Leverage`
-
----
-
-## Параметры (config.yaml / браузер)
-
-```yaml
-signal_quality:
-  min_volume_usd: 1000000      # минимальный объём 24ч для мониторинга пары
-  sl_cooldown_hours: 4.0       # пауза после SL по паре (часы)
-  dedup_minutes: 30            # окно дедупликации одинаковых сигналов
-  min_strength: 50             # минимальная сила для TG-алерта
-  min_strength_register: 75    # минимальная сила для записи в БД
-
-trading:
-  use_tsl: true                # Trailing Stop Loss
-  tsl_activation_r: 1.0       # активация TSL после +1R
-  use_breakeven: true          # перевод в безубыток
-  breakeven_activation_r: 0.8  # активация BE после +0.8R
-  max_rr: 3.0                  # максимальный cap R:R для любой сделки
-  regime_direction_block:      # запрет контр-тренд входов
-    enabled: true
-    TREND_DOWN: LONG
-    TREND_UP: SHORT
-  blocked_regimes: [HIGH_VOL]  # режимы без входов (WR=0%)
-  correlation_groups:          # не дублировать коррелированные активы
-    - [PAXG, XAUT]
-    - [BTC, WBTC]
-
-analysis:
-  history_size: 200            # глубина OHLCV для индикаторов
-  check_interval: 60           # пауза между циклами скана, сек
-```
-
-Параметры `analysis` и `trading` изменяются через `http://localhost:8000/settings` без перезапуска.
-
----
-
-## TSL (Trailing Stop Loss)
-
-Динамический стоп-лосс, следующий за трендом. Защищает прибыль после +1R.
-
-- **Расчёт:** ATR trailing stop из `calculate_trend()` (RMA-ATR)
-- **Активация:** После +`tsl_activation_r` × R (по умолчанию 1.0)
-- **Безубыток:** При +0.8R SL переставляется к entry ± 0.1%
-- **Для LONG:** Закрывает при пробое `trenddown`; для SHORT — при пробое `trendup`
-
-**Cascade TSL** — при подтверждении тренда на старшем TF автоматически переключается на него:
-`15m → 1h → 4h`. Старший TF = более широкий стоп = позиция держится дольше на крупном тренде.
-Если тренд разворачивается и ни один TF не подходит — используется последний сохранённый `tsl_tf` (DEV-67).
-
----
-
-## ML и адаптация
-
-**OutcomePredictor** — RandomForest(200 деревьев) на реальных исходах сделок:
-- 12 признаков: strength, confidence, direction, signal_type, volatility, price_change, regime
-- Цель: TP=1, SL=0; CV AUC растёт с накоплением данных (нужно ~200+ закрытых сделок)
-- Блендинг: `confidence = 0.7 × orig + 0.3 × P(win)`
-
-**Адаптивные веса** — `TradingIntelligence.update_signal_weights()`:
-- Формула: `factor = clamp(1.0 + avg_R × 0.4, 0.5, 2.0)`
-- Порог: минимум 20 закрытых сделок на тип сигнала
-
----
-
-## Производительность
-
-| Метрика | Значение |
-|---------|----------|
-| Скан 600+ пар | ~25–32 сек |
-| Параллельных API-запросов | Semaphore(20) |
-| Cache hit (OHLCV) | LRU до 5000 записей |
-| TTL кеша (15m) | 60 сек |
-
-**Критичная настройка** (`core/data_collector.py`): `enableRateLimit: False` в ccxt.
-Без этого скан занимает 20–90 минут вместо 30 секунд.
-
----
-
-## Тестирование
-
-```bash
-python -m pytest tests/ -v
-python -m pytest tests/unit/test_confluence_state_machine.py -v
-```
-
----
+1. **Только net%** (после комиссий и funding), не R-метрика — R обманывает.
+2. **Только реальный филл** — сигнальная цена маскирует слиппедж (ловушка −0.7%/сд).
+3. **Стоп за структуру, не на линию** — стоп на уровне собирается свитом.
+4. **Look-ahead — главный враг бэктеста** — три класса ловушек задокументированы, HTF-фильтры
+   только intrabar-имитацией.
+5. **Data-era** — данные до/после изменения методики не сравниваются.
 
 ## Диагностика
 
 ```bash
-# Статистика по сделкам
-python -c "
-from core.performance_engine import PerformanceEngine
-pe = PerformanceEngine('subscriptions.db')
-print(pe.summary())
-for r in pe.by_signal_type(): print(r)
-"
-
-# ML-качество
-python -c "
-from core.outcome_predictor import OutcomePredictor
-op = OutcomePredictor(); op.fit('subscriptions.db')
-print(op.info())
-"
+python -m pytest tests/ -q                    # тесты
+python scripts/atr_rank.py                    # вола-ранкинг вселенной
+python scripts/weekly_hypothesis.py           # гипотезы недели + скоринг
+python -c "from core.performance_engine import PerformanceEngine; print(PerformanceEngine('subscriptions.db').summary())"
 ```
-
----
 
 ## Зависимости
 
 ```
-aiogram==3.4.1
-ccxt==4.2.85
-aiohttp==3.9.3
-pandas, numpy
-scikit-learn
-pyyaml, python-dotenv
+Python 3.12 · aiogram 3.4.1 · ccxt 4.2.85 · aiohttp 3.9.3 · pandas · numpy · scikit-learn · pyyaml · python-dotenv
 ```
-
-## Переменные окружения (.env)
-
-```env
-TELEGRAM_TOKEN=...
-ADMIN_ID=...
-BINGX_API_KEY=...
-BINGX_SECRET_KEY=...
-```
-
----
 
 ## Документация
 
 | Файл | Содержание |
 |------|-----------|
-| [PROJECT-LOG.md](PROJECT-LOG.md) | История изменений проекта — от первого запуска |
-| [ROADMAP.md](ROADMAP.md) | Этапы разработки и планы |
-| [TASKS.md](TASKS.md) | Активные задачи агентов |
-| [BOT_SIGNAL_MAP.md](BOT_SIGNAL_MAP.md) | Сигнальный пайплайн (от данных до регистрации) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектурная карта модулей |
-| [docs/INDICATORS_GUIDE.md](docs/INDICATORS_GUIDE.md) | Руководство по индикаторам |
-| [docs/SMC_GUIDE.md](docs/SMC_GUIDE.md) | Smart Money Concepts — теория и реализация |
-| [DISCUSSION.md](DISCUSSION.md) | Живой диалог агентов (23–27.03) |
-
----
-
-## 🔗 Связанные заметки в Obsidian
-
-- [[Project-MOC]] — Map of Content (главная)
-- [[START]] — Быстрый контекст сессии
-- [[STATUS]] — Текущее состояние (29.04.2026)
-- [[ROADMAP-2026]] — Полная временная шкала всех этапов
-- [[Architecture/Cube-Metotron]] — Куб Метатрона (полная реализация)
-- [[Sessions/2026-04-29]] — Последняя сессия (документация + Data Era v4)
-- [[Data-Invalidation-Log]] — ARCH-86 (критично для ML)
-- [[Architecture/ARCH-95-Real-Killers]] — Спринт "Реальные убийцы" (Фаза 0)
+| **[docs/SYSTEM_MAP.md](docs/SYSTEM_MAP.md)** | 🗺️ Карта всей системы — точка входа |
+| **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | 📖 Все термины человеческим языком |
+| [docs/ENCYCLOPEDIA.md](docs/ENCYCLOPEDIA.md) | Философия, Куб Метатрона, структура проекта |
+| [BOT_SIGNAL_MAP.md](BOT_SIGNAL_MAP.md) | Сигнальный пайплайн |
+| [docs/EXECUTION_SPHERE_DESIGN.md](docs/EXECUTION_SPHERE_DESIGN.md) | Дизайн слоя исполнения |
+| [ROADMAP.md](ROADMAP.md) | Этапы разработки |
+| [TASKS.md](TASKS.md) / [DISCUSSION.md](DISCUSSION.md) | Живая работа агентов |
+| `memory/`, `obsidian/` | Память системы и граф знаний (~650 заметок) |
