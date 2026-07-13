@@ -833,6 +833,7 @@ def _select_optimal_sl_short(
 
 async def _execute_atr_change_signal(
     bot, symbol: str, ev, tf: str, df=None, side: str = "LONG",
+    wt_depth: float | None = None,   # 13.07 рецепт Егора: глубина WT-зоны кросса (фича)
 ) -> None:
     """Прямой вход по ATR change на 1h/4h/15m (DEV-209: LONG + SHORT, 15m только в OTE зоне).
 
@@ -977,7 +978,8 @@ async def _execute_atr_change_signal(
                     drop_reason=f"atr_change_{tf}/{side}: sl={sl:.6f} entry={entry:.6f} src={sl_source}",
                     signal_type=f"atr_change_{tf}", direction=side, strength=0,
                     features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf,
-                              "sl_source": sl_source, "trendline": ev.trendline},
+                              "sl_source": sl_source, "trendline": ev.trendline,
+                              **({"wt_os_depth": wt_depth} if wt_depth is not None else {})},
                 ))
             except Exception:
                 pass
@@ -1834,11 +1836,37 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                     logger.debug("[ConfAgg] %s %s: %s", sym, _atr_tf, _ca_e)
 
                             # DEV-209: прямой вход
-                            #   1h/4h — всегда (оба side, по R8 SHORT avgR=+0.164/+0.287)
+                            #   4h — всегда (оба side); 1h — РЕЦЕПТ ЕГОРА 13.07 (WT-гейт ниже)
                             #   15m — только когда price_in_ote и направление совпадает с OTE impulse
                             _allow_entry = False
-                            if _atr_tf in ('1h', '4h'):
+                            _wt_depth_feat = None
+                            if _atr_tf == '4h':
                                 _allow_entry = True
+                            elif _atr_tf == '1h':
+                                # 🔬 13.07 РЕЦЕПТ ЕГОРА («переключим на 1h и дадим WT кросс от OB/OS»),
+                                # бэктест 4г scripts/atr1h_wt_backtest.py: 1h флип + WT-кросс из
+                                # OS≤−70 в последних 3 закрытых барах, LONG-only → +0.55%/сд n=1531,
+                                # 5/5 лет плюс (глубже −75/−80 → +1.19/+2.04 — глубину пишем ФИЧЕЙ,
+                                # полигон выделит премиум сам). SHORT мёртв на всех порогах — skip.
+                                if _side == 'LONG':
+                                    try:
+                                        _dfw = _atr_df
+                                        if 'wt1' not in _dfw.columns or 'wt2' not in _dfw.columns:
+                                            from core.indicators.indicators import calculate_wt
+                                            _dfw = calculate_wt(_atr_df.copy())
+                                        _w1, _w2 = _dfw['wt1'].values, _dfw['wt2'].values
+                                        for _j in range(max(1, len(_w1) - 4), len(_w1) - 1):
+                                            # кросс вверх на закрытом баре _j из зоны OS
+                                            if (_w1[_j] > _w2[_j] and _w1[_j - 1] <= _w2[_j - 1]
+                                                    and _w2[_j - 1] <= -70.0):
+                                                _allow_entry = True
+                                                _wt_depth_feat = round(float(_w2[_j - 1]), 1)
+                                                break
+                                    except Exception as _wte:
+                                        logger.debug("[ATR-1H-WT] %s: %s", sym, _wte)
+                                if _allow_entry:
+                                    logger.info("[ATR-1H-WT] %s LONG: флип 1h + WT-кросс из OS "
+                                                "(глубина %.1f) — вход", sym, _wt_depth_feat or 0)
                             elif (_atr_tf == '15m' and _price_in_ote and _ote_dir == _side
                                   and bot.config.get("signal_quality.atr_change_15m_enabled", True)):
                                 # 18.06: 15m atr_change под флагом (edge<комиссий). 1h/4h не затронуты.
@@ -1851,6 +1879,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             if _allow_entry:
                                 asyncio.create_task(_execute_atr_change_signal(
                                     bot, sym, _atr_ev, _atr_tf, df=_atr_df, side=_side,
+                                    wt_depth=_wt_depth_feat,
                                 ))
                         except Exception as _atr_e:
                             logger.debug("[ATRChangeDetector] %s error %s: %s", _atr_tf, sym, _atr_e)
