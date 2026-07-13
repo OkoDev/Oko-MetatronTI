@@ -42,17 +42,68 @@ def _env(name: str) -> str | None:
     return None
 
 
-def send_tg(text: str) -> bool:
-    token, chat = _env("TELEGRAM_TOKEN"), _env("ADMIN_CHAT_ID") or _env("CHAT_ID")
+# ── TG-КАНАЛЫ (08.07, «+» Егора на структуризацию потока; дизайн Егора: раздельные
+# каналы, объединённые папкой TG). Роутинг по назначению:
+#   action — СЕТАПЫ и решения (PUMP/DUMP A, SPRING, BUILD-сетап, метод, USDT.D-watch)
+#   feed   — информационный поток (сквизы, голые BUILD, киты, BTC-флоу) — мьютится
+#   system — здоровье системы (ledger-audit, ошибки)
+#   news   — новостная сфера (алерты + дайджесты news_sphere.py), отдельный канал 08.07
+# chat_id каналов: .env TG_CHAT_ACTION / TG_CHAT_FEED / TG_CHAT_SYSTEM / TG_CHAT_NEWS.
+# Канал не задан → fallback ADMIN_CHAT_ID (всё работает как раньше, миграция мягкая).
+_CHANNEL_ENV = {"action": "TG_CHAT_ACTION", "feed": "TG_CHAT_FEED",
+                "system": "TG_CHAT_SYSTEM", "news": "TG_CHAT_NEWS"}
+
+
+def send_tg(text: str, channel: str = "main", reply_to: int | None = None):
+    """→ message_id (int, truthy) при успехе, False при ошибке — все `if send_tg(...)`
+    вызовы работают как раньше. reply_to (09.07, Егор «видеть цикл сетап→вход»):
+    ответ на сообщение сетапа; сообщение удалено/чужой чат → шлём без reply."""
+    token = _env("TELEGRAM_TOKEN")
+    chat = None
+    if channel in _CHANNEL_ENV:
+        chat = _env(_CHANNEL_ENV[channel])
+    if not chat:                                     # fallback: основной чат
+        chat = _env("ADMIN_CHAT_ID") or _env("CHAT_ID")
     if not token or not chat:
         return False
     try:
-        data = urllib.parse.urlencode({"chat_id": chat, "text": text,
-                                       "parse_mode": "HTML", "disable_web_page_preview": "1"}).encode()
-        urllib.request.urlopen(
-            urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data),
-            timeout=15)
-        return True
+        params = {"chat_id": chat, "text": text,
+                  "parse_mode": "HTML", "disable_web_page_preview": "1"}
+        if reply_to:
+            params["reply_to_message_id"] = int(reply_to)
+            params["allow_sending_without_reply"] = "1"
+        resp = json.load(urllib.request.urlopen(
+            urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
+                                   urllib.parse.urlencode(params).encode()),
+            timeout=15))
+        return int(resp.get("result", {}).get("message_id") or 0) or True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def send_tg_photo(photo: bytes, caption: str = "", channel: str = "main",
+                  reply_to: int | None = None):
+    """PNG-чарт в канал (sendPhoto, 11.07 Егор «сюда чарты подтянем»). → message_id/False.
+    multipart через requests (есть в окружении: ccxt зависит)."""
+    token = _env("TELEGRAM_TOKEN")
+    chat = None
+    if channel in _CHANNEL_ENV:
+        chat = _env(_CHANNEL_ENV[channel])
+    if not chat:
+        chat = _env("ADMIN_CHAT_ID") or _env("CHAT_ID")
+    if not token or not chat or not photo:
+        return False
+    try:
+        import requests
+        data = {"chat_id": chat, "caption": caption[:1024], "parse_mode": "HTML"}
+        if reply_to:
+            data["reply_to_message_id"] = int(reply_to)
+            data["allow_sending_without_reply"] = "1"
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                          data=data, files={"photo": ("chart.png", photo, "image/png")},
+                          timeout=30)
+        resp = r.json()
+        return int(resp.get("result", {}).get("message_id") or 0) or True
     except Exception:  # noqa: BLE001
         return False
 
@@ -85,7 +136,7 @@ def check_and_alert() -> list[str]:
                 "WHERE kind='whale_swap' AND amount_usd>=1000000 AND ts>?", (now - 720,)).fetchall():
             if _cooldown_ok(c, f"whale:{sym}"):
                 arrow = "→ в стейблы (risk-off)" if d == "risk_off" else "← из стейблов (risk-on)" if d == "risk_on" else ""
-                if send_tg(f"🐋 <b>КИТ ${usd/1e6:.2f}M</b> {sym} {arrow} (Uniswap)"):
+                if send_tg(f"🐋 <b>КИТ ${usd/1e6:.2f}M</b> {sym} {arrow} (Uniswap)", channel="feed"):
                     sent.append(f"whale {sym}")
         # 4) BTC-флоу кумулятив 3ч
         inf = c.execute("SELECT COALESCE(SUM(amount_usd),0) FROM onchain_events "
@@ -95,7 +146,8 @@ def check_and_alert() -> list[str]:
         net = outf - inf
         if abs(net) >= 150 and _cooldown_ok(c, "btc_flow:btc"):
             what = "⬆️ ВЫВОДЯТ в холд (бычье)" if net > 0 else "⬇️ ЗАВОДЯТ на биржи (медвежье)"
-            if send_tg(f"₿ <b>BTC-флоу 3ч: {net:+.0f} BTC</b>\n{what} · in {inf:.0f} / out {outf:.0f}"):
+            if send_tg(f"₿ <b>BTC-флоу 3ч: {net:+.0f} BTC</b>\n{what} · in {inf:.0f} / out {outf:.0f}",
+                       channel="feed"):
                 sent.append("btc_flow")
         # 5) смена USDT.D-режима
         try:
@@ -107,7 +159,7 @@ def check_and_alert() -> list[str]:
                 if _cooldown_ok(c, "usdtd_regime:flip"):
                     txt = "🔄 <b>USDT.D режим: RISK-OFF</b> — среда SHORT-эджа ВКЛ" if ro \
                         else "🔄 <b>USDT.D режим: RISK-ON</b> — шорты спят"
-                    if send_tg(txt): sent.append("regime")
+                    if send_tg(txt, channel="action"): sent.append("regime")
             if ro is not None:
                 _last_regime = ro
         except Exception:  # noqa: BLE001

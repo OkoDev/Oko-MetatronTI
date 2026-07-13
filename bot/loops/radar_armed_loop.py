@@ -36,9 +36,14 @@ def _fetch_new_orders(db_path) -> list[dict]:
     try:
         with sqlite3.connect(db_path, timeout=5) as c:
             c.row_factory = sqlite3.Row
-            rows = c.execute(
-                "SELECT ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, grade, starred "
-                "FROM radar_orders WHERE status='NEW' ORDER BY ts").fetchall()
+            try:      # phase_json добавлен 12.07 (фаза серии BUILD) — старые БД без колонки
+                rows = c.execute(
+                    "SELECT ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, grade, starred, "
+                    "tg_msg_id, phase_json FROM radar_orders WHERE status='NEW' ORDER BY ts").fetchall()
+            except sqlite3.OperationalError:
+                rows = c.execute(
+                    "SELECT ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, grade, starred, "
+                    "tg_msg_id, NULL AS phase_json FROM radar_orders WHERE status='NEW' ORDER BY ts").fetchall()
             return [dict(r) for r in rows]
     except sqlite3.OperationalError:
         return []   # no such table — радар ещё не писал сетапов
@@ -104,7 +109,11 @@ def _mark_pending(db_path, trade_id: int) -> bool:
 async def _check_pending(bot, ttl_sec: float) -> None:
     """PENDING_ENTRY-чекер: fill → OPEN (+actual_entry, захваты, post-fill хук);
     TTL истёк → cancel лимитки → CANCELLED. SL/финальный TP привязаны к самому
-    LIMIT-ордеру (place_bracket_order) — до fill на бирже нечего защищать."""
+    LIMIT-ордеру (place_bracket_order) — до fill на бирже нечего защищать.
+
+    08.07 (спринт LIMIT v1.1): ведёт и atr_s2 LIMIT-входы (mark_pending из scan_loop).
+    Мульти-TP/BE-хуки для них no-op (radar_tps/radar_tp_oids нет → ранние выходы).
+    ⚠️ Лайфцикл живёт в этом лупе: radar_armed.enabled=false остановит и atr_s2-pending."""
     import datetime as _dt
     db_path = bot.trade_simulator.db_path
     try:
@@ -112,7 +121,8 @@ async def _check_pending(bot, ttl_sec: float) -> None:
             c.row_factory = sqlite3.Row
             rows = [dict(r) for r in c.execute(
                 "SELECT id, symbol, direction, exchange_order_id, created_at FROM simulated_trades "
-                "WHERE status='PENDING_ENTRY' AND features_json LIKE '%\"trade_mode\": \"radar\"%'")]
+                "WHERE status='PENDING_ENTRY' AND (features_json LIKE '%\"trade_mode\": \"radar\"%' "
+                "OR features_json LIKE '%\"trade_mode\": \"atr_s2\"%')")]
     except Exception:
         return
     if not rows:
@@ -152,6 +162,30 @@ async def _check_pending(bot, ttl_sec: float) -> None:
                                   "WHERE id=? AND status='PENDING_ENTRY'", (tid,))
                     c.commit()
                 logger.info("[RADAR-ARMED] #%d %s %s LIMIT FILLED @ %.6g → OPEN", tid, symbol, direction, fill_price)
+                # ✅ ВХОД-уведомление (09.07, Егор «как отличить вход от сетапа»): факт fill →
+                # ACTION. Сетап = 🚀/⏳/📈 (предложение радара), вход = ✅ (позиция открыта).
+                try:
+                    from oko_feed.alerts import send_tg as _stg
+                    _feats = _read_features(db_path, tid)
+                    _tps = _feats.get("radar_tps") or []
+                    with sqlite3.connect(db_path, timeout=5) as _c_sl:
+                        _r_sl = _c_sl.execute("SELECT stop_loss FROM simulated_trades WHERE id=?",
+                                              (tid,)).fetchone()
+                    _sl_v = float(_r_sl[0]) if (_r_sl and _r_sl[0]) else 0.0
+                    _sl_pct = (abs(fill_price - _sl_v) / fill_price * 100) if (_sl_v and fill_price) else 0
+                    _dot = "🟢" if direction == "LONG" else "🔴"
+                    _mid_e = _stg(f"✅ <b>ВХОД #{tid}</b> {_dot} <code>{symbol.split('/')[0]}</code> "
+                         f"{direction} @ <code>{fill_price:.6g}</code>\n"
+                         + (f"стоп: <code>{_sl_v:.6g}</code> (−{_sl_pct:.2f}%)\n" if _sl_v else "")
+                         + f"источник: {_feats.get('trigger_source', 'radar')}\n"
+                         + (f"цели: {' / '.join(f'{t:.6g}' for t in _tps)}\n" if _tps else "")
+                         + f"<i>SL и тейки на бирже; остаток поведёт пивот-трейл</i>\n\n"
+                         f"#ENTRY #{symbol.split('/')[0]}", channel="action",
+                         reply_to=_feats.get("radar_tg_msg_id"))   # 💬 reply на сетап = цикл виден
+                    if isinstance(_mid_e, int):
+                        _patch_features(db_path, tid, {"entry_tg_msg_id": _mid_e})
+                except Exception as _ne:
+                    logger.debug("[RADAR-ARMED] entry-notify #%d: %s", tid, _ne)
                 try:
                     from core.exchange.tsl_updater import (
                         fetch_and_save_sl_order_id, fetch_and_save_position_id,
@@ -323,6 +357,255 @@ async def _on_entry_filled(bot, trade_id: int, symbol: str, direction: str, fill
         logger.exception("[RADAR-ARMED] #%d %s multi-TP error: %s", trade_id, symbol, e)
 
 
+def _runner_floor(price: float, direction: str, pivots: dict,
+                  be: float, buf_pct: float = 0.15) -> float | None:
+    """SPRING-RUNNER-TSL (09.07): «этаж» раннера = последний ПРОБИТЫЙ R/S-пивот дня.
+
+    MFE-статистика n=68: брали +0.04%/сд при потенциале +2.84% (62% сделок давали >2%
+    ПОСЛЕ выхода) — BE-у-цены + TSL-1R душили раннеров. Дизайн Егора (разбор ARB 1h):
+    держать ПОКА above R-пивотов; SL = под пробитый этаж (−buf), только ВВЕРХ, не ниже BE.
+    LONG: цена выше R2 → SL под R2; выше R1 → под R1; ниже R1 → BE. SHORT зеркально.
+    Пивоты дня пересчитываются сами с новыми сутками (future-эффект бесплатно)."""
+    lvls = (("R3", "R2", "R1", "PP") if direction == "LONG" else ("S3", "S2", "S1", "PP"))
+    k = 1 - buf_pct / 100 if direction == "LONG" else 1 + buf_pct / 100
+    for name in lvls:                                  # от дальнего этажа к ближнему
+        lv = pivots.get(name)
+        if lv is None:
+            continue
+        broken = price > lv if direction == "LONG" else price < lv
+        if broken:
+            floor = lv * k
+            better_than_be = floor > be if direction == "LONG" else floor < be
+            return floor if better_than_be else None   # этаж хуже BE — не трогаем
+    return None                                        # ни один этаж не пробит — сидим на BE
+
+
+def _swing_floor(df, direction: str, price: float, buf_pct: float = 0.3) -> float | None:
+    """Стоп за ПОСЛЕДНИМ ПОДТВЕРЖДЁННЫМ структурным свингом (Егор 12.07 «микро-отскок!
+    где СТРУКТУРНЫЙ трейл?!» — v1 на 5m±2 была микрошумом: LAB выбило тиком в 2.3%
+    от цены, а структурный LH 0.5768 дышал бы и ехал дальше).
+
+    v2 = канон OKO-SM: 15m + _swings_luxalgo(length=5) [[calib_choch_length5]].
+    SHORT → ПОСЛЕДНИЙ подтверждённый swing high (LH) ВЫШЕ цены: его слом = CHoCH =
+    структура развернулась = выходим. LONG → последний подтверждённый HL НИЖЕ.
+    НЕ ближайший микропик (= слабейший уровень = шум).
+
+    🔴 ВАЛИДНОСТЬ (урок churn'а 12.07): стоп ОБЯЗАН быть на правильной стороне рынка —
+    SHORT выше цены (STOP BUY), LONG ниже. Фильтр p>price*1.002 / p<price*0.998."""
+    if df is None or len(df) < 30 or price <= 0:
+        return None
+    try:
+        from core.smc.smc_engine import _swings_luxalgo
+        sw = sorted(_swings_luxalgo(df, 5), key=lambda x: x[0])
+    except Exception:
+        return None
+    if direction == "SHORT":
+        cands = [p for _, p, k in sw if k == "H" and p > price * 1.002]
+        return cands[-1] * (1 + buf_pct / 100) if cands else None
+    cands = [p for _, p, k in sw if k == "L" and p < price * 0.998]
+    return cands[-1] * (1 - buf_pct / 100) if cands else None
+
+
+async def _daily_pivots(bot, symbol: str) -> dict:
+    """Classic floor пивоты ТЕКУЩЕГО дня (по вчерашней D-свече) из data_collector.
+    force_refresh (11.07, ARB-пивот-баг): этажи двигают РЕАЛЬНЫЙ SL — свечи только свежие
+    (раннеров ≤5, вызов раз в 60с — REST-цена копеечная)."""
+    try:
+        df = await bot.data_collector.get_ohlcv(symbol, "1d", limit=3, force_refresh=True)
+        if df is None or len(df) < 2:
+            return {}
+        prev = df.iloc[-2]
+        h, l, cl = float(prev["high"]), float(prev["low"]), float(prev["close"])
+        pp = (h + l + cl) / 3
+        return {"PP": pp, "R1": 2 * pp - l, "S1": 2 * pp - h,
+                "R2": pp + (h - l), "S2": pp - (h - l),
+                "R3": h + 2 * (pp - l), "S3": l - 2 * (h - pp)}
+    except Exception:
+        return {}
+
+
+async def _runner_ceiling(bot, symbol: str, direction: str, price: float) -> tuple[float | None, str]:
+    """🏔 RUNNER-CEILINGS-W (10.07, разбор ARB с Егором: «+ немного глобального взгляда —
+    ARB пришёл в середину 1W FVG»): потолок раннера = ближайший СТАРШИЙ уровень по ходу
+    сделки: weekly-пивоты + дневные FVG-midline + 0.79/0.886 ретрейса 1h-структуры.
+    У потолка ФИКСИРУЮТ, не надеются. → (уровень, источник) или (None, '')."""
+    cands: list[tuple[float, str]] = []
+    try:
+        # force_refresh (11.07): потолок считается ОДИН раз на сделку и кэшируется в features —
+        # протухший 1d-кэш заморозил бы кривой потолок навсегда (класс ARB-пивот-бага)
+        df_d = await bot.data_collector.get_ohlcv(symbol, "1d", limit=60, force_refresh=True)
+        if df_d is not None and len(df_d) >= 15:
+            import pandas as pd
+            d = df_d.copy()
+            if not isinstance(d.index, pd.DatetimeIndex) and "time" in d.columns:
+                d.index = pd.to_datetime(d["time"], unit="ms")
+            # weekly-пивоты прошлой завершённой недели
+            wk = d.resample("W").agg({"high": "max", "low": "min", "close": "last"}).dropna()
+            if len(wk) >= 2:
+                p = wk.iloc[-2]
+                pp = (float(p["high"]) + float(p["low"]) + float(p["close"])) / 3
+                for lv, nm in ((pp, "W-PP"), (2 * pp - float(p["low"]), "W-R1"),
+                               (2 * pp - float(p["high"]), "W-S1"),
+                               (pp + float(p["high"]) - float(p["low"]), "W-R2"),
+                               (pp - float(p["high"]) + float(p["low"]), "W-S2")):
+                    cands.append((lv, nm))
+            # дневные FVG-midline (незакрытые)
+            from scripts.oi_fast_poller import _fvg_zones
+            hs, ls = list(d["high"].values), list(d["low"].values)
+            for z in _fvg_zones(hs, ls):
+                cands.append(((z["top"] + z["bot"]) / 2, f"FVG-1D-{z['kind']}"))
+    except Exception as e:
+        logger.debug("[CEIL] %s daily: %s", symbol, e)
+    try:
+        # 0.79/0.886 ретрейса структуры 1h (нога против сделки = потолок отката)
+        df_h = await bot.data_collector.get_ohlcv(symbol, "1h", limit=400)
+        if df_h is not None and len(df_h) >= 100:
+            import pandas as pd
+            h = df_h.copy()
+            if not isinstance(h.index, pd.DatetimeIndex) and "time" in h.columns:
+                h.index = pd.to_datetime(h["time"], unit="ms")
+            from core.smc.ote_matrix import structure_trend
+            st = structure_trend(h)
+            org = st.get("impulse_origin") or st.get("break_level")
+            ext = st.get("extreme")
+            if org and ext:
+                for f in (0.79, 0.886):
+                    cands.append((ext + f * (org - ext), f"1h-retr{f}"))
+    except Exception as e:
+        logger.debug("[CEIL] %s 1h: %s", symbol, e)
+    ahead = [(lv, nm) for lv, nm in cands
+             if (lv > price * 1.002 if direction == "LONG" else lv < price * 0.998)]
+    if not ahead:
+        return None, ""
+    best = min(ahead, key=lambda x: abs(x[0] - price))
+    return float(best[0]), best[1]
+
+
+async def _manage_runners(bot) -> None:
+    """Раннер-фаза (после fill TP1, be_activated=1): SL по пивот-этажам вместо TSL-удушения.
+    Потолок v1 = attached финальный TP (уже на бирже). Троттлинг: раз в 60с."""
+    if not bool(_cfg(bot).get("runner_pivot_trail", True)):
+        return
+    om = getattr(bot, "order_executor", None)
+    if om is None or not om.is_live():
+        return
+    now = time.time()
+    if now - getattr(_manage_runners, "_last", 0) < 60:
+        return
+    _manage_runners._last = now
+    db_path = bot.trade_simulator.db_path
+    try:
+        with sqlite3.connect(db_path, timeout=5) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute(
+                "SELECT id, symbol, direction, actual_entry_price, entry_price, stop_loss, "
+                "exchange_sl_order_id FROM simulated_trades WHERE status='OPEN' "
+                "AND be_activated=1 AND features_json LIKE '%\"trade_mode\": \"radar\"%'")]
+    except Exception:
+        return
+    for t in rows:
+        try:
+            symbol, direction = t["symbol"], (t["direction"] or "").upper()
+            px = float(await bot.data_collector.get_current_price(symbol) or 0)
+            if px <= 0:
+                # WsFeed-тикера нет (не подписан/устарел), 1m-кэш пуст → REST через ApiEngine
+                # (кэш+ретраи). Без цены раннер стоял МОЛЧА (BONK 11.07: ceiling не считался).
+                try:
+                    _df1 = await bot.data_collector.get_ohlcv(symbol, "1m", limit=2)
+                    if _df1 is not None and len(_df1) > 0:
+                        px = float(_df1.iloc[-1]["close"])
+                except Exception as _pxe:
+                    logger.warning("[RUNNER] #%s %s: REST-цена не взялась: %s", t.get("id"), symbol, _pxe)
+            if px <= 0:
+                logger.warning("[RUNNER] #%s %s: нет цены (ws+кэш+REST) — пропуск цикла", t.get("id"), symbol)
+                continue
+            # 🏔 потолок старшего ТФ: считается ОДИН раз при входе в раннер-фазу (кэш features)
+            feats_r = _read_features(db_path, t["id"])
+            ceil_v = feats_r.get("runner_ceiling")
+            if ceil_v is None:
+                cv, csrc = await _runner_ceiling(bot, symbol, direction, px)
+                if cv:
+                    _patch_features(db_path, t["id"], {"runner_ceiling": cv,
+                                                       "runner_ceiling_src": csrc})
+                    ceil_v = cv
+                    logger.info("[CEIL] #%d %s потолок %.6g (%s)", t["id"], symbol, cv, csrc)
+                else:
+                    _patch_features(db_path, t["id"], {"runner_ceiling": 0})   # не нашли — не искать снова
+            # у потолка ФИКСИРУЮТ: цена в 0.3% от уровня → market close остатка
+            if ceil_v and float(ceil_v) > 0:
+                cv = float(ceil_v)
+                near = (px >= cv * 0.997) if direction == "LONG" else (px <= cv * 1.003)
+                if near:
+                    try:
+                        client, pid = await om._resolve_position_client(symbol, direction)
+                        qty_c = await om.get_position_qty(symbol, direction)
+                        if client is not None and qty_c > 0:
+                            side_close = "SELL" if direction == "LONG" else "BUY"
+                            resp = await client.close_position_market(symbol, side_close, qty_c,
+                                                                      position_id=pid)
+                            code = resp.get("code", -1) if isinstance(resp, dict) else -1
+                            if code == 0:
+                                logger.info("[CEIL] #%d %s ФИКСАЦИЯ у потолка %.6g (%s) qty=%s",
+                                            t["id"], symbol, cv, feats_r.get("runner_ceiling_src"), qty_c)
+                                from oko_feed.alerts import send_tg as _stg_c
+                                _stg_c(f"🏔 <b>ПОТОЛОК #{t['id']}</b> <code>{symbol.split('/')[0]}</code> — "
+                                       f"остаток зафиксирован у <code>{cv:.6g}</code> "
+                                       f"({feats_r.get('runner_ceiling_src')})\n"
+                                       f"<i>у магнита фиксируют — метод</i>\n\n#CEILING",
+                                       channel="action", reply_to=feats_r.get("entry_tg_msg_id"))
+                                continue                     # позиция закрыта — этажи не нужны
+                    except Exception as _ce:
+                        logger.debug("[CEIL] close #%s: %s", t.get("id"), _ce)
+            piv = await _daily_pivots(bot, symbol)
+            if not piv:
+                continue
+            entry = float(t["actual_entry_price"] or t["entry_price"] or 0)
+            be = entry * (1.001 if direction == "LONG" else 0.999)
+            floor_piv = _runner_floor(px, direction, piv, be)
+            # СТРУКТУРНЫЙ ЭТАЖ (Егор «стоп за экстремум», хвост): за swing high/low — туже
+            # редких дневных пивотов. Комбинируем с пивотом → тугой ВАЛИДНЫЙ (сторона рынка).
+            floor_sw = None
+            if bool(_cfg(bot).get("runner_swing_floor", True)):
+                try:
+                    _cnd = await bot.data_collector.get_ohlcv(symbol, "15m", limit=120)
+                    floor_sw = _swing_floor(_cnd, direction, px)
+                except Exception as _swe:
+                    logger.debug("[RUNNER] swing_floor #%s: %s", t.get("id"), _swe)
+            # валидные (правильная сторона рынка) → тугой: SHORT=min(ниже, ближе сверху), LONG=max
+            _valid = [f for f in (floor_piv, floor_sw) if f is not None
+                      and ((f > px) if direction == "SHORT" else (f < px))]
+            floor = (min(_valid) if direction == "SHORT" else max(_valid)) if _valid else None
+            cur_sl = float(t["stop_loss"] or 0)
+            if floor is None or cur_sl <= 0:
+                continue
+            improves = floor > cur_sl * 1.0015 if direction == "LONG" else floor < cur_sl * 0.9985
+            if not improves:
+                continue
+            qty_rest = await om.get_position_qty(symbol, direction)
+            new_id = await om.update_sl(
+                symbol, direction, old_sl_order_id=str(t["exchange_sl_order_id"] or ""),
+                new_sl_price=floor, qty=qty_rest or 0.0, old_sl_price=cur_sl,
+                limit_buffer_pct=0.15)
+            if new_id:
+                with sqlite3.connect(db_path, timeout=5) as c:
+                    c.execute("UPDATE simulated_trades SET stop_loss=?, exchange_sl_order_id=? "
+                              "WHERE id=? AND status='OPEN'", (floor, new_id, t["id"]))
+                    c.commit()
+                logger.info("[RUNNER] #%d %s SL → этаж %.6g (цена %.6g, BE %.6g)",
+                            t["id"], symbol, floor, px, be)
+                try:                                     # 💬 жизнь сделки тредом
+                    from oko_feed.alerts import send_tg as _stg_rn
+                    _f_rn = _read_features(db_path, t["id"])
+                    _stg_rn(f"🪜 <b>ЭТАЖ #{t['id']}</b> <code>{symbol.split('/')[0]}</code> — "
+                            f"стоп поднят: <code>{floor:.6g}</code> (цена <code>{px:.6g}</code>)\n\n#TRAIL",
+                            channel="action", reply_to=_f_rn.get("entry_tg_msg_id"))
+                except Exception:
+                    pass
+        except Exception as e:
+            # warning, не debug: молчание уже прятало баги (BE-чекер 10.07, цена 11.07)
+            logger.warning("[RUNNER] #%s: %s", t.get("id"), e)
+
+
 async def _check_be_after_tp1(bot) -> None:
     """Авто-БУ (шаг 6, Егор: «БУ после TP1 + наш TSL на остатке»): fill TP1 → SL → BE.
 
@@ -358,8 +641,15 @@ async def _check_be_after_tp1(bot) -> None:
                 continue
             symbol, direction = t["symbol"], (t["direction"] or "").upper()
             client = await om._get_client_synced(symbol)
-            tp1_filled = any(str(o.get("orderId")) == str(tp1[0])
-                             for o in await client.get_filled_orders(symbol, limit=20))
+            # БАГ 10.07 (IOTA #45257) + 11.07 (BONK #45327): сработавший TAKE_PROFIT_MARKET
+            # BingX исполняется под НОВЫМ orderId → матч по oid в allOrders слеп; окно
+            # get_filled_orders(limit=20) отдаёт СТАРЕЙШИЕ ордера символа — свежий fill
+            # туда не попадает при длинной истории. Надёжный детект: точечный GET order
+            # по СТАРОМУ oid — биржа возвращает актуальный (новый исполненный) ордер.
+            close_side = "BUY" if direction == "SHORT" else "SELL"
+            _o = await client.get_order(symbol, str(tp1[0]))
+            tp1_filled = (str(_o.get("status") or "") == "FILLED"
+                          and str(_o.get("side") or "").upper() == close_side)
             if not tp1_filled:
                 continue
             ae = float(t["actual_entry_price"] or 0) or float(t["entry_price"] or 0)
@@ -382,8 +672,79 @@ async def _check_be_after_tp1(bot) -> None:
                     c.commit()
                 logger.info("[RADAR-ARMED] #%d %s TP1 FILLED → BE @ %.6g (oid=%s), остаток ведёт TSL",
                             t["id"], symbol, be, new_id)
+                # ХВОСТ-РАННЕР (11.07, Егор «рано вышли» — IOTA каскад −12.7%, взяли 2.8%):
+                # хвост уже защищён БУ-стопом → снимаем attached финальный TP (measured-move
+                # резал каскадные хвосты), дальше хвост ведут пивот-этажи + потолок 1W.
+                # repair_missing_tp radar-сделки не трогает — TP не пересоздастся.
+                if bool(_cfg(bot).get("runner_tail", True)):
+                    try:
+                        tpf = float(feats.get("radar_tp_final") or 0)
+                        known = {str(o[0]) for o in oids if o}
+                        for oo in await client.get_open_orders(symbol):
+                            if str(oo.get("type") or "") not in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
+                                continue
+                            if str(oo.get("side") or "").upper() != close_side:
+                                continue
+                            if str(oo.get("orderId")) in known:      # частичные TP2/TP3 не трогаем
+                                continue
+                            sp = float(oo.get("stopPrice") or oo.get("price") or 0)
+                            # снимаем ТОЛЬКО при подтверждённом матче цены с нашим tp_final —
+                            # на символе может жить чужой TP (ote_nested и др.), его не трогаем
+                            if not (tpf > 0 and sp > 0 and abs(sp - tpf) / tpf <= 0.005):
+                                continue
+                            r_c = await client.cancel_order(symbol, str(oo.get("orderId")))
+                            logger.info("[RADAR-ARMED] #%d %s ХВОСТ: финальный TP @ %.6g снят "
+                                        "(oid=%s, code=%s) — ведут этажи+потолок", t["id"], symbol,
+                                        sp, oo.get("orderId"), r_c.get("code") if isinstance(r_c, dict) else "?")
+                    except Exception as _tre:
+                        logger.warning("[RADAR-ARMED] #%d хвост-раннер снятие TP: %s", t["id"], _tre)
+                try:                                     # 💬 жизнь сделки тредом (Егор 09.07)
+                    from oko_feed.alerts import send_tg as _stg_tp
+                    _stg_tp(f"🎯 <b>TP1 #{t['id']}</b> <code>{symbol.split('/')[0]}</code> — "
+                            f"40% зафиксировано @ <code>{tp1[1]:.6g}</code>\n"
+                            f"стоп остатка → БУ <code>{be:.6g}</code>, дальше пивот-этажи\n\n#TP",
+                            channel="action", reply_to=feats.get("entry_tg_msg_id"))
+                except Exception:
+                    pass
         except Exception as e:
-            logger.debug("[RADAR-ARMED] BE-чекер #%s: %s", t.get("id"), e)
+            # warning, не debug: молчание уже прятало баги (BE-чекер 10.07, цена 11.07)
+            logger.warning("[RADAR-ARMED] BE-чекер #%s: %s", t.get("id"), e)
+
+
+async def _notify_closed(bot) -> None:
+    """🏁 Финал жизни сделки тредом (Егор 09.07 «полную жизнь видно — будет круто»):
+    radar-сделка закрылась (любой статус) → итог reply'ем на ✅ ВХОД. Однократно
+    (features_json.closed_notified)."""
+    db_path = bot.trade_simulator.db_path
+    try:
+        with sqlite3.connect(db_path, timeout=5) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute(
+                "SELECT id, symbol, direction, status, profit_pct, exit_price "
+                "FROM simulated_trades WHERE status IN ('TP','SL','TSL','EXPIRED','CANCELLED') "
+                "AND features_json LIKE '%\"trade_mode\": \"radar\"%' "
+                "AND features_json LIKE '%entry_tg_msg_id%' "
+                "AND features_json NOT LIKE '%closed_notified%' LIMIT 10")]
+    except Exception:
+        return
+    for t in rows:
+        try:
+            feats = _read_features(db_path, t["id"])
+            pp = t["profit_pct"]
+            if t["status"] == "CANCELLED":
+                head, tail = "🚫 <b>ОТМЕНА", "лимитка не сработала (TTL)"
+            else:
+                win = pp is not None and float(pp) > 0.05
+                head = "🏆 <b>ЗАКРЫТА" if win else ("🟡 <b>ЗАКРЫТА" if pp is not None and abs(float(pp)) <= 0.05 else "🔻 <b>ЗАКРЫТА")
+                tail = (f"{t['status']} · {float(pp):+.2f}%" if pp is not None else t["status"])
+            from oko_feed.alerts import send_tg as _stg_cl
+            _stg_cl(f"{head} #{t['id']}</b> <code>{str(t['symbol']).split('/')[0]}</code> "
+                    f"{t['direction']}\n{tail}"
+                    + (f" · выход <code>{float(t['exit_price']):.6g}</code>" if t["exit_price"] else "")
+                    + "\n\n#CLOSED", channel="action", reply_to=feats.get("entry_tg_msg_id"))
+            _patch_features(db_path, t["id"], {"closed_notified": 1})
+        except Exception as e:
+            logger.debug("[RADAR-ARMED] close-notify #%s: %s", t.get("id"), e)
 
 
 async def radar_armed_loop(bot) -> None:
@@ -408,6 +769,10 @@ async def radar_armed_loop(bot) -> None:
             await _check_pending(bot, ttl_sec)
             # авто-БУ по fill TP1 (шаг 6): SL→BE тугим STOP-LIMIT, остаток ведёт TSL
             await _check_be_after_tp1(bot)
+            # SPRING-RUNNER (09.07): раннеры после TP1 — SL по пивот-этажам (не душить)
+            await _manage_runners(bot)
+            # 🏁 итоги закрытых — reply на ВХОД (полный цикл тредом)
+            await _notify_closed(bot)
             orders = _fetch_new_orders(RADAR_DB)
             if not orders:
                 continue
@@ -518,7 +883,16 @@ async def _try_register(bot, o: dict, radar_db) -> None:
         "radar_ts": ts, "radar_grade": o.get("grade"),
         "radar_starred": int(o.get("starred") or 0),
         "radar_tps": tps,                                # все цели — план multi-TP (шаг 5)
+        "radar_tg_msg_id": o.get("tg_msg_id"),           # 💬 цикл сетап→вход (reply в TG)
     }
+    # 🌊 ФАЗА-ФИЧИ (12.07, VANRY-разбор): build_chain_n + ltf_hh_progress → прозрачно в features
+    try:
+        import json as _pj
+        _ph = _pj.loads(o.get("phase_json") or "{}")
+        for _k, _v in _ph.items():
+            extra[f"radar_{_k}"] = _v
+    except Exception:
+        pass
     try:
         if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
             res = await bot.trade_router.submit(rec, source="radar", extra_features=extra)

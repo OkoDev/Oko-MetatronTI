@@ -32,6 +32,53 @@ CORE = ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "LINK", "AVAX", "DOT",
         "STRK", "WIF", "1000BONK"]   # мемы = 1000-префикс на futures; TON делистнут → HBAR
 INTERVAL = 60
 WIN = collections.defaultdict(lambda: collections.deque(maxlen=30))   # sym -> [(ts, oi, price)]
+
+# ── HOT-LIST (11.07, Егор: «XPIN смотрели?!» — нет: CORE-50 слеп к хвосту, XPIN +47%
+# прошёл мимо PUMP-детектора). Раз в 5 мин batch ticker/24hr (1 запрос ~700 пар) →
+# топ-N горячих (|Δ24ч| ≥ 10%, объём ≥ $5M) добавляются в OI-поллинг на 24ч.
+# CORE не меняется (стабильная вселенная atr_S2); хот-лист расширяет PUMP/SPRING/DUMP.
+HOT_MAX = 15
+HOT_MIN_VOL = 5e6
+HOT_MIN_CHG = 10.0
+HOT_TTL = 24 * 3600
+_HOT: dict[str, float] = {}          # base -> последний раз видел горячим (ts)
+_HOT_LAST = [0.0]
+
+
+def _refresh_hot():
+    if time.time() - _HOT_LAST[0] < 300:
+        return
+    _HOT_LAST[0] = time.time()
+    try:
+        arr = _get("https://fapi.binance.com/fapi/v1/ticker/24hr")
+        cands = []
+        for t in arr:
+            s = str(t.get("symbol", ""))
+            if not s.endswith("USDT"):
+                continue
+            base = s[:-4]
+            if base in CORE:
+                continue
+            try:
+                chg, qv = float(t["priceChangePercent"]), float(t["quoteVolume"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if qv >= HOT_MIN_VOL and abs(chg) >= HOT_MIN_CHG:
+                cands.append((abs(chg), base))
+        now = time.time()
+        fresh = []
+        for _, base in sorted(cands, reverse=True)[:HOT_MAX]:
+            if base not in _HOT:
+                fresh.append(base)
+            _HOT[base] = now
+        for base, ts in list(_HOT.items()):
+            if now - ts > HOT_TTL:
+                _HOT.pop(base, None)
+                WIN.pop(base, None)
+        if fresh:
+            print(f"[HOT] +{','.join(fresh)} → радар (движение дня); всего hot={len(_HOT)}")
+    except Exception as e:
+        print(f"[HOT] refresh err: {e}")
 _PRICES: dict[str, float] = {}
 _FUND: dict[str, float] = {}   # sym -> lastFundingRate (batch premiumIndex раз в цикл)
 
@@ -87,6 +134,62 @@ def _sl_structure(sym: str, side: str) -> float | None:
         return None
 
 
+def _struct_dir(sym: str) -> tuple[str | None, str]:
+    """СТРУКТУРНОЕ направление для BUILD (12.07, Егор: «build вообще знает про волны и где
+    он относительно структуры?!» — не знал: направление было ИНВЕРСИЕЙ funding → WR 19%).
+
+    Руль = структура 1h: последний слом (BOS/CHoCH, length=5 канон OKO-SM [[calib_choch_length5]]).
+    CHoCH приоритетнее BOS (свежий разворот > продолжение). Fallback: EMA-тренд (_htf_trend).
+    → (side, описание) · (None, '') если структура нема (RANGE без сломов) — сетап не строим.
+    OI-build = ТОПЛИВО (кто-то грузится); структура говорит КУДА. Funding = инфо о толпе."""
+    try:
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=1h&limit=120")
+        if len(k) < 60:
+            return None, ""
+        import pandas as pd
+        df = pd.DataFrame({"time": [int(x[0]) for x in k],
+                           "open": [float(x[1]) for x in k], "high": [float(x[2]) for x in k],
+                           "low": [float(x[3]) for x in k], "close": [float(x[4]) for x in k]})
+        from core.smc.smc_engine import detect_structure_breaks
+        brks = detect_structure_breaks(df, length=5)
+        if brks:
+            b = brks[-1]
+            side = "LONG" if b.direction == "bull" else "SHORT"
+            return side, f"структура 1h: {b.kind} {'↑' if side == 'LONG' else '↓'}"
+    except Exception as e:
+        print(f"[BUILD] struct_dir {sym}: {e}")
+    t = _htf_trend(sym)                                  # fallback: EMA-тренд
+    if t == "UP":
+        return "LONG", "структура 1h: тренд EMA ↑"
+    if t == "DOWN":
+        return "SHORT", "структура 1h: тренд EMA ↓"
+    return None, ""
+
+
+def _htf_trend(sym: str, interval: str = "1h") -> str | None:
+    """Лёгкий прокси старшего тренда (05.07, гейт BUILD «лонг на пике падения», CHZ/ORDI):
+    EMA21 на interval×50. UP = цена > EMA и EMA растёт; DOWN = цена < EMA и EMA падает;
+    иначе FLAT. Дублирует смысл atr_trend_1h_bias бота (DEV-169), но без pandas/ATR —
+    радар stateless. Ошибка/недостаток данных → None (fail-open: гейт не блокирует)."""
+    try:
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval={interval}&limit=50")
+    except Exception:
+        return None
+    closes = [float(x[4]) for x in k]
+    if len(closes) < 25:
+        return None
+    ema = closes[0]
+    a = 2 / (21 + 1)
+    prev = ema
+    for c in closes[1:]:
+        prev, ema = ema, c * a + ema * (1 - a)
+    if closes[-1] > ema and ema > prev:
+        return "UP"
+    if closes[-1] < ema and ema < prev:
+        return "DOWN"
+    return "FLAT"
+
+
 def _recent_signals(sym: str, hours: float = 6.0) -> list[dict]:
     """⛓ ЦЕПОЧКИ (04.07, Егор «радар должен знать, что был сигнал ДО»): последние сигналы
     символа из копилок БД. Детекторы stateless — память подключаем ЧТЕНИЕМ уже пишущихся
@@ -123,6 +226,19 @@ def _fmt_chain(chain: list[dict]) -> str:
         sd = {"UP": "↑", "DOWN": "↓", "LONG": "↑", "SHORT": "↓"}.get(str(s["side"] or "?"), "?")
         parts.append(f"{s['type']}{sd} {age} назад")
     return "⛓ до этого: " + " · ".join(parts)
+
+
+def _with_orderbook(msg: str, sym: str, px: float) -> str:
+    """Вставить «📖 стакан» перед подвалом ссылок (маркер как у _with_chain/_with_targets)."""
+    try:
+        line = _orderbook_line(sym, px)
+    except Exception:
+        line = ""
+    if not line:
+        return msg
+    marker = "\n\n- <a href"
+    i = msg.find(marker)
+    return f"{msg[:i]}\n\n{line}{msg[i:]}" if i != -1 else f"{msg}\n{line}"
 
 
 def _with_chain(msg: str, chain: list[dict]) -> str:
@@ -222,11 +338,78 @@ def _wave_leg(sym: str, up: bool) -> dict | None:
     return {"leg": 2 * n_dir - 1, "n_swings": n_dir, "dev": round(dev, 2), "base": base_px}
 
 
+def _send_chart(sym: str, msg_id, tf: str = "1h") -> None:
+    """SMC-чарт reply'ем к алерту (11.07 Егор: «сюда чарты подтянем + BOS/CHoCH не хватает»).
+    Reuse build_signal_chart(wave_overlay=True): свечи+пивоты+объём+WT+ZigZag+OB+FVG+BOS/CHoCH.
+    bot=None → standalone fetch (ccxt bingx→binance). ~2-4с на алерт — редкость, тик переживёт."""
+    if not msg_id:
+        return
+    try:
+        import asyncio as _aio
+        from core.ui.chart_builder import build_signal_chart
+        png = _aio.run(build_signal_chart(f"{sym}/USDT:USDT", tf=tf, bot=None,
+                                          wave_overlay=True))
+        if png:
+            from oko_feed.alerts import send_tg_photo
+            send_tg_photo(png, caption=f"<code>{sym}</code> {tf} · SMC-разметка",
+                          channel="action", reply_to=msg_id)
+    except Exception as e:
+        print(f"[CHART] {sym}: {e}")
+
+
+_BINGX_PERPS: set[str] = set()
+_BINGX_TS = [0.0]
+
+
+def _on_bingx(base: str) -> bool:
+    """Есть ли перп на BingX (торгуемость сетапа). Кэш 24ч, 1 batch-запрос.
+    При недоступности API — fail-open (True): лучше лишний сетап, чем слепота."""
+    now = time.time()
+    if now - _BINGX_TS[0] > 24 * 3600:
+        try:
+            d = _get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker")
+            perps = {str(t.get("symbol", "")).replace("-USDT", "")
+                     for t in (d.get("data") or [])}
+            if perps:
+                _BINGX_PERPS.clear()
+                _BINGX_PERPS.update(perps)
+                _BINGX_TS[0] = now
+                print(f"[RADAR] BingX-перпы обновлены: {len(perps)}")
+        except Exception as e:
+            print(f"[RADAR] BingX perps refresh err: {e}")
+            _BINGX_TS[0] = now - 23 * 3600               # ретрай через час
+    return (base in _BINGX_PERPS) if _BINGX_PERPS else True
+
+
+def _build_phase_feats(sym: str) -> dict:
+    """ФАЗА серии (12.07, VANRY-разбор Егора): не «сколько BUILD», а «есть ли прогресс цены
+    на единицу BUILD». chain_n = BUILD за 6ч; hh_progress: max(high) последних 4×15m-баров
+    против пика окна 32 бара — 1=новые хаи (тренд жив), 0=BUILD'ы в стену (поглощение)."""
+    out: dict = {}
+    try:
+        n = conn().execute("SELECT COUNT(*) FROM build_signals WHERE symbol=? AND ts>?",
+                           (sym, int(time.time()) - 6 * 3600)).fetchone()[0]
+        out["build_chain_n"] = int(n)
+    except Exception:
+        pass
+    try:
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=15m&limit=32")
+        highs = [float(x[2]) for x in k]
+        if len(highs) >= 12:
+            peak, recent = max(highs[:-4]), max(highs[-4:])
+            out["ltf_hh_progress"] = int(recent >= peak * 0.999)
+            out["ltf_peak_dist_pct"] = round((recent / peak - 1) * 100, 2)
+    except Exception:
+        pass
+    return out
+
+
 def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
                      sl: float | None, targets_json: str | None,
                      grade: str | None = None, tps: tuple | None = None,
                      chain: list[dict] | None = None,
-                     wave_leg: int | None = None) -> None:
+                     wave_leg: int | None = None,
+                     tg_msg_id: int | None = None) -> None:
     """Порт ARMED-фазы (docs/RADAR_ARMED_PLAN.md): полный сетап → radar_orders.
 
     Радар о боте НЕ знает: пишет status='NEW' и забывает. Бот (radar_armed_loop)
@@ -239,19 +422,39 @@ def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
             return
         if (sl < entry) != (side == "LONG"):             # SL не с той стороны — сетап битый
             return
+        # BINGX-ФИЛЬТР (11.07, Егор: «ZIL на BingX нет)))» — радар живёт на Binance-данных,
+        # но торгуем BingX: делистнутые (ZIL) и Binance-only из HOT-LIST не армим.
+        if not _on_bingx(sym):
+            try:
+                send_tg(f"⚠️ <code>{sym}</code> нет на BingX — сетап наблюдательный, не армится",
+                        channel="action", reply_to=tg_msg_id)
+            except Exception:
+                pass
+            print(f"[RADAR] {sym} {sig_type}: NO_BINGX — ордер не пишем")
+            return
         try:
             t = json.loads(targets_json) if targets_json else []
         except Exception:
             t = []
         starred = 1 if any(c.get("star") for c in t) else 0
         if tps is None:
-            # лестница TP1→TP3 = от entry в сторону движения (не полагаемся на порядок json)
-            px_list = [c["px"] for c in t if c.get("px") and ((c["px"] > entry) == (side == "LONG"))]
+            # лестница TP1→TP3 = от entry в сторону движения (не полагаемся на порядок json).
+            # RR-гейт (07.07, gap пружины): цель ближе 1×риска — не цель (HBAR tp1 +0.23% при
+            # SL 0.65% = RR1 0.35; исполнение душится до микро-целей). Отбросили — следующая
+            # цель карты становится TP1; не осталось ни одной дальше риска → сетап не армится.
+            risk = abs(entry - sl)
+            px_list = [c["px"] for c in t if c.get("px")
+                       and ((c["px"] > entry) == (side == "LONG"))
+                       and abs(c["px"] - entry) >= risk]
             px_list.sort(reverse=(side == "SHORT"))
             tps = tuple((px_list + [None, None, None])[:3])
         tp1, tp2, tp3 = tps
         if not tp1 or (tp1 > entry) != (side == "LONG"):  # без цели в сторону сделки не армим
             return
+        # ФАЗА-ФИЧИ (12.07, разбор VANRY с Егором: «серия BUILD без новых HH = поглощение»):
+        # build_chain_n = серия BUILD за 6ч · ltf_hh_progress = делает ли 15m новые хаи
+        # после пика окна (1=тренд жив, 0=BUILD'ы в стену). Прозрачно, НЕ гейт.
+        phase = _build_phase_feats(sym)
         c = conn()
         try:
             c.execute("""CREATE TABLE IF NOT EXISTS radar_orders (
@@ -261,18 +464,22 @@ def _log_radar_order(sig_type: str, sym: str, side: str | None, entry: float,
                 status TEXT DEFAULT 'NEW', taken_ts INTEGER, note TEXT,
                 PRIMARY KEY (symbol, ts))""")
             for _mig in ("ALTER TABLE radar_orders ADD COLUMN chain TEXT",
-                         "ALTER TABLE radar_orders ADD COLUMN wave_leg INTEGER"):
-                try:                                      # ⛓/〰 миграция ранних строк
+                         "ALTER TABLE radar_orders ADD COLUMN wave_leg INTEGER",
+                         "ALTER TABLE radar_orders ADD COLUMN tg_msg_id INTEGER",
+                         "ALTER TABLE radar_orders ADD COLUMN phase_json TEXT"):
+                try:                                      # ⛓/〰/💬/🌊 миграция ранних строк
                     c.execute(_mig)
                 except Exception:
                     pass
             c.execute("INSERT OR REPLACE INTO radar_orders "
                       "(ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, "
-                      "grade, starred, targets_json, status, chain, wave_leg) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW',?,?)",
+                      "grade, starred, targets_json, status, chain, wave_leg, tg_msg_id, phase_json) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'NEW',?,?,?,?)",
                       (int(time.time()), sym, sig_type, side, entry, sl, tp1, tp2, tp3,
                        grade, starred, targets_json,
-                       json.dumps(chain, ensure_ascii=False) if chain else None, wave_leg))
+                       json.dumps(chain, ensure_ascii=False) if chain else None, wave_leg,
+                       int(tg_msg_id) if isinstance(tg_msg_id, int) else None,
+                       json.dumps(phase) if phase else None))
             c.commit()
         finally:
             c.close()
@@ -348,39 +555,66 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     if vol_ratio < PUMP_VOL_RATIO or rsi is None:
         return None
     up = d_px > 0
+    # тип сетапа зависит от OI (GRT-урок + зеркало 05.07, добро Егора): обвал+OI НЕ вырос =
+    # ликвидация лонгов, топливо кончилось → LONG-отскок (фейд); обвал+OI ВЫРОС = свежие шорты,
+    # реальные продажи → SHORT-ПРОДОЛЖЕНИЕ (раньше был отброшенный Grade-C LONG-разворот).
+    oi_fuel = d_oi5 is not None and d_oi5 <= 0.1         # OI не вырос = стопы/ликвидация
+    dump_cont = (not up) and (d_oi5 is not None and d_oi5 > 0.1)   # обвал + свежая загрузка вниз
+    # RSI-гейт зависит от типа: фейд требует экстремума; продолжение — нет (сигнал = OI+объём).
     if up and rsi < PUMP_RSI_HI:
-        return None
-    if not up and rsi > PUMP_RSI_LO:
-        return None
-    if up:                                    # памп → сетап на SHORT-разворот
+        return None                                     # памп-фейд: нужен перекуп RSI>75
+    if (not up) and (not dump_cont) and rsi > PUMP_RSI_LO:
+        return None                                     # дамп-фейд (LONG): нужен перепрод RSI<25
+    if dump_cont and rsi < 15:
+        return None                                     # SHORT-продолжение: не шортить капитуляцию дна (v1 порог, тюнить)
+    if up:                                    # памп → SHORT-разворот (фейд)
         ext = max(highs[-3:])                 # хай пампа
         pre = min(lows[-10:-3])               # цена ДО пампа
         rng = ext - pre
         sl, tp1, tp2, tp3 = ext * 1.01, ext - rng * 0.5, ext - rng * 0.75, pre
         head = "🔻 сетап: <b>SHORT</b> (разворот пампа ВНИЗ)"
-    else:                                     # дамп → зеркально LONG-разворот
+        side, sl_note, tp_note = "SHORT", "за экстремум +1%", "до пампа"
+    elif dump_cont:                           # обвал+OI вырос → SHORT-ПРОДОЛЖЕНИЕ (зеркало GRT, 05.07)
+        ext = min(lows[-3:])                  # лоу дампа
+        pre = max(highs[-10:-3])              # хай ДО дампа
+        rng = pre - ext                       # размер плеча дампа
+        # вход у лоу по импульсу; SL за середину плеча (реклейм 50% = импульс выдохся);
+        # цели = measured-move расширение вниз от лоу
+        sl, tp1, tp2, tp3 = ext + rng * 0.5, ext - rng * 0.5, ext - rng * 1.0, ext - rng * 1.5
+        head = "🔻 сетап: <b>SHORT</b> (ПРОДОЛЖЕНИЕ дампа — OI растёт)"
+        side, sl_note, tp_note = "SHORT", "за середину плеча дампа", "расширение вниз"
+    else:                                     # дамп+OI не вырос → LONG-разворот (фейд отскока)
         ext = min(lows[-3:])
         pre = max(highs[-10:-3])
         rng = pre - ext
         sl, tp1, tp2, tp3 = ext * 0.99, ext + rng * 0.5, ext + rng * 0.75, pre
         head = "🔺 сетап: <b>LONG</b> (разворот дампа ВВЕРХ)"
+        side, sl_note, tp_note = "LONG", "за экстремум +1%", "до дампа"
     if rng <= 0:
         return None
-    oi_fuel = d_oi5 is not None and d_oi5 <= 0.1
-    grade = "A" if (oi_fuel and vol_ratio >= 5) else ("B" if oi_fuel else "C")
-    oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка → возврат вероятен' if oi_fuel else 'НАСТОЯЩАЯ загрузка → не спешить, ждать выдоха!'}"
-              if d_oi5 is not None else "OI: нет данных")
-    # ⛓ цикл «загрузка→выстрел» (04.07, GRT 02:08→02:30): пружина/BUILD в сторону пампа
-    # за 3ч = набор начался ЗАРАНЕЕ (5м-окно ΔOI слепо к нему) → разворот преждевременен →
-    # грейд разворотного сетапа честно ↓C (бот армит только A/B → против цикла не войдёт).
+    # STOP-FVG-AWARE (10.07): стоп в незакрытом FVG = магнит для свипа → двигаем за край
+    sl, _fvg_moved = _sl_fvg_adjust(sl, px, side, highs, lows)
+    if dump_cont:
+        grade = "A" if (d_oi5 >= 0.5 and vol_ratio >= 5) else "B"   # OI-грев = сама суть сетапа
+        oi_txt = f"OI {d_oi5:+.2f}%/5м — СВЕЖИЕ ШОРТЫ грузятся → продолжение вниз вероятно"
+    else:
+        grade = "A" if (oi_fuel and vol_ratio >= 5) else ("B" if oi_fuel else "C")
+        oi_txt = (f"OI {d_oi5:+.2f}%/5м — {'СТОПЫ, не загрузка → возврат вероятен' if oi_fuel else 'НАСТОЯЩАЯ загрузка → не спешить, ждать выдоха!'}"
+                  if d_oi5 is not None else "OI: нет данных")
+    # ⛓ цикл «загрузка→выстрел» (04.07, GRT 02:08→02:30): предыдущий сигнал в сторону движения.
+    # Для ФЕЙДА (разворота) = предупреждение (загрузка началась ЗАРАНЕЕ → разворот преждевременен,
+    # грейд ↓C). Для ПРОДОЛЖЕНИЯ (dump_cont) = наоборот ПОДТВЕРЖДЕНИЕ (загрузка в ту же сторону).
     cyc = _chain_same_dir(chain or [], up)
     if cyc is not None:
         _cyc_age = (time.time() - cyc["ts"]) / 60
-        oi_txt += (f"\n⛓ цикл {cyc['type']}→ВЫСТРЕЛ ({_cyc_age:.0f}м) — загрузка началась "
-                   f"раньше, разворот НЕ спешить")
-        if grade != "C":
-            oi_txt += f" (Grade {grade}→C)"
-            grade = "C"
+        if dump_cont:
+            oi_txt += f"\n⛓ {cyc['type']}↓ {_cyc_age:.0f}м назад — загрузка вниз ПОДТВЕРЖДАЕТ продолжение"
+        else:
+            oi_txt += (f"\n⛓ цикл {cyc['type']}→ВЫСТРЕЛ ({_cyc_age:.0f}м) — загрузка началась "
+                       f"раньше, разворот НЕ спешить")
+            if grade != "C":
+                oi_txt += f" (Grade {grade}→C)"
+                grade = "C"
     # 〰 волновой счёт SHADOW (рамка 5-3): нога импульса от базы. Grade НЕ меняет — копим WR по ногам.
     wave = _wave_leg(sym, up)
     if wave is not None:
@@ -388,18 +622,20 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
         oi_txt += (f"\n〰 нога импульса: ~{wave['leg']}-я ({wave['n_swings']} {_dirw} "
                    f"от базы {_fmt(wave['base'])}, dev {wave['dev']}%)")
     grade_txt = {"A": "A (вход надёжнее)", "B": "B", "C": "C (⚠️ против свежего потока)"}[grade]
-    dot = "🔴" if up else "🟢"                            # сетап-разворот: памп → SHORT
-    msg = (f"🚀 <b>PUMP:</b>\n\n"
+    dot = "🔴" if side == "SHORT" else "🟢"
+    title = "🚀 <b>PUMP</b>" if up else "💥 <b>DUMP</b>"   # верх-заголовок по ДВИЖЕНИЮ (не по стороне)
+    tag = "PUMP" if up else "DUMP"
+    msg = (f"{title}:\n\n"
            f"{dot} <code>{sym}</code> {d_px:+.1f}%\n"
            f"{head}\n"
            f"Grade {grade_txt} · объём ×{vol_ratio:.1f} · RSI {rsi:.0f}\n"
            f"{oi_txt}\n\n"
            f"Вход: ~{_c(px)}\n"
-           f"Стоп: {_c(sl)} (за экстремум +1%)\n"
-           f"TP1 {_c(tp1)} (50%) · TP2 {_c(tp2)} (75%) · TP3 {_c(tp3)} (до пампа)\n\n"
+           f"Стоп: {_c(sl)} ({sl_note}{'; сдвинут за FVG' if _fvg_moved else ''})\n"
+           f"TP1 {_c(tp1)} · TP2 {_c(tp2)} · TP3 {_c(tp3)} ({tp_note})\n\n"
            f"{_links(sym)}\n\n"
-           f"#{sym} #PUMP")
-    row = {"ts": int(time.time()), "symbol": sym, "side": "SHORT" if up else "LONG",
+           f"#{sym} #{tag}")
+    row = {"ts": int(time.time()), "symbol": sym, "side": side,
            "d_px": round(d_px, 2), "vol_ratio": round(vol_ratio, 2), "rsi": round(rsi, 1),
            "d_oi": d_oi5 if d_oi5 is None else round(d_oi5, 3), "grade": grade,
            "entry": px, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
@@ -407,7 +643,8 @@ def analyze_pump(sym: str, px: float, d_px: float, d_oi5: float | None,
     return msg, row
 
 
-def check_spring(w, sym: str, px: float, fund: float | None) -> tuple[str, dict] | None:
+def check_spring(w, sym: str, px: float, fund: float | None,
+                 d1d: float | None = None) -> tuple[str, dict] | None:
     """⏳ ПРУЖИНА: OI грузится 15 мин, цена стоит в узком рейндже = скрытая загрузка ДО движения.
 
     Направление выстрела — эвристика по funding: платящая сторона = кто грузится
@@ -425,17 +662,18 @@ def check_spring(w, sym: str, px: float, fund: float | None) -> tuple[str, dict]
         return None
     if fund is None:
         dir_side, dir_txt = "?", "funding: нет данных — направление неясно"
-    elif fund < 0:
-        dir_side = "UP"
+    elif fund <= -0.0002:                      # 10.07 ФИКС (entry-анализ: MANA/IOTA лоси на
+        dir_side = "UP"                        # fund −0.00003≈НОЛЬ читался «шорты грузятся» →
         dir_txt = f"🔺 funding {fund * 100:.4f}% → грузятся ШОРТЫ → топливо ВВЕРХ (вероятно)"
-    elif fund >= 0.0002:                       # заметно выше базовой ставки 0.01%
+    elif fund >= 0.0002:                       # LONG на пике; симметрия порога = BUILD-фикс 05.07
         dir_side = "DOWN"
         dir_txt = f"🔻 funding {fund * 100:.4f}% → грузятся ЛОНГИ → топливо ВНИЗ (вероятно)"
     else:
         dir_side, dir_txt = "?", f"funding {fund * 100:.4f}% нейтрален — направление неясно"
     dot = {"UP": "🟢", "DOWN": "🔴"}.get(dir_side, "⚪")
+    _day = f" · за день {d1d:+.1f}%" if d1d is not None else ""
     msg = (f"⏳ <b>ПРУЖИНА:</b>\n\n"
-           f"{dot} <code>{sym}</code> OI {d_oi15:+.2f}%/15м · цена флэт (range {rng_pct:.2f}%)\n"
+           f"{dot} <code>{sym}</code> OI {d_oi15:+.2f}%/15м{_day} · цена флэт (range {rng_pct:.2f}%)\n"
            f"{dir_txt}\n"
            f"цена {_c(px)}\n\n"
            f"{_links(sym)}\n\n"
@@ -463,27 +701,41 @@ def _log_spring(row: dict) -> None:
         c.close()
 
 
-def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None) -> tuple[str, dict | None]:
+def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None,
+                  d1d: float | None = None) -> tuple[str, dict | None]:
     """📈 BUILD → полный сетап в сообщении (Егор 03.07: «нужно быстро реагировать» —
     вход-стоп-тейк сразу, без переспрашивания).
 
-    Направление по funding (пороги = check_spring): fund<0 → грузятся шорты → сетап LONG
-    (сквиз вверх); fund>=+0.02% → лонги → SHORT. Нейтрален → голый BUILD без сетапа.
+    Направление по funding СИММЕТРИЧНО (05.07 фикс «лонг в падающем тренде», CHZ/ORDI):
+    fund<=-0.02% → грузятся шорты → LONG (сквиз вверх); fund>=+0.02% → лонги → SHORT.
+    |funding|<0.02% = нейтрал → голый BUILD без сетапа (РАНЬШЕ любой fund<0 давал LONG —
+    нейтральный -0.004% открывал контр-трендовый лонг). Плюс гейт 1h-тренда: сетап против
+    старшего тренда (LONG@DOWN / SHORT@UP) не строим — остаётся голый алерт.
     SL — за структуру последнего часа (экстремум 5m×12), цели — карта целей 2.0.
     """
-    side = dir_txt = None
-    if fund is not None and fund < 0:
-        side = "LONG"
-        dir_txt = f"🔺 funding {fund * 100:.3f}% → грузятся ШОРТЫ"
-    elif fund is not None and fund >= 0.0002:
-        side = "SHORT"
-        dir_txt = f"🔻 funding {fund * 100:.3f}% → грузятся ЛОНГИ"
+    # 🔴 12.07 v2 (Егор: «build знает про волны/структуру?!» — НЕ знал: направление =
+    # инверсия funding → WR 19%, −22.8%/48ч). Теперь: OI-BUILD = ТОПЛИВО (грузятся),
+    # НАПРАВЛЕНИЕ = СТРУКТУРА 1h (последний BOS/CHoCH, канон length=5). Funding — инфо
+    # о толпе (сквиз-топливо), НЕ руль. VST-форвард покажет за дни (27 сд/48ч).
+    side, struct_txt = _struct_dir(sym)
+    veto_txt = None
+    if side is not None:
+        _f_txt = (f"толпа: funding {fund * 100:+.3f}%" +
+                  (" (шорты платят — топливо сквиза ↑)" if fund and fund < -0.0002 else
+                   " (лонги платят — топливо сквиза ↓)" if fund and fund > 0.0002 else " нейтрал")
+                  ) if fund is not None else "funding: нет данных"
+        dir_txt = f"{'🔺' if side == 'LONG' else '🔻'} {struct_txt} · {_f_txt}"
+    else:
+        dir_txt = None
+        veto_txt = "⚪ структура 1h нема (боковик без сломов) — сетапа нет 🔄"
     # шапка (макет Егора 03.07): тип отдельно, тикер копируемый + цвет направления
     dot = {"LONG": "🟢", "SHORT": "🔴"}.get(side, "⚪")
-    head = f"📈 <b>OI BUILD LIVE:</b>\n\n{dot} <code>{sym}</code> +{d_oi5:.2f}%/5м"
-    if side is None:                                     # funding нейтрален — сетап не строим,
-        fund_txt = (f"funding {fund * 100:.4f}% — нейтрален\nсетапа нет 🔄"
-                    if fund is not None else "funding: нет данных\nсетапа нет 🔄")
+    _day = f" · за день {d1d:+.1f}%" if d1d is not None else ""
+    head = f"📈 <b>OI BUILD LIVE:</b>\n\n{dot} <code>{sym}</code> +{d_oi5:.2f}%/5м{_day}"
+    if side is None:                                     # нейтрал/контр-тренд — сетап не строим,
+        fund_txt = (veto_txt if veto_txt else
+                    (f"funding {fund * 100:.4f}% — нейтрален\nсетапа нет 🔄"
+                     if fund is not None else "funding: нет данных\nсетапа нет 🔄"))
         bias_txt = ""                                    # но перекос топлива показать можем
         try:
             from scripts.liq_magnets import build_magnets, fmt_usd
@@ -600,6 +852,32 @@ def _log_liq_synth(sym: str, side: str, usd: float, px: float) -> None:
         c.close()
 
 
+_OI_ANCHOR: dict = {}           # sym -> (utc_date, oi_00) — якорь дня в RAM
+
+
+def _oi_day_delta(sym: str, oi: float) -> float | None:
+    """📅 OI-DAY-DELTA (10.07, Егор «детектор видит объёмы, зашедшие ЗА ДЕНЬ?» — не видел:
+    окно радара 30м). Якорь = первый замер OI новых суток UTC (персист в oi_anchor —
+    рестарт радара не теряет день). Возврат: % изменения OI с начала дня."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    cached = _OI_ANCHOR.get(sym)
+    if cached is None or cached[0] != today:
+        c = conn()
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS oi_anchor (symbol TEXT PRIMARY KEY, date TEXT, oi REAL)")
+            row = c.execute("SELECT date, oi FROM oi_anchor WHERE symbol=?", (sym,)).fetchone()
+            if row and row[0] == today and row[1]:
+                _OI_ANCHOR[sym] = (today, float(row[1]))
+            else:                                    # новые сутки → якорь = текущий OI
+                c.execute("INSERT OR REPLACE INTO oi_anchor VALUES (?,?,?)", (sym, today, oi))
+                c.commit()
+                _OI_ANCHOR[sym] = (today, oi)
+        finally:
+            c.close()
+    anchor = _OI_ANCHOR[sym][1]
+    return (oi / anchor - 1) * 100 if anchor else None
+
+
 def _flush_radar_state(rows: list[tuple]) -> None:
     """Live-контекст радара → radar_state (порт для Куба: features_json-мост, Егор 03.07).
 
@@ -612,10 +890,150 @@ def _flush_radar_state(rows: list[tuple]) -> None:
         c.execute("""CREATE TABLE IF NOT EXISTS radar_state (
             symbol TEXT PRIMARY KEY, ts INTEGER, px REAL,
             oi_d5 REAL, oi_d15 REAL, funding REAL)""")
-        c.executemany("INSERT OR REPLACE INTO radar_state VALUES (?,?,?,?,?,?)", rows)
+        try:
+            c.execute("ALTER TABLE radar_state ADD COLUMN oi_d1d REAL")   # 📅 дельта дня
+        except Exception:
+            pass
+        try:
+            c.execute("ALTER TABLE radar_state ADD COLUMN quadrant TEXT")  # 12.07 OI×цена 15м
+        except Exception:
+            pass
+        try:
+            c.execute("ALTER TABLE radar_state ADD COLUMN is_hot INTEGER")  # 12.07 HOT-LIST метка
+        except Exception:
+            pass
+        c.executemany("INSERT OR REPLACE INTO radar_state VALUES (?,?,?,?,?,?,?,?,?)", rows)
         c.commit()
     finally:
         c.close()
+
+
+def _fvg_zones(highs: list, lows: list) -> list[dict]:
+    """FVG (трёхсвечный гэп) по спискам high/low. → [{kind: bear|bull, top, bot, i}].
+    bear: low[i-1] > high[i+1] (гэп СВЕРХУ, магнит для ретрейса вверх); bull зеркально.
+    Возвращаются только НЕзакрытые последующей ценой зоны."""
+    out = []
+    n = len(highs)
+    for i in range(1, n - 1):
+        if lows[i - 1] > highs[i + 1]:               # bearish FVG
+            top, bot = lows[i - 1], highs[i + 1]
+            if not any(highs[j] >= top for j in range(i + 2, n)):     # не закрыт полностью
+                out.append({"kind": "bear", "top": top, "bot": bot, "i": i})
+        if highs[i - 1] < lows[i + 1]:               # bullish FVG
+            top, bot = lows[i + 1], highs[i - 1]
+            if not any(lows[j] <= bot for j in range(i + 2, n)):
+                out.append({"kind": "bull", "top": top, "bot": bot, "i": i})
+    return out
+
+
+def _sl_fvg_adjust(sl: float, entry: float, side: str,
+                   highs: list, lows: list) -> tuple[float, bool]:
+    """STOP-FVG-AWARE (10.07, IOTA #45257, Егор): стоп НЕ должен лежать в FVG — цена
+    стремится закрыть гэп → свип стопа → уход по сетапу. Стоп внутри зоны → за ДАЛЬНИЙ
+    край гэпа + буфер 0.2%. → (sl, был_ли_сдвиг)."""
+    for z in _fvg_zones(highs, lows):
+        if side == "SHORT" and z["kind"] == "bear" and z["top"] > entry:
+            if z["bot"] <= sl <= z["top"]:           # стоп внутри магнита сверху
+                return z["top"] * 1.002, True
+        if side == "LONG" and z["kind"] == "bull" and z["bot"] < entry:
+            if z["bot"] <= sl <= z["top"]:
+                return z["bot"] * 0.998, True
+    return sl, False
+
+
+def _depth_read(sym: str, px: float = 0.0, zone_pct: float = 0.5) -> dict | None:
+    """📖 ORDERBOOK-WALLS (09.07, Егор «видно как цену двигают»): снимок стакана.
+
+    mid — ИЗ САМОГО стакана (тикер-цена разъезжается со срезом на быстрых движениях —
+    ETH-кейс). Окно = min(zone_pct, фактическое покрытие среза): у мейджоров 500 уровней
+    покрывают доли %, у альтов — много (адаптивно, сравнение bid/ask всегда симметрично)."""
+    try:
+        d = _get(f"https://fapi.binance.com/fapi/v1/depth?symbol={sym}USDT&limit=500")
+        bids = [(float(p), float(q)) for p, q in d.get("bids", [])]
+        asks = [(float(p), float(q)) for p, q in d.get("asks", [])]
+        if not bids or not asks:
+            return None
+        mid = (bids[0][0] + asks[0][0]) / 2
+        cov_bid = 1 - bids[-1][0] / mid
+        cov_ask = asks[-1][0] / mid - 1
+        win = min(zone_pct / 100, cov_bid, cov_ask)
+        if win <= 0:
+            return None
+        out = {"px": mid, "win_pct": round(win * 100, 3)}
+        for side, rows_all in (("bids", bids), ("asks", asks)):
+            lo, hi = ((mid * (1 - win), mid) if side == "bids" else (mid, mid * (1 + win)))
+            rows = [(p, q) for p, q in rows_all if lo <= p <= hi]
+            usd = sum(p * q for p, q in rows)
+            wall = max(rows, key=lambda r: r[0] * r[1], default=None)
+            out[side] = {"usd": usd,
+                         "wall_px": wall[0] if wall else None,
+                         "wall_usd": wall[0] * wall[1] if wall else 0.0,
+                         "wall_share": (wall[0] * wall[1] / usd) if (wall and usd) else 0.0}
+        return out
+    except Exception:
+        return None
+
+
+def _log_depth(sym: str, snap: dict, note: str) -> None:
+    c = conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS depth_snap (
+            ts INTEGER, symbol TEXT, px REAL, bid_usd REAL, ask_usd REAL,
+            bid_wall_px REAL, bid_wall_usd REAL, ask_wall_px REAL, ask_wall_usd REAL, note TEXT)""")
+        c.execute("INSERT INTO depth_snap VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  (int(time.time()), sym, snap["px"], snap["bids"]["usd"], snap["asks"]["usd"],
+                   snap["bids"]["wall_px"], snap["bids"]["wall_usd"],
+                   snap["asks"]["wall_px"], snap["asks"]["wall_usd"], note))
+        c.commit()
+    finally:
+        c.close()
+
+
+def _orderbook_line(sym: str, px: float) -> str:
+    """Строка «📖 стакан» для алерта: дисбаланс + стены + ДИНАМИКА (2 замера через 4с:
+    стена переставилась за ценой = «двигают», исчезла = спуфер). Пусто при ошибке."""
+    a = _depth_read(sym, px)
+    if not a or not (a["bids"]["usd"] + a["asks"]["usd"]):
+        return ""
+    time.sleep(4)
+    b = _depth_read(sym, px) or a
+    try:
+        _log_depth(sym, b, "alert")
+    except Exception:
+        pass
+    bid_u, ask_u = b["bids"]["usd"], b["asks"]["usd"]
+    if not bid_u or not ask_u:
+        return ""
+    imb = bid_u / ask_u
+    side, ratio = ("bid", imb) if imb >= 1 else ("ask", 1 / imb)
+    parts = [f"дисбаланс {side} {ratio:.1f}:1"]
+    for sd, label in (("bids", "bid"), ("asks", "ask")):
+        w = b[sd]
+        if w["wall_usd"] > 50_000 and w["wall_share"] > 0.25:      # значимая стена: >25% зоны
+            dist = (w["wall_px"] / px - 1) * 100
+            wa = a[sd]
+            if wa["wall_px"] and abs(w["wall_px"] / wa["wall_px"] - 1) > 0.0005:
+                dyn = " ДВИГАЕТСЯ за ценой!"                       # переставилась за 4с
+            elif wa["wall_usd"] and w["wall_usd"] < wa["wall_usd"] * 0.5:
+                dyn = " тает (спуф?)"
+            else:
+                dyn = ""
+            parts.append(f"{label}-стена ${w['wall_usd']/1e3:.0f}K на {dist:+.2f}%{dyn}")
+    return "📖 стакан: " + " · ".join(parts)
+
+
+def _squeeze_thr(w) -> tuple[float, float | None]:
+    """ATR-адаптивный порог СКВИЗ-алерта (07.07, ENJ −0.73% = шум для его волы, Егор
+    «на BingX не вижу такого»). Обычный 3м-ход монеты = средний |Δцена за 3 точки| по
+    RAM-окну (без запросов). Порог алерта = 2.5× обычного, floor 0.6% (тихие монеты —
+    прежняя чувствительность), потолок 2.5% (выше — территория PUMP-детектора).
+    Мало истории → (0.6, None) = старое поведение. Возврат (порог, обычный_ход)."""
+    px = [p for _, _, p in w]
+    rets = [abs(px[i] / px[i - 3] - 1) * 100 for i in range(3, len(px)) if px[i - 3]]
+    if len(rets) < 8:
+        return 0.6, None
+    avg = sum(rets) / len(rets)
+    return min(max(0.6, 2.5 * avg), 2.5), avg
 
 
 def tick():
@@ -623,7 +1041,8 @@ def tick():
     state_rows = []
     _refresh_prices()
     _refresh_funding()
-    for sym in CORE:
+    _refresh_hot()                                     # HOT-LIST: горячие хвоста → в поллинг
+    for sym in list(CORE) + [b for b in _HOT if b not in CORE]:
         try:
             oi = float(_get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={sym}USDT")["openInterest"])
             px = _PRICES.get(f"{sym}USDT")
@@ -647,30 +1066,42 @@ def tick():
                     _log_liq_synth(sym, "SELL" if d_px3 > 0 else "BUY", (oi3 - oi) * px, px)
                 except Exception:
                     pass
-            if abs(d_px3) >= 0.6 and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
+            # АЛЕРТ — ATR-адаптивный порог (07.07): копилка выше пишется по старому 0.6
+            # (статистика магнитов не меняется), а в TG идёт только значимое ДЛЯ ЭТОЙ монеты.
+            _thr, _avg3 = _squeeze_thr(w)
+            if abs(d_px3) >= _thr and d_oi3 <= -0.15 and _cooldown_ok(f"fast_squeeze:{sym}"):
                 side = "вверх (шорты горят)" if d_px3 > 0 else "вниз (лонги горят)"
                 _dot = "🟢" if d_px3 > 0 else "🔴"
+                _scale = f" (×{abs(d_px3) / _avg3:.1f} обычного хода)" if _avg3 else ""
                 send_tg(f"🌀 <b>СКВИЗ LIVE:</b>\n\n"
-                        f"{_dot} <code>{sym}</code> Δцена {d_px3:+.2f}%/3м {side}\n"
+                        f"{_dot} <code>{sym}</code> Δцена {d_px3:+.2f}%/3м {side}{_scale}\n"
                         f"OI {d_oi3:+.2f}%/3м — движение ЗАКРЫТИЯМИ\nцена {_c(px)}\n\n"
                         f"{_links(sym)}\n\n"
-                        f"#{sym} #SQUEEZE")
+                        f"#{sym} #SQUEEZE", channel="feed")
                 alerts.append(f"squeeze {sym}")
         if len(w) >= 6:
             t5, oi5, px5 = w[-6]
             d_oi5 = (oi / oi5 - 1) * 100 if oi5 else 0
             if d_oi5 >= 0.5 and _cooldown_ok(f"fast_build:{sym}"):
-                b_msg, b_row = analyze_build(sym, px, d_oi5, _FUND.get(f"{sym}USDT"))
+                b_msg, b_row = analyze_build(sym, px, d_oi5, _FUND.get(f"{sym}USDT"),
+                                             d1d=_oi_day_delta(sym, oi))
                 b_chain = _recent_signals(sym)           # ⛓ лениво: только при алерте
-                if send_tg(_with_chain(b_msg, b_chain)):
+                # BUILD с сетапом (side+SL) → action + стакан; голый BUILD → feed
+                if b_row:
+                    b_msg = _with_orderbook(b_msg, sym, px)
+                _mid_b = send_tg(_with_chain(b_msg, b_chain), channel=("action" if b_row else "feed"))
+                if _mid_b:
                     if b_row:
+                        _send_chart(sym, _mid_b)         # 📸 SMC-чарт тредом (только сетапы)
                         _log_build(b_row)
                         # ARMED-порт: BUILD-с-сетапом → radar_orders (цели из карты 2.0)
                         _log_radar_order("build", sym, b_row["side"], px,
-                                         b_row["sl"], b_row["targets_json"], chain=b_chain)
+                                         b_row["sl"], b_row["targets_json"], chain=b_chain,
+                                         tg_msg_id=_mid_b)
                     alerts.append(f"build {sym}")
             # ⏳ ПРУЖИНА: скрытая загрузка ДО движения (окно 16 точек = 15 мин)
-            res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"))
+            res_sp = check_spring(w, sym, px, _FUND.get(f"{sym}USDT"),
+                                  d1d=_oi_day_delta(sym, oi))
             if res_sp and _cooldown_ok(f"spring:{sym}", 3600):
                 sp_msg, sp_row = res_sp
                 # цели в сторону выстрела (dir UP → цели СВЕРХУ = LONG-сторона)
@@ -680,13 +1111,16 @@ def tick():
                 else:
                     sp_row["targets_json"] = None
                 sp_chain = _recent_signals(sym)          # ⛓ лениво: только при алерте
-                if send_tg(_with_chain(sp_msg, sp_chain)):
+                sp_msg = _with_orderbook(sp_msg, sym, px)
+                _mid_sp = send_tg(_with_chain(sp_msg, sp_chain), channel="action")
+                if _mid_sp:
+                    _send_chart(sym, _mid_sp)            # 📸 SMC-чарт тредом
                     _log_spring(sp_row)
                     if sp_side:
                         # ARMED-порт: ПРУЖИНА с направлением → сетап (SL за структуру, цели 2.0)
                         _log_radar_order("spring", sym, sp_side, px,
                                          _sl_structure(sym, sp_side), sp_row["targets_json"],
-                                         chain=sp_chain)
+                                         chain=sp_chain, tg_msg_id=_mid_sp)
                     alerts.append(f"SPRING {sym}")
             # 🚀 PUMP-кандидат по цене → подтверждение объёмом/RSI (klines только для кандидатов)
             d_px5 = (px / px5 - 1) * 100 if px5 else 0
@@ -698,18 +1132,32 @@ def tick():
                 if res and _cooldown_ok(f"pump:{sym}", 3600):
                     msg, row = res
                     msg, row = _with_targets(msg, row, sym, row["side"], px)
-                    if send_tg(_with_chain(msg, p_chain)):
+                    msg = _with_orderbook(msg, sym, px)
+                    _mid_p = send_tg(_with_chain(msg, p_chain), channel="action")
+                    if _mid_p:
+                        _send_chart(sym, _mid_p)         # 📸 SMC-чарт тредом
                         _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
                         # ARMED-порт: PUMP-разворот → radar_orders (tp1-3 по откатам, grade)
                         _log_radar_order("pump", sym, row["side"], px, row["sl"],
                                          row.get("targets_json"), grade=row["grade"],
                                          tps=(row["tp1"], row["tp2"], row["tp3"]), chain=p_chain,
-                                         wave_leg=row.get("wave_leg"))
+                                         wave_leg=row.get("wave_leg"), tg_msg_id=_mid_p)
                         alerts.append(f"PUMP {sym}")
         # live-контекст → radar_state (мост в Куб)
         d5 = (oi / w[-6][1] - 1) * 100 if (len(w) >= 6 and w[-6][1]) else None
         d15 = (oi / w[-16][1] - 1) * 100 if (len(w) >= 16 and w[-16][1]) else None
-        state_rows.append((sym, int(time.time()), px, d5, d15, _FUND.get(f"{sym}USDT")))
+        d1d = _oi_day_delta(sym, oi)
+        # КВАДРАНТ OI×ЦЕНА за 15м (12.07, Егор «расхождение OI с ценой — сильный показатель»,
+        # ретро n=80 ПОДТВЕРДИЛ: PDN+OIUP +0.88% vs PUP+OIUP −0.69% WR14 / PUP+OIFL −1.06% WR0).
+        # Прозрачная ФИЧА (не гейт): radar_state → bridge → features всех сделок.
+        quadrant = None
+        if d15 is not None and len(w) >= 16 and w[-16][2]:
+            d_px15 = (px / w[-16][2] - 1) * 100
+            _p = "PUP" if d_px15 > 0.2 else "PDN" if d_px15 < -0.2 else "PFL"
+            _o = "OIUP" if d15 > 0.15 else "OIDN" if d15 < -0.15 else "OIFL"
+            quadrant = f"{_p}+{_o}"
+        state_rows.append((sym, int(time.time()), px, d5, d15, _FUND.get(f"{sym}USDT"), d1d, quadrant,
+                           1 if sym in _HOT else 0))
         time.sleep(0.15)
     _flush_radar_state(state_rows)
     return alerts

@@ -33,12 +33,19 @@ def get_radar_context(symbol: str) -> dict:
     try:
         c = sqlite3.connect(DB_PATH, timeout=2)
         try:
-            row = c.execute("SELECT ts, px, oi_d5, oi_d15, funding FROM radar_state "
-                            "WHERE symbol=?", (sym,)).fetchone()
+            try:      # quadrant добавлен 12.07 (OI×цена 15м) — старые БД без колонки
+                row = c.execute("SELECT ts, px, oi_d5, oi_d15, funding, quadrant "
+                                "FROM radar_state WHERE symbol=?", (sym,)).fetchone()
+            except sqlite3.OperationalError:
+                row = c.execute("SELECT ts, px, oi_d5, oi_d15, funding, NULL "
+                                "FROM radar_state WHERE symbol=?", (sym,)).fetchone()
             if row and time.time() - row[0] <= STATE_MAX_AGE_SEC:
                 out["radar_oi_d5"] = row[2]
                 out["radar_oi_d15"] = row[3]
                 out["radar_funding"] = row[4]
+                if row[5]:
+                    # квадрант OI×цена (12.07, ретро n=80: PDN+OIUP +0.88% vs PUP+OIUP −0.69%)
+                    out["radar_oi_px_quadrant"] = row[5]
             m = c.execute("SELECT px, above_json, below_json FROM magnet_snapshots "
                           "WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)).fetchone()
             if m:

@@ -407,6 +407,18 @@ class MenuHandler:
             if menu_type in self.menu_handlers:
                 await self.menu_handlers[menu_type](message, state)
             else:
+                # ПАСПОРТ МОНЕТЫ (11.07): неизвестный текст, похожий на тикер → карточка
+                # из шины Куба (SMC/WT/regime/пивоты/OI/магниты/компас) + чарт с уровнями
+                # (Фаза 2: reuse build_signal_chart — тот же рендер, что у сигналов).
+                from bot.menus.coin_card import resolve_symbol, send_coin_card, build_radar_watch
+                if (text or "").strip().lower() in ("радар", "radar"):
+                    # 12.07 (Егор «65 монет — где смотреть?!»): live-список радара + квадранты
+                    await message.answer(build_radar_watch(), parse_mode="HTML")
+                    return
+                _sym = resolve_symbol(self.bot, text or "")
+                if _sym:
+                    await send_coin_card(self.bot, message, _sym)
+                    return
                 logger.warning("[MENU] Неизвестный тип меню: %s для '%s' от %s", menu_type, text, username)
                 await message.answer(f"Неизвестная команда: '{text}'\n\nИспользуйте меню для навигации.")
 
