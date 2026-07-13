@@ -49,6 +49,21 @@ def _refresh_hot():
     if time.time() - _HOT_LAST[0] < 300:
         return
     _HOT_LAST[0] = time.time()
+    # 📌 PIN (13.07, Егор «добавь ARB в hot!»): ручное слежение — oko_feed/hot_pin.txt,
+    # по базе на строку (# = коммент), правится БЕЗ рестарта (перечитка раз в 5 мин).
+    # Пины не вылетают по TTL пока в файле; CORE-дубли безвредны (фильтр в цикле).
+    try:
+        with open("oko_feed/hot_pin.txt", encoding="utf-8") as _pf:
+            for _ln in _pf:
+                _b = _ln.split("#")[0].strip().upper()
+                if _b:
+                    if _b not in _HOT:
+                        print(f"[HOT] 📌 pin {_b} (hot_pin.txt)")
+                    _HOT[_b] = time.time()   # обновляется каждый refresh → TTL не истекает
+    except FileNotFoundError:
+        pass
+    except Exception as _pe:
+        print(f"[HOT] pin err: {_pe}")
     try:
         arr = _get("https://fapi.binance.com/fapi/v1/ticker/24hr")
         cands = []
