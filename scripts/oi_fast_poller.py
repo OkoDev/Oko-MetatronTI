@@ -916,6 +916,52 @@ def _oi_day_delta(sym: str, oi: float) -> float | None:
     return (oi / anchor - 1) * 100 if anchor else None
 
 
+_REV_LAST = [0.0]    # кулдаун алерта разворотного дозора
+_REV_QUIET = [0.0]   # троттл «спокойно»-принта (наблюдаемость без спама)
+
+
+def _reversal_watch(rows: list[tuple]) -> None:
+    """🐂 РАЗВОРОТНЫЙ ДОЗОР (13.07, Егор «нужно быть готовым к бычьим разворотам!»).
+
+    Вся лента недели шортовая (61% пар под W-PP) — бычий сквиз ударит по всем движкам
+    разом. Market-wide прекурсоры из УЖЕ собранных данных цикла (rows = radar_state):
+      A) доля пар PDN+OIUP (цена вниз + OI растёт = шорты ГРУЗЯТСЯ на дне) > 25%
+      B) медианный funding < −0.005% (шорты платят = топливо сквиза вверх)
+      C) BTC 1h структура = LONG (CHoCH/BOS вверх, канон length=5)
+    2 из 3 → TG SYSTEM-алерт (кулдаун 4ч). Дозор НЕ торгует — decision-support:
+    сигнал пересмотреть шорт-ленту/подтянуть стопы. Пороги стартовые — калибровка по данным.
+    """
+    if time.time() - _REV_LAST[0] < 4 * 3600:
+        return
+    try:
+        quads = [r[7] for r in rows if len(r) > 7 and r[7]]
+        if len(quads) < 30:
+            return
+        pdn_oiup = 100.0 * sum(1 for q in quads if q == "PDN+OIUP") / len(quads)
+        funds = sorted(f for f in (r[5] for r in rows) if f is not None)
+        med_fund = funds[len(funds) // 2] * 100 if funds else 0.0   # в %
+        btc_side = None
+        try:
+            btc_side, _ = _struct_dir("BTC")
+        except Exception:
+            pass
+        cond = [pdn_oiup >= 25.0, med_fund <= -0.005, btc_side == "LONG"]
+        if sum(cond) >= 2:
+            _REV_LAST[0] = time.time()
+            msg = (f"🐂 <b>РАЗВОРОТНЫЙ ДОЗОР</b> — прекурсоры бычьего разворота ({sum(cond)}/3):\n"
+                   f"{'✅' if cond[0] else '▫️'} шорты грузятся на дне: {pdn_oiup:.0f}% пар PDN+OIUP (порог 25%)\n"
+                   f"{'✅' if cond[1] else '▫️'} funding медиана {med_fund:+.4f}% (топливо сквиза, порог −0.005)\n"
+                   f"{'✅' if cond[2] else '▫️'} BTC 1h структура: {btc_side or '?'}\n"
+                   f"⚠️ шорт-лента под риском сквиза — пересмотреть стопы\n\n#SYSTEM #REVERSAL")
+            send_tg(msg, channel="system")
+            print(f"[REV-WATCH] 🐂 АЛЕРТ: PDN+OIUP={pdn_oiup:.0f}% fund={med_fund:+.4f}% BTC={btc_side}")
+        elif time.time() - _REV_QUIET[0] > 1800:
+            _REV_QUIET[0] = time.time()
+            print(f"[REV-WATCH] спокойно: PDN+OIUP={pdn_oiup:.0f}% fund={med_fund:+.4f}% BTC={btc_side} ({sum(cond)}/3)")
+    except Exception as e:
+        print(f"[REV-WATCH] err: {e}")
+
+
 def _flush_radar_state(rows: list[tuple]) -> None:
     """Live-контекст радара → radar_state (порт для Куба: features_json-мост, Егор 03.07).
 
@@ -1195,6 +1241,7 @@ def tick():
                            1 if sym in _HOT else 0))
         time.sleep(0.15)
     _flush_radar_state(state_rows)
+    _reversal_watch(state_rows)   # 🐂 дозор бычьего разворота (Егор 13.07)
     return alerts
 
 

@@ -305,6 +305,12 @@ class OTESignalGenerator:
         # а сильнейший по конфлюенции может быть в стороне. Среди коснувшихся — сильнейший.
         fired = None
         for tg in triggers:                              # отсортированы по силе
+            # 🔬 13.07 ресёрч (research_1307_evening_dig): OB-триггер АСИММЕТРИЧЕН —
+            # OB-LONG +0.76%/сд (n=31), OB-SHORT −0.70%/сд (n=63, единственный токсичный
+            # триггер 4h_1h). Медвежий OB как курок mean-rev шорта не работает → skip.
+            # SC/SC*/EQL/FVG — без изменений (премиум-профиль: SC∀ + OB-только-LONG).
+            if tg[0] == "OB" and direction == "short":
+                continue
             touched, e, bh, bl = self._check_shot(tg, df_ltf, direction)
             if touched:
                 fired = (tg, e, bh, bl)

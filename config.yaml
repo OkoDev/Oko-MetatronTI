@@ -531,7 +531,7 @@ signal_quality:
   # 18.06: atr_change на 15m ОТКЛЮЧЁН — edge (бэктест +0.084) < комиссий → структурный
   # минус (боевой honest avgR −0.014, equity −63%/нед). 1h/4h не тронуты (4h ЗОЛОТО
   # +0.692 Sharpe3.44, валидация на 6мес в бэклоге). Реверсивно: вернуть true.
-  atr_change_15m_enabled: true   # 11.07 ПОЛИГОН: sim-only (source exchange_enabled=false), touch data-era
+  atr_change_15m_enabled: false  # ⛔ 13.07 ресёрч: полигонный atr_change (RR3, ATR-стопы) МЁРТВ ЦЕЛИКОМ — −1.16%/сд × 8152 (все направления/сессии); MFE-свип: даже идеальный тейк −0.58% (тяжёлые лоссы, не цель). ≠ atr_s2-выживший (флип 4h+цель S2+стоп за swing12). Пересборка под S2-рецепт — отдельно. research_1307_evening_dig
   atr_change:
     long_strength_penalty: 0
   min_strength_wl_breach: 45
