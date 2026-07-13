@@ -44,6 +44,36 @@
 
 | ID | Ст | Описание | Роль |
 |---|---|---|---|
+| [STOP-FVG-AWARE](#stop-fvg-aware) | 🟡 | Стоп PUMP/DUMP вслепую к FVG (IOTA #45257, Егор 10.07): «середина плеча» может лечь В bearish-FVG → цена закрывает гэп → свип стопа → уход по сетапу. Фикс: детект FVG (5m/15m) между entry и SL → стоп за ДАЛЬНИЙ край гэпа + буфер. Закон «стоп на магнит = свит», FVG = магнит | Даат |
+
+| [RUNNER-CEILINGS-W](#runner-ceilings-w) | 🟡 | Потолки раннера v1.1 + НЕДЕЛЬНЫЙ слой (Егор 10.07, ARB пришёл в середину 1W FVG): конфлюэнция старшего ТФ = 0.79/0.886 ретрейса + PPD/PPW + **FVG 1W/1D midline** + магниты. У потолка — фиксация остатка | Даат |
+
+| [ORDERBOOK-WALLS](#orderbook-walls) | 🟡 | Стакан для PUMP/BUILD-кандидатов (идея Егора 09.07 «видно как цену двигают»): depth на парах с всплеском воли/объёма → bid/ask-дисбаланс ±0.5%, стены (размер/дистанция), ДИНАМИКА стены (растёт/двигается=двигают, исчезла=спуфер) → строка в алерт + копилка depth_snap. Айсберги не увидим — «заметного кита» да | Даат |
+
+| [SPRING-RUNNER-TSL](#spring-runner-tsl) | 🔴 | Трейл для ракет — **MFE-статистика ГОТОВА (09.07, n=68): берём +0.04%/сд при потенциале +2.84%; 62% сделок дают >2% ПОСЛЕ нашего выхода; spring +0.49 vs +3.42.** Выходная механика сжигает эдж радара. ДИЗАЙН (разбор ARB с Егором): держать остаток пока above R-пивотов дня, потолок = конфлюэнция старшего ТФ (0.79/0.886, PPD/PPW, магниты), future_pivots до 00:00. → РЕАЛИЗАЦИЯ exit-механики radar | Даат |
+
+| [OI-DAY-DELTA](#oi-day-delta) | 🟡 | «Объёмы зашедшие ЗА ДЕНЬ» (вопрос Егора 09.07 — детектор НЕ видит): OI-якорь в 00:00 UTC → oi_day_delta в radar_state («за день в монету +4% OI») — вес для BUILD/пружины/компаса. Радар-окно сейчас всего 30м | Даат |
+
+| [DS-FEATURES-VALIDATE](#ds-features-validate) | 🔴 | Валидация DS-mining (26.5k): time-split робастность + гипотезы Егора 08.07 (WT-OS режим-зависима → split по USDT.D; малые n SMC = свежесть фич → дата первого появления). Выжившее → скоринг router (буст above_R3/SMC, пенальти hidden-div) | Даат |
+
+| [COMPASS-SWARM](#compass-swarm) | 🟡 | 🧭 компас: confidence<50% → рой-консилиум (team_ask, все LLM + мета-синтез), оба вердикта в compass_log → форвард покажет кто точнее (локалка vs рой). Reuse team_ask.py | Даат |
+
+| [NEWS-SPHERE-FORWARD](#news-sphere-forward) | 🟡 | Скоринг компаса (bias vs факт BTC/ETH через 4-12ч, compass_log, 2-4 нед) → если > монетки: Сфера Контекста = ПРОДУКТ #3 (E:\PROJECTS\, git; упаковка: публичный TG «крипто-компас») | Даат/ARCH |
+
+| [TG-COLLECTOR-LOGIN](#tg-collector-login) | 🟡 | Слой 3 сферы: api_id/hash (Егор: с телефона/моб.инет — форма лимитнула 08.07) → .env → `tg_collector.py --login` разово → pm2. Папка «PARSE» = список каналов. Код ГОТОВ | Егор+Даат |
+
+| [CLEANUP-S2](#cleanup-s2) | 🟢 | Уборка-2: git (54 untracked skills → commit/ignore), боклог-сверка (устаревшее закрыть), DOC-SYNC Куба (12-я сфера родилась 08.07), TASKS-архив | Даат |
+
+| [CLEANUP-S5](#cleanup-s5) | 🟢 | Уборка-5: мёртвый код (infrastructure/presentation/bot/main.py), разнести dashboard_server, pydantic Ф3 | Даат/DS |
+
+| [ATR-S2-LONG-BULL](#atr-s2-long-bull) | 🔵 | LONG-зеркало atr_S2 при ПОДТВЕРЖДЁННОМ быке («2026 развернётся» — Егор): триггер = usdtd-watch 🟢 + устойчивый MA20-флип вниз. Заготовка: флип 4h ВВЕРХ+close>WPP→R2 (2024 +0.57). НЕ включать до режима | Даат |
+
+| [NEWS-VISION](#news-vision) | 🔵 | Vision для TG-постов БЕЗ текста (сейчас отбрасываются MIN_TEXT_LEN): qwen2.5-vl:7b локально → описание картинки → классификатор. Решение Егора 09.07 «не сейчас»: сначала неделю посчитать, сколько голых картинок реально мимо (по tg_posts). 7B-vision: «о чём график» ок, цифры с осей — врёт | Даат |
+
+| [LLM-LORA-DATASET](#llm-lora-dataset) | 🔵 | LoRA-датасет oko-analyst: compass_log размечает рынок + кнопка Егора «прав/не прав». Через 1-2 мес QLoRA в Colab (НЕ Pascal). До того хватает few-shot+self-check+рой | Даат |
+
+| [EARN-SYNTHESIS](#earn-synthesis) | 🌌 | ВЕКТОР «как зарабатывать» (Даат 08.07): (1) mean-reversion у конфлюэнтных уровней с USDT.D-рулём — в лоб мёртв (PP-bounce −0.115%), путь=кач-во входов через DS-фичи; (2) редкие неэффективности (радар) — работает; (3) decision-support (компас+метод+глаз) — главный продукт. Частота×исполнение×мелкий риск, НЕ лотерея | все |
+
 | [METHOD-V2-LOOKAHEAD-FIX](#method-v2-lookahead-fix) | ⚫ | **ЗАКРЫТА — ЧЕСТНЫЙ ПЕРЕСЧЁТ СДЕЛАН (05.07): эдж = фантом look-ahead.** `test_v2_mtf_honest.py` (per-setup передетект, вход по цене момента подтверждения): 29–71% сетапов не существуют point-in-time; net переключает ЗНАК по lag входа (+0.62% lag3 → −0.34% lag5 → −0.18% lag10), OOS 2/3 минус → робастного эджа НЕТ. method_v2 остаётся enabled:false, в прод не идёт. Корень: автовход на BOS-волне3 = момент невидим live; живой вход=волна2/откат=чутьё→decision-support. DISCUSSION 05.07 | Даат/DS |
 
 | [DS-METHOD-V2-DEEP](#ds-method-v2-deep) | ⚫ | **ЗАКРЫТА С ОГОВОРКОЙ:** WF дал +0.97% OOS, НО потом найден look-ahead (вход на неподтверждённом сломе) → цифры завышены. См. METHOD-V2-LOOKAHEAD-FIX. Урок: изолированный тест детектора недостаточен, нужен end-to-end point-in-time | DS |
@@ -53,7 +83,7 @@
 
 | [ATR-S2-PROD](#atr-s2-prod) | 🔄 | **atr_S2 В ПРОДЕ (VST)** — единственный эдж переживший честный walk-forward (+0.471%/сд n=5290 2022-26, 4/5 лет). Врезка scan_loop: 4h SHORT-флип+cl<WPP → SL=swing12/TP=weekly S2, trade_mode=atr_s2. Мониторинг [ATR-S2]+drops → 30-50 сделок → сверка. memory/atr_s2_survived_honest.md, ba1fb98 | Даат |
 
-| [DS-MINING-FEATURES](#ds-mining-features) | 🔴 | **Mining ЖИВЫХ сделок (features_json)** — какие фичи отделяют + от − на СОБСТВЕННЫХ закрытых сделках (look-ahead невозможен по определению). Мера % net (LAW №1), split по signal_type/direction/data-era. Контракт: DISCUSSION 03.07 | DS |
+| [DS-MINING-FEATURES](#ds-mining-features) | ✅ | **ЗАКРЫТ 08.07.** Mining 26,510 живых сделок. EDGE+: smc CHoCH/BOS/OB mitigated (+1-3%). EDGE-: WT div (-1.8%), pivot.below_R3 (-1.2%). SMC > WT подтверждено на живых.  | DS |
 
 | [BOT-LOOP-OFFLOAD](#bot-loop-offload) | 🔴 | **TG-кнопки/команды тормозят (Егор 03.07) — event loop бота задушен сканом.** ДОКАЗАНО замером: 135-байт ответ = 2с очереди, full_stats 1.4с SQL → 45с через бота (GIL 520 пар). Дашборд вылечен выносом (oko-api :8001); aiogram-хендлеры так не вынести → разгрузка loop: (а) скан в подпроцесс/пул (data-plane vs control-plane), (б) тяжёлые расчёты из loop в executor-ы, (в) sem-тюнинг. Класс DEV-230/231 | Даат/ARCH |
 

@@ -1,0 +1,77 @@
+# 🗺️ КАРТА УСЛОВИЙ — МЕТОД ЕГОРА (канон, пришит намертво)
+
+> Создано 21.06.2026 после того как Claude гонял тесты МИМО метода (вход без WT OB/OS = баг H1).
+> ЭТО ЕДИНСТВЕННЫЙ ИСТОЧНИК условий входа/выхода. Любой бэктест/стратегия СНАЧАЛА сверяется ОТСЮДА.
+> Источники (свёрнуто сюда): `STRATEGY_TRIGGERS.md`, `SHORT_ENTRY_RULES.md`, `LONG_ENTRY_RULES.md`, `SMC_GUIDE.md`, `INDICATORS_GUIDE.md`.
+
+## ⚙️ ПАРАМЕТРЫ (из config/кода, не из памяти)
+- **WT (Wavetrend):** `n1=10, n2=21`. Зоны: **OB = wt1 > +60**, **OS = wt1 < −60**, N = иначе.
+- **Trend (ATRTrend/SuperTrend):** `atr_period=43, factor=1.25` → `hl2 ± 1.25×ATR(43)`.
+- **Фиба OTE:** зона **0.618–0.786** от импульса (вход в discount/premium). 0.705/0.79 = вероятнейшие точки отскока.
+- Entry TF = 15m. Контекст = 1h/4h/1d.
+
+## 🎯 КАРКАС МЕТОДА (одна фраза)
+**WT OB/OS зона → слом структуры 15m → откат в фибу OTE → ВХОД от экстремума → полёт на CHoCH/пивоты.**
+WT-экстремум (или дивергенция) = ОБЯЗАТЕЛЬНОЕ условие зоны. Вход «WT в середине» = баг H1 (WT уже отыграл = поздний вход).
+
+## 🔻 SHORT — вход
+**ОБЯЗАТЕЛЬНО:**
+- **WT OB на LTF (wt1 > +60, перекупленность)** = истощение покупателей. ИЛИ bearish divergence (WT может быть не на экстремуме, но div).
+- Слом структуры 15m: **BearBOS** (тренд вниз продолжается) или bear-CHoCH.
+- **OTE 0.618–0.786** на откате ВВЕРХ после импульса вниз (Wave 2 retracement).
+- **ATRTrend = trenddown** на LTF.
+**КОНТЕКСТ (повышает WR):** AbovePP · **n_down = 2-3** (волна 3, НЕ 5) · htf_dir=down · BearBOS на HTF.
+**🚫 ЗАПРЕТЫ:** n_down≥4 (волна 5 = ловушка, WR10%) · n_down≥3 + BullChoCH (WR0%, avgR−2.181) · BelowPP (кроме pivot_reversal/divergence) · у S2/S3 (глубокая поддержка).
+**Лучшие сигналы:** divergence SHORT (самодостаточен) · pivot_reversal · wt_b_signal (htf=down критичен).
+
+## 🔺 LONG — вход (зеркально)
+**ОБЯЗАТЕЛЬНО:**
+- **WT OS на LTF (wt1 < −60, перепроданность)** = истощение продавцов. ИЛИ bullish divergence.
+- Слом структуры 15m: BOS/CHoCH вверх.
+- **OTE 0.618–0.786** на откате ВНИЗ после импульса вверх.
+- **ATRTrend = trendup** на LTF.
+**КОНТЕКСТ:** BelowPP · **n_up = 2-3** · htf · (парадокс: BearBOS = покупка у структурной поддержки).
+**🚫 ЗАПРЕТЫ:** n_up≥4 · n_up≥3 + BearChoCH · у R2/R3.
+**Лучший:** liquidity_sweep LONG (AbovePP WR89% — инверсия).
+
+## 🗺️ КАРТА ПО ТФ (22.06, 449 пар, выход=magnet, фильтр средней глубины 0.55-0.68)
+Закон: СТАРШЕ зона → выше WR, ниже просадка (MTF-иерархия). $ компаунд-абсурдны (не смотреть).
+| зона→слом | n | net | WR | maxDD | shadow |
+|---|---|---|---|---|---|
+| **4h→1h** | 918 | +0.138 | **90%** | **4%** | ✅ чемпион (редкий) |
+| **4h→15m** | 5045 | +0.079 | 82% | 28% | ✅ основной |
+| **1h→15m** | 19452 | +0.078 | 81% | 59% | ✅ частый |
+| 4h→5m | 6714 | +0.053 | 76% | 35% | 🟡 2-й эшелон |
+| 1h→5m | 25485 | +0.051 | 75% | 58% | 🟡 |
+| 15m→5m | 88635 | +0.049 | 74% | 70% | 🟡 много сигналов, высокий DD |
+**SHADOW-ядро:** 4h→1h + 4h→15m + 1h→15m (старшая зона = надёжность). 5m-слом 2-й эшелон.
+
+## 🔌 ПРОВОДКА НА VST (reuse, единые формулы — 5 точек)
+Контракт: `register_trade_async(recommendation: TradingRecommendation, …)` (trade_simulator:962). Поля рек: symbol/action/direction/overall_strength/entry_price/stop_loss/take_profit/sl_source/tp_source/market_context (`core/signals/signal_models.py:212`). Бот УЖЕ в `execution_mode: vst`.
+1. **SignalType.OKO_OTE** → enum в `core/signals/signal_models.py`.
+2. **Детектор** `core/smc/oko_ote.py` (готов, reuse: find_setups_zz/calculate_wt/detect_*) → отдаёт SignalData(OKO_OTE, direction, strength) + entry(0.618)+SL(Strong Low). ⚠️ TP НЕ дублировать — отдать в шаг 4.
+3. **scan/analyze** (`event_bus._fire_analysis`→`analyze_symbol`) → вызвать детектор на ядре связок ЗА флагом `config strategies.oko_ote.enabled`, в try/except (не уронить scan).
+4. **recommendation_generator.calculate_levels** → УЖЕ строит TP через `TPSelector.select()` (ARCH-113, reuse!) = магнит. SL=Strong Low из metadata сигнала. Ничего не дублировать.
+5. **register_trade_async** → УЖЕ принимает рек + execution_mode=vst из config. Reuse.
+**Новый код = только 1-3 (минимум); 4-5 = существующее (reuse).** Config-блок: `config.yaml strategies.oko_ote` (enabled:false).
+**PREFLIGHT перед enabled:true:** (1) runtime-тест detect_oko_ote на копии БД; (2) scan_loop не падает (try/except); (3) flip на глазах юзера, мониторить первые VST-сделки. НЕ ломать торгующего бота.
+
+## 🚪 ВЫХОД (общий)
+- **TP1 при R≥1.0:** закрыть 20% (`tp1_close_pct`), SL→BE (entry±0.1%).
+- **TSL при R≥1.0:** следить `trenddown`/`trendup` SuperTrend(43,1.25).
+- **Cascade TSL:** TF поднимается **15m→1h→4h** по росту R (anti-degrade R≥5, де-эскалация при откате >15% от пика).
+- **TP-цели:** недельные пивоты (SHORT: PP→S1→S2→S3; LONG: PP→R1→R2→R3) ИЛИ Fib-экстеншены (S1≈0.382, S2≈0.618, S3≈1.0).
+- SL = за структуру/уровень + 0.3% буфер.
+
+## 💰 SIZING / РИСК
+risk_amount = balance × risk%; position_size = risk_amount / |entry−SL|. Риск 1-2%/сделку. min_sl_dist 0.3%.
+
+## 📌 РЕАЛЬНЫЙ КЕЙС JASMY (22.06) — подтвердил «глубина=сила» + «ближний магнит»
+LONG JASMY, вход ГЛУБОКИЙ ~0.705 у Strong Low (0.004617), цель far fib−1 (0.0055), 30X, BE.
+ИТОГ: **вышел по стопу (BE, безубыток).** Глубокая коррекция → слабый импульс → не дал тренда → откат.
+Уроки (данные подтвердили на живом): (1) глубина 0.705 = сигнал слабого импульса (вход на 0.618/0.5 лучше); (2) far fib−1 доходит ~20%, ближний магнит 71-78% → выход к БЛИЖНЕМУ магниту зафиксировал бы профит до разворота; (3) BE спас от минуса. → [[strategy_truth_state]]
+
+## ⚠️ ОШИБКА CLAUDE (21.06) — что перетестировать
+Все nested/exit-тесты сессии входили **БЕЗ условия WT OB/OS** (чистый OTE-ретест после слома) = баг H1 (вход из середины WT). Вывод «tp1 1R король» — на ПОСРЕДСТВЕННЫХ входах.
+**ПЕРЕТЕСТ:** вход ТОЛЬКО при WT OB (short) / OS (long) на LTF [+ опц HTF-WT], затем мерить выходы. Гипотеза: вход от экстремума доезжает дальше → tp1 НЕ оптимум, нужен больший таргет/трейл.
+→ [[strategy_truth_state]]
