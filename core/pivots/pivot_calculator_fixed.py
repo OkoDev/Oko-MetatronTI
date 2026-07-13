@@ -230,7 +230,8 @@ class PivotCalculatorFixed:
         )
 
         try:
-            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=35)
+            # force_refresh: пересчёт раз в месяц — свежие 1d мимо кэша
+            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=35, force_refresh=True)
             if df is None or len(df) < 5:
                 return None
 
@@ -368,7 +369,8 @@ class PivotCalculatorFixed:
     async def _weekly_from_1w(self, symbol: str, data_collector) -> Optional[Dict]:
         """Прямой fetch 1w свечей — самый надёжный метод, без привязки к UTC-границам суток."""
         try:
-            df = await data_collector.get_ohlcv(symbol, timeframe="1w", limit=3)
+            # force_refresh: пересчёт раз в неделю — кэш мог отдать частичную прошлую неделю
+            df = await data_collector.get_ohlcv(symbol, timeframe="1w", limit=3, force_refresh=True)
             if df is None or len(df) < 2:
                 return None
             # iloc[-2] = предыдущая завершённая неделя (iloc[-1] = текущая открытая)
@@ -476,8 +478,16 @@ class PivotCalculatorFixed:
         today_ms = int(day_start.timestamp() * 1000)
 
         try:
-            # Метод 1: из дневных свечей
-            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=5)
+            # Метод 1: из дневных свечей. force_refresh (11.07, ARB PP=0.0895 vs 0.09175):
+            # пересчёт периода 1 раз/день, но кэш OHLCV мог отдать ВЧЕРАШНИЙ снимок с
+            # частичной свечой → кривые пивоты замораживались на сутки. REST 1 раз/день/пара.
+            df = await data_collector.get_ohlcv(symbol, timeframe="1d", limit=5, force_refresh=True)
+            # САНИТИ (11.07, ARB): данные обязаны содержать ТЕКУЩУЮ (сегодняшнюю) свечу —
+            # иначе это протухший снимок (прокси/кэш), и «вчерашняя» свеча в нём частичная.
+            # Кривые пивоты замораживаются на сутки → лучше скип метода 1 (fallback на 1h).
+            if df is not None and len(df) and "time" in df.columns and int(df["time"].max()) < today_ms:
+                logger.warning("[daily_pivot] %s: 1d-данные БЕЗ сегодняшней свечи (протухший снимок) — метод 1 пропущен", symbol)
+                df = None
             if df is not None and len(df) >= 2:
                 df = df.sort_values("time")
                 # Фильтр по ms-timestamp: yesterday start ≤ time < today start
