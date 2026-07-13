@@ -1446,6 +1446,29 @@ class TradeSimulator:
             logger.debug("[ARCH-118] snapshot error %s: %s",
                          locals().get("symbol", "?"), _e_a118)
 
+        # FEAT-W SHADOW (09.07, «двухступенчатые адаптивные веса» — валидация DS-mining +
+        # формула весов проекта): множитель качества входа по validated-фичам снапшота.
+        # ШАДОУ: пишется в features_json, на решения НЕ влияет. Включение — после форварда.
+        if _a118_snap is not None:
+            try:
+                from core.intelligence.feature_weights import score_snapshot
+                _ro_fw = None
+                try:
+                    from core.signals.usdtd_regime import get_usdtd_risk_off
+                    _ro_fw = await asyncio.to_thread(get_usdtd_risk_off)
+                except Exception:
+                    pass
+                _fw_mult, _fw_hits = score_snapshot(_a118_snap, self.db_path, risk_off=_ro_fw)
+                if extra_features is None:
+                    extra_features = {}
+                extra_features["ds_feature_mult"] = round(_fw_mult, 3)
+                if _fw_hits:
+                    extra_features["ds_features_hit"] = _fw_hits
+                    logger.info("[FEAT-W] %s mult=%.2f (%s)",
+                                locals().get("symbol", "?"), _fw_mult, ", ".join(_fw_hits[:4]))
+            except Exception as _e_fw:
+                logger.debug("[FEAT-W] score error: %s", _e_fw)
+
         trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out, regime_v2=_regime_v2)
 
         # ARCH-118 Шаг 5b: снимок в таблицу trade_features (FK), когда есть trade_id.
@@ -1663,7 +1686,20 @@ class TradeSimulator:
                 # exit (чужой filled-ордер из _resolve_exit) даёт R >> MFE (STG R=264 при MFE=1.3).
                 # Clamp в точный наблюдённый диапазон → гарантирует R_multiple <= max_R_possible
                 # (без допуска: при узких стопах ote one_r≈0.5%, любой % допуска раздувает R на >0.3R).
-                if (exit_price and max_price_db and min_price_db
+                # 🔴 12.07 (Егор «причём тут симуляция?!»): кламп ТОЛЬКО для SIM-сделок. Для
+                # VST/exchange-managed exit = ФАКТ с биржи (WS-филл) — а min/max_price_db =
+                # НЕПОЛНЫЙ shadow-трекинг сима (LAB: sim-min 0.674 vs реальный 0.421 — не видел
+                # 60% движения) → кламп ВРАЛ ×3 за день в обе стороны (+32%→+6.4%, +0.6%→−0.05%,
+                # −16%→−13%). Fake-R защита VST = ledger-audit (сверка с биржей), не sim-кламп.
+                _exch_managed_close = False
+                try:
+                    _eoid_cl = cursor.execute(
+                        "SELECT exchange_order_id FROM simulated_trades WHERE id=?",
+                        (trade_id,)).fetchone()
+                    _exch_managed_close = bool(_eoid_cl and _eoid_cl[0] and _eoid_cl[0] != "SIM")
+                except Exception:
+                    pass
+                if (not _exch_managed_close and exit_price and max_price_db and min_price_db
                         and max_price_db >= min_price_db):
                     if exit_price > max_price_db or exit_price < min_price_db:
                         _exit_bad = exit_price
@@ -1756,17 +1792,29 @@ class TradeSimulator:
                 # комиссия round-trip: qty × entry × 0.1% (только VST-сделки с реальным qty)
                 total_fee = round(float(qty_db) * entry * 0.001, 4) if qty_db else 0.0
 
+                # COSTS-PCT (12.07): косты в % для net (работают и для SIM без qty). ЗАКОН №1.
+                #   taker RT = 2 × taker_fee_pct (BingX VST ~0.045%/сторона)
+                #   funding  = (часы удержания / 8) × нормаль (0.01%/период); держим коротко → ~0
+                try:
+                    from core.infra.config_loader import config as _cfg_cost
+                    _taker = float(_cfg_cost.get("simulation.taker_fee_pct", 0.045))
+                    _fund_nom = float(_cfg_cost.get("simulation.funding_est_pct", 0.01))
+                except Exception:
+                    _taker, _fund_nom = 0.045, 0.01
+                _hold_h = (duration_minutes / 60.0) if duration_minutes else 0.0
+                costs_pct = round(_taker * 2 + (_hold_h / 8.0) * _fund_nom, 4)
+
                 cursor.execute(
                     """
                     UPDATE simulated_trades
                     SET status = ?, exit_price = ?, profit_pct = ?, R_multiple = ?,
                         closed_at = ?, duration_minutes = ?, max_R_possible = ?, captured_R_pct = ?,
-                        total_fee = ?
+                        total_fee = ?, costs_pct = ?
                     WHERE id = ?
                     """,
                     (status, exit_price, profit_pct, r_multiple,
                      closed_at.isoformat(), duration_minutes,
-                     max_R_possible, captured_R_pct, total_fee, trade_id),
+                     max_R_possible, captured_R_pct, total_fee, costs_pct, trade_id),
                 )
                 conn.commit()
             logger.info(f"TradeSimulator: закрыта сделка id={trade_id} {status} exit={exit_price:.4f} R={r_multiple}")
@@ -2345,6 +2393,12 @@ class TradeSimulator:
                                 )
                     except Exception:
                         pass
+                # RADAR-гейт v2 (09.07, SPRING-RUNNER): штатный TSL для radar-сделок ВЫКЛЮЧЕН
+                # ПОЛНОСТЬЮ. До TP1 — исходный SL (гейт 07.07: TSL душил до первой цели).
+                # После TP1 — SL ведёт пивот-трейл radar_armed_loop._manage_runners (этажи
+                # R/S-пивотов дня): MFE n=68 показал, что BE+TSL-1R сжигали +2.8%/сд до +0.04.
+                if _tsl_gate and str(trade.get("signal_type") or "").startswith("radar_"):
+                    _tsl_gate = False
                 if use_tsl and _tsl_gate:
                     # Активируем TSL после достижения прибыли — помечаем в БД
                     _tsl_just_activated = False
@@ -2875,6 +2929,16 @@ class TradeSimulator:
                     (_sl_src.startswith("tsl_line") or _sl_src.startswith("wl_pivot_tsl"))
                     and not _exchange_managed_trade  # VST → wick, SIM → close
                 )
+                # SIM=TOUCH (11.07, Егор «sim-исполнение close = биржевой touch»): паритет с
+                # биржей — STOP бьётся фитилём, не закрытием. ЗАКОН «стоп на линию = свит».
+                # Data-era: включено 11.07.2026 (сравнения sim-статистики — с этой даты).
+                if _sl_check_close:
+                    try:
+                        from core.infra.config_loader import config as _cfg_touch
+                        if bool(_cfg_touch.get("simulation.sl_touch_all", True)):
+                            _sl_check_close = False
+                    except Exception:
+                        _sl_check_close = False
                 _tsl_is_active = bool(trade.get("tsl_activated"))
 
                 for _, row in df.iterrows():
@@ -3040,6 +3104,13 @@ class TradeSimulator:
                                 float(_orig_sl_classify), _curr_sl_classify,
                             )
                     if _exchange_managed_trade:
+                        # RADAR (11.07, WIF #45360): свечной sim-детект для multi-TP radar-сделок
+                        # НЕ авторитет — пик свечи ДО входа даёт ложный SL-детект, а хвост-раннер
+                        # без биржевого TP даст ложный TP-детект на tp_final → OPS-06 убивал бы
+                        # здоровые позиции по рынку. НЕ эскалируем: реальные закрытия ловит
+                        # EXEC-WS pa=0; ghost-SL страхует overshoot-путь DEV-185.2 (2%+dwell).
+                        if '"trade_mode": "radar"' in (trade.get("features_json") or ""):
+                            return (_ops05c, _ops05tsl)
                         _lg_key = f"{trade_id}_exit"
                         # OPS-06: симулятор детектит exit, но сделка exchange-managed. НЕ закрываем БД
                         # сами — force-close в симуляторе создаёт orphan, если биржа держит позицию

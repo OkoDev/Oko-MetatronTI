@@ -318,6 +318,18 @@ class OTESignalGenerator:
                 status, entry, bar_hi, bar_lo = "FIRE", e, bh, bl
                 trg_type, trg_zone = tg[0], (tg[2], tg[3])
         atr_up = "atr" in confs
+        # CASCADE-DIV капчер (12.07, Егор: каскад двойное/тройное дно ≠ одиночный див —
+        # ПРОЗРАЧНО, без гейта): div-присутствие на КАЖДОМ ТФ сетапа отдельно. Обучение само
+        # увидит MTF-каскад (div на htf И ltf) vs одиночный (на одном). combinator-флаги, reuse.
+        _want = "bull" if direction == "long" else "bear"
+        _div_by_tf: dict = {}
+        for _tf in {st["htf"], st["ltf"]}:
+            _fl = flags_cache.get(_tf)
+            if _fl is None:
+                _fl = flags_cache[_tf] = self._ltf_flags(dfs.get(_tf), _tf)
+            _g = (lambda k, fl=_fl: bool(fl.get(k, False)) if fl is not None else False)
+            _div_by_tf[_tf] = int(_g(f"rsi_div_{_want}_regular_{_tf}") or _g(f"rsi_div_{_want}_hidden_{_tf}")
+                                  or _g(f"wt_div_{_want}_regular_{_tf}") or _g(f"wt_div_{_want}_hidden_{_tf}"))
         # 🔴 ШИРОКИЙ direction-correct SL (30.06) = за начало LTF-СЛОМА-импульса в сторону сделки
         # (как honest-backtest +0.296R). НЕ HTF h["sl"] (он = начало HTF-импульса → для pull
         # инвертирован). Берём последний LTF-слом direction==сделки → levels[1.0]. ОБЯЗАТЕЛЬНАЯ
@@ -388,7 +400,8 @@ class OTESignalGenerator:
             atr_trend_up=atr_up, confirmations=confs, conf_score=len(confs),
             entry_ts=df_ltf.index[-1],
             meta={"impulse": [imp_lo, imp_hi], "triggers_n": len(triggers),
-                  "avgR_backtest": st.get("avgR"), "wr_backtest": st.get("wr"), "unconfirmed": h.get("unconfirmed")},
+                  "avgR_backtest": st.get("avgR"), "wr_backtest": st.get("wr"), "unconfirmed": h.get("unconfirmed"),
+                  "div_by_tf": _div_by_tf, "div_cascade": int(sum(_div_by_tf.values()) >= 2)},
         )
 
 

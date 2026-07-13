@@ -377,13 +377,46 @@ async def _register_ote_trade(bot, sig):
         "ote_unconfirmed": bool(sig.meta.get("unconfirmed")),
         "ote_atr_trend_up": sig.atr_trend_up,
         # confirmations-лог (18.06): какие подтверждения РЕАЛЬНО сработали (div/fvg_held/vol/
-        # liq_sweep/wt_cross/atr). Превращает слепое пятно в обучающий контур — через дни данных
-        # видно, какое подтверждение несёт edge (особенно div). ПРИНЦИП для ВСЕХ составных
-        # стратегий: логировать сработавшие компоненты (arch104 уже пишет matched_patterns).
+        # liq_sweep/wt_cross/atr). Превращает слепое пятно в обучающий контур. ПРИНЦИП для ВСЕХ
+        # составных стратегий: логировать сработавшие компоненты (arch104 → matched_patterns).
+        # 🔴 12.07 ДИСКРЕТИЗАЦИЯ + разрез Егора (ИЗМЕРЕНИЕ, без гейтов — рано): fvg_held +0.27%.
+        # div TF-условен (ltf=1h +0.34% vs 15m/5m −0.16%), НО на LTF валиден каскад (двойное/
+        # тройное дно, div_cascade_1h_15m) ≠ одиночный див против импульса. Различие капчерим,
+        # гейт НЕ вводим до форвард-валидации на честной эре.
         "ote_confirmations": "+".join(sig.confirmations) if sig.confirmations else "",
         "ote_conf_score": sig.conf_score,
         "trade_mode": "ote_nested",   # dedup: свой режим
     }
+    # OB/SC ПЛУМБИНГ (12.07, DS: «OB у ote_nested 1/8645» + Егор «SC сильнее OB»):
+    # trigger_type = склеенная строка "FVG+OB+SC" — майнинг видит её как одну фичу, компоненты
+    # невидимы. Раскладываем на дискретные булевы флаги → минабельно per-компонент.
+    # Приоритет силы генератора (ote_signal_generator:131): SC*>EQL>OB>FVG (SC*=5 OB=3 FVG=2).
+    _trg = set((sig.trigger_type or "").split("+"))
+    _trg_w = {"SC*": 5, "EQL": 4, "SC": 4, "OB": 3, "FVG": 2}
+    extra.update({
+        "ote_trg_fvg":      int("FVG" in _trg),
+        "ote_trg_ob":       int("OB" in _trg),
+        "ote_trg_eql":      int("EQL" in _trg),
+        "ote_trg_sc":       int("SC" in _trg),    # sponsor candle (неподтв.)
+        "ote_trg_sc_star":  int("SC*" in _trg),   # подтверждённый SC — сильнейший (Егор)
+        "ote_trg_strength": max((_trg_w.get(t, 0) for t in _trg), default=0),
+    })
+    # ПОДТВЕРЖДЕНИЯ тоже склейка (ote_confirmations="div+wt_cross+atr" — код помечал
+    # «какое несёт edge, особенно div», но майнить строку нельзя). Дискретизируем.
+    _cf = set(sig.confirmations or [])
+    extra.update({
+        "ote_cf_atr":       int("atr" in _cf),
+        "ote_cf_wt_cross":  int("wt_cross" in _cf),
+        "ote_cf_fvg_held":  int("fvg_held" in _cf),
+        "ote_cf_div":       int("div" in _cf),
+        "ote_cf_vol":       int("vol" in _cf),
+    })
+    # CASCADE-DIV из meta (12.07, Егор): div на каждом ТФ + флаг каскада (≥2 ТФ) — прозрачно,
+    # обучение различит одиночный див (ловушка) vs MTF-каскад/двойное-тройное дно (разворот).
+    _dbt = sig.meta.get("div_by_tf") or {}
+    for _tf, _v in _dbt.items():
+        extra[f"ote_div_{_tf}"] = int(_v)
+    extra["ote_div_cascade"] = int(sig.meta.get("div_cascade", 0))
     trade_id = None
     exchange_id = None
     if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):

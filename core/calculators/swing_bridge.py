@@ -199,7 +199,10 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01
     choch_ote = find_choch_ote(breaks, df)
     if choch_ote:
-        zone = choch_ote.get("ote_zone", (0, 0))
+        # 🔴 FIX 12.07 (Егор «копай глубже»): build_ote возвращает зону под ключом 'ote',
+        # НЕ 'ote_zone' → get дефолтил (0,0) → 0<=c<=0 никогда → ote_long/ote_short мёртв
+        # с ARCH-128 (0/25000 баров). Тот же класс, что eqh/eql свип.
+        zone = choch_ote.get("ote", choch_ote.get("ote_zone", (0, 0)))
         direction = choch_ote.get("direction", "")
         for i in range(n):
             c = close[i]
@@ -216,26 +219,33 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
 
 
 def etl_eql_eql(df: pd.DataFrame) -> Dict[str, np.ndarray]:
-    """ARCH-128: EQH/EQL через detect_equal_levels."""
+    """ARCH-128: EQH/EQL sweep через detect_equal_levels.
+
+    🔴 FIX 12.07 (Егор «копни»): свип = ПОСЛЕ формирования равного уровня цена пробивает его
+    (снятие ликвидности), НЕ на баре пивота. Старый код проверял high[bar_пивота] > level*1.003,
+    но на баре пивота high==level по определению равного хая → флаг НИКОГДА не горел (0/2000
+    баров). Теперь сканируем бары ПОСЛЕ 2-го пивота до первого пробоя = момент свипа.
+    detect_equal_levels → List[(ts1, p1, ts2, p2, kind)] — пара равных пивотов."""
     from core.smc.smc_engine import detect_equal_levels
 
     n = len(df)
     high, low = df["high"].values, df["low"].values
-
-    # detect_equal_levels → List[(bar, level, bar2, level2, kind)]
     levels = detect_equal_levels(df)
     eqh = np.zeros(n, dtype=bool)
     eql = np.zeros(n, dtype=bool)
 
     for lvl in levels:
-        bar_raw, lvl_price = lvl[0], lvl[1]
-        bar = df.index.get_loc(bar_raw) if hasattr(bar_raw, 'timestamp') else int(bar_raw)
-        kind = lvl[4]
-        if 0 <= bar < n:
-            if kind == "EQH" and high[bar] > lvl_price * 1.003:
-                eqh[bar] = True
-            elif kind == "EQL" and low[bar] < lvl_price * 0.997:
-                eql[bar] = True
+        ts2, kind = lvl[2], lvl[4]                    # 2-й пивот = конец формирования уровня
+        i2 = df.index.get_loc(ts2) if hasattr(ts2, "timestamp") else int(ts2)
+        # уровень ликвидности: EQH берём выше из пары (пробить надо его), EQL — ниже
+        lvl_price = max(lvl[1], lvl[3]) if kind == "EQH" else min(lvl[1], lvl[3])
+        for b in range(i2 + 1, n):                    # первый бар ПОСЛЕ, что снимает уровень
+            if kind == "EQH" and high[b] > lvl_price * 1.003:
+                eqh[b] = True
+                break
+            if kind == "EQL" and low[b] < lvl_price * 0.997:
+                eql[b] = True
+                break
 
     return {"eqh_sweep": eqh, "eql_sweep": eql}
 

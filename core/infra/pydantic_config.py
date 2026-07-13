@@ -199,6 +199,7 @@ class OkoConfig(BaseModel):
     outcome_predictor: Dict[str, Any] = Field(default_factory=dict)
     trade_analyzer: Dict[str, Any] = Field(default_factory=dict)
     sideways_mode: Dict[str, Any] = Field(default_factory=dict)
+    simulation: Dict[str, Any] = Field(default_factory=dict)   # 12.07: sl_touch_all + costs (net)
     signal_router: Dict[str, Any] = Field(default_factory=dict)
     strategy: Dict[str, Any] = Field(default_factory=dict)
     proxy_pool: Dict[str, Any] = Field(default_factory=dict)
@@ -209,6 +210,9 @@ class OkoConfig(BaseModel):
     arch104: Dict[str, Any] = Field(default_factory=dict)
     arch118: Dict[str, Any] = Field(default_factory=dict)
     arch96: Dict[str, Any] = Field(default_factory=dict)
+    # THE GRAPH (03.07, Сфера 6.5): api_key для thegraph_client/graph-shadow. Секция добавлена
+    # в config.yaml ПОСЛЕ схемы → extra_forbidden ронял ВСЮ валидацию в default-режим (08.07).
+    the_graph: Dict[str, Any] = Field(default_factory=dict)
 
     # ── Валидация (поглощает config_validator.py) ──
 

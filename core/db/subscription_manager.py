@@ -157,6 +157,10 @@ class SubscriptionManager:
                 ("execution_mode", "TEXT DEFAULT 'SIM'"),  # SIM/VST/LIVE — явно, не через NULL
                 ("exchange", "TEXT DEFAULT 'bingx'"),      # биржа (Ф2 нормализует в exchange_id)
                 ("total_fee", "REAL DEFAULT 0"),           # 13.06: комиссия round-trip (qty×entry×0.1%), заполняется при close_trade
+                # 12.07 (Егор «максимально сократить разрыв sim↔биржа»): косты в % (не $, работают
+                # для SIM без qty). net = profit_pct − costs_pct. taker RT + funding по времени.
+                # ЗАКОН №1: всё мерить % net. Data-era 12.07 (сравнения net — с этой даты).
+                ("costs_pct", "REAL DEFAULT 0"),
                 # 19.06: фактическое плечо сделки (записывается при открытии в trade_router).
                 # Корень: дашборд брал leverage из ЖИВОГО config → старые сделки «перекрашивались»
                 # задним числом при смене конфига. Теперь = свойство сделки (per-source, не глобал).
