@@ -291,8 +291,10 @@ class BingXAdapter(ExchangeAdapter):
                     entry=(_f(p.get("ep")) or None), upnl=_f(p.get("up")),
                     margin_mode=mt, updated_ts=ts,
                     # cr = cumulative realized позиции — первичный резолв exit при гонке
-                    # fill↔pa=0 (ответ в самом событии, ноль REST/ожидания)
-                    cum_realized=(_f(p.get("cr")) if p.get("cr") is not None else None),
+                    # fill↔pa=0 (ответ в самом событии, ноль REST/ожидания).
+                    # 🔴 LAB 13.07: BingX шлёт cr="" (пустую строку) в глюк-событиях —
+                    # это НЕ 0.0 (затёрло бы стеш), а «нет данных» → None
+                    cum_realized=(_f(p.get("cr")) if p.get("cr") not in (None, "") else None),
                 )))
                 if mt:
                     events.append(MarginModeEvent(account, sym, str(mt)))

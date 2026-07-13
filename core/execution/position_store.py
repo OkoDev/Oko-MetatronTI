@@ -85,6 +85,13 @@ class PositionStore:
         # pa>0 — обновляем/создаём; сохраняем уже известный position_id если WS его не прислал
         if key in self._pos and not p.position_id and self._pos[key].position_id:
             p.position_id = self._pos[key].position_id
+        # 🔴 pa-глюк BingX (LAB 13.07: pa 52.2→522.0 ×10 при НЕИЗМЕННОМ ep, без fill'ов):
+        # реальный добор сдвинул бы среднюю цену входа — qty-скачок >×2.5 при том же ep =
+        # мусор, оставляем прежний qty (иначе CR-DELTA восстановит цену от отравленного qty)
+        cur = self._pos.get(key)
+        if (cur is not None and cur.qty and p.qty > cur.qty * 2.5
+                and p.entry and cur.entry and abs(p.entry - cur.entry) / cur.entry < 1e-6):
+            p.qty = cur.qty
         self._pos[key] = p
         # стеш cr при живой позиции: cr сбрасывается при новом цикле (ORDI 13.07) →
         # дельта на закрытии считается от ПОСЛЕДНЕГО виденного значения
