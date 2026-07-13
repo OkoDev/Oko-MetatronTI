@@ -191,7 +191,7 @@ trading:
     write_exch_id: false
     sync_close: true
     sphere_shadow: true    # Ф4.1 EXECUTION-REBUILD: true → строит NEW pipeline (ExecutionSphere, on_close=None) ПАРАЛЛЕЛЬНО старому 2a/2b. Лог "[SPHERE-SHADOW] would close", реально НЕ закрывает, position_sync не тронут. Сверка would-close с фактом на живом потоке → потом CUTOVER. Откат = false. Требует рестарта.
-    sphere_cutover: false  # 🔴 CUTOVER (Ф5): false=shadow (выше). true → ExecutionSphere АВТОРИТЕТЕН: on_close=build_close_applier (закрывает БД из WS-exit) + ВЫКЛ старые пути (position_sync close-by-price + exec_ws 2b sync_close), иначе двойное закрытие. Требует sphere_shadow:true (на нём строится pipeline). 🔴 DELIBERATE: только после зелёной shadow-сверки + copy-DB теста. Откат = false + рестарт.
+    sphere_cutover: true   # ✅ ФЛИП 13.07 (Егор «добро!»): ExecutionSphere АВТОРИТЕТЕН — on_close=build_close_applier (закрывает БД из WS-истины: fill/CR-DELTA/REST/income) + ВЫКЛ старые пути (position_sync close-by-price + exec_ws 2b sync_close). Основание: copy-DB тест 8 закрытий + LAB-реплей Δ0.05% + BEAT live Δ0.076% fees-точный rp. EXEC-SIM-SPLIT шаг 4 — VST-выход отвязан от SIM. Откат = false + рестарт.
   vst_time_exit:           # EXEC-SIM-SPLIT шаг 2 (13.07): тайм-выход VST (у SIM есть EXPIRED, у VST не было → BREV #41641 9+ дней). position_sync._vst_time_exit_check
     enabled: false         # false = shadow: лог [VST-TIME-EXIT] WOULD CLOSE + TG SYSTEM (1/сутки на сделку). true → Sphere.close (reduceOnly бирже; БД закрывает штатный WS-путь pa=0)
     default_ttl_days: 5.0
