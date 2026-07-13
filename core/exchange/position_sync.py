@@ -562,6 +562,13 @@ async def sync_positions(bot) -> None:
             except Exception as _ew:
                 logger.debug("[DEV-185.2] watchdog error %s: %s", sym_w, _ew)
 
+        # EXEC-SIM-SPLIT шаг 2 (консилиум 13.07): VST-time-exit reconciliation.
+        # У SIM есть EXPIRED-путь, у VST не было НИЧЕГО → BREV #41641 висел 9+ дней.
+        try:
+            await _vst_time_exit_check(bot, open_sim)
+        except Exception as _tte:
+            logger.debug("[VST-TIME-EXIT] error: %s", _tte)
+
         # 🔴 CUTOVER (Ф5): close-by-price ВЫКЛ — ExecutionSphere (on_close из WS-exit) +
         # reconcile-watchdog авторитетны. Этот REST close-by-price = старый buggy путь (корень
         # fake-R: _resolve_exit по 15s-mark врал). Орфан-детект ниже (нет OPEN-строки) НЕ тронут.
@@ -800,6 +807,71 @@ async def sync_positions(bot) -> None:
 
     except Exception as e:
         logger.warning("[POSITION-SYNC] ошибка: %s", e)
+
+
+async def _vst_time_exit_check(bot, open_sim: list) -> None:
+    """EXEC-SIM-SPLIT шаг 2 (консилиум 13.07): тайм-выход для VST-сделок (reconciliation).
+
+    У SIM есть EXPIRED, у VST не было ничего → BREV #41641 висел 9+ дней. Проверка возраста
+    биржевых OPEN: age > TTL → лог + TG SYSTEM (дедуп 1 алерт/сутки на сделку).
+    `trading.vst_time_exit.enabled=true` → Sphere.close (reduceOnly-команда бирже; БД закроет
+    ШТАТНЫЙ WS-путь pa=0 → 2b/сфера — этот код БД не трогает, раскол SIM×биржа не нарушен).
+    Default shadow (enabled=false): наблюдаем пороги до активации.
+    """
+    import datetime as _dt
+    cfg = getattr(bot, "config", None)
+    if cfg is None:
+        return
+    tte = cfg.get("trading.vst_time_exit", {}) or {}
+    default_ttl = float(tte.get("default_ttl_days", 5.0))
+    per_source = tte.get("per_source", {}) or {}
+    enabled = bool(tte.get("enabled", False))
+    now = _dt.datetime.now(_dt.timezone.utc)
+    alerted = getattr(bot, "_vst_tte_alerted", None)
+    if alerted is None:
+        alerted = bot._vst_tte_alerted = {}
+    for t in open_sim:
+        eid = t.get("exchange_order_id")
+        if not eid or eid == "SIM":
+            continue   # SIM-полигон живёт своим EXPIRED-путём
+        try:
+            created = _dt.datetime.fromisoformat(str(t.get("created_at")).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=_dt.timezone.utc)
+            age_d = (now - created).total_seconds() / 86400.0
+        except Exception:
+            continue
+        ttl = float(per_source.get(str(t.get("signal_type") or ""), default_ttl))
+        if age_d < ttl:
+            continue
+        tid = t.get("id")
+        today = now.strftime("%Y-%m-%d")
+        if alerted.get(tid) != today:
+            alerted[tid] = today
+            logger.info("[VST-TIME-EXIT]%s #%s %s %s age=%.1fд > TTL %.1fд (source=%s)",
+                        "" if enabled else " WOULD CLOSE (shadow)", tid, t.get("symbol"),
+                        t.get("direction"), age_d, ttl, t.get("signal_type"))
+            try:
+                from oko_feed.alerts import send_tg
+                send_tg(f"⏳ <b>VST-TIME-EXIT{'' if enabled else ' (shadow)'}</b> — "
+                        f"#{tid} <code>{t.get('symbol')}</code> {t.get('direction')} "
+                        f"висит {age_d:.1f}д (TTL {ttl:.0f}д, {t.get('signal_type')})"
+                        + ("" if enabled else " — закрыл бы, но enabled=false")
+                        + "\n\n#SYSTEM", channel="system")
+            except Exception as _tge:
+                logger.debug("[VST-TIME-EXIT] TG: %s", _tge)
+        if enabled:
+            sphere = getattr(bot, "_exec_sphere", None)
+            pid = t.get("position_id")
+            if sphere is not None and pid:
+                try:
+                    res = await sphere.close(str(pid), reason="time_exit")
+                    logger.info("[VST-TIME-EXIT] #%s close(pid=%s) → success=%s %s", tid, pid,
+                                getattr(res, "success", None), getattr(res, "error", "") or "")
+                except Exception as _ce:
+                    logger.warning("[VST-TIME-EXIT] #%s close error: %s", tid, _ce)
+            else:
+                logger.warning("[VST-TIME-EXIT] #%s enabled, но нет sphere/pid — пропуск", tid)
 
 
 async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:

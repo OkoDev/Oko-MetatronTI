@@ -109,8 +109,13 @@ class ExecutionSphere:
             # pa=0 по отслеживаемой позиции = ЕДИНСТВЕННЫЙ авторитетный триггер close
             exit_info = self._store.take_exit(account, flat.symbol, flat.side)
             if exit_info is None:
-                # ГОНКА fill↔pa=0: pa=0 пришёл раньше закрывающего ORDER_TRADE_UPDATE →
-                # ExitInfo не застешился. Дотянуть закрывающий fill по positionId (REST,
+                # ГОНКА fill↔pa=0 (13.07, консилиум): ПЕРВИЧНЫЙ резолв = Δcr из САМОГО
+                # события pa=0 (cumulative realized позиции) — детерминизм, ноль REST,
+                # ноль ожидания. Чинит класс AVAAI: REST/income в T+1мс пусты → был rp=0
+                # → мисс-класс «TP @ entry». Грейс-ожидание отклонено (латентность).
+                exit_info = self._exit_from_cr_delta(account, flat, ev)
+            if exit_info is None:
+                # cr не пришёл в событии → дотянуть закрывающий fill по positionId (REST,
                 # детерминированно — как _resolve_exit positionID-якорь). Только на гонке.
                 exit_info = await self._resolve_exit_via_rest(account, flat)
             if exit_info is None:
@@ -118,6 +123,10 @@ class ExecutionSphere:
                 # ликвидация без positionId) → realized из income-ledger ($-истина биржи, всегда
                 # есть). Поднимает o.rp-захват с ~65% к ~100% → CUTOVER флип безопасен.
                 exit_info = await self._resolve_exit_via_income(account, flat)
+            if exit_info is not None and exit_info.order_type != "CR_DELTA":
+                # цикл позиции завершён не-cr путём → почистить cr-стеш (иначе старая база
+                # протечёт в следующий цикл символа при закрытии без промежуточных pa>0)
+                self._store.take_cr_delta(account, flat.symbol, flat.side, None)
             intent = CloseIntent(account=account, symbol=flat.symbol, side=flat.side,
                                  position_id=flat.position_id, exit=exit_info, reason="ws_pa0")
             await self._fire_close(intent)
@@ -259,6 +268,36 @@ class ExecutionSphere:
                          (intent.exit.status if intent.exit else "?"))
             return
         await self._on_close(intent)
+
+    def _exit_from_cr_delta(self, account: int, flat: Position,
+                            ev: PositionEvent) -> Optional[ExitInfo]:
+        """Гонка fill↔pa=0, первичный резолв: realized = Δcr из закрывающего ACCOUNT_UPDATE.
+
+        Валидация 13.07 (shadow-логи vs БД): cr(pa=0) ≈ realized сделки нетто (Δ от gross =
+        fees: AVAAI −0.17, RIVER −0.15, UAI −0.18); ORDI показал сброс cr при новом цикле →
+        дельта от последнего стеша (store.take_cr_delta). exit_price восстановлен из
+        realized+entry+qty (цену cr не даёт; настоящую цену несёт fill — он в приоритете
+        через take_exit). Статус по знаку rp (classify_exit); SL→TSL уточняет db_writer.
+        Возврат None (cr отсутствует/цена невосстановима) → каскад REST→income.
+        """
+        cr_final = ev.position.cum_realized
+        if cr_final is None:
+            return None
+        delta = self._store.take_cr_delta(account, flat.symbol, flat.side, cr_final)
+        if delta is None:
+            return None
+        exit_price = 0.0
+        if flat.entry and flat.qty:
+            d = 1.0 if flat.side == "LONG" else -1.0
+            exit_price = flat.entry + d * delta / flat.qty
+        if exit_price <= 0:
+            return None   # без entry/qty цену не восстановить — не гадаем, каскад дальше
+        logger.info("[Sphere] exit via CR-DELTA (гонка fill↔pa=0): %s %s acc=%d Δcr=%.4g exit~%.8g",
+                    flat.symbol, flat.side, account, delta, exit_price)
+        return ExitInfo(symbol=flat.symbol, side=flat.side, account=account,
+                        exit_price=float(exit_price), realized_pnl=float(delta),
+                        status=classify_exit("CR_DELTA", delta), order_type="CR_DELTA",
+                        position_id=flat.position_id, ts=time.time())
 
     async def _resolve_exit_via_rest(self, account: int, pos: Position) -> Optional[ExitInfo]:
         """Гонка fill↔pa=0: pa=0 без застешенного fill → дотянуть закрывающий fill из REST.

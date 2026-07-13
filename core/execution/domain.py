@@ -86,6 +86,10 @@ class Position:
     margin_mode: Optional[str] = None   # mt: cross | isolated
     position_id: Optional[str] = None
     updated_ts: float = 0.0
+    # cr из ACCOUNT_UPDATE: cumulative realized позиции (нетто, с fees/funding).
+    # Валидировано 13.07: cr(pa=0) ≈ realized сделки (Δ от gross = комиссии); ORDI показал
+    # сброс cr при новом цикле позиции → потребитель берёт ДЕЛЬТУ от последнего стеша.
+    cum_realized: Optional[float] = None
 
     @property
     def is_flat(self) -> bool:

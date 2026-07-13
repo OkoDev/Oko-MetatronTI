@@ -58,6 +58,7 @@ class PositionStore:
     _pos: dict = field(default_factory=dict)          # (account, symbol, side) → Position
     _exit: dict = field(default_factory=dict)         # (account, symbol, side) → ExitInfo
     _last_ws_ts: dict = field(default_factory=dict)   # account → monotonic ts
+    _cr: dict = field(default_factory=dict)           # (account, symbol, side) → последний cr при pa>0
 
     # ── cold-start ─────────────────────────────────────────────────────────
     def init_account(self, account: int, positions: list[Position]) -> None:
@@ -85,6 +86,10 @@ class PositionStore:
         if key in self._pos and not p.position_id and self._pos[key].position_id:
             p.position_id = self._pos[key].position_id
         self._pos[key] = p
+        # стеш cr при живой позиции: cr сбрасывается при новом цикле (ORDI 13.07) →
+        # дельта на закрытии считается от ПОСЛЕДНЕГО виденного значения
+        if p.cum_realized is not None:
+            self._cr[key] = p.cum_realized
         return None
 
     def apply_fill(self, ev: FillEvent) -> None:
@@ -118,6 +123,19 @@ class PositionStore:
     def take_exit(self, account: int, symbol: str, side: str) -> Optional[ExitInfo]:
         """Извлечь (и удалить) застешенный exit для пары — для close-классификации Sphere."""
         return self._exit.pop((account, symbol, side), None)
+
+    def take_cr_delta(self, account: int, symbol: str, side: str,
+                      cr_final: Optional[float]) -> Optional[float]:
+        """Δcr = cr(pa=0) − последний стеш при pa>0 → realized сделки (нетто, с fees).
+
+        Первичный резолв гонки fill↔pa=0: ответ в самом закрывающем событии (13.07,
+        валидация: AVAAI Δ=−0.17 RIVER −0.15 UAI −0.18 от gross = комиссии). Стеша нет
+        (позиция без промежуточных pa>0 событий) → база 0.0 — cr за цикл и есть realized.
+        Стеш чистится всегда (закрытие завершает цикл позиции)."""
+        base = self._cr.pop((account, symbol, side), 0.0)
+        if cr_final is None:
+            return None
+        return cr_final - base
 
     # ── чтение состояния (дашборд/сайзинг — из WS-снимка, НЕ REST polling) ───
     def positions(self, account: Optional[int] = None) -> list[Position]:

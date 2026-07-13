@@ -8283,3 +8283,47 @@ if not in_ote:
 **Python:** `C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe`
 
 — Даат, 13.06.2026
+---
+
+## 🏛️ [ARCH] EXEC-SIM-SPLIT — дизайн-обсуждение, ПОДКЛЮЧИТЬСЯ ВСЕМ РОЛЯМ (Егор 13.07: «дизайн через bot-arch обязательно, подключить всех»)
+
+**Решение Егора (12-13.07):** «симуляцию отделить насовсем от биржи! приблизить логику, но полностью отделить! SIM мешает в исполнении». Раскол ВНУТРИ одного процесса (2 процесса отвергнуты 14.06 — дубль логики). Заодно — распил монолитов («тот самый момент»).
+
+**Проверенные факты (13.07, все числа из живых замеров):**
+- `trade_simulator.py` = 3152 строки: register+гейты, ОБЩИЙ close_trade (SIM×VST — корень багов недели: phantom-clamp LAB +32%→+6.4%, orphan-killer убил ручной LONG, tail-runner в SIM-стенах, BREV #41641 9+ дней без тайм-выхода — EXPIRED только у SIM-пути)
+- ote_nested: SIM honest (touch+costs) **+0.52%/сд** WR68 n=199 vs живой VST **−0.57%** → разрыв 1.1% = исполнение. SIM-полигон = research-ценность (не ломать), VST-исполнение — чистить
+- CUTOVER (`sphere_cutover:false`, config.yaml:194): захват rp сегодня 11/11, НО **4/11 с rp=0 — ГОНКА**: pa=0 приходит первым, сфера резолвит +1мс, FILLED приходит через ~90мс, income-ledger пуст → rp=0 → мисс-класс (AVAAI: сфера «TP @ entry», БД правильно SL). Само событие pa=0 несёт `cr` (cumulative realized −5.34) — ответ был внутри! BILL/LAB — события без пары в БД (частичные закрытия TP1 радара?)
+- Старый путь 2b (`exec_ws sync_close` + `position_sync` close-by-price) сейчас закрывает БД ПРАВИЛЬНО
+
+**Вопросы ролям:**
+1. [ARCH] Границы распила trade_simulator: gates/ + sim_exit/ + vst_exit(сфера)? Карта функция→модуль?
+2. [DEV] Фикс гонки pa=0: грейс 300-500мс / дельта `cr` из ACCOUNT_UPDATE / income-retry — что комбинировать?
+3. [DEV] Частичные закрытия (TP1 радара) — как сфере отличать от полного (BILL/LAB-сироты)?
+4. [TRADER] VST-тайм-выход: сколько дней держать mean-reversion сделку (BREV 9д — не дело)? per-source TTL?
+5. [ARCH] Судьба position_sync (1027 строк) после флипа: reconciliation-only? 
+6. [DS] Что мониторить после каждого шага (метрики сверки сфера↔БД)?
+7. [ALL] Порядок: фикс гонки → copy-DB тест → флип → вырезание SIM из VST-веток → распил? Возражения?
+
+bot-arch агент считает полный план параллельно — его вывод добавлю следом.
+
+— Даат, 13.07.2026
+
+### 🏛️ [ARCH] EXEC-SIM-SPLIT — вердикт консилиума (bot-arch по коду + рой 6 моделей, 13.07)
+
+**Консенсус (bot-arch + 6/6 роя): порядок шагов утверждён.**
+1. Фикс гонки pa=0 в shadow-сфере (малый) → 2. VST-time-exit как reconciliation (малый, BREV-класс, НЕ ждёт cutover) → 3. copy-DB тест N дней → 4. флип `sphere_cutover:true` (тривиальный, обратимый) → 5. выделить `trade_writer` finalize (средний) → 6. SIM-ветки монитора → `SimExitEngine` (средний) → 7. распил монолита gates/sim_engine (большой, низкий риск). **Поведенческий раскол ДО файлового** — рефакторить сплетённый close_trade раньше = переносить баги.
+
+**Гонка pa=0 — решение:** первично **дельта `cr`** из ACCOUNT_UPDATE (детерминизм, ноль ожидания; хранить last-cr per position) + exit_price из WS-ap (`_close_fills` УЖЕ ловит) + классификатор по геометрии ap vs SL/entry; вторично income-retry 2-3с (сверка fee, не блокирует). Грейс-ожидание ОТКЛОНЕНО как первичный путь (латентность каждому close; рой сам дал аргумент — Model B: grace-delay вредит импульсным стратегиям = наш радар). ⚠️ Главная неизвестная: семантика `cr` (cumulative per-position vs per-symbol) — валидировать на shadow-логах ДО доверия.
+
+**Частичные закрытия (BILL/LAB-сироты):** сфера закрывает ТОЛЬКО при tracked qty→0; reduceOnly-fill с остатком = partial (radar TP1) → уменьшить qty в PositionStore, пометить tp1_hit_at, НЕ close.
+
+**Карта распила trade_simulator (3152):** `gates/register_gates.py` (dedup/corr/RR из register) · `trade_writer.py` — ОДИН finalize-калькулятор (R-math+costs+4 хвоста: шина/веса/TG/SSE; clamp=параметр SIM-only) · `sim_engine/sim_exit.py` (touch+time-exit+throttle) · VST-exit = ExecutionSphere. Обучение (Сфера 11) кормится общим finalize — feedback loop НЕ рвётся.
+
+**position_sync после флипа:** оставить reconciler'ом (orphan-detect, SL-reconcile, snapshots), close-by-price глохнет флагом, fail-safe 2-3 недели.
+
+**Куб:** Сфера 10 (Exit) расщепляется SIM/VST, ребро Sphere→finalize→Bus→Feedback, Bus усилен.
+
+**Мониторинг после каждого шага:** счётчик rp=0 → 0 · дубли POSITION_CLOSED · возраст stuck-OPEN VST · sphere-close == 2b-close на copy-DB.
+
+Полный план роя: obsidian/Team-Discussions/2026-07-13-exec-sim-split-*.md
+— Даат, 13.07.2026
