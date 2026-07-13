@@ -701,8 +701,20 @@ def _log_spring(row: dict) -> None:
         c.close()
 
 
+def _quadrant15(w, px: float, oi: float) -> str | None:
+    """Квадрант OI×цена за 15м — ЕДИНЫЙ расчёт (BUILD-гейт + radar_state, reuse).
+    PUP/PDN/PFL × OIUP/OIDN/OIFL. None если окна <16 точек."""
+    if len(w) < 16 or not w[-16][2] or not w[-16][1]:
+        return None
+    d_px15 = (px / w[-16][2] - 1) * 100
+    d15 = (oi / w[-16][1] - 1) * 100
+    _p = "PUP" if d_px15 > 0.2 else "PDN" if d_px15 < -0.2 else "PFL"
+    _o = "OIUP" if d15 > 0.15 else "OIDN" if d15 < -0.15 else "OIFL"
+    return f"{_p}+{_o}"
+
+
 def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None,
-                  d1d: float | None = None) -> tuple[str, dict | None]:
+                  d1d: float | None = None, quadrant: str | None = None) -> tuple[str, dict | None]:
     """📈 BUILD → полный сетап в сообщении (Егор 03.07: «нужно быстро реагировать» —
     вход-стоп-тейк сразу, без переспрашивания).
 
@@ -719,6 +731,16 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None,
     # о толпе (сквиз-топливо), НЕ руль. VST-форвард покажет за дни (27 сд/48ч).
     side, struct_txt = _struct_dir(sym)
     veto_txt = None
+    # 🚦 13.07 КВАДРАНТ-КОНКОРДАНС ГЕЙТ (Егор): вход ПРОТИВ 15м-потока OI×цена не строим.
+    # Ночь 13.07: против квадранта 5/5 лоссов (SHORT при PUP+*: UAI/STRK/TIA/AGLD/SXT),
+    # по квадранту — LAB профит + все живые. Ретро n=80: PDN+OIUP +0.88% vs PUP+OIUP −0.69%.
+    # Блокируем ТОЛЬКО явный противоход (PFL/нет данных = пропуск): сетап → голый алерт.
+    if side is not None and quadrant:
+        _pq = quadrant.split("+")[0]
+        if (side == "SHORT" and _pq == "PUP") or (side == "LONG" and _pq == "PDN"):
+            veto_txt = (f"🚦 структура 1h даёт {side}, но 15м-поток против ({quadrant}) — "
+                        f"вход не строим (конкорданс-гейт) 🔄")
+            side = None
     if side is not None:
         _f_txt = (f"толпа: funding {fund * 100:+.3f}%" +
                   (" (шорты платят — топливо сквиза ↑)" if fund and fund < -0.0002 else
@@ -727,7 +749,8 @@ def analyze_build(sym: str, px: float, d_oi5: float, fund: float | None,
         dir_txt = f"{'🔺' if side == 'LONG' else '🔻'} {struct_txt} · {_f_txt}"
     else:
         dir_txt = None
-        veto_txt = "⚪ структура 1h нема (боковик без сломов) — сетапа нет 🔄"
+        # конкорданс-гейт выше мог уже поставить свой veto_txt — не затираем
+        veto_txt = veto_txt or "⚪ структура 1h нема (боковик без сломов) — сетапа нет 🔄"
     # шапка (макет Егора 03.07): тип отдельно, тикер копируемый + цвет направления
     dot = {"LONG": "🟢", "SHORT": "🔴"}.get(side, "⚪")
     _day = f" · за день {d1d:+.1f}%" if d1d is not None else ""
@@ -1084,7 +1107,8 @@ def tick():
             d_oi5 = (oi / oi5 - 1) * 100 if oi5 else 0
             if d_oi5 >= 0.5 and _cooldown_ok(f"fast_build:{sym}"):
                 b_msg, b_row = analyze_build(sym, px, d_oi5, _FUND.get(f"{sym}USDT"),
-                                             d1d=_oi_day_delta(sym, oi))
+                                             d1d=_oi_day_delta(sym, oi),
+                                             quadrant=_quadrant15(w, px, oi))
                 b_chain = _recent_signals(sym)           # ⛓ лениво: только при алерте
                 # BUILD с сетапом (side+SL) → action + стакан; голый BUILD → feed
                 if b_row:
@@ -1149,13 +1173,9 @@ def tick():
         d1d = _oi_day_delta(sym, oi)
         # КВАДРАНТ OI×ЦЕНА за 15м (12.07, Егор «расхождение OI с ценой — сильный показатель»,
         # ретро n=80 ПОДТВЕРДИЛ: PDN+OIUP +0.88% vs PUP+OIUP −0.69% WR14 / PUP+OIFL −1.06% WR0).
-        # Прозрачная ФИЧА (не гейт): radar_state → bridge → features всех сделок.
-        quadrant = None
-        if d15 is not None and len(w) >= 16 and w[-16][2]:
-            d_px15 = (px / w[-16][2] - 1) * 100
-            _p = "PUP" if d_px15 > 0.2 else "PDN" if d_px15 < -0.2 else "PFL"
-            _o = "OIUP" if d15 > 0.15 else "OIDN" if d15 < -0.15 else "OIFL"
-            quadrant = f"{_p}+{_o}"
+        # Фича в radar_state → bridge → features всех сделок; с 13.07 ещё и конкорданс-гейт
+        # BUILD (расчёт единый — _quadrant15, reuse).
+        quadrant = _quadrant15(w, px, oi)
         state_rows.append((sym, int(time.time()), px, d5, d15, _FUND.get(f"{sym}USDT"), d1d, quadrant,
                            1 if sym in _HOT else 0))
         time.sleep(0.15)
