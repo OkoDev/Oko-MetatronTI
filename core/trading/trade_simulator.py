@@ -1847,25 +1847,11 @@ class TradeSimulator:
             _exch_id_pre = trade.get("exchange_order_id")
             _is_sim_only = not (bool(_exch_id_pre) and _exch_id_pre != "SIM")
             if _is_sim_only:
-                # SIM-TIME-EXIT (анти-орфан): закрыть EXPIRED если висит > N часов и не TP/SL.
-                # Биржевые НЕ трогаем (закрываются биржей). Устраняет КОРЕНЬ копления sim-орфанов.
-                if _sim_te_h > 0:
-                    _created = trade.get("created_at")
-                    if _created:
-                        try:
-                            _ct = datetime.fromisoformat(str(_created).replace("Z", "+00:00"))
-                            if _ct.tzinfo is None:
-                                _ct = _ct.replace(tzinfo=timezone.utc)
-                            _age_h = (datetime.now(timezone.utc) - _ct).total_seconds() / 3600.0
-                            if _age_h > _sim_te_h:
-                                _px = await data_collector.get_current_price(trade["symbol"])
-                                _px = float(_px) if _px else float(trade["entry_price"])
-                                self.close_trade(trade["id"], STATUS_EXPIRED, _px)
-                                logger.info("[SIM-TIME-EXIT] #%d %s EXPIRED (age %.0fh > %.0fh)",
-                                            trade["id"], trade["symbol"], _age_h, _sim_te_h)
-                                return
-                        except Exception as _tee:
-                            logger.debug("[SIM-TIME-EXIT] %s: %s", trade.get("symbol"), _tee)
+                # SIM-TIME-EXIT (анти-орфан) — вынесен в sim_exit (шаг 6, перенос 1:1).
+                # Биржевые НЕ трогаем (их время следит VST-time-exit в position_sync).
+                from core.trading.sim_exit import sim_time_exit_if_due
+                if await sim_time_exit_if_due(self, trade, _sim_te_h, data_collector):
+                    return
                 import time as _t_sim
                 _now_sim = _t_sim.monotonic()
                 _tid_sim = trade["id"]
@@ -2751,107 +2737,52 @@ class TradeSimulator:
                         _sl_check_close = False
                 _tsl_is_active = bool(trade.get("tsl_activated"))
 
-                for _, row in df.iterrows():
-                    high  = float(row.get("high",  0) or 0)
-                    low   = float(row.get("low",   0) or 0)
-                    close = float(row.get("close", 0) or 0)
-                    open_ = float(row.get("open",  0) or 0)
-
-                    if high > 0:
-                        max_high = max(max_high, high)
-                    if low > 0:
-                        min_low = min(min_low, low)
-
-                    if direction == "LONG":
-                        hit_sl = sl is not None and (close <= sl if _sl_check_close else low <= sl)
-                        # TP1 фиксирует часть — только если ещё не сработал
-                        if tp1_price and tp1_hit_at is None and high >= tp1_price:
-                            tp1_hit_at = datetime.now(timezone.utc).isoformat()
-                            try:
-                                with self._db_connect() as _c:
-                                    _c.execute(
-                                        "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
-                                        (tp1_hit_at, trade_id, STATUS_OPEN),
-                                    )
-                                    _c.commit()
-                            except Exception:
-                                pass
-                            logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                            # Куб: Сфера 10 → bus: TP1_HIT
-                            _pcb = getattr(self, "_pair_context_bus", None)
-                            if _pcb is not None:
-                                try:
-                                    from core.context.pair_context import SphereEvent
-                                    _r_at_tp1 = (tp1_price - entry) / abs(entry - sl) if sl and entry != sl else 0
-                                    _pcb.publish(symbol, SphereEvent.TP1_HIT, {
-                                        "trade_id": trade_id, "r_at_tp1": round(abs(_r_at_tp1), 2),
-                                    })
-                                except Exception:
-                                    pass
-                        # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
-                        if tp2_price and tp2_hit_at is None and tp1_hit_at and high >= tp2_price:
-                            tp2_hit_at = datetime.now(timezone.utc).isoformat()
-                            try:
-                                with self._db_connect() as _c:
-                                    _c.execute(
-                                        "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
-                                        (tp2_hit_at, trade_id, STATUS_OPEN),
-                                    )
-                                    _c.commit()
-                            except Exception:
-                                pass
-                            logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
-                            exit_status, exit_price_val = STATUS_TP, tp2_price
-                        # Обычный TP (SINGLE — tp1/tp2 не используются)
-                        # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
-                        # TSL сам закроет сделку при развороте тренда.
-                        hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and high >= tp)
-                        if not exit_status:
-                            if hit_sl and hit_tp:
-                                exit_status, exit_price_val = (STATUS_SL, sl) if (open_ - sl <= tp - open_) else (STATUS_TP, tp)
-                            elif hit_sl:
-                                exit_status, exit_price_val = STATUS_SL, sl
-                            elif hit_tp:
-                                exit_status, exit_price_val = STATUS_TP, tp
-                    else:  # SHORT
-                        hit_sl = sl is not None and (close >= sl if _sl_check_close else high >= sl)
-                        if tp1_price and tp1_hit_at is None and low <= tp1_price:
-                            tp1_hit_at = datetime.now(timezone.utc).isoformat()
-                            try:
-                                with self._db_connect() as _c:
-                                    _c.execute(
-                                        "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
-                                        (tp1_hit_at, trade_id, STATUS_OPEN),
-                                    )
-                                    _c.commit()
-                            except Exception:
-                                pass
-                            logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
-                        # TP2 — финальный выход для DUAL_TP (30.03.2026: добавлен exit_status)
-                        if tp2_price and tp2_hit_at is None and tp1_hit_at and low <= tp2_price:
-                            tp2_hit_at = datetime.now(timezone.utc).isoformat()
-                            try:
-                                with self._db_connect() as _c:
-                                    _c.execute(
-                                        "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
-                                        (tp2_hit_at, trade_id, STATUS_OPEN),
-                                    )
-                                    _c.commit()
-                            except Exception:
-                                pass
-                            logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
-                            exit_status, exit_price_val = STATUS_TP, tp2_price
-                        # DEV-TSL-SUPREMACY: если TSL уже активен — фиксированный TP не режет ракету.
-                        hit_tp = (not _tsl_is_active and tp is not None and tp2_price is None and tp1_price is None and low <= tp)
-                        if not exit_status:
-                            if hit_sl and hit_tp:
-                                exit_status, exit_price_val = (STATUS_SL, sl) if (sl - open_ <= open_ - tp) else (STATUS_TP, tp)
-                            elif hit_sl:
-                                exit_status, exit_price_val = STATUS_SL, sl
-                            elif hit_tp:
-                                exit_status, exit_price_val = STATUS_TP, tp
-                    if exit_status:
-                        break
+                # Свечной детект — ЧИСТАЯ функция sim_exit.detect_candle_exit (шаг 6,
+                # перенос 1:1; side-effects — запись tp-хитов и шина — здесь, снаружи)
+                from core.trading.sim_exit import detect_candle_exit
+                _det = detect_candle_exit(
+                    df, direction=direction, sl=sl, tp=tp,
+                    tp1_price=tp1_price, tp1_hit_at=tp1_hit_at,
+                    tp2_price=tp2_price, tp2_hit_at=tp2_hit_at,
+                    sl_check_close=_sl_check_close, tsl_active=_tsl_is_active,
+                )
+                exit_status, exit_price_val = _det.exit_status, _det.exit_price
+                max_high, min_low = _det.max_high, _det.min_low
+                if _det.tp1_hit_now:
+                    tp1_hit_at = datetime.now(timezone.utc).isoformat()
+                    try:
+                        with self._db_connect() as _c:
+                            _c.execute(
+                                "UPDATE simulated_trades SET tp1_hit_at=? WHERE id=? AND status=?",
+                                (tp1_hit_at, trade_id, STATUS_OPEN),
+                            )
+                            _c.commit()
+                    except Exception:
+                        pass
+                    logger.info("TradeSimulator: TP1 hit %s id=%d tp1=%.6f", symbol, trade_id, tp1_price)
+                    # Куб: Сфера 10 → bus: TP1_HIT
+                    _pcb = getattr(self, "_pair_context_bus", None)
+                    if _pcb is not None:
+                        try:
+                            from core.context.pair_context import SphereEvent
+                            _r_at_tp1 = (tp1_price - entry) / abs(entry - sl) if sl and entry != sl else 0
+                            _pcb.publish(symbol, SphereEvent.TP1_HIT, {
+                                "trade_id": trade_id, "r_at_tp1": round(abs(_r_at_tp1), 2),
+                            })
+                        except Exception:
+                            pass
+                if _det.tp2_hit_now:
+                    tp2_hit_at = datetime.now(timezone.utc).isoformat()
+                    try:
+                        with self._db_connect() as _c:
+                            _c.execute(
+                                "UPDATE simulated_trades SET tp2_hit_at=? WHERE id=? AND status=?",
+                                (tp2_hit_at, trade_id, STATUS_OPEN),
+                            )
+                            _c.commit()
+                    except Exception:
+                        pass
+                    logger.info("TradeSimulator: TP2 hit %s id=%d tp2=%.6f", symbol, trade_id, tp2_price)
 
                 # Обновляем MFE экстремумы + first_profit_r / first_drawdown_r
                 new_max = max_high if max_high > 0 else None
