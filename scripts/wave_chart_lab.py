@@ -135,11 +135,40 @@ async def _fetch_pivot_1h(symbol: str, limit: int = 530) -> pd.DataFrame:
     return df
 
 
-def _calc_pivot_levels(df1h: pd.DataFrame, tz_offset_hours: int = 3) -> tuple[dict, dict]:
-    """
-    Считает дневные и недельные пивоты из 1h данных с учётом timezone.
-    tz_offset_hours=3 → UTC+3 (как в TradingView у пользователя).
-    Граница дня: 00:00 местного = (24 - tz_offset_hours) % 24 UTC.
+def _pivots_from_cache(symbol: str, db_path: str = "subscriptions.db") -> tuple[dict, dict]:
+    """🔴 13.07 (Егор «проверь все пивоты!» — чарт врал D 0.3-1.2% / W 1.7-3.5%): пивоты
+    для чарта из pivot_cache БОТА (единый источник правды: живой пересчёт + гард свежести +
+    страж pivot-sanity), НЕ собственный расчёт. Урок reuse≠дублирование — чарт считал сам
+    в МСК-сутках и вт-пн неделях. Гард свежести: period_start = текущий период UTC."""
+    import sqlite3 as _sq
+    import datetime as _dt
+    out = {"1D": {}, "1W": {}}
+    now = _dt.datetime.now(_dt.timezone.utc)
+    day_key = now.strftime("%Y-%m-%d")
+    ws = now.replace(hour=0, minute=0, second=0, microsecond=0) - _dt.timedelta(days=now.weekday())
+    week_key = ws.strftime("%Y-%m-%d")
+    try:
+        with _sq.connect(db_path, timeout=5) as c:
+            for tf, key in (("1D", day_key), ("1W", week_key)):
+                r = c.execute(
+                    "SELECT pp, r1, r2, s1, s2 FROM pivot_cache "
+                    "WHERE symbol=? AND timeframe=? AND period_start LIKE ?",
+                    (symbol, tf, f"{key}%")).fetchone()
+                if r and r[0]:
+                    out[tf] = {"PP": r[0], "R1": r[1], "R2": r[2], "S1": r[3], "S2": r[4]}
+    except Exception:
+        pass
+    return out["1D"], out["1W"]
+
+
+def _calc_pivot_levels(df1h: pd.DataFrame, tz_offset_hours: int = 0) -> tuple[dict, dict]:
+    """FALLBACK-расчёт (когда pivot_cache пуст/протух для символа) из 1h данных.
+
+    🔴 13.07 фикс двух дефектов (чарт врал, Егор поймал по BTC-скрину):
+    - tz_offset 3→0: биржа/бот/TW считают пивоты от UTC-периодов (TW — от биржевых свечей
+      независимо от таймзоны отображения); МСК-сутки давали чужие H/L/C
+    - W-MON: дефолт pandas = недели, ЗАКАНЧИВАЮЩИЕСЯ пн (окно вт→пн) → label/closed='left'
+      даёт биржевые пн→пн
     """
     offset = pd.Timedelta(hours=tz_offset_hours)
 
@@ -150,7 +179,7 @@ def _calc_pivot_levels(df1h: pd.DataFrame, tz_offset_hours: int = 3) -> tuple[di
     daily_piv = _pivot_levels(*daily.iloc[-2][["high", "low", "close"]]) if len(daily) >= 2 else {}
 
     weekly = (df1h
-              .resample("W-MON", offset=offset)
+              .resample("W-MON", label="left", closed="left", offset=offset)
               .agg({"high": "max", "low": "min", "close": "last"})
               .dropna())
     weekly_piv = _pivot_levels(*weekly.iloc[-2][["high", "low", "close"]]) if len(weekly) >= 2 else {}
@@ -509,7 +538,13 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
 
         df_full = _calculate_wt(df_full)
         df = df_full.iloc[-bars:].copy()
-        daily_pivots, weekly_pivots = _calc_pivot_levels(df_pivot1h, tz_offset_hours=3) if df_pivot1h is not None and not df_pivot1h.empty else ({}, {})
+        # 13.07: пивоты из pivot_cache бота (единый источник, свежий+охраняемый);
+        # fallback — локальный UTC-расчёт (символа нет в кэше / кэш протух)
+        daily_pivots, weekly_pivots = _pivots_from_cache(symbol)
+        if not daily_pivots or not weekly_pivots:
+            _d_fb, _w_fb = _calc_pivot_levels(df_pivot1h) if df_pivot1h is not None and not df_pivot1h.empty else ({}, {})
+            daily_pivots = daily_pivots or _d_fb
+            weekly_pivots = weekly_pivots or _w_fb
         # 4h-пивоты для МЛАДШИХ ТФ (ресемпл 1h→4h) — ближние интрадей-уровни, релевантнее daily
         h4_pivots = None
         if tf in ("1m", "3m", "5m", "15m", "30m") and df_pivot1h is not None and not df_pivot1h.empty:
