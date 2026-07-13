@@ -112,6 +112,14 @@ class PositionStore:
                     entry=f.avg_price or None, position_id=f.position_id, updated_ts=time.time(),
                 )
         else:
+            # ЧАСТИЧНОЕ закрытие (radar TP1, консилиум 13.07): fill заметно меньше живой
+            # позиции → это НЕ exit всей позиции. Не стешим (иначе pa=0 позже возьмёт цену
+            # частички); позицию уменьшит штатный ACCOUNT_UPDATE pa>0. Финальный кусок
+            # (fill ≈ остатку) стешится ниже; при гонке подстрахует CR-DELTA.
+            cur = self._pos.get(key)
+            if (cur is not None and f.total_qty and cur.qty
+                    and (cur.qty - f.total_qty) > cur.qty * 0.02):
+                return
             # закрывающий fill (reduceOnly/STOP/TP/LIQUIDATION) → точный exit (o.ap) + realized (o.rp)
             self._exit[key] = ExitInfo(
                 symbol=f.symbol, side=f.pos_side, account=ev.account,

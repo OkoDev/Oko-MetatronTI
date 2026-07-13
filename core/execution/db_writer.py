@@ -87,6 +87,24 @@ def build_close_applier(trade_simulator):
             logger.info("[db_writer] %s %s — OPEN биржевой строки нет (уже закрыта/SIM) — no-op",
                         intent.symbol, intent.side)
             return
+        # SL→TSL коррекция (перенос из exec_ws 2b, copy-DB тест 13.07: AGLD-класс): наш TSL
+        # двигает обычный STOP (cancel+replace) → закрытие приходит как «SL»/по знаку rp.
+        # original_sl != stop_loss = стоп реально двигался → это TSL. Применяем к статусам
+        # без нативного типа ордера (SL, и TP от знаковой классификации CR_DELTA/INCOME —
+        # профитный подтянутый стоп закрывается именно так); нативный TAKE_PROFIT не трогаем.
+        _knows_order = (intent.exit.order_type or "").upper() not in ("CR_DELTA", "INCOME_FALLBACK", "")
+        if status == "SL" or (status == "TP" and not _knows_order):
+            try:
+                with sqlite3.connect(db_path, timeout=5) as _c:
+                    _r = _c.execute("SELECT original_sl, stop_loss FROM simulated_trades WHERE id=?",
+                                    (trade_id,)).fetchone()
+                if _r and _r[0] and _r[1] and float(_r[0]) > 0 and \
+                        abs(float(_r[1]) - float(_r[0])) / float(_r[0]) > 0.0001:
+                    logger.info("[db_writer] #%d %s: %s→TSL (orig_sl=%.6g → curr_sl=%.6g, стоп двигался)",
+                                trade_id, intent.symbol, status, float(_r[0]), float(_r[1]))
+                    status = "TSL"
+            except Exception as _tsle:
+                logger.debug("[db_writer] SL→TSL lookup #%d: %s", trade_id, _tsle)
         try:
             ok = trade_simulator.close_trade(trade_id, status, exit_price)
             logger.info("[db_writer] #%d %s %s → %s @ %.8g (intent=%s ok=%s)",
