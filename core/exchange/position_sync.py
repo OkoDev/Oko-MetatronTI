@@ -328,6 +328,29 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
             _st6, _px6 = await _resolve_exit(client, sym, direction, cur_price,
                                              trade.get("exchange_sl_order_id"), trade.get("exchange_tp_order_id"),
                                              trade.get("position_id"))
+            # 🔴 10.07 (ATOM #44872): резолв СРАЗУ после one-click брал ФАНТОМ-цену (1.569
+            # при реальном fill 1.539 — цены нет ни в одном ордере): fill ещё не в allOrders.
+            # Честная цена = СВЕЖИЙ reduceOnly-fill (ждём 2.5с; максимальный updateTime).
+            try:
+                import asyncio as _aio
+                import time as _t
+                await _aio.sleep(2.5)
+                _cut = int((_t.time() - 180) * 1000)
+                _best_ts, _best_px = 0, None
+                for _o in await client.get_filled_orders(sym, limit=50):
+                    _ots = int(_o.get("updateTime") or 0)
+                    if (_o.get("reduceOnly") in (True, "true") and _ots >= _cut and _ots > _best_ts):
+                        _pxf = float(_o.get("avgPrice") or 0)
+                        if _pxf > 0:
+                            _best_ts, _best_px = _ots, _pxf
+                if _best_px is not None and _px6 and abs(_best_px / _px6 - 1) > 0.001:
+                    logger.warning("[OPS-06] %s #%d exit-price коррекция: resolve=%.6f → fill=%.6f",
+                                   sym, trade_id, _px6, _best_px)
+                    _px6 = _best_px
+                elif _best_px is not None and not _px6:
+                    _px6 = _best_px
+            except Exception as _e_fx:
+                logger.debug("[OPS-06] fresh-fill exit lookup: %s", _e_fx)
             if bot.trade_simulator.close_trade(trade_id, _st6, _px6):
                 logger.info("[OPS-06] %s #%d: БД закрыта %s @ %.6f после emergency (orphan-prevent)",
                             sym, trade_id, _st6, _px6 or 0)

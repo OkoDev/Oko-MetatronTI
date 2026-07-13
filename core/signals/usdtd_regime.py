@@ -39,6 +39,41 @@ def _fetch_cg_usdtd() -> float | None:
         return None
 
 
+_CMC_URL_G = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
+_CMC_URL_Q = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?symbol=USDT"
+
+
+def _fetch_cmc_usdtd() -> float | None:
+    """Фолбэк CG→CMC (11.07, ключ Егора): USDT.D = mcap(USDT)/total, та же методология что
+    CG market_cap_percentage. Уровни источников расходятся на десятые пп (разный состав
+    TOTAL) — зовётся ТОЛЬКО когда CG недоступен, чтобы не шуметь в MA20-ряду."""
+    import os
+    key = os.getenv("CMC_API_KEY") or ""
+    if not key:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            key = os.getenv("CMC_API_KEY") or ""
+        except Exception:
+            pass
+    if not key:
+        return None
+    try:
+        def _get(url):
+            req = urllib.request.Request(url, headers={"X-CMC_PRO_API_KEY": key})
+            return json.load(urllib.request.urlopen(req, timeout=15))
+        total = float(_get(_CMC_URL_G)["data"]["quote"]["USD"]["total_market_cap"])
+        qd = _get(_CMC_URL_Q)["data"]["USDT"]
+        usdt = float((qd[0] if isinstance(qd, list) else qd)["quote"]["USD"]["market_cap"])
+        if total <= 0:
+            return None
+        logger.info("[USDTD] CoinGecko недоступен → CMC-фолбэк: %.3f%%", usdt / total * 100)
+        return usdt / total * 100
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[USDTD] CMC fallback error: %s", e)
+        return None
+
+
 def _series(conn: sqlite3.Connection) -> list[tuple[str, float]]:
     """Склеенный дневной ряд: TW-история (норм. offset'ом) + CG-замеры. [(date, value)] по датам."""
     conn.execute("""CREATE TABLE IF NOT EXISTS usdtd_cg (date TEXT PRIMARY KEY, value REAL)""")
@@ -73,8 +108,10 @@ def get_usdtd_risk_off() -> bool | None:
     try:
         conn = sqlite3.connect(_DB)
         try:
-            # live-замер → upsert на сегодня
+            # live-замер → upsert на сегодня (CG первичен, CMC — фолбэк при недоступности)
             val = _fetch_cg_usdtd()
+            if val is None:
+                val = _fetch_cmc_usdtd()
             if val is not None:
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 conn.execute("""CREATE TABLE IF NOT EXISTS usdtd_cg (date TEXT PRIMARY KEY, value REAL)""")

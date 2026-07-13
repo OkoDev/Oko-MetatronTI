@@ -278,7 +278,11 @@ def get_router(bot) -> Router:
                 await state.clear()
                 return
 
-            await _run_intelligence_analysis(bot, message, target_symbol, display_symbol, user_id)
+            # ПАСПОРТ МОНЕТЫ (11.07): «Комплексный анализ» теперь = карточка из шины Куба
+            # (мгновенно) вместо старого 60-секундного пайплайна с вердиктом «0/100 HOLD».
+            # Старый путь остался в /intelligence (_run_intelligence_analysis) до выпила.
+            from bot.menus.coin_card import send_coin_card
+            await send_coin_card(bot, message, target_symbol)
             await state.clear()
 
         except Exception:

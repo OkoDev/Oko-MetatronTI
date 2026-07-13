@@ -67,7 +67,8 @@ def build_help_text() -> str:
         "/reset — сбросить счётчики\n\n"
 
         "<b>📊 Анализ пары:</b>\n"
-        "/intelligence BTC — комплексный AI-анализ\n"
+        "🔋 <b>Просто напиши тикер</b> (btc, sol, bonk) — паспорт монеты:\n"
+        "   чарт + WT/SMC/Эллиотт/пивоты/OI/магниты/компас из Куба\n"
         "/deep BTC — глубокий разбор (SMC + MTF)\n"
         "/pivots BTC — пивотные уровни\n"
         "/check_pivot BTC — близость к пивотам\n"

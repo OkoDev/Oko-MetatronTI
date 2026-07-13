@@ -52,7 +52,11 @@ def structure_trend(df, k: int = 2, lookback: int | None = None, atr_mult: float
     ⚠️ ТОЧНЫЙ общий слом младший=старший (15m=1h=0.01872) = модель ВЛОЖЕННОСТИ (младший наследует
     значимый слом старшего) — НЕ решается изолированным per-ТФ фракталом, см. [[mtf_nested_zigzag_principle]].
 
-    Возвращает {trend: 'long'/'short'/None, break_level, broken}.
+    Возвращает {trend: 'long'/'short'/None, break_level, extreme, broken, break_ts, extreme_ts,
+    impulse_origin, origin_ts}. break_level = СКОЛЬЗЯЩИЙ CHoCH-уровень (последний H/L перед
+    последним LL/HH — дрейфует, для детекта флипа). impulse_origin = Strong High/Low: экстремум,
+    чей пробой дал флип; НЕ дрейфует. НОГА для OTE-целей = origin→extreme (НЕ break→extreme —
+    Егор 07.07, ETH: нога 2464→1504, а не 2157→1504).
     """
     try:
         if lookback is None:
@@ -101,7 +105,12 @@ def structure_trend(df, k: int = 2, lookback: int | None = None, atr_mult: float
                 return (tt, pp)
         return None
     # break_pt/extreme_pt = (time, price) для точной отрисовки ноги на РОДНОМ ТФ (не по цене!)
+    # impulse_origin (07.07, Егор «нога ОТЕ = вершина ВСЕГО импульса», ETH-кейс 2464 vs 2157):
+    # Strong High/Low — экстремум, чей пробой дал ФЛИП (CHoCH). Фиксируется в момент флипа
+    # и НЕ дрейфует при новых LL/HH (break_level дрейфует — он CHoCH-уровень инвалидации,
+    # а origin = начало ноги для OTE-целей). ETH 1d: origin=2464 (17.04), break=2157 (21.05).
     trend = None; break_level = None; break_ts = None
+    origin = None; origin_ts = None
     struct_low = None; struct_high = None; ext_ts = None
     for i, (t, p, kind) in enumerate(col):
         if kind == "L":
@@ -110,16 +119,18 @@ def structure_trend(df, k: int = 2, lookback: int | None = None, atr_mult: float
                     trend = "short"
                     hb = _last("H", i)
                     if hb: break_ts, break_level = hb
+                    if hb: origin_ts, origin = hb                      # вершина импульса (Strong High)
                     struct_low = p; ext_ts = t; struct_high = None
             elif trend == "short":
                 if struct_low is None or p < struct_low:               # новый СТРУКТУРНЫЙ LL
                     hb = _last("H", i)
-                    if hb: break_ts, break_level = hb
+                    if hb: break_ts, break_level = hb                  # слом дрейфует; origin — НЕТ
                     struct_low = p; ext_ts = t
             else:                                                       # инициализация short
                 if struct_low is not None and p < struct_low:
                     hb = _last("H", i)
                     if hb: trend = "short"; break_ts, break_level = hb; ext_ts = t
+                    if hb: origin_ts, origin = hb
                 if struct_low is None or p < struct_low:
                     struct_low = p; ext_ts = t if trend == "short" else ext_ts
         else:
@@ -128,6 +139,7 @@ def structure_trend(df, k: int = 2, lookback: int | None = None, atr_mult: float
                     trend = "long"
                     lb = _last("L", i)
                     if lb: break_ts, break_level = lb
+                    if lb: origin_ts, origin = lb                      # дно импульса (Strong Low)
                     struct_high = p; ext_ts = t; struct_low = None
             elif trend == "long":
                 if struct_high is None or p > struct_high:             # новый СТРУКТУРНЫЙ HH
@@ -138,6 +150,7 @@ def structure_trend(df, k: int = 2, lookback: int | None = None, atr_mult: float
                 if struct_high is not None and p > struct_high:
                     lb = _last("L", i)
                     if lb: trend = "long"; break_ts, break_level = lb; ext_ts = t
+                    if lb: origin_ts, origin = lb
                 if struct_high is None or p > struct_high:
                     struct_high = p; ext_ts = t if trend == "long" else ext_ts
     close = float(df["close"].values[-1])
@@ -146,7 +159,8 @@ def structure_trend(df, k: int = 2, lookback: int | None = None, atr_mult: float
     # экстремум ноги = второй конец импульса (для OTE): short→LL, long→HH.
     extreme = struct_low if trend == "short" else (struct_high if trend == "long" else None)
     return {"trend": trend, "break_level": break_level, "extreme": extreme, "broken": broken,
-            "break_ts": break_ts, "extreme_ts": ext_ts}
+            "break_ts": break_ts, "extreme_ts": ext_ts,
+            "impulse_origin": origin, "origin_ts": origin_ts}
 
 # порядок старший→младший (вес контекста убывает)
 TF_ORDER = ["1d", "4h", "1h", "15m", "5m"]

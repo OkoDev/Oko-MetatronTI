@@ -27,7 +27,7 @@ import pandas as pd
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
 from core.smc.method_egor import detect_method_egor
-from core.smc.ote_matrix import structure_trend
+from core.smc.ote_matrix import structure_trend, _atr
 
 # те же ликвидные, что радар (крауд-контекст в radar_state есть только для них)
 from oi_fast_poller import CORE  # noqa: E402
@@ -131,9 +131,21 @@ def scan_one(sym: str, test: bool = False) -> str | None:
     d4 = _klines(sym, HTF, HTF_LIMIT)
     if d1 is None or d4 is None or len(d1) < 300 or len(d4) < 80:
         return None
-    st = structure_trend(d4.tail(400))
-    ms = detect_method_egor(d1, htf_trend=st.get("trend"), htf_break=st.get("break_level"),
-                            htf_extreme=st.get("extreme"), edge=EDGE, fresh_bars=2)
+    t4 = d4.tail(400)
+    st = structure_trend(t4)
+    # гейты аудита 06.07 (LINK микро-нога): ATR(4h) для мин-масштаба ноги + возраст экстремума
+    # в 4h-барах (LL/HH только что = слом в моменте, не разворачивать против)
+    ext_age = None
+    if st.get("extreme_ts") is not None:
+        try:
+            ext_age = int((t4.index[-1] - st["extreme_ts"]) / pd.Timedelta(HTF))
+        except Exception:
+            pass
+    # НОГА = impulse_origin→extreme (07.07, Егор: вершина ВСЕГО импульса, не дрейфующий слом)
+    ms = detect_method_egor(d1, htf_trend=st.get("trend"),
+                            htf_break=st.get("impulse_origin") or st.get("break_level"),
+                            htf_extreme=st.get("extreme"), edge=EDGE, fresh_bars=2,
+                            htf_atr=_atr(t4), htf_extreme_age_bars=ext_age)
     if not ms:
         return "нет свежего сетапа" if test else None
     m = ms[0]
@@ -157,7 +169,7 @@ def scan_one(sym: str, test: bool = False) -> str | None:
     if not _cooldown_ok(f"method_shadow:{sym}", COOLDOWN_SEC):
         return None
     _log_shadow(sym, m, crowd, "confirm" if confirms else "against")
-    send_tg(msg)
+    send_tg(msg, channel="action")
     return f"SHADOW {sym} {m['direction']} fuel={'✅' if confirms else '⚠️'}"
 
 

@@ -80,17 +80,24 @@ class SMCSubCube:
 
         # Публикация в Bus (те же события — обратная совместимость)
         if ctx_bus is not None:
-            try:
-                from core.context.pair_context import SphereEvent
-                ctx_bus.publish(symbol, SphereEvent.SMC_SNAP_UPDATED, snap)
-                if verdict:
-                    ctx_bus.publish(symbol, SphereEvent.SMC_VERDICT, {
-                        "label": verdict, "confidence": 0.5,
-                    })
-            except Exception as e:
-                logger.debug("[SMCSubCube] %s bus publish error: %s", symbol, e)
+            self.publish_snap(symbol, snap, ctx_bus)
 
         return snap
+
+    def publish_snap(self, symbol: str, snap: Dict[str, Any], ctx_bus: Any) -> None:
+        """Публикация готового snap в Bus — отдельно от расчёта (BOT-LOOP-OFFLOAD 11.07:
+        scan_loop считает snap в to_thread с ctx_bus=None, публикует этим методом из
+        event loop — подписчики шины не thread-safe)."""
+        try:
+            from core.context.pair_context import SphereEvent
+            ctx_bus.publish(symbol, SphereEvent.SMC_SNAP_UPDATED, snap)
+            verdict = snap.get("smc_verdict")
+            if verdict:
+                ctx_bus.publish(symbol, SphereEvent.SMC_VERDICT, {
+                    "label": verdict, "confidence": 0.5,
+                })
+        except Exception as e:
+            logger.debug("[SMCSubCube] %s bus publish error: %s", symbol, e)
 
 
 # Singleton (как PivotCalculatorFixed) — переиспользуем между парами

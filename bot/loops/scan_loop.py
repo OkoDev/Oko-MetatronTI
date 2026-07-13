@@ -939,6 +939,20 @@ async def _execute_atr_change_signal(
                             _s2_setup = None
                 except Exception:
                     pass                              # тикер недоступен → торгуем без гейта
+            # КАП ПОЗИЦИЙ (08.07 СПРИНТ, VST-включение): в risk-off флипы валят пачками
+            # (shadow: 166 сетапов/5д) — не собрать 20 коррелированных SHORT разом. Fail-closed.
+            if _s2_setup is not None:
+                try:
+                    _s2_max = int(bot.config.get("signal_quality.atr_s2_max_positions", 5))
+                    with __import__("sqlite3").connect(bot.trade_simulator.db_path, timeout=5) as _s2c:
+                        _s2_open = _s2c.execute(
+                            "SELECT COUNT(*) FROM simulated_trades WHERE status IN ('OPEN','PENDING_ENTRY') "
+                            "AND features_json LIKE '%\"trade_mode\": \"atr_s2\"%'").fetchone()[0]
+                    if _s2_open >= _s2_max:
+                        logger.info("[ATR-S2] %s SKIP: max_positions %d/%d", symbol, _s2_open, _s2_max)
+                        _s2_setup = None
+                except Exception:
+                    _s2_setup = None                  # БД недоступна → fail-closed (не открываем)
 
         if side == "LONG":
             sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
@@ -1120,8 +1134,11 @@ async def _execute_atr_change_signal(
         # Router обходит DEV-155 (min_strength_register=60 блок) — strength_threshold SOFT.
         # Откат: config.yaml → signal_router.enabled=false.
         if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
+            # 08.07 СПРИНТ: atr_s2 сетап → СВОЯ policy (VST, MARKET) — atr_change policy
+            # exchange_enabled:false и утащила бы валидированный эдж в SIM-only.
             _sr_result = await bot.trade_router.submit(
-                rec, source="atr_change", extra_features=extra,
+                rec, source=("atr_s2" if _s2_setup is not None else "atr_change"),
+                extra_features=extra,
             )
             trade_id = _sr_result.trade_id
             if trade_id:
@@ -1131,6 +1148,25 @@ async def _execute_atr_change_signal(
                     len(_sr_result.soft_penalties),
                     _sr_result.exchange_order_id or "none", sl_source,
                 )
+                # LIMIT v1.1 (08.07 спринт): atr_s2 LIMIT поставлен, fill не подтверждён →
+                # PENDING_ENTRY (reuse лайфцикла radar_armed_loop: fill→OPEN / TTL→cancel;
+                # его _check_pending расширен на trade_mode atr_s2). MARKET-вход не трогаем.
+                if _s2_setup is not None and getattr(_sr_result, "exchange_order_id", None):
+                    try:
+                        from bot.loops.radar_armed_loop import _mark_pending
+                        if _mark_pending(bot.trade_simulator.db_path, trade_id):
+                            logger.info("[ATR-S2] #%d → PENDING_ENTRY (LIMIT ждёт fill)", trade_id)
+                            # лимитка ПОСТАВЛЕНА (не вход!) — fill-уведомление даст pending-чекер
+                            try:
+                                from oko_feed.alerts import send_tg as _stg_s2
+                                _stg_s2(f"⏳ <b>ЛИМИТКА #{trade_id}</b> 🔴 <code>{symbol.split('/')[0]}</code> "
+                                        f"SHORT @ <code>{entry:.6g}</code> (atr_S2: risk-off сетап)\n"
+                                        f"SL <code>{sl:.6g}</code> · TP S2 <code>{tp:.6g}</code> · TTL 45м\n\n"
+                                        f"#PENDING #{symbol.split('/')[0]}", channel="action")
+                            except Exception:
+                                pass
+                    except Exception as _pe_s2:
+                        logger.warning("[ATR-S2] mark_pending #%d: %s", trade_id, _pe_s2)
             else:
                 _hd_names = ",".join(g for g, _ in _sr_result.hard_drops) or "none"
                 logger.info(
@@ -1321,6 +1357,78 @@ async def _execute_sideways_signal(bot, rec) -> None:
         logger.warning("[sideways] _execute_sideways_signal: %s", _e)
 
 
+def _prep_pair_cpu(df_entry, df_1h, df_3m, df_4h, df_1d, etf: str,
+                   atr_p: int, factor: float, use_v2: bool):
+    """BOT-LOOP-OFFLOAD (11.07): весь чистый CPU-прегрев пары ОДНИМ куском для to_thread —
+    WT+ATRTrend по TF (ARCH-18), Elliott n_down/n_up (DEV-226), market regime (DEV-108) +
+    rev_mode, WT-snap (ARCH-117). Раньше это крутилось в event loop на каждой из ~520 пар →
+    TG-кнопки отвечали 25-85 СЕКУНД (очередь за сканом). Никаких publish/шины здесь — только
+    расчёты; публикация остаётся в scan_one (подписчики шины не thread-safe)."""
+    from core.indicators.indicators import (calculate_wt as _calc_wt,
+                                            calculate_trend as _calc_trend,
+                                            find_swing_highs, find_swing_lows,
+                                            calculate_n_down, calculate_n_up)
+    from core.indicators.market_regime import MarketRegimeClassifier
+    from core.intelligence.wt_service import build_wt_snap
+
+    df_entry = _calc_trend(_calc_wt(df_entry), atr_period=atr_p, factor=factor)
+    if df_1h is not None and not df_1h.empty:
+        df_1h = _calc_trend(_calc_wt(df_1h), atr_period=atr_p, factor=factor)
+    if df_3m is not None and not df_3m.empty:
+        df_3m = _calc_trend(_calc_wt(df_3m), atr_period=atr_p, factor=factor)
+    if df_4h is not None and not df_4h.empty:
+        df_4h = _calc_trend(_calc_wt(df_4h), atr_period=atr_p, factor=factor)
+    if df_1d is not None and not df_1d.empty:
+        df_1d = _calc_trend(_calc_wt(df_1d), atr_period=atr_p, factor=factor)
+
+    # DEV-226: Elliott n_down/n_up на всех TF
+    elliott = None
+    try:
+        def _calc_elliott(df_, period=5):
+            if df_ is None or len(df_) < period * 2 + 2:
+                return 0, 0
+            sh = find_swing_highs(df_["high"], period=period)
+            sl = find_swing_lows(df_["low"], period=period)
+            return calculate_n_down(sh), calculate_n_up(sl)
+
+        _nd_4h, _nu_4h = _calc_elliott(df_4h) if (df_4h is not None and not df_4h.empty) else (0, 0)
+        _nd_1h, _nu_1h = _calc_elliott(df_1h) if (df_1h is not None and not df_1h.empty) else (0, 0)
+        _nd_ltf, _nu_ltf = _calc_elliott(df_entry, period=3)   # LTF — меньший period для 15m
+        elliott = {
+            "elliott_n_down":     _nd_4h,   # HTF (4h) — основной
+            "elliott_n_up":       _nu_4h,
+            "elliott_n_down_1h":  _nd_1h,   # MTF (1h)
+            "elliott_n_up_1h":    _nu_1h,
+            "elliott_n_down_ltf": _nd_ltf,  # LTF (15m/entry)
+            "elliott_n_up_ltf":   _nu_ltf,
+            "htf_tf": "4h" if (df_4h is not None and not df_4h.empty) else "1h",
+        }
+    except Exception as _ell_e:
+        logger.debug("[Elliott] prep n_down/n_up error: %s", _ell_e)
+
+    # DEV-108 / REGIME-V2: режим пары + rev_mode (Сфера 6) — один раз
+    pair_regime, rev_mode = "", None
+    try:
+        _mrc = MarketRegimeClassifier()
+        if use_v2:
+            pair_regime = _mrc.classify_v2(df_entry, df_1h, df_4h) or ""
+        else:
+            pair_regime = _mrc.classify_from_dataframes(df_entry, df_1h) or ""
+        if df_4h is not None:
+            rev_mode = _mrc.classify_mode(df_entry, df_1h, df_4h)
+    except Exception:
+        pass
+
+    # ARCH-117: WT snap (расчёт; publish — в scan_one)
+    wt_snap = None
+    try:
+        wt_snap = build_wt_snap([(etf, df_entry), ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)])
+    except Exception as _wt_e:
+        logger.debug("[ARCH-117] prep wt_snap error: %s", _wt_e)
+
+    return df_entry, df_1h, df_3m, df_4h, df_1d, elliott, pair_regime, rev_mode, wt_snap
+
+
 async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     """Один проход по всем парам: для каждой пары все проверки подряд,
     затем broadcast СНАРУЖИ семафора — analyze_symbol не блокирует OHLCV-слоты."""
@@ -1402,73 +1510,20 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 if df_entry is None or df_entry.empty:
                     return
 
-                # ARCH-18: pre-compute индикаторы один раз на все основные TF.
-                # Детекторы проверяют наличие колонок и пропускают пересчёт.
-                from core.indicators.indicators import calculate_wt as _calc_wt, calculate_trend as _calc_trend
+                # BOT-LOOP-OFFLOAD (11.07): весь CPU-прегрев (ARCH-18 WT/ATRTrend, DEV-226
+                # Elliott, DEV-108 regime, ARCH-117 WT-snap) — ОДНИМ to_thread, event loop
+                # свободен для TG-хендлеров (было 25-85с очереди). Publish ниже — в лупе.
                 from core.infra.config_loader import config as _cfg_scan
                 _scan_atr_p = int(_cfg_scan.get("analysis.indicators.trend.atr_period", 43))
                 _scan_factor = float(_cfg_scan.get("analysis.indicators.trend.factor", 1.0))
-                df_entry = _calc_wt(df_entry)
-                df_entry = _calc_trend(df_entry, atr_period=_scan_atr_p, factor=_scan_factor)
-                if df_1h is not None and not df_1h.empty:
-                    df_1h = _calc_wt(df_1h)
-                    df_1h = _calc_trend(df_1h, atr_period=_scan_atr_p, factor=_scan_factor)
-                if df_3m is not None and not df_3m.empty:
-                    df_3m = _calc_wt(df_3m)
-                    df_3m = _calc_trend(df_3m, atr_period=_scan_atr_p, factor=_scan_factor)
-                if df_4h is not None and not df_4h.empty:
-                    df_4h = _calc_wt(df_4h)
-                    df_4h = _calc_trend(df_4h, atr_period=_scan_atr_p, factor=_scan_factor)
-                if df_1d is not None and not df_1d.empty:
-                    df_1d = _calc_wt(df_1d)
-                    df_1d = _calc_trend(df_1d, atr_period=_scan_atr_p, factor=_scan_factor)
-
-                # DEV-226: Elliott n_down/n_up на всех TF (HTF/MTF/LTF)
-                # n_down=2-3 → Волна 3 SHORT оптимальна; n_down=4+ → STOP SHORT
-                try:
-                    from core.indicators.indicators import find_swing_highs, find_swing_lows, calculate_n_down, calculate_n_up
-
-                    def _calc_elliott(df_, period=5):
-                        if df_ is None or len(df_) < period * 2 + 2:
-                            return 0, 0
-                        sh = find_swing_highs(df_["high"], period=period)
-                        sl = find_swing_lows(df_["low"], period=period)
-                        return calculate_n_down(sh), calculate_n_up(sl)
-
-                    _nd_4h, _nu_4h = _calc_elliott(df_4h) if (df_4h is not None and not df_4h.empty) else (0, 0)
-                    _nd_1h, _nu_1h = _calc_elliott(df_1h) if (df_1h is not None and not df_1h.empty) else (0, 0)
-                    _nd_ltf, _nu_ltf = _calc_elliott(df_entry, period=3)  # LTF — меньший period для 15m
-
+                (df_entry, df_1h, df_3m, df_4h, df_1d, _elliott_data, _pair_regime,
+                 _rev_mode, _wt_snap_data) = await asyncio.to_thread(
+                    _prep_pair_cpu, df_entry, df_1h, df_3m, df_4h, df_1d, _etf,
+                    _scan_atr_p, _scan_factor, bool(bot.config.get("market_regime.use_v2", False)))
+                if _elliott_data is not None:
                     if not hasattr(bot, "_elliott_snap"):
                         bot._elliott_snap = {}
-                    bot._elliott_snap[sym] = {
-                        "elliott_n_down":     _nd_4h,   # HTF (4h) — основной
-                        "elliott_n_up":       _nu_4h,
-                        "elliott_n_down_1h":  _nd_1h,   # MTF (1h)
-                        "elliott_n_up_1h":    _nu_1h,
-                        "elliott_n_down_ltf": _nd_ltf,  # LTF (15m/entry)
-                        "elliott_n_up_ltf":   _nu_ltf,
-                        "htf_tf": "4h" if (df_4h is not None and not df_4h.empty) else "1h",
-                    }
-                except Exception as _ell_e:
-                    logger.debug("[Elliott] %s n_down/n_up error: %s", sym, _ell_e)
-
-                # DEV-108: вычисляем market_regime один раз для всего скана пары
-                # Используется в WT/confluence детекторах для dynamic_os в RANGE
-                # REGIME-V2 Этап 2 (D-10): use_v2 переключает ИСТОЧНИК Bus-режима:
-                #   use_v2=true  → classify_v2 (HTF-доминанта, эталон; нужен 4h)
-                #   use_v2=false → classify_from_dataframes (v1, текущее поведение)
-                _pair_regime = ""
-                try:
-                    from core.indicators.market_regime import MarketRegimeClassifier
-                    _mrc_pub = MarketRegimeClassifier()
-                    if bool(bot.config.get("market_regime.use_v2", False)):
-                        # df_4h уже собран в этом скане (используется ниже для classify_mode)
-                        _pair_regime = _mrc_pub.classify_v2(df_entry, df_1h, df_4h) or ""
-                    else:
-                        _pair_regime = _mrc_pub.classify_from_dataframes(df_entry, df_1h) or ""
-                except Exception:
-                    pass
+                    bot._elliott_snap[sym] = _elliott_data
 
                 # ═══ КУБ МЕТАТРОНА: публикуем снапы всех сфер в PairContextBus ═══
                 _bus = getattr(bot, "pair_context", None)
@@ -1487,14 +1542,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         "tf": _etf, "rows": len(df_entry), "close": _last_close,
                     })
 
-                    # Сфера 6: Market Regime → bus
+                    # Сфера 6: Market Regime → bus (regime/rev_mode посчитаны в _prep_pair_cpu)
                     if _pair_regime:
-                        _rev_mode = None
-                        try:
-                            _mrc = MarketRegimeClassifier()
-                            _rev_mode = _mrc.classify_mode(df_entry, df_1h, df_4h) if df_4h is not None else None
-                        except Exception:
-                            pass
                         _sw_threshold = int((bot.config.get("sideways_mode") or {}).get("min_sideways_bars", 3))
                         _bus.publish(sym, SphereEvent.REGIME_UPDATED, {
                             "regime": _pair_regime,
@@ -1530,13 +1579,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             except Exception as _sw_e:
                                 logger.debug("[sideways] %s: ошибка: %s", sym, _sw_e)
 
-                    # Сфера 3/15 (ARCH-117): WT snap → bus через WTService.
+                    # Сфера 3/15 (ARCH-117): WT snap → bus (расчёт был в _prep_pair_cpu).
                     # Единый источник: zone(±60), wt_cross(сырой, обр.совместимость),
                     # cross_in_zone(строгий — wt1 был в OS/OB ДО кросса).
-                    from core.intelligence.wt_service import build_wt_snap
-                    _wt_snap_data = build_wt_snap(
-                        [(_etf, df_entry), ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)]
-                    )
                     if _wt_snap_data:
                         _bus.publish(sym, SphereEvent.WT_SNAP_UPDATED, _wt_snap_data)
 
@@ -1569,10 +1614,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         # NotificationDispatcher подписан на SMC_SNAP_UPDATED через bus,
                         # берёт цену из snap. scan_loop НЕ знает о потребителях.
                         _cp_snap = float(df_entry.iloc[-1]["close"]) if (df_entry is not None and not df_entry.empty) else None
-                        _smc_snap = get_smc_sub_cube().compute_and_publish(
-                            sym, _smc_ohlcv, ctx_bus=_bus, df_1h=df_1h, df_4h=df_4h,
-                            current_price=_cp_snap,
+                        # BOT-LOOP-OFFLOAD: расчёт snap (самый жирный CPU скана) — в поток
+                        # (ctx_bus=None → только compute); publish — здесь, из event loop.
+                        _smc_cube = get_smc_sub_cube()
+                        _smc_snap = await asyncio.to_thread(
+                            _smc_cube.compute_and_publish, sym, _smc_ohlcv,
+                            ctx_bus=None, df_1h=df_1h, df_4h=df_4h, current_price=_cp_snap,
                         )
+                        if _smc_snap:
+                            _smc_cube.publish_snap(sym, _smc_snap, _bus)
                         if _smc_snap:
                             # Кешируем для SMC BOS/CHoCH EventBus (ниже по коду)
                             if not hasattr(bot, "_last_smc_snap"):

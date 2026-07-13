@@ -167,9 +167,24 @@ async def _scan_one(bot, symbol, detect_method_egor, structure_trend,
             _df.index = pd.to_datetime(_df["time"], unit="ms", utc=True, errors="coerce")
 
     def _detect():
-        st = structure_trend(df_4h.tail(400))
-        return detect_method_egor(df_15m, htf_trend=st.get("trend"), htf_break=st.get("break_level"),
-                                  htf_extreme=st.get("extreme"), edge=edge, fresh_bars=fresh_bars)
+        t4 = df_4h.tail(400)
+        st = structure_trend(t4)
+        # гейты аудита 06.07 (LINK: «большой 4h» = микро-нога 4.3%, RR1<1 у 4/6 shadow):
+        # ATR(4h) → мин-масштаб ноги; возраст экстремума в 4h-барах → не против свежего слома.
+        # RR-гейт и SL-буфер активны в ядре по дефолту.
+        from core.smc.ote_matrix import _atr
+        ext_age = None
+        if st.get("extreme_ts") is not None:
+            try:
+                ext_age = int((t4.index[-1] - st["extreme_ts"]) / pd.Timedelta("4h"))
+            except Exception:
+                pass
+        # НОГА = impulse_origin→extreme (07.07, Егор: «вершина ВСЕГО импульса», ETH 2464 vs
+        # дрейфующий слом 2157). Фолбэк на break_level — origin пуст только на init-старте истории.
+        return detect_method_egor(df_15m, htf_trend=st.get("trend"),
+                                  htf_break=st.get("impulse_origin") or st.get("break_level"),
+                                  htf_extreme=st.get("extreme"), edge=edge, fresh_bars=fresh_bars,
+                                  htf_atr=_atr(t4), htf_extreme_age_bars=ext_age)
 
     setups = await asyncio.get_running_loop().run_in_executor(None, _detect)
     if not setups:

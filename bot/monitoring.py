@@ -1294,6 +1294,10 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                     break
             if conf_factors:
                 extra["confluence_factors"] = conf_factors
+                # СКЛЕЙКА→ФЛАГИ (12.07, Егор «всё в прозрачную структуру для обучения»): список
+                # факторов невидим плоскому майнингу → дискретные булевы conf_f_<фактор>. Не гейт.
+                for _cf in conf_factors:
+                    extra["conf_f_" + str(_cf).lower()] = 1
             # ARCH-28: FVG+Pivot confluence зоны в features_json
             _fvg_zones = (recommendation.metadata or {}).get("fvg_confluences")
             if _fvg_zones:

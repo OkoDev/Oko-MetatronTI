@@ -53,26 +53,53 @@ except Exception:
 _LOCK_FILE = os.path.join(os.path.dirname(__file__) or ".", "bot_instance.lock")
 
 
-def _acquire_single_instance_lock(lock_path: str = _LOCK_FILE) -> bool:
+def _lock_owner_alive(lock_path: str) -> bool:
+    """PID из lock-файла жив И это python-процесс. После BSOD/kill atexit не срабатывает —
+    lock сиротеет, и автозапуск упирался в мёртвый файл (Егор удалял руками, 08.07)."""
+    import subprocess
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
-
-        def _cleanup():
-            try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-            except Exception:
-                pass
-
-        atexit.register(_cleanup)
-        return True
-    except FileExistsError:
-        return False
+        pid = int(open(lock_path, encoding="utf-8").read().strip() or 0)
     except Exception:
-        logging.warning("Не удалось создать lock-файл. Продолжаю без блокировки.")
-        return True
+        return False                                  # пустой/битый lock = сирота
+    if pid <= 0:
+        return False
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return "python" in (out or "").lower()        # жив и питон → настоящий бот
+    except Exception:
+        return True                                   # проверить не смогли → lock не забираем
+
+
+def _acquire_single_instance_lock(lock_path: str = _LOCK_FILE) -> bool:
+    for attempt in (1, 2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+
+            def _cleanup():
+                try:
+                    if os.path.exists(lock_path):
+                        os.remove(lock_path)
+                except Exception:
+                    pass
+
+            atexit.register(_cleanup)
+            return True
+        except FileExistsError:
+            if attempt == 1 and not _lock_owner_alive(lock_path):
+                logging.warning("Lock-файл ОСИРОТЕЛ (владелец мёртв — BSOD/kill?) — забираю и стартую.")
+                try:
+                    os.remove(lock_path)
+                    continue                          # второй заход возьмёт lock
+                except Exception:
+                    pass
+            return False
+        except Exception:
+            logging.warning("Не удалось создать lock-файл. Продолжаю без блокировки.")
+            return True
+    return False
 
 
 # ==============================

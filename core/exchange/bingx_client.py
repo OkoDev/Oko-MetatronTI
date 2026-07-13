@@ -604,6 +604,17 @@ class BingXClient:
         resp = await self.get("/openApi/swap/v2/trade/openOrders", params or None)
         return resp.get("data", {}).get("orders", []) or []
 
+    async def get_order(self, symbol: str, order_id: str) -> dict:
+        """Ордер по orderId. КЛЮЧЕВОЕ (11.07, BONK #45327): для сработавшего условного ордера
+        (TAKE_PROFIT_MARKET/STOP) BingX возвращает НОВЫЙ исполненный ордер (новый orderId,
+        status=FILLED) по СТАРОМУ oid — самый надёжный детект исполнения. Пустой dict при ошибке."""
+        resp = await self.get("/openApi/swap/v2/trade/order", {
+            "symbol": to_bingx_symbol(symbol), "orderId": str(order_id),
+        })
+        if resp.get("code") != 0:
+            return {}
+        return resp.get("data", {}).get("order", {}) or {}
+
     async def get_filled_orders(self, symbol: str, limit: int = 50) -> list:
         """Возвращает последние исполненные ордера по символу.
         Используется в position_sync для определения реального exit price и статуса (SL/TP).

@@ -6,6 +6,10 @@
 Или ключ в config.yaml: the_graph: { api_key: "..." }
 """
 import sys, time, logging
+try:
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)   # cp1251 роняла «→» в print (08.07,
+except Exception:                                                    # 4 дня err-цикла; паттерн oi_fast)
+    pass
 sys.path.insert(0, ".")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 from core.signals.thegraph_client import poll_uniswap_events

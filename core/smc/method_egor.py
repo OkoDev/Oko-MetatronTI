@@ -52,14 +52,36 @@ def detect_method_egor(
     depth: int = 11,
     fresh_bars: int = 1,
     only_choch: bool = True,
+    htf_atr: Optional[float] = None,
+    min_big_atr: float = 6.0,
+    min_rr1: float = 1.0,
+    sl_buffer_pct: float = 0.2,
+    htf_extreme_age_bars: Optional[int] = None,
+    min_extreme_age_bars: int = 3,
 ) -> List[dict]:
     """Свежий сетап метода Егора на конце df_ltf (или пусто).
 
     df_ltf — младший ТФ (1h), последний бар = «сейчас». htf_* — сторона из structure_trend(4h).
     entry_price — цена входа (по умолч. close последнего бара df_ltf). Возвращает список dict:
       {direction, entry_ts, entry, sl, targets, confluence, pos, htf_trend}.
+
+    Гейты аудита 06.07 (LINK: «большой 4h» = вчерашняя микро-нога 4.3%, RR1=0.65; 4/6 shadow
+    сигналов RR1<1, ATOM 0.03):
+      (а) htf_atr+min_big_atr: |big| >= min_big_atr*ATR(HTF) — микро-нога не «большой импульс».
+          Активен только если htf_atr передан (старые бэктесты не ломаются).
+      (б) min_rr1: dist(TP1) >= min_rr1*risk — цель не меньше стопа (ядро метода = асимметрия).
+      (в) sl_buffer_pct: SL отодвигается от точки 1.0 импульса — стоп ЗА структуру, не НА линию
+          (ЗАКОН свит-ликвидности; движок ote_retest кладёт голую 1.0, докстринг врёт про буфер).
+      (г) htf_extreme_age_bars+min_extreme_age_bars: экстремум HTF свежее N баров = слом ещё
+          в моменте, разворот преждевременен. Активен только если возраст передан.
     """
     if htf_trend is None or htf_break is None or htf_extreme is None:
+        return []
+    # (а) масштаб ноги: микро-откат не может быть «большим импульсом» метода
+    if htf_atr is not None and htf_atr > 0 and abs(htf_extreme - htf_break) < min_big_atr * htf_atr:
+        return []
+    # (г) свежесть экстремума: LL/HH поставлен только что = momentum ещё живой, не лезть против
+    if htf_extreme_age_bars is not None and htf_extreme_age_bars < min_extreme_age_bars:
         return []
     setups = ote_retest_setups(df_ltf, provisional=True, only_choch=only_choch, depth=depth)
     if not setups:
@@ -88,13 +110,19 @@ def detect_method_egor(
     targets = method_targets(htf_trend, htf_break, htf_extreme)
     if targets is None:
         return []
-    sl = s["sl"]                              # локальный тугой стоп из движка (асимметрия)
+    # (в) стоп ЗА структуру: движок отдаёт голую точку 1.0 импульса — отодвигаем на буфер
+    # (стоп ровно на линии = свит ликвидности выбивает touch'ем; LINK 06.07: SL=LL 7.834)
+    sl = s["sl"] * ((1 - sl_buffer_pct / 100) if lng else (1 + sl_buffer_pct / 100))
     # sanity: цена по правильную сторону стопа и целей
     if (entry <= sl) if lng else (entry >= sl):
         return []
     if lng and not all(t > entry for t in targets):
         return []
     if not lng and not all(t < entry for t in targets):
+        return []
+    # (б) асимметрия метода: цель не меньше стопа (иначе «тугой стоп + огромная цель» инвертирован)
+    risk = abs(entry - sl)
+    if risk <= 0 or abs(targets[0] - entry) < min_rr1 * risk:
         return []
     return [{
         "direction": "LONG" if lng else "SHORT",

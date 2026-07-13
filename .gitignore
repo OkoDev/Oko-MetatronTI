@@ -210,3 +210,5 @@ memory/project_timeline.md
 # Log rotation (crypto_bot.log.1, .2, ...)
 # ===============================
 *.log.*
+*.session
+oko_tg.session

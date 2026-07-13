@@ -262,9 +262,15 @@ def make_event_handler(bot, account_tag: str = "acc1"):
                 if order_id and symbol and direction in ("LONG", "SHORT"):
                     dry = not bool(cfg.get("trading.exec_ws.write_exch_id", False))
                     _write_exch_id(bot, symbol, direction, order_id, qty, dry, avg_price)
-            elif o.get("X") == "FILLED":
-                # ЗАКРЫВАЮЩИЙ fill (STOP/TP/LIMIT/MARKET-reduceOnly) → запомнить точный exit_price (ap).
+            elif o.get("X") == "FILLED" and (
+                    o.get("ro", False)
+                    or str(o.get("o", "")).upper() not in ("MARKET", "LIMIT")):
+                # ЗАКРЫВАЮЩИЙ fill (STOP*/TP*/TRAILING* всегда reduce; MARKET/LIMIT — только с ro=true).
                 # Это реальная цена с биржи для sync_close (корень APEX: REST _resolve_exit врал).
+                # 🔴 08.07: БЕЗ ro-фильтра LIMIT-ВХОД radar-сделок писался сюда как «закрывающий» →
+                # exit_price перезаписывался ценой ВХОДА → лоси маскировались под BE +0.00%
+                # (ALGO #43840: REST=0.0854 SL честный → WS-fill=0.0864=entry). До radar-LIMIT эпохи
+                # (03.07) баг спал: все входы были MARKET и уходили в ветку 2a выше.
                 _csym = _ws_to_db_symbol(str(o.get("s", "")))
                 _cdir = str(o.get("ps", "")).upper()
                 _ap = o.get("ap") or o.get("p")
