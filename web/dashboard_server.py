@@ -1511,7 +1511,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                     # +свежесть → приоритет живой sim над zombie (live_orders.sim_trade_id мост сохранён).
                     rows = _conn.execute(
                         f"SELECT lo.symbol, st.direction, st.stop_loss, st.take_profit, "
-                        f"st.tsl_activated, st.tsl_tf, st.regime, st.signal_type, st.max_R_possible "
+                        f"st.tsl_activated, st.tsl_tf, st.regime, st.signal_type, st.max_R_possible, st.created_at "
                         f"FROM live_orders lo "
                         f"JOIN simulated_trades st ON lo.sim_trade_id = st.id "
                         f"WHERE lo.status='OPEN' AND lo.symbol IN ({ph}) "
@@ -1541,6 +1541,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                                 "regime": row["regime"],   # FIX (18.06): реальный regime сделки, не хардкод RANGE на фронте
                                 "signal_type": row["signal_type"],   # FIX (18.06): реальный сигнал, не хардкод "confluence"
                                 "max_r": row["max_R_possible"],       # FIX (18.06): реальный max R, не хардкод 0
+                                "created_at": row["created_at"],      # 14.07 Егор: Age/сорт «новые сверху» на Exchange-виде
                             }
             except Exception as db_e:
                 logger.debug("_handle_live JOIN failed: %s", db_e)
@@ -1557,6 +1558,7 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 pos["regime"] = st.get("regime")   # реальный regime сматченной сделки (None если нет)
                 pos["signal_type"] = st.get("signal_type")   # None если нет sim-матча (ручная позиция)
                 pos["max_r"] = st.get("max_r")
+                pos["created_at"] = st.get("created_at")   # 14.07: время открытия сматченной сделки
 
         result["error"] = _err
 
