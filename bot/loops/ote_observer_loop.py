@@ -331,6 +331,14 @@ async def _register_ote_trade(bot, sig):
     # strength из tier: T1→~85, T2→~73, T3→~61
     strength = max(60, min(95, 55 + int(sig.weight * 30)))
     confidence = max(0.55, min(0.9, 0.55 + sig.weight * 0.3))
+    # 14.07 ВОЗВРАТ В VST (Егор «почему не VST?!»): биржа — ТОЛЬКО премиум-профилю
+    # (ресёрч 13.07: 4h_1h + fvg_held = +0.886%/сд WR66; OB-SHORT уже отрезан генератором).
+    # Механика штатная: непремиум → strength cap 65 < policy.min_strength 70 → router
+    # регистрирует SIM, биржу не открывает. SIM-полигон ничего не теряет.
+    _is_premium = (getattr(sig, "setup_id", "") == "4h_1h_pull"
+                   and "fvg_held" in (sig.confirmations or []))
+    if not _is_premium:
+        strength = min(strength, 65)
 
     # реальный 24h оборот (был хардкод 0.0 → ломал LIQ-GATE эксперимент: нечем split ликвид/неликвид)
     _vol24 = 0.0

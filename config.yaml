@@ -715,8 +715,14 @@ signal_router:
   source_policies:
     atr_change:
       min_strength: 15
-      exchange_enabled: false   # 19.06 ОТКЛЮЧЁН: честный R после fake-R фикса LONG −0.083/SHORT −0.183, net −$74 (комиссии). [[bug_phantom_exit_resolve]]
+      exchange_enabled: true    # ✅ 14.07 В VST-ПЕСОЧНИЦУ (Егор «почему не VST?!»): источник теперь
+                                # генерит ТОЛЬКО рецепт 1h+WT LONG (15m/4h off) — бэктест +0.55%/сд
+                                # 5/5 лет; вход MARKET на закрытии сигнального бара (слиппедж мал,
+                                # не «в воздухе»). Поток редкий (~APEX 1/ночь). Судья = форвард-машина
       trade_mode: atr_change
+      leverage: 10              # умеренно для нового рецепта в песочнице
+      risk_pct: 0.5
+      lev_set_to_max: false
     wt_sideways:
       min_strength: 60
       exchange_enabled: false
@@ -779,12 +785,18 @@ signal_router:
       trade_mode: arch104
       soft_gates_enabled: []
     ote_nested:
-      min_strength: 40
-      exchange_enabled: false  # ⛔ 05.07 ОТКЛЮЧЁН от VST (Егор): льёт по РЕАЛЬНОМУ филлу −0.57%/сд
+      min_strength: 70         # 14.07: биржа ТОЛЬКО премиуму (observer даёт непремиуму strength≤65 →
+                               # SIM-регистрация сохраняется, биржа отсекается штатным router-гейтом)
+      exchange_enabled: true   # ✅ 14.07 ВОЗВРАТ В VST С LIMIT-ВХОДОМ (Егор «почему не VST?!»):
+                               # течь −0.57%/сд была MARKET-входом «в воздухе» (fake-entry маскировал);
+                               # теперь: entry_order_type=LIMIT (вход по цене сетапа или лучше) +
+                               # только премиум-профиль 4h_1h (SC∀+OB-LONG+fvg_held, SIM +0.886%/сд WR66).
+                               # Старое (для истории): 05.07 ОТКЛЮЧЁН — льёт по РЕАЛЬНОМУ филлу −0.57%/сд
                                # (fake-entry маскировал: 66% actual_entry=NULL, БД-метрика/R врали +).
                                # Вход «в воздухе» (не на откате) исполняется хуже сигнала. Замена =
                                # method_egor (вход на откате LIMIT). SIM остаётся (research). ote_nested_live_vst_bleeding
       trade_mode: ote_nested
+      entry_order_type: LIMIT  # 14.07: вход лимиткой по entry сетапа — чинит корень течи (слиппедж входа)
       soft_gates_enabled: []
       leverage: 30             # 21.06 50→30 (рой+диагноз: 50x усиливал течь, прибыли нет = резать нечего; liq ~2%→~3.3%). 19.06 Режим В: ЛОКАЛЬНОЕ плечо ote_nested (не глобальное!)
       risk_pct: 0.5            # 19.06 Режим В: ЛОКАЛЬНЫЙ риск ote_nested
