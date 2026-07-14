@@ -45,6 +45,9 @@ _HOT: dict[str, float] = {}          # base -> последний раз вид�
 _HOT_LAST = [0.0]
 
 
+_TICK24: dict[str, tuple[float, float]] = {}   # base -> (quoteVolume, Δ24ч%) из refresh_hot
+
+
 def _refresh_hot():
     if time.time() - _HOT_LAST[0] < 300:
         return
@@ -78,6 +81,7 @@ def _refresh_hot():
                 chg, qv = float(t["priceChangePercent"]), float(t["quoteVolume"])
             except (KeyError, TypeError, ValueError):
                 continue
+            _TICK24[base] = (qv, chg)   # кэш для гейтов (build_flip и др.)
             if qv >= HOT_MIN_VOL and abs(chg) >= HOT_MIN_CHG:
                 cands.append((abs(chg), base))
         now = time.time()
@@ -933,7 +937,15 @@ def _ambush_conn():
 
 
 def _set_ambush(sym: str) -> None:
-    """BUILD-детект → засада: диапазон набора (16×15m закрытых) + TTL 24ч. Вход НЕ сейчас."""
+    """BUILD-детект → засада: диапазон набора (16×15m закрытых) + TTL 24ч. Вход НЕ сейчас.
+
+    🔴 14.07 FOLKS-гейт (#47774 −4R: SHORT-флип на памповом неликвиде, свеча пролетела SL
+    на 6.3% — STOP_MARKET в пустой стакан): засада только при объёме ≥$10M И |Δ24ч|<15%
+    (на параболе флип = откат пампа, не разрешение набора — этим живёт PUMP-детектор)."""
+    _qv, _chg = _TICK24.get(sym, (0.0, 0.0))
+    if _qv and (_qv < 10e6 or abs(_chg) >= 15.0):
+        print(f"[BUILD-FLIP] 🚫 {sym} без засады: vol=${_qv/1e6:.1f}M Δ24ч={_chg:+.0f}% (FOLKS-гейт)")
+        return
     try:
         k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=15m&limit=17")
         if len(k) < 8:
