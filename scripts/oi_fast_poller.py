@@ -82,7 +82,10 @@ def _refresh_hot():
             except (KeyError, TypeError, ValueError):
                 continue
             _TICK24[base] = (qv, chg)   # кэш для гейтов (build_flip и др.)
-            if qv >= HOT_MIN_VOL and abs(chg) >= HOT_MIN_CHG:
+            # 14.07 (Егор «пары которых нет на BingX не присылать»): IBM-класс (+458% Binance,
+            # на BingX отсутствует) — неторгуемое в hot-list не берём ВООБЩЕ (ни алертов,
+            # ни чартов, ни мониторинга). Пины (hot_pin.txt) не фильтруются — решение юзера.
+            if qv >= HOT_MIN_VOL and abs(chg) >= HOT_MIN_CHG and _on_bingx(base):
                 cands.append((abs(chg), base))
         now = time.time()
         fresh = []
