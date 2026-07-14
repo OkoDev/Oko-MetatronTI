@@ -916,6 +916,90 @@ def _oi_day_delta(sym: str, oi: float) -> float | None:
     return (oi / anchor - 1) * 100 if anchor else None
 
 
+# ═══ BUILD-FLIP (14.07, Егор: «build = пробойная! триггер = смена ATR-тренда?») ═══
+# Ретро 188 живых сетапов (scripts/build_breakout_retro.py): вход в момент BUILD −0.09%/сд ·
+# пробой края −0.63 · ретест −0.20 · ФЛИП ATR-тренда **+0.798%/сд WR54** — единственный плюс.
+# BUILD не входит — ставит ЗАСАДУ (диапазон набора 4ч, TTL 24ч); чекер ловит флип ATR 15m
+# (боевые 43/1.25, ЗАКРЫТАЯ свеча) → сетап build_flip → radar_orders → ARMED торгует.
+_AMBUSH_LAST = [0.0]
+
+
+def _ambush_conn():
+    c = conn()
+    c.execute("""CREATE TABLE IF NOT EXISTS build_ambush(
+        symbol TEXT PRIMARY KEY, ts INTEGER, hi REAL, lo REAL,
+        expire INTEGER, fired INTEGER DEFAULT 0)""")
+    return c
+
+
+def _set_ambush(sym: str) -> None:
+    """BUILD-детект → засада: диапазон набора (16×15m закрытых) + TTL 24ч. Вход НЕ сейчас."""
+    try:
+        k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=15m&limit=17")
+        if len(k) < 8:
+            return
+        hi = max(float(x[2]) for x in k[:-1])
+        lo = min(float(x[3]) for x in k[:-1])
+        if hi <= lo:
+            return
+        now = int(time.time())
+        c = _ambush_conn()
+        c.execute("INSERT OR REPLACE INTO build_ambush VALUES(?,?,?,?,?,0)",
+                  (sym, now, hi, lo, now + 24 * 3600))
+        c.commit()
+        print(f"[BUILD-FLIP] 🪤 засада {sym}: {lo:.6g}–{hi:.6g}, ждём флип ATR (TTL 24ч)")
+    except Exception as _ea:
+        print(f"[BUILD-FLIP] set {sym}: {_ea}")
+
+
+def _check_ambushes() -> None:
+    """Чекер засад (раз в ~3 мин): флип ATR-тренда 15m на ЗАКРЫТОЙ свече → сетап build_flip."""
+    if time.time() - _AMBUSH_LAST[0] < 180:
+        return
+    _AMBUSH_LAST[0] = time.time()
+    try:
+        c = _ambush_conn()
+        now = int(time.time())
+        rows = c.execute("SELECT symbol, hi, lo FROM build_ambush WHERE fired=0 AND expire>?",
+                         (now,)).fetchall()
+        if not rows:
+            return
+        import pandas as pd
+        from core.indicators.indicators import calculate_trend   # ЕДИНЫЙ источник тренда (reuse)
+        for sym, hi, lo in rows:
+            try:
+                k = _get(f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT&interval=15m&limit=130")
+                if len(k) < 60:
+                    continue
+                df = pd.DataFrame([(float(x[1]), float(x[2]), float(x[3]), float(x[4])) for x in k],
+                                  columns=["open", "high", "low", "close"])
+                tr = calculate_trend(df, atr_period=43, factor=1.25)["trend"].values
+                if len(tr) < 4 or tr[-2] == tr[-3]:      # закрытая свеча: [-2] vs [-3]
+                    continue
+                side = "LONG" if tr[-2] == 1 else "SHORT"
+                entry = float(k[-2][4])
+                sl = lo * 0.998 if side == "LONG" else hi * 1.002   # за противокрай НАБОРА (структура)
+                try:
+                    tgs = build_targets(sym, side, entry)
+                except Exception:
+                    tgs = []
+                import json as _j
+                _log_radar_order("build_flip", sym, side, entry, sl,
+                                 _j.dumps(tgs) if tgs else None)
+                c.execute("UPDATE build_ambush SET fired=1 WHERE symbol=?", (sym,))
+                c.commit()
+                dot = "🟢" if side == "LONG" else "🔴"
+                send_tg(f"🪤 <b>BUILD-FLIP:</b>\n\n{dot} <code>{sym}</code> набор разрешился — "
+                        f"флип ATR → {side}\nвход ~{_c(entry)} · стоп {_c(sl)} (за диапазон набора)\n\n"
+                        f"{_links(sym)}\n\n#{sym} #BUILD_FLIP", channel="action")
+                print(f"[BUILD-FLIP] 🔫 {sym} {side} @ {entry:.6g} (диапазон {lo:.6g}–{hi:.6g})")
+            except Exception as _ec:
+                print(f"[BUILD-FLIP] check {sym}: {_ec}")
+            time.sleep(0.1)
+    except Exception as _ee:
+        print(f"[BUILD-FLIP] err: {_ee}")
+
+
 _REV_LAST = [0.0]    # кулдаун алерта разворотного дозора
 _REV_QUIET = [0.0]   # троттл «спокойно»-принта (наблюдаемость без спама)
 
@@ -1174,6 +1258,7 @@ def tick():
                 # BUILD с сетапом (side+SL) → action + стакан; голый BUILD → feed
                 if b_row:
                     b_msg = _with_orderbook(b_msg, sym, px)
+                _set_ambush(sym)   # 🪤 BUILD-FLIP: каждый BUILD ставит засаду (вход = флип ATR)
                 _mid_b = send_tg(_with_chain(b_msg, b_chain), channel=("action" if b_row else "feed"))
                 if _mid_b:
                     if b_row:
@@ -1242,6 +1327,7 @@ def tick():
         time.sleep(0.15)
     _flush_radar_state(state_rows)
     _reversal_watch(state_rows)   # 🐂 дозор бычьего разворота (Егор 13.07)
+    _check_ambushes()             # 🪤 build-flip: флип ATR по засадам (Егор 14.07)
     return alerts
 
 
