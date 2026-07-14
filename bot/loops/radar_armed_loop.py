@@ -833,6 +833,13 @@ async def radar_armed_loop(bot) -> None:
                 if st == "pump" and str(o["grade"] or "").upper() not in pump_grades:
                     _set_status(RADAR_DB, sym_feed, ts, "SKIPPED", f"grade {o['grade']} off")
                     continue
+                # 🔴 14.07 (лоси дня, Егор): pump-разворот ТОЛЬКО после выдоха — ранние ноги
+                # минусят (VST-срез: leg≤2 n=8 −2.77% vs leg≥3 n=11 +14.21%, Δ=1.64%/сд;
+                # LAB leg=1 −3.64 vs AGLD-класс выдох +4). None (старые без фичи) — пропуск.
+                _wl = o.get("wave_leg")
+                if st == "pump" and _wl is not None and int(_wl) < int(cfg.get("pump_min_wave_leg", 3)):
+                    _set_status(RADAR_DB, sym_feed, ts, "SKIPPED", f"wave_leg {_wl} < 3 (рано, разгон)")
+                    continue
                 if _radar_open_count(bot.trade_simulator.db_path) >= max_pos:
                     _set_status(RADAR_DB, sym_feed, ts, "SKIPPED", f"max_positions {max_pos}")
                     continue
