@@ -119,6 +119,13 @@ class PositionStore:
                     entry=f.avg_price or None, position_id=f.position_id, updated_ts=time.time(),
                 )
         else:
+            # 🔴 14.07 ZBT-класс, рубеж №2: exit-стеш ТОЛЬКО для закрывающей стороны
+            # (SELL+LONG | BUY+SHORT). Открывающая сторона (LIMIT-вход радара проскакивал
+            # мимо is_open_fill из-за MARKET-фильтра) НЕ exit — иначе pa=0 позже берёт
+            # «exit=entry rp=0» и замазывает реальный исход.
+            _s, _ps = f.side.upper(), f.pos_side.upper()
+            if not ((_s == "SELL" and _ps == "LONG") or (_s == "BUY" and _ps == "SHORT")):
+                return
             # ЧАСТИЧНОЕ закрытие (radar TP1, консилиум 13.07): fill заметно меньше живой
             # позиции → это НЕ exit всей позиции. Не стешим (иначе pa=0 позже возьмёт цену
             # частички); позицию уменьшит штатный ACCOUNT_UPDATE pa>0. Финальный кусок

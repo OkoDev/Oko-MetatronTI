@@ -116,14 +116,18 @@ class Fill:
 
     @property
     def is_open_fill(self) -> bool:
-        """MARKET FILLED = открытие позиции — различаем по side×pos_side, НЕ по reduceOnly.
+        """MARKET/LIMIT FILLED = открытие позиции — различаем по side×pos_side, НЕ по reduceOnly.
 
         Находка shadow 19.06: хедж-retry close (bingx_client:699-707) СНИМАЕТ reduceOnly при
         109400/101205 → плоский MARKET FILLED ro=false, который ВЫГЛЯДИТ как открытие, но это
         CLOSE. Надёжный различитель в hedge-mode: открытие = BUY+LONG | SELL+SHORT; обратное
         (SELL+LONG | BUY+SHORT) = закрытие, даже если reduceOnly снят.
+        🔴 14.07 (ZBT-класс, 6 сделок/ночь): радар входит LIMIT'ом — 'MARKET'-only фильтр
+        отправлял LIMIT-вход в exit-стеш (exit=entry rp=0 «TP») → замазывал реальные лоси
+        (ZBT: записан 0 вместо −2.2%). Тот же класс, что ALGO 08.07 в старом пути — фикс
+        не был продублирован в сферу (урок reuse ×4).
         """
-        if self.status != "FILLED" or self.order_type != "MARKET" or self.is_reduce_only:
+        if self.status != "FILLED" or self.order_type not in ("MARKET", "LIMIT") or self.is_reduce_only:
             return False
         s, ps = self.side.upper(), self.pos_side.upper()
         return (s == "BUY" and ps == "LONG") or (s == "SELL" and ps == "SHORT")
