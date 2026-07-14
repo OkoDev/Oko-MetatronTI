@@ -1114,6 +1114,9 @@ async def _execute_atr_change_signal(
             "atr_tf": tf,
             "zone": ev.zone,
             "wt1": ev.wt1,
+            # 13.07 рецепт Егора (1h+WT): глубина WT-зоны кросса — фича премиум-срезов
+            # (−75/−80 → +1.19/+2.04%/сд бэктест). 14.07 фикс: доехала не в тот dict
+            **({"wt_os_depth": wt_depth} if wt_depth is not None else {}),
             "signal_mode": (agg_res or {}).get("signal_mode", "momentum"),
             "confirmations": (agg_res or {}).get("confirmations", []),
             "confirmations_no_trigger": not (agg_res or {}).get("has_trigger", False),  # DEV-200
@@ -1841,7 +1844,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _allow_entry = False
                             _wt_depth_feat = None
                             if _atr_tf == '4h':
-                                _allow_entry = True
+                                # ⛔ 14.07: 4h-регистрация ВЫКЛ (бэктест 4г: в лоб −0.505%/сд
+                                # 4/5 лет минус; с WT-гейтом LONG +0.22 нестабильно, SHORT −1.3).
+                                # Задышала после off 15m (dedup освободился) — 39 сделок/ночь шума.
+                                # atr_s2-shadow (лог сетапов выше) НЕ тронут. research_1307_evening_dig
+                                _allow_entry = False
                             elif _atr_tf == '1h':
                                 # 🔬 13.07 РЕЦЕПТ ЕГОРА («переключим на 1h и дадим WT кросс от OB/OS»),
                                 # бэктест 4г scripts/atr1h_wt_backtest.py: 1h флип + WT-кросс из
