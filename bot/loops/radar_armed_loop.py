@@ -808,6 +808,8 @@ async def radar_armed_loop(bot) -> None:
     while True:
         try:
             await asyncio.sleep(poll_sec)
+            # 14.07 hot-reload лимита (Егор «не успеваем»): тюнинг без рестарта
+            max_pos = int(_cfg(bot).get("max_positions", 10))
             # pending-lifecycle: fill→OPEN / TTL→cancel (до чтения новых — освобождает слоты)
             await _check_pending(bot, ttl_sec)
             # авто-БУ по fill TP1 (шаг 6): SL→BE тугим STOP-LIMIT, остаток ведёт TSL
