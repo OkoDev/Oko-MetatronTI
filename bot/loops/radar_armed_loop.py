@@ -24,6 +24,42 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_SEC = 15
 
 
+async def _late_fill_verify_close(bot, tid: int, symbol: str, cli, open_o: dict) -> None:
+    """🔴 SAND-класс (#47688, 14.07): LIMIT зафиллился, а позиция уже закрылась МЕЖДУ циклами.
+    При CUTOVER position_sync close-by-price выключен — резолвим сами: позиция флэт →
+    закрывающий fill того же positionID (REST-якорь) → боевой close_trade."""
+    import asyncio as _aio
+    try:
+        await _aio.sleep(2)
+        pid = str(open_o.get("positionID") or open_o.get("positionId") or "")
+        base = symbol.split("/")[0]
+        try:
+            for p in (await cli.get_positions() or []):
+                if base in str(p.get("symbol", "")) and abs(float(p.get("positionAmt") or 0)) > 0:
+                    return   # позиция жива — штатно поведёт сфера
+        except Exception:
+            return           # не смогли проверить — не гадаем
+        fills = await cli.get_filled_orders(symbol, limit=30)
+        cand = [o for o in (fills or [])
+                if str(o.get("positionID") or o.get("positionId") or "") == pid
+                and str(o.get("orderId")) != str(open_o.get("orderId"))]
+        if not cand or not pid:
+            return
+        o = max(cand, key=lambda x: int(x.get("updateTime") or 0))
+        ap = float(o.get("avgPrice") or 0)
+        if ap <= 0:
+            return
+        typ = str(o.get("type", "")).upper()
+        st = {"STOP": "SL", "STOP_MARKET": "SL", "TAKE_PROFIT": "TP",
+              "TAKE_PROFIT_MARKET": "TP", "TRAILING_STOP_MARKET": "TSL"}.get(
+            typ, "SL" if float(o.get("profit") or 0) < 0 else "TP")
+        ok = bot.trade_simulator.close_trade(tid, st, ap)
+        logger.info("[RADAR-ARMED] #%d %s late-fill verify-flat → %s @ %s (ok=%s)",
+                    tid, symbol, st, ap, ok)
+    except Exception as _e:
+        logger.debug("[RADAR-ARMED] verify-flat #%d: %s", tid, _e)
+
+
 def _cfg(bot) -> dict:
     try:
         return bot.config.get("trading.radar_armed", {}) or {}
@@ -216,6 +252,7 @@ async def _check_pending(bot, ttl_sec: float) -> None:
                 except Exception:
                     router, accs = None, [1]
                 was_filled = False
+                _fill_cli = _fill_o = None
                 for acc in accs:
                     cli = router.client_for_account(acc) if router else await om._get_client_synced(symbol)
                     if cli is None:
@@ -224,6 +261,7 @@ async def _check_pending(bot, ttl_sec: float) -> None:
                         for o in await cli.get_filled_orders(symbol, limit=20):
                             if str(o.get("orderId")) == oid:
                                 was_filled = True
+                                _fill_cli, _fill_o = cli, o
                                 break
                     except Exception:
                         continue
@@ -235,7 +273,12 @@ async def _check_pending(bot, ttl_sec: float) -> None:
                                   "WHERE id=? AND status='PENDING_ENTRY'", (tid,))
                         c.commit()
                     logger.info("[RADAR-ARMED] #%d %s LIMIT зафиллился (позиция уже закрыта?) "
-                                "→ OPEN, exit резолвит position_sync", tid, symbol)
+                                "→ OPEN + verify-flat", tid, symbol)
+                    # 🔴 14.07 SAND-класс (#47688 вечный OPEN): «резолвит position_sync» больше
+                    # НЕ работает — close-by-price выключен CUTOVER'ом. Если позиция уже флэт —
+                    # немедленно дотянуть закрывающий fill (REST, positionID-якорь) → close_trade.
+                    if _fill_cli is not None and _fill_o is not None:
+                        asyncio.create_task(_late_fill_verify_close(bot, tid, symbol, _fill_cli, _fill_o))
                     continue
                 # реально не сработал: cancel account-aware → CANCELLED
                 cancelled = False
