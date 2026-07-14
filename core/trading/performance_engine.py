@@ -1097,9 +1097,11 @@ class PerformanceEngine:
         """
         _filt = ""
         if mode == "sim":
-            _filt = " AND exchange_order_id IS NULL"
+            # 14.07 фикс: SIM-строки помечены exchange_order_id='SIM' (не только NULL)
+            _filt = " AND (exchange_order_id IS NULL OR exchange_order_id='SIM')"
         elif mode == "vst":
-            _filt = " AND exchange_order_id IS NOT NULL"
+            # 14.07 фикс: IS NOT NULL ловил 'SIM'-метку → VST-календарь мешал SIM-сделки
+            _filt = " AND exchange_order_id IS NOT NULL AND exchange_order_id != 'SIM'"
         if account_id is not None:
             _filt += f" AND account_id={int(account_id)}"
         # РЕАЛЬНЫЙ $ P&L из сделок: qty × (exit−entry) × направление (как биржа).
@@ -1113,7 +1115,9 @@ class PerformanceEngine:
                     ROUND(AVG(R_multiple), 3) as avg_r,
                     ROUND(SUM(R_multiple), 2) as total_r,
                     ROUND(SUM(CASE WHEN qty IS NOT NULL AND exit_price IS NOT NULL
-                        THEN qty * (exit_price - entry_price) * (CASE WHEN UPPER(direction)='LONG' THEN 1 ELSE -1 END)
+                        THEN qty * (exit_price - COALESCE(actual_entry_price, entry_price))
+                             * (CASE WHEN UPPER(direction)='LONG' THEN 1 ELSE -1 END)
+                             - COALESCE(total_fee, 0)
                         ELSE 0 END), 2) as total_usd,
                     ROUND(SUM(CASE WHEN R_multiple > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) as wr
                 FROM simulated_trades
