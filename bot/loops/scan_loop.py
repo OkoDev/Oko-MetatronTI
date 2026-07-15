@@ -957,6 +957,16 @@ async def _execute_atr_change_signal(
 
         if side == "LONG":
             sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
+            # 🔴 15.07 (AERGO −5.64%): рецепт 1h+WT бэктестился со стопом за swing12×0.998
+            # (5/5 лет), а бой ставил trendline-стоп — ТОРГОВАЛИ НЕ ТО, ЧТО ТЕСТИРОВАЛИ.
+            # wt_depth-маркер = сделка рецепта → стоп строго как в бэктесте.
+            if wt_depth is not None and df is not None and len(df) >= 13:
+                try:
+                    _sw = float(df["low"].iloc[-13:-1].min()) * 0.998
+                    if 0 < _sw < entry:
+                        sl, sl_source = _sw, "swing12_recipe"
+                except Exception:
+                    pass
             sl_dist = entry - sl
             valid_sl = sl > 0 and sl < entry
         elif _s2_setup is not None:
