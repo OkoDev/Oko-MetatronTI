@@ -796,12 +796,22 @@ async def sync_positions(bot) -> None:
                     _esc = await _sphere.reconcile_watchdog(_acc_wd, min_cycles=2)
                     for _it in _esc:
                         _ex = _it.exit
+                        # 🔴 16.07 (Егор «14 DRIFT при 2 позициях»): при CUTOVER watchdog —
+                        # ЕДИНСТВЕННАЯ страховка от пропущенного WS pa=0 (WS: 292 реконнекта,
+                        # 2.5ч без account-событий → 15 зомби-OPEN). Раньше только логировал
+                        # (наследие shadow-эпохи) → флип оставил дыру. Теперь ЗАКРЫВАЕТ через
+                        # штатный on_close (db_writer): exit дотянут REST'ом по positionId,
+                        # «не гадаем» сохранено (exit=None → db_writer сам откажет).
                         logger.warning(
-                            "[SPHERE-SHADOW] RECONCILE would-close %s %s acc=%s → %s @ %s "
-                            "(store-open, биржа-флэт ≥2 цикла; WS-close пропущен/«?»-exit)",
+                            "[RECONCILE] %s %s acc=%s → %s @ %s (store-open, биржа-флэт ≥2 цикла; "
+                            "WS-close пропущен) — закрываю",
                             _it.symbol, _it.side, _acc_wd,
                             (_ex.status if _ex else "?"),
                             (f"{_ex.exit_price:.8g}" if _ex else "?"))
+                        try:
+                            await _sphere._fire_close(_it)   # cutover → db_writer; shadow → debug-лог
+                        except Exception as _fce:
+                            logger.warning("[RECONCILE] fire_close %s: %s", _it.symbol, _fce)
                 except Exception as _wde:
                     logger.debug("[SPHERE-SHADOW] reconcile_watchdog acc=%s: %s", _acc_wd, _wde)
 
