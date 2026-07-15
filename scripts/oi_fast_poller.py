@@ -1032,7 +1032,7 @@ def _check_ambushes() -> None:
                 c.execute("UPDATE build_ambush SET fired=1 WHERE symbol=?", (sym,))
                 c.commit()
                 dot = "🟢" if side == "LONG" else "🔴"
-                send_tg(f"🪤 <b>BUILD-FLIP:</b>\n\n{dot} <code>{sym}</code> набор разрешился — "
+                _send_setup_with_chart(f"🪤 <b>BUILD-FLIP:</b>\n\n{dot} <code>{sym}</code> набор разрешился — "
                         f"флип ATR → {side}\nвход ~{_c(entry)} · стоп {_c(sl)} (за диапазон набора)\n\n"
                         f"{_links(sym)}\n\n#{sym} #BUILD_FLIP", channel="action")
                 print(f"[BUILD-FLIP] 🔫 {sym} {side} @ {entry:.6g} (диапазон {lo:.6g}–{hi:.6g})")
@@ -1302,10 +1302,13 @@ def tick():
                 if b_row:
                     b_msg = _with_orderbook(b_msg, sym, px)
                 _set_ambush(sym)   # 🪤 BUILD-FLIP: каждый BUILD ставит засаду (вход = флип ATR)
-                _mid_b = send_tg(_with_chain(b_msg, b_chain), channel=("action" if b_row else "feed"))
+                if b_row:   # 15.07: сетап = ОДНО сообщение (чарт с caption-текстом)
+                    _mid_b = _send_setup_with_chart(_with_chain(b_msg, b_chain), sym)
+                else:
+                    _mid_b = send_tg(_with_chain(b_msg, b_chain), channel="feed")
                 if _mid_b:
                     if b_row:
-                        _send_chart(sym, _mid_b)         # 📸 SMC-чарт тредом (только сетапы)
+                        pass                             # чарт уже в сообщении
                         _log_build(b_row)
                         # ARMED-порт: BUILD-с-сетапом → radar_orders (цели из карты 2.0)
                         _log_radar_order("build", sym, b_row["side"], px,
@@ -1325,9 +1328,9 @@ def tick():
                     sp_row["targets_json"] = None
                 sp_chain = _recent_signals(sym)          # ⛓ лениво: только при алерте
                 sp_msg = _with_orderbook(sp_msg, sym, px)
-                _mid_sp = send_tg(_with_chain(sp_msg, sp_chain), channel="action")
+                _mid_sp = _send_setup_with_chart(_with_chain(sp_msg, sp_chain), sym)  # 15.07 одно сообщение
                 if _mid_sp:
-                    _send_chart(sym, _mid_sp)            # 📸 SMC-чарт тредом
+                    pass                                 # чарт уже в сообщении
                     _log_spring(sp_row)
                     if sp_side:
                         # ARMED-порт: ПРУЖИНА с направлением → сетап (SL за структуру, цели 2.0)
@@ -1346,9 +1349,9 @@ def tick():
                     msg, row = res
                     msg, row = _with_targets(msg, row, sym, row["side"], px)
                     msg = _with_orderbook(msg, sym, px)
-                    _mid_p = send_tg(_with_chain(msg, p_chain), channel="action")
+                    _mid_p = _send_setup_with_chart(_with_chain(msg, p_chain), sym)  # 15.07 одно сообщение
                     if _mid_p:
-                        _send_chart(sym, _mid_p)         # 📸 SMC-чарт тредом
+                        pass                             # чарт уже в сообщении
                         _log_pump(row)          # → pump_signals: WR-статистика для SHADOW→ARMED
                         # ARMED-порт: PUMP-разворот → radar_orders (tp1-3 по откатам, grade)
                         _log_radar_order("pump", sym, row["side"], px, row["sl"],
