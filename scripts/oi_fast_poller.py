@@ -379,6 +379,34 @@ def _send_chart(sym: str, msg_id, tf: str = "1h") -> None:
         print(f"[CHART] {sym}: {e}")
 
 
+def _send_setup_with_chart(msg: str, sym: str, tf: str = "1h", channel: str = "action"):
+    """15.07 (Егор «чарт и сообщение объединить!»): сетап = ОДНО сообщение — фото-чарт
+    с caption-текстом. Telegram caption ≤ 1024 симв.: длинный текст / нет чарта →
+    фолбэк на старый путь (текст + чарт-reply). → message_id | False."""
+    png = None
+    try:
+        import asyncio as _aio
+        from core.ui.chart_builder import build_signal_chart
+        png = _aio.run(build_signal_chart(f"{sym}/USDT:USDT", tf=tf, bot=None, wave_overlay=True))
+    except Exception as e:
+        print(f"[CHART] {sym}: {e}")
+    if png and len(msg) <= 1024:
+        from oko_feed.alerts import send_tg_photo
+        mid = send_tg_photo(png, caption=msg, channel=channel)
+        if mid:
+            return mid
+    # фолбэк: старый путь (текст + reply-чарт)
+    mid = send_tg(msg, channel=channel)
+    if mid and png:
+        try:
+            from oko_feed.alerts import send_tg_photo
+            send_tg_photo(png, caption=f"<code>{sym}</code> {tf} · SMC-разметка",
+                          channel=channel, reply_to=mid)
+        except Exception:
+            pass
+    return mid
+
+
 _BINGX_PERPS: set[str] = set()
 _BINGX_TS = [0.0]
 
