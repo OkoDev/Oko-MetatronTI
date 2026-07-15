@@ -1034,7 +1034,7 @@ def _check_ambushes() -> None:
                 dot = "🟢" if side == "LONG" else "🔴"
                 _send_setup_with_chart(f"🪤 <b>BUILD-FLIP:</b>\n\n{dot} <code>{sym}</code> набор разрешился — "
                         f"флип ATR → {side}\nвход ~{_c(entry)} · стоп {_c(sl)} (за диапазон набора)\n\n"
-                        f"{_links(sym)}\n\n#{sym} #BUILD_FLIP", channel="action")
+                        f"{_links(sym)}\n\n#{sym} #BUILD_FLIP", sym)
                 print(f"[BUILD-FLIP] 🔫 {sym} {side} @ {entry:.6g} (диапазон {lo:.6g}–{hi:.6g})")
             except Exception as _ec:
                 print(f"[BUILD-FLIP] check {sym}: {_ec}")
