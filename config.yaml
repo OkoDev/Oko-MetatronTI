@@ -64,7 +64,7 @@ analysis:
   anomaly:
     max_per_cycle: 5
   confluence:
-    enabled: true            # 11.07 ПОЛИГОН: вернулся в sim (touch, data-era 11.07)
+    enabled: true
     use_state_machine: false
     lookback_bars: 8
     cross_fresh_bars: 5
@@ -121,94 +121,70 @@ monitoring:
 outcome_predictor:
   training_window: null
 strategy_name: multi_signal
-# SIM-ПОЛИГОН (11.07, Егор: «sim close = биржевой touch + вернуть зарубленные легаси в sim»):
-# симулятор мерит SL по фитилю (паритет с биржевым STOP), легаси-детекторы снова копят
-# sim-статистику (catch-all exchange_enabled=false — на биржу НЕ ходят). Data-era: 11.07.2026.
 simulation:
-  sl_touch_all: true       # тугая правда: SL по wick и для tsl_line-источников (было close, DEV-88)
-  taker_fee_pct: 0.045     # BingX VST taker/сторона; costs_pct = 2× + funding (net = profit_pct − costs_pct)
-  funding_est_pct: 0.01    # нормаль фандинга на 8ч-период (× часы/8); держим коротко → почти 0
+  sl_touch_all: true
+  taker_fee_pct: 0.045
+  funding_est_pct: 0.01
 sideways_mode:
-  enabled: true            # 11.07 ПОЛИГОН: вернулся в sim (touch-исполнение, data-era 11.07)
+  enabled: true
   min_sideways_bars: 3
   timeframe: 30m
   min_strength: 60
 trading:
   execution_mode: vst
   live_guard_timeout_min: 7
-  # RADAR-ARMED-VST (03.07, docs/RADAR_ARMED_PLAN.md): бот исполняет сетапы радара
-  # (oko_feed/external_data.db → radar_orders) через trade_router + source_policy 'radar'.
-  # METHOD-V2 фрактальный вход (05.07, ТЗ docs/OTE_METHOD_ENTRY_V2.md, прошёл walk-forward OOS
-  # +0.97% WR75%). 4h=волна1 старшего, 15m=волна3 младшего, стоп за волну2, лестница целей по
-  # старшему. Егор: «сразу в прод — VST песочница». Reuse обвязки radar (LIMIT/multi-TP/BE/TSL).
   method_v2:
-    enabled: false             # 🔴 ОТКЛЮЧЁН 05.07: LOOK-AHEAD НАЙДЕН (DS прав, мой 1-й тест был недостаточен).
-                               # Истинный point-in-time тест: 16/19 сетапов не воспроизводятся — вход на СВЕЖЕМ
-                               # сломе (волна3), который виден только через length баров подтверждения. WF-цифры
-                               # ЗАВЫШЕНЫ. Нужен честный пересчёт (задержка входа на подтверждение слома). НЕ включать.
-    scan_sec: 900              # период скана (метод на 4h — редкие сетапы, 15 мин достаточно)
-    max_positions: 5           # лимит одновременных method_v2-позиций
-    fresh_bars_15m: 3          # сетап «свежий» если entry_ts в последних N барах 15m (иначе старый)
-    tp_shares: [40, 30, 30]    # доли целей (t1=пробой волны1, t2/t3=продолжение)
-    conf_only: false           # true → только сетапы в конфлюэнции сеток (conf=ДА, +1.3% WR82%, реже)
-    max_symbols: 60            # ликвидные top-N (метод на неликвиде тонет в спреде)
-  method_egor:                 # 05.07 METHOD-EGOR боевой (замена ote_nested): вход на откате +
-    enabled: true              # ✅ В БОЙ 05.07 (Егор «в бой, VST песочница, смотрю глазами»). Разворот у
-                               # экстремума 4h + OTE-цели + толпа-гейт. Ядро core/smc/method_egor. 15m/4h WR55%
-                               # бэктест OOS+. Толпа-гейт = funding из radar_state. Откат = false + рестарт.
-    scan_sec: 900              # 15m-сигнал: скан на закрытии свежего бара
-    fresh_bars: 2              # сетап «свежий» если ретест в последних N барах 15m (≈30 мин)
-    max_positions: 6           # лимит одновременных method_egor-позиций
-    max_symbols: 60            # ликвидные top-N
-    edge: 0.5                  # порог близости к экстремуму большого импульса (pos≥edge)
-    require_crowd: true        # ЖЁСТКИЙ толпа-гейт: funding подтверждает разворот (SHORT+f>0 / LONG+f<0)
+    enabled: false
+    scan_sec: 900
+    max_positions: 5
+    fresh_bars_15m: 3
+    tp_shares:
+    - 40
+    - 30
+    - 30
+    conf_only: false
+    max_symbols: 60
+  method_egor:
+    enabled: true
+    scan_sec: 900
+    fresh_bars: 2
+    max_positions: 6
+    max_symbols: 60
+    edge: 0.5
+    require_crowd: true
   radar_armed:
-    enabled: true              # ✅ ВКЛЮЧЁН 03.07 ~19:45 (Егор: «дампы возможны, лови» + рестарт). Первый живой сетап = прогон под грепом [RADAR-ARMED]. Откат = false + рестарт
-    poll_sec: 15               # период чтения radar_orders из external_data.db
-    entry_ttl_min: 45          # TTL сетапа и лимитки входа: не зафиллилась — отменить
-    max_positions: 10          # 14.07 5→10 (Егор «не успеваем заходить»): лимит-5 срезал 88
-                               # сетапов/16ч (37% потока) при 5 источниках. Риск-рамка держит:
-                               # 10×0.5% = 5% суммарного, DEV-52 cap 25% + margin-гейт страхуют.
-                               # Hot-reload: читается каждый цикл (рестарт не нужен для тюнинга)
-    tp_shares: [40, 30, 30]    # доли TP1/TP2/TP3 % (Егор 03.07: дефолт 40/30/30 принят)
-    signal_types: [pump, spring, build_flip]  # 15.07 17:15 build_flip ВЕРНУЛИ (Егор «пусть отработает
-                               # до завтра»): shadow-ночь −10.6% (11 дней 1 режима не выдержали OOS),
-                               # но форвард на живых данных ценнее — 2-й заход. ETH-инсайт: флип на
-                               # ПАРАБОЛЕ (перегрев +13%) ≠ нож в середине хода — этот класс и проверим.
-                               # Откат = убрать build_flip. 14.07 ПЕРЕСБОРКА (Егор + 3 сходящиеся оценки: ретро dead,
-                               # форвард-машина «льёт», ночь с конкорданс-гейтом −0.13/сд ≈ 0−).
-                               # Сетапы ЛОГИРУЮТСЯ (radar_orders+TG) — глаза остаются. Инсайт Егора:
-                               # build = ПРОБОЙНАЯ природа (набор OI = подготовка) → пересборка: вход
-                               # на ПРОБОЕ диапазона накопления, не в момент набора. Вернуть = build в список
-    pump_grades: [A, B]        # PUMP только Grade A/B (C = загрузка, ждать выдоха)
-    pump_min_wave_leg: 3       # 14.07 (лоси дня): разворот ТОЛЬКО после выдоха — VST-срез:
-                               # leg≤2 −2.77% (n=8) vs leg≥3 +14.21% (n=11). LAB leg=1 −3.64
-    be_after_tp1: true         # авто-БУ по WS-fill TP1 (reuse e762449; НЕ глобальный use_breakeven)
-    runner_pivot_trail: true   # 09.07 SPRING-RUNNER: после TP1 SL по этажам R/S-пивотов дня
-                               # (MFE n=68: BE+TSL-1R сжигали +2.84%/сд до +0.04). Штатный TSL
-                               # для radar_* выключен полностью (trade_simulator гейт v2).
-                               # false → раннер сидит на BE + attached финальный TP
-    runner_tail: true          # 11.07 ХВОСТ-РАННЕР (Егор «рано вышли»: IOTA каскад −12.7%, взяли 2.8%):
-                               # при переводе в БУ снимается attached финальный TP — хвост 30% ведут
-                               # пивот-этажи + потолок 1W (закрытие у реальной преграды, не measured-move).
-                               # false → как раньше: финальный TP режет хвост на tp_final
-    runner_swing_floor: true   # 12.07 v2 (Егор «где СТРУКТУРНЫЙ трейл?!»): SL за ПОСЛЕДНИМ
-                               # подтверждённым LH/HL (15m, luxalgo length=5 — канон OKO-SM), слом
-                               # которого = CHoCH = выход. v1 (5m±2=микрошум, ближайший пик) выбило
-                               # тиком на LAB; структурный 0.5768 дышал 13% и лочил +19.6%.
-                               # Валидность стороны рынка встроена. false → только пивот-этажи
-  sl_reconcile: live   # SL-RECONCILE (#1): позиции без живого SL-ордера → off/shadow(лог "выставил бы")/live(place). Анти-ликвидация. Активирован live 18.06: shadow доказал риск (REAL/KAT SHORT без SL ~час); place_sl_order account-aware (multiacct), анти-дубликат, throttle 5мин
-  orphan_autoclose: live     # D-070 PREVENTION (19.06): orphan (биржа без OPEN в БД) → off(только alert)/shadow(лог "закрыл бы")/live(account-aware close, one_click_on_fail). Корень рассинхрона БД↔биржа [[orphan_root_dbexch_desync]]. Hedge-safe: skip символов с DB-OPEN (one-click задел бы брата). Дефолт shadow → валидировать перед live (как sl_reconcile)
+    enabled: true
+    poll_sec: 15
+    entry_ttl_min: 45
+    max_positions: 16
+    tp_shares:
+    - 40
+    - 30
+    - 30
+    signal_types:
+    - pump
+    - spring
+    - build_flip
+    pump_grades:
+    - A
+    - B
+    pump_min_wave_leg: 3
+    be_after_tp1: true
+    runner_pivot_trail: true
+    runner_tail: true
+    runner_swing_floor: true
+  sl_reconcile: live
+  orphan_autoclose: live
   exec_ws:
     enabled: true
     write_exch_id: false
     sync_close: true
-    sphere_shadow: true    # Ф4.1 EXECUTION-REBUILD: true → строит NEW pipeline (ExecutionSphere, on_close=None) ПАРАЛЛЕЛЬНО старому 2a/2b. Лог "[SPHERE-SHADOW] would close", реально НЕ закрывает, position_sync не тронут. Сверка would-close с фактом на живом потоке → потом CUTOVER. Откат = false. Требует рестарта.
-    sphere_cutover: true   # ✅ ФЛИП 13.07 (Егор «добро!»): ExecutionSphere АВТОРИТЕТЕН — on_close=build_close_applier (закрывает БД из WS-истины: fill/CR-DELTA/REST/income) + ВЫКЛ старые пути (position_sync close-by-price + exec_ws 2b sync_close). Основание: copy-DB тест 8 закрытий + LAB-реплей Δ0.05% + BEAT live Δ0.076% fees-точный rp. EXEC-SIM-SPLIT шаг 4 — VST-выход отвязан от SIM. Откат = false + рестарт.
-  vst_time_exit:           # EXEC-SIM-SPLIT шаг 2 (13.07): тайм-выход VST (у SIM есть EXPIRED, у VST не было → BREV #41641 9+ дней). position_sync._vst_time_exit_check
-    enabled: false         # false = shadow: лог [VST-TIME-EXIT] WOULD CLOSE + TG SYSTEM (1/сутки на сделку). true → Sphere.close (reduceOnly бирже; БД закрывает штатный WS-путь pa=0)
+    sphere_shadow: true
+    sphere_cutover: true
+  vst_time_exit:
+    enabled: false
     default_ttl_days: 5.0
-    per_source:            # signal_type → TTL дней (mean-reversion своё отработал за 1-2 дня)
+    per_source:
       ote_nested: 3.0
       radar_build: 2.0
       radar_pump: 2.0
@@ -222,44 +198,17 @@ trading:
   dev185_2_overshoot_threshold_pct: 0.5
   dev185_2_dwell_seconds: 300
   tp1_close_pct: 0.2
-  # EXEC-SIM-SPLIT (17.06): SIM-номинал + fallback для sizing при сбое REST. НЕ источник истины
-  # для VST: реальный риск/дашборд берут equity per-account из balance_snapshots (ARCH-DB-V2),
-  # VST sizing — live availableMargin. ⚠️ реальный equity ~316 (acc1 ~150 + acc2 ~167) ≠ 710.
-  deposit_usdt: 598.0   # 19.06 OTE-ONLY Режим В (DS): SIM-номинал ≈ реальный equity
-  # 19.06: risk_pct/leverage — ГЛОБАЛЬНЫЙ FALLBACK (для источников без per-source override).
-  # Режим В живёт в source_policies.ote_nested (leverage:50/risk_pct:0.5). Глобал вернул к
-  # безопасному дефолту, чтобы новые стратегии НЕ наследовали 50x ote_nested.
+  deposit_usdt: 598.0
   risk_pct: 1.0
   leverage: 5
   max_notional_mult: 20.0
-  # 🔴 SL-SAFETY SET-TO-MAX ПЛЕЧА (27.06, было кап-вниз 19.06): плечо НЕ влияет на риск
-  # (qty=f(risk_pct,SL), position_sizer.calc_qty) — только на маржу. Берём МАКС безопасное
-  # плечо = 1/(sl_dist + liq_safety_buffer), ограниченное max пары. Меньше маржи/сделку →
-  # 2-4× параллельных позиций при идентичном per-trade риске. Ликвидация (~1/leverage)
-  # держится дальше SL за счёт буфера. Раньше cap-down (только понижал config>safe) → при
-  # config 5x и SL 9% сидели в 2× недозагрузе маржи. Буфер 1.5% кроет maintenance + slippage
-  # + funding (при set-to-max упираемся в предел, запас нужен больше прежних 0.5%).
   liq_safety_enabled: true
   liq_safety_buffer_pct: 1.5
-  # CONFIG-SLTP-BUG fix (15.06): код читает trading.min_sl_dist_pct (gates/min_sl_dist.py:24,
-  # trade_simulator.py:469/677), а значение лежало ТОЛЬКО в sl_tp_engine:321 (не читается) →
-  # дефолт 0.1 → SL≈entry проходили → fake-R −15R + реальные −20%. Дублируем сюда до миграции sl_tp_engine.
-  # 18.06: ОПУЩЕН 0.5→0.25 — пол 0.5% резал ТУГИЕ SL<0.5% (avgR+1.07!) с 15.06, оставлял
-  # широкие (+0.39, вдвое хуже). Тест порогов ote n=2680 (NET, комиссия 0.1%): 0.5%→net+0.461/
-  # sumR898; 0.25%→net+0.546/sumR1448 (+61%). Пол был ПРОТИВ fake-R (SL≈entry→R-взрыв), а fake-R
-  # закрыт clamp R≤MFE (bug_phantom_exit_resolve). 0.25% держит буфер от SL≈entry, пропускает
-  # тугое золото (ote естеств. минимум SL ~0.15%). Откат: вернуть 0.5.
   min_sl_dist_pct: 0.25
   min_rr_per_strategy:
-    ote_nested: 0.9   # 27.06 ОЖИВЛЕНИЕ: выход = tp1 (1R, mean-reversion) → RR≈1.0. Было 3.0 (под runner) —
-                      # резало бы ВСЕ сигналы. 0.9 = запас на округление tp1. См. ote_is_meanreversion_not_continuation
-    oko_ote: 0.1   # 22.06 СНЯТО RR-ограничение для OKO-OTE — ближний магнит даёт RR<1, нужны данные на VST
-    radar: 0.5     # 14.07 (Егор «смотри RR! какая логика?!», NEAR RR=1.6 резался): цели радара —
-                   # у РЕАЛЬНЫХ преград (магниты/пивоты, «у магнита фиксируют») → честно близкие;
-                   # RR≥2 поощрял нарисованные TP и резал структурные сетапы (ZBT 1.98). Само
-                   # «правило RR» опровергнуто ресёрчем 07.07 (RR<1 → +1.6%, WR решает). Плюс
-                   # хвост-раннер бежит без потолка — RR к tp_final слеп к реальному потенциалу.
-                   # 0.5 = защита от вырожденных (стоп дальше цели вдвое)
+    ote_nested: 0.9
+    oko_ote: 0.1
+    radar: 0.5
   regime_direction_block:
     enabled: false
     TREND_DOWN: LONG
@@ -304,26 +253,15 @@ trading:
     against_bias_penalty: 20
     near_level_pct: 1.5
   l3_checker:
-    enabled: true          # #2 BACKLOG (15.06): портфельный стоп-кран ВКЛ. Было 134 поз/риск 150% (l3 был shadow). 50/25/25 мягко: риск→~55%, edge раннеров цел. Старые доживут по TSL/SL, новые блок >лимита
+    enabled: true
     min_score: 85
-    # 05.07 (Егор «снять лимит чтобы методы жили»): числовой лимит — ГРУБЫЙ (позиция≠риск), душил
-    # 3 источника (radar+ote_nested+method_v2) в общем пуле РАНЬШЕ риск-лимита. ГЛАВНЫЙ контроль =
-    # max_total_risk_pct 25% (по % депозита, боевой с 19.06). Числовой поднят до АВАРИЙНОГО стоп-крана
-    # (на случай бага risk-расчёта): при risk 0.5%/сд риск 25% ≈ 50 поз/сторону → числовой 100 не душит.
     max_open_long: 100
     max_open_short: 100
     max_open_total: 200
-    # EXEC-SIM-SPLIT кирпич №1 (17.06): риск-экспозиция % депозита (VST). Мерка = Σ(qty×|entry−sl|)/deposit,
-    # НЕ количество (узкий стоп взрывает notional при том же risk%). Старт SHADOW: лог [DEV-52][RISK]
-    # exposure/would_block без блокировки → собрать распределение → выбрать потолок по данным.
-    # Рой 17.06: cerebras 5-10% (система нестабильна, 60% фантомов), DS 20% cap-цель. Старт активации 10%.
-    max_total_risk_pct: 25.0     # 19.06 Режим В: 10→25 (диверсификация ~37 поз). потолок суммарного риска открытых VST
-    risk_gate_shadow: false       # 19.06 Режим В: АКТИВИРОВАН (было shadow). Блокирует вход при суммарном риске >25%
-    # Кирпич №2 margin pre-check (17.06): блок нового входа если available маржа per-account < порога
-    # (из balance_snapshots). Корень фантомов: register пишет SIM ДО placement → margin-reject оставляет
-    # SIM=фантом. Shadow 17.06: available ~22/acc, used 87%. Старт 5 USDT (margin сделки ~2-5), уточнить.
-    min_available_usdt: 5.0      # порог доступной маржи. null/0 → проверка выключена
-    margin_gate_shadow: false     # 19.06 Режим В: АКТИВИРОВАН (было shadow). Блокирует вход при available < min_available_usdt
+    max_total_risk_pct: 25.0
+    risk_gate_shadow: false
+    min_available_usdt: 5.0
+    margin_gate_shadow: false
   correlation_groups:
   - - PAXG
     - XAUT
@@ -347,33 +285,28 @@ trading:
   - multi_signal
   - mtf_bias
   strategies:
-    oko_ote:                     # OKO-OTE (метод Егора, валидирован 22.06 — docs/METHOD_MAP.md)
-      enabled: false             # ⛔ 27.06 ОТКЛЮЧЁН: OOS=мираж (overfit, IN+28→OUT+3). VST освобождён под
-                                 # ote_nested (реальный OOS-edge). Код/HTF-фильтр остаётся — реверс: true.
-      execution_mode: vst        # песочница
-      links:                     # ядро связок зона→слом (старше зона = выше WR + ниже DD)
-        - {zone: "4h", break: "1h"}    # WR90% DD4% (чемпион, редкий)
-        - {zone: "4h", break: "15m"}   # WR82%
-        - {zone: "1h", break: "15m"}   # WR81%
-      wt_ob: 60                  # WT OB порог (зона→SHORT)
-      wt_os: -60                 # WT OS порог (зона→LONG)
-      entry_fib: 0.618           # вход на касании 0.618 (основной уровень коррекции)
-      depth_min: 0.55            # фильтр СРЕДНЕЙ глубины (мелкая=сильный импульс)
-      depth_max: 0.68            # глубже = слабый импульс → режем
-      zone_window_h: 48          # окно (ч) после WT-зоны на поиск слома
-      sl_source: strong_low      # SL = Strong Low (levels[1.0]) + буфер
+    oko_ote:
+      enabled: false
+      execution_mode: vst
+      links:
+      - zone: 4h
+        break: 1h
+      - zone: 4h
+        break: 15m
+      - zone: 1h
+        break: 15m
+      wt_ob: 60
+      wt_os: -60
+      entry_fib: 0.618
+      depth_min: 0.55
+      depth_max: 0.68
+      zone_window_h: 48
+      sl_source: strong_low
       sl_buffer_pct: 0.15
-      tp_source: magnet          # TP = ближайший магнит (reuse TPSelector)
-      risk_pct: 0.5              # риск/сделку (консервативно для песочницы)
-      max_concurrent: 200        # макс параллельных позиций (песочница, данные нужны быстро)
-      max_entry_slippage_pct: 0.3  # 01.07 УЖЕСТОЧЕНО 0.5→0.3: живой аудит VST показал 54% сделок
-                                   # обошли гейт 0.5% (fill уходит ПОСЛЕ проверки), WR по slip: <0.3%=30%,
-                                   # 0.3-0.5%=20%, 0.5-1%=11%, >1%=12%. Режем всё >0.3% (worst половину).
-                                   # 25.06 ГЕЙТ СВЕЖЕСТИ: skip входа если текущая цена ушла от OTE >этого %
-                                   # (market-вход по уехавшей цене ломал R:R: SL/TP от sig.entry, а fill по текущей).
-                                   # ⚠️ НЕДОСТАТОЧНО: даже slip<0.3% даёт WR30% avg−0.37% (killer#2=production drift,
-                                   # прод-курок/SL ≠ honest-бэктест WR70%). См. memory/ote_nested_live_vst_bleeding.md
-                                   # без новой валидации. Поймаем на след. 10-мин цикле. Полный лимит = Фаза Б.
+      tp_source: magnet
+      risk_pct: 0.5
+      max_concurrent: 200
+      max_entry_slippage_pct: 0.3
     wt_entry:
       min_strength: 60
       tp_rr: 3.0
@@ -459,20 +392,10 @@ sl_tp_engine:
     no_degrade_above_r: 8.0
     r_gradient_peak_min_r: 2.5
     r_gradient_rollback_pct: 0.4
-  use_breakeven: false   # 01.07 ОТКЛЮЧЁН: counterfactual на реальных барах (ote_nested n=122):
-                         # BE душит прибыль — 69% BE-закрытых дошли бы до TP, 21% выбило original_SL.
-                         # факт BE avg −0.121%/sum −14.8% → БЕЗ BE avg +0.345%/sum +42.1% (+0.466%/сделка).
-                         # Защита остаётся: original_SL (широкий) + CHoCH-перенос за структуру (choch_sl_moved).
-                         # oko_ote counterfactual n=9 (ничтожно) намекал обратное — под наблюдением. Обратимо.
+  use_breakeven: false
   breakeven_activation_r: 0.5
-  use_be_after_tp1: false  # 01.07 ОТКЛЮЧЁН вместе с BE (тот же механизм преждевременного обрезания)
-  # BE-SYNC FIX (20.06.2026): BE-перенос SL кладётся в очередь биржевого cancel+replace
-  # (та же что TSL). До фикса BE двигал SL ТОЛЬКО в БД → биржа держала исходный SL
-  # (live: 11/18 OPEN GAP, NAORIS −0.8R при be=1). false = откат к старому поведению.
+  use_be_after_tp1: false
   be_exchange_sync: true
-  # BE-LIMIT (21.06): BE-ордер = тугой STOP-LIMIT (% ниже/выше стопа) чтобы закрыться на ≈BE
-  # без market-слиппеджа (иначе слиппедж съедает безубыток). Уже sl_limit_buffer_pct=1% для
-  # TSL/обычного SL (гэп-защита), но для BE 1% = до −1% убытка. 0.15% ≈ tick-уровень.
   be_limit_buffer_pct: 0.15
   expired_extend_min_r: 5.0
   expired_extend_hours: 120
@@ -523,9 +446,8 @@ advisor:
   breaker_fails: 3
   breaker_cooldown_s: 1800
 signal_quality:
-  # ── atr_s2 (08.07 СПРИНТ): гейты читаются в scan_loop (ветка _s2_setup) ──
-  atr_s2_min_vol24_usd: 2000000   # неликвид: спред>costs съедает эдж (код-дефолт был тот же)
-  atr_s2_max_positions: 5         # кап одновременных atr_s2 (risk-off валит флипы пачками)
+  atr_s2_min_vol24_usd: 2000000
+  atr_s2_max_positions: 5
   sl_cooldown_hours: 1.0
   sl_cooldown_ignore_sources:
     anomaly:
@@ -547,16 +469,13 @@ signal_quality:
   dev186_shadow: false
   min_strength_register: 50
   min_strength_atr_change: 0
-  # 18.06: atr_change на 15m ОТКЛЮЧЁН — edge (бэктест +0.084) < комиссий → структурный
-  # минус (боевой honest avgR −0.014, equity −63%/нед). 1h/4h не тронуты (4h ЗОЛОТО
-  # +0.692 Sharpe3.44, валидация на 6мес в бэклоге). Реверсивно: вернуть true.
-  atr_change_15m_enabled: false  # ⛔ 13.07 ресёрч: полигонный atr_change (RR3, ATR-стопы) МЁРТВ ЦЕЛИКОМ — −1.16%/сд × 8152 (все направления/сессии); MFE-свип: даже идеальный тейк −0.58% (тяжёлые лоссы, не цель). ≠ atr_s2-выживший (флип 4h+цель S2+стоп за swing12). Пересборка под S2-рецепт — отдельно. research_1307_evening_dig
+  atr_change_15m_enabled: false
   atr_change:
     long_strength_penalty: 0
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
-  pivot_reversal_enabled: true      # 11.07 ПОЛИГОН: вернулся в sim (touch data-era)
-  watch_list_breach_enabled: true   # 11.07 ПОЛИГОН: вернулся в sim (touch data-era)
+  pivot_reversal_enabled: true
+  watch_list_breach_enabled: true
   ote_shadow_mode: false
   ote_zone_tfs:
   - 1h
@@ -601,8 +520,8 @@ detectors:
 performance:
   check_open_semaphore: 15
   scan_semaphore_size: 8
-  sim_check_interval_sec: 300   # SIM-DEPRIO: throttle sim-only в check_open (300с вместо 60с). Биржевые — всегда. Откат: 60
-  sim_time_exit_hours: 48       # SIM-TIME-EXIT (анти-орфан): закрыть sim-only EXPIRED если висит >48ч и не TP/SL. Корень копления орфанов. 0=выкл
+  sim_check_interval_sec: 300
+  sim_time_exit_hours: 48
   analyze_semaphore_size: 3
   prefetch_pivots_semaphore_size: 2
   background_check_semaphore_size: 5
@@ -615,42 +534,41 @@ performance:
   pair_slow_threshold_sec: 10.0
   scan_cycle_warning_threshold_sec: 70.0
   ws_enabled: false
-  event_loop_debug: false   # LOOP-РАЗГРУЗКА 14.06: debug-режим грузил каждую loop-операцию + спам 2867 warnings. Диагностику собрали. Вернуть true только для отладки drift
+  event_loop_debug: false
   slow_callback_threshold_sec: 1.0
-  # Паузовые пары BingX (код 109415 "pause currency") — блокируют scan_one на 76-82с
   scan_blacklist:
-    - "UNITAS/USDT:USDT"
-    - "NVDAX/USDT:USDT"
-    - "PI/USDT:USDT"
-    - "XPIN/USDT:USDT"
+  - UNITAS/USDT:USDT
+  - NVDAX/USDT:USDT
+  - PI/USDT:USDT
+  - XPIN/USDT:USDT
   ws_ticker_batch_size: 75
   ws_ohlcv_batch_size: 80
   ws_batch_start_delay_sec: 5.0
   ws_reconnect_base_delay_sec: 5.0
   ws_ohlcv_error_pause_sec: 1.0
-
-# MARKET-WS (LOOP-разгрузка): kline-push 5m/15m → OhlcvCache, scan без REST-polling.
-# Кастомный aiohttp WS в отдельном потоке (НЕ ccxt.pro). Доказан тестом 14.06.
-# ЭТАПЫ: enabled=true + use_ws=false = SHADOW (теневой кэш, scan на REST, сравнение).
-#        use_ws=true = ОСНОВНОЙ cache (scan читает WS) — ТОЛЬКО после shadow-валидации ≥99%.
 dashboard:
-  enabled: true         # false → не запускать aiohttp :8000 (диагностика нагрузки на loop). Замер 14.06: dashboard НЕ грузит цикл (OFF 282 ≈ ON 299, в шуме)
-  host: 127.0.0.1       # SEC-01a: localhost по умолчанию
-  threaded: true        # PERF-DASH-THREAD: dashboard в отдельном потоке+loop → не ждёт scan-очередь (лечит латентность 11с). false=в главном loop (старое поведение)
-
-market_ws:
-  enabled: true         # v2 ПРОЦЕСС (14.06): multiprocessing.Queue — GIL изолирован. Этап 1 SHADOW (use_ws=false).
-  use_ws: true          # Этап 2 LIVE (14.06): scan читает из WS-кэша, без REST-polling ohlcv
-  timeframes: [3m, 5m, 15m]   # +3m (15.06): был 31% hit (не на WS, TTL 180с истекал) → −200 REST/цикл. WS-трафик +50%
-  batch_pairs: 50       # пар на одно WS-соединение (526/50 ≈ 11 соединений)
-
-proxy_pool:
   enabled: true
+  host: 127.0.0.1
+  threaded: true
+market_ws:
+  enabled: true
+  use_ws: true
+  timeframes:
+  - 3m
+  - 5m
+  - 15m
+  batch_pairs: 50
+proxy_pool:
+  enabled: false           # 16.07 (Егор «интернет плохой, без прокси никак?»): proxies=[] = прокси НЕТ,
+                           # ходим напрямую. enabled:true включал overrides для прокси-ФЕРМЫ (30 конн,
+                           # 40rps, сем15) → все они через ОДИН домашний канал = сатурация линии +
+                           # BingX-таймауты (CancelledError-краши). false → щадящий прямой режим (~8 конн).
+                           # Вернуть true ТОЛЬКО когда proxies заполнен реальными прокси.
   proxies: []
   rps_per_proxy: 35.0
   health_cooldown_sec: 30.0
   overrides:
-    api_rps: 40            # 100→40 (15.06): прокси Singapore медленные/в cooldown → REST идёт с одного VPN IP. 100 rps на один IP → 100410 бан. 40 безопасно для одного IP. Вернуть 100 когда прокси быстрые/распределяют
+    api_rps: 40
     scan_semaphore_size: 15
     api_semaphore_size: 30
 strategy:
@@ -717,7 +635,7 @@ signal_router:
     log_path: logs/router_shadow.log
   default_policy:
     min_strength: 50
-    exchange_enabled: false   # 19.06 OTE-ONLY: catch-all off (через него шёл liquidity_sweep и пр.). Только ote_nested торгует.
+    exchange_enabled: false
     trade_mode: ''
     soft_gates_enabled:
     - strength_threshold
@@ -730,12 +648,9 @@ signal_router:
   source_policies:
     atr_change:
       min_strength: 15
-      exchange_enabled: true    # ✅ 14.07 В VST-ПЕСОЧНИЦУ (Егор «почему не VST?!»): источник теперь
-                                # генерит ТОЛЬКО рецепт 1h+WT LONG (15m/4h off) — бэктест +0.55%/сд
-                                # 5/5 лет; вход MARKET на закрытии сигнального бара (слиппедж мал,
-                                # не «в воздухе»). Поток редкий (~APEX 1/ночь). Судья = форвард-машина
+      exchange_enabled: true
       trade_mode: atr_change
-      leverage: 10              # умеренно для нового рецепта в песочнице
+      leverage: 10
       risk_pct: 0.5
       lev_set_to_max: false
     wt_sideways:
@@ -796,83 +711,61 @@ signal_router:
       trade_mode: ''
     arch104:
       min_strength: 40
-      exchange_enabled: false   # 19.06 ОТКЛЮЧЁН: честный R после fake-R фикса LONG −0.182/SHORT −0.050 (SHORT БОЛЬШЕ НЕ несёт — иллюзию держал fake-R), net −$208. [[bug_phantom_exit_resolve]]
+      exchange_enabled: false
       trade_mode: arch104
       soft_gates_enabled: []
     ote_nested:
-      min_strength: 70         # 14.07: биржа ТОЛЬКО премиуму (observer даёт непремиуму strength≤65 →
-                               # SIM-регистрация сохраняется, биржа отсекается штатным router-гейтом)
-      exchange_enabled: true   # ✅ 14.07 ВОЗВРАТ В VST С LIMIT-ВХОДОМ (Егор «почему не VST?!»):
-                               # течь −0.57%/сд была MARKET-входом «в воздухе» (fake-entry маскировал);
-                               # теперь: entry_order_type=LIMIT (вход по цене сетапа или лучше) +
-                               # только премиум-профиль 4h_1h (SC∀+OB-LONG+fvg_held, SIM +0.886%/сд WR66).
-                               # Старое (для истории): 05.07 ОТКЛЮЧЁН — льёт по РЕАЛЬНОМУ филлу −0.57%/сд
-                               # (fake-entry маскировал: 66% actual_entry=NULL, БД-метрика/R врали +).
-                               # Вход «в воздухе» (не на откате) исполняется хуже сигнала. Замена =
-                               # method_egor (вход на откате LIMIT). SIM остаётся (research). ote_nested_live_vst_bleeding
+      min_strength: 70
+      exchange_enabled: true
       trade_mode: ote_nested
-      entry_order_type: LIMIT  # 14.07: вход лимиткой по entry сетапа — чинит корень течи (слиппедж входа)
+      entry_order_type: LIMIT
       soft_gates_enabled: []
-      leverage: 30             # 21.06 50→30 (рой+диагноз: 50x усиливал течь, прибыли нет = резать нечего; liq ~2%→~3.3%). 19.06 Режим В: ЛОКАЛЬНОЕ плечо ote_nested (не глобальное!)
-      risk_pct: 0.5            # 19.06 Режим В: ЛОКАЛЬНЫЙ риск ote_nested
-    oko_ote:                   # 22.06 НОВАЯ стратегия (метод Егора) — отдельный trade_mode для dedup
+      leverage: 30
+      risk_pct: 0.5
+    oko_ote:
       min_strength: 40
-      exchange_enabled: false  # ⛔ 03.07 Егор «oko_ote закрыть»: стратегия off с 27.06, зомби CARV #37380 закрыт вручную (one-click acc2), политика добита в false
-      trade_mode: oko_ote      # 🔴 КРИТИЧНО: иначе dedup_open режет на любой открытой (was "без trade_mode")
-      soft_gates_enabled: []
-      leverage: 20             # умеренно для песочницы (метод не нуждается в 50x — edge во входе/выходе)
-      risk_pct: 0.5
-      entry_order_type: MARKET # 25.06 ОТКАТ LIMIT→MARKET: гейт свежести (ARMED, skip если цена вне
-                               # OTE-зоны) перехватывает ДО постановки лимита → LIMIT на биржу не уходил.
-                               # Гейт+MARKET уже даёт вход близко к OTE (gap старых сделок 0.2-0.8%) — то
-                               # ради чего был LIMIT, но без pending-lifecycle/orphan-рисков. LIMIT-код
-                               # (place_bracket_order/order_manager/source_policy) сохранён для будущего.
-    radar:                     # 03.07 RADAR-ARMED-VST (docs/RADAR_ARMED_PLAN.md): сетапы радара
-      min_strength: 0          # качество фильтрует радар (Grade/★/signal_types) — strength не считается
-      exchange_enabled: true   # VST (добро Егора 03.07)
-      trade_mode: radar        # dedup + изоляция от других стратегий
-      soft_gates_enabled: []
-      leverage: 20             # Егор 03.07
-      risk_pct: 5.0            # 10.07 Егор «сделок немного → 5%» (было 0.5). VST-стресс:
-                               # 5% × кап 5 позиций = до 25% депо в риске. ⚠️ ПРИ ПЕРЕХОДЕ
-                               # НА РЕАЛ вернуть 0.5-1% — серия лосей радара сожжёт четверть депо
-      entry_order_type: LIMIT  # вход лимиткой по цене сетапа (pending-lifecycle в radar_armed_loop)
-      lev_set_to_max: false    # 04.07: уважать 20× (не поднимать до 50 set-to-max). Радар=импульс,
-                               # гэп мимо SL достаёт близкую ликвидацию — низкое плечо = запас (JUP #41708 liq −1%)
-    atr_s2:                    # 08.07 СПРИНТ «эксплуатируем доказанное»: единственный эдж,
-                               # переживший честную зачистку (+0.471%/сд n=5290 2022-26, 4/5 лет,
-                               # memory atr_s2_survived_honest). Сетап+гейты (funding/USDT.D/
-                               # ликвидность/кап позиций) живут в scan_loop; policy = исполнение.
-      min_strength: 0          # качество = сам сетап, strength не считается
-      exchange_enabled: true   # VST (добро Егора 08.07 «давай спринт»)
-      trade_mode: atr_s2       # dedup + изоляция в БД (scan_loop ставит его же в extra)
-      soft_gates_enabled: []
-      leverage: 20
-      risk_pct: 5.0            # 10.07 Егор (было 0.5). ⚠️ на реале вернуть 0.5-1%
-      entry_order_type: LIMIT  # v1.1 (08.07): вход лимиткой по цене сетапа = +0.13%/сд гарантия
-                               # (maker+без slippage). Pending-lifecycle: scan_loop → _mark_pending,
-                               # ведёт radar_armed_loop._check_pending (расширен на atr_s2;
-                               # fill→OPEN / TTL 45мин→cancel). Откат на MARKET = одна строка.
-      lev_set_to_max: false    # SHORT у swing-high: гэп-риск, уважаем 20x
-    method_v2:                 # 05.07 METHOD-V2 фрактальный вход (прошёл walk-forward OOS)
-      min_strength: 0          # качество = сама структура сетапа (волновой счёт), strength не считается
-      exchange_enabled: true   # VST-песочница (добро Егора «сразу в прод»)
-      trade_mode: method_v2    # dedup + изоляция
+      exchange_enabled: false
+      trade_mode: oko_ote
       soft_gates_enabled: []
       leverage: 20
       risk_pct: 0.5
-      entry_order_type: MARKET # вход по рынку на волне 3 (BOS = импульс уже пошёл, не ждать откат)
-      lev_set_to_max: false    # тугой стоп за волну 2 (~1%) → уважать 20× (не 50, гэп-риск)
-    method_egor:               # 05.07 METHOD-EGOR боевой: разворот у экстремума большого 4h + вход
-      min_strength: 0          # на откате (ote_retest) + OTE-цели + толпа-гейт. WR55% бэктест, 15m/4h OOS+
-      exchange_enabled: true   # VST-песочница (добро Егора «в бой»)
-      trade_mode: method_egor  # dedup + изоляция
-      soft_gates_enabled: []   # качество = геометрия сетапа + толпа-гейт (в лупе), не strength
-      leverage: 20             # Егор 05.07
-      risk_pct: 5.0            # 10.07 Егор «до 5%» (было 1.0). ⚠️ на реале вернуть 0.5-1%
-      entry_order_type: MARKET # MARKET+гейт свежести (урок oko_ote: LIMIT без pending-чекера=orphan).
-                               # Детект=свежий ретест → цена в OTE-зоне сейчас → MARKET входит близко к зоне
-      lev_set_to_max: false    # тугой локальный стоп → уважать 20× (не 50, гэп-риск)
+      entry_order_type: MARKET
+    radar:
+      min_strength: 0
+      exchange_enabled: true
+      trade_mode: radar
+      soft_gates_enabled: []
+      leverage: 20
+      risk_pct: 5.0
+      entry_order_type: LIMIT
+      lev_set_to_max: false
+    atr_s2:
+      min_strength: 0
+      exchange_enabled: true
+      trade_mode: atr_s2
+      soft_gates_enabled: []
+      leverage: 20
+      risk_pct: 5.0
+      entry_order_type: LIMIT
+      lev_set_to_max: false
+    method_v2:
+      min_strength: 0
+      exchange_enabled: true
+      trade_mode: method_v2
+      soft_gates_enabled: []
+      leverage: 20
+      risk_pct: 0.5
+      entry_order_type: MARKET
+      lev_set_to_max: false
+    method_egor:
+      min_strength: 0
+      exchange_enabled: true
+      trade_mode: method_egor
+      soft_gates_enabled: []
+      leverage: 20
+      risk_pct: 5.0
+      entry_order_type: MARKET
+      lev_set_to_max: false
     trigger_loop:
       min_strength: 50
       exchange_enabled: false
@@ -909,7 +802,7 @@ arch96:
     enabled: true
 arch104:
   vst_trading:
-    enabled: false   # 19.06 ОТКЛЮЧЁН (observer-loop гейт): балласт на честном R, net −$208. Реверс: true. [[bug_phantom_exit_resolve]]
+    enabled: false
     signal_type: arch104
   choch_length: 50
   d051_wt_cross_gate: false
@@ -917,28 +810,12 @@ arch104:
     enabled: false
 ote:
   vst_trading:
-    enabled: true    # ✅ 27.06 ОЖИВЛЕНА: net−1.057 был от сломанного выхода (runner+BE-не-синк), не отсутствия edge.
-                     # OOS подтвердил edge (WF 7/9). Портфель 4h_1h/4h_15m/1h_15m, выход tp1, фильтры сняты,
-                     # ARMED-watcher. oko_ote (мираж) отключён. [[ote_is_meanreversion_not_continuation]] [[strategy_truth_state]]
+    enabled: true
     signal_type: ote_nested
-  # OTE-CASCADE (19.06, Claude→DS): 1D-трендфильтр SHADOW на каждый ote_nested FIRE —
-  # лог [CASCADE][shadow] would_block (вход против 1D-тренда), НЕ блокирует. DS меряет
-  # дельту forward → edge есть → гейтим (live), нет → закрываем. False=отключить shadow.
   cascade_shadow: true
-  # 🔴 CASCADE-ГЕЙТ (04.07, решение Егора «ote_nested не знает где находится относительно
-  # матрицы HTF» — врезаем сейчас): true → FIRE против 1D-тренда БЛОКИРУЕТСЯ (оба пути:
-  # FIRE-ветка + ARMED-watcher). Данные shadow n=37: против-1D −0.72%/сд win17% vs
-  # по-1D +1.07%/сд win44% (июль: SHORT −2.03%/сд = контр-HTF течь). unknown → fail-open.
-  # Заблокированные видны: [CASCADE][GATE] BLOCKED + signal_drops (cascade_1d_gate).
-  # ⚠️ Форвард-сравнение block-vs-pass для DS ПРЕКРАЩАЕТСЯ (blocked не торгуются).
   cascade_gate: true
 arch118:
   shadow_enabled: true
   write_table: true
-
-# ═══ THE GRAPH — on-chain данные (Сфера 6.5 / oko_feed, 03.07.2026) ═══
-# Бесплатный ключ: thegraph.com → Subgraph Studio → API Keys (free 100k запросов/мес).
-# Использует: core/signals/thegraph_client.py + scripts/thegraph_shadow_poller.py
-# (shadow-логгер Uniswap V3: whale-свопы >$250k, ликвидность >$500k → onchain_events).
 the_graph:
-  api_key: "THE_GRAPH_API_KEY"          # ← ВСТАВЬ КЛЮЧ СЮДА (в кавычках)
+  api_key: THE_GRAPH_API_KEY
