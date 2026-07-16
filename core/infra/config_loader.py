@@ -181,11 +181,16 @@ class ConfigLoader:
         except (KeyError, TypeError):
             return default
 
+    def proxy_active(self) -> bool:
+        """РУЧНОЙ вкл/выкл прокси (Егор 16.07): один флаг proxy_pool.enabled.
+        ON = прокси (из .env PROXY_LIST) + farm-профиль (30 конн, 40rps).
+        OFF = щадящий direct (~8 конн). Прокси не оплачены → ставь OFF, адреса в .env целы."""
+        return bool(self.get("proxy_pool.enabled", False))
+
     def perf(self, key: str, default: Any = None) -> Any:
-        """PROXY-NODE профиль: если proxy_pool.enabled → берёт proxy_pool.overrides.<key>
-        (прокси-оптимизированные rps/semaphore), иначе performance.<key> (базовые).
-        Один флаг proxy_pool.enabled переключает весь профиль — не править параметры руками."""
-        if self.get("proxy_pool.enabled", False):
+        """PROXY-NODE профиль: proxy_active() → proxy_pool.overrides.<key> (прокси-farm rps/
+        semaphore), иначе performance.<key> (щадящие direct)."""
+        if self.proxy_active():
             ov = self.get(f"proxy_pool.overrides.{key}")
             if ov is not None:
                 return ov

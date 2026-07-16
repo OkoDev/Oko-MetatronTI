@@ -431,13 +431,13 @@ trigger_bus:
   cascade_min: 3
   interval_sec: 120
 event_bus:
-  enabled: true
+  enabled: false
   shadow: false
   cooldown_minutes: 30
   max_concurrent: 3
   btc_macro_shock_pct: 2.5
 advisor:
-  enabled: true
+  enabled: false
   shadow: true
   interval_hours: 4
   timeout_s: 600
@@ -547,11 +547,11 @@ performance:
   ws_reconnect_base_delay_sec: 5.0
   ws_ohlcv_error_pause_sec: 1.0
 dashboard:
-  enabled: true
+  enabled: false
   host: 127.0.0.1
   threaded: true
 market_ws:
-  enabled: true
+  enabled: false
   use_ws: true
   timeframes:
   - 3m
@@ -559,12 +559,14 @@ market_ws:
   - 15m
   batch_pairs: 50
 proxy_pool:
-  enabled: false           # 16.07 (Егор «интернет плохой, без прокси никак?»): proxies=[] = прокси НЕТ,
-                           # ходим напрямую. enabled:true включал overrides для прокси-ФЕРМЫ (30 конн,
-                           # 40rps, сем15) → все они через ОДИН домашний канал = сатурация линии +
-                           # BingX-таймауты (CancelledError-краши). false → щадящий прямой режим (~8 конн).
-                           # Вернуть true ТОЛЬКО когда proxies заполнен реальными прокси.
-  proxies: []
+  # 🔀 ПЕРЕКЛЮЧАТЕЛЬ ПРОКСИ (Егор 16.07): enabled = вкл/выкл. Прокси-адреса живут в .env →
+  # PROXY_LIST (url1,url2,... — пароли НЕ в git). Логика ЧЕСТНАЯ (config_loader.proxy_active):
+  #   enabled:true  + PROXY_LIST заполнен  → ПРОКСИ + farm-профиль (30 конн, 40rps)
+  #   enabled:true  + PROXY_LIST пуст (не оплачены) → авто-щадящий direct (канал не душим)
+  #   enabled:false → всегда щадящий direct (~8 конн)
+  # Оплатил прокси → вписал в .env PROXY_LIST + enabled:true. Кончились → enabled:false (или пусто).
+  enabled: false
+  proxies: []              # можно и сюда список, но лучше .env PROXY_LIST (не в git)
   rps_per_proxy: 35.0
   health_cooldown_sec: 30.0
   overrides:
@@ -629,7 +631,7 @@ trade_analyzer:
   api_key: ${GROQ_API_KEY}
   model: llama-3.3-70b-versatile
 signal_router:
-  enabled: true
+  enabled: false
   shadow_compare:
     enabled: false
     log_path: logs/router_shadow.log
