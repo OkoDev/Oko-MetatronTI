@@ -34,6 +34,12 @@ async def trade_tracker_loop(bot) -> None:
     while True:
         try:
             await asyncio.sleep(60)
+            # 16.07 HEARTBEAT: пульс ведения позиций (TSL/BE/sync) — критичнее скана
+            try:
+                from core.infra.heartbeat import beat as _hb
+                _hb("tracker")
+            except Exception:
+                pass
 
             # ── Шаг 1: биржевой sync (VST/LIVE only) ──────────────────────
             if _is_live:

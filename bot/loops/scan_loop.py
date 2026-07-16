@@ -2655,6 +2655,13 @@ async def monitor_market(bot) -> None:
             if _wl is not None:
                 _wl.cleanup_expired()
 
+            # 16.07 HEARTBEAT: пульс лупа — вотчдог рестартит бота при тишине
+            # (инцидент 15.07: сеть просела → луп завис на ретраях, pm2 видел «online» 6.5ч)
+            try:
+                from core.infra.heartbeat import beat as _hb
+                _hb("scan")
+            except Exception:
+                pass
             await asyncio.sleep(bot.config.get("analysis.check_interval", 60))
         except asyncio.CancelledError:
             logger.info("Мониторинг остановлен")
