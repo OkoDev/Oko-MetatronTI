@@ -29,6 +29,21 @@ def beat(name: str) -> None:
         logger.debug("[heartbeat] %s: %s", name, e)
 
 
+_LAST: dict = {}
+
+
+def beat_progress(name: str, min_interval: float = 15.0) -> None:
+    """Пульс ПО ХОДУ длинного цикла (17.07): скан 530 пар на щадящем direct идёт 5-10 мин,
+    а beat в конце цикла = ложная «тишина» → вотчдог убивал ЖИВОЙ луп. Пульс = «луп жив»,
+    не «цикл завершён» → бьём по прогрессу с троттлом (не чаще min_interval сек)."""
+    import time
+    now = time.monotonic()
+    if now - _LAST.get(name, 0) < min_interval:
+        return
+    _LAST[name] = now
+    beat(name)
+
+
 def age_sec(name: str) -> float | None:
     """Сколько секунд назад бился пульс (None — файла нет = луп ни разу не отметился)."""
     import time

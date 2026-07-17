@@ -1472,6 +1472,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
     async def scan_one(sym):
         nonlocal _confluence_sent, _anomaly_sent
+        # 17.07 ПРОГРЕСС-ПУЛЬС: скан 530 пар на щадящем direct идёт 5-10 мин; beat только в
+        # конце цикла = ложная «тишина» → вотчдог убивал ЖИВОЙ луп. Бьём по ходу (троттл 15с).
+        try:
+            from core.infra.heartbeat import beat_progress as _hbp
+            _hbp("scan")
+        except Exception:
+            pass
         signals_to_broadcast = []  # [(sig_type, raw_text, fallback_rec), ...]
         all_scan_signals = []      # SignalData от детекторов — для pre_collected_signals
 
