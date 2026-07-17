@@ -169,7 +169,20 @@ def scan_one(sym: str, test: bool = False) -> str | None:
     if not _cooldown_ok(f"method_shadow:{sym}", COOLDOWN_SEC):
         return None
     _log_shadow(sym, m, crowd, "confirm" if confirms else "against")
-    send_tg(msg, channel="action")
+    # 17.07 (Егор «нет чарта»): SMC-чарт одним сообщением (фото+caption), фолбэк на текст.
+    _sent = False
+    if len(msg) <= 1024:
+        try:
+            import asyncio as _aio
+            from core.ui.chart_builder import build_signal_chart
+            from oko_feed.alerts import send_tg_photo
+            _png = _aio.run(build_signal_chart(f"{sym}/USDT:USDT", tf="1h", bot=None, wave_overlay=True))
+            if _png and send_tg_photo(_png, caption=msg, channel="action"):
+                _sent = True
+        except Exception as _ce:
+            print(f"[METHOD-SHADOW] chart {sym}: {_ce}")
+    if not _sent:
+        send_tg(msg, channel="action")   # фолбэк: текст (чарт не собрался / caption длинный)
     return f"SHADOW {sym} {m['direction']} fuel={'✅' if confirms else '⚠️'}"
 
 
