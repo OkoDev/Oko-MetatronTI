@@ -164,7 +164,6 @@ trading:
     signal_types:
     - pump
     - spring
-    - build_flip
     pump_grades:
     - A
     - B
