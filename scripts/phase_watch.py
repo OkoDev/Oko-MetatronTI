@@ -76,9 +76,11 @@ def main():
     if prev is None or prev["phase"] != macro.phase:
         try:
             from oko_feed.alerts import send_tg
-            send_tg(f"🧭 <b>ФАЗА РЫНКА сменилась:</b> {prev['phase'] if prev else '—'} → <b>{macro.phase}</b>\n"
-                    f"bias={macro.bias or '—'} veto={macro.veto or '—'} (conf {macro.confidence:.0%})\n"
-                    f"{macro.detail}\n\n<i>shadow — сверь с глазом</i>\n#SYSTEM #PHASE", channel="system")
+            from core.context.phase_sphere import macro_interp
+            send_tg(f"🧭 <b>ФАЗА РЫНКА сменилась:</b> {prev['phase'] if prev else '—'} → <b>{macro.phase}</b>\n\n"
+                    f"{macro_interp(macro.phase)}\n\n"
+                    f"<i>уверенность {macro.confidence:.0%} · триггер: {macro.detail}</i>\n"
+                    f"<i>shadow — сверь с глазом, согласен?</i>\n\n#SYSTEM #PHASE", channel="system")
         except Exception as _e:
             print(f"[PHASE] TG: {_e}")
     print(f"[PHASE] МАКРО: {macro.phase} bias={macro.bias} (%PDN+OIUP={pdn} funding={medf} BTC={btc_trend} risk_off={risk_off})")

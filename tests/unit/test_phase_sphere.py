@@ -10,24 +10,24 @@ class TestMacro:
     def test_squeeze_up_precursors(self):
         # шорты грузятся на дне (2/3 прекурсора) → готовим LONG-разворот
         m = diagnose_macro(pct_pdn_oiup=30, median_funding_pct=-0.01, btc_trend="short", usdtd_risk_off=True)
-        assert m.phase == "SQUEEZE_UP" and m.bias == "LONG" and m.veto == "SHORT"
+        assert m.phase == "REVERSAL_BREWING" and m.bias == "LONG" and m.veto == "SHORT"
 
     def test_markup_down(self):
         m = diagnose_macro(pct_pdn_oiup=5, median_funding_pct=0.01, btc_trend="short", usdtd_risk_off=True)
-        assert m.phase == "MARKUP_DOWN" and m.bias == "SHORT" and m.veto == "LONG"
+        assert m.phase == "TREND_DOWN" and m.bias == "SHORT" and m.veto == "LONG"
 
     def test_markup_up(self):
         m = diagnose_macro(pct_pdn_oiup=5, median_funding_pct=0.01, btc_trend="long", usdtd_risk_off=False)
-        assert m.phase == "MARKUP_UP" and m.bias == "LONG"
+        assert m.phase == "TREND_UP" and m.bias == "LONG"
 
     def test_neutral_when_unclear(self):
         m = diagnose_macro(pct_pdn_oiup=10, median_funding_pct=0.0, btc_trend=None, usdtd_risk_off=None)
-        assert m.phase == "NEUTRAL" and m.bias is None
+        assert m.phase == "UNCLEAR" and m.bias is None
 
     def test_degrades_on_none(self):
         # None-входы не роняют — меньше уверенности
         m = diagnose_macro(None, None, None, None)
-        assert m.phase == "NEUTRAL"
+        assert m.phase == "UNCLEAR"
 
 
 class TestPair:
@@ -62,19 +62,19 @@ class TestPair:
 
 class TestPhaseFit:
     def test_fit_concordant(self):
-        macro = MacroPhase("MARKUP_DOWN", "SHORT", "LONG", 0.8, "")
+        macro = MacroPhase("TREND_DOWN", "SHORT", "LONG", 0.8, "")
         pair = PairPhase("CONTINUATION", "SHORT", "trend", True, 0.7, "")
         fit, _ = phase_fit("SHORT", macro, pair)
         assert fit is True
 
     def test_conflict_against_pair_side(self):
-        macro = MacroPhase("MARKUP_DOWN", "SHORT", "LONG", 0.8, "")
+        macro = MacroPhase("TREND_DOWN", "SHORT", "LONG", 0.8, "")
         pair = PairPhase("CONTINUATION", "SHORT", "trend", True, 0.7, "")
         fit, _ = phase_fit("LONG", macro, pair)
         assert fit is False
 
     def test_conflict_chop(self):
-        macro = MacroPhase("NEUTRAL", None, None, 0.4, "")
+        macro = MacroPhase("UNCLEAR", None, None, 0.4, "")
         pair = PairPhase("CHOP", None, None, None, 0.3, "")
         fit, _ = phase_fit("SHORT", macro, pair)
         assert fit is False

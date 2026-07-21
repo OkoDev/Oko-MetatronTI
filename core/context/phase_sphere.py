@@ -28,7 +28,7 @@ _MIDDLE_LO, _MIDDLE_HI = 0.30, 0.70   # pos в середине ноги = зо�
 
 @dataclass(frozen=True)
 class MacroPhase:
-    phase: str                 # MARKUP_UP | MARKUP_DOWN | SQUEEZE_UP | NEUTRAL
+    phase: str                 # TREND_UP | TREND_DOWN | REVERSAL_BREWING | UNCLEAR
     bias: Optional[str]        # LONG | SHORT | None — разрешённая сторона входов
     veto: Optional[str]        # какую сторону continuation ВЕТИРУЕМ (против фазы)
     confidence: float          # 0..1 (доля согласных сигналов)
@@ -50,11 +50,11 @@ def diagnose_macro(pct_pdn_oiup: Optional[float], median_funding_pct: Optional[f
     """МАКРО-фаза из market-wide агрегатов (reuse _reversal_watch-сигналы + USDT.D).
 
     Задаёт РАЗРЕШЕНИЕ стороны + veto continuation. Деградирует gracefully (None-входы = меньше
-    уверенности, не падение). Логика консилиума:
-      прекурсоры накопления ≥2/3 → SQUEEZE_UP (готовим LONG-разворот, SHORT-cont вето)
-      risk_off & BTC↓            → MARKUP_DOWN (SHORT ок, LONG-cont вето)
-      risk_on & BTC↑             → MARKUP_UP   (LONG ок, SHORT-cont вето)
-      иначе                      → NEUTRAL     (стоять/сокращать)
+    уверенности, не падение). Имена ФАЗ = механические (по триггеру, НЕ Вайкофф-ярлыки):
+      прекурсоры разворота ≥2/3 → REVERSAL_BREWING (шорты грузятся на дне → готовим LONG)
+      risk_off & BTC-структура↓ → TREND_DOWN (SHORT по тренду, LONG-cont вето)
+      risk_on & BTC-структура↑  → TREND_UP   (LONG по тренду, SHORT-cont вето)
+      иначе                     → UNCLEAR    (стоять/сокращать)
     """
     # прекурсоры бычьего разворота (reversal_watch, 2 из 3)
     prec = [
@@ -64,15 +64,15 @@ def diagnose_macro(pct_pdn_oiup: Optional[float], median_funding_pct: Optional[f
     ]
     n_prec = sum(prec)
     if n_prec >= 2:
-        return MacroPhase("SQUEEZE_UP", "LONG", "SHORT", min(1.0, n_prec / 3 + 0.2),
-                          f"прекурсоры накопления {n_prec}/3 → готовим LONG-разворот")
+        return MacroPhase("REVERSAL_BREWING", "LONG", "SHORT", min(1.0, n_prec / 3 + 0.2),
+                          f"прекурсоры разворота вверх {n_prec}/3 (шорты грузятся на дне) → готовим LONG")
     if usdtd_risk_off is True and btc_trend == "short":
-        return MacroPhase("MARKUP_DOWN", "SHORT", "LONG", 0.8,
-                          "risk_off + BTC↓ → разгрузка, SHORT по тренду")
+        return MacroPhase("TREND_DOWN", "SHORT", "LONG", 0.8,
+                          "risk_off + BTC-структура вниз → тренд вниз, SHORT по тренду")
     if usdtd_risk_off is False and btc_trend == "long":
-        return MacroPhase("MARKUP_UP", "LONG", "SHORT", 0.8,
-                          "risk_on + BTC↑ → разметка, LONG по тренду")
-    return MacroPhase("NEUTRAL", None, None, 0.4,
+        return MacroPhase("TREND_UP", "LONG", "SHORT", 0.8,
+                          "risk_on + BTC-структура вверх → тренд вверх, LONG по тренду")
+    return MacroPhase("UNCLEAR", None, None, 0.4,
                       f"нет чистой фазы (risk_off={usdtd_risk_off}, BTC={btc_trend}, прек={n_prec}/3) → стоять")
 
 
@@ -141,6 +141,20 @@ def diagnose_pair(struct: dict, rev: dict, quadrant: Optional[str], funding: Opt
     # прочее (у origin / поздняя нога без переворота) — неясно
     return PairPhase("CHOP", None, None, _quadrant_concordant(quadrant, htf_side), 0.35,
                      f"pos={pos:.2f} {trend}-нога, нет чёткого REVERSAL/CONT → стоять")
+
+
+# ── Человеческая интерпретация фаз для TG (Егор: «в сообщении дать интерпретацию») ──
+_MACRO_INTERP = {
+    "TREND_UP": "🟢 Рынок в тренде ВВЕРХ (деньги в риск, BTC-структура растёт). Торгуем LONG по тренду, шорт-продолжения не берём.",
+    "TREND_DOWN": "🔴 Рынок в тренде ВНИЗ (risk-off, BTC-структура падает). Торгуем SHORT по тренду, лонг-продолжения не берём.",
+    "REVERSAL_BREWING": "🐂 Зреет РАЗВОРОТ вверх (шорты грузятся на дне, платят funding — топливо сквиза). Готовим LONG от дна, шорты опасны.",
+    "UNCLEAR": "⚪ Фаза НЕЯСНА (сигналы конфликтуют). Лучше стоять в стороне / сокращать риск.",
+}
+
+
+def macro_interp(phase: str) -> str:
+    """Человеческая расшифровка макро-фазы для TG-сообщения."""
+    return _MACRO_INTERP.get(phase, phase)
 
 
 def phase_fit(signal_direction: str, macro: MacroPhase, pair: PairPhase) -> tuple[bool, str]:
