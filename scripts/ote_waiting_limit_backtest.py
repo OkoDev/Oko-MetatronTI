@@ -96,8 +96,11 @@ def main():
     print(f"🎯 OTE WAITING-LIMIT (глубокий fib) · топ-{nsyms} символов · TTL={ttl}бар ({ttl*15}мин)")
     print(f"   всего ote-сделок с зоной: {len(trades)}, тестируем на {sum(freq[b] for b in top)} (топ символы)\n")
 
-    wl_net, sim_net, miss = [], [], 0
-    fills = 0
+    # СВИП ГЛУБИНЫ (23.07, Егор «до каких fib цена не доходит?»): лимит на доле d зоны
+    # (0=shallow-край, 1=golden pocket deep-край). Один фетч на символ — все глубины разом.
+    DEPTHS = (0.25, 0.5, 0.618, 0.705, 0.786, 1.0)
+    res = {d: {"net": [], "miss": 0} for d in DEPTHS}
+    import bisect
     for base in top:
         sub = [t for t in trades if t["base"] == base]
         if not sub:
@@ -108,55 +111,58 @@ def main():
         if len(bars) < 20:
             continue
         times = [b[0] for b in bars]
-        import bisect
         for t in sub:
             i0 = bisect.bisect_left(times, t["ms"])
             if i0 >= len(bars):
                 continue
-            deep = t["zlo"] if t["d"] == "LONG" else t["zhi"]
-            # 1) ждём достижения глубокого края за TTL баров
-            fill_i = None
-            for i in range(i0, min(i0 + ttl + 1, len(bars))):
-                _, o, h, l, cl = bars[i]
-                if (t["d"] == "LONG" and l <= deep) or (t["d"] == "SHORT" and h >= deep):
-                    fill_i = i; break
-            if fill_i is None:
-                miss += 1
-                continue
-            fills += 1
-            sim_net.append(t["sim_net"])
-            # 2) walk-forward от fill: SL или TP1 раньше?
-            outcome = None
-            for j in range(fill_i, min(fill_i + WALK_BARS, len(bars))):
-                _, o, h, l, cl = bars[j]
-                if t["d"] == "LONG":
-                    if l <= t["sl"]: outcome = ("SL", t["sl"]); break
-                    if h >= t["tp1"]: outcome = ("TP", t["tp1"]); break
-                else:
-                    if h >= t["sl"]: outcome = ("SL", t["sl"]); break
-                    if l <= t["tp1"]: outcome = ("TP", t["tp1"]); break
-            if outcome is None:
-                _, o, h, l, cl = bars[min(fill_i + WALK_BARS - 1, len(bars) - 1)]
-                outcome = ("END", cl)
-            exitp = outcome[1]
-            net = ((exitp - deep) / deep if t["d"] == "LONG" else (deep - exitp) / deep) * 100 - COSTS
-            wl_net.append(net)
+            span = t["zhi"] - t["zlo"]
+            for d in DEPTHS:
+                # цена лимита на глубине d: LONG от zhi вниз, SHORT от zlo вверх
+                lim = (t["zhi"] - d * span) if t["d"] == "LONG" else (t["zlo"] + d * span)
+                fill_i = None
+                for i in range(i0, min(i0 + ttl + 1, len(bars))):
+                    _, o, h, l, cl = bars[i]
+                    if (t["d"] == "LONG" and l <= lim) or (t["d"] == "SHORT" and h >= lim):
+                        fill_i = i; break
+                if fill_i is None:
+                    res[d]["miss"] += 1
+                    continue
+                outcome = None
+                for j in range(fill_i, min(fill_i + WALK_BARS, len(bars))):
+                    _, o, h, l, cl = bars[j]
+                    if t["d"] == "LONG":
+                        if l <= t["sl"]: outcome = ("SL", t["sl"]); break
+                        if h >= t["tp1"]: outcome = ("TP", t["tp1"]); break
+                    else:
+                        if h >= t["sl"]: outcome = ("SL", t["sl"]); break
+                        if l <= t["tp1"]: outcome = ("TP", t["tp1"]); break
+                if outcome is None:
+                    outcome = ("END", bars[min(fill_i + WALK_BARS - 1, len(bars) - 1)][4])
+                exitp = outcome[1]
+                net = ((exitp - lim) / lim if t["d"] == "LONG" else (lim - exitp) / lim) * 100 - COSTS
+                res[d]["net"].append(net)
         time.sleep(0.15)
 
     def _st(a):
         if not a: return 0, 0, 0
         return len(a), 100*sum(1 for x in a if x > 0)/len(a), sum(a)/len(a)
-    nw, wrw, netw = _st(wl_net)
-    ns, wrs, nets = _st(sim_net)
-    tot = fills + miss
-    print("── РЕЗУЛЬТАТ ──")
-    print(f"   fill-rate ожидающего лимита = {100*fills/tot:.0f}% (зафилилось {fills}, откат не дошёл {miss})")
-    print(f"   🟢 ОЖИДАЮЩИЙ ЛИМИТ  n={nw:4} WR{wrw:3.0f}% net={netw:+.3f}%  (вход по глубокому fib)")
-    print(f"   📊 те же в SIM       n={ns:4} WR{wrs:3.0f}% net={nets:+.3f}%  (вход по reaction-close)")
-    if nw:
-        v = ("✅ ОЖИДАЮЩИЙ ЛИМИТ в плюсе → эдж восстановим (гипотеза A подтв. для waiting)"
-             if netw > 0.10 else "❌ и ожидающий лимит не даёт плюса")
-        print(f"\n   {v}")
+    print("── СВИП ГЛУБИНЫ ЛИМИТА (доля зоны: 0=shallow-край, 1=golden pocket) ──")
+    print(f"   {'глубина':>8} {'fill%':>6} {'n':>5} {'WR':>4} {'net/фил':>9} {'E/сетап':>9}   (E = fill_rate × net)")
+    best = None
+    for d in DEPTHS:
+        nets = res[d]["net"]; miss = res[d]["miss"]
+        n, wr, net = _st(nets)
+        tot = n + miss
+        if not tot:
+            continue
+        fr = n / tot
+        exp = fr * (net or 0)
+        mark = ""
+        if best is None or exp > best[1]:
+            best = (d, exp)
+        print(f"   {d:8.3f} {100*fr:5.0f}% {n:5} {wr:3.0f}% {net:+8.3f}% {exp:+8.3f}%")
+    if best:
+        print(f"\n   🎯 ОПТИМУМ по матожиданию на сетап: глубина {best[0]:.3f} (E={best[1]:+.3f}%/сетап)")
 
 
 if __name__ == "__main__":
