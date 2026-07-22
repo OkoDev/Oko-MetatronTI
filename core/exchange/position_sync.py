@@ -544,6 +544,28 @@ async def sync_positions(bot) -> None:
         open_sim = bot.trade_simulator.get_open_trades()
         synced = 0
 
+        # actual_entry_price BACKFILL (22.07): LIMIT-вход пишет actual_entry=NULL при постановке
+        # (br.entry_price=0, fill позже), а WS-дозапись выключена (exec_ws.write_exch_id=false —
+        # пауза CUTOVER) → 65% VST ote_nested без факта филла. REST-снапшот позиции несёт реальный
+        # avgPrice (pp.entry) → дописываем NULL пока позиция открыта. Работает при любом cutover.
+        # ЗАКОН №1: без факта филла дрифт SIM↔VST (вход +0.81% adverse) невидим. Только VST (order_id).
+        for _t in open_sim:
+            if _t.get("actual_entry_price") is not None or not _t.get("exchange_order_id"):
+                continue
+            _pp_ae = open_pairs.get((_t.get("symbol", ""), (_t.get("direction") or "LONG").upper()))
+            if _pp_ae is not None and getattr(_pp_ae, "entry", 0) and _pp_ae.entry > 0:
+                try:
+                    import sqlite3 as _sq_ae
+                    with _sq_ae.connect(bot.trade_simulator.db_path, timeout=5) as _bc_ae:
+                        _bc_ae.execute(
+                            "UPDATE simulated_trades SET actual_entry_price=? "
+                            "WHERE id=? AND actual_entry_price IS NULL", (float(_pp_ae.entry), _t.get("id")))
+                        _bc_ae.commit()
+                    logger.info("[POSITION-SYNC] actual_entry backfill #%s %s %s = %.6g (LIMIT-fill)",
+                                _t.get("id"), _t.get("symbol"), _t.get("direction"), _pp_ae.entry)
+                except Exception as _be_ae:
+                    logger.debug("[POSITION-SYNC] actual_entry backfill err #%s: %s", _t.get("id"), _be_ae)
+
         # DEV-185.2: emergency watchdog — перед основным циклом закрытия проверяем
         # "висящие" позиции (STOP-LIMIT trigger сработал, но limit не fill из-за gap).
         for trade in open_sim:
