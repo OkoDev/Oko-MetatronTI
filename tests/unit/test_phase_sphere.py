@@ -2,7 +2,7 @@
 """Поведенческий контракт Сферы Фазы v0 (Decision Core, 21.07). Пороги калибруются
 по shadow-сверке с глазом Егора — логика классификации заморожена этими кейсами."""
 from core.context.phase_sphere import (
-    diagnose_macro, diagnose_pair, phase_fit, MacroPhase, PairPhase,
+    diagnose_macro, diagnose_pair, phase_fit, trade_phase_snapshot, MacroPhase, PairPhase,
 )
 
 
@@ -78,3 +78,35 @@ class TestPhaseFit:
         pair = PairPhase("CHOP", None, None, None, 0.3, "")
         fit, _ = phase_fit("SHORT", macro, pair)
         assert fit is False
+
+
+class TestTradeSnapshot:
+    """Снапшот фазы в features_json (шаг 2-4) — вердикт fit из сохранённых строк phase_state."""
+
+    def test_macro_only_conflict(self):
+        # SHORT в TREND_UP без пер-пара данных → под veto, fit=False (инсайт Егора: шорт льёт вверх)
+        s = trade_phase_snapshot("SHORT", "TREND_UP", "LONG", 0.8)
+        assert s["macro_fit"] is False and s["fit"] is False and s["pair"] is None
+
+    def test_macro_only_fit(self):
+        # LONG в TREND_UP по фазе → fit=True
+        s = trade_phase_snapshot("LONG", "TREND_UP", "LONG", 0.8)
+        assert s["macro_fit"] is True and s["fit"] is True
+
+    def test_unclear_not_judged(self):
+        # UNCLEAR не судим — macro_fit=None, fit=True (не режем на неясной фазе)
+        s = trade_phase_snapshot("SHORT", "UNCLEAR", None, 0.4)
+        assert s["macro_fit"] is None and s["fit"] is True and s["macro_veto"] is None
+
+    def test_pair_reversal_overrides_macro_veto(self):
+        # SHORT под TREND_UP-veto, НО пара в REVERSAL SHORT (разворот у вершины) → fit=True:
+        # veto режет только continuation, законный counter-trend reversal проходит
+        s = trade_phase_snapshot("SHORT", "TREND_UP", "LONG", 0.8,
+                                 pair_phase="REVERSAL", pair_side="SHORT", pair_conc=True)
+        assert s["macro_fit"] is False and s["fit"] is True and s["pair"] == "REVERSAL"
+
+    def test_pair_continuation_under_veto(self):
+        # SHORT continuation под TREND_UP-veto → fit=False (шорт по тренду вверх = против фазы)
+        s = trade_phase_snapshot("SHORT", "TREND_UP", "LONG", 0.8,
+                                 pair_phase="CONTINUATION", pair_side="SHORT", pair_conc=True)
+        assert s["fit"] is False

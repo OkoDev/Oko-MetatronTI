@@ -157,6 +157,43 @@ def macro_interp(phase: str) -> str:
     return _MACRO_INTERP.get(phase, phase)
 
 
+# ── Снапшот фазы для features_json сделки (Сфера Фазы, шаг 2-4, 22.07) ──────────
+# veto фазы детерминирован именем (какую сторону continuation НЕ берём против фазы):
+_VETO_BY_PHASE = {
+    "TREND_UP": "SHORT", "TREND_DOWN": "LONG", "REVERSAL_BREWING": "SHORT", "UNCLEAR": None,
+}
+
+
+def trade_phase_snapshot(signal_direction: str, macro_phase: str, macro_bias: Optional[str],
+                         macro_conf: Optional[float], pair_phase: Optional[str] = None,
+                         pair_side: Optional[str] = None, pair_conc: Optional[bool] = None,
+                         age_min: Optional[int] = None) -> dict:
+    """ЕДИНЫЙ источник вердикта fit сделки из СОХРАНЁННОЙ фазы (строки phase_state).
+    Чистая: значения подаёт вызывающий (trade_simulator читает phase_state). Пишется в
+    features_json → форвард (шаг 4) сверит net% сделок fit=True vs fit=False.
+
+    Два уровня фита (форвард может резать любым):
+      macro_fit — сторона НЕ под veto макро-фазы (None если UNCLEAR — не судим).
+      fit       — полный phase_fit (макро+пара) если есть пер-пара строка, иначе = macro_fit.
+    """
+    sd = (signal_direction or "").upper()
+    veto = _VETO_BY_PHASE.get(macro_phase)
+    macro_fit = None if veto is None else (sd != veto)
+    macro = MacroPhase(macro_phase, macro_bias, veto, macro_conf or 0.0, "")
+    if pair_phase:
+        pair = PairPhase(pair_phase, pair_side, None, pair_conc, 0.0, "")
+        fit, reason = phase_fit(sd, macro, pair)
+    else:
+        # нет пер-пара данных (не мажор) → судим по макро-veto; UNCLEAR = не режем (fit=True)
+        fit = macro_fit if macro_fit is not None else True
+        reason = f"макро-only: veto={veto}, dir={sd}"
+    return {
+        "macro": macro_phase, "macro_bias": macro_bias, "macro_veto": veto,
+        "macro_fit": macro_fit, "pair": pair_phase, "pair_side": pair_side,
+        "fit": bool(fit), "reason": reason, "age_min": age_min,
+    }
+
+
 def phase_fit(signal_direction: str, macro: MacroPhase, pair: PairPhase) -> tuple[bool, str]:
     """ГЕЙТ-СУДЬЯ (SHADOW): вписывается ли сигнал в фазу. Возвращает (fit, причина).
     НЕ блокирует пока (features_json snapshot) — форвард сверит fit vs conflict net%.

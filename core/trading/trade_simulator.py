@@ -1205,6 +1205,45 @@ class TradeSimulator:
             except Exception as _e_fw:
                 logger.debug("[FEAT-W] score error: %s", _e_fw)
 
+        # PHASE-SPHERE (Сфера Фазы, шаг 2-4, 22.07): снапшот ФАЗЫ на момент входа → features_json.
+        # ШАДОУ: не блокирует (phase_guard_enabled=false). Форвард (scripts/phase_forward.py, 3 нед)
+        # сверит net% сделок fit=True vs fit=False. Reuse: свежий вердикт из phase_state
+        # (phase_watch, cron 30 мин) — НЕ пересчитываем фазу здесь. Дешёвый read, try/except.
+        try:
+            _ph_dir = _direction_str(_get_recommendation_value(recommendation, "direction"))
+            if _ph_dir:
+                _pc = sqlite3.connect(self.db_path, timeout=5)
+                _pc.row_factory = sqlite3.Row
+                try:
+                    _mrow = _pc.execute(
+                        "SELECT phase, side, confidence, ts FROM phase_state "
+                        "WHERE level='macro' ORDER BY ts DESC LIMIT 1").fetchone()
+                    _base = (symbol or "").split("/")[0].replace("USDT", "")  # SEI/USDT:USDT → SEI
+                    _prow = _pc.execute(
+                        "SELECT phase, side, concordance FROM phase_state "
+                        "WHERE level='pair' AND symbol=? AND ts>? ORDER BY ts DESC LIMIT 1",
+                        (_base, int(time.time()) - 7200)).fetchone()
+                finally:
+                    _pc.close()
+                if _mrow:
+                    _p_age = int((time.time() - _mrow["ts"]) / 60) if _mrow["ts"] else None
+                    _p_conc = None
+                    if _prow and _prow["concordance"] is not None:
+                        _p_conc = {"True": True, "False": False}.get(str(_prow["concordance"]))
+                    from core.context.phase_sphere import trade_phase_snapshot
+                    _ph_snap = trade_phase_snapshot(
+                        _ph_dir, _mrow["phase"], _mrow["side"], _mrow["confidence"],
+                        pair_phase=(_prow["phase"] if _prow else None),
+                        pair_side=(_prow["side"] if _prow else None),
+                        pair_conc=_p_conc, age_min=_p_age)
+                    if extra_features is None:
+                        extra_features = {}
+                    extra_features["phase"] = _ph_snap
+                    logger.debug("[PHASE] %s %s macro_fit=%s fit=%s (%s/%s)", symbol, _ph_dir,
+                                 _ph_snap["macro_fit"], _ph_snap["fit"], _ph_snap["macro"], _ph_snap["pair"])
+        except Exception as _e_ph:
+            logger.debug("[PHASE] snapshot error %s: %s", locals().get("symbol", "?"), _e_ph)
+
         trade_id = self.register_trade(recommendation, regime=regime, extra_features=extra_features, _reason_out=_reason_out, regime_v2=_regime_v2)
 
         # ARCH-118 Шаг 5b: снимок в таблицу trade_features (FK), когда есть trade_id.
