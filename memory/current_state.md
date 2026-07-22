@@ -1678,3 +1678,36 @@
 - ✅ 4h-atr регистрация off (бэктест −0.505%/сд 4/5 лет); wt_os_depth-фича в боевом dict
 - 🔬 VST-лента: pump + spring + build_flip + atr-1h-WT + ote-премиум-LIMIT. Судья всем = форвард-машина вс 08:00
 - ⚠️ Наблюдать: первый build_flip сетап (засады ставятся), первая LIMIT-постановка ote-премиума, [BUILD-FLIP]/[ATR-1H-WT] в логах
+
+## [21.07] Даат: Сфера Фазы — переименование + интерпретация ✅
+- ✅ Механические имена фаз (Егор поймал Вайкофф-ярлыки): MARKUP_UP→TREND_UP, MARKUP_DOWN→TREND_DOWN, SQUEEZE_UP→REVERSAL_BREWING, NEUTRAL→UNCLEAR
+- ✅ macro_interp() — человеческая расшифровка в TG при смене фазы. 12 тестов ✓, коммит, phase-watch перезапущен
+- 📍 ЖИВАЯ ФАЗА СЕЙЧАС: **TREND_UP** bias=LONG conf=80% (risk_on + BTC-структура вверх). Рынок бычий.
+- 🔄 Next Сферы Фазы: шаги 2-4 (снапшот фазы в features_json на сделке → форвард fit vs conflict net%), 6-7 (soft→hard gate). Time-box 3 нед.
+- ⚠️ Отложено Егором: «остановить кровь» (только pump VST). Но при TREND_UP pump-SHORT = continuation под veto — противоречие, обсудить.
+
+## [22.07] Даат: Сфера Фазы шаг 2-4 — снапшот в сделки + форвард ✅
+- ✅ trade_phase_snapshot() в core/context/phase_sphere.py — единый вердикт fit из phase_state (чистая, 17 тестов ✓)
+- ✅ register_trade_async пишет features_json.phase на каждой сделке (shadow, не блокирует, reuse phase_state — не пересчитывает)
+- ✅ scripts/phase_forward.py — судья net% fit vs conflict (порог n=5, приговор через ~3 нед → гейт soft→hard ИЛИ закрытие автономии)
+- ✅ oko-bot перезапущен (снапшоты пишутся с 22.07). Коммит сделан.
+- 📍 Живая фаза TREND_UP → pump-SHORT метится fit=False. Форвард измерит: льют ли шорты против бычьей фазы.
+- 🔄 NEXT: 3 нед копим → python scripts/phase_forward.py. Если фаза РАЗДЕЛЯЕТ (Δ ПО−ПРОТИВ >0.15%) → активировать phase_guard_enabled (soft). Иначе закрыть автономию.
+
+## [22.07] Даат: atr_change → только S2, wt_sideways проверен
+- ✅ Гейт signal_quality.atr_change_s2_only=true: сырой atr_change (1h −0.86%, 4h −1.27%, 15m −0.50% net SIM) дропается, торгуется ТОЛЬКО S2-рецепт (+0.47%/сд 4 года). scan_loop.py + config. Бот перезапущен.
+- 📍 Коррекция ТФ-карты: atr_change детектит 1h/4h (НЕ 15m — то entry_tf колонка); wt_sideways детектит 30m (sideways_mode.timeframe), exchange_enabled=false → уже SIM-only, живьё не жжёт.
+- 🔬 Корневая находка сессии: 2 детектора (atr_change+wt_sideways) = 63% объёма, maxR 0.34, топили статистику. Ядро без них +0.237% WR59. Эдж 3% Егора = входы maxR≥2 (+2.14% WR88). Задача проекта = ОТБОР входа (R-Predictor уже в коде).
+- 🔄 NEXT: wt_sideways (SIM-only) — решить демоут/1h-тест; качественное ядро (ote/liq) → бой с execution drift (SIM+0.28→VST−1.34); R-Predictor как гейт входа.
+
+## [22.07] Даат: шаг 1 — actual_entry_price backfill (execution)
+- ✅ Корень NULL: WS open-fill (exec_ws_integration:250) ловит только o=='MARKET' → LIMIT-филлы проваливались; + write_exch_id=false (пауза CUTOVER). 65% VST ote без actual_entry.
+- ✅ Фикс: REST-бэкфилл в position_sync из pp.entry (avgPrice), не трогает cutover, идёт вперёд. Коммит, бот перезапущен.
+- ⚠️ Лимит: закрытые исторические NULL не бэкфиллятся (позиций нет). Идёт вперёд — разблокирует измерение дрифта на НОВЫХ сделках.
+- 🔄 NEXT шаг 2: slippage-модель в SIM (чтобы полигон перестал врать про идеальный fib-вход). Дизайн: измеренный per-source слиппедж (ote +0.72%, oko_ote +2.52%) вычитать из SIM-входа. Потом шаг 3 (execution dig).
+
+## [22.07] Даат: шаг 3 раскопка входа ote — A/B решается измерением
+- ✅ entry ote = ЗАКРЫТИЕ реакционной 15m-свечи (_check_shot → c[k]), лимит там. НЕ отдыхающий fib глубже.
+- ✅ «+0.81% adverse» = СМЕЩЁННАЯ выборка: лимит-филлы были NULL (невидимы), записаны только market-догоны. Реальный вопрос = FILL-RATE, не adverse-цена.
+- ✅ Шаг 1 (починка actual_entry) РАЗБЛОКИРОВАЛ измерение A/B — теперь лимит-филлы пишут цену.
+- 🔄 NEXT: измерительный форвард 1-2 нед (fill-rate лимитов + качество лимит-филла + net лимит vs market). A=восстановим/B=недостижим. Без изменения живой торговли.
