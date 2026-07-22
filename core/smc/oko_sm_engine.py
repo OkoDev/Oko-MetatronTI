@@ -42,6 +42,7 @@ class SMState:
     trail_dn: Optional[float] = None    # Weak Low
     trail_dn_x: Optional[int] = None
     events: list = field(default_factory=list)
+    leg_history: list = field(default_factory=list)   # per-bar current_leg (record_legs=True)
 
 
 def _swings(high: pd.Series, low: pd.Series, length: int):
@@ -67,9 +68,12 @@ def _swings(high: pd.Series, low: pd.Series, length: int):
     return out
 
 
-def run_structure(df: pd.DataFrame, swing_len: int = 50, internal_len: int = 5) -> SMState:
+def run_structure(df: pd.DataFrame, swing_len: int = 50, internal_len: int = 5,
+                  record_legs: bool = False) -> SMState:
     """Прогон структурной машины OKO-SM по df (columns: open/high/low/close, RangeIndex).
-    Возвращает состояние: trend, свинги, trail (Strong/Weak), события CHoCH/BOS."""
+    Возвращает состояние: trend, свинги, trail (Strong/Weak), события CHoCH/BOS.
+    record_legs=True → st.leg_history[t] = current_leg() ПОСЛЕ бара t (каузально: решение
+    на баре t+1 принимается по ноге бара t)."""
     st = SMState()
     close = df["close"].values
     high = df["high"].values
@@ -133,6 +137,11 @@ def run_structure(df: pd.DataFrame, swing_len: int = 50, internal_len: int = 5) 
             btm_cross = False
             st.trend = -1
 
+        if record_legs:
+            st.leg_history.append(current_leg(st))
+
+    if record_legs and len(st.leg_history) < n:      # бар t=0 пропущен continue'ом
+        st.leg_history.insert(0, None)
     return st
 
 
