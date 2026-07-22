@@ -469,6 +469,9 @@ signal_quality:
   min_strength_register: 50
   min_strength_atr_change: 0
   atr_change_15m_enabled: false
+  # Егор 22.07: сырой atr_change льёт на всех ТФ (15m −0.50%, 1h −0.86%, 4h −1.27% net SIM).
+  # Оставляем ТОЛЬКО S2-рецепт (4h SHORT + close<WPP + funding/usdtd/vol гейты = +0.47%/сд).
+  atr_change_s2_only: true
   atr_change:
     long_strength_penalty: 0
   min_strength_wl_breach: 45

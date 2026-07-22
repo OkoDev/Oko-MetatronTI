@@ -955,6 +955,23 @@ async def _execute_atr_change_signal(
                 except Exception:
                     _s2_setup = None                  # БД недоступна → fail-closed (не открываем)
 
+        # Егор 22.07: «оставить только atr_change S2» (signal_quality.atr_change_s2_only).
+        # Сырой atr_change без эджа на ВСЕХ ТФ детекции (SIM net ≥11.07: 15m −0.50%, 1h −0.86%,
+        # 4h −1.27%); S2-рецепт (+0.47%/сд n=5290, 4 года, memory detectors_two_poison_atr_wt)
+        # — единственный выживший. Не-S2 → drop (в shadow-БД остаётся след record_drop, не торгуем).
+        if _s2_setup is None and bot.config.get("signal_quality.atr_change_s2_only", False):
+            logger.info("[ATR-S2-ONLY] %s %s %s: не S2-сетап → drop", symbol, tf, side)
+            try:
+                from core.observability.decision_trace import record_drop
+                asyncio.create_task(record_drop(
+                    symbol=symbol, gate_name="atr_change_s2_only",
+                    drop_reason=f"atr_change_{tf}/{side}: не S2-сетап (atr_change_s2_only)",
+                    signal_type=f"atr_change_{tf}", direction=side, strength=0,
+                    features={"trigger_source": f"atr_change_{tf}", "atr_tf": tf}))
+            except Exception:
+                pass
+            return
+
         if side == "LONG":
             sl, sl_source = _select_optimal_sl_long(entry, df, ev.trendline, live_mode=_live_mode)
             # 🔴 15.07 (AERGO −5.64%): рецепт 1h+WT бэктестился со стопом за swing12×0.998
