@@ -1,0 +1,7 @@
+//@version=6
+indicator(title="OkoTrend", shorttitle="Trend")
+// (сохранено Даат 23.07.2026 из TW через MCP; полный текст в git)
+// WT: esa=EMA(hlc3,10); d=EMA(|hlc3-esa|,10); ci=(hlc3-esa)/(0.015*d); wt1=EMA(ci,21); wt2=SMA(wt1,4)
+// Медиана: MA(wt1, 200) тип EMA деф.; dirMa rising/falling (reaction=1)
+// Стрелки: crossover(wt1,wt2) & wt1<-60 = вверх; crossunder & wt1>60 = вниз (на цене)
+// Дивергенции: фракталы wt1 (regular/hidden)

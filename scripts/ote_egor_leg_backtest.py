@@ -57,15 +57,43 @@ def _load(o, sym):
 
 
 def backtest_symbol(df, fib):
-    """→ list[(year, dir, net%)] по правилу Егора для одного fib."""
+    """→ list[(year, dir, net%)] по правилу Егора для одного fib.
+    Ит.2 (фикс 3 нарушений): SL-буфер=1×ATR20 за origin (ЗАКОН свипа), TP=2R (тугой стоп-
+    большая цель без всё-или-ничего), нога ≥ 4×ATR (шум-фильтр после флипов)."""
     st = run_structure(df, record_legs=True)
     legs = st.leg_history
     hv, lv, tv = df["high"].values, df["low"].values, df["time"].values
+    tr_ = (df["high"] - df["low"]).rolling(20).mean().values   # ATR-прокси (H-L mean)
+    # OkoTrend (порт 1:1 из OkoTrend v171): WT + медиана EMA200 + направление медианы
+    ap = (df["high"] + df["low"] + df["close"]) / 3
+    esa = ap.ewm(span=10, adjust=False).mean()
+    dd = (ap - esa).abs().ewm(span=10, adjust=False).mean()
+    ci = (ap - esa) / (0.015 * dd)
+    wt1s = ci.ewm(span=21, adjust=False).mean()
+    wt2s = wt1s.rolling(4).mean()
+    mas = wt1s.ewm(span=200, adjust=False).mean()
+    wt1v, wt2v, mav = wt1s.values, wt2s.values, mas.values
     n = len(df)
     trades = []
     pos = None      # dict(dir, entry, sl, tp, t_in)
+    prev_leg = None                 # предыдущий импульс (до флипа) — сетка-сосед для конфлюэнции
+    _last = None
+    GRID = (0.0, 0.382, 0.5, 0.618, 0.705, 0.786, 1.0, -0.27, -0.62)
+    def _conf(price):
+        if prev_leg is None or not price:
+            return False
+        po, pe = prev_leg["origin"], prev_leg["extreme"]
+        for f in GRID:
+            lvl = pe - f * (pe - po)
+            if lvl > 0 and abs(price - lvl) / price <= 0.003:
+                return True
+        return False
     for t in range(1, n):
         leg = legs[t - 1]           # нога ПОСЛЕ бара t-1 — каузально
+        if leg is not None and _last is not None and leg["trend"] != _last["trend"]:
+            prev_leg = _last        # флип → ушедшая нога = сосед-сетка
+        if leg is not None:
+            _last = leg
         # управление открытой позицией (SL приоритет)
         if pos is not None:
             if pos["dir"] == "long":
@@ -77,7 +105,7 @@ def backtest_symbol(df, fib):
                     exitp = None
                 if exitp is not None:
                     net = (exitp - pos["entry"]) / pos["entry"] * 100 - COSTS
-                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "LONG", net))
+                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "LONG", net, pos["conf"], pos["wt"]))
                     pos = None
             else:
                 if hv[t] >= pos["sl"]:
@@ -88,39 +116,51 @@ def backtest_symbol(df, fib):
                     exitp = None
                 if exitp is not None:
                     net = (pos["entry"] - exitp) / pos["entry"] * 100 - COSTS
-                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "SHORT", net))
+                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "SHORT", net, pos["conf"], pos["wt"]))
                     pos = None
             continue                 # одна позиция на символ; pending не работает пока в позиции
 
         if leg is None:
             continue
         o_, e_ = leg["origin"], leg["extreme"]
+        atr = tr_[t - 1]
+        if not atr or atr != atr:
+            continue
+        if abs(e_ - o_) < 4 * atr:          # нога-шум после флипа — не торгуем
+            continue
         if leg["trend"] == "long":
             # откат ВНИЗ к origin: fib f цена = extreme - f*(extreme-origin)
             lim = e_ - fib * (e_ - o_)
-            sl = o_ * (1 - SL_BUF)
-            if lim <= sl:
+            sl = o_ - 1.0 * atr             # ЗАКОН: стоп ЗА свип-зону origin (1×ATR)
+            if lim <= sl or sl <= 0:
                 continue
             if lv[t] <= lim:         # ожидающий лимит-BUY зафилился
                 entry = lim
-                # добит ли SL тем же баром (консервативно)
+                tp = entry + 2 * (entry - sl)      # 2R
+                _cf = _conf(entry)
+                _wt = {"wt": wt1v[t-1], "x_up": wt1v[t-1] > wt2v[t-1], "vs_ma": wt1v[t-1] - mav[t-1],
+                       "ma_up": mav[t-1] > mav[t-2] if t >= 2 else False}
                 if lv[t] <= sl:
                     net = (sl - entry) / entry * 100 - COSTS
-                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "LONG", net))
+                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "LONG", net, _cf, _wt))
                 else:
-                    pos = {"dir": "long", "entry": entry, "sl": sl, "tp": e_, "t_in": t}
+                    pos = {"dir": "long", "entry": entry, "sl": sl, "tp": tp, "t_in": t, "conf": _cf, "wt": _wt}
         else:
             lim = e_ + fib * (o_ - e_)
-            sl = o_ * (1 + SL_BUF)
+            sl = o_ + 1.0 * atr
             if lim >= sl:
                 continue
             if hv[t] >= lim:
                 entry = lim
+                tp = entry - 2 * (sl - entry)
+                _cf = _conf(entry)
+                _wt = {"wt": wt1v[t-1], "x_up": wt1v[t-1] > wt2v[t-1], "vs_ma": wt1v[t-1] - mav[t-1],
+                       "ma_up": mav[t-1] > mav[t-2] if t >= 2 else False}
                 if hv[t] >= sl:
                     net = (entry - sl) / entry * 100 - COSTS
-                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "SHORT", net))
+                    trades.append((datetime.fromtimestamp(tv[t] / 1000, timezone.utc).year, "SHORT", net, _cf, _wt))
                 else:
-                    pos = {"dir": "short", "entry": entry, "sl": sl, "tp": e_, "t_in": t}
+                    pos = {"dir": "short", "entry": entry, "sl": sl, "tp": tp, "t_in": t, "conf": _cf, "wt": _wt}
     return trades
 
 
@@ -152,12 +192,39 @@ def main():
     for f in FIBS:
         tr = allres[f]
         n, wr, net = _st([x[2] for x in tr])
-        ln = [x[2] for x in tr if x[1] == "LONG"]
-        sh = [x[2] for x in tr if x[1] == "SHORT"]
-        nl, _, netl = _st(ln)
-        ns_, _, nets = _st(sh)
+        cy = [x[2] for x in tr if x[3]]
+        cn = [x[2] for x in tr if not x[3]]
+        ncy, wrcy, netcy = _st(cy)
+        ncn, _, netcn = _st(cn)
         mark = "🟢" if net > 0.10 else ("🔴" if net < -0.10 else "⚪")
-        print(f"{mark} {f:5.3f} {n:6} {wr:4.0f}% {net:+8.3f}% | {netl:+7.3f} ({nl}) | {nets:+7.3f} ({ns_})")
+        cmark = "🟢" if netcy > 0.10 else ("🔴" if netcy < -0.10 else "⚪")
+        print(f"{mark} {f:5.3f} {n:6} {wr:4.0f}% {net:+8.3f}% | conf=ДА {cmark} n={ncy:4} WR{wrcy:3.0f}% {netcy:+7.3f}% | conf=нет n={ncn} {netcn:+7.3f}%")
+    # WT-РАЗРЕЗЫ (задание Егора «сравни зависимости»): fib 0.886, wt зеркалим для SHORT
+    print("\n── ЗАВИСИМОСТЬ ОТ OkoTrend (fib 0.886, WT в момент филла; для SHORT знак зеркален) ──")
+    tr886 = allres[0.886]
+    def _mir(x):
+        w = x[4]
+        sgn = 1 if x[1] == "LONG" else -1
+        return {"wt": sgn * w["wt"], "x_al": (w["x_up"] if x[1]=="LONG" else not w["x_up"]),
+                "vs_ma": sgn * w["vs_ma"], "ma_al": (w["ma_up"] if x[1]=="LONG" else not w["ma_up"]), "net": x[2]}
+    mm = [_mir(x) for x in tr886 if len(x) > 4]
+    def _b(rows, label):
+        n, wr, net = _st([r["net"] for r in rows])
+        if n: 
+            mk = "🟢" if net > 0.10 else ("🔴" if net < -0.10 else "⚪")
+            print(f"   {mk} {label:34} n={n:5} WR{wr:3.0f}% net={net:+.3f}%")
+    _b([r for r in mm if r["wt"] < -60], "WT экстремум ЗА вход (<-60)")
+    _b([r for r in mm if -60 <= r["wt"] < -30], "WT -60..-30")
+    _b([r for r in mm if -30 <= r["wt"] < 0], "WT -30..0")
+    _b([r for r in mm if r["wt"] >= 0], "WT >0 (против входа)")
+    _b([r for r in mm if r["x_al"]], "кросс WT ПО входу")
+    _b([r for r in mm if not r["x_al"]], "кросс WT против")
+    _b([r for r in mm if r["vs_ma"] > 0], "WT выше медианы (по входу)")
+    _b([r for r in mm if r["vs_ma"] <= 0], "WT ниже медианы")
+    _b([r for r in mm if r["ma_al"]], "медиана ПО входу (dirMa)")
+    _b([r for r in mm if not r["ma_al"]], "медиана против")
+    _b([r for r in mm if r["wt"] < -60 and r["x_al"]], "🎯 экстремум + кросс ПО (стрелка)")
+    _b([r for r in mm if r["wt"] < -60 and r["x_al"] and r["ma_al"]], "🎯🎯 стрелка + медиана ПО")
     # по годам для лучшего fib
     best = max(FIBS, key=lambda f: _st([x[2] for x in allres[f]])[2] if allres[f] else -9)
     print(f"\n── fib {best:.3f} по годам ──")
