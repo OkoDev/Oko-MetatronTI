@@ -96,10 +96,20 @@ def main():
     print(f"🎯 OTE WAITING-LIMIT (глубокий fib) · топ-{nsyms} символов · TTL={ttl}бар ({ttl*15}мин)")
     print(f"   всего ote-сделок с зоной: {len(trades)}, тестируем на {sum(freq[b] for b in top)} (топ символы)\n")
 
-    # СВИП ГЛУБИНЫ (23.07, Егор «до каких fib цена не доходит?»): лимит на доле d зоны
-    # (0=shallow-край, 1=golden pocket deep-край). Один фетч на символ — все глубины разом.
-    DEPTHS = (0.25, 0.5, 0.618, 0.705, 0.786, 1.0)
-    res = {d: {"net": [], "miss": 0} for d in DEPTHS}
+    # СВИП по РЕАЛЬНЫМ FIB (23.07, Егор: «нужны 0.618/0.705/0.786 реальной fib; если и это
+    # не работает — неверно детектим OTE»). Зона генератора = fib 0.5→0.79 (smc_engine build_ote,
+    # уточнение Егора 02.06) → конверсия: доля зоны d = (fib−0.5)/0.29. 0.886/1.0 = экстраполяция
+    # за край зоны (проверка хвоста «поглощения»). Лимит глубже SL → сетап невалиден (skip).
+    # 🔴 ФИКС 23.07: хранимый SL (тугой, для реакционного входа) НЕСОВМЕСТИМ с глубоким лимитом
+    # (83% сетапов SL мельче fib0.79 → зона-свип входил НИЖЕ стопа = фейк-профит «+1.78%» СНЯТ).
+    # Честная геометрия = метод Егора: вход на fib, СТОП ЗА СТРУКТУРУ (за fib 1.0 = начало
+    # импульса, буфер), цель tp1. fib1.0 экстраполируется из зоны: d(f)=(f−0.5)/0.29.
+    FIBS = (0.618, 0.705, 0.786)
+    DEPTHS = tuple(round((f - 0.5) / 0.29, 4) for f in FIBS)
+    _FIB_BY_D = dict(zip(DEPTHS, FIBS))
+    D_10 = (1.0 - 0.5) / 0.29          # глубина fib 1.0 (начало импульса)
+    SL_BUF = 0.0015
+    res = {d: {"net": [], "miss": 0, "invalid": 0} for d in DEPTHS}
     import bisect
     for base in top:
         sub = [t for t in trades if t["base"] == base]
@@ -116,9 +126,20 @@ def main():
             if i0 >= len(bars):
                 continue
             span = t["zhi"] - t["zlo"]
+            # структурный SL: за fib 1.0 (начало импульса) с буфером — ЗАКОН «стоп за структуру»
+            if t["d"] == "LONG":
+                _sl_struct = (t["zhi"] - D_10 * span) * (1 - SL_BUF)
+            else:
+                _sl_struct = (t["zlo"] + D_10 * span) * (1 + SL_BUF)
+            if _sl_struct <= 0:
+                continue
             for d in DEPTHS:
                 # цена лимита на глубине d: LONG от zhi вниз, SHORT от zlo вверх
                 lim = (t["zhi"] - d * span) if t["d"] == "LONG" else (t["zlo"] + d * span)
+                # валидность (со структурным SL всегда ок, оставлено как guard)
+                if (t["d"] == "LONG" and lim <= _sl_struct) or (t["d"] == "SHORT" and lim >= _sl_struct):
+                    res[d]["invalid"] += 1
+                    continue
                 fill_i = None
                 for i in range(i0, min(i0 + ttl + 1, len(bars))):
                     _, o, h, l, cl = bars[i]
@@ -131,10 +152,10 @@ def main():
                 for j in range(fill_i, min(fill_i + WALK_BARS, len(bars))):
                     _, o, h, l, cl = bars[j]
                     if t["d"] == "LONG":
-                        if l <= t["sl"]: outcome = ("SL", t["sl"]); break
+                        if l <= _sl_struct: outcome = ("SL", _sl_struct); break
                         if h >= t["tp1"]: outcome = ("TP", t["tp1"]); break
                     else:
-                        if h >= t["sl"]: outcome = ("SL", t["sl"]); break
+                        if h >= _sl_struct: outcome = ("SL", _sl_struct); break
                         if l <= t["tp1"]: outcome = ("TP", t["tp1"]); break
                 if outcome is None:
                     outcome = ("END", bars[min(fill_i + WALK_BARS - 1, len(bars) - 1)][4])
@@ -146,23 +167,22 @@ def main():
     def _st(a):
         if not a: return 0, 0, 0
         return len(a), 100*sum(1 for x in a if x > 0)/len(a), sum(a)/len(a)
-    print("── СВИП ГЛУБИНЫ ЛИМИТА (доля зоны: 0=shallow-край, 1=golden pocket) ──")
-    print(f"   {'глубина':>8} {'fill%':>6} {'n':>5} {'WR':>4} {'net/фил':>9} {'E/сетап':>9}   (E = fill_rate × net)")
+    print("── СВИП по РЕАЛЬНЫМ FIB (лимит на fib-уровне отката) ──")
+    print(f"   {'fib':>7} {'fill%':>6} {'n':>5} {'WR':>4} {'net/фил':>9} {'E/сетап':>9} {'invalid':>8}   (E = fill_rate × net)")
     best = None
     for d in DEPTHS:
-        nets = res[d]["net"]; miss = res[d]["miss"]
+        nets = res[d]["net"]; miss = res[d]["miss"]; inv = res[d]["invalid"]
         n, wr, net = _st(nets)
         tot = n + miss
         if not tot:
             continue
         fr = n / tot
         exp = fr * (net or 0)
-        mark = ""
         if best is None or exp > best[1]:
-            best = (d, exp)
-        print(f"   {d:8.3f} {100*fr:5.0f}% {n:5} {wr:3.0f}% {net:+8.3f}% {exp:+8.3f}%")
+            best = (_FIB_BY_D[d], exp)
+        print(f"   {_FIB_BY_D[d]:7.3f} {100*fr:5.0f}% {n:5} {wr:3.0f}% {net:+8.3f}% {exp:+8.3f}% {inv:8}")
     if best:
-        print(f"\n   🎯 ОПТИМУМ по матожиданию на сетап: глубина {best[0]:.3f} (E={best[1]:+.3f}%/сетап)")
+        print(f"\n   🎯 ОПТИМУМ по матожиданию на сетап: fib {best[0]:.3f} (E={best[1]:+.3f}%/сетап)")
 
 
 if __name__ == "__main__":
