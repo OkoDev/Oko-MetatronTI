@@ -89,6 +89,16 @@ def _oko_pivots(df):
     return out
 
 
+_W = {"W": 3.0, "M": 3.0, "D": 1.0, "сосед": 2.0, "FVG": 1.0, "полка": 0.5}
+
+
+def _hit_weight(name):
+    for k, w in _W.items():
+        if name.startswith(k):
+            return w
+    return 0.5
+
+
 def _levels_near(price, df, st, pivots):
     """Именованные источники в ±0.3% от price: пивоты / FVG / полки(len5) / сетка соседа."""
     hits = []
@@ -164,14 +174,27 @@ def scan_one(base, test=False):
     if not (in_zone or approach):
         return f"вне зоны (откат {retr:.2f})" if test else None
 
+    # фильтр ноги-шума
+    atr = float((df["high"] - df["low"]).rolling(20).mean().iloc[-1])
+    if abs(span) < 4 * atr:
+        return "нога < 4×ATR (шум)" if test else None
     pivots = _oko_pivots(df)
     wt = _wt_state(df)
-    # схождения на ключевых fib
+    # схождения на ключевых fib + ВЗВЕШЕННЫЙ скор (W/M=3, сосед=2, D=1, FVG=1, полка=0.5)
     conf_lines = []
+    best_score = 0.0
+    hits_by_fib = {}
     for f in (0.705, 0.786, 0.886):
         hits = _levels_near(fibp[f], df, st, pivots)
+        hits_by_fib[f] = hits
         if hits:
+            sc = sum(_hit_weight(h) for h in hits)
+            best_score = max(best_score, sc)
             conf_lines.append(f"  {f:g} ∩ " + " ∩ ".join(hits))
+    # ГЕЙТ КАЧЕСТВА (Егор: «куча мусорных алертов не прокатит»): в зоне score≥3, на подходе ≥5
+    need = 3.0 if in_zone else 5.0
+    if best_score < need:
+        return f"score {best_score:.1f} < {need} (слабое схождение)" if test else None
     itn = "синхрон" if (st.itrend > 0) == long_ else "коррекция (internal против)"
     div = "R+ свежая" if (wt["divB"] if long_ else wt["divS"]) else "нет"
     dseg = "LONG" if long_ else "SHORT"
@@ -189,14 +212,77 @@ def scan_one(base, test=False):
            f"пробой {fibp[1.0]:.6g} → слом старшего</i>\n"
            f'📊 <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{base}USDT.P">график</a>'
            f"\n\n#{base} #OKOSM_WATCH")
+    png = None
+    try:
+        png = _render_chart(base, df, leg, fibp, hits_by_fib, px)
+    except Exception as _ce:
+        print(f"[OKO-SM-WATCH] chart {base}: {_ce}")
+    cap = (f"🔭 <b>{base}</b> 4h · нога <b>{dseg}</b> {o_:.6g}→{e_:.6g} · <b>{state}</b> (откат {retr:.2f})\n"
+           + ("⭐ " + conf_lines[0].strip() + "\n" if conf_lines else "")
+           + f"WT {wt['wt']:+.0f}/мед {wt['ma']:+.0f} · див {div}\n"
+           f"Откат от зоны → {dseg} на {e_:.6g} · пробой {fibp[1.0]:.6g} → слом\n#{base} #OKOSM")
     if test:
-        return msg
+        return (png or "чарт не собрался") + "\n" + msg
     key = f"okosm:{base}:{round(o_, 8)}:{round(e_, 8)}"
     if not _cooldown_ok(key):
         return None
-    from oko_feed.alerts import send_tg
-    send_tg(msg, channel="action")
-    return f"ALERT {base} {dseg} retr={retr:.2f} conf={len(conf_lines)}"
+    sent = False
+    if png:
+        try:
+            from oko_feed.alerts import send_tg_photo
+            with open(png, "rb") as fh:
+                sent = send_tg_photo(fh.read(), caption=cap, channel="action")
+        except Exception as _pe:
+            print(f"[OKO-SM-WATCH] photo {base}: {_pe}")
+    if not sent:
+        from oko_feed.alerts import send_tg
+        send_tg(msg, channel="action")
+    return f"ALERT {base} {dseg} retr={retr:.2f} score={best_score:.1f}"
+
+
+def _render_chart(base, df, leg, fibp, hits_by_fib, px):
+    """Свечи 4h (хвост) + нога + OTE-зона + fib-уровни. → путь PNG."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import os, tempfile
+    W = 160
+    n = len(df)
+    i0 = max(0, n - W)
+    d = df.iloc[i0:].reset_index(drop=True)
+    x = range(len(d))
+    fig, ax = plt.subplots(figsize=(11, 5.6), facecolor="#0e1117")
+    ax.set_facecolor("#0e1117")
+    up = d["close"] >= d["open"]
+    ax.vlines(x, d["low"], d["high"], color="#555", lw=0.7)
+    ax.bar(x, (d["close"] - d["open"]).abs(), 0.62,
+           bottom=d[["open", "close"]].min(axis=1),
+           color=["#26a69a" if u else "#ef5350" for u in up])
+    # нога
+    ox, ex = leg["origin_i"] - i0, leg["extreme_i"] - i0
+    ox = max(0, ox); ex = max(0, ex)
+    ax.plot([ox, ex], [leg["origin"], leg["extreme"]], color="#ff9800", lw=2.5, zorder=5)
+    # зона + уровни
+    lo, hi = sorted((fibp[0.618], fibp[0.886]))
+    ax.axhspan(lo, hi, color="#ffd54f", alpha=0.13)
+    for f in (0.618, 0.705, 0.786, 1.0):
+        v = fibp[f]
+        strong = bool(hits_by_fib.get(f))
+        ax.axhline(v, color="#ffd54f" if f != 1.0 else "#e91e63",
+                   lw=2.0 if strong else 0.8, ls="-" if strong else "--", alpha=0.9)
+        ax.text(len(d) + 1, v, f"{f:g} {v:.6g}" + (" *" if strong else ""),
+                color="#ffd54f" if f != 1.0 else "#e91e63", fontsize=8, va="center")
+    ax.plot(len(d) - 1, px, "o", color="#fff", ms=5)
+    ax.set_title(f"{base} 4h · OKO-SM ВАХТА", color="#ddd", fontsize=11)
+    ax.tick_params(colors="#777", labelsize=7)
+    for sp in ax.spines.values():
+        sp.set_color("#333")
+    ax.set_xlim(-2, len(d) + 14)
+    fig.tight_layout()
+    out = os.path.join(tempfile.gettempdir(), f"okosm_{base}.png")
+    fig.savefig(out, dpi=110, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return out
 
 
 def main():
