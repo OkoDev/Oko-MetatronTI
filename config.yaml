@@ -181,7 +181,7 @@ trading:
     sphere_shadow: true
     sphere_cutover: true
   vst_time_exit:
-    enabled: false
+    enabled: true    # 23.07 Егор «закрой все что висят больше 5 дней» (был shadow c 13.07)
     default_ttl_days: 5.0
     per_source:
       ote_nested: 3.0
