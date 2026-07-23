@@ -212,11 +212,30 @@ def scan_one(base, test=False):
            f"пробой {fibp[1.0]:.6g} → слом старшего</i>\n"
            f'📊 <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{base}USDT.P">график</a>'
            f"\n\n#{base} #OKOSM_WATCH")
-    png = None
+    png_bytes = None
     try:
-        png = _render_chart(base, df, leg, fibp, hits_by_fib, px)
+        import asyncio as _aio
+        from core.ui.chart_builder import build_signal_chart
+        _ok = {"leg": (int(df["time"].iloc[leg["origin_i"]]), leg["origin"],
+                       int(df["time"].iloc[leg["extreme_i"]]), leg["extreme"]),
+               "zone": (fibp[0.618], fibp[0.886]),
+               "levels": [(f, fibp[f], bool(hits_by_fib.get(f))) for f in (0.618, 0.705, 0.786)],
+               "break": fibp[1.0]}
+        png_bytes = _aio.run(build_signal_chart(f"{base}/USDT:USDT", tf="4h", bot=None,
+                                                wave_overlay=True, okosm=_ok))
     except Exception as _ce:
         print(f"[OKO-SM-WATCH] chart {base}: {_ce}")
+    png = None
+    if png_bytes:
+        import tempfile, os
+        png = os.path.join(tempfile.gettempdir(), f"okosm_{base}.png")
+        with open(png, "wb") as fh:
+            fh.write(png_bytes)
+    if png is None:
+        try:
+            png = _render_chart(base, df, leg, fibp, hits_by_fib, px)
+        except Exception as _ce:
+            print(f"[OKO-SM-WATCH] chart-fb {base}: {_ce}")
     cap = (f"🔭 <b>{base}</b> 4h · нога <b>{dseg}</b> {o_:.6g}→{e_:.6g} · <b>{state}</b> (откат {retr:.2f})\n"
            + ("⭐ " + conf_lines[0].strip() + "\n" if conf_lines else "")
            + f"WT {wt['wt']:+.0f}/мед {wt['ma']:+.0f} · див {div}\n"

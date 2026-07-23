@@ -161,7 +161,8 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
             weekly_pivots: dict | None = None,
             wave_overlay: bool = False,
             h4_pivots: dict | None = None,
-            htf_fvg: list | None = None) -> bytes:
+            htf_fvg: list | None = None,
+            okosm: dict | None = None) -> bytes:
     if daily_pivots is None:
         daily_pivots = _calc_daily_pivots(df)
     if weekly_pivots is None:
@@ -402,6 +403,39 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
         except Exception as _e:
             logger.warning("[chart_builder] wave_overlay %s: %s", symbol, _e)
 
+    # OKO-SM ВАХТА overlay (23.07, опционально — okosm=None ничего не меняет):
+    # нога (оранж) + золотая OTE-зона + fib-уровни (⭐=схождение) + слом. Времена в мс →
+    # позиции баров через DatetimeIndex (кламп к левому краю если нога старше окна).
+    if okosm:
+        try:
+            ax_price = axes[0]
+            n = len(df)
+            idx_ns = df.index.view("int64") // 1_000_000   # DatetimeIndex → мс
+
+            def _pos(ms):
+                import numpy as _np
+                return int(max(0, min(n - 1, _np.searchsorted(idx_ns, ms))))
+            t0, p0, t1, p1 = okosm["leg"]
+            ax_price.plot([_pos(t0), _pos(t1)], [p0, p1],
+                          color="#ff9800", lw=2.4, zorder=7, solid_capstyle="round")
+            zlo, zhi = sorted(okosm["zone"])
+            ax_price.axhspan(zlo, zhi, color="#ffd54f", alpha=0.10, zorder=1)
+            for f, price, starred in okosm.get("levels", []):
+                ax_price.axhline(price, color="#ffd54f",
+                                 lw=1.6 if starred else 0.7,
+                                 ls="-" if starred else "--", alpha=0.9, zorder=6)
+                ax_price.annotate(f"{f:g}{' *' if starred else ''}",
+                                  (n + 1, price), color="#ffd54f", fontsize=7,
+                                  zorder=8, annotation_clip=False)
+            if okosm.get("break"):
+                ax_price.axhline(okosm["break"], color="#e91e63", lw=1.4,
+                                 ls=(0, (4, 2)), alpha=0.95, zorder=6)
+                ax_price.annotate("слом 1.0", (n + 1, okosm["break"]),
+                                  color="#e91e63", fontsize=7, zorder=8,
+                                  annotation_clip=False)
+        except Exception as _e_ok:
+            logger.warning("[chart_builder] okosm overlay %s: %s", symbol, _e_ok)
+
     for ax in [axes[0], axes[2], axes[4]]:
         ax.set_xlim(-0.5, x_right)
 
@@ -416,7 +450,8 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
 async def build_signal_chart(symbol: str, tf: str = "1h",
                               bars: int = 300, warmup: int = 80,
                               bot=None, fvg_zones=None,
-                              wave_overlay: bool = False) -> bytes | None:
+                              wave_overlay: bool = False,
+                              okosm: dict | None = None) -> bytes | None:
     """Генерирует PNG-график для сигнала. Возвращает bytes или None при ошибке."""
     if not _MPF_OK:
         logger.warning("chart_builder: mplfinance не установлен")
@@ -523,7 +558,8 @@ async def build_signal_chart(symbol: str, tf: str = "1h",
                        weekly_pivots=weekly_pivots,
                        wave_overlay=wave_overlay,
                        h4_pivots=h4_pivots,
-                       htf_fvg=htf_fvg)
+                       htf_fvg=htf_fvg,
+                       okosm=okosm)
     except Exception:
         logger.exception("chart_builder: ошибка генерации графика для %s", symbol)
         return None
