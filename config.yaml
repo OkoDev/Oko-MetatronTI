@@ -636,7 +636,9 @@ trade_analyzer:
   api_key: ${GROQ_API_KEY}
   model: llama-3.3-70b-versatile
 signal_router:
-  enabled: false
+  enabled: true    # 25.07 КРИТ-ФИКС (Егор «торгует всё что можно»): router off = старый путь ставил
+                   # VST-ордер БЕЗ source-гейта. Включён → source_policies.exchange_enabled наконец
+                   # гейтит биржу: торгуют ТОЛЬКО radar/atr_change_S2/atr_s2/ds_advisor, прочее SIM-only.
   shadow_compare:
     enabled: false
     log_path: logs/router_shadow.log
