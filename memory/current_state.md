@@ -1814,3 +1814,7 @@
 - ✅ DC написала охотника (SMC+WT+Pivot confluence≥2, луна, дедуп, thesis). Моё ревью до запуска: 4 фикса [Даат fix] — fetchone/ключи шины encoded/smc_snap плоский (last_choch.direction!)/дедуп SHORT. Отчёт ей в DISCUSSION (pivot-формат + структурный SL — её зона v2).
 - ✅ КОРЕНЬ мёртвого :8000: dashboard.enabled=false (старая изоляция нагрузки) → ВКЛЮЧЁН (threaded). Шина живая: 248 пар. Ключи 'X/USDT:USDT' (URL-encoded). wt_snap: {'15m'/{wt1,wt2,zone,trend,atr_trend}...}. smc_snap: ПЛОСКИЙ. oko-dash тоже должен ожить (:8000 вернулся).
 - 🔄 Цепочка: dc-agent (60с) → ds_signals → ds_advisor_loop (30с) → router → VST LIMIT. Судья forward machine, гейт 20-30 net+.
+
+## [26.07] Даат: API-дырка шины найдена и закрыта — DC прозрела
+- 🔴→✅ get_full_state НЕ экспортировал smc_snap/pivot_snap (жили в памяти, наружу пусто) → DC была слепа → 0 сигналов на 508 парах математически. Экспорт добавлен (2 строки), верифицировано: FOLKS choch/bos=DOWN, pivots 1W/1D/1M UPPERCASE.
+- DC сказано: поправить lowercase r1→R1 в pivot-блоке. Теперь полное зрение: SMC+WT+Pivot+508 пар. Ждём первые сигналы.
