@@ -80,6 +80,20 @@ async def _process_one(bot, row: dict) -> tuple[int, str]:
     if res.trade_id:
         logger.info("[DS-ADVISOR] ✅ #%s %s %s → trade %s exch=%s",
                     row["id"], sym, d, res.trade_id, res.exchange_order_id or "pending")
+        # видимость Егору (25.07 «я как-то увижу его работу?»): каждая сделка DC → TG с ТЕЗИСОМ
+        try:
+            from oko_feed.alerts import send_tg
+            _emoji = "🟢" if is_long else "🔴"
+            _ex = "📡 ордер на VST" if res.exchange_order_id else "⏳ ордер pending/отклонён sizing'ом"
+            await asyncio.to_thread(
+                send_tg,
+                f"🤖 <b>DC-АГЕНТ вошла:</b> {_emoji} <b>{d}</b> <code>{sym.split('/')[0]}</code>\n"
+                f"вход <code>{entry:.6g}</code> · SL <code>{sl:.6g}</code> · TP <code>{tp:.6g}</code>\n"
+                f"💭 <i>{(row['thesis'] or '—')[:200]}</i>\n"
+                f"{_ex} · trade #{res.trade_id}\n\n#DC_AGENT #DS",
+                channel="action")
+        except Exception as _tge:
+            logger.debug("[DS-ADVISOR] TG: %s", _tge)
         return 1, str(res.trade_id)
     hd = ",".join(g for g, _ in res.hard_drops) or "router None"
     logger.info("[DS-ADVISOR] ⛔ #%s %s %s — %s", row["id"], sym, d, hd)

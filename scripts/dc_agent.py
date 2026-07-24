@@ -4,6 +4,11 @@ Reads Cube bus (HTTP API) + applies research rules → writes signals.
 Polled by ds_advisor_loop (pm2, 30s) → trade_router.submit(source='ds_advisor')
 """
 import sqlite3, json, time, math, statistics as st
+import sys
+try:
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)   # [Даат fix] pm2-лог был пуст: буферизация
+except Exception:
+    pass
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
