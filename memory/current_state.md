@@ -1777,3 +1777,8 @@
 - 📊 Карта созвездия (Artifact): 24 pm2-процесса=развязанные сферы→шина→терминал. oko-bot=монолит (разбить), остальные 23 декаплены. https://claude.ai/code/artifact/85d9eb78-6dbc-4489-93ee-a78312f4912a
 - 🔄 НАПРАВЛЕНИЕ: ветка А «Куб торгует»=ARCH-96 (пауза, execution съедает эдж); ветка Б «Куб видит»=decision-support/продукт «OKO Terminal» (Electron, Krypt-Trader шаблон) → живая дорога. Тессеракт=созвездие продуктов.
 - NEXT-шаги (карта): 1)разбить oko-bot монолит 2)слить oko-dash+structure-term→OKO Terminal 3)metatron-core+AdvisorPort 4)Electron-упаковка.
+
+## [24.07 веч] Даат: разведка Buildix (Егор дал ссылку) — ниша ЧИЩЕ
+- Buildix = orderflow (CVD/VPIN/heatmap/whale), Hyperliquid, ПЛАТНЫЙ $9-79/мес лесенкой, free-скринер=воронка. SMC-структуры НЕТ → он конкурент Coinglass, не нас.
+- Карта: LuxAlgo=SMC внутри TV · Buildix=orderflow без структуры · НИКТО: структурный скринер 500 пар+макро-ротация+фаза+конвергенция standalone без TV = наш стек.
+- Их «6 логик агрят»=валидация конвергенц-механики; прайс-лесенка=бенчмарк. Дополнение DC записано в DISCUSSION (сверху).
