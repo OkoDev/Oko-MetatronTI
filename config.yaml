@@ -552,7 +552,7 @@ performance:
   ws_reconnect_base_delay_sec: 5.0
   ws_ohlcv_error_pause_sec: 1.0
 dashboard:
-  enabled: false
+  enabled: true    # 25.07: :8000 нужен DC-агенту (шина /api/cube/context) + oko-dash; threaded=не душит scan
   host: 127.0.0.1
   threaded: true
 market_ws:
