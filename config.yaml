@@ -145,7 +145,7 @@ trading:
     conf_only: false
     max_symbols: 60
   method_egor:
-    enabled: true
+    enabled: false   # 24.07: OOS +0.05 тонкий, чисто не форвардился; алерты живут в method-shadow
     scan_sec: 900
     fresh_bars: 2
     max_positions: 6
@@ -720,7 +720,7 @@ signal_router:
       soft_gates_enabled: []
     ote_nested:
       min_strength: 70
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: ote_nested
       entry_order_type: LIMIT
       soft_gates_enabled: []
@@ -754,7 +754,7 @@ signal_router:
       lev_set_to_max: false
     method_v2:
       min_strength: 0
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: method_v2
       soft_gates_enabled: []
       leverage: 20
@@ -763,7 +763,7 @@ signal_router:
       lev_set_to_max: false
     method_egor:
       min_strength: 0
-      exchange_enabled: true
+      exchange_enabled: false
       trade_mode: method_egor
       soft_gates_enabled: []
       leverage: 20
@@ -814,7 +814,7 @@ arch104:
     enabled: false
 ote:
   vst_trading:
-    enabled: true
+    enabled: false   # 24.07 Егор «сначала торговля в +»: вход ОПРОВЕРГНУТ (adverse selection) — заперто до починки исполнения
     signal_type: ote_nested
   cascade_shadow: true
   cascade_gate: true
