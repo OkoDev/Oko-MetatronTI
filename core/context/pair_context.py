@@ -605,6 +605,10 @@ class PairContextBus:
             # Сфера 4
             "smc_verdict":       state.smc_verdict,
             "smc_confidence":    state.smc_confidence,
+            # 25.07 (DC-агент слеп): smc_snap/pivot_snap ЖИЛИ в шине, но НЕ экспортировались
+            # get_full_state — API-дырка, все внешние читатели видели пусто.
+            "smc_snap":          state.smc_snap,
+            "pivot_snap":        state.pivot_snap,
             # Сфера 5
             "btc_regime":        state.btc_regime,
             "cross_market_time": state.cross_market_time,
