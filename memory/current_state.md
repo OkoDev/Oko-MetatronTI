@@ -1803,3 +1803,9 @@
 - ✅ DC-вердикт: продукт №1 = Decision-Support Терминал OKO-SM (скринер+confluence+shadow-метод+ротация), 2-нед план принят. НЕ делаем: автоторговлю-продукт, TG-радар первым, data-API.
 - ✅ DS-ADVISOR: ds_signals + pm2 ds-advisor поллер → SIM-shadow (signal_type=ds_advisor верифицирован, 2 смоука). Шина DC: /api/cube/context/{symbol} live + durable БД. Гейт: 20-30 net+ → VST. DC пишет агента.
 - Очередь: (а) DC-агент пишет сигналы → форвард копится; (б) скринер-бэкенд (Неделя-1 DC-плана); (в) форвард узкого портфеля pump/spring/S2 идёт фоном.
+
+## [25.07] Даат: DC = торговый агент на VST (решение Егора «сразу на VST — это и есть песочница»)
+- ✅ bot/loops/ds_advisor_loop.py в боте: ds_signals → trade_router.submit → VST LIMIT (гейты/sizing/sync как у pump). Кап 5, lev 5, risk 2% (0.5% упирался в notional<$5 — демо-маржа занята). Решения DC не фильтруются.
+- ✅ Смоук верифицировал цепочку до самой биржи (OrderExecutor рассчитал, отклонил по минимуму — честно). signal_type=ds_advisor → forward machine судит автоматически.
+- 📍 Гейт: 20-30 закрытых net+ → реальные деньги. Красный форвард → закрытие трека. DC пишет агента (шина: /api/cube/context + durable БД).
+- pm2 ds-advisor (standalone SIM-поллер) снят — заменён боевым лупом; scripts/ds_advisor_poller.py оставлен как fallback.
