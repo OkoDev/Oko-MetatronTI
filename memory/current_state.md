@@ -1769,3 +1769,11 @@
 - ✅ rotation_now = триада Егора: USDT.D↓→альты летят / USDT.D↑+BTC.D↓→стоят / USDT.D↑+альт↓→risk-off. Живьё 🟡 СТОЯТ = точь-в-точь его наблюдение (порог 1.2 калибр по глазу).
 - 📍 Точность: Куб 8.25/57.7 vs TW 8.49/59.4, смещение 1-2% состава (для режима норм). NEXT-точность: дедуп wrapped/staked.
 - 🔄 NEXT: live_dominance→usdtd_watch moment-value; rotation-алерт в TG.
+
+## [24.07] Даат: РЕВИЗИЯ КУБА + карта созвездия (стратегия)
+- ✅ Ревизия ENCYCLOPEDIA/TASKS/Obsidian/Krypt-Trader. Куб = 13 сфер (12+шина), 4 фазы (1-3 done, Фаза4 Execution=ARCH-96 CRITICAL блокер LIVE). Фрактальные Sub-кубы (SMC/WT/Elliott-Pivot).
+- 🔑 Внешний функционал через AdvisorPort (ARCH-125/ADR-001): Рой=ollama в проде shadow (ARCH-126). Куб→metatron-core, бот+рой=клиенты. Condor=Cube2 вынесен. AI-R1 research готов.
+- 🌀 КОНВЕРГЕНЦИЯ: сессия органически строила ровно решённую архитектуру — dominance=ARCH-67(USDT.D gate)+cross_market(Сф5); OKO-SM=SMC Sub-куб(Сф4); watch/terminal=DASHBOARD_EPIC развязанный; движки-процессы=metatron-core паттерн; «отвязать от лупов»=🔴 инвариант DASHBOARD_EPIC (уже в роадмапе).
+- 📊 Карта созвездия (Artifact): 24 pm2-процесса=развязанные сферы→шина→терминал. oko-bot=монолит (разбить), остальные 23 декаплены. https://claude.ai/code/artifact/85d9eb78-6dbc-4489-93ee-a78312f4912a
+- 🔄 НАПРАВЛЕНИЕ: ветка А «Куб торгует»=ARCH-96 (пауза, execution съедает эдж); ветка Б «Куб видит»=decision-support/продукт «OKO Terminal» (Electron, Krypt-Trader шаблон) → живая дорога. Тессеракт=созвездие продуктов.
+- NEXT-шаги (карта): 1)разбить oko-bot монолит 2)слить oko-dash+structure-term→OKO Terminal 3)metatron-core+AdvisorPort 4)Electron-упаковка.
