@@ -24,12 +24,26 @@ SL_MIN_PCT = 0.5
 SL_MAX_PCT = 3.0
 TP_R_MULT = 2.0
 
-# Pairs to watch (top liquid from research)
-WATCH_PAIRS = [
+# [Даат fix 25.07, Егор «почему не все доступные?»] ВЕСЬ поток шины: динамический список
+# GET /api/cube/pairs?active=1 (только наполненные стейты). Fallback = топ-29 DC.
+FALLBACK_PAIRS = [
     "BTC","ETH","SOL","WLD","GRT","LINK","AVAX","DOT","ARB","OP",
     "SUI","APT","NEAR","INJ","FIL","ATOM","RUNE","SEI","LTC","XRP",
     "AAVE","ETC","BCH","TIA","UNI","ADA","DOGE","TRX","BNB"
 ]
+
+
+def get_watch_pairs() -> List[str]:
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"{BUS_URL}/pairs?active=1", timeout=8) as r:
+            d = json.loads(r.read())
+        pairs = d.get("pairs") or []
+        if len(pairs) >= 10:
+            return pairs                      # полные символы 'X/USDT:USDT' — fetch их поймёт
+    except Exception:
+        pass
+    return FALLBACK_PAIRS
 
 def moon_phase(date: datetime) -> float:
     y,m = date.year, date.month
@@ -160,7 +174,7 @@ def write_signal(conn, sig: Dict):
 
 def main():
     print(f"DC-AGENT starting. Bus: {BUS_URL} Poll: {POLL_SEC}s Max open: {MAX_OPEN}")
-    print(f"Watching: {len(WATCH_PAIRS)} pairs")
+    print(f"Watching: DYNAMIC (все пары шины, fallback {len(FALLBACK_PAIRS)})")
     print()
     
     while True:
@@ -180,8 +194,9 @@ def main():
             time.sleep(POLL_SEC * 5)
             continue
         
+        watch = get_watch_pairs()   # [Даат fix] весь поток шины, каждый цикл свежий
         signals_found = 0
-        for symbol in WATCH_PAIRS:
+        for symbol in watch:
             if count_open(conn) >= MAX_OPEN:
                 break
             
@@ -201,7 +216,7 @@ def main():
                           f"conf={sig['confidence']} | {sig['reasons']}")
         
         if signals_found == 0:
-            print(f"[{now.strftime('%H:%M:%S')}] No signals. Open: {open_count}")
+            print(f"[{now.strftime('%H:%M:%S')}] No signals ({len(watch)} pairs scanned). Open: {open_count}")
         
         conn.close()
         time.sleep(POLL_SEC)

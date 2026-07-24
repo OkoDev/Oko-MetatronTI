@@ -2589,6 +2589,7 @@ async def _handle_cube_events(request: web.Request) -> web.Response:
 
 async def _handle_cube_stats(request: web.Request) -> web.Response:
     """GET /api/cube/stats — статистика шины: пары, подписчики, очередь EventBus."""
+    # (роут /api/cube/pairs — ниже, _handle_cube_pairs)
     bot = request.app.get("bot")
     try:
         pair_ctx = getattr(bot, "pair_context", None)
@@ -2975,6 +2976,23 @@ async def _handle_pairs(request: web.Request) -> web.Response:
 
 # ── DEV-207: ATR Change стратегия — агрегаты по trigger_source ──────────────
 
+
+async def _handle_cube_pairs(request: web.Request) -> web.Response:
+    """GET /api/cube/pairs — все пары шины (25.07, DC-агент: «почему не все доступные?»).
+    ?active=1 → только с живым tick_price (наполненный стейт)."""
+    bot = request.app.get("bot")
+    try:
+        pair_ctx = getattr(bot, "pair_context", None)
+        syms = pair_ctx.all_symbols() if pair_ctx else []
+        if request.query.get("active"):
+            syms = [s for s in syms if getattr(pair_ctx.get(s), "tick_price", None)]
+        return web.Response(text=json.dumps({"pairs": sorted(syms), "n": len(syms)}, ensure_ascii=False),
+                            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), status=500,
+                            content_type="application/json", charset="utf-8")
+
+
 def _atr_stats_compute_sync(db_path: str) -> dict:
     """DEV-231: SQL + агрегация ATR stats — в thread pool."""
     import sqlite3
@@ -3324,6 +3342,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/events",             _handle_sse)
     # ── Куб Метатрана — MCP Layer (Фаза 1) ──
     app.router.add_get("/api/cube/context/{symbol}", _handle_cube_context)
+    app.router.add_get("/api/cube/pairs", _handle_cube_pairs)
     app.router.add_get("/api/cube/events", _handle_cube_events)
     app.router.add_get("/api/cube/stats", _handle_cube_stats)
     app.router.add_post("/api/cube/event", _handle_cube_event_inject)
