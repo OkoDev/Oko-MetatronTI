@@ -55,6 +55,49 @@ def _wt(closes: list[float]) -> tuple[list[float], list[float]]:
     return wt1, wt2
 
 
+def _weekly_pivot(ser: list[tuple[str, float]]) -> dict | None:
+    """Недельный floor-пивот из ДНЕВНОГО ряда доминации (H/L/C прошлой ISO-недели = агрегат
+    дневных close). Егор читает «под недельным пивотом» — считаем тот же уровень автономно
+    (без 1h TW). Формула OKO: S1/R1 со сдвигом 2.003/1.997 (сдвиг за свип)."""
+    from datetime import date as _date
+    weeks: dict = {}
+    order: list = []
+    for d, v in ser:
+        try:
+            y, m, dd = map(int, d.split("-"))
+            k = _date(y, m, dd).isocalendar()[:2]
+        except Exception:
+            continue
+        if k not in weeks:
+            weeks[k] = []
+            order.append(k)
+        weeks[k].append(v)
+    if len(order) < 2:
+        return None
+    prev = weeks[order[-2]]                       # прошлая ЗАВЕРШЁННАЯ неделя
+    H, L, C = max(prev), min(prev), prev[-1]
+    pp = (H + L + C) / 3
+    return {"PP": pp, "R1": pp * 1.997 - L, "R2": pp + (H - L),
+            "S1": pp * 2.003 - H, "S2": pp - (H - L)}
+
+
+def _struct(vals: list[float]) -> dict:
+    """Структура USDT.D через порт OKO-SM (ряд close → df, swings на close). Возвращает
+    trend + ближайшее сопротивление/поддержку (swing) — «OB/полка» доминации без 1h."""
+    try:
+        import pandas as _pd
+        from core.smc.oko_sm_engine import run_structure, current_leg
+        df = _pd.DataFrame({"open": vals, "high": vals, "low": vals, "close": vals})
+        df["time"] = range(len(df))
+        st = run_structure(df)
+        leg = current_leg(st)
+        return {"trend": (leg or {}).get("trend"),
+                "res": st.trail_up, "sup": st.trail_dn,
+                "swing_top": st.top_y, "swing_btm": st.btm_y}
+    except Exception as _e:
+        return {"trend": None, "res": None, "sup": None}
+
+
 def _cooldown_ok(key: str) -> bool:
     c = feed_conn()
     try:
@@ -102,31 +145,46 @@ def check(test: bool = False) -> str | None:
         else:
             break
     dist = ma - cur                                    # >0 = ниже MA20 (risk-on), пп
+    # ── STRUCTURE-AWARE (23.07, Егор «слепой MA20 vs структура»): недельный пивот + WT-кросс ──
+    wpp = _weekly_pivot(ser)
+    struct = _struct(vals)
+    wt_up = wt1[-1] > wt1[-2]                           # моментум WT вверх/вниз
+    below_pp = wpp is not None and cur < wpp["PP"]      # под недельным пивотом = крышка сверху
+    ppd = (wpp["PP"] - cur) if wpp else None            # дистанция до недельного PP, пп
+    pp_s = (f" · нед.PP {wpp['PP']:.3f}% ({'ПОД' if below_pp else 'НАД'}, {ppd:+.3f}пп)" if wpp else "")
+    st_s = f" · структура USDT.D {struct.get('trend') or '—'}"
     status = (f"USDT.D {cur:.3f}% · MA20 {ma:.3f}% ({'RISK-OFF' if risk_off else 'risk-on'}) · "
-              f"WT {wt1[-1]:+.0f}/{wt2[-1]:+.0f} · streak +{streak_up}/-{streak_dn} · dist {dist:+.3f}пп")
+              f"WT {wt1[-1]:+.0f}/{wt2[-1]:+.0f} ({'▲' if wt_up else '▼'}) · "
+              f"streak +{streak_up}/-{streak_dn}{pp_s}{st_s}")
     print(f"[USDTD-WATCH] {status}")
 
-    up_wt = cross_up and from_os
-    up_soft = (not risk_off) and streak_up >= STREAK_N and 0 < dist < NEAR_PP
-    dn_wt = cross_dn and from_ob
-    dn_soft = risk_off and streak_dn >= STREAK_N and 0 < -dist < NEAR_PP
-    if up_wt or up_soft:
-        why = " + ".join((["WT-кросс ВВЕРХ из OS (опережал MA20-флип 6/6, +1..9д)"] if up_wt else [])
-                         + ([f"{streak_up} дней роста, до MA20 {dist:.2f}пп"] if up_soft else []))
-        msg = (f"🟠 <b>USDT.D разворот-кандидат ВВЕРХ</b>\n\n"
-               f"→ risk-off близко: шорт-среда atr_S2 просыпается\n{why}\n\n"
-               f"{status}\n\n#USDTD #REGIME")
+    # ОТБОЙ у недельного (кейс Егора): USDT.D толкнулся вверх, но ПОД нед.PP и WT крестит/катит
+    # вниз → доминация отбивается → risk-on ДЕРЖИТСЯ → лонги продолжаются.
+    reject_up = (below_pp and streak_up >= 2 and abs(ppd) < NEAR_PP
+                 and (cross_dn or not wt_up))
+    # ПРОБОЙ вверх: USDT.D НАД нед.PP + WT вверх → risk-off ПОДТВЕРЖДАЕТСЯ (шорт-среда atr_S2).
+    breakout_up = (not below_pp) and wt_up and (cross_up or streak_up >= STREAK_N)
+    # РАННИЙ WT-кросс вверх из OS (опережал MA20-флип 6/6) — но ТОЛЬКО если не под явным отбоем.
+    early_up = cross_up and from_os and wt_up and not below_pp
+    # зеркало вниз: пробой поддержки / WT-кросс вниз из OB → risk-on/бык
+    reject_dn = (not below_pp) and struct.get("sup") and streak_dn >= 2 and wt_up  # отбой от поддержки вверх=USDT.D растёт? нет
+    early_dn = cross_dn and from_ob and (not wt_up)
+
+    if breakout_up or early_up:
+        why = ("USDT.D НАД недельным пивотом + WT▲ — пробой, risk-off подтверждается"
+               if breakout_up else "WT-кросс ВВЕРХ из OS (опережал MA20-флип 6/6, +1..9д)")
+        msg = (f"🟠 <b>USDT.D → RISK-OFF (структурно)</b>\n\n"
+               f"→ шорт-среда atr_S2 просыпается\n{why}\n\n{status}\n\n#USDTD #REGIME")
         if test:
             return msg
         if _cooldown_ok("usdtd_watch:UP"):
             send_tg(msg, channel="action")
             return "UP"
-    if dn_wt or dn_soft:
-        why = " + ".join((["WT-кросс ВНИЗ из OB"] if dn_wt else [])
-                         + ([f"{streak_dn} дней падения, до MA20 {-dist:.2f}пп"] if dn_soft else []))
-        msg = (f"🟢 <b>USDT.D разворот-кандидат ВНИЗ</b>\n\n"
-               f"→ risk-on/бык: деньги выходят в альты (среда лонгов)\n{why}\n\n"
-               f"{status}\n\n#USDTD #REGIME")
+    if reject_up or early_dn:
+        why = ("USDT.D ОТБИЛСЯ от недельного пивота, WT▼ — доминация падает, risk-on держится"
+               if reject_up else "WT-кросс ВНИЗ из OB — доминация разворачивается вниз")
+        msg = (f"🟢 <b>USDT.D → RISK-ON держится (структурно)</b>\n\n"
+               f"→ деньги остаются в альтах: среда ЛОНГОВ\n{why}\n\n{status}\n\n#USDTD #REGIME")
         if test:
             return msg
         if _cooldown_ok("usdtd_watch:DOWN"):
