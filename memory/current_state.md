@@ -1763,3 +1763,9 @@
 - ✅ Детектор на usdtd_1h (8.42 ≈ TW). Регим MA20 на дневном (шкала CG≠CMC — не микшу). Вердикт = WT-кросс из OS/OB (валидир. 6/6), пивот СНЯТ с гейта (моя формула 8.380 ≠ TW OKO 8.4582 — перевернул бы знак) → оставлен контекстом.
 - ⚠️ Открытое: нед.пивот выровнять под OKO Егора (недельная свеча, не hourly-closes) ИЛИ читать из TW. WT 10/21 уже совпадает.
 - 🔄 Живьё: WT +53 OB ▲ без кросса → молчит; выстрелит 🟢 на CrossDown.
+
+## [24.07] Даат: SELF-COMPUTED DOMINANCE engine (продукт-грейд)
+- ✅ Егор «Куб как продукт — TW не у всех». core/context/marketcap_engine.py: USDT.D/BTC.D/ETH.D/ALT.D = Σ(supply×live_price)+tail. supply=daily CMC топ-500, price=live Binance+BingX (85% mcap). Автономно, без TW. pm2 mcap-refresh 00:10.
+- ✅ rotation_now = триада Егора: USDT.D↓→альты летят / USDT.D↑+BTC.D↓→стоят / USDT.D↑+альт↓→risk-off. Живьё 🟡 СТОЯТ = точь-в-точь его наблюдение (порог 1.2 калибр по глазу).
+- 📍 Точность: Куб 8.25/57.7 vs TW 8.49/59.4, смещение 1-2% состава (для режима норм). NEXT-точность: дедуп wrapped/staked.
+- 🔄 NEXT: live_dominance→usdtd_watch moment-value; rotation-алерт в TG.
