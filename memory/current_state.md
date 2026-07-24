@@ -1809,3 +1809,8 @@
 - ✅ Смоук верифицировал цепочку до самой биржи (OrderExecutor рассчитал, отклонил по минимуму — честно). signal_type=ds_advisor → forward machine судит автоматически.
 - 📍 Гейт: 20-30 закрытых net+ → реальные деньги. Красный форвард → закрытие трека. DC пишет агента (шина: /api/cube/context + durable БД).
 - pm2 ds-advisor (standalone SIM-поллер) снят — заменён боевым лупом; scripts/ds_advisor_poller.py оставлен как fallback.
+
+## [25.07] Даат: DC-АГЕНТ ЗАПУЩЕН (pm2 dc-agent) — охота началась
+- ✅ DC написала охотника (SMC+WT+Pivot confluence≥2, луна, дедуп, thesis). Моё ревью до запуска: 4 фикса [Даат fix] — fetchone/ключи шины encoded/smc_snap плоский (last_choch.direction!)/дедуп SHORT. Отчёт ей в DISCUSSION (pivot-формат + структурный SL — её зона v2).
+- ✅ КОРЕНЬ мёртвого :8000: dashboard.enabled=false (старая изоляция нагрузки) → ВКЛЮЧЁН (threaded). Шина живая: 248 пар. Ключи 'X/USDT:USDT' (URL-encoded). wt_snap: {'15m'/{wt1,wt2,zone,trend,atr_trend}...}. smc_snap: ПЛОСКИЙ. oko-dash тоже должен ожить (:8000 вернулся).
+- 🔄 Цепочка: dc-agent (60с) → ds_signals → ds_advisor_loop (30с) → router → VST LIMIT. Судья forward machine, гейт 20-30 net+.
