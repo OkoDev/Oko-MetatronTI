@@ -761,6 +761,10 @@ signal_router:
       risk_pct: 0.5
       entry_order_type: MARKET
       lev_set_to_max: false
+    ds_advisor:
+      min_strength: 0
+      exchange_enabled: false   # 25.07: DC зарабатывает арминг форвардом (гейт 20-30 net+), как pump
+      trade_mode: ds_advisor
     method_egor:
       min_strength: 0
       exchange_enabled: false
