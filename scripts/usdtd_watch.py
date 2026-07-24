@@ -98,6 +98,22 @@ def _struct(vals: list[float]) -> dict:
         return {"trend": None, "res": None, "sup": None}
 
 
+def _load_1h(max_stale_h: float = 3.0):
+    """1h-ряд USDT.D из usdtd_1h (CMC, строит scripts/usdtd_intraday.py — уровень как TW).
+    → [(day, value)] для reuse _weekly_pivot/_wt/_struct. None если мало/протух → детектор
+    падает на дневной CG-ряд. Шкала 1h(CMC)≠дневной(CG-норм) — НЕ смешивать в одном сравнении."""
+    try:
+        c = sqlite3.connect(str(_DB))
+        rows = c.execute("SELECT time, close FROM usdtd_1h ORDER BY time").fetchall()
+        c.close()
+    except Exception:
+        return None
+    if len(rows) < 80 or (time.time() - rows[-1][0] / 1000) > max_stale_h * 3600:
+        return None
+    return [(datetime.fromtimestamp(t / 1000, timezone.utc).strftime("%Y-%m-%d"), float(v))
+            for t, v in rows]
+
+
 def _cooldown_ok(key: str) -> bool:
     c = feed_conn()
     try:
@@ -126,65 +142,54 @@ def check(test: bool = False) -> str | None:
         conn.close()
     if len(ser) < _MA_LEN + 25:
         print("[USDTD-WATCH] ряда мало"); return None
-    vals = [v for _, v in ser]
+    # РЕГИМ-БАЗЛАЙН (MA20) — на ДНЕВНОМ ряду, своя шкала (CG-норм). НЕ смешивать с 1h(CMC).
+    dvals = [v for _, v in ser]
+    ma = sum(dvals[-_MA_LEN:]) / _MA_LEN
+    risk_off = dvals[-1] > ma
+    dist = ma - dvals[-1]                               # >0 = ниже MA20 (risk-on), пп
+
+    # СТРУКТУРНЫЙ READ — 1h если есть (CMC, уровень как TW), иначе дневной. Своя шкала = self-consistent.
+    h1 = _load_1h()
+    R = h1 if h1 is not None else ser
+    tf = "1h" if h1 is not None else "1d"
+    vals = [v for _, v in R]
     cur = vals[-1]
-    ma = sum(vals[-_MA_LEN:]) / _MA_LEN
-    risk_off = cur > ma
     wt1, wt2 = _wt(vals)
-    # кросс на последней точке: prev по одну сторону, now по другую
     cross_up = wt1[-2] <= wt2[-2] and wt1[-1] > wt2[-1]
     cross_dn = wt1[-2] >= wt2[-2] and wt1[-1] < wt2[-1]
     from_os = min(wt1[-2], wt1[-1]) < OS_LEVEL
     from_ob = max(wt1[-2], wt1[-1]) > OB_LEVEL
-    streak_up = streak_dn = 0
-    for i in range(len(vals) - 1, 0, -1):
-        if vals[i] > vals[i - 1] and streak_dn == 0:
-            streak_up += 1
-        elif vals[i] < vals[i - 1] and streak_up == 0:
-            streak_dn += 1
-        else:
-            break
-    dist = ma - cur                                    # >0 = ниже MA20 (risk-on), пп
-    # ── STRUCTURE-AWARE (23.07, Егор «слепой MA20 vs структура»): недельный пивот + WT-кросс ──
-    wpp = _weekly_pivot(ser)
+    wt_up = wt1[-1] > wt1[-2]
+    wpp = _weekly_pivot(R)
     struct = _struct(vals)
-    wt_up = wt1[-1] > wt1[-2]                           # моментум WT вверх/вниз
     below_pp = wpp is not None and cur < wpp["PP"]      # под недельным пивотом = крышка сверху
-    ppd = (wpp["PP"] - cur) if wpp else None            # дистанция до недельного PP, пп
-    pp_s = (f" · нед.PP {wpp['PP']:.3f}% ({'ПОД' if below_pp else 'НАД'}, {ppd:+.3f}пп)" if wpp else "")
-    st_s = f" · структура USDT.D {struct.get('trend') or '—'}"
-    status = (f"USDT.D {cur:.3f}% · MA20 {ma:.3f}% ({'RISK-OFF' if risk_off else 'risk-on'}) · "
-              f"WT {wt1[-1]:+.0f}/{wt2[-1]:+.0f} ({'▲' if wt_up else '▼'}) · "
-              f"streak +{streak_up}/-{streak_dn}{pp_s}{st_s}")
+    ppd = (wpp["PP"] - cur) if wpp else 0.0             # дистанция до нед.PP (пп, шкала R)
+    pp_s = (f" · {'ПОД' if below_pp else 'НАД'} нед.PP {wpp['PP']:.3f} ({ppd:+.3f}пп)" if wpp else "")
+    cr_s = " cross↓" if cross_dn else (" cross↑" if cross_up else "")
+    status = (f"USDT.D({tf}) {cur:.3f}% · регим {'RISK-OFF' if risk_off else 'risk-on'} (MA20 dist {dist:+.3f}пп) · "
+              f"WT {wt1[-1]:+.0f} ({'▲' if wt_up else '▼'}{cr_s}){pp_s} · структура {struct.get('trend') or '—'}")
     print(f"[USDTD-WATCH] {status}")
 
-    # ОТБОЙ у недельного (кейс Егора): USDT.D толкнулся вверх, но ПОД нед.PP и WT крестит/катит
-    # вниз → доминация отбивается → risk-on ДЕРЖИТСЯ → лонги продолжаются.
-    reject_up = (below_pp and streak_up >= 2 and abs(ppd) < NEAR_PP
-                 and (cross_dn or not wt_up))
-    # ПРОБОЙ вверх: USDT.D НАД нед.PP + WT вверх → risk-off ПОДТВЕРЖДАЕТСЯ (шорт-среда atr_S2).
-    breakout_up = (not below_pp) and wt_up and (cross_up or streak_up >= STREAK_N)
-    # РАННИЙ WT-кросс вверх из OS (опережал MA20-флип 6/6) — но ТОЛЬКО если не под явным отбоем.
-    early_up = cross_up and from_os and wt_up and not below_pp
-    # зеркало вниз: пробой поддержки / WT-кросс вниз из OB → risk-on/бык
-    reject_dn = (not below_pp) and struct.get("sup") and streak_dn >= 2 and wt_up  # отбой от поддержки вверх=USDT.D растёт? нет
-    early_dn = cross_dn and from_ob and (not wt_up)
+    # ВЕРДИКТ = WT-КРОСС на R (метод Егора «1h OB/OS + cross», валидирован: из OS опережал
+    # MA20-флип 6/6, +1..9д). Пивот пока КОНТЕКСТ (моя формула ≠ OKO-пивоту TW — калибруется),
+    # НЕ гейтит вердикт, чтобы не врать (кейс 24.07: pivot 8.380 vs TW 8.4582 перевернул знак).
+    pp_note = f" · {pp_s.strip(' ·')} (контекст, калибр.)" if wpp else ""
+    up_off = cross_up and from_os                      # WT↑ из OS → доминация растёт → risk-off
+    dn_on = cross_dn and from_ob                       # WT↓ из OB → доминация падает → risk-on
 
-    if breakout_up or early_up:
-        why = ("USDT.D НАД недельным пивотом + WT▲ — пробой, risk-off подтверждается"
-               if breakout_up else "WT-кросс ВВЕРХ из OS (опережал MA20-флип 6/6, +1..9д)")
-        msg = (f"🟠 <b>USDT.D → RISK-OFF (структурно)</b>\n\n"
-               f"→ шорт-среда atr_S2 просыпается\n{why}\n\n{status}\n\n#USDTD #REGIME")
+    if up_off:
+        msg = (f"🟠 <b>USDT.D разворот ВВЕРХ ({tf})</b>\n\n"
+               f"→ risk-off близко: шорт-среда atr_S2 просыпается\n"
+               f"WT-кросс ВВЕРХ из OS (опережал MA20-флип 6/6, +1..9д){pp_note}\n\n{status}\n\n#USDTD #REGIME")
         if test:
             return msg
         if _cooldown_ok("usdtd_watch:UP"):
             send_tg(msg, channel="action")
             return "UP"
-    if reject_up or early_dn:
-        why = ("USDT.D ОТБИЛСЯ от недельного пивота, WT▼ — доминация падает, risk-on держится"
-               if reject_up else "WT-кросс ВНИЗ из OB — доминация разворачивается вниз")
-        msg = (f"🟢 <b>USDT.D → RISK-ON держится (структурно)</b>\n\n"
-               f"→ деньги остаются в альтах: среда ЛОНГОВ\n{why}\n\n{status}\n\n#USDTD #REGIME")
+    if dn_on:
+        msg = (f"🟢 <b>USDT.D разворот ВНИЗ ({tf})</b>\n\n"
+               f"→ risk-on/бык: деньги в альты, среда ЛОНГОВ\n"
+               f"WT-кросс ВНИЗ из OB — доминация разворачивается{pp_note}\n\n{status}\n\n#USDTD #REGIME")
         if test:
             return msg
         if _cooldown_ok("usdtd_watch:DOWN"):
