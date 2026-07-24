@@ -588,6 +588,13 @@ class TradingAlertBot:
                 logger.info("[OKO-OTE observer] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[OKO-OTE observer] failed to start: %s", e)
+            # ═══ DS-ADVISOR — торговый агент DC на VST (25.07 Егор; gated trading.ds_advisor.enabled) ═══
+            try:
+                from bot.loops.ds_advisor_loop import ds_advisor_loop
+                asyncio.create_task(ds_advisor_loop(self))
+                logger.info("[DS-ADVISOR] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[DS-ADVISOR] failed to start: %s", e)
             # ═══ RADAR-ARMED — исполнение сетапов радара (gated config.trading.radar_armed) ═══
             try:
                 from bot.loops.radar_armed_loop import radar_armed_loop

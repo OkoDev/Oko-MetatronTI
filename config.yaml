@@ -144,6 +144,9 @@ trading:
     - 30
     conf_only: false
     max_symbols: 60
+  ds_advisor:
+    enabled: true    # 25.07 Егор: DC получает весь поток и принимает торговые решения (VST, кап 5)
+    max_open: 5
   method_egor:
     enabled: false   # 24.07: OOS +0.05 тонкий, чисто не форвардился; алерты живут в method-shadow
     scan_sec: 900
@@ -763,8 +766,12 @@ signal_router:
       lev_set_to_max: false
     ds_advisor:
       min_strength: 0
-      exchange_enabled: false   # 25.07: DC зарабатывает арминг форвардом (гейт 20-30 net+), как pump
+      exchange_enabled: true    # 25.07 Егор «сразу на VST — это и есть песочница»: демо=правда исполнения
       trade_mode: ds_advisor
+      entry_order_type: LIMIT
+      leverage: 5
+      risk_pct: 2.0             # демо-депо в марже: 0.5% давал notional<$5 min (смоук) — песочница мерит эдж
+      lev_set_to_max: false
     method_egor:
       min_strength: 0
       exchange_enabled: false
