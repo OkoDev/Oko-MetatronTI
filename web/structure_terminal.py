@@ -79,6 +79,62 @@ async def api_screener(req):
     return web.json_response({"rows": _screener_rows(limit), "ts": int(time.time())})
 
 
+_EXT_DB = "oko_feed/external_data.db"
+
+
+def _inplay():
+    """🎯 Монеты 'в игре' СЕЙЧАС (Егор 25.07) — конфлюэнция внимания всех источников:
+    радар(pump🚀/spring🌱/build🔨 со стороной) + OKO-SM скринер(OTE🎯) + DC🤖 + trending🔥.
+    Больше источников = выше. → [{sym, tags}]. Терминал развязан → читает БД напрямую."""
+    since2 = int(time.time()) - 7200
+    coins: dict[str, list[str]] = {}
+
+    def add(sym, tag):
+        s = str(sym or "").split("/")[0].split("-")[0].upper().replace("USDT", "").strip()
+        if not s:
+            return
+        coins.setdefault(s, [])
+        if tag not in coins[s]:
+            coins[s].append(tag)
+
+    try:
+        ed = sqlite3.connect(_EXT_DB, timeout=5)
+        for tbl, ico, col in (("pump_signals", "🚀", "side"), ("spring_signals", "🌱", "dir"),
+                              ("build_signals", "🔨", "side")):
+            try:
+                for sym, side in ed.execute(f"SELECT symbol,{col} FROM {tbl} WHERE ts>?", (since2,)):
+                    add(sym, ico + ("↑" if str(side or "").upper() in ("BUY", "LONG", "UP") else "↓"))
+            except Exception:
+                pass
+        try:
+            row = ed.execute("SELECT coins FROM cg_trending ORDER BY ts DESC LIMIT 1").fetchone()
+            for sym in (json.loads(row[0]) if row else []):
+                add(sym, "🔥")
+        except Exception:
+            pass
+        ed.close()
+    except Exception:
+        pass
+    try:
+        sc = sqlite3.connect(_DB, timeout=5)
+        for sym, sco in sc.execute("SELECT symbol,conf_score FROM screener_state WHERE in_zone=1 "
+                                   "AND conf_score>=3 ORDER BY conf_score DESC LIMIT 10"):
+            add(sym, f"🎯{sco:.0f}")
+        for (sym,) in sc.execute("SELECT DISTINCT symbol FROM simulated_trades WHERE "
+                                 "signal_type='ds_advisor' AND status IN ('OPEN','PENDING_ENTRY')"):
+            add(sym, "🤖")
+        sc.close()
+    except Exception:
+        pass
+    ranked = sorted(coins.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    return [{"sym": s, "tags": "".join(t)} for s, t in ranked[:24]]
+
+
+async def api_inplay(_req):
+    """GET /api/inplay — монеты в игре сейчас (радар/скринер/DC/trending)."""
+    return web.json_response({"coins": _inplay(), "ts": int(time.time())})
+
+
 async def api_pair(req):
     """GET /api/pair/{base} — полная строка пары из screener_state."""
     base = req.match_info["base"].upper()
@@ -121,11 +177,21 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
 #scr a{color:inherit;text-decoration:none}#scr a:hover{color:#e0b25c;text-decoration:underline}
 .sbar{display:inline-block;height:5px;border-radius:3px;background:linear-gradient(90deg,#5a4a28,#e0b25c);vertical-align:middle;margin-left:6px}
 .lk{color:var(--dim);font-size:10.5px;letter-spacing:.03em}
+.ipwrap{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.ipc{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border-radius:9px;
+  background:var(--bg);border:1px solid var(--line);font-size:13px;text-decoration:none;color:var(--tx);transition:.12s}
+.ipc:hover{border-color:#5a4a28;color:#e0b25c}
+.ipc b{font-weight:600}.ipc .tg{font-size:12px;letter-spacing:-1px}
+.ipc.hot{border-color:#5a4a28}
 </style></head><body>
 <h1><span class=dot></span>OKO · Структура рынка <small id=age>…</small></h1>
 <div class="row tri" id=tri></div>
 <div class=row style=margin-top:14px><div class=banner b-w id=rot>…</div></div>
 <div class="card phase" id=phase></div>
+<div class=card style=margin-top:14px>
+  <div class=lbl>🎯 В ИГРЕ сейчас <span class=dim style=text-transform:none>· радар🚀🌱🔨 · OTE🎯 · DC🤖 · хайп🔥 (сортировка: конфлюэнция внимания)</span></div>
+  <div class=ipwrap id=inplay></div>
+</div>
 <div class=card style=margin-top:14px>
   <div class=lbl>🔭 СКРИНЕР OKO-SM · нога старшего 4h · схождения · WT <span id=scount class=dim></span></div>
   <div class=chips id=filters>
@@ -196,6 +262,13 @@ function scRender(){
  }).join('')||'<tr><td colspan=9 style="padding:10px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
 }
 async function scr(){try{var r=await fetch('/api/screener?limit=150',{cache:'no-store'});var d=await r.json();SR.rows=d.rows||[];scRender();}catch(e){}}
+async function ip(){try{var r=await fetch('/api/inplay',{cache:'no-store'});var d=await r.json();
+ document.getElementById('inplay').innerHTML=(d.coins||[]).map(function(x){
+  var multi=(x.tags.match(/[🚀🌱🔨🎯🤖🔥]/gu)||[]).length>=2;
+  var tw='https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.sym+'USDT.P&interval=240';
+  return '<a class="ipc'+(multi?' hot':'')+'" href="'+tw+'" target=_blank><b>'+x.sym+'</b><span class=tg>'+x.tags+'</span></a>';
+ }).join('')||'<span class=dim style=font-size:13px>тихо — активных сетапов нет</span>';
+}catch(e){}}
 document.querySelectorAll('#scr th[data-s]').forEach(function(th){th.addEventListener('click',function(){
  var k=th.getAttribute('data-s');SR.dir=(SR.sort==k)?-SR.dir:-1;SR.sort=k;
  document.querySelectorAll('#scr th .ar').forEach(function(a){a.remove()});
@@ -204,7 +277,7 @@ document.querySelectorAll('#filters .chip').forEach(function(ch){ch.addEventList
  document.querySelectorAll('#filters .chip').forEach(function(c){c.classList.remove('on')});
  ch.classList.add('on');SR.filt=ch.getAttribute('data-f');scRender();});});
 document.querySelector('#filters .chip[data-f=all]').classList.add('on');
-tick();scr();setInterval(tick,30000);setInterval(scr,60000);
+tick();scr();ip();setInterval(tick,30000);setInterval(scr,60000);setInterval(ip,60000);
 </script></body></html>"""
 
 
@@ -217,6 +290,7 @@ def main():
     app.router.add_get("/", index)
     app.router.add_get("/api/structure", api)
     app.router.add_get("/api/screener", api_screener)
+    app.router.add_get("/api/inplay", api_inplay)
     app.router.add_get("/api/pair/{base}", api_pair)
     print(f"[STRUCT] терминал структуры → http://localhost:{PORT} (развязан от oko-bot/прокси)")
     web.run_app(app, host="0.0.0.0", port=PORT, print=None)
