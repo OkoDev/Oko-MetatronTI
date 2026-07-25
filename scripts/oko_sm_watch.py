@@ -178,6 +178,55 @@ def _levels(df, px, above=True):
     return sorted(out, key=lambda x: abs(x[2]))  # ближайший к цене
 
 
+def _breakout_shadow(base, px, res, sup):
+    """SHADOW-сигнал пробоя (Егор 25.07 «breakout как shadow»): свежий кросс значимого уровня →
+    SIM-сделка source=breakout → форвард-машина судит net%. Кросс = prev px (из screener, цикл 15м
+    = «закрепление 15м») по одну сторону, текущий по другую. exchange_enabled нет → чистый SIM.
+    Дедуп 12ч/пара. Возвращает (dir, lvl, touches) для TG-алерта или None."""
+    import sqlite3 as _sq
+    c = _sq.connect("subscriptions.db", timeout=5)
+    prev = c.execute("SELECT px FROM screener_state WHERE symbol=?", (base,)).fetchone()
+    c.close()
+    if not prev or prev[0] is None:
+        return None                                   # первый цикл — нет prev-цены
+    ppx = float(prev[0])
+    r0 = (res or [None])[0]
+    s0 = (sup or [None])[0]
+    sig = None
+    if r0 and ppx < r0[0] <= px and r0[1] >= RES_MIN_TOUCHES:          # пробой ВВЕРХ
+        lvl = r0[0]; sl = lvl * (1 - 0.006); tp = px + 2 * (px - sl)   # SL под пробитым (теперь поддержка)
+        sig = ("LONG", lvl, r0[1], sl, tp)
+    elif s0 and ppx > s0[0] >= px and s0[1] >= RES_MIN_TOUCHES:        # пробой ВНИЗ
+        lvl = s0[0]; sl = lvl * (1 + 0.006); tp = px - 2 * (sl - px)
+        sig = ("SHORT", lvl, s0[1], sl, tp)
+    if not sig:
+        return None
+    direction, lvl, touches, sl, tp = sig
+    sym = f"{base}/USDT:USDT"
+    c = _sq.connect("subscriptions.db", timeout=5)
+    dup = c.execute("SELECT 1 FROM simulated_trades WHERE symbol=? AND signal_type='breakout' "
+                    "AND created_at > datetime('now','-12 hours') LIMIT 1", (sym,)).fetchone()
+    c.close()
+    if dup:
+        return None
+    try:
+        import asyncio as _aio
+        from types import SimpleNamespace
+        from core.trading.trade_simulator import TradeSimulator
+        ts = TradeSimulator("subscriptions.db")
+        rec = SimpleNamespace(symbol=sym, direction=direction, entry_price=px, stop_loss=sl,
+                              take_profit=tp, signal_type="breakout", strength=60, confidence=0.6,
+                              timeframe="4h", metadata={"level": lvl, "touches": touches},
+                              sl_source="breakout:level", tp_source="breakout:2R")
+        _aio.run(ts.register_trade_async(rec, data_collector=None, extra_features={
+            "signal_type_override": "breakout", "trade_mode": "breakout",
+            "brk_level": lvl, "brk_touches": touches}))
+    except Exception as e:
+        print(f"[BREAKOUT] {base} register: {e}")
+        return None
+    return (direction, lvl, touches)
+
+
 def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, wt, st, fibp, noise,
                     res=None, sup=None):
     """Скринер-строка пары → screener_state (последний снапшот на символ). Читает :8010."""
@@ -278,6 +327,17 @@ def scan_one(base, test=False):
     try:
         _res = _levels(df, px, above=True)           # сопротивления над ценой → ЛОНГ-пробой
         _sup = _levels(df, px, above=False)          # поддержки под ценой → ШОРТ-пробой (пробой вниз)
+        _brk = _breakout_shadow(base, px, _res, _sup)   # СНАЧАЛА (читает prev px до перезаписи)
+        if _brk:
+            _bd, _bl, _bt = _brk
+            _bico = "🟢 ЛОНГ" if _bd == "LONG" else "🔴 ШОРТ"
+            try:
+                from oko_feed.alerts import send_tg
+                send_tg(f"⚡ <b>ПРОБОЙ (shadow):</b> {_bico} <code>{base}</code> 4h\n"
+                        f"пробил уровень <code>{_bl:.6g}</code> (×{_bt} касаний) @ <code>{px:.6g}</code>\n"
+                        f"<i>SIM-форвард — судья net%. Калибровка позже.</i>\n#BREAKOUT", channel="action")
+            except Exception:
+                pass
         _store_screener(base, leg, px, retr, in_zone, approach, best_score,
                         hits_by_fib, wt, st, fibp, noise, res=_res, sup=_sup)
     except Exception as _se:

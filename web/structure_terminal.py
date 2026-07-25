@@ -79,6 +79,41 @@ async def api_screener(req):
     return web.json_response({"rows": _screener_rows(limit), "ts": int(time.time())})
 
 
+_CLEAN_ERA = "2026-07-11"   # sl_touch+costs (грязь размечена data_era)
+_TRACK = ["radar_pump", "radar_spring", "radar_build", "atr_s2", "atr_change",
+          "ds_advisor", "breakout"]
+
+
+def _scoreboard():
+    """⚖️ ФОРВАРД-ТАБЛО (Егор 25.07): net% каждого источника рядом → гейт «30 чистых net+»
+    виден цифрой. Чистая эра (≥11.07, sl_touch+costs). net = profit_pct − costs_pct."""
+    try:
+        c = sqlite3.connect(_DB)
+        c.row_factory = sqlite3.Row
+        rows = c.execute(f"""SELECT signal_type,
+              CASE WHEN execution_mode='VST' THEN 'vst' ELSE 'sim' END mode,
+              COUNT(*) n,
+              ROUND(AVG(CASE WHEN profit_pct>0 THEN 100.0 ELSE 0 END)) wr,
+              ROUND(AVG(COALESCE(profit_pct,0)-COALESCE(costs_pct,0)),3) net
+            FROM simulated_trades
+            WHERE status IN ('SL','TP','TSL') AND created_at >= '{_CLEAN_ERA}'
+            GROUP BY signal_type, mode""").fetchall()
+        c.close()
+        agg: dict = {}
+        for r in rows:
+            agg.setdefault(r["signal_type"], {})[r["mode"]] = {
+                "n": r["n"], "wr": r["wr"], "net": r["net"]}
+        return [{"src": s, "vst": agg.get(s, {}).get("vst"),
+                 "sim": agg.get(s, {}).get("sim")} for s in _TRACK]
+    except Exception:
+        return []
+
+
+async def api_scoreboard(_req):
+    """GET /api/scoreboard — форвард net% по источникам (гейт-табло)."""
+    return web.json_response({"board": _scoreboard(), "gate": 30, "ts": int(time.time())})
+
+
 _EXT_DB = "oko_feed/external_data.db"
 
 
@@ -183,11 +218,22 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
 .ipc:hover{border-color:#5a4a28;color:#e0b25c}
 .ipc b{font-weight:600}.ipc .tg{font-size:12px;letter-spacing:-1px}
 .ipc.hot{border-color:#5a4a28}
+.sbgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:9px;margin-top:10px}
+.sbcell{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--bg)}
+.sbsrc{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.sbnet{font-size:20px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.sbmeta{font-size:11px;color:var(--dim2,#5b6480);margin-top:2px}
+.sbbar{height:4px;border-radius:3px;background:var(--line);margin-top:6px;overflow:hidden}
+.sbbar span{display:block;height:100%}
 </style></head><body>
 <h1><span class=dot></span>OKO · Структура рынка <small id=age>…</small></h1>
 <div class="row tri" id=tri></div>
 <div class=row style=margin-top:14px><div class=banner b-w id=rot>…</div></div>
 <div class="card phase" id=phase></div>
+<div class=card style=margin-top:14px>
+  <div class=lbl>⚖️ ФОРВАРД-ТАБЛО · net% источников <span class=dim style=text-transform:none>· чистая эра ≥11.07 · гейт 30 net+ → реальные деньги</span></div>
+  <div class=sbgrid id=board></div>
+</div>
 <div class=card style=margin-top:14px>
   <div class=lbl>🎯 В ИГРЕ сейчас <span class=dim style=text-transform:none>· радар🚀🌱🔨 · OTE🎯 · DC🤖 · хайп🔥 (сортировка: конфлюэнция внимания)</span></div>
   <div class=ipwrap id=inplay></div>
@@ -289,7 +335,21 @@ document.querySelectorAll('#filters .chip').forEach(function(ch){ch.addEventList
  document.querySelectorAll('#filters .chip').forEach(function(c){c.classList.remove('on')});
  ch.classList.add('on');SR.filt=ch.getAttribute('data-f');scRender();});});
 document.querySelector('#filters .chip[data-f=all]').classList.add('on');
-tick();scr();ip();setInterval(tick,30000);setInterval(scr,60000);setInterval(ip,60000);
+async function sb(){try{var r=await fetch('/api/scoreboard',{cache:'no-store'});var d=await r.json();var g=d.gate||30;
+ document.getElementById('board').innerHTML=(d.board||[]).map(function(x){
+  var v=x.vst,s=x.sim;                              // VST = гейт (реал исполнение); SIM = shadow-research
+  var prim=v||s,shadow=!v&&s;                       // нет VST → показываем SIM как shadow
+  if(!prim)return '<div class=sbcell><div class=sbsrc>'+x.src+'</div><div class=sbnet style=color:var(--dim)>—</div><div class=sbmeta>нет сделок</div></div>';
+  var pos=prim.net>0,c=pos?'var(--up)':'var(--dn)';
+  var prog=Math.min(100,Math.round(100*((v?v.n:0))/g));
+  return '<div class=sbcell><div class=sbsrc>'+x.src+(shadow?' <span style=color:#e0b25c>shadow</span>':'')+'</div>'+
+   '<div class=sbnet style="color:'+c+'">'+(pos?'+':'')+prim.net.toFixed(2)+'%</div>'+
+   '<div class=sbmeta>'+(v?('VST n '+v.n+'/'+g+' · WR '+v.wr+'%'):('SIM n '+s.n+' · WR '+s.wr+'%'))+
+     (v&&s?(' <span style=color:var(--dim2)>· sim '+(s.net>0?'+':'')+s.net.toFixed(2)+'%</span>'):'')+'</div>'+
+   '<div class=sbbar><span style="width:'+prog+'%;background:'+c+'"></span></div></div>';
+ }).join('');
+}catch(e){}}
+tick();scr();ip();sb();setInterval(tick,30000);setInterval(scr,60000);setInterval(ip,60000);setInterval(sb,120000);
 </script></body></html>"""
 
 
@@ -302,6 +362,7 @@ def main():
     app.router.add_get("/", index)
     app.router.add_get("/api/structure", api)
     app.router.add_get("/api/screener", api_screener)
+    app.router.add_get("/api/scoreboard", api_scoreboard)
     app.router.add_get("/api/inplay", api_inplay)
     app.router.add_get("/api/pair/{base}", api_pair)
     print(f"[STRUCT] терминал структуры → http://localhost:{PORT} (развязан от oko-bot/прокси)")
