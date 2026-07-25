@@ -30,6 +30,10 @@ _CMC_GLOBAL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
 
 _live_cache: dict = {"ts": 0.0, "val": None}
 _LIVE_TTL = 45.0
+# ротация из CMC-истории (18ч-дельта, часовая гранулярность) — кэш 5 мин бережёт CMC-кредиты:
+# без него терминал дёргал CMC каждые 45с пока вкладка открыта (~80/час). Егор 25.07.
+_rot_cache: dict = {"ts": 0.0, "val": None, "w": None}
+_ROT_TTL = 300.0
 
 
 def _cmc_key() -> str | None:
@@ -203,6 +207,10 @@ def rotation_now(window_h: int = 18) -> dict | None:
       USDT.D↓                     → альты ЛЕТЯТ (деньги из стейблов в крипту).
       USDT.D↑ & alt↓              → risk-off, всё вниз.
     """
+    now = time.time()
+    if (now - _rot_cache["ts"] < _ROT_TTL and _rot_cache["val"] is not None
+            and _rot_cache["w"] == window_h):
+        return _rot_cache["val"]
     key = _cmc_key()
     if not key:
         return None
@@ -239,8 +247,10 @@ def rotation_now(window_h: int = 18) -> dict | None:
         verdict = "🟠 BTC-СЕЗОН — BTC.D↑, альты сливаются в BTC"
     else:
         verdict = "⚪ смешанно — чёткой ротации нет"
-    return {"d_usdtd": d_usdtd, "d_btcd": d_btcd, "d_alt_pct": d_alt,
-            "usdt_d": b["usdt_d"], "btc_d": b["btc_d"], "window_h": window_h, "verdict": verdict}
+    val = {"d_usdtd": d_usdtd, "d_btcd": d_btcd, "d_alt_pct": d_alt,
+           "usdt_d": b["usdt_d"], "btc_d": b["btc_d"], "window_h": window_h, "verdict": verdict}
+    _rot_cache.update(ts=now, val=val, w=window_h)
+    return val
 
 
 if __name__ == "__main__":
