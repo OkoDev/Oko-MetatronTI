@@ -208,7 +208,7 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
     <thead><tr style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em">
       <th data-s=symbol>пара</th><th data-s=trend>нога</th><th data-s=retr>откат</th>
       <th data-s=status>статус</th><th data-s=conf_score>score <span class=ar>▼</span></th>
-      <th data-s=res_dist>уровень↑</th><th>схождения</th><th data-s=wt>WT</th><th data-s=div>див</th><th></th></tr></thead>
+      <th data-s=res_dist>уровень ↑↓</th><th>схождения</th><th data-s=wt>WT</th><th data-s=div>див</th><th></th></tr></thead>
     <tbody></tbody>
   </table></div>
 </div>
@@ -231,12 +231,21 @@ async function tick(){
  }catch(e){document.getElementById('age').innerHTML='<span class=err>сервер недоступен</span>';}
 }
 var SR={rows:[],sort:'conf_score',dir:-1,filt:'all'};
+function lvlCell(x){
+ var up=(x.res_lvl!=null)?{l:x.res_lvl,t:x.res_touches,d:x.res_dist,a:'↑',c:'var(--up)',s:'лонг-пробой'}:null;
+ var dn=(x.sup_lvl!=null)?{l:x.sup_lvl,t:x.sup_touches,d:x.sup_dist,a:'↓',c:'var(--dn)',s:'шорт-пробой'}:null;
+ var n=(up&&dn)?(Math.abs(up.d)<=Math.abs(dn.d)?up:dn):(up||dn);
+ if(!n)return '<span class=dim>—</span>';
+ var near=Math.abs(n.d)<=3;
+ return '<span title="'+n.s+'" style="color:'+(near?'#e0b25c':n.c)+'">'+n.a+(+n.l).toPrecision(4)+
+   '</span> <span class=lk>×'+(n.t||0)+' '+(n.d>0?'+':'')+(n.d||0).toFixed(1)+'%</span>';
+}
 function scRender(){
  var f=SR.filt,rows=SR.rows.filter(function(x){
   if(f=='zone')return x.in_zone;if(f=='approach')return x.approach;
   if(f=='long')return x.trend=='long';if(f=='short')return x.trend=='short';
   if(f=='conf')return x.conf_score>=3;
-  if(f=='breakout')return x.res_dist!=null&&x.res_dist<=3;return true;});
+  if(f=='breakout')return (x.res_dist!=null&&x.res_dist<=3)||(x.sup_dist!=null&&x.sup_dist>=-3);return true;});
  var k=SR.sort;rows.sort(function(a,b){
   if(k=='symbol'||k=='trend')return SR.dir*String(a[k]||'').localeCompare(String(b[k]||''));
   var va=k=='status'?(a.in_zone?2:a.approach?1:0):(a[k]||0),vb=k=='status'?(b.in_zone?2:b.approach?1:0):(b[k]||0);
@@ -257,8 +266,7 @@ function scRender(){
    '<td>'+st+(x.noise?' <span style=color:var(--dim)>шум</span>':'')+'</td>'+
    '<td style="font-weight:600;color:'+(x.conf_score>=3?'#e0b25c':'inherit')+'">'+(x.conf_score||0).toFixed(1)+
      '<span class=sbar style="width:'+bw+'px"></span></td>'+
-   '<td>'+(x.res_lvl!=null?('<span style="color:'+(x.res_dist<=3?'#e0b25c':'var(--tx)')+'">'+(+x.res_lvl).toPrecision(4)+
-     '</span> <span class=lk>×'+(x.res_touches||0)+' +'+(x.res_dist||0).toFixed(1)+'%</span>'):'<span class=dim>—</span>')+'</td>'+
+   '<td>'+lvlCell(x)+'</td>'+
    '<td style="color:var(--dim);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+hits+'</td>'+
    '<td>'+(x.wt>0?'+':'')+Math.round(x.wt||0)+'</td>'+
    '<td>'+(x.div?'<span class=up>R+</span>':'—')+'</td>'+

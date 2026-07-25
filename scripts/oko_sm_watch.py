@@ -179,7 +179,7 @@ def _levels(df, px, above=True):
 
 
 def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, wt, st, fibp, noise,
-                    res=None):
+                    res=None, sup=None):
     """Скринер-строка пары → screener_state (последний снапшот на символ). Читает :8010."""
     import sqlite3 as _sq
     hits_flat = sorted({h for hs in hits_by_fib.values() for h in hs},
@@ -190,18 +190,24 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
         px REAL, retr REAL, in_zone INTEGER, approach INTEGER, noise INTEGER,
         conf_score REAL, hits TEXT, wt REAL, wt_ma REAL, div INTEGER,
         itrend_sync INTEGER, fib618 REAL, fib705 REAL, fib786 REAL, fib100 REAL,
-        res_lvl REAL, res_touches INTEGER, res_dist REAL)""")
+        res_lvl REAL, res_touches INTEGER, res_dist REAL,
+        sup_lvl REAL, sup_touches INTEGER, sup_dist REAL)""")
     for _mig in ("ALTER TABLE screener_state ADD COLUMN res_lvl REAL",
                  "ALTER TABLE screener_state ADD COLUMN res_touches INTEGER",
-                 "ALTER TABLE screener_state ADD COLUMN res_dist REAL"):
+                 "ALTER TABLE screener_state ADD COLUMN res_dist REAL",
+                 "ALTER TABLE screener_state ADD COLUMN sup_lvl REAL",
+                 "ALTER TABLE screener_state ADD COLUMN sup_touches INTEGER",
+                 "ALTER TABLE screener_state ADD COLUMN sup_dist REAL"):
         try:
             c.execute(_mig)
         except Exception:
             pass
     r0 = (res or [None])[0]
     res_lvl, res_touches, res_dist = (r0[0], r0[1], r0[2]) if r0 else (None, None, None)
+    s0 = (sup or [None])[0]
+    sup_lvl, sup_touches, sup_dist = (s0[0], s0[1], s0[2]) if s0 else (None, None, None)
     long_ = leg["trend"] == "long"
-    c.execute("INSERT OR REPLACE INTO screener_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    c.execute("INSERT OR REPLACE INTO screener_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
               (base, int(time.time()), leg["trend"], leg["origin"], leg["extreme"],
                px, round(float(retr), 4), int(in_zone), int(approach), int(noise),
                round(float(score), 2), json.dumps(hits_flat, ensure_ascii=False),
@@ -209,7 +215,8 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
                int(wt["divB"] if long_ else wt["divS"]),
                int((st.itrend > 0) == long_),
                fibp[0.618], fibp[0.705], fibp[0.786], fibp[1.0],
-               res_lvl, res_touches, res_dist))
+               res_lvl, res_touches, res_dist,
+               sup_lvl, sup_touches, sup_dist))
     c.commit()
     c.close()
 
@@ -269,9 +276,10 @@ def scan_one(base, test=False):
             best_score = max(best_score, sc)
             conf_lines.append(f"  {f:g} ∩ " + " ∩ ".join(hits))
     try:
-        _res = _levels(df, px, above=True)          # пробойные сопротивления над ценой (v0)
+        _res = _levels(df, px, above=True)           # сопротивления над ценой → ЛОНГ-пробой
+        _sup = _levels(df, px, above=False)          # поддержки под ценой → ШОРТ-пробой (пробой вниз)
         _store_screener(base, leg, px, retr, in_zone, approach, best_score,
-                        hits_by_fib, wt, st, fibp, noise, res=_res)
+                        hits_by_fib, wt, st, fibp, noise, res=_res, sup=_sup)
     except Exception as _se:
         print(f"[OKO-SM-WATCH] screener store {base}: {_se}")
 
