@@ -108,17 +108,40 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
 .meta{color:var(--dim);font-size:12px;margin-top:6px}.phase{margin-top:14px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--up);margin-right:6px;animation:p 2s infinite}
 @keyframes p{50%{opacity:.3}}.err{color:var(--dn)}
+.gold{color:#e0b25c}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 4px}
+.chip{font-size:12px;padding:4px 11px;border-radius:20px;border:1px solid var(--line);color:var(--dim);
+  background:transparent;cursor:pointer;user-select:none;transition:.15s;font-family:inherit}
+.chip:hover{border-color:#3a4658;color:var(--tx)}
+.chip.on{background:rgba(224,178,92,.14);border-color:#5a4a28;color:#e0b25c}
+#scr th{padding:6px 8px;cursor:pointer;white-space:nowrap;user-select:none}
+#scr th:hover{color:var(--tx)}#scr th .ar{opacity:.5;font-size:9px}
+#scr td{padding:6px 8px;border-top:1px solid var(--line)}
+#scr tbody tr{transition:background .1s}#scr tbody tr:hover{background:rgba(255,255,255,.03)}
+#scr a{color:inherit;text-decoration:none}#scr a:hover{color:#e0b25c;text-decoration:underline}
+.sbar{display:inline-block;height:5px;border-radius:3px;background:linear-gradient(90deg,#5a4a28,#e0b25c);vertical-align:middle;margin-left:6px}
+.lk{color:var(--dim);font-size:10.5px;letter-spacing:.03em}
 </style></head><body>
 <h1><span class=dot></span>OKO · Структура рынка <small id=age>…</small></h1>
 <div class="row tri" id=tri></div>
 <div class=row style=margin-top:14px><div class=banner b-w id=rot>…</div></div>
 <div class="card phase" id=phase></div>
 <div class=card style=margin-top:14px>
-  <div class=lbl>🔭 СКРИНЕР OKO-SM · пары у OTE-зон (нога старшего 4h · схождения · WT)</div>
-  <div style="overflow-x:auto;margin-top:10px">
-  <table id=scr style="width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums">
-    <thead><tr style="color:var(--dim);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em">
-      <th style=padding:4px>пара</th><th>нога</th><th>откат</th><th>статус</th><th>score</th><th>схождения</th><th>WT</th><th>див</th></tr></thead>
+  <div class=lbl>🔭 СКРИНЕР OKO-SM · нога старшего 4h · схождения · WT <span id=scount class=dim></span></div>
+  <div class=chips id=filters>
+    <span class=chip data-f=all>все</span>
+    <span class=chip data-f=zone>🎯 в зоне</span>
+    <span class=chip data-f=approach>→ подход</span>
+    <span class=chip data-f=long>LONG</span>
+    <span class=chip data-f=short>SHORT</span>
+    <span class=chip data-f=conf>score ≥ 3</span>
+  </div>
+  <div style="overflow-x:auto;margin-top:6px">
+  <table id=scr style="width:100%;border-collapse:collapse;font-size:12.5px;text-align:left;font-variant-numeric:tabular-nums">
+    <thead><tr style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em">
+      <th data-s=symbol>пара</th><th data-s=trend>нога</th><th data-s=retr>откат</th>
+      <th data-s=status>статус</th><th data-s=conf_score>score <span class=ar>▼</span></th>
+      <th>схождения</th><th data-s=wt>WT</th><th data-s=div>див</th><th></th></tr></thead>
     <tbody></tbody>
   </table></div>
 </div>
@@ -140,25 +163,47 @@ async function tick(){
   document.getElementById('age').textContent='обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
  }catch(e){document.getElementById('age').innerHTML='<span class=err>сервер недоступен</span>';}
 }
-async function scr(){
- try{const r=await fetch('/api/screener?limit=40',{cache:'no-store'});const d=await r.json();
-  const tb=document.querySelector('#scr tbody');
-  tb.innerHTML=(d.rows||[]).map(x=>{
-   const st=x.in_zone?'🎯 в зоне':(x.approach?'→ подход':'—');
-   const legc=x.trend==='long'?'var(--up)':'var(--dn)';
-   const hits=(JSON.parse(x.hits||'[]')).slice(0,3).join(' ∩ ')||'—';
-   return '<tr style="border-top:1px solid var(--line)">'+
-    '<td style="padding:5px 4px;font-weight:600">'+x.symbol+'</td>'+
-    '<td style="color:'+legc+'">'+(x.trend||'—').toUpperCase()+'</td>'+
-    '<td>'+(x.retr!=null?(x.retr*100).toFixed(0)+'%':'—')+'</td>'+
-    '<td>'+st+(x.noise?' <span style=color:var(--dim2)>шум</span>':'')+'</td>'+
-    '<td style="font-weight:600;color:'+(x.conf_score>=3?'var(--gold,#e0b25c)':'inherit')+'">'+(x.conf_score||0).toFixed(1)+'</td>'+
-    '<td style="color:var(--dim);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+hits+'</td>'+
-    '<td>'+(x.wt>0?'+':'')+Math.round(x.wt||0)+'</td>'+
-    '<td>'+(x.div?'R+':'—')+'</td></tr>';
-  }).join('')||'<tr><td colspan=8 style="padding:8px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
- }catch(e){}
+var SR={rows:[],sort:'conf_score',dir:-1,filt:'all'};
+function scRender(){
+ var f=SR.filt,rows=SR.rows.filter(function(x){
+  if(f=='zone')return x.in_zone;if(f=='approach')return x.approach;
+  if(f=='long')return x.trend=='long';if(f=='short')return x.trend=='short';
+  if(f=='conf')return x.conf_score>=3;return true;});
+ var k=SR.sort;rows.sort(function(a,b){
+  if(k=='symbol'||k=='trend')return SR.dir*String(a[k]||'').localeCompare(String(b[k]||''));
+  var va=k=='status'?(a.in_zone?2:a.approach?1:0):(a[k]||0),vb=k=='status'?(b.in_zone?2:b.approach?1:0):(b[k]||0);
+  return SR.dir*(va-vb);});
+ document.getElementById('scount').textContent='· '+rows.length;
+ var mx=Math.max.apply(null,rows.map(function(x){return x.conf_score||0}).concat([5]));
+ document.querySelector('#scr tbody').innerHTML=rows.map(function(x){
+  var st=x.in_zone?'<span class=gold>🎯 в зоне</span>':(x.approach?'→ подход':'—');
+  var legc=x.trend=='long'?'var(--up)':'var(--dn)';
+  var hits=(JSON.parse(x.hits||'[]')).slice(0,3).join(' ∩ ')||'—';
+  var bw=Math.round(36*(x.conf_score||0)/mx);
+  var tw='https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.symbol+'USDT.P&interval=240';
+  var bx='https://bingx.com/ru/perpetual/'+x.symbol+'-USDT';
+  return '<tr>'+
+   '<td style="font-weight:600"><a href="'+tw+'" target=_blank>'+x.symbol+'</a></td>'+
+   '<td style="color:'+legc+'">'+(x.trend||'—').toUpperCase()+'</td>'+
+   '<td>'+(x.retr!=null?Math.round(x.retr*100)+'%':'—')+'</td>'+
+   '<td>'+st+(x.noise?' <span style=color:var(--dim)>шум</span>':'')+'</td>'+
+   '<td style="font-weight:600;color:'+(x.conf_score>=3?'#e0b25c':'inherit')+'">'+(x.conf_score||0).toFixed(1)+
+     '<span class=sbar style="width:'+bw+'px"></span></td>'+
+   '<td style="color:var(--dim);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+hits+'</td>'+
+   '<td>'+(x.wt>0?'+':'')+Math.round(x.wt||0)+'</td>'+
+   '<td>'+(x.div?'<span class=up>R+</span>':'—')+'</td>'+
+   '<td class=lk><a href="'+bx+'" target=_blank>BINGX↗</a></td></tr>';
+ }).join('')||'<tr><td colspan=9 style="padding:10px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
 }
+async function scr(){try{var r=await fetch('/api/screener?limit=150',{cache:'no-store'});var d=await r.json();SR.rows=d.rows||[];scRender();}catch(e){}}
+document.querySelectorAll('#scr th[data-s]').forEach(function(th){th.addEventListener('click',function(){
+ var k=th.getAttribute('data-s');SR.dir=(SR.sort==k)?-SR.dir:-1;SR.sort=k;
+ document.querySelectorAll('#scr th .ar').forEach(function(a){a.remove()});
+ var ar=document.createElement('span');ar.className='ar';ar.textContent=SR.dir<0?' ▼':' ▲';th.appendChild(ar);scRender();});});
+document.querySelectorAll('#filters .chip').forEach(function(ch){ch.addEventListener('click',function(){
+ document.querySelectorAll('#filters .chip').forEach(function(c){c.classList.remove('on')});
+ ch.classList.add('on');SR.filt=ch.getAttribute('data-f');scRender();});});
+document.querySelector('#filters .chip[data-f=all]').classList.add('on');
 tick();scr();setInterval(tick,30000);setInterval(scr,60000);
 </script></body></html>"""
 
