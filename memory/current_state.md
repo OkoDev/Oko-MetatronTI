@@ -1823,3 +1823,9 @@
 - 🔴→✅ Корень «торгует всё»: signal_router.enabled=false → старый путь ставил VST-ордер БЕЗ source-гейта; source_policies (мой «локдаун») гейтил только router. Мой прошлый «портфель зачищен» был ложным. Фикс: enabled=true. Верифицировано: 0 старых bracket после рестарта, confluence идёт router-dropped. Память: bug_source_policies_deadpath_router_off.
 - ✅ Закрыто 18 утёкших (wt_sideways 16/wl_breach 3/confluence 1) через scripts/close_leaked_positions.py (per-account router._clients[acc]+positionId, обход hedge-граблей) + 9 фантомов→EXPIRED. На бирже осталось 2 живые = обе ds_advisor (одобрены). Ноль неодобренных на бирже.
 - ⚠️ Урок: signal_type = radar_pump/radar_spring/atr_change (НЕ 'radar') — approved-фильтр по ПРЕФИКСУ. Чуть не закрыл пампы (спасло что были SKIP).
+
+## [25.07] Даат: breakout shadow + форвард-табло + ЧЕСТНЫЕ VST-цифры
+- ✅ breakout: _breakout_shadow (вахта) — кросс уровня ≥3 касаний → SIM source=breakout → форвард. TG #BREAKOUT.
+- ✅ табло: :8010/api/scoreboard, split VST(гейт)/SIM. Гейт 30 чистых VST net+.
+- 🔴 ПРАВДА табло (чистая эра ≥11.07): VST всё в минусе — radar_pump -0.08% n19 (ближе всех к 0), radar_build -0.56% n54, spring -0.77%, ds_advisor -1.28% n2, atr_change -5.51% n2(шум). SIM: atr_change -0.98% n1114. Гейт далёк.
+- ⚠️ ВОПРОС: radar_build торгует VST n54 — но armed только pump/spring. Проверить (интенд или ещё утечка?).
