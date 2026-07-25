@@ -80,18 +80,37 @@ async def _process_one(bot, row: dict) -> tuple[int, str]:
     if res.trade_id:
         logger.info("[DS-ADVISOR] ✅ #%s %s %s → trade %s exch=%s",
                     row["id"], sym, d, res.trade_id, res.exchange_order_id or "pending")
-        # видимость Егору (25.07 «я как-то увижу его работу?»): каждая сделка DC → TG с ТЕЗИСОМ
+        # видимость Егору (25.07 «нужен чарт в сообщении и полноценные ссылки», как у radar):
+        # чарт+текст одним фото-сообщением + ссылки TW/BINGX. Чарт в отдельном ПОТОКЕ (build_signal_chart
+        # рендерит matplotlib — блокирующе; отдельный event loop в thread не стопорит луп бота).
         try:
-            from oko_feed.alerts import send_tg
+            from oko_feed.alerts import send_tg, send_tg_photo
+            base = sym.split("/")[0]
             _emoji = "🟢" if is_long else "🔴"
-            _ex = "📡 ордер на VST" if res.exchange_order_id else "⏳ ордер pending/отклонён sizing'ом"
-            await asyncio.to_thread(
-                send_tg,
-                f"🤖 <b>DC-АГЕНТ вошла:</b> {_emoji} <b>{d}</b> <code>{sym.split('/')[0]}</code>\n"
-                f"вход <code>{entry:.6g}</code> · SL <code>{sl:.6g}</code> · TP <code>{tp:.6g}</code>\n"
-                f"💭 <i>{(row['thesis'] or '—')[:200]}</i>\n"
-                f"{_ex} · trade #{res.trade_id}\n\n#DC_AGENT #DS",
-                channel="action")
+            _ex = "📡 ордер на VST" if res.exchange_order_id else "⏳ ордер отклонён sizing'ом"
+            _links = (f'- <a href="https://ru.tradingview.com/chart/?symbol=BINGX%3A{base}USDT.P'
+                      f'&interval=60">TW</a>\n- <a href="https://bingx.com/ru/perpetual/{base}-USDT">BINGX</a>')
+            _msg = (f"🤖 <b>DC-АГЕНТ вошла:</b> {_emoji} <b>{d}</b> <code>{base}</code>\n"
+                    f"вход <code>{entry:.6g}</code> · SL <code>{sl:.6g}</code> · TP <code>{tp:.6g}</code>\n"
+                    f"💭 <i>{(row['thesis'] or '—')[:200]}</i>\n"
+                    f"{_ex} · trade #{res.trade_id}\n\n{_links}\n\n#DC_AGENT #DS")
+
+            def _chart_sync() -> bytes | None:
+                import asyncio as _a
+                from core.ui.chart_builder import build_signal_chart
+                try:
+                    return _a.run(build_signal_chart(f"{base}/USDT:USDT", tf="1h",
+                                                     bot=None, wave_overlay=True))
+                except Exception:
+                    return None
+            _png = await asyncio.to_thread(_chart_sync)
+            if _png and len(_msg) <= 1024:
+                await asyncio.to_thread(send_tg_photo, _png, _msg, "action")  # чарт+текст = одно сообщение
+            else:
+                _mid = await asyncio.to_thread(send_tg, _msg, "action")       # фолбэк: текст + чарт-reply
+                if _png and _mid:
+                    await asyncio.to_thread(send_tg_photo, _png,
+                                            f"<code>{base}</code> 1h · SMC", "action", _mid)
         except Exception as _tge:
             logger.debug("[DS-ADVISOR] TG: %s", _tge)
         return 1, str(res.trade_id)
