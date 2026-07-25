@@ -133,6 +133,30 @@ def _levels_near(price, df, st, pivots):
     return list(dict.fromkeys(hits))[:6]
 
 
+def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, wt, st, fibp, noise):
+    """Скринер-строка пары → screener_state (последний снапшот на символ). Читает :8010."""
+    import sqlite3 as _sq
+    hits_flat = sorted({h for hs in hits_by_fib.values() for h in hs},
+                       key=lambda h: -_hit_weight(h))[:8]
+    c = _sq.connect("subscriptions.db", timeout=5)
+    c.execute("""CREATE TABLE IF NOT EXISTS screener_state(
+        symbol TEXT PRIMARY KEY, ts INTEGER, trend TEXT, origin REAL, extreme REAL,
+        px REAL, retr REAL, in_zone INTEGER, approach INTEGER, noise INTEGER,
+        conf_score REAL, hits TEXT, wt REAL, wt_ma REAL, div INTEGER,
+        itrend_sync INTEGER, fib618 REAL, fib705 REAL, fib786 REAL, fib100 REAL)""")
+    long_ = leg["trend"] == "long"
+    c.execute("INSERT OR REPLACE INTO screener_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              (base, int(time.time()), leg["trend"], leg["origin"], leg["extreme"],
+               px, round(float(retr), 4), int(in_zone), int(approach), int(noise),
+               round(float(score), 2), json.dumps(hits_flat, ensure_ascii=False),
+               round(wt["wt"], 1), round(wt["ma"], 1),
+               int(wt["divB"] if long_ else wt["divS"]),
+               int((st.itrend > 0) == long_),
+               fibp[0.618], fibp[0.705], fibp[0.786], fibp[1.0]))
+    c.commit()
+    c.close()
+
+
 def _cooldown_ok(key):
     from oko_feed.store import conn
     c = conn()
@@ -171,16 +195,12 @@ def scan_one(base, test=False):
         in_zone = z_edge <= px <= z_deep
         approach = (not in_zone) and px < z_edge and (z_edge - px) / px <= APPROACH_PCT
         retr = (px - e_) / (o_ - e_) if span else 0
-    if not (in_zone or approach):
-        return f"вне зоны (откат {retr:.2f})" if test else None
-
-    # фильтр ноги-шума
+    # СКРИНЕР (26.07, Неделя-1 плана DC): метрики считаем ВСЕГДА (не только у зоны) и пишем
+    # КАЖДУЮ пару в screener_state — :8010 отдаёт таблицей. Алерт-гейты ниже не тронуты.
     atr = float((df["high"] - df["low"]).rolling(20).mean().iloc[-1])
-    if abs(span) < 4 * atr:
-        return "нога < 4×ATR (шум)" if test else None
+    noise = abs(span) < 4 * atr
     pivots = _oko_pivots(df)
     wt = _wt_state(df)
-    # схождения на ключевых fib + ВЗВЕШЕННЫЙ скор (W/M=3, сосед=2, D=1, FVG=1, полка=0.5)
     conf_lines = []
     best_score = 0.0
     hits_by_fib = {}
@@ -191,6 +211,16 @@ def scan_one(base, test=False):
             sc = sum(_hit_weight(h) for h in hits)
             best_score = max(best_score, sc)
             conf_lines.append(f"  {f:g} ∩ " + " ∩ ".join(hits))
+    try:
+        _store_screener(base, leg, px, retr, in_zone, approach, best_score,
+                        hits_by_fib, wt, st, fibp, noise)
+    except Exception as _se:
+        print(f"[OKO-SM-WATCH] screener store {base}: {_se}")
+
+    if not (in_zone or approach):
+        return f"вне зоны (откат {retr:.2f})" if test else None
+    if noise:
+        return "нога < 4×ATR (шум)" if test else None
     # ГЕЙТ КАЧЕСТВА (Егор: «куча мусорных алертов не прокатит»): в зоне score≥3, на подходе ≥5
     need = 3.0 if in_zone else 5.0
     if best_score < need:

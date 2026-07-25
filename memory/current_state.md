@@ -1818,3 +1818,8 @@
 ## [26.07] Даат: API-дырка шины найдена и закрыта — DC прозрела
 - 🔴→✅ get_full_state НЕ экспортировал smc_snap/pivot_snap (жили в памяти, наружу пусто) → DC была слепа → 0 сигналов на 508 парах математически. Экспорт добавлен (2 строки), верифицировано: FOLKS choch/bos=DOWN, pivots 1W/1D/1M UPPERCASE.
 - DC сказано: поправить lowercase r1→R1 в pivot-блоке. Теперь полное зрение: SMC+WT+Pivot+508 пар. Ждём первые сигналы.
+
+## [25.07] Даат: КРИТ-фикс router + закрытие утёкших позиций (Егор «торгует всё» → «закрыть»)
+- 🔴→✅ Корень «торгует всё»: signal_router.enabled=false → старый путь ставил VST-ордер БЕЗ source-гейта; source_policies (мой «локдаун») гейтил только router. Мой прошлый «портфель зачищен» был ложным. Фикс: enabled=true. Верифицировано: 0 старых bracket после рестарта, confluence идёт router-dropped. Память: bug_source_policies_deadpath_router_off.
+- ✅ Закрыто 18 утёкших (wt_sideways 16/wl_breach 3/confluence 1) через scripts/close_leaked_positions.py (per-account router._clients[acc]+positionId, обход hedge-граблей) + 9 фантомов→EXPIRED. На бирже осталось 2 живые = обе ds_advisor (одобрены). Ноль неодобренных на бирже.
+- ⚠️ Урок: signal_type = radar_pump/radar_spring/atr_change (НЕ 'radar') — approved-фильтр по ПРЕФИКСУ. Чуть не закрыл пампы (спасло что были SKIP).

@@ -60,6 +60,32 @@ async def api(_req):
     return web.json_response(_build())
 
 
+def _screener_rows(limit=60):
+    try:
+        c = sqlite3.connect(_DB)
+        c.row_factory = sqlite3.Row
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM screener_state ORDER BY in_zone DESC, approach DESC, conf_score DESC "
+            "LIMIT ?", (limit,)).fetchall()]
+        c.close()
+        return rows
+    except Exception:
+        return []
+
+
+async def api_screener(req):
+    """GET /api/screener — таблица пар (Неделя-1 плана DC): нога/зона/схождения/WT."""
+    limit = int(req.query.get("limit", 60))
+    return web.json_response({"rows": _screener_rows(limit), "ts": int(time.time())})
+
+
+async def api_pair(req):
+    """GET /api/pair/{base} — полная строка пары из screener_state."""
+    base = req.match_info["base"].upper()
+    rows = [r for r in _screener_rows(500) if r["symbol"] == base]
+    return web.json_response(rows[0] if rows else {"error": f"{base} нет в скринере"})
+
+
 _HTML = """<!doctype html><html lang=ru><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>OKO · Структура рынка</title><style>
@@ -87,6 +113,15 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
 <div class="row tri" id=tri></div>
 <div class=row style=margin-top:14px><div class=banner b-w id=rot>…</div></div>
 <div class="card phase" id=phase></div>
+<div class=card style=margin-top:14px>
+  <div class=lbl>🔭 СКРИНЕР OKO-SM · пары у OTE-зон (нога старшего 4h · схождения · WT)</div>
+  <div style="overflow-x:auto;margin-top:10px">
+  <table id=scr style="width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums">
+    <thead><tr style="color:var(--dim);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em">
+      <th style=padding:4px>пара</th><th>нога</th><th>откат</th><th>статус</th><th>score</th><th>схождения</th><th>WT</th><th>див</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</div>
 <div class=meta id=foot></div>
 <script>
 function arrow(x){return x>0.001?'<span class=up>▲ '+x.toFixed(3)+'</span>':x<-0.001?'<span class=dn>▼ '+x.toFixed(3)+'</span>':'· '+x.toFixed(3)}
@@ -105,7 +140,26 @@ async function tick(){
   document.getElementById('age').textContent='обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
  }catch(e){document.getElementById('age').innerHTML='<span class=err>сервер недоступен</span>';}
 }
-tick();setInterval(tick,30000);
+async function scr(){
+ try{const r=await fetch('/api/screener?limit=40',{cache:'no-store'});const d=await r.json();
+  const tb=document.querySelector('#scr tbody');
+  tb.innerHTML=(d.rows||[]).map(x=>{
+   const st=x.in_zone?'🎯 в зоне':(x.approach?'→ подход':'—');
+   const legc=x.trend==='long'?'var(--up)':'var(--dn)';
+   const hits=(JSON.parse(x.hits||'[]')).slice(0,3).join(' ∩ ')||'—';
+   return '<tr style="border-top:1px solid var(--line)">'+
+    '<td style="padding:5px 4px;font-weight:600">'+x.symbol+'</td>'+
+    '<td style="color:'+legc+'">'+(x.trend||'—').toUpperCase()+'</td>'+
+    '<td>'+(x.retr!=null?(x.retr*100).toFixed(0)+'%':'—')+'</td>'+
+    '<td>'+st+(x.noise?' <span style=color:var(--dim2)>шум</span>':'')+'</td>'+
+    '<td style="font-weight:600;color:'+(x.conf_score>=3?'var(--gold,#e0b25c)':'inherit')+'">'+(x.conf_score||0).toFixed(1)+'</td>'+
+    '<td style="color:var(--dim);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+hits+'</td>'+
+    '<td>'+(x.wt>0?'+':'')+Math.round(x.wt||0)+'</td>'+
+    '<td>'+(x.div?'R+':'—')+'</td></tr>';
+  }).join('')||'<tr><td colspan=8 style="padding:8px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
+ }catch(e){}
+}
+tick();scr();setInterval(tick,30000);setInterval(scr,60000);
 </script></body></html>"""
 
 
@@ -117,6 +171,8 @@ def main():
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/api/structure", api)
+    app.router.add_get("/api/screener", api_screener)
+    app.router.add_get("/api/pair/{base}", api_pair)
     print(f"[STRUCT] терминал структуры → http://localhost:{PORT} (развязан от oko-bot/прокси)")
     web.run_app(app, host="0.0.0.0", port=PORT, print=None)
 
