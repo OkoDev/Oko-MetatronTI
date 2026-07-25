@@ -201,13 +201,14 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
     <span class=chip data-f=long>LONG</span>
     <span class=chip data-f=short>SHORT</span>
     <span class=chip data-f=conf>score ≥ 3</span>
+    <span class=chip data-f=breakout>⚡ пробой (≤3% к уровню)</span>
   </div>
   <div style="overflow-x:auto;margin-top:6px">
   <table id=scr style="width:100%;border-collapse:collapse;font-size:12.5px;text-align:left;font-variant-numeric:tabular-nums">
     <thead><tr style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em">
       <th data-s=symbol>пара</th><th data-s=trend>нога</th><th data-s=retr>откат</th>
       <th data-s=status>статус</th><th data-s=conf_score>score <span class=ar>▼</span></th>
-      <th>схождения</th><th data-s=wt>WT</th><th data-s=div>див</th><th></th></tr></thead>
+      <th data-s=res_dist>уровень↑</th><th>схождения</th><th data-s=wt>WT</th><th data-s=div>див</th><th></th></tr></thead>
     <tbody></tbody>
   </table></div>
 </div>
@@ -234,7 +235,8 @@ function scRender(){
  var f=SR.filt,rows=SR.rows.filter(function(x){
   if(f=='zone')return x.in_zone;if(f=='approach')return x.approach;
   if(f=='long')return x.trend=='long';if(f=='short')return x.trend=='short';
-  if(f=='conf')return x.conf_score>=3;return true;});
+  if(f=='conf')return x.conf_score>=3;
+  if(f=='breakout')return x.res_dist!=null&&x.res_dist<=3;return true;});
  var k=SR.sort;rows.sort(function(a,b){
   if(k=='symbol'||k=='trend')return SR.dir*String(a[k]||'').localeCompare(String(b[k]||''));
   var va=k=='status'?(a.in_zone?2:a.approach?1:0):(a[k]||0),vb=k=='status'?(b.in_zone?2:b.approach?1:0):(b[k]||0);
@@ -255,11 +257,13 @@ function scRender(){
    '<td>'+st+(x.noise?' <span style=color:var(--dim)>шум</span>':'')+'</td>'+
    '<td style="font-weight:600;color:'+(x.conf_score>=3?'#e0b25c':'inherit')+'">'+(x.conf_score||0).toFixed(1)+
      '<span class=sbar style="width:'+bw+'px"></span></td>'+
-   '<td style="color:var(--dim);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+hits+'</td>'+
+   '<td>'+(x.res_lvl!=null?('<span style="color:'+(x.res_dist<=3?'#e0b25c':'var(--tx)')+'">'+(+x.res_lvl).toPrecision(4)+
+     '</span> <span class=lk>×'+(x.res_touches||0)+' +'+(x.res_dist||0).toFixed(1)+'%</span>'):'<span class=dim>—</span>')+'</td>'+
+   '<td style="color:var(--dim);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+hits+'</td>'+
    '<td>'+(x.wt>0?'+':'')+Math.round(x.wt||0)+'</td>'+
    '<td>'+(x.div?'<span class=up>R+</span>':'—')+'</td>'+
    '<td class=lk><a href="'+bx+'" target=_blank>BINGX↗</a></td></tr>';
- }).join('')||'<tr><td colspan=9 style="padding:10px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
+ }).join('')||'<tr><td colspan=10 style="padding:10px;color:var(--dim)">скринер наполняется (цикл вахты 15 мин)…</td></tr>';
 }
 async function scr(){try{var r=await fetch('/api/screener?limit=150',{cache:'no-store'});var d=await r.json();SR.rows=d.rows||[];scRender();}catch(e){}}
 async function ip(){try{var r=await fetch('/api/inplay',{cache:'no-store'});var d=await r.json();

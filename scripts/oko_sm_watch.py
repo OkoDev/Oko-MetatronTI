@@ -133,7 +133,53 @@ def _levels_near(price, df, st, pivots):
     return list(dict.fromkeys(hits))[:6]
 
 
-def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, wt, st, fibp, noise):
+# ── ПРОБОЙНЫЕ УРОВНИ v0 (Егор 25.07, BEAM 0.001800) — калибруемые дефолты ──
+# КАЛИБРОВКА: окно 500 4h (~83д) поймало твой 0.001800 (3 касания); 150-250 его не видели —
+# уровень из старой структуры. Знать где крутить: RES_WINDOW (глубина), RES_SWING_K (крупность
+# пивота: ↑k = только мажорные), RES_MIN_TOUCHES, RES_TOL. Следующий шаг — тюнинг под глаз.
+RES_WINDOW = 500       # баров назад (4h)
+RES_TOL = 0.5          # % — насколько близко вершины = один уровень
+RES_MIN_TOUCHES = 3    # касаний делает уровень значимым
+RES_SWING_K = 2        # локальный максимум: выше соседей ±k
+
+
+def _levels(df, px, above=True):
+    """Значимые горизонтали из повторных swing-экстремумов (v0 breakout-детектор).
+    above=True → сопротивления над ценой (лонг-пробой); False → поддержки под (шорт).
+    → [(price, touches, dist_pct)] ближайший к цене первым. Калибровка: RES_*."""
+    ser = df["high"] if above else df["low"]
+    v = ser.values[-RES_WINDOW:]
+    k = RES_SWING_K
+    piv = []
+    for i in range(k, len(v) - k):
+        seg = v[i - k:i + k + 1]
+        if (above and v[i] == seg.max()) or (not above and v[i] == seg.min()):
+            piv.append(float(v[i]))
+    if not piv:
+        return []
+    piv.sort()
+    clusters = []
+    for p in piv:
+        if clusters and abs(p - clusters[-1]["m"]) / clusters[-1]["m"] * 100 <= RES_TOL:
+            clusters[-1]["p"].append(p)
+            clusters[-1]["m"] = sum(clusters[-1]["p"]) / len(clusters[-1]["p"])
+        else:
+            clusters.append({"m": p, "p": [p]})
+    out = []
+    for c in clusters:
+        if len(c["p"]) < RES_MIN_TOUCHES:
+            continue
+        lvl = c["m"]
+        if above and lvl <= px:
+            continue
+        if (not above) and lvl >= px:
+            continue
+        out.append((round(lvl, 8), len(c["p"]), round((lvl - px) / px * 100, 2)))
+    return sorted(out, key=lambda x: abs(x[2]))  # ближайший к цене
+
+
+def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, wt, st, fibp, noise,
+                    res=None):
     """Скринер-строка пары → screener_state (последний снапшот на символ). Читает :8010."""
     import sqlite3 as _sq
     hits_flat = sorted({h for hs in hits_by_fib.values() for h in hs},
@@ -143,16 +189,27 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
         symbol TEXT PRIMARY KEY, ts INTEGER, trend TEXT, origin REAL, extreme REAL,
         px REAL, retr REAL, in_zone INTEGER, approach INTEGER, noise INTEGER,
         conf_score REAL, hits TEXT, wt REAL, wt_ma REAL, div INTEGER,
-        itrend_sync INTEGER, fib618 REAL, fib705 REAL, fib786 REAL, fib100 REAL)""")
+        itrend_sync INTEGER, fib618 REAL, fib705 REAL, fib786 REAL, fib100 REAL,
+        res_lvl REAL, res_touches INTEGER, res_dist REAL)""")
+    for _mig in ("ALTER TABLE screener_state ADD COLUMN res_lvl REAL",
+                 "ALTER TABLE screener_state ADD COLUMN res_touches INTEGER",
+                 "ALTER TABLE screener_state ADD COLUMN res_dist REAL"):
+        try:
+            c.execute(_mig)
+        except Exception:
+            pass
+    r0 = (res or [None])[0]
+    res_lvl, res_touches, res_dist = (r0[0], r0[1], r0[2]) if r0 else (None, None, None)
     long_ = leg["trend"] == "long"
-    c.execute("INSERT OR REPLACE INTO screener_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    c.execute("INSERT OR REPLACE INTO screener_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
               (base, int(time.time()), leg["trend"], leg["origin"], leg["extreme"],
                px, round(float(retr), 4), int(in_zone), int(approach), int(noise),
                round(float(score), 2), json.dumps(hits_flat, ensure_ascii=False),
                round(wt["wt"], 1), round(wt["ma"], 1),
                int(wt["divB"] if long_ else wt["divS"]),
                int((st.itrend > 0) == long_),
-               fibp[0.618], fibp[0.705], fibp[0.786], fibp[1.0]))
+               fibp[0.618], fibp[0.705], fibp[0.786], fibp[1.0],
+               res_lvl, res_touches, res_dist))
     c.commit()
     c.close()
 
@@ -212,8 +269,9 @@ def scan_one(base, test=False):
             best_score = max(best_score, sc)
             conf_lines.append(f"  {f:g} ∩ " + " ∩ ".join(hits))
     try:
+        _res = _levels(df, px, above=True)          # пробойные сопротивления над ценой (v0)
         _store_screener(base, leg, px, retr, in_zone, approach, best_score,
-                        hits_by_fib, wt, st, fibp, noise)
+                        hits_by_fib, wt, st, fibp, noise, res=_res)
     except Exception as _se:
         print(f"[OKO-SM-WATCH] screener store {base}: {_se}")
 
