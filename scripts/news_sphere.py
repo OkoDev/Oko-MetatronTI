@@ -447,6 +447,69 @@ def swarm_compass(data: str) -> dict | None:
             "detail": " ".join(f"{p}={b}" for p, (b, _) in votes.items())}
 
 
+def _inplay_coins(c) -> list[str]:
+    """🎯 Монеты 'в игре' СЕЙЧАС из всех сигнальных источников (Егор 25.07 «больше инплей монет»).
+    Конфлюэнция внимания: radar(pump/spring/build) + OKO-SM скринер (OTE-зоны) + DC-торговля +
+    trending. Больше источников на монету = выше в списке. → строки 'СИМ 🚀🎯...'."""
+    import sqlite3 as _sq
+    since2 = int(time.time()) - 7200
+    coins: dict[str, list[str]] = {}
+
+    def add(sym, tag):
+        s = str(sym or "").split("/")[0].split("-")[0].upper().replace("USDT", "").strip()
+        if not s:
+            return
+        coins.setdefault(s, [])
+        if tag not in coins[s]:
+            coins[s].append(tag)
+
+    # радар (external_data.db = c) — свежие сетапы со стороной
+    for tbl, ico, col in (("pump_signals", "🚀", "side"), ("spring_signals", "🌱", "dir"),
+                          ("build_signals", "🔨", "side")):
+        try:
+            for sym, side in c.execute(f"SELECT symbol, {col} FROM {tbl} WHERE ts>?", (since2,)).fetchall():
+                arrow = "↑" if str(side or "").upper() in ("BUY", "LONG", "UP") else "↓"
+                add(sym, ico + arrow)
+        except Exception:
+            pass
+    # OKO-SM скринер + DC-торговля (subscriptions.db)
+    try:
+        sc = _sq.connect("subscriptions.db", timeout=5)
+        for sym, sco in sc.execute("SELECT symbol, conf_score FROM screener_state WHERE in_zone=1 "
+                                   "AND conf_score>=3 ORDER BY conf_score DESC LIMIT 8").fetchall():
+            add(sym, f"🎯{sco:.0f}")
+        for (sym,) in sc.execute("SELECT DISTINCT symbol FROM simulated_trades WHERE "
+                                 "signal_type='ds_advisor' AND status IN ('OPEN','PENDING_ENTRY')").fetchall():
+            add(sym, "🤖")
+        sc.close()
+    except Exception:
+        pass
+    # trending торгуемые (retail-хайп) — reuse _futures_universe
+    try:
+        row = c.execute("SELECT coins FROM cg_trending ORDER BY ts DESC LIMIT 1").fetchone()
+        if row:
+            uni = _futures_universe()
+            for sym in json.loads(row[0]):
+                if str(sym).upper() in uni:
+                    add(sym, "🔥")
+    except Exception:
+        pass
+    ranked = sorted(coins.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    return [f"{s} {''.join(tags)}" for s, tags in ranked[:10]]
+
+
+def _rotation_line() -> str | None:
+    """🔺 Ротация капитала — self-computed триада (marketcap_engine, MOAT сессии 24.07)."""
+    try:
+        from core.context.marketcap_engine import rotation_now
+        r = rotation_now()
+        if r and r.get("verdict"):
+            return f"Ротация: {r['verdict']}"
+    except Exception:
+        pass
+    return None
+
+
 def compass(c) -> None:
     """🧭 ЧАСОВОЙ КОМПАС (Егор 08.07: «не поток, а агрегация и интерпретация — ждём/лонг/шорт»).
     Раз в час: синтез всего (новости+календарь+on-chain+рынок+USDT.D+пульс радара) → один
@@ -495,6 +558,14 @@ def compass(c) -> None:
         parts.append(f"Радар 1ч: ликвидации шортов {sq_up} / лонгов {sq_dn}, BUILD {bld}, PUMP/DUMP {pmp}")
     except Exception:
         pass
+    # 🔺 ротация капитала (self-computed триада — MOAT)
+    _rot = _rotation_line()
+    if _rot:
+        parts.append(_rot)
+    # 🎯 монеты в игре (Егор 25.07) — в LLM-контекст (пусть биас учитывает) + в сообщение
+    inplay = _inplay_coins(c)
+    if inplay:
+        parts.append("В игре сейчас (радар/скринер/DC/trending): " + ", ".join(inplay))
     if len(parts) < 2:
         return
     data = "\n".join(f"- {p}" for p in parts)
@@ -549,8 +620,11 @@ def compass(c) -> None:
             sw_icon = {"long": "🟢", "short": "🔴"}.get(swarm["bias"], "⏳")
             sw_line = (f"\n🐝 <b>Консилиум:</b> {sw_icon} {swarm['bias'].upper()} "
                        f"{swarm['votes'].split(':')[1]} голосов · {swarm['confidence']}%")
-        send_tg(f"🧭 <b>КОМПАС: {icon}</b> · {conf}%{flip}\n\n"
-                f"{d.get('reasoning_ru') or ''}{sw_line}\n\n"
+        _rot_block = f"\n🔺 <b>{_rot}</b>" if _rot else ""
+        _ip_block = ("\n\n🎯 <b>В ИГРЕ</b> (радар🚀🌱🔨 · OTE🎯 · DC🤖 · хайп🔥):\n"
+                     + "\n".join(f"• <code>{x}</code>" for x in inplay)) if inplay else ""
+        send_tg(f"🧭 <b>КОМПАС: {icon}</b> · {conf}%{flip}{_rot_block}\n\n"
+                f"{d.get('reasoning_ru') or ''}{sw_line}{_ip_block}\n\n"
                 f"⚠️ <b>Риск:</b> {d.get('key_risk') or '—'}\n\n#COMPASS", channel="news")
         c.execute("INSERT OR REPLACE INTO alert_log VALUES ('compass_sent', ?)", (int(time.time()),))
     c.execute("INSERT OR REPLACE INTO alert_log VALUES ('compass', ?)", (int(time.time()),))
