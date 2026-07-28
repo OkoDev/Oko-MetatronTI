@@ -9,7 +9,7 @@
 Отдаёт: /api/structure (JSON, кэш 45с) + / (self-render HTML-кокпит, поллинг 30с).
 Запуск: python web/structure_terminal.py · pm2 --name structure-term (autorestart). Открыть :8010.
 """
-import sys, sqlite3, time
+import sys, sqlite3, time, json, urllib.request
 sys.path.insert(0, ".")
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
@@ -170,6 +170,96 @@ async def api_inplay(_req):
     return web.json_response({"coins": _inplay(), "ts": int(time.time())})
 
 
+# ── ФИЛЬТР-КОНСТРУКТОР (Егор 29.07): составной MTF-фильтр по снапшотам Куба ──
+_SNAP_URL = "http://127.0.0.1:8000/api/cube/snapshot_all"
+_snap = {"ts": 0.0, "coins": {}}
+
+
+def _fetch_snap():
+    """Кэш bulk-снапшота из шины (60с). Бот флапнул → отдаём последний (stale, но живой)."""
+    now = time.time()
+    if now - _snap["ts"] < 60 and _snap["coins"]:
+        return _snap["coins"]
+    try:
+        with urllib.request.urlopen(_SNAP_URL, timeout=15) as r:
+            _snap["coins"] = json.loads(r.read()).get("coins", {})
+            _snap["ts"] = now
+    except Exception:
+        pass
+    return _snap["coins"]
+
+
+def _match_block(rec, b):
+    """Один TF-блок: WT-диапазон/зона/кросс + SMC OB/FVG/CHoCH/BOS на этом ТФ."""
+    tf = b.get("tf", "1h")
+    wt = (rec.get("wt") or {}).get(tf) or {}
+    sm = (rec.get("smc") or {}).get(tf) or {}
+    w1 = wt.get("wt1")
+    if b.get("wt_min") is not None and (w1 is None or w1 < b["wt_min"]):
+        return False
+    if b.get("wt_max") is not None and (w1 is None or w1 > b["wt_max"]):
+        return False
+    if b.get("wt_zone") and wt.get("zone") != b["wt_zone"]:
+        return False
+    cr = wt.get("cross") or 0
+    if b.get("wt_cross") == "up" and not cr > 0:
+        return False
+    if b.get("wt_cross") == "down" and not cr < 0:
+        return False
+    if b.get("ob_bull") and not sm.get("ob_bull"):
+        return False
+    if b.get("ob_bear") and not sm.get("ob_bear"):
+        return False
+    if b.get("fvg_bull") and not (sm.get("fvg_bull") or 0) > 0:
+        return False
+    if b.get("fvg_bear") and not (sm.get("fvg_bear") or 0) > 0:
+        return False
+    if b.get("choch") and sm.get("choch") != b["choch"]:
+        return False
+    if b.get("bos") and sm.get("bos") != b["bos"]:
+        return False
+    return True
+
+
+def _match_global(rec, g):
+    if not g:
+        return True
+    if g.get("regime") and rec.get("regime") != g["regime"]:
+        return False
+    if g.get("eqh_near") and not rec.get("eqh_near"):
+        return False
+    if g.get("eql_near") and not rec.get("eql_near"):
+        return False
+    if g.get("in_ote") and not rec.get("in_ote"):
+        return False
+    if g.get("near_pivot_pct") is not None:
+        np_ = rec.get("near_pivot") or {}
+        d = np_.get("dist")
+        if d is None or abs(d) > g["near_pivot_pct"]:
+            return False
+        if g.get("pivot_src") and g["pivot_src"] not in str(np_.get("src") or ""):
+            return False
+    return True
+
+
+async def api_filter(req):
+    """POST /api/filter — {blocks:[{tf,wt_min,...}], global:{...}} → монеты, прошедшие ВСЕ блоки (AND)."""
+    try:
+        q = await req.json()
+    except Exception:
+        q = {}
+    blocks = q.get("blocks") or []
+    g = q.get("global") or {}
+    coins = _fetch_snap()
+    out = []
+    for sym, rec in coins.items():
+        if all(_match_block(rec, b) for b in blocks) and _match_global(rec, g):
+            out.append({"sym": sym.split("/")[0], "px": rec.get("px"),
+                        "regime": rec.get("regime"), "np": rec.get("near_pivot")})
+    out.sort(key=lambda x: x["sym"])
+    return web.json_response({"coins": out, "n": len(out), "total": len(coins), "ts": int(time.time())})
+
+
 async def api_pair(req):
     """GET /api/pair/{base} — полная строка пары из screener_state."""
     base = req.match_info["base"].upper()
@@ -226,7 +316,7 @@ h1{font-size:17px;font-weight:600;letter-spacing:.3px}h1 small{color:var(--dim);
 .sbbar{height:4px;border-radius:3px;background:var(--line);margin-top:6px;overflow:hidden}
 .sbbar span{display:block;height:100%}
 </style></head><body>
-<h1><span class=dot></span>OKO · Структура рынка <small id=age>…</small></h1>
+<h1><span class=dot></span>OKO · Структура рынка <a href="/filter" style="color:#e0b25c;font-size:13px;font-weight:400;text-decoration:none;margin-left:10px">🔬 фильтр-конструктор →</a> <small id=age>…</small></h1>
 <div class="row tri" id=tri></div>
 <div class=row style=margin-top:14px><div class=banner b-w id=rot>…</div></div>
 <div class="card phase" id=phase></div>
@@ -357,6 +447,100 @@ async def index(_req):
     return web.Response(text=_HTML, content_type="text/html")
 
 
+_FILTER_HTML = """<!doctype html><html lang=ru><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>OKO · Фильтр-конструктор</title><style>
+:root{--bg:#0b0e14;--card:#141922;--line:#232a36;--tx:#d1d6e0;--dim:#7b8496;--up:#26a69a;--dn:#ef5350;--gold:#e0b25c}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:18px;max-width:1100px;margin:0 auto}
+h1{font-size:17px;font-weight:600}h1 a{color:var(--dim);font-size:13px;font-weight:400;text-decoration:none;margin-left:10px}h1 a:hover{color:var(--gold)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px;margin-top:12px}
+.lbl{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px}
+.grp{display:inline-flex;align-items:center;gap:5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:5px 9px}
+.grp b{color:var(--gold);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+input,select{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:inherit;font-size:12.5px}
+input[type=number]{width:52px}input[type=checkbox]{accent-color:var(--gold);cursor:pointer}
+label{cursor:pointer;user-select:none}select{cursor:pointer}
+.tfhdr{color:var(--gold);font-weight:600;font-size:13px;min-width:38px}
+.res a{color:var(--tx);text-decoration:none;display:inline-block;padding:5px 9px;margin:3px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font-size:13px}
+.res a:hover{border-color:var(--gold);color:var(--gold)}.res a small{color:var(--dim)}
+.cnt{font-size:22px;font-weight:700;color:var(--gold)}
+.reset{cursor:pointer;color:var(--dim);font-size:12px;border:1px solid var(--line);border-radius:8px;padding:4px 10px;background:transparent}
+.reset:hover{color:var(--tx)}
+</style></head><body>
+<h1>🔬 OKO · Фильтр-конструктор <a href="/">← кокпит</a> <span id=age style=color:var(--dim);font-size:12px;font-weight:400></span></h1>
+<div class=card><div class=lbl>Глобальные условия</div><div class=row id=glob></div></div>
+<div id=blocks></div>
+<div class=card><div class=row style=justify-content:space-between>
+  <div><span class=cnt id=cnt>—</span> <span style=color:var(--dim)>монет из <span id=tot>?</span></span></div>
+  <button class=reset onclick=reset()>сбросить всё</button></div>
+  <div class=res id=list style=margin-top:8px></div>
+</div>
+<script>
+var TFS=['15m','1h','4h'];
+function el(h){var d=document.createElement('div');d.innerHTML=h;return d.firstElementChild;}
+// глобальные
+document.getElementById('glob').innerHTML=
+ '<span class=grp><b>режим</b><select id=g_regime><option value="">любой</option><option>TREND_UP</option><option>TREND_DOWN</option><option>RANGE</option></select></span>'+
+ '<span class=grp><b>пивот</b><label><input type=checkbox id=g_pv> ≤</label><input type=number id=g_pvpct value=1.5 step=0.1 style=width:46px>%<select id=g_pvsrc><option value="">все</option><option>W</option><option>D</option><option>M</option><option>R1</option><option>R2</option><option>R3</option><option>S1</option><option>S2</option><option>S3</option><option>PP</option></select></span>'+
+ '<span class=grp><label><input type=checkbox id=g_eqh> EQH рядом</label></span>'+
+ '<span class=grp><label><input type=checkbox id=g_eql> EQL рядом</label></span>'+
+ '<span class=grp><label><input type=checkbox id=g_ote> в OTE</label></span>';
+// блоки по ТФ
+document.getElementById('blocks').innerHTML=TFS.map(function(tf){return
+ '<div class=card><div class=row><span class=tfhdr>'+tf+'</span>'+
+  '<span class=grp><b>WT</b><input type=number id="'+tf+'_wtmin" placeholder=min>..<input type=number id="'+tf+'_wtmax" placeholder=max></span>'+
+  '<span class=grp><b>зона</b><select id="'+tf+'_wtzone"><option value="">—</option><option>OB</option><option>OS</option><option>N</option></select></span>'+
+  '<span class=grp><b>кросс</b><select id="'+tf+'_wtcross"><option value="">—</option><option value=up>↑</option><option value=down>↓</option></select></span>'+
+  '<span class=grp><label><input type=checkbox id="'+tf+'_obb"> OB↑</label><label><input type=checkbox id="'+tf+'_obr"> OB↓</label><label><input type=checkbox id="'+tf+'_fvb"> FVG↑</label><label><input type=checkbox id="'+tf+'_fvr"> FVG↓</label></span>'+
+  '<span class=grp><b>CHoCH</b><select id="'+tf+'_choch"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
+  '<span class=grp><b>BOS</b><select id="'+tf+'_bos"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
+ '</div></div>';}).join('');
+function num(id){var v=document.getElementById(id).value;return v===''?null:parseFloat(v);}
+function val(id){return document.getElementById(id).value||null;}
+function chk(id){return document.getElementById(id).checked;}
+function buildQuery(){
+ var blocks=[];
+ TFS.forEach(function(tf){
+  var b={tf:tf};var any=false;
+  if(num(tf+'_wtmin')!=null){b.wt_min=num(tf+'_wtmin');any=true;}
+  if(num(tf+'_wtmax')!=null){b.wt_max=num(tf+'_wtmax');any=true;}
+  if(val(tf+'_wtzone')){b.wt_zone=val(tf+'_wtzone');any=true;}
+  if(val(tf+'_wtcross')){b.wt_cross=val(tf+'_wtcross');any=true;}
+  if(chk(tf+'_obb')){b.ob_bull=true;any=true;}if(chk(tf+'_obr')){b.ob_bear=true;any=true;}
+  if(chk(tf+'_fvb')){b.fvg_bull=true;any=true;}if(chk(tf+'_fvr')){b.fvg_bear=true;any=true;}
+  if(val(tf+'_choch')){b.choch=val(tf+'_choch');any=true;}
+  if(val(tf+'_bos')){b.bos=val(tf+'_bos');any=true;}
+  if(any)blocks.push(b);
+ });
+ var g={};
+ if(val('g_regime'))g.regime=val('g_regime');
+ if(chk('g_pv')){g.near_pivot_pct=num('g_pvpct')||1.5;if(val('g_pvsrc'))g.pivot_src=val('g_pvsrc');}
+ if(chk('g_eqh'))g.eqh_near=true;if(chk('g_eql'))g.eql_near=true;if(chk('g_ote'))g.in_ote=true;
+ return {blocks:blocks,global:g};
+}
+async function apply(){
+ try{var r=await fetch('/api/filter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildQuery())});
+  var d=await r.json();
+  document.getElementById('cnt').textContent=d.n;document.getElementById('tot').textContent=d.total;
+  document.getElementById('age').textContent='· обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
+  document.getElementById('list').innerHTML=(d.coins||[]).map(function(x){
+   var tw='https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.sym+'USDT.P&interval=60';
+   var np=x.np&&x.np.dist!=null?(' <small>'+x.np.src+' '+(x.np.dist>0?'+':'')+x.np.dist.toFixed(1)+'%</small>'):'';
+   return '<a href="'+tw+'" target=_blank>'+x.sym+np+'</a>';
+  }).join('')||'<span style=color:var(--dim)>нет монет под эти условия</span>';
+ }catch(e){document.getElementById('list').innerHTML='<span style=color:var(--dn)>ошибка (бот/шина недоступны?)</span>';}
+}
+function reset(){document.querySelectorAll('input,select').forEach(function(x){if(x.type==='checkbox')x.checked=false;else if(x.id!=='g_pvpct')x.value='';});apply();}
+document.addEventListener('input',function(){clearTimeout(window._t);window._t=setTimeout(apply,350);});
+apply();setInterval(apply,30000);
+</script></body></html>"""
+
+
+async def filter_page(_req):
+    return web.Response(text=_FILTER_HTML, content_type="text/html")
+
+
 def main():
     app = web.Application()
     app.router.add_get("/", index)
@@ -364,6 +548,8 @@ def main():
     app.router.add_get("/api/screener", api_screener)
     app.router.add_get("/api/scoreboard", api_scoreboard)
     app.router.add_get("/api/inplay", api_inplay)
+    app.router.add_post("/api/filter", api_filter)
+    app.router.add_get("/filter", filter_page)
     app.router.add_get("/api/pair/{base}", api_pair)
     print(f"[STRUCT] терминал структуры → http://localhost:{PORT} (развязан от oko-bot/прокси)")
     web.run_app(app, host="0.0.0.0", port=PORT, print=None)

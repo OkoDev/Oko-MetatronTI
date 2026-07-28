@@ -2993,6 +2993,50 @@ async def _handle_cube_pairs(request: web.Request) -> web.Response:
                             content_type="application/json", charset="utf-8")
 
 
+def _filter_record(st) -> dict:
+    """Урезанный per-coin стейт для фильтр-конструктора (Егор 29.07): WT per-TF + SMC by_tf +
+    пивоты + флаги. Только то, по чему фильтруем — payload лёгкий для bulk по 500 монетам."""
+    smc = st.smc_snap or {}
+    wt = st.wt_snap or {}
+    wt_out = {}
+    for tf, w in (wt.items() if isinstance(wt, dict) else []):
+        if isinstance(w, dict):
+            wt_out[tf] = {"wt1": w.get("wt1"), "zone": w.get("zone"), "cross": w.get("wt_cross"),
+                          "trend": w.get("trend"), "atr": w.get("atr_trend")}
+    smc_bt = {}
+    for tf, s in (smc.get("by_tf") or {}).items():
+        smc_bt[tf] = {"ob_bull": bool(s.get("ob_bull")), "ob_bear": bool(s.get("ob_bear")),
+                      "ob_bull_d": (s.get("ob_bull") or {}).get("distance_pct"),
+                      "ob_bear_d": (s.get("ob_bear") or {}).get("distance_pct"),
+                      "fvg_bull": s.get("fvg_bull"), "fvg_bear": s.get("fvg_bear"),
+                      "choch": s.get("choch"), "bos": s.get("bos")}
+    np_ = st.near_pivot or {}
+    return {"px": st.tick_price, "regime": st.regime, "wt": wt_out, "smc": smc_bt,
+            "eqh_near": smc.get("eqh_near"), "eql_near": smc.get("eql_near"),
+            "in_ote": smc.get("price_in_ote"),
+            "near_pivot": {"level": np_.get("level"), "src": np_.get("source"),
+                           "dist": np_.get("distance_pct")} if np_ else None}
+
+
+async def _handle_cube_snapshot_all(request: web.Request) -> web.Response:
+    """GET /api/cube/snapshot_all — урезанный стейт ВСЕХ монет одним вызовом (фильтр-конструктор)."""
+    bot = request.app.get("bot")
+    try:
+        pair_ctx = getattr(bot, "pair_context", None)
+        out = {}
+        if pair_ctx:
+            for s in pair_ctx.all_symbols():
+                stt = pair_ctx.get(s)
+                if getattr(stt, "tick_price", None):
+                    out[s] = _filter_record(stt)
+        return web.Response(text=json.dumps({"coins": out, "n": len(out), "ts": int(__import__("time").time())},
+                                            ensure_ascii=False, default=str),
+                            content_type="application/json", charset="utf-8")
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), status=500,
+                            content_type="application/json", charset="utf-8")
+
+
 def _atr_stats_compute_sync(db_path: str) -> dict:
     """DEV-231: SQL + агрегация ATR stats — в thread pool."""
     import sqlite3
@@ -3343,6 +3387,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     # ── Куб Метатрана — MCP Layer (Фаза 1) ──
     app.router.add_get("/api/cube/context/{symbol}", _handle_cube_context)
     app.router.add_get("/api/cube/pairs", _handle_cube_pairs)
+    app.router.add_get("/api/cube/snapshot_all", _handle_cube_snapshot_all)
     app.router.add_get("/api/cube/events", _handle_cube_events)
     app.router.add_get("/api/cube/stats", _handle_cube_stats)
     app.router.add_post("/api/cube/event", _handle_cube_event_inject)
