@@ -154,6 +154,8 @@ def build_smc_snapshot(
     latest_choch: Optional[Dict[str, Any]] = None
 
     structures_by_tf: Dict[str, Any] = {}
+    by_tf: Dict[str, Any] = {}   # per-TF раскрытие (Егор 29.07): OB/FVG/CHoCH/BOS отдельно по каждому
+                                 # ТФ — раньше схлопывалось в nearest/latest, MTF-нюанс терялся.
 
     for tf, df in ohlcv_by_tf.items():
         if df is None or df.empty or len(df) < 30:
@@ -167,6 +169,8 @@ def build_smc_snapshot(
         structures_by_tf[tf] = struct
         tfs_processed.append(tf)
         bars_n = len(df)
+        ob_res = None
+        fvg_res = None
 
         try:
             ob_res = detect_order_blocks(df, struct)
@@ -200,6 +204,29 @@ def build_smc_snapshot(
                     if latest_choch is None or snap["age_bars"] < latest_choch["age_bars"]:
                         latest_choch = snap
                     break
+
+        # per-TF раскрытие (аддитивно): ближайший OB↑/↓ + FVG-плотность + последний CHoCH/BOS
+        # НА ЭТОМ ТФ (не схлопнутый). Читают: фильтр-конструктор + будущие MTF-гейты.
+        try:
+            _obb = [_ob_snap(o, tf, current_price, bars_n) for o in getattr(ob_res, "active_bull", [])]
+            _obr = [_ob_snap(o, tf, current_price, bars_n) for o in getattr(ob_res, "active_bear", [])]
+            _ch = _bs = None
+            for brk in reversed(struct.breaks or []):
+                _d = "UP" if brk.direction == "LONG" else "DOWN"
+                if _ch is None and brk.break_type in (BreakType.BULLISH_CHOCH, BreakType.BEARISH_CHOCH):
+                    _ch = _d
+                if _bs is None and brk.break_type in (BreakType.BULLISH_BOS, BreakType.BEARISH_BOS):
+                    _bs = _d
+            by_tf[tf] = {
+                "ob_bull": min(_obb, key=lambda x: abs(x["distance_pct"])) if _obb else None,
+                "ob_bear": min(_obr, key=lambda x: abs(x["distance_pct"])) if _obr else None,
+                "fvg_bull": len(getattr(fvg_res, "active_bull", [])),
+                "fvg_bear": len(getattr(fvg_res, "active_bear", [])),
+                "choch": _ch,
+                "bos": _bs,
+            }
+        except Exception as e:
+            logger.debug("[SMC_SNAP] %s by_tf(%s) error: %s", symbol, tf, e)
 
     if not tfs_processed:
         return None
@@ -300,5 +327,6 @@ def build_smc_snapshot(
         "eqh_near": eqh_near,
         "eql_near": eql_near,
         "liq_tf": senior_tf,
+        "by_tf": by_tf,   # per-TF раскрытие (аддитивно, Егор 29.07)
     }
     return snap
