@@ -206,6 +206,11 @@ def _match_block(rec, b):
         return False
     if b.get("wt_cross") == "down" and not cr < 0:
         return False
+    at = wt.get("atr") or 0   # ATRTrend per-TF (+1 вверх / −1 вниз) — Егор 29.07
+    if b.get("atr_trend") == "up" and not at > 0:
+        return False
+    if b.get("atr_trend") == "down" and not at < 0:
+        return False
     if b.get("ob_bull") and not sm.get("ob_bull"):
         return False
     if b.get("ob_bear") and not sm.get("ob_bear"):
@@ -233,11 +238,22 @@ def _match_global(rec, g):
     if g.get("in_ote") and not rec.get("in_ote"):
         return False
     if g.get("near_pivot_pct") is not None:
-        np_ = rec.get("near_pivot") or {}
-        d = np_.get("dist")
-        if d is None or abs(d) > g["near_pivot_pct"]:
-            return False
-        if g.get("pivot_src") and g["pivot_src"] not in str(np_.get("src") or ""):
+        px = rec.get("px")
+        piv = rec.get("piv") or {}
+        tfmap = {"W": "1W", "D": "1D", "M": "1M"}
+        tfs = [tfmap[g["pivot_tf"]]] if g.get("pivot_tf") in tfmap else ["1W", "1D", "1M"]
+        levels = [g["pivot_level"]] if g.get("pivot_level") else ("PP", "R1", "R2", "R3", "S1", "S2", "S3")
+        ok = False
+        for t in tfs:
+            d = piv.get(t) or {}
+            for lv in levels:
+                v = d.get(lv)
+                if v and px and abs(px - v) / px * 100.0 <= g["near_pivot_pct"]:
+                    ok = True
+                    break
+            if ok:
+                break
+        if not ok:
             return False
     return True
 
@@ -482,7 +498,7 @@ function el(h){var d=document.createElement('div');d.innerHTML=h;return d.firstE
 // глобальные
 document.getElementById('glob').innerHTML=
  '<span class=grp><b>режим</b><select id=g_regime><option value="">любой</option><option>TREND_UP</option><option>TREND_DOWN</option><option>RANGE</option></select></span>'+
- '<span class=grp><b>пивот</b><label><input type=checkbox id=g_pv> ≤</label><input type=number id=g_pvpct value=1.5 step=0.1 style=width:46px>%<select id=g_pvsrc><option value="">все</option><option>W</option><option>D</option><option>M</option><option>R1</option><option>R2</option><option>R3</option><option>S1</option><option>S2</option><option>S3</option><option>PP</option></select></span>'+
+ '<span class=grp><b>пивот</b><label><input type=checkbox id=g_pv> ≤</label><input type=number id=g_pvpct value=1.5 step=0.1 style=width:44px>%<select id=g_pvtf><option value="">любой ТФ</option><option value=W>недельный</option><option value=D>дневной</option><option value=M>месячный</option></select><select id=g_pvlv><option value="">любой</option><option>PP</option><option>R1</option><option>R2</option><option>R3</option><option>S1</option><option>S2</option><option>S3</option></select></span>'+
  '<span class=grp><label><input type=checkbox id=g_eqh> EQH рядом</label></span>'+
  '<span class=grp><label><input type=checkbox id=g_eql> EQL рядом</label></span>'+
  '<span class=grp><label><input type=checkbox id=g_ote> в OTE</label></span>';
@@ -492,6 +508,7 @@ document.getElementById('blocks').innerHTML=TFS.map(function(tf){return ''+
   '<span class=grp><b>WT</b><input type=number id="'+tf+'_wtmin" placeholder=min>..<input type=number id="'+tf+'_wtmax" placeholder=max></span>'+
   '<span class=grp><b>зона</b><select id="'+tf+'_wtzone"><option value="">—</option><option>OB</option><option>OS</option><option>N</option></select></span>'+
   '<span class=grp><b>кросс</b><select id="'+tf+'_wtcross"><option value="">—</option><option value=up>↑</option><option value=down>↓</option></select></span>'+
+  '<span class=grp><b>ATRTrend</b><select id="'+tf+'_atr"><option value="">—</option><option value=up>↑ вверх</option><option value=down>↓ вниз</option></select></span>'+
   '<span class=grp><label><input type=checkbox id="'+tf+'_obb"> OB↑</label><label><input type=checkbox id="'+tf+'_obr"> OB↓</label><label><input type=checkbox id="'+tf+'_fvb"> FVG↑</label><label><input type=checkbox id="'+tf+'_fvr"> FVG↓</label></span>'+
   '<span class=grp><b>CHoCH</b><select id="'+tf+'_choch"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
   '<span class=grp><b>BOS</b><select id="'+tf+'_bos"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
@@ -507,6 +524,7 @@ function buildQuery(){
   if(num(tf+'_wtmax')!=null){b.wt_max=num(tf+'_wtmax');any=true;}
   if(val(tf+'_wtzone')){b.wt_zone=val(tf+'_wtzone');any=true;}
   if(val(tf+'_wtcross')){b.wt_cross=val(tf+'_wtcross');any=true;}
+  if(val(tf+'_atr')){b.atr_trend=val(tf+'_atr');any=true;}
   if(chk(tf+'_obb')){b.ob_bull=true;any=true;}if(chk(tf+'_obr')){b.ob_bear=true;any=true;}
   if(chk(tf+'_fvb')){b.fvg_bull=true;any=true;}if(chk(tf+'_fvr')){b.fvg_bear=true;any=true;}
   if(val(tf+'_choch')){b.choch=val(tf+'_choch');any=true;}
@@ -515,7 +533,7 @@ function buildQuery(){
  });
  var g={};
  if(val('g_regime'))g.regime=val('g_regime');
- if(chk('g_pv')){g.near_pivot_pct=num('g_pvpct')||1.5;if(val('g_pvsrc'))g.pivot_src=val('g_pvsrc');}
+ if(chk('g_pv')){g.near_pivot_pct=num('g_pvpct')||1.5;if(val('g_pvtf'))g.pivot_tf=val('g_pvtf');if(val('g_pvlv'))g.pivot_level=val('g_pvlv');}
  if(chk('g_eqh'))g.eqh_near=true;if(chk('g_eql'))g.eql_near=true;if(chk('g_ote'))g.in_ote=true;
  return {blocks:blocks,global:g};
 }

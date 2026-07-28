@@ -3010,12 +3010,17 @@ def _filter_record(st) -> dict:
                       "ob_bear_d": (s.get("ob_bear") or {}).get("distance_pct"),
                       "fvg_bull": s.get("fvg_bull"), "fvg_bear": s.get("fvg_bear"),
                       "choch": s.get("choch"), "bos": s.get("bos")}
-    np_ = st.near_pivot or {}
+    piv = st.pivot_snap or {}
+    piv_out = {}
+    for _ptf in ("1W", "1D", "1M"):
+        _d = piv.get(_ptf) or {}
+        _lv = {k: _d.get(k) for k in ("PP", "R1", "R2", "R3", "S1", "S2", "S3")
+               if isinstance(_d.get(k), (int, float))}
+        if _lv:
+            piv_out[_ptf] = _lv
     return {"px": st.tick_price, "regime": st.regime, "wt": wt_out, "smc": smc_bt,
             "eqh_near": smc.get("eqh_near"), "eql_near": smc.get("eql_near"),
-            "in_ote": smc.get("price_in_ote"),
-            "near_pivot": {"level": np_.get("level"), "src": np_.get("source"),
-                           "dist": np_.get("distance_pct")} if np_ else None}
+            "in_ote": smc.get("price_in_ote"), "piv": piv_out}
 
 
 async def _handle_cube_snapshot_all(request: web.Request) -> web.Response:
