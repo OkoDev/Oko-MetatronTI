@@ -487,7 +487,7 @@ document.getElementById('glob').innerHTML=
  '<span class=grp><label><input type=checkbox id=g_eql> EQL рядом</label></span>'+
  '<span class=grp><label><input type=checkbox id=g_ote> в OTE</label></span>';
 // блоки по ТФ
-document.getElementById('blocks').innerHTML=TFS.map(function(tf){return
+document.getElementById('blocks').innerHTML=TFS.map(function(tf){return ''+
  '<div class=card><div class=row><span class=tfhdr>'+tf+'</span>'+
   '<span class=grp><b>WT</b><input type=number id="'+tf+'_wtmin" placeholder=min>..<input type=number id="'+tf+'_wtmax" placeholder=max></span>'+
   '<span class=grp><b>зона</b><select id="'+tf+'_wtzone"><option value="">—</option><option>OB</option><option>OS</option><option>N</option></select></span>'+
@@ -496,9 +496,9 @@ document.getElementById('blocks').innerHTML=TFS.map(function(tf){return
   '<span class=grp><b>CHoCH</b><select id="'+tf+'_choch"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
   '<span class=grp><b>BOS</b><select id="'+tf+'_bos"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
  '</div></div>';}).join('');
-function num(id){var v=document.getElementById(id).value;return v===''?null:parseFloat(v);}
-function val(id){return document.getElementById(id).value||null;}
-function chk(id){return document.getElementById(id).checked;}
+function num(id){var e=document.getElementById(id);if(!e)return null;var v=e.value;return v===''?null:parseFloat(v);}
+function val(id){var e=document.getElementById(id);return e?(e.value||null):null;}
+function chk(id){var e=document.getElementById(id);return e?e.checked:false;}
 function buildQuery(){
  var blocks=[];
  TFS.forEach(function(tf){
@@ -538,7 +538,8 @@ apply();setInterval(apply,30000);
 
 
 async def filter_page(_req):
-    return web.Response(text=_FILTER_HTML, content_type="text/html")
+    return web.Response(text=_FILTER_HTML, content_type="text/html",
+                        headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 def main():
