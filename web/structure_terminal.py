@@ -258,6 +258,84 @@ def _match_global(rec, g):
     return True
 
 
+_BINGX_FUND = "https://open-api.bingx.com/openApi/swap/v2/quote/premiumIndex"
+_BINGX_TICK = "https://open-api.bingx.com/openApi/swap/v2/quote/ticker"
+_BYBIT_OI = "https://api.bybit.com/v5/market/tickers?category=linear"
+_oif = {"ts": 0.0, "cur": {}, "prev": {}}
+
+
+def _bx_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "oko"})
+    return json.loads(urllib.request.urlopen(req, timeout=15).read()).get("data", [])
+
+
+def _fetch_oif():
+    """Funding+объём с BingX (наша биржа, точно) + OI с Bybit (у BingX нет bulk-OI) для OI-изменения.
+    Егор 29.07 «торгуем на BingX». Кэш 5 мин; prev-снап для ~5-мин OI-моментума."""
+    now = time.time()
+    if now - _oif["ts"] < 300 and _oif["cur"]:
+        return _oif["cur"]
+    cur = {}
+    try:  # BingX funding + оборот
+        for t in _bx_get(_BINGX_FUND):
+            b = str(t.get("symbol", "")).replace("-USDT", "")
+            if b:
+                cur.setdefault(b, {})["fund"] = float(t.get("lastFundingRate") or 0) * 100.0
+        for t in _bx_get(_BINGX_TICK):
+            b = str(t.get("symbol", "")).replace("-USDT", "")
+            if b in cur:
+                cur[b]["turn"] = float(t.get("quoteVolume") or 0)
+    except Exception:
+        pass
+    try:  # Bybit OI (BingX bulk-OI нет)
+        lst = json.loads(urllib.request.urlopen(_BYBIT_OI, timeout=15).read())["result"]["list"]
+        for t in lst:
+            s = t.get("symbol", "")
+            if s.endswith("USDT") and s[:-4] in cur:
+                cur[s[:-4]]["oi"] = float(t.get("openInterest") or 0)
+    except Exception:
+        pass
+    if cur:
+        _oif["prev"] = _oif["cur"] or cur
+        _oif["cur"] = cur
+        _oif["ts"] = now
+    return _oif["cur"]
+
+
+def _oif_get(base):
+    cur = _oif["cur"].get(base)
+    if not cur:
+        return None
+    prev = _oif["prev"].get(base) or {}
+    co, po = cur.get("oi"), prev.get("oi")
+    oi_chg = ((co - po) / po * 100.0) if (co is not None and po) else None
+    return {"fund": cur.get("fund"), "oi_chg": oi_chg, "turn": cur.get("turn") or 0}
+
+
+def _match_oif(of, g):
+    """Funding-диапазон + OI-изменение + оборот (глобальные, из Bybit)."""
+    need = any(g.get(k) is not None for k in ("fund_min", "fund_max", "oi_chg", "turn_min"))
+    if not need:
+        return True
+    if of is None:
+        return False
+    if g.get("fund_min") is not None and (of["fund"] is None or of["fund"] < g["fund_min"]):
+        return False
+    if g.get("fund_max") is not None and (of["fund"] is None or of["fund"] > g["fund_max"]):
+        return False
+    if g.get("oi_chg") is not None:
+        v = of["oi_chg"]
+        if v is None:
+            return False
+        if g["oi_chg"] >= 0 and v < g["oi_chg"]:      # рост ≥
+            return False
+        if g["oi_chg"] < 0 and v > g["oi_chg"]:       # падение ≤ (отрицательный порог)
+            return False
+    if g.get("turn_min") is not None and of["turn"] < g["turn_min"] * 1e6:
+        return False
+    return True
+
+
 async def api_filter(req):
     """POST /api/filter — {blocks:[{tf,wt_min,...}], global:{...}} → монеты, прошедшие ВСЕ блоки (AND)."""
     try:
@@ -267,11 +345,17 @@ async def api_filter(req):
     blocks = q.get("blocks") or []
     g = q.get("global") or {}
     coins = _fetch_snap()
+    _fetch_oif()  # прогрев OI/funding кэша
     out = []
     for sym, rec in coins.items():
-        if all(_match_block(rec, b) for b in blocks) and _match_global(rec, g):
-            out.append({"sym": sym.split("/")[0], "px": rec.get("px"),
-                        "regime": rec.get("regime"), "np": rec.get("near_pivot")})
+        base = sym.split("/")[0]
+        if all(_match_block(rec, b) for b in blocks) and _match_global(rec, g) \
+                and _match_oif(_oif_get(base), g):
+            of = _oif_get(base)
+            out.append({"sym": base, "px": rec.get("px"), "regime": rec.get("regime"),
+                        "np": rec.get("near_pivot"),
+                        "fund": round(of["fund"], 4) if of else None,
+                        "oi_chg": round(of["oi_chg"], 1) if of and of["oi_chg"] is not None else None})
     out.sort(key=lambda x: x["sym"])
     return web.json_response({"coins": out, "n": len(out), "total": len(coins), "ts": int(time.time())})
 
@@ -501,7 +585,10 @@ document.getElementById('glob').innerHTML=
  '<span class=grp><b>пивот</b><label><input type=checkbox id=g_pv> ≤</label><input type=number id=g_pvpct value=1.5 step=0.1 style=width:44px>%<select id=g_pvtf><option value="">любой ТФ</option><option value=W>недельный</option><option value=D>дневной</option><option value=M>месячный</option></select><select id=g_pvlv><option value="">любой</option><option>PP</option><option>R1</option><option>R2</option><option>R3</option><option>S1</option><option>S2</option><option>S3</option></select></span>'+
  '<span class=grp><label><input type=checkbox id=g_eqh> EQH рядом</label></span>'+
  '<span class=grp><label><input type=checkbox id=g_eql> EQL рядом</label></span>'+
- '<span class=grp><label><input type=checkbox id=g_ote> в OTE</label></span>';
+ '<span class=grp><label><input type=checkbox id=g_ote> в OTE</label></span>'+
+ '<span class=grp><b>funding</b><input type=number id=g_fmin placeholder=min step=0.005 style=width:50px>..<input type=number id=g_fmax placeholder=max step=0.005 style=width:50px>% <span style=color:var(--dim);font-size:10px>BingX</span></span>'+
+ '<span class=grp><b>OI</b><select id=g_oidir><option value="">—</option><option value=up>рост ≥</option><option value=down>падение ≥</option></select><input type=number id=g_oipct value=2 step=0.5 style=width:42px>% <span style=color:var(--dim);font-size:10px>~5м</span></span>'+
+ '<span class=grp><b>оборот ≥</b><input type=number id=g_turn placeholder=любой style=width:54px>млн$</span>';
 // блоки по ТФ
 document.getElementById('blocks').innerHTML=TFS.map(function(tf){return ''+
  '<div class=card><div class=row><span class=tfhdr>'+tf+'</span>'+
@@ -535,6 +622,9 @@ function buildQuery(){
  if(val('g_regime'))g.regime=val('g_regime');
  if(chk('g_pv')){g.near_pivot_pct=num('g_pvpct')||1.5;if(val('g_pvtf'))g.pivot_tf=val('g_pvtf');if(val('g_pvlv'))g.pivot_level=val('g_pvlv');}
  if(chk('g_eqh'))g.eqh_near=true;if(chk('g_eql'))g.eql_near=true;if(chk('g_ote'))g.in_ote=true;
+ if(num('g_fmin')!=null)g.fund_min=num('g_fmin');if(num('g_fmax')!=null)g.fund_max=num('g_fmax');
+ if(val('g_oidir')){var p=num('g_oipct')||2;g.oi_chg=(val('g_oidir')=='up'?p:-p);}
+ if(num('g_turn')!=null)g.turn_min=num('g_turn');
  return {blocks:blocks,global:g};
 }
 async function apply(){
@@ -544,8 +634,10 @@ async function apply(){
   document.getElementById('age').textContent='· обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
   document.getElementById('list').innerHTML=(d.coins||[]).map(function(x){
    var tw='https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.sym+'USDT.P&interval=60';
-   var np=x.np&&x.np.dist!=null?(' <small>'+x.np.src+' '+(x.np.dist>0?'+':'')+x.np.dist.toFixed(1)+'%</small>'):'';
-   return '<a href="'+tw+'" target=_blank>'+x.sym+np+'</a>';
+   var t='';
+   if(x.fund!=null)t+=' <small style="color:'+(x.fund>0?'var(--dn)':'var(--up)')+'">f'+(x.fund>0?'+':'')+x.fund.toFixed(3)+'%</small>';
+   if(x.oi_chg!=null)t+=' <small style="color:'+(x.oi_chg>0?'var(--up)':'var(--dn)')+'">OI'+(x.oi_chg>0?'+':'')+x.oi_chg.toFixed(1)+'%</small>';
+   return '<a href="'+tw+'" target=_blank>'+x.sym+t+'</a>';
   }).join('')||'<span style=color:var(--dim)>нет монет под эти условия</span>';
  }catch(e){document.getElementById('list').innerHTML='<span style=color:var(--dn)>ошибка (бот/шина недоступны?)</span>';}
 }
