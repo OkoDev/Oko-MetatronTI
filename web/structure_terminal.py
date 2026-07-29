@@ -285,6 +285,9 @@ def _fetch_oif():
             b = str(t.get("symbol", "")).replace("-USDT", "")
             if b in cur:
                 cur[b]["turn"] = float(t.get("quoteVolume") or 0)
+                ask, bid = float(t.get("askPrice") or 0), float(t.get("bidPrice") or 0)
+                if ask > 0 and bid > 0:
+                    cur[b]["spread"] = (ask - bid) / ((ask + bid) / 2.0) * 100.0  # % (Егор 30.07)
     except Exception:
         pass
     try:  # Bybit OI (BingX bulk-OI нет)
@@ -309,15 +312,18 @@ def _oif_get(base):
     prev = _oif["prev"].get(base) or {}
     co, po = cur.get("oi"), prev.get("oi")
     oi_chg = ((co - po) / po * 100.0) if (co is not None and po) else None
-    return {"fund": cur.get("fund"), "oi_chg": oi_chg, "turn": cur.get("turn") or 0}
+    return {"fund": cur.get("fund"), "oi_chg": oi_chg, "turn": cur.get("turn") or 0,
+            "spread": cur.get("spread")}
 
 
 def _match_oif(of, g):
     """Funding-диапазон + OI-изменение + оборот (глобальные, из Bybit)."""
-    need = any(g.get(k) is not None for k in ("fund_min", "fund_max", "oi_chg", "turn_min"))
+    need = any(g.get(k) is not None for k in ("fund_min", "fund_max", "oi_chg", "turn_min", "spread_max"))
     if not need:
         return True
     if of is None:
+        return False
+    if g.get("spread_max") is not None and (of.get("spread") is None or of["spread"] > g["spread_max"]):
         return False
     if g.get("fund_min") is not None and (of["fund"] is None or of["fund"] < g["fund_min"]):
         return False
@@ -355,8 +361,12 @@ async def api_filter(req):
             out.append({"sym": base, "px": rec.get("px"), "regime": rec.get("regime"),
                         "np": rec.get("near_pivot"),
                         "fund": round(of["fund"], 4) if of else None,
-                        "oi_chg": round(of["oi_chg"], 1) if of and of["oi_chg"] is not None else None})
-    out.sort(key=lambda x: x["sym"])
+                        "oi_chg": round(of["oi_chg"], 1) if of and of["oi_chg"] is not None else None,
+                        "spread": round(of["spread"], 4) if of and of["spread"] is not None else None})
+    if g.get("spread_max") is not None:   # «наименьший спред» → тесные вверху
+        out.sort(key=lambda x: (x["spread"] if x["spread"] is not None else 9e9))
+    else:
+        out.sort(key=lambda x: x["sym"])
     return web.json_response({"coins": out, "n": len(out), "total": len(coins), "ts": int(time.time())})
 
 
@@ -588,7 +598,8 @@ document.getElementById('glob').innerHTML=
  '<span class=grp><label><input type=checkbox id=g_ote> в OTE</label></span>'+
  '<span class=grp><b>funding</b><input type=number id=g_fmin placeholder=min step=0.005 style=width:50px>..<input type=number id=g_fmax placeholder=max step=0.005 style=width:50px>% <span style=color:var(--dim);font-size:10px>BingX</span></span>'+
  '<span class=grp><b>OI</b><select id=g_oidir><option value="">—</option><option value=up>рост ≥</option><option value=down>падение ≥</option></select><input type=number id=g_oipct value=2 step=0.5 style=width:42px>% <span style=color:var(--dim);font-size:10px>~5м</span></span>'+
- '<span class=grp><b>оборот ≥</b><input type=number id=g_turn placeholder=любой style=width:54px>млн$</span>';
+ '<span class=grp><b>оборот ≥</b><input type=number id=g_turn placeholder=любой style=width:54px>млн$</span>'+
+ '<span class=grp><b>спред ≤</b><input type=number id=g_spread placeholder=0.05 step=0.01 style=width:50px>% <span style=color:var(--dim);font-size:10px>BingX</span></span>';
 // блоки по ТФ
 document.getElementById('blocks').innerHTML=TFS.map(function(tf){return ''+
  '<div class=card><div class=row><span class=tfhdr>'+tf+'</span>'+
@@ -625,6 +636,7 @@ function buildQuery(){
  if(num('g_fmin')!=null)g.fund_min=num('g_fmin');if(num('g_fmax')!=null)g.fund_max=num('g_fmax');
  if(val('g_oidir')){var p=num('g_oipct')||2;g.oi_chg=(val('g_oidir')=='up'?p:-p);}
  if(num('g_turn')!=null)g.turn_min=num('g_turn');
+ if(num('g_spread')!=null)g.spread_max=num('g_spread');
  return {blocks:blocks,global:g};
 }
 async function apply(){
@@ -637,6 +649,7 @@ async function apply(){
    var t='';
    if(x.fund!=null)t+=' <small style="color:'+(x.fund>0?'var(--dn)':'var(--up)')+'">f'+(x.fund>0?'+':'')+x.fund.toFixed(3)+'%</small>';
    if(x.oi_chg!=null)t+=' <small style="color:'+(x.oi_chg>0?'var(--up)':'var(--dn)')+'">OI'+(x.oi_chg>0?'+':'')+x.oi_chg.toFixed(1)+'%</small>';
+   if(x.spread!=null)t+=' <small style=color:var(--dim)>sp'+x.spread.toFixed(3)+'%</small>';
    return '<a href="'+tw+'" target=_blank>'+x.sym+t+'</a>';
   }).join('')||'<span style=color:var(--dim)>нет монет под эти условия</span>';
  }catch(e){document.getElementById('list').innerHTML='<span style=color:var(--dn)>ошибка (бот/шина недоступны?)</span>';}
