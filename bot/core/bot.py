@@ -595,6 +595,13 @@ class TradingAlertBot:
                 logger.info("[DS-ADVISOR] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[DS-ADVISOR] failed to start: %s", e)
+            # ═══ RANGEFADE — первый эдж переживший прокурора (30.07; gated trading.rangefade.enabled) ═══
+            try:
+                from bot.loops.rangefade_loop import rangefade_loop
+                asyncio.create_task(rangefade_loop(self))
+                logger.info("[RANGEFADE] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[RANGEFADE] failed to start: %s", e)
             # ═══ RADAR-ARMED — исполнение сетапов радара (gated config.trading.radar_armed) ═══
             try:
                 from bot.loops.radar_armed_loop import radar_armed_loop

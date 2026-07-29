@@ -147,6 +147,12 @@ trading:
   ds_advisor:
     enabled: true    # 25.07 Егор: DC получает весь поток и принимает торговые решения (VST, кап 5)
     max_open: 5
+  rangefade:
+    enabled: true    # 30.07: первый эдж переживший прокурора (бэктест мед+0.66%, 82% монет, OOS).
+    wt_threshold: -60   # глубже = сильнее (WT-70 мед+1.26) но реже; -60 баланс n/эдж
+    tp_r: 1.0
+    max_open: 8
+    cooldown_h: 6
   method_egor:
     enabled: false   # 24.07: OOS +0.05 тонкий, чисто не форвардился; алерты живут в method-shadow
     scan_sec: 900
@@ -773,6 +779,14 @@ signal_router:
       entry_order_type: LIMIT
       leverage: 5
       risk_pct: 2.0             # демо-депо в марже: 0.5% давал notional<$5 min (смоук) — песочница мерит эдж
+      lev_set_to_max: false
+    rangefade:
+      min_strength: 0
+      exchange_enabled: true    # 30.07: решающий тест эджа — живое VST-исполнение (бэктест прошёл прокурора)
+      trade_mode: rangefade
+      entry_order_type: LIMIT
+      leverage: 5
+      risk_pct: 1.0
       lev_set_to_max: false
     method_egor:
       min_strength: 0
