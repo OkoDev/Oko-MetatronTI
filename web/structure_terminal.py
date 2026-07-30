@@ -81,7 +81,7 @@ async def api_screener(req):
 
 _CLEAN_ERA = "2026-07-11"   # sl_touch+costs (грязь размечена data_era)
 _TRACK = ["radar_pump", "radar_spring", "radar_build", "atr_s2", "atr_change",
-          "ds_advisor", "breakout", "rangefade"]
+          "ds_advisor", "breakout", "rangefade", "rangefade4h"]
 
 
 def _scoreboard():

@@ -148,8 +148,9 @@ trading:
     enabled: true    # 25.07 Егор: DC получает весь поток и принимает торговые решения (VST, кап 5)
     max_open: 5
   rangefade:
-    enabled: true    # 30.07: первый эдж переживший прокурора (бэктест мед+0.66%, 82% монет, OOS).
-    wt_threshold: -60   # глубже = сильнее (WT-70 мед+1.26) но реже; -60 баланс n/эдж
+    enabled: true    # 30.07: фейд-семейство. 1h (чоп-режим) + 4h WT<-70 (СИЛЬНЕЕ: плюс в ОБА года,
+    wt_threshold: -60    # медиана+2% WR61). Живой VST-тест (survivorship-free судья).
+    wt_threshold_4h: -70
     tp_r: 1.0
     max_open: 8
     cooldown_h: 6
@@ -784,6 +785,14 @@ signal_router:
       min_strength: 0
       exchange_enabled: true    # 30.07: решающий тест эджа — живое VST-исполнение (бэктест прошёл прокурора)
       trade_mode: rangefade
+      entry_order_type: LIMIT
+      leverage: 5
+      risk_pct: 1.0
+      lev_set_to_max: false
+    rangefade4h:
+      min_strength: 0
+      exchange_enabled: true    # 30.07: 4h-сиблинг (сильнее, всепогоднее) — живой VST-тест
+      trade_mode: rangefade4h
       entry_order_type: LIMIT
       leverage: 5
       risk_pct: 1.0
