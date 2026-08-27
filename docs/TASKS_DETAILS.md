@@ -525,7 +525,8 @@ if _last is None or (now - _last).total_seconds() > 3600:
 - L14: 10 рёбер (связи между сферами)
 - L15: 4 feedback loop (adaptive_weights, cascade, narrative, ml_retrain)
 - Интеграция: `run_all()` вызывает `run_cube_selftest(bot)`, результат в `SelfTestReport.cube_text`
-- Автономный запуск: `python core/selftest_cube.py`
+- Автономный запуск: `python core/selftest_cube.py` — тянет живой отчёт с `GET /api/cube/selftest`
+  (нужен работающий бот). Флаг `--stub` — каркас проверок без бота: все MISSING, это норма, а не статус сфер.
 
 ---
 
