@@ -60,24 +60,54 @@ ENV_FILE = PROJECT_ROOT / ".env"
 # Gemini: gemini-3.5-flash (GA), gemini-3.1-flash-lite, gemini-2.5-flash/pro.
 DEFAULT_MODELS = {
     "groq": "openai/gpt-oss-120b",                               # 120B reasoner на скорости Groq (было llama-4-scout-17b)
-    "cerebras": "zai-glm-4.7",                                   # GLM-4.7 thinking — диверсифицирует от groq gpt-oss
+    # 🔴 18.08: cerebras МЁРТВ для нас — zai-glm-4.7 архивирован (404), а весь каталог
+    # (gpt-oss-120b, gemma-4-31b) отвечает 402 Payment required: free-tier аккаунта закрыт.
+    "cerebras": "gpt-oss-120b",                                  # единственная живая модель каталога — заработает, если оплатят биллинг
     "gemini": "gemini-3.5-flash",                                # upd 30.05.2026 (было 2.5-flash)
     "mistral": "magistral-medium-latest",                        # reasoning/synthesis voice
-    "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",      # единственный стабильный free на OpenRouter
+    "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",      # 13.08: апгрейд super-120B → ultra-550B (1M ctx, 1.7с, тот же ключ, бесплатно)
     "github_models": "openai/gpt-4.1-mini",                      # чистый/надёжный (было gpt-4o-mini). DeepSeek-R1 → --reasoning (течёт <think> в swarm)
     # --- новые провайдеры (активируются при наличии ключа; см. ENV_KEYS) ---
-    "sambanova": "DeepSeek-V3.2",                                # free tier ✅ (проверено 31.05). Каталог: DeepSeek-V3.1/V3.2, Llama-4-Maverick, Meta-Llama-3.3-70B, gpt-oss-120b. (R1/MiniMax — платные)
+    # 18.08: DeepSeek-V3.2/V3.1 и Llama-3.3-70B на этом ключе отдают 429 «high demand» КАЖДЫЙ
+    # прогон (голос терялся). MiniMax-M2.7 из того же каталога ответил за 7.3с → он и дефолт.
+    # Бонусом MiniMax — семейство, которого в рою больше нигде нет.
+    "sambanova": "MiniMax-M2.7",                                 # каталог: DeepSeek-V3.1/V3.2, MiniMax-M2.7, Meta-Llama-3.3-70B, gemma-4-31B, gpt-oss-120b
     "nvidia": "deepseek-ai/deepseek-r1",                         # ⚠️ НЕ проверено: NVIDIA NIM (build.nvidia.com) блокирует регистрацию из РФ (+7). Без ключа неактивен.
+    "omniroute": "auto/best-chat",                               # 12.08: локальный gateway (338 провайдеров, auto-fallback). Ключ НЕ нужен.
     "deepseek": "deepseek-chat",                                 # ПРЯМОЙ api.deepseek.com (платный, дёшево ~$0.3/1M, 1M ctx). v4 non-thinking. Активен при DEEPSEEK_API_KEY. Сильный голос ≈Opus для роя.
+    # --- 13.08: ДОПОЛНИТЕЛЬНЫЕ СЕМЕЙСТВА через УЖЕ ИМЕЮЩИЙСЯ ключ OpenRouter ---
+    # Задача Егора: «все самые сильные и без подписок для сохранения бюджета».
+    # Это НЕ новые ключи и НЕ подписки — тот же OPENROUTER_API_KEY, модели с суффиксом :free.
+    # Берём РАЗНЫЕ компании: рою нужны разные подходы, а не клоны одного семейства.
+    # gpt-oss-20b намеренно НЕ берём — groq уже даёт gpt-oss-120b (то же семейство, сильнее).
+    "or_cohere": "cohere/north-mini-code:free",                  # Cohere — семейства нет больше нигде в рое
+    "or_poolside": "poolside/laguna-s-2.1:free",                 # Poolside — новое семейство
+    # 18.08: or_gemma снят — 429 upstream у Google КАЖДЫЙ прогон, и это дубль семейства Gemma.
+    # Замена: Dots Studio — самое свежее семейство из 15 живых :free на OpenRouter, 512k ctx.
+    "or_dots": "dots-studio/dots-3-note-preview:free",           # Dots Studio (512k ctx) — 8.4с на боевом промпте
+    # 18.08: замена мёртвому cerebras. Qwen/Alibaba — семейства в рою нет; ключ Groq уже есть.
+    # ⚠️ делит квоту Groq с голосом `groq` (gpt-oss-120b): 30 RPM / ~14 400 RPD на двоих.
+    "groq_qwen": "qwen/qwen3.6-27b",                             # Qwen 3.6 27B — 6.8с, 70% кириллицы на боевом промпте
+    # --- 18.08: добор роя до 12 ЖИВЫХ (задача Егора). Честная оговорка: НОВЫХ СЕМЕЙСТВ
+    # в доступе больше НЕТ — из 16 проверенных кандидатов выжили только клоны уже имеющихся.
+    # Взяты двое, что дают иной РЕЖИМ работы (агент с инструментами), а не только имя:
+    "groq_compound": "groq/compound",                            # агентная надстройка Groq (инструменты/поиск) — 5.7с, 1085 симв.
+    "ag_gemini_agent": "antigravity/gemini-pro-agent",           # агентный Gemini; ЕДИНСТВЕННАЯ модель Antigravity с живой квотой — 27.7с
+    # --- 13.08: Antigravity OAuth (Егор подключил личным Google-аккаунтом) → 30 моделей БЕСПЛАТНО ---
+    # Идут через локальный шлюз, но это НЕ клоны felo/oc: настоящие Gemini 3.x Pro и Claude 4.6.
+    # Проверены боевым промптом (не «60−26»: felo/hy3 именно так и обманули — верно на коротком, пусто на длинном).
+    "ag_gemini_pro": "antigravity/gemini-3.1-pro-low",           # Gemini 3.1 Pro — сильнее нашего прямого gemini-3.5-flash
+    "ag_opus": "antigravity/claude-opus-4-6-thinking",           # Claude Opus 4.6 thinking — сильнейший бесплатный reasoner
 }
 
 # Модели для --reasoning (специализированные thinking-модели; проверено 30.05.2026)
 REASONING_MODELS = {
     "github_models": "deepseek/DeepSeek-R1",                     # самый надёжный reasoner (не флакает как OpenRouter)
     "openrouter": "deepseek/deepseek-v4-flash:free",             # native reasoning 1M ctx (arcee-trinity → 404, убрано)
-    "cerebras": "zai-glm-4.7",                                   # qwen-3-235b → 404, заменено
+    "cerebras": "gpt-oss-120b",                                  # 18.08: qwen-3-235b и zai-glm-4.7 → 404; из живого каталога это единственный reasoner
     "sambanova": "DeepSeek-V3.2",                                # R1 на free-tier SambaNova недоступен
     "nvidia": "deepseek-ai/deepseek-r1",
+    "omniroute": "auto/best-reasoning",                          # авто-выбор лучшего reasoner среди живых провайдеров
     "deepseek": "deepseek-reasoner",                             # v4 thinking-режим (нативный reasoning, 1M ctx)
 }
 
@@ -90,7 +120,16 @@ OPENAI_COMPAT_URLS = {
     "github_models": "https://models.github.ai/inference",
     "sambanova": "https://api.sambanova.ai/v1",                  # ключ: https://cloud.sambanova.ai (persistent free tier)
     "nvidia": "https://integrate.api.nvidia.com/v1",            # ключ: https://build.nvidia.com (40 RPM free)
+    "omniroute": "http://127.0.0.1:20128/v1",                   # локальный OmniRoute (npm i -g omniroute; omniroute serve)
     "deepseek": "https://api.deepseek.com",                     # ключ: https://platform.deepseek.com (платный). OpenAI-совместимый.
+    "or_cohere": "https://openrouter.ai/api/v1",                # псевдо-провайдеры: тот же OpenRouter,
+    "or_poolside": "https://openrouter.ai/api/v1",              # но ДРУГИЕ семейства моделей (см. DEFAULT_MODELS)
+    "or_dots": "https://openrouter.ai/api/v1",
+    "groq_qwen": "https://api.groq.com/openai/v1",              # тот же Groq, но семейство Qwen вместо gpt-oss
+    "groq_compound": "https://api.groq.com/openai/v1",          # тот же Groq, агентный режим
+    "ag_gemini_agent": "http://127.0.0.1:20128/v1",             # через локальный OmniRoute (Antigravity OAuth)
+    "ag_gemini_pro": "http://127.0.0.1:20128/v1",           # через локальный OmniRoute (OAuth-подключение Antigravity)
+    "ag_opus": "http://127.0.0.1:20128/v1",
 }
 
 # ENV-имена ключей
@@ -104,7 +143,81 @@ ENV_KEYS = {
     "sambanova": "SAMBANOVA_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "omniroute": "OMNIROUTE_API_KEY",                            # опционален: локальный сервер работает без ключа
+    "or_cohere": "OPENROUTER_API_KEY",                           # все три — ТОТ ЖЕ ключ OpenRouter, новых регистраций не нужно
+    "or_poolside": "OPENROUTER_API_KEY",
+    "or_dots": "OPENROUTER_API_KEY",
+    "groq_qwen": "GROQ_API_KEY",                                 # тот же ключ Groq, что и у голоса `groq`
+    "groq_compound": "GROQ_API_KEY",
+    "ag_gemini_agent": "OMNIROUTE_API_KEY",
+    "ag_gemini_pro": "OMNIROUTE_API_KEY",
+    "ag_opus": "OMNIROUTE_API_KEY",
 }
+
+# Провайдеры, которым ключ НЕ обязателен (локальные шлюзы)
+KEYLESS = {"omniroute"}
+
+# ─── OmniRoute ПО ТРЕБОВАНИЮ (18.08, Егор: «бот обрастает процессами») ───
+# Шлюз держал 350 MB круглосуточно (pm2 показывал 46 MB — это launcher, воркер ещё 304 MB),
+# хотя нужен только на время прогона роя: ag_* голоса + запасные входы при 429.
+# Ни один фоновый процесс от него не зависит (news_sphere ходит к API напрямую),
+# поэтому держать его под pm2 24/7 не нужно — поднимаем на прогон и гасим.
+# Провайдеры, которые ходят ЧЕРЕЗ локальный шлюз (и требуют его поднятым).
+# Одно множество на все три места (stream=False · автоподъём в CLI · маршрутизация),
+# иначе при добавлении нового ag_*-голоса легко забыть одно из них.
+GATEWAY_PROVIDERS = {"omniroute", "ag_gemini_pro", "ag_opus", "ag_gemini_agent"}
+GATEWAY_HOST, GATEWAY_PORT = "127.0.0.1", 20128
+GATEWAY_BIN = Path(os.environ.get("APPDATA", "")) / "npm" / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+
+
+def gateway_alive(timeout: float = 1.0) -> bool:
+    """Слушает ли шлюз порт. Дёшево — обычный connect, без HTTP."""
+    import socket
+    with socket.socket() as s:
+        s.settimeout(timeout)
+        return s.connect_ex((GATEWAY_HOST, GATEWAY_PORT)) == 0
+
+
+def ensure_gateway(wait_sec: int = 45):
+    """Поднимает OmniRoute, если порт молчит.
+    → Popen, если подняли МЫ (значит нам же и гасить), или None (уже был жив / нет бинаря)."""
+    if gateway_alive():
+        return None
+    if not GATEWAY_BIN.exists():
+        print(f"[gateway] не найден {GATEWAY_BIN} — ag_*/spare будут недоступны", file=sys.stderr)
+        return None
+    import subprocess, time
+    print("[gateway] OmniRoute не запущен → поднимаю на время прогона...", file=sys.stderr)
+    # --no-open ОБЯЗАТЕЛЕН: `serve` по умолчанию открывает браузер на /home. Под pm2 это
+    # случалось раз в сутки и не мешало, а при подъёме на каждый прогон — вкладка на КАЖДЫЙ
+    # запрос к рою (Егор поймал 18.08). --no-tray заодно убирает иконку в трее.
+    proc = subprocess.Popen(
+        ["node", str(GATEWAY_BIN), "serve", "--no-open", "--no-tray"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(PROJECT_ROOT),          # чтобы шлюз подхватил .env проекта, как под pm2
+    )
+    for _ in range(wait_sec * 2):
+        time.sleep(0.5)
+        if gateway_alive():
+            print(f"[gateway] готов за ~{_ * 0.5:.1f}с (pid {proc.pid})", file=sys.stderr)
+            return proc
+    print(f"[gateway] не поднялся за {wait_sec}с — гашу", file=sys.stderr)
+    stop_gateway(proc)
+    return None
+
+
+def stop_gateway(proc) -> None:
+    """Гасит шлюз, поднятый нами. ⚠️ launcher ФОРКАЕТ воркер (он и держит 304 MB),
+    поэтому убивать надо ДЕРЕВО: одиночный kill оставит воркер висеть на порту."""
+    if proc is None:
+        return
+    import subprocess
+    try:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        print(f"[gateway] остановлен (pid {proc.pid} + дочерние)", file=sys.stderr)
+    except Exception as e:
+        print(f"[gateway] не удалось остановить: {e}", file=sys.stderr)
 
 # Цепочка fallback при 429/503 (sambanova/nvidia в конце — активны только при наличии ключа)
 FALLBACK_ORDER = ["cerebras", "groq", "openrouter", "mistral", "github_models",
@@ -123,6 +236,10 @@ def load_env() -> None:
 
 
 def has_key(provider: str) -> bool:
+    # Локальные шлюзы (omniroute) ключа не требуют — считаем доступными всегда.
+    # KEYLESS объявлен ниже по файлу, поэтому берём через globals() с запасным множеством.
+    if provider in globals().get("KEYLESS", {"omniroute"}):
+        return True
     return bool(os.environ.get(ENV_KEYS.get(provider, "")))
 
 
@@ -171,7 +288,10 @@ def ask_openai_compat(provider: str, prompt: str, model: str, max_tokens: int,
 
     key = os.environ.get(ENV_KEYS[provider])
     if not key:
-        raise RuntimeError(f"{ENV_KEYS[provider]} не задан в .env")
+        if provider in KEYLESS:
+            key = "local"          # локальный шлюз не проверяет ключ
+        else:
+            raise RuntimeError(f"{ENV_KEYS[provider]} не задан в .env")
 
     base_url = OPENAI_COMPAT_URLS[provider]
     client = OpenAI(api_key=key, base_url=base_url)
@@ -185,6 +305,9 @@ def ask_openai_compat(provider: str, prompt: str, model: str, max_tokens: int,
             {"role": "user", "content": prompt},
         ],
     )
+    # OmniRoute по умолчанию отдаёт SSE-поток — просим обычный JSON
+    if provider in GATEWAY_PROVIDERS:
+        kwargs["stream"] = False
     # OpenRouter поддерживает usage stats
     if provider == "openrouter":
         kwargs["extra_headers"] = {
@@ -192,6 +315,11 @@ def ask_openai_compat(provider: str, prompt: str, model: str, max_tokens: int,
             "X-Title": "Oko MTF Bot",
         }
     resp = client.chat.completions.create(**kwargs)
+    # OmniRoute за `auto/*` подставляет РАЗНЫЕ модели от запроса к запросу (проверено 13.08:
+    # big-pickle → felo-chat → hy3-free). Без этой строки в протоколе роя не видно, кто голосовал.
+    actual = getattr(resp, "model", None)
+    if provider == "omniroute" and actual and actual != model:
+        print(f"[llm_ask] omniroute: {model} → РЕАЛЬНО {actual}", file=sys.stderr)
     msg = resp.choices[0].message
     content = msg.content
     # Reasoning-модели (GLM-4.7, DeepSeek-R1) при finish_reason=length могут вернуть content=None
@@ -311,8 +439,15 @@ def main() -> int:
     parser.add_argument("--image", type=Path, help="Картинка (только gemini)")
     parser.add_argument(
         "--provider",
+        # 12.08: "deepseek" был в MODELS/BASES/KEYS (прямой api.deepseek.com), но НЕ выведен
+        # в choices — прямой путь к DS был недоступен из CLI при живом ключе. Добавлен.
+        # `--reasoning` даёт deepseek-reasoner (thinking-режим).
         choices=["auto", "groq", "cerebras", "gemini", "mistral", "openrouter",
-                 "github_models", "sambanova", "nvidia"],
+                 "github_models", "sambanova", "deepseek", "nvidia", "omniroute",
+                 # 13.08: доп. семейства через тот же ключ OpenRouter — иначе CLI их не примет
+                 # 18.08: or_gemma → or_dots (429 upstream + дубль Gemma); +groq_qwen на ключе Groq
+                 "or_cohere", "or_poolside", "or_dots", "groq_qwen",
+                 "groq_compound", "ag_gemini_pro", "ag_opus", "ag_gemini_agent"],
         default="auto",
         help="LLM-провайдер (по умолчанию auto)",
     )
@@ -337,8 +472,9 @@ def main() -> int:
 
     if args.list_keys:
         print("Available keys:")
-        for p in ["groq", "cerebras", "gemini", "mistral", "openrouter",
-                  "github_models", "sambanova", "nvidia"]:
+        for p in ["groq", "groq_qwen", "cerebras", "gemini", "mistral", "openrouter",
+                  "or_cohere", "or_poolside", "or_dots",
+                  "github_models", "sambanova", "nvidia", "deepseek"]:
             mark = "[+]" if has_key(p) else "[ ]"
             print(f"  {mark} {p:15s} ({ENV_KEYS[p]})")
         return 0
@@ -365,6 +501,14 @@ def main() -> int:
     # --reasoning без явной --model → берём thinking-модель провайдера
     if args.reasoning and not args.model and provider in REASONING_MODELS:
         args.model = REASONING_MODELS[provider]
+
+    # Шлюз больше не висит под pm2 (18.08) → поднимаем его сам, если просят модель за ним.
+    # Гасим через atexit, и только если подняли МЫ: чужой запущенный шлюз не трогаем.
+    if provider in GATEWAY_PROVIDERS:
+        _gw = ensure_gateway()
+        if _gw is not None:
+            import atexit
+            atexit.register(stop_gateway, _gw)
 
     if args.image and provider != "gemini":
         print(f"WARNING: --image игнорируется при provider={provider} (только gemini multimodal)",
