@@ -130,7 +130,11 @@ Singleton, TTL = 300 сек. Используется напрямую в [bot/m
 |---|---|---|---|
 | `detect_funding_extreme` | [core/signals/funding_detector.py:63](../core/signals/funding_detector.py#L63) | `|funding| > 0.0005` + WT cross OS/OB | FUNDING_EXTREME ⚠️ SHADOW (DEV-81) |
 
-История funding ❌ отсутствует — только текущее значение.
+**🔴 ИСПРАВЛЕНО 27.08.2026: история funding ЕСТЬ.** `ohlcv_cache.db` → таблица
+`funding_rates`: **1 557 170 строк, 2022-01 → 2026-06** (symbol · time · interval_hours · rate).
+Прежняя запись «истории нет» была неверна и стоила дорого: фандинг НИ РАЗУ не
+использовался в замерах, потому что по карте его «не существовало».
+**🔌 NOT WIRED:** в шину не публикуется — сферы истории фандинга не видят.
 
 ## Pre-compute (ARCH-18)
 
@@ -141,17 +145,27 @@ Singleton, TTL = 300 сек. Используется напрямую в [bot/m
 - DIVERGENCE считает свинги отдельно вместо чтения SwingAnalysis из SMC.
 - Старый `confluence_scanner` (CONFLUENCE) тянет WT/TSL напрямую из collector.
 
-## ❌ Отсутствует в RAW
+## ❌ Отсутствует в RAW (выверено 27.08.2026)
 
-- Camarilla pivots
-- Woodie pivots
-- Hurst exponent
-- USDT.D (USDT Dominance)
-- BTC.D (BTC Dominance)
-- COT (Commitment of Traders)
-- История funding rate
+**Действительно нет:**
+- Camarilla pivots · Woodie pivots · Hurst exponent
+- BTC.D (BTC Dominance) · COT (Commitment of Traders)
 - RSI-divergence (есть только WT-divergence)
 - ATR-percentile / volatility regime (только абсолютный ATR)
+
+**🔴 БЫЛО ОШИБОЧНО ЗАПИСАНО КАК ОТСУТСТВУЮЩЕЕ — данные ЕСТЬ:**
+
+| данные | где лежит | объём | в шине |
+|---|---|---|---|
+| история funding | `ohlcv_cache.db` → `funding_rates` | **1 557 170 строк, 2022-2026** | 🔌 NOT WIRED |
+| USDT.D | `usdtd` · `usdtd_1h` · `usdtd_cg` | 2 617 строк (с 2025-09) | 🔌 NOT WIRED |
+| капитализация / supply | `mcap_supply` · `mcap_meta` | 15 948 строк | 🔌 NOT WIRED |
+| onchain-события (киты, переводы) | `onchain_events` | 10 029 строк | 🔌 NOT WIRED |
+| открытый интерес (OI) | live с Bybit, `radar_oi_d5/d15` | без истории | 🔌 NOT WIRED |
+| дрейф вселенной | `subscriptions.db` → `universe_drift` + считается в замерах | 225 дней | 🔌 NOT WIRED |
+
+🔴 **Следствие:** 213 из 230 признаков боевых решений идут МИМО шины — Куб видит
+только свечи. Задача: `ARCH-129` Market Data Sphere (19). Подробно: `docs/REGISTRY.md` § 3.5.
 
 ---
 
@@ -529,12 +543,22 @@ ENCYCLOPEDIA обещает «12/12 сфер publish-ят». Реально — 
 
 # СЛОЙ 4 — Сферы Куба
 
-В проекте **две нумерации сфер** (важное расхождение):
+> 🧭 **ЭТО ЕДИНАЯ КАРТА СФЕР. Другие документы на неё ССЫЛАЮТСЯ, а не дублируют**
+> (правило [[principle_reuse_not_duplication]]). Сведено 27.08.2026 — до этого карт
+> было ЧЕТЫРЕ с разной нумерацией, и это была механическая причина, по которой
+> «забывали, что в Кубе есть».
 
-- **Концептуальная** ([sphere_registry.py:49](../core/context/sphere_registry.py#L49) `SPHERE_NAMES`): S1=DataCollector, S3=MTF WT Specialist, S4=MTF SMC Specialist, S5=Cross-Market, S6=Regime, S7=Detectors, S8=Pivots, S9=Narrative, S10=Exit, S11=PostTrade.
-- **Селфтеста** ([selftest_cube.py](../core/selftest_cube.py)): S7=TradingIntelligence, S8=TradeSimulator, S9=Exit, S10=PostTrade, S11=Narrative, S12=ML Outcome, S13=PairContextBus.
+**Источник истины — КОД:** [`sphere_registry.py:49`](../core/context/sphere_registry.py#L49)
+`SPHERE_NAMES`. Всё остальное сверяется с ним.
 
-Ниже — концептуальная нумерация (она используется в ENCYCLOPEDIA).
+**Расхождения, которые были (устранены ссылками, номера НЕ переиспользовать):**
+
+| Источник | Что утверждал | Решение |
+|---|---|---|
+| `selftest_cube.py` | своя нумерация: S7=TradingIntelligence · S13=PairContextBus | это ПРОВЕРКИ, не сферы — сверять по имени, не по номеру |
+| `obsidian/Concepts/Cube-Metatron.md` | 17 сфер, S2=Regime · S13=Portfolio · S16=PositionSync | ⚠️ устарело → ссылается сюда |
+| `docs/ENCYCLOPEDIA.md` | 13 сфер + S14=WaveService | канон 13 = сакральная геометрия; 14+ = расширение |
+| `TASKS.md` ARCH-121 | WaveService = «Сфера 14» | 🔴 конфликт с ARCH-96 → `FIX-SPHERE-NUM` |
 
 ## Текущие сферы S1–S13
 
@@ -554,14 +578,23 @@ ENCYCLOPEDIA обещает «12/12 сфер publish-ят». Реально — 
 | 12 | Self-Diagnostics | [core/selftest_cube.py](../core/selftest_cube.py) | ✅ ACTIVE | L13/L14/L15, автономный запуск |
 | 13 | PairContextBus | [core/context/pair_context.py](../core/context/pair_context.py) | ✅ ACTIVE | 38 полей, sync pub/sub, 22 типа событий |
 
-## Новые сферы S14–S17 (TASKS.md)
+## Сферы S13+ — расширение за канон (TASKS.md)
+
+🔴 **Перед добавлением новой сферы свериться с этой таблицей** — иначе номер уйдёт в дубль
+(так уже случилось с 14).
 
 | # | Сфера | Задача | Статус | Драйвер |
 |---|---|---|---|---|
+| 13 | Фаза / Decision Core | — | ⚠️ SHADOW | [`core/context/phase_sphere.py`](../core/context/phase_sphere.py) — композит доказанных сепараторов, логирует не гейтит |
 | 14 | Execution Sphere | [ARCH-96](../TASKS.md) | ❌ MISSING — 🔴 критично перед LIVE | IdempotencyGuard, SlippagePredictor, OrderTypeSelector, ExecutionTracker; закроет SL-дубли архитектурно |
+| 14? | WaveService | [ARCH-121](../TASKS.md) | 🔴 КОНФЛИКТ НОМЕРА с ARCH-96 | Elliott Wave прокси → `FIX-SPHERE-NUM` |
 | 15 | Anomaly Detection | [ARCH-97](../TASKS.md) | ❌ MISSING | Self-observability на execution / trading / ML drift; поймала бы DEV-174/175 за 1–72ч |
 | 16 | Portfolio Manager | [ARCH-98](../TASKS.md) | ❌ MISSING | β-exposure к BTC/ETH, sector concentration, rolling DD (5%/8%/15%) |
 | 17 | Meta-Learning | [ARCH-99](../TASKS.md) | ❌ MISSING | XGBoost f(context, signal_type) → E[R] контекстуальный фильтр |
+| 18 | Setup Engine | [ARCH-107](../TASKS.md) | ❌ MISSING | `TradingSetup` dataclass + state machine + таблица `trading_setups` |
+| **19** | **Market Data** | [ARCH-129](../TASKS.md) | ❌ MISSING — 🆕 27.08 | фандинг · OI · доминация · onchain · mcap · магниты · фазы · дрейф → В ШИНУ. Сейчас 213 из 230 признаков решений идут МИМО Куба |
+
+**Занято: 1–19.** Следующая свободная — 20.
 
 ## Рёбра (что проверяет L14)
 
@@ -708,7 +741,9 @@ ENCYCLOPEDIA обещает «12/12 сфер publish-ят». Реально — 
 
 Как проверить, что эта карта актуальна:
 
-1. **Selftest:** `python core/selftest_cube.py` → сравнить L13/L14/L15 с разделом «Слой 4».
+1. **Selftest:** `python core/selftest_cube.py` (или `curl http://localhost:8000/api/cube/selftest`)
+   → сравнить L13/L14/L15 с разделом «Слой 4». Бот должен быть запущен: без него отчёт пустой,
+   а `--stub` печатает всё MISSING — это каркас проверок, а не статус сфер.
 2. **EventBus shadow:** `grep "shadow:" config.yaml` → убедиться, что `event_bus.shadow: false`.
 3. **PairState поля:** [core/context/pair_context.py:80–160](../core/context/pair_context.py#L80) пересчитать поля.
 4. **SignalType enum:** [core/signals/signal_models.py:10](../core/signals/signal_models.py#L10) — 15 значений.

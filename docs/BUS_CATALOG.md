@@ -70,6 +70,7 @@
 | `ote_ltf_tp` | Optional[float] | ote_observer | финальная цель (runner) |
 | `ote_ltf_setup` | Optional[str] | ote_observer | setup_id из шкафа |
 | `ote_ltf_time` | Optional[datetime] | ote_observer | время OTE-снимка |
+| `watchlist` | Dict[str, Dict[str, Any]] | bus.set_watchlist() из любой стратегии | {стратегия: {entry, potential_pct, ...}} — заявки стратегий на пару |
 | `pivot_snap` | Optional[Dict[str, Any]] | scan_loop (Сфера 8) | {1W:{PP,S1,R1,..},1D:{..}} |
 | `near_pivot` | Optional[Dict] | scan_loop (Сфера 8) | {level,source,distance_pct} |
 | `last_narrative` | Optional[str] | trading_intelligence (Сфера 9) | текст нарратива |
@@ -105,5 +106,5 @@
 | `updated_at` | Optional[datetime] | EXEC-WS / position_sync | `bus.get_account(id).updated_at` | время обновления счёта |
 
 ---
-**Покрытие:** события 24 · L1 56 · L2 6.
+**Покрытие:** события 24 · L1 57 · L2 6.
 ✅ Каталог в синхроне с dataclass.
