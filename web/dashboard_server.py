@@ -1559,6 +1559,15 @@ async def _live_fetch_and_cache(request: web.Request, result: dict, bot) -> web.
                 pos["signal_type"] = st.get("signal_type")   # None если нет sim-матча (ручная позиция)
                 pos["max_r"] = st.get("max_r")
                 pos["created_at"] = st.get("created_at")   # 14.07: время открытия сматченной сделки
+                # 🔴 22.08 ТФ ИЗ РЕЕСТРА, а не из tsl_tf. Фронт брал `tsl_tf || "15m"`, а
+                # tsl_tf заполняется ТОЛЬКО при активном трейлинге — у impulse_fib он выключен
+                # по конструкции, поэтому его часовые позиции печатались как 15m. Егор поймал
+                # это на экране: четыре позиции 1h с меткой 15m и сигналом `unknown`.
+                try:
+                    from core.trading.source_registry import tf_for
+                    pos["tf"] = tf_for(str(st.get("signal_type") or "")) or st.get("tsl_tf")
+                except Exception:                              # noqa: BLE001
+                    pos["tf"] = st.get("tsl_tf")
 
         result["error"] = _err
 
@@ -2604,6 +2613,33 @@ async def _handle_cube_stats(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
 
 
+async def _handle_cube_selftest(request: web.Request) -> web.Response:
+    """GET /api/cube/selftest — ЖИВОЙ статус 13 сфер, 21 ребра, 4 циклов.
+
+    Единственный честный источник: проверки читают атрибуты работающего бота.
+    Автономный `python core/selftest_cube.py` без бота печатает всё MISSING.
+    """
+    bot = request.app.get("bot")
+    if bot is None:
+        return web.Response(
+            text=json.dumps({"error": "bot не подключён к дашборду — живой статус недоступен"},
+                            ensure_ascii=False),
+            content_type="application/json", charset="utf-8", status=503,
+        )
+    try:
+        from core.selftest_cube import run_cube_selftest, format_cube_report
+        results = await run_cube_selftest(bot)
+        return web.Response(
+            text=json.dumps({
+                "report": format_cube_report(results),
+                "results": [r.__dict__ for r in results],
+            }, ensure_ascii=False, default=str),
+            content_type="application/json", charset="utf-8",
+        )
+    except Exception as e:
+        return web.Response(text=json.dumps({"error": str(e)}), content_type="application/json", status=500)
+
+
 async def _handle_cube_event_inject(request: web.Request) -> web.Response:
     """POST /api/cube/event — ручная инжекция события в EventBus (Full CALL триггер).
 
@@ -3001,7 +3037,11 @@ def _filter_record(st) -> dict:
     wt_out = {}
     for tf, w in (wt.items() if isinstance(wt, dict) else []):
         if isinstance(w, dict):
-            wt_out[tf] = {"wt1": w.get("wt1"), "zone": w.get("zone"), "cross": w.get("wt_cross"),
+            # wt2 нужен фильтру, чтобы отличать СОСТОЯНИЕ кросса (wt1 выше/ниже сигнальной,
+            # держится до обратного пересечения) от МОМЕНТА пересечения (живёт один бар).
+            # Егор 19.08: «кросс — историческое событие, оно живёт до обратного кросса».
+            wt_out[tf] = {"wt1": w.get("wt1"), "wt2": w.get("wt2"),
+                          "zone": w.get("zone"), "cross": w.get("wt_cross"),
                           "trend": w.get("trend"), "atr": w.get("atr_trend")}
     smc_bt = {}
     for tf, s in (smc.get("by_tf") or {}).items():
@@ -3395,6 +3435,7 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app.router.add_get("/api/cube/snapshot_all", _handle_cube_snapshot_all)
     app.router.add_get("/api/cube/events", _handle_cube_events)
     app.router.add_get("/api/cube/stats", _handle_cube_stats)
+    app.router.add_get("/api/cube/selftest", _handle_cube_selftest)
     app.router.add_post("/api/cube/event", _handle_cube_event_inject)
     app.router.add_post("/api/cube/ml/train", _handle_cube_ml_train)
     # ── DEV-203: DecisionTrace — видимость отброшенных сигналов ──
