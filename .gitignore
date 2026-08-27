@@ -227,3 +227,5 @@ subscriptions.db.backup-*
 _risk_matrix.json
 # лок-файл скиллов
 skills-lock.json
+# архив-свалка: 25 МБ zip, восстановлению не подлежит и не нужен в истории
+archive/scratch_*.zip
