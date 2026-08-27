@@ -36,6 +36,45 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe \"e:/MTF BOT/CURSOR/crypto_volume_bot/tools/session_hooks.py\" precompact",
+            "timeout": 30,
+            "statusMessage": "Записываю статус перед компактом..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe \"e:/MTF BOT/CURSOR/crypto_volume_bot/tools/session_hooks.py\" sessionend",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe \"e:/MTF BOT/CURSOR/crypto_volume_bot/tools/session_hooks.py\" postwrite",
+            "timeout": 120,
+            "async": true,
+            "statusMessage": "Проверяю память/vault..."
+          }
+        ]
+      }
     ]
   }
 }

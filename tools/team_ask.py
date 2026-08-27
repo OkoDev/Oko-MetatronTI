@@ -30,7 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from llm_ask import load_env, has_key, ENV_KEYS, DEFAULT_MODELS, call_provider  # noqa: E402
+from llm_ask import (load_env, has_key, ENV_KEYS, DEFAULT_MODELS, call_provider,  # noqa: E402
+                     ensure_gateway, stop_gateway)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -51,8 +52,72 @@ OUTPUT_MEMORY = PROJECT_ROOT / "memory" / "last_team_discussion.md"
 # sambanova/nvidia активируются автоматически при добавлении SAMBANOVA_API_KEY / NVIDIA_API_KEY в .env.
 # NB: deepseek НЕ в списке голосов (R5) — он платный + используется как ДИРИЖЁР в
 # swarm_orchestrator (ARCH-126), не как один из голосов. Обычный /team-ask бесплатен.
-ALL_PROVIDERS = ["cerebras", "mistral", "openrouter", "gemini", "groq",
-                 "github_models", "sambanova", "nvidia"]
+# 12.08: + omniroute — локальный шлюз (338 провайдеров, auto-fallback). Ключа не требует,
+# has_key() возвращает True всегда. Добавлен как ЗАПАСНОЙ голос: рой стабильно давал 5/7
+# (github_models 410 retirement, sambanova timeout, openrouter 404 на reasoning), а
+# omniroute сам перебирает живых провайдеров. ⚠️ компрессия у него должна быть выключена —
+# наши брифы это таблицы чисел, искажение = ложный вердикт.
+# github_models УБРАН 13.08: отдаёт 410 `github_models_retirement_brownout` — сервис
+# закрывается, это не временный сбой. Держать в составе = гарантированный ❌ в каждом прогоне.
+# `omniroute` УБРАН из состава голосов 13.08, но ОСТАЁТСЯ запасным входом (OMNIROUTE_SPARE ниже):
+#   1) `auto/*` — лотерея: 6 одинаковых запросов дали big-pickle / felo-chat / hy3-free,
+#      и felo на боевом промпте возвращает "...." → пустой голос при HTTP 200;
+#   2) его лучшая модель `oc/nemotron-3-ultra-free` ДУБЛИРУЕТ `openrouter` (nemotron-ultra-550B),
+#      а рою нужны разные подходы, а не клоны.
+# 🔴 18.08: `cerebras` УБРАН из состава голосов — весь его каталог отдаёт 402 Payment required
+# (free-tier аккаунта закрыт), а прежняя модель zai-glm-4.7 ещё и архивирована → 404.
+# Причина та же, по которой 13.08 убрали github_models: гарантированный ❌ в каждом прогоне.
+# Провайдер остаётся в llm_ask (--provider cerebras) — оживёт, если оплатят биллинг.
+# Замены подобраны боевым промптом 18.08 (длина ≥200 симв. + кириллица + арифметика):
+#   cerebras → groq_qwen (Qwen 3.6 27B, 6.8с) — новое семейство Alibaba на имеющемся ключе Groq
+#   or_gemma → or_dots   (Dots3-Note, 8.4с)   — новейшее семейство, 512k ctx, ключ OpenRouter
+# GLM восстановить НЕ удалось: zai-glm-5-2 в каталоге Mistral отдаёт 429 Rate limit.
+# 🔴 18.08 (добор до 12 ЖИВЫХ): из состава убраны два слота, которые не могли ответить в принципе —
+#   `nvidia`   — ключа нет и не будет (build.nvidia.com блокирует регистрацию из РФ);
+#   `ag_opus`  — Antigravity отдаёт 429 «All antigravity accounts have…» на ВСЮ линейку Claude
+#                (проверены opus-4-6-thinking, sonnet-4-6, gpt-oss-120b-medium). Квота выбрана.
+# Оба остаются в llm_ask (`--provider …`) и вернутся в состав, если появится ключ/квота.
+# ⚠️ ЧЕСТНАЯ ОГОВОРКА: новых СЕМЕЙСТВ в бесплатном доступе не осталось. Из 16 кандидатов,
+# прогнанных боевым промптом, выжили 4, и все — клоны уже представленных в рою.
+# Взяты двое с иным РЕЖИМОМ работы (агенты с инструментами), а не просто другой размер:
+#   groq_compound   — агентная надстройка Groq, 5.7с
+#   ag_gemini_agent — агентный Gemini, единственная модель Antigravity с живой квотой, 27.7с
+# Цена: перекос семейств. Gemini теперь ТРИ голоса (gemini · ag_gemini_pro · ag_gemini_agent),
+# Groq — ТРИ (groq · groq_qwen · groq_compound). Клоны склонны голосовать согласованно →
+# консенсус и Borda-ранг смещаются в их сторону. Читая отчёт роя, считать не голоса, а СЕМЕЙСТВА.
+ALL_PROVIDERS = ["mistral", "openrouter", "gemini", "groq",
+                 "sambanova", "groq_compound", "ag_gemini_agent",
+                 # 13.08: +3 семейства через УЖЕ имеющийся ключ OpenRouter (Cohere/Poolside/Gemma).
+                 # Без подписок и новых регистраций — задача Егора «самые сильные и без подписок».
+                 "or_cohere", "or_poolside", "or_dots", "groq_qwen",
+                 # 13.08: Antigravity OAuth (Google-аккаунт Егора) → Gemini 3.1 Pro и Claude Opus 4.6.
+                 # Первые ДЕЙСТВИТЕЛЬНО новые семейства верхнего уровня в рое, и бесплатно.
+                 "ag_gemini_pro"]
+
+# Запасной вход через локальный OmniRoute: при 429/503 голос НЕ теряется (13.08).
+# Раньше рой звал call_provider напрямую и упавший провайдер просто выпадал из состава —
+# так 13.08 потеряли gemini (429 квота) и sambanova (429 high demand) → 5/8 вместо 7/8.
+# Модели ФИКСИРОВАННЫЕ, не `auto/*`: шлюз за auto подставляет случайную модель
+# (проверено — 6 запросов дали big-pickle / felo-chat / hy3-free), и голос невоспроизводим.
+# Из 115 моделей шлюза отвечают только эти четыре (tllm/* → 403, aug/* → 502, ddgw → 418).
+# Каждому провайдеру своя запасная — иначе два упавших дали бы один и тот же голос.
+# 🔴 felo/* и oc/hy3-free ИСКЛЮЧЕНЫ: на коротком тесте отвечают, на боевом промпте роя
+# возвращают "...." / 3 символа при HTTP 200 — формально голос есть, по сути пустой.
+# Такой голос ХУЖЕ отказа: он считается как ✅ и врёт статистикой состава.
+# Содержательно держит структуру промпта только nemotron-ultra (2963 симв. в прогоне 13.08).
+SPARE_MIN_CHARS = 200          # короче — считаем провалом, а не голосом
+OMNIROUTE_SPARE = {
+    # 13.08: gemini падает по 429 КАЖДЫЙ прогон (квота API исчерпана). Запасной — ТОТ ЖЕ Gemini,
+    # но через OAuth-канал Antigravity: другая квота, родное семейство вместо клона nemotron.
+    "gemini": "antigravity/gemini-3.6-flash-high",
+    "sambanova": "oc/nemotron-3-ultra-free",
+    "groq": "oc/nemotron-3-ultra-free",
+    "mistral": "oc/nemotron-3-ultra-free",
+    # 18.08: cerebras выбыл из состава голосов → его запасной вход убран.
+    # groq_qwen делит квоту с `groq`: если Groq упрётся в RPM, оба уйдут на запасной вход,
+    # поэтому здесь ДРУГАЯ модель шлюза — иначе два голоса стали бы одним и тем же.
+    "groq_qwen": "oc/mimo-v2.5-free",
+}
 
 # Бюджет символов на КОНТЕКСТ-блок по провайдеру (входной лимит модели/free-tier).
 # Перепроверено 31.05.2026: полный bundle (~101k символов) валит github_models/sambanova/groq.
@@ -61,7 +126,9 @@ CONTEXT_BUDGET_CHARS = {
     "github_models": 10_000,   # free tier ~8k токенов на запрос (вход+выход вместе)
     "sambanova": 60_000,       # лимит модели 32k токенов (~2.6 символа/токен на кириллице)
     "groq": 18_000,            # free TPM лимит
-    "cerebras": 35_000,        # free TPM: вход + reasoning-выход GLM-4.7 не должны превысить токены/мин
+    "groq_qwen": 18_000,       # 18.08: тот же ключ и тот же TPM-лимит Groq, что у `groq`
+    "groq_compound": 18_000,   # тот же TPM-лимит Groq (третий голос на этом ключе)
+    "cerebras": 35_000,        # (вне состава голосов с 18.08 — 402; бюджет оставлен на случай оплаты)
     "deepseek": 600_000,       # 1M ctx (~170k токенов на кириллице) → весь bundle проекта без нарезки
 }
 DEFAULT_CONTEXT_BUDGET = 200_000
@@ -258,6 +325,11 @@ def get_answer(provider: str, question: str, context: str) -> tuple[str, str, st
         )
         try:
             text = call_provider(provider, prompt, None, max_tokens=out_tokens, image_path=None)
+            # HTTP 200 ≠ ответ: felo/hy3 за шлюзом возвращают "...." / 5 символов.
+            # Пустой голос ХУЖЕ отказа — он считается как ✅ и льёт пустоту в синтез.
+            if len((text or "").strip()) < SPARE_MIN_CHARS:
+                return (provider, model,
+                        f"❌ ERROR: пустой ответ ({len((text or '').strip())} симв.)")
             return (provider, model, text)
         except Exception as e:
             last_err = str(e)
@@ -268,6 +340,23 @@ def get_answer(provider: str, question: str, context: str) -> tuple[str, str, st
                 print(f"[team-ask] {provider}: size-error → ужимаю контекст до {budget} симв. "
                       f"(попытка {attempt + 2}/4)", file=sys.stderr)
                 continue
+            # 429/503 — провайдер жив, но занят. Не теряем голос: берём запасной вход
+            # через локальный OmniRoute с фиксированной моделью.
+            spare = OMNIROUTE_SPARE.get(provider)
+            is_busy = any(m in msg for m in ("429", "503", "rate limit", "quota",
+                                             "resource_exhausted", "high demand"))
+            if spare and is_busy:
+                try:
+                    text = call_provider("omniroute", prompt, spare,
+                                         max_tokens=out_tokens, image_path=None)
+                    if len((text or "").strip()) < SPARE_MIN_CHARS:
+                        raise RuntimeError(
+                            f"запасной вернул {len((text or '').strip())} симв. — пустой голос")
+                    print(f"[team-ask] {provider}: занят → запасной {spare}", file=sys.stderr)
+                    return (provider, f"{model} → {spare}", text)
+                except Exception as e2:
+                    print(f"[team-ask] {provider}: запасной {spare} тоже упал ({str(e2)[:80]})",
+                          file=sys.stderr)
             return (provider, model, f"❌ ERROR: {last_err[:500]}")
     return (provider, model, f"❌ ERROR: не уложился в лимит контекста. {last_err[:300]}")
 
@@ -351,6 +440,15 @@ def main() -> int:
 
     print(f"[team-ask] участники: {', '.join(providers)}", file=sys.stderr)
     print(f"[team-ask] вопрос: {args.question[:100]}", file=sys.stderr)
+
+    # 18.08: шлюз нужен ТОЛЬКО на прогон (ag_* голоса + запасные входы при 429), поэтому
+    # он больше не висит под pm2 круглосуточно на 350 MB. Поднимаем сами, если молчит.
+    # atexit, а не try/finally: гасим и при исключении, и при sys.exit, без переиндентации main.
+    # stop_gateway вызовется ТОЛЬКО если шлюз подняли мы — чужой (pm2/ручной) не трогаем.
+    gw = ensure_gateway()
+    if gw is not None:
+        import atexit
+        atexit.register(stop_gateway, gw)
 
     # Контекст
     context_parts = []
@@ -458,7 +556,7 @@ def main() -> int:
             )
         # ФОЛБЭК: ранг съедает free-tier бюджет (×2 вызовов) → meta часто ловит 429.
         # Пробуем мета-провайдеров по очереди, пока один не ответит.
-        meta_candidates = [p for p in ["mistral", "openrouter", "cerebras", "gemini", "groq"]
+        meta_candidates = [p for p in ["mistral", "openrouter", "gemini", "groq"]
                            if p in [r[0] for r in good]]
         meta_done = False
         for meta_provider in meta_candidates:

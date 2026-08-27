@@ -166,6 +166,11 @@ class SwarmOrchestrator:
         else:
             context = team_ask.collect_context()
         plan = self._plan(req, context)
+        # 18.08: шлюз OmniRoute снят с pm2 (держал 350 MB круглосуточно). Боевой луп
+        # `bot/loops/advisor_loop.py` зовёт consult раз в час, и запасные входы при 429
+        # (OMNIROUTE_SPARE) идут именно через него → поднимаем на время консультации.
+        # ensure_gateway вернёт None, если шлюз уже поднят кем-то — чужой не гасим.
+        gw = llm_ask.ensure_gateway()
         # рассылка: по плану DS (выжимка+подвопрос) или fallback на общий вопрос+trim
         def ask(p):
             if plan and p in plan:
@@ -176,11 +181,15 @@ class SwarmOrchestrator:
                 q = req.question
             return team_ask.get_answer(p, q, ctx)
         answers = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.providers)) as ex:
-            # get_answer → (provider, model, text); берём text как ans (R1 fix)
-            for prov, _model, ans in ex.map(ask, self.providers):
-                answers[prov] = ans
-        verdict = self._synthesize(req, answers, context)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.providers)) as ex:
+                # get_answer → (provider, model, text); берём text как ans (R1 fix)
+                for prov, _model, ans in ex.map(ask, self.providers):
+                    answers[prov] = ans
+            verdict = self._synthesize(req, answers, context)
+        finally:
+            # бот живёт вечно — без явного гашения шлюз висел бы с первой консультации
+            llm_ask.stop_gateway(gw)
         if verdict:
             verdict = AdvisoryVerdict(**{**verdict.__dict__, "latency_ms": int((time.monotonic() - t0) * 1000)})
         return verdict
