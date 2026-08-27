@@ -1,0 +1,3189 @@
+version: 2
+generated: '2026-06-04'
+source: DS-315/316 walkforward_mht на эталонных признаках (ARCH-118
+  один калькулятор)
+note: 'Поток 2 ARCH-128: заменил старый реестр 2026-05-20
+  (устаревший combinator). Отбор: mht+stable, avgR>=0.8, n>=30, дедуп,
+  топ-200 баланс.'
+patterns:
+  DS_L001_pivotb_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - pivot_bounce_up_PP_1D
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 1587
+    test_avgR: 1.201
+    test_WR: 92.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L002_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - bull_fvg_1d
+    detection_tf: 1h
+    weight: 17
+    test_n: 377
+    test_avgR: 1.434
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L003_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L004_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - pivot_bounce_up_PP_1D
+    detection_tf: 4h
+    weight: 17
+    test_n: 8
+    test_avgR: .nan
+    test_WR: 87.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L005_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L006_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L007_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_4h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 1
+    test_avgR: 2.0
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L008_bullfv_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1d
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 1
+    test_avgR: 2.0
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L009_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - pivot_bounce_up_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 130
+    test_avgR: 1.567
+    test_WR: 99.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L010_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_4h
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 580
+    test_avgR: 1.273
+    test_WR: 92.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L011_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 16
+    test_n: 1010
+    test_avgR: 1.2
+    test_WR: 88.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L012_bullfv_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 1
+    test_avgR: 2.0
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L013_bullfv_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L014_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L015_bullfv_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L016_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1d
+    - ema50_above_ema200_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L017_abovee_abovee_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 70
+    test_avgR: 1.689
+    test_WR: 98.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L018_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 70
+    test_avgR: 1.689
+    test_WR: 98.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L019_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - rsi_div_bull_hidden_1d
+    detection_tf: 4h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L020_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - rsi_div_bull_hidden_1d
+    detection_tf: 4h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L021_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - rsi_div_bull_hidden_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L022_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L023_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L024_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L025_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 111
+    test_avgR: 1.548
+    test_WR: 96.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L026_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L027_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - ema50_above_ema200_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L028_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - discount_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L029_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - above_ema50_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 1033
+    test_avgR: 1.165
+    test_WR: 85.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L030_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L031_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L032_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - ema50_above_ema200_4h
+    detection_tf: 1h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L033_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - ema50_above_ema200_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L034_pivotb_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - pivot_bounce_up_S1_1D
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 376
+    test_avgR: 1.254
+    test_WR: 92.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L035_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L036_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    - rsi_div_bull_hidden_4h
+    detection_tf: 1h
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L037_abovee_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - above_ema50_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_in_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 84
+    test_avgR: 1.581
+    test_WR: 97.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L038_atrup1_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L039_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L040_abovee_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - above_ema200_4h
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L041_atrup1_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_1h
+    - bull_fvg_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 86
+    test_avgR: 1.569
+    test_WR: 96.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L042_atrup1_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L043_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    - rsi_div_bull_hidden_4h
+    detection_tf: 4h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L044_bullfv_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_1d
+    - rsi_div_bull_hidden_4h
+    detection_tf: 4h
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L045_atrup1_bullfv_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - atr_up_1d
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - discount_4h
+    detection_tf: 4h
+    weight: 17
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L046_bullfv_bullfv_rsidiv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1d
+    - bull_fvg_4h
+    - rsi_div_bull_hidden_1d
+    detection_tf: 4h
+    weight: 17
+    test_n: 129
+    test_avgR: 1.433
+    test_WR: 96.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L047_bullfv_discou_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_1h
+    - discount_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L048_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 67
+    test_avgR: .nan
+    test_WR: 77.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L049_ema50a_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - ema50_above_ema200_4h
+    - bull_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 1115
+    test_avgR: 1.117
+    test_WR: 84.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L050_bullfv_discou:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_1h
+    - discount_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 76
+    test_avgR: .nan
+    test_WR: 75.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S001_bearfv_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 510
+    test_avgR: .nan
+    test_WR: 87.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S002_bearfv_wtob1h_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - wt_ob_1h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 140
+    test_avgR: .nan
+    test_WR: 95.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S003_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 16
+    test_n: 463
+    test_avgR: 1.231
+    test_WR: 98.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S004_bearfv_wtob1h:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 17
+    test_n: 296
+    test_avgR: .nan
+    test_WR: 86.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S005_bearfv_ema50b_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1d
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 213
+    test_avgR: 1.474
+    test_WR: 92.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S006_rsicro_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 18
+    test_n: 163
+    test_avgR: 1.529
+    test_WR: 93.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S007_bearfv_belowe_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_1d
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 211
+    test_avgR: 1.472
+    test_WR: 91.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S008_bearfv_pivotn_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R1_1D
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 224
+    test_avgR: 1.461
+    test_WR: 91.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S009_bearfv_rsiob1_rsiob4:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - rsi_ob_4h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 124
+    test_avgR: .nan
+    test_WR: 90.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S010_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1029
+    test_avgR: 1.087
+    test_WR: 94.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S011_bearfv_rsiob1_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - pivot_bounce_down_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 118
+    test_avgR: .nan
+    test_WR: 91.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S012_atrdow_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 117
+    test_avgR: .nan
+    test_WR: 89.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S013_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 3973
+    test_avgR: 0.994
+    test_WR: 84.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S014_bearfv_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 307
+    test_avgR: 1.353
+    test_WR: 89.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S015_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 4027
+    test_avgR: 0.992
+    test_WR: 84.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S016_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    - vol_spike_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 75
+    test_avgR: .nan
+    test_WR: 93.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S017_bearfv_rsiob1_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - bear_fvg_in_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 96
+    test_avgR: 1.586
+    test_WR: 92.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S018_bearfv_ema50b_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1d
+    - pivot_near_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 76
+    test_avgR: 1.649
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S019_bearfv_belowe_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_1d
+    - pivot_near_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 76
+    test_avgR: 1.649
+    test_WR: 93.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S020_pivotb_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_bounce_down_PP_1D
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 1736
+    test_avgR: 0.996
+    test_WR: 88.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S021_bearfv_rsiob1_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 80
+    test_avgR: 1.619
+    test_WR: 92.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S022_bearfv_atrdow:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - atr_down_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2238
+    test_avgR: 1.005
+    test_WR: 84.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S023_bearfv_pivotb_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 19
+    test_n: 32
+    test_avgR: 1.875
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S024_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema50_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 2606
+    test_avgR: 0.984
+    test_WR: 83.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S025_pivotb_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_bounce_down_R1_1D
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 16
+    test_n: 435
+    test_avgR: 1.134
+    test_WR: 94.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S026_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 84
+    test_avgR: 1.464
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S027_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2394
+    test_avgR: 0.992
+    test_WR: 83.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S028_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_4h
+    - bear_fvg_1d
+    detection_tf: 4h
+    weight: 15
+    test_n: 752
+    test_avgR: 1.026
+    test_WR: 95.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S029_bearfv_wtob1h_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - wt_ob_1h
+    - pivot_near_R1_1D
+    detection_tf: 1h
+    weight: 19
+    test_n: 41
+    test_avgR: 1.783
+    test_WR: 97.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S030_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R3_1D
+    - rsi_ob_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 64
+    test_avgR: 1.622
+    test_WR: 95.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S031_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    - rsi_ob_4h
+    detection_tf: 1h
+    weight: 18
+    test_n: 63
+    test_avgR: 1.652
+    test_WR: 93.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S032_bearfv_rsiob1_volspi:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - vol_spike_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 67
+    test_avgR: .nan
+    test_WR: 88.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S033_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 15
+    test_n: 1372
+    test_avgR: 1.031
+    test_WR: 85.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S034_bearfv_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - below_ema50_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 16
+    test_n: 250
+    test_avgR: 1.191
+    test_WR: 96.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S035_atrdow_bearfv_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1h
+    - rsi_ob_1h
+    - wt_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 75
+    test_avgR: .nan
+    test_WR: 89.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S036_bearfv_pivotb_rsiob1:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R2_1D
+    - rsi_ob_1h
+    - vol_spike_1h
+    detection_tf: 1h
+    weight: 19
+    test_n: 48
+    test_avgR: .nan
+    test_WR: 89.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S037_bearfv_atrcro_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - atr_cross_down_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 4h
+    weight: 19
+    test_n: 38
+    test_avgR: 1.72
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S038_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_1h
+    - bear_fvg_1d
+    detection_tf: 1h
+    weight: 15
+    test_n: 1117
+    test_avgR: 0.992
+    test_WR: 89.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S039_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_in_4h
+    - pivot_bounce_down_PP_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 19
+    test_n: 37
+    test_avgR: 1.757
+    test_WR: 97.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S040_bearfv_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - ema50_below_ema200_4h
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 16
+    test_n: 225
+    test_avgR: 1.19
+    test_WR: 95.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S041_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - ema50_below_ema200_1h
+    detection_tf: 1h
+    weight: 15
+    test_n: 1754
+    test_avgR: 0.97
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S042_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_PP_1D
+    detection_tf: 1h
+    weight: 15
+    test_n: 1855
+    test_avgR: 0.958
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S043_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - below_ema200_4h
+    detection_tf: 1h
+    weight: 15
+    test_n: 2145
+    test_avgR: 0.939
+    test_WR: 83.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S044_bearfv_pivotn_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R1_1D
+    - pivot_bounce_down_PP_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 71
+    test_avgR: 1.56
+    test_WR: 90.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S045_bearfv_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - below_ema50_1d
+    - pivot_bounce_down_R1_1D
+    detection_tf: 1h
+    weight: 18
+    test_n: 45
+    test_avgR: 1.565
+    test_WR: 100.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S046_atrdow_bearfv_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_1d
+    - bear_fvg_1d
+    - bear_fvg_1h
+    - bear_fvg_4h
+    - ema50_below_ema200_4h
+    detection_tf: 1h
+    weight: 17
+    test_n: 87
+    test_avgR: 1.348
+    test_WR: 98.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S047_bearfv_rsiob4:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - rsi_ob_4h
+    detection_tf: 1h
+    weight: 16
+    test_n: 521
+    test_avgR: .nan
+    test_WR: 80.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S048_bearfv_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - bear_fvg_in_4h
+    - pivot_bounce_down_R1_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 40
+    test_avgR: 1.693
+    test_WR: 95.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S049_bearfv_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_near_R2_1D
+    detection_tf: 1h
+    weight: 17
+    test_n: 128
+    test_avgR: 1.355
+    test_WR: 89.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_S050_bearfv_pivotb_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_1h
+    - pivot_bounce_down_R1_1D
+    - pivot_bounce_down_R2_1D
+    - rsi_ob_1h
+    detection_tf: 1h
+    weight: 18
+    test_n: 57
+    test_avgR: 1.593
+    test_WR: 91.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-315 walkforward_mht
+  DS_L051_bullfv_rsios1:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - rsi_os_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 2035
+    test_avgR: 1.675
+    test_WR: 90.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L052_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - bull_fvg_overlap_held_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1888
+    test_avgR: 1.552
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L053_atrup1_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_15m
+    - bull_fvg_overlap_held_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1822
+    test_avgR: 1.545
+    test_WR: 97.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L054_atrup1_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_up_15m
+    - bull_fvg_overlap_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1845
+    test_avgR: 1.541
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L055_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - above_ema50_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1703
+    test_avgR: 1.55
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L056_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - above_ema50_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1720
+    test_avgR: 1.545
+    test_WR: 97.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L057_bullfv_rsicro:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - rsi_cross50_up_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 6768
+    test_avgR: 1.444
+    test_WR: 86.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L058_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_in_15m
+    - bull_fvg_overlap_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1076
+    test_avgR: 1.604
+    test_WR: 97.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L059_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - bull_fvg_in_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 74652
+    test_avgR: 1.195
+    test_WR: 81.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L060_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_in_15m
+    - bull_fvg_overlap_held_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1068
+    test_avgR: 1.601
+    test_WR: 97.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L061_discou_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - discount_15m
+    - bull_fvg_overlap_held_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L062_discou_bullfv:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - discount_15m
+    - bull_fvg_overlap_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L063_bullfv_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 57158
+    test_avgR: 1.213
+    test_WR: 81.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L064_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - above_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1412
+    test_avgR: 1.533
+    test_WR: 97.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L065_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - above_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1424
+    test_avgR: 1.524
+    test_WR: 97.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L066_bullfv_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 954
+    test_avgR: 1.596
+    test_WR: 97.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L067_bullfv_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 961
+    test_avgR: 1.586
+    test_WR: 97.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L068_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - pivot_above_PP_1W
+    detection_tf: 15m
+    weight: 16
+    test_n: 46031
+    test_avgR: 1.214
+    test_WR: 81.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L069_bullfv_wtos15:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - wt_os_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 901
+    test_avgR: 1.682
+    test_WR: 92.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L070_atrcro_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_cross_up_15m
+    - bull_fvg_overlap_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 828
+    test_avgR: 1.6
+    test_WR: 97.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L071_atrcro_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_cross_up_15m
+    - bull_fvg_overlap_held_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 817
+    test_avgR: 1.595
+    test_WR: 97.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L072_bullfv_ema50a_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - ema50_above_ema200_15m
+    - pivot_above_PP_1W
+    - rsi_cross50_up_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 2008
+    test_avgR: 1.548
+    test_WR: 88.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L073_bullfv_ema50a_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - ema50_above_ema200_15m
+    - pivot_above_PP_1W
+    - rsi_cross50_up_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 2008
+    test_avgR: 1.548
+    test_WR: 88.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L074_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - above_ema200_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 70049
+    test_avgR: 1.154
+    test_WR: 80.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L075_bullfv_abovee:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - above_ema50_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 79655
+    test_avgR: 1.141
+    test_WR: 80.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L076_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - pivot_above_PP_1W
+    detection_tf: 15m
+    weight: 18
+    test_n: 995
+    test_avgR: 1.526
+    test_WR: 97.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L077_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - pivot_above_PP_1W
+    detection_tf: 15m
+    weight: 18
+    test_n: 997
+    test_avgR: 1.524
+    test_WR: 97.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L078_bullfv_rsidiv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - rsi_div_bull_regular_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 2050
+    test_avgR: 1.505
+    test_WR: 89.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L079_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - pivot_above_PP_1D
+    detection_tf: 15m
+    weight: 16
+    test_n: 71551
+    test_avgR: 1.14
+    test_WR: 80.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L080_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - pivot_above_PP_1D
+    detection_tf: 15m
+    weight: 17
+    test_n: 1314
+    test_avgR: 1.476
+    test_WR: 96.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L081_bullfv_pivota:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - pivot_above_PP_1D
+    detection_tf: 15m
+    weight: 17
+    test_n: 1326
+    test_avgR: 1.468
+    test_WR: 96.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L082_atrcro_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_cross_up_15m
+    - bull_fvg_overlap_15m
+    - bull_fvg_overlap_held_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 395
+    test_avgR: 1.71
+    test_WR: 98.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L083_atrcro_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - atr_cross_up_15m
+    - bull_fvg_overlap_15m
+    - bull_fvg_overlap_held_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 395
+    test_avgR: 1.71
+    test_WR: 98.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L084_bullfv_atrcro_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - atr_cross_up_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 395
+    test_avgR: 1.71
+    test_WR: 98.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L085_bullfv_atrcro_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - atr_cross_up_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 395
+    test_avgR: 1.71
+    test_WR: 98.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L086_bullfv_rsidiv_ema50a:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - rsi_div_bull_regular_15m
+    - ema50_above_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 788
+    test_avgR: 1.633
+    test_WR: 91.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L087_bullfv_atrup1:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - atr_up_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 73147
+    test_avgR: 1.112
+    test_WR: 79.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L088_bullfv_bullmo:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - bull_mom_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 992
+    test_avgR: 1.469
+    test_WR: 97.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L089_bullfv_volspi:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - vol_spike_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 989
+    test_avgR: 1.486
+    test_WR: 96.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L090_bullfv_bullmo:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_15m
+    - bull_mom_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 1005
+    test_avgR: 1.461
+    test_WR: 97.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L091_bullfv_volspi:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - vol_spike_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 974
+    test_avgR: 1.486
+    test_WR: 96.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L092_bullfv_pivotb:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - pivot_bounce_up_PP_1D
+    detection_tf: 15m
+    weight: 16
+    test_n: 32222
+    test_avgR: 1.165
+    test_WR: 81.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L093_bullfv_rsidiv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - rsi_div_bull_hidden_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 9316
+    test_avgR: 1.284
+    test_WR: 83.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L094_bullfv_pivotn:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - pivot_near_S1_1D
+    detection_tf: 15m
+    weight: 17
+    test_n: 2164
+    test_avgR: 1.448
+    test_WR: 87.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L095_bullfv_atrcro:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - atr_cross_up_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 14524
+    test_avgR: 1.234
+    test_WR: 81.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L096_bullfv_discou:
+    enabled: false
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - discount_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L097_bullfv_pivotb:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - pivot_bounce_up_S1_1D
+    detection_tf: 15m
+    weight: 16
+    test_n: 10336
+    test_avgR: 1.204
+    test_WR: 82.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L098_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - bull_fvg_overlap_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 343
+    test_avgR: 1.626
+    test_WR: 96.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L099_bullfv_bullfv:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_15m
+    - bull_fvg_overlap_held_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 335
+    test_avgR: 1.617
+    test_WR: 96.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_L100_bullfv_pivotb:
+    enabled: true
+    direction: LONG
+    anchor_factors:
+    - bull_fvg_overlap_held_15m
+    - pivot_bounce_up_PP_1D
+    detection_tf: 15m
+    weight: 17
+    test_n: 736
+    test_avgR: 1.41
+    test_WR: 96.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S051_bearfv_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 4232
+    test_avgR: 1.636
+    test_WR: 88.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S052_bearfv_rsiob1:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - rsi_ob_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S053_bearfv_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 8479
+    test_avgR: 1.424
+    test_WR: 81.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S054_bearfv_wtob15:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - wt_ob_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S055_bearfv_atrcro_bearfv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - atr_cross_down_15m
+    - bear_fvg_in_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 7220
+    test_avgR: 1.425
+    test_WR: 81.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S056_bearfv_atrcro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - atr_cross_down_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 9209
+    test_avgR: 1.394
+    test_WR: 80.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S057_pivotn_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_near_R1_1D
+    - bear_fvg_15m
+    - pivot_bounce_down_R1_1D
+    detection_tf: 15m
+    weight: 19
+    test_n: 574
+    test_avgR: 1.753
+    test_WR: 92.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S058_bearfv_belowe_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - below_ema200_15m
+    - pivot_bounce_down_PP_1D
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 2300
+    test_avgR: 1.549
+    test_WR: 85.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S059_atrcro_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_in_15m
+    - ema50_below_ema200_15m
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1937
+    test_avgR: 1.57
+    test_WR: 85.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S060_bearfv_rsiob1_pivotb:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - rsi_ob_15m
+    - pivot_bounce_down_PP_1D
+    detection_tf: 15m
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S061_bearfv_ema50b_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - ema50_below_ema200_15m
+    - pivot_bounce_down_PP_1D
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1996
+    test_avgR: 1.554
+    test_WR: 85.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S062_rsicro_pivotb_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - pivot_bounce_down_PP_1D
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 4004
+    test_avgR: 1.461
+    test_WR: 82.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S063_atrcro_bearfv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_in_15m
+    - below_ema200_15m
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 2244
+    test_avgR: 1.529
+    test_WR: 84.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S064_rsicro_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - pivot_bounce_down_PP_1D
+    detection_tf: 15m
+    weight: 17
+    test_n: 5360
+    test_avgR: 1.423
+    test_WR: 81.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S065_pivotn_atrcro_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_near_R1_1D
+    - atr_cross_down_15m
+    - pivot_bounce_down_R1_1D
+    detection_tf: 15m
+    weight: 19
+    test_n: 503
+    test_avgR: 1.74
+    test_WR: 91.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S066_bearfv_pivotb_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - pivot_below_PP_1W
+    - pivot_bounce_down_PP_1D
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1655
+    test_avgR: 1.545
+    test_WR: 85.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S067_atrcro_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_in_15m
+    - pivot_below_PP_1W
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1725
+    test_avgR: 1.545
+    test_WR: 85.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S068_rsicro_atrcro_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - atr_cross_down_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 4171
+    test_avgR: 1.43
+    test_WR: 81.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S069_atrcro_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 6099
+    test_avgR: 1.382
+    test_WR: 79.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S070_atrdow_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_down_15m
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 12831
+    test_avgR: 1.302
+    test_WR: 77.1
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S071_rsicro_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 12995
+    test_avgR: 1.301
+    test_WR: 77.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S072_rsicro_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - pivot_below_PP_1W
+    detection_tf: 15m
+    weight: 17
+    test_n: 11168
+    test_avgR: 1.311
+    test_WR: 77.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S073_rsidiv_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_div_bear_regular_15m
+    - bear_fvg_in_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1156
+    test_avgR: 1.562
+    test_WR: 85.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S074_rsidiv_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_div_bear_regular_15m
+    - bear_fvg_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 717
+    test_avgR: 1.625
+    test_WR: 88.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S075_rsicro_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - below_ema200_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 14119
+    test_avgR: 1.288
+    test_WR: 76.6
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S076_rsicro_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - below_ema50_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 14897
+    test_avgR: 1.268
+    test_WR: 76.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S077_bearfv_rsidiv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - rsi_div_bear_regular_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 2075
+    test_avgR: 1.463
+    test_WR: 82.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S078_rsidiv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_div_bear_regular_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 17
+    test_n: 3132
+    test_avgR: 1.403
+    test_WR: 81.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S079_atrcro_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_in_15m
+    - pivot_bounce_down_PP_1D
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1026
+    test_avgR: 1.549
+    test_WR: 85.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S080_rsicro_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - pivot_below_PP_1D
+    detection_tf: 15m
+    weight: 16
+    test_n: 13680
+    test_avgR: 1.264
+    test_WR: 75.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S081_bearfv_wtob15:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - wt_ob_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S082_rsicro_rsidiv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - rsi_div_bear_regular_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 454
+    test_avgR: 1.666
+    test_WR: 88.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S083_atrcro_bearfv_atrdow:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_in_15m
+    - atr_down_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 18890
+    test_avgR: 1.214
+    test_WR: 74.8
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S084_bearfv_rsidiv:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - rsi_div_bear_regular_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1204
+    test_avgR: 1.503
+    test_WR: 83.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S085_bearfv_atrcro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_in_15m
+    - atr_cross_down_15m
+    detection_tf: 15m
+    weight: 16
+    test_n: 19174
+    test_avgR: 1.209
+    test_WR: 74.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S086_rsidiv_atrcro_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_div_bear_regular_15m
+    - atr_cross_down_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 1056
+    test_avgR: 1.51
+    test_WR: 84.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S087_bearfv_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - pivot_near_R1_1D
+    detection_tf: 15m
+    weight: 18
+    test_n: 921
+    test_avgR: 1.519
+    test_WR: 84.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S088_rsicro_rsidiv_belowe:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_cross50_down_15m
+    - rsi_div_bear_regular_15m
+    - below_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 487
+    test_avgR: 1.609
+    test_WR: 86.7
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S089_bearfv_pivotb_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - pivot_bounce_down_R1_1D
+    - pivot_near_R1_1D
+    - vol_spike_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 113
+    test_avgR: 1.892
+    test_WR: 96.5
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S090_rsidiv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - rsi_div_bear_regular_15m
+    - pivot_below_PP_1W
+    detection_tf: 15m
+    weight: 17
+    test_n: 3234
+    test_avgR: 1.338
+    test_WR: 79.2
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S091_pivotn_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_near_R1_1D
+    - bear_fvg_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 110
+    test_avgR: 1.889
+    test_WR: 96.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S092_wtob15_pivotb_pivotb:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - wt_ob_15m
+    - pivot_bounce_down_R1_1D
+    - pivot_below_PP_1W
+    detection_tf: 15m
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S093_bearfv_rsiob1_pivotb:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - rsi_ob_15m
+    - pivot_bounce_down_R1_1D
+    detection_tf: 15m
+    weight: 19
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S094_pivotn_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - pivot_near_R1_1D
+    - pivot_bounce_down_R1_1D
+    detection_tf: 4h
+    weight: 17
+    test_n: 3928
+    test_avgR: 1.318
+    test_WR: 77.4
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S095_atrcro_bearfv_rsicro:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_15m
+    - rsi_cross50_down_15m
+    - rsi_div_bear_hidden_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 166
+    test_avgR: 1.757
+    test_WR: 94.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S096_atrcro_pivotn:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - pivot_near_R1_1D
+    detection_tf: 15m
+    weight: 17
+    test_n: 940
+    test_avgR: 1.484
+    test_WR: 82.9
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S097_wtob15_ema50b:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - wt_ob_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S098_wtob15_pivotb:
+    enabled: false
+    direction: SHORT
+    anchor_factors:
+    - wt_ob_15m
+    - pivot_bounce_down_R1_1D
+    detection_tf: 15m
+    weight: 18
+    test_n: 0
+    test_avgR: 0.0
+    test_WR: 0.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S099_atrcro_bearfv_pivotb:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - atr_cross_down_15m
+    - bear_fvg_15m
+    - pivot_bounce_down_S1_1D
+    - rsi_cross50_down_15m
+    detection_tf: 15m
+    weight: 19
+    test_n: 176
+    test_avgR: 1.748
+    test_WR: 92.0
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
+  DS_S100_bearfv_ema50b:
+    enabled: true
+    direction: SHORT
+    anchor_factors:
+    - bear_fvg_15m
+    - ema50_below_ema200_15m
+    detection_tf: 15m
+    weight: 15
+    test_n: 45292
+    test_avgR: 1.086
+    test_WR: 71.3
+    fallback_tp_r: 2.0
+    tp_strategy: no_trail
+    time_exit_hours: 24
+    source: DS-316 LTF-15m nested
