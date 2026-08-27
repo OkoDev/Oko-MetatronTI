@@ -389,7 +389,12 @@ class BingXClient:
             resp = await r.json()
         # DEV-145 авто-ресинхронизация: при timestamp drift ресинхронизируем и ретраим
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
-            logger.warning("[BingXClient] timestamp is invalid — ресинхронизация (force) и retry")
+            # 17.08 ПРИБОР: сообщение было захардкожено и resp выбрасывался → 8 месяцев неясно,
+            # на что мы вообще реагируем. Замер того же дня: РЕАЛЬНЫЙ сдвиг часов даёт 100421
+            # («Null timestamp or timestamp mismatch»), а НЕ 109400, и дрейф часов = −78мс.
+            # Значит 109400 — что-то другое. Печатаем путь, msg и исход ретрая.
+            logger.warning("[BingXClient] %s → code=109400 msg=%r (offset_ms=%d) — resync+retry",
+                           path, str(resp.get("msg", ""))[:120], self._time_offset_ms)
             await self.sync_time(force=True)
             p["timestamp"] = self._ts()
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
@@ -398,6 +403,8 @@ class BingXClient:
             async with s.get(url2, headers={"X-BX-APIKEY": self._api_key},
                              timeout=aiohttp.ClientTimeout(total=30)) as r:
                 resp = await r.json()
+            logger.warning("[BingXClient] %s retry → code=%s msg=%r", path,
+                           resp.get("code"), str(resp.get("msg", ""))[:120])
         self._maybe_set_ban(resp)  # ARCH-96 Ф1: бан → глобальная пауза
         return resp
 
@@ -421,7 +428,8 @@ class BingXClient:
             resp = await r.json()
         # 27.05.2026: timestamp drift retry — асимметрия с GET (там был, в POST нет → 2 wl_breach в SIM)
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
-            logger.warning("[BingXClient] POST timestamp is invalid — ресинхронизация (force) и retry")
+            logger.warning("[BingXClient] POST %s → code=109400 msg=%r — resync+retry",
+                           path, str(resp.get("msg", ""))[:120])
             await self.sync_time(force=True)
             p["timestamp"] = self._ts()
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
@@ -472,7 +480,8 @@ class BingXClient:
                             timeout=aiohttp.ClientTimeout(total=30)) as r:
             resp = await r.json()
         if resp.get("code") == 109400 and "timestamp" in str(resp.get("msg", "")).lower():
-            logger.warning("[BingXClient] DELETE timestamp is invalid — ресинхронизация (force) и retry")
+            logger.warning("[BingXClient] DELETE %s → code=109400 msg=%r — resync+retry",
+                           path, str(resp.get("msg", ""))[:120])
             await self.sync_time(force=True)
             p["timestamp"] = self._ts()
             qs2 = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
@@ -751,6 +760,12 @@ class BingXClient:
                                     one_click_on_fail: bool = False,
                                     position_id: str | None = None) -> dict:
         """Закрывает часть позиции (reduce-only MARKET).
+
+        🔴 side = сторона ОТКРЫТИЯ позиции, НЕ закрывающего ордера: "BUY" закрывает LONG,
+        "SELL" закрывает SHORT (внутри инвертируется в close_side/pos_side). Передашь сторону
+        закрытия — биржа ищет противоположную позицию и отвечает 101205 "No position to close".
+        Так было в position_sync/radar/adapter до 14.08: 1030 emergency-выходов ушли в one-click
+        (закрывает ВСЮ позицию), а фиксация у потолка не сработала ни разу из 62.
 
         position_id: точный positionId позиции (Separate Isolated / hedge). КОРЕНЬ
         101205 (12.06): без positionId биржа не находит сторону в hedge → "No position

@@ -38,14 +38,17 @@ class RrFilterGate(Gate):
 
         rr = tp_dist / sl_dist
         try:
-            min_rr = float(ctx.bot.config.get("trading.min_rr_ratio", 2.0))
             # SCALABILITY (14.06): per-source min_rr — селекция качества вместо лимита
             # позиций. ote_nested >=3R (юзер: «не пропускать ote_nested <3R»). Меньше
             # входов → RISK под контролем → sim≈биржа (нет sim-only фантомов от margin-reject).
-            _per = ctx.bot.config.get("trading.min_rr_per_strategy", {})
-            _src = getattr(ctx, "source", None)
-            if isinstance(_per, dict) and _src and _src in _per:
-                min_rr = float(_per[_src])
+            # 22.08 (реестр, фаза 2): порог резолвит РЕЕСТР по обоим именам источника —
+            # здесь читался только `source`, а в trade_simulator только `trade_mode`.
+            from core.trading.source_registry import min_rr as _min_rr
+            min_rr = _min_rr(
+                source=getattr(ctx, "source", "") or "",
+                trade_mode=str(getattr(getattr(ctx, "policy", None), "trade_mode", "") or ""),
+                cfg=ctx.bot.config,
+            )
         except Exception:
             min_rr = 2.0
 

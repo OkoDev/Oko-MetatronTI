@@ -66,7 +66,10 @@ class TradingSlTpEngine(BaseModel):
     adaptive_weights: Dict[str, Any] = Field(default_factory=dict)
 
     breakeven_activation_r: float = Field(default=1.5, ge=0.1, le=10.0)
-    min_sl_dist_pct: float = Field(default=0.5, ge=0.1, le=5.0)
+    # 13.08.2026: потолок 5.0 → 12.0. Замер на боевой базе показал, что порог 5% даёт
+    # безубыток (PF 1.06), а 4% — убыток в 5 раз меньше прежнего; упираться в 5.0 нельзя.
+    # Верхняя граница согласована с trading.max_stop_pct=12.0 — стоп шире контракта смысла не имеет.
+    min_sl_dist_pct: float = Field(default=0.5, ge=0.1, le=12.0)
     sl_limit_buffer_pct: float = Field(default=0.1, ge=0.0, le=2.0)
     max_positions: int = Field(default=50, ge=1, le=500)
     # BE-sync на биржу (DEV-40 Breakeven доезжает на биржу, bug_be_not_synced)

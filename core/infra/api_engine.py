@@ -488,11 +488,17 @@ class ApiEngine:
         self._in_flight[dedup_key] = fut
 
         try:
-            result = await self._fetch_with_retry(symbol, timeframe, limit, since)
+            # 🔴 17.08: запрашивать надо _fetch_limit, а НЕ limit. Иначе вызов с limit=3
+            # (radar_armed_loop:457 просит 1d limit=3) тянул 3 бара, а в кэш они ложились
+            # с меткой «200» → все следующие потребители 1d получали 3-4 бара вместо 200.
+            # Итог: WT на 1d считался на 4 барах и взрывался до −328 у 99% монет.
+            result = await self._fetch_with_retry(symbol, timeframe, _fetch_limit, since)
             # Любой ответ от API (даже пустой) = API доступен → success
             self._cb.record_success()
             if result is not None:
                 self._cache.set(cache_key, result, _fetch_limit)
+                if len(result) > limit:      # вызвавшему отдаём ровно то, что он просил
+                    result = result.iloc[-limit:]
             if not fut.done():
                 fut.set_result(result)
             return result.copy() if result is not None else None

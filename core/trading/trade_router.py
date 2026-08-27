@@ -26,6 +26,7 @@ from core.trading.gates.dedup_open import DedupOpenGate
 from core.trading.gates.sl_cooldown import SlCooldownGate
 from core.trading.gates.min_sl_dist import MinSlDistGate
 from core.trading.gates.rr_filter import RrFilterGate
+from core.trading.gates.loss_streak_halt import LossStreakHaltGate
 from core.trading.gates.strength_threshold import StrengthThresholdGate
 from core.trading.gates.regime_safety import RegimeSafetyGate
 from core.trading.gates.btc_market import BtcMarketGate
@@ -55,6 +56,10 @@ class TradeRouter:
             SlCooldownGate(),
             MinSlDistGate(),
             RrFilterGate(),
+            # ПРЕДОХРАНИТЕЛЬ (13.08.2026): пауза источника после серии убытков.
+            # Ставится ПОСЛЕДНИМ среди HARD — единственный ходит в БД, пусть
+            # дешёвые проверки отсеют раньше. Выключен по умолчанию (enabled: false).
+            LossStreakHaltGate(),
         ]
         # SOFT gates — аккумулируют strength_penalty
         self._soft_gates: dict[str, Gate] = {
@@ -253,6 +258,19 @@ class TradeRouter:
             _pol = ctx.policy
             risk_pct = _pol.risk_pct if getattr(_pol, "risk_pct", None) is not None else get_risk_pct(self.config)
             leverage = _pol.leverage if getattr(_pol, "leverage", None) is not None else get_leverage(self.config)
+            # 07.08 Егор: множитель риска из extra_features (кондиционеры funding/AC-режим).
+            # Основной сайзинг отложен до 20-30 чистых net+; пока ×1.5 с потолком и только
+            # там, где источник сам его выставил (bigflush15). Потолок жёсткий — защита от
+            # раздувания риска на кластере (88% сигналов приходят пачками).
+            try:
+                _rm = float((getattr(ctx, "extra_features", None) or {}).get("risk_mult") or 1.0)
+                if _rm != 1.0:
+                    # 10.08: нижняя граница 0.25 — гибрид-выход шлёт ДВЕ половины по 0.5×
+                    # (одна на TP1R, вторая раннером под TSL). Верх по-прежнему под потолком.
+                    _rm = max(0.25, min(_rm, float(self.config.get("trading.risk_mult_cap", 1.5))))
+                    risk_pct = round(risk_pct * _rm, 4)
+            except Exception:
+                pass
             qty = self.bot.position_sizer.calc_qty(
                 entry_price=entry, sl_price=sl,
                 deposit=deposit, risk_pct=risk_pct, leverage=leverage,
@@ -268,6 +286,7 @@ class TradeRouter:
                 leverage=leverage,   # per-source плечо → биржа (кламп к max пары внутри)
                 entry_order_type=getattr(_pol, "entry_order_type", "MARKET"),  # oko_ote → LIMIT (Фаза 1)
                 lev_set_to_max=getattr(_pol, "lev_set_to_max", True),  # radar → False (уважать 20×)
+                source=ctx.source,   # 20.08: per-strategy min_sl_dist внутри open_bracket
             )
             if not br.success:
                 if br.error != "position_already_open":
@@ -364,9 +383,17 @@ class TradeRouter:
             db_path = self.bot.trade_simulator.db_path
             with sqlite3.connect(db_path) as conn:
                 conn.row_factory = sqlite3.Row
+                # 🔴 20.08: PENDING_ENTRY ОБЯЗАН попадать в снимок. Раньше брали только
+                # OPEN, и выставленная лимитка была НЕВИДИМА для dedup_open: другой
+                # источник открывал MARKET по тому же символу и стороне, а чекер лимиток
+                # (`radar_armed_loop._check_pending`) видел позицию в агрегате и
+                # засчитывал ЧУЖУЮ позицию как наш фил — записывал чужую цену входа,
+                # привязывал чужой position_id, после чего `repair_missing_sl` ставил
+                # наш стоп на чужую позицию. Своя лимитка при этом оставалась на бирже
+                # без надзора: строка уже OPEN, TTL её не отменит.
                 rows = conn.execute(
                     "SELECT id, symbol, direction, features_json FROM simulated_trades "
-                    "WHERE status=? LIMIT 500",
+                    "WHERE status IN (?, 'PENDING_ENTRY') LIMIT 500",
                     (STATUS_OPEN,),
                 ).fetchall()
             return [dict(r) for r in rows]

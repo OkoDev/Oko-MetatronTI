@@ -446,13 +446,13 @@ class TradeSimulator:
 
             # RR-фильтр: при WR=40% нужен RR≥2.0 для положительного EV
             try:
-                from core.infra.config_loader import config as _cfg
-                MIN_RR = float(_cfg.get("trading.min_rr_ratio", 2.0))
                 # per-strategy override (симметрично router gate rr_filter): trade_mode → свой порог.
                 # OKO-OTE (ближний магнит RR<1) использует min_rr_per_strategy.oko_ote.
-                _per_rr = _cfg.get("trading.min_rr_per_strategy", {})
-                if isinstance(_per_rr, dict) and trade_mode and trade_mode in _per_rr:
-                    MIN_RR = float(_per_rr[trade_mode])
+                # 22.08 (реестр, фаза 2): резолвит РЕЕСТР — здесь известен trade_mode,
+                # в роутере source; у `wt_sideways` это РАЗНЫЕ имена.
+                from core.trading.source_registry import min_rr as _min_rr
+                _src_rr = (extra_features or {}).get("signal_type_override") or ""
+                MIN_RR = _min_rr(source=str(_src_rr), trade_mode=str(trade_mode or ""))
             except Exception:
                 MIN_RR = 2.0
             # DEV-164: guard вынесен ДО проверки take_profit — не зависит от наличия TP
@@ -472,8 +472,20 @@ class TradeSimulator:
                     return None
                 if _sl_dist_raw > 0:
                     try:
-                        from core.infra.config_loader import config as _cfg_sl
-                        MIN_SL_DIST_PCT = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.5))
+                        # 🔴 20.08: per-strategy override — СИММЕТРИЧНО RR-фильтру выше и
+                        # router-гейту min_sl_dist. Раньше здесь читался ТОЛЬКО глобальный
+                        # порог, и `trading.min_sl_dist_per_strategy` действовал лишь в
+                        # роутере. Итог: impulse_fib (стоп 1.5-3.2% ПО КОНСТРУКЦИИ) прошёл
+                        # роутер и был молча зарезан здесь — 8 сигналов из 8, 0 сделок.
+                        # Тот же механизм задевает rangefade/rangefade4h (порог 0.25).
+                        # 22.08 (реестр, фаза 2): ключ резолвит РЕЕСТР. Здесь известен
+                        # только trade_mode; у `wt_sideways` он не равен source, и порог,
+                        # вписанный под именем источника, это место раньше не видело.
+                        from core.trading.source_registry import min_sl_dist_pct as _msd
+                        _src_sl = (extra_features or {}).get("signal_type_override") or ""
+                        MIN_SL_DIST_PCT = _msd(
+                            source=str(_src_sl), trade_mode=str(trade_mode or ""),
+                        )
                     except Exception:
                         MIN_SL_DIST_PCT = 0.5
                     _sl_dist_pct = _sl_dist_raw / float(entry) * 100
@@ -648,6 +660,13 @@ class TradeSimulator:
             smc_snap = metadata.get("smc_snap") if metadata else None
             if smc_snap and isinstance(smc_snap, dict):
                 features["smc_snap"] = smc_snap
+            # 12.08: сами ВЕРДИКТЫ не сохранялись — только снимки. Из-за этого контрфакт
+            # verdict_gate пришлось считать пересчётом derive_wt_verdict по wt_snap.
+            # Пишем исход решения, а не только вход в него.
+            for _vk in ("wt_verdict", "smc_verdict", "verdict_gate"):
+                _vv = metadata.get(_vk) if metadata else None
+                if _vv:
+                    features[_vk] = _vv
             # DEV-137: reversal_mode shadow
             rev_mode = metadata.get("reversal_mode") if metadata else None
             if rev_mode:
@@ -767,8 +786,22 @@ class TradeSimulator:
                     # ARCH-128: OTE исключён из RR-cap. runner = HTF-target (далёкий),
                     # частичный TP1=1R фиксирует 50%, остаток бежит до цели + TSL. Cap до 3R
                     # при компактном SL (0.2-0.3%) давал мизерный TP в % → срезал прибыль cont.
-                    _is_ote_64a = bool(extra_features and
-                                       extra_features.get("signal_type_override") == "ote_nested")
+                    # 🔴 20.08: список исключений вынесен в конфиг. impulse_fib — тот же
+                    # случай, что ote_nested: компактный стоп (1.5-3.2%) + ДАЛЬНЯЯ цель по
+                    # конструкции (RR 6-13). Замер на боевой клетке (89 монет, 707 сделок):
+                    # цель фибо −1.618 против обрезанной до RR 3.0 → PF 2.80 против 2.19,
+                    # OOS×OOS 1.90 против 1.46. Кэп поднимает WR (36.9%→40.3%) и втрое
+                    # увеличивает долю достигнутых целей, но денег даёт МЕНЬШЕ — закон
+                    # «высокий WR может быть беднее» ([[backlog_impulse_session_19_08]]).
+                    # 22.08 (реестр, фаза 2): членство резолвит РЕЕСТР — по обоим именам
+                    # источника, чтобы список не промахнулся мимо имени в конфиге.
+                    from core.trading.source_registry import in_list as _in_list
+                    _is_ote_64a = _in_list(
+                        "trading.sl_management.rr_cap_exempt",
+                        source=str((extra_features or {}).get("signal_type_override") or ""),
+                        trade_mode=str(trade_mode or ""),
+                        default=["ote_nested", "impulse_fib"],
+                    )
                     if rr > _max_rr_64a and not _is_ote_64a:
                         take_profit = float(entry) + sign * sl_dist * _max_rr_64a
                         tp_dist = abs(float(take_profit) - float(entry))
@@ -845,7 +878,26 @@ class TradeSimulator:
             # DEV-124: SINGLE +1866R vs DUAL_TP/TSL -88.5R. Компактный SL → 1R=свеча,
             # частичный фикс убивает идею. Вся позиция под TSL: активируется после +1R
             # (BE@0.5R защищает раньше), ведёт до конца. take_profit=runner (далёкий потолок).
-            if extra_features and extra_features.get("signal_type_override") == "ote_nested":
+            # 🔴 20.08: список ОДНОЦЕЛЕВЫХ источников вынесен в конфиг. impulse_fib попал в
+            # DUAL_TP по формальному признаку RR>=2.0 (у него RR 7-13 ПО КОНСТРУКЦИИ), и это
+            # ломало ДВЕ вещи разом:
+            #   1. `sim_exit` перестаёт видеть TP: условие hit_tp требует tp1_price IS NULL,
+            #      а DUAL_TP его заполняет → детект становится ОДНОСТОРОННИМ (стоп ловится,
+            #      цель нет), и позиция уходит в аварийное закрытие по рынку по таймауту
+            #      live-guard. Именно так закрылась KAIA #58367: 0.02566 вместо цели 0.0310.
+            #   2. `trade_writer` считает итог как 0.1*R(tp1)+0.9*R(exit), хотя частичной
+            #      фиксации на бирже НЕ происходит (`close_partial` не вызывается ниоткуда) —
+            #      записанный R становится смесью, которой в реальности не было.
+            # Замер механики сделан на ОДНОЙ цели без частичной фиксации.
+            # 22.08 (реестр, фаза 2): членство резолвит РЕЕСТР по обоим именам источника.
+            from core.trading.source_registry import in_list as _in_list_tp
+            _is_single_tp = _in_list_tp(
+                "trading.single_tp_sources",
+                source=str((extra_features or {}).get("signal_type_override") or ""),
+                trade_mode=str(trade_mode or ""),
+                default=["ote_nested", "impulse_fib"],
+            )
+            if _is_single_tp:
                 strategy_type = "SINGLE"
                 tp1_price = None
                 tp2_price = None
@@ -1930,10 +1982,15 @@ class TradeSimulator:
                     if _trade_regime == "RANGE":
                         _tsl_act_r = float(_cfg_tsl.get("trading.tsl_activation_r_range", tsl_activation_r))
                     # Рой-консенсус: per-strategy пороги (pivot=0.5R, wt_b=0.8R, wt_signal=1.0R, atr_change=1.5R)
+                    # 22.08 (реестр, фаза 2): ключ резолвит РЕЕСТР. Здесь известно только
+                    # имя из БД (`signal_type`); порог, объявленный под вторым именем
+                    # источника (`sideways` против `wt_sideways`), раньше был невидим.
+                    from core.trading.source_registry import per_strategy as _per_reg
                     _sig_type_trade = trade.get("signal_type", "")
-                    _per_strategy_tsl = _cfg_tsl.get("trading.tsl_activation_r_per_strategy", {})
-                    if _sig_type_trade and isinstance(_per_strategy_tsl, dict) and _sig_type_trade in _per_strategy_tsl:
-                        _tsl_act_r = float(_per_strategy_tsl[_sig_type_trade])
+                    _hit_tsl = _per_reg("tsl_activation_r_per_strategy", source=str(_sig_type_trade or ""),
+                                        label="tsl_activation_r")
+                    if _hit_tsl is not None:
+                        _tsl_act_r = _hit_tsl
                 except Exception:
                     pass
                 _tsl_gate = (current_r is not None and current_r >= _tsl_act_r)

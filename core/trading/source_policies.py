@@ -46,6 +46,20 @@ class SourcePolicy:
     # импульсная торговля + гэп мимо SL достаёт близкую ликвидацию высокого плеча.
     lev_set_to_max: bool = True
 
+    # ── РЕЕСТР СТРАТЕГИЙ, фаза 1 (21.08.2026): поля ЧИТАЮТСЯ, но ЕЩЁ НЕ ПРИМЕНЯЮТСЯ.
+    # Повод: к свойствам стратегии код ходит по ЧЕТЫРЁМ ключам (ctx.source / trade_mode /
+    # extra_features["signal_type_override"] / trade["signal_type"]), и у них РАЗНЫЕ
+    # запасные значения (min_sl_dist: router 0.5, simulator 0.5, order_manager 0.1).
+    # У impulse_fib ключи совпали СЛУЧАЙНО; у wt_sideways уже расходятся
+    # (source=wt_sideways, trade_mode=sideways) — мина ждёт. См. scripts/strategy_preflight.py.
+    # Здесь собираем ЕДИНЫЙ вид по ключу `source`; переключение потребителей — фаза 2,
+    # по одному, с замером до/после. None = «не задано, работает глобальный порог».
+    min_sl_dist_pct: float | None = None
+    min_rr: float | None = None
+    tsl_activation_r: float | None = None
+    tp_mode: str = "DUAL"          # SINGLE, если источник в trading.single_tp_sources
+    rr_cap_exempt: bool = False    # освобождён ли от обрезки RR (DEV-64A)
+
     @classmethod
     def from_config(cls, config: Any, source: str) -> "SourcePolicy":
         """
@@ -66,6 +80,18 @@ class SourcePolicy:
 
         _lev = _pick("leverage", None)
         _risk = _pick("risk_pct", None)
+        # ── реестр, фаза 1: собираем свойства по ЕДИНОМУ ключу `source` ──
+        def _per(section: str) -> Any:
+            tbl = config.get(f"trading.{section}", {}) or {}
+            return tbl.get(source) if isinstance(tbl, dict) else None
+
+        _single = config.get("trading.single_tp_sources") or ["ote_nested", "impulse_fib"]
+        _exempt = (config.get("trading.sl_management.rr_cap_exempt")
+                   or ["ote_nested", "impulse_fib"])
+        _msd = _per("min_sl_dist_per_strategy")
+        _mrr = _per("min_rr_per_strategy")
+        _tsl = _per("tsl_activation_r_per_strategy")
+
         return cls(
             source=source,
             min_strength=int(_pick("min_strength", 50)),
@@ -76,4 +102,9 @@ class SourcePolicy:
             risk_pct=float(_risk) if _risk is not None else None,
             entry_order_type=str(_pick("entry_order_type", "MARKET")).upper(),
             lev_set_to_max=bool(_pick("lev_set_to_max", True)),
+            min_sl_dist_pct=None if _msd is None else float(_msd),
+            min_rr=None if _mrr is None else float(_mrr),
+            tsl_activation_r=None if _tsl is None else float(_tsl),
+            tp_mode="SINGLE" if source in _single else "DUAL",
+            rr_cap_exempt=source in _exempt,
         )

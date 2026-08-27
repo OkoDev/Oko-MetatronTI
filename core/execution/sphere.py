@@ -87,13 +87,32 @@ class ExecutionSphere:
         return await self._adapter.place_bracket(replace(req, account=account))
 
     # ── CLOSE (авторитетная команда; реальный флэт подтвердит WS pa=0) ─────
-    async def close(self, position_id: str, reason: str = "manual") -> CloseResult:
+    async def close(self, position_id: str, reason: str = "manual", *,
+                    symbol: str = "", side: str = "", qty: float = 0.0,
+                    account: int | None = None) -> CloseResult:
+        """Закрыть позицию. Store — основной путь, биржа — фолбэк.
+
+        🔴 20.08: store наполняется ТОЛЬКО из WS-событий и одного cold_start при запуске.
+        Позиция, открытая до старта или пропущенная при разрыве WS, в него не попадает —
+        и закрыть её было НЕЧЕМ: 53 975 отказов «position not found in store» в логе,
+        записи висели до 22 суток при TTL 2. Для impulse_fib это критично: выход по
+        времени даёт 37% филов и три четверти прибыли механики.
+
+        Фолбэк зовёт `close_reduce_only`, который резолвит позицию НАПРЯМУЮ С БИРЖИ
+        (`_resolve_position_client`), минуя память. Вызывающему достаточно знать
+        symbol и side — они есть в БД.
+        """
         pos = self._store.by_position_id(position_id)
-        if pos is None:
-            return CloseResult(success=False, symbol="", position_id=position_id,
-                               error="position not found in store")
-        return await self._adapter.close_reduce_only(pos.symbol, pos.side, pos.qty,
-                                                      pos.account, position_id)
+        if pos is not None:
+            return await self._adapter.close_reduce_only(pos.symbol, pos.side, pos.qty,
+                                                          pos.account, position_id)
+        if symbol and side:
+            logger.info("[Sphere] close(%s): нет в store → фолбэк на биржу %s %s",
+                        position_id, symbol, side)
+            return await self._adapter.close_reduce_only(symbol, str(side).upper(), qty,
+                                                          account, position_id)
+        return CloseResult(success=False, symbol="", position_id=position_id,
+                           error="position not found in store")
 
     # ── WS-ИСТИНА (единственный вход для всех событий всех аккаунтов) ──────
     async def on_event(self, account: int, ev: ExecEvent) -> Optional[CloseIntent]:

@@ -208,12 +208,21 @@ class PerformanceEngine:
             era_params = (data_era,)
 
         # DEV-190: tsl_activated для скрытых TSL; be_activated для нейтрала безубытка
+        # 🔴 22.08: исключаем сделки, чей результат РАЗОШЁЛСЯ с income-леджером биржи
+        # (`ledger_audit.py --mark`). На них цена выхода писалась не из факта исполнения,
+        # а из цены момента обнаружения закрытия: у 45 сделок из 939 знак результата
+        # ПРОТИВОПОЛОЖЕН биржевому (MMT: стоп −2.6%, в БД записано −85%).
+        # Адаптивные веса учатся именно здесь — кормить их заведомо кривым PnL нельзя.
+        # Тот же фильтр стоит в `forward_machine.py` и `validate_ds_features.py`.
+        # Масштаб честно: 178 из 17 192 (1.0%) — эффект на веса малый, но эти сделки
+        # ядовиты качественно (перевёрнутый знак), а не количественно.
         sql = f"""
             SELECT signal_type, status, R_multiple, profit_pct, tsl_activated, be_activated
             FROM simulated_trades
             WHERE status IN ('TP','SL','TSL','EXPIRED')
               AND R_multiple IS NOT NULL
               AND execution_mode='VST'
+              AND (features_json IS NULL OR features_json NOT LIKE '%ledger_mismatch%')
               {era_clause}
             ORDER BY closed_at ASC
         """

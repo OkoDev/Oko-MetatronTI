@@ -288,13 +288,16 @@ async def _emergency_close_check(bot, sym: str, trade: dict, position: dict) -> 
             return False
         # multiacct-safe: client аккаунта позиции + positionId (КОРЕНЬ 101205); не основной acc
         client, _pid = await order_mgr._resolve_position_client(sym, direction)
-        side_close = "SELL" if direction == "LONG" else "BUY"
+        # 🔴 14.08: close_position_market ждёт сторону ОТКРЫТИЯ (BUY = закрыть LONG) — внутри сам
+        # инвертирует. Раньше сюда шла сторона закрытия → биржа искала противоположную позицию,
+        # отвечала 101205 и выход спасался one-click'ом (закрывал ВСЮ позицию по символу).
+        side_open = "BUY" if direction == "LONG" else "SELL"
         logger.warning(
             "[DEV-185.2][EMERGENCY][STOP_LIMIT_EMERGENCY_FILL] %s #%d %s: "
             "overshoot %.2f%% за %.0fс — market close qty=%s",
             sym, trade_id, direction, overshoot_pct, elapsed, qty,
         )
-        resp = await client.close_position_market(sym, side_close, qty, position_id=_pid)
+        resp = await client.close_position_market(sym, side_open, qty, position_id=_pid)
         code = resp.get("code", 0) if isinstance(resp, dict) else 0
         if code != 0:
             logger.warning(
@@ -471,10 +474,10 @@ async def sync_positions(bot) -> None:
                     pp.symbol_our, pp.side, pp.margin, pp.qty,
                 )
                 try:
-                    close_side = "SELL" if pp.side == "LONG" else "BUY"
+                    side_open = "BUY" if pp.side == "LONG" else "SELL"   # сторона ОТКРЫТИЯ (14.08)
                     # multiacct-safe: client аккаунта позиции + positionId (КОРЕНЬ 101205)
                     _dcli, _dpid = await order_mgr._resolve_position_client(pp.symbol_our, pp.side)
-                    resp = await _dcli.close_position_market(pp.symbol_our, close_side, pp.qty,
+                    resp = await _dcli.close_position_market(pp.symbol_our, side_open, pp.qty,
                                                              position_id=_dpid)
                     if resp.get("code", 0) != 0:
                         resp2 = await _dcli.close_position_one_click(pp.symbol_our)
@@ -587,7 +590,7 @@ async def sync_positions(bot) -> None:
         # EXEC-SIM-SPLIT шаг 2 (консилиум 13.07): VST-time-exit reconciliation.
         # У SIM есть EXPIRED-путь, у VST не было НИЧЕГО → BREV #41641 висел 9+ дней.
         try:
-            await _vst_time_exit_check(bot, open_sim)
+            await _vst_time_exit_check(bot, open_sim, open_pairs)
         except Exception as _tte:
             logger.debug("[VST-TIME-EXIT] error: %s", _tte)
 
@@ -841,7 +844,7 @@ async def sync_positions(bot) -> None:
         logger.warning("[POSITION-SYNC] ошибка: %s", e)
 
 
-async def _vst_time_exit_check(bot, open_sim: list) -> None:
+async def _vst_time_exit_check(bot, open_sim: list, open_pairs: dict | None = None) -> None:
     """EXEC-SIM-SPLIT шаг 2 (консилиум 13.07): тайм-выход для VST-сделок (reconciliation).
 
     У SIM есть EXPIRED, у VST не было ничего → BREV #41641 висел 9+ дней. Проверка возраста
@@ -895,15 +898,98 @@ async def _vst_time_exit_check(bot, open_sim: list) -> None:
         if enabled:
             sphere = getattr(bot, "_exec_sphere", None)
             pid = t.get("position_id")
+            # 05.08: 7 из 17 живых VST-сделок были БЕЗ position_id (WS-фил не проставил) →
+            # тайм-выход физически не мог их закрыть, ASTER/APEX висели 6-7 дней при TTL 5.
+            # Восстанавливаем pid с биржи по символу перед отказом.
+            if sphere is not None and not pid:
+                try:
+                    _sym = str(t.get("symbol") or "")
+                    _dir = str(t.get("direction") or "").upper()
+                    _router = getattr(bot, "trade_router", None)
+                    _clients = (getattr(_router, "_clients", None) or {}) if _router else {}
+                    for _cl in _clients.values():
+                        for _p in (await _cl.get_positions() or []):
+                            if str(_p.get("symbol")) != _sym:
+                                continue
+                            _pside = str(_p.get("positionSide") or _p.get("side") or "").upper()
+                            if _dir and _pside and not _pside.startswith(_dir[:1]):
+                                continue
+                            pid = _p.get("positionId") or _p.get("position_id")
+                            if pid:
+                                logger.info("[VST-TIME-EXIT] #%s pid восстановлен с биржи: %s", tid, pid)
+                                break
+                        if pid:
+                            break
+                except Exception as _pe:
+                    logger.debug("[VST-TIME-EXIT] #%s pid-recovery: %s", tid, _pe)
             if sphere is not None and pid:
                 try:
-                    res = await sphere.close(str(pid), reason="time_exit")
+                    # 20.08: передаём symbol/side из БД — если позиции нет в store,
+                    # Sphere закроет её напрямую с биржи (см. sphere.close).
+                    res = await sphere.close(str(pid), reason="time_exit",
+                                             symbol=str(t.get("symbol") or ""),
+                                             side=str(t.get("direction") or "").upper(),
+                                             qty=float(t.get("qty") or 0) or 0.0)
                     logger.info("[VST-TIME-EXIT] #%s close(pid=%s) → success=%s %s", tid, pid,
                                 getattr(res, "success", None), getattr(res, "error", "") or "")
+                    # 🔴 20.08 ВТОРАЯ ПОЛОВИНА ФИКСА. Команда ушла, но запись в БД закрывает
+                    # ШТАТНЫЙ WS-путь (pa=0). Если позиции на бирже УЖЕ НЕТ (фантом), события
+                    # не будет никогда — запись останется OPEN навсегда, съедая слот кэпа и
+                    # блокируя символ. Замер 20.08: 8 записей OPEN, на бирже 0 позиций.
+                    # Поэтому: команда успешна И позиции в агрегате нет → закрываем сами.
+                    if getattr(res, "success", False):
+                        try:
+                            from core.exchange.position_parser import parse_positions
+                            _om = getattr(bot, "order_executor", None)
+                            _live = set()
+                            if _om is not None:
+                                _om._invalidate_positions()
+                                for _pp in parse_positions(await _om._get_positions_cached()):
+                                    if getattr(_pp, "qty", 0) > 0:
+                                        _live.add((_pp.symbol_our, _pp.side))
+                            _key = (str(t.get("symbol") or ""), str(t.get("direction") or "").upper())
+                            if _key not in _live:
+                                _px = float(t.get("current_price") or t.get("entry_price") or 0)
+                                _sim = getattr(bot, "trade_simulator", None)
+                                if _sim is not None and _px > 0:
+                                    _sim.close_trade(int(tid), "EXPIRED", _px)
+                                    logger.info("[VST-TIME-EXIT] #%s позиции на бирже НЕТ → "
+                                                "запись закрыта EXPIRED @ %.6g", tid, _px)
+                        except Exception as _fe:               # noqa: BLE001
+                            logger.warning("[VST-TIME-EXIT] #%s post-close reconcile: %s", tid, _fe)
                 except Exception as _ce:
                     logger.warning("[VST-TIME-EXIT] #%s close error: %s", tid, _ce)
             else:
-                logger.warning("[VST-TIME-EXIT] #%s enabled, но нет sphere/pid — пропуск", tid)
+                # 🔴 25.08 ДЫРА ЛАЙФЦИКЛА (ds_advisor #54965 висел 21 день, WARNING в лог
+                # каждую минуту). Запись OPEN с exchange_order_id, но БЕЗ position_id и
+                # БЕЗ позиции на бирже невидима ВСЕМ трём механизмам:
+                #   · close-by-price — выключен при sphere_cutover;
+                #   · sphere/reconcile_watchdog — работает по своему store, куда запись
+                #     без WS-фила не попала;
+                #   · time_exit — упирался ровно сюда и только логировал.
+                # Если позиции на бирже НЕТ, закрывать на бирже нечего, и БД остаётся
+                # единственным путём. Оговорка «этот код БД не трогает» верна для ЖИВОЙ
+                # позиции (её закроет WS-путь); у зомби живой позиции не существует.
+                _sym_z = str(t.get("symbol") or "")
+                _dir_z = str(t.get("direction") or "LONG").upper()
+                if open_pairs is None or (_sym_z, _dir_z) in open_pairs:
+                    logger.warning("[VST-TIME-EXIT] #%s enabled, но нет sphere/pid — пропуск", tid)
+                    continue
+                _px = None
+                try:
+                    _px = await bot.data_collector.get_current_price(_sym_z)
+                except Exception:                                # noqa: BLE001
+                    pass
+                _px = float(_px or t.get("actual_entry_price") or t.get("entry_price") or 0)
+                if _px <= 0:
+                    logger.warning("[VST-TIME-EXIT] #%s зомби, но цена неизвестна — не гадаем", tid)
+                    continue
+                try:
+                    _ok = bot.trade_simulator.close_trade(int(tid), "EXPIRED", _px)
+                    logger.warning("[VST-TIME-EXIT] #%s %s ЗОМБИ (age=%.1fд · нет pid · нет позиции "
+                                   "на бирже) → EXPIRED @ %.8g (ok=%s)", tid, _sym_z, age_d, _px, _ok)
+                except Exception as _ze:                         # noqa: BLE001
+                    logger.warning("[VST-TIME-EXIT] #%s закрытие зомби: %s", tid, _ze)
 
 
 async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
@@ -938,6 +1024,33 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
                 tracked_pairs.add((_sym_pd, (_dir_pd or "").upper()))
     except Exception as _pde:
         logger.debug("[D-070] pending-entry fetch: %s", _pde)
+
+    # РУЧНЫЕ ПОЗИЦИИ с монитора :8010 (Егор 14.08) — открыты человеком с графика, бот ими НЕ
+    # управляет и не считает их рассинхроном. Держим их в отдельной таблице, а не в
+    # simulated_trades: иначе TSL-updater переставил бы стоп, а форвард-табло съело бы чужую
+    # статистику. Пары, которых уже нет на бирже, закрываем здесь же — таблица не залипает.
+    try:
+        import sqlite3 as _sq_mp
+        _live_pairs = set()
+        for _p_mp in open_on_exchange.values():
+            _pp_mp = parse_position(_p_mp)
+            if _pp_mp is not None:
+                _live_pairs.add((_pp_mp.symbol_our, _pp_mp.side))
+        with _sq_mp.connect(bot.trade_simulator.db_path, timeout=5) as _c_mp:
+            _rows_mp = _c_mp.execute(
+                "SELECT id, symbol, direction FROM manual_positions WHERE closed_at IS NULL"
+            ).fetchall()
+            for _id_mp, _sym_mp, _dir_mp in _rows_mp:
+                _pair_mp = (_sym_mp, (_dir_mp or "").upper())
+                if _pair_mp in _live_pairs:
+                    tracked_pairs.add(_pair_mp)
+                else:
+                    _c_mp.execute("UPDATE manual_positions SET closed_at=? WHERE id=?",
+                                  (int(__import__("time").time()), _id_mp))
+                    logger.info("[D-070] ручная позиция %s %s закрыта на бирже → снята с учёта",
+                                _sym_mp, _dir_mp)
+    except Exception as _mpe:
+        logger.debug("[D-070] manual_positions fetch: %s", _mpe)
 
     import time as _t
     state = getattr(bot, "_orphan_alert_last", None)
@@ -1001,7 +1114,7 @@ async def _detect_orphans(bot, open_on_exchange: dict, open_sim: list) -> None:
             else:
                 try:
                     # account-aware (КОРЕНЬ 101205) + one_click_on_fail (символ без DB-OPEN → брата нет)
-                    _ac_side = "SELL" if pp.side == "LONG" else "BUY"
+                    _ac_side = "BUY" if pp.side == "LONG" else "SELL"   # сторона ОТКРЫТИЯ (14.08)
                     _ac_cli, _ac_pid = await _ac_om._resolve_position_client(pp.symbol_our, pp.side)
                     _ac_resp = await _ac_cli.close_position_market(
                         pp.symbol_our, _ac_side, abs(pp.qty), one_click_on_fail=True, position_id=_ac_pid)

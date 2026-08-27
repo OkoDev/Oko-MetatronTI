@@ -86,6 +86,7 @@ _COMBINATOR_FLAG_SIDE = {
     'bull_ob': 'LONG', 'bear_ob': 'SHORT',
     'bull_ob_near': 'LONG', 'bear_ob_near': 'SHORT',
     'bull_ob_mitigated': 'LONG', 'bear_ob_mitigated': 'SHORT',
+    'bull_breaker': 'LONG', 'bear_breaker': 'SHORT',
     'ote_long': 'LONG', 'ote_short': 'SHORT',
     'premium': 'SHORT', 'discount': 'LONG',
     'bull_fvg_overlap': 'LONG', 'bear_fvg_overlap': 'SHORT',
@@ -540,6 +541,7 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
                     _br = await _oe.open_bracket(
                         symbol=symbol, direction=direction,
                         entry_price=current_price, sl=sl, tp1=tp, qty=_qty,
+                        source="wl_breach",   # 22.08: без source per-strategy порог тут не виден
                     )
                     if _br.success:
                         logger.info("[WL-BREACH][%s] %s %s qty=%.6f order_id=%s",
@@ -945,12 +947,24 @@ async def _execute_atr_change_signal(
             if _s2_setup is not None:
                 try:
                     _s2_max = int(bot.config.get("signal_quality.atr_s2_max_positions", 5))
+                    # 🔴 22.08 ДВА ЛИМИТА (DEV-239): позиции = рыночный риск, заявки = резерв
+                    # маржи. Вход у atr_s2 ЛИМИТНЫЙ → ожидающая заявка занимала слот риска,
+                    # не будучи в рынке ([[cap_pending_not_risk_slot]]).
+                    # 🔑 Ключ ОСТАЁТСЯ по features_json: у atr_s2 нет ни одной записи в БД,
+                    # проверить соответствие signal_type нечем, а проверка тут fail-closed —
+                    # промах ключа открыл бы кэп настежь. Унификация ключа = DEV-238.
+                    _s2_max_pend = int(bot.config.get("signal_quality.atr_s2_max_pending", _s2_max))
                     with __import__("sqlite3").connect(bot.trade_simulator.db_path, timeout=5) as _s2c:
-                        _s2_open = _s2c.execute(
-                            "SELECT COUNT(*) FROM simulated_trades WHERE status IN ('OPEN','PENDING_ENTRY') "
-                            "AND features_json LIKE '%\"trade_mode\": \"atr_s2\"%'").fetchone()[0]
-                    if _s2_open >= _s2_max:
-                        logger.info("[ATR-S2] %s SKIP: max_positions %d/%d", symbol, _s2_open, _s2_max)
+                        _s2_rows = dict(_s2c.execute(
+                            "SELECT status,COUNT(*) FROM simulated_trades WHERE status IN "
+                            "('OPEN','PENDING_ENTRY') "
+                            "AND features_json LIKE '%\"trade_mode\": \"atr_s2\"%' "
+                            "GROUP BY status").fetchall())
+                    _s2_open = _s2_rows.get("OPEN", 0)
+                    _s2_pend = _s2_rows.get("PENDING_ENTRY", 0)
+                    if _s2_open >= _s2_max or _s2_pend >= _s2_max_pend:
+                        logger.info("[ATR-S2] %s SKIP: позиций %d/%d · заявок %d/%d",
+                                    symbol, _s2_open, _s2_max, _s2_pend, _s2_max_pend)
                         _s2_setup = None
                 except Exception:
                     _s2_setup = None                  # БД недоступна → fail-closed (не открываем)
@@ -1232,6 +1246,7 @@ async def _execute_atr_change_signal(
                             _br = await _oe.open_bracket(
                                 symbol=symbol, direction=side,
                                 entry_price=entry, sl=sl, tp1=tp, tp2=None, qty=_qty,
+                                source="atr_change",   # 22.08: см. wl_breach выше
                             )
                             if not _br.success:
                                 if _br.error != "position_already_open":
@@ -1355,6 +1370,9 @@ async def _execute_sideways_signal(bot, rec) -> None:
             _br = await _oe.open_bracket(
                 symbol=rec.symbol, direction=_dir,
                 entry_price=_entry, sl=_sl, tp1=_tp, tp2=None, qty=_qty,
+                # 22.08: имя источника, как его знает роутер. Его trade_mode — `sideways`;
+                # резолвер реестра понимает оба имени, порог одинаков при любом.
+                source="wt_sideways",
             )
             if not _br.success:
                 if _br.error != "position_already_open":
@@ -1390,7 +1408,7 @@ async def _execute_sideways_signal(bot, rec) -> None:
 
 
 def _prep_pair_cpu(df_entry, df_1h, df_3m, df_4h, df_1d, etf: str,
-                   atr_p: int, factor: float, use_v2: bool):
+                   atr_p: int, factor: float, use_v2: bool, df_5m=None):
     """BOT-LOOP-OFFLOAD (11.07): весь чистый CPU-прегрев пары ОДНИМ куском для to_thread —
     WT+ATRTrend по TF (ARCH-18), Elliott n_down/n_up (DEV-226), market regime (DEV-108) +
     rev_mode, WT-snap (ARCH-117). Раньше это крутилось в event loop на каждой из ~520 пар →
@@ -1412,6 +1430,8 @@ def _prep_pair_cpu(df_entry, df_1h, df_3m, df_4h, df_1d, etf: str,
         df_4h = _calc_trend(_calc_wt(df_4h), atr_period=atr_p, factor=factor)
     if df_1d is not None and not df_1d.empty:
         df_1d = _calc_trend(_calc_wt(df_1d), atr_period=atr_p, factor=factor)
+    if df_5m is not None and not df_5m.empty:      # 5m как КОНТЕКСТ (не entry) — 17.08
+        df_5m = _calc_trend(_calc_wt(df_5m), atr_period=atr_p, factor=factor)
 
     # DEV-226: Elliott n_down/n_up на всех TF
     elliott = None
@@ -1454,11 +1474,13 @@ def _prep_pair_cpu(df_entry, df_1h, df_3m, df_4h, df_1d, etf: str,
     # ARCH-117: WT snap (расчёт; publish — в scan_one)
     wt_snap = None
     try:
-        wt_snap = build_wt_snap([(etf, df_entry), ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)])
+        # все ТФ, что есть на руках: 3m/5m контекстные, etf — вход, дальше старшие (17.08)
+        wt_snap = build_wt_snap([("3m", df_3m), ("5m", df_5m), (etf, df_entry),
+                                 ("1h", df_1h), ("4h", df_4h), ("1d", df_1d)])
     except Exception as _wt_e:
         logger.debug("[ARCH-117] prep wt_snap error: %s", _wt_e)
 
-    return df_entry, df_1h, df_3m, df_4h, df_1d, elliott, pair_regime, rev_mode, wt_snap
+    return df_entry, df_1h, df_3m, df_4h, df_1d, df_5m, elliott, pair_regime, rev_mode, wt_snap
 
 
 async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
@@ -1519,6 +1541,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _add_fetch(tf, _ohlcv_limit)
                 _add_fetch("1h", _ohlcv_limit)
                 _add_fetch("4h", 60)
+                _add_fetch("5m", 200)    # 17.08: 5m как КОНТЕКСТ в снапшот (запросы освободил
+                                          # выключенный sideways_mode, который жёг 219 REST/цикл)
 
                 # D-055v2 REVERTED (2026-05-24 17:46 MSK): sequential TF fetch замедлял
                 # scan_loop → cascade через 54 мин (raньше 8-9ч). Возврат на parallel.
@@ -1535,8 +1559,17 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 }
                 df_1h = _fetched_map.get(("1h", _ohlcv_limit))
                 df_4h = _fetched_map.get(("4h", 60))
+                df_5m = _fetched_map.get(("5m", 200))
                 df_3m = None
-                df_1d = None
+                # 17.08 (Егор): дневку тянем ДО сборки wt_snap — иначе снапшот шины уходил без «1d»
+                # (build_wt_snap ждёт его на :1457, а грузился он лениво только на ~:2458).
+                # Данные биржевые, НЕ ресемпл; по счётчикам [OHLCV-CACHE] 1d отдаётся из кэша на 97%,
+                # то есть цена вопроса ~6 REST на цикл.
+                try:
+                    df_1d = await bot.data_collector.get_ohlcv(sym, "1d", limit=60)
+                except Exception as _d1_e:
+                    logger.debug("[scan] %s 1d fetch: %s", sym, _d1_e)
+                    df_1d = None
                 # Primary entry для совместимости (используется в divergence, confluence, etc.)
                 _primary = _entry_dfs.get(_etf)
                 df_entry = _primary if _primary is not None else next((v for v in _entry_dfs.values() if v is not None), None)
@@ -1555,10 +1588,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 from core.infra.config_loader import config as _cfg_scan
                 _scan_atr_p = int(_cfg_scan.get("analysis.indicators.trend.atr_period", 43))
                 _scan_factor = float(_cfg_scan.get("analysis.indicators.trend.factor", 1.0))
-                (df_entry, df_1h, df_3m, df_4h, df_1d, _elliott_data, _pair_regime,
+                (df_entry, df_1h, df_3m, df_4h, df_1d, df_5m, _elliott_data, _pair_regime,
                  _rev_mode, _wt_snap_data) = await asyncio.to_thread(
                     _prep_pair_cpu, df_entry, df_1h, df_3m, df_4h, df_1d, _etf,
-                    _scan_atr_p, _scan_factor, bool(bot.config.get("market_regime.use_v2", False)))
+                    _scan_atr_p, _scan_factor, bool(bot.config.get("market_regime.use_v2", False)),
+                    df_5m)
                 if _elliott_data is not None:
                     if not hasattr(bot, "_elliott_snap"):
                         bot._elliott_snap = {}

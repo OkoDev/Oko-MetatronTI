@@ -1617,6 +1617,9 @@ async def _broadcast_intelligence_alert(bot, symbol: str, raw_text: str, signal_
                                         tp1=_oe_tp1,
                                         tp2=_oe_tp2,
                                         qty=_qty,
+                                        # 22.08: без source per-strategy порог min_sl_dist
+                                        # здесь не виден — путь мимо роутера.
+                                        source=str(signal_type or "monitoring"),
                                     )
                                     if not _br.success:
                                         if _br.error != "position_already_open":

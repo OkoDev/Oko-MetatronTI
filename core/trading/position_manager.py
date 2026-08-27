@@ -222,10 +222,24 @@ class PositionManager:
             logger.warning("[PositionManager] sync: не удалось получить позиции с биржи: %s", e)
             return stats
 
+        # 🔴 22.08 ЛИМИТНЫЙ ВХОД ЛОМАЛ ЭТУ СВЕРКУ. Запись создаётся в момент ВЫСТАВЛЕНИЯ
+        # заявки, а позиции на бирже до фила НЕТ — и первый же sync помечал её CLOSED
+        # «нет на бирже». После фила позиция появлялась, но запись обратно не открывалась:
+        # мост live_orders → simulated_trades рвался НАВСЕГДА.
+        # Цена: дашборд показывал живые позиции impulse_fib как `unknown` с дефолтным ТФ
+        # (JOIN в /api/live требует lo.status='OPEN'), то есть ПРИБОР ВРАЛ о том, какая
+        # стратегия сейчас в рынке ([[phantom_trades_corrupt_forward]]: статус по ТИПУ ордера).
+        # Торговлю это не задевало — SL/TP ведёт trade_simulator по simulated_trades.
+        pend = self._pending_sim_ids()
         for pos in open_positions:
             if (pos.symbol, pos.side) in open_pairs:
                 stats["ok"] += 1
                 logger.debug("[PositionManager] sync OK %s %s", pos.symbol, pos.side)
+            elif pos.sim_trade_id in pend:
+                # Заявка ЖДЁТ фила: позиции нет по конструкции, а не потому что закрылась.
+                stats["pending"] = stats.get("pending", 0) + 1
+                logger.info("[PositionManager] sync PENDING %s %s id=%d — лимитка ждёт фила, "
+                            "запись НЕ закрываем", pos.symbol, pos.side, pos.id)
             else:
                 # Позиция закрылась пока бот не работал — закрываем запись
                 self.close(pos.id)
@@ -233,5 +247,49 @@ class PositionManager:
                 logger.info("[PositionManager] sync CLOSED %s %s id=%d — нет на бирже",
                             pos.symbol, pos.side, pos.id)
 
-        logger.info("[PositionManager] sync завершён: ok=%d closed=%d", stats["ok"], stats["closed"])
+        # Обратный ход: заявка исполнилась, позиция в рынке, а запись уже была закрыта
+        # прежней логикой. Возвращаем мост — иначе он остаётся разорванным навсегда.
+        stats["reopened"] = self._reopen_filled(open_pairs)
+
+        logger.info("[PositionManager] sync завершён: ok=%d closed=%d pending=%d reopened=%d",
+                    stats["ok"], stats["closed"], stats.get("pending", 0), stats["reopened"])
         return stats
+
+    def _pending_sim_ids(self) -> set:
+        """id сделок, чья лимитка ещё ждёт фила (позиции на бирже нет ПО КОНСТРУКЦИИ)."""
+        try:
+            with self._conn() as conn:
+                return {r[0] for r in conn.execute(
+                    "SELECT id FROM simulated_trades WHERE status='PENDING_ENTRY'")}
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("[PositionManager] pending ids: %s", e)
+            return set()
+
+    def _reopen_filled(self, open_pairs: set) -> int:
+        """
+        Возвращает в OPEN записи, чья позиция РЕАЛЬНО есть на бирже, а сделка живая.
+
+        Строгие условия — чтобы не воскресить действительно закрытое:
+        позиция присутствует на бирже (symbol, side) И simulated_trades.status='OPEN'.
+        """
+        n = 0
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT lo.id, lo.symbol, lo.side FROM live_orders lo "
+                    "JOIN simulated_trades st ON st.id = lo.sim_trade_id "
+                    "WHERE lo.status=? AND st.status='OPEN'", (STATUS_CLOSED,)).fetchall()
+                now = datetime.now(timezone.utc).isoformat()
+                for lid, sym, side in rows:
+                    if (sym, side) not in open_pairs:
+                        continue
+                    conn.execute("UPDATE live_orders SET status=?, updated_at=? WHERE id=?",
+                                 (STATUS_OPEN, now, lid))
+                    n += 1
+                    logger.info("[PositionManager] sync REOPEN %s %s id=%d — заявка исполнилась, "
+                                "позиция в рынке", sym, side, lid)
+                if n:
+                    conn.commit()
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("[PositionManager] reopen: %s", e)
+        return n

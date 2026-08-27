@@ -444,6 +444,10 @@ class TradingAlertBot:
             if selftest_report.failed:
                 for r in selftest_report.failed:
                     logger.warning("SELFTEST WARN [%s] %s: %s", r.layer, r.name, r.error)
+            # L13-L15 (Куб) уходил только в TG — в логе его не было, и статусы сфер
+            # приходилось угадывать по документации. Пишем в лог.
+            if selftest_report.cube_text:
+                logger.info("Куб Метатрона (L13-L15):\n%s", selftest_report.cube_text)
             # Сохраняем отчёт для /status команды
             self._selftest_report = selftest_report
 
@@ -602,6 +606,47 @@ class TradingAlertBot:
                 logger.info("[RANGEFADE] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[RANGEFADE] failed to start: %s", e)
+            # ═══ CHOCH-WAVEC — единственная механика, прошедшая перекрёстный OOS (18.08;
+            #     gated trading.choch_wavec.enabled, по умолчанию SHADOW — на биржу не шлёт) ═══
+            try:
+                from bot.loops.choch_wavec_loop import choch_wavec_loop
+                asyncio.create_task(choch_wavec_loop(self))
+                logger.info("[CHOCH-C] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[CHOCH-C] failed to start: %s", e)
+            # ═══ IMPULSE-FIB — лучший OOS проекта: импульс → лимит 0.382 (20.08;
+            #     gated trading.impulse_fib.enabled, по умолчанию SHADOW) ═══
+            try:
+                from bot.loops.impulse_fib_loop import impulse_fib_loop
+                asyncio.create_task(impulse_fib_loop(self))
+                logger.info("[IMPULSE] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[IMPULSE] failed to start: %s", e)
+            # ═══ IMPULSE-FIB 15m — ОТДЕЛЬНЫЙ инстанс той же механики (21.08).
+            #     На 15m без дрейф-гейта механика УБЫТОЧНА (PF 0.89) — торгуется
+            #     только short + drift30>=+10% (PF 7.04, WR 56.9%, OOS 10.82).
+            #     Смысл: ПОТОК ДАННЫХ — 655 сд/мес против 18 на 1h, филл 35.7%/9.8%.
+            #     Проверить гейт в бою на 1h заняло бы 25 мес, здесь — 3 недели.
+            #     gated trading.impulse_fib_15m.enabled ═══
+            try:
+                from bot.loops.impulse_fib_15m_loop import impulse_fib_15m_loop
+                asyncio.create_task(impulse_fib_15m_loop(self))
+                logger.info("[IMPULSE15] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[IMPULSE15] failed to start: %s", e)
+            # ═══ WATCH-BRIDGE — мост из внешних вахт в шину событий (21.08).
+            #     Куб: сферы общаются через шину, а не напрямую. Тяжёлые вахты
+            #     (long_revival_watch, universe_drift) считают отдельными процессами
+            #     pm2, пишут состояние в `watch_state`, а мост публикует СМЕНУ
+            #     состояния как regime_change — и об этом узнают все сферы,
+            #     а не только Telegram. Лёгкий: одно чтение таблицы за цикл ═══
+            try:
+                from core.context.watch_bridge import WatchBridge
+                _wb = WatchBridge(self.event_bus, poll_sec=300)
+                asyncio.create_task(_wb.run())
+                logger.info("[WatchBridge] task spawned")
+            except Exception as e:
+                logger.warning("[WatchBridge] failed to start: %s", e)
             # ═══ RADAR-ARMED — исполнение сетапов радара (gated config.trading.radar_armed) ═══
             try:
                 from bot.loops.radar_armed_loop import radar_armed_loop

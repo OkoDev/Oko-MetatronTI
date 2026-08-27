@@ -21,6 +21,11 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Допуск между заявленной ценой лимитки и фактической ценой позиции (%). Лимитный ордер
+# исполняется по своей цене или лучше, поэтому расхождение больше этого — признак того,
+# что позицию открыл кто-то другой (см. защиту в _check_pending).
+_FILL_PRICE_TOL_PCT = 1.0
+
 DEFAULT_POLL_SEC = 15
 
 
@@ -99,13 +104,32 @@ def _set_status(db_path, symbol: str, ts: int, status: str, note: str = "") -> N
         logger.debug("[RADAR-ARMED] set_status %s: %s", symbol, e)
 
 
+def _radar_types() -> tuple[str, list]:
+    """
+    Условие «запись принадлежит radar-семейству» — из РЕЕСТРА, а не LIKE по JSON.
+
+    🔴 22.08 (DEV-238): LIKE `'%"trade_mode": "radar"%'` ломается о суффиксы — ровно
+    так шаблон `impulse_fib` не поймал `impulse_fib_15m`, и лимитки нового источника
+    молча выпали из лайфцикла. Здесь ключ — колонка `signal_type` плюс объявленные
+    подтипы (`radar_pump`/`radar_spring`/`radar_build`/`radar_build_flip`).
+    Эквивалентность ключей проверена на всей боевой базе: 570 = 570, расхождений 0.
+    """
+    try:
+        from core.trading.source_registry import types_sql
+        return types_sql("radar")
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning("[RADAR] реестр недоступен (%s) — запасной ключ по features_json", e)
+        return ("features_json LIKE '%\"trade_mode\": \"radar\"%'", [])
+
+
 def _radar_open_count(db_path) -> int:
     """Открытые radar-сделки (лимит max_positions). PENDING_ENTRY = лимитка ждёт fill (шаг 4)."""
     try:
+        cond, params = _radar_types()
         with sqlite3.connect(db_path, timeout=5) as c:
             return c.execute(
                 "SELECT COUNT(*) FROM simulated_trades WHERE status IN ('OPEN', 'PENDING_ENTRY') "
-                "AND features_json LIKE '%\"trade_mode\": \"radar\"%'").fetchone()[0]
+                f"AND {cond}", params).fetchone()[0]
     except Exception:
         return 10**9   # БД недоступна → fail-closed (не открываем новое)
 
@@ -114,10 +138,11 @@ def _radar_symbol_busy(db_path, symbol: str) -> bool:
     """Уже есть живая radar-сделка/лимитка по символу — новый сетап не дублируем."""
     try:
         with sqlite3.connect(db_path, timeout=5) as c:
+            cond, params = _radar_types()
             return c.execute(
                 "SELECT 1 FROM simulated_trades WHERE symbol=? AND status IN ('OPEN', 'PENDING_ENTRY') "
-                "AND features_json LIKE '%\"trade_mode\": \"radar\"%' LIMIT 1",
-                (symbol,)).fetchone() is not None
+                f"AND {cond} LIMIT 1",
+                (symbol, *params)).fetchone() is not None
     except Exception:
         return True   # fail-closed
 
@@ -142,6 +167,30 @@ def _mark_pending(db_path, trade_id: int) -> bool:
         return False
 
 
+
+def _pending_where() -> str:
+    """
+    SQL-условие «источник ведётся ЦЕНТРАЛЬНЫМ pending-лайфциклом».
+
+    🔴 21.08: раньше здесь был РУЧНОЙ список из пяти LIKE-шаблонов. Добавление
+    `impulse_fib_15m` его не задело: шаблон `'%"trade_mode": "impulse_fib"%'`
+    требует закрывающую кавычку и не ловит имя с суффиксом. Лимитки нового
+    источника молча выпали из лайфцикла — ни проверки фила, ни отмены по TTL.
+    Теперь список приходит из реестра: объявил стратегию — подхватилась везде.
+    Отказ реестра → прежний набор, чтобы лайфцикл не встал совсем.
+    """
+    try:
+        from core.trading.source_registry import pending_sql
+        return pending_sql()
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning("[RADAR] реестр недоступен (%s) — запасной список", e)
+        return ("(features_json LIKE '%\"trade_mode\": \"radar\"%' "
+                "OR features_json LIKE '%\"trade_mode\": \"atr_s2\"%' "
+                "OR features_json LIKE '%\"trade_mode\": \"impulse_fib\"%' "
+                "OR features_json LIKE '%\"trade_mode\": \"impulse_fib_15m\"%' "
+                "OR features_json LIKE '%\"trade_mode\": \"choch_wavec\"%')")
+
+
 async def _check_pending(bot, ttl_sec: float) -> None:
     """PENDING_ENTRY-чекер: fill → OPEN (+actual_entry, захваты, post-fill хук);
     TTL истёк → cancel лимитки → CANCELLED. SL/финальный TP привязаны к самому
@@ -156,9 +205,9 @@ async def _check_pending(bot, ttl_sec: float) -> None:
         with sqlite3.connect(db_path, timeout=5) as c:
             c.row_factory = sqlite3.Row
             rows = [dict(r) for r in c.execute(
-                "SELECT id, symbol, direction, exchange_order_id, created_at FROM simulated_trades "
-                "WHERE status='PENDING_ENTRY' AND (features_json LIKE '%\"trade_mode\": \"radar\"%' "
-                "OR features_json LIKE '%\"trade_mode\": \"atr_s2\"%')")]
+                "SELECT id, symbol, direction, exchange_order_id, created_at, entry_price "
+                "FROM simulated_trades "
+                "WHERE status='PENDING_ENTRY' AND " + _pending_where())]
     except Exception:
         return
     if not rows:
@@ -186,6 +235,26 @@ async def _check_pending(bot, ttl_sec: float) -> None:
         oid = str(t["exchange_order_id"] or "")
         try:
             pp = live.get((symbol, direction))
+            # 🔴 20.08 ЗАЩИТА ОТ ЧУЖОЙ ПОЗИЦИИ. Раньше фил засчитывался ПО ФАКТУ наличия
+            # позиции на (symbol, direction) — без сверки с нашей заявкой. Если другой
+            # источник открывал тот же символ по рынку, наша PENDING-строка получала
+            # ЧУЖУЮ цену входа и чужой position_id, а `repair_missing_sl` ставил наш стоп
+            # на чужую позицию. Своя лимитка при этом оставалась на бирже без надзора.
+            # Дешёвая проверка без лишних запросов: фактическая цена обязана быть рядом
+            # с нашим лимитом. Лимитка не может исполниться далеко от заявки — расхождение
+            # больше допуска означает, что позиция не наша.
+            if pp is not None:
+                _decl = float(t["entry_price"] or 0)
+                _got = float(getattr(pp, "entry", 0) or 0)
+                if _decl > 0 and _got > 0:
+                    _gap = abs(_got - _decl) / _decl * 100
+                    if _gap > _FILL_PRICE_TOL_PCT:
+                        logger.warning(
+                            "[RADAR-ARMED] #%d %s %s: позиция на бирже по %.6g, а наш лимит "
+                            "%.6g (расхождение %.2f%% > %.2f%%) — ЧУЖАЯ позиция, фил НЕ "
+                            "засчитан", tid, symbol, direction, _got, _decl, _gap,
+                            _FILL_PRICE_TOL_PCT)
+                        pp = None
             if pp is not None:                            # зафиллено (позиция в агрегате)
                 fill_price = float(getattr(pp, "entry", 0) or 0)
                 with sqlite3.connect(db_path, timeout=5) as c:
@@ -241,7 +310,20 @@ async def _check_pending(bot, ttl_sec: float) -> None:
                 age_s = (now - ca).total_seconds()
             except Exception:
                 pass
-            if age_s is not None and age_s > ttl_sec:
+            # 20.08: TTL ПО ИСТОЧНИКУ. У radar/atr_s2 лимитка живёт минуты (entry_ttl_min),
+            # у impulse_fib — ровно WAIT_BARS баров 1h, как в замере механики: лимит на
+            # откате 0.382 актуален 12 часов, дальше сетап протух и его надо снять.
+            # 🔴 21.08 TTL ИЗ РЕЕСТРА, а не из веток if/elif по имени источника.
+            # Ветка знала только `impulse_fib` и дала бы `impulse_fib_15m` те же
+            # 12 ЧАСОВ вместо 3 — WAIT_BARS одинаковый, но бары разной длины.
+            _ttl = ttl_sec
+            try:
+                _tm = (_read_features(db_path, tid) or {}).get("trade_mode")
+                from core.trading.source_registry import ttl_for as _ttl_for
+                _ttl = _ttl_for(_tm, default_sec=ttl_sec)
+            except Exception:
+                pass
+            if age_s is not None and age_s > _ttl:
                 # ГОНКА fill→быстрый-exit (ARB #41633): LIMIT зафиллился и закрылся по SL
                 # МЕЖДУ циклами → позиции уже нет, но это НЕ «не сработал». Проверяем filled
                 # по orderId на всех субакках: нашли → OPEN (exit резолвит position_sync/exec_ws,
@@ -543,7 +625,7 @@ async def _manage_runners(bot) -> None:
             rows = [dict(r) for r in c.execute(
                 "SELECT id, symbol, direction, actual_entry_price, entry_price, stop_loss, "
                 "exchange_sl_order_id FROM simulated_trades WHERE status='OPEN' "
-                "AND be_activated=1 AND features_json LIKE '%\"trade_mode\": \"radar\"%'")]
+                f"AND be_activated=1 AND {_radar_types()[0]}", _radar_types()[1])]
     except Exception:
         return
     for t in rows:
@@ -583,8 +665,11 @@ async def _manage_runners(bot) -> None:
                         client, pid = await om._resolve_position_client(symbol, direction)
                         qty_c = await om.get_position_qty(symbol, direction)
                         if client is not None and qty_c > 0:
-                            side_close = "SELL" if direction == "LONG" else "BUY"
-                            resp = await client.close_position_market(symbol, side_close, qty_c,
+                            # 🔴 14.08: close_position_market ждёт сторону ОТКРЫТИЯ (BUY=закрыть
+                            # LONG). Со стороной закрытия биржа отвечала 101205, а fallback'а тут
+                            # нет → фиксация у потолка не срабатывала НИ РАЗУ (0 из 62 потолков).
+                            side_open = "BUY" if direction == "LONG" else "SELL"
+                            resp = await client.close_position_market(symbol, side_open, qty_c,
                                                                       position_id=pid)
                             code = resp.get("code", -1) if isinstance(resp, dict) else -1
                             if code == 0:
@@ -670,8 +755,8 @@ async def _check_be_after_tp1(bot) -> None:
                 "SELECT id, symbol, direction, actual_entry_price, entry_price, stop_loss, "
                 "exchange_sl_order_id, features_json FROM simulated_trades "
                 "WHERE status='OPEN' AND (be_activated IS NULL OR be_activated=0) "
-                "AND features_json LIKE '%\"trade_mode\": \"radar\"%' "
-                "AND features_json LIKE '%\"radar_tp_oids\"%'")]
+                f"AND {_radar_types()[0]} "
+                "AND features_json LIKE '%\"radar_tp_oids\"%'", _radar_types()[1])]
     except Exception:
         return
     import json as _json
@@ -765,9 +850,9 @@ async def _notify_closed(bot) -> None:
             rows = [dict(r) for r in c.execute(
                 "SELECT id, symbol, direction, status, profit_pct, exit_price "
                 "FROM simulated_trades WHERE status IN ('TP','SL','TSL','EXPIRED','CANCELLED') "
-                "AND features_json LIKE '%\"trade_mode\": \"radar\"%' "
+                f"AND {_radar_types()[0]} "
                 "AND features_json LIKE '%entry_tg_msg_id%' "
-                "AND features_json NOT LIKE '%closed_notified%' LIMIT 10")]
+                "AND features_json NOT LIKE '%closed_notified%' LIMIT 10", _radar_types()[1])]
     except Exception:
         return
     for t in rows:
@@ -943,6 +1028,14 @@ async def _try_register(bot, o: dict, radar_db) -> None:
         _ph = _pj.loads(o.get("phase_json") or "{}")
         for _k, _v in _ph.items():
             extra[f"radar_{_k}"] = _v
+    except Exception:
+        pass
+    # 🔭 ШИРОКОЕ ЗРЕНИЕ (04.08, Егор): рыночный контекст как ФИЧИ (не гейты). Разбор 129 сделок
+    # radar_pump показал ЗЕРКАЛО нашего фейда: одиночный сигнал PF 1.36 против кластера ≥4 PF 0.78,
+    # возвратный режим PF 3.14 против импульсного 0.72. Пишем, чтобы судить по форварду.
+    try:
+        from core.context.market_regime import context_features
+        extra.update(context_features(str(rec.symbol).split("/")[0]))
     except Exception:
         pass
     try:

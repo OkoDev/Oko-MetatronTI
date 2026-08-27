@@ -272,6 +272,20 @@ class OrderManager:
         self._positions_cache = None
         self._positions_ts = 0.0
 
+    def invalidate_balance(self) -> None:
+        """Сбрасывает кеш свободной маржи (после постановки/снятия ордера).
+
+        🔴 20.08: размер позиции считается от `get_available_balance()`, а он кэшируется
+        на `balance_cache_ttl_sec` (120 с). Луп выставляет пачку лимиток за десятки секунд,
+        и ВСЕ они считались от ОДНОГО снимка баланса: замер по боевым сделкам показал, что
+        первая в пачке рисковала $8.69, восьмая — $5.03, то есть на 42% меньше при
+        одинаковом заявленном риске 2%. Механика же мерилась равновесным портфелем.
+        Сбрасывая кеш после каждой постановки, получаем актуальную свободную маржу —
+        и заодно естественную защиту от переполнения депозита при узких стопах.
+        """
+        self._balance_cache = None
+        self._balance_ts = 0.0
+
     async def snapshot_balances_per_account(self) -> list[dict]:
         """ARCH-DB-V2 Ф1: баланс КАЖДОГО аккаунта для balance_snapshots (equity-график).
         Возвращает [{account_id, equity, available, used_margin, unrealized_pnl}] или []."""
@@ -450,6 +464,7 @@ class OrderManager:
         lev_set_to_max: bool = True,        # False → уважать запрошенное плечо (cap-down only). radar:
                                             # 20× вместо set-to-max 50× — импульсная торговля, гэп мимо
                                             # SL достаёт близкую ликвидацию 50× (JUP #41708 liq −1%).
+        source: str = "",                   # 20.08: нужен для per-strategy порога min_sl_dist (см. ниже)
     ) -> BracketResult:
         notional = qty * entry_price
 
@@ -465,10 +480,17 @@ class OrderManager:
         if entry_price > 0 and sl > 0:
             _sl_dist_pct = abs(entry_price - sl) / entry_price * 100
             try:
-                from core.infra.config_loader import config as _cfg_sl
-                _min_sl_dist = float(_cfg_sl.get("trading.min_sl_dist_pct", 0.1))
+                # 🔴 20.08: ТРЕТЬЯ копия этой проверки (router-гейт · trade_simulator · здесь).
+                # Без per-strategy override источник со стопом МЕНЬШЕ глобального порога
+                # проходил первые две и умирал тут: impulse_fib (стоп 1.5-3.2%) получал
+                # exch=none при глобальном 4.0%. См. memory/bug_gate_lives_in_two_places.
+                # 22.08 (реестр, фаза 2): порог резолвит РЕЕСТР — один ключ на три места.
+                # 🔴 Запасное значение было 0.1 против 0.5 в двух других местах; теперь
+                # общее 0.5. Разница видна ТОЛЬКО когда конфиг не читается вовсе.
+                from core.trading.source_registry import min_sl_dist_pct as _msd
+                _min_sl_dist = _msd(source=source or "")
             except Exception:
-                _min_sl_dist = 0.1
+                _min_sl_dist = 0.5
             if _sl_dist_pct < _min_sl_dist:
                 err = (f"DEV-164 SL too close: {_sl_dist_pct:.4f}% < {_min_sl_dist:.2f}% "
                        f"(entry={entry_price:.6g} sl={sl:.6g})")
@@ -976,9 +998,11 @@ class OrderManager:
                     try:
                         # multiacct-safe: client аккаунта позиции + точный positionId (КОРЕНЬ 101205)
                         _cli, _pid = await self._resolve_position_client(symbol, pos_side)
-                        cr = await _cli.close_position_market(symbol, side, qty_floor,
-                                                              one_click_on_fail=True,
-                                                              position_id=_pid)
+                        # side здесь = сторона SL-ордера (SELL для LONG), а close_position_market
+                        # ждёт сторону ОТКРЫТИЯ (BUY = закрыть LONG) — инвертируем (фикс 14.08)
+                        cr = await _cli.close_position_market(
+                            symbol, "BUY" if pos_side.upper() == "LONG" else "SELL", qty_floor,
+                            one_click_on_fail=True, position_id=_pid)
                         if cr.get("code", -1) == 0:
                             logger.info("[OrderManager] ✅ %s %s закрыта по рынку (SL был пробит)",
                                         symbol, pos_side)

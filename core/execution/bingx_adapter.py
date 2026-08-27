@@ -72,6 +72,7 @@ class BingXAdapter(ExchangeAdapter):
             symbol=req.symbol, direction=req.direction,
             entry_price=req.entry_price, sl=req.sl, tp1=req.tp, tp2=None,
             qty=req.qty, leverage=req.leverage,
+            source=req.source,   # 20.08: per-strategy min_sl_dist внутри open_bracket
         )
         account = req.account if req.account is not None else self._route(req.symbol)
         return OrderResult(
@@ -93,8 +94,9 @@ class BingXAdapter(ExchangeAdapter):
     async def close_reduce_only(self, symbol, side, qty, account, position_id=None) -> CloseResult:
         try:
             cli, pid = await self._om._resolve_position_client(symbol, side)
-            close_side = "SELL" if str(side).upper() == "LONG" else "BUY"
-            resp = await cli.close_position_market(symbol, close_side, qty,
+            # close_position_market ждёт сторону ОТКРЫТИЯ: BUY = закрыть LONG (фикс 14.08)
+            side_open = "BUY" if str(side).upper() == "LONG" else "SELL"
+            resp = await cli.close_position_market(symbol, side_open, qty,
                                                    position_id=pid or position_id)
             ok = resp.get("code", -1) == 0
             if not ok:

@@ -21,7 +21,20 @@ class MinSlDistGate(Gate):
             return self._pass()   # пропускаем валидацию — validate_inputs ловит
 
         try:
-            min_pct = float(ctx.bot.config.get("trading.min_sl_dist_pct", 0.5))
+            # 13.08.2026 PER-SOURCE (по образцу rr_filter.min_rr_per_strategy).
+            # Повод: глобальный порог 4% верен для большинства источников, но ПРОТИВОПОЛОЖЕН
+            # для фейда. Замер по боевым сделкам:
+            #   rangefade4h: стоп <2% → PF 6.30 · 2-4% → 3.03 · 4-6% → 0.00 · >6% → 0.18
+            #   radar_pump : стоп <2% → PF 0.82 · 2-4% → 0.45 · 4-6% → 0.31 · >6% → 3.01
+            # Один глобальный порог убил бы прибыльную зону rangefade целиком.
+            # 22.08 (реестр, фаза 2): порог резолвит РЕЕСТР — по source и trade_mode
+            # одновременно, чтобы три места кода не расходились из-за имени ключа.
+            from core.trading.source_registry import min_sl_dist_pct
+            min_pct = min_sl_dist_pct(
+                source=getattr(ctx, "source", "") or "",
+                trade_mode=str(getattr(getattr(ctx, "policy", None), "trade_mode", "") or ""),
+                cfg=ctx.bot.config,
+            )
         except Exception:
             min_pct = 0.5
 

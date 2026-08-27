@@ -76,6 +76,12 @@ async def _process_one(bot, row: dict) -> tuple[int, str]:
         "ds_thesis": (row["thesis"] or "")[:300],
         "ds_confidence": row["confidence"],
     }
+    # 🔭 Рыночный контекст как фичи (04.08) — см. core/context/market_regime.py
+    try:
+        from core.context.market_regime import context_features
+        extra.update(context_features(str(sym).split("/")[0]))
+    except Exception:
+        pass
     res = await bot.trade_router.submit(rec, source="ds_advisor", extra_features=extra)
     if res.trade_id:
         logger.info("[DS-ADVISOR] ✅ #%s %s %s → trade %s exch=%s",
@@ -125,18 +131,27 @@ async def ds_advisor_loop(bot) -> None:
         logger.info("[DS-ADVISOR] disabled (trading.ds_advisor.enabled=false) — loop не стартует")
         return
     max_open = int(cfg.get("max_open", 5))
-    logger.info("[DS-ADVISOR] loop start: DC торгует VST через router · кап %d позиций · "
-                "судья forward machine · гейт 20-30 net+ → реальные деньги", max_open)
+    # 🔴 22.08 ДВА ЛИМИТА (DEV-239). Ожидающая лимитка НЕ в рынке: выиграть или проиграть
+    # она не может, рыночного риска не несёт — расходует только маржу под резерв.
+    # Считая её слотом риска, мы запрещали вход из-за расхода, которого нет (22.08 у
+    # impulse_fib это дало 8 часов простоя при НОЛЕ позиций, [[cap_pending_not_risk_slot]]).
+    # У ds_advisor вход тоже LIMIT → та же мина, просто ещё не выстрелила.
+    max_pending = int(cfg.get("max_pending", max_open))
+    logger.info("[DS-ADVISOR] loop start: DC торгует VST через router · кап %d позиций / "
+                "%d заявок · судья forward machine · гейт 20-30 net+ → реальные деньги",
+                max_open, max_pending)
     db = bot.trade_simulator.db_path
     while True:
         try:
             await asyncio.sleep(POLL_SEC)
             conn = sqlite3.connect(db, timeout=5)
             conn.row_factory = sqlite3.Row
-            n_open = conn.execute(
-                "SELECT COUNT(*) FROM simulated_trades WHERE status IN ('OPEN','PENDING_ENTRY') "
-                "AND signal_type='ds_advisor'").fetchone()[0]
-            budget = max(0, max_open - n_open)
+            from core.trading.source_registry import slots as _slots
+            _st = _slots(conn, "ds_advisor", max_open=max_open, max_pending=max_pending)
+            # Бюджет ограничен ОБОИМИ лимитами: свободные слоты риска и свободный резерв маржи.
+            budget = max(0, min(max_open - _st["open"], max_pending - _st["pending"]))
+            if not budget and _st["why"]:
+                logger.info("[DS-ADVISOR] новых сигналов не берём: %s", _st["why"])
             if budget == 0:
                 conn.close()
                 continue
