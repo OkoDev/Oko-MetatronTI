@@ -1,0 +1,4 @@
+  File "E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\choch_pullback_atrflip_waveC.py", line 279
+    print(f"
+          ^
+SyntaxError: unterminated f-string literal (detected at line 279)

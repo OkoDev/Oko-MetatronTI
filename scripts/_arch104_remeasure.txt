@@ -1,0 +1,692 @@
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:187: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  m &= np.asarray(F[f].fillna(False), dtype=bool)
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:187: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  m &= np.asarray(F[f].fillna(False), dtype=bool)
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:170: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  F[col] = fh[col]
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:187: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  m &= np.asarray(F[f].fillna(False), dtype=bool)
+E:\MTF BOT\CURSOR\crypto_volume_bot\scripts\arch104_remeasure_causal.py:187: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  m &= np.asarray(F[f].fillna(False), dtype=bool)

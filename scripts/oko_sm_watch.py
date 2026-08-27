@@ -49,27 +49,52 @@ def _kl(base, interval="4h", lim=BARS):
     return df if len(df) >= 300 else None
 
 
+_DIV_SCAN = 12            # на сколько баров назад ищем, когда дивергенция была свежей
+_DIV_DET = None
+
+
+def _divergence(df):
+    """Дивергенция ШТАТНЫМ детектором проекта (14.08). Раньше здесь была своя мини-версия,
+    сканировавшая 12 последних баров с обнулением предыдущего пика на входе в окно → двух
+    фрактальных пиков туда почти не помещалось и колонка ДИВ стояла пустой у ВСЕХ 50 монет
+    (замер: окно 12 → 2 монеты из 20, окно 60 → 17 из 20). Теперь один калькулятор на проект
+    (lookback=50, max_bars=100) [[principle_reuse_not_duplication]].
+
+    Детектор строит дивергенцию к ПОСЛЕДНЕМУ бару, поэтому «свежесть» получаем, прогоняя его
+    по срезам: age = сколько баров назад дивергенция была актуальна. Возвращает (тип, age).
+    """
+    global _DIV_DET
+    if _DIV_DET is None:
+        from core.indicators.divergence_detector import DivergenceDetector
+        _DIV_DET = DivergenceDetector(pivot_period=5, lookback=50, max_bars=100,
+                                      min_bars_between=5)
+    d = _DIV_DET
+    kinds = (("R+", d.detect_regular_bullish), ("R−", d.detect_regular_bearish),
+             ("H+", d.detect_hidden_bullish), ("H−", d.detect_hidden_bearish))
+    # хвоста хватает: max_bars=100 + pivot_period — гонять пивоты по всей 1000-барной истории
+    # незачем (было 2.4с на монету, вахта из 50 монет упиралась в это)
+    tail = df.tail(_DIV_SCAN + 220).reset_index(drop=True)
+    for age in range(_DIV_SCAN + 1):
+        sub = tail if age == 0 else tail.iloc[:len(tail) - age]
+        if len(sub) < 120:
+            break
+        for name, fn in kinds:
+            try:
+                if fn(sub, indicator_col="wt1"):
+                    return name, age
+            except Exception:
+                pass
+    return None, None
+
+
 def _wt_state(df):
-    """OkoTrend порт: wt1/медиана/свежая дивергенция (≤10 бар)."""
-    ap = (df["high"] + df["low"] + df["close"]) / 3
-    esa = ap.ewm(span=10, adjust=False).mean()
-    dd = (ap - esa).abs().ewm(span=10, adjust=False).mean()
-    wt1 = ((ap - esa) / (0.015 * dd)).ewm(span=21, adjust=False).mean()
+    """OkoTrend порт: wt1 + медиана + дивергенция (тип и свежесть) штатным детектором."""
+    from core.indicators.indicators import calculate_wt
+    d = calculate_wt(df.copy())          # тот же wt1 (n1=10, n2=21), что у всего проекта
+    wt1 = d["wt1"]
     ma = wt1.ewm(span=200, adjust=False).mean()
-    w = wt1.values; hv, lv = df["high"].values, df["low"].values
-    divB = divS = False
-    pb = pt = None
-    for t in range(max(4, len(w) - 12), len(w)):
-        w4, w3, w2, w1_, w0 = w[t-4], w[t-3], w[t-2], w[t-1], w[t]
-        if w4 < w2 and w3 < w2 and w2 > w1_ and w2 > w0:
-            if pt is not None and hv[t-2] > pt[1] and w2 < pt[0]:
-                divS = True
-            pt = (w2, hv[t-2])
-        if w4 > w2 and w3 > w2 and w2 < w1_ and w2 < w0:
-            if pb is not None and lv[t-2] < pb[1] and w2 > pb[0]:
-                divB = True
-            pb = (w2, lv[t-2])
-    return {"wt": float(w[-1]), "ma": float(ma.iloc[-1]), "divB": divB, "divS": divS}
+    dv, age = _divergence(d)
+    return {"wt": float(wt1.iloc[-1]), "ma": float(ma.iloc[-1]), "div": dv, "div_age": age}
 
 
 def _oko_pivots(df):
@@ -246,7 +271,9 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
                  "ALTER TABLE screener_state ADD COLUMN res_dist REAL",
                  "ALTER TABLE screener_state ADD COLUMN sup_lvl REAL",
                  "ALTER TABLE screener_state ADD COLUMN sup_touches INTEGER",
-                 "ALTER TABLE screener_state ADD COLUMN sup_dist REAL"):
+                 "ALTER TABLE screener_state ADD COLUMN sup_dist REAL",
+                 "ALTER TABLE screener_state ADD COLUMN div_type TEXT",     # R+/R−/H+/H− (14.08)
+                 "ALTER TABLE screener_state ADD COLUMN div_age INTEGER"):  # баров назад
         try:
             c.execute(_mig)
         except Exception:
@@ -256,16 +283,22 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
     s0 = (sup or [None])[0]
     sup_lvl, sup_touches, sup_dist = (s0[0], s0[1], s0[2]) if s0 else (None, None, None)
     long_ = leg["trend"] == "long"
-    c.execute("INSERT OR REPLACE INTO screener_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    c.execute("""INSERT OR REPLACE INTO screener_state
+                 (symbol, ts, trend, origin, extreme, px, retr, in_zone, approach, noise,
+                  conf_score, hits, wt, wt_ma, div, itrend_sync, fib618, fib705, fib786, fib100,
+                  res_lvl, res_touches, res_dist, sup_lvl, sup_touches, sup_dist,
+                  div_type, div_age)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (base, int(time.time()), leg["trend"], leg["origin"], leg["extreme"],
                px, round(float(retr), 4), int(in_zone), int(approach), int(noise),
                round(float(score), 2), json.dumps(hits_flat, ensure_ascii=False),
                round(wt["wt"], 1), round(wt["ma"], 1),
-               int(wt["divB"] if long_ else wt["divS"]),
+               int(bool(wt["div"])),                  # флаг для старых читателей
                int((st.itrend > 0) == long_),
                fibp[0.618], fibp[0.705], fibp[0.786], fibp[1.0],
                res_lvl, res_touches, res_dist,
-               sup_lvl, sup_touches, sup_dist))
+               sup_lvl, sup_touches, sup_dist,
+               wt["div"], wt["div_age"]))             # тип и свежесть (баров назад)
     c.commit()
     c.close()
 
@@ -352,7 +385,7 @@ def scan_one(base, test=False):
     if best_score < need:
         return f"score {best_score:.1f} < {need} (слабое схождение)" if test else None
     itn = "синхрон" if (st.itrend > 0) == long_ else "коррекция (internal против)"
-    div = "R+ свежая" if (wt["divB"] if long_ else wt["divS"]) else "нет"
+    div = (f"{wt['div']} {wt['div_age']} бар назад" if wt["div"] else "нет")
     dseg = "LONG" if long_ else "SHORT"
     dt0 = datetime.fromtimestamp(int(df["time"].iloc[leg["origin_i"]])/1000, timezone.utc).strftime("%d.%m")
     dt1 = datetime.fromtimestamp(int(df["time"].iloc[leg["extreme_i"]])/1000, timezone.utc).strftime("%d.%m")

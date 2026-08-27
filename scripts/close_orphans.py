@@ -98,7 +98,8 @@ async def close_orphans(args: argparse.Namespace) -> int:
         qty = pp.qty
         pnl = pp.unrealized_pnl or 0.0
         total_pnl += pnl
-        side_close = "SELL" if direction == "LONG" else "BUY"
+        # close_position_market ждёт сторону ОТКРЫТИЯ: BUY = закрыть LONG (фикс 14.08, 101205)
+        side_close = "BUY" if direction == "LONG" else "SELL"
         print(f"--- {sym_our} {direction} qty={qty:.4f} mark={pp.mark:.6f} pnl={fmt_money(pnl)} ---")
         if qty <= 0:
             print("  ! qty<=0 — пропуск")

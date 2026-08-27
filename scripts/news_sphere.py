@@ -390,7 +390,10 @@ COMPASS_PROMPT = """Ты — главный аналитик крипто-дес
 
 
 SWARM_CONF_TRIGGER = 50         # локальная уверенность ниже → зовём рой
-SWARM_PROVIDERS = ["cerebras", "groq", "gemini", "mistral"]   # быстрые бесплатные голоса
+# 18.08: cerebras заменён на openrouter — его free-tier закрыт (402 на весь каталог),
+# фоновый компас месяцами голосовал бы втроём вместо четверых и молча.
+# Четыре РАЗНЫХ ключа (groq/gemini/mistral/openrouter) → общий rate-limit никого не роняет.
+SWARM_PROVIDERS = ["openrouter", "groq", "gemini", "mistral"]   # быстрые бесплатные голоса
 
 
 def swarm_compass(data: str) -> dict | None:

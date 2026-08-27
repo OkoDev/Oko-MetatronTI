@@ -1,0 +1,210 @@
+[slow] 0G/USDT 13.7s
+[slow] 2Z/USDT 15.0s
+[slow] 1000000BOB/USDT 47.7s
+[slow] 4/USDT 33.9s
+[slow] 1000CHEEMS/USDT 74.5s
+[runner] 5/150 | сделок 4 | 76s
+[slow] A/USDT 29.5s
+[slow] 1000000MOG/USDT 79.1s
+[slow] 1000CAT/USDT 83.1s
+[slow] ACU/USDT 5.2s
+[slow] 1000BONK/USDT 125.1s
+[runner] 10/150 | сделок 7 | 126s
+[slow] ACT/USDT 73.9s
+[slow] ACX/USDT 67.4s
+[slow] 1000PEPE/USDT 157.9s
+[slow] ACE/USDT 107.9s
+[slow] AERGO/USDT 49.0s
+[runner] 15/150 | сделок 14 | 203s
+[slow] 1INCH/USDT 234.8s
+[slow] AIA/USDT 33.0s
+[slow] AERO/USDT 88.9s
+[slow] AIN/USDT 24.2s
+[slow] AIO/USDT 41.7s
+[runner] 20/150 | сделок 22 | 278s
+[slow] AEVO/USDT 122.0s
+[slow] AKE/USDT 12.0s
+[slow] AAVE/USDT 232.3s
+[slow] ACH/USDT 219.6s
+[slow] AIOT/USDT 56.3s
+[runner] 25/150 | сделок 33 | 302s
+[slow] ALCH/USDT 36.6s
+[slow] ALLO/USDT 27.0s
+[slow] ALPINE/USDT 14.3s
+[slow] AIXBT/USDT 80.7s
+[slow] AKT/USDT 68.9s
+[runner] 30/150 | сделок 35 | 350s
+[slow] ANIME/USDT 45.4s
+[slow] AGLD/USDT 214.3s
+[slow] ADA/USDT 275.2s
+[slow] APR/USDT 28.6s
+[slow] ALT/USDT 135.3s
+[runner] 35/150 | сделок 46 | 464s
+[slow] ALICE/USDT 261.1s
+[slow] ALGO/USDT 278.7s
+[slow] ARIA/USDT 11.3s
+[slow] ARC/USDT 55.8s
+[slow] API3/USDT 236.5s
+[runner] 40/150 | сделок 52 | 623s
+[slow] APE/USDT 274.5s
+[slow] ANKR/USDT 284.4s
+[slow] APT/USDT 243.9s
+[slow] ASTER/USDT 35.5s
+[slow] ASR/USDT 38.1s
+[runner] 45/150 | сделок 59 | 663s
+[slow] ARB/USDT 206.4s
+[slow] AT/USDT 31.8s
+[slow] ATH/USDT 34.8s
+[slow] ARK/USDT 163.6s
+[slow] AVA/USDT 70.9s
+[runner] 50/150 | сделок 65 | 768s
+[slow] AR/USDT 341.9s
+[slow] ARKM/USDT 166.7s
+[slow] AVNT/USDT 14.4s
+[slow] AVAAI/USDT 58.1s
+[slow] AWE/USDT 37.4s
+[runner] 55/150 | сделок 74 | 819s
+[slow] AUCTION/USDT 141.4s
+[slow] ASTR/USDT 212.3s
+[slow] B2/USDT 26.1s
+[slow] B/USDT 45.8s
+[runner] 60/150 | сделок 83 | 869s
+[slow] ATOM/USDT 221.6s
+[slow] BANANAS31/USDT 28.1s
+[slow] BABY/USDT 40.1s
+[slow] ARPA/USDT 285.7s
+[runner] 65/150 | сделок 92 | 911s
+[slow] BAS/USDT 18.0s
+[slow] BARD/USDT 31.9s
+[slow] AXL/USDT 153.9s
+[slow] BANK/USDT 47.0s
+[slow] BANANA/USDT 89.6s
+[runner] 70/150 | сделок 96 | 950s
+[slow] BEAT/USDT 33.4s
+[slow] BERA/USDT 64.9s
+[slow] BIRB/USDT 5.1s
+[slow] BIO/USDT 46.2s
+[runner] 75/150 | сделок 99 | 1017s
+[slow] BLESS/USDT 11.9s
+[slow] BLUAI/USDT 11.7s
+[slow] BB/USDT 115.8s
+[slow] AVAX/USDT 283.8s
+[slow] BR/USDT 26.2s
+[runner] 80/150 | сделок 101 | 1078s
+[slow] BIGTIME/USDT 156.7s
+[slow] BREV/USDT 7.2s
+[slow] AXS/USDT 313.6s
+[slow] BOME/USDT 141.8s
+[runner] 85/150 | сделок 105 | 1173s
+[slow] BRETT/USDT 101.8s
+[slow] C/USDT 41.6s
+[slow] CARV/USDT 16.1s
+[slow] BLUR/USDT 215.9s
+[slow] BAT/USDT 331.3s
+[runner] 90/150 | сделок 113 | 1242s
+[slow] BCH/USDT 319.1s
+[slow] CC/USDT 29.6s
+[slow] BNB/USDT 276.8s
+[slow] CETUS/USDT 59.4s
+[runner] 95/150 | сделок 120 | 1308s
+[slow] BSV/USDT 198.7s
+[slow] CATI/USDT 87.3s
+[slow] CAKE/USDT 180.2s
+[slow] CGPT/USDT 61.8s
+[runner] 100/150 | сделок 132 | 1367s
+[slow] CLANKER/USDT 10.7s
+[slow] CHILLGUY/USDT 72.3s
+[slow] CLO/USDT 11.2s
+[slow] COLLECT/USDT 17.7s
+[slow] COAI/USDT 31.3s
+[runner] 105/150 | сделок 136 | 1411s
+[slow] BTC/USDT 295.5s
+[slow] CELO/USDT 219.4s
+[slow] CFX/USDT 207.9s
+[slow] COOKIE/USDT 71.6s
+[slow] CROSS/USDT 34.5s
+[runner] 110/150 | сделок 142 | 1512s
+[slow] COW/USDT 61.7s
+[slow] CKB/USDT 181.4s
+[slow] CYS/USDT 8.1s
+[slow] CHR/USDT 261.8s
+[slow] D/USDT 56.7s
+[runner] 115/150 | сделок 146 | 1607s
+[slow] CHZ/USDT 309.3s
+[slow] DEXE/USDT 21.8s
+[slow] CYBER/USDT 132.4s
+[slow] CRV/USDT 175.6s
+[slow] DEEP/USDT 58.1s
+[runner] 120/150 | сделок 153 | 1665s
+[slow] COMP/USDT 261.4s
+[slow] CTK/USDT 184.0s
+[slow] DOLO/USDT 45.0s
+[slow] DOOD/USDT 43.5s
+[slow] COTI/USDT 312.2s
+[runner] 125/150 | сделок 170 | 1729s
+[slow] DOGS/USDT 75.9s
+[slow] DIA/USDT 87.5s
+[slow] DRIFT/USDT 91.7s
+[slow] DASH/USDT 329.4s
+[slow] DYM/USDT 176.8s
+[runner] 130/150 | сделок 183 | 1911s
+[slow] ELSA/USDT 5.7s
+[slow] DOT/USDT 239.5s
+[slow] DOGE/USDT 280.0s
+[slow] DYDX/USDT 211.6s
+[slow] EDU/USDT 229.7s
+[runner] 135/150 | сделок 188 | 1967s
+[slow] ENSO/USDT 31.2s
+[slow] EIGEN/USDT 69.6s
+[slow] ESP/USDT 17.2s
+[slow] ESPORTS/USDT 9.2s
+[slow] ERA/USDT 40.7s
+[runner] 140/150 | сделок 192 | 2013s
+[slow] EPIC/USDT 61.0s
+[slow] ENA/USDT 125.9s
+[slow] DUSK/USDT 341.1s
+[slow] EVAA/USDT 33.7s
+[slow] ETHFI/USDT 111.3s
+[runner] 145/150 | сделок 200 | 2139s
+[slow] EGLD/USDT 339.9s
+[slow] ENS/USDT 263.1s
+[slow] ENJ/USDT 266.8s
+[slow] ETC/USDT 227.7s
+[slow] ETH/USDT 229.6s
+[runner] 150/150 | сделок 208 | 2242s
+
+# OKO-OTE ВЫХОД-ТЕСТ ($) — 1h->15m, confs>=3, entry_fib=0.62, PIT-ЗОНА(честно), 208 сделок, риск $5.0/сделку
+
+| выход | сумма $ | средн $/сделку | WR% | макс $ | мин $ |
+|---|---|---|---|---|---|
+| target_-1 | **+103** | +0.50 | 23% | +21 | -6 |
+| target_-1.618 | **+184** | +0.89 | 19% | +29 | -6 |
+| tp_2R | **+136** | +0.65 | 39% | +10 | -6 |
+| tp_3R | **+90** | +0.43 | 28% | +15 | -6 |
+| runner_choch | **-359** | -1.72 | 24% | +40 | -6 |
+| ladder | **-128** | -0.61 | 26% | +30 | -6 |
+| ladder_run | **-112** | -0.54 | 39% | +25 | -6 |
+
+MFE медиана 4.58% · ≥5% 47% · ≥20% 16% · max 152%
+
+Доходила ли цена до фибо-уровня до SL/maxhold (reach-rate, БЕЗ P&L):
+  -1.618: 18% (n=208)
+  -2.0: 15% (n=208)
+  -2.618: 13% (n=208)
+  -3.618: 8% (n=208)
+  -4.236: 7% (n=208)
+
+long=96 short=112
+  LONG: runner_choch сумма -159$ средн -1.65$ WR22%
+  SHORT: runner_choch сумма -200$ средн -1.78$ WR25%
+
+# A=текущий(все) · B=HTF-bias(aligned) · counter(против HTF) — выходы runner_choch / target_-1 / ladder_run
+| вариант | n | runner $ | ср.$ | WR | target_-1 $ | ср.$ | WR | ladder_run $ | ср.$ | WR |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A: все(текущий) | 208 | **-359** | -1.72 | 24% | **+103** | +0.50 | 23% | **-112** | -0.54 | 39% |
+| B: aligned(HTF-bias) | 59 | **-35** | -0.60 | 25% | **-23** | -0.39 | 20% | **-21** | -0.35 | 34% |
+| counter(против HTF) | 149 | **-323** | -2.17 | 23% | **+126** | +0.85 | 24% | **-91** | -0.61 | 41% |
+
+aligned по сторонам (trend-continuation):
+  long-cont: n=46 runner -8$ ср -0.17$ WR26%
+  short-cont: n=13 runner -27$ ср -2.11$ WR23%

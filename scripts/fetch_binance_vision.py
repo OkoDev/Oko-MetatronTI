@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE_DB = ROOT / "ohlcv_cache.db"
 SUBS_DB = ROOT / "subscriptions.db"
 BASE = "https://data.binance.vision/data/futures/um/monthly/klines"
+BASE_DAILY = "https://data.binance.vision/data/futures/um/daily/klines"
 
 # Дефолтные окна (с какого месяца тянуть) по ТФ — баланс глубина/объём
 DEFAULT_SINCE = {"5m": "2025-01", "15m": "2024-01", "1h": "2022-01", "4h": "2022-01"}
@@ -70,9 +71,37 @@ def _universe_from_db() -> list[str]:
     return sorted(set(out))
 
 
+def _days(since_day: str) -> list[str]:
+    """Дни YYYY-MM-DD от since по ВЧЕРА включительно (сегодняшний архив ещё не готов)."""
+    from datetime import date, timedelta
+    y, m, d = map(int, since_day.split("-"))
+    cur, last = date(y, m, d), datetime.now(timezone.utc).date() - timedelta(days=1)
+    out = []
+    while cur <= last:
+        out.append(cur.isoformat())
+        cur += timedelta(days=1)
+    return out
+
+
+def _download_day(sym: str, tf: str, day: str) -> list[tuple] | None:
+    """
+    Качает 1 ДНЕВНОЙ zip. Нужен для ТЕКУЩЕГО месяца: месячный архив публикуется
+    только после его окончания, поэтому без daily кэш всегда отстаёт на 1-31 день.
+    🔴 22-24.08: из-за этого кэш стоял на 31.07, и августовские сигналы молча
+    выпадали из замеров — слепой тест «июль→август» стал невозможен.
+    """
+    url = f"{BASE_DAILY}/{sym}/{tf}/{sym}-{tf}-{day}.zip"
+    return _fetch_zip(url)
+
+
 def _download_month(sym: str, tf: str, month: str) -> list[tuple] | None:
     """Качает 1 месячный zip → список (open_time_ms, o,h,l,c,v) или None (404/ошибка)."""
     url = f"{BASE}/{sym}/{tf}/{sym}-{tf}-{month}.zip"
+    return _fetch_zip(url)
+
+
+def _fetch_zip(url: str) -> list[tuple] | None:
+    """Общий загрузчик zip-CSV (месячный и дневной форматы идентичны)."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "oko-remine/1.0"})
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -120,6 +149,8 @@ def main() -> int:
     ap.add_argument("--symbols", nargs="*", help="базы (BTC ETH); по умолч. — вселенная из БД")
     ap.add_argument("--tfs", nargs="*", default=DEFAULT_TFS)
     ap.add_argument("--since", help="YYYY-MM (один для всех ТФ); иначе per-TF дефолт")
+    ap.add_argument("--since-day", help="YYYY-MM-DD: докачать ДНЕВНЫМИ архивами "
+                                        "(текущий месяц; месячного архива ещё нет)")
     ap.add_argument("--workers", type=int, default=16)
     args = ap.parse_args()
 
@@ -129,21 +160,29 @@ def main() -> int:
         syms = _universe_from_db()
     print(f"[vision] пар: {len(syms)} | ТФ: {args.tfs}", flush=True)
 
-    # задания (sym, tf, month)
+    # задания (sym, tf, период). daily — для текущего месяца, monthly — для истории
     jobs = []
-    for tf in args.tfs:
-        since = args.since or DEFAULT_SINCE.get(tf, "2023-01")
-        for sym in syms:
-            for mon in _months(since):
-                jobs.append((sym, tf, mon))
-    print(f"[vision] заданий (sym×tf×month): {len(jobs)}", flush=True)
+    if args.since_day:
+        for tf in args.tfs:
+            for sym in syms:
+                for day in _days(args.since_day):
+                    jobs.append((sym, tf, day, "day"))
+        print(f"[vision] ДНЕВНОЙ режим · заданий (sym×tf×day): {len(jobs)}", flush=True)
+    else:
+        for tf in args.tfs:
+            since = args.since or DEFAULT_SINCE.get(tf, "2023-01")
+            for sym in syms:
+                for mon in _months(since):
+                    jobs.append((sym, tf, mon, "month"))
+        print(f"[vision] заданий (sym×tf×month): {len(jobs)}", flush=True)
 
     conn = sqlite3.connect(CACHE_DB, timeout=60)
     _ensure_schema(conn)
 
     done = bars = miss = 0
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(_download_month, s, t, m): (s, t, m) for (s, t, m) in jobs}
+        futs = {ex.submit(_download_day if kind == "day" else _download_month, s, t, m): (s, t, m)
+                for (s, t, m, kind) in jobs}
         for fut in as_completed(futs):
             s, t, m = futs[fut]
             rows = fut.result()

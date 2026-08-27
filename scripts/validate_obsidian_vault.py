@@ -21,7 +21,11 @@ from pathlib import Path
 from collections import defaultdict
 import sys
 
-VAULT_ROOT = Path("/workspace/obsidian")
+# 12.08: было жёстко Path("/workspace/obsidian") — на Windows этого пути нет, валидатор
+# находил 0 файлов и рапортовал «🟢 ЗДОРОВ», ничего не проверив. Тот же класс, что
+# selftest_cube со заглушкой вместо бота: прибор обязан падать, а не зеленеть впустую.
+_CANDIDATES = [Path("/workspace/obsidian"), Path(__file__).resolve().parent.parent / "obsidian"]
+VAULT_ROOT = next((p for p in _CANDIDATES if p.is_dir()), _CANDIDATES[-1])
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 FRONTMATTER_PATTERN = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 BACKLINK_CACHE = defaultdict(set)  # file → set of files that link to it
@@ -110,10 +114,14 @@ class VaultValidator:
                         if not link_file.endswith(".md"):
                             link_file += ".md"
 
-                        # Ищем файл
+                        # Ищем файл. 12.08: на Windows FILE_CACHE хранит пути с "\",
+                        # а из wikilink приходит "/" → endswith всегда давал False и
+                        # валидатор рапортовал 7726 ЛОЖНЫХ broken links (цели существуют).
+                        # Нормализуем разделители перед сравнением.
+                        needle = link_file.replace("\\", "/")
                         found = False
                         for candidate in FILE_CACHE:
-                            if candidate.endswith(link_file):
+                            if candidate.replace("\\", "/").endswith(needle):
                                 found = True
                                 BACKLINK_CACHE[candidate].add(str(rel_path))
                                 break
