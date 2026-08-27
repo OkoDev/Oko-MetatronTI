@@ -212,3 +212,11 @@ memory/project_timeline.md
 *.log.*
 *.session
 oko_tg.session
+
+# 12.08.2026 — артефакты, которым не место в репозитории
+graphify-out/                       # граф знаний, 9.6 МБ, пересобираемый
+registry.db                         # реестр объектов ревизии, 15 МБ, пересобираемый
+subscriptions.db.*-bak-*            # ручные бэкапы БД
+subscriptions.db.backup-*
+_risk_matrix.json                   # рантайм-состояние риск-слоя
+skills-lock.json                    # лок-файл скиллов
