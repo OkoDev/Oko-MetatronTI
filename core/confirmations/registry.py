@@ -57,6 +57,9 @@ _COMBINATOR_BASE_WEIGHTS = {
     'bear_ob_near':         {'LONG': 0, 'SHORT': 5},
     'bull_ob_mitigated':    {'LONG': 2, 'SHORT': 0},
     'bear_ob_mitigated':    {'LONG': 0, 'SHORT': 2},
+    # 🧱 Breaker (20.08.2026): вес предварительный = как у OB, до перемера на боевом детекторе
+    'bull_breaker':         {'LONG': 5, 'SHORT': 0},
+    'bear_breaker':         {'LONG': 0, 'SHORT': 5},
     'ote_long':             {'LONG': 7, 'SHORT': 0},
     'ote_short':            {'LONG': 0, 'SHORT': 7},
     'premium':              {'LONG': 0, 'SHORT': 7},

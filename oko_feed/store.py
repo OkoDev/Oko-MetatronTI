@@ -9,7 +9,11 @@ DB_PATH = Path(__file__).parent / "external_data.db"
 
 
 def conn() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_PATH)
+    # в базу пишут одновременно несколько pm2-процессов (ote-cell, method-shadow,
+    # shadow-resolve, graph-shadow) → дефолтные 5с без WAL давали `database is locked`
+    c = sqlite3.connect(DB_PATH, timeout=30)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=30000")
     c.execute("""CREATE TABLE IF NOT EXISTS dominance (
         asset TEXT NOT NULL, date TEXT NOT NULL, value REAL NOT NULL, source TEXT,
         PRIMARY KEY (asset, date))""")

@@ -83,20 +83,30 @@ def aggregate_verdicts(
     block    = False
     delta    = 0.0
 
-    # ─── SMC gate ───────────────────────────────────────────────────
+    # ─── SMC gate (12.08: ПОЧИНЕНО + переведено в SHADOW) ───────────
+    # Было логически невыполнимо: `_label_from_proba` ставит STRONG_BEAR_ZONE при
+    # p_win < 0.35, а блок требовал confidence(=p_win) >= 0.65 — условия несовместимы,
+    # плечо не могло сработать НИКОГДА. Починка: сравнивать УВЕРЕННОСТЬ В МЕТКЕ,
+    # для медвежьей это 1 − p_win.
+    # 🔴 БЛОКИРОВКА НЕ ВКЛЮЧЕНА: контрфакт на 7724 закрытых сделках (437 монет, 44 дня)
+    # показал, что починенное плечо отрезало бы 14.1% сделок с НУЛЕВЫМ эффектом —
+    # Δмедиана +0.04 п.п., а WR отрезанных ВЫШЕ (18.8% против 15.5%), т.е. режет
+    # скорее лучшее. Копим would_block, should_block от SMC не ставим.
+    smc_shadow_block = False
     if smc_verdict is not None:
-        if direction == "LONG" and smc_label == _SMC_BEAR and smc_conf >= smc_conf_thr:
-            block = True
-            factors.append(f"SMC={_SMC_BEAR}({smc_conf:.2f})↔LONG")
-        elif direction == "SHORT" and smc_label == _SMC_BULL and smc_conf >= smc_conf_thr:
-            block = True
-            factors.append(f"SMC={_SMC_BULL}({smc_conf:.2f})↔SHORT")
-        elif direction == "LONG" and smc_label == _SMC_BULL and smc_conf >= smc_conf_thr:
+        smc_lab_conf = (1.0 - smc_conf) if smc_label == _SMC_BEAR else smc_conf
+        if direction == "LONG" and smc_label == _SMC_BEAR and smc_lab_conf >= smc_conf_thr:
+            smc_shadow_block = True
+            factors.append(f"SMC={_SMC_BEAR}(lab{smc_lab_conf:.2f})↔LONG[shadow]")
+        elif direction == "SHORT" and smc_label == _SMC_BULL and smc_lab_conf >= smc_conf_thr:
+            smc_shadow_block = True
+            factors.append(f"SMC={_SMC_BULL}(lab{smc_lab_conf:.2f})↔SHORT[shadow]")
+        elif direction == "LONG" and smc_label == _SMC_BULL and smc_lab_conf >= smc_conf_thr:
             delta += strength_boost * 0.5
-            factors.append(f"SMC={_SMC_BULL}({smc_conf:.2f})✓LONG")
-        elif direction == "SHORT" and smc_label == _SMC_BEAR and smc_conf >= smc_conf_thr:
+            factors.append(f"SMC={_SMC_BULL}(lab{smc_lab_conf:.2f})✓LONG")
+        elif direction == "SHORT" and smc_label == _SMC_BEAR and smc_lab_conf >= smc_conf_thr:
             delta += strength_boost * 0.5
-            factors.append(f"SMC={_SMC_BEAR}({smc_conf:.2f})✓SHORT")
+            factors.append(f"SMC={_SMC_BEAR}(lab{smc_lab_conf:.2f})✓SHORT")
 
     # ─── WT gate ────────────────────────────────────────────────────
     if wt_verdict is not None:
@@ -134,6 +144,12 @@ def aggregate_verdicts(
     gate.factors = factors
     gate.strength_delta = round(delta, 1)
     gate.reason  = " | ".join(factors) if factors else "no_signal"
+
+    # SMC-плечо: только тень (см. контрфакт выше) — считаем, но не блокируем
+    if smc_shadow_block:
+        gate.would_block = True
+        logger.info("[VerdictGate] SMC-SHADOW %s would_block (%s) — блокировка НЕ применена",
+                    direction, " | ".join(f for f in factors if f.startswith("SMC=")))
 
     if block:
         gate.would_block = True

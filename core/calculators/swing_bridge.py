@@ -63,7 +63,12 @@ def etl_fvg(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     bear_in = np.zeros(n, dtype=bool)
 
     for f in fvgs:
-        bar_raw, l1, l2, direction = f[0], f[1], f[2], f[3]
+        # 🔴 13.08.2026: было f[0] = ts_left (ЛЕВЫЙ бар формации, i-2) → флаг ставился
+        # за 2 бара ДО того, как формация становится известна. В бэктесте это давало
+        # look-ahead (WR 96.3% вместо 43.8%, PF 52.55 вместо 0.72), в бою — слепоту:
+        # на текущем баре флага не было. Берём f[4] = ts_i — бар ОБНАРУЖЕНИЯ гэпа.
+        # Контракт кортежа detect_fvg: (ts_left, top, bottom, kind, ts_i, mitigated).
+        bar_raw, l1, l2, direction = f[4], f[1], f[2], f[3]
         # bar может быть Timestamp или int
         bar = df.index.get_loc(bar_raw) if hasattr(bar_raw, 'timestamp') else int(bar_raw)
         bot, top = min(l1, l2), max(l1, l2)
@@ -116,9 +121,26 @@ def etl_order_blocks(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     bull_mit = [ob.mitigated_idx for ob in obs if ob.kind == "bull" and ob.mitigated_idx >= 0]
     bear_mit = [ob.mitigated_idx for ob in obs if ob.kind == "bear" and ob.mitigated_idx >= 0]
 
+    # 🧱 BREAKER BLOCK (20.08.2026): пробитый OB МЕНЯЕТ РОЛЬ. Флаг ставится на барах,
+    # где цена ТЕСТИРУЕТ зону уже после пробоя — это и есть вход по схеме ICT.
+    #   bear-OB пробит вверх  → бывшее сопротивление стало ПОДДЕРЖКОЙ (bull_breaker)
+    #   bull-OB пробит вниз   → бывшая поддержка стала СОПРОТИВЛЕНИЕМ (bear_breaker)
+    # Каузально: бары строго ПОСЛЕ mitigated_idx. Окно теста 30 баров.
+    # Замер 20.08: breaker — лучший ОДИНОЧНЫЙ фактор конфлюэнции по OOS (1.80).
+    bull_brk, bear_brk = [], []
+    for ob in obs:
+        m = ob.mitigated_idx
+        if m < 0 or m >= n:
+            continue
+        lo, hi = min(ob.top, ob.bottom), max(ob.top, ob.bottom)
+        for j in range(m + 1, min(m + 31, n)):
+            if lo * 0.997 <= close[j] <= hi * 1.003:
+                (bull_brk if ob.kind == "bear" else bear_brk).append(j)
+
     ret = {"bull_ob": _to_bool_array(n, bull_idx), "bear_ob": _to_bool_array(n, bear_idx),
             "bull_ob_near": _to_bool_array(n, bull_near), "bear_ob_near": _to_bool_array(n, bear_near),
-            "bull_ob_mitigated": _to_bool_array(n, bull_mit), "bear_ob_mitigated": _to_bool_array(n, bear_mit)}
+            "bull_ob_mitigated": _to_bool_array(n, bull_mit), "bear_ob_mitigated": _to_bool_array(n, bear_mit),
+            "bull_breaker": _to_bool_array(n, bull_brk), "bear_breaker": _to_bool_array(n, bear_brk)}
     _add_dir_meta(ret, "ob", "bull")
     return ret
 
@@ -197,14 +219,38 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
 
     # OTE от CHoCH
     breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01
-    choch_ote = find_choch_ote(breaks, df)
-    if choch_ote:
-        # 🔴 FIX 12.07 (Егор «копай глубже»): build_ote возвращает зону под ключом 'ote',
-        # НЕ 'ote_zone' → get дефолтил (0,0) → 0<=c<=0 никогда → ote_long/ote_short мёртв
-        # с ARCH-128 (0/25000 баров). Тот же класс, что eqh/eql свип.
-        zone = choch_ote.get("ote", choch_ote.get("ote_zone", (0, 0)))
-        direction = choch_ote.get("direction", "")
-        for i in range(n):
+    # 🔴 FIX 13.08.2026 (Егор «проверить наборы ote_nested на правильность детекции импульса»):
+    # было — ОДНА зона от find_choch_ote(breaks, df), то есть от ПОСЛЕДНЕГО CHoCH всей истории,
+    # и она красила ВСЕ бары `for i in range(n)`. Пока CHoCH не случился, зоны нет; как только
+    # случился — она ретроактивно подсвечивала прошлое. Замер видимости: ote_short лаг >20 баров
+    # на 100% событий, ote_long — на 67%. Весь ote_nested стоял на этом.
+    # Стало — rolling, как у premium/discount выше: зона действует ТОЛЬКО с бара своего CHoCH
+    # до следующего. find_choch_ote переиспользуется на префиксе (вызовов = число CHoCH,
+    # не число баров) — формула не дублируется, ARCH-118 «один калькулятор» соблюдён.
+    _choch_pos = [j for j, b in enumerate(breaks) if b.kind == "CHoCH"]
+    _OTE_SW_LEN = 20
+    _sw_all = _sw if _sw else _swings_luxalgo(df, _OTE_SW_LEN)   # считаем ОДИН раз
+    for _k, _j in enumerate(_choch_pos):
+        _b = breaks[_j]
+        _bi = getattr(_b, "idx", None)
+        if _bi is None or not (0 <= _bi < n):
+            continue
+        # swings, ПОДТВЕРЖДЁННЫЕ к бару слома (swing на idx виден только через _OTE_SW_LEN баров)
+        _sw_ok = [s for s in _sw_all if s[0] + _OTE_SW_LEN <= _bi]
+        if len(_sw_ok) < 2:
+            continue
+        _co = find_choch_ote(breaks[:_j + 1], df, swing_len=_OTE_SW_LEN, swings=_sw_ok)
+        if not _co:
+            continue
+        # build_ote возвращает зону под ключом 'ote', НЕ 'ote_zone' (FIX 12.07, Егор «копай глубже»):
+        # get дефолтил (0,0) → 0<=c<=0 никогда → ote_long/ote_short был мёртв с ARCH-128.
+        zone = _co.get("ote", _co.get("ote_zone", (0, 0)))
+        direction = _co.get("direction", "")
+        if not direction or zone[1] <= 0:
+            continue
+        _end = breaks[_choch_pos[_k + 1]].idx if _k + 1 < len(_choch_pos) else n
+        _end = min(max(_end, _bi), n)
+        for i in range(_bi, _end):
             c = close[i]
             if zone[0] <= c <= zone[1]:
                 if direction == "long":
@@ -295,12 +341,18 @@ def etl_fvg_overlap(df: pd.DataFrame) -> Dict[str, np.ndarray]:
         bar = _bar_of(df, o["since"], n)
         if bar is None:
             continue
+        # 🔴 13.08.2026: `held` — утверждение о барах ПОСЛЕ since (зона удержалась),
+        # раньше ставилось на сам since → look-ahead. Теперь флаг held идёт на бар
+        # held_ts = since + hold_bars, когда удержание реально известно.
+        hbar = _bar_of(df, o.get("held_ts"), n) if o.get("held_ts") is not None else None
+        if hbar is None:
+            hbar = bar
         if o["direction"] == "up":
             bull_ov[bar] = True
-            if o.get("held"): bull_ov_held[bar] = True
+            if o.get("held"): bull_ov_held[hbar] = True
         else:
             bear_ov[bar] = True
-            if o.get("held"): bear_ov_held[bar] = True
+            if o.get("held"): bear_ov_held[hbar] = True
     ret = {"bull_fvg_overlap": bull_ov, "bear_fvg_overlap": bear_ov,
            "bull_fvg_overlap_held": bull_ov_held, "bear_fvg_overlap_held": bear_ov_held}
     _add_dir_meta(ret, "fvg_overlap", "up")  # up → bull/+1

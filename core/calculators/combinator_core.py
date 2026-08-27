@@ -454,6 +454,10 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"bear_ob_near_{label}"] = bear_ob_near
     out[f"bull_ob_mitigated_{label}"] = ob_etl["bull_ob_mitigated"]   # ARCH-128 Шаг 2
     out[f"bear_ob_mitigated_{label}"] = ob_etl["bear_ob_mitigated"]
+    # 🧱 Breaker (20.08.2026): пробитый OB меняет роль, флаг — на тесте зоны после пробоя
+    bull_brk = ob_etl["bull_breaker"]; bear_brk = ob_etl["bear_breaker"]
+    out[f"bull_breaker_{label}"] = bull_brk
+    out[f"bear_breaker_{label}"] = bear_brk
 
     # ─ BOS/CHoCH (ARCH-128: LuxAlgo + объём + закрепление) ───────────────
     bos_etl = etl_bos_choch(df)
@@ -630,10 +634,19 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"dc_at_upper_{label}"]   = dc_up
     out[f"dc_at_lower_{label}"]   = dc_lo
 
-    # ─ Pivots (только для исходного 1h TF) ────────────────────────────────
+    # ─ Pivots ─────────────────────────────────────────────────────────────
+    # 17.08.2026 (Егор: «насытить 5m и 1d остальными флагами»): пивоты считаются
+    # на ЛЮБОМ TF, а не только на 1h. Уровни 1D/1W одни и те же, но «цена у уровня»
+    # и «отбой» на 5m точнее по времени, чем на 1h.
+    # 🔴 ИМЕНОВАНИЕ: суффикс в имени флага — это ПЕРИОД УРОВНЯ (1D/1W), а НЕ TF графика.
+    # Без разделения пять TF писали бы `pivot_near_PP_1D` под одним ключом и затирали
+    # друг друга в snapshot. Поэтому на 1h оставлены ИСТОРИЧЕСКИЕ имена без суффикса TF
+    # (совместимость: 200 паттернов arch104 ссылаются на `pivot_bounce_up_PP_1D`),
+    # а прочие TF получают свой суффикс: `pivot_near_PP_1D_5m`.
     if include_pivots:
-        add_pivot_flags(df, out, "1D")
-        add_pivot_flags(df, out, "1W")
+        _sfx = "" if label == "1h" else f"_{label}"
+        add_pivot_flags(df, out, f"1D{_sfx}")
+        add_pivot_flags(df, out, f"1W{_sfx}")
 
     return pd.DataFrame(out, index=df.index)
 

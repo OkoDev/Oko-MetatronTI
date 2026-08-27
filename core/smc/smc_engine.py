@@ -213,8 +213,32 @@ def detect_order_blocks(
                 mit = j; break
             if b.direction == "bear" and close_arr[j] > ob_top:
                 mit = j; break
-        out.append(OrderBlock(best_idx, ob_top, ob_btm, b.direction, b.idx, mit))  # type: ignore
+        # 🧱 BREAKER BLOCK (20.08.2026): пробитый OB МЕНЯЕТ РОЛЬ — бывшая поддержка
+        # становится сопротивлением и наоборот. Поле is_breaker существовало с самого
+        # начала, но НИКОГДА не выставлялось: присваивания True не было во всём проекте,
+        # то есть детектора breaker-блоков не существовало. Роль меняется с бара mit.
+        # Замер 20.08: breaker — лучший ОДИНОЧНЫЙ фактор конфлюэнции по OOS (1.80).
+        out.append(OrderBlock(best_idx, ob_top, ob_btm, b.direction, b.idx, mit,
+                              is_breaker=(mit != -1)))  # type: ignore
     return out
+
+
+def active_breakers(obs: List[OrderBlock], at_bar: int) -> List[OrderBlock]:
+    """Breaker-блоки, активные НА БАРЕ at_bar (каузально).
+
+    Breaker = OB, пробитый до этого бара. Его торговая сторона ОБРАТНА исходной:
+    пробитый bull-OB (поддержка не удержала) работает как сопротивление, и наоборот.
+    Возвращает те, что уже сломаны (mitigated_idx <= at_bar), в хронологии.
+    """
+    return sorted(
+        [o for o in obs if o.mitigated_idx != -1 and o.mitigated_idx <= at_bar],
+        key=lambda o: o.mitigated_idx,
+    )
+
+
+def breaker_side(ob: "OrderBlock") -> str:
+    """Сторона, с которой breaker работает после смены роли: bull-OB → 'bear' и наоборот."""
+    return "bear" if ob.kind == "bull" else "bull"
 
 
 def active_order_blocks(obs: List[OrderBlock], n_bars: int, per_side: int = 5) -> List[OrderBlock]:
@@ -300,6 +324,7 @@ def find_choch_ote(
     breaks: List["StructureBreak"],
     df_for_swings: Optional["pd.DataFrame"] = None,
     swing_len: int = 20,
+    swings: Optional[List[tuple]] = None,
 ) -> Optional[dict]:
     """OTE на ЗНАЧИМОМ импульсе, что ВЫЗВАЛ последний CHoCH (механика пользователя).
 
@@ -308,13 +333,21 @@ def find_choch_ote(
     bear-CHoCH: импульс ВНИЗ (swing high → swing low) → OTE near high → SHORT.
     Импульс = «первый левый от низа до верха» (значимая нога, не последняя мелкая).
     0=КОНЕЦ импульса, 1=НАЧАЛО. Торговля вероятностей — цена может НЕ зайти в OTE.
+
+    `swings` — необязательный УЖЕ ПОСЧИТАННЫЙ список [(idx, price, 'H'/'L')].
+    Нужен вызывающим, которые строят OTE для каждого CHoCH по очереди (rolling):
+    без него пересчёт swings на каждом префиксе даёт O(k·n). Формула одна и та же —
+    различие вынесено в параметр (ARCH-118 «один калькулятор», reuse ≠ дублирование).
     """
     chochs = [b for b in breaks if b.kind == "CHoCH"]
     if not chochs:
         return None
     b = chochs[-1]
     # ЗНАЧИМЫЙ импульс, что вызвал CHoCH: структурные swing-точки ДО слома.
-    sw = _swings_luxalgo(df_for_swings, swing_len) if (df_for_swings is not None) else []
+    if swings is not None:
+        sw = swings
+    else:
+        sw = _swings_luxalgo(df_for_swings, swing_len) if (df_for_swings is not None) else []
     pts = [(i, p, k) for i, p, k in sw if df_for_swings.index[i] <= b.ts]
     if len(pts) < 2:
         return None
@@ -554,16 +587,23 @@ def detect_fvg(
 def detect_fvg_overlap(
     df: "pd.DataFrame",
     threshold: Optional[float] = None,
+    hold_bars: int = 5,
 ) -> List[dict]:
     """Перекрытие bull×bear FVG = ПОТЕНЦИАЛЬНЫЙ разворот (НЕ гарантия — наблюдать).
 
     bull-FVG перекрывает bear-FVG (bull сформирован ПОЗЖЕ, зоны пересекаются) → bull-импульс
     снял bear-сопротивление → возможный разворот ВВЕРХ. Bear часто уже mitigated (его и
     закрыл этот bull). Зеркально: bear перекрыл bull → разворот ВНИЗ.
-    held = зона перекрытия удержалась (после формирования цена не закрылась за противоположной
-    границей зоны) — подтверждение, что разворот пока в силе. Правило пользователя 03.06:
-    сигнал вероятностный, требует наблюдения за откатом, не вход «вслепую».
-    Возвращает [dict(lo, hi, direction 'up'/'down', since_ts, held, bull, bear)].
+    held = зона перекрытия удержалась (цена не закрылась за противоположной границей)
+    на окне `hold_bars` баров после формирования — подтверждение, что разворот пока в силе.
+    Правило пользователя 03.06: сигнал вероятностный, требует наблюдения за откатом,
+    не вход «вслепую».
+
+    🔴 `held` — утверждение о барах ПОСЛЕ `since`, поэтому оно становится известно только
+    на баре `held_ts` = since + hold_bars. Потребитель обязан ставить флаг именно туда,
+    иначе получает look-ahead на hold_bars. Возвращается в поле `held_ts`.
+
+    Возвращает [dict(lo, hi, direction 'up'/'down', since, held, held_ts, bull, bear)].
     """
     fvgs = detect_fvg(df, threshold)
     close = df["close"].values
@@ -574,26 +614,53 @@ def detect_fvg_overlap(
     bulls = [f for f in fvgs if f[3] == "bull"]
     bears = [f for f in fvgs if f[3] == "bear"]
     out: List[dict] = []
-    # bull(активный) перекрыл bear(любой) → разворот вверх
-    for bu in [f for f in bulls if f[5] is None]:
+
+    # 🔴 FIX 13.08.2026 (Егор «FVG чинить и приводить все к эталону») — ДВА look-ahead:
+    #  (1) `for bu in bulls if f[5] is None` брал только FVG, НИ РАЗУ не митигированные
+    #      за всю оставшуюся историю → survivorship: зона попадала в набор за то,
+    #      что выживет в будущем.
+    #  (2) `held = all(close[j] ... for j in range(i0+1, n))` проверял до КОНЦА данных →
+    #      флаг на баре `since` утверждал, что цена НИКОГДА не уйдёт за границу зоны.
+    # Цена ошибки: паттерны на `bull_fvg_overlap(_held)_15m` показывали WR 89–92%,
+    # PF 49–71, +4.49%/сд — невозможные для рынка числа.
+    # Стало: активность FVG проверяется НА МОМЕНТ бара обнаружения (митигация позже —
+    # не наше знание), а `held` считается на КОНЕЧНОМ окне `hold_bars` и потому известен
+    # на баре since+hold_bars (потребитель обязан ставить флаг именно туда).
+    def _active_at(f, i_at: int) -> bool:
+        """FVG не митигирован К БАРУ i_at (митигация в будущем — не наше знание)."""
+        if f[5] is None:
+            return True
+        m = pos.get(f[5])
+        return m is None or m > i_at
+
+    for bu in bulls:
         bl, bh = lohi(bu)
+        i0 = pos[bu[4]]
+        if not _active_at(bu, i0):
+            continue
         for be in bears:
             rl, rh = lohi(be)
             if bl <= rh and rl <= bh and bu[4] > be[4]:
                 lo, hi = max(bl, rl), min(bh, rh)
-                i0 = pos[bu[4]]
-                held = all(close[j] >= lo for j in range(i0 + 1, n)) if i0 + 1 < n else True
-                out.append(dict(lo=lo, hi=hi, direction="up", since=bu[4], held=held, bull=bu, bear=be))
-    # bear(активный) перекрыл bull(любой) → разворот вниз
-    for be in [f for f in bears if f[5] is None]:
+                j1 = min(i0 + 1 + hold_bars, n)
+                held = all(close[j] >= lo for j in range(i0 + 1, j1)) if i0 + 1 < j1 else True
+                held_ts = df.index[min(i0 + hold_bars, n - 1)]
+                out.append(dict(lo=lo, hi=hi, direction="up", since=bu[4], held=held,
+                                held_ts=held_ts, bull=bu, bear=be))
+    for be in bears:
         rl, rh = lohi(be)
+        i0 = pos[be[4]]
+        if not _active_at(be, i0):
+            continue
         for bu in bulls:
             bl, bh = lohi(bu)
             if bl <= rh and rl <= bh and be[4] > bu[4]:
                 lo, hi = max(bl, rl), min(bh, rh)
-                i0 = pos[be[4]]
-                held = all(close[j] <= hi for j in range(i0 + 1, n)) if i0 + 1 < n else True
-                out.append(dict(lo=lo, hi=hi, direction="down", since=be[4], held=held, bull=bu, bear=be))
+                j1 = min(i0 + 1 + hold_bars, n)
+                held = all(close[j] <= hi for j in range(i0 + 1, j1)) if i0 + 1 < j1 else True
+                held_ts = df.index[min(i0 + hold_bars, n - 1)]
+                out.append(dict(lo=lo, hi=hi, direction="down", since=be[4], held=held,
+                                held_ts=held_ts, bull=bu, bear=be))
     return out
 
 
@@ -946,14 +1013,30 @@ def ote_retest_setups(
             continue
         entry = (ote_lo + ote_hi) / 2.0       # середина зоны (~0.645)
         # 4. КОНФЛЮЕНЦИЯ — OB/FVG той же стороны в OTE-зоне
+        # 🔴 ФИКС ПРИЧИННОСТИ (19.08.2026): раньше конфлюэнция считалась по ВСЕЙ истории —
+        # сетап на баре 100 получал усиление от FVG, образовавшегося на баре 500.
+        # Это и был источник «35.4% сетапов не существуют причинно» (аудит лага флагов).
+        # Теперь берём только то, что СУЩЕСТВОВАЛО на баре входа:
+        #   OB  — сформирован (break_idx <= entry_i) и ещё не митигирован;
+        #   FVG — обнаружен на баре f[4]=ts_i (контракт detect_fvg) не позже входа.
         want = "bull" if direction == "long" else "bear"
         confl = 0
         for ob in obs:
-            if ob.kind == want and min(ob.top, ob.bottom) <= ote_hi and max(ob.top, ob.bottom) >= ote_lo:
+            if ob.kind != want or ob.break_idx > entry_i:
+                continue
+            if 0 <= ob.mitigated_idx <= entry_i:
+                continue
+            if min(ob.top, ob.bottom) <= ote_hi and max(ob.top, ob.bottom) >= ote_lo:
                 confl += 1
+        _entry_ts = df.index[entry_i]
         for fv in fvgs:
+            if fv[3] != want:
+                continue
+            _seen = fv[4] if len(fv) > 4 else fv[0]     # ts_i — бар обнаружения гэпа
+            if _seen is not None and _seen > _entry_ts:
+                continue
             ftop, fbot = max(fv[1], fv[2]), min(fv[1], fv[2])
-            if fv[3] == want and fbot <= ote_hi and ftop >= ote_lo:
+            if fbot <= ote_hi and ftop >= ote_lo:
                 confl += 1
         # 5. СТОП за 1.0 (начало импульса = s['to'] для long(низ)? — точка 1.0 build_ote)
         one_level = s["levels"][1.0]          # 1.0 = начало импульса

@@ -33,10 +33,19 @@ from typing import Any, Optional
 
 import pandas as pd
 
-SCHEMA_VERSION = 3   # v3 (ARCH-128 Шаг 2): +fvg_overlap, elliott, regime троичный, ob_mitigated
+SCHEMA_VERSION = 4   # v4 (17.08.2026): pivot-флаги на ВСЕХ TF (было — только 1h)
 
-# TF, для которых compute_flags вызывает pivot-флаги (эталон: только исходный 1h)
-_PIVOT_TF = "1h"
+# TF, для которых compute_flags вызывает pivot-флаги.
+# 17.08.2026 (Егор: «насытить 5m и 1d остальными флагами»): было `_PIVOT_TF = "1h"` —
+# 1h получал 149 флагов, остальные TF только 73. SMC (OB/FVG/CHoCH/BOS/OTE/EQH/EQL/
+# Elliott, 29 флагов) считались везде и раньше; не хватало ровно пивотов — 76 признаков
+# (38 уровневых × 1D и 1W).
+# Уровни 1D/1W одни и те же на любом TF, но флаг «цена у уровня»/«отбой» на 5m точнее
+# по времени, чем на 1h, а на 1d даёт контекст закрытия дня относительно уровня.
+# Цена: на живом df (300–500 баров) — доли секунды; замер 17.08 на 20 000 барах:
+# 5m 2.00→3.60с, 15m 3.94→6.20с, 1h 0.62→1.31с, 4h 0.14→0.33с, 1d 0.05→0.08с.
+_PIVOT_TFS = {"5m", "15m", "1h", "4h", "1d"}
+_PIVOT_TF = "1h"     # оставлен для обратной совместимости импортов
 # Канонический порядок TF (для сортировки в snapshot_from_flags_row)
 _TF_ORDER = ["5m", "15m", "1h", "4h", "1d"]
 
@@ -162,7 +171,9 @@ async def build_df_by_tf(
     if df_1h is None or len(df_1h) < 50:
         return out
     out["1h"] = df_1h
-    df_15m = await _fetch_df(data_collector, symbol, "15m", 400)
+    # 17.08.2026: 400 → 500. Пивот-флаги 1D/1W требуют многодневной истории:
+    # замер показал, что 15m набирает их с 500 баров (~5 суток), на 400 — впритык.
+    df_15m = await _fetch_df(data_collector, symbol, "15m", 500)
     if df_15m is not None:
         out["15m"] = df_15m
     cb = _import_cb()
@@ -172,7 +183,11 @@ async def build_df_by_tf(
         except Exception:
             pass
     if want_5m:
-        df_5m = await _fetch_df(data_collector, symbol, "5m", 500)
+        # 17.08.2026: 500 → 1440. На 500 барах (сутки) пивот-флаги 1D/1W НЕ считаются
+        # вовсе — уровням нужна многодневная история. Замер порога: 1200 и 1300 баров
+        # дают 0 пивотов, 1440 (4д 23ч) — все 76. 1440 = максимум BingX за один запрос,
+        # то есть глубина взята впритык и без лишних обращений к API.
+        df_5m = await _fetch_df(data_collector, symbol, "5m", 1440)
         if df_5m is not None and len(df_5m) >= 100:
             out["5m"] = df_5m
     return out
@@ -221,7 +236,7 @@ def snapshot_features(
     for tf, df in df_by_tf.items():
         if df is None or len(df) == 0:
             continue
-        flags_df = compute_flags(df, tf, include_pivots=(tf == _PIVOT_TF))
+        flags_df = compute_flags(df, tf, include_pivots=(tf in _PIVOT_TFS))
         if flags_df is None or len(flags_df) == 0:
             continue
         last = flags_df.iloc[-1]  # момент входа = последняя закрытая свеча TF

@@ -56,6 +56,25 @@ class CubeCheckResult:
         return f"  {icon} [{self.code}] {self.name}: {self.status}" + (f" — {self.detail}" if self.detail else "")
 
 
+def _spec_state(spec) -> tuple:
+    """Состояние ML-специалиста через ПУБЛИЧНЫЙ интерфейс (is_trained / info()).
+
+    Раньше читались `is_fitted` / `n_samples` — таких атрибутов у специалистов нет
+    (внутри `_trained` / `_n_samples`), getattr молча отдавал False/0, и обученные
+    на 7.4k сделках модели показывались как пустые. Отсюда ложный вывод «сферы 3/4
+    не обучены» при живых моделях. Публичный интерфейс не даст соврать молча.
+    """
+    try:
+        info = spec.info() if hasattr(spec, "info") else {}
+    except Exception:
+        info = {}
+    fitted = bool(info.get("trained", getattr(spec, "is_trained", False)))
+    n = int(info.get("n_samples", 0) or 0)
+    auc = info.get("cv_auc")
+    auc_s = f"{auc:.3f}" if isinstance(auc, (int, float)) else "n/a"
+    return fitted, n, auc_s
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # L13 — СФЕРЫ
 # ═════════════════════════════════════════════════════════════════════════
@@ -79,11 +98,22 @@ def _check_sphere_2_ws_feed(bot) -> CubeCheckResult:
     ws = getattr(bot, "ws_feed", None)
     if ws is None:
         return CubeCheckResult("L13_sphere", "S2", "WSFeed", MISSING, "bot.ws_feed не найден")
-    running = getattr(ws, "_running", False) or getattr(ws, "is_running", lambda: False)()
-    n_subs = len(getattr(ws, "_subscriptions", []) or [])
-    if running:
-        return CubeCheckResult("L13_sphere", "S2", "WSFeed", ACTIVE, f"running, subs={n_subs}")
-    return CubeCheckResult("L13_sphere", "S2", "WSFeed", SHADOW, f"not running (subs={n_subs})")
+    # Читаем ПУБЛИЧНЫЙ stats(): раньше искались `is_running` (метод зовётся is_alive)
+    # и `_subscriptions` (такого атрибута нет) — обе давали тихий False/0.
+    try:
+        st = ws.stats() if hasattr(ws, "stats") else {}
+    except Exception:
+        st = {}
+    running = bool(st.get("running", getattr(ws, "_running", False)))
+    tickers = int(st.get("active_tickers", 0) or 0)
+    alive = ws.is_alive() if hasattr(ws, "is_alive") else running
+    up = int(st.get("uptime_sec", 0) or 0)
+    detail = f"alive={alive} tickers={tickers} ohlcv={st.get('active_ohlcv', 0)} uptime={up}s errors={st.get('errors', 0)}"
+    if alive:
+        return CubeCheckResult("L13_sphere", "S2", "WSFeed", ACTIVE, detail)
+    # Селфтест идёт при старте, а ws_feed.start() — позже отдельной задачей:
+    # «не запущен» в момент старта нормально, это не приговор сфере.
+    return CubeCheckResult("L13_sphere", "S2", "WSFeed", SHADOW, detail + " (при старте — возможна гонка)")
 
 
 def _check_sphere_3_mtf_wt(bot) -> CubeCheckResult:
@@ -93,16 +123,18 @@ def _check_sphere_3_mtf_wt(bot) -> CubeCheckResult:
     spec = getattr(ti, "_wt_specialist", None)
     if spec is None:
         return CubeCheckResult("L13_sphere", "S3", "MTF WT Specialist", MISSING, "_wt_specialist не инициализирован")
-    fitted = getattr(spec, "is_fitted", False)
-    n = getattr(spec, "n_samples", 0)
+    fitted, n, auc = _spec_state(spec)
     gate_on = False
     try:
         gate_on = bool(bot.config.get("trading.verdict_gate.enabled", False))
     except Exception:
         pass
-    status = ACTIVE if (fitted and gate_on) else SHADOW
-    return CubeCheckResult("L13_sphere", "S3", "MTF WT Specialist", status,
-                           f"fitted={fitted} n={n} gate={gate_on}")
+    # 12.08: модель ОБУЧАЕТСЯ на каждом старте, но её predict НЕ ВЫЗЫВАЕТСЯ нигде —
+    # DEV-161 заменил ML на rule-based derive_wt_verdict. Обучение = чистая трата
+    # ~7с старта. Статус ACTIVE тут был бы ложью: сфера не влияет на решения.
+    return CubeCheckResult("L13_sphere", "S3", "MTF WT Specialist", SHADOW,
+                           f"fitted={fitted} n={n} auc={auc} gate={gate_on} — "
+                           f"predict НЕ вызывается (DEV-161 заменил rule-based), обучение впустую")
 
 
 def _check_sphere_4_mtf_smc(bot) -> CubeCheckResult:
@@ -112,8 +144,7 @@ def _check_sphere_4_mtf_smc(bot) -> CubeCheckResult:
     spec = getattr(ti, "_smc_specialist", None)
     if spec is None:
         return CubeCheckResult("L13_sphere", "S4", "MTF SMC Specialist", MISSING, "_smc_specialist не инициализирован")
-    fitted = getattr(spec, "is_fitted", False)
-    n = getattr(spec, "n_samples", 0)
+    fitted, n, auc = _spec_state(spec)
     gate_on = False
     try:
         gate_on = bool(bot.config.get("trading.verdict_gate.enabled", False))
@@ -121,7 +152,7 @@ def _check_sphere_4_mtf_smc(bot) -> CubeCheckResult:
         pass
     status = ACTIVE if (fitted and gate_on) else SHADOW
     return CubeCheckResult("L13_sphere", "S4", "MTF SMC Specialist", status,
-                           f"fitted={fitted} n={n} gate={gate_on}")
+                           f"fitted={fitted} n={n} auc={auc} gate={gate_on}")
 
 
 def _check_sphere_5_cross_market(bot) -> CubeCheckResult:
@@ -385,10 +416,11 @@ def _edge_ws_to_dc(bot) -> CubeCheckResult:
     dc = getattr(bot, "data_collector", None)
     if not ws or not dc:
         return CubeCheckResult("L14_edge", "E_WS_DC", "WSFeed→DataCollector", MISSING)
-    running = getattr(ws, "_running", False) or (hasattr(ws, "is_running") and ws.is_running())
+    # `is_running` не существует — метод зовётся is_alive() (учитывает активные тикеры)
+    alive = ws.is_alive() if hasattr(ws, "is_alive") else bool(getattr(ws, "_running", False))
     return CubeCheckResult("L14_edge", "E_WS_DC", "WSFeed→DataCollector",
-                           ACTIVE if running else SHADOW,
-                           f"running={running}")
+                           ACTIVE if alive else SHADOW,
+                           f"alive={alive}")
 
 
 # --- Дополнительные рёбра (покрывают связи существующие в коде) ---
@@ -425,10 +457,14 @@ def _edge_wt_to_ti(bot) -> CubeCheckResult:
     if not ti:
         return CubeCheckResult("L14_edge", "E_WT_TI", "WTSpecialist→TradingIntelligence", MISSING)
     wt = getattr(ti, "_wt_specialist", None)
-    ok = wt is not None and hasattr(wt, "predict")
+    loaded = wt is not None and hasattr(wt, "predict")
+    # `hasattr(wt, "predict")` проверял НАЛИЧИЕ метода, а не ИСПОЛЬЗОВАНИЕ ребра, и
+    # рапортовал ACTIVE. На деле `_wt_specialist.predict` не вызывается ни в одном
+    # модуле (12.08, grep): wt_verdict строит rule-based derive_wt_verdict (DEV-161).
     return CubeCheckResult("L14_edge", "E_WT_TI", "WTSpecialist→TradingIntelligence",
-                           ACTIVE if ok else SHADOW,
-                           f"TI._wt_specialist.predict={'ok' if ok else 'missing'}")
+                           SHADOW,
+                           f"модель={'загружена' if loaded else 'нет'}, но predict НЕ вызывается — "
+                           f"wt_verdict идёт от rule-based (DEV-161). Ребро разорвано")
 
 
 def _edge_smc_to_ti(bot) -> CubeCheckResult:
@@ -704,8 +740,32 @@ async def print_cube_selftest(bot) -> None:
 
 
 if __name__ == "__main__":
-    # Автономный запуск: без bot — покажет только статические checks
-    class _Stub:
-        config = None
+    # Раньше здесь подставлялся _Stub() вместо бота: проверки не находили ни одного
+    # атрибута и печатали 38/38 MISSING на полностью живом Кубе. Отсюда и пошло
+    # «сфер не существует» в документации. Теперь по умолчанию идём за ЖИВЫМ отчётом.
     import asyncio as _a
-    _a.run(print_cube_selftest(_Stub()))
+    import json as _json
+    import sys as _sys
+    import urllib.request as _url
+
+    try:
+        _sys.stdout.reconfigure(encoding="utf-8")  # иначе cp1251 роняет вывод на Windows
+    except Exception:
+        pass
+
+    if "--stub" in _sys.argv:
+        class _Stub:
+            config = None
+        print("⚠️  STUB-РЕЖИМ: бота нет. MISSING ниже означает «нечего проверять»,\n"
+              "    а НЕ «сферы не существует». Настоящий статус — запуск без --stub.\n")
+        _a.run(print_cube_selftest(_Stub()))
+    else:
+        _u = "http://127.0.0.1:8000/api/cube/selftest"
+        try:
+            with _url.urlopen(_u, timeout=30) as _r:
+                print(_json.loads(_r.read().decode("utf-8"))["report"])
+        except Exception as _e:
+            print(f"🔴 Живой отчёт недоступен ({_u}): {_e}\n"
+                  f"   Статусы сфер снимаются ТОЛЬКО с работающего бота — проверь, что он запущен.\n"
+                  f"   `--stub` покажет каркас проверок без бота (там все MISSING — это норма).")
+            _sys.exit(1)

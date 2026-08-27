@@ -1216,7 +1216,12 @@ class TradingIntelligence:
                         except Exception:
                             pass
                     _vgate = aggregate_verdicts(
-                        direction=str(getattr(recommendation, "direction", "") or ""),
+                        # 12.08 ФИКС: было str(enum) → 'SignalDirection.LONG', а агрегатор
+                        # сравнивает с 'LONG' → гейт не срабатывал НИ РАЗУ с апреля
+                        # (0 блокировок при 22 684 EXHAUSTION). Контрфакт: резал бы худшее
+                        # (WR 4.0% против базы 12.1%). memory/verdict_gate_dead_enum_str.md
+                        direction=str(getattr(recommendation.direction, "value", None)
+                                      or getattr(recommendation, "direction", "") or ""),
                         wt_verdict=_VGVrd(_vg_wt_v) if _vg_wt_v else None,
                         smc_verdict=_VGVrd(_vg_sc_v) if _vg_sc_v else None,
                         config=(self.config or {}).get("trading"),
@@ -1229,6 +1234,17 @@ class TradingIntelligence:
                         "strength_delta": _vgate.strength_delta,
                         "reason": _vgate.reason,
                     }
+                    # 12.08 ДИАГНОСТИКА: за 5 недель лога — 22 684 wt_verdict=EXHAUSTION
+                    # с conf 0.80 (порог 0.65) и НИ ОДНОГО VERDICT_GATE. Ретроспективно по
+                    # wt_snap из БД 80 из 576 EXHAUSTION подпадали под блок, но лежат
+                    # зарегистрированными. Логируем ИСХОД гейта, а не только факт блока.
+                    if _vg_wt_v and _vg_wt_v.get("label") == "EXHAUSTION":
+                        logger.info(
+                            "[%s][DEV-146] GATE_EVAL exha_dir=%s dir=%s block=%s would=%s delta=%s reason=%s",
+                            symbol, _vg_exha_dir, getattr(recommendation, "direction", None),
+                            _vgate.should_block, _vgate.would_block, _vgate.strength_delta,
+                            _vgate.reason or "-",
+                        )
                     if _vgate.should_block:
                         # Реальный gate: обнуляем strength → сигнал не пройдёт is_actionable
                         recommendation.overall_strength = 0
@@ -1245,7 +1261,8 @@ class TradingIntelligence:
                         )
                         recommendation.overall_strength = _new_str
             except Exception as _e_vg:
-                logger.debug("[DEV-146] VerdictAggregator error: %s", _e_vg)
+                # Был logger.debug при уровне INFO — гейт мог падать молча месяцами.
+                logger.warning("[%s][DEV-146] VerdictAggregator error: %r", symbol, _e_vg)
 
             # DEV-141: Narrative Builder (shadow — config toggle trading.narrative.enabled)
             _narrative_enabled = (self.config or {}).get("trading", {}).get("narrative", {}).get("enabled", False)

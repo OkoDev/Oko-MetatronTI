@@ -27,6 +27,7 @@ class SMEvent:
     bull: bool          # бычий (пробой вверх) / медвежий
     level: float        # сломанный уровень (цена свинга)
     internal: bool      # internal(len5) или swing(len50)
+    level_i: Optional[int] = None   # бар свинга-уровня (откуда OKO-SM тянет линию до пробоя)
 
 
 @dataclass
@@ -118,22 +119,22 @@ def run_structure(df: pd.DataFrame, swing_len: int = 50, internal_len: int = 5,
         # internal сломы (crossover close vs itop_y/ibtm_y; фильтр top_y!=itop_y как в Pine)
         if (itop_y is not None and itop_cross and cc > itop_y and pc <= itop_y
                 and (st.top_y is None or st.top_y != itop_y)):
-            st.events.append(SMEvent(t, "CHoCH" if st.itrend < 0 else "BOS", True, itop_y, True))
+            st.events.append(SMEvent(t, "CHoCH" if st.itrend < 0 else "BOS", True, itop_y, True, itop_x))
             itop_cross = False
             st.itrend = 1
         if (ibtm_y is not None and ibtm_cross and cc < ibtm_y and pc >= ibtm_y
                 and (st.btm_y is None or st.btm_y != ibtm_y)):
-            st.events.append(SMEvent(t, "CHoCH" if st.itrend > 0 else "BOS", False, ibtm_y, True))
+            st.events.append(SMEvent(t, "CHoCH" if st.itrend > 0 else "BOS", False, ibtm_y, True, ibtm_x))
             ibtm_cross = False
             st.itrend = -1
 
         # swing сломы
         if st.top_y is not None and top_cross and cc > st.top_y and pc <= st.top_y:
-            st.events.append(SMEvent(t, "CHoCH" if st.trend < 0 else "BOS", True, st.top_y, False))
+            st.events.append(SMEvent(t, "CHoCH" if st.trend < 0 else "BOS", True, st.top_y, False, st.top_x))
             top_cross = False
             st.trend = 1
         if st.btm_y is not None and btm_cross and cc < st.btm_y and pc >= st.btm_y:
-            st.events.append(SMEvent(t, "CHoCH" if st.trend > 0 else "BOS", False, st.btm_y, False))
+            st.events.append(SMEvent(t, "CHoCH" if st.trend > 0 else "BOS", False, st.btm_y, False, st.btm_x))
             btm_cross = False
             st.trend = -1
 
