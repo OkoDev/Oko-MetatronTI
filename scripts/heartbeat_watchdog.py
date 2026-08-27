@@ -24,17 +24,67 @@ import time
 from pathlib import Path
 
 # порог тишины на луп, сек (запас ×5-8 от нормального цикла: scan 60с, tracker 60с)
-LIMITS = {"scan": 480, "tracker": 480}
+# 🔴 18.08 ПОРОГ scan ПОДНЯТ 480 → 1200 (замер по 28 дням лога вотчдога, 13 516 замеров).
+# Порог 480с резал ХВОСТ НОРМАЛЬНОГО распределения, а не отделял мёртвый луп:
+#   живой scan: медиана 153с, p90 340с, **p99 454с** — вплотную к 480с;
+#   178 рестартов: медиана тишины 8.9м, **71% на 8-10м**, ещё 22% на 10-15м.
+# То есть ~168 из 178 рестартов убивали ЗДОРОВОГО бота посреди затянувшегося скана
+# (500 пар под нагрузкой), плюс 260 раз вотчдог хотел рестартить и его удержал cooldown.
+# Настоящая тихая смерть в тех же данных выглядит ИНАЧЕ: 6 случаев >60м, максимум 344м —
+# ровно класс инцидента 15.07 (сеть просела, лупы висели 6.5ч), ради которого сторож и написан.
+# 1200с (20м) выше p99 живого скана в 2.6× и ловит настоящую смерть за ~23м (порог + подтверждение).
+# tracker не трогаем: медиана 40с, p99 109с, за 28 дней НИ ОДНОГО срабатывания.
+LIMITS = {"scan": 1200, "tracker": 480}
 GRACE_SEC = 300               # после старта бота — не трогаем (лупы прогреваются)
 RESTART_COOLDOWN_MIN = 20     # анти-флаппинг
+# 11.08 ПОДТВЕРЖДЕНИЕ (инцидент того же дня): вотчдог рестартил ЗДОРОВОГО бота по ОДНОМУ
+# просроченному пульсу. За вечер 4 рестарта (18:18, 18:54, 20:21, 20:57 — все на :03,
+# т.е. по крону вотчдога), причём в логе pm2 «Stopping app» = намеренная остановка.
+# Скан по 500 парам иногда затягивается >8 мин под нагрузкой (параллельные бэктесты,
+# сетевые лаги) — это НЕ смерть. Настоящая тихая смерть не проходит сама, поэтому
+# требуем ДВА подряд просроченных замера (2 × крон 3мин = 6 мин непрерывной тишины).
+# Тот же приём, что спас детектор режима от дёрганья: подтверждение, а не мягкий порог.
+CONFIRM_RUNS = 2
+STREAK_TTL_SEC = 15 * 60      # серия старше — считаем разорванной (вотчдог сам простаивал)
 STATE = Path("logs/heartbeat/.watchdog_last_restart")
+STREAK = Path("logs/heartbeat/.watchdog_streak")
 HB_DIR = Path("logs/heartbeat")
+
+
+def _streak_bump(dead: bool) -> int:
+    """Счётчик подряд идущих тревог. Возвращает текущую длину серии (0 если всё живо)."""
+    now = time.time()
+    if not dead:
+        try:
+            STREAK.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return 0
+    n, ts = 0, 0.0
+    try:
+        n_s, ts_s = STREAK.read_text().strip().split(",")
+        n, ts = int(n_s), float(ts_s)
+    except Exception:
+        pass
+    if now - ts > STREAK_TTL_SEC:
+        n = 0                                   # серия разорвана — начинаем заново
+    n += 1
+    try:
+        STREAK.parent.mkdir(parents=True, exist_ok=True)
+        STREAK.write_text(f"{n},{now}")
+    except Exception:
+        pass
+    return n
 
 
 def _pm2_bot() -> dict | None:
     try:
-        out = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, timeout=25,
-                             shell=True).stdout
+        # 17.08: text=True декодировал вывод в cp1251 (локаль) → UnicodeDecodeError в
+        # читающем потоке → except ниже глушил всё → «oko-bot не найден» → сторож молча
+        # не работал. Тот самый класс тихой смерти, ради которого он и написан.
+        out = subprocess.run(["pm2", "jlist"], capture_output=True, timeout=25,
+                             shell=True).stdout.decode("utf-8", "replace")
+        out = out[out.find("["):]                 # pm2 иногда сыпет баннер перед JSON
         for p in json.loads(out):
             if p.get("name") == "oko-bot":
                 return p
@@ -71,7 +121,12 @@ def main() -> None:
         else:
             print(f"[HB-WD] {name}: пульс {age:.0f}с назад ✓")
 
+    streak = _streak_bump(bool(dead))
     if not dead:
+        return
+    if streak < CONFIRM_RUNS:
+        print(f"[HB-WD] ⚠ подозрение {streak}/{CONFIRM_RUNS}: {'; '.join(dead)} — "
+              f"жду подтверждения (затяжной цикл ≠ смерть)")
         return
 
     # анти-флаппинг
@@ -94,7 +149,7 @@ def main() -> None:
     except Exception as e:
         print(f"[HB-WD] TG: {e}")
     try:
-        subprocess.run(["pm2", "restart", "oko-bot"], capture_output=True, text=True,
+        subprocess.run(["pm2", "restart", "oko-bot"], capture_output=True,
                        timeout=60, shell=True)
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(str(time.time()))

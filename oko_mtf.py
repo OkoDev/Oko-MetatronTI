@@ -19,6 +19,8 @@ _aiohttp_connector.TCPConnector.__init__ = _patched_init
 import asyncio
 import shutil
 import glob
+import sqlite3          # 11.08: online-backup API вместо небезопасной файловой копии
+import time             # 11.08: возраст последней копии (пропуск частых бэкапов)
 from datetime import datetime
 
 from core.infra.config_loader import config
@@ -109,18 +111,51 @@ if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
-def _backup_database(db_path: str = "subscriptions.db", backup_dir: str = "backups", keep: int = 7):
-    """Автоматический бэкап БД при старте. Хранит последние `keep` копий."""
+def _backup_database(db_path: str = "subscriptions.db", backup_dir: str = "backups",
+                     keep: int = 7, min_age_h: float = 24.0):
+    """Локальный снимок БД при старте — «на всякий случай перед рестартом».
+
+    11.08.2026, две правки после разбора рестартов:
+    1. ЧАСТОТА. Копия делалась на КАЖДОМ старте. Вотчдог рестартил бота по одному
+       просроченному пульсу ([[bug_watchdog_restarts_healthy_bot]]) — вышло 4 копии по
+       937 МБ за вечер, 6.4 ГБ на ровном месте. Теперь пропускаем, если свежая копия
+       моложе `min_age_h`.
+    2. БЕЗОПАСНОСТЬ. Был `shutil.copy2` — файловая копия ЖИВОЙ базы может поймать её
+       на середине записи и дать битый снимок. Теперь SQLite online-backup API
+       (тот же метод, что в `scripts/backup_dbs.py::_hot_backup`).
+
+    Это НЕ основной бэкап: основной делает pm2-крон `backup-dbs` (04:10, на ДРУГОЙ
+    физический диск F:, gzip, ротация 14 дней + 8 недель). Здесь — локальная страховка.
+    """
     if not os.path.exists(db_path):
         return
     os.makedirs(backup_dir, exist_ok=True)
+    existing = sorted(glob.glob(os.path.join(backup_dir, "subscriptions_*.db")))
+    if existing:
+        age_h = (time.time() - os.path.getmtime(existing[-1])) / 3600
+        if age_h < min_age_h:
+            logging.info("DB backup: пропуск — свежая копия %.1fч назад (порог %.0fч)",
+                         age_h, min_age_h)
+            return
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     dst = os.path.join(backup_dir, f"subscriptions_{stamp}.db")
     try:
-        shutil.copy2(db_path, dst)
+        src_con = sqlite3.connect(db_path, timeout=30)
+        try:
+            dst_con = sqlite3.connect(dst)
+            try:
+                src_con.backup(dst_con)        # атомарный снимок, безопасен при записи
+            finally:
+                dst_con.close()
+        finally:
+            src_con.close()
         logging.info("DB backup: %s (%.1f MB)", dst, os.path.getsize(dst) / 1e6)
     except Exception as e:
         logging.warning("DB backup failed: %s", e)
+        try:
+            os.path.exists(dst) and os.remove(dst)      # не оставлять огрызок
+        except Exception:
+            pass
         return
     old = sorted(glob.glob(os.path.join(backup_dir, "subscriptions_*.db")))
     while len(old) > keep:
