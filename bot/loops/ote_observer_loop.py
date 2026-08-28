@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 from typing import Optional
 
@@ -447,6 +448,50 @@ async def _register_ote_trade(bot, sig):
         except Exception as e:
             logger.exception("[OTE VST] %s register error: %s", sig.symbol, e)
             return
+
+    # 🔴 28.08 ЛИМИТНЫЙ ВХОД → PENDING_ENTRY. Политика источника переведена на LIMIT
+    # (config.yaml, `ote_nested.entry_order_type`), а `register_trade` пишет сразу OPEN.
+    # До фила позиции НЕТ, и строка со статусом OPEN — это три известных дефекта разом:
+    #   1) TSL видит «прибыль» относительно лимита, которого никто не касался, и тащит
+    #      стоп за несуществующей позицией (SOL #58346/XRP — поймано у impulse_fib 20.08);
+    #   2) ордер мог вообще не уйти на биржу (гейт/ошибка) — тогда записи быть не должно;
+    #   3) между INSERT и пометкой проходит 10-20 с, и TSL-цикл успевает зацепить строку.
+    # Лечение переиспользуем целиком у impulse_fib_runner — там же account-aware cancel,
+    # TTL и обработка гонки fill→exit ([[principle_reuse_not_duplication]]).
+    # ⚠️ Зависимость: лайфцикл ведёт `radar_armed_loop._check_pending`; источник обязан
+    # быть в реестре с `pending_lifecycle: true`, иначе заявка повиснет без надзора.
+    _entry_type = str((bot.config.get("signal_router.source_policies", {}) or {})
+                      .get("ote_nested", {}).get("entry_order_type", "MARKET")).upper()
+    if trade_id and _entry_type == "LIMIT":
+        try:
+            if exchange_id:
+                from bot.loops.radar_armed_loop import _mark_pending
+                if _mark_pending(bot.trade_simulator.db_path, int(trade_id)):
+                    logger.info("[OTE VST] #%s → PENDING_ENTRY (лимитка ждёт фила)", trade_id)
+                with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
+                    _r = _c.execute(
+                        "UPDATE simulated_trades SET stop_loss=original_sl, tsl_activated=0 "
+                        "WHERE id=? AND original_sl IS NOT NULL AND original_sl>0 "
+                        "AND stop_loss<>original_sl "
+                        "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
+                        (int(trade_id),))
+                    _c.commit()
+                    if _r.rowcount:
+                        logger.warning("[OTE VST] #%s стоп восстановлен из original_sl "
+                                       "(TSL зацепил строку до PENDING)", trade_id)
+            else:
+                # Ордер на биржу не ушёл — позиции не будет, записи быть не должно.
+                with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
+                    _c.execute(
+                        "UPDATE simulated_trades SET status='CANCELLED' WHERE id=? "
+                        "AND status='OPEN' AND (exchange_order_id IS NULL OR exchange_order_id='') "
+                        "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
+                        (int(trade_id),))
+                    _c.commit()
+                logger.warning("[OTE VST] #%s ордер на биржу не ушёл → CANCELLED", trade_id)
+                return
+        except Exception as _mp:                                   # noqa: BLE001
+            logger.warning("[OTE VST] #%s mark_pending: %s", trade_id, _mp)
 
     if trade_id:
         logger.info("[OTE VST] %s [%s T%d] %s → trade #%s str=%d entry=%.6f SL=%.6f TP=%.6f exch=%s",

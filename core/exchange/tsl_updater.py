@@ -325,16 +325,27 @@ async def repair_missing_sl(bot) -> None:
                                 trade_id, symbol, live_sl_oid, db_sl_oid or "∅")
                 continue
 
-            # На бирже SL нет. Если в DB был stale ID — чистим, чтобы не вводить в заблуждение.
-            if db_sl_oid:
-                ts.set_exchange_sl_order_id(trade_id, "")
-                logger.warning("[REPAIR-SL] #%d %s: stale exchange_sl_order_id=%s (на бирже SL отсутствует)",
-                               trade_id, symbol, db_sl_oid)
-
+            # 🔴 FIX-STOPS (28.08.2026): порядок проверок был ОБРАТНЫМ и стирал историю.
+            # Чистка stale ID стояла ЗДЕСЬ, ДО проверки живой позиции. Когда стоп
+            # СРАБАТЫВАЛ, ордера на бирже уже нет, а запись ещё OPEN (окно до 60 с
+            # между исполнением и закрытием записи) → в БД писалось exchange_sl_order_id=''
+            # и сделка НАВСЕГДА выглядела «открытой без биржевого стопа».
+            # Именно это производило метрику «22% позиций без стопа»: доказано на
+            # MOVR #58528 — 06:18:06 стоп ...785 TRIGGERED, 06:18:27 «stale ... на бирже
+            # SL отсутствует» → id стёрт УЖЕ ПОСЛЕ закрытия по этому же стопу.
+            # Теперь id чистится ТОЛЬКО когда позиция ЖИВА и стопа на ней действительно нет.
             real_qty = await om.get_position_qty(symbol, pos_side)
             if not real_qty or real_qty <= 0:
-                logger.debug("[REPAIR-SL] #%d %s: qty=0 на бирже — orphan, пропуск", trade_id, symbol)
+                logger.debug("[REPAIR-SL] #%d %s: qty=0 на бирже — orphan/стоп уже сработал, "
+                             "exchange_sl_order_id=%s сохранён", trade_id, symbol, db_sl_oid or "∅")
                 continue
+
+            # Позиция ЖИВА, а SL на бирже нет. Только теперь stale ID вводит в заблуждение.
+            if db_sl_oid:
+                ts.set_exchange_sl_order_id(trade_id, "")
+                logger.warning("[REPAIR-SL] #%d %s: stale exchange_sl_order_id=%s "
+                               "(позиция жива qty=%s, SL на бирже отсутствует)",
+                               trade_id, symbol, db_sl_oid, real_qty)
 
             # TSL-engine guard: не шлём перевёрнутый SL на биржу.
             # REAL #7264 (19.04.2026): SHORT SL записывался ниже entry → биржа отвергала

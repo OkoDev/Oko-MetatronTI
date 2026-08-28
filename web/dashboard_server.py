@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -3360,6 +3361,62 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     app["bot"] = bot
     app.router.add_get("/", _handle_index)
     app.router.add_get("/dashboard", _handle_dashboard_page)
+
+    # ── /viz — ВИЗУАЛЬНАЯ ПРОВЕРКА ДЕТЕКТОРОВ (28.08, требование Егора) ──────
+    # «чтобы не искать в артефактах или в папках проекта: ты даёшь картинку,
+    # я проверяю» + «окно нужно выбирать согласованно — я открываю актив, тф».
+    # Один постоянный адрес http://localhost:8000/viz?symbol=ARB/USDT&tf=15m
+    # Графики строит ШТАТНЫЙ core/ui/chart_builder (тот же рендер, что шлёт в TG),
+    # разметка подаётся его же механизмами htf_fvg/okosm — ничего не дорисовано.
+    # 🔴 РЕНДЕР — В ОТДЕЛЬНОМ ПРОЦЕССЕ, НЕ В ПОТОКЕ. Замер 28.08: та же страница
+    # строится 3.0 с автономно и 111-216 с через `run_in_executor` внутри бота.
+    # Причина — GIL: matplotlib борется за него со сканером, который считает
+    # индикаторы непрерывно. Поток здесь не спасает, спасает только своя память.
+    # Побочная выгода: рендер не может уронить и не тормозит торговый процесс.
+    async def _handle_viz(request: web.Request) -> web.Response:
+        q = request.rel_url.query
+        symbol = (q.get("symbol") or "ARB/USDT").strip()
+        tf = (q.get("tf") or "15m").strip()
+        try:
+            cases = max(1, min(4, int(q.get("cases", 2))))
+        except ValueError:
+            cases = 2
+        try:
+            root = Path(__file__).resolve().parent.parent
+            out = root / "cache" / f"viz_{abs(hash((symbol, tf, cases)))}.html"
+            out.parent.mkdir(exist_ok=True)
+            # 🔴 Windows: `asyncio.create_subprocess_exec` требует ProactorEventLoop,
+            # а дашборд живёт в своём потоке с SelectorEventLoop → NotImplementedError.
+            # Поэтому блокирующий subprocess в executor: поток тут безопасен, вся
+            # тяжёлая работа всё равно уходит в ОТДЕЛЬНЫЙ процесс, GIL ни при чём.
+            import subprocess as _sp
+            cmd = [sys.executable, str(root / "scripts" / "detector_visual.py"),
+                   "--symbol", symbol, "--tf", tf, "--cases", str(cases),
+                   "--out", str(out)]
+
+            def _run():
+                return _sp.run(cmd, cwd=str(root), capture_output=True, timeout=180)
+
+            loop = asyncio.get_running_loop()
+            r = await loop.run_in_executor(None, _run)
+            if r.returncode != 0 or not out.exists():
+                msg = (r.stdout or b"") + (r.stderr or b"")
+                raise RuntimeError(msg.decode("utf-8", "replace")[-800:]
+                                   or f"код возврата {r.returncode}")
+            return web.Response(text=out.read_text(encoding="utf-8"),
+                                content_type="text/html", charset="utf-8")
+        except Exception as e:                                    # noqa: BLE001
+            logger.exception("[/viz] %s %s: %s", symbol, tf, e)
+            return web.Response(
+                text=(f"<title>Проверка детекторов</title>"
+                      f"<body style='font:14px/1.6 system-ui;padding:24px'>"
+                      f"<h1>Не построилось</h1><p>{symbol} · {tf}</p>"
+                      f"<pre>{type(e).__name__}: {e}</pre>"
+                      f"<p>Проверьте, есть ли пара в кэше <code>ohlcv_cache.db</code> "
+                      f"(символы БЕЗ суффикса <code>:USDT</code>).</p></body>"),
+                content_type="text/html", charset="utf-8", status=500)
+
+    app.router.add_get("/viz", _handle_viz)
 
     # ── DS: временный API старта сканирования (Telegram недоступен) ──
     async def _handle_start_scan(request: web.Request) -> web.Response:

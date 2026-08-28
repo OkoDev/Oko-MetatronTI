@@ -162,7 +162,9 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
             wave_overlay: bool = False,
             h4_pivots: dict | None = None,
             htf_fvg: list | None = None,
-            okosm: dict | None = None) -> bytes:
+            okosm: dict | None = None,
+            choch_length: int | None = None,
+            choch_length_major: int | None = None) -> bytes:
     if daily_pivots is None:
         daily_pivots = _calc_daily_pivots(df)
     if weekly_pivots is None:
@@ -306,7 +308,27 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 # zigzag-линия БЕЗ нумерации (zigzag не различает импульс 1-5 / коррекцию ABC)
                 ax_price.plot([i for i, _, _ in _typed], [p for _, p, _ in _typed],
                               color="#ffa726", linewidth=1.3, zorder=6, alpha=0.85)
-            _brks = detect_structure_breaks(_d, length=5)
+            # 🔴 28.08: длина вынесена в параметр, чтобы можно было показать
+            # ЭТАЛОН (5) против БОЕВОГО (50) одним и тем же рендером.
+            # Дефолт прежний — поведение боевых графиков не меняется.
+            # 🔴 28.08 ДВЕ СТРУКТУРЫ НА ОДНОМ ГРАФИКЕ (метод Егора len5/len50).
+            # len5 и len50 — НЕ «зрячий против слепого», а РАЗНЫЙ МАСШТАБ:
+            # len50 = значимые сломы (направление и подтверждение),
+            # len5  = внутренняя структура (точки входа). Работают ВМЕСТЕ:
+            # триггер входа даёт len5, подтверждение и добор — len50
+            # ([[method_egor_two_scale_entry]]).
+            # Старшая рисуется ТОЛЩЕ и ярче, младшая — тоньше и бледнее.
+            if choch_length_major:
+                for _bm in detect_structure_breaks(_d, length=choch_length_major)[-6:]:
+                    _mc = "#26a69a" if _bm.direction == "bull" else "#ef5350"
+                    _mf = _bm.from_idx if _bm.from_idx >= 0 else _bm.idx
+                    ax_price.plot([_mf, _bm.idx], [_bm.price, _bm.price], color=_mc,
+                                  linestyle="-", linewidth=2.6, alpha=0.95, zorder=6)
+                    ax_price.annotate(f"{_bm.kind}·{choch_length_major}",
+                                      ((_mf + _bm.idx) / 2, _bm.price), color=_mc,
+                                      fontsize=8, fontweight="bold", zorder=7,
+                                      va="bottom", ha="center")
+            _brks = detect_structure_breaks(_d, length=(choch_length or 5))
             for _b in detect_order_blocks(_d, _brks):
                 if _b.mitigated_idx != -1:
                     continue
@@ -375,7 +397,12 @@ def _render(df: pd.DataFrame, symbol: str, tf: str,
                 (_ib, _pb, _tb) = _typed[-1]
                 _rng = _pb - _pa
                 if abs(_rng) / _pr > 0.003:
-                    for _ff, _fc, _lw in [(0.618, "#ffd700", 0.8), (0.705, "#ffa726", 1.1), (0.786, "#ffd700", 0.8)]:
+                    # 🔴 28.08 (Егор: «на фибо нужны отметки 0 и 1»): без границ хода
+                    # уровни 0.618/0.705/0.786 висят в воздухе — непонятно, от чего
+                    # отмеряны. 0 и 1 = концы самой ноги, читаются тонкой линией.
+                    for _ff, _fc, _lw in [(0.0, "#ffd700", 0.6), (0.618, "#ffd700", 0.8),
+                                          (0.705, "#ffa726", 1.1), (0.786, "#ffd700", 0.8),
+                                          (1.0, "#ffd700", 0.6)]:
                         _lvl = _pb - _ff * _rng
                         _ote_levels[_ff] = _lvl
                         ax_price.plot([_ib, n - 1], [_lvl, _lvl], color=_fc, linestyle=":",

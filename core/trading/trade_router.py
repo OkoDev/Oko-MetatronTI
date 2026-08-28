@@ -17,8 +17,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+# 🔴 28.08: пауза по паре, которую БИРЖА объявила недоступной (не наш отказ, а её).
+# Час — заметно длиннее цикла любого лупа (600 с у OTE), поэтому повтор не проскочит.
+SYMBOL_COOLDOWN_SEC = 3600.0
 
 from core.trading.gates.base import Gate, GateContext, GateResult, GateType, SubmitResult
 from core.trading.gates.validate_inputs import ValidateInputsGate
@@ -48,6 +53,9 @@ class TradeRouter:
     def __init__(self, bot: Any) -> None:
         self.bot = bot
         self.config = bot.config
+        # symbol → до какого времени (unix) пара на паузе после отказа биржи.
+        # In-memory: после рестарта пробуем снова — биржа могла вернуть пару в строй.
+        self._symbol_cooldown: dict[str, float] = {}
 
         # HARD gates — выполняются первыми, любой drop → break pipeline
         self._hard_gates: list[Gate] = [
@@ -85,6 +93,16 @@ class TradeRouter:
         register_trade_async + open_bracket.
         """
         extra = dict(extra_features or {})
+        # 🔴 28.08: пара на паузе после отказа биржи «symbol offline» — не тратим
+        # ни запрос, ни строку в БД. Кулдаун ставится ниже, в ветке open_bracket_fail.
+        _sym = getattr(recommendation, "symbol", "") or ""
+        _until = getattr(self, "_symbol_cooldown", {}).get(_sym, 0.0)
+        if _until and time.time() < _until:
+            logger.info("[TradeRouter] %s пропуск: биржа объявила пару недоступной, "
+                        "пауза ещё %.0f мин", _sym, (_until - time.time()) / 60)
+            return SubmitResult(trade_id=None, exchange_order_id=None,
+                                hard_drops=[("symbol_offline_cooldown",
+                                             "пара недоступна на бирже")])
         policy = SourcePolicy.from_config(self.config, source)
 
         # ── Build context ────────────────────────────────────────────────
@@ -292,6 +310,18 @@ class TradeRouter:
                 if br.error != "position_already_open":
                     logger.warning("[TradeRouter] %s OrderExecutor: %s", ctx.symbol, br.error)
                     await self._record_drop_plain(ctx, "open_bracket_fail", br.error or "unknown")
+                    # 🔴 28.08 КУЛДАУН ПО НЕДОСТУПНОМУ СИМВОЛУ. Вселенная сигналов шире
+                    # вселенной ТОРГУЕМЫХ пар: детектор берёт свечи из кэша, а биржа
+                    # отвечает «ICP-USDT is offline currently». Без кулдауна один и тот же
+                    # сигнал долбится по кругу — за 4 часа 28.08 ICP ушёл на биржу 8 раз,
+                    # ILV 6 раз, все впустую ([[universe_mismatch_backtest_vs_live]]).
+                    # Отказ ПО СИМВОЛУ (а не по нашим параметрам) → пара молчит SYMBOL_COOLDOWN_SEC.
+                    _e = str(br.error or "").lower()
+                    if any(k in _e for k in ("offline", "not exist", "validted symbols",
+                                             "invalid symbol", "symbol not")):
+                        self._symbol_cooldown[ctx.symbol] = time.time() + SYMBOL_COOLDOWN_SEC
+                        logger.warning("[TradeRouter] %s недоступен на бирже → пауза %.0f мин",
+                                       ctx.symbol, SYMBOL_COOLDOWN_SEC / 60)
                 else:
                     # 27.05.2026: position_already_open ранее был молчаливым → невидимый блок.
                     # Теперь видим в логе и в signal_drops (отдельный gate чтобы отличать).

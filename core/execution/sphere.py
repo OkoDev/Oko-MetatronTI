@@ -311,6 +311,20 @@ class ExecutionSphere:
             exit_price = flat.entry + d * delta / flat.qty
         if exit_price <= 0:
             return None   # без entry/qty цену не восстановить — не гадаем, каскад дальше
+        # 🔴 FIX-STOPS (28.08.2026) — ФИЗИЧЕСКИЙ ПРЕДОХРАНИТЕЛЬ ПРОТИВ ОТРАВЛЕННОГО qty.
+        # Убыток не может превысить нотионал позиции: |realized| ≥ entry·qty означает,
+        # что qty занижен, а не что цена ушла на 100%. Именно так MOVR #58528 получил
+        # «exit=1.4138 / −101% / −15R»: Δcr=−10.18 поделили на замёрзший qty=14.32
+        # (нотионал 10.07) вместо реальных 389.99. Корень вычищен в PositionStore,
+        # здесь — страховка: молча не гадаем, отдаём резолв каскаду REST→income,
+        # который берёт настоящую цену закрывающего fill (у MOVR это ap=0.7286).
+        notional = abs(float(flat.entry) * float(flat.qty))
+        if notional > 0 and abs(delta) >= notional:
+            logger.warning(
+                "[Sphere] CR-DELTA ОТКЛОНЁН (qty отравлен): %s %s acc=%d Δcr=%.4g ≥ нотионал %.4g "
+                "(entry=%.8g qty=%.8g) → каскад REST",
+                flat.symbol, flat.side, account, delta, notional, flat.entry, flat.qty)
+            return None
         logger.info("[Sphere] exit via CR-DELTA (гонка fill↔pa=0): %s %s acc=%d Δcr=%.4g exit~%.8g",
                     flat.symbol, flat.side, account, delta, exit_price)
         return ExitInfo(symbol=flat.symbol, side=flat.side, account=account,

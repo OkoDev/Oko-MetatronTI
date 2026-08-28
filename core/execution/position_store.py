@@ -59,12 +59,17 @@ class PositionStore:
     _exit: dict = field(default_factory=dict)         # (account, symbol, side) → ExitInfo
     _last_ws_ts: dict = field(default_factory=dict)   # account → monotonic ts
     _cr: dict = field(default_factory=dict)           # (account, symbol, side) → последний cr при pa>0
+    # 🔴 FIX-STOPS (28.08): размер НАШЕЙ заявки (o.q) с последнего open-fill.
+    # Нужен, чтобы отличить законный рост pa при ЧАСТИЧНОМ филле лимитки от pa-глюка биржи.
+    _order_qty: dict = field(default_factory=dict)    # (account, symbol, side) → qty заявки
 
     # ── cold-start ─────────────────────────────────────────────────────────
     def init_account(self, account: int, positions: list[Position]) -> None:
         """Cold-start снимок (adapter.get_positions). Сбрасывает прежнее состояние аккаунта."""
         for key in [k for k in self._pos if k[0] == account]:
             del self._pos[key]
+        for key in [k for k in self._order_qty if k[0] == account]:
+            del self._order_qty[key]
         for p in positions:
             if not p.is_flat:
                 self._pos[(account, p.symbol, p.side)] = p
@@ -81,6 +86,7 @@ class PositionStore:
         self._touch(ev.account)
         if p.is_flat:
             prev = self._pos.pop(key, None)
+            self._order_qty.pop(key, None)   # цикл позиции завершён — граница заявки не нужна
             return prev  # была отслеживаемой → флэт-триггер; None если её и не было (idempotent)
         # pa>0 — обновляем/создаём; сохраняем уже известный position_id если WS его не прислал
         if key in self._pos and not p.position_id and self._pos[key].position_id:
@@ -88,8 +94,25 @@ class PositionStore:
         # 🔴 pa-глюк BingX (LAB 13.07: pa 52.2→522.0 ×10 при НЕИЗМЕННОМ ep, без fill'ов):
         # реальный добор сдвинул бы среднюю цену входа — qty-скачок >×2.5 при том же ep =
         # мусор, оставляем прежний qty (иначе CR-DELTA восстановит цену от отравленного qty)
+        #
+        # 🔴 FIX-STOPS (28.08.2026) — ПОСЫЛКА «добор сдвинул бы ep» НЕВЕРНА ДЛЯ ЛИМИТКИ.
+        # Лимитка исполняется порциями по ОДНОЙ И ТОЙ ЖЕ цене → ep не меняется вовсе,
+        # и защита срабатывала на ЗАКОННОМ росте позиции. MOVR #58528: заявка 389.9879
+        # залилась тремя порциями 14.32 → 157.42 → 389.99 при ep=0.70290000 неизменном;
+        # store замёрз на 14.32, а биржа держала 389.99. Последствия:
+        #   · CR-DELTA восстановил цену выхода от 14.32 → в БД «exit=1.4138 / −101% / −15R»
+        #     вместо реальных ap=0.7286 / ≈−3.7% / ≈−1.2R;
+        #   · `sphere.close()` закрыл бы 14.32 из 389.99 — недозакрытие позиции.
+        # Тот же класс, что [[bug_live_orders_bridge_broken_by_limit]]: защита писалась
+        # под MARKET-вход и ломается о лимитный.
+        #
+        # Различитель: размер НАШЕЙ заявки. BingX не шлёт `z` (накопленный филл) — только
+        # `q` (размер заявки), и он известен с ПЕРВОГО же fill-события. Рост в пределах
+        # заявки объясним филлом; выше заявки — глюк (52.2→522.0 при заявке ~52 ловится).
         cur = self._pos.get(key)
-        if (cur is not None and cur.qty and p.qty > cur.qty * 2.5
+        known_order_qty = self._order_qty.get(key, 0.0)
+        explained_by_fill = bool(known_order_qty) and p.qty <= known_order_qty * 1.02
+        if (cur is not None and cur.qty and p.qty > cur.qty * 2.5 and not explained_by_fill
                 and p.entry and cur.entry and abs(p.entry - cur.entry) / cur.entry < 1e-6):
             p.qty = cur.qty
         self._pos[key] = p
@@ -106,6 +129,12 @@ class PositionStore:
         key = (ev.account, f.symbol, f.pos_side)
         self._touch(ev.account)
         if f.is_open_fill:
+            # 🔴 FIX-STOPS (28.08): запоминаем размер ЗАЯВКИ (o.q — `z` BingX не шлёт).
+            # Это верхняя граница законного роста pa; ниже по ней отличается частичный
+            # филл лимитки от pa-глюка биржи. Берём максимум: докупка тем же источником
+            # поднимает границу, чужой глюк — нет.
+            if f.total_qty > 0:
+                self._order_qty[key] = max(self._order_qty.get(key, 0.0), f.total_qty)
             cur = self._pos.get(key)
             if cur is not None:
                 if f.position_id:
@@ -196,6 +225,7 @@ class PositionStore:
 
     def drop(self, account: int, symbol: str, side: str) -> Optional[Position]:
         """Снять позицию из состояния (watchdog: биржа-флэт подтверждена N циклов)."""
+        self._order_qty.pop((account, symbol, side), None)
         return self._pos.pop((account, symbol, side), None)
 
     # ── staleness watchdog (§6, страховка от потерянного WS-события) ─────────
