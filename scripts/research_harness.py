@@ -64,6 +64,11 @@ FAMILIES = {
     "дивергенции": lambda c: "div" in c,
     "ATR-тренд":   lambda c: c.startswith("atr_"),
     "SMC":         lambda c: any(k in c for k in ("bos", "choch", "fvg", "ob_", "eqh", "eql", "ote")),
+    # 🔴 28.08: до этого дня ВСЯ структурная семья считалась одним масштабом
+    # (choch_length=50) — были признаки НАПРАВЛЕНИЯ и ни одного признака ТРИГГЕРА.
+    "ДВЕ СТРУКТУРЫ": lambda c: c.startswith(("st5_", "st50_", "sc_")),
+    # 🔴 28.08: ног (волн) в матрице не было ВООБЩЕ — слом это точка, нога отрезок
+    "ВОЛНЫ": lambda c: c.startswith("leg_"),
     "СО СТАРШИХ ТФ": lambda c: "__from_" in c,
 }
 
@@ -150,7 +155,8 @@ def mtf_flags(df: pd.DataFrame, tf: str, senior: list[str] | None = None) -> pd.
 
 def collect(mechanic: Callable, *, tf: str = "15m", n_symbols: int = 25,
             with_flags: bool = True, cost: float = COST_LIMIT,
-            senior: list[str] | None = None) -> pd.DataFrame:
+            senior: list[str] | None = None,
+            extra: Callable | None = None) -> pd.DataFrame:
     """
     Прогоняет механику по вселенной и приклеивает ВСЮ матрицу признаков
     на баре ВХОДА (не импульса!).
@@ -181,6 +187,12 @@ def collect(mechanic: Callable, *, tf: str = "15m", n_symbols: int = 25,
             try:
                 # MTF: младший ТФ + старшие с ЗАКРЫТОГО бара (shift(1))
                 F = mtf_flags(df, tf, senior)
+                # MATRIX-FULL (28.08): семьи, которых в combinator_core нет — фандинг,
+                # ширина вселенной, непрерывные дистанции и состояние осцилляторов.
+                # Подключается ОДНОЙ точкой: `extra(df, tf, sym)` → DataFrame по тому же
+                # индексу. Забыть расширение при прогоне так же невозможно, как семью.
+                if extra is not None:
+                    F = pd.concat([F, extra(df, tf, sym)], axis=1)
             except Exception as e:  # noqa: BLE001
                 print(f"  [{sym}] флаги упали: {type(e).__name__}: {str(e)[:60]}")
         oos = int(hashlib.md5(sym.encode()).hexdigest(), 16) % 2 == 1
@@ -212,8 +224,25 @@ def collect(mechanic: Callable, *, tf: str = "15m", n_symbols: int = 25,
 
 
 def feature_cols(R: pd.DataFrame) -> list[str]:
+    """
+    Колонки-признаки. Мета и НЕ-ЧИСЛОВЫЕ исключаются.
+
+    🔴 28.08: раньше отсекался только `object`, и попавшая в набор колонка ВРЕМЕНИ
+    (`entry_ts`, добавлена для среза «кластер») уезжала в отбор, где выполняется
+    `IS[IS[f] > 0]` → `TypeError: Invalid comparison between datetime64 and int`,
+    и прогон падал на последнем шаге, после часа счёта. Механика вправе возвращать
+    любые служебные поля — фильтр обязан пропускать ТОЛЬКО то, что можно сравнивать
+    с порогом.
+    """
     meta = {"sym", "oos", "year", "side", "pnl"}
-    return [c for c in R.columns if c not in meta and R[c].dtype != object]
+    out = []
+    for c in R.columns:
+        if c in meta:
+            continue
+        if not (pd.api.types.is_numeric_dtype(R[c]) or pd.api.types.is_bool_dtype(R[c])):
+            continue          # object, datetime, timedelta, category — мимо
+        out.append(c)
+    return out
 
 
 def stat(v: pd.DataFrame) -> dict | None:
@@ -267,6 +296,12 @@ def blind_select(R: pd.DataFrame, *, is_years=(0, 2024), oos_years=(2025, 9999),
 
     🔴 Без этого протокола перебор сотни признаков ГАРАНТИРОВАННО даст «грааль»
     случайно — за сессию так сгорело три вердикта подряд.
+
+    🔴 ОГРАНИЧЕНИЕ (найдено 28.08): здесь признак проверяется ТОЛЬКО как `f > 0`.
+    Для булевых это верно, для ЧИСЛОВЫХ — единственный порог «ноль». А числовых
+    в матрице немало (`pivot_nearest_dist_*`, все дистанции и значения из
+    `matrix_full`). То есть прошлые «0 из 446» получены при одном фиксированном
+    пороге на каждый числовой признак. Для них — `blind_select_num()` ниже.
     """
     flags = feature_cols(R)
     IS = R[(~R.oos) & (R.year >= is_years[0]) & (R.year <= is_years[1])]
@@ -292,8 +327,16 @@ def blind_select(R: pd.DataFrame, *, is_years=(0, 2024), oos_years=(2025, 9999),
         # покрывала 97% выборки, то есть фильтровала воздух. Отсекаем.
         if keep > 80:
             continue
-        if (st["wr"] > b_is["wr"] and st["pf"] > 1.2 and keep >= min_keep_pct
-                and st["bt"] > b_is["bt"]):
+        # 🔴 28.08 ПОРОГ PF СДЕЛАН ОТНОСИТЕЛЬНЫМ. Было `st["pf"] > 1.2` — абсолютное
+        # число, откалиброванное под базу с PF около 1.0. Когда сама база сильнее
+        # (боевая механика на ранних годах даёт PF 1.91), критерий пропускал
+        # подвыборки ХУЖЕ БАЗЫ, то есть отбирал шум.
+        # Замер 28.08 (816 сделок, 429 булевых признаков, 12 перемешиваний pnl):
+        #   абсолютный порог: реальных кандидатов 43, шум даёт медиану 38 → P=0.250
+        #   относительный:    реальных кандидатов 41, шум даёт медиану 17 → P=0.000
+        # То есть со старым порогом отбор на IS был практически НЕОТЛИЧИМ ОТ ШУМА.
+        if (st["wr"] > b_is["wr"] and st["pf"] > b_is["pf"] * 1.15
+                and keep >= min_keep_pct and st["bt"] > b_is["bt"]):
             cands.append((f, st, keep))
     cands.sort(key=lambda x: -x[1]["wr"])
     print(f"\nШАГ 1 — кандидатов на IS: {len(cands)} из {len(flags)}")
@@ -319,6 +362,158 @@ def blind_select(R: pd.DataFrame, *, is_years=(0, 2024), oos_years=(2025, 9999),
     print(f"\nПЕРЕЖИЛО OOS: {len(survived)} из {min(len(cands), top)}")
     if not survived:
         print("🔴 отбор на IS был подгонкой — признаки не переносятся")
+    return survived
+
+
+def _is_binary(v: pd.Series) -> bool:
+    u = pd.unique(v.dropna())
+    return len(u) <= 2
+
+
+def _num_candidates(IS: pd.DataFrame, f: str, base: dict, *,
+                    min_keep: float, max_keep: float) -> tuple | None:
+    """
+    Лучший ПОРОГ признака на IS: децили × две стороны (≥ и ≤).
+
+    Возвращает (сторона, порог, статистика, охват потока) или None.
+    Порог — ЗНАЧЕНИЕ, а не квантиль: на OOS применяем то же число, поэтому сдвиг
+    распределения между выборками виден, а не замаскирован пересчётом квантиля.
+    """
+    v = IS[f]
+    if v.notna().sum() < 60:
+        return None
+    qs = v.quantile([i / 10 for i in range(1, 10)]).dropna().unique()
+    best = None
+    for thr in qs:
+        for side, mask in (("≥", v >= thr), ("≤", v <= thr)):
+            sub = IS[mask.fillna(False)]
+            st = stat(sub)
+            if st is None:
+                continue
+            keep = st["n"] / max(base["n"], 1) * 100
+            if keep < min_keep or keep > max_keep:
+                continue
+            # 🔴 28.08: порог PF обязан быть ОТНОСИТЕЛЬНЫМ. Абсолютные «pf > 1.2»
+            # (как в булевой ветке) на базе с PF 1.28 пропускают подвыборки ХУЖЕ базы —
+            # перестановочный контроль показал 136 «кандидатов» из 136 на шуме.
+            if not (st["wr"] > base["wr"] and st["pf"] > base["pf"] * 1.15
+                    and st["bt"] > base["bt"]):
+                continue
+            if best is None or st["pf"] > best[2]["pf"]:
+                best = (side, float(thr), st, keep)
+    return best
+
+
+def blind_select_num(R: pd.DataFrame, *, is_years=(0, 2024), oos_years=(2025, 9999),
+                     min_keep_pct: float = 25.0, max_keep_pct: float = 80.0,
+                     top: int = 12, n_perm: int = 20, seed: int = 19) -> list[tuple]:
+    """
+    Слепой отбор ДЛЯ ЧИСЛОВЫХ признаков + перестановочный контроль.
+
+    🔴 Зачем отдельно от `blind_select` (найдено 28.08.2026): тот проверяет любой
+    признак как `f > 0`. Для булевых это верно, для ЧИСЛОВЫХ — единственный порог
+    «ноль». А числовых в полной матрице больше сотни (все дистанции до магнитов,
+    значения осцилляторов, z-оценки, `pivot_nearest_dist_*`). То есть прошлые
+    «0 из 446» получены при одной фиксированной точке на каждый числовой признак.
+    Здесь порог ищется по децилям в ОБЕ стороны.
+
+    🔴 ПЕРЕСТАНОВОЧНЫЙ КОНТРОЛЬ ОБЯЗАТЕЛЕН. Перебор «признак × 9 децилей × 2 стороны»
+    даёт тысячи проверок — часть пройдёт IS СЛУЧАЙНО. Поэтому тот же перебор
+    гоняется по ПЕРЕМЕШАННОМУ pnl: сколько «находок» рождает чистый шум. Если
+    настоящих кандидатов не больше, чем шумовых, — находок нет, сколько бы
+    красивых чисел ни печаталось.
+    """
+    flags = feature_cols(R)
+    num = [f for f in flags if not _is_binary(R[f])]
+    IS = R[(~R.oos) & (R.year >= is_years[0]) & (R.year <= is_years[1])]
+    OOS = R[R.oos & (R.year >= oos_years[0]) & (R.year <= oos_years[1])]
+    b_is, b_oos = stat(IS), stat(OOS)
+    print("\n" + "=" * 104)
+    print(f"ЧИСЛОВОЙ СЛЕПОЙ ОТБОР · признаков числовых {len(num)} из {len(flags)} · "
+          f"IS n={len(IS)} ({IS.sym.nunique()} монет) · OOS n={len(OOS)} ({OOS.sym.nunique()})")
+    print("=" * 104)
+    if b_is is None or b_oos is None:
+        print("🔴 мало данных для протокола"); return []
+    print(line(IS, "БАЗА IS")); print(line(OOS, "БАЗА OOS"))
+
+    cands = []
+    for f in num:
+        got = _num_candidates(IS, f, b_is, min_keep=min_keep_pct, max_keep=max_keep_pct)
+        if got:
+            cands.append((f, *got))
+    cands.sort(key=lambda x: -x[3]["pf"])
+    print(f"\nШАГ 1 — прошло IS: {len(cands)} из {len(num)}")
+    for f, side, thr, st, keep in cands[:top]:
+        print(f"  {f:<44} {side} {thr:<12.5g} PF {st['pf']:5.2f}  WR {st['wr']:5.1f}%  "
+              f"безтоп10% {st['bt']:+7.0f}  поток {keep:4.0f}%")
+
+    def _oos_survivors(cand_list, OOSf, base_oos, verbose=False):
+        """Применить пороги, выбранные на IS, к OOS. Порог — то же ЧИСЛО."""
+        surv = []
+        for f, side, thr, _, _ in cand_list[:top]:
+            v = OOSf[f]
+            sub = OOSf[(v >= thr).fillna(False)] if side == "≥" else OOSf[(v <= thr).fillna(False)]
+            st = stat(sub)
+            if st is None:
+                if verbose:
+                    print(f"  {f:<44} мало данных")
+                continue
+            ok = (st["pf"] > base_oos["pf"] * 1.15 and st["wr"] > base_oos["wr"]
+                  and st["bt"] > base_oos["bt"])
+            if verbose:
+                print(f"  {f:<44} {side} {thr:<12.5g} PF {st['pf']:5.2f}  WR {st['wr']:5.1f}%  "
+                      f"безтоп10% {st['bt']:+7.0f}  охват {st['cov']:4.0f}%{'  ✅' if ok else ''}")
+            if ok:
+                surv.append((f, side, thr))
+        return surv
+
+    print(f"\nШАГ 2 — OOS, открываем ОДИН раз (порог тот же ЧИСЛОМ):")
+    survived = _oos_survivors(cands, OOS, b_oos, verbose=True)
+    print(f"\nПЕРЕЖИЛО OOS: {len(survived)} из {min(len(cands), top)}")
+
+    # ── 🎲 СКВОЗНОЙ ПЕРЕСТАНОВОЧНЫЙ КОНТРОЛЬ ────────────────────────────────
+    # 🔴 Считать «сколько прошло IS» мало: перебор признак × 9 децилей × 2 стороны —
+    # это тысячи проверок, и часть пройдёт СЛУЧАЙНО. Поэтому под нулевой гипотезой
+    # гоняется ВЕСЬ конвейер: перемешали pnl → отобрали на IS → открыли OOS →
+    # посчитали выживших. Сравниваем не с нулём, а с тем, что даёт чистый случай.
+    rng = np.random.default_rng(seed)
+    noise_surv, noise_best = [], []
+    for _ in range(n_perm):
+        perm = rng.permutation(R.pnl.values)
+        Rp = R.copy(); Rp["pnl"] = perm
+        ISp = Rp[(~Rp.oos) & (Rp.year >= is_years[0]) & (Rp.year <= is_years[1])]
+        OOSp = Rp[Rp.oos & (Rp.year >= oos_years[0]) & (Rp.year <= oos_years[1])]
+        bi, bo = stat(ISp), stat(OOSp)
+        if bi is None or bo is None:
+            continue
+        cp = []
+        for f in num:
+            got = _num_candidates(ISp, f, bi, min_keep=min_keep_pct, max_keep=max_keep_pct)
+            if got:
+                cp.append((f, *got))
+        cp.sort(key=lambda x: -x[3]["pf"])
+        noise_best.append(cp[0][3]["pf"] if cp else 0.0)
+        noise_surv.append(len(_oos_survivors(cp, OOSp, bo)))
+
+    print(f"\n🎲 СКВОЗНОЙ ПЕРЕСТАНОВОЧНЫЙ КОНТРОЛЬ ({len(noise_surv)} перемешиваний "
+          f"pnl, полный конвейер IS→OOS):")
+    if not noise_surv:
+        print("   🔴 контроль не отработал — выборка слишком мала")
+        return survived
+    ns = np.array(noise_surv); nb_ = np.array(noise_best)
+    print(f"   ШУМ переживает OOS: медиана {np.median(ns):.1f} · "
+          f"95-й перцентиль {np.quantile(ns, 0.95):.1f} · максимум {ns.max()}")
+    print(f"   ШУМ, лучший PF на IS: медиана {np.median(nb_):.2f} · максимум {nb_.max():.2f}"
+          f"   (наш лучший {cands[0][3]['pf']:.2f})" if cands else "")
+    p_emp = float((ns >= len(survived)).mean())
+    print(f"   наш результат {len(survived)} выживших · P(шум ≥ нашего) = {p_emp:.3f}")
+    if len(survived) == 0:
+        print("   🔴 находок нет — пороги не переносятся на отложенную выборку")
+    elif p_emp > 0.10:
+        print("   🔴 РЕЗУЛЬТАТ НЕ ОТЛИЧИМ ОТ ШУМА: случай даёт столько же выживших.")
+        print("      Это НЕ находка, сколько бы красивых PF ни печаталось выше.")
+    else:
+        print("   ✅ выживших существенно больше, чем даёт случай — есть что проверять дальше")
     return survived
 
 
