@@ -113,6 +113,66 @@ def _drift_gate(inst: Instance, side: str) -> tuple[bool, str]:
         return True, f"gate:ИМПОРТ УПАЛ {type(e).__name__} → пропускаю"
 
 
+def _eqh_alt_entry(bot, inst: Instance, df, side: str) -> tuple[bool, str]:
+    """
+    АЛЬТЕРНАТИВНЫЙ ВХОД: цена у скопления стопов (EQH сверху / EQL снизу).
+
+    Замер 29.08 на 6730 сделках: `short` в пределах 0.25 ATR от уровня равных хаёв даёт
+    PF 5.06 против 2.40 у чистого дрейф-гейта, безтоп10% +525, охват 64%, зеркало на
+    long — 0.75 (идёт прямо в стопы). P(перестановка) = 0.000, плато порога проверено
+    (0.1→1.5 ATR монотонно), временной OOS train ×1.41 → test ×2.18
+    ([[eqh_liquidity_short_works_in_2026]]).
+
+    🔑 Почему это АЛЬТЕРНАТИВА, а не добавка к дрейф-гейту: по годам они конкуренты,
+    а не партнёры. В 2026 EQH даёт 1.93 при хрупкости +5, дрейф-гейт — 1.06 при −200,
+    а их ПЕРЕСЕЧЕНИЕ (1.19) хуже чистого EQH. В 2024 наоборот сильнее гейт. Поэтому
+    сигнал проходит, если выполнено ЛЮБОЕ из двух условий, и какое именно — пишется в лог.
+
+    🔴 FAIL-CLOSED, в отличие от `_drift_gate`. Дрейф-гейт при сбое ПРОПУСКАЕТ (иначе
+    стратегия умирает молча). Здесь наоборот: функция РАСШИРЯЕТ поток, и её поломка
+    открыла бы шлюз. Любая неясность → «не пропускаю».
+    """
+    try:
+        cfg = bot.config.get(f"{inst.cfg_key}.eqh_entry", {}) or {}
+        if not bool(cfg.get("enabled", False)):
+            return False, "eqh:выключен"
+        if side not in (cfg.get("sides") or ["short"]):
+            return False, f"eqh:сторона {side} не разрешена"
+
+        from core.smc.impulse_fib import _atr
+        from core.smc.smc_engine import detect_equal_levels
+
+        tol = float(cfg.get("tolerance_atr", 0.25))
+        # уровень должен быть ПОДТВЕРЖДЁН: `detect_equal_levels(eq_len)` помечает пивот
+        # только через eq_len баров, поэтому хвост ряда ещё не окончателен
+        # ([[detector_lag_is_a_parameter_not_statistics]]).
+        lag = int(cfg.get("confirm_bars", 3))
+        atr = float(_atr(df).iloc[-1])
+        if not atr or atr <= 0:
+            return False, "eqh:ATR недоступен"
+        price = float(df["close"].iloc[-1])
+        tag = "EQH" if side == "short" else "EQL"
+        cutoff = df.index[-lag] if len(df) > lag else df.index[-1]
+
+        best = None
+        for e in detect_equal_levels(df):
+            if len(e) < 5 or str(e[4]).upper() != tag:
+                continue
+            if pd.Timestamp(e[2]) > cutoff:        # уровень ещё не подтверждён
+                continue
+            lvl = (float(e[1]) + float(e[3])) / 2.0
+            d = abs(price - lvl) / atr
+            if best is None or d < best[0]:
+                best = (d, lvl)
+        if best is None:
+            return False, f"eqh:{tag} не найден"
+        if best[0] <= tol:
+            return True, f"eqh:{tag} на {best[0]:.2f} ATR (порог {tol})"
+        return False, f"eqh:{tag} далеко {best[0]:.2f} ATR"
+    except Exception as e:                                   # noqa: BLE001
+        return False, f"eqh:СБОЙ {type(e).__name__} → не пропускаю"
+
+
 def _ud_feats() -> dict:
     """Режимный контекст (наблюдательный). Любой сбой → пустой словарь, луп не страдает."""
     try:
@@ -329,10 +389,21 @@ def make_loop(inst: Instance):
                     # При любой неясности gate() пропускает (fail-open) — см. universe_drift.
                     _pass_gate, _why = _drift_gate(inst, s["side"])
                     if not _pass_gate:
-                        _drop("дрейф-гейт")
-                        logger.info("[%s] %s %s ОТКЛОНЁН дрейф-гейтом: %s",
-                                    TAG, sym, s["side"].upper(), _why)
-                        continue
+                        # 🔴 29.08 ВТОРАЯ ДВЕРЬ: цена у скопления стопов (EQH). По замеру
+                        # эта ось и дрейф-гейт — КОНКУРЕНТЫ, а не партнёры: в 2026 EQH
+                        # даёт 1.93 против 1.06 у гейта, а их пересечение хуже обоих.
+                        # Поэтому вход открыт при выполнении ЛЮБОГО условия, и в лог
+                        # пишется, какая именно дверь сработала — иначе через месяц
+                        # будет не разобрать, что принесло сделки.
+                        _pass_alt, _alt_why = _eqh_alt_entry(bot, inst, df, s["side"])
+                        if not _pass_alt:
+                            _drop("дрейф-гейт")
+                            logger.info("[%s] %s %s ОТКЛОНЁН: %s · %s",
+                                        TAG, sym, s["side"].upper(), _why, _alt_why)
+                            continue
+                        logger.info("[%s] %s %s ПРОПУЩЕН ПО EQH (гейт был против): %s",
+                                    TAG, sym, s["side"].upper(), _alt_why)
+                        _drop("вход по EQH (не отсев)")
                     if not (min_stop <= s["stop_pct"] <= max_stop):
                         _drop("стоп уже зоны" if s["stop_pct"] < min_stop else "стоп шире зоны")
                         continue
