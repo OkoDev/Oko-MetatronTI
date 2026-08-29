@@ -182,6 +182,19 @@ class PairState:
     spheres_ok: int = 0               # сколько сфер обновляли данные за последний час
     last_diagnostic_time: Optional[datetime] = None
 
+    # ── WaveService (ARCH-132) ──────────────────────────────────────────
+    # 🔴 До 29.08.2026 этих полей не было, а `update()` молча роняет неизвестные ключи
+    # в debug-лог — то есть публикация волнового состояния уходила бы в никуда
+    # (класс «молчаливый отказ»). Поля заведены ДО подключения сервиса.
+    elliott_n_down: int = 0           # подряд снижающихся swing high на HTF ≈ номер волны вниз
+    elliott_n_up: int = 0             # подряд растущих swing low ≈ номер волны вверх
+    elliott_phase: Optional[str] = None      # wave3_mid / wave5_final / ABC_waveB / impulse_start
+    elliott_conf: float = 0.0
+    wave_snap: Optional[Dict[str, Any]] = None   # полный снимок по ТФ: n_down/n_up на 4h/1h/LTF
+    wave_recount_ts: Optional[datetime] = None   # когда счёт волн последний раз СЛОМАЛСЯ
+    wave_recounts: int = 0            # сколько раз разметка пересчитывалась (сам по себе сигнал)
+    wave_updated_at: Optional[datetime] = None
+
 
 @dataclass
 class AccountState:
