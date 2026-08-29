@@ -147,12 +147,22 @@ def _eqh_alt_entry(bot, inst: Instance, df, side: str) -> tuple[bool, str]:
         # только через eq_len баров, поэтому хвост ряда ещё не окончателен
         # ([[detector_lag_is_a_parameter_not_statistics]]).
         lag = int(cfg.get("confirm_bars", 3))
-        atr = float(_atr(df).iloc[-1])
+        # 🔴 БАР СРАВНЕНИЯ — ПРЕДЫДУЩИЙ, а не последний. Замер 29.08 показал, что это
+        # не мелочь: сдвиг 0 → ×1.20, сдвиг 1 → ×3.73, сдвиг 2 → ×2.05. Физика простая —
+        # «цена БЫЛА у уровня, и уже отходит» это отбой, а «цена У уровня прямо сейчас»
+        # это момент касания, который ещё может обернуться проколом. Матрица считает все
+        # признаки со `shift(1)`, и первая версия этой функции сравнивала боевой сдвиг 0
+        # с матричным сдвигом 1 — из-за чего находка была ошибочно объявлена мёртвой.
+        if len(df) < 3:
+            return False, "eqh:ряд короче 3 баров"
+        d0 = df.iloc[:-1]                       # закрытый бар, как в матрице
+        atr = float(_atr(d0).iloc[-1])
         if not atr or atr <= 0:
             return False, "eqh:ATR недоступен"
-        price = float(df["close"].iloc[-1])
+        price = float(d0["close"].iloc[-1])
         tag = "EQH" if side == "short" else "EQL"
-        cutoff = df.index[-lag] if len(df) > lag else df.index[-1]
+        cutoff = d0.index[-lag] if len(d0) > lag else d0.index[-1]
+        df = d0
 
         best = None
         for e in detect_equal_levels(df):
