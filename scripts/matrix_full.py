@@ -54,6 +54,7 @@ warnings.filterwarnings("ignore")
 
 DB = str(ROOT / "ohlcv_cache.db")
 CACHE = ROOT / "cache" / "market_context.parquet"
+RS_CACHE = ROOT / "cache" / "rs_context.parquet"
 
 # ── FUND ────────────────────────────────────────────────────────────────────
 # `interval_hours` в таблице разный (1 / 2 / 4 / 8) — сырые ставки НЕСРАВНИМЫ
@@ -173,6 +174,82 @@ def market_context(rebuild: bool = False) -> pd.DataFrame:
 def market_features(index: pd.DatetimeIndex, M: pd.DataFrame | None = None) -> pd.DataFrame:
     M = market_context() if M is None else M
     return M.reindex(index.floor("D"), method="ffill").set_axis(index)
+
+
+# ── RS: относительная сила МОНЕТЫ против вселенной ──────────────────────────
+# 🔴 Этой семьи в матрице не было НИКОГДА (30.08.2026). Обнаружено после того, как
+# перебор 753 колонок не нашёл ни одной связки для long: среди них не было ни одной,
+# отвечающей на вопрос «сильнее ли эта монета рынка».
+#
+# Почему это ровно тот пробел. Long по монетам в плюсе: 2023 7/15 · 2024 10/21 ·
+# 2025 9/35 · 2026 3/40. Даже в худший год растущие монеты ЕСТЬ — их всё меньше,
+# и отбирать их нечем. Признаки MKT описывают вселенную целиком и потому на любом
+# своём срезе усиливают short сильнее long (замерено: ×6.02 против ×0.90).
+def _build_rs_context(min_bars_4h: int = 3000, n_syms: int = 300) -> pd.DataFrame:
+    """
+    Панель относительной силы: индекс (день, символ), колонки — признаки RS.
+
+    Считается из того же дневного среза 4h-кэша, что и `_build_market_context`,
+    поэтому причинность общая: значения относятся к ЗАКРЫТОМУ дню, сдвиг на день
+    делает `rs_context()` при выдаче.
+    """
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
+        rows = c.execute("SELECT symbol,COUNT(*) n FROM ohlcv_cache WHERE timeframe='4h' "
+                         "GROUP BY symbol HAVING n>? ORDER BY n DESC", (min_bars_4h,)).fetchall()
+        syms = [s for s, _ in rows][:n_syms]
+        if not syms:
+            raise RuntimeError("rs_context: ноль символов 4h — пустой замер запрещён")
+        q = ("SELECT symbol,time,close FROM ohlcv_cache WHERE timeframe='4h' AND symbol IN (%s)"
+             % ",".join("?" * len(syms)))
+        d = pd.read_sql(q, c, params=syms)
+    d["day"] = pd.to_datetime(d.time, unit="ms", utc=True).dt.floor("D")
+    px = d.sort_values("time").groupby(["day", "symbol"]).close.last().unstack().sort_index()
+    print(f"  rs_context: {px.shape[1]} монет × {px.shape[0]} дней")
+
+    ret = lambda k: px.pct_change(k) * 100                 # noqa: E731
+    out = {}
+    for k in (30, 90, 180):
+        r = ret(k)
+        out[f"rs{k}"] = r.sub(r.median(axis=1), axis=0)     # монета минус медиана вселенной
+    for k in (30, 90):
+        out[f"rs_rank{k}"] = ret(k).rank(axis=1, pct=True) * 100      # место в вселенной
+    out["rs_slope"] = out["rs90"].diff(30)                  # производная силы бьёт уровень
+    ma200 = px.rolling(200, min_periods=100).mean()
+    out["own_above_ma200"] = (px - ma200) / px * 100        # своя MA200, а не BTC-шная
+    dr = px.pct_change()
+    med = dr.median(axis=1)
+    out["rs_days_up30"] = dr.gt(med, axis=0).rolling(30).mean() * 100   # доля дней обгона
+    btc = next((s for s in ("BTC/USDT", "BTCUSDT") if s in px.columns), None)
+    if btc:
+        b = dr[btc]
+        cov = dr.rolling(90, min_periods=45).cov(b)
+        out["beta_btc"] = cov.div(b.rolling(90, min_periods=45).var(), axis=0)
+        out["corr_btc90"] = dr.rolling(90, min_periods=45).corr(b)
+    RS = pd.concat({k: v.stack(dropna=False) for k, v in out.items()}, axis=1)
+    RS.index.names = ["day", "symbol"]
+    return RS
+
+
+def rs_context(rebuild: bool = False) -> pd.DataFrame:
+    """Панель RS со СДВИГОМ на 1 день (только закрытые дни) — та же причинность, что MKT."""
+    if RS_CACHE.exists() and not rebuild:
+        RS = pd.read_parquet(RS_CACHE)
+    else:
+        RS = _build_rs_context()
+        RS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        RS.to_parquet(RS_CACHE)
+    return RS.groupby(level="symbol").shift(1)             # 🔴 вчерашний закрытый день
+
+
+def rs_features(index: pd.DatetimeIndex, symbol: str,
+                RS: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Признаки RS одной монеты, разложенные на бары её ряда."""
+    RS = rs_context() if RS is None else RS
+    try:
+        one = RS.xs(symbol, level="symbol")
+    except KeyError:
+        return pd.DataFrame(index=index)
+    return one.reindex(index.floor("D"), method="ffill").set_axis(index)
 
 
 # ── DIST + STATE ────────────────────────────────────────────────────────────
@@ -870,6 +947,12 @@ def extra_flags(df: pd.DataFrame, tf: str, symbol: str,
              candle_volume_features(df, tf),          # анатомия свечи + объём как следует
              funding_features(df.index, symbol),
              market_features(df.index, M)]
+    # 🔴 RS: сильнее ли МОНЕТА рынка. Признаки MKT описывают вселенную целиком и потому
+    # усиливают short на любом своём срезе — long живёт в отдельных монетах, не в рынке
+    try:
+        parts.append(rs_features(df.index, symbol))
+    except Exception:                                  # noqa: BLE001
+        pass
     # 🔴 две структуры вместо одной: у матрицы не было признаков ТРИГГЕРА входа
     try:
         parts.append(structure_scales_features(df, tf))
