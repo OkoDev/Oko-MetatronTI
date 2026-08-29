@@ -480,11 +480,21 @@ def structure_scales_features(df: pd.DataFrame, label: str) -> pd.DataFrame:
 # через `eq_len`. Признак «возраст события» причинен ТОЛЬКО если событие уже видно.
 # Дважды за 29.08 наступили на это: правило с допуском меньше лага давало PF 0.04
 # (тавтология «цена развернулась» → см. `detector_confirmation_lag.py`).
-SMC_LAG = {"ob": 0,          # break_idx = бар пробоя, событие уже случилось
-           "fvg": 1,         # трёхсвечный паттерн закрывается на своём баре
+# ✅ СВЕРЕНО НЕЗАВИСИМЫМ ЗАМЕРОМ (`scripts/smc_confirmation_lags.py`, 3 символа × 10 событий):
+# лаг оказался НЕ рыночной статистикой, а АЛГОРИТМИЧЕСКОЙ КОНСТАНТОЙ — он равен параметру
+# детектора и одинаков в БАРАХ на любом ТФ (но в часах масштабируется: 50 баров на 1h = 50 ч).
+#   detect_structure_breaks(L) → 0 при любом L (уровень свинга активен уже к моменту пробоя)
+#   detect_order_blocks        → 0 (break_idx = бар пробоя)
+#   detect_sponsored_candle    → 0 на появление, 5 на флаги confirmed/broke_structure
+#   detect_fvg                 → 0 (здесь взят 1 — на бар строже, в безопасную сторону)
+#   detect_equal_levels(eq)    → ровно eq_len
+#   classify_structure(L) / detect_swings → ровно L. Для major_len=50 это 12.5 ЧАСА на 15m —
+#     главная ловушка семьи: любой признак «свинг появился N баров назад» с N < 50 читает будущее.
+SMC_LAG = {"ob": 0,
+           "fvg": 1,
            "swing_major": MAJOR_LEN, "swing_minor": MINOR_LEN,
-           "sc": 5,          # confirm_bars по умолчанию
-           "eq": 3}          # eq_len по умолчанию
+           "sc": 5,
+           "eq": 3}
 
 
 def _zone_state(n: int, c: np.ndarray, atr_s: np.ndarray,
