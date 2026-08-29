@@ -903,6 +903,21 @@ def extra_flags(df: pd.DataFrame, tf: str, symbol: str,
         S = S.reindex(df.index, method="ffill")
         S.columns = [f"{c}__from_{stf}" for c in S.columns]
         parts.append(S)
+
+        # 🔴 29.08 ВЛОЖЕННОСТЬ ВОЛН ПО ТФ (запрос Егора: «все ТФ + MTF + вложенности волн»).
+        # До этого структура и ноги считались ТОЛЬКО на рабочем ТФ, то есть «две структуры»
+        # жили внутри одного масштаба. Настоящая вложенность — когда старший ТФ даёт свою
+        # пару структур, а младший свою: 15m·50 ≈ 4h·5 по календарю, перекрытие уровней
+        # 66.7% ([[method_egor_two_scale_entry]]). Теперь спрашивать можно и это.
+        # Причинность: признаки старшего ТФ уже сдвинуты на свой бар внутри функций,
+        # плюс `ffill` по младшей сетке — значение ЗАКРЫТОГО старшего бара.
+        for fn in (structure_scales_features, wave_features):
+            try:
+                W = fn(agg, stf).reindex(df.index, method="ffill")
+                W.columns = [f"{c}__from_{stf}" for c in W.columns]
+                parts.append(W)
+            except Exception:                          # noqa: BLE001
+                pass
     return pd.concat(parts, axis=1)
 
 
