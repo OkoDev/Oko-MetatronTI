@@ -132,16 +132,24 @@ def main() -> int:
     D = D.reset_index(drop=True)
 
     fams = list(FAMILIES) if a.families == "all" else [f.strip() for f in a.families.split(",")]
-    cols = []
+    by_fam: dict[str, list[str]] = {}
     for f in fams:
         pred = FAMILIES.get(f)
         if pred is None:
             print(f"🔴 неизвестная семья: {f}"); return 1
-        cols += [c for c in D.columns if c not in SKIP and pred(c)
-                 and pd.api.types.is_numeric_dtype(D[c])]
-    cols = sorted(set(cols))
+        by_fam[f] = sorted({c for c in D.columns if c not in SKIP and pred(c)
+                            and pd.api.types.is_numeric_dtype(D[c])})
+    # 🔴 29.08 ИСПРАВЛЕНО. Первая версия резала `cols[:max_feats]` ПО АЛФАВИТУ — и при
+    # `--families all --max-feats 250` в отбор не попадало НИ ОДНОГО признака SCALES/WAVES
+    # (их имена начинаются с s/l и стоят в конце), а из SMC проходило 5 из 60. То есть
+    # «полный охват» молча превращался в охват одной семьи. Теперь квота делится РОВНО
+    # между семьями, и каждая присутствует.
     if a.max_feats:
-        cols = cols[:a.max_feats]
+        quota = max(1, a.max_feats // max(1, len(by_fam)))
+        for f in by_fam:
+            by_fam[f] = by_fam[f][:quota]
+    cols = sorted({c for v in by_fam.values() for c in v})
+    print("  состав по семьям: " + " · ".join(f"{f}:{len(v)}" for f, v in by_fam.items()))
 
     b = stat(D)
     print("=" * 104)
@@ -169,9 +177,39 @@ def main() -> int:
             g = D[D.year == y]
             aa, bb = stat(g[m[g.index]]), stat(g)
             yrs.append(f"{y}×{aa['pf']/bb['pf']:.1f}" if (aa and bb and bb["pf"]) else f"{y}—")
+        # 🔴 КОНЦЕНТРАЦИЯ В ОДНОМ ГОДЕ — дефект, которого перестановка НЕ ловит: она
+        # проверяет отличимость от случайности, а не то, что вся связка живёт в одной
+        # эпохе. Связка с долей 87-100% сделок из одного года — это свойство года.
+        sub = D[m]
+        top_share = float(sub.year.value_counts(normalize=True).max()) if len(sub) else 0.0
+        top_year = sub.year.value_counts().idxmax() if len(sub) else "—"
+        flag = " 🔴 ОДИН ГОД" if top_share >= 0.7 else (" 🟡" if top_share >= 0.5 else "")
+        full = stat(sub)
         print(f"  {nm[:74]:<76}")
         print(f"      IS {s['pf']:5.2f} n={s['n']:<4} → OOS {o['pf']:5.2f} n={o['n']:<4} "
               f"безтоп10% {o['bt']:+7.0f} охват {o['cov']:3.0f}%  " + " ".join(yrs))
+        print(f"      вся выборка PF {full['pf']:5.2f} (×{full['pf']/b['pf']:.2f} к базе) · "
+              f"{top_share*100:3.0f}% сделок из {top_year}{flag}")
+
+    # 🔴 ОДНИ И ТЕ ЖЕ СДЕЛКИ ПОД РАЗНЫМИ ИМЕНАМИ. Десять «находок», покрывающих один и тот
+    # же набор сделок, — это одна находка, посчитанная десять раз. Без этой проверки список
+    # выше выглядит богаче, чем есть, и значимость завышается.
+    if len(surv) > 1:
+        print("\n🔗 НЕ ОДНО ЛИ ЭТО (Жаккар пересечения сделок между выжившими):")
+        groups: list[list[int]] = []
+        for i in range(len(surv)):
+            placed = False
+            for g in groups:
+                mi, mj = surv[i][3], surv[g[0]][3]
+                u = int((mi | mj).sum())
+                if u and (mi & mj).sum() / u >= 0.7:
+                    g.append(i); placed = True; break
+            if not placed:
+                groups.append([i])
+        print(f"   выживших {len(surv)} → РАЗЛИЧНЫХ явлений {len(groups)}")
+        for k, g in enumerate(groups, 1):
+            names = [surv[i][0][:46] for i in g]
+            print(f"   [{k}] {names[0]}" + (f"   (+{len(g)-1} с теми же сделками)" if len(g) > 1 else ""))
 
     print(f"\n🎲 ПЕРЕСТАНОВОЧНЫЙ КОНТРОЛЬ ({a.perm} перемешиваний, ТОТ ЖЕ конвейер целиком):")
     rng = np.random.default_rng(7)
