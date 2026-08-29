@@ -50,6 +50,14 @@ FAM = {
     # находки [[two_scale_structure_minor_churn]] на волновой язык (ступенчатая нога)
     "waves":  (("leg_",),
                ["leg_in_ote_15m", "leg_in_disc_15m"]),
+    # SMC как СОСТОЯНИЕ (29.08). Названные заранее гипотезы — прямой канон SMC/ICT:
+    # вход в зоне ордер-блока · вход в незакрытом FVG · цена у уровня ликвидности ·
+    # зона подтверждённой sponsored candle (свип + BOS + имбаланс).
+    "smc":    (("smc_", "in_smc_", "near_smc_"),
+               ["in_smc_bull_ob_15m", "in_smc_bear_ob_15m",
+                "in_smc_bull_fvg_15m", "in_smc_bear_fvg_15m",
+                "near_smc_eqh_15m", "near_smc_eql_15m",
+                "in_smc_spons_confirmed_15m"]),
 }
 SCALES, NAMED = FAM["scales"]
 

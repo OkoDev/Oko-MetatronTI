@@ -474,6 +474,213 @@ def structure_scales_features(df: pd.DataFrame, label: str) -> pd.DataFrame:
     return E.shift(1)     # 🔴 причинность: состояние на ЗАКРЫТОМ баре
 
 
+# ── SMC КАК СОСТОЯНИЕ ───────────────────────────────────────────────────────
+# 🔴 Лаг подтверждения на бар: событие видно НЕ тогда, когда произошло.
+# Свинг подтверждается через `length` баров, SC — через `confirm_bars`, EQH/EQL —
+# через `eq_len`. Признак «возраст события» причинен ТОЛЬКО если событие уже видно.
+# Дважды за 29.08 наступили на это: правило с допуском меньше лага давало PF 0.04
+# (тавтология «цена развернулась» → см. `detector_confirmation_lag.py`).
+SMC_LAG = {"ob": 0,          # break_idx = бар пробоя, событие уже случилось
+           "fvg": 1,         # трёхсвечный паттерн закрывается на своём баре
+           "swing_major": MAJOR_LEN, "swing_minor": MINOR_LEN,
+           "sc": 5,          # confirm_bars по умолчанию
+           "eq": 3}          # eq_len по умолчанию
+
+
+def _zone_state(n: int, c: np.ndarray, atr_s: np.ndarray,
+                zones: list[tuple[int, float, float, int]],
+                max_active: int = 20) -> dict[str, np.ndarray]:
+    """
+    Развёртка ЗОН в состояние по каждому бару — единый резолвер вместо копипасты.
+
+    zones: (known_from, top, bottom, dead_from) — бар, с которого зона ИЗВЕСТНА
+    (уже с лагом подтверждения), границы, и бар смерти (-1 = жива).
+
+    Отвечает на три вопроса, которыми лечится «событие вместо состояния»
+    ([[two_scale_structure_minor_churn]]): как далеко · как давно · внутри ли.
+    """
+    z = lambda: np.full(n, np.nan)                                    # noqa: E731
+    dist, age, cnt = z(), z(), np.zeros(n)
+    inside = np.zeros(n)
+    if not zones:
+        return {"dist_atr": dist, "age": age, "inside": inside, "active": cnt}
+    zones = sorted(zones)
+    active: list[tuple[int, float, float, int]] = []
+    si = 0
+    for t in range(n):
+        while si < len(zones) and zones[si][0] <= t:
+            active.append(zones[si]); si += 1
+        if active:
+            active = [q for q in active if not (0 <= q[3] <= t)]
+            # 🔴 Точечные уровни (свинги, EQH/EQL, SC) не «умирают» сами, и без окна
+            # их список растёт до тысяч: свинг годичной давности не активная зона,
+            # а цикл превращается в O(n²). Держим последние `max_active`.
+            if len(active) > max_active:
+                active = active[-max_active:]
+        if not active:
+            continue
+        cnt[t] = len(active)
+        best, best_d = None, None
+        for kf, top, bot, _ in active:
+            d = c[t] - top if c[t] > top else (c[t] - bot if c[t] < bot else 0.0)
+            if best_d is None or abs(d) < abs(best_d):
+                best, best_d = kf, d
+        dist[t] = best_d / atr_s[t] if atr_s[t] == atr_s[t] else np.nan
+        age[t] = t - best
+        inside[t] = 1.0 if best_d == 0.0 else 0.0
+    return {"dist_atr": dist, "age": age, "inside": inside, "active": cnt}
+
+
+def _idx_of(df: pd.DataFrame, ts) -> int:
+    """Timestamp → iloc. Часть детекторов отдаёт ВРЕМЯ, часть — индексы (легко перепутать)."""
+    try:
+        return int(df.index.get_indexer([pd.Timestamp(ts)], method="nearest")[0])
+    except Exception:                                  # noqa: BLE001
+        return -1
+
+
+def smc_state_features(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    """
+    🔴 SMC КАК СОСТОЯНИЕ, А НЕ СОБЫТИЕ (29.08.2026).
+
+    Инвентаризация вскрыла, что SMC в матрице наполовину мёртв: 13 из 69 признаков —
+    КОНСТАНТА 0, а `bull_ob` помечает 4 бара из 19 851 (0.020%). При этом ДЕТЕКТОРЫ
+    исправны все до одного: `detect_order_blocks` находит 126 блоков, `detect_swings` —
+    2983 события, `detect_sponsored_candle` — 318 ([[smc_in_matrix_is_dead_weight]]).
+
+    Ломается мост детектор→признак, тремя способами:
+      1. функция ОТРИСОВКИ вместо исторической — `active_order_blocks(obs, n_bars=30,
+         per_side=5)` отдаёт блоки, живые к КОНЦУ ряда, и флаг ставится на их `break_idx`;
+      2. событие вместо состояния — `bull_bos` срабатывает раз в тысячи баров;
+      3. детектор просто не подключён — свингов и SC в матрице нет вовсе.
+
+    Здесь всё разворачивается единообразно: где мы ОТНОСИТЕЛЬНО зоны, как давно она
+    возникла, внутри ли мы, сколько их живо. Лаг подтверждения учитывается по `SMC_LAG`.
+
+    ⚠️ Префикс `smc_` намеренно: `sc_*` в матрице уже занят признаками согласования
+    масштабов (`sc_agree`, `sc_pullback`), а НЕ sponsored candle.
+    """
+    from core.smc.smc_engine import (detect_equal_levels, detect_fvg,
+                                     detect_order_blocks, detect_sponsored_candle,
+                                     detect_structure_breaks, detect_swings)
+
+    n = len(df)
+    out: dict[str, np.ndarray] = {}
+    if n < 600:
+        return pd.DataFrame(out, index=df.index)
+
+    from core.smc.impulse_fib import _atr
+    atr = _atr(df).values
+    atr_s = np.where(atr > 0, atr, np.nan)
+    c = df.close.values
+
+    def put(prefix: str, st: dict[str, np.ndarray], point: bool = False) -> None:
+        """
+        `point=True` — зона выродилась в ЛИНИЮ (свинг, EQH/EQL): у неё top == bottom,
+        поэтому `inside` там всегда 0 (цена ровно на уровне не закрывается практически
+        никогда) и колонка была бы мусором. Вместо неё — «близко к уровню» в долях ATR,
+        что для линии и есть содержательный вопрос.
+        """
+        out[f"{prefix}_dist_atr_{label}"] = st["dist_atr"]
+        out[f"{prefix}_age_{label}"] = st["age"]
+        out[f"{prefix}_active_{label}"] = st["active"]
+        if point:
+            d = np.abs(st["dist_atr"])
+            out[f"near_{prefix}_{label}"] = np.where(np.isnan(d), np.nan,
+                                                     (d <= 0.25).astype(float))
+        else:
+            out[f"in_{prefix}_{label}"] = st["inside"]
+
+    # ── ORDER BLOCKS ────────────────────────────────────────────────────────
+    breaks = detect_structure_breaks(df, length=MAJOR_LEN)
+    obs = detect_order_blocks(df, breaks)
+    for kind in ("bull", "bear"):
+        zs = [(int(o.break_idx) + SMC_LAG["ob"], float(o.top), float(o.bottom),
+               int(o.mitigated_idx)) for o in obs
+              if o.kind == kind and 0 <= o.break_idx < n]
+        put(f"smc_{kind}_ob", _zone_state(n, c, atr_s, zs))
+    # breaker = пробитый OB, сменивший роль — отдельная сущность, не дубль
+    for kind in ("bull", "bear"):
+        zs = [(int(o.mitigated_idx), float(o.top), float(o.bottom), -1) for o in obs
+              if o.kind == kind and o.is_breaker and 0 <= o.mitigated_idx < n]
+        put(f"smc_{kind}_breaker", _zone_state(n, c, atr_s, zs))
+
+    # ── FVG ─────────────────────────────────────────────────────────────────
+    # 🔴 контракт: (ts_left, top, bottom, kind, ts_i, mitigated_ts_or_None) — ВРЕМЕНА
+    # 🔴🔴 LOOK-AHEAD ЧЕРЕЗ ГЛОБАЛЬНУЮ НОРМИРОВКУ: при `threshold=None` детектор считает
+    # порог значимости как средний |Δ%| × 2 по ВСЕМУ поданному ряду. Значит набор FVG
+    # зависит от будущих баров — проверка усечением дала расхождения в 8 признаках
+    # (до 1590 баров). Лечение: порог считается на ПЕРВЫХ `TH_WIN` барах и дальше
+    # фиксирован — он не может знать будущего ни на одном баре.
+    TH_WIN = 2000
+    h0, l0 = df.high.values[:TH_WIN], df.low.values[:TH_WIN]
+    c0 = df.close.values[:TH_WIN]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        dpct = np.abs(np.diff(c0) / np.where(c0[:-1] != 0, c0[:-1], np.nan)) * 100
+    th = float(np.nanmean(dpct) * 2) if np.isfinite(np.nanmean(dpct)) else 0.05
+    try:
+        fvgs = detect_fvg(df, threshold=th)
+    except Exception:                                  # noqa: BLE001
+        fvgs = []
+    for kind in ("bull", "bear"):
+        zs = []
+        for f in fvgs:
+            if len(f) < 6 or str(f[3]).lower() != kind:
+                continue
+            i_ev = _idx_of(df, f[4])
+            if i_ev < 0:
+                continue
+            i_mit = _idx_of(df, f[5]) if f[5] is not None else -1
+            zs.append((i_ev + SMC_LAG["fvg"], float(f[1]), float(f[2]), i_mit))
+        put(f"smc_{kind}_fvg", _zone_state(n, c, atr_s, zs))
+
+    # ── СВИНГИ (в матрице их не было ВОВСЕ, 2983 события) ───────────────────
+    try:
+        sws = detect_swings(df, major_len=MAJOR_LEN, minor_len=MINOR_LEN)
+    except Exception:                                  # noqa: BLE001
+        sws = []
+    for lvl, lag_key in (("major", "swing_major"), ("minor", "swing_minor")):
+        for kind in ("H", "L"):
+            zs = [(int(s.idx) + SMC_LAG[lag_key], float(s.price), float(s.price), -1)
+                  for s in sws if s.level == lvl and s.kind == kind and 0 <= s.idx < n]
+            put(f"smc_swing_{lvl}_{kind.lower()}", _zone_state(n, c, atr_s, zs), point=True)
+
+    # ── SPONSORED CANDLE (в матрице не было ВОВСЕ, 318 событий) ─────────────
+    try:
+        scs = detect_sponsored_candle(df)
+    except Exception:                                  # noqa: BLE001
+        scs = []
+    for kind in ("bull", "bear"):
+        zs = [(int(s.idx) + SMC_LAG["sc"], float(s.top), float(s.bottom), -1)
+              for s in scs if s.direction == kind and 0 <= s.idx < n]
+        put(f"smc_{kind}_spons", _zone_state(n, c, atr_s, zs))
+    # ПОДТВЕРЖДЁННЫЙ SC (свип + BOS + FVG) — по автору детектора это «истинный» SC
+    zs = [(int(s.idx) + SMC_LAG["sc"], float(s.top), float(s.bottom), -1)
+          for s in scs if s.confirmed and 0 <= s.idx < n]
+    put("smc_spons_confirmed", _zone_state(n, c, atr_s, zs))
+
+    # ── EQH / EQL (было только «свип», 1-3% баров) ──────────────────────────
+    # 🔴 контракт: [(ts1, p1, ts2, p2, 'EQH'/'EQL')] — тоже ВРЕМЕНА
+    try:
+        eqs = detect_equal_levels(df)
+    except Exception:                                  # noqa: BLE001
+        eqs = []
+    for tag in ("EQH", "EQL"):
+        zs = []
+        for e in eqs:
+            if len(e) < 5 or str(e[4]).upper() != tag:
+                continue
+            i2 = _idx_of(df, e[2])
+            if i2 < 0:
+                continue
+            lvl = (float(e[1]) + float(e[3])) / 2.0
+            zs.append((i2 + SMC_LAG["eq"], lvl, lvl, -1))
+        put(f"smc_{tag.lower()}", _zone_state(n, c, atr_s, zs), point=True)
+
+    E = pd.DataFrame(out, index=df.index)
+    return E.shift(1)     # 🔴 причинность: состояние на ЗАКРЫТОМ баре
+
+
 def wave_features(df: pd.DataFrame, label: str,
                   swing_len: int = MAJOR_LEN, internal_len: int = MINOR_LEN) -> pd.DataFrame:
     """
@@ -650,6 +857,11 @@ def extra_flags(df: pd.DataFrame, tf: str, symbol: str,
     # 🔴 волны: слом — точка, нога — отрезок. В матрице ног не было вовсе
     try:
         parts.append(wave_features(df, tf))
+    except Exception:                                  # noqa: BLE001
+        pass
+    # 🔴 SMC как СОСТОЯНИЕ: 13 из 69 старых признаков были константой 0
+    try:
+        parts.append(smc_state_features(df, tf))
     except Exception:                                  # noqa: BLE001
         pass
     # профиль объёма старших баров, разобранных ТЕКУЩИМ ТФ («внутрь свечи»)

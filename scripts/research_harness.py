@@ -69,6 +69,9 @@ FAMILIES = {
     "ДВЕ СТРУКТУРЫ": lambda c: c.startswith(("st5_", "st50_", "sc_")),
     # 🔴 28.08: ног (волн) в матрице не было ВООБЩЕ — слом это точка, нога отрезок
     "ВОЛНЫ": lambda c: c.startswith("leg_"),
+    # 🔴 29.08: SMC как СОСТОЯНИЕ. Старые булевы SMC-флаги наполовину были константой 0
+    # (Order Blocks помечали 4 бара из 19851) — [[smc_in_matrix_is_dead_weight]]
+    "SMC-СОСТОЯНИЕ": lambda c: c.startswith("smc_") or c.startswith("in_smc_"),
     "СО СТАРШИХ ТФ": lambda c: "__from_" in c,
 }
 
