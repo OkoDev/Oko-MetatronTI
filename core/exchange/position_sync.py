@@ -840,8 +840,106 @@ async def sync_positions(bot) -> None:
                 except Exception as _wde:
                     logger.debug("[SPHERE-SHADOW] reconcile_watchdog acc=%s: %s", _acc_wd, _wde)
 
+        # 🔴 30.08 DB-RECONCILE — страховка от класса «зомби после рестарта».
+        # reconcile_watchdog выше идёт по STORE Сферы, а store наполняется cold_start'ом
+        # ТОЛЬКО живыми позициями: закрытие, случившееся пока бот лежал, в store не попадает
+        # НИКОГДА, и watchdog его не видит. Замер 30.08: `reconcile_ws_drop` = 0 за весь лог
+        # при 23 зомби в БД (бот рестартили 256 раз, каждые ~35 мин). Здесь истина — БД:
+        # OPEN-строка с биржевым order_id, которой нет среди позиций биржи ≥2 циклов подряд.
+        # «Не гадаем» сохранено: exit не резолвится → строка остаётся, добьёт time_exit по TTL.
+        try:
+            await _db_reconcile(bot, open_sim, open_pairs)
+        except Exception as _dbre:
+            logger.warning("[DB-RECONCILE] error: %s", _dbre)
+
     except Exception as e:
         logger.warning("[POSITION-SYNC] ошибка: %s", e)
+
+
+_DBR_STREAK: dict = {}          # trade_id → циклов подряд «в БД OPEN, на бирже позиции нет»
+_DBR_CONFIRM = 2                # подтверждение серией (одиночный замер — не событие)
+_DBR_GRACE_SEC = 300            # свежая сделка: фил мог не попасть в снапшот (кэш 15-45с)
+
+
+async def _db_reconcile(bot, open_sim: list, open_pairs: dict) -> None:
+    """БД-истина против биржи: OPEN-строка без позиции ≥_DBR_CONFIRM циклов → дотянуть exit и закрыть.
+
+    Дополняет `Sphere.reconcile_watchdog` (тот идёт по своему store и пропущенное при рестарте
+    закрытие не видит) и `_vst_time_exit_check` (тот бьёт только по TTL 3-4.5 суток).
+    Резолв exit — тем же каскадом, что и штатный close: REST по positionId → income-ledger.
+    Цену НЕ угадываем: не резолвится → строка остаётся, громкий WARNING, добьёт time_exit.
+    """
+    import datetime as _dt_r
+
+    sphere = getattr(bot, "_exec_sphere", None)
+    if sphere is None:
+        return
+
+    from core.execution.domain import Position as _Pos
+    from core.execution.db_writer import apply_exit_to_trade
+
+    now = _dt_r.datetime.now(_dt_r.timezone.utc)
+    seen: set = set()
+    for t in open_sim:
+        _eoid = t.get("exchange_order_id")
+        if not _eoid or _eoid == "SIM":
+            continue                                    # SIM-сделка — не наш контур
+        sym = str(t.get("symbol") or "")
+        side = str(t.get("direction") or "LONG").upper()
+        if (sym, side) in open_pairs:
+            continue                                    # позиция на бирже есть — всё в порядке
+        try:
+            _ca = t.get("created_at")
+            _ca_dt = _dt_r.datetime.fromisoformat(str(_ca).replace("Z", "+00:00"))
+            if _ca_dt.tzinfo is None:
+                _ca_dt = _ca_dt.replace(tzinfo=_dt_r.timezone.utc)
+            if (now - _ca_dt).total_seconds() < _DBR_GRACE_SEC:
+                continue                                # grace: фил ещё мог не доехать
+        except Exception:
+            pass
+        tid = int(t.get("id") or 0)
+        if not tid:
+            continue
+        seen.add(tid)
+        streak = _DBR_STREAK.get(tid, 0) + 1
+        _DBR_STREAK[tid] = streak
+        if streak < _DBR_CONFIRM:
+            logger.info("[DB-RECONCILE] #%d %s %s: в БД OPEN, на бирже нет — подозрение %d/%d",
+                        tid, sym, side, streak, _DBR_CONFIRM)
+            continue
+
+        acc = int(t.get("account_id") or 1)
+        pos = _Pos(symbol=sym, side=side, qty=float(t.get("qty") or 0), account=acc,
+                   entry=float(t.get("actual_entry_price") or t.get("entry_price") or 0) or None,
+                   position_id=str(t.get("position_id")) if t.get("position_id") else None)
+        exit_info = None
+        try:
+            exit_info = await sphere._resolve_exit_via_rest(acc, pos)
+            if exit_info is None:
+                exit_info = await sphere._resolve_exit_via_income(acc, pos)
+        except Exception as _re:
+            logger.warning("[DB-RECONCILE] #%d %s resolve error: %s", tid, sym, _re)
+        if exit_info is None:
+            # без positionId (WS-фил его не проставил) закрывающий ордер не отличить от чужого —
+            # такие строки живут до TTL. Логируем на подтверждении и дальше раз в 30 циклов,
+            # иначе WARNING каждые 60с на каждую (было 4 таких строки на 30.08).
+            if streak == _DBR_CONFIRM or streak % 30 == 0:
+                logger.warning("[DB-RECONCILE] #%d %s %s acc=%d: позиции на бирже нет %d циклов, "
+                               "но exit не резолвится (REST+income пусты, pid=%s) — НЕ гадаем, "
+                               "останется OPEN до time_exit", tid, sym, side, acc, streak,
+                               pos.position_id or "нет")
+            continue
+        logger.warning("[DB-RECONCILE] #%d %s %s acc=%d → %s @ %.8g (БД-OPEN, биржа-флэт ≥%d циклов; "
+                       "WS-close пропущен) — закрываю", tid, sym, side, acc,
+                       exit_info.status, exit_info.exit_price, _DBR_CONFIRM)
+        if await apply_exit_to_trade(bot.trade_simulator, tid, exit_info,
+                                     symbol=sym, side=side, reason="db_reconcile"):
+            _DBR_STREAK.pop(tid, None)
+            seen.discard(tid)
+
+    # серия рвётся, как только позиция вернулась в снапшот или строка закрылась
+    for _k in [k for k in list(_DBR_STREAK) if k not in seen]:
+        del _DBR_STREAK[_k]
 
 
 async def _vst_time_exit_check(bot, open_sim: list, open_pairs: dict | None = None) -> None:

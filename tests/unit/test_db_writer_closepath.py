@@ -13,7 +13,8 @@ import pytest
 from core.db.subscription_manager import SubscriptionManager
 from core.trading.trade_simulator import TradeSimulator
 from core.execution.db_writer import (
-    build_close_applier, find_open_exchange_trade, intent_to_close_args,
+    apply_exit_to_trade, build_close_applier, find_open_exchange_trade,
+    intent_to_close_args,
 )
 from core.execution.domain import ExecMode, Fill, FillEvent, Position, PositionEvent
 from core.execution.position_store import ExitInfo, PositionStore
@@ -145,3 +146,49 @@ class TestSphereToDbIntegration:
         await sp.on_event(1, PositionEvent(1, Position(symbol=SYM, side="LONG", qty=0, account=1)))
         status, exit_price, r = _status_of(db_with_open_trade, 1)
         assert status == "SL" and abs(exit_price - 0.49) < 1e-9 and abs(r + 1.0) < 1e-6
+
+
+# ── 4. Ретрай на db-lock + адресация КОНКРЕТНОЙ строки (30.08, класс «зомби») ──
+class TestApplyExitToTradeRetry:
+    """Корень 30.08: единственный `database is locked` терял закрытие навсегда —
+    Sphere уже сделала store.drop, второго pa=0 не будет (#58702 ACU висел сутки)."""
+
+    @pytest.mark.asyncio
+    async def test_retries_while_row_still_open(self, db_with_open_trade):
+        sim = TradeSimulator(db_with_open_trade)
+        real_close = sim.close_trade
+        calls = {"n": 0}
+
+        def flaky(trade_id, status, exit_price, closed_at=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return False                       # имитация db-lock: строка осталась OPEN
+            return real_close(trade_id, status, exit_price, closed_at)
+
+        sim.close_trade = flaky
+        ex = ExitInfo(symbol=SYM, side="LONG", account=1, exit_price=0.49, realized_pnl=-1.0,
+                      status="SL", order_type="STOP_MARKET", position_id="pid-1")
+        ok = await apply_exit_to_trade(sim, 1, ex, symbol=SYM, side="LONG", reason="db_reconcile")
+        assert ok is True and calls["n"] == 2
+        assert _status_of(db_with_open_trade, 1)[0] == "SL"
+
+    @pytest.mark.asyncio
+    async def test_closes_exact_row_not_last_of_pair(self, db_with_open_trade):
+        """Две OPEN одной стороны (MYX SHORT #58595 + #58605 в бою) — закрываем адресно по id."""
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(db_with_open_trade) as conn:
+            conn.execute(
+                """INSERT INTO simulated_trades
+                   (symbol, direction, entry_price, stop_loss, take_profit, status,
+                    execution_mode, exchange_order_id, position_id, qty, original_sl,
+                    created_at, max_price, min_price)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (SYM, "LONG", 0.5, 0.49, 0.6, "OPEN", "VST", "ord-2", "pid-2", 100.0, 0.49,
+                 now, 0.55, 0.48))
+            conn.commit()
+        sim = TradeSimulator(db_with_open_trade)
+        ex = ExitInfo(symbol=SYM, side="LONG", account=1, exit_price=0.49, realized_pnl=-1.0,
+                      status="SL", order_type="STOP_MARKET", position_id="pid-1")
+        assert await apply_exit_to_trade(sim, 1, ex, symbol=SYM, side="LONG", reason="db_reconcile")
+        assert _status_of(db_with_open_trade, 1)[0] == "SL"      # адресная закрыта
+        assert _status_of(db_with_open_trade, 2)[0] == "OPEN"    # вторая не тронута

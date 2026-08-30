@@ -44,6 +44,7 @@ except Exception:      # noqa: BLE001
 
 from research_harness import load        # noqa: E402
 
+# по умолчанию — обычный прогон; --input/--out позволяют пересчитать ЯДРО тем же окном
 PQ = ROOT / "cache" / "matrix_run_15m.parquet"
 OUT = ROOT / "cache" / "matrix_run_15m_lw.parquet"
 
@@ -52,11 +53,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bars", type=int, default=1000, help="окно, как у боевого runner")
     ap.add_argument("--tf", default="15m")
+    ap.add_argument("--input", default=None, help="исходный parquet (по умолчанию matrix_run_15m)")
+    ap.add_argument("--out", default=None, help="куда писать (по умолчанию ..._lw)")
     a = ap.parse_args()
+    src = Path(a.input) if a.input else PQ
+    dst = Path(a.out) if a.out else OUT
+    print(f"источник: {src.name} → {dst.name}")
 
     from matrix_full import smc_state_features
 
-    R = pd.read_parquet(PQ)
+    R = pd.read_parquet(src)
     R["_ts"] = pd.to_datetime(R.entry_ts, utc=True, errors="coerce")
     R = R[R._ts.notna()].copy()
     print("=" * 96)
@@ -100,11 +106,11 @@ def main() -> int:
         print("🔴 ничего не пересчитано")
         return 1
     X = pd.concat(parts, ignore_index=True)
-    X.to_parquet(OUT)
+    X.to_parquet(dst)
     lw = [c for c in X.columns if c.endswith("_lw")]
     print(f"\nготово за {time.time()-t0:.0f}с · сделок {len(X)} (пропущено {skipped}) · "
           f"пересчитано признаков {len(lw)}")
-    print(f"→ {OUT}")
+    print(f"→ {dst}")
 
     # ── сразу же: насколько версии разошлись ────────────────────────────────
     print("\n" + "=" * 96)
