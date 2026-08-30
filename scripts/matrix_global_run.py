@@ -41,7 +41,10 @@ from matrix_full import extra_flags, market_context                             
 
 # Боевая геометрия impulse_fib. 1h — база модуля; 15m — ×4 по барам (та же длительность).
 GEOM = {"1h":  dict(wait=12, hold=96,  lo=1.5, hi=3.234),
-        "15m": dict(wait=48, hold=384, lo=1.5, hi=3.234)}
+        "15m": dict(wait=48, hold=384, lo=1.5, hi=3.234),
+        # 4h: та же КАЛЕНДАРНАЯ длительность, что 1h (12 ч ожидания, 4 суток удержания).
+        # 🔴 константа в БАРАХ между ТФ не переносится — см. twins_15m_stabilized_by_measure
+        "4h":  dict(wait=3,  hold=24,  lo=1.5, hi=3.234)}
 PEN = 0.15          # лимит ставится глубже на эту долю — как в боевом луте
 
 
@@ -118,7 +121,7 @@ def make_mechanic(tf: str, sides: set[str]):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Глобальный прогон по ПОЛНОЙ матрице")
-    ap.add_argument("--tf", default="15m", choices=["15m", "1h"])
+    ap.add_argument("--tf", default="15m", choices=["15m", "1h", "4h"])
     ap.add_argument("--symbols", type=int, default=40)
     ap.add_argument("--core", action="store_true",
                     help="БАЛАНСИРОВАННАЯ ПАНЕЛЬ: только монеты с полным покрытием окна. Состав фиксирован → годы сравнимы напрямую, без поправки на состав (15m: 97 монет)")
