@@ -120,6 +120,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Глобальный прогон по ПОЛНОЙ матрице")
     ap.add_argument("--tf", default="15m", choices=["15m", "1h"])
     ap.add_argument("--symbols", type=int, default=40)
+    ap.add_argument("--core", action="store_true",
+                    help="БАЛАНСИРОВАННАЯ ПАНЕЛЬ: только монеты с полным покрытием окна. Состав фиксирован → годы сравнимы напрямую, без поправки на состав (15m: 97 монет)")
     ap.add_argument("--sides", default="long,short")
     ap.add_argument("--perm", type=int, default=20, help="перестановок для контроля шума")
     a = ap.parse_args()
@@ -142,7 +144,8 @@ def main() -> int:
     print(f"рыночный контекст: {M.shape[0]} дней × {M.shape[1]} признаков "
           f"({M.index[0].date()} → {M.index[-1].date()})")
 
-    R = collect(make_mechanic(a.tf, sides), tf=a.tf, n_symbols=a.symbols,
+    R = collect(make_mechanic(a.tf, sides), tf=a.tf,
+                n_symbols=0 if a.core else a.symbols, core=a.core,
                 extra=lambda df, tf, sym: extra_flags(df, tf, sym, M=M))
 
     flags = feature_cols(R)
@@ -161,7 +164,10 @@ def main() -> int:
     print("=" * 104)
     blind_select_num(R, n_perm=a.perm)
 
-    out = ROOT / "cache" / f"matrix_run_{a.tf}.parquet"
+    # ядро пишется отдельным файлом — сравнивать с обычным прогоном можно только
+    # так, а перезапись затёрла бы базу, на которой стоят прошлые выводы
+    out = ROOT / "cache" / (f"matrix_core_{a.tf}.parquet" if a.core
+                            else f"matrix_run_{a.tf}.parquet")
     try:
         R.to_parquet(out)
         print(f"\nсырые сделки с признаками → {out}")

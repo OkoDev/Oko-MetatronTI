@@ -101,6 +101,46 @@ def universe(tf: str, min_bars: int | None = None, n: int = 25, seed: int = 19) 
     return syms[:n]
 
 
+# 🔴 БАЛАНСИРОВАННАЯ ПАНЕЛЬ (30.08.2026, вопрос Егора «не проще собрать ядро одинаковое
+# и большое для всех лет?» — проще, и так и надо).
+#
+# Обычный `universe()` отбирает по ЧИСЛУ баров и берёт первые n после перемешивания.
+# Следствие: вселенная замера различалась по годам (2023 — 15 монет, все выжившие;
+# 2026 — 40, из них 25 новичков), и любое «в 2023 работало, в 2026 нет» имело второе
+# объяснение — сменился состав. На short это уже дало перевёрнутый вывод: «2024 лучше
+# 2025» на общей вселенной, на ядре наоборот ([[method_year_vs_composition]]).
+#
+# Здесь отбор идёт по ПОКРЫТИЮ ПЕРИОДА: монета обязана существовать на всём окне.
+# Тогда состав фиксирован по построению и годы сравнимы без поправок.
+def core_universe(tf: str, since: str = "2023-01-01", until: str = "2026-06-01",
+                  n: int | None = None, seed: int = 19,
+                  min_bars: int | None = None) -> list[str]:
+    """
+    Монеты, существующие на ВСЁМ окне [since, until] — балансированная панель.
+
+    Размер на 30.08.2026: 15m → 97 монет · 1h → 94 · 4h → 94 (с 2023).
+    На 15m окно «с середины 2022» даёт НОЛЬ — кэш 15m у выживших начинается позже,
+    поэтому since по умолчанию 2023-01-01, а не 2022.
+    """
+    if min_bars is None:
+        min_bars = MIN_BARS_TF.get(tf, 12000)
+    lo = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
+    hi = int(pd.Timestamp(until, tz="UTC").timestamp() * 1000)
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
+        rows = c.execute(
+            "SELECT symbol, COUNT(*) n, MIN(time) f, MAX(time) l FROM ohlcv_cache "
+            "WHERE timeframe=? GROUP BY symbol HAVING n>? AND f<=? AND l>=?",
+            (tf, min_bars, lo, hi)).fetchall()
+    if not rows:
+        raise RuntimeError(
+            f"core_universe({tf}, {since}→{until}): НОЛЬ монет с полным покрытием окна. "
+            f"Молчаливый пустой замер запрещён — сузьте окно или проверьте кэш.")
+    from core.smc.impulse_fib import is_junk
+    syms = sorted(s for s, *_ in rows if not is_junk(s))
+    random.Random(seed).shuffle(syms)
+    return syms if n is None else syms[:n]
+
+
 def load(sym: str, tf: str) -> pd.DataFrame:
     """OHLCV с DatetimeIndex. Для SMC-детекторов делайте .reset_index(drop=True)."""
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
@@ -157,6 +197,7 @@ def mtf_flags(df: pd.DataFrame, tf: str, senior: list[str] | None = None) -> pd.
 
 
 def collect(mechanic: Callable, *, tf: str = "15m", n_symbols: int = 25,
+            core: bool = False,
             with_flags: bool = True, cost: float = COST_LIMIT,
             senior: list[str] | None = None,
             extra: Callable | None = None) -> pd.DataFrame:
@@ -169,8 +210,14 @@ def collect(mechanic: Callable, *, tf: str = "15m", n_symbols: int = 25,
     Косты вычитаются здесь — единообразно, по закону №1.
     """
     out = []
-    syms = universe(tf, n=n_symbols)
-    print(f"вселенная: {len(syms)} монет, ТФ {tf}, косты {cost}%")
+    if core:
+        syms = core_universe(tf, n=None if n_symbols <= 0 else n_symbols)
+        print(f"вселенная: ЯДРО {len(syms)} монет (полное покрытие окна), "
+              f"ТФ {tf}, косты {cost}% — состав ФИКСИРОВАН, годы сравнимы напрямую")
+    else:
+        syms = universe(tf, n=n_symbols)
+        print(f"вселенная: {len(syms)} монет, ТФ {tf}, косты {cost}% "
+              f"🔴 состав РАЗЛИЧАЕТСЯ по годам — годовые сравнения требуют year_vs_composition")
     min_bars = MIN_BARS_TF.get(tf, 12000)
     skipped = 0
     for i, sym in enumerate(syms, 1):
