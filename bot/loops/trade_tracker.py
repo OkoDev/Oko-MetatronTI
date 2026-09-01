@@ -31,24 +31,35 @@ async def trade_tracker_loop(bot) -> None:
 
     _is_live = _is_live_fn(bot.config)
 
+    def _hb(name: str = "tracker") -> None:
+        """Пульс лупа. Никогда не бросает — трекинг позиций важнее наблюдаемости."""
+        try:
+            from core.infra.heartbeat import beat
+            beat(name)
+        except Exception:
+            pass
+
     while True:
         try:
             await asyncio.sleep(60)
             # 16.07 HEARTBEAT: пульс ведения позиций (TSL/BE/sync) — критичнее скана
-            try:
-                from core.infra.heartbeat import beat as _hb
-                _hb("tracker")
-            except Exception:
-                pass
+            _hb("tracker")
 
             # ── Шаг 1: биржевой sync (VST/LIVE only) ──────────────────────
             if _is_live:
                 await sync_positions(bot)
+                _hb("tracker")      # 01.09: пульс ПО ШАГАМ — см. ниже
 
             # ── Шаг 1.5: repair — поставить SL/TP на бирже для сделок без него
             if _is_live and hasattr(bot, "order_executor"):
                 await repair_missing_sl(bot)
                 await repair_missing_tp(bot)
+                # 🔴 01.09 ТОТ ЖЕ ДЕФЕКТ, ЧТО В scan_loop: пульс бился ОДИН раз в начале
+                # итерации, поэтому «тишина tracker» = длительность итерации, а не смерть.
+                # Итерация (sync + repair + check_open_trades по 25-46 сделкам с REST на
+                # каждую) занимала до 24 мин — вотчдог считал это смертью и рестартил.
+                # Бьём после каждого шага: тишина теперь означает, что шаг реально завис.
+                _hb("tracker")
 
             # ── Шаг 2: симуляторный трекинг ───────────────────────────────
             closed, tsl_moved = await bot.trade_simulator.check_open_trades_with_tsl(
@@ -60,6 +71,7 @@ async def trade_tracker_loop(bot) -> None:
                 use_be_after_tp1=use_be_after_tp1,
                 cascade_tsl=cascade_tsl,
             )
+            _hb("tracker")
             if closed > 0:
                 logger.info("TradeSimulator: закрыто сделок за цикл: %d", closed)
 

@@ -908,6 +908,12 @@ async def _db_reconcile(bot, open_sim: list, open_pairs: dict) -> None:
                         tid, sym, side, streak, _DBR_CONFIRM)
             continue
 
+        # 01.09: РЕЗОЛВ, а не только его лог, идёт по троттлу. Строка без position_id не
+        # резолвится никогда, а каждая попытка — 2 REST (filled + income) внутри tracker-цикла,
+        # который и так упирается в rate-limit. Первая попытка на подтверждении, дальше раз в 30.
+        if streak > _DBR_CONFIRM and streak % 30 != 0:
+            continue
+
         acc = int(t.get("account_id") or 1)
         pos = _Pos(symbol=sym, side=side, qty=float(t.get("qty") or 0), account=acc,
                    entry=float(t.get("actual_entry_price") or t.get("entry_price") or 0) or None,

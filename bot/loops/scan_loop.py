@@ -1511,17 +1511,25 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
     async def scan_one(sym):
         nonlocal _confluence_sent, _anomaly_sent
-        # 17.07 ПРОГРЕСС-ПУЛЬС: скан 530 пар на щадящем direct идёт 5-10 мин; beat только в
-        # конце цикла = ложная «тишина» → вотчдог убивал ЖИВОЙ луп. Бьём по ходу (троттл 15с).
-        try:
-            from core.infra.heartbeat import beat_progress as _hbp
-            _hbp("scan")
-        except Exception:
-            pass
         signals_to_broadcast = []  # [(sig_type, raw_text, fallback_rec), ...]
         all_scan_signals = []      # SignalData от детекторов — для pre_collected_signals
 
         async with sem:
+            # 17.07 ПРОГРЕСС-ПУЛЬС: скан 530 пар идёт 5-10 мин; beat только в конце цикла =
+            # ложная «тишина» → вотчдог убивал ЖИВОЙ луп.
+            # 🔴 01.09 ПУЛЬС БИЛСЯ ДО СЕМАФОРА И ПОТОМУ НЕ РАБОТАЛ. `asyncio.gather` создаёт
+            # ВСЕ 566 корутин разом: каждая доходила до `_hbp("scan")` в первые миллисекунды
+            # цикла, троттл 15с пропускал ОДИН удар — и дальше все ждали семафор, а пульс
+            # молчал до конца цикла. То есть вотчдог мерил ДЛИТЕЛЬНОСТЬ ЦИКЛА, а не живость
+            # лупа: цикл на 566 парах занимает 545-2570с, и любой длинный выглядел «смертью».
+            # Отсюда 271 рестарт — сколько порог ни поднимай (480 → 1200 → 2700), хвост
+            # длительности догонял его снова. Внутри семафора удар случается при РЕАЛЬНОМ
+            # заходе в обработку пары → тишина = луп встал, а не «много работы».
+            try:
+                from core.infra.heartbeat import beat_progress as _hbp
+                _hbp("scan")
+            except Exception:
+                pass
             # Этап 8.4.2: единый snapshot_time для всей пары — все данные привязаны к нему
             snapshot_time = datetime.now()
             t_enter = _time.monotonic()

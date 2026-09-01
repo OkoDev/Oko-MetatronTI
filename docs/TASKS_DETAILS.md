@@ -6,6 +6,268 @@
 
 ---
 
+# 🌐 ARCH-129 — MARKET DATA SPHERE (Сфера 19) 🟡
+
+> Спека дописана 30.08.2026 после живого разбора HYPE, где OI и фандинг дали ответ,
+> которого шесть боевых ценовых источников дать не могли. Все числа ниже — проверены
+> запросом к БД и grep'ом по коду, не по памяти.
+
+## 🔴🔴 ГЛАВНОЕ, ЧТО НАДО ПОНЯТЬ ДО ПЕРВОЙ СТРОКИ КОДА
+
+**В проекте ДВЕ разные вещи со словом «шина», и публиковать надо НЕ в ту, что называется EventBus.**
+
+| | `core/context/event_bus.py` → `EventBus` | `core/context/pair_context.py` → `PairContextBus` |
+|---|---|---|
+| Что это | **очередь на запуск анализа символа** | **Shared Context Bus — центральная сфера Куба** |
+| `publish(symbol, event_type, data, priority)` | ставит пару в heap → `_fire_analysis` грузит 6 ТФ → `analyze_symbol` | пишет данные в `PairState` + будит подписчиков |
+| Есть cooldown/priority | да (пара может быть **отброшена**) | нет |
+| Хранит состояние | нет | да: `PairState` (L1), `AccountState` (L2) |
+| Куда лить рыночные данные | ❌ **НЕТ** | ✅ **ДА** |
+
+Положить фандинг в `EventBus` = попросить перезапустить анализ пары, а не сообщить факт.
+При этом `publish` вернёт `False` на cooldown, и данные **молча потеряются** — это ровно класс
+«МОЛЧАЛИВЫЙ ОТКАЗ» из `memory/MEMORY.md`.
+
+**API, которым пользоваться** (`PairContextBus`, проверено чтением файла):
+```python
+bus.get(symbol)              -> PairState          # чтение
+bus.update(symbol, **kwargs)                       # запись полей L1
+bus.publish(symbol, event_type, data)              # событие + _auto_update_state
+bus.subscribe(event_type, handler)                 # синхронный подписчик
+bus.subscribe_async(event_type, async_handler)     # асинхронный
+bus.get_full_state(symbol) -> dict                 # всё состояние пары
+bus.catalog() / bus.catalog_markdown()             # «меню» шины
+```
+
+---
+
+## ARCH-129.0 — БЛОКЕР: Сферы 19 в коде не существует 🔴
+
+**Делать первым, иначе всё остальное будет висеть в воздухе.**
+
+`core/context/sphere_registry.py`:
+```python
+SPHERE_NAMES = { 1: "DataCollector", ..., 12: "Self-Diagnostics", 0: "Central Hub (EventBus)" }
+#                                          ^^ обрывается на 12
+class SphereRegistry:
+    def __init__(self, bus=None):
+        self._sphere_events = {i: 0 for i in range(13)}      # 🔴 жёстко 13
+        self._sphere_last_update = {i: None for i in range(13)}
+```
+Сфер 13–19 в реестре **нет вообще**, хотя `docs/REGISTRY.md` и карта Куба их описывают.
+Это ровно то расхождение «панель рисует сферы, которых нет» из [[cube_panel_vs_map_vs_code_drift]].
+
+**Что сделать:**
+1. Дописать `SPHERE_NAMES` до 19 (сверить имена по `docs/SIGNAL_BUS_CUBE_MAP.md`, он источник
+   именования; **код — источник истины по факту существования**).
+2. Заменить `range(13)` на `range(max(SPHERE_NAMES) + 1)` — иначе следующая сфера снова упрётся.
+3. Решить конфликт номера 14 (`FIX-SPHERE-NUM`) до дописывания, иначе зафиксируем дубль в коде.
+
+**Acceptance:** `sphere_registry.report()` показывает 19 сфер; `selftest_cube` не падает.
+
+---
+
+## ARCH-129.6 — `MarketState`: третий контейнер шины 🟡
+
+**Архитектурная развилка, которую нельзя проскочить.** В шине сейчас два измерения:
+
+- `PairState` (L1) — **per-pair**: свечи, WT, SMC, режим, сигналы
+- `AccountState` (L2) — **per-account**: equity, маржа, позиции
+
+**USDT.D, BTC.D, total mcap, ротация — ни то, ни другое.** Они глобальны. Класть их в `PairState`
+= дублировать одно и то же число в 400 пар и получить 400 источников правды.
+
+**Сделать по образцу `AccountState`** (`pair_context.py:200`) — новый dataclass:
+
+```python
+@dataclass
+class MarketState:
+    """L3 РЫНОЧНОЕ измерение шины (ARCH-129). Глобальные данные, не привязанные
+    ни к паре, ни к аккаунту. Публикует Сфера 19 Market Data."""
+    usdt_d: Optional[float] = None
+    btc_d: Optional[float] = None
+    eth_d: Optional[float] = None
+    alt_d: Optional[float] = None
+    total_mcap: Optional[float] = None
+    alt_mcap: Optional[float] = None
+    usdt_d_pct_120d: Optional[float] = None    # перцентиль в 120-дневном диапазоне
+    usdt_d_d1: Optional[float] = None          # Δ п.п. за сутки
+    usdt_d_d7: Optional[float] = None
+    rotation_verdict: Optional[str] = None     # из marketcap_engine.rotation_now()
+    source: str = "self_computed"              # self_computed | coingecko
+    updated_at: Optional[datetime] = None
+```
+
+Плюс методы `bus.update_market(**kwargs)` / `bus.get_market()` — зеркально `update_account`/`get_account`.
+
+**Источник уже готов и работает:** `core/context/marketcap_engine.py` → `live_dominance()`
+(кэш 45с) и `rotation_now(window_h)`. Проверено 30.08: движок отдаёт USDT.D 6.879 против
+CoinGecko 6.964 — расхождение 1.2%, как и записано в `marketcap_dominance_engine`. Для режима
+годится, **абсолют не годится** — сверять только динамику.
+
+---
+
+## ARCH-129.1 — Фандинг в шину первым 🟡
+
+**Почему первым:** это единственный источник с полной историей — можно не только транслировать
+живьём, но и **перемерить всю матрицу задним числом**.
+
+**Что есть (проверено `SELECT COUNT(*)`):**
+
+| таблица | строк | колонки |
+|---|---|---|
+| `funding_rates` | **1 557 170** | `symbol, time, interval_hours, rate` |
+
+**Поля в `PairState`** (секция `# ── Сфера 19: Market Data ──`):
+```python
+funding_rate: Optional[float] = None        # текущая ставка, %
+funding_interval_h: Optional[int] = None    # 4 или 8 — РАЗНОЕ у бирж, не хардкодить
+funding_next_ts: Optional[datetime] = None  # время следующего расчёта
+funding_source: Optional[str] = None        # "bingx" | "binance" — см. ловушку ниже
+```
+
+🔴 **Ловушка, пойманная 30.08:** в один и тот же момент по HYPE BingX давал **−0.0064%/4ч**,
+а Binance **+0.005%/8ч** — разный знак и разный интервал. Хранить и публиковать **с указанием
+источника и интервала**, приводить к общей базе (`%/8ч`) только явно, отдельным полем. Иначе
+получим «расхождение реализаций, принятое за свойство рынка» — ровно урок из
+[[eqh_liquidity_short_works_in_2026]].
+
+---
+
+## ARCH-129.2 — OI: таблицы нет вообще 🟢
+
+**Проверено:** в `ohlcv_cache.db` **нет ни одной таблицы с открытым интересом.** Сейчас OI
+берётся live с Bybit внутри radar (`radar_oi_d5/d15`) и нигде не сохраняется.
+
+**Следствие, которое надо принять сразу:** истории OI не существует физически → **бэктест по OI
+невозможен**, и обещать его нельзя. Копить с текущего дня.
+
+**Создать:**
+```sql
+CREATE TABLE IF NOT EXISTS open_interest(
+    symbol TEXT, time INTEGER, oi REAL, oi_value REAL, source TEXT,
+    PRIMARY KEY(symbol, time, source));
+CREATE INDEX IF NOT EXISTS ix_oi_sym_time ON open_interest(symbol, time);
+```
+Шаг 5 мин (чаще биржа не обновляет), ретенция — не чистить, объём мал.
+
+**Поля в `PairState`:**
+```python
+oi: Optional[float] = None
+oi_d1h: Optional[float] = None      # Δ% за час
+oi_d4h: Optional[float] = None
+oi_d24h: Optional[float] = None
+```
+
+---
+
+## ARCH-129.3 — Доминация · onchain · mcap 🟢
+
+**Что есть (проверено):**
+
+| таблица | строк | колонки |
+|---|---|---|
+| `onchain_events` | 10 331 | `ts, kind, source, symbol, amount_usd, direction, raw` |
+| `mcap_supply` | 17 411 | `date, symbol, supply, cmc_price, cmc_mcap` |
+| `usdtd_1h` | 2 322 | `time, close` |
+| `usdtd` | 300 | `time, open, high, low, close` |
+| `usdtd_cg` | 60 | `date, value` |
+| `mcap_meta` | 35 | `date, ts, tail, usdt_mcap, total_snapshot, n` |
+
+Доминация и mcap → в `MarketState` (129.6). Onchain — per-symbol, значит в `PairState`:
+`onchain_flow_24h_usd`, `onchain_last_kind`.
+
+🔴 **Три разных таблицы USDT.D** (`usdtd`, `usdtd_1h`, `usdtd_cg`) — разные источники и шаги.
+Свести к одной или явно пометить, какая канон. Сейчас непонятно, какую читать.
+
+---
+
+## ARCH-129.4 — Магниты · фазы · дрейф вселенной 🟡
+
+Считаются внутри стратегий и никуда не публикуются → каждая стратегия считает заново.
+Вынести расчёт в сферу, стратегии переключить на чтение из шины.
+**Это рефакторинг существующего, а не новые данные** — делать последним, после 129.1–129.3.
+
+---
+
+## ARCH-129.5 — ПРОИЗВОДНЫЕ, а не сырые числа 🔴
+
+**Самый ценный пункт задачи. Сырое число ничего не говорит — сегодня это доказано на живом рынке.**
+
+Фандинг −0.0064% сам по себе не значит ничего: он **не дотягивает** до боевого вето
+(`core/intelligence/risk_intelligence.py:141-144`, порог \|f\|>0.03%/8ч = −0.0128%/8ч у нас).
+Значение было в **серии из четырёх отрицательных подряд** при медиане +0.005% — то есть в
+накоплении перекоса, которого порог не видит.
+
+**Публиковать вычисленные признаки:**
+
+```python
+# фандинг
+funding_streak: int = 0            # знаковая серия: +3 = три положительных подряд, -4 = четыре отрицательных
+funding_pct_30d: Optional[float]   # перцентиль текущей ставки в 30-дневном распределении
+funding_median_30d: Optional[float]
+
+# OI × цена — ГЛАВНАЯ производная
+oi_price_regime: Optional[str] = None
+#   цена↑ + OI↑  -> "new_longs"          приток, движение обеспечено
+#   цена↑ + OI↓  -> "short_squeeze"      сквиз, топлива нет
+#   цена↓ + OI↓  -> "long_liquidation"   выбивают лонги
+#   цена↓ + OI↑  -> "new_shorts"         давление реальное
+
+# доминация (в MarketState)
+usdt_d_pct_120d: Optional[float]   # положение в диапазоне — единственное, что USDT.D даёт сверх BTC
+```
+
+**Готовое правило, применимое сразу, без ML:**
+> **Пробой при падающем OI не торговать.** Это закрытие чужих позиций, оно выдыхается.
+> Вход по пробою — только при растущем OI.
+
+🔴 **Оговорка к USDT.D, которую надо записать в код комментарием:** корреляция дневных
+изменений USDT.D с BTC = **−0.99** (замер 30.08, 120 дней). USDT.D — это почти инвертированный
+BTC, и как «независимое подтверждение» она самообман. Единственное, что она даёт сверх цены
+BTC, — **положение относительно диапазона** (`usdt_d_pct_120d`). Только его и потреблять.
+
+---
+
+## Порядок работ
+
+```
+129.0 (блокер, сферы нет)  →  129.6 (MarketState)  →  129.1 (фандинг, история есть)
+   →  129.2 (OI, копить)  →  129.5 (производные)  →  129.3 (домин/onchain)  →  129.4 (рефакторинг)
+```
+129.5 можно начинать сразу после 129.1 — производные фандинга считаются на готовой истории.
+
+## Acceptance (общий)
+
+- ✅ `bus_catalog.validate()` возвращает **пустой список** — каждое новое поле имеет метаданные
+  в `_PAIR_META` (иначе поле есть, а в «меню» его нет — и о нём снова забудут)
+- ✅ `bus.get_full_state(symbol)` показывает секцию Сферы 19 с непустыми значениями
+- ✅ `sphere_registry.report()` показывает Сферу 19 живой (события идут, `last_update` свежий)
+- ✅ `bus.catalog_markdown()` содержит все новые поля с описанием и источником
+- ✅ `research_harness` умеет запросить фандинг за произвольный день 2022–2026
+- ✅ на живом символе `oi_price_regime` меняется в реальном времени и совпадает с ручной
+  проверкой (сверить на HYPE: 30.08 08:00–08:30 UTC должно давать `short_squeeze`,
+  09:30–09:45 — `new_shorts`)
+- ✅ self-test сферы **громкий**: молчание лупа = отказ без причины ([[feedback_selftest_every_strategy_loud]])
+
+## Ловушки (собраны из этой сессии)
+
+1. **`EventBus` ≠ `PairContextBus`** — см. таблицу вверху. Публикация не туда потеряется молча.
+2. **Истории OI нет физически** — бэктест по OI обещать нельзя, только форвард.
+3. **Фандинг разный на биржах** — знак и интервал отличаются в один момент времени.
+4. **USDT.D ≈ инвертированный BTC** (−0.99) — ценность только в перцентиле.
+5. **Три таблицы USDT.D** — определить канон до начала работ.
+6. **Новое поле без метаданных в `bus_catalog`** — `validate()` поймает, но только если его
+   вызвать; добавить вызов в self-test.
+7. **Сфера 19 за каноном 13 сфер** (сакральная геометрия) — это осознанное расширение,
+   зафиксировать в `docs/SIGNAL_BUS_CUBE_MAP.md`, иначе следующий агент опять «уберёт лишнее».
+
+## Effort
+
+129.0 — XS (полчаса) · 129.6 — S · 129.1 — M · 129.2 — S · 129.5 — M · 129.3 — M · 129.4 — L (рефакторинг)
+
+---
+
 # 🚀 СПРИНТ «CONFIRMATION-DRIVEN ARCHITECTURE» (09.05–23.05.2026)
 
 > Полное обоснование: [DISCUSSION.md → запись 09.05.2026 TRADER → DEV/ARCH](../DISCUSSION.md)
