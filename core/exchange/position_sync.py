@@ -498,6 +498,13 @@ async def sync_positions(bot) -> None:
             _LAST_SL_RECONCILE_TS = _t_slr.time()
             _db_path_slr = bot.trade_simulator.db_path
             for (_sym, _side), _pp in open_pairs.items():
+                # 01.09: прогресс-пульс — обход позиций идёт по REST под rate-limiter'ом
+                # (27 позиций ≈ 5 мин), а пульс лупа бьётся ДО шага → ложная «тишина tracker».
+                try:
+                    from core.infra.heartbeat import beat_progress as _hbp_s
+                    _hbp_s("tracker")
+                except Exception:
+                    pass
                 try:
                     _sl_oid = await order_mgr.get_sl_order_id(_sym, _side)
                     if _sl_oid:

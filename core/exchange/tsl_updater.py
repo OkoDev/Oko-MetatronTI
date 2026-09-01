@@ -235,6 +235,12 @@ async def repair_missing_tp(bot) -> None:
         if '"trade_mode": "radar"' in (trade.get("features_json") or ""):
             continue
 
+        try:                                    # 01.09: прогресс-пульс (см. repair_missing_sl)
+            from core.infra.heartbeat import beat_progress as _hbp_r
+            _hbp_r("tracker")
+        except Exception:
+            pass
+
         trade_id = trade["id"]
         symbol = trade.get("symbol", "")
         direction = trade.get("direction", "LONG")
@@ -302,6 +308,14 @@ async def repair_missing_sl(bot) -> None:
     for trade in ts.get_open_trades():
         if not trade.get("exchange_order_id"):
             continue  # SIM-only
+
+        # 01.09: прогресс-пульс — обход идёт по REST на каждую сделку под rate-limiter'ом,
+        # при 30+ открытых шаг длится минуты (см. комментарий в trade_simulator._proc).
+        try:
+            from core.infra.heartbeat import beat_progress as _hbp_r
+            _hbp_r("tracker")
+        except Exception:
+            pass
 
         trade_id = trade["id"]
         symbol = trade.get("symbol", "")

@@ -1686,6 +1686,17 @@ class TradeSimulator:
                     return
                 self._sim_checked[_tid_sim] = _now_sim
             async with _sem:
+                # 🔴 01.09 ПРОГРЕСС-ПУЛЬС (тот же класс, что чинили в scan_loop). Обход сделок
+                # идёт ПОСЛЕДОВАТЕЛЬНО под rate-limiter'ом ~11с на сделку (замер по логу
+                # [DEV-227]: 04:29:13 → 04:35:33 на 30 сделок), поэтому один этот шаг при
+                # 30+ открытых длится 6-20 мин. Пульс лупа бился ДО шага → вотчдог видел
+                # «тишину tracker 24.9м» и рестартил ЖИВОГО бота. Бьём по ходу обхода:
+                # тишина теперь означает, что обход реально встал.
+                try:
+                    from core.infra.heartbeat import beat_progress as _hbp_t
+                    _hbp_t("tracker")
+                except Exception:
+                    pass
                 trade_id = trade["id"]
                 symbol = trade["symbol"]
                 direction = (trade["direction"] or "").upper()
