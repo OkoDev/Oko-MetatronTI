@@ -67,8 +67,15 @@ def main():
     btc_trend = structure_trend(btc4).get("trend") if btc4 is not None else None
     risk_off = get_usdtd_risk_off()
     macro = diagnose_macro(pdn, medf, btc_trend, risk_off)
+    # 🔴 01.09 ЗАМЕР ПОЙМАЛ ЭТОТ СКРИПТ: write-lock subscriptions.db держался 21.7с
+    # (15:30:17→15:30:39, старт крона */30). Причина — транзакция открывалась этим INSERT
+    # и не закрывалась, пока ниже шли СЕТЕВЫЕ вызовы: send_tg и по три _kl() на каждую
+    # мажорную пару (11 пар = 33 запроса к бирже ВНУТРИ открытой транзакции).
+    # В это окно падали писатели бота: закрытия сделок и запись DecisionTrace.
+    # Лечение: commit сразу — лок держится миллисекунды, до всякой сети.
     c.execute("INSERT INTO phase_state VALUES(?,?,?,?,?,?,?,?,?)",
               (now, "macro", "MARKET", macro.phase, macro.bias, None, None, macro.confidence, macro.detail))
+    c.commit()
 
     # TG при СМЕНЕ макро-фазы
     prev = c.execute("SELECT phase FROM phase_state WHERE level='macro' AND ts<? ORDER BY ts DESC LIMIT 1",
@@ -98,6 +105,7 @@ def main():
         c.execute("INSERT INTO phase_state VALUES(?,?,?,?,?,?,?,?,?)",
                   (now, "pair", base, pp.phase, pp.side, pp.strategy_class,
                    str(pp.concordance), pp.confidence, pp.detail))
+        c.commit()   # 01.09: коммит на каждой паре — следующая итерация уходит в СЕТЬ (_kl)
         if pp.phase != "CHOP":
             print(f"  {base:6} {pp.phase:12} {pp.side or '—':5} {pp.strategy_class or '—':8} conf={pp.confidence:.1f}")
         time.sleep(0.15)

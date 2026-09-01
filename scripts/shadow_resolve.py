@@ -130,6 +130,12 @@ def main():
                     c.execute(f"UPDATE {t} SET resolved=1, outcome=?, exit_price=?, "
                               f"resolved_ts=?, {sets} WHERE rowid=?",
                               [outcome, exit_px, now] + list(cols.values()) + [r["rid"]])
+                    # 🔴 01.09 ТОТ ЖЕ КЛАСС, ЧТО В phase_watch/weekly_pivot_watch: без этого
+                    # commit транзакция жила до конца цикла, а внутри цикла идут ЗАПРОСЫ К
+                    # БИРЖЕ (resolve_row → _klines) плюс sleep 0.12 на строку — write-lock
+                    # subscriptions.db висел бы всё это время. Замер показал эпизоды 21-22с,
+                    # в которые падали закрытия сделок бота.
+                    c.commit()
                 done += 1
                 time.sleep(0.12)          # вежливо к API
             if not a.dry_run:
