@@ -39,39 +39,58 @@ async def trade_tracker_loop(bot) -> None:
         except Exception:
             pass
 
+    # 01.09 ПРИБОР: тайминг каждого шага. Итерация трекера растёт с числом открытых сделок
+    # (REST на сделку в 4 обходах), и без разбивки по шагам нельзя сказать, ЧТО именно её
+    # растит — гадать здесь запрещено, поэтому меряем.
+    _step_warn = float(bot.config.get("performance.tracker_step_warn_sec", 60.0))
+
+    async def _step(name: str, coro):
+        import time as _t
+        _t0 = _t.monotonic()
+        try:
+            return await coro
+        finally:
+            _el = _t.monotonic() - _t0
+            _hb("tracker")
+            if _el >= _step_warn:
+                logger.warning("[tracker] шаг %s: %.1fs (порог %.0fs)", name, _el, _step_warn)
+            else:
+                logger.debug("[tracker] шаг %s: %.1fs", name, _el)
+
     while True:
         try:
             await asyncio.sleep(60)
             # 16.07 HEARTBEAT: пульс ведения позиций (TSL/BE/sync) — критичнее скана
             _hb("tracker")
+            _iter_t0 = __import__("time").monotonic()
 
             # ── Шаг 1: биржевой sync (VST/LIVE only) ──────────────────────
             if _is_live:
-                await sync_positions(bot)
-                _hb("tracker")      # 01.09: пульс ПО ШАГАМ — см. ниже
+                await _step("sync_positions", sync_positions(bot))
 
             # ── Шаг 1.5: repair — поставить SL/TP на бирже для сделок без него
             if _is_live and hasattr(bot, "order_executor"):
-                await repair_missing_sl(bot)
-                await repair_missing_tp(bot)
-                # 🔴 01.09 ТОТ ЖЕ ДЕФЕКТ, ЧТО В scan_loop: пульс бился ОДИН раз в начале
-                # итерации, поэтому «тишина tracker» = длительность итерации, а не смерть.
-                # Итерация (sync + repair + check_open_trades по 25-46 сделкам с REST на
-                # каждую) занимала до 24 мин — вотчдог считал это смертью и рестартил.
-                # Бьём после каждого шага: тишина теперь означает, что шаг реально завис.
-                _hb("tracker")
+                await _step("repair_sl", repair_missing_sl(bot))
+                await _step("repair_tp", repair_missing_tp(bot))
+            # 🔴 01.09 ТОТ ЖЕ ДЕФЕКТ, ЧТО В scan_loop: пульс бился ОДИН раз в начале
+            # итерации, поэтому «тишина tracker» = длительность итерации, а не смерть.
+            # Итерация (sync + repair + check_open_trades по 25-46 сделкам с REST на
+            # каждую) занимала до 24 мин — вотчдог считал это смертью и рестартил.
+            # Пульс бьётся ВНУТРИ каждого обхода (см. trade_simulator._proc, tsl_updater,
+            # position_sync) и после каждого шага здесь (_step): тишина теперь означает,
+            # что шаг реально встал, а не что работы много.
 
             # ── Шаг 2: симуляторный трекинг ───────────────────────────────
-            closed, tsl_moved = await bot.trade_simulator.check_open_trades_with_tsl(
-                bot.data_collector,
-                use_tsl=use_tsl,
-                tsl_activation_r=tsl_activation_r,
-                use_breakeven=use_breakeven,
-                breakeven_activation_r=breakeven_activation_r,
-                use_be_after_tp1=use_be_after_tp1,
-                cascade_tsl=cascade_tsl,
-            )
-            _hb("tracker")
+            closed, tsl_moved = await _step("check_open_trades",
+                bot.trade_simulator.check_open_trades_with_tsl(
+                    bot.data_collector,
+                    use_tsl=use_tsl,
+                    tsl_activation_r=tsl_activation_r,
+                    use_breakeven=use_breakeven,
+                    breakeven_activation_r=breakeven_activation_r,
+                    use_be_after_tp1=use_be_after_tp1,
+                    cascade_tsl=cascade_tsl,
+                ))
             if closed > 0:
                 logger.info("TradeSimulator: закрыто сделок за цикл: %d", closed)
 
@@ -79,7 +98,7 @@ async def trade_tracker_loop(bot) -> None:
             #    +0.315R). После первого LTF-CHoCH → SL за структуру (один раз, сужение).
             try:
                 from core.trading.choch_sl_transfer import apply_choch_transfer
-                choch_moved = await apply_choch_transfer(bot)
+                choch_moved = await _step("choch_sl", apply_choch_transfer(bot))
                 if choch_moved:
                     tsl_moved = (tsl_moved or []) + choch_moved
             except Exception as _e:
@@ -87,7 +106,11 @@ async def trade_tracker_loop(bot) -> None:
 
             # ── Шаг 3: обновить SL на бирже (VST/LIVE only) ───────────────
             if _is_live and tsl_moved and hasattr(bot, "order_executor"):
-                await update_tsl_on_exchange(bot, tsl_moved)
+                await _step("update_tsl", update_tsl_on_exchange(bot, tsl_moved))
+
+            _iter_el = __import__("time").monotonic() - _iter_t0
+            if _iter_el >= _step_warn:
+                logger.warning("[tracker] ИТЕРАЦИЯ %.1fs (шаги выше)", _iter_el)
 
         except asyncio.CancelledError:
             break

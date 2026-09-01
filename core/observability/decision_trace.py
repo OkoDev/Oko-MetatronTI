@@ -11,13 +11,36 @@ DEV-203: DecisionTrace infrastructure.
 import asyncio
 import logging
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _BATCH: list = []
-_BATCH_LOCK = asyncio.Lock()
+# 🔴 01.09 БЫЛ asyncio.Lock — И ЭТО КОРЕНЬ «ТИШИНЫ» ЗАПИСИ.
+# В процессе НЕСКОЛЬКО event loop'ов: главный (asyncio.run), TradingLoop в отдельном потоке
+# (core/infra/trading_loop.py), market_ws. asyncio.Lock привязывается к тому loop'у, где его
+# впервые взяли: record_drop зовётся из торгового контура, flush_periodically крутится в
+# главном — второй ждёт лок чужого loop'а и не записывает НИЧЕГО, молча, без исключения.
+# Симптом 01.09: гейты отбрасывают сигналы (в логе `router dropped` идут), а в signal_drops
+# последняя запись 12:09:32 и дальше пусто.
+# Тот же приём, что уже применён в GlobalRateLimiter: threading.Lock = loop-agnostic.
+# Под ним НЕТ await — только работа со списком (микросекунды), запись идёт вне лока.
+_BATCH_LOCK = threading.Lock()
 _DB_PATH: Optional[str] = None
+# потолок очереди при недоступной БД (01.09): 200 батчей по 50 — держит ~1.5ч простоя записи
+_BATCH_MAX: int = 10000
+
+# 🔴 01.09 СВОЙ ОДНОПОТОЧНЫЙ EXECUTOR. Запись шла через `run_in_executor(None, ...)` =
+# ДЕФОЛТНЫЙ пул, который в этом боте делят 26 мест: генерация сигналов, ML, рендер графиков,
+# наблюдатели. Когда пул насыщен, задача трейса просто СТОИТ В ОЧЕРЕДИ — без ошибки, без лога.
+# Симптом 01.09: запись дропов оборвалась в 11:33:44 и не возобновилась ни через 3 часа, ни
+# после рестарта, при том что гейты продолжали отбрасывать сигналы (1121 упоминание в логе).
+# Отдельный пул на 1 поток: очередь трейса больше ни с кем не конкурирует, а порядок записи
+# сохраняется (один поток = FIFO).
+_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dtrace")
+_WRITE_TIMEOUT_SEC: float = 60.0
 
 
 def configure(db_path: str) -> None:
@@ -56,26 +79,33 @@ async def record_drop(
         "drop_reason": drop_reason,
         "features_json": json.dumps(features, ensure_ascii=False) if features else None,
     }
-    async with _BATCH_LOCK:
+    with _BATCH_LOCK:
         _BATCH.append(row)
-        if len(_BATCH) >= 50:
-            await _flush()
+        need_flush = len(_BATCH) >= 50
+    if need_flush:
+        await _flush()
 
 
 async def _flush() -> None:
     """Записывает накопленный батч в БД.
 
-    Вызывается под _BATCH_LOCK — не требует повторного захвата.
+    Сам берёт _BATCH_LOCK (threading) на изъятие батча — await под локом НЕТ.
     """
     global _BATCH
-    if not _BATCH or _DB_PATH is None:
+    if _DB_PATH is None:
         return
-    batch = _BATCH[:]
-    _BATCH = []
+    with _BATCH_LOCK:
+        if not _BATCH:
+            return
+        batch = _BATCH[:]
+        _BATCH = []
 
     def _write() -> None:
-        with sqlite3.connect(_DB_PATH, timeout=10) as conn:
-            conn.execute("PRAGMA busy_timeout=5000")
+        # 🔴 01.09 busy_timeout был 5000 при том, что connect(timeout=10) уже дал 10с —
+        # PRAGMA его СНИЖАЛА. Замер того же дня: write-lock свободен 99% времени, то есть
+        # ловить BUSY на 5-секундном ожидании было нечего — упирались в редкие короткие окна.
+        with sqlite3.connect(_DB_PATH, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout=30000")
             conn.executemany(
                 """INSERT INTO signal_drops
                    (symbol, signal_type, direction, strength, gate_name, drop_reason, features_json)
@@ -85,10 +115,20 @@ async def _flush() -> None:
 
     try:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _write)
+        # wait_for: зависшая запись обязана стать ВИДИМОЙ ошибкой, а не тихой тишиной
+        await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, _write),
+                               timeout=_WRITE_TIMEOUT_SEC)
         logger.debug("[DecisionTrace] flushed %d rows to signal_drops", len(batch))
     except Exception as e:
-        logger.warning("[DecisionTrace] flush error: %s", e)
+        # 🔴 01.09 БАТЧ ТЕРЯЛСЯ НАВСЕГДА. `_BATCH` очищается ДО записи, и при `database is
+        # locked` строки просто пропадали — за 01.09 это 142 неудачных flush, до 7100
+        # потерянных решений. Наблюдаемость молча врала: «дропов нет» означало «запись упала».
+        # Возвращаем батч в очередь (в начало — хронология сохраняется), следующий flush
+        # через 30с повторит. Кэп защищает память, если БД недоступна долго.
+        with _BATCH_LOCK:
+            _BATCH = (batch + _BATCH)[-_BATCH_MAX:]
+        logger.warning("[DecisionTrace] flush error: %s — %d строк возвращены в очередь (всего %d)",
+                       e, len(batch), len(_BATCH))
 
 
 async def flush_periodically(interval_s: int = 30) -> None:
@@ -96,10 +136,21 @@ async def flush_periodically(interval_s: int = 30) -> None:
 
     Запускать через asyncio.create_task(flush_periodically(30)).
     """
+    tick = 0
+    logger.info("[DecisionTrace] flush_periodically запущен (interval=%ds)", interval_s)
     while True:
         await asyncio.sleep(interval_s)
-        async with _BATCH_LOCK:
-            await _flush()
+        tick += 1
+        try:
+            # ПРИБОР (01.09): раз в 10 тиков печатаем, что таск ЖИВ и сколько в очереди.
+            # Без этого «записей нет» неотличимо от «таск умер» — именно на этой развилке
+            # сегодня потерялся день: писали, что запись сломана, хотя очередь была пуста
+            # (или наоборот). Пусть состояние очереди будет видно в логе всегда.
+            if tick % 10 == 0:
+                logger.info("[DecisionTrace] alive · очередь=%d строк", len(_BATCH))
+            await _flush()          # лок берёт сам _flush (threading, без await под ним)
+        except Exception as e:      # таск обязан пережить любую ошибку — иначе тихо умрёт
+            logger.warning("[DecisionTrace] flush_periodically: %s", e)
 
 
 def get_top_drops(db_path: str, limit: int = 20, hours: int = 24) -> list:

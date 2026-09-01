@@ -96,13 +96,26 @@ def main() -> None:
         if r["pp"] and r["r1"] and r["s1"]:
             piv[str(r["symbol"])] = r
 
+    # 🔴 01.09 ЭТОТ СКРИПТ ДЕРЖАЛ WRITE-LOCK subscriptions.db 22 СЕКУНДЫ КАЖДЫЕ 15 МИНУТ.
+    # Замер (пробник BEGIN IMMEDIATE раз в 200мс, 15 мин): БД свободна 97% времени, 8 эпизодов
+    # <1с и ОДИН на 22.3с — 15:00:02→15:00:25, ровно старт крона `*/15`. В это окно падали все
+    # писатели с коротким терпением: закрытия сделок (`ok=False` без ретрая) и запись
+    # DecisionTrace. Причина — транзакция открывалась первым INSERT и держалась до commit в
+    # конце, а между ними шёл обход 568 символов с ОТДЕЛЬНЫМ SELECT на каждый.
+    # Лечение: всё чтение — заранее, одним запросом; записи копим в памяти и пишем одной
+    # короткой транзакцией. Лок теперь занят миллисекунды.
     opened = {r["symbol"] for r in c.execute(
         "SELECT symbol FROM weekly_pivot_open WHERE week_start=?", (ws_key,)).fetchall()}
     logged = {(r["symbol"], r["level"]) for r in c.execute(
         "SELECT symbol, level FROM weekly_pivot_touch WHERE week_start=?", (ws_key,)).fetchall()}
+    # open_zone всех символов недели ОДНИМ запросом (был SELECT на каждый символ в цикле)
+    open_zones = {r["symbol"]: r["open_zone"] for r in c.execute(
+        "SELECT symbol, open_zone FROM weekly_pivot_open WHERE week_start=?", (ws_key,)).fetchall()}
 
     new_open = 0
     new_touches = []
+    rows_open: list = []
+    rows_touch: list = []
     for sym, r in piv.items():
         base = sym.split("/")[0]
         px = prices.get(base)
@@ -112,23 +125,27 @@ def main() -> None:
         oz = _zone(px, pp, r1, s1)
         # 1) снимок открытия недели (первое наблюдение)
         if sym not in opened:
-            c.execute("INSERT OR IGNORE INTO weekly_pivot_open VALUES(?,?,?,?,?)",
-                      (sym, ws_key, px, oz, now.isoformat()))
+            rows_open.append((sym, ws_key, px, oz, now.isoformat()))
             opened.add(sym)
+            open_zones.setdefault(sym, oz)   # для касаний в этом же проходе
             new_open += 1
         # 2) касания уровней (первое за неделю)
-        oz0 = c.execute("SELECT open_zone FROM weekly_pivot_open WHERE symbol=? AND week_start=?",
-                        (sym, ws_key)).fetchone()
-        oz0 = oz0["open_zone"] if oz0 else oz
+        oz0 = open_zones.get(sym, oz)
         for level, val, hit in [("R2", r2, px >= r2), ("R1", r1, px >= r1),
                                 ("S1", s1, px <= s1), ("S2", s2, px <= s2)]:
             if hit and (sym, level) not in logged:
-                c.execute("""INSERT INTO weekly_pivot_touch
-                    (symbol, week_start, level, touch_price, pivot_val, open_zone, ts)
-                    VALUES(?,?,?,?,?,?,?)""", (sym, ws_key, level, px, val, oz0, now.isoformat()))
+                rows_touch.append((sym, ws_key, level, px, val, oz0, now.isoformat()))
                 logged.add((sym, level))
                 new_touches.append((base, level, px, val, oz0))
-    c.commit()
+
+    if rows_open or rows_touch:      # одна короткая транзакция вместо 22-секундной
+        if rows_open:
+            c.executemany("INSERT OR IGNORE INTO weekly_pivot_open VALUES(?,?,?,?,?)", rows_open)
+        if rows_touch:
+            c.executemany("""INSERT INTO weekly_pivot_touch
+                (symbol, week_start, level, touch_price, pivot_val, open_zone, ts)
+                VALUES(?,?,?,?,?,?,?)""", rows_touch)
+        c.commit()
 
     opens = c.execute("SELECT COUNT(*) FROM weekly_pivot_open WHERE week_start=?", (ws_key,)).fetchone()[0]
     touched = c.execute("SELECT COUNT(*) FROM weekly_pivot_touch WHERE week_start=?", (ws_key,)).fetchone()[0]
