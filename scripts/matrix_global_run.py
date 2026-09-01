@@ -48,7 +48,7 @@ GEOM = {"1h":  dict(wait=12, hold=96,  lo=1.5, hi=3.234),
 PEN = 0.15          # лимит ставится глубже на эту долю — как в боевом луте
 
 
-def make_mechanic(tf: str, sides: set[str]):
+def make_mechanic(tf: str, sides: set[str], entry_fib: float = 0.382):
     g = GEOM[tf]
 
     def mechanic(df: pd.DataFrame, _tf: str) -> list[dict]:
@@ -77,7 +77,7 @@ def make_mechanic(tf: str, sides: set[str]):
             if not (1.0 <= vr < 1.5 and trend_ok and r_ >= 1.1):
                 continue
             d = 1.0 if up else -1.0
-            e = x_ - d * 0.382 * amp
+            e = x_ - d * entry_fib * amp
             tp = x_ + d * 1.618 * amp
             sl = e - d * 2.5 * atr[b]
             if (sl >= e) if up else (sl <= e):
@@ -127,6 +127,8 @@ def main() -> int:
                     help="нижняя граница зоны стопа, %%. Боевая 1.5. Расширить = снять ВШИТЫЙ гейт")
     ap.add_argument("--stop-hi", type=float, default=None,
                     help="верхняя граница зоны стопа, %%. Боевая 3.234")
+    ap.add_argument("--entry-fib", type=float, default=0.382,
+                    help="глубина отката для лимита. Боевая 0.382. Зона OTE 0.705-0.79 — механика туда НЕ ДОХОДИТ, поэтому измерить её разрезом существующих сделок нельзя")
     ap.add_argument("--tag", default="", help="суффикс имени выходного файла")
     ap.add_argument("--core", action="store_true",
                     help="БАЛАНСИРОВАННАЯ ПАНЕЛЬ: только монеты с полным покрытием окна. Состав фиксирован → годы сравнимы напрямую, без поправки на состав (15m: 97 монет)")
@@ -161,7 +163,10 @@ def main() -> int:
     print(f"рыночный контекст: {M.shape[0]} дней × {M.shape[1]} признаков "
           f"({M.index[0].date()} → {M.index[-1].date()})")
 
-    R = collect(make_mechanic(a.tf, sides), tf=a.tf,
+    if a.entry_fib != 0.382:
+        print(f'🔴 ГЛУБИНА ВХОДА ИЗМЕНЕНА: 0.382 → {a.entry_fib} — выборка будет ДРУГОЙ '
+              f'(меняется цена входа, стоп в %% и то, какие сетапы вообще доживают до филла)')
+    R = collect(make_mechanic(a.tf, sides, entry_fib=a.entry_fib), tf=a.tf,
                 n_symbols=0 if a.core else a.symbols, core=a.core,
                 extra=lambda df, tf, sym: extra_flags(df, tf, sym, M=M))
 
