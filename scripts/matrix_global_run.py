@@ -123,12 +123,26 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Глобальный прогон по ПОЛНОЙ матрице")
     ap.add_argument("--tf", default="15m", choices=["15m", "1h", "4h"])
     ap.add_argument("--symbols", type=int, default=40)
+    ap.add_argument("--stop-lo", type=float, default=None,
+                    help="нижняя граница зоны стопа, %%. Боевая 1.5. Расширить = снять ВШИТЫЙ гейт")
+    ap.add_argument("--stop-hi", type=float, default=None,
+                    help="верхняя граница зоны стопа, %%. Боевая 3.234")
+    ap.add_argument("--tag", default="", help="суффикс имени выходного файла")
     ap.add_argument("--core", action="store_true",
                     help="БАЛАНСИРОВАННАЯ ПАНЕЛЬ: только монеты с полным покрытием окна. Состав фиксирован → годы сравнимы напрямую, без поправки на состав (15m: 97 монет)")
     ap.add_argument("--sides", default="long,short")
     ap.add_argument("--perm", type=int, default=20, help="перестановок для контроля шума")
     a = ap.parse_args()
     sides = set(s.strip() for s in a.sides.split(",") if s.strip())
+    # 🔴 зона стопа — ВШИТЫЙ гейт: она отсеивает сетапы при ГЕНЕРАЦИИ, а не фильтрует
+    # готовую выборку. Пока она узкая, в матрице нет контрпримеров и измерить её нельзя.
+    if a.stop_lo is not None or a.stop_hi is not None:
+        g = GEOM[a.tf]
+        old = (g['lo'], g['hi'])
+        if a.stop_lo is not None: g['lo'] = a.stop_lo
+        if a.stop_hi is not None: g['hi'] = a.stop_hi
+        print(f"🔴 ЗОНА СТОПА РАСШИРЕНА: {old[0]}-{old[1]}% → {g['lo']}-{g['hi']}% "
+              f"— это СНЯТИЕ вшитого гейта, выборка будет ДРУГОЙ")
 
     print("=" * 104)
     print(f"ГЛОБАЛЬНЫЙ ПРОГОН · ПОЛНАЯ МАТРИЦА · ТФ {a.tf} · стороны {sorted(sides)}")
@@ -169,8 +183,8 @@ def main() -> int:
 
     # ядро пишется отдельным файлом — сравнивать с обычным прогоном можно только
     # так, а перезапись затёрла бы базу, на которой стоят прошлые выводы
-    out = ROOT / "cache" / (f"matrix_core_{a.tf}.parquet" if a.core
-                            else f"matrix_run_{a.tf}.parquet")
+    base = f"matrix_core_{a.tf}" if a.core else f"matrix_run_{a.tf}"
+    out = ROOT / "cache" / f"{base}{a.tag}.parquet"
     try:
         R.to_parquet(out)
         print(f"\nсырые сделки с признаками → {out}")
