@@ -150,8 +150,18 @@ def build_smc_snapshot(
     bull_fvg_active: List[Dict[str, Any]] = []
     bear_fvg_active: List[Dict[str, Any]] = []
 
-    latest_bos: Optional[Dict[str, Any]] = None   # по свежести (age_bars min)
+    # 🔴 02.09.2026: после перевода detect_structure на двухслойный эталон
+    # struct.breaks содержит ОБА слоя (micro internal_len=5 и swing swing_len=50,
+    # в пропорции 8.8:1). Раньше слой был один — по смыслу это нынешний micro.
+    # Если брать «последний слом» без разбора, latest_* дёргается на каждом
+    # микро-колебании: события шины выросли со 98-166 до 909-3117 в час,
+    # FIRE 202→1366, Full CALL 252→1735. Поэтому latest_* СОХРАНЯЮТ прежний
+    # смысл (micro), а старший слой отдаётся отдельными полями — это новая
+    # информация, которой до сегодня не было вовсе.
+    latest_bos: Optional[Dict[str, Any]] = None   # по свежести (age_bars min), слой micro
     latest_choch: Optional[Dict[str, Any]] = None
+    latest_bos_swing: Optional[Dict[str, Any]] = None    # старший слой (swing_len=50)
+    latest_choch_swing: Optional[Dict[str, Any]] = None
 
     structures_by_tf: Dict[str, Any] = {}
     by_tf: Dict[str, Any] = {}   # per-TF раскрытие (Егор 29.07): OB/FVG/CHoCH/BOS отдельно по каждому
@@ -192,18 +202,34 @@ def build_smc_snapshot(
 
         # Последний BOS / CHoCH по свежести среди всех TF (меньший age_bars = свежее)
         if struct.breaks:
-            for brk in reversed(struct.breaks):
-                snap = _break_snap(brk, tf, bars_n)
-                if brk.break_type in (BreakType.BULLISH_BOS, BreakType.BEARISH_BOS):
-                    if latest_bos is None or snap["age_bars"] < latest_bos["age_bars"]:
-                        latest_bos = snap
-                    break
-            for brk in reversed(struct.breaks):
-                snap = _break_snap(brk, tf, bars_n)
-                if brk.break_type in (BreakType.BULLISH_CHOCH, BreakType.BEARISH_CHOCH):
-                    if latest_choch is None or snap["age_bars"] < latest_choch["age_bars"]:
-                        latest_choch = snap
-                    break
+            _BOS = (BreakType.BULLISH_BOS, BreakType.BEARISH_BOS)
+            _CH = (BreakType.BULLISH_CHOCH, BreakType.BEARISH_CHOCH)
+            # micro-слой — прежнее поведение (до 02.09 слой был один и равен ему)
+            for kinds, get, setname in ((_BOS, latest_bos, "bos"), (_CH, latest_choch, "choch")):
+                for brk in reversed(struct.breaks):
+                    if not getattr(brk, "internal", True):
+                        continue          # старший слой обрабатывается ниже
+                    if brk.break_type in kinds:
+                        snap = _break_snap(brk, tf, bars_n)
+                        if get is None or snap["age_bars"] < get["age_bars"]:
+                            if setname == "bos":
+                                latest_bos = snap
+                            else:
+                                latest_choch = snap
+                        break
+            # старший слой (swing) — новые поля, потребители могут спрашивать явно
+            for kinds, get, setname in ((_BOS, latest_bos_swing, "bos"), (_CH, latest_choch_swing, "choch")):
+                for brk in reversed(struct.breaks):
+                    if getattr(brk, "internal", True):
+                        continue
+                    if brk.break_type in kinds:
+                        snap = _break_snap(brk, tf, bars_n)
+                        if get is None or snap["age_bars"] < get["age_bars"]:
+                            if setname == "bos":
+                                latest_bos_swing = snap
+                            else:
+                                latest_choch_swing = snap
+                        break
 
         # per-TF раскрытие (аддитивно): ближайший OB↑/↓ + FVG-плотность + последний CHoCH/BOS
         # НА ЭТОМ ТФ (не схлопнутый). Читают: фильтр-конструктор + будущие MTF-гейты.
@@ -314,6 +340,9 @@ def build_smc_snapshot(
         "bear_fvg_active": bear_fvg_active,
         "last_bos": latest_bos,
         "last_choch": latest_choch,
+        # ARCH-137.5: старший слой структуры (swing_len=50) — до 02.09 его не было
+        "last_bos_swing": latest_bos_swing,
+        "last_choch_swing": latest_choch_swing,
         "swing_high": swing_high,
         "swing_low": swing_low,
         "fib_levels": fib_levels,
