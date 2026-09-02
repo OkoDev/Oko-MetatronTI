@@ -135,6 +135,27 @@ class ProxyPool:
                                        self._cooldown, _mask(url), s.fails)
                 return
 
+    def quarantine(self, url: Optional[str], seconds: float) -> bool:
+        """Вывести КОНКРЕТНЫЙ прокси из пула на заданное время.
+
+        Для BingX 100410: бан выдаётся ПО IP (market-data идёт без ключа), значит
+        останавливать надо только этот выходной адрес, а не весь пул. Раньше
+        api_engine на 100410 ставил ГЛОБАЛЬНУЮ паузу — один забаненный IP тормозил
+        все три, и смысл пула терялся (замер 02.09: 6 банов за час).
+
+        Возвращает True, если прокси найден и отправлен в карантин.
+        """
+        if url is None:
+            return False
+        for s in self._states:
+            if s.url == url:
+                s.dead_until = max(s.dead_until, time.monotonic() + seconds)
+                s.fails = 0          # причина известна, копить фейлы незачем
+                logger.warning("[ProxyPool] %s выведен на %.0fs (бан по IP); живых: %d/%d",
+                               _mask(url), seconds, self.alive_count, self.size)
+                return True
+        return False
+
     def stats(self) -> dict:
         return {
             "size": self.size,

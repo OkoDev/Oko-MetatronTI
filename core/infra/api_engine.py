@@ -568,6 +568,7 @@ class ApiEngine:
         """3 попытки с exponential backoff. Различает постоянные и временные ошибки."""
         last_exc = None
         for attempt in range(3):
+            _last_proxy = None      # через какой прокси шла ЭТА попытка (None = direct)
             try:
                 # Rate limiter: ждём свою очередь (token bucket + глобальный бан)
                 await self._rate_limiter.acquire()
@@ -576,6 +577,9 @@ class ApiEngine:
                         # PROXY-NODE: market-data через пул прокси (обход per-IP RPS).
                         import time as _t
                         _pxurl = await self._proxy_pool.acquire()  # None = direct fallback
+                        # запоминаем для внешнего except: 100410 приходит ПО IP,
+                        # и наказывать нужно ровно этот выходной адрес
+                        _last_proxy = _pxurl
                         _t0 = _t.monotonic()
                         try:
                             # race на aiohttp_proxy НЕ портит данные (любой прокси = тот же BingX-OHLCV),
@@ -647,13 +651,26 @@ class ApiEngine:
                                 wait = delta + 2.0  # +2 сек запас
                     except Exception:
                         pass
-                    # ГЛОБАЛЬНЫЙ БАН — останавливаем ВСЕ запросы, не только текущий
-                    self._rate_limiter.set_ban(wait)
-                    logger.warning(
-                        "BingX 100410 (temp ban) %s %s — ГЛОБАЛЬНАЯ пауза %.1f сек (попытка %d/3)",
-                        symbol, timeframe, wait, attempt + 1,
-                    )
-                    await asyncio.sleep(wait)
+                    # 02.09.2026: 100410 выдаётся ПО IP — market-data идёт без ключа.
+                    # Если запрос шёл через прокси, останавливать надо ТОЛЬКО его:
+                    # прежде один забаненный адрес ставил глобальную паузу и тормозил
+                    # весь пул, из-за чего смысл прокси терялся ровно в тот момент,
+                    # когда они нужнее всего. Глобальная пауза остаётся для direct.
+                    _quarantined = False
+                    if self._proxy_pool is not None and _last_proxy is not None:
+                        _quarantined = self._proxy_pool.quarantine(_last_proxy, wait)
+                    if not _quarantined:
+                        self._rate_limiter.set_ban(wait)
+                        logger.warning(
+                            "BingX 100410 (temp ban) %s %s — ГЛОБАЛЬНАЯ пауза %.1f сек (попытка %d/3)",
+                            symbol, timeframe, wait, attempt + 1,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.info(
+                            "BingX 100410 %s %s — забанен ОДИН прокси на %.0fs, пул продолжает",
+                            symbol, timeframe, wait,
+                        )
                     last_exc = exc
                     continue
                 # Постоянная ошибка (неверный символ, недоступный инструмент) — не ретраить
