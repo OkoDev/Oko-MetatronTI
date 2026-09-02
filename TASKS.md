@@ -1930,8 +1930,8 @@ phase = wave_svc.compute_and_publish(sym, df_4h, df_1h, df_15m, bot.pair_bus)
 | **OTE-RBUG** | 🟢 | Edge реальный +4808R; min_sl_dist 0.3→0.5 + валидация стороны SL. ч.2 backlog | 5e2fd0f |
 | **PERF-LOOP-B-TEST** | 🟢 | GlobalRateLimiter cross-loop 3/3, listenKey вне IP-бюджета | api_engine:254 |
 | **PERF-LOOP-B-DEADLOCK** | 🟢 | 6 WRITE-точек cross-loop риск; DB-записи в main loop через Queue | docs/DEADLOCK_AUDIT.md |
-| **PERF-COMPUTE-POOL** | ❌ | Закрыт замером: compute=0.5% цикла, pool не окупается (GIL-гипотеза опровергнута) | DS Ф1 |
-| **PERF-SCAN-CYCLE** | 🔵 | Цикл ~290с = REST-fetch; рычаг market_ws/EXEC-WS | market_ws_v2 |
+| **PERF-COMPUTE-POOL** | 🔵 **ПЕРЕОТКРЫТ 02.09** | ~~«compute=0.5% цикла, GIL-гипотеза опровергнута»~~ — **вывод НЕ подтвердился**. Замеры 02.09: SMC 173 с + calculate_trend 97 с = **~270 с CPU за цикл** при цикле ~300 с, то есть compute был почти ВСЁ время, а не 0.5%. GIL подтверждён: процесс ест 44% ОДНОГО ядра из 16. Прямая векторизация (.iloc→numpy) уже дала 270→37 с без всякого пула. Пул процессов имеет смысл как СЛЕДУЮЩИЙ шаг — 15 ядер простаивают | замеры в [[scan_bottleneck_is_the_channel]] |
+| **PERF-SCAN-CYCLE** | ✅ **02.09** | Рычаги применены: прокси (3 ISP, разные /24) + market_ws live 3m/5m/15m + векторизация CPU. Цикл **832 → 256-311 с**, выбросы latency >8с 75%→0%, HARD timeout 83→8 в час. Осталось: узкое место — домашний канал ([[scan_bottleneck_is_the_channel]]) | market_ws_v2 |
 | **PERF-LOOP-DRIFT** | 🔵 | C+executor done (timestamp invalid −80%); B (торговый loop) = эпик | db9726d · BACKLOG #20 |
 
 ---
@@ -2025,8 +2025,6 @@ phase = wave_svc.compute_and_publish(sym, df_4h, df_1h, df_15m, bot.pair_bus)
 | **T-02** | 🟡 T | удалить мёртвый `bot/main.py` + `infrastructure/`/`presentation/` (Clean-Arch скелет, ~300 стр) | 🟡 РЕАЛЬНА | `bot/main.py` |
 | **T-03** | 🟡 T | TTL/maxsize для `_last_signal`/`analysis_cache` (растут без лимита) + `asyncio.Lock` на CircuitBreaker/OhlcvCache | 🟡 РЕАЛЬНА | `bot/core/bot.py:75`, `api_engine.py:31` |
 | **DOC-SYNC** | 🟡 T | регулярное обновление `current_state.md`/`whats-next.md` (косяк: аудит читал уст… | 🟡 НОВАЯ | — |)
-| ~~OPS-02~~ | ✅ | ~~SQLite WAL+busy_timeout~~ — **УЖЕ СДЕЛАНО (DEV-148)** | ✅ устарела в аудите | `subscription_manager.py:30,37` |
-| ~~OPS-03~~ | ✅ | ~~scikit-learn в requirements~~ — **УЖЕ ЕСТЬ** | ✅ устарела в аудите | `requirements.txt:21` |
 
 **Спринты:** 🔴 **S** (Security, 1-2 дня, SEC-01a сразу=1 строка) → 🔴 **R** (Reliability/анти-#1910, критично деньги) → 🟠 **M** (ML-честность, неделя) → 🟡 **T** (техдолг, фон). **Старт: SEC-01a (bind) + OPS-01a (sanity-guard) — обе про потерю денег/безопасность.**
 
@@ -2059,7 +2057,7 @@ phase = wave_svc.compute_and_publish(sym, df_4h, df_1h, df_15m, bot.pair_bus)
 | **DS-325** | 🟢 **Ф1+Ф2 ГОТОВО (DS 14.06).** Файл: `core/infra/pydantic_config.py`. OkoConfig: 6 domain-моделей + 30 Dict-секций, `extra="forbid"` (поймал 30 неучтённых полей → добавлены в схему). `ConfigProxy.get("a.b.c")` совместим с ConfigLoader. Поглощён `config_validator.py`. `strict=True`: config.yaml проходит чисто. `requirements.txt`: pydantic>=2.0.0 + pydantic-settings>=2.0.0. **НЕ сделано:** Ф3 (миграция callsites), перестройка config.yaml. | 🟢 done (Ф1+Ф2) | `core/infra/pydantic_config.py` |)
 | ARCH-128-ENGINE | 🔄 | **OTE-Retest Engine + Фрактальный Куб** (ВХОД-движок): слом→импульс→OTE→ретест→вход+SL. Ядро `ote_retest_setups`. **Исследование 03-04.06 (бэктест 5 пар) → `docs/RESEARCH_OTE_CUBE_2026-06-03.md`:** вложенность HTF-зона×LTF-слом=риск ×10; частичный TP1=1R лечит WR(12→72%); матрица оптимум 4h→15m(+0.471); каскад глубина=качество; двунаправленность (откаты ≥ продолж, 4h→5m откат +1.128 WR83%); дивергенция только В OTE; инвалид-SL(1.0)=неперекрытие Эллиотта; сверка с DS-316 сошлась на 15m. TP→TPSelector(вклад: отриц.фибо+EQL/FVG), TSL→tsl_updater, SL→ExitManager Ph2. **NEXT:** вход=LTF-слом в OTE+дивергенция; подтвердить 5m-откат на 45 парах. `memory/ote_nested_mtf_strategy.md` | Claude |
 | **ARCH-128-MON** | ⏳ | **Мониторинг качества OTE / Premium-Discount** — периодическая отрисовка фибо на чартах для визуальной сверки (правильно ли определяются OTE-зона и premium/discount). Контроль эталона после изменений | Claude |
-| **ARCH-128-C01** | 🔴 → DS | СЛЕПОТА CHoCH/SMC (length=50) в ядре паттернов → length=5 + ре-майнинг. Найд… | DS+Claude |
+| **ARCH-128-C01** | ❌ **СНЯТ 02.09** | ~~«СЛЕПОТА CHoCH/SMC (length=50) → length=5»~~ — **построен на неверном понимании**. `oko_sm_engine.run_structure` ведёт ДВА слоя ОДНОВРЕМЕННО (`swing_len=50` + `internal_len=5`, раздельные trend/itrend, флаг `internal` у события) — это не слепота, а конструкция. Замер: micro/swing = 8.8:1, слои согласны со `smc_engine` на 99%. Реальная проблема была в другом месте и закрыта в ARCH-137.5 | [[smc_canon_engine_is_oko_sm]] |
 
 ---
 
@@ -2069,7 +2067,7 @@ phase = wave_svc.compute_and_publish(sym, df_4h, df_1h, df_15m, bot.pair_bus)
 
 **Корень:** в БД попадает ~4% детектируемых сигналов, остальные 96% теряются молча. ML обучается на 30-40% данных. `decision_trace.py` готов, но в `_broadcast_intelligence_alert` не вызывается. Сначала видимость, потом архитектура.
 
-**Заморожено до Phase 4 (~25.05):** ARCH-74-EXT, ARCH-96..99, ARCH-101..104, ARCH-105..111. Не открываем, не удаляем — паузим. Активный спринт «Реальные убийцы» (DEV-184..193) **продолжается** как стабилизирующий.
+🔴 **ЗАМОРОЗКА ИСТЕКЛА (срок был ~25.05, сейчас 02.09 — три месяца).** Заморожены были: ARCH-74-EXT, ARCH-96..99, ARCH-101..104, ARCH-105..111. Статус каждой НЕ проверялся — при следующем заходе либо разморозить и переоценить, либо снять окончательно. Держать «заморожено» с истёкшим сроком хуже, чем закрыть: выглядит как живая задача, но никем не ведётся.
 
 **Фазы:**
 - **Phase 0** (1-2д): DecisionTrace в 14 gates → таблица `signal_drops` → дашборд топ-10 reasons
