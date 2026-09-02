@@ -927,7 +927,29 @@ async def _db_reconcile(bot, open_sim: list, open_pairs: dict) -> None:
                    position_id=str(t.get("position_id")) if t.get("position_id") else None)
         exit_info = None
         try:
-            exit_info = await sphere._resolve_exit_via_rest(acc, pos)
+            # 🔴 02.09 ВОССТАНОВЛЕНИЕ positionId ИЗ НАШЕГО exchange_order_id.
+            # Запись без pid не резолвилась НИКОГДА (3 из 4 зомби 30.08 и INIT #58854 сегодня):
+            # закрывающий ордер без pid не отличить от чужого, поэтому резолв честно отказывал.
+            # Но pid и не нужно угадывать — он есть у НАШЕГО ВХОДНОГО ордера, id которого
+            # лежит в `exchange_order_id`. Проверено на INIT: вход 2094221847995355136 несёт
+            # positionID 2094221848037298178, и закрывающий BUY MARKET @0.05891 (profit −0.5013)
+            # имеет ТОТ ЖЕ positionID. Никакого гадания: цепочка «наш ордер → его позиция».
+            if pos.position_id is None and _eoid:
+                try:
+                    _f = await sphere._adapter.get_filled(sym, acc, limit=200)
+                    _our = next((o for o in _f
+                                 if str(o.get("orderId") or "") == str(_eoid)), None)
+                    _rpid = (_our or {}).get("positionID") or (_our or {}).get("positionId")
+                    if _rpid:
+                        pos.position_id = str(_rpid)
+                        logger.info("[DB-RECONCILE] #%d %s: pid восстановлен из нашего ордера "
+                                    "%s → %s", tid, sym, _eoid, _rpid)
+                except Exception as _pe:                      # noqa: BLE001
+                    logger.debug("[DB-RECONCILE] #%d pid-recovery: %s", tid, _pe)
+            # limit=200: запись могла висеть сутками (см. комментарий в sphere), закрывающий
+            # ордер по positionId ищем в широком окне. Матч по pid точный — ЧУЖОЙ ордер взять
+            # нельзя, поэтому расширение окна безопасно (в отличие от поиска по symbol+side).
+            exit_info = await sphere._resolve_exit_via_rest(acc, pos, limit=200)
             if exit_info is None:
                 exit_info = await sphere._resolve_exit_via_income(acc, pos)
         except Exception as _re:

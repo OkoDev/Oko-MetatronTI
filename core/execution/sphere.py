@@ -332,7 +332,8 @@ class ExecutionSphere:
                         status=classify_exit("CR_DELTA", delta), order_type="CR_DELTA",
                         position_id=flat.position_id, ts=time.time())
 
-    async def _resolve_exit_via_rest(self, account: int, pos: Position) -> Optional[ExitInfo]:
+    async def _resolve_exit_via_rest(self, account: int, pos: Position,
+                                     limit: int = 20) -> Optional[ExitInfo]:
         """Гонка fill↔pa=0: pa=0 без застешенного fill → дотянуть закрывающий fill из REST.
 
         Матч по positionId (casing positionID/positionId) + close-side, последний по updateTime —
@@ -340,7 +341,11 @@ class ExecutionSphere:
         (db_writer тогда НЕ закроет — не угадываем; эскалация verify-flat). REST только на гонке.
         """
         try:
-            filled = await self._adapter.get_filled(pos.symbol, account, limit=20)
+            # limit по умолчанию 20 — путь WS-гонки (закрытие произошло секунды назад).
+            # DB-RECONCILE зовёт с бо́льшим окном: там запись может висеть СУТКАМИ, и за это
+            # время по символу проходит больше 20 ордеров (02.09: TST #58839 с валидным pid
+            # висел 64ч, «REST+income пусты» — закрывающий ордер просто не попадал в выборку).
+            filled = await self._adapter.get_filled(pos.symbol, account, limit=limit)
         except Exception as e:
             logger.debug("[Sphere] _resolve_exit_via_rest get_filled %s: %s", pos.symbol, e)
             return None

@@ -83,7 +83,18 @@ async def main() -> None:
         pos = Position(symbol=r["symbol"], side=side, qty=float(r["qty"] or 0), account=acc,
                        entry=float(r["actual_entry_price"] or r["entry_price"] or 0) or None,
                        position_id=str(r["position_id"]) if r["position_id"] else None)
-        ex = await sphere._resolve_exit_via_rest(acc, pos)
+        # pid восстанавливаем из НАШЕГО входного ордера (см. position_sync._db_reconcile)
+        if pos.position_id is None and r.get("exchange_order_id"):
+            try:
+                _f = await sphere._adapter.get_filled(r["symbol"], acc, limit=200)
+                _our = next((o for o in _f if str(o.get("orderId") or "") == str(r["exchange_order_id"])), None)
+                _rpid = (_our or {}).get("positionID") or (_our or {}).get("positionId")
+                if _rpid:
+                    pos.position_id = str(_rpid)
+                    print(f"    pid восстановлен из ордера {r['exchange_order_id']} -> {_rpid}")
+            except Exception as _pe:
+                print(f"    pid-recovery: {_pe}")
+        ex = await sphere._resolve_exit_via_rest(acc, pos, limit=200)
         if ex is None:
             ex = await sphere._resolve_exit_via_income(acc, pos)
         if ex is None:
