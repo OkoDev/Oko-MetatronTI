@@ -88,19 +88,35 @@ async def live(proxies: list) -> None:
     except ImportError:
         print("\n(ccxt не установлен — живая проверка пропущена)")
         return
-    print("\nЖИВАЯ ПРОВЕРКА (fetch_ohlcv BTC/USDT 1m limit=2):")
-    for p in proxies:
+    import statistics
+    # 🔴 Прогрев обязателен: первый вызов fetch_ohlcv неявно тянет load_markets
+    # (577 рынков) — без этого замер меряет загрузку справочника, а не латентность.
+    print("\nЖИВАЯ ПРОВЕРКА: прогрев load_markets отдельно, затем 5 × fetch_ohlcv")
+
+    async def probe(proxy, label):
         ex = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-        ex.aiohttp_proxy = p
-        host = (PROXY_RE.match(p) or {}).group("host") if PROXY_RE.match(p) else p[:22]
-        t0 = time.monotonic()
+        if proxy:
+            ex.aiohttp_proxy = proxy
         try:
-            await ex.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=2)
-            print(f"   ✅ {host:>16s}  {(time.monotonic()-t0)*1000:7.0f} мс")
+            t0 = time.monotonic()
+            await ex.load_markets()
+            warm = (time.monotonic() - t0) * 1000
+            lat = []
+            for _ in range(5):
+                t = time.monotonic()
+                await ex.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=2)
+                lat.append((time.monotonic() - t) * 1000)
+            print(f"   {'✅' if proxy else '──'} {label:>16s}  медиана {statistics.median(lat):6.0f} мс"
+                  f"   мин {min(lat):5.0f}  макс {max(lat):5.0f}   (прогрев {warm:.0f})")
         except Exception as e:
-            print(f"   🔴 {host:>16s}  {type(e).__name__}: {str(e)[:60]}")
+            print(f"   🔴 {label:>16s}  {type(e).__name__}: {str(e)[:60]}")
         finally:
             await ex.close()
+
+    for p in proxies:
+        m = PROXY_RE.match(p)
+        await probe(p, m.group("host") if m else p[:22])
+    await probe(None, "DIRECT")   # та же метрика напрямую — честная база
 
 
 def main() -> None:
