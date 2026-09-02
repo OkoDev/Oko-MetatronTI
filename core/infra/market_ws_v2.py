@@ -29,7 +29,24 @@ logger = logging.getLogger(__name__)
 
 # ─── worker-процесс ────────────────────────────────────────────────────────────
 
-_LIVE_DEDUP_INTERVAL = 5.0  # сек: одну (sym,tf) не шлём чаще → поток 1200/s→~200/s
+# Throttle отправки в очередь: одну (sym,tf) не шлём чаще, чем раз в N секунд.
+# 02.09.2026: было единое 5.0 для всех ТФ, и мы упирались в его потолок —
+# 1734 ключа (578 пар × 3 ТФ) / 5 с = 347 сообщ/с максимум, фактически шло 280,
+# то есть 81% предела. Reader делает merge в ГЛАВНОМ процессе, поэтому каждое
+# сообщение стоит времени скана.
+# Логика дифференциации: чем длиннее бар, тем реже его надо освежать. Раньше
+# 15m-свеча обновлялась так же часто, как 3m, хотя живёт впятеро дольше.
+#   3m  (бар 180 с) → 5 с  = 36 обновлений на бар   ← не трогаем, самый чувствительный
+#   5m  (бар 300 с) → 8 с  = 37 обновлений
+#   15m (бар 900 с) → 15 с = 60 обновлений
+# Расчётный поток: 578 × (1/5 + 1/8 + 1/15) ≈ 227/с вместо 347 — минус треть.
+# 🔴 Откат: вернуть единое значение _LIVE_DEDUP_DEFAULT для всех ТФ.
+_LIVE_DEDUP_DEFAULT = 5.0
+_LIVE_DEDUP_BY_TF = {"3m": 5.0, "5m": 8.0, "15m": 15.0, "1h": 30.0, "4h": 60.0, "1d": 120.0}
+
+
+def _dedup_interval(tf: str) -> float:
+    return _LIVE_DEDUP_BY_TF.get(tf, _LIVE_DEDUP_DEFAULT)
 
 
 def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = False) -> None:
@@ -80,11 +97,11 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
             # потому что его намеренно не было. Теперь shadow идёт тем же путём —
             # разница только в том, что reader в shadow СЧИТАЕТ, а не мержит в кэш,
             # то есть торговый путь по-прежнему не затронут.
-            # Throttle: не слать одну (sym,tf) чаще _LIVE_DEDUP_INTERVAL сек
+            # Throttle: не слать одну (sym,tf) чаще _dedup_interval(tf) сек
             # → поток 1200/s→~200/s, reader справляется без overflow
             key = (sym_ccxt, tf)
             now = _time.monotonic()
-            if now - self._last_sent.get(key, 0.0) < _LIVE_DEDUP_INTERVAL:
+            if now - self._last_sent.get(key, 0.0) < _dedup_interval(tf):
                 return
             self._last_sent[key] = now
             try:
