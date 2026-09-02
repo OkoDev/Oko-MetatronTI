@@ -142,23 +142,28 @@ def _track_sweeps(
     SELL-side swept: low бара < zone_bottom (стопы лонгистов сработали).
     """
     n = len(df)
+    # ВЕКТОРНО (02.09.2026). Раньше здесь стоял цикл по барам с df["high"].iloc[j]
+    # для КАЖДОЙ зоны: профиль дал 45 780 обращений к pandas за 20 прогонов и
+    # 42 мс на вызов — самый дорогой детектор после перевода остальных на эталон.
+    # Тот же класс проблемы, что в _detect_breaks старого набора ([[smc_set_b_40x_slower]]).
+    # argmax по булевой маске находит ПЕРВЫЙ бар, пробивший границу, за один проход C-кодом.
+    _high = df["high"].to_numpy(dtype=float)
+    _low = df["low"].to_numpy(dtype=float)
 
     for zone in zones:
         # Начинаем проверку после последнего свинга в кластере
         start = max(zone.swing_indices) + 1 if zone.swing_indices else 0
+        if start >= n:
+            continue
 
-        for j in range(start, n):
-            bar_high = float(df["high"].iloc[j])
-            bar_low = float(df["low"].iloc[j])
+        if zone.side == "BUY":
+            hit = _high[start:] > zone.zone_top
+        else:
+            hit = _low[start:] < zone.zone_bottom
 
-            if zone.side == "BUY" and bar_high > zone.zone_top:
-                zone.swept = True
-                zone.sweep_index = j
-                break
-            elif zone.side == "SELL" and bar_low < zone.zone_bottom:
-                zone.swept = True
-                zone.sweep_index = j
-                break
+        if hit.any():
+            zone.swept = True
+            zone.sweep_index = start + int(hit.argmax())   # argmax = первый True
 
     return zones
 
