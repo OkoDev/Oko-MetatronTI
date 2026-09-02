@@ -296,6 +296,8 @@ def _fvg_from_canon(df: pd.DataFrame) -> FVGAnalysis:
     # позиция бара по метке индекса — эталон отдаёт ts, потребителям нужен int
     pos = {ts: k for k, ts in enumerate(df.index)}
     n = len(df)
+    _low = df["low"].to_numpy(dtype=float)     # один раз, вместо .iloc в циклах
+    _high = df["high"].to_numpy(dtype=float)
     fvgs: List[FVG] = []
 
     for ts_left, top, bottom, kind, ts_i, mit in raw:
@@ -309,24 +311,21 @@ def _fvg_from_canon(df: pd.DataFrame) -> FVGAnalysis:
             continue
         gap = top - bottom
         mitigated = mit is not None
-        # степень захода в зону: максимум проникновения до закрытия/до конца данных
+        # Степень захода в зону — ВЕКТОРНО. Раньше здесь стоял цикл с .iloc[j]
+        # по каждому бару каждой зоны: на 1h/400 это давало 21 мс против 3.
+        # Ровно та поэлементная работа, из-за которой прежний набор был в 42 раза
+        # медленнее эталона ([[smc_set_b_40x_slower]]) — не повторять её здесь.
         end = pos.get(mit, n) if mitigated else n
+        lo, hi = i + 1, min(end + 1, n)
         mpct = 0.0
         m_idx = None
-        if kind == "bull":
-            for j in range(i + 1, min(end + 1, n)):
-                pen = top - float(df["low"].iloc[j])
-                if pen > 0:
-                    p = min(1.0, pen / gap)
-                    if p > mpct:
-                        mpct, m_idx = p, j
-        else:
-            for j in range(i + 1, min(end + 1, n)):
-                pen = float(df["high"].iloc[j]) - bottom
-                if pen > 0:
-                    p = min(1.0, pen / gap)
-                    if p > mpct:
-                        mpct, m_idx = p, j
+        if hi > lo:
+            pen = (top - _low[lo:hi]) if kind == "bull" else (_high[lo:hi] - bottom)
+            k = int(pen.argmax())
+            best = float(pen[k])
+            if best > 0:
+                mpct = min(1.0, best / gap)
+                m_idx = lo + k
         if mitigated:
             mpct = 1.0
             m_idx = pos.get(mit, m_idx)

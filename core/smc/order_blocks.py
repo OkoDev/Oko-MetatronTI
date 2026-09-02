@@ -287,6 +287,8 @@ def _obs_from_canon(df: pd.DataFrame, structure: StructureAnalysis,
 
     raw = _canon_ob(df, views) or []
     n = len(df)
+    _low = df["low"].to_numpy(dtype=float)     # один раз, вместо .iloc в циклах
+    _high = df["high"].to_numpy(dtype=float)
     obs: List[OrderBlock] = []
 
     for r in raw:
@@ -304,21 +306,17 @@ def _obs_from_canon(df: pd.DataFrame, structure: StructureAnalysis,
         mitigated = mit_i >= 0
         gap = top - bottom
         end = mit_i if mitigated else n
+        # ВЕКТОРНО: цикл с .iloc[j] по барам каждой зоны стоил 41 мс против 5
+        # на 1h/400 — см. [[smc_set_b_40x_slower]].
+        lo, hi = idx + 1, min(end + 1, n)
         mpct, m_idx = 0.0, None
-        if r.kind == "bull":
-            for j in range(idx + 1, min(end + 1, n)):
-                pen = top - float(df["low"].iloc[j])
-                if pen > 0:
-                    p = min(1.0, pen / gap)
-                    if p > mpct:
-                        mpct, m_idx = p, j
-        else:
-            for j in range(idx + 1, min(end + 1, n)):
-                pen = float(df["high"].iloc[j]) - bottom
-                if pen > 0:
-                    p = min(1.0, pen / gap)
-                    if p > mpct:
-                        mpct, m_idx = p, j
+        if hi > lo:
+            pen = (top - _low[lo:hi]) if r.kind == "bull" else (_high[lo:hi] - bottom)
+            k = int(pen.argmax())
+            best = float(pen[k])
+            if best > 0:
+                mpct = min(1.0, best / gap)
+                m_idx = lo + k
         if mitigated:
             mpct, m_idx = 1.0, mit_i
 
