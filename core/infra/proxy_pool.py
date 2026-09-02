@@ -20,6 +20,7 @@ proxy_pool.py — ротация IP для market-data запросов (ARCH: D
 """
 from __future__ import annotations
 
+import re
 import time
 import asyncio
 import logging
@@ -27,6 +28,13 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 logger = logging.getLogger(__name__)
+
+
+def _mask(url: Optional[str]) -> str:
+    """Прячет логин и пароль: http://user:pass@1.2.3.4:59100 → http://***@1.2.3.4:59100."""
+    if not url:
+        return "—"
+    return re.sub(r"//[^@/]+@", "//***@", url)
 
 
 @dataclass
@@ -120,15 +128,19 @@ class ProxyPool:
                     s.fails += 1
                     if s.fails >= 3:  # 3 подряд → в карантин
                         s.dead_until = time.monotonic() + self._cooldown
+                        # 🔴 02.09.2026: логировался ПОЛНЫЙ url с логином и паролем.
+                        # Логи не в git, но пароль в открытом файле — лишний риск,
+                        # а для диагностики достаточно хоста.
                         logger.warning("[ProxyPool] прокси в карантине %.0fs: %s (fails=%d)",
-                                       self._cooldown, url, s.fails)
+                                       self._cooldown, _mask(url), s.fails)
                 return
 
     def stats(self) -> dict:
         return {
             "size": self.size,
             "alive": self.alive_count,
-            "per_proxy": [{"url": s.url, "inflight": s.inflight, "alive": s.is_alive(),
+            # url маскируется: stats() уходит в логи и на дашборд — пароль там не нужен
+            "per_proxy": [{"url": _mask(s.url), "inflight": s.inflight, "alive": s.is_alive(),
                            "fails": s.fails} for s in self._states],
         }
 
