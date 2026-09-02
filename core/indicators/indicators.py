@@ -161,13 +161,18 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     tr = true_range_series(df)
 
     # --- 2. ATR методом RMA (Wilder's smoothing), как в Pine Script ---
-    atr = pd.Series(index=tr.index, dtype=float)
-    if len(tr) >= atr_period:
-        # Первый период: простое среднее
-        atr.iloc[atr_period-1] = tr.iloc[:atr_period].mean()
-        # Рекуррентное сглаживание для остальных
-        for i in range(atr_period, len(tr)):
-            atr.iloc[i] = (atr.iloc[i-1] * (atr_period - 1) + tr.iloc[i]) / atr_period
+    # 02.09.2026: цикл работает по numpy, а не по pd.Series.iloc. Алгоритм тот же
+    # (Wilder RMA: первый бар = SMA(period), дальше рекуррентно), но каждое обращение
+    # стоит наносекунды вместо микросекунд. calculate_trend зовётся ~3039 раз за цикл
+    # скана ([TREND-CALC]) — при 34 мс это было 104 с CPU, больше всего SMC вместе взятого.
+    _tr_v = tr.to_numpy(dtype=float)
+    _atr_v = np.full(len(_tr_v), np.nan, dtype=float)
+    if len(_tr_v) >= atr_period:
+        _atr_v[atr_period - 1] = _tr_v[:atr_period].mean()
+        _k = float(atr_period - 1)
+        for i in range(atr_period, len(_tr_v)):
+            _atr_v[i] = (_atr_v[i - 1] * _k + _tr_v[i]) / atr_period
+    atr = pd.Series(_atr_v, index=tr.index)
     # Остальные значения остаются NaN (как в Pine до накопления period баров)
     
     # --- 3. hl2 и базовые уровни up/dn ---
@@ -176,6 +181,13 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     hl2 = (high + low) / 2.0
     up = hl2 - factor * atr
     dn = hl2 + factor * atr
+    # numpy-виды для основного цикла: логика ниже последовательная (каждый бар
+    # зависит от предыдущего), векторизовать её нельзя — но доступ к данным можно
+    # сделать дешёвым. Раньше на КАЖДОЙ итерации шли hl2.iloc[i-1], up.iloc[i],
+    # dn.iloc[i], hl2.iloc[i] — четыре обращения к pandas на бар.
+    _hl2_v = hl2.to_numpy(dtype=float)
+    _up_v = up.to_numpy(dtype=float)
+    _dn_v = dn.to_numpy(dtype=float)
     
     # --- 4. Инициализация выходных массивов (NaN для trendup/trenddown) ---
     trendup = np.full(len(df), np.nan, dtype=float)
@@ -184,19 +196,19 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     
     # --- 5. Первый бар (i=0) ---
     # trendup[0] = up[0] (скорее всего NaN), trenddown[0] = dn[0] (NaN), trend[0] = 1 (как nz(...,1))
-    trendup[0] = up.iloc[0]
-    trenddown[0] = dn.iloc[0]
+    trendup[0] = _up_v[0]
+    trenddown[0] = _dn_v[0]
     trend[0] = 1.0
     
     # --- 6. Основной цикл (точная логика Pine Script) ---
     for i in range(1, len(df)):
-        prev_hl2 = hl2.iloc[i-1]
+        prev_hl2 = _hl2_v[i-1]
         prev_trendup = trendup[i-1]
         prev_trenddown = trenddown[i-1]
         prev_trend = trend[i-1]
-        
-        up_i = up.iloc[i]
-        dn_i = dn.iloc[i]
+
+        up_i = _up_v[i]
+        dn_i = _dn_v[i]
         
         # --- trendup ---
         # Если предыдущий trendup существует и условие выполняется, берём максимум,
@@ -213,9 +225,9 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
             trenddown[i] = dn_i
         
         # --- trendX ---
-        if not np.isnan(prev_trenddown) and hl2.iloc[i] > prev_trenddown:
+        if not np.isnan(prev_trenddown) and _hl2_v[i] > prev_trenddown:
             trend[i] = 1.0
-        elif not np.isnan(prev_trendup) and hl2.iloc[i] < prev_trendup:
+        elif not np.isnan(prev_trendup) and _hl2_v[i] < prev_trendup:
             trend[i] = -1.0
         else:
             trend[i] = prev_trend if not np.isnan(prev_trend) else 1.0
