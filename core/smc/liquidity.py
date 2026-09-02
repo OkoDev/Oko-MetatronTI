@@ -301,12 +301,30 @@ def _eq_from_canon(df: pd.DataFrame, threshold_pct: float = 0.01,
     except Exception:
         pass
 
+    # Отсев СНЯТЫХ уровней — как в web/structure_terminal.py:1040, где эта логика
+    # уже была: EQH живёт, пока цена не прошла ВЫШЕ него, EQL — пока не ушла НИЖЕ.
+    # Снятая ликвидность отработана, и терминал такие уровни не рисует. Без этого
+    # флаг из снапа противоречил бы картинке: терминал берёт eqh_near из шины,
+    # а уровни рисует своим отсевом (structure_terminal.py:1070).
+    hi = df["high"].values
+    lo = df["low"].values
+    n = len(df)
+    pos = {ts: k for k, ts in enumerate(df.index)}
+
     for lab, key in (("EQH", "eqh"), ("EQL", "eql")):
         levels = []
         for ts1, p1, ts2, p2, l in pairs:
             if l != lab:
                 continue
-            levels.append((float(p1) + float(p2)) / 2.0)
+            lvl = (float(p1) + float(p2)) / 2.0
+            i2 = pos.get(ts2)
+            if i2 is None:
+                continue
+            tail = slice(min(i2 + 1, n), n)
+            swept = bool((hi[tail] > lvl).any()) if lab == "EQH" else bool((lo[tail] < lvl).any())
+            if swept:
+                continue
+            levels.append(lvl)
         if not levels:
             continue
         best = min(levels, key=lambda v: abs(v - cur))
