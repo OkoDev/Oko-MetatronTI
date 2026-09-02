@@ -256,6 +256,106 @@ def _find_nearest(
 # Главная функция
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ARCH-137.5: зоны из ЭТАЛОНА (smc_engine.detect_fvg, LuxAlgo-порт)
+# ---------------------------------------------------------------------------
+# Замер 02.09 (16 пар, 1h/400) разложил расхождение двух реализаций на причины:
+#   · условие close импульсной свечи — 1 зона из 1292 (0%), не влияет;
+#   · MITIGATION: эталон гасит по CLOSE за дальней границей, здешняя — по фитилю.
+#     Расходятся на 9% зон, согласие 91%;
+#   · 🔑 ПОРОГ ЗНАЧИМОСТИ — главная причина. Эталон: адаптивный (средний |gap%|
+#     по всем барам × 2). Здешний: ФИКСИРОВАННЫЙ 0.05%. Эталон отсекает 578 зон,
+#     здешний — 187, то есть строже втрое.
+# Почему верен адаптивный: 0.05% на BTC и на мем-коине — величины разной
+# значимости; фиксированный порог не знает волатильности инструмента. Это ровно
+# закон проекта об ОТНОСИТЕЛЬНОМ пороге ([[law_relative_threshold_and_permutation]]).
+# Откат: config.yaml → smc.fvg_canon: false
+
+_FVG_CANON: Optional[bool] = None
+
+
+def _use_fvg_canon() -> bool:
+    global _FVG_CANON
+    if _FVG_CANON is None:
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            _FVG_CANON = bool((cfg.get("smc") or {}).get("fvg_canon", True))
+        except Exception:
+            _FVG_CANON = True
+    return _FVG_CANON
+
+
+def _fvg_from_canon(df: pd.DataFrame) -> FVGAnalysis:
+    """smc_engine.detect_fvg → FVGAnalysis. Контракт сохранён полностью."""
+    from core.smc.smc_engine import detect_fvg as _canon_fvg
+
+    raw = _canon_fvg(df) or []
+    # позиция бара по метке индекса — эталон отдаёт ts, потребителям нужен int
+    pos = {ts: k for k, ts in enumerate(df.index)}
+    n = len(df)
+    fvgs: List[FVG] = []
+
+    for ts_left, top, bottom, kind, ts_i, mit in raw:
+        top = float(top)
+        bottom = float(bottom)
+        if top <= bottom:
+            continue
+        mid = (top + bottom) / 2.0
+        i = pos.get(ts_i, None)
+        if i is None:
+            continue
+        gap = top - bottom
+        mitigated = mit is not None
+        # степень захода в зону: максимум проникновения до закрытия/до конца данных
+        end = pos.get(mit, n) if mitigated else n
+        mpct = 0.0
+        m_idx = None
+        if kind == "bull":
+            for j in range(i + 1, min(end + 1, n)):
+                pen = top - float(df["low"].iloc[j])
+                if pen > 0:
+                    p = min(1.0, pen / gap)
+                    if p > mpct:
+                        mpct, m_idx = p, j
+        else:
+            for j in range(i + 1, min(end + 1, n)):
+                pen = float(df["high"].iloc[j]) - bottom
+                if pen > 0:
+                    p = min(1.0, pen / gap)
+                    if p > mpct:
+                        mpct, m_idx = p, j
+        if mitigated:
+            mpct = 1.0
+            m_idx = pos.get(mit, m_idx)
+
+        fvgs.append(FVG(
+            fvg_type=FVGType.BULL if kind == "bull" else FVGType.BEAR,
+            top=top,
+            bottom=bottom,
+            midpoint=mid,
+            index=max(0, i - 1),          # импульсная свеча — как в прежней реализации
+            size_pct=gap / mid * 100.0 if mid > 0 else 0.0,
+            mitigated=mitigated,
+            mitigation_pct=mpct,
+            mitigation_index=m_idx,
+        ))
+
+    fvgs.sort(key=lambda f: f.index)
+    active_bull = [f for f in fvgs if f.fvg_type == FVGType.BULL and f.is_active]
+    active_bear = [f for f in fvgs if f.fvg_type == FVGType.BEAR and f.is_active]
+    cur = float(df["close"].iloc[-1])
+    return FVGAnalysis(
+        all_fvgs=fvgs,
+        active_bull=active_bull,
+        active_bear=active_bear,
+        nearest_bull=_find_nearest(active_bull, cur),
+        nearest_bear=_find_nearest(active_bear, cur),
+    )
+
+
 def detect_fvg(
     df: pd.DataFrame,
     min_size_pct: float = 0.05,
@@ -285,6 +385,14 @@ def detect_fvg(
 
     if df is None or len(df) < _MIN_BARS:
         return empty
+
+    # ARCH-137.5: единый источник зон — эталон. Откат: smc.fvg_canon: false
+    if _use_fvg_canon():
+        try:
+            return _fvg_from_canon(df)
+        except Exception as e:
+            logger.debug("detect_fvg canon error: %s", e, exc_info=True)
+            # падать нельзя — потребители в горячем пути; идём прежним путём
 
     try:
         # 1. Найти все FVG
