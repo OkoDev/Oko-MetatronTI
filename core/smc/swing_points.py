@@ -249,6 +249,24 @@ def _determine_trend(points: List[SwingPoint], lookback: int = 4) -> StructureTr
 # Главная функция
 # ---------------------------------------------------------------------------
 
+_SWINGS_CANON = None
+
+
+def _use_swings_canon() -> bool:
+    """ARCH-137.5: брать пивоты у эталона. Откат: config.yaml → smc.swings_canon: false"""
+    global _SWINGS_CANON
+    if _SWINGS_CANON is None:
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            _SWINGS_CANON = bool((cfg.get("smc") or {}).get("swings_canon", True))
+        except Exception:
+            _SWINGS_CANON = True
+    return _SWINGS_CANON
+
+
 def detect_swing_points(
     df: pd.DataFrame,
     period: int = 5,
@@ -278,8 +296,28 @@ def detect_swing_points(
         return empty
 
     try:
-        # 1. Raw pivots
-        raw = _find_raw_pivots(df["high"], df["low"], period)
+        # 1. Raw pivots — ARCH-137.5: источник пивотов из ЭТАЛОНА.
+        #    Причина: сломы в StructureAnalysis уже берутся у эталона, а свинги
+        #    оставались от здешнего _find_raw_pivots — и fibonacci.py:190-191 брал
+        #    ПРОБИТЫЙ свинг у эталона, а предыдущие экстремумы отсюда, то есть строил
+        #    диапазон между точками разных детекторов.
+        #    Сверка 02.09 (12 пар, 1h/400): major(50) эталона здесь находились на 89%,
+        #    minor(5) — на 59%; при том что _swings_luxalgo даёт 63 пивота против 52.
+        #    Дальше по конвейеру всё прежнее: чередование, классификация, тренд.
+        #    Откат: config.yaml → smc.swings_canon: false
+        raw = None
+        if _use_swings_canon():
+            try:
+                from core.smc.smc_engine import _swings_luxalgo
+                raw = [
+                    (int(i), float(p), SwingType.HIGH if k == "H" else SwingType.LOW)
+                    for i, p, k in (_swings_luxalgo(df, period) or [])
+                ]
+            except Exception as e:
+                logger.debug("swings canon error: %s", e, exc_info=True)
+                raw = None
+        if not raw:
+            raw = _find_raw_pivots(df["high"], df["low"], period)
         if not raw:
             return empty
 
