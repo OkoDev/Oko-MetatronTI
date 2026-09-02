@@ -35,7 +35,7 @@ except ImportError:
     STRATEGIES_AVAILABLE = False
 
 try:
-    from core.indicators.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg, compute_atr, compute_volatility
+    from core.indicators.indicators import calculate_trend, calculate_wt, get_zone, detect_fvg_last3, compute_atr, compute_volatility
 except ImportError:
     import logging as _log
     _log.getLogger(__name__).error(
@@ -52,7 +52,7 @@ except ImportError:
     def get_zone(wt_value):  # noqa: stub
         return "OS" if wt_value < -60 else ("OB" if wt_value > 60 else "N")
 
-    def detect_fvg(df):  # noqa: stub
+    def detect_fvg_last3(df):  # noqa: stub
         return "NONE", 0
 
     def compute_atr(df=None, period=14, **kw):  # noqa: stub

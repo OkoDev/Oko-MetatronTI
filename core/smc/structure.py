@@ -59,6 +59,9 @@ class StructureBreak:
     break_price: float          # close бара пробоя
     confirmed: bool = True      # close за уровнем (не только фитиль)
     strength: int = 0           # 0-100
+    internal: bool = True       # ARCH-137.5: слой. True — микроструктура (internal_len=5),
+                                # False — структура (swing_len=50). Двухслойный эталон ведёт
+                                # оба одновременно; у старой реализации слой был один.
 
     @property
     def direction(self) -> str:
@@ -109,6 +112,10 @@ class StructureAnalysis:
     # Актуальные непробитые уровни
     active_resistance: Optional[float] = None  # ближайший Swing High
     active_support: Optional[float] = None     # ближайший Swing Low
+    # ARCH-137.5: двухслойный эталон ведёт ДВА тренда раздельно.
+    # trend  — по структуре (swing_len=50), старший контекст.
+    # itrend — по микроструктуре (internal_len=5), внутренние волны.
+    itrend: StructureTrend = StructureTrend.NEUTRAL
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +346,102 @@ def _find_active_levels(
 # Главная функция
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ARCH-137.5: сломы из ДВУХСЛОЙНОГО ЭТАЛОНА (oko_sm_engine.run_structure)
+# ---------------------------------------------------------------------------
+# Зачем: старая реализация `_detect_breaks` вела ОДИН слой и метила тип так:
+#   `if local_trend == BULLISH: BOS else: CHoCH`
+# — а `_infer_local_trend` отдаёт направление только при чистых HH+HL / LH+LL.
+# Замер 02.09 на 250 пробоях: NEUTRAL 34.4% + None 10.8% = 45% сломов попадали
+# в `else` и метились CHoCH не потому, что рынок развернулся, а потому что тренд
+# не определился. Итог: BOS/CHoCH = 29/71 против канонических 54/46 у эталона
+# на ТОЙ ЖЕ длине 5. Эталон ведёт структуру (swing_len=50) и микроструктуру
+# (internal_len=5) одновременно, с раздельными trend/itrend.
+
+_CANON_SWING_LEN = 50
+_CANON_INTERNAL_LEN = 5
+_USE_CANON: Optional[bool] = None   # None → прочитать из config при первом вызове
+
+
+def _use_canon() -> bool:
+    """Флаг источника сломов. config.yaml → smc.structure_canon (по умолчанию true)."""
+    global _USE_CANON
+    if _USE_CANON is None:
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            _USE_CANON = bool((cfg.get("smc") or {}).get("structure_canon", True))
+        except Exception:
+            _USE_CANON = True
+    return _USE_CANON
+
+
+def _breaks_from_canon(df: pd.DataFrame) -> tuple:
+    """run_structure → (List[StructureBreak], trend, itrend). Оба слоя в одном списке.
+
+    Порядок событий сохраняется хронологический, слой различается полем `internal`.
+    """
+    from core.smc.oko_sm_engine import run_structure
+
+    st = run_structure(df, swing_len=_CANON_SWING_LEN,
+                       internal_len=_CANON_INTERNAL_LEN, record_legs=False)
+    closes = df["close"].to_numpy()
+    n = len(df)
+    out: List[StructureBreak] = []
+
+    for e in (st.events or []):
+        i = int(e.i)
+        if i < 0 or i >= n:
+            continue
+        bull = bool(e.bull)
+        is_choch = "CHOCH" in str(e.kind).upper()
+        btype = (BreakType.BULLISH_CHOCH if is_choch else BreakType.BULLISH_BOS) if bull else \
+                (BreakType.BEARISH_CHOCH if is_choch else BreakType.BEARISH_BOS)
+
+        # Пробитый свинг: у события есть индекс бара уровня (level_i).
+        # Пробой вверх снимает HIGH, вниз — LOW.
+        lvl_i = int(getattr(e, "level_i", i))
+        lvl_i = lvl_i if 0 <= lvl_i < n else i
+        swing = SwingPoint(
+            index=lvl_i,
+            value=float(e.level),
+            swing_type=SwingType.HIGH if bull else SwingType.LOW,
+            label=SwingLabel.FIRST,
+        )
+
+        # Шкала strength сохранена от старой реализации — её читают 5 модулей.
+        strength = 70 if not is_choch else 55
+        strength += 10                       # движок подтверждает пробой по закрытию
+        distance = i - lvl_i
+        if distance >= 20:
+            strength += 10
+        elif distance >= 10:
+            strength += 5
+        if not bool(e.internal):
+            strength += 10                   # структурный слой весомее микро
+        strength = max(0, min(100, strength))
+
+        out.append(StructureBreak(
+            break_type=btype,
+            level=float(e.level),
+            broken_swing=swing,
+            break_index=i,
+            break_price=float(closes[i]),
+            confirmed=True,
+            strength=strength,
+            internal=bool(e.internal),
+        ))
+
+    out.sort(key=lambda b: b.break_index)
+    _t = StructureTrend.BULLISH if st.trend > 0 else (
+        StructureTrend.BEARISH if st.trend < 0 else StructureTrend.NEUTRAL)
+    _it = StructureTrend.BULLISH if st.itrend > 0 else (
+        StructureTrend.BEARISH if st.itrend < 0 else StructureTrend.NEUTRAL)
+    return out, _t, _it
+
+
 def detect_structure(
     df: pd.DataFrame,
     swing_period: int = 5,
@@ -377,8 +480,15 @@ def detect_structure(
         if not swing_analysis.swings:
             return StructureAnalysis(swing_analysis=swing_analysis)
 
-        # 2. Structure Breaks (BOS/CHoCH)
-        breaks = _detect_breaks(df, swing_analysis, use_close=use_close, min_distance_bars=min_distance_bars)
+        # 2. Structure Breaks (BOS/CHoCH) — ARCH-137.5: источник = двухслойный эталон.
+        #    Откат на прежнюю реализацию: config.yaml → smc.structure_canon: false
+        _trend = swing_analysis.trend
+        _itrend = swing_analysis.trend
+        if _use_canon():
+            breaks, _trend, _itrend = _breaks_from_canon(df)
+        else:
+            breaks = _detect_breaks(df, swing_analysis, use_close=use_close,
+                                    min_distance_bars=min_distance_bars)
 
         # 3. Breaker Blocks
         breaker_blocks = _build_breaker_blocks(breaks, df)
@@ -395,9 +505,10 @@ def detect_structure(
             breaks=breaks,
             breaker_blocks=breaker_blocks,
             last_break=last_break,
-            trend=swing_analysis.trend,
+            trend=_trend,
             active_resistance=resistance,
             active_support=support,
+            itrend=_itrend,
         )
 
     except Exception as e:

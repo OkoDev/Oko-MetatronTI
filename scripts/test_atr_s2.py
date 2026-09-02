@@ -43,7 +43,10 @@ def weekly_pivots(d4h):
     return pd.DataFrame({"PP": pp, "S1": s1, "S2": s2}).shift(1)
 
 
-def run(d4h):
+def run(d4h, sym=""):
+    # 🔴 136.E: в запись добавлены `sym` и `stop` — без них НЕВОЗМОЖНЫ обязательные
+    # срезы протокола вердикта (охват монет, хрупкость, корзины стопа, кластер).
+    # Логика входа/выхода НЕ тронута.
     st = atr_supertrend(d4h)
     piv = weekly_pivots(d4h)
     piv_idx = piv.index
@@ -76,7 +79,8 @@ def run(d4h):
                 ex = c
             if ex is not None:
                 gross = (p["entry"] - ex) / p["entry"] * 100
-                res[v].append({"net": gross - COST_PCT, "gross": gross, "ts": p["ts"]})
+                res[v].append({"net": gross - COST_PCT, "gross": gross, "ts": p["ts"],
+                               "sym": sym, "stop": (p["sl"] - p["entry"]) / p["entry"] * 100})
                 pos[v] = None
         # ВХОД: флип вниз на этом баре + close<PP
         if st[i] < 0 and st[i - 1] > 0 and c < PP:
@@ -94,15 +98,30 @@ def run(d4h):
 
 
 def main():
+    import argparse
     import statistics as s
+    # 🔴 136.E (01.09.2026): SYMBOLS выше — 38 ВРУЧНУЮ ВЫБРАННЫХ крупных монет,
+    # все выжившие. Это самая узкая вселенная среди боевых источников; на выборке
+    # такого рода вердикт переворачивался дважды ([[law_sample_representativeness]]).
+    # `--core` заменяет её на балансированную панель (монета есть на ВСЁМ окне).
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--core", action="store_true", help="ядро вместо списка SYMBOLS")
+    a = ap.parse_args()
+    if a.core:
+        from scripts.research_harness import core_universe
+        symbols = [x.split("/")[0] for x in core_universe("4h", since="2023-01-01")]
+        print(f"ВСЕЛЕННАЯ: ЯДРО, {len(symbols)} монет (балансированная панель)")
+    else:
+        symbols = SYMBOLS
+        print(f"ВСЕЛЕННАЯ: список SYMBOLS, {len(symbols)} монет (выжившие, не балансировано)")
     conn = sqlite3.connect(DB)
     agg = {v: [] for v in VARIANTS}
     done = 0
-    for sym in SYMBOLS:
+    for sym in symbols:
         d4h = load4h(conn, sym)
         if d4h is None:
             continue
-        r = run(d4h)
+        r = run(d4h, sym)
         for v in agg:
             agg[v].extend(r[v])
         done += 1
@@ -124,6 +143,54 @@ def main():
         nets = [x["net"] for x in part]
         wr = 100 * sum(1 for x in part if x["net"] > 0) / len(part)
         print(f"  {yr}: n={len(part):4} WR={wr:3.0f}% mean={s.mean(nets):+.3f}% sum={sum(nets):+.0f}%")
+    # ── 🔴 136.E: ОБЯЗАТЕЛЬНЫЕ СРЕЗЫ ПРОТОКОЛА (боевой вариант B_with_sl) ──────
+    import collections
+    B = agg["B_with_sl"]
+    if B and "sym" in B[0]:
+        def _st(rows, cost=COST_PCT):
+            if len(rows) < 30:
+                return None
+            n = np.array([x["gross"] - cost for x in rows])
+            w, gl = n[n > 0], -n[n <= 0].sum()
+            srt = np.sort(n)[::-1]
+            return dict(n=len(n), wr=100 * (n > 0).mean(),
+                        pf=(w.sum() / gl if gl else 0.0), avg=n.mean(),
+                        bt=srt[int(len(srt) * 0.1):].sum())
+
+        def _line(nm, rows):
+            s_ = _st(rows)
+            if not s_:
+                print(f"  {nm:<26} n={len(rows)} — мало"); return
+            print(f"  {nm:<26} n={s_['n']:>6} WR {s_['wr']:>4.1f}% PF {s_['pf']:>5.2f} "
+                  f"ср {s_['avg']:>+6.3f}% безтоп10% {s_['bt']:>+8.0f}")
+
+        print(f"\n{'='*94}\nОБЯЗАТЕЛЬНЫЕ СРЕЗЫ · B_with_sl (боевой) · косты {COST_PCT}%\n{'='*94}")
+        _line("ВСЁ", B)
+        print("\nРАЗМЕР СТОПА:")
+        for lo, hi in ((0, 2), (2, 4), (4, 6), (6, 11)):
+            _line(f"  стоп {lo}-{hi}%", [x for x in B if lo <= x["stop"] < hi])
+        print("\nОХВАТ МОНЕТ:")
+        per = collections.defaultdict(float)
+        for x in B:
+            per[x["sym"]] += x["gross"] - COST_PCT
+        vals = sorted(per.values(), reverse=True)
+        print(f"  монет {len(per)} · в плюсе {sum(1 for v in vals if v > 0)} "
+              f"({100 * sum(1 for v in vals if v > 0) / max(len(vals), 1):.0f}%) · "
+              f"сумма {sum(vals):+.0f}% · без топ-3 {sum(vals[3:]):+.0f}% · "
+              f"без топ-10% {sum(vals[int(len(vals) * 0.1):]):+.0f}%")
+        print("\nКЛАСТЕР (≥2 монеты в один день):")
+        by_day = collections.defaultdict(set)
+        for x in B:
+            by_day[x["ts"].date()].add(x["sym"])
+        _line("  одиночка", [x for x in B if len(by_day[x["ts"].date()]) < 2])
+        _line("  кластер ≥2", [x for x in B if len(by_day[x["ts"].date()]) >= 2])
+        print("\nБОЕВЫЕ КОСТЫ (вход ЛИМИТНЫЙ → 0.35%, а не 0.2%):")
+        _line("  при costs 0.35%", B)
+        s35 = _st(B, 0.35)
+        if s35:
+            print(f"     → ср {s35['avg']:+.3f}%/сд · PF {s35['pf']:.2f} · "
+                  f"безтоп10% {s35['bt']:+.0f}")
+
     # costs-чувствительность
     print("\nCosts-свип (A): ", end="")
     for cst in [0.1, 0.2, 0.3, 0.45]:

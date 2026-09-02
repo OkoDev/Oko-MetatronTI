@@ -241,3 +241,61 @@ class WaveService:
         if htf_dir == "down" and n_down >= 4 and not has_div:
             return WavePhase("wave3_mid", 0.50)
         return WavePhase("undefined", 0.30)
+
+
+# ── ДВУХМАСШТАБНАЯ НОГА (02.09.2026) ────────────────────────────────────────
+# 🔴 Повод — вопрос Егора: «у нас же два потока волн строились, period 5 и 50?».
+# Да, и это оказалось расхождением. `WaveService` выше считает счёт волн ОДНИМ
+# мелким масштабом (`find_swing_highs(period=5)`), а вся волновая семья матрицы
+# (`scripts/matrix_full.wave_features`) и находка ARCH-137 стоят на ДВУХМАСШТАБНОМ
+# `run_structure(swing_len=50, internal_len=5)`: нога старшего масштаба плюс счётчик
+# младших сломов внутри неё. Публикуя только первое, шина не покрывала бы находку.
+#
+# Имена полей повторяют матричные — чтобы боевой гейт и исследовательский замер
+# спрашивали ОДНО И ТО ЖЕ, а не два похожих числа.
+#
+# 🔴 ГЛУБИНА: нужно ≥400 баров. Замер 02.09 на 6 парах против эталона в 1000 баров:
+# при 400 совпало 6/6, при 250 — 3/6 (в половине случаев ноги нет вовсе, движку
+# не хватает истории на swing_len=50).
+LEG_MIN_BARS = 400
+
+
+def current_leg(df, tf: str = "1h", swing_len: int = 50, internal_len: int = 5) -> dict:
+    """
+    Нога СТАРШЕГО масштаба на последнем баре + сломы младшего внутри неё.
+
+    Возвращает те же величины, что колонки `leg_*` в матрице. Пустой dict, если
+    истории не хватает — молчаливого «нуля» не отдаём.
+    """
+    import numpy as np
+
+    from core.smc.oko_sm_engine import run_structure
+
+    if df is None or len(df) < LEG_MIN_BARS:
+        return {}
+    d = df.reset_index(drop=True)[["open", "high", "low", "close"]]
+    st = run_structure(d, swing_len=swing_len, internal_len=internal_len, record_legs=True)
+    lg = st.leg_history[-1] if st.leg_history else None
+    if not lg or lg.get("origin_i") is None or lg.get("extreme_i") is None:
+        return {}
+
+    n = len(d)
+    o_i, e_i = int(lg["origin_i"]), int(lg["extreme_i"])
+    o_px, e_px = float(lg["origin"]), float(lg["extreme"])
+    span = e_px - o_px
+    close = float(d["close"].iloc[-1])
+    pos = (close - o_px) / span if span else None
+
+    # сломы МЛАДШЕГО масштаба, случившиеся от начала ноги до сейчас
+    minor = sum(1 for ev in st.events
+                if getattr(ev, "internal", False) and o_i <= getattr(ev, "i", -1) <= n - 1)
+
+    return {
+        "leg_dir": 1 if lg.get("trend") == "long" else -1,
+        "leg_span_bars": e_i - o_i,
+        "leg_age_origin": (n - 1) - o_i,
+        "leg_pos": round(pos, 4) if pos is not None else None,
+        "leg_retr": round(1.0 - pos, 4) if pos is not None else None,
+        "leg_minor_breaks": int(minor),
+        "leg_tf": tf,
+    }

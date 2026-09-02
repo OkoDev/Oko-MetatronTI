@@ -1504,6 +1504,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     _multi_tf = len(_entry_tfs) > 1
     _resolver = getattr(bot, "multi_tf_resolver", None)
     _ohlcv_limit = int(bot.config.get("performance.ohlcv_scan_limit", 160))
+    # 🔑 Глубина СТАРШИХ ТФ — одной переменной на загрузку и на чтение из карты.
+    # Замер BingX 02.09: REST при limit 60 / 150 / 400 стоит 1270 / 1248 / 1264 мс
+    # (1.00×) — глубина бесплатна, платим за факт запроса. Кэш же отдаёт запись
+    # только если её limit ≥ запрошенного, поэтому мелкая глубина здесь гнала в REST
+    # всех остальных потребителей: волновой сфере нужно 1h=400, atr_s2 просил 4h=180.
+    _LIMIT_1H = max(_ohlcv_limit, 400)
+    _LIMIT_4H = 180
     _slow_ohlcv  = float(bot.config.get("performance.ohlcv_slow_threshold_sec", 5.0))
     _slow_div    = float(bot.config.get("performance.divergence_slow_threshold_sec", 3.0))
     _slow_pair   = float(bot.config.get("performance.pair_slow_threshold_sec", 10.0))
@@ -1547,8 +1554,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                 for tf in _entry_tfs:
                     _add_fetch(tf, _ohlcv_limit)
-                _add_fetch("1h", _ohlcv_limit)
-                _add_fetch("4h", 60)
+                # 🔑 ГЛУБИНА СТАРШИХ ТФ (02.09.2026). Замер BingX: REST-запрос стоит
+                # ОДИНАКОВО при limit 60 / 150 / 400 — 1270 / 1248 / 1264 мс, то есть
+                # 1.00×. Платим за факт запроса, не за объём. А кэш ApiEngine отдаёт
+                # запись только если её limit НЕ МЕНЬШЕ запрошенного — поэтому мелкая
+                # глубина здесь заставляла КАЖДОГО другого потребителя идти в REST
+                # заново: волновой сфере нужно 1h=400 (двухмасштабная нога), atr_s2
+                # уже просил 4h=180 отдельным запросом.
+                # Число запросов не меняется, глубина кэша растёт → чужие REST исчезают.
+                _add_fetch("1h", _LIMIT_1H)
+                _add_fetch("4h", _LIMIT_4H)
                 _add_fetch("5m", 200)    # 17.08: 5m как КОНТЕКСТ в снапшот (запросы освободил
                                           # выключенный sideways_mode, который жёг 219 REST/цикл)
 
@@ -1565,8 +1580,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     tf: _fetched_map.get((tf, _ohlcv_limit))
                     for tf in _entry_tfs
                 }
-                df_1h = _fetched_map.get(("1h", _ohlcv_limit))
-                df_4h = _fetched_map.get(("4h", 60))
+                # 🔴 Ключ карты — (tf, limit). Он ОБЯЗАН совпадать с тем, что положил
+                # `_add_fetch` выше: при смене глубины и незамеченном `.get` здесь
+                # df_1h/df_4h молча стали бы None, и весь старший контекст исчез бы
+                # без единой ошибки в логе. Держим глубины в переменных, а не числами.
+                df_1h = _fetched_map.get(("1h", _LIMIT_1H))
+                df_4h = _fetched_map.get(("4h", _LIMIT_4H))
                 df_5m = _fetched_map.get(("5m", 200))
                 df_3m = None
                 # 17.08 (Егор): дневку тянем ДО сборки wt_snap — иначе снапшот шины уходил без «1d»
@@ -2554,6 +2573,19 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     await asyncio.gather(*[scan_one(sym) for sym in pairs], return_exceptions=True)
     elapsed = _time.monotonic() - cycle_start
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
+    # Задвоение расчёта тренда за цикл (02.09): skip — повтор с теми же параметрами
+    # пропущен, recomp — колонки были, но параметры ДРУГИЕ (значит части кода считают
+    # тренд по-разному), calc — реальные расчёты. Один пересчёт стоит ~15 мс.
+    try:
+        from core.indicators.indicators import trend_stats
+        _ts = trend_stats(reset=True)
+        if _ts["computed"] or _ts["skipped"]:
+            logger.info("[TREND-CALC] пропущено %d · пересчёт с чужими параметрами %d · "
+                        "посчитано %d · экономия %.0f%%",
+                        _ts["skipped"], _ts["recomputed_with_cols"],
+                        _ts["computed"], _ts["skip_rate_pct"])
+    except Exception:
+        pass
     # Инструментация OHLCV: cache-hit vs REST per TF за цикл (диагностика market_ws/REST)
     try:
         from core.infra.api_engine import get_ohlcv_cache_stats, reset_ohlcv_cache_stats

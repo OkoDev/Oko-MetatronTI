@@ -60,7 +60,37 @@ SPHERE_NAMES = {
     11: "Post-Trade Analyser",
     12: "Self-Diagnostics",
     0: "Central Hub (EventBus)",
+    # ── ARCH-129.0 (01.09.2026): реестр обрывался на 12, хотя карта Куба описывает
+    # сферы до 19. Из-за этого Сферу 19 (Market Data) некуда было зарегистрировать.
+    # Имена — по `docs/SIGNAL_BUS_CUBE_MAP.md` § «Сферы S13+», он источник ИМЕНОВАНИЯ;
+    # источник истины по факту существования — код (см. SPHERE_IMPLEMENTED ниже).
+    13: "Phase / Decision Core",
+    14: "Execution Sphere",
+    15: "Anomaly Detection",
+    16: "Portfolio Manager",
+    17: "Meta-Learning",
+    18: "Setup Engine",
+    19: "Market Data",
+    # FIX-SPHERE-NUM: номер 14 был занят ДВАЖДЫ — Execution (ARCH-96, застолбил раньше)
+    # и WaveService (ARCH-121, помечен «14?»). Конфликт решён в пользу Execution,
+    # WaveService получает 20 — первый свободный по карте («Занято: 1–19»).
+    20: "Wave Service",
 }
+
+# 🔴 Что РЕАЛЬНО существует в коде. Без этого дописывание имён выше превратило бы
+# панель в шесть строк «DEAD» у сфер, которых никогда не было, — ровно дефект
+# [[cube_panel_vs_map_vs_code_drift]] («панель рисует сферы, которых нет»).
+# Проверено grep'ом 01.09.2026, а не по названию задачи.
+SPHERE_IMPLEMENTED = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13,   # core/context/phase_sphere.py
+    19,   # core/context/market_data_sphere.py + bot/loops/market_data_loop.py — В БОЮ с 01.09
+    20,   # core/intelligence/wave_service.py (создан 29.08, к scan_loop не подключён)
+}
+
+# Диапазон обхода. Раньше был жёстко range(13) в трёх местах — следующая сфера
+# снова упёрлась бы в константу.
+SPHERE_IDS = tuple(sorted(SPHERE_NAMES))
 
 
 class SphereRegistry:
@@ -68,8 +98,8 @@ class SphereRegistry:
 
     def __init__(self, bus=None) -> None:
         self._bus = bus
-        self._sphere_events: Dict[int, int] = {i: 0 for i in range(13)}
-        self._sphere_last_update: Dict[int, Optional[datetime]] = {i: None for i in range(13)}
+        self._sphere_events: Dict[int, int] = {i: 0 for i in SPHERE_IDS}
+        self._sphere_last_update: Dict[int, Optional[datetime]] = {i: None for i in SPHERE_IDS}
         self._start_time = datetime.now(timezone.utc)
 
     def wire_subscriptions(self, bus) -> None:
@@ -143,11 +173,14 @@ class SphereRegistry:
             "uptime_sec": int(uptime),
         }
 
-        for sphere_id in range(13):
+        for sphere_id in SPHERE_IDS:
             events = self._sphere_events.get(sphere_id, 0)
             last = self._sphere_last_update.get(sphere_id)
 
-            if events == 0:
+            if sphere_id not in SPHERE_IMPLEMENTED:
+                # Сфера описана в карте, но кода нет. Это НЕ «умерла» — её не было.
+                status = "MISSING"
+            elif events == 0:
                 status = "DEAD"
             elif last is None:
                 status = "DEAD"
@@ -168,6 +201,7 @@ class SphereRegistry:
                 "events": events,
                 "last_update": last.isoformat() if last else None,
                 "status": status,
+                "implemented": sphere_id in SPHERE_IMPLEMENTED,
             }
 
         return result
@@ -175,9 +209,12 @@ class SphereRegistry:
     def summary_text(self) -> str:
         """Компактный текст для /status и дашборда."""
         hc = self.health_check()
-        lines = [f"Куб Метатрона: {hc['active_spheres']}/13 сфер OK | {hc['total_events']} событий | uptime {hc['uptime_sec']//60}m"]
-        for sid in range(13):
+        n_impl = len(SPHERE_IMPLEMENTED)
+        lines = [f"Куб Метатрона: {hc['active_spheres']}/{n_impl} сфер OK "
+                 f"(в карте {len(SPHERE_IDS)}, из них {len(SPHERE_IDS) - n_impl} без кода) | "
+                 f"{hc['total_events']} событий | uptime {hc['uptime_sec']//60}m"]
+        for sid in SPHERE_IDS:
             s = hc["spheres"][sid]
-            icon = {"OK": "+", "STALE": "~", "DEAD": "x"}[s["status"]]
+            icon = {"OK": "+", "STALE": "~", "DEAD": "x", "MISSING": "-"}[s["status"]]
             lines.append(f"  [{icon}] S{sid:02d} {s['name']}: {s['events']} evt")
         return "\n".join(lines)

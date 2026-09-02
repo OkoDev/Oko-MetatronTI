@@ -216,6 +216,9 @@ class OkoConfig(BaseModel):
     # THE GRAPH (03.07, Сфера 6.5): api_key для thegraph_client/graph-shadow. Секция добавлена
     # в config.yaml ПОСЛЕ схемы → extra_forbidden ронял ВСЮ валидацию в default-режим (08.07).
     the_graph: Dict[str, Any] = Field(default_factory=dict)
+    # SMC (ARCH-137.5, 02.09): structure_canon — источник сломов структуры.
+    # Та же ловушка, что с the_graph выше: секция без поля в схеме роняет валидацию.
+    smc: Dict[str, Any] = Field(default_factory=dict)
 
     # ── Валидация (поглощает config_validator.py) ──
 

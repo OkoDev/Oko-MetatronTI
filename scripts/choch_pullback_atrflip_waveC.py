@@ -125,6 +125,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--coins", type=int, default=120)
     ap.add_argument("--since", type=int, default=2024)
+    # 🔴 136.E (01.09.2026): вселенная ниже — `ORDER BY n DESC LIMIT 120`, то есть
+    # монеты с самой длинной историей = ВЫЖИВШИЕ. Именно на такой выборке дважды
+    # переворачивался вердикт ([[law_sample_representativeness]]). `--core` берёт
+    # балансированную панель: монета обязана существовать на ВСЁМ окне.
+    ap.add_argument("--core", action="store_true",
+                    help="ядро: балансированная панель research_harness.core_universe")
     ap.add_argument("--tf", type=str, default="1h", help="15m,1h,4h,1d или all")
     ap.add_argument("--wait-pb", type=int, default=12, help="ждать коррекцию, баров")
     ap.add_argument("--wait-flip", type=int, default=12, help="ждать флип ATR после коррекции")
@@ -137,15 +143,24 @@ def main() -> int:
         a.ttl = TTL_BY_TF[a.tf]
         a.wait_pb = WAIT_BY_TF[a.tf]
 
+    # 🔑 `--since` управляет окном И на ядре: иначе сравнение «старая вселенная против
+    # ядра» меняло бы ДВА фактора разом (состав + окно) и было бы нечитаемым —
+    # ровно ловушка [[method_year_vs_composition]].
     t0 = int(dt.datetime(a.since, 1, 1, tzinfo=dt.timezone.utc).timestamp() * 1000)
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-    syms = [r[0] for r in con.execute(
-        "SELECT symbol,COUNT(*) n FROM ohlcv_cache WHERE timeframe='15m' AND time>=? "
-        "GROUP BY symbol HAVING n>8000 ORDER BY n DESC LIMIT ?", (t0, a.coins)).fetchall()]
-    con.close()
+    if a.core:
+        from scripts.research_harness import core_universe
+        syms = core_universe("15m", since=f"{a.since}-01-01", until="2026-06-01")
+        uni = f"ЯДРО {len(syms)} монет (балансированная панель)"
+    else:
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        syms = [r[0] for r in con.execute(
+            "SELECT symbol,COUNT(*) n FROM ohlcv_cache WHERE timeframe='15m' AND time>=? "
+            "GROUP BY symbol HAVING n>8000 ORDER BY n DESC LIMIT ?", (t0, a.coins)).fetchall()]
+        con.close()
+        uni = f"{len(syms)} монет ПО ДЛИНЕ ИСТОРИИ (не балансировано)"
 
     print("═" * 124)
-    print(f"CHoCH → КОРРЕКЦИЯ {PB} → ФЛИП ATRTrend → ВОЛНА C · {a.tf} · {len(syms)} монет "
+    print(f"CHoCH → КОРРЕКЦИЯ {PB} → ФЛИП ATRTrend → ВОЛНА C · {a.tf} · {uni} "
           f"с {a.since}")
     print(f"ждём откат {a.wait_pb}б · флип {a.wait_flip}б · держим {a.ttl}б · косты LIMIT {COST_LIMIT}%")
     print("═" * 124)

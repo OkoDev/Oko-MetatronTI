@@ -21,6 +21,27 @@ def calculate_wt(df: pd.DataFrame, n1=10, n2=21) -> pd.DataFrame:
     return df
 
 
+# Диагностика задвоения расчётов (02.09.2026, вопрос Егора «есть задвоения
+# в индикаторах»). Три счётчика:
+#   skipped              — повтор с ТЕМИ ЖЕ параметрами, пересчёт пропущен;
+#   recomputed_with_cols — колонки есть, параметры ДРУГИЕ → честный пересчёт.
+#                          Большое число = части кода считают тренд по-разному;
+#   computed             — реальные расчёты (первый раз / после смены параметров).
+# Читать: from core.indicators.indicators import trend_stats; trend_stats()
+_TREND_STATS = {"skipped": 0, "recomputed_with_cols": 0, "computed": 0}
+
+
+def trend_stats(reset: bool = False) -> dict:
+    """Снимок счётчиков расчёта тренда. reset=True — обнулить после чтения."""
+    out = dict(_TREND_STATS)
+    tot = out["skipped"] + out["computed"]
+    out["skip_rate_pct"] = round(100 * out["skipped"] / tot, 1) if tot else 0.0
+    if reset:
+        for k in ("skipped", "recomputed_with_cols", "computed"):
+            _TREND_STATS[k] = 0
+    return out
+
+
 # def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame:
 #     """
 #     Расчет тренда по алгоритму из Pine Script
@@ -115,8 +136,25 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     _calculate_levels в trading_intelligence, trade_simulator TSL-трекинг.
     """
     _trend_cols = ("trend", "trendup", "trenddown", "tsl")
-    if atr_period == 43 and factor == 1.0 and all(c in df.columns for c in _trend_cols):
-        return df
+    # 🔴 02.09.2026: guard был привязан к ХАРДКОДУ `factor == 1.0`, а в бою
+    # `analysis.indicators.trend.factor = 1.25` ([[calib_atrtrend_factor]] — расхождение
+    # намеренное). То есть в боевом пути пропуск пересчёта НЕ СРАБАТЫВАЛ НИКОГДА:
+    # каждый повторный вызов на том же df считал заново. Замер: 15.5 мс против 0.00 мс.
+    # Теперь сверяемся с параметрами, которыми df посчитан НА САМОМ ДЕЛЕ — они пишутся
+    # в `df.attrs` ниже. Хардкод 1.0 оставлен как запасной путь для старых df,
+    # у которых attrs нет (например, пришедших из pickle/кэша).
+    if all(c in df.columns for c in _trend_cols):
+        _prev = df.attrs.get("_trend_params")
+        if _prev == (atr_period, factor):
+            _TREND_STATS["skipped"] += 1
+            return df
+        if _prev is None and atr_period == 43 and factor == 1.0:
+            _TREND_STATS["skipped"] += 1
+            return df
+        # колонки есть, но параметры другие → честный пересчёт. Считаем отдельно:
+        # большое число здесь = кто-то считает тренд ДРУГИМИ параметрами, чем скан.
+        _TREND_STATS["recomputed_with_cols"] += 1
+    _TREND_STATS["computed"] += 1
     df = df.copy().reset_index(drop=True)
 
     # --- 1. True Range — через единую функцию проекта ---
@@ -187,7 +225,10 @@ def calculate_trend(df: pd.DataFrame, atr_period=43, factor=1.0) -> pd.DataFrame
     df["trendup"] = trendup
     df["trenddown"] = trenddown
     df["tsl"] = np.where(df["trend"] == 1, trendup, trenddown)
-    
+
+    # Чем ИМЕННО посчитано — чтобы повторный вызов с теми же параметрами не считал
+    # заново, а с другими (например, боевой 1.25 против 1.0) честно пересчитал.
+    df.attrs["_trend_params"] = (atr_period, factor)
     return df
 
 
@@ -203,8 +244,17 @@ def get_zone(wt_value: float, ob1=60, os1=-60) -> str:
     return "N"
 
 
-def detect_fvg(df: pd.DataFrame):
-    """Detect FVG on last 3 bars. Return ('BULL'|'BEAR'|None, entry_price)"""
+def detect_fvg_last3(df: pd.DataFrame):
+    """Есть ли разрыв на ПОСЛЕДНИХ ТРЁХ барах. Return ('BULL'|'BEAR'|None, entry_price).
+
+    ARCH-137.3 (02.09.2026): переименовано из `detect_fvg`. Имя врало — это НЕ FVG
+    по канону, а мгновенная проверка трёх баров: без истории зон, без порога
+    значимости и без mitigation. Полноценные детекторы отвечают на другие вопросы:
+      · `core.smc.fvg.detect_fvg`        → какие зоны сейчас активны (FVGAnalysis)
+      · `core.smc.smc_engine.detect_fvg` → вся история зон + mitigation (List[tuple])
+    Три функции с одним именем стоили путаницы: `pivot_reversal` вызывал две из них
+    на одном df. Старое имя оставлено алиасом ниже — чтобы ничего не сломать разом.
+    """
     if df is None or len(df) < 3:
         return None, None
     last3 = df.iloc[-3:].reset_index(drop=True)
@@ -217,6 +267,11 @@ def detect_fvg(df: pd.DataFrame):
         entry = (last3.loc[2, "high"] + last3.loc[0, "low"]) / 2.0
         return "BEAR", entry
     return None, None
+
+
+# Обратная совместимость: старое имя. Не использовать в новом коде — оно вводит
+# в заблуждение (см. docstring выше). Импорты переведены на `detect_fvg_last3`.
+detect_fvg = detect_fvg_last3
 
 
 def calculate_trend_strength(df: pd.DataFrame) -> pd.DataFrame:

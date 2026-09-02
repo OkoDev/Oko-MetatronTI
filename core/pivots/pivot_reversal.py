@@ -1,5 +1,5 @@
 import logging
-from core.indicators.indicators import detect_fvg, calculate_trend, calculate_wt, get_zone, compute_atr
+from core.indicators.indicators import detect_fvg_last3, calculate_trend, calculate_wt, get_zone, compute_atr
 from core.indicators.market_regime import MarketRegimeClassifier as _MRC
 try:
     from core.smc.fvg import detect_fvg as _smc_detect_fvg
@@ -150,7 +150,7 @@ async def check_pivot_level_signal(symbol, data_collector, pivot_calculator):
         has_fvg = False
         if df_3m is not None and len(df_3m) >= 3:
             try:
-                fvg_type, fvg_entry = detect_fvg(df_3m)
+                fvg_type, fvg_entry = detect_fvg_last3(df_3m)
                 has_fvg = fvg_type is not None
             except Exception:
                 pass

@@ -79,6 +79,10 @@ class SphereEvent:
     # Сфера 12 — Self-Diagnostics
     SPHERE_HEALTH      = "sphere_health"        # {sphere_id, status, last_update}
 
+    # Сфера 19 — Market Data (ARCH-129.1 / 129.2)
+    FUNDING_UPDATED    = "funding_updated"      # {rate, interval_h, source, pct_8h, streak, pctile_90d}
+    OI_UPDATED         = "oi_updated"           # {d5, d15, d1d, quadrant, squeeze}
+
 
 @dataclass
 class PairState:
@@ -194,6 +198,109 @@ class PairState:
     wave_recount_ts: Optional[datetime] = None   # когда счёт волн последний раз СЛОМАЛСЯ
     wave_recounts: int = 0            # сколько раз разметка пересчитывалась (сам по себе сигнал)
     wave_updated_at: Optional[datetime] = None
+    # ── ДВУХМАСШТАБНАЯ НОГА (02.09, вопрос Егора «у нас же два потока волн?») ──
+    # 🔴 Поля выше (`elliott_*`) считаются ОДНИМ мелким масштабом
+    # (`find_swing_highs(period=5)`), а вся волновая семья матрицы и находка ARCH-137
+    # («короткая чистая нога») стоят на ДВУХМАСШТАБНОМ `run_structure(swing_len=50,
+    # internal_len=5)`. Это разные объекты, и без этих полей шина не покрывала бы
+    # собственную находку. Имена — как в матрице, чтобы гейт и замер говорили на одном языке.
+    leg_dir: Optional[int] = None            # +1 нога вверх · −1 вниз (масштаб 50)
+    leg_span_bars: Optional[int] = None      # длительность ноги от origin до extreme
+    leg_age_origin: Optional[int] = None     # сколько баров прошло с начала ноги
+    leg_pos: Optional[float] = None          # где цена внутри ноги: 1.0 = на экстремуме
+    leg_retr: Optional[float] = None         # глубина отката = 1 − pos
+    leg_minor_breaks: Optional[int] = None   # сломов МЛАДШЕГО масштаба внутри ноги
+    leg_tf: Optional[str] = None             # на каком ТФ посчитана нога
+    leg_updated_at: Optional[datetime] = None
+
+    # ── Сфера 19: Market Data (ARCH-129.1) ──────────────────────────────
+    # Повод: 213 из 230 признаков боевых решений идут МИМО шины — Куб видит только
+    # свечи ([[bus_sees_only_candles]]). Фандинг первым: история полная (1 557 170
+    # строк 2022-2026), живой источник уже есть — `DataCollector.get_funding_rate`.
+    #
+    # 🔴 ЛОВУШКА (поймана 30.08 на HYPE): в один момент BingX давал −0.0064%/4ч,
+    # Binance +0.005%/8ч — РАЗНЫЙ знак и РАЗНЫЙ интервал. Проверено по данным:
+    # в `funding_rates` интервалы 1ч/2ч/4ч/8ч одновременно. Поэтому храним ставку
+    # КАК ЕСТЬ вместе с интервалом и источником, а приведение к общей базе —
+    # ОТДЕЛЬНЫМ полем и только явно. Иначе получим расхождение реализаций,
+    # принятое за свойство рынка.
+    funding_rate: Optional[float] = None          # ставка как отдаёт биржа, %
+    funding_interval_h: Optional[int] = None      # 1 / 2 / 4 / 8 — не хардкодить
+    funding_next_ts: Optional[datetime] = None    # время следующего расчёта
+    funding_source: Optional[str] = None          # "bingx" | "binance" | "cache"
+    funding_pct_8h: Optional[float] = None        # приведено к %/8ч — ЯВНО, для сравнимости
+    # 🔑 ПРОИЗВОДНЫЕ, а не сырое число (ARCH-129.5). Разбор HYPE 30.08 показал:
+    # сигнал сквиза был в СЕРИИ (−0.0060 → −0.0097 → −0.0078 → −0.0064 при медиане
+    # +0.005%), а боевое вето смотрит на УРОВЕНЬ |f|>0.03% и такого не ловит.
+    funding_streak: int = 0                       # расчётов подряд с тем же знаком
+    funding_pctile_90d: Optional[float] = None    # где ставка в своей истории за 90д, 0..100
+    funding_cum_3d: Optional[float] = None        # накопленная стоимость удержания, %
+    funding_updated_at: Optional[datetime] = None
+    # ── Сфера 19: ОТКРЫТЫЙ ИНТЕРЕС (ARCH-129.2) ─────────────────────────
+    # 🔴 Постановка задачи говорила «таблицы НЕТ вообще, создать и копить» — НЕВЕРНО.
+    # Проверено 01.09.2026: `oko_feed/external_data.db → oi_snapshots` содержит
+    # 145 166 строк по 18 символам, окно 2026-07-02 → сегодня, сбор идёт.
+    # (Ловушка: в КОРНЕ лежит пустышка `external_data.db` на 0 байт — открыв её,
+    # видишь «таблиц нет». Реальная БД в `oko_feed/`. Класс OPS-ROOT-DBCOPIES.)
+    # Квадрант OI×цена тоже уже есть — `radar_state.quadrant` (12.07), не дублируем.
+    # Здесь только ДОВОДИМ существующее до шины: сейчас оно идёт в features_json мимо Куба.
+    oi_d5: Optional[float] = None                 # Δ OI за 5 минут, %
+    oi_d15: Optional[float] = None                # Δ OI за 15 минут, %
+    oi_d1d: Optional[float] = None                # Δ OI за сутки, %
+    oi_px_quadrant: Optional[str] = None          # PUP_OIUP | PDN_OIUP | PUP_OIDN | PDN_OIDN
+    oi_updated_at: Optional[datetime] = None
+
+
+@dataclass
+class MarketState:
+    """L3 РЫНОЧНОЕ измерение шины (ARCH-129.6). Публикует Сфера 19 Market Data.
+
+    🔑 Зачем третий контейнер. В шине было два измерения: `PairState` (per-pair)
+    и `AccountState` (per-account). USDT.D, доминации, total mcap и ротация — ни то,
+    ни другое: они ГЛОБАЛЬНЫ. Положить их в `PairState` значило бы продублировать
+    одно и то же число в 400 пар и завести 400 источников правды.
+
+    Источник — `core/context/marketcap_engine.py` (`live_dominance` / `rotation_now`),
+    он считает доминацию САМ по 499 монетам, а не берёт у CoinGecko.
+    🔴 Расхождение с CoinGecko ~1.2% (проверено 30.08 и 01.09): для РЕЖИМА и ДИНАМИКИ
+    годится, для абсолютного значения — нет. Сравнивать только с самим собой.
+    """
+    usdt_d: Optional[float] = None
+    btc_d: Optional[float] = None
+    eth_d: Optional[float] = None
+    alt_d: Optional[float] = None
+    total_mcap: Optional[float] = None
+    alt_mcap: Optional[float] = None
+    # 🔴 Спека просила `usdt_d_pct_120d`, но истории физически 37 дней
+    # (`ohlcv_cache.db.mcap_meta`, 2026-07-24 → 2026-08-31). Поле названо по СМЫСЛУ,
+    # а рядом лежит фактическая глубина — иначе «перцентиль за 120 дней», посчитанный
+    # на 37 днях, стал бы ещё одним числом, которое врёт молча.
+    usdt_d_pctile: Optional[float] = None       # 0..100 в доступной истории
+    usdt_d_hist_days: Optional[int] = None      # на скольких днях посчитан перцентиль
+    usdt_d_d1: Optional[float] = None           # Δ п.п. за сутки
+    usdt_d_d7: Optional[float] = None           # Δ п.п. за неделю
+    rotation_verdict: Optional[str] = None      # из marketcap_engine.rotation_now()
+    n_coins: Optional[int] = None               # по скольким монетам считалась доминация
+    source: str = "self_computed"               # self_computed | coingecko
+    updated_at: Optional[datetime] = None
+
+    # ── ДРЕЙФ ВСЕЛЕННОЙ (ARCH-129.4) ────────────────────────────────────
+    # 🔴 В проекте ДВА РАЗНЫХ дрейфа, и путать их нельзя (уже было однажды —
+    # [[bug_regime_live_thresholds_mismatch]], «живой детектор режима мерил не то»):
+    #   · `universe_drift` — ДНЕВНОЙ по 437 монетам, из `subscriptions.db`.
+    #     Именно на нём стоит БОЕВОЙ дрейф-гейт `drift30 ≥ 5`;
+    #   · `regime_state` (oko_feed) — ЧАСОВОЙ по 48 монетам, для радара.
+    # Поэтому имена полей разведены явно: ud_* против regime_*.
+    ud_drift30: Optional[float] = None          # боевой гейт смотрит СЮДА
+    ud_drift90: Optional[float] = None
+    ud_drift180: Optional[float] = None
+    ud_slope180: Optional[float] = None
+    ud_short_zone: Optional[bool] = None        # drift30 ≥ порога → зона short открыта
+    ud_n_coins: Optional[int] = None
+    ud_day: Optional[str] = None                # за какой день посчитан (данные дневные!)
+    regime_label: Optional[str] = None          # НЕЙТРАЛЬ | ... из regime_state (48 монет)
+    regime_breadth: Optional[float] = None      # доля растущих
+    regime_drift_1h: Optional[float] = None     # часовой дрейф — НЕ путать с ud_drift30
 
 
 @dataclass
@@ -253,6 +360,7 @@ class PairContextBus:
     def __init__(self) -> None:
         self._states: dict[str, PairState] = {}
         self._accounts: dict[int, AccountState] = {}   # L2: account_id → equity/маржа
+        self._market = MarketState()                   # L3: рынок целиком (ARCH-129.6)
         self._subscribers: Dict[str, List[Callable]] = {}
         self._event_log: List[Dict] = []   # последние N событий для диагностики
         self._max_log = 200
@@ -304,6 +412,27 @@ class PairContextBus:
         """Сбросить состояние по символу."""
         if symbol in self._states:
             del self._states[symbol]
+
+    # ── L3: рыночное измерение (ARCH-129.6) ──────────────────────────────
+    def update_market(self, **kwargs) -> None:
+        """
+        Обновить `MarketState` — глобальные данные (доминации, mcap, ротация).
+        Зеркально `update_account`, но контейнер ОДИН на весь рынок.
+
+        Неизвестные ключи логируются, а не молча теряются: тот же дефект уже
+        стоил публикации WaveService «в никуда» (29.08).
+        """
+        st = self._market
+        for key, val in kwargs.items():
+            if hasattr(st, key):
+                setattr(st, key, val)
+            else:
+                logger.debug("[Bus] MarketState: неизвестное поле %s", key)
+        st.updated_at = datetime.now(timezone.utc)
+
+    def get_market(self) -> "MarketState":
+        """Текущее рыночное состояние. Всегда объект, никогда None."""
+        return self._market
 
     # ── L2: account-измерение (BUS-ACCOUNT-EPIC) ─────────────────────────
     def update_account(self, account_id: int, equity: Optional[float] = None,

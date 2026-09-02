@@ -74,10 +74,12 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
             self._last_sent: dict = {}  # (sym,tf) → monotonic ts
 
         def _on_candle(self, sym_ccxt: str, tf: str, df: pd.DataFrame) -> None:
-            if self._shadow:
-                # Shadow: scan на REST — очередь не нужна, только считаем свечи для логов
-                self.stats["candles"] += 1
-                return
+            # 🔴 02.09: раньше здесь стоял ранний `return` для shadow — свечи не уходили
+            # в очередь вообще. С новым надзором (супервайзор считает отказом застывший
+            # `reader.applied`) это дало бы вечный цикл рестартов: поток «стоит» всегда,
+            # потому что его намеренно не было. Теперь shadow идёт тем же путём —
+            # разница только в том, что reader в shadow СЧИТАЕТ, а не мержит в кэш,
+            # то есть торговый путь по-прежнему не затронут.
             # Throttle: не слать одну (sym,tf) чаще _LIVE_DEDUP_INTERVAL сек
             # → поток 1200/s→~200/s, reader справляется без overflow
             key = (sym_ccxt, tf)
@@ -181,9 +183,11 @@ class QueueReaderThread(threading.Thread):
             if now - self.stats["_last_ts"] >= 60:
                 rate = (self.stats["applied"] - self.stats["_last_count"]) / (now - self.stats["_last_ts"])
                 self.stats["last_rate"] = round(rate, 1)
-                logger.info("[MarketWS-v2] reader STATS (shadow=%s): rate=%.1f/s applied=%d q≈%d",
-                            self._shadow, rate, self.stats["applied"],
-                            self._q.qsize() if hasattr(self._q, "qsize") else -1)
+                _lvl = logger.warning if rate <= 0 else logger.info
+                _lvl("[MarketWS-v2] reader STATS (shadow=%s): rate=%.1f/s applied=%d q≈%d%s",
+                     self._shadow, rate, self.stats["applied"],
+                     self._q.qsize() if hasattr(self._q, "qsize") else -1,
+                     "  🔴 ПОТОК СТОИТ" if rate <= 0 else "")
                 # Разбивка merge-результатов per TF (диагностика WS-покрытия 5m/15m)
                 if self._merge_res:
                     _by_tf: dict = {}
@@ -199,14 +203,50 @@ class QueueReaderThread(threading.Thread):
 
 # ─── супервайзор ──────────────────────────────────────────────────────────────
 
-async def _mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot) -> None:
-    """Async-таска в main loop: раз в 30с проверяет что worker-процесс жив."""
+async def _mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot,
+                          reader=None) -> None:
+    """
+    Async-таска в main loop: раз в 30с проверяет, что worker жив И ЧТО ДАННЫЕ ИДУТ.
+
+    🔴 02.09.2026: раньше проверялось ТОЛЬКО `proc.is_alive()`. Это пропускало самый
+    неприятный отказ — процесс жив, а данных нет: WS-соединение закрылось внутри,
+    реконнект не поднялся, очередь пуста, кэш тихо протухает. Никакого WARNING при
+    этом не было: reader печатал `rate=0.0/s` уровнем INFO, и строка тонула в потоке
+    логов. Ровно класс «молчаливый отказ», который в этом проекте уже стоил
+    двух неработающих источников.
+
+    Теперь мёртвым считается и процесс, который жив, но за два подряд окна (60 с)
+    не принёс НИ ОДНОЙ свечи. Такой процесс перезапускается так же, как упавший.
+    """
     import multiprocessing as mp
+
+    stale_checks = 0          # сколько окон подряд поток данных стоит
+    last_applied = -1
     while True:
         await asyncio.sleep(30)
         try:
-            if not proc.is_alive():
-                logger.warning("[MarketWS-v2] процесс упал (exitcode=%s) — рестарт", proc.exitcode)
+            _applied = int(reader.stats.get("applied", 0)) if reader is not None else -1
+            _frozen = False
+            if reader is not None:
+                if _applied == last_applied:
+                    stale_checks += 1
+                    if stale_checks == 2:      # ~60 с тишины
+                        logger.warning(
+                            "[MarketWS-v2] 🔴 процесс ЖИВ, но данных нет 60с "
+                            "(applied=%d) — считаю отказом, рестарт", _applied)
+                        _frozen = True
+                else:
+                    if stale_checks:
+                        logger.info("[MarketWS-v2] поток данных восстановлен (applied=%d)",
+                                    _applied)
+                    stale_checks = 0
+                last_applied = _applied
+
+            if not proc.is_alive() or _frozen:
+                if not proc.is_alive():
+                    logger.warning("[MarketWS-v2] процесс упал (exitcode=%s) — рестарт",
+                                   proc.exitcode)
+                stale_checks = 0
                 try:
                     proc.kill()
                 except Exception:
@@ -257,15 +297,16 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
         cache  = OhlcvCache(maxsize=5000)
         shadow = True
 
-    if shadow:
-        # Этап 1 SHADOW: очередь не нужна — worker только логирует stats
-        out_queue = None
-        reader    = None
-    else:
-        # Этап 2 LIVE: буфер 70k свечей/мин → ~1200/с
-        out_queue = mp.Queue(maxsize=200_000)
-        reader    = QueueReaderThread(out_queue, cache, shadow=False)
-        reader.start()
+    # 🔴 02.09.2026: очередь и reader создаются В ОБОИХ режимах.
+    # Раньше в SHADOW было `out_queue = None, reader = None` — и это ломало сам смысл
+    # теневого этапа: теневой `OhlcvCache` создавался, но НИКТО в него не писал,
+    # то есть сравнить WS с REST было нечем. Хуже того, из main-процесса не было
+    # видно, идут ли вообще данные: worker жужжал внутри себя, а наружу — тишина.
+    # Теперь reader пишет в ТЕНЕВОЙ кэш (торговый путь не трогает) и одновременно
+    # служит датчиком живости для супервайзора.
+    out_queue = mp.Queue(maxsize=200_000)
+    reader    = QueueReaderThread(out_queue, cache, shadow=shadow)
+    reader.start()
 
     proc = mp.Process(
         target=_mws_worker,
@@ -281,7 +322,7 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
     # Супервайзор — async task в текущем event loop
     try:
         loop = asyncio.get_event_loop()
-        loop.create_task(_mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot))
+        loop.create_task(_mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot, reader))
     except RuntimeError:
         pass  # вне loop — пропускаем (вызывается до start)
 

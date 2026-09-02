@@ -485,6 +485,8 @@ class TradingAlertBot:
             from bot.loops.obsidian_loop import obsidian_daily_loop
             from bot.loops.watchlist_loop import watchlist_loop
             from bot.loops.advisor_loop import spawn_advisor   # ARCH-125: AdvisorPort (shadow, gated)
+            from bot.loops.market_data_loop import market_data_loop  # ARCH-129: Сфера 19 в шину
+            from bot.loops.wave_loop import wave_loop                # ARCH-132: Сфера 20, SHADOW
             from web.dashboard_server import start_dashboard
             from core.observability import decision_trace as _dt
 
@@ -507,6 +509,16 @@ class TradingAlertBot:
             asyncio.create_task(health_check_loop(self))        # DEV-103: Exchange Health Guard
             asyncio.create_task(trade_tracker_loop(self))
             asyncio.create_task(run_trigger_loop(self))     # DEV-95: Куб Метатрона — OTE/Cascade триггеры
+            # ARCH-129 (01.09): Сфера 19 — фандинг и OI в шину. ТОЛЬКО публикует,
+            # ничего не гейтит. Отдельным лупом, а не врезкой в scan_loop: данные
+            # меняются раз в 5-15 мин, читаются одним батчем (1.4 мс на весь рынок),
+            # и торговый цикл, который и так узкое место, остаётся нетронутым.
+            asyncio.create_task(market_data_loop(self))
+            # ARCH-132 (02.09): Сфера 20 — волновая разметка в шину, SHADOW.
+            # Отдельным лупом по замеру: compute_and_publish стоит 41.9 мс на пару,
+            # то есть 21.8 с на 520 пар — в scan_loop такое класть нельзя. Разметка
+            # по 4h/1h меняется за часы, поэтому интервал 15 мин и расчёт в потоке.
+            asyncio.create_task(wave_loop(self))
             asyncio.create_task(self.event_bus.consume_loop(self))  # ARCH-70: EventBus Full CALL шина
             asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket
             try:                                              # EXEC-WS: user-data WS (order/account push), за config-флагом
