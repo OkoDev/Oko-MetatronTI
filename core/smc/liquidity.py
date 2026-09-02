@@ -237,6 +237,88 @@ def detect_liquidity(
 # DEV-140 / ARCH-68: Equal Highs / Equal Lows
 # ---------------------------------------------------------------------------
 
+_EQ_CANON: Optional[bool] = None
+
+
+def _use_eq_canon() -> bool:
+    global _EQ_CANON
+    if _EQ_CANON is None:
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            _EQ_CANON = bool((cfg.get("smc") or {}).get("eq_canon", True))
+        except Exception:
+            _EQ_CANON = True
+    return _EQ_CANON
+
+
+def _eq_from_canon(df: pd.DataFrame, threshold_pct: float = 0.01,
+                   lookback: int = 50) -> dict:
+    """Сводка EQH/EQL поверх эталонных уровней smc_engine.detect_equal_levels.
+
+    Контракт (6 ключей) сохранён. Смысл полей:
+      *_level — уровень, БЛИЖАЙШИЙ к текущей цене;
+      *_near  — этот уровень в радиусе threshold_pct от цены;
+      *_count — сколько эталонных пар уровней попало в кластер (раньше здесь были
+                сотни «пар баров» — величина без смысла; поле никем не читается).
+
+    🔴 `lookback` НЕ фильтрует уровни по возрасту, и это осознанно. Первая редакция
+    резала их окном в 50 баров — как делала прежняя логика, где сравнивались все
+    бары подряд. Для ПИВОТНЫХ уровней окно в 50 баров пусто почти всегда: замер
+    дал eqh_near=0% на 1h (16 пар из 16). По канону зона ликвидности живёт, пока
+    её не сняли, а не N баров; релевантность обеспечивает сам признак `*_near`.
+    Параметр оставлен в сигнатуре ради совместимости вызовов.
+    """
+    from core.smc.smc_engine import detect_equal_levels
+
+    out = {"eqh_near": False, "eql_near": False,
+           "eqh_level": None, "eql_level": None,
+           "eqh_count": 0, "eql_count": 0}
+
+    pairs = detect_equal_levels(df) or []
+    if not pairs:
+        return out
+
+    cur = float(df["close"].iloc[-1])
+    if cur <= 0:
+        return out
+
+    # Радиус «рядом» масштабируется волатильностью ТФ, а threshold_pct служит ПОЛОМ.
+    # Замер 02.09: на 1h ближайшие эталонные уровни лежат в 10–25% от цены (400 часов
+    # хода), и фиксированный 1% давал eqh_near=False на всех 16 парах — признак мёртв
+    # с другой стороны. На 15m те же уровни в 0.04–0.94%. Один и тот же радиус
+    # не может обслуживать оба ТФ: та же логика, что с порогом FVG.
+    radius = threshold_pct
+    try:
+        h, l, c = df["high"], df["low"], df["close"]
+        tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()],
+                       axis=1).max(axis=1)
+        atr = float(tr.rolling(14).mean().iloc[-1])
+        if atr == atr and atr > 0:
+            radius = max(threshold_pct, atr / cur)
+    except Exception:
+        pass
+
+    for lab, key in (("EQH", "eqh"), ("EQL", "eql")):
+        levels = []
+        for ts1, p1, ts2, p2, l in pairs:
+            if l != lab:
+                continue
+            levels.append((float(p1) + float(p2)) / 2.0)
+        if not levels:
+            continue
+        best = min(levels, key=lambda v: abs(v - cur))
+        # сколько уровней собралось вокруг найденного — это и есть плотность зоны
+        cnt = sum(1 for v in levels if abs(v - best) / best <= radius) if best > 0 else 0
+        out[f"{key}_level"] = round(best, 8)
+        out[f"{key}_count"] = cnt
+        out[f"{key}_near"] = abs(best - cur) / cur <= radius
+
+    return out
+
+
 def detect_equal_highs_lows(
     df: pd.DataFrame,
     threshold_pct: float = 0.01,  # 1% = "equal"
@@ -273,6 +355,24 @@ def detect_equal_highs_lows(
 
     if df is None or len(df) < 10:
         return result
+
+    # ── ARCH-137.5: уровни берём у ЭТАЛОНА ──────────────────────────────────
+    # Прежняя логика ниже сравнивала ВСЕ high с ВСЕМИ в окне 50 баров при
+    # ФИКСИРОВАННОМ допуске 1% — то есть спрашивала не «есть ли равные вершины»,
+    # а «ходила ли цена в коридоре 1%». Замер 02.09 (16 пар): eqh_near=True
+    # у 75% пар на 1h и у 100% на 15m, «плотность кластера» 320 и 906 пар баров.
+    # Признак был вырожден — как CHoCH до ARCH-137.5.
+    # Эталон detect_equal_levels сравнивает соседние ПИВОТЫ с допуском 0.1×ATR
+    # (адаптивным) и даёт 4.4 пары уровней на 1h — осмысленную величину.
+    # На нём же стоят боевой IMPULSE-FIB, chart_builder и structure_terminal.
+    # threshold_pct здесь остаётся радиусом «рядом с ценой», а равенство самих
+    # уровней определяет эталон. Откат: config.yaml → smc.eq_canon: false
+    if _use_eq_canon():
+        try:
+            return _eq_from_canon(df, threshold_pct=threshold_pct, lookback=lookback)
+        except Exception as e:
+            logger.debug("detect_equal_highs_lows canon error: %s", e, exc_info=True)
+            # горячий путь падать не должен — идём прежней реализацией
 
     try:
         n = len(df)
