@@ -163,7 +163,17 @@ class UserDataStream:
                     async with self._session.ws_connect(
                         self._ws_base + self._listen_key,
                         timeout=aiohttp.ClientTimeout(total=20),
-                        heartbeat=30,
+                        # 02.09.2026: было heartbeat=30 → 95 разрывов за 6 часов.
+                        # Причина доказана исходником aiohttp 3.9.3: при неполученном
+                        # pong _pong_not_received() бросает asyncio.TimeoutError() БЕЗ
+                        # аргументов — отсюда 91 запись «loop error:  — reconnect»
+                        # с пустым текстом. Наш канал идёт через перегруженный VPN,
+                        # где latency скачет до 14 с, и потеря одного pong за 30 с —
+                        # обычное дело. 60 с даёт запас, не теряя способности заметить
+                        # реально мёртвое соединение (listenKey живёт 60 мин).
+                        # 🔴 Откат: вернуть 30, если разрывы пойдут по иной причине —
+                        # теперь она видна в логе, тип исключения печатается.
+                        heartbeat=60,
                     ) as ws:
                         self._ws = ws
                         logger.info("[EXEC-WS][%s] connected (listenKey %s...)", self._tag, self._listen_key[:12])
@@ -176,7 +186,16 @@ class UserDataStream:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    logger.warning("[EXEC-WS][%s] loop error: %s — reconnect %.0fs", self._tag, e, _RECONNECT_SEC)
+                    # 02.09.2026: печатался только str(e), а у сетевых исключений
+                    # (ServerTimeoutError, ClientConnectionError, ConnectionResetError)
+                    # сообщение пустое → в логе 91 запись вида «loop error:  — reconnect»
+                    # без единого признака причины. Тип обязателен: без него разрывы
+                    # торгового WS не диагностируются, а он несёт ордера и статус счёта.
+                    logger.warning(
+                        "[EXEC-WS][%s] loop error: %s: %s — reconnect %.0fs",
+                        self._tag, type(e).__name__, (str(e) or "«без сообщения»"),
+                        _RECONNECT_SEC,
+                    )
                 if self._running:
                     self.stats["reconnects"] += 1
                     await asyncio.sleep(_RECONNECT_SEC)
