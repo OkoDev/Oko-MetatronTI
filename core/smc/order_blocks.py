@@ -225,6 +225,129 @@ def _track_ob_mitigation(
 # Главная функция
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ARCH-137.5: Order Blocks из ЭТАЛОНА (smc_engine.detect_order_blocks, LuxAlgo)
+# ---------------------------------------------------------------------------
+# Замер 02.09 (16 пар, 1h/400, 343 слома) — это НЕ баг, а два разных определения:
+#   · эталон (LuxAlgo ob_coord): «спокойная» свеча (размер < 2×ATR200) с ЭКСТРЕМУМОМ
+#     в интервале [свинг..пробой];
+#   · прежнее (ICT): последняя ПРОТИВОТРЕНДОВАЯ свеча перед пробоем.
+#   Одну и ту же свечу выбирают лишь в 13% случаев. Обрезка lookback=10 при этом
+#   не влияет вовсе (0 случаев из 343) — проверено отдельно.
+#
+# 🔑 ПОЧЕМУ ВЫБРАН ЭТАЛОН — не «красивее», а рассинхрон человека и бота:
+#   chart_builder.py:297 и web/structure_terminal.py рисуют OB из smc_engine,
+#   то есть НА ГРАФИКАХ ВИДЕН ЭТАЛОН. А smc_snapshot (ML-сфера 4) и cascade_tsl
+#   (боевой TSL!) работали на прежнем. Совпадение 13% означает: смотрим на одни
+#   зоны, торгуем по другим. Тот же класс, что был с FVG на HYPE.
+#
+# Эффект: активных зон 46 → 107 (прежняя гасила по фитилю, эталон — по close).
+# Откат: config.yaml → smc.ob_canon: false
+
+_OB_CANON: Optional[bool] = None
+
+
+def _use_ob_canon() -> bool:
+    global _OB_CANON
+    if _OB_CANON is None:
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            _OB_CANON = bool((cfg.get("smc") or {}).get("ob_canon", True))
+        except Exception:
+            _OB_CANON = True
+    return _OB_CANON
+
+
+class _BrkView:
+    """Вид слома в терминах эталона: ему нужны только idx / from_idx / direction."""
+    __slots__ = ("idx", "from_idx", "direction")
+
+    def __init__(self, idx: int, from_idx: int, direction: str):
+        self.idx = idx
+        self.from_idx = from_idx
+        self.direction = direction
+
+
+def _obs_from_canon(df: pd.DataFrame, structure: StructureAnalysis,
+                    volume_ma_period: int = 20) -> OBAnalysis:
+    """smc_engine.detect_order_blocks → OBAnalysis. Контракт сохранён."""
+    from core.smc.smc_engine import detect_order_blocks as _canon_ob
+
+    views = []
+    by_break_idx = {}
+    for b in structure.breaks:
+        bull = b.break_type in (BreakType.BULLISH_BOS, BreakType.BULLISH_CHOCH)
+        v = _BrkView(int(b.break_index), int(b.broken_swing.index),
+                     "bull" if bull else "bear")
+        views.append(v)
+        by_break_idx.setdefault(v.idx, b)
+
+    raw = _canon_ob(df, views) or []
+    n = len(df)
+    obs: List[OrderBlock] = []
+
+    for r in raw:
+        top = float(r.top)
+        bottom = float(r.bottom)
+        if top <= bottom:
+            continue
+        idx = int(r.left_idx)
+        if not (0 <= idx < n):
+            continue
+        origin = by_break_idx.get(int(r.break_idx))
+        if origin is None:                      # слом эталона без пары — пропуск
+            continue
+        mit_i = int(getattr(r, "mitigated_idx", -1))
+        mitigated = mit_i >= 0
+        gap = top - bottom
+        end = mit_i if mitigated else n
+        mpct, m_idx = 0.0, None
+        if r.kind == "bull":
+            for j in range(idx + 1, min(end + 1, n)):
+                pen = top - float(df["low"].iloc[j])
+                if pen > 0:
+                    p = min(1.0, pen / gap)
+                    if p > mpct:
+                        mpct, m_idx = p, j
+        else:
+            for j in range(idx + 1, min(end + 1, n)):
+                pen = float(df["high"].iloc[j]) - bottom
+                if pen > 0:
+                    p = min(1.0, pen / gap)
+                    if p > mpct:
+                        mpct, m_idx = p, j
+        if mitigated:
+            mpct, m_idx = 1.0, mit_i
+
+        obs.append(OrderBlock(
+            ob_type=OBType.BULLISH if r.kind == "bull" else OBType.BEARISH,
+            top=top,
+            bottom=bottom,
+            midpoint=(top + bottom) / 2.0,
+            index=idx,
+            origin_break=origin,
+            volume_ratio=_compute_volume_ratio(df, idx, volume_ma_period),
+            mitigated=mitigated,
+            mitigation_pct=mpct,
+            mitigation_index=m_idx,
+        ))
+
+    obs.sort(key=lambda x: x.index)
+    active_bull = [x for x in obs if x.ob_type == OBType.BULLISH and x.is_active]
+    active_bear = [x for x in obs if x.ob_type == OBType.BEARISH and x.is_active]
+    cur = float(df["close"].iloc[-1])
+    return OBAnalysis(
+        all_obs=obs,
+        active_bull=active_bull,
+        active_bear=active_bear,
+        nearest_bull=min(active_bull, key=lambda o: abs(o.midpoint - cur)) if active_bull else None,
+        nearest_bear=min(active_bear, key=lambda o: abs(o.midpoint - cur)) if active_bear else None,
+    )
+
+
 def detect_order_blocks(
     df: pd.DataFrame,
     structure: StructureAnalysis,
@@ -256,6 +379,14 @@ def detect_order_blocks(
 
     if not structure.breaks:
         return empty
+
+    # ARCH-137.5: единый источник зон — эталон. Откат: smc.ob_canon: false
+    if _use_ob_canon():
+        try:
+            return _obs_from_canon(df, structure, volume_ma_period)
+        except Exception as e:
+            logger.debug("detect_order_blocks canon error: %s", e, exc_info=True)
+            # горячий путь падать не должен — идём прежней реализацией
 
     try:
         obs: List[OrderBlock] = []
