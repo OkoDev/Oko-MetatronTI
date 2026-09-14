@@ -3995,7 +3995,7 @@ figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-r
 .rv .who{width:70px;color:var(--mut);font-size:12px}.rv .bt{cursor:pointer}.rv .bt.on{background:var(--gold);color:#111;border-color:var(--gold)}
 .rv input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:5px;padding:4px 8px;min-width:240px;flex:1}
 .ai{color:var(--mut);font-size:12.5px}.ai b{color:var(--tx)}
-.lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out}.lb img{max-width:98vw;max-height:96vh}
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;align-items:flex-start;justify-content:center;z-index:9;cursor:zoom-out;overflow:auto;padding:12px}.lb img{width:min(98vw,1840px);max-width:none;max-height:none;height:auto}
 .empty{color:var(--mut);padding:30px;text-align:center}
 .ask{display:flex;gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap}.ask input{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 10px;width:220px}
 .ask .bt{cursor:pointer}.mut{color:var(--mut);font-size:12.5px}.zone{font-size:11.5px;padding:1px 7px;border-radius:4px;border:1px solid var(--gold);color:var(--gold)}

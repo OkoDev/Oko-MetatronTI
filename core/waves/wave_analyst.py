@@ -106,6 +106,67 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
             "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
 
 
+# ─── текстовый блок схемы: под графиками, две колонки, крупный шрифт (Егор 14.09: «текст крупнее и читабельнее») ───
+FIG_W = 16.0
+TXT_FS, TXT_H = 12.0, 14.5
+LINE_IN = 12.0 * 1.55 / 72          # высота строки основного текста, дюймы
+
+
+def build_text_columns(rep: Dict[str, Any], title: str, up_: Optional[bool] = None, best: Optional[float] = None, wrap: int = 66):
+    """→ (левая колонка «Разбор», правая «Сценарии»): списки (текст, стиль). Стили: h1, meta, h2, body, bullet, target, took, fork, bad."""
+    import textwrap
+    L = [(title, "h1"), (f"{pd.Timestamp(rep['now']):%d.%m.%Y %H:%M} UTC · цена {rep.get('price', float('nan')):.6g}", "meta"), ("", "gap"),
+         ("Разбор", "h2")]
+    for para in rep.get("text", []):
+        lines = textwrap.wrap(para, wrap - 2)
+        for i, ln in enumerate(lines):
+            L.append((("• " if i == 0 else "  ") + ln, "body"))
+        L.append(("", "small"))
+    R = [("Сценарии", "h2")]
+    price = rep.get("price") or 0
+    for sc in rep.get("scenarios", []):
+        R.append(("", "small"))
+        for i, ln in enumerate(textwrap.wrap(sc["name"], wrap - 6)):
+            R.append((ln, "h3"))
+        for ln in textwrap.wrap(f"{sc['side']}. {sc['why']}", wrap):
+            R.append((ln, "body"))
+        for nm, v in sc["targets"]:
+            took = best is not None and up_ is not None and ((best <= v) if up_ else (best >= v))
+            d = (v / price - 1) * 100 if price else 0
+            R.append((f"  {'✓' if took else '→'} {nm}: {v:.6g}  " + ("взята" if took else f"({d:+.1f}%)"), "took" if took else "target"))
+        if sc.get("fork"):
+            R.append((f"  развилка: {min(sc['fork']):.6g} – {max(sc['fork']):.6g}", "fork"))
+        for i, ln in enumerate(textwrap.wrap(f"отмена: {sc['invalid']}", wrap - 2)):
+            R.append(("  " + ln, "bad"))
+    return L, R
+
+
+def text_height_in(L, R) -> float:
+    def h(col):
+        return sum({"h1": 1.7, "meta": 1.1, "h2": 1.55, "h3": 1.3, "gap": .6, "small": .45}.get(st, 1.0) for _, st in col) * LINE_IN
+    return max(h(L), h(R)) + 0.4
+
+
+def draw_text_columns(fig, L, R, bottom_in: float, height_in: float):
+    """Рисует две колонки в нижней части фигуры (координаты в дюймах от низа)."""
+    BG, FG, ACC, GRN, DN, MUT = "#0f1116", "#e6e8ee", "#f5c542", "#66bb6a", "#ef5350", "#9aa3b2"
+    H = fig.get_size_inches()[1]
+    sty = {"h1": dict(fontsize=18, color=FG, fontweight="bold"), "meta": dict(fontsize=11, color=MUT),
+           "h2": dict(fontsize=14.5, color=ACC, fontweight="bold"), "h3": dict(fontsize=13, color=ACC, fontweight="bold"),
+           "body": dict(fontsize=TXT_FS, color=FG), "target": dict(fontsize=TXT_FS, color=GRN, family="monospace"),
+           "took": dict(fontsize=TXT_FS, color="#6b7485", family="monospace"), "fork": dict(fontsize=TXT_FS, color=ACC, family="monospace"),
+           "bad": dict(fontsize=TXT_FS, color=DN)}
+    step = {"h1": 1.7, "meta": 1.1, "h2": 1.55, "h3": 1.3, "gap": .6, "small": .45}
+    for col, x0 in ((L, 0.04), (R, 0.53)):
+        ax = fig.add_axes([x0, bottom_in / H, 0.45, height_in / H]); ax.axis("off"); ax.set_facecolor(BG)
+        y = height_in
+        for txt, st in col:
+            if txt and st in sty:
+                ax.text(0, y / height_in, txt, va="top", transform=ax.transAxes, **sty[st])
+            y -= step.get(st, 1.0) * LINE_IN
+    fig.add_artist(__import__("matplotlib").lines.Line2D([0.04, 0.97], [(bottom_in + height_in + 0.15) / H] * 2, color="#2a2f3a", lw=1))
+
+
 # ─── разбор ─────────────────────────────────────────────────────────────────────────────────────
 def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: str = "15m",
             now: Optional[pd.Timestamp] = None, p: AnalystParams = AnalystParams(),
@@ -321,11 +382,13 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             ax.annotate(f"{txt}\n{y1:.5g}", (x1, y1), color=col, fontsize=7.5, fontweight="bold", xytext=(4, 0), textcoords="offset points", va="center")
 
     st, leg = rep["structure"], rep["leg"]; up_ = st["up"]
-    fig = plt.figure(figsize=(14, 13), facecolor=BG)
-    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1.15, 0.95], width_ratios=[1.35, 1], hspace=0.28, wspace=0.12)
+    TL, TR = build_text_columns(rep, f"{rep['sym']} · волновой разбор", up_, rep.get("best_since5", rep.get("price")))
+    th = text_height_in(TL, TR); CH_H = 12.0; H = CH_H + th + 0.6
+    fig = plt.figure(figsize=(FIG_W, H), facecolor=BG)
+    gs = fig.add_gridspec(3, 1, height_ratios=[1, 1.2, 0.95], hspace=0.3, left=0.05, right=0.97, top=1 - 0.25 / H, bottom=(th + 0.6) / H)
 
     # 1D: нога, фибо отрезками от начала до конца ноги
-    ax1 = fig.add_subplot(gs[0, 0]); dd = to_daily(dh); w = dd.iloc[-200:]; candles(ax1, w)
+    ax1 = fig.add_subplot(gs[0]); dd = to_daily(dh); w = dd.iloc[-200:]; candles(ax1, w)
     style(ax1, "1D · дневная нога (фибо от её начала до конца) и где закончилась пятая")
     if leg:
         xo, xe = xi(w, leg["origin_t"]), xi(w, leg["ext_t"])
@@ -342,7 +405,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     ax1.set_xlim(-12, len(w) + 8)
 
     # 4h: счёт, коррекции отрезком 0→5, развилка, прогноз стрелками
-    ax2 = fig.add_subplot(gs[1, 0]); i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
+    ax2 = fig.add_subplot(gs[1]); i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
     style(ax2, f"4h · {'импульс' if st['kind'] == 'impulse' else 'конечная диагональ · ' + st['form']} 0-5 · прогноз из зоны развилки")
     xs = [i - i0 for i in st["wave_idx"]]; ys = list(st["wave_px"][:5]) + [st["p5x"]]; xs[5] = xi(w4, st["t5x"])
     ax2.plot(xs, ys, color=WAVE, lw=1.7); ax2.scatter(xs, ys, color=WAVE, s=30, zorder=5)
@@ -370,7 +433,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     ax2.set_xlim(-12, n4 + F + 34)
 
     # младший ТФ: сломы от свинга до пересечения, фибо A отрезком 5→A, зона от A до касания
-    ax3 = fig.add_subplot(gs[2, 0]); ls = rep.get("ltf_state") or {}
+    ax3 = fig.add_subplot(gs[2]); ls = rep.get("ltf_state") or {}
     if dl is not None and len(dl):
         w3 = dl[dl.index >= st["t5x"] - pd.Timedelta(hours=3)]
         step = max(1, int(np.ceil(len(w3) / 360)))
@@ -400,31 +463,8 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     else:
         style(ax3, "младший ТФ не загружен")
 
-    # текст
-    axt = fig.add_subplot(gs[:, 1]); axt.axis("off"); axt.set_facecolor(BG)
-    y = 0.99
-    axt.text(0, y, f"{rep['sym']} · волновой разбор", color=FG, fontsize=15, fontweight="bold", va="top"); y -= 0.035
-    axt.text(0, y, f"{pd.Timestamp(rep['now']):%d.%m.%Y %H:%M} UTC · цена {rep['price']:.6g}", color="#9aa3b2", fontsize=9, va="top"); y -= 0.035
-    for para in rep["text"]:
-        for ln in textwrap.wrap(para, 58):
-            axt.text(0, y, ln, color=FG, fontsize=8.8, va="top"); y -= 0.0215
-        y -= 0.008
-    best = rep.get("best_since5", rep["price"])
-    for sc in rep["scenarios"]:
-        y -= 0.01
-        axt.text(0, y, sc["name"], color=ACC, fontsize=10.5, fontweight="bold", va="top"); y -= 0.026
-        for ln in textwrap.wrap(f"сторона: {sc['side']}. {sc['why']}", 58):
-            axt.text(0, y, ln, color=FG, fontsize=8.6, va="top"); y -= 0.0205
-        for nm, v in sc["targets"]:
-            took = (best <= v) if up_ else (best >= v)
-            d = (v / rep["price"] - 1) * 100
-            axt.text(0.03, y, f"{'✓' if took else '→'} {nm}: {v:.6g}  " + ("взята" if took else f"({d:+.1f}%)"),
-                     color="#6b7485" if took else GRN, fontsize=8.6, va="top", family="monospace"); y -= 0.0195
-        if sc.get("fork"):
-            axt.text(0.03, y, f"развилка: {min(sc['fork']):.6g} – {max(sc['fork']):.6g}", color=ACC, fontsize=8.6, va="top", family="monospace"); y -= 0.0195
-        for ln in textwrap.wrap(f"отмена: {sc['invalid']}", 56):
-            axt.text(0.03, y, ln, color=DN, fontsize=8.6, va="top"); y -= 0.0195
-    fig.savefig(out, dpi=105, facecolor=BG, bbox_inches="tight"); plt.close(fig)
+    draw_text_columns(fig, TL, TR, 0.2, th)
+    fig.savefig(out, dpi=115, facecolor=BG); plt.close(fig)
     return out
 
 

@@ -48,6 +48,37 @@ def count_in_progress(d1: pd.DataFrame, sw: int = 60, back: int = 9) -> Optional
         break                                                                # самый ранний валидный = самый крупный ход
     if best is None:
         return None
+    # 🔑 провизорные точки (Егор 14.09, XLM: «волна 2», хотя цена давно выше конца первой). Свинг масштаба 60 подтверждается
+    # через 60 баров, и счёт застревает. Если после последней точки был откат ≥ 0.236 прошлой волны и цена ушла ЗА эту точку —
+    # откат становится предварительной точкой; если отката не было — последняя точка ещё не конец, её экстремум обновляется.
+    best["prov"] = []
+    for _ in range(2):
+        li = best["idx"][-1]; lp = best["px"][-1]; kk = best["k"]
+        if li >= t - 1 or kk >= 4:
+            break
+        last_top = (kk % 2 == 0) == best["down"]
+        seg_h, seg_l = hh[li + 1:], ll[li + 1:]
+        prev_len = abs(best["px"][-1] - best["px"][-2])
+        if last_top:
+            jx = li + 1 + int(seg_l.argmin()); after = hh[jx + 1:]
+            if after.size and after.max() > lp and (lp - ll[jx]) >= 0.236 * prev_len:
+                best["idx"].append(jx); best["px"].append(float(ll[jx])); best["times"].append(d1.index[jx]); best["k"] += 1; best["prov"].append(best["k"])
+                continue
+            if seg_h.max() > lp:
+                j2 = li + 1 + int(seg_h.argmax()); best["idx"][-1] = j2; best["px"][-1] = float(hh[j2]); best["times"][-1] = d1.index[j2]
+                best["prov"].append(kk)
+        else:
+            jx = li + 1 + int(seg_h.argmax()); after = ll[jx + 1:]
+            if after.size and after.min() < lp and (hh[jx] - lp) >= 0.236 * prev_len:
+                best["idx"].append(jx); best["px"].append(float(hh[jx])); best["times"].append(d1.index[jx]); best["k"] += 1; best["prov"].append(best["k"])
+                continue
+            if seg_l.min() < lp:
+                j2 = li + 1 + int(seg_l.argmin()); best["idx"][-1] = j2; best["px"][-1] = float(ll[j2]); best["times"][-1] = d1.index[j2]
+                best["prov"].append(kk)
+        break
+    g_, pxs = best["g"], best["px"]
+    if best["k"] >= 2 and not (g_ * (pxs[2] - pxs[0]) > 0):                  # провизорная 2 зашла за 0 — счёт недействителен
+        return None
     li = best["idx"][-1]
     if li < t:
         seg_h, seg_l = hh[li + 1:], ll[li + 1:]
@@ -160,8 +191,11 @@ def analyze_progress(sym: str, dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optiona
     rep["leg"] = leg
     lv: List[tuple] = []
     names = {1: "волна 2 (откат)", 2: "волна 3", 3: "волна 4 (откат)", 4: "волна 5 / C"}
+    prov = set(cnt.get("prov") or [])
     T.append(f"{sym}: завершённой пятёрки нет — идёт ход {word} от {px[0]:.6g} ({times[0]:%d.%m %H:%M} UTC). "
-             f"Счёт (1h, свинг 60): " + " → ".join(f"{i} = {px[i]:.6g}" for i in range(k + 1)) + f". Сейчас — {names[k]}, цена {price:.6g}.")
+             f"Счёт (1h, свинг 60): " + " → ".join(f"{i} = {px[i]:.6g}{'*' if i in prov else ''}" for i in range(k + 1)) + f". Сейчас — {names[k]}, цена {price:.6g}.")
+    if prov:
+        T.append("* — предварительная точка: свинг масштаба 60 ещё не подтверждён (нужно 60 часов без обновления), счёт может сдвинуться.")
     scen = []
     if k == 4:
         l1, l3 = L[0], L[2]; p4 = px[4]
@@ -286,10 +320,13 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             ax.annotate(txt, p1, color=col, fontsize=7.5, fontweight="bold", xytext=off, textcoords="offset points", va="center",
                         bbox=dict(boxstyle="round,pad=0.2", fc=BG, ec="none", alpha=.85))
 
+    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W
     cnt = rep.get("progress"); leg = rep.get("leg")
-    fig = plt.figure(figsize=(14, 13), facecolor=BG)
-    gs = fig.add_gridspec(3, 2, height_ratios=[.9, 1.25, .8], width_ratios=[1.35, 1], hspace=.28, wspace=.12)
-    ax1 = fig.add_subplot(gs[0, 0]); dd = to_daily(dh); w = dd.iloc[-160:]; candles(ax1, w)
+    TL, TR = build_text_columns(rep, f"{rep['sym']} · волновой разбор · ход в процессе")
+    th = text_height_in(TL, TR); CH_H = 12.0; H = CH_H + th + 0.6
+    fig = plt.figure(figsize=(FIG_W, H), facecolor=BG)
+    gs = fig.add_gridspec(3, 1, height_ratios=[.9, 1.3, .85], hspace=.3, left=0.05, right=0.97, top=1 - 0.25 / H, bottom=(th + 0.6) / H)
+    ax1 = fig.add_subplot(gs[0]); dd = to_daily(dh); w = dd.iloc[-160:]; candles(ax1, w)
     style(ax1, "1D · дневная нога, которую корректирует ход")
     if leg:
         xo, xe = xi(w, leg["origin_t"]), xi(w, leg["ext_t"])
@@ -297,7 +334,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
         for kf, v in leg["levels"].items():
             seg(ax1, xo, xe, v, kf, ACC if kf in ("0.618", "0.705", "0.786", "0.79") else VIO, ":", .8, side="left")
     ax1.set_xlim(-12, len(w) + 8)
-    ax2 = fig.add_subplot(gs[1, 0])
+    ax2 = fig.add_subplot(gs[1])
     if cnt:
         i0 = max(0, cnt["idx"][0] - 30); w1 = d1.iloc[i0:]; candles(ax2, w1); n = len(w1) - 1; F = max(40, int(.25 * len(w1)))
         xs = [i - i0 for i in cnt["idx"]]; ys = cnt["px"]
@@ -328,7 +365,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
         ax2.set_xlim(-5, n + F + 40)
     else:
         style(ax2, "1h · счёт не складывается")
-    ax3 = fig.add_subplot(gs[2, 0]); tri = rep.get("triangle")
+    ax3 = fig.add_subplot(gs[2]); tri = rep.get("triangle")
     src = dl3 if (tri and tri.get("tf") == "3m" and dl3 is not None) else dl15
     if src is not None and len(src):
         w3 = src[src.index >= tri["points"][0][0] - (src.index[-1] - src.index[-2]) * 40].iloc[-400:] if tri else src.iloc[-200:]
@@ -341,20 +378,6 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             for i, (tt, pp, top) in enumerate(tri["points"]):
                 x_ = xi(w3, tt); ax3.scatter([x_], [pp], color=WAVE, s=24, zorder=6)
                 ax3.annotate("abcde"[i], (x_, pp), color=WAVE, fontsize=9, xytext=(-3, 7 if top else -13), textcoords="offset points")
-    at = fig.add_subplot(gs[:, 1]); at.axis("off"); y = .99
-    at.text(0, y, f"{rep['sym']} · волновой разбор · ход в процессе", color=FG, fontsize=13.5, fontweight="bold", va="top"); y -= .033
-    at.text(0, y, f"{pd.Timestamp(rep['now']):%d.%m.%Y %H:%M} UTC · цена {rep.get('price', float('nan')):.6g}", color="#9aa3b2", fontsize=9, va="top"); y -= .033
-    for para in rep["text"]:
-        for ln in textwrap.wrap(para, 60):
-            at.text(0, y, ln, color=FG, fontsize=8.6, va="top"); y -= .0205
-        y -= .007
-    for sc in rep.get("scenarios", []):
-        y -= .008; at.text(0, y, sc["name"], color=ACC, fontsize=10, fontweight="bold", va="top"); y -= .025
-        for ln in textwrap.wrap(f"{sc['side']}. {sc['why']}", 60):
-            at.text(0, y, ln, color=FG, fontsize=8.5, va="top"); y -= .021
-        for nm, v in sc["targets"]:
-            at.text(.03, y, f"→ {nm}: {v:.6g}  ({(v / rep['price'] - 1) * 100:+.1f}%)", color=GRN, fontsize=8.5, va="top", family="monospace"); y -= .021
-        for ln in textwrap.wrap(f"отмена: {sc['invalid']}", 58):
-            at.text(.03, y, ln, color=DN, fontsize=8.5, va="top"); y -= .021
-    fig.savefig(out, dpi=105, facecolor=BG, bbox_inches="tight"); plt.close(fig)
+    draw_text_columns(fig, TL, TR, 0.2, th)
+    fig.savefig(out, dpi=115, facecolor=BG); plt.close(fig)
     return out
