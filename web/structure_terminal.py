@@ -849,16 +849,47 @@ def _wave_state(sym, tf):
         import pandas as pd
         from core.waves import mark_impulse, WaveParams
         sw, il = _WAVE_SCALE[tf]
-        bars = _klines(sym, tf, 1000)
-        if len(bars) >= 6 * sw + 60:
-            d = pd.DataFrame([{"ts": pd.Timestamp(b["t"], unit="s", tz="UTC"), "open": b["o"], "high": b["h"],
-                               "low": b["l"], "close": b["c"], "volume": b["v"]} for b in bars]).set_index("ts")
-            tfm = {"1h": 60, "4h": 240}.get(tf, 240)
-            d = d[d.index + pd.Timedelta(minutes=tfm) <= pd.Timestamp.utcnow()]      # последний бар открыт — убрать
+        d = _wave_df(sym, tf)
+        if d is not None and len(d) >= 6 * sw + 60:
             out = mark_impulse(d, pd.Timestamp.utcnow(), WaveParams(sw=sw, il=il), tf)
         _wvs[key] = (now, out)
     except Exception as e:
         print(f"[WAVE] {sym}/{tf}: {e}")
+    return out
+
+
+def _wave_df(sym, tf):
+    """Закрытые бары ТФ как DataFrame с DatetimeIndex UTC — вход для core.waves."""
+    import pandas as pd
+    bars = _klines(sym, tf, 1000)
+    if not bars:
+        return None
+    d = pd.DataFrame([{"ts": pd.Timestamp(b["t"], unit="s", tz="UTC"), "open": b["o"], "high": b["h"],
+                       "low": b["l"], "close": b["c"], "volume": b["v"]} for b in bars]).set_index("ts")
+    tfm = {"1h": 60, "4h": 240}.get(tf, 240)
+    return d[d.index + pd.Timedelta(minutes=tfm) <= pd.Timestamp.utcnow()]      # последний бар открыт — убрать
+
+
+_wvd: dict = {}                     # (sym,tf) → (ts, diag) — что детектор видит, когда сетапа нет
+
+
+def _wave_diag_state(sym, tf):
+    """Монитор: свинги масштаба ядра + причина отказа последней пятёрки (core.waves.wave_diag)."""
+    key = (sym, tf)
+    hit = _wvd.get(key)
+    now = time.time()
+    if hit and now - hit[0] < _WVS_TTL:
+        return hit[1]
+    out = {"zz": [], "why": ""}
+    try:
+        from core.waves.wave5_core import wave_diag, WaveParams
+        sw, il = _WAVE_SCALE[tf]
+        d = _wave_df(sym, tf)
+        if d is not None:
+            out = wave_diag(d, WaveParams(sw=sw, il=il))
+        _wvd[key] = (now, out)
+    except Exception as e:
+        print(f"[WAVE] diag {sym}/{tf}: {e}")
     return out
 
 
@@ -1309,11 +1340,17 @@ async def api_waves(req):
     loop = asyncio.get_running_loop()
     res = await asyncio.gather(*[loop.run_in_executor(_POOL, _wave_state, s, wtf) for s in syms])
     out = {}
+    import pandas as pd
+    # монеты без сетапа: показываем, что детектор видит (зигзаг свингов ядра) и почему пятёрка не импульс
+    miss = [s for s, setups in zip(syms, res) if not setups]
+    diags = await asyncio.gather(*[loop.run_in_executor(_POOL, _wave_diag_state, s, wtf) for s in miss])
+    for s, dg in zip(miss, diags):
+        out[s] = {"tf": wtf, "why": dg.get("why", ""),
+                  "zz": [{"t": int(pd.Timestamp(ts).timestamp()), "p": float(px), "top": top} for ts, px, top in dg.get("zz", [])]}
     for s, setups in zip(syms, res):
         if not setups:
             continue
         w = setups[0]
-        import pandas as pd
         pts = [{"t": int(pd.Timestamp(pd_ts).timestamp()), "p": float(px)} for pd_ts, px in zip(w["wave_times"], w["wave_px"])]
         out[s] = {"side": w["side"], "tf": wtf, "pts": pts, "h": w["hours_from_top"], "imp": w["imp_pct"],
                   "fr": w["fractal"], "ch": w["depth5"], "alt": w["altern"], "cnt": w["count_ok"], "core": w["core_full"],
@@ -3075,8 +3112,18 @@ function drawAtr(c,g,GW){
 // 🌊 Волновая разметка ядра (core.waves): полилиния 0-5, коррекции 2 и 4 жирнее, линия 2-4 с продолжением
 // вправо, параллель канала через 3 (цель пятой), цель = конец волны 4, стоп за экстремум пятой, коррекции 0.382/0.5/0.618.
 function drawWv(c,g,GW,GH){
- var w=c.wv;if(!S.wv||!w||!w.pts||w.pts.length<6)return;
+ var w=c.wv;if(!S.wv||!w)return;
  var y=function(p){return c.cs.priceToCoordinate(p);},X=function(t){return xFut(c,t);};
+ if(!w.pts||w.pts.length<6){                          // сетапа нет: зигзаг свингов ядра + причина отказа
+  var Z=(w.zz||[]).map(function(q){return {x:X(q.t),y:y(q.p),top:q.top};});
+  g.setLineDash([3,3]);g.lineWidth=1;g.strokeStyle='#7b8496';g.beginPath();var st0=false;
+  Z.forEach(function(q){if(q.x==null||q.y==null){st0=false;return;}if(!st0){g.moveTo(q.x,q.y);st0=true;}else g.lineTo(q.x,q.y);});
+  g.stroke();g.setLineDash([]);g.fillStyle='#7b8496';
+  Z.forEach(function(q){if(q.x==null||q.y==null)return;g.beginPath();g.arc(q.x,q.y,2.2,0,6.283);g.fill();});
+  if(w.why){var tw='импульса нет · '+w.why+' · '+w.tf;g.font='10px -apple-system,Segoe UI,sans-serif';
+   g.fillStyle='#b0b8c6';g.fillText(tw,Math.max(4,GW-g.measureText(tw).width-4),14);}
+  return;
+ }
  var P=w.pts.map(function(q){return {x:X(q.t),y:y(q.p)};});
  if(P.some(function(q){return q.x==null||q.y==null;})){
   // часть точек левее загруженной истории — рисуем только видимые

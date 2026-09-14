@@ -183,6 +183,53 @@ def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WavePa
     return out
 
 
+def wave_diag(dh: pd.DataFrame, p: WaveParams = WaveParams(), n_sw: int = 9) -> Dict[str, Any]:
+    """Диагностика для монитора, когда mark_impulse ничего не нашёл: последние свинги масштаба ядра
+    (зигзаг, что детектор ВИДИТ) и причина, по которой последняя пятёрка — не импульс.
+    dh: закрытые бары с DatetimeIndex. Возвращает {"zz": [(time, price, is_top)…], "why": str}."""
+    if len(dh) < p.sw * 2 + 5:
+        return {"zz": [], "why": "мало истории"}
+    dhr = dh.reset_index(drop=True); t = len(dhr) - 1
+    hh, lh = dhr["high"].values.astype(float), dhr["low"].values.astype(float)
+    conf = [s for s in _swings(dhr["high"], dhr["low"], p.sw) if s[0] <= t]
+    zz = [(dh.index[int(s[1])], float(s[2]), bool(s[3])) for s in conf[-n_sw:]]
+    if len(conf) < 5:
+        return {"zz": zz, "why": "меньше 5 подтверждённых свингов"}
+    last5 = conf[-5:]; kinds = [s[3] for s in last5]; px = [float(s[2]) for s in last5]; li = int(last5[-1][1])
+    if any(kinds[i] == kinds[i + 1] for i in range(4)):
+        return {"zz": zz, "why": "свинги не чередуются (два подряд одного типа)"}
+    if li >= t:
+        return {"zz": zz, "why": "последний свинг на текущем баре"}
+    p0, p1, p2, p3, p4 = px
+    if kinds[-1]:                                                    # top → импульс вниз, 5 = low после
+        p5 = float(lh[li + 1:t + 1].min()); dn = True
+        r1 = p1 < p0 and p2 < p0; w3x = p3 < p1; r3 = p4 < p1; ext = p5 < p3
+        l1, l3, l5 = p0 - p1, p2 - p3, p4 - p5
+    else:
+        p5 = float(hh[li + 1:t + 1].max()); dn = False
+        r1 = p1 > p0 and p2 > p0; w3x = p3 > p1; r3 = p4 > p1; ext = p5 > p3
+        l1, l3, l5 = p1 - p0, p3 - p2, p5 - p4
+    if not r1:
+        return {"zz": zz, "why": "R1: волна 2 забирает всю первую"}
+    if not w3x:
+        return {"zz": zz, "why": "третья не вышла за конец первой — структура ABC/флэт, не импульс"}
+    if not r3:
+        return {"zz": zz, "why": "R3: волна 4 заходит на территорию первой (перекрытие)"}
+    if not ext:
+        return {"zz": zz, "why": "пятая ещё не вышла за экстремум третьей (импульс не достроен)"}
+    if l3 < l1 and l3 < l5:
+        return {"zz": zz, "why": "R2: третья — самая короткая"}
+    imp = abs(p5 - p0) / p0 * 100 if p0 else 0
+    if not (p.min_imp <= imp <= p.max_imp):
+        return {"zz": zz, "why": f"ход {imp:.1f}% вне [{p.min_imp:g}; {p.max_imp:g}]%"}
+    wt = calculate_wt(dhr.copy())["wt1"].values.astype(float)
+    seg = lh[li + 1:t + 1] if dn else hh[li + 1:t + 1]
+    b = li + 1 + int(seg.argmin() if dn else seg.argmax())
+    if np.isfinite(wt[b]) and not ((wt[b] < -p.z) if dn else (wt[b] > p.z)):
+        return {"zz": zz, "why": f"WT на пятой {wt[b]:.0f}, нужно {'<-' if dn else '>'}{p.z:g}"}
+    return {"zz": zz, "why": "проходит правила — сетап должен быть в mark_impulse"}
+
+
 def _wt_cross(dl: pd.DataFrame):
     d = calculate_wt(dl.reset_index(drop=True).copy())
     w1, w2 = d["wt1"].values.astype(float), d["wt2"].values.astype(float)
