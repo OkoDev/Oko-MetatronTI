@@ -69,26 +69,31 @@ def js(v):
 
 
 def transition(prev, ls, now, sym):
-    """detected → entered → closed (общий для обоих циклов)."""
-    long_ = prev["side"] == "LONG"; st = prev.get("status", "detected")
-    if st == "detected" and (ls["cross_first"] or ls["line24_broken"]):
-        prev["status"] = "entered"; prev["entered_at"] = now; prev["entry_price"] = ls["last_close"]
-        c1, l1 = ls["cross_first"], ls["line24_first"]
-        prev["entry_trigger"] = "cross" if (c1 is not None and (l1 is None or c1 <= l1)) else "line24"
-        print(f"  IN   {sym:<12} {prev['side']} вход по {prev['entry_trigger']} ~{ls['last_close']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}", flush=True)
-    elif st == "entered":
-        e = prev["entry_price"]
-        hit = (ls["last_close"] >= prev["p4_target"]) if long_ else (ls["last_close"] <= prev["p4_target"])
-        stop = (ls["last_close"] <= ls["stop"]) if long_ else (ls["last_close"] >= ls["stop"])
-        aged = (NOW - pd.Timestamp(prev["entered_at"], tz="UTC")).total_seconds() / 3600 > HOLD_H
-        if hit or stop or aged:
-            prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "target" if hit else ("stop" if stop else "time")
-            prev["pnl_pct"] = round(((ls["last_close"] - e) / e * 100) * (1 if long_ else -1), 2)
-            print(f"  OUT  {sym:<12} {prev['outcome']} {prev['pnl_pct']:+.2f}%", flush=True)
-    for k in ("cross_first", "line24_broken", "line24_first", "line24_now", "p5_ext", "stop", "last_close"):
+    """detected → entered → closed по правилам бэктеста (core.waves.wave5_core.ltf_status: триггер после детекции,
+    вход open следующего бара, стоп фиксирован на входе, исход по экстремумам баров)."""
+    st = prev.get("status", "detected")
+    if st == "detected" and ls.get("entry_time") is not None:
+        prev["status"] = "entered"; prev["entered_at"] = str(ls["entry_time"])[:16]; prev["entry_price"] = ls["entry_price"]
+        prev["entry_trigger"] = ls["trigger"]; prev["stop"] = js(ls["stop"])
+        print(f"  IN   {sym:<12} {prev['side']} вход по {ls['trigger']} {prev['entered_at']} @ {ls['entry_price']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}", flush=True)
+    elif st == "detected" and ls.get("entry_window_over"):
+        prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "no_entry"
+        print(f"  --   {sym:<12} окно входа истекло без триггера", flush=True)
+    if prev.get("status") == "entered" and ls.get("outcome"):
+        prev["status"] = "closed"; prev["closed_at"] = str(ls["exit_time"])[:16]; prev["outcome"] = ls["outcome"]
+        prev["exit_price"] = js(ls["exit_price"]); prev["pnl_pct"] = ls["pnl_pct"]
+        print(f"  OUT  {sym:<12} {ls['outcome']} {ls['pnl_pct']:+.2f}%", flush=True)
+    for k in ("cross_first", "line24_broken", "line24_first", "line24_now", "p5_ext", "last_close"):
         prev[k] = js(ls[k])
+    if prev.get("status") != "entered":
+        prev["stop"] = js(ls["stop"])
     prev["w5_reached"] = ",".join(ls["w5_reached"]); prev["corr_reached"] = ",".join(ls["corr_reached"])
     prev["hours_from_top"] = round((NOW - pd.Timestamp(prev["top_time"], tz="UTC" if pd.Timestamp(prev["top_time"]).tzinfo is None else None)).total_seconds() / 3600, 1)
+
+
+def detect_close(prev):
+    """Момент, с которого разрешён вход: закрытие 4h-бара детекции (детекция идёт через ~3 мин после закрытия)."""
+    return pd.Timestamp(prev["detected_at"], tz="UTC").floor("4h")
 
 
 def save_and_report(state, a):
@@ -143,7 +148,7 @@ def full_scan(a):
             if len(dl) < 200: print(f"  [skip] {s}: {a.ltf}={len(dl)}", flush=True); continue
             for st in setups:
                 if a.only_core and not st["core"]: continue
-                k = f"{s}|{st['key']}"; ls = ltf_status(st, dl, P); prev = state.get(k)
+                k = f"{s}|{st['key']}"; prev = state.get(k); ls = ltf_status(st, dl, P, after=(detect_close(prev) if prev else NOW.floor('4h')), entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
                 if prev is None:
                     prev = {kk: js(v) for kk, v in st.items() if kk not in ("wave_idx", "wave_px")}
                     prev.update({"sym": s, "detected_at": now, "status": "detected", "egor": ""})
@@ -212,9 +217,10 @@ def watch(a):
     for k, prev in act.items():
         s = prev["sym"]; bx = f"{s.split('/')[0]}/USDT:USDT"
         try:
-            dl = fetch(ex, bx, a.ltf, n_ltf)
+            n_need = min(3000, int((NOW - pd.Timestamp(prev["top_time"], tz="UTC" if pd.Timestamp(prev["top_time"]).tzinfo is None else None)) / pd.Timedelta(minutes=TF_MIN[a.ltf])) + 100)
+            dl = fetch(ex, bx, a.ltf, max(n_ltf, n_need))                 # история от вершины пятой: нужна для входа и исхода
             if len(dl) < 100: print(f"  [skip] {s}: {a.ltf}={len(dl)}", flush=True); continue
-            ls = ltf_status(prev, dl, P); transition(prev, ls, now, s)
+            ls = ltf_status(prev, dl, P, after=detect_close(prev), entry_w_h=ENTRY_W_H, hold_h=HOLD_H); transition(prev, ls, now, s)
         except Exception as e_:
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
     save_and_report(state, a)
