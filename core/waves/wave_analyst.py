@@ -186,18 +186,19 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         sr = run_structure(base[["open", "high", "low", "close"]].reset_index(drop=True), swing_len=p.ltf_sw, internal_len=p.ltf_il)
         bt = base.index; bh, bl = base.high.values.astype(float), base.low.values.astype(float)
         want_bull = not st["up"]
-        evs = [e for e in sr.events if e.bull == want_bull and e.kind == "CHoCH" and bt[e.i] > st["t5x"]]
+        # точный экстремум пятой на младшем ТФ внутри её 4h-бара; сломы «после пятой» — строго после него
+        j5a = int(np.searchsorted(bt, st["t5x"])); j5b = int(np.searchsorted(bt, st["t5x"] + pd.Timedelta(hours=4)))
+        j5 = j5a + int((bh[j5a:j5b].argmax() if not want_bull else bl[j5a:j5b].argmin())) if j5b > j5a else min(j5a, len(bt) - 1)
+        evs = [e for e in sr.events if e.bull == want_bull and e.kind == "CHoCH" and e.i > j5]
         ltf_state = {"choch_int": None, "choch_sw": None}
         if evs:
             ei = [e for e in evs if e.internal]; es = [e for e in evs if not e.internal]
             if ei:
                 e = ei[0]; ltf_state["choch_int"] = {"t": bt[e.i], "level": float(e.level),
                                                      "t0": bt[e.level_i] if e.level_i is not None and e.level_i >= 0 else bt[e.i]}
-                j5a = int(np.searchsorted(bt, st["t5x"])); j5b = int(np.searchsorted(bt, st["t5x"] + pd.Timedelta(hours=4)))
-                j5 = j5a + int((bh[j5a:j5b].argmax() if not want_bull else bl[j5a:j5b].argmin())) if j5b > j5a else j5a
                 ltf_state["t5"] = bt[j5]                     # точное время экстремума пятой на младшем ТФ
                 back = [x for x in sr.events if x.internal and x.bull != want_bull and x.kind == "CHoCH" and x.i > e.i]
-                jb = back[0].i if back else len(bt) - 1        # откат B подтверждён встречным сломом → A закончена
+                jb = max(back[0].i if back else len(bt) - 1, j5)   # откат B подтверждён встречным сломом → A закончена
                 ltf_state["a_done"] = bool(back)
                 if want_bull:
                     ka = j5 + int(bh[j5:jb + 1].argmax()); a_top = float(bh[ka]); A = a_top - p5

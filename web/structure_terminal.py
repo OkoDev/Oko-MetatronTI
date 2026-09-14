@@ -3943,7 +3943,12 @@ async def api_waves_journal(_req):
     order = {"entered": 0, "detected": 1, "closed": 2}
     out.sort(key=lambda r: (order.get(r["status"], 3), str(r["top_time"])), reverse=False)
     out.sort(key=lambda r: order.get(r["status"], 3))
-    return web.json_response({"rows": out, "verdicts": _WV_VERDICTS, "ts": int(time.time())})
+    try:
+        from core.waves.wave_audit import agreement
+        agr = agreement(rv)
+    except Exception:
+        agr = {"n": 0, "hit": 0, "by_egor": {}}
+    return web.json_response({"rows": out, "verdicts": _WV_VERDICTS, "agreement": agr, "ts": int(time.time())})
 
 
 async def api_waves_review(req):
@@ -4000,7 +4005,7 @@ figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-r
 Оценка разметки пишется в <code>data/wave5_shadow/reviews.json</code> и попадает в CSV. Строка «ИИ» — самотестирование по методичке; твоя оценка — контроль его оценки.</p>
 <div class=ask><input id=asym placeholder="тикер, например SOLV" maxlength=20><span class="bt" id=abtn>🌊 разобрать монету</span><span id=astat class=mut></span></div>
 <div id=ares></div>
-<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span></div>
+<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span><span class=mut id=agr title="сколько раз вердикт правил совпал с оценкой Егора"></span></div>
 <div id=list><div class=empty>загрузка…</div></div>
 </div><div class=lb id=lb><img id=lbi alt=""></div>
 <script>
@@ -4033,7 +4038,9 @@ function render(){var rows=ROWS.filter(function(r){var rv=r.review||{};
  document.querySelectorAll('figure img').forEach(function(i){i.onclick=function(){document.getElementById('lbi').src=i.src;document.getElementById('lb').style.display='flex';};});}
 async function send(k,w,v,note){try{var r=await fetch('/api/waves/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,who:w,verdict:v,note:note})});
  var d=await r.json();var row=ROWS.find(function(x){return x.key==k;});if(row&&d.review)row.review=d.review;render();}catch(e){alert('не сохранилось: '+e);}}
-async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'});var d=await r.json();V=d.verdicts;ROWS=d.rows;render();}
+async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'});var d=await r.json();V=d.verdicts;ROWS=d.rows;
+ var a=d.agreement||{};document.getElementById('agr').textContent=a.n?(' · согласие ИИ ↔ Егор: '+a.hit+'/'+a.n+' ('+Math.round(a.hit/a.n*100)+'%)'):' · согласие ИИ ↔ Егор: оценок Егора пока нет';
+ render();}
 document.querySelectorAll('.tabs .bt').forEach(function(b){b.onclick=function(){document.querySelectorAll('.tabs .bt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');F=b.dataset.f;render();};});
 document.getElementById('lb').onclick=function(){this.style.display='none';};
 async function analyze(){var sym=document.getElementById('asym').value.trim();if(!sym)return;

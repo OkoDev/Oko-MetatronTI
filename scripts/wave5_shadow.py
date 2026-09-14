@@ -163,6 +163,26 @@ def full_scan(a):
     save_and_report(state, a)
 
 
+def write_ai_review(key, prev):
+    """🧪 Строка «ИИ» на /waves: вердикт правил методички (core.waves.wave_audit) → reviews.json. Оценку Егора не трогаем."""
+    from core.waves.wave_audit import audit_setup
+    try:
+        aj = None
+        if prev.get("analyst_json"):
+            pj = ROOT / "data" / "wave_analyst" / prev["analyst_json"]
+            if pj.exists():
+                aj = json.loads(pj.read_text(encoding="utf-8"))
+        res = audit_setup(prev, aj)
+        rp = DATA / "reviews.json"
+        rv = json.loads(rp.read_text(encoding="utf-8")) if rp.exists() else {}
+        rec = rv.setdefault(key, {})
+        rec.update({"ai": res["ai"], "ai_note": res["ai_note"], "ai_ts": pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M")})
+        rp.write_text(json.dumps(rv, ensure_ascii=False, indent=1), encoding="utf-8")
+        prev["ai"], prev["ai_note"] = res["ai"], res["ai_note"]
+    except Exception as e_:
+        print(f"  [ИИ-сверка] {prev.get('sym')}: {type(e_).__name__} {e_}", flush=True)
+
+
 def refresh_analyst(state):
     """🌊 Волновой разбор (core.waves.wave_analyst) для каждого активного сетапа раз в 4h: схема для /waves,
     зона пятой в дневной ноге (OTE/глубокая/за пределами) — главный признак по замеру 14.09."""
@@ -174,6 +194,7 @@ def refresh_analyst(state):
             r = report_for(prev["sym"], "3m", ROOT / "data" / "wave_analyst", now=NOW)
             prev.update({"analyst_png": r["png"], "analyst_json": r["json"], "zone_1d": r["zone"], "depth_1d": r["depth"]})
             print(f"  разбор {prev['sym']}: {r['zone']} ({r['depth']}) → {r['png']}", flush=True)
+            write_ai_review(k, prev)
         except Exception as e_:
             print(f"  [разбор] {prev['sym']}: {type(e_).__name__} {e_}", flush=True)
 
