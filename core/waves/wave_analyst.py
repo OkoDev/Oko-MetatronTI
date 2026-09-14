@@ -103,7 +103,6 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         rep["text"].append("На 4h (масштаб ядра) нет завершённой пятёрки или конечной диагонали за последние 15 суток — "
                            "разворотного сценария нет, аналитик молчит.")
         return rep
-    st["times"] = [dh.index[i] for i in st["wave_idx"]]
     # фактический экстремум пятой — по всем барам после неё (он мог обновиться)
     i5 = st["wave_idx"][5]
     if st["up"]:
@@ -111,6 +110,20 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
     else:
         k = i5 + int(lh[i5:].argmin()); st["p5x"] = float(lh[k])
     st["t5x"] = dh.index[k]
+    # точка 0 = крайний экстремум с момента, когда цена последний раз была за концом волны 1: подтверждённый свинг
+    # может стоять ниже шпиля, с которого на деле началась нога (RECALL: свинг 0.0526, шпиль 0.0577)
+    i0_, i1_ = st["wave_idx"][0], st["wave_idx"][1]; p1_ = float(st["wave_px"][1])
+    beyond1 = np.where(lh[:i0_] < p1_)[0] if st["up"] is False else np.where(hh[:i0_] > p1_)[0]
+    kb = int(beyond1[-1]) + 1 if len(beyond1) else max(0, i0_ - 60)
+    if st["up"]:
+        k0 = kb + int(lh[kb:i1_].argmin()); better = lh[k0] < st["wave_px"][0]; v0 = float(lh[k0])
+    else:
+        k0 = kb + int(hh[kb:i1_].argmax()); better = hh[k0] > st["wave_px"][0]; v0 = float(hh[k0])
+    st["p0_detector"] = float(st["wave_px"][0])
+    if better and k0 != i0_:
+        st["wave_idx"] = [k0] + list(st["wave_idx"][1:]); st["wave_px"] = [v0] + list(st["wave_px"][1:])
+        st["p0_moved"] = True
+    st["times"] = [dh.index[i] for i in st["wave_idx"]]
     rep["structure"] = st
     g = 1 if st["up"] else -1                             # направление 4h-хода; разворот — против (−g)
     p0, p5 = float(st["wave_px"][0]), st["p5x"]; rng = abs(p5 - p0)
@@ -132,6 +145,7 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         o_i = int(pick[1]); origin = float(pick[2])
         seg = dd.iloc[o_i:]; seg = seg[seg.index <= st["t5x"]]
         ext = float(seg.low.min()) if want_top else float(seg.high.max())       # противоположный конец ноги
+        ext_t = seg.low.idxmin() if want_top else seg.high.idxmax()
         span = abs(origin - ext)
         if span <= 0:
             return None
@@ -140,7 +154,7 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         xt = {f"-{r}": ext - sg * r * span for r in FIB_EXT if ext - sg * r * span > 0}
         zone = ("OTE 0.62–0.79" if 0.62 <= depth <= 0.79 else "глубокая 0.79–1.0" if 0.79 < depth <= 1.0 else
                 "за пределами ноги (>1)" if depth > 1 else "мелкая 0.5–0.62" if depth >= 0.5 else "мелкая (<0.5)")
-        return {"origin": origin, "origin_t": dd.index[o_i], "ext": ext, "depth": depth, "zone": zone, "levels": lvl,
+        return {"origin": origin, "origin_t": dd.index[o_i], "ext": ext, "ext_t": ext_t, "depth": depth, "zone": zone, "levels": lvl,
                 "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
 
     leg = _leg(p.d_sw); alt = _leg(5)
@@ -163,8 +177,11 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         if evs:
             ei = [e for e in evs if e.internal]; es = [e for e in evs if not e.internal]
             if ei:
-                e = ei[0]; ltf_state["choch_int"] = {"t": bt[e.i], "level": float(e.level)}
-                j5 = int(np.searchsorted(bt, st["t5x"]))
+                e = ei[0]; ltf_state["choch_int"] = {"t": bt[e.i], "level": float(e.level),
+                                                     "t0": bt[e.level_i] if e.level_i is not None and e.level_i >= 0 else bt[e.i]}
+                j5a = int(np.searchsorted(bt, st["t5x"])); j5b = int(np.searchsorted(bt, st["t5x"] + pd.Timedelta(hours=4)))
+                j5 = j5a + int((bh[j5a:j5b].argmax() if not want_bull else bl[j5a:j5b].argmin())) if j5b > j5a else j5a
+                ltf_state["t5"] = bt[j5]                     # точное время экстремума пятой на младшем ТФ
                 back = [x for x in sr.events if x.internal and x.bull != want_bull and x.kind == "CHoCH" and x.i > e.i]
                 jb = back[0].i if back else len(bt) - 1        # откат B подтверждён встречным сломом → A закончена
                 ltf_state["a_done"] = bool(back)
@@ -176,11 +193,17 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
                     cur_retr = (float(base.close.iloc[-1]) - a_top) / A if A > 0 else None
                 if A > 0:
                     sgn = 1 if want_bull else -1
+                    z05 = a_top - sgn * 0.5 * A
+                    tail = base.iloc[ka + 1:]
+                    hit = tail.index[(tail.low <= z05) if want_bull else (tail.high >= z05)]
+                    ltf_state["zone_touch_t"] = hit[0] if len(hit) else None
                     ltf_state.update({"a_top": a_top, "a_t": bt[ka], "A": A, "retr_now": cur_retr,
                                       "zone": {f: a_top - sgn * f * A for f in (0.5, 0.618, 0.705)},
                                       "stop_886": a_top - sgn * 0.886 * A})
             if es:
-                ltf_state["choch_sw"] = {"t": bt[es[0].i], "level": float(es[0].level)}
+                e2 = es[0]
+                ltf_state["choch_sw"] = {"t": bt[e2.i], "level": float(e2.level),
+                                         "t0": bt[e2.level_i] if e2.level_i is not None and e2.level_i >= 0 else bt[e2.i]}
         rep["ltf_state"] = ltf_state
 
     # сценарии
@@ -199,6 +222,10 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
                                         f"(глубина {leg['depth']:.2f}) — это коррекция ноги, её тренд продолжается.",
                                  "targets": [("0.382 4h-хода", corr["0.382"]), ("0.618 4h-хода", corr["0.618"])] + tg,
                                  "invalid": ("выше" if st["up"] else "ниже") + f" начала ноги {leg['origin']:.6g} (глубина 1.0)"})
+    fork_mid = (corr["0.5"] + corr["0.618"]) / 2
+    rep["forecast"] = {"fork": (corr["0.5"], corr["0.618"]),
+                       "A": (leg["ext"], "A · к хаю/низу ноги") if leg and leg["depth"] <= 1.0 else None,
+                       "B": (fork_mid + g * 1.0 * rng, "B · волна 3 ≥1.0×w1")}
     rep["scenarios"].append({"name": "B · 4h-ход — волна 1 нового движения", "side": f"{rev} только до коррекции, затем против",
                              "why": f"пятёрка 4h {'вверх' if st['up'] else 'вниз'} может быть первой волной нового тренда — тогда разворот лишь ABC.",
                              "targets": [("0.382", corr["0.382"]), ("0.5", corr["0.5"]), ("0.618", corr["0.618"])],
@@ -209,6 +236,9 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
     s0 = st.get("setup") or {}
     T.append(f"{sym}: на 4h {'завершена пятёрка' if st['kind'] == 'impulse' else 'завершена конечная диагональ (' + st['form'] + ')'} "
              f"{'вверх' if st['up'] else 'вниз'}: {p0:.6g} → {p5:.6g} ({rng / p0 * 100:.0f}%), экстремум {st['t5x']:%d.%m %H:%M} UTC.")
+    if st.get("p0_moved"):
+        T.append(f"Точка 0 уточнена до экстремума ноги: детектор взял подтверждённый свинг {st['p0_detector']:.6g}, "
+                 f"нога началась с {p0:.6g} — коррекции считаются от него.")
     if s0:
         T.append(f"Правила ядра: фрактал {'✓' if s0['fractal'] else '✗'}, канал {s0['depth5']}, чередование {'✓' if s0['altern'] else '✗'}, "
                  f"счёт {'✓' if s0['count_ok'] else '✗'}{' — ЯДРО' if s0['core_full'] else ''}. WT на пятой {s0['wt_top']}, WT 1D {s0['d_wt']}.")
@@ -238,10 +268,13 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
 
 # ─── схема ──────────────────────────────────────────────────────────────────────────────────────
 def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], out: Path) -> Path:
+    """Схема разбора. Правило Егора 14.09: фибо и сломы — ОТРЕЗКАМИ между точками замера (не через весь экран);
+    прогноз — штрихпунктирной стрелкой к зоне развилки и двумя пунктирными стрелками вариантов A/B из неё."""
+    import textwrap
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
+    from matplotlib.patches import Rectangle, FancyArrowPatch
     BG, FG, GRID, UP, DN, WAVE, ACC, LINE, VIO, GRN = "#0f1116", "#e6e8ee", "#2a2f3a", "#26a69a", "#ef5350", "#8ab4f8", "#f5c542", "#ff8f00", "#9575cd", "#66bb6a"
 
     def candles(ax, w):
@@ -250,99 +283,123 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             col = UP if c[i] >= o[i] else DN
             ax.vlines(x[i], l[i], h[i], color=col, lw=0.6, alpha=0.85)
             ax.add_patch(Rectangle((x[i] - 0.32, min(o[i], c[i])), 0.64, max(abs(c[i] - o[i]), (h[i] - l[i]) * 1e-3), color=col, alpha=0.9, lw=0))
-        return x
 
     def style(ax, title):
         ax.set_facecolor(BG); [sp.set_color(GRID) for sp in ax.spines.values()]
-        ax.tick_params(colors=FG, labelsize=7.5); ax.grid(True, color=GRID, lw=0.5, alpha=0.5)
+        ax.tick_params(colors=FG, labelsize=7.5); ax.grid(True, color=GRID, lw=0.5, alpha=0.4)
         ax.set_title(title, color=FG, fontsize=9.5, loc="left")
 
-    def hline(ax, y, txt, col, ls="--", lw=0.9, xr=None):
-        ax.axhline(y, color=col, ls=ls, lw=lw, alpha=0.9)
-        ax.annotate(f"{txt} {y:.6g}", (1.0, y), xycoords=("axes fraction", "data"), color=col, fontsize=7, ha="right", va="bottom")
+    def seg(ax, x0, x1, y, txt, col, ls="--", lw=0.9, side="right"):
+        xa, xb = sorted((x0, x1))
+        ax.hlines(y, xa, xb, colors=col, linestyles=ls, lw=lw, alpha=0.95)
+        if txt:
+            ax.annotate(f"{txt} {y:.5g}", (xb if side == "right" else xa, y), color=col, fontsize=6.8,
+                        ha="left" if side == "right" else "right", va="center",
+                        xytext=(3 if side == "right" else -3, 0), textcoords="offset points")
 
-    st, leg = rep["structure"], rep["leg"]
+    def xi(w, tt):
+        return int(w.index.get_indexer([pd.Timestamp(tt)], method="nearest")[0])
+
+    def arrow(ax, x0, y0, x1, y1, col, ls, txt=None, lw=1.6):
+        ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=14, color=col, lw=lw, linestyle=ls, zorder=7))
+        if txt:
+            ax.annotate(f"{txt}\n{y1:.5g}", (x1, y1), color=col, fontsize=7.5, fontweight="bold", xytext=(4, 0), textcoords="offset points", va="center")
+
+    st, leg = rep["structure"], rep["leg"]; up_ = st["up"]
     fig = plt.figure(figsize=(14, 13), facecolor=BG)
-    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1.1, 0.95], width_ratios=[1.35, 1], hspace=0.28, wspace=0.12)
-    # 1D
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1.15, 0.95], width_ratios=[1.35, 1], hspace=0.28, wspace=0.12)
+
+    # 1D: нога, фибо отрезками от начала до конца ноги
     ax1 = fig.add_subplot(gs[0, 0]); dd = to_daily(dh); w = dd.iloc[-200:]; candles(ax1, w)
-    style(ax1, f"1D · дневная нога и где закончилась пятая")
+    style(ax1, "1D · дневная нога (фибо от её начала до конца) и где закончилась пятая")
     if leg:
+        xo, xe = xi(w, leg["origin_t"]), xi(w, leg["ext_t"])
+        ax1.plot([xo, xe], [leg["origin"], leg["ext"]], color=WAVE, lw=1.1, ls="--", alpha=0.8)
         for k, v in leg["levels"].items():
-            col = ACC if k in ("0.618", "0.705", "0.79") else VIO
-            hline(ax1, v, k, col, ":" if k not in ("0.705",) else "-", 0.8)
+            seg(ax1, xo, xe, v, k, ACC if k in ("0.618", "0.705", "0.79") else VIO, "-" if k == "0.705" else ":", 0.8, side="left")
         for k, v in leg["extensions"].items():
-            hline(ax1, v, k, GRN, "-.", 0.7)
-        lo = min(leg["levels"]["0.886"], leg["ext"]); hi = max(leg["levels"]["0.886"], leg["ext"])
-        y618, y79 = sorted((leg["levels"]["0.618"], leg["levels"]["0.79"]))
-        ax1.axhspan(y618, y79, color=ACC, alpha=0.08)
-        xi = w.index.get_indexer([leg["origin_t"]], method="nearest")[0]
-        ax1.plot([xi, len(w) - 1], [leg["origin"], leg["ext"]], color=WAVE, lw=1, ls="--", alpha=0.7)
-        ax1.annotate(f"пятая: глубина {leg['depth']:.2f} · {leg['zone']}", (0.01, 0.95), xycoords="axes fraction", color=ACC, fontsize=8.5, va="top")
-    # 4h
+            seg(ax1, xo, xe, v, k, GRN, "-.", 0.7, side="left")
+        y1_, y2_ = sorted((leg["levels"]["0.618"], leg["levels"]["0.79"]))
+        ax1.add_patch(Rectangle((min(xo, xe), y1_), abs(xe - xo), y2_ - y1_, color=ACC, alpha=0.10, lw=0))
+        x5 = xi(w, st["t5x"]); ax1.scatter([x5], [st["p5x"]], color=WAVE, s=36, zorder=6)
+        ax1.annotate(f"5 · глубина {leg['depth']:.2f} · {leg['zone']}", (x5, st["p5x"]), color=ACC, fontsize=8,
+                     xytext=(-6, -14 if not up_ else 8), textcoords="offset points", ha="right")
+    ax1.set_xlim(-12, len(w) + 8)
+
+    # 4h: счёт, коррекции отрезком 0→5, развилка, прогноз стрелками
     ax2 = fig.add_subplot(gs[1, 0]); i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
-    style(ax2, f"4h · {'импульс' if st['kind'] == 'impulse' else 'конечная диагональ · ' + st['form']} 0-5 и цели разворота")
-    xs = [i - i0 for i in st["wave_idx"]]; ys = list(st["wave_px"][:5]) + [st["p5x"]]
+    style(ax2, f"4h · {'импульс' if st['kind'] == 'impulse' else 'конечная диагональ · ' + st['form']} 0-5 · прогноз из зоны развилки")
+    xs = [i - i0 for i in st["wave_idx"]]; ys = list(st["wave_px"][:5]) + [st["p5x"]]; xs[5] = xi(w4, st["t5x"])
     ax2.plot(xs, ys, color=WAVE, lw=1.7); ax2.scatter(xs, ys, color=WAVE, s=30, zorder=5)
     for kk, (xk, yk) in enumerate(zip(xs, ys)):
         ax2.annotate(str(kk), (xk, yk), color=WAVE, fontsize=10, fontweight="bold",
-                     xytext=(-3, 9 if (kk % 2 == (0 if st["up"] else 1)) else -15), textcoords="offset points")
+                     xytext=(-3, 9 if (kk % 2 == (0 if up_ else 1)) else -15), textcoords="offset points")
     if st["kind"] == "diagonal":
         for a_, b_ in ((1, 3), (2, 4)):
-            sl_ = (ys[b_] - ys[a_]) / max(1, xs[b_] - xs[a_]); xe = len(w4) - 1
-            ax2.plot([xs[a_], xe], [ys[a_], ys[a_] + sl_ * (xe - xs[a_])], color=LINE, lw=1, ls="--")
+            ax2.plot([xs[a_], xs[b_]], [ys[a_], ys[b_]], color=LINE, lw=1, ls="--")
     for k, v in rep["corr"].items():
-        hline(ax2, v, f"коррекция {k}", GRN if k in ("0.5", "0.618") else VIO, "--")
-    f5, f6 = sorted((rep["corr"]["0.5"], rep["corr"]["0.618"])); ax2.axhspan(f5, f6, color=GRN, alpha=0.07)
-    ax2.annotate("развилка A/B", (0.01, (f5 + f6) / 2), xycoords=("axes fraction", "data"), color=GRN, fontsize=8)
-    hline(ax2, rep["price"], "цена", FG, "-", 0.8)
-    # LTF
-    ax3 = fig.add_subplot(gs[2, 0])
-    ls = rep.get("ltf_state") or {}
+        seg(ax2, xs[0], xs[5], v, f"{k}", GRN if k in ("0.5", "0.618") else VIO, "--", 0.8, side="left")
+    n4 = len(w4) - 1; F = max(18, int(0.45 * len(w4)))
+    fc = rep.get("forecast") or {}
+    lo, hi = sorted(fc.get("fork", (rep["corr"]["0.5"], rep["corr"]["0.618"])))
+    xf0, xf1 = n4 + int(F * 0.30), n4 + int(F * 0.45)
+    ax2.add_patch(Rectangle((xf0, lo), xf1 - xf0, hi - lo, color=GRN, alpha=0.18, lw=0))
+    ax2.annotate("развилка A/B", (xf0, hi), color=GRN, fontsize=8, xytext=(0, 3), textcoords="offset points")
+    ym = (lo + hi) / 2; price = rep["price"]
+    ax2.scatter([n4], [price], color=FG, s=18, zorder=6)
+    arrow(ax2, n4, price, xf0, ym, FG, "-.", None, 1.3)                       # штрихпунктир — путь к развилке
+    if fc.get("A"):
+        ya, ta = fc["A"]; arrow(ax2, xf1, ym, n4 + F, ya, ACC, "--", ta)       # пунктир — вариант A
+    if fc.get("B"):
+        yb, tb = fc["B"]; arrow(ax2, xf1, ym, n4 + int(F * 0.9), yb, DN if not up_ else UP, "--", tb)
+    ax2.set_xlim(-12, n4 + F + 34)
+
+    # младший ТФ: сломы от свинга до пересечения, фибо A отрезком 5→A, зона от A до касания
+    ax3 = fig.add_subplot(gs[2, 0]); ls = rep.get("ltf_state") or {}
     if dl is not None and len(dl):
         w3 = dl[dl.index >= st["t5x"] - pd.Timedelta(hours=3)]
         step = max(1, int(np.ceil(len(w3) / 360)))
         if step > 1:
             w3 = w3.resample(pd.Timedelta(w3.index.to_series().diff().median() * step), label="left", closed="left").agg(
                 {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
-        candles(ax3, w3)
+        candles(ax3, w3); n3 = len(w3) - 1
         tfm = int((w3.index.to_series().diff().median()).total_seconds() // 60)
-        style(ax3, f"{rep['ltf']} (свечи {tfm}m) · от пятой: слом против хода, волна A, зона отката")
-        def _x(tt):
-            return int(w3.index.get_indexer([pd.Timestamp(tt)], method="nearest")[0])
-        ax3.scatter([_x(st["t5x"])], [st["p5x"]], color=WAVE, s=40, zorder=6); ax3.annotate("5", (_x(st["t5x"]), st["p5x"]), color=WAVE, fontsize=10, fontweight="bold", xytext=(4, 0), textcoords="offset points")
-        if ls.get("choch_int"):
-            ax3.axvline(_x(ls["choch_int"]["t"]), color=LINE, lw=0.8, ls=":")
-        if ls.get("a_t"):
-            ax3.scatter([_x(ls["a_t"])], [ls["a_top"]], color=WAVE, s=40, zorder=6); ax3.annotate("A", (_x(ls["a_t"]), ls["a_top"]), color=WAVE, fontsize=10, fontweight="bold", xytext=(4, 0), textcoords="offset points")
-        if ls.get("choch_int"):
-            c = ls["choch_int"]; hline(ax3, c["level"], "CHoCH младший", LINE, "-", 1.1)
-        if ls.get("choch_sw"):
-            hline(ax3, ls["choch_sw"]["level"], "CHoCH старший", DN if st["up"] else UP, "-", 1.1)
+        style(ax3, f"{rep['ltf']} (свечи {tfm}m) · от пятой: слом, волна A, зона отката")
+        x5 = xi(w3, ls.get("t5", st["t5x"])); ax3.scatter([x5], [st["p5x"]], color=WAVE, s=40, zorder=6)
+        ax3.annotate("5", (x5, st["p5x"]), color=WAVE, fontsize=10, fontweight="bold", xytext=(4, 0), textcoords="offset points")
+        for key_, nm, col in (("choch_int", "CHoCH", LINE), ("choch_sw", "CHoCH старший", UP if not up_ else DN)):
+            c = ls.get(key_)
+            if c:
+                seg(ax3, xi(w3, c["t0"]), xi(w3, c["t"]), c["level"], nm, col, "-", 1.2)
         if ls.get("A"):
-            z = ls["zone"]; ax3.axhspan(min(z[0.5], z[0.705]), max(z[0.5], z[0.705]), color=ACC, alpha=0.12)
+            xa = xi(w3, ls["a_t"]); ax3.scatter([xa], [ls["a_top"]], color=WAVE, s=40, zorder=6)
+            ax3.annotate("A", (xa, ls["a_top"]), color=WAVE, fontsize=10, fontweight="bold", xytext=(4, 0), textcoords="offset points")
+            ax3.plot([x5, xa], [st["p5x"], ls["a_top"]], color=WAVE, lw=1, alpha=0.8)
+            z = ls["zone"]
             for f_, v in z.items():
-                hline(ax3, v, f"A {f_}", ACC, ":")
-            hline(ax3, ls["stop_886"], "стоп 0.886", DN, "--")
-            hline(ax3, ls["a_top"], "вершина A", WAVE, "-")
+                seg(ax3, x5, xa, v, f"{f_}", ACC, ":", 0.9, side="left")
+            xt_ = xi(w3, ls["zone_touch_t"]) if ls.get("zone_touch_t") is not None else n3
+            ax3.add_patch(Rectangle((xa, min(z[0.5], z[0.705])), max(1, xt_ - xa), abs(z[0.5] - z[0.705]), color=ACC, alpha=0.22, lw=0))
+            seg(ax3, xa, n3, ls["stop_886"], "стоп 0.886", DN, "--", 0.9)
+        ax3.set_xlim(-25, n3 + 30)
     else:
         style(ax3, "младший ТФ не загружен")
-    # текст справа
+
+    # текст
     axt = fig.add_subplot(gs[:, 1]); axt.axis("off"); axt.set_facecolor(BG)
     y = 0.99
     axt.text(0, y, f"{rep['sym']} · волновой разбор", color=FG, fontsize=15, fontweight="bold", va="top"); y -= 0.035
     axt.text(0, y, f"{pd.Timestamp(rep['now']):%d.%m.%Y %H:%M} UTC · цена {rep['price']:.6g}", color="#9aa3b2", fontsize=9, va="top"); y -= 0.035
-    import textwrap
     for para in rep["text"]:
         for ln in textwrap.wrap(para, 58):
             axt.text(0, y, ln, color=FG, fontsize=8.8, va="top"); y -= 0.0215
         y -= 0.008
+    best = rep.get("best_since5", rep["price"])
     for sc in rep["scenarios"]:
         y -= 0.01
         axt.text(0, y, sc["name"], color=ACC, fontsize=10.5, fontweight="bold", va="top"); y -= 0.026
         for ln in textwrap.wrap(f"сторона: {sc['side']}. {sc['why']}", 58):
             axt.text(0, y, ln, color=FG, fontsize=8.6, va="top"); y -= 0.0205
-        up_ = rep["structure"]["up"]; best = rep.get("best_since5", rep["price"])
         for nm, v in sc["targets"]:
             took = (best <= v) if up_ else (best >= v)
             d = (v / rep["price"] - 1) * 100
