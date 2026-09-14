@@ -178,7 +178,7 @@ def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WavePa
             "core": core, "core_full": bool(core and (alt_type or alt_form) and count_ok),
             "line_ref_time": idx_h[int(x4)], "line_ref_price": float(y4), "line_slope_h": float(slope_h),
             **{k: float(v) for k, v in fib.items()},
-            "wave_idx": w_idx, "wave_px": w_px, "a": a, "b": b, "t": t,
+            "wave_idx": w_idx, "wave_px": w_px, "wave_times": [idx_h[i] for i in w_idx], "a": a, "b": b, "t": t,
         })
     return out
 

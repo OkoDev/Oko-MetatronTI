@@ -1299,6 +1299,30 @@ def _smc_levels(sym, tf):
     return out
 
 
+async def api_waves(req):
+    """GET /api/waves?syms=BTC,ETH&tf=15m — 🌊 волновая разметка ядра для оверлея монитора.
+    Считается на масштабе ядра: на 1h/4h — по своему ТФ, на младших ТФ накладывается 4h-разметка
+    (точки заданы временем, ложатся на любую сетку). Один сетап на монету (первый по списку)."""
+    syms = [s.strip().upper() for s in (req.query.get("syms") or "").split(",") if s.strip()][:24]
+    tf = req.query.get("tf", "15m")
+    wtf = tf if tf in _WAVE_SCALE else "4h"
+    loop = asyncio.get_running_loop()
+    res = await asyncio.gather(*[loop.run_in_executor(_POOL, _wave_state, s, wtf) for s in syms])
+    out = {}
+    for s, setups in zip(syms, res):
+        if not setups:
+            continue
+        w = setups[0]
+        import pandas as pd
+        pts = [{"t": int(pd.Timestamp(pd_ts).timestamp()), "p": float(px)} for pd_ts, px in zip(w["wave_times"], w["wave_px"])]
+        out[s] = {"side": w["side"], "tf": wtf, "pts": pts, "h": w["hours_from_top"], "imp": w["imp_pct"],
+                  "fr": w["fractal"], "ch": w["depth5"], "alt": w["altern"], "cnt": w["count_ok"], "core": w["core_full"],
+                  "d_wt": w["d_wt"], "p4": w["p4_target"], "p5": w["p5"],
+                  "line": {"t": int(pd.Timestamp(w["line_ref_time"]).timestamp()), "p": w["line_ref_price"], "sh": w["line_slope_h"]},
+                  "fib": {k: w[k] for k in ("corr_382", "corr_500", "corr_618", "w5_618", "w5_eq1", "w5_1618")}}
+    return web.json_response({"waves": out, "tf": wtf, "ts": int(time.time())})
+
+
 async def api_levels(req):
     """GET /api/levels?syms=BTC,ETH&tf=15m — контекст Куба на окно: пивоты W/D (цены из шины) +
     FVG/OB/CHoCH/BOS/EQH-EQL, посчитанные детекторами smc_engine на наших свечах."""
@@ -2789,7 +2813,7 @@ __NAV__
   <span class=grp><b>состав</b><span class="bt on" id=b_live>live-фильтр</span><span class="bt" id=b_pin>закреплено</span><span class="bt" id=b_pos>мои позиции<span id=posn></span></span><span class="bt" id=b_play title="монеты из кокпита: радар 🚀🌱🔨 · OTE 🎯 · DC 🤖 · хайп 🔥">🎯 в игре<span id=playn></span></span><span class="bt" id=b_fav title="избранное: ★ в шапке окна добавляет/убирает монету">★ избранное<span id=favn></span></span></span>
   <span class="grp dd" id=lvgrp><span class="bt" id=b_lv>уровни Куба</span><span class="bt ddt" id=b_lv_dd role=button tabindex=0 aria-label="Выбрать слои" title="какие элементы рисовать">▾</span>
     <div class=ddm id=lvmenu role=group aria-label="Слои уровней Куба"></div></span>
-  <span class=grp><span class="bt" id=b_wt>WT</span><span class="bt" id=b_atr>ATRTrend</span></span>
+  <span class=grp><span class="bt" id=b_wt>WT</span><span class="bt" id=b_atr>ATRTrend</span><span class="bt" id=b_wv title="волновая разметка ядра: 0-1-2-3-4-5, линия 2-4, канал, цель (конец волны 4), стоп, коррекции по фибо. На 1h/4h — своя разметка, на младших ТФ — 4h">Волны</span></span>
   <span class="grp dd" id=algrp><span class="bt" id=b_al>🔔 алерты<span id=aln></span></span><span class="bt ddt" id=b_al_dd role=button tabindex=0 aria-label="Настройка алертов" title="что сигналить">▾</span>
     <div class=ddm id=almenu role=group aria-label="Типы алертов"></div></span>
   <span class=grp><b>поиск</b><input id=q_sym list=symlist placeholder="BTC, SEI…" autocomplete=off
@@ -2802,7 +2826,7 @@ __NAV__
 <div id=grid></div>
 <div id=alog aria-live=polite></div>
 <script>
-var S={syms:[],pinned:null,page:0,grid:9,tf:'15m',live:true,lv:false,wt:false,atr:false,
+var S={syms:[],pinned:null,page:0,grid:9,tf:'15m',live:true,lv:false,wt:false,atr:false,wv:false,
  lim:200,q:null,cells:{},acc:'vst',bal:0,tool:null,src:'filter',pos:{},zoom:null};
 var PIVC={PP:'#ffeb3b',R1:'#ef5350',R2:'#ef5350',R3:'#ef5350',S1:'#26a69a',S2:'#26a69a',S3:'#26a69a'};
 // Слои «уровней Куба» — каждый включается отдельно (Егор 16.08): на графике должно быть только то,
@@ -2849,6 +2873,7 @@ function mkCell(sym){
    '<span class="bt zlv" role=button tabindex=0 aria-label="Уровни Куба" title="уровни Куба вкл/выкл">Куб</span>'+
    '<span class="bt zwt" role=button tabindex=0 aria-label="Панель WT" title="WT вкл/выкл">WT</span>'+
    '<span class="bt zatr" role=button tabindex=0 aria-label="ATRTrend" title="ATRTrend вкл/выкл">ATR</span>'+
+   '<span class="bt zwv" role=button tabindex=0 aria-label="Волны" title="волновая разметка вкл/выкл">🌊</span>'+
    '<span class=zsep></span>'+
    '<span class="bt" data-t=hl role=button tabindex=0 aria-label="Горизонтальный уровень" title="уровень">↔</span>'+
    '<span class="bt" data-t=tl role=button tabindex=0 aria-label="Трендовая линия" title="трендовая">╱</span>'+
@@ -2899,8 +2924,12 @@ function mkCell(sym){
  var zsync=function(){                                              // подсветка слоёв в шапке
   el.querySelector('.zlv').classList.toggle('on',S.lv);
   el.querySelector('.zwt').classList.toggle('on',S.wt);
-  el.querySelector('.zatr').classList.toggle('on',S.atr);};
+  el.querySelector('.zatr').classList.toggle('on',S.atr);
+  var zw=el.querySelector('.zwv');if(zw)zw.classList.toggle('on',S.wv);};
  zsync();
+ var zwv=el.querySelector('.zwv');if(zwv)zwv.onclick=function(){document.getElementById('b_wv').click();
+  Object.keys(S.cells).forEach(function(k){var q=S.cells[k].el.querySelector('.zwv');
+   if(q)q.classList.toggle('on',S.wv);});};
  el.querySelector('.zlv').onclick=function(){document.getElementById('b_lv').click();
   Object.keys(S.cells).forEach(function(k){var q=S.cells[k].el.querySelector('.zlv');
    if(q)q.classList.toggle('on',S.lv);});};
@@ -2948,6 +2977,7 @@ function drawOvNow(c){
  try{GW=W-(c.ch.priceScale('right').width()||0);GH=H-(c.ch.timeScale().height()||0);}catch(e){}
  g.save();g.beginPath();g.rect(0,0,GW,GH);g.clip();
  drawAtr(c,g,GW);
+ drawWv(c,g,GW,GH);
  drawTools(c,g,GW,GH);
  drawTrade(c,g,GW,GH);
  var v=c.lv;if(!S.lv||!v){g.restore();return;}
@@ -3042,6 +3072,49 @@ function drawAtr(c,g,GW){
   }else flush();
   prev={x:x,y:yy};pd=p.d;});
  flush();}
+// 🌊 Волновая разметка ядра (core.waves): полилиния 0-5, коррекции 2 и 4 жирнее, линия 2-4 с продолжением
+// вправо, параллель канала через 3 (цель пятой), цель = конец волны 4, стоп за экстремум пятой, коррекции 0.382/0.5/0.618.
+function drawWv(c,g,GW,GH){
+ var w=c.wv;if(!S.wv||!w||!w.pts||w.pts.length<6)return;
+ var y=function(p){return c.cs.priceToCoordinate(p);},X=function(t){return xFut(c,t);};
+ var P=w.pts.map(function(q){return {x:X(q.t),y:y(q.p)};});
+ if(P.some(function(q){return q.x==null||q.y==null;})){
+  // часть точек левее загруженной истории — рисуем только видимые
+ }
+ var col=w.side=='LONG'?'#8ab4f8':'#f4a4a4',lc='#ff8f00';
+ g.setLineDash([]);g.lineWidth=1.6;g.strokeStyle=col;g.beginPath();var st=false;
+ P.forEach(function(q){if(q.x==null||q.y==null){st=false;return;}if(!st){g.moveTo(q.x,q.y);st=true;}else g.lineTo(q.x,q.y);});
+ g.stroke();
+ [1,3].forEach(function(k){var a=P[k],b=P[k+1];if(a.x==null||b.x==null||a.y==null||b.y==null)return;
+  g.strokeStyle=lc;g.lineWidth=3.2;g.globalAlpha=.5;g.beginPath();g.moveTo(a.x,a.y);g.lineTo(b.x,b.y);g.stroke();g.globalAlpha=1;});
+ g.fillStyle=col;g.font='bold 10px -apple-system,Segoe UI,sans-serif';
+ P.forEach(function(q,i){if(q.x==null||q.y==null)return;g.beginPath();g.arc(q.x,q.y,2.6,0,6.283);g.fill();
+  g.fillText(String(i),q.x-3,q.y+(w.side=='LONG'?(i%2?-6:12):(i%2?12:-6)));});
+ // линия 2-4 и параллель через 3: цена = ref + slope_h × часов от ref_time
+ var L=w.line,tR=w.pts[w.pts.length-1].t+3600*72;                        // продлеваем на 3 суток вправо
+ var lineAt=function(t){return L.p+L.sh*((t-L.t)/3600);};
+ var t2=w.pts[2].t,x2=X(t2),xr=X(tR);if(xr==null)xr=GW;
+ var ya=y(lineAt(t2)),yb=y(lineAt(tR));
+ if(x2!=null&&ya!=null&&yb!=null){g.strokeStyle=lc;g.lineWidth=1.1;g.setLineDash([6,4]);g.beginPath();g.moveTo(x2,ya);g.lineTo(xr,yb);g.stroke();}
+ var t3=w.pts[3].t,p3=w.pts[3].p,x3=X(t3),yc=y(p3),yd=y(p3+L.sh*((tR-t3)/3600));
+ if(x3!=null&&yc!=null&&yd!=null){g.setLineDash([2,4]);g.beginPath();g.moveTo(x3,yc);g.lineTo(xr,yd);g.stroke();}
+ g.setLineDash([]);
+ // горизонтали: цель, стоп, коррекции
+ var hl=function(p,txt,color,dash){var yy=y(p);if(yy==null)return;g.strokeStyle=color;g.lineWidth=1;g.setLineDash(dash||[]);
+  g.beginPath();g.moveTo(0,yy);g.lineTo(GW,yy);g.stroke();g.setLineDash([]);g.fillStyle=color;g.font='9px -apple-system,Segoe UI,sans-serif';g.fillText(txt,GW-4-g.measureText(txt).width,yy-3);};
+ hl(w.p4,'цель: конец волны 4','#f5c542',[5,3]);
+ var stp=w.side=='LONG'?w.p5*(1-0.0015):w.p5*(1+0.0015);hl(stp,'стоп за экстремум 5','#ef5350',[2,3]);
+ if(w.fib){hl(w.fib.corr_382,'0.382','#7e57c2',[3,3]);hl(w.fib.corr_500,'0.5','#7e57c2',[3,3]);hl(w.fib.corr_618,'0.618','#43a047',[3,3]);}
+ // подпись правил у точки 5
+ var q5=P[5];if(q5&&q5.x!=null&&q5.y!=null){var tag=(w.side=='LONG'?'5↓':'5↑')+(w.core?' ЯДРО':'')+' · фрактал'+(w.fr?'✓':'✗')+' канал '+w.ch+' черед'+(w.alt?'✓':'✗')+' счёт'+(w.cnt?'✓':'✗')+' · '+w.tf+' · '+Math.round(w.h)+'ч';
+  g.fillStyle=w.core?'#f5c542':col;g.font='10px -apple-system,Segoe UI,sans-serif';g.fillText(tag,Math.max(4,Math.min(q5.x-40,GW-g.measureText(tag).width-4)),Math.max(12,q5.y+(w.side=='LONG'?26:-18)));}
+}
+async function pullWv(){
+ var need=vis();if(!need.length)return;
+ if(!S.wv){Object.keys(S.cells).forEach(function(s){var c=S.cells[s];c.wv=null;drawOv(c);});return;}
+ try{var r=await fetch('/api/waves?tf='+S.tf+'&syms='+need.join(','),{cache:'no-store'});var d=await r.json();
+  need.forEach(function(s){var c=S.cells[s];if(!c)return;c.wv=(d.waves||{})[s]||null;drawOv(c);});
+ }catch(e){}}
 // Координата времени С ПРОДОЛЖЕНИЕМ ВПРАВО: timeToCoordinate знает только существующие бары,
 // поэтому правее последнего бара считаем по шагу сетки — разметку можно тянуть в будущее (Егор).
 function barStep(c){
@@ -3603,20 +3676,20 @@ async function pullSyms(){
   var fv=FAV.slice().sort();
   if(fv.join()!==S.syms.join()){S.syms=fv;
    if(S.page*S.grid>=S.syms.length)S.page=0;
-   renderGrid();await pullBars();pullPx();pullLv();}
+   renderGrid();await pullBars();pullPx();pullLv();pullWv();}
   return;}
  if(S.src=='play'){
   var pl=await playSyms();
   document.getElementById('playn').textContent=pl.length?(' '+pl.length):'';
   if(pl.join()!==S.syms.join()){S.syms=pl;
    if(S.page*S.grid>=S.syms.length)S.page=0;
-   renderGrid();await pullBars();pullPx();pullLv();}
+   renderGrid();await pullBars();pullPx();pullLv();pullWv();}
   return;}
  if(S.src=='pos'){                       // вкладка «мои позиции»: состав = монеты с позициями
   var next=posSyms();
   if(next.join()!==S.syms.join()){S.syms=next;
    if(S.page*S.grid>=S.syms.length)S.page=0;
-   renderGrid();await pullBars();pullPx();pullLv();}
+   renderGrid();await pullBars();pullPx();pullLv();pullWv();}
   return;}
  if(!S.live){if(S.pinned)S.syms=S.pinned;return;}
  try{var r=await fetch('/api/filter',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -3625,7 +3698,7 @@ async function pullSyms(){
    .sort(function(a,b){return (b.turn||0)-(a.turn||0);}).map(function(x){return x.sym;});
   if(next.join()!==S.syms.join()){S.syms=next;
    if(S.page*S.grid>=S.syms.length)S.page=0;
-   renderGrid();await pullBars();pullPx();pullLv();}
+   renderGrid();await pullBars();pullPx();pullLv();pullWv();}
  }catch(e){}}
 function zoomCell(c){                    // двойной клик по шапке — окно на весь экран (Esc/повтор — назад)
  var bar=document.getElementById('bar');
@@ -3644,7 +3717,7 @@ function zoomCell(c){                    // двойной клик по шап�
   drawOv(c);},60);}
 function setBt(sel,el){document.querySelectorAll(sel).forEach(function(b){b.classList.remove('on');});el.classList.add('on');}
 document.querySelectorAll('[data-g]').forEach(function(b){b.onclick=function(){
- setBt('[data-g]',b);S.grid=+b.dataset.g;S.page=0;renderGrid();pullBars().then(function(){pullPx();pullLv();});};});
+ setBt('[data-g]',b);S.grid=+b.dataset.g;S.page=0;renderGrid();pullBars().then(function(){pullPx();pullLv();pullWv();});};});
 document.querySelectorAll('#bar [data-tf]').forEach(function(b){b.onclick=function(){
  setBt('#bar [data-tf]',b);S.tf=b.dataset.tf;
  Object.keys(S.cells).forEach(function(k){                     // подсветка ТФ в шапках окон
@@ -3653,7 +3726,7 @@ document.querySelectorAll('#bar [data-tf]').forEach(function(b){b.onclick=functi
  Object.keys(S.cells).forEach(function(s){S.cells[s].lim=S.lim;S.cells[s].fit=false;});  // новый ТФ — новое окно
  Object.keys(S.cells).forEach(function(s){S.cells[s].el.querySelector('.sy').href=
   'https://ru.tradingview.com/chart/?symbol=BINGX%3A'+s+'USDT.P&interval='+({'3m':'3','5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'}[S.tf]);});
- pullBars().then(function(){pullPx();pullLv();});};});
+ pullBars().then(function(){pullPx();pullLv();pullWv();});};});
 document.getElementById('b_live').onclick=function(){S.src='filter';S.live=true;S.pinned=null;
  setBt('#b_live,#b_pin,#b_pos,#b_play,#b_fav',this);pullSyms();};
 document.getElementById('b_pin').onclick=function(){S.src='filter';S.live=false;S.pinned=S.syms.slice();
@@ -3726,6 +3799,7 @@ document.getElementById('b_lv').onclick=function(){S.lv=!S.lv;this.classList.tog
   if(!grp.contains(e.target))grp.classList.remove('open');});
 })();
 document.getElementById('b_atr').onclick=function(){S.atr=!S.atr;this.classList.toggle('on',S.atr);pullBars();};
+document.getElementById('b_wv').onclick=function(){S.wv=!S.wv;this.classList.toggle('on',S.wv);pullWv();};
 function setTool(t){                    // при активном инструменте график не таскаем — иначе клик уедет
  S.tool=t;
  document.querySelectorAll('[data-t]').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});
@@ -3743,10 +3817,10 @@ document.addEventListener('keydown',function(e){
 document.getElementById('b_wt').onclick=function(){S.wt=!S.wt;this.classList.toggle('on',S.wt);
  Object.keys(S.cells).forEach(function(s){var c=S.cells[s];c.ro.disconnect();c.ch.remove();
   if(c.wch)c.wch.remove();c.el.remove();delete S.cells[s];});
- renderGrid();pullBars().then(function(){pullPx();pullLv();});};
+ renderGrid();pullBars().then(function(){pullPx();pullLv();pullWv();});};
 function page(d){                   // d=+1/−1, по кругу (пробел листает вперёд)
  var n=Math.max(1,Math.ceil(S.syms.length/S.grid));
- S.page=((S.page+d)%n+n)%n;renderGrid();pullBars().then(function(){pullPx();pullLv();});}
+ S.page=((S.page+d)%n+n)%n;renderGrid();pullBars().then(function(){pullPx();pullLv();pullWv();});}
 document.getElementById('pg_p').onclick=function(){page(-1);};
 document.getElementById('pg_n').onclick=function(){page(1);};
 document.getElementById('b_acc_vst').onclick=function(){S.acc='vst';
@@ -3755,9 +3829,9 @@ document.getElementById('b_acc_live').onclick=function(){
  if(!confirm('Переключить на РЕАЛЬНЫЙ счёт? Ордера пойдут живыми деньгами.'))return;
  S.acc='live';setBt('#b_acc_vst,#b_acc_live',this);this.classList.add('live');acct(true);};
 document.addEventListener('visibilitychange',function(){    // вернулись на вкладку — догнать
- if(!document.hidden){pullBars().then(function(){pullPx();pullLv();});acct();}});
+ if(!document.hidden){pullBars().then(function(){pullPx();pullLv();pullWv();});acct();}});
 favSave();
-(async function(){await pullSyms();renderGrid();await pullBars();pullPx();pullLv();acct();})();
+(async function(){await pullSyms();renderGrid();await pullBars();pullPx();pullLv();pullWv();acct();})();
 setInterval(pullSyms,30000);setInterval(pullBars,20000);setInterval(pullPx,3000);
 setInterval(pullLv,60000);setInterval(acct,60000);
 </script></body></html>"""
@@ -3803,6 +3877,7 @@ def main():
     app.router.add_get("/api/prices", api_prices)
     app.router.add_get("/api/symbols", api_symbols)
     app.router.add_get("/api/levels", api_levels)
+    app.router.add_get("/api/waves", api_waves)
     app.router.add_get("/api/account", api_account)
     app.router.add_get("/api/levinfo", api_levinfo)
     app.router.add_post("/api/trade", api_trade)
