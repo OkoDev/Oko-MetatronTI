@@ -102,12 +102,22 @@ def transition(prev, ls, now, sym):
 def save_and_report(state, a):
     if not a.asof:
         STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    try:                                              # оценки со страницы :8010/waves (reviews.json) → в записи
+        rv = json.loads((DATA / "reviews.json").read_text(encoding="utf-8"))
+        for k, s in state.items():
+            r = rv.get(k) or {}
+            s["egor"] = r.get("egor", s.get("egor", "")); s["egor_note"] = r.get("egor_note", "")
+            s["ai"] = r.get("ai", ""); s["ai_note"] = r.get("ai_note", "")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[reviews] {e}", flush=True)
     df = pd.DataFrame(list(state.values()))
     if len(df):
         if "egor" not in df: df["egor"] = ""
         cols = ["status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok",
                 "d_bull", "d_broke", "d_wt", "core", "core_full", "w5_reached", "corr_reached", "line24_broken", "cross_first", "entry_trigger",
-                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "egor",
+                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "egor", "egor_note", "ai", "ai_note",
                 "w5_618", "w5_eq1", "w5_1618", "w5_chan", "corr_382", "corr_500", "corr_618", "key"]
         df = df.reindex(columns=[c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols])
         if not a.asof:

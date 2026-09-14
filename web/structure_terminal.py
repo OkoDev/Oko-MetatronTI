@@ -830,7 +830,13 @@ def _tf_state(sym, tf):
 
 
 _wvs: dict = {}                     # (sym,tf) → (ts, [сетапы]) — волновая разметка из свечей
-_WVS_TTL = 240.0                     # разметка меняется только на закрытии бара
+_WVS_TTL = 240.0                     # (устар.) — кэш живёт до закрытия следующего бара ТФ, см. _wave_epoch
+
+
+def _wave_epoch(tf):
+    """Разметка меняется только на закрытии бара ТФ → ключ кэша = номер текущего бара. Раньше TTL 240 с
+    гонял mark_impulse по 600 монетам каждые 4 минуты (2 мин CPU из 4 — терминал «тормозил», Егор 14.09)."""
+    return int(time.time() // ({"1h": 60, "4h": 240}.get(tf, 240) * 60))
 _WAVE_SCALE = {"4h": (15, 4), "1h": (60, 15)}   # рабочий масштаб ядра ≈ 60-80 ч: свинг/младший слой по ТФ
 
 
@@ -841,8 +847,8 @@ def _wave_state(sym, tf):
         return []
     key = (sym, tf)
     hit = _wvs.get(key)
-    now = time.time()
-    if hit and now - hit[0] < _WVS_TTL:
+    now = _wave_epoch(tf)
+    if hit and hit[0] == now:
         return hit[1]
     out = []
     try:
@@ -877,8 +883,8 @@ def _wave_diag_state(sym, tf):
     """Монитор: свинги масштаба ядра + причина отказа последней пятёрки (core.waves.wave_diag)."""
     key = (sym, tf)
     hit = _wvd.get(key)
-    now = time.time()
-    if hit and now - hit[0] < _WVS_TTL:
+    now = _wave_epoch(tf)
+    if hit and hit[0] == now:
         return hit[1]
     out = {"zz": [], "why": ""}
     try:
@@ -1900,6 +1906,7 @@ def _nav(active):
              ("/cockpit", "Кокпит", "состояние рынка подробно"),
              ("/filter", "Фильтр", "конструктор условий"),
              ("/monitor", "Монитор", "сетка графиков"),
+             ("/waves", "Волны", "журнал тени ядра волн: скрины и оценка разметки"),
              ("/guide", "Инструкция", "как всем этим пользоваться")]
     out = ['<nav class=nav aria-label="Разделы терминала"><span class=brand>OKO</span>']
     for href, name, hint in items:
@@ -3890,6 +3897,148 @@ async def monitor_page(_req):
                         headers={"Cache-Control": "no-store, must-revalidate"})
 
 
+
+# ─── 🌊 /waves — журнал тени ядра волн: скрины + поля + оценка разметки (Егор 14.09: «колонка egor неудобна;
+# складывать скрины на страницу вебсервера — тогда и сам сможешь самотестирование проводить, и рой») ───
+_WV_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "wave5_shadow")
+_WV_VERDICTS = ["верно", "степень не та", "четвёртая не там", "удлинение", "не импульс", "начало не там"]
+
+
+def _wv_reviews():
+    p = os.path.join(_WV_DIR, "reviews.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _wv_state():
+    p = os.path.join(_WV_DIR, "state.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+async def api_waves_journal(_req):
+    """GET /api/waves/journal — сетапы тени (state.json) + оценки (reviews.json), активные первыми."""
+    st, rv = _wv_state(), _wv_reviews()
+    out = []
+    for k, s in st.items():
+        sym = str(s.get("sym", "")).replace("/", "")
+        try:
+            day = str(s.get("top_time", ""))[:10].replace("-", "")
+        except Exception:
+            day = ""
+        chart = f"{sym}_{day}.png"
+        out.append({**{c: s.get(c) for c in ("sym", "side", "tf", "status", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5",
+                                             "altern", "count_ok", "core", "core_full", "d_bull", "d_broke", "d_wt", "wt_top", "w2_retr", "w4_retr", "w3_ext",
+                                             "entry_trigger", "entered_at", "entry_price", "p4_target", "stop", "last_close", "w5_reached", "corr_reached",
+                                             "line24_broken", "outcome", "pnl_pct", "detected_at", "bos1", "bos3", "ns", "absorbed")},
+                    "key": k, "chart": chart if os.path.exists(os.path.join(_WV_DIR, "charts", chart)) else None,
+                    "review": rv.get(k, {})})
+    order = {"entered": 0, "detected": 1, "closed": 2}
+    out.sort(key=lambda r: (order.get(r["status"], 3), str(r["top_time"])), reverse=False)
+    out.sort(key=lambda r: order.get(r["status"], 3))
+    return web.json_response({"rows": out, "verdicts": _WV_VERDICTS, "ts": int(time.time())})
+
+
+async def api_waves_review(req):
+    """POST /api/waves/review {key, who: egor|ai, verdict, note} → reviews.json (тень подмешивает в CSV)."""
+    try:
+        b = await req.json()
+    except Exception:
+        return web.json_response({"ok": False, "err": "bad json"}, status=400)
+    key, who = str(b.get("key", "")), str(b.get("who", "egor"))
+    if not key or who not in ("egor", "ai"):
+        return web.json_response({"ok": False, "err": "key/who"}, status=400)
+    rv = _wv_reviews(); rec = rv.setdefault(key, {})
+    rec[who] = str(b.get("verdict", ""))[:60]; rec[who + "_note"] = str(b.get("note", ""))[:500]
+    rec[who + "_ts"] = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
+    with open(os.path.join(_WV_DIR, "reviews.json"), "w", encoding="utf-8") as f:
+        json.dump(rv, f, ensure_ascii=False, indent=1)
+    return web.json_response({"ok": True, "review": rec})
+
+
+async def waves_chart(req):
+    name = os.path.basename(req.match_info["name"])
+    p = os.path.join(_WV_DIR, "charts", name)
+    if not name.endswith(".png") or not os.path.exists(p):
+        raise web.HTTPNotFound()
+    return web.FileResponse(p, headers={"Cache-Control": "max-age=300"})
+
+
+_WAVES_HTML = r"""<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>OKO · Волны</title><style>__CSS_BASE__
+body{background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:16px 16px 80px}
+h1{font-size:22px;margin:8px 0 2px}.sub{color:var(--mut);margin:0 0 14px;max-width:80ch}
+.tabs{display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap}.tabs .bt{cursor:pointer}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 16px}
+.card h2{margin:0;font-size:18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.side{font-size:11px;padding:2px 8px;border-radius:4px;letter-spacing:.06em}.side.LONG{background:#2b5fd9;color:#fff}.side.SHORT{background:#c0392b;color:#fff}
+.st{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:1px 7px}
+.meta{color:var(--mut);font-size:12.5px;margin:6px 0 10px}.f{padding:1px 6px;border-radius:3px;font-size:11.5px}.f.ok{background:rgba(38,166,154,.18);color:var(--up)}.f.no{background:rgba(239,83,80,.16);color:var(--dn)}
+.core{color:var(--gold);font-weight:600}
+figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-radius:6px;border:1px solid var(--line);cursor:zoom-in}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px 14px;margin:0 0 10px}.kv span{display:block;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.kv b{font-weight:600;font-variant-numeric:tabular-nums}
+.up{color:var(--up)}.dn{color:var(--dn)}
+.rv{border-top:1px dashed var(--line);padding-top:10px;margin-top:6px}.rv .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}
+.rv .who{width:70px;color:var(--mut);font-size:12px}.rv .bt{cursor:pointer}.rv .bt.on{background:var(--gold);color:#111;border-color:var(--gold)}
+.rv input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:5px;padding:4px 8px;min-width:240px;flex:1}
+.ai{color:var(--mut);font-size:12.5px}.ai b{color:var(--tx)}
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out}.lb img{max-width:98vw;max-height:96vh}
+.empty{color:var(--mut);padding:30px;text-align:center}
+</style></head><body>__NAV__<div class=wrap>
+<h1>🌊 Волны — журнал тени ядра</h1>
+<p class=sub>Каждый сетап, найденный тенью на закрытых барах 4h (BingX, оборот ≥2M): разметка 0-5, правила ядра, вход/цель/стоп, прогноз по фибо.
+Оценка разметки пишется в <code>data/wave5_shadow/reviews.json</code> и попадает в CSV. Строка «ИИ» — самотестирование по методичке; твоя оценка — контроль его оценки.</p>
+<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span></div>
+<div id=list><div class=empty>загрузка…</div></div>
+</div><div class=lb id=lb><img id=lbi alt=""></div>
+<script>
+var V=[],ROWS=[],F='active';
+function fl(k,v){return '<span class="f '+(v?'ok':'no')+'">'+k+(v?'✓':'✗')+'</span>';}
+function pct(a,b,side){if(a==null||b==null||!b)return '';var p=(a/b-1)*100*(side=='LONG'?1:-1);return '<em class="'+(p>=0?'up':'dn')+'">'+(p>=0?'+':'')+p.toFixed(1)+'%</em>';}
+function num(x,d){return x==null?'—':(+x).toPrecision(d||5);}
+function card(r){var rv=r.review||{};
+ var btns=function(who){return V.map(function(v){return '<span class="bt'+(rv[who]==v?' on':'')+'" data-k="'+r.key+'" data-w="'+who+'" data-v="'+v+'">'+v+'</span>';}).join('');};
+ return '<section class=card id="c_'+r.key+'"><h2>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+r.side+'</span><span class=st>'+r.status+(r.outcome?' · '+r.outcome:'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+'</h2>'+
+ '<div class=meta>вершина '+String(r.top_time||'').slice(0,16)+' UTC · '+r.hours_from_top+' ч · импульс '+r.imp_pct+'% · '+fl('фрактал',r.fractal)+' '+fl('канал',r.depth5!=null&&r.depth5>=0.5)+' '+fl('черед',r.altern)+' '+fl('счёт',r.count_ok)+' · канал '+r.depth5+' · w2 '+r.w2_retr+' w4 '+r.w4_retr+' w3/w1 '+r.w3_ext+' · сломы '+r.bos1+'/'+r.bos3+' · 1D '+(r.d_bull?'бычья':'медвежья')+(r.d_broke?', свинг пробит':'')+', WT1D '+r.d_wt+(r.absorbed?' · поглощено свингов '+r.absorbed:'')+'</div>'+
+ (r.chart?'<figure><img src="/waves/chart/'+r.chart+'" alt="'+r.sym+'" loading=lazy></figure>':'<div class=empty>картинки нет (тень без --draw или сетап старше)</div>')+
+ '<div class=grid><div class=kv><span>вход</span><b>'+(r.entry_trigger||'—')+' · '+(r.entered_at||'')+' · '+num(r.entry_price)+'</b></div>'+
+ '<div class=kv><span>последнее закрытие</span><b>'+num(r.last_close)+' '+pct(r.last_close,r.entry_price,r.side)+'</b></div>'+
+ '<div class=kv><span>цель (конец w4)</span><b>'+num(r.p4_target)+' '+pct(r.p4_target,r.entry_price,r.side)+'</b></div>'+
+ '<div class=kv><span>стоп</span><b>'+num(r.stop)+' '+pct(r.stop,r.entry_price,r.side)+'</b></div>'+
+ '<div class=kv><span>цели пятой</span><b>'+(r.w5_reached||'—')+'</b></div><div class=kv><span>коррекция показала</span><b>'+(r.corr_reached||'—')+'</b></div>'+
+ '<div class=kv><span>линия 2-4</span><b>'+(r.line24_broken?'пробита':'нет')+'</b></div>'+(r.pnl_pct!=null?'<div class=kv><span>итог</span><b>'+r.pnl_pct+'%</b></div>':'')+'</div>'+
+ '<div class=rv><div class=row><span class=who>Егор</span>'+btns('egor')+'<input placeholder="заметка (что не так, где должна быть точка)" data-k="'+r.key+'" data-w="egor" value="'+(rv.egor_note||'').replace(/"/g,'&quot;')+'"></div>'+
+ '<div class="row ai"><span class=who>ИИ</span>'+(rv.ai?'<b>'+rv.ai+'</b> · '+(rv.ai_note||'')+' <span class=mut>('+(rv.ai_ts||'')+')</span>':'ещё не смотрел')+'</div></div></section>';}
+function render(){var rows=ROWS.filter(function(r){var rv=r.review||{};
+  if(F=='active')return r.status!='closed';if(F=='closed')return r.status=='closed';if(F=='core')return r.core_full;if(F=='unrated')return !rv.egor;return true;});
+ document.getElementById('cnt').textContent=rows.length+' из '+ROWS.length;
+ document.getElementById('list').innerHTML=rows.length?rows.map(card).join(''):'<div class=empty>пусто</div>';
+ document.querySelectorAll('.rv .bt').forEach(function(b){b.onclick=function(){var k=b.dataset.k,w=b.dataset.w,v=b.classList.contains('on')?'':b.dataset.v;
+  var note=(document.querySelector('.rv input[data-k="'+k+'"]')||{}).value||'';send(k,w,v,note);};});
+ document.querySelectorAll('.rv input').forEach(function(i){i.onchange=function(){var k=i.dataset.k,r=ROWS.find(function(x){return x.key==k;});send(k,'egor',(r.review||{}).egor||'',i.value);};});
+ document.querySelectorAll('figure img').forEach(function(i){i.onclick=function(){document.getElementById('lbi').src=i.src;document.getElementById('lb').style.display='flex';};});}
+async function send(k,w,v,note){try{var r=await fetch('/api/waves/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,who:w,verdict:v,note:note})});
+ var d=await r.json();var row=ROWS.find(function(x){return x.key==k;});if(row&&d.review)row.review=d.review;render();}catch(e){alert('не сохранилось: '+e);}}
+async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'});var d=await r.json();V=d.verdicts;ROWS=d.rows;render();}
+document.querySelectorAll('.tabs .bt').forEach(function(b){b.onclick=function(){document.querySelectorAll('.tabs .bt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');F=b.dataset.f;render();};});
+document.getElementById('lb').onclick=function(){this.style.display='none';};
+load();setInterval(load,120000);
+</script></body></html>"""
+
+
+async def waves_page(_req):
+    """GET /waves — журнал тени ядра волн с оценкой разметки."""
+    return web.Response(text=_page(_WAVES_HTML, "/waves"), content_type="text/html",
+                        headers={"Cache-Control": "no-store, must-revalidate"})
+
+
 async def _breadth_bg(app):
     """Ширину пишем раз в 5 минут САМИ, а не только когда открыта страница: иначе лог за
     сутки — 42 снимка из 288 с дырой в 20 часов, и «уникальных за 24ч» врёт (аудит 11.09)."""
@@ -3925,6 +4074,10 @@ def main():
     app.router.add_get("/api/symbols", api_symbols)
     app.router.add_get("/api/levels", api_levels)
     app.router.add_get("/api/waves", api_waves)
+    app.router.add_get("/waves", waves_page)
+    app.router.add_get("/api/waves/journal", api_waves_journal)
+    app.router.add_post("/api/waves/review", api_waves_review)
+    app.router.add_get("/waves/chart/{name}", waves_chart)
     app.router.add_get("/api/account", api_account)
     app.router.add_get("/api/levinfo", api_levinfo)
     app.router.add_post("/api/trade", api_trade)
