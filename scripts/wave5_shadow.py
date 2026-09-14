@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse, json, sys, time, warnings
+from html import escape as html_escape
 from pathlib import Path
 
 import numpy as np, pandas as pd
@@ -169,7 +170,7 @@ def full_scan(a):
         if i % 50 == 0: print(f"  {i}/{len(syms)}", flush=True)
     if not a.asof:
         mark_market(state, now, R72, len(syms))
-        refresh_analyst(state)
+        tg_notify(state, refresh_analyst(state))
     save_and_report(state, a)
 
 
@@ -220,16 +221,51 @@ def refresh_analyst(state):
     """🌊 Волновой разбор (core.waves.wave_analyst) для каждого активного сетапа раз в 4h: схема для /waves,
     зона пятой в дневной ноге (OTE/глубокая/за пределами) — главный признак по замеру 14.09."""
     from core.waves.wave_analyst import report_for
+    reports = {}
     for k, prev in state.items():
         if prev.get("status") == "closed":
             continue
         try:
             r = report_for(prev["sym"], "3m", ROOT / "data" / "wave_analyst", now=NOW)
             prev.update({"analyst_png": r["png"], "analyst_json": r["json"], "zone_1d": r["zone"], "depth_1d": r["depth"]})
+            reports[k] = r
             print(f"  разбор {prev['sym']}: {r['zone']} ({r['depth']}) → {r['png']}", flush=True)
             write_ai_review(k, prev)
         except Exception as e_:
             print(f"  [разбор] {prev['sym']}: {type(e_).__name__} {e_}", flush=True)
+    return reports
+
+
+def tg_notify(state, reports=None):
+    """📤 Канал Oko_Waves (core.waves.wave_tg, настройки data/wave5_shadow/tg.json): новый сетап — схема разбора;
+    вход и выход — короткий ответ на пост сетапа. Постится только то, что появилось после `since` (без залпа по истории)."""
+    from core.waves.wave_tg import tg_config, publish_report, send_text
+    cfg = tg_config()
+    if not cfg.get("enabled"):
+        return
+    since = cfg.get("since", "")
+    for k, v in state.items():
+        try:
+            name = html_escape(v["sym"].split("/")[0])
+            if cfg.get("post_new", True) and str(v.get("detected_at", "")) >= since and not v.get("tg_new") and reports and k in reports:
+                extra = f"Сетап тени: пятая {'вниз' if v['side'] == 'LONG' else 'вверх'} на 4h, импульс {v.get('imp_pct')}%, цель — конец 4-й {v['p4_target']:.6g}"
+                res = publish_report(reports[k], ROOT / "data" / "wave_analyst", side=v["side"], extra=html_escape(extra))
+                v["tg_new"] = (res.get("result") or {}).get("message_id") or -1
+                print(f"  TG   {v['sym']}: сетап {'ок' if res.get('ok') else res}", flush=True)
+            rid = v["tg_new"] if isinstance(v.get("tg_new"), int) and v["tg_new"] > 0 else None
+            if cfg.get("post_trades", True) and v.get("entered_at") and str(v["entered_at"]) >= since and not v.get("tg_in"):
+                txt = "\n".join([f"▶️ <b>{name}</b> · {v['side']} · вход по {v.get('entry_trigger')} {v['entered_at']} UTC @ {v['entry_price']:.6g}",
+                                 f"цель {v['p4_target']:.6g} · стоп {v['stop']:.6g}"])
+                v["tg_in"] = bool(send_text(txt, reply_to=rid).get("ok"))
+            if (cfg.get("post_trades", True) and v.get("status") == "closed" and v.get("pnl_pct") is not None
+                    and str(v.get("closed_at", "")) >= since and not v.get("tg_out")):
+                icon = {"target": "✅", "stop": "⛔", "time": "⏱"}.get(v.get("outcome"), "•")
+                lines = [f"{icon} <b>{name}</b> · {v['side']} · выход {v.get('outcome')} {v['closed_at']} UTC · {v['pnl_pct']:+.2f}%"]
+                if v.get("pnl_trail") is not None:
+                    lines.append(f"с трейлом: {v.get('outcome_trail')} {v['pnl_trail']:+.2f}%")
+                v["tg_out"] = bool(send_text("\n".join(lines), reply_to=rid).get("ok"))
+        except Exception as e_:
+            print(f"  [TG] {v.get('sym')}: {type(e_).__name__} {e_}", flush=True)
 
 
 def watch(a):
@@ -251,6 +287,7 @@ def watch(a):
             ls = ltf_status(prev, dl, P, after=detect_close(prev), entry_w_h=ENTRY_W_H, hold_h=HOLD_H); transition(prev, ls, now, s)
         except Exception as e_:
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
+    tg_notify(state)
     save_and_report(state, a)
 
 

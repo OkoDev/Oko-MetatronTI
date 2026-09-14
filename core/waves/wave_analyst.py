@@ -122,6 +122,62 @@ def fit_y(ax, w: pd.DataFrame, extra=(), pad: float = 0.06) -> None:
         r = (hi2 - lo2) or abs(hi2) * 0.01
         ax.set_ylim(lo2 - r * pad, hi2 + r * pad)
 
+def time_axis(ax, w: pd.DataFrame, nbins: int = 10) -> None:
+    """Подписи оси X — дата/время бара вместо номера (Егор 15.09). Правее последнего бара (зона прогноза) время
+    продолжается шагом ТФ."""
+    from matplotlib.ticker import FuncFormatter, MaxNLocator
+    idx = w.index
+    if len(idx) < 2:
+        return
+    step = pd.Timedelta(idx.to_series().diff().median())
+    fmt = "%d.%m.%y" if step >= pd.Timedelta(days=1) else "%d.%m %H:%M"
+
+    def lab(x, _):
+        k = int(round(x))
+        t = idx[0] + step * k if k < 0 else (idx[-1] + step * (k - len(idx) + 1) if k >= len(idx) else idx[k])
+        return t.strftime(fmt)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins, integer=True))
+    ax.xaxis.set_major_formatter(FuncFormatter(lab))
+
+
+def draw_micro(ax, w: pd.DataFrame, src: pd.DataFrame, sw_len: int = 50, int_len: int = 5, lbl_len: int = 8,
+               up_col: str = "#26a69a", dn_col: str = "#ef5350", fg: str = "#e6e8ee") -> None:
+    """Микроструктура на младшем ТФ (Егор 15.09: «15м жалко без микроструктуры»): OKO-SM BOS/CHoCH отрезком от свинга
+    до пробоя (internal — тонко, swing — жирно), свинги HH/HL/LH/LL, незакрытые FVG. `w` — хвост `src` (структура
+    считается по всему `src`, чтобы был прогрев)."""
+    from matplotlib.patches import Rectangle
+    off = len(src) - len(w)
+    sr = run_structure(src[["open", "high", "low", "close"]].reset_index(drop=True), swing_len=sw_len, internal_len=int_len)
+    for e in sr.events:
+        if e.i < off or e.level_i is None or e.level_i < 0:
+            continue
+        col = up_col if e.bull else dn_col
+        x0, x1 = max(e.level_i - off, 0), e.i - off
+        ax.hlines(e.level, x0, x1, colors=col, linestyles="-" if not e.internal else "--", lw=1.4 if not e.internal else .7, alpha=.9)
+        ax.annotate(e.kind if e.internal else e.kind + " swing", ((x0 + x1) / 2, e.level), color=col, ha="center",
+                    fontsize=6 if e.internal else 7.5, fontweight="normal" if e.internal else "bold",
+                    xytext=(0, 2 if e.bull else -8), textcoords="offset points")
+    last = {True: None, False: None}
+    for _, si, pr, top in _swings(src.high.reset_index(drop=True), src.low.reset_index(drop=True), lbl_len):
+        prev, last[top] = last[top], pr
+        if si < off or prev is None:
+            continue
+        tag = ("HH" if pr > prev else "LH") if top else ("HL" if pr > prev else "LL")
+        ax.annotate(tag, (si - off, pr), color=fg, alpha=.75, fontsize=6.5, ha="center", xytext=(0, 4 if top else -10), textcoords="offset points")
+    h, l = w.high.values.astype(float), w.low.values.astype(float)
+    rng = float(np.median(h - l)) or 1e-12
+    for k in range(2, len(w)):
+        for bull, lo_, hi_ in ((True, h[k - 2], l[k]), (False, h[k], l[k - 2])):
+            if hi_ - lo_ < .5 * rng:
+                continue
+            fut = slice(k + 1, len(w))
+            filled = (l[fut] <= lo_).any() if bull else (h[fut] >= hi_).any()
+            if not filled:
+                ax.add_patch(Rectangle((k - 1, lo_), len(w) - k + 1, hi_ - lo_, color=up_col if bull else dn_col, alpha=.13, lw=0))
+                ax.annotate("FVG", (len(w) - 1, (lo_ + hi_) / 2), color=up_col if bull else dn_col, fontsize=6, va="center",
+                            xytext=(3, 0), textcoords="offset points")
+
+
 # ─── текстовый блок схемы: под графиками, две колонки, крупный шрифт (Егор 14.09: «текст крупнее и читабельнее») ───
 FIG_W = 16.0
 TXT_FS, TXT_H = 12.0, 14.5
@@ -301,7 +357,9 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         rep["ltf_state"] = ltf_state
 
     # сценарии
-    price = float(dh.close.iloc[-1]); rep["price"] = price
+    # цена — самый свежий закрытый бар (младший ТФ новее 4h: 15.09 REDSTONE в шапке стояло закрытие 4h 0.1396 при 3m 0.1413)
+    fresh = dl is not None and len(dl) and dl.index[-1] > dh.index[-1]
+    price = float(dl.close.iloc[-1]) if fresh else float(dh.close.iloc[-1]); rep["price"] = price
     after = dh[dh.index > st["t5x"]]
     rep["best_since5"] = (float(after.low.min()) if st["up"] else float(after.high.max())) if len(after) else price
     rev = "лонг" if not st["up"] else "шорт"
@@ -426,6 +484,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
                      xytext=(-6, -14 if not up_ else 8), textcoords="offset points", ha="right")
     ax1.set_xlim(-12, len(w) + 8)
     fit_y(ax1, w, (list(leg["levels"].values()) + list(leg["extensions"].values()) + [st["p5x"]]) if leg else [st["p5x"]])
+    time_axis(ax1, w)
 
     # 4h: счёт, коррекции отрезком 0→5, развилка, прогноз стрелками
     ax2 = fig.add_subplot(gs[1]); i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
@@ -455,6 +514,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
         yb, tb = fc["B"]; arrow(ax2, xf1, ym, n4 + int(F * 0.9), yb, DN if not up_ else UP, "--", tb)
     ax2.set_xlim(-12, n4 + F + 34)
     fit_y(ax2, w4, list(rep["corr"].values()) + [price, lo, hi] + [v[0] for v in (fc.get("A"), fc.get("B")) if v])
+    time_axis(ax2, w4)
 
     # младший ТФ: сломы от свинга до пересечения, фибо A отрезком 5→A, зона от A до касания
     ax3 = fig.add_subplot(gs[2]); ls = rep.get("ltf_state") or {}
@@ -465,6 +525,8 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             w3 = w3.resample(pd.Timedelta(w3.index.to_series().diff().median() * step), label="left", closed="left").agg(
                 {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
         candles(ax3, w3); n3 = len(w3) - 1
+        if step == 1:
+            draw_micro(ax3, w3, dl, up_col=UP, dn_col=DN, fg=FG)
         tfm = int((w3.index.to_series().diff().median()).total_seconds() // 60)
         style(ax3, f"{rep['ltf']} (свечи {tfm}m) · от пятой: слом, волна A, зона отката")
         x5 = xi(w3, ls.get("t5", st["t5x"])); ax3.scatter([x5], [st["p5x"]], color=WAVE, s=40, zorder=6)
@@ -485,6 +547,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             seg(ax3, xa, n3, ls["stop_886"], "стоп 0.886", DN, "--", 0.9)
         ax3.set_xlim(-25, n3 + 30)
         fit_y(ax3, w3, [st["p5x"]] + ([ls["a_top"], ls["stop_886"]] + list(ls["zone"].values()) if ls.get("A") else []))
+        time_axis(ax3, w3)
     else:
         style(ax3, "младший ТФ не загружен")
 

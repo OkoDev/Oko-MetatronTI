@@ -320,7 +320,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             ax.annotate(txt, p1, color=col, fontsize=7.5, fontweight="bold", xytext=off, textcoords="offset points", va="center",
                         bbox=dict(boxstyle="round,pad=0.2", fc=BG, ec="none", alpha=.85))
 
-    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W, fit_y
+    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W, fit_y, time_axis, draw_micro
     cnt = rep.get("progress"); leg = rep.get("leg")
     TL, TR = build_text_columns(rep, f"{rep['sym']} · волновой разбор · ход в процессе")
     th = text_height_in(TL, TR); CH_H = 12.0; H = CH_H + th + 0.6
@@ -335,6 +335,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             seg(ax1, xo, xe, v, kf, ACC if kf in ("0.618", "0.705", "0.786", "0.79") else VIO, ":", .8, side="left")
     ax1.set_xlim(-12, len(w) + 8)
     fit_y(ax1, w, list(leg["levels"].values()) if leg else [])
+    time_axis(ax1, w)
     ax2 = fig.add_subplot(gs[1])
     if cnt:
         i0 = max(0, cnt["idx"][0] - 30); w1 = d1.iloc[i0:]; candles(ax2, w1); n = len(w1) - 1; F = max(40, int(.25 * len(w1)))
@@ -363,14 +364,15 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             if len(sc) > 1 and sc[1]["targets"]:
                 arrow(ax2, (n, rep["price"]), (n + F * .3, sc[1]["targets"][0][1]), UP if cnt["down"] else DN, "--", "B", (4, 0))
         ax2.set_xlim(-5, n + F + 40)
+        time_axis(ax2, w1)
     else:
         style(ax2, "1h · счёт не складывается")
     ax3 = fig.add_subplot(gs[2]); tri = rep.get("triangle")
     src = dl3 if (tri and tri.get("tf") == "3m" and dl3 is not None) else dl15
     if src is not None and len(src):
         w3 = src[src.index >= tri["points"][0][0] - (src.index[-1] - src.index[-2]) * 40].iloc[-400:] if tri else src.iloc[-200:]
-        candles(ax3, w3)
-        style(ax3, f"{tri['tf'] + ' (свинг ' + str(tri['sw']) + ') · ' + tri['kind'] + ' треугольник a-b-c-d-e, цена ' + tri['breakout'] if tri else '15m · треугольника нет'}")
+        candles(ax3, w3); draw_micro(ax3, w3, src, up_col=UP, dn_col=DN, fg=FG)
+        style(ax3, f"{tri['tf'] + ' (свинг ' + str(tri['sw']) + ') · ' + tri['kind'] + ' треугольник a-b-c-d-e, цена ' + tri['breakout'] if tri else '15m · треугольника нет'} · микроструктура OKO-SM: BOS/CHoCH, HH/HL/LH/LL, незакрытые FVG")
         if tri:
             for (ta, ya), (tb, yb) in (tri["upper"], tri["lower"]):
                 xa, xb = xi(w3, ta), xi(w3, tb); slope = (yb - ya) / max(1, xb - xa); xe_ = len(w3) - 1
@@ -378,6 +380,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             for i, (tt, pp, top) in enumerate(tri["points"]):
                 x_ = xi(w3, tt); ax3.scatter([x_], [pp], color=WAVE, s=24, zorder=6)
                 ax3.annotate("abcde"[i], (x_, pp), color=WAVE, fontsize=9, xytext=(-3, 7 if top else -13), textcoords="offset points")
+        ax3.set_xlim(-3, len(w3) + 12); time_axis(ax3, w3)
     draw_text_columns(fig, TL, TR, 0.2, th)
     fig.savefig(out, dpi=115, facecolor=BG); plt.close(fig)
     return out
