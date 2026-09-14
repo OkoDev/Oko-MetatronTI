@@ -77,9 +77,39 @@ def diagonal_on_bar(swings, t, high, low) -> Optional[Dict[str, Any]]:
             "wave_idx": idx + [p5i], "wave_px": px + [p5], "lens": (l1, l3, l5)}
 
 
+def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: int = 10) -> Optional[Dict[str, Any]]:
+    """Дневная нога, которую корректирует 4h-ход: для хода вверх (want_top=True) — нога вниз от дневного свинг-хая, и наоборот.
+    Начало — последний подтверждённый к `now` дневной свинг до начала хода t0, лежащий ЗА экстремумом хода p5; если такого нет —
+    последний свинг (глубина > 1). Уровни фибо ноги, расширения, глубина и зона экстремума хода."""
+    dd = to_daily(dh)
+    dsw = _swings(dd["high"], dd["low"], d_sw)
+    cand = [s_ for s_ in dsw if bool(s_[3]) == want_top and dd.index[int(s_[1])] < t0 and dd.index[int(s_[0])] + pd.Timedelta(days=1) <= now]
+    beyond = [s_ for s_ in cand if (float(s_[2]) > p5 if want_top else float(s_[2]) < p5)]
+    pick = beyond[-1] if beyond else (cand[-1] if cand else None)
+    if pick is None:
+        return None
+    o_i = int(pick[1]); origin = float(pick[2])
+    seg = dd.iloc[o_i:]; seg = seg[seg.index <= t5x]
+    if seg.empty:
+        return None
+    ext = float(seg.low.min()) if want_top else float(seg.high.max())       # противоположный конец ноги
+    ext_t = seg.low.idxmin() if want_top else seg.high.idxmax()
+    span = abs(origin - ext)
+    if span <= 0:
+        return None
+    depth = abs(p5 - ext) / span; sg = np.sign(origin - ext)
+    lvl = {f"{r}": ext + sg * r * span for r in FIB_RET}
+    xt = {f"-{r}": ext - sg * r * span for r in FIB_EXT if ext - sg * r * span > 0}
+    zone = ("OTE 0.62–0.79" if 0.62 <= depth <= 0.79 else "глубокая 0.79–1.0" if 0.79 < depth <= 1.0 else
+            "за пределами ноги (>1)" if depth > 1 else "мелкая 0.5–0.62" if depth >= 0.5 else "мелкая (<0.5)")
+    return {"origin": origin, "origin_t": dd.index[o_i], "ext": ext, "ext_t": ext_t, "depth": depth, "zone": zone, "levels": lvl,
+            "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
+
+
 # ─── разбор ─────────────────────────────────────────────────────────────────────────────────────
 def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: str = "15m",
-            now: Optional[pd.Timestamp] = None, p: AnalystParams = AnalystParams()) -> Dict[str, Any]:
+            now: Optional[pd.Timestamp] = None, p: AnalystParams = AnalystParams(),
+            d1: Optional[pd.DataFrame] = None, dl15: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     now = now or pd.Timestamp.utcnow()
     rep: Dict[str, Any] = {"sym": sym, "now": str(now), "ltf": ltf, "structure": None, "leg": None, "ltf_state": None,
                            "scenarios": [], "text": []}
@@ -100,6 +130,11 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
             if dg:
                 st = dg; break
     if st is None:
+        if d1 is not None and len(d1) > 400:
+            # 🌊 режим «ход в процессе» (Егор 14.09, BCH): счёт незавершённого хода, зона завершения, сценарии
+            from core.waves.wave_progress import analyze_progress
+            leg_fn = lambda t0_, want_top_, p_ext, t_ext: daily_leg(dh, t0_, want_top_, p_ext, t_ext, now, p.d_sw)
+            return analyze_progress(sym, dh, d1, dl15, now, leg_fn, rep, dl3=dl)
         rep["text"].append("На 4h (масштаб ядра) нет завершённой пятёрки или конечной диагонали за последние 15 суток — "
                            "разворотного сценария нет, аналитик молчит.")
         return rep
@@ -133,29 +168,8 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
     # 1D: дневная нога, против которой шёл 4h-ход (для хода вверх — нога вниз от свинг-хая, и наоборот).
     # Начало ноги — последний дневной свинг ЗА экстремумом пятой (пятая его не прошла). Масштаб свинга неоднозначен
     # (SOLV 14.09: свинг 10 дней берёт апрельский шпиль 0.00937, Егор — майский хай 0.00634) → считаем две ноги.
-    dd = to_daily(dh); t0 = st["times"][0]; want_top = st["up"]
-
-    def _leg(d_sw):
-        dsw = _swings(dd["high"], dd["low"], d_sw)
-        cand = [s_ for s_ in dsw if bool(s_[3]) == want_top and dd.index[int(s_[1])] < t0 and dd.index[int(s_[0])] + pd.Timedelta(days=1) <= now]
-        beyond = [s_ for s_ in cand if (float(s_[2]) > p5 if want_top else float(s_[2]) < p5)]
-        pick = beyond[-1] if beyond else (cand[-1] if cand else None)
-        if pick is None:
-            return None
-        o_i = int(pick[1]); origin = float(pick[2])
-        seg = dd.iloc[o_i:]; seg = seg[seg.index <= st["t5x"]]
-        ext = float(seg.low.min()) if want_top else float(seg.high.max())       # противоположный конец ноги
-        ext_t = seg.low.idxmin() if want_top else seg.high.idxmax()
-        span = abs(origin - ext)
-        if span <= 0:
-            return None
-        depth = abs(p5 - ext) / span; sg = np.sign(origin - ext)
-        lvl = {f"{r}": ext + sg * r * span for r in FIB_RET}
-        xt = {f"-{r}": ext - sg * r * span for r in FIB_EXT if ext - sg * r * span > 0}
-        zone = ("OTE 0.62–0.79" if 0.62 <= depth <= 0.79 else "глубокая 0.79–1.0" if 0.79 < depth <= 1.0 else
-                "за пределами ноги (>1)" if depth > 1 else "мелкая 0.5–0.62" if depth >= 0.5 else "мелкая (<0.5)")
-        return {"origin": origin, "origin_t": dd.index[o_i], "ext": ext, "ext_t": ext_t, "depth": depth, "zone": zone, "levels": lvl,
-                "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
+    t0 = st["times"][0]; want_top = st["up"]
+    _leg = lambda d_sw: daily_leg(dh, t0, want_top, p5, st["t5x"], now, d_sw)
 
     leg = _leg(p.d_sw); alt = _leg(5)
     if leg and alt and abs(alt["origin"] - leg["origin"]) / leg["origin"] < 0.01:
@@ -423,17 +437,21 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
     base = sym.split("/")[0].split(":")[0].upper()
     dh = fetch_closed(base, "4h", 1500, now=now)
     dl = fetch_closed(base, ltf, {"1m": 12000, "3m": 5000, "5m": 3000, "15m": 1500}.get(ltf, 1500), now=now)
-    rep = analyze(base, dh, dl, ltf, now=now)
+    d1 = fetch_closed(base, "1h", 1500, now=now); dl15 = fetch_closed(base, "15m", 600, now=now)
+    rep = analyze(base, dh, dl, ltf, now=now, d1=d1, dl15=dl15)
     stem = f"{base}_{now:%Y%m%d_%H%M}"
     png = None
     if rep["structure"] is not None:
         render(rep, dh, dl, out_dir / f"{stem}.png"); png = f"{stem}.png"
+    elif rep.get("mode") == "progress" and rep.get("progress"):
+        from core.waves.wave_progress import render_progress
+        render_progress(rep, dh, d1, dl15, out_dir / f"{stem}.png", dl3=dl); png = f"{stem}.png"
     clean = {k: v for k, v in rep.items() if k != "structure"}
     if rep["structure"] is not None:
         st = rep["structure"]
         clean["structure"] = {"kind": st["kind"], "form": st["form"], "up": st["up"], "p0": st["wave_px"][0], "p5": st["p5x"], "t5": str(st["t5x"])}
     (out_dir / f"{stem}.json").write_text(_json.dumps(clean, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     leg = rep.get("leg") or {}
-    return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "zone": leg.get("zone"),
+    return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "mode": rep.get("mode", "reversal"), "zone": leg.get("zone"),
             "depth": round(leg["depth"], 3) if leg else None, "text": rep["text"], "price": rep.get("price"),
             "scenarios": [{"name": sc["name"], "targets": [(n, float(v)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}
