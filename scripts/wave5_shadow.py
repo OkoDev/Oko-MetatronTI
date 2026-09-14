@@ -269,6 +269,8 @@ def tg_notify(state, reports=None):
                     if chain(v, res):
                         v["tg_sig"] = r.get("state")
                     print(f"  TG   {v['sym']}: обновление ({'; '.join(changes)}) {'ок' if res.get('ok') else res}", flush=True)
+            if not v.get("tg_last"):                  # без поста сетапа вход/выход не публикуем — цепочке не к чему крепиться
+                continue
             if cfg.get("post_trades", True) and v.get("entered_at") and str(v["entered_at"]) >= since and not v.get("tg_in"):
                 txt = "\n".join([f"▶️ <b>{name}</b> · {v['side']} · вход по {v.get('entry_trigger')} {v['entered_at']} UTC @ {v['entry_price']:.6g}",
                                  f"цель {v['p4_target']:.6g} · стоп {v['stop']:.6g}"])
