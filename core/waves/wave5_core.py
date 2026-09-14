@@ -41,14 +41,61 @@ class WaveParams:
     max_imp: float = 100.0
     ctx_sw: int = 10        # дневные свинги (дней) для контекста степени
     buf: float = 0.0015     # буфер стопа за экстремум пятой
+    merge: bool = False     # поглощение подструктуры свингов (collapse_swings) — см. impulses_on_bar
 
 
-def impulses_on_bar(swings, t, high, low):
-    """Кандидаты 5-волновых импульсов на баре t: 5 подтверждённых свингов + provisional точка 5."""
+def _fix_same_kind(pool):
+    """Два соседних свинга одного типа (top,top / low,low) → остаётся более крайний."""
+    pool = list(pool); i = 0
+    while i < len(pool) - 1:
+        a, b = pool[i], pool[i + 1]
+        if a[3] == b[3]:
+            pool[i:i + 2] = [b if ((b[2] >= a[2]) if a[3] else (b[2] <= a[2])) else a]
+        else:
+            i += 1
+    return pool
+
+
+def _inner_pairs(pool, tail):
+    """Пары соседних свингов (i, i+1), целиком лежащие в диапазоне своих соседей (i-1, i+2) — волна
+    младшей степени внутри старшей. Только в хвосте (i ≥ len-tail): поглощение раньше не меняет последние 5.
+    Возвращает [(размах пары, i)] — самая мелкая пара первая."""
+    out = []
+    for i in range(max(1, len(pool) - tail), len(pool) - 2):
+        a, b, c, d = pool[i - 1], pool[i], pool[i + 1], pool[i + 2]
+        lo, hi = min(a[2], d[2]), max(a[2], d[2])
+        if lo <= b[2] <= hi and lo <= c[2] <= hi:
+            out.append((abs(b[2] - c[2]), i))
+    return sorted(out)
+
+
+def impulses_on_bar(swings, t, high, low, merge=False, pool_n=16, max_absorb=6):
+    """Кандидаты 5-волновых импульсов на баре t: 5 подтверждённых свингов + provisional точка 5.
+    merge=True (Егор 14.09, LINK 4h: «пятёрку не видит из-за сложной w4»): если последние 5 свингов
+    «как есть» не импульс — поглощать подструктуру ПО ОДНОЙ паре (самая мелкая в хвосте первой) и после
+    каждого шага проверять счёт заново; стоп на первом валидном. Минимальность важна: 1-2 тоже лежат
+    внутри 0→3, жадное поглощение съедает их. Счёт без поглощений в приоритете — старые сетапы не меняются."""
     conf = [s for s in swings if s[0] <= t]
     if len(conf) < 5:
         return []
-    last5 = conf[-5:]
+    out = _five(conf[-5:], t, high, low)
+    if out or not merge:
+        return out
+    pool = _fix_same_kind(conf[-pool_n:]); gone = 0
+    while len(pool) >= 5 and gone < max_absorb:
+        pairs = _inner_pairs(pool, tail=6)
+        if not pairs:
+            return []
+        i = pairs[0][1]; del pool[i:i + 2]; gone += 2
+        out = _five(pool[-5:], t, high, low)
+        if out:
+            for o in out:
+                o["absorbed"] = gone
+            return out
+    return []
+
+
+def _five(last5, t, high, low):
     kinds = [s[3] for s in last5]
     if any(kinds[i] == kinds[i + 1] for i in range(4)):
         return []
@@ -107,9 +154,11 @@ def depth5_of(w_idx, w_px, up):
 
 
 def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WaveParams = WaveParams(),
-                 tf: str = "4h") -> List[Dict[str, Any]]:
+                 tf: str = "4h", lookback: int = 0) -> List[Dict[str, Any]]:
     """Разметка на последнем закрытом баре HTF. dh: OHLCV с DatetimeIndex (UTC), только ЗАКРЫТЫЕ бары.
-    Возвращает список сетапов (обычно 0-1) со всеми полями ядра, без LTF-статуса (см. ltf_status)."""
+    Возвращает список сетапов (обычно 0-1) со всеми полями ядра, без LTF-статуса (см. ltf_status).
+    lookback>0 (монитор): если на последнем баре сетапа нет — искать на предыдущих барах до lookback назад
+    и вернуть самый свежий (каузально: на баре tt видны только свинги/события, подтверждённые к tt)."""
     now = now or pd.Timestamp.utcnow()
     if len(dh) < 6 * p.sw + 50:
         return []
@@ -128,7 +177,16 @@ def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WavePa
     d_wt = calculate_wt(dd.copy())["wt1"].values.astype(float) if len(dd) > 30 else np.array([np.nan])
     tfm = TF_MIN[tf]
     out = []
-    for imp in impulses_on_bar(swings, t, hh, lh):
+    for tt in range(t, max(t - lookback, 0) - 1, -1):
+        out = _setups_at(tt, dh, idx_h, hh, lh, st, swings, swings_i, wt1_h, d_ev, d_sw, d_wt, tfm, now, p, tf)
+        if out:
+            break
+    return out
+
+
+def _setups_at(t, dh, idx_h, hh, lh, st, swings, swings_i, wt1_h, d_ev, d_sw, d_wt, tfm, now, p, tf):
+    out = []
+    for imp in impulses_on_bar(swings, t, hh, lh, merge=p.merge):
         w = imp["waves"]; w_idx = [int(x[0]) for x in w]; w_px = [float(x[1]) for x in w]
         a, b = w_idx[0], w_idx[5]; p0, p4, p5 = w_px[0], w_px[4], w_px[5]; up = imp["direction"] == "up"
         rng = abs(p5 - p0); imp_pct = rng / p0 * 100 if p0 > 0 else 0
@@ -179,6 +237,7 @@ def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WavePa
             "line_ref_time": idx_h[int(x4)], "line_ref_price": float(y4), "line_slope_h": float(slope_h),
             **{k: float(v) for k, v in fib.items()},
             "wave_idx": w_idx, "wave_px": w_px, "wave_times": [idx_h[i] for i in w_idx], "a": a, "b": b, "t": t,
+            "absorbed": int(imp.get("absorbed", 0)),
         })
     return out
 

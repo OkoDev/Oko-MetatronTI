@@ -34,18 +34,35 @@ P = WaveParams()
 NOW = pd.Timestamp.utcnow()
 
 
+_KL_URL = "https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol={s}-USDT&interval={tf}&limit={n}"   # как у терминала :8010
+
+
 def fetch(ex, sym, tf, n):
-    ms = TF_MIN[tf] * 60_000; out = []; end_ms = int(NOW.timestamp() * 1000); since = end_ms - n * ms
+    """Закрытые бары BingX swap через v3 klines с пагинацией по endTime.
+    🔴 14.09: ccxt fetch_ohlcv для мелких монет отдавал битые 4h (SOLV — 180 уникальных закрытий на 1000 баров,
+    один и тот же бар с мая по сентябрь; RECALL — 817), v3 терминала — чистый. `ex` оставлен для совместимости."""
+    import json as _json, time as _time, urllib.request as _ur
+    base = sym.split("/")[0]; out = []; end = None
     while len(out) < n:
-        o = ex.fetch_ohlcv(sym, tf, since=since, limit=1000)
-        if not o:
+        url = _KL_URL.format(s=base, tf=tf, n=min(1000, n - len(out) + 1)) + (f"&endTime={end}" if end else "")
+        d = None
+        for i in range(3):
+            try:
+                d = _json.loads(_ur.urlopen(_ur.Request(url, headers={"User-Agent": "oko"}), timeout=20).read()); break
+            except Exception:
+                _time.sleep(2 + 2 * i)
+        raw = (d or {}).get("data") or []
+        if not raw:
             break
-        out += o; since = o[-1][0] + ms
-        if len(o) < 1000 or since >= end_ms:
+        chunk = [[int(b["time"]), float(b["open"]), float(b["high"]), float(b["low"]), float(b["close"]), float(b["volume"])] for b in raw]
+        out = chunk + out if end else chunk
+        oldest = min(r[0] for r in chunk)
+        if len(raw) < 2 or (end is not None and oldest >= end):
             break
-    df = pd.DataFrame(out, columns=["time", "open", "high", "low", "close", "volume"]).drop_duplicates("time")
+        end = oldest - 1
+    df = pd.DataFrame(out, columns=["time", "open", "high", "low", "close", "volume"]).drop_duplicates("time").sort_values("time")
     df["ts"] = pd.to_datetime(df.time, unit="ms", utc=True); df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
-    return df[df.index + pd.Timedelta(minutes=TF_MIN[tf]) <= NOW]          # только закрытые бары
+    return df[df.index + pd.Timedelta(minutes=TF_MIN[tf]) <= NOW].iloc[-n:]          # только закрытые бары
 
 
 def _cache(sym, tf):
