@@ -411,3 +411,29 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             axt.text(0.03, y, ln, color=DN, fontsize=8.6, va="top"); y -= 0.0195
     fig.savefig(out, dpi=105, facecolor=BG, bbox_inches="tight"); plt.close(fig)
     return out
+
+
+def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: Optional[pd.Timestamp] = None) -> Dict[str, Any]:
+    """Разбор под ключ: свечи BingX v3 → analyze → схема + json + md в out_dir (по умолчанию data/wave_analyst).
+    Возвращает сводку: png/json имена, есть ли структура, зона пятой, сценарии, текст."""
+    import json as _json
+    from core.waves.bingx_klines import fetch_closed
+    now = now or pd.Timestamp.utcnow()
+    out_dir = Path(out_dir or Path(__file__).resolve().parents[2] / "data" / "wave_analyst"); out_dir.mkdir(parents=True, exist_ok=True)
+    base = sym.split("/")[0].split(":")[0].upper()
+    dh = fetch_closed(base, "4h", 1500, now=now)
+    dl = fetch_closed(base, ltf, {"1m": 12000, "3m": 5000, "5m": 3000, "15m": 1500}.get(ltf, 1500), now=now)
+    rep = analyze(base, dh, dl, ltf, now=now)
+    stem = f"{base}_{now:%Y%m%d_%H%M}"
+    png = None
+    if rep["structure"] is not None:
+        render(rep, dh, dl, out_dir / f"{stem}.png"); png = f"{stem}.png"
+    clean = {k: v for k, v in rep.items() if k != "structure"}
+    if rep["structure"] is not None:
+        st = rep["structure"]
+        clean["structure"] = {"kind": st["kind"], "form": st["form"], "up": st["up"], "p0": st["wave_px"][0], "p5": st["p5x"], "t5": str(st["t5x"])}
+    (out_dir / f"{stem}.json").write_text(_json.dumps(clean, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    leg = rep.get("leg") or {}
+    return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "zone": leg.get("zone"),
+            "depth": round(leg["depth"], 3) if leg else None, "text": rep["text"], "price": rep.get("price"),
+            "scenarios": [{"name": sc["name"], "targets": [(n, float(v)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}

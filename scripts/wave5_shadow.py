@@ -26,6 +26,7 @@ import ccxt
 from core.waves import mark_impulse, ltf_status, WaveParams
 from core.waves.wave5_core import TF_MIN
 from core.waves.wave5_chart import draw_setup
+from core.waves.bingx_klines import fetch_closed
 
 DATA = ROOT / "data" / "wave5_shadow"; DATA.mkdir(parents=True, exist_ok=True)
 STATE, CSV, CH = DATA / "state.json", DATA / "shadow_signals.csv", DATA / "charts"
@@ -34,35 +35,9 @@ P = WaveParams()
 NOW = pd.Timestamp.utcnow()
 
 
-_KL_URL = "https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol={s}-USDT&interval={tf}&limit={n}"   # как у терминала :8010
-
-
 def fetch(ex, sym, tf, n):
-    """Закрытые бары BingX swap через v3 klines с пагинацией по endTime.
-    🔴 14.09: ccxt fetch_ohlcv для мелких монет отдавал битые 4h (SOLV — 180 уникальных закрытий на 1000 баров,
-    один и тот же бар с мая по сентябрь; RECALL — 817), v3 терминала — чистый. `ex` оставлен для совместимости."""
-    import json as _json, time as _time, urllib.request as _ur
-    base = sym.split("/")[0]; out = []; end = None
-    while len(out) < n:
-        url = _KL_URL.format(s=base, tf=tf, n=min(1000, n - len(out) + 1)) + (f"&endTime={end}" if end else "")
-        d = None
-        for i in range(3):
-            try:
-                d = _json.loads(_ur.urlopen(_ur.Request(url, headers={"User-Agent": "oko"}), timeout=20).read()); break
-            except Exception:
-                _time.sleep(2 + 2 * i)
-        raw = (d or {}).get("data") or []
-        if not raw:
-            break
-        chunk = [[int(b["time"]), float(b["open"]), float(b["high"]), float(b["low"]), float(b["close"]), float(b["volume"])] for b in raw]
-        out = chunk + out if end else chunk
-        oldest = min(r[0] for r in chunk)
-        if len(raw) < 2 or (end is not None and oldest >= end):
-            break
-        end = oldest - 1
-    df = pd.DataFrame(out, columns=["time", "open", "high", "low", "close", "volume"]).drop_duplicates("time").sort_values("time")
-    df["ts"] = pd.to_datetime(df.time, unit="ms", utc=True); df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
-    return df[df.index + pd.Timedelta(minutes=TF_MIN[tf]) <= NOW].iloc[-n:]          # только закрытые бары
+    """Закрытые бары BingX v3 (core.waves.bingx_klines — ccxt отдавал битые 4h мелких монет, 14.09). `ex` — для совместимости."""
+    return fetch_closed(sym, tf, n, now=NOW)
 
 
 def _cache(sym, tf):
@@ -134,7 +109,7 @@ def save_and_report(state, a):
         if "egor" not in df: df["egor"] = ""
         cols = ["status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok",
                 "d_bull", "d_broke", "d_wt", "core", "core_full", "w5_reached", "corr_reached", "line24_broken", "cross_first", "entry_trigger",
-                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "egor", "egor_note", "ai", "ai_note",
+                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "zone_1d", "depth_1d", "egor", "egor_note", "ai", "ai_note",
                 "w5_618", "w5_eq1", "w5_1618", "w5_chan", "corr_382", "corr_500", "corr_618", "key"]
         df = df.reindex(columns=[c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols])
         if not a.asof:
@@ -183,7 +158,24 @@ def full_scan(a):
         except Exception as e_:
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
         if i % 50 == 0: print(f"  {i}/{len(syms)}", flush=True)
+    if not a.asof:
+        refresh_analyst(state)
     save_and_report(state, a)
+
+
+def refresh_analyst(state):
+    """🌊 Волновой разбор (core.waves.wave_analyst) для каждого активного сетапа раз в 4h: схема для /waves,
+    зона пятой в дневной ноге (OTE/глубокая/за пределами) — главный признак по замеру 14.09."""
+    from core.waves.wave_analyst import report_for
+    for k, prev in state.items():
+        if prev.get("status") == "closed":
+            continue
+        try:
+            r = report_for(prev["sym"], "3m", ROOT / "data" / "wave_analyst", now=NOW)
+            prev.update({"analyst_png": r["png"], "analyst_json": r["json"], "zone_1d": r["zone"], "depth_1d": r["depth"]})
+            print(f"  разбор {prev['sym']}: {r['zone']} ({r['depth']}) → {r['png']}", flush=True)
+        except Exception as e_:
+            print(f"  [разбор] {prev['sym']}: {type(e_).__name__} {e_}", flush=True)
 
 
 def watch(a):

@@ -3936,7 +3936,8 @@ async def api_waves_journal(_req):
         out.append({**{c: s.get(c) for c in ("sym", "side", "tf", "status", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5",
                                              "altern", "count_ok", "core", "core_full", "d_bull", "d_broke", "d_wt", "wt_top", "w2_retr", "w4_retr", "w3_ext",
                                              "entry_trigger", "entered_at", "entry_price", "p4_target", "stop", "last_close", "w5_reached", "corr_reached",
-                                             "line24_broken", "outcome", "pnl_pct", "detected_at", "bos1", "bos3", "ns", "absorbed")},
+                                             "line24_broken", "outcome", "pnl_pct", "detected_at", "bos1", "bos3", "ns", "absorbed",
+                                             "analyst_png", "zone_1d", "depth_1d")},
                     "key": k, "chart": chart if os.path.exists(os.path.join(_WV_DIR, "charts", chart)) else None,
                     "review": rv.get(k, {})})
     order = {"entered": 0, "detected": 1, "closed": 2}
@@ -3991,10 +3992,14 @@ figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-r
 .ai{color:var(--mut);font-size:12.5px}.ai b{color:var(--tx)}
 .lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:9;cursor:zoom-out}.lb img{max-width:98vw;max-height:96vh}
 .empty{color:var(--mut);padding:30px;text-align:center}
+.ask{display:flex;gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap}.ask input{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 10px;width:220px}
+.ask .bt{cursor:pointer}.mut{color:var(--mut);font-size:12.5px}.zone{font-size:11.5px;padding:1px 7px;border-radius:4px;border:1px solid var(--gold);color:var(--gold)}
 </style></head><body>__NAV__<div class=wrap>
 <h1>🌊 Волны — журнал тени ядра</h1>
 <p class=sub>Каждый сетап, найденный тенью на закрытых барах 4h (BingX, оборот ≥2M): разметка 0-5, правила ядра, вход/цель/стоп, прогноз по фибо.
 Оценка разметки пишется в <code>data/wave5_shadow/reviews.json</code> и попадает в CSV. Строка «ИИ» — самотестирование по методичке; твоя оценка — контроль его оценки.</p>
+<div class=ask><input id=asym placeholder="тикер, например SOLV" maxlength=20><span class="bt" id=abtn>🌊 разобрать монету</span><span id=astat class=mut></span></div>
+<div id=ares></div>
 <div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span></div>
 <div id=list><div class=empty>загрузка…</div></div>
 </div><div class=lb id=lb><img id=lbi alt=""></div>
@@ -4006,8 +4011,10 @@ function num(x,d){return x==null?'—':(+x).toPrecision(d||5);}
 function card(r){var rv=r.review||{};
  var btns=function(who){return V.map(function(v){return '<span class="bt'+(rv[who]==v?' on':'')+'" data-k="'+r.key+'" data-w="'+who+'" data-v="'+v+'">'+v+'</span>';}).join('');};
  return '<section class=card id="c_'+r.key+'"><h2>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+r.side+'</span><span class=st>'+r.status+(r.outcome?' · '+r.outcome:'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+'</h2>'+
+ (r.zone_1d?'<div class=meta><span class=zone>пятая в дневной ноге: '+r.zone_1d+' ('+r.depth_1d+')</span></div>':'')+
  '<div class=meta>вершина '+String(r.top_time||'').slice(0,16)+' UTC · '+r.hours_from_top+' ч · импульс '+r.imp_pct+'% · '+fl('фрактал',r.fractal)+' '+fl('канал',r.depth5!=null&&r.depth5>=0.5)+' '+fl('черед',r.altern)+' '+fl('счёт',r.count_ok)+' · канал '+r.depth5+' · w2 '+r.w2_retr+' w4 '+r.w4_retr+' w3/w1 '+r.w3_ext+' · сломы '+r.bos1+'/'+r.bos3+' · 1D '+(r.d_bull?'бычья':'медвежья')+(r.d_broke?', свинг пробит':'')+', WT1D '+r.d_wt+(r.absorbed?' · поглощено свингов '+r.absorbed:'')+'</div>'+
- (r.chart?'<figure><img src="/waves/chart/'+r.chart+'" alt="'+r.sym+'" loading=lazy></figure>':'<div class=empty>картинки нет (тень без --draw или сетап старше)</div>')+
+ (r.analyst_png?'<figure><img src="/waves/analyst/'+r.analyst_png+'" alt="разбор '+r.sym+'" loading=lazy><figcaption class=mut>волновой разбор: 1D нога · 4h счёт · 3m слом · сценарии A/B'+(r.chart?' · <a href="/waves/chart/'+r.chart+'" target=_blank>разметка ядра</a>':'')+'</figcaption></figure>':
+  (r.chart?'<figure><img src="/waves/chart/'+r.chart+'" alt="'+r.sym+'" loading=lazy></figure>':'<div class=empty>картинки нет</div>'))+
  '<div class=grid><div class=kv><span>вход</span><b>'+(r.entry_trigger||'—')+' · '+(r.entered_at||'')+' · '+num(r.entry_price)+'</b></div>'+
  '<div class=kv><span>последнее закрытие</span><b>'+num(r.last_close)+' '+pct(r.last_close,r.entry_price,r.side)+'</b></div>'+
  '<div class=kv><span>цель (конец w4)</span><b>'+num(r.p4_target)+' '+pct(r.p4_target,r.entry_price,r.side)+'</b></div>'+
@@ -4029,8 +4036,49 @@ async function send(k,w,v,note){try{var r=await fetch('/api/waves/review',{metho
 async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'});var d=await r.json();V=d.verdicts;ROWS=d.rows;render();}
 document.querySelectorAll('.tabs .bt').forEach(function(b){b.onclick=function(){document.querySelectorAll('.tabs .bt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');F=b.dataset.f;render();};});
 document.getElementById('lb').onclick=function(){this.style.display='none';};
+async function analyze(){var sym=document.getElementById('asym').value.trim();if(!sym)return;
+ var st=document.getElementById('astat');st.textContent='считаю разбор '+sym+'… (20-40 с)';
+ try{var r=await fetch('/api/waves/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sym:sym})});var d=await r.json();
+  if(!d.ok){st.textContent='ошибка: '+d.err;return;}
+  st.textContent='';var h='<section class=card><h2>'+d.sym+' · разбор по запросу'+(d.zone?' <span class=zone>'+d.zone+' ('+d.depth+')</span>':'')+'</h2>';
+  h+=d.png?'<figure><img src="/waves/analyst/'+d.png+'" alt="разбор '+d.sym+'"></figure>':'<p class=mut>'+d.text.join('<br>')+'</p>';
+  document.getElementById('ares').innerHTML=h+'</section>';
+  document.querySelectorAll('#ares figure img').forEach(function(i){i.onclick=function(){document.getElementById('lbi').src=i.src;document.getElementById('lb').style.display='flex';};});
+ }catch(e){st.textContent='ошибка: '+e;}}
+document.getElementById('abtn').onclick=analyze;document.getElementById('asym').onkeydown=function(e){if(e.key=='Enter')analyze();};
 load();setInterval(load,120000);
 </script></body></html>"""
+
+
+_WA_DIR = os.path.join(os.path.dirname(_WV_DIR), "wave_analyst")
+
+
+async def waves_analyst_png(req):
+    name = os.path.basename(req.match_info["name"])
+    p = os.path.join(_WA_DIR, name)
+    if not name.endswith(".png") or not os.path.exists(p):
+        raise web.HTTPNotFound()
+    return web.FileResponse(p, headers={"Cache-Control": "max-age=3600"})
+
+
+async def api_waves_analyze(req):
+    """POST /api/waves/analyze {sym, ltf} — 🌊 волновой разбор любой монеты по запросу (core.waves.wave_analyst.report_for)."""
+    try:
+        b = await req.json()
+    except Exception:
+        b = {}
+    sym = str(b.get("sym", "")).strip().upper().replace("/USDT", "").replace("-USDT", "")
+    if sym.endswith("USDT") and len(sym) > 4:
+        sym = sym[:-4]
+    if not sym or not sym.isalnum():
+        return web.json_response({"ok": False, "err": "нужен тикер, например SOLV"}, status=400)
+    ltf = b.get("ltf") if b.get("ltf") in ("3m", "5m", "15m") else "3m"
+    from core.waves.wave_analyst import report_for
+    try:
+        r = await asyncio.get_running_loop().run_in_executor(_POOL, report_for, sym, ltf, _WA_DIR)
+    except Exception as e:
+        return web.json_response({"ok": False, "err": f"{type(e).__name__}: {e}"}, status=500)
+    return web.json_response({"ok": True, **r})
 
 
 async def waves_page(_req):
@@ -4078,6 +4126,8 @@ def main():
     app.router.add_get("/api/waves/journal", api_waves_journal)
     app.router.add_post("/api/waves/review", api_waves_review)
     app.router.add_get("/waves/chart/{name}", waves_chart)
+    app.router.add_get("/waves/analyst/{name}", waves_analyst_png)
+    app.router.add_post("/api/waves/analyze", api_waves_analyze)
     app.router.add_get("/api/account", api_account)
     app.router.add_get("/api/levinfo", api_levinfo)
     app.router.add_post("/api/trade", api_trade)
