@@ -320,7 +320,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             ax.annotate(txt, p1, color=col, fontsize=7.5, fontweight="bold", xytext=off, textcoords="offset points", va="center",
                         bbox=dict(boxstyle="round,pad=0.2", fc=BG, ec="none", alpha=.85))
 
-    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W
+    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W, fit_y
     cnt = rep.get("progress"); leg = rep.get("leg")
     TL, TR = build_text_columns(rep, f"{rep['sym']} · волновой разбор · ход в процессе")
     th = text_height_in(TL, TR); CH_H = 12.0; H = CH_H + th + 0.6
@@ -334,6 +334,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
         for kf, v in leg["levels"].items():
             seg(ax1, xo, xe, v, kf, ACC if kf in ("0.618", "0.705", "0.786", "0.79") else VIO, ":", .8, side="left")
     ax1.set_xlim(-12, len(w) + 8)
+    fit_y(ax1, w, list(leg["levels"].values()) if leg else [])
     ax2 = fig.add_subplot(gs[1])
     if cnt:
         i0 = max(0, cnt["idx"][0] - 30); w1 = d1.iloc[i0:]; candles(ax2, w1); n = len(w1) - 1; F = max(40, int(.25 * len(w1)))
@@ -351,8 +352,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             seg(ax2, n - 25, n + F, v, nm if inz else "", ACC if inz else "#4a5160", "-." if inz else ":", 1 if inz else .6)
         if rep.get("limit5"):
             seg(ax2, cnt["idx"][-1] - i0, n + F, rep["limit5"], "предел пятой (5 < 3)", DN, "--", 1.1)
-        ys_all = [v for _, v, _ in rep.get("levels", []) if abs(v / pr - 1) <= .2] + list(cnt["px"]) + [pr]
-        ax2.set_ylim(min(ys_all) * .97, max(ys_all) * 1.02)
+        fit_y(ax2, w1, [v for _, v, _ in rep.get("levels", []) if abs(v / pr - 1) <= .2] + list(cnt["px"]) + [pr])
         if z:
             ax2.add_patch(Rectangle((n + 6, z["lo"]), F - 12, z["hi"] - z["lo"], color=ACC, alpha=.16, lw=0))
             ax2.annotate("зона", (n + F / 2, z["hi"]), color=ACC, fontsize=8, ha="center", va="bottom")

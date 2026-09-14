@@ -106,6 +106,22 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
             "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
 
 
+def fit_y(ax, w: pd.DataFrame, extra=(), pad: float = 0.06) -> None:
+    """Ось цены по свечам окна + уровни, лежащие рядом (не дальше ×3 вниз / ×1.5 вверх). Размах > 6 раз — лог-шкала
+    (Егор 14.09: после взрывного пампа свечи сплющивались в линию, а расширения ноги растягивали ось)."""
+    lo, hi = float(w.low.min()), float(w.high.max())
+    vals = [float(v) for v in extra if v is not None and np.isfinite(v) and lo / 3 <= float(v) <= hi * 1.5]
+    lo2, hi2 = min([lo] + vals), max([hi] + vals)
+    if lo2 > 0 and hi2 / lo2 > 6:
+        from matplotlib.ticker import FuncFormatter, LogLocator
+        ax.set_yscale("log"); ax.set_ylim(lo2 / 1.08, hi2 * 1.08)
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5)))
+        ax.yaxis.set_minor_locator(LogLocator(base=10, subs=()))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.4g}"))
+    else:
+        r = (hi2 - lo2) or abs(hi2) * 0.01
+        ax.set_ylim(lo2 - r * pad, hi2 + r * pad)
+
 # ─── текстовый блок схемы: под графиками, две колонки, крупный шрифт (Егор 14.09: «текст крупнее и читабельнее») ───
 FIG_W = 16.0
 TXT_FS, TXT_H = 12.0, 14.5
@@ -131,6 +147,8 @@ def build_text_columns(rep: Dict[str, Any], title: str, up_: Optional[bool] = No
         for ln in textwrap.wrap(f"{sc['side']}. {sc['why']}", wrap):
             R.append((ln, "body"))
         for nm, v in sc["targets"]:
+            if v != v:                                               # примечание без цены
+                R.append((f"  · {nm}", "took")); continue
             took = best is not None and up_ is not None and ((best <= v) if up_ else (best >= v))
             d = (v / price - 1) * 100 if price else 0
             R.append((f"  {'✓' if took else '→'} {nm}: {v:.6g}  " + ("взята" if took else f"({d:+.1f}%)"), "took" if took else "target"))
@@ -293,6 +311,10 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
             tg = [("низ дневной ноги", leg["ext"])] + [(f"расширение {k}", v) for k, v in leg["extensions"].items() if k in ("-0.272", "-0.618", "-1.0")]
         else:
             tg = [("хай дневной ноги", leg["ext"])] + [(f"расширение {k}", v) for k, v in leg["extensions"].items() if k in ("-0.272", "-0.618", "-1.0")]
+        far = [t_ for t_ in tg if (t_[1] > price * 3) or (t_[1] < price / 3)]
+        tg = [t_ for t_ in tg if t_ not in far]
+        if far:
+            tg.append((f"дальние уровни ноги опущены ({len(far)}): за ×3 от цены", float("nan")))
         rep["scenarios"].append({"name": "A · старший ход продолжается", "side": rev,
                                  "why": f"4h-{st['form']} {'вверх' if st['up'] else 'вниз'} закончился в зоне «{leg['zone']}» дневной ноги {leg['dir']} "
                                         f"(глубина {leg['depth']:.2f}) — это коррекция ноги, её тренд продолжается.",
@@ -403,6 +425,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
         ax1.annotate(f"5 · глубина {leg['depth']:.2f} · {leg['zone']}", (x5, st["p5x"]), color=ACC, fontsize=8,
                      xytext=(-6, -14 if not up_ else 8), textcoords="offset points", ha="right")
     ax1.set_xlim(-12, len(w) + 8)
+    fit_y(ax1, w, (list(leg["levels"].values()) + list(leg["extensions"].values()) + [st["p5x"]]) if leg else [st["p5x"]])
 
     # 4h: счёт, коррекции отрезком 0→5, развилка, прогноз стрелками
     ax2 = fig.add_subplot(gs[1]); i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
@@ -431,6 +454,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     if fc.get("B"):
         yb, tb = fc["B"]; arrow(ax2, xf1, ym, n4 + int(F * 0.9), yb, DN if not up_ else UP, "--", tb)
     ax2.set_xlim(-12, n4 + F + 34)
+    fit_y(ax2, w4, list(rep["corr"].values()) + [price, lo, hi] + [v[0] for v in (fc.get("A"), fc.get("B")) if v])
 
     # младший ТФ: сломы от свинга до пересечения, фибо A отрезком 5→A, зона от A до касания
     ax3 = fig.add_subplot(gs[2]); ls = rep.get("ltf_state") or {}
@@ -460,6 +484,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             ax3.add_patch(Rectangle((xa, min(z[0.5], z[0.705])), max(1, xt_ - xa), abs(z[0.5] - z[0.705]), color=ACC, alpha=0.22, lw=0))
             seg(ax3, xa, n3, ls["stop_886"], "стоп 0.886", DN, "--", 0.9)
         ax3.set_xlim(-25, n3 + 30)
+        fit_y(ax3, w3, [st["p5x"]] + ([ls["a_top"], ls["stop_886"]] + list(ls["zone"].values()) if ls.get("A") else []))
     else:
         style(ax3, "младший ТФ не загружен")
 
@@ -488,6 +513,7 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
         from core.waves.wave_progress import render_progress
         render_progress(rep, dh, d1, dl15, out_dir / f"{stem}.png", dl3=dl); png = f"{stem}.png"
     clean = {k: v for k, v in rep.items() if k != "structure"}
+    clean["scenarios"] = [{**sc, "targets": [(n, (v if v == v else None)) for n, v in sc["targets"]]} for sc in rep.get("scenarios", [])]
     if rep["structure"] is not None:
         st = rep["structure"]
         clean["structure"] = {"kind": st["kind"], "form": st["form"], "up": st["up"], "p0": st["wave_px"][0], "p5": st["p5x"], "t5": str(st["t5x"])}
@@ -495,4 +521,4 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
     leg = rep.get("leg") or {}
     return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "mode": rep.get("mode", "reversal"), "zone": leg.get("zone"),
             "depth": round(leg["depth"], 3) if leg else None, "text": rep["text"], "price": rep.get("price"),
-            "scenarios": [{"name": sc["name"], "targets": [(n, float(v)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}
+            "scenarios": [{"name": sc["name"], "targets": [(n, (float(v) if v == v else None)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}
