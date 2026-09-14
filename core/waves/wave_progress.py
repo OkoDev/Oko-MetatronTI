@@ -285,7 +285,7 @@ def analyze_progress(sym: str, dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optiona
 
 
 def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optional[pd.DataFrame], out: Path,
-                    dl3: Optional[pd.DataFrame] = None) -> Path:
+                    dl3: Optional[pd.DataFrame] = None, parts: bool = False):
     """Схема режима «ход в процессе»: 1D нога · 1h счёт + зона + уровни отрезками + стрелки сценариев · 15m треугольник · текст."""
     import textwrap
     import matplotlib
@@ -303,7 +303,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
 
     def style(ax, t_):
         ax.set_facecolor(BG); [s_.set_color(GRID) for s_ in ax.spines.values()]; ax.tick_params(colors=FG, labelsize=7.5)
-        ax.grid(True, color=GRID, lw=.5, alpha=.4); ax.set_title(t_, color=FG, fontsize=9.5, loc="left")
+        ax.grid(True, color=GRID, lw=.5, alpha=.4); ax.set_title((f"{rep['sym']} · " if parts else "") + t_, color=FG, fontsize=9.5, loc="left")
 
     def xi(w, tt):
         return int(w.index.get_indexer([pd.Timestamp(tt)], method="nearest")[0])
@@ -320,13 +320,18 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
             ax.annotate(txt, p1, color=col, fontsize=7.5, fontweight="bold", xytext=off, textcoords="offset points", va="center",
                         bbox=dict(boxstyle="round,pad=0.2", fc=BG, ec="none", alpha=.85))
 
-    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W, fit_y, time_axis, draw_micro
+    from core.waves.wave_analyst import build_text_columns, text_height_in, draw_text_columns, FIG_W, fit_y, time_axis, draw_micro, PART_W, PART_H, save_parts, card_figure, decision_card
     cnt = rep.get("progress"); leg = rep.get("leg")
     TL, TR = build_text_columns(rep, f"{rep['sym']} · волновой разбор · ход в процессе")
     th = text_height_in(TL, TR); CH_H = 12.0; H = CH_H + th + 0.6
-    fig = plt.figure(figsize=(FIG_W, H), facecolor=BG)
-    gs = fig.add_gridspec(3, 1, height_ratios=[.9, 1.3, .85], hspace=.3, left=0.05, right=0.97, top=1 - 0.25 / H, bottom=(th + 0.6) / H)
-    ax1 = fig.add_subplot(gs[0]); dd = to_daily(dh); w = dd.iloc[-160:]; candles(ax1, w)
+    if parts:
+        figs = [plt.figure(figsize=(PART_W, PART_H), facecolor=BG) for _ in range(3)]
+        axes = [f_.add_axes([0.085, 0.1, 0.88, 0.8]) for f_ in figs]
+    else:
+        fig = plt.figure(figsize=(FIG_W, H), facecolor=BG)
+        gs = fig.add_gridspec(3, 1, height_ratios=[.9, 1.3, .85], hspace=.3, left=0.05, right=0.97, top=1 - 0.25 / H, bottom=(th + 0.6) / H)
+        axes = [fig.add_subplot(gs[i]) for i in range(3)]
+    ax1 = axes[0]; dd = to_daily(dh); w = dd.iloc[-160:]; candles(ax1, w)
     style(ax1, "1D · дневная нога, которую корректирует ход")
     if leg:
         xo, xe = xi(w, leg["origin_t"]), xi(w, leg["ext_t"])
@@ -336,7 +341,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
     ax1.set_xlim(-12, len(w) + 8)
     fit_y(ax1, w, list(leg["levels"].values()) if leg else [])
     time_axis(ax1, w)
-    ax2 = fig.add_subplot(gs[1])
+    ax2 = axes[1]
     if cnt:
         i0 = max(0, cnt["idx"][0] - 30); w1 = d1.iloc[i0:]; candles(ax2, w1); n = len(w1) - 1; F = max(40, int(.25 * len(w1)))
         xs = [i - i0 for i in cnt["idx"]]; ys = cnt["px"]
@@ -367,7 +372,7 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
         time_axis(ax2, w1)
     else:
         style(ax2, "1h · счёт не складывается")
-    ax3 = fig.add_subplot(gs[2]); tri = rep.get("triangle")
+    ax3 = axes[2]; tri = rep.get("triangle")
     src = dl3 if (tri and tri.get("tf") == "3m" and dl3 is not None) else dl15
     if src is not None and len(src):
         w3 = src[src.index >= tri["points"][0][0] - (src.index[-1] - src.index[-2]) * 40].iloc[-400:] if tri else src.iloc[-200:]
@@ -381,6 +386,9 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
                 x_ = xi(w3, tt); ax3.scatter([x_], [pp], color=WAVE, s=24, zorder=6)
                 ax3.annotate("abcde"[i], (x_, pp), color=WAVE, fontsize=9, xytext=(-3, 7 if top else -13), textcoords="offset points")
         ax3.set_xlim(-3, len(w3) + 12); time_axis(ax3, w3)
+    if parts:
+        figs.append(card_figure(decision_card(rep), BG))
+        return save_parts(figs, out, BG)
     draw_text_columns(fig, TL, TR, 0.2, th)
     fig.savefig(out, dpi=115, facecolor=BG); plt.close(fig)
     return out

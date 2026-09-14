@@ -226,7 +226,7 @@ def refresh_analyst(state):
         if prev.get("status") == "closed":
             continue
         try:
-            r = report_for(prev["sym"], "3m", ROOT / "data" / "wave_analyst", now=NOW)
+            r = report_for(prev["sym"], "3m", ROOT / "data" / "wave_analyst", now=NOW, parts=True)
             prev.update({"analyst_png": r["png"], "analyst_json": r["json"], "zone_1d": r["zone"], "depth_1d": r["depth"]})
             reports[k] = r
             print(f"  разбор {prev['sym']}: {r['zone']} ({r['depth']}) → {r['png']}", flush=True)

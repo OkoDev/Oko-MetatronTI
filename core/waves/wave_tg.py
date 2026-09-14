@@ -65,6 +65,24 @@ def caption_from_report(r: Dict[str, Any], side: Optional[str] = None, extra: st
     return cap if len(cap) <= 1024 else cap[:1010] + "…"
 
 
+def caption_card(c: Dict[str, Any], note: str = "") -> str:
+    """Короткая подпись альбома из карточки решения — схватывается за секунды (Егор 15.09: «текстом читать долго»)."""
+    e = html.escape
+    light = {"go": "🟢", "wait": "🟡", "off": "🔴"}.get(c.get("light"), "⚪")
+    lines = [f"{light} <b>{e(c['sym'])} · {c.get('side', '')}</b> · {c['price']:.6g}", f"<b>{e(c.get('status', ''))}</b>"]
+    if note:
+        lines.append(f"🔄 {e(note)}")
+    if c.get("entry"):
+        lo, hi = c["entry"]; lines.append(f"Вход <code>{lo:.5g}–{hi:.5g}</code>" + (f" · стоп <code>{c['stop']:.5g}</code>" if c.get("stop") else ""))
+    if c.get("targets"):
+        lines.append("Цели " + " · ".join(f"<code>{v:.5g}</code> ({p:+.0f}%{f', RR {rr:.1f}' if rr is not None else ''})" for _, v, p, rr in c["targets"]))
+    if c.get("invalid"):
+        lines.append(f"⛔ {e(c['invalid'])}")
+    lines.append(f"#волны #{e(c['sym'])}")
+    cap = "\n".join(lines)
+    return cap if len(cap) <= 1024 else cap[:1010] + "…"
+
+
 def state_diff(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]], price: float) -> List[str]:
     """Что значимо изменилось в разборе (отпечаток report_for()['state']). Пусто — постить обновление не нужно.
     Уровни сравниваются с допуском 1.5% цены: дневные пивоты сдвигают зону каждый день на копейки."""
@@ -133,9 +151,54 @@ def send_text(text: str, chat_id: Optional[str] = None, reply_to: Optional[int] 
     return _post("sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "reply_to_message_id": reply_to})
 
 
+def send_album(pngs: List[Path], caption: str, reply_to: Optional[int] = None) -> Dict[str, Any]:
+    """Альбом (sendMediaGroup): подпись — у первой картинки. В ответе список сообщений."""
+    from contextlib import ExitStack
+    with ExitStack() as es:
+        files = {f"p{i}": es.enter_context(open(p_, "rb")) for i, p_ in enumerate(pngs)}
+        media = [{"type": "photo", "media": f"attach://p{i}", **({"caption": caption, "parse_mode": "HTML"} if i == 0 else {})}
+                 for i in range(len(pngs))]
+        return _post("sendMediaGroup", {"media": json.dumps(media, ensure_ascii=False), "reply_to_message_id": reply_to}, files=files, timeout=90)
+
+
+def full_text(r: Dict[str, Any], side: Optional[str] = None, extra: str = "", note: str = "") -> str:
+    """Полный разбор текстом (≤4096, HTML) — отдельным сообщением ответом на альбом (Егор 15.09: «разбор отдельно»)."""
+    e = html.escape
+    price = r.get("price") or 0
+    when = str(r.get("now") or "")[:16].replace("T", " ")
+    out = [(("🔄 " if note else "🌊 ") + f"<b>{e(r['sym'])}</b>" + (f" · {e(side)}" if side else "")
+            + (" · ход в процессе" if r.get("mode") == "progress" else "") + f" · цена {price:.6g}" + (f" · {when} UTC" if when else ""))]
+    if note:
+        out.append(f"<b>Обновление:</b> {e(note)}")
+    out.append("\n<b>Разбор</b>")
+    out += ["• " + e(t) for t in (r.get("text") or [])]
+    out.append("\n<b>Сценарии</b>")
+    for sc in r.get("scenarios") or []:
+        out.append(f"\n<b>{e(sc['name'])}</b>")
+        if sc.get("side") or sc.get("why"):
+            out.append(e(". ".join(x for x in (sc.get("side"), sc.get("why")) if x)))
+        for n, v in sc.get("targets", []):
+            out.append(f"  → {e(n)}: <code>{v:.6g}</code> ({(v / price - 1) * 100:+.1f}%)" if v is not None and price else f"  · {e(n)}")
+        if sc.get("fork"):
+            out.append(f"  развилка: <code>{min(sc['fork']):.6g} – {max(sc['fork']):.6g}</code>")
+        out.append(f"⛔ отмена: {e(sc['invalid'])}")
+    if extra:
+        out.append("\n" + extra)
+    out.append(f"\n#волны #{e(r['sym'])}")
+    txt = "\n".join(out)
+    return txt if len(txt) <= 4096 else txt[:4080] + "…"
+
+
 def publish_report(r: Dict[str, Any], out_dir: Path, side: Optional[str] = None, extra: str = "", note: str = "",
                    reply_to: Optional[int] = None) -> Dict[str, Any]:
-    """Разбор из report_for → фото со схемой в канал (или текст, если схемы нет); note — что изменилось (для обновления)."""
+    """Разбор из report_for → в канал. Есть панели по отдельности (report_for(parts=True)) — ОДНО сообщение-альбом
+    (Егор 15.09: «три картинки + разбор, всё вместе»): 1D · 4h · младший ТФ · разбор текстом-картинкой, подпись с ключевыми
+    уровнями (≤1024) у альбома; для цепочки возвращается первое сообщение альбома.
+    Иначе — одна общая схема с подписью (или текст, если схемы нет); note — что изменилось (для обновления)."""
+    if r.get("parts"):
+        cap = caption_card(r["card"], note) if r.get("card") else caption_from_report(r, side, extra, note)
+        alb = send_album([Path(out_dir) / n for n in r["parts"]], cap, reply_to=reply_to)
+        return {"ok": True, "result": alb["result"][0]} if alb.get("ok") else alb
     cap = caption_from_report(r, side, extra, note)
     if r.get("png"):
         return send_photo(Path(out_dir) / r["png"], cap, reply_to=reply_to)

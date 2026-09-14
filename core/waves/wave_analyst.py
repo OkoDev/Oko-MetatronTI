@@ -122,6 +122,137 @@ def fit_y(ax, w: pd.DataFrame, extra=(), pad: float = 0.06) -> None:
         r = (hi2 - lo2) or abs(hi2) * 0.01
         ax.set_ylim(lo2 - r * pad, hi2 + r * pad)
 
+def decision_card(rep: Dict[str, Any]) -> Dict[str, Any]:
+    """Карточка решения (Егор 15.09: «текстом читать долго — в трейдинге нужно быстро всё схватывать»): светофор статуса,
+    вход/стоп/цели с % и RR, отмена, второй сценарий строкой, признаки чипами. Только уровни из разбора — ничего не выдумывается;
+    стоп и RR — только там, где у механики есть правило стопа (разворот: 0.886 волны A)."""
+    price = float(rep.get("price") or 0); sc = rep.get("scenarios") or []; leg = rep.get("leg") or {}
+    card: Dict[str, Any] = {"sym": rep["sym"], "price": price, "now": str(rep.get("now", ""))[:16], "entry": None, "stop": None,
+                            "targets": [], "invalid": sc[0]["invalid"] if sc else "", "chips": [], "alt": None}
+    pct = lambda v: (v / price - 1) * 100 if price else 0.0
+    if leg:
+        card["chips"].append(f"1D: {leg['zone']} ({leg['depth']:.2f})")
+    st = rep.get("structure")
+    if st is not None:
+        long_ = not st["up"]; card["side"] = "LONG" if long_ else "SHORT"
+        ls = rep.get("ltf_state") or {}
+        card["chips"] += [f"слом {rep.get('ltf', '3m')} {'✓' if ls.get('choch_int') else '✗'}", f"волна A {'✓' if ls.get('a_done') else '✗'}",
+                          "импульс" if st["kind"] == "impulse" else "диагональ"]
+        if ls.get("A"):
+            z = ls["zone"]; lo, hi = sorted((z[0.5], z[0.705])); card["entry"] = (lo, hi); card["stop"] = ls["stop_886"]
+            r_ = ls.get("retr_now")
+            if r_ is None or r_ < 0:
+                card.update(light="off", status="откат пропущен — цена ушла за вершину A")
+            elif r_ < 0.5:
+                card.update(light="wait", status=f"ЖДАТЬ откат в зону (сейчас {r_:.2f} от A)")
+            elif r_ <= 0.886:
+                card.update(light="go", status=f"ЦЕНА В ЗОНЕ ВХОДА ({r_:.2f} от A)")
+            else:
+                card.update(light="off", status="откат глубже 0.886 — сценарий сломан")
+        else:
+            card.update(light="wait", status=f"ЖДАТЬ слом {rep.get('ltf', '3m')} против хода")
+    else:
+        cnt = rep.get("progress") or {}; zn = rep.get("zone") if isinstance(rep.get("zone"), dict) else None
+        k = cnt.get("k"); down = cnt.get("down")
+        card["side"] = ("LONG" if down else "SHORT") if k in (4,) else ("SHORT" if down else "LONG")
+        card["chips"] += [f"счёт 0–{k}" if k is not None else "счёта нет"] + (["треугольник"] if rep.get("triangle") else [])
+        if zn:
+            card["entry"] = (zn["lo"], zn["hi"])
+            inside = zn["lo"] <= price <= zn["hi"]
+            card.update(light="go" if inside else "wait",
+                        status="ЦЕНА В ЗОНЕ — ждать слом младшего ТФ" if inside else f"ЖДАТЬ зону ({pct((zn['lo'] + zn['hi']) / 2):+.1f}% до середины)")
+        else:
+            card.update(light="info", status="ход в процессе — зоны схождения нет")
+    if sc:
+        ent = (sum(card["entry"]) / 2) if card["entry"] else price
+        risk = abs(ent - card["stop"]) if card["stop"] else None
+        for n, v in sc[0]["targets"]:
+            if v is None or v != v:
+                continue
+            card["targets"].append((n, float(v), pct(v), (abs(v - ent) / risk) if risk else None))
+            if len(card["targets"]) == 3:
+                break
+        if len(sc) > 1:
+            t2 = next(((n, v) for n, v in sc[1]["targets"] if v is not None and v == v), None)
+            card["alt"] = {"name": sc[1]["name"], "target": t2, "invalid": sc[1]["invalid"]}
+        card["name"] = sc[0]["name"]
+    return card
+
+
+def card_figure(card: Dict[str, Any], bg: str = "#0f1116"):
+    """Картинка карточки решения ~16:9 — последняя в альбоме."""
+    import textwrap
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch
+    FG, MUT, ACC, UP, DN, GRID = "#e6e8ee", "#9aa3b2", "#f5c542", "#26a69a", "#ef5350", "#2a2f3a"
+    LIGHT = {"go": ("🟢", UP), "wait": ("🟡", ACC), "off": ("🔴", DN), "info": ("⚪", MUT)}
+    f_ = plt.figure(figsize=(10.0, 5.8), facecolor=bg); ax = f_.add_axes([0, 0, 1, 1]); ax.axis("off"); ax.set_facecolor(bg)
+    sc = UP if card.get("side") == "LONG" else DN
+    ax.text(.04, .92, card["sym"], fontsize=30, fontweight="bold", color=FG, va="center")
+    ax.text(.04 + .032 * len(card["sym"]) + .03, .92, card.get("side", ""), fontsize=24, fontweight="bold", color=sc, va="center")
+    ax.text(.96, .935, f"{card['price']:.6g}", fontsize=24, color=FG, ha="right", va="center", family="monospace")
+    ax.text(.96, .875, f"{card['now']} UTC", fontsize=12, color=MUT, ha="right", va="center")
+    _, col = LIGHT.get(card.get("light", "info"))
+    ax.add_patch(FancyBboxPatch((.04, .745), .92, .085, boxstyle="round,pad=0.005,rounding_size=0.015", fc=col, ec="none", alpha=.22))
+    ax.add_patch(FancyBboxPatch((.04, .745), .012, .085, boxstyle="square,pad=0", fc=col, ec="none"))
+    ax.text(.07, .788, card.get("status", ""), fontsize=20, fontweight="bold", color=col, va="center")
+    rows = []
+    if card.get("entry"):
+        lo, hi = card["entry"]; rows.append(("ВХОД", f"{lo:.5g}–{hi:.5g}", "", "", FG))
+    if card.get("stop"):
+        ent = sum(card["entry"]) / 2 if card.get("entry") else card["price"]
+        rows.append(("СТОП", f"{card['stop']:.5g}", f"{(card['stop'] / ent - 1) * 100:+.1f}%", "", DN))
+    for i, (n, v, p, rr) in enumerate(card.get("targets", []), 1):
+        rows.append((f"ЦЕЛЬ {i}", f"{v:.5g}", f"{p:+.1f}%", f"RR {rr:.1f}" if rr is not None else "", UP))
+    y = .64
+    for lab, val, p, rr, c in rows:
+        ax.text(.04, y, lab, fontsize=15, color=MUT, va="center")
+        ax.text(.17, y, val, fontsize=21, color=c, va="center", family="monospace", fontweight="bold")
+        ax.text(.435, y, p, fontsize=16, color=c, va="center", family="monospace", ha="right")
+        ax.text(.585, y, rr, fontsize=16, color=ACC, va="center", family="monospace", ha="right")
+        y -= .092
+    ax.plot([.62, .62], [.14, .69], color=GRID, lw=1.2)
+    yy = .66
+    if card.get("name"):
+        w_ = textwrap.wrap(card["name"], 26)
+        ax.text(.65, yy, "\n".join(w_), fontsize=14, color=ACC, fontweight="bold", va="top"); yy -= .055 * len(w_) + .03
+    w_ = textwrap.wrap("ОТМЕНА: " + card.get("invalid", ""), 30)
+    ax.text(.65, yy, "\n".join(w_), fontsize=13, color=DN, va="top"); yy -= .05 * len(w_) + .07
+    alt = card.get("alt")
+    if alt:
+        w_ = textwrap.wrap(alt["name"], 31)
+        ax.text(.65, yy, "\n".join(w_), fontsize=12.5, color=FG, va="top"); yy -= .05 * len(w_) + .015
+        if alt.get("target"):
+            ax.text(.65, yy, f"→ {alt['target'][0]}: {alt['target'][1]:.5g}", fontsize=12.5, color=MUT, va="top", family="monospace")
+    ax.text(.04, .06, "   ·   ".join(card.get("chips", [])), fontsize=14, color=MUT, va="center")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)                   # линия-разделитель не должна менять шкалу
+    return f_
+
+
+def text_figure(rep: Dict[str, Any], title: str, up_: Optional[bool] = None, best: Optional[float] = None, bg: str = "#0f1116"):
+    """Четвёртая картинка альбома — разбор текстом, две колонки (Егор 15.09: «три картинки + разбор, всё вместе»):
+    подпись альбома в TG ограничена 1024 символами, полный разбор туда не помещается. Кадр ~квадратный — на телефоне крупно."""
+    import matplotlib.pyplot as plt
+    L, R = build_text_columns(rep, title, up_, best, wrap=46)
+    th = text_height_in(L, R)
+    f_ = plt.figure(figsize=(10.0, th + 0.4), facecolor=bg)
+    draw_text_columns(f_, L, R, 0.2, th)
+    return f_
+
+
+def save_parts(figs, out: Path, bg: str) -> List[Path]:
+    """Панели по отдельным файлам <stem>_1.png, _2.png, _3.png (для альбома в TG)."""
+    import matplotlib.pyplot as plt
+    paths = []
+    for i, f_ in enumerate(figs, 1):
+        for ax in f_.axes:                                  # кадр вдвое уже общей схемы — запас справа под подписи уровней
+            if ax.axison:
+                l_, r_ = ax.get_xlim(); ax.set_xlim(l_, r_ + (r_ - l_) * 0.10)
+        pth = Path(out).with_name(f"{Path(out).stem}_{i}.png")
+        f_.savefig(pth, dpi=PART_DPI, facecolor=bg); plt.close(f_); paths.append(pth)
+    return paths
+
+
 def time_axis(ax, w: pd.DataFrame, nbins: int = 10) -> None:
     """Подписи оси X — дата/время бара вместо номера (Егор 15.09). Правее последнего бара (зона прогноза) время
     продолжается шагом ТФ."""
@@ -180,6 +311,9 @@ def draw_micro(ax, w: pd.DataFrame, src: pd.DataFrame, sw_len: int = 50, int_len
 
 # ─── текстовый блок схемы: под графиками, две колонки, крупный шрифт (Егор 14.09: «текст крупнее и читабельнее») ───
 FIG_W = 16.0
+# TG (Егор 15.09: «очень мелко в TG») — каждая панель отдельной картинкой: 8×4.6 дюйма при 225 dpi ≈ 1800×1035 px,
+# шрифты относительно кадра вдвое крупнее, чем в общей схеме шириной 16 дюймов
+PART_W, PART_H, PART_DPI = 8.0, 4.6, 225
 TXT_FS, TXT_H = 12.0, 14.5
 LINE_IN = 12.0 * 1.55 / 72          # высота строки основного текста, дюймы
 
@@ -423,7 +557,7 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
 
 
 # ─── схема ──────────────────────────────────────────────────────────────────────────────────────
-def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], out: Path) -> Path:
+def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], out: Path, parts: bool = False):
     """Схема разбора. Правило Егора 14.09: фибо и сломы — ОТРЕЗКАМИ между точками замера (не через весь экран);
     прогноз — штрихпунктирной стрелкой к зоне развилки и двумя пунктирными стрелками вариантов A/B из неё."""
     import textwrap
@@ -443,7 +577,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     def style(ax, title):
         ax.set_facecolor(BG); [sp.set_color(GRID) for sp in ax.spines.values()]
         ax.tick_params(colors=FG, labelsize=7.5); ax.grid(True, color=GRID, lw=0.5, alpha=0.4)
-        ax.set_title(title, color=FG, fontsize=9.5, loc="left")
+        ax.set_title((f"{rep['sym']} · " if parts else "") + title, color=FG, fontsize=9.5, loc="left")
 
     def seg(ax, x0, x1, y, txt, col, ls="--", lw=0.9, side="right"):
         xa, xb = sorted((x0, x1))
@@ -464,11 +598,16 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     st, leg = rep["structure"], rep["leg"]; up_ = st["up"]
     TL, TR = build_text_columns(rep, f"{rep['sym']} · волновой разбор", up_, rep.get("best_since5", rep.get("price")))
     th = text_height_in(TL, TR); CH_H = 12.0; H = CH_H + th + 0.6
-    fig = plt.figure(figsize=(FIG_W, H), facecolor=BG)
-    gs = fig.add_gridspec(3, 1, height_ratios=[1, 1.2, 0.95], hspace=0.3, left=0.05, right=0.97, top=1 - 0.25 / H, bottom=(th + 0.6) / H)
+    if parts:
+        figs = [plt.figure(figsize=(PART_W, PART_H), facecolor=BG) for _ in range(3)]
+        axes = [f_.add_axes([0.085, 0.1, 0.88, 0.8]) for f_ in figs]
+    else:
+        fig = plt.figure(figsize=(FIG_W, H), facecolor=BG)
+        gs = fig.add_gridspec(3, 1, height_ratios=[1, 1.2, 0.95], hspace=0.3, left=0.05, right=0.97, top=1 - 0.25 / H, bottom=(th + 0.6) / H)
+        axes = [fig.add_subplot(gs[i]) for i in range(3)]
 
     # 1D: нога, фибо отрезками от начала до конца ноги
-    ax1 = fig.add_subplot(gs[0]); dd = to_daily(dh); w = dd.iloc[-200:]; candles(ax1, w)
+    ax1 = axes[0]; dd = to_daily(dh); w = dd.iloc[-200:]; candles(ax1, w)
     style(ax1, "1D · дневная нога (фибо от её начала до конца) и где закончилась пятая")
     if leg:
         xo, xe = xi(w, leg["origin_t"]), xi(w, leg["ext_t"])
@@ -487,7 +626,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     time_axis(ax1, w)
 
     # 4h: счёт, коррекции отрезком 0→5, развилка, прогноз стрелками
-    ax2 = fig.add_subplot(gs[1]); i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
+    ax2 = axes[1]; i0 = max(0, st["wave_idx"][0] - 25); w4 = dh.iloc[i0:]; candles(ax2, w4)
     style(ax2, f"4h · {'импульс' if st['kind'] == 'impulse' else 'конечная диагональ · ' + st['form']} 0-5 · прогноз из зоны развилки")
     xs = [i - i0 for i in st["wave_idx"]]; ys = list(st["wave_px"][:5]) + [st["p5x"]]; xs[5] = xi(w4, st["t5x"])
     ax2.plot(xs, ys, color=WAVE, lw=1.7); ax2.scatter(xs, ys, color=WAVE, s=30, zorder=5)
@@ -517,7 +656,7 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     time_axis(ax2, w4)
 
     # младший ТФ: сломы от свинга до пересечения, фибо A отрезком 5→A, зона от A до касания
-    ax3 = fig.add_subplot(gs[2]); ls = rep.get("ltf_state") or {}
+    ax3 = axes[2]; ls = rep.get("ltf_state") or {}
     if dl is not None and len(dl):
         w3 = dl[dl.index >= st["t5x"] - pd.Timedelta(hours=3)]
         step = max(1, int(np.ceil(len(w3) / 360)))
@@ -551,12 +690,16 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
     else:
         style(ax3, "младший ТФ не загружен")
 
+    if parts:
+        figs.append(card_figure(decision_card(rep), BG))
+        return save_parts(figs, out, BG)
     draw_text_columns(fig, TL, TR, 0.2, th)
     fig.savefig(out, dpi=115, facecolor=BG); plt.close(fig)
     return out
 
 
-def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: Optional[pd.Timestamp] = None) -> Dict[str, Any]:
+def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: Optional[pd.Timestamp] = None,
+               parts: bool = False) -> Dict[str, Any]:
     """Разбор под ключ: свечи BingX v3 → analyze → схема + json + md в out_dir (по умолчанию data/wave_analyst).
     Возвращает сводку: png/json имена, есть ли структура, зона пятой, сценарии, текст."""
     import json as _json
@@ -569,12 +712,16 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
     d1 = fetch_closed(base, "1h", 1500, now=now); dl15 = fetch_closed(base, "15m", 600, now=now)
     rep = analyze(base, dh, dl, ltf, now=now, d1=d1, dl15=dl15)
     stem = f"{base}_{now:%Y%m%d_%H%M}"
-    png = None
+    png = None; part_names = []
     if rep["structure"] is not None:
         render(rep, dh, dl, out_dir / f"{stem}.png"); png = f"{stem}.png"
+        if parts:
+            part_names = [x.name for x in render(rep, dh, dl, out_dir / f"{stem}.png", parts=True)]
     elif rep.get("mode") == "progress" and rep.get("progress"):
         from core.waves.wave_progress import render_progress
         render_progress(rep, dh, d1, dl15, out_dir / f"{stem}.png", dl3=dl); png = f"{stem}.png"
+        if parts:
+            part_names = [x.name for x in render_progress(rep, dh, d1, dl15, out_dir / f"{stem}.png", dl3=dl, parts=True)]
     clean = {k: v for k, v in rep.items() if k != "structure"}
     clean["scenarios"] = [{**sc, "targets": [(n, (v if v == v else None)) for n, v in sc["targets"]]} for sc in rep.get("scenarios", [])]
     if rep["structure"] is not None:
@@ -595,6 +742,7 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
              "tri": f"{tri['tf']} {tri['kind']} · цена {tri['breakout']}" if tri else None,
              "scen": [sc["name"] for sc in rep.get("scenarios", [])]}
     return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "mode": rep.get("mode", "reversal"), "zone": leg.get("zone"),
-            "state": state,
+            "state": state, "parts": part_names, "now": rep.get("now"), "card": decision_card(rep),
             "depth": round(leg["depth"], 3) if leg else None, "text": rep["text"], "price": rep.get("price"),
-            "scenarios": [{"name": sc["name"], "targets": [(n, (float(v) if v == v else None)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}
+            "scenarios": [{"name": sc["name"], "side": sc.get("side"), "why": sc.get("why"), "fork": sc.get("fork"),
+                           "targets": [(n, (float(v) if v == v else None)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}
