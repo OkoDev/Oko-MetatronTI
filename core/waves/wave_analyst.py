@@ -160,8 +160,8 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
     leg = _leg(p.d_sw); alt = _leg(5)
     if leg and alt and abs(alt["origin"] - leg["origin"]) / leg["origin"] < 0.01:
         alt = None
-    if leg and alt and alt["zone"].startswith(("OTE", "глубокая")) and not leg["zone"].startswith(("OTE", "глубокая")):
-        leg, alt = alt, leg                                   # основной — та нога, в зоне интереса которой кончилась пятая
+    # 🔴 основной ногой всегда свинг d_sw (10 дней): выбор «той, что попала в зону» — подгонка (ревью 14.09); по перемеру v2
+    # OTE по свингу 10 держится над контролем по времени (Δ +1.0…+1.4), по свингу 5 — нет (Δ −0.2…−0.3). Нога 5 — справочно.
     rep["leg_alt"] = alt
     rep["leg"] = leg
 
