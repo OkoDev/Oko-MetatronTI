@@ -82,6 +82,7 @@ def transition(prev, ls, now, sym):
     if prev.get("status") == "entered" and ls.get("outcome"):
         prev["status"] = "closed"; prev["closed_at"] = str(ls["exit_time"])[:16]; prev["outcome"] = ls["outcome"]
         prev["exit_price"] = js(ls["exit_price"]); prev["pnl_pct"] = ls["pnl_pct"]
+        prev["outcome_trail"] = ls.get("outcome_trail"); prev["pnl_trail"] = ls.get("pnl_trail")
         print(f"  OUT  {sym:<12} {ls['outcome']} {ls['pnl_pct']:+.2f}%", flush=True)
     for k in ("cross_first", "line24_broken", "line24_first", "line24_now", "p5_ext", "last_close"):
         prev[k] = js(ls[k])
@@ -114,7 +115,7 @@ def save_and_report(state, a):
         if "egor" not in df: df["egor"] = ""
         cols = ["status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok",
                 "d_bull", "d_broke", "d_wt", "core", "core_full", "w5_reached", "corr_reached", "line24_broken", "cross_first", "entry_trigger",
-                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "zone_1d", "depth_1d", "egor", "egor_note", "ai", "ai_note",
+                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "outcome_trail", "pnl_trail", "cluster_3d", "cluster_norm", "mass_flush", "breadth10", "zone_1d", "depth_1d", "egor", "egor_note", "ai", "ai_note",
                 "w5_618", "w5_eq1", "w5_1618", "w5_chan", "corr_382", "corr_500", "corr_618", "key"]
         df = df.reindex(columns=[c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols])
         if not a.asof:
@@ -134,10 +135,13 @@ def full_scan(a):
     state = {} if a.asof else (json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {})
     print(f"[{now} UTC] полная разметка: {len(syms)} монет · LTF {a.ltf}", flush=True)
     n_ltf = int(ENTRY_W_H * 60 / TF_MIN[a.ltf]) * 4
+    R72 = []
     for i, s in enumerate(syms, 1):
         bx = f"{s.split('/')[0]}/USDT:USDT"
         try:
             dh = fetch(ex, bx, "4h", 1000)
+            if len(dh) > 20:
+                R72.append(float(dh.close.iloc[-1] / dh.close.iloc[-19] - 1))      # ход за 72 ч — для ширины слива
             if len(dh) < 400 and a.asof: dh = _cache(s, "4h").tail(1000)
             setups = mark_impulse(dh, NOW, P, "4h") if len(dh) >= 400 else []
             if not setups:
@@ -164,6 +168,7 @@ def full_scan(a):
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
         if i % 50 == 0: print(f"  {i}/{len(syms)}", flush=True)
     if not a.asof:
+        mark_market(state, now, R72, len(syms))
         refresh_analyst(state)
     save_and_report(state, a)
 
@@ -186,6 +191,29 @@ def write_ai_review(key, prev):
         prev["ai"], prev["ai_note"] = res["ai"], res["ai_note"]
     except Exception as e_:
         print(f"  [ИИ-сверка] {prev.get('sym')}: {type(e_).__name__} {e_}", flush=True)
+
+
+def mark_market(state, now, r72, n_univ):
+    """Рыночный момент для сетапов этого скана (замер 14.09, memory wave_3m_program):
+    · breadth10/20 — доля монет вселенной с ходом за 72 ч < −10% / −20% (высокая 10-78% — лучше, экстремальная >78% — хуже);
+    · cluster_3d — сколько РАЗНЫХ монет дали пятёрку той же стороны за ПРОШЛЫЕ 3 дня (без текущего дня);
+      cluster_norm — приведено к вселенной замера (145 монет); mass_flush — cluster_norm ≥ 7 (Δ +1.8 п.п., но 20 дней в замере)."""
+    arr = np.array(r72, float) if r72 else np.array([])
+    b10 = round(float((arr < -0.10).mean()), 3) if arr.size else None
+    b20 = round(float((arr < -0.20).mean()), 3) if arr.size else None
+    for k, v in state.items():
+        if v.get("detected_at") == now and v.get("breadth10") is None:
+            v["breadth10"], v["breadth20"], v["universe_n"] = b10, b20, n_univ
+    for k, v in state.items():
+        if v.get("cluster_3d") is not None:
+            continue
+        d0 = pd.Timestamp(v["detected_at"], tz="UTC").floor("1D")
+        others = {x["sym"] for x in state.values() if x["sym"] != v["sym"] and x.get("side") == v.get("side")
+                  and d0 - pd.Timedelta(days=3) <= pd.Timestamp(x["detected_at"], tz="UTC") < d0}
+        v["cluster_3d"] = len(others)
+        un = v.get("universe_n") or n_univ
+        v["cluster_norm"] = round(len(others) * 145 / max(un, 1), 1)
+        v["mass_flush"] = bool(v["cluster_norm"] >= 7)
 
 
 def refresh_analyst(state):

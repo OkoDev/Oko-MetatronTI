@@ -358,4 +358,22 @@ def ltf_status(setup: Dict[str, Any], dl: pd.DataFrame, p: WaveParams = WavePara
                 out.update({"outcome": "time", "exit_time": pd.Timestamp(lt[k]), "exit_price": float(c[k])}); break
         if out["exit_price"] is not None:
             out["pnl_pct"] = round(((out["exit_price"] - e) / e * 100) * (1 if long_ else -1) - cost_pct, 2)
+        # трейл параллельно (be_lab 14.09: единственное улучшение выхода, прошедшее замер — для входа line24):
+        # после хода ≥ 1× стопа стоп = max(стоп, вход, минимум последних 24 ч) для лонга (зеркально для шорта)
+        risk = abs(e - sl); bars24 = max(1, int(round(24 * 60 / max(1, (lt[1] - lt[0]) / np.timedelta64(1, "m"))))) if len(lt) > 1 else 96
+        tsl = sl; armed = False; mfe = 0.0
+        for k in range(j + 1, len(lt)):
+            if (lo_[k] <= tsl) if long_ else (hi_[k] >= tsl):
+                out.update({"outcome_trail": "trail" if armed else "stop", "exit_trail": tsl}); break
+            if (hi_[k] >= tp) if long_ else (lo_[k] <= tp):
+                out.update({"outcome_trail": "target", "exit_trail": tp}); break
+            if lt[k] >= end_t:
+                out.update({"outcome_trail": "time", "exit_trail": float(c[k])}); break
+            mfe = max(mfe, (hi_[k] - e) if long_ else (e - lo_[k]))
+            if mfe >= risk:
+                armed = True
+                seg = lo_[max(j + 1, k - bars24 + 1):k + 1] if long_ else hi_[max(j + 1, k - bars24 + 1):k + 1]
+                tsl = max(tsl, e, float(seg.min())) if long_ else min(tsl, e, float(seg.max()))
+        if out.get("exit_trail") is not None:
+            out["pnl_trail"] = round(((out["exit_trail"] - e) / e * 100) * (1 if long_ else -1) - cost_pct, 2)
     return out

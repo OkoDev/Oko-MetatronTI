@@ -3937,7 +3937,8 @@ async def api_waves_journal(_req):
                                              "altern", "count_ok", "core", "core_full", "d_bull", "d_broke", "d_wt", "wt_top", "w2_retr", "w4_retr", "w3_ext",
                                              "entry_trigger", "entered_at", "entry_price", "p4_target", "stop", "last_close", "w5_reached", "corr_reached",
                                              "line24_broken", "outcome", "pnl_pct", "detected_at", "bos1", "bos3", "ns", "absorbed",
-                                             "analyst_png", "zone_1d", "depth_1d")},
+                                             "analyst_png", "zone_1d", "depth_1d", "cluster_3d", "cluster_norm", "mass_flush", "breadth10",
+                                             "outcome_trail", "pnl_trail", "exit_price", "closed_at")},
                     "key": k, "chart": chart if os.path.exists(os.path.join(_WV_DIR, "charts", chart)) else None,
                     "review": rv.get(k, {})})
     order = {"entered": 0, "detected": 1, "closed": 2}
@@ -4016,7 +4017,9 @@ function num(x,d){return x==null?'—':(+x).toPrecision(d||5);}
 function card(r){var rv=r.review||{};
  var btns=function(who){return V.map(function(v){return '<span class="bt'+(rv[who]==v?' on':'')+'" data-k="'+r.key+'" data-w="'+who+'" data-v="'+v+'">'+v+'</span>';}).join('');};
  return '<section class=card id="c_'+r.key+'"><h2>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+r.side+'</span><span class=st>'+r.status+(r.outcome?' · '+r.outcome:'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+'</h2>'+
- (r.zone_1d?'<div class=meta><span class=zone>пятая в дневной ноге: '+r.zone_1d+' ('+r.depth_1d+')</span></div>':'')+
+ '<div class=meta>'+(r.zone_1d?'<span class=zone>пятая в дневной ноге: '+r.zone_1d+' ('+r.depth_1d+')</span> ':'')+
+  (r.cluster_3d!=null?'<span class=zone title="сколько разных монет дали пятёрку той же стороны за прошлые 3 дня; в скобках — приведено к 145 монетам замера">'+(r.mass_flush?'🌊 после массового слива':'кластер')+': '+r.cluster_3d+' ('+r.cluster_norm+')</span> ':'')+
+  (r.breadth10!=null?'<span class=zone title="доля монет вселенной с ходом за 72 ч ниже −10% на момент детекции">ширина слива: '+Math.round(r.breadth10*100)+'%</span>':'')+'</div>'+
  '<div class=meta>вершина '+String(r.top_time||'').slice(0,16)+' UTC · '+r.hours_from_top+' ч · импульс '+r.imp_pct+'% · '+fl('фрактал',r.fractal)+' '+fl('канал',r.depth5!=null&&r.depth5>=0.5)+' '+fl('черед',r.altern)+' '+fl('счёт',r.count_ok)+' · канал '+r.depth5+' · w2 '+r.w2_retr+' w4 '+r.w4_retr+' w3/w1 '+r.w3_ext+' · сломы '+r.bos1+'/'+r.bos3+' · 1D '+(r.d_bull?'бычья':'медвежья')+(r.d_broke?', свинг пробит':'')+', WT1D '+r.d_wt+(r.absorbed?' · поглощено свингов '+r.absorbed:'')+'</div>'+
  (r.analyst_png?'<figure><img src="/waves/analyst/'+r.analyst_png+'" alt="разбор '+r.sym+'" loading=lazy><figcaption class=mut>волновой разбор: 1D нога · 4h счёт · 3m слом · сценарии A/B'+(r.chart?' · <a href="/waves/chart/'+r.chart+'" target=_blank>разметка ядра</a>':'')+'</figcaption></figure>':
   (r.chart?'<figure><img src="/waves/chart/'+r.chart+'" alt="'+r.sym+'" loading=lazy></figure>':'<div class=empty>картинки нет</div>'))+
@@ -4025,7 +4028,9 @@ function card(r){var rv=r.review||{};
  '<div class=kv><span>цель (конец w4)</span><b>'+num(r.p4_target)+' '+pct(r.p4_target,r.entry_price,r.side)+'</b></div>'+
  '<div class=kv><span>стоп</span><b>'+num(r.stop)+' '+pct(r.stop,r.entry_price,r.side)+'</b></div>'+
  '<div class=kv><span>цели пятой</span><b>'+(r.w5_reached||'—')+'</b></div><div class=kv><span>коррекция показала</span><b>'+(r.corr_reached||'—')+'</b></div>'+
- '<div class=kv><span>линия 2-4</span><b>'+(r.line24_broken?'пробита':'нет')+'</b></div>'+(r.pnl_pct!=null?'<div class=kv><span>итог</span><b>'+r.pnl_pct+'%</b></div>':'')+'</div>'+
+ '<div class=kv><span>линия 2-4</span><b>'+(r.line24_broken?'пробита':'нет')+'</b></div>'+
+ (r.pnl_pct!=null?'<div class=kv><span>итог ('+r.outcome+')</span><b class="'+(r.pnl_pct>=0?'up':'dn')+'">'+r.pnl_pct+'%</b></div>':'')+
+ (r.pnl_trail!=null?'<div class=kv><span>итог с трейлом ('+r.outcome_trail+')</span><b class="'+(r.pnl_trail>=0?'up':'dn')+'">'+r.pnl_trail+'%</b></div>':'')+'</div>'+
  '<div class=rv><div class=row><span class=who>Егор</span>'+btns('egor')+'<input placeholder="заметка (что не так, где должна быть точка)" data-k="'+r.key+'" data-w="egor" value="'+(rv.egor_note||'').replace(/"/g,'&quot;')+'"></div>'+
  '<div class="row ai"><span class=who>ИИ</span>'+(rv.ai?'<b>'+rv.ai+'</b> · '+(rv.ai_note||'')+' <span class=mut>('+(rv.ai_ts||'')+')</span>':'ещё не смотрел')+'</div></div></section>';}
 function render(){var rows=ROWS.filter(function(r){var rv=r.review||{};
