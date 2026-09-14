@@ -237,33 +237,49 @@ def refresh_analyst(state):
 
 
 def tg_notify(state, reports=None):
-    """📤 Канал Oko_Waves (core.waves.wave_tg, настройки data/wave5_shadow/tg.json): новый сетап — схема разбора;
-    вход и выход — короткий ответ на пост сетапа. Постится только то, что появилось после `since` (без залпа по истории)."""
-    from core.waves.wave_tg import tg_config, publish_report, send_text
+    """📤 Канал Oko_Waves (core.waves.wave_tg, настройки data/wave5_shadow/tg.json). Всё по сетапу — ЦЕПОЧКОЙ ответов
+    (Егор 15.09: «обновление — ответным сообщением на предыдущую версию, так динамику видно»):
+    новый сетап — схема (ответом на последний пост этой монеты, если был) → обновление разбора, когда изменился его
+    отпечаток (state_diff: счёт, зона, слом, волна A, касание зоны, треугольник) → вход → выход. `tg_last` — id последнего
+    сообщения цепочки, `tg_sig` — отпечаток последней опубликованной версии. Только то, что появилось после `since`."""
+    from core.waves.wave_tg import tg_config, publish_report, send_text, state_diff, message_id
     cfg = tg_config()
     if not cfg.get("enabled"):
         return
-    since = cfg.get("since", "")
+    since = cfg.get("since", ""); out_dir = ROOT / "data" / "wave_analyst"
+
+    def chain(v, res):
+        mid = message_id(res)
+        if mid:
+            v["tg_last"] = mid
+        return bool(mid)
     for k, v in state.items():
         try:
-            name = html_escape(v["sym"].split("/")[0])
-            if cfg.get("post_new", True) and str(v.get("detected_at", "")) >= since and not v.get("tg_new") and reports and k in reports:
+            name = html_escape(v["sym"].split("/")[0]); r = (reports or {}).get(k)
+            if cfg.get("post_new", True) and str(v.get("detected_at", "")) >= since and not v.get("tg_new") and r:
+                prev_sym = [x.get("tg_last") for x in state.values() if x is not v and x.get("sym") == v["sym"] and x.get("tg_last")]
                 extra = f"Сетап тени: пятая {'вниз' if v['side'] == 'LONG' else 'вверх'} на 4h, импульс {v.get('imp_pct')}%, цель — конец 4-й {v['p4_target']:.6g}"
-                res = publish_report(reports[k], ROOT / "data" / "wave_analyst", side=v["side"], extra=html_escape(extra))
-                v["tg_new"] = (res.get("result") or {}).get("message_id") or -1
+                res = publish_report(r, out_dir, side=v["side"], extra=html_escape(extra), reply_to=max(prev_sym) if prev_sym else None)
+                v["tg_new"] = message_id(res) or -1; chain(v, res); v["tg_sig"] = r.get("state")
                 print(f"  TG   {v['sym']}: сетап {'ок' if res.get('ok') else res}", flush=True)
-            rid = v["tg_new"] if isinstance(v.get("tg_new"), int) and v["tg_new"] > 0 else None
+            elif r and v.get("tg_last") and v.get("status") != "closed":
+                changes = state_diff(v.get("tg_sig"), r.get("state"), r.get("price") or 0)
+                if changes:
+                    res = publish_report(r, out_dir, side=v["side"], note="; ".join(changes), reply_to=v["tg_last"])
+                    if chain(v, res):
+                        v["tg_sig"] = r.get("state")
+                    print(f"  TG   {v['sym']}: обновление ({'; '.join(changes)}) {'ок' if res.get('ok') else res}", flush=True)
             if cfg.get("post_trades", True) and v.get("entered_at") and str(v["entered_at"]) >= since and not v.get("tg_in"):
                 txt = "\n".join([f"▶️ <b>{name}</b> · {v['side']} · вход по {v.get('entry_trigger')} {v['entered_at']} UTC @ {v['entry_price']:.6g}",
                                  f"цель {v['p4_target']:.6g} · стоп {v['stop']:.6g}"])
-                v["tg_in"] = bool(send_text(txt, reply_to=rid).get("ok"))
+                v["tg_in"] = chain(v, send_text(txt, reply_to=v.get("tg_last")))
             if (cfg.get("post_trades", True) and v.get("status") == "closed" and v.get("pnl_pct") is not None
                     and str(v.get("closed_at", "")) >= since and not v.get("tg_out")):
                 icon = {"target": "✅", "stop": "⛔", "time": "⏱"}.get(v.get("outcome"), "•")
                 lines = [f"{icon} <b>{name}</b> · {v['side']} · выход {v.get('outcome')} {v['closed_at']} UTC · {v['pnl_pct']:+.2f}%"]
                 if v.get("pnl_trail") is not None:
                     lines.append(f"с трейлом: {v.get('outcome_trail')} {v['pnl_trail']:+.2f}%")
-                v["tg_out"] = bool(send_text("\n".join(lines), reply_to=rid).get("ok"))
+                v["tg_out"] = chain(v, send_text("\n".join(lines), reply_to=v.get("tg_last")))
         except Exception as e_:
             print(f"  [TG] {v.get('sym')}: {type(e_).__name__} {e_}", flush=True)
 

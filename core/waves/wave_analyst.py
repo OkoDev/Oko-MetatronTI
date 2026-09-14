@@ -582,6 +582,19 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
         clean["structure"] = {"kind": st["kind"], "form": st["form"], "up": st["up"], "p0": st["wave_px"][0], "p5": st["p5x"], "t5": str(st["t5x"])}
     (out_dir / f"{stem}.json").write_text(_json.dumps(clean, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     leg = rep.get("leg") or {}
+    ls = rep.get("ltf_state") or {}; cnt = rep.get("progress") or {}; tri = rep.get("triangle") or {}
+    zn = rep.get("zone") if isinstance(rep.get("zone"), dict) else None
+    # отпечаток разбора — для постов-обновлений в TG ответом на прошлую версию (core.waves.wave_tg.state_diff)
+    state = {"mode": rep.get("mode", "reversal"), "zone_1d": leg.get("zone"),
+             "p5": float(rep["structure"]["p5x"]) if rep["structure"] is not None else None,
+             "choch": float(ls["choch_int"]["level"]) if ls.get("choch_int") else None,
+             "choch_sw": float(ls["choch_sw"]["level"]) if ls.get("choch_sw") else None,
+             "a_done": bool(ls.get("a_done")), "zone_touch": ls.get("zone_touch_t") is not None,
+             "count_k": cnt.get("k"), "count_px": [float(x) for x in cnt.get("px", [])],
+             "zone_lo": float(zn["lo"]) if zn else None, "zone_hi": float(zn["hi"]) if zn else None,
+             "tri": f"{tri['tf']} {tri['kind']} · цена {tri['breakout']}" if tri else None,
+             "scen": [sc["name"] for sc in rep.get("scenarios", [])]}
     return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "mode": rep.get("mode", "reversal"), "zone": leg.get("zone"),
+            "state": state,
             "depth": round(leg["depth"], 3) if leg else None, "text": rep["text"], "price": rep.get("price"),
             "scenarios": [{"name": sc["name"], "targets": [(n, (float(v) if v == v else None)) for n, v in sc["targets"]], "invalid": sc["invalid"]} for sc in rep["scenarios"]]}
