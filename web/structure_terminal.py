@@ -39,6 +39,29 @@ def _phase():
     return None
 
 
+def _drift_regime():
+    """ИЗМЕРЕННЫЙ режим (11.09): дрейф вселенной + боевой дрейф-гейт шорта 15m.
+    Фаза phase_watch как режим не мерилась (ретро 46k сделок: разделяет на +0.003 п.п.) →
+    только справочно. gate() fail-open: без данных пропускает — для светофора это ложный
+    зелёный, поэтому нет данных → None («неизвестно»), а не «шорт в режиме»."""
+    try:
+        from core.context import universe_drift as ud
+        from core.infra.config_loader import config as _cfg
+        d = ud.get_drift()
+        if not d or d.get("drift30") is None:
+            return None
+        g = dict(_cfg.get("trading.impulse_fib_15m.drift_gate") or {})
+        g["mode"] = "live"           # светофор меряет РЕЖИМ, торгует ли гейт — неважно
+        ok, why = ud.gate("short", cfg={"g": g}, cfg_path="g")
+        return {"d30": round(float(d["drift30"]), 2),
+                "slope": None if d.get("slope180") is None else round(float(d["slope180"]), 1),
+                "day": d["day"], "coins": d["n_coins"], "short_ok": bool(ok),
+                "why": why.replace("gate:", "", 1)}
+    except Exception as e:
+        print(f"[DRIFT] {e}")
+        return None
+
+
 def _build():
     now = time.time()
     if now - _cache["ts"] < _TTL and _cache["data"] is not None:
@@ -52,7 +75,8 @@ def _build():
         rot = rotation_now()
     except Exception as e:
         print(f"[STRUCT] rotation err: {e}")
-    data = {"ts": int(now), "dominance": dom, "rotation": rot, "phase": _phase()}
+    data = {"ts": int(now), "dominance": dom, "rotation": rot, "phase": _phase(),
+            "drift": _drift_regime()}
     _cache["ts"] = now; _cache["data"] = data
     return data
 
@@ -90,6 +114,10 @@ def _screener_rows(limit=60):
 # падение, массовость) и читали задом наперёд. Метрика считает массовое ПАДЕНИЕ
 # (WT<−60 = перепроданность), которое фейд и покупает.
 _BREADTH_HI = 61        # порог из замера: ≥61 монет за 24ч → 4h-фейд PF 1.62 → 4.22 (p=0.00026)
+_BREADTH_SHARE_HI = 0.15  # 11.09: порог ДОЛЕЙ, не числом. 61 мерили на вселенной 140 монет (4h),
+                          # а терминал видит ~590 — абсолют не переносится. Доля ≥0.15 — наименьший
+                          # порог, значимый на обоих ТФ (4h PF 1.60→2.36 p=0.022; 15m 2.78→14.30)
+_MIN_TURN_M = 5           # оборот, млн $ — ниже него повестка отсеивает «проскальзывание»
 
 
 def _breadth_now():
@@ -97,14 +125,25 @@ def _breadth_now():
     Единственная метрика с доказанным множителем, а на экране её не было. Мгновенный срез
     пишем в БД → через сутки появится честное скользящее окно 24ч (как в замере)."""
     coins = _fetch_snap()
+    _fetch_oif()                         # оборот BingX, кэш 5 мин
     now = int(time.time())
+
+    def _liquid(base):
+        of = _oif_get(base)
+        return bool(of) and (of.get("turn") or 0) >= _MIN_TURN_M * 1e6
+
+    # 🔴 11.09: считаем ТОЛЬКО ликвидные. Раньше в ширину шло всё подряд, и из 27 монет
+    # за сутки 23 были с оборотом <5 млн (токенизированные акции, мемы) — тот самый
+    # неликвид, который повестка тут же отсеивает как «проскальзывание».
+    liq_universe = [s for s in coins if _liquid(s.split("/")[0])]
     syms = []
-    for s, rec in coins.items():
-        w = (rec.get("wt") or {}).get("4h") or {}
+    for s in liq_universe:
+        w = (coins[s].get("wt") or {}).get("4h") or {}
         if (w.get("atr") or 0) > 0 and w.get("wt1") is not None and w["wt1"] < -60:
             syms.append(s.split("/")[0])
     n_now = len(syms)
     n24 = None
+    cover = None
     try:
         c = sqlite3.connect(_DB, timeout=5)
         c.execute("""CREATE TABLE IF NOT EXISTS breadth_log(
@@ -112,7 +151,7 @@ def _breadth_now():
         last = c.execute("SELECT MAX(ts) FROM breadth_log").fetchone()[0] or 0
         if now - last >= 300:            # пишем не чаще раза в 5 минут
             c.execute("INSERT OR REPLACE INTO breadth_log VALUES (?,?,?,?)",
-                      (now, n_now, json.dumps(syms[:200]), len(coins)))
+                      (now, n_now, json.dumps(syms[:200]), len(liq_universe)))
             c.commit()
         rows = c.execute("SELECT syms FROM breadth_log WHERE ts > ?", (now - 86400,)).fetchall()
         if rows:
@@ -122,12 +161,21 @@ def _breadth_now():
                     uniq.update(json.loads(js) or [])
                 except Exception:
                     pass
-            n24 = len(uniq)             # РАЗНЫХ монет за окно 24ч — как в замере
+            # старые записи писались без фильтра ликвидности → фильтруем при чтении
+            n24 = len([b for b in uniq if _liquid(b)])   # РАЗНЫХ монет за 24ч — как в замере
+            # 🔴 лог пишется, только пока открыта страница: за сутки бывало 42 снимка из 288
+            # и дыра в 20 часов. «За 24ч» тогда = последние часы. Говорим об этом вслух.
+            cover = round(min(1.0, len(rows) / 288.0), 2)
         c.close()
     except Exception as e:
         print(f"[BREADTH] {e}")
-    return {"now": n_now, "day": n24, "universe": len(coins), "hi": _BREADTH_HI,
-            "wide": bool((n24 or n_now) >= _BREADTH_HI), "syms": syms[:24], "ts": now}
+    uni = len(liq_universe) or 1
+    share = (n24 if n24 is not None else n_now) / uni
+    return {"now": n_now, "day": n24, "universe": len(liq_universe), "min_turn": _MIN_TURN_M,
+            "share_pct": round(share * 100, 1), "share_hi_pct": round(_BREADTH_SHARE_HI * 100),
+            "wide": bool(share >= _BREADTH_SHARE_HI), "hi": _BREADTH_HI,
+            "cover": cover, "cover_h": round((cover or 0) * 24, 1),
+            "syms": syms[:24], "ts": now}
 
 
 async def api_breadth(_req):
@@ -219,37 +267,43 @@ def _agenda():
     clu = _cluster_map(rows)
     phase = (_phase() or {}).get("phase") or ""
     brd = _breadth_now()
+    drf = _drift_regime()
     _fetch_oif()
     longs, shorts, skipped = [], [], []
     for r in rows:
         side = r.get("trend")
         peers = clu.get(side) or []
         r["cluster"] = len(peers) if (r.get("in_zone") or r.get("approach")) else 0
-        r["vs_phase"] = bool((side == "short" and "UP" in phase.upper())
-                             or (side == "long" and "DOWN" in phase.upper()))
         if not (r.get("in_zone") or r.get("approach")):
             continue
         of = _oif_get(r["symbol"])
         plan = _plan_trade(r, of)
         # Кросс WT на ноге 4h: если он совпал со стороной сетапа и вышел ИЗ зоны OS/OB —
         # это доказанная механика (WT<−60 + разворот = фейд падения, PF 1.79), а не украшение.
-        cr = _tf_state(r["symbol"], "4h") or {}
+        cr = _wt_light(r["symbol"], "4h") or {}
         cd, ca, cz = cr.get("cross_dir") or 0, cr.get("cross_age"), cr.get("zone")
         r["_cross"] = {"dir": cd, "age": ca, "zone": cz} if cd else None
+        warn = None
+        if cd and (cd > 0) != (side == "long"):
+            zn = f" из {cz}" if cz in ("OS", "OB") else ""
+            warn = f"WT развернулся {'вверх' if cd > 0 else 'вниз'}{zn} {ca} бар назад — против входа"
         item = {"sym": r["symbol"], "side": side, "score": r.get("conf_score") or 0,
-                "cluster": r["cluster"], "why": _why(r), "plan": plan,
+                "cluster": r["cluster"], "why": _why(r), "plan": plan, "warn": warn,
                 "turn": round((of or {}).get("turn", 0) / 1e6, 1) if of else None,
                 "spread": round(of["spread"], 3) if of and of.get("spread") is not None else None}
         # отсев с ПРИЧИНОЙ — чтобы было видно, что система не молчит, а именно отсеяла
-        if r["vs_phase"]:
-            item["drop"] = f"против фазы ({phase})"
+        # 11.09: отсев «против фазы» снят — фаза не мерилась, а слепое вето по ней убило бы
+        # единственный доказанный pump-шорт (живёт ПРОТИВ фазы). Режим шорта — дрейф-гейт
+        # боевого 15m (перенос на механику скринера — допущение, не замер).
+        if side == "short" and drf and not drf["short_ok"]:
+            item["drop"] = f"шорт вне режима: дрейф 30д {drf['d30']:+.1f}% (гейт 15m-шорта)"
         elif (r["cluster"] or 0) < 2:
             item["drop"] = "одиночный сигнал (PF 0.67 против 2.24 у кластера)"
         elif plan and plan["cost_of_stop"] > 25:
             item["drop"] = f"косты съедят {plan['cost_of_stop']}% стопа"
         elif plan and plan["rr"] < 1.2:
             item["drop"] = f"RR {plan['rr']} — цель ближе стопа"
-        elif item["turn"] is not None and item["turn"] < 5:
+        elif item["turn"] is not None and item["turn"] < _MIN_TURN_M:
             item["drop"] = f"оборот {item['turn']} млн — проскальзывание"
         if item.get("drop"):
             skipped.append(item)
@@ -257,38 +311,65 @@ def _agenda():
             longs.append(item)
         else:
             shorts.append(item)
-    longs.sort(key=lambda x: (-(x["cluster"]), -(x["score"])))
-    shorts.sort(key=lambda x: (-(x["cluster"]), -(x["score"])))
+    # предупреждение обязано иметь цену: «WT против входа» опускает карточку вниз.
+    # Раньше warn только печатался, и карточка с ним стояла ПЕРВОЙ (аудит 11.09).
+    longs.sort(key=lambda x: (bool(x["warn"]), -(x["cluster"]), -(x["score"])))
+    shorts.sort(key=lambda x: (bool(x["warn"]), -(x["cluster"]), -(x["score"])))
     # ── режим дня и светофор ──
+    # 11.09: режим — по ИЗМЕРЕННЫМ приборам (ширина + дрейф вселенной), а не по фазе
     wide = brd["wide"]
     if wide:
-        mode = "ШИРОКОЕ ПАДЕНИЕ — фейд в силе"
+        mode = "ШИРОКОЕ ПАДЕНИЕ — отскок в силе"
         hint = "берём отскок падений; тренд-вход второстепенен"
-    elif "UP" in phase.upper():
-        mode = "ТРЕНД ВВЕРХ — работаем по тренду"
-        hint = "лонги по тренду; фейд не берём — падения нет"
-    elif "DOWN" in phase.upper():
-        mode = "ТРЕНД ВНИЗ"
-        hint = "шорты по тренду; лонг-фейд опасен без ширины падения"
+    elif drf is None:
+        mode = "РЕЖИМ НЕИЗВЕСТЕН"
+        hint = "нет свежего дрейфа вселенной — наполнитель не отработал; работать как в слабый день"
+    elif drf["short_ok"]:
+        mode = "РЫНОК ВЫРОС ЗА МЕСЯЦ — шорт в режиме"
+        hint = f"дрейф 30д {drf['d30']:+.1f}% и растёт — по замеру лучший режим для шорта"
+    elif drf["d30"] <= -30:
+        mode = "РЫНОК УЖЕ УПАЛ — шортить поздно"
+        hint = f"дрейф 30д {drf['d30']:+.1f}% — по замеру худший режим для шорта"
     else:
-        mode = "ДИАПАЗОН"
-        hint = "работаем от границ, размер меньше обычного"
+        mode = "СПОКОЙНЫЙ РЫНОК — режим не подтверждён"
+        hint = (f"дрейф 30д {drf['d30']:+.1f}%: шорт вне режима, "
+                f"для лонга измеренного прибора режима нет — размер меньше обычного")
     n = len(longs) + len(shorts)
+    # 🔴 11.09: светофор по РЕЖИМУ, а не по числу строк. Раньше 15 найденных строк давали
+    # «зелёный» при фазе UNCLEAR и узкой ширине — то есть в слабый по обоим признакам день.
+    regime_ok = wide or bool(drf and drf["short_ok"])
     if n == 0:
         light, reason = "red", "нет кандидатов, прошедших фильтры — сегодня смотрим, не торгуем"
+    elif not regime_ok:
+        drift_txt = (f"шорт вне режима (дрейф 30д {drf['d30']:+.1f}%)" if drf
+                     else "дрейф вселенной неизвестен")
+        light, reason = "yellow", (f"кандидатов {n}, но режим не подтверждён: падение узкое "
+                                   f"({brd['share_pct']}% ликвидных монет при пороге "
+                                   f"{brd['share_hi_pct']}%), {drift_txt} — выборочно и половиной размера")
     elif n <= 2:
         light, reason = "yellow", f"кандидатов мало ({n}) — работать выборочно, размером меньше"
     else:
         light, reason = "green", f"{n} кандидатов прошли кластер, фазу и косты"
     return {"phase": phase, "mode": mode, "hint": hint, "breadth": brd,
-            "light": light, "reason": reason,
+            "light": light, "reason": reason, "n_long": len(longs), "n_short": len(shorts),
+            "drift": drf,
             "long": longs[:_AGENDA_TOP], "short": shorts[:_AGENDA_TOP],
             "skipped": skipped[:8], "ts": int(time.time())}
 
 
+_agenda_cache = {"ts": 0.0, "data": None}
+_AGENDA_TTL = 45.0
+
+
 async def api_agenda(_req):
-    """GET /api/agenda — повестка дня: режим, светофор, готовые планы сделок."""
-    return web.json_response(_agenda())
+    """GET /api/agenda — повестка дня: режим, светофор, готовые планы сделок (кэш 45с)."""
+    now = time.time()
+    if _agenda_cache["data"] and now - _agenda_cache["ts"] < _AGENDA_TTL:
+        return web.json_response(_agenda_cache["data"])
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(_POOL, _agenda)   # не держим event loop на расчёте
+    _agenda_cache.update(ts=now, data=data)
+    return web.json_response(data)
 
 
 async def api_screener(req):
@@ -310,8 +391,7 @@ async def api_screener(req):
 
 
 _CLEAN_ERA = "2026-07-11"   # sl_touch+costs (грязь размечена data_era)
-_TRACK = ["radar_pump", "radar_spring", "radar_build", "atr_s2", "atr_change",
-          "ds_advisor", "breakout", "rangefade", "rangefade4h"]
+# список источников табло строится из БД (что реально торгует) — см. _scoreboard, 11.09
 
 
 def _scoreboard():
@@ -328,13 +408,22 @@ def _scoreboard():
             FROM simulated_trades
             WHERE status IN ('SL','TP','TSL') AND created_at >= '{_CLEAN_ERA}'
             GROUP BY signal_type, mode""").fetchall()
+        # 11.09: список — из того, что РЕАЛЬНО торгует (VST-исполнения за 14 дней или открытая
+        # позиция), а не ручной. Ручной не знал боевых ote_nested/impulse_fib*/choch_wavec и
+        # держал atr_s2 с нулём сделок (он недостижим: tf=='4h' при скане 15m).
+        live = [r[0] for r in c.execute(
+            """SELECT signal_type FROM simulated_trades WHERE execution_mode='VST'
+               GROUP BY signal_type
+               HAVING SUM(created_at >= date('now','-14 day')) > 0
+                   OR SUM(status IN ('OPEN','PENDING_ENTRY')) > 0
+               ORDER BY SUM(created_at >= date('now','-14 day')) DESC""")]
         c.close()
         agg: dict = {}
         for r in rows:
             agg.setdefault(r["signal_type"], {})[r["mode"]] = {
                 "n": r["n"], "wr": r["wr"], "net": r["net"]}
         return [{"src": s, "vst": agg.get(s, {}).get("vst"),
-                 "sim": agg.get(s, {}).get("sim")} for s in _TRACK]
+                 "sim": agg.get(s, {}).get("sim")} for s in live]
     except Exception:
         return []
 
@@ -391,6 +480,13 @@ def _inplay():
         sc.close()
     except Exception:
         pass
+    # 11.09: без фильтра ликвидности сюда попадал неликвид (LAPTOP 🔥 при обороте ~1 млн) —
+    # тот, что повестка отсеивает как «проскальзывание». Порог общий: _MIN_TURN_M.
+    # Нет данных оборота вообще (сеть) → не фильтруем, иначе список молча опустеет.
+    _fetch_oif()
+    if _oif["cur"]:
+        coins = {s: t for s, t in coins.items()
+                 if ((_oif_get(s) or {}).get("turn") or 0) >= _MIN_TURN_M * 1e6}
     ranked = sorted(coins.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     return [{"sym": s, "tags": "".join(t)} for s, t in ranked[:24]]
 
@@ -619,11 +715,53 @@ def _vol_anomaly(sym, tf):
     return out
 
 
-_SNAP_TFS = ("5m", "15m", "1h", "4h", "1d")   # WT+ATRTrend бот ведёт по всем пяти (17.08)
-_SMC_TFS = ("15m", "1h", "4h")                   # а SMC-флаги — только по этим трём
+_SNAP_TFS = ("3m", "5m", "15m", "1h", "4h", "1d")   # WT+ATRTrend бот ведёт по всем шести (3m — 10.09)
+_SMC_TFS = ("3m", "5m", "15m", "1h", "4h", "1d")  # SMC-флаги: 1d шина вела всегда, но константа
+                                                  # врала и прятала его; 3m/5m добавлены 11.09
 _tfs: dict = {}                     # (sym,tf) → (ts, состояние)
 _TFS_TTL = 120.0
 _DIVD = None
+
+
+_wtl: dict = {}          # (sym,tf) → (ts, лёгкое состояние WT)
+
+
+def _wt_light(sym, tf):
+    """WT + зона + состояние кросса и его возраст. БЕЗ дивергенции — она стоит 4.3с на монету
+    (52 прогона детектора) и повестке не нужна: там кросс и зона. Разделено 19.08, когда
+    /api/agenda отвечал 6-12 секунд."""
+    key = (sym, tf)
+    hit = _wtl.get(key)
+    now = time.time()
+    if hit and now - hit[0] < _TFS_TTL:
+        return hit[1]
+    out = None
+    try:
+        import pandas as pd
+        from core.indicators.indicators import calculate_wt
+        bars = _klines(sym, tf, 300)
+        if len(bars) >= 60:
+            d = calculate_wt(pd.DataFrame([{"high": b["h"], "low": b["l"], "close": b["c"]}
+                                           for b in bars]))
+            w1s, w2s = d["wt1"].values, d["wt2"].values
+            w1, w2 = float(w1s[-1]), float(w2s[-1])
+            c_dir, c_age = (1 if w1 > w2 else (-1 if w1 < w2 else 0)), None
+            for k in range(len(w1s) - 1, max(1, len(w1s) - 250), -1):
+                up = w1s[k - 1] <= w2s[k - 1] and w1s[k] > w2s[k]
+                dn = w1s[k - 1] >= w2s[k - 1] and w1s[k] < w2s[k]
+                if up or dn:
+                    c_dir = 1 if up else -1
+                    c_age = len(w1s) - 1 - k
+                    break
+            out = {"wt1": round(w1, 1), "wt2": round(w2, 1),
+                   "zone": "OB" if w1 >= 60 else ("OS" if w1 <= -60 else "N"),
+                   "cross": 1 if (w1s[-2] <= w2s[-2] and w1 > w2) else
+                            (-1 if (w1s[-2] >= w2s[-2] and w1 < w2) else 0),
+                   "cross_dir": c_dir, "cross_age": c_age}
+            _wtl[key] = (now, out)
+    except Exception as e:
+        print(f"[WTL] {sym}/{tf}: {e}")
+    return out
 
 
 def _tf_state(sym, tf):
@@ -691,6 +829,63 @@ def _tf_state(sym, tf):
     return out
 
 
+_wvs: dict = {}                     # (sym,tf) → (ts, [сетапы]) — волновая разметка из свечей
+_WVS_TTL = 240.0                     # разметка меняется только на закрытии бара
+_WAVE_SCALE = {"4h": (15, 4), "1h": (60, 15)}   # рабочий масштаб ядра ≈ 60-80 ч: свинг/младший слой по ТФ
+
+
+def _wave_state(sym, tf):
+    """Разметка пятиволнового импульса на закрытом баре ТФ — core.waves (тот же код, что в тени и
+    бэктесте). Только 1h/4h: на 15m масштабу ядра нужно >1400 свечей, BingX столько не отдаёт."""
+    if tf not in _WAVE_SCALE:            # вне масштаба ядра не считаем: предупреждение уже показано, монет ноль
+        return []
+    key = (sym, tf)
+    hit = _wvs.get(key)
+    now = time.time()
+    if hit and now - hit[0] < _WVS_TTL:
+        return hit[1]
+    out = []
+    try:
+        import pandas as pd
+        from core.waves import mark_impulse, WaveParams
+        sw, il = _WAVE_SCALE[tf]
+        bars = _klines(sym, tf, 1000)
+        if len(bars) >= 6 * sw + 60:
+            d = pd.DataFrame([{"ts": pd.Timestamp(b["t"], unit="s", tz="UTC"), "open": b["o"], "high": b["h"],
+                               "low": b["l"], "close": b["c"], "volume": b["v"]} for b in bars]).set_index("ts")
+            tfm = {"1h": 60, "4h": 240}.get(tf, 240)
+            d = d[d.index + pd.Timedelta(minutes=tfm) <= pd.Timestamp.utcnow()]      # последний бар открыт — убрать
+            out = mark_impulse(d, pd.Timestamp.utcnow(), WaveParams(sw=sw, il=il), tf)
+        _wvs[key] = (now, out)
+    except Exception as e:
+        print(f"[WAVE] {sym}/{tf}: {e}")
+    return out
+
+
+def _match_wave(setups, b):
+    """Блок «волны»: сторона (long = 5 волн вниз, short = 5 вверх, any) + требования правил ядра.
+    Возвращает найденный сетап или None."""
+    want = b.get("wave")
+    for s in setups or []:
+        if want == "long" and s["side"] != "LONG":
+            continue
+        if want == "short" and s["side"] != "SHORT":
+            continue
+        if b.get("wave_fractal") and not s["fractal"]:
+            continue
+        if b.get("wave_channel") and not (s["depth5"] is not None and s["depth5"] >= 0.5):
+            continue
+        if b.get("wave_altern") and not s["altern"]:
+            continue
+        if b.get("wave_count") and not s["count_ok"]:
+            continue
+        mx = b.get("wave_age")
+        if mx is not None and s["hours_from_top"] > mx:
+            continue
+        return s
+    return None
+
+
 def _match_tf_extra(st, b):
     """Условия блока по посчитанному состоянию (для 5m/1d) — WT/зона/кросс."""
     if st is None:
@@ -753,9 +948,32 @@ async def api_filter(req):
     vtf = g.get("vol_tf") or "1h"
     out = []
     pre = []
-    # блоки делим: снапшотные (дёшево, лежат в шине) и вычисляемые из свечей (5m/1d — дорого)
-    snap_blocks = [b for b in blocks if (b.get("tf") or "1h") in _SNAP_TFS]
-    calc_blocks = [b for b in blocks if (b.get("tf") or "1h") not in _SNAP_TFS]
+    # блоки делим: снапшотные (дёшево, лежат в шине) и вычисляемые из свечей (дорого)
+    # 🔴 10.09: снапшотность решаем по ФАКТУ, а не по константе. Дважды было так, что
+    # ТФ числился в _SNAP_TFS, а шина его не отдавала (1d — 17.08, 3m — до перезапуска бота
+    # с этой правкой): блок молча отсеивал ВСЕ монеты, фильтр возвращал ноль без ошибки.
+    # Чего в шине нет — считаем из свечей, медленнее, но честно.
+    _live_tfs: set = set()
+    for _r in list(coins.values())[:20]:
+        _live_tfs |= set((_r.get("wt") or {}).keys())
+    _snap_tfs = tuple(t for t in _SNAP_TFS if t in _live_tfs) if _live_tfs else _SNAP_TFS
+    # то же для SMC: флаги считать нечем, если шина по этому ТФ их не ведёт (бот не перезапущен
+    # после добавления ТФ). Молчать нельзя — блок отсеет ВСЕ монеты и ноль будет выглядеть
+    # как честный результат. Говорим вслух: фронт покажет это над таблицей.
+    _live_smc: set = set()
+    for _r in list(coins.values())[:20]:
+        _live_smc |= set((_r.get("smc") or {}).keys())
+    _SMC_KEYS = ("ob_bull", "ob_bear", "fvg_bull", "fvg_bear", "choch", "bos")
+    warn = []
+    if _live_smc:
+        for b in blocks:
+            _btf = b.get("tf") or "1h"
+            if _btf not in _live_smc and any(b.get(k) for k in _SMC_KEYS):
+                warn.append(f"SMC-флаги на {_btf} шина сейчас не отдаёт — "
+                            f"условие не проверено, монет будет ноль. Есть: "
+                            f"{', '.join(sorted(_live_smc))}")
+    snap_blocks = [b for b in blocks if (b.get("tf") or "1h") in _snap_tfs]
+    calc_blocks = [b for b in blocks if (b.get("tf") or "1h") not in _snap_tfs]
     for sym, rec in coins.items():
         base = sym.split("/")[0]
         if all(_match_block(rec, b) for b in snap_blocks) and _match_global(rec, g) \
@@ -802,6 +1020,35 @@ async def api_filter(req):
                     rec = dict(rec); rec["_div"] = found
                 keep.append((sym, rec, base))
         pre = keep
+    # 🌊 блок «волны» (14.09): разметка из свечей, тяжёлая фаза после всех остальных условий.
+    wave_blocks = [b for b in blocks if b.get("wave")]
+    for b in wave_blocks:
+        if (b.get("tf") or "1h") not in _WAVE_SCALE:
+            warn.append(f"волны считаются только на 1h и 4h (масштаб ядра ≈ 60-80 ч), блок {b.get('tf')} не проверен — монет будет ноль")
+    if wave_blocks:
+        loop = asyncio.get_running_loop()
+        wtfs = sorted({b.get("tf") or "1h" for b in wave_blocks})
+        keep = []
+        for i in range(0, min(len(pre), 400), 24):
+            chunk = pre[i:i + 24]
+            res = await asyncio.gather(*[loop.run_in_executor(_POOL, _wave_state, b, tf) for _, _, b in chunk for tf in wtfs])
+            k = 0
+            for sym, rec, base in chunk:
+                st = {}
+                for tf in wtfs:
+                    st[tf] = res[k]; k += 1
+                found = None
+                for b in wave_blocks:
+                    found = _match_wave(st.get(b.get("tf") or "1h"), b)
+                    if found is None:
+                        break
+                if found is None:
+                    continue
+                rec = dict(rec); rec["_wave"] = {"side": found["side"], "tf": found["tf"], "h": found["hours_from_top"], "imp": found["imp_pct"],
+                                                  "fr": found["fractal"], "ch": found["depth5"], "alt": found["altern"], "cnt": found["count_ok"],
+                                                  "core": found["core_full"], "p4": found["p4_target"], "p5": found["p5"], "d_wt": found["d_wt"]}
+                keep.append((sym, rec, base))
+        pre = keep
     if vmin:                    # объём считаем ТОЛЬКО по прошедшим прочие условия (это klines-запрос)
         loop = asyncio.get_running_loop()
         vres = await asyncio.gather(*[loop.run_in_executor(_POOL, _vol_anomaly, b, vtf)
@@ -825,7 +1072,8 @@ async def api_filter(req):
                     "vr": va.get("ratio"), "vz": va.get("z"), "vbody": va.get("body"),
                     "div": (rec.get("_div") or {}).get("t"),
                     "div_age": (rec.get("_div") or {}).get("a"),
-                    "div_tf": (rec.get("_div") or {}).get("tf")})
+                    "div_tf": (rec.get("_div") or {}).get("tf"),
+                    "wave": rec.get("_wave")})
     # Кросс показываем ВСЕГДА, без доп. поисков: направление действующего состояния + сколько
     # баров назад установилось (Егор 19.08 «EGLD ↑2»). Считаем только для итогового списка —
     # он короткий, поэтому дёшево. Зона рядом: кросс ИЗ OS/OB сильнее прочих.
@@ -833,7 +1081,7 @@ async def api_filter(req):
     if out:
         loop = asyncio.get_running_loop()
         head = out[:40]
-        st_all = await asyncio.gather(*[loop.run_in_executor(_POOL, _tf_state, x["sym"], ctf)
+        st_all = await asyncio.gather(*[loop.run_in_executor(_POOL, _wt_light, x["sym"], ctf)
                                         for x in head])
         for x, stt in zip(head, st_all):
             if stt:
@@ -847,7 +1095,8 @@ async def api_filter(req):
         out.sort(key=lambda x: (x["spread"] if x["spread"] is not None else 9e9))
     else:
         out.sort(key=lambda x: x["sym"])
-    return web.json_response({"coins": out, "n": len(out), "total": len(coins), "ts": int(time.time())})
+    return web.json_response({"coins": out, "n": len(out), "total": len(coins),
+                              "warn": warn, "ts": int(time.time())})
 
 
 # ── МНОГООКОННЫЙ МОНИТОР (Егор 14.08): фильтр → сетка живых графиков, аналог TW ──
@@ -1690,6 +1939,7 @@ function card(x){
    '<span class="sd '+x.side+'">'+(x.side=='long'?'LONG':'SHORT')+'</span>'+
    '<span class=sc>score '+(x.score||0).toFixed(1)+'</span></div>'+
   '<div class=why>'+why+'</div>'+
+  (x.warn?('<div style="color:var(--o);font-size:12px;margin:-2px 0 6px">⚠ '+x.warn+' · поэтому карточка ниже остальных</div>'):'')+
   '<div class=lv>'+
    '<div><div class=t>вход</div><div class=v>'+p.entry+'</div></div>'+
    '<div class=sl><div class=t>стоп −'+p.risk_pct+'%</div><div class=v>'+p.sl+'</div></div>'+
@@ -1710,8 +1960,12 @@ async function load(){
   var b=d.breadth||{};
   document.getElementById('mode').innerHTML=
    '<div><div class=big>'+d.mode+'</div><div class=hint>'+d.hint+'</div></div>'+
-   '<div class=brd>ширина падения<b>'+(b.day!=null?b.day:b.now)+' / '+b.hi+'</b>'+
-    'фаза '+(d.phase||'—')+'</div>';
+   '<div class=brd title="монеты в растущем 4h-тренде, резко упавшие в перепроданность (WT ниже −60), уникальные за 24ч. Считаются только ликвидные: оборот от '+b.min_turn+' млн">ширина падения<b>'+
+    (b.day!=null?b.day:b.now)+' из '+b.universe+' · '+b.share_pct+'%</b>'+
+    'порог '+b.share_hi_pct+'%'+
+    (d.drift?'<br>дрейф 30д '+(d.drift.d30>0?'+':'')+d.drift.d30+'% · шорт '+(d.drift.short_ok?'в режиме':'вне режима'):'')+
+    '<br><span style=opacity:.6 title="фаза phase_watch как режим не мерилась: ретро-тест 46 тыс. сделок — разделяет результат на +0.003 п.п.">фаза '+(d.phase||'—')+' · не мерилась</span>'+
+    (b.cover!=null&&b.cover<0.8?'<br><span style="color:var(--o)">окно неполное: '+b.cover_h+' ч из 24</span>':'')+'</div>';
   var L=document.getElementById('light');
   L.className='light '+d.light;
   L.innerHTML='<span class=dot></span><span><b>'+
@@ -1721,8 +1975,9 @@ async function load(){
    '<div class=empty>нет лонг-кандидатов, прошедших фильтры</div>';
   document.getElementById('shorts').innerHTML=(d.short||[]).map(card).join('')||
    '<div class=empty>нет шорт-кандидатов, прошедших фильтры</div>';
-  document.getElementById('nlong').textContent=(d.long||[]).length;
-  document.getElementById('nshort').textContent=(d.short||[]).length;
+  var nl=(d.long||[]).length, ns=(d.short||[]).length;   // «5 из 15»: показано из прошедших
+  document.getElementById('nlong').textContent=nl+(d.n_long>nl?' из '+d.n_long:'');
+  document.getElementById('nshort').textContent=ns+(d.n_short>ns?' из '+d.n_short:'');
   var sk=document.getElementById('skip');
   if((d.skipped||[]).length){sk.style.display='';
    sk.innerHTML='<h3>Отсеяны — и почему</h3>'+(d.skipped).map(function(x){
@@ -1803,7 +2058,7 @@ __NAV__
   <div class=sbgrid id=board></div>
 </div>
 <div class=card style=margin-top:14px>
-  <div class=lbl>🎯 В ИГРЕ сейчас <span class=dim style=text-transform:none>· радар🚀🌱🔨 · OTE🎯 · DC🤖 · хайп🔥 (сортировка: конфлюэнция внимания)</span></div>
+  <div class=lbl>🎯 В ИГРЕ сейчас <span class=dim style=text-transform:none>· радар🚀🌱🔨 · OTE🎯 · DC🤖 · хайп🔥 · только ликвидные (порог как в повестке) · порядок = сколько источников заметили монету: это внимание, а не прогноз</span></div>
   <div class=ipwrap id=inplay></div>
 </div>
 <div class=card style=margin-top:14px>
@@ -1836,12 +2091,22 @@ async function tick(){
  try{const r=await fetch('/api/structure',{cache:'no-store'});const d=await r.json();
   const dm=d.dominance,rt=d.rotation;
   const du=rt?rt.d_usdtd:0,db=rt?rt.d_btcd:0,da=rt?rt.d_alt_pct:0;
-  const cards=[['USDT.D',dm?dm.usdt_d:null,du,'пп'],['BTC.D',dm?dm.btc_d:null,db,'пп'],['ALT.D',dm?dm.alt_d:null,da,'% mcap']];
+  // 11.09: значение и стрелка — из ОДНОЙ серии (часовая CMC, по ней же вердикт ротации).
+  // Было: значение из live_dominance (6.92%), стрелка из CMC (там USDT.D 7.02%) — разные ряды.
+  const cards=[['USDT.D',rt?rt.usdt_d:(dm?dm.usdt_d:null),du,'пп'],['BTC.D',rt?rt.btc_d:(dm?dm.btc_d:null),db,'пп'],['ALT.D',dm?dm.alt_d:null,da,'% альт-капы']];
   document.getElementById('tri').innerHTML=cards.map(c=>
    '<div class=card><div class=lbl>'+c[0]+'</div><div class=val>'+(c[1]!=null?c[1].toFixed(2)+'%':'—')+'</div><div class=d>'+arrow(c[2])+' <span style=color:var(--dim)>'+c[3]+' /'+(rt?rt.window_h:'?')+'ч</span></div></div>').join('');
   const rot=document.getElementById('rot');rot.className='banner '+bcls(rt&&rt.verdict);rot.textContent=rt?rt.verdict:'ротация: нет данных (CMC)';
-  const ph=d.phase;document.getElementById('phase').innerHTML=ph?('<div class=lbl>ФАЗА РЫНКА</div><div style=font-size:18px;font-weight:600;margin-top:4px>'+ph.phase+'</div><div class=meta>'+(ph.detail||'')+'</div>'):'<div class=lbl>ФАЗА</div><div class=meta>нет данных phase_state</div>';
-  const cov=dm?(' · покрытие '+(dm.cov_mcap*100).toFixed(0)+'% mcap'):'';
+  // 11.09: режим — измеренный дрейф вселенной; фаза phase_watch только справочно
+  const ph=d.phase,dr=d.drift;document.getElementById('phase').innerHTML=
+   '<div class=lbl>РЕЖИМ РЫНКА · дрейф вселенной</div>'+
+   (dr?('<div style=font-size:18px;font-weight:600;margin-top:4px>'+(dr.d30>0?'+':'')+dr.d30+'% за 30 дней</div>'+
+        '<div class=meta>шорт '+(dr.short_ok?'<span class=up>в режиме</span>':'<span class=dn>вне режима</span>')+' · '+dr.why+'</div>')
+      :'<div class=meta>нет свежего дрейфа — наполнитель не отработал</div>')+
+   '<div class=meta style="margin-top:6px;opacity:.6" title="ретро-тест 46 тыс. сделок: макро-фаза разделяет результат на +0.003 п.п.">фаза phase_watch: '+
+    (ph?ph.phase:'—')+' — справочно, как режим не мерилась</div>';
+  const cov=dm?(' · покрытие '+(dm.cov_mcap*100).toFixed(0)+'% mcap · живое USDT.D '+dm.usdt_d.toFixed(2)+
+   '% по живым ценам (карточки выше — часовая серия CMC, как и стрелки)'):'';
   document.getElementById('foot').textContent='total '+(dm?('$'+(dm.total_mcap/1e12).toFixed(3)+'T'):'—')+cov+' · self-computed (без TW/прокси)';
   document.getElementById('age').textContent='обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
  }catch(e){document.getElementById('age').innerHTML='<span class=err>сервер недоступен</span>';}
@@ -1937,17 +2202,20 @@ document.querySelectorAll('#filters .chip').forEach(function(ch){ch.addEventList
 document.querySelector('#filters .chip[data-f=all]').classList.add('on');
 async function brd(){
  try{var r=await fetch('/api/breadth',{cache:'no-store'});var d=await r.json();
-  var n=d.day!=null?d.day:d.now, wide=n>=d.hi;
-  var pct=Math.min(100,Math.round(100*n/d.hi));
+  // 11.09: порог — ДОЛЯ ликвидных монет (d.wide считает сервер), а не абсолют 61
+  var n=d.day!=null?d.day:d.now, wide=!!d.wide;
+  var pct=Math.min(100,Math.round(100*d.share_pct/d.share_hi_pct));
   document.getElementById('breadth').innerHTML=
    '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">'+
-    '<span style="font-size:32px;font-weight:700;color:'+(wide?'var(--g)':'var(--tx)')+'">'+n+'</span>'+
-    '<span style=color:var(--dim)>монет за 24ч · сейчас '+d.now+' · вселенная '+d.universe+'</span>'+
+    '<span style="font-size:32px;font-weight:700;color:'+(wide?'var(--g)':'var(--tx)')+'">'+d.share_pct+'%</span>'+
+    '<span style=color:var(--dim)>'+n+' из '+d.universe+' ликвидных за 24ч · сейчас '+d.now+'</span>'+
     '<span style="margin-left:auto;font-weight:600;color:'+(wide?'var(--g)':'var(--dim)')+'">'+
-     (wide?'ШИРОКОЕ ПАДЕНИЕ — фейд в силе':'узко — фейд слабый (нужно ≥'+d.hi+')')+'</span></div>'+
+     (wide?'ШИРОКОЕ ПАДЕНИЕ — фейд в силе':'узко — фейд слабый (нужно ≥'+d.share_hi_pct+'%)')+'</span></div>'+
    '<div style="height:6px;border-radius:3px;background:var(--line);margin-top:8px;overflow:hidden">'+
     '<span style="display:block;height:100%;width:'+pct+'%;background:'+(wide?'var(--g)':'#5a4a28')+'"></span></div>'+
-   (d.syms&&d.syms.length?('<div style=margin-top:8px;color:var(--dim);font-size:12px>льют сейчас: '+
+   (d.cover!=null&&d.cover<0.8?('<div style=margin-top:6px;color:var(--o);font-size:12px>окно неполное: '+
+     d.cover_h+' ч из 24 — лог пишется с 11.09 в фоне, полное окно будет через сутки</div>'):'')+
+   (d.syms&&d.syms.length?('<div style=margin-top:8px;color:var(--dim);font-size:12px>падают сейчас: '+
      d.syms.join(' · ')+'</div>'):'');
  }catch(e){}}
 async function sb(){try{var r=await fetch('/api/scoreboard',{cache:'no-store'});var d=await r.json();var g=d.gate||30;
@@ -2088,6 +2356,9 @@ __NAV__
 <div class=card>
   <div class=sect>
     <div class=lbl>Найдено <span id=srt class=note style=text-transform:none></span></div>
+    <div id=warn style="display:none;margin:0 0 8px;padding:7px 10px;border-radius:6px;
+     background:rgba(230,160,40,.10);border:1px solid rgba(230,160,40,.35);
+     color:#e0a83c;font-size:12px;line-height:1.5"></div>
     <div class=res id=list><div class=empty>задай условия — список появится здесь</div></div>
   </div>
 </div>
@@ -2104,8 +2375,8 @@ __NAV__
 </div>
 
 <script>
-var TFS=['5m','15m','1h','4h','1d'];
-var SMCTF=['15m','1h','4h'];         // SMC-флаги ведёт шина только по этим ТФ
+var TFS=['3m','5m','15m','1h','4h','1d'];
+var SMCTF=['3m','5m','15m','1h','4h','1d'];  // SMC-флаги ведёт шина по этим ТФ (1d вела всегда — 11.09)
 var DIVOPT='<option value="">—</option><option value=any>любая</option><option value="R+">R+</option>'+
  '<option value="R−">R−</option><option value="H+">H+</option><option value="H−">H−</option>';
 
@@ -2122,7 +2393,7 @@ document.getElementById('g_flow').innerHTML=
  '<span class=grp title="изменение открытого интереса за ~5 минут"><b>OI</b><select id=g_oidir><option value="">—</option><option value=up>рост ≥</option><option value=down>падение ≥</option></select><input type=number id=g_oipct value=2 step=0.5 style=width:46px>%</span>'+
  '<span class=grp title="суточный оборот: ниже 10 млн проскальзывание съедает эдж"><b>оборот ≥</b><input type=number id=g_turn placeholder=любой style=width:60px>млн$</span>'+
  '<span class=grp title="спред BingX: прямой налог на каждый вход"><b>спред ≤</b><input type=number id=g_spread placeholder=0.05 step=0.01 style=width:56px>%</span>'+
- '<span class=grp title="объём последнего ЗАКРЫТОГО бара к средней за 20 баров"><b>объём ≥</b><input type=number id=g_vr placeholder=3 step=0.5 style=width:46px>×<select id=g_vtf><option value=5m>5m</option><option value=15m>15m</option><option value=1h selected>1h</option><option value=4h>4h</option><option value=1d>1d</option></select></span>';
+ '<span class=grp title="объём последнего ЗАКРЫТОГО бара к средней за 20 баров"><b>объём ≥</b><input type=number id=g_vr placeholder=3 step=0.5 style=width:46px>×<select id=g_vtf><option value=3m>3m</option><option value=5m>5m</option><option value=15m>15m</option><option value=1h selected>1h</option><option value=4h>4h</option><option value=1d>1d</option></select></span>';
 
 // ── БЛОКИ ТФ: аккордеон, свёрнутый показывает сводку активных условий ──
 document.getElementById('blocks').innerHTML=TFS.map(function(tf){
@@ -2138,10 +2409,12 @@ document.getElementById('blocks').innerHTML=TFS.map(function(tf){
    '<span class=grp title="кросс WT как СОСТОЯНИЕ: ↑ = wt1 выше сигнальной, держится до обратного пересечения. Поле «≤бар» — дополнительно требовать, чтобы состояние установилось недавно (свежий кросс)"><b>кросс</b><select id="'+tf+'_wtcross"><option value="">—</option><option value=up>↑</option><option value=down>↓</option></select><input type=number id="'+tf+'_crage" placeholder="≤бар" style=width:48px></span>'+
    '<span class=grp title="дивергенция WT: R — разворотная, H — продолжение тренда"><b>див</b><select id="'+tf+'_div">'+DIVOPT+'</select><input type=number id="'+tf+'_divage" placeholder="≤бар" style=width:48px></span>'+
    '<span class=grp><b>ATRTrend</b><select id="'+tf+'_atr"><option value="">—</option><option value=up>↑ вверх</option><option value=down>↓ вниз</option></select></span>'+
+   ((tf=='1h'||tf=='4h')?('<span class=grp title="пятиволновый импульс на двухслойном эталоне OKO-SM (масштаб ядра ≈ 60–80 ч). Лонг = 5 волн вниз завершены, шорт = 5 волн вверх. Флажки — правила ядра: фрактал (импульс настоящий), канал ≥0.5 (пятая дошла до параллели), чередование волн 2 и 4, канонический счёт (не подволны). «≤ч» — часов от вершины пятой"><b>волны</b><select id="'+tf+'_wave"><option value="">—</option><option value=long>5↓ лонг</option><option value=short>5↑ шорт</option><option value=any>любые</option></select>'+
+     '<label><input type=checkbox id="'+tf+'_wfr"> фрактал</label><label><input type=checkbox id="'+tf+'_wch"> канал</label><label><input type=checkbox id="'+tf+'_wal"> чередование</label><label><input type=checkbox id="'+tf+'_wcn"> счёт</label><input type=number id="'+tf+'_wage" placeholder="≤ч" style=width:44px></span>'):'')+
    (full?('<span class=grp><label><input type=checkbox id="'+tf+'_obb"> OB↑</label><label><input type=checkbox id="'+tf+'_obr"> OB↓</label><label><input type=checkbox id="'+tf+'_fvb"> FVG↑</label><label><input type=checkbox id="'+tf+'_fvr"> FVG↓</label></span>'+
     '<span class=grp><b>CHoCH</b><select id="'+tf+'_choch"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>'+
     '<span class=grp><b>BOS</b><select id="'+tf+'_bos"><option value="">—</option><option>UP</option><option>DOWN</option></select></span>')
-    :'<span class=note>SMC-флаги (OB/FVG/CHoCH/BOS) шина ведёт только по 15m/1h/4h</span>')+
+    :'<span class=note>SMC-флаги (OB/FVG/CHoCH/BOS) шина по этому ТФ не ведёт</span>')+
   '</div></div></div>';}).join('');
 
 function num(id){var e=document.getElementById(id);if(!e)return null;var v=e.value;return v===''?null:parseFloat(v);}
@@ -2166,6 +2439,13 @@ function blockOf(tf){                       // условия одного ТФ 
  if(chk(tf+'_fvr')){b.fvg_bear=true;s.push('FVG↓');}
  if(val(tf+'_choch')){b.choch=val(tf+'_choch');s.push('CHoCH '+b.choch);}
  if(val(tf+'_bos')){b.bos=val(tf+'_bos');s.push('BOS '+b.bos);}
+ if(val(tf+'_wave')){b.wave=val(tf+'_wave');var w=[];
+  if(chk(tf+'_wfr')){b.wave_fractal=true;w.push('фрактал');}
+  if(chk(tf+'_wch')){b.wave_channel=true;w.push('канал');}
+  if(chk(tf+'_wal')){b.wave_altern=true;w.push('черед');}
+  if(chk(tf+'_wcn')){b.wave_count=true;w.push('счёт');}
+  if(num(tf+'_wage')!=null){b.wave_age=num(tf+'_wage');w.push('≤'+b.wave_age+'ч');}
+  s.push('волны '+(b.wave=='long'?'5↓':(b.wave=='short'?'5↑':'5'))+(w.length?(' '+w.join('+')):''));}
  return {b:b,n:s.length,sum:s};
 }
 function buildQuery(){
@@ -2283,6 +2563,8 @@ function psLoad(k){
   set(tf+'_atr',b.atr_trend);set(tf+'_choch',b.choch);set(tf+'_bos',b.bos);
   var ck=function(id,v){var e=document.getElementById(id);if(e)e.checked=!!v;};
   ck(tf+'_obb',b.ob_bull);ck(tf+'_obr',b.ob_bear);ck(tf+'_fvb',b.fvg_bull);ck(tf+'_fvr',b.fvg_bear);
+  set(tf+'_wave',b.wave);set(tf+'_wage',b.wave_age);
+  ck(tf+'_wfr',b.wave_fractal);ck(tf+'_wch',b.wave_channel);ck(tf+'_wal',b.wave_altern);ck(tf+'_wcn',b.wave_count);
  });
  apply();
 }
@@ -2309,6 +2591,9 @@ async function apply(){
   var d=await r.json();
   document.getElementById('cnt').textContent=d.n;
   document.getElementById('tot').textContent=d.total;
+  var wb=document.getElementById('warn');   // ноль по недоступному условию не должен молчать
+  if(wb){wb.innerHTML=(d.warn||[]).map(function(w){return '⚠ '+w;}).join('<br>');
+         wb.style.display=(d.warn&&d.warn.length)?'block':'none';}
   document.getElementById('age').textContent='· обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru');
   document.getElementById('srt').textContent=d.n?('сортировка: '+(q.global.vol_ratio_min?'по объёму':
    (q.global.spread_max!=null?'по спреду':'по алфавиту'))):'';
@@ -2324,6 +2609,11 @@ async function apply(){
    if(x.div)t+='<small style="color:'+(x.div.indexOf('+')>0?'var(--up)':'var(--dn)')+
     '" title="дивергенция '+(x.div[0]=='R'?'regular — разворотная':'hidden — продолжение')+
     ' на '+(x.div_tf||'')+', '+x.div_age+' бар назад">'+x.div+' '+(x.div_tf||'')+'</small>';
+   if(x.wave){var wv=x.wave,lg=wv.side=='LONG';
+    t+='<small style="color:'+(wv.core?'var(--gold)':(lg?'var(--up)':'var(--dn)'))+'" title="пять волн '+(lg?'вниз, ждём отскок':'вверх, ждём откат')+
+     ' на '+wv.tf+': вершина '+wv.h+' ч назад, импульс '+wv.imp+'% · фрактал '+(wv.fr?'✓':'✗')+' · канал '+wv.ch+' · чередование '+(wv.alt?'✓':'✗')+
+     ' · счёт '+(wv.cnt?'✓':'✗')+' · WT 1D '+wv.d_wt+' · цель (конец волны 4) '+wv.p4+' · стоп за '+wv.p5+(wv.core?' · ЯДРО':'')+'">'+
+     (lg?'5↓':'5↑')+(wv.core?'★':'')+' к'+wv.ch+'</small>';}
    if(x.vr!=null)t+='<small style="color:'+(x.vbody>0?'var(--up)':'var(--dn)')+
     '" title="объём ×'+x.vr+' к средней, тело бара '+x.vbody+'%">V×'+x.vr+'</small>';
    if(x.fund!=null&&Math.abs(x.fund)>0.02)t+='<small style="color:'+(x.fund>0?'var(--dn)':'var(--up)')+
@@ -2495,7 +2785,7 @@ body{background:var(--bg);color:var(--tx);font:13px/1.45 -apple-system,Segoe UI,
 __NAV__
 <div id=bar>
   <span class=grp><b>сетка</b><span class="bt" data-g=4>2×2</span><span class="bt on" data-g=9>3×3</span><span class="bt" data-g=16>4×4</span></span>
-  <span class=grp><b>тф</b><span class="bt" data-tf=5m>5m</span><span class="bt on" data-tf=15m>15m</span><span class="bt" data-tf=1h>1h</span><span class="bt" data-tf=4h>4h</span><span class="bt" data-tf=1d>1d</span></span>
+  <span class=grp><b>тф</b><span class="bt" data-tf=3m>3m</span><span class="bt" data-tf=5m>5m</span><span class="bt on" data-tf=15m>15m</span><span class="bt" data-tf=1h>1h</span><span class="bt" data-tf=4h>4h</span><span class="bt" data-tf=1d>1d</span></span>
   <span class=grp><b>состав</b><span class="bt on" id=b_live>live-фильтр</span><span class="bt" id=b_pin>закреплено</span><span class="bt" id=b_pos>мои позиции<span id=posn></span></span><span class="bt" id=b_play title="монеты из кокпита: радар 🚀🌱🔨 · OTE 🎯 · DC 🤖 · хайп 🔥">🎯 в игре<span id=playn></span></span><span class="bt" id=b_fav title="избранное: ★ в шапке окна добавляет/убирает монету">★ избранное<span id=favn></span></span></span>
   <span class="grp dd" id=lvgrp><span class="bt" id=b_lv>уровни Куба</span><span class="bt ddt" id=b_lv_dd role=button tabindex=0 aria-label="Выбрать слои" title="какие элементы рисовать">▾</span>
     <div class=ddm id=lvmenu role=group aria-label="Слои уровней Куба"></div></span>
@@ -2554,7 +2844,7 @@ function mkCell(sym){
   '<span class=fav role=button tabindex=0 aria-label="В избранное" title="в избранное (★)">☆</span>'+
   '<span class=tb role=button tabindex=0 aria-label="Торговая панель" title="торговая панель">⚡</span>'+
   '<span class=tools>'+                       // видны в развёрнутом окне (Егор 14.08)
-   '<span class=ztf>'+['5m','15m','1h','4h','1d'].map(function(t){
+   '<span class=ztf>'+['3m','5m','15m','1h','4h','1d'].map(function(t){
      return '<span class="bt ztfb" data-ztf="'+t+'">'+t+'</span>';}).join('')+'</span>'+
    '<span class="bt zlv" role=button tabindex=0 aria-label="Уровни Куба" title="уровни Куба вкл/выкл">Куб</span>'+
    '<span class="bt zwt" role=button tabindex=0 aria-label="Панель WT" title="WT вкл/выкл">WT</span>'+
@@ -2568,7 +2858,7 @@ function mkCell(sym){
   '</span><span class=fl></span></div>'+
   '<div class=cbody></div>'+(S.wt?'<div class=cwt></div>':'');
  el.querySelector('.sy').href='https://ru.tradingview.com/chart/?symbol=BINGX%3A'+sym+'USDT.P&interval='+
-  ({'5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'}[S.tf]||'15');
+  ({'3m':'3','5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'}[S.tf]||'15');
  document.getElementById('grid').appendChild(el);
  var body=el.querySelector('.cbody');
  var ch=LightweightCharts.createChart(body,Object.assign({},CO,{width:body.clientWidth,height:body.clientHeight}));
@@ -3362,7 +3652,7 @@ document.querySelectorAll('#bar [data-tf]').forEach(function(b){b.onclick=functi
    x.classList.toggle('on',x.dataset.ztf===S.tf);});});
  Object.keys(S.cells).forEach(function(s){S.cells[s].lim=S.lim;S.cells[s].fit=false;});  // новый ТФ — новое окно
  Object.keys(S.cells).forEach(function(s){S.cells[s].el.querySelector('.sy').href=
-  'https://ru.tradingview.com/chart/?symbol=BINGX%3A'+s+'USDT.P&interval='+({'5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'}[S.tf]);});
+  'https://ru.tradingview.com/chart/?symbol=BINGX%3A'+s+'USDT.P&interval='+({'3m':'3','5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'}[S.tf]);});
  pullBars().then(function(){pullPx();pullLv();});};});
 document.getElementById('b_live').onclick=function(){S.src='filter';S.live=true;S.pinned=null;
  setBt('#b_live,#b_pin,#b_pos,#b_play,#b_fav',this);pullSyms();};
@@ -3479,8 +3769,24 @@ async def monitor_page(_req):
                         headers={"Cache-Control": "no-store, must-revalidate"})
 
 
+async def _breadth_bg(app):
+    """Ширину пишем раз в 5 минут САМИ, а не только когда открыта страница: иначе лог за
+    сутки — 42 снимка из 288 с дырой в 20 часов, и «уникальных за 24ч» врёт (аудит 11.09)."""
+    async def _loop():
+        while True:
+            try:
+                await asyncio.get_running_loop().run_in_executor(_POOL, _breadth_now)
+            except Exception as e:
+                print(f"[BREADTH-BG] {e}")
+            await asyncio.sleep(300)
+    task = asyncio.create_task(_loop())
+    yield
+    task.cancel()
+
+
 def main():
     app = web.Application()
+    app.cleanup_ctx.append(_breadth_bg)
     app.router.add_get("/", agenda_page)
     app.router.add_get("/cockpit", index)
     app.router.add_get("/api/structure", api)
