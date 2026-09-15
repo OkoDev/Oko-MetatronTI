@@ -75,7 +75,9 @@ def caption_card(c: Dict[str, Any], note: str = "") -> str:
     if c.get("entry"):
         lo, hi = c["entry"]; lines.append(f"Вход <code>{lo:.5g}–{hi:.5g}</code>" + (f" · стоп <code>{c['stop']:.5g}</code>" if c.get("stop") else ""))
     if c.get("targets"):
-        lines.append("Цели " + " · ".join(f"<code>{v:.5g}</code> ({p:+.0f}%{f', RR {rr:.1f}' if rr is not None else ''})" for _, v, p, rr in c["targets"]))
+        tk = c.get("taken") or [False] * len(c["targets"])
+        lines.append("Цели " + " · ".join((f"<s>{v:.5g}</s> ✓" if t_ else f"<code>{v:.5g}</code> ({p:+.0f}%{f', RR {rr:.1f}' if rr is not None else ''})")
+                                          for (_, v, p, rr), t_ in zip(c["targets"], tk)))
     if c.get("invalid"):
         lines.append(f"⛔ {e(c['invalid'])}")
     lines.append(f"#волны #{e(c['sym'])}")
@@ -99,6 +101,8 @@ def state_diff(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]], pri
     switched = old.get("mode") != new.get("mode")
     if switched:
         out.append("пятёрка завершена — разворотный разбор" if new.get("mode") == "reversal" else "завершённой пятёрки больше нет — ход в процессе")
+    if not old.get("invalid5") and new.get("invalid5"):
+        out.append("цена обновила экстремум пятой — разбор отменён до пересчёта")
     if old.get("zone_1d") != new.get("zone_1d") and new.get("zone_1d"):
         out.append(f"зона в дневной ноге: {old.get('zone_1d')} → {new['zone_1d']}")
     if old.get("p5") is not None and new.get("p5") is not None and moved(old.get("p5"), new.get("p5")):

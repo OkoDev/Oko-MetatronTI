@@ -153,7 +153,10 @@ def decision_card(rep: Dict[str, Any]) -> Dict[str, Any]:
         ls = rep.get("ltf_state") or {}
         card["chips"] += [f"слом {rep.get('ltf', '3m')} {'✓' if ls.get('choch_int') else '✗'}", f"волна A {'✓' if ls.get('a_done') else '✗'}",
                           "импульс" if st["kind"] == "impulse" else "диагональ"]
-        if ls.get("A"):
+        if rep.get("invalid5"):
+            iv = rep["invalid5"]
+            card.update(light="off", status=f"ПЯТАЯ ОБНОВИЛА {'МАКСИМУМ' if st['up'] else 'МИНИМУМ'} {iv['price']:.5g} — разбор отменён")
+        elif ls.get("A"):
             z = ls["zone"]; lo, hi = sorted((z[0.5], z[0.705])); card["entry"] = (lo, hi); card["stop"] = ls["stop_886"]
             r_ = ls.get("retr_now")
             if r_ is None or r_ < 0:
@@ -178,6 +181,9 @@ def decision_card(rep: Dict[str, Any]) -> Dict[str, Any]:
                         status="ЦЕНА В ЗОНЕ — ждать слом младшего ТФ" if inside else f"ЖДАТЬ зону ({pct((zn['lo'] + zn['hi']) / 2):+.1f}% до середины)")
         else:
             card.update(light="info", status="ход в процессе — зоны схождения нет")
+    if rep.get("invalid5"):                                  # отменённый разбор: цели и сценарии от старой разметки не показываем
+        card.update(invalid="ждать пересчёт разметки на закрытии 4h", taken=[])
+        return card
     if sc:
         ent = (sum(card["entry"]) / 2) if card["entry"] else price
         risk = abs(ent - card["stop"]) if card["stop"] else None
@@ -187,6 +193,8 @@ def decision_card(rep: Dict[str, Any]) -> Dict[str, Any]:
             card["targets"].append((n, float(v), pct(v), (abs(v - ent) / risk) if risk else None))
             if len(card["targets"]) == 3:
                 break
+        # цель уже взята: цена за ней по ходу сделки (REDSTONE 15.09: цель 1 выше цены шорта показывалась как будущая)
+        card["taken"] = [(price >= v) if card.get("side") == "LONG" else (price <= v) for _, v, _, _ in card["targets"]]
         if len(sc) > 1:
             t2 = next(((n, v) for n, v in sc[1]["targets"] if v is not None and v == v), None)
             card["alt"] = {"name": sc[1]["name"], "target": t2, "invalid": sc[1]["invalid"]}
@@ -217,8 +225,12 @@ def card_figure(card: Dict[str, Any], bg: str = "#0f1116"):
     if card.get("stop"):
         ent = sum(card["entry"]) / 2 if card.get("entry") else card["price"]
         rows.append(("СТОП", f"{card['stop']:.5g}", f"{(card['stop'] / ent - 1) * 100:+.1f}%", "", DN))
+    taken = card.get("taken") or []
     for i, (n, v, p, rr) in enumerate(card.get("targets", []), 1):
-        rows.append((f"ЦЕЛЬ {i}", f"{v:.5g}", f"{p:+.1f}%", f"RR {rr:.1f}" if rr is not None else "", UP))
+        if i <= len(taken) and taken[i - 1]:
+            rows.append((f"ЦЕЛЬ {i} ✓", f"{v:.5g}", "взята", "", MUT))
+        else:
+            rows.append((f"ЦЕЛЬ {i}", f"{v:.5g}", f"{p:+.1f}%", f"RR {rr:.1f}" if rr is not None else "", UP))
     y = .64
     for lab, val, p, rr, c in rows:
         ax.text(.04, y, lab, fontsize=15, color=MUT, va="center")
@@ -568,6 +580,18 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         T.append(f"{ltf}: слома младшего слоя против хода после пятой ещё нет — разворот не подтверждён.")
     if ls.get("choch_sw"):
         T.append(f"{ltf}: слом старшего слоя подтверждён {ls['choch_sw']['t']:%d.%m %H:%M} (уровень {ls['choch_sw']['level']:.6g}).")
+    # 🔴 АКТУАЛЬНОСТЬ (Егор 15.09, HOME: «разбор актуальность не потерял?»): 4h видит только закрытые бары, а младший ТФ уже
+    # может быть за экстремумом пятой — тогда точка 5 не подтверждена (пятая удлиняется), зона A и стоп недействительны.
+    if dl is not None and len(dl):
+        tail = dl[dl.index >= st["t5x"]]
+        if len(tail):
+            ext_l = float(tail.high.max()) if st["up"] else float(tail.low.min())
+            if (ext_l > p5) if st["up"] else (ext_l < p5):
+                t_l = tail.high.idxmax() if st["up"] else tail.low.idxmin()
+                rep["invalid5"] = {"t": t_l, "price": ext_l}
+                T.insert(1, f"⚠️ РАЗБОР ОТМЕНЁН: на {ltf} цена обновила экстремум пятой — {ext_l:.6g} {'>' if st['up'] else '<'} {p5:.6g} "
+                            f"({t_l:%d.%m %H:%M} UTC). Точка 5 не подтверждена (пятая удлиняется или это не конец хода): зона отката A и стоп "
+                            f"недействительны, сценарии ниже — от старой разметки, до пересчёта на закрытии 4h.")
     return rep
 
 
@@ -755,6 +779,7 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
              "count_k": cnt.get("k"), "count_px": [float(x) for x in cnt.get("px", [])],
              "zone_lo": float(zn["lo"]) if zn else None, "zone_hi": float(zn["hi"]) if zn else None,
              "tri": f"{tri['tf']} {tri['kind']} · цена {tri['breakout']}" if tri else None,
+             "invalid5": bool(rep.get("invalid5")),
              "scen": [sc["name"] for sc in rep.get("scenarios", [])]}
     return {"sym": base, "png": png, "json": f"{stem}.json", "has": rep["structure"] is not None, "mode": rep.get("mode", "reversal"), "zone": leg.get("zone"),
             "state": state, "parts": part_names, "now": rep.get("now"), "card": decision_card(rep),
