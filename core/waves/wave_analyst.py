@@ -234,9 +234,22 @@ def decision_card(rep: Dict[str, Any]) -> Dict[str, Any]:
     else:
         cnt = rep.get("progress") or {}; zn = rep.get("zone") if isinstance(rep.get("zone"), dict) else None
         k = cnt.get("k"); down = cnt.get("down")
-        card["side"] = ("LONG" if down else "SHORT") if k in (4,) else ("SHORT" if down else "LONG")
-        card["chips"] += [f"счёт 0–{k}" if k is not None else "счёта нет"] + (["треугольник"] if rep.get("triangle") else [])
-        if zn:
+        card["side"] = ("LONG" if down else "SHORT") if (k == 4 and not cnt.get("nested")) else ("SHORT" if down else "LONG")
+        card["chips"] += ["счёт 0-1-2-(i)-(ii)" if cnt.get("nested") else (f"счёт 0–{k}" if k is not None else "счёта нет")] + (["треугольник"] if rep.get("triangle") else [])
+        if cnt.get("nested") and rep.get("corr_first"):
+            fl = rep.get("fork_levels") or {}
+            card["side"] = "LONG" if down else "SHORT"        # сторона основного счёта (коррекция к старшей ноге)
+            card.update(light="info", status=f"РАЗВИЛКА: коррекция ABC или (iii) из 3 — ждать выход за "
+                                             f"{fl.get('third', 0):.5g} / {fl.get('corr', 0):.5g}")
+        elif k == 2 or cnt.get("nested"):
+            # идёт третья волна: зона — это ЦЕЛИ, а не вход (GRT 15.09: карточка писала «ждать зону +45%»). Вход — по ходу на
+            # откатах, стоп — за точкой отмены счёта: (ii) для вложенного, 0 для 0-1-2
+            px_ = cnt.get("px") or []
+            inv = px_[4] if cnt.get("nested") and len(px_) > 4 else (px_[0] if px_ else None)
+            card["stop"] = inv
+            card.update(light="wait", status=("ИДЁТ (iii) ИЗ 3" if cnt.get("nested") else "ИДЁТ ВОЛНА 3") +
+                        (f" — входы на откатах, отмена за {inv:.5g}" if inv else ""))
+        elif zn:
             card["entry"] = (zn["lo"], zn["hi"])
             inside = zn["lo"] <= price <= zn["hi"]
             card.update(light="go" if inside else "wait",

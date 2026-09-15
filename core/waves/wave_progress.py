@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from core.smc.oko_sm_engine import _swings
-from core.waves.wave5_core import _fix_same_kind
+from core.waves.wave5_core import _fix_same_kind, _inner_pairs
 
 
 def count_in_progress(d1: pd.DataFrame, sw: int = 60, back: int = 9) -> Optional[Dict[str, Any]]:
@@ -33,18 +33,32 @@ def count_in_progress(d1: pd.DataFrame, sw: int = 60, back: int = 9) -> Optional
         o = sws[j]; oi = int(o[1]); op = float(o[2]); down = bool(o[3])      # вершина → ход вниз
         if (down and hh[oi + 1:].max() >= op) or ((not down) and ll[oi + 1:].min() <= op):
             continue                                                         # начало уже пройдено
-        pts = [(oi, op)] + [(int(s[1]), float(s[2])) for s in sws[j + 1:]]
+        # 🔑 Егор 15.09, GRT: «на 1h не видим ещё одну ногу». От настоящего начала (18.08) свингов 6 — пара 22.08/23.08 лежит
+        # внутри соседей (подволна первой волны): поглощаем такие пары по одной (мелкая первая), пока точек не станет ≤ 5.
+        pool = list(sws[j:]); absorbed = 0
+        while len(pool) - 1 > 4:
+            pairs = _inner_pairs(pool, tail=len(pool))
+            if not pairs:
+                break
+            i_ = pairs[0][1]; del pool[i_:i_ + 2]; absorbed += 1
+        pts = [(int(s[1]), float(s[2])) for s in pool]
         k = len(pts) - 1
         if not 1 <= k <= 4:
             continue
         g = -1 if down else 1; px = [p for _, p in pts]
-        ok = True
+        ok = True; nested = False
         if k >= 2: ok &= g * (px[2] - px[0]) > 0 and abs(px[2] - px[1]) < abs(px[1] - px[0])      # R1: 2 не за 0
         if k >= 3: ok &= g * (px[3] - px[1]) > 0                                                  # 3 за концом 1
-        if k >= 4: ok &= g * (px[4] - px[1]) > 0                                                  # R3: 4 не заходит на 1
+        if k >= 4 and not g * (px[4] - px[1]) > 0:
+            # «4» зашла на 1 → пятёрки нет. Если она НЕ за точкой 2 — по канону это вложенный счёт 1-2 / (i)-(ii):
+            # идёт (iii) из 3, самый сильный участок (GRT: 0.01296 · 0.01926 · 0.01582 · (i) 0.02111 · (ii) 0.0172)
+            nested = bool(g * (px[4] - px[2]) > 0)
+            ok &= nested
         if not ok:
             continue
-        best = {"down": down, "g": g, "k": k, "idx": [i for i, _ in pts], "px": px, "times": [d1.index[i] for i, _ in pts]}
+        best = {"down": down, "g": g, "k": k, "idx": [i for i, _ in pts], "px": px, "times": [d1.index[i] for i, _ in pts],
+                "nested": nested, "absorbed": absorbed,
+                "labels": ["0", "1", "2", "(i)", "(ii)"] if nested else [str(i) for i in range(k + 1)]}
         break                                                                # самый ранний валидный = самый крупный ход
     if best is None:
         return None
@@ -87,6 +101,8 @@ def count_in_progress(d1: pd.DataFrame, sw: int = 60, back: int = 9) -> Optional
         ci = li + 1 + int(seg_l.argmin() if nxt_down else seg_h.argmax())
         best["cur"] = (ci, float(ll[ci] if nxt_down else hh[ci]), d1.index[ci])
     best["price"] = float(dr.close.iloc[-1])
+    # подписи — после провизорных точек (k мог вырасти; XLM 15.09: IndexError)
+    best["labels"] = ["0", "1 / A", "2 / B", "(i) / C", "(ii)"] if best.get("nested") else [str(i) for i in range(best["k"] + 1)]
     return best
 
 
@@ -190,14 +206,26 @@ def analyze_progress(sym: str, dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optiona
     leg = leg_fn(times[0], not down, ext_move, t_ext)                          # ход вниз корректирует дневную ногу вверх
     rep["leg"] = leg
     lv: List[tuple] = []
-    names = {1: "волна 2 (откат)", 2: "волна 3", 3: "волна 4 (откат)", 4: "волна 5 / C"}
+    nested = bool(cnt.get("nested")); labels = cnt.get("labels") or [str(i) for i in range(k + 1)]
+    _corr = bool(nested and leg and leg["depth"] <= 1.0)
+    names = {1: "волна 2 (откат)", 2: "волна 3", 3: "волна 4 (откат)",
+             4: ("развилка: коррекция A-B-C завершена или идёт (iii) из 3" if _corr else "волна (iii) из 3") if nested else "волна 5 / C"}
     prov = set(cnt.get("prov") or [])
     T.append(f"{sym}: завершённой пятёрки нет — идёт ход {word} от {px[0]:.6g} ({times[0]:%d.%m %H:%M} UTC). "
-             f"Счёт (1h, свинг 60): " + " → ".join(f"{i} = {px[i]:.6g}{'*' if i in prov else ''}" for i in range(k + 1)) + f". Сейчас — {names[k]}, цена {price:.6g}.")
+             f"Счёт (1h, свинг 60): " + " → ".join(f"{labels[i]} = {px[i]:.6g}{'*' if i in prov else ''}" for i in range(k + 1)) + f". Сейчас — {names[k]}, цена {price:.6g}.")
+    if cnt.get("absorbed"):
+        T.append(f"Поглощено подволн внутри ноги: {cnt['absorbed']} (пары свингов, целиком лежащие между соседями, — младшая степень).")
     if prov:
         T.append("* — предварительная точка: свинг масштаба 60 ещё не подтверждён (нужно 60 часов без обновления), счёт может сдвинуться.")
     scen = []
-    if k == 4:
+    if nested:
+        l1, li = L[0], L[2]
+        lv += [("3 = 1.618×1 от 2", px[2] + g * 1.618 * l1, 2), ("3 = 2.618×1 от 2", px[2] + g * 2.618 * l1, 1.5),
+               ("(iii) = 1.618×(i) от (ii)", px[4] + g * 1.618 * li, 2), ("(iii) = 1×(i) от (ii)", px[4] + g * li, 1.5)]
+        T.append(f"Точка «4» {px[4]:.6g} зашла на территорию первой ({px[1]:.6g}) — пятёрки нет. Два счёта: вложенный 1-2 / (i)-(ii) "
+                 f"(идёт (iii) из 3) или коррекция A-B-C: A {px[0]:.6g}→{px[1]:.6g}, B {px[2]:.6g}, C {px[3]:.6g} (C ≈ {L[2] / L[0]:.2f}A), "
+                 f"перекрытие — классический признак коррекции.")
+    elif k == 4:
         l1, l3 = L[0], L[2]; p4 = px[4]
         lv += [("5 = 0.618×1", p4 + g * 0.618 * l1, 2), ("5 = 1×1", p4 + g * l1, 1.5), ("C = A (0-1-2 как A-B)", px[2] + g * l1, 2),
                ("C = 1.618A", px[2] + g * 1.618 * l1, 1), ("минимум пятой: за 3", px[3], 1)]
@@ -234,8 +262,10 @@ def analyze_progress(sym: str, dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optiona
         if (n.endswith(("S1", "S2")) and zone_dir_down) or (n.endswith(("R1", "R2")) and not zone_dir_down):
             lv.append((n, v, 1.0))
     rep["pivots"] = pv; rep["levels"] = lv
-    zlimit = (px[4] + g * L[2]) if (k == 4 and L[2] < L[0]) else px[0] if k == 1 else px[1] if k == 3 else None   # волна 2 не за 0, волна 4 не за 1
-    zone = cluster_zone(lv, price, zone_dir_down, limit=zlimit)
+    zlimit = (px[4] + g * L[2]) if (k == 4 and not nested and L[2] < L[0]) else px[0] if k == 1 else px[1] if k == 3 else None   # волна 2 не за 0, волна 4 не за 1
+    # вложенный счёт: цели (iii)/3 обязаны лежать ЗА вершиной (i) — пивоты и уровни ноги ближе неё зоной целей не считаются
+    lv_z = [x for x in lv if g * (x[1] - px[3]) > 0] if nested else lv
+    zone = cluster_zone(lv_z, price, zone_dir_down, limit=zlimit)
     rep["zone"] = zone
     if zone is None and k in (1, 3):
         retr_down = not down                                           # откат идёт против хода
@@ -247,7 +277,7 @@ def analyze_progress(sym: str, dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optiona
             T.append(f"Откат уже глубже всех классических уровней — счёт под угрозой: "
                      f"{'за началом ' + format(px[0], '.6g') + ' волна 2 невозможна' if k == 1 else 'заход за конец первой ломает импульс'}.")
     if zone:
-        T.append(f"Зона {'завершения хода' if k == 4 else 'конца отката' if k in (1, 3) else 'целей третьей'}: {zone['lo']:.6g}–{zone['hi']:.6g} — "
+        T.append(f"Зона {'целей третьей' if nested else 'завершения хода' if k == 4 else 'конца отката' if k in (1, 3) else 'целей третьей'}: {zone['lo']:.6g}–{zone['hi']:.6g} — "
                  "сходятся " + ", ".join(f"{n} {v:.5g}" for n, v, _ in zone["levels"]) + ".")
     tri = triangle_scan({"3m": dl3, "15m": dl15}); rep["triangle"] = tri
     if tri:
@@ -255,7 +285,29 @@ def analyze_progress(sym: str, dh: pd.DataFrame, d1: pd.DataFrame, dl15: Optiona
                  "По Эллиотту треугольник — это волна 4 или B: бросок после него обычно в сторону старого тренда; пробой против тренда подтверждать закреплением.")
     # сценарии
     rev = "лонг" if down else "шорт"
-    if k == 4 and zone:
+    if nested:
+        side_w = "шорт" if down else "лонг"
+        # 🔑 Егор 15.09, GRT: «ты уверен, что это не коррекция к нисходящей ноге 4h?» Пока ход НЕ вышел за начало дневной ноги,
+        # которую корректирует (глубина ≤ 1), основной — коррекция A-B-C, вложенная (iii) — альтернатива; решает выход за уровни.
+        corr_first = bool(leg and leg["depth"] <= 1.0)
+        lvl_up = max(px[3], leg["origin"]) if (leg and not down) else (min(px[3], leg["origin"]) if leg else px[3])
+        rep["fork_levels"] = {"third": lvl_up, "corr": px[2]}
+        T.append(f"Развилка: {'выше' if not down else 'ниже'} {lvl_up:.6g} (вершина C / начало дневной ноги) — это (iii) из 3; "
+                 f"{'ниже' if not down else 'выше'} {px[2]:.6g} (точка B) — коррекция завершена, старший тренд продолжается. "
+                 f"{'Ход не вышел за начало дневной ноги (глубина ' + format(leg['depth'], '.2f') + ') — основной счёт: коррекция.' if corr_first else 'Ход вышел за начало дневной ноги — основной счёт: (iii) из 3.'}")
+        rep["corr_first"] = corr_first
+        corr_sc = {"name": "A · коррекция A-B-C к старшей ноге" if corr_first else "B · это была коррекция A-B-C",
+                   "side": f"{'лонг' if down else 'шорт'} после слома младшего ТФ",
+                   "why": f"подъём/спад отыграл {leg['depth']:.2f} дневной ноги и не вышел за её начало; перекрытие 4 и 1 — коррекция. "
+                          f"Подтверждение — {'выход ниже' if not down else 'выход выше'} B = {px[2]:.6g}." if leg else "перекрытие 4 и 1 — коррекция.",
+                   "targets": [("точка B", px[2]), ("начало хода", px[0])] + ([("конец дневной ноги", leg["ext"])] if leg and leg["ext"] != px[0] else []),
+                   "invalid": f"{'выше' if not down else 'ниже'} {lvl_up:.6g} — это уже (iii) из 3"}
+        third_sc = {"name": ("B · " if corr_first else "A · ") + "идёт (iii) из 3 — самый сильный участок", "side": f"{side_w} по ходу",
+                     "why": f"вложенный счёт 1-2 / (i)-(ii); входы на откатах младшего ТФ, пока держится (ii) = {px[4]:.6g}.",
+                     "targets": sorted([(n, v) for n, v, _ in lv[:4]], key=lambda x: x[1] * g),
+                     "invalid": f"за (ii) = {px[4]:.6g} вложенный счёт отменяется; за 2 = {px[2]:.6g} — и счёт 0-1-2"}
+        scen += [corr_sc, third_sc] if corr_first else [third_sc, corr_sc]
+    elif k == 4 and zone:
         whole = abs(zone["mid"] - px[0])
         tg = [(f"{f_} всего хода", zone["mid"] - g * f_ * whole) for f_ in (0.382, 0.5, 0.618)]
         scen.append({"name": f"A · пятая/C {word} до зоны, затем {rev}", "side": f"ждать {rev} в зоне",
@@ -347,27 +399,36 @@ def render_progress(rep: Dict[str, Any], dh: pd.DataFrame, d1: pd.DataFrame, dl1
         xs = [i - i0 for i in cnt["idx"]]; ys = cnt["px"]
         ax2.plot(xs + [n], ys + [rep["price"]], color=WAVE, lw=1.6); ax2.scatter(xs, ys, color=WAVE, s=30, zorder=6)
         for i, (x_, y_) in enumerate(zip(xs, ys)):
-            ax2.annotate(str(i), (x_, y_), color=WAVE, fontsize=10, fontweight="bold", xytext=(-4, 9 if (cnt["g"] < 0) == (i % 2 == 0) else -15), textcoords="offset points")
-        style(ax2, f"1h · ход {'вниз' if cnt['down'] else 'вверх'}: счёт 0–{cnt['k']}, волна {cnt['k'] + 1} в процессе · зона и сценарии")
+            ax2.annotate((cnt.get("labels") or [str(q) for q in range(len(xs))])[i], (x_, y_), color=WAVE, fontsize=10, fontweight="bold", xytext=(-4, 9 if (cnt["g"] < 0) == (i % 2 == 0) else -15), textcoords="offset points")
+        style(ax2, f"1h · ход {'вниз' if cnt['down'] else 'вверх'}: " + (("A-B-C или 0-1-2-(i)-(ii) — развилка" if rep.get("corr_first") else "счёт 0-1-2-(i)-(ii), идёт (iii) из 3") if cnt.get("nested") else
+              f"счёт 0–{cnt['k']}, волна {cnt['k'] + 1} в процессе") + " · зона и сценарии")
         z = rep.get("zone")
         pr = rep["price"]
+        third = bool(cnt.get("nested") or cnt["k"] == 2)          # идёт третья: цели далеко (GRT +45%) — окно шире
+        lim = 0.6 if third else 0.20
         for nm, v, _ in rep.get("levels", []):
-            if abs(v / pr - 1) > 0.20:
+            if abs(v / pr - 1) > lim:
                 continue
             inz = bool(z and z["lo"] <= v <= z["hi"])
             seg(ax2, n - 25, n + F, v, nm if inz else "", ACC if inz else "#4a5160", "-." if inz else ":", 1 if inz else .6)
         if rep.get("limit5"):
             seg(ax2, cnt["idx"][-1] - i0, n + F, rep["limit5"], "предел пятой (5 < 3)", DN, "--", 1.1)
-        fit_y(ax2, w1, [v for _, v, _ in rep.get("levels", []) if abs(v / pr - 1) <= .2] + list(cnt["px"]) + [pr])
+        fit_y(ax2, w1, [v for _, v, _ in rep.get("levels", []) if abs(v / pr - 1) <= lim] + list(cnt["px"]) + [pr]
+              + ([z["lo"], z["hi"]] if (z and third) else []))
         if z:
             ax2.add_patch(Rectangle((n + 6, z["lo"]), F - 12, z["hi"] - z["lo"], color=ACC, alpha=.16, lw=0))
             ax2.annotate("зона", (n + F / 2, z["hi"]), color=ACC, fontsize=8, ha="center", va="bottom")
             sc = rep.get("scenarios") or []
-            arrow(ax2, (n, rep["price"]), (n + F * .35, z["mid"]), ACC, "-.", "A", (4, 0))
-            if sc and sc[0]["targets"]:
+            corr1 = bool(cnt.get("nested") and rep.get("corr_first") and sc)
+            if corr1:                                              # основной счёт — коррекция: A к точке B / началу хода, B — к целям (iii)
+                arrow(ax2, (n, rep["price"]), (n + F * .35, sc[0]["targets"][-1][1]), DN if not cnt["down"] else UP, "-.", "A · ABC", (4, 0))
+                arrow(ax2, (n, rep["price"]), (n + F * .3, z["mid"]), ACC, "--", "B · (iii)", (4, 0))
+            else:
+                arrow(ax2, (n, rep["price"]), (n + F * .35, z["mid"]), ACC, "-.", "A", (4, 0))
+            if sc and sc[0]["targets"] and not third:
                 arrow(ax2, (n + F * .35, z["mid"]), (n + F * .9, sc[0]["targets"][min(1, len(sc[0]["targets"]) - 1)][1]), GRN, "--", None)
-            if len(sc) > 1 and sc[1]["targets"]:
-                arrow(ax2, (n, rep["price"]), (n + F * .3, sc[1]["targets"][0][1]), UP if cnt["down"] else DN, "--", "B", (4, 0))
+            if len(sc) > 1 and sc[1]["targets"] and not corr1:
+                arrow(ax2, (n, rep["price"]), (n + F * .3, sc[1]["targets"][-1 if third else 0][1]), UP if cnt["down"] else DN, "--", "B", (4, 0))
         ax2.set_xlim(-5, n + F + 40)
         time_axis(ax2, w1)
     else:
