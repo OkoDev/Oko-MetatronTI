@@ -75,22 +75,26 @@ def _dt_closed(df, tf_hours: float):
 
 
 async def _wave_ctx(bot, sym: str, seen: dict):
-    """Поля шины wave_leg_up/dn, wave5_setup — раз на новый закрытый 4h-бар. None, если пересчитывать не нужно."""
+    """Поля шины wave_leg_up/dn, wave5_setup — раз на новый закрытый 4h-бар.
+    → (поля | None, причина). Причина пропуска идёт в итог прохода: первый прогон 15.09 обновил 6 пар из 79,
+    а причина уходила в debug — молчаливый отказ."""
     import pandas as pd
     from core.waves.wave_analyst import wave_bus_context
     dc = bot.data_collector
     d4 = await dc.get_ohlcv(sym, "4h", limit=CTX_4H_BARS)
-    if d4 is None or len(d4) < 200:
-        return None
-    d4 = _dt_closed(d4, 4)
-    if len(d4) < 200 or seen.get(sym) == d4.index[-1]:
-        return None
+    if d4 is None:
+        return None, "4h None"
+    n4 = len(d4); d4 = _dt_closed(d4, 4)
+    if len(d4) < 200:
+        return None, f"4h<200 (пришло {n4})"
+    if seen.get(sym) == d4.index[-1]:
+        return None, "тот же 4h-бар"
     dd = await dc.get_ohlcv(sym, "1d", limit=CTX_1D_BARS)
     if dd is None or len(dd) < 60:
-        return None
+        return None, f"1d<60 (пришло {0 if dd is None else len(dd)})"
     res = await asyncio.to_thread(wave_bus_context, d4, _dt_closed(dd, 24), pd.Timestamp.utcnow())
     seen[sym] = d4.index[-1]
-    return res
+    return res, "ok"
 
 
 async def _load_frames(bot, sym: str):
@@ -126,6 +130,7 @@ async def wave_loop(bot) -> None:
             # Берём пары, которые скан уже видел — их свечи в LRU-кэше свежие.
             syms = list(bus.all_symbols())[:MAX_SYMBOLS]
             done, phases, recounts, skipped, legs, ctxs = 0, Counter(), 0, 0, 0, 0
+            ctx_why: Counter = Counter(); ctx_err = None
             t0 = asyncio.get_event_loop().time()
             logger.info("[S20] проход начат: пар в шине %d, берём %d",
                         len(bus.all_symbols()), len(syms))
@@ -147,12 +152,17 @@ async def wave_loop(bot) -> None:
                         legs += 1
                     # волновой контекст аналитика: дневные ноги + 4h-пятёрка (раз на закрытый 4h-бар)
                     try:
-                        ctx = await _wave_ctx(bot, sym, ctx_seen)
+                        ctx, why = await _wave_ctx(bot, sym, ctx_seen)
+                        ctx_why[why.split(" (")[0]] += 1
                         if ctx:
                             bus.update(sym, **ctx)
                             ctxs += 1
+                        elif why not in ("тот же 4h-бар",) and ctx_err is None:
+                            ctx_err = f"{sym}: {why}"
                     except Exception as e:
-                        logger.debug("[S20] %s волновой контекст: %s", sym, e)
+                        ctx_why["ошибка"] += 1
+                        if ctx_err is None:
+                            ctx_err = f"{sym}: {type(e).__name__} {e}"
                     done += 1
                     phases[getattr(ph, "phase", None) or "undefined"] += 1
                     # пересчёт разметки — сам по себе сигнал (счёт волн сломался)
@@ -167,6 +177,8 @@ async def wave_loop(bot) -> None:
                 logger.info("[S20] разметка по %d парам за %.0fс · %s · ног %d · "
                             "пересчётов %d · волновой контекст обновлён %d (в шине %d)%s", done, el, top, legs, recounts,
                             ctxs, len(ctx_seen), f" · пропущено {skipped}" if skipped else "")
+                if ctx_why:
+                    logger.info("[S20] волновой контекст: %s%s", dict(ctx_why), f" · пример: {ctx_err}" if ctx_err else "")
             else:
                 logger.warning("[S20] НИ ОДНОЙ пары не размечено за %.0fс "
                                "(пропущено %d) — проверьте свечи/лимиты", el, skipped)
