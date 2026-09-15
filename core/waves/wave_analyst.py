@@ -94,6 +94,21 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
         return None
     ext = float(seg.low.min()) if want_top else float(seg.high.max())       # противоположный конец ноги
     ext_t = seg.low.idxmin() if want_top else seg.high.idxmax()
+    # 🔑 начало ноги — НАСТОЯЩИЙ экстремум (Егор 15.09, NCCOPALLADIUM2USD: «не вся нога» — взят свинг 13.07 1210, а ход
+    # начался с минимума 25.06 1155). Идём назад по дневным свингам того же типа, что начало: более крайний свинг становится
+    # началом, если промежуточный встречный ход между ним и текущим началом — ПОДВОЛНА (не за концом ноги и ≤ 0.618 всей ноги).
+    # Граница степени: REDSTONE/SOLV без неё уезжали к январскому хаю — это уже нога старшей степени.
+    hi_v, lo_v = dd.high.values.astype(float), dd.low.values.astype(float)
+    same = [s_ for s_ in dsw if bool(s_[3]) == want_top and dd.index[int(s_[0])] + pd.Timedelta(days=1) <= now]
+    for s_ in reversed([x for x in same if int(x[1]) < o_i]):
+        ci, cp = int(s_[1]), float(s_[2])
+        if not ((cp > origin) if want_top else (cp < origin)):
+            continue
+        mid = float(lo_v[ci:o_i + 1].min()) if want_top else float(hi_v[ci:o_i + 1].max())   # встречный ход между ними
+        leg_len = abs(cp - ext)
+        if ((mid <= ext) if want_top else (mid >= ext)) or abs(mid - cp) > 0.618 * leg_len:
+            break
+        o_i, origin = ci, cp
     span = abs(origin - ext)
     if span <= 0:
         return None
