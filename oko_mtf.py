@@ -104,6 +104,48 @@ def _acquire_single_instance_lock(lock_path: str = _LOCK_FILE) -> bool:
     return False
 
 
+def _start_pm2_parent_watchdog(lock_path: str = _LOCK_FILE) -> None:
+    """Сторож родителя под pm2 (15.09.2026, цикл рестартов 22 и 43 за вечер).
+
+    Под pm2 бот — потомок node-обёртки scripts/bot_pm2.js. На Windows pm2 stop/restart завершает обёртку безусловно
+    (обработчики сигналов node не срабатывают), а python-потомок оставался СИРОТОЙ с bot_instance.lock: новый
+    экземпляр видел живой lock и выходил, pm2 поднимал его снова — по кругу. Обёртка передаёт свой PID в
+    OKO_PM2_WRAPPER_PID; держим хэндл её процесса (PID не переиспользуется) и ждём её завершения — тогда снимаем
+    lock и выходим сами. Вне pm2 (запуск из терминала) переменной нет — сторож не запускается."""
+    ppid = int(os.environ.get("OKO_PM2_WRAPPER_PID") or 0)
+    if ppid <= 0 or platform.system() != "Windows":
+        return
+    import ctypes
+    import threading
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # 🔴 типы обязательны: по умолчанию ctypes режет HANDLE до 32 бит → WaitForSingleObject сразу WAIT_FAILED (проверено 15.09)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    handle = k32.OpenProcess(0x00100000, False, ppid)          # SYNCHRONIZE
+    if not handle:
+        logging.warning("[pm2-watch] не удалось открыть процесс обёртки pid=%s — сторож не запущен", ppid)
+        return
+
+    def _watch():
+        rc = k32.WaitForSingleObject(handle, 0xFFFFFFFF)        # INFINITE: ждём завершения обёртки
+        if rc != 0:                                             # не WAIT_OBJECT_0 — ожидание сломалось, НЕ выходим вслепую
+            logging.error("[pm2-watch] ожидание обёртки вернуло %s (ошибка %s) — сторож остановлен", rc, ctypes.get_last_error())
+            return
+        logging.critical("[pm2-watch] обёртка pm2 (pid=%s) завершилась — выхожу, чтобы не остаться сиротой с lock", ppid)
+        try:
+            if open(lock_path, encoding="utf-8").read().strip() == str(os.getpid()):
+                os.remove(lock_path)
+        except Exception:
+            pass
+        os._exit(3)
+
+    threading.Thread(target=_watch, daemon=True, name="pm2-parent-watch").start()
+    logging.info("[pm2-watch] сторож обёртки pm2 запущен (pid обёртки %s)", ppid)
+
+
 # ==============================
 # Windows fix
 # ==============================
@@ -221,12 +263,15 @@ if __name__ == "__main__":
     _project_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(_project_dir)
 
-    _backup_database()
-    _spawn_llm_background_jobs()
-
+    # 🔴 15.09: lock — ПЕРВЫМ. Раньше бэкап БД и LLM-хуки шли до проверки, и каждый отбитый дубль в цикле рестартов
+    # заново спаунил daily_pipeline/weekly_digest/obsidian_indexer/task_linker.
     if not _acquire_single_instance_lock():
         print("⚠️ Бот уже запущен (обнаружен lock-файл). Закрываю второй экземпляр.")
         sys.exit(1)
+    _start_pm2_parent_watchdog()
+
+    _backup_database()
+    _spawn_llm_background_jobs()
 
     from bot.core.bot import TradingAlertBot
     TradingAlertBot().run()
