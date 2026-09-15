@@ -93,6 +93,46 @@ def transition(prev, ls, now, sym):
     prev["hours_from_top"] = round((NOW - pd.Timestamp(prev["top_time"], tz="UTC" if pd.Timestamp(prev["top_time"]).tzinfo is None else None)).total_seconds() / 3600, 1)
 
 
+def reentry_watch(state, now):
+    """♻️ ПОСЛЕ ВЫБИТОГО СТОПА монета остаётся под наблюдением (Егор 16.09: «иначе теряем монету вместе с пробитым стопом»).
+    Пятая удлинилась → ждём новый экстремум и первый слом 3m против хода (core.waves.wave5_core.reentry_status — тот же код,
+    что в замере), окно 96 ч от вершины. Сделка БУМАЖНАЯ: поля re_* в журнале, пост в канал ответом на пост сетапа."""
+    from core.waves.wave5_core import reentry_status
+    from core.waves.wave_tg import tg_config, send_text
+    post = tg_config().get("post_trades", True) and tg_config().get("enabled")
+    for k, v in state.items():
+        if v.get("outcome") != "stop" or v.get("re_status") == "closed":
+            continue
+        t5 = pd.Timestamp(v["top_time"], tz="UTC" if pd.Timestamp(v["top_time"]).tzinfo is None else None)
+        if v.get("re_status") != "entered" and NOW > t5 + pd.Timedelta(hours=ENTRY_W_H):
+            v["re_status"] = "closed"; v["re_outcome"] = "no_entry"; continue
+        try:
+            d3 = fetch_closed(v["sym"].split("/")[0], "3m", 3000)
+            r = reentry_status(v, d3, v["closed_at"], P, entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
+        except Exception as e_:
+            print(f"  [повтор] {v['sym']}: {type(e_).__name__} {e_}", flush=True); continue
+        if r["entry_price"] is None:
+            continue
+        first = v.get("re_status") is None
+        v.update(re_status="entered", re_entry=js(r["entry_price"]), re_stop=js(r["stop"]), re_entry_at=str(r["entry_time"])[:16])
+        if first:
+            print(f"  RE   {v['sym']:<12} {v['side']} повторный вход по слому 3m {v['re_entry_at']} @ {r['entry_price']:.6g} · стоп {r['stop']:.6g}", flush=True)
+            if post:
+                rid = v["tg_last"] if isinstance(v.get("tg_last"), int) and v["tg_last"] > 0 else None
+                txt = (f"♻️ <b>{html_escape(v['sym'].split('/')[0])}</b> · {v['side']} · ПОВТОРНЫЙ вход по слому 3m {v['re_entry_at']} UTC @ {r['entry_price']:.6g}\n"
+                       f"цель {v['p4_target']:.6g} · стоп {r['stop']:.6g} (первый стоп был {v['stop']:.6g}) · бумажная сделка")
+                mid = send_text(txt, reply_to=rid)
+                if (mid.get("result") or {}).get("message_id"):
+                    v["tg_last"] = mid["result"]["message_id"]
+        if r["outcome"]:
+            v.update(re_status="closed", re_outcome=r["outcome"], re_pnl_pct=r["pnl_pct"], re_closed_at=str(r["exit_time"])[:16])
+            print(f"  RE-OUT {v['sym']:<10} {r['outcome']} {r['pnl_pct']:+.2f}%", flush=True)
+            if post:
+                icon = {"target": "✅", "stop": "⛔", "time": "⏱"}.get(r["outcome"], "•")
+                rid = v["tg_last"] if isinstance(v.get("tg_last"), int) and v["tg_last"] > 0 else None
+                send_text(f"{icon} <b>{html_escape(v['sym'].split('/')[0])}</b> · повторный вход закрыт: {r['outcome']} {r['pnl_pct']:+.2f}% (бумажная)", reply_to=rid)
+
+
 def detect_close(prev):
     """Момент, с которого разрешён вход: закрытие 4h-бара детекции (детекция идёт через ~3 мин после закрытия)."""
     return pd.Timestamp(prev["detected_at"], tz="UTC").floor("4h")
@@ -116,7 +156,7 @@ def save_and_report(state, a):
         if "egor" not in df: df["egor"] = ""
         cols = ["status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok",
                 "d_bull", "d_broke", "d_wt", "core", "core_full", "w5_reached", "corr_reached", "line24_broken", "cross_first", "entry_trigger",
-                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "outcome_trail", "pnl_trail", "cluster_3d", "cluster_norm", "mass_flush", "breadth10", "zone_1d", "depth_1d", "egor", "egor_note", "ai", "ai_note",
+                "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "outcome_trail", "pnl_trail", "re_status", "re_entry_at", "re_entry", "re_stop", "re_outcome", "re_pnl_pct", "cluster_3d", "cluster_norm", "mass_flush", "breadth10", "zone_1d", "depth_1d", "egor", "egor_note", "ai", "ai_note",
                 "w5_618", "w5_eq1", "w5_1618", "w5_chan", "corr_382", "corr_500", "corr_618", "key"]
         df = df.reindex(columns=[c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols])
         if not a.asof:
@@ -170,6 +210,7 @@ def full_scan(a):
         if i % 50 == 0: print(f"  {i}/{len(syms)}", flush=True)
     if not a.asof:
         mark_market(state, now, R72, len(syms))
+        reentry_watch(state, now)
         tg_notify(state, refresh_analyst(state))
     save_and_report(state, a)
 
@@ -305,6 +346,7 @@ def watch(a):
             ls = ltf_status(prev, dl, P, after=detect_close(prev), entry_w_h=ENTRY_W_H, hold_h=HOLD_H); transition(prev, ls, now, s)
         except Exception as e_:
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
+    reentry_watch(state, now)
     tg_notify(state)
     save_and_report(state, a)
 

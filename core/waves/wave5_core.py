@@ -379,3 +379,63 @@ def ltf_status(setup: Dict[str, Any], dl: pd.DataFrame, p: WaveParams = WavePara
         if out.get("exit_trail") is not None:
             out["pnl_trail"] = round(((out["exit_trail"] - e) / e * 100) * (1 if long_ else -1) - cost_pct, 2)
     return out
+
+
+def reentry_status(setup: Dict[str, Any], d3: pd.DataFrame, after, p: WaveParams = WaveParams(),
+                   stop_mult: float = 1.0, entry_w_h: float = 96.0, hold_h: float = 240.0,
+                   cost_pct: float = 0.10, sw: int = 50, il: int = 5) -> Dict[str, Any]:
+    """ПОВТОРНЫЙ ВХОД ПОСЛЕ ВЫБИТОГО СТОПА (Егор 16.09: «иначе теряем монету вместе с пробитым стопом и дальше её не отслеживаем»).
+
+    Пятая удлинилась — старая точка 5 недействительна. Ждём НОВЫЙ экстремум после `after` (выхода по стопу) и первый
+    internal CHoCH 3m ПРОТИВ хода (движок OKO-SM, свинги sw/il — как индикатор Егора). Вход — open следующего 3m-бара,
+    стоп за новым экстремумом (stop_mult — множитель расстояния вход→экстремум, проверка закона размера стопа), цель — конец
+    волны 4 (setup['p4_target']), окно входа — до top_time + entry_w_h, удержание hold_h, косты cost_pct.
+    Каузально: CHoCH берётся только на барах, закрытых после `after`; экстремум — по барам до бара слома."""
+    long_ = setup["side"] == "LONG"
+    out = {"trigger": None, "entry_time": None, "entry_price": None, "stop": None, "ext": None,
+           "outcome": None, "exit_time": None, "exit_price": None, "pnl_pct": None, "window_over": False}
+    if d3 is None or len(d3) < 200:
+        return out
+    t3 = d3.index
+    at = pd.Timestamp(after); at = at.tz_convert(None) if at.tzinfo else at
+    t5 = pd.Timestamp(setup["top_time"]); t5 = t5.tz_convert(None) if t5.tzinfo else t5
+    idx = t3.tz_convert(None) if getattr(t3, "tz", None) is not None else t3
+    lim = t5 + pd.Timedelta(hours=entry_w_h)
+    out["window_over"] = bool(idx[-1] >= lim)
+    j0 = int(np.searchsorted(idx.values, np.datetime64(at.to_datetime64()), side="right"))
+    j1 = int(np.searchsorted(idx.values, np.datetime64(lim.to_datetime64()), side="right"))
+    if j1 - j0 < 20:
+        return out
+    hi_, lo_, op_, cl_ = (d3.high.values.astype(float), d3.low.values.astype(float),
+                          d3.open.values.astype(float), d3.close.values.astype(float))
+    st = run_structure(d3[["open", "high", "low", "close"]].iloc[:j1].reset_index(drop=True), swing_len=sw, internal_len=il)
+    want_bull = long_                                        # лонг → ждём бычий слом младшего слоя
+    for e_ in st.events:
+        if not (e_.internal and e_.kind == "CHoCH" and e_.bull == want_bull and j0 <= e_.i < j1 - 1):
+            continue
+        seg_lo, seg_hi = lo_[j0:e_.i + 1], hi_[j0:e_.i + 1]
+        if not len(seg_lo):
+            continue
+        ext = float(seg_lo.min()) if long_ else float(seg_hi.max())
+        if (ext >= float(setup["p5"])) if long_ else (ext <= float(setup["p5"])):
+            continue                                         # нового экстремума за старой пятой ещё нет
+        e = float(op_[e_.i + 1])
+        # stop_mult — множитель РАССТОЯНИЯ от входа до нового экстремума (1× = под экстремумом): проверка закона размера стопа
+        dist = abs(e - ext) * stop_mult + e * p.buf
+        sl = e - dist if long_ else e + dist
+        tp = float(setup["p4_target"])
+        if not ((long_ and sl < e < tp) or ((not long_) and tp < e < sl)):
+            continue
+        out.update({"trigger": "choch3m", "entry_time": pd.Timestamp(t3[e_.i + 1]), "entry_price": e, "stop": sl, "ext": ext})
+        end_t = idx[e_.i + 1] + pd.Timedelta(hours=hold_h)
+        for k in range(e_.i + 1, len(d3)):
+            if (lo_[k] <= sl) if long_ else (hi_[k] >= sl):
+                out.update({"outcome": "stop", "exit_time": pd.Timestamp(t3[k]), "exit_price": sl}); break
+            if (hi_[k] >= tp) if long_ else (lo_[k] <= tp):
+                out.update({"outcome": "target", "exit_time": pd.Timestamp(t3[k]), "exit_price": tp}); break
+            if idx[k] >= end_t:
+                out.update({"outcome": "time", "exit_time": pd.Timestamp(t3[k]), "exit_price": float(cl_[k])}); break
+        if out["exit_price"] is not None:
+            out["pnl_pct"] = round(((out["exit_price"] - e) / e * 100) * (1 if long_ else -1) - cost_pct, 2)
+        break
+    return out
