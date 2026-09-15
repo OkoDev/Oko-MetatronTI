@@ -87,6 +87,8 @@ def impulses_on_bar(swings, t, high, low, merge=False, pool_n=16, max_absorb=6):
         if not pairs:
             return []
         i = pairs[0][1]; del pool[i:i + 2]; gone += 2
+        if len(pool) < 5:                                  # после поглощения не осталось пяти точек (15.09: IndexError на WAL/RVN)
+            return []
         out = _five(pool[-5:], t, high, low)
         if out:
             for o in out:
