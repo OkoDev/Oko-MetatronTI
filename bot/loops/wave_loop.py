@@ -59,6 +59,40 @@ MAX_SYMBOLS = 120
 BARS_4H, BARS_1H, BARS_LTF = 180, 400, 150
 
 
+# ВОЛНОВОЙ КОНТЕКСТ АНАЛИТИКА (15.09): глубина истории — как в замере (4h 1500 бар BingX ≈ 250 дней). Дневную ногу строим
+# из 1D биржи (250 дней), пятёрку ядра — из 4h 500 бар (свинги ядра на коротком окне 180 бар не проверялись на совпадение).
+# Считается ОДИН раз на закрытый 4h-бар: запросы мимо кэша скана — 2 на пару раз в 4 часа.
+CTX_4H_BARS, CTX_1D_BARS = 500, 250
+
+
+def _dt_closed(df, tf_hours: float):
+    """Бот-формат get_ohlcv (RangeIndex + time ms) → DatetimeIndex UTC, только ЗАКРЫТЫЕ бары."""
+    import pandas as pd
+    d = df.copy()
+    d.index = pd.to_datetime(d["time"], unit="ms", utc=True) if "time" in d.columns else pd.to_datetime(d.index, utc=True)
+    d = d[d.index + pd.Timedelta(hours=tf_hours) <= pd.Timestamp.utcnow()]
+    return d[["open", "high", "low", "close", "volume"]].astype(float)
+
+
+async def _wave_ctx(bot, sym: str, seen: dict):
+    """Поля шины wave_leg_up/dn, wave5_setup — раз на новый закрытый 4h-бар. None, если пересчитывать не нужно."""
+    import pandas as pd
+    from core.waves.wave_analyst import wave_bus_context
+    dc = bot.data_collector
+    d4 = await dc.get_ohlcv(sym, "4h", limit=CTX_4H_BARS)
+    if d4 is None or len(d4) < 200:
+        return None
+    d4 = _dt_closed(d4, 4)
+    if len(d4) < 200 or seen.get(sym) == d4.index[-1]:
+        return None
+    dd = await dc.get_ohlcv(sym, "1d", limit=CTX_1D_BARS)
+    if dd is None or len(dd) < 60:
+        return None
+    res = await asyncio.to_thread(wave_bus_context, d4, _dt_closed(dd, 24), pd.Timestamp.utcnow())
+    seen[sym] = d4.index[-1]
+    return res
+
+
 async def _load_frames(bot, sym: str):
     """4h / 1h / 15m для одной пары. None, если данных не хватает."""
     dc = bot.data_collector
@@ -85,12 +119,13 @@ async def wave_loop(bot) -> None:
                 INTERVAL_SEC, MAX_SYMBOLS)
 
     await asyncio.sleep(90)          # дать скану прогреть кэш свечей после старта
+    ctx_seen: dict = {}              # sym → последний закрытый 4h-бар, на котором посчитан волновой контекст
 
     while True:
         try:
             # Берём пары, которые скан уже видел — их свечи в LRU-кэше свежие.
             syms = list(bus.all_symbols())[:MAX_SYMBOLS]
-            done, phases, recounts, skipped, legs = 0, Counter(), 0, 0, 0
+            done, phases, recounts, skipped, legs, ctxs = 0, Counter(), 0, 0, 0, 0
             t0 = asyncio.get_event_loop().time()
             logger.info("[S20] проход начат: пар в шине %d, берём %d",
                         len(bus.all_symbols()), len(syms))
@@ -110,6 +145,14 @@ async def wave_loop(bot) -> None:
                     if leg:
                         bus.update(sym, leg_updated_at=_now(), **leg)
                         legs += 1
+                    # волновой контекст аналитика: дневные ноги + 4h-пятёрка (раз на закрытый 4h-бар)
+                    try:
+                        ctx = await _wave_ctx(bot, sym, ctx_seen)
+                        if ctx:
+                            bus.update(sym, **ctx)
+                            ctxs += 1
+                    except Exception as e:
+                        logger.debug("[S20] %s волновой контекст: %s", sym, e)
                     done += 1
                     phases[getattr(ph, "phase", None) or "undefined"] += 1
                     # пересчёт разметки — сам по себе сигнал (счёт волн сломался)
@@ -122,8 +165,8 @@ async def wave_loop(bot) -> None:
             if done:
                 top = " · ".join(f"{k} {v}" for k, v in phases.most_common(4))
                 logger.info("[S20] разметка по %d парам за %.0fс · %s · ног %d · "
-                            "пересчётов %d%s", done, el, top, legs, recounts,
-                            f" · пропущено {skipped}" if skipped else "")
+                            "пересчётов %d · волновой контекст обновлён %d (в шине %d)%s", done, el, top, legs, recounts,
+                            ctxs, len(ctx_seen), f" · пропущено {skipped}" if skipped else "")
             else:
                 logger.warning("[S20] НИ ОДНОЙ пары не размечено за %.0fс "
                                "(пропущено %d) — проверьте свечи/лимиты", el, skipped)

@@ -212,6 +212,14 @@ class PairState:
     leg_minor_breaks: Optional[int] = None   # сломов МЛАДШЕГО масштаба внутри ноги
     leg_tf: Optional[str] = None             # на каком ТФ посчитана нога
     leg_updated_at: Optional[datetime] = None
+    # ── ВОЛНОВОЙ КОНТЕКСТ АНАЛИТИКА (15.09, Егор: «согласие на публикацию в шину») ──
+    # core.waves.wave_analyst.wave_bus_context: дневные ноги вверх/вниз (глубина цены, зона OTE) и последняя 4h-пятёрка ядра.
+    # Потребитель №1 — ote_nested пишет зону входа в features_json (SHADOW, без гейта): замер 15.09 — вход в OTE ноги
+    # лучше базы, в мелкой части ноги (55% входов) хуже.
+    wave_leg_up: Optional[Dict[str, Any]] = None     # {origin, ext, depth, zone, ote[0.618, 0.79], origin_t, ext_t} — для LONG
+    wave_leg_dn: Optional[Dict[str, Any]] = None     # то же для ноги вниз — для SHORT
+    wave5_setup: Optional[Dict[str, Any]] = None     # {side, top_time, p0, p4, p5, imp_pct, core, core_full} за 5 сут
+    wave_ctx_updated_at: Optional[datetime] = None
 
     # ── Сфера 19: Market Data (ARCH-129.1) ──────────────────────────────
     # Повод: 213 из 230 признаков боевых решений идут МИМО шины — Куб видит только

@@ -77,11 +77,12 @@ def diagonal_on_bar(swings, t, high, low) -> Optional[Dict[str, Any]]:
             "wave_idx": idx + [p5i], "wave_px": px + [p5], "lens": (l1, l3, l5)}
 
 
-def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: int = 10) -> Optional[Dict[str, Any]]:
+def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: int = 10,
+              dd: Optional[pd.DataFrame] = None) -> Optional[Dict[str, Any]]:
     """Дневная нога, которую корректирует 4h-ход: для хода вверх (want_top=True) — нога вниз от дневного свинг-хая, и наоборот.
     Начало — последний подтверждённый к `now` дневной свинг до начала хода t0, лежащий ЗА экстремумом хода p5; если такого нет —
     последний свинг (глубина > 1). Уровни фибо ноги, расширения, глубина и зона экстремума хода."""
-    dd = to_daily(dh)
+    dd = to_daily(dh) if dd is None else dd                    # dd — готовые ЗАКРЫТЫЕ дневные бары (шина: 1D биржи)
     dsw = _swings(dd["high"], dd["low"], d_sw)
     cand = [s_ for s_ in dsw if bool(s_[3]) == want_top and dd.index[int(s_[1])] < t0 and dd.index[int(s_[0])] + pd.Timedelta(days=1) <= now]
     beyond = [s_ for s_ in cand if (float(s_[2]) > p5 if want_top else float(s_[2]) < p5)]
@@ -115,10 +116,71 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
     depth = abs(p5 - ext) / span; sg = np.sign(origin - ext)
     lvl = {f"{r}": ext + sg * r * span for r in FIB_RET}
     xt = {f"-{r}": ext - sg * r * span for r in FIB_EXT if ext - sg * r * span > 0}
-    zone = ("OTE 0.62–0.79" if 0.62 <= depth <= 0.79 else "глубокая 0.79–1.0" if 0.79 < depth <= 1.0 else
-            "за пределами ноги (>1)" if depth > 1 else "мелкая 0.5–0.62" if depth >= 0.5 else "мелкая (<0.5)")
+    zone = leg_zone(depth)
     return {"origin": origin, "origin_t": dd.index[o_i], "ext": ext, "ext_t": ext_t, "depth": depth, "zone": zone, "levels": lvl,
             "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
+
+
+def leg_zone(depth: float) -> str:
+    """Зона глубины в дневной ноге — одна формула для разбора, шины и замеров."""
+    return ("OTE 0.62–0.79" if 0.62 <= depth <= 0.79 else "глубокая 0.79–1.0" if 0.79 < depth <= 1.0 else
+            "за пределами ноги (>1)" if depth > 1 else "мелкая 0.5–0.62" if depth >= 0.5 else "мелкая (<0.5)")
+
+
+# ─── ШИНА КУБА (Сфера 20): волновой контекст пары ────────────────────────────────────────────────
+# Егор 15.09: «потребителей найдём — боевые на OTE, а OTE детектили нечётко». Замер того же дня
+# (memory wave_3m_program): вход ote_nested в OTE 0.62–0.79 дневной ноги аналитика +0.54%/сд против базы +0.32 (SIM,
+# перц 98), в мелкой части ноги (<0.5, 55% входов) — хуже базы. SHADOW: публикуем и пишем в features, не гейтим.
+def _leg_brief(leg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not leg:
+        return None
+    return {"origin": leg["origin"], "origin_t": str(leg["origin_t"])[:10], "ext": leg["ext"], "ext_t": str(leg["ext_t"])[:10],
+            "depth": round(leg["depth"], 3), "zone": leg["zone"],
+            "ote": [round(leg["levels"]["0.618"], 10), round(leg["levels"]["0.79"], 10)]}
+
+
+def wave_bus_context(d4: pd.DataFrame, dd: Optional[pd.DataFrame], now: pd.Timestamp) -> Dict[str, Any]:
+    """Поля шины по паре. d4 / dd — ЗАКРЫТЫЕ бары 4h и 1D с DatetimeIndex UTC.
+    wave_leg_up — дневная нога вверх (контекст откатов для LONG), wave_leg_dn — вниз (для SHORT): глубина текущей цены и зона;
+    wave5_setup — последняя завершённая 4h-пятёрка ядра за 5 суток."""
+    from core.waves.wave5_core import mark_impulse, WaveParams
+    price = float(d4.close.iloc[-1])
+    out: Dict[str, Any] = {"wave_ctx_updated_at": now.to_pydatetime() if hasattr(now, "to_pydatetime") else now}
+    for key, want_top in (("wave_leg_up", False), ("wave_leg_dn", True)):
+        try:
+            out[key] = _leg_brief(daily_leg(d4, now, want_top, price, now, now, dd=dd))
+        except Exception:
+            out[key] = None
+    try:
+        st = mark_impulse(d4, now, WaveParams(), "4h", lookback=30)
+    except Exception:
+        st = []
+    s = st[0] if st else None
+    out["wave5_setup"] = ({"side": s["side"], "top_time": str(s["top_time"])[:16], "p0": s["p0"], "p4": s["p4_target"], "p5": s["p5"],
+                           "imp_pct": s["imp_pct"], "core": s["core"], "core_full": s["core_full"]} if s else None)
+    return out
+
+
+def wave_zone_for(state, side: str, price: float) -> Dict[str, Any]:
+    """Признаки для features_json сделки из состояния шины (PairState или dict): зона и глубина ЦЕНЫ ВХОДА в дневной ноге
+    своей стороны (нога из шины, глубина пересчитана на цену входа), отношение к последней 4h-пятёрке, возраст контекста."""
+    g = (lambda k: getattr(state, k, None)) if not isinstance(state, dict) else state.get
+    leg = g("wave_leg_up") if side == "LONG" else g("wave_leg_dn")
+    upd = g("wave_ctx_updated_at")
+    if upd is None:
+        return {"wave_ctx": "нет в шине"}
+    out: Dict[str, Any] = {"wave_ctx": "ok", "wave_ctx_age_h": round((pd.Timestamp.utcnow() - pd.Timestamp(upd)).total_seconds() / 3600, 1)}
+    if leg and price:
+        span = abs(leg["origin"] - leg["ext"])
+        if span > 0:
+            dep = abs(price - leg["ext"]) / span
+            out.update(wave_zone_1d=leg_zone(dep), wave_depth_1d=round(dep, 3), wave_leg_origin=leg["origin"], wave_leg_ext=leg["ext"])
+    else:
+        out["wave_zone_1d"] = "нет ноги"
+    s5 = g("wave5_setup")
+    out["wave5_rel"] = ("по ходу" if s5["side"] == side else "против") if s5 else "нет"
+    out["wave5_core_full"] = bool(s5 and s5.get("core_full"))
+    return out
 
 
 def fit_y(ax, w: pd.DataFrame, extra=(), pad: float = 0.06) -> None:

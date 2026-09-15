@@ -426,6 +426,16 @@ async def _register_ote_trade(bot, sig):
     for _tf, _v in _dbt.items():
         extra[f"ote_div_{_tf}"] = int(_v)
     extra["ote_div_cascade"] = int(sig.meta.get("div_cascade", 0))
+    # 🌊 ВОЛНОВОЙ КОНТЕКСТ ИЗ ШИНЫ (15.09, Егор: согласие на шину; SHADOW — только запись, НЕ гейт). Замер 15.09:
+    # вход в OTE 0.62–0.79 дневной ноги аналитика лучше базы источника, в мелкой части ноги (<0.5, 55% входов) — хуже.
+    # Форвард нужен в другом режиме рынка до любого гейта. «нет в шине» пишется явно — молчаливый пропуск не прячем.
+    try:
+        from core.waves.wave_analyst import wave_zone_for
+        _bus = getattr(bot, "pair_context", None)
+        if _bus is not None:
+            extra.update(wave_zone_for(_bus.get(sig.symbol), "LONG" if is_long else "SHORT", float(sig.entry)))
+    except Exception as _e:
+        extra["wave_ctx"] = f"ошибка: {type(_e).__name__}"
     trade_id = None
     exchange_id = None
     if bool(bot.config.get("signal_router.enabled", False)) and hasattr(bot, "trade_router"):
