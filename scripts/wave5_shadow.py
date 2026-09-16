@@ -210,7 +210,14 @@ def full_scan(a):
             if len(dl) < 200: print(f"  [skip] {s}: {a.ltf}={len(dl)}", flush=True); continue
             for st in setups:
                 if a.only_core and not st["core"]: continue
-                k = f"{s}|{st['key']}"; prev = state.get(k); ls = ltf_status(st, dl, P, after=(detect_close(prev) if prev else NOW.floor('4h')), entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
+                k = f"{s}|{st['key']}"; prev = state.get(k)
+                # 16.09 (Егор: «тут ничего нового!»): ключ ядра = начало импульса + конец волны 4, БЕЗ вершины пятой.
+                # Пятая продлевается → вершина/стоп/цель новые, ключ прежний. Если по нему лежит ЗАКРЫТАЯ запись,
+                # обновлять её нельзя (заморозка 15.09), и сетап пропадал молча: так 16.09 потерялись 6 сигналов.
+                # Новая вершина при закрытой записи = отдельный сетап.
+                if prev is not None and prev.get("status") == "closed" and str(prev.get("top_time")) != str(st["top_time"]):
+                    k = f"{k}|{pd.Timestamp(st['top_time']):%Y%m%d%H}"; prev = state.get(k)
+                ls = ltf_status(st, dl, P, after=(detect_close(prev) if prev else NOW.floor('4h')), entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
                 if prev is None:
                     prev = {kk: js(v) for kk, v in st.items() if kk not in ("wave_idx", "wave_px")}
                     prev.update({"sym": s, "detected_at": now, "status": "detected", "egor": ""})

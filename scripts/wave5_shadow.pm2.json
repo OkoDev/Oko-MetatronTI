@@ -1,0 +1,15 @@
+{
+  "apps": [
+    {
+      "name": "wave5-shadow",
+      "script": "scripts/wave5_shadow.py",
+      "interpreter": "C:\\Users\\yogoru\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "args": ["--loop", "--universe", "bingx", "--min_vol", "0", "--draw"],
+      "cwd": "E:\\MTF BOT\\CURSOR\\crypto_volume_bot",
+      "out_file": "E:\\MTF BOT\\CURSOR\\crypto_volume_bot\\data\\wave5_shadow\\pm2_out.log",
+      "error_file": "E:\\MTF BOT\\CURSOR\\crypto_volume_bot\\data\\wave5_shadow\\pm2_err.log",
+      "autorestart": true,
+      "max_restarts": 20
+    }
+  ]
+}
