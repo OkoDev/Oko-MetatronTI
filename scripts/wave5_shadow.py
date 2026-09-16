@@ -47,6 +47,16 @@ def _cache(sym, tf):
     return d[d.index + pd.Timedelta(minutes=TF_MIN[tf]) <= NOW]
 
 
+# Синтетика BingX — не крипта, а акции (NCSK*), валютные пары (NCFX*), товары (NCCO*) и индексы (NCSI*).
+# 16.09 их было 592 из 1180 пар, и они лезли в журнал (NCCOPALLADIUM2USD = палладий). Егор: «нужно убрать
+# из скана синтетику». Коротких NC-тикеров в крипте нет — фильтр по префиксам ничего живого не задевает.
+SYNTH_PREFIXES = ("NCSK", "NCFX", "NCCO", "NCSI")
+
+
+def is_synthetic(base: str) -> bool:
+    return base.upper().startswith(SYNTH_PREFIXES)
+
+
 def universe_list(ex, a):
     mk = ex.load_markets()
     if a.syms:
@@ -54,7 +64,8 @@ def universe_list(ex, a):
     if a.universe == "bingx":
         tk = ex.fetch_tickers()
         liq = sorted(((s, m["base"], (tk.get(s) or {}).get("quoteVolume") or 0) for s, m in mk.items()
-                      if m.get("swap") and m.get("quote") == "USDT" and m.get("active")), key=lambda x: -x[2])
+                      if m.get("swap") and m.get("quote") == "USDT" and m.get("active")
+                      and not is_synthetic(m["base"])), key=lambda x: -x[2])
         return [f"{b}/USDT" for _, b, v in liq if v >= a.min_vol]
     from research_harness import universe
     have = {m["base"] for s, m in mk.items() if m.get("swap") and m.get("quote") == "USDT"}
