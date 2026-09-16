@@ -611,6 +611,14 @@ class TradingAlertBot:
                 logger.info("[DS-ADVISOR] task spawned (gated by config)")
             except Exception as e:
                 logger.warning("[DS-ADVISOR] failed to start: %s", e)
+            # ═══ WAVES_LONG — семейство волновых лонгов на VST (17.09, Егор «все в бой»;
+            #     gated trading.waves_long.enabled). Исполняет очередь сигналов тени ═══
+            try:
+                from bot.loops.waves_long_loop import waves_long_loop
+                asyncio.create_task(waves_long_loop(self))
+                logger.info("[WAVES_LONG] task spawned (gated by config)")
+            except Exception as e:
+                logger.warning("[WAVES_LONG] failed to start: %s", e)
             # ═══ RANGEFADE — первый эдж переживший прокурора (30.07; gated trading.rangefade.enabled) ═══
             try:
                 from bot.loops.rangefade_loop import rangefade_loop

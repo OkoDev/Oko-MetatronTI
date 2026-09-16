@@ -80,6 +80,31 @@ def js(v):
     return v
 
 
+EXEC_Q = DATA / "exec_queue.jsonl"
+
+
+def emit_exec(prev, sym, variant, entry, stop, target, extra=None):
+    """Сигнал на исполнение в VST (Егор 17.09: «на vst все в бой… все кандидаты с индивидуальной пометкой»).
+    Тень — отдельный процесс, роутер живёт в боте, поэтому мост — очередь: строка JSON на сигнал.
+    Читает её `bot/loops/waves_long_loop.py`, дедуп по полю `uid`. Вариант входа пишется в `wv_variant`,
+    признаки отбора — рядом, чтобы результат потом резался по ним (ядро / импульс / ширина стопа / массовость)."""
+    try:
+        rec = {"ts": pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+               "uid": f"{sym}|{prev.get('key')}|{variant}", "sym": sym, "side": prev.get("side"),
+               "wv_variant": variant, "entry": js(entry), "stop": js(stop), "target": js(target),
+               "wv_top_time": str(prev.get("top_time"))[:16], "wv_core_full": bool(prev.get("core_full")),
+               "wv_core": bool(prev.get("core")), "wv_fractal": bool(prev.get("fractal")),
+               "wv_imp_pct": js(prev.get("imp_pct")), "wv_depth5": js(prev.get("depth5")),
+               "wv_risk_pct": round(abs(entry - stop) / entry * 100, 2) if entry and stop else None,
+               "wv_mass_day": int(prev.get("_mass_day") or 0)}
+        rec.update(extra or {})
+        with open(EXEC_Q, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"  EXEC {sym:<12} {variant} @ {entry:.6g} стоп {stop:.6g} → очередь VST", flush=True)
+    except Exception as e_:  # noqa: BLE001
+        print(f"  [exec] {sym}: не записал сигнал — {type(e_).__name__} {e_}", flush=True)
+
+
 def transition(prev, ls, now, sym):
     """detected → entered → closed по правилам бэктеста (core.waves.wave5_core.ltf_status: триггер после детекции,
     вход open следующего бара, стоп фиксирован на входе, исход по экстремумам баров)."""
@@ -88,6 +113,8 @@ def transition(prev, ls, now, sym):
         prev["status"] = "entered"; prev["entered_at"] = str(ls["entry_time"])[:16]; prev["entry_price"] = ls["entry_price"]
         prev["entry_trigger"] = ls["trigger"]; prev["stop"] = js(ls["stop"])
         print(f"  IN   {sym:<12} {prev['side']} вход по {ls['trigger']} {prev['entered_at']} @ {ls['entry_price']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}", flush=True)
+        if prev.get("side") == "LONG":          # семейство waves_long: шорты в бой не идут (замер 16.09)
+            emit_exec(prev, sym, ls["trigger"], ls["entry_price"], ls["stop"], prev.get("p4_target"))
     elif st == "detected" and ls.get("entry_window_over"):
         prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "no_entry"
         print(f"  --   {sym:<12} окно входа истекло без триггера", flush=True)
@@ -133,6 +160,9 @@ def reentry_watch(state, now):
         v.update(re_status="entered", re_entry=js(r["entry_price"]), re_stop=js(r["stop"]), re_entry_at=str(r["entry_time"])[:16])
         if first:
             print(f"  RE   {v['sym']:<12} {v['side']} повторный вход по слому 3m {v['re_entry_at']} @ {r['entry_price']:.6g} · стоп {r['stop']:.6g}", flush=True)
+            if v.get("side") == "LONG":         # пятый вариант семейства waves_long — повторный вход по слому 3m
+                emit_exec(v, v["sym"], "reentry_3m", r["entry_price"], r["stop"], v.get("p4_target"),
+                          extra={"wv_mode": r.get("mode"), "wv_first_stop": js(v.get("stop"))})
             if post:
                 rid = v["tg_last"] if isinstance(v.get("tg_last"), int) and v["tg_last"] > 0 else None
                 txt = (f"♻️ <b>{html_escape(v['sym'].split('/')[0])}</b> · {v['side']} · ПОВТОРНЫЙ вход по слому 3m {v['re_entry_at']} UTC @ {r['entry_price']:.6g}\n"

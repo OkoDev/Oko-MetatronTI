@@ -656,7 +656,9 @@ class TradeSimulator:
             wt_snap = metadata.get("wt_snap") if metadata else None
             if wt_snap and isinstance(wt_snap, dict):
                 features["wt_snap"] = wt_snap
-            # DEV-139: smc_snap для MTFSMCSpecialist (4 TF × 9 признаков)
+            # DEV-139: smc_snap для MTFSMCSpecialist (4 TF × до 28 полей, схема _v=2).
+            # 🔴 02.09: metadata наполняет ТОЛЬКО analyze_symbol → сделки от стратегий
+            # через trade_router приходят без snap. Покрытие 10% за июль-сентябрь.
             smc_snap = metadata.get("smc_snap") if metadata else None
             if smc_snap and isinstance(smc_snap, dict):
                 features["smc_snap"] = smc_snap
@@ -1047,9 +1049,26 @@ class TradeSimulator:
             gate_regime_safety, gate_min_strength_regime,
             gate_pivot_reversal_strength, gate_portfolio_l3,
         )
+        # 🔴 17.09 (Егор: «проверь чтобы другие ограничители не резали количество сделок! уже были
+        # моменты когда не пропускался поток»): источник может быть освобождён от HARD-рубежа —
+        # config `trading.gate_exempt_sources: [имя источника, …]`. Список пуст по умолчанию,
+        # поведение прочих стратегий не меняется. Гейты сами источника не видят (в recommendation
+        # нет signal_type), поэтому решение принимается здесь, где есть extra_features.
+        _gsrc = str((extra_features or {}).get("signal_type_override") or "")
+        try:
+            from core.infra.config_loader import config as _cfg_gx
+            _gates_exempt = _gsrc and _gsrc in set((_cfg_gx.get("trading.gate_exempt_sources") or []))
+        except Exception:
+            _gates_exempt = False
+        if _gates_exempt:
+            logger.info("[GATES] %s: источник %s освобождён от HARD-рубежа (gate_exempt_sources)",
+                        _get_recommendation_value(recommendation, "symbol") or "?", _gsrc)
+
         for _gate_call in (lambda: gate_time_of_day(recommendation),
                            lambda: gate_market_stress(self, recommendation),
                            lambda: gate_correlation(self, recommendation)):
+            if _gates_exempt:
+                break
             _blk = _gate_call()
             if _blk:
                 if _reason_out is not None: _reason_out.append(_blk)
@@ -1066,26 +1085,47 @@ class TradeSimulator:
                     from core.indicators.market_regime import MarketRegimeClassifier
                     ohlcv = await data_collector.get_ohlcv(symbol, DEFAULT_TIMEFRAME, 50)
                     if ohlcv is not None and not ohlcv.empty:
-                        regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv)
-                        logger.debug("MarketRegime для %s: %s", symbol, regime)
-                        # DEV-90 / ARCH-59: shadow logging classify_v2 (сравниваем с текущим)
+                        # старый метод считаем ТОЛЬКО когда v2 выключен — иначе это
+                        # холостая работа: результат всё равно затирался ниже (04.09).
+                        try:
+                            from core.infra.config_loader import config as _cfg_rg
+                            _v2_on = bool(_cfg_rg.get("market_regime.use_v2", False)) if _cfg_rg else False
+                        except Exception:      # noqa: BLE001
+                            _v2_on = False
+                        if not _v2_on:
+                            regime = MarketRegimeClassifier().classify_from_ohlcv(ohlcv)
+                            logger.debug("MarketRegime для %s: %s", symbol, regime)
+                        # DEV-90 / ARCH-59 / ARCH-124: classify_v2.
+                        # 🔴 04.09.2026, ВАЖНО ПРО ИСТОЧНИК МЕТКИ. `use_v2: true` стоит
+                        # с 11.06 (коммит 6a18516), поэтому БОЕВОЙ классификатор — v2,
+                        # а `classify_from_ohlcv` выше считался ВПУСТУЮ: его результат
+                        # затирался строкой `regime = _v2`. Именно v2 писал колонку
+                        # `regime` во все 48 581 сделку, по которой шёл замер.
+                        # (Я сам сначала прочитал это наоборот — «боевой старый, v2 в
+                        # shadow»; распределение в БД совпадает с профилем v2, не старого.)
+                        #
+                        # Замер 04.09 ([[regime_three_methods_disagree]]): методы согласны
+                        # на 41.9%, в 3.9% дают ПРОТИВОПОЛОЖНОЕ направление. Но метка
+                        # разделяет результат лишь на 0.162 п.п. при костах 0.35-0.79%,
+                        # поэтому вопрос «какой метод точнее» практического веса не имеет:
+                        # режим снят с роли ГЕЙТА и оставлен как РАЗРЕЗ ОТЧЁТНОСТИ, где
+                        # важна СТАБИЛЬНОСТЬ метки, а не её точность.
+                        # 🔴 Отсюда: НЕ переключать `use_v2` без нужды — смена источника
+                        # метки разорвёт сравнимость с 48k исторических записей.
                         try:
                             from core.infra.config_loader import config as _cfg90
                             _use_v2 = _cfg90.get("market_regime.use_v2", False) if _cfg90 else False
-                            _clf90 = MarketRegimeClassifier()
-                            _df_1h90 = await data_collector.get_ohlcv(symbol, "1h", 50)
-                            # ARCH-124: HTF-доминантному v2 нужен 4h (60 баров > atr_period=43)
-                            _df_4h90 = await data_collector.get_ohlcv(symbol, "4h", 60)
-                            _v2 = _clf90.classify_v2(ohlcv, _df_1h90, _df_4h90)
-                            _regime_v2 = _v2
                             if _use_v2:
+                                _clf90 = MarketRegimeClassifier()
+                                _df_1h90 = await data_collector.get_ohlcv(symbol, "1h", 50)
+                                # ARCH-124: HTF-доминантному v2 нужен 4h (60 баров > atr_period=43)
+                                _df_4h90 = await data_collector.get_ohlcv(symbol, "4h", 60)
+                                _v2 = _clf90.classify_v2(ohlcv, _df_1h90, _df_4h90)
+                                _regime_v2 = _v2
                                 regime = _v2
                                 logger.debug("[regime_v2] %s: v2=%s (production)", symbol, _v2)
-                            else:
-                                logger.debug("[regime_v2][SHADOW] %s: old=%s new=%s",
-                                             symbol, regime, _v2)
                         except Exception as _e90:
-                            logger.debug("[regime_v2] %s: shadow error — %s", symbol, _e90)
+                            logger.debug("[regime_v2] %s: error — %s", symbol, _e90)
                 except Exception as e:
                     logger.debug("MarketRegime: не удалось определить для %s — %s", symbol, e)
 
@@ -1137,16 +1177,19 @@ class TradeSimulator:
         for _gate_call in (lambda: gate_regime_safety(recommendation, regime, extra_features),
                            lambda: gate_min_strength_regime(recommendation, regime, symbol, extra_features),
                            lambda: gate_pivot_reversal_strength(recommendation, symbol)):
+            if _gates_exempt:
+                break
             _blk = _gate_call()
             if _blk:
                 if _reason_out is not None: _reason_out.append(_blk)
                 return None
 
         # Шаг 7: DEV-52 портфельные лимиты + риск/маржа per-account — register_gates (перенос 1:1)
-        _blk = gate_portfolio_l3(self, recommendation, symbol)
-        if _blk:
-            if _reason_out is not None: _reason_out.append(_blk)
-            return None
+        if not _gates_exempt:
+            _blk = gate_portfolio_l3(self, recommendation, symbol)
+            if _blk:
+                if _reason_out is not None: _reason_out.append(_blk)
+                return None
 
         # DEV-110 / ARCH-66: RANGE BOUNCE — переопределяем SL/TP от пивотов
         # Активируется только: RANGE + confluence/watch_list_breach + 15m + entry у края (≤2%)
@@ -1304,6 +1347,29 @@ class TradeSimulator:
                 self._write_trade_features(trade_id, _a118_snap)
             except Exception as _e_tf:
                 logger.debug("[ARCH-118] _write_trade_features #%s error: %s", trade_id, _e_tf)
+
+        # ЭПИК A (04.09): СНИМОК СТАКАНА в момент входа — «стакан ради исполнения».
+        # Стакана в проекте не было вовсе, поэтому adverse selection нечем вычесть,
+        # а ось ликвидности не сведена (пять замеров, три разных прокси, взаимо-
+        # исключающие выводы). Снимок даёт прямую меру: сколько $ стоит между ценой
+        # и нашим лимитом. Fire-and-forget: регистрацию не блокируем и не роняем —
+        # снимок опционален по определению.
+        if trade_id and data_collector is not None:
+            try:
+                _ex = getattr(data_collector, "exchange", None)
+                if _ex is not None and hasattr(_ex, "fetch_order_book"):
+                    from core.exchange.depth_snapshot import capture as _depth_capture
+                    import asyncio as _aio
+                    _t = _aio.create_task(
+                        _depth_capture(_ex, symbol, self.db_path, trade_id)
+                    )
+                    # не ждём результата, но и не теряем исключение молча
+                    _t.add_done_callback(
+                        lambda f: f.exception() and logger.debug(
+                            "[DEPTH] task error: %s", f.exception())
+                    )
+            except Exception as _e_depth:
+                logger.debug("[DEPTH] snapshot skip %s: %s", symbol, _e_depth)
 
         # DUAL_TP: рассчитываем TP2 = следующий пивот после TP1 (30.03.2026)
         if trade_id and data_collector is not None:
