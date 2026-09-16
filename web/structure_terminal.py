@@ -3923,8 +3923,12 @@ def _wv_state():
 
 
 async def api_waves_journal(_req):
-    """GET /api/waves/journal — сетапы тени (state.json) + оценки (reviews.json), активные первыми."""
+    """GET /api/waves/journal — сетапы тени (state.json) + оценки (reviews.json) + статус сканов (status.json), активные первыми."""
     st, rv = _wv_state(), _wv_reviews()
+    try:
+        scan = json.loads(open(os.path.join(_WV_DIR, "status.json"), encoding="utf-8").read())
+    except Exception:
+        scan = {}
     out = []
     for k, s in st.items():
         sym = str(s.get("sym", "")).replace("/", "")
@@ -3949,7 +3953,7 @@ async def api_waves_journal(_req):
         agr = agreement(rv)
     except Exception:
         agr = {"n": 0, "hit": 0, "by_egor": {}}
-    return web.json_response({"rows": out, "verdicts": _WV_VERDICTS, "agreement": agr, "ts": int(time.time())})
+    return web.json_response({"rows": out, "verdicts": _WV_VERDICTS, "agreement": agr, "scan": scan, "ts": int(time.time())})
 
 
 async def api_waves_review(req):
@@ -3984,7 +3988,10 @@ body{background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,Segoe UI,R
 h1{font-size:22px;margin:8px 0 2px}.sub{color:var(--mut);margin:0 0 14px;max-width:80ch}
 .tabs{display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap}.tabs .bt{cursor:pointer}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 16px}
-.card h2{margin:0;font-size:18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.card h2{margin:0;font-size:18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;cursor:pointer;user-select:none}
+.card h2 .tw{color:var(--mut);font-size:13px;width:12px}
+.card.col{padding:8px 16px}.card.col .body{display:none}
+#scan{margin:0 0 10px;font-size:12.5px}
 .side{font-size:11px;padding:2px 8px;border-radius:4px;letter-spacing:.06em}.side.LONG{background:#2b5fd9;color:#fff}.side.SHORT{background:#c0392b;color:#fff}
 .st{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:1px 7px}
 .meta{color:var(--mut);font-size:12.5px;margin:6px 0 10px}.f{padding:1px 6px;border-radius:3px;font-size:11.5px}.f.ok{background:rgba(38,166,154,.18);color:var(--up)}.f.no{background:rgba(239,83,80,.16);color:var(--dn)}
@@ -4006,17 +4013,22 @@ figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-r
 Оценка разметки пишется в <code>data/wave5_shadow/reviews.json</code> и попадает в CSV. Строка «ИИ» — самотестирование по методичке; твоя оценка — контроль его оценки.</p>
 <div class=ask><input id=asym placeholder="тикер, например SOLV" maxlength=20><span class="bt" id=abtn>🌊 разобрать монету</span><span id=astat class=mut></span></div>
 <div id=ares></div>
-<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span><span class=mut id=agr title="сколько раз вердикт правил совпал с оценкой Егора"></span></div>
+<div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span><span class=bt id=colall title="свернуть все">свернуть все</span><span class=bt id=expall title="развернуть все">развернуть все</span><span class=mut id=agr title="сколько раз вердикт правил совпал с оценкой Егора"></span></div>
+<div class=mut id=scan></div>
 <div id=list><div class=empty>загрузка…</div></div>
 </div><div class=lb id=lb><img id=lbi alt=""></div>
 <script>
-var V=[],ROWS=[],F='active';
+var V=[],ROWS=[],F='active',SCAN={};
+// свёрнутые карточки (Егор 16.09: «панели сворачиваемыми, чтобы не скролить всю страницу»); по умолчанию закрытые — свёрнуты
+var COL={};try{COL=JSON.parse(localStorage.getItem('wavesCollapsed')||'{}');}catch(e){COL={};}
+function saveCol(){try{localStorage.setItem('wavesCollapsed',JSON.stringify(COL));}catch(e){}}
 function fl(k,v){return '<span class="f '+(v?'ok':'no')+'">'+k+(v?'✓':'✗')+'</span>';}
 function pct(a,b,side){if(a==null||b==null||!b)return '';var p=(a/b-1)*100*(side=='LONG'?1:-1);return '<em class="'+(p>=0?'up':'dn')+'">'+(p>=0?'+':'')+p.toFixed(1)+'%</em>';}
 function num(x,d){return x==null?'—':(+x).toPrecision(d||5);}
 function card(r){var rv=r.review||{};
  var btns=function(who){return V.map(function(v){return '<span class="bt'+(rv[who]==v?' on':'')+'" data-k="'+r.key+'" data-w="'+who+'" data-v="'+v+'">'+v+'</span>';}).join('');};
- return '<section class=card id="c_'+r.key+'"><h2>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+r.side+'</span><span class=st>'+r.status+(r.outcome?' · '+r.outcome:'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+'</h2>'+
+ return '<section class="card'+(COL[r.key]?' col':'')+'" id="c_'+r.key+'"><h2 data-k="'+r.key+'"><span class=tw>'+(COL[r.key]?'▸':'▾')+'</span>'+(r.sym||'').replace('/USDT','')+' <span class="side '+r.side+'">'+r.side+'</span><span class=st>'+r.status+(r.outcome?' · '+r.outcome:'')+'</span>'+(r.core_full?'<span class=core>ЯДРО</span>':'')+
+ (r.pnl_pct!=null?'<span class="st '+(r.pnl_pct>=0?'up':'dn')+'">'+r.pnl_pct+'%</span>':'')+(r.zone_1d?'<span class=st>'+r.zone_1d+'</span>':'')+'</h2><div class=body>'+
  '<div class=meta>'+(r.zone_1d?'<span class=zone>пятая в дневной ноге: '+r.zone_1d+' ('+r.depth_1d+')</span> ':'')+
   (r.cluster_3d!=null?'<span class=zone title="сколько разных монет дали пятёрку той же стороны за прошлые 3 дня; в скобках — приведено к 145 монетам замера">'+(r.mass_flush?'🌊 после массового слива':'кластер')+': '+r.cluster_3d+' ('+r.cluster_norm+')</span> ':'')+
   (r.breadth10!=null?'<span class=zone title="доля монет вселенной с ходом за 72 ч ниже −10% на момент детекции">ширина слива: '+Math.round(r.breadth10*100)+'%</span>':'')+'</div>'+
@@ -4032,11 +4044,14 @@ function card(r){var rv=r.review||{};
  (r.pnl_pct!=null?'<div class=kv><span>итог ('+r.outcome+')</span><b class="'+(r.pnl_pct>=0?'up':'dn')+'">'+r.pnl_pct+'%</b></div>':'')+
  (r.pnl_trail!=null?'<div class=kv><span>итог с трейлом ('+r.outcome_trail+')</span><b class="'+(r.pnl_trail>=0?'up':'dn')+'">'+r.pnl_trail+'%</b></div>':'')+'</div>'+
  '<div class=rv><div class=row><span class=who>Егор</span>'+btns('egor')+'<input placeholder="заметка (что не так, где должна быть точка)" data-k="'+r.key+'" data-w="egor" value="'+(rv.egor_note||'').replace(/"/g,'&quot;')+'"></div>'+
- '<div class="row ai"><span class=who>ИИ</span>'+(rv.ai?'<b>'+rv.ai+'</b> · '+(rv.ai_note||'')+' <span class=mut>('+(rv.ai_ts||'')+')</span>':'ещё не смотрел')+'</div></div></section>';}
+ '<div class="row ai"><span class=who>ИИ</span>'+(rv.ai?'<b>'+rv.ai+'</b> · '+(rv.ai_note||'')+' <span class=mut>('+(rv.ai_ts||'')+')</span>':'ещё не смотрел')+'</div></div></div></section>';}
 function render(){var rows=ROWS.filter(function(r){var rv=r.review||{};
   if(F=='active')return r.status!='closed';if(F=='closed')return r.status=='closed';if(F=='core')return r.core_full;if(F=='unrated')return !rv.egor;return true;});
  document.getElementById('cnt').textContent=rows.length+' из '+ROWS.length;
  document.getElementById('list').innerHTML=rows.length?rows.map(card).join(''):'<div class=empty>пусто</div>';
+ document.querySelectorAll('#list h2[data-k]').forEach(function(h){h.onclick=function(e){if(e.target.closest('.bt'))return;
+  var k=h.dataset.k,sec=document.getElementById('c_'+k);COL[k]=!COL[k];saveCol();
+  sec.classList.toggle('col',!!COL[k]);h.querySelector('.tw').textContent=COL[k]?'▸':'▾';};});
  document.querySelectorAll('.rv .bt').forEach(function(b){b.onclick=function(){var k=b.dataset.k,w=b.dataset.w,v=b.classList.contains('on')?'':b.dataset.v;
   var note=(document.querySelector('.rv input[data-k="'+k+'"]')||{}).value||'';send(k,w,v,note);};});
  document.querySelectorAll('.rv input').forEach(function(i){i.onchange=function(){var k=i.dataset.k,r=ROWS.find(function(x){return x.key==k;});send(k,'egor',(r.review||{}).egor||'',i.value);};});
@@ -4044,10 +4059,16 @@ function render(){var rows=ROWS.filter(function(r){var rv=r.review||{};
 async function send(k,w,v,note){try{var r=await fetch('/api/waves/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,who:w,verdict:v,note:note})});
  var d=await r.json();var row=ROWS.find(function(x){return x.key==k;});if(row&&d.review)row.review=d.review;render();}catch(e){alert('не сохранилось: '+e);}}
 async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'});var d=await r.json();V=d.verdicts;ROWS=d.rows;
+ ROWS.forEach(function(x){if(COL[x.key]===undefined)COL[x.key]=(x.status=='closed');});   // закрытые свёрнуты по умолчанию
+ SCAN=d.scan||{};
+ var sc=document.getElementById('scan');
+ sc.textContent=SCAN.at?('скан тени: последний '+SCAN.at+' UTC ('+SCAN.mode+')'+(SCAN.last_full?' · полная разметка '+SCAN.last_full:'')+(SCAN.universe?' · монет '+SCAN.universe:'')+' · активных '+SCAN.active+' · в журнале '+SCAN.journal+' · последний новый сетап '+(SCAN.last_new||'—')):'статус скана недоступен';
  var a=d.agreement||{};document.getElementById('agr').textContent=a.n?(' · согласие ИИ ↔ Егор: '+a.hit+'/'+a.n+' ('+Math.round(a.hit/a.n*100)+'%)'):' · согласие ИИ ↔ Егор: оценок Егора пока нет';
  render();}
 document.querySelectorAll('.tabs .bt').forEach(function(b){b.onclick=function(){document.querySelectorAll('.tabs .bt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');F=b.dataset.f;render();};});
 document.getElementById('lb').onclick=function(){this.style.display='none';};
+document.getElementById('colall').onclick=function(){ROWS.forEach(function(r){COL[r.key]=true;});saveCol();render();};
+document.getElementById('expall').onclick=function(){COL={};saveCol();render();};
 async function analyze(){var sym=document.getElementById('asym').value.trim();if(!sym)return;
  var st=document.getElementById('astat');st.textContent='считаю разбор '+sym+'… (20-40 с)';
  try{var r=await fetch('/api/waves/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sym:sym})});var d=await r.json();

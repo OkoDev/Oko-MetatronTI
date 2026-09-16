@@ -85,6 +85,11 @@ def transition(prev, ls, now, sym):
         prev["exit_price"] = js(ls["exit_price"]); prev["pnl_pct"] = ls["pnl_pct"]
         prev["outcome_trail"] = ls.get("outcome_trail"); prev["pnl_trail"] = ls.get("pnl_trail")
         print(f"  OUT  {sym:<12} {ls['outcome']} {ls['pnl_pct']:+.2f}%", flush=True)
+    # 🔴 16.09 (Егор, REDSTONE): у ЗАКРЫТЫХ записей stop/p5_ext продолжали обновляться — в CSV стоп 17.5% при факте 6.3%
+    # и убытке −6.43%. После закрытия запись замораживается: живыми остаются только наблюдения по активным сетапам.
+    if prev.get("status") == "closed":
+        prev["hours_from_top"] = round((NOW - pd.Timestamp(prev["top_time"], tz="UTC" if pd.Timestamp(prev["top_time"]).tzinfo is None else None)).total_seconds() / 3600, 1)
+        return
     for k in ("cross_first", "line24_broken", "line24_first", "line24_now", "p5_ext", "last_close"):
         prev[k] = js(ls[k])
     if prev.get("status") != "entered":
@@ -138,9 +143,21 @@ def detect_close(prev):
     return pd.Timestamp(prev["detected_at"], tz="UTC").floor("4h")
 
 
-def save_and_report(state, a):
+def save_and_report(state, a, mode="watch", n_univ=None):
     if not a.asof:
         STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        # статус для страницы /waves (Егор 16.09: «на странице нет новых сетапов» — чтобы «новых нет» читалось как факт)
+        act = [v for v in state.values() if v.get("status") != "closed"]
+        last_new = max((str(v.get("detected_at", "")) for v in state.values()), default="")
+        prev = {}
+        try:
+            prev = json.loads((DATA / "status.json").read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        st_ = {"at": NOW.strftime("%Y-%m-%d %H:%M"), "mode": mode, "journal": len(state), "active": len(act), "last_new": last_new,
+               "universe": n_univ if n_univ is not None else prev.get("universe"),
+               "last_full": NOW.strftime("%Y-%m-%d %H:%M") if mode == "full" else prev.get("last_full")}
+        (DATA / "status.json").write_text(json.dumps(st_, ensure_ascii=False, indent=1), encoding="utf-8")
     try:                                              # оценки со страницы :8010/waves (reviews.json) → в записи
         rv = json.loads((DATA / "reviews.json").read_text(encoding="utf-8"))
         for k, s in state.items():
@@ -212,7 +229,7 @@ def full_scan(a):
         mark_market(state, now, R72, len(syms))
         reentry_watch(state, now)
         tg_notify(state, refresh_analyst(state))
-    save_and_report(state, a)
+    save_and_report(state, a, mode="full", n_univ=len(syms))
 
 
 def write_ai_review(key, prev):
