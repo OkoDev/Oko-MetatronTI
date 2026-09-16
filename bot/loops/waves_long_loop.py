@@ -19,6 +19,7 @@
 Gated: trading.waves_long.enabled. Дедуп по `uid` (символ|ключ сетапа|вариант).
 """
 import asyncio
+import calendar
 import json
 import logging
 import time
@@ -103,7 +104,9 @@ async def waves_long_loop(bot):
                     continue
                 if r.get("side") != "LONG":
                     continue
-                age_min = (time.time() - time.mktime(time.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"))) / 60
+                # тень пишет ts в UTC; time.mktime трактует его как ЛОКАЛЬНОЕ время и добавляет
+                # смещение пояса (у нас +3 ч), из-за чего свежий сигнал отвергался как «180 мин»
+                age_min = (time.time() - calendar.timegm(time.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"))) / 60
                 if age_min > MAX_AGE_MIN:
                     logger.info("[WAVES_LONG] %s пропуск: сигналу %.0f мин (>%d)", uid, age_min, MAX_AGE_MIN)
                     continue
@@ -118,9 +121,10 @@ async def waves_long_loop(bot):
                 rec = TradingRecommendation(
                     symbol=sym, action="BUY", direction=SignalDirection.LONG,
                     overall_strength=65, confidence=0.6, risk_level="MEDIUM", signals_count=1,
+                    supporting_signals=[], conflicting_signals=[],
                     reasoning=f"waves_long {r.get('wv_variant')} · вершина {r.get('wv_top_time')}",
                     market_context=MarketContext(symbol=sym, current_price=float(entry), volume_24h=0.0,
-                                                 price_change_24h=0.0, volatility=0.0),
+                                                 volume_change_24h=0.0, price_change_24h=0.0, volatility=0.0),
                     entry_price=float(entry), stop_loss=float(stop), take_profit=float(tp))
                 extra = {"signal_type_override": "waves_long", "trade_mode": "waves_long"}
                 extra.update({k: v for k, v in r.items() if k.startswith("wv_")})

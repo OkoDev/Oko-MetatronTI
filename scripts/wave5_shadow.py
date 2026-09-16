@@ -83,6 +83,53 @@ def js(v):
 EXEC_Q = DATA / "exec_queue.jsonl"
 
 
+def choch_entry_15m(setup, dl, after, swing=True):
+    """Вход по СЛОМУ структуры на 15m — лучший триггер по замеру 16.09 (Δ +2.51 против +1.87 у боевого
+    кросса/линии, WR 49.5% против 33%). В ядре такого входа нет: `ltf_status` знает только кросс WT и
+    пробой линии 2-4. Здесь — первый CHoCH нужного направления после детекции, стоп за экстремумом пятой,
+    известным к бару входа (как в ядре). Возврат: (время, цена входа, стоп) или None."""
+    from core.smc.oko_sm_engine import run_structure
+    try:
+        long_ = setup["side"] == "LONG"
+        t5 = pd.Timestamp(setup["top_time"]); t5 = t5.tz_convert(None) if t5.tzinfo else t5
+        at = pd.Timestamp(after); at = at.tz_convert(None) if at.tzinfo else at
+        idx = dl.index.tz_convert(None) if getattr(dl.index, "tz", None) is not None else dl.index
+        x = dl.reset_index(drop=True)
+        st = run_structure(x[["open", "high", "low", "close"]], swing_len=P.sw, internal_len=P.il)
+        j5 = int(np.searchsorted(idx.values, np.datetime64(t5)))
+        ja = int(np.searchsorted(idx.values, np.datetime64(at)))
+        jw = int(np.searchsorted(idx.values, np.datetime64(t5 + pd.Timedelta(hours=ENTRY_W_H))))
+        ev = [e for e in st.events if e.kind == "CHoCH" and e.internal != swing
+              and e.bull == long_ and max(ja, j5) <= e.i < jw]
+        if not ev or ev[0].i + 1 >= len(x):
+            return None
+        j = ev[0].i + 1
+        ext = float(x.low.values[j5:j].min()) if long_ else float(x.high.values[j5:j].max())
+        p5a = min(float(setup["p5"]), ext) if long_ else max(float(setup["p5"]), ext)
+        sl = p5a * (1 - P.buf) if long_ else p5a * (1 + P.buf)
+        return pd.Timestamp(idx[j]), float(x.open.values[j]), sl
+    except Exception:
+        return None
+
+
+def _already_sent(uid: str) -> bool:
+    """Был ли такой сигнал уже выпущен. Дедуп держим в отдельном файле, а НЕ в state.json: по state
+    ходят reentry_watch и выгрузка CSV, служебные ключи там ломали бы формат записей."""
+    p = DATA / "exec_sent.json"
+    try:
+        sent = set(json.loads(p.read_text(encoding="utf-8"))) if p.exists() else set()
+    except Exception:
+        sent = set()
+    if uid in sent:
+        return True
+    sent.add(uid)
+    try:
+        p.write_text(json.dumps(sorted(sent)[-8000:], ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return False
+
+
 def emit_exec(prev, sym, variant, entry, stop, target, extra=None):
     """Сигнал на исполнение в VST (Егор 17.09: «на vst все в бой… все кандидаты с индивидуальной пометкой»).
     Тень — отдельный процесс, роутер живёт в боте, поэтому мост — очередь: строка JSON на сигнал.
@@ -258,7 +305,16 @@ def full_scan(a):
                 # Новая вершина при закрытой записи = отдельный сетап.
                 if prev is not None and prev.get("status") == "closed" and str(prev.get("top_time")) != str(st["top_time"]):
                     k = f"{k}|{pd.Timestamp(st['top_time']):%Y%m%d%H}"; prev = state.get(k)
-                ls = ltf_status(st, dl, P, after=(detect_close(prev) if prev else NOW.floor('4h')), entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
+                _after = detect_close(prev) if prev else NOW.floor('4h')
+                ls = ltf_status(st, dl, P, after=_after, entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
+                # 17.09 (Егор: «вариант входа по слому swing 15m тоже добавить в тень и VST»):
+                # отдельный кандидат семейства — не заменяет боевой вход, идёт параллельно со своей пометкой.
+                if st["side"] == "LONG":
+                    for _sw, _nm in ((True, "choch_swing_15m"), (False, "choch_int_15m")):
+                        _ch = choch_entry_15m(st, dl, _after, swing=_sw)
+                        if _ch and not _already_sent(f"{s}|{st['key']}|{_nm}"):
+                            emit_exec(st, s, _nm, _ch[1], _ch[2], st.get("p4_target"),
+                                      extra={"wv_choch_time": str(_ch[0])[:16]})
                 if prev is None:
                     prev = {kk: js(v) for kk, v in st.items() if kk not in ("wave_idx", "wave_px")}
                     prev.update({"sym": s, "detected_at": now, "status": "detected", "egor": ""})
