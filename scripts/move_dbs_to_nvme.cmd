@@ -15,7 +15,15 @@ set "LOG=%DEST%\move_log.txt"
 net session >nul 2>&1
 if errorlevel 1 (
   echo Нужны права администратора — запрашиваю их (подтвердите окно Windows)...
-  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  REM 🔴 16.09: Start-Process -Verb RunAs НЕ умеет запускать .cmd напрямую (только .exe) — поэтому
+  REM поднимаем cmd.exe и передаём ему этот файл аргументом; иначе окно молча закрывалось без лога.
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:ComSpec -ArgumentList '/k','\"%~f0\"' -Verb RunAs"
+  if errorlevel 1 (
+    echo.
+    echo Не удалось запросить права. Открой «Терминал ^(Администратор^)» ^(Win+X^) и вставь строку:
+    echo   "%~f0"
+    pause
+  )
   exit /b 0
 )
 
