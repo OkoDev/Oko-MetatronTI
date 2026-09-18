@@ -96,15 +96,31 @@ def detect_ote_signal(
     confirmed: List[Tuple[str, FibZone, int]] = []
 
     _priority = zone_tf_priority if zone_tf_priority is not None else _ZONE_TF_PRIORITY
+    # 19.09: «цена в зоне» — по СОБСТВЕННОЙ границе детектора [ote_zone_min_fib … 0.79], а не по флагу
+    # price_in_ote/active_ote из core.smc.fibonacci. Тот флаг с 19.09 считается по канону 0.5–0.79
+    # («все на канон!»), и с ним старший ТФ с мелким откатом (0.5–0.7) становился primary и молча гасил
+    # сигнал младшего ТФ с откатом глубже 0.705. Зона этого детектора — торговый параметр с собственным
+    # замером (04.05: 0.5 → WR 23.7%), а не признак; переводить его на канон — только новым замером.
+    _px = float(df_trigger["close"].iloc[-1])
     for tf, bonus in _priority:
         ctx = smc_contexts.get(tf)
         if ctx is None:
             continue
         fib = ctx.fibonacci
-        if fib is None or fib.active_ote is None:
+        if fib is None or not fib.zones:
             continue
-        zone = fib.active_ote
-        if not zone.price_in_ote:
+        zone = None
+        for z in reversed(fib.zones):                       # последняя зона ТФ, где цена в зоне детектора
+            _imp = z.impulse_high - z.impulse_low
+            if _imp <= 0:
+                continue
+            if z.direction == "LONG":
+                _in = z.ote_bottom <= _px <= z.impulse_high - _imp * ote_zone_min_fib
+            else:
+                _in = z.impulse_low + _imp * ote_zone_min_fib <= _px <= z.ote_top
+            if _in:
+                zone = z; break
+        if zone is None:
             continue
         confirmed.append((tf, zone, bonus))
 
