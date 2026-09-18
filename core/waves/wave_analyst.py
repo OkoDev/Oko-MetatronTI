@@ -583,9 +583,14 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
                     tail = base.iloc[ka + 1:]
                     hit = tail.index[(tail.low <= z05) if want_bull else (tail.high >= z05)]
                     ltf_state["zone_touch_t"] = hit[0] if len(hit) else None
+                    stop_886 = a_top - sgn * 0.886 * A
+                    # зона живёт до пробоя стопа 0.886 (Егор 18.09: «прямоугольник зоны входа рисовать до сегодня,
+                    # пока актуальна»); касание зоны её не гасит — цена может вернуться
+                    dead = tail.index[(tail.low <= stop_886) if want_bull else (tail.high >= stop_886)]
+                    ltf_state["zone_dead_t"] = dead[0] if len(dead) else None
                     ltf_state.update({"a_top": a_top, "a_t": bt[ka], "A": A, "retr_now": cur_retr,
                                       "zone": {f: a_top - sgn * f * A for f in (0.5, 0.618, 0.705)},
-                                      "stop_886": a_top - sgn * 0.886 * A})
+                                      "stop_886": stop_886})
             if es:
                 e2 = es[0]
                 ltf_state["choch_sw"] = {"t": bt[e2.i], "level": float(e2.level),
@@ -795,7 +800,8 @@ def render(rep: Dict[str, Any], dh: pd.DataFrame, dl: Optional[pd.DataFrame], ou
             z = ls["zone"]
             for f_, v in z.items():
                 seg(ax3, x5, xa, v, f"{f_}", ACC, ":", 0.9, side="left")
-            xt_ = xi(w3, ls["zone_touch_t"]) if ls.get("zone_touch_t") is not None else n3
+            # прямоугольник зоны — до сегодня (последний бар), пока зона жива; гаснет только пробоем стопа 0.886
+            xt_ = xi(w3, ls["zone_dead_t"]) if ls.get("zone_dead_t") is not None else n3
             ax3.add_patch(Rectangle((xa, min(z[0.5], z[0.705])), max(1, xt_ - xa), abs(z[0.5] - z[0.705]), color=ACC, alpha=0.22, lw=0))
             seg(ax3, xa, n3, ls["stop_886"], "стоп 0.886", DN, "--", 0.9)
         ax3.set_xlim(-25, n3 + 30)
