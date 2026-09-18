@@ -44,7 +44,9 @@ class SphereEvent:
 
     # Сфера 4 — MTF SMC Specialist
     SMC_VERDICT        = "smc_verdict"          # {label: str, confidence: float}
-    SMC_SNAP_UPDATED   = "smc_snap_updated"     # {tf: {ob_bull, fvg_open, choch, bos, ...}}
+    # схема ПЛОСКАЯ (build_smc_snapshot): price_in_ote, last_bos, nearest_*_ob,
+    # eqh/eql_level + per-TF внутри ключа by_tf. Сверено с кодом 02.09.
+    SMC_SNAP_UPDATED   = "smc_snap_updated"     # плоский dict + by_tf{tf: {...}}
 
     # Сфера 5 — Cross-Market Node
     CROSS_MARKET       = "cross_market"         # {btc_regime, btc_move_pct, direction}
@@ -375,8 +377,46 @@ class PairContextBus:
         self._open_trades: list[dict] = []               # L2: снапшот открытых сделок (push от trade_tracker)
         self._open_trades_ts: Optional[datetime] = None  # ts последней публикации (None = цикл ещё не публиковал)
 
+    # 🔴 18.09 ИНВАРИАНТ КЛЮЧА: пара в шине — ТОЛЬКО `BASE/USDT:USDT` (формат ccxt-swap, в котором живут
+    # AccountRouter, БД сделок и детектор сирот). С 01.09 Сфера 19 публиковала OI/фандинг под `BASE/USDT`:
+    # шина заводила ВТОРУЮ запись на ту же монету, all_symbols() отдавал обе, стратегии брали «голую» пару
+    # → роутер считал её новой, account_id в БД расходился с реальным, детектор сирот закрывал позицию
+    # по рынку через минуту (impulse_fib_15m: INJ, ARB, MMT −5%; STRK; всё семейство waves_long).
+    # А потребители фандинга (arch104, risk_intelligence) читали по каноническому ключу и видели 0.0.
+    _WARNED: set = set()
+
+    @staticmethod
+    def canon(symbol: str) -> str:
+        """Любой формат любой биржи → `BASE/USDT:USDT` (Егор 18.09: «все данные такого типа, входящие в Куб,
+        должны быть нормализованы! разные биржи могут отдавать данные с разными суффиксами»).
+          BingX      GUN-USDT            Binance   GUNUSDT           TradingView  GUNUSDT.P / BINGX:GUNUSDT.P
+          ccxt spot  GUN/USDT            ccxt swap GUN/USDT:USDT     прочие       GUN_USDT · gun/usdt
+        Квота всегда USDT — других котировок в проекте нет; не-USDT символ возвращается как есть."""
+        s = (symbol or "").strip().upper()
+        if not s:
+            return s
+        if ":" in s and not s.endswith(":USDT"):      # префикс биржи TradingView: BINGX:GUNUSDT.P
+            s = s.split(":", 1)[1]
+        if s.endswith(".P"):
+            s = s[:-2]
+        s = s.replace(":USDT", "")
+        for sep in ("/", "-", "_"):
+            s = s.replace(sep, "")
+        if not s.endswith("USDT") or len(s) <= 4:
+            return symbol.strip()                      # не USDT-пара — не наш случай, не трогаем
+        return f"{s[:-4]}/USDT:USDT"
+
+    def _key(self, symbol: str) -> str:
+        k = self.canon(symbol)
+        if k != symbol and symbol not in self._WARNED:
+            self._WARNED.add(symbol)
+            logger.warning("[PairContextBus] символ %r приведён к %r — публикующий пишет пару не в формате "
+                           "шины, найти и исправить источник", symbol, k)
+        return k
+
     def get(self, symbol: str) -> PairState:
         """Возвращает PairState для символа, создаёт если нет."""
+        symbol = self._key(symbol)
         if symbol not in self._states:
             self._states[symbol] = PairState(symbol=symbol)
         return self._states[symbol]
@@ -418,6 +458,7 @@ class PairContextBus:
 
     def reset(self, symbol: str) -> None:
         """Сбросить состояние по символу."""
+        symbol = self._key(symbol)
         if symbol in self._states:
             del self._states[symbol]
 

@@ -197,7 +197,10 @@ async def market_data_loop(bot) -> None:
             rows = _read_radar_state()
             n_oi = n_sq = 0
             for sym, _ts, d5, d15, d1d, quadrant, funding in rows:
-                pair = f"{sym}/USDT"
+                # 🔴 18.09: формат шины — `BASE/USDT:USDT`. `f"{sym}/USDT"` с 01.09 заводил в шине вторую
+                # запись на монету: стратегии брали её как новую пару, роутер раскидывал по аккаунтам,
+                # детектор сирот закрывал позиции; а сам фандинг потребители по каноническому ключу не видели.
+                pair = f"{sym}/USDT:USDT"
                 sq = sphere.publish_oi(pair, d5=d5, d15=d15, d1d=d1d, quadrant=quadrant)
                 n_oi += 1
                 if sq:
