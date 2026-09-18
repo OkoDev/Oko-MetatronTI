@@ -4062,7 +4062,7 @@ async function load(){var r=await fetch('/api/waves/journal',{cache:'no-store'})
  ROWS.forEach(function(x){if(COL[x.key]===undefined)COL[x.key]=(x.status=='closed');});   // закрытые свёрнуты по умолчанию
  SCAN=d.scan||{};
  var sc=document.getElementById('scan');
- sc.textContent=SCAN.at?('скан тени: последний '+SCAN.at+' UTC ('+SCAN.mode+')'+(SCAN.last_full?' · полная разметка '+SCAN.last_full:'')+(SCAN.universe?' · монет '+SCAN.universe:'')+' · активных '+SCAN.active+' · в журнале '+SCAN.journal+' · последний новый сетап '+(SCAN.last_new||'—')):'статус скана недоступен';
+ sc.textContent=SCAN.at?('скан тени: последний '+SCAN.at+' UTC ('+SCAN.mode+')'+(SCAN.last_full?' · полная разметка '+SCAN.last_full:'')+(SCAN.universe?' · монет '+SCAN.universe:'')+' · активных '+SCAN.active+' · в журнале '+SCAN.journal+' · последний новый сетап '+(SCAN.last_new||'—')+((SCAN.young||[]).length?' · молодые (история 4h < '+(SCAN.min_hist_4h||400)+' баров, не сканируются): '+SCAN.young.join(', '):'')):'статус скана недоступен';
  var a=d.agreement||{};document.getElementById('agr').textContent=a.n?(' · согласие ИИ ↔ Егор: '+a.hit+'/'+a.n+' ('+Math.round(a.hit/a.n*100)+'%)'):' · согласие ИИ ↔ Егор: оценок Егора пока нет';
  render();}
 document.querySelectorAll('.tabs .bt').forEach(function(b){b.onclick=function(){document.querySelectorAll('.tabs .bt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');F=b.dataset.f;render();};});

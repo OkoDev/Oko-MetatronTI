@@ -32,6 +32,10 @@ from core.waves.bingx_klines import fetch_closed
 DATA = ROOT / "data" / "wave5_shadow"; DATA.mkdir(parents=True, exist_ok=True)
 STATE, CSV, CH = DATA / "state.json", DATA / "shadow_signals.csv", DATA / "charts"
 ENTRY_W_H, HOLD_H = 96, 240
+# 19.09, решение Егора («история >400»): порог истории 4h ОСТАЁТСЯ 400 баров (~67 дней) — ровно WARMUP всех замеров ядра
+# (tf_sweep, кросс/line24/слом 15m); на меньшей истории механика не мерилась, а закон — сначала воспроизвести
+# боевую конфигурацию. Молодые монеты (CORE 16.09 — 256 баров) не теряются молча: список идёт в лог и в status.json.
+MIN_HIST_4H = 400
 P = WaveParams()
 NOW = pd.Timestamp.utcnow()
 
@@ -232,7 +236,7 @@ def detect_close(prev):
     return pd.Timestamp(prev["detected_at"], tz="UTC").floor("4h")
 
 
-def save_and_report(state, a, mode="watch", n_univ=None):
+def save_and_report(state, a, mode="watch", n_univ=None, young=None):
     if not a.asof:
         STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
         # статус для страницы /waves (Егор 16.09: «на странице нет новых сетапов» — чтобы «новых нет» читалось как факт)
@@ -245,7 +249,8 @@ def save_and_report(state, a, mode="watch", n_univ=None):
             pass
         st_ = {"at": NOW.strftime("%Y-%m-%d %H:%M"), "mode": mode, "journal": len(state), "active": len(act), "last_new": last_new,
                "universe": n_univ if n_univ is not None else prev.get("universe"),
-               "last_full": NOW.strftime("%Y-%m-%d %H:%M") if mode == "full" else prev.get("last_full")}
+               "last_full": NOW.strftime("%Y-%m-%d %H:%M") if mode == "full" else prev.get("last_full"),
+               "min_hist_4h": MIN_HIST_4H, "young": young if young is not None else prev.get("young", [])}
         (DATA / "status.json").write_text(json.dumps(st_, ensure_ascii=False, indent=1), encoding="utf-8")
     try:                                              # оценки со страницы :8010/waves (reviews.json) → в записи
         rv = json.loads((DATA / "reviews.json").read_text(encoding="utf-8"))
@@ -282,17 +287,18 @@ def full_scan(a):
     state = {} if a.asof else (json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {})
     print(f"[{now} UTC] полная разметка: {len(syms)} монет · LTF {a.ltf}", flush=True)
     n_ltf = int(ENTRY_W_H * 60 / TF_MIN[a.ltf]) * 4
-    R72 = []
+    R72 = []; young = []
     for i, s in enumerate(syms, 1):
         bx = f"{s.split('/')[0]}/USDT:USDT"
         try:
             dh = fetch(ex, bx, "4h", 1000)
             if len(dh) > 20:
                 R72.append(float(dh.close.iloc[-1] / dh.close.iloc[-19] - 1))      # ход за 72 ч — для ширины слива
-            if len(dh) < 400 and a.asof: dh = _cache(s, "4h").tail(1000)
-            setups = mark_impulse(dh, NOW, P, "4h") if len(dh) >= 400 else []
+            if len(dh) < MIN_HIST_4H and a.asof: dh = _cache(s, "4h").tail(1000)
+            setups = mark_impulse(dh, NOW, P, "4h") if len(dh) >= MIN_HIST_4H else []
             if not setups:
-                if len(dh) < 400: print(f"  [skip] {s}: 4h={len(dh)}", flush=True)
+                if len(dh) < MIN_HIST_4H:
+                    young.append(f"{s.split('/')[0]}={len(dh)}"); print(f"  [skip] {s}: 4h={len(dh)} < {MIN_HIST_4H}", flush=True)
                 continue
             dl = fetch(ex, bx, a.ltf, n_ltf)
             if len(dl) < 200: dl = _cache(s, a.ltf).tail(n_ltf)
@@ -330,11 +336,13 @@ def full_scan(a):
         except Exception as e_:
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
         if i % 50 == 0: print(f"  {i}/{len(syms)}", flush=True)
+    if young:
+        print(f"  молодые монеты (история 4h < {MIN_HIST_4H} баров, порог замеров ядра): {len(young)} — {', '.join(young)}", flush=True)
     if not a.asof:
         mark_market(state, now, R72, len(syms))
         reentry_watch(state, now)
         tg_notify(state, refresh_analyst(state))
-    save_and_report(state, a, mode="full", n_univ=len(syms))
+    save_and_report(state, a, mode="full", n_univ=len(syms), young=young)
 
 
 def write_ai_review(key, prev):
