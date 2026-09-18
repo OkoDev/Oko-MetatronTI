@@ -295,15 +295,17 @@ def premium_discount(top: float, btm: float) -> dict:
 
 
 def build_ote(swing_a: float, swing_b: float) -> dict:
-    """OTE/Fib от импульса swing_a → swing_b (как разметка пользователя на XLM).
+    """OTE/Fib-сетка отката (как разметка пользователя на XLM). 🔴 КАНОН ПРОЕКТА (Егор 02.06, «все на канон!» 19.09).
 
-    Fib: 0 = swing_a (начало импульса), 1 = swing_b (конец). Уровни между.
-    OTE-зона = 0.705-0.786 (Optimal Trade Entry — глубокий откат к началу).
-    Пример пользователя (импульс вниз high 0.22928→low 0.21478):
+    Ориентация — стандартный retracement: 0 = swing_a = КОНЕЦ импульса, 1 = swing_b = его НАЧАЛО; f = доля
+    отката от конца к началу (0.5 — половина, 0.79 — глубокий). Вызовы в проекте: build_ote(high, low) → откат
+    вниз восходящего импульса low→high → LONG в зоне у low; build_ote(low, high) → SHORT у high.
+    (До 19.09 docstring называл swing_a «началом» — это путало: математика всегда была стандартной.)
+    Пример пользователя (импульс low 0.21478 → high 0.22528, фибо от high вниз):
       0.382=0.22127, 0.5=0.22003, 0.618=0.21879, 0.705=0.21787, 0.786=0.21702.
 
-    direction вычисляется из знака: swing_a>swing_b → импульс ВНИЗ → откат вверх (LONG-сетап,
-    OTE снизу). swing_a<swing_b → импульс ВВЕРХ → SHORT-сетап.
+    Зона входа = OTE_TOP–OTE_BOTTOM (0.5–0.79, core.smc.fibonacci) с уровнями 0.62/0.705 внутри.
+    direction по знаку: swing_a>swing_b → LONG (OTE снизу), swing_a<swing_b → SHORT.
     Возвращает {'levels': {fib: price}, 'ote': (low, high), 'direction': 'long'/'short'}.
     """
     rng = swing_b - swing_a
@@ -314,7 +316,9 @@ def build_ote(swing_a: float, swing_b: float) -> dict:
     levels = {f: swing_a + f * rng for f in fibs}
     # Зона входа = 0.5-0.79 (уточнение пользователя 02.06: вход в диапазоне discount/premium,
     # не только глубокий 0.705-0.79; 0.705/0.79 — наиболее вероятные точки отскока внутри).
-    o1, o2 = levels[0.5], levels[0.79]
+    # 19.09 «все на канон!»: границы берутся из core.smc.fibonacci (OTE_TOP/OTE_BOTTOM) — это ЭТАЛОН проекта.
+    from core.smc.fibonacci import OTE_TOP, OTE_BOTTOM
+    o1, o2 = levels[OTE_TOP], levels[OTE_BOTTOM]
     ote = (min(o1, o2), max(o1, o2))
     direction = "long" if swing_a > swing_b else "short"   # импульс вниз → ждём LONG из OTE
     return {"levels": levels, "ote": ote, "direction": direction}

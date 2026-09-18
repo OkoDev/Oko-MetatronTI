@@ -122,9 +122,10 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
 
 
 def leg_zone(depth: float) -> str:
-    """Зона глубины в дневной ноге — одна формула для разбора, шины и замеров."""
-    return ("OTE 0.62–0.79" if 0.62 <= depth <= 0.79 else "глубокая 0.79–1.0" if 0.79 < depth <= 1.0 else
-            "за пределами ноги (>1)" if depth > 1 else "мелкая 0.5–0.62" if depth >= 0.5 else "мелкая (<0.5)")
+    """Зона глубины в дневной ноге — одна формула для разбора, шины и замеров.
+    19.09 «все на канон!»: корзины берутся из core.smc.fibonacci.ote_band (те же границы, один источник)."""
+    from core.smc.fibonacci import ote_band
+    return ote_band(depth)
 
 
 # ─── ШИНА КУБА (Сфера 20): волновой контекст пары ────────────────────────────────────────────────

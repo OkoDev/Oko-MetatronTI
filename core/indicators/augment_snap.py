@@ -87,14 +87,22 @@ def compute_augment_snap(df: Optional[pd.DataFrame]) -> dict[str, Any]:
 
     # --- fib retracement: позиция цены в недавнем swing-диапазоне (50 баров) ---
     try:
+        from core.smc.fibonacci import in_ote, ote_band_code     # 🔴 канон зоны — один источник (19.09 «все на канон!»)
         cur = float(c.iloc[-1])
-        hi = float(h.tail(50).max())
-        lo = float(l.tail(50).min())
+        h50, l50 = h.tail(50), l.tail(50)
+        hi = float(h50.max())
+        lo = float(l50.min())
         if hi > lo:
             r = (cur - lo) / (hi - lo)
             out["fib_retracement"] = round(r, 3)
-            # OTE-зона по фибо (0.5-0.79 от диапазона, в любую сторону от середины)
-            out["in_ote"] = bool(0.21 <= r <= 0.5 or 0.5 <= r <= 0.79)
+            # Глубина ОТКАТА от последнего хода: если максимум диапазона позже минимума — ход был вверх и
+            # откат считается сверху (1-r), иначе снизу (r). До 19.09 тут стояло «0.21≤r≤0.79 в любую сторону»
+            # без направления — признак был истинен 61% времени и ничего не отбирал.
+            up_move = h50.values.argmax() > l50.values.argmin()
+            depth = (1.0 - r) if up_move else r
+            out["ote_depth"] = round(depth, 3)
+            out["in_ote"] = bool(in_ote(depth))
+            out["ote_band"] = int(ote_band_code(depth))          # 0 мелкая … 2 OTE … 4 за пределами
     except Exception:
         pass
 

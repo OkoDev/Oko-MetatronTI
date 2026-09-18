@@ -850,7 +850,11 @@ def wave_features(df: pd.DataFrame, label: str,
     out[f"leg_pos_{label}"] = pos
     out[f"leg_retr_{label}"] = 1.0 - pos                 # глубина отката — язык фибо
     # зоны, которыми механика реально пользуется
-    out[f"leg_in_ote_{label}"] = ((1.0 - pos >= 0.618) & (1.0 - pos <= 0.79)).astype(float)
+    # 19.09 «все на канон!»: зона из core.smc.fibonacci (0.5–0.79) + корзина глубины 0..4 вместо своих 0.618–0.79
+    from core.smc.fibonacci import OTE_TOP as _OT, OTE_BOTTOM as _OB
+    _depth = 1.0 - pos
+    out[f"leg_in_ote_{label}"] = ((_depth >= _OT) & (_depth <= _OB)).astype(float)
+    out[f"leg_ote_band_{label}"] = np.select([_depth < 0.5, _depth < 0.62, _depth <= 0.79, _depth <= 1.0], [0, 1, 2, 3], 4).astype(float)
     out[f"leg_in_disc_{label}"] = (1.0 - pos > 0.5).astype(float)
     # крутизна: ATR на бар. Одинаковая амплитуда за 10 и за 200 баров — разные вещи
     sb = out[f"leg_span_bars_{label}"]

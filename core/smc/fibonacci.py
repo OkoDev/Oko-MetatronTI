@@ -1,22 +1,29 @@
 """
-Fibonacci — OTE (Optimal Trade Entry) зона.
+Fibonacci — OTE (Optimal Trade Entry) зона. 🔴 ЗДЕСЬ КАНОН ЗОНЫ ДЛЯ ВСЕГО ПРОЕКТА.
 
-OTE зона = 0.618–0.786 уровни Фибоначчи от последнего импульса.
+19.09.2026, решение Егора «все на канон!»: слово «OTE» в коде означало ПЯТЬ разных зон (0.21–0.79 в снимке,
+0.5–0.79 в build_ote, 0.618–0.786 здесь, 0.618–0.79 в матрице, 0.705–0.786 у ML) — признак с одним именем был
+истинен то 61%, то 8% времени, и каждый «замер фильтра OTE» мерил разное (memory ote_canon_five_definitions).
+Замер 19.09 на одной механике (лонги ядра волн 4h, 1944 сделки): 0.21–0.79, 0.5–0.79 и 0.618–0.79 дают одно и то
+же (WR 36–37%, Δ к контролю +1.5…+1.7), узкая 0.705–0.786 — 9% сделок и Δ вдвое ниже. Канон = build_ote (Егор 02.06):
+зона входа 0.5–0.79, уровни 0.62/0.705 внутри. Все места берут константы ОТСЮДА, своих не держат.
+
+OTE зона = OTE_TOP–OTE_BOTTOM (0.5–0.79) уровни Фибоначчи от последнего импульса.
 Это зона наиболее вероятного отката перед продолжением тренда.
 
 Расчёт:
   Бычий импульс (после BOS/CHoCH вверх):
     high = точка пробоя (Swing High)
     low  = последний Swing Low перед импульсом
-    OTE top    = high - (high - low) × 0.618
-    OTE bottom = high - (high - low) × 0.786
+    OTE top    = high - (high - low) × OTE_TOP
+    OTE bottom = high - (high - low) × OTE_BOTTOM
     → цена в этой зоне = оптимальный вход в LONG
 
   Медвежий импульс:
     low  = точка пробоя (Swing Low)
     high = последний Swing High перед импульсом
-    OTE top    = low + (high - low) × 0.786
-    OTE bottom = low + (high - low) × 0.618
+    OTE top    = low + (high - low) × OTE_BOTTOM
+    OTE bottom = low + (high - low) × OTE_TOP
     → цена в этой зоне = оптимальный вход в SHORT
 
 Стандартные уровни Fibonacci:
@@ -40,9 +47,39 @@ logger = logging.getLogger(__name__)
 # Стандартные уровни Fibonacci
 FIB_LEVELS = (0.236, 0.382, 0.500, 0.618, 0.786, 0.886)
 
-# OTE зона
-OTE_TOP = 0.618
-OTE_BOTTOM = 0.786
+# ── КАНОН OTE (Егор 02.06, «все на канон!» 19.09) — единственный источник констант зоны ──
+OTE_ZONE = (0.5, 0.79)                      # зона входа build_ote: доля отката от импульса
+OTE_LEVELS = (0.5, 0.62, 0.705, 0.79)       # уровни внутри зоны (TradingView-набор Егора)
+OTE_TOP, OTE_BOTTOM = OTE_ZONE              # верх зоны = меньший откат, низ = более глубокий
+# Пять корзин глубины — как на /waves и в замерах (leg_zone_lab 18.09): разница между корзинами реальна
+# (Δ к контролю: OTE +1.6 · глубокая +0.8 · за пределами +0.7), булев «в зоне» её не видит.
+OTE_BANDS = ((0.5, "мелкая (<0.5)"), (0.62, "мелкая 0.5–0.62"), (0.79, "OTE 0.62–0.79"),
+             (1.0, "глубокая 0.79–1.0"), (float("inf"), "за пределами ноги (>1)"))
+
+
+def in_ote(depth: float) -> bool:
+    """Откат `depth` (доля импульса, 0..1+) внутри канонической зоны входа."""
+    return OTE_TOP <= depth <= OTE_BOTTOM
+
+
+def ote_band(depth: float) -> str:
+    """Корзина глубины отката — одна формула для разбора, шины, матрицы и замеров.
+    Границы как на /waves: OTE включает 0.62 и 0.79, глубокая — (0.79, 1.0], дальше — за пределами."""
+    if depth < 0.5:
+        return OTE_BANDS[0][1]
+    if depth < 0.62:
+        return OTE_BANDS[1][1]
+    if depth <= 0.79:
+        return OTE_BANDS[2][1]
+    if depth <= 1.0:
+        return OTE_BANDS[3][1]
+    return OTE_BANDS[4][1]
+
+
+def ote_band_code(depth: float) -> int:
+    """Та же корзина числом 0..4 (мелкая → за пределами) — для матрицы и ML."""
+    name = ote_band(depth)
+    return next(i for i, (_, n) in enumerate(OTE_BANDS) if n == name)
 
 
 @dataclass
@@ -132,17 +169,17 @@ def _calc_ote(
     impulse_low: float,
     direction: str,
 ) -> tuple:
-    """Рассчитывает OTE зону (0.618–0.786)."""
+    """Рассчитывает OTE зону по канону (OTE_TOP–OTE_BOTTOM = 0.5–0.79)."""
     diff = impulse_high - impulse_low
     if diff <= 0:
         return 0.0, 0.0
 
     if direction == "LONG":
-        ote_top = impulse_high - diff * OTE_TOP       # 0.618
-        ote_bottom = impulse_high - diff * OTE_BOTTOM  # 0.786
+        ote_top = impulse_high - diff * OTE_TOP       # 0.5
+        ote_bottom = impulse_high - diff * OTE_BOTTOM  # 0.79
     else:
-        ote_bottom = impulse_low + diff * OTE_TOP      # 0.618
-        ote_top = impulse_low + diff * OTE_BOTTOM      # 0.786
+        ote_bottom = impulse_low + diff * OTE_TOP      # 0.5
+        ote_top = impulse_low + diff * OTE_BOTTOM      # 0.79
 
     return ote_top, ote_bottom
 

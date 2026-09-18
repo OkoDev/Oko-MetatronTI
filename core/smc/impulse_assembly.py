@@ -57,8 +57,12 @@ def assemble_impulse(st, high, low, internal: bool = True) -> Optional[dict]:
 
 
 def ote_zone(origin: float, extreme: float, is_long: bool,
-             lo_fib: float = 0.618, hi_fib: float = 0.786) -> tuple[float, float]:
-    """Зона OTE отката собранного импульса → (нижняя граница, верхняя границa)."""
+             lo_fib: float | None = None, hi_fib: float | None = None) -> tuple[float, float]:
+    """Зона OTE отката собранного импульса → (нижняя граница, верхняя границa).
+    Границы по умолчанию — канон core.smc.fibonacci (0.5–0.79), 19.09 «все на канон!»."""
+    from core.smc.fibonacci import OTE_TOP, OTE_BOTTOM
+    lo_fib = OTE_TOP if lo_fib is None else lo_fib
+    hi_fib = OTE_BOTTOM if hi_fib is None else hi_fib
     rng = abs(extreme - origin)
     if is_long:
         return extreme - hi_fib * rng, extreme - lo_fib * rng

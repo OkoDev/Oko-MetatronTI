@@ -52,8 +52,8 @@ _TF_PRIORITY = ["1w", "1d", "4h", "1h", "15m", "5m", "3m"]
 
 # Fibonacci-уровни в snap (включают OTE 0.705 / 0.79 из ARCH-89 спека)
 _FIB_RATIOS = (0.236, 0.382, 0.500, 0.618, 0.705, 0.786, 0.79, 0.886)
-_OTE_TOP_RATIO = 0.705
-_OTE_BOT_RATIO = 0.79
+# 19.09 «все на канон!»: своих границ зоны здесь нет — канон в core.smc.fibonacci (0.5–0.79)
+from core.smc.fibonacci import OTE_TOP as _OTE_TOP_RATIO, OTE_BOTTOM as _OTE_BOT_RATIO  # noqa: E402
 
 
 def _pick_senior_tf(ohlcv_by_tf: Dict[str, pd.DataFrame]) -> Optional[str]:

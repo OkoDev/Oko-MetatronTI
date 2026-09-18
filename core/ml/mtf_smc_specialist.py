@@ -48,7 +48,9 @@ _MIN_FEATURES = 4
 # добавление/удаление признака. Иначе история снова отравит модель.
 #   v1 — до 02.09.2026 (не проставлялась, определяется по отсутствию поля)
 #   v2 — 02.09.2026: SMC сведён на эталон (ARCH-137.5) + непрерывные признаки
-SNAP_SCHEMA_VERSION = 2
+#   v3 — 19.09.2026: «все на канон!» — ote_zone считается по канону core.smc.fibonacci (0.5–0.79),
+#        а не по ICT 0.705–0.786 (признак был истинен 8% времени; смысл поля сменился → новая версия)
+SNAP_SCHEMA_VERSION = 3
 
 # 4 TF по спеке ARCH-68
 _TFS = ["1d", "4h", "1h", "15m"]
@@ -94,7 +96,7 @@ def _build_smc_features(smc_snap: Dict[str, Any]) -> Optional[List[float]]:
       fvg_open         (bool 0/1) — незакрытый FVG
       choch            (bool 0/1) — CHoCH последние 5 баров
       bos              (bool 0/1) — BOS
-      ote_zone         (bool 0/1) — цена в OTE [0.705-0.786]
+      ote_zone         (bool 0/1) — цена в OTE по канону core.smc.fibonacci [0.5-0.79]
       eqh_near         (bool 0/1) — EQH рядом
       eql_near         (bool 0/1) — EQL рядом
       liquidity_above  (bool 0/1) — пул ликвидности выше
@@ -204,7 +206,7 @@ def _build_smc_snap_from_df(
         except Exception as e:
             logger.debug("smc_snap FVG error: %s", e)
 
-        # ── OTE zone (Fib 0.705–0.786) ──
+        # ── OTE zone (канон core.smc.fibonacci 0.5–0.79, 19.09 «все на канон!») ──
         # Раньше код импортировал несуществующий detect_ote_zone → ImportError.
         # Реальная функция: detect_fibonacci(df, structure) → FibAnalysis с active_ote.
         try:

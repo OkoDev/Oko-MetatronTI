@@ -73,13 +73,16 @@ def test_retr_is_complement_of_pos():
 
 
 def test_ote_zone_matches_its_definition():
-    """🔴 НЕГАТИВНЫЙ: зона OTE обязана совпадать со своим определением 0.618-0.79."""
+    """🔴 НЕГАТИВНЫЙ: зона OTE обязана совпадать с КАНОНОМ core.smc.fibonacci (0.5-0.79, «все на канон!» 19.09),
+    а корзина глубины — с ote_band_code (0 мелкая … 4 за пределами)."""
+    from core.smc.fibonacci import OTE_TOP, OTE_BOTTOM, ote_band_code
     E = wave_features(_series(), "15m")
-    m = E[["leg_retr_15m", "leg_in_ote_15m"]].dropna()
-    expected = ((m.leg_retr_15m >= 0.618) & (m.leg_retr_15m <= 0.79)).astype(float)
+    m = E[["leg_retr_15m", "leg_in_ote_15m", "leg_ote_band_15m"]].dropna()
+    expected = ((m.leg_retr_15m >= OTE_TOP) & (m.leg_retr_15m <= OTE_BOTTOM)).astype(float)
     assert np.array_equal(m.leg_in_ote_15m.values, expected.values)
+    assert np.array_equal(m.leg_ote_band_15m.values, np.array([ote_band_code(d) for d in m.leg_retr_15m.values], dtype=float))
     share = m.leg_in_ote_15m.mean()
-    assert 0.01 < share < 0.4, f"зона OTE покрывает {share*100:.1f}% — порог сломан"
+    assert 0.01 < share < 0.5, f"зона OTE покрывает {share*100:.1f}% — порог сломан"
 
 
 def test_minor_waves_nest_inside_major_leg():

@@ -390,13 +390,19 @@ class TestFibonacci:
         assert abs(fib_618.price - 103.82) < 0.01
 
     def test_ote_zone(self):
-        from core.smc.fibonacci import _calc_ote
+        # 19.09 «все на канон!»: зона = OTE_TOP–OTE_BOTTOM из core.smc.fibonacci (0.5–0.79), а не ICT 0.618–0.786
+        from core.smc.fibonacci import _calc_ote, OTE_TOP, OTE_BOTTOM
+        assert (OTE_TOP, OTE_BOTTOM) == (0.5, 0.79)
         top, bottom = _calc_ote(110.0, 100.0, "LONG")
-        # OTE top = 110 - 10*0.618 = 103.82
-        # OTE bottom = 110 - 10*0.786 = 102.14
-        assert abs(top - 103.82) < 0.01
-        assert abs(bottom - 102.14) < 0.01
+        # OTE top = 110 - 10*0.5 = 105.0 · OTE bottom = 110 - 10*0.79 = 102.1
+        assert abs(top - 105.0) < 0.01
+        assert abs(bottom - 102.1) < 0.01
         assert top > bottom
+
+    def test_ote_band_canon(self):
+        from core.smc.fibonacci import ote_band, ote_band_code, in_ote
+        assert [ote_band_code(d) for d in (0.3, 0.5, 0.62, 0.79, 0.8, 1.0, 1.2)] == [0, 1, 2, 2, 3, 3, 4]
+        assert ote_band(0.7) == "OTE 0.62–0.79" and in_ote(0.5) and in_ote(0.79) and not in_ote(0.8)
 
 
 # ===========================================================================
