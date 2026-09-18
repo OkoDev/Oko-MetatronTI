@@ -161,7 +161,8 @@ def transition(prev, ls, now, sym):
         prev["entry_trigger"] = ls["trigger"]; prev["stop"] = js(ls["stop"])
         print(f"  IN   {sym:<12} {prev['side']} вход по {ls['trigger']} {prev['entered_at']} @ {ls['entry_price']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}", flush=True)
         if prev.get("side") == "LONG":          # семейство waves_long: шорты в бой не идут (замер 16.09)
-            emit_exec(prev, sym, ls["trigger"], ls["entry_price"], ls["stop"], prev.get("p4_target"))
+            emit_exec(prev, sym, ls["trigger"], ls["entry_price"], ls["stop"], prev.get("p4_target"),
+                      extra={"wv_entry_time": str(ls["entry_time"])[:16]})   # возраст считается от события
     elif st == "detected" and ls.get("entry_window_over"):
         prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "no_entry"
         print(f"  --   {sym:<12} окно входа истекло без триггера", flush=True)

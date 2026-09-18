@@ -68,6 +68,28 @@ def _read_new(done: set) -> list:
     return out
 
 
+def _canon(sym: str) -> str:
+    """`GUN/USDT` → `GUN/USDT:USDT` (формат ccxt-swap, в котором живут роутер аккаунтов, БД и детектор сирот)."""
+    s = sym.strip()
+    if not s:
+        return s
+    base = s.split("/")[0].split(":")[0].split("-")[0]
+    return f"{base}/USDT:USDT"
+
+
+def _signal_age_min(r: dict) -> float:
+    """Возраст СОБЫТИЯ, а не записи в очередь: тень пишет сигнал при скане, а слом/кросс мог быть часами
+    раньше (STAR 17.09: сигнал 0.0413, вход на бирже 0.0535 — +30%). Берём время события, если оно есть."""
+    for k in ("wv_choch_time", "wv_entry_time"):
+        v = r.get(k)
+        if v:
+            try:
+                return (time.time() - calendar.timegm(time.strptime(str(v)[:16], "%Y-%m-%d %H:%M"))) / 60
+            except Exception:
+                pass
+    return (time.time() - calendar.timegm(time.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"))) / 60
+
+
 def _open_on_symbol(bot, symbol: str) -> int:
     """Сколько открытых сделок семейства уже висит на монете (источник истины — симулятор)."""
     try:
@@ -97,16 +119,18 @@ async def waves_long_loop(bot):
             for r in fresh:
                 uid = r["uid"]
                 done.add(uid)                       # помечаем сразу: повтор при ошибке хуже пропуска
-                sym = r.get("sym") or ""
+                # 🔴 18.09: символ ОБЯЗАН быть в формате бота `BASE/USDT:USDT`. Тень пишет `BASE/USDT`, и на
+                # этом сломалось всё сразу: AccountRouter завёл дубли пар (`GUN/USDT` ≠ `GUN/USDT:USDT`) и
+                # раскидал их по аккаунтам, account_id в БД записался не тот, детектор сирот не узнал свои
+                # позиции и закрыл их по рынку через минуту после входа (GUN, STAR, JASMY, AIXBT, SKY, ONG…).
+                sym = _canon(r.get("sym") or "")
                 entry, stop, tp = r.get("entry"), r.get("stop"), r.get("target")
                 if not sym or not entry or not stop or not tp:
                     logger.info("[WAVES_LONG] %s пропуск: нет цен в сигнале", uid)
                     continue
                 if r.get("side") != "LONG":
                     continue
-                # тень пишет ts в UTC; time.mktime трактует его как ЛОКАЛЬНОЕ время и добавляет
-                # смещение пояса (у нас +3 ч), из-за чего свежий сигнал отвергался как «180 мин»
-                age_min = (time.time() - calendar.timegm(time.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"))) / 60
+                age_min = _signal_age_min(r)        # UTC (calendar.timegm), от времени события
                 if age_min > MAX_AGE_MIN:
                     logger.info("[WAVES_LONG] %s пропуск: сигналу %.0f мин (>%d)", uid, age_min, MAX_AGE_MIN)
                     continue
