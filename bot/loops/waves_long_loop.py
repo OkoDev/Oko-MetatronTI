@@ -16,7 +16,11 @@
 
 ТОЛЬКО ЛОНГ: шорт-сторона втрое слабее, а разворотный шорт после лонга проиграл случайному входу
 той же геометрии 2.5 п.п. (оба контроля посчитаны 16.09).
-Gated: trading.waves_long.enabled. Дедуп по `uid` (символ|ключ сетапа|вариант).
+Gated: trading.waves_long.enabled.
+🔴 21.09 (Егор: «молчаливый пропуск в лонгах починить! повторные входы мы разрешали»): дедуп был по `uid`
+(символ|ключ сетапа|вариант) НАВСЕГДА — повторный вход тени по тому же импульсу после выбитого стопа (STAR line24
+19.09 и 21.09) отбрасывался до логирования. Теперь ключ = uid + время события (`_event_key`): повторные входы
+исполняются (при одной открытой позиции на монету), а всё, что пропущено, пишется в лог.
 """
 import asyncio
 import calendar
@@ -48,7 +52,16 @@ def _save_done(done: set) -> None:
         logger.warning("[WAVES_LONG] не сохранил список обработанных: %s", e)
 
 
-def _read_new(done: set) -> list:
+def _event_key(r: dict) -> str:
+    """Ключ дедупа = uid + время СОБЫТИЯ (слом / кросс / минута записи для reentry_3m). Один и тот же
+    импульс с новым входом — новый ключ, а не «уже обработан»."""
+    for k in ("wv_choch_time", "wv_entry_time"):
+        if r.get(k):
+            return f"{r['uid']}|{str(r[k])[:16]}"
+    return f"{r['uid']}|{str(r.get('ts', ''))[:16]}"
+
+
+def _read_all() -> list:
     if not QUEUE.exists():
         return []
     out = []
@@ -61,11 +74,15 @@ def _read_new(done: set) -> list:
                 r = json.loads(line)
             except Exception:
                 continue
-            if r.get("uid") and r["uid"] not in done:
+            if r.get("uid"):
                 out.append(r)
     except Exception as e:  # noqa: BLE001
         logger.warning("[WAVES_LONG] очередь не прочитана: %s", e)
     return out
+
+
+def _read_new(done: set) -> list:
+    return [r for r in _read_all() if _event_key(r) not in done]
 
 
 def _canon(sym: str) -> str:
@@ -112,13 +129,22 @@ async def waves_long_loop(bot):
     from core.signals.signal_models import TradingRecommendation, SignalDirection, MarketContext
 
     done = _load_done()
-    logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d", QUEUE, len(done))
+    # миграция 21.09: старые записи очереди (старше окна исполнения) помечаем новым ключом, чтобы смена
+    # формата ключа не выстрелила пачкой «сигналу N мин (>45)» по всей истории очереди
+    stale = [_event_key(r) for r in _read_all() if _signal_age_min(r) > MAX_AGE_MIN]
+    done.update(stale)
+    logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d (из них устаревших помечено %d) · "
+                "дедуп по (uid, время события): повторные входы по тому же импульсу разрешены",
+                QUEUE, len(done), len(stale))
     while True:
         try:
             fresh = _read_new(done)
             for r in fresh:
                 uid = r["uid"]
-                done.add(uid)                       # помечаем сразу: повтор при ошибке хуже пропуска
+                done.add(_event_key(r))             # помечаем сразу: повтор при ошибке хуже пропуска
+                if uid in done or any(k.startswith(uid + "|") and k != _event_key(r) for k in done):
+                    logger.info("[WAVES_LONG] %s ПОВТОРНЫЙ вход по тому же импульсу (событие %s) — исполняем",
+                                uid, _event_key(r).rsplit("|", 1)[-1])
                 # 🔴 18.09: символ ОБЯЗАН быть в формате бота `BASE/USDT:USDT`. Тень пишет `BASE/USDT`, и на
                 # этом сломалось всё сразу: AccountRouter завёл дубли пар (`GUN/USDT` ≠ `GUN/USDT:USDT`) и
                 # раскидал их по аккаунтам, account_id в БД записался не тот, детектор сирот не узнал свои
