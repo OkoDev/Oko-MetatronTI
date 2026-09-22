@@ -1,0 +1,177 @@
+//@version=5
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// OKO-SM · CHoCH-формация (вершина/дно + слом внутренней структуры) — Егор 22.09.2026, NEAR 3m
+// Структура — ДОСЛОВНО как OkoSM_v163 / core.smc.oko_sm_engine.run_structure (детектор бота):
+//   swings(len): os := high[len] > ta.highest(len) ? 0 : low[len] < ta.lowest(len) ? 1 : os[1]
+//   внутренний слом — crossover/crossunder close через itop_y/ibtm_y при itop_cross/ibtm_cross и itop_y ≠ top_y (swing),
+//   CHoCH = слом против текущего itrend. Фильтр «конфлюэнции» LuxAlgo НЕ используется (как в боте).
+// ФОРМАЦИЯ (медвежья): от последнего внутреннего слома ВВЕРХ до внутреннего CHoCH ВНИЗ — прямоугольник:
+//   верх = максимум участка (вершина, «5»), низ = минимум участка, правый край = бар CHoCH.
+// ВОЛНА A (опция, как в разборе аналитика): после формации первый встречный внутренний CHoCH ВВЕРХ = A закончена;
+//   A = от вершины до минимума между ними; зона отката 0.5–0.705 A и стоп 0.886 — тянутся вправо, пока не пробит стоп
+//   или не обновлена вершина. Бычья формация — зеркально.
+// Внимание: замер 22.09 (3893 сетапа 2020-26) — вход в зону отката A сам по себе ≈ 0; это инструмент разметки.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+indicator("OKO-SM · CHoCH-формация", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 2000)
+
+swingLen   = input.int(50, "Swing length (старший слой)", minval = 10)
+intLen     = input.int(5,  "Internal length (младший слой)", minval = 2)
+showBear   = input.bool(true,  "Медвежьи формации (вершина → CHoCH вниз)")
+showBull   = input.bool(true,  "Бычьи формации (дно → CHoCH вверх)")
+minHeight  = input.float(0.3, "Мин. высота формации, %", minval = 0.0, step = 0.1)
+maxLook    = input.int(600, "Макс. длина формации, баров", minval = 20, maxval = 1900)
+showA      = input.bool(true, "Волна A и зона отката 0.5–0.705 / стоп 0.886")
+bearCol    = input.color(color.new(color.red, 85),   "Цвет медвежьей формации")
+bullCol    = input.color(color.new(color.green, 85), "Цвет бычьей формации")
+zoneCol    = input.color(color.new(color.orange, 80), "Цвет зоны отката")
+
+n = bar_index
+
+swings(len) =>
+    var os = 0
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os[1]
+    top = os == 0 and os[1] != 0 ? high[len] : 0.
+    btm = os == 1 and os[1] != 1 ? low[len] : 0.
+    [top, btm]
+
+[top, btm]   = swings(swingLen)
+[itop, ibtm] = swings(intLen)
+
+var float top_y  = na
+var float btm_y  = na
+var float itop_y = na
+var float ibtm_y = na
+var bool  itop_cross = true
+var bool  ibtm_cross = true
+var int   itrend = 0
+
+if top > 0
+    top_y := top
+if btm > 0
+    btm_y := btm
+if itop > 0
+    itop_cross := true
+    itop_y := itop
+if ibtm > 0
+    ibtm_cross := true
+    ibtm_y := ibtm
+
+bool bullBreak = false, bool bearBreak = false, bool bullChoch = false, bool bearChoch = false
+if not na(itop_y) and ta.crossover(close, itop_y) and itop_cross and top_y != itop_y
+    bullBreak := true
+    bullChoch := itrend < 0
+    itop_cross := false
+    itrend := 1
+if not na(ibtm_y) and ta.crossunder(close, ibtm_y) and ibtm_cross and btm_y != ibtm_y
+    bearBreak := true
+    bearChoch := itrend > 0
+    ibtm_cross := false
+    itrend := -1
+
+// ── последний слом в каждую сторону (начало участка формации)
+var int lastBullBreak = na
+var int lastBearBreak = na
+
+// ── состояние ожидания волны A
+var float sTop = na, var int sTopBar = na, var bool sArmed = false          // медвежья: ждём встречный CHoCH вверх
+var float lBot = na, var int lBotBar = na, var bool lArmed = false          // бычья: ждём встречный CHoCH вниз
+var box   sZone = na, var line sStop = na, var float sStopPx = na
+var box   lZone = na, var line lStop = na, var float lStopPx = na
+
+// ── продление живых зон отката
+if not na(sZone)
+    if high >= sStopPx
+        sZone := na
+        sStop := na
+    else
+        box.set_right(sZone, n)
+        line.set_x2(sStop, n)
+if not na(lZone)
+    if low <= lStopPx
+        lZone := na
+        lStop := na
+    else
+        box.set_right(lZone, n)
+        line.set_x2(lStop, n)
+
+// ── медвежья формация: от последнего слома вверх до CHoCH вниз
+if bearChoch and showBear and not na(lastBullBreak)
+    len = math.min(n - lastBullBreak, maxLook)
+    if len >= 2
+        hi = high, int hiOff = 0, lo = low
+        for k = 0 to len
+            if high[k] > hi
+                hi := high[k]
+                hiOff := k
+            lo := math.min(lo, low[k])
+        if (hi - lo) / lo * 100 >= minHeight
+            box.new(n - len, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = bearCol, border_width = 2)
+            label.new(n - hiOff, hi, "5", style = label.style_label_down, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
+            label.new(n, ibtm_y, "CHoCH", style = label.style_label_left, color = color.new(color.red, 100), textcolor = color.red, size = size.tiny)
+            sTop := hi, sTopBar := n - hiOff, sArmed := true
+            lArmed := false
+
+// ── бычья формация: от последнего слома вниз до CHoCH вверх
+if bullChoch and showBull and not na(lastBearBreak)
+    len = math.min(n - lastBearBreak, maxLook)
+    if len >= 2
+        lo = low, int loOff = 0, hi = high
+        for k = 0 to len
+            if low[k] < lo
+                lo := low[k]
+                loOff := k
+            hi := math.max(hi, high[k])
+        if (hi - lo) / lo * 100 >= minHeight
+            box.new(n - len, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = bullCol, border_width = 2)
+            label.new(n - loOff, lo, "5", style = label.style_label_up, color = color.new(color.green, 100), textcolor = color.green, size = size.small)
+            label.new(n, itop_y, "CHoCH", style = label.style_label_left, color = color.new(color.green, 100), textcolor = color.green, size = size.tiny)
+            lBot := lo, lBotBar := n - loOff, lArmed := true
+            sArmed := false
+
+// ── обновление экстремума до окончания A — формация отменяется (аналитик пересобирает от нового экстремума)
+if sArmed and high > sTop
+    sArmed := false
+if lArmed and low < lBot
+    lArmed := false
+
+// ── волна A закончена: встречный CHoCH
+if showA and sArmed and bullChoch and not bearChoch
+    len = math.min(n - sTopBar, maxLook)
+    a = low, int aOff = 0
+    for k = 0 to len
+        if low[k] < a
+            a := low[k]
+            aOff := k
+    A = sTop - a
+    if A > 0
+        z05 = a + 0.5 * A, z705 = a + 0.705 * A
+        sStopPx := a + 0.886 * A
+        sZone := box.new(n - aOff, z705, n, z05, border_color = color.new(color.orange, 40), bgcolor = zoneCol)
+        sStop := line.new(n - aOff, sStopPx, n, sStopPx, color = color.red, style = line.style_dashed)
+        label.new(n - aOff, a, "A", style = label.style_label_up, color = color.new(color.blue, 100), textcolor = color.blue, size = size.small)
+    sArmed := false
+if showA and lArmed and bearChoch and not bullChoch
+    len = math.min(n - lBotBar, maxLook)
+    a = high, int aOff = 0
+    for k = 0 to len
+        if high[k] > a
+            a := high[k]
+            aOff := k
+    A = a - lBot
+    if A > 0
+        z05 = a - 0.5 * A, z705 = a - 0.705 * A
+        lStopPx := a - 0.886 * A
+        lZone := box.new(n - aOff, z05, n, z705, border_color = color.new(color.orange, 40), bgcolor = zoneCol)
+        lStop := line.new(n - aOff, lStopPx, n, lStopPx, color = color.green, style = line.style_dashed)
+        label.new(n - aOff, a, "A", style = label.style_label_down, color = color.new(color.blue, 100), textcolor = color.blue, size = size.small)
+    lArmed := false
+
+if bullBreak
+    lastBullBreak := n
+if bearBreak
+    lastBearBreak := n
+
+alertcondition(bearChoch, "CHoCH вниз (медвежья формация)", "OKO-SM: внутренний CHoCH вниз")
+alertcondition(bullChoch, "CHoCH вверх (бычья формация)",   "OKO-SM: внутренний CHoCH вверх")
