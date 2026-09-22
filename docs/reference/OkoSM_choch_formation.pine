@@ -24,8 +24,15 @@ showA      = input.bool(true, "Волна A и зона отката 0.5–0.705
 bearCol    = input.color(color.new(color.red, 85),   "Цвет медвежьей формации")
 bullCol    = input.color(color.new(color.green, 85), "Цвет бычьей формации")
 zoneCol    = input.color(color.new(color.orange, 80), "Цвет зоны отката")
+showAllCh  = input.bool(false, "Линии всех внутренних CHoCH (не только формаций)")
 
 n = bar_index
+
+// линия слома как в OKO-SM display_Structure: от бара свинга до бара слома, подпись по центру
+chochLine(x1, y, col, up) =>
+    line.new(x1, y, n, y, color = col, width = 2)
+    label.new(int(math.round((x1 + n) / 2)), y, "CHoCH", style = up ? label.style_label_down : label.style_label_up,
+              color = color.new(col, 100), textcolor = col, size = size.small)
 
 swings(len) =>
     var os = 0
@@ -43,6 +50,8 @@ var float top_y  = na
 var float btm_y  = na
 var float itop_y = na
 var float ibtm_y = na
+var int   itop_x = na
+var int   ibtm_x = na
 var bool  itop_cross = true
 var bool  ibtm_cross = true
 var int   itrend = 0
@@ -54,19 +63,26 @@ if btm > 0
 if itop > 0
     itop_cross := true
     itop_y := itop
+    itop_x := n - intLen
 if ibtm > 0
     ibtm_cross := true
     ibtm_y := ibtm
+    ibtm_x := n - intLen
 
 bool bullBreak = false, bool bearBreak = false, bool bullChoch = false, bool bearChoch = false
+float chLvlUp = na, int chXUp = na, float chLvlDn = na, int chXDn = na      // уровень и бар сломанного свинга
 if not na(itop_y) and ta.crossover(close, itop_y) and itop_cross and top_y != itop_y
     bullBreak := true
     bullChoch := itrend < 0
+    chLvlUp := itop_y
+    chXUp := itop_x
     itop_cross := false
     itrend := 1
 if not na(ibtm_y) and ta.crossunder(close, ibtm_y) and ibtm_cross and btm_y != ibtm_y
     bearBreak := true
     bearChoch := itrend > 0
+    chLvlDn := ibtm_y
+    chXDn := ibtm_x
     ibtm_cross := false
     itrend := -1
 
@@ -109,7 +125,7 @@ if bearChoch and showBear and not na(lastBullBreak)
         if (hi - lo) / lo * 100 >= minHeight
             box.new(n - len, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = bearCol, border_width = 2)
             label.new(n - hiOff, hi, "5", style = label.style_label_down, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
-            label.new(n, ibtm_y, "CHoCH", style = label.style_label_left, color = color.new(color.red, 100), textcolor = color.red, size = size.tiny)
+            chochLine(chXDn, chLvlDn, color.red, false)
             sTop := hi, sTopBar := n - hiOff, sArmed := true
             lArmed := false
 
@@ -126,7 +142,7 @@ if bullChoch and showBull and not na(lastBearBreak)
         if (hi - lo) / lo * 100 >= minHeight
             box.new(n - len, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = bullCol, border_width = 2)
             label.new(n - loOff, lo, "5", style = label.style_label_up, color = color.new(color.green, 100), textcolor = color.green, size = size.small)
-            label.new(n, itop_y, "CHoCH", style = label.style_label_left, color = color.new(color.green, 100), textcolor = color.green, size = size.tiny)
+            chochLine(chXUp, chLvlUp, color.green, true)
             lBot := lo, lBotBar := n - loOff, lArmed := true
             sArmed := false
 
@@ -167,6 +183,11 @@ if showA and lArmed and bearChoch and not bullChoch
         lStop := line.new(n - aOff, lStopPx, n, lStopPx, color = color.green, style = line.style_dashed)
         label.new(n - aOff, a, "A", style = label.style_label_down, color = color.new(color.blue, 100), textcolor = color.blue, size = size.small)
     lArmed := false
+
+if showAllCh and bearChoch
+    chochLine(chXDn, chLvlDn, color.new(color.red, 40), false)
+if showAllCh and bullChoch
+    chochLine(chXUp, chLvlUp, color.new(color.green, 40), true)
 
 if bullBreak
     lastBullBreak := n
