@@ -291,6 +291,32 @@ def make_resolve(inst: Instance):
     return _resolve
 
 
+def _pivot_2nd(df, t_sig, entry: float, is_long: bool):
+    """🟢 22.09 ЦЕЛЬ ПО ПИВОТАМ (Егор «ставь»; memory/pivot_targets_egor_logic_measured): второй классический дневной пивот
+    ПРОШЛОГО дня за ценой входа в сторону сделки (дальше 0.3%). Замер 2020-26 на 1987 филлах 1h: LONG «2-й пивот целиком»
+    +1.53, 7/7 лет, безтоп10 +1138, монет+ 80% против родной −1.618 +2.12 (58% монет, 5/7). Возвращает цену или None."""
+    try:
+        from core.indicators.indicators import calculate_pivot_points
+        d = df[["high", "low", "close"]].copy()
+        d.columns = [c.lower() for c in d.columns]
+        dd = d.resample("1D").agg({"high": "max", "low": "min", "close": "last"}).dropna()
+        day = pd.Timestamp(t_sig)
+        if d.index.tz is not None and day.tzinfo is None:
+            day = day.tz_localize(d.index.tz)
+        day = day.floor("D")
+        prev = dd[dd.index < day]
+        if prev.empty:
+            return None
+        r = prev.iloc[-1]
+        lv = sorted(calculate_pivot_points(float(r.high), float(r.low), float(r.close)).values())
+        lv = [x for x in lv if ((x > entry * 1.003) if is_long else (x < entry * 0.997))]
+        if not is_long:
+            lv = lv[::-1]
+        return float(lv[1]) if len(lv) >= 2 else None
+    except Exception:
+        return None
+
+
 def make_loop(inst: Instance):
     """Собирает корутину лупа для инстанса. Поведение — одно на все ТФ."""
     _resolve = make_resolve(inst)
@@ -475,7 +501,18 @@ def make_loop(inst: Instance):
                     if shadow:
                         continue
                     is_long = s["side"] == "long"
-                    rec = TradingRecommendation(
+                    # 🟢 22.09 ЦЕЛИ ПО ПИВОТАМ (config <инстанс>.pivot_target, пока только 1h):
+                    #   LONG  — вся позиция на 2-й дневной пивот (замер: 7/7 лет, 80% монет в плюсе);
+                    #   SHORT — гибрид: ½ на 2-й пивот + ½ к родной −1.618, стоп общий (+1.70, 6/7 против +0.98 / +2.33 при 48% монет).
+                    # Нет пивота за входом → родная цель. Журнал механики хранит родную цель (для сверки с замером).
+                    _legs = [(s["tp"], 1.0, "fib_side")]
+                    if bool(cfg.get("pivot_target", False)):
+                        _pv = _pivot_2nd(df, s["impulse_ts"], s["entry"], is_long)
+                        if _pv is not None and ((_pv < s["tp"]) if is_long else (_pv > s["tp"])):
+                            _legs = ([(_pv, 1.0, "pivot2")] if is_long
+                                     else [(_pv, 0.5, "pivot2"), (s["tp"], 0.5, "fib_side")])
+                    for _tp_leg, _share, _tp_src in _legs:
+                      rec = TradingRecommendation(
                         symbol=sym, action="BUY" if is_long else "SELL",
                         direction=SignalDirection.LONG if is_long else SignalDirection.SHORT,
                         overall_strength=65, confidence=0.6, risk_level="MEDIUM",
@@ -483,9 +520,12 @@ def make_loop(inst: Instance):
                         market_context=MarketContext(symbol=sym, current_price=s["price"],
                                                      volume_24h=0.0, volume_change_24h=0.0,
                                                      price_change_24h=0.0),
-                        entry_price=s["entry"], stop_loss=s["sl"], take_profit=s["tp"],
-                        sl_source=f"{SRC}:atr25", tp_source=f"{SRC}:fib_side")
-                    res = await bot.trade_router.submit(rec, source=SRC, extra_features={
+                        entry_price=s["entry"], stop_loss=s["sl"], take_profit=_tp_leg,
+                        sl_source=f"{SRC}:atr25", tp_source=f"{SRC}:{_tp_src}")
+                      logger.info("[%s] %s %s цель %s %.6g · доля %.1f", TAG, sym, s["side"].upper(), _tp_src, _tp_leg, _share)
+                      res = await bot.trade_router.submit(rec, source=SRC, extra_features={
+                        "if_tp_kind": _tp_src, "if_tp_native": s["tp"],
+                        **({"risk_mult": _share} if _share != 1.0 else {}),
                         "signal_type_override": SRC, "trade_mode": SRC,
                         "if_impulse_ts": s["impulse_ts"], "if_age": s["age"],
                         "if_amp_pct": round(s["amp"] / s["entry"] * 100, 2),
@@ -500,62 +540,62 @@ def make_loop(inst: Instance):
                         # против базы 1.22. Копим боевые сделки, чтобы сверить с замером.
                         **_ud_feats()})
 
-                    # 🔴 20.08 OPEN → PENDING_ENTRY. Вход ЛИМИТНЫЙ: до фила позиции нет, а
-                    # register_trade пишет сразу OPEN. Первый же боевой скан показал цену этой
-                    # ошибки: TSL увидел «прибыль» (цена 87.5 против лимита 83.08, которого
-                    # никто не касался) и подтянул стоп SOL с 81.40 на 86.67 — ВЫШЕ входа.
-                    # PENDING-строка невидима для TSL/BE/close-by-price; fill и TTL ведёт
-                    # `_check_pending` в radar_armed_loop (там же account-aware cancel и
-                    # обработка гонки fill→exit — переиспользуем, а не дублируем).
-                    # ⚠️ Зависимость: при trading.radar_armed.enabled=false лайфцикл встанет.
-                    try:
-                        # 🔴 20.08: сбрасываем кеш свободной маржи — иначе вся пачка лимиток
-                        # считается от ОДНОГО снимка баланса и риск по сделкам расходится
-                        # (замер: первая в пачке $8.69, восьмая $5.03 при одинаковых 2%).
-                        try:
-                            _oe = getattr(bot, "order_executor", None)
-                            if _oe is not None and hasattr(_oe, "invalidate_balance"):
-                                _oe.invalidate_balance()
-                        except Exception:                      # noqa: BLE001
-                            pass
-                        tid = getattr(res, "trade_id", None)
-                        oid = getattr(res, "exchange_order_id", None)
-                        if tid and not oid:
-                            # 🔴 Ордер на биржу НЕ ушёл (гейт/ошибка), а запись уже OPEN —
-                            # такую строку подхватывает TSL и портит ей стоп (ARB #58349:
-                            # стоп ушёл выше входа у сделки, которой на бирже нет).
-                            # Позиции нет → и записи быть не должно.
-                            with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                                _c.execute("UPDATE simulated_trades SET status='CANCELLED' "
-                                           "WHERE id=? AND status='OPEN' AND (exchange_order_id "
-                                           "IS NULL OR exchange_order_id='') AND "
-                                           "(actual_entry_price IS NULL OR actual_entry_price<=0)",
-                                           (int(tid),))
-                                _c.commit()
-                            logger.warning("[%s] #%s ордер на биржу не ушёл → CANCELLED", TAG, tid)
-                        elif tid:
-                            from bot.loops.radar_armed_loop import _mark_pending
-                            if _mark_pending(bot.trade_simulator.db_path, int(tid)):
-                                logger.info("[%s] #%s → PENDING_ENTRY (лимитка ждёт фила)", TAG, tid)
-                            # 🔴 ОКНО ГОНКИ: между INSERT (status=OPEN) и mark_pending проходит
-                            # 10-20 сек, и TSL-цикл успевает зацепить строку. XRP #58346 поймали
-                            # живьём: tsl_activated=1, стоп 1.0723 → 1.1541, ВЫШЕ входа 1.0931.
-                            # Пока фила нет, стоп обязан быть исходным — восстанавливаем из
-                            # original_sl. Условие actual_entry гарантирует, что реальную
-                            # позицию (где трейлинг законен) мы не трогаем.
-                            with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
-                                _r = _c.execute(
-                                    "UPDATE simulated_trades SET stop_loss=original_sl, "
-                                    "tsl_activated=0 WHERE id=? AND original_sl IS NOT NULL "
-                                    "AND original_sl>0 AND stop_loss<>original_sl "
-                                    "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
-                                    (int(tid),))
-                                _c.commit()
-                                if _r.rowcount:
-                                    logger.warning("[%s] #%s стоп восстановлен из original_sl "
-                                                   "(TSL зацепил строку до PENDING)", TAG, tid)
-                    except Exception as _mp:                   # noqa: BLE001
-                        logger.warning("[%s] mark_pending: %s", TAG, _mp)
+                      # 🔴 20.08 OPEN → PENDING_ENTRY. Вход ЛИМИТНЫЙ: до фила позиции нет, а
+                      # register_trade пишет сразу OPEN. Первый же боевой скан показал цену этой
+                      # ошибки: TSL увидел «прибыль» (цена 87.5 против лимита 83.08, которого
+                      # никто не касался) и подтянул стоп SOL с 81.40 на 86.67 — ВЫШЕ входа.
+                      # PENDING-строка невидима для TSL/BE/close-by-price; fill и TTL ведёт
+                      # `_check_pending` в radar_armed_loop (там же account-aware cancel и
+                      # обработка гонки fill→exit — переиспользуем, а не дублируем).
+                      # ⚠️ Зависимость: при trading.radar_armed.enabled=false лайфцикл встанет.
+                      try:
+                          # 🔴 20.08: сбрасываем кеш свободной маржи — иначе вся пачка лимиток
+                          # считается от ОДНОГО снимка баланса и риск по сделкам расходится
+                          # (замер: первая в пачке $8.69, восьмая $5.03 при одинаковых 2%).
+                          try:
+                              _oe = getattr(bot, "order_executor", None)
+                              if _oe is not None and hasattr(_oe, "invalidate_balance"):
+                                  _oe.invalidate_balance()
+                          except Exception:                      # noqa: BLE001
+                              pass
+                          tid = getattr(res, "trade_id", None)
+                          oid = getattr(res, "exchange_order_id", None)
+                          if tid and not oid:
+                              # 🔴 Ордер на биржу НЕ ушёл (гейт/ошибка), а запись уже OPEN —
+                              # такую строку подхватывает TSL и портит ей стоп (ARB #58349:
+                              # стоп ушёл выше входа у сделки, которой на бирже нет).
+                              # Позиции нет → и записи быть не должно.
+                              with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
+                                  _c.execute("UPDATE simulated_trades SET status='CANCELLED' "
+                                             "WHERE id=? AND status='OPEN' AND (exchange_order_id "
+                                             "IS NULL OR exchange_order_id='') AND "
+                                             "(actual_entry_price IS NULL OR actual_entry_price<=0)",
+                                             (int(tid),))
+                                  _c.commit()
+                              logger.warning("[%s] #%s ордер на биржу не ушёл → CANCELLED", TAG, tid)
+                          elif tid:
+                              from bot.loops.radar_armed_loop import _mark_pending
+                              if _mark_pending(bot.trade_simulator.db_path, int(tid)):
+                                  logger.info("[%s] #%s → PENDING_ENTRY (лимитка ждёт фила)", TAG, tid)
+                              # 🔴 ОКНО ГОНКИ: между INSERT (status=OPEN) и mark_pending проходит
+                              # 10-20 сек, и TSL-цикл успевает зацепить строку. XRP #58346 поймали
+                              # живьём: tsl_activated=1, стоп 1.0723 → 1.1541, ВЫШЕ входа 1.0931.
+                              # Пока фила нет, стоп обязан быть исходным — восстанавливаем из
+                              # original_sl. Условие actual_entry гарантирует, что реальную
+                              # позицию (где трейлинг законен) мы не трогаем.
+                              with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
+                                  _r = _c.execute(
+                                      "UPDATE simulated_trades SET stop_loss=original_sl, "
+                                      "tsl_activated=0 WHERE id=? AND original_sl IS NOT NULL "
+                                      "AND original_sl>0 AND stop_loss<>original_sl "
+                                      "AND (actual_entry_price IS NULL OR actual_entry_price<=0)",
+                                      (int(tid),))
+                                  _c.commit()
+                                  if _r.rowcount:
+                                      logger.warning("[%s] #%s стоп восстановлен из original_sl "
+                                                     "(TSL зацепил строку до PENDING)", TAG, tid)
+                      except Exception as _mp:                   # noqa: BLE001
+                          logger.warning("[%s] mark_pending: %s", TAG, _mp)
 
                 conn.commit()
                 stats = dict(conn.execute(
