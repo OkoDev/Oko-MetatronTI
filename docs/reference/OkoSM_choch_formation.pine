@@ -49,6 +49,15 @@ wtN2       = input.int(21, "WT average (n2)", group = "WT-фильтр")
 wtOB       = input.float(60, "OB", group = "WT-фильтр")
 wtOS       = input.float(-60, "OS", group = "WT-фильтр")
 wtTol      = input.float(10, "Допуск к уровню (близко = OB − допуск)", minval = 0, group = "WT-фильтр")
+// 22.09 (Егор: «если двухслойные волны сюда привязать?») — схема самого Егора: 4h контекст · 1h структура · LTF триггер.
+// Основание: пятёрка ядра 4h — мастер-контекст (замер 21.09: разворот ПОСЛЕ зрелого импульса поднимает КАЖДУЮ механику).
+useWave    = input.bool(true, "Двухслойный волновой контекст", group = "Волны")
+ctxTf      = input.timeframe("240", "Слой 1 — КОНТЕКСТ (зрелость импульса)", group = "Волны")
+strTf      = input.timeframe("60",  "Слой 2 — СТРУКТУРА (разворот ноги)", group = "Волны")
+minLegs    = input.int(3, "Зрелость: сломов подряд в одну сторону ≥", minval = 1, group = "Волны")
+needStr    = input.bool(true,  "Требовать разворот структуры слоя 2", group = "Волны")
+needDiv    = input.bool(false, "Требовать дивергенцию WT на слое 1", group = "Волны")
+showTbl    = input.bool(true,  "Табло состояния слоёв", group = "Волны")
 
 n = bar_index
 atr14 = ta.atr(14)
@@ -90,6 +99,55 @@ swings(len) =>
     top = os == 0 and os[1] != 0 ? high[len] : 0.
     btm = os == 1 and os[1] != 1 ? low[len] : 0.
     [top, btm]
+
+// ── СЛОЙ ВОЛН: та же структура OKO-SM, но на старшем ТФ + СЧЁТ сломов подряд в одну сторону.
+// Счёт — механизируемый заменитель счёта волн: 1-2 слома = ход только начался, ≥3 = импульс зрелый (ждём разворот).
+// Дивергенция: новый внутренний экстремум ноги при ОСЛАБШЕМ WT — признак пятой (слабая волна).
+legScan(swLen, ilLen) =>
+    var float tY = na, var float bY = na, var float itY = na, var float ibY = na
+    var bool itC = true, var bool ibC = true
+    var int tr = 0, var int cnt = 0
+    var float lastTop = na, var float lastTopWt = na, var float lastBtm = na, var float lastBtmWt = na
+    var bool divUp = false, var bool divDn = false
+    w = wtCalc()
+    [tp, bm]   = swings(swLen)
+    [itp, ibm] = swings(ilLen)
+    if tp > 0
+        tY := tp
+    if bm > 0
+        bY := bm
+    if itp > 0
+        itC := true
+        itY := itp
+        divUp := not na(lastTop) and itp > lastTop and w[ilLen] < lastTopWt
+        lastTop := itp
+        lastTopWt := w[ilLen]
+    if ibm > 0
+        ibC := true
+        ibY := ibm
+        divDn := not na(lastBtm) and ibm < lastBtm and w[ilLen] > lastBtmWt
+        lastBtm := ibm
+        lastBtmWt := w[ilLen]
+    if not na(itY) and ta.crossover(close, itY) and itC and tY != itY
+        cnt := tr == 1 ? cnt + 1 : 1
+        tr := 1
+        itC := false
+    if not na(ibY) and ta.crossunder(close, ibY) and ibC and bY != ibY
+        cnt := tr == -1 ? cnt + 1 : 1
+        tr := -1
+        ibC := false
+    [tr, cnt, divUp ? 1 : 0, divDn ? 1 : 0]
+// со сдвигом на бар — старший ТФ читаем только ЗАКРЫТЫМ (тот же приём, что и для WT)
+legScanPrev(swLen, ilLen) =>
+    [a, b, c, d] = legScan(swLen, ilLen)
+    [a[1], b[1], c[1], d[1]]
+
+[ctxDir, ctxCnt, ctxDivU, ctxDivD] = request.security(syminfo.tickerid, ctxTf, legScanPrev(swingLen, intLen), lookahead = barmerge.lookahead_on)
+[strDir, strCnt, strDivU, strDivD] = request.security(syminfo.tickerid, strTf, legScanPrev(swingLen, intLen), lookahead = barmerge.lookahead_on)
+
+// медвежья формация разрешена: слой 1 — ЗРЕЛЫЙ импульс ВВЕРХ (ждём его конца), слой 2 — нога уже развернулась ВНИЗ
+bearWaveOk = not useWave or (ctxDir == 1 and ctxCnt >= minLegs and (not needDiv or ctxDivU == 1) and (not needStr or strDir == -1))
+bullWaveOk = not useWave or (ctxDir == -1 and ctxCnt >= minLegs and (not needDiv or ctxDivD == 1) and (not needStr or strDir == 1))
 
 [top, btm]   = swings(swingLen)
 [itop, ibtm] = swings(intLen)
@@ -187,7 +245,7 @@ bool bearTrig = onlyChoch ? bearChoch : bearBreak
 bool bullTrig = onlyChoch ? bullChoch : bullBreak
 
 // ── медвежья формация: значимая вершина → первый слом вниз
-if bearTrig and showBear and not sigHiUsed and not na(sigHiBar) and n - sigHiBar <= maxWait and n > sigHiBar
+if bearTrig and showBear and bearWaveOk and not sigHiUsed and not na(sigHiBar) and n - sigHiBar <= maxWait and n > sigHiBar
     int x1 = math.max(sigHiBar - preBars, n - maxLook)
     if startMode == "свинг перед вершиной"
         sw = lastBefore(ibtmHist, sigHiBar)
@@ -212,7 +270,7 @@ if bearTrig and showBear and not sigHiUsed and not na(sigHiBar) and n - sigHiBar
         sigHiUsed := true
 
 // ── бычья формация: значимое дно → первый слом вверх
-if bullTrig and showBull and not sigLoUsed and not na(sigLoBar) and n - sigLoBar <= maxWait and n > sigLoBar
+if bullTrig and showBull and bullWaveOk and not sigLoUsed and not na(sigLoBar) and n - sigLoBar <= maxWait and n > sigLoBar
     int x1 = math.max(sigLoBar - preBars, n - maxLook)
     if startMode == "свинг перед вершиной"
         sw = lastBefore(itopHist, sigLoBar)
@@ -283,6 +341,20 @@ if bullBreak
     lastBullBreak := n
 if bearBreak
     lastBearBreak := n
+
+// ── табло состояния слоёв: видно, ПОЧЕМУ формаций нет
+var table tbl = table.new(position.top_right, 2, 4, border_width = 1, frame_width = 1)
+dirTxt(d) => d == 1 ? "вверх" : d == -1 ? "вниз" : "—"
+if showTbl and useWave and barstate.islast
+    table.cell(tbl, 0, 0, "слой 1 · " + ctxTf, text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 1, 0, dirTxt(ctxDir) + " ×" + str.tostring(ctxCnt) + (ctxDir == 1 and ctxDivU == 1 or ctxDir == -1 and ctxDivD == 1 ? " див" : ""),
+               text_color = ctxCnt >= minLegs ? color.orange : color.gray, text_size = size.small)
+    table.cell(tbl, 0, 1, "слой 2 · " + strTf, text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 1, 1, dirTxt(strDir) + " ×" + str.tostring(strCnt), text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 0, 2, "шорт-формации", text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 1, 2, bearWaveOk ? "разрешены" : "ждём", text_color = bearWaveOk ? color.red : color.gray, text_size = size.small)
+    table.cell(tbl, 0, 3, "лонг-формации", text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 1, 3, bullWaveOk ? "разрешены" : "ждём", text_color = bullWaveOk ? color.green : color.gray, text_size = size.small)
 
 alertcondition(bearChoch, "CHoCH вниз (медвежья формация)", "OKO-SM: внутренний CHoCH вниз")
 alertcondition(bullChoch, "CHoCH вверх (бычья формация)",   "OKO-SM: внутренний CHoCH вверх")
