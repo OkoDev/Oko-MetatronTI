@@ -10,6 +10,7 @@
 // ВОЛНА A (опция, как в разборе аналитика): после формации первый встречный внутренний CHoCH ВВЕРХ = A закончена;
 //   A = от вершины до минимума между ними; зона отката 0.5–0.705 A и стоп 0.886 — тянутся вправо, пока не пробит стоп
 //   или не обновлена вершина. Бычья формация — зеркально.
+// WT-ФИЛЬТР: медвежья формация остаётся, если на её участке WT1 ≥ OB − допуск; бычья — WT1 ≤ OS + допуск.
 // Внимание: замер 22.09 (3893 сетапа 2020-26) — вход в зону отката A сам по себе ≈ 0; это инструмент разметки.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 indicator("OKO-SM · CHoCH-формация", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 2000)
@@ -25,8 +26,19 @@ bearCol    = input.color(color.new(color.red, 85),   "Цвет медвежье�
 bullCol    = input.color(color.new(color.green, 85), "Цвет бычьей формации")
 zoneCol    = input.color(color.new(color.orange, 80), "Цвет зоны отката")
 showAllCh  = input.bool(false, "Линии всех внутренних CHoCH (не только формаций)")
+// 22.09 фильтр WT (Егор: «оставь только формации, близкие к OB/OS по WTTrend») — WT как в OkoTrend/боте: 10/21/4, ±60
+useWt      = input.bool(true, "Только у OB/OS WaveTrend", group = "WT-фильтр")
+wtN1       = input.int(10, "WT channel (n1)", group = "WT-фильтр")
+wtN2       = input.int(21, "WT average (n2)", group = "WT-фильтр")
+wtOB       = input.float(60, "OB", group = "WT-фильтр")
+wtOS       = input.float(-60, "OS", group = "WT-фильтр")
+wtTol      = input.float(10, "Допуск к уровню (близко = OB − допуск)", minval = 0, group = "WT-фильтр")
 
 n = bar_index
+hlc3_ = (high + low + close) / 3
+esa = ta.ema(hlc3_, wtN1)
+dd  = ta.ema(math.abs(hlc3_ - esa), wtN1)
+wt1 = ta.ema((hlc3_ - esa) / (0.015 * dd), wtN2)
 
 // линия слома как в OKO-SM display_Structure: от бара свинга до бара слома, подпись по центру
 chochLine(x1, y, col, up) =>
@@ -122,7 +134,10 @@ if bearChoch and showBear and not na(lastBullBreak)
                 hi := high[k]
                 hiOff := k
             lo := math.min(lo, low[k])
-        if (hi - lo) / lo * 100 >= minHeight
+        float wtMax = wt1
+        for k = 0 to len
+            wtMax := math.max(wtMax, nz(wt1[k], -999))
+        if (hi - lo) / lo * 100 >= minHeight and (not useWt or wtMax >= wtOB - wtTol)
             box.new(n - len, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = bearCol, border_width = 2)
             label.new(n - hiOff, hi, "5", style = label.style_label_down, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
             chochLine(chXDn, chLvlDn, color.red, false)
@@ -139,7 +154,10 @@ if bullChoch and showBull and not na(lastBearBreak)
                 lo := low[k]
                 loOff := k
             hi := math.max(hi, high[k])
-        if (hi - lo) / lo * 100 >= minHeight
+        float wtMin = wt1
+        for k = 0 to len
+            wtMin := math.min(wtMin, nz(wt1[k], 999))
+        if (hi - lo) / lo * 100 >= minHeight and (not useWt or wtMin <= wtOS + wtTol)
             box.new(n - len, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = bullCol, border_width = 2)
             label.new(n - loOff, lo, "5", style = label.style_label_up, color = color.new(color.green, 100), textcolor = color.green, size = size.small)
             chochLine(chXUp, chLvlUp, color.green, true)
