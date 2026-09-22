@@ -1,72 +1,67 @@
 //@version=5
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-// OKO-SM · CHoCH-формация (вершина/дно + слом внутренней структуры) — Егор 22.09.2026, NEAR 3m
+// OKO-SM · CHoCH-формация — Егор, 22.09.2026 (ZEC/BCH/GRT 3m)
 // Структура — ДОСЛОВНО как OkoSM_v163 / core.smc.oko_sm_engine.run_structure (детектор бота):
 //   swings(len): os := high[len] > ta.highest(len) ? 0 : low[len] < ta.lowest(len) ? 1 : os[1]
-//   внутренний слом — crossover/crossunder close через itop_y/ibtm_y при itop_cross/ibtm_cross и itop_y ≠ top_y (swing),
-//   CHoCH = слом против текущего itrend. Фильтр «конфлюэнции» LuxAlgo НЕ используется (как в боте).
-// ФОРМАЦИЯ (медвежья): от последнего внутреннего слома ВВЕРХ до внутреннего CHoCH ВНИЗ — прямоугольник:
-//   левый край — внутренний свинг перед вершиной (по умолчанию) / последний слом / N баров; верх = максимум участка
-//   (вершина, «5»), низ = минимум участка, правый край = бар CHoCH.
-// ВОЛНА A (опция, как в разборе аналитика): после формации первый встречный внутренний CHoCH ВВЕРХ = A закончена;
-//   A = от вершины до минимума между ними; зона отката 0.5–0.705 A и стоп 0.886 — тянутся вправо, пока не пробит стоп
-//   или не обновлена вершина. Бычья формация — зеркально.
-// ЗНАЧИМОСТЬ: вершина/дно формации = экстремум последних N баров (деф. 150) и высота ≥ k·ATR(14) (деф. 1.5);
-//   опция — совпадение со старшим свингом len 50.
-// WT-ФИЛЬТР (ТФ WT выбирается, по умолчанию 1h, закрытый бар): медвежья формация остаётся, если на её участке WT1 ≥ OB − допуск; бычья — WT1 ≤ OS + допуск.
+//   внутренний слом — crossover/crossunder close через itop_y/ibtm_y при itop_cross/ibtm_cross и itop_y ≠ top_y,
+//   CHoCH = слом против текущего itrend, BOS = слом по тренду. Фильтр «конфлюэнции» LuxAlgo НЕ используется.
+//
+// ДВА РЕЖИМА ФОРМАЦИИ (22.09, Егор: «почему на падении зелёные, а на взлёте в продажу?»):
+//   РАЗВОРОТ    — значимый экстремум окна (максимум/минимум sigLook баров) → первый слом ПРОТИВ хода.
+//                 На тренде экстремум обновляется каждым шагом, поэтому формации идут ПРОТИВ движения.
+//   ПРОДОЛЖЕНИЕ — вершина/дно ОТКАТА (последний внутренний свинг) → слом ПО тренду (BOS). Формации идут ПО движению.
+//
+// ВОЛНОВОЙ КОНТЕКСТ: слой 1 (ctxTf) — зрелость импульса по счёту сломов подряд; слой 2 (strTf) — направление ноги.
+//   Разворот разрешён, когда слой 1 зрелый и слой 2 уже развернулся; продолжение — когда оба слоя смотрят в одну сторону.
+// ВОЛНА A (опция): после формации первый встречный CHoCH = A закончена; зона отката 0.5–0.705 A, стоп 0.886.
+// WT-фильтр (канон бота/OkoTrend: 10/21, ±60, допуск 10) — только для РАЗВОРОТА: откат по тренду до OB/OS не доходит.
 // Внимание: замер 22.09 (3893 сетапа 2020-26) — вход в зону отката A сам по себе ≈ 0; это инструмент разметки.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 indicator("OKO-SM · CHoCH-формация", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 2000)
 
+// ── настройки (22.09, Егор: «давай настройки упрощать») — всё редкое ушло в константы ниже
+sides      = input.string("обе", "Стороны", options = ["обе", "только шорт", "только лонг"])
+mode       = input.string("разворот", "Формация", options = ["разворот", "продолжение", "оба"])
 swingLen   = input.int(50, "Swing length (старший слой)", minval = 10)
 intLen     = input.int(5,  "Internal length (младший слой)", minval = 2)
-showBear   = input.bool(true,  "Медвежьи формации (вершина → CHoCH вниз)")
-showBull   = input.bool(true,  "Бычьи формации (дно → CHoCH вверх)")
-minHeight  = input.float(0.3, "Мин. высота формации, %", minval = 0.0, step = 0.1)
-maxLook    = input.int(600, "Макс. длина формации, баров", minval = 20, maxval = 1900)
-// 22.09 (Егор: «почему такой большой кусок?»): в сильном импульсе внутренние сломы подавлены правилом itop_y ≠ top_y,
-// и «последний слом» уезжает на десятки баров назад. По умолчанию левый край = внутренний свинг ПЕРЕД вершиной.
-startMode  = input.string("свинг перед вершиной", "Левый край формации", options = ["свинг перед вершиной", "последний слом", "N баров до вершины"])
-preBars    = input.int(30, "N баров до вершины (для третьего режима)", minval = 3)
 showA      = input.bool(true, "Волна A и зона отката 0.5–0.705 / стоп 0.886")
-bearCol    = input.color(color.new(color.red, 85),   "Цвет медвежьей формации")
-bullCol    = input.color(color.new(color.green, 85), "Цвет бычьей формации")
-zoneCol    = input.color(color.new(color.orange, 80), "Цвет зоны отката")
-showAllCh  = input.bool(false, "Линии всех внутренних CHoCH (не только формаций)")
-// 22.09 (Егор: «только на значимых экстремумах»): вершина формации обязана быть максимумом последних N баров
-// (масштаб значимости) и/или высота формации — не меньше k·ATR. Микрошум 3m отсекается именно этим.
-sigLook    = input.int(150, "Значимость: вершина = экстремум N баров (0 = выкл)", minval = 0, group = "Значимость")
-minAtrK    = input.float(1.5, "Мин. высота формации в ATR(14) (0 = выкл)", minval = 0, step = 0.5, group = "Значимость")
-needSwing  = input.bool(false, "Требовать совпадение со старшим свингом (len 50)", group = "Значимость")
-maxWait    = input.int(60, "Ждать слом после экстремума, баров", minval = 3, group = "Значимость")
-onlyChoch  = input.bool(false, "Только CHoCH (иначе первый слом: CHoCH или BOS)", group = "Значимость")
-swTol      = input.float(0.3, "Допуск совпадения со свингом, %", minval = 0, step = 0.1, group = "Значимость")
-// 22.09 фильтр WT (Егор: «оставь только формации, близкие к OB/OS по WTTrend») — WT как в OkoTrend/боте: 10/21/4, ±60
-useWt      = input.bool(true, "Только у OB/OS WaveTrend", group = "WT-фильтр")
-wtTf       = input.timeframe("60", "ТФ WaveTrend (пусто = ТФ графика)", group = "WT-фильтр")
-wtN1       = input.int(10, "WT channel (n1)", group = "WT-фильтр")
-wtN2       = input.int(21, "WT average (n2)", group = "WT-фильтр")
-wtOB       = input.float(60, "OB", group = "WT-фильтр")
-wtOS       = input.float(-60, "OS", group = "WT-фильтр")
-wtTol      = input.float(10, "Допуск к уровню (близко = OB − допуск)", minval = 0, group = "WT-фильтр")
-// 22.09 (Егор: «если двухслойные волны сюда привязать?») — схема самого Егора: 4h контекст · 1h структура · LTF триггер.
-// Основание: пятёрка ядра 4h — мастер-контекст (замер 21.09: разворот ПОСЛЕ зрелого импульса поднимает КАЖДУЮ механику).
-useWave    = input.bool(true, "Двухслойный волновой контекст", group = "Волны")
+sigLook    = input.int(150, "Значимость: экстремум N баров (0 = выкл)", minval = 0, group = "Фильтры")
+minAtrK    = input.float(1.5, "Высота формации ≥ k·ATR(14)", minval = 0, step = 0.5, group = "Фильтры")
+legAtrK    = input.float(3.0, "Ход в окне ≥ k·ATR(14) (0 = выкл)", minval = 0, step = 0.5, group = "Фильтры")
+maxWait    = input.int(60, "Ждать слом после экстремума, баров", minval = 3, group = "Фильтры")
+onlyChoch  = input.bool(false, "Разворот только по CHoCH (иначе любой слом)", group = "Фильтры")
+useWt      = input.bool(true, "Разворот только у OB/OS WaveTrend", group = "Фильтры")
+wtTf       = input.timeframe("60", "ТФ WaveTrend (пусто = ТФ графика)", group = "Фильтры")
+useWave    = input.bool(true, "Волновой контекст (фильтр формаций)", group = "Волны")
 ctxTf      = input.timeframe("240", "Слой 1 — КОНТЕКСТ (зрелость импульса)", group = "Волны")
-strTf      = input.timeframe("60",  "Слой 2 — СТРУКТУРА (разворот ноги)", group = "Волны")
+strTf      = input.timeframe("60",  "Слой 2 — СТРУКТУРА (направление ноги)", group = "Волны")
 minLegs    = input.int(3, "Зрелость: сломов подряд в одну сторону ≥", minval = 1, group = "Волны")
-needStr    = input.bool(true,  "Требовать разворот структуры слоя 2", group = "Волны")
-needDiv    = input.bool(false, "Требовать дивергенцию WT на слое 1", group = "Волны")
-showTbl    = input.bool(true,  "Табло состояния слоёв", group = "Волны")
-showWaves  = input.bool(true,  "Рисовать ноги слоя 1 (номер = счёт сломов)", group = "Волны")
-showWave2  = input.bool(true,  "Рисовать ноги слоя 2", group = "Волны")
-ctxCol     = input.color(color.orange, "Цвет ног слоя 1", group = "Волны")
-strCol     = input.color(color.new(color.gray, 30), "Цвет ног слоя 2", group = "Волны")
+showWaves  = input.bool(true, "Рисовать ноги слоёв и табло", group = "Волны")
+
+// ── константы: канон WT (как в core/intelligence/wt_service.py и OkoTrend) и геометрия рисовки
+int   WT_N1 = 10
+int   WT_N2 = 21
+float WT_OB = 60.0
+float WT_OS = -60.0
+float WT_TOL = 10.0
+int   MAXLOOK = 600
+int   PRE = 30
+color C_BEAR = color.new(color.red, 85)
+color C_BULL = color.new(color.green, 85)
+color C_ZONE = color.new(color.orange, 80)
+color C_CTX  = color.orange
+color C_STR  = color.new(color.gray, 30)
+
+showBear = sides != "только лонг"
+showBull = sides != "только шорт"
 
 n = bar_index
 atr14 = ta.atr(14)
 hiN = ta.highest(high, math.max(sigLook, 1))     // экстремум окна значимости (считаем на каждом баре, не в ветке)
 loN = ta.lowest(low,  math.max(sigLook, 1))
+// ход в окне: отсекает «ступеньки» пологого сползания, где экстремум обновляется, а движения нет
+runOk = legAtrK == 0 or (hiN - loN) >= legAtrK * atr14
+
 // последний внутренний свинг из истории, стоящий ДО бара x (иначе na)
 lastBefore(arr, x) =>
     int res = na
@@ -80,9 +75,9 @@ lastBefore(arr, x) =>
 
 wtCalc() =>
     hlc3_ = (high + low + close) / 3
-    esa = ta.ema(hlc3_, wtN1)
-    dd  = ta.ema(math.abs(hlc3_ - esa), wtN1)
-    ta.ema((hlc3_ - esa) / (0.015 * dd), wtN2)
+    esa = ta.ema(hlc3_, WT_N1)
+    dd  = ta.ema(math.abs(hlc3_ - esa), WT_N1)
+    ta.ema((hlc3_ - esa) / (0.015 * dd), WT_N2)
 // WT со старшего ТФ — по ЗАКРЫТОМУ бару (без перерисовки): [1] + lookahead_on — стандартный приём
 wtLoc = wtCalc()
 wtHtf = request.security(syminfo.tickerid, wtTf, wtCalc()[1], lookahead = barmerge.lookahead_on)
@@ -104,12 +99,10 @@ swings(len) =>
     btm = os == 1 and os[1] != 1 ? low[len] : 0.
     [top, btm]
 
-// ── СЛОЙ ВОЛН: та же структура OKO-SM, но на старшем ТФ + СЧЁТ сломов подряд в одну сторону.
-// Счёт — механизируемый заменитель счёта волн: 1-2 слома = ход только начался, ≥3 = импульс зрелый (ждём разворот).
-// Дивергенция: новый внутренний экстремум ноги при ОСЛАБШЕМ WT — признак пятой (слабая волна).
-// ВАЖНО (баг 22.09, Егор: «боксы выключаются при включении волн»): сдвиг на закрытый бар делается ВНУТРИ функции.
-// Обёртка `[a,b,c,d] = legScan(); [a[1], ...]` возвращала na — история элементов распакованного кортежа не держится,
-// и весь фильтр молча блокировал каждую формацию. Возвращаем уже сдвинутые значения своих var-переменных.
+// ── СЛОЙ ВОЛН: та же структура OKO-SM на старшем ТФ + СЧЁТ сломов подряд в одну сторону.
+// Счёт — механизируемый заменитель счёта волн: 1-2 слома = ход только начался, ≥ minLegs = импульс зрелый.
+// ВАЖНО (баг 22.09): сдвиг на закрытый бар делается ВНУТРИ функции — история элементов РАСПАКОВАННОГО
+// кортежа не держится, обёртка возвращала na и фильтр молча глушил каждую формацию.
 legScan(swLen, ilLen) =>
     var float tY = na, var float bY = na, var float itY = na, var float ibY = na
     var bool itC = true, var bool ibC = true
@@ -127,7 +120,7 @@ legScan(swLen, ilLen) =>
     if itp > 0
         itC := true
         itY := itp
-        divUp := not na(pTop) and itp > pTop and w[ilLen] < lastTopWt
+        divUp := not na(pTop) and itp > pTop and w[ilLen] < lastTopWt     // новый максимум при ослабшем WT = слабая пятая
         pTop := itp
         tTop := time[ilLen]
         lastTopWt := w[ilLen]
@@ -150,8 +143,8 @@ legScan(swLen, ilLen) =>
     int dD = divDn ? 1 : 0
     [tr[1], cnt[1], dU[1], dD[1], pTop[1], tTop[1], pBtm[1], tBtm[1]]
 
-// ── зигзаг ноги слоя: соединяем внутренние экстремумы старшего ТФ по ВРЕМЕНИ бара (xloc.bar_time)
-// on передаётся параметром: функция с var должна вызываться на КАЖДОМ баре, иначе её состояние рвётся
+// ── зигзаг ноги слоя по ВРЕМЕНИ бара (xloc.bar_time).
+// Флаг видимости — параметром: функция с var обязана вызываться на КАЖДОМ баре, иначе её состояние рвётся.
 zig(pTop, tTop, pBtm, tBtm, col, wdt, cnt, showNum, on) =>
     var float zPx = na, var int zT = na
     if not na(tTop) and tTop != nz(tTop[1], 0)
@@ -174,13 +167,15 @@ zig(pTop, tTop, pBtm, tBtm, col, wdt, cnt, showNum, on) =>
 [ctxDir, ctxCnt, ctxDivU, ctxDivD, ctxPTop, ctxTTop, ctxPBtm, ctxTBtm] = request.security(syminfo.tickerid, ctxTf, legScan(swingLen, intLen), lookahead = barmerge.lookahead_on)
 [strDir, strCnt, strDivU, strDivD, strPTop, strTTop, strPBtm, strTBtm] = request.security(syminfo.tickerid, strTf, legScan(swingLen, intLen), lookahead = barmerge.lookahead_on)
 
-// ── сами волны на графике: слой 1 — толстая оранжевая нога с номером слома, слой 2 — тонкая серая
-zig(ctxPTop, int(ctxTTop), ctxPBtm, int(ctxTBtm), ctxCol, 2, int(ctxCnt), true,  showWaves)
-zig(strPTop, int(strTTop), strPBtm, int(strTBtm), strCol, 1, int(strCnt), false, showWaves and showWave2)
+zig(ctxPTop, int(ctxTTop), ctxPBtm, int(ctxTBtm), C_CTX, 2, int(ctxCnt), true,  showWaves)
+zig(strPTop, int(strTTop), strPBtm, int(strTBtm), C_STR, 1, int(strCnt), false, showWaves)
 
-// медвежья формация разрешена: слой 1 — ЗРЕЛЫЙ импульс ВВЕРХ (ждём его конца), слой 2 — нога уже развернулась ВНИЗ
-bearWaveOk = not useWave or (ctxDir == 1 and ctxCnt >= minLegs and (not needDiv or ctxDivU == 1) and (not needStr or strDir == -1))
-bullWaveOk = not useWave or (ctxDir == -1 and ctxCnt >= minLegs and (not needDiv or ctxDivD == 1) and (not needStr or strDir == 1))
+// РАЗВОРОТ: слой 1 выработал ход, слой 2 уже развернулся против него.
+// ПРОДОЛЖЕНИЕ: оба слоя смотрят в одну сторону — входим по тренду после отката.
+bearRevWave  = not useWave or (ctxDir ==  1 and ctxCnt >= minLegs and strDir == -1)
+bullRevWave  = not useWave or (ctxDir == -1 and ctxCnt >= minLegs and strDir ==  1)
+bearContWave = not useWave or (ctxDir == -1 and strDir == -1)
+bullContWave = not useWave or (ctxDir ==  1 and strDir ==  1)
 
 [top, btm]   = swings(swingLen)
 [itop, ibtm] = swings(intLen)
@@ -233,13 +228,9 @@ if not na(ibtm_y) and ta.crossunder(close, ibtm_y) and ibtm_cross and btm_y != i
     ibtm_cross := false
     itrend := -1
 
-// ── последний слом в каждую сторону (начало участка формации)
-var int lastBullBreak = na
-var int lastBearBreak = na
-
 // ── состояние ожидания волны A
-var float sTop = na, var int sTopBar = na, var bool sArmed = false          // медвежья: ждём встречный CHoCH вверх
-var float lBot = na, var int lBotBar = na, var bool lArmed = false          // бычья: ждём встречный CHoCH вниз
+var float sTop = na, var int sTopBar = na, var bool sArmed = false
+var float lBot = na, var int lBotBar = na, var bool lArmed = false
 var box   sZone = na, var line sStop = na, var float sStopPx = na
 var box   lZone = na, var line lStop = na, var float lStopPx = na
 
@@ -259,10 +250,7 @@ if not na(lZone)
         box.set_right(lZone, n)
         line.set_x2(lStop, n)
 
-// ══ ФОРМАЦИЯ ОТ ЗНАЧИМОГО ЭКСТРЕМУМА (22.09, Егор: «указанные части не видны»)
-// Было: «от слома до слома» — значимая вершина пропадала, если слом пришёл позже окна или оказался BOS, а не CHoCH.
-// Стало: сначала фиксируем ЗНАЧИМЫЙ экстремум (максимум последних sigLook баров), потом ждём ПЕРВЫЙ внутренний слом
-// против хода (CHoCH или BOS — на выбор) не позже maxWait баров. Левый край — внутренний свинг перед экстремумом.
+// ── значимый экстремум окна (источник вершины для РАЗВОРОТА)
 var float sigHi = na, var int sigHiBar = na, var bool sigHiUsed = true
 var float sigLo = na, var int sigLoBar = na, var bool sigLoUsed = true
 if sigLook == 0 or high >= hiN
@@ -274,60 +262,60 @@ if sigLook == 0 or low <= loN
     sigLoBar := n
     sigLoUsed := false
 
-bool bearTrig = onlyChoch ? bearChoch : bearBreak
-bool bullTrig = onlyChoch ? bullChoch : bullBreak
-
-// ── медвежья формация: значимая вершина → первый слом вниз
-if bearTrig and showBear and bearWaveOk and not sigHiUsed and not na(sigHiBar) and n - sigHiBar <= maxWait and n > sigHiBar
-    int x1 = math.max(sigHiBar - preBars, n - maxLook)
-    if startMode == "свинг перед вершиной"
-        sw = lastBefore(ibtmHist, sigHiBar)
-        x1 := na(sw) ? x1 : math.max(sw, n - maxLook)
-    else if startMode == "последний слом" and not na(lastBullBreak)
-        x1 := math.max(math.min(lastBullBreak, sigHiBar), n - maxLook)
-    int len = math.min(n - x1, maxLook)
-    float hi = sigHi, float lo = low, float wtMax = -999
+// ══ МЕДВЕЖЬЯ ФОРМАЦИЯ
+bool revBear  = (onlyChoch ? bearChoch : bearBreak) and not sigHiUsed and not na(sigHiBar) and n - sigHiBar <= maxWait and n > sigHiBar
+bool contBear = bearBreak and not bearChoch and not na(itop_x) and n > itop_x and n - itop_x <= maxWait
+bool doRevBear  = revBear and mode != "продолжение" and bearRevWave
+bool doContBear = contBear and mode != "разворот" and not doRevBear and bearContWave
+if (doRevBear or doContBear) and showBear and runOk
+    float topPx  = doRevBear ? sigHi : itop_y
+    int   topBar = doRevBear ? sigHiBar : itop_x
+    sw = lastBefore(ibtmHist, topBar)
+    int x1 = na(sw) ? math.max(topBar - PRE, n - MAXLOOK) : math.max(sw, n - MAXLOOK)
+    int len = math.min(n - x1, MAXLOOK)
+    float hi = topPx, float lo = low, float wtMax = -999
     for k = 0 to len
         lo := math.min(lo, low[k])
         hi := math.max(hi, high[k])
         wtMax := math.max(wtMax, nz(wt1[k], -999))
-    bool sigOk = (minAtrK == 0 or (hi - lo) >= minAtrK * atr14) and (hi - lo) / lo * 100 >= minHeight
-    if needSwing
-        sigOk := sigOk and not na(top_y) and math.abs(hi - top_y) / hi * 100 <= swTol
-    if sigOk and (not useWt or wtMax >= wtOB - wtTol)
-        box.new(x1, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = bearCol, border_width = 2)
-        label.new(sigHiBar, hi, "5", style = label.style_label_down, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
+    // WT требуем только у разворота: откат по тренду до OB старшего ТФ обычно не доходит
+    if (hi - lo) >= minAtrK * atr14 and (not useWt or not doRevBear or wtMax >= WT_OB - WT_TOL)
+        box.new(x1, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = C_BEAR, border_width = 2)
+        label.new(topBar, hi, doRevBear ? "5" : "→", style = label.style_label_down,
+                  color = color.new(color.red, 100), textcolor = color.red, size = size.small)
         chochLine(chXDn, chLvlDn, color.red, false)
-        sTop := hi, sTopBar := sigHiBar, sArmed := true
+        sTop := hi, sTopBar := topBar, sArmed := true
         lArmed := false
-        sigHiUsed := true
+        if doRevBear
+            sigHiUsed := true
 
-// ── бычья формация: значимое дно → первый слом вверх
-if bullTrig and showBull and bullWaveOk and not sigLoUsed and not na(sigLoBar) and n - sigLoBar <= maxWait and n > sigLoBar
-    int x1 = math.max(sigLoBar - preBars, n - maxLook)
-    if startMode == "свинг перед вершиной"
-        sw = lastBefore(itopHist, sigLoBar)
-        x1 := na(sw) ? x1 : math.max(sw, n - maxLook)
-    else if startMode == "последний слом" and not na(lastBearBreak)
-        x1 := math.max(math.min(lastBearBreak, sigLoBar), n - maxLook)
-    int len = math.min(n - x1, maxLook)
-    float lo = sigLo, float hi = high, float wtMin = 999
+// ══ БЫЧЬЯ ФОРМАЦИЯ
+bool revBull  = (onlyChoch ? bullChoch : bullBreak) and not sigLoUsed and not na(sigLoBar) and n - sigLoBar <= maxWait and n > sigLoBar
+bool contBull = bullBreak and not bullChoch and not na(ibtm_x) and n > ibtm_x and n - ibtm_x <= maxWait
+bool doRevBull  = revBull and mode != "продолжение" and bullRevWave
+bool doContBull = contBull and mode != "разворот" and not doRevBull and bullContWave
+if (doRevBull or doContBull) and showBull and runOk
+    float botPx  = doRevBull ? sigLo : ibtm_y
+    int   botBar = doRevBull ? sigLoBar : ibtm_x
+    sw = lastBefore(itopHist, botBar)
+    int x1 = na(sw) ? math.max(botBar - PRE, n - MAXLOOK) : math.max(sw, n - MAXLOOK)
+    int len = math.min(n - x1, MAXLOOK)
+    float lo = botPx, float hi = high, float wtMin = 999
     for k = 0 to len
         hi := math.max(hi, high[k])
         lo := math.min(lo, low[k])
         wtMin := math.min(wtMin, nz(wt1[k], 999))
-    bool sigOk = (minAtrK == 0 or (hi - lo) >= minAtrK * atr14) and (hi - lo) / lo * 100 >= minHeight
-    if needSwing
-        sigOk := sigOk and not na(btm_y) and math.abs(lo - btm_y) / lo * 100 <= swTol
-    if sigOk and (not useWt or wtMin <= wtOS + wtTol)
-        box.new(x1, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = bullCol, border_width = 2)
-        label.new(sigLoBar, lo, "5", style = label.style_label_up, color = color.new(color.green, 100), textcolor = color.green, size = size.small)
+    if (hi - lo) >= minAtrK * atr14 and (not useWt or not doRevBull or wtMin <= WT_OS + WT_TOL)
+        box.new(x1, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = C_BULL, border_width = 2)
+        label.new(botBar, lo, doRevBull ? "5" : "→", style = label.style_label_up,
+                  color = color.new(color.green, 100), textcolor = color.green, size = size.small)
         chochLine(chXUp, chLvlUp, color.green, true)
-        lBot := lo, lBotBar := sigLoBar, lArmed := true
+        lBot := lo, lBotBar := botBar, lArmed := true
         sArmed := false
-        sigLoUsed := true
+        if doRevBull
+            sigLoUsed := true
 
-// ── обновление экстремума до окончания A — формация отменяется (аналитик пересобирает от нового экстремума)
+// ── обновление экстремума до окончания A — формация отменяется
 if sArmed and high > sTop
     sArmed := false
 if lArmed and low < lBot
@@ -335,7 +323,7 @@ if lArmed and low < lBot
 
 // ── волна A закончена: встречный CHoCH
 if showA and sArmed and bullChoch and not bearChoch
-    len = math.min(n - sTopBar, maxLook)
+    len = math.min(n - sTopBar, MAXLOOK)
     a = low, int aOff = 0
     for k = 0 to len
         if low[k] < a
@@ -345,12 +333,12 @@ if showA and sArmed and bullChoch and not bearChoch
     if A > 0
         z05 = a + 0.5 * A, z705 = a + 0.705 * A
         sStopPx := a + 0.886 * A
-        sZone := box.new(n - aOff, z705, n, z05, border_color = color.new(color.orange, 40), bgcolor = zoneCol)
+        sZone := box.new(n - aOff, z705, n, z05, border_color = color.new(color.orange, 40), bgcolor = C_ZONE)
         sStop := line.new(n - aOff, sStopPx, n, sStopPx, color = color.red, style = line.style_dashed)
         label.new(n - aOff, a, "A", style = label.style_label_up, color = color.new(color.blue, 100), textcolor = color.blue, size = size.small)
     sArmed := false
 if showA and lArmed and bearChoch and not bullChoch
-    len = math.min(n - lBotBar, maxLook)
+    len = math.min(n - lBotBar, MAXLOOK)
     a = high, int aOff = 0
     for k = 0 to len
         if high[k] > a
@@ -360,34 +348,27 @@ if showA and lArmed and bearChoch and not bullChoch
     if A > 0
         z05 = a - 0.5 * A, z705 = a - 0.705 * A
         lStopPx := a - 0.886 * A
-        lZone := box.new(n - aOff, z05, n, z705, border_color = color.new(color.orange, 40), bgcolor = zoneCol)
+        lZone := box.new(n - aOff, z05, n, z705, border_color = color.new(color.orange, 40), bgcolor = C_ZONE)
         lStop := line.new(n - aOff, lStopPx, n, lStopPx, color = color.green, style = line.style_dashed)
         label.new(n - aOff, a, "A", style = label.style_label_down, color = color.new(color.blue, 100), textcolor = color.blue, size = size.small)
     lArmed := false
 
-if showAllCh and bearChoch
-    chochLine(chXDn, chLvlDn, color.new(color.red, 40), false)
-if showAllCh and bullChoch
-    chochLine(chXUp, chLvlUp, color.new(color.green, 40), true)
-
-if bullBreak
-    lastBullBreak := n
-if bearBreak
-    lastBearBreak := n
-
-// ── табло состояния слоёв: видно, ПОЧЕМУ формаций нет
+// ── табло: видно, ПОЧЕМУ формаций нет
 var table tbl = table.new(position.top_right, 2, 4, border_width = 1, frame_width = 1)
 dirTxt(d) => d == 1 ? "вверх" : d == -1 ? "вниз" : "—"
-if showTbl and useWave and barstate.islast
+okTxt(b) => b ? "разрешены" : "ждём"
+if showWaves and barstate.islast
     table.cell(tbl, 0, 0, "слой 1 · " + ctxTf, text_color = color.gray, text_size = size.small)
     table.cell(tbl, 1, 0, dirTxt(ctxDir) + " x" + str.tostring(ctxCnt, "#") + (ctxDir == 1 and ctxDivU == 1 or ctxDir == -1 and ctxDivD == 1 ? " див" : ""),
                text_color = ctxCnt >= minLegs ? color.orange : color.gray, text_size = size.small)
     table.cell(tbl, 0, 1, "слой 2 · " + strTf, text_color = color.gray, text_size = size.small)
     table.cell(tbl, 1, 1, dirTxt(strDir) + " x" + str.tostring(strCnt, "#"), text_color = color.gray, text_size = size.small)
-    table.cell(tbl, 0, 2, "шорт-формации", text_color = color.gray, text_size = size.small)
-    table.cell(tbl, 1, 2, bearWaveOk ? "разрешены" : "ждём", text_color = bearWaveOk ? color.red : color.gray, text_size = size.small)
-    table.cell(tbl, 0, 3, "лонг-формации", text_color = color.gray, text_size = size.small)
-    table.cell(tbl, 1, 3, bullWaveOk ? "разрешены" : "ждём", text_color = bullWaveOk ? color.green : color.gray, text_size = size.small)
+    bearOk = mode == "продолжение" ? bearContWave : mode == "разворот" ? bearRevWave : bearRevWave or bearContWave
+    bullOk = mode == "продолжение" ? bullContWave : mode == "разворот" ? bullRevWave : bullRevWave or bullContWave
+    table.cell(tbl, 0, 2, "шорт · " + mode, text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 1, 2, okTxt(bearOk and showBear), text_color = bearOk and showBear ? color.red : color.gray, text_size = size.small)
+    table.cell(tbl, 0, 3, "лонг · " + mode, text_color = color.gray, text_size = size.small)
+    table.cell(tbl, 1, 3, okTxt(bullOk and showBull), text_color = bullOk and showBull ? color.green : color.gray, text_size = size.small)
 
 alertcondition(bearChoch, "CHoCH вниз (медвежья формация)", "OKO-SM: внутренний CHoCH вниз")
 alertcondition(bullChoch, "CHoCH вверх (бычья формация)",   "OKO-SM: внутренний CHoCH вверх")
