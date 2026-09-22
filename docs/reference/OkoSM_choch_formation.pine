@@ -6,7 +6,8 @@
 //   внутренний слом — crossover/crossunder close через itop_y/ibtm_y при itop_cross/ibtm_cross и itop_y ≠ top_y (swing),
 //   CHoCH = слом против текущего itrend. Фильтр «конфлюэнции» LuxAlgo НЕ используется (как в боте).
 // ФОРМАЦИЯ (медвежья): от последнего внутреннего слома ВВЕРХ до внутреннего CHoCH ВНИЗ — прямоугольник:
-//   верх = максимум участка (вершина, «5»), низ = минимум участка, правый край = бар CHoCH.
+//   левый край — внутренний свинг перед вершиной (по умолчанию) / последний слом / N баров; верх = максимум участка
+//   (вершина, «5»), низ = минимум участка, правый край = бар CHoCH.
 // ВОЛНА A (опция, как в разборе аналитика): после формации первый встречный внутренний CHoCH ВВЕРХ = A закончена;
 //   A = от вершины до минимума между ними; зона отката 0.5–0.705 A и стоп 0.886 — тянутся вправо, пока не пробит стоп
 //   или не обновлена вершина. Бычья формация — зеркально.
@@ -21,6 +22,10 @@ showBear   = input.bool(true,  "Медвежьи формации (вершин�
 showBull   = input.bool(true,  "Бычьи формации (дно → CHoCH вверх)")
 minHeight  = input.float(0.3, "Мин. высота формации, %", minval = 0.0, step = 0.1)
 maxLook    = input.int(600, "Макс. длина формации, баров", minval = 20, maxval = 1900)
+// 22.09 (Егор: «почему такой большой кусок?»): в сильном импульсе внутренние сломы подавлены правилом itop_y ≠ top_y,
+// и «последний слом» уезжает на десятки баров назад. По умолчанию левый край = внутренний свинг ПЕРЕД вершиной.
+startMode  = input.string("свинг перед вершиной", "Левый край формации", options = ["свинг перед вершиной", "последний слом", "N баров до вершины"])
+preBars    = input.int(30, "N баров до вершины (для третьего режима)", minval = 3)
 showA      = input.bool(true, "Волна A и зона отката 0.5–0.705 / стоп 0.886")
 bearCol    = input.color(color.new(color.red, 85),   "Цвет медвежьей формации")
 bullCol    = input.color(color.new(color.green, 85), "Цвет бычьей формации")
@@ -36,6 +41,17 @@ wtOS       = input.float(-60, "OS", group = "WT-фильтр")
 wtTol      = input.float(10, "Допуск к уровню (близко = OB − допуск)", minval = 0, group = "WT-фильтр")
 
 n = bar_index
+// последний внутренний свинг из истории, стоящий ДО бара x (иначе na)
+lastBefore(arr, x) =>
+    int res = na
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            v = array.get(arr, i)
+            if v < x
+                res := v
+                break
+    res
+
 wtCalc() =>
     hlc3_ = (high + low + close) / 3
     esa = ta.ema(hlc3_, wtN1)
@@ -70,6 +86,8 @@ var float itop_y = na
 var float ibtm_y = na
 var int   itop_x = na
 var int   ibtm_x = na
+var int[] itopHist = array.new_int()      // бары внутренних свингов — для левого края формации
+var int[] ibtmHist = array.new_int()
 var bool  itop_cross = true
 var bool  ibtm_cross = true
 var int   itrend = 0
@@ -82,10 +100,16 @@ if itop > 0
     itop_cross := true
     itop_y := itop
     itop_x := n - intLen
+    array.push(itopHist, itop_x)
+    if array.size(itopHist) > 500
+        array.shift(itopHist)
 if ibtm > 0
     ibtm_cross := true
     ibtm_y := ibtm
     ibtm_x := n - intLen
+    array.push(ibtmHist, ibtm_x)
+    if array.size(ibtmHist) > 500
+        array.shift(ibtmHist)
 
 bool bullBreak = false, bool bearBreak = false, bool bullChoch = false, bool bearChoch = false
 float chLvlUp = na, int chXUp = na, float chLvlDn = na, int chXDn = na      // уровень и бар сломанного свинга
@@ -143,8 +167,25 @@ if bearChoch and showBear and not na(lastBullBreak)
         float wtMax = wt1
         for k = 0 to len
             wtMax := math.max(wtMax, nz(wt1[k], -999))
+        int topBar = n - hiOff
+        int x1 = n - len
+        if startMode == "свинг перед вершиной"
+            sw = lastBefore(ibtmHist, topBar)
+            x1 := na(sw) ? math.max(n - len, topBar - preBars) : math.max(sw, n - maxLook)
+        else if startMode == "N баров до вершины"
+            x1 := math.max(topBar - preBars, n - maxLook)
+        // высота и вершина — по участку левый край → CHoCH
+        float hi2 = high, float lo2 = low, int hiOff2 = 0
+        for k = 0 to math.min(n - x1, maxLook)
+            if high[k] > hi2
+                hi2 := high[k]
+                hiOff2 := k
+            lo2 := math.min(lo2, low[k])
+        hi := hi2
+        lo := lo2
+        hiOff := hiOff2
         if (hi - lo) / lo * 100 >= minHeight and (not useWt or wtMax >= wtOB - wtTol)
-            box.new(n - len, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = bearCol, border_width = 2)
+            box.new(x1, hi, n, lo, border_color = color.new(color.red, 20), bgcolor = bearCol, border_width = 2)
             label.new(n - hiOff, hi, "5", style = label.style_label_down, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
             chochLine(chXDn, chLvlDn, color.red, false)
             sTop := hi, sTopBar := n - hiOff, sArmed := true
@@ -163,8 +204,24 @@ if bullChoch and showBull and not na(lastBearBreak)
         float wtMin = wt1
         for k = 0 to len
             wtMin := math.min(wtMin, nz(wt1[k], 999))
+        int botBar = n - loOff
+        int x1 = n - len
+        if startMode == "свинг перед вершиной"
+            sw = lastBefore(itopHist, botBar)
+            x1 := na(sw) ? math.max(n - len, botBar - preBars) : math.max(sw, n - maxLook)
+        else if startMode == "N баров до вершины"
+            x1 := math.max(botBar - preBars, n - maxLook)
+        float hi2 = high, float lo2 = low, int loOff2 = 0
+        for k = 0 to math.min(n - x1, maxLook)
+            if low[k] < lo2
+                lo2 := low[k]
+                loOff2 := k
+            hi2 := math.max(hi2, high[k])
+        hi := hi2
+        lo := lo2
+        loOff := loOff2
         if (hi - lo) / lo * 100 >= minHeight and (not useWt or wtMin <= wtOS + wtTol)
-            box.new(n - len, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = bullCol, border_width = 2)
+            box.new(x1, hi, n, lo, border_color = color.new(color.green, 20), bgcolor = bullCol, border_width = 2)
             label.new(n - loOff, lo, "5", style = label.style_label_up, color = color.new(color.green, 100), textcolor = color.green, size = size.small)
             chochLine(chXUp, chLvlUp, color.green, true)
             lBot := lo, lBotBar := n - loOff, lArmed := true
