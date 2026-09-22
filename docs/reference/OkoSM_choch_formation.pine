@@ -32,6 +32,8 @@ maxWait    = input.int(60, "Ждать слом после экстремума,
 onlyChoch  = input.bool(false, "Разворот только по CHoCH (иначе любой слом)", group = "Фильтры")
 useWt      = input.bool(true, "Разворот только у OB/OS WaveTrend", group = "Фильтры")
 wtTf       = input.timeframe("60", "ТФ WaveTrend (пусто = ТФ графика)", group = "Фильтры")
+colorBars  = input.bool(true, "Красить бары по WT", group = "Бары")
+barWtTf    = input.timeframe("", "ТФ WT для баров (пусто = ТФ графика)", group = "Бары")
 useWave    = input.bool(true, "Волновой контекст (фильтр формаций)", group = "Волны")
 ctxTf      = input.timeframe("240", "Слой 1 — КОНТЕКСТ (зрелость импульса)", group = "Волны")
 strTf      = input.timeframe("60",  "Слой 2 — СТРУКТУРА (направление ноги)", group = "Волны")
@@ -51,6 +53,11 @@ color C_BULL = color.new(color.green, 85)
 color C_ZONE = color.new(color.orange, 80)
 color C_CTX  = color.orange
 color C_STR  = color.new(color.gray, 30)
+// раскраска баров: кросс WT × сторона медианы (медиана WT = нулевая линия осциллятора)
+color C_UP_HI  = #66BB6A      // wt1 > wt2 и НАД медианой — светло-зелёный
+color C_UP_LO  = #1B5E20      // wt1 > wt2, но под медианой — тёмно-зелёный
+color C_DN_HI  = #C62828      // wt1 < wt2, ещё над медианой — красный
+color C_DN_LO  = #FF1744      // wt1 < wt2 и ПОД медианой — ярко-красный
 
 showBear = sides != "только лонг"
 showBull = sides != "только шорт"
@@ -82,6 +89,20 @@ wtCalc() =>
 wtLoc = wtCalc()
 wtHtf = request.security(syminfo.tickerid, wtTf, wtCalc()[1], lookahead = barmerge.lookahead_on)
 wt1 = wtTf == "" ? wtLoc : wtHtf
+
+// ── раскраска баров (Егор 22.09): wt1 > wt2 — зелёные, над медианой — светлее; кросс вниз — красные,
+// под медианой — ярче. wt2 = SMA(wt1, 4) как в каноне WaveTrend, медиана = нулевая линия осциллятора.
+wtSig() =>
+    w = wtCalc()
+    ta.sma(w, 4)
+wtLoc2 = wtSig()
+wtHtf1 = request.security(syminfo.tickerid, barWtTf, wtCalc()[1], lookahead = barmerge.lookahead_on)
+wtHtf2 = request.security(syminfo.tickerid, barWtTf, wtSig()[1],  lookahead = barmerge.lookahead_on)
+bw1 = barWtTf == "" ? wtLoc  : wtHtf1
+bw2 = barWtTf == "" ? wtLoc2 : wtHtf2
+bool wtUp = bw1 > bw2
+bool wtAbove = bw1 > 0
+barcolor(colorBars ? (wtUp ? (wtAbove ? C_UP_HI : C_UP_LO) : (wtAbove ? C_DN_HI : C_DN_LO)) : na)
 
 // линия слома как в OKO-SM display_Structure: от бара свинга до бара слома, подпись по центру
 chochLine(x1, y, col, up) =>
