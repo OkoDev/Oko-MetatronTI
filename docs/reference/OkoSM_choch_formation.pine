@@ -35,6 +35,10 @@ wtTf       = input.timeframe("60", "ТФ WaveTrend (пусто = ТФ графи
 colorBars  = input.bool(true, "Красить бары по WT", group = "Бары")
 barWtTf    = input.timeframe("", "ТФ WT для баров (пусто = ТФ графика)", group = "Бары")
 medLen     = input.int(200, "Период медианы WT (EMA, как в OkoTrend)", minval = 2, group = "Бары")
+C_UP_HI    = input.color(#66BB6A, "wt1 > wt2, над медианой", group = "Бары")
+C_UP_LO    = input.color(#1B5E20, "wt1 > wt2, под медианой", group = "Бары")
+C_DN_HI    = input.color(#C62828, "wt1 < wt2, над медианой", group = "Бары")
+C_DN_LO    = input.color(#FF1744, "wt1 < wt2, под медианой", group = "Бары")
 useWave    = input.bool(true, "Волновой контекст (фильтр формаций)", group = "Волны")
 ctxTf      = input.timeframe("240", "Слой 1 — КОНТЕКСТ (зрелость импульса)", group = "Волны")
 strTf      = input.timeframe("60",  "Слой 2 — СТРУКТУРА (направление ноги)", group = "Волны")
@@ -54,11 +58,6 @@ color C_BULL = color.new(color.green, 85)
 color C_ZONE = color.new(color.orange, 80)
 color C_CTX  = color.orange
 color C_STR  = color.new(color.gray, 30)
-// раскраска баров: кросс WT × сторона СКОЛЬЗЯЩЕЙ медианы (EMA(wt1, medLen), как в OkoTrend)
-color C_UP_HI  = #66BB6A      // wt1 > wt2 и НАД медианой — светло-зелёный
-color C_UP_LO  = #1B5E20      // wt1 > wt2, но под медианой — тёмно-зелёный
-color C_DN_HI  = #C62828      // wt1 < wt2, ещё над медианой — красный
-color C_DN_LO  = #FF1744      // wt1 < wt2 и ПОД медианой — ярко-красный
 
 showBear = sides != "только лонг"
 showBull = sides != "только шорт"
