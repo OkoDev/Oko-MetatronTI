@@ -10,7 +10,7 @@
 // ВОЛНА A (опция, как в разборе аналитика): после формации первый встречный внутренний CHoCH ВВЕРХ = A закончена;
 //   A = от вершины до минимума между ними; зона отката 0.5–0.705 A и стоп 0.886 — тянутся вправо, пока не пробит стоп
 //   или не обновлена вершина. Бычья формация — зеркально.
-// WT-ФИЛЬТР: медвежья формация остаётся, если на её участке WT1 ≥ OB − допуск; бычья — WT1 ≤ OS + допуск.
+// WT-ФИЛЬТР (ТФ WT выбирается, по умолчанию 1h, закрытый бар): медвежья формация остаётся, если на её участке WT1 ≥ OB − допуск; бычья — WT1 ≤ OS + допуск.
 // Внимание: замер 22.09 (3893 сетапа 2020-26) — вход в зону отката A сам по себе ≈ 0; это инструмент разметки.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 indicator("OKO-SM · CHoCH-формация", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 2000)
@@ -28,6 +28,7 @@ zoneCol    = input.color(color.new(color.orange, 80), "Цвет зоны отк�
 showAllCh  = input.bool(false, "Линии всех внутренних CHoCH (не только формаций)")
 // 22.09 фильтр WT (Егор: «оставь только формации, близкие к OB/OS по WTTrend») — WT как в OkoTrend/боте: 10/21/4, ±60
 useWt      = input.bool(true, "Только у OB/OS WaveTrend", group = "WT-фильтр")
+wtTf       = input.timeframe("60", "ТФ WaveTrend (пусто = ТФ графика)", group = "WT-фильтр")
 wtN1       = input.int(10, "WT channel (n1)", group = "WT-фильтр")
 wtN2       = input.int(21, "WT average (n2)", group = "WT-фильтр")
 wtOB       = input.float(60, "OB", group = "WT-фильтр")
@@ -35,10 +36,15 @@ wtOS       = input.float(-60, "OS", group = "WT-фильтр")
 wtTol      = input.float(10, "Допуск к уровню (близко = OB − допуск)", minval = 0, group = "WT-фильтр")
 
 n = bar_index
-hlc3_ = (high + low + close) / 3
-esa = ta.ema(hlc3_, wtN1)
-dd  = ta.ema(math.abs(hlc3_ - esa), wtN1)
-wt1 = ta.ema((hlc3_ - esa) / (0.015 * dd), wtN2)
+wtCalc() =>
+    hlc3_ = (high + low + close) / 3
+    esa = ta.ema(hlc3_, wtN1)
+    dd  = ta.ema(math.abs(hlc3_ - esa), wtN1)
+    ta.ema((hlc3_ - esa) / (0.015 * dd), wtN2)
+// WT со старшего ТФ — по ЗАКРЫТОМУ бару (без перерисовки): [1] + lookahead_on — стандартный приём
+wtLoc = wtCalc()
+wtHtf = request.security(syminfo.tickerid, wtTf, wtCalc()[1], lookahead = barmerge.lookahead_on)
+wt1 = wtTf == "" ? wtLoc : wtHtf
 
 // линия слома как в OKO-SM display_Structure: от бара свинга до бара слома, подпись по центру
 chochLine(x1, y, col, up) =>
