@@ -26,7 +26,7 @@ def main():
         print(f"\n=== {r['sym']} → {OUT / (r['png'] or r['json'])}")
         print("\n".join(r["text"]))
         for sc in r["scenarios"]:
-            print(f"  [{sc['name']}] " + " · ".join(f"{n} {v:.6g}" for n, v in sc["targets"]) + f" | отмена: {sc['invalid']}")
+            print(f"  [{sc['name']}] " + " · ".join(f"{n} {v:.6g}" for n, v in sc["targets"] if v is not None and v == v) + f" | отмена: {sc['invalid']}")
 
 
 if __name__ == "__main__":

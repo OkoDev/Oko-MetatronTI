@@ -4012,7 +4012,9 @@ figure{margin:0 0 10px}figure img{width:100%;max-width:100%;height:auto;border-r
 <p class=sub>Каждый сетап, найденный тенью на закрытых барах 4h (BingX, оборот ≥2M): разметка 0-5, правила ядра, вход/цель/стоп, прогноз по фибо.
 Оценка разметки пишется в <code>data/wave5_shadow/reviews.json</code> и попадает в CSV. Строка «ИИ» — самотестирование по методичке; твоя оценка — контроль его оценки.</p>
 <div class=ask><input id=asym placeholder="тикер, например SOLV" maxlength=20><span class="bt" id=abtn>🌊 разобрать монету</span><span id=astat class=mut></span></div>
+<div class=ask><span class="bt" id=sbtn data-side="SHORT">🔎 найти похожие: пятёрка вверх → шорт</span><span class="bt" id=sbtnl data-side="LONG">пятёрка вниз → лонг</span><span id=sstat class=mut></span></div>
 <div id=ares></div>
+<div id=sres></div>
 <div class=tabs><span class="bt on" data-f="active">активные</span><span class=bt data-f="closed">закрытые</span><span class=bt data-f="all">все</span><span class=bt data-f="core">только ядро</span><span class=bt data-f="unrated">без оценки</span><span class=sp id=cnt></span><span class=bt id=colall title="свернуть все">свернуть все</span><span class=bt id=expall title="развернуть все">развернуть все</span><span class=mut id=agr title="сколько раз вердикт правил совпал с оценкой Егора"></span></div>
 <div class=mut id=scan></div>
 <div id=list><div class=empty>загрузка…</div></div>
@@ -4085,6 +4087,18 @@ async function analyze(){var sym=document.getElementById('asym').value.trim();if
   document.getElementById('ares').innerHTML=h+'</section>';
   document.querySelectorAll('#ares figure img').forEach(function(i){i.onclick=function(){document.getElementById('lbi').src=i.src;document.getElementById('lb').style.display='flex';};});
  }catch(e){st.textContent='ошибка: '+e;}}
+function simRender(d){var st=document.getElementById('sstat');
+ if(d.running){st.textContent=' '+d.stage+' '+d.done+'/'+d.total+'…';}else{st.textContent=d.ts?(' '+d.stage+' · '+d.ts+' · найдено '+d.items.length):(d.stage?' '+d.stage:'');}
+ var h='';(d.items||[]).forEach(function(x){h+='<section class=card><h2>'+x.sym+' · '+(x.side=='SHORT'?'пятёрка вверх → шорт':'пятёрка вниз → лонг')+(x.core_full?' · ЯДРО':(x.core?' · канал':''))+
+  (x.a_done?' · <b>волна A закончена</b>':'')+(x.zone_touch?' · в зоне отката':'')+(x.zone?' <span class=zone>1D: '+x.zone+(x.depth!=null?' ('+x.depth+')':'')+'</span>':'')+'</h2>'+
+  (x.png?'<figure><img src="/waves/analyst/'+x.png+'" alt="разбор '+x.sym+'"></figure>':'<p class=mut>'+(x.text||[]).join('<br>')+'</p>')+'</section>';});
+ document.getElementById('sres').innerHTML=h;
+ document.querySelectorAll('#sres figure img').forEach(function(i){i.onclick=function(){document.getElementById('lbi').src=i.src;document.getElementById('lb').style.display='flex';};});
+ if(d.running)setTimeout(simPoll,4000);}
+async function simPoll(){try{var r=await fetch('/api/waves/similar');simRender(await r.json());}catch(e){}}
+async function simStart(side){document.getElementById('sstat').textContent=' запускаю поиск (скан ~550 монет + разборы, 3-8 мин)…';
+ try{var r=await fetch('/api/waves/similar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({side:side,limit:12})});simRender(await r.json());}catch(e){document.getElementById('sstat').textContent='ошибка: '+e;}}
+document.getElementById('sbtn').onclick=function(){simStart('SHORT');};document.getElementById('sbtnl').onclick=function(){simStart('LONG');};simPoll();
 document.getElementById('abtn').onclick=analyze;document.getElementById('asym').onkeydown=function(e){if(e.key=='Enter')analyze();};
 load();setInterval(load,120000);
 </script></body></html>"""
@@ -4119,6 +4133,78 @@ async def api_waves_analyze(req):
     except Exception as e:
         return web.json_response({"ok": False, "err": f"{type(e).__name__}: {e}"}, status=500)
     return web.json_response({"ok": True, **r})
+
+
+# 🔎 22.09 (Егор: «вот такие разборы — пачку сразу! добавить поиск аналогичных в панель»). Фоновая задача: вся вселенная
+# BingX (оборот ≥$1M, без синтетики) → ядро mark_impulse 4h с окном поиска 30 баров (как аналитик — иначе пятая, продлившаяся
+# после детекции, теряется: NEAR 22.09) → свежие пятёрки (вершина разметки ≤ 5 дн) нужной стороны → report_for по каждой.
+# Один прогон за раз; состояние в _SIM, страница опрашивает GET.
+_SIM = {"running": False, "stage": "", "done": 0, "total": 0, "items": [], "ts": None, "side": None}
+
+
+def _similar_job(side: str, limit: int):
+    import re as _re, ccxt as _ccxt
+    import pandas as _pd
+    from core.waves import mark_impulse, WaveParams
+    from core.waves.bingx_klines import fetch_closed
+    from core.waves.wave_analyst import report_for
+    now = _pd.Timestamp.utcnow(); P = WaveParams()
+    try:
+        _SIM.update(stage="список монет", done=0, total=0, items=[])
+        tk = _ccxt.bingx({"options": {"defaultType": "swap"}}).fetch_tickers()
+        syms = sorted({k.split("/")[0] for k, v in tk.items() if k.endswith(":USDT") and (v.get("quoteVolume") or 0) > 1e6
+                       and not _re.match(r"^(NC|FX|IDX)", k)})
+        _SIM.update(stage="скан пятёрок 4h", total=len(syms))
+        found = []
+
+        def one(b):
+            try:
+                dh = fetch_closed(b, "4h", 1000, now=now)
+                if len(dh) < 400:
+                    return []
+                out = []
+                for st in mark_impulse(dh, now, P, "4h", lookback=30):
+                    t = _pd.Timestamp(st["top_time"]); t = t.tz_localize("UTC") if t.tzinfo is None else t
+                    if (now - t).total_seconds() / 3600 <= 120 and (side == "both" or st["side"] == side):
+                        out.append({"sym": b, "side": st["side"], "core_full": bool(st["core_full"]), "core": bool(st["core"]), "imp": st["imp_pct"]})
+                return out
+            except Exception:
+                return []
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for r in pool.map(one, syms):
+                found += r; _SIM["done"] += 1
+        found.sort(key=lambda x: (not x["core_full"], not x["core"], -float(x["imp"] or 0)))
+        found = found[:limit]
+        _SIM.update(stage="разборы", done=0, total=len(found))
+        for f in found:
+            try:
+                r = report_for(f["sym"], "3m", _WA_DIR)
+                stt = r.get("state") or {}
+                _SIM["items"].append({**f, "png": r.get("png"), "zone": r.get("zone"), "depth": r.get("depth"), "text": r.get("text", [])[:6],
+                                      "a_done": bool(stt.get("a_done")), "zone_touch": bool(stt.get("zone_touch")), "price": r.get("price")})
+            except Exception as e:
+                _SIM["items"].append({**f, "png": None, "text": [f"ошибка разбора: {type(e).__name__} {e}"]})
+            _SIM["done"] += 1
+        _SIM.update(stage="готово", ts=now.strftime("%Y-%m-%d %H:%M UTC"))
+    except Exception as e:
+        _SIM.update(stage=f"ошибка: {type(e).__name__} {e}")
+    finally:
+        _SIM["running"] = False
+
+
+async def api_waves_similar(req):
+    """POST /api/waves/similar {side: SHORT|LONG|both, limit} — запустить поиск аналогичных; GET — состояние и результаты."""
+    if req.method == "POST":
+        try:
+            b = await req.json()
+        except Exception:
+            b = {}
+        side = b.get("side") if b.get("side") in ("SHORT", "LONG", "both") else "SHORT"
+        limit = max(1, min(int(b.get("limit") or 12), 30))
+        if not _SIM["running"]:
+            _SIM.update(running=True, side=side)
+            asyncio.get_running_loop().run_in_executor(_POOL, _similar_job, side, limit)
+    return web.json_response(_SIM)
 
 
 async def waves_page(_req):
@@ -4168,6 +4254,8 @@ def main():
     app.router.add_get("/waves/chart/{name}", waves_chart)
     app.router.add_get("/waves/analyst/{name}", waves_analyst_png)
     app.router.add_post("/api/waves/analyze", api_waves_analyze)
+    app.router.add_get("/api/waves/similar", api_waves_similar)
+    app.router.add_post("/api/waves/similar", api_waves_similar)
     app.router.add_get("/api/account", api_account)
     app.router.add_get("/api/levinfo", api_levinfo)
     app.router.add_post("/api/trade", api_trade)
