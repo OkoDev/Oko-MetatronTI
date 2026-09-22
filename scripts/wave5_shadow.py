@@ -38,6 +38,32 @@ ENTRY_W_H, HOLD_H = 96, 240
 MIN_HIST_4H = 400
 P = WaveParams()
 NOW = pd.Timestamp.utcnow()
+# 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»). Замер memory/waves_long_coin_weight_with_market: лонг после пятой платит
+# на монетах, идущих С РЫНКОМ (corr30 дневных доходностей к BTC ↑) и ВОЛАТИЛЬНЫХ (vol30 ↑); «своя игра» для лонга хуже.
+# Пороги — из замера (corr 0.64 = порог «своей игры», 0.80 = порог IS; vol30 терцили 4.21 / 5.96 %). Вес 0.5…1.5 монотонен:
+# 0.5 → +0.70/сделку · 1.0 → +1.37 · 1.25 → +3.07 · 1.5 → +10.13 (n=119); тот же суммарный риск даёт +27% итога.
+# Идёт в заявку как `risk_mult` (потолок config trading.risk_mult_cap 1.5) — ВЕС, не отсев.
+BTC_DAILY = None
+
+
+def coin_weight(dh, btc_daily):
+    """corr30 / vol30 по дневным доходностям (ресемпл закрытых 4h) → вес 0.5…1.5. None, если истории мало."""
+    try:
+        if btc_daily is None or dh is None or len(dh) < 40 * 6:
+            return None
+        c = dh["close"].resample("1D", label="left", closed="left").last().dropna()
+        r = c.pct_change().dropna(); rb = btc_daily.pct_change().dropna()
+        j = r.index.intersection(rb.index)[-30:]
+        if len(j) < 25:
+            return None
+        corr = float(np.corrcoef(r.loc[j].values, rb.loc[j].values)[0, 1]); vol = float(r.loc[j].std() * 100)
+        if not (np.isfinite(corr) and np.isfinite(vol)):
+            return None
+        cs = 1.0 if corr >= 0.80 else (0.5 if corr >= 0.64 else 0.0)
+        vs = 1.0 if vol >= 5.96 else (0.5 if vol >= 4.21 else 0.0)
+        return {"corr30": round(corr, 3), "vol30": round(vol, 2), "weight": round(0.5 + (cs + vs) / 2, 2)}
+    except Exception:
+        return None
 
 
 def fetch(ex, sym, tf, n):
@@ -147,7 +173,8 @@ def emit_exec(prev, sym, variant, entry, stop, target, extra=None):
                "wv_core": bool(prev.get("core")), "wv_fractal": bool(prev.get("fractal")),
                "wv_imp_pct": js(prev.get("imp_pct")), "wv_depth5": js(prev.get("depth5")),
                "wv_risk_pct": round(abs(entry - stop) / entry * 100, 2) if entry and stop else None,
-               "wv_mass_day": int(prev.get("_mass_day") or 0)}
+               "wv_mass_day": int(prev.get("_mass_day") or 0),
+               "wv_corr30": js(prev.get("corr30")), "wv_vol30": js(prev.get("vol30")), "wv_weight": js(prev.get("weight"))}
         rec.update(extra or {})
         with open(EXEC_Q, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -288,6 +315,12 @@ def full_scan(a):
     print(f"[{now} UTC] полная разметка: {len(syms)} монет · LTF {a.ltf}", flush=True)
     n_ltf = int(ENTRY_W_H * 60 / TF_MIN[a.ltf]) * 4
     R72 = []; young = []
+    global BTC_DAILY
+    try:
+        _b = fetch(ex, "BTC/USDT:USDT", "4h", 1000)
+        BTC_DAILY = _b["close"].resample("1D", label="left", closed="left").last().dropna() if len(_b) > 240 else None
+    except Exception as e_:
+        BTC_DAILY = None; print(f"  [вес] BTC 4h не получен: {e_}", flush=True)
     for i, s in enumerate(syms, 1):
         bx = f"{s.split('/')[0]}/USDT:USDT"
         try:
@@ -322,9 +355,13 @@ def full_scan(a):
                         if _ch and not _already_sent(f"{s}|{st['key']}|{_nm}"):
                             emit_exec(st, s, _nm, _ch[1], _ch[2], st.get("p4_target"),
                                       extra={"wv_choch_time": str(_ch[0])[:16]})
+                _w = coin_weight(dh, BTC_DAILY)
                 if prev is None:
                     prev = {kk: js(v) for kk, v in st.items() if kk not in ("wave_idx", "wave_px")}
                     prev.update({"sym": s, "detected_at": now, "status": "detected", "egor": ""})
+                    if _w: prev.update(_w)
+                elif _w and prev.get("weight") is None:
+                    prev.update(_w)                       # сетап найден до 22.09 — вес дописываем
                     state[k] = prev; transition(prev, ls, now, s)
                     print(f"  NEW  {s:<12} {st['side']} вершина {pd.Timestamp(st['top_time']):%m-%d %H:%M} ({st['hours_from_top']:.0f} ч) импульс {st['imp_pct']}% фрактал {st['fractal']} канал {st['depth5']} черед {int(st['altern_type'])}/{int(st['altern_form'])} счёт {st['count_ok']} 1D {st['d_bull']}/{st['d_broke']} WT1D {st['d_wt']} | линия {'ПРОБИТА' if ls['line24_broken'] else 'нет'} кросс {str(ls['cross_first'])[:16] if ls['cross_first'] else 'нет'} · {'ЯДРО' if st['core_full'] else ('канал' if st['core'] else '')}", flush=True)
                     if a.draw:

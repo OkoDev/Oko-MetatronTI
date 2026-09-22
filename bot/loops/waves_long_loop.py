@@ -178,14 +178,20 @@ async def waves_long_loop(bot):
                     entry_price=float(entry), stop_loss=float(stop), take_profit=float(tp))
                 extra = {"signal_type_override": "waves_long", "trade_mode": "waves_long"}
                 extra.update({k: v for k, v in r.items() if k.startswith("wv_")})
+                # 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»): corr30 к BTC × vol30 → risk_mult 0.5…1.5 (см. wave5_shadow.coin_weight)
+                try:
+                    if r.get("wv_weight") is not None:
+                        extra["risk_mult"] = max(0.5, min(1.5, float(r["wv_weight"])))
+                except (TypeError, ValueError):
+                    pass
                 try:
                     res = await bot.trade_router.submit(rec, source="waves_long", extra_features=extra)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[WAVES_LONG] %s ошибка отправки: %s", uid, e)
                     continue
                 if res and getattr(res, "trade_id", None):
-                    logger.info("[WAVES_LONG] ✅ %s %s вход %.8g стоп %.8g цель %.8g · trade_id=%s",
-                                sym, r.get("wv_variant"), entry, stop, tp, res.trade_id)
+                    logger.info("[WAVES_LONG] ✅ %s %s вход %.8g стоп %.8g цель %.8g · вес %s (corr30 %s · vol30 %s) · trade_id=%s",
+                                sym, r.get("wv_variant"), entry, stop, tp, extra.get("risk_mult", "—"), r.get("wv_corr30", "—"), r.get("wv_vol30", "—"), res.trade_id)
                 else:
                     drops = getattr(res, "hard_drops", None) or getattr(res, "drops", None)
                     logger.warning("[WAVES_LONG] ⛔ %s %s НЕ зарегистрирован: %s",
