@@ -172,6 +172,17 @@ def emit_close_events(sim, *, trade_id: int, status: str, symbol: str, direction
     _mark_market_event_in_window)."""
     from core.trading.trade_simulator import STATUS_SL, STATUS_TSL
 
+    # 26.09: закрываем запись live_orders вместе со сделкой. Раньше её закрывал только
+    # sync_with_exchange при старте бота — после простоя 24–25.09 девять записей остались
+    # OPEN с уже закрытыми сделками, и /api/live показывал в рынке то, чего там нет.
+    try:
+        from core.trading.position_manager import PositionManager
+        _n_lo = PositionManager().close_by_sim_trade(trade_id)
+        if _n_lo:
+            logger.info("[live_orders] закрыто записей: %d (сделка #%d)", _n_lo, trade_id)
+    except Exception as _e_lo:                                   # noqa: BLE001
+        logger.debug("[live_orders] close_by_sim_trade #%s: %s", trade_id, _e_lo)
+
     # DEV-39: Market Event Marker — скользящее окно SL
     if status == STATUS_SL:
         try:

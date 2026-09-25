@@ -127,6 +127,23 @@ class PositionManager:
                 (STATUS_CLOSED, slip_pct, now, live_order_id),
             )
 
+    def close_by_sim_trade(self, sim_trade_id: int) -> int:
+        """Закрыть запись(и) live_orders по id сделки. Возвращает число закрытых.
+
+        🔴 26.09 (Егор «всё проверить и исправить»): до этого запись закрывал ТОЛЬКО
+        sync_with_exchange при старте бота. Простой 24–25.09 (BSOD, 36.5 ч) оставил
+        9 записей OPEN с уже закрытыми сделками — JOIN в /api/live требует lo.status='OPEN',
+        то есть ПРИБОР ВРАЛ о том, что сейчас в рынке ([[phantom_trades_corrupt_forward]]).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE live_orders SET status=?, updated_at=? "
+                "WHERE sim_trade_id=? AND status=?",
+                (STATUS_CLOSED, now, sim_trade_id, STATUS_OPEN),
+            )
+            return cur.rowcount or 0
+
     def mark_orphan(self, live_order_id: int) -> None:
         """Позиция не найдена на бирже — помечаем как ORPHAN для ревью."""
         now = datetime.now(timezone.utc).isoformat()
