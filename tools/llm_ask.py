@@ -87,7 +87,9 @@ DEFAULT_MODELS = {
     "or_dots": "dots-studio/dots-3-note-preview:free",           # Dots Studio (512k ctx) — 8.4с на боевом промпте
     # 18.08: замена мёртвому cerebras. Qwen/Alibaba — семейства в рою нет; ключ Groq уже есть.
     # ⚠️ делит квоту Groq с голосом `groq` (gpt-oss-120b): 30 RPM / ~14 400 RPD на двоих.
-    "groq_qwen": "qwen/qwen3.6-27b",                             # Qwen 3.6 27B — 6.8с, 70% кириллицы на боевом промпте
+    # 26.09: qwen3.6-27b → 404 (снят из каталога Groq), живая замена того же семейства — 3.8.
+    # Боевой промпт 26.09: 3.2с, 92% кириллицы, арифметика 2/3 (PF посчитан неверно).
+    "groq_qwen": "qwen/qwen3.8-27b",
     # --- 18.08: добор роя до 12 ЖИВЫХ (задача Егора). Честная оговорка: НОВЫХ СЕМЕЙСТВ
     # в доступе больше НЕТ — из 16 проверенных кандидатов выжили только клоны уже имеющихся.
     # Взяты двое, что дают иной РЕЖИМ работы (агент с инструментами), а не только имя:
@@ -361,7 +363,10 @@ def ask_gemini(prompt: str, model: str, image_path: Optional[Path]) -> str:
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан в .env")
 
-    client = genai.Client(api_key=key)
+    # 26.09: VPN-выход (VDSka, NL/LV) Google считает RU → 400 «User location is not supported».
+    # LLM_PROXY (.env) — сингапурский прокси: через него Google видит SG и отвечает. Только Gemini.
+    proxy = os.environ.get("LLM_PROXY")
+    client = genai.Client(api_key=key, http_options=types.HttpOptions(client_args={"proxy": proxy}) if proxy else None)
     contents = []
     if image_path:
         mime = "image/png" if image_path.suffix.lower() in (".png",) else "image/jpeg"

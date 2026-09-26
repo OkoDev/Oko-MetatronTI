@@ -1090,7 +1090,7 @@ advisor:
   # 12.08: возвращён (тем же sed 16.07 выключен). shadow:true — как и было до правки.
   enabled: true
   shadow: true
-  interval_hours: 4
+  interval_hours: 8   # 26.09: 4→8 (Егор) — 3 брифинга/сутки (00/08/16 UTC); каждый ест 4 из 50 free-запросов OpenRouter
   timeout_s: 600
   send_telegram: true
   telegram_tag: '#брифинг'
