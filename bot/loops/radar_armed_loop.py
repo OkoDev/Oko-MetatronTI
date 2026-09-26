@@ -948,6 +948,36 @@ async def radar_armed_loop(bot) -> None:
             await asyncio.sleep(poll_sec)
 
 
+async def _wave_ctx_on_demand(bot, sym: str, side: str, entry: float) -> dict | None:
+    """Волновой контекст пары, когда в шине его нет: считаем ЗДЕСЬ по 4h + 1d.
+
+    Заявок у радара 2-3 в сутки, так что цена расчёта (mark_impulse в отдельном потоке)
+    ничтожна, а без этого признак пуст у 85% сделок. Кадры режем тем же `_dt_closed`,
+    что и wave_loop — один калькулятор, не копия ([[principle_reuse_not_duplication]]).
+    """
+    try:
+        import pandas as pd
+        from bot.loops.wave_loop import _dt_closed
+        from core.waves.wave_analyst import wave_bus_context, wave_zone_for
+        dc = getattr(bot, "data_collector", None)
+        if dc is None:
+            return {"wave_ctx": "нет data_collector"}
+        d4 = await dc.get_ohlcv(sym, "4h", limit=400)
+        if d4 is None or len(d4) < 160:
+            return {"wave_ctx": f"мало 4h ({0 if d4 is None else len(d4)})"}
+        dd = await dc.get_ohlcv(sym, "1d", limit=200)
+        d4c = _dt_closed(d4, 4)
+        ddc = _dt_closed(dd, 24) if (dd is not None and len(dd) >= 60) else None
+        if len(d4c) < 150:
+            return {"wave_ctx": f"мало закрытых 4h ({len(d4c)})"}
+        ctx = await asyncio.to_thread(wave_bus_context, d4c, ddc, pd.Timestamp.utcnow())
+        out = wave_zone_for(ctx, side, entry)
+        out["wave_ctx_src"] = "посчитан на месте"
+        return out
+    except Exception as e:                                           # noqa: BLE001
+        return {"wave_ctx": f"расчёт не удался: {type(e).__name__}"}
+
+
 async def _try_register(bot, o: dict, radar_db) -> None:
     """Один сетап порта → TradingRecommendation → trade_router.submit(source='radar')."""
     try:
@@ -1036,6 +1066,28 @@ async def _try_register(bot, o: dict, radar_db) -> None:
             extra[f"radar_{_k}"] = _v
     except Exception:
         pass
+    # 🌊 ВОЛНОВОЙ КОНТЕКСТ ИЗ ШИНЫ (26.09, Егор «с третьего»: сначала копим признак, потом решаем).
+    # SHADOW — только запись, НЕ гейт. Повод: у радара СВОЙ счёт ног (ZigZag 15m/24ч по Binance),
+    # а про ядро OKO-SM он не знает вовсе. Замер 26.09 на 58 сделках с РЕАЛЬНЫМИ ценами:
+    #   пятёрка ядра 4h встретилась радару 2 раза из 74 — как фильтр не годится, масштабы не пересекаются;
+    #   зато тренд 4h: против тренда +1.08%/сд против −0.85 по тренду;
+    #   и позиция в ноге: у экстремума (0.79-1.0) +1.73, в середине (<0.5) −0.68.
+    # Выборки по 10-29 сделок — это гипотеза, а не эдж. Пишем признак, чтобы через месяц судить честно.
+    # «нет в шине» пишется явно — молчаливый пропуск не прячем ([[feedback_selftest_every_strategy_loud]]).
+    try:
+        from core.waves.wave_analyst import wave_zone_for
+        _side_w = "LONG" if is_long else "SHORT"
+        _bus = getattr(bot, "pair_context", None)
+        _z = (wave_zone_for(_bus.get(str(rec.symbol)), _side_w, float(entry))
+              if _bus is not None else {"wave_ctx": "шины нет"})
+        # Шина держит 120 пар и обходит их раз в 15 мин, радар ловит ВСЮ вселенную — проверка
+        # по 150 сделкам с 15.09: контекст нашёлся только в 23 (15%), остальные «нет в шине».
+        # Без добора признак был бы пустым у 85% заявок и копить его не имело бы смысла.
+        if _z.get("wave_ctx") != "ok":
+            _z = await _wave_ctx_on_demand(bot, str(rec.symbol), _side_w, float(entry)) or _z
+        extra.update(_z)
+    except Exception as _e:                                          # noqa: BLE001
+        extra["wave_ctx"] = f"ошибка: {type(_e).__name__}"
     # 🔭 ШИРОКОЕ ЗРЕНИЕ (04.08, Егор): рыночный контекст как ФИЧИ (не гейты). Разбор 129 сделок
     # radar_pump показал ЗЕРКАЛО нашего фейда: одиночный сигнал PF 1.36 против кластера ≥4 PF 0.78,
     # возвратный режим PF 3.14 против импульсного 0.72. Пишем, чтобы судить по форварду.
