@@ -163,20 +163,32 @@ def inv_ob(df, d, ev):
 
 
 def inv_equal(df, d, ev):
-    """EQH/EQL — пара уровней, которые обязаны быть БЛИЗКИ друг к другу."""
+    """EQH/EQL — пара уровней, которые обязаны быть БЛИЗКИ друг к другу.
+
+    🔴 ФИКС 04.09.2026. Раньше брались «два последних ЧИСЛОВЫХ поля» кортежа — но
+    контракт детектора `(ts1, p1, ts2, p2, lab)`, и при числовом индексе DataFrame
+    метки времени проходят проверку `isinstance(..., int|float)` наравне с ценами.
+    В результате сравнивались timestamp с ценой → 134/134 «нарушений», расхождение
+    99.98%. Детектор был исправен: `smc_engine.py:441` сравнивает именно цены
+    (`abs(p2 - p1) < threshold*ATR`).
+
+    Это цена «умного» разбора вместо контракта: инвариант должен читать ПОЗИЦИИ
+    полей, а не угадывать их по типу. Класс ошибки — прибор врал, не механизм
+    (см. [[law_no_finding_means_no_feature]] и историю с EQH, где вердикт менялся
+    четырежды, и один раз именно из-за инструмента сравнения).
+    """
     checked, bad = 0, []
     for e in ev:
-        try:
-            vals = [x for x in e if isinstance(x, (int, float, np.floating))
-                    and 0 < float(x) < 10 ** 9]
-        except Exception:      # noqa: BLE001
+        if not isinstance(e, (tuple, list)) or len(e) < 4:
             continue
-        prices = [v for v in vals if v > 1e-9]
-        if len(prices) < 2:
+        try:
+            a, b = float(e[1]), float(e[3])      # позиции цен по контракту
+        except (TypeError, ValueError):
+            continue
+        if not (a > 0 and b > 0):
             continue
         checked += 1
-        a, b = float(prices[-2]), float(prices[-1])
-        if a > 0 and abs(a - b) / a > 0.02:
+        if abs(a - b) / a > 0.02:
             bad.append((None, f"уровни расходятся на {abs(a-b)/a*100:.2f}% (>2%)"))
     return checked, bad
 

@@ -1,0 +1,327 @@
+//@version=6
+// ============================================================================
+// OKO ELLIOTT v1 — РАЗВОЛНОВКА бота, перенесённая в Pine
+//
+// Порт 1:1 из `core/smc/smc_engine.py`:
+//   zigzag_atr(depth=11, dev_mult, atr_len=10)  — сам порт Pine OKO-SM, вернулся домой;
+//   _zz_typed()                                 — H/L строгим чередованием;
+//   detect_elliott_impulse()                    — 5 волн, hard-правила R1/R2/R3,
+//                                                 extension волны 5, фибо w2/w4/w3, textbook;
+//   detect_elliott_mtf(devs=(3,5,8))            — три масштаба волн (фрактальность).
+//
+// 🔑 ЭТО ДРУГОЙ ДЕТЕКТОР, НЕ ТОТ, ЧТО В OkoWave. В боте их два, и они про разное:
+//   · OkoWave  = `oko_sm_engine`: структура swing50/internal5 → ОДНА нога (origin→extreme).
+//     На нём стоят матрица `wave_features` и находка ARCH-137. Волн 1-2-3-4-5 он
+//     не размечает вообще — отсюда «одна нога» на графике, это не поломка.
+//   · OkoElliott = `smc_engine`: ZigZag + канон Эллиотта → полная разметка 1-2-3-4-5.
+//     На нём стоит замер 29.08.2026: вход ПРОТИВ завершённого импульса вверх PF 3.15,
+//     вход ПО нему 0.76; «фаза коррекции» — единственный признак, живущий в 2026.
+//
+// 🔴🔴 ПЕРЕРИСОВКА — ЧИТАТЬ ДО ЛЮБОГО ВЫВОДА ПО КАРТИНКЕ.
+// ZigZag перерисовывает историю. Замер `scripts/impulse_decay_causal.py` (03.09.2026):
+// из импульсов, ВИДИМЫХ в реальном времени, в финальной разметке остаётся 27–60%
+// (HYPE теряет 40%, GRT 62%, SOL 73%, LINK 66%). Лаг подтверждения — ровно 6 баров,
+// одинаково на всех символах: это ПАРАМЕТР детектора, а не статистика.
+// Цена игнорирования: тот же замер без поправок дал PF 15.65, с одной — 5.47,
+// с обеими — 0.97. Первые два числа были артефактом целиком.
+// Поэтому индикатор рисует импульс в момент ЕГО ПЕРВОГО ПОЯВЛЕНИЯ и не перерисовывает
+// прошлое задним числом — как торговал бы бот, включая импульсы, которые позже исчезнут.
+//
+// ⚠️ ОТЛИЧИЕ ОТ PYTHON, известное: Python сканирует ВСЕ окна из 6 точек по готовому
+// зигзагу, Pine проверяет последнее окно при каждом изменении точек. При инкрементальном
+// проходе это одно и то же, расхождение возможно только там, где зигзаг перерисовался.
+// ============================================================================
+
+indicator("OKO Elliott [порт detect_elliott_impulse]", "OKO EW", overlay = true,
+     max_bars_back = 5000, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 100)
+
+string gZ = "ZigZag (порт zigzag_atr)"
+depth   = input.int(11, "depth (Pine length = depth/2)", minval = 2, group = gZ)
+atrLen  = input.int(10, "ATR length", minval = 1, group = gZ)
+showZz  = input.bool(false, "Рисовать сам ZigZag", group = gZ)
+
+string gM = "Масштабы волн (detect_elliott_mtf)"
+s1on = input.bool(true,  "Масштаб 1", group = gM, inline = "1")
+dev1 = input.float(3.0,  "dev", minval = 0.1, step = 0.5, group = gM, inline = "1")
+col1 = input.color(color.new(#f23645, 0), "", group = gM, inline = "1")
+s2on = input.bool(true,  "Масштаб 2", group = gM, inline = "2")
+dev2 = input.float(5.0,  "dev", minval = 0.1, step = 0.5, group = gM, inline = "2")
+col2 = input.color(color.new(#2962ff, 0), "", group = gM, inline = "2")
+s3on = input.bool(true,  "Масштаб 3", group = gM, inline = "3")
+dev3 = input.float(8.0,  "dev", minval = 0.1, step = 0.5, group = gM, inline = "3")
+col3 = input.color(color.new(#eeeeee, 0), "", group = gM, inline = "3")
+
+string gD = "Отрисовка"
+showOte  = input.bool(true, "Зона отката 0.618–0.79 от импульса", group = gD,
+     tooltip = "Большая волновая фибо строится на ВСЁМ импульсе точка0 → точка5 —\nименно от неё механика бота отмеряет OTE")
+onlyTb   = input.bool(false, "Только textbook-импульсы", group = gD,
+     tooltip = "textbook = w2 откат 0.5–0.886 · w4 откат 0.236–0.618 · w3 расширение ≥ 1.3")
+maxImp   = input.int(10, "Импульсов в памяти на масштаб", minval = 1, maxval = 30, group = gD)
+showTable = input.bool(true, "Панель состояния", group = gD)
+txtIn    = input.string("крупный", "Размер подписей", options = ["мелкий", "обычный", "крупный", "огромный"], group = gD)
+lineW    = input.int(3, "Толщина линий волн", minval = 1, maxval = 6, group = gD)
+
+// размер текста меток и панели — Егор 08.09: «на графике ничего не разобрать»
+simple string SZ = txtIn == "мелкий" ? size.tiny : txtIn == "обычный" ? size.small : txtIn == "крупный" ? size.normal : size.large
+
+// ─── PIVOT (порт zigzag_atr.pivot_at) ───────────────────────────────────────
+// Кандидат = бар `length` назад, окно [i-2·length .. i] — только прошлое, без look-ahead.
+// Анти-дубль плато: слева СТРОГО (равный отменяет), справа нестрого.
+f_pivotAt(simple int length, simple bool hi) =>
+    int l2 = length * 2
+    float c = hi ? high[length] : low[length]
+    bool ok = not na(c)
+    if ok
+        for k = 0 to l2
+            if k != length
+                float v = hi ? high[k] : low[k]
+                if na(v)
+                    ok := false
+                else
+                    bool left = k > length
+                    if hi
+                        if left and v >= c
+                            ok := false
+                        if not left and v > c
+                            ok := false
+                    else
+                        if left and v <= c
+                            ok := false
+                        if not left and v < c
+                            ok := false
+    [ok, c, bar_index - length]
+
+// ─── ОДИН МАСШТАБ: ZigZag → канон Эллиотта → отрисовка ──────────────────────
+// Возвращает [dir, textbook, done, ageBars] последнего импульса этого масштаба.
+f_scale(simple bool enabled, simple float devMult, simple int depth_, simple int atrLen_,
+         color col, simple bool drawZz, simple bool drawOte, simple bool tbOnly, simple int keep,
+         simple string sz, simple int lw) =>
+    var int[]   zx = array.new_int()
+    var float[] zy = array.new_float()
+    var bool[]  zh = array.new_bool()
+    var line[]  hist  = array.new_line()
+    var label[] histB = array.new_label()
+    var box[]   histX = array.new_box()
+    var line[]  zzL   = array.new_line()
+
+    // текущий нарисованный импульс
+    var int   curX0 = na
+    var int   curDir = 0
+    var bool  curTb = false
+    var bool  curDone = false
+    var int   curEndX = na
+    var float curP4 = na
+    var line  cl5 = na
+    var label cb5 = na
+    var box   cbx = na
+    var float curP0 = na
+    var float curP5 = na
+    var int   curX5 = na
+
+    if enabled
+        simple int length = math.max(1, depth_ / 2)
+        float atrv = ta.atr(atrLen_)
+        float thr = not na(atrv) and close != 0 ? atrv / close * 100 * devMult : 1e9
+        [okH, pH, xH] = f_pivotAt(length, true)
+        [okL, pL, xL] = f_pivotAt(length, false)   // high имеет приоритет (Pine: if iH else iL)
+        bool changed = false
+
+        if okH or okL
+            bool hiFlag = okH
+            float price = okH ? pH : pL
+            int   px    = okH ? xH : xL
+            int szz = array.size(zx)
+            if szz == 0
+                array.push(zx, px)
+                array.push(zy, price)
+                array.push(zh, hiFlag)
+                changed := true
+            else
+                bool  lastHi = array.get(zh, szz - 1)
+                float lastP  = array.get(zy, szz - 1)
+                if hiFlag == lastHi
+                    // тот же тип — продлить экстремум
+                    if (hiFlag and price > lastP) or (not hiFlag and price < lastP)
+                        array.set(zy, szz - 1, price)
+                        array.set(zx, szz - 1, px)
+                        changed := true
+                else
+                    float dv = price != 0 ? math.abs(100 * (price - lastP) / price) : 0.0
+                    if dv > thr
+                        array.push(zx, px)
+                        array.push(zy, price)
+                        array.push(zh, hiFlag)
+                        changed := true
+            // память зигзага
+            if array.size(zx) > 400
+                array.shift(zx)
+                array.shift(zy)
+                array.shift(zh)
+            if drawZz and changed and array.size(zx) > 1
+                int n2 = array.size(zx)
+                array.push(zzL, line.new(array.get(zx, n2 - 2), array.get(zy, n2 - 2),
+                     array.get(zx, n2 - 1), array.get(zy, n2 - 1), color = color.new(col, 55), width = 1))
+                if array.size(zzL) > 200
+                    line.delete(array.shift(zzL))
+
+        // ── КАНОН: последние 6 точек = 5 волн ───────────────────────────────
+        int sz2 = array.size(zx)
+        if changed and sz2 >= 6
+            int i0 = sz2 - 6
+            float p0 = array.get(zy, i0),     p1 = array.get(zy, i0 + 1)
+            float p2 = array.get(zy, i0 + 2), p3 = array.get(zy, i0 + 3)
+            float p4 = array.get(zy, i0 + 4), p5 = array.get(zy, i0 + 5)
+            int   x0 = array.get(zx, i0),     x1 = array.get(zx, i0 + 1)
+            int   x2 = array.get(zx, i0 + 2), x3 = array.get(zx, i0 + 3)
+            int   x4 = array.get(zx, i0 + 4), x5 = array.get(zx, i0 + 5)
+            bool  h0 = array.get(zh, i0)
+
+            int   dir = 0
+            float l1 = na
+            float l3 = na
+            float l5 = na
+            if not h0 and array.get(zh, i0 + 5)
+                // L,H,L,H,L,H — импульс ВВЕРХ (чередование гарантирует остальные типы)
+                if p1 > p0 and p2 > p0 and p3 > p1 and p4 > p1 and p5 > p3
+                    dir := 1
+                    l1 := p1 - p0
+                    l3 := p3 - p2
+                    l5 := p5 - p4
+            else if h0 and not array.get(zh, i0 + 5)
+                // H,L,H,L,H,L — импульс ВНИЗ
+                if p1 < p0 and p2 < p0 and p3 < p1 and p4 < p1 and p5 < p3
+                    dir := -1
+                    l1 := p0 - p1
+                    l3 := p2 - p3
+                    l5 := p4 - p5
+            // R2: волна 3 не самая короткая
+            if dir != 0 and l3 < l1 and l3 < l5
+                dir := 0
+
+            if dir != 0
+                float w2r = l1 != 0 ? math.abs(p2 - p1) / l1 : 0.0
+                float w4r = l3 != 0 ? math.abs(p4 - p3) / l3 : 0.0
+                float w3e = l1 != 0 ? l3 / l1 : 0.0
+                bool tb = w2r >= 0.5 and w2r <= 0.886 and w4r >= 0.236 and w4r <= 0.618 and w3e >= 1.3
+                if not tbOnly or tb
+                    if x0 == curX0 and dir == curDir
+                        // тот же импульс — EXTENSION волны 5 (Python тянет точку 5 вперёд)
+                        if not na(cl5)
+                            line.set_xy2(cl5, x5, p5)
+                        if not na(cb5)
+                            label.set_xy(cb5, x5, p5)
+                        curP5 := p5
+                        curX5 := x5
+                    else
+                        // новый импульс — рисуем 1-2-3-4-5
+                        color cc = tb ? col : color.new(col, 45)
+                        string st = tb ? line.style_solid : line.style_dashed
+                        array.push(hist, line.new(x0, p0, x1, p1, color = cc, style = st, width = lw))
+                        array.push(hist, line.new(x1, p1, x2, p2, color = cc, style = st, width = lw))
+                        array.push(hist, line.new(x2, p2, x3, p3, color = cc, style = st, width = lw))
+                        array.push(hist, line.new(x3, p3, x4, p4, color = cc, style = st, width = lw))
+                        line l5line = line.new(x4, p4, x5, p5, color = cc, style = st, width = lw)
+                        array.push(hist, l5line)
+                        bool up = dir == 1
+                        array.push(histB, label.new(x1, p1, "1", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_down : label.style_label_up, size = sz))
+                        array.push(histB, label.new(x2, p2, "2", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_up : label.style_label_down, size = sz))
+                        array.push(histB, label.new(x3, p3, "3", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_down : label.style_label_up, size = sz))
+                        array.push(histB, label.new(x4, p4, "4", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_up : label.style_label_down, size = sz))
+                        label b5 = label.new(x5, p5, "5", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_down : label.style_label_up, size = sz)
+                        array.push(histB, b5)
+                        cl5 := l5line
+                        cb5 := b5
+                        curX0 := x0
+                        curDir := dir
+                        curTb := tb
+                        curDone := false
+                        curP4 := p4
+                        curP0 := p0
+                        curP5 := p5
+                        curX5 := x5
+                        curEndX := na
+                        // память: 5 линий + 5 меток на импульс
+                        if array.size(hist) > keep * 5
+                            for _i = 0 to 4
+                                line.delete(array.shift(hist))
+                                label.delete(array.shift(histB))
+
+        // ── ЗАВЕРШЁННОСТЬ ИМПУЛЬСА ──────────────────────────────────────────
+        // Python прекращает extension, когда появилась точка ЗА волну 4 — это и есть
+        // «импульс завершился». Именно завершённые считались в замере (свежесть ≤ 72 ч).
+        if curDir != 0 and not curDone and array.size(zx) >= 1
+            int szl = array.size(zx)
+            float lp = array.get(zy, szl - 1)
+            bool lh = array.get(zh, szl - 1)
+            if (curDir == -1 and lh and lp > curP4) or (curDir == 1 and not lh and lp < curP4)
+                curDone := true
+                curEndX := array.get(zx, szl - 1)
+                if drawOte and not na(curP0) and not na(curP5)
+                    float sp = curP5 - curP0                 // фибо на ВСЁМ импульсе
+                    float f618 = curP5 - sp * 0.618
+                    float f79  = curP5 - sp * 0.79
+                    array.push(histX, box.new(curX5, math.max(f618, f79), bar_index + 15, math.min(f618, f79),
+                         border_color = color.new(col, 60), bgcolor = color.new(col, 88)))
+                    if array.size(histX) > keep
+                        box.delete(array.shift(histX))
+
+    int age = curDir == 0 ? na : bar_index - (curDone ? curEndX : nz(curX5, bar_index))
+    [curDir, curTb, curDone, age]
+
+[d1, t1, done1, age1] = f_scale(s1on, dev1, depth, atrLen, col1, showZz, showOte, onlyTb, maxImp, SZ, lineW)
+[d2, t2, done2, age2] = f_scale(s2on, dev2, depth, atrLen, col2, showZz, showOte, onlyTb, maxImp, SZ, lineW)
+[d3, t3, done3, age3] = f_scale(s3on, dev3, depth, atrLen, col3, showZz, showOte, onlyTb, maxImp, SZ, lineW)
+
+// ─── ПАНЕЛЬ ─────────────────────────────────────────────────────────────────
+f_dirTxt(int d) =>
+    d == 1 ? "импульс ↑" : d == -1 ? "импульс ↓" : "нет"
+
+f_stateTxt(int d, bool done, bool tb, int age) =>
+    d == 0 ? "—" : (done ? "завершён" : "растёт") + (tb ? " · textbook" : "") + " · " + str.tostring(age) + " бар."
+
+var table tb2 = table.new(position.top_right, 3, 6, border_width = 1,
+     bgcolor = color.new(#131722, 0), frame_color = color.new(color.gray, 40), frame_width = 1)
+if showTable and barstate.islast
+    table.clear(tb2, 0, 0, 2, 5)
+    color hdr = color.new(#2a2e39, 0)
+    table.cell(tb2, 0, 0, "OKO Elliott", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb2, 1, 0, "импульс", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb2, 2, 0, "состояние", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb2, 0, 1, "dev " + str.tostring(dev1), text_size = SZ, text_color = col1)
+    table.cell(tb2, 1, 1, f_dirTxt(d1), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 2, 1, f_stateTxt(d1, done1, t1, age1), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 0, 2, "dev " + str.tostring(dev2), text_size = SZ, text_color = col2)
+    table.cell(tb2, 1, 2, f_dirTxt(d2), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 2, 2, f_stateTxt(d2, done2, t2, age2), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 0, 3, "dev " + str.tostring(dev3), text_size = SZ, text_color = col3)
+    table.cell(tb2, 1, 3, f_dirTxt(d3), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 2, 3, f_stateTxt(d3, done3, t3, age3), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 0, 4, "лаг детектора", text_size = SZ, text_color = color.gray)
+    table.cell(tb2, 1, 4, "6 бар.", text_size = SZ, text_color = color.gray)
+    table.cell(tb2, 2, 4, "хвост может переразметиться", text_size = SZ, text_color = color.gray)
+
+// ─── DATA WINDOW ────────────────────────────────────────────────────────────
+plot(d1, "imp_dir_dev1",  display = display.data_window)
+plot(d2, "imp_dir_dev2",  display = display.data_window)
+plot(d3, "imp_dir_dev3",  display = display.data_window)
+plot(t1 ? 1 : 0, "textbook_dev1", display = display.data_window)
+plot(t2 ? 1 : 0, "textbook_dev2", display = display.data_window)
+plot(t3 ? 1 : 0, "textbook_dev3", display = display.data_window)
+plot(done1 ? 1 : 0, "done_dev1", display = display.data_window)
+plot(done2 ? 1 : 0, "done_dev2", display = display.data_window)
+plot(done3 ? 1 : 0, "done_dev3", display = display.data_window)
+plot(age1, "age_dev1", display = display.data_window)
+plot(age2, "age_dev2", display = display.data_window)
+plot(age3, "age_dev3", display = display.data_window)
+
+// ─── АЛЕРТЫ ─────────────────────────────────────────────────────────────────
+// Замер 29.08.2026: вход ПРОТИВ завершённого импульса вверх — PF 3.15 (n=403),
+// вход ПО нему — 0.76. Алерт именно на это событие, а не на «появился импульс».
+alertcondition(done1 and not done1[1], "Импульс завершён · масштаб 1", "OKO Elliott: импульс завершён (dev1)")
+alertcondition(done2 and not done2[1], "Импульс завершён · масштаб 2", "OKO Elliott: импульс завершён (dev2)")
+alertcondition(done3 and not done3[1], "Импульс завершён · масштаб 3", "OKO Elliott: импульс завершён (dev3)")

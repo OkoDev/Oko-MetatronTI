@@ -1114,6 +1114,20 @@ def _flush_radar_state(rows: list[tuple]) -> None:
         except Exception:
             pass
         c.executemany("INSERT OR REPLACE INTO radar_state VALUES (?,?,?,?,?,?,?,?,?)", rows)
+
+        # 🔴 ИСТОРИЯ OI (04.09.2026). `radar_state` — это СОСТОЯНИЕ: PRIMARY KEY по
+        # symbol, каждый снимок затирает предыдущий. Поэтому истории открытого
+        # интереса в проекте не было вовсе, и любая гипотеза про OI была непроверяема
+        # («находок нет = НЕТ ПРИЗНАКА»). Пишем те же строки ВТОРЫМ потоком в
+        # append-таблицу — live-контур не меняется, история копится сама.
+        # Дедуп по (symbol, ts): поллер может опросить символ дважды в одну секунду.
+        c.execute("""CREATE TABLE IF NOT EXISTS oi_history (
+            symbol TEXT NOT NULL, ts INTEGER NOT NULL, px REAL,
+            oi_d5 REAL, oi_d15 REAL, funding REAL, oi_d1d REAL,
+            quadrant TEXT, is_hot INTEGER,
+            PRIMARY KEY (symbol, ts))""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_oi_history_ts ON oi_history(ts)")
+        c.executemany("INSERT OR IGNORE INTO oi_history VALUES (?,?,?,?,?,?,?,?,?)", rows)
         c.commit()
     finally:
         c.close()

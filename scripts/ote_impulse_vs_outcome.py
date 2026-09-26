@@ -65,7 +65,7 @@ def main() -> int:
     con.close()
     # В сделках символ в формате ccxt-свопа ('OWL/USDT:USDT'), в кэше — спотовый ('OWL/USDT').
     tr["symbol"] = tr.symbol.astype(str).str.split(":").str[0]
-    tr["ts"] = pd.to_datetime(tr.created_at, errors="coerce", utc=True)
+    tr["ts"] = pd.to_datetime(tr.created_at, errors="coerce", utc=True, format="mixed")
     tr = tr[tr.ts.notna()].copy()
     tr["ms"] = (tr.ts.astype("int64") // 10**6)
     tr["stop_pct"] = (tr.entry_price - tr.stop_loss).abs() / tr.entry_price * 100

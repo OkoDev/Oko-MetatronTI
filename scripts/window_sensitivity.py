@@ -48,10 +48,12 @@ PROBES = 40
 def feature_frames(df: pd.DataFrame, tf: str, symbol: str):
     """Полный набор признаков одного символа — тот же путь, что в матрице."""
     from core.calculators.combinator_core import compute_flags
-    from matrix_full import (candle_volume_features, smc_state_features,
-                             structure_scales_features, symbol_features, wave_features)
+    from matrix_full import (smc_state_features, structure_scales_features,
+                             symbol_features, wave_features)
+    # 04.09: `candle_volume_features` НЕ вызывать — семья CANDLE+VOL переехала
+    # в `compute_flags`, второй вызов дал бы 14 дублирующихся колонок и 2D в `F[c].values`.
     parts = [compute_flags(df, tf, include_pivots=False)]
-    for fn in (symbol_features, candle_volume_features, structure_scales_features,
+    for fn in (symbol_features, structure_scales_features,
                wave_features, smc_state_features):
         try:
             parts.append(fn(df, tf))

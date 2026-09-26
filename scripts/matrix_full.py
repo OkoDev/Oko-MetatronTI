@@ -947,8 +947,11 @@ def extra_flags(df: pd.DataFrame, tf: str, symbol: str,
     RULE = {"15m": "15min", "1h": "1h", "4h": "4h", "1d": "1D"}
     senior = AUTO.get(tf, []) if senior is None else senior
 
+    # 04.09: `candle_volume_features` ПЕРЕНЕСЕНА в `combinator_core.compute_flags`
+    # (блок «CANDLE+VOL») и отсюда больше не вызывается — иначе те же 14 имён пришли бы
+    # в `collect` дважды и `pd.concat` дал бы дубли колонок. Функция оставлена как
+    # автономный research-инструмент; боевой источник семьи теперь один.
     parts = [symbol_features(df, tf),
-             candle_volume_features(df, tf),          # анатомия свечи + объём как следует
              funding_features(df.index, symbol),
              market_features(df.index, M)]
     # 🔴 RS: сильнее ли МОНЕТА рынка. Признаки MKT описывают вселенную целиком и потому

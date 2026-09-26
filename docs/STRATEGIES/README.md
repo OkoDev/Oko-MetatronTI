@@ -12,6 +12,7 @@
 |---|---|---|---|---|---|
 | [BEARBOS_COUNTER_LONG](BEARBOS_COUNTER_LONG.md) | 4h→1h→15m | LONG | 📊 Подтверждена данными | +1.5–2.5R | 58–65% |
 | [WAVE3_OTE_SHORT](WAVE3_OTE_SHORT.md) | 4h→1h→15m | SHORT | 📐 Теоретическая | +1.5–2.5R | 60–70% |
+| [SPOT_DUMP_GRID](SPOT_DUMP_GRID.md) | 4h→1h · 2h→15m · 1h→15m | LONG (спот) | 📊 Бэктест + суррогат (11.09.2026) | +1.4…+3.3% на сделку (в %, не в R) | 63–72% |
 
 ---
 

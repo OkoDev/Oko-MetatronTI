@@ -33,7 +33,14 @@ from typing import Any, Optional
 
 import pandas as pd
 
-SCHEMA_VERSION = 4   # v4 (17.08.2026): pivot-флаги на ВСЕХ TF (было — только 1h)
+SCHEMA_VERSION = 6   # v6 (04.09.2026): в compute_flags добавлены перцентиль ATR
+                     #   (atr_prank/atr_prank80/atr_vol_high/atr_vol_low) и семья
+                     #   CANDLE+VOL (анатомия свечи + непрерывный объём, 14 признаков).
+                     #   Непрерывные пишутся ЗНАЧЕНИЕМ (_NUMERIC_PREFIXES), а не sparse-bool.
+                     # v5 (02.09.2026): структура — двухслойный эталон OKO-SM;
+                     #   добавлены *_bos_i / *_choch_i (микроструктура len=5),
+                     #   из старшего слоя убрана примесь zigzag_atr.
+                     # v4 (17.08.2026): pivot-флаги на ВСЕХ TF (было — только 1h)
 
 # TF, для которых compute_flags вызывает pivot-флаги.
 # 17.08.2026 (Егор: «насытить 5m и 1d остальными флагами»): было `_PIVOT_TF = "1h"` —
@@ -203,8 +210,13 @@ def _domain_of(flag: str) -> str:
         return "rsi"
     if flag.startswith(("atr_", "above_ema", "below_ema", "ema50_")):
         return "trend"
-    if flag.startswith(("vol_spike", "bull_mom", "bear_mom")):
+    if flag.startswith(("vol_spike", "bull_mom", "bear_mom",
+                        "vol_ratio", "vol_x_range", "vol_delta", "cum_delta")):
         return "mom"
+    # 04.09.2026: анатомия свечи — новый домен (раньше таких признаков не было вовсе)
+    if flag.startswith(("body_frac", "upper_wick_frac", "lower_wick_frac",
+                        "close_pos_in_bar", "bar_range_pct", "wick_skew", "engulfing")):
+        return "candle"
     # FVG/OB/BOS/CHoCH/OTE/premium/discount/eqh/eql
     return "smc"
 
@@ -322,6 +334,27 @@ def snapshot_from_flags_row(
 # не sparse-bool. Это свёртка pivot (nearest/dist/relation) из combinator (один калькулятор).
 _VALUE_PREFIXES = ("pivot_nearest_", "pivot_dist_pct_", "pivot_relation_")
 
+# 04.09.2026: НЕПРЕРЫВНЫЕ признаки, добавленные в compute_flags (перцентиль ATR и
+# семья CANDLE+VOL). Пишутся ЗНАЧЕНИЕМ по тому же правилу, что `pivot_dist_pct`.
+# 🔴 Иначе был бы молчаливый отказ: `_pack_context` считает всё небулево булевым, а
+# `bool(0.44)` и `bool(nan)` дают True → 16 непрерывных признаков попали бы в
+# n_true/n_total как «сработавшие флаги» и испортили бы и features_json, и долю
+# активных флагов, на которую смотрят обучающие срезы.
+# 🔴 `engulfing_` СЮДА НЕ ВНОСИТЬ: он float64, но значения ровно {0.0, 1.0} — это
+# булев флаг, и ветка `bool(val)` обрабатывает его верно (sparse, участвует в n_total).
+# В списке непрерывных он выпал бы из счётчика флагов (187 паттернов его не увидят)
+# и писал бы 0.0 в КАЖДЫЙ снимок вопреки sparse-принципу.
+# `vol_delta_` наоборот обязан быть здесь: значения {-1, 0, +1}, и `bool(-1.0)` = True
+# пометил бы продажный бар как «сработавший флаг».
+_NUMERIC_PREFIXES = ("atr_prank", "body_frac_", "upper_wick_frac_", "lower_wick_frac_",
+                     "close_pos_in_bar_", "bar_range_pct_", "wick_skew_",
+                     "vol_ratio", "vol_x_range_", "vol_delta_", "cum_delta",
+                     # 04.09: ликвидность — дистанция в % и сила зоны (число свингов).
+                     # `liq_sweep_*` и `liq_near_*` СЮДА НЕ ВНОСИТЬ: они булевы и должны
+                     # остаться sparse-флагами, участвующими в n_true/n_total.
+                     "liq_up_dist_pct", "liq_dn_dist_pct",
+                     "liq_up_strength", "liq_dn_strength")
+
 
 def _is_value_col(col: str) -> bool:
     return col.startswith(_VALUE_PREFIXES)
@@ -345,6 +378,11 @@ def _pack_context(flag_items) -> tuple[dict, int, int]:
             else:  # nearest / relation — категория
                 if val is not None and str(val) != "nan":
                     context.setdefault("pivot", {})[col] = str(val)
+            continue
+        if col.startswith(_NUMERIC_PREFIXES):     # 04.09: непрерывные — значением
+            fv = float(val) if val is not None else float("nan")
+            if fv == fv:                          # не nan
+                context.setdefault(_domain_of(col), {})[col] = round(fv, 4)
             continue
         n_total += 1
         if bool(val):

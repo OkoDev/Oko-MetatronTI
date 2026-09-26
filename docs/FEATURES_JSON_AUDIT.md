@@ -1,6 +1,23 @@
 # features_json AUDIT (ARCH-118) — 30.05.2026
 
-> Карта текущего разрозненного состояния `features_json` перед стандартизацией.
+> 📕 **ИСТОРИЧЕСКИЙ ДОКУМЕНТ — не каталог.** Это разбор состояния ДО стандартизации
+> и обоснование решений ARCH-118. Числа ниже (170 ключей, 36–129 на тип) описывают
+> **май 2026** и с тех пор неверны.
+>
+> 🔴 Действующий набор признаков — **только** в [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md).
+> Не берите перечни признаков отсюда: `features_json` перестал быть носителем
+> рыночного контекста, когда ARCH-118 перенёс снимок в таблицу `trade_features`
+> (`arch118.write_table: true` → «features_json НЕ дублируется», см. Шаг 5b ниже).
+> Замер 02.09.2026 это подтвердил: `trade_features` покрывает 98–100% сделок с июня,
+> `smc_snap` в `features_json` — 10%.
+>
+> Ценность документа сегодня — **почему** набор устроен так: разрешение спора о
+> хранении (Шаг 5b), достижение parity live↔backtest (Шаги 3–4), инвариант
+> «один калькулятор».
+
+---
+
+> Карта состояния `features_json` перед стандартизацией (май 2026).
 > Источник: 1500 последних сделок `simulated_trades`. Анализ: `python -c` по БД.
 
 ## 🔴 Главная проблема
@@ -84,80 +101,25 @@ arch104_* (только arch104), pvt_* shadow (DEV-225), elliott_n_down/n_up, m
 
 ---
 
-## 📋 ПОЛНЫЙ РЕАЛЬНЫЙ индикаторный каталог (для context-слоя)
+## 📋 индикаторный каталог — ПЕРЕНЕСЁН
 
-> Только то, что ДЕЙСТВИТЕЛЬНО вычисляется в живом потоке. `extended_indicators.py`
-> (Bollinger/Ichimoku/MACD/Stochastic/VWAP/MFI — 64 ключа) был МЁРТВЫМ КОДОМ (никто
-> не импортировал) → **удалён 30.05**. ADX живёт в `indicators.py` (market_regime).
-
-### Источник 1 — `combinator_v2.compute_flags` (булевы флаги, ARCH-104)
-
-**47 индикаторных базовых × TF** (5m/15m/1h/4h/1d, у каждого свой суффикс):
-```
-# Trend/ATR Supertrend
-atr_up, atr_down, atr_cross_up, atr_cross_down
-# EMA
-above_ema50, below_ema50, above_ema200, below_ema200,
-ema50_above_ema200, ema50_below_ema200
-# SMC structure
-bull_bos, bear_bos, bull_choch, bear_choch
-bull_fvg, bear_fvg, bull_fvg_in, bear_fvg_in
-bull_ob, bear_ob, bull_ob_near, bear_ob_near
-# SMC zones
-premium, discount, ote_long, ote_short
-eqh_sweep, eql_sweep
-# WT
-wt_os, wt_ob, wt_cross_up, wt_cross_down,
-wt_div_bull_reg, wt_div_bear_reg, wt_div_bull_hidden, wt_div_bear_hidden
-# RSI
-rsi_os, rsi_ob, rsi_cross50_up, rsi_cross50_down,
-rsi_div_bull_hidden, rsi_div_bear_hidden
-# Momentum/Volume
-bull_mom, bear_mom, vol_spike
-# Divergence (RSI regular)
-bull_div, bear_div
-```
-
-**35 pivot базовых × {PP,R1,R2,R3,S1,S2,S3} × {1D,1W}** (статика, ~490 комбинаций):
-```
-pivot_above_*, pivot_below_*, pivot_near_*, pivot_bounce_up_*, pivot_bounce_down_*
-```
-
-### Источник 2 — `indicators.py` (ЧИСЛОВЫЕ значения, основной бот scan_loop)
-
-Пишутся как значения (не булевы) — нужны для ML-фич:
-```
-wt1, wt2                    # WaveTrend (значения, не зоны)
-trend, trendup, trenddown   # ATR Supertrend (направление + линии)
-trend_strength              # сила тренда
-rsi                         # RSI значение
-atr                         # ATR значение
-adx                         # ADX значение (market_regime: >25 тренд)
-ema50, ema200               # EMA значения
-volatility                  # волатильность
-volume_ratio                # отношение объёма
-n_down, n_up                # Elliott прокси (consecutive swings)
-```
-
-### Итоговая схема context-слоя (предложение)
-
-| Группа | TF-зависимо | Кол-во база | Итого (×TF) |
-|---|---|---|---|
-| combinator индикаторные (булевы) | да (5 TF) | 47 | ~235 |
-| combinator pivot (булевы) | нет (1D/1W) | 35×14 | ~490 |
-| indicators.py числовые | да (по необходимости) | ~15 | ~45-75 |
-
-**Полный единый снимок = ~770 признаков на сделку** (булевы combinator + числовые indicators).
-Это и есть то, что должно писаться ОДИНАКОВО для каждой сделки (NULL где TF неприменим),
-ОДНИМ расчётом (live = бэктест). Сейчас вместо этого — 36-129 разрозненных полей на тип.
-
-**❓ Решения для схемы:**
-- Все 5 TF для combinator-индикаторных или только релевантные (entry_tf + HTF 1h/4h/1d)?
-- Числовые indicators.py — на каких TF? (15m entry + 1h/4h контекст?)
-- pivot ~490 булевых — оставить как есть или свернуть в `nearest_pivot_level` + `distance`?
-- Хранение: вложенный JSON по группам или плоско (queryability в SQL)?
-
-Каталоги: `e:/tmp/combinator_flags_full.txt` (117 на 1h), `e:/tmp/full_ind_catalog.txt`.
+> 🗑️ **Перечень удалён 02.09.2026.** Он разошёлся с кодом и вводил в заблуждение:
+> сверка с `compute_flags` показала **36 отсутствующих** признаков (46% реального
+> набора — весь блок CMA/Donchian, breaker, fvg_overlap, ob_mitigated, elliott,
+> микроструктура `*_bos_i`/`*_choch_i`) и **4 имени, которых в коде нет** —
+> `bull_div`, `bear_div`, `wt_div_bull_reg`, `wt_div_bear_reg`, переименованные
+> ещё 30.05 разделом NAMING CONVENTION ниже, в этом же документе.
+>
+> 🔴 Действующий перечень — **только** [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md),
+> и он строится замером, а не переписыванием руками. Актуальные числа (02.09):
+> `compute_flags(tf)` = **155** признаков на ТФ (79 без пивотов, 76 пивотных),
+> матрица исследований с MTF = **447** (149 × свой ТФ + два старших).
+>
+> Проверить состав в любой момент — одной командой, без документа:
+> ```python
+> from core.calculators.combinator_core import compute_flags
+> sorted(compute_flags(df, "1h", include_pivots=True).columns)
+> ```
 
 ---
 

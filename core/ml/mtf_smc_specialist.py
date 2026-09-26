@@ -9,8 +9,15 @@ K сильнейших по объёму выборки (~25 наблюдени�
 Shadow mode: результат пишется в recommendation.metadata["smc_verdict"].
 Не влияет на strength/action пока нет 200+ сделок с smc_snap.
 
-Источник данных: features_json["smc_snap"] — добавляется в register_trade_async
-через _build_smc_snap() в trading_intelligence.py.
+Источник данных: features_json["smc_snap"] — кладётся в recommendation.metadata
+внутри analyze_symbol (trading_intelligence.py:1115), оттуда register_trade_async
+переносит в features.
+
+🔴 02.09: замер покрытия — snap есть лишь у 10% сделок. Метаданные наполняет
+ТОЛЬКО analyze_symbol; стратегии, идущие через trade_router со своим
+recommendation (atr_change, ote_nested, wl_breach, impulse_fib, radar...),
+приносят metadata без snap → 0% покрытия. Вместе со snap теряются wt_snap и
+narrative — падают синхронно, корень один. Сентябрь: 119 сделок, покрытие 0%.
 """
 import json
 import logging
@@ -156,7 +163,8 @@ def _build_smc_snap_from_df(
     Вычисляет SMC-признаки для одного TF из DataFrame.
     Используется в trading_intelligence._build_smc_snap() для сбора smc_snap.
 
-    Возвращает dict с 9 признаками.
+    Возвращает dict: `_v` + 9 булевых (историческая часть, совместимость с БД)
+    + до 18 непрерывных (ARCH-137.6, блок ниже) = до 28 полей.
     """
     snap: Dict[str, Any] = {
         "_v": SNAP_SCHEMA_VERSION,   # версия схемы — fit учится на ОДНОЙ версии

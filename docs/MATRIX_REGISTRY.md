@@ -1,4 +1,8 @@
-# 🧮 ПОЛНАЯ МАТРИЦА ПРИЗНАКОВ — реестр источников Куба
+# 🧮 МАТРИЦА ПРИЗНАКОВ — реестр ИСТОЧНИКОВ Куба
+
+> 📖 Здесь — **откуда признаки берутся** (модули, дубли, что не внесено).
+> Что они собой представляют, где хранятся и с каким покрытием — в едином
+> каталоге [`FEATURE_CATALOG.md`](FEATURE_CATALOG.md). Перечни признаков дублировать сюда не нужно.
 
 > Создано 28.08.2026 (задача **MATRIX-FULL**, слой 0 «ПЛАНА ПЕРЕПРОВЕРКИ»).
 > Повод — Егор: «матрицу дополнить всем что вне её сейчас, пусть будет полной
@@ -263,6 +267,27 @@ P(шум ≥ результата) = 0.500). Разбор показал: при
 
 Причинность проверена ПРОГОНОМ, а не рассуждением: `wt1_val[i] == wavetrend[i-1]` ✅.
 
+### ✅ 04.09: CANDLE+VOL переехал в БОЕВУЮ матрицу, добавлен ПЕРЦЕНТИЛЬ ATR
+
+`compute_flags` 161 → **179** признаков (BTC/USDT 1h, 5000 баров).
+
+| семья | признаки | где живёт |
+|---|---|---|
+| CANDLE+VOL (14) | `body_frac` · `upper_wick_frac` · `lower_wick_frac` · `close_pos_in_bar` · `bar_range_pct` · `wick_skew` · `engulfing` · `vol_ratio20/50/120` · `vol_x_range` · `vol_delta` · `cum_delta5/20` | **перенесены** из `matrix_full.py:371` в `combinator_core.compute_flags`; вызов из `extra_flags` снят (иначе дубли колонок в `collect`) |
+| ПЕРЦЕНТИЛЬ ATR (4) | `atr_prank` (расширяющийся ранг) · `atr_prank80` (окно 80) · `atr_vol_high` · `atr_vol_low` | НОВАЯ семья: «насколько эта вола необычна ДЛЯ ЭТОГО инструмента». Форма — `market_drift._expanding_tercile_label`/`_persist` + прецедент `STRATEGY_TRIGGERS.md:89`; ATR — `impulse_fib._atr` |
+
+Причинность: префиксный тест `compute_flags(df[:t]) == compute_flags(df)[:t]` на всех
+18 колонках, t = 2000/3500/4800 → **0 расхождений**. Оба блока отдают значение ЗАКРЫТОГО
+бара (`.shift(1)`), как research-версия → числа сравнимы со старыми замерами.
+Цена: 23 мс (ATR-перцентиль) + 1 мс (CANDLE+VOL) на 5000 баров.
+
+⚠️ По объёму полный прогон 585 признаков дал НОЛЬ сверх шума (P=0.500). Перенос сделан
+не ради находки, а чтобы «находок нет» перестало быть неотличимым от «не искали»
+([[law_no_finding_means_no_feature]]).
+
+Следствие для снимков: непрерывные признаки пишутся ЗНАЧЕНИЕМ
+(`feature_snapshot._NUMERIC_PREFIXES`, новый домен `candle`), **SCHEMA_VERSION 5 → 6**.
+
 ---
 
 ## 3. 🔑 `trade_features` — матрица УЖЕ лежит в БД
@@ -296,8 +321,9 @@ P(шум ≥ результата) = 0.500). Разбор показал: при
 | `core/smc/smc_engine.py:103/:166/:416/:256` | `detect_structure_breaks` · `detect_order_blocks` · `detect_equal_levels` · `classify_structure` | структуры | ✅ |
 | `core/smc/smc_engine.py:587/:667/:769/:1093` | `detect_fvg_overlap` · `detect_elliott_impulse` · `find_setups_zz` · `zigzag_atr` | зоны/волны | ✅ частично |
 | `core/smc/smc_engine.py:281/:297` | `premium_discount` · `build_ote` | зоны | ✅ |
-| 🔴 `core/smc/smc_extensions.py:18/:75/:125` | `detect_inducement` · `detect_liquidity_void` · `detect_breaker_block` | зоны | ❌ **НЕТ В МАТРИЦЕ** |
-| 🔴 `core/smc/liquidity.py:170` | `detect_liquidity` | `LiquidityAnalysis` | ❌ **НЕТ** |
+| `core/smc/smc_extensions.py:18/:75` | `detect_inducement` · `detect_liquidity_void` | зоны | ✅ **04.09 внесены** (`etl_smc_ext`) — 🔴 в inducement был look-ahead, починен в источнике |
+| 🔴 `core/smc/smc_extensions.py:125` | `detect_breaker_block` | зоны | ⛔ **НЕ вносить намеренно**: эдж мерился и не подтверждён |
+| `core/smc/liquidity.py:175` | `detect_liquidity` | `LiquidityAnalysis` | ✅ **04.09 внесена** как серия (`etl_liquidity`, 8 признаков) — зоны ведутся ОНЛАЙН, не batch |
 | 🔴 `core/smc/structure.py:342` · `core/smc/swing_points.py:252` | `detect_structure` · `detect_swing_points` | dataclass-анализ | 🟡 дублирует, но богаче |
 | 🔴 `core/smc/method_egor.py:44` | `detect_method_egor` | 5-волновой сетап | ❌ **НЕТ** |
 | 🔴 `core/smc/smc_specialist.py:27` | `fast_smc_verdict` | MTF-вердикт | ❌ **НЕТ** |

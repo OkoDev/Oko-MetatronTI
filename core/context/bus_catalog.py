@@ -41,7 +41,10 @@ _PAIR_META: Dict[str, tuple] = {
     # Сфера 4 SMC
     "smc_verdict":       ("sub_cube (Сфера 4)", "STRONG_BULL_ZONE/WEAK_ZONE/STRONG_BEAR_ZONE"),
     "smc_confidence":    ("sub_cube (Сфера 4)", "уверенность SMC 0..1"),
-    "smc_snap":          ("sub_cube (Сфера 4)", "{tf: {ob_bull,fvg_open,choch,bos,...}} — магниты TP"),
+    # 🔴 02.09: описание врало — схема ПЛОСКАЯ, per-TF лежит ВНУТРИ ключа by_tf.
+    # Читатели (narrative_builder) обращаются плоско: snap["price_in_ote"].
+    # Не путать с ctx.smc_snap у ML-сферы 4 — там {tf: {...}}, ДРУГАЯ схема.
+    "smc_snap":          ("sub_cube (Сфера 4)", "плоский: price_in_ote,last_bos,nearest_*_ob,eqh/eql + by_tf{tf:..}"),
     # Сфера 5 Cross-Market
     "btc_regime":        ("scan_loop (Сфера 5)", "режим BTC TREND_UP/DOWN/RANGE/HIGH_VOL"),
     "btc_move_pct":      ("scan_loop (Сфера 5)", "движение BTC %"),
@@ -139,7 +142,7 @@ _EVENT_META: Dict[str, tuple] = {
     "WT_VERDICT":         ("scan_loop (Сфера 3)", "{label,confidence,features}", "вердикт WT"),
     "WT_SNAP_UPDATED":    ("scan_loop (Сфера 3)", "{tf:{wt1,wt2,zone,cross,atr_trend}}", "снимок WT"),
     "SMC_VERDICT":        ("sub_cube (Сфера 4)", "{label,confidence}", "вердикт SMC"),
-    "SMC_SNAP_UPDATED":   ("sub_cube (Сфера 4)", "{tf:{ob,fvg,choch,bos,..}}", "снимок SMC (магниты TP, NOTIF)"),
+    "SMC_SNAP_UPDATED":   ("sub_cube (Сфера 4)", "плоский + by_tf{tf:..}", "снимок SMC (магниты TP, NOTIF)"),
     "CROSS_MARKET":       ("scan_loop (Сфера 5)", "{btc_regime,btc_move_pct,direction}", "контекст BTC"),
     "REGIME_UPDATED":     ("scan_loop (Сфера 6)", "{regime,mode}", "режим рынка"),
     "SIGNAL_DETECTED":    ("scan_loop (Сфера 7)", "{signal_type,direction,strength,tf}", "сигнал детектора"),

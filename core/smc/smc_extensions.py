@@ -53,10 +53,17 @@ def detect_inducement(df: pd.DataFrame, lookback: int = 30, sweep_pct: float = 0
                 # Текущий бар пробивает min_low на sweep_pct%
                 sweep_target = min_low * (1 - sweep_pct / 100)
                 if low[i] < sweep_target:
-                    # Закрытие обратно выше min_low в течение reverse_bars
-                    future_closes = close[i:i + reverse_bars]
-                    if (future_closes > min_low).any():
-                        bull_ind[i] = True
+                    # Закрытие обратно выше min_low в течение reverse_bars.
+                    # 🔴 FIX 04.09: флаг СТАВИТСЯ НА БАР ВОЗВРАТА, а не на бар свипа.
+                    # Было `bull_ind[i] = True` при проверке close[i:i+reverse_bars] —
+                    # флаг на баре i зависел от закрытий i+1/i+2 = look-ahead вида
+                    # «данные будущего в баре». Детектор в матрицу не входил, боевых
+                    # потребителей нет (только detector_bench) — правка безопасна.
+                    fwd = close[i:i + reverse_bars]
+                    if (fwd > min_low).any():
+                        k = i + int(np.argmax(fwd > min_low))   # первый бар возврата
+                        if k < n:
+                            bull_ind[k] = True
 
         # Bear inducement check
         max_high = float(window_highs.max())
@@ -65,9 +72,11 @@ def detect_inducement(df: pd.DataFrame, lookback: int = 30, sweep_pct: float = 0
             if n_eq_highs >= 2:
                 sweep_target = max_high * (1 + sweep_pct / 100)
                 if high[i] > sweep_target:
-                    future_closes = close[i:i + reverse_bars]
-                    if (future_closes < max_high).any():
-                        bear_ind[i] = True
+                    fwd = close[i:i + reverse_bars]             # см. FIX 04.09 выше
+                    if (fwd < max_high).any():
+                        k = i + int(np.argmax(fwd < max_high))
+                        if k < n:
+                            bear_ind[k] = True
 
     return bull_ind, bear_ind
 

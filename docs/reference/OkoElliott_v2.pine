@@ -1,0 +1,559 @@
+//@version=6
+// ============================================================================
+// OKO ELLIOTT v2 — РАЗВОЛНОВКА ПО КАНОНУ IKIGAI
+//
+// Источник правил — гайды, которые Егор положил в `docs/` 08.06.2026:
+//   «Гайд по структурам движения.pdf»  (импульс · начальная и конечная диагональ)
+//   «Гайд по структурам коррекции.pdf» (зигзаг · двойной зигзаг · треугольник ·
+//                                       плоскость · комбинация)
+// Разделение гайда соблюдено буквально: ПРАВИЛА (нарушено → структуры нет),
+// НОРМЫ (выполняются в большинстве случаев → влияют на уверенность, не на факт),
+// ЛОКАЛЬНЫЕ СТРУКТУРЫ (что может стоять внутри каждой волны → проверка вложенности).
+//
+// Опора на код бота: ZigZag — порт `smc_engine.zigzag_atr(depth=11, dev, atr_len=10)`,
+// импульс — `detect_elliott_impulse` (те же R1/R2/R3). Всё остальное — НОВОЕ:
+// в Python классификации коррекций, диагоналей, чередования и вложенности НЕТ
+// (греп 08.09.2026: `detect_elliott_impulse` знает только импульс + textbook).
+//
+// 🔴🔴 ПЕРЕРИСОВКА. ZigZag перерисовывает историю: из импульсов, видимых в реальном
+// времени, в финальной разметке остаётся 27-60% (`impulse_decay_causal.py`, 03.09).
+// Лаг подтверждения — 6 баров. Структура помечается в момент ПЕРВОГО появления.
+// ============================================================================
+
+indicator("OKO Elliott v2 [канон IKIGAI]", "OKO EW2", overlay = true,
+     max_bars_back = 5000, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 100)
+
+// ─── ВХОДЫ ──────────────────────────────────────────────────────────────────
+string gZ = "ZigZag (порт zigzag_atr)"
+zzDepth  = input.int(11, "depth (Pine length = depth/2)", minval = 2, group = gZ)
+zzAtrLen = input.int(10, "ATR length", minval = 1, group = gZ)
+showZz   = input.bool(false, "Рисовать сам ZigZag", group = gZ)
+
+string gM = "Масштабы (степени волн)"
+s1on = input.bool(true,  "Степень 1 (младшая)", group = gM, inline = "1")
+dev1 = input.float(3.0,  "dev", minval = 0.1, step = 0.5, group = gM, inline = "1")
+col1 = input.color(#f23645, "", group = gM, inline = "1")
+s2on = input.bool(true,  "Степень 2 (средняя)", group = gM, inline = "2")
+dev2 = input.float(5.0,  "dev", minval = 0.1, step = 0.5, group = gM, inline = "2")
+col2 = input.color(#2962ff, "", group = gM, inline = "2")
+s3on = input.bool(true,  "Степень 3 (старшая)", group = gM, inline = "3")
+dev3 = input.float(8.0,  "dev", minval = 0.1, step = 0.5, group = gM, inline = "3")
+col3 = input.color(#eeeeee, "", group = gM, inline = "3")
+
+string gS = "Что размечать"
+useImpulse  = input.bool(true, "Импульс (5 волн)", group = gS)
+useDiagonal = input.bool(true, "Диагонали (начальная / конечная)", group = gS)
+useTriangle = input.bool(true, "Треугольник ABCDE (обычный / бегущий)", group = gS)
+useCorr3    = input.bool(true, "Зигзаг · плоскость · комбинация (ABC)", group = gS)
+normTol     = input.float(0.12, "Допуск на НОРМЫ фибо (доля)", minval = 0.01, maxval = 0.5, step = 0.01, group = gS,
+     tooltip = "Норма «волна 2 = 0.618 волны 1» проверяется как 0.618 ± допуск.\nПравила проверяются ТОЧНО и от допуска не зависят")
+
+string gT = "Цели и зоны"
+showTargets = input.bool(true, "Цели по нормам (фибо + канал)", group = gT)
+showInvalid = input.bool(true, "Уровень инвалидации счёта", group = gT)
+showOteZone = input.bool(true, "Зоны коррекций 2 и 4 (0.382 / 0.618)", group = gT)
+
+string gD = "Отрисовка"
+maxStruct = input.int(8, "Структур в памяти на степень", minval = 1, maxval = 20, group = gD)
+txtIn     = input.string("крупный", "Размер подписей", options = ["мелкий", "обычный", "крупный", "огромный"], group = gD)
+lineW     = input.int(3, "Толщина линий", minval = 1, maxval = 6, group = gD)
+showTable = input.bool(true, "Панель состояния", group = gD)
+
+simple string SZ = txtIn == "мелкий" ? size.tiny : txtIn == "обычный" ? size.small : txtIn == "крупный" ? size.normal : size.large
+
+// ─── КОДЫ СТРУКТУР ──────────────────────────────────────────────────────────
+// 1 импульс · 2 начальная диагональ · 3 конечная диагональ · 4 треугольник обычный
+// 5 треугольник бегущий · 10 зигзаг · 11 плоскость обычная · 12 плоскость расширенная
+// 13 плоскость бегущая · 14 комбинация (X ≥ 90% W) · 0 нет структуры
+f_structName(int c) =>
+    c == 1 ? "импульс" : c == 2 ? "нач. диагональ" : c == 3 ? "кон. диагональ" :
+     c == 4 ? "треугольник" : c == 5 ? "треуг. бегущий" : c == 10 ? "зигзаг" :
+     c == 11 ? "плоскость" : c == 12 ? "плоскость расш." : c == 13 ? "плоскость бег." :
+     c == 14 ? "комбинация" : "—"
+
+f_isMotive(int c) => c == 1 or c == 2 or c == 3
+
+// ─── ГЕОМЕТРИЯ ──────────────────────────────────────────────────────────────
+// «за уровень» в направлении движения: для движения вверх — выше, вниз — ниже
+f_beyond(bool up, float price, float level) => up ? price > level : price < level
+f_len(float a, float b) => math.abs(b - a)
+f_near(float v, float target, float tol) => math.abs(v - target) <= tol
+
+// ─── PIVOT (порт zigzag_atr.pivot_at) ───────────────────────────────────────
+// Кандидат = бар `length` назад, окно [i-2·length .. i] — только прошлое.
+// Анти-дубль плато: слева СТРОГО (равный отменяет), справа нестрого.
+f_pivotAt(simple int length, simple bool hi) =>
+    int l2 = length * 2
+    float c = hi ? high[length] : low[length]
+    bool ok = not na(c)
+    if ok
+        for k = 0 to l2
+            if k != length
+                float v = hi ? high[k] : low[k]
+                if na(v)
+                    ok := false
+                else
+                    bool left = k > length
+                    if hi
+                        if left and v >= c
+                            ok := false
+                        if not left and v > c
+                            ok := false
+                    else
+                        if left and v <= c
+                            ok := false
+                        if not left and v < c
+                            ok := false
+    [ok, c, bar_index - length]
+
+// ─── ПРАВИЛА: 5 НОГ (импульс · диагональ · треугольник) ─────────────────────
+// p0..p5 — цены шести последовательных точек ZigZag, t0..t5 — их бары.
+// Возвращает [код, уверенность 0..1, текст нормы].
+f_classify5(float p0, float p1, float p2, float p3, float p4, float p5,
+            int t0, int t1, int t2, int t3, int t4, int t5,
+            simple bool okImp, simple bool okDia, simple bool okTri, float tol) =>
+    bool up = p1 > p0                       // направление волны 1
+    float w1 = f_len(p0, p1)
+    float w2 = f_len(p1, p2)
+    float w3 = f_len(p2, p3)
+    float w4 = f_len(p3, p4)
+    float w5 = f_len(p4, p5)
+
+    int   code = 0
+    float conf = 0.0
+    string note = ""
+
+    // ── ИМПУЛЬС. Правила: R1 волна 2 не заходит за начало волны 1;
+    //    R2 волна 3 не самая короткая из (1,3,5); R3 волна 4 не заходит
+    //    на ценовую территорию волны 1. Волна 3 НЕ обязана быть самой длинной.
+    bool r1 = not f_beyond(not up, p2, p0)
+    bool r2 = not (w3 < w1 and w3 < w5)
+    bool r3 = not f_beyond(not up, p4, p1)
+    bool impulse = okImp and r1 and r2 and r3 and f_beyond(up, p3, p1) and f_beyond(up, p5, p3)
+
+    // ── ДИАГОНАЛЬ. Правила: волна 2 не за начало волны 1; волна 3 завершается
+    //    за концом волны 1; волна 4 ЗАХОДИТ на территорию волны 2 (в отличие от
+    //    импульса); w1 > w3 > w5; w2 > w4. Начальная дополнительно: волна 5 за концом волны 3.
+    bool dOverlap = f_beyond(not up, p4, p1)          // w4 перекрывает конец w1
+    bool dShrink  = w1 > w3 and w3 > w5 and w2 > w4
+    bool diagonal = okDia and r1 and f_beyond(up, p3, p1) and dOverlap and dShrink
+
+    // ── ТРЕУГОЛЬНИК. Правила: волна C не выходит за конец волны A; волна D не
+    //    выходит за конец волны B; волна E не выходит за конец волны C.
+    //    Итог — сужение диапазона. Бегущий: волна B выходит за основание A.
+    bool triC = not f_beyond(up, p3, p1)
+    bool triD = not f_beyond(not up, p4, p2)
+    bool triE = not f_beyond(up, p5, p3)
+    bool triangle = okTri and triC and triD and triE
+
+    if impulse
+        code := 1
+        conf := 0.50
+        // Нормы импульса: w2 ≈ 0.618·w1 · w4 ≈ 0.382·w3 · w5 ≈ w1 или 0.618·w3
+        float r2r = w1 > 0 ? w2 / w1 : na
+        float r4r = w3 > 0 ? w4 / w3 : na
+        if not na(r2r) and f_near(r2r, 0.618, tol)
+            conf += 0.15
+            note += "w2≈0.618 "
+        if not na(r4r) and f_near(r4r, 0.382, tol)
+            conf += 0.15
+            note += "w4≈0.382 "
+        if w1 > 0 and (f_near(w5 / w1, 1.0, tol) or (w3 > 0 and f_near(w5 / w3, 0.618, tol)))
+            conf += 0.10
+            note += "w5 в норме "
+        // Растяжение: если w3 растянута — w5 ограничена; если 1 и 3 без растяжения — растянута 5
+        if w1 > 0 and w3 / w1 >= 1.618
+            note += "· w3 растянута"
+        else if w5 > w1 and w5 > w3
+            note += "· w5 растянута"
+        // Чередование волн 2 и 4: острая ↔ боковая (по глубине отката)
+        bool sharp2 = w1 > 0 and w2 / w1 >= 0.5
+        bool sharp4 = w3 > 0 and w4 / w3 >= 0.5
+        if sharp2 != sharp4
+            conf += 0.10
+            note += " · чередование ✓"
+        else
+            note += " · чередование ✗"
+    else if diagonal
+        // Начальная — волна 5 обязана выйти за конец волны 3; иначе конечная.
+        code := f_beyond(up, p5, p3) ? 2 : 3
+        conf := 0.45
+        // Нормы диагонали: w3 = 0.618/0.786 от w1 · w4 = 0.618/0.786 от w2 · w5 = 0.618/0.786 от w3
+        if w1 > 0 and (f_near(w3 / w1, 0.618, tol) or f_near(w3 / w1, 0.786, tol))
+            conf += 0.15
+            note += "w3 0.618/0.786 "
+        if w2 > 0 and (f_near(w4 / w2, 0.618, tol) or f_near(w4 / w2, 0.786, tol))
+            conf += 0.15
+            note += "w4 0.618/0.786 "
+        if w3 > 0 and (f_near(w5 / w3, 0.618, tol) or f_near(w5 / w3, 0.786, tol))
+            conf += 0.10
+            note += "w5 0.618/0.786"
+    else if triangle
+        // Бегущий треугольник: волна B выходит за основание (чаще обычного)
+        code := f_beyond(not up, p2, p0) ? 5 : 4
+        conf := 0.45
+        // Нормы: C ≈ 0.618·A (в бегущем C ≈ A) · D ≈ 0.618·B · E ≈ 0.618·C
+        if w1 > 0 and (f_near(w3 / w1, 0.618, tol) or (code == 5 and f_near(w3 / w1, 1.0, tol)))
+            conf += 0.15
+            note += "C в норме "
+        if w2 > 0 and f_near(w4 / w2, 0.618, tol)
+            conf += 0.10
+            note += "D в норме "
+        if w3 > 0 and f_near(w5 / w3, 0.618, tol)
+            conf += 0.15
+            note += "E в норме"
+    [code, math.min(conf, 0.95), note]
+
+// ─── ПРАВИЛА: 3 НОГИ (зигзаг · плоскость · комбинация) ──────────────────────
+// q0 — основание A, q1 — конец A, q2 — конец B, q3 — конец C.
+f_classify3(float q0, float q1, float q2, float q3, float tol) =>
+    bool  up = q1 > q0                    // направление волны A
+    float A = f_len(q0, q1)
+    float B = f_len(q1, q2)
+    float C = f_len(q2, q3)
+    float retrB = A > 0 ? B / A : na
+
+    bool bBeyondStart = f_beyond(not up, q2, q0)   // волна B зашла за основание A
+    bool cBeyondA     = f_beyond(up, q3, q1)       // волна C вышла за конец A
+
+    int   code = 0
+    float conf = 0.0
+    string note = ""
+
+    // 🔴 Верхняя граница здравого смысла: правило гайда требует лишь B ≥ 90% A,
+    // но откат втрое больше волны A — это уже не плоскость, а часть другой
+    // структуры. Без ограничения классификатор метил плоскостью почти любой
+    // боковик (проверено глазами на BTC 1h 08.09).
+    if not na(retrB) and retrB <= 2.0
+        if retrB >= 0.9
+            // ПЛОСКОСТЬ. Правило: B откатывает не менее 90% A.
+            //   B не за начало A → C ДОЛЖНА завершиться за концом A (обычная);
+            //   B за начало A → C может завершиться где угодно (расширенная/бегущая).
+            if not bBeyondStart
+                code := cBeyondA ? 11 : 14        // не выполнено правило → это уже комбинация
+                conf := cBeyondA ? 0.55 : 0.35
+            else
+                code := cBeyondA ? 12 : 13        // расширенная / бегущая
+                conf := 0.55
+            // Нормы плоскости: B = 1.236 или 1.382 от A · C = 1.618 от A
+            if f_near(retrB, 1.236, tol) or f_near(retrB, 1.382, tol)
+                conf += 0.15
+                note += "B 1.236/1.382 "
+            if A > 0 and f_near(C / A, 1.618, tol)
+                conf += 0.15
+                note += "C≈1.618·A"
+            else if A > 0 and f_near(C / A, 1.0, tol)
+                conf += 0.10
+                note += "C≈A"
+        else
+            // ЗИГЗАГ. Правила: B не заходит за основание A; C всегда выходит за конец A.
+            if not bBeyondStart and cBeyondA
+                code := 10
+                conf := 0.55
+                // Нормы зигзага: B ≈ 0.618·A · C = 100% или 162% от A
+                if f_near(retrB, 0.618, tol)
+                    conf += 0.15
+                    note += "B≈0.618 "
+                else if f_near(retrB, 0.382, tol)
+                    note += "B≈0.382 (C ждём 0.618·A) "
+                if A > 0 and (f_near(C / A, 1.0, tol) or f_near(C / A, 1.618, tol))
+                    conf += 0.15
+                    note += "C 100%/162%"
+    [code, math.min(conf, 0.95), note, retrB]
+
+// ─── ОДНА СТЕПЕНЬ: ZigZag → канон → отрисовка ───────────────────────────────
+f_degree(simple bool enabled, simple float devMult, simple int depth_, simple int atrLen_,
+         color col, simple bool drawZz, simple int keep, simple string sz, simple int lw,
+         simple bool okImp, simple bool okDia, simple bool okTri, simple bool okC3,
+         float tol, simple bool drawTargets, simple bool drawInvalid, simple bool drawZones) =>
+    var int[]   zx = array.new_int()
+    var float[] zy = array.new_float()
+    var bool[]  zh = array.new_bool()
+    var line[]  hist  = array.new_line()
+    var label[] histB = array.new_label()
+    var line[]  tgt   = array.new_line()
+    var box[]   zones = array.new_box()
+    var line[]  zzL   = array.new_line()
+
+    var int    curCode = 0        // код текущей размеченной структуры
+    var int    curX0 = na         // бар её первой точки — ключ «та же структура»
+    var int    curLegs = 0        // 3 или 5
+    var float  curConf = 0.0
+    var string curNote = ""
+    var int    curDir = 0         // 1 движение вверх / -1 вниз (по первой ноге)
+    var int    curEndX = na
+    var float  curInvalid = na    // уровень, за которым счёт неверен
+
+    if enabled
+        int length = math.max(1, int(depth_ / 2))
+        float atrv = ta.atr(atrLen_)
+        float thr = not na(atrv) and close != 0 ? atrv / close * 100 * devMult : 1e9
+        [okH, pH, xH] = f_pivotAt(length, true)
+        [okL, pL, xL] = f_pivotAt(length, false)
+        bool changed = false
+
+        if okH or okL
+            bool hiFlag = okH
+            float price = okH ? pH : pL
+            int   px    = okH ? xH : xL
+            int n0 = array.size(zx)
+            if n0 == 0
+                array.push(zx, px)
+                array.push(zy, price)
+                array.push(zh, hiFlag)
+                changed := true
+            else
+                bool  lastHi = array.get(zh, n0 - 1)
+                float lastP  = array.get(zy, n0 - 1)
+                if hiFlag == lastHi
+                    if (hiFlag and price > lastP) or (not hiFlag and price < lastP)
+                        array.set(zy, n0 - 1, price)
+                        array.set(zx, n0 - 1, px)
+                        changed := true
+                else
+                    float dv = price != 0 ? math.abs(100 * (price - lastP) / price) : 0.0
+                    if dv > thr
+                        array.push(zx, px)
+                        array.push(zy, price)
+                        array.push(zh, hiFlag)
+                        changed := true
+            if array.size(zx) > 300
+                array.shift(zx)
+                array.shift(zy)
+                array.shift(zh)
+            if drawZz and changed and array.size(zx) > 1
+                int n2 = array.size(zx)
+                array.push(zzL, line.new(array.get(zx, n2 - 2), array.get(zy, n2 - 2),
+                     array.get(zx, n2 - 1), array.get(zy, n2 - 1), color = color.new(col, 55)))
+                if array.size(zzL) > 200
+                    line.delete(array.shift(zzL))
+
+        int n = array.size(zx)
+        if changed and n >= 4
+            // ── сначала пробуем 5 ног (движение / треугольник), потом 3 (коррекция)
+            int   code = 0
+            float conf = 0.0
+            string note = ""
+            int   legs = 0
+            int   i0 = na
+
+            if n >= 6
+                int b = n - 6
+                [c5, cf5, nt5] = f_classify5(array.get(zy, b), array.get(zy, b + 1), array.get(zy, b + 2),
+                     array.get(zy, b + 3), array.get(zy, b + 4), array.get(zy, b + 5),
+                     array.get(zx, b), array.get(zx, b + 1), array.get(zx, b + 2),
+                     array.get(zx, b + 3), array.get(zx, b + 4), array.get(zx, b + 5),
+                     okImp, okDia, okTri, tol)
+                if c5 != 0
+                    code := c5
+                    conf := cf5
+                    note := nt5
+                    legs := 5
+                    i0 := b
+
+            if code == 0 and okC3 and n >= 4
+                int b3 = n - 4
+                [c3, cf3, nt3, rb] = f_classify3(array.get(zy, b3), array.get(zy, b3 + 1),
+                     array.get(zy, b3 + 2), array.get(zy, b3 + 3), tol)
+                if c3 != 0
+                    code := c3
+                    conf := cf3
+                    note := nt3
+                    legs := 3
+                    i0 := b3
+
+            if code != 0
+                int   x0 = array.get(zx, i0)
+                // 🔴 Структуры не должны накладываться: новая принимается, только если
+                // начинается НЕ РАНЬШЕ конца предыдущей размеченной. Иначе каждая новая
+                // точка ZigZag рождала ещё одну разметку поверх старой, и график
+                // превращался в кашу из меток (видно на BTC 1h 08.09).
+                // Исключение: структура из 5 ног (движение/треугольник) имеет приоритет
+                // над коррекцией из 3 — она может «поглотить» её, если начинается не раньше.
+                bool  isNew = (x0 != curX0 or code != curCode) and
+                     (na(curEndX) or x0 >= curEndX or (legs == 5 and curLegs == 3 and x0 >= curX0))
+                float pStart = array.get(zy, i0)
+                float pNext  = array.get(zy, i0 + 1)
+                int   dirUp = pNext > pStart ? 1 : -1
+
+                if isNew
+                    // рисуем структуру целиком
+                    color cc = f_isMotive(code) ? col : color.new(col, 30)
+                    string st = code == 1 ? line.style_solid : line.style_dashed
+                    for k = 0 to legs - 1
+                        array.push(hist, line.new(array.get(zx, i0 + k), array.get(zy, i0 + k),
+                             array.get(zx, i0 + k + 1), array.get(zy, i0 + k + 1),
+                             color = cc, style = st, width = lw))
+                    // подписи волн: движение 1..5 · треугольник A..E · коррекция A,B,C
+                    for k = 1 to legs
+                        string lbl = legs == 5 and (code == 4 or code == 5) ?
+                             (k == 1 ? "A" : k == 2 ? "B" : k == 3 ? "C" : k == 4 ? "D" : "E") :
+                             legs == 5 ? str.tostring(k) :
+                             (k == 1 ? "A" : k == 2 ? "B" : "C")
+                        bool topPt = array.get(zh, i0 + k)
+                        array.push(histB, label.new(array.get(zx, i0 + k), array.get(zy, i0 + k), lbl,
+                             textcolor = color.white, color = color.new(cc, 15),
+                             style = topPt ? label.style_label_down : label.style_label_up, size = sz))
+                    // подпись типа структуры у последней точки
+                    array.push(histB, label.new(array.get(zx, i0 + legs), array.get(zy, i0 + legs),
+                         f_structName(code) + "  " + str.tostring(conf, "#.##"),
+                         textcolor = color.white, color = color.new(cc, 35),
+                         style = array.get(zh, i0 + legs) ? label.style_label_down : label.style_label_up,
+                         size = sz))
+                    if array.size(hist) > keep * 5
+                        for _i = 0 to 4
+                            line.delete(array.shift(hist))
+                    if array.size(histB) > keep * 6
+                        for _i = 0 to 5
+                            label.delete(array.shift(histB))
+
+                    // ── ЦЕЛИ ПО НОРМАМ (только для свежей структуры) ──────────
+                    if drawTargets
+                        float t1 = na
+                        float t2 = na
+                        if legs == 5 and code == 1
+                            // импульс завершён: следующая — коррекция 0.382/0.618 всего движения
+                            float full = array.get(zy, i0 + 5) - array.get(zy, i0)
+                            t1 := array.get(zy, i0 + 5) - full * 0.382
+                            t2 := array.get(zy, i0 + 5) - full * 0.618
+                        else if legs == 3 and code == 10
+                            // зигзаг: C = 100% и 162% волны A от конца B
+                            float A = array.get(zy, i0 + 1) - array.get(zy, i0)
+                            t1 := array.get(zy, i0 + 2) + A
+                            t2 := array.get(zy, i0 + 2) + A * 1.618
+                        else if legs == 3 and (code == 11 or code == 12 or code == 13)
+                            float A = array.get(zy, i0 + 1) - array.get(zy, i0)
+                            t1 := array.get(zy, i0 + 2) + A * 1.618
+                            t2 := array.get(zy, i0 + 2) + A
+                        if not na(t1)
+                            array.push(tgt, line.new(array.get(zx, i0 + legs), t1, bar_index + 20, t1,
+                                 color = color.new(col, 30), style = line.style_dotted))
+                        if not na(t2)
+                            array.push(tgt, line.new(array.get(zx, i0 + legs), t2, bar_index + 20, t2,
+                                 color = color.new(col, 55), style = line.style_dotted))
+                        while array.size(tgt) > keep * 2
+                            line.delete(array.shift(tgt))
+
+                    // ── ЗОНЫ КОРРЕКЦИЙ 2 и 4 (нормы 0.618 и 0.382) ───────────
+                    if drawZones and legs == 5 and code == 1
+                        float w3len = array.get(zy, i0 + 3) - array.get(zy, i0 + 2)
+                        float z1 = array.get(zy, i0 + 3) - w3len * 0.382
+                        float z2 = array.get(zy, i0 + 3) - w3len * 0.618
+                        array.push(zones, box.new(array.get(zx, i0 + 3), math.max(z1, z2),
+                             array.get(zx, i0 + 5), math.min(z1, z2),
+                             border_color = color.new(col, 70), bgcolor = color.new(col, 90)))
+                        while array.size(zones) > keep
+                            box.delete(array.shift(zones))
+
+                    curCode := code
+                    curX0 := x0
+                    curLegs := legs
+                    curConf := conf
+                    curNote := note
+                    curDir := dirUp
+                    curEndX := array.get(zx, i0 + legs)
+                    // уровень инвалидации: для движения — начало волны 1 (правило R1),
+                    // для коррекции — основание волны A (правило зигзага/плоскости)
+                    curInvalid := array.get(zy, i0)
+
+    if drawInvalid and not na(curInvalid) and barstate.islast
+        var line invLine = na
+        line.delete(invLine)
+        invLine := line.new(nz(curEndX, bar_index), curInvalid, bar_index + 20, curInvalid,
+             color = color.new(color.red, 40), style = line.style_dashed)
+
+    [curCode, curConf, curNote, curDir, curLegs, curInvalid]
+
+[c1, cf1, nt1, d1, lg1, iv1] = f_degree(s1on, dev1, zzDepth, zzAtrLen, col1, showZz, maxStruct, SZ, lineW, useImpulse, useDiagonal, useTriangle, useCorr3, normTol, showTargets, showInvalid, showOteZone)
+[c2, cf2, nt2, d2, lg2, iv2] = f_degree(s2on, dev2, zzDepth, zzAtrLen, col2, showZz, maxStruct, SZ, lineW, useImpulse, useDiagonal, useTriangle, useCorr3, normTol, showTargets, showInvalid, showOteZone)
+[c3, cf3, nt3, d3, lg3, iv3] = f_degree(s3on, dev3, zzDepth, zzAtrLen, col3, showZz, maxStruct, SZ, lineW, useImpulse, useDiagonal, useTriangle, useCorr3, normTol, showTargets, showInvalid, showOteZone)
+
+// ─── ВЛОЖЕННОСТЬ: проверка локальных структур по гайду ──────────────────────
+// Гайд «структуры движения» §Локальные структуры: волна 3 — ТОЛЬКО импульс;
+// волна 1 — импульс или начальная диагональ; волна 5 — импульс или конечная
+// диагональ; волна 2 — любая коррекция КРОМЕ треугольника; волна 4 — любая.
+// Гайд «структуры коррекции»: в зигзаге A и C — движения, B — любая коррекция;
+// в плоскости A и B — зигзаги, C — движение; в треугольнике все волны — зигзаги.
+// Здесь проверяется согласие СОСЕДНИХ степеней: что младшая разметила внутри старшей.
+f_nestOk(int senior, int junior) =>
+    bool res = true
+    string why = ""
+    if senior == 0 or junior == 0
+        res := true
+    else if f_isMotive(senior)
+        // внутри движения младшая степень обязана давать движение или коррекцию —
+        // нарушение только одно и оно жёсткое: треугольник не бывает волной 2
+        if senior == 1 and (junior == 4 or junior == 5)
+            res := false
+            why := "треугольник внутри импульса допустим лишь как волна 4"
+    else
+        // внутри коррекции: плоскость требует зигзагов в A и B
+        if (senior == 11 or senior == 12 or senior == 13) and f_isMotive(junior) and junior != 1
+            res := false
+            why := "в плоскости A и B — зигзаги, диагональ здесь не по канону"
+    [res, why]
+
+[nest12, why12] = f_nestOk(c2, c1)
+[nest23, why23] = f_nestOk(c3, c2)
+
+// ─── ПАНЕЛЬ ─────────────────────────────────────────────────────────────────
+f_dirTxt(int d) => d == 1 ? "вверх" : d == -1 ? "вниз" : "—"
+
+var table tb = table.new(position.bottom_right, 4, 8, border_width = 1,
+     bgcolor = color.new(#131722, 0), frame_color = color.new(color.gray, 40), frame_width = 1)
+
+if showTable and barstate.islast
+    table.clear(tb, 0, 0, 3, 7)
+    color hdr = color.new(#2a2e39, 0)
+    table.cell(tb, 0, 0, "OKO Elliott v2", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb, 1, 0, "структура", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb, 2, 0, "напр.", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb, 3, 0, "нормы (уверенность)", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb, 0, 1, "степень 1 · dev " + str.tostring(dev1), text_size = SZ, text_color = col1)
+    table.cell(tb, 1, 1, f_structName(c1), text_size = SZ, text_color = color.white)
+    table.cell(tb, 2, 1, f_dirTxt(d1), text_size = SZ, text_color = color.white)
+    table.cell(tb, 3, 1, nt1 + " (" + str.tostring(cf1, "#.##") + ")", text_size = SZ, text_color = color.white)
+    table.cell(tb, 0, 2, "степень 2 · dev " + str.tostring(dev2), text_size = SZ, text_color = col2)
+    table.cell(tb, 1, 2, f_structName(c2), text_size = SZ, text_color = color.white)
+    table.cell(tb, 2, 2, f_dirTxt(d2), text_size = SZ, text_color = color.white)
+    table.cell(tb, 3, 2, nt2 + " (" + str.tostring(cf2, "#.##") + ")", text_size = SZ, text_color = color.white)
+    table.cell(tb, 0, 3, "степень 3 · dev " + str.tostring(dev3), text_size = SZ, text_color = col3)
+    table.cell(tb, 1, 3, f_structName(c3), text_size = SZ, text_color = color.white)
+    table.cell(tb, 2, 3, f_dirTxt(d3), text_size = SZ, text_color = color.white)
+    table.cell(tb, 3, 3, nt3 + " (" + str.tostring(cf3, "#.##") + ")", text_size = SZ, text_color = color.white)
+    table.cell(tb, 0, 4, "вложенность 1 в 2", text_size = SZ, text_color = color.gray)
+    table.cell(tb, 1, 4, nest12 ? "по канону" : "конфликт", text_size = SZ,
+         text_color = color.white, bgcolor = nest12 ? na : color.new(color.red, 55))
+    table.cell(tb, 2, 4, "", text_size = SZ)
+    table.cell(tb, 3, 4, why12, text_size = SZ, text_color = color.gray)
+    table.cell(tb, 0, 5, "вложенность 2 в 3", text_size = SZ, text_color = color.gray)
+    table.cell(tb, 1, 5, nest23 ? "по канону" : "конфликт", text_size = SZ,
+         text_color = color.white, bgcolor = nest23 ? na : color.new(color.red, 55))
+    table.cell(tb, 2, 5, "", text_size = SZ)
+    table.cell(tb, 3, 5, why23, text_size = SZ, text_color = color.gray)
+    table.cell(tb, 0, 6, "инвалидация ст.2", text_size = SZ, text_color = color.gray)
+    table.cell(tb, 1, 6, na(iv2) ? "—" : str.tostring(iv2, format.mintick), text_size = SZ, text_color = color.white)
+    table.cell(tb, 2, 6, "лаг 6 бар.", text_size = SZ, text_color = color.gray)
+    table.cell(tb, 3, 6, "хвост может переразметиться", text_size = SZ, text_color = color.gray)
+
+// ─── DATA WINDOW ────────────────────────────────────────────────────────────
+plot(c1,  "struct_deg1", display = display.data_window)
+plot(c2,  "struct_deg2", display = display.data_window)
+plot(c3,  "struct_deg3", display = display.data_window)
+plot(cf1, "conf_deg1",   display = display.data_window)
+plot(cf2, "conf_deg2",   display = display.data_window)
+plot(cf3, "conf_deg3",   display = display.data_window)
+plot(d1,  "dir_deg1",    display = display.data_window)
+plot(d2,  "dir_deg2",    display = display.data_window)
+plot(d3,  "dir_deg3",    display = display.data_window)
+plot(lg1, "legs_deg1",   display = display.data_window)
+plot(lg2, "legs_deg2",   display = display.data_window)
+plot(lg3, "legs_deg3",   display = display.data_window)
+plot(iv2, "invalidation_deg2", display = display.data_window)
+plot(nest12 ? 1 : 0, "nest_1in2_ok", display = display.data_window)
+plot(nest23 ? 1 : 0, "nest_2in3_ok", display = display.data_window)
+
+// ─── АЛЕРТЫ ─────────────────────────────────────────────────────────────────
+alertcondition(c2 != c2[1] and c2 != 0, "Новая структура · степень 2", "OKO EW2: размечена новая структура")
+alertcondition(c2 == 1 and c2[1] != 1, "Импульс завершён · степень 2", "OKO EW2: импульс 5 волн завершён")
+alertcondition(not nest12 and nest12[1], "Конфликт вложенности", "OKO EW2: младшая степень противоречит старшей")

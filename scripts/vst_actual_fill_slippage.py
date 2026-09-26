@@ -74,7 +74,7 @@ def main() -> int:
     # знак «хуже»: LONG исполнился ВЫШЕ сигнала — плохо; SHORT НИЖЕ — плохо
     sign = np.where(d["dir"] == "LONG", 1.0, -1.0)
     d["slip"] = (d.actual_entry_price - d.entry_price) / d.entry_price * 100 * sign
-    d["t"] = pd.to_datetime(d.created_at, errors="coerce", utc=True)
+    d["t"] = pd.to_datetime(d.created_at, errors="coerce", utc=True, format="mixed")
     d["stop_pct"] = (d.entry_price - d.stop_loss).abs() / d.entry_price * 100
     d["mode"] = d.execution_mode.fillna("—").astype(str).str.lower()
 

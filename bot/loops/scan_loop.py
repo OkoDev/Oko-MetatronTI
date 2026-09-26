@@ -1542,7 +1542,8 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             t_enter = _time.monotonic()
             try:
                 # Горячий путь: грузим только TF, которые реально нужны самому scan_loop.
-                # 3m/1d оставляем ленивыми — они нужны в analyze_symbol только для пар с сигналом.
+                # 3m и 1d были ленивыми — и оба молча не попадали в wt_snap (1d — 17.08,
+                # 3m — 10.09). Теперь оба тянутся здесь, ДО сборки снапшота.
                 _fetch_plan: list[tuple[str, int]] = []
                 _seen_fetches: set[tuple[str, int]] = set()
 
@@ -1566,6 +1567,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 _add_fetch("4h", _LIMIT_4H)
                 _add_fetch("5m", 200)    # 17.08: 5m как КОНТЕКСТ в снапшот (запросы освободил
                                           # выключенный sideways_mode, который жёг 219 REST/цикл)
+                # 10.09: 3m в снапшот. limit=100 — РОВНО тот, с которым его уже тянет ленивый
+                # путь на ~:2517, поэтому запись кэша общая и REST не прибавляется
+                # (по [OHLCV-CACHE] 3m = 549 попаданий / 0 REST за цикл). Просить 200 нельзя:
+                # кэш отдаёт запись только при limit ≥ запрошенного → все 845 пар ушли бы в REST.
+                _add_fetch("3m", 100)
 
                 # D-055v2 REVERTED (2026-05-24 17:46 MSK): sequential TF fetch замедлял
                 # scan_loop → cascade через 54 мин (raньше 8-9ч). Возврат на parallel.
@@ -1587,7 +1593,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 df_1h = _fetched_map.get(("1h", _LIMIT_1H))
                 df_4h = _fetched_map.get(("4h", _LIMIT_4H))
                 df_5m = _fetched_map.get(("5m", 200))
-                df_3m = None
+                df_3m = _fetched_map.get(("3m", 100))
                 # 17.08 (Егор): дневку тянем ДО сборки wt_snap — иначе снапшот шины уходил без «1d»
                 # (build_wt_snap ждёт его на :1457, а грузился он лениво только на ~:2458).
                 # Данные биржевые, НЕ ресемпл; по счётчикам [OHLCV-CACHE] 1d отдаётся из кэша на 97%,
@@ -1702,6 +1708,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     try:
                         from core.smc.sub_cube import get_smc_sub_cube
                         _smc_ohlcv = {}
+                        # 11.09: 3m и 5m в SMC. Замер BTC (3 прогона): без 3m 40 мс, с 3m 33 мс —
+                        # разница в шуме, у младших ТФ 100-200 баров против 300 у 15m. Свечи уже
+                        # в руках после _add_fetch выше, новых запросов нет. Раньше SMC собирался
+                        # из {entry,1h,4h,1d}, и на 5m флаги были пусты при живом WT — фильтр
+                        # молча отдавал ноль.
+                        if df_3m is not None and not df_3m.empty:
+                            _smc_ohlcv["3m"] = df_3m
+                        if df_5m is not None and not df_5m.empty:
+                            _smc_ohlcv["5m"] = df_5m
                         if df_entry is not None and not df_entry.empty:
                             _smc_ohlcv[_etf] = df_entry
                         if df_1h is not None and not df_1h.empty:

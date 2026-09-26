@@ -1,0 +1,911 @@
+//@version=6
+// ============================================================================
+// OKO WAVE v1 — волновой детектор бота, перенесённый в Pine
+//
+// ЧТО ПЕРЕНЕСЕНО (порт 1:1, не новая выдумка):
+//   core/smc/oko_sm_engine.py       → run_structure() + current_leg()
+//                                     (два масштаба: swing_len=50 / internal_len=5,
+//                                      trend/itrend, CHoCH/BOS, trail_up/trail_dn)
+//   core/intelligence/wave_service.py → счёт волн n_down/n_up на трёх ТФ,
+//                                     _htf_dir(), _detect_phase(), _is_recount()
+//   scripts/matrix_full.py::wave_features → признаки leg_* (те же имена, что
+//                                     в матрице — чтобы график и замер спрашивали
+//                                     ОДНО И ТО ЖЕ число, а не два похожих)
+//
+// 🔴 ЗАМКНУТЫЙ КРУГ: oko_sm_engine сам был портом Pine-индикатора Егора
+// «OKO - SM» v163 (docs/reference/OkoSM_v163.pine). Структурная часть здесь —
+// возврат к первоисточнику, надстройка (нога + счёт волн + фаза) в Pine
+// не существовала никогда.
+//
+// 🔑 ОБА СЛОЯ РАБОЧИЕ. В Python нога строится ТОЛЬКО на старшем масштабе
+// (`current_leg` смотрит на `trend` и `trail_up/dn` len50), а младший живёт лишь
+// счётчиком `leg_minor_breaks`. Здесь у младшего слоя своя структура целиком:
+// свой itrend, свои бегущие экстремумы, своя нога и свои leg_*-признаки. Это
+// РАСШИРЕНИЕ порта, а не порт: в боте таких полей нет, сверять с матрицей можно
+// только слой 50 (колонки leg_*_<tf>).
+//
+// 🔴 ИЗВЕСТНЫЕ РАСХОЖДЕНИЯ С PYTHON (проверять при сверке, а не удивляться):
+//   1. ATR: Python `_atr` = ewm(alpha=1/43, adjust=False) от первого бара,
+//      Pine ta.rma инициализируется SMA(43). Расходятся первые ~43 бара.
+//   2. Матрица делает shift(1) — нога, известная на ЗАКРЫТОМ баре. Индикатор
+//      показывает состояние ТЕКУЩЕГО бара. Для сверки с parquet брать значение
+//      предыдущего бара (в Data Window — шаг влево).
+//   3. Хвост разметки НЕ окончателен: свинг подтверждается только через
+//      `length` баров с каждой стороны — это параметр детектора, не статистика
+//      ([[detector_lag_is_a_parameter_not_statistics]]). Панель показывает
+//      `unconfirmed` — сколько последних баров ещё могут переразметиться,
+//      отдельно для каждого слоя.
+//   4. has_div в боте приходит от отдельного детектора дивергенций (Сфера 7).
+//      Здесь это ВНЕШНИЙ вход (input.source) — детектор дивергенций не портирован.
+//      Пока источник не подключён, фаза `wave5_final` недостижима, ровно как
+//      в боте при пустом `active_divergence`.
+//
+// ✅ ПРОВЕРЕНО ЗАПУСКОМ 08.09.2026 — BINGX:SEIUSDT.P 1h, 500 баров выгружены из
+// TradingView и прогнаны через `oko_sm_engine.run_structure` тем же кодом бота:
+//   Pine / Python: trend 1/1 · itrend 1/1 · leg_dir 1/1 · leg_span_bars 73/73 ·
+//   leg_age_origin 87/87 · leg_age_extreme 14/14 · leg_amp_pct 10.05405/10.05405 ·
+//   leg_amp_atr 7.41992/7.41993 · leg_speed_atr 0.10164/0.10164 ·
+//   leg_minor_breaks 5/5 · leg_minor_per100 5.74713/5.74713.
+//   Разошлись двое, оба объяснены и оба НЕ дефект порта:
+//     · leg_pos 0.65376 против 0.63656 — единственное поле, зависящее от ЖИВОЙ
+//       цены; между двумя замерами тикер сходил на ~0.00008;
+//     · n_up 2 против 0 — это вход «только ЗАКРЫТЫЙ бар»: пивот на баре 494
+//       подтверждается лишь на последнем баре (494+5), до него цепочка
+//       462→474→487 даёт ровно 2.
+//
+// 🔴 НАБЛЮДЕНИЕ, важное для набора ARCH-137: `leg_span_bars` бывает
+// ОТРИЦАТЕЛЬНЫМ — экстремум ноги оказывается ЛЕВЕЕ её origin. Это свойство
+// самого движка, а не Pine: на тех же 500 барах Python дал 10 из 197 ног (5.1%)
+// при swing_len=50 и 72 из 486 (14.8%) при swing_len=5, минимум −41.
+// Фильтр «leg_span_bars ≤ 86» пропускает их все.
+// ============================================================================
+
+indicator("OKO Wave + Elliott [порт детекторов бота]", "OKO WE", overlay = true,
+     max_bars_back = 5000, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 100)
+
+// ─── ВХОДЫ ──────────────────────────────────────────────────────────────────
+string gS = "Структура OKO-SM — ДВА СЛОЯ"
+swingLen    = input.int(50, "Слой 1 · старший length", minval = 2, group = gS)
+internalLen = input.int(5,  "Слой 2 · младший length", minval = 2, group = gS)
+showMajorEv = input.bool(false, "Метки CHoCH / BOS — старший слой", group = gS,
+     tooltip = "Выключено по умолчанию: их уже рисует OKO - SM v163")
+showMinorEv = input.bool(false, "Метки CHoCH / BOS — младший слой", group = gS)
+
+string gL = "Ноги (leg)"
+legLayer = input.string("оба", "Какой слой рисовать", options = ["оба", "старший", "младший", "ничего"], group = gL)
+showOte  = input.bool(true,  "Зона OTE (откат 0.618–0.79)", group = gL)
+oteLayer = input.string("старший", "OTE от какой ноги", options = ["старший", "младший"], group = gL)
+atrLen   = input.int(43, "ATR — боевая калибровка", minval = 1, group = gL,
+     tooltip = "43 = ewm(alpha=1/43) из core/smc/impulse_fib.py::_atr")
+
+string gW = "Счёт волн (прокси Эллиотта)"
+tfHTF     = input.timeframe("240", "HTF — основной счёт n_down/n_up", group = gW)
+tfMTF     = input.timeframe("60",  "MTF", group = gW)
+tfLTF     = input.timeframe("5",   "LTF", group = gW)
+perHTF    = input.int(5, "period · HTF", minval = 1, group = gW)
+perMTF    = input.int(5, "period · MTF", minval = 1, group = gW)
+perLTF    = input.int(3, "period · LTF", minval = 1, group = gW)
+useClosed = input.bool(true, "Брать только ЗАКРЫТЫЙ бар старшего ТФ", group = gW,
+     tooltip = "Причинность: как shift(1) в матрице. Выключать только для отладки")
+
+string gP = "Фаза"
+useDiv = input.bool(false, "Учитывать дивергенцию из внешнего источника", group = gP)
+divSrc = input.source(close, "Источник дивергенции (≠ 0 → есть)", group = gP,
+     tooltip = "Детектор дивергенций не портирован. Подключите вывод стороннего\nиндикатора: любое значение ≠ 0 читается как active_divergence")
+chochScope = input.string("любой", "CHoCH из слоя", options = ["любой", "старший", "младший"], group = gP)
+
+string gT = "Панель"
+showTable   = input.bool(true, "Показывать панель", group = gT)
+tblPosIn    = input.string("Справа сверху", "Позиция", options = ["Справа сверху", "Справа снизу", "Слева сверху", "Слева снизу"], group = gT)
+txtIn       = input.string("крупный", "Размер подписей", options = ["мелкий", "обычный", "крупный", "огромный"], group = gT)
+showArch137 = input.bool(true, "Строка набора ARCH-137 (1h long)", group = gT,
+     tooltip = "leg_minor_breaks ≤ 5 И leg_span_bars ≤ 86 на СТАРШЕМ слое —\nкандидат из [[wave_leg_1h_long_candidate]]. Не сигнал, а метка совпадения условий")
+
+// размер подписей — Егор 08.09: «на графике ничего не разобрать»
+simple string SZ = txtIn == "мелкий" ? size.tiny : txtIn == "обычный" ? size.small : txtIn == "крупный" ? size.normal : size.large
+
+// ─── СВИНГ-МАШИНА OKO-SM ────────────────────────────────────────────────────
+// Порт `_swings()`: os := high[len] > ta.highest(len) ? 0 : low[len] < ta.lowest(len) ? 1 : os[1]
+// Точка свинга лежит на баре `len` назад, подтверждается на текущем.
+f_smSwings(simple int len) =>
+    var int os = 0
+    int prev = os
+    float upper = ta.highest(len)
+    float lower = ta.lowest(len)
+    os := not na(high[len]) and high[len] > upper ? 0 : not na(low[len]) and low[len] < lower ? 1 : os
+    [os == 0 and prev != 0, os == 1 and prev != 1]
+
+[swTop, swBtm] = f_smSwings(swingLen)
+[inTop, inBtm] = f_smSwings(internalLen)
+
+// ─── СЛОЙ 1: СТАРШИЙ (порт run_structure, ветка swing) ──────────────────────
+var float topY = na
+var int   topX = na
+var float btmY = na
+var int   btmX = na
+var float trailUp = na
+var int   trailUpX = na
+var float trailDn = na
+var int   trailDnX = na
+var bool  topCross = false
+var bool  btmCross = false
+var int   trend = 0
+var bool  lastMajorChoch = false
+
+// ─── СЛОЙ 2: МЛАДШИЙ (порт ветки internal + СВОИ бегущие экстремумы) ────────
+// 🔑 trail'ов у internal в Pine-оригинале нет — они добавлены здесь по той же
+// механике, что у старшего слоя: свинг задаёт точку, дальше экстремум бежит.
+// Без них у младшего слоя не может быть ноги, и второй length оставался бы
+// декоративным входом.
+var float itopY = na
+var int   itopX = na
+var float ibtmY = na
+var int   ibtmX = na
+var float itrailUp = na
+var int   itrailUpX = na
+var float itrailDn = na
+var int   itrailDnX = na
+var bool  itopCross = false
+var bool  ibtmCross = false
+var int   itrend = 0
+var bool  lastMinorChoch = false
+var int   icum = 0     // накопительный счётчик младших сломов
+var int   idir = 0     // направление последнего младшего слома
+
+// 1) новые подтверждённые свинги этого бара
+if inTop
+    itopY := high[internalLen]
+    itopX := bar_index - internalLen
+    itopCross := true
+    itrailUp  := itopY
+    itrailUpX := itopX
+if inBtm
+    ibtmY := low[internalLen]
+    ibtmX := bar_index - internalLen
+    ibtmCross := true
+    itrailDn  := ibtmY
+    itrailDnX := ibtmX
+if swTop
+    topY := high[swingLen]
+    topX := bar_index - swingLen
+    topCross := true
+    trailUp  := topY          // top → reset trail (Pine :1679 оригинала)
+    trailUpX := topX
+if swBtm
+    btmY := low[swingLen]
+    btmX := bar_index - swingLen
+    btmCross := true
+    trailDn  := btmY
+    trailDnX := btmX
+
+// 2) бегущие экстремумы обоих слоёв (Strong High / Weak Low)
+if na(trailUp) or high > trailUp
+    trailUp  := high
+    trailUpX := bar_index
+if na(trailDn) or low < trailDn
+    trailDn  := low
+    trailDnX := bar_index
+if na(itrailUp) or high > itrailUp
+    itrailUp  := high
+    itrailUpX := bar_index
+if na(itrailDn) or low < itrailDn
+    itrailDn  := low
+    itrailDnX := bar_index
+
+// 3) сломы: crossover close через уровень свинга, одноразово (флаг *Cross)
+bool evMinorBull = false
+bool evMinorBear = false
+bool evMajorBull = false
+bool evMajorBear = false
+
+if bar_index > 0
+    // младший слой (фильтр topY != itopY — как в Pine-оригинале)
+    if not na(itopY) and itopCross and close > itopY and close[1] <= itopY and (na(topY) or topY != itopY)
+        evMinorBull := true
+        lastMinorChoch := itrend < 0
+        itopCross := false
+        itrend := 1
+        icum += 1
+        idir := 1
+    if not na(ibtmY) and ibtmCross and close < ibtmY and close[1] >= ibtmY and (na(btmY) or btmY != ibtmY)
+        evMinorBear := true
+        lastMinorChoch := itrend > 0
+        ibtmCross := false
+        itrend := -1
+        icum += 1
+        idir := -1
+    // старший слой
+    if not na(topY) and topCross and close > topY and close[1] <= topY
+        evMajorBull := true
+        lastMajorChoch := trend < 0
+        topCross := false
+        trend := 1
+    if not na(btmY) and btmCross and close < btmY and close[1] >= btmY
+        evMajorBear := true
+        lastMajorChoch := trend > 0
+        btmCross := false
+        trend := -1
+
+if showMajorEv and (evMajorBull or evMajorBear)
+    label.new(bar_index, evMajorBull ? low : high,
+         (lastMajorChoch ? "CHoCH" : "BOS") + (evMajorBull ? " ▲" : " ▼"),
+         style = evMajorBull ? label.style_label_up : label.style_label_down,
+         color = evMajorBull ? color.new(color.teal, 20) : color.new(color.maroon, 20),
+         textcolor = color.white, size = SZ)
+if showMinorEv and (evMinorBull or evMinorBear)
+    label.new(bar_index, evMinorBull ? low : high,
+         (lastMinorChoch ? "choch" : "bos") + (evMinorBull ? " ▴" : " ▾"),
+         style = evMinorBull ? label.style_label_up : label.style_label_down,
+         color = color.new(color.gray, 55), textcolor = color.white, size = SZ)
+
+// ─── НОГА ОДНОГО СЛОЯ (порт current_leg, общий для обоих) ───────────────────
+// trend=1:  origin = последний btm (HL) или Weak Low   → extreme = Strong High
+// trend=-1: origin = последний top (LH) или Strong High → extreme = Weak Low
+f_leg(int tr, float tY, int tX, float bY, int bX, float tUp, int tUpX, float tDn, int tDnX) =>
+    int   d  = 0
+    float o  = na
+    int   oX = na
+    float e  = na
+    int   eX = na
+    if tr == 1 and not na(tUp)
+        float oo = not na(bY) ? bY : tDn
+        int   ox = not na(bY) ? bX : tDnX
+        if not na(oo) and oo < tUp
+            d  := 1
+            o  := oo
+            oX := ox
+            e  := tUp
+            eX := tUpX
+    else if tr == -1 and not na(tDn)
+        float oo = not na(tY) ? tY : tUp
+        int   ox = not na(tY) ? tX : tUpX
+        if not na(oo) and oo > tDn
+            d  := -1
+            o  := oo
+            oX := ox
+            e  := tDn
+            eX := tDnX
+    [d, o, oX, e, eX]
+
+[legDir,  legOrigin,  legOriginX,  legExtreme,  legExtremeX]  = f_leg(trend,  topY,  topX,  btmY,  btmX,  trailUp,  trailUpX,  trailDn,  trailDnX)
+[mlegDir, mlegOrigin, mlegOriginX, mlegExtreme, mlegExtremeX] = f_leg(itrend, itopY, itopX, ibtmY, ibtmX, itrailUp, itrailUpX, itrailDn, itrailDnX)
+
+// ─── ПРИЗНАКИ leg_* (имена = колонки матрицы) ───────────────────────────────
+float atrV = ta.atr(atrLen)
+
+// СТАРШИЙ СЛОЙ
+float span  = legDir == 0 ? na : legExtreme - legOrigin
+float spanS = na(span) or span == 0 ? na : span
+float legPos      = (close - legOrigin) / spanS      // 1.0 = на экстремуме, 0 = вернулась к началу
+float legRetr     = 1.0 - legPos                      // глубина отката — язык фибо
+float legAmpPct   = math.abs(span) / legOrigin * 100
+float legAmpAtr   = na(atrV) or atrV <= 0 ? na : math.abs(span) / atrV
+float legSpanBars = legDir == 0 ? na : legExtremeX - legOriginX
+float legAgeOrig  = legDir == 0 ? na : bar_index - legOriginX
+float legAgeExtr  = legDir == 0 ? na : bar_index - legExtremeX
+float legSpeedAtr = na(legSpanBars) or legSpanBars <= 0 ? na : legAmpAtr / legSpanBars
+bool  legInOte    = not na(legRetr) and legRetr >= 0.618 and legRetr <= 0.79
+bool  legInDisc   = not na(legRetr) and legRetr > 0.5
+
+// МЛАДШИЙ СЛОЙ — те же величины на своей ноге
+float mspan  = mlegDir == 0 ? na : mlegExtreme - mlegOrigin
+float mspanS = na(mspan) or mspan == 0 ? na : mspan
+float mlegPos      = (close - mlegOrigin) / mspanS
+float mlegRetr     = 1.0 - mlegPos
+float mlegAmpPct   = math.abs(mspan) / mlegOrigin * 100
+float mlegAmpAtr   = na(atrV) or atrV <= 0 ? na : math.abs(mspan) / atrV
+float mlegSpanBars = mlegDir == 0 ? na : mlegExtremeX - mlegOriginX
+float mlegAgeOrig  = mlegDir == 0 ? na : bar_index - mlegOriginX
+float mlegAgeExtr  = mlegDir == 0 ? na : bar_index - mlegExtremeX
+float mlegSpeedAtr = na(mlegSpanBars) or mlegSpanBars <= 0 ? na : mlegAmpAtr / mlegSpanBars
+bool  mlegInOte    = not na(mlegRetr) and mlegRetr >= 0.618 and mlegRetr <= 0.79
+bool  mlegInDisc   = not na(mlegRetr) and mlegRetr > 0.5
+
+// младшие сломы ВНУТРИ старшей ноги: icum сейчас − icum на баре origin
+int legMinor = na
+if legDir != 0 and not na(legOriginX)
+    int off = math.min(bar_index - legOriginX, 4999)
+    legMinor := icum - icum[off]
+float legMinorPer100 = na(legMinor) or na(legAgeOrig) or legAgeOrig <= 0 ? na : legMinor / legAgeOrig * 100
+int   legMinorAgree  = legDir == 0 or idir == 0 ? na : (idir == legDir ? 1 : -1)
+// вложенность слоёв: младшая нога идёт ПО старшей или ПРОТИВ
+int legNested = legDir == 0 or mlegDir == 0 ? na : (mlegDir == legDir ? 1 : -1)
+
+// ─── СЧЁТ ВОЛН n_down / n_up (порт calculate_n_down / calculate_n_up) ───────
+// 🔴 Строгий порт find_swing_highs: пивот = строго выше ВСЕХ соседей на `per`
+// баров с каждой стороны. ta.pivothigh() трактует равные бары иначе — на плоских
+// свечах (а их у части монет большинство) разметка разошлась бы молча.
+f_isPivotHigh(simple int per) =>
+    float v = high[per]
+    bool ok = not na(v)
+    if ok
+        for k = 0 to per * 2
+            if k != per
+                float x = high[k]
+                if na(x) or x >= v
+                    ok := false
+    ok
+
+f_isPivotLow(simple int per) =>
+    float v = low[per]
+    bool ok = not na(v)
+    if ok
+        for k = 0 to per * 2
+            if k != per
+                float x = low[k]
+                if na(x) or x <= v
+                    ok := false
+    ok
+
+// n_down = сколько подряд снижающихся swing-high с конца (эквивалент цикла
+// по списку пивотов: новый ниже предыдущего → +1, иначе сброс в 0)
+f_waveCount(simple int per) =>
+    var int nDown = 0
+    var int nUp = 0
+    var float prevPH = na
+    var float prevPL = na
+    if f_isPivotHigh(per)
+        float v = high[per]
+        nDown := not na(prevPH) and v < prevPH ? nDown + 1 : 0
+        prevPH := v
+    if f_isPivotLow(per)
+        float v = low[per]
+        nUp := not na(prevPL) and v > prevPL ? nUp + 1 : 0
+        prevPL := v
+    [nDown, nUp]
+
+// _htf_dir(): порог 0.5 диапазона за окно, не фиксированный процент
+f_htfDir(simple int bars) =>
+    float mv = close - close[bars]
+    float rg = ta.sma(high - low, bars)
+    na(rg) or rg <= 0 or na(mv) ? 0 : mv > 0.5 * rg ? 1 : mv < -0.5 * rg ? -1 : 0
+
+f_wavePack(simple int per, simple bool closed) =>
+    [nd, nu] = f_waveCount(per)
+    int dr = f_htfDir(5)
+    [closed ? nd[1] : nd, closed ? nu[1] : nu, closed ? dr[1] : dr]
+
+[ndH, nuH, dirH] = request.security(syminfo.tickerid, tfHTF, f_wavePack(perHTF, useClosed), lookahead = barmerge.lookahead_off)
+[ndM, nuM, dirM] = request.security(syminfo.tickerid, tfMTF, f_wavePack(perMTF, useClosed), lookahead = barmerge.lookahead_off)
+[ndL, nuL, dirL] = request.security(syminfo.tickerid, tfLTF, f_wavePack(perLTF, useClosed), lookahead = barmerge.lookahead_off)
+
+// ─── ФАЗА (порт _detect_phase) ──────────────────────────────────────────────
+bool hasChoch = chochScope == "старший" ? lastMajorChoch : chochScope == "младший" ? lastMinorChoch : (lastMajorChoch or lastMinorChoch)
+bool hasDiv   = useDiv and not na(divSrc) and divSrc != 0
+int  nDownH   = nz(ndH)
+
+string phase = "undefined"
+float  conf  = 0.30
+if dirH == 1 and hasChoch and nDownH >= 3
+    phase := "ABC_waveB"
+    conf  := 0.80
+else if dirH == -1 and hasDiv and nDownH >= 3
+    phase := "wave5_final"
+    conf  := 0.75 + (hasChoch ? 0.10 : 0.0)
+else if dirH == -1 and nDownH == 0
+    phase := "impulse_start"
+    conf  := 0.65
+else if dirH == -1 and nDownH >= 1 and nDownH <= 3 and not hasDiv
+    phase := "wave3_mid"
+    conf  := 0.55 + nDownH * 0.05
+else if dirH == -1 and nDownH >= 4 and not hasDiv
+    phase := "wave3_mid"
+    conf  := 0.50
+
+// ─── ПЕРЕСЧЁТ СЧЁТА (порт _is_recount) ──────────────────────────────────────
+// По канону Эллиотта слом счёта = предыдущая разметка была неверной. Это
+// событие само по себе, а не служебная деталь: номер волны не может упасть
+// больше чем на 1 за такт, если вершины под ним не пересчитаны.
+var int    prevND = 0
+var int    prevNU = 0
+var string prevPhase = "undefined"
+var int    recounts = 0
+
+bool recount = nDownH < prevND - 1 or nz(nuH) < prevNU - 1 or (prevPhase == "wave5_final" and phase == "wave3_mid")
+bool phaseChanged = phase != prevPhase
+if barstate.isconfirmed
+    if recount
+        recounts += 1
+    prevND := nDownH
+    prevNU := nz(nuH)
+    prevPhase := phase
+
+// ─── ОТРИСОВКА НОГ ──────────────────────────────────────────────────────────
+var line  legLine  = na
+var label legLbl   = na
+var line  mlegLine = na
+var label mlegLbl  = na
+var box   oteBox   = na
+
+bool drawMajor = (legLayer == "оба" or legLayer == "старший") and legDir != 0
+bool drawMinor = (legLayer == "оба" or legLayer == "младший") and mlegDir != 0
+
+if barstate.islast
+    if not na(legLine)
+        line.delete(legLine)
+    if not na(legLbl)
+        label.delete(legLbl)
+    if not na(mlegLine)
+        line.delete(mlegLine)
+    if not na(mlegLbl)
+        label.delete(mlegLbl)
+    if not na(oteBox)
+        box.delete(oteBox)
+
+    if drawMajor
+        color c1 = legDir == 1 ? color.teal : color.maroon
+        legLine := line.new(legOriginX, legOrigin, legExtremeX, legExtreme, color = c1, width = 3)
+        legLbl := label.new(legExtremeX, legExtreme,
+             (legDir == 1 ? "нога ↑ " : "нога ↓ ") + str.tostring(swingLen) + " · откат " + str.tostring(legRetr * 100, "#.#") + "%",
+             style = legDir == 1 ? label.style_label_down : label.style_label_up,
+             color = color.new(c1, 25), textcolor = color.white, size = SZ)
+    if drawMinor
+        color c2 = mlegDir == 1 ? color.teal : color.maroon
+        mlegLine := line.new(mlegOriginX, mlegOrigin, mlegExtremeX, mlegExtreme,
+             color = color.new(c2, 35), width = 1, style = line.style_dashed)
+        mlegLbl := label.new(mlegExtremeX, mlegExtreme,
+             (mlegDir == 1 ? "↑" : "↓") + str.tostring(internalLen) + " · " + str.tostring(mlegRetr * 100, "#.#") + "%",
+             style = mlegDir == 1 ? label.style_label_down : label.style_label_up,
+             color = color.new(color.gray, 45), textcolor = color.white, size = SZ)
+
+    // OTE выбранного слоя
+    bool oteMajor = oteLayer == "старший"
+    int   oDir = oteMajor ? legDir : mlegDir
+    float oExt = oteMajor ? legExtreme : mlegExtreme
+    int   oExX = oteMajor ? legExtremeX : mlegExtremeX
+    float oSpan = oteMajor ? span : mspan
+    bool  oIn  = oteMajor ? legInOte : mlegInOte
+    if showOte and oDir != 0 and not na(oSpan)
+        float p618 = oExt - oSpan * 0.618
+        float p79  = oExt - oSpan * 0.79
+        oteBox := box.new(oExX, math.max(p618, p79), bar_index + 10, math.min(p618, p79),
+             border_color = color.new(color.orange, 40),
+             bgcolor = color.new(color.orange, oIn ? 80 : 92))
+
+// ─── ПАНЕЛЬ ─────────────────────────────────────────────────────────────────
+f_num(float v, simple string fmt) =>
+    na(v) ? "—" : str.tostring(v, fmt)
+
+f_dir(int d) =>
+    d == 1 ? "up" : d == -1 ? "down" : "flat"
+
+f_legDir(int d) =>
+    d == 1 ? "long" : d == -1 ? "short" : "нет"
+
+var table tbl = table.new(tblPosIn == "Справа снизу" ? position.bottom_right : tblPosIn == "Слева сверху" ? position.top_left : tblPosIn == "Слева снизу" ? position.bottom_left : position.top_right, 3, 22, border_width = 1,
+     bgcolor = color.new(#131722, 0), frame_color = color.new(color.gray, 40), frame_width = 1)
+
+if showTable and barstate.islast
+    table.clear(tbl, 0, 0, 2, 21)
+    int r = 0
+    color hdr = color.new(color.gray, 70)
+    table.cell(tbl, 0, r, "OKO Wave", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tbl, 1, r, "слой " + str.tostring(swingLen), bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tbl, 2, r, "слой " + str.tostring(internalLen), bgcolor = hdr, text_color = color.white, text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "trend", text_size = SZ)
+    table.cell(tbl, 1, r, f_dir(trend), text_size = SZ)
+    table.cell(tbl, 2, r, f_dir(itrend), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "последний слом", text_size = SZ)
+    table.cell(tbl, 1, r, lastMajorChoch ? "CHoCH" : "BOS", text_size = SZ)
+    table.cell(tbl, 2, r, lastMinorChoch ? "CHoCH" : "BOS", text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_dir", text_size = SZ)
+    table.cell(tbl, 1, r, f_legDir(legDir), text_size = SZ)
+    table.cell(tbl, 2, r, f_legDir(mlegDir), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_pos", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legPos, "#.###"), text_size = SZ)
+    table.cell(tbl, 2, r, f_num(mlegPos, "#.###"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_retr", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legRetr, "#.###"), text_size = SZ,
+         bgcolor = legInOte ? color.new(color.orange, 60) : legInDisc ? color.new(color.orange, 85) : na)
+    table.cell(tbl, 2, r, f_num(mlegRetr, "#.###"), text_size = SZ,
+         bgcolor = mlegInOte ? color.new(color.orange, 60) : mlegInDisc ? color.new(color.orange, 85) : na)
+    r += 1
+    table.cell(tbl, 0, r, "leg_span_bars", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legSpanBars, "#"), text_size = SZ)
+    table.cell(tbl, 2, r, f_num(mlegSpanBars, "#"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_age_origin", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legAgeOrig, "#"), text_size = SZ)
+    table.cell(tbl, 2, r, f_num(mlegAgeOrig, "#"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_amp_pct", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legAmpPct, "#.##") + "%", text_size = SZ)
+    table.cell(tbl, 2, r, f_num(mlegAmpPct, "#.##") + "%", text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_amp_atr", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legAmpAtr, "#.##"), text_size = SZ)
+    table.cell(tbl, 2, r, f_num(mlegAmpAtr, "#.##"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_speed_atr", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legSpeedAtr, "#.####"), text_size = SZ)
+    table.cell(tbl, 2, r, f_num(mlegSpeedAtr, "#.####"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "leg_minor_breaks", text_size = SZ)
+    table.cell(tbl, 1, r, f_num(legMinor, "#") + " (" + f_num(legMinorPer100, "#.#") + "/100)", text_size = SZ)
+    table.cell(tbl, 2, r, "—", text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "вложенность слоёв", text_size = SZ)
+    table.cell(tbl, 1, r, na(legNested) ? "—" : (legNested == 1 ? "по старшей" : "против старшей"), text_size = SZ)
+    table.cell(tbl, 2, r, na(legMinorAgree) ? "—" : (legMinorAgree == 1 ? "agree" : "против"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "unconfirmed (хвост)", text_size = SZ)
+    table.cell(tbl, 1, r, str.tostring(swingLen) + " бар.", text_size = SZ)
+    table.cell(tbl, 2, r, str.tostring(internalLen) + " бар.", text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "фаза / conf", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tbl, 1, r, phase, text_size = SZ,
+         text_color = phase == "undefined" ? color.gray : color.white,
+         bgcolor = phase == "undefined" ? na : color.new(color.blue, 70))
+    table.cell(tbl, 2, r, f_num(conf, "#.##"), text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "htf_dir / recounts", text_size = SZ)
+    table.cell(tbl, 1, r, f_dir(dirH), text_size = SZ)
+    table.cell(tbl, 2, r, str.tostring(recounts) + (recount ? " ⚠" : ""), text_size = SZ,
+         bgcolor = recount ? color.new(color.orange, 60) : na)
+    r += 1
+    table.cell(tbl, 0, r, "n_down/n_up HTF", text_size = SZ)
+    table.cell(tbl, 1, r, str.tostring(nz(ndH)) + " / " + str.tostring(nz(nuH)), text_size = SZ)
+    table.cell(tbl, 2, r, tfHTF, text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "n_down/n_up MTF", text_size = SZ)
+    table.cell(tbl, 1, r, str.tostring(nz(ndM)) + " / " + str.tostring(nz(nuM)), text_size = SZ)
+    table.cell(tbl, 2, r, tfMTF, text_size = SZ)
+    r += 1
+    table.cell(tbl, 0, r, "n_down/n_up LTF", text_size = SZ)
+    table.cell(tbl, 1, r, str.tostring(nz(ndL)) + " / " + str.tostring(nz(nuL)), text_size = SZ)
+    table.cell(tbl, 2, r, tfLTF, text_size = SZ)
+    if showArch137
+        bool a137 = legDir == 1 and not na(legMinor) and legMinor <= 5 and not na(legSpanBars) and legSpanBars <= 86
+        r += 1
+        table.cell(tbl, 0, r, "ARCH-137 (1h long)", text_size = SZ)
+        table.cell(tbl, 1, r, a137 ? "условия сошлись" : "нет", text_size = SZ,
+             bgcolor = a137 ? color.new(color.green, 60) : na)
+        table.cell(tbl, 2, r, "≤5 сломов · ≤86 бар", text_size = SZ)
+
+// ─── ВЫВОД В DATA WINDOW (для сверки с матрицей / MCP data_get_study_values) ─
+plot(legDir,         "leg_dir",           display = display.data_window)
+plot(legPos,         "leg_pos",           display = display.data_window)
+plot(legRetr,        "leg_retr",          display = display.data_window)
+plot(legSpanBars,    "leg_span_bars",     display = display.data_window)
+plot(legAgeOrig,     "leg_age_origin",    display = display.data_window)
+plot(legAgeExtr,     "leg_age_extreme",   display = display.data_window)
+plot(legAmpPct,      "leg_amp_pct",       display = display.data_window)
+plot(legAmpAtr,      "leg_amp_atr",       display = display.data_window)
+plot(legSpeedAtr,    "leg_speed_atr",     display = display.data_window)
+plot(legMinor,       "leg_minor_breaks",  display = display.data_window)
+plot(legMinorPer100, "leg_minor_per100",  display = display.data_window)
+plot(legMinorAgree,  "leg_minor_agree",   display = display.data_window)
+plot(legInOte  ? 1 : 0, "leg_in_ote",     display = display.data_window)
+plot(legInDisc ? 1 : 0, "leg_in_disc",    display = display.data_window)
+plot(legNested,      "leg_nested",        display = display.data_window)
+// младший слой — те же величины с префиксом minor_
+plot(mlegDir,        "minor_leg_dir",       display = display.data_window)
+plot(mlegPos,        "minor_leg_pos",       display = display.data_window)
+plot(mlegRetr,       "minor_leg_retr",      display = display.data_window)
+plot(mlegSpanBars,   "minor_leg_span_bars", display = display.data_window)
+plot(mlegAgeOrig,    "minor_leg_age_origin",display = display.data_window)
+plot(mlegAgeExtr,    "minor_leg_age_extreme", display = display.data_window)
+plot(mlegAmpPct,     "minor_leg_amp_pct",   display = display.data_window)
+plot(mlegAmpAtr,     "minor_leg_amp_atr",   display = display.data_window)
+plot(mlegSpeedAtr,   "minor_leg_speed_atr", display = display.data_window)
+plot(mlegInOte  ? 1 : 0, "minor_leg_in_ote",  display = display.data_window)
+plot(mlegInDisc ? 1 : 0, "minor_leg_in_disc", display = display.data_window)
+// счёт волн и фаза
+plot(nz(ndH), "n_down",     display = display.data_window)
+plot(nz(nuH), "n_up",       display = display.data_window)
+plot(nz(ndM), "n_down_1h",  display = display.data_window)
+plot(nz(nuM), "n_up_1h",    display = display.data_window)
+plot(nz(ndL), "n_down_ltf", display = display.data_window)
+plot(nz(nuL), "n_up_ltf",   display = display.data_window)
+plot(conf,     "elliott_conf",  display = display.data_window)
+plot(dirH,     "htf_dir",       display = display.data_window)
+plot(trend,    "trend",         display = display.data_window)
+plot(itrend,   "itrend",        display = display.data_window)
+plot(recounts, "wave_recounts", display = display.data_window)
+
+// ─── АЛЕРТЫ ─────────────────────────────────────────────────────────────────
+alertcondition(phaseChanged, "Смена волновой фазы", "OKO Wave: фаза сменилась")
+alertcondition(recount,      "Пересчёт волнового счёта", "OKO Wave: счёт волн СЛОМАЛСЯ — прежняя разметка была неверной")
+alertcondition(legInOte  and not legInOte[1],  "Старшая нога вошла в OTE", "OKO Wave: откат старшей ноги в 0.618–0.79")
+alertcondition(mlegInOte and not mlegInOte[1], "Младшая нога вошла в OTE", "OKO Wave: откат младшей ноги в 0.618–0.79")
+
+
+// ============================================================================
+// БЛОК 2 — РАЗВОЛНОВКА 1-2-3-4-5 (порт smc_engine: zigzag_atr + detect_elliott_impulse)
+// Другой движок, чем блок 1: там структура 50/5 и ОДНА нога, здесь ZigZag и канон
+// Эллиотта. В боте это тоже два разных модуля, и матрица берёт признаки из обоих.
+// ============================================================================
+
+string ewGz = "РАЗВОЛНОВКА · ZigZag (порт zigzag_atr)"
+zzDepth   = input.int(11, "depth (Pine length = depth/2)", minval = 2, group = ewGz)
+zzAtrLen  = input.int(10, "ATR length", minval = 1, group = ewGz)
+showZz  = input.bool(false, "Рисовать сам ZigZag", group = ewGz)
+
+string ewGm = "РАЗВОЛНОВКА · масштабы волн (detect_elliott_mtf)"
+s1on = input.bool(true,  "Масштаб 1", group = ewGm, inline = "1")
+dev1 = input.float(3.0,  "dev", minval = 0.1, step = 0.5, group = ewGm, inline = "1")
+col1 = input.color(color.new(#f23645, 0), "", group = ewGm, inline = "1")
+s2on = input.bool(true,  "Масштаб 2", group = ewGm, inline = "2")
+dev2 = input.float(5.0,  "dev", minval = 0.1, step = 0.5, group = ewGm, inline = "2")
+col2 = input.color(color.new(#2962ff, 0), "", group = ewGm, inline = "2")
+s3on = input.bool(true,  "Масштаб 3", group = ewGm, inline = "3")
+dev3 = input.float(8.0,  "dev", minval = 0.1, step = 0.5, group = ewGm, inline = "3")
+col3 = input.color(color.new(#eeeeee, 0), "", group = ewGm, inline = "3")
+
+string ewGd = "РАЗВОЛНОВКА · отрисовка"
+showOteEW  = input.bool(true, "Зона отката 0.618–0.79 от импульса", group = ewGd,
+     tooltip = "Большая волновая фибо строится на ВСЁМ импульсе точка0 → точка5 —\nименно от неё механика бота отмеряет OTE")
+onlyTb   = input.bool(false, "Только textbook-импульсы", group = ewGd,
+     tooltip = "textbook = w2 откат 0.5–0.886 · w4 откат 0.236–0.618 · w3 расширение ≥ 1.3")
+maxImp   = input.int(10, "Импульсов в памяти на масштаб", minval = 1, maxval = 30, group = ewGd)
+showTableEW = input.bool(true, "Панель состояния", group = ewGd)
+lineW    = input.int(3, "Толщина линий волн", minval = 1, maxval = 6, group = ewGd)
+
+// размер текста меток и панели — Егор 08.09: «на графике ничего не разобрать»
+
+// ─── PIVOT (порт zigzag_atr.pivot_at) ───────────────────────────────────────
+// Кандидат = бар `length` назад, окно [i-2·length .. i] — только прошлое, без look-ahead.
+// Анти-дубль плато: слева СТРОГО (равный отменяет), справа нестрого.
+f_pivotAt(simple int length, simple bool hi) =>
+    int l2 = length * 2
+    float c = hi ? high[length] : low[length]
+    bool ok = not na(c)
+    if ok
+        for k = 0 to l2
+            if k != length
+                float v = hi ? high[k] : low[k]
+                if na(v)
+                    ok := false
+                else
+                    bool left = k > length
+                    if hi
+                        if left and v >= c
+                            ok := false
+                        if not left and v > c
+                            ok := false
+                    else
+                        if left and v <= c
+                            ok := false
+                        if not left and v < c
+                            ok := false
+    [ok, c, bar_index - length]
+
+// ─── ОДИН МАСШТАБ: ZigZag → канон Эллиотта → отрисовка ──────────────────────
+// Возвращает [dir, textbook, done, ageBars] последнего импульса этого масштаба.
+f_scale(simple bool enabled, simple float devMult, simple int depth_, simple int atrLen_,
+         color col, simple bool drawZz, simple bool drawOte, simple bool tbOnly, simple int keep,
+         simple string sz, simple int lw) =>
+    var int[]   zx = array.new_int()
+    var float[] zy = array.new_float()
+    var bool[]  zh = array.new_bool()
+    var line[]  hist  = array.new_line()
+    var label[] histB = array.new_label()
+    var box[]   histX = array.new_box()
+    var line[]  zzL   = array.new_line()
+
+    // текущий нарисованный импульс
+    var int   curX0 = na
+    var int   curDir = 0
+    var bool  curTb = false
+    var bool  curDone = false
+    var int   curEndX = na
+    var float curP4 = na
+    var line  cl5 = na
+    var label cb5 = na
+    var box   cbx = na
+    var float curP0 = na
+    var float curP5 = na
+    var int   curX5 = na
+
+    if enabled
+        simple int length = math.max(1, depth_ / 2)
+        float atrv = ta.atr(atrLen_)
+        float thr = not na(atrv) and close != 0 ? atrv / close * 100 * devMult : 1e9
+        [okH, pH, xH] = f_pivotAt(length, true)
+        [okL, pL, xL] = f_pivotAt(length, false)   // high имеет приоритет (Pine: if iH else iL)
+        bool changed = false
+
+        if okH or okL
+            bool hiFlag = okH
+            float price = okH ? pH : pL
+            int   px    = okH ? xH : xL
+            int szz = array.size(zx)
+            if szz == 0
+                array.push(zx, px)
+                array.push(zy, price)
+                array.push(zh, hiFlag)
+                changed := true
+            else
+                bool  lastHi = array.get(zh, szz - 1)
+                float lastP  = array.get(zy, szz - 1)
+                if hiFlag == lastHi
+                    // тот же тип — продлить экстремум
+                    if (hiFlag and price > lastP) or (not hiFlag and price < lastP)
+                        array.set(zy, szz - 1, price)
+                        array.set(zx, szz - 1, px)
+                        changed := true
+                else
+                    float dv = price != 0 ? math.abs(100 * (price - lastP) / price) : 0.0
+                    if dv > thr
+                        array.push(zx, px)
+                        array.push(zy, price)
+                        array.push(zh, hiFlag)
+                        changed := true
+            // память зигзага
+            if array.size(zx) > 400
+                array.shift(zx)
+                array.shift(zy)
+                array.shift(zh)
+            if drawZz and changed and array.size(zx) > 1
+                int n2 = array.size(zx)
+                array.push(zzL, line.new(array.get(zx, n2 - 2), array.get(zy, n2 - 2),
+                     array.get(zx, n2 - 1), array.get(zy, n2 - 1), color = color.new(col, 55), width = 1))
+                if array.size(zzL) > 200
+                    line.delete(array.shift(zzL))
+
+        // ── КАНОН: последние 6 точек = 5 волн ───────────────────────────────
+        int sz2 = array.size(zx)
+        if changed and sz2 >= 6
+            int i0 = sz2 - 6
+            float p0 = array.get(zy, i0),     p1 = array.get(zy, i0 + 1)
+            float p2 = array.get(zy, i0 + 2), p3 = array.get(zy, i0 + 3)
+            float p4 = array.get(zy, i0 + 4), p5 = array.get(zy, i0 + 5)
+            int   x0 = array.get(zx, i0),     x1 = array.get(zx, i0 + 1)
+            int   x2 = array.get(zx, i0 + 2), x3 = array.get(zx, i0 + 3)
+            int   x4 = array.get(zx, i0 + 4), x5 = array.get(zx, i0 + 5)
+            bool  h0 = array.get(zh, i0)
+
+            int   dir = 0
+            float l1 = na
+            float l3 = na
+            float l5 = na
+            if not h0 and array.get(zh, i0 + 5)
+                // L,H,L,H,L,H — импульс ВВЕРХ (чередование гарантирует остальные типы)
+                if p1 > p0 and p2 > p0 and p3 > p1 and p4 > p1 and p5 > p3
+                    dir := 1
+                    l1 := p1 - p0
+                    l3 := p3 - p2
+                    l5 := p5 - p4
+            else if h0 and not array.get(zh, i0 + 5)
+                // H,L,H,L,H,L — импульс ВНИЗ
+                if p1 < p0 and p2 < p0 and p3 < p1 and p4 < p1 and p5 < p3
+                    dir := -1
+                    l1 := p0 - p1
+                    l3 := p2 - p3
+                    l5 := p4 - p5
+            // R2: волна 3 не самая короткая
+            if dir != 0 and l3 < l1 and l3 < l5
+                dir := 0
+
+            if dir != 0
+                float w2r = l1 != 0 ? math.abs(p2 - p1) / l1 : 0.0
+                float w4r = l3 != 0 ? math.abs(p4 - p3) / l3 : 0.0
+                float w3e = l1 != 0 ? l3 / l1 : 0.0
+                bool tb = w2r >= 0.5 and w2r <= 0.886 and w4r >= 0.236 and w4r <= 0.618 and w3e >= 1.3
+                if not tbOnly or tb
+                    if x0 == curX0 and dir == curDir
+                        // тот же импульс — EXTENSION волны 5 (Python тянет точку 5 вперёд)
+                        if not na(cl5)
+                            line.set_xy2(cl5, x5, p5)
+                        if not na(cb5)
+                            label.set_xy(cb5, x5, p5)
+                        curP5 := p5
+                        curX5 := x5
+                    else
+                        // новый импульс — рисуем 1-2-3-4-5
+                        color cc = tb ? col : color.new(col, 45)
+                        string st = tb ? line.style_solid : line.style_dashed
+                        array.push(hist, line.new(x0, p0, x1, p1, color = cc, style = st, width = lw))
+                        array.push(hist, line.new(x1, p1, x2, p2, color = cc, style = st, width = lw))
+                        array.push(hist, line.new(x2, p2, x3, p3, color = cc, style = st, width = lw))
+                        array.push(hist, line.new(x3, p3, x4, p4, color = cc, style = st, width = lw))
+                        line l5line = line.new(x4, p4, x5, p5, color = cc, style = st, width = lw)
+                        array.push(hist, l5line)
+                        bool up = dir == 1
+                        array.push(histB, label.new(x1, p1, "1", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_down : label.style_label_up, size = sz))
+                        array.push(histB, label.new(x2, p2, "2", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_up : label.style_label_down, size = sz))
+                        array.push(histB, label.new(x3, p3, "3", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_down : label.style_label_up, size = sz))
+                        array.push(histB, label.new(x4, p4, "4", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_up : label.style_label_down, size = sz))
+                        label b5 = label.new(x5, p5, "5", textcolor = color.white, color = color.new(cc, 15),
+                             style = up ? label.style_label_down : label.style_label_up, size = sz)
+                        array.push(histB, b5)
+                        cl5 := l5line
+                        cb5 := b5
+                        curX0 := x0
+                        curDir := dir
+                        curTb := tb
+                        curDone := false
+                        curP4 := p4
+                        curP0 := p0
+                        curP5 := p5
+                        curX5 := x5
+                        curEndX := na
+                        // память: 5 линий + 5 меток на импульс
+                        if array.size(hist) > keep * 5
+                            for _i = 0 to 4
+                                line.delete(array.shift(hist))
+                                label.delete(array.shift(histB))
+
+        // ── ЗАВЕРШЁННОСТЬ ИМПУЛЬСА ──────────────────────────────────────────
+        // Python прекращает extension, когда появилась точка ЗА волну 4 — это и есть
+        // «импульс завершился». Именно завершённые считались в замере (свежесть ≤ 72 ч).
+        if curDir != 0 and not curDone and array.size(zx) >= 1
+            int szl = array.size(zx)
+            float lp = array.get(zy, szl - 1)
+            bool lh = array.get(zh, szl - 1)
+            if (curDir == -1 and lh and lp > curP4) or (curDir == 1 and not lh and lp < curP4)
+                curDone := true
+                curEndX := array.get(zx, szl - 1)
+                if drawOte and not na(curP0) and not na(curP5)
+                    float sp = curP5 - curP0                 // фибо на ВСЁМ импульсе
+                    float f618 = curP5 - sp * 0.618
+                    float f79  = curP5 - sp * 0.79
+                    array.push(histX, box.new(curX5, math.max(f618, f79), bar_index + 15, math.min(f618, f79),
+                         border_color = color.new(col, 60), bgcolor = color.new(col, 88)))
+                    if array.size(histX) > keep
+                        box.delete(array.shift(histX))
+
+    int age = curDir == 0 ? na : bar_index - (curDone ? curEndX : nz(curX5, bar_index))
+    [curDir, curTb, curDone, age]
+
+[d1, t1, done1, age1] = f_scale(s1on, dev1, zzDepth, zzAtrLen, col1, showZz, showOteEW, onlyTb, maxImp, SZ, lineW)
+[d2, t2, done2, age2] = f_scale(s2on, dev2, zzDepth, zzAtrLen, col2, showZz, showOteEW, onlyTb, maxImp, SZ, lineW)
+[d3, t3, done3, age3] = f_scale(s3on, dev3, zzDepth, zzAtrLen, col3, showZz, showOteEW, onlyTb, maxImp, SZ, lineW)
+
+// ─── ПАНЕЛЬ ─────────────────────────────────────────────────────────────────
+f_dirTxt(int d) =>
+    d == 1 ? "импульс ↑" : d == -1 ? "импульс ↓" : "нет"
+
+f_stateTxt(int d, bool done, bool tb, int age) =>
+    d == 0 ? "—" : (done ? "завершён" : "растёт") + (tb ? " · textbook" : "") + " · " + str.tostring(math.round(age)) + " бар. назад"
+
+var table tb2 = table.new(position.bottom_right, 3, 6, border_width = 1,
+     bgcolor = color.new(#131722, 0), frame_color = color.new(color.gray, 40), frame_width = 1)
+if showTableEW and barstate.islast
+    table.clear(tb2, 0, 0, 2, 5)
+    color hdr = color.new(#2a2e39, 0)
+    table.cell(tb2, 0, 0, "OKO Elliott", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb2, 1, 0, "импульс", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb2, 2, 0, "состояние", bgcolor = hdr, text_color = color.white, text_size = SZ)
+    table.cell(tb2, 0, 1, "dev " + str.tostring(dev1), text_size = SZ, text_color = col1)
+    table.cell(tb2, 1, 1, f_dirTxt(d1), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 2, 1, f_stateTxt(d1, done1, t1, age1), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 0, 2, "dev " + str.tostring(dev2), text_size = SZ, text_color = col2)
+    table.cell(tb2, 1, 2, f_dirTxt(d2), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 2, 2, f_stateTxt(d2, done2, t2, age2), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 0, 3, "dev " + str.tostring(dev3), text_size = SZ, text_color = col3)
+    table.cell(tb2, 1, 3, f_dirTxt(d3), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 2, 3, f_stateTxt(d3, done3, t3, age3), text_size = SZ, text_color = color.white)
+    table.cell(tb2, 0, 4, "лаг детектора", text_size = SZ, text_color = color.gray)
+    table.cell(tb2, 1, 4, "6 бар.", text_size = SZ, text_color = color.gray)
+    table.cell(tb2, 2, 4, "хвост может переразметиться", text_size = SZ, text_color = color.gray)
+
+// ─── DATA WINDOW ────────────────────────────────────────────────────────────
+plot(d1, "imp_dir_dev1",  display = display.data_window)
+plot(d2, "imp_dir_dev2",  display = display.data_window)
+plot(d3, "imp_dir_dev3",  display = display.data_window)
+plot(t1 ? 1 : 0, "textbook_dev1", display = display.data_window)
+plot(t2 ? 1 : 0, "textbook_dev2", display = display.data_window)
+plot(t3 ? 1 : 0, "textbook_dev3", display = display.data_window)
+plot(done1 ? 1 : 0, "done_dev1", display = display.data_window)
+plot(done2 ? 1 : 0, "done_dev2", display = display.data_window)
+plot(done3 ? 1 : 0, "done_dev3", display = display.data_window)
+plot(age1, "age_dev1", display = display.data_window)
+plot(age2, "age_dev2", display = display.data_window)
+plot(age3, "age_dev3", display = display.data_window)
+
+// ─── АЛЕРТЫ ─────────────────────────────────────────────────────────────────
+// Замер 29.08.2026: вход ПРОТИВ завершённого импульса вверх — PF 3.15 (n=403),
+// вход ПО нему — 0.76. Алерт именно на это событие, а не на «появился импульс».
+alertcondition(done1 and not done1[1], "Импульс завершён · масштаб 1", "OKO Elliott: импульс завершён (dev1)")
+alertcondition(done2 and not done2[1], "Импульс завершён · масштаб 2", "OKO Elliott: импульс завершён (dev2)")
+alertcondition(done3 and not done3[1], "Импульс завершён · масштаб 3", "OKO Elliott: импульс завершён (dev3)")

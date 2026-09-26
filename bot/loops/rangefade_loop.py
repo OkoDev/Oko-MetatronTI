@@ -149,7 +149,10 @@ async def rangefade_loop(bot):
     CAPS_PEND = {k: int(cfg.get(f"{k}_max_pending", v)) for k, v in CAPS.items()}
     FAMILY = {"rangefade": "rf", "rangefade4h": "rf", "bigflush15": "bf"}
     WT_FLOOR = -150.0   # санитайз: WT живёт в ±100; -200/-300 = сломанный индикатор на неликвиде
-    MIN_CLUSTER = int(cfg.get("min_cluster", 2))   # 31.07: одиночный сигнал PF0.67, кластер PF2.24
+    # 04.09: `min_cluster` → `min_breadth` (омонимия: см. комментарий в config.yaml).
+    # Старый ключ читается запасным, чтобы правка конфига и кода не были связаны по времени.
+    MIN_BREADTH = int(cfg.get("min_breadth", cfg.get("min_cluster", 2)))
+    MIN_CLUSTER = MIN_BREADTH   # алиас: ниже по коду имя ещё встречается
     MIN_BOS = int(cfg.get("bigflush_min_bos", 1))  # 10.08: без BOS PF1.05/безтоп10% −884; с BOS 1.79/+634
     # 05.08 СЕССИОННЫЙ ГЕЙТ (только для 15m big-flush, где измерено): фейд живёт в ТОНКОЙ ликвидности.
     # ASIA 00-08 PF 5.49 · OFF 21-24 PF 2.83 · LONDON 08-14 PF 0.45 (ЯД) · NY 14-21 PF 0.88.
@@ -206,7 +209,26 @@ async def rangefade_loop(bot):
             # ПРОХОД 1: собираем кандидатов. 31.07: весь эдж в КЛАСТЕРАХ — монета, упавшая
             # ОДНА (идиосинкразия: своя новость/слом), льёт (МЕД −0.218% PF0.67); упавшая
             # ВМЕСТЕ с рынком (механическое корреляционное падение) отскакивает (+1.232% PF2.24).
+            # 🔴 БУФЕР ПО БАРУ (04.09.2026) — почему кластер-гейт не работал в бою.
+            # Бэктест считает кластером монеты, чей СИГНАЛЬНЫЙ БАР закрылся в одну метку.
+            # Бой собирал их за ОДИН ПРОХОД цикла — а это разные вещи: `scan_loop`
+            # обходит вселенную последовательно (~290 с), луп просыпается раз в 120 с,
+            # поэтому в один проход попадают монеты, чей `wt_snap` обновлён в РАЗНОЕ время.
+            # Замер по pm2-логам: кластер-гейт проходили **7.7%** сигналов (67 из 875)
+            # против **88%** в бэктесте — расхождение в 11 раз, и стратегия почти не
+            # торговала. Характерная улика: OPENLEDGER попал в «одиночки» 348 раз —
+            # сигнал WT<порог это СОСТОЯНИЕ, монета остаётся кандидатом каждый проход,
+            # но соседи к этому моменту устарели.
+            # Лечение: копим кандидатов в буфере, живущем МЕЖДУ проходами, и группируем
+            # по метке бара — тогда монеты, найденные в разные проходы внутри одного
+            # бара, собираются в кластер, как в бэктесте.
+            # Класс ошибки: [[universe_mismatch_backtest_vs_live]] — замер на закрытии
+            # бара не описывает систему с асинхронным сканом.
+            _BAR_SEC = {"3m": 180, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
             cand = {src: [] for _, _, src, _, _ in VARIANTS}
+            if not hasattr(rangefade_loop, "_cluster_buf"):
+                rangefade_loop._cluster_buf = {}
+            _buf = rangefade_loop._cluster_buf
             for sym in pair_ctx.all_symbols():
                 st = pair_ctx.get(sym)
                 px = st.tick_price
@@ -286,34 +308,60 @@ async def rangefade_loop(bot):
                                         sym, src)
                             continue
                     acg = _atr_change(kl)   # записываем как фичу (гейтить нельзя: без него сетап тоже плюс)
-                    cand[src].append({"sym": sym, "tf": tf, "px": px, "sl": sl, "w1": w1,
-                                      "stop_pct": stop_pct, "acg": acg, "base": base, "key": key,
-                                      "bos_dn": bos_dn})
+                    _c = {"sym": sym, "tf": tf, "px": px, "sl": sl, "w1": w1,
+                          "stop_pct": stop_pct, "acg": acg, "base": base, "key": key,
+                          "bos_dn": bos_dn}
+                    cand[src].append(_c)
+                    # копим в буфер по метке бара — кластер собирается за весь бар,
+                    # а не за один проход цикла (см. комментарий у _BAR_SEC выше)
+                    _bar = int(now // _BAR_SEC.get(tf, 900)) * _BAR_SEC.get(tf, 900)
+                    _buf.setdefault((src, _bar), {})[sym] = _c
                     break
-            # ПРОХОД 2: КЛАСТЕР-ГЕЙТ — торгуем только рыночное падение (≥2 монеты одновременно)
+            # ПРОХОД 2: ГЕЙТ ШИРИНЫ РЫНКА — торгуем только рыночное падение (≥2 монеты одновременно).
+            # 04.09: раньше назывался «кластер-гейт»; слово значило три разных вещи (см. config.yaml).
             ac_now = _ac_regime()
             ac_label = (None if ac_now is None else
                         ("импульсный" if ac_now >= _AC_HI else
                          ("возвратный" if ac_now <= _AC_LO else "середина")))
-            for _, _, src, _, _ in VARIANTS:
-                cs = cand.get(src) or []
-                if not cs:
+            # чистим буфер от баров старше двух периодов — память не растёт
+            for _k in [k for k in _buf
+                       if now - k[1] > 2 * _BAR_SEC.get(
+                           next((t for t, _, s, _, _ in VARIANTS if s == k[0]), "15m"), 900)]:
+                _buf.pop(_k, None)
+
+            for _tf_v, _, src, _, _ in VARIANTS:
+                _bar_now = int(now // _BAR_SEC.get(_tf_v, 900)) * _BAR_SEC.get(_tf_v, 900)
+                # кластер = ВСЕ кандидаты текущего бара (из буфера), а не только
+                # найденные в этом проходе; сам вход по-прежнему только для свежих
+                _bar_all = list((_buf.get((src, _bar_now)) or {}).values())
+                cs_now = cand.get(src) or []
+                if not cs_now:
                     continue
+                cs = _bar_all if len(_bar_all) >= len(cs_now) else cs_now
+                if len(cs) > len(cs_now):
+                    logger.info("[RANGEFADE] 🧩 [%s] ширина по БАРУ: %d монет "
+                                "(в этом проходе было %d) — буфер бара %s",
+                                src, len(cs), len(cs_now),
+                                _dt.datetime.fromtimestamp(_bar_now, _dt.timezone.utc).strftime("%H:%M"))
                 if len(cs) < MIN_CLUSTER:
-                    logger.info("[RANGEFADE] ⏭ [%s] одиночный сигнал (%s) — идиосинкразия, пропуск "
-                                "(в бэктесте PF 0.67 против 2.24 у кластера)",
+                    logger.info("[RANGEFADE] ⏭ [%s] УЗКАЯ ШИРИНА: одиночный сигнал (%s) — идиосинкразия, пропуск "
+                                "(в бэктесте PF 0.67 против 2.24 при широком заливе)",
                                 src, ", ".join(c["sym"].split("/")[0] for c in cs))
                     continue
                 fams = {_family(c["base"]) for c in cs}
                 if len(fams) < MIN_CLUSTER:
-                    logger.info("[RANGEFADE] ⏭ [%s] псевдо-кластер %d монет ОДНОГО семейства %s (%s) — "
+                    logger.info("[RANGEFADE] ⏭ [%s] ПСЕВДО-ШИРИНА: %d монет ОДНОГО семейства %s (%s) — "
                                 "это не рыночное падение, пропуск", src, len(cs), sorted(fams),
                                 ", ".join(c["sym"].split("/")[0] for c in cs[:6]))
                     continue
-                logger.info("[RANGEFADE] 🔔 [%s] КЛАСТЕР %d монет / %d семейств: %s · режим=%s",
+                logger.info("[RANGEFADE] 🔔 [%s] ШИРИНА РЫНКА %d монет / %d семейств: %s · режим=%s",
                             src, len(cs), len(fams),
                             ", ".join(c["sym"].split("/")[0] for c in cs[:8]), ac_label or "?")
-                for c in cs:
+                # 🔴 ВХОДИМ ТОЛЬКО ПО СВЕЖИМ. Буфер бара служит ГЕЙТОМ (доказать, что
+                # падение рыночное), но у его старых записей `px`/`sl` сняты минуты назад —
+                # открывать по ним значило бы торговать по устаревшей цене.
+                # Кластер = свойство РЫНКА, вход = свойство МОМЕНТА, это разные вещи.
+                for c in cs_now:
                     if (n_fam[FAMILY[src]] >= CAPS[src]
                             or n_fam_p[FAMILY[src]] >= CAPS_PEND[src]):
                         break

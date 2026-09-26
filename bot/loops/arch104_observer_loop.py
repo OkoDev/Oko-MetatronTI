@@ -284,11 +284,30 @@ async def _scan_one_pair(bot, symbol: str, adapter,
     f_1d_shifted = _shift(f_1d_src, 24)
 
     # Контекст (минимальный — TODO: расширить из bot state)
+    # 🔴 04.09.2026: `funding_pct_8h` был захардкожен `0.0`. Из-за этого любой порог по
+    # фандингу становился непреодолимым, и вся история ставок (1 557 170 строк, 2022-2026)
+    # не участвовала в решениях — признака физически не существовало для гейтов
+    # ([[law_no_finding_means_no_feature]]: «находок нет» = НЕТ ПРИЗНАКА).
+    # Подставляем реальное значение из того же источника, что и остальной бой
+    # (`market_regime.funding_map`, bulk + кэш 5 мин — лишних запросов не делает).
+    #
+    # ⚠️ ЗНАЧЕНИЕ, А НЕ ВЕТО. Гейт по фандингу НЕ включается: замер показал, что вето
+    # поверх боевых гейтов режет ЛУЧШИЕ сделки (у отсечённых PF 13-16) —
+    # [[funding_veto_threshold_measured]]. Здесь только делаем признак ДОСТУПНЫМ,
+    # чтобы он попадал в снимок и участвовал в исследованиях.
+    _funding_pct = 0.0
+    try:
+        from core.context.market_regime import funding_map as _fmap
+        _base = str(symbol).split("/")[0].replace("-USDT", "")
+        _funding_pct = float(_fmap().get(_base, 0.0) or 0.0)
+    except Exception as _e_fund:      # noqa: BLE001
+        logger.debug("[ARCH-104] funding для %s недоступен: %s", symbol, _e_fund)
+
     context = {
         "signal_strength": 75,
         "regime": "UNKNOWN",
         "btc_regime": "UNKNOWN",
-        "funding_pct_8h": 0.0,
+        "funding_pct_8h": _funding_pct,
         "ema_avg_r_30d": 0.0,
         "sharpe_30d": 0.0,
         "n_trades_30d": 0,

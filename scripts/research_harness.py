@@ -189,6 +189,14 @@ def mtf_flags(df: pd.DataFrame, tf: str, senior: list[str] | None = None) -> pd.
         F = F.drop(columns=[c for c in F.columns
                             if any(b in c for b in CAUSAL_BLACKLIST)], errors="ignore")
         F = F.select_dtypes(include=["number", "bool"])
+        # 🔴 04.09: bool → float32 ДО shift. `shift(1)` вводит NaN, а NaN в булевой
+        # колонке переводит её в dtype=object — 314 таких колонок хранились как массивы
+        # ПИТОНОВСКИХ УКАЗАТЕЛЕЙ (8 байт на значение вместо 1). Это и есть источник
+        # прожорливости: полный прогон падал с MemoryError на 10-й монете из 94.
+        # float32 (не float64) — значения 0/1, точность избыточна, память вдвое меньше.
+        _bcols = F.select_dtypes(include=["bool"]).columns
+        if len(_bcols):
+            F[_bcols] = F[_bcols].astype("float32")
         # 🔴 shift(1) = берём только ЗАКРЫТЫЙ старший бар
         F = F.shift(1).reindex(df.index, method="ffill")
         F.columns = [f"{c}__from_{stf}" for c in F.columns]
