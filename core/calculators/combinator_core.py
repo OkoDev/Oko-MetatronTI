@@ -161,6 +161,8 @@ def add_pivot_flags(df_1h: pd.DataFrame, out: dict, label: str = "1D"):
 # Все сравнения и trendline — по CLOSE (не low/high): пивоты по close, точки сравнения close,
 # обе линии валидации (цена + осциллятор) по close. Реальные пивоты pivothigh/low(prd,prd)
 # вместо argmin скользящего окна. Trendline non-intersection. Без persistent rolling.
+# WTX_MAX_PP / WTX_MAX_BARS убраны 11.09.2026: эталон OkoTrend (Pine, прислан Егором)
+# сравнивает фрактал ТОЛЬКО с предыдущим — `ta.valuewhen(topFr, wt1[2], 0)[2]`.
 DIV_PIVOT_PRD = 5      # prd: баров подтверждения с каждой стороны (Pine default)
 DIV_MAX_PP    = 10     # maxpp: сколько пивотов назад проверять
 DIV_MAX_BARS  = 100    # maxbars: макс. расстояние между пивотами
@@ -188,8 +190,14 @@ def _wtx_divergences(wt: np.ndarray, low: np.ndarray, high: np.ndarray):
     bull_hid = np.zeros(n, dtype=bool)
     bear_hid = np.zeros(n, dtype=bool)
 
-    prev_top_wt = prev_top_price = None   # предыдущий WT-фрактал-high
-    prev_bot_wt = prev_bot_price = None   # предыдущий WT-фрактал-low
+    # 🔴 ОТКАТ 11.09.2026 к эталону. Егор прислал исходник индикатора OkoTrend:
+    #     highPrev = ta.valuewhen(topFr, wt1[2], 0)[2]
+    # — сравнение идёт с ОДНИМ предыдущим фракталом того же типа, и только с ним.
+    # Правка от 10.09 (история из WTX_MAX_PP фракталов в окне WTX_MAX_BARS) отошла
+    # от эталона: среди 10 предыдущих почти всегда находится хоть один с расхождением,
+    # и флаг вставал на 81% входов вместо редких меток R+ на графике Егора.
+    prev_top_wt = prev_top_price = None
+    prev_bot_wt = prev_bot_price = None
 
     for i in range(4, n):
         s = wt
@@ -202,20 +210,16 @@ def _wtx_divergences(wt: np.ndarray, low: np.ndarray, high: np.ndarray):
         if is_top:
             hp = high[i-2]
             if prev_top_wt is not None:
-                # bear regular: price HH + wt LH
                 if hp > prev_top_price and c < prev_top_wt:
                     bear_reg[i] = True
-                # bear hidden: price LH + wt HH
                 if hp < prev_top_price and c > prev_top_wt:
                     bear_hid[i] = True
             prev_top_wt, prev_top_price = c, hp
         if is_bot:
             lp = low[i-2]
             if prev_bot_wt is not None:
-                # bull regular: price LL + wt HL
                 if lp < prev_bot_price and c > prev_bot_wt:
                     bull_reg[i] = True
-                # bull hidden: price HL + wt LL
                 if lp > prev_bot_price and c < prev_bot_wt:
                     bull_hid[i] = True
             prev_bot_wt, prev_bot_price = c, lp
@@ -433,6 +437,7 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
         etl_fvg, etl_order_blocks, etl_bos_choch, etl_ote_premium, etl_eql_eql,
         etl_fvg_overlap, etl_elliott,   # ARCH-128 Шаг 2 (Claude)
         etl_swing_structure,             # HH/HL/LH/LL
+        etl_liquidity, etl_smc_ext,      # 04.09: ликвидность + inducement/void (ЭПИК B)
     )
 
     # ─ FVG (ARCH-128: структурный, порог значимости) ─────────────────────
@@ -459,7 +464,7 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"bull_breaker_{label}"] = bull_brk
     out[f"bear_breaker_{label}"] = bear_brk
 
-    # ─ BOS/CHoCH (ARCH-128: LuxAlgo + объём + закрепление) ───────────────
+    # ─ BOS/CHoCH (ARCH-128: структурное ядро + объём + закрепление) ──────
     bos_etl = etl_bos_choch(df)
     bull_bos = bos_etl["bull_bos"]; bear_bos = bos_etl["bear_bos"]
     bull_choch = bos_etl["bull_choch"]; bear_choch = bos_etl["bear_choch"]
@@ -467,6 +472,32 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     out[f"bear_bos_{label}"]    = bear_bos
     out[f"bull_choch_{label}"]  = bull_choch
     out[f"bear_choch_{label}"]  = bear_choch
+    # 02.09: микроструктура эталона (internal, len=5) — слой, которого в матрице
+    # не было. Старший слой выше давал BOS/CHoCH лишь в 1.3% снимков, поэтому
+    # ни один структурный флаг не набирал статистику при майнинге.
+    out[f"bull_bos_i_{label}"]   = bos_etl["bull_bos_i"]
+    out[f"bear_bos_i_{label}"]   = bos_etl["bear_bos_i"]
+    out[f"bull_choch_i_{label}"] = bos_etl["bull_choch_i"]
+    out[f"bear_choch_i_{label}"] = bos_etl["bear_choch_i"]
+    # 🔴 sc_pullback / sc_resume ЗДЕСЬ НЕ ПУБЛИКУЮТСЯ (04.09, откат моей же правки).
+    # Они УЖЕ существуют в `matrix_full.structure_scales_features:553-557` — та же
+    # геометрия, плюс `.shift(1)` и богаче (`sc_agree`, `sc_minor_since_major`,
+    # `sc_resume_vol`). Публикация отсюда давала 6 ДУБЛИРУЮЩИХСЯ имён в `collect`,
+    # где `F[c]` возвращал DataFrame (n,2) вместо Series → dtype object на каждую
+    # сделку → MemoryError на 10-й монете и несохранённый parquet.
+    # Источник семьи ОДИН — matrix_full. См. [[principle_reuse_not_duplication]].
+
+    # ─ ЛИКВИДНОСТЬ (04.09, ЭПИК B): кластеры свингов — семьи в матрице НЕ БЫЛО ──
+    # `detect_liquidity` числился в MATRIX_REGISTRY:325 как «❌ НЕТ». EQH/EQL — пара
+    # равных пивотов; здесь кластер из N свингов: сила зоны (сколько стопов) +
+    # дистанция + момент снятия. Онлайн-ведение зон → причинность по построению.
+    liq_etl = etl_liquidity(df)
+    for _k, _v in liq_etl.items():
+        out[f"{_k}_{label}"] = _v
+    # SMC-extensions: inducement (stop hunt) + liquidity void (магнит).
+    # breaker НЕ внесён: его эдж уже мерился и не подтвердился — см. etl_smc_ext.
+    for _k, _v in etl_smc_ext(df).items():
+        out[f"{_k}_{label}"] = _v
 
     # ─ OTE & Premium/Discount (ARCH-128: build_ote + find_choch_ote) ─────
     ote_etl = etl_ote_premium(df)
@@ -488,6 +519,56 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
             if atr[j-1] ==  1 and atr[j] == -1: atr_cd[i] = True
     out[f"atr_cross_up_{label}"]   = atr_cu
     out[f"atr_cross_down_{label}"] = atr_cd
+
+    # ─ ПЕРЦЕНТИЛЬ ATR (04.09.2026) ────────────────────────────────────────
+    # Дыра, найденная ревизией: ATR в матрице был, а вопроса «НАСКОЛЬКО ЭТА
+    # волатильность необычна ДЛЯ ЭТОГО инструмента» не задавал ни один признак.
+    # Абсолютный ATR несравним между монетами (1.2% у BTC и 1.2% у мем-коина —
+    # разные события), поэтому нужен ранг относительно СОБСТВЕННОЙ истории.
+    # Почему это не «ещё один признак на всякий случай»: размер стопа — главный
+    # доказанный рычаг проекта ([[stop_zone_survived_blind_test]], подтверждён на
+    # 6 механиках), а стоп у нас считается от ATR. Значит «ATR сейчас в верхнем
+    # или нижнем терциле» — это прямое описание того, в какой режим стопа мы входим.
+    #
+    # 🔴 ФОРМА ВЗЯТА ГОТОВАЯ, третьего способа считать перцентиль в проекте нет:
+    #   · расширяющийся терциль + гистерезис — `core.context.market_drift`
+    #     (`_expanding_tercile_label` / `_persist`), тот же код, что метит режим рынка;
+    #   · окно 80 баров — прецедент `docs/STRATEGY_TRIGGERS.md:89` («адаптивный OS =
+    #     10-й перцентиль за 80 баров», триггер WT_B_SIGNAL);
+    #   · сам ATR — `core.smc.impulse_fib._atr` (боевая калибровка ewm alpha=1/43,
+    #     та же функция, что в боевых лупах и в matrix_full).
+    # Заводить свою формулу здесь означало бы повторить D-10 (режим считался тремя
+    # методами в шести местах) на волатильности.
+    #
+    # 🔴 ПРИЧИННОСТЬ: перцентиль на баре i считается только по барам ≤ i
+    # (expanding / rolling), `df.quantile()` по всему ряду ЗАПРЕЩЁН — сегодня же
+    # этот класс ошибки пойман в `detect_fvg`, где порог по всему ряду менял набор
+    # зон в бэктесте. Проверено префиксным тестом: compute_flags(df[:t]) совпадает
+    # с compute_flags(df)[:t] на всех новых колонках (t = 2000/3500/4800, 0 расхождений).
+    from core.context.market_drift import _expanding_tercile_label, _persist, BULL, BEAR
+    from core.smc.impulse_fib import _atr as _combat_atr
+
+    ATR_PRANK_MIN = 200    # прогрев: EWM(43) + запас; до 200 баров ранг ни о чём
+    ATR_PRANK_WIN = 80     # окно скользящего перцентиля — прецедент STRATEGY_TRIGGERS:89
+    ATR_HOLD      = 6      # гистерезис смены состояния, баров (аналог min_hold=12 у режима)
+
+    atr_rel = (_combat_atr(df) / df["close"].replace(0, np.nan)) * 100   # ATR в % цены
+    # ранг 0..1 = доля ПРОШЛЫХ баров с ATR ниже текущего
+    prank_exp = atr_rel.expanding(min_periods=ATR_PRANK_MIN).rank(pct=True)
+    prank_80  = atr_rel.rolling(ATR_PRANK_WIN, min_periods=ATR_PRANK_WIN // 2).rank(pct=True)
+    # терциль + гистерезис. `_expanding_tercile_label` возвращает метки режима
+    # (БЫК = верхний терциль, МЕДВЕДЬ = нижний) — здесь тот же порядок величины
+    # переименовывается на границе: верхний терциль ATR = высокая вола.
+    _lab = _persist(_expanding_tercile_label(atr_rel, ATR_PRANK_MIN), ATR_HOLD)
+    # ⚠️ Оба новых блока (перцентиль ATR и CANDLE+VOL ниже) отдают значение
+    # ЗАКРЫТОГО ПРЕДЫДУЩЕГО бара — `.shift(1)`, как research-версия
+    # (`matrix_full.py`: `return E.shift(1)`). Так числа напрямую сравнимы с уже
+    # сделанными замерами, и признак-СОСТОЯНИЕ не может попасть в решение раньше,
+    # чем бар, который его породил, закрылся.
+    out[f"atr_prank_{label}"]    = prank_exp.shift(1).values      # ранг по ВСЕЙ прошлой истории
+    out[f"atr_prank80_{label}"]  = prank_80.shift(1).values       # ранг за 80 последних баров
+    out[f"atr_vol_high_{label}"] = (_lab == BULL).shift(1, fill_value=False).values
+    out[f"atr_vol_low_{label}"]  = (_lab == BEAR).shift(1, fill_value=False).values
 
     # ─ WaveTrend ──────────────────────────────────────────────────────────
     wt = wavetrend(df).values            # wt1 (EMA21)
@@ -577,6 +658,70 @@ def compute_flags(df: pd.DataFrame, label: str, include_pivots: bool = False) ->
     if "volume" in df.columns:
         vol_sma = pd.Series(volume).rolling(20, min_periods=5).mean().values
         out[f"vol_spike_{label}"] = (volume > 1.5 * vol_sma) & (vol_sma > 0)
+
+    # ─ CANDLE+VOL (04.09.2026): перенос research-слоя `matrix_full.py:371` ──
+    # Было: анатомия свечи — НОЛЬ признаков в боевой матрице; объём — ОДИН флаг
+    # `vol_spike = v > 1.5·SMA20` выше. Значимое движение идёт на объёме в 3-4 раза
+    # выше среднего, то есть единственный порог стоял ВТРОЕ ниже интересной зоны, и
+    # спросить «а насколько выше» было нечем. Здесь — непрерывные отношения, порог
+    # ищет отбор, а не мы.
+    #
+    # ⚠️ ЧЕСТНАЯ ОГОВОРКА, ради которой перенос и делается. Полный прогон матрицы
+    # (585 признаков) дал по семье ОБЪЁМА НОЛЬ находок сверх шума: P(шум)=0.500
+    # ([[matrix_full_run_zero_new_findings]]). Мы переносим НЕ в ожидании находки,
+    # а чтобы закрыть вопрос: пока признака нет в боевой матрице, «находок нет»
+    # неотличимо от «не искали» ([[law_no_finding_means_no_feature]] — три случая
+    # подряд, когда явление объявляли отсутствующим при отсутствующем приборе).
+    # Отрицательный результат теперь можно предъявить, а не подразумевать.
+    #
+    # Перенос устроен как `sc_pullback`/`sc_resume` сегодня утром: имена оставлены
+    # research-овские (сравнимость с уже сделанными замерами), формулы — те же,
+    # `.shift(1)` — тот же. Вызов из `matrix_full.extra_flags` снят, чтобы семья не
+    # считалась дважды под одним именем ([[principle_reuse_not_duplication]]);
+    # побочный выигрыш — MTF: `research_harness.mtf_flags` гоняет `compute_flags`
+    # и по старшим ТФ, поэтому семья впервые получает срезы `__from_4h` / `__from_1d`.
+    if "volume" in df.columns:
+        cv = {}
+        rng = np.where((high - low) > 0, high - low, np.nan)     # диапазон бара
+        # анатомия: всё в долях ДИАПАЗОНА → сравнимо между монетами и эпохами
+        cv[f"body_frac_{label}"]        = np.abs(close - open_) / rng
+        cv[f"upper_wick_frac_{label}"]  = (high - np.maximum(open_, close)) / rng
+        cv[f"lower_wick_frac_{label}"]  = (np.minimum(open_, close) - low) / rng
+        # где ЗАКРЫЛИСЬ внутри бара: 100 = на максимуме (победили покупатели), 0 = на минимуме
+        cv[f"close_pos_in_bar_{label}"] = (close - low) / rng * 100
+        cv[f"bar_range_pct_{label}"]    = (high - low) / np.where(close != 0, close, np.nan) * 100
+        # перевес тени: >0 верхняя длиннее (давили сверху), <0 нижняя (подбирали снизу)
+        cv[f"wick_skew_{label}"] = ((high - np.maximum(open_, close))
+                                    - (np.minimum(open_, close) - low)) / rng
+
+        # поглощение: тело перекрывает тело предыдущего бара И цвет сменился
+        body_lo = np.minimum(open_, close); body_hi = np.maximum(open_, close)
+        up = close > open_
+        eng = ((body_lo <= np.roll(body_lo, 1)) & (body_hi >= np.roll(body_hi, 1))
+               & (up != np.roll(up, 1)))
+        eng[0] = False                                   # np.roll заворачивает хвост в 0
+        cv[f"engulfing_{label}"] = eng.astype(float)
+
+        # объём: НЕПРЕРЫВНОЕ отношение вместо одного порога 1.5, три горизонта памяти
+        for w in (20, 50, 120):
+            sma = pd.Series(volume).rolling(w, min_periods=max(3, w // 4)).mean().values
+            cv[f"vol_ratio{w}_{label}"] = volume / np.where(sma > 0, sma, np.nan)
+        # объём × ход: сильное движение НА объёме — не то же, что такое же без него
+        cv[f"vol_x_range_{label}"] = cv[f"vol_ratio20_{label}"] * cv[f"bar_range_pct_{label}"]
+
+        # дельта-прокси: знак объёма по цвету свечи. Настоящую дельту (агрессивные
+        # покупки минус продажи) даёт только лента сделок, её у нас нет — цвет свечи
+        # грубое, но ПРИЧИННОЕ приближение.
+        sv = np.where(close > open_, volume, np.where(close < open_, -volume, 0.0))
+        cv[f"vol_delta_{label}"] = sv / np.where(volume > 0, volume, np.nan)   # −1..+1
+        for w in (5, 20):
+            s   = pd.Series(sv).rolling(w, min_periods=2).sum().values
+            tot = pd.Series(np.abs(sv)).rolling(w, min_periods=2).sum().values
+            cv[f"cum_delta{w}_{label}"] = s / np.where(tot > 0, tot, np.nan)
+
+        CV = pd.DataFrame(cv, index=df.index).shift(1)   # 🔴 значение ЗАКРЫТОГО бара
+        for c in CV.columns:
+            out[c] = CV[c].values
 
     # ─ Momentum ───────────────────────────────────────────────────────────
     bull_mom = np.zeros(n, dtype=bool); bear_mom = np.zeros(n, dtype=bool)

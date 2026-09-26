@@ -38,7 +38,7 @@ def assemble(st, win, internal):
     evs = [e for e in st.events if bool(e.internal) == internal]
     if not evs:
         return None
-    is_long = (st.itrend if internal else st.trend) > 0
+    is_long = (st.minor_trend if internal else st.trend) > 0
     # последний CHoCH В СТОРОНУ тренда = момент, когда характер сменился на текущий
     i_ch = None; pos = None
     for k in range(len(evs) - 1, -1, -1):

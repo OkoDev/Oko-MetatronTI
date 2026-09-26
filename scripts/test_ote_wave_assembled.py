@@ -14,7 +14,7 @@ from collections import defaultdict
 warnings.filterwarnings("ignore")
 sys.path.insert(0, ".")
 sys.stdout.reconfigure(encoding="utf-8")
-from core.smc.oko_sm_engine import run_structure, current_leg, _swings
+from core.smc.oko_sm_engine import run_structure, current_leg, pivot_points
 DB = "ohlcv_cache.db"
 
 
@@ -31,7 +31,7 @@ def assemble_impulse(win, is_long, swing_len=50):
     Для импульса ВВЕРХ: каждый предыдущий лоу должен быть НИЖЕ следующего (HL-цепочка).
     Возвращает список размахов: [1 нога, 2 ноги, 3+ ног]."""
     try:
-        hi, lo = _swings(win["high"], win["low"], swing_len)
+        hi, lo = pivot_points(win["high"], win["low"], swing_len)
     except Exception:
         return []
     # свинги: списки (index, price); собираем чередующуюся последовательность

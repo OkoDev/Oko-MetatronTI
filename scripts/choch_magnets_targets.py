@@ -42,7 +42,7 @@ except Exception:
     pass
 
 from core.smc.oko_sm_engine import run_structure  # noqa: E402
-from core.smc.smc_engine import _swings_luxalgo  # noqa: E402
+from core.smc.smc_engine import confirmed_swings  # noqa: E402
 
 DB = "ohlcv_cache.db"
 COST = 0.35
@@ -179,8 +179,8 @@ def main() -> int:
         days = max(days, (d.index.max() - d.index.min()).days)
         try:
             st = run_structure(dd, swing_len=50, internal_len=5, record_legs=True)
-            sw50 = _swings_luxalgo(dd, 50)
-            sw5 = _swings_luxalgo(dd, 5)
+            sw50 = confirmed_swings(dd, 50)
+            sw5 = confirmed_swings(dd, 5)
         except Exception:
             continue
         legs = st.leg_history

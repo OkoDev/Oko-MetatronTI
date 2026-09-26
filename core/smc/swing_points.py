@@ -302,16 +302,16 @@ def detect_swing_points(
         #    ПРОБИТЫЙ свинг у эталона, а предыдущие экстремумы отсюда, то есть строил
         #    диапазон между точками разных детекторов.
         #    Сверка 02.09 (12 пар, 1h/400): major(50) эталона здесь находились на 89%,
-        #    minor(5) — на 59%; при том что _swings_luxalgo даёт 63 пивота против 52.
+        #    minor(5) — на 59%; при том что confirmed_swings даёт 63 пивота против 52.
         #    Дальше по конвейеру всё прежнее: чередование, классификация, тренд.
         #    Откат: config.yaml → smc.swings_canon: false
         raw = None
         if _use_swings_canon():
             try:
-                from core.smc.smc_engine import _swings_luxalgo
+                from core.smc.smc_engine import confirmed_swings
                 raw = [
                     (int(i), float(p), SwingType.HIGH if k == "H" else SwingType.LOW)
-                    for i, p, k in (_swings_luxalgo(df, period) or [])
+                    for i, p, k in (confirmed_swings(df, period) or [])
                 ]
             except Exception as e:
                 logger.debug("swings canon error: %s", e, exc_info=True)

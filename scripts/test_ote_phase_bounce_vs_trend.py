@@ -42,7 +42,7 @@ def assemble(st, win, internal=True):
     evs = [e for e in st.events if bool(e.internal) == internal]
     if not evs:
         return None
-    is_long = (st.itrend if internal else st.trend) > 0
+    is_long = (st.minor_trend if internal else st.trend) > 0
     i_ch = pos = None
     for k in range(len(evs) - 1, -1, -1):
         if evs[k].kind == "CHoCH" and bool(evs[k].bull) == is_long:

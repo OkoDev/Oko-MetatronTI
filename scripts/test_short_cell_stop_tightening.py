@@ -27,7 +27,7 @@ from collections import defaultdict
 warnings.filterwarnings("ignore")
 sys.path.insert(0, ".")
 sys.stdout.reconfigure(encoding="utf-8")
-from core.smc.oko_sm_engine import run_structure, _swings
+from core.smc.oko_sm_engine import run_structure, pivot_points
 from core.smc.impulse_assembly import assemble_impulse, ote_zone
 from core.smc.structure import detect_structure
 from core.smc.order_blocks import detect_order_blocks
@@ -134,7 +134,7 @@ for si, sym in enumerate(syms):
             alts = {"A) origin (база)": sl_o}
             # B) ближайший свинг-хай между ценой и origin
             try:
-                sw = [p for (_ci, _si, p, is_top) in _swings(win["high"], win["low"], 5) if is_top]
+                sw = [p for (_ci, _si, p, is_top) in pivot_points(win["high"], win["low"], 5) if is_top]
                 cand = [p for p in sw if px * 1.002 < p < sl_o]
                 if cand:
                     alts["B) свинг-хай (len5)"] = min(cand) * 1.003

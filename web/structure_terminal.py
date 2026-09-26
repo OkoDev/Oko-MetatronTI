@@ -1288,7 +1288,7 @@ def _smc_levels(sym, tf):
                            "close": b["c"], "volume": b["v"]} for b in bars])
         ts = [b["t"] for b in bars]           # позиция бара → время свечи
         px = bars[-1]["c"]
-        # СТРУКТУРА — движком OKO-SM (порт индикатора Егора v163, сверен с метками графика):
+        # СТРУКТУРА — структурным ядром OKO (core/structure, сверено с метками графика):
         # два масштаба, swing(50) = сторона, internal(5) = вход [[method_egor_two_scale_entry]]
         st = run_structure(d, swing_len=50, internal_len=5)
         sw_ev = [e for e in st.events if not e.internal][-4:]     # раздельно: internal(5) частые и
@@ -1298,10 +1298,10 @@ def _smc_levels(sym, tf):
             out["brk"].append({"t0": ts[i0], "t1": ts[e.i], "p": e.level, "kind": e.kind,
                                "dir": "bull" if e.bull else "bear", "int": bool(e.internal)})
         leg = current_leg(st)
-        if leg:                               # нога старшего масштаба + Strong High / Weak Low
+        if leg:                               # нога старшего масштаба + верх/низ ноги
             out["leg"] = {"t0": ts[leg["origin_i"]], "p0": leg["origin"],
                           "t1": ts[leg["extreme_i"]], "p1": leg["extreme"], "side": leg["trend"]}
-        out["trail"] = {"up": st.trail_up, "dn": st.trail_dn}
+        out["trail"] = {"up": st.leg_top, "dn": st.leg_bottom}
         brks = detect_structure_breaks(d, length=5)    # OB привязаны к сломам smc_engine
         for o in detect_order_blocks(d, brks):
             if o.mitigated_idx != -1:         # пробитый OB не рисуем

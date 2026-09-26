@@ -26,7 +26,7 @@ import re
 import pandas as pd
 
 from core.smc.oko_sm_engine import run_structure
-from core.smc.smc_engine import _swings_luxalgo
+from core.smc.smc_engine import confirmed_swings
 
 # Параметры механики. Значения — центр плато устойчивости, не подогнанный пик.
 PULLBACK = 0.236       # глубина отката для лимита
@@ -112,8 +112,8 @@ def find_setup(df: pd.DataFrame, *, symbol: str = "", pullback: float = PULLBACK
     dd = d.reset_index(drop=True)
     try:
         st = run_structure(dd, swing_len=swing_len, internal_len=5, record_legs=True)
-        sw_big = _swings_luxalgo(dd, swing_len)
-        sw_int = _swings_luxalgo(dd, 5)
+        sw_big = confirmed_swings(dd, swing_len)
+        sw_int = confirmed_swings(dd, 5)
     except Exception as e:                                    # noqa: BLE001
         return {"symbol": symbol, "reason": f"структура: {str(e)[:50]}"}
 

@@ -52,8 +52,8 @@ def analyze_tf(df: pd.DataFrame, tf: str) -> list[dict]:
     d = df.copy()
     d.columns = [c.lower() for c in d.columns]
     if USE_SWINGS:
-        from core.smc.smc_engine import _swings_luxalgo
-        _sw = _swings_luxalgo(d, SWING_LEN.get(tf, 50))   # значимые swing-точки (окно=length)
+        from core.smc.smc_engine import confirmed_swings
+        _sw = confirmed_swings(d, SWING_LEN.get(tf, 50))   # значимые swing-точки (окно=length)
         zz = [(d.index[i], p) for i, p, _k in _sw if i < len(d.index)]
     else:
         _dp = ZZ_DEPTH.get(tf, 11)

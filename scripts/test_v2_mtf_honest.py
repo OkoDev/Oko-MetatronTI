@@ -2,7 +2,7 @@
 """ЧЕСТНЫЙ point-in-time бэктест method_v2_mtf (после находки look-ahead, DS 05.07).
 
 Look-ahead: сетап с w3-сломом на баре e_ts виден в full-df, но НЕ виден live в момент e_ts
-(свинги в хвосте df не подтверждены _swings_luxalgo). Тест lookahead_true: 16/19 исчезают.
+(свинги в хвосте df не подтверждены confirmed_swings). Тест lookahead_true: 16/19 исчезают.
 
 ЧЕСТНАЯ методика (per-setup передетект — быстро, O(сетапов), а не O(баров)):
   1. detect_v2_mtf(full) → кандидаты (могут содержать look-ahead).

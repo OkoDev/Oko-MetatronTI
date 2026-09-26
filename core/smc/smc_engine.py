@@ -1,12 +1,13 @@
-"""ARCH-128 — SMC Engine: эталонный движок SMC (порт OKO-SM Pine, единый калькулятор).
+"""ARCH-128 — SMC Engine: единый калькулятор SMC для бота, матрицы и терминала.
 
-Воспроизводит индикатор пользователя OKO-SM слой-в-слой. НЕ только свинги (имя
-swing_service устарело 03.06 → smc_engine): ZigZag · structure HH/HL/LH/LL · BOS/CHoCH
-(защищённые уровни) · Order Blocks (+mitigation) · Premium/Discount · OTE (0.5-0.79) ·
-EQH/EQL · FVG (+overlap) · Эллиотт (5-волн +extension, мульти-масштаб).
+Слои: ZigZag · structure HH/HL/LH/LL · BOS/CHoCH (защищённые уровни) · Order Blocks
+(+mitigation) · Premium/Discount · OTE (0.5-0.79) · EQH/EQL · FVG (+overlap) ·
+Эллиотт (5-волн +extension, мульти-масштаб).
 
-Базис значимости свингов (корень «мелких свингов» DS-311 OTE):
-1. swings(length) — LuxAlgo: значимый (major, len=50) vs internal (minor, len=5).
+С 26.09.2026 опорные точки, сломы, блоки, равные уровни, разрывы и зоны диапазона считает
+структурное ядро `core/structure` (docs/STRUCTURE_KERNEL_SPEC.md); функции ниже сохраняют
+прежние сигнатуры и форматы. Базис значимости свингов:
+1. опорные точки окна length: старший масштаб (major, len=50) и младший (minor, len=5).
 2. ZigZag с ATR-deviation: разворот ≥ k×ATR% (dev=3, depth=11). Отсекает шум.
 
 ЕДИНЫЙ КАЛЬКУЛЯТОР (ARCH-118): combinator/features_json/сферы Bus вызывают ЭТОТ модуль,
@@ -17,7 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
+import numpy as np
 import pandas as pd
+
+from core.structure import (LevelBreak, confirmed_pivots, equal_levels, fair_value_gaps, label_swings,
+                            level_breaks, order_blocks, range_zones, two_sided_pivots)
+from core.structure.levels import column
 
 
 @dataclass(frozen=True)
@@ -29,43 +35,13 @@ class Swing:
     level: Literal["major", "minor"]
 
 
-def _swings_luxalgo(df: pd.DataFrame, length: int) -> List[tuple]:
-    """LuxAlgo swings(length). Возвращает [(idx, price, 'H'/'L')].
-
-    os := 0 (формируется high) когда high[length] > highest(length)
-          1 (формируется low)  когда low[length]  < lowest(length)
-    top фиксируется при переходе os 1→0, btm при 0→1. Свинг помечается
-    на баре (n-length) — там, где экстремум.
-    """
-    n = len(df)
-    if n < length * 2 + 2:
+def confirmed_swings(df: pd.DataFrame, length: int) -> List[tuple]:
+    """Опорные точки окна length (core.structure.confirmed_pivots). Возвращает [(idx, price, 'H'/'L')],
+    idx — бар экстремума; точка известна на баре idx + length. Ряд короче 2·length+2 баров — пусто."""
+    if len(df) < length * 2 + 2:
         return []
-    high = df["high"].values
-    low = df["low"].values
-    # rolling highest/lowest за `length` баров (исключая текущий, как в Pine ta.highest)
-    upper = df["high"].rolling(length).max().values
-    lower = df["low"].rolling(length).min().values
-
-    out = []
-    os = 0
-    prev_os = 0
-    for i in range(length, n):
-        h_l = high[i - length]   # high[length] в Pine = бар length назад от текущего
-        l_l = low[i - length]
-        up = upper[i] if not pd.isna(upper[i]) else h_l
-        lo = lower[i] if not pd.isna(lower[i]) else l_l
-        prev_os = os
-        if h_l > up:
-            os = 0
-        elif l_l < lo:
-            os = 1
-        # else os unchanged
-        # top при os 1→0, btm при 0→1
-        if os == 0 and prev_os != 0:
-            out.append((i - length, float(h_l), "H"))
-        elif os == 1 and prev_os != 1:
-            out.append((i - length, float(l_l), "L"))
-    return out
+    return [(p.bar, p.price, "H" if p.is_high else "L")
+            for p in confirmed_pivots(column(df, "high"), column(df, "low"), length)]
 
 
 def detect_swings(
@@ -82,7 +58,7 @@ def detect_swings(
     d.columns = [c.lower() for c in d.columns]
     res: List[Swing] = []
     for length, level in ((major_len, "major"), (minor_len, "minor")):
-        for idx, price, kind in _swings_luxalgo(d, length):
+        for idx, price, kind in confirmed_swings(d, length):
             ts = d.index[idx] if idx < len(d.index) else idx
             res.append(Swing(idx=idx, ts=ts, price=price, kind=kind, level=level))  # type: ignore
     res.sort(key=lambda s: s.idx)
@@ -106,50 +82,18 @@ def detect_structure_breaks(
     vol_len: int = 20,
     vol_mult: float = 1.2,
 ) -> List[StructureBreak]:
-    """BOS/CHoCH (LuxAlgo) + критерий пользователя: пробой + ОБЪЁМ + закрепление.
+    """BOS/CHoCH одного масштаба + критерий пользователя: пробой + ОБЪЁМ + закрепление.
 
-    LuxAlgo: close пробивает последний swing high (bull) / low (bear).
+    Слом — закрытие за последней опорной точкой окна length (core.structure.level_breaks):
       BOS   = пробой ПО тренду (продолжение)
       CHoCH = первый пробой ПРОТИВ тренда (смена характера)
-    Критерий пользователя (настоящий слом): закрепление = пробой по CLOSE (тело, не
-    фитиль — уже в LuxAlgo) + объём на баре пробоя > среднего (has_volume=True).
+    Закрепление = пробой по CLOSE (тело, не фитиль) + объём на баре пробоя выше среднего
+    за vol_len баров × vol_mult (has_volume=True). from_idx — бар опорной точки уровня.
     """
-    d = df.copy()
-    d.columns = [c.lower() for c in d.columns]
-    n = len(d)
-    close = d["close"].values
-    vol = d["volume"].values if "volume" in d.columns else None
-    vol_avg = (pd.Series(vol).rolling(vol_len).mean().values if vol is not None else None)
-    sw = _swings_luxalgo(d, length)   # [(idx, price, 'H'/'L')], idx = экстремум
-    # активируем уровень с бара (idx + length) — момент подтверждения свинга (как Pine)
-    # храним (confirm_idx, swing_idx, price) — swing_idx = откуда тянуть линию
-    highs = sorted([(idx + length, idx, price) for idx, price, k in sw if k == "H"])
-    lows = sorted([(idx + length, idx, price) for idx, price, k in sw if k == "L"])
-
-    out: List[StructureBreak] = []
-    trend = 0
-    top_y: Optional[float] = None
-    btm_y: Optional[float] = None
-    top_from = btm_from = -1
-    top_cross = btm_cross = False
-    hi_ptr = lo_ptr = 0
-    for i in range(n):
-        while hi_ptr < len(highs) and highs[hi_ptr][0] <= i:
-            top_y = highs[hi_ptr][2]; top_from = highs[hi_ptr][1]; top_cross = True; hi_ptr += 1
-        while lo_ptr < len(lows) and lows[lo_ptr][0] <= i:
-            btm_y = lows[lo_ptr][2]; btm_from = lows[lo_ptr][1]; btm_cross = True; lo_ptr += 1
-        has_vol = bool(vol is not None and not pd.isna(vol_avg[i]) and vol[i] > vol_avg[i] * vol_mult)
-        if top_y is not None and top_cross and close[i] > top_y:
-            kind = "CHoCH" if trend < 0 else "BOS"
-            out.append(StructureBreak(d.index[i], i, float(top_y), kind, "bull", has_vol, top_from))  # type: ignore
-            top_cross = False
-            trend = 1
-        elif btm_y is not None and btm_cross and close[i] < btm_y:
-            kind = "CHoCH" if trend > 0 else "BOS"
-            out.append(StructureBreak(d.index[i], i, float(btm_y), kind, "bear", has_vol, btm_from))  # type: ignore
-            btm_cross = False
-            trend = -1
-    return out
+    idx = df.index
+    return [StructureBreak(idx[b.bar], b.bar, b.level, b.kind, "bull" if b.bullish else "bear",  # type: ignore
+                           b.heavy_volume, b.level_bar)
+            for b in level_breaks(df, window=length, vol_len=vol_len, vol_mult=vol_mult)]
 
 
 @dataclass(frozen=True)
@@ -168,59 +112,35 @@ def detect_order_blocks(
     breaks: List["StructureBreak"],
     atr_len: int = 200,
 ) -> List[OrderBlock]:
-    """Order Blocks (LuxAlgo ob_coord): при сломе структуры — последняя «спокойная»
-    свеча (размер < 2×ATR) с экстремумом в интервале [свинг..пробой].
+    """Order Blocks (core.structure.order_blocks): при сломе структуры — крайняя «спокойная»
+    свеча (размах < 2×ATR Уайлдера) на отрезке [опорная точка..пробой].
 
-    bull-слом → bullish OB = lowest-свеча (поддержка, институционал покупал).
-    bear-слом → bearish OB = highest-свеча (сопротивление).
-    OB-бокс = (high, low) той свечи. Фильтр Atr (ta.atr(200)).
+    bull-слом → bullish OB = свеча с самым низким low (поддержка, институционал покупал).
+    bear-слом → bearish OB = свеча с самым высоким high (сопротивление).
+    OB-бокс = (high, low) той свечи; mitigated_idx — первое закрытие за дальней границей.
+
+    🔴 ПРИЧИННОСТЬ ПОЛЕЙ (важно при использовании в признаках):
+      · `left_idx`, `break_idx` — ПРИЧИННЫ (лаг 0): блок известен на баре слома;
+      · `mitigated_idx`, `is_breaker` — СМОТРЯТ ВПЕРЁД по построению. Их можно
+        использовать ТОЛЬКО как границу «блок жив до N», но НЕЛЬЗЯ как признак
+        на баре ≤ N: на баре 100 мы не знаем, что блок пробьют на баре 300.
+      · `active_order_blocks(obs, ...)` — функция ОТРИСОВКИ, а не истории: отдаёт
+        блоки, живые на ПОСЛЕДНЕМ баре ряда, по `per_side` с каждой стороны
+        (её `n_bars` в теле не используется). Для чарта верно, для признаков —
+        нет: 04.09 выяснилось, что в конвейере матрицы она обрезала OB до 10 баров
+        на всю историю (теряя 70% митигированных блоков), и признак был почти
+        всегда False — неотличимо от «эджа нет».
+
+    🧱 BREAKER BLOCK (20.08.2026): пробитый OB МЕНЯЕТ РОЛЬ — бывшая поддержка становится
+    сопротивлением и наоборот, с бара mitigated_idx. Замер 20.08: breaker — лучший
+    ОДИНОЧНЫЙ фактор конфлюэнции по OOS (1.80).
     """
-    d = df.copy()
-    d.columns = [c.lower() for c in d.columns]
-    high, low = d["high"].values, d["low"].values
-    tr = pd.concat([
-        d["high"] - d["low"],
-        (d["high"] - d["close"].shift()).abs(),
-        (d["low"] - d["close"].shift()).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
-
-    out: List[OrderBlock] = []
-    for b in breaks:
-        loc = b.from_idx if b.from_idx >= 0 else b.idx
-        a, z = min(loc, b.idx), max(loc, b.idx)
-        if z - a < 1:
-            continue
-        best_idx = None
-        best_val = None
-        for i in range(a, z + 1):
-            if (high[i] - low[i]) >= (atr[i] if not pd.isna(atr[i]) else 1e9) * 2:
-                continue   # волатильная свеча — пропуск (фильтр Atr)
-            if b.direction == "bull":
-                if best_val is None or low[i] < best_val:
-                    best_val = low[i]; best_idx = i
-            else:
-                if best_val is None or high[i] > best_val:
-                    best_val = high[i]; best_idx = i
-        if best_idx is None:
-            continue
-        ob_top, ob_btm = float(high[best_idx]), float(low[best_idx])
-        # mitigation: первый бар ПОСЛЕ слома, где close пробивает OB (LuxAlgo remove)
-        close_arr = d["close"].values
-        mit = -1
-        for j in range(b.idx + 1, len(d)):
-            if b.direction == "bull" and close_arr[j] < ob_btm:
-                mit = j; break
-            if b.direction == "bear" and close_arr[j] > ob_top:
-                mit = j; break
-        # 🧱 BREAKER BLOCK (20.08.2026): пробитый OB МЕНЯЕТ РОЛЬ — бывшая поддержка
-        # становится сопротивлением и наоборот. Поле is_breaker существовало с самого
-        # начала, но НИКОГДА не выставлялось: присваивания True не было во всём проекте,
-        # то есть детектора breaker-блоков не существовало. Роль меняется с бара mit.
-        # Замер 20.08: breaker — лучший ОДИНОЧНЫЙ фактор конфлюэнции по OOS (1.80).
-        out.append(OrderBlock(best_idx, ob_top, ob_btm, b.direction, b.idx, mit,
-                              is_breaker=(mit != -1)))  # type: ignore
-    return out
+    level = [LevelBreak(b.idx, b.direction == "bull", getattr(b, "kind", "BOS") == "CHoCH",
+                        getattr(b, "price", float("nan")), b.from_idx, bool(getattr(b, "has_volume", False)))
+             for b in breaks]
+    return [OrderBlock(z.origin_bar, z.top, z.bottom, "bull" if z.bullish else "bear",  # type: ignore
+                       z.break_bar, z.gone_bar, is_breaker=z.flipped)
+            for z in order_blocks(df, level, atr_len=atr_len)]
 
 
 def active_breakers(obs: List[OrderBlock], at_bar: int) -> List[OrderBlock]:
@@ -244,7 +164,7 @@ def breaker_side(ob: "OrderBlock") -> str:
 def active_order_blocks(obs: List[OrderBlock], n_bars: int, per_side: int = 5) -> List[OrderBlock]:
     """Только ВАЛИДНЫЕ OB к концу данных (непробитые), последние per_side каждого типа.
 
-    Как LuxAlgo: пробитый OB удаляется (mitigated_idx != -1 и < n_bars). Показываем
+    Пробитый OB в отрисовку не попадает (mitigated_idx != -1 и < n_bars). Показываем
     активные (mitigated_idx == -1) — последние per_side bull + per_side bear.
     """
     active = [o for o in obs if o.mitigated_idx == -1]
@@ -254,44 +174,29 @@ def active_order_blocks(obs: List[OrderBlock], n_bars: int, per_side: int = 5) -
 
 
 def classify_structure(df: pd.DataFrame, length: int = 50) -> List[tuple]:
-    """Swing Structure HH/HL/LH/LL (LuxAlgo, «Show Swings Points = length»).
+    """Структура HH/HL/LH/LL по опорным точкам окна length (core.structure.label_swings).
 
-    swings(length) → классификация по предыдущему экстремуму того же типа:
-      swing-high: HH если > пред. high, иначе LH
-      swing-low:  LL если < пред. low,  иначе HL
+    Классификация по предыдущей точке того же вида:
+      вершина: HH если > пред. вершины, иначе LH
+      впадина: LL если < пред. впадины, иначе HL
     Возвращает [(ts, price, label)] где label ∈ {HH,HL,LH,LL}. Отдельный слой
     от ZigZag (структурные точки, не волновая линия).
     """
-    raw = _swings_luxalgo(df, length)   # [(idx, price, 'H'/'L')]
-    out: List[tuple] = []
-    prev_high: Optional[float] = None
-    prev_low: Optional[float] = None
-    for idx, price, kind in raw:
-        if kind == "H":
-            label = "HH" if (prev_high is not None and price > prev_high) else ("LH" if prev_high is not None else "HH")
-            prev_high = price
-        else:
-            label = "LL" if (prev_low is not None and price < prev_low) else ("HL" if prev_low is not None else "LL")
-            prev_low = price
-        ts = df.index[idx] if idx < len(df.index) else idx
-        out.append((ts, float(price), label))
-    return out
+    n = len(df.index)
+    return [(df.index[idx] if idx < n else idx, float(price), label)
+            for idx, price, label in label_swings(df, length)]
 
 
 def premium_discount(top: float, btm: float) -> dict:
-    """Premium/Discount/Equilibrium зоны (LuxAlgo) — упрощённое Фибо-деление диапазона.
+    """Premium/Discount/Equilibrium — полосы диапазона (core.structure.range_zones).
 
-    top = Strong High (trail_up), btm = Weak Low (trail_dn). Связь с Фибо:
+    top = верх ноги, btm = низ ноги. Связь с Фибо:
       equilibrium ≈ 0.5; discount = нижняя зона (где OTE-LONG 0.705-0.786);
       premium = верхняя (где OTE-SHORT). Грубая рамка «где торговать»:
       покупать в discount, продавать в premium.
     """
-    return {
-        "premium": (0.95 * top + 0.05 * btm, top),                       # верх
-        "equilibrium": (0.475 * top + 0.525 * btm, 0.525 * top + 0.475 * btm),  # ~0.5
-        "discount": (btm, 0.95 * btm + 0.05 * top),                      # низ
-        "eq_mid": (top + btm) / 2,
-    }
+    z = range_zones(top, btm)
+    return {"premium": z["upper"], "equilibrium": z["middle"], "discount": z["lower"], "eq_mid": z["mid"]}
 
 
 def build_ote(swing_a: float, swing_b: float) -> dict:
@@ -351,7 +256,7 @@ def find_choch_ote(
     if swings is not None:
         sw = swings
     else:
-        sw = _swings_luxalgo(df_for_swings, swing_len) if (df_for_swings is not None) else []
+        sw = confirmed_swings(df_for_swings, swing_len) if (df_for_swings is not None) else []
     pts = [(i, p, k) for i, p, k in sw if df_for_swings.index[i] <= b.ts]
     if len(pts) < 2:
         return None
@@ -393,28 +298,9 @@ def _pivots(df: "pd.DataFrame", length: int, is_high: bool) -> List[tuple]:
     """Pivot-точки (строгий left, нестрогий right — анти-дубль плато, как zigzag_atr).
 
     Кандидат на баре c — экстремум окна [c-length .. c+length]. Возвращает [(idx, price)].
-    Используется для EQH/EQL (eq_len=3) и любой fixed-pivot разметки.
+    Используется для EQH/EQL (eq_len=3) и любой fixed-pivot разметки (core.structure.two_sided_pivots).
     """
-    d = df
-    src = d["high"].values if is_high else d["low"].values
-    n = len(d)
-    out: List[tuple] = []
-    for c in range(length, n - length):
-        val = src[c]
-        ok = True
-        for j in range(c - length, c + length + 1):
-            if j == c:
-                continue
-            left = j < c
-            if is_high:
-                if (left and src[j] >= val) or (not left and src[j] > val):
-                    ok = False; break
-            else:
-                if (left and src[j] <= val) or (not left and src[j] < val):
-                    ok = False; break
-        if ok:
-            out.append((c, float(val)))
-    return out
+    return two_sided_pivots(column(df, "high" if is_high else "low"), length, highs=is_high)
 
 
 def detect_equal_levels(
@@ -423,28 +309,16 @@ def detect_equal_levels(
     threshold: float = 0.1,
     atr_len: int = 200,
 ) -> List[tuple]:
-    """EQH/EQL (LuxAlgo) — равные хаи/лоу = зоны ликвидности (скопления стопов).
+    """EQH/EQL — равные хаи/лоу = зоны ликвидности (скопления стопов), core.structure.equal_levels.
 
-    Два СОСЕДНИХ pivot(eq_len) того же типа «равны», если |Δцены| < threshold×ATR.
+    Две СОСЕДНИЕ опорные точки (окно eq_len с обеих сторон) одного вида «равны», если
+    |Δцены| < threshold×ATR Уайлдера(atr_len) на второй точке.
     EQH = равные вершины (ликвидность сверху, цель для свипа вверх); EQL = равные донья.
     Возвращает [(ts1, p1, ts2, p2, 'EQH'/'EQL')] — пары уровней.
     """
-    d = df.copy()
-    d.columns = [c.lower() for c in d.columns]
-    tr = pd.concat([
-        d["high"] - d["low"],
-        (d["high"] - d["close"].shift()).abs(),
-        (d["low"] - d["close"].shift()).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1.0 / atr_len, adjust=False).mean().values
-    out: List[tuple] = []
-    for is_high, lab in ((True, "EQH"), (False, "EQL")):
-        pv = _pivots(d, eq_len, is_high)
-        for (i1, p1), (i2, p2) in zip(pv, pv[1:]):
-            thr = threshold * atr[i2] if not pd.isna(atr[i2]) else 0.0
-            if abs(p2 - p1) < thr:
-                out.append((d.index[i1], p1, d.index[i2], p2, lab))
-    return out
+    idx = df.index
+    return [(idx[p.first_bar], p.first_price, idx[p.second_bar], p.second_price, "EQH" if p.highs else "EQL")
+            for p in equal_levels(df, window=eq_len, tolerance=threshold, atr_len=atr_len)]
 
 
 @dataclass(frozen=True)
@@ -545,47 +419,21 @@ def detect_fvg(
     df: "pd.DataFrame",
     threshold: Optional[float] = None,
 ) -> List[tuple]:
-    """FVG / Fair Value Gap (LuxAlgo) — трёхсвечный имбаланс (незаполненный гэп).
+    """FVG / Fair Value Gap — трёхсвечный имбаланс (незаполненный гэп), core.structure.fair_value_gaps.
 
     bull-FVG: low[i] > high[i-2] и close[i-1] > high[i-2] → гэп ВВЕРХ (бокс high[i-2]..low[i]).
     bear-FVG: high[i] < low[i-2] и close[i-1] < low[i-2] → гэп ВНИЗ (бокс high[i]..low[i-2]).
-    Фильтр значимости: Δ% > threshold (auto = средний |Δ%| × 2 — отсекает мелкие гэпы).
-    mitigated = бар, где цена ЗАКРЫЛА гэп (вошла насквозь); -1 = активен.
+    Фильтр значимости: Δ% > threshold; threshold=None — причинный авто-порог: удвоенное
+    расширяющееся среднее размера гэпа в % по барам ≤ i (гэп=0 где нет). Раньше (до 04.09)
+    среднее бралось по ВСЕМУ ряду — look-ahead в бэктесте, менявший сам набор зон.
+    mitigated = бар, где цена ЗАКРЫЛА гэп (close за дальней границей, не фитиль); None = активен.
     Возвращает [(ts_left, top, bottom, kind, ts_i, mitigated_ts_or_None)].
     Конфлюенция: FVG внутри OTE-зоны = усиление сигнала («+»).
     """
-    d = df.copy()
-    d.columns = [c.lower() for c in d.columns]
-    high, low, close = d["high"].values, d["low"].values, d["close"].values
-    n = len(d)
-    raw = []
-    for i in range(2, n):
-        if low[i] > high[i - 2] and close[i - 1] > high[i - 2]:
-            dper = (low[i] - high[i - 2]) / high[i - 2] * 100
-            raw.append((i, "bull", float(low[i]), float(high[i - 2]), dper))
-        elif high[i] < low[i - 2] and close[i - 1] < low[i - 2]:
-            dper = (low[i - 2] - high[i]) / high[i] * 100
-            raw.append((i, "bear", float(low[i - 2]), float(high[i]), dper))
-    if threshold is None:
-        # LuxAlgo auto: средний |gap%| по ВСЕМ барам (gap=0 где нет) × 2. Считать
-        # только по FVG-барам НЕЛЬЗЯ — редкие крупные гэпы задирают порог и режут валидные.
-        allgaps = [max(0.0, low[i] - high[i - 2], low[i - 2] - high[i]) / close[i] * 100
-                   for i in range(2, n)]
-        threshold = (sum(allgaps) / len(allgaps)) * 2 if allgaps else 0.0
-    out = []
-    for i, kind, top, bottom, dper in raw:
-        if dper <= threshold:
-            continue
-        mit = None
-        for j in range(i + 1, n):
-            # mitigation по CLOSE за противоположной границей (полное закрытие гэпа),
-            # НЕ касание фитилём — иначе тренд закрывает валидные FVG откатами.
-            if kind == "bull" and close[j] < bottom:
-                mit = d.index[j]; break
-            if kind == "bear" and close[j] > top:
-                mit = d.index[j]; break
-        out.append((d.index[i - 2], top, bottom, kind, d.index[i], mit))
-    return out
+    idx = df.index
+    return [(idx[g.left_bar], g.top, g.bottom, "bull" if g.bullish else "bear", idx[g.bar],
+             idx[g.filled_bar] if g.filled_bar != -1 else None)
+            for g in fair_value_gaps(df, threshold)]
 
 
 def detect_fvg_overlap(
@@ -670,6 +518,25 @@ def detect_fvg_overlap(
 
 def detect_elliott_impulse(zz: List[tuple]) -> List[dict]:
     """ARCH-128 — Эллиотт: 5-волновой импульс на ZigZag (1-3-5 импульсные, 2-4 коррекции).
+
+    🔴🔴 ПЕРЕРИСОВКА — ОБЯЗАТЕЛЬНО К ПРОЧТЕНИЮ ПЕРЕД ЛЮБЫМ ЗАМЕРОМ.
+    Функция работает поверх `zigzag_atr`, а зигзаг ПЕРЕРИСОВЫВАЕТ историю. Замер
+    03.09.2026 (`scripts/impulse_decay_causal.py`, префиксный проход по 4 символам):
+    из импульсов, ВИДИМЫХ в реальном времени, в финальной разметке остаётся лишь
+    27–60% — HYPE теряет 40%, GRT 62%, SOL 73%, LINK 66%.
+
+    Отсюда ДВЕ обязательные проверки причинности, не одна:
+      1. ЛАГ ПОДТВЕРЖДЕНИЯ — префиксный аудит `детектор(df[:t])` против полного df.
+         Замерен: ровно 6 баров, одинаково на всех символах (это ПАРАМЕТР детектора,
+         не статистика — [[detector_lag_is_a_parameter_not_statistics]]).
+      2. SURVIVORSHIP — торговать надо КАЖДЫЙ импульс в момент его первого появления,
+         включая те, что позже исчезнут. Иначе замер идёт только по «выжившим», то
+         есть по заведомо настоящим сигналам.
+
+    Цена пропуска: тот же замер без обеих проверок дал PF **15.65**, с одной лагом —
+    **5.47**, с обеими — **0.97**. Первые два числа были артефактом целиком.
+    🔑 Практическое правило: PF > 5 на механике с базой ~0.8 — это сигнал ошибки
+    теста, а не находка.
 
     Окно из 6 ZigZag-точек = 5 волн. Hard-правила Эллиотта (обязательные):
       R1. Волна 2 не откатывает ЗА начало волны 1.
@@ -771,7 +638,7 @@ def _zz_typed(zz: List[tuple]) -> List[tuple]:
 
 
 def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
-    """ARCH-128 ЯДРО АВТОПОИСКА — сетапы на ZigZag-структуре (точные вершины LuxAlgo пропускает).
+    """ARCH-128 ЯДРО АВТОПОИСКА — сетапы на ZigZag-структуре (точные вершины опорные точки окна 50 пропускают).
 
     Перебирает ВСЕ значимые сломы (не «последний CHoCH»). Слом структуры на ZigZag:
       • новый zz-high > предыдущего zz-high → пробой хая вверх (bull).
@@ -781,7 +648,8 @@ def find_setups_zz(zz: List[tuple], df: "pd.DataFrame") -> List[dict]:
     (low перед bull-сломом / high перед bear-сломом) до zz-вершины слома. На GRT 02.06:
     LL 19:33(0.02284) → H 19:53(0.02348) пробил LH 19:00(0.02342) = bull-CHoCH, OTE near low.
 
-    Логика BOS/CHoCH/trend — LuxAlgo; источник свингов — ZigZag (точнее swings(50)).
+    Логика BOS/CHoCH/trend — общая SMC (защищённые уровни); источник свингов — ZigZag
+    (точнее опорных точек окна 50).
     Возвращает [dict] (build_ote + from/to/kind/struct/choch_ts/broken_level), хронологически.
     """
     typed = _zz_typed(zz)
@@ -1064,7 +932,7 @@ def last_swing_leg_ote(df: pd.DataFrame, length: int = 20) -> Optional[dict]:
     high→low или low→high, привязанная к экстремумам (не глобальный поиск, не мелкая
     ZigZag-нога). bull (нога вниз high→low) → OTE near low; bear (вверх) → near high.
     """
-    sw = _swings_luxalgo(df, length)   # [(idx, price, 'H'/'L')] в порядке времени
+    sw = confirmed_swings(df, length)   # [(idx, price, 'H'/'L')] в порядке времени
     if len(sw) < 2:
         return None
     (ai, ap, ak), (ci, cp, ck) = sw[-2], sw[-1]   # последняя нога: ap=начало, cp=конец

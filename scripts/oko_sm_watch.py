@@ -137,8 +137,8 @@ def _levels_near(price, df, st, pivots):
             hits.append(f"FVG({hv[t-2]:.6g})")
         elif hv[t] < lvv[t-2] and abs(price - lvv[t-2]) / price <= TOL:
             hits.append(f"FVG({lvv[t-2]:.6g})")
-    from core.smc.oko_sm_engine import _swings
-    for conf_i, sw_i, p, is_top in _swings(df["high"], df["low"], 5)[-24:]:
+    from core.smc.oko_sm_engine import pivot_points
+    for conf_i, sw_i, p, is_top in pivot_points(df["high"], df["low"], 5)[-24:]:
         if abs(price - p) / price <= TOL:
             hits.append(f"полка({p:.6g})")
     # сетка соседнего импульса (последняя нога противоположного тренда)
@@ -294,7 +294,7 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
                round(float(score), 2), json.dumps(hits_flat, ensure_ascii=False),
                round(wt["wt"], 1), round(wt["ma"], 1),
                int(bool(wt["div"])),                  # флаг для старых читателей
-               int((st.itrend > 0) == long_),
+               int((st.minor_trend > 0) == long_),
                fibp[0.618], fibp[0.705], fibp[0.786], fibp[1.0],
                res_lvl, res_touches, res_dist,
                sup_lvl, sup_touches, sup_dist,
@@ -384,7 +384,7 @@ def scan_one(base, test=False):
     need = 3.0 if in_zone else 5.0
     if best_score < need:
         return f"score {best_score:.1f} < {need} (слабое схождение)" if test else None
-    itn = "синхрон" if (st.itrend > 0) == long_ else "коррекция (internal против)"
+    itn = "синхрон" if (st.minor_trend > 0) == long_ else "коррекция (internal против)"
     div = (f"{wt['div']} {wt['div_age']} бар назад" if wt["div"] else "нет")
     dseg = "LONG" if long_ else "SHORT"
     dt0 = datetime.fromtimestamp(int(df["time"].iloc[leg["origin_i"]])/1000, timezone.utc).strftime("%d.%m")

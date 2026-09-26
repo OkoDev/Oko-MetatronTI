@@ -10,7 +10,7 @@
 если origin/extreme определены неверно, то и глубина отката меряется неверно, и все выводы
 о зоне — об артефакте построения, а не о рынке. Проверяем ТРИ определения origin:
   A) моё текущее — структурный экстремум между предыдущим событием и CHoCH
-  B) фактический свинг-пивот из `_swings` (точка, а не экстремум диапазона)
+  B) фактический свинг-пивот из `pivot_points` (точка, а не экстремум диапазона)
   C) origin из `current_leg` — нога ЭТАЛОННОГО движка, сверенного с графиком Егора
 Если результат сильно зависит от определения — построение критично и его надо чинить.
 Если нет — глубина отката устойчива, и спор о точке origin не влияет на эдж.
@@ -22,7 +22,7 @@ from collections import defaultdict
 warnings.filterwarnings("ignore")
 sys.path.insert(0, ".")
 sys.stdout.reconfigure(encoding="utf-8")
-from core.smc.oko_sm_engine import run_structure, current_leg, _swings
+from core.smc.oko_sm_engine import run_structure, current_leg, pivot_points
 from core.smc.impulse_assembly import assemble_impulse, ote_zone
 from core.smc.structure import detect_structure
 from core.smc.order_blocks import detect_order_blocks
@@ -110,7 +110,7 @@ for si, sym in enumerate(syms):
         # ── ТРИ ОПРЕДЕЛЕНИЯ ORIGIN ──
         origins = {"A) мой (экстремум диапазона)": imp["origin"]}
         try:
-            sw = [(p, is_top) for (_ci, _si, p, is_top) in _swings(win["high"], win["low"], 5)]
+            sw = [(p, is_top) for (_ci, _si, p, is_top) in pivot_points(win["high"], win["low"], 5)]
             cand = [p for p, tp_ in sw if (tp_ is False) == is_long]      # лоу для лонга, хай для шорта
             if cand:
                 origins["B) свинг-пивот len5"] = (min(cand) if is_long else max(cand))

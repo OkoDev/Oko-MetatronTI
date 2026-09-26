@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from core.smc.oko_sm_engine import run_structure, _swings
+from core.smc.oko_sm_engine import run_structure, pivot_points
 from core.waves.wave5_core import mark_impulse, WaveParams
 
 FIB_RET = (0.382, 0.5, 0.618, 0.705, 0.79, 0.886)
@@ -83,7 +83,7 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
     Начало — последний подтверждённый к `now` дневной свинг до начала хода t0, лежащий ЗА экстремумом хода p5; если такого нет —
     последний свинг (глубина > 1). Уровни фибо ноги, расширения, глубина и зона экстремума хода."""
     dd = to_daily(dh) if dd is None else dd                    # dd — готовые ЗАКРЫТЫЕ дневные бары (шина: 1D биржи)
-    dsw = _swings(dd["high"], dd["low"], d_sw)
+    dsw = pivot_points(dd["high"], dd["low"], d_sw)
     cand = [s_ for s_ in dsw if bool(s_[3]) == want_top and dd.index[int(s_[1])] < t0 and dd.index[int(s_[0])] + pd.Timedelta(days=1) <= now]
     beyond = [s_ for s_ in cand if (float(s_[2]) > p5 if want_top else float(s_[2]) < p5)]
     pick = beyond[-1] if beyond else (cand[-1] if cand else None)
@@ -392,7 +392,7 @@ def draw_micro(ax, w: pd.DataFrame, src: pd.DataFrame, sw_len: int = 50, int_len
                     fontsize=6 if e.internal else 7.5, fontweight="normal" if e.internal else "bold",
                     xytext=(0, 2 if e.bull else -8), textcoords="offset points")
     last = {True: None, False: None}
-    for _, si, pr, top in _swings(src.high.reset_index(drop=True), src.low.reset_index(drop=True), lbl_len):
+    for _, si, pr, top in pivot_points(src.high.reset_index(drop=True), src.low.reset_index(drop=True), lbl_len):
         prev, last[top] = last[top], pr
         if si < off or prev is None:
             continue
@@ -496,7 +496,7 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
         st = {"kind": "impulse", "up": s["side"] == "SHORT", "wave_idx": s["wave_idx"], "wave_px": s["wave_px"],
               "setup": s, "form": "импульс"}
     else:
-        sw = _swings(dhr["high"], dhr["low"], p.sw4h)
+        sw = pivot_points(dhr["high"], dhr["low"], p.sw4h)
         for tt in range(t, max(t - p.lookback, 0), -1):
             dg = diagonal_on_bar(sw, tt, hh, lh)
             if dg:

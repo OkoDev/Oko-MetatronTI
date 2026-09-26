@@ -437,8 +437,8 @@ def _breaks_from_canon(df: pd.DataFrame) -> tuple:
     out.sort(key=lambda b: b.break_index)
     _t = StructureTrend.BULLISH if st.trend > 0 else (
         StructureTrend.BEARISH if st.trend < 0 else StructureTrend.NEUTRAL)
-    _it = StructureTrend.BULLISH if st.itrend > 0 else (
-        StructureTrend.BEARISH if st.itrend < 0 else StructureTrend.NEUTRAL)
+    _it = StructureTrend.BULLISH if st.minor_trend > 0 else (
+        StructureTrend.BEARISH if st.minor_trend < 0 else StructureTrend.NEUTRAL)
     return out, _t, _it
 
 

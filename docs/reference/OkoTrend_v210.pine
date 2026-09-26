@@ -1,0 +1,123 @@
+//@version=6
+indicator(title="OkoTrend", shorttitle="Trend")
+
+n1 = input(10, "Channel Length")
+n2 = input(21, "Average Length")
+ap = input(hlc3, "Src")
+obLevel2 = input(80, "Over Bought Level 1")
+obLevel1 = input(60, "Over Bought Level 2")
+osLevel2 = input(-80, "Over Sold Level 1")
+osLevel1 = input(-60, "Over Sold Level 2")
+
+// Дивергенции
+showRegBull = input(true, "Дивергенции: регулярные бычьи")
+showRegBear = input(true, "Дивергенции: регулярные медвежьи")
+showHidBull = input(false, "Дивергенции: скрытые бычьи")
+showHidBear = input(false, "Дивергенции: скрытые медвежьи")
+showLabels  = input(true, "Метки дивергенций")
+
+// Медиана (MA по WT)
+showMa     = input(true, "Показать медиану (MA по WT)")
+maType     = input.string("EMA", "Тип медианы", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "HullMA"])
+maLen      = input.int(200, "Период медианы", minval=1)
+maReaction = input.int(1, "Реакция медианы", minval=1)
+
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+
+wt1 = tci
+wt2 = ta.sma(wt1, 4)
+
+
+
+plot(0, color=color.gray)
+plot(obLevel1, color=color.red)
+plot(osLevel1, color=color.green)
+plot(30, color=color.rgb(255, 255, 255), style=plot.style_line)
+plot(-30, color=color.rgb(255, 255, 255), style=plot.style_line)
+plot(obLevel2, color=color.red, style=plot.style_line)
+plot(osLevel2, color=color.green)
+
+plot(wt1, color=color.green)
+plot(wt2, color=color.red)
+plot(wt1 - wt2, color=color.new(color.blue, 70), style=plot.style_area)
+
+xx = ta.crossover(wt1, wt2)
+xxx = ta.crossunder(wt1, wt2)
+
+plot(xx ? wt2 : na, title="CrossOver", color=color.rgb(4, 255, 58), linewidth=2, style=plot.style_circles)
+plot(xxx ? wt2 : na, title="CrossUnder", color=color.rgb(255, 0, 0), linewidth=2, style=plot.style_circles)
+
+
+/////// Дивергенции (фракталы по wt1) ///////
+
+f_top_fractal(_src) => _src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and _src[2] > _src[0]
+f_bot_fractal(_src) => _src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and _src[2] < _src[0]
+
+topFr = f_top_fractal(wt1)
+botFr = f_bot_fractal(wt1)
+
+fractalTop = topFr ? wt1[2] : na
+fractalBot = botFr ? wt1[2] : na
+
+highPrev  = ta.valuewhen(topFr, wt1[2], 0)[2]
+highPrice = ta.valuewhen(topFr, high[2], 0)[2]
+lowPrev   = ta.valuewhen(botFr, wt1[2], 0)[2]
+lowPrice  = ta.valuewhen(botFr, low[2], 0)[2]
+
+regBearDiv = topFr and high[2] > highPrice and wt1[2] < highPrev and showRegBear
+hidBearDiv = topFr and high[2] < highPrice and wt1[2] > highPrev and showHidBear
+regBullDiv = botFr and low[2] < lowPrice and wt1[2] > lowPrev and showRegBull
+hidBullDiv = botFr and low[2] > lowPrice and wt1[2] < lowPrev and showHidBull
+
+bearCol = regBearDiv or hidBearDiv ? color.red : na
+bullCol = regBullDiv or hidBullDiv ? color.rgb(10, 172, 0) : na
+
+plot(fractalTop, title="Дивергенции медвежьи", color=bearCol, linewidth=2, offset=-2)
+plot(fractalBot, title="Дивергенции бычьи", color=bullCol, linewidth=2, offset=-2)
+
+ploff = (obLevel1 - osLevel1) / 16.0
+
+plotshape(regBearDiv and showLabels ? wt1[1] + ploff : na, title="Регулярная медвежья", text="R-", location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, offset=-2)
+plotshape(hidBearDiv and showLabels ? wt1[1] + ploff : na, title="Скрытая медвежья", text="H-", location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, offset=-2)
+plotshape(regBullDiv and showLabels ? wt1[1] - ploff : na, title="Регулярная бычья", text="R+", location=location.absolute, style=shape.labelup, size=size.tiny, color=color.rgb(10, 172, 0), textcolor=color.white, offset=-2)
+plotshape(hidBullDiv and showLabels ? wt1[1] - ploff : na, title="Скрытая бычья", text="H+", location=location.absolute, style=shape.labelup, size=size.tiny, color=color.rgb(10, 172, 0), textcolor=color.white, offset=-2)
+
+/////// Медиана — MA по WT ///////
+
+maSma  = ta.sma(wt1, maLen)
+maEma  = ta.ema(wt1, maLen)
+maWma  = ta.wma(wt1, maLen)
+maVwma = ta.vwma(wt1, maLen)
+maSmma = ta.rma(wt1, maLen)
+maHull = ta.hma(wt1, maLen)
+
+ma_series = maType == "SMA" ? maSma : maType == "EMA" ? maEma : maType == "WMA" ? maWma : maType == "VWMA" ? maVwma : maType == "SMMA" ? maSmma : maHull
+
+maRising  = ta.rising(ma_series, maReaction)
+maFalling = ta.falling(ma_series, maReaction)
+
+var int dirMa = 0
+dirMa := maRising ? 1 : maFalling ? -1 : dirMa[1]
+
+maCol = dirMa > 0 ? color.new(#2E8B57, 10) : dirMa < 0 ? color.new(#FF4500, 10) : na
+
+plot(showMa ? ma_series : na, title="Медиана WT (MA)", color=maCol, linewidth=3)
+
+
+// Пересечения
+bullish = wt1 > wt2
+bearish =  wt1 < wt2
+
+// Цвет фона при пересечениях
+barcolor(bullish and maRising ? color.new(#00ff08, 0) : bearish ? color.new(#ff0000, 0) : na)
+// barcolor(maRising ? color.new(#00ff08, 0) : maFalling ? color.new(color.red, 0) : na)
+
+// Стрелки на ОСНОВНОМ графике: кросс вверх ниже -50, кросс вниз выше +50
+arrowUp = xx and wt1 < -60
+arrowDown = xxx and wt1 > 60
+
+plotshape(arrowDown, title="Стрелка вниз (кросс вниз выше +30)", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, force_overlay=true)
+plotshape(arrowUp, title="Стрелка вверх (кросс вверх ниже -30)", style=shape.triangleup, location=location.belowbar, color=color.rgb(4, 255, 58), size=size.small, force_overlay=true)

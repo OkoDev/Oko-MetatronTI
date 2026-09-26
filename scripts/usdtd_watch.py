@@ -92,8 +92,8 @@ def _struct(vals: list[float]) -> dict:
         st = run_structure(df)
         leg = current_leg(st)
         return {"trend": (leg or {}).get("trend"),
-                "res": st.trail_up, "sup": st.trail_dn,
-                "swing_top": st.top_y, "swing_btm": st.btm_y}
+                "res": st.leg_top, "sup": st.leg_bottom,
+                "swing_top": st.last_high, "swing_btm": st.last_low}
     except Exception as _e:
         return {"trend": None, "res": None, "sup": None}
 

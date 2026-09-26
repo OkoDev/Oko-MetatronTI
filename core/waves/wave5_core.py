@@ -1,7 +1,7 @@
 """Детектор пятиволнового импульса на двухслойном эталоне OKO-SM + правила ядра.
 
 Каузальность: разметка на последнем ЗАКРЫТОМ баре старшего ТФ; все точки, кроме пятой, —
-подтверждённые свинги (`_swings`), пятая — текущий экстремум после последнего свинга (provisional).
+подтверждённые свинги (`pivot_points`), пятая — текущий экстремум после последнего свинга (provisional).
 Поля ядра (все известны в момент решения):
   fractal   — младшие сломы по направлению внутри волн 1 и 3, bos3 ≥ bos1 (импульс настоящий)
   depth5    — глубина пятой в канале Эллиотта (линия 2-4 + параллель через 3): ≥0.5 = импульс завершён
@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from core.smc.oko_sm_engine import run_structure, _swings          # эталонный двухслойный движок структуры
+from core.smc.oko_sm_engine import run_structure, pivot_points          # эталонный двухслойный движок структуры
 from core.indicators.indicators import calculate_wt                 # штатный WT (10/21/4)
 from core.trading.source_registry import _TF_MIN as TF_MIN         # минуты в баре — единый словарь проекта
 
@@ -75,7 +75,7 @@ _CONF_CACHE: Dict[int, tuple] = {}          # список свингов стр
 
 def _swing_arrays(swings):
     """(бары подтверждения, бары самих свингов) для бинарного поиска — или (None, None), если порядок не возрастающий.
-    `_swings` отдаёт свинги по возрастанию обоих (бар свинга = бар подтверждения − длина окна), но проверяем это явно:
+    `pivot_points` отдаёт свинги по возрастанию обоих (бар свинга = бар подтверждения − длина окна), но проверяем это явно:
     на неожиданном порядке вызывающий возвращается к полному проходу."""
     got = _CONF_CACHE.get(id(swings))
     if got is None or got[0] is not swings:
@@ -215,7 +215,7 @@ def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WavePa
     idx_h = dh.index; hh, lh = dh.high.values.astype(float), dh.low.values.astype(float)
     dhr = dh.reset_index(drop=True); t = len(dhr) - 1
     st = run_structure(dhr[["open", "high", "low", "close"]], swing_len=p.sw, internal_len=p.il)
-    swings = _swings(dhr["high"], dhr["low"], p.sw); swings_i = _swings(dhr["high"], dhr["low"], p.il)
+    swings = pivot_points(dhr["high"], dhr["low"], p.sw); swings_i = pivot_points(dhr["high"], dhr["low"], p.il)
     wt1_h = calculate_wt(dhr.copy())["wt1"].values.astype(float)
     # дневной контекст из HTF-ресемпла (только закрытые дни)
     dd = dh[["open", "high", "low", "close"]].resample("1D", label="left", closed="left").agg(
@@ -223,7 +223,7 @@ def mark_impulse(dh: pd.DataFrame, now: Optional[pd.Timestamp] = None, p: WavePa
     dd = dd[dd.index + pd.Timedelta(days=1) <= now]
     have_ctx = len(dd) > p.ctx_sw * 3
     d_ev = [e for e in run_structure(dd, swing_len=p.ctx_sw, internal_len=3).events if not e.internal] if have_ctx else []
-    d_sw = _swings(dd["high"], dd["low"], p.ctx_sw) if have_ctx else []
+    d_sw = pivot_points(dd["high"], dd["low"], p.ctx_sw) if have_ctx else []
     d_wt = calculate_wt(dd.copy())["wt1"].values.astype(float) if len(dd) > 30 else np.array([np.nan])
     tfm = TF_MIN[tf]
     out = []
@@ -300,7 +300,7 @@ def wave_diag(dh: pd.DataFrame, p: WaveParams = WaveParams(), n_sw: int = 9) -> 
         return {"zz": [], "why": "мало истории"}
     dhr = dh.reset_index(drop=True); t = len(dhr) - 1
     hh, lh = dhr["high"].values.astype(float), dhr["low"].values.astype(float)
-    conf = [s for s in _swings(dhr["high"], dhr["low"], p.sw) if s[0] <= t]
+    conf = [s for s in pivot_points(dhr["high"], dhr["low"], p.sw) if s[0] <= t]
     zz = [(dh.index[int(s[1])], float(s[2]), bool(s[3])) for s in conf[-n_sw:]]
     if len(conf) < 5:
         return {"zz": zz, "why": "меньше 5 подтверждённых свингов"}

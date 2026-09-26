@@ -117,7 +117,7 @@ def backtest_symbol(df, fib):
     # КОНВЕРГЕНЦИЯ (вопрос Егора «моменты сходящиеся в единой точке»): каузальные уровни
     pivD = _period_pivots(df, "D"); pivW = _period_pivots(df, "W"); pivM = _period_pivots(df, "M")
     # FVG-края (3-бар гэпы, последние 24) и структурные полки (len5-свинги, последние 24)
-    from core.smc.oko_sm_engine import _swings as _sw5
+    from core.smc.oko_sm_engine import pivot_points as _sw5
     shelf_by_conf = {}
     for conf_i, sw_i, price, is_top in _sw5(df["high"], df["low"], 5):
         shelf_by_conf.setdefault(conf_i, []).append(price)

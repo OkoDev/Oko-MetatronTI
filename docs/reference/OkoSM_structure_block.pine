@@ -1,0 +1,608 @@
+//=============================================================================
+// СТРУКТУРА OKO — собственная реализация
+// Спецификация: docs/STRUCTURE_KERNEL_SPEC.md (та же, что у core/structure в Python).
+// Заменяет блок SMC, стоявший в v163 со строки 1139. Подписи сломов: старший масштаб —
+// «CHoCH»/«BOS», младший — «choch»/«bos» (для автоматической сверки с Python по меткам).
+//=============================================================================
+string K_G_ST  = "Структура OKO"
+string K_G_OB  = "Блоки заявок"
+string K_G_EQ  = "Равные уровни"
+string K_G_GAP = "Разрывы (FVG)"
+string K_G_RZ  = "Полосы диапазона"
+string K_G_PER = "Хаи и лои периодов"
+
+kStShow     = input.bool(true, "Показать структуру", group = K_G_ST)
+kMajorLen   = input.int(50, "Старший масштаб, баров", minval = 2, group = K_G_ST)
+kMinorLen   = input.int(5, "Младший масштаб, баров", minval = 2, group = K_G_ST)
+kShowMinor  = input.bool(true, "Сломы младшего масштаба", group = K_G_ST)
+kShowLeg    = input.bool(true, "Верх и низ ноги", group = K_G_ST)
+kUpCol      = input.color(#26A69A, "Вверх", inline = "kst", group = K_G_ST)
+kDnCol      = input.color(#EF5350, "Вниз", inline = "kst", group = K_G_ST)
+kParityInfo = input.bool(false, "Сведения для сверки с Python", group = K_G_ST,
+  tooltip = "Показывает время первого бара графика и число баров: scripts/structure_parity_pine.py считает структуру с того же бара")
+
+kObShow     = input.bool(true, "Показать блоки", group = K_G_OB)
+kObLen      = input.int(50, "Масштаб уровней, баров", minval = 2, group = K_G_OB)
+kObKeep     = input.int(5, "Последних блоков каждой стороны", minval = 1, maxval = 20, group = K_G_OB)
+kObUpCol    = input.color(color.new(#2962FF, 80), "Поддержка", inline = "kob", group = K_G_OB)
+kObDnCol    = input.color(color.new(#F23645, 80), "Сопротивление", inline = "kob", group = K_G_OB)
+
+kEqShow     = input.bool(true, "Показать равные уровни", group = K_G_EQ)
+kEqLen      = input.int(3, "Окно точки, баров", minval = 1, group = K_G_EQ)
+kEqTol      = input.float(0.1, "Допуск, доля ATR", minval = 0, step = 0.05, group = K_G_EQ)
+
+kGapShow    = input.bool(true, "Показать разрывы", group = K_G_GAP)
+kGapAuto    = input.bool(true, "Порог авто (2 × среднее)", group = K_G_GAP)
+kGapFixed   = input.float(0.0, "Порог вручную, %", minval = 0, step = 0.05, group = K_G_GAP)
+kGapDrop    = input.bool(true, "Убирать закрытые", group = K_G_GAP)
+kGapUpCol   = input.color(color.new(#00897B, 75), "Вверх", inline = "kgp", group = K_G_GAP)
+kGapDnCol   = input.color(color.new(#C2185B, 75), "Вниз", inline = "kgp", group = K_G_GAP)
+
+kRzShow     = input.bool(false, "Показать полосы", group = K_G_RZ)
+kRzBand     = input.float(5.0, "Ширина крайней полосы, %", minval = 1, maxval = 25, group = K_G_RZ) / 100
+
+kPerD       = input.bool(false, "День", inline = "kpr", group = K_G_PER)
+kPerW       = input.bool(false, "Неделя", inline = "kpr", group = K_G_PER)
+kPerM       = input.bool(false, "Месяц", inline = "kpr", group = K_G_PER)
+
+string K_G_LAY = "Слои OKO"
+kOteShow    = input.bool(true, "OTE на ноге (0.5–0.79)", group = K_G_LAY)
+kTgtShow    = input.bool(true, "Цель по пивотам дня", group = K_G_LAY)
+kTgtMode    = input.string("Логика Егора", "Правило цели", options = ["Логика Егора", "Второй пивот"], group = K_G_LAY,
+  tooltip = "Логика Егора: внутри S1–R1 → R1/S1, за ними → R2/S2 и дальше. Второй пивот — как боевой impulse_fib 1h.")
+kDcShow     = input.bool(false, "Ноги Directional Change", group = K_G_LAY)
+kDcMult     = input.float(3.0, "Порог DC, × ATR", minval = 0.5, step = 0.5, inline = "kdc", group = K_G_LAY)
+kDcLen      = input.int(43, "ATR", minval = 2, inline = "kdc", group = K_G_LAY)
+
+//-----------------------------------------------------------------------------
+// Типы
+//-----------------------------------------------------------------------------
+type KLevel
+    float price
+    int   bar
+    bool  armed = false
+
+// Масштаб: направление, вид последней зафиксированной точки (1 вершина, -1 впадина;
+// начальное соглашение — вершина), последние вершина и впадина.
+type KScale
+    int    dir  = 0
+    int    last = 1
+    KLevel hi
+    KLevel lo
+
+type KZone
+    box   area
+    float top
+    float bottom
+    bool  up
+    int   born              // бар, на котором зона стала известна
+    bool  gone = false
+
+//-----------------------------------------------------------------------------
+// Функции
+//-----------------------------------------------------------------------------
+// ATR Уайлдера, начатый с первого истинного диапазона (как в Python-ядре).
+kWilder(int len) =>
+    float tr = na(close[1]) ? high - low : math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1]))
+    var float smooth = na
+    smooth := na(smooth) ? tr : (1.0 - 1.0 / len) * smooth + (1.0 / len) * tr
+    smooth
+
+// Кандидат в опорную точку len баров назад: 1 вершина, -1 впадина, 0 нет (вершина приоритетнее).
+kPivotKind(int len) =>
+    float newerHi = ta.highest(high, len)
+    float newerLo = ta.lowest(low, len)
+    high[len] > newerHi ? 1 : low[len] < newerLo ? -1 : 0
+
+// Фиксирует точку, если её вид сменился; возвращает true при фиксации.
+kAccept(KScale s, int kind, int len) =>
+    bool fresh = kind != 0 and kind != s.last
+    if fresh
+        s.last := kind
+        if kind == 1
+            s.hi := KLevel.new(high[len], bar_index - len, true)
+        else
+            s.lo := KLevel.new(low[len], bar_index - len, true)
+    fresh
+
+kDrawBreak(KLevel lv, bool up, bool reversal, bool minor) =>
+    color kCol = up ? kUpCol : kDnCol
+    line.new(lv.bar, lv.price, bar_index, lv.price, color = kCol,
+      style = minor ? line.style_dashed : line.style_solid, width = minor ? 1 : 2)
+    string txt = reversal ? (minor ? "choch" : "CHoCH") : (minor ? "bos" : "BOS")
+    label.new(int(math.avg(lv.bar, bar_index)), lv.price, txt, color = color(na), textcolor = kCol,
+      style = up ? label.style_label_down : label.style_label_up, size = minor ? size.tiny : size.small)
+
+// Сломы масштаба по закрытию. senior — старший масштаб: совпавший с ним уровень принадлежит ему.
+kBreaks(KScale s, KScale senior, bool minor, bool draw) =>
+    bool upHit = false
+    bool upRev = false
+    bool dnHit = false
+    bool dnRev = false
+    if not na(s.hi)
+        if s.hi.armed and close[1] <= s.hi.price and close > s.hi.price
+            bool mine = true
+            if minor and not na(senior.hi)
+                mine := senior.hi.price != s.hi.price
+            if mine
+                upHit := true
+                upRev := s.dir < 0
+                s.hi.armed := false
+                s.dir := 1
+                if draw
+                    kDrawBreak(s.hi, true, upRev, minor)
+    if not na(s.lo)
+        if s.lo.armed and close[1] >= s.lo.price and close < s.lo.price
+            bool mine = true
+            if minor and not na(senior.lo)
+                mine := senior.lo.price != s.lo.price
+            if mine
+                dnHit := true
+                dnRev := s.dir > 0
+                s.lo.armed := false
+                s.dir := -1
+                if draw
+                    kDrawBreak(s.lo, false, dnRev, minor)
+    [upHit, upRev, dnHit, dnRev]
+
+// Точка с окном k с обеих сторон: слева строго хуже, справа не лучше.
+kTwoSided(int k, bool highs) =>
+    float olderHi = ta.highest(high[k + 1], k)
+    float newerHi = ta.highest(high, k)
+    float olderLo = ta.lowest(low[k + 1], k)
+    float newerLo = ta.lowest(low, k)
+    highs ? (olderHi < high[k] and newerHi <= high[k]) : (olderLo > low[k] and newerLo >= low[k])
+
+kKeepLast(array<KZone> zones, int keep) =>
+    while array.size(zones) > keep
+        KZone old = array.shift(zones)
+        if not na(old.area)
+            box.delete(old.area)
+
+//-----------------------------------------------------------------------------
+// Структура на двух масштабах
+//-----------------------------------------------------------------------------
+var KScale kMajor = KScale.new()
+var KScale kMinor = KScale.new()
+var float kLegTop = na
+var int   kLegTopBar = na
+var float kLegBot = na
+var int   kLegBotBar = na
+
+int kMajorKind = kPivotKind(kMajorLen)
+int kMinorKind = kPivotKind(kMinorLen)
+if kAccept(kMajor, kMajorKind, kMajorLen)
+    if kMajorKind == 1
+        kLegTop := kMajor.hi.price
+        kLegTopBar := kMajor.hi.bar
+    else
+        kLegBot := kMajor.lo.price
+        kLegBotBar := kMajor.lo.bar
+kAccept(kMinor, kMinorKind, kMinorLen)
+
+if na(kLegTop) or high > kLegTop
+    kLegTop := high
+    kLegTopBar := bar_index
+if na(kLegBot) or low < kLegBot
+    kLegBot := low
+    kLegBotBar := bar_index
+
+[kMinUp, kMinUpRev, kMinDn, kMinDnRev] = kBreaks(kMinor, kMajor, true, kStShow and kShowMinor)
+[kMajUp, kMajUpRev, kMajDn, kMajDnRev] = kBreaks(kMajor, kMajor, false, kStShow)
+
+var line  kTopLine = na
+var line  kBotLine = na
+var label kTopLab = na
+var label kBotLab = na
+if barstate.islast and kStShow and kShowLeg
+    line.delete(kTopLine)
+    line.delete(kBotLine)
+    label.delete(kTopLab)
+    label.delete(kBotLab)
+    kTopLine := line.new(kLegTopBar, kLegTop, bar_index + 5, kLegTop, color = kDnCol, style = line.style_dotted)
+    kBotLine := line.new(kLegBotBar, kLegBot, bar_index + 5, kLegBot, color = kUpCol, style = line.style_dotted)
+    kTopLab := label.new(bar_index + 5, kLegTop, "верх ноги", color = color(na), textcolor = kDnCol,
+      style = label.style_label_left, size = size.tiny)
+    kBotLab := label.new(bar_index + 5, kLegBot, "низ ноги", color = color(na), textcolor = kUpCol,
+      style = label.style_label_left, size = size.tiny)
+
+//-----------------------------------------------------------------------------
+// Блоки заявок: сломы одного масштаба (закрытие за уровнем, один слом за бар)
+//-----------------------------------------------------------------------------
+float kAtr200 = kWilder(200)
+var KScale kObScale = KScale.new()
+int kObKind = kPivotKind(kObLen)
+kAccept(kObScale, kObKind, kObLen)
+
+var array<KZone> kObUp = array.new<KZone>()
+var array<KZone> kObDn = array.new<KZone>()
+bool kObFlipUp = false
+bool kObFlipDn = false
+
+kPickBlock(int fromBar, bool up) =>
+    int span = bar_index - fromBar
+    int pick = na
+    float best = na
+    if span >= 1
+        for off = span to 0 by -1
+            float lim = na(kAtr200[off]) ? na : 2 * kAtr200[off]
+            bool calm = na(lim) or (high[off] - low[off]) < lim
+            if calm
+                float v = up ? low[off] : high[off]
+                if na(best) or (up ? v < best : v > best)
+                    best := v
+                    pick := off
+    pick
+
+// один слом за бар, вверх проверяется первым (вложенные if: в Pine v5 «and» не ленивый)
+bool kObUpHit = false
+if not na(kObScale.hi)
+    if kObScale.hi.armed and close > kObScale.hi.price
+        kObUpHit := true
+bool kObDnHit = false
+if not kObUpHit and not na(kObScale.lo)
+    if kObScale.lo.armed and close < kObScale.lo.price
+        kObDnHit := true
+
+int kObFrom = na
+if kObUpHit
+    kObFrom := kObScale.hi.bar
+    kObScale.hi.armed := false
+    kObScale.dir := 1
+else if kObDnHit
+    kObFrom := kObScale.lo.bar
+    kObScale.lo.armed := false
+    kObScale.dir := -1
+
+// вызывается на каждом баре (требование Pine к функциям с историей); вне слома отрезок пуст
+int kObPick = kPickBlock(na(kObFrom) ? bar_index : kObFrom, kObUpHit)
+if not na(kObFrom)
+    int off = kObPick
+    if not na(off)
+        float bTop = high[off]
+        float bBot = low[off]
+        box area = kObShow ? box.new(bar_index - off, bTop, bar_index, bBot, border_color = color(na),
+          bgcolor = kObUpHit ? kObUpCol : kObDnCol) : na
+        KZone z = KZone.new(area, bTop, bBot, kObUpHit, bar_index)
+        if kObUpHit
+            array.push(kObUp, z)
+            kKeepLast(kObUp, kObKeep)
+        else
+            array.push(kObDn, z)
+            kKeepLast(kObDn, kObKeep)
+
+// блок пробит закрытием за дальней границей → меняет роль (поддержка ↔ сопротивление)
+if array.size(kObUp) > 0
+    for z in kObUp
+        if not z.gone and bar_index > z.born and close < z.bottom
+            z.gone := true
+            kObFlipUp := true
+            if not na(z.area)
+                box.set_bgcolor(z.area, kObDnCol)
+                box.set_border_style(z.area, line.style_dashed)
+        if not z.gone and not na(z.area)
+            box.set_right(z.area, bar_index)
+if array.size(kObDn) > 0
+    for z in kObDn
+        if not z.gone and bar_index > z.born and close > z.top
+            z.gone := true
+            kObFlipDn := true
+            if not na(z.area)
+                box.set_bgcolor(z.area, kObUpCol)
+                box.set_border_style(z.area, line.style_dashed)
+        if not z.gone and not na(z.area)
+            box.set_right(z.area, bar_index)
+
+//-----------------------------------------------------------------------------
+// Равные уровни
+//-----------------------------------------------------------------------------
+bool kEqHiNow = kTwoSided(kEqLen, true)
+bool kEqLoNow = kTwoSided(kEqLen, false)
+var float kEqHiPrice = na
+var int   kEqHiBar = na
+var float kEqLoPrice = na
+var int   kEqLoBar = na
+float kEqAllowed = na(kAtr200[kEqLen]) ? 0.0 : kEqTol * kAtr200[kEqLen]
+if kEqHiNow
+    float kEqP = high[kEqLen]
+    int   kEqB = bar_index - kEqLen
+    if not na(kEqHiPrice) and math.abs(kEqP - kEqHiPrice) < kEqAllowed and kEqShow
+        line.new(kEqHiBar, kEqHiPrice, kEqB, kEqP, color = kDnCol, style = line.style_dotted)
+        label.new(int(math.avg(kEqHiBar, kEqB)), kEqP, "EQH", color = color(na), textcolor = kDnCol,
+          style = label.style_label_down, size = size.tiny)
+    kEqHiPrice := kEqP
+    kEqHiBar := kEqB
+if kEqLoNow
+    float kEqP = low[kEqLen]
+    int   kEqB = bar_index - kEqLen
+    if not na(kEqLoPrice) and math.abs(kEqP - kEqLoPrice) < kEqAllowed and kEqShow
+        line.new(kEqLoBar, kEqLoPrice, kEqB, kEqP, color = kUpCol, style = line.style_dotted)
+        label.new(int(math.avg(kEqLoBar, kEqB)), kEqP, "EQL", color = color(na), textcolor = kUpCol,
+          style = label.style_label_up, size = size.tiny)
+    kEqLoPrice := kEqP
+    kEqLoBar := kEqB
+
+//-----------------------------------------------------------------------------
+// Разрывы справедливой цены (три свечи), порог причинный
+//-----------------------------------------------------------------------------
+bool  kGapUp = low > high[2] and close[1] > high[2]
+bool  kGapDn = not kGapUp and high < low[2] and close[1] < low[2]
+float kGapSpan = bar_index >= 2 ? math.max(0.0, low - high[2], low[2] - high) : 0.0
+var float kGapSum = 0.0
+kGapSum += close != 0 ? kGapSpan / close * 100 : 0.0
+float kGapLimit = kGapAuto ? kGapSum / math.max(bar_index - 1, 1) * 2.0 : kGapFixed
+float kGapSize = kGapUp ? (low - high[2]) / high[2] * 100 : kGapDn ? (low[2] - high) / high * 100 : na
+
+var array<KZone> kGaps = array.new<KZone>()
+bool kGapNew = false
+if (kGapUp or kGapDn) and kGapSize > kGapLimit
+    kGapNew := true
+    float gTop = kGapUp ? low : low[2]
+    float gBot = kGapUp ? high[2] : high
+    box area = kGapShow ? box.new(bar_index - 2, gTop, bar_index, gBot, border_color = color(na),
+      bgcolor = kGapUp ? kGapUpCol : kGapDnCol) : na
+    array.push(kGaps, KZone.new(area, gTop, gBot, kGapUp, bar_index))
+    kKeepLast(kGaps, 100)
+
+if array.size(kGaps) > 0
+    for z in kGaps
+        if not z.gone and bar_index > z.born and (z.up ? close < z.bottom : close > z.top)
+            z.gone := true
+            if kGapDrop and not na(z.area)
+                box.delete(z.area)
+        if not z.gone and not na(z.area)
+            box.set_right(z.area, bar_index)
+
+//-----------------------------------------------------------------------------
+// Полосы диапазона ноги
+//-----------------------------------------------------------------------------
+var box kRzTop = na
+var box kRzMid = na
+var box kRzBot = na
+if barstate.islast and kRzShow and not na(kLegTop) and not na(kLegBot)
+    box.delete(kRzTop)
+    box.delete(kRzMid)
+    box.delete(kRzBot)
+    int left = math.min(kLegTopBar, kLegBotBar)
+    float half = kRzBand / 2
+    kRzTop := box.new(left, kLegTop, bar_index, kLegTop * (1 - kRzBand) + kLegBot * kRzBand,
+      border_color = color(na), bgcolor = color.new(kDnCol, 85))
+    kRzMid := box.new(left, kLegTop * (0.5 + half) + kLegBot * (0.5 - half), bar_index,
+      kLegTop * (0.5 - half) + kLegBot * (0.5 + half), border_color = color(na), bgcolor = color.new(color.gray, 85))
+    kRzBot := box.new(left, kLegBot * (1 - kRzBand) + kLegTop * kRzBand, bar_index, kLegBot,
+      border_color = color(na), bgcolor = color.new(kUpCol, 85))
+
+//-----------------------------------------------------------------------------
+// Хаи и лои прошлых периодов (без перерисовки: значение закрытого периода)
+//-----------------------------------------------------------------------------
+kPrevRange(string tf) =>
+    request.security(syminfo.tickerid, tf, [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+[kDh, kDl] = kPrevRange("D")
+[kWh, kWl] = kPrevRange("W")
+[kMh, kMl] = kPrevRange("M")
+
+kPeriodLine(bool on, float h, float l, string tag) =>
+    var line hi = na
+    var line lo = na
+    var label hl = na
+    var label ll = na
+    if barstate.islast and on
+        line.delete(hi)
+        line.delete(lo)
+        label.delete(hl)
+        label.delete(ll)
+        hi := line.new(bar_index - 20, h, bar_index + 10, h, color = color.gray, style = line.style_dashed)
+        lo := line.new(bar_index - 20, l, bar_index + 10, l, color = color.gray, style = line.style_dashed)
+        hl := label.new(bar_index + 10, h, tag + "↑", color = color(na), textcolor = color.gray,
+          style = label.style_label_left, size = size.tiny)
+        ll := label.new(bar_index + 10, l, tag + "↓", color = color(na), textcolor = color.gray,
+          style = label.style_label_left, size = size.tiny)
+
+kPeriodLine(kPerD, kDh, kDl, "Д")
+kPeriodLine(kPerW, kWh, kWl, "Н")
+kPeriodLine(kPerM, kMh, kMl, "М")
+
+//-----------------------------------------------------------------------------
+// Слои OKO: нога → OTE (канон проекта 0.5–0.79, уровни 0.5/0.62/0.705/0.79 — core/smc/fibonacci.py)
+//-----------------------------------------------------------------------------
+// Нога старшего масштаба: от последней точки против направления (или края ноги) до экстремума ноги.
+int   kLegDir = 0
+float kLegO = na
+int   kLegOB = na
+float kLegE = na
+int   kLegEB = na
+if kMajor.dir == 1 and not na(kLegTop)
+    float kO = na(kMajor.lo) ? kLegBot : kMajor.lo.price
+    int   kOb = na(kMajor.lo) ? kLegBotBar : kMajor.lo.bar
+    if not na(kO) and kO < kLegTop
+        kLegDir := 1
+        kLegO := kO
+        kLegOB := kOb
+        kLegE := kLegTop
+        kLegEB := kLegTopBar
+else if kMajor.dir == -1 and not na(kLegBot)
+    float kO = na(kMajor.hi) ? kLegTop : kMajor.hi.price
+    int   kOb = na(kMajor.hi) ? kLegTopBar : kMajor.hi.bar
+    if not na(kO) and kO > kLegBot
+        kLegDir := -1
+        kLegO := kO
+        kLegOB := kOb
+        kLegE := kLegBot
+        kLegEB := kLegBotBar
+
+kOteAt(float r) => kLegE - (kLegE - kLegO) * r
+float kOteNear = kLegDir != 0 ? kOteAt(0.5) : na
+float kOteFar  = kLegDir != 0 ? kOteAt(0.79) : na
+
+var box   kOteBox = na
+var line  kOte62 = na
+var line  kOte705 = na
+var label kOteLab = na
+if barstate.islast
+    box.delete(kOteBox)
+    line.delete(kOte62)
+    line.delete(kOte705)
+    label.delete(kOteLab)
+    if kOteShow and kLegDir != 0
+        color kOc = kLegDir == 1 ? kUpCol : kDnCol
+        kOteBox := box.new(kLegEB, math.max(kOteNear, kOteFar), bar_index + 10, math.min(kOteNear, kOteFar),
+          border_color = color.new(kOc, 40), bgcolor = color.new(kOc, 88))
+        kOte62 := line.new(kLegEB, kOteAt(0.62), bar_index + 10, kOteAt(0.62), color = color.new(kOc, 30), style = line.style_dotted)
+        kOte705 := line.new(kLegEB, kOteAt(0.705), bar_index + 10, kOteAt(0.705), color = kOc, style = line.style_dashed)
+        kOteLab := label.new(bar_index + 10, kOteAt(0.705), "OTE 0.705", color = color(na), textcolor = kOc,
+          style = label.style_label_left, size = size.tiny)
+
+//-----------------------------------------------------------------------------
+// Слои OKO: цель по пивотам прошлого дня (формула проекта calculate_pivot_points)
+//-----------------------------------------------------------------------------
+[kPdH, kPdL, kPdC] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], lookahead = barmerge.lookahead_on)
+
+kPivots(float h, float l, float c) =>
+    float pp = (h + l + c) / 3.0
+    float hl = h - l
+    array<string> names = array.from("S5", "S4", "S3", "S2", "S1", "PP", "R1", "R2", "R3", "R4", "R5")
+    array<float> vals = array.from(pp * 4 - (4 * h - l), pp * 3 - (3 * h - l), pp * 2 - (2 * h - l), pp - hl,
+      pp * 2.003 - h, pp, pp * 1.997 - l, pp + hl, pp * 2 + (h - 2 * l), pp * 3 + (h - 3 * l), pp * 4 + (h - 4 * l))
+    [names, vals]
+
+// Возвращает [имя, цена] цели или ["", na]. Запас 0.3% — как в замере и в боевом impulse_fib.
+kPivotTarget(array<string> names, array<float> vals, float entry, bool isLong, bool egor) =>
+    string tName = ""
+    float  tPrice = na
+    float  lim = isLong ? entry * 1.003 : entry * 0.997
+    if egor
+        array<string> seq = isLong ? array.from("R1", "R2", "R3", "R4", "R5") : array.from("S1", "S2", "S3", "S4", "S5")
+        for nm in seq
+            float v = array.get(vals, array.indexof(names, nm))
+            if na(tPrice) and (isLong ? v > lim : v < lim)
+                tName := nm
+                tPrice := v
+    else
+        int seen = 0
+        array<int> kIdx = array.sort_indices(vals, isLong ? order.ascending : order.descending)
+        for j in kIdx
+            float v = array.get(vals, j)
+            if isLong ? v > lim : v < lim
+                seen += 1
+                if seen == 2 and na(tPrice)
+                    tName := array.get(names, j)
+                    tPrice := v
+    [tName, tPrice]
+
+var line  kTgtLine = na
+var label kTgtLab = na
+string kTgtName = ""
+float  kTgtPrice = na
+if barstate.islast
+    line.delete(kTgtLine)
+    label.delete(kTgtLab)
+    if kLegDir != 0 and not na(kPdH)
+        [kPn, kPv] = kPivots(kPdH, kPdL, kPdC)
+        [kTn, kTp] = kPivotTarget(kPn, kPv, close, kLegDir == 1, kTgtMode == "Логика Егора")
+        kTgtName := kTn
+        kTgtPrice := kTp
+        if kTgtShow and not na(kTp)
+            color kTc = kLegDir == 1 ? kUpCol : kDnCol
+            kTgtLine := line.new(bar_index - 20, kTp, bar_index + 15, kTp, color = kTc, width = 2)
+            kTgtLab := label.new(bar_index + 15, kTp, "цель " + kTn, color = color(na), textcolor = kTc,
+              style = label.style_label_left, size = size.small)
+
+//-----------------------------------------------------------------------------
+// Слои OKO: ноги Directional Change — порог в ATR (core/smc/dc_legs.py: экстремум по фитилю,
+// подтверждение по закрытию; начало следующей ноги — крайний бар участка до подтверждения)
+//-----------------------------------------------------------------------------
+float kDcAtr = kWilder(kDcLen)
+var bool  kDcUp = true
+var float kDcMax = na
+var int   kDcMaxB = na
+var float kDcMin = na
+var int   kDcMinB = na
+var float kDcPrevP = na
+var int   kDcPrevB = na
+
+kDcSegment(int fromBar, bool wantMin) =>
+    int span = bar_index - fromBar
+    int pick = na
+    float best = na
+    for off = span to 0 by -1
+        float v = wantMin ? low[off] : high[off]
+        if na(best) or (wantMin ? v < best : v > best)
+            best := v
+            pick := off
+    [best, bar_index - pick]
+
+bool  kDcConfUp = false
+bool  kDcConfDn = false
+float kDcExtP = na
+int   kDcExtB = na
+if bar_index == 0
+    kDcMax := high
+    kDcMaxB := 0
+    kDcMin := low
+    kDcMinB := 0
+else
+    float kThr = kDcAtr * kDcMult
+    if kDcUp
+        if high > kDcMax
+            kDcMax := high
+            kDcMaxB := bar_index
+        else if close < kDcMax - kThr
+            kDcConfUp := true
+            kDcExtP := kDcMax
+            kDcExtB := kDcMaxB
+    else
+        if low < kDcMin
+            kDcMin := low
+            kDcMinB := bar_index
+        else if close > kDcMin + kThr
+            kDcConfDn := true
+            kDcExtP := kDcMin
+            kDcExtB := kDcMinB
+
+[kDcSegP, kDcSegB] = kDcSegment(kDcConfUp ? kDcMaxB : kDcConfDn ? kDcMinB : bar_index, kDcConfUp)
+if kDcConfUp or kDcConfDn
+    if kDcShow
+        color kDcc = kDcConfUp ? kDnCol : kUpCol
+        if not na(kDcPrevP)
+            line.new(kDcPrevB, kDcPrevP, kDcExtB, kDcExtP, color = color.new(kDcc, 20), width = 2)
+        label.new(kDcExtB, kDcExtP, kDcConfUp ? "kDcc+" : "kDcc-", color = color(na), textcolor = kDcc,
+          style = kDcConfUp ? label.style_label_down : label.style_label_up, size = size.tiny)
+    kDcPrevP := kDcExtP
+    kDcPrevB := kDcExtB
+    if kDcConfUp
+        kDcUp := false
+        kDcMin := kDcSegP
+        kDcMinB := kDcSegB
+    else
+        kDcUp := true
+        kDcMax := kDcSegP
+        kDcMaxB := kDcSegB
+
+//-----------------------------------------------------------------------------
+// Сведения для сверки с Python: первый бар графика, число баров, нога, OTE, цель
+//-----------------------------------------------------------------------------
+var int   kFirstTime = time
+var table kInfo = na
+if barstate.islast and kParityInfo
+    if na(kInfo)
+        kInfo := table.new(position.bottom_right, 1, 3)
+    string kF8 = "#.########"
+    table.cell(kInfo, 0, 0, "OKO t0=" + str.tostring(kFirstTime) + " n=" + str.tostring(bar_index + 1),
+      text_color = color.gray, text_size = size.tiny)
+    table.cell(kInfo, 0, 1, "leg=" + str.tostring(kLegDir) + " o=" + str.tostring(kLegO, kF8) + " e=" + str.tostring(kLegE, kF8)
+      + " ote=" + str.tostring(kOteNear, kF8) + "/" + str.tostring(kOteFar, kF8), text_color = color.gray, text_size = size.tiny)
+    table.cell(kInfo, 0, 2, "tgt=" + kTgtName + "@" + str.tostring(kTgtPrice, kF8) + " close=" + str.tostring(close, kF8)
+      + " piv=" + str.tostring(kPdH, kF8) + "/" + str.tostring(kPdL, kF8) + "/" + str.tostring(kPdC, kF8),
+      text_color = color.gray, text_size = size.tiny)
+
+//-----------------------------------------------------------------------------
+// Оповещения
+//-----------------------------------------------------------------------------
+alertcondition(kMajUp and kMajUpRev, "OKO: CHoCH вверх", "OKO: разворот вверх (старший масштаб)")
+alertcondition(kMajUp and not kMajUpRev, "OKO: BOS вверх", "OKO: продолжение вверх (старший масштаб)")
+alertcondition(kMajDn and kMajDnRev, "OKO: CHoCH вниз", "OKO: разворот вниз (старший масштаб)")
+alertcondition(kMajDn and not kMajDnRev, "OKO: BOS вниз", "OKO: продолжение вниз (старший масштаб)")
+alertcondition(kMinUp or kMinDn, "OKO: слом младшего масштаба", "OKO: слом младшего масштаба")
+alertcondition(kObFlipUp or kObFlipDn, "OKO: блок сменил роль", "OKO: блок заявок пробит закрытием")
+alertcondition(kGapNew, "OKO: новый разрыв", "OKO: новый разрыв справедливой цены")

@@ -96,25 +96,47 @@ def etl_order_blocks(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     n = len(df)
     breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01: config-флаг choch_length
     obs = detect_order_blocks(df, breaks)       # List[OrderBlock]
-    active = active_order_blocks(obs, n_bars=30, per_side=5)
 
     close = df["close"].values
     bull_idx, bear_idx = [], []
     bull_near, bear_near = [], []
+    _ATR_OB = _atr_pct(df)      # масштаб ТФ для порогов «цена у блока» (фикс 10.09)
 
-    for ob in active:
+    # 🔴 ФИКС 04.09.2026. Здесь стоял `active_order_blocks(obs, n_bars=30, per_side=5)` —
+    # функция ОТРИСОВКИ, а не истории: она отдаёт блоки, живые на ПОСЛЕДНЕМ баре ряда
+    # (её `n_bars` вообще не используется в теле, мёртвый параметр), и берёт лишь по 5
+    # штук с каждой стороны. Итог: на 19 851 баре помечалось 4–5 — признак в матрице
+    # существовал, но был почти всегда False, что неотличимо от «эджа нет»
+    # ([[law_no_finding_means_no_feature]]).
+    #
+    # Для матрицы нужна ИСТОРИЯ, а не текущая картинка: берём ВСЕ блоки. Причинность
+    # сохранена — `break_idx` это бар слома, на котором блок и становится известен
+    # (лаг детектора 0, `SMC_DETECTOR_CONTRACTS`).
+    for ob in obs:
         idx = ob.break_idx
         if not (0 <= idx < n):
             continue
+        # окно жизни блока: от формирования до митигации (или до конца данных).
+        # 🔴 `mitigated_idx` смотрит вперёд по построению, поэтому используем его
+        # ТОЛЬКО как границу «блок ещё жив», а не как самостоятельный признак.
+        end = ob.mitigated_idx if ob.mitigated_idx >= 0 else n
+        stop = min(idx + 10, end, n)
+        # 🔴 ФИКС 10.09.2026: окно «цена у блока» было АБСОЛЮТНЫМ (−0.5%…+3%).
+        # Диагностика по гиперкубу: bull_ob_near схлопывался 2.42% → 0.00% с ростом ТФ
+        # (дрейф 0.000) — на старших окнах признак не срабатывал НИКОГДА.
+        # Границы переведены в доли ATR(14) своего ТФ, множители откалиброваны по 15m:
+        # ATR(15m) ≈ 0.62% ⇒ −0.5% = −0.81·ATR, +3% = +4.84·ATR.
         if ob.kind == "bull":
             bull_idx.append(idx)
-            for j in range(idx, min(idx + 10, n)):
-                if -0.5 <= (close[j] - ob.top) / close[j] * 100 <= 3:
+            for j in range(idx, stop):
+                a = _ATR_OB[j] if _ATR_OB is not None and not np.isnan(_ATR_OB[j]) else 0.62
+                if -0.81 * a <= (close[j] - ob.top) / close[j] * 100 <= 4.84 * a:
                     bull_near.append(j)
         else:
             bear_idx.append(idx)
-            for j in range(idx, min(idx + 10, n)):
-                if -0.5 <= (ob.bottom - close[j]) / close[j] * 100 <= 3:
+            for j in range(idx, stop):
+                a = _ATR_OB[j] if _ATR_OB is not None and not np.isnan(_ATR_OB[j]) else 0.62
+                if -0.81 * a <= (ob.bottom - close[j]) / close[j] * 100 <= 4.84 * a:
                     bear_near.append(j)
 
     # ARCH-128 Шаг 2: митигация OB (флаг на баре пробоя блока) — из ВСЕХ obs, не только active
@@ -146,34 +168,94 @@ def etl_order_blocks(df: pd.DataFrame) -> Dict[str, np.ndarray]:
 
 
 def etl_bos_choch(df: pd.DataFrame) -> Dict[str, np.ndarray]:
-    """ARCH-128: BOS/CHoCH через detect_structure_breaks."""
-    from core.smc.smc_engine import detect_structure_breaks, zigzag_atr, find_setups_zz
+    """BOS/CHoCH из ДВУХСЛОЙНОГО эталона OKO-SM (ARCH-137.5, 02.09.2026).
+
+    Было — ТРИ источника структуры в одних массивах: `detect_structure_breaks`
+    на `choch_length` (=50) + примесь `find_setups_zz` (zigzag_atr). Замер 02.09
+    по 4757 живым сделкам: BOS/CHoCH присутствовали лишь в **1.3%** снимков,
+    против FVG 88% и pivot 100%. Следствие — из 75 флагов, набравших статистику
+    в 200 паттернах arch104, структурных **ноль**: майнинг просто не видел слома.
+
+    Стало — один эталон, оба слоя сразу (`run_structure(swing_len=50,
+    internal_len=5)`):
+      · старший слой (swing, len=50)   → `bull_bos` / `bear_bos` / `*_choch`
+        — та же семантика, что раньше, сопоставимо со старыми замерами;
+      · микроструктура (internal, len=5) → `*_i`-флаги, которых НЕ БЫЛО вовсе.
+
+    Примесь zigzag убрана: разные движки, писавшие в одно поле, — это то самое
+    дублирование, из-за которого один и тот же слом получал разную метку.
+    Смена состава → `feature_snapshot.SCHEMA_VERSION` поднят до 5, старые снимки
+    в обучение не смешиваются.
+    """
+    from core.smc.oko_sm_engine import run_structure
 
     n = len(df)
-    breaks = detect_structure_breaks(df, length=_get_choch_length())  # C-01
+    st = run_structure(df, swing_len=_get_choch_length(), internal_len=5,
+                       record_legs=False)
 
-    # Из StructureBreak объектов
-    bull_bos_idx = [b.idx for b in breaks if b.kind == "BOS" and b.direction == "bull"]
-    bear_bos_idx = [b.idx for b in breaks if b.kind == "BOS" and b.direction == "bear"]
-    bull_choch_idx = [b.idx for b in breaks if b.kind == "CHoCH" and b.direction == "bull"]
-    bear_choch_idx = [b.idx for b in breaks if b.kind == "CHoCH" and b.direction == "bear"]
+    idx: Dict[str, List[int]] = {k: [] for k in (
+        "bull_bos", "bear_bos", "bull_choch", "bear_choch",
+        "bull_bos_i", "bear_bos_i", "bull_choch_i", "bear_choch_i")}
+    for e in st.events:
+        key = f"{'bull' if e.bull else 'bear'}_{'bos' if e.kind == 'BOS' else 'choch'}"
+        if e.internal:
+            key += "_i"
+        idx[key].append(e.i)
 
-    # Дополнительно: ZigZag-based сетапы (find_setups_zz)
-    zz = zigzag_atr(df)
-    setups = find_setups_zz(zz, df)
-    for s in setups:
-        bar = s.get("bar", 0)
-        if s.get("kind") == "BOS" and s.get("dir") == "bull":
-            if bar not in bull_bos_idx: bull_bos_idx.append(bar)
-        elif s.get("kind") == "BOS" and s.get("dir") == "bear":
-            if bar not in bear_bos_idx: bear_bos_idx.append(bar)
-        elif s.get("kind") == "CHoCH" and s.get("dir") == "bull":
-            if bar not in bull_choch_idx: bull_choch_idx.append(bar)
-        elif s.get("kind") == "CHoCH" and s.get("dir") == "bear":
-            if bar not in bear_choch_idx: bear_choch_idx.append(bar)
+    ret = {k: _to_bool_array(n, v) for k, v in idx.items()}
 
-    ret = {"bull_bos": _to_bool_array(n, bull_bos_idx), "bear_bos": _to_bool_array(n, bear_bos_idx),
-            "bull_choch": _to_bool_array(n, bull_choch_idx), "bear_choch": _to_bool_array(n, bear_choch_idx)}
+    # ── ЭПИК B (04.09): СОГЛАСОВАНИЕ ДВУХ МАСШТАБОВ = ГЕОМЕТРИЯ ВХОДА ──────────
+    # Метод Егора: старший масштаб задаёт СТОРОНУ, младший — МОМЕНТ. До этого
+    # матрица знала, куда смотрит старшая структура, и не знала НИ ОДНОГО признака
+    # того, КОГДА входить — искать триггер в наборе без триггеров невозможно.
+    # Признаки названы ЗАРАНЕЕ (`sc_pullback`/`sc_resume`, `matrix_full.py:476`),
+    # то есть защищены от подгонки под результат; здесь они собираются поверх
+    # ЭТАЛОНА, а не копией research-кода — иначе получим третий движок структуры.
+    #
+    # Причинность: событие эталона известно на баре подтверждения (лаг 0 у
+    # `run_structure`), но состояние «после события» читаем со сдвигом на бар —
+    # `np.roll` + обнуление первого элемента, как `.shift(1)` в research-версии.
+    maj_dir = np.zeros(n, dtype=np.int8)     # +1 бычий старший слом, −1 медвежий
+    min_dir = np.zeros(n, dtype=np.int8)
+    maj_is_bos = np.zeros(n, dtype=bool)     # старший идёт ПРОДОЛЖЕНИЕМ, не разворотом
+    cur_maj = cur_min = 0
+    cur_maj_bos = False
+    ev_by_bar: Dict[int, list] = {}
+    for e in st.events:
+        ev_by_bar.setdefault(e.i, []).append(e)
+    for i in range(n):
+        for e in ev_by_bar.get(i, ()):
+            if e.internal:
+                cur_min = 1 if e.bull else -1
+            else:
+                cur_maj = 1 if e.bull else -1
+                cur_maj_bos = (e.kind == "BOS")
+        maj_dir[i] = cur_maj
+        min_dir[i] = cur_min
+        maj_is_bos[i] = cur_maj_bos
+
+    def _lag1(a: np.ndarray) -> np.ndarray:
+        out = np.roll(a, 1)
+        if len(out):
+            out[0] = 0 if out.dtype != bool else False
+        return out
+
+    maj_dir, min_dir, maj_is_bos = _lag1(maj_dir), _lag1(min_dir), _lag1(maj_is_bos)
+    both = (maj_dir != 0) & (min_dir != 0)
+    agree = both & (maj_dir == min_dir)
+    against = both & (maj_dir != min_dir)
+
+    # ОТКАТ ПО ТРЕНДУ: старший в продолжении (BOS), младший сломался ПРОТИВ него.
+    # Это точка входа по тренду, а НЕ разворот — не путать с mean-reversion.
+    ret["sc_pullback"] = against & maj_is_bos
+    # ВОЗОБНОВЛЕНИЕ: младший вернулся на сторону старшего — откат закончен.
+    ret["sc_resume"] = agree
+    # Сторона согласования — чтобы отбор мог искать раздельно по long/short.
+    ret["sc_pullback_bull"] = ret["sc_pullback"] & (maj_dir > 0)
+    ret["sc_pullback_bear"] = ret["sc_pullback"] & (maj_dir < 0)
+    ret["sc_resume_bull"] = agree & (maj_dir > 0)
+    ret["sc_resume_bear"] = agree & (maj_dir < 0)
+
     _add_dir_meta(ret, "bos_choch", "bull")
     return ret
 
@@ -196,9 +278,9 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     # lookahead (весь df включая будущее). SMC меряет от dealing range ТЕКУЩЕЙ структуры.
     # Rolling per bar (swing подтверждён через length баров) → lookahead-safe + parity
     # (last bar = последний confirmed leg, одинаков на любой глубине истории).
-    from core.smc.smc_engine import _swings_luxalgo
+    from core.smc.smc_engine import confirmed_swings
     _LEN = 20
-    _sw = sorted(_swings_luxalgo(df, _LEN), key=lambda x: x[0])   # [(idx, price, 'H'/'L')]
+    _sw = sorted(confirmed_swings(df, _LEN), key=lambda x: x[0])   # [(idx, price, 'H'/'L')]
     _last_h = _last_l = None
     _si = 0
     for i in range(n):
@@ -229,7 +311,7 @@ def etl_ote_premium(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     # не число баров) — формула не дублируется, ARCH-118 «один калькулятор» соблюдён.
     _choch_pos = [j for j, b in enumerate(breaks) if b.kind == "CHoCH"]
     _OTE_SW_LEN = 20
-    _sw_all = _sw if _sw else _swings_luxalgo(df, _OTE_SW_LEN)   # считаем ОДИН раз
+    _sw_all = _sw if _sw else confirmed_swings(df, _OTE_SW_LEN)   # считаем ОДИН раз
     for _k, _j in enumerate(_choch_pos):
         _b = breaks[_j]
         _bi = getattr(_b, "idx", None)
@@ -299,7 +381,7 @@ def etl_eql_eql(df: pd.DataFrame) -> Dict[str, np.ndarray]:
 def etl_swing_structure(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     """ARCH-128 Шаг 2: явные HH/HL/LH/LL флаги — тип swing-точки (состояние структуры).
 
-    classify_structure (LuxAlgo Swings=50): HH/LH для вершин, LL/HL для доньев.
+    classify_structure (опорные точки окна 50): HH/LH для вершин, LL/HL для доньев.
     Отличается от BOS/CHoCH (слом) и regime (грубый режим) — это ДЕТАЛЬНЫЙ тип точки.
     Майнинг: «вход на HL в восходящей», «LH перед сломом» и т.п.
     """
@@ -382,6 +464,150 @@ def etl_elliott(df: pd.DataFrame) -> Dict[str, np.ndarray]:
             textbook[bar] = True
     return {"elliott_bull_impulse": bull_imp, "elliott_bear_impulse": bear_imp,
             "elliott_textbook": textbook}
+
+
+# ── ЛИКВИДНОСТЬ (04.09, ЭПИК B): кластеры свингов — семьи в матрице НЕ БЫЛО ──────
+# `core/smc/liquidity.py:detect_liquidity` стоял в MATRIX_REGISTRY:325 как «❌ НЕТ».
+# EQH/EQL (`etl_eql_eql`) — это ПАРА равных пивотов; здесь КЛАСТЕР из N свингов с силой
+# (сколько стопов накоплено) и статусом снятия. Родственник ERL, но не он: ERL —
+# граница 96-барового окна ([[erl_distance_gate_candidate]]), здесь — уровни скоплений.
+#
+# 🔴 ПОЧЕМУ НЕ ПЕРЕИСПОЛЬЗОВАНЫ `_cluster_swings` / `_track_sweeps` (закон reuse):
+#   1. `_cluster_swings` кластеризует ВСЮ историю разом — для серии по барам его пришлось
+#      бы звать на каждом баре заново (O(n·k log k), десятки секунд на 40k баров);
+#   2. `_track_sweeps` стартует с `max(swing_indices) + 1` — с бара ПОСЛЕ свинга, тогда как
+#      свинг подтверждается только через `length` баров. В live это безвредно (всё в прошлом),
+#      в матрице дало бы look-ahead: зона «снята» раньше, чем мы могли о ней узнать.
+# Поэтому зоны ведутся ОНЛАЙН — ровно так, как возникали бы в реальном времени.
+# Причинность по построению: ни одного обращения к будущему.
+_LIQ_SW_LEN = 20          # та же длина свингов, что у OTE-семьи (etl_ote_premium:_LEN)
+_LIQ_TOL_PCT = 0.3        # допуск кластеризации — дефолт боевого detect_liquidity
+# 🔴 ФИКС 10.09.2026. Здесь стоял АБСОЛЮТНЫЙ порог `_LIQ_NEAR_PCT = 0.5` (% от цены).
+# Диагностика по гиперкубу: частота liq_near падала 16.26% → 0.10% с ростом ТФ
+# (дрейф 0.006), то есть на старших окнах признак МЁРТВ по построению — расстояния
+# до уровней растут с масштабом, а порог оставался фиксированным.
+# Это ровно [[law_no_finding_means_no_feature]]: «находок нет» = нет признака.
+# Порог переведён в доли ATR(14) своего ТФ. Множитель откалиброван так, чтобы на 15m
+# порог остался прежним (ATR(14) на 15m ≈ 0.62% ⇒ 0.81·ATR ≈ 0.5%) — поведение на
+# боевом ТФ не меняется, старшие окна оживают.
+_LIQ_NEAR_ATR = 0.81      # «цена у зоны» = ближе 0.81·ATR(14)
+_LIQ_NEAR_PCT_FALLBACK = 0.5   # если ATR не считается (короткий ряд)
+
+
+def _atr_pct(df: pd.DataFrame, period: int = 14) -> np.ndarray:
+    """ATR(period) в ПРОЦЕНТАХ цены — общая мера масштаба для порогов «цена у зоны».
+    True Range с учётом гэпов; на первых барах — расширяющееся окно."""
+    h = df["high"].to_numpy(dtype=float)
+    l = df["low"].to_numpy(dtype=float)
+    c = df["close"].to_numpy(dtype=float)
+    prev = np.concatenate(([c[0]], c[:-1]))
+    tr = np.maximum(h - l, np.maximum(np.abs(h - prev), np.abs(l - prev)))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = np.where(c > 0, tr / c * 100.0, np.nan)
+    s = pd.Series(rel).rolling(period, min_periods=max(2, period // 3)).mean()
+    return s.to_numpy(dtype=float)
+
+
+def etl_liquidity(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """Зоны ликвидности как СЕРИЯ: дистанция до ближайшей, сила, момент снятия.
+
+    BUY-side — кластеры swing-highs (стопы шортистов, выше цены);
+    SELL-side — кластеры swing-lows (стопы лонгистов, ниже цены).
+    Свинг на баре `idx` подтверждается через `_LIQ_SW_LEN` баров ⇒ зона рождается
+    на `idx + _LIQ_SW_LEN`, раньше её не существует.
+    """
+    from core.smc.smc_engine import confirmed_swings
+
+    n = len(df)
+    nan = float("nan")
+    up_d = np.full(n, nan); dn_d = np.full(n, nan)
+    up_n = np.full(n, nan); dn_n = np.full(n, nan)
+    sw_up = np.zeros(n, dtype=bool); sw_dn = np.zeros(n, dtype=bool)
+
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    # свинг → бар, с которого он ИЗВЕСТЕН
+    born: Dict[int, List[tuple]] = {}
+    for idx, price, kind in confirmed_swings(df, _LIQ_SW_LEN):
+        b = int(idx) + _LIQ_SW_LEN
+        if b < n:
+            born.setdefault(b, []).append((float(price), kind))
+
+    # активные зоны: [level, count, side] — side 'H' (buy-side) / 'L' (sell-side)
+    zones: List[list] = []
+
+    for b in range(n):
+        for price, kind in born.get(b, ()):                # 1) родившиеся зоны
+            for z in zones:
+                if z[2] == kind and z[0] > 0 and abs(price - z[0]) / z[0] * 100 <= _LIQ_TOL_PCT:
+                    z[0] = (z[0] * z[1] + price) / (z[1] + 1)   # средний уровень кластера
+                    z[1] += 1
+                    break
+            else:
+                zones.append([price, 1, kind])
+
+        alive = []                                          # 2) снятие на ЭТОМ баре
+        for z in zones:
+            tol = z[0] * _LIQ_TOL_PCT / 100.0
+            if z[2] == "H" and high[b] > z[0] + tol:
+                sw_up[b] = True                             # сняли buy-side (стопы шортов)
+            elif z[2] == "L" and low[b] < z[0] - tol:
+                sw_dn[b] = True
+            else:
+                alive.append(z)
+        zones = alive
+
+        c = close[b]                                        # 3) ближайшие активные
+        if c <= 0:
+            continue
+        up = [z for z in zones if z[2] == "H" and z[0] > c]
+        dn = [z for z in zones if z[2] == "L" and z[0] < c]
+        if up:
+            z = min(up, key=lambda z: z[0])
+            up_d[b] = (z[0] - c) / c * 100.0
+            up_n[b] = z[1]
+        if dn:
+            z = max(dn, key=lambda z: z[0])
+            dn_d[b] = (c - z[0]) / c * 100.0
+            dn_n[b] = z[1]
+
+    # порог «цена у зоны» — в долях ATR своего ТФ, а не фиксированные 0.5% (фикс 10.09)
+    thr = _LIQ_NEAR_ATR * _atr_pct(df)
+    thr = np.where(np.isnan(thr), _LIQ_NEAR_PCT_FALLBACK, thr)
+    with np.errstate(invalid="ignore"):
+        near_up = np.nan_to_num(up_d, nan=1e9) < thr
+        near_dn = np.nan_to_num(dn_d, nan=1e9) < thr
+
+    return {"liq_up_dist_pct": up_d, "liq_dn_dist_pct": dn_d,
+            "liq_up_strength": up_n, "liq_dn_strength": dn_n,
+            "liq_sweep_up": sw_up, "liq_sweep_dn": sw_dn,
+            "liq_near_up": near_up, "liq_near_dn": near_dn}
+
+
+def etl_smc_ext(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """SMC-extensions в матрицу (04.09, ЭПИК B): inducement + liquidity void.
+
+    Оба числились в MATRIX_REGISTRY:324 как «❌ НЕТ В МАТРИЦЕ».
+      · inducement — ложный пробой равных уровней с возвратом (stop hunt);
+      · liquidity void — широкий импульсный бар, к середине которого цена не вернулась
+        (магнит: рынок склонен возвращаться в пустоту).
+
+    🔴 `detect_breaker_block` СЮДА НЕ ВНЕСЁН НАМЕРЕННО: детектор существует, но его эдж
+    уже мерился и НЕ подтвердился ([[breaker_detector_real_vs_claimed]]). Вносить признак
+    с известным отсутствием эджа = растить множественность без шанса на находку.
+
+    🔴 `detect_inducement` содержал look-ahead (флаг на баре свипа зависел от закрытий
+    i+1/i+2) — починен 04.09 в источнике: флаг встаёт на бар ПОДТВЕРЖДЁННОГО возврата.
+    Оба прошли префиксный тест: 0 расхождений на t=1500/2500/3400.
+    """
+    from core.smc.smc_extensions import detect_inducement, detect_liquidity_void
+
+    bull_ind, bear_ind = detect_inducement(df)
+    bull_void, bear_void = detect_liquidity_void(df)
+    return {"inducement_bull": bull_ind, "inducement_bear": bear_ind,
+            "liq_void_bull": bull_void, "liq_void_bear": bear_void}
 
 
 # etl_regime УДАЛЁН (03.06, решение ARCH): regime-классификатор не нужен — торгуем ДВИЖЕНИЯ,

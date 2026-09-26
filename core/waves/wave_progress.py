@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from core.smc.oko_sm_engine import _swings
+from core.smc.oko_sm_engine import pivot_points
 from core.waves.wave5_core import _fix_same_kind, _inner_pairs
 
 
@@ -25,7 +25,7 @@ def count_in_progress(d1: pd.DataFrame, sw: int = 60, back: int = 9) -> Optional
     текущий провизорный экстремум после последнего свинга."""
     dr = d1.reset_index(drop=True); t = len(dr) - 1
     hh, ll = dr.high.values.astype(float), dr.low.values.astype(float)
-    sws = _fix_same_kind([s for s in _swings(dr.high, dr.low, sw) if s[0] <= t])
+    sws = _fix_same_kind([s for s in pivot_points(dr.high, dr.low, sw) if s[0] <= t])
     if len(sws) < 3:
         return None
     best = None
@@ -140,7 +140,7 @@ def triangle_ltf(dl: pd.DataFrame, sw: int = 5, shift: int = 0) -> Optional[Dict
     if dl is None or len(dl) < 100:
         return None
     dr = dl.reset_index(drop=True); t = len(dr) - 1
-    allsw = _fix_same_kind([s for s in _swings(dr.high, dr.low, sw) if s[0] <= t])
+    allsw = _fix_same_kind([s for s in pivot_points(dr.high, dr.low, sw) if s[0] <= t])
     sws = allsw[len(allsw) - 5 - shift:len(allsw) - shift] if len(allsw) >= 5 + shift else []
     if len(sws) < 5:
         return None
