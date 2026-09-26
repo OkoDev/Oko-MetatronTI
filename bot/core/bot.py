@@ -175,7 +175,7 @@ class TradingAlertBot:
         from core.context.sphere_registry import SphereRegistry
         self.sphere_registry = SphereRegistry(self.pair_context)
 
-        # ═══ КУБ: Подписки между сферами (mesh-связность) ═══
+        # ═══ КУБ: Подписки между сферами (mesh — цель; 6 из 7 пока заглушки, ARCH-101 🧊) ═══
         self._wire_cube_subscriptions()
 
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
@@ -198,7 +198,12 @@ class TradingAlertBot:
         """
         Куб Метатрона: подписки между сферами.
         Каждая сфера подписывается на события других через PairContextBus.
-        Это создаёт mesh-связность — любое событие достигает всех заинтересованных узлов.
+        Цель — mesh-связность: любое событие достигает всех заинтересованных узлов.
+
+        🔴 Факт (26.09.2026): 6 обработчиков ниже — ЗАГЛУШКИ (только logger.debug, реакции нет).
+        Реальную работу делает один — _on_btc_for_signals (кладёт btc_regime в шину).
+        Межсферные реакции заморожены вместе с ARCH-101 (09.05). Каждая реакция = новое
+        торговое поведение → включать по одной и только после замера (BACKLOG N12).
         """
         from core.context.pair_context import SphereEvent
         bus = self.pair_context
@@ -210,7 +215,7 @@ class TradingAlertBot:
             # Если режим сменился на REVERSAL mode — WT specialist должен знать
             if data.get("mode") == "REVERSAL" and state.wt_verdict == "TREND_CONTINUATION":
                 logger.debug("[Cube] %s: regime→REVERSAL, WT verdict stale", symbol)
-        bus.subscribe(SphereEvent.REGIME_UPDATED, _on_regime_for_wt)
+        bus.subscribe(SphereEvent.REGIME_UPDATED, _on_regime_for_wt)          # ЗАГЛУШКА
 
         # ── Сфера 6 (Regime) подписана на: wt_snap_updated ───────────────────
         # WT snap на 4h даёт сигнал о reversal mode
@@ -221,7 +226,7 @@ class TradingAlertBot:
                 state = bus.get(symbol)
                 if abs(wt1) > 60 and state.reversal_mode != "REVERSAL":
                     logger.debug("[Cube] %s: WT 4h=%+.0f → potential REVERSAL", symbol, wt1)
-        bus.subscribe(SphereEvent.WT_SNAP_UPDATED, _on_wt_for_regime)
+        bus.subscribe(SphereEvent.WT_SNAP_UPDATED, _on_wt_for_regime)         # ЗАГЛУШКА
 
         # ── Сфера 9 (Narrative Builder) подписана на: все ключевые события ────
         # Narrative Builder реагирует на каждый новый сигнал
@@ -231,7 +236,7 @@ class TradingAlertBot:
             sig_type = data.get("signal_type", "")
             if sig_type and state.last_signal_type != sig_type:
                 logger.debug("[Cube] %s: signal %s → narrative update pending", symbol, sig_type)
-        bus.subscribe(SphereEvent.SIGNAL_DETECTED, _on_signal_for_narrative)
+        bus.subscribe(SphereEvent.SIGNAL_DETECTED, _on_signal_for_narrative)  # ЗАГЛУШКА
 
         # ── Сфера 10 (Exit Manager) подписана на: wt_snap, regime, divergence ─
         # При дивергенции — Exit Manager может подтянуть TSL
@@ -240,14 +245,14 @@ class TradingAlertBot:
             if state.open_trade_id and state.tsl_active:
                 logger.debug("[Cube] %s: divergence → Exit Manager aware (trade #%d)",
                              symbol, state.open_trade_id)
-        bus.subscribe(SphereEvent.DIVERGENCE_FOUND, _on_div_for_exit)
+        bus.subscribe(SphereEvent.DIVERGENCE_FOUND, _on_div_for_exit)         # ЗАГЛУШКА
 
         # ── Сфера 11 (Post-Trade) подписана на: position_closed ──────────────
         # Когда позиция закрывается — cascade обновляется
         def _on_close_for_cascade(symbol, data):
             state = bus.get(symbol)
             logger.debug("[Cube] %s: position closed → cascade_count=%d", symbol, state.cascade_count)
-        bus.subscribe(SphereEvent.POSITION_CLOSED, _on_close_for_cascade)
+        bus.subscribe(SphereEvent.POSITION_CLOSED, _on_close_for_cascade)     # ЗАГЛУШКА
 
         # ── Сфера 12 (Diagnostics) подписана на: все события ─────────────────
         # SphereRegistry отслеживает здоровье всех сфер
@@ -267,11 +272,13 @@ class TradingAlertBot:
             if state.open_trade_id:
                 logger.debug("[Cube] %s: pivot touch → TP check (trade #%d)",
                              symbol, state.open_trade_id)
-        bus.subscribe(SphereEvent.PIVOT_TOUCH, _on_pivot_for_exit)
+        bus.subscribe(SphereEvent.PIVOT_TOUCH, _on_pivot_for_exit)            # ЗАГЛУШКА
 
+        _n_stubs = 6    # помеченные «ЗАГЛУШКА» выше; реакцию сделал — уменьши
         _n_subs = sum(len(v) for v in bus._subscribers.values())
-        logger.info("[Cube] mesh-связность: %d подписок на %d типов событий",
-                    _n_subs, len(bus._subscribers))
+        logger.info("[Cube] подписок на шину: %d на %d типов событий "
+                    "(межсферных заглушек без реакции: %d, ARCH-101 🧊)",
+                    _n_subs, len(bus._subscribers), _n_stubs)
 
     def _register_routers(self):
         from bot.handlers.subscription_handlers import get_router as sub_router

@@ -1,7 +1,10 @@
 """
 PairContextBus — Shared Context Bus / Центральная Сфера Куба Метатрона.
 
-Полная mesh-шина: 13 сфер публикуют → подписчики реагируют → per-pair живое состояние.
+Цель — mesh-шина: 13 сфер публикуют → подписчики реагируют → per-pair живое состояние.
+🔴 Факт (26.09.2026): это ДОСКА — сферы публикуют, потребители ЧИТАЮТ состояние (pull);
+реальный push-потребитель один (NotificationDispatcher), межсферные реакции заморожены
+вместе с ARCH-101. Подробно: docs/BACKLOG_CONSOLIDATED.md → N12.
 
 Два уровня:
   1. PairState — персистентный снимок состояния пары (все 13 сфер)
@@ -334,7 +337,7 @@ class PairContextBus:
     """
     Центральная Сфера Куба Метатрона — Shared Context Bus.
 
-    Mesh-связность: каждая сфера публикует → подписчики реагируют.
+    Сферы публикуют → потребители читают (pull) или реагируют (push). Mesh — цель, не факт (BACKLOG N12).
     Per-pair состояние: PairState (L1, 13 сфер) · Per-account: AccountState (L2: equity/позиции).
 
     Thread-safe в рамках asyncio event loop (+ AccountState читается из dashboard-потока под GIL).
