@@ -77,14 +77,20 @@ def _fetch_new_orders(db_path) -> list[dict]:
     try:
         with sqlite3.connect(db_path, timeout=5) as c:
             c.row_factory = sqlite3.Row
+            # 🔴 26.09 wave_leg НЕ ВЫБИРАЛСЯ — и гейт «pump только после выдоха» (14.07) молчал
+            # 2.5 месяца: o.get("wave_leg") всегда None → условие `_wl is not None` ложно → пропуск.
+            # Цена: 0 отсеиваний по wave_leg из 41924 SKIPPED, 119 ранних пампов ушли в бой после
+            # введения гейта. На реальных ценах leg<3 даёт −1.93%/сд против +2.20% у leg≥3.
+            # Тот же класс, что молчаливый пропуск waves_long: фильтр есть, данные до него не доходят.
             try:      # phase_json добавлен 12.07 (фаза серии BUILD) — старые БД без колонки
                 rows = c.execute(
                     "SELECT ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, grade, starred, "
-                    "tg_msg_id, phase_json FROM radar_orders WHERE status='NEW' ORDER BY ts").fetchall()
+                    "tg_msg_id, phase_json, wave_leg FROM radar_orders WHERE status='NEW' ORDER BY ts").fetchall()
             except sqlite3.OperationalError:
                 rows = c.execute(
                     "SELECT ts, symbol, sig_type, side, entry, sl, tp1, tp2, tp3, grade, starred, "
-                    "tg_msg_id, NULL AS phase_json FROM radar_orders WHERE status='NEW' ORDER BY ts").fetchall()
+                    "tg_msg_id, NULL AS phase_json, NULL AS wave_leg FROM radar_orders "
+                    "WHERE status='NEW' ORDER BY ts").fetchall()
             return [dict(r) for r in rows]
     except sqlite3.OperationalError:
         return []   # no such table — радар ещё не писал сетапов
@@ -510,7 +516,7 @@ def _swing_floor(df, direction: str, price: float, buf_pct: float = 0.3) -> floa
     где СТРУКТУРНЫЙ трейл?!» — v1 на 5m±2 была микрошумом: LAB выбило тиком в 2.3%
     от цены, а структурный LH 0.5768 дышал бы и ехал дальше).
 
-    v2 = канон OKO-SM: 15m + _swings_luxalgo(length=5) [[calib_choch_length5]].
+    v2 = канон OKO-SM: 15m + confirmed_swings(length=5) [[calib_choch_length5]].
     SHORT → ПОСЛЕДНИЙ подтверждённый swing high (LH) ВЫШЕ цены: его слом = CHoCH =
     структура развернулась = выходим. LONG → последний подтверждённый HL НИЖЕ.
     НЕ ближайший микропик (= слабейший уровень = шум).
@@ -520,8 +526,8 @@ def _swing_floor(df, direction: str, price: float, buf_pct: float = 0.3) -> floa
     if df is None or len(df) < 30 or price <= 0:
         return None
     try:
-        from core.smc.smc_engine import _swings_luxalgo
-        sw = sorted(_swings_luxalgo(df, 5), key=lambda x: x[0])
+        from core.smc.smc_engine import confirmed_swings
+        sw = sorted(confirmed_swings(df, 5), key=lambda x: x[0])
     except Exception:
         return None
     if direction == "SHORT":
