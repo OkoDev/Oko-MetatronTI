@@ -596,10 +596,16 @@ class ApiEngine:
                                             symbol, timeframe, _ipshort,
                                             (_t.monotonic() - _t0) * 1000, self._proxy_pool.stats()["alive"])
                         except Exception as _pe:
-                            self._proxy_pool.release(_pxurl, ok=False)
-                            _ipshort = (_pxurl or "direct").split("@")[-1]
-                            logger.warning("[PROXY] %s %s via %s: FAIL %s: %s",
-                                            symbol, timeframe, _ipshort, type(_pe).__name__, str(_pe)[:50])
+                            # 27.09: ответ БИРЖИ (ExchangeError/BadSymbol — напр. 109415 по одной паре)
+                            # значит, что прокси довёз запрос: штрафовать его нельзя. Раньше одна битая
+                            # пара гнала здоровые прокси в карантин (277 раз за полчаса при 2 сетевых сбоях).
+                            # 100410 (бан по IP) — тоже ExchangeError: его карантинит внешний except точечно.
+                            _proxy_ok = isinstance(_pe, ccxt.ExchangeError)
+                            self._proxy_pool.release(_pxurl, ok=_proxy_ok)
+                            if not _proxy_ok:
+                                _ipshort = (_pxurl or "direct").split("@")[-1]
+                                logger.warning("[PROXY] %s %s via %s: FAIL %s: %s",
+                                                symbol, timeframe, _ipshort, type(_pe).__name__, str(_pe)[:50])
                             raise
                     else:
                         candles = await self._exchange.fetch_ohlcv(
