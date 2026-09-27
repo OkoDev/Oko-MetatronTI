@@ -92,7 +92,10 @@ ALL_PROVIDERS = ["mistral", "openrouter", "gemini", "groq",
                  "or_cohere", "or_poolside", "or_dots", "groq_qwen",
                  # 13.08: Antigravity OAuth (Google-аккаунт Егора) → Gemini 3.1 Pro и Claude Opus 4.6.
                  # Первые ДЕЙСТВИТЕЛЬНО новые семейства верхнего уровня в рое, и бесплатно.
-                 "ag_gemini_pro"]
+                 "ag_gemini_pro",
+                 # 26.09: ag_opus возвращён — 403/429 были из-за VPN-выхода, который Google считает RU.
+                 # Через LLM_PROXY (Сингапур) — 200, боевой промпт 3/3 (79с, самый медленный голос).
+                 "ag_opus"]
 
 # Запасной вход через локальный OmniRoute: при 429/503 голос НЕ теряется (13.08).
 # Раньше рой звал call_provider напрямую и упавший провайдер просто выпадал из состава —

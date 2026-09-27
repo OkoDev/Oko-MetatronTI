@@ -193,10 +193,17 @@ def ensure_gateway(wait_sec: int = 45):
     # --no-open ОБЯЗАТЕЛЕН: `serve` по умолчанию открывает браузер на /home. Под pm2 это
     # случалось раз в сутки и не мешало, а при подъёме на каждый прогон — вкладка на КАЖДЫЙ
     # запрос к рою (Егор поймал 18.08). --no-tray заодно убирает иконку в трее.
+    # 26.09: Antigravity (Google) отдаёт 403 с VPN-выхода, который Google считает RU;
+    # через LLM_PROXY (Сингапур) — 200 на gemini-3.1-pro / claude-opus-4-6. Шлюзу — стандартными переменными.
+    env = dict(os.environ)
+    if os.environ.get("LLM_PROXY"):
+        env.update(HTTPS_PROXY=os.environ["LLM_PROXY"], HTTP_PROXY=os.environ["LLM_PROXY"],
+                   NO_PROXY="127.0.0.1,localhost")
     proc = subprocess.Popen(
         ["node", str(GATEWAY_BIN), "serve", "--no-open", "--no-tray"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         cwd=str(PROJECT_ROOT),          # чтобы шлюз подхватил .env проекта, как под pm2
+        env=env,
     )
     for _ in range(wait_sec * 2):
         time.sleep(0.5)
