@@ -1398,8 +1398,10 @@ _tcl_lock = None        # гонка на создании клиента = ос
 
 
 def _is_local(req):
+    # IP локальный — мало: чужая страница в браузере Егора тоже шлёт с 127.0.0.1 (CSRF, N1 аудита 26.09)
+    from web.local_guard import is_local_origin
     ip = (req.remote or "").strip()
-    return ip in ("127.0.0.1", "::1", "localhost")
+    return ip in ("127.0.0.1", "::1", "localhost") and is_local_origin(req)
 
 
 async def _trade_client(mode):

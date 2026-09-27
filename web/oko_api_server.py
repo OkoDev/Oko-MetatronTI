@@ -185,7 +185,8 @@ async def h_proxy(request: web.Request) -> web.Response:
 
 
 def main():
-    app = web.Application()
+    from web.local_guard import local_origin_guard      # SEC N1 (26.09): прокси снимает Origin → проверять ДО него
+    app = web.Application(middlewares=[local_origin_guard])
     app.router.add_get("/api/dashboard", h_dashboard)
     app.router.add_get("/api/feed", h_feed)
     app.router.add_route("*", "/{tail:.*}", h_proxy)

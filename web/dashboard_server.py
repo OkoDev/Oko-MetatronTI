@@ -3325,7 +3325,8 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
     global _dashboard_loop
     _dashboard_loop = asyncio.get_running_loop()
 
-    app = web.Application()
+    from web.local_guard import local_origin_guard      # SEC N1 (26.09): CSRF на изменяющие POST
+    app = web.Application(middlewares=[local_origin_guard])
     app["engine"] = PerformanceEngine(db_path=db_path)
     app["config"] = config
     app["data_collector"] = data_collector   # для получения текущей цены
