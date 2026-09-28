@@ -1,8 +1,18 @@
-## 🚀 THE GRAPH MCP (30.06.2026 — on-chain intelligence) 
-→ [The Graph for Cube](the_graph_onchain_plan.md) — НОВЫЙ КАНАЛ (6-й!): whale tracking, DEX liquidity surge, contract stress, funding+whale divergence, new pools. WR 55-70%, БЕСПЛАТНО вместо Glassnode $500-5k. Триангуляция с Liquidation+Pairs дает 65-75% WR. 12-16 дней, нет блокеров. **ПРИОРИТЕТ 2** (неделя 2 параллельно).
+> 🔴 **ЭТО НЕ ИНДЕКС ПАМЯТИ.** Горячий индекс (законы измерения, что в бою, состояние поиска
+> эджа) живёт в auto-memory: `~/.claude/projects/e--MTF-BOT-CURSOR-crypto-volume-bot/memory/MEMORY.md`
+> — он подгружается в контекст сам. Здесь, в repo-слое (git, читает DS), только SHARED-правила
+> ролей. Архитектура памяти описана в шапке `memory/current_state.md`. Помечено 29.09.2026,
+> когда выяснилось, что CLAUDE.md п.4 отправлял читать при старте сессии именно этот файл.
 
-## 🎯 5 НОВЫХ EDGE-СТРАТЕГИЙ (30.06.2026 — team-ask консенсус)
-→ [новые стратегии от роя](new_edge_strategies_team_verdict.md) — Gamma Scalping (СЕЙЧАС, 3 дня), Liquidation Cascades, Pairs Trading, Delta Footprint, Epsilon Arb. Не OTE/Памп/Funding. Детальный план в файле.
+## 🧊 ЗАМОРОЖЕНО (планы от 30.06.2026, к исполнению НЕ принимать без решения Егора)
+Оба пункта — планы, а не факты; в индексе auto-memory направления GAMMA / LIQUIDATION / PAIRS
+стоят как **заморожены**. Оставлено как история намерения.
+
+- **THE GRAPH MCP** → [план](the_graph_onchain_plan.md): 6-й канал (whale tracking, DEX liquidity
+  surge, contract stress, funding+whale divergence, new pools). Заявленный WR 55-70% — ОЦЕНКА из
+  плана, не наш замер.
+- **5 EDGE-СТРАТЕГИЙ от роя** → [вердикт team-ask](new_edge_strategies_team_verdict.md): Gamma
+  Scalping, Liquidation Cascades, Pairs Trading, Delta Footprint, Epsilon Arb.
 
 ## 🔴 MACRO-REVIEW — правило DS (16.06.2026)
 
@@ -28,7 +38,7 @@
    Провал: OTE-конверсию назвал «нужно», а DEV-209 уже в коде.
 
 3. ПЕРЕД «SL не работает» — проверить tsl_activated колонку.
-   TSL спасает ×2.4 для ote_nested, игнорировал в早期них выводах.
+   TSL спасает ×2.4 для ote_nested, игнорировал в ранних выводах.
 
 4. Данные за ALL TIME ≠ данные за последние 3 дня.
    Система меняется быстро. Всегда брать свежий срез.
