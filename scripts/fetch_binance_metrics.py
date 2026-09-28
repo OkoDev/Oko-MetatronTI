@@ -11,8 +11,9 @@
 URL: https://data.binance.vision/data/futures/um/daily/metrics/{SYM}/{SYM}-metrics-{YYYY-MM-DD}.zip
 Месячных архивов нет (404) — только дневные. 404 = дня нет (до листинга / после делистинга) → пропуск.
 
-Выход: C:/oko_data/history/metrics/{BASE}USDT.parquet (как 1m-паркеты рядом). Докачка: продолжает с дня
-после последнего сохранённого. Монеты — из 1m-истории, порядок — по 24ч-обороту Binance (ликвидные первыми),
+Выход: C:/oko_data/history/metrics/{BASE}USDT.parquet (как 1m-паркеты рядом). Докачка: качает ВСЕ дни,
+которых нет в файле (хвост и дыры); день, не скачавшийся за 5 попыток, не роняет монету — повторный запуск
+его доберёт. Монеты — из 1m-истории, порядок — по 24ч-обороту Binance (ликвидные первыми),
 старт монеты — с первого фандинга в ohlcv_cache.funding_rates (прокси листинга), но не раньше --since.
 
   python scripts/fetch_binance_metrics.py                    # все монеты 1m-истории
@@ -48,20 +49,26 @@ except Exception:
     pass
 
 
+class DayFailed(Exception):
+    """День не скачался после всех попыток — монета сохраняется без него, докачка доберёт."""
+
+
 def _day(sym: str, d: date) -> pd.DataFrame | None:
     url = f"{BASE}/{sym}/{sym}-metrics-{d:%Y-%m-%d}.zip"
-    for attempt in range(3):
+    err = ""
+    for attempt in range(5):
         try:
             data = urllib.request.urlopen(url, timeout=30).read()
             break
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
-            time.sleep(2 * (attempt + 1))
-        except Exception:
-            time.sleep(2 * (attempt + 1))
+            err = f"HTTP {e.code}"
+        except Exception as e:  # noqa: BLE001
+            err = f"{type(e).__name__}: {e}"
+        time.sleep(2 ** attempt)
     else:
-        raise RuntimeError(f"{sym} {d}: не скачалось за 3 попытки")
+        raise DayFailed(f"{d} ({err})")
     z = zipfile.ZipFile(io.BytesIO(data))
     df = pd.read_csv(io.BytesIO(z.read(z.namelist()[0])))
     df["time"] = pd.to_datetime(df.create_time).astype("int64") // 1_000_000       # UTC, мс
@@ -89,27 +96,35 @@ def _first_funding() -> dict[str, date]:
     return {s.split("/")[0]: datetime.fromtimestamp(t / 1000, timezone.utc).date() for s, t in rows}
 
 
-def fetch_symbol(base: str, start: date, end: date, workers: int) -> tuple[int, int, int]:
-    """Докачать монету до end включительно. Возврат: (новых дней, 404, строк в файле)."""
+def fetch_symbol(base: str, start: date, end: date, workers: int) -> tuple[int, int, int, list[str]]:
+    """Докачать ВСЕ отсутствующие в файле дни [start, end] (и дыры внутри, и хвост).
+    Возврат: (новых дней, 404, строк в файле, дни-сбои)."""
     out = OUT / f"{base}USDT.parquet"
     old = pd.read_parquet(out) if out.exists() else None
-    if old is not None and len(old):
-        start = max(start, datetime.fromtimestamp(old.time.max() / 1000, timezone.utc).date() + timedelta(days=1))
-    days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    have = set() if old is None else set(pd.to_datetime(old.time, unit="ms").dt.date.unique())
+    days = [d for d in (start + timedelta(days=i) for i in range((end - start).days + 1)) if d not in have]
     if not days:
-        return 0, 0, 0 if old is None else len(old)
+        return 0, 0, 0 if old is None else len(old), []
+
+    def one(d):
+        try:
+            return _day(f"{base}USDT", d)
+        except DayFailed as e:
+            return e
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        got = list(pool.map(lambda d: _day(f"{base}USDT", d), days))
-    new = [g for g in got if g is not None and len(g)]
+        got = list(pool.map(one, days))
+    failed = [str(g) for g in got if isinstance(g, DayFailed)]
+    new = [g for g in got if isinstance(g, pd.DataFrame) and len(g)]
     miss = sum(g is None for g in got)
     if not new:
-        return 0, miss, 0 if old is None else len(old)
+        return 0, miss, 0 if old is None else len(old), failed
     df = pd.concat(([old] if old is not None else []) + new, ignore_index=True)
     df = df.drop_duplicates("time").sort_values("time").reset_index(drop=True)
     tmp = out.with_suffix(".tmp")
     df.to_parquet(tmp, compression="zstd", index=False)
     tmp.replace(out)                                                   # атомарно: обрыв не портит файл
-    return len(new), miss, len(df)
+    return len(new), miss, len(df), failed
 
 
 def main():
@@ -117,7 +132,7 @@ def main():
     ap.add_argument("--symbols", nargs="*")
     ap.add_argument("--top", type=int)
     ap.add_argument("--since", default="2022-01-01")
-    ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--workers", type=int, default=24)   # 48 → сбои соединений у CDN (28.09)
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     since = date.fromisoformat(a.since)
@@ -125,16 +140,18 @@ def main():
     first = _first_funding()
     bases = _universe(a.top, [s.upper() for s in a.symbols] if a.symbols else None)
     print(f"монет {len(bases)} · {since} → {end} · выход {OUT}")
-    t0 = time.time()
+    t0, fails = time.time(), 0
     for i, b in enumerate(bases, 1):
         start = max(since, first.get(b, since))
         try:
-            n, miss, rows = fetch_symbol(b, start, end, a.workers)
+            n, miss, rows, failed = fetch_symbol(b, start, end, a.workers)
         except Exception as e:  # noqa: BLE001
             print(f"[{i}/{len(bases)}] {b}: ОШИБКА {e}")
             continue
-        print(f"[{i}/{len(bases)}] {b}: +{n} дн · 404 {miss} · строк {rows:,} · {time.time() - t0:.0f} с")
-    print("ГОТОВО")
+        fails += len(failed)
+        tail = f" · СБОЙ {len(failed)} дн (перезапуск доберёт): {failed[:2]}" if failed else ""
+        print(f"[{i}/{len(bases)}] {b}: +{n} дн · 404 {miss} · строк {rows:,} · {time.time() - t0:.0f} с{tail}")
+    print(f"ГОТОВО · дней-сбоев всего {fails}" + (" → запустить ещё раз, докачка заполнит дыры" if fails else ""))
 
 
 if __name__ == "__main__":
