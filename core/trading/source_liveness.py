@@ -38,6 +38,7 @@ class SourceState:
     last_trade: str | None = None  # дата последней сделки за всё время
     traces: int = 0                # следов источника в логе (его луп что-то делал)
     needs: str = ""                # требования источника (ТФ/стороны) из политики
+    top_gate: str = ""             # гейт, который режет чаще всего, и сколько раз
     min_sl_dist: float | None = None
     min_rr: float | None = None
     ttl_h: float | None = None
@@ -127,6 +128,31 @@ def _requirements_ok(src: str, pol: dict, cfg) -> tuple[bool, str]:
     return False, f"нужен ТФ {need_tf}, а сканер даёт {tfs or '—'}"
 
 
+
+def _top_gate(conn, names: list[str], days: int) -> tuple[str, int]:
+    """Какой гейт чаще всего режет этот источник и сколько раз за окно.
+
+    🔴 Пункт 3 контракта (Егор 28.09): порог, способный обнулить поток, — это ТОЖЕ разрешение,
+    и он обязан быть видимым. `ds_advisor` умер именно так: политика говорила «торгует»,
+    а `min_sl_dist` резал ВСЁ (его средний стоп 1.9% против глобального порога 4.0%), и узнать
+    об этом можно было только читая лог руками.
+    Свой счётчик не заводим: отказы уже пишет `decision_trace.record_drop` в `signal_drops`
+    ([[principle_reuse_not_duplication]]) — просто читаем.
+    """
+    if not names:
+        return "", 0
+    like = " OR ".join(["drop_reason LIKE ?"] * len(names) + ["features_json LIKE ?"] * len(names))
+    args = [f"{n}/%" for n in names] + [f'%"source": "{n}"%' for n in names]
+    try:
+        row = conn.execute(
+            f"SELECT gate_name, COUNT(*) c FROM signal_drops "
+            f"WHERE dropped_at >= datetime('now', '-{int(days)} days') AND ({like}) "
+            f"GROUP BY 1 ORDER BY c DESC LIMIT 1", args).fetchone()
+    except Exception:                                       # noqa: BLE001
+        return "", 0
+    return (str(row[0]), int(row[1])) if row else ("", 0)
+
+
 def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = None) -> list[SourceState]:
     """Состояние всех источников из политики роутера. Ничего не меняет."""
     pols = (cfg.get("signal_router.source_policies", {}) or {})
@@ -159,6 +185,9 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
             except Exception:                               # noqa: BLE001
                 pass
             st.traces = _count_traces(src, log_path)
+            _g, _gn = _top_gate(conn, names, days)
+            st.top_gate = f"{_g}:{_gn}" if _gn else ""
+
             _ok_req, st.needs = _requirements_ok(src, (pols.get(src) or {}), cfg)
             if st.mode == "live" and not _ok_req:
                 st.verdict = "ПУТЬ НЕ НАЙДЕН"
@@ -173,8 +202,9 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
                         st.verdict = "МОЛЧИТ"
                         st.note = st.note or (f"нет сделок {days} сут"
                                               + (f", последняя {st.last_trade}" if st.last_trade else ", НИ ОДНОЙ за всё время")
-                                              + (f"; следов в логе {st.traces} → путь жив, режет порог или нет сетапов"
-                                                 if st.traces > 0 else ""))
+                                              + (f"; чаще всего режет {st.top_gate}" if st.top_gate
+                                                 else (f"; следов в логе {st.traces} → путь жив, порог или рынок"
+                                                       if st.traces > 0 else "")))
                 else:
                     st.verdict = "ok"
             else:
@@ -190,7 +220,7 @@ def format_table(rows: list[SourceState], days: int = SILENT_DAYS) -> str:
     if not rows:
         return "[LIVENESS] нет данных"
     head = (f"{'источник':<18}{'режим':<8}{f'сделок {days}д':>12}{'последняя':>12}"
-            f"{'следов':>8}{'min_sl':>8}{'min_rr':>8}{'TTL ч':>7}  вердикт")
+            f"{'следов':>8}{'min_sl':>8}{'min_rr':>8}{'TTL ч':>7}{'режет чаще':>22}  вердикт")
     lines = [head, "-" * len(head)]
     for r in sorted(rows, key=lambda x: (x.mode != "live", x.src)):
         mark = {"МОЛЧИТ": "🟡", "ПУТЬ НЕ НАЙДЕН": "🔴", "ok": "✅"}.get(r.verdict, "  ")
@@ -199,7 +229,7 @@ def format_table(rows: list[SourceState], days: int = SILENT_DAYS) -> str:
             f"{(r.traces if r.traces >= 0 else '—'):>8}"
             f"{(r.min_sl_dist if r.min_sl_dist is not None else '—'):>8}"
             f"{(r.min_rr if r.min_rr is not None else '—'):>8}"
-            f"{(r.ttl_h if r.ttl_h is not None else '—'):>7}  {mark} {r.verdict}"
+            f"{(r.ttl_h if r.ttl_h is not None else '—'):>7}{(r.top_gate or '—'):>22}  {mark} {r.verdict}"
             + (f" · {r.note}" if r.note else ""))
     dead = [r for r in rows if r.verdict == "ПУТЬ НЕ НАЙДЕН"]
     silent = [r for r in rows if r.verdict == "МОЛЧИТ"]
@@ -210,8 +240,10 @@ def format_table(rows: list[SourceState], days: int = SILENT_DAYS) -> str:
         lines.append("   Это профиль atr_s2: ветка в коде недостижима (ТФ/сторона/вселенная не совпали). "
                      "Проверять код, а не рынок.")
     if silent:
-        lines.append(f"🟡 МОЛЧАТ (путь жив, сделок нет): " + ", ".join(r.src for r in silent))
-        lines.append("   Смотреть отказы в логе: порог (min_sl_dist/min_rr/TTL) или рынок не даёт сетапов.")
+        lines.append("🟡 МОЛЧАТ (путь жив, сделок нет): "
+                     + ", ".join(f"{r.src}" + (f" [{r.top_gate}]" if r.top_gate else "") for r in silent))
+        lines.append("   Если назван гейт — источник убивает ПОРОГ (дать персональное значение или выключить); "
+                     "если гейта нет — рынок не даёт сетапов.")
     if not dead and not silent:
         lines.append("✅ все live-источники дают сделки")
     return "\n".join(lines)
