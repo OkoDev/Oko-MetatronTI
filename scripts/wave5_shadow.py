@@ -80,11 +80,8 @@ def _cache(sym, tf):
 # Синтетика BingX — не крипта, а акции (NCSK*), валютные пары (NCFX*), товары (NCCO*) и индексы (NCSI*).
 # 16.09 их было 592 из 1180 пар, и они лезли в журнал (NCCOPALLADIUM2USD = палладий). Егор: «нужно убрать
 # из скана синтетику». Коротких NC-тикеров в крипте нет — фильтр по префиксам ничего живого не задевает.
-SYNTH_PREFIXES = ("NCSK", "NCFX", "NCCO", "NCSI")
-
-
-def is_synthetic(base: str) -> bool:
-    return base.upper().startswith(SYNTH_PREFIXES)
+# 28.09: фильтр переехал в Сферу 1 (core/infra/market_store.py) — один на всех процессах.
+from core.infra.market_store import SYNTH_PREFIXES, is_synthetic  # noqa: E402,F401
 
 
 def universe_list(ex, a):

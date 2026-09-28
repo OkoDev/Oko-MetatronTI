@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.request
 from typing import Optional
@@ -15,6 +16,27 @@ import pandas as pd
 from core.trading.source_registry import _TF_MIN as TF_MIN
 
 KL_URL = "https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol={s}-USDT&interval={tf}&limit={n}"
+
+# Пауза между запросами (28.09, хранилище Сферы 1): сервис с прямым IP не должен ловить бан BingX.
+# По умолчанию 0 — поведение прежних клиентов (тень волн, терминал) не меняется.
+_MIN_INTERVAL = 0.0
+_LAST = [0.0]
+_PACE = threading.Lock()
+
+
+def set_min_interval(seconds: float) -> None:
+    global _MIN_INTERVAL
+    _MIN_INTERVAL = max(0.0, float(seconds))
+
+
+def _pace() -> None:
+    if _MIN_INTERVAL <= 0:
+        return
+    with _PACE:
+        wait = _LAST[0] + _MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _LAST[0] = time.monotonic()
 
 
 def fetch_closed(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None, retries: int = 3) -> pd.DataFrame:
@@ -27,6 +49,7 @@ def fetch_closed(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None, 
         d = None
         for i in range(retries):
             try:
+                _pace()
                 d = json.loads(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "oko"}), timeout=20).read())
                 break
             except Exception:
