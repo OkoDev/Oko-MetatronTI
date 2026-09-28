@@ -111,7 +111,7 @@ USDT.D и mcap лежат в `ohlcv_cache.db`, а не в `external_data.db` (т
 |---|---|---|---|---|
 | `ohlcv_cache` | ohlcv_cache | 112 907 223 строк | ✅ да | это всё, что видит Куб |
 | **`funding_rates`** | ohlcv_cache | **1 708 871 строк, 2022 → 31.08.2026** (догрузка 27.09; только месячные архивы — месяц доступен после окончания) | 🔴 нет | потолок информации измерен 27.09: `scripts/funding_info_ceiling.py` |
-| **Binance metrics** (НЕ загружен) | — | 5m с 2022 до вчера: `sum_open_interest`, top-trader L/S, global L/S, `sum_taker_long_short_vol_ratio` | 🔴 нет | 🔑 ИСТОРИЯ OI/лонг-шорт/тейкера за 4 года без накопления: `data.binance.vision/data/futures/um/daily/metrics/{SYM}/{SYM}-metrics-{дата}.zip` |
+| **Binance metrics** (загрузка с 28.09: `scripts/fetch_binance_metrics.py`, pm2 `metrics-fetch`) | паркеты `C:/oko_data/history/metrics/` | 5m с 2022 до вчера: `sum_open_interest`, top-trader L/S, global L/S, `sum_taker_long_short_vol_ratio` | 🔴 нет | 🔑 ИСТОРИЯ OI/лонг-шорт/тейкера за 4 года без накопления: `data.binance.vision/data/futures/um/daily/metrics/{SYM}/{SYM}-metrics-{дата}.zip` |
 | `mcap_supply` / `mcap_meta` | ohlcv_cache | 19 905 / 40 — **всего 40 дней** | 🔴 нет | 🔴 ключ бьёт по 48-54% вселенной, мимо всех множителей (`1000PEPE`) |
 | `onchain_events` | ohlcv_cache | 11 346, с 2026-07-02 | 🔴 нет | DEX: `whale_swap` / `liq_mint` / `liq_burn` |
 | `onchain_events` | **external_data** | 22 267, с 2026-07-03 | 🔴 нет | 🔴 ДРУГОЙ ФИД ПОД ТЕМ ЖЕ ИМЕНЕМ: BTC flow + `oi_spike`. 3 дефекта живы |
