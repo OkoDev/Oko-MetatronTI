@@ -475,12 +475,18 @@ def _inplay_coins(c) -> list[str]:
                 add(sym, ico + arrow)
         except Exception:
             pass
-    # OKO-SM скринер + DC-торговля (subscriptions.db)
+    # OKO-SM скринер (своё хранилище, N16) + DC-торговля (subscriptions.db)
+    try:
+        from core.infra import screener_store
+        scr = screener_store.connect()
+        for sym, sco in scr.execute("SELECT symbol, conf_score FROM screener_state WHERE in_zone=1 "
+                                    "AND conf_score>=3 ORDER BY conf_score DESC LIMIT 8").fetchall():
+            add(sym, f"🎯{sco:.0f}")
+        scr.close()
+    except Exception:
+        pass
     try:
         sc = _sq.connect("subscriptions.db", timeout=5)
-        for sym, sco in sc.execute("SELECT symbol, conf_score FROM screener_state WHERE in_zone=1 "
-                                   "AND conf_score>=3 ORDER BY conf_score DESC LIMIT 8").fetchall():
-            add(sym, f"🎯{sco:.0f}")
         for (sym,) in sc.execute("SELECT DISTINCT symbol FROM simulated_trades WHERE "
                                  "signal_type='ds_advisor' AND status IN ('OPEN','PENDING_ENTRY')").fetchall():
             add(sym, "🤖")
@@ -611,6 +617,7 @@ def compass(c) -> None:
               (int(time.time()), bias, conf, d.get("reasoning_ru"),
                (swarm or {}).get("bias"), (swarm or {}).get("confidence"),
                (swarm or {}).get("votes")))
+    c.commit()                                   # N16: не держать запись через send_tg (сеть)
     # 09.07 (Егор: «одно и то же каждый час»): в КАНАЛ — только при ИЗМЕНЕНИИ
     # (bias сменился или |Δconf|>=15) или раз в 3ч (жив-маркер). В compass_log — всегда (скоринг).
     changed = prev is None or prev[0] != bias or abs(int(prev[1] or 0) - conf) >= 15
@@ -662,6 +669,9 @@ def cycle() -> None:
         for it in skip:                              # записать без классификации (дедуп на будущее)
             c.execute("INSERT OR IGNORE INTO news_items(link, ts, source, title, importance) "
                       "VALUES (?,?,?,?,0)", (it["link"], int(time.time()), it["source"], it["title"]))
+        # 🔴 N16 (29.09): закрыть транзакцию ДО LLM. Иначе INSERT выше держит блокировку записи
+        # subscriptions.db всё время, пока думает модель (таймаут 240 с), — бот ловит «database is locked».
+        c.commit()
         print(f"[NEWS] новых {len(fresh)} (LLM: {len(todo)}, мимо: {len(skip)})")
         for it in todo:
             d = classify(it["title"]) or {}

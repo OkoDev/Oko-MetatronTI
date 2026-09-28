@@ -229,8 +229,12 @@ def _breakout_shadow(base, px, res, sup):
     = «закрепление 15м») по одну сторону, текущий по другую. exchange_enabled нет → чистый SIM.
     Дедуп 12ч/пара. Возвращает (dir, lvl, touches) для TG-алерта или None."""
     import sqlite3 as _sq
-    c = _sq.connect("subscriptions.db", timeout=5)
-    prev = c.execute("SELECT px FROM screener_state WHERE symbol=?", (base,)).fetchone()
+    from core.infra import screener_store          # N16: скринер — своё хранилище, не база бота
+    c = screener_store.connect()
+    try:
+        prev = c.execute("SELECT px FROM screener_state WHERE symbol=?", (base,)).fetchone()
+    except _sq.OperationalError:                   # таблицы ещё нет (первый цикл)
+        prev = None
     c.close()
     if not prev or prev[0] is None:
         return None                                   # первый цикл — нет prev-цены
@@ -278,7 +282,8 @@ def _store_screener(base, leg, px, retr, in_zone, approach, score, hits_by_fib, 
     import sqlite3 as _sq
     hits_flat = sorted({h for hs in hits_by_fib.values() for h in hs},
                        key=lambda h: -_hit_weight(h))[:8]
-    c = _sq.connect("subscriptions.db", timeout=5)
+    from core.infra import screener_store          # N16 (29.09): своё хранилище — в базе бота 97–99% «locked»
+    c = screener_store.connect()
     c.execute("""CREATE TABLE IF NOT EXISTS screener_state(
         symbol TEXT PRIMARY KEY, ts INTEGER, trend TEXT, origin REAL, extreme REAL,
         px REAL, retr REAL, in_zone INTEGER, approach INTEGER, noise INTEGER,

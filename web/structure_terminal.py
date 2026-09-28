@@ -98,7 +98,8 @@ def _cluster_map(rows):
 
 def _screener_rows(limit=60):
     try:
-        c = sqlite3.connect(_DB)
+        from core.infra import screener_store      # N16: скринер живёт в своём хранилище
+        c = screener_store.connect()
         c.row_factory = sqlite3.Row
         rows = [dict(r) for r in c.execute(
             "SELECT * FROM screener_state ORDER BY in_zone DESC, approach DESC, conf_score DESC "
@@ -470,10 +471,16 @@ def _inplay():
     except Exception:
         pass
     try:
-        sc = sqlite3.connect(_DB, timeout=5)
-        for sym, sco in sc.execute("SELECT symbol,conf_score FROM screener_state WHERE in_zone=1 "
-                                   "AND conf_score>=3 ORDER BY conf_score DESC LIMIT 10"):
+        from core.infra import screener_store      # N16: скринер — своё хранилище, сделки — база бота
+        scr = screener_store.connect()
+        for sym, sco in scr.execute("SELECT symbol,conf_score FROM screener_state WHERE in_zone=1 "
+                                    "AND conf_score>=3 ORDER BY conf_score DESC LIMIT 10").fetchall():
             add(sym, f"🎯{sco:.0f}")
+        scr.close()
+    except Exception:
+        pass
+    try:
+        sc = sqlite3.connect(_DB, timeout=5)
         for (sym,) in sc.execute("SELECT DISTINCT symbol FROM simulated_trades WHERE "
                                  "signal_type='ds_advisor' AND status IN ('OPEN','PENDING_ENTRY')"):
             add(sym, "🤖")
