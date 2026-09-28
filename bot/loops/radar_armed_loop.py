@@ -892,9 +892,12 @@ async def radar_armed_loop(bot) -> None:
     ttl_sec = float(cfg.get("entry_ttl_min", 45)) * 60
     sig_types = [str(s).lower() for s in (cfg.get("signal_types") or ["build", "pump", "spring"])]
     pump_grades = [str(g).upper() for g in (cfg.get("pump_grades") or ["A", "B"])]
+    # пустой список = фильтр по типу выключен (все типы проходят)
+    pump_kinds = [str(k) for k in (cfg.get("pump_kinds") or [])]
     max_pos = int(cfg.get("max_positions", 5))
-    logger.info("[RADAR-ARMED] started: poll=%ds ttl=%dмин types=%s pump_grades=%s max_pos=%d",
-                poll_sec, ttl_sec / 60, sig_types, pump_grades, max_pos)
+    logger.info("[RADAR-ARMED] started: poll=%ds ttl=%dмин types=%s pump_grades=%s "
+                "pump_kinds=%s max_pos=%d",
+                poll_sec, ttl_sec / 60, sig_types, pump_grades, pump_kinds or "все", max_pos)
 
     while True:
         try:
@@ -926,6 +929,20 @@ async def radar_armed_loop(bot) -> None:
                 if st == "pump" and str(o["grade"] or "").upper() not in pump_grades:
                     _set_status(RADAR_DB, sym_feed, ts, "SKIPPED", f"grade {o['grade']} off")
                     continue
+                # 🔴 28.09 ФИЛЬТР ПО ТИПУ СЕТАПА (решение Егора «радар — фильтр»).
+                # Замер всего журнала (2 984 сигнала, 1 610 исполненных на наших 1m-паркетах,
+                # контроль ±10 дн, боевой выход 40/30/30 + безубыток) показал: грейд различал не
+                # качество, а ТИП, и платит ровно один из трёх:
+                #   фейд пампа (шорт вершины, RSI 80)  n=555  Δr +0.45
+                #   фейд дампа (лонг дна, RSI 20)      n=319  Δr −0.19
+                #   продолжение дампа (шорт вниз)      n=232  Δr −0.67
+                # Прежний фильтр `pump_grades: [A, B]` работал наоборот: фейд пампа почти целиком
+                # помечался C и выбрасывался, а продолжение дампа (только A/B) оставалось.
+                if st == "pump" and pump_kinds:
+                    _kind = _setup_kind(RADAR_DB, sym_feed, ts, str(o["side"]))
+                    if _kind not in pump_kinds:
+                        _set_status(RADAR_DB, sym_feed, ts, "SKIPPED", f"тип «{_kind}» off")
+                        continue
                 # 🔴 14.07 (лоси дня, Егор): pump-разворот ТОЛЬКО после выдоха — ранние ноги
                 # минусят (VST-срез: leg≤2 n=8 −2.77% vs leg≥3 n=11 +14.21%, Δ=1.64%/сд;
                 # LAB leg=1 −3.64 vs AGLD-класс выдох +4). None (старые без фичи) — пропуск.
@@ -946,6 +963,28 @@ async def radar_armed_loop(bot) -> None:
         except Exception as e:
             logger.exception("[RADAR-ARMED] loop error: %s", e)
             await asyncio.sleep(poll_sec)
+
+
+def _setup_kind(db_path, symbol: str, ts: int, side: str) -> str:
+    """Тип pump-сетапа: фейд пампа / фейд дампа / продолжение дампа.
+
+    Детектор (`scripts/oi_fast_poller.py`) знает тип по `up = d_px > 0` и `dump_cont`, но в
+    `radar_orders` его не пишет — восстанавливаем по знаку движения из `pump_signals` (та же БД).
+    Допуск ±120 с: у ARMED-порта и журнала сигналов время ставится раздельно.
+    """
+    try:
+        with sqlite3.connect(db_path, timeout=5) as c:
+            r = c.execute(
+                "SELECT d_px FROM pump_signals WHERE symbol=? AND ABS(ts-?)<=120 "
+                "ORDER BY ABS(ts-?) LIMIT 1", (symbol, ts, ts)).fetchone()
+    except Exception as e:                                           # noqa: BLE001
+        logger.debug("[RADAR-ARMED] тип сетапа %s: %s", symbol, e)
+        return "неизвестно"
+    if not r or r[0] is None:
+        return "неизвестно"
+    if float(r[0]) > 0:
+        return "фейд пампа"
+    return "продолжение дампа" if str(side).upper() == "SHORT" else "фейд дампа"
 
 
 async def _wave_ctx_on_demand(bot, sym: str, side: str, entry: float) -> dict | None:

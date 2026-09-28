@@ -24,6 +24,7 @@ import asyncio
 import logging
 import sqlite3
 import time
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -36,8 +37,42 @@ POLL_SEC = 900          # бар 1h закрывается раз в час — 
 HOLD_BARS = 96          # столько держим позицию после фила (из бэктеста механики)
 SRC = "choch_wavec"
 
+
+@dataclass(frozen=True)
+class Instance:
+    """ТФ-инстанс механики. Всё, чем инстансы отличаются друг от друга.
+
+    🔴 28.09 второй инстанс (4h) — по замеру расширения по масштабу. Окна КАЛЕНДАРНЫЕ:
+    ожидание фила 12 ч и удержание 96 ч одинаковы на всех ТФ, в барах они разные.
+    Константа в барах, перенесённая между ТФ молча, уже стоила нам 15m-близнеца
+    ([[twins_15m_stabilized_by_measure]]).
+    """
+    src: str                 # имя источника = ключ политики и trade_mode
+    tf: str                  # таймфрейм свечей
+    tf_hours: float          # длительность бара в часах — из неё считаются окна
+    table: str               # таблица исследовательского журнала
+    tag: str                 # тег в логе
+
+    @property
+    def wait_bars(self) -> int:
+        """Окно ожидания фила В БАРАХ этого ТФ (календарно всегда 12 ч)."""
+        return max(1, int(round(WAIT_BARS / self.tf_hours)))
+
+    @property
+    def hold_bars(self) -> int:
+        """Горизонт удержания В БАРАХ этого ТФ (календарно всегда 96 ч)."""
+        return max(1, int(round(HOLD_BARS / self.tf_hours)))
+
+    @property
+    def cfg_key(self) -> str:
+        return f"trading.{self.src}"
+
+
+INSTANCE_1H = Instance(src="choch_wavec", tf="1h", tf_hours=1.0, table="choch_shadow", tag="CHOCH-C")
+INSTANCE_4H = Instance(src="choch_wavec_4h", tf="4h", tf_hours=4.0, table="choch_shadow_4h", tag="CHOCH-C4")
+
 _TABLE = """
-CREATE TABLE IF NOT EXISTS choch_shadow (
+CREATE TABLE IF NOT EXISTS {table} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at   TEXT DEFAULT (datetime('now')),
     symbol       TEXT NOT NULL,
@@ -63,16 +98,17 @@ CREATE TABLE IF NOT EXISTS choch_shadow (
 """
 
 
-def _conn(bot):
+def _conn(bot, inst: Instance = None):
+    inst = inst or INSTANCE_1H
     c = sqlite3.connect(bot.trade_simulator.db_path, timeout=10)
-    c.execute(_TABLE)
+    c.execute(_TABLE.format(table=inst.table))
     return c
 
 
-async def _fetch_1h(bot, symbol: str, limit: int):
-    """OHLCV 1h → DatetimeIndex UTC. D-042: data_collector отдаёт колонку 'time' (мс)."""
+async def _fetch_tf(bot, symbol: str, limit: int, tf: str = "1h"):
+    """OHLCV нужного ТФ → DatetimeIndex UTC. D-042: data_collector отдаёт колонку 'time' (мс)."""
     try:
-        df = await bot.data_collector.get_ohlcv(symbol, timeframe="1h", limit=limit)
+        df = await bot.data_collector.get_ohlcv(symbol, timeframe=tf, limit=limit)
     except Exception:                                          # noqa: BLE001
         return None
     if df is None or len(df) < 300:
@@ -88,7 +124,9 @@ async def _fetch_1h(bot, symbol: str, limit: int):
     return df
 
 
-def _resolve(conn, symbol: str, df: pd.DataFrame) -> None:
+def _resolve(conn, symbol: str, df: pd.DataFrame, inst: Instance = None) -> None:
+    inst = inst or INSTANCE_1H
+    tbl = inst.table
     """Догоняет статусы незакрытых записей символа по закрытым барам.
 
     Порядок проверок повторяет бэктест: сначала «стоп задет ДО входа» (сетап умер, а не
@@ -97,7 +135,7 @@ def _resolve(conn, symbol: str, df: pd.DataFrame) -> None:
     база показывала PF 0.27 вместо 1.15. Поэтому «ничего не сработало» проверяется ЯВНО.
     """
     rows = conn.execute(
-        "SELECT id,choch_ts,entry,stop_loss,take_profit,status,filled_at FROM choch_shadow "
+        f"SELECT id,choch_ts,entry,stop_loss,take_profit,status,filled_at FROM {tbl} "
         "WHERE symbol=? AND status IN ('WAITING','FILLED')", (symbol,)).fetchall()
     if not rows:
         return
@@ -117,47 +155,49 @@ def _resolve(conn, symbol: str, df: pd.DataFrame) -> None:
             # Поиск по ВСЕЙ истории завышал число входов: бот заходил бы на протухших
             # сетапах, которых в бэктесте не было. Проверка B в verify_choch_loop.py
             # поймала это на 1086 из 1807 сетапов.
-            win = min(len(hi), WAIT_BARS)
+            win = min(len(hi), inst.wait_bars)
             f_entry = next((k for k in range(win) if hi[k] >= entry), None)
             f_stop = next((k for k in range(win) if hi[k] >= sl), None)
             if f_stop is not None and (f_entry is None or f_stop < f_entry):
-                conn.execute("UPDATE choch_shadow SET status='INVALID',"
+                conn.execute(f"UPDATE {tbl} SET status='INVALID',"
                              "resolved_at=? WHERE id=?", (str(idx[f_stop]), rid))
                 continue
             if f_entry is None:
-                if len(hi) >= WAIT_BARS:                # окно отката исчерпано
-                    conn.execute("UPDATE choch_shadow SET status='EXPIRED',"
+                if len(hi) >= inst.wait_bars:                # окно отката исчерпано
+                    conn.execute(f"UPDATE {tbl} SET status='EXPIRED',"
                                  "resolved_at=? WHERE id=?", (str(idx[win - 1]), rid))
                 continue
-            conn.execute("UPDATE choch_shadow SET status='FILLED',filled_at=?,"
+            conn.execute(f"UPDATE {tbl} SET status='FILLED',filled_at=?,"
                          "bars_to_fill=? WHERE id=?", (str(idx[f_entry]), f_entry + 1, rid))
             hi, lo, idx = hi[f_entry + 1:], lo[f_entry + 1:], idx[f_entry + 1:]
             if len(hi) == 0:
                 continue
 
         # Позиция живёт HOLD_BARS баров от фила — дальше выход по close, как в замере.
-        hold = min(len(hi), HOLD_BARS)
+        hold = min(len(hi), inst.hold_bars)
         h_tp = next((k for k in range(hold) if lo[k] <= tp), None)
         h_sl = next((k for k in range(hold) if hi[k] >= sl), None)
         if h_tp is None and h_sl is None:
-            if len(hi) >= HOLD_BARS:                    # вышли по времени — считаем по close
+            if len(hi) >= inst.hold_bars:                    # вышли по времени — считаем по close
                 out = float(w.close.values[len(w) - len(hi) + hold - 1])
-                conn.execute("UPDATE choch_shadow SET status='EXPIRED',resolved_at=?,"
+                conn.execute(f"UPDATE {tbl} SET status='EXPIRED',resolved_at=?,"
                              "result_pct=? WHERE id=?",
                              (str(idx[hold - 1]), (entry - out) / entry * 100, rid))
             continue
         if h_sl is not None and (h_tp is None or h_sl <= h_tp):
-            conn.execute("UPDATE choch_shadow SET status='SL',resolved_at=?,result_pct=?"
+            conn.execute(f"UPDATE {tbl} SET status='SL',resolved_at=?,result_pct=?"
                          " WHERE id=?", (str(idx[h_sl]), (entry - sl) / entry * 100, rid))
         else:
-            conn.execute("UPDATE choch_shadow SET status='TP',resolved_at=?,result_pct=?"
+            conn.execute(f"UPDATE {tbl} SET status='TP',resolved_at=?,result_pct=?"
                          " WHERE id=?", (str(idx[h_tp]), (entry - tp) / entry * 100, rid))
 
 
-async def choch_wavec_loop(bot):
-    cfg = (bot.config.get("trading.choch_wavec", {}) or {})
+async def choch_wavec_loop(bot, inst: Instance = None):
+    inst = inst or INSTANCE_1H
+    tbl = inst.table
+    cfg = (bot.config.get(inst.cfg_key, {}) or {})
     if not cfg.get("enabled", False):
-        logger.info("[CHOCH-C] выключен (trading.choch_wavec.enabled=false)")
+        logger.info("[%s] выключен (%s.enabled=false)", inst.tag, inst.cfg_key)
         return
 
     shadow = bool(cfg.get("shadow", True))
@@ -184,9 +224,11 @@ async def choch_wavec_loop(bot):
     # в рынке. У impulse_fib это стоило 8 часов простоя ([[cap_pending_not_risk_slot]]).
     cap_pending = int(cfg.get("max_pending", cap))
     bars = int(cfg.get("bars", 1000))
-    logger.info("[CHOCH-C] старт · %s · вселенная top%d · стоп %.0f-%.0f%% · ATR>%.2f%% · "
-                "усилителей≥%d · кап %d позиций / %d заявок", "SHADOW (на биржу НЕ шлём)" if shadow else "🔴 ЖИВОЙ",
-                top_n, min_stop, max_stop, min_atr, min_boost, cap, cap_pending)
+    logger.info("[%s] старт · %s · вселенная top%d · стоп %.0f-%.0f%% · ATR>%.2f%% · "
+                "усилителей≥%d · кап %d позиций / %d заявок · окно фила %d бар · удержание %d бар",
+                inst.tag, "SHADOW (на биржу НЕ шлём)" if shadow else "🔴 ЖИВОЙ",
+                top_n, min_stop, max_stop, min_atr, min_boost, cap, cap_pending,
+                inst.wait_bars, inst.hold_bars)
 
     from core.signals.signal_models import (MarketContext, SignalDirection,
                                             TradingRecommendation)
@@ -206,30 +248,30 @@ async def choch_wavec_loop(bot):
             syms.sort(key=lambda s: -turn.get(s.split("/")[0], 0.0))
             syms = syms[:top_n]
 
-            conn = _conn(bot)
+            conn = _conn(bot, inst)
             # 🔴 21.08: КЭП ПО РЕАЛЬНЫМ СДЕЛКАМ, а не по журналу. Журнал —
             # исследовательский: в нём остаются и сетапы, которых на бирже нет (отбил
             # гейт), и они навсегда занимают слоты. Тот же дефект чинили в impulse_fib.
             if shadow:
                 n_open = conn.execute(
-                    "SELECT COUNT(*) FROM choch_shadow WHERE status IN ('WAITING','FILLED')"
+                    f"SELECT COUNT(*) FROM {tbl} WHERE status IN ('WAITING','FILLED')"
                 ).fetchone()[0]
                 n_pend = 0            # в shadow биржи нет — заявкам взяться неоткуда
             else:
                 from core.trading.source_registry import slots as _slots
-                _st = _slots(conn, SRC, max_open=cap, max_pending=cap_pending)
+                _st = _slots(conn, inst.src, max_open=cap, max_pending=cap_pending)
                 n_open, n_pend = _st["open"], _st["pending"]
                 if not _st["can_place"]:
-                    logger.info("[CHOCH-C] новых заявок не будет: %s", _st["why"])
+                    logger.info("[%s] новых заявок не будет: %s", inst.tag, _st["why"])
             found = 0
             hour = time.gmtime().tm_hour
 
             for sym in syms:
-                df = await _fetch_1h(bot, sym, bars)
+                df = await _fetch_tf(bot, sym, bars, inst.tf)
                 await asyncio.sleep(0.05)
                 if df is None:
                     continue
-                _resolve(conn, sym, df)
+                _resolve(conn, sym, df, inst)
                 # shadow: журнал сам себе кэп. Бой: ДВА лимита раздельно.
                 if shadow:
                     if n_open + found >= cap:
@@ -247,13 +289,13 @@ async def choch_wavec_loop(bot):
                 b = boosters(s, hour_utc=hour)
                 if b["count"] < min_boost:
                     continue
-                dup = conn.execute("SELECT 1 FROM choch_shadow WHERE symbol=? AND choch_ts=?",
+                dup = conn.execute(f"SELECT 1 FROM {tbl} WHERE symbol=? AND choch_ts=?",
                                    (sym, s["choch_ts"])).fetchone()
                 if dup:
                     continue
 
                 conn.execute(
-                    "INSERT INTO choch_shadow (symbol,choch_ts,entry,stop_loss,take_profit,"
+                    f"INSERT INTO {tbl} (symbol,choch_ts,entry,stop_loss,take_profit,"
                     "stop_pct,price_at_signal,block,shield,atr_pct,under_s1w,good_hour,"
                     "boosters_n) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (sym, s["choch_ts"], s["entry"], s["sl"], s["tp"], s["stop_pct"],
@@ -261,9 +303,9 @@ async def choch_wavec_loop(bot):
                      int(b["under_s1w"]), int(b.get("good_hour", False)), b["count"]))
                 conn.commit()
                 found += 1
-                logger.info("[CHOCH-C] %s %s лимит %.6g (%.2f%% от цены) · стоп %.6g (%.2f%%) "
+                logger.info("[%s] %s %s лимит %.6g (%.2f%% от цены) · стоп %.6g (%.2f%%) "
                             "· цель %.6g · помеха %.0f · ATR %.2f%% · усилителей %d",
-                            "📓" if shadow else "🔴", sym, s["entry"],
+                            inst.tag, "📓" if shadow else "🔴", sym, s["entry"],
                             (s["entry"] - s["price"]) / s["price"] * 100, s["sl"],
                             s["stop_pct"], s["tp"], s["block"], s["atr_pct"], b["count"])
 
@@ -277,8 +319,8 @@ async def choch_wavec_loop(bot):
                                                  volume_24h=0.0, volume_change_24h=0.0,
                                                  price_change_24h=0.0),
                     entry_price=s["entry"], stop_loss=s["sl"], take_profit=s["tp"],
-                    sl_source=f"{SRC}:leg_origin", tp_source=f"{SRC}:waveC")
-                res = await bot.trade_router.submit(rec, source=SRC, extra_features={
+                    sl_source=f"{inst.src}:leg_origin", tp_source=f"{inst.src}:waveC")
+                res = await bot.trade_router.submit(rec, source=inst.src, extra_features={
                     "signal_type_override": SRC, "trade_mode": SRC,
                     "cw_choch_ts": s["choch_ts"], "cw_age": s["age"],
                     "cw_leg_pct": round(s["leg_len"] / s["entry"] * 100, 2),
@@ -312,11 +354,11 @@ async def choch_wavec_loop(bot):
                                        "(actual_entry_price IS NULL OR actual_entry_price<=0)",
                                        (int(tid),))
                             _c.commit()
-                        logger.warning("[CHOCH-C] #%s ордер на биржу не ушёл → CANCELLED", tid)
+                        logger.warning("[%s] #%s ордер на биржу не ушёл → CANCELLED", inst.tag, tid)
                     elif tid:
                         from bot.loops.radar_armed_loop import _mark_pending
                         if _mark_pending(bot.trade_simulator.db_path, int(tid)):
-                            logger.info("[CHOCH-C] #%s → PENDING_ENTRY (лимитка ждёт фила)", tid)
+                            logger.info("[%s] #%s → PENDING_ENTRY (лимитка ждёт фила)", inst.tag, tid)
                         # окно гонки: TSL мог зацепить строку до перевода в PENDING
                         with sqlite3.connect(bot.trade_simulator.db_path, timeout=10) as _c:
                             _r = _c.execute(
@@ -327,19 +369,19 @@ async def choch_wavec_loop(bot):
                                 (int(tid),))
                             _c.commit()
                             if _r.rowcount:
-                                logger.warning("[CHOCH-C] #%s стоп восстановлен из original_sl", tid)
+                                logger.warning("[%s] #%s стоп восстановлен из original_sl", inst.tag, tid)
                 except Exception as _mp:                       # noqa: BLE001
-                    logger.warning("[CHOCH-C] mark_pending: %s", _mp)
+                    logger.warning("[%s] mark_pending: %s", inst.tag, _mp)
 
             conn.commit()
             stats = dict(conn.execute(
-                "SELECT status,COUNT(*) FROM choch_shadow GROUP BY status").fetchall())
-            logger.info("[CHOCH-C] скан %d пар · новых %d · журнал: %s",
-                        len(syms), found, stats or "пусто")
+                f"SELECT status,COUNT(*) FROM {tbl} GROUP BY status").fetchall())
+            logger.info("[%s] скан %d пар · новых %d · журнал: %s",
+                        inst.tag, len(syms), found, stats or "пусто")
         except asyncio.CancelledError:
             raise
         except Exception as e:                                 # noqa: BLE001
-            logger.error("[CHOCH-C] ошибка цикла: %s", e, exc_info=True)
+            logger.error("[%s] ошибка цикла: %s", inst.tag, e, exc_info=True)
         finally:
             # 🔴 21.08: соединение закрывается ВСЕГДА. Без finally исключение внутри прохода
             # оставляло его открытым с незавершённой транзакцией — а это само порождало

@@ -636,9 +636,13 @@ class TradingAlertBot:
             # ═══ CHOCH-WAVEC — единственная механика, прошедшая перекрёстный OOS (18.08;
             #     gated trading.choch_wavec.enabled, по умолчанию SHADOW — на биржу не шлёт) ═══
             try:
-                from bot.loops.choch_wavec_loop import choch_wavec_loop
-                asyncio.create_task(choch_wavec_loop(self))
-                logger.info("[CHOCH-C] task spawned (gated by config)")
+                # 🔴 28.09 ДВА ИНСТАНСА: 1h (боевой с 19.08) и 4h. На 4h механика качественнее —
+                # Δr +1.42 против +1.06, медиана +1.66 против +1.30 и ЕДИНСТВЕННАЯ неотрицательная
+                # хрупкость среди её ТФ; поток вчетверо меньше, поэтому это добавка, а не замена.
+                from bot.loops.choch_wavec_loop import INSTANCE_1H, INSTANCE_4H, choch_wavec_loop
+                for _inst in (INSTANCE_1H, INSTANCE_4H):
+                    asyncio.create_task(choch_wavec_loop(self, _inst))
+                    logger.info("[%s] task spawned (gated by config)", _inst.tag)
             except Exception as e:
                 logger.warning("[CHOCH-C] failed to start: %s", e)
             # ═══ IMPULSE-FIB — лучший OOS проекта: импульс → лимит 0.382 (20.08;
