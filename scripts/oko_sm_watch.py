@@ -34,6 +34,26 @@ BARS = 1000               # 4h истории (верифицировано: ≥
 
 
 def _kl(base, interval="4h", lim=BARS):
+    """Закрытые бары — из хранилища Сферы 1 (core/infra/market_store, BACKLOG N15, 28.09); с биржи —
+    только формирующийся бар (limit=2 вместо 1000). Как и раньше, последний бар — ТЕКУЩИЙ, незакрытый:
+    от него берётся цена подхода (scan_one: px = close[-1]). Хранилище отстало → прежний путь целиком."""
+    from core.infra.market_store import read_bars
+    closed = read_bars(base, interval, n=lim - 1)
+    step = {"1h": 3_600_000, "4h": 14_400_000}.get(interval)
+    now = int(pd.Timestamp.utcnow().value // 1_000_000)
+    if step is None or len(closed) < 300 or int(closed.index[-1].value // 1_000_000) != (now // step - 1) * step:
+        return _kl_rest(base, interval, lim)
+    tail = _kl_rest(base, interval, 2, min_bars=1)
+    if tail is None:
+        return None
+    df = closed.reset_index(drop=False)
+    df["time"] = df.ts.astype("int64") // 1_000_000
+    df = pd.concat([df[["time", "open", "high", "low", "close"]],
+                    tail[tail.time > int(df.time.iloc[-1])]], ignore_index=True)
+    return df if len(df) >= 300 else None
+
+
+def _kl_rest(base, interval="4h", lim=BARS, min_bars=300):
     url = (f"https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol={base}-USDT"
            f"&interval={interval}&limit={min(lim,1440)}")
     try:
@@ -46,7 +66,7 @@ def _kl(base, interval="4h", lim=BARS):
     df = pd.DataFrame([(int(k["time"]), float(k["open"]), float(k["high"]), float(k["low"]),
                         float(k["close"])) for k in d],
                       columns=["time", "open", "high", "low", "close"]).sort_values("time").reset_index(drop=True)
-    return df if len(df) >= 300 else None
+    return df if len(df) >= min_bars else None
 
 
 _DIV_SCAN = 12            # на сколько баров назад ищем, когда дивергенция была свежей
