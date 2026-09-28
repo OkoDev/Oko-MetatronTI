@@ -141,6 +141,7 @@ class SelfTest:
             ("L10", "Trade Simulator",    self._test_trade_simulator),
             ("L11", "Config Integrity",   self._test_config_integrity),
             ("L12", "Trade Lifecycle",    self._test_trade_lifecycle),
+            ("L12b", "Source Liveness",   self._test_source_liveness),
         ]
 
         for layer, name, test_fn in tests:
@@ -708,6 +709,40 @@ class SelfTest:
     # ------------------------------------------------------------------
     # L12: Trade Lifecycle — полный цикл register → open → close → verify
     # ------------------------------------------------------------------
+    def _test_source_liveness(self) -> SelfTestResult:
+        """L12b: совпадает ли «числится торгующим» с «действительно торгует».
+
+        🔴 28.09 (Егор: «конфиг должен быть источником истинности»). За 26-28.09 пять
+        механизмов оказались мёртвыми при включённом конфиге, и НИ ОДИН прибор этого не
+        показал: молчание источника выглядит как «сигналов не было». Правило — ноль сделок
+        при режиме live есть ТРЕВОГА ([[config_is_single_source_of_truth]]).
+        Тест не критический: он не должен мешать старту, его задача — громко сказать.
+        """
+        t0 = time.monotonic()
+        try:
+            from core.trading.source_liveness import SILENT_DAYS, collect, format_table
+            db = getattr(getattr(self.bot, "trade_simulator", None), "db_path", None) or "subscriptions.db"
+            import os
+            _log = os.path.expanduser("~/.pm2/logs/oko-bot-out.log")
+            rows = collect(db, self.config, days=SILENT_DAYS,
+                           log_path=_log if os.path.exists(_log) else None)
+            table = format_table(rows, SILENT_DAYS)
+            for line in table.split("\n"):
+                logger.info("[LIVENESS] %s", line)
+            silent = [r for r in rows if r.verdict == "МОЛЧИТ"]
+            live_n = sum(1 for r in rows if r.mode == "live")
+            msg = f"live-источников {live_n}, молчат {len(silent)}"
+            if silent:
+                msg += ": " + ", ".join(r.src for r in silent)
+            return SelfTestResult(
+                layer="L12b", name="Source Liveness", passed=not silent, critical=False,
+                duration_ms=(time.monotonic() - t0) * 1000, message=msg,
+                error=("молчащие live-источники: " + ", ".join(r.src for r in silent)) if silent else "")
+        except Exception as e:                                       # noqa: BLE001
+            return SelfTestResult(layer="L12b", name="Source Liveness", passed=True, critical=False,
+                                  duration_ms=(time.monotonic() - t0) * 1000,
+                                  message=f"пропущен: {type(e).__name__}", error=str(e)[:200])
+
     def _test_trade_lifecycle(self) -> SelfTestResult:
         t0 = time.monotonic()
         test_trade_id = None
