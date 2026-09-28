@@ -154,7 +154,10 @@ def measure(p: pd.DataFrame, st: dict, label: str, relative: bool) -> pd.DataFra
         f = p[f"fwd_{nm}"]
         if relative:
             f = f - p.groupby("hr")[f"fwd_{nm}"].transform("median")
-        y = np.where(f.notna(), (f > 0).astype(int), -1)
+        # 🔴 28.09: форвард РОВНО 0 = ничья, знака нет → исключить. Иначе плоские ряды (монета застыла,
+        # кэш продолжается постоянными свечами) дают детерминированный «не рост», и любое состояние,
+        # которое их узнаёт, получает фальшивые биты (так «нашлась» медиана WT EMA14 — 0.006 бит).
+        y = np.where(f.notna() & (f != 0), (f > 0).astype(int), -1)
         shifts = RNG.integers(48, p.hr.max() - p.hr.min() - 48, N_SHIFT)
         ys = [shifted(y, p.hr.to_numpy(), p.symbol.to_numpy(), int(s)) for s in shifts]
         need = 50 + COST / (2 * np.nanmean(np.abs(p[f"fwd_{nm}"]))) * 100
