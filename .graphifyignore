@@ -1,0 +1,10 @@
+# graphify: не тащить в граф знаний
+# .agents/ — сторонние описания скиллов (BingX и др.), ~25% объёма доков, не знания проекта
+.agents/
+# .claude/skills/bingx-* — junction-ссылки на .agents/skills/ (detect ходит по ним и тянет те же файлы)
+.claude/skills/bingx-*/
+# .continue/skills — целиком junction-ссылки на .agents/skills/
+.continue/skills/
+# архивы: мёртвый код и отработанные исследовательские скрипты (ищутся grep'ом, в графе — шум)
+archive/
+scripts/_archive/
