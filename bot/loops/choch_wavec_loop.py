@@ -321,7 +321,12 @@ async def choch_wavec_loop(bot, inst: Instance = None):
                     entry_price=s["entry"], stop_loss=s["sl"], take_profit=s["tp"],
                     sl_source=f"{inst.src}:leg_origin", tp_source=f"{inst.src}:waveC")
                 res = await bot.trade_router.submit(rec, source=inst.src, extra_features={
-                    "signal_type_override": SRC, "trade_mode": SRC,
+                    # 🔴 28.09 ИМЕНЕМ ИНСТАНСА, не константой SRC: под `trade_mode` реестр ищет
+                    # пороги, а под `signal_type` считается вся статистика источника. С жёстким
+                    # SRC сделки 4h подписывались именем 1h — инстансы было не разделить, и при
+                    # расхождении порогов 4h молча получил бы чужие ([[bug_gate_lives_in_two_places]]).
+                    "signal_type_override": inst.src, "trade_mode": inst.src,
+                    "cw_tf": inst.tf,
                     "cw_choch_ts": s["choch_ts"], "cw_age": s["age"],
                     "cw_leg_pct": round(s["leg_len"] / s["entry"] * 100, 2),
                     "cw_stop_pct": round(s["stop_pct"], 2),
