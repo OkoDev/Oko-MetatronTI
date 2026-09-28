@@ -66,19 +66,44 @@ foreach ($p in @('G:\oko_lab', 'C:\oko_history')) {
     if (Test-Path $p) { Write-Log "путь доступен: $p" } else { Write-Log "ВНИМАНИЕ: путь НЕ доступен: $p" }
 }
 
-try { pm2 resurrect 2>&1 | ForEach-Object { Write-Log "pm2: $_" } }
-catch { Write-Log "pm2 resurrect упал: $_" }
+# Таблицу pm2 в лог не тащим: она давала ~10 КБ на каждый подъём и топила настоящие строки.
+# Статусы всё равно проверяются ниже через jlist; сюда — только жалобы pm2 и размер вывода.
+try {
+    $out = pm2 resurrect 2>&1 | Out-String
+    $bad = @($out -split "`r?`n" | Where-Object { $_ -match '(?i)error|not found|failed' })
+    if ($bad.Count) { $bad | ForEach-Object { Write-Log "pm2: $_" } }
+    Write-Log ("pm2 resurrect отработал ({0} строк вывода, жалоб: {1})" -f @($out -split "`r?`n").Count, $bad.Count)
+} catch { Write-Log "pm2 resurrect упал: $_" }
 
 Start-Sleep -Seconds 40
 
-# Проверка 1: сколько процессов online
+# Проверка 1: сколько процессов online.
+# 🔴 ConvertFrom-Json на PowerShell 5.1 ЗДЕСЬ ПАДАЛ: pm2 отдаёт env и с `username`, и с
+# `USERNAME` — для 5.1 это «повторяющиеся ключи», и вся проверка процессов молча терялась
+# (лог 27.09: «pm2 jlist не прочитался»). Разбираем питоном — он и так есть, pm2 крутит
+# на нём сам бот. Регистр ключей питону безразличен.
+$py = 'C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe'
+if (-not (Test-Path $py)) {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { $py = $cmd.Source } else { $py = $null }
+}
 try {
-    $list = pm2 jlist | ConvertFrom-Json
-    $online = @($list | Where-Object { $_.pm2_env.status -eq 'online' })
-    Write-Log ("процессов online: {0} из {1}" -f $online.Count, @($list).Count)
+    if (-not $py) { throw 'python не найден — статусы процессов не проверить' }
+    # Литералы в питоне ТОЛЬКО в одинарных кавычках ('' внутри строки PS): двойные PowerShell
+    # съедает при передаче нативному exe, и питон падает с «name is not defined».
+    # chr(91)='[' (отрезаем возможный мусор pm2 перед JSON), chr(9)=TAB, chr(10)=LF.
+    $code = 'import sys,json;t=sys.stdin.read();t=t[t.find(chr(91)):];a=json.loads(t);print(chr(10).join(str(p.get(''name''))+chr(9)+str((p.get(''pm2_env'') or {}).get(''status'')) for p in a))'
+    $rows = (pm2 jlist 2>$null | Out-String) | & $py -c $code
+    $st = @{}
+    foreach ($r in @($rows)) {
+        if ($r -match '^(.+)\t(.+)$') { $st[$Matches[1]] = $Matches[2] }
+    }
+    $online = @($st.Values | Where-Object { $_ -eq 'online' })
+    # «online меньше половины» — это НОРМА: 18 из 38 записей — cron-задачи с autorestart=False,
+    # между запусками они законно stopped. Смотреть надо на четыре имени ниже.
+    Write-Log ("процессов online: {0} из {1} (cron-задачи между запусками stopped — норма)" -f $online.Count, $st.Count)
     foreach ($n in @('oko-bot', 'structure-term', 'oko-api', 'wave5-shadow')) {
-        $st = ($list | Where-Object { $_.name -eq $n } | Select-Object -First 1).pm2_env.status
-        Write-Log ("  {0}: {1}" -f $n, $(if ($st) { $st } else { 'НЕТ В СПИСКЕ' }))
+        Write-Log ("  {0}: {1}" -f $n, $(if ($st.ContainsKey($n)) { $st[$n] } else { 'НЕТ В СПИСКЕ' }))
     }
 } catch { Write-Log "pm2 jlist не прочитался: $_" }
 
