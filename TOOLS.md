@@ -101,6 +101,21 @@ python tools/team_ask.py --file бриф.md --no-context "вопрос"
 
 ---
 
+## 🕸️ ГРАФ ЗНАНИЙ (graphify)
+
+| инструмент | зачем |
+|---|---|
+| `tools/graphify_refresh.py` | обновить `graphify-out/` одной командой: код (бесплатно) · `--docs` (Gemini через `LLM_PROXY`) · `--labels` · `--all` |
+
+```bash
+python tools/graphify_refresh.py          # код + чистка по .graphifyignore
+python tools/graphify_refresh.py --all    # доки → код → имена сообществ
+```
+Хук post-commit дособирает код сам, но исключённое в `.graphifyignore` не вычищает.
+Руками `graphify extract` без `update --force` следом НЕ запускать — теряет узлы кода.
+
+---
+
 ## 🗂️ ГДЕ ЧТО ЛЕЖИТ
 
 ```
