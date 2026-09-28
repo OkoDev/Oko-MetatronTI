@@ -435,3 +435,48 @@ class NarrativeBuilder:
                 pass
 
         return narrative
+
+
+def narrative_metadata(narrative: TradingNarrative) -> Dict[str, Any]:
+    """То, что кладётся в recommendation.metadata["narrative"]. Читатель — блок «Нарратив» в TG-сообщении
+    (bot/monitoring.py, trading.narrative.include_in_tg). В features_json НЕ попадает (сверено 28.09: 0 из 262)."""
+    return {
+        "text": narrative.text,
+        "p_win": narrative.p_win,
+        "mode": narrative.mode,
+        "key_factors": narrative.key_factors,
+        "confidence": narrative.confidence,
+        "smc_factors": narrative.smc_factors,
+        "smc_flat": narrative.smc_flat,
+    }
+
+
+def narrative_consumer(pair_context_bus: Any):
+    """Сфера 9 как ПОДПИСЧИК шины: RECOMMENDATION_BUILT → нарратив в metadata рекомендации.
+
+    Подписывать СИНХРОННО (bus.subscribe): publish() вызывает обработчик в своём стеке, и нарратив
+    оказывается в metadata до того, как анализ вернёт рекомендацию и её прочитает TG-рассылка.
+    Прежде trading_intelligence звал NarrativeBuilder напрямую (заглушка Куба 12.04 лишь логировала).
+    """
+    nb = NarrativeBuilder(pair_context_bus)
+
+    def _on_recommendation_built(symbol: str, data: Dict[str, Any]) -> None:
+        rec = data.get("recommendation")
+        if rec is None:
+            return
+        narrative = nb.build(
+            symbol=symbol,
+            recommendation=rec,
+            wt_verdict=data.get("wt_verdict"),
+            smc_verdict=data.get("smc_verdict"),
+            reversal_mode=data.get("reversal_mode", "UNCLEAR"),
+            btc_regime=data.get("btc_regime"),
+            p_outcome=data.get("p_outcome"),
+        )
+        rec.metadata["narrative"] = narrative_metadata(narrative)
+        if data.get("log_info"):
+            logger.info("[%s][DEV-141] narrative: %s", symbol, narrative.text)
+        else:
+            logger.debug("[%s][DEV-141] narrative (shadow): %s", symbol, narrative.text)
+
+    return _on_recommendation_built

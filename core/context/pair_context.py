@@ -62,6 +62,9 @@ class SphereEvent:
     ANOMALY_DETECTED   = "anomaly_detected"     # {volume_ratio, tf}
     DIVERGENCE_FOUND   = "divergence_found"     # {type, direction, tf, strength}
     PIVOT_TOUCH        = "pivot_touch"          # {level, source, distance_pct}
+    # {recommendation, wt_verdict, smc_verdict, reversal_mode, btc_regime, p_outcome, log_info}
+    # 🔴 подписчиков — СИНХРОННО: Сфера 9 пишет нарратив в recommendation.metadata внутри publish()
+    RECOMMENDATION_BUILT = "recommendation_built"
 
     # Сфера 8 — Pivot Levels
     PIVOT_SNAP_UPDATED = "pivot_snap_updated"   # {1W: {PP, S1, R1, ...}, 1D: {...}}

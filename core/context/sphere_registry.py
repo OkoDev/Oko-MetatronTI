@@ -35,6 +35,7 @@ _EVENT_TO_SPHERE = {
     "anomaly_detected":  7,
     "divergence_found":  7,
     "pivot_touch":       7,
+    "recommendation_built": 7,
     "pivot_snap_updated": 8,
     "narrative_built":   9,
     "tsl_moved":         10,

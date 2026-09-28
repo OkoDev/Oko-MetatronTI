@@ -149,6 +149,8 @@ _EVENT_META: Dict[str, tuple] = {
     "ANOMALY_DETECTED":   ("scan_loop (Сфера 7)", "{volume_ratio,tf}", "аномалия"),
     "DIVERGENCE_FOUND":   ("scan_loop (Сфера 7)", "{type,direction,tf,strength}", "дивергенция"),
     "PIVOT_TOUCH":        ("scan_loop (Сфера 7)", "{level,source,distance_pct}", "касание пивота"),
+    "RECOMMENDATION_BUILT": ("trading_intelligence (Сфера 7)", "{recommendation,wt_verdict,smc_verdict,reversal_mode,...}",
+                             "рекомендация собрана → Сфера 9 (синхронно) пишет нарратив в metadata"),
     "PIVOT_SNAP_UPDATED": ("scan_loop (Сфера 8)", "{1W:{..},1D:{..}}", "снимок пивотов"),
     "NARRATIVE_BUILT":    ("trading_intelligence (Сфера 9)", "{text,action,p_win,key_factors}", "нарратив решения"),
     "POSITION_OPENED":    ("trade_router (Сфера 9)", "{side,source,trade_id,final_strength,regime}", "сделка открыта"),

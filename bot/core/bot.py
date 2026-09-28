@@ -175,7 +175,7 @@ class TradingAlertBot:
         from core.context.sphere_registry import SphereRegistry
         self.sphere_registry = SphereRegistry(self.pair_context)
 
-        # ═══ КУБ: Подписки между сферами (mesh — цель; 6 из 7 пока заглушки, ARCH-101 🧊) ═══
+        # ═══ КУБ: Подписки между сферами (mesh — цель; 3 межсферных пока заглушки, ARCH-101 🧊) ═══
         self._wire_cube_subscriptions()
 
         # WsFeed: WebSocket real-time тикеры (фаза 1) + OHLCV для приоритетных пар (фаза 2)
@@ -200,43 +200,24 @@ class TradingAlertBot:
         Каждая сфера подписывается на события других через PairContextBus.
         Цель — mesh-связность: любое событие достигает всех заинтересованных узлов.
 
-        🔴 Факт (26.09.2026): 6 обработчиков ниже — ЗАГЛУШКИ (только logger.debug, реакции нет).
-        Реальную работу делает один — _on_btc_for_signals (кладёт btc_regime в шину).
-        Межсферные реакции заморожены вместе с ARCH-101 (09.05). Каждая реакция = новое
-        торговое поведение → включать по одной и только после замера (BACKLOG N12).
+        🔴 Статус (28.09.2026): 3 обработчика ниже — ЗАГЛУШКИ (только logger.debug, реакции нет):
+        дивергенция → выход, закрытие → каскад, пивот → выход. Настоящие потребители:
+        Сфера 9 (нарратив, синхронно на RECOMMENDATION_BUILT), теневые «режим ↔ WT»
+        (core/context/shadow_consumers.py: решение в журнал, торговлю не трогают),
+        _on_btc_for_signals (btc_regime в шину), SphereRegistry, NotificationDispatcher.
+        Каждая реакция = новое торговое поведение → в бой по одной и только после замера (BACKLOG N12).
         """
         from core.context.pair_context import SphereEvent
         bus = self.pair_context
 
-        # ── Сфера 3 (WT Specialist) подписана на: regime_updated ──────────────
-        # При смене режима → verdict может измениться (EXHAUSTION в TREND vs RANGE разное)
-        def _on_regime_for_wt(symbol, data):
-            state = bus.get(symbol)
-            # Если режим сменился на REVERSAL mode — WT specialist должен знать
-            if data.get("mode") == "REVERSAL" and state.wt_verdict == "TREND_CONTINUATION":
-                logger.debug("[Cube] %s: regime→REVERSAL, WT verdict stale", symbol)
-        bus.subscribe(SphereEvent.REGIME_UPDATED, _on_regime_for_wt)          # ЗАГЛУШКА
+        # ── Сфера 6 ↔ Сфера 3 (режим ↔ WT): теневые потребители — решение в журнал ──
+        from core.context.shadow_consumers import wire as _wire_shadow
+        _wire_shadow(bus)
 
-        # ── Сфера 6 (Regime) подписана на: wt_snap_updated ───────────────────
-        # WT snap на 4h даёт сигнал о reversal mode
-        def _on_wt_for_regime(symbol, data):
-            wt_4h = data.get("4h")
-            if wt_4h:
-                wt1 = wt_4h.get("wt1", 0)
-                state = bus.get(symbol)
-                if abs(wt1) > 60 and state.reversal_mode != "REVERSAL":
-                    logger.debug("[Cube] %s: WT 4h=%+.0f → potential REVERSAL", symbol, wt1)
-        bus.subscribe(SphereEvent.WT_SNAP_UPDATED, _on_wt_for_regime)         # ЗАГЛУШКА
-
-        # ── Сфера 9 (Narrative Builder) подписана на: все ключевые события ────
-        # Narrative Builder реагирует на каждый новый сигнал
-        def _on_signal_for_narrative(symbol, data):
-            state = bus.get(symbol)
-            # Обновляем narrative-relevant fields
-            sig_type = data.get("signal_type", "")
-            if sig_type and state.last_signal_type != sig_type:
-                logger.debug("[Cube] %s: signal %s → narrative update pending", symbol, sig_type)
-        bus.subscribe(SphereEvent.SIGNAL_DETECTED, _on_signal_for_narrative)  # ЗАГЛУШКА
+        # ── Сфера 9 (Narrative Builder): рекомендация собрана → нарратив в её metadata ──
+        # СИНХРОННО: нарратив нужен в metadata до возврата анализа — его читает TG-рассылка.
+        from core.intelligence.narrative_builder import narrative_consumer
+        bus.subscribe(SphereEvent.RECOMMENDATION_BUILT, narrative_consumer(bus))
 
         # ── Сфера 10 (Exit Manager) подписана на: wt_snap, regime, divergence ─
         # При дивергенции — Exit Manager может подтянуть TSL
@@ -274,7 +255,7 @@ class TradingAlertBot:
                              symbol, state.open_trade_id)
         bus.subscribe(SphereEvent.PIVOT_TOUCH, _on_pivot_for_exit)            # ЗАГЛУШКА
 
-        _n_stubs = 6    # помеченные «ЗАГЛУШКА» выше; реакцию сделал — уменьши
+        _n_stubs = 3    # помеченные «ЗАГЛУШКА» выше; реакцию сделал — уменьши
         _n_subs = sum(len(v) for v in bus._subscribers.values())
         logger.info("[Cube] подписок на шину: %d на %d типов событий "
                     "(межсферных заглушек без реакции: %d, ARCH-101 🧊)",

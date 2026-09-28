@@ -1267,7 +1267,6 @@ class TradingIntelligence:
             # DEV-141: Narrative Builder (shadow — config toggle trading.narrative.enabled)
             _narrative_enabled = (self.config or {}).get("trading", {}).get("narrative", {}).get("enabled", False)
             try:
-                from core.intelligence.narrative_builder import NarrativeBuilder
                 _rm  = recommendation.metadata.get("reversal_mode", "UNCLEAR")
                 _wt_v = recommendation.metadata.get("wt_verdict")
                 _sc_v = recommendation.metadata.get("smc_verdict")
@@ -1284,30 +1283,19 @@ class TradingIntelligence:
                     if _btc_prov is not None:
                         _btc_reg = _btc_prov.get_btc_mode()
                 _pair_bus = getattr(self, '_pair_context_bus', None)
-                _nb = NarrativeBuilder(_pair_bus)
-                _narrative = _nb.build(
-                    symbol=symbol,
-                    recommendation=recommendation,
-                    wt_verdict=_wt_vrd,
-                    smc_verdict=_smc_vrd,
-                    reversal_mode=_rm,
-                    btc_regime=_btc_reg,
-                    p_outcome=_p_out,
-                )
-                recommendation.metadata["narrative"] = {
-                    "text": _narrative.text,
-                    "p_win": _narrative.p_win,
-                    "mode": _narrative.mode,
-                    "key_factors": _narrative.key_factors,
-                    "confidence": _narrative.confidence,
-                    # ARCH-90: SMC-факторы + плоские поля для ML
-                    "smc_factors": _narrative.smc_factors,
-                    "smc_flat": _narrative.smc_flat,
-                }
-                if _narrative_enabled:
-                    logger.info("[%s][DEV-141] narrative: %s", symbol, _narrative.text)
-                else:
-                    logger.debug("[%s][DEV-141] narrative (shadow): %s", symbol, _narrative.text)
+                # Куб (28.09): нарратив строит Сфера 9 как СИНХРОННЫЙ подписчик шины на
+                # RECOMMENDATION_BUILT (bot._wire_cube_subscriptions) — metadata заполняется
+                # внутри publish(). Нет шины / нет подписчика (исследовательские скрипты) /
+                # подписчик упал → строим напрямую, как раньше.
+                _payload = {"recommendation": recommendation, "wt_verdict": _wt_vrd,
+                            "smc_verdict": _smc_vrd, "reversal_mode": _rm, "btc_regime": _btc_reg,
+                            "p_outcome": _p_out, "log_info": _narrative_enabled}
+                if _pair_bus is not None:
+                    from core.context.pair_context import SphereEvent
+                    _pair_bus.publish(symbol, SphereEvent.RECOMMENDATION_BUILT, _payload)
+                if "narrative" not in recommendation.metadata:
+                    from core.intelligence.narrative_builder import narrative_consumer
+                    narrative_consumer(_pair_bus)(symbol, _payload)
             except Exception as _e_narr:
                 logger.debug("[DEV-141] narrative error: %s", _e_narr)
 
