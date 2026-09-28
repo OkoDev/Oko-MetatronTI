@@ -26,6 +26,21 @@ DEFAULT_SOFT_GATES = [
 ]
 
 
+def _resolve_exchange(source: str, config) -> bool:
+    """Пускать ли источник на биржу — через единый резолвер режима.
+
+    Обёрнуто в try: реестр импортирует политики, поэтому прямой импорт наверху дал бы цикл.
+    При недоступном резолвере падаем на прежнее поведение (голый ключ), чтобы правка
+    режима никогда не роняла торговлю.
+    """
+    try:
+        from core.trading.source_registry import trades_on_exchange
+        return bool(trades_on_exchange(source, cfg=config))
+    except Exception:                                        # noqa: BLE001
+        pol = (config.get(f"signal_router.source_policies.{source}", {}) or {})
+        return bool(pol.get("exchange_enabled", True))
+
+
 @dataclass
 class SourcePolicy:
     source: str
@@ -95,7 +110,11 @@ class SourcePolicy:
         return cls(
             source=source,
             min_strength=int(_pick("min_strength", 50)),
-            exchange_enabled=bool(_pick("exchange_enabled", True)),
+            # 🔴 28.09 РЕЖИМ БЕРЁТСЯ ИЗ ОДНОЙ ТОЧКИ (source_registry.mode_of), а не из голого
+            # ключа: до этого «торгует или нет» решалось в четырёх местах, и каждое расхождение
+            # стоило мёртвого источника ([[config_is_single_source_of_truth]]). Резолвер
+            # предпочитает канон `mode`, при конфликте со старыми ключами пишет предупреждение.
+            exchange_enabled=_resolve_exchange(source, config),
             trade_mode=str(_pick("trade_mode", "")),
             soft_gates_enabled=list(_pick("soft_gates_enabled", DEFAULT_SOFT_GATES)),
             leverage=int(_lev) if _lev is not None else None,

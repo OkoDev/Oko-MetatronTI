@@ -891,7 +891,16 @@ async def _execute_atr_change_signal(
         # (+0.471%/сд n=5290 2022-26, memory atr_s2_survived_honest). 4h SHORT + close<WPP →
         # SL=swing-high12, TP=недельная S2 (полная позиция, лестница ХУЖЕ). SHORT-only (LONG-зеркало −0.14).
         _s2_setup = None
-        if tf == "4h" and side == "SHORT":
+        # 🔴 28.09 УСЛОВИЕ ЧИТАЕТСЯ ИЗ КОНФИГА, а не зашито здесь. Прежний вид
+        # `if tf == "4h" and side == "SHORT"` молча выключал источник: политика объявляла его
+        # торгующим, а entry-ТФ сканера = ['15m'] → ветка не исполнялась НИ РАЗУ за всё время,
+        # и ни один прибор этого не показывал ([[config_is_single_source_of_truth]]).
+        # Теперь требования живут в signal_router.source_policies.atr_s2 (requires_entry_tf, sides),
+        # а селф-тест L12b сверяет их с фактическим списком ТФ сканера.
+        _s2_pol = bot.config.get("signal_router.source_policies.atr_s2", {}) or {}
+        _s2_tf = str(_s2_pol.get("requires_entry_tf", "4h"))
+        _s2_sides = [str(s).upper() for s in (_s2_pol.get("sides") or ["SHORT"])]
+        if tf == _s2_tf and side in _s2_sides:
             try:
                 from core.signals.atr_s2_shadow import check_atr_s2_setup
                 # 🔴 ФИКС 03.07: df_4h скана = 60 баров (10 дней) → weekly-пивоты НЕ считались

@@ -37,6 +37,7 @@ class SourceState:
     trades: int = 0                # сделок за окно
     last_trade: str | None = None  # дата последней сделки за всё время
     traces: int = 0                # следов источника в логе (его луп что-то делал)
+    needs: str = ""                # требования источника (ТФ/стороны) из политики
     min_sl_dist: float | None = None
     min_rr: float | None = None
     ttl_h: float | None = None
@@ -80,17 +81,18 @@ def _count_traces(src: str, log_path: str | None, tail_lines: int = 60_000) -> i
 
 
 def _mode_of(cfg, src: str) -> str:
-    """Режим источника ПО КОНФИГУ. Спорные случаи трактуем в пользу «торгует»:
-    так тест скорее поднимет ложную тревогу, чем пропустит молчащий live-источник."""
-    pol = (cfg.get(f"signal_router.source_policies.{src}", {}) or {})
-    if not pol.get("exchange_enabled"):
-        return "off" if pol else "—"
-    tr = (cfg.get(f"trading.{src}", {}) or {})
-    if tr and tr.get("enabled") is False:
-        return "off"
-    if tr.get("shadow") is True:
-        return "shadow"
-    return "live"
+    """Режим источника — ЧЕРЕЗ ЕДИНЫЙ РЕЗОЛВЕР (source_registry.mode_of).
+
+    🔴 Своей копии этой логики здесь быть не должно: прибор, который сам решает, что значит
+    «включён», — это ещё один источник истины, то есть ровно та болезнь, которую он измеряет
+    ([[principle_reuse_not_duplication]]).
+    """
+    try:
+        from core.trading.source_registry import mode_of
+        return mode_of(src, cfg=cfg, warn=False)
+    except Exception:                                       # noqa: BLE001
+        pol = (cfg.get(f"signal_router.source_policies.{src}", {}) or {})
+        return "live" if pol.get("exchange_enabled") else ("off" if pol else "—")
 
 
 def _names(src: str, cfg) -> list[str]:
@@ -101,6 +103,28 @@ def _names(src: str, cfg) -> list[str]:
     except Exception:                                       # noqa: BLE001
         subs = []
     return sorted({src, *subs})
+
+
+
+def _requirements_ok(src: str, pol: dict, cfg) -> tuple[bool, str]:
+    """Совместимы ли объявленные требования источника с конфигурацией сканера.
+
+    🔴 Ради этого пункт и делался: `atr_s2` требовал 4h, сканер давал 15m — источник числился
+    торгующим и молчал МЕСЯЦАМИ. Теперь несовпадение видно сразу при старте, не дожидаясь,
+    пока накопится неделя тишины ([[config_is_single_source_of_truth]]).
+    Требование объявляется в политике как `requires_entry_tf`.
+    """
+    need_tf = str(pol.get("requires_entry_tf") or "").strip()
+    if not need_tf:
+        return True, ""
+    try:
+        from core.infra.entry_config import get_entry_timeframes
+        tfs = [str(x) for x in (get_entry_timeframes(cfg) or [])]
+    except Exception:                                       # noqa: BLE001
+        return True, f"нужен {need_tf} (список ТФ сканера не прочитан)"
+    if need_tf in tfs:
+        return True, f"нужен {need_tf} — есть"
+    return False, f"нужен ТФ {need_tf}, а сканер даёт {tfs or '—'}"
 
 
 def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = None) -> list[SourceState]:
@@ -135,7 +159,11 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
             except Exception:                               # noqa: BLE001
                 pass
             st.traces = _count_traces(src, log_path)
-            if st.mode == "live":
+            _ok_req, st.needs = _requirements_ok(src, (pols.get(src) or {}), cfg)
+            if st.mode == "live" and not _ok_req:
+                st.verdict = "ПУТЬ НЕ НАЙДЕН"
+                st.note = st.needs
+            elif st.mode == "live":
                 if st.trades == 0:
                     # ключевое различение: есть следы лупа или нет
                     if st.traces == 0:

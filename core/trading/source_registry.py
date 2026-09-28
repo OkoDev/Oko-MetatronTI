@@ -109,6 +109,63 @@ def pending_sql(column: str = "signal_type", cfg=None) -> str:
     return f"({column} IN ({quoted}))"
 
 
+MODE_LIVE, MODE_SHADOW, MODE_OFF = "live", "shadow", "off"
+
+
+def mode_of(source: str, cfg=None, *, warn: bool = True) -> str:
+    """РЕЖИМ ИСТОЧНИКА — одна точка правды: `live` | `shadow` | `off`.
+
+    🔴 28.09 (Егор: «конфиг должен быть источником истинности… механизмы включения и
+    выключения не должны нести в себе разрешений, иначе каша»). До этого решение
+    «торгует или нет» было размазано по ЧЕТЫРЁМ местам, и каждое расхождение стоило нам
+    мёртвого источника ([[config_is_single_source_of_truth]]):
+
+      signal_router.source_policies.<src>.exchange_enabled   — пускать ли на биржу
+      trading.<src>.enabled                                  — жив ли луп
+      trading.<src>.shadow                                   — писать, но не торговать
+      ote.vst_trading.enabled                                — отдельный ключ у ote_nested
+
+    Канон теперь один: `signal_router.source_policies.<src>.mode`. Старые ключи читаются
+    только как запасной вывод (пока не вычищены) и при расхождении с каноном пишется
+    ГРОМКОЕ предупреждение — молчаливое расхождение и есть корень всей проблемы.
+    """
+    pol = (_policies(cfg).get(source) or {})
+    declared = str(pol.get("mode") or "").strip().lower() or None
+    if declared not in (None, MODE_LIVE, MODE_SHADOW, MODE_OFF):
+        logger.warning("[РЕЖИМ] %s: недопустимое mode=%r — читаю старые ключи", source, declared)
+        declared = None
+
+    if cfg is None:
+        try:
+            from core.infra.config_loader import config as cfg
+        except Exception:                                    # noqa: BLE001
+            return declared or MODE_LIVE
+    legacy_exch = pol.get("exchange_enabled")
+    tr = (cfg.get(f"trading.{source}", {}) or {})
+    if not legacy_exch:
+        legacy = MODE_OFF if pol else MODE_LIVE
+    elif tr.get("enabled") is False:
+        legacy = MODE_OFF
+    elif tr.get("shadow") is True:
+        legacy = MODE_SHADOW
+    else:
+        legacy = MODE_LIVE
+
+    if declared is None:
+        return legacy
+    if warn and declared != legacy:
+        logger.warning("[РЕЖИМ] %s: канон mode=%s, а старые ключи дают %s "
+                       "(exchange_enabled=%s, enabled=%s, shadow=%s). Действует КАНОН — "
+                       "приведите старые ключи в соответствие.",
+                       source, declared, legacy, legacy_exch, tr.get("enabled"), tr.get("shadow"))
+    return declared
+
+
+def trades_on_exchange(source: str, cfg=None) -> bool:
+    """Пускать ли ордера этого источника на биржу. Тонкая обёртка над `mode_of`."""
+    return mode_of(source, cfg=cfg) == MODE_LIVE
+
+
 def ttl_for(trade_mode: str, default_sec: float = 1800.0, cfg=None) -> float:
     """
     Сколько секунд живёт лимитка источника.
