@@ -90,6 +90,7 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
             self._q = q
             self._shadow = shadow_
             self._last_sent: dict = {}  # (sym,tf) → monotonic ts
+            self._held: dict = {}       # (sym,tf) → последнее придержанное прореживанием обновление
 
         def _on_candle(self, sym_ccxt: str, tf: str, df: pd.DataFrame) -> None:
             # 🔴 02.09: раньше здесь стоял ранний `return` для shadow — свечи не уходили
@@ -101,23 +102,35 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
             # Throttle: не слать одну (sym,tf) чаще _dedup_interval(tf) сек
             # → поток 1200/s→~200/s, reader справляется без overflow
             key = (sym_ccxt, tf)
-            now = _time.monotonic()
-            if now - self._last_sent.get(key, 0.0) < _dedup_interval(tf):
-                return
-            self._last_sent[key] = now
             try:
                 r = df.iloc[0]
-                self._q.put_nowait((
-                    sym_ccxt, tf,
-                    {
-                        "time":   int(r["time"]),
-                        "open":   float(r["open"]),
-                        "high":   float(r["high"]),
-                        "low":    float(r["low"]),
-                        "close":  float(r["close"]),
-                        "volume": float(r.get("volume", 0)),
-                    },
-                ))
+                row = {
+                    "time":   int(r["time"]),
+                    "open":   float(r["open"]),
+                    "high":   float(r["high"]),
+                    "low":    float(r["low"]),
+                    "close":  float(r["close"]),
+                    "volume": float(r.get("volume", 0)),
+                }
+            except Exception:
+                self.stats["errors"] += 1
+                return
+            # 🔴 29.09 ФИНАЛ БАРА. Прореживание теряло последние 5–15 с бара: закрытый по потоку бар
+            # не совпадал с биржевым (15m, 18 432 бара: close точно у 49.6%, объём у 18%). Придержанное
+            # обновление досылается ПЕРЕД первым сообщением следующего бара — закрытый бар = финал.
+            held = self._held.pop(key, None)
+            if held is not None and held["time"] < row["time"]:
+                self._put(sym_ccxt, tf, held)
+            now = _time.monotonic()
+            if now - self._last_sent.get(key, 0.0) < _dedup_interval(tf):
+                self._held[key] = row
+                return
+            self._last_sent[key] = now
+            self._put(sym_ccxt, tf, row)
+
+        def _put(self, sym_ccxt: str, tf: str, row: dict) -> None:
+            try:
+                self._q.put_nowait((sym_ccxt, tf, row))
                 self.stats["candles"] += 1
             except Exception:
                 self.stats["errors"] += 1
@@ -142,11 +155,12 @@ class QueueReaderThread(threading.Thread):
     из WS-потока — lock гарантирован самим OhlcvCache._lock (RLock).
     """
 
-    def __init__(self, q, cache, shadow: bool = True):
+    def __init__(self, q, cache, shadow: bool = True, spool_tfs: tuple = ()):
         super().__init__(daemon=True, name="mws-reader")
         self._q = q
         self._cache = cache
         self._shadow = shadow
+        self._spool_tfs = spool_tfs   # Сфера 1: закрытые бары этих ТФ → очередь хранилища (market_spool)
         self._running = True
         self.stats = {
             "applied": 0, "errors": 0, "shadow": shadow,
@@ -157,6 +171,24 @@ class QueueReaderThread(threading.Thread):
         self._merge_res: _C = _C()  # ключ (tf, result) → count
 
     _BATCH_MAX = 1000  # дренируем до 1000 элементов за цикл
+
+    def _merge_one(self, s: str, t: str, r: dict) -> None:
+        try:
+            # ARCH-130: merge_dict избегает pd.DataFrame([r]) в hot path
+            _res = self._cache.merge_dict((s, t), r)
+            self.stats["applied"] += 1
+            self._merge_res[(t, _res)] += 1  # диагностика покрытия per TF
+            if _res == "append" and t in self._spool_tfs:
+                # новый бар дописан → предыдущий закрыт (его финал применён выше) → в очередь хранилища
+                with self._cache._lock:
+                    _e = self._cache._data.get((s, t))
+                    _closed = _e["df"].iloc[-2] if _e is not None and len(_e["df"]) >= 2 else None
+                if _closed is not None:
+                    from core.infra import market_spool
+                    market_spool.put(s, t, _closed)
+        except Exception as e:
+            self.stats["errors"] += 1
+            logger.debug("[MarketWS-v2] reader merge error: %s", e)
 
     def run(self) -> None:
         while self._running:
@@ -183,18 +215,16 @@ class QueueReaderThread(threading.Thread):
                 for _ in range(self._BATCH_MAX - 1):
                     try:
                         s, t, r = self._q.get_nowait()
-                        latest[(s, t)] = r  # последний выигрывает — финальная версия свечи
                     except _stdlib_queue.Empty:
                         break
+                    prev = latest.get((s, t))
+                    # 🔴 29.09: «последний выигрывает» терял ФИНАЛ бара, досланный воркером прямо перед
+                    # первым сообщением следующего бара (оба в одной пачке). Новый бар → сначала финал старого.
+                    if prev is not None and prev["time"] < r["time"]:
+                        self._merge_one(s, t, prev)
+                    latest[(s, t)] = r  # внутри одного бара последний выигрывает
                 for (s, t), r in latest.items():
-                    try:
-                        # ARCH-130: merge_dict избегает pd.DataFrame([r]) в hot path
-                        _res = self._cache.merge_dict((s, t), r)
-                        self.stats["applied"] += 1
-                        self._merge_res[(t, _res)] += 1  # диагностика покрытия per TF
-                    except Exception as e:
-                        self.stats["errors"] += 1
-                        logger.debug("[MarketWS-v2] reader merge error: %s", e)
+                    self._merge_one(s, t, r)
 
             # Лог раз в 60с
             now = time.monotonic()
@@ -324,7 +354,11 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
     # Теперь reader пишет в ТЕНЕВОЙ кэш (торговый путь не трогает) и одновременно
     # служит датчиком живости для супервайзора.
     out_queue = mp.Queue(maxsize=200_000)
-    reader    = QueueReaderThread(out_queue, cache, shadow=shadow)
+    # Сфера 1 (N15 шаг 2): закрытые бары WS → очередь хранилища; пишет market-store (один писатель).
+    spool_tfs = tuple(cfg.get("market_store.ws_spool_tfs", []) or []) if not shadow else ()
+    reader    = QueueReaderThread(out_queue, cache, shadow=shadow, spool_tfs=spool_tfs)
+    if spool_tfs:
+        logger.info("[MarketWS-v2] закрытые бары %s → очередь хранилища Сферы 1", list(spool_tfs))
     reader.start()
 
     proc = mp.Process(
