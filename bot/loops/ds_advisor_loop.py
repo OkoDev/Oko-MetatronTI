@@ -38,6 +38,7 @@ def _cfg(bot) -> dict:
 async def _process_one(bot, row: dict) -> tuple[int, str]:
     """→ (processed_flag, note). 1=зарегистрирован, -1=ошибка/режект."""
     from core.signals.signal_models import TradingRecommendation, SignalDirection, MarketContext
+    from core.context.context_factory import build_market_context
     sym = _norm_symbol(row["symbol"])
     d = (row["direction"] or "").upper()
     entry, sl = float(row["entry_price"]), float(row["stop_loss"])
@@ -63,8 +64,8 @@ async def _process_one(bot, row: dict) -> tuple[int, str]:
         overall_strength=60, confidence=float(row["confidence"] or 0.6),
         risk_level="MEDIUM", signals_count=1,
         supporting_signals=[], conflicting_signals=[],
-        market_context=MarketContext(symbol=sym, current_price=entry,
-                                     volume_24h=0.0, volume_change_24h=0.0, price_change_24h=0.0),
+        # 29.09: контекст собирает ШИНА (было volume_24h=0.0 — оборот терялся)
+        market_context=build_market_context(bot, sym, current_price=entry),
         entry_price=entry, stop_loss=sl, take_profit=tp,
         sl_source="ds_advisor", tp_source="ds_advisor",
     )

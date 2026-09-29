@@ -365,6 +365,7 @@ def make_loop(inst: Instance):
 
         from core.signals.signal_models import (MarketContext, SignalDirection,
                                                 TradingRecommendation)
+        from core.context.context_factory import build_market_context
 
         while True:
             conn = None
@@ -540,9 +541,8 @@ def make_loop(inst: Instance):
                         direction=SignalDirection.LONG if is_long else SignalDirection.SHORT,
                         overall_strength=65, confidence=0.6, risk_level="MEDIUM",
                         signals_count=1, supporting_signals=[], conflicting_signals=[],
-                        market_context=MarketContext(symbol=sym, current_price=s["price"],
-                                                     volume_24h=0.0, volume_change_24h=0.0,
-                                                     price_change_24h=0.0),
+                        # 29.09: контекст собирает ШИНА (было volume_24h=0.0 — оборот терялся)
+                        market_context=build_market_context(bot, sym, current_price=s["price"]),
                         entry_price=s["entry"], stop_loss=s["sl"], take_profit=_tp_leg,
                         sl_source=f"{SRC}:atr25", tp_source=f"{SRC}:{_tp_src}")
                       logger.info("[%s] %s %s цель %s %.6g · доля %.1f", TAG, sym, s["side"].upper(), _tp_src, _tp_leg, _share)

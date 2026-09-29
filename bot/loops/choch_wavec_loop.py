@@ -232,6 +232,7 @@ async def choch_wavec_loop(bot, inst: Instance = None):
 
     from core.signals.signal_models import (MarketContext, SignalDirection,
                                             TradingRecommendation)
+    from core.context.context_factory import build_market_context
 
     while True:
         conn = None
@@ -318,9 +319,8 @@ async def choch_wavec_loop(bot, inst: Instance = None):
                     symbol=sym, action="SELL", direction=SignalDirection.SHORT,
                     overall_strength=65, confidence=0.6, risk_level="MEDIUM",
                     signals_count=1, supporting_signals=[], conflicting_signals=[],
-                    market_context=MarketContext(symbol=sym, current_price=s["price"],
-                                                 volume_24h=0.0, volume_change_24h=0.0,
-                                                 price_change_24h=0.0),
+                    # 29.09: контекст собирает ШИНА (было volume_24h=0.0 — оборот терялся)
+                    market_context=build_market_context(bot, sym, current_price=s["price"]),
                     entry_price=s["entry"], stop_loss=s["sl"], take_profit=s["tp"],
                     sl_source=f"{inst.src}:leg_origin", tp_source=f"{inst.src}:waveC")
                 res = await bot.trade_router.submit(rec, source=inst.src, extra_features={

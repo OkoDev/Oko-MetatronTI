@@ -187,9 +187,15 @@ class MTFContext:
 class MarketContext:
     symbol: str
     current_price: float
-    volume_24h: float
-    volume_change_24h: float
-    price_change_24h: float
+    # 🔴 29.09 ДЕФОЛТЫ, А НЕ ОБЯЗАТЕЛЬНЫЕ ПОЛЯ. Пока они были обязательными, каждый луп был
+    # вынужден что-то передать — и передавал 0.0, потому что источника не было. Итог: оборот
+    # нулевой во ВСЕХ 922 боевых сделках. Теперь единственная точка сборки —
+    # `core/context/context_factory.build_market_context()`, которая читает оборот из шины;
+    # ручное конструирование остаётся возможным, но нуль больше не навязан
+    # ([[signal_volume24h_is_always_zero]]).
+    volume_24h: float = 0.0
+    volume_change_24h: float = 0.0
+    price_change_24h: float = 0.0
     market_cap: Optional[float] = None
     volatility: Optional[float] = None
     trend_strength: Optional[float] = None

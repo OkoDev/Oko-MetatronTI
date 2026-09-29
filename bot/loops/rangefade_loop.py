@@ -179,6 +179,7 @@ async def rangefade_loop(bot):
                            for tf, thr, src, _, mp in VARIANTS), tp_r, CAPS)
     import sqlite3
     from core.signals.signal_models import TradingRecommendation, SignalDirection, MarketContext
+    from core.context.context_factory import build_market_context
     while True:
         try:
             await asyncio.sleep(POLL_SEC)
@@ -383,8 +384,9 @@ async def rangefade_loop(bot):
                             symbol=c["sym"], action="BUY", direction=SignalDirection.LONG,
                             overall_strength=65, confidence=0.6, risk_level="MEDIUM", signals_count=1,
                             supporting_signals=[], conflicting_signals=[],
-                            market_context=MarketContext(symbol=c["sym"], current_price=c["px"], volume_24h=0.0,
-                                                         volume_change_24h=0.0, price_change_24h=0.0),
+                            # 29.09: контекст СОБИРАЕТ ШИНА, а не луп. Раньше здесь стоял
+                            # volume_24h=0.0, и оборот терялся во всех сделках источника.
+                            market_context=build_market_context(bot, c["sym"], current_price=c["px"]),
                             entry_price=c["px"], stop_loss=c["sl"], take_profit=tp,
                             sl_source=f"{src}:{c['tf']}low", tp_source=f"{src}:{_tpr}R:{_leg}")
                         # САЙЗИНГ ×1.5 (потолок risk_mult_cap): два независимых усилителя —

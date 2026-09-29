@@ -107,6 +107,15 @@ class PairState:
     # ── Сфера 2: WSFeed ─────────────────────────────────────────────────
     tick_price: Optional[float] = None
     tick_time: Optional[datetime] = None
+    # 🔴 29.09 ОБОРОТ ЖИВЁТ ЗДЕСЬ, А НЕ В ЛУПАХ. Каталог шины обещал `TICK_PRICE: {price,
+    # volume_24h}` с самого начала, но поля не было — обработчик брал из события только цену,
+    # оборот выбрасывался. Из-за этого `MarketContext.volume_24h` (обязательное поле) шесть
+    # лупов затыкали нулём, а четыре лезли за тикером ПО СЕТИ на каждый сигнал. Итог: оборот
+    # 0.0 во ВСЕХ 922 боевых сделках, срез по ликвидности невозможен, гейт `min_volume_usd`
+    # сравнивает порог с нулём ([[signal_volume24h_is_always_zero]]).
+    volume_24h: Optional[float] = None        # оборот в КОТИРУЕМОЙ валюте (USDT), как quoteVolume
+    volume_24h_time: Optional[datetime] = None
+    price_change_24h: Optional[float] = None  # % за сутки
 
     # ── Сфера 3: MTF WT Specialist ──────────────────────────────────────
     wt_verdict: Optional[str] = None          # TREND_CONTINUATION / REVERSAL_SETUP / EXHAUSTION
@@ -699,6 +708,15 @@ class PairContextBus:
         elif event_type == SphereEvent.TICK_PRICE:
             state.tick_price = data.get("price")
             state.tick_time = now
+            # 🔴 29.09 оборот БОЛЬШЕ НЕ ВЫБРАСЫВАЕТСЯ: каталог события обещает его с самого
+            # начала (`{price, volume_24h}`), но раньше отсюда бралась только цена.
+            _v = data.get("volume_24h")
+            if _v:
+                state.volume_24h = float(_v)
+                state.volume_24h_time = now
+            _pc = data.get("price_change_24h")
+            if _pc is not None:
+                state.price_change_24h = float(_pc)
 
         elif event_type == SphereEvent.WT_VERDICT:
             state.wt_verdict = data.get("label")
@@ -795,6 +813,11 @@ class PairContextBus:
             # Сфера 1-2
             "last_ohlcv_time":   state.last_ohlcv_time,
             "tick_price":        state.tick_price,
+            # 29.09: оборот экспортируется наравне с ценой — иначе повторится дырка 25.07,
+            # когда данные ЖИЛИ в шине, но внешние читатели видели пусто.
+            "volume_24h":        state.volume_24h,
+            "volume_24h_time":   state.volume_24h_time,
+            "price_change_24h":  state.price_change_24h,
             # Сфера 3
             "wt_verdict":        state.wt_verdict,
             "wt_confidence":     state.wt_confidence,

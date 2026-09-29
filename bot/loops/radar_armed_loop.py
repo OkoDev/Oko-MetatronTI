@@ -1021,6 +1021,7 @@ async def _try_register(bot, o: dict, radar_db) -> None:
     """Один сетап порта → TradingRecommendation → trade_router.submit(source='radar')."""
     try:
         from core.signals.signal_models import TradingRecommendation, SignalDirection, MarketContext
+        from core.context.context_factory import build_market_context
     except ImportError as e:
         logger.warning("[RADAR-ARMED] import failed: %s", e)
         return
@@ -1081,10 +1082,8 @@ async def _try_register(bot, o: dict, radar_db) -> None:
         direction=SignalDirection.LONG if is_long else SignalDirection.SHORT,
         overall_strength=70, confidence=0.7, risk_level="MEDIUM", signals_count=1,
         supporting_signals=[], conflicting_signals=[],
-        market_context=MarketContext(
-            symbol=symbol, current_price=entry,
-            volume_24h=0.0, volume_change_24h=0.0, price_change_24h=0.0,
-        ),
+        # 29.09: контекст собирает ШИНА (было volume_24h=0.0 — оборот терялся)
+        market_context=build_market_context(bot, symbol, current_price=entry),
         entry_price=entry, stop_loss=sl, take_profit=tp_final,
         sl_source=f"radar:{o['sig_type']}", tp_source="radar:targets2.0",
     )

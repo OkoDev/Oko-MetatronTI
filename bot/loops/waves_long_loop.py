@@ -127,6 +127,7 @@ async def waves_long_loop(bot):
         logger.info("[WAVES_LONG] выключен (trading.waves_long.enabled=false)")
         return
     from core.signals.signal_models import TradingRecommendation, SignalDirection, MarketContext
+    from core.context.context_factory import build_market_context
 
     done = _load_done()
     # миграция 21.09: старые записи очереди (старше окна исполнения) помечаем новым ключом, чтобы смена
@@ -173,8 +174,9 @@ async def waves_long_loop(bot):
                     overall_strength=65, confidence=0.6, risk_level="MEDIUM", signals_count=1,
                     supporting_signals=[], conflicting_signals=[],
                     reasoning=f"waves_long {r.get('wv_variant')} · вершина {r.get('wv_top_time')}",
-                    market_context=MarketContext(symbol=sym, current_price=float(entry), volume_24h=0.0,
-                                                 volume_change_24h=0.0, price_change_24h=0.0, volatility=0.0),
+                    # 29.09: контекст собирает ШИНА (было volume_24h=0.0 — оборот терялся)
+                    market_context=build_market_context(bot, sym, current_price=float(entry),
+                                                        volatility=0.0),
                     entry_price=float(entry), stop_loss=float(stop), take_profit=float(tp))
                 extra = {"signal_type_override": "waves_long", "trade_mode": "waves_long"}
                 extra.update({k: v for k, v in r.items() if k.startswith("wv_")})
