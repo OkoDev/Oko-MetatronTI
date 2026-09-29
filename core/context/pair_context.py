@@ -704,6 +704,13 @@ class PairContextBus:
             if _c:
                 state.tick_price = float(_c)
                 state.tick_time = now
+            # 🔴 29.09 ОБОРОТ ТОЖЕ ЗДЕСЬ. Рассчитывать только на TICK_PRICE нельзя: WsFeed
+            # отключён (`performance.ws_enabled=false`, DEV-230), событие не приходит вовсе.
+            # scan_loop считает оборот из уже загруженных свечей — сеть не трогается.
+            _v = data.get("volume_24h")
+            if _v:
+                state.volume_24h = float(_v)
+                state.volume_24h_time = now
 
         elif event_type == SphereEvent.TICK_PRICE:
             state.tick_price = data.get("price")

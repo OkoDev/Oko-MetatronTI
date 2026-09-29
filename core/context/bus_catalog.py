@@ -136,7 +136,8 @@ _ACCOUNT_META: Dict[str, tuple] = {
 # ── Метаданные событий: ИМЯ → (источник, payload, описание) ───────────────────
 # Доступ: bus.subscribe_async(SphereEvent.<ИМЯ>, handler)
 _EVENT_META: Dict[str, tuple] = {
-    "OHLCV_UPDATED":      ("scan_loop (Сфера 1)", "{tf,rows,close}", "обновление свечей + текущая цена"),
+    "OHLCV_UPDATED":      ("scan_loop (Сфера 1)", "{tf,rows,close,volume_24h}",
+                           "обновление свечей + текущая цена + оборот за сутки (из тех же свечей)"),
     "TICK_PRICE":         ("WsFeed (Сфера 2)", "{price,volume_24h}", "тик цены (если WsFeed on)"),
     "VOLUME_SPIKE":       ("scan_loop (Сфера 2)", "{ratio,tf}", "всплеск объёма"),
     "WT_VERDICT":         ("scan_loop (Сфера 3)", "{label,confidence,features}", "вердикт WT"),

@@ -1652,8 +1652,25 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         float(df_entry["close"].iloc[-1])
                         if (df_entry is not None and not df_entry.empty) else None
                     )
+                    # 🔴 29.09 ОБОРОТ ИЗ УЖЕ ЗАГРУЖЕННЫХ СВЕЧЕЙ, без единого запроса к бирже.
+                    # Почему не из TICK_PRICE: WsFeed отключён (`performance.ws_enabled=false`,
+                    # DEV-230), событие не приходит — а без оборота `volume_24h` в сигнале
+                    # остаётся нулём, как было во всех 922 боевых сделках
+                    # ([[signal_volume24h_is_always_zero]]). Свечи у нас уже в руках.
+                    _vol24 = None
+                    try:
+                        if df_entry is not None and not df_entry.empty and "volume" in df_entry:
+                            from core.trading.source_registry import _TF_MIN as _TFM
+                            _bars_24h = max(1, int(24 * 60 / _TFM.get(_etf, 60)))
+                            _tail = df_entry.tail(_bars_24h)
+                            # volume у ccxt — в БАЗОВОЙ валюте; порог min_volume_usd в долларах,
+                            # поэтому переводим через цену бара (close), а не через последнюю.
+                            _vol24 = float((_tail["volume"] * _tail["close"]).sum())
+                    except Exception:                        # noqa: BLE001
+                        _vol24 = None
                     _bus.publish(sym, SphereEvent.OHLCV_UPDATED, {
                         "tf": _etf, "rows": len(df_entry), "close": _last_close,
+                        "volume_24h": _vol24,
                     })
 
                     # Сфера 6: Market Regime → bus (regime/rev_mode посчитаны в _prep_pair_cpu)

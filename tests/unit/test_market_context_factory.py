@@ -50,6 +50,34 @@ def test_bus_keeps_volume_from_tick_event():
     assert st.volume_24h_time is not None
 
 
+def test_bus_keeps_volume_from_ohlcv_event():
+    """🔴 Главный путь в бою: WsFeed ОТКЛЮЧЁН (performance.ws_enabled=false), TICK_PRICE не
+    приходит вовсе. Оборот считает scan_loop из уже загруженных свечей и шлёт в OHLCV_UPDATED —
+    правка, опирающаяся только на TICK_PRICE, дала бы нуль."""
+    bus = PairContextBus()
+    bus.publish(SYM, SphereEvent.OHLCV_UPDATED, {"tf": "1h", "rows": 500, "close": 50.0,
+                                                 "volume_24h": 3_000_000.0})
+    st = bus.get(SYM)
+    assert st.tick_price == 50.0
+    assert st.volume_24h == 3_000_000.0
+
+
+def test_ohlcv_without_volume_keeps_previous():
+    bus = PairContextBus()
+    bus.publish(SYM, SphereEvent.OHLCV_UPDATED, {"tf": "1h", "rows": 1, "close": 1.0,
+                                                 "volume_24h": 123.0})
+    bus.publish(SYM, SphereEvent.OHLCV_UPDATED, {"tf": "1h", "rows": 1, "close": 2.0})
+    assert bus.get(SYM).volume_24h == 123.0
+
+
+def test_factory_takes_volume_from_ohlcv_path():
+    bus = PairContextBus()
+    bus.publish(SYM, SphereEvent.OHLCV_UPDATED, {"tf": "15m", "rows": 96, "close": 3.0,
+                                                 "volume_24h": 777_000.0})
+    ctx = build_market_context(_Bot(bus, _DC()), SYM, current_price=3.0)
+    assert ctx.volume_24h == 777_000.0
+
+
 def test_bus_snapshot_exports_volume():
     """Данные, живущие в шине, но не экспортируемые, — уже пройденная дыра (25.07)."""
     bus = PairContextBus()
