@@ -9,6 +9,16 @@
 
 ---
 
+## [29.09 22:00 МСК] Агент: Даат — N16: один писатель на базу (этап 1) + dc-agent выключен
+- ✅ db2d145: `core/infra/sat_store` — weekly-pivot, weekly-hypo, forward-machine пишут в свои oko_feed/*.db, базу бота
+  читают через ATTACH ro. Данные перенесены 1:1, прогоны проверены. Старые копии в subscriptions.db — для отката.
+- ✅ dc-agent выключен (Егор): pm2 stop + save. lock-probe удалён (N16 подтверждён: 0 «locked» после 04:16).
+- ✅ Пересечения с параллельной сессией по Сфере 1 нет (они делают оборот в шине — не качают свечи).
+- ✅ Этап 2 (d0a68ac, 22:20): phase-watch → phase.db, universe-drift → universe.db; читатели (trade_simulator,
+  терминал, core/context/universe_drift.py) переведены; рестарт бота и терминала чистый. N16 закрыт.
+- ⏳ Через неделю: удалить старые копии перенесённых таблиц из subscriptions.db (weekly_*, forward_verdicts,
+  phase_state, universe_*). dc-agent при включении — перевести чтение phase_state.
+
 ## [29.09 21:05 МСК] Агент: Даат — самопроизвольные выходы бота найдены и исправлены
 - ✅ 3579484: SelfTest звал load_markets под wait_for(10 с) → при медленном BingX отменял ОБЩУЮ задачу ccxt markets_loading
   → главный старт падал с CancelledError (04:17, 17:41). asyncio.shield в DataCollector. Тест воспроизводит сбой.
