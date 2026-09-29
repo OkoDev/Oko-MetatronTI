@@ -190,6 +190,43 @@ def _heal_one(base: str, tf: str, now: int) -> int:
         return 0
 
 
+# СВЕРКА (Егор 29.09, вариант A): бары из очереди WS ≈ биржевые, но не эталон — в обычном режиме неточны ~0.7–3%
+# (объём, изредка close), в сбоях почти все (закрытие 14:30 UTC, рестарты). Раз в час (в :30, мимо прохода 1h/4h/1d
+# в начале часа) закрытые бары последних 75 мин перекачиваются по REST поверх очереди — каждый бар хранилища
+# становится биржевым не позже чем через час; 75 > 60 — бар на стыке запусков проверяется дважды.
+SETTLE_MIN = 75
+
+
+def _settle_one(base: str, tf: str) -> tuple[int, int, int]:
+    """(не было, отличался, проверено) — REST-бары окна пишутся поверх хранилища."""
+    try:
+        rest = bingx_klines.fetch_closed(base, tf, SETTLE_MIN * 60_000 // tf_ms(tf) + 1)
+        if rest.empty:
+            return 0, 0, 0
+        have = ms.read_bars(base, tf, since_ms=int(rest.index[0].value // 1_000_000))
+        j = rest.join(have, how="left", rsuffix="_s")
+        missing = j["close_s"].isna()
+        diff = pd.Series(False, index=j.index)
+        for c in ms.COLS:
+            diff |= (j[c] - j[f"{c}_s"]).abs() > 1e-9 * j[c].abs().clip(lower=1e-12)
+        _append(base, tf, rest)
+        return int(missing.sum()), int((diff & ~missing).sum()), len(rest)
+    except Exception as e:  # noqa: BLE001
+        print(f"[market-store] сверка {base} {tf}: {type(e).__name__}: {e}")
+        return 0, 0, 0
+
+
+def settle_ltf(bases: list[str]) -> None:
+    for tf in SPOOL_TFS:
+        t0 = time.time()
+        with ThreadPoolExecutor(WORKERS) as pool:
+            res = list(pool.map(lambda b: _settle_one(b, tf), bases))
+        miss, diff, checked = (sum(r[i] for r in res) for i in range(3))
+        n = max(checked, 1)
+        print(f"[market-store] сверка {tf}: баров {checked} · не было {miss} ({100 * miss / n:.1f}%) · "
+              f"неточных из очереди {diff} ({100 * diff / n:.2f}%) · за {time.time() - t0:.0f} с")
+
+
 def heal_ltf(bases: list[str]) -> None:
     """Раз в час: 3m/5m, где очередь не покрыла (бот стоял, монеты нет в WS бота) — докачать по REST.
     Монеты без дыр запросов не получают."""
@@ -225,16 +262,20 @@ def main():
         if n:
             print(f"[market-store] очередь WS: +{n} баров")
 
-    heal_state = {"last": 0.0}
+    heal_state = {"last": 0.0, "settle_hour": -1}
 
-    def _heal():
+    def _heal():                     # один поток: лечение дыр раз в час + сверка в :30
         if time.time() - heal_state["last"] >= 3600:
             heal_ltf(bases)
             heal_state["last"] = time.time()
+        now = time.time()
+        if 30 <= time.gmtime(now).tm_min < 40 and heal_state["settle_hour"] != int(now // 3600):
+            heal_state["settle_hour"] = int(now // 3600)
+            settle_ltf(bases)
 
     last_close: dict = {}
     if a.once:
-        _ingest(); live_pass(bases, last_close); heal_ltf(bases)
+        _ingest(); live_pass(bases, last_close); heal_ltf(bases); settle_ltf(bases)
         return
     threading.Thread(target=_every_minute, args=(_ingest, "очередь WS"), name="ingest", daemon=True).start()
     threading.Thread(target=_every_minute, args=(_heal, "лечение"), name="heal", daemon=True).start()
