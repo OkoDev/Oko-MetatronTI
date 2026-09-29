@@ -64,7 +64,11 @@ def _ensure(c: sqlite3.Connection) -> None:
 def main() -> None:
     now = dt.datetime.now(dt.timezone.utc)
     ws = _week_start_utc(now)
-    c = sqlite3.connect(DB)
+    # N16 29.09: своя база (один писатель); weekly_pivot_* — из базы weekly-pivot (ПЕРВОЙ: в базе бота остались
+    # их старые копии), pivot_cache — из базы бота; обе только чтение
+    from core.infra import sat_store
+    c = sat_store.connect("weekly_hypothesis",
+                          attach={"wp": sat_store.path("weekly_pivot"), "bot": sat_store.BOT_DB})
     c.row_factory = sqlite3.Row
     _ensure(c)
 

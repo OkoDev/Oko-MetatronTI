@@ -57,7 +57,9 @@ def _cohort(c, where: str, params: tuple, group: str):
 
 
 def run(once: bool = False) -> None:
-    c = sqlite3.connect(DB)
+    # N16 29.09: своя база (один писатель); simulated_trades — из базы бота только на чтение
+    from core.infra import sat_store
+    c = sat_store.connect("forward", attach={"bot": sat_store.BOT_DB})
     c.execute("""CREATE TABLE IF NOT EXISTS forward_verdicts
         (ts INTEGER, cohort TEXT, exec_mode TEXT, n INTEGER, wr REAL, net REAL, verdict TEXT)""")
     now = int(time.time())

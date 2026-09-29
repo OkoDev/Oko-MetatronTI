@@ -85,7 +85,9 @@ def main() -> None:
         if last > 0 and qv >= MIN_VOL_USD:
             prices[s[:-5]] = last
 
-    c = sqlite3.connect(DB)
+    # N16 29.09: своя база (один писатель); база бота — только чтение (pivot_cache)
+    from core.infra import sat_store
+    c = sat_store.connect("weekly_pivot", attach={"bot": sat_store.BOT_DB})
     c.row_factory = sqlite3.Row
     _ensure_tables(c)
 
