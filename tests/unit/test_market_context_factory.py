@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from core.context.context_factory import build_market_context
+from core.context import context_factory as CF
+from core.context.context_factory import build_market_context, turnover_of, turnover_snapshot
 from core.context.pair_context import PairContextBus, SphereEvent
 from core.signals.signal_models import MarketContext
 
@@ -145,3 +146,64 @@ def test_market_context_no_longer_forces_zero():
 def test_empty_ticker_gives_honest_zero(bad):
     ctx = build_market_context(_Bot(PairContextBus(), _DC(bad)), SYM, current_price=1.0)
     assert ctx.volume_24h == 0.0
+
+
+# ── ОДИН ИСТОЧНИК ОБОРОТА: turnover_map наполняет шину, потребители читают её ────────────
+
+class _BusWithSymbols(PairContextBus):
+    """Шина, знающая свои пары (гейтам нужен обход всех символов)."""
+
+    def __init__(self, symbols):
+        super().__init__()
+        self._syms = list(symbols)
+
+    def all_symbols(self):
+        return list(self._syms)
+
+
+def test_turnover_snapshot_backfills_bus(monkeypatch):
+    """Карта оборотов обязана ОСЕДАТЬ в шине: иначе каждый гейт снова пойдёт за ней сам."""
+    monkeypatch.setattr("core.context.market_regime.turnover_map",
+                        lambda *a, **k: {"BTC": 5_000_000.0, "ETH": 3_000_000.0})
+    bus = _BusWithSymbols([SYM, "ETH/USDT:USDT", "XRP/USDT:USDT"])
+    turn = turnover_snapshot(_Bot(bus, _DC()))
+    assert turn["BTC"] == 5_000_000.0
+    assert bus.get(SYM).volume_24h == 5_000_000.0
+    assert bus.get("ETH/USDT:USDT").volume_24h == 3_000_000.0
+    assert bus.get("XRP/USDT:USDT").volume_24h is None, "пары нет в карте — выдумывать нечего"
+
+
+def test_turnover_snapshot_empty_means_no_data(monkeypatch):
+    """Пустая карта = НЕТ ДАННЫХ. Потребитель обязан трактовать это запретительно."""
+    monkeypatch.setattr("core.context.market_regime.turnover_map", lambda *a, **k: {})
+    assert turnover_snapshot(_Bot(_BusWithSymbols([SYM]), _DC())) == {}
+
+
+def test_turnover_of_prefers_bus_and_skips_network(monkeypatch):
+    calls = []
+
+    def _spy(*a, **k):
+        calls.append(1)
+        return {"BTC": 9.0}
+
+    monkeypatch.setattr("core.context.market_regime.turnover_map", _spy)
+    bus = _BusWithSymbols([SYM])
+    bus.publish(SYM, SphereEvent.OHLCV_UPDATED, {"tf": "1h", "rows": 1, "close": 1.0,
+                                                 "volume_24h": 4_242.0})
+    assert turnover_of(_Bot(bus, _DC()), SYM) == 4_242.0
+    assert not calls, "оборот был в шине — за картой ходить незачем"
+
+
+def test_turnover_of_falls_back_to_map(monkeypatch):
+    monkeypatch.setattr("core.context.market_regime.turnover_map",
+                        lambda *a, **k: {"BTC": 1_111.0})
+    assert turnover_of(_Bot(_BusWithSymbols([SYM]), _DC()), SYM) == 1_111.0
+
+
+def test_turnover_survives_broken_source(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("биржа недоступна")
+
+    monkeypatch.setattr("core.context.market_regime.turnover_map", _boom)
+    assert turnover_snapshot(_Bot(_BusWithSymbols([SYM]), _DC())) == {}
+    assert turnover_of(_Bot(_BusWithSymbols([SYM]), _DC()), SYM) is None

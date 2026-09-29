@@ -28,7 +28,6 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from core.context.market_regime import turnover_map as _turnover_map
 from core.smc.choch_wavec import WAIT_BARS, boosters, find_setup, is_junk
 
 logger = logging.getLogger(__name__)
@@ -232,7 +231,7 @@ async def choch_wavec_loop(bot, inst: Instance = None):
 
     from core.signals.signal_models import (MarketContext, SignalDirection,
                                             TradingRecommendation)
-    from core.context.context_factory import build_market_context
+    from core.context.context_factory import build_market_context, turnover_snapshot
 
     while True:
         conn = None
@@ -244,7 +243,7 @@ async def choch_wavec_loop(bot, inst: Instance = None):
 
             # Вселенная = та, на которой мерился эдж: крипта, топ по обороту.
             # Расширение 250 → 400 монет роняло PF 1.15 → 1.06 (мусор разбавляет).
-            turn = _turnover_map()
+            turn = turnover_snapshot(bot)   # 29.09: через шину — один источник оборота
             # 🔴 29.09 FAIL-CLOSED: при пустой карте (bulk-запрос тикеров упал) у всех пар ключ
             # 0.0, сортировка вырождается, и «топ-250 по обороту» становится ПРОИЗВОЛЬНЫМИ 250.
             # А расширение вселенной 250 → 400 уже роняло PF 1.15 → 1.06 (строка выше).

@@ -37,6 +37,58 @@ logger = logging.getLogger(__name__)
 _VOL_KEYS = ("quoteVolume", "quote_volume", "volume_24h")
 
 
+def _base(symbol: str) -> str:
+    """BASE из символа. Инвариант пары у нас BASE/USDT:USDT, карта оборотов ключуется базой."""
+    return str(symbol).split("/")[0]
+
+
+def turnover_snapshot(bot: Any) -> dict:
+    """ОБОРОТЫ ВСЕХ ПАР — одна точка чтения для гейтов и сортировок.
+
+    🔴 29.09 (Егор: «почему не один источник?»). До этого обороты добывались тремя путями:
+    `ws_feed` (выключен), `turnover_map()` bulk-REST в каждом лупе, расчёт из свечей в шине.
+    Теперь потребители зовут ЭТО, а оно: берёт кэшированную карту (`turnover_map` ходит в биржу
+    не чаще раза в 10 мин) и **оседает в шине**, чтобы состояние пары знало свой оборот и его
+    видели все читатели, а не только вызвавший гейт ([[turnover_gate_fails_open]]).
+
+    Пустой dict = данных НЕТ. Потребитель обязан трактовать это запретительно (fail-closed),
+    а не как «ограничение снято».
+    """
+    try:
+        from core.context.market_regime import turnover_map
+        turn = turnover_map() or {}
+    except Exception:                                        # noqa: BLE001
+        turn = {}
+    bus = getattr(bot, "pair_context", None)
+    if turn and bus is not None:
+        now = datetime.now(timezone.utc)
+        try:
+            for sym in bus.all_symbols():
+                v = turn.get(_base(sym))
+                if v:
+                    st = bus.get(sym)
+                    # свечной путь (OHLCV_UPDATED) считает оборот по НАШЕМУ окну; биржевой
+                    # quoteVolume точнее, поэтому он побеждает и обновляет отметку времени
+                    st.volume_24h = float(v)
+                    st.volume_24h_time = now
+        except Exception:                                    # noqa: BLE001
+            pass
+    return turn
+
+
+def turnover_of(bot: Any, symbol: str) -> Optional[float]:
+    """Оборот ОДНОЙ пары: шина → карта. None = данных нет (а не «ноль»)."""
+    bus = getattr(bot, "pair_context", None)
+    if bus is not None:
+        try:
+            v = getattr(bus.get(symbol), "volume_24h", None)
+            if v:
+                return float(v)
+        except Exception:                                    # noqa: BLE001
+            pass
+    return turnover_snapshot(bot).get(_base(symbol))
+
+
 def _from_bus(bus: Any, symbol: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """(цена, оборот, изменение за сутки) из шины. Ошибки шины не должны ронять торговлю."""
     try:

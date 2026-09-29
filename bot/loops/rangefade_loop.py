@@ -56,7 +56,7 @@ def _klines(base, interval, limit=40):
 # каждый со своими 24 запросами к BingX; версия в radar_armed не получала данные
 # (mkt_* писались как None во всех 39 сделках). Единый источник — core/context/market_regime.
 from core.context.market_regime import (ac_regime as _ac_regime, ac_label as _ac_label,
-                                        funding_map as _funding_map, turnover_map as _turnover_map,
+                                        funding_map as _funding_map,
                                         AC_LO as _AC_LO,
                                         AC_HI as _AC_HI)  # noqa: E402
 
@@ -179,7 +179,7 @@ async def rangefade_loop(bot):
                            for tf, thr, src, _, mp in VARIANTS), tp_r, CAPS)
     import sqlite3
     from core.signals.signal_models import TradingRecommendation, SignalDirection, MarketContext
-    from core.context.context_factory import build_market_context
+    from core.context.context_factory import build_market_context, turnover_snapshot
     while True:
         try:
             await asyncio.sleep(POLL_SEC)
@@ -287,7 +287,9 @@ async def rangefade_loop(bot):
                         # За месяц карта ни разу не падала (4804 отсечения, 0 ошибок), то есть это
                         # страховка, а не лечение: на деньгах умолчание обязано быть запретительным
                         # ([[turnover_gate_fails_open]]).
-                        _tmap = _turnover_map()
+                        # 29.09: обороты читаются ЧЕРЕЗ ШИНУ (context_factory), а не своим
+                        # вызовом turnover_map — один источник на всех потребителей.
+                        _tmap = turnover_snapshot(bot)
                         _tv = _tmap.get(base)
                         if not _tmap:
                             logger.warning("[RANGEFADE] ⏭ %s [%s] карта оборотов ПУСТА "

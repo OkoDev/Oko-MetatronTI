@@ -32,7 +32,6 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from core.context.market_regime import turnover_map as _turnover_map
 from core.smc.impulse_fib import (HOLD_BARS, WAIT_BARS, find_setup, gates, is_junk,
                                   score, size_mult)
 from core.trading.source_registry import slots as _slots
@@ -365,7 +364,7 @@ def make_loop(inst: Instance):
 
         from core.signals.signal_models import (MarketContext, SignalDirection,
                                                 TradingRecommendation)
-        from core.context.context_factory import build_market_context
+        from core.context.context_factory import build_market_context, turnover_snapshot
 
         while True:
             conn = None
@@ -375,7 +374,7 @@ def make_loop(inst: Instance):
                 if pair_ctx is None:
                     continue
 
-                turn = _turnover_map()
+                turn = turnover_snapshot(bot)   # 29.09: через шину — один источник оборота
                 # 🔴 29.09 FAIL-CLOSED: пустая карта (запрос тикеров упал) → у всех ключ 0.0,
                 # сортировка вырождается, и «топ-N по обороту» превращается в произвольные N пар.
                 # Пропускаем цикл, а не торгуем по неизвестной вселенной
