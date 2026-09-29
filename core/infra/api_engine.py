@@ -83,6 +83,23 @@ def reset_ohlcv_cache_stats() -> None:
     _ohlcv_cache_miss.clear()
 
 
+# 🔴 29.09 ДЫРЫ В WS-РЯДАХ. merge дописывал пришедший бар без проверки шага, а снимок с диска поднимался как есть:
+# бары, пропущенные за время рестарта/обрыва WS, не докачивал никто, а TTL не истекал (WS освежает запись).
+# Снимок 29.09 04:41: дыры у 613/621 записей 15m, 387 5m, 426 3m — ровно на моментах рестартов бота.
+# Теперь: бар через дыру → запись сбрасывается (следующий get → REST целиком); запись с дырой из снимка не грузится.
+_TF_STEP_MS: dict[str, int] = {
+    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "45m": 2_700_000,
+    "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+}
+
+
+def _has_gap(df: pd.DataFrame, tf: str) -> bool:
+    step = _TF_STEP_MS.get(tf)
+    if not step or df is None or len(df) < 2 or "time" not in df.columns:
+        return False
+    return bool((df["time"].astype("int64").diff().iloc[1:] != step).any())
+
+
 class OhlcvCache:
     """TTL-кеш с LRU eviction.
 
@@ -93,6 +110,8 @@ class OhlcvCache:
     def __init__(self, maxsize: int = 5000):
         self._data: OrderedDict = OrderedDict()
         self._maxsize = maxsize
+        self.gap_drops = 0                  # записей сброшено из-за дыры (бар через пропуск)
+        self._gap_logged = time.monotonic()
         # MARKET-WS Этап 2: cross-thread доступ (WS-поток пишет merge ↔ scan main-loop читает get).
         # RLock — reentrant (merge() вызывает self.set() внутри, иначе deadlock).
         self._lock = threading.RLock()
@@ -178,6 +197,8 @@ class OhlcvCache:
                         existing.iloc[-1, existing.columns.get_loc(col)] = new_df[col].iloc[-1]
                 entry["ts"] = time.monotonic()
                 return "replace"
+            if self._drop_on_gap(key, new_last_t - cache_last_t):
+                return "gap"
             # Новый bar (new_last_t > cache_last_t): append + drop oldest, держим длину неизменной
             merged = pd.concat([existing, new_df.iloc[[-1]]], ignore_index=True)
             if len(merged) > entry["limit"]:
@@ -215,6 +236,8 @@ class OhlcvCache:
                         existing.at[last_idx, col] = row[col]
                 entry["ts"] = time.monotonic()
                 return "replace"
+            if self._drop_on_gap(key, new_last_t - cache_last_t):
+                return "gap"
             # Новый bar (append) — редко, pd.concat допустим
             new_df = pd.DataFrame([row])
             merged = pd.concat([existing, new_df], ignore_index=True)
@@ -223,6 +246,18 @@ class OhlcvCache:
             entry["df"] = merged
             entry["ts"] = time.monotonic()
             return "append"
+
+    def _drop_on_gap(self, key: tuple, delta_ms: int) -> bool:
+        """Бар пришёл через пропуск → сбросить запись (вызывается под self._lock)."""
+        step = _TF_STEP_MS.get(key[1])
+        if not step or delta_ms <= step:
+            return False
+        self._data.pop(key, None)
+        self.gap_drops += 1
+        if time.monotonic() - self._gap_logged >= 600:
+            self._gap_logged = time.monotonic()
+            logger.info("[OhlcvCache] дыры в WS-рядах: сброшено на REST %d записей (с запуска)", self.gap_drops)
+        return True
 
     def __len__(self) -> int:
         return len(self._data)
@@ -294,11 +329,14 @@ class OhlcvCache:
             return 0
         now_wall = time.time()
         now_mono = time.monotonic()
-        loaded = 0
+        loaded = holey = 0
         for key, entry in snapshot.items():
             age = now_wall - entry["ts_wall"]
             if age < 0 or age > max_ttl:
                 continue  # stale или future ts (защита от системного clock skew)
+            if _has_gap(entry["df"], key[1]):
+                holey += 1
+                continue  # 29.09: ряд с дырой не поднимаем — докачает REST целиком
             # Виртуальный monotonic timestamp: "как будто" set был age секунд назад
             self._data[key] = {
                 "df": entry["df"],
@@ -308,6 +346,8 @@ class OhlcvCache:
             loaded += 1
             if loaded >= self._maxsize:
                 break
+        if holey:
+            logger.info("[OhlcvCache] снимок: %d записей с дырами не загружено (докачает REST)", holey)
         return loaded
 
 
@@ -458,6 +498,23 @@ class ApiEngine:
         self._proxy_pool = proxy_pool
         if proxy_pool:
             logger.info("[ApiEngine] ProxyPool активен: %d прокси для market-data", proxy_pool.size)
+        # Сфера 1 (N15, 29.09): 1h/4h/1d из хранилища закрытых баров + текущий бар из 15m (WS).
+        # config market_store.bot_htf: off | shadow (REST как было + сверка в лог) | on.
+        self._htf = None
+        self._htf_tasks: set = set()
+        try:
+            from core.infra.config_loader import config as _cfg
+            _raw = _cfg.get("market_store.bot_htf", "off")
+            # голое on/off YAML отдаёт как bool (29.09: режим молча не включился)
+            _mode = ("on" if _raw else "off") if isinstance(_raw, bool) else str(_raw).lower()
+            if _mode not in ("off", "shadow", "on"):
+                logger.warning("[HTF-STORE] неизвестный режим %r — выключено", _raw)
+            if _mode in ("shadow", "on"):
+                from core.infra.htf_from_store import HtfStore
+                self._htf = HtfStore(_mode, {tf: n + 10 for tf, n in _CANON_LIMIT.items()})
+                logger.info("[HTF-STORE] старшие ТФ из хранилища Сферы 1: режим %s", _mode)
+        except Exception as _htf_e:  # noqa: BLE001 — без хранилища бот работает как раньше
+            logger.warning("[HTF-STORE] не включён: %s", _htf_e)
 
     async def fetch_ohlcv(
         self,
@@ -495,6 +552,16 @@ class ApiEngine:
             _fetch_limit = _canon
         dedup_key = (symbol, timeframe, _fetch_limit)
         ttl = _CACHE_TTL.get(timeframe, _DEFAULT_TTL)
+
+        # Сфера 1: старший ТФ собирается из хранилища + 15m кэша; нехватка → обычный путь ниже.
+        _htf = self._htf if (self._htf is not None and timeframe in ("1h", "4h", "1d")
+                             and since is None and not force_refresh) else None
+        if _htf is not None and _htf.mode == "on":
+            df = await _htf.get(symbol, timeframe, _fetch_limit,
+                                self._cache.get_stale((symbol, "15m"), limit=1))
+            if df is not None:
+                _ohlcv_cache_hit[timeframe] += 1
+                return df.iloc[-limit:] if len(df) > limit else df
 
         if not force_refresh:
             # 1. Кеш
@@ -539,6 +606,11 @@ class ApiEngine:
             self._cb.record_success()
             if result is not None:
                 self._cache.set(cache_key, result, _fetch_limit)
+                if _htf is not None and _htf.mode == "shadow":
+                    _t = asyncio.create_task(_htf.shadow_compare(
+                        symbol, timeframe, result.copy(), self._cache.get_stale((symbol, "15m"), limit=1)))
+                    self._htf_tasks.add(_t)
+                    _t.add_done_callback(self._htf_tasks.discard)
                 if len(result) > limit:      # вызвавшему отдаём ровно то, что он просил
                     result = result.iloc[-limit:]
             if not fut.done():

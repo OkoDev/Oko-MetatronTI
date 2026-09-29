@@ -219,6 +219,8 @@ class OkoConfig(BaseModel):
     # SMC (ARCH-137.5, 02.09): structure_canon — источник сломов структуры.
     # Та же ловушка, что с the_graph выше: секция без поля в схеме роняет валидацию.
     smc: Dict[str, Any] = Field(default_factory=dict)
+    # Сфера 1 (N15, 29.09): bot_htf off|shadow|on — старшие ТФ бота из хранилища закрытых баров.
+    market_store: Dict[str, Any] = Field(default_factory=dict)
 
     # ── Валидация (поглощает config_validator.py) ──
 
