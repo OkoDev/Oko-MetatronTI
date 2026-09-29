@@ -1170,6 +1170,10 @@ signal_quality:
     - wt_sideways
   dedup_minutes: 30
   min_volume_usd: 0
+  # 29.09 (Егор): синтетика BingX (NCSK акции · NCFX валюты · NCCO сырьё · NCSI индексы) — не крипта. С марта 438
+  # сделок (0.75%), сумма ≈ −95%, эджа нет; стоила 36 пар из 615 в скане/WS и REST 1h/4h/1d (в хранилище её нет).
+  # false — не входит во вселенную бота (скан, WS, шина); true — вернуть для анализа. Рестарт oko-bot.
+  include_synthetic: false
   min_strength: 50
   pair_cooldown_sl_streak: 5
   pair_cooldown_shadow: true

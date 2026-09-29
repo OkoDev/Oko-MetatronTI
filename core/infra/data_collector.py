@@ -107,6 +107,15 @@ class RealTimeData:
                 p for p in self.usdt_pairs
                 if len(p.split("/")[0]) <= 10
             ]
+            # 29.09 (Егор): синтетика BingX (акции/валюты/сырьё/индексы) — во вселенную только по флагу
+            # signal_quality.include_synthetic (по умолчанию нет): эджа на ней нет, а стоила 36 пар скана/WS и REST.
+            from core.infra.config_loader import config as _cfg
+            if not _cfg.get("signal_quality.include_synthetic", False):
+                from core.infra.market_store import base_of, is_synthetic
+                _n0 = len(self.usdt_pairs)
+                self.usdt_pairs = [p for p in self.usdt_pairs if not is_synthetic(base_of(p))]
+                logger.info("Синтетика вне вселенной (signal_quality.include_synthetic=false): −%d пар",
+                            _n0 - len(self.usdt_pairs))
 
             logger.info(f"Loaded {len(self.usdt_pairs)} USDT-futures pairs")
 
