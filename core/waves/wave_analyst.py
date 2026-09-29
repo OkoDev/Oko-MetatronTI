@@ -574,10 +574,36 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
                 ltf_state["a_done"] = bool(back)
                 if want_bull:
                     ka = j5 + int(bh[j5:jb + 1].argmax()); a_top = float(bh[ka]); A = a_top - p5
-                    cur_retr = (a_top - float(base.close.iloc[-1])) / A if A > 0 else None
                 else:
                     ka = j5 + int(bl[j5:jb + 1].argmin()); a_top = float(bl[ka]); A = p5 - a_top
-                    cur_retr = (float(base.close.iloc[-1]) - a_top) / A if A > 0 else None
+                # 🔴 30.09 ПЕРЕСТРОЕНИЕ ВОЛНЫ A (Егор: «цена сходила на 4.6, а анализ не меняется!»).
+                # Было: экстремум A искался ТОЛЬКО до первого встречного слома `jb` и больше не
+                # пересматривался, а живость зоны проверялась лишь пробоем стопа 0.886 В ОБРАТНУЮ
+                # сторону. Уход цены В СТОРОНУ ХОДА разметку не гасил и не двигал: у NEAR волна A
+                # стояла на 5.214, цена ушла на 4.545 (−12.8%), и разбор продолжал рисовать зону
+                # входа 5.397–5.472, КУДА ЦЕНА ПОСЛЕ A НЕ ПОДНИМАЛАСЬ ВООБЩЕ (максимум 5.287).
+                # По механике: если экстремум обновлён, предыдущая «волна A» им не была — она
+                # оказалась частью A. Значит A растягиваем на фактический экстремум, а зону и стоп
+                # считаем от него. Торгового пути это не касается: в `wave5_core.ltf_status` стоп
+                # намеренно фиксируется на входе и не ползёт ([[waves_sides_measured_both]]).
+                _tail = base.iloc[ka + 1:]
+                if len(_tail):
+                    _v = _tail.high.values if want_bull else _tail.low.values
+                    _j = int(_v.argmax() if want_bull else _v.argmin())
+                    _ext = float(_v[_j])
+                    if (_ext > a_top) if want_bull else (_ext < a_top):
+                        ka = ka + 1 + _j
+                        a_top = _ext
+                        A = (a_top - p5) if want_bull else (p5 - a_top)
+                        ltf_state["a_extended"] = True
+                        ltf_state["a_ext_t"] = bt[ka]
+                        # встречный слом ищем заново — ПОСЛЕ нового экстремума, иначе «A закончена»
+                        # осталось бы от старой разметки
+                        _back2 = [x for x in sr.events if x.internal and x.bull != want_bull
+                                  and x.kind == "CHoCH" and x.i > ka]
+                        ltf_state["a_done"] = bool(_back2)
+                cur_retr = (((a_top - float(base.close.iloc[-1])) / A) if want_bull
+                            else ((float(base.close.iloc[-1]) - a_top) / A)) if A > 0 else None
                 if A > 0:
                     sgn = 1 if want_bull else -1
                     z05 = a_top - sgn * 0.5 * A

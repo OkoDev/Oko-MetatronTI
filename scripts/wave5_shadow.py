@@ -386,6 +386,13 @@ def full_scan(a):
                 if prev is None:
                     prev = {kk: js(v) for kk, v in st.items() if kk not in ("wave_idx", "wave_px")}
                     prev.update({"sym": s, "detected_at": now, "status": "detected", "egor": ""})
+                    # 🔑 30.09 СНИМОК НА МОМЕНТ ДЕТЕКЦИИ. Признаки теперь обновляются каждый цикл
+                    # (динамика), поэтому «что знали В МОМЕНТ сигнала» надо сохранить отдельно:
+                    # иначе любой замер по журналу начнёт смотреть из будущего — это тот же класс,
+                    # что look-ahead вида 6 ([[lookahead_htf_open_vs_close_time]]).
+                    prev.update({f"det_{kk}": js(st.get(kk)) for kk in
+                                 ("core", "core_full", "fractal", "depth5", "altern_type",
+                                  "altern_form", "count_ok", "p5", "imp_pct", "d_wt")})
                     if _w: prev.update(_w)
                 elif _w and prev.get("weight") is None:
                     prev.update(_w)                       # сетап найден до 22.09 — вес дописываем
@@ -395,7 +402,26 @@ def full_scan(a):
                         try: draw_setup({**st, "sym": s}, dh, ls, CH / f"{s.replace('/', '')}_{pd.Timestamp(st['top_time']):%Y%m%d}.png")
                         except Exception as e_: print(f"   (картинка: {e_})", flush=True)
                 else:
-                    for kk in ("depth5", "d_wt", "hours_from_top"): prev[kk] = js(st[kk])
+                    # 🔴 30.09 ДИНАМИКА РАЗМЕТКИ (Егор: «аналитика должна быть динамической! и такой
+                    # фриз может влиять на боевые сетапы!»). Обновлялись ТРИ поля, а `core`,
+                    # `core_full`, `fractal`, `altern_*`, `count_ok`, `p5` и фибо держались с первой
+                    # детекции. Рассогласование уже было видно: по текущим полям CAKE 18.09 стал
+                    # полным ядром, а флаг остался False — то есть метка «ЯДРО» могла не появиться
+                    # у сетапа, который ею стал. Теперь обновляем весь набор признаков.
+                    # 🔑 Каузальность при этом НЕ теряется: снимок на момент детекции лежит рядом
+                    # в `det_*` (пишется при создании записи), и резать замеры надо по нему —
+                    # текущее значение смотрит из будущего ([[waves_sides_measured_both]]).
+                    for kk in ("depth5", "d_wt", "hours_from_top", "core", "core_full", "fractal",
+                               "altern_type", "altern_form", "altern", "count_ok", "alt_w3_w1",
+                               "d_bull", "d_broke", "imp_pct", "w2_retr", "w4_retr", "w3_ext",
+                               "p5", "wt_top", "ns", "w5_618", "w5_eq1", "w5_1618", "w5_chan",
+                               "corr_382", "corr_500", "corr_618", "corr_w4"):
+                        if kk in st:
+                            prev[kk] = js(st[kk])
+                    # метка клетки пересчитывается вместе с ядром: стоп фиксирован на входе,
+                    # а ядро теперь может дозреть после детекции
+                    if prev.get("stop_pct") is not None:
+                        prev["cell"] = bool(prev.get("core_full") and prev["stop_pct"] >= 6.0)
                     transition(prev, ls, now, s)
         except Exception as e_:
             print(f"  [skip] {s}: {type(e_).__name__} {e_}", flush=True)
