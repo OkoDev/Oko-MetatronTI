@@ -299,6 +299,22 @@ def save_and_report(state, a, mode="watch", n_univ=None, young=None):
             df.sort_values(["status", "top_time"], ascending=[True, False]).to_csv(CSV, index=False, encoding="utf-8-sig")
     act = df[df.status != "closed"] if len(df) else df
     print(f"\n[{NOW:%Y-%m-%d %H:%M} UTC] активных: {len(act)} (ядро полное {int(act.core_full.sum()) if len(act) else 0}, канал {int(act.core.sum()) if len(act) else 0}) · журнал {len(df)} · {CSV} · свечи: хранилище {CLOSED_STATS['store']} / REST {CLOSED_STATS['rest']}", flush=True)
+    # 🔴 29.09 ПОЧЕМУ ядро НЕ полное — по журналу, в разрезе стороны. Строка «ядро полное 0»
+    # сама по себе не отвечает, сломан прибор или рынок не даёт: разбор сентябрьской тишины
+    # занял два часа, а ответ (у лонгов не проходит depth5 — пятая мелкая/усечённая) читается
+    # из этих же полей ([[waves_sides_measured_both]]). Только печать, на отбор не влияет.
+    if len(df):
+        print("  ядро НЕ полное — на чём отсеялось (по журналу, сторона: всего → отказы):", flush=True)
+        for _side, _g in df.groupby("side"):
+            _fr = ~_g.get("fractal", pd.Series(False, index=_g.index)).astype("boolean").fillna(False)
+            _dp = ~(pd.to_numeric(_g.get("depth5"), errors="coerce") >= 0.5)
+            _al = ~(_g.get("altern_type", pd.Series(False, index=_g.index)).astype("boolean").fillna(False)
+                    | _g.get("altern_form", pd.Series(False, index=_g.index)).astype("boolean").fillna(False))
+            _co = ~_g.get("count_ok", pd.Series(False, index=_g.index)).astype("boolean").fillna(False)
+            _full = int(_g.get("core_full", pd.Series(False, index=_g.index)).astype("boolean").fillna(False).sum())
+            print(f"    {_side:<6} всего {len(_g):>3} · полных {_full:>3} · нет фрактала {int(_fr.sum()):>3}"
+                  f" · depth5<0.5 {int(_dp.sum()):>3} · нет чередования {int(_al.sum()):>3}"
+                  f" · счёт не тот {int(_co.sum()):>3}", flush=True)
     if len(act):
         cols = [c for c in ("status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok", "d_wt", "w5_reached", "corr_reached", "line24_broken", "cross_first", "core_full") if c in act]
         print(act[cols].to_string(index=False), flush=True)
