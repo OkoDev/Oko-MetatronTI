@@ -281,8 +281,23 @@ async def rangefade_loop(bot):
                                     sym, src, stop_pct, MAX_STOP_PCT)
                         continue
                     if MIN_TURNOVER:
-                        _tv = _turnover_map().get(base)
-                        if _tv is not None and _tv < MIN_TURNOVER:
+                        # 🔴 29.09 FAIL-CLOSED. Было `if _tv is not None and _tv < MIN`: при пустой
+                        # карте (bulk-запрос тикеров упал) `_tv is None` → условие ложно → гейт
+                        # пропускал ВСЁ, включая хлам, ради которого его и заводили 10.08.
+                        # За месяц карта ни разу не падала (4804 отсечения, 0 ошибок), то есть это
+                        # страховка, а не лечение: на деньгах умолчание обязано быть запретительным
+                        # ([[turnover_gate_fails_open]]).
+                        _tmap = _turnover_map()
+                        _tv = _tmap.get(base)
+                        if not _tmap:
+                            logger.warning("[RANGEFADE] ⏭ %s [%s] карта оборотов ПУСТА "
+                                           "(биржа недоступна?) — пропускаю, вселенная неизвестна", sym, src)
+                            continue
+                        if _tv is None:
+                            logger.info("[RANGEFADE] ⏭ %s [%s] пары нет в карте оборотов — "
+                                        "вне вселенной бэктеста", sym, src)
+                            continue
+                        if _tv < MIN_TURNOVER:
                             logger.info("[RANGEFADE] ⏭ %s [%s] оборот $%.0f < $%.0f — вне вселенной бэктеста",
                                         sym, src, _tv, MIN_TURNOVER)
                             continue

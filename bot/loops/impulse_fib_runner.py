@@ -376,6 +376,14 @@ def make_loop(inst: Instance):
                     continue
 
                 turn = _turnover_map()
+                # 🔴 29.09 FAIL-CLOSED: пустая карта (запрос тикеров упал) → у всех ключ 0.0,
+                # сортировка вырождается, и «топ-N по обороту» превращается в произвольные N пар.
+                # Пропускаем цикл, а не торгуем по неизвестной вселенной
+                # ([[turnover_gate_fails_open]]).
+                if not turn:
+                    logger.warning("[%s] карта оборотов ПУСТА — цикл пропущен, вселенная неизвестна",
+                                   inst.tag)
+                    continue
                 syms = [s for s in pair_ctx.all_symbols() if not is_junk(s)]
                 syms.sort(key=lambda s: -turn.get(s.split("/")[0], 0.0))
                 syms = syms[:top_n]

@@ -245,6 +245,15 @@ async def choch_wavec_loop(bot, inst: Instance = None):
             # Вселенная = та, на которой мерился эдж: крипта, топ по обороту.
             # Расширение 250 → 400 монет роняло PF 1.15 → 1.06 (мусор разбавляет).
             turn = _turnover_map()
+            # 🔴 29.09 FAIL-CLOSED: при пустой карте (bulk-запрос тикеров упал) у всех пар ключ
+            # 0.0, сортировка вырождается, и «топ-250 по обороту» становится ПРОИЗВОЛЬНЫМИ 250.
+            # А расширение вселенной 250 → 400 уже роняло PF 1.15 → 1.06 (строка выше).
+            # Лучше пропустить цикл, чем торговать по неизвестной вселенной
+            # ([[turnover_gate_fails_open]]).
+            if not turn:
+                logger.warning("[%s] карта оборотов ПУСТА — цикл пропущен, вселенная неизвестна",
+                               inst.tag)
+                continue
             syms = [s for s in pair_ctx.all_symbols() if not is_junk(s)]
             syms.sort(key=lambda s: -turn.get(s.split("/")[0], 0.0))
             syms = syms[:top_n]
