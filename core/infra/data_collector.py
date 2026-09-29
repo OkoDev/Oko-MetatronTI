@@ -76,7 +76,10 @@ class RealTimeData:
     async def load_markets(self, min_volume_usd: float = 0):
         """Загрузить только USDT futures-пары (попытка универсальной фильтрации)"""
         try:
-            await self.exchange.load_markets()
+            # 🔴 29.09 shield: ccxt держит ОДНУ задачу markets_loading на всех вызывающих. SelfTest звал load_markets
+            # под wait_for(timeout=10) — при медленном BingX таймаут отменял эту общую задачу, её же ждал главный
+            # старт (start_monitoring) → CancelledError → бот выходил (29.09 04:17 и 17:41, «SIGINT» в pm2).
+            await asyncio.shield(self.exchange.load_markets())
             symbols = list(self.exchange.symbols or [])
             candidates = []
 
@@ -192,7 +195,7 @@ class RealTimeData:
     async def symbol_exists(self, symbol):
         """Проверить существование символа"""
         try:
-            await self.exchange.load_markets()
+            await asyncio.shield(self.exchange.load_markets())   # общая задача ccxt — см. load_markets
             return symbol in self.exchange.markets
         except Exception:
             logger.debug(f"symbol_exists error {symbol}", exc_info=True)
