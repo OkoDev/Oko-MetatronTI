@@ -689,7 +689,13 @@ class TradingAlertBot:
                 from bot.monitoring import start_monitoring
                 from unittest.mock import MagicMock
                 fake_msg = MagicMock()
-                fake_msg.from_user.id = 1
+                # 29.09 (Егор): получатель личных сигналов — telegram.admin_id. Было id=1 — несуществующий
+                # чат: все broadcast_with_subscription_check (в т.ч. тревога D-070 ORPHAN) падали. Админ
+                # заранее в subscribers → start_monitoring не зовёт add_user и не затирает его строку users.
+                _admin = str(self.config.get("telegram.admin_id", "") or "").strip()
+                fake_msg.from_user.id = int(_admin) if _admin.isdigit() else 1
+                if _admin.isdigit():
+                    self.subscribers.add(int(_admin))
                 fake_msg.from_user.username = "auto"
                 fake_msg.from_user.first_name = "Auto"
                 fake_msg.from_user.last_name = ""
@@ -712,7 +718,10 @@ class TradingAlertBot:
                             from bot.monitoring import start_monitoring
                             from unittest.mock import MagicMock
                             fake_msg = MagicMock()
-                            fake_msg.from_user.id = 1
+                            _admin = str(self.config.get("telegram.admin_id", "") or "").strip()
+                            fake_msg.from_user.id = int(_admin) if _admin.isdigit() else 1
+                            if _admin.isdigit():
+                                self.subscribers.add(int(_admin))
                             fake_msg.from_user.username = "auto"
                             fake_msg.from_user.first_name = "Auto"
                             fake_msg.from_user.last_name = ""

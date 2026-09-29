@@ -42,7 +42,7 @@ notifications:
     # ─── TIER-2: SMC события ─────────────────────────────────────────────────
 
     fvg_detected:
-      enabled: true
+      enabled: false            # 29.09 Егор: «🆕 FVG LONG XLM 3m — отключить!»
       tier: 2
       symbols: [XLM-USDT]
       directions: [LONG]
