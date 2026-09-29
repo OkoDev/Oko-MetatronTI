@@ -9,6 +9,36 @@
 
 ---
 
+## [29.09 05:35 МСК] Агент: Даат (сессия N15/N18) — бот читает 1h/4h/1d из Сферы 1 (`on`)
+- ✅ N18: дыры в WS-кэше свечей бота на рестартах (613/621 записей 15m) — `api_engine._drop_on_gap/_has_gap`, тесты 3/3.
+- ✅ N15: shadow в бою 77/0 → `market_store.bot_htf: "on"` (в кавычках — голое on YAML = true!). Глубина чтения по
+  запросу + молодые монеты (история исчерпана = короткий ответ как REST). Тесты 5/5, сверки оффлайн 119/0 и 60/0.
+- ⏳ Рестарты oko-bot сегодня (мои): 03:11, 04:16, 04:30, 04:44, 04:55, 04:59, 05:30 — все одиночные, кроме 04:17 (Ctrl+C извне,
+  источник не найден). Замер эффекта — 3 цикла после 05:30 (фоновая задача).
+- ⏳ НЕ закоммичено — см. запись 04:25 + test_ohlcv_cache_gaps.py.
+
+## [29.09 04:25 МСК] Агент: Даат (сессия N16/N15) — держатель найден + бот читает Сферу 1 (shadow)
+- ✅ N16: держатель — `impulse_fib_runner._loop` и `choch_wavec_loop` (UPDATE из `_resolve` жил до commit в конце прохода
+  250 пар через все await). Лечение: `conn.commit()` после `_resolve`. Доказательства — TXN-WATCH + конец прохода = снятие полосы.
+- ✅ N15: `core/infra/htf_from_store.py` + `ApiEngine` + config `market_store.bot_htf: shadow` (+ поле в pydantic_config).
+  Тесты: `tests/unit/test_htf_from_store.py` 4/4; оффлайн 40 монет 119/0; живой ApiEngine shadow 9/0, on без REST.
+- ✅ oko-bot перезапущен 04:16 (мой); в 04:17:36 лишний рестарт — процесс получил Ctrl+C извне (pm2.log: exit без «Stopping»),
+  источник НЕ найден (не pm2, не зонд, не gateway). После — стабилен, 0 «locked», 0 TXN-WATCH.
+- ⏳ НЕ закоммичено (мои): htf_from_store.py, api_engine.py, pydantic_config.py (моя строка market_store), config.yaml
+  (секция market_store), impulse_fib_runner.py, choch_wavec_loop.py, test_htf_from_store.py, MARKET_DATA_INVENTORY.md,
+  BACKLOG, этот файл + ранее sqlite_txn_watch.py, oko_mtf.py. Файлы сессии VPN не трогал.
+- 🔵 Дальше: сводка `[HTF-STORE]` (0 расхождений?) → `bot_htf: on` + рестарт → замер REST/цикл и «ohlcv=… с» на пару.
+
+## [29.09 03:15 МСК] Агент: Даат (сессия N16) — держатель блокировки subscriptions.db
+- ✅ Sysinternals handle64 (`%LOCALAPPDATA%\Sysinternals`, подпись Microsoft, без админа). Зонд v2 под pm2 `lock-probe`
+  (scratchpad, 24 ч): держатель ВНУТРИ БОТА — во время полос базу держат только бот, dc_agent (запись 0), терминал.
+  Полоса 02:45:30→03:05:39 (~20 мин): запись в WAL стояла, бот не писал ничего.
+- ✅ `core/infra/sqlite_txn_watch.py` + 3 строки в `oko_mtf.py` (инертно без `OKO_SQLITE_TXN_WATCH=1`).
+  Бот перезапущен 03:11 С переменной (решение Егора): один процесс 28104, :8000 03:12:37, 0 «locked» после рестарта.
+- ⚠️ Попутно: сигналы в TG не доходят — единственный подписчик uid=1, отправка падает («не отправлен ни одному»).
+- ⏳ НЕ закоммичено (мои): `core/infra/sqlite_txn_watch.py`, `oko_mtf.py`, `docs/BACKLOG_CONSOLIDATED.md`, этот файл.
+- 🔵 Дальше: дождаться `[TXN-WATCH] транзакция записи открыта` в oko-bot-out.log → чинить место; зонд окна больше не открывает.
+
 ## [29.09 02:40 МСК] Агент: Даат (сессия VPN-трафика) — трафик бота через платный VPN
 - 🔴 Владелец VPN: ~966 ГиБ/мес с компа Егора. SRUM Windows: xray.exe 978 ГБ/30 дн, почасово ровно ~500 КБ/с круглосуточно = БОТ
   (в простой 24–25.09 — 12–17 ГБ/сут против 40–50). С 02.09 (proxy_pool farm) ~22 → 40–58 ГБ/сут.
