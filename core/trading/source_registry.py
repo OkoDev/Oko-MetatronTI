@@ -130,20 +130,47 @@ def mode_of(source: str, cfg=None, *, warn: bool = True) -> str:
     ГРОМКОЕ предупреждение — молчаливое расхождение и есть корень всей проблемы.
     """
     pol = (_policies(cfg).get(source) or {})
-    declared = str(pol.get("mode") or "").strip().lower() or None
-    if declared not in (None, MODE_LIVE, MODE_SHADOW, MODE_OFF):
-        logger.warning("[РЕЖИМ] %s: недопустимое mode=%r — читаю старые ключи", source, declared)
-        declared = None
+    _raw = pol.get("mode")
+    # 🔴 29.09 YAML 1.1 СЪЕДАЕТ ГОЛОЕ off/on: `mode: off` приходит сюда как boolean False,
+    # и прежняя строка `str(False or "")` давала пустую строку → declared=None. Канон молча
+    # терялся во ВСЕХ шести выключенных источниках, разрешение держал только старый ключ
+    # `exchange_enabled` — то есть контракт «конфиг = источник истины» не работал именно там,
+    # где выключает. Ту же ловушку поймали в `market_store.bot_htf` (голое on = True).
+    if isinstance(_raw, bool):
+        # False → off: совпадает с намерением автора и с безопасной стороной (не торговать).
+        # True неоднозначен (live или shadow?) — в деньгах не угадываем, читаем старые ключи.
+        declared = MODE_OFF if _raw is False else None
+        logger.warning("[РЕЖИМ] %s: mode=%r прочитан как BOOLEAN — YAML съел голое off/on. "
+                       "Пишите mode: \"off\" В КАВЫЧКАХ. Читаю как %s.",
+                       source, _raw, declared or "старые ключи")
+    else:
+        declared = str(_raw or "").strip().lower() or None
+        if declared not in (None, MODE_LIVE, MODE_SHADOW, MODE_OFF):
+            logger.warning("[РЕЖИМ] %s: недопустимое mode=%r — читаю старые ключи", source, declared)
+            declared = None
 
     if cfg is None:
         try:
             from core.infra.config_loader import config as cfg
         except Exception:                                    # noqa: BLE001
-            return declared or MODE_LIVE
+            # Конфиг недоступен → решения о деньгах принимать НЕ на чём. Прежний `or MODE_LIVE`
+            # означал «торгуем, раз не знаем»; теперь безопасная сторона.
+            return declared or MODE_OFF
     legacy_exch = pol.get("exchange_enabled")
     tr = (cfg.get(f"trading.{source}", {}) or {})
     if not legacy_exch:
-        legacy = MODE_OFF if pol else MODE_LIVE
+        # 🔴 29.09 ИСТОЧНИКА НЕТ В КОНФИГЕ → НЕ ТОРГУЕТ (было MODE_LIVE, «разрешено по умолчанию»).
+        # Прямо противоречило контракту: новый луп торговал бы реальными деньгами, не будучи
+        # ни строкой упомянут в конфиге. Все боевые источники прописаны (проверено 29.09:
+        # 23 имени из router.submit — все в source_policies), так что смена дефолта никого
+        # не выключает; она закрывает дверь для следующего.
+        if not pol:
+            legacy = MODE_OFF
+            if warn:
+                logger.warning("[РЕЖИМ] %s: НЕТ в signal_router.source_policies — считаю off. "
+                               "Чтобы источник торговал, опишите его в конфиге явно.", source)
+        else:
+            legacy = MODE_OFF
     elif tr.get("enabled") is False:
         legacy = MODE_OFF
     elif tr.get("shadow") is True:

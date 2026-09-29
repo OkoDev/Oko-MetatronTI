@@ -1603,7 +1603,7 @@ signal_router:
       # Обе корзины стопа в минусе, широкий (2.5–4%) хуже: −7.0% на сделку против −0.97% у тугих.
       # Поток в симуляцию продолжается — вернуть только если честный реплей 15m оправдает.
       exchange_enabled: false
-      mode: off            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
+      mode: "off"            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
       trade_mode: impulse_fib_15m
   # 🔴 ДОЛЖЕН совпадать с source: иначе trade_simulator
       # ищет пороги по ОДНОМУ ключу, а router по ДРУГОМУ (см. strategy_preflight)
@@ -1735,7 +1735,7 @@ signal_router:
       # за 26-28.09 дал нам мёртвый гейт радара, недостижимую ветку atr_s2 и ds_advisor,
       # режущийся порогом. Держим оба ключа согласованными.
       exchange_enabled: false
-      mode: off            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
+      mode: "off"            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
       trade_mode: ote_nested
       entry_order_type: LIMIT
       pending_lifecycle: true
@@ -1801,7 +1801,7 @@ signal_router:
       # 🔴 ОГОВОРКА: окно замера 07-09.2026, а заявленный эдж (+0.471%/сд) мерился 2022-26 —
       # утверждение «механика мертва» НЕ доказано, доказано «в текущем режиме минус и не работает».
       exchange_enabled: false
-      mode: off            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
+      mode: "off"            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
       trade_mode: atr_s2
       soft_gates_enabled: []
       leverage: 20
@@ -1833,7 +1833,7 @@ signal_router:
       # Вернуть можно ТОЛЬКО вместе с персональным min_sl_dist и честным замером — иначе
       # мы оживим источник, про который не знаем, есть ли у него эдж вообще.
       exchange_enabled: false
-      mode: off            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
+      mode: "off"            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
       trade_mode: ds_advisor
       entry_order_type: LIMIT
       leverage: 5
@@ -1845,7 +1845,7 @@ signal_router:
       # съел весь плюс rangefade4h (+43.28%). Совпало с бэктестом 30.07: у 1h база
       # НЕ эдж (медиана −0.31%, безтоп10% −5711). Оставляем только 4h и bigflush15.
       exchange_enabled: false
-      mode: off            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of    # 30.07: решающий тест эджа — живое VST-исполнение (бэктест прошёл прокурора)
+      mode: "off"            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of    # 30.07: решающий тест эджа — живое VST-исполнение (бэктест прошёл прокурора)
       trade_mode: rangefade
       entry_order_type: LIMIT
       leverage: 20
@@ -1875,7 +1875,7 @@ signal_router:
       # Замер 30.07 (ниже) держался на 40 монетах 2024-26 и на текущем режиме («2024 в нуле»);
       # на полной вселенной и семи годах эдж не воспроизвёлся.
       exchange_enabled: false
-      mode: off            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
+      mode: "off"            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
       trade_mode: bigflush15
       entry_order_type: LIMIT
       leverage: 20

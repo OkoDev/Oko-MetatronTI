@@ -188,6 +188,14 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
             _g, _gn = _top_gate(conn, names, days)
             st.top_gate = f"{_g}:{_gn}" if _gn else ""
 
+            # 🔴 29.09 ЛОВУШКА YAML: `mode: off` без кавычек = boolean False. Резолвер такое
+            # чинит, но КОНФИГ всё равно кривой — прибор обязан назвать место, иначе следующий
+            # редактор напишет так же и решит, что канон работает.
+            if isinstance((pols.get(src) or {}).get("mode"), bool):
+                st.note = (f"🔴 mode={(pols.get(src) or {}).get('mode')!r} — голое off/on, YAML "
+                           f"читает как boolean; напишите в КАВЫЧКАХ"
+                           + (f" · {st.note}" if st.note else ""))
+
             _ok_req, st.needs = _requirements_ok(src, (pols.get(src) or {}), cfg)
             if st.mode == "live" and not _ok_req:
                 st.verdict = "ПУТЬ НЕ НАЙДЕН"
@@ -233,7 +241,13 @@ def format_table(rows: list[SourceState], days: int = SILENT_DAYS) -> str:
             + (f" · {r.note}" if r.note else ""))
     dead = [r for r in rows if r.verdict == "ПУТЬ НЕ НАЙДЕН"]
     silent = [r for r in rows if r.verdict == "МОЛЧИТ"]
+    yamlbad = [r for r in rows if "голое off/on" in (r.note or "")]
     lines.append("")
+    if yamlbad:
+        lines.append(f"🔴 КОНФИГ: у {len(yamlbad)} источник(ов) mode задан голым off/on — "
+                     + ", ".join(r.src for r in yamlbad))
+        lines.append("   YAML читает это как boolean, канон режима теряется, разрешение остаётся "
+                     "на старом ключе. Закавычить: mode: \"off\".")
     if dead:
         lines.append(f"🔴 ТРЕВОГА: {len(dead)} источник(ов) числятся торгующими, но НЕ ОСТАВИЛИ СЛЕДОВ: "
                      + ", ".join(r.src for r in dead))

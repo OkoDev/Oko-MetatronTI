@@ -67,8 +67,24 @@ def test_min_sl_dist_does_not_kill_native_geometry():
 
 
 def test_exchange_enabled_matches_intent():
-    """Лимитный вход без выхода на биржу не проверить — это был бы SIM-полигон."""
-    assert _policy().get("exchange_enabled") is True
+    """Разрешение на биржу и режим источника обязаны говорить ОДНО И ТО ЖЕ.
+
+    🔴 29.09 переписан. Было жёсткое `exchange_enabled is True` — тест требовал, чтобы
+    `ote_nested` торговал. Но источник выключен решением Егора 22.09 (реплей на истории
+    мёртв), и с 28.09 в конфиге стоит `mode: "off"` — тест стал красным и утверждал
+    устаревшее намерение. Теперь он проверяет то, что и должен: согласованность канона
+    (`mode`) со старым ключом, то есть отсутствие той самой каши, из-за которой источник
+    может молча торговать или молча молчать ([[config_is_single_source_of_truth]]).
+    """
+    from core.trading.source_registry import MODE_LIVE, mode_of
+    mode = mode_of(SRC, cfg=config, warn=False)
+    exch = bool(_policy().get("exchange_enabled"))
+    assert (mode == MODE_LIVE) == exch, (
+        f"режим и разрешение расходятся: mode={mode!r}, exchange_enabled={exch}. "
+        "Разрешение живёт ТОЛЬКО в конфиге и только в одном виде")
+    if mode == MODE_LIVE:
+        assert _policy().get("entry_order_type") == "LIMIT", (
+            "источник торгует, но вход не LIMIT — лимитная геометрия не проверяется")
 
 
 def test_keys_agree_across_lookups():
