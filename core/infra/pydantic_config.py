@@ -153,6 +153,7 @@ class MarketWsSection(BaseModel):
     throttle_ms: int = Field(default=5000, ge=100, le=60000)
     timeframes: List[str] = Field(default_factory=lambda: ["5m", "15m"])
     batch_pairs: int = Field(default=50, ge=1, le=500)
+    bind_ip_prefix: str = ""   # WS мимо VPN-туннеля: bind на локальный IPv4 с этим префиксом
 
 
 class LoggingSection(BaseModel):

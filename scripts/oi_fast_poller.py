@@ -13,12 +13,13 @@
 Алерт → TG сразу (cooldown 30-60 мин per монета через oko_feed.alerts.alert_log).
 pm2: --name oi-fast · тест разбора монеты: python scripts/oi_fast_poller.py --test MANA
 """
-import sys, time, json, urllib.request, collections
+import sys, time, json, collections
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)   # cp1251 роняла Δ/≥; pipe-буфер прятал логи
 except Exception:
     pass
 sys.path.insert(0, ".")
+from core.infra.http_fetch import fetch_json
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
 from oko_feed.targets import build_targets, format_targets_block
@@ -885,8 +886,7 @@ def _refresh_funding():
 
 
 def _get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 oko-feed"})
-    return json.load(urllib.request.urlopen(req, timeout=10))
+    return fetch_json(url, headers={"User-Agent": "Mozilla/5.0 oko-feed"}, timeout=10)
 
 
 def _cooldown_ok(key: str, sec: int = 1800) -> bool:

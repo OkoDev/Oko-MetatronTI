@@ -26,6 +26,7 @@ import gzip
 import io
 import json
 import logging
+import socket
 import threading
 import time
 import uuid
@@ -59,6 +60,22 @@ def _ccxt_to_ws(sym_ccxt: str) -> str:
     return f"{base}-{quote}"
 
 
+def local_ip_by_prefix(prefix: str) -> Optional[str]:
+    """Локальный IPv4 с префиксом (напр. «192.168.1.») или None.
+
+    29.09.2026: весь трафик машины идёт через платный VPN (Happ, TUN), а этот поток —
+    ~22 ГБ/сут, 2/3 всего VPN. Сокет, привязанный к адресу домашней сети, уходит мимо
+    туннеля. Замер: WS BingX напрямую 0 обрывов за 2 мин — как через VPN (Binance
+    напрямую режет ТСПУ, BingX — нет). Ищем на каждом подключении: адрес от DHCP может смениться."""
+    if not prefix:
+        return None
+    try:
+        ips = socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        return None
+    return next((ip for ip in ips if ip.startswith(prefix)), None)
+
+
 class MarketWS:
     """Public kline WS по N соединений (батчи). on_candle → merge в cache."""
 
@@ -70,6 +87,7 @@ class MarketWS:
         cache_lock: Optional[threading.Lock] = None,
         batch_pairs: int = 50,
         shadow: bool = True,
+        bind_prefix: str = "",       # market_ws.bind_ip_prefix: пусто = как все (через VPN)
     ):
         self._symbols = symbols
         self._tfs = timeframes
@@ -77,6 +95,7 @@ class MarketWS:
         self._lock = cache_lock or threading.Lock()
         self._batch = max(1, int(batch_pairs))
         self._shadow = shadow
+        self._bind_prefix = bind_prefix
         self._running = False
         self.stats = {"candles": 0, "replace": 0, "append": 0, "stale": 0,
                       "skip_no_cache": 0, "gaps": 0, "reconnects": 0, "pings": 0,
@@ -145,7 +164,9 @@ class MarketWS:
             await asyncio.sleep(idx * _STAGGER_SEC)
         while self._running:
             try:
-                async with aiohttp.ClientSession() as s:
+                _ip = local_ip_by_prefix(self._bind_prefix)
+                _conn = aiohttp.TCPConnector(local_addr=(_ip, 0), family=socket.AF_INET) if _ip else None
+                async with aiohttp.ClientSession(connector=_conn) as s:
                     # БЕЗ aiohttp heartbeat — BingX шлёт свой "Ping"→"Pong" (ниже). Двойной ping
                     # давал ConnectionResetError в WebSocketWriter.ping при reconnect (лог-шум).
                     async with s.ws_connect(WS_URL, timeout=aiohttp.ClientTimeout(total=20)) as ws:

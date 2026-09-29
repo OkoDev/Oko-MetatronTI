@@ -25,7 +25,6 @@ pm2: --name ote-cell · тест одной монеты: python scripts/ote_cel
 import json
 import sys
 import time
-import urllib.request
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
@@ -35,6 +34,7 @@ sys.path.insert(0, ".")
 sys.path.insert(0, "scripts")
 import pandas as pd
 
+from core.infra.http_fetch import fetch_json
 from oko_feed.store import conn
 from core.smc.oko_sm_engine import run_structure
 from core.smc.impulse_assembly import assemble_impulse, ote_zone
@@ -54,8 +54,7 @@ def _klines(sym: str, interval: str, limit: int):
     url = (f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT"
            f"&interval={interval}&limit={limit}")
     try:
-        arr = json.load(urllib.request.urlopen(
-            urllib.request.Request(url, headers={"User-Agent": "oko-shadow"}), timeout=10))
+        arr = fetch_json(url, headers={"User-Agent": "oko-shadow"}, timeout=10)
     except Exception:
         return None
     if not arr or len(arr) < 3:

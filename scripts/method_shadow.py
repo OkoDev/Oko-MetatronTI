@@ -15,7 +15,7 @@ WR → ARMED на VST.
 Reuse: send_tg/conn (oko_feed), radar_state (контекст), detect_method_egor (ядро).
 pm2: --name method-shadow · тест одной монеты: python scripts/method_shadow.py --test ZEC
 """
-import sys, time, json, urllib.request
+import sys, time
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
@@ -24,6 +24,7 @@ except Exception:
 sys.path.insert(0, ".")
 import pandas as pd
 
+from core.infra.http_fetch import fetch_json
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
 from core.smc.method_egor import detect_method_egor
@@ -44,9 +45,8 @@ COOLDOWN_SEC = 6 * 3600   # один алерт по символу раз в 6�
 def _klines(sym: str, interval: str, limit: int) -> pd.DataFrame | None:
     url = (f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT"
            f"&interval={interval}&limit={limit}")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 oko-shadow"})
     try:
-        arr = json.load(urllib.request.urlopen(req, timeout=10))
+        arr = fetch_json(url, headers={"User-Agent": "Mozilla/5.0 oko-shadow"}, timeout=10)
     except Exception:
         return None
     if not arr:

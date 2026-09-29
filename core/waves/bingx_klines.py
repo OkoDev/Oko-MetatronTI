@@ -5,14 +5,13 @@
 `now` берётся на каждом вызове: процесс может жить сутками (терминал, тень), фиксировать его при импорте нельзя."""
 from __future__ import annotations
 
-import json
 import threading
 import time
-import urllib.request
 from typing import Optional
 
 import pandas as pd
 
+from core.infra.http_fetch import fetch_json
 from core.trading.source_registry import _TF_MIN as TF_MIN
 
 KL_URL = "https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol={s}-USDT&interval={tf}&limit={n}"
@@ -50,7 +49,7 @@ def fetch_closed(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None, 
         for i in range(retries):
             try:
                 _pace()
-                d = json.loads(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "oko"}), timeout=20).read())
+                d = fetch_json(url, headers={"User-Agent": "oko"}, timeout=20)
                 break
             except Exception:
                 time.sleep(2 + 2 * i)

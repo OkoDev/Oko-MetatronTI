@@ -49,7 +49,8 @@ def _dedup_interval(tf: str) -> float:
     return _LIVE_DEDUP_BY_TF.get(tf, _LIVE_DEDUP_DEFAULT)
 
 
-def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = False) -> None:
+def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = False,
+                bind_prefix: str = "") -> None:
     """Standalone-функция для multiprocessing.Process.
 
     shadow=True  → очередь не используется, только stats-логирование (Этап 1)
@@ -85,7 +86,7 @@ def _mws_worker(out_queue, symbols: list, tfs: list, batch: int, shadow: bool = 
 
     class _MarketWSQueue(MarketWS):
         def __init__(self, q, syms, tfs_, batch_, shadow_):
-            super().__init__(syms, tfs_, _QueueCache(), batch_pairs=batch_)
+            super().__init__(syms, tfs_, _QueueCache(), batch_pairs=batch_, bind_prefix=bind_prefix)
             self._q = q
             self._shadow = shadow_
             self._last_sent: dict = {}  # (sym,tf) → monotonic ts
@@ -221,7 +222,7 @@ class QueueReaderThread(threading.Thread):
 # ─── супервайзор ──────────────────────────────────────────────────────────────
 
 async def _mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot,
-                          reader=None) -> None:
+                          reader=None, bind_prefix: str = "") -> None:
     """
     Async-таска в main loop: раз в 30с проверяет, что worker жив И ЧТО ДАННЫЕ ИДУТ.
 
@@ -270,7 +271,7 @@ async def _mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, b
                     pass
                 new_proc = mp.Process(
                     target=_mws_worker,
-                    args=(out_queue, symbols, tfs, batch, shadow),
+                    args=(out_queue, symbols, tfs, batch, shadow, bind_prefix),
                     daemon=True, name="market-ws-v2",
                 )
                 new_proc.start()
@@ -300,6 +301,7 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
     tfs   = cfg.get("market_ws.timeframes", ["5m", "15m"]) or ["5m", "15m"]
     batch = int(cfg.get("market_ws.batch_pairs", 50))
     use_ws = bool(cfg.get("market_ws.use_ws", False))
+    bind_prefix = str(cfg.get("market_ws.bind_ip_prefix", "") or "")
 
     symbols = list(getattr(bot.data_collector, "usdt_pairs", []) or [])
     if not symbols:
@@ -327,7 +329,7 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
 
     proc = mp.Process(
         target=_mws_worker,
-        args=(out_queue, symbols, tfs, batch, shadow),
+        args=(out_queue, symbols, tfs, batch, shadow, bind_prefix),
         daemon=True, name="market-ws-v2",
     )
     proc.start()
@@ -339,12 +341,16 @@ def start_market_ws_v2(bot) -> Optional[tuple]:
     # Супервайзор — async task в текущем event loop
     try:
         loop = asyncio.get_event_loop()
-        loop.create_task(_mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot, reader))
+        loop.create_task(_mws_supervisor(proc, out_queue, symbols, tfs, batch, cache, shadow, bot, reader,
+                                         bind_prefix=bind_prefix))
     except RuntimeError:
         pass  # вне loop — пропускаем (вызывается до start)
 
+    from core.infra.market_ws import local_ip_by_prefix
+    _ip = local_ip_by_prefix(bind_prefix)
     logger.info(
-        "[MarketWS-v2] процесс запущен pid=%d (%d пар, tfs=%s, use_ws=%s, shadow=%s)",
+        "[MarketWS-v2] процесс запущен pid=%d (%d пар, tfs=%s, use_ws=%s, shadow=%s, сеть=%s)",
         proc.pid, len(symbols), tfs, use_ws, shadow,
+        f"напрямую {_ip}" if _ip else ("через VPN (префикс не найден!)" if bind_prefix else "как у всех"),
     )
     return proc, reader
