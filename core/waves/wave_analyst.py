@@ -824,13 +824,13 @@ def report_for(sym: str, ltf: str = "3m", out_dir: Optional[Path] = None, now: O
     """Разбор под ключ: свечи BingX v3 → analyze → схема + json + md в out_dir (по умолчанию data/wave_analyst).
     Возвращает сводку: png/json имена, есть ли структура, зона пятой, сценарии, текст."""
     import json as _json
-    from core.waves.bingx_klines import fetch_closed
+    from core.infra.market_store import closed_bars   # Сфера 1 (29.09): хранилище, REST BingX v3 — запасной путь
     now = now or pd.Timestamp.utcnow()
     out_dir = Path(out_dir or Path(__file__).resolve().parents[2] / "data" / "wave_analyst"); out_dir.mkdir(parents=True, exist_ok=True)
     base = sym.split("/")[0].split(":")[0].upper()
-    dh = fetch_closed(base, "4h", 1500, now=now)
-    dl = fetch_closed(base, ltf, {"1m": 12000, "3m": 5000, "5m": 3000, "15m": 1500}.get(ltf, 1500), now=now)
-    d1 = fetch_closed(base, "1h", 1500, now=now); dl15 = fetch_closed(base, "15m", 600, now=now)
+    dh = closed_bars(base, "4h", 1500, now=now)
+    dl = closed_bars(base, ltf, {"1m": 12000, "3m": 5000, "5m": 3000, "15m": 1500}.get(ltf, 1500), now=now)
+    d1 = closed_bars(base, "1h", 1500, now=now); dl15 = closed_bars(base, "15m", 600, now=now)
     rep = analyze(base, dh, dl, ltf, now=now, d1=d1, dl15=dl15)
     stem = f"{base}_{now:%Y%m%d_%H%M}"
     png = None; part_names = []

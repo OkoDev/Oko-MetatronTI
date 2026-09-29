@@ -106,6 +106,31 @@ def last_time(base: str, tf: str, exchange: str = "bingx") -> Optional[int]:
     return int(_read(files[-1]).time.max()) if files else None
 
 
+CLOSED_STATS: dict = {"store": 0, "rest": 0}      # сколько раз closed_bars отдал из хранилища / ушёл в REST
+
+
+def closed_bars(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """Для клиентов Сферы 1 — drop-in замена core.waves.bingx_klines.fetch_closed: до n закрытых баров на момент
+    now (DatetimeIndex UTC, OHLCV). Из хранилища; в REST BingX — только если хранилище отстало от последнего
+    закрытого бара, в окне дыра или истории меньше n, а в хранилище она не кончилась (монета не молодая)."""
+    from core.trading.source_registry import _TF_MIN
+    now = now or pd.Timestamp.utcnow()
+    step = pd.Timedelta(minutes=_TF_MIN[tf])
+    since = now - step * (n + 2)
+    d = read_bars(base_of(sym), tf, since_ms=int(since.value // 1_000_000))
+    d = d[d.index + step <= now].iloc[-n:]
+    last_closed = now.floor(step) - step
+    fresh = len(d) > 0 and d.index[-1] >= last_closed
+    whole = len(d) < 2 or bool((d.index[1:] - d.index[:-1] == step).all())
+    enough = len(d) >= n or (len(d) > 0 and d.index[0] > since + step)   # молодая: в хранилище вся её история
+    if fresh and whole and enough:
+        CLOSED_STATS["store"] += 1
+        return d
+    CLOSED_STATS["rest"] += 1
+    from core.waves.bingx_klines import fetch_closed
+    return fetch_closed(sym, tf, n, now=now)
+
+
 def read_bars(base: str, tf: str, n: Optional[int] = None, since_ms: Optional[int] = None,
               exchange: str = "bingx") -> pd.DataFrame:
     """Закрытые бары: DatetimeIndex UTC (открытие бара), колонки open/high/low/close/volume.

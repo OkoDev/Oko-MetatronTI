@@ -4155,7 +4155,7 @@ def _similar_job(side: str, limit: int):
     import re as _re, ccxt as _ccxt
     import pandas as _pd
     from core.waves import mark_impulse, WaveParams
-    from core.waves.bingx_klines import fetch_closed
+    from core.infra.market_store import closed_bars   # Сфера 1 (29.09): 4h из хранилища, REST — запасной путь
     from core.waves.wave_analyst import report_for
     now = _pd.Timestamp.utcnow(); P = WaveParams()
     try:
@@ -4168,7 +4168,7 @@ def _similar_job(side: str, limit: int):
 
         def one(b):
             try:
-                dh = fetch_closed(b, "4h", 1000, now=now)
+                dh = closed_bars(b, "4h", 1000, now=now)
                 if len(dh) < 400:
                     return []
                 out = []

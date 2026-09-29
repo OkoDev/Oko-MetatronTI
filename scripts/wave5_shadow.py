@@ -27,7 +27,7 @@ import ccxt
 from core.waves import mark_impulse, ltf_status, WaveParams
 from core.waves.wave5_core import TF_MIN
 from core.waves.wave5_chart import draw_setup
-from core.waves.bingx_klines import fetch_closed
+from core.infra.market_store import CLOSED_STATS, closed_bars   # Сфера 1: хранилище, REST — запасной путь
 
 DATA = ROOT / "data" / "wave5_shadow"; DATA.mkdir(parents=True, exist_ok=True)
 STATE, CSV, CH = DATA / "state.json", DATA / "shadow_signals.csv", DATA / "charts"
@@ -67,8 +67,9 @@ def coin_weight(dh, btc_daily):
 
 
 def fetch(ex, sym, tf, n):
-    """Закрытые бары BingX v3 (core.waves.bingx_klines — ccxt отдавал битые 4h мелких монет, 14.09). `ex` — для совместимости."""
-    return fetch_closed(sym, tf, n, now=NOW)
+    """Закрытые бары — из хранилища Сферы 1 (29.09, N15); отстало/дыра → BingX v3 как раньше (bingx_klines — ccxt
+    отдавал битые 4h мелких монет, 14.09). `ex` — для совместимости."""
+    return closed_bars(sym, tf, n, now=NOW)
 
 
 def _cache(sym, tf):
@@ -226,7 +227,7 @@ def reentry_watch(state, now):
         if v.get("re_status") != "entered" and NOW > t5 + pd.Timedelta(hours=ENTRY_W_H):
             v["re_status"] = "closed"; v["re_outcome"] = "no_entry"; continue
         try:
-            d3 = fetch_closed(v["sym"].split("/")[0], "3m", 3000)
+            d3 = closed_bars(v["sym"].split("/")[0], "3m", 3000)
             r = reentry_status(v, d3, v["closed_at"], P, entry_w_h=ENTRY_W_H, hold_h=HOLD_H)
         except Exception as e_:
             print(f"  [повтор] {v['sym']}: {type(e_).__name__} {e_}", flush=True); continue
@@ -297,7 +298,7 @@ def save_and_report(state, a, mode="watch", n_univ=None, young=None):
         if not a.asof:
             df.sort_values(["status", "top_time"], ascending=[True, False]).to_csv(CSV, index=False, encoding="utf-8-sig")
     act = df[df.status != "closed"] if len(df) else df
-    print(f"\n[{NOW:%Y-%m-%d %H:%M} UTC] активных: {len(act)} (ядро полное {int(act.core_full.sum()) if len(act) else 0}, канал {int(act.core.sum()) if len(act) else 0}) · журнал {len(df)} · {CSV}", flush=True)
+    print(f"\n[{NOW:%Y-%m-%d %H:%M} UTC] активных: {len(act)} (ядро полное {int(act.core_full.sum()) if len(act) else 0}, канал {int(act.core.sum()) if len(act) else 0}) · журнал {len(df)} · {CSV} · свечи: хранилище {CLOSED_STATS['store']} / REST {CLOSED_STATS['rest']}", flush=True)
     if len(act):
         cols = [c for c in ("status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok", "d_wt", "w5_reached", "corr_reached", "line24_broken", "cross_first", "core_full") if c in act]
         print(act[cols].to_string(index=False), flush=True)
