@@ -38,6 +38,24 @@ def _pace() -> None:
         _LAST[0] = time.monotonic()
 
 
+def fetch_forming(sym: str, tf: str, now: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """Текущий НЕЗАКРЫТЫЙ бар (0 или 1 строка, DatetimeIndex UTC) — один короткий запрос. Хранилище Сферы 1 держит
+    только закрытые бары; клиентам, которым нужен живой край, — закрытые из хранилища + этот бар."""
+    now = now or pd.Timestamp.utcnow()
+    base = sym.split("/")[0].split(":")[0]
+    try:
+        _pace()
+        raw = (fetch_json(KL_URL.format(s=base, tf=tf, n=2), headers={"User-Agent": "oko"}, timeout=20) or {}).get("data") or []
+    except Exception:
+        raw = []
+    cur = int(now.floor(f"{TF_MIN[tf]}min").value // 1_000_000)
+    rows = [[int(b["time"]), float(b["open"]), float(b["high"]), float(b["low"]), float(b["close"]), float(b["volume"])]
+            for b in raw if int(b["time"]) == cur]
+    df = pd.DataFrame(rows[:1], columns=["time", "open", "high", "low", "close", "volume"])
+    df.index = pd.DatetimeIndex(pd.to_datetime(df.time, unit="ms", utc=True), name="ts")
+    return df[["open", "high", "low", "close", "volume"]]
+
+
 def fetch_closed(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None, retries: int = 3) -> pd.DataFrame:
     """До n последних ЗАКРЫТЫХ баров (DatetimeIndex UTC, open/high/low/close/volume). sym: «SOLV», «SOLV/USDT» или «SOLV/USDT:USDT»."""
     now = now or pd.Timestamp.utcnow()

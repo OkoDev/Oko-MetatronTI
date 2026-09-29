@@ -44,8 +44,16 @@ SPECS = {
 BINANCE = "https://fapi.binance.com/fapi/v1/klines"
 
 
-def klines_after(sym: str, ts: int, hours: int):
-    """Часовые бары с момента сигнала. Возвращает [(open_ms, high, low, close), ...]."""
+def klines_after(sym: str, ts: int, hours: int, src: str | None = None):
+    """Часовые бары с момента сигнала. Возвращает [(open_ms, high, low, close), ...].
+    src='bingx' (строки с 29.09) → закрытые 1h из хранилища Сферы 1: исход на той же бирже, что вход.
+    Старые строки (src пуст) — Binance, как писались."""
+    if src == "bingx":
+        from core.infra.market_store import read_bars
+        d = read_bars(sym, "1h", since_ms=int(ts) * 1000)
+        d = d[d.index.asi8 // 1_000_000 >= int(ts) * 1000].iloc[:hours + 4]
+        return [(int(t // 1_000_000), float(h), float(lo), float(cl))
+                for t, h, lo, cl in zip(d.index.asi8, d["high"], d["low"], d["close"])]
     limit = min(1000, hours + 4)
     url = f"{BINANCE}?symbol={sym}USDT&interval=1h&startTime={int(ts)*1000}&limit={limit}"
     try:
@@ -63,7 +71,7 @@ def resolve_row(row, spec, now_ts):
     side = 1 if row["direction"] == "LONG" else -1
     entry = float(row[spec["entry"]]); sl = float(row[spec["sl"]])
     age_h = (now_ts - row["ts"]) / 3600
-    bars = klines_after(sym, row["ts"], spec["ttl_h"])
+    bars = klines_after(sym, row["ts"], spec["ttl_h"], row["src"] if "src" in row.keys() else None)
     if not bars:
         return None
     tgts = [(row[c], pc) for c, pc in spec["targets"] if row[c] is not None]

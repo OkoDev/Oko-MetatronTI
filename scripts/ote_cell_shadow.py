@@ -34,7 +34,7 @@ sys.path.insert(0, ".")
 sys.path.insert(0, "scripts")
 import pandas as pd
 
-from core.infra.http_fetch import fetch_json
+from core.infra.market_store import closed_bars
 from oko_feed.store import conn
 from core.smc.oko_sm_engine import run_structure
 from core.smc.impulse_assembly import assemble_impulse, ote_zone
@@ -50,20 +50,14 @@ MIN_STOP_PCT, MAX_STOP_PCT = 0.5, 25.0
 
 
 def _klines(sym: str, interval: str, limit: int):
-    """Binance fapi (та же биржа, что в кэше бэктеста). Последний бар — формирующийся."""
-    url = (f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT"
-           f"&interval={interval}&limit={limit}")
-    try:
-        arr = fetch_json(url, headers={"User-Agent": "oko-shadow"}, timeout=10)
-    except Exception:
+    """Закрытые бары BingX из хранилища Сферы 1 (29.09, Егор «BingX по умолчанию»; было Binance fapi — журнал
+    судил сигналы по ценам не той биржи, где торгуем). Сколько и как раньше: limit−1 ЗАКРЫТЫХ (формирующийся
+    отбрасывался), колонка ot (мс) + OHLCV. Строки журнала с 29.09 помечены src='bingx'."""
+    d = closed_bars(sym, interval, limit - 1)
+    if d is None or len(d) < 2:
         return None
-    if not arr or len(arr) < 3:
-        return None
-    df = pd.DataFrame(arr, columns=["ot", "open", "high", "low", "close", "volume",
-                                    "ct", "qv", "n", "tb", "tq", "ig"])
-    for c in ("open", "high", "low", "close", "volume"):
-        df[c] = df[c].astype(float)
-    return df[["ot", "open", "high", "low", "close", "volume"]].iloc[:-1].reset_index(drop=True)
+    return pd.DataFrame({"ot": d.index.asi8 // 1_000_000, **{c: d[c].to_numpy(dtype=float)
+                         for c in ("open", "high", "low", "close", "volume")}})
 
 
 def _cooldown_ok(key: str, sec: int) -> bool:
@@ -91,13 +85,13 @@ def _log(row: dict) -> None:
             resolved INTEGER DEFAULT 0, outcome TEXT, exit_price REAL,
             pct_1r REAL, pct_ext REAL, resolved_ts INTEGER)""")
         _cols = [x[1] for x in c.execute("PRAGMA table_info(ote_cell_shadow)")]
-        for _c, _t in (("cluster_size", "INTEGER"), ("retr", "REAL")):
+        for _c, _t in (("cluster_size", "INTEGER"), ("retr", "REAL"), ("src", "TEXT")):
             if _c not in _cols:
                 c.execute(f"ALTER TABLE ote_cell_shadow ADD COLUMN {_c} {_t}")
         c.execute("""INSERT INTO ote_cell_shadow
             (ts,symbol,direction,entry,sl,tp1r,tp_ext,origin,extreme,n_bos,stop_pct,
-             ac_value,ac_label,core_cell,cluster_size,retr)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             ac_value,ac_label,core_cell,cluster_size,retr,src)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'bingx')""",
                   (int(time.time()), row["symbol"], row["direction"], row["entry"], row["sl"],
                    row["tp1r"], row["tp_ext"], row["origin"], row["extreme"], row["n_bos"],
                    row["stop_pct"], row["ac_value"], row["ac_label"], row["core_cell"],

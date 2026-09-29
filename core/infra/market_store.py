@@ -131,6 +131,16 @@ def closed_bars(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None) -
     return fetch_closed(sym, tf, n, now=now)
 
 
+def bars_with_forming(sym: str, tf: str, n: int, now: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """n баров, последний — текущий незакрытый (как у REST-клиентов «с живым краем»): n−1 закрытых из хранилища
+    (closed_bars) + один короткий запрос за текущим баром. Текущий не пришёл → только закрытые."""
+    from core.waves.bingx_klines import fetch_forming
+    now = now or pd.Timestamp.utcnow()
+    closed = closed_bars(sym, tf, n - 1, now=now)
+    live = fetch_forming(sym, tf, now=now)
+    return pd.concat([closed, live]) if len(live) else closed
+
+
 def read_bars(base: str, tf: str, n: Optional[int] = None, since_ms: Optional[int] = None,
               exchange: str = "bingx") -> pd.DataFrame:
     """Закрытые бары: DatetimeIndex UTC (открытие бара), колонки open/high/low/close/volume.

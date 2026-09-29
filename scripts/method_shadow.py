@@ -24,7 +24,7 @@ except Exception:
 sys.path.insert(0, ".")
 import pandas as pd
 
-from core.infra.http_fetch import fetch_json
+from core.infra.market_store import bars_with_forming
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
 from core.smc.method_egor import detect_method_egor
@@ -43,20 +43,17 @@ COOLDOWN_SEC = 6 * 3600   # один алерт по символу раз в 6�
 
 
 def _klines(sym: str, interval: str, limit: int) -> pd.DataFrame | None:
-    url = (f"https://fapi.binance.com/fapi/v1/klines?symbol={sym}USDT"
-           f"&interval={interval}&limit={limit}")
+    """BingX из хранилища Сферы 1 (29.09, Егор «BingX по умолчанию»; было Binance fapi). Как раньше: limit баров,
+    ПОСЛЕДНИЙ — текущий незакрытый (метод смотрит живой край), индекс — naive UTC. Строки журнала — src='bingx'."""
     try:
-        arr = fetch_json(url, headers={"User-Agent": "Mozilla/5.0 oko-shadow"}, timeout=10)
+        d = bars_with_forming(sym, interval, limit)
     except Exception:
         return None
-    if not arr:
+    if d is None or d.empty:
         return None
-    df = pd.DataFrame(arr, columns=["ot", "open", "high", "low", "close", "volume",
-                                    "ct", "qv", "n", "tb", "tq", "ig"])
-    df.index = pd.to_datetime(df["ot"], unit="ms")
-    for c in ("open", "high", "low", "close", "volume"):
-        df[c] = df[c].astype(float)
-    return df[["open", "high", "low", "close", "volume"]]
+    d = d.astype(float)
+    d.index = d.index.tz_localize(None)
+    return d[["open", "high", "low", "close", "volume"]]
 
 
 def _crowd(sym: str) -> dict:
@@ -96,9 +93,11 @@ def _log_shadow(sym: str, m: dict, crowd: dict, fuel: str) -> None:
             tp1 REAL, tp2 REAL, tp3 REAL, htf_trend TEXT, pos REAL,
             funding REAL, oi_d5 REAL, oi_d15 REAL, fuel TEXT,
             resolved INTEGER DEFAULT 0, outcome TEXT)""")
+        if "src" not in [x[1] for x in c.execute("PRAGMA table_info(method_shadow)")]:
+            c.execute("ALTER TABLE method_shadow ADD COLUMN src TEXT")   # биржа цен строки (29.09 → bingx)
         t = m["targets"]
         c.execute("INSERT INTO method_shadow (ts,symbol,direction,entry,sl,tp1,tp2,tp3,"
-                  "htf_trend,pos,funding,oi_d5,oi_d15,fuel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  "htf_trend,pos,funding,oi_d5,oi_d15,fuel,src) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'bingx')",
                   (int(time.time()), sym, m["direction"], m["entry"], m["sl"],
                    t[0], t[1], t[2], m["htf_trend"], round(m["pos"], 3),
                    crowd.get("funding"), crowd.get("oi_d5"), crowd.get("oi_d15"), fuel))
