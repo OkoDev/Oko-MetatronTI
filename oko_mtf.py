@@ -41,6 +41,10 @@ logging.basicConfig(
     ],
 )
 
+# N16 (29.09): кто держит транзакцию записи subscriptions.db — только при OKO_SQLITE_TXN_WATCH=1
+from core.infra import sqlite_txn_watch as _txn_watch
+_txn_watch.install()
+
 try:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="ignore")

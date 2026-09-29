@@ -414,6 +414,11 @@ def make_loop(inst: Instance):
                         _drop("нет данных")
                         continue
                     _resolve(conn, sym, df)
+                    # 🔴 N16 29.09: UPDATE из _resolve держал запись subscriptions.db до commit в КОНЦЕ
+                    # прохода — через все await _fetch по 250 парам. Полоса 02:45:30→03:05:39 (20 мин,
+                    # WAL стоял) снялась ровно на «[IMPULSE15] скан 250 пар»; трассировка TXN-WATCH — первая
+                    # в полосах 03:28:40 и 03:48:49 (соединение отсюда, строка conn = _conn(...)).
+                    conn.commit()
                     if shadow:
                         if n_open + found >= cap:
                             _drop("кэп журнала")

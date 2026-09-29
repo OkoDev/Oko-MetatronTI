@@ -272,6 +272,9 @@ async def choch_wavec_loop(bot, inst: Instance = None):
                 if df is None:
                     continue
                 _resolve(conn, sym, df, inst)
+                # 🔴 N16 29.09: UPDATE из _resolve держал запись subscriptions.db до commit в КОНЦЕ
+                # прохода — через все await _fetch_tf по 250 парам (полосы «database is locked» до 20 мин).
+                conn.commit()
                 # shadow: журнал сам себе кэп. Бой: ДВА лимита раздельно.
                 if shadow:
                     if n_open + found >= cap:
