@@ -188,10 +188,23 @@ def transition(prev, ls, now, sym):
     if st == "detected" and ls.get("entry_time") is not None:
         prev["status"] = "entered"; prev["entered_at"] = str(ls["entry_time"])[:16]; prev["entry_price"] = ls["entry_price"]
         prev["entry_trigger"] = ls["trigger"]; prev["stop"] = js(ls["stop"])
-        print(f"  IN   {sym:<12} {prev['side']} вход по {ls['trigger']} {prev['entered_at']} @ {ls['entry_price']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}", flush=True)
+        # 🔑 30.09 МЕТКА КЛЕТКИ (только пометка, отбор НЕ меняется — Егор: «ничего сужать не будем пока»).
+        # Замер обеих сторон на 2020 сделках 2022-12→2026-08 (`scratchpad/waves_sides_lab.py`) показал,
+        # что эдж ядра сидит в пересечении «полное ядро × стоп ≥6%»: LONG n=96, ср +5.46%, WR 71%,
+        # Δr +9.67, Δt +1.59, безтоп10% +245, 4/4 года (лучший — 2026). Соседние клетки слабее:
+        # ядро без широкого стопа +2.55, широкий стоп без ядра +3.19, ни того ни другого +0.80
+        # при хрупкости −797. Клетка редкая — 2.1 сделки/мес на 276 монет, в 11 месяцах из 45 её нет
+        # вовсе, поэтому её надо ВИДЕТЬ, а не ждать вслепую ([[waves_sides_measured_both]]).
+        _e, _s = ls.get("entry_price"), ls.get("stop")
+        prev["stop_pct"] = round(abs(_e - _s) / _e * 100, 2) if (_e and _s) else None
+        prev["cell"] = bool(prev.get("core_full") and prev["stop_pct"] is not None and prev["stop_pct"] >= 6.0)
+        print(f"  IN   {sym:<12} {prev['side']} вход по {ls['trigger']} {prev['entered_at']} @ {ls['entry_price']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}"
+              + (f"  🔑 КЛЕТКА (ядро+стоп {prev['stop_pct']}%)" if prev["cell"] else ""), flush=True)
         if prev.get("side") == "LONG":          # семейство waves_long: шорты в бой не идут (замер 16.09)
             emit_exec(prev, sym, ls["trigger"], ls["entry_price"], ls["stop"], prev.get("p4_target"),
-                      extra={"wv_entry_time": str(ls["entry_time"])[:16]})   # возраст считается от события
+                      extra={"wv_entry_time": str(ls["entry_time"])[:16],   # возраст считается от события
+                             "wv_cell": bool(prev["cell"]),                 # метка едет в features_json сделки
+                             "wv_stop_pct": prev["stop_pct"]})
     elif st == "detected" and ls.get("entry_window_over"):
         prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "no_entry"
         print(f"  --   {sym:<12} окно входа истекло без триггера", flush=True)
@@ -290,7 +303,7 @@ def save_and_report(state, a, mode="watch", n_univ=None, young=None):
     df = pd.DataFrame(list(state.values()))
     if len(df):
         if "egor" not in df: df["egor"] = ""
-        cols = ["status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok",
+        cols = ["status", "sym", "side", "cell", "stop_pct", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok",
                 "d_bull", "d_broke", "d_wt", "core", "core_full", "w5_reached", "corr_reached", "line24_broken", "cross_first", "entry_trigger",
                 "entered_at", "entry_price", "p4_target", "p5_ext", "stop", "outcome", "pnl_pct", "outcome_trail", "pnl_trail", "re_status", "re_entry_at", "re_entry", "re_stop", "re_outcome", "re_pnl_pct", "cluster_3d", "cluster_norm", "mass_flush", "breadth10", "zone_1d", "depth_1d", "egor", "egor_note", "ai", "ai_note",
                 "w5_618", "w5_eq1", "w5_1618", "w5_chan", "corr_382", "corr_500", "corr_618", "key"]
@@ -316,7 +329,7 @@ def save_and_report(state, a, mode="watch", n_univ=None, young=None):
                   f" · depth5<0.5 {int(_dp.sum()):>3} · нет чередования {int(_al.sum()):>3}"
                   f" · счёт не тот {int(_co.sum()):>3}", flush=True)
     if len(act):
-        cols = [c for c in ("status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok", "d_wt", "w5_reached", "corr_reached", "line24_broken", "cross_first", "core_full") if c in act]
+        cols = [c for c in ("status", "sym", "side", "top_time", "hours_from_top", "imp_pct", "fractal", "depth5", "altern_type", "altern_form", "count_ok", "d_wt", "w5_reached", "corr_reached", "line24_broken", "cross_first", "core_full", "stop_pct", "cell") if c in act]
         print(act[cols].to_string(index=False), flush=True)
 
 
