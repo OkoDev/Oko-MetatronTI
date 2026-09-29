@@ -24,6 +24,9 @@ from core.signals.signal_checkers import (
     check_wt_b_signals as _check_wt_b_signals,
 )
 from core.signals.signal_models import SignalData, SignalType, SignalDirection
+# 29.09: на уровне модуля, а не внутри функции — контекст собирается в ДВУХ ветках скана
+# (atr_change и wl_breach), и локальный импорт в одной из них оставлял вторую без имени.
+from core.context.context_factory import build_market_context
 from core.intelligence.signal_aggregator import attach_confirmations
 from core.signals.wt_15m_reversal_scanner import scan_wt_15m_reversal, reversal_message as _confluence_message
 from core.infra.data_quality import check_ohlcv_quality, MIN_BARS
@@ -422,7 +425,9 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
         overall_strength=int(score),
         confidence=0.65,
         timestamp=datetime.now(timezone.utc),  # DEV-49
-        market_context=None,
+        # 29.09: было None — и в features_json этого источника `volume_24h` не писался вовсе
+        # (у остальных писался нулём). Контекст собирает шина ([[signal_volume24h_is_always_zero]]).
+        market_context=build_market_context(bot, symbol, current_price=current_price),
         supporting_signals=[_sig],
         conflicting_signals=[],
         sl_source=f"wl_pivot_{wl_entry.pivot_key or 'level'}",
