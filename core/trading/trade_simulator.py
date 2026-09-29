@@ -1307,7 +1307,8 @@ class TradeSimulator:
         try:
             _ph_dir = _direction_str(_get_recommendation_value(recommendation, "direction"))
             if _ph_dir:
-                _pc = sqlite3.connect(self.db_path, timeout=5)
+                from core.infra import sat_store   # N16 29.09: phase_state живёт в базе phase-watch
+                _pc = sqlite3.connect(sat_store.path("phase").as_uri() + "?mode=ro", uri=True, timeout=5)
                 _pc.row_factory = sqlite3.Row
                 try:
                     _mrow = _pc.execute(

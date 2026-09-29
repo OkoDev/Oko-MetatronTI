@@ -28,7 +28,8 @@ _TTL = 45.0
 
 def _phase():
     try:
-        c = sqlite3.connect(_DB)
+        from core.infra import sat_store   # N16 29.09: phase_state живёт в базе phase-watch
+        c = sqlite3.connect(sat_store.path("phase").as_uri() + "?mode=ro", uri=True)
         r = c.execute("SELECT ts, phase, side, detail FROM phase_state WHERE level='macro' "
                       "ORDER BY ts DESC LIMIT 1").fetchone()
         c.close()

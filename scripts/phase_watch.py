@@ -53,7 +53,8 @@ def _ensure(c):
 
 def main():
     now = int(time.time())
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    from core.infra import sat_store                    # N16 29.09: своя база (один писатель), не subscriptions.db
+    c = sat_store.connect("phase"); c.row_factory = sqlite3.Row
     _ensure(c)
     e = sqlite3.connect(RADAR_DB)
 

@@ -34,7 +34,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE_DB = ROOT / "ohlcv_cache.db"
-SUBS_DB = ROOT / "subscriptions.db"
+# N16 29.09: своя база (один писатель), не subscriptions.db; путь = core/infra/sat_store.path("universe")
+UNIVERSE_DB = ROOT / "oko_feed" / "universe.db"
 API = "https://fapi.binance.com/fapi/v1/klines"
 NL = chr(10)
 WORKERS = 6
@@ -62,7 +63,7 @@ def _universe() -> list[str]:
 
 
 def _init_db() -> None:
-    with sqlite3.connect(SUBS_DB, timeout=30) as c:
+    with sqlite3.connect(UNIVERSE_DB, timeout=30) as c:
         c.execute("PRAGMA busy_timeout=10000")
         c.execute("""
             CREATE TABLE IF NOT EXISTS universe_daily (
@@ -122,7 +123,7 @@ def refresh(limit: int) -> int:
                 miss += 1
             if i % 100 == 0:
                 print(f"  ... {i}/{len(syms)} (получено {ok}, пусто {miss})", flush=True)
-    with sqlite3.connect(SUBS_DB, timeout=30) as c:
+    with sqlite3.connect(UNIVERSE_DB, timeout=30) as c:
         c.execute("PRAGMA busy_timeout=10000")
         c.executemany("INSERT OR REPLACE INTO universe_daily (symbol,day,close) VALUES (?,?,?)", rows)
     print(f"записано баров: {len(rows)} · монет с данными: {ok} · без данных: {miss}")
@@ -134,7 +135,7 @@ def compute() -> None:
     import numpy as np
     import pandas as pd
 
-    with sqlite3.connect(f"file:{SUBS_DB}?mode=ro", uri=True) as c:
+    with sqlite3.connect(f"file:{UNIVERSE_DB}?mode=ro", uri=True) as c:
         df = pd.read_sql("SELECT symbol,day,close FROM universe_daily", c)
     if df.empty:
         print("🔴 нет данных — сначала --bootstrap"); return
@@ -149,7 +150,7 @@ def compute() -> None:
     res["n_coins"] = alive
     res = res.dropna(subset=["drift30"])
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    with sqlite3.connect(SUBS_DB, timeout=30) as c:
+    with sqlite3.connect(UNIVERSE_DB, timeout=30) as c:
         c.execute("PRAGMA busy_timeout=10000")
         c.executemany(
             "INSERT OR REPLACE INTO universe_drift "
@@ -165,7 +166,7 @@ def compute() -> None:
 
 
 def show(n: int = 8) -> None:
-    with sqlite3.connect(f"file:{SUBS_DB}?mode=ro", uri=True) as c:
+    with sqlite3.connect(f"file:{UNIVERSE_DB}?mode=ro", uri=True) as c:
         rows = c.execute(
             "SELECT day,drift30,drift90,drift180,n_coins FROM universe_drift "
             "ORDER BY day DESC LIMIT ?", (n,)).fetchall()

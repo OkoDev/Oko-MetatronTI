@@ -26,7 +26,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_DB = str(Path(__file__).resolve().parents[2] / "subscriptions.db")
+_DB = str(Path(__file__).resolve().parents[2] / "oko_feed" / "universe.db")   # N16 29.09: база universe-drift
 _TTL_SEC = 600                      # значение меняется раз в сутки — 10 минут с запасом
 _cache: dict = {"ts": 0.0, "val": None}
 
