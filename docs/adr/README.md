@@ -20,3 +20,4 @@
 |---|---|---|---|
 | [ADR-001](ADR-001-external-services-via-port.md) | Внешние сервисы подключаются через Port, а не встраиваются | accepted | ARCH-125 |
 | [ADR-002](ADR-002-swarm-ds-orchestrator.md) | DS-оркестратор роя за AdvisorPort (DeepSeek-дирижёр внутри swarm-service) | accepted | ARCH-126 |
+| [ADR-003](ADR-003-bus-out-of-process.md) | Шина Куба выходит из процесса бота: хаб `cube-hub` (второй уровень, синхронная часть остаётся в боте) | proposed | N12 · N16 |
