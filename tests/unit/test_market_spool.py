@@ -33,6 +33,25 @@ def test_numpy_values_written_as_plain_numbers(tmp_path, monkeypatch):
     assert txt == "ETH,5m,0,0.323,0.4,0.3,0.35,7.0\n"                 # не «np.float64(0.323)»
 
 
+def test_reader_spools_closed_bar_without_bot_cache_entry(monkeypatch):
+    """30.09: очередь не зависит от кэша бота — пара без записи в кэше (skip_no_cache) всё равно даёт бар."""
+    from core.infra.api_engine import OhlcvCache
+    from core.infra.market_ws_v2 import QueueReaderThread
+    got = []
+    monkeypatch.setattr(market_spool, "put", lambda s, t, bar: got.append((s, t, bar["time"], bar["close"])))
+    rd = QueueReaderThread(q=None, cache=OhlcvCache(), shadow=False, spool_tfs=("3m",))
+
+    def row(t, c):
+        return {"time": t, "open": 1.0, "high": 2.0, "low": 0.5, "close": c, "volume": 1.0}
+    rd._merge_one("XYZ/USDT:USDT", "3m", row(0, 1.1))
+    rd._merge_one("XYZ/USDT:USDT", "3m", row(0, 1.2))          # финал бара 0
+    rd._merge_one("XYZ/USDT:USDT", "3m", row(M3, 1.3))         # следующий бар → бар 0 в очередь
+    rd._merge_one("XYZ/USDT:USDT", "3m", row(0, 9.9))          # опоздавшее сообщение бара 0 — игнор
+    rd._merge_one("XYZ/USDT:USDT", "15m", row(0, 5.0))         # ТФ вне списка — не в очередь
+    assert got == [("XYZ/USDT:USDT", "3m", 0, 1.2)]
+    assert rd._merge_res[("3m", "skip_no_cache")] >= 1         # в кэше бота пары нет — а бар дошёл
+
+
 def test_first_hole_inside_tail_and_none(tmp_path, monkeypatch):
     from scripts import market_store_service as svc
     monkeypatch.setattr(ms, "ROOT", tmp_path)

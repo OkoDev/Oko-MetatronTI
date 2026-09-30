@@ -161,6 +161,7 @@ class QueueReaderThread(threading.Thread):
         self._cache = cache
         self._shadow = shadow
         self._spool_tfs = spool_tfs   # Сфера 1: закрытые бары этих ТФ → очередь хранилища (market_spool)
+        self._last_row: dict = {}     # (sym, tf) → последнее обновление бара — очередь не зависит от кэша бота
         self._running = True
         self.stats = {
             "applied": 0, "errors": 0, "shadow": shadow,
@@ -172,20 +173,27 @@ class QueueReaderThread(threading.Thread):
 
     _BATCH_MAX = 1000  # дренируем до 1000 элементов за цикл
 
+    def _spool(self, s: str, t: str, r: dict) -> None:
+        """Пришло обновление СЛЕДУЮЩЕГО бара → последнее обновление предыдущего = финал закрытого бара → очередь.
+        30.09: раньше бар шёл в очередь только на «append» кэша бота — пары без записи в кэше (сброшены на REST,
+        скан их не запрашивал) молчали: 2–2.5% баров 3m/5m не доходили до хранилища даже без сбоев."""
+        key = (s, t)
+        prev = self._last_row.get(key)
+        if prev is not None and r["time"] < prev["time"]:
+            return                                     # опоздавшее сообщение старого бара — не откатываем
+        self._last_row[key] = r
+        if prev is not None and r["time"] > prev["time"]:
+            from core.infra import market_spool
+            market_spool.put(s, t, prev)
+
     def _merge_one(self, s: str, t: str, r: dict) -> None:
         try:
+            if t in self._spool_tfs:
+                self._spool(s, t, r)
             # ARCH-130: merge_dict избегает pd.DataFrame([r]) в hot path
             _res = self._cache.merge_dict((s, t), r)
             self.stats["applied"] += 1
             self._merge_res[(t, _res)] += 1  # диагностика покрытия per TF
-            if _res == "append" and t in self._spool_tfs:
-                # новый бар дописан → предыдущий закрыт (его финал применён выше) → в очередь хранилища
-                with self._cache._lock:
-                    _e = self._cache._data.get((s, t))
-                    _closed = _e["df"].iloc[-2] if _e is not None and len(_e["df"]) >= 2 else None
-                if _closed is not None:
-                    from core.infra import market_spool
-                    market_spool.put(s, t, _closed)
         except Exception as e:
             self.stats["errors"] += 1
             logger.debug("[MarketWS-v2] reader merge error: %s", e)
