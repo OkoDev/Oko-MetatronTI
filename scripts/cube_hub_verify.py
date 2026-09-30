@@ -50,13 +50,18 @@ def main() -> None:
 
     b1 = {s: bot_state(s) for s in syms}
     time.sleep(a.wait)
-    b2 = {s: bot_state(s) for s in syms}
-    h2 = {s: _get(f"{HUB}/state/{s.replace('/', '_').replace(':USDT', '')}") for s in syms}
+    # по каждой паре подряд: бот → хаб → бот. Последовательное чтение «все у бота, потом все у хаба»
+    # давало гонку: скан успевал обновить пару между чтениями, и хаб оказывался НОВЕЕ (30.09, 300 пар).
+    b2, h2, b3 = {}, {}, {}
+    for s in syms:
+        b2[s] = bot_state(s)
+        h2[s] = _get(f"{HUB}/state/{s.replace('/', '_').replace(':USDT', '')}")
+        b3[s] = bot_state(s)
 
     bad = Counter(); stable = 0; examples = []
     for s in syms:
         for k, v2 in b2[s].items():
-            if _norm(b1[s].get(k)) != _norm(v2):
+            if _norm(b1[s].get(k)) != _norm(v2) or _norm(b3[s].get(k)) != _norm(v2):
                 continue                                  # поле у бота менялось — сравнивать нечестно
             stable += 1
             if _norm(h2[s].get(k)) != _norm(v2):
