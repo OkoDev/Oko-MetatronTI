@@ -47,6 +47,14 @@
 **Как подключиться:** `bus.subscribe_async(SphereEvent.X, handler)` (push) ·
 `bus.get(sym).<поле>` (pull). Что течёт — в меню каталога.
 
+**🧊 Из ДРУГОГО процесса (с 30.09, ADR-003 шаг 1) — хаб `cube-hub`, 127.0.0.1:8020** (pm2, `scripts/cube_hub.py`).
+Бот зеркалит туда свою шину (`core/context/cube_mirror.py`, флаг `cube_hub.enabled`): доска переживает рестарт бота.
+- `GET /state/{sym}` — ВСЕ поля пары (надмножество `/api/cube/context`) + `_age_sec`; `GET /state` — все пары;
+- `GET /facts?since=&types=` — журнал фактов (класс в `bus_catalog.EVENT_CLASS`: сигналы, открытия/отказы/закрытия…, 30 дней);
+- `GET /ws?types=` — поток фактов; `GET /stats` — разрывы seq, задержка;
+- публикация `POST /publish` — только с токеном `oko_feed/cube_hub.token` (шаг 3, клиент — позже).
+Сверка «хаб = бот»: `python scripts/cube_hub_verify.py`. 🔴 Новый процесс НЕ ходит в :8000 бота за состоянием — читает хаб.
+
 ---
 
 ## 3. 📊 МАТРИЦА ПРИЗНАКОВ — что в ней и чего в ней НЕТ
