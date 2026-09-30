@@ -391,6 +391,14 @@ class PairContextBus:
         self._max_log = 200
         self._open_trades: list[dict] = []               # L2: снапшот открытых сделок (push от trade_tracker)
         self._open_trades_ts: Optional[datetime] = None  # ts последней публикации (None = цикл ещё не публиковал)
+        self._mirror = None   # ADR-003: зеркало в хаб Куба (core/context/cube_mirror.py), ставит bot.py по флагу
+
+    def _mirror_dirty(self, symbol: str) -> None:
+        if self._mirror is not None:
+            try:
+                self._mirror.on_update(self.canon(symbol))
+            except Exception as e:                        # зеркало не ломает шину
+                logger.debug("[Bus] mirror: %s", e)
 
     # 🔴 18.09 ИНВАРИАНТ КЛЮЧА: пара в шине — ТОЛЬКО `BASE/USDT:USDT` (формат ccxt-swap, в котором живут
     # AccountRouter, БД сделок и детектор сирот). С 01.09 Сфера 19 публиковала OI/фандинг под `BASE/USDT`:
@@ -444,6 +452,7 @@ class PairContextBus:
                 setattr(state, key, val)
             else:
                 logger.debug("[Bus] неизвестное поле PairState: %s", key)
+        self._mirror_dirty(symbol)
 
     def set_watchlist(self, symbol: str, strategy: str, entry: Optional[Dict[str, Any]]) -> None:
         """WATCHLIST-UNI: публикует/обновляет watchlist-запись стратегии (или удаляет если None).
@@ -458,10 +467,12 @@ class PairContextBus:
             e = dict(entry); e["strategy"] = strategy
             e.setdefault("ts", datetime.now(timezone.utc).isoformat())
             state.watchlist[strategy] = e
+        self._mirror_dirty(symbol)
 
     def clear_watchlist(self, symbol: str, strategy: str) -> None:
         """Снять watchlist-запись стратегии (сетап исчез/инвалидирован)."""
         self.get(symbol).watchlist.pop(strategy, None)
+        self._mirror_dirty(symbol)
 
     def all_symbols(self) -> list[str]:
         """Все символы с ненулевым состоянием."""
@@ -686,6 +697,13 @@ class PairContextBus:
             except Exception as e:
                 logger.warning("[Bus] subscriber error (%s → %s): %s",
                                event_type, getattr(handler, "__qualname__", "?"), e)
+
+        # ADR-003: зеркало в хаб — после подписчиков (синхронные могли дописать состояние)
+        if self._mirror is not None:
+            try:
+                self._mirror.on_publish(self.canon(symbol), event_type, data)
+            except Exception as e:                        # зеркало не ломает шину
+                logger.debug("[Bus] mirror: %s", e)
 
     def _auto_update_state(self, symbol: str, event_type: str, data: dict) -> None:
         """Автоматически обновляет PairState при публикации события."""

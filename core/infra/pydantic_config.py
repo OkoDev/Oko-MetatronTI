@@ -222,6 +222,7 @@ class OkoConfig(BaseModel):
     smc: Dict[str, Any] = Field(default_factory=dict)
     # Сфера 1 (N15, 29.09): bot_htf off|shadow|on — старшие ТФ бота из хранилища закрытых баров.
     market_store: Dict[str, Any] = Field(default_factory=dict)
+    cube_hub: Dict[str, Any] = Field(default_factory=dict)       # ADR-003: хаб шины Куба
 
     # ── Валидация (поглощает config_validator.py) ──
 

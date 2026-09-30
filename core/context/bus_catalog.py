@@ -163,7 +163,39 @@ _EVENT_META: Dict[str, tuple] = {
     "CASCADE_UPDATED":    ("trade_simulator (Сфера 11)", "{cascade_count,avg_r,direction}", "обновление каскада"),
     "OTE_ZONE_SET":       ("ote_observer (Сфера 11)", "{ote_top,ote_bot,direction,ttl_hours}", "OTE-зона установлена"),
     "SPHERE_HEALTH":      ("sphere_registry (Сфера 12)", "{sphere_id,status,last_update}", "здоровье сферы"),
+    "FUNDING_UPDATED":    ("market_data_sphere (Сфера 19)", "{rate,interval_h,source,pct_8h,streak,pctile_90d}", "фандинг пары"),
+    "OI_UPDATED":         ("market_data_sphere (Сфера 19)", "{d5,d15,d1d,quadrant,squeeze}", "открытый интерес пары"),
 }
+
+# ── Класс события для хаба Куба (ADR-003, шаг 0) ───────────────────────────────
+# Ключ — значение SphereEvent (строка, которая уходит в publish).
+#   state    — последнее значение пары (хаб хранит upsert, не журнал: ~4 тыс. событий за цикл скана);
+#   fact     — событие-факт, идёт в журнал хаба (редкие, их переигрывают после рестарта подписчика);
+#   internal — наружу не идёт (несёт объект, а не данные).
+# Незнакомое событие = internal: наружу по умолчанию ничего не утекает.
+EVENT_CLASS: Dict[str, str] = {
+    "ohlcv_updated": "state", "tick_price": "state", "wt_verdict": "state", "wt_snap_updated": "state",
+    "smc_verdict": "state", "smc_snap_updated": "state", "regime_updated": "state",
+    "pivot_snap_updated": "state", "sphere_health": "state", "funding_updated": "state",
+    "oi_updated": "state", "cascade_updated": "state",
+    "signal_detected": "fact", "anomaly_detected": "fact", "volume_spike": "fact",
+    "divergence_found": "fact", "pivot_touch": "fact", "cross_market": "fact",
+    "narrative_built": "fact", "position_opened": "fact", "position_dropped": "fact",
+    "tsl_moved": "fact", "tp1_hit": "fact", "position_closed": "fact", "trade_closed": "fact",
+    "ote_zone_set": "fact",
+    "recommendation_built": "internal",
+}
+
+
+def event_class(event_type: str) -> str:
+    """Класс события для хаба: state | fact | internal (незнакомое — internal)."""
+    return EVENT_CLASS.get(event_type, "internal")
+
+
+def unclassified_events() -> List[str]:
+    """События SphereEvent без класса для хаба. Пусто = контракт шага 0 полон."""
+    return [name for name in dir(SphereEvent)
+            if name.isupper() and getattr(SphereEvent, name) not in EVENT_CLASS]
 
 
 def _typename(t: Any) -> str:

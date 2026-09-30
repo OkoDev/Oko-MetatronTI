@@ -659,6 +659,22 @@ class TradingAlertBot:
                 logger.info("[WatchBridge] task spawned")
             except Exception as e:
                 logger.warning("[WatchBridge] failed to start: %s", e)
+            # ═══ CUBE-MIRROR — зеркало шины в хаб Куба (ADR-003 шаг 1, gated cube_hub.enabled).
+            #     Синхронная шина остаётся здесь; хаб — реплика для других процессов ═══
+            try:
+                _ch = self.config.get("cube_hub", {}) or {}
+                if bool(_ch.get("enabled", False)):
+                    from core.context.cube_mirror import CubeMirror
+                    self.cube_mirror = CubeMirror(
+                        self.pair_context, _ch.get("url", "http://127.0.0.1:8020"),
+                        flush_sec=float(_ch.get("flush_sec", 1.0)),
+                        rolling_per_tick=int(_ch.get("rolling_per_tick", 20)),
+                        queue_max=int(_ch.get("queue_max", 20000)))
+                    self.pair_context._mirror = self.cube_mirror
+                    asyncio.create_task(self.cube_mirror.run())
+                    logger.info("[CUBE-MIRROR] task spawned")
+            except Exception as e:
+                logger.warning("[CUBE-MIRROR] failed to start: %s", e)
             # ═══ RADAR-ARMED — исполнение сетапов радара (gated config.trading.radar_armed) ═══
             try:
                 from bot.loops.radar_armed_loop import radar_armed_loop
