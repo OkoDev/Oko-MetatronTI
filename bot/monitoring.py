@@ -198,11 +198,62 @@ def _make_pivot_recommendation(info: dict):
     )
 
 
-async def start_monitoring(bot, message):
+# 🔴 30.09: BingX /contracts ответил таймаутом на старте → load_markets = [] → мониторинг не запускался,
+# бот жил БЕЗ скана до ручного рестарта (13:05–13:16; заметили по хабу Куба — доска старела).
+# Теперь повторы идут фоном (автостарт вызывается ДО Telegram polling — ждать нельзя), пока пары
+# не загрузятся или мониторинг не остановят.
+_PAIRS_RETRY_DELAYS = (15, 30, 60, 120)   # дальше — каждые 120 с
+
+
+async def _begin_monitoring(bot, message, pairs) -> None:
     from bot.loops.scan_loop import monitor_market, _prefetch_pivots
 
+    bot.monitored_pairs = pairs
+    bot.is_monitoring = True
+    bot.start_time = datetime.now()
+    bot.monitor_task = asyncio.create_task(monitor_market(bot))
+
+    asyncio.create_task(_prefetch_pivots(bot))
+
+    user_id = message.from_user.id
+    await message.answer(
+        f"✅ Запущен мониторинг {len(bot.monitored_pairs)} пар.\n"
+        f"📡 Отслеживаю: аномалии, WT, MTF, тренд-сигналы и дивергенции\n\n"
+        f"💎 <b>Ваша подписка:</b> "
+        f"{bot.subscription_manager.get_subscription_info(user_id)['tier']}",
+        reply_markup=main_menu(),
+    )
+
+
+async def _retry_load_pairs(bot, message, min_vol) -> None:
+    """Фоновые повторы загрузки пар; на успехе — обычный запуск мониторинга."""
+    attempt = 1
+    try:
+        while getattr(bot, "monitoring_starting", False):
+            delay = _PAIRS_RETRY_DELAYS[min(attempt - 1, len(_PAIRS_RETRY_DELAYS) - 1)]
+            logger.warning("[start] пары не загружены (попытка %d) — повтор через %d с", attempt, delay)
+            await asyncio.sleep(delay)
+            if not getattr(bot, "monitoring_starting", False):
+                break
+            attempt += 1
+            pairs = await bot.data_collector.load_markets(min_volume_usd=min_vol)
+            if pairs:
+                logger.info("[start] пары загружены с попытки %d: %d — запускаю мониторинг", attempt, len(pairs))
+                bot.monitoring_starting = False
+                await _begin_monitoring(bot, message, pairs)
+                return
+        logger.info("[start] повторы загрузки пар остановлены (попыток %d)", attempt)
+    finally:
+        bot.monitoring_starting = False
+
+
+async def start_monitoring(bot, message):
     if bot.is_monitoring:
         await message.answer("⚠️ Мониторинг уже запущен.", reply_markup=main_menu())
+        return
+    if getattr(bot, "monitoring_starting", False):
+        await message.answer("⏳ Мониторинг уже запускается — жду, пока биржа отдаст список пар.",
+                             reply_markup=main_menu())
         return
 
     user_id = message.from_user.id
@@ -219,27 +270,21 @@ async def start_monitoring(bot, message):
     min_vol = bot.config.get("signal_quality.min_volume_usd", 0)
     pairs = await bot.data_collector.load_markets(min_volume_usd=min_vol)
     if not pairs:
-        await message.answer("❌ Не удалось загрузить пары.", reply_markup=main_menu())
+        bot.monitoring_starting = True
+        bot.pairs_retry_task = asyncio.create_task(_retry_load_pairs(bot, message, min_vol))
+        await message.answer("⚠️ Биржа не отдала список пар — повторяю в фоне, мониторинг запустится сам.",
+                             reply_markup=main_menu())
         return
 
-    bot.monitored_pairs = pairs
-    bot.is_monitoring = True
-    bot.start_time = datetime.now()
-    bot.monitor_task = asyncio.create_task(monitor_market(bot))
-
-    asyncio.create_task(_prefetch_pivots(bot))
-
-    await message.answer(
-        f"✅ Запущен мониторинг {len(bot.monitored_pairs)} пар.\n"
-        f"📡 Отслеживаю: аномалии, WT, MTF, тренд-сигналы и дивергенции\n\n"
-        f"💎 <b>Ваша подписка:</b> "
-        f"{bot.subscription_manager.get_subscription_info(user_id)['tier']}",
-        reply_markup=main_menu(),
-    )
+    await _begin_monitoring(bot, message, pairs)
 
 
 async def stop_monitoring(bot, message):
     if not bot.is_monitoring:
+        if getattr(bot, "monitoring_starting", False):
+            bot.monitoring_starting = False           # фоновые повторы загрузки пар увидят и выйдут
+            await message.answer("⏹ Повторы запуска мониторинга остановлены.", reply_markup=main_menu())
+            return
         await message.answer("⚠️ Мониторинг не запущен.", reply_markup=main_menu())
         return
 

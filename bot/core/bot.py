@@ -720,7 +720,10 @@ class TradingAlertBot:
                 fake_msg.reply = _noop
                 await start_monitoring(self, fake_msg)
                 self._monitoring_autostarted = True
-                logger.info("[Bot] Мониторинг АВТОЗАПУЩЕН при старте (не ждём кнопку ТГ)")
+                if self.is_monitoring:
+                    logger.info("[Bot] Мониторинг АВТОЗАПУЩЕН при старте (не ждём кнопку ТГ)")
+                else:   # 30.09: раньше здесь писалось «АВТОЗАПУЩЕН» и при провале загрузки пар
+                    logger.warning("[Bot] Мониторинг ещё НЕ запущен: биржа не отдала пары — повторы в фоне")
             except Exception as se:
                 logger.warning("[Bot] автостарт мониторинга: %s", se)
             try:
