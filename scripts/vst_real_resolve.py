@@ -17,8 +17,22 @@ _cache = {}
 
 
 def klines5(base, t0, t1):
-    """5m klines реального рынка [t0, t1]; кэш по монете; куски ≤1440 баров = 5 дней."""
+    """5m klines реального рынка [t0, t1]; кэш по монете; куски ≤1440 баров = 5 дней.
+    30.09: сначала хранилище Сферы 1 (свои данные, биржу не трогаем; 5m с 29.08.2026),
+    и только если оно не покрывает окно — сеть, как раньше."""
     key = base
+    if key not in _cache:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from core.infra import market_store as _ms
+            d = _ms.read_bars(base, "5m", since_ms=int(t0.timestamp() * 1000))
+            if len(d):
+                d = d.copy(); d.index = d.index.tz_localize(None)
+                if d.index[0] <= t0 + pd.Timedelta(minutes=10) and d.index[-1] >= min(t1, pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(minutes=10)):
+                    _cache[key] = d
+                    return d
+        except Exception:
+            pass
     if key in _cache and _cache[key].index[0] <= t0 and _cache[key].index[-1] >= t1 - pd.Timedelta(minutes=10):
         return _cache[key]
     # 🔴 5m отдаёт максимум 1000 баров на запрос и ПОСЛЕДНИЕ 1000 окна (проверено 20.09) → куски по 1000 баров = 83 ч
@@ -49,15 +63,19 @@ def resolve(k, t0, long_, e, sl, tp, ttl_h, hold_h):
         return {"real": "нет данных"}                       # история 5m начинается позже заявки — не судим
     hi, lo, cl, idx = w.high.values, w.low.values, w.close.values, w.index
     n_ttl = int(ttl_h * 12); fill = None
+    # 🔴 30.09: ВХОД проверяется ПЕРВЫМ. Было наоборот, и касание входа и стопа в одной свече шло как
+    # «стоп до фила = сделки нет» — из счёта выпадали быстрые убыточные сделки (у радара это 35% филлов,
+    # его реальный результат был завышен). Цена непрерывна: стоп лежит ЗА входом, значит вход раньше.
     for j in range(min(n_ttl, len(w))):
-        if (lo[j] <= sl) if long_ else (hi[j] >= sl):
-            return {"real": "стоп до фила"}
         if (lo[j] <= e) if long_ else (hi[j] >= e):
             fill = j; break
+        if (lo[j] <= sl) if long_ else (hi[j] >= sl):
+            return {"real": "стоп до фила"}                 # достижимо только при вывернутой геометрии
     if fill is None:
         return {"real": "нет фила"}
     n_hold = int(hold_h * 12)
-    for j in range(fill + 1, min(fill + 1 + n_hold, len(w))):
+    # удержание считаем СО СВЕЧИ ФИЛЛА: стоп/цель в ней же — часть сделки, а не «ничего не было»
+    for j in range(fill, min(fill + 1 + n_hold, len(w))):
         if (lo[j] <= sl) if long_ else (hi[j] >= sl):
             return {"real": "SL", "pnl": ((sl - e) / e * 100) * (1 if long_ else -1) - COST, "fill_t": idx[fill], "exit_t": idx[j]}
         if (hi[j] >= tp) if long_ else (lo[j] <= tp):
