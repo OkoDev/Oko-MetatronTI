@@ -1962,19 +1962,19 @@ phase = wave_svc.compute_and_publish(sym, df_4h, df_1h, df_15m, bot.pair_bus)
 | [ARCH-98](#arch-98) | 🧊 | Portfolio Manager Sphere (Сфера 16): β-exposure к BTC/ETH, sector concentration, rolling DD. После Risk Sphere shadow — **FROZEN до Phase 4** | ARCH/DEV |
 | [ARCH-99](#arch-99) | 🧊 | Meta-Learning Sphere (Сфера 17): XGBoost f(context, signal_type)→E[R] контекстуальный фильтр — **FROZEN до Phase 4** | ARCH/DEV |
 | **🆕 ДОЛГ ПО КАРТЕ ШИНЫ И КУБА (`docs/SIGNAL_BUS_CUBE_MAP.md`, 27.04 TRADER)** — Фаза 1 roadmap | | | |
-| [ARCH-101](#arch-101) | 🧊 | Mesh шины: 11/16 детекторов → `event_bus.publish("signal_detected", ...)` в monitoring.py. Без этого Narrative/Anomaly/Exit слепы — **FROZEN до Phase 4**. **30.09 разбор (рой + 3 субагента, `obsidian/Team-Discussions/2026-09-30-arch-101-*`): посылка устарела** — 7 из 11 детекторов уже публикуют в EventBus; EventBus = очередь повторного анализа, а не подписка (исходная вставка дала бы второй analyze); поток кандидатов = `POSITION_OPENED ∪ DROPPED` роутера. Сделана гигиена без влияния на торговлю (`e9f5b9f`); кластер-потребитель по БД эджа не дал (`obsidian/Research/2026-09-30-Cluster-Own-Signals-DB.md`). Закрыть или держать — решение Егора, вместе с ARCH-106/107 | ARCH/DEV |
+| [ARCH-101](#arch-101) | ✅ | **ЗАКРЫТ 30.09 — постановка устарела** (разбор: рой + 3 субагента, `obsidian/Team-Discussions/2026-09-30-arch-101-*`). 7 из 11 детекторов уже публикуют в EventBus; оставшиеся MTF_BIAS/SMC_STRUCTURE/OTE_SIGNAL — значения `SignalType` внутри `analyze_symbol`, а не детекторы. EventBus = очередь повторного анализа, не подписка (исходная вставка дала бы второй analyze). Поток кандидатов для сфер = `POSITION_OPENED ∪ DROPPED` роутера (все 19 путей). Гигиена `e9f5b9f`; кластер-потребитель по БД эджа не дал (`obsidian/Research/2026-09-30-Cluster-Own-Signals-DB.md`). Реакции сфер — по одной, после замера (N12) | ARCH/DEV |
 | [ARCH-102](#arch-102) | 🧊 | BTCRegimeProvider → `cross_market` publish при смене BULL↔BEAR. Расширение ARCH-78 — **FROZEN до Phase 4** | ARCH/DEV |
 | [ARCH-103](#arch-103) | 🧊 | `classify_mode` (reversal_mode) из shadow в production — **FROZEN до Phase 4** | ARCH |
 | [ARCH-104](#arch-104) | 🧊 | Унификация двух нумераций сфер: `sphere_registry.SPHERE_NAMES` vs `selftest_cube`. Выбрать одну, выровнять — **FROZEN до Phase 4** | ARCH |
 | **🆕 ВИДЕНИЕ: PREDICTIVE SETUP ENGINE (`docs/TRADER_VISION_PREDICTIVE_SETUPS.md`, 28.04 TRADER)** — переход от reactive market к predictive limit | | | |
 | [ARCH-105](#arch-105) | 🧊 | Order Flow & Macro data sources: funding history + OI + liquidations. Базис для гипотез H5/H6 — **FROZEN до Phase 4** | ARCH/DEV |
-| [ARCH-106](#arch-106) | 🧊 | TriggerBus + persistence: новая шина атомарных триггеров + таблица `trigger_events`. Фундамент для ML на 100k+ событий — **FROZEN до Phase 4** | ARCH/DEV |
-| [ARCH-107](#arch-107) | 🧊 | Setup Engine v1 (Сфера 18): `TradingSetup` dataclass + state machine + таблица `trading_setups` — **FROZEN до Phase 4** | ARCH/DEV |
-| [ARCH-108](#arch-108) | 🧊 | Predictive entries: ladder limit orders + bracket-link. Зависит от ARCH-96 — **FROZEN до Phase 4** | ARCH/DEV |
+| [ARCH-106](#arch-106) | ✅ | **ЗАКРЫТ 30.09 — поглощён.** Цель «ценность триггеров на 100k+ событий» закрывает `scripts/research_harness.py` на ИСТОРИИ (годы, причинность проверена), а не 30 дней живого журнала; живой журнал фактов (детекций) — журнал хаба `cube-hub` (ADR-003), исходы — офлайн из хранилища Сферы 1. Зависимость от ARCH-101 снята вместе с ним. 🔴 Имя TriggerBus занято: `core/context/trigger_bus.py` = триггеры re-entry (`trigger_loop`), другое | ARCH/DEV |
+| [ARCH-107](#arch-107) | 🧊 | Setup Engine v1 (Сфера 18). **30.09 пересмотр:** зависимость от ARCH-106 снята (v1 её не требует). Посылки устарели: точка создания `_broadcast_intelligence_alert` почти мертва (5 сделок в сентябре), вход уже LIMIT с TTL у 11 источников, жизненный цикл заявки уже в `simulated_trades` (PENDING → исполнена / EXPIRED / CANCELLED). **Первый шаг — офлайн-замер цикла по источникам против бэктеста, код Сферы 18 — только после.** Повод: исполнено с 01.08 — impulse_fib 8/109, impulse_fib_15m 88/551, choch_wavec 12/41, ote_nested 372/805, radar 224/263 (сырые числа, причины отмен не разобраны) | ARCH/DEV |
+| [ARCH-108](#arch-108) | 🧊 | Predictive entries: ladder limit orders + bracket-link. Зависит от ARCH-96 — **FROZEN до Phase 4**. 30.09: одиночный LIMIT с TTL уже у 11 источников — осталась лесенка и связь с ARCH-96 | ARCH/DEV |
 | [ARCH-109](#arch-109) | 🧊 | Strategy DSL: yaml-описания стратегий. После Setup Engine v2 — **FROZEN до Phase 4** | ARCH/DEV |
 | [ARCH-110](#arch-110) | 🧊 | Volume Profile + CVD: VPVR / POC / VAH / VAL + WS trade stream. Гипотеза H9 — **FROZEN до Phase 4** | ARCH/DEV |
 | [ARCH-111](#arch-111) | 🧊 | Setup-aware Meta-Learning: расширение ARCH-99 на `f(context, setup_type, trigger_chain) → E[R]` — **FROZEN до Phase 4** | ARCH/DEV |
-| [TR-002](#tr-002) | 🟢 | Бэктест-валидация 10 гипотез прогнозирования H1–H10 на исторических данных Trigg… | TRADER |
+| [TR-002](#tr-002) | 🟢 | Бэктест-валидация 10 гипотез прогнозирования H1–H10 на исторических данных Trigg… · 30.09: зависимость от ARCH-106 снята — история через `research_harness.py` | TRADER |
 | **DASHBOARD** | | | |
 | [DEV-144f](#dev-144f) | 🟢 | P6: Единый CSS — тёмная тема, виджет-карточки, responsive grid | DEV |
 | **СТРАТЕГИЯ / СИГНАЛЫ** | | | |
@@ -2257,8 +2257,8 @@ phase = wave_svc.compute_and_publish(sym, df_4h, df_1h, df_15m, bot.pair_bus)
 | DEV-186 + DEV-187 | ARCH-103 (reversal_mode production после стабилизации gate) |
 | ARCH-95 (аудит) | ARCH-96 (Execution Sphere) |
 | ARCH-96 | ARCH-97, ARCH-108 (predictive entries требуют OCO) |
-| ARCH-101 (Mesh шины) | ARCH-106 (TriggerBus — расширение EventBus) |
-| ARCH-106 (TriggerBus) | ARCH-107 (Setup Engine v1), TR-002 (бэктест H1-H10) |
+| ~~ARCH-101 (Mesh шины)~~ ✅ закрыт 30.09 | — (ARCH-106 закрыт вместе) |
+| ~~ARCH-106 (TriggerBus)~~ ✅ поглощён 30.09 | — (ARCH-107 и TR-002 от него больше не зависят) |
 | ARCH-107 (Setup Engine v1) | ARCH-108 (predictive entries), ARCH-111 (Meta-Learning v2) |
 | ARCH-104 (унификация сфер) | ARCH-96..99 (регистрация новых сфер без хаоса) |
 | DEV-180 (Risk v1 shadow) | DEV-181 (leverage), ARCH-98 (Portfolio Manager) |
