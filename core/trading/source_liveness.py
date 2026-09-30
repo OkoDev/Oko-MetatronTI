@@ -42,7 +42,7 @@ class SourceState:
     min_sl_dist: float | None = None
     min_rr: float | None = None
     ttl_h: float | None = None
-    verdict: str = ""              # ok | МОЛЧИТ | ПУТЬ НЕ НАЙДЕН | —
+    verdict: str = ""              # ok | МОЛЧИТ | ПУТЬ НЕ НАЙДЕН | ПРОГРЕВ | —
     note: str = ""
 
 
@@ -66,19 +66,64 @@ LOG_TAGS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _count_traces(src: str, log_path: str | None, tail_lines: int = 60_000) -> int:
-    """Сколько строк источник оставил в хвосте лога. 0 при недоступном логе — тогда
-    колонка просто не участвует в вердикте (лучше не знать, чем соврать)."""
+def _log_files(log_path: str) -> list:
+    """Текущий лог + ротированные рядом (`<имя>__2026-09-29_00-00-01.log`), новые первыми.
+
+    🔴 30.09 ПОЧЕМУ ЭТО ВАЖНО: прибор запускается селф-тестом В МОМЕНТ СТАРТА бота, когда
+    текущий лог ещё пуст, а вчерашние строки уехали в ротированный файл. Читая только текущий,
+    он видел ноль следов и объявлял живой источник недостижимым: 30.09 так «похоронило»
+    `waves_long`, который на самом деле стартовал штатно.
+    """
+    import glob
+    import os
+    out = [log_path] if os.path.exists(log_path) else []
+    stem, ext = os.path.splitext(log_path)
+    out += sorted(glob.glob(f"{stem}__*{ext}"), reverse=True)
+    return out[:3]                                           # текущий + двое суток истории
+
+
+def _log_span_h(files: list) -> float:
+    """Сколько часов истории покрывают прочитанные логи — по первой датированной строке самого
+    старого из них. Нужно, чтобы отличить «источник молчит» от «мы ещё ничего не видели»."""
+    import re
+    from datetime import datetime, timezone
+    pat = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+    for p in reversed(files):
+        try:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                for _ in range(200):
+                    m = pat.match(f.readline())
+                    if m:
+                        t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+                        # в логе локальное время; часовой пояс тут не важен — нужна ДЛИТЕЛЬНОСТЬ
+                        return max(0.0, (datetime.now() - t).total_seconds() / 3600)
+        except Exception:                                    # noqa: BLE001
+            continue
+    return 0.0
+
+
+def _count_traces(src: str, log_path: str | None, tail_lines: int = 60_000) -> tuple:
+    """(сколько строк оставил источник, сколько часов истории просмотрено).
+
+    Считаем по текущему логу И по ротированным: иначе после каждого рестарта следов ноль.
+    (-1, 0.0) при недоступном логе — тогда колонка не участвует в вердикте.
+    """
     tags = LOG_TAGS.get(src)
     if not tags or not log_path:
-        return -1
+        return -1, 0.0
+    files = _log_files(log_path)
+    if not files:
+        return -1, 0.0
     try:
         from collections import deque
-        with open(log_path, encoding="utf-8", errors="ignore") as f:
-            tail = deque(f, maxlen=tail_lines)
-        return sum(1 for ln in tail if any(t in ln for t in tags))
+        n = 0
+        for p in files:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                tail = deque(f, maxlen=tail_lines)
+            n += sum(1 for ln in tail if any(t in ln for t in tags))
+        return n, _log_span_h(files)
     except Exception:                                       # noqa: BLE001
-        return -1
+        return -1, 0.0
 
 
 def _mode_of(cfg, src: str) -> str:
@@ -184,7 +229,7 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
                 st.ttl_h = round(ttl_for(src, cfg=cfg) / 3600, 1)
             except Exception:                               # noqa: BLE001
                 pass
-            st.traces = _count_traces(src, log_path)
+            st.traces, _span_h = _count_traces(src, log_path)
             _g, _gn = _top_gate(conn, names, days)
             st.top_gate = f"{_g}:{_gn}" if _gn else ""
 
@@ -204,8 +249,18 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
                 if st.trades == 0:
                     # ключевое различение: есть следы лупа или нет
                     if st.traces == 0:
-                        st.verdict = "ПУТЬ НЕ НАЙДЕН"
-                        st.note = "нет ни сделок, ни следов в логе — ветка в коде недостижима?"
+                        # 🔴 30.09 НЕ СУДИТЬ НА ХОЛОДНОМ ЛОГЕ. Прибор работает селф-тестом при
+                        # старте бота: если истории просмотрено меньше часа, «нет следов» означает
+                        # «мы ещё ничего не видели», а не «ветка недостижима». Живой `waves_long`
+                        # был так объявлен мёртвым 30.09.
+                        if _span_h < 1.0:
+                            st.verdict = "ПРОГРЕВ"
+                            st.note = (f"следов пока нет, но просмотрено лишь {_span_h*60:.0f} мин "
+                                       f"лога — вердикт после накопления истории")
+                        else:
+                            st.verdict = "ПУТЬ НЕ НАЙДЕН"
+                            st.note = (f"нет ни сделок, ни следов за {_span_h:.0f} ч лога — "
+                                       f"ветка в коде недостижима?")
                     else:
                         st.verdict = "МОЛЧИТ"
                         st.note = st.note or (f"нет сделок {days} сут"
@@ -231,7 +286,7 @@ def format_table(rows: list[SourceState], days: int = SILENT_DAYS) -> str:
             f"{'следов':>8}{'min_sl':>8}{'min_rr':>8}{'TTL ч':>7}{'режет чаще':>22}  вердикт")
     lines = [head, "-" * len(head)]
     for r in sorted(rows, key=lambda x: (x.mode != "live", x.src)):
-        mark = {"МОЛЧИТ": "🟡", "ПУТЬ НЕ НАЙДЕН": "🔴", "ok": "✅"}.get(r.verdict, "  ")
+        mark = {"МОЛЧИТ": "🟡", "ПУТЬ НЕ НАЙДЕН": "🔴", "ПРОГРЕВ": "⏳", "ok": "✅"}.get(r.verdict, "  ")
         lines.append(
             f"{r.src:<18}{r.mode:<8}{r.trades:>12}{(r.last_trade or '—'):>12}"
             f"{(r.traces if r.traces >= 0 else '—'):>8}"
