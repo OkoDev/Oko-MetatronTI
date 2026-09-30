@@ -75,6 +75,10 @@ def _ensure_thread() -> None:
             if _thread is None:
                 _thread = threading.Thread(target=_loop, name="market-spool", daemon=True)
                 _thread.start()
+                # 30.09: буфер сбрасывается раз в 10 с — при остановке бота хвост терялся (рестарт 00:10:47:
+                # бар 5m 00:05 дошёл у 563 из 584). Штатный выход — дописать остаток.
+                import atexit
+                atexit.register(flush)
 
 
 def completed_files(now: float | None = None) -> list[Path]:
