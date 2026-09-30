@@ -373,10 +373,28 @@ class TradeRouter:
 
             if hasattr(self.bot, "position_manager"):
                 try:
+                    # 🔴 30.09 ПРОСКАЛЬЗЫВАНИЕ ЗАПИСЫВАЕТСЯ. Колонка `slip_pct` существовала с
+                    # апреля, но `register()` звали без неё — и в 20 436 ордерах за полгода стоял
+                    # ноль. Из-за этого ФАКТИЧЕСКИЙ кост неизвестен: в замерах и выводах вида
+                    # «косты съели эдж» используются записанные 0.35%, из которых подтверждена
+                    # только комиссия 0.09% (taker 0.045 × 2), а остальное — оценка августа
+                    # ([[signal_volume24h_is_always_zero]] — тот же класс поля-пустышки).
+                    # Знак: плюс = исполнились ХУЖЕ сигнала (для LONG выше, для SHORT ниже).
+                    _slip = 0.0
+                    try:
+                        _sig_px, _fill_px = float(entry or 0), float(getattr(br, "entry_price", 0) or 0)
+                        if _sig_px > 0 and _fill_px > 0:
+                            _slip = (_fill_px - _sig_px) / _sig_px * 100
+                            if ctx.direction != "LONG":
+                                _slip = -_slip
+                            _slip = round(_slip, 4)
+                    except (TypeError, ValueError):
+                        _slip = 0.0
                     self.bot.position_manager.register(
                         symbol=ctx.symbol, side=ctx.direction, qty=qty,
                         sim_trade_id=trade_id,
                         exchange_order_id=order_id,
+                        slip_pct=_slip,
                     )
                 except Exception as _pm_e:
                     logger.debug("[TradeRouter] position_manager.register: %s", _pm_e)
