@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DB = str(ROOT / "subscriptions.db")
+DB = str(ROOT / "oko_feed" / "watch.db")   # N16 30.09: состояние вахт — своя база, не subscriptions.db (sat_store)
 TASKS = ROOT / "TASKS.md"
 SECTION = "## 🔭 СРАБОТАВШИЕ ВАХТЫ"
 logger = logging.getLogger(__name__)

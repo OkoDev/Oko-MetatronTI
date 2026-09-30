@@ -34,7 +34,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_DB = str(Path(__file__).resolve().parents[2] / "subscriptions.db")
+_DB = str(Path(__file__).resolve().parents[2] / "oko_feed" / "watch.db")   # N16 30.09: пишет scripts/_alert.py
 
 # Человекочитаемые описания вахт — для текста события.
 _WATCHES = {
