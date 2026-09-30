@@ -237,3 +237,6 @@ cache/
 # и obsidian/Research (см. research_data_goes_to_obsidian_research). 16 файлов на 20 МБ
 # уже уехали в историю коммитов; здесь закрываем дорогу новым.
 *.csv
+
+# ADR-003: токен публикации в хаб Куба — секрет, не коммитить
+oko_feed/cube_hub.token
