@@ -8,7 +8,7 @@ cube_hub.py — хаб шины Куба (ADR-003): доска состояни�
     POST /publish            пачка от производителя (токен X-Cube-Token; запрос с Origin — отказ)
     GET  /state              все пары: {"coins": {sym: state}, "n", "ts", "max_age_sec"}
     GET  /state/{symbol}     состояние пары (+ "_ts", "_age_sec"); символ в любом формате
-    GET  /facts?since=&types=&limit=   журнал фактов по id
+    GET  /facts?since=&types=&limit=   журнал фактов по id  (?last=N — N последних, лента дашборда)
     GET  /ws?types=a,b       поток фактов (WebSocket)
     GET  /stats              производители, разрывы seq, задержка p50/p95, размеры
 
@@ -150,20 +150,25 @@ class Hub:
     def all_states_json(self, now: float | None = None) -> str:
         now = now or time.time()
         parts = [json.dumps(s, ensure_ascii=False) + ":" + js for s, (_, _, js) in self.states.items()]
-        max_age = round(max((now - ts for ts, _, _ in self.states.values()), default=0.0), 1)
-        return ('{"coins": {' + ",".join(parts) + '}, "n": %d, "ts": %.3f, "max_age_sec": %s}'
-                % (len(self.states), now, max_age))
+        ages = [now - ts for ts, _, _ in self.states.values()]
+        max_age = round(max(ages, default=0.0), 1)
+        p50 = _pctl(ages, 0.5)
+        return ('{"coins": {' + ",".join(parts) + '}, "n": %d, "ts": %.3f, "max_age_sec": %s, "age_p50_sec": %s}'
+                % (len(self.states), now, max_age, "null" if p50 is None else round(p50, 1)))
 
-    def facts(self, since: int = 0, types: list[str] | None = None, limit: int = 500) -> list[dict]:
+    def facts(self, since: int = 0, types: list[str] | None = None, limit: int = 500,
+              last: int | None = None) -> list[dict]:
+        """Факты по возрастанию id: после `since`, либо `last` последних (лента дашборда)."""
         q = "SELECT id, producer, seq, ts, symbol, event, json FROM facts WHERE id > ?"
         args: list = [since]
         if types:
             q += " AND event IN (%s)" % ",".join("?" * len(types))
             args += types
-        q += " ORDER BY id LIMIT ?"
-        args.append(min(max(1, limit), 5000))
-        return [{"id": r[0], "producer": r[1], "seq": r[2], "ts": r[3], "symbol": r[4], "event": r[5],
+        q += " ORDER BY id DESC LIMIT ?" if last else " ORDER BY id LIMIT ?"
+        args.append(min(max(1, last or limit), 5000))
+        rows = [{"id": r[0], "producer": r[1], "seq": r[2], "ts": r[3], "symbol": r[4], "event": r[5],
                  "data": json.loads(r[6])} for r in self.db.execute(q, args)]
+        return rows[::-1] if last else rows
 
     def stats(self) -> dict:
         now = time.time()
@@ -218,7 +223,8 @@ def make_app(hub: Hub, token: str) -> web.Application:
 
     async def facts(req: web.Request) -> web.Response:
         types = [t for t in req.query.get("types", "").split(",") if t] or None
-        rows = hub.facts(int(req.query.get("since", 0) or 0), types, int(req.query.get("limit", 500) or 500))
+        rows = hub.facts(int(req.query.get("since", 0) or 0), types, int(req.query.get("limit", 500) or 500),
+                         last=int(req.query["last"]) if req.query.get("last") else None)
         return _json(json.dumps({"facts": rows}, ensure_ascii=False))
 
     async def ws_stream(req: web.Request) -> web.WebSocketResponse:

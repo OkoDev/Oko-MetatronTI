@@ -165,3 +165,28 @@ def test_hub_http_token_origin_and_ws(tmp_path):
             assert st["states"] == 1 and st["producers"]["oko-bot"]["items"] == 3
 
     asyncio.new_event_loop().run_until_complete(run())
+
+
+# ── шаг 2: терминал применяет ту же проекцию поверх хаба ──
+def test_projection_same_on_bot_object_and_hub_dict():
+    from core.context.cube_projection import filter_record
+    bus = PairContextBus()
+    bus.publish(SYM, SphereEvent.WT_SNAP_UPDATED, {"15m": {"wt1": -61.2, "wt2": -55, "zone": "OS", "wt_cross": "up"}})
+    bus.publish(SYM, SphereEvent.SMC_SNAP_UPDATED, {"by_tf": {"1h": {"ob_bull": {"distance_pct": 1.2}, "choch": "UP"}},
+                                                    "eqh_near": True})
+    bus.publish(SYM, SphereEvent.PIVOT_SNAP_UPDATED, {"1W": {"PP": 100.0, "R1": 110, "S1": "x"}})
+    bus.get(SYM).tick_price, bus.get(SYM).regime = 101.5, "RANGE"
+    via_bot = json.loads(json.dumps(filter_record(bus.get(SYM)), default=str))    # как отдаёт /snapshot_all
+    via_hub = filter_record(json.loads(json.dumps(pair_state_dict(bus.get(SYM)), default=str)))
+    assert via_bot == via_hub
+
+
+def test_hub_all_states_has_age_p50(hub):
+    hub.apply("oko-bot", [_item_s(1, regime="A"), _item_s(2, sym="ETH/USDT:USDT", regime="B")])
+    d = json.loads(hub.all_states_json(now=1010.0))
+    assert d["age_p50_sec"] == 10.0 and d["max_age_sec"] == 10.0
+
+
+def test_hub_facts_last_n_for_dashboard_feed(hub):
+    hub.apply("oko-bot", [_item_f(i, "signal_detected", n=i) for i in range(1, 6)])
+    assert [f["data"]["n"] for f in hub.facts(last=2)] == [4, 5]          # последние, по возрастанию

@@ -169,6 +169,54 @@ async def h_feed(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+HUB_URL = "http://127.0.0.1:8020"   # ADR-003: хаб шины Куба (pm2 cube-hub) — доска переживает рестарт бота
+
+
+async def _hub_get(path: str, timeout: float = 5.0):
+    async with ClientSession(timeout=ClientTimeout(total=timeout)) as s:
+        async with s.get(f"{HUB_URL}{path}") as r:
+            if r.status != 200:
+                raise RuntimeError(f"hub HTTP {r.status}")
+            return await r.json()
+
+
+async def h_cube_events(request: web.Request) -> web.Response:
+    """GET /api/cube/events?limit=N — лента Куба из журнала фактов хаба (ADR-003 шаг 2).
+
+    Переживает рестарт бота. В ленте — ФАКТЫ (сигналы, открытия/отказы/закрытия…, класс в
+    bus_catalog.EVENT_CLASS), без потока обновлений снимков (~40/с, шум для ленты).
+    Хаб недоступен → старый путь (лог событий в памяти бота)."""
+    limit = min(max(1, int(request.rel_url.query.get("limit", 50) or 50)), 500)
+    try:
+        facts = (await _hub_get(f"/facts?last={limit}")).get("facts") or []
+        from datetime import datetime, timezone
+        events = [{"symbol": f["symbol"], "event": f["event"],
+                   "time": datetime.fromtimestamp(f["ts"], timezone.utc).isoformat(),
+                   "keys": list((f.get("data") or {}).keys())} for f in facts]
+        return web.json_response({"events": events, "count": len(events), "source": "hub"})
+    except Exception:                                    # noqa: BLE001 — хаб лёг: как раньше
+        return await h_proxy(request)
+
+
+async def h_cube_stats(request: web.Request) -> web.Response:
+    """GET /api/cube/stats — внутренности шины БОТА (подписчики, очередь EventBus) — от бота.
+    Бот недоступен → минимум из хаба (сколько пар на доске) с пометкой, а не ошибка."""
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=8)) as s:
+            async with s.get(f"{BOT_URL}/api/cube/stats") as r:
+                if r.status == 200:
+                    return web.Response(body=await r.read(), content_type="application/json")
+    except Exception:                                    # noqa: BLE001
+        pass
+    try:
+        st = await _hub_get("/stats")
+        return web.json_response({"context_bus": {"pairs_tracked": st.get("states")},
+                                  "event_bus": {}, "source": "hub", "bot": "unavailable",
+                                  "hub": {k: st.get(k) for k in ("state_age_p50", "facts", "uptime_sec")}})
+    except Exception as e:                               # noqa: BLE001
+        return web.json_response({"error": f"bot and hub unavailable: {e}"}, status=502)
+
+
 async def h_proxy(request: web.Request) -> web.Response:
     """Прозрачный прокси всего остального на бота (POST/settings/oracle/...)."""
     url = f"{BOT_URL}{request.rel_url}"
@@ -189,6 +237,8 @@ def main():
     app = web.Application(middlewares=[local_origin_guard])
     app.router.add_get("/api/dashboard", h_dashboard)
     app.router.add_get("/api/feed", h_feed)
+    app.router.add_get("/api/cube/events", h_cube_events)     # ADR-003 шаг 2: из хаба Куба
+    app.router.add_get("/api/cube/stats", h_cube_stats)
     app.router.add_route("*", "/{tail:.*}", h_proxy)
 
     async def _on_start(app_):

@@ -3030,38 +3030,8 @@ async def _handle_cube_pairs(request: web.Request) -> web.Response:
                             content_type="application/json", charset="utf-8")
 
 
-def _filter_record(st) -> dict:
-    """Урезанный per-coin стейт для фильтр-конструктора (Егор 29.07): WT per-TF + SMC by_tf +
-    пивоты + флаги. Только то, по чему фильтруем — payload лёгкий для bulk по 500 монетам."""
-    smc = st.smc_snap or {}
-    wt = st.wt_snap or {}
-    wt_out = {}
-    for tf, w in (wt.items() if isinstance(wt, dict) else []):
-        if isinstance(w, dict):
-            # wt2 нужен фильтру, чтобы отличать СОСТОЯНИЕ кросса (wt1 выше/ниже сигнальной,
-            # держится до обратного пересечения) от МОМЕНТА пересечения (живёт один бар).
-            # Егор 19.08: «кросс — историческое событие, оно живёт до обратного кросса».
-            wt_out[tf] = {"wt1": w.get("wt1"), "wt2": w.get("wt2"),
-                          "zone": w.get("zone"), "cross": w.get("wt_cross"),
-                          "trend": w.get("trend"), "atr": w.get("atr_trend")}
-    smc_bt = {}
-    for tf, s in (smc.get("by_tf") or {}).items():
-        smc_bt[tf] = {"ob_bull": bool(s.get("ob_bull")), "ob_bear": bool(s.get("ob_bear")),
-                      "ob_bull_d": (s.get("ob_bull") or {}).get("distance_pct"),
-                      "ob_bear_d": (s.get("ob_bear") or {}).get("distance_pct"),
-                      "fvg_bull": s.get("fvg_bull"), "fvg_bear": s.get("fvg_bear"),
-                      "choch": s.get("choch"), "bos": s.get("bos")}
-    piv = st.pivot_snap or {}
-    piv_out = {}
-    for _ptf in ("1W", "1D", "1M"):
-        _d = piv.get(_ptf) or {}
-        _lv = {k: _d.get(k) for k in ("PP", "R1", "R2", "R3", "S1", "S2", "S3")
-               if isinstance(_d.get(k), (int, float))}
-        if _lv:
-            piv_out[_ptf] = _lv
-    return {"px": st.tick_price, "regime": st.regime, "wt": wt_out, "smc": smc_bt,
-            "eqh_near": smc.get("eqh_near"), "eql_near": smc.get("eql_near"),
-            "in_ote": smc.get("price_in_ote"), "piv": piv_out}
+# 30.09 (ADR-003 шаг 2): проекция вынесена в общий модуль — её же применяет терминал поверх хаба Куба
+from core.context.cube_projection import filter_record as _filter_record  # noqa: E402
 
 
 async def _handle_cube_snapshot_all(request: web.Request) -> web.Response:
