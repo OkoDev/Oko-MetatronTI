@@ -43,6 +43,7 @@ def test_mirror_fact_goes_immediately_state_on_flush():
     bus.publish(SYM, SphereEvent.SIGNAL_DETECTED, {"signal_type": "wt_signal", "direction": "LONG"})
     bus.publish(SYM, SphereEvent.REGIME_UPDATED, {"regime": "RANGE"})
     bus.publish(SYM, SphereEvent.RECOMMENDATION_BUILT, {"recommendation": object()})
+    bus.get(SYM).tick_price = 1.0
     items = _drain(m)
     assert [i["ev"] for i in items] == ["signal_detected"]          # состояние и internal — не фактом
     assert m.flush_states() == 1
@@ -190,3 +191,28 @@ def test_hub_all_states_has_age_p50(hub):
 def test_hub_facts_last_n_for_dashboard_feed(hub):
     hub.apply("oko-bot", [_item_f(i, "signal_detected", n=i) for i in range(1, 6)])
     assert [f["data"]["n"] for f in hub.facts(last=2)] == [4, 5]          # последние, по возрастанию
+
+
+
+def test_mirror_does_not_send_state_without_price():
+    """30.09: после рестарта бот заводит пару раньше скана (без цены) — это не должно затирать хаб."""
+    bus = PairContextBus()
+    m = _mirror(bus, rolling_per_tick=5)
+    bus._mirror = m
+    bus.publish(SYM, SphereEvent.FUNDING_UPDATED, {"rate": 0.0001})     # пара есть, цены нет
+    assert m.flush_states() == 0 and _drain(m) == []
+    bus.get(SYM).tick_price = 100.0
+    bus.update(SYM, regime="RANGE")
+    assert m.flush_states() == 1
+
+
+def test_mirror_caps_pairs_per_tick():
+    bus = PairContextBus()
+    m = _mirror(bus, rolling_per_tick=0)
+    m.MAX_PER_TICK = 3
+    for i in range(5):
+        s = f"C{i}/USDT:USDT"
+        bus.get(s).tick_price = 1.0
+        m.on_update(s)
+    assert m.flush_states() == 3 and len(m._dirty) == 2
+    assert m.flush_states() == 2 and not m._dirty

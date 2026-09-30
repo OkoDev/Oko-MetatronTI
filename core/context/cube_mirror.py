@@ -101,19 +101,28 @@ class CubeMirror:
             except queue.Full:
                 self.dropped[kind] = self.dropped.get(kind, 0) + 1
 
+    MAX_PER_TICK = 200     # предохранитель: сброс не держит цикл событий, остаток — в следующий тик
+
     def flush_states(self) -> int:
         """Грязные пары + N давно не отправленных → в очередь. Возвращает число пар."""
         now = time.monotonic()
-        syms, self._dirty = self._dirty, set()
+        dirty = list(self._dirty)
+        syms, self._dirty = set(dirty[:self.MAX_PER_TICK]), set(dirty[self.MAX_PER_TICK:])
         states = self._bus._states                     # не get(): незнакомую пару не создаём
         if self._roll > 0:
-            rest = [s for s in states if s not in syms]
+            rest = [s for s in states if s not in syms and s not in self._dirty]
             rest.sort(key=lambda s: self._sent_at.get(s, 0.0))
             syms.update(rest[:self._roll])
         n = 0
         for sym in syms:
             st = states.get(sym)
             if st is None:
+                continue
+            if not st.tick_price:
+                # 🔴 30.09: после рестарта бот заводит запись пары раньше скана (фандинг Сферы 19 и т.п.) —
+                # без цены. Отправка затирала в хабе полное состояние пустым: терминал терял 115 монет
+                # на весь первый цикл. Пока цены нет — хаб держит прежнее (его возраст честно растёт).
+                self._sent_at[sym] = now               # в хвост кругового досыла, чтобы не застревать
                 continue
             self._put("state", json.dumps(
                 {"k": "s", "sym": sym, "st": pair_state_dict(st), "ts": time.time(), "seq": self._next()},
