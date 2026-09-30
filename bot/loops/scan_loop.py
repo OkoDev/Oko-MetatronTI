@@ -2310,10 +2310,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         bot.signal_counters["total"] += 1
                         signals_to_broadcast.append(("wt_signal", wt_message(sym, info), None))
                         all_scan_signals.append(sig)
-                        # Куб: Сфера 7 → bus
+                        # Куб: Сфера 7 → bus (сырая детекция). 30.09: тип из сигнала —
+                        # после апгрейда ARCH-23 это confluence, а не wt_signal
                         if _bus is not None:
                             _bus.publish(sym, SphereEvent.SIGNAL_DETECTED, {
-                                "signal_type": "wt_signal", "direction": sig.direction.value,
+                                "signal_type": sig.signal_type.value, "direction": sig.direction.value,
                                 "strength": sig.strength, "tf": _scan_tf,
                             })
 

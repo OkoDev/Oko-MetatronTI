@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -116,6 +117,10 @@ class EventBus:
         self._semaphore  = asyncio.Semaphore(self.max_concurrent)
         self._wake       = asyncio.Event()
         self._seq        = 0
+        # 30.09 (ARCH-101 гигиена): счёт публикаций по типам — самопроверка ребра
+        # «детекторы→EventBus» смотрит на факт публикаций, а не на флаг конфига
+        self._accepted: Counter = Counter()   # event_type → принято в очередь
+        self._rejected: Counter = Counter()   # event_type → отбито паузой пары / очередью
 
     async def publish(
         self,
@@ -144,6 +149,7 @@ class EventBus:
                     "[EventBus] %s %s: cooldown %.1f мин (осталось %.1f)",
                     symbol, event_type, self.cooldown_min, self.cooldown_min - elapsed,
                 )
+                self._rejected[event_type] += 1
                 return False
 
         prio = priority if priority is not None else EVENT_PRIORITY.get(event_type, 5)
@@ -154,6 +160,7 @@ class EventBus:
                 # Новый сигнал не приоритетнее — пропускаем
                 logger.debug("[EventBus] %s already in queue prio=%d, skip %s prio=%d",
                              symbol, existing_prio, event_type, prio)
+                self._rejected[event_type] += 1
                 return False
             # Новый сигнал ПРИОРИТЕТНЕЕ — заменяем в очереди
             # heapq не поддерживает удаление O(1); помечаем старый как invalid и добавляем новый
@@ -170,6 +177,7 @@ class EventBus:
                           event_type=event_type, data=data)
         heapq.heappush(self._heap, item)
         self._in_queue[symbol] = prio
+        self._accepted[event_type] += 1
         self._wake.set()
 
         logger.info(
@@ -253,6 +261,8 @@ class EventBus:
             "queue_size":   len(self._heap),
             "cooldowns":    len(self._cooldowns),
             "in_queue":     len(self._in_queue),
+            "accepted_by_type": dict(self._accepted),
+            "rejected_by_type": dict(self._rejected),
         }
 
 

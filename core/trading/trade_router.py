@@ -100,9 +100,11 @@ class TradeRouter:
         if _until and time.time() < _until:
             logger.info("[TradeRouter] %s пропуск: биржа объявила пару недоступной, "
                         "пауза ещё %.0f мин", _sym, (_until - time.time()) / 60)
-            return SubmitResult(trade_id=None, exchange_order_id=None,
-                                hard_drops=[("symbol_offline_cooldown",
-                                             "пара недоступна на бирже")])
+            _drops = [("symbol_offline_cooldown", "пара недоступна на бирже")]
+            # 30.09 (ARCH-101 гигиена): единственный выход роутера, который не публиковал
+            # отказ — поток кандидатов в шине = OPENED ∪ DROPPED без дыр
+            self._publish_early_drop(recommendation, source, _drops)
+            return SubmitResult(trade_id=None, exchange_order_id=None, hard_drops=_drops)
         policy = SourcePolicy.from_config(self.config, source)
 
         # ── Build context ────────────────────────────────────────────────
@@ -515,6 +517,26 @@ class TradeRouter:
             })
         except Exception as e:
             logger.debug("[TradeRouter] publish POSITION_DROPPED err: %s", e)
+
+    def _publish_early_drop(self, rec: Any, source: str,
+                            hard_drops: list[tuple[str, str]]) -> None:
+        """POSITION_DROPPED для выхода ДО сборки контекста (режим пары не запрашиваем)."""
+        bus = getattr(self.bot, "pair_context", None) or getattr(self.bot, "pair_context_bus", None)
+        if bus is None:
+            return
+        try:
+            from core.context.pair_context import SphereEvent
+            bus.publish(_get(rec, "symbol") or "?", SphereEvent.POSITION_DROPPED, {
+                "side": _direction_str(_get(rec, "direction")),
+                "source": source,
+                "hard_drops": [{"gate": g, "reason": r} for g, r in hard_drops],
+                "soft_penalties": [],
+                "strength": int(_get(rec, "overall_strength") or 0),
+                "regime": None,
+                "ts_ms": int(time.time() * 1000),
+            })
+        except Exception as e:
+            logger.debug("[TradeRouter] publish early POSITION_DROPPED err: %s", e)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

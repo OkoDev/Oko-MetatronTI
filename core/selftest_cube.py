@@ -396,18 +396,30 @@ def _edge_ti_to_ts(bot) -> CubeCheckResult:
 
 
 def _edge_detectors_to_eventbus(bot) -> CubeCheckResult:
-    """Ребро: детекторы (anomaly, funding, liquidity_sweep, wt_confluence) → EventBus."""
+    """Ребро: детекторы → EventBus.
+
+    30.09 (ARCH-101 гигиена): статус по ФАКТУ публикаций с запуска (`EventBus.stats()`),
+    а не по флагу конфига — флаг давал ACTIVE, даже если не публиковал никто.
+    `trade_closed` не считается: это отдельное ребро Post-Trade → EventBus.
+    """
     eb = getattr(bot, "event_bus", None)
     if not eb:
         return CubeCheckResult("L14_edge", "E_DET_EB", "Детекторы→EventBus", MISSING)
-    # Косвенная проверка: событийные триггеры в config.event_bus
-    try:
-        enabled = bool(bot.config.get("event_bus.enabled", True))
-    except Exception:
-        enabled = False
-    return CubeCheckResult("L14_edge", "E_DET_EB", "Детекторы→EventBus",
-                           ACTIVE if enabled else MISSING,
-                           f"event_bus.enabled={enabled} (publish в anomaly/funding/sweep/wt_confluence)")
+    st = eb.stats() if hasattr(eb, "stats") else {}
+    if not st.get("enabled", False):
+        return CubeCheckResult("L14_edge", "E_DET_EB", "Детекторы→EventBus", SHADOW,
+                               "event_bus.enabled=false")
+    by_type: dict = {}
+    for key in ("accepted_by_type", "rejected_by_type"):
+        for t, n in (st.get(key) or {}).items():
+            if t != "trade_closed":
+                by_type[t] = by_type.get(t, 0) + n
+    if not by_type:
+        return CubeCheckResult("L14_edge", "E_DET_EB", "Детекторы→EventBus", SHADOW,
+                               "0 публикаций с запуска (сразу после старта — норма)")
+    top = ", ".join(f"{t}={n}" for t, n in sorted(by_type.items(), key=lambda x: -x[1])[:4])
+    return CubeCheckResult("L14_edge", "E_DET_EB", "Детекторы→EventBus", ACTIVE,
+                           f"{len(by_type)} типов, {sum(by_type.values())} публикаций: {top}")
 
 
 def _edge_ws_to_dc(bot) -> CubeCheckResult:
