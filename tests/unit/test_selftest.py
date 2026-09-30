@@ -157,9 +157,13 @@ class TestRunSelftest:
         # Не менее 8 тестов
         assert len(report.results) >= 8
         assert report.total_duration_ms > 0
-        # Все кроме exchange должны быть real results
+        # Все кроме exchange должны быть real results.
+        # 🔴 30.09: список был захардкожен и отстал от кода — слой L12b («Source Liveness»)
+        # добавлен 28.09, и тест падал с того дня. Сверяемся с шаблоном «L<число><буква?>»,
+        # чтобы новый слой ломал тест только по существу, а не по забытой строке.
+        import re as _re
         for r in report.results:
-            assert r.layer in ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12"]
+            assert _re.fullmatch(r"L\d{1,2}[a-z]?", r.layer), f"неожиданный слой: {r.layer}"
 
     @pytest.mark.asyncio
     async def test_run_selftest_convenience(self):
