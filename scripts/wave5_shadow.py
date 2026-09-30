@@ -432,6 +432,7 @@ def full_scan(a):
         mark_market(state, now, R72, len(syms))
         reentry_watch(state, now)
         tg_notify(state, refresh_analyst(state))
+        cleanup_analyst()        # 30.09: папка разборов росла без ограничений (715 МБ к 30.09)
     save_and_report(state, a, mode="full", n_univ=len(syms), young=young)
 
 
@@ -478,11 +479,105 @@ def mark_market(state, now, r72, n_univ):
         v["mass_flush"] = bool(v["cluster_norm"] >= 7)
 
 
+FOCUS = DATA / "analyst_focus.json"
+FOCUS_AGE_H = 24.0          # монета «в фокусе» столько часов после последнего ручного разбора
+KEEP_PER_SYM, KEEP_HOURS = 3, 24.0      # чистка: последние N разборов монеты + всё за сутки
+
+
+def _focus_syms(state) -> list:
+    """Монеты, которые смотрели руками через кнопку «разобрать монету» (терминал пишет сюда).
+
+    🔑 30.09 (Егор: «важно чтобы разборы были актуальны и доступны»). Тень обновляла разборы
+    ТОЛЬКО активных сетапов — их сейчас один, поэтому всё, что смотрят вручную, протухало:
+    NEAR был просрочен на 10 ч, GRT на 9 ч. Держим такие монеты свежими наравне с активными,
+    пока с последнего запроса не прошло FOCUS_AGE_H.
+    """
+    try:
+        raw = json.loads(FOCUS.read_text(encoding="utf-8")) if FOCUS.exists() else {}
+    except Exception:                                        # noqa: BLE001
+        return []
+    live = {str(v.get("sym", "")).split("/")[0].upper()
+            for v in state.values() if v.get("status") != "closed"}
+    out = []
+    for sym, ts in raw.items():
+        try:
+            age = (NOW - pd.Timestamp(ts, tz="UTC")).total_seconds() / 3600
+        except Exception:                                    # noqa: BLE001
+            continue
+        if age <= FOCUS_AGE_H and sym.upper() not in live:
+            out.append(sym.upper())
+    return out
+
+
+def cleanup_analyst(keep_per_sym: int = KEEP_PER_SYM, keep_hours: float = KEEP_HOURS) -> None:
+    """Чистка папки разборов: на монету оставляем последние N + всё за сутки, остальное удаляем.
+
+    Чистки не было вовсе: к 30.09 накопилось 3608 файлов на 715 МБ (с 14.09, ~45 МБ в день),
+    на одну STAR — 417 разборов. Папку было не прочитать, а диск рос линейно.
+    """
+    d = ROOT / "data" / "wave_analyst"
+    if not d.exists():
+        return
+    import collections
+    # 🔴 ЗАЩИТА ЖУРНАЛА. Холостой прогон показал, что без неё чистка снесла бы 24 картинки
+    # из 49, на которые ссылается state.json — в журнале /waves у закрытых сетапов появились бы
+    # битые изображения. История разборов должна оставаться доступной, поэтому всё, что упомянуто
+    # в записях (`analyst_png` / `analyst_json`), не трогаем независимо от возраста.
+    keep_stamps = set()
+    try:
+        _st = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
+        for _v in _st.values():
+            for _f in (_v.get("analyst_png"), _v.get("analyst_json")):
+                if _f:
+                    _p = Path(str(_f)).stem.split("_")
+                    if len(_p) >= 3:
+                        keep_stamps.add(f"{_p[0].upper()}|{_p[1]}_{_p[2]}")
+    except Exception:                                        # noqa: BLE001
+        return                                               # не смогли прочитать журнал — не чистим
+    by_sym = collections.defaultdict(list)
+    for p in d.iterdir():
+        if p.suffix.lower() not in (".png", ".json", ".md"):
+            continue
+        by_sym[p.name.split("_")[0].upper()].append(p)
+    now = pd.Timestamp.utcnow().timestamp()
+    freed = gone = 0
+    for sym, files in by_sym.items():
+        # группируем по «штампу» разбора (SYM_YYYYmmdd_HHMM), чтобы png/json/части жили вместе
+        stamps = collections.defaultdict(list)
+        for p in files:
+            parts = p.stem.split("_")
+            stamps["_".join(parts[1:3]) if len(parts) >= 3 else p.stem].append(p)
+        order = sorted(stamps.items(), key=lambda kv: max(x.stat().st_mtime for x in kv[1]), reverse=True)
+        for i, (_stamp, group) in enumerate(order):
+            newest = max(x.stat().st_mtime for x in group)
+            if i < keep_per_sym or (now - newest) / 3600 <= keep_hours:
+                continue
+            if f"{sym}|{_stamp}" in keep_stamps:
+                continue                                     # на этот разбор ссылается журнал
+            for p in group:
+                try:
+                    freed += p.stat().st_size
+                    p.unlink()
+                    gone += 1
+                except Exception:                            # noqa: BLE001
+                    pass
+    if gone:
+        print(f"  [чистка] разборов удалено {gone} · освобождено {freed/1024/1024:.0f} МБ "
+              f"(оставляем {keep_per_sym} последних на монету + сутки)", flush=True)
+
+
 def refresh_analyst(state):
     """🌊 Волновой разбор (core.waves.wave_analyst) для каждого активного сетапа раз в 4h: схема для /waves,
-    зона пятой в дневной ноге (OTE/глубокая/за пределами) — главный признак по замеру 14.09."""
+    зона пятой в дневной ноге (OTE/глубокая/за пределами) — главный признак по замеру 14.09.
+    Плюс «монеты в фокусе» — те, что смотрели руками: иначе их разборы протухают на часы."""
     from core.waves.wave_analyst import report_for
     reports = {}
+    for sym in _focus_syms(state):
+        try:
+            r = report_for(sym, "3m", ROOT / "data" / "wave_analyst", now=NOW, parts=True)
+            print(f"  разбор [фокус] {sym}: {r['zone']} ({r['depth']}) → {r['png']}", flush=True)
+        except Exception as e_:                              # noqa: BLE001
+            print(f"  [разбор-фокус] {sym}: {type(e_).__name__} {e_}", flush=True)
     for k, prev in state.items():
         if prev.get("status") == "closed":
             continue

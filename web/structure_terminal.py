@@ -505,22 +505,43 @@ async def api_inplay(_req):
 
 
 # ── ФИЛЬТР-КОНСТРУКТОР (Егор 29.07): составной MTF-фильтр по снапшотам Куба ──
-_SNAP_URL = "http://127.0.0.1:8000/api/cube/snapshot_all"
-_snap = {"ts": 0.0, "coins": {}}
+_HUB_STATE_URL = "http://127.0.0.1:8020/state"                # ADR-003 шаг 2: хаб Куба
+_SNAP_URL = "http://127.0.0.1:8000/api/cube/snapshot_all"     # запасной путь: сам бот
+_snap = {"ts": 0.0, "coins": {}, "source": None, "age_sec": None}
 
 
 def _fetch_snap():
-    """Кэш bulk-снапшота из шины (60с). Бот флапнул → отдаём последний (stale, но живой)."""
+    """Кэш bulk-снапшота Куба (60 с).
+
+    30.09 (ADR-003 шаг 2): источник — хаб Куба: его доска переживает рестарт бота. Проекция та же,
+    что у бота (`core/context/cube_projection.filter_record`), — один калькулятор. Хаб недоступен →
+    бот :8000 (старый путь). Недоступны оба → последний снимок (stale, но живой)."""
     now = time.time()
     if now - _snap["ts"] < 60 and _snap["coins"]:
         return _snap["coins"]
     try:
+        with urllib.request.urlopen(_HUB_STATE_URL, timeout=15) as r:
+            d = json.loads(r.read())
+        from core.context.cube_projection import filter_record
+        coins = {s: filter_record(st) for s, st in (d.get("coins") or {}).items() if st.get("tick_price")}
+        if coins:
+            _snap.update(coins=coins, ts=now, source="hub", age_sec=d.get("age_p50_sec"))
+            return coins
+    except Exception:
+        pass
+    try:
         with urllib.request.urlopen(_SNAP_URL, timeout=15) as r:
-            _snap["coins"] = json.loads(r.read()).get("coins", {})
-            _snap["ts"] = now
+            _snap.update(coins=json.loads(r.read()).get("coins", {}), ts=now, source="bot", age_sec=0.0)
     except Exception:
         pass
     return _snap["coins"]
+
+
+def _snap_meta() -> dict:
+    """Откуда и насколько свежий снимок — чтобы экран не выдавал старое за живое."""
+    return {"source": _snap["source"], "age_sec": _snap["age_sec"],
+            "fetched_ago_sec": round(time.time() - _snap["ts"], 1) if _snap["ts"] else None,
+            "n": len(_snap["coins"])}
 
 
 def _match_block(rec, b):
@@ -1141,7 +1162,7 @@ async def api_filter(req):
     else:
         out.sort(key=lambda x: x["sym"])
     return web.json_response({"coins": out, "n": len(out), "total": len(coins),
-                              "warn": warn, "ts": int(time.time())})
+                              "warn": warn, "ts": int(time.time()), "snap": _snap_meta()})
 
 
 # ── МНОГООКОННЫЙ МОНИТОР (Егор 14.08): фильтр → сетка живых графиков, аналог TW ──
@@ -4142,7 +4163,31 @@ async def api_waves_analyze(req):
         r = await asyncio.get_running_loop().run_in_executor(_POOL, report_for, sym, ltf, _WA_DIR)
     except Exception as e:
         return web.json_response({"ok": False, "err": f"{type(e).__name__}: {e}"}, status=500)
+    _remember_focus(sym)
     return web.json_response({"ok": True, **r})
+
+
+# 🔑 30.09 «МОНЕТЫ В ФОКУСЕ» (Егор: «важно чтобы разборы были актуальны и доступны»).
+# Тень обновляет разборы ТОЛЬКО активных сетапов — сейчас это одна запись, поэтому всё, что
+# смотрят руками, протухает: NEAR был просрочен на 10 ч, GRT на 9 ч. Здесь запоминаем монету,
+# которую только что разобрали по кнопке, а тень (`wave5_shadow.refresh_analyst`) держит их
+# свежими наравне с активными. Формат — плоский json {ТИКЕР: время запроса UTC}.
+_FOCUS = os.path.join(_WV_DIR, "analyst_focus.json")
+_FOCUS_KEEP = 15
+
+
+def _remember_focus(sym: str) -> None:
+    try:
+        cur = {}
+        if os.path.exists(_FOCUS):
+            with open(_FOCUS, encoding="utf-8") as f:
+                cur = json.load(f) or {}
+        cur[sym] = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
+        cur = dict(sorted(cur.items(), key=lambda kv: kv[1], reverse=True)[:_FOCUS_KEEP])
+        with open(_FOCUS, "w", encoding="utf-8") as f:
+            json.dump(cur, f, ensure_ascii=False, indent=1)
+    except Exception:                                        # noqa: BLE001
+        pass                                                 # фокус — удобство, ронять разбор из-за него нельзя
 
 
 # 🔎 22.09 (Егор: «вот такие разборы — пачку сразу! добавить поиск аналогичных в панель»). Фоновая задача: вся вселенная
