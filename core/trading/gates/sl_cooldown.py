@@ -36,6 +36,8 @@ class SlCooldownGate(Gate):
                 row = conn.execute(
                     "SELECT id, closed_at FROM simulated_trades "
                     "WHERE symbol=? AND status='SL' AND datetime(closed_at)>=datetime(?) "
+                    # 30.09: сделка, открытая симуляцией филла, — наблюдение, не торговля
+                    "AND (features_json IS NULL OR features_json NOT LIKE '%sim_fill_at%') "
                     "ORDER BY closed_at DESC LIMIT 1",
                     (ctx.symbol, cutoff_str),
                 ).fetchone()

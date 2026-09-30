@@ -697,6 +697,8 @@ def _is_in_sl_cooldown(bot, symbol: str, signal_type: str = "") -> bool:
 
     try:
         db_path = bot.trade_simulator.db_path
+        # 30.09: сделка, ОТКРЫТАЯ симуляцией филла (core/trading/sim_fill.py), — наблюдение,
+        # а не торговля: её стоп не должен запирать боевой вход. Метка — sim_fill_at в features.
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         # DEV-215: datetime() нормализует ISO 'T' и naive форматы для правильного сравнения.
         cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
@@ -706,12 +708,15 @@ def _is_in_sl_cooldown(bot, symbol: str, signal_type: str = "") -> bool:
                 query = (
                     "SELECT 1 FROM simulated_trades "
                     f"WHERE symbol=? AND status='SL' AND datetime(closed_at)>=datetime(?) "
+                    "AND (features_json IS NULL OR features_json NOT LIKE '%sim_fill_at%') "
                     f"AND signal_type NOT IN ({placeholders}) LIMIT 1"
                 )
                 row = conn.execute(query, (symbol, cutoff_str, *excluded_sources)).fetchone()
             else:
                 row = conn.execute(
-                    "SELECT 1 FROM simulated_trades WHERE symbol=? AND status='SL' AND datetime(closed_at)>=datetime(?) LIMIT 1",
+                    "SELECT 1 FROM simulated_trades WHERE symbol=? AND status='SL' "
+                    "AND datetime(closed_at)>=datetime(?) "
+                    "AND (features_json IS NULL OR features_json NOT LIKE '%sim_fill_at%') LIMIT 1",
                     (symbol, cutoff_str),
                 ).fetchone()
         if row:

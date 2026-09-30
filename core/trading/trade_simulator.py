@@ -1903,7 +1903,19 @@ class TradeSimulator:
                     df = df.copy()
                     df["time"] = pd.to_numeric(df["time"], errors="coerce")
                     try:
-                        created_ms = created_dt.timestamp() * 1000
+                        # 30.09: у SIM-лимитки, исполненной по свечам (core/trading/sim_fill.py),
+                        # сделка начинается с ФИЛЛА, а не с сигнала. Бары до входа — это другая
+                        # сторона цены (лимит стоит на откате), и по ним сделка «закрылась» бы
+                        # по цели, которой не было.
+                        _bars_from = created_dt
+                        try:
+                            _sfa = (json.loads(trade.get("features_json") or "{}") or {}).get("sim_fill_at")
+                            if _sfa:
+                                _sfd = datetime.fromisoformat(str(_sfa))
+                                _bars_from = _sfd if _sfd.tzinfo else _sfd.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            pass
+                        created_ms = _bars_from.timestamp() * 1000
                         # OPS-01b анти-#1910 (КОРЕНЬ, 10.06): created_at пишется СИСТЕМНЫМИ часами
                         # хоста (Windows, datetime.now при register), а df["time"] — БИРЖЕВОЕ время
                         # свечей. Если часы хоста ушли ВПЕРЁД, created_ms оказывается «в будущем»

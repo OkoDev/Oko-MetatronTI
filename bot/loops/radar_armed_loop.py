@@ -904,6 +904,15 @@ async def radar_armed_loop(bot) -> None:
             await asyncio.sleep(poll_sec)
             # 14.07 hot-reload лимита (Егор «не успеваем»): тюнинг без рестарта
             max_pos = int(_cfg(bot).get("max_positions", 10))
+            # 30.09: SIM-лимитки судит ЦЕНА (позиции на бирже у них нет — иначе всегда CANCELLED,
+            # и SIM-строки LIMIT-источников не были форвардом). core/trading/sim_fill.py
+            try:
+                from core.trading.sim_fill import resolve_sim_pending
+                _sf = await asyncio.to_thread(resolve_sim_pending, bot.trade_simulator.db_path)
+                if _sf["fill"] or _sf["cancel"]:
+                    logger.info("[SIM-FILL] филл %d · снято %d · ждут %d", _sf["fill"], _sf["cancel"], _sf["wait"])
+            except Exception as _sfe:                    # noqa: BLE001 — симуляция не роняет цикл
+                logger.debug("[SIM-FILL] %s", _sfe)
             # pending-lifecycle: fill→OPEN / TTL→cancel (до чтения новых — освобождает слоты)
             await _check_pending(bot, ttl_sec)
             # авто-БУ по fill TP1 (шаг 6): SL→BE тугим STOP-LIMIT, остаток ведёт TSL
