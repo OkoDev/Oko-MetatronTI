@@ -320,6 +320,15 @@ class SubscriptionManager:
                     dropped_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )
             """)
+            # 02.10 (дата-долг L1): цена и волатильность в момент отказа. Без них журнал из
+            # 905 тыс. строк нечем мерить: нельзя ни посчитать форвард, ни построить контроль
+            # той же волатильности (скилл research-verdict §0, §2A). Берутся из шины в record_drop.
+            for _dcol, _dtype in (("price", "REAL"), ("atr_pct", "REAL"),
+                                  ("tf", "TEXT"), ("source", "TEXT")):
+                try:
+                    cursor.execute(f"ALTER TABLE signal_drops ADD COLUMN {_dcol} {_dtype}")
+                except Exception:
+                    pass  # колонка уже существует
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_drops_gate "
                 "ON signal_drops(gate_name, dropped_at)"

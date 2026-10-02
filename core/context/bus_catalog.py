@@ -31,6 +31,13 @@ _PAIR_META: Dict[str, tuple] = {
     # Сфера 1 DataCollector
     "last_ohlcv_time":   ("scan_loop (Сфера 1)", "когда обновлялись свечи"),
     "ohlcv_tfs_loaded":  ("scan_loop (Сфера 1)", "какие TF загружены"),
+    # 02.10 (дата-долг L1): цена и волатильность нужны, чтобы мерить силу сигнала и строить
+    # СОПОСТАВИМЫЙ контроль (ATR% ±25%) — см. скилл research-verdict §0, §2A
+    "volume_24h":        ("scan_loop (Сфера 1)", "оборот за сутки в USDT (из тех же свечей)"),
+    "volume_24h_time":   ("scan_loop (Сфера 1)", "когда обновлён оборот"),
+    "price_change_24h":  ("scan_loop (Сфера 1)", "изменение цены за сутки, %"),
+    "atr_pct":           ("scan_loop (Сфера 1)", "волатильность входного ТФ, % (средний размах 14 баров)"),
+    "atr_pct_time":      ("scan_loop (Сфера 1)", "когда обновлён atr_pct"),
     # Сфера 2 WSFeed / scan_loop
     "tick_price":        ("WsFeed / scan_loop (OHLCV close)", "текущая цена пары"),
     "tick_time":         ("WsFeed / scan_loop", "время последнего тика"),
@@ -136,8 +143,8 @@ _ACCOUNT_META: Dict[str, tuple] = {
 # ── Метаданные событий: ИМЯ → (источник, payload, описание) ───────────────────
 # Доступ: bus.subscribe_async(SphereEvent.<ИМЯ>, handler)
 _EVENT_META: Dict[str, tuple] = {
-    "OHLCV_UPDATED":      ("scan_loop (Сфера 1)", "{tf,rows,close,volume_24h}",
-                           "обновление свечей + текущая цена + оборот за сутки (из тех же свечей)"),
+    "OHLCV_UPDATED":      ("scan_loop (Сфера 1)", "{tf,rows,close,volume_24h,atr_pct}",
+                           "обновление свечей + цена + оборот + волатильность входного ТФ (из тех же свечей)"),
     "TICK_PRICE":         ("WsFeed (Сфера 2)", "{price,volume_24h}", "тик цены (если WsFeed on)"),
     "VOLUME_SPIKE":       ("scan_loop (Сфера 2)", "{ratio,tf}", "всплеск объёма"),
     "WT_VERDICT":         ("scan_loop (Сфера 3)", "{label,confidence,features}", "вердикт WT"),
@@ -146,7 +153,8 @@ _EVENT_META: Dict[str, tuple] = {
     "SMC_SNAP_UPDATED":   ("sub_cube (Сфера 4)", "плоский + by_tf{tf:..}", "снимок SMC (магниты TP, NOTIF)"),
     "CROSS_MARKET":       ("scan_loop (Сфера 5)", "{btc_regime,btc_move_pct,direction}", "контекст BTC"),
     "REGIME_UPDATED":     ("scan_loop (Сфера 6)", "{regime,mode}", "режим рынка"),
-    "SIGNAL_DETECTED":    ("scan_loop (Сфера 7)", "{signal_type,direction,strength,tf}", "сигнал детектора"),
+    "SIGNAL_DETECTED":    ("scan_loop (Сфера 7)", "{signal_type,direction,strength,tf,price,atr_pct}",
+                           "сигнал детектора (сырая детекция; цена и волатильность — для замера силы сигнала)"),
     "ANOMALY_DETECTED":   ("scan_loop (Сфера 7)", "{volume_ratio,tf}", "аномалия"),
     "DIVERGENCE_FOUND":   ("scan_loop (Сфера 7)", "{type,direction,tf,strength}", "дивергенция"),
     "PIVOT_TOUCH":        ("scan_loop (Сфера 7)", "{level,source,distance_pct}", "касание пивота"),

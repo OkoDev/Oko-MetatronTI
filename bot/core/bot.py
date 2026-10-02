@@ -479,7 +479,7 @@ class TradingAlertBot:
             from core.observability import decision_trace as _dt
 
             # DEV-203: DecisionTrace — инициализация и фоновый flush
-            _dt.configure(self.trade_simulator.db_path)
+            _dt.configure(self.trade_simulator.db_path, bus=self.pair_context)
             asyncio.create_task(_dt.flush_periodically(30))
 
             # D-069 (25.05): Persistent OHLCV cache — load с диска при старте.

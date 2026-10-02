@@ -1673,9 +1673,20 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                             _vol24 = float((_tail["volume"] * _tail["close"]).sum())
                     except Exception:                        # noqa: BLE001
                         _vol24 = None
+                    # 02.10 (дата-долг L1): ATR% входного ТФ — в шину. Без него журнал отказов и
+                    # событие сигнала нечем нормировать: мемкоин и BTC несравнимы, а контроль
+                    # обязан совпадать по волатильности (закон о контрольной группе).
+                    # Считаем из УЖЕ загруженного df_entry — лишних запросов нет.
+                    _atr_pct = None
+                    try:
+                        if df_entry is not None and len(df_entry) >= 15 and _last_close:
+                            _tr = (df_entry["high"] - df_entry["low"]).tail(14)
+                            _atr_pct = round(float(_tr.mean() / float(_last_close) * 100), 4)
+                    except Exception:                        # noqa: BLE001
+                        _atr_pct = None
                     _bus.publish(sym, SphereEvent.OHLCV_UPDATED, {
                         "tf": _etf, "rows": len(df_entry), "close": _last_close,
-                        "volume_24h": _vol24,
+                        "volume_24h": _vol24, "atr_pct": _atr_pct,
                     })
 
                     # Сфера 6: Market Regime → bus (regime/rev_mode посчитаны в _prep_pair_cpu)
@@ -2313,9 +2324,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         # Куб: Сфера 7 → bus (сырая детекция). 30.09: тип из сигнала —
                         # после апгрейда ARCH-23 это confluence, а не wt_signal
                         if _bus is not None:
+                            _st_sd = _bus.get(sym)
                             _bus.publish(sym, SphereEvent.SIGNAL_DETECTED, {
                                 "signal_type": sig.signal_type.value, "direction": sig.direction.value,
                                 "strength": sig.strength, "tf": _scan_tf,
+                                # 02.10 (дата-долг L1): цена и волатильность в момент сигнала —
+                                # без них форвард сигнала не посчитать, а контроль не построить
+                                "price": _st_sd.tick_price, "atr_pct": _st_sd.atr_pct,
                             })
 
                 # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
@@ -2370,9 +2385,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         asyncio.create_task(_eb.publish(sym, "wt_confluence", priority=3))
                     # Куб: Сфера 7 → bus
                     if _bus is not None:
+                        _st_sd2 = _bus.get(sym)
                         _bus.publish(sym, SphereEvent.SIGNAL_DETECTED, {
                             "signal_type": "confluence", "direction": sig.direction.value if sig.direction else "NEUTRAL",
                             "strength": sig.strength, "tf": _etf,
+                            "price": _st_sd2.tick_price, "atr_pct": _st_sd2.atr_pct,   # 02.10: дата-долг L1
                         })
                     break  # Один confluence Full CALL на пару за цикл достаточно
 

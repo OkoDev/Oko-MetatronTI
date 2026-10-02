@@ -30,6 +30,7 @@ _BATCH: list = []
 # со списком (микросекунды), запись идёт вне лока. Проверено тестом cross-loop записи.
 _BATCH_LOCK = threading.Lock()
 _DB_PATH: Optional[str] = None
+_BUS = None   # 02.10: шина Куба — источник цены/волатильности для записи отказа
 # потолок очереди при недоступной БД (01.09): 200 батчей по 50 — держит ~1.5ч простоя записи
 _BATCH_MAX: int = 10000
 
@@ -43,11 +44,12 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dtrace")
 _WRITE_TIMEOUT_SEC: float = 60.0
 
 
-def configure(db_path: str) -> None:
-    """Устанавливает путь к БД. Вызывать при старте бота."""
-    global _DB_PATH
+def configure(db_path: str, bus=None) -> None:
+    """Путь к БД и (02.10) шина для обогащения записи. Вызывать при старте бота."""
+    global _DB_PATH, _BUS
     _DB_PATH = db_path
-    logger.info("[DecisionTrace] configured db_path=%s", db_path)
+    _BUS = bus
+    logger.info("[DecisionTrace] configured db_path=%s · шина=%s", db_path, "да" if bus else "нет")
 
 
 async def record_drop(
@@ -70,6 +72,17 @@ async def record_drop(
     if _DB_PATH is None:
         return
 
+    # 02.10 (дата-долг L1): цена и волатильность берутся ЗДЕСЬ, из шины — 14 мест вызова
+    # не меняются. Без этих полей журнал отказов нечем мерить (нет форварда и контроля).
+    _price = _atr = _tf = None
+    if _BUS is not None:
+        try:
+            _st = _BUS.get(symbol)
+            _price, _atr, _tf = _st.tick_price, _st.atr_pct, (_st.ohlcv_tfs_loaded or [None])[0]
+        except Exception as _be:                      # noqa: BLE001 — трейс не роняет скан
+            logger.debug("[DecisionTrace] обогащение %s: %s", symbol, _be)
+    _src = (features or {}).get("source") or (features or {}).get("trade_mode")
+
     row = {
         "symbol": symbol,
         "signal_type": signal_type,
@@ -78,6 +91,10 @@ async def record_drop(
         "gate_name": gate_name,
         "drop_reason": drop_reason,
         "features_json": json.dumps(features, ensure_ascii=False) if features else None,
+        "price": _price,
+        "atr_pct": _atr,
+        "tf": _tf,
+        "source": _src,
     }
     with _BATCH_LOCK:
         _BATCH.append(row)
@@ -108,8 +125,10 @@ async def _flush() -> None:
             conn.execute("PRAGMA busy_timeout=30000")
             conn.executemany(
                 """INSERT INTO signal_drops
-                   (symbol, signal_type, direction, strength, gate_name, drop_reason, features_json)
-                   VALUES (:symbol, :signal_type, :direction, :strength, :gate_name, :drop_reason, :features_json)""",
+                   (symbol, signal_type, direction, strength, gate_name, drop_reason, features_json,
+                    price, atr_pct, tf, source)
+                   VALUES (:symbol, :signal_type, :direction, :strength, :gate_name, :drop_reason,
+                           :features_json, :price, :atr_pct, :tf, :source)""",
                 batch,
             )
 

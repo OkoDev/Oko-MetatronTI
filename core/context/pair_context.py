@@ -116,6 +116,8 @@ class PairState:
     volume_24h: Optional[float] = None        # оборот в КОТИРУЕМОЙ валюте (USDT), как quoteVolume
     volume_24h_time: Optional[datetime] = None
     price_change_24h: Optional[float] = None  # % за сутки
+    atr_pct: Optional[float] = None           # 02.10: волатильность входного ТФ, % (средний размах 14 баров)
+    atr_pct_time: Optional[datetime] = None
 
     # ── Сфера 3: MTF WT Specialist ──────────────────────────────────────
     wt_verdict: Optional[str] = None          # TREND_CONTINUATION / REVERSAL_SETUP / EXHAUSTION
@@ -729,6 +731,12 @@ class PairContextBus:
             if _v:
                 state.volume_24h = float(_v)
                 state.volume_24h_time = now
+            # 02.10 (дата-долг L1): волатильность — наравне с ценой и оборотом. Нужна, чтобы
+            # нормировать форвард сигнала и строить СОПОСТАВИМЫЙ контроль (ATR% ±25%).
+            _a = data.get("atr_pct")
+            if _a:
+                state.atr_pct = float(_a)
+                state.atr_pct_time = now
 
         elif event_type == SphereEvent.TICK_PRICE:
             state.tick_price = data.get("price")
@@ -843,6 +851,8 @@ class PairContextBus:
             "volume_24h":        state.volume_24h,
             "volume_24h_time":   state.volume_24h_time,
             "price_change_24h":  state.price_change_24h,
+            "atr_pct":           state.atr_pct,
+            "atr_pct_time":      state.atr_pct_time,
             # Сфера 3
             "wt_verdict":        state.wt_verdict,
             "wt_confidence":     state.wt_confidence,
