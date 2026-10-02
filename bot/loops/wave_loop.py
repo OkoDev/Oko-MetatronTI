@@ -121,21 +121,41 @@ async def wave_loop(bot) -> None:
         return
     svc = WaveService()
     bot.wave_service = svc          # чтобы состояние было доступно другим потребителям
-    logger.info("[S20] Wave Service запущена (SHADOW), интервал %dс, до %d пар",
-                INTERVAL_SEC, MAX_SYMBOLS)
+    logger.info("[S20] Wave Service запущена (SHADOW), интервал %dс, окно %d пар за проход, "
+                "ротация по кругу (покрытие всей вселенной — за len(шина)/%d проходов)",
+                INTERVAL_SEC, MAX_SYMBOLS, MAX_SYMBOLS)
 
     await asyncio.sleep(90)          # дать скану прогреть кэш свечей после старта
     ctx_seen: dict = {}              # sym → последний закрытый 4h-бар, на котором посчитан волновой контекст
+    offset = 0                       # начало окна ротации (см. ниже)
 
     while True:
         try:
-            # Берём пары, которые скан уже видел — их свечи в LRU-кэше свежие.
-            syms = list(bus.all_symbols())[:MAX_SYMBOLS]
+            # 🔴 02.10: БЫЛО `all_symbols()[:MAX_SYMBOLS]` — срез от НАЧАЛА, а порядок
+            # `dict.keys()` стабилен, поэтому разметку получали ВСЕГДА одни и те же 120 пар,
+            # а остальные ~464 из 584 — никогда (в логе «в шине 118» не рос между проходами).
+            # Теперь окно едет по кругу: вселенная покрывается за ~5 проходов (75 мин), что
+            # чаще нового 4h-бара (240 мин), а нагрузка на проход та же.
+            # 🔑 Почему не подняли MAX_SYMBOLS: замер 02.10 — расчёт стоит 49 мс/пару
+            # (584 пары = 29 с CPU = 3% интервала), но проход идёт 450-490 с на 119 пар,
+            # потому что время уходит в получение свечей (5 `get_ohlcv` на пару через
+            # HtfStore + 3 `to_thread`), а не в вычисления. На 584 парах проход занял бы
+            # ~2250 с против интервала 900 с — луп отставал бы втрое.
+            allsym = list(bus.all_symbols())
+            n_all = len(allsym)
+            if n_all:
+                offset %= n_all
+                take = min(MAX_SYMBOLS, n_all)
+                syms = [allsym[(offset + i) % n_all] for i in range(take)]
+                win = f"окно {offset}..{(offset + take - 1) % n_all}"
+                offset = (offset + take) % n_all
+            else:
+                syms, win = [], "окно пусто"
             done, phases, recounts, skipped, legs, ctxs = 0, Counter(), 0, 0, 0, 0
             ctx_why: Counter = Counter(); ctx_err = None
             t0 = asyncio.get_event_loop().time()
-            logger.info("[S20] проход начат: пар в шине %d, берём %d",
-                        len(bus.all_symbols()), len(syms))
+            logger.info("[S20] проход начат: пар в шине %d, берём %d (%s)",
+                        n_all, len(syms), win)
             for sym in syms:
                 try:
                     frames = await _load_frames(bot, sym)

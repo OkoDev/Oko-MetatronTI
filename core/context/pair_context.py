@@ -896,6 +896,35 @@ class PairContextBus:
             "post_tsl_data":     state.post_tsl_data,
             # Сфера 12
             "spheres_ok":        state.spheres_ok,
+            # ── Сфера 20 / WaveService ──────────────────────────────────
+            # 🔴 02.10: ТРЕТИЙ случай той же API-дырки в этом файле (после smc_snap/pivot_snap
+            # 25.07 и оборота 29.09). Волновая разметка публиковалась в шину с 02.09, а
+            # get_full_state её не отдавал — значит терминал, дашборд и DS видели пусто,
+            # и ЯДРО волн (`wave5_setup.core_full`), на котором стоит измеренный эдж,
+            # было недоступно снаружи. Экспорт ничего не гейтит: читателям становится видно
+            # то, что уже лежит в шине.
+            "elliott_n_down":    state.elliott_n_down,
+            "elliott_n_up":      state.elliott_n_up,
+            "elliott_phase":     state.elliott_phase,
+            "elliott_conf":      state.elliott_conf,
+            "wave_snap":         state.wave_snap,
+            "wave_recounts":     state.wave_recounts,
+            "wave_recount_ts":   state.wave_recount_ts,
+            "wave_updated_at":   state.wave_updated_at,
+            # двухмасштабная нога (на ней стоит находка ARCH-137) — отдельный объект от elliott_*
+            "leg_dir":           state.leg_dir,
+            "leg_span_bars":     state.leg_span_bars,
+            "leg_age_origin":    state.leg_age_origin,
+            "leg_pos":           state.leg_pos,
+            "leg_retr":          state.leg_retr,
+            "leg_minor_breaks":  state.leg_minor_breaks,
+            "leg_tf":            state.leg_tf,
+            "leg_updated_at":    state.leg_updated_at,
+            # волновой контекст аналитика: дневные ноги + последняя 4h-пятёрка ЯДРА
+            "wave_leg_up":       state.wave_leg_up,
+            "wave_leg_dn":       state.wave_leg_dn,
+            "wave5_setup":       state.wave5_setup,
+            "wave_ctx_updated_at": state.wave_ctx_updated_at,
         }
 
     def get_event_log(self, limit: int = 50) -> List[Dict]:
