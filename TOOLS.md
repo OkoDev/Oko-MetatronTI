@@ -92,6 +92,22 @@ python scripts/strategy_preflight.py impulse_fib --gates --stop 2.0 --rr 3.0
 | `tools/llm_ask.py` | одиночный запрос |
 | `tools/swarm_orchestrator.py` | оркестрация роя |
 
+### 🔬 СТЕНД СЛОЯ СИГНАЛА (L1) — первым делом при вопросе «работает ли механика»
+
+```bash
+python scripts/signal_info.py --source radar:pump      # журнал радара (~46 тыс. сигналов)
+python scripts/signal_info.py --source drops:radar     # отказы гейтов (цена и ATR% с 03.10)
+python scripts/signal_info.py --source shadow:impulse_shadow_15m
+python scripts/signal_info.py --source trades:choch_wavec
+python scripts/signal_info.py --source hub:signal_detected   # журнал фактов хаба Куба
+```
+Меряет ЧИСТЫЙ форвард от момента сигнала (без цели/стопа/лимита) против ДВУХ контролей —
+случайный момент и момент той же волатильности. Метрики: медиана и доля>0 с интервалом.
+🔴 Порядок обязателен: **L1 сигнал → L2 геометрия → L3 управление → L4 исполнение → L5 портфель**.
+«Выключить» нельзя без замера L1 (скилл `research-verdict` §0). 02.10 вердикт по радару был выдан
+по геометрии — сигнал `pump` оказался живым (+1.5%/24ч против контроля).
+
+
 ```bash
 python tools/team_ask.py --file бриф.md --no-context "вопрос"
 ```
