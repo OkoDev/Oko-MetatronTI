@@ -40,8 +40,12 @@ CTRL_N, CTRL_DAYS = 5, 30
 _c1: dict = {}
 
 
+PRE_H = 4   # запас истории ДО входа — нужен для волатильности (подбор контроля)
+
+
 def bars(base: str, t0: pd.Timestamp) -> tuple[pd.DataFrame | None, int]:
-    """(свечи от t0, шаг в минутах). До 15.09 — 1m Binance, дальше — 3m BingX."""
+    """(свечи с запасом PRE_H до t0, шаг в минутах). До 15.09 — 1m Binance, дальше — 3m BingX.
+    🔴 Запас обязателен: без него ATR% перед входом не считается и подбор контроля молча отключается."""
     if t0 < SWITCH:
         if base not in _c1:
             f = P1M / f"{base}USDT.parquet"
@@ -50,8 +54,8 @@ def bars(base: str, t0: pd.Timestamp) -> tuple[pd.DataFrame | None, int]:
                 d0 = d0.copy(); d0.index = d0.index.tz_localize(None)   # часть паркетов 1m — tz-aware
             _c1[base] = d0
         d = _c1[base]
-        return (None, 1) if d is None else (d[d.index >= t0 - pd.Timedelta(minutes=5)], 1)
-    d = ms.read_bars(base, "3m", since_ms=int((t0 - pd.Timedelta(minutes=5)).timestamp() * 1000))
+        return (None, 1) if d is None else (d[d.index >= t0 - pd.Timedelta(hours=PRE_H)], 1)
+    d = ms.read_bars(base, "3m", since_ms=int((t0 - pd.Timedelta(hours=PRE_H)).timestamp() * 1000))
     if not len(d):
         return None, 3
     d = d.copy(); d.index = d.index.tz_localize(None)
@@ -85,11 +89,27 @@ def resolve(w, t0, long_, e, sl, tp, step_min) -> tuple[str, float | None]:
     return "время", ((cl[j] - e) / e * 100) * (1 if long_ else -1) - COST
 
 
-def control(base, t0, long_, px, e, sl, tp, rnd) -> list[float]:
-    """Та же геометрия в процентах, случайный момент ±CTRL_DAYS. Возвращает pnl закрытых."""
+def atr_pct(w, t, step) -> float | None:
+    """Волатильность перед входом: средний размах 12 баров в % от цены."""
+    pre = w[w.index <= t]
+    if len(pre) < 14:
+        return None
+    return float((pre.high - pre.low).tail(12).mean() / pre.close.values[-1] * 100)
+
+
+def control(base, t0, long_, px, e, sl, tp, rnd, atr0=None, tol=0.25, tries=60) -> list[float]:
+    """Контроль: та же монета/сторона/геометрия в %, случайный момент ±CTRL_DAYS.
+
+    🔴 02.10: добавлен ПОДБОР ПО ВОЛАТИЛЬНОСТИ. Без него контроль попадал в вчетверо более
+    спокойный рынок (медиана ATR% 0.17 против 0.76 у радара: он входит после резкого движения) —
+    при геометрии, заданной в процентах, это меняет шансы дойти и до стопа, и до цели.
+    `atr0=None` → старое поведение (контроль без подбора), чтобы сравнить оба.
+    """
     d_e, d_sl, d_tp = (e - px) / px, (sl - e) / e, (tp - e) / e
-    out = []
-    for _ in range(CTRL_N):
+    out, n = [], 0
+    for _ in range(tries):
+        if n >= CTRL_N:
+            break
         tr = t0 + pd.Timedelta(days=rnd.uniform(-CTRL_DAYS, CTRL_DAYS))
         if tr > pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(hours=HOLD_H + 2):
             continue
@@ -99,8 +119,13 @@ def control(base, t0, long_, px, e, sl, tp, rnd) -> list[float]:
         w0 = w[w.index >= tr]
         if len(w0) == 0:
             continue
+        if atr0:
+            a = atr_pct(w, tr, step)
+            if a is None or not (atr0 * (1 - tol) <= a <= atr0 * (1 + tol)):
+                continue                                   # не похоже по волатильности — другой момент
         p = float(w0.close.values[0])
         r, pnl = resolve(w, tr, long_, p * (1 + d_e), p * (1 + d_e) * (1 + d_sl), p * (1 + d_e) * (1 + d_tp), step)
+        n += 1
         if pnl is not None:
             out.append(pnl)
     return out
@@ -159,7 +184,8 @@ def main() -> None:
         if w is not None and len(w):
             w0 = w[w.index <= t0]
             px = float(w0.close.values[-1]) if len(w0) else None
-        R.append(dict(id=tid, sym=base, side="LONG" if long_ else "SHORT", stype=stype, t0=t0,
+        a0 = atr_pct(w, t0, step) if (w is not None and len(w)) else None
+        R.append(dict(id=tid, atr0=a0, sym=base, side="LONG" if long_ else "SHORT", stype=stype, t0=t0,
                       month=str(ca)[:7], real=r, pnl=pnl, stop_pct=abs(e - sl) / e * 100,
                       wl=wl, grade=grade or f.get("radar_grade"), mode=mode, px=px,
                       e=float(e), sl=float(sl), tp=float(tp), long_=long_))
@@ -169,15 +195,33 @@ def main() -> None:
     print(f"судимых (закрытых на рынке): {len(judged)}\n")
     print("■ БАЗА (все заявки радара):      " + line(stats([r["pnl"] for r in judged])))
 
-    # контроль
-    ctrl = []
+    # контроль: без подбора (как было) и с подбором по волатильности (честный)
+    ctrl, ctrl_m = [], []
     for r in judged:
-        if r["px"]:
-            ctrl += control(r["sym"], r["t0"], r["long_"], r["px"], r["e"], r["sl"], r["tp"], rnd)
-    print("■ КОНТРОЛЬ (случайный вход):     " + line(stats(ctrl)))
-    b, c = stats([r["pnl"] for r in judged]), stats(ctrl)
-    if b and c:
-        print(f"   Δ сигнал − контроль: {b['ср'] - c['ср']:+.2f} п.п./сделку · по медиане {b['мед'] - c['мед']:+.2f}")
+        if not r["px"]:
+            continue
+        ctrl += control(r["sym"], r["t0"], r["long_"], r["px"], r["e"], r["sl"], r["tp"], rnd)
+        ctrl_m += control(r["sym"], r["t0"], r["long_"], r["px"], r["e"], r["sl"], r["tp"], rnd,
+                          atr0=r.get("atr0"))
+    print("■ КОНТРОЛЬ случайный момент:     " + line(stats(ctrl)))
+    print("■ КОНТРОЛЬ + та же волатильность:" + line(stats(ctrl_m)))
+    b = stats([r["pnl"] for r in judged])
+    sig = [r["pnl"] for r in judged]
+    for nm, cc, arr in (("случайный момент", stats(ctrl), ctrl),
+                        ("та же волатильность", stats(ctrl_m), ctrl_m)):
+        if not (b and cc):
+            continue
+        # бутстрап разницы средних (закон о контрольной группе требует интервал, а не точку)
+        d = []
+        for _ in range(2000):
+            a = sum(rnd.choice(sig) for _ in range(len(sig))) / len(sig)
+            c2 = sum(rnd.choice(arr) for _ in range(len(arr))) / len(arr)
+            d.append(a - c2)
+        d.sort()
+        lo, hi = d[int(0.025 * len(d))], d[int(0.975 * len(d))]
+        print(f"   Δ сигнал − контроль [{nm}]: {b['ср'] - cc['ср']:+.2f} п.п./сделку "
+              f"(95% [{lo:+.2f}; {hi:+.2f}]) · по медиане {b['мед'] - cc['мед']:+.2f} · "
+              f"PF {b['PF']:.2f} против {cc['PF']:.2f}")
 
     axes = [("сторона", lambda r: r["side"]), ("месяц", lambda r: r["month"]),
             ("тип сетапа", lambda r: r["stype"]), ("grade", lambda r: str(r["grade"])),
