@@ -252,27 +252,35 @@ def _breakout_shadow(base, px, res, sup):
         return None
     direction, lvl, touches, sl, tp = sig
     sym = f"{base}/USDT:USDT"
-    c = _sq.connect("subscriptions.db", timeout=5)
-    dup = c.execute("SELECT 1 FROM simulated_trades WHERE symbol=? AND signal_type='breakout' "
-                    "AND created_at > datetime('now','-12 hours') LIMIT 1", (sym,)).fetchone()
-    c.close()
-    if dup:
+    # 🔴 03.10 (ADR-003 шаг 3): спутник БОЛЬШЕ НЕ ПИШЕТ в базу бота. Раньше здесь был
+    # `TradeSimulator("subscriptions.db").register_trade_async` — чужой писатель в чужой таблице
+    # (хвост N16, 7 сделок 25.07–12.08). Теперь публикуем ФАКТ в шину Куба; регистрирует бот,
+    # по своим `signal_router.source_policies` (источника `breakout` там нет → default_policy:
+    # exchange_enabled=false, то есть только SIM — как и решено в ADR-003, правило 3).
+    # Дедуп 12ч — в СВОЕЙ базе (screener_store), а не чтением базы бота.
+    from core.infra import screener_store
+    _c = screener_store.connect()
+    _c.execute("CREATE TABLE IF NOT EXISTS breakout_sent (symbol TEXT PRIMARY KEY, ts INTEGER)")
+    _row = _c.execute("SELECT ts FROM breakout_sent WHERE symbol=?", (sym,)).fetchone()
+    if _row and (time.time() - _row[0]) < 12 * 3600:
+        _c.close()
         return None
     try:
-        import asyncio as _aio
-        from types import SimpleNamespace
-        from core.trading.trade_simulator import TradeSimulator
-        ts = TradeSimulator("subscriptions.db")
-        rec = SimpleNamespace(symbol=sym, direction=direction, entry_price=px, stop_loss=sl,
-                              take_profit=tp, signal_type="breakout", strength=60, confidence=0.6,
-                              timeframe="4h", metadata={"level": lvl, "touches": touches},
-                              sl_source="breakout:level", tp_source="breakout:2R")
-        _aio.run(ts.register_trade_async(rec, data_collector=None, extra_features={
-            "signal_type_override": "breakout", "trade_mode": "breakout",
-            "brk_level": lvl, "brk_touches": touches}))
-    except Exception as e:
-        print(f"[BREAKOUT] {base} register: {e}")
-        return None
+        from core.context.cube_client import publish
+        ok = publish("signal_detected", sym, {
+            "signal_type": "breakout", "direction": direction, "strength": 60, "tf": "4h",
+            "price": px, "entry": px, "sl": sl, "tp": tp,
+            "brk_level": lvl, "brk_touches": touches,
+            "sl_source": "breakout:level", "tp_source": "breakout:2R",
+        }, producer="oko-sm-watch")
+    except Exception as e:                                 # noqa: BLE001
+        print(f"[BREAKOUT] {base} publish: {e}")
+        ok = False
+    if not ok:
+        _c.close()
+        return None                                        # хаб недоступен — не помечаем, повторим
+    _c.execute("INSERT OR REPLACE INTO breakout_sent VALUES (?,?)", (sym, int(time.time())))
+    _c.commit(); _c.close()
     return (direction, lvl, touches)
 
 

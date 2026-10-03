@@ -673,6 +673,15 @@ class TradingAlertBot:
                     self.pair_context._mirror = self.cube_mirror
                     asyncio.create_task(self.cube_mirror.run())
                     logger.info("[CUBE-MIRROR] task spawned")
+                    # ═══ CUBE-INBOX (ADR-003 шаг 3): факты внешних сфер → сделка через роутер ═══
+                    _ib = _ch.get("inbox") or {}
+                    if bool(_ib.get("enabled", False)):
+                        from core.context.cube_inbox import CubeInbox
+                        self.cube_inbox = CubeInbox(self, list(_ib.get("allow") or []),
+                                                    poll_sec=float(_ib.get("poll_sec", 5)),
+                                                    dedup_min=float(_ib.get("dedup_min", 60)))
+                        asyncio.create_task(self.cube_inbox.run())
+                        logger.info("[CUBE-INBOX] task spawned")
             except Exception as e:
                 logger.warning("[CUBE-MIRROR] failed to start: %s", e)
             # ═══ RADAR-ARMED — исполнение сетапов радара (gated config.trading.radar_armed) ═══
