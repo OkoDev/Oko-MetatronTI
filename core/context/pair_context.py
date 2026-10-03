@@ -87,6 +87,11 @@ class SphereEvent:
     # Сфера 12 — Self-Diagnostics
     SPHERE_HEALTH      = "sphere_health"        # {sphere_id, status, last_update}
 
+    # ── Внешние сферы (ADR-003 шаг 4): факты процессов вне бота ──
+    # 🔑 РЫНОЧНОЕ событие, пары у него нет → публикуется с symbol="*MARKET*".
+    # Раньше вахты жили в обход шины: watch_state в SQLite + опрос раз в 300 с (watch_bridge).
+    WATCH_STATE_CHANGED = "watch_state_changed"  # {key, state, title, text, prev}
+
     # Сфера 19 — Market Data (ARCH-129.1 / 129.2)
     FUNDING_UPDATED    = "funding_updated"      # {rate, interval_h, source, pct_8h, streak, pctile_90d}
     OI_UPDATED         = "oi_updated"           # {d5, d15, d1d, quadrant, squeeze}

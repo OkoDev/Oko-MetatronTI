@@ -35,6 +35,29 @@ class CubeInbox:
         self.accepted = self.rejected = self.registered = 0
 
     # ── приём одного факта ──
+    async def handle_any(self, f: dict) -> bool:
+        """Любой факт внешней сферы. Торговым может стать только `signal_detected`."""
+        ev = f.get("event")
+        if ev == "signal_detected":
+            return await self.handle(f)
+        if ev == "watch_state_changed":
+            return self._watch(f)
+        logger.debug("[CUBE-INBOX] факт %s от %s — без обработчика", ev, f.get("producer"))
+        return False
+
+    def _watch(self, f: dict) -> bool:
+        """Смена состояния внешней вахты: в локальную шину (сферы увидят) + лог. Сделок НЕ создаёт."""
+        d = f.get("data") or {}
+        try:
+            from core.context.pair_context import SphereEvent
+            self.bot.pair_context.publish("*MARKET*", SphereEvent.WATCH_STATE_CHANGED, d)
+        except Exception as e:                           # noqa: BLE001
+            logger.debug("[CUBE-INBOX] вахта в локальную шину: %s", e)
+        logger.info("[CUBE-INBOX] 🔭 вахта %s: %s → %s (%s)", d.get("key"), d.get("prev"),
+                    d.get("state"), d.get("title"))
+        self.watch_events = getattr(self, "watch_events", 0) + 1
+        return True
+
     async def handle(self, f: dict) -> bool:
         """True — факт превращён в сделку. Исключения не выпускают: мост не роняет бота."""
         data = f.get("data") or {}
@@ -110,16 +133,17 @@ class CubeInbox:
         logger.info("[CUBE-INBOX] старт · белый список: %s · опрос %.0f с",
                     ", ".join(sorted(self.allow)) or "—", self.poll)
         # с текущего момента: старые факты не переигрываем при первом запуске
-        for f in await asyncio.to_thread(cc.facts, 0, ["signal_detected"], 1, 1):
+        _types = ["signal_detected", "watch_state_changed"]
+        for f in await asyncio.to_thread(cc.facts, 0, _types, 1, 1):
             self._last_id = f["id"]
         while True:
             await asyncio.sleep(self.poll)
             try:
-                rows = await asyncio.to_thread(cc.facts, self._last_id, ["signal_detected"], 200)
+                rows = await asyncio.to_thread(cc.facts, self._last_id, _types, 200)
                 for f in rows:
                     self._last_id = max(self._last_id, int(f.get("id") or 0))
                     if (f.get("producer") or "") == "oko-bot":
                         continue                         # свои факты обратно не принимаем
-                    await self.handle(f)
+                    await self.handle_any(f)
             except Exception as e:                       # noqa: BLE001 — мост не роняет бота
                 logger.warning("[CUBE-INBOX] ошибка приёма: %s", e)

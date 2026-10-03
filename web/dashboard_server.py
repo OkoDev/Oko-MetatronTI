@@ -2642,12 +2642,18 @@ async def _handle_cube_selftest(request: web.Request) -> web.Response:
 
 
 async def _handle_cube_event_inject(request: web.Request) -> web.Response:
-    """POST /api/cube/event — ручная инжекция события в EventBus (Full CALL триггер).
+    """POST /api/cube/event — внешний факт в шину Куба (ADR-003 шаг 4).
 
-    Body: {"symbol": "BTC/USDT", "event_type": "wt_confluence", "data": {...}}
-    Whitelist: только аналитические события, не торговые.
+    Body: {"symbol": "BTC/USDT:USDT", "event_type": "signal_detected", "data": {...}}
+
+    🔴 03.10 ПУТЬ ИЗМЕНЁН. Раньше эндпоинт инжектил событие прямо в EventBus — то есть снаружи
+    запускался Full CALL (`analyze_symbol` → `trade_router.submit`). Разбор ARCH-101 (02.10) показал,
+    что EventBus — это ОЧЕРЕДЬ ЗАДАНИЙ, а не шина подписки, и внешний вход в неё открывает путь к
+    регистрации сделки в обход единого моста. Теперь факт публикуется в хаб Куба, а разбирает его
+    `core/context/cube_inbox.py`: белый список источников, дедуп, решение принимает роутер бота.
+    ⚠️ Следствие: ручная инжекция больше НЕ запускает анализ пары. Нужен прогон анализа — отдельное
+    решение (и отдельная ручка), а не вход снаружи в торговую очередь.
     """
-    bot = request.app.get("bot")
     try:
         body = await request.json()
     except Exception:
@@ -2664,20 +2670,20 @@ async def _handle_cube_event_inject(request: web.Request) -> web.Response:
         )
     if event_type not in _CUBE_EVENT_WHITELIST:
         return web.Response(
-            text=json.dumps({"error": f"event_type '{event_type}' not in whitelist", "allowed": sorted(_CUBE_EVENT_WHITELIST)}),
+            text=json.dumps({"error": f"event_type '{event_type}' not in whitelist",
+                             "allowed": sorted(_CUBE_EVENT_WHITELIST)}),
             content_type="application/json", status=400,
         )
-
-    event_bus = getattr(bot, "event_bus", None)
-    if event_bus is None:
-        return web.Response(
-            text=json.dumps({"error": "EventBus not available"}),
-            content_type="application/json", status=503,
-        )
-
     data["_source"] = "MANUAL_INJECT"
-    accepted = await event_bus.publish(symbol, event_type, data)
-    logger.info("[cube/event] MANUAL_INJECT %s %s → accepted=%s", symbol, event_type, accepted)
+    try:
+        from core.context.cube_client import publish as _pub
+        accepted = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _pub(event_type, symbol, data, producer="manual-inject"))
+    except Exception as _pe:                 # noqa: BLE001
+        return web.Response(text=json.dumps({"error": f"хаб Куба недоступен: {_pe}"}),
+                            content_type="application/json", status=503)
+    logger.info("[cube/event] MANUAL_INJECT %s %s → в хаб accepted=%s (анализ НЕ запускается)",
+                symbol, event_type, accepted)
     return web.Response(
         text=json.dumps({"ok": True, "accepted": accepted, "symbol": symbol, "event_type": event_type}),
         content_type="application/json", charset="utf-8",

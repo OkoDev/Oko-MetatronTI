@@ -121,3 +121,38 @@ def test_own_facts_are_not_consumed_back(monkeypatch):
     _run(one_pass())
     assert all(src == "breakout" for _, src, _ in r.calls)
     assert all(e["external_producer"] == "oko-sm-watch" for _, _, e in r.calls)
+
+
+# ── шаг 4: неторговые факты (вахты) ──
+
+def _watch_fact(key="drift_zone", state="IN", prev="OUT"):
+    return {"id": 11, "producer": "watch", "symbol": "*MARKET*", "event": "watch_state_changed",
+            "data": {"key": key, "state": state, "prev": prev, "title": "Зона дрейфа",
+                     "text": "зона открылась", "detail": "гейт пропускает"}}
+
+
+def test_watch_fact_goes_to_local_bus_and_never_trades():
+    """Смена вахты — рыночный факт: сферы его видят, но сделки он не создаёт."""
+    r = _Router()
+    bot = _bot(r)
+    inbox = CubeInbox(bot, allow=["breakout"])
+    assert _run(inbox.handle_any(_watch_fact())) is True
+    assert r.calls == []                                  # ни одного обращения к роутеру
+    assert inbox.watch_events == 1
+    log = bot.pair_context.get_event_log(limit=5)
+    assert any(e["event"] == SphereEvent.WATCH_STATE_CHANGED for e in log)
+
+
+def test_signal_fact_still_routed_through_handle_any():
+    r = _Router()
+    inbox = CubeInbox(_bot(r), allow=["breakout"])
+    assert _run(inbox.handle_any(_fact())) is True
+    assert len(r.calls) == 1
+
+
+def test_unknown_fact_type_is_ignored_safely():
+    r = _Router()
+    inbox = CubeInbox(_bot(r), allow=["breakout"])
+    f = dict(_fact(), event="оплата_подписки")
+    assert _run(inbox.handle_any(f)) is False
+    assert r.calls == []

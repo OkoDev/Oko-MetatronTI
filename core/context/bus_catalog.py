@@ -171,6 +171,8 @@ _EVENT_META: Dict[str, tuple] = {
     "CASCADE_UPDATED":    ("trade_simulator (Сфера 11)", "{cascade_count,avg_r,direction}", "обновление каскада"),
     "OTE_ZONE_SET":       ("ote_observer (Сфера 11)", "{ote_top,ote_bot,direction,ttl_hours}", "OTE-зона установлена"),
     "SPHERE_HEALTH":      ("sphere_registry (Сфера 12)", "{sphere_id,status,last_update}", "здоровье сферы"),
+    "WATCH_STATE_CHANGED": ("вахты вне бота: scripts/_alert.py (ADR-003 шаг 4)", "{key,state,title,text,prev}",
+                            "смена состояния внешней вахты (long_watch, drift_zone); symbol=*MARKET*"),
     "FUNDING_UPDATED":    ("market_data_sphere (Сфера 19)", "{rate,interval_h,source,pct_8h,streak,pctile_90d}", "фандинг пары"),
     "OI_UPDATED":         ("market_data_sphere (Сфера 19)", "{d5,d15,d1d,quadrant,squeeze}", "открытый интерес пары"),
 }
@@ -190,7 +192,7 @@ EVENT_CLASS: Dict[str, str] = {
     "divergence_found": "fact", "pivot_touch": "fact", "cross_market": "fact",
     "narrative_built": "fact", "position_opened": "fact", "position_dropped": "fact",
     "tsl_moved": "fact", "tp1_hit": "fact", "position_closed": "fact", "trade_closed": "fact",
-    "ote_zone_set": "fact",
+    "ote_zone_set": "fact", "watch_state_changed": "fact",
     "recommendation_built": "internal",
 }
 

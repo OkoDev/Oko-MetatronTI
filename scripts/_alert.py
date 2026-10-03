@@ -168,8 +168,23 @@ def notify(key: str, state: str, *, title: str, tg_text: str, task_detail: str,
         return {"tg": False, "tasks": False, "prev": prev, "state": state}
     sent = alert(tg_text)
     logged = log_to_tasks(title, state, task_detail)
-    logger.info("[alert] %s: %s → %s · tg=%s · tasks=%s", key, prev, state, sent, logged)
-    return {"tg": sent, "tasks": logged, "prev": prev, "state": state}
+    # 🧊 03.10 (ADR-003 шаг 4): смена состояния — ФАКТ в шину Куба. Раньше о ней узнавал только
+    # Telegram и TASKS.md, а бот опрашивал таблицу `watch_state` раз в 300 с (watch_bridge).
+    # Теперь факт доходит до сфер за секунды. Хаб недоступен → publish=False, вахта работает дальше.
+    published = False
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT))
+        from core.context.cube_client import publish as _pub
+        published = _pub("watch_state_changed", "*MARKET*",
+                         {"key": key, "state": state, "prev": prev, "title": title,
+                          "text": tg_text[:500], "detail": task_detail},
+                         producer="watch")
+    except Exception as e:                                # noqa: BLE001 — шина не роняет вахту
+        logger.debug("[alert] publish в шину: %s", e)
+    logger.info("[alert] %s: %s → %s · tg=%s · tasks=%s · шина=%s",
+                key, prev, state, sent, logged, published)
+    return {"tg": sent, "tasks": logged, "prev": prev, "state": state, "bus": published}
 
 
 if __name__ == "__main__":
