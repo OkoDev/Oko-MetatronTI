@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from bot.loops.waves_long_loop import _stop_rel
+from bot.loops.waves_long_loop import _in_corridor, _stop_rel
 
 
 def test_arithmetic_matches_measurement_units():
@@ -71,6 +71,42 @@ def test_no_thresholds_means_no_gate():
     """Удалить ключи из конфига = вернуть прежний поток, включая узкие стопы."""
     assert _passes(0.05, None, None) is True
     assert _passes(None, None, None) is True
+
+
+def test_config_keeps_both_tracks_in_play():
+    """🔴 03.10 КОРИДОР = МЕТКА, А НЕ ОТБОР (Егор: «механику с гейтом можно оставить, но она не
+    должна быть единственной! такой подход лишает нас потока данных ИСПОЛНЕНИЯ! можем оставлять
+    их в работе, но параллельно друг другу»).
+
+    Жёсткий отбор оставлял 6% потока (3 из 48 записей живой очереди) — данные исполнения
+    (филлы, проскальзывание, косты) по остальным 94% не набирались бы вовсе. Тест закрепляет:
+    границы коридора ЗАДАНЫ (иначе метка бессмысленна), а гейт ВЫКЛЮЧЕН (иначе второй трек
+    исчезает). Вернуть отбор — осознанная правка конфига вместе с этим тестом.
+    """
+    from core.infra.config_loader import ConfigLoader
+    cfg = ConfigLoader("config.yaml")
+    lo = cfg.get("trading.waves_long.stop_rel_min", None)
+    hi = cfg.get("trading.waves_long.stop_rel_max", None)
+    gate = cfg.get("trading.waves_long.stop_rel_gate", False)
+    assert lo is not None and hi is not None, "границы коридора не заданы — метка wv_in_corridor пуста"
+    assert bool(gate) is False, (
+        "stop_rel_gate=true оставляет в бою ТОЛЬКО коридор (~5 сделок/мес) и лишает данных "
+        "исполнения по второму треку; если это намеренно — поправь тест вместе с конфигом")
+
+
+def test_label_separates_tracks_but_blocks_nobody():
+    """Оба трека идут в бой, но различимы: метка считается по тем же границам, что и отбор."""
+    assert _in_corridor(0.42, 0.30, 0.50) is True
+    assert _in_corridor(0.129, 0.30, 0.50) is False     # медианный бой — второй трек, но торгуется
+    assert _in_corridor(None, 0.30, 0.50) is False      # ширина неизвестна ≠ «в коридоре»
+
+
+@pytest.mark.parametrize("rel,expect", [
+    (0.299, False), (0.30, True), (0.499, True), (0.50, False),
+])
+def test_label_boundaries_match_measured_basket(rel, expect):
+    """Границы метки = границы корзины замера [0.3; 0.5): иначе метка и замер разойдутся."""
+    assert _in_corridor(rel, 0.30, 0.50) is expect
 
 
 def test_one_sided_threshold_works():

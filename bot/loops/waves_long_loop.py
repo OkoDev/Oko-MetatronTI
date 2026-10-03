@@ -122,6 +122,21 @@ def _stop_rel(entry, stop, imp_pct):
     return abs(e - s) / e * 100 / i
 
 
+def _in_corridor(rel, lo, hi) -> bool:
+    """Попадает ли ширина стопа в измеренный коридор [lo; hi).
+
+    Верхняя граница ИСКЛЮЧЕНА — корзина 30-50% в замере считалась как [0.3; 0.5).
+    Неизвестная ширина (нет `wv_imp_pct`) — это НЕ «в коридоре»: метка должна отличать
+    «вне» от «не знаем», поэтому False, а признак `wv_stop_rel` в сделку просто не попадёт."""
+    if rel is None:
+        return False
+    if lo is not None and rel < float(lo):
+        return False
+    if hi is not None and rel >= float(hi):
+        return False
+    return True
+
+
 def _open_on_symbol(bot, symbol: str) -> int:
     """Сколько открытых сделок семейства уже висит на монете (источник истины — симулятор)."""
     try:
@@ -151,12 +166,15 @@ async def waves_long_loop(bot):
     done.update(stale)
     _lo0, _hi0 = (cfg.get("trading.waves_long.stop_rel_min", None),
                   cfg.get("trading.waves_long.stop_rel_max", None))
-    _gate = (f"стоп {_lo0}–{_hi0} импульса (ожидаемо ~5 сделок/мес на вселенную; "
-             f"без фильтра было бы ~69)" if (_lo0 is not None or _hi0 is not None) else "ВЫКЛЮЧЕН")
+    _gate_on = bool(cfg.get("trading.waves_long.stop_rel_gate", False))
+    _mode = (f"ОТБОР: только коридор [{_lo0}; {_hi0}) — ожидаемо ~5 сделок/мес на вселенную"
+             if _gate_on else
+             f"МЕТКА: торгуем ОБА трека, коридор [{_lo0}; {_hi0}) помечается wv_in_corridor "
+             f"(поток полный, ~69/мес — данные исполнения собираются по обоим)")
     logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d (из них устаревших помечено %d) · "
                 "дедуп по (uid, время события): повторные входы по тому же импульсу разрешены · "
-                "отбор по ширине стопа: %s",
-                QUEUE, len(done), len(stale), _gate)
+                "ширина стопа в долях импульса → %s",
+                QUEUE, len(done), len(stale), _mode)
     while True:
         try:
             fresh = _read_new(done)
@@ -184,22 +202,22 @@ async def waves_long_loop(bot):
                 if tp <= entry or stop >= entry:    # 16.09 (SYN): цель за спиной = мгновенный «target» с убытком
                     logger.info("[WAVES_LONG] %s пропуск: цель/стоп не с той стороны", uid)
                     continue
-                # 🌊🔑 03.10 ШИРИНА СТОПА В ДОЛЯХ ИМПУЛЬСА (пороги — в config, см. trading.waves_long).
+                # 🌊🔑 03.10 ШИРИНА СТОПА В ДОЛЯХ ИМПУЛЬСА — МЕТКА, А НЕ ОТБОР.
                 # Замер 02.10: эдж сидит в коридоре 30-50% импульса (ср +5.01, WR 80%, Δr +10.76),
-                # а бой стоял на медиане 0.129 — в корзине 0-20%, где ср +0.52…+2.89. Отбор, не
-                # геометрия: стоп по-прежнему ставит структура. Отменяет правило «не отбирать
-                # заранее» (17.09) — поэтому порог в конфиге и снимается одной правкой.
+                # а бой стоял на медиане 0.129 — в корзине 0-20%, где ср +0.52…+2.89.
+                # 🔴 Жёсткий отбор был включён и в тот же день снят (Егор: «он не должен быть
+                # единственным — такой подход лишает нас потока данных ИСПОЛНЕНИЯ; оставлять в
+                # работе параллельно друг другу»): коридор оставлял 6% потока. Теперь в бой идут
+                # ОБА трека, различимые по `wv_in_corridor`, и данные исполнения (филлы,
+                # проскальзывание, косты) набираются по обоим на одной выборке.
                 _rel = _stop_rel(entry, stop, r.get("wv_imp_pct"))
                 _lo, _hi = (cfg.get("trading.waves_long.stop_rel_min", None),
                             cfg.get("trading.waves_long.stop_rel_max", None))
-                if _lo is not None or _hi is not None:
-                    if _rel is None:
-                        logger.info("[WAVES_LONG] %s пропуск: нет wv_imp_pct — ширину стопа не посчитать", uid)
-                        continue
-                    if (_lo is not None and _rel < float(_lo)) or (_hi is not None and _rel >= float(_hi)):
-                        logger.info("[WAVES_LONG] %s пропуск: стоп %.3f импульса вне коридора [%s; %s)",
-                                    uid, _rel, _lo, _hi)
-                        continue
+                _in_cor = _in_corridor(_rel, _lo, _hi)
+                if cfg.get("trading.waves_long.stop_rel_gate", False) and not _in_cor:
+                    logger.info("[WAVES_LONG] %s пропуск (gate=true): стоп %s импульса вне коридора [%s; %s)",
+                                uid, "—" if _rel is None else f"{_rel:.3f}", _lo, _hi)
+                    continue
                 # одна открытая позиция на монету: у COOKIE/PROMPT за двое суток набралось по 4 входа
                 # (три сетапа + повторные) — случай AEONBSC, где три варианта били по очереди
                 if _open_on_symbol(bot, sym) >= int(cfg.get("trading.waves_long.max_per_symbol", 1) or 1):
@@ -220,6 +238,7 @@ async def waves_long_loop(bot):
                 # по ТОЙ ЖЕ величине, по которой шёл отбор (а не по пересчёту задним числом)
                 if _rel is not None:
                     extra["wv_stop_rel"] = round(_rel, 4)
+                    extra["wv_in_corridor"] = bool(_in_cor)   # трек: коридор замера против остального
                 # 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»): corr30 к BTC × vol30 → risk_mult 0.5…1.5 (см. wave5_shadow.coin_weight)
                 try:
                     if r.get("wv_weight") is not None:
