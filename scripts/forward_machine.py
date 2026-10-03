@@ -62,6 +62,15 @@ def run(once: bool = False) -> None:
     c = sat_store.connect("forward", attach={"bot": sat_store.BOT_DB})
     c.execute("""CREATE TABLE IF NOT EXISTS forward_verdicts
         (ts INTEGER, cohort TEXT, exec_mode TEXT, n INTEGER, wr REAL, net REAL, verdict TEXT)""")
+    # 03.10: КАЖДЫЙ вердикт обязан называть СЛОЙ, к которому относится (скилл research-verdict §0).
+    # Журнал сделок смешивает L1–L5, поэтому его вердикт — всегда 'L1-L5 (журнал)', а не «о механике».
+    # Отключение источника требует отдельной строки со слоем L1 (стенд scripts/signal_info.py).
+    for _col, _type in (("layer", "TEXT"), ("delta_vs_control", "REAL"), ("script", "TEXT")):
+        try:
+            c.execute(f"ALTER TABLE forward_verdicts ADD COLUMN {_col} {_type}")
+        except Exception:
+            pass  # колонка уже есть
+    LAYER_MIXED = "L1-L5 (журнал)"   # что именно мерит форвард-машина
     now = int(time.time())
     _days = (dt.date.today() - dt.date.fromisoformat(DATA_ERA)).days
     _warm = " ⚠️ данные молодые, вердикты крепнут" if _days < 14 else ""
@@ -75,8 +84,9 @@ def run(once: bool = False) -> None:
             out.append(f"  {_verdict(n, net)} <code>{k}</code> n={n} WR{wr:.0f}% net={net:+.2f}%")
         # запись трендовых точек
         for k, n, wr, net, _ in vst:
-            c.execute("INSERT INTO forward_verdicts VALUES (?,?,?,?,?,?,?)",
-                      (now, k, "VST", n, wr, net, _verdict(n, net)))
+            c.execute("INSERT INTO forward_verdicts (ts,cohort,exec_mode,n,wr,net,verdict,layer,script) "
+                      "VALUES (?,?,?,?,?,?,?,?,?)",
+                      (now, k, "VST", n, wr, net, _verdict(n, net), LAYER_MIXED, "forward_machine.py"))
     else:
         out.append("  — нет закрытых VST в data-era")
 
@@ -86,8 +96,9 @@ def run(once: bool = False) -> None:
     for k, n, wr, net, mfe in sim:
         mfe_s = f" cap{mfe:.0f}%" if mfe is not None else ""
         out.append(f"  {_verdict(n, net)} <code>{k}</code> n={n} WR{wr:.0f}% net={net:+.2f}%{mfe_s}")
-        c.execute("INSERT INTO forward_verdicts VALUES (?,?,?,?,?,?,?)",
-                  (now, k, "SIM", n, wr, net, _verdict(n, net)))
+        c.execute("INSERT INTO forward_verdicts (ts,cohort,exec_mode,n,wr,net,verdict,layer,script) "
+                  "VALUES (?,?,?,?,?,?,?,?,?)",
+                  (now, k, "SIM", n, wr, net, _verdict(n, net), LAYER_MIXED, "forward_machine.py"))
 
     # ── НИШИ: для источников с n≥MIN_N ищем лучший разрез (direction/regime) ──
     niche_lines = []
