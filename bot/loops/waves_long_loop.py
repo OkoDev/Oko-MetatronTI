@@ -137,6 +137,40 @@ def _in_corridor(rel, lo, hi) -> bool:
     return True
 
 
+def _risk_mult(coin_weight, in_corridor: bool, out_mult, cap) -> float | None:
+    """Итоговый множитель риска: вес монеты × множитель ТРЕКА.
+
+    04.10 (Егор «да» на риск-вес вместо отсечения): трек вне измеренного коридора ширины стопа
+    торгуется МЕНЬШИМ риском, а не выбрасывается — так данные исполнения продолжают набираться
+    по обоим трекам ([[law_hard_filter_kills_execution_data]]), но деньги смещены в сторону
+    измеренного эджа (коридор 30-50% импульса: ср +5.01, WR 80%, Δr +10.76 против +0.52…+2.89
+    в корзинах 0-20%).
+
+    Вес монеты (22.09) живёт в своих границах 0.5…1.5, трековый множитель применяется ПОВЕРХ,
+    итог зажимается в [0.25; cap] — те же границы, что в `trade_router` (иначе ослабление
+    срезалось бы там и правка оказалась бы декоративной).
+    None — если ни веса, ни ослабления нет: тогда ключ в сделку не пишется и риск остаётся
+    базовым (risk_pct источника), как было до правки."""
+    m = None
+    if coin_weight is not None:
+        try:
+            m = max(0.5, min(1.5, float(coin_weight)))
+        except (TypeError, ValueError):
+            m = None
+    if not in_corridor and out_mult is not None:
+        try:
+            m = (1.0 if m is None else m) * float(out_mult)
+        except (TypeError, ValueError):
+            pass
+    if m is None:
+        return None
+    try:
+        hi = float(cap)
+    except (TypeError, ValueError):
+        hi = 1.5
+    return round(max(0.25, min(m, hi)), 4)
+
+
 def _open_on_symbol(bot, symbol: str) -> int:
     """Сколько открытых сделок семейства уже висит на монете (источник истины — симулятор)."""
     try:
@@ -167,10 +201,12 @@ async def waves_long_loop(bot):
     _lo0, _hi0 = (cfg.get("trading.waves_long.stop_rel_min", None),
                   cfg.get("trading.waves_long.stop_rel_max", None))
     _gate_on = bool(cfg.get("trading.waves_long.stop_rel_gate", False))
+    _rm0 = cfg.get("trading.waves_long.stop_rel_risk_mult", None)
     _mode = (f"ОТБОР: только коридор [{_lo0}; {_hi0}) — ожидаемо ~5 сделок/мес на вселенную"
              if _gate_on else
              f"МЕТКА: торгуем ОБА трека, коридор [{_lo0}; {_hi0}) помечается wv_in_corridor "
-             f"(поток полный, ~69/мес — данные исполнения собираются по обоим)")
+             f"(поток полный, ~69/мес — данные исполнения собираются по обоим)"
+             + (f" · РИСК вне коридора ×{_rm0}" if _rm0 not in (None, 1, 1.0) else " · риск равный"))
     logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d (из них устаревших помечено %d) · "
                 "дедуп по (uid, время события): повторные входы по тому же импульсу разрешены · "
                 "ширина стопа в долях импульса → %s",
@@ -239,20 +275,27 @@ async def waves_long_loop(bot):
                 if _rel is not None:
                     extra["wv_stop_rel"] = round(_rel, 4)
                     extra["wv_in_corridor"] = bool(_in_cor)   # трек: коридор замера против остального
-                # 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»): corr30 к BTC × vol30 → risk_mult 0.5…1.5 (см. wave5_shadow.coin_weight)
-                try:
-                    if r.get("wv_weight") is not None:
-                        extra["risk_mult"] = max(0.5, min(1.5, float(r["wv_weight"])))
-                except (TypeError, ValueError):
-                    pass
+                # 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»): corr30 к BTC × vol30 → 0.5…1.5
+                #   (см. wave5_shadow.coin_weight)
+                # 🌊🔑 04.10 РИСК-ВЕС ТРЕКА: вне коридора ширины стопа — меньший риск, а не отказ.
+                _rm = _risk_mult(r.get("wv_weight"), bool(_in_cor),
+                                 cfg.get("trading.waves_long.stop_rel_risk_mult", None),
+                                 cfg.get("trading.risk_mult_cap", 1.5))
+                if _rm is not None:
+                    extra["risk_mult"] = _rm
                 try:
                     res = await bot.trade_router.submit(rec, source="waves_long", extra_features=extra)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[WAVES_LONG] %s ошибка отправки: %s", uid, e)
                     continue
                 if res and getattr(res, "trade_id", None):
-                    logger.info("[WAVES_LONG] ✅ %s %s вход %.8g стоп %.8g цель %.8g · вес %s (corr30 %s · vol30 %s) · trade_id=%s",
-                                sym, r.get("wv_variant"), entry, stop, tp, extra.get("risk_mult", "—"), r.get("wv_corr30", "—"), r.get("wv_vol30", "—"), res.trade_id)
+                    logger.info("[WAVES_LONG] ✅ %s %s вход %.8g стоп %.8g цель %.8g · стоп %s имп (%s) · "
+                                "вес %s (corr30 %s · vol30 %s) · trade_id=%s",
+                                sym, r.get("wv_variant"), entry, stop, tp,
+                                "—" if _rel is None else f"{_rel:.3f}",
+                                "В КОРИДОРЕ" if _in_cor else "вне",
+                                extra.get("risk_mult", "—"), r.get("wv_corr30", "—"),
+                                r.get("wv_vol30", "—"), res.trade_id)
                 else:
                     drops = getattr(res, "hard_drops", None) or getattr(res, "drops", None)
                     logger.warning("[WAVES_LONG] ⛔ %s %s НЕ зарегистрирован: %s",

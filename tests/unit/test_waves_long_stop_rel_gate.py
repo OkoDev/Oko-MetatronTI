@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from bot.loops.waves_long_loop import _in_corridor, _stop_rel
+from bot.loops.waves_long_loop import _in_corridor, _risk_mult, _stop_rel
 
 
 def test_arithmetic_matches_measurement_units():
@@ -107,6 +107,58 @@ def test_label_separates_tracks_but_blocks_nobody():
 def test_label_boundaries_match_measured_basket(rel, expect):
     """Границы метки = границы корзины замера [0.3; 0.5): иначе метка и замер разойдутся."""
     assert _in_corridor(rel, 0.30, 0.50) is expect
+
+
+class TestRiskWeightInsteadOfCutting:
+    """🌊 04.10 РИСК-ВЕС ТРЕКА (Егор «да»): деньги защищаем размером, а не отсечением.
+
+    Эдж мерится в % хода и от размера позиции НЕ зависит — значит поток резать не нужно,
+    достаточно развести риск. Границы итога — те же [0.25; cap], что в `trade_router`:
+    если ослабление выйдет за них, оно срежется там и правка станет декоративной.
+    """
+
+    CAP = 1.5
+
+    def test_corridor_keeps_coin_weight_untouched(self):
+        assert _risk_mult(1.2, True, 0.5, self.CAP) == pytest.approx(1.2)
+        assert _risk_mult(0.8, True, 0.5, self.CAP) == pytest.approx(0.8)
+
+    def test_outside_corridor_is_halved(self):
+        assert _risk_mult(1.0, False, 0.5, self.CAP) == pytest.approx(0.5)
+        assert _risk_mult(1.5, False, 0.5, self.CAP) == pytest.approx(0.75)
+
+    def test_outside_without_coin_weight_still_weakened(self):
+        """Веса монеты нет — ослабление всё равно должно примениться к базовой единице."""
+        assert _risk_mult(None, False, 0.5, self.CAP) == pytest.approx(0.5)
+
+    def test_nothing_to_apply_returns_none(self):
+        """Ни веса, ни ослабления → ключ в сделку не пишется, риск базовый (как до правки)."""
+        assert _risk_mult(None, True, None, self.CAP) is None
+        assert _risk_mult(None, True, 0.5, self.CAP) is None
+
+    def test_result_stays_inside_router_bounds(self):
+        """Нижний пол 0.25 и потолок cap — иначе значение срежет роутер."""
+        assert _risk_mult(0.5, False, 0.1, self.CAP) == pytest.approx(0.25)   # 0.05 → пол
+        assert _risk_mult(1.5, True, 0.5, 1.2) == pytest.approx(1.2)          # 1.5 → потолок
+
+    def test_disabled_multiplier_equalizes_tracks(self):
+        """null или 1.0 → риск у обоих треков одинаковый."""
+        assert _risk_mult(1.1, False, None, self.CAP) == _risk_mult(1.1, True, None, self.CAP)
+        assert _risk_mult(1.1, False, 1.0, self.CAP) == pytest.approx(1.1)
+
+    @pytest.mark.parametrize("bad", ["", "нет", object()])
+    def test_bad_values_do_not_break_sizing(self, bad):
+        """Мусор в весе или множителе не должен обнулять риск или ронять луп."""
+        assert _risk_mult(bad, True, 0.5, self.CAP) is None
+        assert _risk_mult(1.0, False, bad, self.CAP) == pytest.approx(1.0)
+
+    def test_config_has_risk_weight_wired(self):
+        from core.infra.config_loader import ConfigLoader
+        cfg = ConfigLoader("config.yaml")
+        rm = cfg.get("trading.waves_long.stop_rel_risk_mult", None)
+        assert rm is not None and 0 < float(rm) < 1, (
+            f"риск-вес трека не настроен (stop_rel_risk_mult={rm}) — вне коридора ставка "
+            "должна быть МЕНЬШЕ, иначе защита денег не работает")
 
 
 def test_one_sided_threshold_works():
