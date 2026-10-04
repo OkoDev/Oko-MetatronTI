@@ -35,7 +35,7 @@ def _market(age_min: float, usdt_d=5.1, drift=-1.2):
 
 def test_s19_fresh_market_is_active():
     r = _check_sphere_19_market_data(_bot(pair_context=_bus(_market(2))))
-    assert r.code == "S19" and r.status == ACTIVE
+    assert r.code == "MKT" and r.status == ACTIVE
     assert "USDT.D" in r.detail and "дрейф30" in r.detail
 
 

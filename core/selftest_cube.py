@@ -1,11 +1,11 @@
 """
 SelfTest Куба Метатрона (ARCH-73 / DEV-121 расширение).
 
-Проверяет что 13 сфер и все рёбра между ними живы и подключены.
+Проверяет, что сферы Куба и рёбра между ними живы и подключены.
 Работает поверх bot instance — полноценный selftest запускается после init.
 
 Три слоя:
-  L13 — Cube Spheres:   статус всех 13 сфер (ACTIVE / SHADOW / MISSING)
+  L13 — Cube Spheres:   статус каждой сферы (ACTIVE / SHADOW / MISSING)
   L14 — Cube Edges:     рёбра — связи между сферами (callbacks, references)
   L15 — Feedback Loops: циклы обратной связи замкнуты (PostTrade → weights/bus)
 
@@ -17,18 +17,29 @@ SelfTest Куба Метатрона (ARCH-73 / DEV-121 расширение).
 Интеграция с основным selftest:
     В core/selftest.py add_layer() вызывает run_cube_selftest() и дополняет отчёт.
 
-Куб Метатрона (13 сфер вокруг Shared Context Bus):
-    1 DataCollector       | 2 WSFeed             | 3 MTF WT Specialist
-    4 MTF SMC Specialist  | 5 Cross-Market       | 6 MarketRegime
-    7 TradingIntelligence | 8 TradeSimulator     | 9 Exit Manager
-    10 PostTradeAnalyser  | 11 NarrativeBuilder  | 12 ML Outcome
-    13 PairContextBus (центр)
+КОДЫ — БУКВЕННЫЕ, И ЭТО РЕШЕНИЕ, А НЕ СТИЛЬ (04.10.2026, Егор: «я за В»).
 
-04.10.2026 — ещё три сферы, которые работали в боте БЕЗ ПРИСМОТРА (их не проверял никто):
-    S19 Market Data (рынок и дрейф в шину, в бою с 01.09)
-    S20 Wave Service (волновая разметка, SHADOW по замыслу)
-    S13_PHASE Фаза / Decision Core (в реестре — сфера 13; код составной, т.к. S13 здесь
-              занята шиной: две нумерации Куба разошлись исторически — бэклог N20)
+Числа в проекте заняты дважды, поэтому «S8» значил три разных вещи:
+  • карта и реестр (`sphere_registry.py`, `SIGNAL_BUS_CUBE_MAP.md`) нумеруют
+    ПРОИЗВОДИТЕЛЕЙ СОБЫТИЙ шины: S8 = Pivot Levels, S9 = Narrative, S13 = Phase;
+  • этот селфтест проверяет ОБЪЕКТЫ БОТА, которых в той карте может не быть
+    вовсе (TradeSimulator, ML Outcome), — и нумерация разъехалась крест-накрест;
+  • S1/S2/S3 в 74 файлах проекта — это УРОВНИ ПОДДЕРЖКИ пивотов, не сферы.
+Назначить «одну правильную нумерацию» значило бы передвинуть коллизию, а не убрать:
+две карты описывают разные сущности и обе нужны. Поэтому числа остались у сфер Куба,
+а компоненты здесь зовутся по имени.
+
+  DC   DataCollector        (сфера карты 1)      WS    WSFeed              (2)
+  WT   MTF WT Specialist    (3)                  SMC   MTF SMC Specialist  (4)
+  XM   Cross-Market / BTC   (5)                  RGM   MarketRegime        (6)
+  TI   TradingIntelligence  (≈7 Detectors)       TS    TradeSimulator      (в карте нет)
+  EXIT Exit Manager         (10)                 PTA   PostTradeAnalyser   (11)
+  NB   NarrativeBuilder     (9)                  ML    ML Outcome          (в карте нет)
+  BUS  PairContextBus — центр                    MKT   Market Data         (19)
+  WAVE Wave Service         (20)                 PHASE Фаза / Decision Core (13)
+
+MKT, WAVE и PHASE добавлены 04.10: они работали в боте, и их здоровье не опрашивал
+никто — встань цикл Market Data, отчёт сказал бы «полный порядок».
 """
 from __future__ import annotations
 
@@ -52,7 +63,7 @@ STATUS_ICON = {ACTIVE: "✅", SHADOW: "⚠️", MISSING: "🔴"}
 class CubeCheckResult:
     """Результат проверки сферы / ребра / цикла."""
     layer:   str           # "L13_sphere", "L14_edge", "L15_loop"
-    code:    str           # "S1", "E_TS_PTA", "LOOP_ADAPT_WEIGHTS"
+    code:    str           # "DC", "E_TS_PTA", "LOOP_ADAPT_WEIGHTS"
     name:    str
     status:  str           # ACTIVE | SHADOW | MISSING
     detail:  str = ""
@@ -88,22 +99,22 @@ def _spec_state(spec) -> tuple:
 def _check_sphere_1_data_collector(bot) -> CubeCheckResult:
     dc = getattr(bot, "data_collector", None)
     if dc is None:
-        return CubeCheckResult("L13_sphere", "S1", "DataCollector", MISSING, "bot.data_collector не найден")
+        return CubeCheckResult("L13_sphere", "DC", "DataCollector", MISSING, "bot.data_collector не найден")
     try:
         engine = getattr(dc, "_engine", None)
         if engine is None:
-            return CubeCheckResult("L13_sphere", "S1", "DataCollector", SHADOW, "_engine отсутствует (старый API)")
+            return CubeCheckResult("L13_sphere", "DC", "DataCollector", SHADOW, "_engine отсутствует (старый API)")
         stats = engine.cache_stats() if hasattr(engine, "cache_stats") else {}
-        return CubeCheckResult("L13_sphere", "S1", "DataCollector", ACTIVE,
+        return CubeCheckResult("L13_sphere", "DC", "DataCollector", ACTIVE,
                                f"cache={stats.get('cache_size','?')} cb={stats.get('cb_state','?')}")
     except Exception as e:
-        return CubeCheckResult("L13_sphere", "S1", "DataCollector", SHADOW, f"error: {e}")
+        return CubeCheckResult("L13_sphere", "DC", "DataCollector", SHADOW, f"error: {e}")
 
 
 def _check_sphere_2_ws_feed(bot) -> CubeCheckResult:
     ws = getattr(bot, "ws_feed", None)
     if ws is None:
-        return CubeCheckResult("L13_sphere", "S2", "WSFeed", MISSING, "bot.ws_feed не найден")
+        return CubeCheckResult("L13_sphere", "WS", "WSFeed", MISSING, "bot.ws_feed не найден")
     # Читаем ПУБЛИЧНЫЙ stats(): раньше искались `is_running` (метод зовётся is_alive)
     # и `_subscriptions` (такого атрибута нет) — обе давали тихий False/0.
     try:
@@ -116,19 +127,19 @@ def _check_sphere_2_ws_feed(bot) -> CubeCheckResult:
     up = int(st.get("uptime_sec", 0) or 0)
     detail = f"alive={alive} tickers={tickers} ohlcv={st.get('active_ohlcv', 0)} uptime={up}s errors={st.get('errors', 0)}"
     if alive:
-        return CubeCheckResult("L13_sphere", "S2", "WSFeed", ACTIVE, detail)
+        return CubeCheckResult("L13_sphere", "WS", "WSFeed", ACTIVE, detail)
     # Селфтест идёт при старте, а ws_feed.start() — позже отдельной задачей:
     # «не запущен» в момент старта нормально, это не приговор сфере.
-    return CubeCheckResult("L13_sphere", "S2", "WSFeed", SHADOW, detail + " (при старте — возможна гонка)")
+    return CubeCheckResult("L13_sphere", "WS", "WSFeed", SHADOW, detail + " (при старте — возможна гонка)")
 
 
 def _check_sphere_3_mtf_wt(bot) -> CubeCheckResult:
     ti = getattr(bot, "trading_intelligence", None)
     if ti is None:
-        return CubeCheckResult("L13_sphere", "S3", "MTF WT Specialist", MISSING, "trading_intelligence отсутствует")
+        return CubeCheckResult("L13_sphere", "WT", "MTF WT Specialist", MISSING, "trading_intelligence отсутствует")
     spec = getattr(ti, "_wt_specialist", None)
     if spec is None:
-        return CubeCheckResult("L13_sphere", "S3", "MTF WT Specialist", MISSING, "_wt_specialist не инициализирован")
+        return CubeCheckResult("L13_sphere", "WT", "MTF WT Specialist", MISSING, "_wt_specialist не инициализирован")
     fitted, n, auc = _spec_state(spec)
     gate_on = False
     try:
@@ -138,7 +149,7 @@ def _check_sphere_3_mtf_wt(bot) -> CubeCheckResult:
     # 12.08: модель ОБУЧАЕТСЯ на каждом старте, но её predict НЕ ВЫЗЫВАЕТСЯ нигде —
     # DEV-161 заменил ML на rule-based derive_wt_verdict. Обучение = чистая трата
     # ~7с старта. Статус ACTIVE тут был бы ложью: сфера не влияет на решения.
-    return CubeCheckResult("L13_sphere", "S3", "MTF WT Specialist", SHADOW,
+    return CubeCheckResult("L13_sphere", "WT", "MTF WT Specialist", SHADOW,
                            f"fitted={fitted} n={n} auc={auc} gate={gate_on} — "
                            f"predict НЕ вызывается (DEV-161 заменил rule-based), обучение впустую")
 
@@ -146,10 +157,10 @@ def _check_sphere_3_mtf_wt(bot) -> CubeCheckResult:
 def _check_sphere_4_mtf_smc(bot) -> CubeCheckResult:
     ti = getattr(bot, "trading_intelligence", None)
     if ti is None:
-        return CubeCheckResult("L13_sphere", "S4", "MTF SMC Specialist", MISSING, "trading_intelligence отсутствует")
+        return CubeCheckResult("L13_sphere", "SMC", "MTF SMC Specialist", MISSING, "trading_intelligence отсутствует")
     spec = getattr(ti, "_smc_specialist", None)
     if spec is None:
-        return CubeCheckResult("L13_sphere", "S4", "MTF SMC Specialist", MISSING, "_smc_specialist не инициализирован")
+        return CubeCheckResult("L13_sphere", "SMC", "MTF SMC Specialist", MISSING, "_smc_specialist не инициализирован")
     fitted, n, auc = _spec_state(spec)
     gate_on = False
     try:
@@ -157,7 +168,7 @@ def _check_sphere_4_mtf_smc(bot) -> CubeCheckResult:
     except Exception:
         pass
     status = ACTIVE if (fitted and gate_on) else SHADOW
-    return CubeCheckResult("L13_sphere", "S4", "MTF SMC Specialist", status,
+    return CubeCheckResult("L13_sphere", "SMC", "MTF SMC Specialist", status,
                            f"fitted={fitted} n={n} auc={auc} gate={gate_on}")
 
 
@@ -180,74 +191,74 @@ def _check_sphere_5_cross_market(bot) -> CubeCheckResult:
             shadow = True
         status = SHADOW if shadow else ACTIVE
         detail = f"BTCRegimeProvider mode={mode} updated={updated} gate_shadow={shadow}"
-        return CubeCheckResult("L13_sphere", "S5", "Cross-Market (BTC gate)", status, detail)
+        return CubeCheckResult("L13_sphere", "XM", "Cross-Market (BTC gate)", status, detail)
     # fallback: старый gate без провайдера
     try:
         cfg = getattr(bot, "config", None)
         if cfg is None:
-            return CubeCheckResult("L13_sphere", "S5", "Cross-Market (BTC gate)", MISSING, "btc_regime_provider отсутствует")
+            return CubeCheckResult("L13_sphere", "XM", "Cross-Market (BTC gate)", MISSING, "btc_regime_provider отсутствует")
         gate_cfg = (cfg.get("trading", {}) or {}).get("btc_market_gate", {})
         enabled  = bool(gate_cfg.get("enabled", False))
         shadow   = bool(gate_cfg.get("shadow_mode", True))
     except Exception as e:
-        return CubeCheckResult("L13_sphere", "S5", "Cross-Market (BTC gate)", MISSING, f"cfg error: {e}")
+        return CubeCheckResult("L13_sphere", "XM", "Cross-Market (BTC gate)", MISSING, f"cfg error: {e}")
     if not enabled:
-        return CubeCheckResult("L13_sphere", "S5", "Cross-Market (BTC gate)", MISSING, "btc_market_gate.enabled=false, provider отсутствует")
+        return CubeCheckResult("L13_sphere", "XM", "Cross-Market (BTC gate)", MISSING, "btc_market_gate.enabled=false, provider отсутствует")
     status = SHADOW if shadow else ACTIVE
-    return CubeCheckResult("L13_sphere", "S5", "Cross-Market (BTC gate)", status, f"старый gate enabled={enabled} shadow={shadow}")
+    return CubeCheckResult("L13_sphere", "XM", "Cross-Market (BTC gate)", status, f"старый gate enabled={enabled} shadow={shadow}")
 
 
 def _check_sphere_6_market_regime(bot) -> CubeCheckResult:
     try:
         from core.indicators.market_regime import MarketRegimeClassifier
         _ = MarketRegimeClassifier()
-        return CubeCheckResult("L13_sphere", "S6", "MarketRegime", ACTIVE, "classify доступен")
+        return CubeCheckResult("L13_sphere", "RGM", "MarketRegime", ACTIVE, "classify доступен")
     except Exception as e:
-        return CubeCheckResult("L13_sphere", "S6", "MarketRegime", MISSING, f"import/init error: {e}")
+        return CubeCheckResult("L13_sphere", "RGM", "MarketRegime", MISSING, f"import/init error: {e}")
 
 
 def _check_sphere_7_trading_intelligence(bot) -> CubeCheckResult:
     ti = getattr(bot, "trading_intelligence", None)
     if ti is None:
-        return CubeCheckResult("L13_sphere", "S7", "TradingIntelligence", MISSING, "отсутствует")
+        return CubeCheckResult("L13_sphere", "TI", "TradingIntelligence", MISSING, "отсутствует")
     strategies = list(getattr(ti, "strategies", {}).keys()) if hasattr(ti, "strategies") else []
     active = getattr(ti, "active_strategy_name", "?")
-    return CubeCheckResult("L13_sphere", "S7", "TradingIntelligence", ACTIVE,
+    return CubeCheckResult("L13_sphere", "TI", "TradingIntelligence", ACTIVE,
                            f"active={active} strats={len(strategies)}")
 
 
 def _check_sphere_8_trade_simulator(bot) -> CubeCheckResult:
     ts = getattr(bot, "trade_simulator", None)
     if ts is None:
-        return CubeCheckResult("L13_sphere", "S8", "TradeSimulator", MISSING, "отсутствует")
+        return CubeCheckResult("L13_sphere", "TS", "TradeSimulator", MISSING, "отсутствует")
     db = getattr(ts, "db_path", None)
     cb_set = ts._post_trade_callback is not None
-    return CubeCheckResult("L13_sphere", "S8", "TradeSimulator", ACTIVE,
+    return CubeCheckResult("L13_sphere", "TS", "TradeSimulator", ACTIVE,
                            f"db={db} post_cb={cb_set}")
 
 
 def _check_sphere_9_exit_manager(bot) -> CubeCheckResult:
     oe = getattr(bot, "order_executor", None)
     if oe is None:
-        return CubeCheckResult("L13_sphere", "S9", "Exit Manager", MISSING, "order_executor отсутствует")
+        return CubeCheckResult("L13_sphere", "EXIT", "Exit Manager", MISSING, "order_executor отсутствует")
     try:
         mode = oe.mode.value if hasattr(oe.mode, "value") else str(oe.mode)
     except Exception:
         mode = "?"
     is_live = oe.is_live() if hasattr(oe, "is_live") else False
     status = ACTIVE if is_live else SHADOW
-    return CubeCheckResult("L13_sphere", "S9", "Exit Manager", status, f"mode={mode} live={is_live}")
+    return CubeCheckResult("L13_sphere", "EXIT", "Exit Manager", status, f"mode={mode} live={is_live}")
 
 
 def _check_sphere_10_post_trade_analyser(bot) -> CubeCheckResult:
     pta = getattr(bot, "post_analyser", None)
     if pta is None:
-        return CubeCheckResult("L13_sphere", "S10", "PostTradeAnalyser", MISSING, "отсутствует")
+        return CubeCheckResult("L13_sphere", "PTA", "PostTradeAnalyser", MISSING, "отсутствует")
     ctx_set  = getattr(pta, "_ctx", None) is not None
     intel    = getattr(pta, "_intelligence", None) is not None  # ARCH-72
     ev_set   = getattr(pta, "_event_bus", None) is not None     # ARCH-72
     status = ACTIVE if (ctx_set and intel and ev_set) else SHADOW
-    return CubeCheckResult("L13_sphere", "S10", "PostTradeAnalyser", status,
+    return CubeCheckResult("L13_sphere", "PTA", "PostTradeAnalyser", status,
                            f"ctx={ctx_set} intel={intel} event_bus={ev_set}")
 
 
@@ -261,20 +272,20 @@ def _check_sphere_11_narrative_builder(bot) -> CubeCheckResult:
     except Exception:
         exists = False
     if not exists:
-        return CubeCheckResult("L13_sphere", "S11", "NarrativeBuilder", MISSING, "модуль не импортируется")
+        return CubeCheckResult("L13_sphere", "NB", "NarrativeBuilder", MISSING, "модуль не импортируется")
     try:
         log_enabled = bool(bot.config.get("trading.narrative.enabled", False))
     except Exception:
         log_enabled = False
     # Код в TI.analyze_symbol вызывает build() независимо от флага — флаг только меняет уровень лога
-    return CubeCheckResult("L13_sphere", "S11", "NarrativeBuilder", ACTIVE,
+    return CubeCheckResult("L13_sphere", "NB", "NarrativeBuilder", ACTIVE,
                            f"build() всегда вызывается, INFO-лог={'вкл' if log_enabled else 'выкл (debug)'}")
 
 
 def _check_sphere_12_ml_outcome(bot) -> CubeCheckResult:
     ti = getattr(bot, "trading_intelligence", None)
     if ti is None:
-        return CubeCheckResult("L13_sphere", "S12", "ML Outcome", MISSING, "trading_intelligence отсутствует")
+        return CubeCheckResult("L13_sphere", "ML", "ML Outcome", MISSING, "trading_intelligence отсутствует")
     predictor = getattr(ti, "outcome_predictor", None)
     use_pred  = False
     try:
@@ -282,20 +293,20 @@ def _check_sphere_12_ml_outcome(bot) -> CubeCheckResult:
     except Exception:
         pass
     if predictor is None:
-        return CubeCheckResult("L13_sphere", "S12", "ML Outcome", MISSING, "outcome_predictor отсутствует")
+        return CubeCheckResult("L13_sphere", "ML", "ML Outcome", MISSING, "outcome_predictor отсутствует")
     status = ACTIVE if use_pred else SHADOW
-    return CubeCheckResult("L13_sphere", "S12", "ML Outcome", status, f"use={use_pred}")
+    return CubeCheckResult("L13_sphere", "ML", "ML Outcome", status, f"use={use_pred}")
 
 
 def _check_sphere_13_pair_context_bus(bot) -> CubeCheckResult:
     pc = getattr(bot, "pair_context", None)
     if pc is None:
-        return CubeCheckResult("L13_sphere", "S13", "PairContextBus (центр)", MISSING, "отсутствует")
+        return CubeCheckResult("L13_sphere", "BUS", "PairContextBus (центр)", MISSING, "отсутствует")
     try:
         n_pairs = len(getattr(pc, "_states", {}) or {})
     except Exception:
         n_pairs = 0
-    return CubeCheckResult("L13_sphere", "S13", "PairContextBus (центр)", ACTIVE, f"pairs={n_pairs}")
+    return CubeCheckResult("L13_sphere", "BUS", "PairContextBus (центр)", ACTIVE, f"pairs={n_pairs}")
 
 
 # ── Сферы, которые РАБОТАЮТ в боте, но до 04.10.2026 в селфтест не входили ──
@@ -311,7 +322,7 @@ def _check_sphere_19_market_data(bot) -> CubeCheckResult:
     Признак жизни — СВЕЖЕСТЬ рыночного состояния: луп ходит раз в 300 с, поэтому
     запас втрое. Проверять «есть ли объект» бессмысленно: `get_market()` никогда не None.
     """
-    code, name = "S19", "Market Data"
+    code, name = "MKT", "Market Data"
     pc = getattr(bot, "pair_context", None)
     if pc is None:
         return CubeCheckResult("L13_sphere", code, name, MISSING, "pair_context отсутствует — луп не стартует")
@@ -354,7 +365,7 @@ def _check_sphere_20_wave_service(bot) -> CubeCheckResult:
     Отличаем «работает в тени» от «умерла»: MISSING, если луп не стартовал или
     в шине нет ни одной свежей разметки.
     """
-    code, name = "S20", "Wave Service"
+    code, name = "WAVE", "Wave Service"
     svc = getattr(bot, "wave_service", None)
     pc = getattr(bot, "pair_context", None)
     if svc is None:
@@ -427,7 +438,7 @@ def _check_sphere_13_phase(bot) -> CubeCheckResult:
     которую пишет отдельный процесс `phase-watch` (цикл 30 мин). Поэтому здоровье
     сферы = СВЕЖЕСТЬ этой таблицы: процесс встанет — сделки молча получат прошлогоднюю фазу.
     """
-    code, name = "S13_PHASE", "Фаза / Decision Core (реестр: сфера 13)"
+    code, name = "PHASE", "Фаза / Decision Core (реестр: сфера 13)"
     try:
         import sqlite3
         import time as _t
