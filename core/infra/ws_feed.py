@@ -58,6 +58,15 @@ class WsFeed:
         self._running     = False
         self._tasks: List[asyncio.Task] = []
 
+        # Троттлинг публикации тика в шину: символ → когда уходил в последний раз
+        self._bus_last_pub: Dict[str, float] = {}
+        self._bus_published  = 0          # сколько тиков реально доехало до шины
+        # Приоритет берём ИЗ ШИНЫ (открытая сделка или watchlist), а не из _active_ohlcv:
+        # `update_priority_pairs` после отката к Phase A/B — заглушка, и подписок OHLCV нет
+        # (селфтест: ohlcv=0), так что опора на них дала бы приоритет НИКОМУ.
+        self._bus_prio: Set[str] = set()
+        self._bus_prio_ts = 0.0
+
         # Счётчики
         self._ticker_updates = 0
         self._ohlcv_updates  = 0
@@ -73,11 +82,17 @@ class WsFeed:
             self._batch_start_delay    = float(_cfg.get("performance.ws_batch_start_delay_sec", 2.0))
             self._reconnect_base_delay = float(_cfg.get("performance.ws_reconnect_base_delay_sec", _RECONNECT_DELAY))
             self._ohlcv_error_pause    = float(_cfg.get("performance.ws_ohlcv_error_pause_sec", 1.0))
+            # 04.10 (Егор «живую цену в шину срочно»): как часто тик уходит в шину.
+            # Приоритет — пары с открытыми сделками и watchlist: там цена нужна сейчас.
+            self._bus_pub_sec      = float(_cfg.get("performance.ws_bus_publish_sec", 15.0))
+            self._bus_pub_prio_sec = float(_cfg.get("performance.ws_bus_publish_priority_sec", 1.0))
         except Exception:
             self._batch_size           = _BATCH_SIZE
             self._ohlcv_batch_size     = _OHLCV_BATCH_SIZE
             self._batch_start_delay    = 2.0
             self._reconnect_base_delay = _RECONNECT_DELAY
+            self._bus_pub_sec          = 15.0
+            self._bus_pub_prio_sec     = 1.0
             self._ohlcv_error_pause    = 1.0
 
     # ── Публичный API ──────────────────────────────
@@ -99,6 +114,7 @@ class WsFeed:
             "active_tickers": len(self._active_tickers),
             "active_ohlcv":   len(self._active_ohlcv),
             "ticker_updates": self._ticker_updates,
+            "bus_published":  self._bus_published,
             "ohlcv_updates":  self._ohlcv_updates,
             "errors":         self._errors,
             "uptime_sec":     int(time.time() - self._started_at) if self._started_at else 0,
@@ -162,6 +178,25 @@ class WsFeed:
         self._ws_prices = {}
         self._active_tickers = set()
         self._active_ohlcv = set()
+
+    def _priority_symbols(self, now: float) -> Set[str]:
+        """Пары, где цена нужна СЕЙЧАС: открытая сделка или watchlist. Кеш на 10 с."""
+        if now - self._bus_prio_ts < 10.0:
+            return self._bus_prio
+        self._bus_prio_ts = now
+        pcb = getattr(self, "_pair_context_bus", None)
+        if pcb is None:
+            return self._bus_prio
+        try:
+            prio = set()
+            for sym in pcb.all_symbols():
+                st = pcb.get(sym)
+                if getattr(st, "open_trade_id", None) or getattr(st, "watchlist", None):
+                    prio.add(sym)
+            self._bus_prio = prio
+        except Exception as e:                      # noqa: BLE001
+            logger.debug("[WsFeed] приоритет из шины: %s", e)
+        return self._bus_prio
 
     def update_priority_pairs(self, priority_pairs: List[str]) -> None:
         """D-073 (26.05): после rollback к Phase A/B — SKIP dynamic add.
@@ -228,12 +263,23 @@ class WsFeed:
                 )
                 price = ticker.get("last") or ticker.get("close")
                 if price and price > 0:
-                    self._ws_prices[symbol] = (float(price), time.time())
+                    _now = time.time()
+                    self._ws_prices[symbol] = (float(price), _now)
                     self._ticker_updates += 1
-                    # Куб: Сфера 2 → PairContextBus (tick_price)
+                    # Куб: Сфера 2 → PairContextBus (tick_price).
+                    # 🔴 04.10: было `self._ticker_updates % 10 == 0` — счётчик ОБЩИЙ по всем
+                    # парам, то есть в шину уходило каждое десятое событие ИЗ ВСЕГО ПОТОКА
+                    # 567 пар. Ликвид проскакивал часто, неликвид почти никогда: в шине
+                    # цена жила с медианой 81 с при мгновенном тике в памяти. Теперь порог
+                    # ПО ВРЕМЕНИ И ПО СИМВОЛУ, у приоритетных пар — свой, короткий.
                     _pcb = getattr(self, "_pair_context_bus", None)
-                    if _pcb is not None and self._ticker_updates % 10 == 0:
-                        # Throttle: публикуем каждый 10-й тик (не перегружать bus)
+                    _gap = (self._bus_pub_prio_sec
+                            if (symbol in self._active_ohlcv
+                                or symbol in self._priority_symbols(_now))
+                            else self._bus_pub_sec)
+                    if _pcb is not None and _now - self._bus_last_pub.get(symbol, 0.0) >= _gap:
+                        self._bus_last_pub[symbol] = _now
+                        self._bus_published += 1
                         try:
                             from core.context.pair_context import SphereEvent
                             _pcb.publish(symbol, SphereEvent.TICK_PRICE, {

@@ -1309,6 +1309,11 @@ performance:
   # 04.10 ЗАМЕРЕНО и ВКЛЮЧЕНО: цена в шине p75 291→123 с, цикл скана 358→255 с (n=45/16),
   # slow callbacks 0, DEGRADED 1→0, трафик VPN в пределах шума. Откат — вернуть false.
   ws_enabled: true
+  # 04.10 (Егор «живую цену в шину срочно»): частота публикации тика в шину.
+  # Было: каждый 10-й тик по ОБЩЕМУ счётчику всех пар → в шине цена жила 81 с.
+  # Стало: порог по символу и времени. Приоритет — открытая сделка или watchlist.
+  ws_bus_publish_sec: 15.0
+  ws_bus_publish_priority_sec: 1.0
   event_loop_debug: false
   slow_callback_threshold_sec: 1.0
   scan_blacklist:

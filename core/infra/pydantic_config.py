@@ -134,6 +134,8 @@ class PerformanceSection(BaseModel):
     ws_batch_start_delay_sec: float = Field(default=5.0, ge=0.0, le=60.0)
     ws_reconnect_base_delay_sec: float = Field(default=5.0, ge=0.1, le=60.0)
     ws_ohlcv_error_pause_sec: float = Field(default=1.0, ge=0.0, le=300.0)
+    ws_bus_publish_sec: float = Field(default=15.0, ge=0.0, le=300.0)
+    ws_bus_publish_priority_sec: float = Field(default=1.0, ge=0.0, le=60.0)
     sim_time_exit_hours: int = Field(default=48, ge=0, le=10000)  # анти-орфан SIM
 
 
