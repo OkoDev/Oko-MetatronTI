@@ -103,9 +103,20 @@ class PositionManager:
         exchange_order_id:  Optional[str]  = None,
         sl_order_id:        Optional[str]  = None,
         tp_order_id:        Optional[str]  = None,
-        slip_pct:           float          = 0.0,
+        slip_pct:           Optional[float] = None,
     ) -> int:
-        """Зарегистрировать новую открытую позицию. Возвращает live_order.id."""
+        """Зарегистрировать новую открытую позицию. Возвращает live_order.id.
+
+        🔴 04.10 `slip_pct` по умолчанию **None (NULL), а не 0.0**. Причина: в момент вызова
+        фактическая цена филла обычно ещё НЕИЗВЕСТНА (`br.entry_price` пуст у MARKET, а у LIMIT
+        филла ещё нет) — и ноль в этом поле читался как «идеальный филл». Замер показал цену
+        такой лжи: из 29 ордеров за 5 дней «нулевое проскальзывание» стояло у 22, то есть у 76%
+        записей, которых никто не измерял.
+        🔑 КАНОНИЧЕСКИЙ источник коста — `simulated_trades.actual_entry_price` против
+        `entry_price`: фактический филл пишут WS (`exec_ws_integration`) и backfill
+        (`position_sync`), он заполнен у 7 197 сделок. Инструмент: `scripts/cost_measure.py`.
+        Это поле остаётся как справочное у ордера и заполняется только когда филл ИЗВЕСТЕН.
+        """
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             cur = conn.execute(

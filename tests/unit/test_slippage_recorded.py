@@ -49,11 +49,30 @@ def test_register_stores_slippage(tmp_path):
     assert got == pytest.approx(0.1234), "проскальзывание не записалось"
 
 
-def test_default_is_zero_not_none(tmp_path):
-    """Без явного значения — 0.0, чтобы колонка оставалась числовой."""
+def test_default_is_null_not_zero(tmp_path):
+    """🔴 04.10 ПЕРЕСМОТРЕНО: без явного значения — NULL, а НЕ 0.0.
+
+    Прежняя версия этого теста требовала ноль «чтобы колонка оставалась числовой» — и это
+    оказалось ошибкой проектирования: `br.entry_price` в момент регистрации обычно пуст
+    (MARKET отдаёт цену позже, у LIMIT филла ещё нет), поэтому ноль вставал у ордеров,
+    которых никто не измерял. Замер 04.10: «нулевое проскальзывание» стояло у 22 из 29
+    ордеров за 5 дней, то есть у 76% записей, и читалось как «идеальный филл».
+    Ноль обязан означать ноль, а «не знаю» — NULL. Кост мерится по
+    `simulated_trades.actual_entry_price` (`scripts/cost_measure.py`).
+    """
     pm = PositionManager(str(tmp_path / "t2.db"))
     oid = pm.register(symbol="ETH/USDT:USDT", side="SHORT", qty=1.0)
     import sqlite3
     with sqlite3.connect(tmp_path / "t2.db") as c:
+        got = c.execute("SELECT slip_pct FROM live_orders WHERE id=?", (oid,)).fetchone()[0]
+    assert got is None, "неизмеренное проскальзывание обязано быть NULL, иначе ноль врёт"
+
+
+def test_measured_zero_is_still_stored(tmp_path):
+    """А ИЗМЕРЕННЫЙ ноль (филл ровно по сигналу) записывается как 0.0 и отличим от NULL."""
+    pm = PositionManager(str(tmp_path / "t3.db"))
+    oid = pm.register(symbol="BTC/USDT:USDT", side="LONG", qty=1.0, slip_pct=0.0)
+    import sqlite3
+    with sqlite3.connect(tmp_path / "t3.db") as c:
         got = c.execute("SELECT slip_pct FROM live_orders WHERE id=?", (oid,)).fetchone()[0]
     assert got == 0.0

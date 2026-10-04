@@ -380,7 +380,14 @@ class TradeRouter:
                     # только комиссия 0.09% (taker 0.045 × 2), а остальное — оценка августа
                     # ([[signal_volume24h_is_always_zero]] — тот же класс поля-пустышки).
                     # Знак: плюс = исполнились ХУЖЕ сигнала (для LONG выше, для SHORT ниже).
-                    _slip = 0.0
+                    # 🔴 04.10 УТОЧНЕНО: пишем None (NULL), если филл НЕИЗВЕСТЕН, а не 0.0.
+                    # Замер 04.10: у 22 из 29 ордеров за 5 дней стоял ровно 0 — `br.entry_price`
+                    # в момент отправки пуст (MARKET отдаёт цену позже, у LIMIT филла ещё нет),
+                    # и ноль читался как «идеальный филл». Это тот же класс поля-пустышки, что
+                    # оборот=0 у 922 сделок ([[signal_volume24h_is_always_zero]]).
+                    # 🔑 Кост мерится не отсюда, а по `actual_entry_price` (его пишут WS-fill и
+                    # backfill position_sync) — `scripts/cost_measure.py`.
+                    _slip = None
                     try:
                         _sig_px, _fill_px = float(entry or 0), float(getattr(br, "entry_price", 0) or 0)
                         if _sig_px > 0 and _fill_px > 0:
@@ -389,7 +396,7 @@ class TradeRouter:
                                 _slip = -_slip
                             _slip = round(_slip, 4)
                     except (TypeError, ValueError):
-                        _slip = 0.0
+                        _slip = None
                     self.bot.position_manager.register(
                         symbol=ctx.symbol, side=ctx.direction, qty=qty,
                         sim_trade_id=trade_id,
