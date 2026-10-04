@@ -616,6 +616,23 @@ class PairContextBus:
         self._open_trades = [{k: r.get(k) for k in self._OPEN_TRADE_FIELDS} for r in rows]
         self._open_trades_ts = datetime.now(timezone.utc)
 
+        # 🔴 05.10 (N22): этот снапшот — ЕДИНСТВЕННЫЙ регулярный источник правды о том,
+        # где сейчас открыта позиция, поэтому заодно чиним `open_trade_id` у пар.
+        # Событие POSITION_OPENED приходит только в момент открытия: после рестарта бота
+        # шина о прежних сделках не знает, и поле осталось бы пустым до закрытия.
+        try:
+            live = {r.get("symbol"): r.get("id") for r in rows if r.get("symbol")}
+            for sym, tid in live.items():
+                st = self._states.get(sym)
+                if st is not None and st.open_trade_id != tid:
+                    st.open_trade_id = tid
+            for sym, st in self._states.items():
+                if st.open_trade_id is not None and sym not in live:
+                    st.open_trade_id = None       # сделка закрылась, а события мы не видели
+                    st.tsl_active = False
+        except Exception as e:                    # noqa: BLE001 — снапшот важнее починки поля
+            logger.debug("[Bus] сверка open_trade_id: %s", e)
+
     def open_trades_snapshot(self) -> tuple[list[dict], Optional[datetime]]:
         """PULL: оперативные открытые сделки из шины (dashboard /api/open, без тяжёлого SQL).
         Возвращает (копия списка, ts последней публикации). ts=None → цикл ещё не публиковал."""
@@ -807,6 +824,14 @@ class PairContextBus:
             state.last_narrative = data.get("text")
             state.last_narrative_time = now
             state.last_p_win = data.get("p_win", 0.0)
+
+        elif event_type == SphereEvent.POSITION_OPENED:
+            # 🔴 05.10 (бэклог N22): обработчика НЕ БЫЛО — поле ставилось только на
+            # TSL_MOVED, то есть лишь когда сработает трейлинг. У сделок без +1R трейлинг
+            # не активируется никогда, поэтому open_trade_id был ПУСТ у всех 585 пар при
+            # живых позициях. Из-за этого молчали три подписки-заглушки и не работал
+            # приоритет живой цены (его пришлось брать из БД).
+            state.open_trade_id = data.get("trade_id")
 
         elif event_type == SphereEvent.TSL_MOVED:
             state.tsl_active = True
