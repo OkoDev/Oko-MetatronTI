@@ -714,6 +714,11 @@ trading:
   balance_cache_ttl_sec: 120
   dedicated_loop: true
   sl_limit_buffer_pct: 1.0
+  # N7 (аудит 26.09): true = сначала ставим новый SL, потом снимаем старые.
+  # false (как было) = снимаем все стопы и только потом ставим новый — если постановка
+  # упадёт, позиция едет БЕЗ СТОПА до следующего тика TSL. Цена true — доли секунды
+  # с двумя стопами (сироту уберёт order_reconciler). Включать осознанно.
+  sl_place_before_cancel: false
   dev185_2_emergency_enabled: true
   dev185_2_overshoot_threshold_pct: 0.5
   dev185_2_dwell_seconds: 300

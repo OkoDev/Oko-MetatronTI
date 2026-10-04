@@ -1098,30 +1098,64 @@ class OrderManager:
                              symbol, move_pct, min_move_pct)
                 return None
 
-        # Отменяем ВСЕ STOP / STOP_MARKET по символу+pos_side (атомарная очистка накопленных ордеров)
-        # Bug fix 19.04: type="STOP" (Stop-Limit, DEV-175) раньше не ловился → ордера накапливались
+        # N7 (аудит 26.09): порядок «отменить всё → поставить новый» оставляет позицию
+        # БЕЗ СТОПА между двумя вызовами. Упадёт place_sl_order (таймаут, 429, обрыв) —
+        # и позиция едет голой до следующего тика TSL. Безопасный порядок обратный:
+        # сначала ставим новый, и только получив его id, снимаем старые.
+        # Цена безопасного порядка — доли секунды с ДВУМЯ стопами; сироту уберёт
+        # order_reconciler, а вот голую позицию чинить нечем.
+        # Флагом, чтобы включение было решением, а не побочным эффектом правки.
+        place_first = False
         try:
-            # D-062: атомарная очистка ВСЕХ SL — нужен свежий fetch (force=True)
-            orders = await self._get_open_orders_cached(symbol, force=True)
-            sl_orders = [
-                o for o in orders
-                if o.get("type") in ("STOP_MARKET", "STOP")
-                and o.get("positionSide", "").upper() == pos_side.upper()
-            ]
-            if sl_orders:
-                logger.info("[OrderManager] update_sl %s %s: отменяем %d SL ордеров (STOP_MARKET+STOP)",
-                            symbol, pos_side, len(sl_orders))
-                for o in sl_orders:
-                    await self.cancel_order(symbol, str(o["orderId"]))
-            else:
-                logger.info("[OrderManager] update_sl %s %s: открытых SL нет — ставим напрямую",
-                            symbol, pos_side)
-        except Exception as e:
-            logger.warning("[OrderManager] update_sl %s: ошибка get_open_orders: %s — fallback cancel by ID", symbol, e)
-            await self.cancel_order(symbol, old_sl_order_id)
+            place_first = bool(self._cfg.get("trading.sl_place_before_cancel", False))
+        except Exception:
+            pass
 
-        new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty,
-                                           limit_buffer_pct=limit_buffer_pct)
-        logger.info("[OrderManager] TSL update %s %s: SL %.6f → %.6f order_id=%s",
-                    symbol, pos_side, old_sl_price, new_sl_price, new_id)
+        async def _cancel_existing_sl(skip_id: Optional[str] = None) -> int:
+            """Снимает все STOP/STOP_MARKET по символу+pos_side, кроме skip_id."""
+            try:
+                # D-062: атомарная очистка ВСЕХ SL — нужен свежий fetch (force=True)
+                orders = await self._get_open_orders_cached(symbol, force=True)
+                sl_orders = [
+                    o for o in orders
+                    if o.get("type") in ("STOP_MARKET", "STOP")
+                    and o.get("positionSide", "").upper() == pos_side.upper()
+                    and (skip_id is None or str(o.get("orderId")) != str(skip_id))
+                ]
+                if sl_orders:
+                    logger.info("[OrderManager] update_sl %s %s: отменяем %d SL ордеров (STOP_MARKET+STOP)",
+                                symbol, pos_side, len(sl_orders))
+                    for o in sl_orders:
+                        await self.cancel_order(symbol, str(o["orderId"]))
+                else:
+                    logger.info("[OrderManager] update_sl %s %s: открытых SL нет", symbol, pos_side)
+                return len(sl_orders)
+            except Exception as e:
+                logger.warning("[OrderManager] update_sl %s: ошибка get_open_orders: %s — fallback cancel by ID",
+                               symbol, e)
+                if old_sl_order_id and str(old_sl_order_id) != str(skip_id or ""):
+                    await self.cancel_order(symbol, old_sl_order_id)
+                return 0
+
+        if place_first:
+            new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty,
+                                               limit_buffer_pct=limit_buffer_pct)
+            if not new_id:
+                # Старый стоп НЕ трогаем: позиция остаётся под защитой на прежнем уровне.
+                logger.warning("[OrderManager] update_sl %s %s: новый SL не встал — старый СОХРАНЁН "
+                               "(позиция под защитой на %.6f)", symbol, pos_side, old_sl_price)
+                return None
+            await _cancel_existing_sl(skip_id=new_id)
+        else:
+            await _cancel_existing_sl()
+            new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty,
+                                               limit_buffer_pct=limit_buffer_pct)
+            if not new_id:
+                logger.error("[OrderManager] 🔴 update_sl %s %s: старые SL сняты, новый НЕ встал — "
+                             "ПОЗИЦИЯ БЕЗ СТОПА (включи trading.sl_place_before_cancel)",
+                             symbol, pos_side)
+
+        logger.info("[OrderManager] TSL update %s %s: SL %.6f → %.6f order_id=%s%s",
+                    symbol, pos_side, old_sl_price, new_sl_price, new_id,
+                    " (сначала поставили, потом сняли)" if place_first else "")
         return new_id
