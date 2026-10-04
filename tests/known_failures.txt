@@ -1,0 +1,30 @@
+# Известные падения юнит-тестов — базовая линия для scripts/test_gate.py.
+# Ворота падают только на НОВЫХ падениях: список чинится постепенно,
+# но расти ему не дают. Обновлять: python scripts/test_gate.py --update
+tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_1_direction_change_ema_reacts_faster
+tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_2_inertia_full_history_vs_ema
+tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_3_format_compatible_with_by_signal_type
+tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_4_data_era_filter_ignores_pre_fix
+tests/unit/test_dedup_trades.py::test_dedup_allows_after_close
+tests/unit/test_dedup_trades.py::test_dedup_allows_different_symbol
+tests/unit/test_dedup_trades.py::test_dedup_first_trade_registers
+tests/unit/test_dedup_trades.py::test_dedup_multiple_symbols_independent
+tests/unit/test_execution_calc_parity.py::TestClampLeverage::test_pair_max_clamp
+tests/unit/test_execution_calc_parity.py::TestClampLeverage::test_sl_safety_popcat_case
+tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_data_fields_present
+tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_long_signal_on_cluster_sweep
+tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_pivot_bonus_applied_for_cluster_confluence
+tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_pivot_fallback_still_works
+tests/unit/test_liquidity_sweep_detector.py::TestLiquiditySweepSignal::test_symbol_and_timeframe
+tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_degraded_quality_from_collect
+tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_hard_block_returns_none_on_missing_data
+tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_pre_collected_gets_full_quality
+tests/unit/test_quality_gate.py::TestAnalyzeSymbolQualityMetadata::test_snapshot_time_is_recent_isoformat
+tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_degraded_when_checker_fails
+tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_full_quality_when_all_succeed
+tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_hard_block_on_missing_1h
+tests/unit/test_quality_gate.py::TestCollectAllSignalsQuality::test_returns_tuple
+tests/unit/test_smc_layer.py::TestFVG::test_min_size_filter
+tests/unit/test_strategy_pattern.py::TestTradingIntelligenceStrategyPattern::test_run_all_strategies_returns_dict
+tests/unit/test_strategy_pattern.py::TestTradingIntelligenceStrategyPattern::test_run_strategy_returns_none_on_no_signal
+tests/unit/test_strategy_pattern.py::TestTradingIntelligenceStrategyPattern::test_run_strategy_returns_recommendation
