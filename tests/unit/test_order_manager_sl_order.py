@@ -198,3 +198,87 @@ async def test_update_sl_place_first_asks_to_keep_existing():
 
     await om.update_sl(SYM, SIDE, "OLD1", 1.10, 10, old_sl_price=1.00)
     assert got["keep"] is True
+
+
+# ── Сторож покрытия: SL обязан закрывать ВСЮ позицию ────────────────────
+# Егор 04.10: «нельзя допустить, чтобы SL закрывал только часть позиции».
+# Стоп ставится на qty ОДНОЙ сделки, а позиция на бирже одна на символ+сторону:
+# две сделки на паре (за историю 65 пересечений) → объём больше нашего стопа.
+
+def _om_coverage(pos_qty, stops, place_ok=True):
+    om = OrderManager(_Cfg(place_first=True))
+    om.placed = []
+
+    async def _pos_qty(symbol, side):
+        return pos_qty
+
+    async def _orders(symbol, force=False):
+        return stops
+
+    async def _place(symbol, pos_side, price, qty, limit_buffer_pct=None, keep_existing=False):
+        om.placed.append((qty, keep_existing))
+        return "EXTRA1" if place_ok else None
+
+    om.is_live = lambda: True
+    om.get_position_qty = _pos_qty
+    om._get_open_orders_cached = _orders
+    om.place_sl_order = _place
+    return om
+
+
+@pytest.mark.asyncio
+async def test_coverage_tops_up_when_stop_is_partial():
+    """Позиция 200, стоп на 120 — 80 остались бы голыми."""
+    om = _om_coverage(200.0, [{"orderId": "A", "type": "STOP_MARKET",
+                               "positionSide": "LONG", "origQty": "120"}])
+    await om._ensure_sl_covers_position(SYM, SIDE, 1.10)
+    assert om.placed and abs(om.placed[0][0] - 80.0) < 1e-9
+    assert om.placed[0][1] is True        # добиваем, не снося существующий
+
+
+@pytest.mark.asyncio
+async def test_coverage_silent_when_full():
+    om = _om_coverage(120.0, [{"orderId": "A", "type": "STOP_MARKET",
+                               "positionSide": "LONG", "origQty": "120"}])
+    await om._ensure_sl_covers_position(SYM, SIDE, 1.10)
+    assert om.placed == []
+
+
+@pytest.mark.asyncio
+async def test_coverage_counts_all_stops_of_side():
+    """Две сделки на паре — два стопа, вместе покрывают позицию."""
+    om = _om_coverage(200.0, [
+        {"orderId": "A", "type": "STOP_MARKET", "positionSide": "LONG", "origQty": "120"},
+        {"orderId": "B", "type": "STOP", "positionSide": "LONG", "origQty": "80"},
+        {"orderId": "C", "type": "STOP_MARKET", "positionSide": "SHORT", "origQty": "50"},
+    ])
+    await om._ensure_sl_covers_position(SYM, SIDE, 1.10)
+    assert om.placed == []                # чужую сторону не считаем, своя покрыта
+
+
+@pytest.mark.asyncio
+async def test_coverage_respects_close_position_flag():
+    """closePosition=true закрывает позицию целиком — объём не важен."""
+    om = _om_coverage(200.0, [{"orderId": "A", "type": "STOP_MARKET", "positionSide": "LONG",
+                               "origQty": "1", "closePosition": "true"}])
+    await om._ensure_sl_covers_position(SYM, SIDE, 1.10)
+    assert om.placed == []
+
+
+@pytest.mark.asyncio
+async def test_coverage_without_position_does_nothing():
+    om = _om_coverage(0.0, [])
+    await om._ensure_sl_covers_position(SYM, SIDE, 1.10)
+    assert om.placed == []
+
+
+@pytest.mark.asyncio
+async def test_coverage_survives_exchange_error():
+    """Сторож не имеет права уронить обновление стопа."""
+    om = _om_coverage(200.0, [])
+
+    async def _boom(symbol, force=False):
+        raise RuntimeError("биржа недоступна")
+
+    om._get_open_orders_cached = _boom
+    await om._ensure_sl_covers_position(SYM, SIDE, 1.10)   # не бросает

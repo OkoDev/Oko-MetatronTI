@@ -1168,4 +1168,50 @@ class OrderManager:
         logger.info("[OrderManager] TSL update %s %s: SL %.6f → %.6f order_id=%s%s",
                     symbol, pos_side, old_sl_price, new_sl_price, new_id,
                     " (сначала поставили, потом сняли)" if place_first else "")
+
+        # 🔴 04.10 (вопрос Егора «нельзя допустить, чтобы SL закрывал только часть»):
+        # стоп ставится на qty ОДНОЙ сделки, а на бирже позиция по символу+стороне ОДНА.
+        # Если на паре живут две сделки (за историю таких пересечений 65), объём позиции
+        # больше, чем у нашего стопа, а снимаем мы ВСЕ стопы стороны — и часть позиции
+        # остаётся голой. Сторож добивает недостачу; он дешёвый и работает в обоих режимах.
+        if new_id:
+            await self._ensure_sl_covers_position(symbol, pos_side, new_sl_price, limit_buffer_pct)
         return new_id
+
+    async def _ensure_sl_covers_position(
+        self, symbol: str, pos_side: str, sl_price: float,
+        limit_buffer_pct: float | None = None,
+    ) -> None:
+        """Проверяет, что живые стопы покрывают ВЕСЬ объём позиции, и добивает остаток."""
+        try:
+            pos_qty = await self.get_position_qty(symbol, pos_side)
+            if pos_qty <= 0:
+                return
+            orders = await self._get_open_orders_cached(symbol, force=True)
+            stops = [o for o in orders
+                     if o.get("type") in ("STOP_MARKET", "STOP")
+                     and (o.get("positionSide", "") or "").upper() == pos_side.upper()]
+            # closePosition=true закрывает позицию целиком — объём считать не нужно
+            if any(str(o.get("closePosition", "")).lower() == "true" for o in stops):
+                return
+            covered = sum(float(o.get("origQty") or o.get("quantity") or 0) for o in stops)
+            if covered >= pos_qty * 0.995:
+                return
+
+            missing = pos_qty - covered
+            logger.error(
+                "[OrderManager] 🔴 %s %s: стопы покрывают %.6g из %.6g позиции (%.1f%%) — "
+                "ставлю догоняющий SL на остаток %.6g",
+                symbol, pos_side, covered, pos_qty, covered / pos_qty * 100, missing,
+            )
+            extra_id = await self.place_sl_order(symbol, pos_side, sl_price, missing,
+                                                 limit_buffer_pct=limit_buffer_pct,
+                                                 keep_existing=True)
+            if extra_id:
+                logger.info("[OrderManager] ✅ %s %s: остаток позиции закрыт стопом order_id=%s",
+                            symbol, pos_side, extra_id)
+            else:
+                logger.error("[OrderManager] 🔴 %s %s: догоняющий SL НЕ встал — "
+                             "%.6g позиции без стопа", symbol, pos_side, missing)
+        except Exception as e:                       # noqa: BLE001 — сторож не роняет TSL
+            logger.warning("[OrderManager] проверка покрытия SL %s %s: %s", symbol, pos_side, e)
