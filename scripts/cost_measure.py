@@ -52,13 +52,18 @@ def load(days: int | None, source: str | None) -> list[dict]:
     if source:
         where.append("signal_type = ?")
         params.append(source)
+    # 🔑 05.10 `filled_at` — время фактического исполнения. Для LIMIT-источников оно и есть
+    # момент сделки: `created_at` у них только постановка заявки, и сравнение филла с той минутой
+    # давало ложные «82-100% вне рынка». Где времени нет (старые записи) — остаётся created_at,
+    # и это помечается в выводе.
     sql = ("SELECT signal_type, direction, entry_price, actual_entry_price, stop_loss, "
-           "features_json, status, profit_pct, created_at FROM simulated_trades WHERE "
+           "features_json, status, profit_pct, COALESCE(filled_at, created_at), "
+           "filled_at IS NOT NULL FROM simulated_trades WHERE "
            + " AND ".join(where))
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
         rows = c.execute(sql, params).fetchall()
     out = []
-    for stype, d, sig, act, sl, fj, status, pnl, ca in rows:
+    for stype, d, sig, act, sl, fj, status, pnl, ca, has_ft in rows:
         try:
             sig, act = float(sig), float(act)
         except (TypeError, ValueError):
@@ -87,7 +92,8 @@ def load(days: int | None, source: str | None) -> list[dict]:
                 stop_pct = None
         out.append({"src": stype, "dir": d, "slip": slip, "stop_pct": stop_pct,
                     "copy": abs(act - sig) < 1e-12, "status": status, "pnl": pnl,
-                    "ca": ca, "imp": next((float(f[k]) for k in IMP_KEYS if f.get(k)), None)})
+                    "ca": ca, "has_fill_time": bool(has_ft),
+                    "imp": next((float(f[k]) for k in IMP_KEYS if f.get(k)), None)})
     return out
 
 
@@ -122,6 +128,10 @@ def main() -> None:
           + (f" · источник: {a.source}" if a.source else ""))
     print(f"⚠️ из них actual РОВНО == entry (копия, филл не настоящий): {copies} "
           f"({100*copies/len(raw_data):.0f}%)")
+    _ft = sum(1 for x in raw_data if x.get("has_fill_time"))
+    print(f"⏱️ с временем филла (filled_at): {_ft} ({100*_ft/len(raw_data):.0f}%); "
+          f"у остальных берётся created_at — для LIMIT-источников это момент ПОСТАНОВКИ заявки, "
+          f"и сравнивать их филл со свечой того момента нельзя")
     # 🔴 04.10 КОПИИ ИСКЛЮЧАЮТСЯ ИЗ РАСЧЁТА. Поймано на первом же прогоне этого скрипта:
     # за 60 дней медиана slip вышла ровно 0.0000% и круг «0.09%», хотя копий было 32-85%
     # по источникам — то есть ноль пришёл из записей, где филл не измерялся, а копировался.

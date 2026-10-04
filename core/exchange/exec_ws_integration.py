@@ -89,10 +89,16 @@ def _write_exch_id(bot, symbol: str, direction: str, order_id: str, qty: float, 
             _raw_em = str(_cfg_dbv2.get("trading.execution_mode", "vst")).upper()
             _em = {"VST": "VST", "LIVE": "LIVE"}.get(_raw_em, "VST")
             if avg_price > 0:
+                # 🔴 05.10 ВРЕМЯ ФИЛЛА. Здесь оно ТОЧНОЕ: WS приносит событие исполнения, и мы
+                # пишем момент его обработки. Без `filled_at` кост у LIMIT-источников неизмерим —
+                # цена филла есть, а когда он случился, нет, и сравнивать приходилось с минутой
+                # ПОСТАНОВКИ заявки (замер 04.10 дал по лимиткам ложные «82-100% вне рынка»).
+                from datetime import datetime as _dt_f, timezone as _tz_f
                 conn.execute(
-                    "UPDATE simulated_trades SET exchange_order_id=?, execution_mode=?, actual_entry_price=? "
+                    "UPDATE simulated_trades SET exchange_order_id=?, execution_mode=?, "
+                    "actual_entry_price=?, filled_at=? "
                     "WHERE id=? AND status='OPEN' AND (exchange_order_id IS NULL OR exchange_order_id='')",
-                    (order_id, _em, avg_price, tid),
+                    (order_id, _em, avg_price, _dt_f.now(_tz_f.utc).isoformat(), tid),
                 )
             else:
                 conn.execute(

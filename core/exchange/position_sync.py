@@ -566,10 +566,18 @@ async def sync_positions(bot) -> None:
             if _pp_ae is not None and getattr(_pp_ae, "entry", 0) and _pp_ae.entry > 0:
                 try:
                     import sqlite3 as _sq_ae
+                    from datetime import datetime as _dt_ae, timezone as _tz_ae
+                    # 🔴 05.10 `filled_at` пишем и здесь, но это ВЕРХНЯЯ ГРАНИЦА: backfill узнаёт
+                    # о филле при очередном синке, то есть фактический фил был РАНЬШЕ (до периода
+                    # синхронизации). Для измерения коста лимиток этого достаточно — сейчас нет
+                    # вообще ничего, — но в замерах эту границу надо называть.
+                    # Точное время даёт только WS-путь (`exec_ws_integration`).
                     with _sq_ae.connect(bot.trade_simulator.db_path, timeout=5) as _bc_ae:
                         _bc_ae.execute(
-                            "UPDATE simulated_trades SET actual_entry_price=? "
-                            "WHERE id=? AND actual_entry_price IS NULL", (float(_pp_ae.entry), _t.get("id")))
+                            "UPDATE simulated_trades SET actual_entry_price=?, "
+                            "filled_at=COALESCE(filled_at, ?) "
+                            "WHERE id=? AND actual_entry_price IS NULL",
+                            (float(_pp_ae.entry), _dt_ae.now(_tz_ae.utc).isoformat(), _t.get("id")))
                         _bc_ae.commit()
                     logger.info("[POSITION-SYNC] actual_entry backfill #%s %s %s = %.6g (LIMIT-fill)",
                                 _t.get("id"), _t.get("symbol"), _t.get("direction"), _pp_ae.entry)

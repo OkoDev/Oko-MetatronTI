@@ -49,6 +49,16 @@ MAX_SYMBOLS = 120
 # 04.10: пауза между проходами, пока вселенная ещё не обойдена окном ни разу. Не ноль —
 # чтобы дать скану и прочим лупам вдохнуть между двумя подряд проходами по 120 пар.
 CATCHUP_SLEEP_SEC = 20
+# 🔴 05.10 Сколько пар обрабатывается ОДНОВРЕМЕННО. Егор: «нужен параллелизм, но очень
+# осторожно!». 98% времени прохода — ожидание общего канала со сканом, поэтому выигрыш есть,
+# но и жадность здесь уже стоила нам HARD timeout скана (история MAX_SYMBOLS 120 → 40 → 20 → 120).
+# 🔴 НАБЛЮДЕНИЕ 05.10: при PARALLEL=4 темп `HARD timeout при сборе сигналов` за первые 8 минут
+# вырос с 0.32 до 0.75 в минуту. Выборка мала и первый проход после рестарта всегда тяжелее
+# (ctx_seen пуст → контекст считается для ВСЕХ пар окна), поэтому вина параллелизма НЕ доказана —
+# но принцип осторожности важнее возможного выигрыша: снижено до 2 и наблюдаем.
+# Поднимать обратно ТОЛЬКО с замером темпа таймаутов до/после на окне от часа.
+# PARALLEL = 1 полностью возвращает прежнее последовательное поведение.
+PARALLEL = 2
 
 # 🔴 ГЛУБИНА ПОДОБРАНА ПОД КЭШ, а не «побольше на всякий случай».
 # Ключ LRU в ApiEngine — (symbol, timeframe), но `get` отдаёт запись только если
@@ -252,48 +262,75 @@ async def wave_loop(bot) -> None:
             t0 = asyncio.get_event_loop().time()
             logger.info("[S20] проход начат: пар в шине %d, берём %d (%s)",
                         n_all, len(syms), win)
-            for sym in syms:
-                try:
-                    frames = await _load_frames(bot, sym)
-                    if frames is None:
-                        skipped += 1
-                        continue
-                    d4, d1, dl = frames
-                    # расчёт ~42 мс — в поток, чтобы не держать event loop
-                    ph = await asyncio.to_thread(
-                        svc.compute_and_publish, sym, d4, d1, dl, bus)
-                    # ДВУХМАСШТАБНАЯ нога — то, на чём стоит находка ARCH-137.
-                    # Счёт волн выше её НЕ покрывает: там один мелкий масштаб.
-                    leg = await asyncio.to_thread(current_leg, d1, "1h")
-                    if leg:
-                        bus.update(sym, leg_updated_at=_now(), **leg)
-                        legs += 1
-                    # волновой контекст аналитика: дневные ноги + 4h-пятёрка (раз на закрытый 4h-бар)
+            # 🔴 05.10 ПАРАЛЛЕЛИЗМ, ОСТОРОЖНО (Егор: «нужен, но очень осторожно!»).
+            # Замер 04.10: данные и расчёт стоят 83 мс на пару (чтение баров из хранилища
+            # 6-21 мс + расчёт 49 мс), а проход тратит 4.4 с/пару — то есть 98% времени луп
+            # ЖДЁТ в очередях (`to_thread` + семафор `get_ohlcv`), а не работает. Поэтому
+            # несколько пар одновременно дают почти линейный выигрыш.
+            # 🔴 Почему мало и через семафор: канал — общее узкое место со сканом, и история
+            # MAX_SYMBOLS (120 → 40 → 20 → 120) ровно про это. Откат к прежнему поведению —
+            # PARALLEL = 1, тогда gather вырождается в последовательный обход.
+            _sem = asyncio.Semaphore(PARALLEL)
+
+            async def _one(sym: str) -> dict:
+                """Обработка одной пары. Возвращает счётчики — агрегируем ПОСЛЕ gather,
+                чтобы параллельные задачи не делили изменяемое состояние."""
+                r = {"done": 0, "skipped": 0, "legs": 0, "ctxs": 0, "phase": None,
+                     "why": None, "err": None, "sym": sym}
+                async with _sem:
                     try:
-                        ctx, why = await _wave_ctx(bot, sym, ctx_seen)
-                        ctx_why[why.split(" (")[0]] += 1
-                        if ctx:
-                            bus.update(sym, **ctx)
-                            ctxs += 1
-                        elif why not in ("тот же 4h-бар",) and ctx_err is None:
-                            ctx_err = f"{sym}: {why}"
-                    except Exception as e:
-                        ctx_why["ошибка"] += 1
-                        if ctx_err is None:
-                            ctx_err = f"{sym}: {type(e).__name__} {e}"
-                    done += 1
-                    phases[getattr(ph, "phase", None) or "undefined"] += 1
-                    # пересчёт разметки — сам по себе сигнал (счёт волн сломался)
-                    recounts += svc.recount_count(sym)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.debug("[S20] %s: %s", sym, e)
-                finally:
-                    # пара пройдена окном — даже если данных не хватило. Иначе «догоняющий»
-                    # режим ниже крутился бы вечно из-за пар, у которых контекста не будет
-                    # никогда (4h<150, 1d<60 — их в каждом проходе 5-8).
-                    touched.add(sym)
+                        frames = await _load_frames(bot, sym)
+                        if frames is None:
+                            r["skipped"] = 1
+                            return r
+                        d4, d1, dl = frames
+                        # расчёт ~42 мс — в поток, чтобы не держать event loop
+                        ph = await asyncio.to_thread(
+                            svc.compute_and_publish, sym, d4, d1, dl, bus)
+                        # ДВУХМАСШТАБНАЯ нога — то, на чём стоит находка ARCH-137.
+                        # Счёт волн выше её НЕ покрывает: там один мелкий масштаб.
+                        leg = await asyncio.to_thread(current_leg, d1, "1h")
+                        if leg:
+                            bus.update(sym, leg_updated_at=_now(), **leg)
+                            r["legs"] = 1
+                        # волновой контекст аналитика: дневные ноги + 4h-пятёрка (раз на закрытый бар)
+                        try:
+                            ctx, why = await _wave_ctx(bot, sym, ctx_seen)
+                            r["why"] = why.split(" (")[0]
+                            if ctx:
+                                bus.update(sym, **ctx)
+                                r["ctxs"] = 1
+                            elif why not in ("тот же 4h-бар",):
+                                r["err"] = f"{sym}: {why}"
+                        except Exception as e:                   # noqa: BLE001
+                            r["why"] = "ошибка"
+                            r["err"] = f"{sym}: {type(e).__name__} {e}"
+                        r["done"] = 1
+                        r["phase"] = getattr(ph, "phase", None) or "undefined"
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:                       # noqa: BLE001
+                        logger.debug("[S20] %s: %s", sym, e)
+                    finally:
+                        # пара пройдена окном — даже если данных не хватило. Иначе «догоняющий»
+                        # режим ниже крутился бы вечно из-за пар, у которых контекста не будет
+                        # никогда (4h<150, 1d<60 — их в каждом проходе 5-8).
+                        touched.add(sym)
+                return r
+
+            for _res in await asyncio.gather(*(_one(s) for s in syms), return_exceptions=True):
+                if isinstance(_res, BaseException):
+                    logger.debug("[S20] задача упала: %s", _res)
+                    continue
+                done += _res["done"]; skipped += _res["skipped"]
+                legs += _res["legs"]; ctxs += _res["ctxs"]
+                if _res["phase"]:
+                    phases[_res["phase"]] += 1
+                if _res["why"]:
+                    ctx_why[_res["why"]] += 1
+                if _res["err"] and ctx_err is None:
+                    ctx_err = _res["err"]
+                recounts += svc.recount_count(_res["sym"])
             el = asyncio.get_event_loop().time() - t0
             if done:
                 bot.wave_last_pass_at = _dt.now(_tz.utc)   # селфтест: луп не завис
