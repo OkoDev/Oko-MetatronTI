@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
@@ -68,8 +69,15 @@ class TestCollectAllSignalsQuality:
 
     def _make_ti(self):
         from core.trading_intelligence import TradingIntelligence
+        # 04.10: было db_path="/tmp/test_qg.db" — на Windows это C:	mp	est_qg.db,
+        # файл создавался пустым и КАЖДЫЙ запрос падал «no such table: simulated_trades».
+        # Схему заводит SubscriptionManager — ровно как в бою.
+        import tempfile
+        from core.db.subscription_manager import SubscriptionManager
+        db = str(Path(tempfile.mkdtemp()) / "test_qg.db")
+        SubscriptionManager(db)
         return TradingIntelligence(
-            MockCollector(), config=FakeCfg(), db_path="/tmp/test_qg.db"
+            MockCollector(), config=FakeCfg(), db_path=db
         )
 
     def test_returns_tuple(self):
@@ -89,7 +97,7 @@ class TestCollectAllSignalsQuality:
         })
 
         # Мокируем data_collector.get_ohlcv
-        async def mock_get_ohlcv(symbol, tf, **kw):
+        async def mock_get_ohlcv(symbol, tf="15m", limit=150, **kw):
             return df.copy()
 
         ti.data_collector.get_ohlcv = mock_get_ohlcv
@@ -107,7 +115,7 @@ class TestCollectAllSignalsQuality:
         """Если 1h OHLCV None — возвращает (None, 'full')."""
         ti = self._make_ti()
 
-        async def mock_get_ohlcv(symbol, tf, **kw):
+        async def mock_get_ohlcv(symbol, tf="15m", limit=150, **kw):
             return None  # 1h отсутствует
 
         ti.data_collector.get_ohlcv = mock_get_ohlcv
@@ -131,7 +139,7 @@ class TestCollectAllSignalsQuality:
             "close": np.random.uniform(44000, 46000, n),
             "volume": np.random.uniform(1000, 5000, n),
         })
-        async def mock_get_ohlcv(symbol, tf, **kw):
+        async def mock_get_ohlcv(symbol, tf="15m", limit=150, **kw):
             return df.copy()
         ti.data_collector.get_ohlcv = mock_get_ohlcv
 
@@ -165,7 +173,7 @@ class TestCollectAllSignalsQuality:
             "close": np.random.uniform(44000, 46000, n),
             "volume": np.random.uniform(1000, 5000, n),
         })
-        async def mock_get_ohlcv(symbol, tf, **kw):
+        async def mock_get_ohlcv(symbol, tf="15m", limit=150, **kw):
             return df.copy()
         ti.data_collector.get_ohlcv = mock_get_ohlcv
 

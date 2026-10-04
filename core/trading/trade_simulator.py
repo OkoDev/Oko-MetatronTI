@@ -968,9 +968,15 @@ class TradeSimulator:
                 # execution_mode = ФАКТ исполнения (юзер 12.06): на момент register order_id ещё
                 # нет → 'SIM' (симуляция). UPDATE на VST/LIVE при записи exchange_order_id
                 # (trade_router/exec_ws). Shadow-сделки (order_id NULL) остаются SIM.
-                _acc_row = conn.execute(
-                    "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1", (symbol,)
-                ).fetchone()
+                # 🔴 04.10: account_routing создаёт только AccountRouter (мультиаккаунт),
+                # на свежей базе её нет — и регистрация сделки падала целиком из-за
+                # вспомогательной таблицы. Нет маршрутизации = аккаунт по умолчанию.
+                try:
+                    _acc_row = conn.execute(
+                        "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1", (symbol,)
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    _acc_row = None
                 _account_id = _acc_row[0] if _acc_row else 1
                 _exec_mode = "SIM"
                 cursor.execute(

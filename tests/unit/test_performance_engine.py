@@ -11,39 +11,30 @@ from core.trading.performance_engine import PerformanceEngine
 # Фикстура: создаём временную БД с нужной схемой и тестовыми данными
 # ──────────────────────────────────────────────────────────────────────────────
 
-CREATE_TABLE = """
-CREATE TABLE simulated_trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol TEXT, timeframe TEXT, signal_type TEXT, direction TEXT,
-    entry_price REAL, stop_loss REAL, take_profit REAL,
-    strength INTEGER, confidence REAL, regime TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    status TEXT DEFAULT 'OPEN',
-    exit_price REAL, profit_pct REAL, R_multiple REAL, closed_at TEXT,
-    duration_minutes INTEGER, features_json TEXT,
-    max_price REAL, min_price REAL, max_R_possible REAL, captured_R_pct REAL,
-    sl_source TEXT, tp_source TEXT,
-    tsl_activated INTEGER DEFAULT 0,
-    strategy_name TEXT, tsl_tf TEXT DEFAULT '15m',
-    tp1_price REAL, tp2_price REAL, tp3_price REAL,
-    tp1_hit_at TEXT, strategy_type TEXT,
-    decision_trace_json TEXT, original_sl REAL,
-    execution_mode TEXT DEFAULT 'VST'
-)
-"""
+# 04.10: здесь лежала РУЧНАЯ КОПИЯ боевой схемы, и она отстала — не было колонки
+# be_activated, которую использует SQL_IS_BE_NEUTRAL_CASE. Запрос падал, summary()
+# возвращал пустой словарь, и восемь тестов валились с KeyError на ровном месте.
+# Схему теперь заводит тот же код, что и в бою, — копия отстать больше не может.
+
+def _create_schema(db: str) -> None:
+    from core.db.subscription_manager import SubscriptionManager
+    SubscriptionManager(db)
 
 
 def _make_db(tmp_path, rows):
     """Создаёт SQLite-файл с тестовыми сделками."""
     db = str(tmp_path / "test.db")
+    _create_schema(db)
     con = sqlite3.connect(db)
-    con.execute(CREATE_TABLE)
     for r in rows:
         con.execute(
+            # боевая схема требует геометрию (NOT NULL) — подставляем нейтральную,
+            # тесты считают статистику по статусам и R, цены им безразличны
             """INSERT INTO simulated_trades
                (symbol, signal_type, direction, status, profit_pct, R_multiple,
-                closed_at, max_R_possible, regime)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                closed_at, max_R_possible, regime, execution_mode,
+                entry_price, stop_loss, take_profit, timeframe)
+               VALUES (?,?,?,?,?,?,?,?,?,'VST', 100.0, 99.0, 102.0, '15m')""",
             r,
         )
     con.commit()

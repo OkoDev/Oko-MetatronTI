@@ -98,10 +98,19 @@ def get_open_positions(account_id: Optional[int] = None) -> list[dict]:
 
 
 def resolve_account_id(symbol: str) -> int:
-    """По символу возвращает account_id из account_routing. Default=1."""
+    """По символу возвращает account_id из account_routing. Default=1.
+
+    🔴 04.10: таблицу создаёт только `AccountRouter._ensure_table()`, то есть она
+    появляется лишь при включённом мультиаккаунте. На свежей базе (и в тестах)
+    её нет, и запрос падал OperationalError, роняя вызывающего. Отсутствие
+    маршрутизации — это «аккаунт по умолчанию», а не ошибка.
+    """
     with _connect() as db:
-        r = db.execute(
-            "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1",
-            (symbol,),
-        ).fetchone()
+        try:
+            r = db.execute(
+                "SELECT account_id FROM account_routing WHERE symbol=? LIMIT 1",
+                (symbol,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 1
         return r["account_id"] if r else 1

@@ -165,6 +165,20 @@ class SubscriptionManager:
                 # Корень: дашборд брал leverage из ЖИВОГО config → старые сделки «перекрашивались»
                 # задним числом при смене конфига. Теперь = свойство сделки (per-source, не глобал).
                 ("leverage", "REAL"),
+                # 🔴 04.10: девять колонок жили в боевой БД, но КОД ИХ НЕ СОЗДАВАЛ —
+                # добавлены когда-то вручную и выпали из миграций. На свежей установке
+                # PerformanceEngine.summary() падал целиком («no such column: be_activated»,
+                # её требует SQL_IS_BE_NEUTRAL_CASE) → KPI и дашборд оставались пустыми.
+                # Найдено сверкой схемы боевой базы с тем, что заводит этот код.
+                ("be_activated", "INTEGER DEFAULT 0"),      # безубыток активирован
+                ("choch_sl_moved", "INTEGER DEFAULT 0"),    # стоп перенесён по слому структуры
+                ("first_profit_r", "REAL"),                 # первый плюс в R до минуса
+                ("first_drawdown_r", "REAL"),               # первая просадка в R
+                ("qty", "REAL"),                            # объём позиции
+                ("actual_entry_price", "REAL"),             # фактическая цена входа с биржи
+                ("exchange_tp_order_id", "TEXT"),           # id TP-ордера на бирже
+                ("tp2_hit_at", "TIMESTAMP"),
+                ("tp3_hit_at", "TIMESTAMP"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE simulated_trades ADD COLUMN {col} {coltype}")
