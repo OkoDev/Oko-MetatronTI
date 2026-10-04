@@ -23,6 +23,12 @@ SelfTest Куба Метатрона (ARCH-73 / DEV-121 расширение).
     7 TradingIntelligence | 8 TradeSimulator     | 9 Exit Manager
     10 PostTradeAnalyser  | 11 NarrativeBuilder  | 12 ML Outcome
     13 PairContextBus (центр)
+
+04.10.2026 — ещё три сферы, которые работали в боте БЕЗ ПРИСМОТРА (их не проверял никто):
+    S19 Market Data (рынок и дрейф в шину, в бою с 01.09)
+    S20 Wave Service (волновая разметка, SHADOW по замыслу)
+    S13_PHASE Фаза / Decision Core (в реестре — сфера 13; код составной, т.к. S13 здесь
+              занята шиной: две нумерации Куба разошлись исторически — бэклог N20)
 """
 from __future__ import annotations
 
@@ -290,6 +296,171 @@ def _check_sphere_13_pair_context_bus(bot) -> CubeCheckResult:
     except Exception:
         n_pairs = 0
     return CubeCheckResult("L13_sphere", "S13", "PairContextBus (центр)", ACTIVE, f"pairs={n_pairs}")
+
+
+# ── Сферы, которые РАБОТАЮТ в боте, но до 04.10.2026 в селфтест не входили ──
+# Их здоровье не опрашивал никто: встал бы цикл Сферы 19 — отчёт сказал бы «порядок».
+# Найдено 04.10 сверкой карты Куба с графом кодовой базы.
+# 🔴 Коды: S19 и S20 — из `core/context/sphere_registry.py`. У Фазы в реестре номер 13,
+# но здесь S13 занята шиной (две нумерации Куба разошлись исторически), поэтому код
+# составной — S13_PHASE. Разведение нумераций — отдельная задача, см. бэклог N20.
+
+def _check_sphere_19_market_data(bot) -> CubeCheckResult:
+    """Сфера 19 (`bot/loops/market_data_loop.py`, в бою с 01.09): рынок и дрейф в шину.
+
+    Признак жизни — СВЕЖЕСТЬ рыночного состояния: луп ходит раз в 300 с, поэтому
+    запас втрое. Проверять «есть ли объект» бессмысленно: `get_market()` никогда не None.
+    """
+    code, name = "S19", "Market Data"
+    pc = getattr(bot, "pair_context", None)
+    if pc is None:
+        return CubeCheckResult("L13_sphere", code, name, MISSING, "pair_context отсутствует — луп не стартует")
+    try:
+        m = pc.get_market()
+    except Exception as e:
+        return CubeCheckResult("L13_sphere", code, name, MISSING, f"get_market error: {e}")
+
+    upd = getattr(m, "updated_at", None)
+    if upd is None:
+        return CubeCheckResult("L13_sphere", code, name, SHADOW,
+                               "рыночное состояние ни разу не обновлялось (луп не публиковал)")
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        age_s = (now - (upd if upd.tzinfo else upd.replace(tzinfo=timezone.utc))).total_seconds()
+    except Exception:
+        age_s = -1.0
+
+    usdt_d = getattr(m, "usdt_d", None)
+    drift30 = getattr(m, "ud_drift30", None)   # на это поле смотрит боевой гейт дрейфа
+    bits = [f"возраст {age_s / 60:.0f} мин" if age_s >= 0 else "возраст n/a"]
+    if usdt_d is not None:
+        bits.append(f"USDT.D {usdt_d:.3f}%")
+    if drift30 is not None:
+        bits.append(f"дрейф30 {drift30:.2f}%")
+    detail = " · ".join(bits)
+
+    # 900 с = три интервала лупа: один пропуск не повод кричать, три — уже остановка
+    status = SHADOW if (age_s < 0 or age_s > 900) else ACTIVE
+    if status is SHADOW and age_s > 900:
+        detail += " — луп молчит дольше трёх интервалов"
+    return CubeCheckResult("L13_sphere", code, name, status, detail)
+
+
+def _check_sphere_20_wave_service(bot) -> CubeCheckResult:
+    """Сфера 20 (`bot/loops/wave_loop.py`, ARCH-132): волновая разметка в шину.
+
+    Она SHADOW ПО ЗАМЫСЛУ — ничего не гейтит, поэтому ACTIVE здесь не бывает.
+    Отличаем «работает в тени» от «умерла»: MISSING, если луп не стартовал или
+    в шине нет ни одной свежей разметки.
+    """
+    code, name = "S20", "Wave Service"
+    svc = getattr(bot, "wave_service", None)
+    pc = getattr(bot, "pair_context", None)
+    if svc is None:
+        return CubeCheckResult("L13_sphere", code, name, MISSING,
+                               "bot.wave_service не выставлен — луп не стартовал")
+    if pc is None:
+        return CubeCheckResult("L13_sphere", code, name, MISSING, "pair_context отсутствует")
+
+    marked = fresh = 0
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        for st in list((getattr(pc, "_states", {}) or {}).values()):
+            ts = getattr(st, "wave_updated_at", None)
+            if ts is None:
+                continue
+            marked += 1
+            try:
+                age = (now - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds()
+                # окно ротации: 120 пар за проход, вся вселенная — за ~5 проходов (75 мин)
+                if age <= 2 * 3600:
+                    fresh += 1
+            except Exception:
+                pass
+    except Exception as e:
+        return CubeCheckResult("L13_sphere", code, name, MISSING, f"обход шины: {e}")
+
+    # Прогрев: первый проход стартует через 90 с и идёт ~8 мин, вся вселенная
+    # покрывается за ~5 проходов. Без этой скидки каждый рестарт давал бы MISSING,
+    # и на красный флаг перестали бы смотреть — прибор, который врёт, хуже отсутствующего.
+    started = getattr(bot, "wave_started_at", None)
+    last_pass = getattr(bot, "wave_last_pass_at", None)
+    warming = False
+    try:
+        from datetime import datetime, timezone
+        if started is not None:
+            since_start = (datetime.now(timezone.utc) - started).total_seconds()
+            warming = since_start < 20 * 60
+    except Exception:
+        pass
+
+    if marked == 0:
+        if warming:
+            return CubeCheckResult("L13_sphere", code, name, SHADOW,
+                                   "прогрев после старта: первый проход идёт ~8 мин, разметки ещё нет")
+        return CubeCheckResult("L13_sphere", code, name, MISSING,
+                               "луп запущен, но в шине НЕТ ни одной волновой разметки")
+
+    # Луп мог остаться живым и перестать работать: два интервала (1800 с) без прохода — завис
+    if last_pass is not None:
+        try:
+            from datetime import datetime, timezone
+            idle = (datetime.now(timezone.utc) - last_pass).total_seconds()
+            if idle > 2 * 900:
+                return CubeCheckResult("L13_sphere", code, name, MISSING,
+                                       f"последний проход {idle / 60:.0f} мин назад — луп завис "
+                                       f"(разметка у {marked} пар устаревает)")
+        except Exception:
+            pass
+
+    detail = f"разметка у {marked} пар, свежей (<2ч) {fresh} — не гейтит (SHADOW по замыслу)"
+    return CubeCheckResult("L13_sphere", code, name, SHADOW, detail)
+
+
+def _check_sphere_13_phase(bot) -> CubeCheckResult:
+    """Сфера Фазы (`core/context/phase_sphere.py`, в реестре — 13).
+
+    Сама сфера — чистые функции, своего состояния нет: снимок кладётся в сделку при
+    регистрации (`trade_simulator.py`), а вердикт берётся из таблицы `phase_state`,
+    которую пишет отдельный процесс `phase-watch` (цикл 30 мин). Поэтому здоровье
+    сферы = СВЕЖЕСТЬ этой таблицы: процесс встанет — сделки молча получат прошлогоднюю фазу.
+    """
+    code, name = "S13_PHASE", "Фаза / Decision Core (реестр: сфера 13)"
+    try:
+        import sqlite3
+        import time as _t
+        from core.infra import sat_store
+        p = sat_store.path("phase")
+        if not p.exists():
+            return CubeCheckResult("L13_sphere", code, name, MISSING, f"базы нет: {p.name}")
+        c = sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=5)
+        c.row_factory = sqlite3.Row
+        try:
+            row = c.execute("SELECT phase, side, confidence, ts FROM phase_state "
+                            "WHERE level='macro' ORDER BY ts DESC LIMIT 1").fetchone()
+        finally:
+            c.close()
+    except Exception as e:
+        return CubeCheckResult("L13_sphere", code, name, MISSING, f"phase_state недоступна: {e}")
+
+    if not row:
+        return CubeCheckResult("L13_sphere", code, name, MISSING, "в phase_state нет строк уровня macro")
+
+    age_h = (_t.time() - (row["ts"] or 0)) / 3600.0
+    try:
+        guard = bool(bot.config.get("trading.phase_guard_enabled", False))
+    except Exception:
+        guard = False
+
+    detail = (f"{row['phase']} side={row['side']} conf={row['confidence']} · "
+              f"возраст {age_h:.1f} ч · гейт={'вкл' if guard else 'выкл'}")
+    if age_h > 2.0:
+        return CubeCheckResult("L13_sphere", code, name, SHADOW,
+                               detail + " — данные протухли, phase-watch молчит")
+    # свежие данные, но без гейта сфера не влияет на решения — это и есть SHADOW
+    return CubeCheckResult("L13_sphere", code, name, ACTIVE if guard else SHADOW, detail)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -669,6 +840,10 @@ SPHERE_CHECKS = [
     _check_sphere_11_narrative_builder,
     _check_sphere_12_ml_outcome,
     _check_sphere_13_pair_context_bus,
+    # 04.10: сферы, работавшие без всякого присмотра (см. комментарий у проверок)
+    _check_sphere_19_market_data,
+    _check_sphere_20_wave_service,
+    _check_sphere_13_phase,
 ]
 
 EDGE_CHECKS = [

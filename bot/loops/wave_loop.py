@@ -121,6 +121,12 @@ async def wave_loop(bot) -> None:
         return
     svc = WaveService()
     bot.wave_service = svc          # чтобы состояние было доступно другим потребителям
+    # 04.10: метки для селфтеста Куба. Без них «разметки в шине нет» нельзя отличить
+    # от «бот только что перезапущен»: первый проход начинается через 90 с и идёт ~8 мин,
+    # поэтому сразу после рестарта сфера выглядела бы мёртвой (ложная тревога каждый раз).
+    from datetime import datetime as _dt, timezone as _tz
+    bot.wave_started_at = _dt.now(_tz.utc)
+    bot.wave_last_pass_at = None
     logger.info("[S20] Wave Service запущена (SHADOW), интервал %dс, окно %d пар за проход, "
                 "ротация по кругу (покрытие всей вселенной — за len(шина)/%d проходов)",
                 INTERVAL_SEC, MAX_SYMBOLS, MAX_SYMBOLS)
@@ -195,6 +201,7 @@ async def wave_loop(bot) -> None:
                     logger.debug("[S20] %s: %s", sym, e)
             el = asyncio.get_event_loop().time() - t0
             if done:
+                bot.wave_last_pass_at = _dt.now(_tz.utc)   # селфтест: луп не завис
                 top = " · ".join(f"{k} {v}" for k, v in phases.most_common(4))
                 logger.info("[S20] разметка по %d парам за %.0fс · %s · ног %d · "
                             "пересчётов %d · волновой контекст обновлён %d (в шине %d)%s", done, el, top, legs, recounts,
