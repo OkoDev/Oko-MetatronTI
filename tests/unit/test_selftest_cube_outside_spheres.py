@@ -172,3 +172,51 @@ def test_phase_missing_db(tmp_path, monkeypatch):
     monkeypatch.setattr(sat_store, "path", lambda _n: tmp_path / "нет-такой.db")
     bot = SimpleNamespace(config=SimpleNamespace(get=lambda k, d=None: False))
     assert _check_sphere_13_phase(bot).status == MISSING
+
+
+# ── Сфера WS: активный источник цены, а не конкретный объект ─────────────
+# 🔴 05.10: после перехода на PriceWS проверка продолжала смотреть на bot.ws_feed
+# (ccxt.pro, больше не запускается) и рапортовала «в тени» при живом потоке цены.
+
+from core.selftest_cube import _check_sphere_2_ws_feed
+
+
+class _PriceWS:
+    def __init__(self, pairs=567, alive=True):
+        self._pairs, self._alive = pairs, alive
+
+    def is_alive(self):
+        return self._alive
+
+    def stats_dict(self):
+        return {"pairs": self._pairs, "channel": "markPrice", "updates": 12345,
+                "published": 678, "reconnects": 0, "errors": 0, "uptime_sec": 900}
+
+
+def test_ws_sphere_sees_price_ws_as_active():
+    r = _check_sphere_2_ws_feed(_bot(price_ws=_PriceWS(), ws_feed=None))
+    assert r.status == ACTIVE and "PriceWS" in r.detail and "пар 567" in r.detail
+
+
+def test_ws_sphere_warm_up_is_shadow_not_active():
+    r = _check_sphere_2_ws_feed(_bot(price_ws=_PriceWS(pairs=0, alive=False), ws_feed=None))
+    assert r.status == SHADOW and "прогрев" in r.detail
+
+
+def test_ws_sphere_falls_back_to_old_feed():
+    """PriceWS выключен — смотрим старый путь и честно помечаем его устаревшим."""
+    class _Old:
+        def is_alive(self):
+            return True
+
+        def stats(self):
+            return {"running": True, "active_tickers": 500, "active_ohlcv": 0,
+                    "uptime_sec": 60, "errors": 0}
+
+    r = _check_sphere_2_ws_feed(SimpleNamespace(price_ws=None, ws_feed=_Old()))
+    assert r.status == ACTIVE and "устарел" in r.detail
+
+
+def test_ws_sphere_without_any_source_is_missing():
+    r = _check_sphere_2_ws_feed(SimpleNamespace(price_ws=None, ws_feed=None))
+    assert r.status == MISSING and "только из REST" in r.detail

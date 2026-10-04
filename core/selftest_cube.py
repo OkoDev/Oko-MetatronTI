@@ -112,9 +112,35 @@ def _check_sphere_1_data_collector(bot) -> CubeCheckResult:
 
 
 def _check_sphere_2_ws_feed(bot) -> CubeCheckResult:
+    """Поток цены — ЛЮБОЙ активный, а не только старый ws_feed.
+
+    🔴 05.10 (Егор по скриншоту: «получается WS выходит из тени?»): после перехода
+    на PriceWS (N21) эта проверка продолжала смотреть на `bot.ws_feed` — объект
+    ccxt.pro, который теперь НЕ ЗАПУСКАЕТСЯ. Прибор рапортовал «alive=False,
+    tickers=0, в тени», хотя цена шла по 567 парам. Классика: проверяем не тот
+    объект. Теперь спрашиваем активный источник, а какой именно — пишем в деталь.
+    """
+    price_ws = getattr(bot, "price_ws", None)
+    if price_ws is not None:
+        try:
+            st = price_ws.stats_dict()
+        except Exception as e:                       # noqa: BLE001
+            return CubeCheckResult("L13_sphere", "WS", "Поток цены (PriceWS)", SHADOW,
+                                   f"stats недоступны: {e}")
+        pairs = int(st.get("pairs", 0) or 0)
+        alive = price_ws.is_alive() if hasattr(price_ws, "is_alive") else pairs > 0
+        detail = (f"PriceWS · пар {pairs} · канал {st.get('channel')} · обновлений {st.get('updates')} "
+                  f"· в шину {st.get('published')} · реконнектов {st.get('reconnects')} "
+                  f"· ошибок {st.get('errors')} · uptime {st.get('uptime_sec')}s")
+        if alive:
+            return CubeCheckResult("L13_sphere", "WS", "Поток цены (PriceWS)", ACTIVE, detail)
+        return CubeCheckResult("L13_sphere", "WS", "Поток цены (PriceWS)", SHADOW,
+                               detail + " — цен ещё нет (прогрев ~1 мин после старта)")
+
     ws = getattr(bot, "ws_feed", None)
     if ws is None:
-        return CubeCheckResult("L13_sphere", "WS", "WSFeed", MISSING, "bot.ws_feed не найден")
+        return CubeCheckResult("L13_sphere", "WS", "Поток цены", MISSING,
+                               "нет ни price_ws, ни ws_feed — цена только из REST")
     # Читаем ПУБЛИЧНЫЙ stats(): раньше искались `is_running` (метод зовётся is_alive)
     # и `_subscriptions` (такого атрибута нет) — обе давали тихий False/0.
     try:
@@ -125,12 +151,14 @@ def _check_sphere_2_ws_feed(bot) -> CubeCheckResult:
     tickers = int(st.get("active_tickers", 0) or 0)
     alive = ws.is_alive() if hasattr(ws, "is_alive") else running
     up = int(st.get("uptime_sec", 0) or 0)
-    detail = f"alive={alive} tickers={tickers} ohlcv={st.get('active_ohlcv', 0)} uptime={up}s errors={st.get('errors', 0)}"
+    detail = (f"WsFeed (ccxt.pro, устарел) · alive={alive} tickers={tickers} "
+              f"ohlcv={st.get('active_ohlcv', 0)} uptime={up}s errors={st.get('errors', 0)}")
     if alive:
-        return CubeCheckResult("L13_sphere", "WS", "WSFeed", ACTIVE, detail)
+        return CubeCheckResult("L13_sphere", "WS", "Поток цены (WsFeed)", ACTIVE, detail)
     # Селфтест идёт при старте, а ws_feed.start() — позже отдельной задачей:
     # «не запущен» в момент старта нормально, это не приговор сфере.
-    return CubeCheckResult("L13_sphere", "WS", "WSFeed", SHADOW, detail + " (при старте — возможна гонка)")
+    return CubeCheckResult("L13_sphere", "WS", "Поток цены (WsFeed)", SHADOW,
+                           detail + " (при старте — возможна гонка)")
 
 
 def _check_sphere_3_mtf_wt(bot) -> CubeCheckResult:
@@ -605,6 +633,19 @@ def _edge_detectors_to_eventbus(bot) -> CubeCheckResult:
 
 
 def _edge_ws_to_dc(bot) -> CubeCheckResult:
+    # 05.10: при активном PriceWS ребро живёт через него — data_collector.set_ws_feed()
+    # получает именно его (интерфейс get_price тот же).
+    _p = getattr(bot, "price_ws", None)
+    if _p is not None:
+        try:
+            _ok = _p.is_alive()
+            _n = _p.stats_dict().get("pairs", 0)
+        except Exception:                            # noqa: BLE001
+            _ok, _n = False, 0
+        _dc_linked = getattr(getattr(bot, "data_collector", None), "_ws_feed", None) is _p
+        return CubeCheckResult("L14_edge", "E_WS_DC", "Поток цены→DataCollector",
+                               ACTIVE if (_ok and _dc_linked) else SHADOW,
+                               f"PriceWS · пар {_n} · подключён к data_collector={_dc_linked}")
     """Ребро: WSFeed → DataCollector (real-time тикеры)."""
     ws = getattr(bot, "ws_feed", None)
     dc = getattr(bot, "data_collector", None)
