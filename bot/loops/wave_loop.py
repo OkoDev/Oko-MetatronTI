@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,6 +160,23 @@ def _load_ctx_state(bus) -> tuple[int, int]:
     return ok, old
 
 
+def _timed_call(fn, *args):
+    """Замер пула потоков (05.10, Егор: «отдельный пул под сферу нужно проверить замером»).
+
+    Возвращает `(результат, ожидание_в_очереди, время_работы)`. Ожидание — от момента отправки
+    в `to_thread` до старта функции внутри потока: именно оно показывает, забит ли общий пул
+    (20 потоков на 16 ядрах, его делят скан, сферы и HtfStore). Если ожидание сопоставимо
+    с работой — отдельный пул под сферу оправдан; если околонулевое — потоки ни при чём.
+    """
+    sent = time.perf_counter()
+
+    def _run():
+        begin = time.perf_counter()
+        res = fn(*args)
+        return res, begin - sent, time.perf_counter() - begin
+    return _run
+
+
 def _dt_closed(df, tf_hours: float):
     """Бот-формат get_ohlcv (RangeIndex + time ms) → DatetimeIndex UTC, только ЗАКРЫТЫЕ бары."""
     import pandas as pd
@@ -276,20 +294,31 @@ async def wave_loop(bot) -> None:
                 """Обработка одной пары. Возвращает счётчики — агрегируем ПОСЛЕ gather,
                 чтобы параллельные задачи не делили изменяемое состояние."""
                 r = {"done": 0, "skipped": 0, "legs": 0, "ctxs": 0, "phase": None,
-                     "why": None, "err": None, "sym": sym}
+                     "why": None, "err": None, "sym": sym,
+                     # 🔑 05.10 ЗАМЕР ПУЛА (Егор: «отдельный пул под сферу нужно проверить
+                     # замером»). `t_wait` — сколько задача ПРОЛЕЖАЛА в очереди дефолтного
+                     # ThreadPoolExecutor (20 потоков на 16 ядрах) до начала работы, `t_cpu` —
+                     # сколько считала. Если ожидание сопоставимо с расчётом, узкое место —
+                     # общий пул, и своя сфера оправдана. Если нет — пул ни при чём, и тогда
+                     # 4.4 с/пару сидят в сети, а не в потоках.
+                     "t_wait": 0.0, "t_cpu": 0.0, "t_net": 0.0}
                 async with _sem:
                     try:
+                        _t_net0 = time.perf_counter()
                         frames = await _load_frames(bot, sym)
+                        r["t_net"] = time.perf_counter() - _t_net0
                         if frames is None:
                             r["skipped"] = 1
                             return r
                         d4, d1, dl = frames
                         # расчёт ~42 мс — в поток, чтобы не держать event loop
-                        ph = await asyncio.to_thread(
-                            svc.compute_and_publish, sym, d4, d1, dl, bus)
+                        ph, _w1, _c1 = await asyncio.to_thread(
+                            _timed_call(svc.compute_and_publish, sym, d4, d1, dl, bus))
                         # ДВУХМАСШТАБНАЯ нога — то, на чём стоит находка ARCH-137.
                         # Счёт волн выше её НЕ покрывает: там один мелкий масштаб.
-                        leg = await asyncio.to_thread(current_leg, d1, "1h")
+                        leg, _w2, _c2 = await asyncio.to_thread(_timed_call(current_leg, d1, "1h"))
+                        r["t_wait"] = _w1 + _w2
+                        r["t_cpu"] = _c1 + _c2
                         if leg:
                             bus.update(sym, leg_updated_at=_now(), **leg)
                             r["legs"] = 1
@@ -318,10 +347,12 @@ async def wave_loop(bot) -> None:
                         touched.add(sym)
                 return r
 
+            _waits, _cpus, _nets = [], [], []
             for _res in await asyncio.gather(*(_one(s) for s in syms), return_exceptions=True):
                 if isinstance(_res, BaseException):
                     logger.debug("[S20] задача упала: %s", _res)
                     continue
+                _waits.append(_res["t_wait"]); _cpus.append(_res["t_cpu"]); _nets.append(_res["t_net"])
                 done += _res["done"]; skipped += _res["skipped"]
                 legs += _res["legs"]; ctxs += _res["ctxs"]
                 if _res["phase"]:
@@ -340,6 +371,17 @@ async def wave_loop(bot) -> None:
                             ctxs, len(ctx_seen), f" · пропущено {skipped}" if skipped else "")
                 if ctx_why:
                     logger.info("[S20] волновой контекст: %s%s", dict(ctx_why), f" · пример: {ctx_err}" if ctx_err else "")
+                # 🔑 05.10 КУДА УХОДИТ ВРЕМЯ (замер по просьбе Егора: нужен ли свой пул сфере).
+                # Печатаем три слагаемых на пару: ожидание в общем пуле потоков · собственно
+                # расчёт · получение свечей. Решение про отдельный пул принимать по ЭТИМ числам,
+                # а не по ощущению: свой пул помогает только если ожидание велико.
+                if _waits:
+                    import statistics as _st
+                    _mw, _mc, _mn = _st.median(_waits), _st.median(_cpus), _st.median(_nets)
+                    logger.info("[S20] время на пару: ожидание в пуле %.0f мс · расчёт %.0f мс · "
+                                "свечи %.0f мс · итого %.1f с (из них пул %.0f%%)",
+                                _mw * 1000, _mc * 1000, _mn * 1000, _mw + _mc + _mn,
+                                100 * _mw / max(_mw + _mc + _mn, 1e-9))
                 # 🔑 04.10 снимок на диск — чтобы следующий старт не ждал 75 минут
                 _saved = _save_ctx_state(bus)
                 if _saved:
