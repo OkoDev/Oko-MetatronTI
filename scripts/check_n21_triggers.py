@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import urllib.request
+from pathlib import Path
 from datetime import datetime
 from statistics import median
 
@@ -53,8 +54,10 @@ def ws_state() -> dict:
             d = json.load(r)
         for x in d.get("results", []):
             if x.get("code") == "WS":
-                m = re.search(r"tickers=(\d+)", x.get("detail", ""))
-                e = re.search(r"errors=(\d+)", x.get("detail", ""))
+                # PriceWS пишет «пар N», старый WsFeed — «tickers=N»
+                _d = x.get("detail", "")
+                m = re.search(r"tickers=(\d+)", _d) or re.search(r"пар (\d+)", _d)
+                e = re.search(r"errors=(\d+)", _d) or re.search(r"ошибок (\d+)", _d)
                 return {"status": x.get("status"), "tickers": int(m.group(1)) if m else 0,
                         "errors": int(e.group(1)) if e else 0, "detail": x.get("detail", "")}
     except Exception as ex:                      # noqa: BLE001
@@ -62,8 +65,38 @@ def ws_state() -> dict:
     return {}
 
 
+def vpn_from_log() -> tuple[float | None, int]:
+    """Медиана суточной оценки из traffic_log.csv (прогревы исключены) + число окон.
+
+    🔴 05.10: минутные и даже 10-минутные окна соврали ТРИЖДЫ за сутки — серия в одном
+    режиме дала 26.69 / 9.17 / 8.93 ГБ/сут. Причина: прогрев после рестарта, а бота
+    за день перезапускают десятки раз (в том числе параллельная сессия). Поэтому
+    триггер смотрит на накопленный лог, а разовый замер остался запасным путём.
+    """
+    import csv as _csv
+    from datetime import datetime as _dt
+    f = Path(__file__).resolve().parent.parent / "oko_feed" / "traffic_log.csv"
+    if not f.exists():
+        return None, 0
+    cutoff = __import__("time").time() - 24 * 3600
+    vals = []
+    with f.open(encoding="utf-8") as fh:
+        for r in _csv.DictReader(fh):
+            if r.get("adapter") != "happ-xray" or r.get("warmup") == "1":
+                continue
+            try:
+                if _dt.fromisoformat(r["ts"]).timestamp() >= cutoff:
+                    vals.append(float(r["rx_gb_day"]))
+            except Exception:                        # noqa: BLE001
+                continue
+    if not vals:
+        return None, 0
+    vals.sort()
+    return vals[len(vals) // 2], len(vals)
+
+
 def vpn_gb_per_day() -> float | None:
-    """Трафик туннеля за 60 с → оценка в сутки. PowerShell: ТОЛЬКО латиница в -Command."""
+    """Разовый замер за 60 с (запасной путь). PowerShell: ТОЛЬКО латиница в -Command."""
     ps = ("$a=(Get-NetAdapterStatistics -Name 'happ-xray').ReceivedBytes; Start-Sleep -Seconds 60; "
           "$b=(Get-NetAdapterStatistics -Name 'happ-xray').ReceivedBytes; "
           "Write-Output ([math]::Round(($b-$a)*1440/1GB,2))")
@@ -129,13 +162,19 @@ def main() -> int:
         if ws.get("errors", 0) > 0:
             fired.append(f"ошибки WsFeed {ws['errors']}")
 
-    gb = vpn_gb_per_day()
-    if gb is None:
-        print("  трафик     : не измерен (нет адаптера happ-xray?)")
-    else:
-        print(f"  трафик VPN : ~{gb} ГБ/сут · порог {VPN_GB_PER_DAY} — {'ок' if gb <= VPN_GB_PER_DAY else 'СРАБОТАЛ'}")
+    gb, n = vpn_from_log()
+    if gb is not None and n >= 6:
+        print(f"  трафик VPN : медиана {gb} ГБ/сут по логу (окон {n}, прогревы исключены) · "
+              f"порог {VPN_GB_PER_DAY} — {'ок' if gb <= VPN_GB_PER_DAY else 'СРАБОТАЛ'}")
         if gb > VPN_GB_PER_DAY:
-            fired.append(f"VPN {gb} ГБ/сут > {VPN_GB_PER_DAY}")
+            fired.append(f"VPN {gb} ГБ/сут > {VPN_GB_PER_DAY} (медиана суток)")
+    else:
+        one = vpn_gb_per_day()
+        if one is None:
+            print("  трафик     : не измерен (нет адаптера happ-xray?)")
+        else:
+            print(f"  трафик VPN : РАЗОВЫЙ замер ~{one} ГБ/сут — вывод НЕ делаем, "
+                  f"данных лога мало ({n} окон). Нужен pm2 traffic-log и сутки.")
 
     print("\n  продукт    : нужна ли тиковая цена В ШИНЕ для исполнения на LTF — решает человек")
 
