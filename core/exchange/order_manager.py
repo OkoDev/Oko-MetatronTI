@@ -918,6 +918,7 @@ class OrderManager:
     async def place_sl_order(
         self, symbol: str, pos_side: str, sl_price: float, qty: float,
         limit_buffer_pct: float | None = None,
+        keep_existing: bool = False,
     ) -> Optional[str]:
         """Ставит STOP_MARKET или STOP (Limit) ордер (SL) для существующей позиции.
 
@@ -947,23 +948,31 @@ class OrderManager:
             # Bug fix 20.04: анти-дубликат перед place_sl_order.
             # Если на бирже уже есть SL того же pos_side (race: fetch_and_save + repair) —
             # отменяем их, чтобы не накапливать. После cancel → place нового.
-            try:
-                # D-062: кеш open_orders — окей для dup-check (свежесть 10с достаточна)
-                existing = await self._get_open_orders_cached(symbol)
-                existing_sl = [
-                    o for o in existing
-                    if o.get("type") in ("STOP_MARKET", "STOP")
-                    and o.get("positionSide", "").upper() == pos_side.upper()
-                ]
-                if existing_sl:
-                    logger.warning(
-                        "[OrderManager] place_sl_order %s %s: уже есть %d SL — отменяю перед новым",
-                        symbol, pos_side, len(existing_sl),
-                    )
-                    for o in existing_sl:
-                        await self.cancel_order(symbol, str(o["orderId"]))
-            except Exception as _e_clean:
-                logger.debug("[OrderManager] place_sl_order precheck %s: %s", symbol, _e_clean)
+            # 🔴 04.10 keep_existing: при замене стопа «ставим новый → снимаем старый»
+            # (trading.sl_place_before_cancel) эта чистка сводила правку на нет — она
+            # открывала то самое окно без стопа ВНУТРИ вызова. В таком режиме старые
+            # снимает update_sl, и только после того, как новый реально встал.
+            if keep_existing:
+                logger.debug("[OrderManager] place_sl_order %s %s: старые SL оставляем — "
+                             "их снимет update_sl после успешной постановки", symbol, pos_side)
+            else:
+                try:
+                    # D-062: кеш open_orders — окей для dup-check (свежесть 10с достаточна)
+                    existing = await self._get_open_orders_cached(symbol)
+                    existing_sl = [
+                        o for o in existing
+                        if o.get("type") in ("STOP_MARKET", "STOP")
+                        and o.get("positionSide", "").upper() == pos_side.upper()
+                    ]
+                    if existing_sl:
+                        logger.warning(
+                            "[OrderManager] place_sl_order %s %s: уже есть %d SL — отменяю перед новым",
+                            symbol, pos_side, len(existing_sl),
+                        )
+                        for o in existing_sl:
+                            await self.cancel_order(symbol, str(o["orderId"]))
+                except Exception as _e_clean:
+                    logger.debug("[OrderManager] place_sl_order precheck %s: %s", symbol, _e_clean)
 
             # DEV-175: STOP-LIMIT если sl_limit_buffer_pct > 0
             limit_price: float | None = None
@@ -1139,7 +1148,8 @@ class OrderManager:
 
         if place_first:
             new_id = await self.place_sl_order(symbol, pos_side, new_sl_price, qty,
-                                               limit_buffer_pct=limit_buffer_pct)
+                                               limit_buffer_pct=limit_buffer_pct,
+                                               keep_existing=True)
             if not new_id:
                 # Старый стоп НЕ трогаем: позиция остаётся под защитой на прежнем уровне.
                 logger.warning("[OrderManager] update_sl %s %s: новый SL не встал — старый СОХРАНЁН "

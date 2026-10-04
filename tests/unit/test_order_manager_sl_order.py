@@ -40,7 +40,7 @@ def _om(place_first=False, *, place_result="NEW1", orders=None):
         om.calls.append(("cancel", str(order_id)))
         return True
 
-    async def _place(symbol, pos_side, price, qty, limit_buffer_pct=None):
+    async def _place(symbol, pos_side, price, qty, limit_buffer_pct=None, keep_existing=False):
         om.calls.append(("place", price))
         return place_result
 
@@ -114,3 +114,87 @@ async def test_min_move_guard_still_works():
         assert await om.update_sl(SYM, SIDE, "OLD1", 1.0005, 10,
                                   old_sl_price=1.00, min_move_pct=0.1) is None
         assert om.calls == []
+
+
+# ── Анти-дубликат внутри place_sl_order ─────────────────────────────────
+# 🔴 04.10: прежние тесты мокали place_sl_order ЦЕЛИКОМ и не видели, что внутри
+# него есть своя чистка старых SL (Bug fix 20.04). Она открывала то самое окно
+# без стопа прямо внутри вызова, то есть флаг sl_place_before_cancel не работал.
+# Эти тесты смотрят на настоящий place_sl_order.
+
+class _FakeClient:
+    async def quantize_qty(self, symbol, qty):
+        return qty
+
+    async def place_stop_order(self, **kw):
+        return {"code": 0, "data": {"order": {"orderId": "NEW9"}}}
+
+
+def _om_real_place(existing):
+    om = OrderManager(_Cfg())
+    om.seen = []
+
+    async def _orders(symbol, force=False):
+        om.seen.append("fetch")
+        return existing
+
+    async def _cancel(symbol, order_id):
+        om.seen.append(f"cancel:{order_id}")
+        return True
+
+    async def _client(symbol):
+        return _FakeClient()
+
+    async def _pid(symbol, pos_side):
+        return None
+
+    om.is_live = lambda: True
+    om._get_open_orders_cached = _orders
+    om.cancel_order = _cancel
+    om._get_client_synced = _client
+    om._get_position_id = _pid
+    return om
+
+
+_EXISTING = [{"orderId": "OLD1", "type": "STOP_MARKET", "positionSide": "LONG"}]
+
+
+@pytest.mark.asyncio
+async def test_place_sl_order_cleans_duplicates_by_default():
+    om = _om_real_place(_EXISTING)
+    await om.place_sl_order(SYM, SIDE, 1.10, 10)
+    assert "cancel:OLD1" in om.seen          # прежнее поведение сохранено
+
+
+@pytest.mark.asyncio
+async def test_place_sl_order_keeps_existing_when_asked():
+    """Старый стоп обязан дожить до успеха нового — иначе правка бессмысленна.
+
+    Единственный fetch, который здесь допустим, — пост-проверка: через 3 с
+    биржу спрашивают, встал ли новый ордер. Отмен быть не должно ни одной.
+    """
+    om = _om_real_place(_EXISTING)
+    await om.place_sl_order(SYM, SIDE, 1.10, 10, keep_existing=True)
+    assert not [s for s in om.seen if s.startswith("cancel")]
+
+
+@pytest.mark.asyncio
+async def test_update_sl_place_first_asks_to_keep_existing():
+    """Связка целиком: update_sl обязан передать keep_existing, иначе окно вернётся."""
+    om = OrderManager(_Cfg(place_first=True))
+    got = {}
+
+    async def _place(symbol, pos_side, price, qty, limit_buffer_pct=None, keep_existing=False):
+        got["keep"] = keep_existing
+        return "NEW1"
+
+    async def _orders(symbol, force=False):
+        return []
+
+    om.is_live = lambda: True
+    om.place_sl_order = _place
+    om._get_open_orders_cached = _orders
+    om.cancel_order = lambda *a, **k: None
+
+    await om.update_sl(SYM, SIDE, "OLD1", 1.10, 10, old_sl_price=1.00)
+    assert got["keep"] is True

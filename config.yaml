@@ -718,7 +718,7 @@ trading:
   # false (как было) = снимаем все стопы и только потом ставим новый — если постановка
   # упадёт, позиция едет БЕЗ СТОПА до следующего тика TSL. Цена true — доли секунды
   # с двумя стопами (сироту уберёт order_reconciler). Включать осознанно.
-  sl_place_before_cancel: false
+  sl_place_before_cancel: true    # ВКЛЮЧЕНО 04.10 по решению Егора (проверяем в бою)
   dev185_2_emergency_enabled: true
   dev185_2_overshoot_threshold_pct: 0.5
   dev185_2_dwell_seconds: 300
