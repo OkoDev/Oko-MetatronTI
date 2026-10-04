@@ -24,9 +24,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 def _now():
@@ -44,6 +46,9 @@ INTERVAL_SEC = 900
 # 🔑 Если проход снова затянется — сначала смотреть hit по 1h в логе [OHLCV-CACHE],
 # а не резать число пар: причина будет в глубине кэша, а не в объёме работы.
 MAX_SYMBOLS = 120
+# 04.10: пауза между проходами, пока вселенная ещё не обойдена окном ни разу. Не ноль —
+# чтобы дать скану и прочим лупам вдохнуть между двумя подряд проходами по 120 пар.
+CATCHUP_SLEEP_SEC = 20
 
 # 🔴 ГЛУБИНА ПОДОБРАНА ПОД КЭШ, а не «побольше на всякий случай».
 # Ключ LRU в ApiEngine — (symbol, timeframe), но `get` отдаёт запись только если
@@ -65,6 +70,83 @@ BARS_4H, BARS_1H, BARS_LTF = 180, 400, 150
 # (≈350 раз в сутки, хроника скана) возвращает пусто: 4h 500 дал 59 «4h None» из 97, 1D 250 — 41 «1d<60» из 83.
 # Поэтому обе глубины = канон кэша: покрытие важнее 2% расхождения ноги. Неудачные пары пересчитываются на следующем проходе.
 CTX_4H_BARS, CTX_1D_BARS = 200, 200
+
+
+# 🔴 04.10 ПЕРСИСТ ВОЛНОВОГО КОНТЕКСТА (Егор: «как сократить прогрев?» → «1+2, согласен»).
+# Замер 04.10: контекста в шине 0 из 100 пар через 25 мин после рестарта, хотя каузальный
+# расчёт сетапы находит; до рестарта было накоплено 497 пар — всё терялось, потому что
+# `wave5_setup` жил ТОЛЬКО в памяти процесса. Полный прогрев 569 пар занимает ~75 минут,
+# а бот 04.10 перезапускался 11 раз за сутки — значит заметную часть времени потребители
+# (`wave_zone_for` → features_json сделок) видели пусто и считали «импульса нет».
+# Решение: снимок полей в файл после каждого прохода, восстановление при старте.
+STATE_FILE = Path(__file__).resolve().parents[2] / "data" / "wave_ctx_state.json"
+# Ядро считается на 4h-баре, то есть живёт 4 часа. Старше 12 ч не поднимаем: лучше пусто,
+# чем древний контекст, который потребитель примет за свежий.
+STATE_MAX_AGE_H = 12.0
+# поля, которые дорого считать и которые наполняются медленно (фазу `elliott_*` не сохраняем:
+# она пересчитывается на каждом проходе за 31 мс и не зависит от нового 4h-бара)
+_PERSIST_FIELDS = ("wave_leg_up", "wave_leg_dn", "wave5_setup", "wave_ctx_updated_at",
+                   "leg_dir", "leg_span_bars", "leg_age_origin", "leg_pos", "leg_retr",
+                   "leg_minor_breaks", "leg_tf", "leg_updated_at")
+
+
+def _save_ctx_state(bus) -> int:
+    """Снимок волнового контекста всех пар шины в файл. Возвращает число сохранённых пар."""
+    out = {}
+    for sym in bus.all_symbols():
+        st = bus.get(sym)
+        upd = getattr(st, "wave_ctx_updated_at", None)
+        if upd is None:
+            continue
+        rec = {}
+        for f in _PERSIST_FIELDS:
+            v = getattr(st, f, None)
+            rec[f] = v.isoformat() if isinstance(v, datetime) else v
+        out[sym] = rec
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps(out, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("[S20] снимок контекста не сохранён: %s", e)
+        return 0
+    return len(out)
+
+
+def _load_ctx_state(bus) -> tuple[int, int]:
+    """Восстановить контекст в шину после рестарта. → (поднято, пропущено по возрасту)."""
+    if not STATE_FILE.exists():
+        return 0, 0
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("[S20] снимок контекста не прочитан: %s", e)
+        return 0, 0
+    ok = old = 0
+    now = _now()
+    for sym, rec in data.items():
+        upd = rec.get("wave_ctx_updated_at")
+        try:
+            t = datetime.fromisoformat(str(upd))
+            t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        except Exception:                                        # noqa: BLE001
+            continue
+        if (now - t).total_seconds() / 3600 > STATE_MAX_AGE_H:
+            old += 1
+            continue
+        fields = {k: v for k, v in rec.items() if v is not None}
+        for k in ("wave_ctx_updated_at", "leg_updated_at"):
+            if fields.get(k):
+                try:
+                    tt = datetime.fromisoformat(str(fields[k]))
+                    fields[k] = tt if tt.tzinfo else tt.replace(tzinfo=timezone.utc)
+                except Exception:                                # noqa: BLE001
+                    fields.pop(k, None)
+        try:
+            bus.update(sym, **fields)
+            ok += 1
+        except Exception:                                        # noqa: BLE001
+            continue
+    return ok, old
 
 
 def _dt_closed(df, tf_hours: float):
@@ -131,8 +213,16 @@ async def wave_loop(bot) -> None:
                 "ротация по кругу (покрытие всей вселенной — за len(шина)/%d проходов)",
                 INTERVAL_SEC, MAX_SYMBOLS, MAX_SYMBOLS)
 
+    # 🔑 04.10 ПРОГРЕВ: поднимаем контекст прошлого запуска ДО первой паузы, иначе 75 минут
+    # после каждого рестарта потребители видят пусто (замер: 0 из 100 пар через 25 мин).
+    _rest, _old = _load_ctx_state(bus)
+    if _rest or _old:
+        logger.info("[S20] контекст прошлого запуска: поднято %d пар · пропущено по возрасту "
+                    "(>%.0f ч) %d · файл %s", _rest, STATE_MAX_AGE_H, _old, STATE_FILE.name)
+
     await asyncio.sleep(90)          # дать скану прогреть кэш свечей после старта
     ctx_seen: dict = {}              # sym → последний закрытый 4h-бар, на котором посчитан волновой контекст
+    touched: set = set()             # пары, которые окно уже проходило (для решения «спать или догонять»)
     offset = 0                       # начало окна ротации (см. ниже)
 
     while True:
@@ -199,6 +289,11 @@ async def wave_loop(bot) -> None:
                     raise
                 except Exception as e:
                     logger.debug("[S20] %s: %s", sym, e)
+                finally:
+                    # пара пройдена окном — даже если данных не хватило. Иначе «догоняющий»
+                    # режим ниже крутился бы вечно из-за пар, у которых контекста не будет
+                    # никогда (4h<150, 1d<60 — их в каждом проходе 5-8).
+                    touched.add(sym)
             el = asyncio.get_event_loop().time() - t0
             if done:
                 bot.wave_last_pass_at = _dt.now(_tz.utc)   # селфтест: луп не завис
@@ -208,6 +303,10 @@ async def wave_loop(bot) -> None:
                             ctxs, len(ctx_seen), f" · пропущено {skipped}" if skipped else "")
                 if ctx_why:
                     logger.info("[S20] волновой контекст: %s%s", dict(ctx_why), f" · пример: {ctx_err}" if ctx_err else "")
+                # 🔑 04.10 снимок на диск — чтобы следующий старт не ждал 75 минут
+                _saved = _save_ctx_state(bus)
+                if _saved:
+                    logger.debug("[S20] снимок контекста: %d пар → %s", _saved, STATE_FILE.name)
             else:
                 logger.warning("[S20] НИ ОДНОЙ пары не размечено за %.0fс "
                                "(пропущено %d) — проверьте свечи/лимиты", el, skipped)
@@ -215,4 +314,14 @@ async def wave_loop(bot) -> None:
             raise
         except Exception as e:
             logger.error("[S20] ошибка цикла: %s", e, exc_info=True)
-        await asyncio.sleep(INTERVAL_SEC)
+        # 🔑 04.10 ДОГОНЯЮЩИЙ РЕЖИМ (Егор: «как сократить прогрев?»). Пока окно не обошло
+        # вселенную хотя бы раз, спать полный интервал незачем: проход занимает ~9 мин, а
+        # интервал 15 — то есть на каждом круге мы ДАРИЛИ 6 минут простоя, и прогрев 569 пар
+        # растягивался с 45 до 75 минут. После полного круга возвращаемся к штатному интервалу:
+        # разметка меняется на 4h-баре, чаще считать незачем.
+        _left = max(0, len(bus.all_symbols()) - len(touched))
+        if _left:
+            logger.info("[S20] догоняю прогрев: без разметки ещё %d пар → следующий проход сразу", _left)
+            await asyncio.sleep(CATCHUP_SLEEP_SEC)
+        else:
+            await asyncio.sleep(INTERVAL_SEC)
