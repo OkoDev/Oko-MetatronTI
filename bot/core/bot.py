@@ -508,7 +508,22 @@ class TradingAlertBot:
             # по 4h/1h меняется за часы, поэтому интервал 15 мин и расчёт в потоке.
             asyncio.create_task(wave_loop(self))
             asyncio.create_task(self.event_bus.consume_loop(self))  # ARCH-70: EventBus Full CALL шина
-            asyncio.create_task(self._start_ws_feed())      # WsFeed: real-time тикеры через WebSocket
+            # N21 (05.10): цена — на СВОЁМ клиенте вместо ccxt.pro. Замер 04.10: WsFeed
+            # добавлял ~12.5 ГБ/сут в VPN (увести мимо туннеля там нельзя без подмены
+            # сессии) и был единственным WS-потоком в торговом event loop.
+            # PriceWS: канал markPrice (по нему биржа и исполняет наши стопы), bind мимо
+            # туннеля, отдельный поток. Флаг performance.price_ws_enabled.
+            try:
+                from core.infra.price_ws import start_price_ws
+                _price_ws = start_price_ws(self)
+                if _price_ws is not None:
+                    self.price_ws = _price_ws
+                    self.data_collector.set_ws_feed(_price_ws)   # тот же интерфейс get_price()
+            except Exception as _pws_e:                          # noqa: BLE001
+                logger.warning("[PriceWS] start error: %s", _pws_e)
+                _price_ws = None
+            if _price_ws is None:
+                asyncio.create_task(self._start_ws_feed())  # WsFeed: тикеры через ccxt.pro (старый путь)
             try:                                              # EXEC-WS: user-data WS (order/account push), за config-флагом
                 from core.exchange.exec_ws_integration import start_exec_ws
                 start_exec_ws(self)

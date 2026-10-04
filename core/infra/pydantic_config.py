@@ -136,6 +136,11 @@ class PerformanceSection(BaseModel):
     ws_ohlcv_error_pause_sec: float = Field(default=1.0, ge=0.0, le=300.0)
     ws_bus_publish_sec: float = Field(default=15.0, ge=0.0, le=300.0)
     ws_bus_publish_priority_sec: float = Field(default=1.0, ge=0.0, le=60.0)
+    price_ws_enabled: bool = False          # N21: свой клиент цены вместо ccxt.pro
+    price_ws_channel: str = "markPrice"
+    price_ws_batch: int = Field(default=100, ge=10, le=200)
+    price_ws_fast_channel: str = "lastPrice"
+    price_ws_fast_limit: int = Field(default=60, ge=0, le=200)
     sim_time_exit_hours: int = Field(default=48, ge=0, le=10000)  # анти-орфан SIM
 
 

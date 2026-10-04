@@ -1314,6 +1314,18 @@ performance:
   # Стало: порог по символу и времени. Приоритет — открытая сделка или watchlist.
   ws_bus_publish_sec: 15.0
   ws_bus_publish_priority_sec: 1.0
+  # N21 (05.10): цена на СВОЁМ клиенте вместо ccxt.pro — мимо VPN и вне торгового loop.
+  # Замер 04.10: ccxt.pro-поток добавлял ~12.5 ГБ/сут в туннель (A/B 22.9 против 10.4).
+  # Канал markPrice: по нему биржа исполняет наши стопы (workingType=MARK_PRICE) и он
+  # вдвое легче ticker (125 против 327 Б/с на пару). 🔴 Откат: price_ws_enabled: false
+  # — бот вернётся на старый WsFeed (ccxt.pro) автоматически.
+  price_ws_enabled: true
+  price_ws_channel: "markPrice"   # markPrice | lastPrice
+  price_ws_batch: 100
+  # Торгуемые пары — на быстром канале: markPrice обновляется раз в десятки секунд,
+  # а где стоит позиция, цена нужна сейчас. Десятки КБ/с, идут мимо VPN.
+  price_ws_fast_channel: "lastPrice"   # lastPrice | bookTicker | "" выключить
+  price_ws_fast_limit: 60
   event_loop_debug: false
   slow_callback_threshold_sec: 1.0
   scan_blacklist:
