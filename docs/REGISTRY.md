@@ -171,6 +171,7 @@ USDT.D и mcap лежат в `ohlcv_cache.db`, а не в `external_data.db` (т
 
 ---|---|---|
 | 1–12 | DataCollector · WSFeed · WT · SMC · Cross-Market · Regime · Detectors · Pivots · Narrative · Exit · Post-Trade · Self-Diagnostics | ✅ в бою |
+| — | **Поток цены: `core/infra/price_ws.py` (N21, 05.10)** — свой клиент BingX вместо ccxt.pro: `@markPrice` по всем парам + `@lastPrice` по торгуемым, bind мимо VPN, отдельный поток. `core/infra/ws_feed.py` УСТАРЕЛ, оставлен запасным путём (`performance.price_ws_enabled: false`) | ✅ в бою |
 | 13 | Фаза / Decision Core | `core/context/phase_sphere.py`, shadow |
 | 14 | Execution (ARCH-96) **ИЛИ** WaveService (ARCH-121) | 🔴 конфликт номера — `FIX-SPHERE-NUM` |
 | 15 | Anomaly Detection (ARCH-97) | 🧊 frozen |
@@ -237,6 +238,14 @@ USDT.D и mcap лежат в `ohlcv_cache.db`, а не в `external_data.db` (т
 | `TASKS.md` ARCH-96…107 | 14–18 | 14=Execution ↔ 14=WaveService (ARCH-121) |
 
 🔴 Задача `FIX-SPHERE-NUM`: свести к одной нумерации. Истина = код (`sphere_registry`).
+
+✅ **05.10.2026 — РЕШЕНО (бэклог N20).** Числа оставлены за сферами КАРТЫ (производители событий
+шины), а селфтест `core/selftest_cube.py` зовёт КОМПОНЕНТЫ по имени:
+`DC WS WT SMC XM RGM TI TS EXIT PTA NB ML BUS MKT WAVE PHASE`. Почему не «одна правильная
+нумерация»: карта и селфтест описывают разные сущности (у TradeSimulator и ML Outcome номера
+в карте нет вовсе), плюс `S1`–`S3` в 74 файлах — это уровни поддержки пивотов. Единая нумерация
+передвинула бы коллизию, а не убрала. Таблица соответствия — в докстринге `selftest_cube.py`.
+Экран CUBE (`oko-dash`) с 04.10 строится из `/api/cube/selftest`, своей карты больше не держит.
 
 ### Главные карты — читать их, а не пересказы
 
