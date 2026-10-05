@@ -1,0 +1,37 @@
+#!/bin/sh
+# Ворота юнит-тестов перед отправкой на сервер (бэклог N8).
+#
+# Зачем: 26.09 аудит зафиксировал «959 ok / 50 fail, CI нет». 04.10 перемерили —
+# стало 1185 / 58: падений прибавилось, и никто не заметил, потому что тесты
+# «и так красные». scripts/test_gate.py сравнивает прогон с базовой линией
+# tests/known_failures.txt и падает ТОЛЬКО на новых падениях — старые не мешают
+# работать, но и расти им больше не дают.
+#
+# Обойти (когда push нужен срочно, а тесты чинить некогда):
+#     OKO_SKIP_GATE=1 git push
+# Обновить базовую линию после починки:
+#     python scripts/test_gate.py --update
+
+if [ -n "$OKO_SKIP_GATE" ]; then
+  echo "[pre-push] ворота пропущены (OKO_SKIP_GATE)"
+  exit 0
+fi
+
+PYTHON="C:/Users/yogoru/AppData/Local/Programs/Python/Python312/python.exe"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+[ -x "$PYTHON" ] || PYTHON="python"
+
+echo "[pre-push] ворота тестов: прогон tests/unit (~80 с)…"
+"$PYTHON" "$REPO_ROOT/scripts/test_gate.py"
+RC=$?
+
+if [ $RC -ne 0 ]; then
+  echo ""
+  echo "[pre-push] 🔴 PUSH ОСТАНОВЛЕН: появились НОВЫЕ падения (список выше)."
+  echo "           Почини их или, если падения ожидаемы и приняты:"
+  echo "             python scripts/test_gate.py --update   # сдвинуть базовую линию"
+  echo "           Срочный обход: OKO_SKIP_GATE=1 git push"
+  exit 1
+fi
+
+exit 0
