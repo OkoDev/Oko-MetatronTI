@@ -1114,10 +1114,10 @@ class TradingIntelligence:
             if mtf_context is not None and getattr(mtf_context, "smc_snap", None):
                 recommendation.metadata["smc_snap"] = mtf_context.smc_snap
                 try:
-                    # 🔴 05.10: сторону передаём обязательно — модель обучена только
-                    # на LONG (единственная сторона, положительная при строгом
-                    # переносе по месяцам: Δ +0.037 против −0.002 у шорта).
-                    # Без стороны специалист молчит, и это верное поведение.
+                    # 🔴 05.10: сторону передаём обязательно. Модель знает, на каких
+                    # сторонах она мерена (`sides` в файле), и на чужой молчит.
+                    # Сейчас обучена на обеих: на боевых окнах Δ +0.033 у лонга и
+                    # +0.052 у шорта при блоке «неделя». Без стороны молчит — верно.
                     _smc_dir = str(getattr(recommendation.direction, "value", None)
                                    or getattr(recommendation, "direction", "") or "")
                     _smc_verdict = (self._smc_specialist.predict(mtf_context.smc_snap, _smc_dir)
