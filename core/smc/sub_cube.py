@@ -28,7 +28,23 @@ logger = logging.getLogger("SMCSubCube")
 
 
 class SMCSubCube:
-    """Сфера 4 / SMC Sub-куб. compute_and_publish() — единый вход."""
+    """Сфера 4 / SMC Sub-куб. compute_and_publish() — единый вход.
+
+    🔑 05.10 КЭШ ПО ЗАКРЫТОМУ БАРУ. Замер [SCAN-PERF] трижды показал: SMC — единственный
+    настоящий потребитель цикла скана (1.2-1.4 с на пару × 565 пар ≈ 750 с CPU за круг,
+    98% блока «детекторы и прочее»). При этом структура (OB / FVG / BOS / CHoCH / OTE)
+    строится ПО ЗАКРЫТЫМ БАРАМ: пока новый бар не закрылся, ответ не может измениться.
+    А цикл скана идёт 3-7 минут против 15-минутного бара — то есть одно и то же считалось
+    по 2-5 раз подряд.
+    🔴 Почему кэшировать можно ЦЕЛИКОМ: current_price в расчёте НЕ участвует — он только
+    кладётся в готовый snap (ключ _current_price) для подписчиков шины. Поэтому при попадании
+    в кэш достаточно подставить свежую цену в копию снимка.
+    Тот же приём уже работает в волновом лупе (ctx_seen → «тот же 4h-бар»).
+    """
+
+    def __init__(self) -> None:
+        self._cache: Dict[str, Any] = {}     # symbol → (ключ баров, snap без цены)
+        self._stats: Dict[str, int] = {}     # hit/miss — видно в логе, а не на словах
 
     def compute_and_publish(
         self,
@@ -54,6 +70,20 @@ class SMCSubCube:
         Returns:
             snap dict (с добавленным 'smc_verdict') либо None.
         """
+        # ── кэш по закрытому бару ────────────────────────────────────────────
+        _key = self._bars_key(ohlcv_by_tf)
+        if _key is not None:
+            _hit = getattr(self, "_cache", {}).get(symbol)
+            if _hit is not None and _hit[0] == _key:
+                self._stats["hit"] = self._stats.get("hit", 0) + 1
+                snap = dict(_hit[1])          # копия: подписчики не должны править кэш
+                if current_price and current_price > 0:
+                    snap["_current_price"] = float(current_price)
+                if ctx_bus is not None:
+                    self.publish_snap(symbol, snap, ctx_bus)
+                return snap
+        self._stats["miss"] = self._stats.get("miss", 0) + 1
+
         snap = None
         try:
             snap = build_smc_snapshot(symbol, ohlcv_by_tf)
@@ -78,11 +108,40 @@ class SMCSubCube:
         if current_price and current_price > 0:
             snap["_current_price"] = float(current_price)
 
+        # в кэш кладём БЕЗ текущей цены: она меняется каждый цикл и к структуре не относится
+        if _key is not None:
+            _store = dict(snap)
+            _store.pop("_current_price", None)
+            if not hasattr(self, "_cache"):
+                self._cache = {}
+            self._cache[symbol] = (_key, _store)
+
         # Публикация в Bus (те же события — обратная совместимость)
         if ctx_bus is not None:
             self.publish_snap(symbol, snap, ctx_bus)
 
         return snap
+
+    @staticmethod
+    def _bars_key(ohlcv_by_tf: Dict[str, pd.DataFrame]):
+        """Отпечаток входных данных: время последнего бара КАЖДОГО ТФ.
+
+        Любое обновление любого ТФ меняет ключ и честно инвалидирует кэш. None — если
+        данных нет или индекс не читается: тогда кэш не используется вовсе."""
+        try:
+            parts = []
+            for tf in sorted(ohlcv_by_tf or {}):
+                df = ohlcv_by_tf.get(tf)
+                if df is None or len(df) == 0:
+                    continue
+                parts.append((tf, int(len(df)), str(df.index[-1])))
+            return tuple(parts) or None
+        except Exception:                                        # noqa: BLE001
+            return None
+
+    def cache_stats(self) -> Dict[str, int]:
+        """hit/miss для лога — чтобы прореживание было видно, а не предполагалось."""
+        return dict(getattr(self, "_stats", {}))
 
     def publish_snap(self, symbol: str, snap: Dict[str, Any], ctx_bus: Any) -> None:
         """Публикация готового snap в Bus — отдельно от расчёта (BOT-LOOP-OFFLOAD 11.07:

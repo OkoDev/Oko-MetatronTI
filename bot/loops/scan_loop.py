@@ -2744,6 +2744,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                             for k, (n, m, t) in sorted(_parts.items(),
                                                                        key=lambda x: -x[1][2])),
                                 _tot)
+                try:
+                    from core.smc.sub_cube import get_smc_sub_cube as _gsc
+                    _cs = _gsc().cache_stats()
+                    if _cs:
+                        _h, _m = _cs.get("hit", 0), _cs.get("miss", 0)
+                        logger.info("[SCAN-PERF] кэш SMC по закрытому бару: hit %d · miss %d (%.0f%% пересчётов сэкономлено)",
+                                    _h, _m, 100 * _h / max(_h + _m, 1))
+                except Exception:
+                    pass
                 logger.info("[SCAN-PERF] на пару: свечи %.0f мс · подготовка(CPU) %.0f мс · "
                             "детекторы и прочее %.0f мс · всего %.2f с | цикл %.0f с, пар %d",
                             _mf*1000, _mc*1000, _other*1000, _mt,
