@@ -52,6 +52,7 @@ def _publish_and_confirm(
     `observe()`/shadow, но gate `aggregate()` (требует trigger) НЕ трогаем.
     Если source отсутствует в registry (weight=0) — только публикуем событие.
     """
+    _mark(sym, "шина+SMC")
     _eb = getattr(bot, "event_bus", None)
     if _eb is not None:
         asyncio.create_task(_eb.publish(sym, event_name, priority=priority, data=data))
@@ -1513,6 +1514,18 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     _sem_in = {}   # sym → момент ВХОДА под семафор (без ожидания слота)
     # 🔑 05.10 РАЗЛОЖЕНИЕ 13.5 с «детекторы и прочее» по блокам (Егор: «разложить»).
     _perf2 = {k: [] for k in ("smc", "anomaly", "wt", "wt_b", "div_mtf", "div", "mtf_snap", "fetch_extra")}
+    # 🔑 05.10 вторая итерация: вехи МЕЖДУ секциями тела пары — закрываем те ~9 с из 12,
+    # что не попали в обёртки детекторов (публикации, atr_change, combinator, watchlist, confluence).
+    _perf3 = {}
+    _mark_prev = {}
+
+    def _mark(_sym, _name):
+        """Веха: пишет длительность секции от предыдущей вехи ЭТОЙ ЖЕ пары."""
+        _now = _time.monotonic()
+        _prev = _mark_prev.get(_sym)
+        if _prev is not None:
+            _perf3.setdefault(_name, []).append(_now - _prev)
+        _mark_prev[_sym] = _now
 
     async def _tm(_name, _coro):
         """Замер одного блока: имя → список длительностей. Обёртка вокруг await, тело не трогаем."""
@@ -1667,6 +1680,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     bot._elliott_snap[sym] = _elliott_data
 
                 # ═══ КУБ МЕТАТРОНА: публикуем снапы всех сфер в PairContextBus ═══
+                _mark(sym, "до_шины")
                 _bus = getattr(bot, "pair_context", None)
                 if _bus is not None:
                     from core.context.pair_context import SphereEvent
@@ -1924,6 +1938,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # ═══ КУБ: ATR Trend Change Detector → EventBus + ConfirmationAggregator (DEV-199/202) ═══
                 # 1d не публикуется: backtest R8 avgR=-0.4
                 # DEV-209: 15m расширен в OTE зоне; LONG+SHORT; auto ote_zone confirmation.
+                _mark(sym, "event_bus")
                 _atr_det = getattr(bot, "atr_change_detector", None)
                 _eb_atr = getattr(bot, "event_bus", None)
                 _conf_agg = getattr(bot, "confirmation_aggregator", None)
@@ -2190,6 +2205,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     return
 
                 # DEV-22: проверяем пробой/разворот для пар в WATCH LIST
+                _mark(sym, "atr+combinator")
                 _wl = getattr(bot, "signal_watch_list", None)
                 if _wl is not None and _wl.has(sym) and len(df_entry) > 0:
                     _cur_price = float(df_entry["close"].iloc[-1])
@@ -2222,6 +2238,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                 # === Multi-TF signal collection ===
                 # Для каждого entry TF собираем сигналы (anomaly, WT, MTF)
+                _mark(sym, "watchlist")
                 _scan_tfs = _entry_tfs if _multi_tf else [_etf]
                 for _scan_tf in _scan_tfs:
                     _df_tf = _entry_dfs.get(_scan_tf, df_entry)
@@ -2358,6 +2375,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # 3. Confluence: State Machine (ARCH-03) или Lookback Scanner (fallback)
                 # DEV-177 24.04: gated по analysis.confluence.enabled — иначе утечка в signal_type=confluence.
                 # 16.05.2026 FIX: ключ был "confluence.enabled" → None → False; фикс — analysis.confluence.enabled.
+                _mark(sym, "цикл_по_ТФ")
                 pivot_cache = getattr(getattr(bot, "pivot_calculator", None), "pivot_cache", {})
                 _conf_enabled_block = bool(bot.config.get("analysis.confluence.enabled", False))
                 _use_sm = bool(bot.config.get("analysis.confluence.use_state_machine", True))
@@ -2558,6 +2576,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             try:
                 from core.mtf.mtf_interpreter import analyze_context
                 from core.mtf.mtf_checker import collect_mtf_data
+                _mark(sym, "confluence")
                 _snapshot = await _tm("mtf_snap", collect_mtf_data(sym, bot.data_collector))
                 if _snapshot:
                     _cur_price = float(df_entry['close'].iloc[-1]) if df_entry is not None and len(df_entry) > 0 else 0
@@ -2699,6 +2718,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 _mc = _pst.median(_perf["cpu"]) if _perf["cpu"] else 0.0
                 _mt = _pst.median(_perf["rest"])
                 _other = max(0.0, _mt - _mf - _mc)
+                _sec = {k: (len(v), _pst.median(v) * 1000, sum(v)) for k, v in _perf3.items() if v}
+                if _sec:
+                    _st = sum(x[2] for x in _sec.values())
+                    logger.info("[SCAN-PERF] секции тела пары (медиана · доля): %s | сумма %.0f с",
+                                " · ".join(f"{k} {m:.0f} мс ({100*t/max(_st,1e-9):.0f}%)"
+                                            for k, (c, m, t) in sorted(_sec.items(), key=lambda x: -x[1][2])),
+                                _st)
                 _parts = {k: (len(v), _pst.median(v) * 1000, sum(v)) for k, v in _perf2.items() if v}
                 if _parts:
                     _tot = sum(x[2] for x in _parts.values())
