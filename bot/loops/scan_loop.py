@@ -1615,6 +1615,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # (по [OHLCV-CACHE] 3m = 549 попаданий / 0 REST за цикл). Просить 200 нельзя:
                 # кэш отдаёт запись только при limit ≥ запрошенного → все 845 пар ушли бы в REST.
                 _add_fetch("3m", 100)
+                # 🔑 05.10 АДРЕС 1 (замер [SCAN-PERF]): 1d грузился ОТДЕЛЬНЫМ запросом ПОСЛЕ
+                # общего gather, хотя тот и так тянет 6 ТФ. Под нагрузкой это давало 1672 мс
+                # на пару (50% блока «детекторы и прочее»), а на свободной машине 0 мс — то есть
+                # платили мы не за загрузку, а за СТОЯНИЕ В ОЧЕРЕДИ лишним запросом.
+                # Теперь 1d едет вместе со всеми. Канон кэша для 1d = 200, так что лимит 60
+                # всё равно тянет каноническую глубину — промаха не добавляется.
+                _add_fetch("1d", 60)
 
                 # D-055v2 REVERTED (2026-05-24 17:46 MSK): sequential TF fetch замедлял
                 # scan_loop → cascade через 54 мин (raньше 8-9ч). Возврат на parallel.
@@ -1643,11 +1650,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # (build_wt_snap ждёт его на :1457, а грузился он лениво только на ~:2458).
                 # Данные биржевые, НЕ ресемпл; по счётчикам [OHLCV-CACHE] 1d отдаётся из кэша на 97%,
                 # то есть цена вопроса ~6 REST на цикл.
-                try:
-                    df_1d = await _tm("fetch_extra", bot.data_collector.get_ohlcv(sym, "1d", limit=60))
-                except Exception as _d1_e:
-                    logger.debug("[scan] %s 1d fetch: %s", sym, _d1_e)
-                    df_1d = None
+                df_1d = _fetched_map.get(("1d", 60))
+                if df_1d is None:
+                    # запасной путь: план мог не отработать (новая пара, сбой одного ТФ)
+                    try:
+                        df_1d = await _tm("fetch_extra", bot.data_collector.get_ohlcv(sym, "1d", limit=60))
+                    except Exception as _d1_e:
+                        logger.debug("[scan] %s 1d fetch: %s", sym, _d1_e)
+                        df_1d = None
                 # Primary entry для совместимости (используется в divergence, confluence, etc.)
                 _primary = _entry_dfs.get(_etf)
                 df_entry = _primary if _primary is not None else next((v for v in _entry_dfs.values() if v is not None), None)
