@@ -57,11 +57,17 @@ _MIN_FEATURES = 4
 #   v2 — 02.09.2026: SMC сведён на эталон (ARCH-137.5) + непрерывные признаки
 #   v3 — 19.09.2026: «все на канон!» — ote_zone считается по канону core.smc.fibonacci (0.5–0.79),
 #        а не по ICT 0.705–0.786 (признак был истинен 8% времени; смысл поля сменился → новая версия)
-SNAP_SCHEMA_VERSION = 3
+#   v4 — 05.10.2026: +7 полей про СНЯТИЕ ликвидности (sc_*, *_swept_age) и нормированный
+#        fvg_age_frac. Прежние поля спрашивали «есть ли НЕСНЯТЫЙ уровень» и вырождались
+#        (eqh_near горел у 1%: отсев снятых убивал 82–100%), а платит обратное — вход
+#        ПОСЛЕ снятия (EQH-short PF 2.41, OB+свип 1.32 против 0.46 у сырого OB).
+SNAP_SCHEMA_VERSION = 4
 
 # 4 TF по спеке ARCH-68
 _TFS = ["1d", "4h", "1h", "15m"]
-_N_FEATURES = len(_TFS) * (9 + 18)  # 9 булевых (совместимость) + 18 непрерывных
+_N_BOOL_KEYS = 9                    # исторический блок (8 bool + ob_distance_pct)
+# _N_FEATURES считается ОТ _CONT_KEYS, а не числом: при v4 добавились 7 полей,
+# и зашитое «18» разошлось бы с вектором молча.
 
 # 🔴 ОКНА ИСТОРИИ — ЕДИНСТВЕННОЕ ОПРЕДЕЛЕНИЕ НА ПРОЕКТ.
 # Длина ряда — ЧАСТЬ определения признака, а не деталь вызова: детекторы от неё
@@ -99,7 +105,24 @@ _CONT_KEYS = (
     "brk_age", "brk_dist_atr", "brk_strength", "brk_internal",
     "fib_pos", "ote_dist_atr", "fib_dir_long", "eqh_dist_atr", "eql_dist_atr",
     "liq_buy_dist_atr", "liq_sell_dist_atr",
+    # ── v4 (05.10): СНЯТИЕ ликвидности как СОБЫТИЕ ────────────────────────
+    # Прежние поля отвечали на вопрос «есть ли рядом НЕСНЯТЫЙ уровень» — и
+    # вырождались: отсев снятых убивал 82–100% уровней, `eqh_near` горел у 1%.
+    # Но платит ровно обратное. Измерено у нас: EQH-short PF 2.41 (×1.89 на 97
+    # монетах, перестановка P=0.000) — вход ПОСЛЕ снятия; OB СО свипом PF 1.32
+    # против 0.46 у сырого OB (сырой хуже, чем вообще ничего — 0.79).
+    # Независимо то же у SSRN (G10 FX, 07.2026): свип предсказывает ПРОДОЛЖЕНИЕ,
+    # а не канонический разворот. Поэтому меряем не наличие уровня, а свежесть
+    # и близость СОБЫТИЯ снятия.
+    "sc_age",             # бары с последней Sponsored Candle (свип + разворот)
+    "sc_dist_atr",        # до середины её бокса, знаковое
+    "sc_confirmed",       # свип подтверждён CHoCH и имбалансом (0/1)
+    "sc_dir_bull",        # сторона свипа: снимали минимум (1) или максимум (0)
+    "eqh_swept_age",      # бары с момента снятия ближайшего EQH
+    "eql_swept_age",      # то же для EQL
+    "fvg_age_frac",       # возраст FVG как доля окна — сопоставимо между ТФ
 )
+_N_FEATURES = len(_TFS) * (_N_BOOL_KEYS + len(_CONT_KEYS))   # v4: 4 × (9 + 25) = 136
 # «признака нет» ≠ «ноль»: ноль означает «зона ровно на цене».
 _MISS = -99.0
 
@@ -332,6 +355,68 @@ def _build_smc_snap_from_df(
                     if liq.nearest_sell:
                         snap["liq_sell_dist_atr"] = _d(liq.nearest_sell.level)
                 except (NameError, AttributeError):
+                    pass
+
+                # ── v4: СНЯТИЕ ликвидности как событие ───────────────────
+                _n = len(df)
+
+                # Sponsored Candle = свеча, снявшая экстремум 10 баров и
+                # закрывшаяся против фитиля. Это и есть «свип» из замеров.
+                # 🔴 `confirmed` смотрит вперёд на confirm_bars=5, поэтому
+                # берём только СВЕЧИ СТАРШЕ 5 баров — иначе заглядывание.
+                try:
+                    from core.smc.smc_engine import detect_sponsored_candle
+                    _CONFIRM_BARS = 5
+                    _scs = [s for s in (detect_sponsored_candle(df) or [])
+                            if (_n - 1 - int(s.idx)) >= _CONFIRM_BARS]
+                    if _scs:
+                        _sc = _scs[-1]                       # последний причинно известный
+                        snap["sc_age"] = _n - 1 - int(_sc.idx)
+                        snap["sc_dist_atr"] = _d(float(_sc.mt))
+                        snap["sc_confirmed"] = bool(_sc.confirmed)
+                        snap["sc_dir_bull"] = bool(str(_sc.direction).lower() == "bull")
+                except Exception as e:                       # noqa: BLE001
+                    logger.debug("smc_snap SC error: %s", e)
+
+                # Давность СНЯТИЯ уровня: сколько баров назад цена прошла за EQH/EQL.
+                # Отвечает на вопрос, которого не было: не «цел ли уровень», а
+                # «как давно его сняли» — то есть насколько свежо событие.
+                try:
+                    from core.smc.smc_engine import detect_equal_levels
+                    _pairs = detect_equal_levels(df) or []
+                    if _pairs:
+                        _hi, _lo = df["high"].values, df["low"].values
+                        _pos = {ts: k for k, ts in enumerate(df.index)}
+                        for _lab, _key in (("EQH", "eqh"), ("EQL", "eql")):
+                            _ages = []
+                            for _t1, _p1, _t2, _p2, _l in _pairs:
+                                if _l != _lab:
+                                    continue
+                                _lvl = (float(_p1) + float(_p2)) / 2.0
+                                _i2 = _pos.get(_t2)
+                                if _i2 is None:
+                                    continue
+                                _tail = range(min(_i2 + 1, _n), _n)
+                                if _lab == "EQH":
+                                    _hit = next((k for k in _tail if _hi[k] > _lvl), None)
+                                else:
+                                    _hit = next((k for k in _tail if _lo[k] < _lvl), None)
+                                if _hit is not None:
+                                    _ages.append(_n - 1 - _hit)
+                            if _ages:
+                                snap[f"{_key}_swept_age"] = int(min(_ages))
+                except Exception as e:                       # noqa: BLE001
+                    logger.debug("smc_snap swept_age error: %s", e)
+
+                # Возраст FVG как ДОЛЯ окна. Сырые бары между ТФ несопоставимы:
+                # «10 баров» на 15m и на 1d — разные вещи, а дерево делить не умеет.
+                # Егор 05.10: «fvg нужна свежесть». Замер показал, что знак зависит
+                # от ТФ (на 4h свежесть платит, на 1h и 15m — наоборот), поэтому
+                # признак даём в сопоставимом виде и пусть модель решает сама.
+                try:
+                    if snap.get("fvg_age") is not None and _n > 0:
+                        snap["fvg_age_frac"] = round(float(snap["fvg_age"]) / _n, 4)
+                except Exception:                            # noqa: BLE001
                     pass
         except Exception as e:
             logger.debug("smc_snap continuous error: %s", e)
