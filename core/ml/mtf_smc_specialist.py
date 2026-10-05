@@ -492,6 +492,9 @@ class MTFSMCSpecialist:
         self._feat_idx: Optional[List[int]] = None
         self._model_source = "обучение"      # откуда модель: обучение или сохранённый файл
         self._ctrl_score: Optional[float] = None   # AUC контроля-перестановки, если известен
+        # Квантили p_win на обучающей выборке — для ОТНОСИТЕЛЬНОГО порога.
+        # Абсолютный 0.65 недостижим: фактический диапазон модели [0.397, 0.537].
+        self._p_quantiles: Optional[List[float]] = None
         # 🔴 05.10: стороны, на которых модели РАЗРЕШЕНО говорить. None = обе.
         # 🔴 05.10, ВТОРАЯ РЕДАКЦИЯ. Первая держала только LONG, и это решение стояло
         # на выборке с train/serve skew (окна 200 баров против боевых 60–100).
@@ -547,6 +550,8 @@ class MTFSMCSpecialist:
             self._n_samples = int(blob.get("n_samples") or 0)
             self._cv_score = cv
             self._ctrl_score = ctrl
+            _pq = blob.get("p_quantiles")
+            self._p_quantiles = [float(x) for x in _pq] if _pq else None
             self._model_source = str(blob.get("source") or "файл")
             sides = blob.get("sides")
             self._sides = [str(s).upper() for s in sides] if sides else None
@@ -720,6 +725,25 @@ class MTFSMCSpecialist:
             return False
 
     # ------------------------------------------------------------------
+    def p_percentile(self, p_win: float) -> Optional[float]:
+        """Где `p_win` лежит в СОБСТВЕННОМ распределении модели, 0..1.
+
+        🔴 05.10: зачем это нужно. Порог `verdict_gate.smc_block_confidence = 0.65`
+        задан АБСОЛЮТНО, а фактический диапазон модели — [0.397, 0.537] (замер на
+        4000 предсказаниях): ни `STRONG_BULL` (p>0.65), ни `STRONG_BEAR` (p<0.35)
+        не рождаются НИКОГДА. Абсолютный порог на выходе модели бессмыслен: он
+        зависит от того, насколько уверенной вышла модель, а не от рынка.
+        Относительный («верхние 10% своих же предсказаний») самокалибруется при
+        каждом переобучении — тот же принцип, что в законе о пороге относительно базы.
+
+        None — если квантили неизвестны (старый файл модели).
+        """
+        qs = self._p_quantiles
+        if not qs:
+            return None
+        import bisect
+        return bisect.bisect_right(qs, float(p_win)) / len(qs)
+
     def predict(self, smc_snap: Dict[str, Any],
                 direction: Optional[str] = None) -> Optional[SMCVerdict]:
         """Вердикт по снимку. `direction` — сторона сделки ('LONG'/'SHORT').

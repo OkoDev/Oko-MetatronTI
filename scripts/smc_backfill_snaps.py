@@ -174,7 +174,8 @@ def train(sides: tuple = ("LONG", "SHORT")) -> int:
     отсортированной по времени выборке завышал число (0.566 на случайных фолдах)
     за счёт соседства сделок: 1164 из 2328 лежат в одной шестидневке.
     """
-    from core.ml.mtf_smc_specialist import _build_smc_features, _MODEL_FILE
+    from core.ml.mtf_smc_specialist import (_build_smc_features, _MODEL_FILE,
+                                            SNAP_SCHEMA_VERSION)
     try:
         import joblib
         import numpy as np
@@ -235,10 +236,20 @@ def train(sides: tuple = ("LONG", "SHORT")) -> int:
         print("🔴 Δ над контролем меньше 0.02 — модель НЕ сохранена, говорить ей не о чем")
         return 1
 
+    # 🔴 Квантили p_win на обучающей выборке — чтобы порог можно было задавать
+    # ОТНОСИТЕЛЬНО («верхние 10% своих предсказаний»), а не абсолютным числом.
+    # Абсолютный 0.65 из конфига недостижим: диапазон модели [0.397, 0.537].
+    _p = model.predict_proba(Xs)[:, 1]
+    p_q = [float(x) for x in np.quantile(_p, np.linspace(0, 1, 101))]
+    print(f"p_win на обучении: min {_p.min():.3f} · медиана {np.median(_p):.3f} · "
+          f"max {_p.max():.3f}  (порог конфига 0.65 "
+          f"{'ДОСТИЖИМ' if _p.max() >= 0.65 else '🔴 НЕДОСТИЖИМ'})")
+
     path = ROOT / _MODEL_FILE
     joblib.dump({"model": model, "feat_idx": idx, "cv_auc": float(auc),
                  "ctrl_auc": float(np.mean(ctrl)), "n_samples": int(len(Xs)),
-                 "source": "backfill_v3", "sides": sorted(want)}, path)
+                 "source": f"backfill_v{SNAP_SCHEMA_VERSION}", "sides": sorted(want),
+                 "p_quantiles": p_q}, path)
     print(f"модель сохранена: {path.name} · говорить разрешено только: {sorted(want)}")
     return 0
 
