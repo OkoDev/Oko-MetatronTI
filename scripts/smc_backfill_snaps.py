@@ -36,7 +36,23 @@ sys.path.insert(0, str(ROOT))
 
 DB = ROOT / "subscriptions.db"
 OUT = ROOT / "oko_feed" / "smc_backfill.db"
-TFS = (("1d", 60), ("4h", 200), ("1h", 200), ("15m", 200))
+
+# 🔴🔴 ОКНА = БОЕВЫЕ, БАЙТ В БАЙТ. Это не стилистика.
+# 05.10 первая версия считала 4h=200 · 1h=200 · 15m=200, а бой считает
+# `trading_intelligence.py:2151-2153` (15m/1h) и `:2208` (1d):
+#       15m=100 · 1h=100 · 4h=60 · 1d=60
+# Детекторы ЧУВСТВИТЕЛЬНЫ К ДЛИНЕ РЯДА, и расхождение било прямо по признакам:
+#   4h: ote_zone 15% против боевых 5% (×3) · brk_internal 68% против 100%
+#   1h: ob_bull 85% против 77% · fvg_dist_atr пропущен 0% против 5%
+# Причина у структуры физическая: `core/structure/pivots.py:31` ищет опорные точки
+# только среди баров [0 … len−window]. При window=50 и 60 барах это бары 0–9,
+# то есть СТАРШИЙ слой в бою почти недоступен — и модель, обученная на 200 барах,
+# в бою получает другой признак под тем же именем.
+# Это train/serve skew, которого `SNAP_SCHEMA_VERSION` НЕ ловит: схема формально
+# та же v3. Закон [[law_reproduce_live_config_first]] — сначала воспроизвести бой.
+TFS = (("1d", 60), ("4h", 60), ("1h", 100), ("15m", 100))
+# старая широкая раскладка — только для сравнения «широкие против боевых»
+TFS_WIDE = (("1d", 60), ("4h", 200), ("1h", 200), ("15m", 200))
 
 
 def _ddl(con: sqlite3.Connection) -> None:
@@ -70,7 +86,8 @@ def _trades(limit: int, since: str, until: str = "2099-01-01") -> list:
         con.close()
 
 
-def backfill(limit: int, since: str, until: str = "2099-01-01") -> int:
+def backfill(limit: int, since: str, until: str = "2099-01-01",
+             tfs: tuple = TFS) -> int:
     import pandas as pd
     from core.infra import market_store as ms
     from core.ml.mtf_smc_specialist import _build_smc_snap_from_df
@@ -96,7 +113,7 @@ def backfill(limit: int, since: str, until: str = "2099-01-01") -> int:
                 now = now.tz_localize("UTC")
             price = float(tr.get("entry_price") or 0) or None
             snap, got = {}, 0
-            for tf, n in TFS:
+            for tf, n in tfs:
                 try:
                     df = ms.closed_bars(tr["symbol"], tf, n, now=now)
                 except Exception:
@@ -237,8 +254,14 @@ if __name__ == "__main__":
     ap.add_argument("--train", action="store_true", help="обучить модель из пересчитанного")
     ap.add_argument("--sides", default="LONG",
                     help="стороны через запятую; по умолчанию LONG — на SHORT эджа нет")
+    ap.add_argument("--wide", action="store_true",
+                    help="широкие окна 200 баров ВМЕСТО боевых — только для сравнения, "
+                         "обучать на этом нельзя (train/serve skew)")
     a = ap.parse_args()
     if a.limit:
-        backfill(a.limit, a.since, a.until)
+        tfs = TFS_WIDE if a.wide else TFS
+        print("окна: " + " · ".join(f"{t}={n}" for t, n in tfs)
+              + ("   🔴 ШИРОКИЕ, не боевые" if a.wide else "   (боевые)"))
+        backfill(a.limit, a.since, a.until, tfs)
     if a.train:
         sys.exit(train(tuple(s.strip() for s in a.sides.split(",") if s.strip())))

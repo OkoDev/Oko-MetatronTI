@@ -139,14 +139,15 @@ def _build_smc_features(smc_snap: Dict[str, Any]) -> Optional[List[float]]:
 
 
 def _label_from_proba(p_win: float, smc_snap: Dict[str, Any]) -> str:
-    """Категориальный label из вероятности и SMC-снимка."""
-    # OB active на 4h/1h → усиленный сигнал
-    ob_4h = (smc_snap.get("4h") or {}).get("ob_bull", False)
-    ob_1h = (smc_snap.get("1h") or {}).get("ob_bull", False)
+    """Категориальный label из вероятности.
 
+    🔴 05.10: здесь была мёртвая развилка — `if ob_4h or ob_1h: return X` и сразу
+    `return X`, обе ветки одинаковые. Проверка OB не влияла ни на что с момента
+    написания. Убрана вместе с чтением `ob_bull`, чтобы не создавать видимость,
+    будто метка учитывает ордер-блоки. Если её захотят вернуть — вводить осознанно
+    и отдельной меткой, а не веткой с тем же результатом.
+    """
     if p_win > 0.65:
-        if ob_4h or ob_1h:
-            return "STRONG_BULL_ZONE"
         return "STRONG_BULL_ZONE"
     if p_win < 0.35:
         return "STRONG_BEAR_ZONE"
@@ -363,6 +364,7 @@ class MTFSMCSpecialist:
         # predict обязан подавать ровно их — иначе порядок полей поедет.
         self._feat_idx: Optional[List[int]] = None
         self._model_source = "обучение"      # откуда модель: обучение или сохранённый файл
+        self._ctrl_score: Optional[float] = None   # AUC контроля-перестановки, если известен
         # 🔴 05.10: стороны, на которых модели РАЗРЕШЕНО говорить. None = обе.
         # Замер на пересчитанной истории (9278 образцов, март→окт, блок = НЕДЕЛЯ,
         # порог — перестановка метки): при самом строгом блоке (МЕСЯЦ) LONG даёт
@@ -395,8 +397,25 @@ class MTFSMCSpecialist:
             self._model = model
             self._feat_idx = list(feat_idx)
             self._trained = True
+            # 🔴 05.10: порог берём ОТНОСИТЕЛЬНО контроля, а не от 0.5.
+            # backfill пишет `ctrl_auc` (перестановка метки на той же схеме фолдов),
+            # и при GroupKFold контроль НЕ равен 0.5 — у лонга выходило 0.468…0.506.
+            # Раньше поле не читалось: модель поднималась, даже если её Δ над
+            # контролем нулевая. Ровно тот случай, против которого записан закон
+            # «порог относительно базы».
+            cv, ctrl = blob.get("cv_auc"), blob.get("ctrl_auc")
+            if cv is not None and ctrl is not None and float(cv) - float(ctrl) < 0.02:
+                logger.info(
+                    "MTFSMCSpecialist: сохранённая модель НЕ поднята — Δ над контролем "
+                    "%.3f (AUC %.3f против контроля %.3f) меньше 0.02, говорить не о чем.",
+                    float(cv) - float(ctrl), float(cv), float(ctrl))
+                self._model = None
+                self._feat_idx = None
+                self._trained = False
+                return False
             self._n_samples = int(blob.get("n_samples") or 0)
-            self._cv_score = blob.get("cv_auc")
+            self._cv_score = cv
+            self._ctrl_score = ctrl
             self._model_source = str(blob.get("source") or "файл")
             sides = blob.get("sides")
             self._sides = [str(s).upper() for s in sides] if sides else None
@@ -504,12 +523,35 @@ class MTFSMCSpecialist:
             self._feat_idx = feat_idx
 
             try:
-                scores = cross_val_score(
-                    model, Xs, y, cv=min(5, len(Xs) // 10), scoring="roc_auc",
-                )
+                _cv = min(5, len(Xs) // 10)
+                scores = cross_val_score(model, Xs, y, cv=_cv, scoring="roc_auc")
                 self._cv_score = float(scores.mean())
+                # 🔴 05.10: вместе с AUC считаем КОНТРОЛЬ — перестановку метки на той
+                # же схеме фолдов. Без него число не с чем сравнивать: 0.5 порогом не
+                # является, а `_load_saved` отсеивает модели с Δ < 0.02 и обязан
+                # получать сопоставимую пару (cv_auc, ctrl_auc) от обоих обучателей.
+                import numpy as _np
+                _rng = _np.random.default_rng(42)
+                _ya = _np.array(y)
+                self._ctrl_score = float(_np.mean([
+                    cross_val_score(model, Xs, _rng.permutation(_ya), cv=_cv,
+                                    scoring="roc_auc").mean() for _ in range(3)]))
             except Exception:
                 self._cv_score = None
+                self._ctrl_score = None
+
+            # 🔴 Своё обучение НЕ должно молча заменять модель, обученную по более
+            # строгому протоколу (backfill: GroupKFold по неделям + перестановка).
+            # Здесь CV идёт по соседним во времени сделкам, что завышает — на той же
+            # выборке случайные фолды давали 0.566 против 0.505 по неделям.
+            if (self._cv_score is not None and self._ctrl_score is not None
+                    and self._cv_score - self._ctrl_score < 0.02):
+                logger.info(
+                    "MTFSMCSpecialist: своё обучение дало Δ над контролем %.3f "
+                    "(AUC %.3f против %.3f) — меньше 0.02. Модель не сохраняем, "
+                    "пробуем поднять прежнюю.",
+                    self._cv_score - self._ctrl_score, self._cv_score, self._ctrl_score)
+                return self._load_saved(db_path)
 
             model.fit(Xs, y)
             self._model = model
@@ -528,7 +570,8 @@ class MTFSMCSpecialist:
                 # ограничение по стороне: модель молча получала право говорить
                 # по шорту, где её AUC равен контролю.
                 joblib.dump({"model": model, "feat_idx": feat_idx,
-                             "cv_auc": self._cv_score, "n_samples": len(Xs),
+                             "cv_auc": self._cv_score, "ctrl_auc": self._ctrl_score,
+                             "n_samples": len(Xs),
                              "source": "обучение", "sides": list(self._sides)}, model_path)
             except Exception:
                 pass
@@ -609,5 +652,6 @@ class MTFSMCSpecialist:
             "sides": self._sides or "обе",
             "n_samples": self._n_samples,
             "cv_auc": self._cv_score,
+            "ctrl_auc": self._ctrl_score,
             "n_features": _N_FEATURES,
         }
