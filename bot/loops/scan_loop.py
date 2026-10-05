@@ -1511,6 +1511,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     # «ProcessPool не нужен») надо перемерить. Копим три слагаемых на пару.
     _perf = {"fetch": [], "cpu": [], "rest": []}
     _sem_in = {}   # sym → момент ВХОДА под семафор (без ожидания слота)
+    # 🔑 05.10 РАЗЛОЖЕНИЕ 13.5 с «детекторы и прочее» по блокам (Егор: «разложить»).
+    _perf2 = {k: [] for k in ("smc", "anomaly", "wt", "wt_b", "div_mtf", "div", "mtf_snap", "fetch_extra")}
+
+    async def _tm(_name, _coro):
+        """Замер одного блока: имя → список длительностей. Обёртка вокруг await, тело не трогаем."""
+        _t = _time.monotonic()
+        try:
+            return await _coro
+        finally:
+            _perf2[_name].append(_time.monotonic() - _t)
 
     # Лимиты сигналов за один цикл — защита от Telegram flood control
     _confluence_max_per_cycle = int(bot.config.get("analysis.confluence.max_per_cycle", 3))
@@ -1621,7 +1631,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # Данные биржевые, НЕ ресемпл; по счётчикам [OHLCV-CACHE] 1d отдаётся из кэша на 97%,
                 # то есть цена вопроса ~6 REST на цикл.
                 try:
-                    df_1d = await bot.data_collector.get_ohlcv(sym, "1d", limit=60)
+                    df_1d = await _tm("fetch_extra", bot.data_collector.get_ohlcv(sym, "1d", limit=60))
                 except Exception as _d1_e:
                     logger.debug("[scan] %s 1d fetch: %s", sym, _d1_e)
                     df_1d = None
@@ -1785,10 +1795,10 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         # BOT-LOOP-OFFLOAD: расчёт snap (самый жирный CPU скана) — в поток
                         # (ctx_bus=None → только compute); publish — здесь, из event loop.
                         _smc_cube = get_smc_sub_cube()
-                        _smc_snap = await asyncio.to_thread(
+                        _smc_snap = await _tm("smc", asyncio.to_thread(
                             _smc_cube.compute_and_publish, sym, _smc_ohlcv,
                             ctx_bus=None, df_1h=df_1h, df_4h=df_4h, current_price=_cp_snap,
-                        )
+                        ))
                         if _smc_snap:
                             _smc_cube.publish_snap(sym, _smc_snap, _bus)
                         if _smc_snap:
@@ -2220,7 +2230,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                     # 1. Anomalies (только primary TF — аномалии не зависят от entry)
                     if _scan_tf == _etf:
-                        for sig in await check_anomaly_signals(sym, _df_tf):
+                        for sig in await _tm("anomaly", check_anomaly_signals(sym, _df_tf)):
                             info = sig.data or {}
                             bot.recent_anomalies[sym] = {"timestamp": datetime.now(), "info": info}
                             bot.signal_counters["anomaly"] += 1
@@ -2303,7 +2313,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                     # 2. WT
                     _pivot_calc = getattr(bot, "pivot_calculator", None)
-                    for sig in await _check_wt_signals(sym, _df_tf, df_1h, market_regime=_pair_regime):
+                    for sig in await _tm("wt", _check_wt_signals(sym, _df_tf, df_1h, market_regime=_pair_regime)):
                         info = sig.data or {}
                         if _multi_tf:
                             sig.timeframe = _scan_tf  # тегируем ТФ
@@ -2408,7 +2418,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 # 5. WT-B Signal (1h): адаптивный OS/OB + дивергенция, WR=85%
                 # df_1h уже в кеше — не фетчим повторно
                 if df_1h is not None and not df_1h.empty:
-                    _wt_b_sigs = await _check_wt_b_signals(sym, df_1h)
+                    _wt_b_sigs = await _tm("wt_b", _check_wt_b_signals(sym, df_1h))
                     for sig in _wt_b_sigs:
                         bot.signal_counters["wt_b"] = bot.signal_counters.get("wt_b", 0) + 1
                         bot.signal_counters["total"] += 1
@@ -2434,9 +2444,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     # Этап 8.4.5: режим пары — скрытые дивергенции отклоняем в RANGE/HIGH_VOL
                     # _pair_regime уже вычислен выше (DEV-108, один раз на пару)
                     try:
+                        _pt_dm = _time.monotonic()
                         has_mtf, mtf_info = await bot.divergence_detector.detect_mtf_divergence(
                             sym, bot.data_collector
                         )
+                        _perf2["div_mtf"].append(_time.monotonic() - _pt_dm)
                         if has_mtf:
                             passed, reason = _div_passes_filters(
                                 mtf_info, df_entry, pivot_calc, sym, _div_proximity_pct,
@@ -2484,9 +2496,11 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     if not div_found:
                         for tf in (_etf, "1h"):
                             try:
+                                _pt_d = _time.monotonic()
                                 has_div, div_info = await bot.divergence_detector.detect_divergence(
                                     sym, bot.data_collector, timeframe=tf
                                 )
+                                _perf2["div"].append(_time.monotonic() - _pt_d)
                                 if has_div:
                                     passed, reason = _div_passes_filters(
                                         div_info, df_entry, pivot_calc, sym, _div_proximity_pct,
@@ -2544,7 +2558,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
             try:
                 from core.mtf.mtf_interpreter import analyze_context
                 from core.mtf.mtf_checker import collect_mtf_data
-                _snapshot = await collect_mtf_data(sym, bot.data_collector)
+                _snapshot = await _tm("mtf_snap", collect_mtf_data(sym, bot.data_collector))
                 if _snapshot:
                     _cur_price = float(df_entry['close'].iloc[-1]) if df_entry is not None and len(df_entry) > 0 else 0
                     _wp = getattr(bot.pivot_calculator, "pivot_cache", {}).get(f"{sym}_1W", {})
@@ -2589,7 +2603,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         if signals_to_broadcast:
             # Ленивая догрузка: дорогие 3m/1d нужны только для дальнейшего intelligence-анализа.
             if df_3m is None:
-                df_3m = await bot.data_collector.get_ohlcv(sym, "3m", limit=100)
+                df_3m = await _tm("fetch_extra", bot.data_collector.get_ohlcv(sym, "3m", limit=100))
             if df_1d is None:
                 df_1d = await bot.data_collector.get_ohlcv(sym, "1d", limit=60)
 
@@ -2685,6 +2699,15 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 _mc = _pst.median(_perf["cpu"]) if _perf["cpu"] else 0.0
                 _mt = _pst.median(_perf["rest"])
                 _other = max(0.0, _mt - _mf - _mc)
+                _parts = {k: (len(v), _pst.median(v) * 1000, sum(v)) for k, v in _perf2.items() if v}
+                if _parts:
+                    _tot = sum(x[2] for x in _parts.values())
+                    logger.info("[SCAN-PERF] разложение «детекторы и прочее» (медиана на вызов · "
+                                "доля от суммы блоков): %s | сумма блоков %.0f с",
+                                " · ".join(f"{k} {m:.0f} мс×{n} ({100*t/max(_tot,1e-9):.0f}%)"
+                                            for k, (n, m, t) in sorted(_parts.items(),
+                                                                       key=lambda x: -x[1][2])),
+                                _tot)
                 logger.info("[SCAN-PERF] на пару: свечи %.0f мс · подготовка(CPU) %.0f мс · "
                             "детекторы и прочее %.0f мс · всего %.2f с | цикл %.0f с, пар %d",
                             _mf*1000, _mc*1000, _other*1000, _mt,
