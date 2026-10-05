@@ -237,6 +237,13 @@ class PerformanceEngine:
             return []
 
         agg: Dict[str, Dict[str, Any]] = {}
+        # 🔴 06.10: БАЗА ведётся в ТОМ ЖЕ проходе и по ТОЙ ЖЕ хронологии.
+        # Зачем: веса надо считать от % net ОТНОСИТЕЛЬНО базы (ЗАКОН №1 + закон
+        # относительного порога), а EMA базы, посчитанная отдельно по всей выборке,
+        # центрирована на последних сделках ВСЕГО потока. Тип с 23 сделками в июне
+        # сравнивался бы с базой октября — это сравнение разных эпох.
+        # Поэтому для каждого типа запоминаем базу НА МОМЕНТ ЕГО ПОСЛЕДНЕЙ сделки.
+        ema_base: Optional[float] = None
         for r in rows:
             st = r["signal_type"] or "unknown"
             status = r["status"]
@@ -244,12 +251,14 @@ class PerformanceEngine:
             pnl = float(r["profit_pct"]) if r["profit_pct"] is not None else 0.0
             tsl_act = r["tsl_activated"]
             be_act = r["be_activated"]
+            ema_base = pnl if ema_base is None else alpha * pnl + (1.0 - alpha) * ema_base
             a = agg.setdefault(st, {
                 "signal_type": st,
                 "total": 0, "tp_count": 0, "tsl_count": 0, "sl_count": 0,
                 "tsl_hidden_count": 0, "be_neutral_count": 0,
-                "ema_r": None, "ema_pnl": None,
+                "ema_r": None, "ema_pnl": None, "base_at_last": None,
             })
+            a["base_at_last"] = ema_base        # база на момент последней сделки типа
             a["total"] += 1
             if status == "TP":
                 a["tp_count"] += 1
@@ -300,6 +309,12 @@ class PerformanceEngine:
                 "win_rate_raw":  round((tp + tsl) / closed * 100, 1) if closed else None,
                 "avg_r":         round(a["ema_r"], 3) if a["ema_r"] is not None else None,
                 "avg_profit_pct": round(a["ema_pnl"], 3) if a["ema_pnl"] is not None else None,
+                # % net ОТНОСИТЕЛЬНО базы, синхронной по времени (см. комментарий выше).
+                # Это и есть величина, от которой считаются адаптивные веса с 06.10.
+                "base_profit_pct": round(a["base_at_last"], 3) if a["base_at_last"] is not None else None,
+                "delta_profit_pct": (round(a["ema_pnl"] - a["base_at_last"], 3)
+                                     if a["ema_pnl"] is not None and a["base_at_last"] is not None
+                                     else None),
             })
         result.sort(key=lambda x: -x["total"])
         return result

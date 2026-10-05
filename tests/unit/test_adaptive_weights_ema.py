@@ -37,7 +37,14 @@ def _make_tmp_db() -> str:
                 tsl_activated INTEGER DEFAULT 0,
                 max_R_possible REAL,
                 regime TEXT,
-                direction TEXT
+                direction TEXT,
+                -- 06.10: колонки добавлялись в боевую схему позже фикстуры, и тесты
+                -- падали на `no such column` ещё до первой проверки — все четыре
+                -- лежали в known_failures. Чинится здесь, а не обходом в движке:
+                -- `be_activated` нужен для BE-нейтрала (DEV-190), `execution_mode`
+                -- для фильтра VST, по которому и учатся веса.
+                be_activated INTEGER DEFAULT 0,
+                execution_mode TEXT DEFAULT 'VST'
             )
         """)
         conn.commit()

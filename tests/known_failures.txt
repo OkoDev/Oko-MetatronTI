@@ -1,10 +1,6 @@
 # Известные падения юнит-тестов — базовая линия для scripts/test_gate.py.
 # Ворота падают только на НОВЫХ падениях: список чинится постепенно,
 # но расти ему не дают. Обновлять: python scripts/test_gate.py --update
-tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_1_direction_change_ema_reacts_faster
-tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_2_inertia_full_history_vs_ema
-tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_3_format_compatible_with_by_signal_type
-tests/unit/test_adaptive_weights_ema.py::EMAAdaptiveWeightsTests::test_4_data_era_filter_ignores_pre_fix
 tests/unit/test_dedup_trades.py::test_dedup_allows_after_close
 tests/unit/test_dedup_trades.py::test_dedup_allows_different_symbol
 tests/unit/test_dedup_trades.py::test_dedup_first_trade_registers

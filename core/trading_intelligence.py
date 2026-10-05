@@ -270,6 +270,9 @@ class TradingIntelligence:
         except Exception:
             _aw = {}
         _method = str(_aw.get("method", "ema")).lower()
+        # 🔴 06.10: основание весов. `pct_net` — % net относительно синхронной базы
+        # (ЗАКОН №1), `avg_r` — прежнее поведение для отката.
+        _basis = str(_aw.get("basis", "pct_net")).lower()
         _hl = float(_aw.get("half_life", 50))
         _era = _aw.get("data_era_filter", "post_fix")
         _hist_enabled = bool(_aw.get("history_log_enabled", True))
@@ -296,8 +299,23 @@ class TradingIntelligence:
                 if closed < _MIN_TRADES:
                     continue
                 avg_r = row["avg_r"] or 0.0
-                # factor: avg_r=0 → 1.0, +1R → 1.4, -1R → 0.6, clamped [0.5, 2.0]
-                factor = max(0.5, min(2.0, 1.0 + avg_r * 0.4))
+                # 🔴 06.10 (N25, пункт «а»): ОСНОВАНИЕ ВЕСОВ — % net, А НЕ R.
+                # ЗАКОН №1 запрещает мерить эдж в R, и соседний слой весов признаков
+                # (`core/intelligence/feature_weights.py`) это уже соблюдал с 09.07,
+                # а слой типов — нет. Формула приведена к той же, что там:
+                #     weight = clamp(1 + delta_pct * 0.2, 0.5, 2.0)
+                # где delta_pct — % net типа МИНУС база, синхронная по времени
+                # (`by_signal_type_ema` ведёт её в том же проходе: база берётся на
+                # момент последней сделки типа, иначе сравнивались бы разные эпохи).
+                # Старый режим остаётся за `trading.adaptive_weights.basis: avg_r`.
+                delta_pct = row.get("delta_profit_pct")
+                if _basis == "pct_net" and delta_pct is not None:
+                    factor = max(0.5, min(2.0, 1.0 + float(delta_pct) * 0.2))
+                    _basis_used = f"%net Δ={float(delta_pct):+.2f}"
+                else:
+                    # factor: avg_r=0 → 1.0, +1R → 1.4, -1R → 0.6, clamped [0.5, 2.0]
+                    factor = max(0.5, min(2.0, 1.0 + avg_r * 0.4))
+                    _basis_used = f"avg_R={avg_r:+.2f}"
                 base = self._base_signal_weights.get(st, 0.1)
                 new_w = round(base * factor, 4)
                 old_w = self.signal_weights.get(st, base)
@@ -317,7 +335,7 @@ class TradingIntelligence:
                     )
                     changed.append(
                         f"{row['signal_type']}: {old_w:.3f}→{new_w:.3f} | "
-                        f"{_main_label} avg_R={avg_r:+.2f} (n={closed}){_shadow_part}"
+                        f"{_main_label} {_basis_used} (n={closed}){_shadow_part}"
                     )
 
                 snapshots.append({
@@ -331,8 +349,8 @@ class TradingIntelligence:
 
             if changed:
                 logger.info(
-                    "Adaptive weights (method=%s hl=%g era=%s): %s",
-                    _method, _hl, _era, " | ".join(changed),
+                    "Adaptive weights (basis=%s method=%s hl=%g era=%s): %s",
+                    _basis, _method, _hl, _era, " | ".join(changed),
                 )
             else:
                 logger.debug(
