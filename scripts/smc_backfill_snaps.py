@@ -264,7 +264,7 @@ if __name__ == "__main__":
     ap.add_argument("--since", default="2026-07-01", help="с какой даты брать сделки")
     ap.add_argument("--until", default="2099-01-01", help="до какой даты (не включая)")
     ap.add_argument("--train", action="store_true", help="обучить модель из пересчитанного")
-    ap.add_argument("--sides", default="LONG",
+    ap.add_argument("--sides", default="LONG,SHORT",
                     help="стороны через запятую; по умолчанию обе (на боевых окнах "
                          "шорт не хуже лонга: Δ +0.052 против +0.033 при блоке «неделя»)")
     ap.add_argument("--wide", action="store_true",
