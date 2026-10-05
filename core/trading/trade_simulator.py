@@ -656,9 +656,11 @@ class TradeSimulator:
             wt_snap = metadata.get("wt_snap") if metadata else None
             if wt_snap and isinstance(wt_snap, dict):
                 features["wt_snap"] = wt_snap
-            # DEV-139: smc_snap для MTFSMCSpecialist (4 TF × до 28 полей, схема _v=2).
+            # DEV-139: smc_snap для MTFSMCSpecialist (4 TF × 27 полей, схема _v=3).
             # 🔴 02.09: metadata наполняет ТОЛЬКО analyze_symbol → сделки от стратегий
-            # через trade_router приходят без snap. Покрытие 10% за июль-сентябрь.
+            # через trade_router приходили без snap. Замер сен–окт: 47 из 1678 (2.8%).
+            # ✅ 05.10: роутер кладёт снимок в extra_features (они влиты в features выше),
+            # поэтому здесь metadata лишь ДОПОЛНЯЕТ — пустой snap чужой не затирает.
             smc_snap = metadata.get("smc_snap") if metadata else None
             if smc_snap and isinstance(smc_snap, dict):
                 features["smc_snap"] = smc_snap

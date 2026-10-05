@@ -63,6 +63,17 @@ SNAP_SCHEMA_VERSION = 3
 _TFS = ["1d", "4h", "1h", "15m"]
 _N_FEATURES = len(_TFS) * (9 + 18)  # 9 булевых (совместимость) + 18 непрерывных
 
+# 🔴 ОКНА ИСТОРИИ — ЕДИНСТВЕННОЕ ОПРЕДЕЛЕНИЕ НА ПРОЕКТ.
+# Длина ряда — ЧАСТЬ определения признака, а не деталь вызова: детекторы от неё
+# зависят (адаптивный порог FVG — расширяющееся среднее по ряду; `confirmed_pivots`
+# ищет точки только среди баров [0 … len−window], поэтому при window=50 и 60 барах
+# старший слой структуры виден лишь в барах 0–9).
+# 05.10: пересчёт истории шёл на 200 барах, бой на 60–100 — одни и те же поля имели
+# разные распределения (ote_zone 15% против 5%). SNAP_SCHEMA_VERSION это не ловит:
+# схема формально та же. Поэтому окна теперь живут ЗДЕСЬ, и оба пути берут их отсюда.
+SNAP_BARS = {"1d": 60, "4h": 60, "1h": 100, "15m": 100}
+_MIN_BARS_FOR_SNAP = 30
+
 _MODEL_FILE = "smc_specialist_model.pkl"
 
 try:
@@ -328,6 +339,37 @@ def _build_smc_snap_from_df(
     except Exception as e:
         logger.debug("_build_smc_snap_from_df error: %s", e)
 
+    return snap
+
+
+async def build_smc_snap_live(data_collector, symbol: str, price: float,
+                              entry_tf: str = "15m",
+                              have: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Собирает снимок SMC по 4 ТФ, догружая только недостающие свечи.
+
+    🔴 05.10: вынесено из `trading_intelligence._build_mtf_context`, потому что
+    снимок получали ТОЛЬКО сделки через `analyze_symbol`. Замер за сен–окт:
+    1678 сделок, со снимком **47 (2.8%)** — у `ote_nested` 575/0, `impulse_fib_15m`
+    559/0, `wl_breach` 247/0, `radar` 95/0. Сфера 4 училась на выборке, которая
+    покрывает 3% боя, и для 97% сделок признаков SMC не существовало вовсе.
+
+    `have` — уже загруженные датафреймы `{tf: df}`, чтобы не ходить в сеть дважды.
+    Окна берутся из `SNAP_BARS` — единственного определения на проект.
+    Исключения глушатся: снимок справочный, из-за него сделка падать не должна.
+    """
+    snap: Dict[str, Any] = {}
+    have = have or {}
+    px = float(price or 0.0)
+    for tf in _TFS:
+        try:
+            df = have.get(tf)
+            if df is None:
+                _tf = entry_tf if tf == "15m" and entry_tf else tf
+                df = await data_collector.get_ohlcv(symbol, _tf, limit=SNAP_BARS[tf])
+            if df is not None and len(df) >= _MIN_BARS_FOR_SNAP:
+                snap[tf] = _build_smc_snap_from_df(df, px)
+        except Exception as e:                       # noqa: BLE001
+            logger.debug("build_smc_snap_live %s %s: %s", symbol, tf, e)
     return snap
 
 

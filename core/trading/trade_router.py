@@ -186,6 +186,26 @@ class TradeRouter:
                 is_registered=False,
             )
 
+        # ── SMC-снимок ───────────────────────────────────────────────────
+        # 🔴 05.10: до этой правки снимок получали ТОЛЬКО сделки из `analyze_symbol`.
+        # Замер сен–окт: 1678 сделок, со снимком 47 (2.8%) — `ote_nested` 575/0,
+        # `impulse_fib_15m` 559/0, `wl_breach` 247/0, `radar` 95/0. Сфера 4 училась
+        # на 3% боя, а для остальных признаков SMC не существовало вовсе.
+        # Считаем ЗДЕСЬ, после гейтов: у отсеянных сделок снимок не нужен, а здесь
+        # сделка уже идёт в БД. Цена ~1 с на пару, но это момент регистрации
+        # (десятки раз в сутки), а не горячий путь скана.
+        if "smc_snap" not in ctx.extra_features:
+            try:
+                from core.ml.mtf_smc_specialist import build_smc_snap_live
+                _entry_tf = str(getattr(policy, "entry_tf", "") or "15m")
+                _px = float(getattr(recommendation, "entry_price", 0) or 0)
+                _snap = await build_smc_snap_live(
+                    self.bot.data_collector, symbol, _px, entry_tf=_entry_tf)
+                if _snap:
+                    ctx.extra_features["smc_snap"] = _snap
+            except Exception as e:                   # noqa: BLE001
+                logger.debug("[TradeRouter] %s smc_snap: %s", symbol, e)
+
         # ── Persist ──────────────────────────────────────────────────────
         _reg_reason: list = []
         try:

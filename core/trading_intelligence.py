@@ -2193,23 +2193,17 @@ class TradingIntelligence:
                     if isinstance(v, dict)
                 }
 
-            # DEV-139: smc_snap — вычисляем для 4 TF (использует уже загруженные df)
+            # DEV-139: smc_snap для 4 ТФ. 05.10: сборка вынесена в
+            # `build_smc_snap_live`, чтобы окна истории были ОДНИ на проект
+            # (их длина — часть определения признака) и чтобы тот же снимок
+            # мог получить trade_router, через который идут 97% сделок.
+            # Уже загруженные df передаём — повторных сетевых вызовов нет.
             try:
-                from core.ml.mtf_smc_specialist import _build_smc_snap_from_df
-                _cur_price_smc = current_price or 0.0
-                _smc_snap: dict = {}
-                for _tf_name, _df_smc in (
-                    ("15m", df_15m), ("1h", df_1h), ("4h", df_4h)
-                ):
-                    if _df_smc is not None and len(_df_smc) >= 30:
-                        _smc_snap[_tf_name] = _build_smc_snap_from_df(_df_smc, _cur_price_smc)
-                # 1d — загружаем отдельно (не было в _build_mtf_context)
-                try:
-                    _df_1d = await self.data_collector.get_ohlcv(symbol, "1d", limit=60)
-                    if _df_1d is not None and len(_df_1d) >= 30:
-                        _smc_snap["1d"] = _build_smc_snap_from_df(_df_1d, _cur_price_smc)
-                except Exception:
-                    pass
+                from core.ml.mtf_smc_specialist import build_smc_snap_live
+                _smc_snap = await build_smc_snap_live(
+                    self.data_collector, symbol, current_price or 0.0,
+                    have={"15m": df_15m, "1h": df_1h, "4h": df_4h},
+                )
                 if _smc_snap:
                     ctx.smc_snap = _smc_snap
             except Exception as _e_smc:
