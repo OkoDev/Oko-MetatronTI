@@ -52,21 +52,25 @@ def _ddl(con: sqlite3.Connection) -> None:
     con.commit()
 
 
-def _trades(limit: int, since: str) -> list:
+def _trades(limit: int, since: str, until: str = "2099-01-01") -> list:
+    """Окно сделок. `until` нужен, чтобы брать МЕСЯЦ, а не только последние по id:
+    в БД 57 779 закрытых сделок с марта 2026, и без границы сверху выборка всегда
+    садится на свежий хвост — то есть на один режим рынка."""
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
             "SELECT id, symbol, created_at, status, R_multiple, tsl_activated, entry_price "
             "FROM simulated_trades "
-            "WHERE status IN ('TP','SL','TSL','EXPIRED') AND datetime(created_at) >= datetime(?) "
-            "ORDER BY id DESC LIMIT ?", (since, limit)).fetchall()
+            "WHERE status IN ('TP','SL','TSL','EXPIRED') "
+            "  AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
+            "ORDER BY id DESC LIMIT ?", (since, until, limit)).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
 
 
-def backfill(limit: int, since: str) -> int:
+def backfill(limit: int, since: str, until: str = "2099-01-01") -> int:
     import pandas as pd
     from core.infra import market_store as ms
     from core.ml.mtf_smc_specialist import _build_smc_snap_from_df
@@ -77,7 +81,7 @@ def backfill(limit: int, since: str) -> int:
     _ddl(out)
     done = {r[0] for r in out.execute("SELECT trade_id FROM smc_samples")}
 
-    rows = _trades(limit, since)
+    rows = _trades(limit, since, until)
     todo = [r for r in rows if r["id"] not in done]
     print(f"сделок в окне: {len(rows)} · уже пересчитано: {len(rows) - len(todo)} · к работе: {len(todo)}")
 
@@ -224,11 +228,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="сколько сделок пересчитать")
     ap.add_argument("--since", default="2026-07-01", help="с какой даты брать сделки")
+    ap.add_argument("--until", default="2099-01-01", help="до какой даты (не включая)")
     ap.add_argument("--train", action="store_true", help="обучить модель из пересчитанного")
     ap.add_argument("--sides", default="LONG",
                     help="стороны через запятую; по умолчанию LONG — на SHORT эджа нет")
     a = ap.parse_args()
     if a.limit:
-        backfill(a.limit, a.since)
+        backfill(a.limit, a.since, a.until)
     if a.train:
         sys.exit(train(tuple(s.strip() for s in a.sides.split(",") if s.strip())))
