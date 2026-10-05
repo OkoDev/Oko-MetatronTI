@@ -498,6 +498,19 @@ class ApiEngine:
         self._proxy_pool = proxy_pool
         if proxy_pool:
             logger.info("[ApiEngine] ProxyPool активен: %d прокси для market-data", proxy_pool.size)
+
+        # N11 (05.10): REST мимо VPN. Потоки (свечи, цена) уже ходят напрямую через
+        # bind на домашний IP, а REST остался единственным жильцом платного туннеля.
+        # Замер 05.10: прокси работают мимо VPN не хуже (1064–1070 мс против 1094–1103),
+        # прямой запрос мимо туннеля вообще вдвое быстрее (305 мс против 530).
+        # Пусто = прежнее поведение (через VPN), это и есть откат.
+        self._bind_done = False
+        try:
+            from core.infra.config_loader import config as _cfg_b
+            self._bind_prefix = str(_cfg_b.get("performance.rest_bind_ip_prefix", "") or "")
+        except Exception:                            # noqa: BLE001
+            self._bind_prefix = ""
+
         # Сфера 1 (N15, 29.09): 1h/4h/1d из хранилища закрытых баров + текущий бар из 15m (WS).
         # config market_store.bot_htf: off | shadow (REST как было + сверка в лог) | on.
         self._htf = None
@@ -515,6 +528,37 @@ class ApiEngine:
                 logger.info("[HTF-STORE] старшие ТФ из хранилища Сферы 1: режим %s", _mode)
         except Exception as _htf_e:  # noqa: BLE001 — без хранилища бот работает как раньше
             logger.warning("[HTF-STORE] не включён: %s", _htf_e)
+
+    async def _ensure_bound_session(self) -> None:
+        """Подменяет сессию ccxt на привязанную к локальному IP. Один раз, лениво.
+
+        Лениво — потому что ccxt создаёт сессию внутри работающего loop (`Exchange.open`),
+        и собрать её в __init__ нельзя. Если своя сессия уже стоит, ccxt её не трогает.
+        """
+        if self._bind_done or not self._bind_prefix:
+            return
+        self._bind_done = True                       # не пытаемся повторно даже при ошибке
+        try:
+            import aiohttp
+            import socket as _socket
+            from core.infra.market_ws import local_ip_by_prefix
+
+            ip = local_ip_by_prefix(self._bind_prefix)
+            if not ip:
+                logger.warning("[ApiEngine] REST bind: локальный IP с префиксом %r не найден — "
+                               "идём как раньше (через VPN)", self._bind_prefix)
+                return
+            if getattr(self._exchange, "session", None) is not None:
+                logger.info("[ApiEngine] REST bind: у ccxt уже своя сессия — не трогаем")
+                return
+            conn = aiohttp.TCPConnector(local_addr=(ip, 0), family=_socket.AF_INET,
+                                        ssl=getattr(self._exchange, "ssl_context", None),
+                                        enable_cleanup_closed=True)
+            self._exchange.session = aiohttp.ClientSession(connector=conn)
+            logger.info("[ApiEngine] REST идёт МИМО VPN: bind %s (N11)", ip)
+        except Exception as e:                       # noqa: BLE001 — транспорт важнее экономии
+            logger.warning("[ApiEngine] REST bind не включился: %s — работаем как раньше", e)
+
 
     async def fetch_ohlcv(
         self,
@@ -639,6 +683,7 @@ class ApiEngine:
     ) -> Optional[pd.DataFrame]:
         """3 попытки с exponential backoff. Различает постоянные и временные ошибки."""
         last_exc = None
+        await self._ensure_bound_session()   # N11: REST мимо VPN (один раз, лениво)
         for attempt in range(3):
             _last_proxy = None      # через какой прокси шла ЭТА попытка (None = direct)
             try:

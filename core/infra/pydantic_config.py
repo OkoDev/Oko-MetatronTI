@@ -141,6 +141,7 @@ class PerformanceSection(BaseModel):
     price_ws_batch: int = Field(default=100, ge=10, le=200)
     price_ws_fast_channel: str = "lastPrice"
     price_ws_fast_limit: int = Field(default=60, ge=0, le=200)
+    rest_bind_ip_prefix: str = ""   # N11: REST мимо VPN (пусто = через туннель)
     sim_time_exit_hours: int = Field(default=48, ge=0, le=10000)  # анти-орфан SIM
 
 

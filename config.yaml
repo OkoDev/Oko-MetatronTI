@@ -1326,6 +1326,10 @@ performance:
   # а где стоит позиция, цена нужна сейчас. Десятки КБ/с, идут мимо VPN.
   price_ws_fast_channel: "lastPrice"   # lastPrice | bookTicker | "" выключить
   price_ws_fast_limit: 60
+  # N11 (05.10): REST мимо VPN — тем же приёмом, что потоки. Замер: прокси работают
+  # мимо туннеля не хуже (1064-1070 мс против 1094-1103), прямой запрос вдвое быстрее
+  # (305 против 530 мс). Пусто = как раньше, через туннель. 🔴 Откат: очистить значение.
+  rest_bind_ip_prefix: "192.168.1."
   event_loop_debug: false
   slow_callback_threshold_sec: 1.0
   scan_blacklist:

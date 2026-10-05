@@ -75,6 +75,13 @@ class RealTimeData:
 
     async def load_markets(self, min_volume_usd: float = 0):
         """Загрузить только USDT futures-пары (попытка универсальной фильтрации)"""
+        # N11 (05.10): сессию ccxt надо привязать к домашнему IP ДО первого сетевого
+        # вызова — после load_markets она уже создана, и подменять её поздно (проверено:
+        # «у ccxt уже своя сессия — не трогаем»). Пустой префикс = ничего не делает.
+        try:
+            await self._engine._ensure_bound_session()
+        except Exception as _b_e:                    # noqa: BLE001 — bind не блокирует старт
+            logger.warning("[DataCollector] REST bind: %s", _b_e)
         try:
             # 🔴 29.09 shield: ccxt держит ОДНУ задачу markets_loading на всех вызывающих. SelfTest звал load_markets
             # под wait_for(timeout=10) — при медленном BingX таймаут отменял эту общую задачу, её же ждал главный
