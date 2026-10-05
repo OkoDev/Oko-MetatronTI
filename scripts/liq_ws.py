@@ -32,6 +32,7 @@ except Exception:
 sys.path.insert(0, ".")
 
 import aiohttp
+from core.infra.net_bind import aiohttp_connector as _bind_conn
 
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
@@ -124,7 +125,8 @@ async def _subscribe(ws):
 async def run():
     while True:
         try:
-            async with aiohttp.ClientSession() as s:
+            # 05.10 (N11): публичный поток — уводим мимо платного туннеля
+            async with aiohttp.ClientSession(connector=_bind_conn()) as s:
                 async with s.ws_connect(WS_URL, heartbeat=20) as ws:
                     await _subscribe(ws)
                     print(f"[LIQ-WS] connected: Bybit v5 linear · {len(CORE)} монет · "

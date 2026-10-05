@@ -5,6 +5,8 @@ pm2 start python --name btc-flows -- scripts/btc_flows_poller.py
 """
 import sys, time
 sys.path.insert(0, ".")
+# 🔴 05.10: bind мимо VPN здесь НЕЛЬЗЯ — коллекторы ходят на fapi.binance.com,
+# а Binance напрямую режет ТСПУ. Трафик этого поллера остаётся в туннеле.
 from oko_feed.collectors.btc_flows import collect
 from oko_feed.collectors.oi import collect as collect_oi
 

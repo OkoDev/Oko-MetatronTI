@@ -41,6 +41,10 @@ from pathlib import Path
 
 import aiohttp
 
+# 05.10: процесс запускается из корня проекта, но путь добавить надо ДО импорта core
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.infra.net_bind import aiohttp_connector as _bind_conn, install_urllib_bind
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(encoding="utf-8")
@@ -169,7 +173,9 @@ async def run(top_n: int) -> None:
 
     while True:
         try:
-            async with aiohttp.ClientSession() as sess:
+            # 05.10 (N11): лента мимо платного VPN — bind на домашний IP.
+            # Канал публичный, ключей нет, поэтому привязка безопасна.
+            async with aiohttp.ClientSession(connector=_bind_conn()) as sess:
                 async with sess.ws_connect(WS_URL, timeout=aiohttp.ClientTimeout(total=20),
                                            heartbeat=60) as ws:
                     for s in syms:
@@ -227,6 +233,7 @@ async def run(top_n: int) -> None:
 
 
 if __name__ == "__main__":
+    install_urllib_bind()       # и REST-вызовы этого процесса тоже мимо VPN
     n = int(sys.argv[1]) if len(sys.argv) > 1 else TOP_N_DEFAULT
     try:
         asyncio.run(run(n))

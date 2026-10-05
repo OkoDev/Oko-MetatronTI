@@ -20,6 +20,9 @@ except Exception:
     pass
 sys.path.insert(0, ".")
 from core.infra.http_fetch import fetch_json
+# 🔴 05.10: bind МИМО VPN здесь НЕЛЬЗЯ — поллер ходит на fapi.binance.com,
+# а Binance напрямую режет ТСПУ (память network_vpn_routing_happ, 29.09).
+# Проверено ценой: после включения пошли <urlopen error: handshake timed out>.
 from oko_feed.alerts import send_tg
 from oko_feed.store import conn
 from oko_feed.targets import build_targets, format_targets_block
