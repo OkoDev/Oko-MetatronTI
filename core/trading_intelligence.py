@@ -2661,25 +2661,13 @@ class TradingIntelligence:
         all_recommendations.sort(key=lambda x: x.timestamp, reverse=True)
         return all_recommendations[:limit]
     
-    def optimize_weights(self):
-        """Оптимизирует веса сигналов на основе исторической производительности"""
-        for signal_type, perf in self.signal_performance.items():
-            if perf["total_signals"] > 10:  # Минимум 10 сигналов для оптимизации
-                accuracy = perf["accuracy"]
-                
-                # Корректируем вес на основе точности
-                current_weight = self.signal_weights.get(signal_type, 0.1)
-                
-                if accuracy > 0.7:  # Высокая точность - увеличиваем вес
-                    new_weight = min(current_weight * 1.2, 0.5)
-                elif accuracy < 0.4:  # Низкая точность - уменьшаем вес
-                    new_weight = max(current_weight * 0.8, 0.05)
-                else:
-                    new_weight = current_weight
-                
-                self.signal_weights[signal_type] = new_weight
-                logger.info(f"Оптимизирован вес {signal_type.value}: {current_weight:.3f} -> {new_weight:.3f}")
-    
+    # 🔴 06.10 УДАЛЁН `optimize_weights()` — мёртвый код (бэклог N25, пункт «д»).
+    # Правил веса по `accuracy` (×1.2 / ×0.8), но НИКЕМ не вызывался: grep по всему
+    # проекту давал одно совпадение — само определение. Второй, живой механизм —
+    # `update_signal_weights()` выше (:246), он считает по avg_R через EMA.
+    # Опасность была в том, что два механизма правят ОДИН словарь `signal_weights`
+    # по разным основаниям, и включение забытого тихо поломало бы веса.
+
     def clear_cache(self):
         """Очищает кэш анализа"""
         self.analysis_cache.clear()
