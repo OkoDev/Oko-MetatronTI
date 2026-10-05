@@ -1505,6 +1505,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
     scan_sem_size = int(bot.config.perf("scan_semaphore_size", 20))
     sem = asyncio.Semaphore(scan_sem_size)
     cycle_start = _time.monotonic()
+    # 🔑 05.10 КУДА УХОДИТ ЦИКЛ (Егор: «делай»). Повод: запросы сокращены в 30 раз
+    # (REST 2711 → 27-90 за цикл после WS на 3m/5m/15m), а цикл упал всего с 400 до 306 с —
+    # значит узкое место уже НЕ сеть, и прежние выводы (02.09 «домашний канал», 15.06
+    # «ProcessPool не нужен») надо перемерить. Копим три слагаемых на пару.
+    _perf = {"fetch": [], "cpu": [], "rest": []}
+    _sem_in = {}   # sym → момент ВХОДА под семафор (без ожидания слота)
 
     # Лимиты сигналов за один цикл — защита от Telegram flood control
     _confluence_max_per_cycle = int(bot.config.get("analysis.confluence.max_per_cycle", 3))
@@ -1535,6 +1541,7 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         all_scan_signals = []      # SignalData от детекторов — для pre_collected_signals
 
         async with sem:
+            _sem_in[sym] = _time.monotonic()   # 05.10: время ПОД семафором, без ожидания слота
             # 17.07 ПРОГРЕСС-ПУЛЬС: скан 530 пар идёт 5-10 мин; beat только в конце цикла =
             # ложная «тишина» → вотчдог убивал ЖИВОЙ луп.
             # 🔴 01.09 ПУЛЬС БИЛСЯ ДО СЕМАФОРА И ПОТОМУ НЕ РАБОТАЛ. `asyncio.gather` создаёт
@@ -1588,10 +1595,12 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
 
                 # D-055v2 REVERTED (2026-05-24 17:46 MSK): sequential TF fetch замедлял
                 # scan_loop → cascade через 54 мин (raньше 8-9ч). Возврат на parallel.
+                _pf_t0 = _time.monotonic()
                 _fetched = await asyncio.gather(*[
                     bot.data_collector.get_ohlcv(sym, tf, limit=limit)
                     for tf, limit in _fetch_plan
                 ])
+                _perf["fetch"].append(_time.monotonic() - _pf_t0)
                 _fetched_map = {
                     (tf, limit): df for (tf, limit), df in zip(_fetch_plan, _fetched)
                 }
@@ -1634,11 +1643,14 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                 from core.infra.config_loader import config as _cfg_scan
                 _scan_atr_p = int(_cfg_scan.get("analysis.indicators.trend.atr_period", 43))
                 _scan_factor = float(_cfg_scan.get("analysis.indicators.trend.factor", 1.0))
+                _pf_c0 = _time.monotonic()
                 (df_entry, df_1h, df_3m, df_4h, df_1d, df_5m, _elliott_data, _pair_regime,
                  _rev_mode, _wt_snap_data) = await asyncio.to_thread(
                     _prep_pair_cpu, df_entry, df_1h, df_3m, df_4h, df_1d, _etf,
                     _scan_atr_p, _scan_factor, bool(bot.config.get("market_regime.use_v2", False)),
                     df_5m)
+                _perf["cpu"].append(_time.monotonic() - _pf_c0)
+                _pf_r0 = _time.monotonic()
                 if _elliott_data is not None:
                     if not hasattr(bot, "_elliott_snap"):
                         bot._elliott_snap = {}
@@ -2633,7 +2645,19 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         logger.warning("[EventLoop] LAG %.3fs перед scan_gather — event loop был заблокирован!", _el_lag)
     elif _el_lag > 0.01:
         logger.info("[EventLoop] lag %.3fs перед scan_gather", _el_lag)
-    await asyncio.gather(*[scan_one(sym) for sym in pairs], return_exceptions=True)
+    async def _scan_one_timed(sym):
+        """05.10: замер общего времени пары, чтобы вывести остаток
+        (детекторы/SMC/публикация) = total − fetch − cpu. Обёртка снаружи, тело scan_one не тронуто."""
+        _t0 = _time.monotonic()
+        try:
+            return await scan_one(sym)
+        finally:
+            # 🔴 ВАЖНО: берём время от ВХОДА ПОД СЕМАФОР, а не от старта корутины. Первый замер
+            # дал «479 с на пару» именно потому, что gather создаёт все 565 корутин разом и
+            # каждая ЖДЁТ слот — это ожидание очереди, а не работа.
+            _perf["rest"].append(_time.monotonic() - _sem_in.get(sym, _t0))
+
+    await asyncio.gather(*[_scan_one_timed(sym) for sym in pairs], return_exceptions=True)
     elapsed = _time.monotonic() - cycle_start
     logger.info("Цикл сканирования завершён: %.1f сек / %d пар", elapsed, len(pairs))
     # Задвоение расчёта тренда за цикл (02.09): skip — повтор с теми же параметрами
@@ -2655,6 +2679,16 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
         _ohlcv_stats = get_ohlcv_cache_stats()
         if _ohlcv_stats:
             _total_rest = sum(v["rest"] for v in _ohlcv_stats.values())
+            if _perf["rest"]:
+                import statistics as _pst
+                _mf = _pst.median(_perf["fetch"]) if _perf["fetch"] else 0.0
+                _mc = _pst.median(_perf["cpu"]) if _perf["cpu"] else 0.0
+                _mt = _pst.median(_perf["rest"])
+                _other = max(0.0, _mt - _mf - _mc)
+                logger.info("[SCAN-PERF] на пару: свечи %.0f мс · подготовка(CPU) %.0f мс · "
+                            "детекторы и прочее %.0f мс · всего %.2f с | цикл %.0f с, пар %d",
+                            _mf*1000, _mc*1000, _other*1000, _mt,
+                            _time.monotonic() - cycle_start, len(_perf["rest"]))
             logger.info("[OHLCV-CACHE] REST=%d/цикл | %s", _total_rest, {
                 tf: f"{v['hit']}h/{v['rest']}r ({v['hit_rate']:.0%})" for tf, v in sorted(_ohlcv_stats.items())
             })
