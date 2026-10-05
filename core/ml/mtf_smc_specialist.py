@@ -362,8 +362,45 @@ class MTFSMCSpecialist:
         # ARCH-137.6: индексы признаков, отобранных при обучении.
         # predict обязан подавать ровно их — иначе порядок полей поедет.
         self._feat_idx: Optional[List[int]] = None
+        self._model_source = "обучение"      # откуда модель: обучение или сохранённый файл
+        # 🔴 05.10: стороны, на которых модели РАЗРЕШЕНО говорить. None = обе
+        # (как было у модели, обученной из features_json). Замер на пересчитанной
+        # истории: при блоке «неделя» LONG даёт AUC 0.551 против контроля 0.468,
+        # SHORT — 0.504 против 0.501, то есть РОВНО контроль. А verdict_gate
+        # (config: enabled=true, smc_block_confidence=0.65) имеет право БЛОКИРОВАТЬ
+        # сигнал. Пустить сюда шорт — отдать блокировку монетке.
+        self._sides: Optional[List[str]] = None
 
     # ------------------------------------------------------------------
+    def _load_saved(self, db_path: str) -> bool:
+        """Поднимает модель из файла рядом с БД. False — если файла нет или он чужой.
+
+        Нужна, когда свежих сделок текущей схемы ещё мало: модель может быть обучена
+        на ПЕРЕСЧИТАННОЙ истории (`scripts/smc_backfill_snaps.py`) — признаки те же,
+        считаны тем же кодом, причинность соблюдена (бары только до входа).
+        """
+        try:
+            import joblib
+            path = os.path.join(os.path.dirname(db_path) or ".", _MODEL_FILE)
+            if not os.path.exists(path):
+                return False
+            blob = joblib.load(path)
+            model, feat_idx = blob.get("model"), blob.get("feat_idx")
+            if model is None or not feat_idx:
+                return False
+            self._model = model
+            self._feat_idx = list(feat_idx)
+            self._trained = True
+            self._n_samples = int(blob.get("n_samples") or 0)
+            self._cv_score = blob.get("cv_auc")
+            self._model_source = str(blob.get("source") or "файл")
+            sides = blob.get("sides")
+            self._sides = [str(s).upper() for s in sides] if sides else None
+            return True
+        except Exception as e:                       # noqa: BLE001 — молчим так же, как раньше
+            logger.debug("MTFSMCSpecialist: сохранённая модель не поднялась: %s", e)
+            return False
+
     def fit(self, db_path: str = "subscriptions.db") -> bool:
         if not _SKLEARN_OK:
             return False
@@ -371,8 +408,17 @@ class MTFSMCSpecialist:
             rows = self._load_closed_trades(db_path)
             X, y = [], []
             skipped_ver = 0
+            skipped_side = 0
             for r in rows:
                 try:
+                    # 🔴 05.10: только LONG. Замер на пересчитанной истории (блок —
+                    # неделя, контроль перестановкой): LONG 0.551 против 0.468,
+                    # SHORT 0.504 против 0.501. Без этого фильтра своё обучение
+                    # вернёт шорту голос в блокирующем verdict_gate, и тихо —
+                    # просто потому, что сделок наконец накопилось 50.
+                    if str(r.get("direction") or "").upper() != "LONG":
+                        skipped_side += 1
+                        continue
                     fj = json.loads(r.get("features_json") or "{}")
                     smc_snap = fj.get("smc_snap")
                     if not smc_snap:
@@ -398,6 +444,19 @@ class MTFSMCSpecialist:
                     continue
 
             if len(X) < MIN_TRADES:
+                # 🔴 05.10: раньше здесь сфера просто замолкала на три недели (темп
+                # 1.4 сделки/сут при пороге 50), ХОТЯ рядом лежала обученная модель —
+                # её сохраняли и ни разу не читали. Теперь поднимаем сохранённую:
+                # признаки в ней те же (схема v3), источник записан в файле.
+                if self._load_saved(db_path):
+                    logger.info(
+                        "MTFSMCSpecialist: свежих сделок схемы v%d мало (%d/%d), поднята "
+                        "СОХРАНЁННАЯ модель (%s, n=%d, CV AUC=%s). Переобучится сама, "
+                        "когда история накопится.",
+                        SNAP_SCHEMA_VERSION, len(X), MIN_TRADES, self._model_source,
+                        self._n_samples,
+                        f"{self._cv_score:.3f}" if self._cv_score else "n/a")
+                    return True
                 logger.info(
                     "MTFSMCSpecialist: недостаточно данных схемы v%d (%d/%d) — пропуск"
                     "%s. Модель молчит, пока не накопится свежая история — это НЕ сбой,"
@@ -452,13 +511,21 @@ class MTFSMCSpecialist:
             self._model = model
             self._trained = True
             self._n_samples = len(Xs)
+            self._model_source = "обучение"
+            self._sides = ["LONG"]            # ровно то, на чём обучились выше
 
             model_path = os.path.join(os.path.dirname(db_path) or ".", _MODEL_FILE)
             try:
                 import joblib
                 # 🔴 Индексы сохраняются ВМЕСТЕ с моделью: predict обязан подавать
                 # ровно те же признаки, иначе порядок поедет и вердикт станет мусором.
-                joblib.dump({"model": model, "feat_idx": feat_idx}, model_path)
+                # 🔴 05.10: вместе с ними — sides. Раньше писались только model и
+                # feat_idx, поэтому собственное обучение затирало файл и стирало
+                # ограничение по стороне: модель молча получала право говорить
+                # по шорту, где её AUC равен контролю.
+                joblib.dump({"model": model, "feat_idx": feat_idx,
+                             "cv_auc": self._cv_score, "n_samples": len(Xs),
+                             "source": "обучение", "sides": list(self._sides)}, model_path)
             except Exception:
                 pass
 
@@ -475,11 +542,21 @@ class MTFSMCSpecialist:
             return False
 
     # ------------------------------------------------------------------
-    def predict(self, smc_snap: Dict[str, Any]) -> Optional[SMCVerdict]:
+    def predict(self, smc_snap: Dict[str, Any],
+                direction: Optional[str] = None) -> Optional[SMCVerdict]:
+        """Вердикт по снимку. `direction` — сторона сделки ('LONG'/'SHORT').
+
+        Если у модели заявлены стороны (`_sides`), а сторона другая или неизвестна —
+        молчим. Молчание здесь безопасно: `verdict_gate` без вердикта не блокирует.
+        """
         if not self._trained or self._model is None:
             return None
         if not smc_snap:
             return None
+        if self._sides is not None:
+            d = str(direction or "").upper()
+            if d not in self._sides:
+                return None
         try:
             fv = _build_smc_features(smc_snap)
             if fv is None:
@@ -508,7 +585,7 @@ class MTFSMCSpecialist:
             cur = conn.cursor()
             # DEV-190: добавлены tsl_activated и R_multiple для is_win helper
             cur.execute("""
-                SELECT status, features_json, tsl_activated, R_multiple
+                SELECT status, features_json, tsl_activated, R_multiple, direction
                 FROM simulated_trades
                 WHERE status IN ('TP', 'SL', 'TSL')
                   AND features_json IS NOT NULL
@@ -524,6 +601,8 @@ class MTFSMCSpecialist:
     def info(self) -> Dict:
         return {
             "trained": self._trained,
+            "source": self._model_source,
+            "sides": self._sides or "обе",
             "n_samples": self._n_samples,
             "cv_auc": self._cv_score,
             "n_features": _N_FEATURES,

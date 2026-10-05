@@ -708,10 +708,22 @@ def _edge_smc_to_ti(bot) -> CubeCheckResult:
     if not ti:
         return CubeCheckResult("L14_edge", "E_SMC_TI", "SMCSpecialist→TradingIntelligence", MISSING)
     smc = getattr(ti, "_smc_specialist", None)
-    ok = smc is not None and hasattr(smc, "predict")
+    if smc is None or not hasattr(smc, "predict"):
+        return CubeCheckResult("L14_edge", "E_SMC_TI", "SMCSpecialist→TradingIntelligence",
+                               MISSING, "TI._smc_specialist отсутствует")
+    # 🔴 05.10: раньше здесь стояло hasattr(smc,'predict') — прибор показывал ACTIVE
+    # даже когда модель НЕ обучена и вердикт никогда не рождался (сфера месяц
+    # молчала при зелёной проверке). Теперь смотрим на состояние модели.
+    try:
+        inf = smc.info() if hasattr(smc, "info") else {}
+    except Exception:                                # noqa: BLE001
+        inf = {}
+    trained = bool(inf.get("trained"))
+    detail = (f"обучена={trained} · источник={inf.get('source')} · "
+              f"стороны={inf.get('sides')} · n={inf.get('n_samples')} · "
+              f"AUC={inf.get('cv_auc') and round(float(inf['cv_auc']), 3)}")
     return CubeCheckResult("L14_edge", "E_SMC_TI", "SMCSpecialist→TradingIntelligence",
-                           ACTIVE if ok else SHADOW,
-                           f"TI._smc_specialist.predict={'ok' if ok else 'missing'}")
+                           ACTIVE if trained else SHADOW, detail)
 
 
 def _edge_mr_to_ti(bot) -> CubeCheckResult:

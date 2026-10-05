@@ -1114,7 +1114,15 @@ class TradingIntelligence:
             if mtf_context is not None and getattr(mtf_context, "smc_snap", None):
                 recommendation.metadata["smc_snap"] = mtf_context.smc_snap
                 try:
-                    _smc_verdict = self._smc_specialist.predict(mtf_context.smc_snap) if self._smc_specialist else None
+                    # 🔴 05.10: сторону передаём обязательно. Модель на пересчитанной
+                    # истории имеет эдж только на LONG (AUC 0.551 против контроля
+                    # 0.468 при блоке «неделя»); на SHORT — 0.504 против 0.501.
+                    # Без стороны специалист замолчит — и это верное поведение,
+                    # потому что его вердикт кормит блокирующий verdict_gate.
+                    _smc_dir = str(getattr(recommendation.direction, "value", None)
+                                   or getattr(recommendation, "direction", "") or "")
+                    _smc_verdict = (self._smc_specialist.predict(mtf_context.smc_snap, _smc_dir)
+                                    if self._smc_specialist else None)
                     if _smc_verdict is not None:
                         recommendation.metadata["smc_verdict"] = {
                             "label": _smc_verdict.label,
