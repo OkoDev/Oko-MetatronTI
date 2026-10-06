@@ -509,8 +509,17 @@ async def check_mtf_bias_signal(
     """
     MTF Bias — автономный интерпретатор TF-alignment.
     Собирает MTF-снапшот через collect_mtf_data и передаёт в MTFInterpreter.
+
+    🔴 06.10.2026 (Егор «выключить тени»): флаг полного отключения генерации.
+    Причина — замер за 14 дней: 23 сделки, сумма −29.4%, на биржу НЕ уходит ни одна
+    (в `live_orders` источника нет). То есть сигнал не торгуется, но кормит
+    статистику и адаптивные веса. Включить обратно: `mtf_bias_enabled: true`.
     """
     signals = []
+    if cfg is not None and not bool(
+        cfg.get("signal_quality.mtf_bias_enabled", True)
+    ):
+        return signals
     try:
         from core.mtf.mtf_checker import collect_mtf_data
         from core.mtf.mtf_interpreter import interpret

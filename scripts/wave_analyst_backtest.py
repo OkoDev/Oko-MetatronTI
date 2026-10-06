@@ -122,6 +122,48 @@ def _swings(df, sw_len: int = 20):
     return sw_hi, sw_lo
 
 
+def target_zone(levels, price: float, side: str, tol_pct: float = 1.5):
+    """ЦЕЛЬ КАК ЗОНА СХОЖДЕНИЯ, а не одиночный уровень (Егор 06.10: «проверить!»).
+
+    На ВХОДЕ принцип уже подтверждён: `zone.score` монотонен по WR и медиане
+    (41.5% → 56.1%). На ВЫХОДЕ мерились только одиночные уровни — и все четыре
+    варианта провалились. Здесь считаем ту же величину впереди цены: кластеризуем
+    уровни разбора (фибо-цели волны вес 1.5–2.0 · уровни дневной ноги 1.5 ·
+    пивоты D/W/M 1.0) и берём схождение с максимальным весом.
+
+    Возвращает (цель, вес_схождения, число_уровней) или (None, 0.0, 0).
+    Цель — БЛИЖНИЙ край кластера: до дальнего края цена может не дойти, а зона
+    отрабатывает с первого касания.
+    """
+    if not levels:
+        return None, 0.0, 0
+    ahead = []
+    for item in levels:
+        try:
+            nm, px, w = item[0], float(item[1]), float(item[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if px != px or px <= 0:
+            continue
+        if (px > price) if side == "long" else (px < price):
+            ahead.append((px, w))
+    if not ahead:
+        return None, 0.0, 0
+    ahead.sort(key=lambda p: p[0])
+    best = (None, 0.0, 0)
+    for px0, _ in ahead:
+        tol = px0 * tol_pct / 100.0
+        grp = [(p, w) for p, w in ahead if abs(p - px0) <= tol]
+        wsum = sum(w for _, w in grp)
+        # ближний край кластера по направлению сделки
+        edge = min(p for p, _ in grp) if side == "long" else max(p for p, _ in grp)
+        # при равном весе предпочитаем БЛИЖАЙШУЮ к цене зону
+        if wsum > best[1] or (wsum == best[1] and best[0] is not None
+                              and abs(edge - price) < abs(best[0] - price)):
+            best = (edge, wsum, len(grp))
+    return best
+
+
 def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
     dh = load(sym, "4h")
     d1 = load(sym, "1h")
@@ -221,6 +263,19 @@ def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
                 geo[f"t_{tname}"] = np.nan
                 continue
             geo[f"t_{tname}"] = resolve(H, L, C, t, side, price, sl, gtp) - COST
+
+        # ── ЦЕЛЬ КАК ЗОНА СХОЖДЕНИЯ (три допуска кластеризации) ─────────
+        tz = {}
+        for tol in (1.0, 1.5, 3.0):
+            gtp, zw, zn = target_zone(r.get("levels"), price, side, tol)
+            key = f"tz{str(tol).replace('.', '')}"
+            tz[f"{key}_w"] = zw
+            tz[f"{key}_n"] = zn
+            if gtp is None or abs(gtp - price) / price * 100 <= 0.1:
+                geo[f"t_{key}"] = np.nan
+            else:
+                geo[f"t_{key}"] = resolve(H, L, C, t, side, price, sl, gtp) - COST
+                tz[f"{key}_dist"] = round(abs(gtp - price) / price * 100, 2)
         lbl = (prog.get("labels") or [])
         out.append(dict(
             sym=sym, t=str(now)[:16], year=int(now.year), side=side, pnl=pnl,
@@ -234,6 +289,7 @@ def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
             risk=round(risk, 2),
             rr=round(abs(tp - price) / max(1e-9, abs(price - sl)), 2),
             **{f"pnl_{k}": v for k, v in geo.items()},
+            **tz,
         ))
     return out
 
@@ -390,9 +446,40 @@ def main() -> int:
               f"{'сумма':>9}{'безтоп10%':>10}{'монет+':>7}")
         for col, nm in (("pnl_t_swing", "ближайший swing"),
                         ("pnl_t_rr1", "1R"), ("pnl_t_rr2", "2R"),
-                        ("pnl_t_far", "дальняя цель сцен.")):
+                        ("pnl_t_far", "дальняя цель сцен."),
+                        ("pnl_t_tz10", "ЗОНА схожд. ±1.0%"),
+                        ("pnl_t_tz15", "ЗОНА схожд. ±1.5%"),
+                        ("pnl_t_tz30", "ЗОНА схожд. ±3.0%")):
             if col in frame.columns:
                 _pair(frame, col, nm)
+
+    # ── МОНОТОННОСТЬ ЦЕЛИ ПО ВЕСУ СХОЖДЕНИЯ ─────────────────────────────
+    # На ВХОДЕ `zone.score` монотонен (WR 41.5% → 56.1%). Проверяем тот же
+    # принцип на ВЫХОДЕ: платит ли ЦЕЛЬ тем больше, чем плотнее схождение.
+    print("\n" + "=" * 100)
+    print("МОНОТОННОСТЬ ЦЕЛИ: растёт ли результат с ВЕСОМ схождения в зоне цели")
+    print("=" * 100)
+    for col, wcol, nm in (("pnl_t_tz15", "tz15_w", "допуск ±1.5%"),
+                          ("pnl_t_tz30", "tz30_w", "допуск ±3.0%")):
+        if col not in sel.columns or wcol not in sel.columns:
+            continue
+        print(f"\n  {nm} · база (фибо-цель) для сравнения в каждой корзине")
+        print(f"  {'вес схождения':<22}{'n':>6}{'WR':>8}{'PF':>7}{'средн':>8}"
+              f"{'медиана':>8}{'сумма':>9}{'безтоп10%':>10}{'монет+':>7}")
+        v = sel[sel[col].notna()].copy()
+        for lo, hi, lbl in ((0, 2.0, "< 2.0 (слабое)"), (2.0, 3.5, "2.0–3.5"),
+                            (3.5, 5.0, "3.5–5.0"), (5.0, 99, "≥ 5.0 (плотное)")):
+            g = v[(v[wcol] >= lo) & (v[wcol] < hi)]
+            if len(g) < 25:
+                print(f"  {lbl:<22} — мало ({len(g)})"); continue
+            g2 = g.copy(); g2["pnl"] = g2[col]
+            s, b = stat(g2), stat(g)
+            print(f"  {lbl:<22}{s['n']:>6}{s['wr']:>7.1f}%{s['pf']:>7.2f}"
+                  f"{s['mean']:>+8.3f}{s['med']:>+8.3f}{s['total']:>+9.0f}"
+                  f"{s['frail']:>+10.0f}{s['cov']:>7.0f}%")
+            print(f"  {'  ↳ фибо на этих же':<22}{b['n']:>6}{b['wr']:>7.1f}%{b['pf']:>7.2f}"
+                  f"{b['mean']:>+8.3f}{b['med']:>+8.3f}{b['total']:>+9.0f}"
+                  f"{b['frail']:>+10.0f}{b['cov']:>7.0f}%")
 
     print("\nПО ГОДАМ (score ≥ 4 И ясно против базы):")
     for y, g in R.groupby("year"):

@@ -1257,7 +1257,13 @@ signal_quality:
   min_strength_wl_breach: 45
   pivot_reversal_max_strength: 79
   pivot_reversal_enabled: true
-  watch_list_breach_enabled: true
+  # 🔴 06.10.2026 ВЫКЛЮЧЕНЫ ОБЕ ТЕНИ (Егор «выключить тени»). Замер за 14 дней:
+  #   watch_list_breach — 87 сделок, сумма −171.2% (75% всего убытка симуляции),
+  #                       на биржу НЕ ходит с 24.07 → портит статистику не торгуя;
+  #   mtf_bias          — 23 сделки, −29.4%, в `live_orders` отсутствует.
+  # Обе кормили адаптивные веса и любую сводку по боту, не принося денег.
+  watch_list_breach_enabled: false
+  mtf_bias_enabled: false
   ote_shadow_mode: false
   ote_zone_tfs:
   - 1h
