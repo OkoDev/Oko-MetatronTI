@@ -129,14 +129,29 @@ class PositionManager:
             )
             return cur.lastrowid
 
-    def close(self, live_order_id: int, slip_pct: float = 0.0) -> None:
-        """Пометить позицию как закрытую."""
+    def close(self, live_order_id: int, slip_pct: Optional[float] = None) -> None:
+        """Пометить позицию как закрытую.
+
+        🔴 06.10 `slip_pct` по умолчанию **None — поле НЕ ТРОГАЕМ**. Было `0.0`, и этот
+        дефолт возвращал лживый ноль через UPDATE, сводя на нет фикс 04.10 на INSERT:
+        замер за 14 дней дал 87 ордеров → **70 нулей**, 4 NULL и лишь 13 измеренных
+        значений (−0.26…−6.77). Ноль в этом поле читается как «идеальный филл», то есть
+        прибор сам порождал данные, которых никто не мерил
+        ([[law_ties_flat_rows_fake_information]]: нули = фальшивая информация).
+        Передавать число сюда можно только когда слип ИЗМЕРЕН по фактическому филлу.
+        """
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
-            conn.execute(
-                "UPDATE live_orders SET status=?, slip_pct=?, updated_at=? WHERE id=?",
-                (STATUS_CLOSED, slip_pct, now, live_order_id),
-            )
+            if slip_pct is None:
+                conn.execute(
+                    "UPDATE live_orders SET status=?, updated_at=? WHERE id=?",
+                    (STATUS_CLOSED, now, live_order_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE live_orders SET status=?, slip_pct=?, updated_at=? WHERE id=?",
+                    (STATUS_CLOSED, slip_pct, now, live_order_id),
+                )
 
     def close_by_sim_trade(self, sim_trade_id: int) -> int:
         """Закрыть запись(и) live_orders по id сделки. Возвращает число закрытых.
