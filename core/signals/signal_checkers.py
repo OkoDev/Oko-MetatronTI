@@ -53,6 +53,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# 06.10: выключенный детектор обязан сказать об этом ОДИН раз и ГРОМКО.
+# Повод конкретный: `watch_list_breach` был «отключён 12.06» комментарием в коде,
+# а флаг в конфиге стоял true — молчаливое выключение никто не заметил 4 месяца.
+_MTF_BIAS_OFF_SAID = False
+
 
 def _wt_params() -> tuple:
     """Возвращает (n1, n2, ob_threshold, os_threshold) из конфига или дефолты."""
@@ -519,6 +524,11 @@ async def check_mtf_bias_signal(
     if cfg is not None and not bool(
         cfg.get("signal_quality.mtf_bias_enabled", True)
     ):
+        global _MTF_BIAS_OFF_SAID
+        if not _MTF_BIAS_OFF_SAID:
+            _MTF_BIAS_OFF_SAID = True
+            logger.warning("[mtf_bias] 🔇 ДЕТЕКТОР ВЫКЛЮЧЕН "
+                           "(signal_quality.mtf_bias_enabled=false, 06.10 «выключить тени»)")
         return signals
     try:
         from core.mtf.mtf_checker import collect_mtf_data

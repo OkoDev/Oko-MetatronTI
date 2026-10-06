@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # DEV-41: rate-limit для WL breach — не более 3 входов за 30 минут
 _wl_breach_timestamps: deque = deque()
 
+# 06.10: выключенный источник обязан сказать об этом ОДИН раз и ГРОМКО
+# (закон «self-test у каждой стратегии, и громкий»). Этот флаг стоял true
+# вопреки комментарию «ОТКЛЮЧЁН 12.06» — молчание скрыло расхождение на 4 месяца.
+_WL_BREACH_OFF_SAID = False
+
 
 def _publish_and_confirm(
     bot, sym: str, event_name: str, *, priority: int, data=None,
@@ -215,6 +220,12 @@ async def _handle_wl_breach_entry(bot, symbol: str, wl_entry, current_price: flo
     # SIGNAL-CLEANUP (12.06.2026): watch_list_breach ОТКЛЮЧЁН. Балласт −169R (SIGNAL-AUDIT),
     # длинные сделки (avg 701 мин). config-флаг полного отключения генерации.
     if not bool(bot.config.get("signal_quality.watch_list_breach_enabled", True)):
+        global _WL_BREACH_OFF_SAID
+        if not _WL_BREACH_OFF_SAID:
+            _WL_BREACH_OFF_SAID = True
+            logger.warning("[WL-BREACH] 🔇 ИСТОЧНИК ВЫКЛЮЧЕН "
+                           "(signal_quality.watch_list_breach_enabled=false, "
+                           "06.10 «выключить тени»: −171.2%% за 14 дней, на биржу не ходит с 24.07)")
         return
 
     direction = wl_entry.direction  # "LONG" | "SHORT"
