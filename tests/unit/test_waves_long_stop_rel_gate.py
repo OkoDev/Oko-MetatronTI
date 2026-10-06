@@ -201,3 +201,79 @@ class TestShortCell:
         cfg = ConfigLoader("config.yaml")
         assert cfg.get("trading.waves_long.short_enabled", None) is True
         assert float(cfg.get("trading.waves_long.short_cell_risk_mult", 0)) == 0.5
+
+
+# ── 06.10 РИСК-КАРКАС: слоты + дневной лимит ──────────────────────────────────
+# Ограничителей не было вообще: за 60 дней максимум одновременно открытых по всем
+# источникам — 130 (при риске 2%/сделку это 260% счёта в рынке), худшие дни
+# −212.2 / −200.9 / −126.8 при медиане −15.5. Каркас не ищет доход, он даёт счёту
+# дожить до статистики редких клеток (0.8–4.9 сделки/мес).
+class TestRiskFrame:
+    @staticmethod
+    def _db(tmp_path, open_n=0, day_sum=0.0):
+        """Временная БД с нужным числом открытых и суммой за сутки."""
+        import sqlite3
+        p = tmp_path / "t.db"
+        conn = sqlite3.connect(p)
+        conn.execute("CREATE TABLE simulated_trades (signal_type TEXT, status TEXT, "
+                     "profit_pct REAL, closed_at TEXT)")
+        for _ in range(open_n):
+            conn.execute("INSERT INTO simulated_trades VALUES ('waves_long','OPEN',NULL,NULL)")
+        if day_sum:
+            import datetime as dt
+            now = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+            conn.execute("INSERT INTO simulated_trades VALUES ('waves_long','SL',?,?)",
+                         (day_sum, now))
+        conn.commit(); conn.close()
+        return str(p)
+
+    class _Cfg:
+        def __init__(self, **kw): self._d = kw
+        def get(self, k, d=None): return self._d.get(k, d)
+
+    def test_no_limits_configured_means_allow(self, tmp_path):
+        """Пока лимиты не заданы — каркас не вмешивается (обратная совместимость)."""
+        from bot.loops.waves_long_loop import _risk_frame
+        bot = type("B", (), {"db_path": self._db(tmp_path, open_n=99)})()
+        ok, why = _risk_frame(bot, self._Cfg())
+        assert ok is True and why == ""
+
+    def test_slots_block_when_full(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_frame
+        bot = type("B", (), {"db_path": self._db(tmp_path, open_n=6)})()
+        ok, why = _risk_frame(bot, self._Cfg(**{"trading.waves_long.max_open": 6}))
+        assert ok is False and "рынок полон" in why
+
+    def test_slots_allow_below_cap(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_frame
+        bot = type("B", (), {"db_path": self._db(tmp_path, open_n=5)})()
+        ok, _ = _risk_frame(bot, self._Cfg(**{"trading.waves_long.max_open": 6}))
+        assert ok is True
+
+    def test_daily_loss_blocks(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_frame
+        bot = type("B", (), {"db_path": self._db(tmp_path, day_sum=-30.0)})()
+        ok, why = _risk_frame(bot, self._Cfg(**{"trading.waves_long.max_daily_loss_pct": 25.0}))
+        assert ok is False and "дневной лимит" in why
+
+    def test_daily_loss_allows_above_limit(self, tmp_path):
+        """−20% при лимите 25% — торгуем дальше."""
+        from bot.loops.waves_long_loop import _risk_frame
+        bot = type("B", (), {"db_path": self._db(tmp_path, day_sum=-20.0)})()
+        ok, _ = _risk_frame(bot, self._Cfg(**{"trading.waves_long.max_daily_loss_pct": 25.0}))
+        assert ok is True
+
+    def test_broken_db_does_not_stop_trading(self, tmp_path):
+        """Сбой каркаса не должен ронять торговлю — пропускаем, но громко."""
+        from bot.loops.waves_long_loop import _risk_frame
+        bot = type("B", (), {"db_path": str(tmp_path / "нет-такой.db")})()
+        ok, _ = _risk_frame(bot, self._Cfg(**{"trading.waves_long.max_open": 1}))
+        assert ok is True
+
+    def test_config_has_frame_wired(self):
+        from core.infra.config_loader import ConfigLoader
+        cfg = ConfigLoader("config.yaml")
+        assert int(cfg.get("trading.waves_long.max_open", 0)) == 6
+        assert float(cfg.get("trading.waves_long.max_daily_loss_pct", 0)) == 25.0
+        pol = cfg.get("signal_router.source_policies.waves_long", {}) or {}
+        assert float(pol.get("risk_pct", 0)) == 0.5, "риск источника должен быть 0.5%"

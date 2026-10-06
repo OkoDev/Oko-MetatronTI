@@ -235,14 +235,10 @@ def format_pivot_signal_message(symbol: str, analysis: Dict, signal_info: Dict) 
     
     # Информация о силе сигнала
     strength = signal_info.get('mtf_strength', 0)
-    if strength >= 70:
-        strength_text = "🔥🔥🔥 Очень высокая"
-    elif strength >= 50:
-        strength_text = "🔥🔥 Высокая"
-    elif strength >= 30:
-        strength_text = "🔥 Средняя"
-    else:
-        strength_text = "⚠️ Низкая"
+    # 🔴 06.10.2026 градация снята — шкала не ранжирует результат (замер 57 438 сделок:
+    # лучшая корзина 70-80 даёт −0.23%, «≥98» −0.457%). Остаётся порог, а не ярлык.
+    strength_text = (f"• {int(strength)}/100" if strength >= 50
+                     else f"· {int(strength)}/100 (ниже порога)")
     
     parts.append(f"Сила MTF: {strength}/100 ({strength_text})")
     

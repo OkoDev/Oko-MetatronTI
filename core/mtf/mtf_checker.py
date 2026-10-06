@@ -137,19 +137,15 @@ def mtf_alert_message(symbol: str, snapshot: dict, signal_type: str) -> str:
     strength = analyze_mtf_strength(snapshot, signal_type)
     recommendations = get_entry_recommendations(snapshot, signal_type)
     
-    # Эмодзи для силы сигнала
-    if strength >= 80:
-        strength_emoji = "🔥🔥🔥"
-        strength_text = "Очень высокая"
-    elif strength >= 60:
-        strength_emoji = "🔥🔥"
-        strength_text = "Высокая"
-    elif strength >= 40:
-        strength_emoji = "🔥"
-        strength_text = "Средняя"
+    # 🔴 06.10.2026 градация снята: шкала НЕ ранжирует (57 438 сделок — корзина 70-80
+    # даёт −0.23%, а «≥98 Очень высокая» −0.457%, то есть ярлык стоял на худшем).
+    # Остаётся порог: прошёл/не прошёл → [[live_strength_scale_does_not_rank]].
+    if strength >= 50:
+        strength_emoji = "•"
+        strength_text = f"{int(strength)}/100"
     else:
-        strength_emoji = "⚠️"
-        strength_text = "Низкая"
+        strength_emoji = "·"
+        strength_text = f"{int(strength)}/100 (ниже порога)"
     
     # Эмодзи для уровня риска
     risk_level = recommendations["risk_level"]

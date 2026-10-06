@@ -137,6 +137,56 @@ def _in_corridor(rel, lo, hi) -> bool:
     return True
 
 
+def _risk_frame(bot, cfg) -> tuple[bool, str]:
+    """РИСК-КАРКАС (Егор 06.10 «делай»): можно ли открывать ЕЩЁ одну позицию.
+
+    Два ограничителя, оба измеренные, а не придуманные:
+
+    1. **Слоты.** Лимита не было вовсе (решение 17.09 «слоты не ограничиваем»), и
+       за 60 дней максимум одновременно открытых по всем источникам достигал **130** —
+       при риске 2% на сделку это 260% счёта в рынке одновременно. Считаем через
+       общий `source_registry.slots()`, как `choch_wavec`, `impulse_fib`, `ds_advisor`.
+    2. **Дневной лимит.** Его тоже не было. Худшие дни по сумме % хода: −212.2,
+       −200.9, −126.8 при медиане дня −15.5.
+
+    🔑 Зачем это, если каркас не даёт прибыли: единственное, что проходит линейку
+    коста ([[cost_is_amplifier_not_cause]]), — редкие клетки с частотой 0.8–4.9
+    сделки/мес. Им нужны МЕСЯЦЫ, чтобы себя показать, и счёт должен дожить.
+    Каркас ограничивает ущерб, а не ищет доход — перемер 22.08 показал, что
+    предохранитель ничего не отбирает ([[live_no_circuit_breaker_cost_95pct_loss]]).
+
+    Возвращает (можно ли торговать, причина отказа).
+    """
+    max_open = cfg.get("trading.waves_long.max_open", None)
+    day_lim = cfg.get("trading.waves_long.max_daily_loss_pct", None)
+    if max_open is None and day_lim is None:
+        return True, ""
+    try:
+        import sqlite3
+        with sqlite3.connect(bot.db_path if hasattr(bot, "db_path") else "subscriptions.db") as conn:
+            if max_open is not None:
+                from core.trading.source_registry import slots as _slots
+                st = _slots(conn, "waves_long", max_open=int(max_open))
+                if not st["can_place"]:
+                    return False, st["why"]
+            if day_lim is not None:
+                # сумма % хода по ЗАКРЫТЫМ за последние сутки; формат времени с `T`
+                # нормализуем — иначе сравнение строк врёт ([[time_utc_vs_local_in_db]])
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(profit_pct), 0) FROM simulated_trades "
+                    "WHERE signal_type='waves_long' AND profit_pct IS NOT NULL "
+                    "AND substr(replace(closed_at,'T',' '),1,19) >= datetime('now','-1 day')"
+                ).fetchone()
+                day_sum = float(row[0] or 0.0)
+                if day_sum <= -abs(float(day_lim)):
+                    return False, f"дневной лимит: {day_sum:+.1f}% за сутки (лимит −{abs(float(day_lim))}%)"
+    except Exception as e:                               # noqa: BLE001
+        # каркас не должен ронять торговлю: при сбое пропускаем, но ГРОМКО
+        logger.warning("[WAVES_LONG] риск-каркас не проверен (%s) — пропускаю", e)
+        return True, ""
+    return True, ""
+
+
 def _short_cell(entry, stop, core_full) -> bool:
     """Живая клетка ШОРТА: полное ядро И стоп ≥6% цены (замер 29.09, n=36).
 
@@ -299,6 +349,13 @@ async def waves_long_loop(bot):
                 # (три сетапа + повторные) — случай AEONBSC, где три варианта били по очереди
                 if _open_on_symbol(bot, sym) >= int(cfg.get("trading.waves_long.max_per_symbol", 1) or 1):
                     logger.info("[WAVES_LONG] %s пропуск: по монете уже есть открытая позиция", uid)
+                    continue
+                # 🛡️ 06.10 РИСК-КАРКАС: слоты + дневной лимит. Проверяем ПОСЛЕДНИМ, прямо
+                # перед отправкой — чтобы в логе было видно, что сетап дошёл до конца и
+                # остановлен именно каркасом, а не фильтром (закон: молчаливых отказов нет).
+                _ok, _why = _risk_frame(bot, cfg)
+                if not _ok:
+                    logger.info("[WAVES_LONG] 🛡️ %s ПРИДЕРЖАН каркасом: %s", uid, _why)
                     continue
                 rec = TradingRecommendation(
                     symbol=sym,
