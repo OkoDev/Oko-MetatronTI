@@ -394,13 +394,23 @@ def full_scan(a):
                                  ("core", "core_full", "fractal", "depth5", "altern_type",
                                   "altern_form", "count_ok", "p5", "imp_pct", "d_wt")})
                     if _w: prev.update(_w)
-                elif _w and prev.get("weight") is None:
-                    prev.update(_w)                       # сетап найден до 22.09 — вес дописываем
+                    # 🔴🔴 06.10 РЕГРЕССИЯ ИСПРАВЛЕНА. Эти четыре действия стояли в ветке
+                    # `elif` (дописывание веса старым записям), то есть НОВЫЙ сетап
+                    # формировался и МОЛЧА ВЫБРАСЫВАЛСЯ: в `state` он не попадал никогда.
+                    # Цена: журнал замер на 58 записях, `last_new` = 2026-09-22 00:15 —
+                    # ровно дата правки про вес, — и `waves_long` не дал НИ ОДНОГО ордера
+                    # за 14 дней. Внешне это выглядело как «рынок не даёт сетапов»:
+                    # счётчик «LONG всего 40 · полных 0» считается ПО ЖУРНАЛУ, а он замёрз.
+                    # Проверено прямым прогоном детектора на свежих данных: ICP/USDT SHORT,
+                    # вершина 05.10 20:00 — сетапы есть, их просто некуда было класть.
                     state[k] = prev; transition(prev, ls, now, s)
                     print(f"  NEW  {s:<12} {st['side']} вершина {pd.Timestamp(st['top_time']):%m-%d %H:%M} ({st['hours_from_top']:.0f} ч) импульс {st['imp_pct']}% фрактал {st['fractal']} канал {st['depth5']} черед {int(st['altern_type'])}/{int(st['altern_form'])} счёт {st['count_ok']} 1D {st['d_bull']}/{st['d_broke']} WT1D {st['d_wt']} | линия {'ПРОБИТА' if ls['line24_broken'] else 'нет'} кросс {str(ls['cross_first'])[:16] if ls['cross_first'] else 'нет'} · {'ЯДРО' if st['core_full'] else ('канал' if st['core'] else '')}", flush=True)
                     if a.draw:
                         try: draw_setup({**st, "sym": s}, dh, ls, CH / f"{s.replace('/', '')}_{pd.Timestamp(st['top_time']):%Y%m%d}.png")
                         except Exception as e_: print(f"   (картинка: {e_})", flush=True)
+                elif _w and prev.get("weight") is None:
+                    prev.update(_w)                       # сетап найден до 22.09 — вес дописываем
+                    transition(prev, ls, now, s)
                 else:
                     # 🔴 30.09 ДИНАМИКА РАЗМЕТКИ (Егор: «аналитика должна быть динамической! и такой
                     # фриз может влиять на боевые сетапы!»). Обновлялись ТРИ поля, а `core`,
