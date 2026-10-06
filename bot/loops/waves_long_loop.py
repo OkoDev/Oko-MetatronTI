@@ -137,6 +137,25 @@ def _in_corridor(rel, lo, hi) -> bool:
     return True
 
 
+def _short_cell(entry, stop, core_full) -> bool:
+    """Живая клетка ШОРТА: полное ядро И стоп ≥6% цены (замер 29.09, n=36).
+
+    Оба условия обязательны вместе: стоп≥6% БЕЗ ядра даёт Δt −0.69 (мёртво), ядро без
+    стопа — слабо, вместе Δt +4.41 при перестановке p=0.002 и пройденном суррогате.
+    Коридор 30-50% импульса сюда НЕ переносится: он измерен для лонга, у шорта та же ось
+    мертва (20-30% → −0.66, 30-50% → −2.22) — [[waves_sides_measured_both]].
+    """
+    if not core_full:
+        return False
+    try:
+        e, s = float(entry), float(stop)
+        if e <= 0:
+            return False
+        return abs(e - s) / e * 100.0 >= 6.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _risk_mult(coin_weight, in_corridor: bool, out_mult, cap) -> float | None:
     """Итоговый множитель риска: вес монеты × множитель ТРЕКА.
 
@@ -229,13 +248,29 @@ async def waves_long_loop(bot):
                 if not sym or not entry or not stop or not tp:
                     logger.info("[WAVES_LONG] %s пропуск: нет цен в сигнале", uid)
                     continue
-                if r.get("side") != "LONG":
+                # 🌊 06.10 ШОРТ ВКЛЮЧЁН (Егор «шорт-ядра +»). До этого отсекался наглухо
+                # «замером 16.09». Замер 29.09 ([[waves_sides_measured_both]]) его подтвердил
+                # НА ОБЩЕЙ БАЗЕ: шорт против рыночного момента ноль (Δt −0.09), при боевом
+                # косте вся сторона в минусе (ср −0.22). 🔑 Но у шорта есть ОДНО живое место —
+                # клетка `полное ядро ∧ стоп ≥6% цены`: n=36, ср +2.15, медиана +4.02, WR 58%,
+                # Δt +4.41, безтоп10% +21, перестановка p=0.002, суррогат пройден (перевес
+                # реала +5.77 против −1.82 на шуме). Поодиночке условия мертвы: стоп≥6% БЕЗ
+                # ядра → Δt −0.69. Поэтому шорт идёт МЕТКОЙ с риск-весом, как лонг с 04.10:
+                # поток данных исполнения собираем по обоим трекам, деньги смещаем в клетку.
+                _side = str(r.get("side") or "").upper()
+                if _side == "SHORT" and not cfg.get("trading.waves_long.short_enabled", False):
                     continue
+                if _side not in ("LONG", "SHORT"):
+                    continue
+                _is_short = _side == "SHORT"
                 age_min = _signal_age_min(r)        # UTC (calendar.timegm), от времени события
                 if age_min > MAX_AGE_MIN:
                     logger.info("[WAVES_LONG] %s пропуск: сигналу %.0f мин (>%d)", uid, age_min, MAX_AGE_MIN)
                     continue
-                if tp <= entry or stop >= entry:    # 16.09 (SYN): цель за спиной = мгновенный «target» с убытком
+                # 16.09 (SYN): цель за спиной = мгновенный «target» с убытком. Для шорта
+                # неравенства зеркальны — иначе каждый шорт отсеивался бы этой же строкой.
+                _geom_bad = (tp >= entry or stop <= entry) if _is_short else (tp <= entry or stop >= entry)
+                if _geom_bad:
                     logger.info("[WAVES_LONG] %s пропуск: цель/стоп не с той стороны", uid)
                     continue
                 # 🌊🔑 03.10 ШИРИНА СТОПА В ДОЛЯХ ИМПУЛЬСА — МЕТКА, А НЕ ОТБОР.
@@ -250,6 +285,12 @@ async def waves_long_loop(bot):
                 _lo, _hi = (cfg.get("trading.waves_long.stop_rel_min", None),
                             cfg.get("trading.waves_long.stop_rel_max", None))
                 _in_cor = _in_corridor(_rel, _lo, _hi)
+                # 🌊 06.10 У ШОРТА СВОЯ КЛЕТКА — не коридор импульса, а `ядро ∧ стоп ≥6% цены`.
+                # Коридор 30-50% импульса измерен ДЛЯ ЛОНГА; у шорта та же ось мертва
+                # (20-30% → −0.66, 30-50% → −2.22). Переносить метку нельзя — это ровно тот
+                # случай, о котором предупреждает протокол: перенос = мерить, не предполагать.
+                if _is_short:
+                    _in_cor = _short_cell(entry, stop, r.get("wv_core_full"))
                 if cfg.get("trading.waves_long.stop_rel_gate", False) and not _in_cor:
                     logger.info("[WAVES_LONG] %s пропуск (gate=true): стоп %s импульса вне коридора [%s; %s)",
                                 uid, "—" if _rel is None else f"{_rel:.3f}", _lo, _hi)
@@ -260,10 +301,13 @@ async def waves_long_loop(bot):
                     logger.info("[WAVES_LONG] %s пропуск: по монете уже есть открытая позиция", uid)
                     continue
                 rec = TradingRecommendation(
-                    symbol=sym, action="BUY", direction=SignalDirection.LONG,
+                    symbol=sym,
+                    action="SELL" if _is_short else "BUY",
+                    direction=SignalDirection.SHORT if _is_short else SignalDirection.LONG,
                     overall_strength=65, confidence=0.6, risk_level="MEDIUM", signals_count=1,
                     supporting_signals=[], conflicting_signals=[],
-                    reasoning=f"waves_long {r.get('wv_variant')} · вершина {r.get('wv_top_time')}",
+                    reasoning=f"waves_{'short' if _is_short else 'long'} {r.get('wv_variant')} · "
+                              f"вершина {r.get('wv_top_time')}",
                     # 29.09: контекст собирает ШИНА (было volume_24h=0.0 — оборот терялся)
                     market_context=build_market_context(bot, sym, current_price=float(entry),
                                                         volatility=0.0),
@@ -274,11 +318,17 @@ async def waves_long_loop(bot):
                 # по ТОЙ ЖЕ величине, по которой шёл отбор (а не по пересчёту задним числом)
                 if _rel is not None:
                     extra["wv_stop_rel"] = round(_rel, 4)
-                    extra["wv_in_corridor"] = bool(_in_cor)   # трек: коридор замера против остального
+                if _rel is not None or _is_short:
+                    extra["wv_in_corridor"] = bool(_in_cor)   # трек: клетка замера против остального
+                # сторона пишется явно: `waves_long` как имя источника остаётся (чтобы не рвать
+                # историю и отчёты), поэтому отличить шорт можно только по этому полю
+                extra["wv_side"] = "SHORT" if _is_short else "LONG"
                 # 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»): corr30 к BTC × vol30 → 0.5…1.5
                 #   (см. wave5_shadow.coin_weight)
                 # 🌊🔑 04.10 РИСК-ВЕС ТРЕКА: вне коридора ширины стопа — меньший риск, а не отказ.
                 _rm = _risk_mult(r.get("wv_weight"), bool(_in_cor),
+                                 cfg.get("trading.waves_long.short_cell_risk_mult", None)
+                                 if _is_short else
                                  cfg.get("trading.waves_long.stop_rel_risk_mult", None),
                                  cfg.get("trading.risk_mult_cap", 1.5))
                 if _rm is not None:
@@ -289,11 +339,13 @@ async def waves_long_loop(bot):
                     logger.warning("[WAVES_LONG] %s ошибка отправки: %s", uid, e)
                     continue
                 if res and getattr(res, "trade_id", None):
-                    logger.info("[WAVES_LONG] ✅ %s %s вход %.8g стоп %.8g цель %.8g · стоп %s имп (%s) · "
+                    logger.info("[WAVES_LONG] ✅ %s %s %s вход %.8g стоп %.8g цель %.8g · стоп %s имп (%s) · "
                                 "вес %s (corr30 %s · vol30 %s) · trade_id=%s",
+                                "SHORT" if _is_short else "LONG",
                                 sym, r.get("wv_variant"), entry, stop, tp,
                                 "—" if _rel is None else f"{_rel:.3f}",
-                                "В КОРИДОРЕ" if _in_cor else "вне",
+                                ("В КЛЕТКЕ (ядро+стоп≥6%)" if _in_cor else "вне клетки") if _is_short
+                                else ("В КОРИДОРЕ" if _in_cor else "вне"),
                                 extra.get("risk_mult", "—"), r.get("wv_corr30", "—"),
                                 r.get("wv_vol30", "—"), res.trade_id)
                 else:

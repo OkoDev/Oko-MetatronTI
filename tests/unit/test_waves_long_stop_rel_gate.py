@@ -166,3 +166,38 @@ def test_one_sided_threshold_works():
     n=54, ср +5.41, WR 83%)."""
     assert _passes(0.95, 0.30, None) is True
     assert _passes(0.20, 0.30, None) is False
+
+
+# ── 06.10 ШОРТ: своя клетка, не коридор импульса ──────────────────────────────
+# Егор «шорт-ядра +». Шорт отсекался наглухо с 16.09; замер 29.09 подтвердил это
+# на общей базе (Δt −0.09, при боевом косте вся сторона −0.22), но нашёл ОДНО живое
+# место — «полное ядро ∧ стоп ≥6% цены» (n=36, Δt +4.41, перестановка p=0.002).
+class TestShortCell:
+    def test_both_conditions_required(self):
+        from bot.loops.waves_long_loop import _short_cell
+        # ядро есть, стоп 10% → клетка
+        assert _short_cell(100.0, 110.0, True) is True
+        # ядро есть, стоп 3% → НЕ клетка (стоп узкий)
+        assert _short_cell(100.0, 103.0, True) is False
+        # стоп широкий, ядра нет → НЕ клетка: «стоп≥6% без ядра» мёртв (Δt −0.69)
+        assert _short_cell(100.0, 110.0, False) is False
+        # ни того, ни другого
+        assert _short_cell(100.0, 102.0, False) is False
+
+    def test_boundary_is_six_percent(self):
+        from bot.loops.waves_long_loop import _short_cell
+        assert _short_cell(100.0, 106.0, True) is True      # ровно 6% — внутри
+        assert _short_cell(100.0, 105.99, True) is False    # чуть меньше — вне
+
+    @pytest.mark.parametrize("entry,stop", [(None, 110.0), (100.0, None),
+                                            ("x", 110.0), (0.0, 110.0)])
+    def test_garbage_does_not_raise(self, entry, stop):
+        from bot.loops.waves_long_loop import _short_cell
+        assert _short_cell(entry, stop, True) is False
+
+    def test_config_has_short_wired(self):
+        """Флаги должны читаться ЧЕРЕЗ config_loader, а не из сырого YAML."""
+        from core.infra.config_loader import ConfigLoader
+        cfg = ConfigLoader("config.yaml")
+        assert cfg.get("trading.waves_long.short_enabled", None) is True
+        assert float(cfg.get("trading.waves_long.short_cell_risk_mult", 0)) == 0.5

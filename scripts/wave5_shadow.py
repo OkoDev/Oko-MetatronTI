@@ -200,11 +200,15 @@ def transition(prev, ls, now, sym):
         prev["cell"] = bool(prev.get("core_full") and prev["stop_pct"] is not None and prev["stop_pct"] >= 6.0)
         print(f"  IN   {sym:<12} {prev['side']} вход по {ls['trigger']} {prev['entered_at']} @ {ls['entry_price']:.6g} · цель {prev['p4_target']:.6g} · стоп {ls['stop']:.6g}"
               + (f"  🔑 КЛЕТКА (ядро+стоп {prev['stop_pct']}%)" if prev["cell"] else ""), flush=True)
-        if prev.get("side") == "LONG":          # семейство waves_long: шорты в бой не идут (замер 16.09)
-            emit_exec(prev, sym, ls["trigger"], ls["entry_price"], ls["stop"], prev.get("p4_target"),
-                      extra={"wv_entry_time": str(ls["entry_time"])[:16],   # возраст считается от события
-                             "wv_cell": bool(prev["cell"]),                 # метка едет в features_json сделки
-                             "wv_stop_pct": prev["stop_pct"]})
+        # 🌊 06.10 (Егор «шорт-ядра +»): в очередь идут ОБЕ стороны. Раньше здесь стояло
+        # `side == "LONG"` («шорты в бой не идут, замер 16.09»), и шорт не доходил до боя
+        # физически. Теперь сторону решает ОДИН флаг в бою —
+        # `trading.waves_long.short_enabled` в `bot/loops/waves_long_loop.py`, а очередь
+        # остаётся полным журналом событий. Так фильтр живёт в одном месте, а не в двух.
+        emit_exec(prev, sym, ls["trigger"], ls["entry_price"], ls["stop"], prev.get("p4_target"),
+                  extra={"wv_entry_time": str(ls["entry_time"])[:16],   # возраст считается от события
+                         "wv_cell": bool(prev["cell"]),                 # метка едет в features_json сделки
+                         "wv_stop_pct": prev["stop_pct"]})
     elif st == "detected" and ls.get("entry_window_over"):
         prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "no_entry"
         print(f"  --   {sym:<12} окно входа истекло без триггера", flush=True)
@@ -250,9 +254,9 @@ def reentry_watch(state, now):
         v.update(re_status="entered", re_entry=js(r["entry_price"]), re_stop=js(r["stop"]), re_entry_at=str(r["entry_time"])[:16])
         if first:
             print(f"  RE   {v['sym']:<12} {v['side']} повторный вход по слому 3m {v['re_entry_at']} @ {r['entry_price']:.6g} · стоп {r['stop']:.6g}", flush=True)
-            if v.get("side") == "LONG":         # пятый вариант семейства waves_long — повторный вход по слому 3m
-                emit_exec(v, v["sym"], "reentry_3m", r["entry_price"], r["stop"], v.get("p4_target"),
-                          extra={"wv_mode": r.get("mode"), "wv_first_stop": js(v.get("stop"))})
+            # пятый вариант семейства — повторный вход по слому 3m; сторону решает флаг в бою (06.10)
+            emit_exec(v, v["sym"], "reentry_3m", r["entry_price"], r["stop"], v.get("p4_target"),
+                      extra={"wv_mode": r.get("mode"), "wv_first_stop": js(v.get("stop"))})
             if post:
                 rid = v["tg_last"] if isinstance(v.get("tg_last"), int) and v["tg_last"] > 0 else None
                 txt = (f"♻️ <b>{html_escape(v['sym'].split('/')[0])}</b> · {v['side']} · ПОВТОРНЫЙ вход по слому 3m {v['re_entry_at']} UTC @ {r['entry_price']:.6g}\n"
