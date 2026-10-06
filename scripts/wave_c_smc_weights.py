@@ -234,13 +234,35 @@ def main() -> int:
     ap.add_argument("--save", default="", help="куда сохранить собранную выборку (.parquet)")
     ap.add_argument("--gates", default="",
                     help="через запятую: проверить признаки КАК ГЕЙТ против полной базы")
+    ap.add_argument("--extra", action="store_true",
+                    help="подключить ФАНДИНГ и РЫНОЧНЫЙ КОНТЕКСТ (matrix_full) — слои, "
+                         "которых нет в combinator_core")
     a = ap.parse_args()
 
     print(f"МЕХАНИКА ВОЛНЫ C на {a.tf}: CHoCH → коррекция {PB} от A → цель |A|×{WAVE_K}, "
           f"стоп за экстремум B, TTL {TTL}, ждём откат {WAIT_PB} баров")
     print("Вопрос: добавляет ли SMC-конфлюэнция СВЕРХ самого волнового контекста.\n")
 
-    R = collect(wave_c, tf=a.tf, n_symbols=a.coins, core=a.core)
+    # 🔴 06.10: ФАНДИНГ и РЫНОЧНЫЙ КОНТЕКСТ — два слоя, которых нет в `combinator_core`,
+    # и это единственное в нашем наборе, что НЕ является производной цены
+    # ([[gap_positioning_layer_missing]]: «слоя ПОЗИЦИОНИРОВАНИЯ нет» — он есть в
+    # данных, просто к механикам не приложен).
+    #   фандинг: `funding_rates` 1 784 007 строк, 2022-01→2026-09, 474 символа —
+    #     ЕДИНСТВЕННЫЙ внешний слой с полной историей (OI, поток и стакан — только
+    #     последний месяц, для реплея не годятся);
+    #   рынок: `mkt_disp30` («рынок един или врозь») и `btc_vol30` — прямое выражение
+    #     наблюдения Егора «пока BTC боковит, остальное движется». Ручной счёт по годам
+    #     дал разброс альтов 15.1% в 2025 (механика умерла) против 19.1% в 2026 (ожила).
+    # Обе функции причинны: фандинг через merge_asof backward, контекст через shift(1).
+    _extra = None
+    if a.extra:
+        from matrix_full import extra_flags, market_context
+        _M = market_context()
+        print(f"рыночный контекст: {_M.shape[0]} дней × {_M.shape[1]} признаков "
+              f"({_M.index[0].date()} → {_M.index[-1].date()})")
+        _extra = lambda df, tf, sym: extra_flags(df, tf, sym, M=_M)   # noqa: E731
+
+    R = collect(wave_c, tf=a.tf, n_symbols=a.coins, core=a.core, extra=_extra)
 
     if a.save:
         try:
