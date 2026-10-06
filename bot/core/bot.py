@@ -219,21 +219,17 @@ class TradingAlertBot:
         from core.intelligence.narrative_builder import narrative_consumer
         bus.subscribe(SphereEvent.RECOMMENDATION_BUILT, narrative_consumer(bus))
 
-        # ── Сфера 10 (Exit Manager) подписана на: wt_snap, regime, divergence ─
-        # При дивергенции — Exit Manager может подтянуть TSL
-        def _on_div_for_exit(symbol, data):
-            state = bus.get(symbol)
-            if state.open_trade_id and state.tsl_active:
-                logger.debug("[Cube] %s: divergence → Exit Manager aware (trade #%d)",
-                             symbol, state.open_trade_id)
-        bus.subscribe(SphereEvent.DIVERGENCE_FOUND, _on_div_for_exit)         # ЗАГЛУШКА
-
-        # ── Сфера 11 (Post-Trade) подписана на: position_closed ──────────────
-        # Когда позиция закрывается — cascade обновляется
-        def _on_close_for_cascade(symbol, data):
-            state = bus.get(symbol)
-            logger.debug("[Cube] %s: position closed → cascade_count=%d", symbol, state.cascade_count)
-        bus.subscribe(SphereEvent.POSITION_CLOSED, _on_close_for_cascade)     # ЗАГЛУШКА
+        # 🔴 07.10.2026 СНЯТЫ три заглушки (Егор: «выход по пивоту и по дивергенции не стоит
+        # даже рассматривать»). Все три были реакциями на УЖЕ ОТКРЫТУЮ сделку и писали только
+        # logger.debug — к поиску сетапов отношения не имели (поиск идёт через EventBus и
+        # trigger_loop и работает: по логам с 02.10 — 73 типа событий, ~98 тыс. переанализов).
+        #   • дивергенция → выход: три закона предсказывают вред — выход исправен, TSL+BE и так
+        #     закрывают до хода, любое подтягивание выхода переносит сделку в мёртвую зону;
+        #   • пивот → выход: пивот-цель работает только у impulse_fib 1h и там уже стоит
+        #     политикой источника (pivot_target: true); у ядра волн родная цель p4 лучше;
+        #   • закрытие → каскад: дубль — cascade_count ведёт post_trade_analyser, реагирует
+        #     trigger_bus.CascadeTrigger, читает narrative_builder.
+        # → memory: bus_is_blackboard_not_mesh
 
         # ── Сфера 12 (Diagnostics) подписана на: все события ─────────────────
         # SphereRegistry отслеживает здоровье всех сфер
@@ -247,19 +243,13 @@ class TradingAlertBot:
             state.btc_regime = data.get("btc_regime")
         bus.subscribe(SphereEvent.CROSS_MARKET, _on_btc_for_signals)
 
-        # ── Pivot touch → Exit Manager (TP targets near pivot) ───────────────
-        def _on_pivot_for_exit(symbol, data):
-            state = bus.get(symbol)
-            if state.open_trade_id:
-                logger.debug("[Cube] %s: pivot touch → TP check (trade #%d)",
-                             symbol, state.open_trade_id)
-        bus.subscribe(SphereEvent.PIVOT_TOUCH, _on_pivot_for_exit)            # ЗАГЛУШКА
-
-        _n_stubs = 3    # помеченные «ЗАГЛУШКА» выше; реакцию сделал — уменьши
+        # Лог старта говорит точно, что это за шина, — без «mesh-связности» по счёту проводов.
+        # PairContextBus = доска (состояние + чтение); событийная сеть «сфера → переанализ»
+        # живёт в EventBus. Заглушек без реакции больше нет (сняты 07.10).
         _n_subs = sum(len(v) for v in bus._subscribers.values())
-        logger.info("[Cube] подписок на шину: %d на %d типов событий "
-                    "(межсферных заглушек без реакции: %d, ARCH-101 🧊)",
-                    _n_subs, len(bus._subscribers), _n_stubs)
+        logger.info("[Cube] PairContextBus: %d подписок на %d типов событий "
+                    "(доска состояния; событийная сеть сфер — EventBus)",
+                    _n_subs, len(bus._subscribers))
 
     def _register_routers(self):
         from bot.handlers.subscription_handlers import get_router as sub_router
