@@ -3,6 +3,11 @@ name: feedback-wt-cross-zone
 description: wt_cross в scan_loop = сырой кросс без зоны; zone-фильтр добавляется потребителями (WTSpecialist). Фикс scan_loop отложен — запомнить перед ARCH-117.
 metadata: 
   node_type: memory
+  triggers: 
+    - wt_cross
+    - WT
+    - zone-фильтр
+    - scan_loop
   type: feedback
   originSessionId: 9d582948-c9be-42e6-8444-4165a225d1fa
 ---

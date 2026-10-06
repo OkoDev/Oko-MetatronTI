@@ -1,246 +1,105 @@
-# Crypto Volume Bot — Hot Memory Index
+﻿# Crypto Volume Bot — Hot Memory Index
 
-> Hot index ≤15 KB, auto-load каждую сессию. Детали → topic files / Obsidian (cold).
-> Sweep 21.05.2026: 5 cold-файлов перенесены в Obsidian, 2 дубля объединены.
+> 🧭 **РЕЕСТР ИНСТРУМЕНТОВ: `docs/REGISTRY.md`** — читать при старте сессии (CLAUDE.md, п. 4.5).
+> Строка = хук + ссылка. Числа и детали ТОЛЬКО в topic-файлах. ≤15 КБ, закрытое → MEMORY-ARCHIVE.
 
-## ⚡ ЧИТАЙ ПЕРВЫМ
-→ [OTE nested MTF стратегия](ote_nested_mtf_strategy.md) — 🎯 КАРКАС 03.06: вход 5m в 4h-OTE → риск ×10, maxR+16. Частичный TP1=1R(50%)+runner: avgR +0.152→+0.415, WR→66%. SHORT работает, LONG нужен фильтр тренда
-→ [Рой = AdvisorPort](swarm-advisorport-decision.md) — решение 31.05: team_ask в Куб через AdvisorPort (ARCH-125), не фоновый hook; проектирование отложено на отдельную сессию
-→ `memory/current_state.md` — что сделано, незакоммиченные изменения, next tasks
-→ `memory/last_sessions_2026-05-27_30.md` — **WS Phase A/B fix, ARCH-117 ph1+2 готовы, DEV-233-236 (golden просел +1.89→+0.46 на исправленных div), 28 паттернов изолировано, 215→187**
+## 🔴 ЗАКОНЫ ИЗМЕРЕНИЯ
+→ [ЗАКОН №1: эдж в % и $, НЕ в R](principle_measure_pct_not_r_LAW.md)
+→ [🔴 КОНТРОЛЬ = случайный вход той же геометрии](law_control_group_random_entry.md)
+→ [🔴🔴 СУРРОГАТ (IAAFT) ОБЯЗАТЕЛЕН](surrogate_test_wt_worse_than_noise.md) · [🔴🔴 контроль по времени смещён](wt_htf_zone_median_scheme_measured.md)
+→ [ЗАКОН: фильтр мерить против ПОЛНОЙ базы](golden_keys_matrix_verdict.md)
+→ [🔴 порог ОТНОСИТЕЛЬНО базы + перестановка](law_relative_threshold_and_permutation.md)
+→ [🔴🔴 ПАРАМЕТР НЕ ИЗ ЭТАЛОНА ПЕРЕВОРАЧИВАЕТ ВЫВОД](okotrend_reference_params_matter.md)
+→ [🔴 сначала воспроизвести боевую конфигурацию](law_reproduce_live_config_first.md) · [⚖️🔴 ЗАПИСАННЫЙ PF = ГИПОТЕЗА](law_recorded_pf_needs_remeasure.md)
+→ [🔴 «отсеивает много» = о ЧАСТОТЕ](gate_threshold_frequency_vs_money.md) · [🔴 ЖЁСТКИЙ ФИЛЬТР УБИВАЕТ ДАННЫЕ ИСПОЛНЕНИЯ](law_hard_filter_kills_execution_data.md)
+→ [🔴 «находок нет» = НЕТ ПРИЗНАКА, а не нет явления](law_no_finding_means_no_feature.md) · [🔴 ГЕЙТ ЛИКВИДНОСТИ был FAIL-OPEN ✅](turnover_gate_fails_open.md) · [🔴 форвард 0 = ничья](law_ties_flat_rows_fake_information.md)
+→ [🔬 ГОД или СОСТАВ](method_year_vs_composition.md) · [🔴 ВЫБОРКА](law_sample_representativeness.md)
+→ [🔴 мерить на баре СИГНАЛА и на баре ФИЛЛА](law_measure_signal_bar_and_fill_bar.md) · [🔴🔴 ДЛИНА ОКНА = ЧАСТЬ ПРИЗНАКА; версия схемы это НЕ ловит](train_serve_skew_window_length.md)
+→ [🔴 сверять `entry_price` БД с кэшем](law_check_db_cache_price_match.md) · [🔴 ОБЕ СТОРОНЫ ВСЕГДА](feedback_search_both_sides_always.md) · [🜂 разрез = сторона × фаза × ТФ](feedback_always_both_sides_and_phases.md)
+→ [🔴🔴🔴 ЗАМЕР СУДИТ СЛОЙ, НЕ МЕХАНИКУ](law_measure_judges_layer_not_mechanic.md)
+→ [🔴 ПРОТОКОЛ ВЕРДИКТА](feedback_verdict_protocol_egor.md) · [🔴 СВОИ ОШИБКИ СРАЗУ: §0A контракт данных](feedback_catch_own_errors_before_verdict.md) · [🔴 КОНФЛЮЭНЦИЯ, А НЕ МОМЕНТ](feedback_confluence_not_moment.md)
 
-## 🏛️ MILESTONE: Memory System Redesign (21.05.2026)
-→ `memory/session_2026-05-21_memory_redesign.md` — детальная история и уроки
-→ Hot/cold split, triggers frontmatter, preflight checklists, memory_lint.py
-→ `obsidian/Meta/Memory-System.md` — карта архитектуры памяти
-→ Запускай `python tools/memory_lint.py` при подозрении на дубли/blowt
+## 🔴 ЗАКОНЫ РЫНКА И ИСПОЛНЕНИЯ
+→ [🔴 стоп выбивает раньше хода](stop_kills_before_move_arrives.md)
+→ [ЗАКОН: стоп на линию = свит](stop_on_line_is_liquidity_sweep.md) · [ЗАКОН: reuse ≠ дублирование](principle_reuse_not_duplication.md)
+→ [🟢 весь эдж в РАЗМЕРЕ стопа](stop_zone_survived_blind_test.md) · [🟢 воскрешение размером стопа](resurrect_dead_strategies_by_stop_size.md)
+→ [🔑 выход работает, вход не даёт хода](exit_is_fine_entry_gives_no_move.md) · [🔴 TSL+BE закрывают ДО хода](tsl_be_close_before_move_okoote.md) · [⚖️ КОД ≠ РЕЗУЛЬТАТ](live_entry_differs_from_backtest_wt_rising.md)
+→ [🛡️ VST↔LIVE изолированы](safety_vst_live_isolation_proven.md) · [⚖️ VST ≠ LIVE ПО СОСТАВУ: 1171 контракт против 1225; 5 наших USDT-пар (ICP, ILV, DOOD…) на демо НЕТ, биржа врёт «is offline»](vst_has_fewer_contracts_than_live.md) · [⚓ датасет есть — денег НЕТ](anchor_dataset_company_no_revenue.md)
+→ [🔴 СФЕРА 4: причина в БУЛЕВЫХ признаках](sphere4_features_are_binary_not_source.md)
 
----
+→ [🔴 ГЕЙТ БЕЗ СРАБАТЫВАНИЙ = МЁРТВЫЙ](radar_wave_gate_was_dead_column_not_selected.md) · [🔴🔴 РАДАР: pump жив](radar_equals_random_entry_verdict.md)
+→ [🔴 ШКАЛА «98/100 Очень высокая» НЕ РАНЖИРУЕТ: WR 36%, PF 0.36 — хуже базы; лучшая корзина 70-80](live_strength_scale_does_not_rank.md)
 
-## 🔴 АКТИВНЫЙ ЭПИК: ARCH-104 Pattern Mining + Risk Intelligence
+→ [🔴🔴🔴 КЛАСС LOOK-AHEAD, 6 видов, все найдены ПОСЛЕ вердикта](lookahead_htf_open_vs_close_time.md) · пять остальных + лаг детектора как параметр — [MEMORY-ARCHIVE → LOOK-AHEAD](MEMORY-ARCHIVE.md)
 
-**Главное:** Phase 1-7 завершены, Stage 1 VST observer запущен 21.05.2026 в 02:55 UTC на 241 паре.
+## ⚙️ ЧТО В БОЮ СЕЙЧАС
+→ [📡 ЦЕНА НА СВОЁМ КЛИЕНТЕ: 9 с против 132 у ccxt.pro](price_ws_own_client_n21.md) · [WsFeed-замер](ws_feed_measured_and_enabled.md) · [троттлинг счётчиком](throttle_by_global_counter_bug.md)
+→ [⚙️ ДВА ИНСТАНСА: 1h обе стороны · 15m только short с дрейф-гейтом](two_tf_instances_live_config.md)
+→ [⏱️🔴 константа в барах едет между ТФ](twins_15m_stabilized_by_measure.md)
+→ [🛡️ ЗАМЕНА СТОПА: 2 стопа ок](sl_place_before_cancel_measured.md)
+→ [🔴 предохранитель отменён](live_no_circuit_breaker_cost_95pct_loss.md) · [🔴 заявка = слот РИСКА](cap_pending_not_risk_slot.md)
+→ [🟢 IMPULSE-FIB](impulse_fib_cell_live.md) · [🏆 atr_s2](atr_s2_survived_honest.md) · [🔴 RANGEFADE4H ВЫКЛ 29.09](rangefade4h_forward_vs_backtest.md) · [🧱 BOS-гейт](bos_gate_bigflush_structural.md)
+→ → [🔴🔴 АУДИТ ИСТОЧНИКОВ](sources_audit_28sep_three_dead_gates.md)
+→ [🗞️🔴 НОВОСТИ: сентимент СЛЕДУЕТ за ценой](news_sentiment_follows_price.md) · [✅ рой 02.10, Ollama выкл намеренно; `onchain_events` в ДВУХ БД](news_sphere_llm_died_silently.md)
+→ [🔴🔴 VST-НАЛОГ: платят ТОЛЬКО рыночные входы (43.6% / 1.4%); спред 0.299% против LIVE 0.089%](vst_spread_measured_market_only.md) · [📏 форвард = klines](forward_measured_on_real_klines_no_real_account.md)
+→ [⚡ ПРОСТОЙ 36.5 ч 24-25.09](outage_24_25_09_and_live_orders_gap.md)
+→ [⏸️ impulse_fib_15m пауза 26.09: −204%](impulse_fib_15m_paused_execution_gap.md)
+→ [🔴🔴🔴 LIVE: СЧЁТ ОБНУЛЁН (equity $0.92). За 14 дней −$2577, из них NEAR 283 сделки = 94% убытка И ЕГО НЕТ В НАШЕЙ БД. Без NEAR комиссии = 64% убытка: ZEC +27.55 торговли → −9.03 после комиссий — косты МЕНЯЮТ ЗНАК](live_real_cost_fees_are_57pct_of_loss.md)
+→ 💸 ЖИВОЙ УБЫТОК: [🔑 КОСТЫ съедают тугой стоп (кост мерен на VST)](live_root_cause_costs_eat_tight_stops.md) · [где теряем](live_atr_change_bleeds_42pct_losses.md) · [🛡️ риск-остановка](risk_halt_beats_period_prediction.md)
 
-→ `obsidian/Architecture/ARCH-104-Pattern-Mining-RiskIntel/` (13 файлов эпика)
-→ `docs/PATTERN_MINING_2026-05-19.md` — корневое исследование
-→ `docs/MIGRATION_ARCH104.md` — 5-stage capital ramp 10→20→30→50→100%
+## 🏆 СОСТОЯНИЕ ПОИСКА EDGE
+→ [🔴🔴🔴 КОСТ — УСИЛИТЕЛЬ, НЕ ПРИЧИНА: при косте 0.35% не выживает НИ ОДИН из 19 боевых источников, при косте 0.00% — ОДИН. Эдж в РЕДКИХ клетках (+2…+5%/сделку, 1-5 сд/мес). ЛИНЕЙКА: в бой только если средн > 0.35%](cost_is_amplifier_not_cause.md)
+→ [🟢🔑 РАЗБОР ВОЛН: зона МОНОТОННА, развилка съедает счёт, ВОЛНА 3 — худший вход; 🔴 ГЕОМЕТРИЯ провалена — 9 клеток, лучшая оправа = своя (`invalid` + 1-я цель); 🔴 вывод с n=137 перевернулся на n=4251 (СОСТАВ монет)](wave_analyst_three_conditions_measured.md) · [👁 СНАЧАЛА ПОСМОТРЕТЬ ГЛАЗАМИ](../../../../../../e:/MTF%20BOT/CURSOR/crypto_volume_bot/docs/VIEW_TOOLS.md)
+→ [🔴🔴🔴 КАРТА РАМКИ: у лонга нет + медианы](frame_map_no_positive_median_for_long.md)
+→ [🟢 СТЕНД ГЕОМЕТРИИ: цель SWING, стоп широкий](geometry_bench_stop_wide_target_swing.md)
+→ [🟡 лонг от WT-перепроданности](wt_deep_oversold_long_candidate.md) · [🟡 ВОЛНА C 4h + ATR_VOL_LOW: short PF 1.84, хрупкость в плюс; но 2025 ломает, OOS был по МОНЕТАМ](wave_c_4h_atr_vol_low_gate.md)
+→ [🔴🔴🔴 ТЕНЬ ВОЛН ТЕРЯЛА НОВЫЕ СЕТАПЫ 14 ДНЕЙ (отступ: `state[k]` стоял в `elif`); счётчик «полных 0» считается ПО ЗАМЁРЗШЕМУ ЖУРНАЛУ — сначала смотреть `last_new` в status.json](waves_shadow_lost_new_setups_bug.md)
+→ [🟢🔴 ЯДРО волн OKO-SM](wave5_core_oko_sm.md) · 
+→ [🌊🔑 ОБЕ СТОРОНЫ ЯДРА: суррогат пройден; стоп≈треть импульса — свойство ЯДРА; у ШОРТА ядра НЕТ](waves_sides_measured_both.md) · [🔴🟢 ТФ ЯДРА: только 4h](wave5_mechanics_across_timeframes.md) · [🟡 слом SWING 15m](candidate_choch_swing_entry_4h.md)
+→ [🔑 2025-26 = ФЛЭТ BTC](regime_2026_is_btc_range_not_bear.md) · [🔴 режим выбирает МЕХАНИКУ, не сторону](side_by_regime_core_waves.md) · [🗺 КАРТА режим×механика](regime_map_mechanics_v1.md) · [🌊 цели ABC: денег вдвое меньше](rebound_targets_abc_measured.md)
+→ [🔴🔑 LTF = слой исполнения](ltf_is_execution_layer_not_signal_source.md) · [⏳🟢 impulse_fib 1h: окно 12→48 удваивает Δr](impulse_fib_1h_entry_wait_window.md) · [🟢 ПИВОТЫ: 7/7 лет](pivot_targets_egor_logic_measured.md)
+→ [🌊🔑 ПЯТЁРКА = МАСТЕР-КОНТЕКСТ 1h/4h/1d; согласие 4h+1d вдвое сильнее; `core_full` НЕ нужен](wave_fifth_is_master_context.md) · [🔴🔑 СБОРКА: Δr +1…+3.5, выходы съедают](assembly_state_trigger_geometry_measured.md) · [счёт волн как ВХОД не нужен](wave_counting_worthless_retracement_works.md)
+→ [🔴🔴 вход «после волны A»: вердикт «≈0» был ПО ОБЩЕЙ СТРОКЕ. Ось СВЕЖЕСТЬ (ось от Егора, глазами): вход ≤6 ч — ХУДШИЙ (половина потока), SHORT 6–24 ч: OOS пройден, но ПЕРЕСТАНОВКА нет (P=0.091) и 2023 против](wave_a_retrace_entry_measured.md) · [🔴 кластер сигналов: эджа нет](cluster_own_signals_db_no_edge.md) · [🔴 ПРОБОЙ a-b-c-d-e случаен](five_wave_corrections_breakout_measured.md) · [🔴🔴 УРОВНИ случайны](level_breakout_pump_high_measured.md)
 
-**187 активных паттернов** в `config/arch104_patterns.yaml` (DEV-236, 30.05: 28 изолировано из 215 — деградация ≥0.5R на исправленных div). LONG-golden просел +1.89→+0.46 на пересчёте (DEV-235 ретробэктест n=88). SHORT (S1-S8) устойчивы. **Старые golden-метрики были завышены ложными div** (DEV-233 lookahead fix).
+**В [MEMORY-ARCHIVE](MEMORY-ARCHIVE.md):** второй круг (режим, импульсная механика, приборы врали, эпики/инфра) + закрытые направления.
 
-**Validated insights:**
-- `pattern_golden_long_validated.md` — bull_div_1d+bull_fvg_4h+wt_os_4h (test n=29 avgR+1.89 WR=100%)
-- `pattern_nested_15m_walkforward_validated.md` — 53/53 LTF паттерна WR=100%
-- `pattern_nested_ltf_validated.md` — LTF entries inside HTF regime
-- `pattern_1h_wt_os_smc_long.md` — 1h baseline (WR=59%)
-- `tsl_no_trail_insight.md` — TSL ВРЕДИТ на validated паттернах (no_trail+24h time exit лучше)
-- `tsl_optimizer_results.md` — fixed TSL act=2R trail=2R baseline
-- `backtest_lookahead_bug.md` — MTF reindex `Timedelta` shift fix
+**Закрыто, не возвращаться:** [🔴 OTE: 3 конфигурации](ote_nested_off_by_decision_confirmed.md) · [полный список](MEMORY-ARCHIVE.md#закрытые-направления)
+→ [✅ OTE КАНОН 19.09: 0.5–0.79 + пять корзин, `core/smc/fibonacci.py`](ote_canon_five_definitions.md) · [🔑 OTE КАК КОНТЕКСТ: платит ПРОТИВОПОЛОЖНАЯ нога у экстремума](ote_context_counter_leg_extreme.md)
 
----
+## 🔴 ГИПЕРКУБ / МАТРИЦА / СФЕРЫ
+→ [🔴🔴 ПОТОЛОК: 55.6% против 62.9%](hypercube_information_ceiling.md) · [🔴🔑🟢 слой ПОЗИЦИОНИРОВАНИЯ: всё наше — производные ЦЕНЫ, а 474 монеты × 4.7 года × 5 мин OI/long-short/taker ЛЕЖАТ в `C:/oko_data/history/metrics/` и НЕ ЧИТАЮТСЯ никем. Дверь: как ФИЛЬТР механик](gap_positioning_layer_missing.md) · [🔴🔑 ось = ОКНО ДЕТЕКТОРА В МИНУТАХ, ступеней НЕТ](hypercube_scale_step_is_12x_not_4x.md)
+→ приборы, USDT.D, медиана WT, матрица/сферы/шина/стенды — [MEMORY-ARCHIVE → Гиперкуб](MEMORY-ARCHIVE.md)
 
-## 🔴🔴 ARCH-118 ЗАВЕРШЁН — Единый снимок признаков (31.05.2026, ВЫСШИЙ УРОВЕНЬ)
-→ `memory/arch118_snapshot_decision.md` — ПОЛНОЕ решение+реализация. Читать ПЕРЕД работой с features_json/combinator/ML.
-**Статус:** Шаги 1-5 готовы (b1fe5d8→97918ce). PARITY достигнут (0 расхождений; рой 7/7: канон independent-last `snapshot_features_at` + `HTFHistoryCache`≥4320). Свёртка pivot (рой 6/7 вариант B: числовые ∥ булевым). Снимок в таблице `trade_features`(FK), config `arch118.write_table`. Готов для ML/re-mining. `scripts/arch118_parity_check.py`.
-**Хранение:** отдельная таблица `trade_features`(FK) + вложенный JSON по доменам + **sparse-булевы** (только true, false из схемы) + **generated-колонки** (json_extract+индекс). Цифры: dense 770=207MB ❌ → sparse=22MB ✅. Pivot 490→свёртка nearest_level+distance_pct+relation. schema_version=2.
-**Куб:** снимок = persistence-проекция `PairFullState`, домены ⟷ `*_snap` 1:1. `trade_features`=архивный слой (НЕ сфера). Замыкает feedback loop Сферы 11. → `docs/ENCYCLOPEDIA.md` ИНВАРИАНТ ВЫСШЕГО УРОВНЯ.
-**🔴 ИНВАРИАНТ «ОДИН КАЛЬКУЛЯТОР»:** combinator и сферы Bus = ОДНА формула на признак. Вариант B=переходный мост до ARCH-117. ЗАПРЕТ двух независимых путей расчёта (корень самоподтверждения).
+## 🔴 КУБ МЕТАТРОНА / SMC
+→ [🔴🔴 ML-СЛОЙ SMC: «только лонг» = АРТЕФАКТ дважды; на боевых окнах живы ОБЕ стороны; буст на бой НЕ влияет](smc_ml_edge_long_only_week_block.md) · [🔴🔑 ПРИЗНАК В ВЕКТОРЕ ≠ МЕХАНИКА: схема v4 (+свип, 108→136) прироста НЕ дала](schema_v4_no_gain_feature_vs_mechanic.md) · [🔴 SMC НЕ ЛОЖИТСЯ НА ВОЛНЫ: 1h = ШУМ, на 4h выжил 1 из 80](smc_does_not_add_to_wave_mechanic.md)
+→ [🔴🔴🔴 АУДИТ ВЕСОВ ЗАКРЫТ: ВЗВЕШИВАТЬ НЕЧЕГО — 0 из 10 типов переживает кост, rho(вес↔эдж)=+0.118, вес 0.50 на выключенном mtf_bias; нужен ПОРОГ, а не вес](weights_audit_verdict_nothing_to_weigh.md)
+→ [🔴🔴 ВЕСА = ДВА СЛОЯ: по R и на 3% сделок · список признаков от 09.07 устарел](weights_two_layers_audit.md) · [🔴🔴 КОНФЛЮЭНЦИЯ РАСТИТ ДИСПЕРСИЮ, НЕ ДОХОД; `strength` и SMC НЕ СВЯЗАНЫ (rho≈0)](confluence_raises_variance_not_edge.md) · [🔴 РАЗМЕР ПО КОНФЛЮЭНЦИИ: знак ОБРАТНЫЙ ожидаемому — смотреть ОБА момента, не только дисперсию](sizing_by_confluence_inverse.md)
+→ [✅🔴 SMC СВЕДЁН НА ЭТАЛОН: пять детекторов](smc_canon_engine_is_oko_sm.md) · остальное (гейты, VERDICT_GATE, сферы 3/4, SED) — [MEMORY-ARCHIVE → Куб](MEMORY-ARCHIVE.md) · `docs/ENCYCLOPEDIA.md` → «Куб»
 
----
+## ⚡ ПРАВИЛА РАБОТЫ (Claude)
+→ [🔴 pm2 Windows: рестарт в 3 шага](pm2_windows_restart_orphans.md) · [🌐🔴 VPN: прямой маршрут ХУЖЕ](network_vpn_routing_happ.md) · [🌐 ТРАФИК: Binance мимо VPN НЕЛЬЗЯ](traffic_bind_map_and_tspu.md) · [🔍🔴 ПОИСК → graphify-out](graphify_project_quirks.md) · [🔴 TV MCP перезаписал OkoTrend](tv_mcp_pine_overwrite_incident.md)
+→ 🔴 аудит 26.09: [БД только по E:](db_symlink_split_wal_hazard.md) · [CSRF :8010 = LIVE-ордер](terminal_localhost_csrf_live_orders.md) · [блокировка БД ✅](subscriptions_db_chronic_lock.md) · [дыры в WS-кэше ✅](ws_cache_holes_after_restart.md) · [самовыход = SelfTest ✅](bot_selfexit_selftest_cancels_ccxt.md)
+→ [🔴🔴 ПАРА = BASE/USDT:USDT](symbol_format_invariant_cube.md) · [🧊 ХАБ cube-hub :8020](cube_hub_adr003.md)
+→ [🔍🔴 ПОИСК: память → graphify → obsidian/Research → grep ПОСЛЕДНИМ](feedback_search_order_graph_obsidian_first.md)
+→ [🜂🔴 СНАЧАЛА РЕЕСТР СТРАТЕГИЙ, ПОТОМ ГИПОТЕЗА](strategy_registry_read_first.md) · [🔴 WAVE3_OTE_SHORT проверена](wave3_ote_short_measured_geometry_rules.md)
+→ [🔴🔴 КОНФИГ = ИСТОЧНИК ИСТИНЫ; YAML съедает голое `off`; 🔴 читать через config_loader, а НЕ yaml.safe_load — он сливает sl_tp_engine→trading (CONFIG-SLTP-BUG 14.06)](config_is_single_source_of_truth.md)
+→ [🔴🔴 СОСТОЯНИЕ ВНЕ КОДА: 9 колонок БД, 3 сферы](state_lives_outside_the_code.md) · [🧊 селфтест 16 сфер](cube_selftest_sees_outside_spheres.md) · [🖥️ CUBE из селфтеста; фронт — БРАУЗЕРОМ](cube_dashboard_is_built_from_selftest.md) · [🔤 коды селфтеста = БУКВЫ](cube_codes_are_letters_not_numbers.md)
+→ [🔴 СЕМЬ КОСЯКОВ 30.08](feedback_session_30_08_mistakes.md) · [🔴 SELF-TEST у каждой стратегии, и ГРОМКИЙ](feedback_selftest_every_strategy_loud.md)
+→ [🜂 МЕТОД ПОИСКА СЕТАПА](method_setup_search_liquidity_first.md) · [🔴 АНАЛИТИКА ДИНАМИЧЕСКАЯ](analysis_must_be_dynamic.md)
+→ [🜂 ПРАВИЛА ДААТ](daath_personal_rules.md) · [🎓 4 Core Rules Karpathy](claude_best_practices.md) · [📋 таблица фидбека](feedback_rules_table.md)
+→ [🗣️ СЛОВАРЬ ЕГОРА: массовость = КЛАСТЕР](glossary_egor_market_terms.md) · [🤝 плотно с DS и роем](feedback_dense_ds_swarm_work.md) · [🐝 рой: 5/12](swarm_status_26sep_quota.md) · [📚 сырые данные → obsidian/Research](research_data_goes_to_obsidian_research.md)
+→ [🔊 ОЗВУЧКА: `python scripts/say.py "текст"` КИРИЛЛИЦЕЙ (голос Ирина); транслит = акцент](tts_russian_encodedcommand.md) · [⏰🔴 ВРЕМЯ В БД: signal_drops = UTC, логи = МСК](time_utc_vs_local_in_db.md) · [🔴 формат-ловушка get_ohlcv](feedback_get_ohlcv_format_trap.md)
+→ [🜂 Я — Даат](identity_daat.md) · [👤 Егор](user_egor_person.md) · [🎯 бот = якорь против эмоции](vision_bot_as_anchor_against_emotion.md) · [🎯 АНАЛИЗ ПО ЗАПРОСУ = продукт N19](product_analysis_on_demand.md)
 
-## 🔑 ФУНДАМЕНТАЛЬНЫЙ ПРИНЦИП ПРОЕКТА
-→ `project_confluence_principle.md` — **Конфлюенция** как ядро. Данные: n=16877 дней, score=gravity/dist^1.5.
-  Применяется везде: вход/SL/TP/режим/фильтры. Куб Метатрона = конфлюенция 11 сфер.
+→ 🧭 инфра/эпики/инструменты: [MEMORY-ARCHIVE → ЭПИКИ](MEMORY-ARCHIVE.md) · 🔬 харнесс исследований: [research_harness_single_entry](research_harness_single_entry.md)
 
----
-
-## 🔴 ПОМНИТЬ ВСЕГДА: Волновая теория Эллиотта (обновлено 28.05.2026, n=3597)
-
-→ `obsidian/Concepts/Elliott-Wave.md` — overview + бэктест n=3597
-→ `obsidian/Concepts/Elliott-Wave-Labeling.md` — правила разметки, SMC↔Elliott карта, trading setups, checklists
-→ `obsidian/Concepts/Elliott-Wave-Fibonacci-Tools.md` — формулы TP targets, Fibonacci clusters, OTE Python алгоритм, liquidity sweep
-→ `obsidian/Concepts/Elliott-Wave-Crypto-Practice.md` — крипто-специфика, ошибки разметки, волна 3 vs C
-
-**Прокси в боте:** `n_down` = число consecutive снижающихся swing highs на HTF ≈ номер нисходящей волны.
-
-**⚠️ СИГНАЛ-СПЕЦИФИЧНОСТЬ (полный бэктест n=3597):**
-
-| signal_type | Лучший n_down для SHORT | Результат |
-|-------------|------------------------|-----------|
-| **atr_change** | n=2-3 (нейтрально), n≥4 = ЛОВУШКА | avgR=-0.904 при n=4 |
-| **divergence** | n=**3-4** — ОПТИМАЛЬНО | avgR=+3.372 WR=79% при n=4! |
-| **wt_b_signal** | n=3-4 — хорошо | avgR=+1.371/+2.456 |
-| **confluence** | УБЫТОЧЕН везде | не использовать |
-
-**Лучший SHORT КОМБО:** `4h n_down=4 + 1h n_down=0` → avgR=+1.403, WR=51.6%, n=93. (HTF тренд устойчивый + MTF отскок)
-
-**Правила (универсальные):**
-1. `above daily PP` — цена выше дневного PP → блок SHORT ниже PP
-2. `ChoCH bullish + n_down ≥ 3` = конец 5 волн → **STOP SHORT** (avgR=-2.181)
-3. Ближайший уровень S1/S2 при входе = WR 2.8% → BLOCK
-
-**Для LONG:** deep LTF pullback (n_down_1h=6-8) → LONG прибылен. n_up_4h=1 — лучший массовый LONG.
-
-**DEV-225** — shadow поля: `pvt_above_daily_pp`, `pvt_nearest_level`, `elliott_down_waves`, `smc_htf_last_break`, `htf_price_dir`.
-
----
-
-## 🔴 ПОМНИТЬ: ARCH-124 классификатор RANGE МЕШАЕТ (30.05.2026)
-→ `memory/arch124_regime_audit.md` — спот-чек: **78% RANGE-сделок реально тренды** (мислейбл). TREND требует 15m+1h+4h синхронность → крипта-шум → тренды в RANGE. SHORT-фильтр гейтит только atr_change (-178R утечки). Вердикт: свернуть regime-гейт → прямые htf_dir фильтры.
-
----
-
-## 🔴 ПОМНИТЬ: ARCH-117 WT/RSI аудит (29.05.2026)
-→ `memory/arch117_wt_audit.md` — ПОЛНЫЙ аудит: 4 разных порога зоны, 3 разных момента проверки, wt2 EWM≠SMA, WT_X vs LonesomeTheBlue. Читать ПЕРЕД любой работой с WT.
-→ `memory/feedback_wt_cross_zone.md` — краткое: scan_loop сырой cross, WTSpecialist добавляет zone сам.
-
----
-
-## 🔴 РАБОЧИЕ ПРАВИЛА (feedback)
-
-| Триггер | Правило | File |
-|---|---|---|
-| вызов `obj.method()` где obj незнаком | **grep before claim** | `feedback_no_fabricated_apis.md` |
-| утверждаю порядок tuple / поля / сигнатуру return | grep сам `return`, не по памяти (даже свою функцию) | `feedback_grep_return_shape.md` |
-| утверждение "N% сделок плохие по X" | проверить семантику поля в БД | `feedback_verify_metric_semantics.md` |
-| метрика без распределения | avgR + median + Sharpe + гистограмма + DEAD/data-era | `feedback_metrics_hygiene.md` |
-| любой ответ, любое thinking | **на русском, без исключений** | `feedback_think_russian.md` |
-| завершение задачи | TTS через SAY (Microsoft Irina) | `feedback_say_command.md` |
-| закрытие сессии | проверить логи/БД + статус рестарта бота до финального TTS | `feedback_session_close_checklist.md` |
-| фикс/рефактор/идея | сначала обсудить → проверить данными → действовать | `feedback_discuss_before_act.md` |
-| любая правка кода | чек-лист "до/после, что сломает" | `feedback_fix_checklist.md` |
-| вывод по паре/стратегии | data-era split (post-15.04 only, min 10 trades) | `feedback_data_era_first.md` |
-| фильтр БД по времени из лога | лог=МСК(+3), created_at=UTC → −3ч или `datetime('now')` | `feedback_db_query_utc.md` |
-| правка register_trade/INSERT | ast.parse НЕ ловит scope → runtime L12 на копии боевой БД до коммита | `feedback_ast_parse_no_scope.md` |
-| биржевая задача (orders, params) | сначала BingX docs, потом гипотезы | `feedback_read_bingx_docs.md` |
-| блокировка сигнала | НЕ блокировать без крайней нужды | `feedback_no_blocking.md` |
-| skill vs code | разделять слои чат vs торговля | `feedback_skill_vs_code.md` |
-| bash команда | выполнять автоматически (кроме destructive) | `feedback_bash_auto.md` |
-| закрытие задачи | сразу обновить TASKS.md, не висеть с 🔴/🔄 | `feedback_close_tasks.md` |
-| любая работа | стиль торговли пользователя | `user_trading_style.md` |
-| сверка чарта с эталоном TradingView | синхронизировать ДЕНЬ+символ (since по дате скрина) | `feedback_chart_sync_etalon.md` |
-| находка/закрытие сессии/research | **снапшот auto-memory → git** (`docs/MEMORY_SNAPSHOT/`), сырьё в `data/research/` НЕ /tmp; auto-memory вне git=эфемерна | `feedback_memory_persistence.md` |
-
----
-
-## 🚦 PRE-FLIGHT CHECKLISTS (читать ПЕРЕД task-классом)
-
-| Триггер задачи | Чек-лист |
-|---|---|
-| новый async loop в bot/loops/ | `preflight_new_loop.md` |
-| новый detector / signal source | `preflight_new_detector.md` |
-| ALTER TABLE / новое поле в БД | `preflight_db_change.md` |
-| BingX / ccxt / order / VST | `preflight_exchange_task.md` |
-| бэктест / walkforward / data analysis | `preflight_backtest_research.md` |
-
----
-
-## 🔴 АРХИТЕКТУРА: Куб Метатрона
-
-→ `docs/ENCYCLOPEDIA.md` → "Архитектурная концепция: Куб Метатрона"
-
-**Перед любой архитектурной задачей** — задать 4 вопроса:
-1. Это строит/улучшает одну из 12 сфер?
-2. Это усиливает Shared Context Bus (центр)?
-3. Это добавляет ребро между сферами?
-4. Это feedback loop (одна сфера обучается от другой)?
-
-Статус: 11/12 сфер активны. Shadow: Сфера 4 (MTF SMC Specialist, ждёт 200+ SMC сделок).
-
-**Новые сферы (29-30.05.2026):**
-- **Сфера 14: WTService + RSIService** (ARCH-117) — ✅ **Phase 1+2 ГОТОВЫ (30.05)**. `core/intelligence/{wt,rsi}_service.py` единый источник. extended_indicators.py удалён, 26 тестов ✅.
-- **Сфера 8 PivotSphere** (ARCH-123) — ✅ Phase 1 (f7ce4fe) — Singleton + fibonacci_equiv.
-- **Сфера 6 v2 Reversal Mode** (ARCH-119) — WT OS/OB + ADX down + CHoCH = Волна 5→ABC. ЗАПРЕТ SHORT.
-- **SMC Sub-куб** (ARCH-120) — ✅ Phase 1 (2fd6cef) единый вход + liquidity в snapshot. Первый фрактальный куб.
-- **TPSelector магниты** (ARCH-122) — ✅ Часть 1a+2 (4bdaaa3+47b712e) — tp2 из Bus smc_snap.
-- **features_json snapshot** (ARCH-118) — 🟡 Вариант B принят: `combinator.compute_flags()` ОДНИМ кодом в live+бэктест → parity. До ML/re-mining.
-- **Elliott-Pivot Sub-куб** (vision) — WaveService + PivotSphere + FibClusters → PricePositionContext.
-
-**Порядок реализации новых сфер:** PivotSphere → RegimeV2 → WaveService (каждая prerequisite для следующей).
-
-**Архитектурные принципы (приняты, hot):**
-- `arch_timeframe.md` — ТФ всегда из данных, не хардкод
-- `arch_indicator_precompute.md` — pre-compute WT+trend в scan_one, детекторы читают колонки
-- WaveService = синхронный вызов в scan_loop, запись в Bus, НЕ полный async EventBus до Этапа 21
-
-**Архитектурные решения (cold, читать при работе с темой):**
-- `obsidian/Architecture/Signal-Types-Reference.md` — SignalType vs стратегии (28.03)
-- `obsidian/Architecture/Cascade-TSL-Pyramiding-Vision.md` — vision: каскадный TSL + пирамидинг
-
----
-
-## 🛠️ TOOLING
-
-| Скрипт | Назначение | Output |
-|---|---|---|
-| `tools/team_ask.py` | рой LLM с meta-синтезом (6 актив + sambanova/nvidia при ключах) | `obsidian/Team-Discussions/<date>-<slug>.md` |
-| `tools/llm_ask.py` | один LLM с auto-routing | stdout |
-| `tools/llm_delegator` | разгрузка контекста через Groq/Gemini | summary |
-| `tools/daily_pipeline.py` | daily Gemini (trade_review + log_digest + brief) | `memory/last_*.md` |
-| `tools/project_timeline.py` | хронология проекта | `memory/project_timeline.md` |
-| `tools/obsidian_enrich.py` | досье на задачу `DEV-X/ARCH-Y/TR-Z` | `obsidian/Tasks/<ID>.md` |
-| `tools/obsidian_indexer.py` | TIMELINE индекс | `obsidian/Index/TIMELINE.md` |
-
-→ `memory/llm-swarm-config.md` — конфиг роя (модели/провайдеры, проверено 30.05.2026) + факт: free Claude API НЕТ, аналоги Opus = DeepSeek-R1/GLM-4.7/Nemotron
-→ `memory/arch125-metatron-kernel.md` — ARCH-125 (ВЫСШИЙ): Куб→переносимый скелет `metatron-core` + примитив AdvisorPort (подключение, не встраивание); рой→standalone swarm-service. Док `docs/METATRON-KERNEL.md` + ADR-001
-→ `memory/team-topology.md` — кто есть кто: «DS-сессия»=Opus 4.8 (НЕ DeepSeek!); DeepSeek-flash=дирижёр-инструмент, DeepSeek-pro(DeepCode)=подключаемый агент. Не путать.
-→ `memory/reference_context_pipeline.md` — 3-уровневая память (auto / timeline / enrich)
-→ `memory/reference_daily_pipeline.md` — что запускается при старте бота
-→ `memory/reference_llm_delegator.md` — когда делегировать в Gemini/Groq
-→ `memory/reference_vue_dashboard_build.md` — `docker run node:lts npm run build` для Vue v2 (нет глобального Node)
-→ `memory/order_book_backlog.md` — 🔵 БЭКЛОГ order-book данных (стакан китов, магниты цены). Binance spot depth=5000 (лучший источник, без ключа), скрипты в `e:/tmp/`, идея OrderBookSphere. Задача OB-DATA в TASKS.md
-
-**Slash commands** (в `.claude/commands/`): `/team`, `/team-ask`, `/ask`, `/brief`, `/timeline`, `/postmortem`, `/enrich`, `/llm-keys`
-
----
-
-## 📁 PROJECT PATHS
-
-- Корень: `e:/MTF BOT/CURSOR/crypto_volume_bot/`
-- Entry: `oko_mtf.py` (бывш. `bot_with_subscriptions.py`, шим есть)
-- Python: `C:\Users\yogoru\AppData\Local\Programs\Python\Python312\python.exe` (3.12 — единственный с aiogram)
-- БД: `subscriptions.db` (главная таблица `simulated_trades`, поля см. `obsidian/Reference/`)
-- Дашборд: `http://localhost:8000`
-
-**Stack:** aiogram 3.4.1, ccxt 4.2.85, aiohttp 3.9.3, pandas, scikit-learn, yaml
-
----
-
-## 📚 OBSIDIAN VAULT (cold storage)
-
-→ `obsidian/Project-MOC.md` — главный хаб
-→ `obsidian/OBSIDIAN-RULES.md` — правила (wikilinks vs tags, frontmatter format)
-→ `obsidian/Tasks/Tasks.md`, `obsidian/Discussions/Discussions.md` — индексы
-
-**Архивы из памяти (21.05.2026 sweep):**
-- `obsidian/Research/2026-05-08-Classifier-Cascade-Research.md`
-- `obsidian/Architecture/Signal-Types-Reference.md`
-- `obsidian/Architecture/Cascade-TSL-Pyramiding-Vision.md`
-- `obsidian/Project-Log/Bugs-March-2026.md`
-- `obsidian/Reference/BingX-PlaceOrder-Response.md`
-- `memory/memory_audit_plan.md` — план дальнейших шагов B/C/D
-- `obsidian/Meta/Memory-System.md` — карта моей памяти (создаётся)
-
----
-
-## 🔴 ОБЯЗАТЕЛЬНО: ведение MD во время работы
-
-- После задачи → обновить `current_state.md`
-- При завершении сессии → полное обновление `current_state.md` + затронутые разделы `MEMORY.md`
-- При компакте контекста → промежуточный статус в `current_state.md`, раздел "В ПРОЦЕССЕ (прерван компактом)"
-- Формат: `## [HH:MM UTC] Агент: <Developer|Architect|TRADER>` + ✅/🔄/⚠️
-
----
-
-## 💡 ОТЛОЖЕННЫЕ ИДЕИ
-
-- [Vector Pattern Search](project_idea_vector_pattern_search.md) — HNSW soft-matching паттернов, риск-скоринг через исторических соседей. Вернуться когда VST-observer накопит 500+ сделок на паттерн.
-- [Dashboard charts ideas](project_idea_dashboard_charts.md) — 4 идеи action-able визуализаций (MFE captured ratio / time-to-MFE / leak heatmap / strategy timeline). Отложено 26.05 после D-075, trader сказал "после вернёмся".
-
----
+## 📁 PATHS
+Корень `e:/MTF BOT/CURSOR/crypto_volume_bot/` · Entry `oko_mtf.py` · БД `subscriptions.db` · Дашборд :8000 · Терминал :8010
+**Кэш `ohlcv_cache.db`**: 15m/1h/4h 2022→2026-07 (475 симв) · 5m 2025→2026-05 · 3m (42) · 1d (19)
+**Паркеты 1m** `C:\oko_data\history\1m` (junction `C:\oko_history`) 477 монет 2022-12→14.09.26 · **ТФ** `G:\oko_lab\tf` · замеры `G:\oko_lab\out` → [tf_precompute_lab_speed](tf_precompute_lab_speed.md)
+Stack: aiogram 3.4.1, ccxt 4.2.85, aiohttp 3.9.3, pandas, sklearn, yaml
 
 ## 📌 NOTES
-
-- Live stats обновляются Gemini в `memory/last_*.md` (не дублировать в MEMORY.md)
-- Bugs/incidents → `obsidian/Project-Log/`, не в hot memory
-- Старые "Этапы N" реализации (Этап 4.4 MFE, Этап 7 watchlist и т.д.) — давно в проде, не для MEMORY
-- ML/SL/TP детали — `core/` грепом, не пересказывать в индексе
+- 📘 [Методичка Эллиотта (артефакт)](elliott_guide_artifact.md) · ядро волн: https://claude.ai/code/artifact/455e8973-98a7-43c1-907f-13447d2608f4 · данные — `obsidian/Research/`
+- Obsidian: `obsidian/Project-MOC.md` · `OBSIDIAN-RULES.md` · Bugs → `obsidian/Project-Log/` · [🗺 карта аудитов 18.04–26.09](audits_history_map.md)
+- После задачи → `current_state.md`; сессия/компакт → + MEMORY.md · TASKS: заморожены GAMMA/LIQUIDATION/PAIRS

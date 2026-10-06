@@ -3,6 +3,12 @@ name: feedback-session-close-checklist
 description: Чек-лист закрытия сессии — все обязательные шаги перед финальным TTS
 metadata: 
   node_type: memory
+  triggers: 
+    - конец сессии
+    - закрытие сессии
+    - handoff
+    - TTS
+    - итоги
   type: feedback
   originSessionId: 314f4490-7a8f-430e-a77b-80b420ce50cc
 ---
