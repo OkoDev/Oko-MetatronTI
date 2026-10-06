@@ -172,11 +172,68 @@ def wave_c(df: pd.DataFrame, tf: str) -> list[dict]:
     return out
 
 
+def gates_vs_full_base(R, gates: list[str]) -> None:
+    """Проверка кандидатов КАК ГЕЙТА против ПОЛНОЙ базы.
+
+    🔴 Закон: фильтр меряется против полной базы, а не подменяет её
+    ([[golden_keys_matrix_verdict]]). Слепой отбор харнесса отвечает на вопрос
+    «лучше ли подвыборка», а торговое решение требует другого: сколько ПОТОКА
+    режем и сколько денег теряем вместе с ним. Гейт, поднимающий PF вдвое ценой
+    90% сделок, в бою бесполезен.
+
+    Печатаем на каждой строке: долю потока, PF, сумму и хрупкость — чтобы
+    «отсеивает много» нельзя было спутать с «зарабатывает больше»
+    ([[gate_threshold_frequency_vs_money]]).
+    """
+    import numpy as np
+
+    def _st(v):
+        if len(v) < 30:
+            return None
+        p = v["pnl"].values
+        pos, neg = p[p > 0].sum(), -p[p < 0].sum()
+        frail = np.sort(p)[:max(1, int(len(p) * 0.9))].sum()
+        return dict(n=len(p), wr=(p > 0).mean() * 100,
+                    pf=(pos / neg if neg > 0 else float("inf")),
+                    mean=p.mean(), total=p.sum(), frail=frail,
+                    cov=(v.groupby("sym")["pnl"].sum() > 0).mean() * 100)
+
+    for side in ("short", "long"):
+        S = R[R.side == side]
+        base = _st(S)
+        if base is None:
+            continue
+        print(f"\n  ── {side.upper()} · ПОЛНАЯ БАЗА n={base['n']} · PF {base['pf']:.2f} · "
+              f"сумма {base['total']:+.0f}% · хрупкость {base['frail']:+.0f} ──")
+        print(f"    {'гейт':<34}{'поток':>7}{'n':>6}{'PF':>7}{'сумма':>9}"
+              f"{'безтоп10%':>11}{'монет+':>8}")
+        for g in gates:
+            if g not in S.columns:
+                continue
+            v = S[S[g].fillna(0) > 0] if _is_bool_like(S[g]) else None
+            if v is None:
+                continue
+            s = _st(v)
+            if s is None:
+                print(f"    {g:<34}{len(v) / len(S) * 100:>6.0f}%  — мало сделок")
+                continue
+            print(f"    {g:<34}{s['n'] / base['n'] * 100:>6.0f}%{s['n']:>6}"
+                  f"{s['pf']:>7.2f}{s['total']:>+9.0f}{s['frail']:>+11.0f}{s['cov']:>7.0f}%")
+
+
+def _is_bool_like(col) -> bool:
+    u = set(col.dropna().unique().tolist())
+    return u <= {0, 1, 0.0, 1.0, True, False}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tf", default="1h")
     ap.add_argument("--coins", type=int, default=60)
     ap.add_argument("--core", action="store_true", help="фиксированное ядро (годы сравнимы)")
+    ap.add_argument("--save", default="", help="куда сохранить собранную выборку (.parquet)")
+    ap.add_argument("--gates", default="",
+                    help="через запятую: проверить признаки КАК ГЕЙТ против полной базы")
     a = ap.parse_args()
 
     print(f"МЕХАНИКА ВОЛНЫ C на {a.tf}: CHoCH → коррекция {PB} от A → цель |A|×{WAVE_K}, "
@@ -185,10 +242,33 @@ def main() -> int:
 
     R = collect(wave_c, tf=a.tf, n_symbols=a.coins, core=a.core)
 
+    if a.save:
+        try:
+            R.to_parquet(a.save)
+            print(f"выборка сохранена: {a.save} ({len(R)} сделок) — "
+                  f"повторный анализ без пересчёта")
+        except Exception as e:                       # noqa: BLE001
+            print(f"сохранить не вышло: {type(e).__name__}: {e}")
+
     print("\n" + "=" * 78)
     print("ОБЯЗАТЕЛЬНЫЕ СРЕЗЫ (база механики — без всяких фильтров)")
     print("=" * 78)
     report(R)
+
+    # режим года — харнесс его не печатает, а без него «год» читается неверно
+    print("\nРЕЖИМ ГОДА (медиана % net по сделкам года — бык/медведь по нашей выборке):")
+    for y, g in R.groupby("year"):
+        if len(g) < 30:
+            continue
+        print(f"    {int(y)}  n={len(g):>4}  медиана {g['pnl'].median():+.2f}%  "
+              f"доля плюсовых {(g['pnl'] > 0).mean() * 100:.0f}%  "
+              f"монет+ {(g.groupby('sym')['pnl'].sum() > 0).mean() * 100:.0f}%")
+
+    if a.gates:
+        print("\n" + "=" * 78)
+        print("ГЕЙТЫ ПРОТИВ ПОЛНОЙ БАЗЫ (сколько потока режем и что получаем)")
+        print("=" * 78)
+        gates_vs_full_base(R, [g.strip() for g in a.gates.split(",") if g.strip()])
 
     print("\n" + "=" * 78)
     print("СЛЕПОЙ ОТБОР IS→OOS: какие признаки добавляют к механике")
