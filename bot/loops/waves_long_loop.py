@@ -276,10 +276,19 @@ async def waves_long_loop(bot):
              f"МЕТКА: торгуем ОБА трека, коридор [{_lo0}; {_hi0}) помечается wv_in_corridor "
              f"(поток полный, ~69/мес — данные исполнения собираются по обоим)"
              + (f" · РИСК вне коридора ×{_rm0}" if _rm0 not in (None, 1, 1.0) else " · риск равный"))
+    # 🛡️ каркас обязан объявить себя при старте: выключенный ограничитель, о котором
+    # никто не знает, — это та же мина, что молчаливо выключенный источник
+    # ([[feedback_selftest_every_strategy_loud]])
+    _mo = cfg.get("trading.waves_long.max_open", None)
+    _dl = cfg.get("trading.waves_long.max_daily_loss_pct", None)
+    _sh = bool(cfg.get("trading.waves_long.short_enabled", False))
+    _frame = (f"слоты {_mo} · дневной лимит −{_dl}%" if (_mo is not None or _dl is not None)
+              else "🔴 НЕ ЗАДАН (ни слотов, ни дневного лимита)")
     logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d (из них устаревших помечено %d) · "
                 "дедуп по (uid, время события): повторные входы по тому же импульсу разрешены · "
-                "ширина стопа в долях импульса → %s",
-                QUEUE, len(done), len(stale), _mode)
+                "ширина стопа в долях импульса → %s · 🛡️ РИСК-КАРКАС: %s · ШОРТ: %s",
+                QUEUE, len(done), len(stale), _mode, _frame,
+                "включён (клетка = ядро ∧ стоп≥6%)" if _sh else "выключен")
     while True:
         try:
             fresh = _read_new(done)
