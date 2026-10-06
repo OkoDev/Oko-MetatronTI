@@ -90,6 +90,38 @@ def resolve(H, L, C, j, side, entry, sl, tp, ttl=TTL_BARS) -> float:
     return ((C[end] - entry) if side == "long" else (entry - C[end])) / entry * 100
 
 
+def _swings(df, sw_len: int = 20):
+    """Ближайший подтверждённый свинг выше / ниже цены на каждом баре.
+
+    Переиспользуем эталонные `confirmed_swings` и ту же каузальную схему, что в
+    `scripts/geometry_bench.py`: свинг появляется на баре ПОДТВЕРЖДЕНИЯ (idx+len),
+    а не на баре экстремума. Нужны как ЦЕЛЬ — по стенду геометрии 05.09 цель
+    «ближайший swing» единственная давала положительное среднее.
+    """
+    from core.smc.smc_engine import confirmed_swings
+
+    n = len(df)
+    C = df.close.values
+    sw_hi, sw_lo = np.full(n, np.nan), np.full(n, np.nan)
+    born: dict[int, list] = {}
+    for idx, price, kind in confirmed_swings(df, sw_len):
+        b = int(idx) + sw_len
+        if b < n:
+            born.setdefault(b, []).append((float(price), kind))
+    highs: list[float] = []
+    lows: list[float] = []
+    for i in range(n):
+        for price, kind in born.get(i, ()):
+            (highs if kind == "H" else lows).append(price)
+        up = [p for p in highs if p > C[i]]
+        dn = [p for p in lows if p < C[i]]
+        if up:
+            sw_hi[i] = min(up)
+        if dn:
+            sw_lo[i] = max(dn)
+    return sw_hi, sw_lo
+
+
 def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
     dh = load(sym, "4h")
     d1 = load(sym, "1h")
@@ -97,6 +129,7 @@ def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
     if dh is None or len(dh) < warmup + 200:
         return []
     H, L, C = dh.high.values, dh.low.values, dh.close.values
+    SW_HI, SW_LO = _swings(dh)
     out = []
     for t in range(warmup, len(dh) - TTL_BARS - 1, step):
         now = dh.index[t]
@@ -133,6 +166,61 @@ def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
         if risk <= 0.2 or risk > 25:
             continue
         pnl = resolve(H, L, C, t, side, price, sl, tp) - COST
+
+        # ── ГЕОМЕТРИЯ: тот же сигнал, но стоп НЕ из `invalid` ────────────
+        # Диагноз замера 06.10: разбор верно указывает направление и зону, но
+        # PF лучших клеток 1.01–1.08 при ПОЛОЖИТЕЛЬНОЙ медиане — типичная сделка
+        # в плюс, среднее съедают редкие крупные убытки. Классический признак
+        # слишком широкого стопа ([[stop_zone_survived_blind_test]]: весь эдж
+        # в РАЗМЕРЕ стопа; [[live_root_cause_costs_eat_tight_stops]]: тугой стоп
+        # отдаёт 36.5% риска косту). Меряем варианты на ОДНИХ И ТЕХ ЖЕ сигналах.
+        geo = {}
+        _atr = float(pd.Series(
+            np.maximum(H[max(0, t - 14):t + 1] - L[max(0, t - 14):t + 1],
+                       np.abs(H[max(0, t - 14):t + 1] - np.roll(C[max(0, t - 14):t + 1], 1)))
+        ).mean())
+        for gname, gsl in (
+            ("atr1", price - _atr if side == "long" else price + _atr),
+            ("atr2", price - 2 * _atr if side == "long" else price + 2 * _atr),
+            # доля импульса: 1/3 хода от начала счёта до цены — наш закон размера
+            ("imp33", price - abs(price - sl) / 3 if side == "long"
+                      else price + abs(price - sl) / 3),
+            ("imp50", price - abs(price - sl) / 2 if side == "long"
+                      else price + abs(price - sl) / 2),
+        ):
+            r2 = abs(price - gsl) / price * 100
+            if r2 <= 0.1 or r2 > 25:
+                geo[gname] = np.nan
+                continue
+            # цель держим в R от НОВОГО риска: 2R, как в июльском эдже
+            tp2 = (price + 2 * abs(price - gsl)) if side == "long" else (price - 2 * abs(price - gsl))
+            geo[gname] = resolve(H, L, C, t, side, price, gsl, tp2) - COST
+
+        # ── ЦЕЛЬ: стоп держим на `invalid`, варьируем ТОЛЬКО TP ──────────
+        # Четыре варианта стопа выше оказались ХУЖЕ базы (замер 06.10) — это
+        # третье воспроизведение [[stop_tightening_by_structure_dead]]. Значит
+        # непроверенной осью геометрии осталась ЦЕЛЬ. База здесь — первая цель
+        # сценария, то есть ФИБО-цель волны, а на стенде 05.09
+        # ([[geometry_bench_stop_wide_target_swing]]) фибо-расширения давали
+        # −0.7…−1.6%, и только «ближайший swing» — положительное среднее.
+        _risk_abs = abs(price - sl)
+        _sw = SW_HI[t] if side == "long" else SW_LO[t]
+        for tname, gtp in (
+            ("swing", _sw),
+            ("rr1", price + _risk_abs if side == "long" else price - _risk_abs),
+            ("rr2", price + 2 * _risk_abs if side == "long" else price - 2 * _risk_abs),
+            ("far", float(tgts[-1])),
+        ):
+            if gtp is None or gtp != gtp:
+                geo[f"t_{tname}"] = np.nan
+                continue
+            gtp = float(gtp)
+            # цель обязана быть по правильную сторону и не вплотную к цене
+            ok = (gtp > price) if side == "long" else (gtp < price)
+            if not ok or abs(gtp - price) / price * 100 <= 0.1:
+                geo[f"t_{tname}"] = np.nan
+                continue
+            geo[f"t_{tname}"] = resolve(H, L, C, t, side, price, sl, gtp) - COST
         lbl = (prog.get("labels") or [])
         out.append(dict(
             sym=sym, t=str(now)[:16], year=int(now.year), side=side, pnl=pnl,
@@ -145,6 +233,7 @@ def run_symbol(sym: str, step: int, warmup: int = 400) -> list[dict]:
             clear=int(len(scs) == 1),
             risk=round(risk, 2),
             rr=round(abs(tp - price) / max(1e-9, abs(price - sl)), 2),
+            **{f"pnl_{k}": v for k, v in geo.items()},
         ))
     return out
 
@@ -237,6 +326,73 @@ def main() -> int:
             continue
         show(f"{sd}: база", b)
         show(f"{sd}: score≥4 и ясно", stat(S[(S.score >= 4) & (S.clear == 1)]), b)
+
+    # ── ГЕОМЕТРИЯ на одних и тех же сигналах ────────────────────────────
+    print("\n" + "=" * 100)
+    print("ГЕОМЕТРИЯ: тот же сигнал, разный СТОП (цель 2R от нового риска)")
+    print("=" * 100)
+    sel = R[(R.score >= 4) & (R.clear == 1)]
+    print(f"  выборка: score ≥ 4 И один сценарий · n={len(sel)}")
+    print(f"  {'стоп':<22}{'n':>6}{'WR':>8}{'PF':>7}{'средн':>8}{'медиана':>8}"
+          f"{'сумма':>9}{'безтоп10%':>10}{'монет+':>7}")
+    for col, nm in (("pnl", "invalid разбора"), ("pnl_atr1", "1×ATR"),
+                    ("pnl_atr2", "2×ATR"), ("pnl_imp33", "треть до invalid"),
+                    ("pnl_imp50", "половина до invalid")):
+        if col not in sel.columns:
+            continue
+        v = sel[sel[col].notna()].rename(columns={col: "pnl"} if col != "pnl" else {})
+        if col != "pnl":
+            v = sel[sel[col].notna()].copy()
+            v["pnl"] = v[col]
+        s = stat(v)
+        if s is None:
+            print(f"  {nm:<22} — мало"); continue
+        print(f"  {nm:<22}{s['n']:>6}{s['wr']:>7.1f}%{s['pf']:>7.2f}{s['mean']:>+8.3f}"
+              f"{s['med']:>+8.3f}{s['total']:>+9.0f}{s['frail']:>+10.0f}{s['cov']:>7.0f}%")
+
+    print("\n  то же ТОЛЬКО SHORT (сторона, где база > 1):")
+    sh = sel[sel.side == "short"]
+    for col, nm in (("pnl", "invalid разбора"), ("pnl_atr1", "1×ATR"),
+                    ("pnl_atr2", "2×ATR"), ("pnl_imp33", "треть до invalid")):
+        if col not in sh.columns:
+            continue
+        v = sh[sh[col].notna()].copy()
+        v["pnl"] = v[col]
+        s = stat(v)
+        if s is None:
+            print(f"  {nm:<22} — мало"); continue
+        print(f"  {nm:<22}{s['n']:>6}{s['wr']:>7.1f}%{s['pf']:>7.2f}{s['mean']:>+8.3f}"
+              f"{s['med']:>+8.3f}{s['total']:>+9.0f}{s['frail']:>+10.0f}{s['cov']:>7.0f}%")
+
+    # ── ЦЕЛЬ: стоп на `invalid`, варьируем ТОЛЬКО TP ────────────────────
+    print("\n" + "=" * 100)
+    print("ЦЕЛЬ: тот же сигнал, тот же стоп (`invalid`), разный TP")
+    print("база = первая цель сценария, то есть ФИБО-цель волны")
+    print("=" * 100)
+
+    def _pair(frame, col, nm):
+        """альтернатива И база НА ТЕХ ЖЕ сделках — иначе подмена базы."""
+        v = frame[frame[col].notna()].copy()
+        if len(v) < 25:
+            print(f"  {nm:<22} — мало ({len(v)})"); return
+        b = stat(v)                                    # база на этих же строках
+        v2 = v.copy(); v2["pnl"] = v2[col]
+        s = stat(v2)
+        for tag, x in ((nm, s), (f"  ↳ база на этих же", b)):
+            print(f"  {tag:<22}{x['n']:>6}{x['wr']:>7.1f}%{x['pf']:>7.2f}"
+                  f"{x['mean']:>+8.3f}{x['med']:>+8.3f}{x['total']:>+9.0f}"
+                  f"{x['frail']:>+10.0f}{x['cov']:>7.0f}%")
+
+    for frame, title in ((sel, "score ≥ 4 И один сценарий"),
+                         (sel[sel.side == "short"], "то же ТОЛЬКО SHORT")):
+        print(f"\n  {title} · n={len(frame)}")
+        print(f"  {'цель':<22}{'n':>6}{'WR':>8}{'PF':>7}{'средн':>8}{'медиана':>8}"
+              f"{'сумма':>9}{'безтоп10%':>10}{'монет+':>7}")
+        for col, nm in (("pnl_t_swing", "ближайший swing"),
+                        ("pnl_t_rr1", "1R"), ("pnl_t_rr2", "2R"),
+                        ("pnl_t_far", "дальняя цель сцен.")):
+            if col in frame.columns:
+                _pair(frame, col, nm)
 
     print("\nПО ГОДАМ (score ≥ 4 И ясно против базы):")
     for y, g in R.groupby("year"):
