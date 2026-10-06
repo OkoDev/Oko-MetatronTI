@@ -3412,6 +3412,88 @@ async def start_dashboard(db_path: str = "subscriptions.db", host: str = "127.0.
             return web.json_response({"status": "ok", "monitoring": bot.is_monitoring})
         except Exception as e:
             return web.json_response({"status": "error", "error": str(e)}, status=500)
+    # ── N19: АНАЛИЗ ПО ЗАПРОСУ как продуктовая ручка (Егор 04.10: «полезная функция,
+    # если рассматривать проект как ПРОДУКТ доступного анализа для пользователей») ──
+    # Движок и человекочитаемый формат были готовы, но жили ТОЛЬКО за командой
+    # /intelligence в Telegram. Здесь тот же путь отдаётся наружу по HTTP.
+    _ANALYZE_CACHE: dict = {}          # symbol → (время, ответ)
+    _ANALYZE_LAST: dict = {}           # symbol → время последнего ЗАПУСКА (антидубль)
+    _ANALYZE_TTL = 120.0               # сек: повтор по той же паре отдаём из кэша
+    _ANALYZE_MIN_GAP = 20.0            # сек: чаще этого одну пару не считаем
+    _ANALYZE_LOCK = asyncio.Semaphore(2)   # анализ держит 6 ТФ — больше двух разом не пускаем
+
+    async def _handle_analyze(request: web.Request) -> web.Response:
+        """POST /api/analyze {"symbol": "BTC"} — ручной прогон анализа по паре.
+
+        Ограничители нужны не для красоты: один анализ грузит 6 ТФ и конкурирует
+        со сканом за семафор ([[analysis_must_be_dynamic]] — считать надо заново,
+        но не любой ценой). Поэтому: кэш ответа на 120 с, минимальный разрыв 20 с
+        на пару и не более двух одновременных прогонов.
+        """
+        import time as _t
+        try:
+            body = await request.json()
+        except Exception:                                  # noqa: BLE001
+            body = {}
+        raw = str(body.get("symbol") or request.query.get("symbol") or "").strip().upper()
+        if not raw:
+            return web.json_response({"ok": False, "error": "нужен symbol"}, status=400)
+        # приводим к инварианту пары ([[symbol_format_invariant_cube]])
+        sym = raw if "/" in raw else f"{raw}/USDT:USDT"
+        now = _t.time()
+
+        hit = _ANALYZE_CACHE.get(sym)
+        if hit and now - hit[0] < _ANALYZE_TTL and not body.get("force"):
+            return web.json_response({**hit[1], "cached": True,
+                                      "age_sec": round(now - hit[0], 1)})
+        last = _ANALYZE_LAST.get(sym, 0.0)
+        if now - last < _ANALYZE_MIN_GAP:
+            return web.json_response(
+                {"ok": False, "error": f"слишком часто по {sym}; подождите "
+                                       f"{_ANALYZE_MIN_GAP - (now - last):.0f} с"}, status=429)
+
+        ti = getattr(bot, "trading_intelligence", None) or getattr(bot, "intelligence", None)
+        if ti is None:
+            return web.json_response({"ok": False, "error": "движок анализа недоступен"}, status=503)
+
+        _ANALYZE_LAST[sym] = now
+        t0 = now
+        try:
+            async with _ANALYZE_LOCK:
+                rec = await ti.analyze_symbol(sym, manual_request=True)
+        except Exception as e:                             # noqa: BLE001
+            logger.warning("[N19] анализ %s не удался: %s", sym, e)
+            return web.json_response({"ok": False, "symbol": sym, "error": str(e)}, status=500)
+
+        if rec is None:
+            out = {"ok": True, "symbol": sym, "found": False,
+                   "reason": "рекомендация не построена (нет сигналов или отсечено фильтрами)",
+                   "took_sec": round(_t.time() - t0, 2)}
+        else:
+            text = ""
+            try:
+                from core.ui.intelligence_formatter import format_intelligence_message
+                text = format_intelligence_message(rec)
+            except Exception:                              # noqa: BLE001
+                pass
+            out = {"ok": True, "symbol": sym, "found": True,
+                   "direction": getattr(getattr(rec, "direction", None), "value", None),
+                   "action": getattr(rec, "action", None),
+                   "strength": getattr(rec, "overall_strength", None),
+                   "confidence": getattr(rec, "confidence", None),
+                   "entry": getattr(rec, "entry_price", None),
+                   "stop_loss": getattr(rec, "stop_loss", None),
+                   "take_profit": getattr(rec, "take_profit", None),
+                   "reasoning": getattr(rec, "reasoning", None),
+                   "text": text,
+                   "took_sec": round(_t.time() - t0, 2)}
+        _ANALYZE_CACHE[sym] = (_t.time(), out)
+        logger.info("[N19] анализ по запросу %s → found=%s за %.2f с",
+                    sym, out.get("found"), out.get("took_sec"))
+        return web.json_response(out)
+
+    app.router.add_post("/api/analyze", _handle_analyze)
+    app.router.add_get("/api/analyze", _handle_analyze)     # удобно дёрнуть из браузера
     app.router.add_get("/api/start_scan", _handle_start_scan)
     app.router.add_static("/static", Path(__file__).parent / "static")
     app.router.add_get("/api/dashboard", _handle_dashboard_api)
