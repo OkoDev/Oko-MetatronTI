@@ -178,8 +178,13 @@ def report() -> None:
                 continue
             pos, neg = v[v > 0].sum(), -v[v < 0].sum()
             frail = float(np.sort(v.values)[:max(1, int(len(v) * 0.9))].sum())
-            both = S[[f"pnl_{d}", "pnl_0"]].dropna()           # НА ОДНИХ И ТЕХ ЖЕ сделках
-            dd = (both[f"pnl_{d}"] - both["pnl_0"]).mean() if len(both) else np.nan
+            # НА ОДНИХ И ТЕХ ЖЕ сделках; при d=0 сравнивать столбец сам с собой нельзя
+            # (двойное имя колонки даёт DataFrame вместо Series)
+            if d == 0:
+                dd = 0.0
+            else:
+                both = S[[f"pnl_{d}", "pnl_0"]].dropna()
+                dd = float((both[f"pnl_{d}"] - both["pnl_0"]).mean()) if len(both) else np.nan
             print(f"  {d * 15:>4} мин   {len(v):>7}{S[f'skip_{d}'].mean() * 100:>10.0f}%"
                   f"{(v > 0).mean() * 100:>6.1f}%{pos / neg if neg > 0 else 9.99:>7.2f}"
                   f"{v.mean():>+8.3f}{v.median():>+9.3f}{frail:>+10.0f}{dd:>+20.3f}")
