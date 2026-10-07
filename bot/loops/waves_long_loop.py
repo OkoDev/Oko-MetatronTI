@@ -187,21 +187,25 @@ def _risk_frame(bot, cfg) -> tuple[bool, str]:
     return True, ""
 
 
-def _short_cell(entry, stop, core_full) -> bool:
-    """Живая клетка ШОРТА: полное ядро И стоп ≥6% цены (замер 29.09, n=36).
+def _long_proven(entry, stop, in_corridor: bool, proven_stop_pct) -> bool:
+    """ДОКАЗАННАЯ ЗОНА ЛОНГА: структурный стоп ≥ `proven_stop_pct` % цены ИЛИ коридор 30-50% импульса.
 
-    Оба условия обязательны вместе: стоп≥6% БЕЗ ядра даёт Δt −0.69 (мёртво), ядро без
-    стопа — слабо, вместе Δt +4.41 при перестановке p=0.002 и пройденном суррогате.
-    Коридор 30-50% импульса сюда НЕ переносится: он измерен для лонга, у шорта та же ось
-    мертва (20-30% → −0.66, 30-50% → −2.22) — [[waves_sides_measured_both]].
+    07.10 (Егор: «заставить работать то, что уже доказано»). Замер боевым кодом
+    (`scripts/wave_entry_delay_lab.py`, 198 монет, кост 0.35): лонг после завершённой пятёрки
+    вниз со стопом ≥6% цены — плюс В КАЖДОМ году: 2023 PF 3.50 · 2024 1.43 · 2025 4.36 ·
+    **2026 5.39 (183 сделки, 79% прибыльных, +7.59% в среднем)**. Коридор 30-50% импульса
+    (метка с 03.10) тоже живой (n=126, PF 3.50) — он остаётся, зона его не заменяет, а
+    расширяет. Стоп у доказанных сделок: медиана 9%, квартили 6.9–12.2%.
     """
-    if not core_full:
+    if in_corridor:
+        return True
+    if proven_stop_pct is None:
         return False
     try:
         e, s = float(entry), float(stop)
         if e <= 0:
             return False
-        return abs(e - s) / e * 100.0 >= 6.0
+        return abs(e - s) / e * 100.0 >= float(proven_stop_pct)
     except (TypeError, ValueError):
         return False
 
@@ -284,11 +288,14 @@ async def waves_long_loop(bot):
     _sh = bool(cfg.get("trading.waves_long.short_enabled", False))
     _frame = (f"слоты {_mo} · дневной лимит −{_dl}%" if (_mo is not None or _dl is not None)
               else "🔴 НЕ ЗАДАН (ни слотов, ни дневного лимита)")
+    _pp = cfg.get("trading.waves_long.proven_stop_pct", None)
+    _srm = cfg.get("trading.waves_long.short_risk_mult", None)
     logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d (из них устаревших помечено %d) · "
                 "дедуп по (uid, время события): повторные входы по тому же импульсу разрешены · "
-                "ширина стопа в долях импульса → %s · 🛡️ РИСК-КАРКАС: %s · ШОРТ: %s",
-                QUEUE, len(done), len(stale), _mode, _frame,
-                "включён (клетка = ядро ∧ стоп≥6%)" if _sh else "выключен")
+                "ширина стопа в долях импульса → %s · 🔑 ДОКАЗАННАЯ ЗОНА ЛОНГА: стоп ≥%s%% или коридор · "
+                "🛡️ РИСК-КАРКАС: %s · ШОРТ: %s",
+                QUEUE, len(done), len(stale), _mode, _pp, _frame,
+                (f"включён, доказанной зоны нет → риск ×{_srm}" if _sh else "выключен"))
     while True:
         try:
             fresh = _read_new(done)
@@ -344,12 +351,16 @@ async def waves_long_loop(bot):
                 _lo, _hi = (cfg.get("trading.waves_long.stop_rel_min", None),
                             cfg.get("trading.waves_long.stop_rel_max", None))
                 _in_cor = _in_corridor(_rel, _lo, _hi)
-                # 🌊 06.10 У ШОРТА СВОЯ КЛЕТКА — не коридор импульса, а `ядро ∧ стоп ≥6% цены`.
-                # Коридор 30-50% импульса измерен ДЛЯ ЛОНГА; у шорта та же ось мертва
-                # (20-30% → −0.66, 30-50% → −2.22). Переносить метку нельзя — это ровно тот
-                # случай, о котором предупреждает протокол: перенос = мерить, не предполагать.
+                # 🔑 07.10 ЛОНГ: полный риск — доказанной зоне (стоп ≥6% цены ИЛИ коридор импульса).
+                # 🔴 07.10 ШОРТ: доказанной зоны НЕТ. Клетка 06.10 (`core_full ∧ стоп≥6%`) на боевом
+                # коде дала PF 0.64, −2.04; «верная» (ядро без порога глубины) — тоже 0.64, −1.99;
+                # сторона целиком идёт за режимом года (2025 PF 1.43, 2023 0.57). Поэтому все шорты
+                # торгуются одинаковым минимальным риском — ради данных исполнения, без «клетки».
                 if _is_short:
-                    _in_cor = _short_cell(entry, stop, r.get("wv_core_full"))
+                    _in_cor = False
+                else:
+                    _in_cor = _long_proven(entry, stop, _in_cor,
+                                           cfg.get("trading.waves_long.proven_stop_pct", None))
                 if cfg.get("trading.waves_long.stop_rel_gate", False) and not _in_cor:
                     logger.info("[WAVES_LONG] %s пропуск (gate=true): стоп %s импульса вне коридора [%s; %s)",
                                 uid, "—" if _rel is None else f"{_rel:.3f}", _lo, _hi)
@@ -393,7 +404,7 @@ async def waves_long_loop(bot):
                 #   (см. wave5_shadow.coin_weight)
                 # 🌊🔑 04.10 РИСК-ВЕС ТРЕКА: вне коридора ширины стопа — меньший риск, а не отказ.
                 _rm = _risk_mult(r.get("wv_weight"), bool(_in_cor),
-                                 cfg.get("trading.waves_long.short_cell_risk_mult", None)
+                                 cfg.get("trading.waves_long.short_risk_mult", None)
                                  if _is_short else
                                  cfg.get("trading.waves_long.stop_rel_risk_mult", None),
                                  cfg.get("trading.risk_mult_cap", 1.5))
@@ -410,8 +421,8 @@ async def waves_long_loop(bot):
                                 "SHORT" if _is_short else "LONG",
                                 sym, r.get("wv_variant"), entry, stop, tp,
                                 "—" if _rel is None else f"{_rel:.3f}",
-                                ("В КЛЕТКЕ (ядро+стоп≥6%)" if _in_cor else "вне клетки") if _is_short
-                                else ("В КОРИДОРЕ" if _in_cor else "вне"),
+                                "шорт: доказанной зоны нет, минимальный риск" if _is_short
+                                else ("В ДОКАЗАННОЙ ЗОНЕ" if _in_cor else "вне зоны"),
                                 extra.get("risk_mult", "—"), r.get("wv_corr30", "—"),
                                 r.get("wv_vol30", "—"), res.trade_id)
                 else:

@@ -36,6 +36,7 @@ ENTRY_W_H, HOLD_H = 96, 240
 # (tf_sweep, кросс/line24/слом 15m); на меньшей истории механика не мерилась, а закон — сначала воспроизвести
 # боевую конфигурацию. Молодые монеты (CORE 16.09 — 256 баров) не теряются молча: список идёт в лог и в status.json.
 MIN_HIST_4H = 400
+WATCH_MIN = 5          # проход по активным сетапам, мин (было 15; см. run_loop)
 P = WaveParams()
 NOW = pd.Timestamp.utcnow()
 # 🟢 22.09 ВЕС МОНЕТЫ (Егор: «вес монеты добавить!»). Замер memory/waves_long_coin_weight_with_market: лонг после пятой платит
@@ -690,7 +691,13 @@ def run_loop(a):
             else: watch(a)
         except Exception as e_:
             print(f"[loop] ошибка: {type(e_).__name__} {e_}", flush=True)
-        nxt = pd.Timestamp.utcnow().floor("15min") + pd.Timedelta(minutes=15, seconds=20)
+        # ⏱️ 07.10 15 → 5 мин. Замер стоимости опоздания (`scripts/wave_entry_delay_lab.py`):
+        # доказанная зона лонга теряет на тех же сделках −0.17 / −0.38 / −0.46 п.п. за
+        # 15 / 30 / 45 мин опоздания при среднем +4.56; в бою медиана «событие → очередь» 24 мин.
+        # Триггер ловится на ЗАКРЫТОМ 15m-баре; если бар ещё не доехал до хранилища к проходу
+        # (+20 с), его ловил только СЛЕДУЮЩИЙ проход — через 15 мин. Частый проход стоит мало:
+        # активных сетапов единицы, полный скан по-прежнему раз в 4h-бар.
+        nxt = pd.Timestamp.utcnow().floor(f"{WATCH_MIN}min") + pd.Timedelta(minutes=WATCH_MIN, seconds=20)
         time.sleep(max(30, (nxt - pd.Timestamp.utcnow()).total_seconds()))
 
 

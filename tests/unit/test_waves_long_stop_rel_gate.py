@@ -168,39 +168,50 @@ def test_one_sided_threshold_works():
     assert _passes(0.20, 0.30, None) is False
 
 
-# ── 06.10 ШОРТ: своя клетка, не коридор импульса ──────────────────────────────
-# Егор «шорт-ядра +». Шорт отсекался наглухо с 16.09; замер 29.09 подтвердил это
-# на общей базе (Δt −0.09, при боевом косте вся сторона −0.22), но нашёл ОДНО живое
-# место — «полное ядро ∧ стоп ≥6% цены» (n=36, Δt +4.41, перестановка p=0.002).
-class TestShortCell:
-    def test_both_conditions_required(self):
-        from bot.loops.waves_long_loop import _short_cell
-        # ядро есть, стоп 10% → клетка
-        assert _short_cell(100.0, 110.0, True) is True
-        # ядро есть, стоп 3% → НЕ клетка (стоп узкий)
-        assert _short_cell(100.0, 103.0, True) is False
-        # стоп широкий, ядра нет → НЕ клетка: «стоп≥6% без ядра» мёртв (Δt −0.69)
-        assert _short_cell(100.0, 110.0, False) is False
-        # ни того, ни другого
-        assert _short_cell(100.0, 102.0, False) is False
+# ── 07.10 ДОКАЗАННАЯ ЗОНА ЛОНГА; у шорта зоны нет ─────────────────────────────
+# Егор: «заставить работать то, что уже доказано». Замер боевым кодом: лонг после
+# завершённой пятёрки вниз со стопом ≥6% цены — плюс в каждом году (2026 PF 5.39,
+# 183 сделки, +7.59%). Клетка шорта 06.10 не воспроизвелась ни в одном определении
+# (PF 0.64) — шорт идёт одинаковым минимальным риском, без клетки.
+class TestLongProven:
+    def test_wide_stop_is_proven(self):
+        from bot.loops.waves_long_loop import _long_proven
+        assert _long_proven(100.0, 90.0, False, 6.0) is True     # стоп 10% → зона
+        assert _long_proven(100.0, 97.0, False, 6.0) is False    # стоп 3%, не коридор → вне
+
+    def test_corridor_stays_proven(self):
+        """Коридор 30-50% импульса (метка с 03.10) зоной остаётся — зона его расширяет."""
+        from bot.loops.waves_long_loop import _long_proven
+        assert _long_proven(100.0, 97.0, True, 6.0) is True
 
     def test_boundary_is_six_percent(self):
-        from bot.loops.waves_long_loop import _short_cell
-        assert _short_cell(100.0, 106.0, True) is True      # ровно 6% — внутри
-        assert _short_cell(100.0, 105.99, True) is False    # чуть меньше — вне
+        from bot.loops.waves_long_loop import _long_proven
+        assert _long_proven(100.0, 94.0, False, 6.0) is True     # ровно 6% — внутри
+        assert _long_proven(100.0, 94.01, False, 6.0) is False   # чуть меньше — вне
 
-    @pytest.mark.parametrize("entry,stop", [(None, 110.0), (100.0, None),
-                                            ("x", 110.0), (0.0, 110.0)])
+    def test_no_threshold_means_corridor_only(self):
+        from bot.loops.waves_long_loop import _long_proven
+        assert _long_proven(100.0, 80.0, False, None) is False
+
+    @pytest.mark.parametrize("entry,stop", [(None, 90.0), (100.0, None),
+                                            ("x", 90.0), (0.0, 90.0)])
     def test_garbage_does_not_raise(self, entry, stop):
-        from bot.loops.waves_long_loop import _short_cell
-        assert _short_cell(entry, stop, True) is False
+        from bot.loops.waves_long_loop import _long_proven
+        assert _long_proven(entry, stop, False, 6.0) is False
 
-    def test_config_has_short_wired(self):
-        """Флаги должны читаться ЧЕРЕЗ config_loader, а не из сырого YAML."""
+    def test_short_cell_is_gone(self):
+        """Клетки шорта больше нет — функция удалена, чтобы её не вернули по ошибке."""
+        import bot.loops.waves_long_loop as m
+        assert not hasattr(m, "_short_cell")
+
+    def test_config_wired(self):
+        """Флаги читаются ЧЕРЕЗ config_loader, а не из сырого YAML."""
         from core.infra.config_loader import ConfigLoader
         cfg = ConfigLoader("config.yaml")
+        assert float(cfg.get("trading.waves_long.proven_stop_pct", 0)) == 6.0
         assert cfg.get("trading.waves_long.short_enabled", None) is True
-        assert float(cfg.get("trading.waves_long.short_cell_risk_mult", 0)) == 0.5
+        assert float(cfg.get("trading.waves_long.short_risk_mult", 0)) == 0.25
+        assert cfg.get("trading.waves_long.short_cell_risk_mult", None) is None
 
 
 # ── 06.10 РИСК-КАРКАС: слоты + дневной лимит ──────────────────────────────────
@@ -276,4 +287,5 @@ class TestRiskFrame:
         assert int(cfg.get("trading.waves_long.max_open", 0)) == 6
         assert float(cfg.get("trading.waves_long.max_daily_loss_pct", 0)) == 25.0
         pol = cfg.get("signal_router.source_policies.waves_long", {}) or {}
-        assert float(pol.get("risk_pct", 0)) == 0.5, "риск источника должен быть 0.5%"
+        # 07.10: 0.5 → 1.0 — экспозицию держит каркас (слоты + дневной лимит)
+        assert float(pol.get("risk_pct", 0)) == 1.0, "риск источника должен быть 1.0%"
