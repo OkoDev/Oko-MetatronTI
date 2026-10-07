@@ -16,6 +16,7 @@
 | `collect(mechanic, tf, n_symbols)` | прогоняет механику + клеит признаки на баре ВХОДА | признаки сами, забыть семью нельзя |
 | `report(R)` | обязательные срезы (год · стоп · хрупкость · охват) | закон, не опция |
 | `blind_select(R)` | IS = чётные монеты × ранние годы, OOS = нечётные × поздние | пересечение монет НУЛЕВОЕ |
+| **`scripts/research_verify.py`** (07.10) | 🧾 КАРТОЧКА ВЕРДИКТА: ярус 1 одним вызовом (деньги · нулевая модель сдвигом исходов · контроль · сверх геометрии · годы · охват · без лучших дней · ликвидность · перекрытие), ярус 2 — нулевая модель ВСЕГО поиска; журнал гипотез `G:/oko_lab/out/hypothesis_journal.jsonl` | `V.card(V.normalize(R, pnl=…, ts=…), mask, name=…, study=…, geo=("stop_pct",))` · `V.search_null(D, search, …)` · калибровка `scripts/verify_calibration.py` |
 | `universe(tf, n)` | вселенная из кэша, тот же seed → те же монеты | пороги истории в `MIN_BARS_TF` |
 | `load(sym, tf)` | OHLCV с DatetimeIndex | 🔴 SMC-детекторы требуют `reset_index(drop=True)` |
 | `mtf_flags(df, tf, senior)` | младший ТФ + старшие с ЗАКРЫТОГО бара (shift 1) | причинность встроена |

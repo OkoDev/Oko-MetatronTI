@@ -256,7 +256,9 @@ def collect(mechanic: Callable, *, tf: str = "15m", n_symbols: int = 25,
         oos = int(hashlib.md5(sym.encode()).hexdigest(), 16) % 2 == 1
         for t in trades:
             jf = int(t["entry_bar"])
-            row = {"sym": sym, "oos": oos, "year": int(df.index[jf].year),
+            # entry_ts — для карточки вердикта (`research_verify.normalize(R, ts="entry_ts")`):
+            # нулевая модель и «без лучших дней» работают по времени входа
+            row = {"sym": sym, "oos": oos, "year": int(df.index[jf].year), "entry_ts": df.index[jf],
                    "side": t.get("side", "?"), "pnl": float(t["pnl_pct"]) - cost}
             row.update({k: v for k, v in t.items()
                         if k not in ("entry_bar", "pnl_pct", "side")})
