@@ -55,7 +55,18 @@ COST_MARKET = 0.79         # круг по рынку
 
 # 🔴 НЕ ПРИЧИННЫЕ — переписываются задним числом. Проверено префиксным аудитом
 # 21.08: 150 из 151 флага чисты, этот единственный расходится.
-CAUSAL_BLACKLIST = {"bear_fvg_overlap_held", "bull_fvg_overlap_held"}
+# 🔴🔴 07.10 прицельный скан (`scripts/matrix_causality_scan.py`, бары где флаг =1, перепроверка на
+# полной истории): ставятся на бар САМОГО экстремума и подтверждаются задним числом — HH/HL/LH/LL,
+# Эллиотт, inducement, на всех ТФ. Прошли всю статистику (ярус 2 P 0.005, OOS 2025) с +5…+8% за сутки.
+CAUSAL_BLACKLIST = {"bear_fvg_overlap_held", "bull_fvg_overlap_held",
+                    "elliott_bull_impulse", "elliott_bear_impulse", "elliott_textbook",
+                    "inducement_bull", "inducement_bear"}
+# по НАЧАЛУ имени: подстрока `ll_` сидит внутри каждого `bull_…`
+CAUSAL_BLACKLIST_PREFIX = ("hh_", "hl_", "lh_", "ll_")
+
+
+def noncausal(col: str) -> bool:
+    return col.startswith(CAUSAL_BLACKLIST_PREFIX) or any(b in col for b in CAUSAL_BLACKLIST)
 
 # Семьи признаков — для отчёта «что вообще проверено»
 FAMILIES = {
@@ -173,7 +184,7 @@ def mtf_flags(df: pd.DataFrame, tf: str, senior: list[str] | None = None) -> pd.
 
     base = compute_flags(df, tf, include_pivots=True)
     base = base.drop(columns=[c for c in base.columns
-                              if any(b in c for b in CAUSAL_BLACKLIST)], errors="ignore")
+                              if noncausal(c)], errors="ignore")
     base = base.select_dtypes(include=["number", "bool"])
     out = [base]
     for stf in senior:
@@ -187,7 +198,7 @@ def mtf_flags(df: pd.DataFrame, tf: str, senior: list[str] | None = None) -> pd.
         except Exception:                                    # noqa: BLE001
             continue
         F = F.drop(columns=[c for c in F.columns
-                            if any(b in c for b in CAUSAL_BLACKLIST)], errors="ignore")
+                            if noncausal(c)], errors="ignore")
         F = F.select_dtypes(include=["number", "bool"])
         # 🔴 04.09: bool → float32 ДО shift. `shift(1)` вводит NaN, а NaN в булевой
         # колонке переводит её в dtype=object — 314 таких колонок хранились как массивы
@@ -580,5 +591,5 @@ def blind_select_num(R: pd.DataFrame, *, is_years=(0, 2024), oos_years=(2025, 99
 if __name__ == "__main__":
     print(__doc__)
     print("Это библиотека. Пример использования — в докстроке выше.")
-    print(f"\nчёрный список не-причинных: {sorted(CAUSAL_BLACKLIST)}")
+    print(f"\nчёрный список не-причинных: {sorted(CAUSAL_BLACKLIST)} + по началу имени {CAUSAL_BLACKLIST_PREFIX}")
     print(f"семьи признаков: {list(FAMILIES)}")
