@@ -1792,6 +1792,12 @@ signal_router:
       mode: live            # 🔴 28.09 КАНОН режима (live|shadow|off) — см. source_registry.mode_of
       trade_mode: choch_wavec_4h
       entry_order_type: LIMIT
+      # 🔴 07.10 ДРИФТ: без этого флага лимитки 4h-инстанса выпадали из центрального
+      # лайфцикла (`radar_armed_loop._check_pending`) — ни перевода в OPEN по филу, ни
+      # снятия по TTL. Флага не было, а запасной список `_CENTRAL_LIFECYCLE` знает только
+      # `choch_wavec`. Итог: ENSO исполнилась ~30.09 и 6 дней жила на бирже, а в SIM
+      # висела PENDING_ENTRY; KGEN — то же с 07.10. Тот же класс, что 21.08 у impulse_fib_15m.
+      pending_lifecycle: true
       entry_ttl_bars: 3
       entry_tf: 4h
       leverage: 4
