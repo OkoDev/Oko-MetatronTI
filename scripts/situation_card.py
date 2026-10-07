@@ -161,6 +161,19 @@ REGISTRY = [
                            "+1.31%/сд, PF 1.60, но медиана −1.74% и без лучших 10% −0.97% (держится на хвосте); "
                            "в бою риск 0.5%"),
      "src": "verify_card_unified (S1 вся база)"},
+    # нога старшей степени: смысл OTE ИЗМЕРЕН на лонгах ядра 4h (core/smc/fibonacci.py — канон 19.09; leg_zone_lab 18.09)
+    {"id": "degree_leg_ote_long", "side": "BUY", "status": "ℹ️",
+     "when": lambda r, x: r.get("w_side") == 1 and r.get("w_leg_band") is not None and np.isfinite(r.get("w_leg_band")),
+     "text": lambda r, x: (f"Пятая закончилась на глубине {r['w_leg_depth5']:.2f} ноги старшей степени. Замеры: "
+                           "корзины глубины (leg_zone_lab 18.09) — Δ к контролю OTE 0.62–0.79 +1.6 · глубокая 0.79–1.0 "
+                           "+0.8 · за пределами +0.7; лонги ядра 4h (1944 сд., 19.09) — зона OTE Δ к контролю +1.5…+1.7; "
+                           "входы ote_nested в мелкой части (<0.5) — хуже базы. Это контекст, не вход"),
+     "src": "core/smc/fibonacci.py (канон 19.09) · wave_analyst.py (замер 15.09)"},
+    {"id": "degree_leg_short", "side": "SELL", "status": "ℹ️",
+     "when": lambda r, x: r.get("w_side") == -1 and r.get("w_leg_band") is not None and np.isfinite(r.get("w_leg_band")),
+     "text": lambda r, x: (f"Пятая закончилась на глубине {r['w_leg_depth5']:.2f} ноги старшей степени — "
+                           "для ШОРТА смысл глубины не мерился"),
+     "src": "—"},
     {"id": "waves_short_none", "side": "SELL", "status": "⚠️",
      "when": lambda r, x: r.get("w_side") == -1,
      "text": "Шорт ядра волн: клетки НЕТ — полное ядро ∧ стоп ≥6% PF 0.64 (−2.04%/сд), шорт идёт за режимом года",
@@ -212,14 +225,20 @@ def _state(r: dict) -> dict:
                           ("pivot_above_R1_1D", "выше R1 дня"), ("pivot_below_S1_1D", "ниже S1 дня"),
                           ("pivot_above_PP_1W", "выше PP недели"), ("pivot_below_PP_1W", "ниже PP недели")) if flag(c)]
     ws = r.get("w_side")
+    big = None
     if ws is not None and np.isfinite(ws) and ws != 0:
         wave = (f"видна пятёрка → сетап {'ЛОНГ' if ws > 0 else 'ШОРТ'}"
                 f"{' (полное ядро)' if flag('w_core_full') else ''} · откат {_band_txt(r.get('w_retr'))} · "
                 f"возраст {_f(r.get('w_age_h'), 0)} ч")
+        d5 = r.get("w_leg_depth5")
+        if d5 is not None and np.isfinite(d5):
+            px = lambda v: f"{v:.6g}"                                                        # noqa: E731
+            big = (f"{px(r['w_leg_origin'])} → {px(r['w_leg_ext'])} (её корректирует импульс) · пятая на "
+                   f"{_band_txt(d5)} · цена сейчас {_f(r.get('w_leg_depth_now'), 2)}")
     else:
         wave = "пятёрки ядра 4h не видно"
     pr = r.get("atr_prank_1h")
-    return {
+    out = {
         "WT": wt + (f" · за час 15m: {', '.join(ev)}" if ev else ""),
         "ATR-тренд": f"1h {tr('atr_up_1h')} · 4h {tr('atr_up_4h__from_4h')} · 1d {tr('atr_up_1d__from_1d')}",
         "Волатильность": (f"ATR 1h — {pr * 100:.0f}-й перцентиль своей истории" if pr is not None and np.isfinite(pr)
@@ -227,13 +246,21 @@ def _state(r: dict) -> dict:
         "SMC": (", ".join(smc) + " · " if smc else "") + liq,
         "Пивоты": ", ".join(piv) or "—",
         "Волна ядра": wave,
-        "Дневная нога": f"вверх {_band_txt(r.get('legup_depth'))} · вниз {_band_txt(r.get('legdn_depth'))}",
+    }
+    # 08.10 «одна нога в другой»: старшая степень — та, что корректирует импульс (как разбор и Oko-WAVES);
+    # текущая — младшая, при видимой пятёрке обычно та, на вершине которой начался сам импульс
+    if big:
+        out["Нога старшей степени"] = big
+    out.update({
+        "Текущая нога": (f"вверх {_band_txt(r.get('legup_depth'))} · вниз {_band_txt(r.get('legdn_depth'))}"
+                         + (" (младшая степень)" if big else "")),
         "Режим": f"дрейф вселенной 30д {_f(r.get('mkt_drift30'), 1, True)}%",
         "Позиционирование": (f"розница L/S {_f(r.get('pos_retail_ls'), 2)} · топы {_f(r.get('pos_top_ls'), 2)} · "
                              f"ΔOI 24ч {_f(r.get('pos_doi_24h'), 1, True)}%"
                              if r.get("pos_retail_ls") is not None and np.isfinite(r.get("pos_retail_ls"))
                              else "нет свежих (Binance отдаёт метрики по вчера)"),
-    }
+    })
+    return out
 
 
 def _rates(c: pd.Series | None) -> dict | None:
@@ -360,8 +387,9 @@ def card(base: str, side: str | None = None, stop: float | None = None) -> dict:
 def summary_text(c: dict) -> str:
     """Короткий текст для окна подтверждения ордера."""
     L = [f"КАРТА {c['base']} · закрытый час {str(c['hour'])[:16]} UTC"]
-    for k in ("WT", "Волна ядра", "Дневная нога", "Режим"):
-        L.append(f"{k}: {c['state'][k]}")
+    for k in ("WT", "Волна ядра", "Нога старшей степени", "Текущая нога", "Режим"):
+        if k in c["state"]:
+            L.append(f"{k}: {c['state'][k]}")
     r, u = c.get("rates"), c.get("usual") or {}
     if r:
         lo, sh = r["long"], r["short"]

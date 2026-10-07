@@ -105,13 +105,45 @@ def _wave_ctx(df: pd.DataFrame) -> pd.DataFrame:
         for s in out:
             rows.append({"tt": tt, "time": idx_h[tt], "side": s["side"], "p0": s["p0"], "p5": s["p5"],
                          "p4": s["p4_target"], "top_time": s["top_time"], "core": s["core"],
-                         "core_full": s["core_full"], "depth5": s["depth5"], "imp_pct": s["imp_pct"]})
+                         "core_full": s["core_full"], "depth5": s["depth5"], "imp_pct": s["imp_pct"],
+                         "t0": idx_h[int(s["a"])]})          # начало импульса — якорь ноги старшей степени
+    return pd.DataFrame(rows)
+
+
+def _degree_legs(df: pd.DataFrame, W: pd.DataFrame) -> pd.DataFrame:
+    """НОГА СТАРШЕЙ СТЕПЕНИ для каждой пятёрки (08.10, Егор: «будем видеть одну ногу в другой?» — да).
+    Та же постановка, что разбор и тень: дневная нога, которую корректирует 4h-импульс — свинг ДО начала
+    импульса (t0) и ЗА экстремумом пятой (p5), конец ноги — до вершины пятой. Считается ОДИН раз на пятёрку,
+    в момент, когда ядро её впервые увидело (only закрытые дни/4h к этому моменту) — без заглядывания.
+    Текущая нога (`_leg_block`, как шина) — младшая степень: при видимой пятёрке она обычно та, на вершине
+    которой начался сам импульс, и её глубина ~1 почти по определению (SKR 08.10: 1.09 против 0.66)."""
+    from core.waves.wave_analyst import daily_leg
+    d = df.copy()
+    d.index = d.index.tz_convert(None)
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    d4, dd = d.resample("4h").agg(agg).dropna(), d.resample("1D").agg(agg).dropna()
+    first = W.sort_values("visible").drop_duplicates(["t0", "top_time", "side"], keep="first")
+    rows = []
+    for _, s in first.iterrows():
+        now = s.visible
+        ddc, d4c = dd[dd.index + pd.Timedelta(days=1) <= now], d4[d4.index + pd.Timedelta("4h") <= now]
+        L = None
+        if len(ddc) >= 40 and not d4c.empty:
+            try:
+                L = daily_leg(d4c, pd.Timestamp(s.t0), s.side == "SHORT", float(s.p5),
+                              pd.Timestamp(s.top_time), now, dd=ddc)
+            except Exception:                            # noqa: BLE001
+                L = None
+        rows.append({"t0": s.t0, "top_time": s.top_time, "side": s.side,
+                     "leg_o": L["origin"] if L else np.nan, "leg_e": L["ext"] if L else np.nan,
+                     "leg_d5": L["depth"] if L else np.nan})
     return pd.DataFrame(rows)
 
 
 def _wave_block(sym: str, df: pd.DataFrame) -> pd.DataFrame:
     cols = ["w_side", "w_core", "w_core_full", "w_depth5", "w_imp_pct", "w_age_h", "w_retr", "w_to_p4",
-            "w_retr_band", "w_in_ote"]
+            "w_retr_band", "w_in_ote", "w_leg_origin", "w_leg_ext", "w_leg_depth5", "w_leg_band", "w_leg_in_ote",
+            "w_leg_depth_now"]
     empty = pd.DataFrame(np.nan, index=df.index, columns=cols)
     W = _wave_ctx(df)
     if W.empty:
@@ -120,6 +152,8 @@ def _wave_block(sym: str, df: pd.DataFrame) -> pd.DataFrame:
     W = (W.assign(cf=W.core_full.astype(int))
           .sort_values(["tt", "top_time", "cf"]).groupby("tt").tail(1))
     W = W.assign(visible=pd.to_datetime(W.time) + pd.Timedelta("4h")).sort_values("visible")
+    G = _degree_legs(df, W)
+    W = W.merge(G, on=["t0", "top_time", "side"], how="left").sort_values("visible")
     L = pd.DataFrame({"tc": df.index.tz_convert(None) + pd.Timedelta("1h"), "close": df.close.values})
     M = pd.merge_asof(L, W, left_on="tc", right_on="visible", direction="backward",
                       tolerance=WAVE_MAX_AGE)
@@ -141,6 +175,14 @@ def _wave_block(sym: str, df: pd.DataFrame) -> pd.DataFrame:
     r = out.w_retr.values
     out["w_retr_band"] = np.array([np.nan if not np.isfinite(x) else (-1.0 if x < 0 else ote_band_code(x)) for x in r])
     out["w_in_ote"] = np.array([np.nan if not np.isfinite(x) else float(in_ote(x)) for x in r])
+    # нога СТАРШЕЙ степени: где закончилась пятая (фиксировано на пятёрку) и где цена сейчас
+    o, e = M.leg_o.values.astype(float), M.leg_e.values.astype(float)
+    d5 = M.leg_d5.values.astype(float)
+    sp = np.abs(o - e)
+    out["w_leg_origin"], out["w_leg_ext"], out["w_leg_depth5"] = o, e, d5
+    out["w_leg_band"] = np.array([np.nan if not np.isfinite(x) else ote_band_code(x) for x in d5])
+    out["w_leg_in_ote"] = np.array([np.nan if not np.isfinite(x) else float(in_ote(x)) for x in d5])
+    out["w_leg_depth_now"] = np.where(sp > 0, np.abs(M.close.values - e) / sp, np.nan)
     return out
 
 
