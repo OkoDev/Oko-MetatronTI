@@ -101,7 +101,11 @@ def run_symbol(sym: str) -> list[dict]:
             rel = stop_pct / imp if imp and imp == imp and imp > 0 else np.nan
             proven = side == "LONG" and (stop_pct >= PROVEN or (0.30 <= rel < 0.50))
             out.append(dict(sym=sym, side=side, entry_time=str(et)[:16], stop_pct=round(stop_pct, 2),
-                            proven=bool(proven), pnl=pnl, how=how))
+                            proven=bool(proven), pnl=pnl, how=how,
+                            # 08.10: поля детектора для проверки «WT пятой глубже −75» вне выборки
+                            top_time=str(st.get("top_time"))[:16], wt_top=st.get("wt_top"),
+                            fractal=bool(st.get("fractal")), core_full=bool(st.get("core_full")),
+                            imp_pct=imp))
     return out
 
 
@@ -119,7 +123,7 @@ def main() -> int:
             if i % 100 == 0:
                 print(f"  ... {i}/{len(syms)} · сделок {len(rows)} · {time.time() - t0:.0f} с", flush=True)
     R = pd.DataFrame(rows)
-    R.to_pickle(Path("G:/oko_lab/out/wave_entry_delay") / "forward_fresh.pkl")
+    R.to_pickle(Path("G:/oko_lab/out/wave_entry_delay") / os.environ.get("FRESH_OUT", "forward_fresh.pkl"))
     print(f"готово: {len(R)} сделок · {time.time() - t0:.0f} с\n")
     if R.empty:
         print("🔴 сделок нет — отказ, а не вывод")

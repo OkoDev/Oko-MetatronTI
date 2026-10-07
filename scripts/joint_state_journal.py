@@ -103,10 +103,18 @@ def _wave_ctx(df: pd.DataFrame) -> pd.DataFrame:
         except Exception:                                # noqa: BLE001
             continue
         for s in out:
+            wp = s["wave_px"]
+            ns = list(s.get("ns") or [np.nan] * 5)
+            l3, l5 = abs(wp[2] - wp[3]), abs(wp[4] - wp[5])
             rows.append({"tt": tt, "time": idx_h[tt], "side": s["side"], "p0": s["p0"], "p5": s["p5"],
                          "p4": s["p4_target"], "top_time": s["top_time"], "core": s["core"],
                          "core_full": s["core_full"], "depth5": s["depth5"], "imp_pct": s["imp_pct"],
-                         "t0": idx_h[int(s["a"])]})          # начало импульса — якорь ноги старшей степени
+                         "t0": idx_h[int(s["a"])],           # начало импульса — якорь ноги старшей степени
+                         # младший слой детектора (08.10, замер wave_detector_layers_lab) — в журнал не пишется
+                         "fractal": s["fractal"], "altern_type": s["altern_type"], "altern_form": s["altern_form"],
+                         "count_ok": s["count_ok"], "w2_retr": s["w2_retr"], "w4_retr": s["w4_retr"],
+                         "w3_ext": s["w3_ext"], "wt_top": s["wt_top"], "ns5": ns[4], "ns_total": float(np.nansum(ns)),
+                         "w5_rel": l5 / l3 if l3 else np.nan})
     return pd.DataFrame(rows)
 
 
