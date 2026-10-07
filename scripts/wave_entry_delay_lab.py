@@ -46,6 +46,7 @@ DELAYS = (0, 1, 2, 3, 4, 8)          # баров 15m → 0 / 15 / 30 / 45 / 60 
 HOLD_H = 240
 COST = 0.35                           # линейка коста — та же, что во всех замерах сессии
 WARMUP = 400
+ROWS = os.environ.get("DELAY_ROWS", "rows.pkl")   # отдельный файл на прогон — не затирать прежний
 
 
 def _walk(hi, lo, cl, lt, k0, side, e, sl, tp):
@@ -118,6 +119,12 @@ def run_symbol(sym: str) -> list[dict]:
             rec = dict(sym=sym, side=side, top_time=str(st.get("top_time"))[:16],
                        entry_time=str(et)[:16], trigger=ls.get("trigger"),
                        core_full=bool(st.get("core_full")), core=bool(st.get("core")),
+                       # 07.10: составные части ядра ПО ОТДЕЛЬНОСТИ — чтобы собрать клетку шорта
+                       # «ядро БЕЗ порога глубины» (fractal ∧ altern ∧ count_ok), которая записана
+                       # живой, а не core_full (с depth5 ≥ 0.5), которую 06.10 ошибочно взяли в бой
+                       fractal=bool(st.get("fractal")), altern_type=bool(st.get("altern_type")),
+                       altern_form=bool(st.get("altern_form")), count_ok=bool(st.get("count_ok")),
+                       depth5=float(st.get("depth5")) if st.get("depth5") is not None else np.nan,
                        stop_pct=round(stop_pct, 3), imp_pct=imp,
                        stop_rel=(stop_pct / imp) if imp and imp == imp and imp > 0 else np.nan)
             for d in DELAYS:
@@ -153,12 +160,12 @@ def run(n_coins: int, procs: int) -> None:
             if i % 10 == 0:
                 print(f"  ... {i}/{len(syms)} монет · сетапов с входом {len(rows)} · "
                       f"{time.time() - t0:.0f} с", flush=True)
-    pickle.dump(rows, open(OUT / "rows.pkl", "wb"))
+    pickle.dump(rows, open(OUT / ROWS, "wb"))
     print(f"готово: {len(rows)} сетапов · {time.time() - t0:.0f} с", flush=True)
 
 
 def report() -> None:
-    R = pd.DataFrame(pickle.load(open(OUT / "rows.pkl", "rb")))
+    R = pd.DataFrame(pickle.load(open(OUT / ROWS, "rb")))
     R["year"] = pd.to_datetime(R.entry_time).dt.year
     print(f"сетапов с входом: {len(R)} · монет {R.sym.nunique()} · годы {sorted(R.year.unique())}")
     cell = R.core_full & (R.stop_pct >= 6.0)
