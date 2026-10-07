@@ -118,18 +118,30 @@ def _download_month(sym: str, tf: str, month: str) -> list[tuple] | None:
     return _fetch_zip(url)
 
 
-def _fetch_zip(url: str) -> list[tuple] | None:
-    """Общий загрузчик zip-CSV (месячный и дневной форматы идентичны)."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "oko-remine/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        return None
-    except Exception:
-        return None
+class _NetErr(list):
+    """Сетевая ошибка после повторов — ложна, как «пусто», но отличима от 404.
+    🔴 08.10: раньше ЛЮБАЯ ошибка возвращала None и считалась «404/пусто» — два загрузчика разом
+    (24 + 16 потоков) дали 9165 «пропусков» из 9252 и отчёт «ГОТОВО» без единой тревоги."""
+
+
+def _fetch_zip(url: str, tries: int = 3) -> list[tuple] | None:
+    """Общий загрузчик zip-CSV (месячный и дневной форматы идентичны). 404 → None (дня/месяца нет);
+    иная ошибка → повтор с паузой, после `tries` неудач → _NetErr (считается отдельно и громко)."""
+    import time as _t
+    for a in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "oko-remine/1.0"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+        except Exception:                                # noqa: BLE001
+            pass
+        _t.sleep(2 * (a + 1))
+    else:
+        return _NetErr()
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
         raw = zf.read(zf.namelist()[0]).decode("utf-8", "replace")
@@ -295,7 +307,7 @@ def main() -> int:
     conn = sqlite3.connect(CACHE_DB, timeout=60)
     _ensure_schema(conn)
 
-    done = bars = miss = 0
+    done = bars = miss = err = 0
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futs = {ex.submit(_download_day if kind == "day" else _download_month, s, t, m): (s, t, m)
                 for (s, t, m, kind) in jobs}
@@ -308,14 +320,18 @@ def main() -> int:
                 bars += _store(conn, cache_sym, t, rows)
                 if done % 200 == 0:
                     conn.commit()
+            elif isinstance(rows, _NetErr):
+                err += 1
             else:
                 miss += 1
             if done % 500 == 0:
-                print(f"[vision] {done}/{len(jobs)} | баров+{bars} | 404/пусто {miss}", flush=True)
+                print(f"[vision] {done}/{len(jobs)} | баров+{bars} | 404/пусто {miss} | 🔴 сеть {err}", flush=True)
     conn.commit()
     conn.close()
-    print(f"[vision] ГОТОВО: {done} заданий, +{bars} баров, {miss} пропущено(404)", flush=True)
-    return 0
+    print(f"[vision] ГОТОВО: {done} заданий, +{bars} баров, {miss} пропущено(404)"
+          + (f" · 🔴 СЕТЕВЫХ ОШИБОК {err} — запустить повторно, INSERT OR IGNORE доберёт" if err else ""),
+          flush=True)
+    return 1 if err else 0
 
 
 if __name__ == "__main__":

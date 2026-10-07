@@ -48,7 +48,8 @@ TRIGGERS = {                                              # имя → (коло
     "wt_os_1h": ("wt_os_1h", "LONG"), "wt_ob_1h": ("wt_ob_1h", "SHORT"),
     "wt_os_4h": ("wt_os_4h__from_4h", "LONG"), "wt_ob_4h": ("wt_ob_4h__from_4h", "SHORT"),
 }
-OUTCOMES = ("fwd_4", "fwd_24", "fwd_72", "mfe_24", "mae_24")
+OUTCOMES = ("fwd_4", "fwd_24", "fwd_72", "mfe_24", "mae_24", "geo_tight_long", "geo_tight_short",
+            "geo_wide_long", "geo_wide_short")
 META = {"sym", "close"}
 K_SINGLE, K_PAIR_POOL, K_PAIR = 20, 30, 20
 SUPPORT = 0.01                                            # доля событий IS, ниже — условие не рассматривается

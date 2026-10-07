@@ -109,7 +109,8 @@ def _wave_ctx(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _wave_block(sym: str, df: pd.DataFrame) -> pd.DataFrame:
-    cols = ["w_side", "w_core", "w_core_full", "w_depth5", "w_imp_pct", "w_age_h", "w_retr", "w_to_p4"]
+    cols = ["w_side", "w_core", "w_core_full", "w_depth5", "w_imp_pct", "w_age_h", "w_retr", "w_to_p4",
+            "w_retr_band", "w_in_ote"]
     empty = pd.DataFrame(np.nan, index=df.index, columns=cols)
     W = _wave_ctx(df)
     if W.empty:
@@ -134,7 +135,59 @@ def _wave_block(sym: str, df: pd.DataFrame) -> pd.DataFrame:
         "w_to_p4": np.where((M.p4 - M.p5).values != 0,
                             (M.close.values - M.p5.values) / (M.p4 - M.p5).values, np.nan),
     }, index=df.index)
+    # канон OTE на откате волны: корзина 0..4 как у дневной ноги; −1 — цена ЗА пятой (откат ещё не начался)
+    from core.smc.fibonacci import ote_band_code, in_ote
+    r = out.w_retr.values
+    out["w_retr_band"] = np.array([np.nan if not np.isfinite(x) else (-1.0 if x < 0 else ote_band_code(x)) for x in r])
+    out["w_in_ote"] = np.array([np.nan if not np.isfinite(x) else float(in_ote(x)) for x in r])
     return out
+
+
+def _leg_block(df: pd.DataFrame) -> pd.DataFrame:
+    """ДНЕВНАЯ НОГА + КАНОН OTE (v2, Егор 07.10: «где мы в волне или OTE»). Та же функция, что поля шины
+    `wave_leg_up/dn` (`core.waves.wave_analyst.daily_leg`), и канон корзин `core.smc.fibonacci.ote_band_code`
+    (0 мелкая <0.5 · 1 0.5–0.62 · 2 OTE 0.62–0.79 · 3 глубокая 0.79–1.0 · 4 за пределами).
+    up — нога вверх (откат вниз = контекст ЛОНГА), dn — нога вниз (откат вверх = контекст ШОРТА).
+    🔴 Отличие от бота: нога берётся на закрытии ДНЯ (бот обновляет на каждом закрытом 4h), глубина цены в ноге —
+    каждый час. Причинно: только закрытые дни и 4h до `now`."""
+    from core.waves.wave_analyst import daily_leg
+    from core.smc.fibonacci import ote_band_code, in_ote
+    cols = [f"leg{d}_{k}" for d in ("up", "dn") for k in ("depth", "band", "in_ote", "span_pct")]
+    d = df.copy()
+    d.index = d.index.tz_convert(None)
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    d4 = d.resample("4h").agg(agg).dropna()
+    dd = d.resample("1D").agg(agg).dropna()
+    rows = []
+    for D in dd.index[dd.index >= T0 - pd.Timedelta(days=2)]:
+        now = D + pd.Timedelta(days=1)
+        ddc, d4c = dd[dd.index + pd.Timedelta(days=1) <= now], d4[d4.index + pd.Timedelta("4h") <= now]
+        if len(ddc) < 40 or d4c.empty:
+            continue
+        px = float(d4c.close.iloc[-1])
+        r = {"now": now}
+        for key, want_top in (("up", False), ("dn", True)):
+            try:
+                L = daily_leg(d4c, now, want_top, px, now, now, dd=ddc)
+            except Exception:                            # noqa: BLE001
+                L = None
+            r[f"{key}_o"], r[f"{key}_e"] = (L["origin"], L["ext"]) if L else (np.nan, np.nan)
+        rows.append(r)
+    if not rows:
+        return pd.DataFrame(np.nan, index=df.index, columns=cols)
+    R = pd.DataFrame(rows).sort_values("now")
+    Lh = pd.DataFrame({"tc": d.index + pd.Timedelta("1h"), "close": d.close.values})
+    M = pd.merge_asof(Lh, R, left_on="tc", right_on="now", direction="backward")
+    out = {}
+    for key in ("up", "dn"):
+        o, e, c = M[f"{key}_o"].values, M[f"{key}_e"].values, M.close.values
+        span = np.abs(o - e)
+        dep = np.where(span > 0, np.abs(c - e) / span, np.nan)
+        out[f"leg{key}_depth"] = dep
+        out[f"leg{key}_band"] = np.array([ote_band_code(x) if np.isfinite(x) else np.nan for x in dep])
+        out[f"leg{key}_in_ote"] = np.array([float(in_ote(x)) if np.isfinite(x) else np.nan for x in dep])
+        out[f"leg{key}_span_pct"] = np.where(np.isfinite(e) & (e > 0), span / e * 100, np.nan)
+    return pd.DataFrame(out, index=df.index)[cols]
 
 
 def _regime_block(df: pd.DataFrame) -> pd.DataFrame:
@@ -182,13 +235,88 @@ def _misc_block(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out, index=df.index)
 
 
-def build(sym: str, df: pd.DataFrame | None = None) -> pd.DataFrame:
+GEO = {"tight": (1.5, 3.0), "wide": (4.0, 8.0)}   # стоп и цель в ATR(1h,14); горизонт GEO_H
+GEO_H = 72
+
+
+def _geo_block(df: pd.DataFrame) -> pd.DataFrame:
+    """ИСХОД ПО СТОПУ И ЦЕЛИ (v2, Егор 07.10: «что даст?» → деньги, близкие к торговле). Фиксированный
+    горизонт масштабирует доход волатильностью — на этом держалась «капитуляция». Здесь: вход по open
+    следующего бара, стоп/цель = k·ATR от входа, первое касание; стоп и цель на одном баре → СТОП
+    (худший случай); не коснулось за GEO_H ч → выход по close. Валовые %, отдельно лонг и шорт."""
+    h, l, c = df.high.values, df.low.values, df.close.values
+    tr = pd.concat([df.high - df.low, (df.high - df.close.shift()).abs(),
+                    (df.low - df.close.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().values
+    n = len(df)
+    e = np.r_[df.open.values[1:], np.nan]                 # вход: open следующего бара
+    out = {}
+    for nm, (ks, kt) in GEO.items():
+        for side, sg in (("long", 1.0), ("short", -1.0)):
+            stop, tgt = e - sg * ks * atr, e + sg * kt * atr
+            res = np.full(n, np.nan)
+            done = np.zeros(n, bool)
+            for k in range(1, GEO_H + 1):
+                j = np.arange(n) + k
+                ok = (j < n) & ~done & np.isfinite(e) & np.isfinite(atr)
+                if not ok.any():
+                    break
+                jj = np.minimum(j, n - 1)
+                hit_s = ok & ((l[jj] <= stop) if sg > 0 else (h[jj] >= stop))
+                hit_t = ok & ~hit_s & ((h[jj] >= tgt) if sg > 0 else (l[jj] <= tgt))
+                res[hit_s] = sg * (stop[hit_s] - e[hit_s]) / e[hit_s] * 100
+                res[hit_t] = sg * (tgt[hit_t] - e[hit_t]) / e[hit_t] * 100
+                done |= hit_s | hit_t
+                if k == GEO_H:
+                    tm = ok & ~done
+                    res[tm] = sg * (c[jj][tm] - e[tm]) / e[tm] * 100
+            out[f"geo_{nm}_{side}"] = res
+    return pd.DataFrame(out, index=df.index)
+
+
+def _ltf_block(df: pd.DataFrame, d15: pd.DataFrame | None) -> pd.DataFrame:
+    """LTF 15m ВНУТРИ ЧАСА (v2, Егор 07.10: «а LTF мы не собираем?»). На закрытии часа t+1h закрыт и
+    последний 15m-бар часа (открытие t+45m) → его WT/ATR-тренд причинны. Плюс события ЗА час:
+    кросс wt1×wt2 вверх/вниз, вход в OS/OB. Только бары 15m, закрывшиеся до конца последнего часа df."""
+    cols = ["wt1_15m", "wt2_15m", "wt_os_15m_now", "wt_ob_15m_now", "atr_trend_15m",
+            "wt_cross_up_15m_in_h", "wt_cross_dn_15m_in_h", "wt_enter_os_15m_in_h", "wt_enter_ob_15m_in_h"]
+    if d15 is None or d15.empty:
+        return pd.DataFrame(np.nan, index=df.index, columns=cols)
+    from core.indicators.indicators import calculate_wt, calculate_trend
+    end = df.index[-1] + pd.Timedelta("1h")
+    d15 = d15[d15.index + pd.Timedelta("15min") <= end]
+    w = calculate_trend(calculate_wt(d15.reset_index(drop=True).copy()), atr_period=43, factor=1.25)
+    w1, w2, tr = w["wt1"].values, w["wt2"].values, w["trend"].values
+    up = np.r_[False, (w1[1:] > w2[1:]) & (w1[:-1] <= w2[:-1])]
+    dn = np.r_[False, (w1[1:] < w2[1:]) & (w1[:-1] >= w2[:-1])]
+    eos = np.r_[False, (w1[1:] < -60) & (w1[:-1] >= -60)]
+    eob = np.r_[False, (w1[1:] > 60) & (w1[:-1] <= 60)]
+    s = pd.DataFrame({"wt1_15m": w1, "wt2_15m": w2, "wt_os_15m_now": (w1 < -60).astype(float),
+                      "wt_ob_15m_now": (w1 > 60).astype(float), "atr_trend_15m": tr,
+                      "up": up, "dn": dn, "eos": eos, "eob": eob}, index=d15.index)
+    hour = s.index.floor("1h")
+    last = s.groupby(hour)[["wt1_15m", "wt2_15m", "wt_os_15m_now", "wt_ob_15m_now", "atr_trend_15m"]].last()
+    ev = s.groupby(hour)[["up", "dn", "eos", "eob"]].max().astype(float)
+    ev.columns = ["wt_cross_up_15m_in_h", "wt_cross_dn_15m_in_h", "wt_enter_os_15m_in_h", "wt_enter_ob_15m_in_h"]
+    full = pd.concat([last, ev], axis=1)
+    # час неполный (нет 4 баров 15m) — значения «последнего» бара не на закрытии часа → NaN
+    cnt = s.groupby(hour).size()
+    full[cnt.reindex(full.index) < 4] = np.nan
+    return full.reindex(df.index)[cols]
+
+
+def build(sym: str, df: pd.DataFrame | None = None, d15: pd.DataFrame | None = None) -> pd.DataFrame:
     from research_harness import load, mtf_flags
     if df is None:
         df = load(sym, "1h")
+    if d15 is None:
+        try:
+            d15 = load(sym, "15m")
+        except Exception:                                # noqa: BLE001
+            d15 = None
     F = mtf_flags(df, "1h")
-    J = pd.concat([F, _wt_block(df), _wave_block(sym, df), _regime_block(df),
-                   _positioning_block(sym, df), _misc_block(df)], axis=1)
+    J = pd.concat([F, _wt_block(df), _ltf_block(df, d15), _wave_block(sym, df), _leg_block(df), _regime_block(df),
+                   _positioning_block(sym, df), _misc_block(df), _geo_block(df)], axis=1)
     J = J.loc[J.index >= T0.tz_localize("UTC")]
     num = J.select_dtypes(include=["number", "bool"]).columns
     J[num] = J[num].astype("float32")
@@ -198,9 +326,9 @@ def build(sym: str, df: pd.DataFrame | None = None) -> pd.DataFrame:
     return J
 
 
-def run_symbol(sym: str) -> str:
+def run_symbol(sym: str, force: bool = False) -> str:
     out = OUT / f"{_key(sym)}.parquet"
-    if out.exists():
+    if out.exists() and not force:
         return f"{sym}: есть"
     import logging
     logging.disable(logging.CRITICAL)
@@ -222,13 +350,16 @@ def universe() -> list[str]:
     return [s for s in U("1h", min_bars=MIN_BARS, n=10_000) if ":" not in s.split("/")[0]]
 
 
-def run(procs: int) -> None:
+def run(procs: int, force: bool = False) -> None:
+    """force=True — пересобрать всё (ежедневный прогон после докачки: журнал причинен, полная пересборка
+    даёт то же, что дописывание, без логики стыков)."""
+    from functools import partial
     OUT.mkdir(parents=True, exist_ok=True)
     syms = universe()
-    print(f"монет: {len(syms)} (1h-кэш ∩ волновой контекст) · процессов {procs}", flush=True)
+    print(f"монет: {len(syms)} · процессов {procs} · {'ПЕРЕСБОРКА' if force else 'только новые'}", flush=True)
     t0 = time.time()
     with Pool(procs) as pool:
-        for i, r in enumerate(pool.imap_unordered(run_symbol, syms), 1):
+        for i, r in enumerate(pool.imap_unordered(partial(run_symbol, force=force), syms), 1):
             if i % 10 == 0 or "🔴" in r:
                 print(f"  [{i}/{len(syms)} · {time.time() - t0:.0f} с] {r}", flush=True)
     print(f"готово за {time.time() - t0:.0f} с", flush=True)
@@ -244,7 +375,7 @@ def check(n_coins: int = 3, cuts: int = 3) -> None:
     for sym in rng.choice(syms, n_coins, replace=False):
         df = load(sym, "1h")
         full = build(sym, df)
-        feats = [c for c in full.columns if c != "sym" and not c.startswith(("fwd_", "mfe_", "mae_"))]
+        feats = [c for c in full.columns if c != "sym" and not c.startswith(("fwd_", "mfe_", "mae_", "geo_"))]
         for cut in rng.integers(int(len(df) * 0.55), len(df) - 100, cuts):
             part = build(sym, df.iloc[:cut + 1])
             t = part.index[-1]
@@ -283,7 +414,8 @@ def stat() -> None:
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "stat"
     if cmd == "run":
-        run(int(sys.argv[2]) if len(sys.argv) > 2 else max(1, (os.cpu_count() or 2) - 4))
+        args = [a for a in sys.argv[2:] if a != "--force"]
+        run(int(args[0]) if args else max(1, (os.cpu_count() or 2) - 4), force="--force" in sys.argv)
         stat()
     elif cmd == "check":
         check(int(sys.argv[2]) if len(sys.argv) > 2 else 3)
