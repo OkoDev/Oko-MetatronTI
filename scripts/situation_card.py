@@ -127,18 +127,46 @@ def current_vector(base: str) -> pd.Series:
 
 # ─────────────────────────────── реестр измеренного ───────────────────────────────
 # Только то, что ИЗМЕРЕНО и записано в памяти; каждая строка — вердикт с источником. Пополнять отсюда.
+# `when(r, x)`: r — строка вектора, x — контекст сделки ({"stop_pct": …} из окна ордера, если стоп известен).
+# 08.10 (SKR из Oko-WAVES: стоп 0.59%, фрактал ✗): клетка ядра доказана ТОЛЬКО при стопе ≥6% — без проверки стопа
+# вердикт 🟢 загорелся бы на сделке, которой клетка не касается.
+CELL_STOP = 6.0
+
+
+def _in_cell(r, x):
+    s = x.get("stop_pct")
+    return r.get("w_side") == 1 and r.get("w_core_full") == 1 and (s is None or s >= CELL_STOP)
+
+
+def _why_out(r, x):
+    out = []
+    if r.get("w_core_full") != 1:
+        out.append("ядро не полное")
+    if x.get("stop_pct") is not None and x["stop_pct"] < CELL_STOP:
+        out.append(f"стоп {x['stop_pct']:.2f}% < {CELL_STOP:.0f}%")
+    return " · ".join(out)
+
+
 REGISTRY = [
     {"id": "waves_long_core", "side": "BUY", "status": "🟢",
-     "when": lambda r: r.get("w_side") == 1 and r.get("w_core_full") == 1,
-     "text": "Лонг ядра волн (видна пятёрка вниз, полное ядро): клетка «стоп ≥6%» — PF 2.79, +4.56%/сд на 2023-26 "
-             "(170 сд.), 4/4 года; форвард 23.08–07.10 — 16 сд., PF 0.83. Держится в КЛАСТЕРАХ (одиночка −1.4%)",
+     "when": _in_cell,
+     "text": lambda r, x: ("Лонг ядра волн в доказанной клетке (полное ядро, стоп ≥6%"
+                           + ("" if x.get("stop_pct") is not None else " — стоп сделки не передан, проверь")
+                           + "): PF 2.79, +4.56%/сд на 2023-26 (170 сд.), 4/4 года; форвард 23.08–07.10 — 16 сд., "
+                             "PF 0.83. Держится в КЛАСТЕРАХ (одиночка −1.4%)"),
      "src": "wave_entry_delay_cost · verify_card_unified"},
+    {"id": "waves_long_outside", "side": "BUY", "status": "🟡",
+     "when": lambda r, x: r.get("w_side") == 1 and not _in_cell(r, x),
+     "text": lambda r, x: (f"Сетап волн ЛОНГ ВНЕ доказанной клетки ({_why_out(r, x)}): все лонги ядра 2023-26 — "
+                           "+1.31%/сд, PF 1.60, но медиана −1.74% и без лучших 10% −0.97% (держится на хвосте); "
+                           "в бою риск 0.5%"),
+     "src": "verify_card_unified (S1 вся база)"},
     {"id": "waves_short_none", "side": "SELL", "status": "⚠️",
-     "when": lambda r: r.get("w_side") == -1,
+     "when": lambda r, x: r.get("w_side") == -1,
      "text": "Шорт ядра волн: клетки НЕТ — полное ядро ∧ стоп ≥6% PF 0.64 (−2.04%/сд), шорт идёт за режимом года",
      "src": "waves_sides_measured_both"},
     {"id": "capitulation", "side": "BUY", "status": "🟡",
-     "when": lambda r: r.get("wt_os_1h") == 1 and r.get("atr_vol_high_1h") == 1,
+     "when": lambda r, x: r.get("wt_os_1h") == 1 and r.get("atr_vol_high_1h") == 1,
      "text": "Капитуляция (WT 1h в OS при высокой волатильности): лонг +1.11% за 24 ч на 2023-25, PF 1.52, 72% монет — "
              "но без 71 лучшего дня −1.34%: эффект живёт в днях обвалов. Карточку НЕ прошла",
      "src": "joint_trigger_search_wt_capitulation"},
@@ -285,7 +313,9 @@ def _stop_level(side: str | None, rates: dict | None, hits: list[dict], base: di
     return {"level": lvl, "why": why}
 
 
-def card(base: str, side: str | None = None) -> dict:
+def card(base: str, side: str | None = None, stop: float | None = None) -> dict:
+    """stop — цена стопа сделки (окно ордера / пост сигнала): без неё вердикты, завязанные на размер стопа
+    (клетка ядра волн — стоп ≥6%), честно пишут «стоп не передан»."""
     import core.infra.market_store as M
     base = M.base_of(base)
     side = (side or "").upper() or None
@@ -312,8 +342,11 @@ def card(base: str, side: str | None = None) -> dict:
         cell = C[m].iloc[0] if m.any() else None
     rates = _rates(cell)
     sb = side_base(C) if C is not None else None
-    hits = [{"id": h["id"], "side": h["side"], "status": h["status"], "text": h["text"], "src": h["src"]}
-            for h in REGISTRY if h["when"](r)]
+    px = r.get("close")
+    x = {"stop_pct": (abs(px - float(stop)) / px * 100) if stop and px else None}
+    hits = [{"id": h["id"], "side": h["side"], "status": h["status"],
+             "text": h["text"](r, x) if callable(h["text"]) else h["text"], "src": h["src"]}
+            for h in REGISTRY if h["when"](r, x)]
     return {
         "base": base, "hour": vec_info["ts"], "price": r.get("close"),
         "state": _state(r), "key": key, "rates": rates, "coin": _coin_rates(base, key),

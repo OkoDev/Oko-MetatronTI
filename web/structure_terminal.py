@@ -1944,9 +1944,13 @@ async def api_situation(req):
     base = req.match_info["base"].upper()
     side = (req.query.get("side") or "").upper() or None
     try:
+        stop = float(req.query.get("stop")) if req.query.get("stop") else None
+    except ValueError:
+        stop = None
+    try:
         sys.path.insert(0, "scripts")
         import situation_card as SC
-        c = await asyncio.wait_for(asyncio.to_thread(SC.card, base, side), timeout=90)
+        c = await asyncio.wait_for(asyncio.to_thread(SC.card, base, side, stop), timeout=90)
         c["summary"] = SC.summary_text(c)
         return web.json_response(_jsonable(c), dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str))
     except Exception as e:
@@ -2175,8 +2179,8 @@ function card(x){
    '<span class=sc>score '+(x.score||0).toFixed(1)+'</span></div>'+
   '<div class=why>'+why+'</div>'+
   (x.warn?('<div style="color:var(--o);font-size:12px;margin:-2px 0 6px">⚠ '+x.warn+' · поэтому карточка ниже остальных</div>'):'')+
-  '<div class=sit data-k="'+x.sym+'|'+(x.side=='long'?'BUY':'SELL')+'">'+
-   (SITC[x.sym+'|'+(x.side=='long'?'BUY':'SELL')]||'<span class=dim>карта: в очереди…</span>')+'</div>'+
+  '<div class=sit data-k="'+x.sym+'|'+(x.side=='long'?'BUY':'SELL')+'|'+(p.sl||'')+'">'+
+   (SITC[x.sym+'|'+(x.side=='long'?'BUY':'SELL')+'|'+(p.sl||'')]||'<span class=dim>карта: в очереди…</span>')+'</div>'+
   '<div class=lv>'+
    '<div><div class=t>вход</div><div class=v>'+p.entry+'</div></div>'+
    '<div class=sl><div class=t>стоп −'+p.risk_pct+'%</div><div class=v>'+p.sl+'</div></div>'+
@@ -2205,7 +2209,7 @@ function sitLine(c,side){
 async function sitPump(){
  if(SITBUSY)return;SITBUSY=true;
  while(SITQ.length){var key=SITQ.shift();if(SITC[key])continue;var p=key.split('|');
-  try{var r=await fetch('/api/situation/'+p[0]+'?side='+p[1]);SITC[key]=sitLine(await r.json(),p[1]);}
+  try{var r=await fetch('/api/situation/'+p[0]+'?side='+p[1]+(p[2]?'&stop='+p[2]:''));SITC[key]=sitLine(await r.json(),p[1]);}
   catch(e){SITC[key]='<span class=dim>карта: сеть</span>';}
   document.querySelectorAll('.sit[data-k="'+key+'"]').forEach(function(el){el.innerHTML=SITC[key];});}
  SITBUSY=false;}
@@ -3600,7 +3604,7 @@ async function sendOrder(c,side){
  // СИТУАЦИОННАЯ КАРТА перед входом (08.10): состояние сфер + базовые частоты + стоп-кран.
  // Против базы устойчиво — ввести тикер руками; решение (отправил / отказался) пишется в журнал.
  var card=null,head='';
- try{var cr=await fetch('/api/situation/'+c.sym+'?side='+side);card=await cr.json();}catch(e){}
+ try{var cr=await fetch('/api/situation/'+c.sym+'?side='+side+'&stop='+t.sl);card=await cr.json();}catch(e){}
  if(card&&card.summary)head=card.summary+'\\n────────────\\n';
  else head='КАРТА: нет данных ('+((card&&card.error)||'не ответила')+')\\n────────────\\n';
  var lvl=(card&&card.stop&&card.stop.level)||null;
