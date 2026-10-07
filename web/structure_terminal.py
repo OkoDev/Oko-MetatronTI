@@ -297,7 +297,10 @@ def _agenda():
         # 11.09: отсев «против фазы» снят — фаза не мерилась, а слепое вето по ней убило бы
         # единственный доказанный pump-шорт (живёт ПРОТИВ фазы). Режим шорта — дрейф-гейт
         # боевого 15m (перенос на механику скринера — допущение, не замер).
-        if side == "short" and drf and not drf["short_ok"]:
+        age_h = (time.time() - (r.get("ts") or 0)) / 3600
+        if age_h > 2:                                    # 08.10: строка скринера, которую никто не обновляет
+            item["drop"] = f"данные скринера устарели ({age_h:.0f} ч)"
+        elif side == "short" and drf and not drf["short_ok"]:
             item["drop"] = f"шорт вне режима: дрейф 30д {drf['d30']:+.1f}% (гейт 15m-шорта)"
         elif (r["cluster"] or 0) < 2:
             item["drop"] = "одиночный сигнал (PF 0.67 против 2.24 у кластера)"
@@ -339,22 +342,30 @@ def _agenda():
     n = len(longs) + len(shorts)
     # 🔴 11.09: светофор по РЕЖИМУ, а не по числу строк. Раньше 15 найденных строк давали
     # «зелёный» при фазе UNCLEAR и узкой ширине — то есть в слабый по обоим признакам день.
-    regime_ok = wide or bool(drf and drf["short_ok"])
+    # 🔴 08.10 (Егор: «актуальность и информативность под вопросом»): режим — ПО СТОРОНЕ. Дрейф-гейт
+    # измерен для ШОРТА 15m и зажигал зелёный для ЛОНГОВ («шорт в режиме · Работаем · лонгов 4, шортов 0»).
+    # Лонгу режим даёт только ширина падения (отскок); измеренного прибора режима лонга кроме неё нет.
+    long_ok, short_ok = bool(wide), bool(wide or (drf and drf["short_ok"]))
+    n_ok = (len(longs) if long_ok else 0) + (len(shorts) if short_ok else 0)
     if n == 0:
         light, reason = "red", "нет кандидатов, прошедших фильтры — сегодня смотрим, не торгуем"
-    elif not regime_ok:
-        drift_txt = (f"шорт вне режима (дрейф 30д {drf['d30']:+.1f}%)" if drf
-                     else "дрейф вселенной неизвестен")
-        light, reason = "yellow", (f"кандидатов {n}, но режим не подтверждён: падение узкое "
-                                   f"({brd['share_pct']}% ликвидных монет при пороге "
-                                   f"{brd['share_hi_pct']}%), {drift_txt} — выборочно и половиной размера")
-    elif n <= 2:
-        light, reason = "yellow", f"кандидатов мало ({n}) — работать выборочно, размером меньше"
+    elif n_ok == 0:
+        parts = []
+        if longs:
+            parts.append(f"лонгов {len(longs)} — режима лонга нет (ширина падения {brd['share_pct']}% "
+                         f"при пороге {brd['share_hi_pct']}%, другого измеренного прибора нет)")
+        if shorts:
+            parts.append(f"шортов {len(shorts)} — " + (f"шорт вне режима (дрейф 30д {drf['d30']:+.1f}%)"
+                                                       if drf else "дрейф вселенной неизвестен"))
+        light, reason = "yellow", "; ".join(parts) + " — выборочно и половиной размера"
+    elif n_ok <= 2:
+        light, reason = "yellow", f"в подтверждённом режиме кандидатов мало ({n_ok}) — выборочно, размером меньше"
     else:
-        light, reason = "green", f"{n} кандидатов прошли кластер, фазу и косты"
+        light, reason = "green", f"{n_ok} кандидатов в подтверждённом для их стороны режиме прошли кластер и косты"
+    ts_data = max((int(r.get("ts") or 0) for r in rows), default=0)
     return {"phase": phase, "mode": mode, "hint": hint, "breadth": brd,
             "light": light, "reason": reason, "n_long": len(longs), "n_short": len(shorts),
-            "drift": drf,
+            "drift": drf, "long_ok": long_ok, "short_ok": short_ok, "ts_data": ts_data,
             "long": longs[:_AGENDA_TOP], "short": shorts[:_AGENDA_TOP],
             "skipped": skipped[:8], "ts": int(time.time())}
 
@@ -1908,6 +1919,127 @@ async def api_pair(req):
     return web.json_response(rows[0] if rows else {"error": f"{base} нет в скринере"})
 
 
+# ── СИТУАЦИОННАЯ КАРТА (08.10, Егор: «как карта ляжет на :8010?») ──
+# Модуль `scripts/situation_card.py`: состояние сфер по ЖИВЫМ барам BingX (тот же build, что журнал) +
+# базовые частоты похожих часов 2023→сейчас + измеренные вердикты + стоп-кран для стороны. Не сигнал.
+# Считается в отдельном потоке (первый раз ~7 с на монету, дальше кэш 10 мин).
+from pathlib import Path
+_DECISIONS = Path("data/decisions/manual_decisions.jsonl")
+
+
+def _jsonable(o):
+    """NaN/inf → null: JSON.parse в браузере падает на NaN."""
+    import math
+    if isinstance(o, dict):
+        return {k: _jsonable(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_jsonable(v) for v in o]
+    if isinstance(o, float) and (math.isnan(o) or math.isinf(o)):
+        return None
+    return o
+
+
+async def api_situation(req):
+    """GET /api/situation/{base}?side=BUY|SELL — ситуационная карта монеты (+ стоп-кран для стороны)."""
+    base = req.match_info["base"].upper()
+    side = (req.query.get("side") or "").upper() or None
+    try:
+        sys.path.insert(0, "scripts")
+        import situation_card as SC
+        c = await asyncio.wait_for(asyncio.to_thread(SC.card, base, side), timeout=90)
+        c["summary"] = SC.summary_text(c)
+        return web.json_response(_jsonable(c), dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str))
+    except Exception as e:
+        return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+
+async def api_situation_log(req):
+    """POST /api/situation/log {sym, side, mode, level, action:sent|cancelled} — журнал ручных решений
+    рядом с картой. Через месяц отвечает на вопрос «где эмоция стоила денег»."""
+    if not _is_local(req):
+        return web.json_response({"error": "только с localhost"}, status=403)
+    try:
+        q = await req.json()
+    except Exception:
+        q = {}
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **{k: q.get(k) for k in ("sym", "side", "mode", "level", "action")}}
+    try:
+        sys.path.insert(0, "scripts")
+        import situation_card as SC
+        hit = SC._cache.get(str(q.get("sym") or "").upper())
+        if hit:
+            row = hit[1]["row"]
+            rec["hour"] = hit[1]["ts"]
+            rec["key"] = SC.situation_key(__import__("pandas").DataFrame([row])).iloc[0].to_dict()
+            rec["price"] = row.get("close")
+        _DECISIONS.parent.mkdir(parents=True, exist_ok=True)
+        with _DECISIONS.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(_jsonable(rec), ensure_ascii=False, default=str) + "\n")
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response({"ok": True})
+
+
+_SITUATION_HTML = """<!doctype html><html lang=ru><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>OKO · Карта</title><style>__CSS_BASE__
+body{background:var(--bg);color:var(--tx);font:14px/1.45 -apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column;min-height:100vh}
+main{max-width:960px;width:100%;margin:0 auto;padding:16px}
+form{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+input,select,button{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:14px;min-height:36px}
+button{cursor:pointer;border-color:var(--gold);color:var(--gold)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.card h2{font-size:13px;color:var(--dim);font-weight:600;margin-bottom:8px;letter-spacing:.3px}
+.row{display:grid;grid-template-columns:150px 1fr;gap:8px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.03)}
+.row b{color:var(--dim);font-weight:500}
+.lvl{font-size:15px;font-weight:700;padding:10px 12px;border-radius:6px}
+.ok{background:rgba(38,166,154,.12);color:var(--up)}.warn{background:rgba(255,152,0,.12);color:var(--o)}.stop{background:rgba(239,83,80,.14);color:var(--dn)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:5px 6px;text-align:right;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:500}td:first-child,th:first-child{text-align:left}
+.note{color:var(--dim);font-size:12px}
+@media (max-width:600px){.row{grid-template-columns:1fr}}
+</style></head><body>__NAV__<main>
+<form id=f><input id=sym placeholder="монета, напр. BTC" required size=10>
+<select id=side><option value="">сторона — не выбрана</option><option value=BUY>лонг</option><option value=SELL>шорт</option></select>
+<button>Показать карту</button><span class=note id=st></span></form>
+<div id=out></div></main><script>
+function f(x,d,s){if(x==null)return '—';return (s&&x>0?'+':'')+(+x).toFixed(d)}
+function esc(t){return String(t).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+async function load(sym,side){
+ var st=document.getElementById('st');st.textContent='считаю… (первый раз до 10 с)';
+ try{var r=await fetch('/api/situation/'+encodeURIComponent(sym)+(side?'?side='+side:''));var c=await r.json();}
+ catch(e){st.textContent='сеть: '+e;return;}
+ if(c.error){st.textContent='❌ '+c.error;return;}
+ st.textContent='закрытый час '+String(c.hour).slice(0,16)+' UTC · цена '+f(c.price,6);
+ var h='';
+ if(c.stop&&c.stop.level){var m={ok:'✅ база не против — это НЕ сигнал',warn:'⚠️ ПРОТИВ БАЗЫ',stop:'⛔ УСТОЙЧИВО ПРОТИВ БАЗЫ'};
+  h+='<div class="card lvl '+c.stop.level+'">'+m[c.stop.level]+((c.stop.why||[]).length?'<div style="font-weight:400;font-size:13px;margin-top:6px">'+c.stop.why.map(esc).join('<br>')+'</div>':'')+'</div>';}
+ h+='<div class=card><h2>СОСТОЯНИЕ СФЕР — '+esc(c.base)+'</h2>';
+ for(var k in c.state)h+='<div class=row><b>'+esc(k)+'</b><span>'+esc(c.state[k])+'</span></div>';
+ h+='</div>';
+ var r=c.rates;
+ if(r){h+='<div class=card><h2>ПОХОЖИЕ ЧАСЫ 2023→СЕЙЧАС · '+r.n_days+' дн. · '+r.n_coins+' монет · '+r.n+' ч</h2><table><tr><th></th><th>средн. 24ч после коста</th><th>в плюс</th><th>худшие 10%</th><th>лучшие 10%</th><th>стоп/цель 4/8 ATR</th><th>2023-24</th><th>2025-26</th></tr>';
+  [['лонг','long'],['шорт','short']].forEach(function(x){var s=r[x[1]];
+   h+='<tr><td>'+x[0]+'</td><td>'+f(s.mean,2,1)+'%</td><td>'+f(s.p_up*100,0)+'%</td><td>'+f(s.p10,2,1)+'%</td><td>'+f(s.p90,2,1)+'%</td><td>'+f(s.geo,2,1)+'%</td><td>'+f(s.mean_23_24,2,1)+'%</td><td>'+f(s.mean_25_26,2,1)+'%</td></tr>';});
+  h+='</table>';
+  if(c.coin&&c.coin.n_days)h+='<div class=note style="margin-top:8px">сама монета в таком состоянии: '+c.coin.n_days+' дн. · лонг '+f(c.coin.long_mean,2,1)+'% · шорт '+f(c.coin.short_mean,2,1)+'%</div>';
+  h+='</div>';}
+ else h+='<div class=card>Похожих ситуаций в истории нет</div>';
+ if(c.verdicts&&c.verdicts.length){h+='<div class=card><h2>ИЗМЕРЕНО РАНЬШЕ</h2>';
+  c.verdicts.forEach(function(v){h+='<div class=row><b>'+v.status+' '+(v.side=='BUY'?'лонг':'шорт')+'</b><span>'+esc(v.text)+'</span></div>';});h+='</div>';}
+ h+='<p class=note>'+esc(c.note)+'</p>';
+ document.getElementById('out').innerHTML=h;}
+document.getElementById('f').onsubmit=function(e){e.preventDefault();var s=document.getElementById('sym').value.trim().toUpperCase();
+ history.replaceState(null,'','?sym='+s);load(s,document.getElementById('side').value);};
+var q=new URLSearchParams(location.search).get('sym');if(q){document.getElementById('sym').value=q;load(q.toUpperCase(),'');}
+</script></body></html>"""
+
+
+async def situation_page(_req):
+    """GET /situation?sym=BTC — ситуационная карта монеты целиком."""
+    return web.Response(text=_page(_SITUATION_HTML, "/situation"), content_type="text/html")
+
+
 # ── ОБЩАЯ ОБОЛОЧКА ТРЁХ СТРАНИЦ (Егор 14.08: «разделился на три страницы, нужен UX») ──
 # Кокпит/фильтр/монитор были тремя вёрстками со своими токенами и разрозненными ссылками.
 # Общие токены + одна навигация: видно, где ты, и переход в один клик. Плюс базовая доступность:
@@ -1938,6 +2070,7 @@ def _nav(active):
              ("/filter", "Фильтр", "конструктор условий"),
              ("/monitor", "Монитор", "сетка графиков"),
              ("/waves", "Волны", "журнал тени ядра волн: скрины и оценка разметки"),
+             ("/situation", "Карта", "ситуационная карта монеты: состояние сфер и базовые частоты"),
              ("/guide", "Инструкция", "как всем этим пользоваться")]
     out = ['<nav class=nav aria-label="Разделы терминала"><span class=brand>OKO</span>']
     for href, name, hint in items:
@@ -2013,6 +2146,9 @@ body{background:var(--bg);color:var(--tx);font:14px/1.55 -apple-system,Segoe UI,
 .skip .s{font-weight:600;min-width:70px}
 .skip .r{color:var(--dim)}
 .upd{color:var(--dim);font-size:12px;margin-top:12px}
+.sit{font-size:12px;margin:0 0 8px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.03);color:var(--tx)}
+.sit .dim{color:var(--dim)}
+.lvl-ok{color:var(--up);font-weight:600}.lvl-warn{color:var(--o);font-weight:600}.lvl-stop{color:var(--dn);font-weight:700}
 </style></head><body>
 __NAV__
 <div class=wrap>
@@ -2039,6 +2175,8 @@ function card(x){
    '<span class=sc>score '+(x.score||0).toFixed(1)+'</span></div>'+
   '<div class=why>'+why+'</div>'+
   (x.warn?('<div style="color:var(--o);font-size:12px;margin:-2px 0 6px">⚠ '+x.warn+' · поэтому карточка ниже остальных</div>'):'')+
+  '<div class=sit data-k="'+x.sym+'|'+(x.side=='long'?'BUY':'SELL')+'">'+
+   (SITC[x.sym+'|'+(x.side=='long'?'BUY':'SELL')]||'<span class=dim>карта: в очереди…</span>')+'</div>'+
   '<div class=lv>'+
    '<div><div class=t>вход</div><div class=v>'+p.entry+'</div></div>'+
    '<div class=sl><div class=t>стоп −'+p.risk_pct+'%</div><div class=v>'+p.sl+'</div></div>'+
@@ -2050,9 +2188,29 @@ function card(x){
    (x.turn!=null?('<span>оборот <b>'+x.turn+'</b> млн</span>'):'')+
    (x.spread!=null?('<span>спред <b>'+x.spread+'%</b></span>'):'')+'</div>'+
   '<div class=act><a class="btn pri" href="'+q+'" target=_blank>→ на график с планом</a>'+
+   '<a class=btn href="/situation?sym='+x.sym+'" target=_blank title="состояние сфер и базовые частоты похожих часов">Карта</a>'+
    '<a class=btn href="https://ru.tradingview.com/chart/?symbol=BINGX%3A'+x.sym+'USDT.P&interval=240" target=_blank>TW</a></div>'+
  '</div>';
 }
+// СИТУАЦИОННАЯ КАРТА у каждого кандидата (08.10): стоп-кран для его стороны + базовая частота похожих
+// часов + измеренные вердикты. Грузится ПО ОЧЕРЕДИ (первый расчёт монеты ~10 с), результат кэшируется.
+var SITC={},SITQ=[],SITBUSY=false;
+function sitLine(c,side){
+ if(!c||c.error)return '<span class=dim>карта: '+((c&&c.error)||'нет ответа')+'</span>';
+ var m={ok:'✅ база не против',warn:'⚠️ против базы',stop:'⛔ устойчиво против базы'};
+ var s=c.stop&&c.stop.level?m[c.stop.level]:'',r=c.rates,k=side=='BUY'?'long':'short';
+ var t=(r&&r[k]&&r[k].mean!=null)?(' · похожих '+r.n_days+' дн.: '+(k=='long'?'лонг ':'шорт ')+((r[k].mean>0?'+':'')+r[k].mean.toFixed(2))+'% за 24ч после коста, в плюс '+Math.round((r[k].p_up||0)*100)+'%'):' · похожих часов нет';
+ var v=(c.verdicts||[]).filter(function(h){return h.side==side;}).map(function(h){return h.status;}).join(' ');
+ return '<span class="lvl-'+((c.stop&&c.stop.level)||'na')+'">'+s+'</span>'+t+(v?' · измерено: '+v:'');}
+async function sitPump(){
+ if(SITBUSY)return;SITBUSY=true;
+ while(SITQ.length){var key=SITQ.shift();if(SITC[key])continue;var p=key.split('|');
+  try{var r=await fetch('/api/situation/'+p[0]+'?side='+p[1]);SITC[key]=sitLine(await r.json(),p[1]);}
+  catch(e){SITC[key]='<span class=dim>карта: сеть</span>';}
+  document.querySelectorAll('.sit[data-k="'+key+'"]').forEach(function(el){el.innerHTML=SITC[key];});}
+ SITBUSY=false;}
+function sitQueue(){document.querySelectorAll('.sit[data-k]').forEach(function(el){var k=el.getAttribute('data-k');
+ if(!SITC[k]&&SITQ.indexOf(k)<0)SITQ.push(k);});sitPump();}
 async function load(){
  try{
   var r=await fetch('/api/agenda',{cache:'no-store'});var d=await r.json();
@@ -2084,7 +2242,9 @@ async function load(){
      x.sym+'</span><span class=r>'+x.drop+'</span></div>';}).join('');
   }else sk.style.display='none';
   document.getElementById('upd').textContent='обновлено '+new Date(d.ts*1000).toLocaleTimeString('ru')+
+   (d.ts_data?' · данные скринера на '+new Date(d.ts_data*1000).toLocaleTimeString('ru'):'')+
    ' · список пересобирается каждые 60 секунд';
+  sitQueue();
  }catch(e){
   document.getElementById('light').className='light red';
   document.getElementById('light').innerHTML='<span class=dot></span>нет связи с терминалом';
@@ -3437,7 +3597,20 @@ async function sendOrder(c,side){
   ' (маржа $'+r.margin.toFixed(2)+')\\nSL '+(+t.sl).toPrecision(6)+' · TP '+(+t.tp).toPrecision(6)+
   '\\nриск $'+r.risk.toFixed(2)+' · RR '+r.rr.toFixed(2)+
   '\\nсвободно на счёте $'+r.free.toFixed(2);
- if(!confirm((S.acc=='live'?'🔴 РЕАЛЬНЫЕ ДЕНЬГИ\\n\\n':'VST-демо\\n\\n')+txt))return;
+ // СИТУАЦИОННАЯ КАРТА перед входом (08.10): состояние сфер + базовые частоты + стоп-кран.
+ // Против базы устойчиво — ввести тикер руками; решение (отправил / отказался) пишется в журнал.
+ var card=null,head='';
+ try{var cr=await fetch('/api/situation/'+c.sym+'?side='+side);card=await cr.json();}catch(e){}
+ if(card&&card.summary)head=card.summary+'\\n────────────\\n';
+ else head='КАРТА: нет данных ('+((card&&card.error)||'не ответила')+')\\n────────────\\n';
+ var lvl=(card&&card.stop&&card.stop.level)||null;
+ function logDec(a){try{fetch('/api/situation/log',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({sym:c.sym,side:side,mode:S.acc,level:lvl,action:a})});}catch(e){}}
+ if(lvl=='stop'){var ans=prompt('⛔ ВХОД УСТОЙЧИВО ПРОТИВ БАЗЫ\\n\\n'+head+
+   'Чтобы всё равно отправить, впиши тикер '+c.sym+':');
+  if((ans||'').trim().toUpperCase()!=String(c.sym).toUpperCase()){logDec('cancelled');return;}}
+ if(!confirm(head+(S.acc=='live'?'🔴 РЕАЛЬНЫЕ ДЕНЬГИ\\n\\n':'VST-демо\\n\\n')+txt)){logDec('cancelled');return;}
+ logDec('sent');
  try{var res=await fetch('/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({sym:c.sym,side:side,mode:S.acc,lev:r.lev,sl:t.sl,tp:t.tp,
     size:{kind:r.kind,v:r.v}})});
@@ -4317,6 +4490,9 @@ def main():
     app.router.add_post("/api/protect", api_protect)
     app.router.add_post("/api/close", api_close)
     app.router.add_get("/api/pair/{base}", api_pair)
+    app.router.add_get("/api/situation/{base}", api_situation)
+    app.router.add_post("/api/situation/log", api_situation_log)
+    app.router.add_get("/situation", situation_page)
     _vendor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "vendor")
     if os.path.isdir(_vendor):
         app.router.add_static("/vendor", _vendor)

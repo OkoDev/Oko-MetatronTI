@@ -50,6 +50,7 @@ OUT = Path("G:/oko_lab/joint/1h")
 MET = Path("C:/oko_data/history/metrics")
 MIN_BARS = 2000                            # ~3 месяца 1h: новые листинги тоже в потоке
 DRIFT = Path("G:/oko_lab/out/universe_drift_daily.pkl")
+UNIVERSE_DB = ROOT / "oko_feed" / "universe.db"            # живой дрейф (задача universe-drift)
 T0 = pd.Timestamp("2023-01-01")
 HORIZONS = (4, 24, 72)
 WAVE_MAX_AGE = pd.Timedelta(days=10)       # как wave_phase_context: не старше 60 баров 4h
@@ -190,13 +191,31 @@ def _leg_block(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out, index=df.index)[cols]
 
 
-def _regime_block(df: pd.DataFrame) -> pd.DataFrame:
+def _drift_daily() -> pd.DataFrame:
+    """Дрейф вселенной по дням: история — `universe_drift_daily.pkl` (2022→15.09.2026), дальше — живая база
+    задачи universe-drift (`oko_feed/universe.db`, обновляется ежечасно). Определение одно: на 245 общих днях
+    корр drift30 = 1.0, средняя разница 0.27 п.п. (состав вселенной 470 против 437). share_up90/btc90 есть только
+    в истории — для новых дней пусто, а не протянуто."""
     D = pd.read_pickle(DRIFT)
     D.index = pd.to_datetime(D.index)
-    D = D.add_prefix("mkt_")
+    try:
+        import sqlite3
+        with sqlite3.connect(f"file:{UNIVERSE_DB.as_posix()}?mode=ro", uri=True) as c:
+            U = pd.read_sql("SELECT day, drift30, drift90, n_coins AS n FROM universe_drift", c, index_col="day")
+        U.index = pd.to_datetime(U.index)
+        D = pd.concat([D, U[U.index > D.index.max()]])
+    except Exception:                                    # noqa: BLE001
+        pass
+    return D
+
+
+def _regime_block(df: pd.DataFrame) -> pd.DataFrame:
+    D = _drift_daily().add_prefix("mkt_")
     D["avail"] = D.index + pd.Timedelta(days=1)      # значение дня D известно с начала D+1
     L = pd.DataFrame({"tc": df.index.tz_convert(None) + pd.Timedelta("1h")})
-    M = pd.merge_asof(L, D.sort_values("avail"), left_on="tc", right_on="avail", direction="backward")
+    # 🔴 08.10: без допуска значение 15.09 тихо тянулось на недели вперёд — устаревший режим = пусто
+    M = pd.merge_asof(L, D.sort_values("avail"), left_on="tc", right_on="avail", direction="backward",
+                      tolerance=pd.Timedelta(days=3))
     return pd.DataFrame({c: M[c].values for c in D.columns if c.startswith("mkt_")}, index=df.index)
 
 

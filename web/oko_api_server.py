@@ -217,6 +217,23 @@ async def h_cube_stats(request: web.Request) -> web.Response:
         return web.json_response({"error": f"bot and hub unavailable: {e}"}, status=502)
 
 
+TERMINAL_URL = "http://127.0.0.1:8010"
+
+
+async def h_situation(request: web.Request) -> web.Response:
+    """GET /api/situation/{base}?side= — ситуационная карта (08.10). Считает терминал :8010
+    (`scripts/situation_card.py`, свой кэш 10 мин); дашборд :3000 получает её через свой прокси /api/*."""
+    url = f"{TERMINAL_URL}/api/situation/{request.match_info['base']}"
+    if request.query_string:
+        url += f"?{request.query_string}"
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=95)) as s:
+            async with s.get(url) as r:
+                return web.Response(body=await r.read(), status=r.status, content_type="application/json")
+    except Exception as e:                               # noqa: BLE001
+        return web.json_response({"error": f"terminal unavailable: {e}"}, status=502)
+
+
 async def h_proxy(request: web.Request) -> web.Response:
     """Прозрачный прокси всего остального на бота (POST/settings/oracle/...)."""
     url = f"{BOT_URL}{request.rel_url}"
@@ -239,6 +256,7 @@ def main():
     app.router.add_get("/api/feed", h_feed)
     app.router.add_get("/api/cube/events", h_cube_events)     # ADR-003 шаг 2: из хаба Куба
     app.router.add_get("/api/cube/stats", h_cube_stats)
+    app.router.add_get("/api/situation/{base}", h_situation)
     app.router.add_route("*", "/{tail:.*}", h_proxy)
 
     async def _on_start(app_):
