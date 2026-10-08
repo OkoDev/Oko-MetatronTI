@@ -146,8 +146,52 @@ def wide_stop(open_holdout: bool = False) -> None:
                    geo=("mkt_drift30",), holdout=True)
 
 
+def _flip_of(f):
+    """По монете: каждый вход в OTE ноги вверх (0→1) — сменилась ли сама нога в этот час (пересчёт начала ноги)."""
+    J = pd.read_parquet(f, columns=["sym", "legup_in_ote", "legup_span_pct", "legup_depth", "geo_wide_long", "mkt_drift30"])
+    s = J.legup_in_ote.fillna(0).values > 0.5
+    sp = J.legup_span_pct.values
+    ev = np.flatnonzero(s & ~np.r_[False, s[:-1]])
+    ev = ev[ev > 0]
+    prev_dep = J.legup_depth.values[ev - 1]
+    return pd.DataFrame({"sym": J.sym.values[ev], "ts": J.index[ev],
+                         "flip": ~np.isclose(sp[ev], sp[ev - 1], rtol=1e-6, equal_nan=True),
+                         "dep_prev": prev_dep, "dep": J.legup_depth.values[ev],
+                         "pnl": J.geo_wide_long.values[ev] - COST, "drift": J.mkt_drift30.values[ev]})
+
+
+def leg_flip_check(procs: int = 12) -> None:
+    """08.10, вопрос Егора по USELESS («вопрос был в ноге, по которой строился сетап»): начало дневной ноги — последний
+    свинг ЗА ценой. Пробила цена свинг → нога переключается на старшую, и глубина скачком меняется (USELESS: 1.00 →
+    0.50 от сдвига на 0.4%). Тогда «вход в OTE ноги» может быть ПЕРЕКЛЮЧЕНИЕМ ноги, а не откатом. Доля таких входов и
+    их исход отдельно от настоящих откатов (глубина пришла в OTE по той же ноге)."""
+    from multiprocessing import Pool
+    files = sorted(Path("G:/oko_lab/joint/1h").glob("*.parquet"))
+    with Pool(procs) as pool:
+        F = pd.concat(pool.map(_flip_of, files), ignore_index=True)
+    F["ts"] = pd.to_datetime(F.ts)
+    F = F[np.isfinite(F.pnl.values)]
+    C = _load("ctrl")
+    hi = np.nanquantile(C.mkt_drift30.values[np.isin(C.ts.dt.year.values, IS_Y)], 2 / 3)
+    F["y"] = F.ts.dt.tz_localize(None).dt.year if F.ts.dt.tz is not None else F.ts.dt.year
+    F = F[F.y < HOLD]
+    print("=" * 110)
+    print(f"ВХОД В OTE НОГИ ВВЕРХ: ОТКАТ ИЛИ ПЕРЕКЛЮЧЕНИЕ НОГИ · все входы 0→1 без кулдауна · 2023–2025 · {len(F)} входов")
+    print("=" * 110)
+    for nm, m in (("все рынки", np.ones(len(F), bool)), (f"рынок растёт (дрейф30 ≥ {hi:+.1f})", F.drift.values >= hi)):
+        G = F[m]
+        print(f"  {nm}: входов {len(G)} · из них нога сменилась в этот час {G.flip.mean() * 100:.1f}%")
+        for lab, g in (("откат по той же ноге", G[~G.flip]), ("переключение ноги", G[G.flip])):
+            print(f"    {lab:<22} n {len(g):>6} · средн {g.pnl.mean():+.2f}% · медиана {g.pnl.median():+.2f} · "
+                  f"глубина до/после {np.nanmedian(g.dep_prev):.2f}/{np.nanmedian(g.dep):.2f} · по годам " +
+                  " ".join(f"{y} {v:+.2f}" for y, v in g.groupby('y').pnl.mean().items()))
+    print(F[F.flip][["sym", "ts", "dep_prev", "dep", "pnl"]].head(4).round(3).to_string(index=False))
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "wide":
+    if len(sys.argv) > 1 and sys.argv[1] == "flip":
+        leg_flip_check()
+    elif len(sys.argv) > 1 and sys.argv[1] == "wide":
         wide_stop(open_holdout=len(sys.argv) > 2 and sys.argv[2] == "holdout")
     else:
         run("legup_ote", "LONG", "up")

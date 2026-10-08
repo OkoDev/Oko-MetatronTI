@@ -107,34 +107,9 @@ def _signal_age_min(r: dict) -> float:
     return (time.time() - calendar.timegm(time.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"))) / 60
 
 
-def _stop_rel(entry, stop, imp_pct):
-    """Ширина стопа в долях импульса: |вход−стоп|/вход, делённое на размер импульса в %.
-
-    Считаем из цен сигнала, а не из `wv_risk_pct` тени: поле может отсутствовать у старых
-    записей очереди, а цены есть всегда. None — если импульс неизвестен или нулевой
-    (тогда решение принимает вызывающий, а не молчаливый ноль)."""
-    try:
-        e, s, i = float(entry), float(stop), float(imp_pct)
-    except (TypeError, ValueError):
-        return None
-    if e <= 0 or i <= 0:
-        return None
-    return abs(e - s) / e * 100 / i
-
-
-def _in_corridor(rel, lo, hi) -> bool:
-    """Попадает ли ширина стопа в измеренный коридор [lo; hi).
-
-    Верхняя граница ИСКЛЮЧЕНА — корзина 30-50% в замере считалась как [0.3; 0.5).
-    Неизвестная ширина (нет `wv_imp_pct`) — это НЕ «в коридоре»: метка должна отличать
-    «вне» от «не знаем», поэтому False, а признак `wv_stop_rel` в сделку просто не попадёт."""
-    if rel is None:
-        return False
-    if lo is not None and rel < float(lo):
-        return False
-    if hi is not None and rel >= float(hi):
-        return False
-    return True
+# 08.10: правило зоны живёт в core.waves.proven_zone — его же читают канал Oko-WAVES и карточка аналитика,
+# чтобы канал не расходился с боем. Смысл не менялся (перенос дословный).
+from core.waves.proven_zone import _in_corridor, _long_proven, _stop_rel  # noqa: E402,F401
 
 
 def _risk_frame(bot, cfg) -> tuple[bool, str]:
@@ -244,29 +219,6 @@ def _risk_budget(bot, cfg, new_risk_pct: float, wt_abs) -> tuple[float | None, s
     return None, (f"открыто {cur:.1f}% риска: + {new_risk_pct:.2f}% выходит за мягкий {float(soft):g}%"
                   + ("" if deep else f", а |WT пятой| {wt_abs if wt_abs is not None else '—'} < {wt_th:g}")
                   + (f" и за жёсткий {hard:g}%" if deep else ""))
-
-
-def _long_proven(entry, stop, in_corridor: bool, proven_stop_pct) -> bool:
-    """ДОКАЗАННАЯ ЗОНА ЛОНГА: структурный стоп ≥ `proven_stop_pct` % цены ИЛИ коридор 30-50% импульса.
-
-    07.10 (Егор: «заставить работать то, что уже доказано»). Замер боевым кодом
-    (`scripts/wave_entry_delay_lab.py`, 198 монет, кост 0.35): лонг после завершённой пятёрки
-    вниз со стопом ≥6% цены — плюс В КАЖДОМ году: 2023 PF 3.50 · 2024 1.43 · 2025 4.36 ·
-    **2026 5.39 (183 сделки, 79% прибыльных, +7.59% в среднем)**. Коридор 30-50% импульса
-    (метка с 03.10) тоже живой (n=126, PF 3.50) — он остаётся, зона его не заменяет, а
-    расширяет. Стоп у доказанных сделок: медиана 9%, квартили 6.9–12.2%.
-    """
-    if in_corridor:
-        return True
-    if proven_stop_pct is None:
-        return False
-    try:
-        e, s = float(entry), float(stop)
-        if e <= 0:
-            return False
-        return abs(e - s) / e * 100.0 >= float(proven_stop_pct)
-    except (TypeError, ValueError):
-        return False
 
 
 def _risk_mult(coin_weight, in_corridor: bool, out_mult, cap) -> float | None:

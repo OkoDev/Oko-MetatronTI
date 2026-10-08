@@ -121,6 +121,15 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
             "extensions": xt, "dir": "вниз" if want_top else "вверх", "d_sw": d_sw}
 
 
+LEG_EDGE = 0.95          # нога пройдена почти целиком: её начало рядом, контекст вот-вот переключится на старшую (08.10)
+
+
+def leg_depth(leg: Dict[str, Any], price: float) -> float:
+    """Глубина цены в ноге: 0 — у конца ноги (ext), 1 — у её начала (origin)."""
+    span = abs(leg["origin"] - leg["ext"])
+    return abs(price - leg["ext"]) / span if span > 0 else float("nan")
+
+
 def leg_zone(depth: float) -> str:
     """Зона глубины в дневной ноге — одна формула для разбора, шины и замеров.
     19.09 «все на канон!»: корзины берутся из core.smc.fibonacci.ote_band (те же границы, один источник)."""
@@ -257,12 +266,29 @@ def decision_card(rep: Dict[str, Any]) -> Dict[str, Any]:
                         status="ЦЕНА В ЗОНЕ — ждать слом младшего ТФ" if inside else f"ЖДАТЬ зону ({pct((zn['lo'] + zn['hi']) / 2):+.1f}% до середины)")
         else:
             card.update(light="info", status="ход в процессе — зоны схождения нет")
+    if rep.get("leg_next"):
+        card["chips"].append(f"→ старшая нога {leg_depth(rep['leg_next'], price):.2f}")
+    # 🔴 08.10 ЗЕЛЁНЫЙ — ТОЛЬКО ДОКАЗАННОМУ ВХОДУ (Егор «мы точно видим то что нужно?!»: USELESS горел «ЦЕНА В ЗОНЕ
+    # ВХОДА» при стопе 1.4%). Правило то же, что у боя (core.waves.proven_zone): лонг со стопом ≥ proven_stop_pct %,
+    # у шорта зоны нет. Импульс карточке неизвестен → коридор не проверяется, зелёным становится только широкий стоп.
+    from core.waves.proven_zone import COST_RT, zone as _zone
+    ent0 = (sum(card["entry"]) / 2) if card.get("entry") else price
+    z = _zone(card.get("side", ""), ent0, card["stop"]) if card.get("stop") else None
+    if card.get("light") == "go" and not (z and z["proven"]):
+        why = ("стоп не определён" if z is None else "шорт — доказанной зоны нет" if card.get("side") == "SHORT"
+               else f"стоп {z['stop_pct']:.1f}% < {z['thr']}%")
+        card.update(light="wait", status=f"ВХОД НЕ ДОКАЗАН: {why}", status_sub=card.get("status", ""))
+    stop_pct = z["stop_pct"] if z else None
     if rep.get("invalid5"):                                  # отменённый разбор: цели и сценарии от старой разметки не показываем
         card.update(invalid="ждать пересчёт разметки на закрытии 4h", taken=[])
         return card
     if sc:
         ent = (sum(card["entry"]) / 2) if card["entry"] else price
         risk = abs(ent - card["stop"]) if card["stop"] else None
+        # RR при стопе в несколько костов — не прибыль, а обещание: кост съедает заметную долю риска (линейка 0.35)
+        if risk and stop_pct is not None and stop_pct < 4 * COST_RT:
+            card["rr_note"] = f"RR не показан: стоп {stop_pct:.1f}% — кост {COST_RT}% съедает {COST_RT / stop_pct * 100:.0f}% риска"
+            risk = None
         for n, v in sc[0]["targets"]:
             if v is None or v != v:
                 continue
@@ -295,6 +321,8 @@ def card_figure(card: Dict[str, Any], bg: str = "#0f1116"):
     ax.add_patch(FancyBboxPatch((.04, .745), .92, .085, boxstyle="round,pad=0.005,rounding_size=0.015", fc=col, ec="none", alpha=.22))
     ax.add_patch(FancyBboxPatch((.04, .745), .012, .085, boxstyle="square,pad=0", fc=col, ec="none"))
     ax.text(.07, .788, card.get("status", ""), fontsize=20, fontweight="bold", color=col, va="center")
+    if card.get("status_sub"):                       # 08.10: прежний статус разбора под плашкой «вход не доказан»
+        ax.text(.07, .705, card["status_sub"], fontsize=13, color=MUT, va="center")
     rows = []
     if card.get("entry"):
         lo, hi = card["entry"]; rows.append(("ВХОД", f"{lo:.5g}–{hi:.5g}", "", "", FG))
@@ -314,6 +342,8 @@ def card_figure(card: Dict[str, Any], bg: str = "#0f1116"):
         ax.text(.435, y, p, fontsize=16, color=c, va="center", family="monospace", ha="right")
         ax.text(.585, y, rr, fontsize=16, color=ACC, va="center", family="monospace", ha="right")
         y -= .092
+    if card.get("rr_note"):
+        ax.text(.04, y + .02, card["rr_note"], fontsize=11, color=MUT, va="center")
     ax.plot([.62, .62], [.14, .69], color=GRID, lw=1.2)
     yy = .66
     if card.get("name"):
@@ -550,6 +580,16 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
     # OTE по свингу 10 держится над контролем по времени (Δ +1.0…+1.4), по свингу 5 — нет (Δ −0.2…−0.3). Нога 5 — справочно.
     rep["leg_alt"] = alt
     rep["leg"] = leg
+    # 🔴 08.10 (Егор по USELESS: «вопрос был в ноге, по которой строился сетап»). Начало ноги — последний свинг ЗА пятой,
+    # поэтому у начала ноги контекст неустойчив: USELESS пятая 0.19269, свинг 14.09 0.19224 (на 0.2% ниже) → нога
+    # 14.09→23.09, глубина 1.00, «отмена ниже начала ноги»; пятая на 0.4% ниже → нога 06.02→23.09, глубина 0.50.
+    # Пробой начала ноги переключает контекст на старшую, поэтому при глубине ≥ 0.95 считаем и её — разбор показывает обе.
+    rep["leg_next"] = None
+    if leg and leg["depth"] >= LEG_EDGE:
+        beyond = leg["origin"] * (1.001 if want_top else 0.999)
+        nxt = daily_leg(dh, t0, want_top, beyond, st["t5x"], now, p.d_sw)
+        if nxt and abs(nxt["origin"] - leg["origin"]) / leg["origin"] > 0.01:
+            rep["leg_next"] = nxt
 
     # LTF: слом против хода после пятой, волна A и зона отката
     if dl is not None and len(dl) > 300:
@@ -645,7 +685,10 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
                                  "why": f"4h-{st['form']} {'вверх' if st['up'] else 'вниз'} закончился в зоне «{leg['zone']}» дневной ноги {leg['dir']} "
                                         f"(глубина {leg['depth']:.2f}) — это коррекция ноги, её тренд продолжается.",
                                  "targets": [("0.382 4h-хода", corr["0.382"]), ("0.618 4h-хода", corr["0.618"])] + tg,
-                                 "invalid": ("выше" if st["up"] else "ниже") + f" начала ноги {leg['origin']:.6g} (глубина 1.0)"})
+                                 "invalid": ("выше" if st["up"] else "ниже") + f" начала ноги {leg['origin']:.6g} (глубина 1.0)"
+                                            + (f" — дальше контекст старшей ноги от {rep['leg_next']['origin']:.6g}"
+                                               f" ({rep['leg_next']['origin_t']:%d.%m}), там цена на глубине "
+                                               f"{leg_depth(rep['leg_next'], price):.2f}" if rep.get("leg_next") else "")})
     fork_mid = (corr["0.5"] + corr["0.618"]) / 2
     rep["forecast"] = {"fork": (corr["0.5"], corr["0.618"]),
                        "A": (leg["ext"], "A · к хаю/низу ноги") if leg and leg["depth"] <= 1.0 else None,
@@ -671,6 +714,12 @@ def analyze(sym: str, dh: pd.DataFrame, dl: Optional[pd.DataFrame] = None, ltf: 
                  "После диагонали типичен резкий возврат к её началу.")
     if leg:
         T.append(f"1D: нога {leg['dir']} от {leg['origin']:.6g} ({leg['origin_t']:%d.%m}) до {leg['ext']:.6g}; пятая остановилась на глубине {leg['depth']:.2f} — {leg['zone']}.")
+    if rep.get("leg_next"):
+        ln = rep["leg_next"]
+        T.append(f"⚠️ Нога пройдена почти целиком (глубина {leg['depth']:.2f}): пробой её начала {leg['origin']:.6g} не столько "
+                 f"отмена, сколько переключение контекста на старшую ногу {ln['dir']} от {ln['origin']:.6g} ({ln['origin_t']:%d.%m}) "
+                 f"до {ln['ext']:.6g} — в ней цена сейчас на глубине {leg_depth(ln, price):.2f}. Замер 08.10: где в дневной ноге "
+                 f"кончилась пятая, денег ядра не разделяет; вход в момент переключения ноги — хуже обычного отката.")
     if rep.get("leg_alt"):
         la = rep["leg_alt"]
         T.append(f"Альтернативная нога (другой масштаб свинга): от {la['origin']:.6g} ({la['origin_t']:%d.%m}) — глубина {la['depth']:.2f}, {la['zone']}.")

@@ -188,6 +188,16 @@ def transition(prev, ls, now, sym):
     """detected → entered → closed по правилам бэктеста (core.waves.wave5_core.ltf_status: триггер после детекции,
     вход open следующего бара, стоп фиксирован на входе, исход по экстремумам баров)."""
     st = prev.get("status", "detected")
+    # 🔴 08.10 ЦЕЛЬ ЗА ВХОДОМ — не сделка. SYN 16.09: до триггера цена ушла вдвое выше пятой, вход 0.17 при цели 0.10 →
+    # «выход по цели» сразу с −43% и стоп 54% в журнале. Бой такие сигналы отбрасывает (`_geom_bad` в waves_long_loop),
+    # тень — нет; общий код входа (`wave5_core.ltf_status`) не трогаем, отсекаем здесь же, где бой.
+    if st == "detected" and ls.get("entry_time") is not None and prev.get("p4_target") is not None:
+        _long = prev.get("side") == "LONG"
+        if (float(prev["p4_target"]) <= float(ls["entry_price"])) if _long else (float(prev["p4_target"]) >= float(ls["entry_price"])):
+            prev["status"] = "closed"; prev["closed_at"] = now; prev["outcome"] = "target_behind"
+            prev["bad"] = f"цель {float(prev['p4_target']):.6g} за входом {float(ls['entry_price']):.6g}"
+            print(f"  --   {sym:<12} вход {ls['entry_price']:.6g} за целью {prev['p4_target']:.6g} — не сделка", flush=True)
+            return
     if st == "detected" and ls.get("entry_time") is not None:
         prev["status"] = "entered"; prev["entered_at"] = str(ls["entry_time"])[:16]; prev["entry_price"] = ls["entry_price"]
         prev["entry_trigger"] = ls["trigger"]; prev["stop"] = js(ls["stop"])
@@ -254,16 +264,27 @@ def reentry_watch(state, now):
         if r["entry_price"] is None:
             continue
         first = v.get("re_status") is None
+        # 🔴 08.10 ОДИН ПОВТОР НА ИМПУЛЬС (USELESS 05:18: два выбитых сетапа одного импульса — удлинения пятой — дали ОДНУ
+        # И ТУ ЖЕ бумажную сделку по одному слому 3m: два поста и двойной счёт в журнале тени). Первый занял — второй дубль.
+        if first:
+            twin = next((kk for kk, x in state.items() if x is not v and _impulse_of(kk) == _impulse_of(k)
+                         and x.get("re_entry_at") == str(r["entry_time"])[:16]), None)
+            if twin:
+                v.update(re_status="closed", re_outcome="dup", re_dup_of=twin)
+                print(f"  RE   {v['sym']:<12} повтор {str(r['entry_time'])[:16]} — дубль сетапа {twin}, пропущен", flush=True)
+                continue
         v.update(re_status="entered", re_entry=js(r["entry_price"]), re_stop=js(r["stop"]), re_entry_at=str(r["entry_time"])[:16])
+        z = _zone(v, entry=r["entry_price"], stop=r["stop"])
         if first:
             print(f"  RE   {v['sym']:<12} {v['side']} повторный вход по слому 3m {v['re_entry_at']} @ {r['entry_price']:.6g} · стоп {r['stop']:.6g}", flush=True)
             # пятый вариант семейства — повторный вход по слому 3m; сторону решает флаг в бою (06.10)
             emit_exec(v, v["sym"], "reentry_3m", r["entry_price"], r["stop"], v.get("p4_target"),
                       extra={"wv_mode": r.get("mode"), "wv_first_stop": js(v.get("stop"))})
-            if post:
+            if post and z["proven"]:                    # 08.10: повтор вне зоны — одной строкой при закрытии
                 rid = v["tg_last"] if isinstance(v.get("tg_last"), int) and v["tg_last"] > 0 else None
                 txt = (f"♻️ <b>{html_escape(v['sym'].split('/')[0])}</b> · {v['side']} · ПОВТОРНЫЙ вход по слому 3m {v['re_entry_at']} UTC @ {r['entry_price']:.6g}\n"
-                       f"цель {v['p4_target']:.6g} · стоп {r['stop']:.6g} (первый стоп был {v['stop']:.6g}) · бумажная сделка")
+                       f"цель {v['p4_target']:.6g} · стоп {r['stop']:.6g} (первый стоп был {v['stop']:.6g}) · бумажная сделка\n"
+                       f"{html_escape(z['label'])}")
                 mid = send_text(txt, reply_to=rid)
                 if (mid.get("result") or {}).get("message_id"):
                     v["tg_last"] = mid["result"]["message_id"]
@@ -273,7 +294,11 @@ def reentry_watch(state, now):
             if post:
                 icon = {"target": "✅", "stop": "⛔", "time": "⏱"}.get(r["outcome"], "•")
                 rid = v["tg_last"] if isinstance(v.get("tg_last"), int) and v["tg_last"] > 0 else None
-                send_text(f"{icon} <b>{html_escape(v['sym'].split('/')[0])}</b> · повторный вход закрыт: {r['outcome']} {r['pnl_pct']:+.2f}% (бумажная)", reply_to=rid)
+                if z["proven"]:
+                    send_text(f"{icon} <b>{html_escape(v['sym'].split('/')[0])}</b> · повторный вход закрыт: {r['outcome']} {r['pnl_pct']:+.2f}% (бумажная)", reply_to=rid)
+                else:                                   # вход и выход повтора вне зоны — одной строкой
+                    send_text(f"{icon} <b>{html_escape(v['sym'].split('/')[0])}</b> · повтор по слому 3m {v['re_entry_at']} UTC @ "
+                              f"{float(v['re_entry']):.6g} → {r['outcome']} {r['pnl_pct']:+.2f}% · 🌒 вне зоны, бумажная", reply_to=rid)
 
 
 def detect_close(prev):
@@ -281,7 +306,35 @@ def detect_close(prev):
     return pd.Timestamp(prev["detected_at"], tz="UTC").floor("4h")
 
 
+def mark_bad(state) -> int:
+    """🔴 08.10 Битые записи журнала — пометкой, а не удалением (любой подсчёт отбрасывает `bad` и `re_outcome == "dup"`):
+    · цель по ту сторону входа (SYN 16.09: «цель» с −43%) — новые такие отсекает `transition`, здесь — старые;
+    · повтор по слому 3m, уже записанный другим сетапом того же импульса (USELESS 08.10 05:18 — одна сделка дважды).
+    Идемпотентно: вызывается при каждом сохранении. Возвращает число новых пометок."""
+    n = 0
+    for v in state.values():
+        e, t = v.get("entry_price"), v.get("p4_target")
+        if v.get("bad") or e is None or t is None:
+            continue
+        if (float(t) <= float(e)) if v.get("side") == "LONG" else (float(t) >= float(e)):
+            v["bad"] = f"цель {float(t):.6g} за входом {float(e):.6g}"; n += 1
+    seen = {}
+    for k in sorted(state, key=lambda kk: str(state[kk].get("detected_at", ""))):
+        v = state[k]
+        if not v.get("re_entry_at") or v.get("re_outcome") == "dup":
+            continue
+        key = (_impulse_of(k), v["re_entry_at"])
+        if key in seen:
+            v.update(re_outcome="dup", re_dup_of=seen[key]); n += 1
+        else:
+            seen[key] = k
+    return n
+
+
 def save_and_report(state, a, mode="watch", n_univ=None, young=None):
+    _nb = mark_bad(state)
+    if _nb:
+        print(f"  помечено битых записей журнала: {_nb} (поле bad / re_outcome=dup — в статистику не входят)", flush=True)
     if not a.asof:
         STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
         # статус для страницы /waves (Егор 16.09: «на странице нет новых сетапов» — чтобы «новых нет» читалось как факт)
@@ -609,6 +662,33 @@ def refresh_analyst(state):
     return reports
 
 
+def _zone(v, entry=None, stop=None):
+    """Зона входа ТАК, как её решает бой (core.waves.proven_zone — то же правило, что в waves_long_loop)."""
+    from core.waves.proven_zone import zone
+    e = entry if entry is not None else (v.get("entry_price") or v.get("last_close"))
+    return zone(v["side"], e, stop if stop is not None else v.get("stop"), v.get("imp_pct"))
+
+
+def day_mass(state, side, ts) -> int:
+    """МАССОВОСТЬ ТЕКУЩЕГО ДНЯ (Егор 08.10): сколько РАЗНЫХ монет дали пятёрку той же стороны с начала UTC-дня до ts,
+    включая эту. Причинно — только сетапы, обнаруженные не позже ts. Не путать с cluster_3d: там 3 ПРОШЛЫХ дня без
+    текущего, и он запаздывает (16.09, когда сработали 22 сетапа, показывал 2.5 в нормировке)."""
+    t = str(ts)[:16]
+    return len({x["sym"] for x in state.values() if isinstance(x, dict) and x.get("side") == side
+                and str(x.get("detected_at", ""))[:10] == t[:10] and str(x.get("detected_at", ""))[:16] <= t})
+
+
+def _mass_line(state, v, ts) -> str:
+    c3 = v.get("cluster_3d")
+    return (f"👥 массовость: сегодня {day_mass(state, v['side'], ts)} мон. с пятёркой "
+            f"{'вниз' if v['side'] == 'LONG' else 'вверх'}" + (f" · за 3 прошлых дня {c3}" if c3 is not None else ""))
+
+
+def _impulse_of(k) -> str:
+    """Ключ импульса без вершины пятой: «монета|начало импульса|конец волны 4» (удлинение добавляет 4-й сегмент)."""
+    return "|".join(str(k).split("|")[:3])
+
+
 def tg_notify(state, reports=None):
     """📤 Канал Oko_Waves (core.waves.wave_tg, настройки data/wave5_shadow/tg.json). Всё по сетапу — ЦЕПОЧКОЙ ответов
     (Егор 15.09: «обновление — ответным сообщением на предыдущую версию, так динамику видно»):
@@ -631,8 +711,24 @@ def tg_notify(state, reports=None):
             name = html_escape(v["sym"].split("/")[0]); r = (reports or {}).get(k)
             if cfg.get("post_new", True) and str(v.get("detected_at", "")) >= since and not v.get("tg_new") and r:
                 prev_sym = [x.get("tg_last") for x in state.values() if x is not v and x.get("sym") == v["sym"] and x.get("tg_last")]
-                extra = f"Сетап тени: пятая {'вниз' if v['side'] == 'LONG' else 'вверх'} на 4h, импульс {v.get('imp_pct')}%, цель — конец 4-й {v['p4_target']:.6g}"
-                res = publish_report(r, out_dir, side=v["side"], extra=html_escape(extra), reply_to=max(prev_sym) if prev_sym else None)
+                z = _zone(v, entry=r.get("price") or v.get("last_close"))
+                # 🌒 08.10 (Егор «мы точно видим то что нужно?!»): удлинение пятой ВНЕ доказанной зоны — не новый альбом,
+                # а строка в ветке импульса (USELESS 07–08.10: 4 сетапа одного импульса = 4 альбома и 4 стопа)
+                same_imp = [x.get("tg_last") for kk, x in state.items() if x is not v and _impulse_of(kk) == _impulse_of(k)
+                            and x.get("tg_last")]
+                if k.count("|") >= 3 and same_imp and not z["proven"]:
+                    txt = (f"🔄 <b>{name}</b> · {v['side']} · пятая удлинилась: вершина {str(v.get('top_time'))[:16]} UTC · "
+                           f"стоп {float(v['stop']):.6g}\n{html_escape(z['label'])}")
+                    res = send_text(txt, reply_to=max(same_imp))
+                    v["tg_new"] = message_id(res) or -1; chain(v, res); v["tg_sig"] = r.get("state"); v["tg_compact"] = True
+                    print(f"  TG   {v['sym']}: удлинение строкой {'ок' if res.get('ok') else res}", flush=True)
+                    continue
+                extra = "\n".join([
+                    html_escape(f"Сетап тени: пятая {'вниз' if v['side'] == 'LONG' else 'вверх'} на 4h, импульс {v.get('imp_pct')}%, "
+                                f"цель — конец 4-й {v['p4_target']:.6g}"),
+                    html_escape(z["label"] + " (по текущей цене; точно — при входе)"),
+                    html_escape(_mass_line(state, v, v.get("detected_at")))])
+                res = publish_report(r, out_dir, side=v["side"], extra=extra, reply_to=max(prev_sym) if prev_sym else None)
                 v["tg_new"] = message_id(res) or -1; chain(v, res); v["tg_sig"] = r.get("state")
                 print(f"  TG   {v['sym']}: сетап {'ок' if res.get('ok') else res}", flush=True)
             elif r and v.get("tg_last") and v.get("status") != "closed":
@@ -645,13 +741,24 @@ def tg_notify(state, reports=None):
             if not v.get("tg_last"):                  # без поста сетапа вход/выход не публикуем — цепочке не к чему крепиться
                 continue
             if cfg.get("post_trades", True) and v.get("entered_at") and str(v["entered_at"]) >= since and not v.get("tg_in"):
-                txt = "\n".join([f"▶️ <b>{name}</b> · {v['side']} · вход по {v.get('entry_trigger')} {v['entered_at']} UTC @ {v['entry_price']:.6g}",
-                                 f"цель {v['p4_target']:.6g} · стоп {v['stop']:.6g}"])
-                v["tg_in"] = chain(v, send_text(txt, reply_to=v.get("tg_last")))
+                z = _zone(v)                                  # точная зона: цена входа и зафиксированный стоп
+                if v.get("tg_compact") and not z["proven"]:
+                    v["tg_in"] = True                         # удлинение вне зоны: вход и выход — одной строкой при выходе
+                else:
+                    txt = "\n".join([f"▶️ <b>{name}</b> · {v['side']} · вход по {v.get('entry_trigger')} {v['entered_at']} UTC @ {v['entry_price']:.6g}",
+                                     f"цель {v['p4_target']:.6g} · стоп {v['stop']:.6g}",
+                                     html_escape(z["label"]), html_escape(_mass_line(state, v, v["entered_at"]))])
+                    v["tg_in"] = chain(v, send_text(txt, reply_to=v.get("tg_last")))
             if (cfg.get("post_trades", True) and v.get("status") == "closed" and v.get("pnl_pct") is not None
                     and str(v.get("closed_at", "")) >= since and not v.get("tg_out")):
                 icon = {"target": "✅", "stop": "⛔", "time": "⏱"}.get(v.get("outcome"), "•")
-                lines = [f"{icon} <b>{name}</b> · {v['side']} · выход {v.get('outcome')} {v['closed_at']} UTC · {v['pnl_pct']:+.2f}%"]
+                z = _zone(v)
+                tag = "🔑 доказанная зона" if z["proven"] else "🌒 вне зоны, бумажная"
+                if v.get("tg_compact") and not z["proven"]:
+                    lines = [f"{icon} <b>{name}</b> · удлинение: вход по {v.get('entry_trigger')} @ {v['entry_price']:.6g} → "
+                             f"{v.get('outcome')} {v['pnl_pct']:+.2f}% · {tag}"]
+                else:
+                    lines = [f"{icon} <b>{name}</b> · {v['side']} · выход {v.get('outcome')} {v['closed_at']} UTC · {v['pnl_pct']:+.2f}% · {tag}"]
                 if v.get("pnl_trail") is not None:
                     lines.append(f"с трейлом: {v.get('outcome_trail')} {v['pnl_trail']:+.2f}%")
                 v["tg_out"] = chain(v, send_text("\n".join(lines), reply_to=v.get("tg_last")))

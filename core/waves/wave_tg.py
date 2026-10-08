@@ -65,11 +65,14 @@ def caption_from_report(r: Dict[str, Any], side: Optional[str] = None, extra: st
     return cap if len(cap) <= 1024 else cap[:1010] + "…"
 
 
-def caption_card(c: Dict[str, Any], note: str = "") -> str:
-    """Короткая подпись альбома из карточки решения — схватывается за секунды (Егор 15.09: «текстом читать долго»)."""
+def caption_card(c: Dict[str, Any], note: str = "", extra: str = "") -> str:
+    """Короткая подпись альбома из карточки решения — схватывается за секунды (Егор 15.09: «текстом читать долго»).
+    extra — готовый HTML (зона входа и массовость дня, 08.10); до этого в альбоме дополнительная строка терялась."""
     e = html.escape
     light = {"go": "🟢", "wait": "🟡", "off": "🔴"}.get(c.get("light"), "⚪")
     lines = [f"{light} <b>{e(c['sym'])} · {c.get('side', '')}</b> · {c['price']:.6g}", f"<b>{e(c.get('status', ''))}</b>"]
+    if c.get("status_sub"):
+        lines.append(e(c["status_sub"]))
     if note:
         lines.append(f"🔄 {e(note)}")
     if c.get("entry"):
@@ -78,8 +81,12 @@ def caption_card(c: Dict[str, Any], note: str = "") -> str:
         tk = c.get("taken") or [False] * len(c["targets"])
         lines.append("Цели " + " · ".join((f"<s>{v:.5g}</s> ✓" if t_ else f"<code>{v:.5g}</code> ({p:+.0f}%{f', RR {rr:.1f}' if rr is not None else ''})")
                                           for (_, v, p, rr), t_ in zip(c["targets"], tk)))
+    if c.get("rr_note"):
+        lines.append(e(c["rr_note"]))
     if c.get("invalid"):
         lines.append(f"⛔ {e(c['invalid'])}")
+    if extra:
+        lines.append(extra)
     lines.append(f"#волны #{e(c['sym'])}")
     cap = "\n".join(lines)
     return cap if len(cap) <= 1024 else cap[:1010] + "…"
@@ -200,7 +207,7 @@ def publish_report(r: Dict[str, Any], out_dir: Path, side: Optional[str] = None,
     уровнями (≤1024) у альбома; для цепочки возвращается первое сообщение альбома.
     Иначе — одна общая схема с подписью (или текст, если схемы нет); note — что изменилось (для обновления)."""
     if r.get("parts"):
-        cap = caption_card(r["card"], note) if r.get("card") else caption_from_report(r, side, extra, note)
+        cap = caption_card(r["card"], note, extra) if r.get("card") else caption_from_report(r, side, extra, note)
         alb = send_album([Path(out_dir) / n for n in r["parts"]], cap, reply_to=reply_to)
         return {"ok": True, "result": alb["result"][0]} if alb.get("ok") else alb
     cap = caption_from_report(r, side, extra, note)
