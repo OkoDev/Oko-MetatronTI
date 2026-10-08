@@ -126,7 +126,7 @@ class PairFullState:
     # ML специалисты
     mtf_wt_verdict: str            # TREND/REVERSAL/EXHAUSTION
     mtf_wt_confidence: float
-    mtf_smc_verdict: str           # STRONG_BULL/WEAK/BEAR_ZONE
+    mtf_smc_verdict: str           # STRONG_SETUP/MIXED/WEAK_SETUP/NEUTRAL (качество сетапа, без стороны; 08.10)
     mtf_smc_confidence: float
     # История пары
     cascade_count: int
@@ -235,7 +235,8 @@ class PairFullState:
     eqh_near (bool)         — Equal Highs в радиусе 1% (ликвидность сверху)
     eql_near (bool)         — Equal Lows в радиусе 1% (ликвидность снизу)
     liquidity_above (bool)  — пул ликвидности выше цены
-Выход: STRONG_BULL_ZONE / WEAK_ZONE / STRONG_BEAR_ZONE / NEUTRAL
+Выход: STRONG_SETUP / MIXED / WEAK_SETUP / NEUTRAL (08.10: p_win без стороны; было STRONG_BULL/BEAR_ZONE —
+       агрегатор путал качество сетапа с направлением)
        + confidence 0.0-1.0
 Обучение: аналогично MTF WT Specialist
 Публикует в шину: mtf_smc_verdict, mtf_smc_confidence
@@ -414,7 +415,7 @@ PP/S1/R1/S2/R2/S3/R3 как Fibonacci-прокси:
    CHoCH подтверждён на 1h. Цена вошла в 4h OB зону.
    EQL на 1h — ликвидность снята. OTE [0.705-0.786] активна.
    Cascade по паре: 3 TSL подряд avg +4.2R.
-   MTF WT: REVERSAL_SETUP (0.81). MTF SMC: STRONG_BULL_ZONE (0.74).
+   MTF WT: REVERSAL_SETUP (0.81). MTF SMC: STRONG_SETUP (0.74).
    → LONG setup. P(win)=0.73. Стратегия: DUAL_TSL."
 
 Сейчас вместо этого: _analyze_signals_advanced() в trading_intelligence.py
@@ -532,8 +533,8 @@ Feedback loop (СЕЙЧАС ОТСУТСТВУЕТ):
   OTESphere   ← ote.py             → ote_zone_active, ote_optimal_price
 
 Центр Sub-куба (SMCContext):
-  Агрегирует все 5 → SMCVerdict:
-    STRONG_BEAR_ZONE / WEAK_ZONE / STRONG_BULL_ZONE / NEUTRAL
+  Агрегирует все 5 → SMCVerdict (ЗАМЫСЕЛ; 🔴 в коде вердикт sub_cube — ATR-тренд 1h/4h `fast_smc_verdict`,
+  метки с 09.10 ATR_TREND_BULL_STRONG / …_WEAK / ATR_TREND_BEAR_* / ATR_TREND_NONE, было STRONG_BULL_ZONE/…):
     + confidence 0.0-1.0
     + key_factors: list[str]
 

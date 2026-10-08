@@ -154,8 +154,9 @@ def analyze(sym,state,rad,macro):
     
     # SMC verdict + OTE
     sv=str(smc.get("smc_verdict","") or "")
-    if "STRONG_BULL" in sv and sig.get("dir")=="LONG": sig["conf"]+=1; sig["rs"].append("SMC strong B")
-    if "STRONG_BEAR" in sv and sig.get("dir")=="SHORT": sig["conf"]+=1; sig["rs"].append("SMC strong B")
+    # 09.10: метка шины = ATR-тренд 1h/4h, переименована STRONG_BULL_ZONE → ATR_TREND_BULL_STRONG
+    if "BULL_STRONG" in sv and sig.get("dir")=="LONG": sig["conf"]+=1; sig["rs"].append("SMC strong B")
+    if "BEAR_STRONG" in sv and sig.get("dir")=="SHORT": sig["conf"]+=1; sig["rs"].append("SMC strong B")
     if smc.get("price_in_ote",False) and sig.get("dir"): sig["conf"]+=1; sig["rs"].append("OTE")
     od=smc.get("ote_direction","") or ""
     if "UP" in od and sig.get("dir")=="LONG": sig["conf"]+=1; sig["rs"].append("OTE dir UP")

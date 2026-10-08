@@ -43,7 +43,7 @@
 | `wt_verdict` | Optional[str] | scan_loop (Сфера 3) | TREND_CONTINUATION/REVERSAL_SETUP/EXHAUSTION |
 | `wt_confidence` | float | scan_loop (Сфера 3) | уверенность WT-вердикта 0..1 |
 | `wt_snap` | Optional[Dict[str, Any]] | scan_loop (Сфера 3) | {tf: {wt1,wt2,zone,cross,atr_trend}} |
-| `smc_verdict` | Optional[str] | sub_cube (Сфера 4) | STRONG_BULL_ZONE/WEAK_ZONE/STRONG_BEAR_ZONE |
+| `smc_verdict` | Optional[str] | sub_cube (Сфера 4) | ATR-тренд 1h/4h: ATR_TREND_BULL_STRONG/…_WEAK/ATR_TREND_BEAR_*/ATR_TREND_NONE (до 09.10 — STRONG_BULL_ZONE/…) |
 | `smc_confidence` | float | sub_cube (Сфера 4) | уверенность SMC 0..1 |
 | `smc_snap` | Optional[Dict[str, Any]] | sub_cube (Сфера 4) | {tf: {ob_bull,fvg_open,choch,bos,...}} — магниты TP |
 | `btc_regime` | Optional[str] | scan_loop (Сфера 5) | режим BTC TREND_UP/DOWN/RANGE/HIGH_VOL |

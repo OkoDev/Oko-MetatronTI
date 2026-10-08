@@ -130,7 +130,7 @@ class PairState:
     wt_snap: Optional[Dict[str, Any]] = None  # {tf: {wt1, wt2, zone, cross, atr_trend}}
 
     # ── Сфера 4: MTF SMC Specialist ─────────────────────────────────────
-    smc_verdict: Optional[str] = None         # STRONG_BULL_ZONE / WEAK_ZONE / STRONG_BEAR_ZONE
+    smc_verdict: Optional[str] = None         # ATR-тренд 1h/4h: ATR_TREND_BULL_STRONG / …_WEAK / ATR_TREND_BEAR_* / ATR_TREND_NONE
     smc_confidence: float = 0.0
     smc_snap: Optional[Dict[str, Any]] = None
 

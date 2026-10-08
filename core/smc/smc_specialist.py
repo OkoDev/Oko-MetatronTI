@@ -5,12 +5,15 @@ SMC Specialist — Сфера 4 / CUBE-08.
 Вызывается в scan_one() после расчёта индикаторов — данные уже есть в памяти.
 
 Вердикты (🔴 08.10: это ATR-тренд `calculate_trend` на 1h и 4h, BOS/CHoCH здесь НЕ смотрятся — старый
-docstring врал; с ML-вердиктом `mtf_smc_specialist` (качество сетапа STRONG_SETUP/WEAK_SETUP) не путать):
-  STRONG_BULL_ZONE  — тренд UP на 1h и на 4h
-  WEAK_BULL_ZONE    — тренд UP на 1h, 4h нет или против
-  STRONG_BEAR_ZONE  — тренд DOWN на 1h и на 4h
-  WEAK_BEAR_ZONE    — тренд DOWN на 1h, 4h нет или против
-  NEUTRAL           — тренда на 1h нет
+docstring врал; с ML-вердиктом `mtf_smc_specialist` (качество сетапа STRONG_SETUP/WEAK_SETUP) не путать).
+09.10 (Егор): метки переименованы из STRONG_BULL_ZONE/… в ATR_TREND_* — имя говорит, что внутри. Слова
+BULL/BEAR/STRONG/WEAK сохранены: дашборд oko-dashboard разбирает метку по этим подстрокам.
+  ATR_TREND_BULL_STRONG  — тренд UP на 1h и на 4h          (было STRONG_BULL_ZONE)
+  ATR_TREND_BULL_WEAK    — тренд UP на 1h, 4h нет или против (было WEAK_BULL_ZONE)
+  ATR_TREND_BEAR_STRONG  — тренд DOWN на 1h и на 4h        (было STRONG_BEAR_ZONE)
+  ATR_TREND_BEAR_WEAK    — тренд DOWN на 1h, 4h нет или против (было WEAK_BEAR_ZONE)
+  ATR_TREND_NONE         — тренда на 1h нет                 (было NEUTRAL)
+В `features_json` сделок до 09.10 лежат старые имена.
 """
 from __future__ import annotations
 
@@ -46,27 +49,27 @@ def fast_smc_verdict(
     # ── 1h тренд: основная структура ──────────────────────────────────────
     trend_1h = _get_trend(df_1h)
     if trend_1h == 0:
-        return "NEUTRAL"
+        return "ATR_TREND_NONE"
 
     # ── 4h подтверждение ─────────────────────────────────────────────────
     if df_4h is None or df_4h.empty or len(df_4h) < _MIN_BARS:
         # Только 1h — слабый сигнал
         if trend_1h == 1:
-            return "WEAK_BULL_ZONE"
-        return "WEAK_BEAR_ZONE"
+            return "ATR_TREND_BULL_WEAK"
+        return "ATR_TREND_BEAR_WEAK"
 
     trend_4h = _get_trend(df_4h)
 
     # Оба TF совпадают → сильный сигнал
     if trend_4h == trend_1h:
         if trend_1h == 1:
-            return "STRONG_BULL_ZONE"
-        return "STRONG_BEAR_ZONE"
+            return "ATR_TREND_BULL_STRONG"
+        return "ATR_TREND_BEAR_STRONG"
 
-    # 4h против 1h → CHoCH формируется, слабый сигнал
+    # 4h против 1h (или 4h без тренда) → слабый сигнал
     if trend_1h == 1:
-        return "WEAK_BULL_ZONE"
-    return "WEAK_BEAR_ZONE"
+        return "ATR_TREND_BULL_WEAK"
+    return "ATR_TREND_BEAR_WEAK"
 
 
 def _get_trend(df: pd.DataFrame) -> int:

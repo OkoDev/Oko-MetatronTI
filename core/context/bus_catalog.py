@@ -46,7 +46,7 @@ _PAIR_META: Dict[str, tuple] = {
     "wt_confidence":     ("scan_loop (Сфера 3)", "уверенность WT-вердикта 0..1"),
     "wt_snap":           ("scan_loop (Сфера 3)", "{tf: {wt1,wt2,zone,cross,atr_trend}}"),
     # Сфера 4 SMC
-    "smc_verdict":       ("sub_cube (Сфера 4)", "STRONG_BULL_ZONE/WEAK_ZONE/STRONG_BEAR_ZONE"),
+    "smc_verdict":       ("sub_cube (Сфера 4)", "ATR-тренд 1h/4h: ATR_TREND_BULL_STRONG/…_WEAK/ATR_TREND_BEAR_*/ATR_TREND_NONE"),
     "smc_confidence":    ("sub_cube (Сфера 4)", "уверенность SMC 0..1"),
     # 🔴 02.09: описание врало — схема ПЛОСКАЯ, per-TF лежит ВНУТРИ ключа by_tf.
     # Читатели (narrative_builder) обращаются плоско: snap["price_in_ote"].

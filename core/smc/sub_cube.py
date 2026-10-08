@@ -93,7 +93,7 @@ class SMCSubCube:
         if not snap:
             return None
 
-        # Вердикт (STRONG_BULL_ZONE / WEAK_* / STRONG_BEAR_ZONE / NEUTRAL)
+        # Вердикт ATR-тренда 1h/4h (ATR_TREND_BULL_STRONG / …_WEAK / ATR_TREND_BEAR_* / ATR_TREND_NONE)
         _df_1h = df_1h if df_1h is not None else ohlcv_by_tf.get("1h")
         _df_4h = df_4h if df_4h is not None else ohlcv_by_tf.get("4h")
         verdict = None
