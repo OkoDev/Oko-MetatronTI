@@ -57,7 +57,9 @@ def _publish_and_confirm(
     `observe()`/shadow, но gate `aggregate()` (требует trigger) НЕ трогаем.
     Если source отсутствует в registry (weight=0) — только публикуем событие.
     """
-    _mark(sym, "шина+SMC")
+    # 🔴 08.10: здесь стоял `_mark(sym, "шина+SMC")` (16665a4, 05.10) — `_mark` живёт только внутри scan_one,
+    # на уровне модуля это NameError: каждый WT-кросс и событие комбинатора обрывали скан пары
+    # (~1000 обрывов за сутки). Секцию публикаций закрывает веха "event_bus" в scan_one.
     _eb = getattr(bot, "event_bus", None)
     if _eb is not None:
         asyncio.create_task(_eb.publish(sym, event_name, priority=priority, data=data))
