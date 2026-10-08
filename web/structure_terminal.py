@@ -63,6 +63,40 @@ def _drift_regime():
         return None
 
 
+_PULSE_STALE = 300      # снимок пульса старше 5 мин — прибор молчит, состояние не выдаём за живое
+
+
+def _pulse_block():
+    """МАРКЕТ-ПУЛЬС в повестке (09.10, Егор «ок» на карточку момента): состояние рынка раз в минуту и ликвидации
+    из снимка `scripts/market_pulse.py` (пороги каскада — его же `liq_events`, один калькулятор) + только ИЗМЕРЕННЫЕ
+    строки «что это значит». Светофор пульс НЕ трогает: реакция на наш бой не мерилась (шорт по рынку в слив мерили
+    на случайном входе, не на наших источниках)."""
+    try:
+        if "scripts" not in sys.path:
+            sys.path.insert(0, "scripts")
+        import market_pulse as MP
+        m = json.loads(MP.SNAP.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    now = time.time()
+    age = int(now - (m.get("ts") or 0))
+    st = m.get("state") or "НОРМА"
+    win = {k: {"dn": round(m[k]["dn"] * 100), "up": round(m[k]["up"] * 100), "med": round(m[k]["med"] * 100, 1)}
+           for k in ("15m", "2h", "6h") if m.get(k)}
+    facts = []
+    if st in ("СЛИВ", "ОБВАЛ"):          # dump_short_lab 08.10: эпизоды «2ч ≥50% монет вниз >3%» — определение СЛИВА пульса
+        facts.append("шорт по рынку в начале слива: 24 ч −1.30% против −0.39% в обычный час, хуже 4/4 лет — не догонять")
+        facts.append("лонг по рынку в начале слива: +0.60% против −0.31%, но 2025 −0.03% — слабо, не сигнал")
+    if ((m.get("6h") or {}).get("dn") or 0) >= 0.5:   # wave_knife_lab 08.10: «≥50% монет −3% за 6 ч»
+        facts.append("доказанный лонг ядра волн в широкий слив: +8.2%/сделку против +4.0, но годы 2/4 — запрета лонга нет")
+    if st == "ВЫНОС":
+        facts.append("ВЫНОС по пульсу не мерился · близкий замер (другое определение): шорт свипа, когда хаи "
+                     "снимает масса монет за 6 ч, хуже обычного 0/4 лет")
+    return {"state": st, "age_sec": age, "stale": age > _PULSE_STALE, "n": m.get("n_liquid"), "win": win,
+            "since_min": int((now - m["since"]) / 60) if m.get("since") else None,
+            "liq": MP.liq_line(m.get("liq")), "cascade": MP.liq_events(m.get("liq")), "facts": facts}
+
+
 def _build():
     now = time.time()
     if now - _cache["ts"] < _TTL and _cache["data"] is not None:
@@ -165,8 +199,9 @@ def _breadth_now():
                     pass
             # старые записи писались без фильтра ликвидности → фильтруем при чтении
             n24 = len([b for b in uniq if _liquid(b)])   # РАЗНЫХ монет за 24ч — как в замере
-            # 🔴 лог пишется, только пока открыта страница: за сутки бывало 42 снимка из 288
-            # и дыра в 20 часов. «За 24ч» тогда = последние часы. Говорим об этом вслух.
+            # До 11.09 лог писался, только пока открыта страница (42 снимка из 288, дыра 20 ч); с 11.09 пишет
+            # фон `_breadth_bg` раз в 5 мин (09.10: 848 снимков за 3 суток, разрыв ≤9 мин). Покрытие всё равно
+            # считаем: после простоя терминала «за 24ч» = последние часы, и это говорим вслух.
             cover = round(min(1.0, len(rows) / 288.0), 2)
         c.close()
     except Exception as e:
@@ -363,7 +398,7 @@ def _agenda():
     else:
         light, reason = "green", f"{n_ok} кандидатов в подтверждённом для их стороны режиме прошли кластер и косты"
     ts_data = max((int(r.get("ts") or 0) for r in rows), default=0)
-    return {"phase": phase, "mode": mode, "hint": hint, "breadth": brd,
+    return {"phase": phase, "mode": mode, "hint": hint, "breadth": brd, "pulse": _pulse_block(),
             "light": light, "reason": reason, "n_long": len(longs), "n_short": len(shorts),
             "drift": drf, "long_ok": long_ok, "short_ok": short_ok, "ts_data": ts_data,
             "long": longs[:_AGENDA_TOP], "short": shorts[:_AGENDA_TOP],
@@ -2095,6 +2130,9 @@ body{background:var(--bg);color:var(--tx);font:14px/1.55 -apple-system,Segoe UI,
 .mode .hint{color:var(--dim);font-size:13px}
 .mode .brd{margin-left:auto;text-align:right;font-size:12px;color:var(--dim)}
 .mode .brd b{display:block;font-size:20px;color:var(--tx)}
+.pulse{margin-top:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 16px;font-size:13px}
+.pulse .dm{color:var(--dim)}
+.pulse .pf{font-size:12.5px;margin-top:3px}
 .light{display:flex;align-items:center;gap:12px;margin-top:10px;border-radius:12px;
  padding:12px 16px;border:1px solid var(--line);font-size:14px}
 .light .dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto}
@@ -2157,6 +2195,7 @@ body{background:var(--bg);color:var(--tx);font:14px/1.55 -apple-system,Segoe UI,
 __NAV__
 <div class=wrap>
   <div class=mode id=mode>…</div>
+  <div class=pulse id=pulse></div>
   <div class="light" id=light></div>
   <div class=cols>
     <div class=col><h2>🟢 Лонг <span class=n id=nlong>0</span></h2><div id=longs></div></div>
@@ -2228,6 +2267,19 @@ async function load(){
     (d.drift?'<br>дрейф 30д '+(d.drift.d30>0?'+':'')+d.drift.d30+'% · шорт '+(d.drift.short_ok?'в режиме':'вне режима'):'')+
     '<br><span style=opacity:.6 title="фаза phase_watch как режим не мерилась: ретро-тест 46 тыс. сделок — разделяет результат на +0.003 п.п.">фаза '+(d.phase||'—')+' · не мерилась</span>'+
     (b.cover!=null&&b.cover<0.8?'<br><span style="color:var(--o)">окно неполное: '+b.cover_h+' ч из 24</span>':'')+'</div>';
+  // 09.10 МАРКЕТ-ПУЛЬС: состояние рынка раз в минуту + ликвидации + только измеренные строки (светофор не трогает)
+  var p=d.pulse||{},P=document.getElementById('pulse');
+  if(p.error){P.innerHTML='<span class=dm>пульс: '+p.error+'</span>';}
+  else{
+   var pc={'СЛИВ':'var(--dn)','ОБВАЛ':'var(--dn)','ВЫНОС':'var(--up)'}[p.state]||'var(--dim)';
+   var wl=['15m','2h','6h'].filter(function(k){return p.win&&p.win[k];}).map(function(k){var x=p.win[k];
+    return k+': ↓'+x.dn+'% ↑'+x.up+'% мед '+(x.med>0?'+':'')+x.med+'%';}).join(' · ');
+   P.innerHTML='<div>'+(p.stale?'<b style="color:var(--o)">пульс молчит '+Math.round(p.age_sec/60)+' мин</b> · последнее: ':'')+
+    '<b style="color:'+pc+'">РЫНОК СЕЙЧАС: '+p.state+'</b>'+
+    (p.state!='НОРМА'&&p.since_min!=null?' · '+p.since_min+' мин':'')+
+    ' <span class=dm>· доля монет за окно · '+wl+' · ликвидных '+p.n+'</span></div>'+
+    '<div class=dm>'+p.liq+((p.cascade||[]).length?' · <b style="color:var(--y)">'+p.cascade.join(', ')+'</b>':'')+'</div>'+
+    (p.facts||[]).map(function(f){return '<div class=pf>• '+f+'</div>';}).join('');}
   var L=document.getElementById('light');
   L.className='light '+d.light;
   L.innerHTML='<span class=dot></span><span><b>'+
