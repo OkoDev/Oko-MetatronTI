@@ -219,7 +219,8 @@ def _db():
 
 def save(m: dict, state: str, prev: dict) -> None:
     g = lambda w, k: (m.get(w) or {}).get(k)                  # noqa: E731
-    snap = {**m, "state": state, "since": prev.get("since"), "updated": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
+    snap = {**m, "state": state, "since": prev.get("since"), "last_alert": prev.get("last_alert") or {},
+            "updated": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
     tmp = SNAP.with_suffix(".tmp")
     tmp.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
     tmp.replace(SNAP)
@@ -249,9 +250,10 @@ def loop() -> None:
     try:
         old = json.loads(SNAP.read_text(encoding="utf-8"))
         prev = {"state": old.get("state", "НОРМА"), "since": old.get("since")}   # рестарт не повторяет алерт
+        last_alert: dict[str, float] = dict(old.get("last_alert") or {})       # 08.10: 16:15 СЛИВ ушёл повторно
     except Exception:                                    # noqa: BLE001
-        pass
-    last_alert: dict[str, float] = {}
+        last_alert = {}
+    prev["last_alert"] = last_alert
     refresh_turnover()
     print(f"[pulse] старт · ликвидных пар {len(_liquid)} · досеяно историей 15m: {seed_history()} · "
           f"состояние {prev.get('state', 'НОРМА')}", flush=True)
