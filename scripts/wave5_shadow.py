@@ -159,12 +159,20 @@ def _already_sent(uid: str) -> bool:
     return False
 
 
+_STATE_REF: dict = {}      # журнал текущего скана/наблюдения — для массовости дня в сигнале (ставят scan и watch)
+
+
 def emit_exec(prev, sym, variant, entry, stop, target, extra=None):
     """Сигнал на исполнение в VST (Егор 17.09: «на vst все в бой… все кандидаты с индивидуальной пометкой»).
     Тень — отдельный процесс, роутер живёт в боте, поэтому мост — очередь: строка JSON на сигнал.
     Читает её `bot/loops/waves_long_loop.py`, дедуп по полю `uid`. Вариант входа пишется в `wv_variant`,
     признаки отбора — рядом, чтобы результат потом резался по ним (ядро / импульс / ширина стопа / массовость)."""
     try:
+        # 🔴 08.10: `wv_mass_day` раньше брался из `_mass_day`, который не заполнялся нигде, — во всех сделках стоял 0.
+        # Теперь — массовость дня в определении замера `wave_day_mass_lab` (Егор: «не отсекать немассовые» — в бою
+        # не гейт, а метка для форварда): другие монеты той же стороны, уже вошедшие сегодня до события, и то же на 198.
+        _ev = (extra or {}).get("wv_entry_time") or (extra or {}).get("wv_choch_time") or pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M")
+        _n, _k = mass_now(_STATE_REF, prev, _ev) if _STATE_REF else (None, None)
         rec = {"ts": pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                "uid": f"{sym}|{prev.get('key')}|{variant}", "sym": sym, "side": prev.get("side"),
                "wv_variant": variant, "entry": js(entry), "stop": js(stop), "target": js(target),
@@ -172,7 +180,7 @@ def emit_exec(prev, sym, variant, entry, stop, target, extra=None):
                "wv_core": bool(prev.get("core")), "wv_fractal": bool(prev.get("fractal")),
                "wv_imp_pct": js(prev.get("imp_pct")), "wv_depth5": js(prev.get("depth5")),
                "wv_risk_pct": round(abs(entry - stop) / entry * 100, 2) if entry and stop else None,
-               "wv_mass_day": int(prev.get("_mass_day") or 0),
+               "wv_mass_day": _n, "wv_mass_norm": None if _k is None else round(_k, 2),
                "wv_corr30": js(prev.get("corr30")), "wv_vol30": js(prev.get("vol30")), "wv_weight": js(prev.get("weight")),
                # 08.10: WT на вершине пятой — приоритет в бюджете риска waves_long ([[wave_fifth_wt_depth_cell]])
                "wv_wt_top": js(prev.get("wt_top"))}
@@ -399,6 +407,7 @@ def full_scan(a):
     ex = ccxt.bingx({"enableRateLimit": True, "options": {"defaultType": "swap"}})
     syms = universe_list(ex, a)
     state = {} if a.asof else (json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {})
+    globals()["_STATE_REF"] = state          # 08.10: массовость дня в сигнале (emit_exec)
     print(f"[{now} UTC] полная разметка: {len(syms)} монет · LTF {a.ltf}", flush=True)
     n_ltf = int(ENTRY_W_H * 60 / TF_MIN[a.ltf]) * 4
     R72 = []; young = []
@@ -681,13 +690,18 @@ def day_mass(state, side, ts, sym=None) -> int:
                 and str(x.get("entered_at") or "")[:10] == t[:10] and str(x.get("entered_at") or "")[:16] <= t})
 
 
+def mass_now(state, v, ts):
+    """(сколько других монет уже вошло сегодня, то же на вселенную замера 198) — для строки канала и для сигнала в бой."""
+    n = day_mass(state, v.get("side"), ts, v.get("sym"))
+    un = v.get("universe_n") or max((x.get("universe_n") or 0 for x in state.values() if isinstance(x, dict)), default=0) or MASS_UNIV
+    return n, n * MASS_UNIV / un
+
+
 def _mass_line(state, v, ts) -> str:
     """Замер 08.10 (5270 сделок 2023→08.2026, 198 монет): доказанный лонг в день, когда до него вошли ≥3 других монет,
     +5.98%/сд (536 сд., 62 дня, 4/4 года, без 7 лучших дней +1.23) — в одиночку −0.35% (78 сд.). Вселенная тени
     втрое шире замера, поэтому число приводится к 198 монетам."""
-    n = day_mass(state, v["side"], ts, v.get("sym"))
-    un = v.get("universe_n") or max((x.get("universe_n") or 0 for x in state.values()), default=0) or MASS_UNIV
-    k = n * MASS_UNIV / un
+    n, k = mass_now(state, v, ts)
     tag = "МАССОВЫЙ день" if k >= MASS_MIN else "немассовый день"
     c3 = v.get("cluster_3d")
     return (f"👥 {tag}: сегодня уже вошли {n} др. мон. ({k:.1f} на {MASS_UNIV} замера, порог {MASS_MIN})"
@@ -780,6 +794,7 @@ def watch(a):
     global NOW
     NOW = pd.Timestamp.utcnow(); now = NOW.strftime("%Y-%m-%d %H:%M")
     state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
+    globals()["_STATE_REF"] = state          # 08.10: массовость дня в сигнале (emit_exec)
     act = {k: v for k, v in state.items() if v.get("status") != "closed"}
     if not act:
         print(f"[{now} UTC] watch: активных нет", flush=True); return
