@@ -95,3 +95,23 @@ def test_mark_bad_target_behind_and_dup_reentry():
     assert st["U|1|2|8"]["re_outcome"] == "dup" and st["U|1|2|8"]["re_dup_of"] == "U|1|2|7"
     assert st["U|1|2|7"].get("re_outcome") != "dup" and st["V|9|9"].get("re_outcome") != "dup"   # другой импульс — не дубль
     assert W.mark_bad(st) == 0                                                                       # идемпотентно
+
+
+def test_daily_leg_starts_after_full_retracement():
+    """08.10 (Егор, USELESS): нога — от минимума, с которого начался импульс (12.08), а не от последнего свинга (14.09)
+    и не от февраля. Откат внутри ноги (0.48 подъёма) ногу не рвёт; спад, съевший >0.786 предыдущего подъёма, — рвёт."""
+    import numpy as np
+    import pandas as pd
+    from core.waves.wave_analyst import daily_leg
+    # дневной путь: 0.030 (март) → 0.110 (июнь) → 0.033 (август, откат 0.96) → 0.337 → 0.192 (откат 0.48) → 0.358
+    pts = [(0, 0.030), (60, 0.110), (130, 0.033), (158, 0.337), (163, 0.192), (172, 0.358), (186, 0.190)]
+    x = np.arange(pts[-1][0] + 1)
+    mid = np.interp(x, [p[0] for p in pts], [p[1] for p in pts])
+    idx = pd.date_range("2026-03-01", periods=len(x), freq="1D")
+    dd = pd.DataFrame({"open": mid, "high": mid * 1.01, "low": mid * 0.99, "close": mid, "volume": 1.0}, index=idx)
+    now = idx[-1] + pd.Timedelta(days=1)
+    t0 = idx[172]
+    for p5 in (0.20, 0.188):                                   # пятая выше и ниже свинга 0.192 — нога одна и та же
+        L = daily_leg(dd, t0, False, p5, now, now, d_sw=3, dd=dd)
+        assert abs(L["origin"] - 0.033 * 0.99) < 1e-6, (p5, L["origin"], L["origin_t"])
+        assert 0.45 < L["depth"] < 0.55

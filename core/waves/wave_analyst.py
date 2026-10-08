@@ -77,6 +77,9 @@ def diagonal_on_bar(swings, t, high, low) -> Optional[Dict[str, Any]]:
             "wave_idx": idx + [p5i], "wave_px": px + [p5], "lens": (l1, l3, l5)}
 
 
+LEG_BREAK_RETR = 0.786   # откат глубже этой доли предыдущего хода — прежняя структура закончилась (конец канона OTE)
+
+
 def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: int = 10,
               dd: Optional[pd.DataFrame] = None) -> Optional[Dict[str, Any]]:
     """Дневная нога, которую корректирует 4h-ход: для хода вверх (want_top=True) — нога вниз от дневного свинг-хая, и наоборот.
@@ -99,15 +102,20 @@ def daily_leg(dh: pd.DataFrame, t0, want_top: bool, p5: float, t5x, now, d_sw: i
     # начался с минимума 25.06 1155). Идём назад по дневным свингам того же типа, что начало: более крайний свинг становится
     # началом, если промежуточный встречный ход между ним и текущим началом — ПОДВОЛНА (не за концом ноги и ≤ 0.618 всей ноги).
     # Граница степени: REDSTONE/SOLV без неё уезжали к январскому хаю — это уже нога старшей степени.
+    # 🔴 08.10 (Егор, USELESS: «почему вот так бот не видит?!» — нога от 12.08 0.033, а бот брал 14.09 0.192). Было:
+    # «встречный ход ≤ 0.618 всей ноги», но мерился |mid − cp| — ПОДЪЁМ от раннего свинга, т.е. ход ПО ноге: у USELESS
+    # подъём 12.08→09.09 (0.304) > 0.618 ноги → стоп, хотя откат 09.09→14.09 — лишь 0.48 подъёма (обычная волна 2/4).
+    # Стало: откат между свингами меряется к ПРЕДЫДУЩЕМУ ходу (cp → mid). Глубже LEG_BREAK_RETR — прежняя структура
+    # закончилась, нога начинается заново (USELESS: спад 06.→08. съел 0.95 подъёма 03.→06. → начало 12.08, не февраль).
+    # Это и граница степени, которой служил старый ограничитель (REDSTONE/SOLV не уезжают к январю — проверено 08.10).
     hi_v, lo_v = dd.high.values.astype(float), dd.low.values.astype(float)
     same = [s_ for s_ in dsw if bool(s_[3]) == want_top and dd.index[int(s_[0])] + pd.Timedelta(days=1) <= now]
     for s_ in reversed([x for x in same if int(x[1]) < o_i]):
         ci, cp = int(s_[1]), float(s_[2])
         if not ((cp > origin) if want_top else (cp < origin)):
             continue
-        mid = float(lo_v[ci:o_i + 1].min()) if want_top else float(hi_v[ci:o_i + 1].max())   # встречный ход между ними
-        leg_len = abs(cp - ext)
-        if ((mid <= ext) if want_top else (mid >= ext)) or abs(mid - cp) > 0.618 * leg_len:
+        mid = float(lo_v[ci:o_i + 1].min()) if want_top else float(hi_v[ci:o_i + 1].max())   # экстремум между ними
+        if ((mid <= ext) if want_top else (mid >= ext)) or abs(mid - origin) > LEG_BREAK_RETR * abs(mid - cp):
             break
         o_i, origin = ci, cp
     span = abs(origin - ext)
