@@ -1968,6 +1968,18 @@ def _close_open_html_tags(text: str) -> str:
 async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
                                              chart_png: bytes | None = None,
                                              trade_id: int | None = None):
+    # 09.10 аудит TG (Егор «перенастраивай»): тип из `telegram.route_to_channel` уходит в канал, а не в личку
+    try:
+        _route = (bot.config.get("telegram.route_to_channel") or {}).get(signal_type)
+    except Exception:
+        _route = None
+    if _route:
+        from oko_feed.alerts import send_tg, send_tg_photo
+        if chart_png:
+            await asyncio.to_thread(send_tg_photo, chart_png, _prepare_photo_caption(text), _route)
+        else:
+            await asyncio.to_thread(send_tg, text, _route)
+        return
     if not bot.subscribers:
         logger.warning("Нет подписчиков для отправки сигнала %s", signal_type)
         return
@@ -2017,6 +2029,11 @@ async def broadcast_with_subscription_check(bot, text: str, signal_type: str,
         logger.warning("Сигнал %s не отправлен ни одному подписчику", signal_type)
     else:
         logger.info("Сигнал %s отправлен %d/%d подписчикам", signal_type, sent_count, len(uids))
+    try:                                   # 09.10: журнал отправок (аудит TG 08.10), одна строка на рассылку
+        from oko_feed.tg_journal import log as _journal
+        _journal("dm", sent_count > 0, text, kind=signal_type, source="oko-bot", to=sent_count)
+    except Exception:
+        pass
 
     # DEV-222: сохраняем message_id только для зарегистрированных сделок
     if trade_id and sent:

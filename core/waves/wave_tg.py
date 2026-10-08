@@ -148,9 +148,16 @@ def _post(method: str, data: Dict[str, Any], files=None, timeout: int = 30) -> D
         data["allow_sending_without_reply"] = True
     rr = requests.post(f"https://api.telegram.org/bot{tok}/{method}", data=data, files=files, timeout=timeout)
     try:
-        return rr.json()
+        res = rr.json()
     except Exception:
-        return {"ok": False, "error": rr.text[:200]}
+        res = {"ok": False, "error": rr.text[:200]}
+    try:                                              # 09.10: журнал отправок (аудит TG 08.10)
+        from oko_feed.tg_journal import log as _journal
+        _journal("waves", res.get("ok"), data.get("text") or data.get("caption") or "",
+                 kind="photo" if method == "sendPhoto" else None)
+    except Exception:
+        pass
+    return res
 
 
 def send_photo(png: Path, caption: str, chat_id: Optional[str] = None, reply_to: Optional[int] = None) -> Dict[str, Any]:

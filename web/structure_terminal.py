@@ -83,18 +83,10 @@ def _pulse_block():
     st = m.get("state") or "НОРМА"
     win = {k: {"dn": round(m[k]["dn"] * 100), "up": round(m[k]["up"] * 100), "med": round(m[k]["med"] * 100, 1)}
            for k in ("15m", "2h", "6h") if m.get(k)}
-    facts = []
-    if st in ("СЛИВ", "ОБВАЛ"):          # dump_short_lab 08.10: эпизоды «2ч ≥50% монет вниз >3%» — определение СЛИВА пульса
-        facts.append("шорт по рынку в начале слива: 24 ч −1.30% против −0.39% в обычный час, хуже 4/4 лет — не догонять")
-        facts.append("лонг по рынку в начале слива: +0.60% против −0.31%, но 2025 −0.03% — слабо, не сигнал")
-    if ((m.get("6h") or {}).get("dn") or 0) >= 0.5:   # wave_knife_lab 08.10: «≥50% монет −3% за 6 ч»
-        facts.append("доказанный лонг ядра волн в широкий слив: +8.2%/сделку против +4.0, но годы 2/4 — запрета лонга нет")
-    if st == "ВЫНОС":
-        facts.append("ВЫНОС по пульсу не мерился · близкий замер (другое определение): шорт свипа, когда хаи "
-                     "снимает масса монет за 6 ч, хуже обычного 0/4 лет")
     return {"state": st, "age_sec": age, "stale": age > _PULSE_STALE, "n": m.get("n_liquid"), "win": win,
             "since_min": int((now - m["since"]) / 60) if m.get("since") else None,
-            "liq": MP.liq_line(m.get("liq")), "cascade": MP.liq_events(m.get("liq")), "facts": facts}
+            "liq": MP.liq_line(m.get("liq")), "cascade": MP.liq_events(m.get("liq")),
+            "facts": MP.facts(m, st)}           # измеренные строки — те же, что уходят в Telegram
 
 
 def _build():

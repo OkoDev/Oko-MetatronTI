@@ -242,11 +242,86 @@ def classify(m: dict, prev: dict) -> tuple[str, list[str]]:
     return new, ev
 
 
+def facts(m: dict, state: str) -> list[str]:
+    """Только ИЗМЕРЕННЫЕ строки «что это значит» — и только когда определение замера совпадает с состоянием.
+    Один источник для алерта и повестки терминала (09.10)."""
+    out = []
+    if state in ("СЛИВ", "ОБВАЛ"):      # dump_short_lab 08.10: эпизоды «2ч ≥50% монет вниз >3%» — определение СЛИВА
+        out.append("шорт по рынку в начале слива: 24 ч −1.30% против −0.39% в обычный час, хуже 4/4 лет — не догонять")
+        out.append("лонг по рынку в начале слива: +0.60% против −0.31%, но 2025 −0.03% — слабо, не сигнал")
+    if ((m.get("6h") or {}).get("dn") or 0) >= 0.5:   # wave_knife_lab 08.10: «≥50% монет −3% за 6 ч»
+        out.append("доказанный лонг ядра волн в широкий слив: +8.2%/сделку против +4.0, но годы 2/4 — запрета лонга нет")
+    if state == "ВЫНОС":
+        out.append("ВЫНОС по пульсу не мерился · близкий замер (другое определение): шорт свипа, когда хаи "
+                   "снимает масса монет за 6 ч, хуже обычного 0/4 лет")
+    return out
+
+
+# ── ПОВЕСТКА в том же голосе (09.10, Егор «перенастраивай»): состояние рынка в Oko-ACTION — ОДНО сообщение на смену
+# состояния пульса, каскад или смену режима/светофора повестки терминала :8010. Повестку берём по HTTP раз в 5 мин;
+# смена засчитывается, когда новое (режим, светофор) продержалось 2 опроса подряд (светофор зависит от числа
+# кандидатов и может мигать), и одно и то же не повторяется чаще раза в час.
+AGENDA_URL = "http://127.0.0.1:8010/api/agenda"
+AGENDA_SEC, AGENDA_HOLD, AGENDA_GAP = 300, 2, 3600
+LIGHT_TXT = {"green": "🟢 Работаем", "yellow": "🟡 Осторожно", "red": "🔴 Сегодня не торгуем"}
+
+
+def fetch_agenda() -> dict | None:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(AGENDA_URL, timeout=60) as r:
+            d = json.loads(r.read())
+        return {"mode": d.get("mode"), "light": d.get("light"), "reason": d.get("reason"), "ts": int(time.time()),
+                "long": [x.get("sym") for x in d.get("long") or []], "short": [x.get("sym") for x in d.get("short") or []]}
+    except Exception as e:                               # noqa: BLE001
+        print(f"[pulse] повестка недоступна: {type(e).__name__} {e}", flush=True)
+        return None
+
+
+def agenda_line(ag: dict | None) -> str:
+    if not ag or time.time() - ag.get("ts", 0) > 3 * AGENDA_SEC:
+        return "📋 повестка: нет свежих данных (терминал :8010)"
+    sides = " · ".join(f"{nm}: {', '.join(v[:5])}" for nm, v in (("лонг", ag["long"]), ("шорт", ag["short"])) if v)
+    return f"📋 <b>{ag['mode']}</b> · {LIGHT_TXT.get(ag['light'], ag['light'])}" + (f" · {sides}" if sides else "")
+
+
+def agenda_text(ag: dict, m: dict, state: str) -> str:
+    t = time.strftime("%d.%m %H:%M", time.gmtime(ag["ts"]))
+    sides = " · ".join(f"{nm}: {', '.join(v[:5])}" for nm, v in (("лонг", ag["long"]), ("шорт", ag["short"])) if v)
+    return "\n".join([f"<b>📋 ПОВЕСТКА: {ag['mode']}</b> · {t} UTC",
+                      f"{LIGHT_TXT.get(ag['light'], ag['light'])}. {ag.get('reason') or ''}",
+                      sides or "кандидатов нет",
+                      f"рынок сейчас: {state} · {liq_line(m.get('liq'))}"])
+
+
+def agenda_step(prev: dict, m: dict, state: str, now: float) -> str | None:
+    """Опрос повестки; → текст сообщения, если режим/светофор сменился устойчиво. Первый опрос — только база."""
+    ag = fetch_agenda()
+    if not ag:
+        return None
+    prev["agenda"] = ag
+    key = f"{ag['mode']}|{ag['light']}"
+    if key == prev.get("agenda_cand"):
+        prev["agenda_seen"] = prev.get("agenda_seen", 0) + 1
+    else:
+        prev["agenda_cand"], prev["agenda_seen"] = key, 1
+    sent = prev.setdefault("agenda_sent", {})
+    if not prev.get("agenda_key"):                      # первый опрос после старта/выкатки — база, без сообщения
+        prev["agenda_key"] = key
+        return None
+    if key != prev["agenda_key"] and prev["agenda_seen"] >= AGENDA_HOLD:
+        prev["agenda_key"] = key
+        if now - sent.get(key, 0) >= AGENDA_GAP:
+            sent[key] = now
+            return agenda_text(ag, m, state)
+    return None
+
+
 def _pct(x) -> str:
     return "—" if x is None else f"{x * 100:+.1f}%"
 
 
-def text(m: dict, state: str, ev: str | None = None) -> str:
+def text(m: dict, state: str, ev: str | None = None, ag: dict | None = None) -> str:
     w15, w1, w2, w6 = (m.get(k) or {} for k in ("15m", "1h", "2h", "6h"))
     head = {"СЛИВ": "🔴 СЛИВ РЫНКА", "ОБВАЛ": "🆘 ОБВАЛ РЫНКА", "ВЫНОС": "🟢 ВЫНОС РЫНКА", "НОРМА": "⚪ рынок успокоился"}[state]
     if ev == "ОТСКОК":
@@ -261,9 +336,8 @@ def text(m: dict, state: str, ev: str | None = None) -> str:
     b, e = m.get("btc") or {}, m.get("eth") or {}
     lines.append(f"BTC {_pct(b.get('15m'))} / {_pct(b.get('2h'))} · ETH {_pct(e.get('15m'))} / {_pct(e.get('2h'))} (15 мин / 2 ч)")
     lines.append(liq_line(m.get("liq")))
-    if state in ("СЛИВ", "ОБВАЛ") and ev not in ("ОТСКОК", "КАСКАД ШОРТОВ"):
-        lines.append("По замерам: доказанные лонги ядра волн в такой слив исторически +8.2%/сд (неустойчиво по годам) — "
-                     "вход после завершённой пятёрки, в массовый день; шорт-механики бота входят лимитом на откате.")
+    lines += [f"• {f}" for f in facts(m, state)]        # 09.10: только измеренное, по определению состояния
+    lines.append(agenda_line(ag))
     return "\n".join(lines)
 
 
@@ -294,6 +368,8 @@ def _db():
 def save(m: dict, state: str, prev: dict) -> None:
     g = lambda w, k: (m.get(w) or {}).get(k)                  # noqa: E731
     snap = {**m, "state": state, "since": prev.get("since"), "last_alert": prev.get("last_alert") or {},
+            "agenda": prev.get("agenda"), "agenda_key": prev.get("agenda_key"),
+            "agenda_sent": prev.get("agenda_sent") or {},
             "updated": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
     tmp = SNAP.with_suffix(".tmp")
     tmp.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
@@ -317,11 +393,10 @@ def save(m: dict, state: str, prev: dict) -> None:
 
 
 def alert(txt: str) -> None:
+    # 09.10 (аудит TG, Егор «перенастраивай»): из Oko-WAVES в Oko-ACTION — состояние рынка там одно (пульс + повестка)
     try:
-        from core.waves.wave_tg import send_text, tg_config
-        if tg_config().get("enabled"):
-            res = send_text(txt)                       # отказ Telegram исключения не бросает — пишем его в лог
-            print(f"[pulse] TG {'ок' if res.get('ok') else 'ОТКАЗ: ' + str(res)[:200]}", flush=True)
+        from oko_feed.alerts import send_tg
+        print(f"[pulse] TG {'ок' if send_tg(txt, channel='action') else 'ОТКАЗ'}", flush=True)
     except Exception as e:                               # noqa: BLE001
         print(f"[pulse] TG: {e}", flush=True)
 
@@ -332,9 +407,12 @@ def loop() -> None:
         old = json.loads(SNAP.read_text(encoding="utf-8"))
         prev = {"state": old.get("state", "НОРМА"), "since": old.get("since")}   # рестарт не повторяет алерт
         last_alert: dict[str, float] = dict(old.get("last_alert") or {})       # 08.10: 16:15 СЛИВ ушёл повторно
+        prev.update(agenda=old.get("agenda"), agenda_key=old.get("agenda_key"),
+                    agenda_sent=dict(old.get("agenda_sent") or {}))
     except Exception:                                    # noqa: BLE001
         last_alert = {}
     prev["last_alert"] = last_alert
+    ag_ts = 0.0
     refresh_turnover()
     print(f"[pulse] старт · ликвидных пар {len(_liquid)} · досеяно историей 15m: {seed_history()} · "
           f"состояние {prev.get('state', 'НОРМА')}", flush=True)
@@ -352,11 +430,17 @@ def loop() -> None:
                 prev["state"], prev["since"] = st, int(t0)
                 if st != "НОРМА" or st0 in ("СЛИВ", "ОБВАЛ", "ВЫНОС"):
                     if t0 - last_alert.get(st, 0) >= ALERT_GAP or st == "ОБВАЛ":
-                        alert(text(m, st)); last_alert[st] = t0
+                        alert(text(m, st, ag=prev.get("agenda"))); last_alert[st] = t0
                 print(f"[pulse] {time.strftime('%H:%M', time.gmtime(t0))} UTC · {st0} → {st}", flush=True)
             for ev in evs:
                 if t0 - last_alert.get(ev, 0) >= ALERT_GAP:
-                    alert(text(m, st, ev)); last_alert[ev] = t0
+                    alert(text(m, st, ev, ag=prev.get("agenda"))); last_alert[ev] = t0
+            if t0 - ag_ts >= AGENDA_SEC:
+                ag_ts = t0
+                msg = agenda_step(prev, m, st, t0)
+                if msg:
+                    alert(msg)
+                    print(f"[pulse] повестка сменилась: {prev.get('agenda_key')}", flush=True)
             save(m, st, prev)
             if int(t0) % 600 < POLL_SEC:
                 w2 = m.get("2h") or {}

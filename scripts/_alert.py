@@ -51,7 +51,8 @@ def _creds() -> tuple[str, str] | None:
         pass
     token = (os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
              or os.environ.get("BOT_TOKEN") or "")
-    chat = (os.environ.get("ADMIN_CHAT_ID") or os.environ.get("ADMIN_ID")
+    # 09.10 (аудит TG, Егор «перенастраивай»): вахты — в Oko-SYSTEM, личка только для критичного по счёту
+    chat = (os.environ.get("TG_CHAT_SYSTEM") or os.environ.get("ADMIN_CHAT_ID") or os.environ.get("ADMIN_ID")
             or os.environ.get("TELEGRAM_ADMIN_ID") or "")
     if not chat:
         try:
@@ -75,14 +76,22 @@ def alert(text: str, *, silent: bool = False) -> bool:
         "chat_id": chat, "text": text[:4000], "parse_mode": "Markdown",
         "disable_notification": "true" if silent else "false",
     }).encode()
+    ok = False
     try:
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage", data=data)
         with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read()).get("ok", False)
+            ok = json.loads(r.read()).get("ok", False)
     except Exception as e:  # noqa: BLE001
         logger.warning("[alert] отправка не удалась: %s", e)
-        return False
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from oko_feed.tg_journal import log as _journal
+        _journal("system" if chat == os.environ.get("TG_CHAT_SYSTEM") else "main", ok, text, kind="watch")
+    except Exception:  # noqa: BLE001
+        pass
+    return ok
 
 
 def _ensure_table() -> None:

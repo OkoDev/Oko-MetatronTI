@@ -111,7 +111,7 @@ def _on_liq(sym_full: str, rows: list[dict]):
            + (f"\n{block}\n" if block else "")
            + f"\n{_links(sym)}\n\n"
            + f"#{sym} #LIQ_CASCADE")
-    if send_tg(msg):
+    if send_tg(msg, channel="feed"):                     # 09.10 аудит TG: каскады по монетам — поток рынка, не личка
         print(f"[LIQ-WS] {time.strftime('%H:%M:%S')} CASCADE {sym} ${tot/1e3:.0f}k {move_side}")
 
 

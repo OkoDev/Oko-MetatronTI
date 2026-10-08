@@ -184,7 +184,7 @@ def check(test: bool = False) -> str | None:
         if test:
             return msg
         if _cooldown_ok("usdtd_watch:UP"):
-            send_tg(msg, channel="action")
+            send_tg(msg, channel="system")   # 09.10 аудит TG: состояние рынка в ACTION — одно (пульс + повестка)
             return "UP"
     if dn_on:
         msg = (f"🟢 <b>USDT.D разворот ВНИЗ ({tf})</b>\n\n"
@@ -193,7 +193,7 @@ def check(test: bool = False) -> str | None:
         if test:
             return msg
         if _cooldown_ok("usdtd_watch:DOWN"):
-            send_tg(msg, channel="action")
+            send_tg(msg, channel="system")
             return "DOWN"
     return None
 

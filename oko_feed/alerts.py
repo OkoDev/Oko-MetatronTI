@@ -66,6 +66,7 @@ def send_tg(text: str, channel: str = "main", reply_to: int | None = None):
         chat = _env("ADMIN_CHAT_ID") or _env("CHAT_ID")
     if not token or not chat:
         return False
+    from .tg_journal import log as _journal          # 09.10: журнал отправок (аудит TG 08.10)
     try:
         params = {"chat_id": chat, "text": text,
                   "parse_mode": "HTML", "disable_web_page_preview": "1"}
@@ -76,8 +77,10 @@ def send_tg(text: str, channel: str = "main", reply_to: int | None = None):
             urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
                                    urllib.parse.urlencode(params).encode()),
             timeout=15))
+        _journal(channel, resp.get("ok"), text)
         return int(resp.get("result", {}).get("message_id") or 0) or True
     except Exception:  # noqa: BLE001
+        _journal(channel, False, text)
         return False
 
 
@@ -93,6 +96,7 @@ def send_tg_photo(photo: bytes, caption: str = "", channel: str = "main",
         chat = _env("ADMIN_CHAT_ID") or _env("CHAT_ID")
     if not token or not chat or not photo:
         return False
+    from .tg_journal import log as _journal
     try:
         import requests
         data = {"chat_id": chat, "caption": caption[:1024], "parse_mode": "HTML"}
@@ -103,8 +107,10 @@ def send_tg_photo(photo: bytes, caption: str = "", channel: str = "main",
                           data=data, files={"photo": ("chart.png", photo, "image/png")},
                           timeout=30)
         resp = r.json()
+        _journal(channel, resp.get("ok"), caption, kind="photo")
         return int(resp.get("result", {}).get("message_id") or 0) or True
     except Exception:  # noqa: BLE001
+        _journal(channel, False, caption, kind="photo")
         return False
 
 
@@ -159,7 +165,8 @@ def check_and_alert() -> list[str]:
                 if _cooldown_ok(c, "usdtd_regime:flip"):
                     txt = "🔄 <b>USDT.D режим: RISK-OFF</b> — среда SHORT-эджа ВКЛ" if ro \
                         else "🔄 <b>USDT.D режим: RISK-ON</b> — шорты спят"
-                    if send_tg(txt, channel="action"): sent.append("regime")
+                    # 09.10 аудит TG: состояние рынка в ACTION — одно (пульс + повестка), USDT.D — справочно в SYSTEM
+                    if send_tg(txt, channel="system"): sent.append("regime")
             if ro is not None:
                 _last_regime = ro
         except Exception:  # noqa: BLE001
