@@ -68,14 +68,20 @@ def test_caption_carries_sub_status_and_extra():
     assert "ЦЕНА В ЗОНЕ" in cap and "🌒 зона" in cap and "👥 массовость" in cap
 
 
-def test_day_mass_is_causal():
+def test_day_mass_is_causal_by_entries():
+    """Определение замера wave_day_mass_lab: ДРУГИЕ монеты той же стороны, уже вошедшие сегодня до ts."""
     import wave5_shadow as W
-    st = {"A|1|2": {"sym": "A", "side": "LONG", "detected_at": "2026-09-16 04:05"},
-          "B|1|2": {"sym": "B", "side": "LONG", "detected_at": "2026-09-16 12:05"},
-          "C|1|2": {"sym": "C", "side": "SHORT", "detected_at": "2026-09-16 04:05"},
-          "D|1|2": {"sym": "D", "side": "LONG", "detected_at": "2026-09-15 20:05"}}
-    assert W.day_mass(st, "LONG", "2026-09-16 08:15") == 1      # B ещё не обнаружен, D — вчера, C — другая сторона
+    st = {"A|1|2": {"sym": "A", "side": "LONG", "entered_at": "2026-09-16 04:15"},
+          "B|1|2": {"sym": "B", "side": "LONG", "entered_at": "2026-09-16 12:15"},
+          "C|1|2": {"sym": "C", "side": "SHORT", "entered_at": "2026-09-16 04:15"},
+          "D|1|2": {"sym": "D", "side": "LONG", "entered_at": "2026-09-15 20:15"},
+          "E|1|2": {"sym": "E", "side": "LONG", "entered_at": None}}
+    assert W.day_mass(st, "LONG", "2026-09-16 08:15") == 1                 # B позже, D вчера, C шорт, E не вошёл
     assert W.day_mass(st, "LONG", "2026-09-16 23:00") == 2
+    assert W.day_mass(st, "LONG", "2026-09-16 23:00", sym="A") == 1        # себя не считает
+    line = W._mass_line({**st, "X": {"sym": "X", "side": "LONG", "universe_n": 594}},
+                        {"sym": "X", "side": "LONG", "universe_n": 594}, "2026-09-16 23:00")
+    assert "немассовый" in line and "0.7 на 198" in line                     # 2 из 594 → 0.7 на 198 замера
 
 
 def test_mark_bad_target_behind_and_dup_reentry():

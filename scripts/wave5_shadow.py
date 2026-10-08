@@ -669,19 +669,29 @@ def _zone(v, entry=None, stop=None):
     return zone(v["side"], e, stop if stop is not None else v.get("stop"), v.get("imp_pct"))
 
 
-def day_mass(state, side, ts) -> int:
-    """МАССОВОСТЬ ТЕКУЩЕГО ДНЯ (Егор 08.10): сколько РАЗНЫХ монет дали пятёрку той же стороны с начала UTC-дня до ts,
-    включая эту. Причинно — только сетапы, обнаруженные не позже ts. Не путать с cluster_3d: там 3 ПРОШЛЫХ дня без
-    текущего, и он запаздывает (16.09, когда сработали 22 сетапа, показывал 2.5 в нормировке)."""
+MASS_UNIV, MASS_MIN = 198, 3     # вселенная замера `wave_day_mass_lab` и порог «массового дня» в ней
+
+
+def day_mass(state, side, ts, sym=None) -> int:
+    """МАССОВОСТЬ ТЕКУЩЕГО ДНЯ (Егор 08.10) в определении замера `scripts/wave_day_mass_lab.py`: сколько ДРУГИХ монет той
+    же стороны уже ВОШЛИ с начала UTC-дня до ts (вход ≤ ts). Причинно. Не путать с cluster_3d: там 3 ПРОШЛЫХ дня без
+    текущего, и он запаздывает (16.09, когда вошли 22 сетапа, показывал 2.5 в нормировке)."""
     t = str(ts)[:16]
-    return len({x["sym"] for x in state.values() if isinstance(x, dict) and x.get("side") == side
-                and str(x.get("detected_at", ""))[:10] == t[:10] and str(x.get("detected_at", ""))[:16] <= t})
+    return len({x["sym"] for x in state.values() if isinstance(x, dict) and x.get("side") == side and x.get("sym") != sym
+                and str(x.get("entered_at") or "")[:10] == t[:10] and str(x.get("entered_at") or "")[:16] <= t})
 
 
 def _mass_line(state, v, ts) -> str:
+    """Замер 08.10 (5270 сделок 2023→08.2026, 198 монет): доказанный лонг в день, когда до него вошли ≥3 других монет,
+    +5.98%/сд (536 сд., 62 дня, 4/4 года, без 7 лучших дней +1.23) — в одиночку −0.35% (78 сд.). Вселенная тени
+    втрое шире замера, поэтому число приводится к 198 монетам."""
+    n = day_mass(state, v["side"], ts, v.get("sym"))
+    un = v.get("universe_n") or max((x.get("universe_n") or 0 for x in state.values()), default=0) or MASS_UNIV
+    k = n * MASS_UNIV / un
+    tag = "МАССОВЫЙ день" if k >= MASS_MIN else "немассовый день"
     c3 = v.get("cluster_3d")
-    return (f"👥 массовость: сегодня {day_mass(state, v['side'], ts)} мон. с пятёркой "
-            f"{'вниз' if v['side'] == 'LONG' else 'вверх'}" + (f" · за 3 прошлых дня {c3}" if c3 is not None else ""))
+    return (f"👥 {tag}: сегодня уже вошли {n} др. мон. ({k:.1f} на {MASS_UNIV} замера, порог {MASS_MIN})"
+            + (f" · за 3 прошлых дня {c3}" if c3 is not None else ""))
 
 
 def _impulse_of(k) -> str:
