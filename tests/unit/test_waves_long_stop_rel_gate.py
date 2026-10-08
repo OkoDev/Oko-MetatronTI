@@ -381,3 +381,33 @@ class TestOpenOnSymbolScope:
         assert _open_on_symbol(bot, "X/USDT:USDT") == 3
         assert _open_on_symbol(bot, "X/USDT:USDT", True) == 1
         assert _open_on_symbol(bot, "X/USDT:USDT", False) == 2
+
+
+class TestMassRiskMult:
+    """08.10 немассовый день — половина риска доказанному лонгу (Егор: не отсекать, а «да» на половину)."""
+
+    @staticmethod
+    def _cfg(**kw):
+        base = {"trading.waves_long.mass_min_norm": 3.0, "trading.waves_long.mass_low_risk_mult": 0.5}
+        base.update(kw)
+        return type("C", (), {"get": lambda self, k, d=None: base.get(k, d)})()
+
+    def test_low_mass_halves(self):
+        from bot.loops.waves_long_loop import _mass_risk_mult
+        assert _mass_risk_mult(0.7, self._cfg()) == 0.5          # USELESS/PONS 07.10: 0…1.4 на 198
+
+    def test_mass_day_untouched(self):
+        from bot.loops.waves_long_loop import _mass_risk_mult
+        assert _mass_risk_mult(3.0, self._cfg()) is None         # порог включительно — массовый
+        assert _mass_risk_mult(5.1, self._cfg()) is None         # 16.09 вечер
+
+    def test_unknown_or_off_untouched(self):
+        from bot.loops.waves_long_loop import _mass_risk_mult
+        assert _mass_risk_mult(None, self._cfg()) is None        # старая запись очереди — незнание ≠ немассовый
+        assert _mass_risk_mult(0.5, self._cfg(**{"trading.waves_long.mass_min_norm": None})) is None
+
+    def test_config_wired(self):
+        from core.infra.config_loader import ConfigLoader
+        cfg = ConfigLoader("config.yaml")
+        assert float(cfg.get("trading.waves_long.mass_min_norm")) == 3.0
+        assert float(cfg.get("trading.waves_long.mass_low_risk_mult")) == 0.5

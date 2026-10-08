@@ -305,6 +305,11 @@ trading:
     max_open_risk_pct: 15
     max_open_risk_hard_pct: 25
     wt_priority_abs: 75
+    # 🔑 08.10 (Егор: «не отсекать немассовые» → «да» на половину риска). Массовость дня = другие монеты той же
+    # стороны, уже вошедшие сегодня, на 198 монет замера (поле wv_mass_norm от тени). Доказанный лонг при ≥3:
+    # +5.98%/сд (536 сд., 4/4 года); в немассовый день −0.35% (78 сд.) — `scripts/wave_day_mass_lab.py`.
+    mass_min_norm: 3.0
+    mass_low_risk_mult: 0.5
 
   # 🔴 17.09 Источники, освобождённые от HARD-рубежа регистрации (time_gate · market_stress ·
   # correlation · regime_safety · min_strength_regime · pivot_reversal · portfolio_l3).

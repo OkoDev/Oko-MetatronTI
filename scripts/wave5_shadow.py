@@ -705,7 +705,21 @@ def _mass_line(state, v, ts) -> str:
     tag = "МАССОВЫЙ день" if k >= MASS_MIN else "немассовый день"
     c3 = v.get("cluster_3d")
     return (f"👥 {tag}: сегодня уже вошли {n} др. мон. ({k:.1f} на {MASS_UNIV} замера, порог {MASS_MIN})"
-            + (f" · за 3 прошлых дня {c3}" if c3 is not None else ""))
+            + (f" · за 3 прошлых дня {c3}" if c3 is not None else "") + _pulse_line())
+
+
+def _pulse_line() -> str:
+    """📡 08.10 состояние рынка из маркет-пульса (`scripts/market_pulse.py`, раз в минуту): ширина за 2 ч и 15 мин.
+    Снимок старше 5 минут не показывается — устаревший пульс хуже никакого."""
+    try:
+        p = json.loads((ROOT / "data" / "market_pulse.json").read_text(encoding="utf-8"))
+        if time.time() - float(p.get("ts", 0)) > 300:
+            return ""
+        w2, w15 = p.get("2h") or {}, p.get("15m") or {}
+        return (f"\n📡 рынок: {p.get('state', '—')} · за 2 ч вниз {w2.get('dn', 0) * 100:.0f}% монет (медиана "
+                f"{(w2.get('med') or 0) * 100:+.1f}%) · за 15 мин медиана {(w15.get('med') or 0) * 100:+.1f}%")
+    except Exception:                                    # noqa: BLE001
+        return ""
 
 
 def _impulse_of(k) -> str:

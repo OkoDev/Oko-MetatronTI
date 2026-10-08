@@ -221,6 +221,20 @@ def _risk_budget(bot, cfg, new_risk_pct: float, wt_abs) -> tuple[float | None, s
                   + (f" и за жёсткий {hard:g}%" if deep else ""))
 
 
+def _mass_risk_mult(mass_norm, cfg) -> float | None:
+    """Множитель риска за немассовый день (08.10): массовость (wv_mass_norm, на 198 монет замера) ниже порога
+    `trading.waves_long.mass_min_norm` → `mass_low_risk_mult`; иначе / нет поля / порог не задан → None (не трогать)."""
+    thr = cfg.get("trading.waves_long.mass_min_norm", None)
+    if mass_norm is None or thr is None:
+        return None
+    try:
+        if float(mass_norm) >= float(thr):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return float(cfg.get("trading.waves_long.mass_low_risk_mult", 0.5) or 0.5)
+
+
 def _risk_mult(coin_weight, in_corridor: bool, out_mult, cap) -> float | None:
     """Итоговый множитель риска: вес монеты × множитель ТРЕКА.
 
@@ -429,6 +443,15 @@ async def waves_long_loop(bot):
                     if _use < 1.0:
                         _half = True
                         logger.info("[WAVES_LONG] 🛡️ %s %s", uid, _bwhy)
+                # 🔑 08.10 НЕМАССОВЫЙ ДЕНЬ — МЕНЬШЕ РИСКА, НЕ ОТКАЗ (Егор: «не отсекать немассовые», затем «да» на
+                # половину риска). Замер `scripts/wave_day_mass_lab.py`: доказанный лонг, когда до него в тот же
+                # UTC-день вошли ≥3 других монет (на 198 замера), +5.98%/сд (536 сд., 4/4 года, ярус 1 ✅); в
+                # немассовый день −0.35% (78 сд.) — PONS 07.10 (стоп 12%, −14.3% на VST) был именно таким.
+                # Нет поля (старая запись очереди) — риск не трогаем: незнание ≠ «немассовый».
+                _mass_mult = None if _to_shadow else _mass_risk_mult(r.get("wv_mass_norm"), cfg)
+                if _mass_mult is not None:
+                    logger.info("[WAVES_LONG] 🛡️ %s немассовый день (%.1f на 198 < %s) — риск ×%s", uid,
+                                float(r["wv_mass_norm"]), cfg.get("trading.waves_long.mass_min_norm"), _mass_mult)
                 rec = TradingRecommendation(
                     symbol=sym,
                     action="SELL" if _is_short else "BUY",
@@ -463,6 +486,9 @@ async def waves_long_loop(bot):
                 if _half:                                # сверх мягкого бюджета — половина риска
                     _rm = round((1.0 if _rm is None else _rm) * 0.5, 4)
                     extra["wv_risk_half"] = True
+                if _mass_mult is not None:               # немассовый день — меньше риска (роутер держит пол 0.25)
+                    _rm = round((1.0 if _rm is None else _rm) * _mass_mult, 4)
+                    extra["wv_mass_low"] = True
                 if _rm is not None:
                     extra["risk_mult"] = _rm
                 if _to_shadow:
