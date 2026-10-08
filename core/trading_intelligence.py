@@ -987,10 +987,17 @@ class TradingIntelligence:
                     continue
                 # Ищем ближайший уровень в ±1%
                 _price41 = (market_context.current_price if market_context else 0) or _sig41.data.get("price", 0)
+                # 🔴 08.10 та же ошибка, что ARCH-23: буст давался за ЛЮБОЙ уровень в ±1%. После правки ARCH-23
+                # лонг под R1 перестал бы быть confluence и получил бы эти же +20 здесь. Уровень — только с правильной
+                # стороны: LONG — на цене или ниже (поддержка), SHORT — на цене или выше (сопротивление).
+                _side41 = getattr(_sig41.direction, "value", str(_sig41.direction))
                 _nearest_name, _nearest_dist = None, float("inf")
                 for _lvl_name, _lvl_price in _all_levels_41.items():
                     try:
                         if _lvl_price and float(_lvl_price) > 0:
+                            if (_side41 == "LONG" and float(_lvl_price) > _price41) or \
+                                    (_side41 == "SHORT" and float(_lvl_price) < _price41):
+                                continue
                             _d = abs(_price41 - float(_lvl_price)) / float(_lvl_price) * 100
                             if _d < _nearest_dist:
                                 _nearest_dist, _nearest_name = _d, _lvl_name

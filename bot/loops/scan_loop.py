@@ -2365,7 +2365,18 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                         _conf_enabled = bool(bot.config.get("analysis.confluence.enabled", False))
                         if _conf_enabled and _pivot_calc is not None and not _df_tf.empty:
                             _price = float(_df_tf["close"].iloc[-1])
-                            _near = _pivot_calc.find_near_pivot(_price, sym)
+                            # 🔴 08.10 (Егор, NEAR 05:12 UTC: WT LONG в 0.44% под недельным R1 стал «confluence» +20):
+                            # конфлюэнция только с уровнем с ПРАВИЛЬНОЙ стороны — лонг над поддержкой, шорт под
+                            # сопротивлением. Уровень против стороны — не апгрейд, а пометка (без штрафа: не мерено).
+                            _sig_side = getattr(sig.direction, "value", str(sig.direction))
+                            _near = _pivot_calc.find_near_pivot(_price, sym, side=_sig_side)
+                            if not _near:
+                                _against = _pivot_calc.find_near_pivot(
+                                    _price, sym, side="SHORT" if _sig_side == "LONG" else "LONG")
+                                if _against:
+                                    sig.data["pivot_against"] = _against[1]
+                                    logger.info("ARCH-23 [%s]: WT %s у уровня %s=%.6f ПРОТИВ стороны — confluence не даётся",
+                                                sym, _sig_side, _against[1], _against[0])
                             if _near:
                                 _lvl, _src = _near
                                 sig.signal_type = SignalType.CONFLUENCE

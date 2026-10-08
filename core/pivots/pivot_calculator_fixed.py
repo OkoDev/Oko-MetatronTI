@@ -1133,15 +1133,22 @@ class PivotCalculatorFixed:
         price: float,
         symbol: str,
         threshold_pct: float = 1.0,
+        side: Optional[str] = None,
     ) -> Optional[tuple]:
         """
         ARCH-23: возвращает (pivot_price, source_str) если цена в пределах threshold_pct%
-        от любого пивотного уровня. Приоритет: 1M > 1W > 1D (старший ТФ важнее).
+        от пивотного уровня. Приоритет: 1M > 1W > 1D (старший ТФ важнее).
         Проверяет PP и S1-S3 / R1-R3.
         Один вызов на сигнал — переиспользует уже прогретый pivot_cache.
+
+        🔴 08.10 side (Егор, NEAR: лонг ПОД недельным R1 получил «конфлюэнцию»): уровень опорный только с ПРАВИЛЬНОЙ
+        стороны — для LONG на цене или ниже (поддержка под ногами), для SHORT на цене или выше (сопротивление над).
+        Сторона определяется положением уровня, а не именем: пробитый вверх R1 — поддержка, пробитый вниз S1 —
+        сопротивление. side=None — старое поведение (любой уровень).
         """
         if not price or price <= 0:
             return None
+        s = str(side).upper() if side else None
         for tf in ("1M", "1W", "1D"):
             cached = self.pivot_cache.get(f"{symbol}_{tf}")
             if not cached:
@@ -1149,6 +1156,10 @@ class PivotCalculatorFixed:
             for lk in ["PP"] + [f"S{i}" for i in range(1, 4)] + [f"R{i}" for i in range(1, 4)]:
                 lvl = cached.get(lk)
                 if not lvl or lvl <= 0:
+                    continue
+                if s == "LONG" and lvl > price:
+                    continue
+                if s == "SHORT" and lvl < price:
                     continue
                 if abs(price - lvl) / price * 100 <= threshold_pct:
                     return lvl, f"{tf}:{lk}"
