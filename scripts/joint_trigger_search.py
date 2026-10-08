@@ -47,7 +47,14 @@ IS_Y, OOS_Y, HOLD_Y = (2023, 2024), (2025,), (2026,)
 TRIGGERS = {                                              # имя → (колонка состояния, сторона)
     "wt_os_1h": ("wt_os_1h", "LONG"), "wt_ob_1h": ("wt_ob_1h", "SHORT"),
     "wt_os_4h": ("wt_os_4h__from_4h", "LONG"), "wt_ob_4h": ("wt_ob_4h__from_4h", "SHORT"),
+    # 08.10 Егор: «если рынок рос — искать механику входа в рост и продолжение». Откат в ТЕКУЩЕЙ дневной ноге
+    # дошёл до канона OTE 0.62–0.79 (`_leg_block`) → по направлению ноги. Обе стороны (закон).
+    "legup_ote": ("legup_in_ote", "LONG"), "legdn_ote": ("legdn_in_ote", "SHORT"),
 }
+# 08.10: у триггеров ноги — исход по стопу и цели (широкая геометрия: тихий рост даёт широкий стоп, туда
+# impulse_fib не дотягивается), кулдаун = горизонт исхода (сделки одной монеты не перекрываются)
+TRIG_OPTS = {"legup_ote": dict(cooldown=72, outcome="geo_wide"), "legdn_ote": dict(cooldown=72, outcome="geo_wide")}
+CTRL_STEP_H = 72                                          # контроль: обычный час по сетке каждые 72 ч на монету
 OUTCOMES = ("fwd_4", "fwd_24", "fwd_72", "mfe_24", "mae_24", "geo_tight_long", "geo_tight_short",
             "geo_wide_long", "geo_wide_short")
 META = {"sym", "close"}
@@ -57,18 +64,24 @@ SUPPORT = 0.01                                            # доля событ�
 
 # ─────────────────────────────── события ───────────────────────────────
 
-def _events_of(f: Path) -> dict:
+def _events_of(args) -> dict:
+    f, names = args
     J = pd.read_parquet(f)
     out = {}
-    for name, (col, side) in TRIGGERS.items():
+    for name in names:
+        if name == "ctrl":                               # обычный час: сетка CTRL_STEP_H, обе стороны в исходах
+            out[name] = J.iloc[::CTRL_STEP_H].copy()
+            continue
+        col, side = TRIGGERS[name]
         if col not in J.columns:
             continue
+        cool = TRIG_OPTS.get(name, {}).get("cooldown", COOLDOWN_H)
         s = J[col].fillna(0).values > 0.5
         ev = np.flatnonzero(s & ~np.r_[False, s[:-1]])
         keep, last = [], None
         for i in ev:
             t = J.index[i]
-            if last is None or (t - last) >= pd.Timedelta(hours=COOLDOWN_H):
+            if last is None or (t - last) >= pd.Timedelta(hours=cool):
                 keep.append(i)
                 last = t
         E = J.iloc[keep].copy()
@@ -77,13 +90,14 @@ def _events_of(f: Path) -> dict:
     return out
 
 
-def events(procs: int) -> None:
+def events(procs: int, names: list[str] | None = None) -> None:
     EVENTS.mkdir(parents=True, exist_ok=True)
+    names = names or list(TRIGGERS)
     files = sorted(JOURNAL.glob("*.parquet"))
-    print(f"файлов журнала: {len(files)}", flush=True)
-    acc = {k: [] for k in TRIGGERS}
+    print(f"файлов журнала: {len(files)} · триггеры {names}", flush=True)
+    acc = {k: [] for k in names}
     with Pool(procs) as pool:
-        for i, d in enumerate(pool.imap_unordered(_events_of, files), 1):
+        for i, d in enumerate(pool.imap_unordered(_events_of, [(f, names) for f in files]), 1):
             for k, E in d.items():
                 acc[k].append(E)
             if i % 50 == 0:
@@ -225,13 +239,55 @@ def pipeline(p: np.ndarray, X: np.ndarray, names: list[str], is_m: np.ndarray, o
     return best[0], float(len(surv))
 
 
+def _outcome(E: pd.DataFrame, trigger: str, side: str) -> tuple[np.ndarray, str]:
+    """Исход сделки −кост: fwd_24 по стороне (по умолчанию) или стоп/цель geo_* стороны (уже со знаком стороны)."""
+    oc = TRIG_OPTS.get(trigger, {}).get("outcome", "fwd_24")
+    if oc.startswith("geo_"):
+        col = f"{oc}_{side.lower()}"
+        return E[col].astype(float).values - COST, f"{col} − {COST}"
+    sg = 1.0 if side == "LONG" else -1.0
+    return sg * E[oc].astype(float).values - COST, f"{'+' if sg > 0 else '−'}{oc} − {COST}"
+
+
+def control_table(trigger: str, side: str, E: pd.DataFrame) -> None:
+    """Триггер против ОБЫЧНОГО ЧАСА той же геометрии (сетка ctrl) по году × трети дрейфа рынка.
+    Трети — по дрейфу всех часов IS (контроль), одни и те же для обоих."""
+    f = EVENTS / "ctrl.parquet"
+    if not f.exists():
+        print("  ⚠️ контроль не собран (events N ctrl) — сравнения с обычным часом НЕТ")
+        return
+    C = pd.read_parquet(f)
+    C = C.reset_index().rename(columns={"index": "ts"}) if "ts" not in C.columns else C.reset_index(drop=True)
+    C["pnl"], _ = _outcome(C, trigger, side)
+    C = C[np.isfinite(C.pnl.values)]
+    cy = pd.to_datetime(C.ts).dt.year.values
+    lo, hi = np.nanquantile(C.mkt_drift30.values[np.isin(cy, IS_Y)], [1 / 3, 2 / 3])
+
+    def _ter(v):
+        return np.where(~np.isfinite(v), "—", np.where(v <= lo, "падает", np.where(v >= hi, "РАСТЁТ", "середина")))
+    E2 = E.assign(y=pd.to_datetime(E.ts).dt.year.values, ter=_ter(E.mkt_drift30.values))
+    C2 = C.assign(y=cy, ter=_ter(C.mkt_drift30.values))
+    print(f"\n  ТРИГГЕР ПРОТИВ ОБЫЧНОГО ЧАСА (та же геометрия; трети дрейфа30 по IS: ≤{lo:+.1f} / ≥{hi:+.1f}):")
+    print(f"    {'год':<6}{'рынок':<11}{'триггер n':>10}{'средн':>8}{'медиана':>9}{'обычный n':>11}{'средн':>8}"
+          f"{'Δ':>7}")
+    for (yy, tt), g in E2.groupby(["y", "ter"]):
+        c = C2[(C2.y == yy) & (C2.ter == tt)]
+        if len(g) < 20:
+            continue
+        print(f"    {yy:<6}{tt:<11}{len(g):>10}{g.pnl.mean():>+8.2f}{g.pnl.median():>+9.2f}{len(c):>11}"
+              f"{c.pnl.mean():>+8.2f}{g.pnl.mean() - c.pnl.mean():>+7.2f}")
+
+
 def search(trigger: str, n_null: int) -> None:
     E = pd.read_parquet(EVENTS / f"{trigger}.parquet")
     col, side = TRIGGERS[trigger]
-    E = E[np.isfinite(E["fwd_24"].values)]
     E = E.reset_index().rename(columns={"index": "ts"}) if "ts" not in E.columns else E.reset_index(drop=True)
-    sg = 1.0 if side == "LONG" else -1.0
-    E["pnl"] = sg * E["fwd_24"].astype(float) - COST
+    E["pnl"], oc_txt = _outcome(E, trigger, side)
+    E = E[np.isfinite(E.pnl.values)].reset_index(drop=True)
+    # §0A.2/§0A.3: сторона одна, исход — ровно своя колонка стороны
+    assert set(E.side) == {side}
+    if oc_txt.startswith("geo_wide"):
+        assert np.allclose(E.pnl.values, E[f"geo_wide_{side.lower()}"].values - COST)
     y = pd.to_datetime(E.ts).dt.year.values
     is_m, oos_m, hold_m = np.isin(y, IS_Y), np.isin(y, OOS_Y), np.isin(y, HOLD_Y)
     D = V.normalize(E[~hold_m], pnl="pnl", ts="ts", liq="liq")            # 2026 в поиск не входит
@@ -242,10 +298,19 @@ def search(trigger: str, n_null: int) -> None:
     days_ok = np.array([days[X[:, i] & is_d].nunique() >= 30 for i in range(X.shape[1])])
 
     print("=" * 110)
-    print(f"ТРИГГЕР {trigger} ({col} вход в зону → {side}) · исход fwd_{H} − {COST}")
+    print(f"ТРИГГЕР {trigger} ({col} вход в зону → {side}) · исход {oc_txt}")
     print("=" * 110)
+    # инвентаризация (§1): годы × монеты × режим года
+    inv = E.assign(y=y).groupby("y").agg(n=("pnl", "size"), coins=("sym", "nunique"),
+                                         drift30=("mkt_drift30", "median"))
+    print("  инвентаризация: " + " · ".join(f"{k}: {r.n} соб., {r.coins} мон., дрейф30 мед {r.drift30:+.1f}"
+                                         for k, r in inv.iterrows()))
     for nm, mm in (("IS 2023-24", is_m), ("OOS 2025", oos_m), ("ОТЛОЖЕНО 2026", hold_m)):
         print(f"  база {nm:<14} {V._fmt(V._stat(E.pnl.values[mm], E.sym.values[mm]))}")
+    # 2026 в таблицу контроля не входит: отложенный год не смотрим до карточки
+    control_table(trigger, side, E[~hold_m])
+    print(E[["sym", "ts", "side", "close", "legup_depth" if side == "LONG" else "legdn_depth", "mkt_drift30",
+             "pnl"]].head(4).round(3).to_string(index=False))
     print(f"  условий: {X.shape[1]} · одиночек в OOS {K_SINGLE} · пар из {K_PAIR_POOL} лучших → {K_PAIR}")
 
     p = D.pnl.values
@@ -287,14 +352,15 @@ def search(trigger: str, n_null: int) -> None:
         cards.append(V.card(D, lab2mask[lab], name=f"{trigger} × {lab}", study="joint-trigger-search",
                             geo=("mkt_drift30", "atr_pct")))
     V.save_md(cards + [dict(text=res["text"])],
-              ROOT / f"obsidian/Research/2026-10-07-Joint-Trigger-{trigger}.md",
+              ROOT / f"obsidian/Research/{pd.Timestamp.now():%Y-%m-%d}-Joint-Trigger-{trigger}.md",
               f"Триггер {trigger} × наборы сфер", f"Поиск наборов других сфер при {trigger}: IS 2023-24, OOS 2025")
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "search"
-    if cmd == "events":
-        events(int(sys.argv[2]) if len(sys.argv) > 2 else max(1, (os.cpu_count() or 2) - 4))
+    if cmd == "events":                                  # events [процессов] [триггер,…|ctrl]
+        events(int(sys.argv[2]) if len(sys.argv) > 2 else max(1, (os.cpu_count() or 2) - 4),
+               sys.argv[3].split(",") if len(sys.argv) > 3 else None)
     else:
         trig = sys.argv[2] if len(sys.argv) > 2 else "wt_os_1h"
         search(trig, int(sys.argv[3]) if len(sys.argv) > 3 else 100)
