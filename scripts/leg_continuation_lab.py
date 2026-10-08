@@ -115,7 +115,41 @@ def run(trig: str, side: str, regime: str) -> None:
            study="leg-continuation", geo=("atr_pct", "legup_span_pct" if side == "LONG" else "legdn_span_pct"))
 
 
+def wide_stop(open_holdout: bool = False) -> None:
+    """08.10, ПОСЛЕ взгляда (гипотеза №N журнала, не заявленная): в портфеле поток отката при равном риске в минусе
+    в 2024–25, а плюс во все три года — только у широкого стопа (верхняя треть 4·ATR%). Закон размера стопа
+    ([[stop_zone_survived_blind_test]]). Порог — по IS 2023-24; судят и %, и R (деньги при риске на сделку)."""
+    E, C = _load("legup_ote"), _load("ctrl")
+    E["pnl"] = E.geo_wide_long.astype(float) - COST
+    E = E[np.isfinite(E.pnl.values) & np.isfinite(E.mkt_drift30.values) & np.isfinite(E.atr_pct.values)]
+    hi = np.nanquantile(C.mkt_drift30.values[np.isin(C.ts.dt.year.values, IS_Y)], 2 / 3)
+    E = E[E.mkt_drift30.values >= hi].reset_index(drop=True)
+    E["stop_pct"] = 4.0 * E.atr_pct                      # ≈ стоп 4 ATR (ATR на баре сигнала / close, вход — open след.)
+    E["R"] = E.pnl / E.stop_pct
+    y = E.ts.dt.year.values
+    thr = np.quantile(E.stop_pct.values[np.isin(y, IS_Y)], 2 / 3)
+    cand = E.stop_pct.values >= thr
+    assert (E.stop_pct.values[cand] >= thr).all() and set(E.side) == {"LONG"}   # §0A.3
+    print("=" * 110)
+    print(f"ОТКАТ В РОСТЕ × ШИРОКИЙ СТОП (≥ {thr:.2f}% = верхняя треть IS) · рынок дрейф30 ≥ {hi:+.2f}")
+    print("=" * 110)
+    print(E.loc[cand, ["sym", "ts", "atr_pct", "stop_pct", "pnl", "R"]].head(4).round(3).to_string(index=False))
+    act = y < HOLD
+    for unit in ("pnl", "R"):
+        D = V.normalize(E[act].assign(pnl=E[unit][act]), pnl="pnl", ts="ts", liq="liq")
+        V.card(D, cand[act], name=f"legup_ote × рост × стоп ≥ треть IS ({unit})", study="leg-continuation",
+               geo=("mkt_drift30",))
+    if open_holdout:
+        for unit in ("pnl", "R"):
+            D = V.normalize(E[~act].assign(pnl=E[unit][~act]), pnl="pnl", ts="ts", liq="liq")
+            V.card(D, cand[~act], name=f"legup_ote × рост × стоп ≥ треть IS ({unit})", study="leg-continuation",
+                   geo=("mkt_drift30",), holdout=True)
+
+
 if __name__ == "__main__":
-    run("legup_ote", "LONG", "up")
-    print()
-    run("legdn_ote", "SHORT", "down")
+    if len(sys.argv) > 1 and sys.argv[1] == "wide":
+        wide_stop(open_holdout=len(sys.argv) > 2 and sys.argv[2] == "holdout")
+    else:
+        run("legup_ote", "LONG", "up")
+        print()
+        run("legdn_ote", "SHORT", "down")

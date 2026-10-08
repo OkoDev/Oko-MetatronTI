@@ -182,8 +182,8 @@ def simulate_riskcap(T: pd.DataFrame, soft: float, hard: float, wt_th: float = 7
             "halted": halted, "years": Rz.groupby(Rz.X.dt.year).c.sum().round(1).to_dict()}
 
 
-def main() -> int:
-    procs = int(sys.argv[1]) if len(sys.argv) > 1 else max(1, (os.cpu_count() or 2) - 6)
+def prepare(procs: int) -> tuple[pd.DataFrame, pd.Series]:
+    """Сделки ядра с пересчитанным выходом, WT пятой и риском как в бою → (D, маска доказанных лонгов)."""
     D = pd.read_pickle(OUT) if OUT.exists() else collect(procs)
     # ГОЛДЕН §0A.2: пересчитанный доход = записанный
     ok = D.pnl_re.notna()
@@ -205,6 +205,12 @@ def main() -> int:
     D["risk"] = np.where(D.side == "SHORT", RISK["short"], np.where(proven, RISK["proven"], RISK["long_out"]))
     # риск по глубине WT: доказанный лонг с |WT пятой| ≥ 75 — полный, прочий доказанный — половина
     D["risk_wt"] = np.where(proven & (D.wt_abs >= 75), 1.0, D.risk * np.where(proven, 0.5, 1.0))
+    return D, proven
+
+
+def main() -> int:
+    procs = int(sys.argv[1]) if len(sys.argv) > 1 else max(1, (os.cpu_count() or 2) - 6)
+    D, proven = prepare(procs)
     print(f"в симуляции {len(D)} сделок · {D.E.min():%Y-%m-%d} → {D.E.max():%Y-%m-%d} · доказанных лонгов "
           f"{int(proven.sum())} · из них |WT|≥75 {int((proven & (D.wt_abs >= 75)).sum())}")
     print(D[["sym", "side", "entry_time", "exit_time", "stop_pct", "pnl_0", "pnl_re", "risk", "wt_top"]].head(3)
