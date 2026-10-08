@@ -144,6 +144,44 @@ def simulate(T: pd.DataFrame, slots: int | None, prio: str = "fifo", daily: floa
             "proven": int((tk.risk == RISK["proven"]).sum()) if len(tk) else 0}
 
 
+def simulate_riskcap(T: pd.DataFrame, soft: float, hard: float, wt_th: float = 75.0,
+                     daily_move: float | None = None) -> dict:
+    """Боевое правило: открытый риск + новая сделка ≤ мягкого — полный риск; иначе, если |WT пятой| ≥ wt_th и
+    помещается половина под жёсткий потолок — половинный риск; иначе пропуск. Одновременные — глубже WT первым.
+    daily_move — дневной лимит КАК В БОЮ (`_risk_frame`): сумма % ХОДА (не капитала) закрытых за скользящие 24 ч."""
+    T = T.sort_values(["E", "wt_neg"]).reset_index(drop=True)
+    open_pos, realized, taken = [], [], 0
+    closed_moves: list[tuple] = []                       # (exit_ts, pnl % хода) — для дневного лимита
+    max_risk, halted = 0.0, 0
+    for _, t in T.iterrows():
+        for p in open_pos:
+            if p[0] <= t.E:
+                closed_moves.append((p[0], p[3]))
+        open_pos = [p for p in open_pos if not (p[0] <= t.E and realized.append((p[0], p[1])) is None)]
+        if daily_move is not None:
+            day = sum(m for x, m in closed_moves if t.E - pd.Timedelta("24h") <= x <= t.E)
+            if day <= -daily_move:
+                halted += 1
+                continue
+        cur = sum(p[2] for p in open_pos)
+        rk = t.risk
+        if cur + rk <= soft + 1e-9:
+            use = rk
+        elif (t.wt_abs or 0) >= wt_th and cur + 0.5 * rk <= hard + 1e-9:
+            use = 0.5 * rk
+        else:
+            continue
+        open_pos.append((t.X, use * t.pnl_re / t.stop_pct, use, t.pnl_re))
+        taken += 1
+        max_risk = max(max_risk, cur + use)
+    realized += [(p[0], p[1]) for p in open_pos]
+    Rz = pd.DataFrame(realized, columns=["X", "c"]).sort_values("X")
+    eq = Rz.c.cumsum()
+    return {"n": taken, "total": float(Rz.c.sum()), "dd": float((eq - eq.cummax()).min()),
+            "worst_day": float(Rz.groupby(Rz.X.dt.floor("D")).c.sum().min()), "max_risk": max_risk,
+            "halted": halted, "years": Rz.groupby(Rz.X.dt.year).c.sum().round(1).to_dict()}
+
+
 def main() -> int:
     procs = int(sys.argv[1]) if len(sys.argv) > 1 else max(1, (os.cpu_count() or 2) - 6)
     D = pd.read_pickle(OUT) if OUT.exists() else collect(procs)
@@ -219,6 +257,23 @@ def main() -> int:
     print("\nпо годам:")
     for nm, _, _ in scen2:
         print(f"  {nm:<44} {res[nm]['years']}")
+    # ── правило для боя (08.10, Егор «1-3»): лимит СУММЫ ОТКРЫТОГО РИСКА вместо числа позиций ──
+    # маржа при плече «под стоп» (lev_set_to_max) ≈ риску позиции → лимит риска держит и маржу
+    print("\n" + "=" * 112)
+    print("ДОКАЗАННЫЕ ЛОНГИ · ЛИМИТ ОТКРЫТОГО РИСКА: до мягкого — всё; сверх — только |WT пятой|≥75 половиной риска; "
+          "жёсткий потолок")
+    print("=" * 112)
+    for soft, hard in ((6, 6), (10, 15), (12, 18), (15, 25), (20, 30), (30, 45)):
+        r = simulate_riskcap(P, soft, hard)
+        print(f"  мягкий {soft:>2}% · жёсткий {hard:>2}%   сделок {r['n']:>4} · итог {r['total']:+7.1f} · просадка {r['dd']:+6.1f} · "
+              f"худший день {r['worst_day']:+6.1f} · макс риск {r['max_risk']:5.1f}% · годы {r['years']}")
+    # боевой дневной лимит считает сумму % ХОДА, а не капитала: при стопах ≥6% четыре стопа = −24% хода
+    print("\n  15/25 + дневной лимит КАК В БОЮ (сумма % хода закрытых за 24 ч):")
+    for dm in (None, 25.0, 50.0, 100.0):
+        r = simulate_riskcap(P, 15, 25, daily_move=dm)
+        print(f"    дневной {'нет' if dm is None else f'−{dm:g}% хода':<12} сделок {r['n']:>4} (остановлено лимитом "
+              f"{r['halted']:>3}) · итог {r['total']:+7.1f} · просадка {r['dd']:+6.1f} · худший день {r['worst_day']:+6.1f} · "
+              f"годы {r['years']}")
     print("\n⚠️ учёт по закрытию: открытые позиции не переоцениваются → просадка ЗАНИЖЕНА (в кластере капитуляции все "
           "позиции идут вниз одновременно до разворота); маржа, плечо и проскальзывание VST не моделируются.")
     return 0

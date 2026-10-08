@@ -173,7 +173,9 @@ def emit_exec(prev, sym, variant, entry, stop, target, extra=None):
                "wv_imp_pct": js(prev.get("imp_pct")), "wv_depth5": js(prev.get("depth5")),
                "wv_risk_pct": round(abs(entry - stop) / entry * 100, 2) if entry and stop else None,
                "wv_mass_day": int(prev.get("_mass_day") or 0),
-               "wv_corr30": js(prev.get("corr30")), "wv_vol30": js(prev.get("vol30")), "wv_weight": js(prev.get("weight"))}
+               "wv_corr30": js(prev.get("corr30")), "wv_vol30": js(prev.get("vol30")), "wv_weight": js(prev.get("weight")),
+               # 08.10: WT на вершине пятой — приоритет в бюджете риска waves_long ([[wave_fifth_wt_depth_cell]])
+               "wv_wt_top": js(prev.get("wt_top"))}
         rec.update(extra or {})
         with open(EXEC_Q, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")

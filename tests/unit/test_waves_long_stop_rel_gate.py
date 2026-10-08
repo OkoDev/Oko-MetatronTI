@@ -284,8 +284,99 @@ class TestRiskFrame:
     def test_config_has_frame_wired(self):
         from core.infra.config_loader import ConfigLoader
         cfg = ConfigLoader("config.yaml")
-        assert int(cfg.get("trading.waves_long.max_open", 0)) == 6
+        # 08.10: лимит числа позиций снят → бюджет открытого риска, недоказанный поток в тени
+        assert cfg.get("trading.waves_long.max_open", "нет") is None
+        assert float(cfg.get("trading.waves_long.max_open_risk_pct", 0)) == 15
+        assert float(cfg.get("trading.waves_long.max_open_risk_hard_pct", 0)) == 25
+        assert float(cfg.get("trading.waves_long.wt_priority_abs", 0)) == 75
+        assert cfg.get("trading.waves_long.unproven_to_shadow") is True
         assert float(cfg.get("trading.waves_long.max_daily_loss_pct", 0)) == 25.0
         pol = cfg.get("signal_router.source_policies.waves_long", {}) or {}
-        # 07.10: 0.5 → 1.0 — экспозицию держит каркас (слоты + дневной лимит)
+        # 07.10: 0.5 → 1.0 — экспозицию держит каркас (бюджет риска + дневной лимит)
         assert float(pol.get("risk_pct", 0)) == 1.0, "риск источника должен быть 1.0%"
+
+
+class TestRiskBudget:
+    """08.10 бюджет открытого риска waves_long вместо числа позиций (Егор «1-3»)."""
+
+    def _db(self, tmp_path, opens):
+        """opens: [(execution_mode, risk_mult)] открытых waves_long."""
+        import json
+        import sqlite3
+        p = tmp_path / "b.db"
+        conn = sqlite3.connect(p)
+        conn.execute("CREATE TABLE simulated_trades (signal_type TEXT, status TEXT, execution_mode TEXT, "
+                     "features_json TEXT, profit_pct REAL, closed_at TEXT)")
+        for em, rm in opens:
+            conn.execute("INSERT INTO simulated_trades VALUES ('waves_long','OPEN',?,?,NULL,NULL)",
+                         (em, json.dumps({"risk_mult": rm})))
+        conn.commit(); conn.close()
+        return type("B", (), {"db_path": str(p)})()
+
+    @staticmethod
+    def _cfg(**kw):
+        base = {"trading.waves_long.max_open_risk_pct": 15, "trading.waves_long.max_open_risk_hard_pct": 25,
+                "trading.waves_long.wt_priority_abs": 75, "signal_router.source_policies.waves_long.risk_pct": 1.0}
+        base.update(kw)
+        return type("C", (), {"get": lambda self, k, d=None: base.get(k, d)})()
+
+    def test_no_budget_configured_means_full(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = self._db(tmp_path, [("VST", 1.0)] * 40)
+        cfg = type("C", (), {"get": lambda self, k, d=None: d})()
+        assert _risk_budget(bot, cfg, 1.0, None) == (1.0, "")
+
+    def test_under_soft_full_risk(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = self._db(tmp_path, [("VST", 1.0)] * 14)          # 14% + 1% = 15% ≤ мягкого
+        use, why = _risk_budget(bot, self._cfg(), 1.0, 10)
+        assert use == 1.0 and why == ""
+
+    def test_over_soft_deep_wt_half(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = self._db(tmp_path, [("VST", 1.0)] * 15)          # 15% открыто, мелкая WT не пройдёт
+        use, why = _risk_budget(bot, self._cfg(), 1.0, -80)    # знак WT не важен: глубина по модулю
+        assert use == 0.5 and "ПОЛОВИНОЙ" in why
+
+    def test_over_soft_shallow_wt_hold(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = self._db(tmp_path, [("VST", 1.0)] * 15)
+        use, why = _risk_budget(bot, self._cfg(), 1.0, -40)
+        assert use is None and "мягкий" in why
+
+    def test_hard_ceiling_holds_even_deep(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = self._db(tmp_path, [("VST", 1.0)] * 25)          # 25% + 0.5% > жёсткого
+        use, why = _risk_budget(bot, self._cfg(), 1.0, -90)
+        assert use is None and "жёсткий" in why
+
+    def test_counts_only_exchange_and_risk_mult(self, tmp_path):
+        """Теневые (SIM) бюджет не занимают; риск позиции = база × risk_mult."""
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = self._db(tmp_path, [("SIM", 1.0)] * 50 + [("VST", 0.5)] * 28)   # биржевых 14%
+        assert _risk_budget(bot, self._cfg(), 1.0, None) == (1.0, "")
+        assert _risk_budget(bot, self._cfg(), 2.0, None)[0] is None          # 14 + 2 > 15, WT нет
+
+    def test_broken_db_full_risk(self, tmp_path):
+        from bot.loops.waves_long_loop import _risk_budget
+        bot = type("B", (), {"db_path": str(tmp_path / "нет" / "такой.db")})()
+        assert _risk_budget(bot, self._cfg(), 1.0, None)[0] == 1.0
+
+
+class TestOpenOnSymbolScope:
+    """08.10: теневая сделка на монете не блокирует биржевой вход, и наоборот."""
+
+    def _bot(self, rows):
+        sim = type("S", (), {"get_open_trades": lambda self: rows})()
+        return type("B", (), {"trade_simulator": sim})()
+
+    def test_scope(self):
+        from bot.loops.waves_long_loop import _open_on_symbol
+        rows = [{"symbol": "X/USDT:USDT", "signal_type": "waves_long", "execution_mode": "SIM"},
+                {"symbol": "X/USDT:USDT", "signal_type": "waves_long", "execution_mode": "VST"},
+                {"symbol": "X/USDT:USDT", "signal_type": "waves_long", "execution_mode": None},
+                {"symbol": "Y/USDT:USDT", "signal_type": "waves_long", "execution_mode": "VST"}]
+        bot = self._bot(rows)
+        assert _open_on_symbol(bot, "X/USDT:USDT") == 3
+        assert _open_on_symbol(bot, "X/USDT:USDT", True) == 1
+        assert _open_on_symbol(bot, "X/USDT:USDT", False) == 2

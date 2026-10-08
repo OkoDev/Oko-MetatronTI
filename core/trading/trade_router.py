@@ -236,9 +236,15 @@ class TradeRouter:
         # ── Exchange placement ───────────────────────────────────────────
         exchange_order_id = None
         below_min = ctx.strength < policy.min_strength
+        # 08.10: источник может увести ОТДЕЛЬНУЮ сделку в тень, не трогая политику (waves_long: недоказанный
+        # поток → SIM, портфельная симуляция: −73% и забивал слоты доказанным). Причина — в значении флага.
+        _exch_off = ctx.extra_features.get("exchange_off")
+        if _exch_off:
+            logger.info("[TradeRouter] %s %s #%d → ТЕНЬ (без биржи): %s", symbol, source, trade_id, _exch_off)
         can_open = (
             policy.exchange_enabled
             and not below_min
+            and not _exch_off
             and _is_live_fn(self.config)
             and hasattr(self.bot, "order_executor")
             and hasattr(self.bot, "position_sizer")

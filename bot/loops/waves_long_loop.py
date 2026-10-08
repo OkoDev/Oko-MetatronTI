@@ -172,10 +172,13 @@ def _risk_frame(bot, cfg) -> tuple[bool, str]:
             if day_lim is not None:
                 # сумма % хода по ЗАКРЫТЫМ за последние сутки; формат времени с `T`
                 # нормализуем — иначе сравнение строк врёт ([[time_utc_vs_local_in_db]])
+                # 🔴 08.10: только БИРЖЕВЫЕ сделки — недоказанный поток теперь в тени (SIM), и его убытки
+                # не должны останавливать доказанные входы
+                _exch = (" AND execution_mode IN ('VST','LIVE')" if _has_col(conn, "execution_mode") else "")
                 row = conn.execute(
                     "SELECT COALESCE(SUM(profit_pct), 0) FROM simulated_trades "
                     "WHERE signal_type='waves_long' AND profit_pct IS NOT NULL "
-                    "AND substr(replace(closed_at,'T',' '),1,19) >= datetime('now','-1 day')"
+                    "AND substr(replace(closed_at,'T',' '),1,19) >= datetime('now','-1 day')" + _exch
                 ).fetchone()
                 day_sum = float(row[0] or 0.0)
                 if day_sum <= -abs(float(day_lim)):
@@ -185,6 +188,62 @@ def _risk_frame(bot, cfg) -> tuple[bool, str]:
         logger.warning("[WAVES_LONG] риск-каркас не проверен (%s) — пропускаю", e)
         return True, ""
     return True, ""
+
+
+def _has_col(conn, col: str, table: str = "simulated_trades") -> bool:
+    try:
+        return any(r[1] == col for r in conn.execute(f"PRAGMA table_info({table})"))
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
+def _risk_budget(bot, cfg, new_risk_pct: float, wt_abs) -> tuple[float | None, str]:
+    """БЮДЖЕТ ОТКРЫТОГО РИСКА вместо числа позиций (08.10, Егор «1-3»: «именно поэтому лимиты и не ограничивал»).
+
+    Портфельная симуляция (`scripts/wave_portfolio_sim.py`, доказанные лонги 2023→08.2026, учёт по закрытию):
+    лимит 6 позиций +97% капитала · бюджет риска 15/25% +185% (просадка −29, худший день −22) · без лимита +312%
+    при 141 позиции разом. Деньги клетки живут в КЛАСТЕРАХ дней капитуляции, и счёт позиций режет именно их.
+    Маржа при плече «под стоп» (lev_set_to_max) ≈ риску позиции → бюджет риска держит и маржу.
+
+    Правило: открытый риск биржевых позиций + новая ≤ мягкого — полный риск (1.0); сверх мягкого — только
+    |WT на вершине пятой| ≥ порога ([[wave_fifth_wt_depth_cell]]: +9.06 против +3.26 при стопе ≥6%) и
+    половиной риска, пока помещается под жёсткий потолок (0.5); иначе придержать (None).
+    Бюджет не задан → (1.0, ""). Сбой подсчёта → (1.0, ...) громко: каркас не роняет торговлю."""
+    soft = cfg.get("trading.waves_long.max_open_risk_pct", None)
+    if soft is None:
+        return 1.0, ""
+    hard = float(cfg.get("trading.waves_long.max_open_risk_hard_pct", soft) or soft)
+    wt_th = float(cfg.get("trading.waves_long.wt_priority_abs", 75.0) or 75.0)
+    base = float(cfg.get("signal_router.source_policies.waves_long.risk_pct", 1.0) or 1.0)
+    try:
+        import sqlite3
+        with sqlite3.connect(bot.db_path if hasattr(bot, "db_path") else "subscriptions.db") as conn:
+            _exch = " AND execution_mode IN ('VST','LIVE')" if _has_col(conn, "execution_mode") else ""
+            rows = conn.execute(
+                "SELECT features_json FROM simulated_trades WHERE signal_type='waves_long' "
+                "AND status IN ('OPEN','PENDING_ENTRY')" + _exch).fetchall()
+        cur = 0.0
+        for (fj,) in rows:
+            try:
+                rm = float((json.loads(fj or "{}") or {}).get("risk_mult") or 1.0)
+            except Exception:                            # noqa: BLE001
+                rm = 1.0
+            cur += base * rm
+    except Exception as e:                               # noqa: BLE001
+        logger.warning("[WAVES_LONG] бюджет риска не посчитан (%s) — пропускаю полным риском", e)
+        return 1.0, ""
+    if cur + new_risk_pct <= float(soft) + 1e-9:
+        return 1.0, ""
+    try:
+        deep = wt_abs is not None and abs(float(wt_abs)) >= wt_th
+    except (TypeError, ValueError):
+        deep = False
+    if deep and cur + 0.5 * new_risk_pct <= hard + 1e-9:
+        return 0.5, (f"открыто {cur:.1f}% риска > мягкого {float(soft):g}% — глубокая пятая (|WT| "
+                     f"{abs(float(wt_abs)):.0f} ≥ {wt_th:g}) берётся ПОЛОВИНОЙ риска (потолок {hard:g}%)")
+    return None, (f"открыто {cur:.1f}% риска: + {new_risk_pct:.2f}% выходит за мягкий {float(soft):g}%"
+                  + ("" if deep else f", а |WT пятой| {wt_abs if wt_abs is not None else '—'} < {wt_th:g}")
+                  + (f" и за жёсткий {hard:g}%" if deep else ""))
 
 
 def _long_proven(entry, stop, in_corridor: bool, proven_stop_pct) -> bool:
@@ -244,16 +303,24 @@ def _risk_mult(coin_weight, in_corridor: bool, out_mult, cap) -> float | None:
     return round(max(0.25, min(m, hi)), 4)
 
 
-def _open_on_symbol(bot, symbol: str) -> int:
-    """Сколько открытых сделок семейства уже висит на монете (источник истины — симулятор)."""
+def _open_on_symbol(bot, symbol: str, exchange: bool | None = None) -> int:
+    """Сколько открытых сделок семейства уже висит на монете (источник истины — симулятор).
+    exchange=True — только биржевые (VST/LIVE), False — только теневые (SIM), None — все.
+    08.10: теневая (недоказанная) сделка на монете не должна блокировать доказанный вход по ней."""
     try:
         sim = getattr(bot, "trade_simulator", None) or getattr(bot, "simulator", None)
         if sim is None:
             return 0
         rows = sim.get_open_trades() if hasattr(sim, "get_open_trades") else []
+
+        def _mode_ok(t):
+            if exchange is None:
+                return True
+            on_ex = str(t.get("execution_mode") or "SIM").upper() in ("VST", "LIVE")
+            return on_ex if exchange else not on_ex
         return sum(1 for t in rows
                    if str(t.get("symbol") or t.get("pair") or "") == symbol
-                   and str(t.get("signal_type") or "") == "waves_long")
+                   and str(t.get("signal_type") or "") == "waves_long" and _mode_ok(t))
     except Exception:
         return 0
 
@@ -286,19 +353,28 @@ async def waves_long_loop(bot):
     _mo = cfg.get("trading.waves_long.max_open", None)
     _dl = cfg.get("trading.waves_long.max_daily_loss_pct", None)
     _sh = bool(cfg.get("trading.waves_long.short_enabled", False))
-    _frame = (f"слоты {_mo} · дневной лимит −{_dl}%" if (_mo is not None or _dl is not None)
+    _frame = (f"слоты {'не ограничены' if _mo is None else _mo} · дневной лимит −{_dl}% хода (биржевые)"
+              if (_mo is not None or _dl is not None)
               else "🔴 НЕ ЗАДАН (ни слотов, ни дневного лимита)")
     _pp = cfg.get("trading.waves_long.proven_stop_pct", None)
     _srm = cfg.get("trading.waves_long.short_risk_mult", None)
+    _shadow = bool(cfg.get("trading.waves_long.unproven_to_shadow", False))
+    _br = cfg.get("trading.waves_long.max_open_risk_pct", None)
+    _budget = (f"бюджет открытого риска {_br}% (сверх — |WT пятой| ≥ "
+               f"{cfg.get('trading.waves_long.wt_priority_abs', 75)} половиной, потолок "
+               f"{cfg.get('trading.waves_long.max_open_risk_hard_pct', _br)}%)" if _br is not None else "бюджет риска не задан")
     logger.info("[WAVES_LONG] старт · очередь %s · обработано ранее %d (из них устаревших помечено %d) · "
                 "дедуп по (uid, время события): повторные входы по тому же импульсу разрешены · "
                 "ширина стопа в долях импульса → %s · 🔑 ДОКАЗАННАЯ ЗОНА ЛОНГА: стоп ≥%s%% или коридор · "
-                "🛡️ РИСК-КАРКАС: %s · ШОРТ: %s",
-                QUEUE, len(done), len(stale), _mode, _pp, _frame,
-                (f"включён, доказанной зоны нет → риск ×{_srm}" if _sh else "выключен"))
+                "🛡️ РИСК-КАРКАС: %s · %s · ШОРТ: %s · 🌒 НЕДОКАЗАННЫЕ (лонг вне зоны, шорт): %s",
+                QUEUE, len(done), len(stale), _mode, _pp, _frame, _budget,
+                (f"включён, доказанной зоны нет → риск ×{_srm}" if _sh else "выключен"),
+                "ТЕНЬ — регистрируются без биржи" if _shadow else "на биржу пониженным риском")
     while True:
         try:
-            fresh = _read_new(done)
+            # 08.10: пришедшие одновременно — глубже WT пятой первым: бюджет риска достаётся сильнейшим
+            # ([[wave_fifth_wt_depth_cell]]); у старых записей без поля — в конец очереди
+            fresh = sorted(_read_new(done), key=lambda r: -abs(float(r.get("wv_wt_top") or 0)))
             for r in fresh:
                 uid = r["uid"]
                 done.add(_event_key(r))             # помечаем сразу: повтор при ошибке хуже пропуска
@@ -365,18 +441,41 @@ async def waves_long_loop(bot):
                     logger.info("[WAVES_LONG] %s пропуск (gate=true): стоп %s импульса вне коридора [%s; %s)",
                                 uid, "—" if _rel is None else f"{_rel:.3f}", _lo, _hi)
                     continue
+                # 🌒 08.10 НЕДОКАЗАННЫЙ ПОТОК → ТЕНЬ (Егор «1-3»). Портфельная симуляция: лонг вне доказанной
+                # зоны + шорт = −73% капитала без лимита, −161% с лимитом 3, и он забирал слоты у доказанных
+                # (весь поток с лимитом 6 −97% против +100% у одних доказанных). Сделка регистрируется (SIM —
+                # данные сигнала копятся), но на биржу не идёт и бюджет риска не занимает.
+                _to_shadow = (_is_short or not _in_cor) and bool(cfg.get("trading.waves_long.unproven_to_shadow", False))
                 # одна открытая позиция на монету: у COOKIE/PROMPT за двое суток набралось по 4 входа
-                # (три сетапа + повторные) — случай AEONBSC, где три варианта били по очереди
-                if _open_on_symbol(bot, sym) >= int(cfg.get("trading.waves_long.max_per_symbol", 1) or 1):
-                    logger.info("[WAVES_LONG] %s пропуск: по монете уже есть открытая позиция", uid)
+                # (три сетапа + повторные) — случай AEONBSC, где три варианта били по очереди.
+                # 08.10: считается в СВОЁМ контуре — теневая сделка не блокирует биржевой вход и наоборот
+                _scope = (False if _to_shadow else True) if cfg.get("trading.waves_long.unproven_to_shadow", False) else None
+                if _open_on_symbol(bot, sym, _scope) >= int(cfg.get("trading.waves_long.max_per_symbol", 1) or 1):
+                    logger.info("[WAVES_LONG] %s пропуск: по монете уже есть открытая позиция%s", uid,
+                                " (тень)" if _to_shadow else "")
                     continue
-                # 🛡️ 06.10 РИСК-КАРКАС: слоты + дневной лимит. Проверяем ПОСЛЕДНИМ, прямо
-                # перед отправкой — чтобы в логе было видно, что сетап дошёл до конца и
-                # остановлен именно каркасом, а не фильтром (закон: молчаливых отказов нет).
-                _ok, _why = _risk_frame(bot, cfg)
-                if not _ok:
-                    logger.info("[WAVES_LONG] 🛡️ %s ПРИДЕРЖАН каркасом: %s", uid, _why)
-                    continue
+                _half = False
+                if not _to_shadow:
+                    # 🛡️ 06.10 РИСК-КАРКАС: слоты + дневной лимит (по биржевым). Проверяем ПОСЛЕДНИМ, прямо
+                    # перед отправкой — чтобы в логе было видно, что сетап дошёл до конца и
+                    # остановлен именно каркасом, а не фильтром (закон: молчаливых отказов нет).
+                    _ok, _why = _risk_frame(bot, cfg)
+                    if not _ok:
+                        logger.info("[WAVES_LONG] 🛡️ %s ПРИДЕРЖАН каркасом: %s", uid, _why)
+                        continue
+                    # 08.10 БЮДЖЕТ ОТКРЫТОГО РИСКА (вместо числа позиций)
+                    _rm_pre = _risk_mult(r.get("wv_weight"), bool(_in_cor),
+                                         cfg.get("trading.waves_long.stop_rel_risk_mult", None),
+                                         cfg.get("trading.risk_mult_cap", 1.5))
+                    _new_risk = float(cfg.get("signal_router.source_policies.waves_long.risk_pct", 1.0) or 1.0) \
+                        * (1.0 if _rm_pre is None else _rm_pre)
+                    _use, _bwhy = _risk_budget(bot, cfg, _new_risk, r.get("wv_wt_top"))
+                    if _use is None:
+                        logger.info("[WAVES_LONG] 🛡️ %s ПРИДЕРЖАН бюджетом риска: %s", uid, _bwhy)
+                        continue
+                    if _use < 1.0:
+                        _half = True
+                        logger.info("[WAVES_LONG] 🛡️ %s %s", uid, _bwhy)
                 rec = TradingRecommendation(
                     symbol=sym,
                     action="SELL" if _is_short else "BUY",
@@ -408,21 +507,30 @@ async def waves_long_loop(bot):
                                  if _is_short else
                                  cfg.get("trading.waves_long.stop_rel_risk_mult", None),
                                  cfg.get("trading.risk_mult_cap", 1.5))
+                if _half:                                # сверх мягкого бюджета — половина риска
+                    _rm = round((1.0 if _rm is None else _rm) * 0.5, 4)
+                    extra["wv_risk_half"] = True
                 if _rm is not None:
                     extra["risk_mult"] = _rm
+                if _to_shadow:
+                    extra["exchange_off"] = ("waves: шорт — доказанной зоны нет" if _is_short else
+                                             "waves: лонг вне доказанной зоны (стоп <6% и не коридор)")
+                    extra["wv_shadow"] = True
                 try:
                     res = await bot.trade_router.submit(rec, source="waves_long", extra_features=extra)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[WAVES_LONG] %s ошибка отправки: %s", uid, e)
                     continue
                 if res and getattr(res, "trade_id", None):
-                    logger.info("[WAVES_LONG] ✅ %s %s %s вход %.8g стоп %.8g цель %.8g · стоп %s имп (%s) · "
-                                "вес %s (corr30 %s · vol30 %s) · trade_id=%s",
+                    logger.info("[WAVES_LONG] %s %s %s %s вход %.8g стоп %.8g цель %.8g · стоп %s имп (%s) · "
+                                "WT пятой %s · вес %s (corr30 %s · vol30 %s) · trade_id=%s",
+                                "🌒 ТЕНЬ" if _to_shadow else "✅",
                                 "SHORT" if _is_short else "LONG",
                                 sym, r.get("wv_variant"), entry, stop, tp,
                                 "—" if _rel is None else f"{_rel:.3f}",
-                                "шорт: доказанной зоны нет, минимальный риск" if _is_short
+                                "шорт: доказанной зоны нет" if _is_short
                                 else ("В ДОКАЗАННОЙ ЗОНЕ" if _in_cor else "вне зоны"),
+                                r.get("wv_wt_top", "—"),
                                 extra.get("risk_mult", "—"), r.get("wv_corr30", "—"),
                                 r.get("wv_vol30", "—"), res.trade_id)
                 else:
