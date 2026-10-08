@@ -353,9 +353,10 @@ async def waves_long_loop(bot):
     _mo = cfg.get("trading.waves_long.max_open", None)
     _dl = cfg.get("trading.waves_long.max_daily_loss_pct", None)
     _sh = bool(cfg.get("trading.waves_long.short_enabled", False))
-    _frame = (f"слоты {'не ограничены' if _mo is None else _mo} · дневной лимит −{_dl}% хода (биржевые)"
+    _frame = (f"слоты {'не ограничены' if _mo is None else _mo} · дневной лимит "
+              f"{'снят' if _dl is None else f'−{_dl}% хода (биржевые)'}"
               if (_mo is not None or _dl is not None)
-              else "🔴 НЕ ЗАДАН (ни слотов, ни дневного лимита)")
+              else "слотов и дневного лимита нет (сняты 08.10)")
     _pp = cfg.get("trading.waves_long.proven_stop_pct", None)
     _srm = cfg.get("trading.waves_long.short_risk_mult", None)
     _shadow = bool(cfg.get("trading.waves_long.unproven_to_shadow", False))

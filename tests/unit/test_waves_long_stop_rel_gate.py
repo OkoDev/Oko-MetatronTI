@@ -290,9 +290,10 @@ class TestRiskFrame:
         assert float(cfg.get("trading.waves_long.max_open_risk_hard_pct", 0)) == 25
         assert float(cfg.get("trading.waves_long.wt_priority_abs", 0)) == 75
         assert cfg.get("trading.waves_long.unproven_to_shadow") is True
-        assert float(cfg.get("trading.waves_long.max_daily_loss_pct", 0)) == 25.0
+        # 08.10: дневной лимит снят (в % хода резал доказанный поток перед разворотом: +185 → +65)
+        assert cfg.get("trading.waves_long.max_daily_loss_pct", "нет") is None
         pol = cfg.get("signal_router.source_policies.waves_long", {}) or {}
-        # 07.10: 0.5 → 1.0 — экспозицию держит каркас (бюджет риска + дневной лимит)
+        # 07.10: 0.5 → 1.0 — экспозицию держит каркас (бюджет открытого риска)
         assert float(pol.get("risk_pct", 0)) == 1.0, "риск источника должен быть 1.0%"
 
 
