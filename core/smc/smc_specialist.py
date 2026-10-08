@@ -4,12 +4,13 @@ SMC Specialist — Сфера 4 / CUBE-08.
 Быстрый SMC классификатор на уже загруженных df (без дополнительных API запросов).
 Вызывается в scan_one() после расчёта индикаторов — данные уже есть в памяти.
 
-Вердикты:
-  STRONG_BULL_ZONE  — на 4h бычий BOS/CHoCH + тренд UP на 1h
-  WEAK_BULL_ZONE    — тренд UP на 1h, нет подтверждения с 4h
-  STRONG_BEAR_ZONE  — на 4h медвежий BOS/CHoCH + тренд DOWN на 1h
-  WEAK_BEAR_ZONE    — тренд DOWN на 1h, нет подтверждения с 4h
-  NEUTRAL           — смешанные/отсутствующие сигналы
+Вердикты (🔴 08.10: это ATR-тренд `calculate_trend` на 1h и 4h, BOS/CHoCH здесь НЕ смотрятся — старый
+docstring врал; с ML-вердиктом `mtf_smc_specialist` (качество сетапа STRONG_SETUP/WEAK_SETUP) не путать):
+  STRONG_BULL_ZONE  — тренд UP на 1h и на 4h
+  WEAK_BULL_ZONE    — тренд UP на 1h, 4h нет или против
+  STRONG_BEAR_ZONE  — тренд DOWN на 1h и на 4h
+  WEAK_BEAR_ZONE    — тренд DOWN на 1h, 4h нет или против
+  NEUTRAL           — тренда на 1h нет
 """
 from __future__ import annotations
 

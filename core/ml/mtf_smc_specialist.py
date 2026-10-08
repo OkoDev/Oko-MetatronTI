@@ -93,7 +93,7 @@ except ImportError:
 
 @dataclass
 class SMCVerdict:
-    label: str        # "STRONG_BULL_ZONE" | "WEAK_ZONE" | "STRONG_BEAR_ZONE" | "NEUTRAL"
+    label: str        # "STRONG_SETUP" | "MIXED" | "WEAK_SETUP" | "NEUTRAL" — качество сетапа, НЕ направление (08.10)
     confidence: float  # 0.0–1.0
 
 
@@ -181,13 +181,16 @@ def _label_from_proba(p_win: float, smc_snap: Dict[str, Any]) -> str:
     будто метка учитывает ордер-блоки. Если её захотят вернуть — вводить осознанно
     и отдельной меткой, а не веткой с тем же результатом.
     """
+    # 🔴 08.10 (Егор: «переименовать метки ML-вердикта SMC»): модель учится на исходе сделки ЛЮБОЙ стороны и стороны
+    # в признаках не видит — p_win это КАЧЕСТВО сетапа, а не направление рынка. Метки BULL/BEAR врали: агрегатор
+    # сравнивал их со стороной, и шорт со СЛАБЫМ сетапом (p<0.35, «BEAR») получал +2.5 к силе.
     if p_win > 0.65:
-        return "STRONG_BULL_ZONE"
+        return "STRONG_SETUP"
     if p_win < 0.35:
-        return "STRONG_BEAR_ZONE"
+        return "WEAK_SETUP"
     if 0.45 <= p_win <= 0.55:
         return "NEUTRAL"
-    return "WEAK_ZONE"
+    return "MIXED"
 
 
 def _build_smc_snap_from_df(
@@ -479,7 +482,7 @@ class MTFSMCSpecialist:
         spec = MTFSMCSpecialist()
         spec.fit("subscriptions.db")
         verdict = spec.predict(smc_snap_dict)
-        # → SMCVerdict(label="STRONG_BULL_ZONE", confidence=0.71)
+        # → SMCVerdict(label="STRONG_SETUP", confidence=0.71)
     """
 
     def __init__(self) -> None:

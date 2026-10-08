@@ -28,7 +28,7 @@ Confluence Scanner — Lookback-детектор мульти-факторных
 """
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -216,7 +216,7 @@ def scan_confluence(
 
         # 3L. Цена у поддержки (S1/S2/PP дневной или недельный)
         pivot_hit_l, pivot_desc_l = _check_near_support(
-            window, daily_pivots, pivot_cache, symbol, pivot_pct
+            window, daily_pivots, pivot_cache, symbol, pivot_pct, current_price
         )
         if pivot_hit_l:
             score_long += _SCORE_NEAR_PIVOT
@@ -281,7 +281,7 @@ def scan_confluence(
 
         # 3S. Цена у сопротивления (R1/R2/PP дневной или недельный)
         pivot_hit_s, pivot_desc_s = _check_near_resistance(
-            window, daily_pivots, pivot_cache, symbol, pivot_pct
+            window, daily_pivots, pivot_cache, symbol, pivot_pct, current_price
         )
         if pivot_hit_s:
             score_short += _SCORE_NEAR_PIVOT
@@ -369,25 +369,32 @@ def _make_signal(
     )
 
 
+# 🔴 09.10 (как ARCH-23/DEV-41 в find_near_pivot): поддержка/сопротивление — по ПОЛОЖЕНИЮ уровня
+# относительно текущей цены, а не по имени. Было: S1, пробитый вниз и висящий НАД ценой, засчитывался
+# лонгу «поддержкой», если лоу окна его касались до пробоя; пробитый вверх R1 под ценой лонгу не засчитывался.
+
+
 def _check_near_support(
     window: pd.DataFrame,
     daily_pivots: Dict,
     pivot_cache: Dict,
     symbol: str,
     proximity_pct: float = _DEFAULT_PIVOT_PCT,
+    ref_price: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """
-    Цена (low) была у поддержки S1/S2/PP в окне.
-    Fallback: недельные пивоты.
+    Цена (low) была у уровня в окне, и уровень сейчас НЕ ВЫШЕ цены (`ref_price`,
+    по умолчанию close последнего бара окна). Fallback: недельные пивоты.
     """
     pivots = daily_pivots or pivot_cache.get(f"{symbol}_1W") or {}
     if not pivots:
         return False, ""
+    ref = float(ref_price) if ref_price else float(window["close"].iloc[-1])
 
     lows = window["low"].values
-    for level in ("S1", "S2", "PP"):
+    for level in ("S1", "S2", "PP", "R1", "R2"):
         pv = pivots.get(level) or 0.0
-        if pv <= 0:
+        if pv <= 0 or pv > ref:
             continue
         for price in lows:
             if abs(price - pv) / pv * 100 <= proximity_pct:
@@ -402,19 +409,21 @@ def _check_near_resistance(
     pivot_cache: Dict,
     symbol: str,
     proximity_pct: float = _DEFAULT_PIVOT_PCT,
+    ref_price: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """
-    Цена (high) была у сопротивления R1/R2/PP в окне.
-    Fallback: недельные пивоты.
+    Цена (high) была у уровня в окне, и уровень сейчас НЕ НИЖЕ цены (`ref_price`,
+    по умолчанию close последнего бара окна). Fallback: недельные пивоты.
     """
     pivots = daily_pivots or pivot_cache.get(f"{symbol}_1W") or {}
     if not pivots:
         return False, ""
+    ref = float(ref_price) if ref_price else float(window["close"].iloc[-1])
 
     highs = window["high"].values
-    for level in ("R1", "R2", "PP"):
+    for level in ("R1", "R2", "PP", "S1", "S2"):
         pv = pivots.get(level) or 0.0
-        if pv <= 0:
+        if pv <= 0 or pv < ref:
             continue
         for price in highs:
             if abs(price - pv) / pv * 100 <= proximity_pct:

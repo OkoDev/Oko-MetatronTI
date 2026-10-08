@@ -195,7 +195,7 @@ def _extract_key_factors(
     # Сфера 4: SMC verdict
     if smc_verdict is not None:
         label = getattr(smc_verdict, "label", None)
-        if label and label not in ("NEUTRAL", "WEAK_ZONE"):
+        if label and label not in ("NEUTRAL", "MIXED"):
             factors.append(f"SMC={label}")
 
     # Сфера 5: BTC regime

@@ -26,10 +26,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Метки SMCVerdict
-_SMC_BULL = "STRONG_BULL_ZONE"
-_SMC_BEAR = "STRONG_BEAR_ZONE"
-_SMC_WEAK = "WEAK_ZONE"
+# Метки SMCVerdict (ML, `mtf_smc_specialist._label_from_proba`). 08.10: это КАЧЕСТВО сетапа (p_win модели,
+# сторона в признаки не входит), а не направление рынка — сравнивать со стороной сделки нельзя.
+_SMC_STRONG = "STRONG_SETUP"
+_SMC_WEAK = "WEAK_SETUP"
 _SMC_NEUT = "NEUTRAL"
 
 # Метки WTVerdict
@@ -92,21 +92,17 @@ def aggregate_verdicts(
     # показал, что починенное плечо отрезало бы 14.1% сделок с НУЛЕВЫМ эффектом —
     # Δмедиана +0.04 п.п., а WR отрезанных ВЫШЕ (18.8% против 15.5%), т.е. режет
     # скорее лучшее. Копим would_block, should_block от SMC не ставим.
+    # 🔴 08.10: метка — качество сетапа без стороны. Раньше SHORT при p_win<0.35 («BEAR») получал +2.5 к силе,
+    # а SHORT при p_win>0.65 уходил в теневой блок — ровно наоборот. Теперь одинаково для обеих сторон.
     smc_shadow_block = False
     if smc_verdict is not None:
-        smc_lab_conf = (1.0 - smc_conf) if smc_label == _SMC_BEAR else smc_conf
-        if direction == "LONG" and smc_label == _SMC_BEAR and smc_lab_conf >= smc_conf_thr:
+        smc_lab_conf = (1.0 - smc_conf) if smc_label == _SMC_WEAK else smc_conf
+        if smc_label == _SMC_WEAK and smc_lab_conf >= smc_conf_thr:
             smc_shadow_block = True
-            factors.append(f"SMC={_SMC_BEAR}(lab{smc_lab_conf:.2f})↔LONG[shadow]")
-        elif direction == "SHORT" and smc_label == _SMC_BULL and smc_lab_conf >= smc_conf_thr:
-            smc_shadow_block = True
-            factors.append(f"SMC={_SMC_BULL}(lab{smc_lab_conf:.2f})↔SHORT[shadow]")
-        elif direction == "LONG" and smc_label == _SMC_BULL and smc_lab_conf >= smc_conf_thr:
+            factors.append(f"SMC={_SMC_WEAK}(lab{smc_lab_conf:.2f})↔{direction}[shadow]")
+        elif smc_label == _SMC_STRONG and smc_lab_conf >= smc_conf_thr:
             delta += strength_boost * 0.5
-            factors.append(f"SMC={_SMC_BULL}(lab{smc_lab_conf:.2f})✓LONG")
-        elif direction == "SHORT" and smc_label == _SMC_BEAR and smc_lab_conf >= smc_conf_thr:
-            delta += strength_boost * 0.5
-            factors.append(f"SMC={_SMC_BEAR}(lab{smc_lab_conf:.2f})✓SHORT")
+            factors.append(f"SMC={_SMC_STRONG}(lab{smc_lab_conf:.2f})✓{direction}")
 
     # ─── WT gate ────────────────────────────────────────────────────
     if wt_verdict is not None:

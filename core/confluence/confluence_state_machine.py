@@ -293,9 +293,11 @@ class ConfluenceStateMachine:
             piv_factor = "NEAR_SUPPORT" if is_long else "NEAR_RESISTANCE"
             if piv_factor not in st.factors:
                 if is_long:
-                    hit, desc = _check_near_support(window, daily_pivots, pivot_cache, symbol, pivot_pct)
+                    hit, desc = _check_near_support(window, daily_pivots, pivot_cache, symbol, pivot_pct,
+                                                    current_price)
                 else:
-                    hit, desc = _check_near_resistance(window, daily_pivots, pivot_cache, symbol, pivot_pct)
+                    hit, desc = _check_near_resistance(window, daily_pivots, pivot_cache, symbol, pivot_pct,
+                                                       current_price)
                 if hit:
                     st.add_factor(piv_factor, _SCORE_PIVOT_TOUCH, {"pivot_hit": desc})
                     if st.state == ConfluenceState.TSL_CROSS:
