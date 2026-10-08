@@ -2201,8 +2201,9 @@ function card(x){
 var SITC={},SITQ=[],SITBUSY=false;
 function sitLine(c,side){
  if(!c||c.error)return '<span class=dim>карта: '+((c&&c.error)||'нет ответа')+'</span>';
- var m={ok:'✅ база не против',warn:'⚠️ против базы',stop:'⛔ устойчиво против базы'};
- var s=c.stop&&c.stop.level?m[c.stop.level]:'',r=c.rates,k=side=='BUY'?'long':'short';
+ // 09.10: уровни situation_card._stop_level — better/same/warn/stop; ключей better/same не было → «undefined»
+ var m={better:'✅ лучше обычного (не сигнал)',same:'➖ как обычно',warn:'⚠️ хуже обычного',stop:'⛔ стабильно хуже обычного'};
+ var s=c.stop&&c.stop.level?(m[c.stop.level]||''):'',r=c.rates,k=side=='BUY'?'long':'short';
  var t=(r&&r[k]&&r[k].mean!=null)?(' · похожих '+r.n_days+' дн.: '+(k=='long'?'лонг ':'шорт ')+((r[k].mean>0?'+':'')+r[k].mean.toFixed(2))+'% за 24ч после коста, в плюс '+Math.round((r[k].p_up||0)*100)+'%'):' · похожих часов нет';
  var v=(c.verdicts||[]).filter(function(h){return h.side==side;}).map(function(h){return h.status;}).join(' ');
  return '<span class="lvl-'+((c.stop&&c.stop.level)||'na')+'">'+s+'</span>'+t+(v?' · измерено: '+v:'');}
