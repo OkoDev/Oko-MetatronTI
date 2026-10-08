@@ -238,7 +238,8 @@ def alert(txt: str) -> None:
     try:
         from core.waves.wave_tg import send_text, tg_config
         if tg_config().get("enabled"):
-            send_text(txt)
+            res = send_text(txt)                       # отказ Telegram исключения не бросает — пишем его в лог
+            print(f"[pulse] TG {'ок' if res.get('ok') else 'ОТКАЗ: ' + str(res)[:200]}", flush=True)
     except Exception as e:                               # noqa: BLE001
         print(f"[pulse] TG: {e}", flush=True)
 
