@@ -10,7 +10,8 @@ FAIL → scan/tracker/position_sync повисли на ретраях и уме
 Вотчдог читает mtime: пульс старше порога И процесс online → TG-алерт + pm2 restart.
 Анти-флаппинг: не чаще RESTART_COOLDOWN_MIN; свежий старт (uptime < GRACE) не трогаем.
 
-pm2 cron: */3 мин. Тест: python scripts/heartbeat_watchdog.py
+pm2: постоянный процесс `--loop`, замер раз в 3 мин (до 09.10 — pm2 cron */3: 480 холодных стартов python
+в сутки). Разовый прогон: python scripts/heartbeat_watchdog.py
 """
 import sys
 sys.path.insert(0, ".")
@@ -93,6 +94,7 @@ RESTART_COOLDOWN_MIN = 20     # анти-флаппинг
 # Тот же приём, что спас детектор режима от дёрганья: подтверждение, а не мягкий порог.
 CONFIRM_RUNS = 2
 STREAK_TTL_SEC = 15 * 60      # серия старше — считаем разорванной (вотчдог сам простаивал)
+LOOP_SEC = 180                # шаг цикла --loop = прежний крон */3 (серия и cooldown считаются по файлам ниже)
 STATE = Path("logs/heartbeat/.watchdog_last_restart")
 STREAK = Path("logs/heartbeat/.watchdog_streak")
 HB_DIR = Path("logs/heartbeat")
@@ -204,4 +206,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--loop" in sys.argv:
+        while True:
+            try:
+                main()
+            except Exception as e:  # noqa: BLE001 — сторож не должен умереть от собственной ошибки
+                print(f"[HB-WD] ошибка цикла: {type(e).__name__}: {e}")
+            time.sleep(LOOP_SEC)
+    else:
+        main()
