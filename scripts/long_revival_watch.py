@@ -41,6 +41,7 @@ except Exception:  # noqa: BLE001
     pass
 
 DB = str(ROOT / "ohlcv_cache.db")
+LAST = ROOT / "data" / "long_watch_last.json"   # 09.10: последний замер — строкой в недельном отчёте forward_machine
 COST, PEN = 0.35, 0.15
 WAIT, HOLD = 48, 384
 NL = "\n"
@@ -135,6 +136,13 @@ def main() -> int:
     # Три пути: Telegram (узнать сразу) · TASKS.md (не потерять) · шина событий
     # через watch_bridge (узнают остальные сферы Куба).
     state = "ALIVE" if alive else ("NEAR" if st["pf"] > 1.2 else "DEAD")
+    try:
+        import json, time
+        LAST.parent.mkdir(parents=True, exist_ok=True)
+        LAST.write_text(json.dumps({"ts": int(time.time()), "state": state, **st}, ensure_ascii=False),
+                        encoding="utf-8")
+    except Exception as e:                                       # noqa: BLE001
+        print(f"  ⚠️ {LAST.name}: {type(e).__name__}: {e}")
     try:
         from scripts._alert import notify
         res = notify(

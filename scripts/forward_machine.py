@@ -56,6 +56,85 @@ def _cohort(c, where: str, params: tuple, group: str):
     return rows
 
 
+SHADOW_COST = 0.35       # кост проекта: тени пишут валовый % (pct_1r), исполнения у них нет
+LAYER_SHADOW = "L1-L3 (тень)"
+
+
+def _ro(path) -> sqlite3.Connection:
+    from pathlib import Path
+    # absolute(), не resolve(): базы — по пути E: репозитория, симлинки не разворачивать (память db_symlink_split)
+    return sqlite3.connect(f"file:{Path(path).absolute().as_posix()}?mode=ro", uri=True, timeout=10)
+
+
+def _shadows(c, now: int) -> list[str]:
+    """09.10 (Егор «1-3»): у теневых журналов не было читателя — копили исходы, которые никто не смотрел.
+    Здесь они раз в неделю попадают в отчёт и в forward_verdicts (тренд). Медиана рядом со средним:
+    у альтов тяжёлые хвосты, среднее одно — не оценка (research-verdict §2B). Без вердикт-значков."""
+    import json
+    from pathlib import Path
+    out = [f"\n🌗 <b>Тени</b> ({LAYER_SHADOW}: сигнал + геометрия, без исполнения · net = % − {SHADOW_COST})"]
+    since = now - 28 * 86400
+    try:
+        e = _ro("oko_feed/external_data.db")
+        for t in ("method_shadow", "ote_cell_shadow"):
+            for side in ("LONG", "SHORT"):
+                p = [r[0] - SHADOW_COST for r in e.execute(
+                    f"SELECT pct_1r FROM {t} WHERE resolved=1 AND pct_1r IS NOT NULL AND direction=?", (side,))]
+                p4 = [r[0] - SHADOW_COST for r in e.execute(
+                    f"SELECT pct_1r FROM {t} WHERE resolved=1 AND pct_1r IS NOT NULL AND direction=? AND ts>=?",
+                    (side, since))]
+                if not p:
+                    continue
+                s = sorted(p)
+                med = s[len(s) // 2]
+                avg = sum(p) / len(p)
+                wr = 100.0 * sum(x + SHADOW_COST > 0 for x in p) / len(p)
+                tail = f" · 4 нед n={len(p4)} ср {sum(p4) / len(p4):+.2f}%" if p4 else " · 4 нед: 0"
+                out.append(f"  <code>{t.replace('_shadow', '')} {side}</code> n={len(p)} доля>0 {wr:.0f}% "
+                           f"net медиана {med:+.2f}% ср {avg:+.2f}%{tail}")
+                c.execute("INSERT INTO forward_verdicts (ts,cohort,exec_mode,n,wr,net,verdict,layer,script) "
+                          "VALUES (?,?,?,?,?,?,?,?,?)", (now, f"{t} {side}", "SHADOW", len(p), round(wr, 0),
+                                                         round(avg, 3), f"медиана {med:+.2f}", LAYER_SHADOW,
+                                                         "forward_machine.py"))
+        e.close()
+    except Exception as ex:  # noqa: BLE001
+        out.append(f"  ⚠️ тени: {type(ex).__name__}: {ex}")
+
+    # недельные гипотезы: только закрытые недели (status NONE = неделя без касаний, с 09.10)
+    try:
+        h = _ro("oko_feed/weekly_hypothesis.db")
+        today = dt.date.today()
+        cur = (today - dt.timedelta(days=today.weekday())).isoformat()
+        cut4 = (today - dt.timedelta(days=today.weekday() + 28)).isoformat()
+        rows = h.execute("""SELECT hypo_code,
+                   SUM(status IN ('TARGET','STRETCH')), SUM(status='INVALID'), SUM(status IN ('NONE','OPEN')),
+                   SUM(week_start>=? AND status IN ('TARGET','STRETCH')), SUM(week_start>=? AND status='INVALID')
+                FROM weekly_hypothesis WHERE week_start<? GROUP BY hypo_code ORDER BY hypo_code""",
+                         (cut4, cut4, cur)).fetchall()
+        h.close()
+        if rows:
+            out.append("  недельные гипотезы (закрытые недели · «цель раньше отмены» из решённых · без касаний):")
+            for code, tg, inv, none, tg4, inv4 in rows:
+                dec, dec4 = tg + inv, tg4 + inv4
+                r4 = f" · 4 нед {100 * tg4 / dec4:.0f}% (n={dec4})" if dec4 else ""
+                out.append(f"    <code>{code}</code> {100 * tg / max(dec, 1):.0f}% (n={dec}){r4} · "
+                           f"без касаний {100 * none / max(tg + inv + none, 1):.0f}%")
+            out.append("    база истории 2020–26 и зеркальный контроль: obsidian/Research/2026-10-09-Weekly-Hypo-Backtest.md")
+    except Exception as ex:  # noqa: BLE001
+        out.append(f"  ⚠️ гипотезы: {type(ex).__name__}: {ex}")
+
+    # лонг на 15m: последний замер long-watch (смену состояния он сам шлёт в TG и TASKS)
+    try:
+        lw = json.loads(Path("data/long_watch_last.json").read_text(encoding="utf-8"))
+        out.append(f"  лонг на 15m (long-watch {dt.datetime.fromtimestamp(lw['ts']):%d.%m}): <b>{lw['state']}</b> · "
+                   f"PF {lw['pf']:.2f} · охват {lw['cov']:.0f}% · безтоп10% {lw['bt']:+.0f} (n={lw['n']})")
+    except FileNotFoundError:
+        out.append("  лонг на 15m: замера long-watch ещё нет (пн 09:20)")
+    except Exception as ex:  # noqa: BLE001
+        out.append(f"  ⚠️ long-watch: {type(ex).__name__}: {ex}")
+    return out
+
+
 def run(once: bool = False) -> None:
     # N16 29.09: своя база (один писатель); simulated_trades — из базы бота только на чтение
     from core.infra import sat_store
@@ -131,6 +210,8 @@ def run(once: bool = False) -> None:
             out.append(f"  {bar} {n}/{GATE_N} <code>{st}</code> net={net:+.2f}% {status}")
     else:
         out.append("  — нет VST-сделок")
+
+    out.extend(_shadows(c, now))
 
     text = "\n".join(out) + "\n\n#SYSTEM"
     print(text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", ""))
