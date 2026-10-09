@@ -9,6 +9,8 @@
   2 OKO-SM 50    current_leg(той же структуры)                                                       (контекст OTE 21.09)
   3 волны 1D     wave_analyst.daily_leg — нога вверх и вниз, рисуется та, чей конец свежее          (журнал, шина wave_leg)
   4 DC 3×ATR43   dc_legs.active_leg(4h, atr_mult=3.0, atr_len=43)                                   (ядро структуры)
+  5/6 импульс 1h wave5_core.impulses_on_bar(1h, swing 12, merge=True) — последний пятиволновый импульс ВВЕРХ (5) и ВНИЗ (6)
+                 (добавлено 09.10: Егор разметил BTC 15.09→21.09 пятёркой; ядро волн 4h swing 15 её не видит)
 Данные — BingX из хранилища (закрытые бары), момент — последний закрытый 4h. Зона OTE — канон 0.5–0.79 для всех.
 Запуск: python scripts/leg_compare_view.py [--syms BTC,ETH] [--out data/leg_compare]
 """
@@ -38,9 +40,13 @@ from core.smc.impulse_assembly import assemble_impulse  # noqa: E402
 from core.smc.fibonacci import OTE_TOP, OTE_BOTTOM      # noqa: E402
 from core.smc.dc_legs import active_leg as dc_active    # noqa: E402
 from core.waves.wave_analyst import daily_leg           # noqa: E402
+from core.waves.wave5_core import impulses_on_bar       # noqa: E402
+from core.smc.oko_sm_engine import pivot_points          # noqa: E402
 
-COLORS = {1: "#e8590c", 2: "#1c7ed6", 3: "#2f9e44", 4: "#ae3ec9"}
-NAMES = {1: "клетка OTE (CHoCH+BOS 4h)", 2: "OKO-SM swing 50 (4h)", 3: "волны: дневная нога", 4: "DC 3×ATR43 (4h)"}
+COLORS = {1: "#e8590c", 2: "#1c7ed6", 3: "#2f9e44", 4: "#ae3ec9", 5: "#e03131", 6: "#862e9c"}
+NAMES = {1: "клетка OTE (CHoCH+BOS 4h)", 2: "OKO-SM swing 50 (4h)", 3: "волны: дневная нога", 4: "DC 3×ATR43 (4h)",
+         5: "импульс волн 1h ↑ (0→5)", 6: "импульс волн 1h ↓ (0→5)"}
+IMP_SW, IMP_SCAN = 12, 600                               # 1h: swing 12, искать назад до 25 суток
 DEFAULT = "BTC,ETH,SOL,XRP,DOGE,NEAR,LINK,AVAX,SUI,TIA,ARB,OP,INJ,WIF,APT,LDO"
 
 
@@ -95,6 +101,26 @@ def legs_for(base: str) -> dict | None:
     if dc:
         out["legs"][4] = {"up": dc["up"], "o": dc["origin"], "e": dc["extreme"],
                           "ot": d4.index[dc["a"]], "et": d4.index[dc["b"]]}
+    # 5: последний пятиволновый импульс на 1h (каузально: свинги, подтверждённые к бару, + provisional точка 5)
+    h1 = read_bars(base, "1h")
+    if h1.index.tz is not None:
+        h1.index = h1.index.tz_convert(None)
+    h1 = h1[h1.index + pd.Timedelta("1h") <= now]
+    if len(h1) > 200:
+        r1 = h1.reset_index(drop=True)
+        S = pivot_points(r1["high"], r1["low"], IMP_SW)
+        hh1, lh1 = r1.high.values.astype(float), r1.low.values.astype(float)
+        for tt in range(len(r1) - 1, max(len(r1) - 1 - IMP_SCAN, 0), -1):   # первый найденный вверх → 5, вниз → 6
+            for imp in impulses_on_bar(S, tt, hh1, lh1, merge=True):
+                k_ = 5 if imp["direction"] == "up" else 6
+                if k_ in out["legs"]:
+                    continue
+                w5 = imp["waves"]
+                out["legs"][k_] = {"up": k_ == 5, "o": float(w5[0][1]), "e": float(w5[5][1]),
+                                   "ot": h1.index[int(w5[0][0])], "et": h1.index[int(w5[5][0])],
+                                   "waves": [(h1.index[int(i)], float(px)) for i, px in w5]}
+            if 5 in out["legs"] and 6 in out["legs"]:
+                break
     for k, L in out["legs"].items():
         span = abs(L["o"] - L["e"])
         L["span_pct"] = span / min(L["o"], L["e"]) * 100
@@ -127,10 +153,18 @@ def draw(r: dict, path: Path) -> None:
     for k in sorted(r["legs"]):
         L = r["legs"][k]; c = COLORS[k]
         xo, xe = pos(L["ot"]), pos(L["et"])
-        ax.plot([xo, xe], [L["o"], L["e"]], color=c, linewidth={1: 6.5, 2: 4.5, 3: 2.6, 4: 1.2}[k], alpha=0.85,
-                solid_capstyle="round")       # толщина убывает: совпадающие ноги видны вложенными полосами
+        if k in (5, 6) and L.get("waves"):                   # пятёрка — ломаной 0-1-2-3-4-5, как размечает Егор
+            xs = [pos(t_) for t_, _ in L["waves"]]; ys = [p_ for _, p_ in L["waves"]]
+            ax.plot(xs, ys, color=c, linewidth=1.8, alpha=0.95)
+            for j, (xw, yw) in enumerate(zip(xs, ys)):
+                ax.text(xw, yw, str(j), color=c, fontsize=9, fontweight="bold", ha="center",
+                        va="bottom" if (j % 2 == 1) == L["up"] else "top")
+        else:
+            ax.plot([xo, xe], [L["o"], L["e"]], color=c, linewidth={1: 6.5, 2: 4.5, 3: 2.6, 4: 1.2}[k], alpha=0.85,
+                    solid_capstyle="round")   # толщина убывает: совпадающие ноги видны вложенными полосами
         ax.scatter([xo, xe], [L["o"], L["e"]], color=c, s=28, zorder=5)
-        ax.text(xe, L["e"], f" {k}", color=c, fontsize=12, fontweight="bold", va="bottom" if L["up"] else "top")
+        if k not in (5, 6):
+            ax.text(xe, L["e"], f" {k}", color=c, fontsize=12, fontweight="bold", va="bottom" if L["up"] else "top")
         ax.fill_between([xe, len(v) + 2], L["zone"][0], L["zone"][1], color=c, alpha=0.10)
         ax.hlines(L["zone"], xe, len(v) + 2, color=c, linewidth=0.8, linestyles="--", alpha=0.7)
         lines.append(f"{k} {NAMES[k]}: {'↑' if L['up'] else '↓'} {L['span_pct']:.1f}% · глубина {L['depth']:.2f}"
