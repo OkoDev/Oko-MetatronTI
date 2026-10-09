@@ -55,10 +55,35 @@ def _ensure(c: sqlite3.Connection) -> None:
     c.execute("""CREATE TABLE IF NOT EXISTS weekly_hypothesis(
         symbol TEXT, week_start TEXT, regime TEXT, open_zone TEXT, hypo_code TEXT, side TEXT,
         target TEXT, stretch TEXT, inval TEXT, prob INTEGER, hypo_text TEXT,
-        status TEXT DEFAULT 'OPEN',            -- OPEN / TARGET / STRETCH / INVALID / NONE
+        status TEXT DEFAULT 'OPEN',            -- OPEN / TARGET / STRETCH / INVALID / NONE (неделя кончилась без касаний)
         created_at TEXT, resolved_at TEXT,
         PRIMARY KEY(symbol, week_start))""")
     c.commit()
+
+
+def _resolve_week(c: sqlite3.Connection, wk: str, now: dt.datetime) -> list:
+    touches = {}
+    for t in c.execute("SELECT symbol, level, ts FROM weekly_pivot_touch WHERE week_start=?", (wk,)):
+        touches.setdefault(t["symbol"], {})[t["level"]] = t["ts"]
+    resolved = []
+    for h in c.execute("SELECT * FROM weekly_hypothesis WHERE week_start=? AND status='OPEN'", (wk,)).fetchall():
+        tch = touches.get(h["symbol"], {})
+        t_ts = tch.get(h["target"])
+        i_ts = tch.get(h["inval"])
+        status = None
+        if t_ts and i_ts:
+            status = "TARGET" if t_ts <= i_ts else "INVALID"
+        elif t_ts:
+            status = "TARGET"
+        elif i_ts:
+            status = "INVALID"
+        if status == "TARGET" and tch.get(h["stretch"]):
+            status = "STRETCH"
+        if status:
+            c.execute("UPDATE weekly_hypothesis SET status=?, resolved_at=? "
+                      "WHERE symbol=? AND week_start=?", (status, now.isoformat(), h["symbol"], wk))
+            resolved.append((h["symbol"].split("/")[0], h["hypo_code"], status))
+    return resolved
 
 
 def main() -> None:
@@ -97,28 +122,16 @@ def main() -> None:
                    rule["text"], now.isoformat()))
         gen += 1
 
-    # ── 2. Резолвинг открытых гипотез по касаниям вотчера (первое из target/inval побеждает)
-    touches = {}
-    for t in c.execute("SELECT symbol, level, ts FROM weekly_pivot_touch WHERE week_start=?", (ws,)):
-        touches.setdefault(t["symbol"], {})[t["level"]] = t["ts"]
+    # ── 2. Резолвинг открытых гипотез по касаниям вотчера (первое из target/inval побеждает).
+    # 09.10: и ПРОШЛЫХ недель — касания последнего часа воскресенья (вотчер пишет и в 23:15–23:45, мы идём в :07)
+    # раньше не доразрешались; затем неделя закрывается: ни цели, ни отмены → NONE. До 09.10 такие висели OPEN
+    # навсегда (1 630 строк за 13 недель) — скорить журнал было нельзя.
     resolved = []
-    for h in c.execute("SELECT * FROM weekly_hypothesis WHERE week_start=? AND status='OPEN'", (ws,)).fetchall():
-        tch = touches.get(h["symbol"], {})
-        t_ts = tch.get(h["target"])
-        i_ts = tch.get(h["inval"])
-        status = None
-        if t_ts and i_ts:
-            status = "TARGET" if t_ts <= i_ts else "INVALID"
-        elif t_ts:
-            status = "TARGET"
-        elif i_ts:
-            status = "INVALID"
-        if status == "TARGET" and tch.get(h["stretch"]):
-            status = "STRETCH"
-        if status:
-            c.execute("UPDATE weekly_hypothesis SET status=?, resolved_at=? "
-                      "WHERE symbol=? AND week_start=?", (status, now.isoformat(), h["symbol"], ws))
-            resolved.append((h["symbol"].split("/")[0], h["hypo_code"], status))
+    for r in c.execute("SELECT DISTINCT week_start FROM weekly_hypothesis "
+                       "WHERE status='OPEN' AND week_start<=?", (ws,)).fetchall():
+        resolved += _resolve_week(c, r[0], now)
+    closed = c.execute("UPDATE weekly_hypothesis SET status='NONE', resolved_at=? "
+                       "WHERE status='OPEN' AND week_start<?", (now.isoformat(), ws)).rowcount
     c.commit()
 
     # ── сводка
@@ -127,7 +140,7 @@ def main() -> None:
     tot = sum(n.values())
     print(f"[WEEKLY-HYPO] неделя {ws} | гипотез={tot} (+{gen}) "
           f"OPEN={n.get('OPEN',0)} TARGET={n.get('TARGET',0)} STRETCH={n.get('STRETCH',0)} "
-          f"INVALID={n.get('INVALID',0)}")
+          f"INVALID={n.get('INVALID',0)}" + (f" | закрыто прошлых недель без касаний: {closed}" if closed else ""))
     for r in c.execute("""SELECT hypo_code, COUNT(*) n FROM weekly_hypothesis
                           WHERE week_start=? GROUP BY hypo_code ORDER BY n DESC""", (ws,)):
         print(f"  {r['hypo_code']:14} n={r['n']}")
