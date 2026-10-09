@@ -66,43 +66,49 @@ def klines_after(sym: str, ts: int, hours: int, src: str | None = None):
 
 
 def resolve_row(row, spec, now_ts):
-    """→ (outcome, exit_price, {колонка_%: значение}) или None если рано."""
+    """→ (outcome, exit_price, {колонка_%: значение}) или None если рано.
+
+    🔴 09.10 ПОРЯДОК СОБЫТИЙ. Раньше цель засчитывалась, если её достигли КОГДА-НИБУДЬ до конца срока —
+    даже после сработавшего стопа (golden-case: стоп в 1-м баре, цель во 2-м → было TP). Все исходы
+    method_shadow/ote_cell_shadow были смещены к TP. Теперь цель засчитана, только если её бар СТРОГО раньше
+    бара стопа; стоп и цель в одном часовом баре → стоп (порядок внутри часа неизвестен — консервативно).
+    Бары — только внутри срока (раньше смотрелись ещё +4 ч сверх него)."""
     sym = row["symbol"].replace("/USDT:USDT", "").replace("USDT", "")
     side = 1 if row["direction"] == "LONG" else -1
     entry = float(row[spec["entry"]]); sl = float(row[spec["sl"]])
     age_h = (now_ts - row["ts"]) / 3600
     bars = klines_after(sym, row["ts"], spec["ttl_h"], row["src"] if "src" in row.keys() else None)
+    end_ms = (int(row["ts"]) + spec["ttl_h"] * 3600) * 1000
+    bars = [b for b in bars if b[0] < end_ms]
     if not bars:
         return None
     tgts = [(row[c], pc) for c, pc in spec["targets"] if row[c] is not None]
-    hit_sl = None
-    hit = {pc: None for _, pc in tgts}
-    for _, hi, lo, _cl in bars:
-        if hit_sl is None and ((side > 0 and lo <= sl) or (side < 0 and hi >= sl)):
-            hit_sl = sl
+    i_sl = None
+    i_tp = {pc: None for _, pc in tgts}
+    for i, (_, hi, lo, _cl) in enumerate(bars):
+        if (side > 0 and lo <= sl) or (side < 0 and hi >= sl):
+            i_sl = i
         for tp, pc in tgts:
-            if hit[pc] is None and ((side > 0 and hi >= tp) or (side < 0 and lo <= tp)):
-                hit[pc] = float(tp)
-        if hit_sl is not None and all(v is not None for v in hit.values()):
-            break
+            if i_tp[pc] is None and ((side > 0 and hi >= tp) or (side < 0 and lo <= tp)):
+                i_tp[pc] = i
+        if i_sl is not None:
+            break                                 # после стопа сделки нет
     pct = lambda p: round(side * (p - entry) / entry * 100, 4)
+    won = {pc: i_tp[pc] is not None and (i_sl is None or i_tp[pc] < i_sl) for _, pc in tgts}
+    cols = {pc: (pct(float(tp)) if won[pc] else pct(sl) if i_sl is not None else None) for tp, pc in tgts}
+    if any(v is None for v in cols.values()) and age_h < spec["ttl_h"]:
+        return None                               # ещё в игре (в т.ч. дальняя цель после первой)
+    if age_h >= spec["ttl_h"]:
+        for _tp, pc in tgts:
+            if cols[pc] is None:
+                cols[pc] = pct(bars[-1][3])
     # первая цель определяет вердикт строки
     first_pc = tgts[0][1] if tgts else None
-    cols = {}
-    for tp, pc in tgts:
-        cols[pc] = pct(hit[pc]) if hit[pc] is not None else (
-            pct(hit_sl) if hit_sl is not None else None)
-    if hit_sl is not None and (first_pc is None or hit[first_pc] is None):
+    if first_pc and won[first_pc]:
+        return "TP", float(tgts[0][0]), cols
+    if i_sl is not None:
         return "SL", sl, cols
-    if first_pc and hit[first_pc] is not None:
-        return "TP", float(hit[first_pc]), cols
-    if age_h >= spec["ttl_h"]:
-        last = bars[-1][3]
-        for _tp, pc in tgts:
-            if cols.get(pc) is None:
-                cols[pc] = pct(last)
-        return "EXPIRED", last, cols
-    return None                                   # ещё в игре
+    return "EXPIRED", bars[-1][3], cols
 
 
 def main():
