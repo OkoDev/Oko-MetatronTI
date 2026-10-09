@@ -19,13 +19,28 @@ try:
 except Exception:
     pass
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-# 09.10 (Егор: «появляется окно терминала и исчезает периодически»): pm2 на Windows — pm2.cmd через cmd.exe;
-# без этого флага каждый запуск сторожа (cron */3) мигал консолью.
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+def _pm2(*args: str, timeout: int) -> subprocess.CompletedProcess:
+    """pm2 напрямую через node с JS-входом, мимо pm2.cmd и cmd.exe (09.10). Окно, которое видел Егор, открывал НЕ
+    сторож (под pm2 у него скрытая консоль, наблюдение 16:30 — окна нет), а git-хук graphify; здесь — на будущее:
+    если сторож запустят вне pm2, DETACHED_PROCESS + SW_HIDE + stdin=DEVNULL не даст окна (рецепт памяти 29.09)."""
+    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    pm2_js = Path(os.environ.get("APPDATA", "")) / "npm" / "node_modules" / "pm2" / "bin" / "pm2"
+    cmd = [node, str(pm2_js), *args] if pm2_js.exists() else ["pm2", *args]
+    kw: dict = {}
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0                                   # SW_HIDE
+        kw = {"creationflags": subprocess.DETACHED_PROCESS, "startupinfo": si}
+    return subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout,
+                          shell=cmd[0] == "pm2", **kw)
 
 # порог тишины на луп, сек (запас ×5-8 от нормального цикла: scan 60с, tracker 60с)
 # 🔴 18.08 ПОРОГ scan ПОДНЯТ 480 → 1200 (замер по 28 дням лога вотчдога, 13 516 замеров).
@@ -114,8 +129,7 @@ def _pm2_bot() -> dict | None:
         # 17.08: text=True декодировал вывод в cp1251 (локаль) → UnicodeDecodeError в
         # читающем потоке → except ниже глушил всё → «oko-bot не найден» → сторож молча
         # не работал. Тот самый класс тихой смерти, ради которого он и написан.
-        out = subprocess.run(["pm2", "jlist"], capture_output=True, timeout=25,
-                             shell=True, creationflags=_NO_WINDOW).stdout.decode("utf-8", "replace")
+        out = _pm2("jlist", timeout=25).stdout.decode("utf-8", "replace")
         out = out[out.find("["):]                 # pm2 иногда сыпет баннер перед JSON
         for p in json.loads(out):
             if p.get("name") == "oko-bot":
@@ -181,8 +195,7 @@ def main() -> None:
     except Exception as e:
         print(f"[HB-WD] TG: {e}")
     try:
-        subprocess.run(["pm2", "restart", "oko-bot"], capture_output=True,
-                       timeout=60, shell=True, creationflags=_NO_WINDOW)
+        _pm2("restart", "oko-bot", timeout=60)
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(str(time.time()))
         print("[HB-WD] ✅ pm2 restart oko-bot выполнен")
