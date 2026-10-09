@@ -69,6 +69,15 @@ def _flush_events():
         c.close()
 
 
+def _flush_safe():
+    """09.10: «database is locked» (общая external_data.db) раньше рвал WS-соединение → на переподключении терялись
+    события (дыра 08.10 ~14:00 UTC, десятки переподключений в сутки). Теперь буфер остаётся и пишется в следующий раз."""
+    try:
+        _flush_events()
+    except Exception as e:  # noqa: BLE001
+        print(f"[LIQ-WS] запись отложена ({type(e).__name__}): в буфере {len(_BUF)}")
+
+
 def _on_liq(sym_full: str, rows: list[dict]):
     """topic allLiquidation.{SYM}USDT → data=[{T,s,S,v,p}]. Bybit V5: S = POSITION side —
     S=Buy = лонг-позиция ликвидирована (цена ВНИЗ), S=Sell = шорт ликвидирован (ВВЕРХ)."""
@@ -153,11 +162,11 @@ async def run():
                         if topic.startswith("allLiquidation.") and d.get("data"):
                             _on_liq(topic.split(".", 1)[1], d["data"])
                         if now - last_flush > 30:
-                            _flush_events()
+                            _flush_safe()
                             last_flush = now
         except Exception as e:  # noqa: BLE001
             print(f"[LIQ-WS] reconnect after err: {e}")
-            _flush_events()
+            _flush_safe()
             await asyncio.sleep(5)
 
 

@@ -23,6 +23,10 @@ import subprocess
 import time
 from pathlib import Path
 
+# 09.10 (Егор: «появляется окно терминала и исчезает периодически»): pm2 на Windows — pm2.cmd через cmd.exe;
+# без этого флага каждый запуск сторожа (cron */3) мигал консолью.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # порог тишины на луп, сек (запас ×5-8 от нормального цикла: scan 60с, tracker 60с)
 # 🔴 18.08 ПОРОГ scan ПОДНЯТ 480 → 1200 (замер по 28 дням лога вотчдога, 13 516 замеров).
 # Порог 480с резал ХВОСТ НОРМАЛЬНОГО распределения, а не отделял мёртвый луп:
@@ -111,7 +115,7 @@ def _pm2_bot() -> dict | None:
         # читающем потоке → except ниже глушил всё → «oko-bot не найден» → сторож молча
         # не работал. Тот самый класс тихой смерти, ради которого он и написан.
         out = subprocess.run(["pm2", "jlist"], capture_output=True, timeout=25,
-                             shell=True).stdout.decode("utf-8", "replace")
+                             shell=True, creationflags=_NO_WINDOW).stdout.decode("utf-8", "replace")
         out = out[out.find("["):]                 # pm2 иногда сыпет баннер перед JSON
         for p in json.loads(out):
             if p.get("name") == "oko-bot":
@@ -178,7 +182,7 @@ def main() -> None:
         print(f"[HB-WD] TG: {e}")
     try:
         subprocess.run(["pm2", "restart", "oko-bot"], capture_output=True,
-                       timeout=60, shell=True)
+                       timeout=60, shell=True, creationflags=_NO_WINDOW)
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(str(time.time()))
         print("[HB-WD] ✅ pm2 restart oko-bot выполнен")

@@ -401,6 +401,21 @@ def alert(txt: str) -> None:
         print(f"[pulse] TG: {e}", flush=True)
 
 
+def to_hub(kind: str, m: dict, state: str, prev: dict) -> None:
+    """09.10 (Егор «передать пульс в cube-hub»): факт `market_pulse` (symbol *MARKET*) в шину Куба — на старт, смену
+    состояния, событие и смену повестки: терминал, дашборд и бот читают одно. Только факты: «монеты» *MARKET* в
+    состоянии пар хаба не заводим. Хаб лёг — пульс работает дальше (publish не бросает)."""
+    try:
+        from core.context.cube_client import publish
+        win = {k: {x: (m.get(k) or {}).get(x) for x in ("dn", "up", "med")} for k in ("15m", "2h", "6h")}
+        publish("market_pulse", "*MARKET*", {"kind": kind, "state": state, "since": prev.get("since"),
+                                             "win": win, "liq_events": liq_events(m.get("liq")),
+                                             "facts": facts(m, state), "agenda": prev.get("agenda")},
+                producer="market-pulse")
+    except Exception as e:                               # noqa: BLE001
+        print(f"[pulse] хаб: {e}", flush=True)
+
+
 def loop() -> None:
     prev = {}
     try:
@@ -413,7 +428,13 @@ def loop() -> None:
         last_alert = {}
     prev["last_alert"] = last_alert
     ag_ts = 0.0
-    refresh_turnover()
+    while True:     # 09.10: сеть лежала (DNS) → падение на старте → 158 рестартов pm2 за 49 мин. Ждём сеть, не падаем.
+        try:
+            refresh_turnover()
+            break
+        except Exception as e:                           # noqa: BLE001
+            print(f"[pulse] старт: биржа недоступна ({type(e).__name__}) — повтор через 30 с", flush=True)
+            time.sleep(30)
     print(f"[pulse] старт · ликвидных пар {len(_liquid)} · досеяно историей 15m: {seed_history()} · "
           f"состояние {prev.get('state', 'НОРМА')}", flush=True)
     while True:
@@ -426,8 +447,12 @@ def loop() -> None:
             st0 = prev.get("state", "НОРМА")
             st, evs = classify(m, prev)
             evs = evs + liq_events(m.get("liq"))
+            if not prev.get("hub_started"):
+                prev["hub_started"] = True
+                to_hub("start", m, st, prev)
             if st != st0:
                 prev["state"], prev["since"] = st, int(t0)
+                to_hub("state", m, st, prev)
                 if st != "НОРМА" or st0 in ("СЛИВ", "ОБВАЛ", "ВЫНОС"):
                     if t0 - last_alert.get(st, 0) >= ALERT_GAP or st == "ОБВАЛ":
                         alert(text(m, st, ag=prev.get("agenda"))); last_alert[st] = t0
@@ -435,11 +460,13 @@ def loop() -> None:
             for ev in evs:
                 if t0 - last_alert.get(ev, 0) >= ALERT_GAP:
                     alert(text(m, st, ev, ag=prev.get("agenda"))); last_alert[ev] = t0
+                    to_hub(ev, m, st, prev)
             if t0 - ag_ts >= AGENDA_SEC:
                 ag_ts = t0
                 msg = agenda_step(prev, m, st, t0)
                 if msg:
                     alert(msg)
+                    to_hub("agenda", m, st, prev)
                     print(f"[pulse] повестка сменилась: {prev.get('agenda_key')}", flush=True)
             save(m, st, prev)
             if int(t0) % 600 < POLL_SEC:

@@ -245,7 +245,13 @@ def main():
     ap.add_argument("--once", action="store_true", help="глубина + один проход догрузки, без цикла")
     a = ap.parse_args()
     bingx_klines.set_min_interval(1.0 / RPS)
-    bases = [s.upper() for s in a.symbols] if a.symbols else universe()
+    while True:     # 09.10: сеть лежит (DNS) → падение на старте → 953 рестарта pm2 с 29.09. Ждём сеть, не падаем.
+        try:
+            bases = [s.upper() for s in a.symbols] if a.symbols else universe()
+            break
+        except Exception as e:  # noqa: BLE001
+            print(f"[market-store] старт: биржа недоступна ({type(e).__name__}) — повтор через 30 с")
+            time.sleep(30)
     print(f"[market-store] {len(bases)} монет · хранилище {ms.ROOT} · {RPS:g} запр/с")
     backfill(bases)
 

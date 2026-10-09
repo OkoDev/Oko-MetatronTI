@@ -193,6 +193,9 @@ EVENT_CLASS: Dict[str, str] = {
     "narrative_built": "fact", "position_opened": "fact", "position_dropped": "fact",
     "tsl_moved": "fact", "tp1_hit": "fact", "position_closed": "fact", "trade_closed": "fact",
     "ote_zone_set": "fact", "watch_state_changed": "fact",
+    # 09.10: факт спутника scripts/market_pulse.py (не SphereEvent бота), symbol=*MARKET*:
+    # {kind: start|state|ОТСКОК|КАСКАД…|agenda, state, since, w15m/w2h/w6h, liq_events, facts, agenda}
+    "market_pulse": "fact",
     "recommendation_built": "internal",
 }
 
