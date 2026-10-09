@@ -434,20 +434,47 @@ _CLEAN_ERA = "2026-07-11"   # sl_touch+costs (грязь размечена data
 # список источников табло строится из БД (что реально торгует) — см. _scoreboard, 11.09
 
 
+_SB_ENTRY_GLITCH = 0.10    # фактический вход дальше 10% от сигнального — сбой записи, а не исполнение
+
+
+def _sb_tech(r) -> bool:
+    """Техническое закрытие — не результат механики (09.10, разбор waves_long на VST, Егор «делай»):
+    VST-сделка с «голым» символом без «:USDT» — баг формата 01–18.09, детектор сирот закрывал её по рынку за минуты
+    (память symbol_format_invariant_cube); `fakeR_quarantine` — сбой учёта; фактический вход дальше 10% от
+    сигнального — сбой записи. Короткие сделки по ДЛИТЕЛЬНОСТИ не исключаем: настоящий быстрый стоп — тоже результат."""
+    if r["mode"] == "vst" and not str(r["symbol"] or "").endswith(":USDT"):
+        return True
+    if r["fakeR_quarantine"]:
+        return True
+    a, e = r["actual_entry_price"], r["entry_price"]
+    return bool(a and e and abs(a / e - 1) > _SB_ENTRY_GLITCH)
+
+
+def _sb_wave_zone(r) -> str:
+    """waves_long делится по доказанной зоне — то же правило, что в бою (`core/waves/proven_zone.zone`)."""
+    try:
+        from core.waves.proven_zone import zone
+        f = json.loads(r["features_json"] or "{}")
+        z = zone(r["direction"], r["entry_price"], r["original_sl"] or r["stop_loss"], f.get("wv_imp_pct"))
+        return "доказанная зона" if z["proven"] else "вне зоны"
+    except Exception:
+        return "зона ?"
+
+
 def _scoreboard():
     """⚖️ ФОРВАРД-ТАБЛО (Егор 25.07): net% каждого источника рядом → гейт «30 чистых net+»
-    виден цифрой. Чистая эра (≥11.07, sl_touch+costs). net = profit_pct − costs_pct."""
+    виден цифрой. Чистая эра (≥11.07, sl_touch+costs). net = profit_pct − costs_pct.
+    09.10: технические закрытия (`_sb_tech`) не входят в n/WR/net, их число — в `tech`; waves_long — две строки:
+    «доказанная зона» и «вне зоны» (средняя по смеси 13 сирот, 5 входов вне зоны и 2 доказанных врала)."""
     try:
         c = sqlite3.connect(_DB)
         c.row_factory = sqlite3.Row
-        rows = c.execute(f"""SELECT signal_type,
+        rows = c.execute(f"""SELECT signal_type, symbol, direction, entry_price, actual_entry_price, original_sl,
+              stop_loss, profit_pct, costs_pct, COALESCE(fakeR_quarantine,0) fakeR_quarantine,
               CASE WHEN execution_mode='VST' THEN 'vst' ELSE 'sim' END mode,
-              COUNT(*) n,
-              ROUND(AVG(CASE WHEN profit_pct>0 THEN 100.0 ELSE 0 END)) wr,
-              ROUND(AVG(COALESCE(profit_pct,0)-COALESCE(costs_pct,0)),3) net
+              CASE WHEN signal_type='waves_long' THEN features_json END features_json
             FROM simulated_trades
-            WHERE status IN ('SL','TP','TSL') AND created_at >= '{_CLEAN_ERA}'
-            GROUP BY signal_type, mode""").fetchall()
+            WHERE status IN ('SL','TP','TSL') AND created_at >= '{_CLEAN_ERA}'""").fetchall()
         # 11.09: список — из того, что РЕАЛЬНО торгует (VST-исполнения за 14 дней или открытая
         # позиция), а не ручной. Ручной не знал боевых ote_nested/impulse_fib*/choch_wavec и
         # держал atr_s2 с нулём сделок (он недостижим: tf=='4h' при скане 15m).
@@ -458,12 +485,33 @@ def _scoreboard():
                    OR SUM(status IN ('OPEN','PENDING_ENTRY')) > 0
                ORDER BY SUM(created_at >= date('now','-14 day')) DESC""")]
         c.close()
-        agg: dict = {}
+        acc: dict = {}
         for r in rows:
-            agg.setdefault(r["signal_type"], {})[r["mode"]] = {
-                "n": r["n"], "wr": r["wr"], "net": r["net"]}
-        return [{"src": s, "vst": agg.get(s, {}).get("vst"),
-                 "sim": agg.get(s, {}).get("sim")} for s in live]
+            src = r["signal_type"]
+            if src == "waves_long":
+                src = f"waves_long · {_sb_wave_zone(r)}"
+            a = acc.setdefault(src, {}).setdefault(r["mode"], {"n": 0, "win": 0, "net": 0.0, "tech": 0})
+            if _sb_tech(r):
+                a["tech"] += 1
+                continue
+            p = r["profit_pct"] or 0.0
+            a["n"] += 1
+            a["win"] += p > 0
+            a["net"] += p - (r["costs_pct"] or 0.0)
+
+        def fin(m):
+            if not m or not m["n"]:
+                return None
+            return {"n": m["n"], "wr": round(100 * m["win"] / m["n"]), "net": round(m["net"] / m["n"], 3)}
+
+        out = []
+        for s in live:
+            keys = sorted(k for k in acc if k.startswith("waves_long · ")) if s == "waves_long" else [s]
+            for k in keys or [s]:
+                m = acc.get(k, {})
+                out.append({"src": k, "vst": fin(m.get("vst")), "sim": fin(m.get("sim")),
+                            "tech": sum(v["tech"] for v in m.values())})
+        return out
     except Exception:
         return []
 
@@ -2530,13 +2578,15 @@ async function sb(){try{var r=await fetch('/api/scoreboard',{cache:'no-store'});
  document.getElementById('board').innerHTML=(d.board||[]).map(function(x){
   var v=x.vst,s=x.sim;                              // VST = гейт (реал исполнение); SIM = shadow-research
   var prim=v||s,shadow=!v&&s;                       // нет VST → показываем SIM как shadow
-  if(!prim)return '<div class=sbcell><div class=sbsrc>'+x.src+'</div><div class=sbnet style=color:var(--dim)>—</div><div class=sbmeta>нет сделок</div></div>';
+  // 09.10: технические закрытия (сироты 01–18.09, сбои учёта) в n/WR/net не входят — показываем их число отдельно
+  var tech=x.tech?' <span style=color:var(--dim2) title="сироты бага формата 01–18.09, fakeR-карантин, вход записан дальше 10% от сигнала">· исключено техн. '+x.tech+'</span>':'';
+  if(!prim)return '<div class=sbcell><div class=sbsrc>'+x.src+'</div><div class=sbnet style=color:var(--dim)>—</div><div class=sbmeta>нет сделок'+tech+'</div></div>';
   var pos=prim.net>0,c=pos?'var(--up)':'var(--dn)';
   var prog=Math.min(100,Math.round(100*((v?v.n:0))/g));
   return '<div class=sbcell><div class=sbsrc>'+x.src+(shadow?' <span style=color:#e0b25c>shadow</span>':'')+'</div>'+
    '<div class=sbnet style="color:'+c+'">'+(pos?'+':'')+prim.net.toFixed(2)+'%</div>'+
    '<div class=sbmeta>'+(v?('VST n '+v.n+'/'+g+' · WR '+v.wr+'%'):('SIM n '+s.n+' · WR '+s.wr+'%'))+
-     (v&&s?(' <span style=color:var(--dim2)>· sim '+(s.net>0?'+':'')+s.net.toFixed(2)+'%</span>'):'')+'</div>'+
+     (v&&s?(' <span style=color:var(--dim2)>· sim '+(s.net>0?'+':'')+s.net.toFixed(2)+'%</span>'):'')+tech+'</div>'+
    '<div class=sbbar><span style="width:'+prog+'%;background:'+c+'"></span></div></div>';
  }).join('');
 }catch(e){}}
