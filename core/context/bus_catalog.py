@@ -111,6 +111,48 @@ _PAIR_META: Dict[str, tuple] = {
     # WATCHLIST-UNI — единственное поле, которое validate() ловил без метаданных (27.08)
     "watchlist":           ("bus.set_watchlist() из любой стратегии",
                             "{стратегия: {entry, potential_pct, ...}} — заявки стратегий на пару"),
+    # ── 13.10.2026 (ARCH-142.1): 34 поля жили в шине БЕЗ записи в каталоге — волны, фандинг, открытый интерес.
+    # Следствие: `scripts/mtf_zone_card.py` посчитал ноги волн сам, хотя они лежали в `wave_leg_up/dn`.
+    # Описания — из комментариев к полям PairState; писатели проверены grep'ом.
+    # WaveService (ARCH-132) — мелкий масштаб, счёт подряд идущих свингов
+    "elliott_n_down":    ("WaveService (wave_service.py)", "подряд снижающихся swing high на HTF ≈ номер волны вниз"),
+    "elliott_n_up":      ("WaveService (wave_service.py)", "подряд растущих swing low ≈ номер волны вверх"),
+    "elliott_phase":     ("WaveService (wave_service.py)", "wave3_mid / wave5_final / ABC_waveB / impulse_start"),
+    "elliott_conf":      ("WaveService (wave_service.py)", "уверенность фазы 0..1"),
+    "wave_snap":         ("WaveService (wave_service.py)", "снимок по ТФ: n_down/n_up на 4h/1h/LTF, phase, conf, ts"),
+    "wave_recount_ts":   ("WaveService (wave_service.py)", "когда счёт волн последний раз сломался"),
+    "wave_recounts":     ("WaveService (wave_service.py)", "сколько раз разметка пересчитывалась"),
+    "wave_updated_at":   ("WaveService (wave_service.py)", "время обновления волнового снимка"),
+    # Двухмасштабная нога (02.09): run_structure(swing_len=50, internal_len=5)
+    "leg_dir":           ("WaveService, двухмасштабная нога", "+1 нога вверх · −1 вниз (масштаб 50)"),
+    "leg_span_bars":     ("WaveService, двухмасштабная нога", "длительность ноги от origin до extreme, баров"),
+    "leg_age_origin":    ("WaveService, двухмасштабная нога", "баров с начала ноги"),
+    "leg_pos":           ("WaveService, двухмасштабная нога", "где цена внутри ноги: 1.0 = на экстремуме"),
+    "leg_retr":          ("WaveService, двухмасштабная нога", "глубина отката = 1 − pos"),
+    "leg_minor_breaks":  ("WaveService, двухмасштабная нога", "сломов младшего масштаба внутри ноги"),
+    "leg_tf":            ("WaveService, двухмасштабная нога", "на каком ТФ посчитана нога"),
+    "leg_updated_at":    ("WaveService, двухмасштабная нога", "время обновления ноги"),
+    # Волновой контекст аналитика (15.09): wave_analyst.wave_bus_context, раз на закрытый 4h-бар
+    "wave_leg_up":       ("wave_loop → wave_analyst.wave_bus_context", "дневная нога вверх {origin, ext, depth, zone, ote[0.618, 0.79], origin_t, ext_t} — для LONG"),
+    "wave_leg_dn":       ("wave_loop → wave_analyst.wave_bus_context", "дневная нога вниз, те же поля — для SHORT"),
+    "wave5_setup":       ("wave_loop → wave_analyst.wave_bus_context", "последняя 4h-пятёрка ядра за 5 сут {side, top_time, p0, p4, p5, imp_pct, core, core_full}"),
+    "wave_ctx_updated_at": ("wave_loop → wave_analyst.wave_bus_context", "время обновления волнового контекста"),
+    # Сфера 19 Market Data: фандинг (ARCH-129.1)
+    "funding_rate":      ("market_data_sphere (Сфера 19)", "ставка как отдаёт биржа, %"),
+    "funding_interval_h": ("market_data_sphere (Сфера 19)", "интервал расчёта 1/2/4/8 ч — не хардкодить"),
+    "funding_next_ts":   ("market_data_sphere (Сфера 19)", "время следующего расчёта"),
+    "funding_source":    ("market_data_sphere (Сфера 19)", "bingx | binance | cache"),
+    "funding_pct_8h":    ("market_data_sphere (Сфера 19)", "ставка, приведённая к %/8ч — для сравнимости"),
+    "funding_streak":    ("market_data_sphere (Сфера 19)", "расчётов подряд с тем же знаком"),
+    "funding_pctile_90d": ("market_data_sphere (Сфера 19)", "где ставка в своей истории за 90 дней, 0..100"),
+    "funding_cum_3d":    ("market_data_sphere (Сфера 19)", "накопленная стоимость удержания за 3 дня, %"),
+    "funding_updated_at": ("market_data_sphere (Сфера 19)", "время обновления фандинга"),
+    # Сфера 19 Market Data: открытый интерес (ARCH-129.2)
+    "oi_d5":             ("market_data_sphere (Сфера 19)", "Δ открытого интереса за 5 минут, %"),
+    "oi_d15":            ("market_data_sphere (Сфера 19)", "Δ открытого интереса за 15 минут, %"),
+    "oi_d1d":            ("market_data_sphere (Сфера 19)", "Δ открытого интереса за сутки, %"),
+    "oi_px_quadrant":    ("market_data_sphere (Сфера 19)", "PUP_OIUP | PDN_OIUP | PUP_OIDN | PDN_OIDN"),
+    "oi_updated_at":     ("market_data_sphere (Сфера 19)", "время обновления открытого интереса"),
 }
 
 # ── 🔴 ЧЕГО В ШИНЕ НЕТ (сверка 27.08.2026) ────────────────────────────────────

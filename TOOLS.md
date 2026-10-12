@@ -94,6 +94,10 @@ python scripts/strategy_preflight.py impulse_fib --gates --stop 2.0 --rr 3.0
 **Правило:** правка конфига или боевого кода = рестарт + проверка `SelfTest N/N`.
 Пропуск этого шага 21.08 положил бота на 25 минут.
 
+**Нужно значение «на сейчас»?** Сначала шина: `docs/BUS_CATALOG.md` (96 полей пары, кто пишет) и
+`docs/BUS_INVENTORY.md` (кто читает, чего нет, кто считает сам) — пересобрать `python scripts/bus_inventory.py`.
+Каталог обновлять так: `python -m core.context.bus_catalog > docs/BUS_CATALOG.md` (не `python core/context/…` — упадёт).
+
 **Мигает окно терминала?** `scripts/win_watch.ps1` — ловушка окон: пишет, какой процесс открыл консольное
 окно и кто его запустил. Под pm2 у процесса НЕТ консоли: любой консольный потомок (powershell, git, netsh)
 запускать с `STARTUPINFO(SW_HIDE)` или `shell=True`, иначе Windows Terminal покажет окно (12.10: traffic-log).

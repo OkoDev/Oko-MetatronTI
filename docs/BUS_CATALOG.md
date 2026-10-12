@@ -7,19 +7,20 @@
 
 | Событие | Payload | Источник | Описание |
 |---|---|---|---|
-| `OHLCV_UPDATED` | `{tf,rows,close}` | scan_loop (Сфера 1) | обновление свечей + текущая цена |
+| `OHLCV_UPDATED` | `{tf,rows,close,volume_24h,atr_pct}` | scan_loop (Сфера 1) | обновление свечей + цена + оборот + волатильность входного ТФ (из тех же свечей) |
 | `TICK_PRICE` | `{price,volume_24h}` | WsFeed (Сфера 2) | тик цены (если WsFeed on) |
 | `VOLUME_SPIKE` | `{ratio,tf}` | scan_loop (Сфера 2) | всплеск объёма |
 | `WT_VERDICT` | `{label,confidence,features}` | scan_loop (Сфера 3) | вердикт WT |
 | `WT_SNAP_UPDATED` | `{tf:{wt1,wt2,zone,cross,atr_trend}}` | scan_loop (Сфера 3) | снимок WT |
 | `SMC_VERDICT` | `{label,confidence}` | sub_cube (Сфера 4) | вердикт SMC |
-| `SMC_SNAP_UPDATED` | `{tf:{ob,fvg,choch,bos,..}}` | sub_cube (Сфера 4) | снимок SMC (магниты TP, NOTIF) |
+| `SMC_SNAP_UPDATED` | `плоский + by_tf{tf:..}` | sub_cube (Сфера 4) | снимок SMC (магниты TP, NOTIF) |
 | `CROSS_MARKET` | `{btc_regime,btc_move_pct,direction}` | scan_loop (Сфера 5) | контекст BTC |
 | `REGIME_UPDATED` | `{regime,mode}` | scan_loop (Сфера 6) | режим рынка |
-| `SIGNAL_DETECTED` | `{signal_type,direction,strength,tf}` | scan_loop (Сфера 7) | сигнал детектора |
+| `SIGNAL_DETECTED` | `{signal_type,direction,strength,tf,price,atr_pct}` | scan_loop (Сфера 7) | сигнал детектора (сырая детекция; цена и волатильность — для замера силы сигнала) |
 | `ANOMALY_DETECTED` | `{volume_ratio,tf}` | scan_loop (Сфера 7) | аномалия |
 | `DIVERGENCE_FOUND` | `{type,direction,tf,strength}` | scan_loop (Сфера 7) | дивергенция |
 | `PIVOT_TOUCH` | `{level,source,distance_pct}` | scan_loop (Сфера 7) | касание пивота |
+| `RECOMMENDATION_BUILT` | `{recommendation,wt_verdict,smc_verdict,reversal_mode,...}` | trading_intelligence (Сфера 7) | рекомендация собрана → Сфера 9 (синхронно) пишет нарратив в metadata |
 | `PIVOT_SNAP_UPDATED` | `{1W:{..},1D:{..}}` | scan_loop (Сфера 8) | снимок пивотов |
 | `NARRATIVE_BUILT` | `{text,action,p_win,key_factors}` | trading_intelligence (Сфера 9) | нарратив решения |
 | `POSITION_OPENED` | `{side,source,trade_id,final_strength,regime}` | trade_router (Сфера 9) | сделка открыта |
@@ -31,6 +32,9 @@
 | `CASCADE_UPDATED` | `{cascade_count,avg_r,direction}` | trade_simulator (Сфера 11) | обновление каскада |
 | `OTE_ZONE_SET` | `{ote_top,ote_bot,direction,ttl_hours}` | ote_observer (Сфера 11) | OTE-зона установлена |
 | `SPHERE_HEALTH` | `{sphere_id,status,last_update}` | sphere_registry (Сфера 12) | здоровье сферы |
+| `WATCH_STATE_CHANGED` | `{key,state,title,text,prev}` | вахты вне бота: scripts/_alert.py (ADR-003 шаг 4) | смена состояния внешней вахты (long_watch, drift_zone); symbol=*MARKET* |
+| `FUNDING_UPDATED` | `{rate,interval_h,source,pct_8h,streak,pctile_90d}` | market_data_sphere (Сфера 19) | фандинг пары |
+| `OI_UPDATED` | `{d5,d15,d1d,quadrant,squeeze}` | market_data_sphere (Сфера 19) | открытый интерес пары |
 
 ## 🅛1 PAIR STATE (PULL — состояние пары). `bus.get(sym).<поле>`
 
@@ -40,12 +44,17 @@
 | `ohlcv_tfs_loaded` | List[str] | scan_loop (Сфера 1) | какие TF загружены |
 | `tick_price` | Optional[float] | WsFeed / scan_loop (OHLCV close) | текущая цена пары |
 | `tick_time` | Optional[datetime] | WsFeed / scan_loop | время последнего тика |
+| `volume_24h` | Optional[float] | scan_loop (Сфера 1) | оборот за сутки в USDT (из тех же свечей) |
+| `volume_24h_time` | Optional[datetime] | scan_loop (Сфера 1) | когда обновлён оборот |
+| `price_change_24h` | Optional[float] | scan_loop (Сфера 1) | изменение цены за сутки, % |
+| `atr_pct` | Optional[float] | scan_loop (Сфера 1) | волатильность входного ТФ, % (средний размах 14 баров) |
+| `atr_pct_time` | Optional[datetime] | scan_loop (Сфера 1) | когда обновлён atr_pct |
 | `wt_verdict` | Optional[str] | scan_loop (Сфера 3) | TREND_CONTINUATION/REVERSAL_SETUP/EXHAUSTION |
 | `wt_confidence` | float | scan_loop (Сфера 3) | уверенность WT-вердикта 0..1 |
 | `wt_snap` | Optional[Dict[str, Any]] | scan_loop (Сфера 3) | {tf: {wt1,wt2,zone,cross,atr_trend}} |
-| `smc_verdict` | Optional[str] | sub_cube (Сфера 4) | ATR-тренд 1h/4h: ATR_TREND_BULL_STRONG/…_WEAK/ATR_TREND_BEAR_*/ATR_TREND_NONE (до 09.10 — STRONG_BULL_ZONE/…) |
+| `smc_verdict` | Optional[str] | sub_cube (Сфера 4) | ATR-тренд 1h/4h: ATR_TREND_BULL_STRONG/…_WEAK/ATR_TREND_BEAR_*/ATR_TREND_NONE |
 | `smc_confidence` | float | sub_cube (Сфера 4) | уверенность SMC 0..1 |
-| `smc_snap` | Optional[Dict[str, Any]] | sub_cube (Сфера 4) | {tf: {ob_bull,fvg_open,choch,bos,...}} — магниты TP |
+| `smc_snap` | Optional[Dict[str, Any]] | sub_cube (Сфера 4) | плоский: price_in_ote,last_bos,nearest_*_ob,eqh/eql + by_tf{tf:..} |
 | `btc_regime` | Optional[str] | scan_loop (Сфера 5) | режим BTC TREND_UP/DOWN/RANGE/HIGH_VOL |
 | `btc_move_pct` | float | scan_loop (Сфера 5) | движение BTC % |
 | `cross_market_time` | Optional[datetime] | scan_loop (Сфера 5) | время cross-market снимка |
@@ -93,6 +102,40 @@
 | `last_narrative_outcome` | Optional[dict] | trade_simulator (ARCH-91) | {status,R,lost_reason,closed_at} |
 | `spheres_ok` | int | sphere_registry (Сфера 12) | сколько сфер живы за час |
 | `last_diagnostic_time` | Optional[datetime] | sphere_registry (Сфера 12) | время диагностики |
+| `elliott_n_down` | int | WaveService (wave_service.py) | подряд снижающихся swing high на HTF ≈ номер волны вниз |
+| `elliott_n_up` | int | WaveService (wave_service.py) | подряд растущих swing low ≈ номер волны вверх |
+| `elliott_phase` | Optional[str] | WaveService (wave_service.py) | wave3_mid / wave5_final / ABC_waveB / impulse_start |
+| `elliott_conf` | float | WaveService (wave_service.py) | уверенность фазы 0..1 |
+| `wave_snap` | Optional[Dict[str, Any]] | WaveService (wave_service.py) | снимок по ТФ: n_down/n_up на 4h/1h/LTF, phase, conf, ts |
+| `wave_recount_ts` | Optional[datetime] | WaveService (wave_service.py) | когда счёт волн последний раз сломался |
+| `wave_recounts` | int | WaveService (wave_service.py) | сколько раз разметка пересчитывалась |
+| `wave_updated_at` | Optional[datetime] | WaveService (wave_service.py) | время обновления волнового снимка |
+| `leg_dir` | Optional[int] | WaveService, двухмасштабная нога | +1 нога вверх · −1 вниз (масштаб 50) |
+| `leg_span_bars` | Optional[int] | WaveService, двухмасштабная нога | длительность ноги от origin до extreme, баров |
+| `leg_age_origin` | Optional[int] | WaveService, двухмасштабная нога | баров с начала ноги |
+| `leg_pos` | Optional[float] | WaveService, двухмасштабная нога | где цена внутри ноги: 1.0 = на экстремуме |
+| `leg_retr` | Optional[float] | WaveService, двухмасштабная нога | глубина отката = 1 − pos |
+| `leg_minor_breaks` | Optional[int] | WaveService, двухмасштабная нога | сломов младшего масштаба внутри ноги |
+| `leg_tf` | Optional[str] | WaveService, двухмасштабная нога | на каком ТФ посчитана нога |
+| `leg_updated_at` | Optional[datetime] | WaveService, двухмасштабная нога | время обновления ноги |
+| `wave_leg_up` | Optional[Dict[str, Any]] | wave_loop → wave_analyst.wave_bus_context | дневная нога вверх {origin, ext, depth, zone, ote[0.618, 0.79], origin_t, ext_t} — для LONG |
+| `wave_leg_dn` | Optional[Dict[str, Any]] | wave_loop → wave_analyst.wave_bus_context | дневная нога вниз, те же поля — для SHORT |
+| `wave5_setup` | Optional[Dict[str, Any]] | wave_loop → wave_analyst.wave_bus_context | последняя 4h-пятёрка ядра за 5 сут {side, top_time, p0, p4, p5, imp_pct, core, core_full} |
+| `wave_ctx_updated_at` | Optional[datetime] | wave_loop → wave_analyst.wave_bus_context | время обновления волнового контекста |
+| `funding_rate` | Optional[float] | market_data_sphere (Сфера 19) | ставка как отдаёт биржа, % |
+| `funding_interval_h` | Optional[int] | market_data_sphere (Сфера 19) | интервал расчёта 1/2/4/8 ч — не хардкодить |
+| `funding_next_ts` | Optional[datetime] | market_data_sphere (Сфера 19) | время следующего расчёта |
+| `funding_source` | Optional[str] | market_data_sphere (Сфера 19) | bingx | binance | cache |
+| `funding_pct_8h` | Optional[float] | market_data_sphere (Сфера 19) | ставка, приведённая к %/8ч — для сравнимости |
+| `funding_streak` | int | market_data_sphere (Сфера 19) | расчётов подряд с тем же знаком |
+| `funding_pctile_90d` | Optional[float] | market_data_sphere (Сфера 19) | где ставка в своей истории за 90 дней, 0..100 |
+| `funding_cum_3d` | Optional[float] | market_data_sphere (Сфера 19) | накопленная стоимость удержания за 3 дня, % |
+| `funding_updated_at` | Optional[datetime] | market_data_sphere (Сфера 19) | время обновления фандинга |
+| `oi_d5` | Optional[float] | market_data_sphere (Сфера 19) | Δ открытого интереса за 5 минут, % |
+| `oi_d15` | Optional[float] | market_data_sphere (Сфера 19) | Δ открытого интереса за 15 минут, % |
+| `oi_d1d` | Optional[float] | market_data_sphere (Сфера 19) | Δ открытого интереса за сутки, % |
+| `oi_px_quadrant` | Optional[str] | market_data_sphere (Сфера 19) | PUP_OIUP | PDN_OIUP | PUP_OIDN | PDN_OIDN |
+| `oi_updated_at` | Optional[datetime] | market_data_sphere (Сфера 19) | время обновления открытого интереса |
 
 ## 🅛2 ACCOUNT STATE (PULL — портфель). `bus.get_account(id).<поле>`
 
@@ -106,5 +149,5 @@
 | `updated_at` | Optional[datetime] | EXEC-WS / position_sync | `bus.get_account(id).updated_at` | время обновления счёта |
 
 ---
-**Покрытие:** события 24 · L1 57 · L2 6.
+**Покрытие:** события 28 · L1 96 · L2 6.
 ✅ Каталог в синхроне с dataclass.
