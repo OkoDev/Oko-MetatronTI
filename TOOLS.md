@@ -94,6 +94,10 @@ python scripts/strategy_preflight.py impulse_fib --gates --stop 2.0 --rr 3.0
 **Правило:** правка конфига или боевого кода = рестарт + проверка `SelfTest N/N`.
 Пропуск этого шага 21.08 положил бота на 25 минут.
 
+**Мигает окно терминала?** `scripts/win_watch.ps1` — ловушка окон: пишет, какой процесс открыл консольное
+окно и кто его запустил. Под pm2 у процесса НЕТ консоли: любой консольный потомок (powershell, git, netsh)
+запускать с `STARTUPINFO(SW_HIDE)` или `shell=True`, иначе Windows Terminal покажет окно (12.10: traffic-log).
+
 ---
 
 ## 🤖 РОЙ И АГЕНТЫ
