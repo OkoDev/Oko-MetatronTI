@@ -34,9 +34,17 @@ def _counters() -> dict:
     names = ",".join(f"'{a}'" for a in ADAPTERS)
     ps = (f"Get-NetAdapterStatistics -Name {names} | "
           "ForEach-Object { \"$($_.Name);$($_.ReceivedBytes);$($_.SentBytes)\" }")
+    kw = {}
+    if sys.platform == "win32":
+        # 12.10: под pm2 у процесса нет консоли — powershell получал новую, и Windows Terminal показывал её окном
+        # каждые 10 минут (поймано ловушкой окон). SW_HIDE — то же, что Python сам ставит при shell=True.
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0                          # SW_HIDE
+        kw["startupinfo"] = si
     try:
         p = subprocess.run(["powershell", "-NonInteractive", "-Command", ps],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, **kw)
         out = {}
         for line in (p.stdout or "").strip().splitlines():
             parts = line.strip().split(";")
