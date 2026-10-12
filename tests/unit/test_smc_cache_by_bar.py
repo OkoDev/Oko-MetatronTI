@@ -87,6 +87,42 @@ def test_cached_snap_is_a_copy(cube, bars):
     assert second["ob"] == "x"
 
 
+def _bot_bars(t0_ms: int, n: int = 50, step_ms: int = 900_000) -> pd.DataFrame:
+    """ФОРМАТ БОТА: RangeIndex + колонка `time` (мс), окно фиксированной длины (api_engine: reset_index(drop=True))."""
+    return pd.DataFrame({"time": [t0_ms + i * step_ms for i in range(n)], "open": range(n),
+                         "high": range(1, n + 1), "low": range(n), "close": range(1, n + 1)})
+
+
+def test_bot_format_new_bar_invalidates(cube):
+    """F01 внешнего аудита (10.2026): окно сдвинулось на бар, длина и номер последней строки те же —
+    ключ обязан измениться. Тесты выше этого не ловили: они на DatetimeIndex и на растущем окне."""
+    c, calls = cube
+    a = _bot_bars(1_760_000_000_000)
+    b = _bot_bars(1_760_000_000_000 + 900_000)
+    assert len(a) == len(b) and a.index[-1] == b.index[-1], "тест должен повторять формат бота"
+    c.compute_and_publish("BTC/USDT:USDT", {"15m": a}, current_price=100.0)
+    c.compute_and_publish("BTC/USDT:USDT", {"15m": b}, current_price=100.0)
+    assert calls["n"] == 2, "новый бар на формате бота не инвалидировал кэш — структура замёрзнет"
+
+
+def test_bot_format_same_bar_hits(cube):
+    c, calls = cube
+    a = _bot_bars(1_760_000_000_000)
+    c.compute_and_publish("BTC/USDT:USDT", {"15m": a}, current_price=100.0)
+    c.compute_and_publish("BTC/USDT:USDT", {"15m": a.copy()}, current_price=101.0)
+    assert calls["n"] == 1 and c.cache_stats()["hit"] == 1
+
+
+def test_no_bar_time_disables_cache(cube):
+    """Нет колонки `time` и индекс не временной — номер строки временем не считаем, кэш выключен."""
+    c, calls = cube
+    df = _bot_bars(1_760_000_000_000).drop(columns=["time"])
+    assert c._bars_key({"15m": df}) is None
+    c.compute_and_publish("BTC/USDT:USDT", {"15m": df}, current_price=100.0)
+    c.compute_and_publish("BTC/USDT:USDT", {"15m": df}, current_price=100.0)
+    assert calls["n"] == 2
+
+
 def test_no_data_disables_cache(cube):
     """Пустой вход — кэш не применяется, молчаливых «снимков из ниоткуда» быть не должно."""
     c, calls = cube

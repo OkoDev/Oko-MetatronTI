@@ -127,14 +127,24 @@ class SMCSubCube:
         """Отпечаток входных данных: время последнего бара КАЖДОГО ТФ.
 
         Любое обновление любого ТФ меняет ключ и честно инвалидирует кэш. None — если
-        данных нет или индекс не читается: тогда кэш не используется вовсе."""
+        данных нет или время бара взять неоткуда: тогда кэш не используется вовсе.
+
+        🔴 13.10.2026 (F01 внешнего аудита): время берётся из колонки `time`. У свечей бота RangeIndex и окно
+        фиксированной длины — `df.index[-1]` был НОМЕРОМ СТРОКИ, ключ не менялся, и структура в шине замерзала
+        на часы (лог: hit 48 237 / miss 1 087 за 10 ч при 3m-барах на входе). Индекс — только для DatetimeIndex."""
         try:
             parts = []
             for tf in sorted(ohlcv_by_tf or {}):
                 df = ohlcv_by_tf.get(tf)
                 if df is None or len(df) == 0:
                     continue
-                parts.append((tf, int(len(df)), str(df.index[-1])))
+                if "time" in df.columns:
+                    last = df["time"].iloc[-1]
+                elif isinstance(df.index, pd.DatetimeIndex):
+                    last = df.index[-1]
+                else:
+                    return None                  # номер строки временем не считаем — лучше без кэша
+                parts.append((tf, int(len(df)), str(last)))
             return tuple(parts) or None
         except Exception:                                        # noqa: BLE001
             return None
