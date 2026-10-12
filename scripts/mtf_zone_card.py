@@ -10,7 +10,7 @@
   откаты 0.5/0.618/0.705/0.79 каждого действующего импульса (1D 2.0 · 4h 1.5 · 1h 1.0 · 15m 0.5) и его начало;
   проекции волны C = 1.0/1.272/1.618 × A после импульса; FVG и ордер-блоки 4h (живые) — обе границы;
   пивоты D/W/M (вес 0.5/1/1.5); равные вершины/днища 4h (пулы ликвидности); профиль объёма 1h за 30 дней — POC и узлы.
-Зона = `wave_progress.cluster_zone` (плотнейшее окно уровней по весу). Всё каузально: только закрытые бары.
+Зона = ближайшее к цене окно, где сошлось ≥ 3 разных источников (семей); вес считается по семьям. Только закрытые бары.
 Запуск: python scripts/mtf_zone_card.py --sym BTC [--out data/mtf_card]
 """
 from __future__ import annotations
@@ -36,18 +36,38 @@ except Exception:
 from core.infra.market_store import read_bars                     # noqa: E402
 from core.waves.wave5_core import impulses_on_bar                  # noqa: E402
 from core.smc.oko_sm_engine import pivot_points                    # noqa: E402
-from core.waves.wave_progress import cluster_zone                  # noqa: E402
 from core.structure.zones import fair_value_gaps, order_blocks, equal_levels   # noqa: E402
 from core.structure.levels import level_breaks                     # noqa: E402
 from core.indicators.indicators import calculate_pivot_points      # noqa: E402
 
-SCALES = [("1d", 5, 200, 2.0), ("4h", 15, 400, 1.5), ("4h", 8, 400, 1.5), ("1h", 12, 700, 1.0), ("15m", 12, 900, 0.5)]
 RET = (0.5, 0.618, 0.705, 0.79)
-ZONE_W = 0.025                     # ширина окна зоны — 2.5% цены
-TFD = {"1d": "1D", "4h": "4h", "1h": "1h", "15m": "15m"}
+TFD = {"1w": "1W", "1d": "1D", "4h": "4h", "1h": "1h", "15m": "15m"}
+# Два взгляда одним кодом (Егор 09.10: «давай старшие ТФ посмотрим так же — картину глобальнее»).
+PROFILES = {
+    "local": dict(scales=[("1d", 5, 200, 2.0), ("4h", 15, 400, 1.5), ("4h", 8, 400, 1.5), ("1h", 12, 700, 1.0),
+                          ("15m", 12, 900, 0.5)],
+                  fvg=[("4h", 0.75, 360)], ob=("4h", 10, 0.75, 360), eq=("4h", 360),
+                  pivots=[("1D", "D", 0.5), ("W-SUN", "W", 1.0), ("MS", "M", 1.5)],
+                  vp=("1h", 30, 0.25), zone_w=0.025, far=0.30, chart=("4h", 45), s_min=3.0),
+    "global": dict(scales=[("1w", 3, 150, 3.0), ("1w", 5, 150, 3.0), ("1d", 10, 500, 2.0), ("1d", 5, 500, 2.0),
+                           ("4h", 30, 2000, 1.5)],
+                   fvg=[("1w", 1.5, 120), ("1d", 1.0, 500)], ob=("1d", 10, 1.0, 500), eq=("1d", 500),
+                   pivots=[("MS", "M", 1.0), ("QS", "Q", 1.5), ("YS", "Y", 2.0)],
+                   vp=("1d", 365, 0.5), zone_w=0.05, far=0.60, chart=("1d", 480), s_min=3.5),
+}
 
 
 def bars(base: str, tf: str, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    if tf == "1w":                                   # недели — из дневок BingX, неделя с понедельника
+        d = read_bars(base, "1d")
+        if d.index.tz is not None:
+            d.index = d.index.tz_convert(None)
+        if now is not None:
+            d = d[d.index + pd.Timedelta("1D") <= now]
+        w = d.resample("W-MON", label="left", closed="left").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+        lim = now if now is not None else w.index[-1] + pd.Timedelta("7D")
+        return w[w.index + pd.Timedelta("7D") <= lim]
     d = read_bars(base, tf)
     if d.index.tz is not None:
         d.index = d.index.tz_convert(None)
@@ -134,43 +154,78 @@ def prev_pivots(d1d: pd.DataFrame, rule: str) -> dict:
     return calculate_pivot_points(float(last.high), float(last.low), float(last.close))
 
 
-def zones_by_distance(levels: list, px: float, down: bool, s_min: float = 3.5, n_min: int = 3, k: int = 3) -> list:
-    """Зоны по порядку удаления от цены (Егор: «провалят эту → следующая 76 и ниже»): ближайшая ЗНАЧИМАЯ (вес ≥ s_min,
-    факторов ≥ n_min), затем следующая за ней. Внутри окрестности берётся лучшее окно — `wave_progress.cluster_zone`."""
-    out, ref, pool = [], px, list(levels)
+def family(name: str) -> str:
+    """Семья источника. 12.10 (самопроверка): семь дневных пивотов узкого воскресенья (R3…S3 в полосе 2%) считались
+    семью факторами и рисовали «зону» вплотную к цене. Один источник — один фактор, берётся самый весомый уровень."""
+    if name.startswith("пивот "):
+        return " ".join(name.split()[:2])                 # «пивот D»
+    if name.startswith("профиль объёма"):
+        return "профиль объёма"
+    if name.startswith("откат "):
+        return "откат " + name.split(" ", 2)[2]           # «откат импульса ↑ 1h sw12»
+    if name.startswith("C = "):
+        return "C " + name[name.index("("):]
+    return name
+
+
+def fam_best(inside: list) -> dict:
+    best = {}
+    for n, p_, w in inside:
+        f = family(n)
+        if f not in best or w > best[f][2]:
+            best[f] = (n, p_, w)
+    return best
+
+
+def n_src(z: dict) -> int:
+    """Сколько разных источников (семей) в зоне."""
+    return len(fam_best(z["levels"]))
+
+
+def zones_by_distance(levels: list, px: float, down: bool, zone_w: float, s_min: float = 3.0, n_min: int = 3,
+                      k: int = 3) -> list:
+    """Зоны по порядку удаления от цены (Егор: «провалят эту → следующая 76 и ниже»): ближайшая ЗНАЧИМАЯ, затем следующая.
+    Окно шириной zone_w от ближайшего уровня в сторону от цены; вес зоны = сумма по СЕМЬЯМ (лучший уровень семьи),
+    значима при весе ≥ s_min и семей ≥ n_min. Идея окна — как у wave_progress.cluster_zone, счёт — по семьям."""
+    out, ref = [], px
     while len(out) < k:
-        cand = [l for l in pool if (l[1] < ref if down else l[1] > ref)]
-        if len(cand) < 2:
-            break
-        cand.sort(key=lambda l: abs(l[1] - ref))
+        cand = sorted([l for l in levels if (l[1] < ref if down else l[1] > ref)], key=lambda l: abs(l[1] - ref))
         z = None
-        for _, v0, _ in cand:                         # ближайшая окрестность с достаточным весом
-            near = [l for l in cand if abs(l[1] - v0) <= ZONE_W * px]
-            zz = cluster_zone(near, ref, down, width=ZONE_W)
-            if zz and zz["score"] >= s_min and len(zz["levels"]) >= n_min:
-                z = zz
+        for _, v0, _ in cand:
+            lo, hi = (v0 - zone_w * px, v0) if down else (v0, v0 + zone_w * px)
+            inside = [l for l in cand if lo <= l[1] <= hi]
+            fb = fam_best(inside)
+            sc = sum(w for _, _, w in fb.values())
+            if sc >= s_min and len(fb) >= n_min:
+                vs = [l[1] for l in inside]
+                z = {"lo": min(vs), "hi": max(vs), "mid": float(np.mean(vs)), "score": sc, "levels": inside}
                 break
         if z is None:
             break
         out.append(z)
         ref = z["lo"] if down else z["hi"]
-        pool = [l for l in pool if (l[1] < z["lo"] if down else l[1] > z["hi"])]
     return out
 
 
-def build(base: str) -> dict:
+def build(base: str, view: str = "local") -> dict:
+    P = PROFILES[view]
     d1h = bars(base, "1h")
     now = d1h.index[-1] + pd.Timedelta("1h")
-    D = {tf: bars(base, tf, now) for tf in ("1d", "4h", "1h", "15m")}
+    D = {tf: bars(base, tf, now) for tf in ("1w", "1d", "4h", "1h", "15m")}
     px = float(D["1h"].close.iloc[-1])
     levels = {"LONG": [], "SHORT": []}
 
-    def add(name, price, w):
-        if price and np.isfinite(price) and abs(price / px - 1) < 0.30:
-            levels["LONG" if price < px else "SHORT"].append((name, float(price), float(w)))
+    def add(name, price, w, side=None):
+        """side — чей это уровень по смыслу. 12.10 (самопроверка): без него откат импульса ВНИЗ после подъёма цены
+        попадал в ЛОНГ-зону как «поддержка», и зоны сливались вплотную к цене. Чужая сторона → уровень не берём."""
+        if not (price and np.isfinite(price) and abs(price / px - 1) < P["far"]):
+            return
+        pos_side = "LONG" if price < px else "SHORT"
+        if side is None or side == pos_side:
+            levels[pos_side].append((name, float(price), float(w)))
 
     found = []
-    for tf, sw, scan, w in SCALES:
+    for tf, sw, scan, w in P["scales"]:
         if len(D[tf]) < 4 * sw + 20:
             continue
         imps = impulses(D[tf], sw, scan)
@@ -181,53 +236,77 @@ def build(base: str) -> dict:
             beyond = (after.high.max() > p5) if up else (after.low.min() < p5)
             broken = (after.low.min() < p0) if up else (after.high.max() > p0)
             rec = {"tf": tf, "sw": sw, "dir": dirn, "waves": imp["waves"], "range_pct": abs(p5 - p0) / min(p0, p5) * 100,
-                   "valid": bool(not beyond and not broken)}
+                   "valid": bool(not beyond and not broken), "depth": abs(px - p5) / abs(p5 - p0),
+                   "ote_edge": p5 - (1 if up else -1) * 0.5 * abs(p5 - p0)}
             found.append(rec)
             if not rec["valid"]:
                 continue
             tag = f"{TFD[tf]} sw{sw}"
-            for f in RET:
-                add(f"откат {f} импульса {'↑' if up else '↓'} {tag}", p5 - (1 if up else -1) * f * abs(p5 - p0), w)
-            add(f"начало импульса {'↑' if up else '↓'} {tag}", p0, w * 0.8)
+            sd_ = "LONG" if up else "SHORT"
+            for f in (0.382,) + RET:           # 0.382 — мелкая коррекция, вес ниже зоны OTE 0.5–0.79
+                add(f"откат {f} импульса {'↑' if up else '↓'} {tag}", p5 - (1 if up else -1) * f * abs(p5 - p0),
+                    w * (0.6 if f == 0.382 else 1.0), sd_)
+            add(f"начало импульса {'↑' if up else '↓'} {tag}", p0, w * 0.8, sd_)
             abc = abc_after(D[tf], imp, up, sw)
             rec["abc"] = abc
             if abc:
                 for k in (1.0, 1.272, 1.618):
-                    add(f"C = {k}×A ({tag})", abc["B"] - (1 if up else -1) * k * abc["len_A"], w * 0.8)
-    # FVG и ордер-блоки 4h: живые на момент, за последние 60 дней
-    d4 = D["4h"].reset_index()
-    t4 = d4.columns[0]
-    recent = len(d4) - 360
-    fvgs = [g for g in fair_value_gaps(d4) if g.filled_bar == -1 and g.bar >= recent]
-    for g in fvgs:
-        for edge in (g.top, g.bottom):
-            add(f"FVG 4h {'↑' if g.bullish else '↓'} {d4[t4].iat[g.bar]:%d.%m}", edge, 0.75)
-    obs = [b for b in order_blocks(d4, level_breaks(d4, window=10)) if b.gone_bar == -1 and b.origin_bar >= recent]
+                    add(f"C = {k}×A ({tag})", abc["B"] - (1 if up else -1) * k * abc["len_A"], w * 0.8, sd_)
+    # FVG, ордер-блоки, равные уровни: живые на момент, за последние recent баров своего ТФ
+    fvgs = []
+    for tf, w, recent in P["fvg"]:
+        dd_ = D[tf]
+        for g in fair_value_gaps(dd_.reset_index(drop=True)):
+            if g.filled_bar == -1 and g.bar >= len(dd_) - recent:
+                name = f"FVG {TFD[tf]} {'↑' if g.bullish else '↓'} {dd_.index[g.bar]:%d.%m.%y}"
+                fvgs.append({"t": dd_.index[g.bar], "top": g.top, "bottom": g.bottom, "bullish": g.bullish, "tf": tf,
+                             "name": name})
+                for edge in (g.top, g.bottom):
+                    add(name, edge, w / 2, "LONG" if g.bullish else "SHORT")   # одна FVG = один источник
+    tf, win, w, recent = P["ob"]
+    dd_ = D[tf]; r_ = dd_.reset_index(drop=True)
+    obs = [b for b in order_blocks(r_, level_breaks(r_, window=win)) if b.gone_bar == -1 and b.origin_bar >= len(dd_) - recent]
     for b in obs:
         for edge in (b.top, b.bottom):
-            add(f"OB 4h {'↑' if b.bullish else '↓'} {d4[t4].iat[b.origin_bar]:%d.%m}", edge, 0.75)
-    eqs = [e for e in equal_levels(d4) if e.second_bar >= recent]
-    for e in eqs:
-        add(f"{'равные вершины' if e.highs else 'равные днища'} 4h (ликвидность)", (e.first_price + e.second_price) / 2, 1.0)
+            add(f"OB {TFD[tf]} {'↑' if b.bullish else '↓'} {dd_.index[b.origin_bar]:%d.%m.%y}", edge, w / 2,
+                "LONG" if b.bullish else "SHORT")
+    tf, recent = P["eq"]
+    dd_ = D[tf]
+    for e in [e for e in equal_levels(dd_.reset_index(drop=True)) if e.second_bar >= len(dd_) - recent]:
+        add(f"{'равные вершины' if e.highs else 'равные днища'} {TFD[tf]} (ликвидность)",
+            (e.first_price + e.second_price) / 2, 1.0, "SHORT" if e.highs else "LONG")
     piv = {}
-    for rule, lab, w in (("1D", "D", 0.5), ("W-SUN", "W", 1.0), ("MS", "M", 1.5)):
+    for rule, lab, w in P["pivots"]:
         pv = prev_pivots(D["1d"], rule)
         piv[lab] = pv
         for k in ("PP", "S1", "S2", "S3", "R1", "R2", "R3"):
             if k in pv:
                 add(f"пивот {lab} {k}", pv[k], w)
-    vp = volume_profile(D["1h"])
-    add("профиль объёма 30д: POC", vp["poc"], 1.5)
+    vtf, vdays, vbin = P["vp"]
+    vp = volume_profile(D[vtf], vdays, vbin)
+    vp["label"] = f"объём {vdays}д"
+    add(f"профиль объёма {vdays}д: POC", vp["poc"], 1.5)
     for h in vp["hvn"]:
-        if abs(h / vp["poc"] - 1) > 0.003:
-            add("профиль объёма 30д: узел", h, 1.0)
+        if abs(h / vp["poc"] - 1) > vbin / 100 * 1.5:
+            add(f"профиль объёма {vdays}д: узел", h, 1.0)
 
     zones = {}
     for side, down in (("LONG", True), ("SHORT", False)):
-        zl = zones_by_distance(levels[side], px, down)
+        zl = zones_by_distance(levels[side], px, down, P["zone_w"], s_min=P["s_min"])
+        # цена уже ВНУТРИ OTE импульса этой стороны (откат 0.5–0.79): уровень 0.5 пройден и в уровни не попал —
+        # возвращаем его границей зоны 1, иначе карточка пишет «между зонами», когда цена в зоне
+        for rec in found:
+            if rec["valid"] and (rec["dir"] == "up") == down and 0.5 <= rec["depth"] <= 0.79 and zl:
+                z0 = zl[0]
+                if down and z0["hi"] < rec["ote_edge"]:
+                    z0["hi"] = rec["ote_edge"]
+                elif (not down) and z0["lo"] > rec["ote_edge"]:
+                    z0["lo"] = rec["ote_edge"]
+                z0["entered"] = f"OTE импульса {'↑' if rec['dir'] == 'up' else '↓'} {TFD[rec['tf']]}, откат {rec['depth']:.2f}"
         zones[side] = {"zone": zl[0] if zl else None, "next": zl[1] if len(zl) > 1 else None, "all": zl}
     return {"sym": base, "now": now, "px": px, "impulses": found, "zones": zones, "fvgs": fvgs, "obs": obs,
-            "vp": vp, "pivots": piv, "d4": D["4h"], "levels_n": {k: len(v) for k, v in levels.items()}}
+            "vp": vp, "pivots": piv, "chart": D[P["chart"][0]], "chart_tf": P["chart"][0], "chart_days": P["chart"][1],
+            "view": view, "levels_n": {k: len(v) for k, v in levels.items()}}
 
 
 def scenarios(R: dict) -> list[str]:
@@ -237,21 +316,21 @@ def scenarios(R: dict) -> list[str]:
     out = ["СЕЙЧАС:"]
     inside = [(sd, j, z) for sd, zz in (("ЛОНГ", L), ("ШОРТ", S)) for j, z in enumerate(zz, 1) if z["lo"] <= px <= z["hi"]]
     if inside:
-        out.append(f"  цена {px:.0f} — в зоне {inside[0][0]} {inside[0][1]}")
+        sd, j, z = inside[0]
+        out.append(f"  цена {px:.0f} — в зоне {sd} {j}")
+        if z.get("entered"):
+            out.append(f"  ({z['entered']})")
     elif L and S:
-        out.append(f"  цена {px:.0f} между ЛОНГ 1 и ШОРТ 1 —")
-        out.append("  «вправо», ждём реакцию у зоны")
+        dl, ds = (px / L[0]["hi"] - 1) * 100, (S[0]["lo"] / px - 1) * 100
+        out.append(f"  цена {px:.0f}: до ЛОНГ 1 {dl:.1f}%, до ШОРТ 1 {ds:.1f}%")
+        out.append("  между зонами — «вправо», ждём реакцию")
     ups = [r for r in R["impulses"] if r["valid"] and r["dir"] == "up"]
     if L:
-        tg = [f(S[0])] if S else []
-        if ups:
-            tg.append(f"вершина {ups[0]['waves'][5][1]:.0f}")
+        tg = [f(z) for z in S[:2]] or ["нет зоны сверху"]
         out += ["ЛОНГ:", f"  реакция в ЛОНГ 1" + (" или ЛОНГ 2" if len(L) > 1 else ""), "  цели: " + " → ".join(tg)]
     if S:
-        tg = [f(L[0])] if L else []
-        if len(L) > 1:
-            tg.append(f(L[1]))
-        out += ["ШОРТ:", "  реакция в ШОРТ 1", "  цели: " + " → ".join(tg)]
+        tg = [f(z) for z in L[:2]] or ["нет зоны снизу"]
+        out += ["ШОРТ:", "  реакция в ШОРТ 1" + (" или ШОРТ 2" if len(S) > 1 else ""), "  цели: " + " → ".join(tg)]
     if len(L) > 2:
         out += ["ПРОВАЛ ЛОНГ 1–2:", f"  ЛОНГ 3 ({f(L[2])})" + (f" → начало {ups[0]['waves'][0][1]:.0f}" if ups else ""),
                 "  дальше — сетап старшего ТФ"]
@@ -259,7 +338,7 @@ def scenarios(R: dict) -> list[str]:
 
 
 def draw(R: dict, path: Path) -> None:
-    d4 = R["d4"]; v = d4[d4.index >= R["now"] - pd.Timedelta(days=45)]
+    dc = R["chart"]; v = dc[dc.index >= R["now"] - pd.Timedelta(days=R["chart_days"])]
     fig = plt.figure(figsize=(16, 9), dpi=90)
     ax = fig.add_axes([0.04, 0.30, 0.78, 0.65]); axv = fig.add_axes([0.82, 0.30, 0.10, 0.65], sharey=ax)
     x = np.arange(len(v)); up = v.close >= v.open
@@ -267,50 +346,61 @@ def draw(R: dict, path: Path) -> None:
     ax.bar(x, (v.close - v.open).abs().clip(lower=v.close * 1e-4), bottom=np.minimum(v.open, v.close),
            color=np.where(up, "#8ce99a", "#ffa8a8"), width=0.7)
     pos = lambda t: int(np.searchsorted(v.index, pd.Timestamp(t)))   # noqa: E731
+    in_zones = {n for sd in ("LONG", "SHORT") for z in R["zones"][sd]["all"] for n, _, _ in z["levels"]}
     for g in R["fvgs"]:
-        if abs((g.top + g.bottom) / 2 / R["px"] - 1) > 0.10:      # дальние FVG не рисуем — сплющивают график
+        if g.get("name") not in in_zones:      # только FVG, которые вошли в зоны (самопроверка 09.10: каша)
             continue
-        xs = pos(R["d4"].index[g.bar])
+        xs = pos(g["t"])
         if xs < len(v):
-            ax.fill_between([max(xs, 0), len(v)], g.bottom, g.top, color="#74c0fc" if g.bullish else "#ffc078", alpha=0.18)
+            ax.fill_between([max(xs, 0), len(v)], g["bottom"], g["top"], color="#74c0fc" if g["bullish"] else "#ffc078",
+                            alpha=0.18)
+    best = {}                                  # (сторона, время пятой) → больший по ходу импульс
     for rec in R["impulses"]:
         if not rec["valid"] or rec["waves"][0][0] < v.index[0]:
-            continue
+            continue                           # отработанные не рисуем — путают (самопроверка 09.10)
+        k_ = (rec["dir"], rec["waves"][5][0].floor("D"))
+        if k_ not in best or rec["range_pct"] > best[k_]["range_pct"]:
+            best[k_] = rec
+    for rec in best.values():
         c = "#e03131" if rec["dir"] == "up" else "#862e9c"
         xs = [pos(t) for t, _ in rec["waves"]]; ys = [p for _, p in rec["waves"]]
-        ax.plot(xs, ys, color=c, linewidth=1.6)
+        ax.plot(xs, ys, color=c, linewidth=1.6 if rec["valid"] else 0.9, linestyle="-" if rec["valid"] else "--",
+                alpha=1.0 if rec["valid"] else 0.6)
+        dx = max(1, len(v) // 120) * (1 if rec["dir"] == "up" else -1)
         for j, (xw, yw) in enumerate(zip(xs, ys)):
-            ax.text(xw, yw, str(j), color=c, fontsize=8, fontweight="bold", ha="center",
+            ax.text(xw + dx, yw, str(j), color=c, fontsize=8, fontweight="bold", ha="center",
                     va="bottom" if (j % 2 == 1) == (rec["dir"] == "up") else "top")
         ab = rec.get("abc")
         if ab and ab["A_t"] >= v.index[0]:
             for lab, t_, p_ in (("A", ab["A_t"], ab["A"]), ("B", ab["B_t"], ab["B"]), ("C", ab["C_t"], ab["C"])):
-                ax.text(pos(t_), p_, lab, color="#1864ab", fontsize=10, fontweight="bold", ha="center",
+                ax.text(pos(t_), p_, lab, color=c, fontsize=11, fontweight="bold", ha="center",   # цвет своего импульса
                         va="top" if lab != "B" and rec["dir"] == "up" else "bottom")
     for side, col in (("LONG", "#2f9e44"), ("SHORT", "#e8590c")):
         for j, z in enumerate(R["zones"][side]["all"], 1):
             ax.axhspan(z["lo"], z["hi"], color=col, alpha=0.24 if j == 1 else 0.12)
-            ax.text(1, z["mid"], f" {'ЛОНГ' if side == 'LONG' else 'ШОРТ'} {j}: {z['lo']:.0f}–{z['hi']:.0f} · факторов {len(z['levels'])} · вес {z['score']:.1f}",
+            ax.text(1, z["mid"], f" {'ЛОНГ' if side == 'LONG' else 'ШОРТ'} {j}: {z['lo']:.0f}–{z['hi']:.0f} · факторов {n_src(z)} · вес {z['score']:.1f}",
                     color=col, fontsize=10 if j == 1 else 9, fontweight="bold" if j == 1 else "normal", va="center")
     ax.axhline(R["px"], color="#343a40", linewidth=0.8, linestyle=":")
     zs = [z for sd in ("LONG", "SHORT") for z in R["zones"][sd]["all"]]
     lo_y = min([v.low.min()] + [z["lo"] for z in zs]); hi_y = max([v.high.max()] + [z["hi"] for z in zs])
     ax.set_ylim(lo_y - (hi_y - lo_y) * 0.03, hi_y + (hi_y - lo_y) * 0.03)
     step = max(1, len(v) // 10)
-    ax.set_xticks(x[::step]); ax.set_xticklabels([t.strftime("%d.%m") for t in v.index[::step]], fontsize=8)
-    ax.set_title(f"{R['sym']} · 4h · {R['now']:%d.%m %H:%M} UTC · цена {R['px']:.6g}", loc="left", fontsize=12)
+    ax.set_xticks(x[::step]); ax.set_xticklabels([t.strftime("%d.%m" if R["view"] == "local" else "%d.%m.%y")
+                                                   for t in v.index[::step]], fontsize=8)
+    ax.set_title(f"{R['sym']} · {TFD[R['chart_tf']]} · {'ГЛОБАЛЬНО' if R['view'] == 'global' else 'локально'} · "
+                 f"{R['now']:%d.%m.%y %H:%M} UTC · цена {R['px']:.6g}", loc="left", fontsize=12)
     ax.grid(alpha=0.15)
     vp = R["vp"]
     axv.barh(vp["mids"], vp["vol"], height=(vp["mids"][1] - vp["mids"][0]) * 0.9, color="#adb5bd")
     axv.axhline(vp["poc"], color="#495057", linewidth=1); axv.text(vp["vol"].max() * 0.5, vp["poc"], " POC", fontsize=8, va="bottom")
-    axv.set_xticks([]); axv.tick_params(labelleft=False); axv.set_title("объём 30д", fontsize=9)
+    axv.set_xticks([]); axv.tick_params(labelleft=False); axv.set_title(vp.get("label", "объём"), fontsize=9)
     tx = fig.add_axes([0.04, 0.02, 0.92, 0.25]); tx.axis("off")
     cols = []
     for side in ("LONG", "SHORT"):
         lines = []
         for j, z in enumerate(R["zones"][side]["all"], 1):
-            top = sorted(z["levels"], key=lambda t: -t[2])[:4 if j == 1 else 3]
-            lines.append(f"{'ЛОНГ' if side == 'LONG' else 'ШОРТ'} {j}: {z['lo']:.0f}–{z['hi']:.0f}  ({len(z['levels'])} факторов)")
+            top = sorted(fam_best(z["levels"]).values(), key=lambda t: -t[2])[:4 if j == 1 else 3]
+            lines.append(f"{'ЛОНГ' if side == 'LONG' else 'ШОРТ'} {j}: {z['lo']:.0f}–{z['hi']:.0f}  ({n_src(z)} факторов)")
             lines += [f"   • {n} {p_:.0f}" for n, p_, _ in top]
         cols.append("\n".join(lines) or "нет схождения")
     tx.text(0.0, 1.0, cols[0], va="top", fontsize=8.5, family="monospace")
@@ -322,33 +412,35 @@ def draw(R: dict, path: Path) -> None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sym", default="BTC")
+    ap.add_argument("--view", default="local", choices=list(PROFILES))
     ap.add_argument("--out", default=str(ROOT / "data" / "mtf_card"))
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-    R = build(a.sym.upper())
+    R = build(a.sym.upper(), a.view)
     print(f"{R['sym']} · {R['now']} · цена {R['px']:.2f} · уровней: лонг {R['levels_n']['LONG']}, шорт {R['levels_n']['SHORT']}")
     print("ИМПУЛЬСЫ (каскад ТФ):")
     for rec in R["impulses"]:
         w = rec["waves"]
         ab = rec.get("abc")
         print(f"  {TFD[rec['tf']]:>3} sw{rec['sw']:<2} {'↑' if rec['dir'] == 'up' else '↓'} {rec['range_pct']:5.1f}% "
-              f"{w[0][0]:%d.%m} {w[0][1]:.0f} → {w[5][0]:%d.%m} {w[5][1]:.0f} · {'действует' if rec['valid'] else 'отработан/сломан'}"
+              f"{w[0][0]:%d.%m} {w[0][1]:.0f} → {w[5][0]:%d.%m} {w[5][1]:.0f} · "
+              + (f"действует, откат {rec['depth']:.2f}" if rec["valid"] else "отработан/сломан")
               + (f" · ABC: A {ab['A']:.0f} B {ab['B']:.0f} C {ab['C']:.0f} (C = {ab['C_ratio']:.2f}×A)" if ab else ""))
     for side in ("LONG", "SHORT"):
         z, n = R["zones"][side]["zone"], R["zones"][side]["next"]
-        print(f"\n{side}-ЗОНА: " + (f"{z['lo']:.0f}–{z['hi']:.0f} · вес {z['score']:.1f} · факторов {len(z['levels'])}" if z else "нет"))
+        print(f"\n{side}-ЗОНА: " + (f"{z['lo']:.0f}–{z['hi']:.0f} · вес {z['score']:.1f} · факторов {n_src(z)}" if z else "нет"))
         if z:
             for name, p_, w in sorted(z["levels"], key=lambda t: t[1], reverse=True):
                 print(f"   {p_:10.0f}  {w:.2f}  {name}")
         for j, n in enumerate(R["zones"][side]["all"][1:], 2):
             print(f"  если провалят → зона {j}: {n['lo']:.0f}–{n['hi']:.0f} · вес {n['score']:.1f}: "
                   + "; ".join(f"{nm} {p_:.0f}" for nm, p_, _ in sorted(n["levels"], key=lambda t: -t[2])[:7]))
-    png = out / f"{R['sym']}.png"
+    png = out / f"{R['sym']}_{a.view}.png"
     draw(R, png)
     js = {"sym": R["sym"], "now": str(R["now"]), "px": R["px"],
           "zones": {s: [{**{kk: vv for kk, vv in z.items() if kk != "levels"}, "levels": [list(l) for l in z["levels"]]}
                         for z in R["zones"][s]["all"]] for s in ("LONG", "SHORT")}}
-    (out / f"{R['sym']}.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    (out / f"{R['sym']}_{a.view}.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     print(f"\n→ {png}")
 
 
