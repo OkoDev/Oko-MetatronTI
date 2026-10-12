@@ -47,12 +47,12 @@ PROFILES = {
     "local": dict(scales=[("1d", 5, 200, 2.0), ("4h", 15, 400, 1.5), ("4h", 8, 400, 1.5), ("1h", 12, 700, 1.0),
                           ("15m", 12, 900, 0.5)],
                   fvg=[("4h", 0.75, 360)], ob=("4h", 10, 0.75, 360), eq=("4h", 360),
-                  pivots=[("1D", "D", 0.5), ("W-SUN", "W", 1.0), ("MS", "M", 1.5)],
+                  pivots=[("D", "D", 0.5), ("W-SUN", "W", 1.0), ("M", "M", 1.5)],
                   vp=("1h", 30, 0.25), zone_w=0.025, far=0.30, chart=("4h", 45), s_min=3.0),
     "global": dict(scales=[("1w", 3, 150, 3.0), ("1w", 5, 150, 3.0), ("1d", 10, 500, 2.0), ("1d", 5, 500, 2.0),
                            ("4h", 30, 2000, 1.5)],
                    fvg=[("1w", 1.5, 120), ("1d", 1.0, 500)], ob=("1d", 10, 1.0, 500), eq=("1d", 500),
-                   pivots=[("MS", "M", 1.0), ("QS", "Q", 1.5), ("YS", "Y", 2.0)],
+                   pivots=[("M", "M", 1.0), ("Q", "Q", 1.5), ("Y", "Y", 2.0)],
                    vp=("1d", 365, 0.5), zone_w=0.05, far=0.60, chart=("1d", 480), s_min=3.5),
 }
 
@@ -145,13 +145,40 @@ def volume_profile(d1h: pd.DataFrame, days: int = 30, bin_pct: float = 0.25):
     return {"mids": mids, "vol": vol, "poc": poc, "hvn": hvn}
 
 
-def prev_pivots(d1d: pd.DataFrame, rule: str) -> dict:
-    """Классические пивоты по ПРОШЛОМУ закрытому периоду (день/неделя/месяц) из дневок."""
-    g = d1d.resample(rule).agg({"high": "max", "low": "min", "close": "last"}).dropna()
-    if len(g) < 2:
+def prev_pivots(d1d: pd.DataFrame, freq: str, now: pd.Timestamp) -> dict:
+    """Классические пивоты по ПОСЛЕДНЕМУ ЗАВЕРШЁННОМУ периоду (D / W-SUN / M / Q / Y) из закрытых дневок.
+    🔴 12.10: было `resample(...).iloc[-2]` — но в закрытых дневках последняя группа УЖЕ завершённый период, если новый
+    ещё не дал ни одной закрытой дневки. Дневные пивоты всегда считались от позавчера, недельные/месячные — в первый
+    день периода от периода до прошлого (понедельник 12.10: неделя 28.09–04.10 вместо 05–11.10). Поймано вопросом Егора
+    «как ложится на недельные пивоты?». Теперь период определяется календарём: всё, что раньше периода, где лежит now."""
+    per = d1d.index.to_period(freq)
+    cur = pd.Timestamp(now).to_period(freq)
+    done = d1d[per < cur]
+    if done.empty:
         return {}
-    last = g.iloc[-2]                                # прошлый ЗАКРЫТЫЙ период
-    return calculate_pivot_points(float(last.high), float(last.low), float(last.close))
+    last = done[done.index.to_period(freq) == done.index.to_period(freq).max()]
+    out = calculate_pivot_points(float(last.high.max()), float(last.low.min()), float(last.close.iloc[-1]))
+    out["_period"] = f"{last.index[0]:%d.%m.%y}–{last.index[-1]:%d.%m.%y}"
+    return out
+
+
+HUB = "http://127.0.0.1:8020"                     # хаб шины Куба (pm2 cube-hub, ADR-003)
+
+
+def bus_pivots(base: str) -> dict:
+    """Пивоты D/W/M из ШИНЫ (Егор 12.10: «пивоты в шине») — те же, что видит бот; свои не считаем (reuse).
+    Пара в шине — BASE/USDT:USDT. Хаб недоступен → пустой словарь, тогда запасной расчёт prev_pivots."""
+    import json
+    import urllib.parse
+    import urllib.request
+    try:
+        url = f"{HUB}/state/" + urllib.parse.quote(f"{base}/USDT:USDT", safe="")
+        st = json.load(urllib.request.urlopen(url, timeout=3))
+        snap = (st.get("state", st) or {}).get("pivot_snap") or {}
+        return {lab: snap[k] for k, lab in (("1D", "D"), ("1W", "W"), ("1M", "M")) if isinstance(snap.get(k), dict)}
+    except Exception as e:                          # noqa: BLE001
+        print(f"[пивоты] шина недоступна ({type(e).__name__}) — считаю сам из дневок")
+        return {}
 
 
 def family(name: str) -> str:
@@ -276,8 +303,10 @@ def build(base: str, view: str = "local") -> dict:
         add(f"{'равные вершины' if e.highs else 'равные днища'} {TFD[tf]} (ликвидность)",
             (e.first_price + e.second_price) / 2, 1.0, "SHORT" if e.highs else "LONG")
     piv = {}
+    bus = bus_pivots(base)
     for rule, lab, w in P["pivots"]:
-        pv = prev_pivots(D["1d"], rule)
+        pv = bus.get(lab) or prev_pivots(D["1d"], rule, now)     # Q и Y в шине нет — считаются из дневок
+        piv["_src_" + lab] = "шина" if lab in bus else "дневки"
         piv[lab] = pv
         for k in ("PP", "S1", "S2", "S3", "R1", "R2", "R3"):
             if k in pv:
@@ -337,6 +366,71 @@ def scenarios(R: dict) -> list[str]:
     return out
 
 
+def hypotheses(R: dict) -> dict | None:
+    """ГИПОТЕЗЫ, А НЕ ПЛАН (Егор 12.10: «важны гипотезы, а не строгое утверждение одного плана; знать, когда каждая
+    отменяется и что делать дальше»). Детектор даёт один счёт волн — здесь он раскладывается на три гипотезы от самого
+    свежего действующего импульса (0…5), для любого направления:
+      1 — растянутая третья: точки 3 и 4 детектора — подволны, текущий откат = 4-я, впереди 5-я;
+      2 — пятёрка завершена: идёт коррекция всего хода;
+      3 — весь ход — коррекция старшего встречного импульса, старший ход продолжится.
+    У каждой: подтверждение, цели, отмена и к какой гипотезе переходить. Только уровни — без вероятностей."""
+    val = [r for r in R["impulses"] if r["valid"]]
+    if not val:
+        return None
+    m = max(val, key=lambda r: r["waves"][5][0])
+    sg = 1 if m["dir"] == "up" else -1
+    w = [p_ for _, p_ in m["waves"]]
+    ch = R["chart"]
+    after = ch[ch.index > m["waves"][5][0]]
+    corr = w[5] if after.empty else (float(after.low.min()) if sg > 0 else float(after.high.max()))
+    l1, alt3, full = abs(w[1] - w[0]), abs(w[5] - w[2]), abs(w[5] - w[0])
+    up, dn = ("выше", "ниже") if sg > 0 else ("ниже", "выше")
+    px = R["px"]
+    soft4 = w[5] - sg * 0.5 * alt3
+    beyond5 = (px - w[5]) * sg > 0
+    h1_ok = (corr - w[1]) * sg > 0 and (corr - soft4) * sg > 0
+    H = [dict(n=1, name="4-я волна перед 5-й (третья растянута)",
+              status="подтверждается" if beyond5 else ("в игре" if h1_ok else "отменена"),
+              confirm=f"{up} {w[5]:.0f}",
+              target=" / ".join(f"{corr + sg * k * l1:.0f}" for k in (0.618, 1.0, 1.618)) + "  (0.618 / 1 / 1.618 первой)",
+              cancel=f"{dn} {soft4:.0f} → гипотеза 2 (жёстко — {dn} {w[1]:.0f})",
+              depth=abs(w[5] - corr) / alt3),
+         dict(n=2, name="пять волн завершены, коррекция всего хода",
+              status="отменена" if beyond5 else "в игре",
+              confirm=f"{dn} {corr:.0f}, затем {dn} {w[4]:.0f}",
+              target=" / ".join(f"{w[5] - sg * f * full:.0f}" for f in (0.382, 0.5, 0.618)) + "  (0.382 / 0.5 / 0.618 хода)",
+              cancel=f"{up} {w[5]:.0f} → гипотеза 1; {dn} {w[0]:.0f} → гипотеза 3")]
+    par = [r for r in val if r["dir"] != m["dir"] and abs(r["waves"][5][1] / w[0] - 1) < 0.01]
+    levels = [(w[5], f"{w[5]:.0f} — подтв. гип. 1"), (soft4, f"{soft4:.0f} — отмена гип. 1"), (w[0], f"{w[0]:.0f} — начало хода")]
+    if abs(corr - w[5]) > 0:
+        levels.append((corr, f"{corr:.0f} — подтв. гип. 2"))
+    if par:
+        pr = max(par, key=lambda r: r["range_pct"])
+        p0 = pr["waves"][0][1]; lp = abs(p0 - w[0])
+        weak = w[0] + sg * 0.618 * lp
+        H.append(dict(n=3, name=f"весь ход — коррекция старшего импульса {'↓' if sg > 0 else '↑'} ({TFD[pr['tf']]})",
+                      status="отменена" if (px - p0) * sg > 0 else "в игре",
+                      confirm=f"{dn} {w[0]:.0f}",
+                      target=" / ".join(f"{w[5] - sg * k * lp:.0f}" for k in (0.5, 0.618)) + "  (нога 0.5 / 0.618 старшей)",
+                      cancel=f"{up} {weak:.0f} слабеет (отыграно > 0.618), {up} {p0:.0f} — отменена",
+                      retr=full / lp))
+        levels[2] = (w[0], f"{w[0]:.0f} — подтв. гип. 3")
+    return {"main": m, "corr": corr, "H": H, "levels": levels}
+
+
+def hypo_lines(R: dict) -> list[str]:
+    hy = hypotheses(R)
+    if not hy:
+        return ["нет действующего импульса — гипотез нет"]
+    m = hy["main"]; w = m["waves"]
+    out = [f"ГИПОТЕЗЫ · импульс {TFD[m['tf']]} {'↑' if m['dir'] == 'up' else '↓'} {w[0][1]:.0f} → {w[5][1]:.0f}, откат до {hy['corr']:.0f}"]
+    for h in hy["H"]:
+        extra = f" · 4-я = {h['depth']:.2f} третьей" if "depth" in h else (f" · отыграно {h['retr']:.2f}" if "retr" in h else "")
+        out += [f"{h['n']}. {h['name']} — {h['status']}{extra}", f"    подтверждение: {h['confirm']}",
+                f"    цели: {h['target']}", f"    отмена: {h['cancel']}"]
+    return out
+
+
 def draw(R: dict, path: Path) -> None:
     dc = R["chart"]; v = dc[dc.index >= R["now"] - pd.Timedelta(days=R["chart_days"])]
     fig = plt.figure(figsize=(16, 9), dpi=90)
@@ -381,6 +475,12 @@ def draw(R: dict, path: Path) -> None:
             ax.text(1, z["mid"], f" {'ЛОНГ' if side == 'LONG' else 'ШОРТ'} {j}: {z['lo']:.0f}–{z['hi']:.0f} · факторов {n_src(z)} · вес {z['score']:.1f}",
                     color=col, fontsize=10 if j == 1 else 9, fontweight="bold" if j == 1 else "normal", va="center")
     ax.axhline(R["px"], color="#343a40", linewidth=0.8, linestyle=":")
+    hy = hypotheses(R) if R["view"] == "global" else None
+    if hy:
+        for lvl, lab in hy["levels"]:
+            ax.hlines(lvl, len(v) * 0.72, len(v) + 2, color="#212529", linewidth=1.1, linestyles=(0, (4, 3)))
+            ax.text(len(v) * 0.72, lvl, lab + " ", color="#212529", fontsize=8, ha="right", va="center",
+                    bbox=dict(facecolor="white", alpha=0.75, edgecolor="none", pad=1))
     zs = [z for sd in ("LONG", "SHORT") for z in R["zones"][sd]["all"]]
     lo_y = min([v.low.min()] + [z["lo"] for z in zs]); hi_y = max([v.high.max()] + [z["hi"] for z in zs])
     ax.set_ylim(lo_y - (hi_y - lo_y) * 0.03, hi_y + (hi_y - lo_y) * 0.03)
@@ -403,9 +503,14 @@ def draw(R: dict, path: Path) -> None:
             lines.append(f"{'ЛОНГ' if side == 'LONG' else 'ШОРТ'} {j}: {z['lo']:.0f}–{z['hi']:.0f}  ({n_src(z)} факторов)")
             lines += [f"   • {n} {p_:.0f}" for n, p_, _ in top]
         cols.append("\n".join(lines) or "нет схождения")
-    tx.text(0.0, 1.0, cols[0], va="top", fontsize=8.5, family="monospace")
-    tx.text(0.36, 1.0, cols[1], va="top", fontsize=8.5, family="monospace")
-    tx.text(0.70, 1.0, "\n".join(scenarios(R)), va="top", fontsize=9)
+    if R["view"] == "global":
+        tx.text(0.0, 1.0, cols[0], va="top", fontsize=7.5, family="monospace")
+        tx.text(0.25, 1.0, cols[1], va="top", fontsize=7.5, family="monospace")
+        tx.text(0.50, 1.0, "\n".join(scenarios(R)[:3] + [""] + hypo_lines(R)), va="top", fontsize=8.5)
+    else:
+        tx.text(0.0, 1.0, cols[0], va="top", fontsize=8.5, family="monospace")
+        tx.text(0.36, 1.0, cols[1], va="top", fontsize=8.5, family="monospace")
+        tx.text(0.70, 1.0, "\n".join(scenarios(R)), va="top", fontsize=9)
     fig.savefig(path); plt.close(fig)
 
 
@@ -435,9 +540,13 @@ def main():
         for j, n in enumerate(R["zones"][side]["all"][1:], 2):
             print(f"  если провалят → зона {j}: {n['lo']:.0f}–{n['hi']:.0f} · вес {n['score']:.1f}: "
                   + "; ".join(f"{nm} {p_:.0f}" for nm, p_, _ in sorted(n["levels"], key=lambda t: -t[2])[:7]))
+    if a.view == "global":
+        print()
+        print("\n".join(hypo_lines(R)))
     png = out / f"{R['sym']}_{a.view}.png"
     draw(R, png)
-    js = {"sym": R["sym"], "now": str(R["now"]), "px": R["px"],
+    hy = hypotheses(R) if a.view == "global" else None
+    js = {"sym": R["sym"], "now": str(R["now"]), "px": R["px"], "hypotheses": hy["H"] if hy else None,
           "zones": {s: [{**{kk: vv for kk, vv in z.items() if kk != "levels"}, "levels": [list(l) for l in z["levels"]]}
                         for z in R["zones"][s]["all"]] for s in ("LONG", "SHORT")}}
     (out / f"{R['sym']}_{a.view}.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
