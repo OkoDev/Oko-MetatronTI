@@ -311,6 +311,10 @@ def build(base: str, view: str = "local") -> dict:
         for k in ("PP", "S1", "S2", "S3", "R1", "R2", "R3"):
             if k in pv:
                 add(f"пивот {lab} {k}", pv[k], w)
+    piv_all = {lab: pv for lab, pv in piv.items() if not lab.startswith("_")}   # для опции --pivots: + недельные
+    if "W" not in piv_all:
+        piv_all["W"] = bus.get("W") or prev_pivots(D["1d"], "W-SUN", now)
+        piv["_src_W"] = "шина" if "W" in bus else "дневки"
     vtf, vdays, vbin = P["vp"]
     vp = volume_profile(D[vtf], vdays, vbin)
     vp["label"] = f"объём {vdays}д"
@@ -334,7 +338,7 @@ def build(base: str, view: str = "local") -> dict:
                 z0["entered"] = f"OTE импульса {'↑' if rec['dir'] == 'up' else '↓'} {TFD[rec['tf']]}, откат {rec['depth']:.2f}"
         zones[side] = {"zone": zl[0] if zl else None, "next": zl[1] if len(zl) > 1 else None, "all": zl}
     return {"sym": base, "now": now, "px": px, "impulses": found, "zones": zones, "fvgs": fvgs, "obs": obs,
-            "vp": vp, "pivots": piv, "chart": D[P["chart"][0]], "chart_tf": P["chart"][0], "chart_days": P["chart"][1],
+            "vp": vp, "pivots": piv, "piv_all": piv_all, "link_pivots": False, "chart": D[P["chart"][0]], "chart_tf": P["chart"][0], "chart_days": P["chart"][1],
             "view": view, "levels_n": {k: len(v) for k, v in levels.items()}}
 
 
@@ -366,6 +370,19 @@ def scenarios(R: dict) -> list[str]:
     return out
 
 
+def near_pivot(R: dict, price: float, tol: float = 0.015) -> str:
+    """Опция --pivots (Егор 12.10: «как ложится на недельные пивоты?»): ближайший пивот старших периодов к уровню
+    гипотезы — « ≈W R1 86758». Дальше tol от уровня — пусто: за уши не притягиваем. Без опции — всегда пусто."""
+    if not R.get("link_pivots"):
+        return ""
+    cand = [(f"{lab} {k}", val) for lab, pv in R["piv_all"].items() for k, val in pv.items()
+            if k in ("PP", "S1", "S2", "S3", "R1", "R2", "R3")]
+    if not cand:
+        return ""
+    name, val = min(cand, key=lambda t: abs(t[1] - price))
+    return f" ≈{name} {val:.0f}" if abs(val / price - 1) <= tol else ""
+
+
 def hypotheses(R: dict) -> dict | None:
     """ГИПОТЕЗЫ, А НЕ ПЛАН (Егор 12.10: «важны гипотезы, а не строгое утверждение одного плана; знать, когда каждая
     отменяется и что делать дальше»). Детектор даёт один счёт волн — здесь он раскладывается на три гипотезы от самого
@@ -389,32 +406,33 @@ def hypotheses(R: dict) -> dict | None:
     soft4 = w[5] - sg * 0.5 * alt3
     beyond5 = (px - w[5]) * sg > 0
     h1_ok = (corr - w[1]) * sg > 0 and (corr - soft4) * sg > 0
+    lv = lambda p_: f"{p_:.0f}" + near_pivot(R, p_)                           # noqa: E731  уровень (+ пивот при --pivots)
     H = [dict(n=1, name="4-я волна перед 5-й (третья растянута)",
               status="подтверждается" if beyond5 else ("в игре" if h1_ok else "отменена"),
-              confirm=f"{up} {w[5]:.0f}",
-              target=" / ".join(f"{corr + sg * k * l1:.0f}" for k in (0.618, 1.0, 1.618)) + "  (0.618 / 1 / 1.618 первой)",
-              cancel=f"{dn} {soft4:.0f} → гипотеза 2 (жёстко — {dn} {w[1]:.0f})",
+              confirm=f"{up} {lv(w[5])}",
+              target=" / ".join(lv(corr + sg * k * l1) for k in (0.618, 1.0, 1.618)) + "  (0.618 / 1 / 1.618 первой)",
+              cancel=f"{dn} {lv(soft4)} → гипотеза 2 (жёстко — {dn} {lv(w[1])})",
               depth=abs(w[5] - corr) / alt3),
          dict(n=2, name="пять волн завершены, коррекция всего хода",
               status="отменена" if beyond5 else "в игре",
-              confirm=f"{dn} {corr:.0f}, затем {dn} {w[4]:.0f}",
-              target=" / ".join(f"{w[5] - sg * f * full:.0f}" for f in (0.382, 0.5, 0.618)) + "  (0.382 / 0.5 / 0.618 хода)",
+              confirm=f"{dn} {lv(corr)}, затем {dn} {lv(w[4])}",
+              target=" / ".join(lv(w[5] - sg * f * full) for f in (0.382, 0.5, 0.618)) + "  (0.382 / 0.5 / 0.618 хода)",
               cancel=f"{up} {w[5]:.0f} → гипотеза 1; {dn} {w[0]:.0f} → гипотеза 3")]
     par = [r for r in val if r["dir"] != m["dir"] and abs(r["waves"][5][1] / w[0] - 1) < 0.01]
-    levels = [(w[5], f"{w[5]:.0f} — подтв. гип. 1"), (soft4, f"{soft4:.0f} — отмена гип. 1"), (w[0], f"{w[0]:.0f} — начало хода")]
+    levels = [(w[5], f"{lv(w[5])} — подтв. гип. 1"), (soft4, f"{lv(soft4)} — отмена гип. 1"), (w[0], f"{w[0]:.0f} — начало хода")]
     if abs(corr - w[5]) > 0:
-        levels.append((corr, f"{corr:.0f} — подтв. гип. 2"))
+        levels.append((corr, f"{lv(corr)} — подтв. гип. 2"))
     if par:
         pr = max(par, key=lambda r: r["range_pct"])
         p0 = pr["waves"][0][1]; lp = abs(p0 - w[0])
         weak = w[0] + sg * 0.618 * lp
         H.append(dict(n=3, name=f"весь ход — коррекция старшего импульса {'↓' if sg > 0 else '↑'} ({TFD[pr['tf']]})",
                       status="отменена" if (px - p0) * sg > 0 else "в игре",
-                      confirm=f"{dn} {w[0]:.0f}",
-                      target=" / ".join(f"{w[5] - sg * k * lp:.0f}" for k in (0.5, 0.618)) + "  (нога 0.5 / 0.618 старшей)",
-                      cancel=f"{up} {weak:.0f} слабеет (отыграно > 0.618), {up} {p0:.0f} — отменена",
+                      confirm=f"{dn} {lv(w[0])}",
+                      target=" / ".join(lv(w[5] - sg * k * lp) for k in (0.5, 0.618)) + "  (нога 0.5 / 0.618 старшей)",
+                      cancel=f"{up} {lv(weak)} слабеет (отыграно > 0.618), {up} {lv(p0)} — отменена",
                       retr=full / lp))
-        levels[2] = (w[0], f"{w[0]:.0f} — подтв. гип. 3")
+        levels[2] = (w[0], f"{lv(w[0])} — подтв. гип. 3")
     return {"main": m, "corr": corr, "H": H, "levels": levels}
 
 
@@ -519,9 +537,11 @@ def main():
     ap.add_argument("--sym", default="BTC")
     ap.add_argument("--view", default="local", choices=list(PROFILES))
     ap.add_argument("--out", default=str(ROOT / "data" / "mtf_card"))
+    ap.add_argument("--pivots", action="store_true", help="опция: связать уровни гипотез с пивотами W/M/Q/Y (W и M — из шины)")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     R = build(a.sym.upper(), a.view)
+    R["link_pivots"] = a.pivots
     print(f"{R['sym']} · {R['now']} · цена {R['px']:.2f} · уровней: лонг {R['levels_n']['LONG']}, шорт {R['levels_n']['SHORT']}")
     print("ИМПУЛЬСЫ (каскад ТФ):")
     for rec in R["impulses"]:
@@ -543,13 +563,18 @@ def main():
     if a.view == "global":
         print()
         print("\n".join(hypo_lines(R)))
-    png = out / f"{R['sym']}_{a.view}.png"
+    if a.pivots:
+        print("\nПИВОТЫ для связи с гипотезами:")
+        for lab, pv in R["piv_all"].items():
+            print(f"  {lab} ({R['pivots'].get('_src_' + lab, '?')}): "
+                  + " · ".join(f"{k} {pv[k]:.0f}" for k in ("S3", "S2", "S1", "PP", "R1", "R2", "R3") if k in pv))
+    png = out / f"{R['sym']}_{a.view}{'_piv' if a.pivots else ''}.png"
     draw(R, png)
     hy = hypotheses(R) if a.view == "global" else None
     js = {"sym": R["sym"], "now": str(R["now"]), "px": R["px"], "hypotheses": hy["H"] if hy else None,
           "zones": {s: [{**{kk: vv for kk, vv in z.items() if kk != "levels"}, "levels": [list(l) for l in z["levels"]]}
                         for z in R["zones"][s]["all"]] for s in ("LONG", "SHORT")}}
-    (out / f"{R['sym']}_{a.view}.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    (out / f"{R['sym']}_{a.view}{'_piv' if a.pivots else ''}.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     print(f"\n→ {png}")
 
 
