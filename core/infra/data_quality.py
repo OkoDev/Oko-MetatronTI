@@ -43,6 +43,37 @@ _TF_SECONDS: dict[str, int] = {
 }
 
 
+_warned_no_time = False
+
+
+def _last_bar_time(df: pd.DataFrame) -> Optional[datetime]:
+    """Время открытия последней свечи (UTC) или None, если взять неоткуда.
+
+    Формат бота — RangeIndex + колонка `time` (мс эпохи); DatetimeIndex — запасной путь.
+    🔴 13.10.2026 (F02 внешнего аудита): раньше бралось `df.index[-1]` — у бота это НОМЕР СТРОКИ, исключение
+    проглатывалось, и свеча любой давности считалась свежей (проверено: месячная → `(True, 'ok')`)."""
+    try:
+        if "time" in df.columns:
+            v = df["time"].iloc[-1]
+            if pd.api.types.is_number(v):
+                v = float(v)
+                ts = pd.Timestamp(v, unit="ms" if v > 1e11 else "s", tz="UTC")
+            else:
+                ts = pd.Timestamp(v)
+        elif isinstance(df.index, pd.DatetimeIndex):
+            ts = df.index[-1]
+        else:
+            return None
+        if ts is pd.NaT:
+            return None
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return ts.to_pydatetime()
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("[data_quality] время последней свечи не читается: %s: %s", type(e).__name__, e)
+        return None
+
+
 def check_ohlcv_quality(
     df: Optional[pd.DataFrame],
     timeframe: str = "15m",
@@ -80,13 +111,14 @@ def check_ohlcv_quality(
     # 2. Свежесть последней свечи
     tf_secs = _TF_SECONDS.get(timeframe, 900)
     max_age = freshness_mult * tf_secs
-    try:
-        last_ts = df.index[-1]
-        # pandas Timestamp → datetime
-        if hasattr(last_ts, "to_pydatetime"):
-            last_ts = last_ts.to_pydatetime()
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.replace(tzinfo=timezone.utc)
+    last_ts = _last_bar_time(df)
+    if last_ts is None:
+        global _warned_no_time
+        if not _warned_no_time:                      # громко, но один раз за запуск — не на каждую пару
+            _warned_no_time = True
+            logger.warning("[data_quality] %s %s: время последней свечи взять неоткуда (нет колонки `time`, "
+                           "индекс не временной) — свежесть НЕ проверяется", symbol, timeframe)
+    else:
         age_secs = (datetime.now(timezone.utc) - last_ts).total_seconds()
         if age_secs > max_age:
             reason = (
@@ -95,8 +127,6 @@ def check_ohlcv_quality(
             )
             logger.info("[data_quality] %s %s: %s", symbol, timeframe, reason)
             return False, reason
-    except Exception:
-        pass  # если индекс не datetime — пропускаем проверку свежести
 
     # 3. Пробелы в close
     if "close" in df.columns:

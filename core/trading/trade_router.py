@@ -153,6 +153,20 @@ class TradeRouter:
             if gate is None:
                 continue
             res = await _run_gate_safe(gate, ctx)
+            if not res.passed:
+                # SOFT штатно всегда passed=True → сюда попадает только ОШИБКА самой проверки (F03, 13.10.2026):
+                # неизвестный штраф не считаем нулевым — вход запрещён, причина в журнале отказов
+                hard_drops.append((res.gate_name, res.reason))
+                await self._record_drop(ctx, res)
+                await self._publish_position_dropped(ctx, hard_drops, soft_penalties)
+                return SubmitResult(
+                    trade_id=None,
+                    exchange_order_id=None,
+                    soft_penalties=soft_penalties,
+                    hard_drops=hard_drops,
+                    final_strength=ctx.strength,
+                    is_registered=False,
+                )
             if res.strength_penalty > 0:
                 soft_penalties.append((res.gate_name, res.strength_penalty, res.reason))
                 ctx.strength = max(0, ctx.strength - res.strength_penalty)
@@ -638,14 +652,17 @@ async def _safe_regime(bot: Any, symbol: str) -> Optional[str]:
 
 
 async def _run_gate_safe(gate: Gate, ctx: GateContext) -> GateResult:
-    """Запускает gate.check с защитой от исключений."""
+    """Запускает gate.check с защитой от исключений.
+
+    🔴 13.10.2026 (F03 внешнего аудита; Егор: «запрет входа при ошибке проверки»): раньше исключение возвращало
+    passed=True — сбой проверки РАЗРЕШАЛ вход. Теперь отказ: проверка, которая не отработала, вход не пропускает.
+    Конвейер по-прежнему не падает — отказ уходит в журнал с причиной."""
     try:
         return await gate.check(ctx)
     except Exception as e:
-        logger.warning("[TradeRouter] gate %s error: %s", gate.name, e)
-        # Безопасно пропускаем (gate не должен ломать pipeline)
+        logger.error("[TradeRouter] gate %s error: %s — вход запрещён (ошибка проверки)", gate.name, e)
         return GateResult(
-            passed=True, gate_name=gate.name, gate_type=gate.gate_type,
+            passed=False, gate_name=gate.name, gate_type=gate.gate_type,
             reason=f"gate exception: {e}",
             features={"gate_exception": str(e)},
         )
