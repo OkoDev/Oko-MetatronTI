@@ -2777,6 +2777,13 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                                     _h, _m, 100 * _h / max(_h + _m, 1))
                 except Exception:
                     pass
+                try:                                             # паспорт данных, правило 1 (ARCH-147)
+                    from core.infra.candles import WATCH as _cw, report_line as _crl
+                    _crep = _cw.report(reset=True)
+                    if _crep["checked"]:
+                        logger.info("[DATA-CONTRACT] %s", _crl(_crep))
+                except Exception:
+                    pass
                 logger.info("[SCAN-PERF] на пару: свечи %.0f мс · подготовка(CPU) %.0f мс · "
                             "детекторы и прочее %.0f мс · всего %.2f с | цикл %.0f с, пар %d",
                             _mf*1000, _mc*1000, _other*1000, _mt,

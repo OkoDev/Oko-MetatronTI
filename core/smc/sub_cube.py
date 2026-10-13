@@ -23,6 +23,7 @@ import pandas as pd
 
 from core.smc.smc_snapshot import build_smc_snapshot
 from core.smc.smc_specialist import fast_smc_verdict
+from core.infra.candles import last_bar_time
 
 logger = logging.getLogger("SMCSubCube")
 
@@ -138,13 +139,10 @@ class SMCSubCube:
                 df = ohlcv_by_tf.get(tf)
                 if df is None or len(df) == 0:
                     continue
-                if "time" in df.columns:
-                    last = df["time"].iloc[-1]
-                elif isinstance(df.index, pd.DatetimeIndex):
-                    last = df.index[-1]
-                else:
+                last = last_bar_time(df)         # единственный способ узнать время свечи (core/infra/candles)
+                if last is None:
                     return None                  # номер строки временем не считаем — лучше без кэша
-                parts.append((tf, int(len(df)), str(last)))
+                parts.append((tf, int(len(df)), last.isoformat()))
             return tuple(parts) or None
         except Exception:                                        # noqa: BLE001
             return None

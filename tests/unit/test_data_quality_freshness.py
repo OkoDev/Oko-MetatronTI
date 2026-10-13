@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import time
 
 import pandas as pd
 import pytest
@@ -15,13 +14,10 @@ import pytest
 from core.infra import data_quality as dq
 
 
-def _bot_bars(last_open_age_sec: float, n: int = 200, step_sec: int = 900, unit: str = "ms") -> pd.DataFrame:
-    """ФОРМАТ БОТА: RangeIndex + `time`; последняя свеча открылась `last_open_age_sec` секунд назад."""
-    last = time.time() - last_open_age_sec
-    t = [last - (n - 1 - i) * step_sec for i in range(n)]
-    if unit == "ms":
-        t = [int(x * 1000) for x in t]
-    return pd.DataFrame({"time": t, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+def _bot_bars(last_open_age_sec: float, unit: str = "ms") -> pd.DataFrame:
+    """ФОРМАТ БОТА из общей заготовки (паспорт данных, правило 8); последняя свеча открылась столько секунд назад."""
+    from tests.factories import bot_bars
+    return bot_bars(n=200, tf="15m", last_open_age_sec=last_open_age_sec, time_unit=unit)
 
 
 def test_bot_format_month_old_candle_is_stale():

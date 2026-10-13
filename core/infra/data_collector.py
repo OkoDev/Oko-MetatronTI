@@ -7,6 +7,7 @@ import re
 import time as _time
 
 from core.infra.api_engine import ApiEngine
+from core.infra.candles import WATCH as _CANDLE_WATCH
 
 # DEV-81: TTL кеша funding rate (30 мин)
 _FUNDING_CACHE_TTL = 1800
@@ -242,7 +243,15 @@ class RealTimeData:
         Делегирует в ApiEngine: LRU cache → in-flight dedup → retry → circuit breaker.
         force_refresh=True (DEV-227): обход кэша/circuit breaker, реальный REST."""
         normalized_symbol = self.normalize_symbol(symbol)
-        return await self._engine.fetch_ohlcv(normalized_symbol, timeframe, limit, since, force_refresh=force_refresh)
+        df = await self._engine.fetch_ohlcv(normalized_symbol, timeframe, limit, since, force_refresh=force_refresh)
+        # Паспорт данных, правило 1 (ARCH-147): на входе СЧИТАЕМ нарушения формата свечей, работе не мешаем.
+        # Отчёт — строка [DATA-CONTRACT] в логе раз за круг скана.
+        if df is not None:
+            try:
+                _CANDLE_WATCH.observe(df, timeframe, normalized_symbol)
+            except Exception:                            # noqa: BLE001 — наблюдатель не роняет поставщика
+                pass
+        return df
 
     async def get_funding_rate(self, symbol: str) -> Optional[float]:
         """

@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # 'cannot schedule new futures after shutdown' на /analytics, /signal_weights, /api/live).
 # Авто-пересоздание если закрыт. Фикс 16.06.
 import concurrent.futures as _cf
+from core.infra.time_utils import utc_iso as _utc_iso
 _DASH_EXECUTOR: "_cf.ThreadPoolExecutor | None" = None
 
 
@@ -3211,8 +3212,8 @@ async def _handle_repair_expire(request: web.Request) -> web.Response:
             if row[2] != "OPEN":
                 return None, f"status={row[2]}"
             conn.execute(
-                "UPDATE simulated_trades SET status='EXPIRED', closed_at=datetime('now') WHERE id=?",
-                (trade_id,),
+                "UPDATE simulated_trades SET status='EXPIRED', closed_at=? WHERE id=?",
+                (_utc_iso(), trade_id),                       # паспорт данных, правило 2: одна запись времени
             )
             conn.commit()
             return trade_id, "ok"
@@ -3254,18 +3255,19 @@ async def _handle_repair_expire_bulk(request: web.Request) -> web.Response:
             if older_hours > 0:
                 cur = conn.execute(
                     """UPDATE simulated_trades
-                       SET status='EXPIRED', closed_at=datetime('now')
+                       SET status='EXPIRED', closed_at=?
                        WHERE status='OPEN'
                          AND (exchange_order_id IS NULL OR exchange_order_id = '')
-                         AND created_at < datetime('now', ? || ' hours')""",
-                    (f"-{older_hours}",),
+                         AND datetime(created_at) < datetime('now', ? || ' hours')""",
+                    (_utc_iso(), f"-{older_hours}"),   # время не сравниваем как текст
                 )
             else:
                 cur = conn.execute(
                     """UPDATE simulated_trades
-                       SET status='EXPIRED', closed_at=datetime('now')
+                       SET status='EXPIRED', closed_at=?
                        WHERE status='OPEN'
-                         AND (exchange_order_id IS NULL OR exchange_order_id = '')"""
+                         AND (exchange_order_id IS NULL OR exchange_order_id = '')""",
+                    (_utc_iso(),)
                 )
             conn.commit()
             return cur.rowcount

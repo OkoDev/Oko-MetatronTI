@@ -27,51 +27,10 @@ MIN_BARS: dict[str, int] = {
     "default": 50,       # общий минимум для scan_one
 }
 
-# Таймфрейм → длительность в секундах
-_TF_SECONDS: dict[str, int] = {
-    "1m": 60,
-    "3m": 180,
-    "5m": 300,
-    "15m": 900,
-    "30m": 1800,
-    "1h": 3600,
-    "2h": 7200,
-    "4h": 14400,
-    "6h": 21600,
-    "1d": 86400,
-    "1w": 604800,
-}
-
+# Длительности ТФ и время последней свечи — из единого места (паспорт данных, правило 1)
+from core.infra.candles import TF_SECONDS as _TF_SECONDS, last_bar_time as _last_bar_time  # noqa: E402
 
 _warned_no_time = False
-
-
-def _last_bar_time(df: pd.DataFrame) -> Optional[datetime]:
-    """Время открытия последней свечи (UTC) или None, если взять неоткуда.
-
-    Формат бота — RangeIndex + колонка `time` (мс эпохи); DatetimeIndex — запасной путь.
-    🔴 13.10.2026 (F02 внешнего аудита): раньше бралось `df.index[-1]` — у бота это НОМЕР СТРОКИ, исключение
-    проглатывалось, и свеча любой давности считалась свежей (проверено: месячная → `(True, 'ok')`)."""
-    try:
-        if "time" in df.columns:
-            v = df["time"].iloc[-1]
-            if pd.api.types.is_number(v):
-                v = float(v)
-                ts = pd.Timestamp(v, unit="ms" if v > 1e11 else "s", tz="UTC")
-            else:
-                ts = pd.Timestamp(v)
-        elif isinstance(df.index, pd.DatetimeIndex):
-            ts = df.index[-1]
-        else:
-            return None
-        if ts is pd.NaT:
-            return None
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC")
-        return ts.to_pydatetime()
-    except Exception as e:                                       # noqa: BLE001
-        logger.warning("[data_quality] время последней свечи не читается: %s: %s", type(e).__name__, e)
-        return None
 
 
 def check_ohlcv_quality(

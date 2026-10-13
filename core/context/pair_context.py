@@ -352,6 +352,10 @@ class AccountState:
     updated_at: Optional[datetime] = None
 
 
+# Типы событий из каталога: всё остальное — запись мимо него (паспорт данных, правило 5)
+_KNOWN_EVENTS = frozenset(getattr(SphereEvent, _n) for _n in dir(SphereEvent) if _n.isupper())
+
+
 class PairContextBus:
     """
     Центральная Сфера Куба Метатрона — Shared Context Bus.
@@ -451,6 +455,17 @@ class PairContextBus:
             self._states[symbol] = PairState(symbol=symbol)
         return self._states[symbol]
 
+    def _warn_unknown(self, kind: str, name: str, symbol: str) -> None:
+        """Паспорт данных, правило 5 (ARCH-147): запись мимо каталога шины — ошибка производителя.
+        До 13.10.2026 уходила в debug и терялась молча. Теперь WARNING, один раз на имя за запуск."""
+        seen = self.__dict__.setdefault("_unknown_seen", set())
+        if (kind, name) in seen:
+            return
+        seen.add((kind, name))
+        logger.warning("[Bus] неизвестное %s «%s» (пара %s): производитель пишет мимо каталога шины. "
+                       "Для поля значение ПОТЕРЯНО. Завести в dataclass и в bus_catalog — docs/DATA_CONTRACT.md",
+                       kind, name, symbol)
+
     def update(self, symbol: str, **kwargs) -> None:
         """Обновляет поля PairState для символа."""
         state = self.get(symbol)
@@ -458,7 +473,7 @@ class PairContextBus:
             if hasattr(state, key):
                 setattr(state, key, val)
             else:
-                logger.debug("[Bus] неизвестное поле PairState: %s", key)
+                self._warn_unknown("поле PairState", key, symbol)
         self._mirror_dirty(symbol)
 
     def set_watchlist(self, symbol: str, strategy: str, entry: Optional[Dict[str, Any]]) -> None:
@@ -509,7 +524,7 @@ class PairContextBus:
             if hasattr(st, key):
                 setattr(st, key, val)
             else:
-                logger.debug("[Bus] MarketState: неизвестное поле %s", key)
+                self._warn_unknown("поле MarketState", key, "*MARKET*")
         st.updated_at = datetime.now(timezone.utc)
 
     def get_market(self) -> "MarketState":
@@ -700,6 +715,9 @@ class PairContextBus:
         Также обновляет PairState соответствующими полями.
         """
         data = data or {}
+
+        if event_type not in _KNOWN_EVENTS:
+            self._warn_unknown("тип события", str(event_type), symbol)
 
         # Авто-обновление PairState по типу события
         self._auto_update_state(symbol, event_type, data)

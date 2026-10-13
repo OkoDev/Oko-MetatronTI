@@ -88,9 +88,9 @@ def test_cached_snap_is_a_copy(cube, bars):
 
 
 def _bot_bars(t0_ms: int, n: int = 50, step_ms: int = 900_000) -> pd.DataFrame:
-    """ФОРМАТ БОТА: RangeIndex + колонка `time` (мс), окно фиксированной длины (api_engine: reset_index(drop=True))."""
-    return pd.DataFrame({"time": [t0_ms + i * step_ms for i in range(n)], "open": range(n),
-                         "high": range(1, n + 1), "low": range(n), "close": range(1, n + 1)})
+    """ФОРМАТ БОТА из общей заготовки (паспорт данных, правило 8): окно из `n` свечей, первая открылась в `t0_ms`."""
+    from tests.factories import bot_bars
+    return bot_bars(n=n, tf="15m", last_open_ms=t0_ms + (n - 1) * step_ms)
 
 
 def test_bot_format_new_bar_invalidates(cube):
