@@ -11,9 +11,12 @@
 `C:/oko_data/history/1m`, добавлены: пропуск неизменившихся монет, отчёт и проверка свежести.
 
 Запуск:
+    python scripts/tfcache.py refresh          # докачать хвост 1m + пересобрать (ночная pm2-задача)
     python scripts/tfcache.py build            # пересобрать устаревшие (по времени файла 1m)
     python scripts/tfcache.py build --all      # пересобрать всё заново
     python scripts/tfcache.py status           # что отстаёт
+
+🔴 Хранилище ЗАМЕРОВ (Binance 1m → ТФ). НЕ путать с онлайн-кэшем бота (`cache_topup_cron.py`, другой контур).
 """
 from __future__ import annotations
 
@@ -106,32 +109,38 @@ def status() -> int:
     return 1 if (stale or need) else 0
 
 
-def main() -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:  # молчим: настройка кодировки консоли, на расчёт не влияет
-        pass
-    ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["build", "status"])
-    ap.add_argument("--all", action="store_true", help="пересобрать все монеты, а не только устаревшие")
-    ap.add_argument("--procs", type=int, default=3, help="процессов (по умолчанию 3 — чтобы не мешать боту)")
-    ap.add_argument("--limit", type=int, default=0)
-    a = ap.parse_args()
-    if a.cmd == "status":
-        return status()
+def refresh(days: int = 40, procs: int = 3) -> int:
+    """Докачать хвост 1m за последние `days` дней + пересобрать изменившиеся ТФ. Для ночной pm2-задачи.
 
+    Докачку делает тот же `fetch_binance_vision --out parquet`, что и руками: дневными архивами Binance,
+    резюмируемо. Затем `build` пересоберёт только монеты, у которых 1m стал новее ТФ."""
+    import subprocess
+    since = (pd.Timestamp.utcnow() - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+    print(f"[tfcache refresh] докачка 1m с {since} → {PARQ}")
+    r = subprocess.run([sys.executable, str(Path(__file__).with_name("fetch_binance_vision.py")),
+                        "--out", "parquet", "--tfs", "1m", "--since-day", since,
+                        "--outdir", str(PARQ.parent)], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    for line in (r.stdout or "").splitlines()[-3:]:
+        print("   " + line)
+    if r.returncode != 0:
+        print(f"[tfcache refresh] 🔴 докачка 1m вернула {r.returncode}: {(r.stderr or '')[:200]}")
+    return _build(procs=procs, only_stale=True)
+
+
+def _build(procs: int, only_stale: bool, limit: int = 0) -> int:
     syms = sorted(p.stem for p in PARQ.glob("*.parquet"))
-    if not a.all:
+    if only_stale:
         syms = [s for s in syms if _needs_rebuild(s)]
-    if a.limit:
-        syms = syms[:a.limit]
+    if limit:
+        syms = syms[:limit]
     if not syms:
         print("[tfcache] пересобирать нечего — все ТФ новее своих 1m")
         return 0
-    print(f"[tfcache] пересобираю {len(syms)} монет × {len(TFS)} ТФ, процессов {a.procs}")
+    print(f"[tfcache] пересобираю {len(syms)} монет × {len(TFS)} ТФ, процессов {procs}")
     t0 = time.time()
     done = errs = 0
-    with Pool(a.procs) as pool:
+    with Pool(procs) as pool:
         for i, (sym, n, err) in enumerate(pool.imap_unordered(build, syms), 1):
             if err:
                 errs += 1
@@ -142,6 +151,24 @@ def main() -> int:
                 print(f"   {i}/{len(syms)} · {time.time() - t0:.0f} с")
     print(f"[tfcache] ГОТОВО: монет {done}, ошибок {errs}, за {time.time() - t0:.0f} с")
     return 1 if errs else 0
+
+
+def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # молчим: настройка кодировки консоли, на расчёт не влияет
+        pass
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["build", "status", "refresh"])
+    ap.add_argument("--all", action="store_true", help="пересобрать все монеты, а не только устаревшие")
+    ap.add_argument("--procs", type=int, default=3, help="процессов (по умолчанию 3 — чтобы не мешать боту)")
+    ap.add_argument("--limit", type=int, default=0)
+    a = ap.parse_args()
+    if a.cmd == "status":
+        return status()
+    if a.cmd == "refresh":
+        return refresh(procs=a.procs)
+    return _build(procs=a.procs, only_stale=not a.all, limit=a.limit)
 
 
 if __name__ == "__main__":

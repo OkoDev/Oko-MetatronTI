@@ -106,6 +106,7 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     c = sqlite3.connect(f"file:{CACHE}?mode=ro", uri=True)
     tfs = [r[0] for r in c.execute("SELECT DISTINCT timeframe FROM ohlcv_cache")]
+    print("СТАРЫЙ ОБЩИЙ КЭШ — ohlcv_cache.db (выведен из замеров 13.10, справочно):")
     print(f"{'ТФ':<6}{'последний бар (UTC)':<24}{'отставание':>12}   источник")
     stale = []
     for tf in sorted(tfs, key=lambda x: BAR_MIN.get(x, 999)):
@@ -124,9 +125,9 @@ def main() -> int:
             continue
         last = datetime.fromtimestamp(ref[0] / 1000, timezone.utc)
         age = (now - last).total_seconds() / 86400
-        flag = "  🔴" if age > a.max_age else ""
-        if age > a.max_age:
-            stale.append((tf, age))
+        # Старый общий кэш (ohlcv_cache.db) выведен из замеров 13.10 (харнесс → G:/oko_lab/tf), 3m/5m в нём
+        # устарели ОСОЗНАННО. Показываем, но в код возврата НЕ включаем — иначе ежедневная проверка всегда красная.
+        flag = "  ⚪ (устар., вне замеров)" if age > a.max_age else ""
         print(f"{tf:<6}{last:%Y-%m-%d %H:%M:%S}{'':<5}{age:>10.1f} сут{flag}   эталон {ref[1]}")
     # 🔴 поиск смешанных рядов идёт ~8 мин на таблице 19 ГБ — для ежедневной проверки это дорого,
     # поэтому по умолчанию выключен: разовая ревизия запускается флагом --sources
