@@ -183,6 +183,17 @@ def _rows_to_df(rows: list[tuple]):
     return df.drop(columns=["time"]).astype("float64")
 
 
+def _naive_utc(df):
+    """Индекс к одному виду — время UTC БЕЗ зоны, как уже лежит в 477 файлах на диске.
+
+    🔴 13.10.2026 (правило 2 паспорта данных): на диске индекс naive, свежие строки приходили tz-aware,
+    и `concat` падал с «Cannot compare tz-naive and tz-aware timestamps» — докачка 1m не шла вовсе."""
+    if getattr(df.index, "tz", None) is not None:
+        df = df.copy()
+        df.index = df.index.tz_convert("UTC").tz_localize(None)
+    return df
+
+
 def _covered_months(path: Path) -> tuple[set, object]:
     """Какие месяцы в файле уже ПОЛНЫЕ. Последний месяц полным не считаем — он мог
     качаться дневными архивами и обрываться на середине."""
@@ -195,7 +206,8 @@ def _covered_months(path: Path) -> tuple[set, object]:
         return set(), None
     if not len(have):
         return set(), None
-    per = have.index.tz_localize(None).to_period("M")   # to_period ругается на tz
+    have = _naive_utc(have)
+    per = have.index.to_period("M")
     last = per.max()
     return {str(p) for p in per.unique() if p != last}, have
 
@@ -221,9 +233,9 @@ def _sync_parquet(sym: str, tf: str, months: list[str], path: Path, workers: int
                     parts.append(rows)
     if not parts:
         return 0
-    df = _rows_to_df([r for p in parts for r in p])
+    df = _naive_utc(_rows_to_df([r for p in parts for r in p]))
     if have is not None:
-        df = pd.concat([have, df])
+        df = pd.concat([_naive_utc(have), df])
         df = df[~df.index.duplicated(keep="last")].sort_index()
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, compression="zstd")

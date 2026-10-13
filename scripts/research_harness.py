@@ -31,6 +31,7 @@ research_harness.py — ЕДИНАЯ ТОЧКА ВХОДА ДЛЯ ПРОВЕРК
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import sqlite3
 import sys
@@ -50,6 +51,52 @@ except Exception:  # noqa: BLE001
     pass
 
 DB = str(ROOT / "ohlcv_cache.db")
+
+# ─────────────────── ОТКУДА БЕРЁМ СВЕЧИ (13.10.2026, решение Егора) ───────────────────
+# Хранилищ три, у каждого своя работа: `C:/oko_data/market` — ОНЛАЙН (бой, терминал, карточка; BingX),
+# `G:/oko_lab/tf` — ЗАМЕРЫ (Binance 1m → ТФ, 477 монет), `ohlcv_cache.db` — старый общий кэш.
+# Харнесс исторически читал ТРЕТЬЕ, и из-за этого замеры на 3m/5m шли по данным апреля и мая, а
+# 45 пар «монета+ТФ» в нём лежат от РАЗНЫХ бирж. Первичный источник замеров — лабораторные паркеты.
+# Переключатель оставлен, чтобы сверить старые выводы: OKO_HARNESS_SOURCE=cache возвращает прежнее
+# поведение, не меняя ни одной строки замера.
+SOURCE = os.environ.get("OKO_HARNESS_SOURCE", "lab").lower()    # lab | cache
+LAB_TF = Path("G:/oko_lab/tf")
+
+
+def _lab_sym(sym: str) -> str:
+    """`BTC/USDT` и `BTC/USDT:USDT` → `BTCUSDT`: в паркетах имена без разделителей."""
+    return sym.replace("/USDT:USDT", "USDT").replace("/", "").replace(":USDT", "")
+
+
+def _lab_path(sym: str, tf: str) -> Path:
+    return LAB_TF / tf / f"{_lab_sym(sym)}.parquet"
+
+
+def _lab_bars(tf: str) -> list[tuple[str, int]]:
+    """(символ, число баров) по всем монетам ТФ — из МЕТАДАННЫХ parquet, без чтения данных (~5 с на 477 файлов)."""
+    import pyarrow.parquet as pq
+    out = []
+    for f in sorted((LAB_TF / tf).glob("*.parquet")):
+        try:
+            base = f.stem[:-4] if f.stem.endswith("USDT") else f.stem   # BTCUSDT → BTC, но не трогаем USDT внутри имени
+            out.append((base + "/USDT", pq.ParquetFile(f).metadata.num_rows))
+        except Exception:                                    # молчим: битый файл просто не попадёт во вселенную
+            continue
+    return out
+
+
+def _lab_span(sym: str, tf: str) -> tuple | None:
+    """(первый бар, последний бар, число баров) — читаем одну колонку, индекс приходит вместе с ней."""
+    f = _lab_path(sym, tf)
+    if not f.exists():
+        return None
+    try:
+        d = pd.read_parquet(f, columns=["close"])
+        if not len(d):
+            return None
+        return pd.Timestamp(d.index[0]), pd.Timestamp(d.index[-1]), len(d)
+    except Exception:                                        # молчим: битый файл не участвует в отборе
+        return None
 COST_LIMIT = 0.35          # круг лимитом
 COST_MARKET = 0.79         # круг по рынку
 
@@ -99,9 +146,14 @@ def universe(tf: str, min_bars: int | None = None, n: int = 25, seed: int = 19) 
     """Вселенная из кэша. Тот же seed → те же монеты, что в прошлых замерах."""
     if min_bars is None:
         min_bars = MIN_BARS_TF.get(tf, 12000)
-    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
-        rows = c.execute("SELECT symbol,COUNT(*) n FROM ohlcv_cache WHERE timeframe=? "
-                         "GROUP BY symbol HAVING n>? ORDER BY n DESC", (tf, min_bars)).fetchall()
+    warn_if_stale(tf)
+    if SOURCE == "lab":
+        rows = [(sym, n) for sym, n in _lab_bars(tf) if n > min_bars]
+        rows.sort(key=lambda r: -r[1])
+    else:
+        with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
+            rows = c.execute("SELECT symbol,COUNT(*) n FROM ohlcv_cache WHERE timeframe=? "
+                             "GROUP BY symbol HAVING n>? ORDER BY n DESC", (tf, min_bars)).fetchall()
     if not rows:
         raise RuntimeError(
             f"universe({tf}): НОЛЬ символов с историей > {min_bars} баров. "
@@ -135,13 +187,29 @@ def core_universe(tf: str, since: str = "2023-01-01", until: str = "2026-06-01",
     """
     if min_bars is None:
         min_bars = MIN_BARS_TF.get(tf, 12000)
-    lo = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
-    hi = int(pd.Timestamp(until, tz="UTC").timestamp() * 1000)
-    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
-        rows = c.execute(
-            "SELECT symbol, COUNT(*) n, MIN(time) f, MAX(time) l FROM ohlcv_cache "
-            "WHERE timeframe=? GROUP BY symbol HAVING n>? AND f<=? AND l>=?",
-            (tf, min_bars, lo, hi)).fetchall()
+    warn_if_stale(tf)
+    if SOURCE == "lab":
+        lo_t, hi_t = pd.Timestamp(since), pd.Timestamp(until)
+        rows = []
+        for sym, n in _lab_bars(tf):
+            if n <= min_bars:
+                continue
+            sp = _lab_span(sym, tf)
+            if sp is None:
+                continue
+            first, last, cnt = sp
+            first = first.tz_localize(None) if first.tz is not None else first
+            last = last.tz_localize(None) if last.tz is not None else last
+            if first <= lo_t and last >= hi_t:
+                rows.append((sym, cnt, first, last))
+    else:
+        lo = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
+        hi = int(pd.Timestamp(until, tz="UTC").timestamp() * 1000)
+        with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
+            rows = c.execute(
+                "SELECT symbol, COUNT(*) n, MIN(time) f, MAX(time) l FROM ohlcv_cache "
+                "WHERE timeframe=? GROUP BY symbol HAVING n>? AND f<=? AND l>=?",
+                (tf, min_bars, lo, hi)).fetchall()
     warn_if_stale(tf)
     if not rows:
         raise RuntimeError(
@@ -163,6 +231,19 @@ def data_age_days(tf: str) -> float | None:
     🔴 13.10.2026 (правило 9 паспорта данных): у 3m кэш отставал на 184 дня, у 5m на 134, а замер
     этого не показывал — он просто сужался до последнего бара. Класс тот же, что `min_bars`: пустой
     или усечённый результат вместо отказа. Эталонный символ — чтобы запрос лёг на индекс (19 ГБ)."""
+    if SOURCE == "lab":
+        try:
+            f = _lab_path("BTC/USDT", tf)
+            if not f.exists():
+                return None
+            d = pd.read_parquet(f, columns=["close"])
+            last = pd.Timestamp(d.index[-1])
+            if last.tz is not None:
+                last = last.tz_convert("UTC").tz_localize(None)
+            return (pd.Timestamp.utcnow().tz_localize(None) - last).total_seconds() / 86400
+        except Exception as e:                               # noqa: BLE001
+            print(f"[харнесс] возраст данных {tf} не проверен: {type(e).__name__}: {e}")
+            return None
     try:
         with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
             for ref in ("BTC/USDT", "ETH/USDT"):
@@ -183,12 +264,21 @@ def warn_if_stale(tf: str) -> None:
     age = data_age_days(tf)
     if age is not None and age > MAX_LAG_DAYS:
         print(f"🔴 [харнесс] кэш {tf} отстаёт на {age:.0f} сут — замер НЕ про текущий рынок. "
-              f"Докачать: python scripts/fetch_binance_vision.py --tfs {tf} · проверить: scripts/cache_freshness.py")
+              f"Пересобрать: python scripts/tfcache.py build · проверить: scripts/cache_freshness.py")
 
 
 def load(sym: str, tf: str) -> pd.DataFrame:
     """OHLCV с DatetimeIndex. Для SMC-детекторов делайте .reset_index(drop=True)."""
     warn_if_stale(tf)
+    if SOURCE == "lab":
+        f = _lab_path(sym, tf)
+        if not f.exists():
+            return pd.DataFrame()
+        d = pd.read_parquet(f)
+        if getattr(d.index, "tz", None) is None:          # в паркетах индекс naive-UTC
+            d.index = d.index.tz_localize("UTC")
+        d.index.name = "ts"
+        return d[["open", "high", "low", "close", "volume"]]
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
         d = pd.read_sql("SELECT time,open,high,low,close,volume FROM ohlcv_cache "
                         "WHERE symbol=? AND timeframe=? ORDER BY time", c, params=(sym, tf))
