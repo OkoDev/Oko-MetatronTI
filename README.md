@@ -116,6 +116,7 @@ python scripts/test_gate.py         # ворота: падают только н
 | [docs/BACKLOG_CONSOLIDATED.md](docs/BACKLOG_CONSOLIDATED.md) | Единый реестр незакрытого и план по важности |
 | [docs/REGISTRY.md](docs/REGISTRY.md), [TOOLS.md](TOOLS.md) | Какие инструменты уже есть |
 | [docs/DATA_CONTRACT.md](docs/DATA_CONTRACT.md) | Паспорт данных: требования к свечам, времени, шине и признакам на входе |
+| [docs/TOOL_CONTRACT.md](docs/TOOL_CONTRACT.md) | Паспорт инструмента: как новое входит в проект — тесты, самопроверка, отчёт |
 | [docs/ENCYCLOPEDIA.md](docs/ENCYCLOPEDIA.md) | Концепция «Куба Метатрона» и структура проекта |
 | [docs/SYSTEM_MAP.md](docs/SYSTEM_MAP.md), [docs/GLOSSARY.md](docs/GLOSSARY.md) | Карта системы и словарь терминов |
 | [docs/adr/](docs/adr/README.md) | Архитектурные решения |

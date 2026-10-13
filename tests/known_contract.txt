@@ -1,0 +1,4 @@
+# Принятые нарушения паспорта инструмента (docs/TOOL_CONTRACT.md).
+# Обновить: python scripts/code_contract.py --update
+молчащий except: bot/monitoring.py:2035: except Exception:
+молчащий except: scripts/news_sphere.py:231: except Exception:

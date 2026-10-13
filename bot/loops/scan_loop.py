@@ -2782,8 +2782,9 @@ async def scan_all_pairs(bot, check_divergences: bool = True) -> None:
                     _crep = _cw.report(reset=True)
                     if _crep["checked"]:
                         logger.info("[DATA-CONTRACT] %s", _crl(_crep))
-                except Exception:
-                    pass
+                except Exception as _dc_e:                       # noqa: BLE001 — отчёт не роняет цикл, но и не молчит
+                    logger.warning("[DATA-CONTRACT] отчёт наблюдателя свечей не собран: %s: %s",
+                                   type(_dc_e).__name__, _dc_e)
                 logger.info("[SCAN-PERF] на пару: свечи %.0f мс · подготовка(CPU) %.0f мс · "
                             "детекторы и прочее %.0f мс · всего %.2f с | цикл %.0f с, пар %d",
                             _mf*1000, _mc*1000, _other*1000, _mt,

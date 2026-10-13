@@ -108,7 +108,7 @@ def pm2_scripts() -> set[str]:
                     f = Path(c) if Path(c).is_absolute() else Path(e.get("pm_cwd", ".")) / c
                     try:
                         out.add(f.resolve().relative_to(ROOT).as_posix())
-                    except ValueError:
+                    except ValueError:  # молчим: путь вне корня проекта — такой скрипт не наш
                         pass
         return out
     except Exception as e:  # noqa: BLE001

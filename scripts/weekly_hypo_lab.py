@@ -33,7 +33,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-except Exception:
+except Exception:  # молчим: настройка кодировки консоли, на расчёт не влияет
     pass
 
 TF = Path("G:/oko_lab/tf/15m")

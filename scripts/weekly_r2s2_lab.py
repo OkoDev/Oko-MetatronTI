@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-except Exception:
+except Exception:  # молчим: настройка кодировки консоли, на расчёт не влияет
     pass
 from weekly_hypo_touch_lab import (COST, FLAGS, JOINT, TF1H, TRIG, WAIT, WEEKS, summary, trade)  # noqa: E402
 

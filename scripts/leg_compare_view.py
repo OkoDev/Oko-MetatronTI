@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-except Exception:
+except Exception:  # молчим: настройка кодировки консоли, на расчёт не влияет
     pass
 from core.infra.market_store import read_bars          # noqa: E402
 from core.smc.oko_sm_engine import run_structure, current_leg   # noqa: E402

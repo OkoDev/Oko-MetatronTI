@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-except Exception:
+except Exception:  # молчим: настройка кодировки консоли, на расчёт не влияет
     pass
 from research_verify import card, normalize, save_md  # noqa: E402
 
