@@ -402,20 +402,27 @@ def call_gemini_vision(png_bytes: bytes, symbol: str, ta_snapshot: dict | None =
             types.Part.from_text(text=prompt_text),
             types.Part.from_bytes(data=png_bytes, mime_type="image/png"),
         ]
-        resp = client.models.generate_content(
-            model=GEMINI_MODEL_PRIMARY,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                max_output_tokens=2000,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-                system_instruction=(
-                    "Только русский. Только факты с графика. "
-                    "БЕЗ markdown разметки — никаких **, *, _, #. "
-                    "Строго следуй шаблону. Никакой воды, только числа и символы."
-                ),
+        _vcfg = types.GenerateContentConfig(
+            temperature=0.3,
+            max_output_tokens=2000,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            system_instruction=(
+                "Только русский. Только факты с графика. "
+                "БЕЗ markdown разметки — никаких **, *, _, #. "
+                "Строго следуй шаблону. Никакой воды, только числа и символы."
             ),
         )
+        try:
+            resp = client.models.generate_content(
+                model=GEMINI_MODEL_PRIMARY, contents=contents, config=_vcfg)
+        except Exception as e:
+            # 14.10: + 429 (квота flash 20/сутки) → на flash-lite, как у текстовых вызовов.
+            # vision опционален: при полном провале возвращаем маркер, но текстовый разбор пишется.
+            if not any(s in str(e) for s in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                raise
+            print(f"[vision] {str(e)[:40]} → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
+            resp = client.models.generate_content(
+                model=GEMINI_MODEL_FALLBACK, contents=contents, config=_vcfg)
         # Логируем обрезку
         try:
             reason = resp.candidates[0].finish_reason if resp.candidates else "unknown"
