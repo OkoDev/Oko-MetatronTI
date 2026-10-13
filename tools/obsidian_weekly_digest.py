@@ -39,6 +39,9 @@ DISCUSSION_FILE = PROJECT_ROOT / "DISCUSSION.md"
 ENV_FILE = PROJECT_ROOT / ".env"
 
 GEMINI_MODEL = "gemini-2.5-flash"
+# 13.10: своя квота у каждой модели (free-tier 20 запросов/СУТКИ НА МОДЕЛЬ), поэтому запасная
+# живёт, когда основная уже отдаёт 429 — как у остальных шести инструментов.
+GEMINI_MODEL_FALLBACK = "gemini-2.5-flash-lite"
 
 
 # ── ENV ──────────────────────────────────────────────────────────────────────
@@ -158,39 +161,48 @@ def collect_db_metrics(since: datetime) -> str:
 # ── GEMINI CALL ───────────────────────────────────────────────────────────────
 
 def call_gemini(prompt: str, context: str) -> str:
-    """Вызов Gemini 2.5 Flash."""
-    try:
-        import google.generativeai as genai
-        from google.generativeai.types import GenerationConfig
-    except ImportError:
-        return "(google-generativeai не установлен)"
+    """Дайджест от Gemini. 🔴 При неудаче БРОСАЕТ исключение, а не возвращает текст ошибки.
+
+    13.10: раньше здесь возвращалась строка «(ошибка Gemini: …)», она уходила в файл дайджеста,
+    и инструмент печатал «✅». Внешне — свежий артефакт, по сути — пустая страница; ровно тот
+    класс, из-за которого шесть инструментов простояли 24 дня незамеченными. Отказ должен быть
+    виден: пусть лучше файла не будет, тогда вахта scripts/llm_health.py его хватится.
+    """
+    # Старый SDK google-generativeai объявлен прекращённым («All support has ended»),
+    # поэтому здесь тот же google-genai, что у остальных инструментов.
+    from google import genai
+    from google.genai import types
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return "(GEMINI_API_KEY не найден)"
+        raise RuntimeError("GEMINI_API_KEY не найден в .env")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        generation_config=GenerationConfig(
-            temperature=0.3,
-            max_output_tokens=4000,
-        ),
+    # Google считает наш VPN-выход RU → 400; LLM_PROXY (.env) — как в tools/llm_ask.py
+    _px = os.environ.get("LLM_PROXY")
+    client = genai.Client(api_key=api_key,
+                          http_options=types.HttpOptions(client_args={"proxy": _px}) if _px else None)
+    cfg = types.GenerateContentConfig(
+        temperature=0.3,
+        max_output_tokens=4000,
         system_instruction=(
             "Ты ассистент проекта Oko MTF Trading Bot. "
             "Создавай структурированные дайджесты на русском языке. "
             "БЕЗ markdown разметки кроме заголовков ## и ###. "
             "Используй wikilinks [[DEV-XXX]] для задач. "
             "Будь конкретным — приводи числа, ключевые решения, не пересказывай."
-        )
+        ),
     )
-
     full_prompt = f"{prompt}\n\n---КОНТЕКСТ---\n\n{context}"
     try:
-        response = model.generate_content(full_prompt)
-        return response.text
-    except Exception as e:
-        return f"(ошибка Gemini: {e})"
+        resp = client.models.generate_content(model=GEMINI_MODEL, contents=full_prompt, config=cfg)
+        return (resp.text or "").strip()
+    except Exception as e:                                    # noqa: BLE001
+        msg = str(e)
+        if not any(s in msg for s in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+            raise
+        print(f"[weekly_digest] {msg[:40]} → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
+        resp = client.models.generate_content(model=GEMINI_MODEL_FALLBACK, contents=full_prompt, config=cfg)
+        return (resp.text or "").strip()
 
 
 # ── RENDER ────────────────────────────────────────────────────────────────────
@@ -226,7 +238,7 @@ month: "{month_link}"
 """
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Obsidian Weekly Digest через Gemini")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--dry-run", action="store_true", help="Собрать контекст, не вызывать Gemini")
@@ -273,7 +285,7 @@ def main() -> None:
         print("\n--- КОНТЕКСТ (dry-run) ---")
         print(context[:2000])
         print("...")
-        return
+        return 0
 
     print("  Вызываю Gemini...", end=" ", flush=True)
     prompt = f"""Создай структурированный недельный дайджест проекта Oko MTF Bot за период {since.strftime('%d.%m')}–{now.strftime('%d.%m.%Y')}.
@@ -296,7 +308,18 @@ def main() -> None:
 
 Используй wikilinks [[DEV-XXX]] для задач. Приводи конкретные числа из контекста."""
 
-    digest = call_gemini(prompt, context)
+    # 13.10: отказ громкий и БЕЗ записи файла — иначе страница с текстом ошибки выглядит
+    # свежим артефактом, и вахта llm_health считает задачу выполненной.
+    try:
+        digest = call_gemini(prompt, context)
+    except Exception as e:                                    # noqa: BLE001
+        print("FAIL")
+        print(f"[weekly_digest] ОШИБКА: дайджест не создан, файл не записан: {e}", file=sys.stderr)
+        return 1
+    if not digest:
+        print("FAIL")
+        print("[weekly_digest] ОШИБКА: модель вернула пустой текст, файл не записан", file=sys.stderr)
+        return 1
     print("OK")
 
     output_text = build_obsidian_page(week, digest, since, now)
@@ -305,7 +328,8 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(output_text, encoding="utf-8")
     print(f"✅ → {out_path.relative_to(PROJECT_ROOT)}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

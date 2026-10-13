@@ -77,7 +77,11 @@ class MessageComposer:
             self._ai_available = True
             logger.info("MessageComposer: Claude haiku подключён")
         except ImportError:
-            logger.debug("MessageComposer: anthropic не установлен — pip install anthropic")
+            # 13.10: было logger.debug — и отказ оставался невидимым. Ключ в .env ЕСТЬ, пакета нет,
+            # значит AI не вызывался ни разу, а интерпретации молча берутся из статического словаря.
+            # Отказ подсистемы должен быть виден в логе: WARNING один раз при старте.
+            logger.warning("MessageComposer: ключ задан, но пакет anthropic не установлен — "
+                           "AI-интерпретация ВЫКЛЮЧЕНА, работает статический словарь")
 
     async def interpret(
         self,

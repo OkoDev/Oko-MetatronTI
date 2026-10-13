@@ -46,6 +46,14 @@ def _age_file(rel: str) -> float | None:
     return (time.time() - p.stat().st_mtime) / 3600
 
 
+def _age_glob(pattern: str) -> float | None:
+    """Возраст САМОГО СВЕЖЕГО файла по маске — для задач с датой в имени (WEEKLY-2026-W42.md)."""
+    files = [p for p in ROOT.glob(pattern) if p.is_file()]
+    if not files:
+        return None
+    return (time.time() - max(p.stat().st_mtime for p in files)) / 3600
+
+
 def _age_sql(db: Path, query: str) -> float | None:
     """Возраст самой свежей строки (query возвращает unixtime). None = нет строк/БД."""
     if not db.exists():
@@ -112,6 +120,9 @@ WATCH: list[dict] = [
      "age": lambda: _age_sql(EXTERNAL_DB, "SELECT MAX(ts) FROM news_items"), "max_h": 6,
      "fix": "pm2 logs news-sphere; цепочка LLM_CHAIN",
      "check": _news_tone_share},
+    {"key": "weekly_digest", "name": "Недельный дайджест Obsidian",
+     "age": lambda: _age_glob("obsidian/Index/WEEKLY-*.md"), "max_h": 192,
+     "fix": "python tools/obsidian_weekly_digest.py"},
     {"key": "news_compass", "name": "Часовой компас",
      "age": lambda: _age_sql(EXTERNAL_DB, "SELECT MAX(ts) FROM compass_log"), "max_h": 4,
      "fix": "pm2 logs news-sphere"},
