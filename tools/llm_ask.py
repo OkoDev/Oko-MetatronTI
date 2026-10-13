@@ -232,6 +232,56 @@ def stop_gateway(proc) -> None:
 FALLBACK_ORDER = ["cerebras", "groq", "openrouter", "mistral", "github_models",
                   "sambanova", "deepseek", "nvidia", "gemini"]
 
+# ─── РОЛИ: задача просит УМЕНИЕ, а не имя модели (13.10) ──────────────────────
+# Егор: «если мы меняем состав роя, выполнимые задачи не должны МОЛЧА прекращать исполняться».
+# Привязка задачи к конкретной модели — и есть причина простоев: модель сняли с каталога
+# (groq/compound, llama-3.3-70b-versatile), выбрали квоту (gemini 20/сутки), кончился баланс
+# (deepseek) — и задача умирала вместе с ней. Теперь задача называет РОЛЬ, а реестр сам
+# перебирает живых кандидатов по порядку. Поменялся состав роя — правка ТОЛЬКО здесь.
+# (provider, model|None) — None значит дефолтную модель провайдера из DEFAULT_MODELS.
+ROLES: dict[str, list[tuple[str, Optional[str]]]] = {
+    # дешёвая массовая классификация (новости): отдельная модель, чтобы не жечь квоту боевого голоса
+    "classify_cheap": [("groq_qwen", None), ("groq", None), ("openrouter", None)],
+    # пересказ/сжатие длинного текста (дайджесты, архивация обсуждений)
+    "summarize_long": [("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"),
+                       ("groq", None), ("openrouter", None)],
+    # рассуждение и синтез (вердикты, брифинг советника)
+    "reason_strong": [("ag_opus", None), ("groq", None), ("openrouter", None), ("or_dots", None)],
+    # короткий быстрый ответ (интерпретация сигнала)
+    "chat_fast": [("groq", None), ("groq_qwen", None), ("openrouter", None)],
+}
+
+
+def ask_role(role: str, prompt: str, max_tokens: int = 2000,
+             image_path: Optional[Path] = None) -> tuple[str, str]:
+    """Ответ первого живого кандидата роли. Возвращает (текст, 'provider/model').
+
+    🔴 Бросает RuntimeError, если не ответил НИКТО: отказ должен быть громким, иначе задача
+    тихо остаётся без результата (из-за этого шесть инструментов простояли 24 дня).
+    Шлюз OmniRoute поднимается только если до его кандидата реально дошла очередь.
+    """
+    if role not in ROLES:
+        raise ValueError(f"неизвестная роль {role}; есть: {sorted(ROLES)}")
+    errors, gw = [], None
+    try:
+        for provider, model in ROLES[role]:
+            if not has_key(provider):
+                errors.append(f"{provider}: нет ключа")
+                continue
+            if provider in GATEWAY_PROVIDERS and gw is None and not gateway_alive():
+                gw = ensure_gateway()
+            try:
+                text = call_provider(provider, prompt, model, max_tokens, image_path)
+                if not (text or "").strip():
+                    raise RuntimeError("пустой ответ")
+                return text, f"{provider}/{model or DEFAULT_MODELS.get(provider)}"
+            except Exception as e:                       # noqa: BLE001 — пробуем следующего
+                errors.append(f"{provider}: {str(e)[:90]}")
+                print(f"[ask_role:{role}] {provider} не смог → следующий", file=sys.stderr)
+    finally:
+        stop_gateway(gw)
+    raise RuntimeError(f"роль '{role}': не ответил никто из {len(ROLES[role])}. " + " | ".join(errors))
+
 
 def load_env() -> None:
     if not ENV_FILE.exists():
