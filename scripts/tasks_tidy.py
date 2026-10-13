@@ -149,10 +149,31 @@ def main():
         print(f"  L{ln:<4} {rid:<24} | {why}")
 
     # проверка: ключевые активные НЕ должны попасть в архив
+    #
+    # 🔴 13.10.2026: список САМООЧИЩАЮЩИЙСЯ. Был статическим — и заклинил уборку: `DS-326` закрыт 18.06,
+    # но числился «не трогать», поэтому любой прогон с --apply отменял сам себя, и TASKS не чистился.
+    # Теперь имя из списка считается тревогой ТОЛЬКО если его строка в TASKS сейчас не закрыта (нет ✅
+    # в статус-ячейке). Список — страховка от регрессии логики разбора, а не реестр задач.
     done_ids = {rid for _, rid, _ in done_list}
     must_stay = ["REGIME-V2", "ARCH-129-FLOW", "ARCH-96-MULTIACCT", "ARCH-96-HUB",
                  "WAVE-SERVICE", "WAVE-FLAGMAN", "OPS-05", "DS-326", "PROXY-NODE"]
-    leaked = [m for m in must_stay if any(m == d.strip("*[]") or m in d for d in done_ids)]
+
+    def _still_open(name: str) -> bool:
+        """Есть ли в TASKS строка этого ID со статусом НЕ ✅ (т.е. её правда нельзя уносить)."""
+        for l in lines:
+            if name in l and l.lstrip().startswith("|"):
+                cells = [c.strip() for c in l.strip().strip("|").split("|")]
+                if len(cells) >= 2 and not cells[1].replace("~~", "").strip().startswith("✅"):
+                    return True
+        return False
+
+    leaked = [m for m in must_stay
+              if any(m == d.strip("*[]") or m in d for d in done_ids) and _still_open(m)]
+    closed_in_list = [m for m in must_stay
+                      if any(m == d.strip("*[]") or m in d for d in done_ids) and not _still_open(m)]
+    if closed_in_list:
+        print("\n--- из списка must_stay УЖЕ ЗАКРЫТЫ (тревогой не считаем) ---")
+        print("  " + ", ".join(closed_in_list))
     print("\n--- SANITY: ключевые активные, ошибочно унесённые в архив ---")
     print("  " + ("НЕТ — чисто ✅" if not leaked else "🔴 УТЕЧКА: " + ", ".join(leaked)))
 
