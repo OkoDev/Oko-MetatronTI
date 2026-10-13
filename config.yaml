@@ -1705,7 +1705,7 @@ trade_analyzer:
   signal_comment: false
   provider: groq
   api_key: ${GROQ_API_KEY}
-  model: llama-3.3-70b-versatile
+  model: openai/gpt-oss-120b   # 13.10: llama-3.3-70b-versatile снята из каталога Groq (404) — проверено пингом
 
 # ════════════════════════════════════════════════════════════════════════════
 # 🔴 МАРШРУТИЗАТОР ИСТОЧНИКОВ — 193 ключа

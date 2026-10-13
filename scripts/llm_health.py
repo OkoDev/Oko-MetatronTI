@@ -118,7 +118,7 @@ WATCH: list[dict] = [
      "check": _advisor_is_real},
     {"key": "news_tone", "name": "Разметка новостей (news_sphere)",
      "age": lambda: _age_sql(EXTERNAL_DB, "SELECT MAX(ts) FROM news_items"), "max_h": 6,
-     "fix": "pm2 logs news-sphere; цепочка LLM_CHAIN",
+     "fix": "pm2 logs news-sphere; роль classify_cheap в llm_ask.ROLES",
      "check": _news_tone_share},
     {"key": "weekly_digest", "name": "Недельный дайджест Obsidian",
      "age": lambda: _age_glob("obsidian/Index/WEEKLY-*.md"), "max_h": 192,

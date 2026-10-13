@@ -4,13 +4,13 @@
 
 Пайплайн (цикл 30 мин):
   RSS (CoinDesk/Cointelegraph/CryptoSlate + Google News гео/макро) → дедуп (news_items,
-  external_data.db) → классификация qwen3:8b ЛОКАЛЬНО (Ollama, think:false, JSON:
+  external_data.db) → классификация внешним бесплатным роем (llm_ask, роль LLM_ROLE; JSON:
   category/tone/importance/assets/summary_ru) →
     importance >= 8  → немедленно 🗞️ в ACTION-канал
     остальное        → копится; раз в DIGEST_EVERY_H часов сводка топ-5 в FEED-канал.
 
-LLM = локальная (бесплатно, без лимитов; ~5 ток/с хватает: 10-20 новостей/цикл по ~30с).
-Правило эксплуатации: модель на 1080 (ollama GPU-баг #9722) — дайджесты фоновые, не при монтаже.
+LLM = внешний бесплатный рой (02.10: локальная Ollama отключена — не помещалась в RAM
+домашней машины). Нулевая нагрузка на железо; цена — чужие квоты, см. llm_ask.ROLES.
 Reuse: oko_feed.store.conn (дедуп/копилка), oko_feed.alerts.send_tg (русла), RSS-фиды из
 tools/market_news_digest.py. Fear&Greed в сводке.
 
@@ -38,8 +38,28 @@ URGENT_IMPORTANCE = 8           # 09.07: 9 прятал атаки по Иран
                                 # мусор-8 отсеивают self-check + дедуп похожих (_is_dup)
 MAX_AGE_H = 48                  # фиды подмешивают СТАРЬЁ (Decrypt отдал новость 1.5-летней давности)
 MAX_LLM_PER_CYCLE = 20          # защита от лавины на холодном старте
-OLLAMA = "http://localhost:11434/api/generate"
-MODEL = "oko-analyst"           # 08.07 «прошивка»: qwen3:8b + SYSTEM-правила (oko_analyst.Modelfile)
+# 02.10: Ollama отключена Егором НАМЕРЕННО (локальная модель не помещалась в RAM, тормозила
+# систему). Классификация ушла на внешний бесплатный рой — reuse tools/llm_ask (как swarm_compass).
+# Замер 02.10 на реальных заголовках: groq 3/3 валидных JSON за 2.5с · openrouter 2/3 за 7.2с ·
+# mistral 429 · cerebras 402 (free-тир закрыт) · gemini — нет библиотеки google-genai.
+# Нагрузка сферы ~342 классификации/сутки при потолке 960 (20×48) — groq free покрывает ×15.
+# 13.10: своя копия цепочки убрана — сфера просит РОЛЬ `classify_cheap` у llm_ask.ROLES.
+# Два списка провайдеров рядом неизбежно расходятся (модель снимают с каталога, правят в одном
+# месте, второе молча умирает). Порядок кандидатов роли — в tools/llm_ask.py, там же и правится.
+LLM_ROLE = "classify_cheap"
+
+# 13.10: квота токенов не покрывает поток. Нужно ~364к/сутки (598 токенов промпта + ответ
+# на каждую из ~430 новостей), бесплатные провайдеры дают порядка сотни тысяч — проходило
+# 15-20%. Замер КПД источников за неделю (доля размеченных у всех схожая, 14-22%, сравнение
+# корректно): markettwits 936 новостей → 7 важных · GoogleNews-Macro 550 → 1 · CNBC 311 → 1,
+# против Decrypt 102 → 4 · CoinDesk 127 → 3 · GoogleNews-Geo 36 → 2 (обе importance>=8).
+# ⇒ широкие финансовые ленты съедают 61% потока и почти не дают сигнала. Крипто-источники
+# классифицируем ВСЕГДА, остальные — по остаточному бюджету.
+# 13.10: биржевые анонсы и новые тикеры идут ПЕРВЫМИ — это факты-события, а не мнения.
+PRIORITY_SOURCES = {"Bybit-ann", "OKX-ann", "Upbit-ann", "binance_fut-new", "upbit_mkt-new",
+                    "CoinDesk", "Cointelegraph", "TheBlock", "Decrypt", "Blockworks",
+                    "BitcoinMag", "GoogleNews-Geo", "Reddit-Crypto"}
+TAIL_PER_CYCLE = 8              # добор необработанного хвоста (tone IS NULL) за цикл
 
 FEEDS = [
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
@@ -91,6 +111,28 @@ def _price_context() -> str:
 
 def _get(url: str, timeout: int = 20) -> bytes:
     return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout).read()
+
+
+def _llm(prompt: str, max_tokens: int = 400) -> str:
+    """Ответ первого живого кандидата роли. Пустая строка = все упали (вызывающий решает).
+
+    13.10: было СВОЕЙ копией цепочки (LLM_CHAIN) — второй список провайдеров рядом с реестром
+    в llm_ask. Два списка расходятся: модель снимают с каталога, правят в одном месте, а второе
+    молча умирает. Теперь просим РОЛЬ `classify_cheap`, перебор живых — в одном месте на проект.
+    """
+    try:
+        sys.path.insert(0, "tools")
+        from llm_ask import ask_role, load_env
+    except ImportError as e:
+        print(f"[NEWS] llm_ask недоступен: {e}")
+        return ""
+    load_env()
+    try:
+        text, who = ask_role(LLM_ROLE, prompt, max_tokens)
+        return text
+    except Exception as e:  # noqa: BLE001 — роль не ответила никем; решает вызывающий
+        print(f"[NEWS] роль {LLM_ROLE}: {str(e)[:160]}")
+        return ""
 
 
 def fetch_rss() -> list[dict]:
@@ -153,6 +195,95 @@ def fetch_rss() -> list[dict]:
                                 "title": title[:300], "link": link[:500]})
     except Exception as e:
         print(f"[NEWS] CryptoPanic err: {e}")
+    return out
+
+
+def fetch_exchange_news() -> list[dict]:
+    """🏛 БИРЖЕВЫЕ АНОНСЫ (13.10). Другой класс данных, чем ленты мнений: это ФАКТЫ с меткой
+    времени — листинг физически предшествует движению, а тон новостей за ценой лишь следует
+    (замер 30.09: corr с прошлым +0.235, с будущим 0). Все три источника проверены запросом:
+    публичные, БЕЗ ключа. Формат возврата — как у fetch_rss(), чтобы вся труба работала как есть.
+    """
+    out = []
+    try:                                       # Bybit: type=new_crypto — только листинги
+        d = json.loads(_get("https://api.bybit.com/v5/announcements/index"
+                            "?locale=en-US&type=new_crypto&limit=20"))
+        for a in (d.get("result") or {}).get("list") or []:
+            out.append({"source": "Bybit-ann", "title": (a.get("title") or "")[:300],
+                        "link": (a.get("url") or "")[:500],
+                        "ts_pub": int(a.get("publishTime", 0)) // 1000 or None})
+    except Exception as e:
+        print(f"[EXCH] bybit: {str(e)[:70]}")
+    try:                                       # OKX: все анонсы первой страницы
+        d = json.loads(_get("https://www.okx.com/api/v5/support/announcements?page=1"))
+        for grp in d.get("data") or []:
+            for a in grp.get("details") or []:
+                out.append({"source": "OKX-ann", "title": (a.get("title") or "")[:300],
+                            "link": (a.get("url") or "")[:500],
+                            "ts_pub": int(a.get("pTime") or 0) // 1000 or None})
+    except Exception as e:
+        print(f"[EXCH] okx: {str(e)[:70]}")
+    try:                                       # Upbit: category=거래 (trade) — листинги KRW/USDT.
+        # Ключ НЕ нужен (проверено 13.10): api-manager отдаёт публично. Заголовки корейские —
+        # LLM переводит в summary_ru. url в ответе нет, собираем из id.
+        d = json.loads(_get("https://api-manager.upbit.com/api/v1/announcements"
+                            "?os=web&page=1&per_page=20&category=trade"))
+        for n in ((d.get("data") or {}).get("notices") or []):
+            ts = None
+            try:
+                ts = int(dtparse(n.get("listed_at")).timestamp())
+            except Exception:
+                pass
+            out.append({"source": "Upbit-ann", "title": (n.get("title") or "")[:300],
+                        "link": f"https://upbit.com/service_center/notice?id={n.get('id')}",
+                        "ts_pub": ts})
+    except Exception as e:
+        print(f"[EXCH] upbit: {str(e)[:70]}")
+    return out
+
+
+def dtparse(s: str):
+    from datetime import datetime
+    return datetime.fromisoformat(str(s))
+
+
+def detect_new_listings(c) -> list[dict]:
+    """🆕 НОВЫЕ ТИКЕРЫ через diff вселенной. У Binance официального API анонсов НЕТ (проверено
+    по каталогу 1064 endpoint'ов), но новый символ в exchangeInfo часто появляется РАНЬШЕ
+    анонса. Тот же приём для Upbit. Первый прогон только запоминает снимок, событий не даёт."""
+    c.execute("CREATE TABLE IF NOT EXISTS universe_snapshot ("
+              "exchange TEXT PRIMARY KEY, symbols TEXT, ts INTEGER)")
+    out = []
+    srcs = []
+    try:
+        info = json.loads(_get("https://fapi.binance.com/fapi/v1/exchangeInfo"))
+        srcs.append(("binance_fut", {s["symbol"] for s in info.get("symbols", [])
+                                     if s.get("status") == "TRADING"}))
+    except Exception as e:
+        print(f"[EXCH] binance universe: {str(e)[:70]}")
+    try:
+        mk = json.loads(_get("https://api.upbit.com/v1/market/all?isDetails=true"))
+        srcs.append(("upbit_mkt", {m["market"] for m in mk}))
+    except Exception as e:
+        print(f"[EXCH] upbit universe: {str(e)[:70]}")
+
+    for name, cur in srcs:
+        if not cur:
+            continue
+        row = c.execute("SELECT symbols FROM universe_snapshot WHERE exchange=?", (name,)).fetchone()
+        if row:
+            new = cur - set(json.loads(row[0]))
+            if new and len(new) <= 20:         # лавина = биржа поменяла формат, а не листинг
+                for sym in sorted(new):
+                    out.append({"source": f"{name}-new",
+                                "title": f"New trading pair appeared on "
+                                         f"{'Binance Futures' if name.startswith('binance') else 'Upbit'}: {sym}",
+                                "link": f"universe:{name}:{sym}", "ts_pub": int(time.time())})
+            elif new:
+                print(f"[EXCH] {name}: +{len(new)} символов — похоже на смену формата, пропуск")
+        c.execute("INSERT OR REPLACE INTO universe_snapshot VALUES (?,?,?)",
+                  (name, json.dumps(sorted(cur)), int(time.time())))
+    c.commit()
     return out
 
 
@@ -241,11 +372,9 @@ def verify_urgent(title: str, imp: int) -> tuple[bool, str]:
     try:
         p = (VERIFY_PROMPT.replace("{imp}", str(imp))
              .replace("{prices}", _PRICE_CTX).replace("{title}", title))
-        req = urllib.request.Request(OLLAMA, json.dumps({
-            "model": MODEL, "prompt": p, "stream": False, "think": False,
-            "options": {"temperature": 0.1, "num_predict": 150},
-        }).encode(), {"Content-Type": "application/json"})
-        resp = json.load(urllib.request.urlopen(req, timeout=240)).get("response", "")
+        resp = _llm(p, 150)
+        if not resp:
+            return True, ""                           # рой лёг → fail-open (не терять событие)
         m = re.search(r"\{.*\}", resp, re.DOTALL)
         d = json.loads(m.group(0)) if m else {}
         return bool(d.get("confirm")), str(d.get("reason_ru") or "")
@@ -256,14 +385,10 @@ def verify_urgent(title: str, imp: int) -> tuple[bool, str]:
 
 def classify(title: str) -> dict | None:
     try:
-        req = urllib.request.Request(OLLAMA, json.dumps({
-            "model": MODEL,
-            "prompt": PROMPT.replace("{prices}", _PRICE_CTX).replace("{title}", title),
-            "stream": False, "think": False,
-            "options": {"temperature": 0.1, "num_predict": 250},
-        }).encode(), {"Content-Type": "application/json"})
-        resp = json.load(urllib.request.urlopen(req, timeout=240)).get("response", "")
-        m = re.search(r"\{.*\}", resp, re.DOTALL)
+        # 13.10: бюджет ответа подобран ЗАМЕРОМ, не на глаз: 140 → 0/3 валидных JSON,
+        # 180 → 1/3, 220 → 3/3, 250 → 3/3. Кириллица в summary_ru дорогая по токенам.
+        resp = _llm(PROMPT.replace("{prices}", _PRICE_CTX).replace("{title}", title), 220)
+        m = re.search(r"\{.*\}", resp, re.DOTALL) if resp else None
         if not m:
             return None
         d = json.loads(m.group(0))
@@ -579,15 +704,12 @@ def compass(c) -> None:
         return
     data = "\n".join(f"- {p}" for p in parts)
     try:
-        # компас ДУМАЕТ (qwen3 hybrid-thinking, Егор 08.07): раз в час можно позволить
-        # 1-2 мин размышлений — синтез противоречивых данных именно там, где reasoning
-        # даёт качество. Массовая классификация остаётся think:false (скорость).
-        req = urllib.request.Request(OLLAMA, json.dumps({
-            "model": MODEL, "prompt": COMPASS_PROMPT.replace("{data}", data),
-            "stream": False, "think": True,
-            "options": {"temperature": 0.2, "num_predict": 1200},
-        }).encode(), {"Content-Type": "application/json"})
-        resp = json.load(urllib.request.urlopen(req, timeout=300)).get("response", "")
+        # 02.10: раньше компас ДУМАЛ (qwen3 hybrid-thinking, Егор 08.07). У внешних моделей
+        # режима «think» нет — синтез идёт обычным вызовом с большим бюджетом токенов.
+        resp = _llm(COMPASS_PROMPT.replace("{data}", data), 1200)
+        if not resp:
+            print("[COMPASS] рой не ответил — пропуск цикла")
+            return
         m = re.search(r"\{.*\}", resp, re.DOTALL)
         d = json.loads(m.group(0)) if m else {}
     except Exception as e:
@@ -649,7 +771,12 @@ def cycle() -> None:
         _ensure(c)
         fresh, stale = [], []
         now_ts = time.time()
-        for it in fetch_rss():
+        # 13.10: к RSS добавлены биржевые анонсы и diff вселенной символов. Формат тот же,
+        # поэтому дедуп по link, классификация, алерты и дайджест работают без изменений.
+        feed_items = fetch_rss() + fetch_exchange_news() + detect_new_listings(c)
+        for it in feed_items:
+            if not it.get("link"):
+                continue
             if c.execute("SELECT 1 FROM news_items WHERE link=?", (it["link"],)).fetchone():
                 continue
             ts_pub = it.get("ts_pub")
@@ -665,6 +792,9 @@ def cycle() -> None:
         if stale:
             print(f"[NEWS] старьё мимо LLM: {len(stale)}")
         # холодный старт: не гнать сотни старых заголовков через LLM
+        # 13.10: бюджет сначала крипто-источникам (PRIORITY_SOURCES), широкие ленты — на остаток.
+        # sort устойчив, поэтому внутри каждой группы порядок фидов сохраняется.
+        fresh.sort(key=lambda it: it["source"] not in PRIORITY_SOURCES)
         todo, skip = fresh[:MAX_LLM_PER_CYCLE], fresh[MAX_LLM_PER_CYCLE:]
         for it in skip:                              # записать без классификации (дедуп на будущее)
             c.execute("INSERT OR IGNORE INTO news_items(link, ts, source, title, importance) "
@@ -721,6 +851,28 @@ def cycle() -> None:
                 send_tg(f"🗞️ <b>ВАЖНОЕ ИЗ TG</b> [{d.get('category')}] {tone_dot} {imp}/10\n\n"
                         f"{d.get('summary_ru') or text[:200]}\n\n"
                         f'<a href="{link}">{ch}</a>\n\n#NEWS #TG', channel="news")
+        # 🩹 ДОБОР ХВОСТА (13.10). Раньше новость, не прошедшая LLM (лимит провайдера или
+        # превышение MAX_LLM_PER_CYCLE), оставалась tone=NULL НАВСЕГДА: cycle() берёт только те,
+        # которых ещё нет в БД, а записанную уже никто не подбирал. Так потерялось ~80% потока.
+        # Теперь каждый цикл добираем немного старых. Алерты по ним НЕ шлём — это история.
+        tail = c.execute("SELECT link, title FROM news_items WHERE tone IS NULL "
+                         "AND length(title) > 15 ORDER BY ts DESC LIMIT ?",
+                         (TAIL_PER_CYCLE,)).fetchall()
+        tail_done = 0
+        for link, title in tail:
+            d = classify(title) or {}
+            if not d.get("tone"):
+                break                        # рой лёг — не долбить в стену, подождём цикла
+            c.execute("UPDATE news_items SET category=?, tone=?, importance=?, assets=?, "
+                      "summary_ru=? WHERE link=?",
+                      (d.get("category"), d.get("tone"), int(d.get("importance") or 0),
+                       json.dumps(d.get("assets") or [], ensure_ascii=False),
+                       d.get("summary_ru"), link))
+            c.commit()
+            tail_done += 1
+        if tail:
+            print(f"[NEWS] хвост: добрано {tail_done} из {len(tail)}")
+
         # 📅 High-impact событие ближе 12ч → однократный алерт («не держи плечо в FOMC»)
         for ev in upcoming_high_impact(12):
             key = f"cal:{ev['ts']}:{ev['title']}"[:80]
@@ -770,7 +922,7 @@ def cycle() -> None:
 
 
 if __name__ == "__main__":
-    print(f"[NEWS-SPHERE] старт: {len(FEEDS)} фидов · цикл {CYCLE_SEC//60}м · LLM={MODEL} · "
+    print(f"[NEWS-SPHERE] старт: {len(FEEDS)} фидов · цикл {CYCLE_SEC//60}м · роль={LLM_ROLE} · "
           f"срочное >= {URGENT_IMPORTANCE} → ACTION · сводка {DIGEST_EVERY_H}ч → FEED")
     if "--once" in sys.argv:
         cycle()

@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 # Дефолтные модели по провайдеру
 _PROVIDER_DEFAULTS = {
     "anthropic":  {"model": "claude-haiku-4-5-20251001", "base_url": None},
-    "groq":       {"model": "llama-3.1-8b-instant",      "base_url": "https://api.groq.com/openai/v1"},
+    # 13.10: llama-3.1-8b-instant снята из каталога Groq (404). Живые на этом ключе проверены
+    # пингом: openai/gpt-oss-120b и qwen/qwen3.8-27b. Модуль выключен (signal_comment: false),
+    # но с мёртвой моделью он не заработал бы и при включении.
+    "groq":       {"model": "openai/gpt-oss-120b",       "base_url": "https://api.groq.com/openai/v1"},
     "openai":     {"model": "gpt-4o-mini",               "base_url": None},
     "openrouter": {"model": "meta-llama/llama-3.1-8b-instruct:free", "base_url": "https://openrouter.ai/api/v1"},
     "ollama":     {"model": "llama3",                    "base_url": "http://localhost:11434/v1"},

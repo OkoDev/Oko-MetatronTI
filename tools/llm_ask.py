@@ -245,8 +245,11 @@ ROLES: dict[str, list[tuple[str, Optional[str]]]] = {
     # пересказ/сжатие длинного текста (дайджесты, архивация обсуждений)
     "summarize_long": [("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"),
                        ("groq", None), ("openrouter", None)],
-    # рассуждение и синтез (вердикты, брифинг советника)
-    "reason_strong": [("ag_opus", None), ("groq", None), ("openrouter", None), ("or_dots", None)],
+    # рассуждение и синтез (вердикты, брифинг советника).
+    # 13.10 (Егор): groq ПЕРВЫМ — у него своя квота 1000/сут, а ag_opus идёт за чужой счёт
+    # (Antigravity OAuth, лимиты не публикуются и уже кончались 18.08). Opus — сразу второй,
+    # чтобы при отказе groq синтез делал сильный голос, а не слабый.
+    "reason_strong": [("groq", None), ("ag_opus", None), ("openrouter", None), ("or_dots", None)],
     # короткий быстрый ответ (интерпретация сигнала)
     "chat_fast": [("groq", None), ("groq_qwen", None), ("openrouter", None)],
 }
