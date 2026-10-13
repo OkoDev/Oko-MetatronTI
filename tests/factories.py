@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
 import pandas as pd
 
 TF_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000,
@@ -34,6 +35,41 @@ def bot_bars(n: int = 200, tf: str = "15m", last_open_ms: int | None = None, las
     if time_unit == "s":
         df["time"] = df["time"] // 1000
     return df
+
+
+def trades(*, coins: int = 15, days: int = 40, per_day: int = 4, cand_share: float = 0.4,
+           edge: float = 0.0, base: float = 0.0, noise: float = 1.0, start: str = "2024-01-01",
+           years: int = 2, seed: int = 7, cand_coins: int | None = None,
+           spike_days: int = 0, spike: float = 0.0, edge_by_year: tuple[float, ...] | None = None) -> pd.DataFrame:
+    """Таблица сделок в контракте `scripts/research_verify.normalize`: sym · side · ts · pnl (% после коста).
+
+    Для golden-case карточки вердикта: `edge` — надбавка кандидату в процентных пунктах, `cand_coins` —
+    на скольких монетах она есть (остальным кандидатам ноль, проверка охвата), `spike_days`/`spike` —
+    редкие дни с огромной прибылью (проверка хрупкости), `edge_by_year` — своя надбавка на каждый год
+    (проверка устойчивости по годам: например (2.5, -1.0) — был эдж и пропал). Колонка `cand` — маска кандидата.
+    """
+    rng = np.random.default_rng(seed)
+    t0 = pd.Timestamp(start)
+    syms = [f"C{i:02d}/USDT:USDT" for i in range(coins)]
+    edge_syms = set(syms if cand_coins is None else syms[:cand_coins])
+    rows = []
+    for y in range(years):
+        for d in range(days):
+            day = t0 + pd.DateOffset(years=y) + pd.Timedelta(days=d)
+            hot = spike_days and d < spike_days
+            for k in range(per_day):
+                sym = syms[int(rng.integers(coins))]
+                is_cand = rng.random() < cand_share
+                pnl = base + rng.normal(0, noise)
+                if is_cand:
+                    e = edge if edge_by_year is None else edge_by_year[y % len(edge_by_year)]
+                    pnl += e if sym in edge_syms else 0.0
+                    if hot:
+                        pnl += spike
+                rows.append((sym, "LONG" if rng.random() < 0.5 else "SHORT",
+                             day + pd.Timedelta(hours=int(rng.integers(24))), float(pnl), bool(is_cand)))
+    df = pd.DataFrame(rows, columns=["sym", "side", "ts", "pnl", "cand"])
+    return df.sort_values("ts").reset_index(drop=True)
 
 
 def shifted(df: pd.DataFrame, bars: int, tf: str = "15m") -> pd.DataFrame:

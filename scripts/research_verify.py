@@ -192,7 +192,9 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
         return out
 
     # 1. деньги
-    gates["деньги"] = sc["mean"] > 0 and sc["frail"] > 0
+    # 🔴 13.10: гейты и вердикт — ОБЫЧНЫЕ bool, а не numpy.bool_: иначе `json.dumps` на них падает,
+    # а проверка `is True` у читателя молча не срабатывает (поймано тестами ARCH-148.3).
+    gates["деньги"] = bool(sc["mean"] > 0 and sc["frail"] > 0)
     say(f"\n[{'✅' if gates['деньги'] else '❌'}] ДЕНЬГИ: средн {sc['mean']:+.2f}% > 0 и без лучших 10% "
         f"{sc['frail']:+.2f}% > 0")
 
@@ -213,7 +215,7 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
             nul_s[g].append(_strat_delta(ps, m, strata[g], S["min_slice"]))
     nul = np.asarray(nul)
     pv = (np.sum(nul >= obs) + 1) / (len(nul) + 1)
-    gates["лучше остальных (нулевая модель)"] = obs > 0 and pv < S["alpha"]
+    gates["лучше остальных (нулевая модель)"] = bool(obs > 0 and pv < S["alpha"])
     say(f"[{'✅' if gates['лучше остальных (нулевая модель)'] else '❌'}] ЛУЧШЕ ОСТАЛЬНЫХ: Δ {obs:+.2f} п.п. · "
         f"P {pv:.3f} (сдвиг исходов во времени внутри года, {S['n_null']}) · к базе {sc['mean'] - sa['mean']:+.2f}")
 
@@ -222,7 +224,7 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
         dc = (D.pnl - D.ctrl).values
         ok = np.isfinite(dc)
         c_c, c_r = dc[m & ok].mean(), dc[~m & ok].mean()
-        gates["лучше случайного входа той же геометрии"] = c_c > 0
+        gates["лучше случайного входа той же геометрии"] = bool(c_c > 0)
         say(f"[{'✅' if c_c > 0 else '❌'}] КОНТРОЛЬ: кандидат − случайный вход {c_c:+.2f} п.п. "
             f"(у остальных {c_r:+.2f})")
     else:
@@ -250,7 +252,7 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
             rows.append(f"      {y}{tag}: кандидат {a.mean():+6.2f}% (n={len(a)}) · остальные {b.mean():+6.2f}% (n={len(b)})")
         else:
             rows.append(f"      {y}{tag}: мало (кандидат {len(a)}, остальные {len(b)})")
-    ok = cnt >= 2 and pos / cnt >= S["year_share"]
+    ok = bool(cnt >= 2 and pos / cnt >= S["year_share"])
     gates["годы"] = ok
     say(f"[{'✅' if ok else '❌'}] ГОДЫ: кандидат лучше в {pos} из {cnt} (нужно ≥{S['year_share']:.0%}, лет ≥2)")
     L.extend(rows)
@@ -258,10 +260,10 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
         missing.append("подпись режима года (regimes не передан)")
 
     # 6. охват монет и размер выборки
-    ok = sc.get("cov", 0) >= S["cov_share"] * 100
+    ok = bool(sc.get("cov", 0) >= S["cov_share"] * 100)
     gates["охват монет"] = ok
     days, coins = D.day[m].nunique(), D.sym[m].nunique()
-    ok2 = days >= S["min_days"] and coins >= S["min_coins"]
+    ok2 = bool(days >= S["min_days"] and coins >= S["min_coins"])
     gates["выборка (дни, монеты)"] = ok2
     say(f"[{'✅' if ok else '❌'}] ОХВАТ: монет кандидата в плюсе {sc.get('cov', 0):.0f}% (нужно ≥{S['cov_share']:.0%})")
     say(f"[{'✅' if ok2 else '❌'}] ВЫБОРКА: {sc['n']} сделок на {days} днях, {coins} монет "
@@ -274,7 +276,7 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
     top = D[m].groupby("day").pnl.sum().nlargest(k).index
     keep = ~D.day.isin(top).values
     a, b = p[m & keep], p[~m & keep]
-    ok = len(a) >= S["min_slice"] and a.mean() > 0 and a.mean() > b.mean()
+    ok = bool(len(a) >= S["min_slice"] and a.mean() > 0 and a.mean() > b.mean())
     gates["без лучших дней"] = ok
     dm = D.assign(c=m).groupby(["day", "c"]).pnl.mean().unstack()
     dw = dm[True].mean() - dm[False].mean() if True in dm and False in dm else np.nan
@@ -306,7 +308,7 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
                 keep[i] = True
                 last[s] = e if pd.notna(e) else t
         a = p[keep]
-        ok = len(a) >= S["min_slice"] and a.mean() > 0 and a.mean() > sr["mean"]
+        ok = bool(len(a) >= S["min_slice"] and a.mean() > 0 and a.mean() > sr["mean"])
         gates["без перекрытия"] = ok
         say(f"[{'✅' if ok else '❌'}] БЕЗ ПЕРЕКРЫТИЯ: одна позиция на монету — {len(a)} из {sc['n']} · "
             f"средн {a.mean():+.2f}%")
@@ -343,7 +345,7 @@ def card(D: pd.DataFrame, cand, *, name: str, study: str, geo: tuple = (),
     say(f"\n  гипотез на этом наборе за всё время: {len(same)} → случайных «прошло» ожидается "
         f"~{len(same) * S['alpha']:.1f} (по P одного гейта)")
 
-    passed = all(gates.values())
+    passed = bool(all(gates.values()))
     failed = [k for k, v in gates.items() if not v]
     say(f"\n  ИТОГ ЯРУСА 1: {'✅ ПРОШЁЛ' if passed else '❌ НЕ ПРОШЁЛ — ' + ', '.join(failed)}")
     say("  НЕ проверено: " + "; ".join(missing + ["ярус 2: нулевая модель всего поиска"] + list(TIER3)))
@@ -372,7 +374,7 @@ def search_null(D: pd.DataFrame, search, *, name: str, study: str, n: int = 200,
     lab, real = search(p)
     best = np.asarray([search(_shifted(p, groups, rng))[1] for _ in range(n)])
     pv = (np.sum(best >= real) + 1) / (n + 1)
-    ok = pv < S["alpha"]
+    ok = bool(pv < S["alpha"])
     txt = (f"ЯРУС 2 · {study} · {name}: лучший настоящий «{lab}» счёт {real:+.3f} · лучшие на мусоре: "
            f"медиана {np.median(best):+.3f}, 95-й {np.percentile(best, 95):+.3f}, макс {best.max():+.3f} · "
            f"P {pv:.3f} → {'✅ поиск нашёл больше, чем находит на мусоре' if ok else '❌ такое поиск находит и на мусоре'}")
