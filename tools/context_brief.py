@@ -305,7 +305,11 @@ def generate_brief(days: int) -> tuple[str, dict]:
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан в .env")
 
-    client = genai.Client(api_key=key)
+    # 13.10: Google видит наш VPN-выход (VDSka) как RU → 400 «User location is not supported».
+    # LLM_PROXY (.env) — сингапурский прокси, тот же приём, что в tools/llm_ask.py (26.09).
+    _px = os.environ.get("LLM_PROXY")
+    client = genai.Client(api_key=key,
+                          http_options=types.HttpOptions(client_args={"proxy": _px}) if _px else None)
 
     def _call(model_name: str):
         # ThinkingConfig: отключаем reasoning у Gemini 2.5, чтобы все токены ушли в output.
@@ -335,8 +339,11 @@ def generate_brief(days: int) -> tuple[str, dict]:
         resp = _call(GEMINI_MODEL_PRIMARY)
     except Exception as e:
         msg = str(e)
-        if "503" in msg or "UNAVAILABLE" in msg or "overload" in msg.lower():
-            print(f"[context_brief] {GEMINI_MODEL_PRIMARY} 503 → fallback на {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
+        # 13.10: + 429 (квота free-tier 20/сутки НА МОДЕЛЬ — запасная flash-lite при этом жива).
+        # Этот инструмент — хук SessionStart: без условия он молча не обновлял бриф с 19.09.
+        if ("503" in msg or "UNAVAILABLE" in msg or "overload" in msg.lower()
+                or "429" in msg or "RESOURCE_EXHAUSTED" in msg):
+            print(f"[context_brief] {GEMINI_MODEL_PRIMARY}: {msg[:40]} → fallback на {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
             used_model = GEMINI_MODEL_FALLBACK
             resp = _call(GEMINI_MODEL_FALLBACK)
         else:

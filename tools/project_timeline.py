@@ -33,6 +33,8 @@ GEMINI_MODEL_PRIMARY = "gemini-2.5-flash"
 GEMINI_MODEL_FALLBACK = "gemini-2.5-flash-lite"
 MAX_OUTPUT_TOKENS_MONTH = 8000
 MAX_OUTPUT_TOKENS_MERGE = 16000
+# Выше этого ждать бессмысленно: это не минутный лимит, а суточная квота модели → на запасную
+MAX_RETRY_SLEEP_S = 120
 
 
 MONTH_PROMPT = """Ты — историк проекта Oko MTF (торговый бот).
@@ -157,7 +159,10 @@ def call_gemini(prompt: str, max_tokens: int, system: str) -> tuple[str, str]:
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан в .env")
 
-    client = genai.Client(api_key=key)
+    # 13.10: VPN-выход Google считает RU → 400. LLM_PROXY (.env) — как в tools/llm_ask.py
+    _px = os.environ.get("LLM_PROXY")
+    client = genai.Client(api_key=key,
+                          http_options=types.HttpOptions(client_args={"proxy": _px}) if _px else None)
     cfg = types.GenerateContentConfig(
         temperature=0.2,
         max_output_tokens=max_tokens,
@@ -176,11 +181,21 @@ def call_gemini(prompt: str, max_tokens: int, system: str) -> tuple[str, str]:
                 # Извлекаем retry delay
                 m = re.search(r'retryDelay["\']\s*:\s*["\'](\d+)s', msg)
                 delay = int(m.group(1)) + 2 if m else 25
-                print(f"[timeline] 429 attempt {attempt+1}/3, sleep {delay}s", file=sys.stderr)
-                time.sleep(delay)
-                continue
-            if "503" in msg or "UNAVAILABLE" in msg:
-                print(f"[timeline] 503 → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
+                # 13.10: ждать имеет смысл только минутный лимит. Суточная квота (20 запросов
+                # на МОДЕЛЬ) отдаёт retryDelay ~82000s — тут сон означал бы 23 часа молчания,
+                # а запасная flash-lite в этот момент жива: у неё своя суточная квота.
+                if delay <= MAX_RETRY_SLEEP_S:
+                    print(f"[timeline] 429 attempt {attempt+1}/3, sleep {delay}s", file=sys.stderr)
+                    time.sleep(delay)
+                    continue
+                print(f"[timeline] 429 retryDelay {delay}s (суточная квота) → fallback {GEMINI_MODEL_FALLBACK}",
+                      file=sys.stderr)
+                resp = client.models.generate_content(
+                    model=GEMINI_MODEL_FALLBACK, contents=prompt, config=cfg,
+                )
+                return (resp.text or "").strip(), GEMINI_MODEL_FALLBACK
+            if "503" in msg or "UNAVAILABLE" in msg or "RESOURCE_EXHAUSTED" in msg:
+                print(f"[timeline] {msg[:40]} → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
                 resp = client.models.generate_content(
                     model=GEMINI_MODEL_FALLBACK, contents=prompt, config=cfg,
                 )

@@ -203,7 +203,10 @@ def call_gemini(prompt: str) -> tuple[str, str]:
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан в .env")
 
-    client = genai.Client(api_key=key)
+    # 13.10: VPN-выход Google считает RU → 400. LLM_PROXY (.env) — как в tools/llm_ask.py
+    _px = os.environ.get("LLM_PROXY")
+    client = genai.Client(api_key=key,
+                          http_options=types.HttpOptions(client_args={"proxy": _px}) if _px else None)
     cfg = types.GenerateContentConfig(
         temperature=0.3,
         max_output_tokens=MAX_OUTPUT_TOKENS,
@@ -221,8 +224,9 @@ def call_gemini(prompt: str) -> tuple[str, str]:
         return (resp.text or "").strip(), GEMINI_MODEL_PRIMARY
     except Exception as e:
         msg = str(e)
-        if "503" in msg or "UNAVAILABLE" in msg:
-            print(f"[enrich] 503 → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
+        # 13.10: + 429 (квота free-tier 20/сутки НА МОДЕЛЬ — запасная flash-lite при этом жива)
+        if any(s in msg for s in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+            print(f"[enrich] {msg[:40]} → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
             resp = client.models.generate_content(
                 model=GEMINI_MODEL_FALLBACK, contents=prompt, config=cfg,
             )

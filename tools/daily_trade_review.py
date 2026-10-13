@@ -322,7 +322,10 @@ def call_gemini(prompt: str) -> tuple[str, str]:
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан в .env")
 
-    client = genai.Client(api_key=key)
+    # 13.10: VPN-выход Google считает RU → 400. LLM_PROXY (.env) — как в tools/llm_ask.py
+    _px = os.environ.get("LLM_PROXY")
+    client = genai.Client(api_key=key,
+                          http_options=types.HttpOptions(client_args={"proxy": _px}) if _px else None)
     cfg_kwargs: dict = dict(
         temperature=0.2,
         max_output_tokens=MAX_OUTPUT_TOKENS,
@@ -344,8 +347,11 @@ def call_gemini(prompt: str) -> tuple[str, str]:
         return (resp.text or "").strip(), GEMINI_MODEL_PRIMARY
     except Exception as e:
         msg = str(e)
-        if "503" in msg or "UNAVAILABLE" in msg:
-            print(f"[trade_review] 503 → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
+        # 13.10: + 429. Квота free-tier — 20 запросов/СУТКИ НА МОДЕЛЬ, поэтому выбранная
+        # основная НЕ значит выбранную запасную: flash-lite живёт, когда flash уже отдаёт 429.
+        # Без этого условия инструмент молча стоял с 18.09 (замер: 7 инструментов, 24 дня).
+        if "503" in msg or "UNAVAILABLE" in msg or "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            print(f"[trade_review] {msg[:40]} → fallback {GEMINI_MODEL_FALLBACK}", file=sys.stderr)
             resp = client.models.generate_content(
                 model=GEMINI_MODEL_FALLBACK, contents=prompt,
                 config=types.GenerateContentConfig(**cfg_kwargs),
@@ -381,7 +387,10 @@ def call_gemini_vision(png_bytes: bytes, symbol: str, ta_snapshot: dict | None =
         return "[GEMINI_API_KEY не задан]"
 
     try:
-        client = genai.Client(api_key=key)
+        # 13.10: VPN-выход Google считает RU → 400. LLM_PROXY (.env) — как в tools/llm_ask.py
+        _px = os.environ.get("LLM_PROXY")
+        client = genai.Client(api_key=key,
+                              http_options=types.HttpOptions(client_args={"proxy": _px}) if _px else None)
         snapshot_line = _fmt_ta_snapshot_line(ta_snapshot)
         prompt_text = VISION_PROMPT.format(symbol=symbol)
         if snapshot_line:
