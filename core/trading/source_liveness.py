@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+
+from core.infra.time_utils import utc_iso_ago
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -213,9 +215,10 @@ def collect(db_path: str, cfg, days: int = SILENT_DAYS, log_path: str | None = N
             names = _names(src, cfg)
             q = ",".join("?" * len(names))
             try:
+                # паспорт данных, правило 2: порог ISO-строкой, не datetime('now') — иначе сравнение как текст
                 st.trades = conn.execute(
                     f"SELECT COUNT(*) FROM simulated_trades WHERE signal_type IN ({q}) "
-                    f"AND created_at >= datetime('now', '-{int(days)} days')", names).fetchone()[0]
+                    f"AND created_at >= ?", [*names, utc_iso_ago(days=int(days))]).fetchone()[0]
                 row = conn.execute(
                     f"SELECT MAX(created_at) FROM simulated_trades WHERE signal_type IN ({q})",
                     names).fetchone()

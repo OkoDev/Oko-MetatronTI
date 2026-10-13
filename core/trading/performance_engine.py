@@ -12,6 +12,7 @@ import sqlite3
 import logging
 from typing import Any, Dict, List, Optional
 
+from core.infra.time_utils import utc_iso_ago
 from core.trading.effective_status import SQL_IS_WIN_CASE, SQL_IS_BE_NEUTRAL_CASE
 
 logger = logging.getLogger(__name__)
@@ -931,8 +932,10 @@ class PerformanceEngine:
         try:
             with self._conn() as conn:
                 cur = conn.cursor()
-                cutoff = f"datetime('now', '-{days_back} days')"
-                row = cur.execute(f"""
+                # паспорт данных, правило 2: порог ISO-строкой параметром, не datetime('now') в тексте запроса —
+                # иначе сравнение идёт как текст и в окно попадает лишний кусок граничного дня
+                cutoff = utc_iso_ago(days=days_back)
+                row = cur.execute("""
                     SELECT
                         COUNT(*) as total,
                         SUM(CASE WHEN status='TP'  THEN 1 ELSE 0 END) as tp_count,
@@ -940,16 +943,16 @@ class PerformanceEngine:
                         SUM(CASE WHEN status='SL'  THEN 1 ELSE 0 END) as sl_count,
                         AVG(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as avg_r,
                         MAX(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as best_r
-                    FROM simulated_trades WHERE closed_at >= {cutoff}
-                """).fetchone()
-                by_type = cur.execute(f"""
+                    FROM simulated_trades WHERE closed_at >= ?
+                """, (cutoff,)).fetchone()
+                by_type = cur.execute("""
                     SELECT signal_type,
                            COUNT(*) as cnt,
                            SUM(CASE WHEN status IN ('TP','TSL') THEN 1 ELSE 0 END) as wins,
                            AVG(CASE WHEN status IN ('TP','SL','TSL') THEN R_multiple END) as avg_r
-                    FROM simulated_trades WHERE closed_at >= {cutoff}
+                    FROM simulated_trades WHERE closed_at >= ?
                     GROUP BY signal_type ORDER BY avg_r DESC
-                """).fetchall()
+                """, (cutoff,)).fetchall()
                 tp = row[1] or 0
                 tsl = row[2] or 0
                 sl = row[3] or 0

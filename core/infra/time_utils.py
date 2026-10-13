@@ -26,6 +26,21 @@ def utc_iso() -> str:
     return utc_now().isoformat()
 
 
+def utc_iso_ago(*, days: float = 0, hours: float = 0, minutes: float = 0) -> str:
+    """Порог «столько-то назад» строкой ISO UTC — для сравнения с `created_at`/`closed_at` в SQL.
+
+    Паспорт данных, правило 2 (ARCH-147). Так писать НЕЛЬЗЯ:
+        WHERE created_at >= datetime('now', '-7 days')
+    в базе время лежит строкой ISO с «T», а `datetime('now', …)` отдаёт строку с пробелом; сравнение идёт как
+    ТЕКСТ, «T» больше пробела — в окно попадает лишний кусок граничного дня (замер 13.10: 520 строк вместо 517).
+    Обёртка `datetime(created_at)` считает верно, но отключает индекс (SCAN вместо SEARCH). Порог в том же
+    формате, что и хранимое значение, — и верно, и по индексу:
+        WHERE created_at >= ?        , (utc_iso_ago(days=7),)
+    """
+    from datetime import timedelta
+    return (utc_now() - timedelta(days=days, hours=hours, minutes=minutes)).isoformat()
+
+
 def utc_unix_ms() -> int:
     """Unix timestamp в миллисекундах (для BingX API, JS frontend)."""
     return int(utc_now().timestamp() * 1000)
