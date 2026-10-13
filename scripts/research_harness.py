@@ -142,6 +142,7 @@ def core_universe(tf: str, since: str = "2023-01-01", until: str = "2026-06-01",
             "SELECT symbol, COUNT(*) n, MIN(time) f, MAX(time) l FROM ohlcv_cache "
             "WHERE timeframe=? GROUP BY symbol HAVING n>? AND f<=? AND l>=?",
             (tf, min_bars, lo, hi)).fetchall()
+    warn_if_stale(tf)
     if not rows:
         raise RuntimeError(
             f"core_universe({tf}, {since}→{until}): НОЛЬ монет с полным покрытием окна. "
@@ -152,8 +153,42 @@ def core_universe(tf: str, since: str = "2023-01-01", until: str = "2026-06-01",
     return syms if n is None else syms[:n]
 
 
+_FRESH_SAID: set = set()
+MAX_LAG_DAYS = 3.0          # больше — замер молча считает по старым данным
+
+
+def data_age_days(tf: str) -> float | None:
+    """Возраст последнего бара ТФ в кэше, суток. None — узнать не удалось.
+
+    🔴 13.10.2026 (правило 9 паспорта данных): у 3m кэш отставал на 184 дня, у 5m на 134, а замер
+    этого не показывал — он просто сужался до последнего бара. Класс тот же, что `min_bars`: пустой
+    или усечённый результат вместо отказа. Эталонный символ — чтобы запрос лёг на индекс (19 ГБ)."""
+    try:
+        with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
+            for ref in ("BTC/USDT", "ETH/USDT"):
+                row = c.execute("SELECT MAX(time) FROM ohlcv_cache WHERE symbol=? AND timeframe=?",
+                                (ref, tf)).fetchone()
+                if row and row[0]:
+                    return (pd.Timestamp.utcnow() - pd.Timestamp(row[0], unit="ms", tz="UTC")).total_seconds() / 86400
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[харнесс] возраст данных {tf} не проверен: {type(e).__name__}: {e}")
+    return None
+
+
+def warn_if_stale(tf: str) -> None:
+    """Громко один раз на ТФ: данные старые — любой вывод будет про прошлое, а не про сейчас."""
+    if tf in _FRESH_SAID:
+        return
+    _FRESH_SAID.add(tf)
+    age = data_age_days(tf)
+    if age is not None and age > MAX_LAG_DAYS:
+        print(f"🔴 [харнесс] кэш {tf} отстаёт на {age:.0f} сут — замер НЕ про текущий рынок. "
+              f"Докачать: python scripts/fetch_binance_vision.py --tfs {tf} · проверить: scripts/cache_freshness.py")
+
+
 def load(sym: str, tf: str) -> pd.DataFrame:
     """OHLCV с DatetimeIndex. Для SMC-детекторов делайте .reset_index(drop=True)."""
+    warn_if_stale(tf)
     with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as c:
         d = pd.read_sql("SELECT time,open,high,low,close,volume FROM ohlcv_cache "
                         "WHERE symbol=? AND timeframe=? ORDER BY time", c, params=(sym, tf))
