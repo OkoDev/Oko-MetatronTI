@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -988,6 +989,43 @@ async def print_cube_selftest(bot) -> None:
     """Удобный вызов: запустить + напечатать."""
     results = await run_cube_selftest(bot)
     print(format_cube_report(results))
+
+
+# Код сферы 12 (Self-Diagnostics) и «пара» для рыночного факта без привязки к монете
+HEALTH_SYMBOL = "*CUBE*"
+
+
+def health_summary(results: List[CubeCheckResult]) -> dict:
+    """Сводка селфтеста для факта `sphere_health` (ARCH-148.5 «б»): сколько живо/в тени/отсутствует и ЧТО именно
+    отсутствует. Раньше 113 проверок уходили только в консоль по запросу — на вопрос «что сейчас красное в Кубе»
+    ответа в одном месте не было. MISSING здесь = «красное»: компонент заявлен в карте, но не отвечает."""
+    by_status: dict[str, int] = {}
+    for r in results:
+        by_status[r.status] = by_status.get(r.status, 0) + 1
+    missing = [f"{r.code}:{r.name}" for r in results if r.status == MISSING]
+    return {
+        "total": len(results),
+        "active": by_status.get(ACTIVE, 0),
+        "shadow": by_status.get(SHADOW, 0),
+        "missing": by_status.get(MISSING, 0),
+        "missing_list": missing[:40],          # хватает для диагноза; весь список — в селфтесте
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def publish_health(results: List[CubeCheckResult]) -> bool:
+    """Публикует сводку селфтеста в хаб как факт `sphere_health` (сфера 12). True — принято хабом.
+
+    Хаб недоступен → False, исключений не бросает: диагностика не должна ронять старт бота. Читают факт
+    `scripts/checks_registry.py` (реестр «что красное») и дашборд — без повторного прогона 113 проверок."""
+    try:
+        from core.context import cube_client
+        from core.context.pair_context import SphereEvent
+        return cube_client.publish(SphereEvent.SPHERE_HEALTH, HEALTH_SYMBOL, health_summary(results),
+                                    producer="selftest-cube")
+    except Exception as e:                                    # noqa: BLE001
+        logger.warning("[selftest-cube] публикация здоровья в сферу 12 не удалась: %s: %s", type(e).__name__, e)
+        return False
 
 
 if __name__ == "__main__":

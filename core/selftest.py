@@ -160,9 +160,12 @@ class SelfTest:
         # L13-L15: Куб Метатрона (сферы + рёбра + feedback loops)
         if self.bot is not None:
             try:
-                from core.selftest_cube import run_cube_selftest, format_cube_report
+                from core.selftest_cube import run_cube_selftest, format_cube_report, publish_health
                 cube_results = await run_cube_selftest(self.bot)
                 report.cube_text = format_cube_report(cube_results)
+                # ARCH-148.5 «б»: сводка селфтеста → факт sphere_health в сферу 12 (хаб).
+                # Чтобы «что красное в Кубе» читалось реестром и дашбордом без повторного прогона 113 проверок.
+                publish_health(cube_results)
             except Exception as _ce:
                 report.cube_text = f"🔴 Cube selftest ошибка: {_ce}"
 

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))                    # чтобы видеть core.context.cube_client (факт здоровья Куба)
 
 # Какие pm2-процессы — ПРОВЕРКИ (а не производители данных). По назначению имени.
 CHECK_PROCS = {
@@ -75,6 +76,17 @@ def _pm2_checks() -> list[tuple]:
     return out
 
 
+def _cube_health() -> dict | None:
+    """Последний факт `sphere_health` из хаба (его публикует селфтест Куба на старте, ARCH-148.5).
+    None — хаб недоступен или факта нет."""
+    try:
+        from core.context import cube_client
+        facts = cube_client.facts(types=["sphere_health"], last=1)
+        return facts[-1].get("data") if facts else None
+    except Exception:  # молчим: хаб недоступен — раздел просто не покажет живой статус Куба
+        return None
+
+
 def _log_age(name: str) -> str:
     p = Path(os.path.expanduser(f"~/.pm2/logs/{name}-out.log"))
     if not p.exists():
@@ -83,9 +95,20 @@ def _log_age(name: str) -> str:
     return f"{age_h:.0f} ч назад" if age_h < 72 else f"{age_h / 24:.0f} сут назад"
 
 
+def _cube_status() -> str:
+    """Строка живого статуса Куба из факта sphere_health, иначе — откуда взять вручную."""
+    h = _cube_health()
+    if not h:
+        return "хаб молчит · `GET :8000/api/cube/selftest`"
+    miss = h.get("missing", 0)
+    flag = f"🔴 {miss} MISSING" if miss else "✅ все отвечают"
+    return f"{flag} из {h.get('total', '?')} ({h.get('ts', '')[:16]})"
+
+
 def build() -> str:
     n_tests, known = _count_tests()
     cube = _count_matches("core/selftest_cube.py", r"CubeCheckResult\(")
+    cube_h = _cube_health()
     pm2 = _pm2_checks()
     L = ["# 🚦 РЕЕСТР ПРОВЕРОК — что проверяется и что сейчас красное",
          "",
@@ -105,6 +128,14 @@ def build() -> str:
                  + ", ".join(f"{n} (код {ec})" for n, _, _, ec, _ in bad))
     else:
         L.append("- вахты pm2: последний прогон без ошибок (ненулевых кодов нет)")
+    if cube_h:
+        miss = cube_h.get("missing", 0)
+        L.append(f"- селфтест Куба: {'🔴 ' + str(miss) + ' MISSING' if miss else '✅ все отвечают'} из "
+                 f"{cube_h.get('total')} (ACTIVE {cube_h.get('active')}, SHADOW {cube_h.get('shadow')}) · "
+                 f"{cube_h.get('ts', '')[:16]}"
+                 + (" · " + ", ".join(cube_h.get("missing_list", [])[:6]) if miss else ""))
+    else:
+        L.append("- селфтест Куба: живого факта в хабе нет (бот не стартовал с ARCH-148.5 или хаб недоступен)")
     L += ["", "## 2. Проверки кода — до запуска (на выдуманных данных)",
           "",
           "| Проверка | Сколько | Когда | Красное значит | Где смотреть |",
@@ -116,7 +147,7 @@ def build() -> str:
           "",
           "| Проверка | Сколько | Когда | Красное значит | Где смотреть |",
           "|---|---|---|---|---|",
-          f"| селфтест Куба | {cube} | по запросу / старт бота | сфера не отвечает | `GET :8000/api/cube/selftest`, лог старта |",
+          f"| селфтест Куба | {cube} | старт бота → факт в сферу 12 | сфера не отвечает (MISSING) | {_cube_status()} |",
           "| селфтест старта | 13 | каждый старт бота | бот поднялся неисправным | `SelfTest завершён N/N` в логе |",
           "| наблюдатель свечей | формат | каждый круг скана | битый формат свечей на входе | `[DATA-CONTRACT]` в логе бота |",
           "| свежесть/запись шины | — | непрерывно | запись мимо каталога / устаревший снимок | `[Bus] неизвестное …` в логе |"]
