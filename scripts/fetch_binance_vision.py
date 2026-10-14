@@ -101,6 +101,23 @@ def _days(since_day: str) -> list[str]:
     return out
 
 
+# BingX-вселенная (имена паркетов) ↔ Binance USDT-M futures. Мемкоины-мультипликаторы Binance называет
+# с ×1000 (FLOKIUSDT там — `1000FLOKIUSDT`), поэтому докачка по BingX-имени получала 404 и ряд замирал
+# (ARCH-147.11, 6 пар стояли на 15.09). Паркеты этих монет УЖЕ в масштабе ×1000 — источник Binance, и хвост
+# 15.09 совпал с vision 1:1 (проверено 14.10). Значит качаем под Binance-именем, храним под BingX-именем БЕЗ
+# коэффициента: источник один, склейка однородна. Остальные 3 (PUNDIX/VTHO/XTZ) на Binance зовутся как есть.
+_VISION_SYMBOL = {
+    "FLOKIUSDT": "1000FLOKIUSDT",
+    "RATSUSDT": "1000RATSUSDT",
+    "LUNCUSDT": "1000LUNCUSDT",
+}
+
+
+def _vision_sym(sym: str) -> str:
+    """Имя символа на Binance Vision для BingX-символа (мультипликаторы — см. _VISION_SYMBOL)."""
+    return _VISION_SYMBOL.get(sym, sym)
+
+
 def _download_day(sym: str, tf: str, day: str) -> list[tuple] | None:
     """
     Качает 1 ДНЕВНОЙ zip. Нужен для ТЕКУЩЕГО месяца: месячный архив публикуется
@@ -108,13 +125,15 @@ def _download_day(sym: str, tf: str, day: str) -> list[tuple] | None:
     🔴 22-24.08: из-за этого кэш стоял на 31.07, и августовские сигналы молча
     выпадали из замеров — слепой тест «июль→август» стал невозможен.
     """
-    url = f"{BASE_DAILY}/{sym}/{tf}/{sym}-{tf}-{day}.zip"
+    bn = _vision_sym(sym)
+    url = f"{BASE_DAILY}/{bn}/{tf}/{bn}-{tf}-{day}.zip"
     return _fetch_zip(url)
 
 
 def _download_month(sym: str, tf: str, month: str) -> list[tuple] | None:
     """Качает 1 месячный zip → список (open_time_ms, o,h,l,c,v) или None (404/ошибка)."""
-    url = f"{BASE}/{sym}/{tf}/{sym}-{tf}-{month}.zip"
+    bn = _vision_sym(sym)
+    url = f"{BASE}/{bn}/{tf}/{bn}-{tf}-{month}.zip"
     return _fetch_zip(url)
 
 
